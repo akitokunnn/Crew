@@ -5,6 +5,7 @@ import datetime
 import json
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -15,7 +16,11 @@ from .hooks import git_details, git_toplevel
 
 
 def claude_agents():
-    result = subprocess.run(["claude", "agents", "--json"], check=True, capture_output=True, text=True, encoding="utf-8")
+    # On Windows the CLI is an npm .cmd shim, which subprocess only finds through shutil.which (PATHEXT).
+    exe = shutil.which("claude")
+    if exe is None:
+        raise FileNotFoundError("claude not found in PATH")
+    result = subprocess.run([exe, "agents", "--json"], check=True, capture_output=True, text=True, encoding="utf-8")
     agents = json.loads(result.stdout)
     if not isinstance(agents, list):
         raise ValueError("claude agents --json 必须返回数组")
@@ -153,11 +158,66 @@ def _human(value):
     return str(value)
 
 
-def _emit(value, as_json=False):
+STATUS_TEXT = {"working": "干活中", "waiting": "等你", "idle": "空闲", "offline": "离线", "closed": "已收"}
+
+
+def _ago(ts):
+    if ts is None:
+        return "-"
+    seconds = (datetime.datetime.now(datetime.timezone.utc) - store.parse_iso(ts)).total_seconds()
+    if seconds < 60:
+        return "刚刚"
+    if seconds < 3600:
+        return "%d 分钟前" % (seconds // 60)
+    if seconds < 86400:
+        return "%d 小时前" % (seconds // 3600)
+    return "%d 天前" % (seconds // 86400)
+
+
+def _session_line(s):
+    name = ("★ " if s["role"] == "leader" else "") + (s["crew_name"] or s["session_id"][:8])
+    state = STATUS_TEXT[s["status"]] + ("（%s）" % s["status_note"] if s["status_note"] else "")
+    return "  %s  %s  %s  地址 %s  %s" % (name, state, s["task"] or "-", s["cc_name"] or "-", _ago(s["last_event_at"]))
+
+
+def _status_text(v):
+    p = v["project"]
+    lines = ["%s（%s）  待拍板 %d 条" % (p["name"], p["root"], v["open_decisions"])]
+    for g in v["groups"]:
+        lines.append("[%s]%s" % (g["name"], " 已收" if g["closed_at"] else ""))
+        members = sorted(g["members"], key=lambda s: (s["role"] != "leader", s["crew_name"] or ""))
+        lines.extend(_session_line(s) for s in members) if members else lines.append("  （没有成员）")
+    if v["ungrouped"]:
+        lines.append("[未分组]")
+        lines.extend(_session_line(s) for s in v["ungrouped"])
+    lines.append("借出：" + ("无" if not v["leases"] else ""))
+    lines.extend("  %s ← %s  用途 %s  %s借出  预计 %s" % (l["resource"], l["holder_name"] or l["holder_session"][:8], l["purpose"],
+                                                    _ago(l["taken_at"]), l["until_at"] or "-") for l in v["leases"])
+    lines.append("文件归属：" + ("无" if not v["claims"] else ""))
+    lines.extend("  %s ← %s  %s" % (c["pattern"], c["crew_name"] or c["session_id"][:8], c["note"] or "") for c in v["claims"])
+    return "\n".join(lines)
+
+
+def _whoami_text(s):
+    leader = s.get("leader")
+    lines = [_session_line(s).strip(),
+             "项目 %s  分组 %s  leader %s（地址 %s）" % (s["project"], s["group_name"] or "-",
+                                                    leader["crew_name"] if leader else "-", leader["cc_name"] if leader else "-"),
+             "worktree %s  分支 %s  会话 %s" % (s["worktree"] or "-", s["branch"] or "-", s["session_id"])]
+    if s["last_message"]:
+        lines.append("最后一句：" + s["last_message"])
+    return "\n".join(lines)
+
+
+def _emit(value, as_json=False, command=None):
     if as_json:
         print(json.dumps(value, ensure_ascii=False))
     elif value is None:
         print("完成")
+    elif command == "status":
+        print(_status_text(value))
+    elif command in ("whoami", "who"):
+        print(_whoami_text(value))
     else:
         print(_human(value))
 
@@ -312,7 +372,7 @@ def main(argv=None, agents_provider=claude_agents, cwd=None, plugin_root=None):
         else:
             with contextlib.closing(store.connect(args.home)) as conn:
                 value = doctor(conn, args.home, cwd) if args.command == "doctor" else execute(conn, args, cwd, agents_provider)
-        _emit(value, getattr(args, "json", False))
+        _emit(value, getattr(args, "json", False), args.command)
         return 0
     except board.Conflict as exc:
         print("冲突: %s" % exc, file=sys.stderr)
