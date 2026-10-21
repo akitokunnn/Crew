@@ -201,20 +201,31 @@ def _session_line(s):
     return "  %s  %s  %s  地址 %s  %s" % (name, state, s["task"] or "-", s["cc_name"] or "-", _ago(s["last_event_at"]))
 
 
-def _status_text(v):
+def inactive(s, now=None):
+    """Ended sessions pile up over weeks; only live ones and named ones that ended within a day stay in view."""
+    if s["status"] == "closed":
+        return True
+    if s["status"] != "offline":
+        return False
+    now = datetime.datetime.now(datetime.timezone.utc) if now is None else now
+    return not s["crew_name"] or s["last_event_at"] is None or now - store.parse_iso(s["last_event_at"]) > datetime.timedelta(days=1)
+
+
+def _status_text(v, now=None):
     p = v["project"]
     lines = ["%s（%s）  待拍板 %d 条" % (p["name"], p["root"], v["open_decisions"])]
     for g in v["groups"]:
-        lines.append("[%s]%s" % (g["name"], " 已收" if g["closed_at"] else ""))
+        if g["closed_at"]:
+            continue
+        lines.append("[%s]" % g["name"])
         members = sorted(g["members"], key=lambda s: (s["role"] != "leader", s["crew_name"] or ""))
         lines.extend(_session_line(s) for s in members) if members else lines.append("  （没有成员）")
-    # Unnamed sessions that already ended (one-off probes, short chats) are only counted.
-    shown = [s for s in v["ungrouped"] if s["crew_name"] or s["status"] not in ("offline", "closed")]
+    shown = [s for s in v["ungrouped"] if not inactive(s, now)]
     if shown:
         lines.append("[未分组]")
         lines.extend(_session_line(s) for s in shown)
     if len(shown) < len(v["ungrouped"]):
-        lines.append("  （另有 %d 个未命名、已离线的会话）" % (len(v["ungrouped"]) - len(shown)))
+        lines.append("  （另有 %d 个已结束的会话没列出：已收、未命名，或离线超过一天）" % (len(v["ungrouped"]) - len(shown)))
     lines.append("借出：" + ("无" if not v["leases"] else ""))
     lines.extend("  %s ← %s  用途 %s  %s借出  预计 %s" % (l["resource"], l["holder_name"] or l["holder_session"][:8], l["purpose"],
                                                     _ago(l["taken_at"]), l["until_at"] or "-") for l in v["leases"])

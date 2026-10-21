@@ -61,11 +61,11 @@ function sessionCard(s) {
     ${s.role !== "leader" ? `<footer><label>挪组 <select data-move="${esc(name)}" aria-label="移动 ${esc(name)}">${groupOptions(s.group_name)}</select></label></footer>` : ""}</article>`;
 }
 function sessionGrid(sessions, group, expanded) {
-  // Plain sessions that never ran `crew join` pile up as offline cards; fold them away like `crew status` does.
-  const folded = sessions.filter(s => !s.crew_name && s.status === "offline");
+  // Same rule as `crew status`: ended sessions pile up over weeks, so fold closed, unnamed and day-old offline ones.
+  const folded = sessions.filter(s => s.status === "closed" || (s.status === "offline" && (!s.crew_name || !s.last_event_at || Date.now() - new Date(s.last_event_at) > 864e5)));
   const shown = sessions.filter(s => !folded.includes(s)).sort((a,b) => Number(b.role === "leader") - Number(a.role === "leader") || Number(a.status === "offline") - Number(b.status === "offline"));
   return `<div class="grid">${shown.map(sessionCard).join("") || (folded.length ? "" : empty())}</div>` +
-    (folded.length ? `<details class="folded" data-group="${esc(group)}" ${expanded.has(group) ? "open" : ""}><summary>另有 ${folded.length} 个未命名、已离线的会话</summary><div class="grid">${folded.map(sessionCard).join("")}</div></details>` : "");
+    (folded.length ? `<details class="folded" data-group="${esc(group)}" ${expanded.has(group) ? "open" : ""}><summary>另有 ${folded.length} 个已结束的会话：已收、未命名，或离线超过一天</summary><div class="grid">${folded.map(sessionCard).join("")}</div></details>` : "");
 }
 function table(rows, fields) {
   if (!rows.length) return empty();
@@ -82,7 +82,7 @@ function renderBoard() {
   $("freshness").textContent = state.agents_error ? "进程状态未知" : `进程状态 ${Math.floor(state.agents_age_seconds)} 秒前更新`;
   $("waiting").innerHTML = `<h2>等你 · ${waiting.length + open.length}</h2>` + (waiting.length + open.length ? `<ul>${waiting.map(s => `<li><strong>${esc(s.crew_name || s.session_id.slice(0,8))}</strong>：${esc(s.status_note || "等你处理")} <small>已等 ${ago(s.last_event_at) === "刚刚" ? "不足 1 分钟" : ago(s.last_event_at).replace(/前$/, "")}</small></li>`).join("")}${open.map(d => `<li><a href="#decision-${d.id}">${d.blocking ? "卡流程 · " : ""}${esc(d.question)}</a> · ${esc(displayName(d.session_id))}</li>`).join("")}</ul>` : "当前没有等待处理的事。");
   const expanded = new Set([...$("groups").querySelectorAll("details[open]")].map(d => d.dataset.group));
-  $("groups").innerHTML = state.groups.map(g => `<section><h2>${esc(g.name)} ${g.closed_at ? '<small>已收</small>' : ""}</h2>${sessionGrid(g.members, g.name, expanded)}</section>`).join("") + `<section><h2>未分组</h2>${sessionGrid(state.ungrouped, "", expanded)}</section>`;
+  $("groups").innerHTML = state.groups.filter(g => !g.closed_at).map(g => `<section><h2>${esc(g.name)}</h2>${sessionGrid(g.members, g.name, expanded)}</section>`).join("") + `<section><h2>未分组</h2>${sessionGrid(state.ungrouped, "", expanded)}</section>`;
   const resources = state.resources.map(r => ({...r, lease:state.leases.find(l => l.resource === r.name)}));
   $("leases").innerHTML = table(resources, [["name","资源"],["lease","借用人", l => esc(l ? l.holder_name || displayName(l.holder_session) : "空闲")],["lease","用途",l => esc(l?.purpose || "—")],["lease","借出时间", l => esc(dateTime(l?.taken_at))],["lease","预计归还", l => esc(dateTime(l?.until_at))],["lease","操作",(l,r) => l ? `<button data-give="${esc(r.name)}">强制归还</button>` : "—"]]);
   $("claims").innerHTML = table(state.claims, [["pattern","路径"],["crew_name","归属人", (v,r) => esc(v || displayName(r.session_id))],["note","说明"],["created_at","声明时间", v => esc(dateTime(v))]]);

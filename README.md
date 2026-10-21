@@ -40,6 +40,8 @@
 | 看用量 | `crew usage summary`、`crew usage sessions`、`crew usage codex`，或网页的用量页 |
 | 收掉一组 | `crew leader close 感知 --with-members` |
 
+`crew status` 和网页只列在线的会话和一天内才离线的会话；已收的组不显示，已收、未命名、离线超过一天的会话只计个数（网页上收在折叠条里）。
+
 会话里的守则在技能里：成员是 `/crew:member`，leader 是 `/crew:leader`。会话启动时 Crew 会告诉它是谁、归哪个 leader、怎么调命令。
 
 ## 命令速查

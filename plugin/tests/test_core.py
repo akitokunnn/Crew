@@ -573,6 +573,23 @@ class GuardTests(CoreCase):
 
 
 class InstallAndCliTests(CoreCase):
+    def test_status_text_hides_closed_groups_and_ended_sessions(self):
+        def s(name, status, at="2026-10-21T07:00:00.000Z", role="member"):
+            return {"crew_name": name, "status": status, "last_event_at": at, "role": role, "status_note": None,
+                    "task": None, "cc_name": None, "session_id": "abcdef0123"}
+        view = {"project": {"name": "demo", "root": "c:/demo"}, "open_decisions": 0, "leases": [], "claims": [],
+                "groups": [{"name": "old", "closed_at": NOW, "members": []},
+                           {"name": "live", "closed_at": None, "members": [s("lead", "idle", role="leader")]}],
+                "ungrouped": [s("recent", "offline"), s("stale", "offline", "2026-10-19T00:00:00.000Z"),
+                              s(None, "offline"), s("done", "closed"), s("busy", "working")]}
+        text = cli._status_text(view, now=store.parse_iso(NOW))
+        self.assertNotIn("[old]", text)
+        for name in ("[live]", "lead", "recent", "busy"):
+            self.assertIn(name, text)
+        for name in ("stale", "abcdef01", "done"):
+            self.assertNotIn(name, text)
+        self.assertIn("另有 3 个已结束的会话", text)
+
     def test_install_files_idempotent_preserves_custom_defaults(self):
         first = install.install(self.home, self.fake_plugin, now=NOW)
         self.assertEqual(set(first), {"plugin_root", "python", "updated_at"})
