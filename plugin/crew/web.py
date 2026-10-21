@@ -410,16 +410,19 @@ class Handler(BaseHTTPRequestHandler):
         query = parse_qs(url.query)
         service = self.server.service
         if method == "POST":
+            length = int(self.headers.get('Content-Length', '0'))
+            payload = self.rfile.read(length) if length > 0 else b''
+            # Drain the request before an early error, so Windows can deliver
+            # the HTTP response instead of resetting a socket with unread data.
             if self.headers.get("X-Crew") != "1":
                 self._send(403, {"error": "\u7f3a\u5c11 X-Crew: 1 \u8bf7\u6c42\u5934"})
                 return
             if url.path not in POST_PATHS:
                 self._send(404, {"error": "\u63a5\u53e3\u4e0d\u5b58\u5728"})
                 return
-            length = int(self.headers.get("Content-Length", "0"))
             if length <= 0:
                 raise ValueError("\u8bf7\u63d0\u4f9b JSON \u8bf7\u6c42\u4f53")
-            data = json.loads(self.rfile.read(length).decode("utf-8"))
+            data = json.loads(payload.decode("utf-8"))
             self._send(200, service.post(url.path, data, query.get("project", [None])[0]))
         elif url.path == "/api/state":
             self._send(200, service.state(query.get("project", [None])[0]))

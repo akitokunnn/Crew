@@ -287,10 +287,17 @@ class Inbox:
         if conn.execute('SELECT 1 FROM notification_inbound WHERE event_id=?', (identity,)).fetchone():
             return
         leaders = [dict(row) for row in conn.execute("SELECT s.* FROM sessions s LEFT JOIN session_controls c ON s.session_id=c.session_id WHERE role='leader' AND status!='closed' AND COALESCE(c.removed,0)=0")]
-        prefix = re.match(r'^@([^\s]+)\s+(.+)', text, flags=re.S)
-        if prefix:
-            selected = [s for s in leaders if prefix[1] in (s['crew_name'], s['project'] + '/' + s['crew_name'])]
-            session_id, text = (selected[0]['session_id'], prefix[2]) if len(selected) == 1 else (None, text)
+        if text.startswith('@'):
+            matches = []
+            for leader in leaders:
+                for name in (leader['crew_name'], leader['project'] + '/' + leader['crew_name']):
+                    prefix = '@' + name
+                    rest = text[len(prefix):] if text.startswith(prefix) else ''
+                    if rest and rest[0].isspace() and rest.strip():
+                        matches.append((leader, prefix, rest.strip()))
+            longest = max((len(m[1]) for m in matches), default=0)
+            selected = [m for m in matches if len(m[1]) == longest]
+            session_id, text = (selected[0][0]['session_id'], selected[0][2]) if len(selected) == 1 else (None, text)
         elif session_id is None and len(leaders) == 1:
             session_id = leaders[0]['session_id']
         if session_id is None:

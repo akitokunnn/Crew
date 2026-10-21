@@ -165,6 +165,16 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         self.assertFalse(self.service.chat.running('s3'))
         self.assertIn('下一轮收到', self.client.sent[-1][1])
 
+    def test_explicit_route_supports_spaces_and_never_guesses_between_leaders(self):
+        for sid, name in (('short', '设计'), ('long', '设计 复查')):
+            board.join(self.conn, sid, 'demo', name, self.project, None, None, role='leader', now=NOW)
+        self.inbox.receive(self.text('ambiguous', '汇报进度'))
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM notification_replies').fetchone()[0], 0)
+        self.assertIn('@demo/设计 复查', self.client.sent[-1][1])
+        self.inbox.receive(self.text('explicit', '@demo/设计 复查 请检查手机布局'))
+        row = self.conn.execute('SELECT * FROM notification_replies').fetchone()
+        self.assertEqual((row['session_id'], row['text']), ('long', '请检查手机布局'))
+
     def test_status_uses_authenticated_post_without_starting_desktop_agent(self):
         from crew.notifications import desktop_locked
         folder = self.root / 'RemoteDev'
