@@ -144,7 +144,7 @@ class Service:
                     if self.chat.running(session["session_id"]):
                         session["status"] = self.chat.journal(session["session_id"]).status
                     session["open"] = open_session.availability(session["session_id"], agents,
-                                                                self.claude_root.parent / "sessions", error)
+                                                                self.claude_root.parent / "sessions", error, manager=self.chat)
                 decisions = board.decisions(conn, name, all=True)
                 result.update(candidates=self.candidates(conn, name), resources=board.resources(conn, name),
                               decisions=[d for d in decisions if d["status"] == "open"] +
@@ -167,6 +167,16 @@ class Service:
                 board.answer(conn, data["id"], _text(data, "text"), board.HUMAN, now=now)
                 return {"ok": True}
             project = self.selected_project(conn, project_name)
+            if path in ("/api/open", "/api/open/continue"):
+                target = (board.session(conn, _text(data, "session_id")) if path.endswith("/continue") or data.get("session_id") is not None else
+                          board.named_session(conn, project, _text(data, "name")))
+                if target["project"] != project:
+                    raise board.BoardError("会话不属于当前项目")
+                if path == "/api/open":
+                    return open_session.begin(conn, target["session_id"], self.agents_provider,
+                                              self.claude_root.parent / "sessions", manager=self.chat)
+                return open_session.resume(conn, target["session_id"], self.agents_provider, data.get("confirm") is True,
+                                           self.claude_root.parent / "sessions", now=now, manager=self.chat)
             if path == "/api/spawn":
                 return self.chat.start(conn, project, _text(data, "name"), _text(data, "task"),
                                        group=_optional_text(data, "group"), role=data.get("role", "member"),
@@ -236,7 +246,7 @@ class Service:
             return result
 
 
-POST_PATHS = {"/api/answer", "/api/spawn", "/api/leader", "/api/lease/give", "/api/roster/move", "/api/roster/adopt", "/api/chat/send"}
+POST_PATHS = {"/api/open", "/api/open/continue", "/api/answer", "/api/spawn", "/api/leader", "/api/lease/give", "/api/roster/move", "/api/roster/adopt", "/api/chat/send"}
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"),
           "/style.css": ("style.css", "text/css; charset=utf-8"), "/chat.js": ("chat.js", "text/javascript; charset=utf-8"),
           "/vendor/markdown-it.min.js": ("vendor/markdown-it.min.js", "text/javascript; charset=utf-8")}

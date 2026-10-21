@@ -81,6 +81,7 @@ def parser():
     c = command("status", True)
     c.add_argument("--project")
     command("who", True).add_argument("name")
+    command("open").add_argument("name")
     c = command("lease").add_subparsers(dest="action", required=True)
     a = c.add_parser("take")
     a.add_argument("resource")
@@ -252,6 +253,8 @@ def _emit(value, as_json=False, command=None):
         print("完成")
     elif command == "status":
         print(_status_text(value))
+    elif command == "open":
+        print("已取消，会话继续保持原样" if value.get("cancelled") else "已在 VS Code 打开会话：" + value["session_id"])
     elif command in ("whoami", "who"):
         print(_whoami_text(value))
     else:
@@ -348,6 +351,9 @@ def execute(conn, args, cwd, agents_provider):
         return board.resources(conn, p)
     if cmd == "status":
         return board.status(conn, p, _agents(agents_provider))
+    if cmd == "open":
+        from . import open_session
+        return open_session.cli_open(conn, args.home, board.named_session(conn, p, args.name)["session_id"], agents_provider)
     if cmd == "who":
         s = board.named_session(conn, p, args.name)
         agents = _agents(agents_provider, allow_failure=True)

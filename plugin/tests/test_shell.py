@@ -286,6 +286,60 @@ class WebTests(ShellFixture, unittest.TestCase):
         self.assertEqual(self.server.server_address[0], "127.0.0.1")
         self.assertIsNone(state["agents_error"])
 
+    def test_open_two_steps_rechecks_busy_and_confirmation_before_closing(self):
+        directory = self.server.service.claude_root.parent / "sessions"
+        directory.mkdir()
+        record = {"sessionId": "s1", "pid": 101, "cwd": str(self.project), "entrypoint": "cli",
+                  "procStart": "123456", "status": "idle"}
+        (directory / "101.json").write_text(json.dumps(record), encoding="utf-8")
+        self.provider.return_value = [{"sessionId": "s1", "pid": 101, "name": "one", "status": "idle"}]
+        with mock.patch("crew.open_session.open_folder") as folder, \
+             mock.patch("crew.open_session.close_terminal") as closer, \
+             mock.patch("crew.open_session.os.startfile") as uri:
+            code, first, _ = self.get("/api/open", {"name": "one"})
+            self.assertEqual(code, 200)
+            self.assertTrue(first["needs_window_ready"])
+            self.assertEqual((first["location"], first["session_id"]), ("terminal", "s1"))
+            folder.assert_called_once_with(str(self.project))
+            closer.assert_not_called()
+            uri.assert_not_called()
+            self.assertEqual(self.get("/api/open/continue", {"session_id": "s1"})[0], 409)
+            self.provider.return_value[0]["status"] = "busy"
+            self.server.service.refresh_agents()
+            state = self.get("/api/state")[1]
+            target = next(s for g in state["groups"] for s in g["members"] if s["session_id"] == "s1")
+            self.assertFalse(target["open"]["enabled"])
+            self.assertEqual(self.get("/api/open/continue", {"session_id": "s1", "confirm": True})[0], 409)
+            closer.assert_not_called()
+            self.provider.return_value[0]["status"] = "idle"
+            self.assertEqual(self.get("/api/open/continue", {"session_id": "s1", "confirm": True})[0], 200)
+            closer.assert_called_once()
+            uri.assert_called_once_with("vscode://anthropic.claude-code/open?session=s1")
+
+    def test_cli_managed_open_uses_running_web_manager_and_detaches_sdk(self):
+        code, created, _ = self.get("/api/leader", {"name": "web-open", "task": "work"})
+        self.assertEqual(code, 200)
+        session_id = created["session_id"]
+        process = self.processes[-1]
+        process.pid = 202
+        self.server.service.chat.journal(session_id).set_status("idle")
+        directory = self.server.service.claude_root.parent / "sessions"
+        directory.mkdir()
+        record = {"sessionId": session_id, "pid": process.pid, "cwd": str(self.project), "entrypoint": "sdk-cli",
+                  "procStart": "123456", "status": "idle"}
+        (directory / "202.json").write_text(json.dumps(record), encoding="utf-8")
+        self.provider.return_value = [{"sessionId": session_id, "pid": 202, "name": "web-open", "status": "idle"}]
+        with mock.patch("crew.open_session.open_folder") as folder, \
+             mock.patch("crew.open_session.close_terminal") as closer, \
+             mock.patch("crew.open_session.os.startfile") as uri, \
+             mock.patch("builtins.input", side_effect=["", "yes"]):
+            code, output, errors = self.run_cli(["open", "web-open"])
+        self.assertEqual(code, 0, errors)
+        folder.assert_called_once_with(str(self.project))
+        closer.assert_not_called()
+        self.assertEqual(process.poll(), 0)
+        uri.assert_called_once_with("vscode://anthropic.claude-code/open?session=" + session_id)
+
     def test_agents_cache_age_failure_preserves_original_states_then_recovers(self):
         initial_calls = self.provider.call_count
         self.clock += dt.timedelta(seconds=7)

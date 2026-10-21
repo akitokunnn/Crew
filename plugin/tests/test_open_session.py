@@ -120,8 +120,88 @@ class OpenSessionTests(CoreCase):
         kernel.TerminateProcess.assert_not_called()
         kernel.CloseHandle.assert_called_once_with(123)
 
+    def test_native_close_rechecks_registry_busy_before_terminating(self):
+        record = self.live_session()
+        latest = {**record, "status": "busy"}
+        (self.process_dir / "101.json").write_text(json.dumps(latest), encoding="utf-8")
+        kernel = mock.Mock()
+
+        def process_times(handle, created, *unused):
+            created._obj.dwLowDateTime = 123456
+            return True
+
+        kernel.GetProcessTimes.side_effect = process_times
+        with mock.patch("crew.open_session.ctypes.WinDLL", return_value=kernel):
+            with self.assertRaises(board.Conflict):
+                open_session.close_terminal(record, self.process_dir)
+        kernel.TerminateProcess.assert_not_called()
+
     def test_register_and_join_preserve_spawn_id(self):
         board.register_session(self.conn, "s1", "demo", self.root, self.root, "main", spawn_id="crew-spawn", now=NOW)
         board.register_session(self.conn, "s1", "demo", self.root, self.root, "main", entrypoint="claude-vscode", now=NOW)
         board.join(self.conn, "s1", "demo", "one", self.root, self.root, "main", now=NOW)
         self.assertEqual(board.session(self.conn, "s1")["spawn_id"], "crew-spawn")
+
+    def test_managed_sdk_uses_detach_and_startup_busy_is_not_offline(self):
+        manager = mock.Mock()
+        manager.is_owned.return_value = True
+        manager.busy.return_value = True
+        manager.owns_pid.return_value = True
+        info = open_session.availability("s1", [], self.process_dir, manager=manager)
+        self.assertEqual(info["location"], "web")
+        self.assertFalse(info["enabled"])
+        manager.busy.return_value = False
+        self.live_session(entrypoint="sdk-cli")
+        info = open_session.availability("s1", self.live, self.process_dir, manager=manager)
+        self.assertTrue(info["enabled"])
+        self.assertTrue(info["needs_confirmation"])
+        with self.assertRaises(board.Conflict):
+            open_session.resume(self.conn, "s1", lambda: self.live, False, self.process_dir, manager=manager)
+        open_session.resume(self.conn, "s1", lambda: self.live, True, self.process_dir,
+                            self.closed.append, self.uris.append, manager=manager)
+        manager.detach.assert_called_once_with("s1")
+        self.assertEqual(self.closed, [])
+        self.assertEqual(self.uris, [open_session.session_uri("s1")])
+
+    def test_foreign_sdk_pid_and_detach_busy_race_never_open_uri(self):
+        self.live_session(entrypoint="sdk-cli")
+        manager = mock.Mock()
+        manager.is_owned.return_value = True
+        manager.busy.return_value = False
+        manager.owns_pid.return_value = False
+        with self.assertRaises(board.Conflict):
+            open_session.resume(self.conn, "s1", lambda: self.live, True, self.process_dir,
+                                self.closed.append, self.uris.append, manager=manager)
+        manager.detach.assert_not_called()
+        manager.owns_pid.return_value = True
+        manager.detach.side_effect = board.Conflict("became busy")
+        with self.assertRaises(board.Conflict):
+            open_session.resume(self.conn, "s1", lambda: self.live, True, self.process_dir,
+                                self.closed.append, self.uris.append, manager=manager)
+        self.assertEqual(self.closed, [])
+        self.assertEqual(self.uris, [])
+
+    def test_cli_waits_for_window_then_requires_explicit_terminal_confirmation(self):
+        first = {"cwd": str(self.root), "needs_confirmation": True, "location": "terminal"}
+        with mock.patch("crew.open_session.begin", return_value=first), mock.patch("crew.open_session.resume") as resume:
+            with mock.patch("builtins.input", side_effect=["", "n"]):
+                self.assert_cli(["open", "one"])
+            resume.assert_not_called()
+            with mock.patch("builtins.input", side_effect=["", "y"]):
+                self.assert_cli(["open", "one"])
+            self.assertTrue(resume.call_args.kwargs["confirm"])
+            self.assertEqual(resume.call_args.args[1], "s1")
+
+    def test_cli_managed_session_uses_http_for_both_steps(self):
+        journal = self.home / "chat" / "s1.jsonl"
+        journal.parent.mkdir()
+        journal.touch()
+        first = {"cwd": str(self.root), "needs_confirmation": True, "location": "web"}
+        with mock.patch("crew.open_session._web_post", side_effect=[first, {"ok": True, "session_id": "s1"}]) as post, \
+             mock.patch("crew.open_session.begin") as begin, mock.patch("crew.open_session.resume") as resume, \
+             mock.patch("builtins.input", side_effect=["", "yes"]):
+            self.assert_cli(["open", "one"])
+        self.assertEqual([call.args[2] for call in post.call_args_list], ["/api/open", "/api/open/continue"])
+        self.assertEqual(post.call_args.args[3], {"session_id": "s1", "confirm": True})
+        begin.assert_not_called()
+        resume.assert_not_called()
