@@ -5,7 +5,6 @@ import datetime as dt
 import io
 import json
 import subprocess
-import sys
 import threading
 import unittest
 from pathlib import Path
@@ -37,6 +36,9 @@ class ShellFixture(UsageFixture):
         self.project = self.root / "project"
         self.project.mkdir()
         self.commands = []
+        self.processes = []
+        self.manager = chat.Manager(self.home, PLUGIN, lambda: [], self.process_factory)
+        self.addCleanup(self.manager.close)
         board.init_project(self.conn, "demo", self.project, now=NOW)
         for sid, name in (("s1", "one"), ("s2", "two")):
             board.join(self.conn, sid, "demo", name, self.project, self.project, "main", cc_name="cc-" + name, now=NOW)
@@ -46,8 +48,13 @@ class ShellFixture(UsageFixture):
                           "cache_write_5m": 6.25, "cache_write_1h": 10, "cache_read": .5}}), encoding="utf-8")
 
     def make_spawn(self, name="new", task="\u4efb\u52a1\u539f\u6587\nsecond line", **options):
-        return spawn.spawn(self.conn, self.home, PLUGIN, "demo", name, task,
-                           launcher=self.commands.append, now=NOW, **options)
+        return self.manager.start(self.conn, "demo", name, task, now=NOW, **options)
+
+    def process_factory(self, command, **options):
+        process = FakeProcess(command, **options)
+        self.processes.append(process)
+        self.commands.append(command)
+        return process
 
     def spec(self, result):
         return json.loads((self.home / "spawn" / (result["id"] + ".json")).read_text(encoding="utf-8"))
@@ -84,13 +91,12 @@ class SpawnTests(ShellFixture, unittest.TestCase):
         self.assertTrue(brief.endswith(spec["task"]))
         command = result["command"]
         self.assertEqual(self.commands, [command])
-        self.assertEqual(command[:7], ["wt.exe", "-w", "crew", "new-tab", "--title", "new", "--suppressApplicationTitle"])
-        self.assertEqual(command[command.index("--tabColor") + 1], spawn.tab_color("new"))
-        self.assertEqual(command[command.index("-d") + 1], spec["cwd"])
-        self.assertEqual(command[command.index("-File") + 1], str(PLUGIN / "launch.ps1"))
-        self.assertEqual(command[-2:], ["-Spec", str(self.home / "spawn" / (result["id"] + ".json"))])
-        start = command.index("powershell.exe")
-        self.assertEqual(command[start:start + 4], ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass"])
+        self.assertEqual(command[command.index("--name") + 1], "new")
+        self.assertEqual(command[-2:], ["--session-id", result["session_id"]])
+        self.assertNotIn("--agent", command)
+        self.assertEqual(self.processes[0].options["cwd"], store.norm_path(self.project))
+        self.assertEqual(self.processes[0].options["env"]["CREW_ROLE"], "member")
+        self.assertEqual(board.session(self.conn, result["session_id"])["group_name"], "lead")
         self.assertEqual(board.events(self.conn, "demo", limit=1)[0]["kind"], "spawn")
 
     def test_brief_names_live_and_missing_leader(self):
@@ -107,21 +113,21 @@ class SpawnTests(ShellFixture, unittest.TestCase):
         result = self.make_spawn(task=task)
         self.assertTrue(Path(self.spec(result)["md"]).read_bytes().endswith(task.encode("utf-8")))
 
-    def test_leader_spec_group_and_color(self):
+    def test_leader_spec_group_and_role(self):
         result = self.make_spawn("boss", role="leader")
         spec = self.spec(result)
         self.assertEqual((spec["group"], spec["agent"]), ("boss", "crew:leader"))
         self.assertIn("/crew:leader", Path(spec["md"]).read_text(encoding="utf-8"))
-        self.assertIn("#C9A227", result["command"])
+        self.assertEqual(result["command"][result["command"].index("--agent") + 1], "crew:leader")
         group = next(g for g in board.groups(self.conn, "demo") if g["name"] == "boss")
-        self.assertIsNone(group["leader_session_id"])
+        self.assertEqual(group["leader_session_id"], result["session_id"])
 
     def test_reopen_closed_leader_group(self):
         board.close_group(self.conn, "demo", "lead", with_members=True, now=NOW)
-        self.make_spawn("lead", role="leader")
+        result = self.make_spawn("lead", role="leader")
         group = board.groups(self.conn, "demo")[0]
         self.assertIsNone(group["closed_at"])
-        self.assertIsNone(group["leader_session_id"])
+        self.assertEqual(group["leader_session_id"], result["session_id"])
 
     def test_duplicate_online_conflicts_but_offline_and_other_project_allowed(self):
         with self.assertRaises(board.Conflict):
@@ -186,18 +192,10 @@ class SpawnTests(ShellFixture, unittest.TestCase):
                 self.make_spawn(**options)
         self.assertEqual(self.commands, [])
 
-    def test_color_stable_across_interpreters_and_member_palette(self):
-        name = "\u89c6\u89c9"
-        output = subprocess.run([sys.executable, "-c", "from crew.spawn import tab_color; print(tab_color(" + ascii(name) + "))"],
-                                cwd=PLUGIN, capture_output=True, text=True, check=True).stdout.strip()
-        self.assertEqual(output, spawn.tab_color(name))
-        self.assertIn(output, spawn.MEMBER_COLORS)
-
     def test_spawn_dry_run_never_writes_or_launches(self):
         self.git_repo()
         before = self.conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
-        with mock.patch("crew.spawn.launch") as launcher:
-            code, output, errors = self.run_cli(["spawn", "--name", "new", "--task", "task", "--role", "leader", "--new-worktree", "feature/new", "--dry-run", "--json"])
+        code, output, errors = self.run_cli(["spawn", "--name", "new", "--task", "task", "--role", "leader", "--new-worktree", "feature/new", "--dry-run", "--json"])
         self.assertEqual(code, 0, errors)
         plan = json.loads(output)
         self.assertEqual(len(plan["files"]), 2)
@@ -206,20 +204,15 @@ class SpawnTests(ShellFixture, unittest.TestCase):
         self.assertFalse((self.home / "spawn").exists())
         self.assertEqual(len(board.groups(self.conn, "demo")), 1)
         self.assertEqual(before, self.conn.execute("SELECT COUNT(*) FROM events").fetchone()[0])
-        launcher.assert_not_called()
+        self.assertEqual(self.processes, [])
 
-    def test_cli_spawn_dispatch_conflict_exit_and_no_host(self):
-        with mock.patch("crew.spawn.launch", side_effect=self.commands.append):
-            code, output, errors = self.run_cli(["spawn", "--name", "new", "--task", "task", "--json"])
-        self.assertEqual(code, 0, errors)
-        self.assertEqual(json.loads(output)["command"], self.commands[0])
-        self.assertEqual(self.run_cli(["spawn", "--name", "one", "--task", "task"])[0], 3)
+    def test_web_listens_only_on_loopback(self):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
             cli.parser().parse_args(["web", "--host", "0.0.0.0"])
         self.assertEqual(raised.exception.code, 2)
 
     def test_leader_start_moves_members_and_passes_spec(self):
-        result = spawn.leader_start(self.conn, self.home, PLUGIN, "demo", "boss", ["one", "two"], launcher=self.commands.append, now=NOW)
+        result = self.manager.start(self.conn, "demo", "boss", role="leader", members=["one", "two"], now=NOW)
         self.assertEqual(board.session(self.conn, "s1")["group_name"], "boss")
         self.assertEqual(board.session(self.conn, "s2")["group_name"], "boss")
         self.assertEqual(self.spec(result)["task"], "\u7ba1\u7406\u5206\u7ec4 boss")
@@ -228,7 +221,7 @@ class SpawnTests(ShellFixture, unittest.TestCase):
     def test_leader_bad_members_do_not_create_group_or_move_anyone(self):
         for members in (["one", "missing"], ["lead"]):
             with self.assertRaises(board.BoardError):
-                spawn.leader_start(self.conn, self.home, PLUGIN, "demo", "boss", members, launcher=self.commands.append, now=NOW)
+                self.manager.start(self.conn, "demo", "boss", role="leader", members=members, now=NOW)
         self.assertEqual([g["name"] for g in board.groups(self.conn, "demo")], ["lead"])
         self.assertEqual(board.session(self.conn, "s1")["group_name"], "lead")
         self.assertEqual(self.commands, [])
@@ -239,46 +232,6 @@ class SpawnTests(ShellFixture, unittest.TestCase):
         self.assertEqual(json.loads(output)["members"], ["one", "two"])
         self.assertEqual(board.session(self.conn, "s1")["group_name"], "lead")
         self.assertFalse((self.home / "spawn").exists())
-
-    def test_launch_script_ascii_and_powershell_51_parser(self):
-        script = PLUGIN / "launch.ps1"
-        self.assertTrue(script.read_bytes().isascii())
-        code = "$tokens=$null; $errors=$null; [System.Management.Automation.Language.Parser]::ParseFile('" + str(script).replace("'", "''") + "',[ref]$tokens,[ref]$errors) | Out-Null; if ($errors.Count) { $errors | Format-List; exit 1 }; $PSVersionTable.PSVersion.ToString()"
-        parsed = subprocess.run(["powershell.exe", "-NoProfile", "-Command", code], capture_output=True, text=True, check=True)
-        self.assertTrue(parsed.stdout.strip().startswith("5.1."), parsed.stdout)
-
-    def test_default_launcher_starts_without_waiting(self):
-        with mock.patch("crew.spawn.subprocess.Popen") as process:
-            command = ["wt.exe", "-w", "crew"]
-            spawn.launch(command)
-        process.assert_called_once_with(command)
-        process.return_value.wait.assert_not_called()
-
-
-class LaunchScriptTests(unittest.TestCase):
-    def test_strips_inherited_claude_session_markers_and_sets_identity(self):
-        import os
-        import tempfile
-        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent) as temp:
-            temp = Path(temp)
-            dump = temp / "env.txt"
-            # A fake claude on PATH records the environment it was started with.
-            (temp / "claude.cmd").write_text("@set > \"%s\"\n" % dump, encoding="ascii")
-            (temp / "brief.md").write_text("task", encoding="utf-8")
-            spec = temp / "spec.json"
-            spec.write_text(json.dumps({"id": "sid1", "name": "probe", "group": None, "role": "member",
-                                        "cwd": str(temp), "agent": None, "md": str(temp / "brief.md")}), encoding="utf-8")
-            env = {k: v for k, v in os.environ.items() if not k.upper().startswith("CLAUDE")}
-            env.update(PATH=str(temp) + os.pathsep + env["PATH"], CLAUDE_CODE_CHILD_SESSION="1",
-                       CLAUDE_CODE_SESSION_ID="parent", CLAUDECODE="1", CREW_GROUP="stale")
-            subprocess.run(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-                            str(PLUGIN / "launch.ps1"), "-Spec", str(spec)], env=env, check=True, timeout=60)
-            seen = dict(line.split("=", 1) for line in dump.read_text(encoding="mbcs").splitlines() if "=" in line)
-            names = {k.upper() for k in seen}
-            for marker in ("CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_SESSION_ID", "CLAUDECODE", "CREW_GROUP"):
-                self.assertNotIn(marker, names)
-            self.assertEqual((seen["CREW_NAME"], seen["CREW_ROLE"], seen["CREW_SPAWN_ID"]), ("probe", "member", "sid1"))
-
 
 class WebTests(ShellFixture, unittest.TestCase):
     def setUp(self):
@@ -294,15 +247,9 @@ class WebTests(ShellFixture, unittest.TestCase):
         board.report(self.conn, "s1", "report", now=NOW)
         self.clock = store.parse_iso(NOW)
         self.provider = mock.Mock(return_value=[{"sessionId":"s1", "name":"cc-one"}, {"sessionId":"s3", "name":"cc-lead"}])
-        self.processes = []
-        def process_factory(command, **options):
-            process = FakeProcess(command, **options)
-            self.processes.append(process)
-            return process
-        self.process_factory = process_factory
         self.server = web.create_server(self.home, PLUGIN, port=0, cwd=self.project, agents_provider=self.provider,
-                                        launcher=self.commands.append, claude_root=self.claude, codex_root=self.codex,
-                                        runs_file=self.runs, now=lambda: self.clock, process_factory=process_factory)
+                                        claude_root=self.claude, codex_root=self.codex,
+                                        runs_file=self.runs, now=lambda: self.clock, process_factory=self.process_factory)
         self.thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval":.02})
         self.thread.start()
         self.addCleanup(self.close_server)
@@ -438,7 +385,7 @@ class WebTests(ShellFixture, unittest.TestCase):
         other = self.root / "a-first"
         other.mkdir()
         board.init_project(self.conn, "a-first", other, now=NOW)
-        options = {"agents_provider":self.provider, "launcher":self.commands.append,
+        options = {"agents_provider":self.provider,
                    "claude_root":self.claude, "codex_root":self.codex, "runs_file":self.runs, "now":self.clock}
         inside = web.Service(self.home, PLUGIN, cwd=self.project, **options)
         self.assertEqual(inside.default_project, "demo")
@@ -447,7 +394,7 @@ class WebTests(ShellFixture, unittest.TestCase):
 
     def test_first_agents_failure_does_not_mark_idle_offline(self):
         service = web.Service(self.home, PLUGIN, agents_provider=mock.Mock(side_effect=ValueError("bad JSON")),
-                              launcher=self.commands.append, claude_root=self.claude, codex_root=self.codex, runs_file=self.runs, now=self.clock)
+                              claude_root=self.claude, codex_root=self.codex, runs_file=self.runs, now=self.clock)
         service.refresh_agents()
         state = service.state()
         self.assertIsNotNone(state["agents_error"])
@@ -486,6 +433,46 @@ class WebTests(ShellFixture, unittest.TestCase):
         self.assertEqual(self.get("/api/spawn", {"name":"one", "task":"work"})[0], 409)
         self.assertEqual(self.get("/api/spawn", {"name":"fresh", "task":"work", "group":"missing"})[0], 400)
         self.assertEqual(self.get("/api/spawn", {"name":"fresh"})[0], 400)
+
+    def test_member_chat_resume_uses_current_group_and_keeps_member_role(self):
+        code, result, _ = self.get("/api/spawn", {"name": "web-member", "task": "implement the feature"})
+        self.assertEqual(code, 200)
+        session_id = result["session_id"]
+        self.assertEqual(result["role"], "member")
+        self.assertNotIn("--agent", result["command"])
+        self.assertNotIn("CREW_GROUP", self.processes[0].options["env"])
+        session = board.session(self.conn, session_id)
+        self.assertEqual((session["role"], session["group_name"]), ("member", None))
+        self.assertTrue(self.get("/api/chat/history?session_id=" + session_id)[1]["running"])
+        shown = next(s for s in self.get("/api/state")[1]["ungrouped"] if s["session_id"] == session_id)
+        self.assertTrue(shown["web_chat"])
+        manager = self.server.service.chat
+        self.assertTrue(manager.owns_pid(session_id, self.processes[0].pid))
+        self.assertFalse(manager.owns_pid(session_id, -1))
+        self.processes[0].emit({"type": "result"})
+        self.chat_wait(session_id, lambda journal: journal.status == "idle")
+        self.assertEqual(self.get("/api/chat/send", {"session_id": session_id, "text": "continue"})[0], 200)
+        board.roster(self.conn, "demo", "move", "lead", ["web-member"], now=NOW)
+        manager.close()
+        self.server.service.chat = chat.Manager(self.home, PLUGIN, self.provider, self.process_factory)
+        self.assertEqual(self.get("/api/chat/send", {"session_id": session_id, "text": "resume"})[0], 200)
+        process = self.processes[1]
+        self.assertEqual(process.command[-2:], ["--resume", session_id])
+        self.assertNotIn("--agent", process.command)
+        self.assertEqual((process.options["env"]["CREW_ROLE"], process.options["env"]["CREW_GROUP"]), ("member", "lead"))
+
+    def test_cli_spawn_uses_web_service_and_reports_conflicts(self):
+        code, output, errors = self.run_cli(["spawn", "--name", "cli-member", "--task", "work", "--cwd", str(self.project), "--json"])
+        self.assertEqual(code, 0, errors)
+        result = json.loads(output)
+        self.assertEqual(result["role"], "member")
+        self.assertEqual(board.session(self.conn, result["session_id"])["crew_name"], "cli-member")
+        self.assertNotIn("--agent", result["command"])
+        self.assertEqual(self.run_cli(["spawn", "--name", "one", "--task", "work"])[0], 3)
+        with mock.patch("crew.spawn.urlopen", side_effect=URLError("service down")):
+            code, _, errors = self.run_cli(["spawn", "--name", "offline-member", "--task", "work"])
+        self.assertEqual(code, 1)
+        self.assertIn("crew web --open", errors)
 
     def test_leader_success_and_business_errors(self):
         code, result, _ = self.get("/api/leader", {"name":"boss", "members":["one","two"], "task":"plan"})
@@ -579,8 +566,8 @@ class WebTests(ShellFixture, unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("crew web --open", errors)
 
-    def test_detach_only_closes_selected_idle_leader_and_waits_for_exit(self):
-        selected = self.chat_start()
+    def test_detach_only_closes_selected_idle_session_and_waits_for_exit(self):
+        selected = self.get("/api/spawn", {"name": "selected-member", "task": "work"})[1]["session_id"]
         other = self.get("/api/leader", {"name": "other-boss"})[1]["session_id"]
         manager = self.server.service.chat
         with self.assertRaises(board.Conflict):

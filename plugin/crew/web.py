@@ -27,13 +27,13 @@ def _optional_text(data, key):
 
 
 class Service:
-    def __init__(self, home, plugin_root, agents_provider=None, launcher=spawn.launch,
+    def __init__(self, home, plugin_root, agents_provider=None,
                  claude_root=None, codex_root=None, runs_file=None, now=None, cwd=None, process_factory=subprocess.Popen):
         if agents_provider is None:
             from .cli import claude_agents
             agents_provider = claude_agents
         self.home, self.plugin_root = Path(home), Path(plugin_root)
-        self.agents_provider, self.launcher, self.clock = agents_provider, launcher, now
+        self.agents_provider, self.clock = agents_provider, now
         self.chat = chat.Manager(home, plugin_root, agents_provider, process_factory)
         self.claude_root = Path.home() / ".claude" / "projects" if claude_root is None else Path(claude_root)
         self.codex_root = Path.home() / ".codex" / "sessions" if codex_root is None else Path(codex_root)
@@ -166,9 +166,10 @@ class Service:
                 return {"ok": True}
             project = self.selected_project(conn, project_name)
             if path == "/api/spawn":
-                return spawn.spawn(conn, self.home, self.plugin_root, project, _text(data, "name"), _text(data, "task"),
-                                   _optional_text(data, "group"), data.get("role", "member"),
-                                   new_worktree=_optional_text(data, "new_worktree"), launcher=self.launcher, now=now)
+                return self.chat.start(conn, project, _text(data, "name"), _text(data, "task"),
+                                       group=_optional_text(data, "group"), role=data.get("role", "member"),
+                                       cwd=_optional_text(data, "cwd"), new_worktree=_optional_text(data, "new_worktree"),
+                                       base=_optional_text(data, "base"), now=now)
             if path == "/api/leader":
                 members = data.get("members", [])
                 if not isinstance(members, list) or any(not isinstance(m, str) or not m.strip() for m in members):
@@ -183,13 +184,12 @@ class Service:
                         raise board.Conflict("组员重名: " + member_name)
                     names.add(member_name)
                 # Check the leader and existing members before adopting anyone.
-                spawn.leader_start(conn, self.home, self.plugin_root, project, name, members,
-                                   task, cwd=_optional_text(data, "cwd"), new_worktree=_optional_text(data, "new_worktree"),
-                                   launcher=self.launcher, now=now, dry_run=True)
+                spawn.leader_plan(conn, self.home, self.plugin_root, project, name, members,
+                                  task, cwd=_optional_text(data, "cwd"), new_worktree=_optional_text(data, "new_worktree"), now=now)
                 for candidate, member_name in candidate_members:
                     self.adopt(conn, project, candidate, member_name, None, now)
-                return self.chat.start(conn, project, name, members + [member_name for _, member_name in candidate_members],
-                                       task, cwd=_optional_text(data, "cwd"),
+                return self.chat.start(conn, project, name, task, role="leader",
+                                       members=members + [member_name for _, member_name in candidate_members], cwd=_optional_text(data, "cwd"),
                                        new_worktree=_optional_text(data, "new_worktree"), now=now)
             if path == "/api/chat/send":
                 return self.chat.send(self.chat_session(conn, project, _text(data, "session_id")), _text(data, "text"))
@@ -205,7 +205,7 @@ class Service:
     def chat_session(self, conn, project, session_id):
         session = board.session(conn, session_id)
         if session["project"] != project or not self.chat.path(session_id).exists():
-            raise board.BoardError("当前项目中没有这个网页 leader")
+            raise board.BoardError("当前项目中没有这个网页会话")
         return session
 
     def chat_history(self, session_id, project_name=None):

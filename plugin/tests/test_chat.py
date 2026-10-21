@@ -25,6 +25,7 @@ class QueueStream:
 class FakeProcess:
     def __init__(self, command, **options):
         self.command, self.options = command, options
+        self.pid = id(self)
         self.stdout, self.stderr = QueueStream(), QueueStream()
         self.returncode = None
         self.done = threading.Event()
@@ -89,7 +90,7 @@ class ChatTests(UsageFixture, unittest.TestCase):
         self.assertEqual(chat.Journal(self.journal.path).events, events)
 
     def test_child_environment_keeps_persistent_settings_and_clears_parent_identity(self):
-        env = chat.child_environment({"name": "boss", "group": "boss", "id": "spawn-1"},
+        env = chat.child_environment({"name": "boss", "group": "boss", "role": "leader", "id": "spawn-1"},
               {"PATH": "system", "CLAUDE_CODE_SESSION_ID": "parent", "CLAUDE_CODE_CHILD_SESSION": "1",
                "CLAUDE_API_KEY": "keep", "CREW_GROUP": "parent", "ANTHROPIC_API_KEY": "keep-too"},
               {"CLAUDE_API_KEY"})
@@ -97,6 +98,12 @@ class ChatTests(UsageFixture, unittest.TestCase):
         self.assertNotIn("CLAUDE_CODE_CHILD_SESSION", env)
         self.assertEqual(env["CLAUDE_API_KEY"], "keep")
         self.assertEqual((env["CREW_NAME"], env["CREW_GROUP"], env["CREW_ROLE"]), ("boss", "boss", "leader"))
+
+    def test_ungrouped_member_environment_does_not_inherit_group(self):
+        env = chat.child_environment({"name": "member", "group": None, "role": "member", "id": "spawn-1"},
+                                     {"CREW_GROUP": "old-group"}, set())
+        self.assertEqual(env["CREW_ROLE"], "member")
+        self.assertNotIn("CREW_GROUP", env)
 
 
 if __name__ == "__main__":

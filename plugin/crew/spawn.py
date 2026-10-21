@@ -1,6 +1,5 @@
-"""Plan and launch Crew sessions; dry runs share validation without mutations."""
+"""Prepare background Crew sessions and route CLI launches to the web service."""
 import contextlib
-import hashlib
 import json
 import re
 import sqlite3
@@ -13,17 +12,13 @@ from urllib.request import Request, urlopen
 
 from . import board, store
 
-MEMBER_COLORS = ("#3A86FF", "#2A9D8F", "#E76F51", "#8E7DBE", "#4D908E", "#F4A261")
-
-
-def tab_color(name, role="member"):
+def command(session_id, name, role, resume=False):
+    args = ["claude", "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
+            "--include-partial-messages", "--replay-user-messages", "--permission-mode", "bypassPermissions",
+            "--name", name]
     if role == "leader":
-        return "#C9A227"
-    return MEMBER_COLORS[int.from_bytes(hashlib.sha256(name.encode("utf-8")).digest(), "big") % len(MEMBER_COLORS)]
-
-
-def launch(command):
-    subprocess.Popen(command)
+        args += ["--agent", "crew:leader"]
+    return args + ["--resume" if resume else "--session-id", session_id]
 
 
 def _text(value, label):
@@ -74,7 +69,7 @@ def prepare(conn, home, plugin_root, project_name, name, task, group=None, role=
         if directory.exists():
             raise board.BoardError("worktree \u76ee\u5f55\u5df2\u5b58\u5728: " + str(directory))
         worktree_command = ["git", "-C", str(root), "worktree", "add", "-b", new_worktree, str(directory), base if base is not None else "HEAD"]
-    spawn_id = uuid.uuid4().hex
+    spawn_id, session_id = uuid.uuid4().hex, str(uuid.uuid4())
     target = Path(home).resolve() / "spawn" / spawn_id
     md_path, json_path = target.with_suffix(".md"), target.with_suffix(".json")
     leader = None
@@ -92,11 +87,7 @@ def prepare(conn, home, plugin_root, project_name, name, task, group=None, role=
     spec = {"id": spawn_id, "name": name, "group": group, "role": role, "task": task,
             "cwd": str(directory), "project": project_name, "agent": "crew:leader" if role == "leader" else None,
             "md": str(md_path), "created_at": store.now_iso() if now is None else now}
-    # --suppressApplicationTitle: otherwise Claude retitles the tab to "Claude Code" and the crew name is lost.
-    command = ["wt.exe", "-w", "crew", "new-tab", "--title", name, "--suppressApplicationTitle", "--tabColor", tab_color(name, role),
-               "-d", str(directory), "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
-               "-File", str(Path(plugin_root).resolve() / "launch.ps1"), "-Spec", str(json_path)]
-    return {"id": spawn_id, "command": command, "spec": spec,
+    return {"id": spawn_id, "session_id": session_id, "command": command(session_id, name, role), "spec": spec,
             "files": {str(json_path): json.dumps(spec, ensure_ascii=False, indent=2) + "\n", str(md_path): brief},
             "worktree_command": worktree_command}
 
@@ -120,23 +111,30 @@ def _execute(conn, plan, launcher, members=()):
     return {"id": plan["id"], "command": plan["command"]}
 
 
-def spawn(conn, home, plugin_root, project_name, name, task, group=None, role="member", cwd=None,
-          new_worktree=None, base=None, launcher=launch, now=None):
-    plan = prepare(conn, home, plugin_root, project_name, name, task, group, role, cwd, new_worktree, base, now)
-    return _execute(conn, plan, launcher)
-
-
-def leader_start(conn, home, plugin_root, project_name, name, members=(), task=None, cwd=None,
-                 new_worktree=None, launcher=launch, now=None, dry_run=False):
+def leader_plan(conn, home, plugin_root, project_name, name, members=(), task=None, cwd=None,
+                new_worktree=None, base=None, now=None):
     plan = prepare(conn, home, plugin_root, project_name, name, "\u7ba1\u7406\u5206\u7ec4 " + name if task is None else task,
-                   role="leader", cwd=cwd, new_worktree=new_worktree, now=now)
+                   role="leader", cwd=cwd, new_worktree=new_worktree, base=base, now=now)
     for member in members:
         s = board.named_session(conn, project_name, _text(member, "\u7ec4\u5458\u540d\u5b57"))
         if s["role"] == "leader":
             raise board.BoardError("leader \u5fc5\u987b\u7559\u5728\u81ea\u5df1\u7684\u540c\u540d\u5206\u7ec4")
-    if dry_run:
-        return {**plan, "members": list(members)}
-    return _execute(conn, plan, launcher, members)
+    return {**plan, "members": list(members)}
+
+
+def request_start(home, project_name, path, body):
+    address = Path(home) / "web.json"
+    url = json.loads(address.read_text(encoding="utf-8"))["url"] if address.exists() else "http://127.0.0.1:47811"
+    request = Request(url + path + "?" + urlencode({"project": project_name}),
+                      json.dumps(body).encode("utf-8"), {"X-Crew": "1", "Content-Type": "application/json"})
+    try:
+        with urlopen(request, timeout=15) as response:
+            return json.load(response)
+    except HTTPError as exc:
+        message = json.load(exc)["error"]
+        raise (board.Conflict if exc.code == 409 else board.BoardError)(message) from exc
+    except URLError as exc:
+        raise board.BoardError("网页服务未运行，请先 crew web --open；" + str(exc.reason)) from exc
 
 
 def cli_dispatch(args, cwd, plugin_root):
@@ -151,23 +149,16 @@ def cli_dispatch(args, cwd, plugin_root):
             raise board.BoardError("\u5f53\u524d\u76ee\u5f55\u4e0d\u5c5e\u4e8e\u5df2\u542f\u7528\u9879\u76ee\uff0c\u8bf7\u5148 crew init")
         if args.command == "leader":
             if not args.dry_run:
-                address = Path(args.home) / "web.json"
-                url = json.loads(address.read_text(encoding="utf-8"))["url"] if address.exists() else "http://127.0.0.1:47811"
                 body = {"name": args.name, "members": args.members.split(",") if args.members is not None else [],
                         "task": args.task, "cwd": str(args.cwd) if args.cwd is not None else None, "new_worktree": args.new_worktree}
-                request = Request(url + "/api/leader?" + urlencode({"project": project["name"]}),
-                                  json.dumps(body).encode("utf-8"), {"X-Crew": "1", "Content-Type": "application/json"})
-                try:
-                    with urlopen(request, timeout=15) as response:
-                        return json.load(response)
-                except HTTPError as exc:
-                    message = json.load(exc)["error"]
-                    raise (board.Conflict if exc.code == 409 else board.BoardError)(message) from exc
-                except URLError as exc:
-                    raise board.BoardError("网页服务未运行，请先 crew web --open；" + str(exc.reason)) from exc
-            return leader_start(conn, args.home, plugin_root, project["name"], args.name,
-                                args.members.split(",") if args.members is not None else (), args.task,
-                                args.cwd, args.new_worktree, launcher=launch, dry_run=args.dry_run)
+                return request_start(args.home, project["name"], "/api/leader", body)
+            return leader_plan(conn, args.home, plugin_root, project["name"], args.name,
+                               args.members.split(",") if args.members is not None else (), args.task,
+                               args.cwd, args.new_worktree)
+        if not args.dry_run:
+            return request_start(args.home, project["name"], "/api/spawn", {
+                "name": args.name, "task": args.task, "group": args.group, "role": args.role,
+                "cwd": str(args.cwd) if args.cwd is not None else None, "new_worktree": args.new_worktree, "base": args.base})
         plan = prepare(conn, args.home, plugin_root, project["name"], args.name, args.task, args.group,
                        args.role, args.cwd, args.new_worktree, args.base)
-        return plan if args.dry_run else _execute(conn, plan, launch)
+        return plan

@@ -1,4 +1,4 @@
-"""Persistent Claude stream-json leaders and their replayable web journals."""
+"""Persistent Claude stream-json sessions and their replayable web journals."""
 import collections
 import json
 import os
@@ -25,7 +25,9 @@ def child_environment(spec, environ=None, persistent_names=None):
     env = {name: value for name, value in env.items()
            if not name.upper().startswith("CREW_")
            and (not name.upper().startswith("CLAUDE") or name.upper() in persistent_names)}
-    env.update(CREW_NAME=spec["name"], CREW_GROUP=spec["group"], CREW_ROLE="leader", CREW_SPAWN_ID=spec["id"])
+    env.update(CREW_NAME=spec["name"], CREW_ROLE=spec["role"], CREW_SPAWN_ID=spec["id"])
+    if spec["group"] is not None:
+        env["CREW_GROUP"] = spec["group"]
     return env
 
 
@@ -145,6 +147,9 @@ class Manager:
     def is_owned(self, session_id):
         return self.running(session_id)
 
+    def owns_pid(self, session_id, pid):
+        return self.is_owned(session_id) and self.processes[session_id].process.pid == pid
+
     def busy(self, session_id):
         return self.running(session_id) and self.journal(session_id).status == "working"
 
@@ -181,16 +186,15 @@ class Manager:
     def _launch(self, session, spec, resume=False):
         session_id = session["session_id"]
         if resume and any(agent["sessionId"] == session_id for agent in self.agents_provider()):
-            raise board.Conflict("该 leader 正在 VS Code 或其他进程中运行，请先在那里结束会话")
+            raise board.Conflict("该会话正在 VS Code 或其他进程中运行，请先在那里结束会话")
         exe = shutil.which("claude")
         if exe is None:
             raise FileNotFoundError("claude not found in PATH")
-        command = [exe, "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
-                   "--include-partial-messages", "--replay-user-messages", "--permission-mode", "bypassPermissions",
-                   "--agent", "crew:leader", "--name", session["crew_name"],
-                   "--resume" if resume else "--session-id", session_id]
+        command = spawn.command(session_id, session["crew_name"], session["role"], resume)
+        command[0] = exe
         journal = self.journal(session_id)
-        process = self.process_factory(command, cwd=session["cwd"], env=child_environment(spec), stdin=subprocess.PIPE,
+        identity = {**spec, "name": session["crew_name"], "role": session["role"], "group": session["group_name"]}
+        process = self.process_factory(command, cwd=session["cwd"], env=child_environment(identity), stdin=subprocess.PIPE,
                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", bufsize=1,
                                        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
         current = Running(process, journal)
@@ -201,16 +205,23 @@ class Manager:
         current.reader.start()
         return command
 
-    def start(self, conn, project_name, name, members=(), task=None, cwd=None, new_worktree=None, now=None):
-        plan = spawn.leader_start(conn, self.home, self.plugin_root, project_name, name, members, task,
-                                  cwd=cwd, new_worktree=new_worktree, now=now, dry_run=True)
-        session_id = str(uuid.uuid4())
+    def start(self, conn, project_name, name, task=None, group=None, role="member", members=(), cwd=None,
+              new_worktree=None, base=None, now=None):
+        if role == "leader":
+            if group not in (None, name):
+                raise board.BoardError("leader 分组必须与 crew 名同名")
+            plan = spawn.leader_plan(conn, self.home, self.plugin_root, project_name, name, members, task,
+                                     cwd=cwd, new_worktree=new_worktree, base=base, now=now)
+        else:
+            plan = spawn.prepare(conn, self.home, self.plugin_root, project_name, name, task, group, role,
+                                 cwd=cwd, new_worktree=new_worktree, base=base, now=now)
+        session_id = plan["session_id"]
         spec = plan["spec"]
 
         def launch(_):
             worktree, branch = hooks.git_details(spec["cwd"])
             session = board.register_session(conn, session_id, project_name, spec["cwd"], worktree, branch, name=name,
-                                             role="leader", group_name=name, spawn_id=spec["id"],
+                                             role=spec["role"], group_name=spec["group"], spawn_id=spec["id"],
                                              permission_mode="bypassPermissions", now=now)
             board.update_cc_name(conn, session_id, name, now=now)
             try:
@@ -223,7 +234,7 @@ class Manager:
                 raise
 
         result = spawn._execute(conn, plan, launch, members)
-        return {**result, "session_id": session_id}
+        return {**result, "session_id": session_id, "role": spec["role"]}
 
     def _send(self, session_id, text, display_text=None):
         current = self.processes[session_id]
@@ -244,32 +255,32 @@ class Manager:
             if not self.path(session_id).exists():
                 raise board.BoardError("该会话没有网页聊天记录")
             if self.running(session_id) and self.journal(session_id).status == "working":
-                raise board.Conflict("leader 正在回复，请等这一轮结束")
+                raise board.Conflict("会话正在回复，请等这一轮结束")
             if not self.running(session_id):
                 previous = self.processes.get(session_id)
                 if previous is not None and not previous.reader_done.wait(10):
-                    raise board.BoardError("上一轮 leader 进程的输出尚未结束，请稍后查看状态")
+                    raise board.BoardError("上一轮会话进程的输出尚未结束，请稍后查看状态")
                 spec = json.loads((self.home / "spawn" / (session["spawn_id"] + ".json")).read_text(encoding="utf-8"))
                 self._launch(session, spec, resume=True)
             self._send(session_id, text)
         return {"ok": True}
 
     def detach(self, session_id):
-        """Release an idle leader to VS Code by letting its own process finish."""
+        """Release an idle session to VS Code by letting its own process finish."""
         with self.lock:
             if not self.is_owned(session_id):
-                raise board.BoardError("网页服务没有管理这个 leader 进程")
+                raise board.BoardError("网页服务没有管理这个会话进程")
             if self.busy(session_id):
-                raise board.Conflict("leader 正在回复，请等这一轮结束")
+                raise board.Conflict("会话正在回复，请等这一轮结束")
             current = self.processes[session_id]
             with current.input_lock:
                 current.process.stdin.close()
             try:
                 current.process.wait(timeout=10)
             except subprocess.TimeoutExpired as exc:
-                raise board.BoardError("leader 关闭输入后仍未退出，请稍后查看进程状态") from exc
+                raise board.BoardError("会话关闭输入后仍未退出，请稍后查看进程状态") from exc
             if not current.reader_done.wait(10):
-                raise board.BoardError("leader 进程已退出，但输出尚未读完")
+                raise board.BoardError("会话进程已退出，但输出尚未读完")
 
     def close(self):
         with self.lock:
