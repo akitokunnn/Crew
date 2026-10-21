@@ -114,7 +114,7 @@ Crew/
 | `spawn ...` | 通过运行中的网页服务开后台成员会话；dry-run 只看计划（§10） |
 | `leader start --name N [--members A,B] [--task T] [--dry-run]` | 调用运行中的网页服务开 leader；服务没开时报错，dry-run 只看计划（§10） |
 | `web [--port 47811] [--open]` | 本机工作区网页；--open 按 cwd 绑定工作区并复用已有服务（§10） |
-| `autostart install|status|uninstall` | 当前用户登录自启，不立即启动、停止服务或弹浏览器 |
+| `autostart install\|status\|uninstall` | 当前用户登录自启，不立即启动、停止服务或弹浏览器 |
 
 白板写操作同时写一条 events；聊天输出另记在 `chat/<会话ID>.jsonl`。
 
