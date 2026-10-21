@@ -243,12 +243,14 @@ CREATE TABLE IF NOT EXISTS codex_runs (
     rollout_id         TEXT                -- matched codex_sessions row
 );
 
+-- One row per token_count event carrying rate_limits. Several rollouts can report in the same millisecond.
 CREATE TABLE IF NOT EXISTS codex_rate_limits (
-    ts               TEXT PRIMARY KEY,
     rollout_id       TEXT NOT NULL,
+    ts               TEXT NOT NULL,
     plan_type        TEXT,
     used_percent     REAL,
     window_minutes   INTEGER,
     resets_at        TEXT,
-    credits_balance  TEXT
+    credits_balance  TEXT,
+    PRIMARY KEY (rollout_id, ts)
 );
