@@ -4,7 +4,8 @@ import json
 import queue
 import threading
 import unittest
-from crew import chat
+from unittest import mock
+from crew import chat, claude_limits
 from test_usage import UsageFixture
 
 
@@ -88,6 +89,42 @@ class ChatTests(UsageFixture, unittest.TestCase):
         self.assertEqual([e["text"] for e in events if e["type"] == "error"], ["quota reached"])
         self.assertNotIn("private", self.journal.path.read_text(encoding="utf-8"))
         self.assertEqual(chat.Journal(self.journal.path).events, events)
+
+    def read_process(self, records):
+        process = FakeProcess([])
+        for record in records:
+            process.emit(record)
+        process.finish()
+        current = chat.Running(process, self.journal)
+        current.stderr_reader = mock.Mock()
+        manager = chat.Manager(self.home, self.root, lambda: [], process_factory=mock.Mock())
+        manager._read("s1", current)
+        self.assertTrue(current.reader_done.is_set())
+        manager.process_factory.assert_not_called()
+
+    def test_reader_captures_rate_limit_windows_without_chat_messages(self):
+        with mock.patch.object(claude_limits.store, "now_iso", return_value="2026-10-21T12:00:00.000Z"):
+            self.read_process([{"type": "rate_limit_event", "rate_limit_info": {"unifiedWindows": {
+                "five_hour": {"utilization": 0.05, "resetsAt": 1792587600},
+                "seven_day": {"utilization": 0.95, "resetsAt": 1792634400}}}}])
+        limits = claude_limits.read(self.home, cache_path=self.root / "missing-cache", now="2026-10-21T12:00:00.000Z")
+        self.assertEqual((limits["five_hour"]["used_percent"], limits["seven_day"]["used_percent"]), (5, 95))
+        self.assertEqual([event["type"] for event in self.journal.events], [])
+
+    def test_quota_write_failure_is_reported_and_does_not_stop_reply_stream(self):
+        with mock.patch.object(claude_limits, "capture", side_effect=OSError("quota disk failed")):
+            self.read_process([{"type": "rate_limit_event", "rate_limit_info": {"unifiedWindows": {}}},
+                               {"type": "assistant", "message": {"id": "answer", "content": [{"type": "text", "text": "still arrives"}]}},
+                               {"type": "result"}])
+        self.assertIn("quota disk failed", self.journal.events[0]["text"])
+        self.assertEqual([event["content"] for event in self.journal.events if event["type"] == "assistant"],
+                         [[{"type": "text", "text": "still arrives"}]])
+
+    def test_malformed_quota_is_reported_and_does_not_stop_reply_stream(self):
+        self.read_process([{"type": "rate_limit_event", "rate_limit_info": {"unifiedWindows": {"five_hour": []}}},
+                           {"type": "assistant", "message": {"id": "answer", "content": [{"type": "text", "text": "still arrives"}]}}])
+        self.assertIn("Claude 协议错误", self.journal.events[0]["text"])
+        self.assertEqual([event["id"] for event in self.journal.events if event["type"] == "assistant"], ["answer"])
 
     def test_child_environment_keeps_persistent_settings_and_clears_parent_identity(self):
         env = chat.child_environment({"name": "boss", "group": "boss", "role": "leader", "id": "spawn-1"},

@@ -8,7 +8,7 @@ import threading
 import uuid
 from pathlib import Path
 
-from . import board, hooks, spawn
+from . import board, claude_limits, hooks, spawn
 
 
 def child_environment(spec, environ=None, persistent_names=None):
@@ -165,7 +165,13 @@ class Manager:
         try:
             for line in current.process.stdout:
                 try:
-                    current.journal.consume(json.loads(line))
+                    record = json.loads(line)
+                    if record["type"] == "rate_limit_event":
+                        try:
+                            claude_limits.capture(self.home, record)
+                        except OSError as exc:
+                            current.journal.emit("error", text="Claude 额度记录失败：" + str(exc))
+                    current.journal.consume(record)
                 except (ValueError, KeyError, TypeError) as exc:
                     current.journal.emit("error", text="Claude 协议错误：" + str(exc))
             code = current.process.wait()
