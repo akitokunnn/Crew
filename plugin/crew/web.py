@@ -206,6 +206,9 @@ class Service:
                 members = data.get("members", [])
                 if not isinstance(members, list) or any(not isinstance(m, str) or not m.strip() for m in members):
                     raise ValueError("members \u5fc5\u987b\u662f\u540d\u5b57\u6570\u7ec4")
+                member_session_ids = data.get("member_session_ids", [])
+                if not isinstance(member_session_ids, list) or any(not isinstance(sid, str) or not sid.strip() for sid in member_session_ids):
+                    raise ValueError("member_session_ids 必须是会话 ID 数组")
                 name, task = _text(data, "name"), _optional_text(data, "task")
                 candidate_members = [(self.candidate(conn, project, _text(member, "session_id")), _text(member, "name"))
                                      for member in data.get("candidate_members", [])]
@@ -217,20 +220,26 @@ class Service:
                     names.add(member_name)
                 # Check the leader and existing members before adopting anyone.
                 spawn.leader_plan(conn, self.home, self.plugin_root, project, name, members,
-                                  task, cwd=_optional_text(data, "cwd"), new_worktree=_optional_text(data, "new_worktree"), now=now)
+                                  task, cwd=_optional_text(data, "cwd"), new_worktree=_optional_text(data, "new_worktree"), now=now,
+                                  member_session_ids=member_session_ids)
                 for candidate, member_name in candidate_members:
                     self.adopt(conn, project, candidate, member_name, None, now)
                 return self.chat.start(conn, project, name, task, role="leader",
-                                       members=members + [member_name for _, member_name in candidate_members], cwd=_optional_text(data, "cwd"),
+                                       members=members, member_session_ids=member_session_ids + [candidate["session_id"] for candidate, _ in candidate_members],
+                                       cwd=_optional_text(data, "cwd"),
                                        new_worktree=_optional_text(data, "new_worktree"), now=now)
             if path == "/api/chat/send":
                 return self.chat.send(self.chat_session(conn, project, _text(data, "session_id")), _text(data, "text"))
             if path == "/api/lease/give":
                 board.give(conn, project, _text(data, "resource"), board.HUMAN, force=True, reason=_text(data, "reason"), now=now)
             elif path == "/api/roster/move":
-                board.roster(conn, project, "move", _text(data, "to"), [_text(data, "name")], now=now)
+                board.roster(conn, project, "move", _text(data, "to"),
+                             [] if data.get("session_id") is not None else [_text(data, "name")], now=now,
+                             session_ids=[_text(data, "session_id")] if data.get("session_id") is not None else [])
             elif path == "/api/roster/remove":
-                board.roster(conn, project, "remove", _text(data, "group"), [_text(data, "name")], now=now)
+                board.roster(conn, project, "remove", _text(data, "group"),
+                             [] if data.get("session_id") is not None else [_text(data, "name")], now=now,
+                             session_ids=[_text(data, "session_id")] if data.get("session_id") is not None else [])
             elif path == "/api/group/close":
                 board.close_group(conn, project, _text(data, "group"), with_members=data.get("with_members") is True, now=now)
             elif path == "/api/roster/adopt":

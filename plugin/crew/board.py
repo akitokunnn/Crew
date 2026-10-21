@@ -209,11 +209,27 @@ def groups(conn, project_name):
     return result
 
 
+def roster_targets(conn, project_name, names=(), session_ids=()):
+    targets = [named_session(conn, project_name, name) for name in names]
+    targets.extend(session(conn, session_id) for session_id in session_ids)
+    selected = {}
+    for target in targets:
+        if target["project"] != project_name:
+            raise BoardError("会话不属于当前项目")
+        if target["status"] == "closed":
+            raise BoardError("已归档会话不能调整分组")
+        if not target["crew_name"]:
+            raise BoardError("请先为会话命名收编，再调整分组")
+        selected[target["session_id"]] = target
+    return list(selected.values())
+
+
 @atomic
-def roster(conn, project_name, action, group_name, names, actor=HUMAN, now=None):
+def roster(conn, project_name, action, group_name, names=(), actor=HUMAN, now=None, session_ids=()):
     _group(conn, project_name, group_name)
-    for name in names:
-        s = named_session(conn, project_name, name)
+    targets = roster_targets(conn, project_name, names, session_ids)
+    for s in targets:
+        name = s["crew_name"]
         if action == "remove" and s["group_name"] != group_name:
             raise BoardError("会话不在此分组: " + name)
         if action == "add" and s["group_name"] not in (None, group_name):
@@ -222,7 +238,9 @@ def roster(conn, project_name, action, group_name, names, actor=HUMAN, now=None)
             raise BoardError("leader 必须留在自己的同名分组")
         conn.execute("UPDATE sessions SET group_name=? WHERE session_id=?",
                      (None if action == "remove" else group_name, s["session_id"]))
-    _event(conn, "roster:" + action, project_name, actor, {"group": group_name, "names": names}, now)
+    _event(conn, "roster:" + action, project_name, actor,
+           {"group": group_name, "names": [s["crew_name"] for s in targets],
+            "session_ids": [s["session_id"] for s in targets]}, now)
 
 
 @atomic

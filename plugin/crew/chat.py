@@ -210,12 +210,13 @@ class Manager:
         return command
 
     def start(self, conn, project_name, name, task=None, group=None, role="member", members=(), cwd=None,
-              new_worktree=None, base=None, now=None):
+              new_worktree=None, base=None, now=None, member_session_ids=()):
         if role == "leader":
             if group not in (None, name):
                 raise board.BoardError("leader 分组必须与 crew 名同名")
             plan = spawn.leader_plan(conn, self.home, self.plugin_root, project_name, name, members, task,
-                                     cwd=cwd, new_worktree=new_worktree, base=base, now=now)
+                                     cwd=cwd, new_worktree=new_worktree, base=base, now=now,
+                                     member_session_ids=member_session_ids)
         else:
             plan = spawn.prepare(conn, self.home, self.plugin_root, project_name, name, task, group, role,
                                  cwd=cwd, new_worktree=new_worktree, base=base, now=now)
@@ -237,7 +238,7 @@ class Manager:
                 board.set_status(conn, session_id, "offline", now=now)
                 raise
 
-        result = spawn._execute(conn, plan, launch, members)
+        result = spawn._execute(conn, plan, launch, members, member_session_ids)
         return {**result, "session_id": session_id, "role": spec["role"]}
 
     def _send(self, session_id, text, display_text=None):

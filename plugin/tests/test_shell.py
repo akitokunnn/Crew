@@ -767,6 +767,58 @@ class WebTests(ShellFixture, unittest.TestCase):
         self.assertEqual(self.get("/api/roster/move", {"name":"one", "to":"missing"})[0], 400)
         self.assertEqual(self.get("/api/roster/move", {"name":"missing", "to":"next"})[0], 400)
 
+    def test_roster_session_id_changes_exact_offline_homonym_and_preserves_name_calls(self):
+        board.set_status(self.conn, "s1", "offline", now=NOW)
+        board.join(self.conn, "new-one", "demo", "one", self.project, self.project, "main", now=NOW)
+        board.ensure_spawn_group(self.conn, "demo", "next", now=NOW)
+        self.assertEqual(self.get("/api/roster/move", {"session_id": "s1", "to": "next"})[0], 200)
+        self.assertEqual(board.session(self.conn, "s1")["group_name"], "next")
+        self.assertIsNone(board.session(self.conn, "new-one")["group_name"])
+        event = next(e for e in board.events(self.conn, "demo") if e["kind"] == "roster:move")
+        self.assertEqual(event["detail"]["session_ids"], ["s1"])
+        self.assertEqual(self.get("/api/roster/remove", {"session_id": "s1", "group": "lead"})[0], 400)
+        self.assertEqual(self.get("/api/roster/remove", {"session_id": "s1", "group": "next"})[0], 200)
+        self.assertIsNone(board.session(self.conn, "s1")["group_name"])
+        self.assertEqual(self.get("/api/roster/move", {"name": "one", "to": "next"})[0], 200)
+        self.assertEqual(board.session(self.conn, "new-one")["group_name"], "next")
+        self.assertIsNone(board.session(self.conn, "s1")["group_name"])
+
+    def test_leader_session_ids_keep_offline_homonym_and_mix_with_names_and_candidates(self):
+        board.set_status(self.conn, "s1", "offline", now=NOW)
+        board.join(self.conn, "new-one", "demo", "one", self.project, self.project, "main", group_name="lead", now=NOW)
+        candidate = self.live_candidate()
+        code, result, _ = self.get("/api/leader", {"name": "precise-boss", "member_session_ids": ["s1"],
+                                                  "members": ["two"], "candidate_members": [candidate]})
+        self.assertEqual(code, 200, result)
+        for sid in ("s1", "s2", candidate["session_id"]):
+            self.assertEqual(board.session(self.conn, sid)["group_name"], "precise-boss")
+        self.assertEqual(board.session(self.conn, "s1")["status"], "offline")
+        self.assertEqual(board.session(self.conn, "new-one")["group_name"], "lead")
+        self.assertEqual(len(self.processes), 1)
+
+    def test_session_id_roster_and_leader_reject_invalid_members_before_writes(self):
+        other = self.root / "other-project"
+        other.mkdir()
+        board.init_project(self.conn, "other", other, now=NOW)
+        board.register_session(self.conn, "foreign", "other", other, other, "main", name="foreign", now=NOW)
+        board.register_session(self.conn, "unnamed", "demo", self.project, self.project, "main", now=NOW)
+        board.set_status(self.conn, "s2", "closed", now=NOW)
+        candidate = self.live_candidate()
+        for sid in ("foreign", "unnamed", "s2", "s3", "missing"):
+            with self.subTest(session_id=sid):
+                self.assertEqual(self.get("/api/roster/move", {"session_id": sid, "to": "lead"})[0], 400)
+                self.assertEqual(self.get("/api/roster/remove", {"session_id": sid, "group": "lead"})[0], 400)
+                self.assertEqual(self.get("/api/leader", {"name": "invalid-boss", "member_session_ids": ["s1", sid],
+                                                         "candidate_members": [candidate]})[0], 400)
+        for ids in ("s1", None, [None], [""]):
+            with self.subTest(member_session_ids=ids):
+                self.assertEqual(self.get("/api/leader", {"name": "invalid-boss", "member_session_ids": ids})[0], 400)
+        self.assertEqual(board.session(self.conn, "s1")["group_name"], "lead")
+        self.assertEqual([g["name"] for g in board.groups(self.conn, "demo")], ["lead"])
+        self.assertIsNone(self.conn.execute("SELECT 1 FROM sessions WHERE session_id=?", (candidate["session_id"],)).fetchone())
+        self.assertFalse((self.home / "spawn").exists())
+        self.assertEqual(self.processes, [])
+
     def test_usage_reports_and_scan_throttle(self):
         real_scan = web.usage.scan
         with mock.patch("crew.web.usage.scan", wraps=real_scan) as scan:

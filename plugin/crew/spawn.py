@@ -92,7 +92,7 @@ def prepare(conn, home, plugin_root, project_name, name, task, group=None, role=
             "worktree_command": worktree_command}
 
 
-def _execute(conn, plan, launcher, members=()):
+def _execute(conn, plan, launcher, members=(), member_session_ids=()):
     spec = plan["spec"]
     if plan["worktree_command"] is not None:
         result = subprocess.run(plan["worktree_command"], capture_output=True, text=True, encoding="utf-8")
@@ -100,8 +100,9 @@ def _execute(conn, plan, launcher, members=()):
             raise board.BoardError("\u521b\u5efa worktree \u5931\u8d25: " + result.stderr.strip())
     if spec["role"] == "leader":
         board.ensure_spawn_group(conn, spec["project"], spec["name"], now=spec["created_at"])
-    if members:
-        board.roster(conn, spec["project"], "move", spec["name"], members, now=spec["created_at"])
+    if members or member_session_ids:
+        board.roster(conn, spec["project"], "move", spec["name"], members, now=spec["created_at"],
+                     session_ids=member_session_ids)
     for path, content in plan["files"].items():
         target = Path(path)
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -112,14 +113,15 @@ def _execute(conn, plan, launcher, members=()):
 
 
 def leader_plan(conn, home, plugin_root, project_name, name, members=(), task=None, cwd=None,
-                new_worktree=None, base=None, now=None):
+                new_worktree=None, base=None, now=None, member_session_ids=()):
     plan = prepare(conn, home, plugin_root, project_name, name, "\u7ba1\u7406\u5206\u7ec4 " + name if task is None else task,
                    role="leader", cwd=cwd, new_worktree=new_worktree, base=base, now=now)
     for member in members:
-        s = board.named_session(conn, project_name, _text(member, "\u7ec4\u5458\u540d\u5b57"))
+        _text(member, "\u7ec4\u5458\u540d\u5b57")
+    for s in board.roster_targets(conn, project_name, members, member_session_ids):
         if s["role"] == "leader":
             raise board.BoardError("leader \u5fc5\u987b\u7559\u5728\u81ea\u5df1\u7684\u540c\u540d\u5206\u7ec4")
-    return {**plan, "members": list(members)}
+    return {**plan, "members": list(members), "member_session_ids": list(member_session_ids)}
 
 
 def request_start(home, project_name, path, body):
