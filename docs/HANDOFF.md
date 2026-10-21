@@ -10,8 +10,11 @@
 - 已修复同 ID 多 PID 导致重复候选、busy 被 idle 盖掉、旧进程钩子状态遮住当前进程的问题；原始 agents 列表仍保留所有 PID。`spawn_id` 重新登记和 join 后保留，避免丢失恢复所需的任务文件标识。
 - 集成分支已通过 139 个测试（含 `spawn_id` 回归），JS 语法检查和 diff 检查通过。真实隔离 HTTP/SSE 与浏览器验收已通过：多轮、服务重启恢复、无重复用户消息、流式文本与完整回复一致、Markdown、忙时禁用发送、刷新历史。所有探针都正常 EOF 退出，未操作用户现有会话。
 - 实机证据：`Temp/leader-probe/http-20261021-201342/state.json`、`history-after-browser.json`。界面示例 `Temp/chat-preview.jpg`，实机截图 `Temp/chat-live-check.jpg`。
+- 继续补验：从只读真实白板复制出的临时副本里，用真实 agents/transcript 验证了 10 个尚未登记的 VS Code 会话的候选与收编元数据，标题、cwd、地址、分组、状态检查通过；真实白板和原会话未改变。脚本 `Temp/check_live_candidates.py`，摘要 `Temp/live-candidate-check-result.json`。
+- 已补完跨会话网页整链：自建无钩子成员被候选发现并收编，给已空闲的托管 leader 发唯一消息后，Journal/SSE/浏览器均显示正确的 peer 发送者和原文，leader 自动回复，没有额外用户输入唤醒。浏览器截图 `Temp/chat-peer-check.jpg`；完整证据 `Temp/leader-probe/peer-http-20261021-202337/state.json`（browser_verified=true）、`peer.sse.json`、`history.json`。两个自建进程均正常 EOF 退出，临时服务已关闭。没有给用户原有会话发消息。
 - 任务一底层在独立分支 `codex/open-vscode`，提交 `5368f42`，worktree `Temp/wt/open-vscode`。包含空闲/入口/PID 创建时间检查和两阶段函数，**CLI/API 尚未接线**。不能直接宣称 `crew open` 可用。该分支的 spawn_id 单行修复已先带进集成分支。
 - VS Code 已查明：`code <cwd>` 返回不等窗口 ready，`code --open-url` 同时带目录会忽略目录。已问用户是否接受两步：先开对应目录，窗口就绪后再点一次打开会话；**尚未答复，不能自行按两步方案启用入口**。
+- 进一步只读调查：本机 VS Code main 命名管道的 diagnostics 已实测能返回精确 windowId 和完整 folderURIs；但它不返回 ready，外部 main IPC 只开放 launch/diagnostics，内部窗口 ready 事件未导出。未就绪的 windowId 路由仍可能退到活动窗口。所以这条通道不能证实新窗口的可靠一键接续，不为此添加 80–110 行查询协议或日志/PID 猜测。用户的两步选择仍需答复。
 - 网页 leader 的进程入口是 `sdk-cli`。未来接任务一时：先用 `chat.Manager.is_owned/busy` 判断；用户第二次确认后走 `Manager.detach(session_id)`，只关自己的 stdin 并等正常退出，再开原 ID 的 URI。不要把 SDK 进程交给 `TerminateProcess`。现有终端进程关闭仍须空闲和用户明确确认，VS Code 进程永远不关。
 - 用户还未回答新组员要不要也改后台；保持原来的终端方案，别扩到后台成员。
 - 已查旧看板正在监听 `127.0.0.1:47811`，当时 PID `16156`，命令为主目录 `plugin/crew_cli.py web --port 47811`。已请求允许合入并重启这一个看板服务，**尚未答复**。合入前重新核对进程身份。不要先更新 main 的前端，否则旧内存后端会配上新静态页面，接口错位。确认后先停止旧看板、再合入并启动新版；不关其他会话或终端窗口。
