@@ -10,5 +10,7 @@
   "claude-sonnet-5":   { "input": 2,  "output": 10, "cache_write_5m": 2.5,  "cache_write_1h": 4,  "cache_read": 0.2 },
   "claude-sonnet-4-6": { "input": 3,  "output": 15, "cache_write_5m": 3.75, "cache_write_1h": 6,  "cache_read": 0.3 },
   "claude-haiku-4-5":  { "input": 1,  "output": 5,  "cache_write_5m": 1.25, "cache_write_1h": 2,  "cache_read": 0.1 },
-  "claude-haiku-4-5-20251001": { "input": 1, "output": 5, "cache_write_5m": 1.25, "cache_write_1h": 2, "cache_read": 0.1 }
+  "claude-haiku-4-5-20251001": { "input": 1, "output": 5, "cache_write_5m": 1.25, "cache_write_1h": 2, "cache_read": 0.1 },
+  "anthropic/claude-opus-5.5":   { "input": 4, "output": 20, "cache_write_5m": 5,   "cache_write_1h": 8, "cache_read": 0.2 },
+  "anthropic/claude-sonnet-5.5": { "input": 2, "output": 10, "cache_write_5m": 2.5, "cache_write_1h": 4, "cache_read": 0.2 }
 }
