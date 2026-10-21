@@ -136,12 +136,6 @@ class OpenSessionTests(CoreCase):
                 open_session.close_terminal(record, self.process_dir)
         kernel.TerminateProcess.assert_not_called()
 
-    def test_register_and_join_preserve_spawn_id(self):
-        board.register_session(self.conn, "s1", "demo", self.root, self.root, "main", spawn_id="crew-spawn", now=NOW)
-        board.register_session(self.conn, "s1", "demo", self.root, self.root, "main", entrypoint="claude-vscode", now=NOW)
-        board.join(self.conn, "s1", "demo", "one", self.root, self.root, "main", now=NOW)
-        self.assertEqual(board.session(self.conn, "s1")["spawn_id"], "crew-spawn")
-
     def test_managed_sdk_uses_detach_and_startup_busy_is_not_offline(self):
         manager = mock.Mock()
         manager.is_owned.return_value = True

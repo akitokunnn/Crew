@@ -13,7 +13,7 @@
 
 ## 安装
 
-需要：Windows、Python 3.11 以上（在 PATH 里叫 `python`）、支持 `agents` 和 `stream-json` 的 Claude Code（本机以 2.1.306 验收）。需要在 VS Code 接续时，另需安装 Claude Code 扩展。
+需要：Windows、Python 3.11 以上（在 PATH 里叫 `python`）、支持 `agents` 和 `stream-json` 的 Claude Code（本机以 2.1.306 验收）。需要在 VS Code 接续时，另需安装 Claude Code 扩展，并由用户信任会话所在的目录；扩展不支持 Restricted Mode。
 
 1. 拿到代码：`git clone https://github.com/akitokunnn/Crew.git C:\Tools\Crew`
 2. 装插件（用户级，所有项目生效）：
@@ -34,6 +34,7 @@
 | 让已经开着的会话加入 | 网页看板的“发现的会话”里点“收进组”，起名字、选分组；也可以在那个会话里执行 `crew join 雷达 --task "..."` |
 | 开一个 leader 管一组 | 先运行 `crew web --open`，在网页点“开 leader”，可混选已登记成员和发现的会话；命令行也可用 `crew leader start --name 感知 --members 雷达,视觉 --task "<这一组的目标>"` |
 | 开一个新会话干活 | 网页点“开新会话”；也可在网页服务运行时用 `crew spawn --name 姿势 --group 感知 --task "<任务>"`，需要独立 worktree 时加 `--new-worktree feature/pose` |
+| 在 VS Code 接着聊 | 看板卡片或对话页点“VS Code”，也可用 `crew open <名字>`；先开对应目录，确认窗口就绪后再继续打开会话 |
 | 一屏看全 | `crew web --open` |
 | 看谁在干什么 | `crew status` |
 | 回答待拍板 | 网页上直接答，或 `crew decisions` 再 `crew answer <编号> "<答复>"`；提问的会话下一轮开始时会收到 |
@@ -45,6 +46,8 @@
 “发现的会话”只列当前项目下尚未登记的活会话，标题取 Claude 会话记录里最新的 `ai-title`。收编不必重开会话；还没加载 Crew 钩子的会话，状态先按 Claude 的 busy / idle 显示，SendMessage 地址也直接取活会话列表。
 
 网页服务会在后台保持新成员和 leader 的 Claude CLI 进程。浏览器刷新只重读聊天记录，不会重启会话；网页服务重启后，下一次发言会恢复原会话 ID。若这个 ID 已在 VS Code 或其他进程中运行，网页会拒绝双开。会话回复时先等这一轮结束再发送；组员消息会自动进入对话。网页服务退出时只关闭自己启动的会话的输入，让进程正常结束。
+
+转到 VS Code 分两步：先打开会话所在的项目目录，等窗口就绪并确认目录正确，再点“窗口已就绪，继续打开”。这时才结束空闲的网页或终端会话，续上原来的会话 ID；取消会保留原会话。正在干活时不能转移，VS Code 里的会话不会被关闭。
 
 会话里的守则在技能里：成员是 `/crew:member`，leader 是 `/crew:leader`。会话启动时 Crew 会告诉它是谁、归哪个 leader、怎么调命令。
 
@@ -64,6 +67,7 @@
 | `crew group list` / `crew roster add\|remove\|move` | 分组和花名册 |
 | `crew leader start` / `crew leader close` | 通过正在运行的网页服务开 leader / 收一个分组；`start --dry-run` 只看计划 |
 | `crew spawn` | 通过正在运行的网页服务开后台成员；`--dry-run` 只看计划 |
+| `crew open <名字>` | 两步在 VS Code 接续同一会话，停止空闲的原运行端前须明确确认 |
 | `crew web` | 看板网页 |
 | `crew usage scan\|summary\|sessions\|daily\|codex\|agents\|models\|export` | 用量 |
 | `crew events` / `crew doctor` | 事件流水 / 自检 |
@@ -102,6 +106,7 @@
 
 - 从本地目录装的插件，**运行时直接用仓库里 `plugin/` 这份代码**（不另拷一份）。改 Python 代码对之后的每次钩子调用立刻生效；改了钩子注册、技能、角色定义，要在会话里 `/reload-plugins` 或重开会话。
 - 所以**不要在主检出里直接改代码**：在 `Temp/wt/<名字>` 开 worktree 改，测试通过再合进 main。主检出里的代码一旦出错，所有会话的钩子都会跟着出错。
+- 这是单人本机工具，优先保持代码直白、少配置；测试用临时白板，不随意关闭用户正在使用的会话或窗口。提交信息用中文说明改了什么、为什么，不加署名行。
 - 跑测试：`cd plugin` 后执行 `python -m unittest discover -s tests -v`。
 - Python 后端只用标准库；网页是原生 JS，Markdown 用仓库内的 markdown-it 15.0.2，不需要构建步骤。
 - 成员和网页 leader 都用 PATH 里的 `claude`（npm 全局安装的命令行版），它的版本可能比 VS Code 扩展里带的旧。旧版本可能缺跨会话消息等功能，要定期 `npm install -g @anthropic-ai/claude-code@latest`。

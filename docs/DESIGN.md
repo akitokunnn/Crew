@@ -208,6 +208,9 @@ PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stder
 - 启动计划预分配 UUID，首次用 `--session-id`，把会话的角色、分组、cwd、spawn_id 记进白板；重启网页服务后，等用户下一次发言再用 `--resume` 恢复同 ID，并使用白板里当前的角色和分组。恢复前直接查活进程，同 ID 已在 VS Code 或其他进程里运行时拒绝双开。
 - 浏览器刷新只重放 `HOME/chat/<会话ID>.jsonl`，不会启动新进程。聊天事件不含 thinking；assistant 的同 ID 分块合并，完整块替换对应流式文本，重复的 human replay 不再显示。组员发来的消息取 peer origin 的 body 和 name，不需要网页另投一次 stdin。
 - 会话正在处理时，用户发送返回冲突，让这一轮结束；result 只代表一轮结束，CLI 仍保持在线。服务退出只关闭自己子进程的 stdin，让它正常结束。恢复前先等旧进程输出读完，避免旧状态覆盖新一轮。
+- Windows 的 npm `claude.cmd` 会另起原生子进程；托管会话直接启动该安装目录的 `bin/claude.exe`，让 Manager 持有的 PID 与 `claude agents` 一致，交接时可以确认进程归属。
+- `crew open NAME` 与网页使用相同的两步流程：先 `code <cwd>` 打开正确目录；用户确认窗口已经就绪后，再打开 `vscode://anthropic.claude-code/open?session=<ID>`。第一步不关闭会话，取消保留原运行端。第二步重新查询 agents 和 PID 注册文件；忙会话拒绝交接，网页进程须属于当前 Manager，确认后仅关闭该进程的 stdin 并等正常退出。遗留终端会话只有明确确认且空闲才关闭，并核对 PID 创建时间；VS Code 进程永远不关闭。
+- 有网页聊天记录的 `crew open` 通过 `HOME/web.json` 调同一服务，确保释放的是 Manager 管理的进程。在 VS Code 里继续时网页保留历史并禁用发言，避免同时恢复两份。
 
 网页接口：
 
@@ -220,6 +223,8 @@ PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stder
 | `GET /api/chat/history?project=P&session_id=S` | 返回 session_id、events、running、busy |
 | `GET /api/chat/events?project=P&session_id=S&after=N` | SSE 重放 seq 大于 N 的事件，兼读 Last-Event-ID；空闲时发心跳，浏览器断开不关会话 |
 | `POST /api/chat/send` | session_id、text；向当前进程发送，或恢复原会话后发送 |
+| `POST /api/open` | session_id（或 name），只打开对应目录，返回 cwd、location、needs_window_ready、needs_confirmation |
+| `POST /api/open/continue` | session_id、confirm=true；重查空闲和进程归属后交接，再打开原 ID 的 VS Code URI |
 
 成员和 leader 的聊天接口相同，`web_chat` 由聊天日志是否存在判定。会话保留在 Claude transcript 中，需要时可在 VS Code 按同 ID 接续；网页再次发言时会检查外部进程，避免同时恢复两份。
 

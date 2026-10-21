@@ -1,4 +1,4 @@
-"""Move an idle terminal session into the Claude editor in VS Code."""
+"""Continue an idle Crew session in the Claude editor in VS Code."""
 import ctypes
 import json
 import os

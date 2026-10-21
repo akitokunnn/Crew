@@ -583,7 +583,7 @@ def apply_hook(conn, event, data, project_name, identity=None, git_info=None, no
         if identity.get("name") is not None:
             _identity(conn, project_name, sid, identity["name"], identity["role"], identity.get("group_name"), now)
             if identity.get("spawn_id") is not None:
-                # launch.ps1 starts spawned sessions with `claude -n <crew name>`, so that name is the SendMessage address.
+                # Spawned sessions use --name <crew name>, which is also the SendMessage address.
                 conn.execute("UPDATE sessions SET cc_name=? WHERE session_id=?", (identity["name"], sid))
             if identity.get("task"):
                 # SessionStart repeats on resume / compact; keep a task the session has since changed with `crew task`.
