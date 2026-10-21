@@ -3,6 +3,7 @@ import contextlib
 import io
 import json
 import subprocess
+import sys
 import tempfile
 import unittest
 import urllib.error
@@ -55,6 +56,7 @@ class AutostartTests(unittest.TestCase):
         self.assertNotIn(".Run(", script)
         self.assertNotIn(".Stop(", script)
         self.assertEqual(subprocess.CREATE_NO_WINDOW, options["creationflags"])
+        self.assertNotIn("-WindowStyle", argv)  # The no-console host must not try to style a console window.
         self.assertFalse(self.home.exists())
 
     def test_status_and_uninstall_do_not_require_checkout_or_create_home(self):
@@ -70,6 +72,32 @@ class AutostartTests(unittest.TestCase):
         runner = Mock(return_value=subprocess.CompletedProcess([], 1, "", "Access denied"))
         with self.assertRaisesRegex(OSError, "Access denied"):
             autostart.configure("status", self.home, self.plugin, runner)
+
+    def test_native_failure_without_stderr_still_reports_exit_code_and_available_output(self):
+        runner = Mock(return_value=subprocess.CompletedProcess([], 4294967295, "native output", ""))
+        with self.assertRaisesRegex(OSError, r"4294967295.*native output"):
+            autostart.configure("status", self.home, self.plugin, runner)
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows PowerShell transport")
+    def test_real_no_console_transport_preserves_utf8_stdin_and_stdout(self):
+        # Exercise the actual host/arguments without touching Task Scheduler.
+        script = r'''
+[Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+$request = [Console]::In.ReadToEnd() | ConvertFrom-Json
+@{action=$request.action; root=$request.root; arguments=$request.arguments; label='中文'; installed=$false} | ConvertTo-Json -Compress
+'''
+        def runner(argv, **options):
+            if argv[0] == "git":
+                return subprocess.CompletedProcess(argv, 0, str(self.root / ".git"), "")
+            return subprocess.run(argv, **options)
+        with patch.object(autostart, "TASK_SCRIPT", script):
+            result = autostart.configure("install", self.home, self.worktree, runner, self.python)
+        self.assertEqual((result["action"], result["label"], result["installed"]), ("install", "中文", False))
+        self.assertEqual(result["root"], str(self.root))
+        self.assertEqual(result["arguments"], subprocess.list2cmdline([
+            str(self.plugin / "crew" / "autostart.py"), "--home", str(self.home)]))
+        self.assertFalse(self.home.exists())
 
     def test_unmerged_entry_and_missing_pythonw_fail_before_registration(self):
         runner = Mock(return_value=subprocess.CompletedProcess([], 0, str(self.root / ".git"), ""))

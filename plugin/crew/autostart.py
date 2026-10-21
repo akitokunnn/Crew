@@ -93,11 +93,14 @@ def configure(action, home, plugin_root, runner=subprocess.run, executable=None)
         request.update(executable=str(pythonw), root=str(root),
                        arguments=subprocess.list2cmdline([str(entry), "--home", str(Path(home).resolve())]))
     encoded = base64.b64encode(TASK_SCRIPT.encode("utf-16-le")).decode("ascii")
-    result = runner(["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden",
+    # CREATE_NO_WINDOW already hides this host. -WindowStyle requires a console
+    # window and can abort Windows PowerShell before it executes the script.
+    result = runner(["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
                      "-EncodedCommand", encoded], input=json.dumps(request, ensure_ascii=False),
                     capture_output=True, text=True, encoding="utf-8", creationflags=subprocess.CREATE_NO_WINDOW)
     if result.returncode:
-        raise OSError("登录自启任务操作失败: " + result.stderr.strip())
+        raise OSError("登录自启任务操作失败（退出码 %s）: %s" %
+                      (result.returncode, result.stderr.strip() or result.stdout.strip() or "PowerShell 未返回错误输出"))
     return json.loads(result.stdout)
 
 
