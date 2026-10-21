@@ -180,6 +180,7 @@ function setTab(tab) {
   $("chat-tab").setAttribute("aria-pressed", String(tab === "chat"));
   history.replaceState(null, "", tab === "usage" ? "#usage" : tab === "chat" ? "#chat" : location.pathname + location.search);
   document.body.classList.toggle("chat-active", tab === "chat");
+  window.scrollTo(0, 0);
   window.crewChat?.visibility(tab === "chat");
   if (tab === "usage") loadUsage(); else loadState();
 }

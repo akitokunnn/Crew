@@ -2,6 +2,22 @@
 
 接手的 AI 先读这份，再读 `README.md` 和 `docs/DESIGN.md`。做完就删掉这份文件。
 
+## 本轮接续进度（2026-10-21）
+
+尚未全部完成，保留交接。**主检出 main 仍是 5709d44，没有合入、没有重启旧服务。**
+
+- 已完成的集成分支：`codex/web-leader`，worktree `C:\Tools\Crew\Temp\wt\web-leader`。包含下文任务二、任务三及前端：发现候选/收编/混选成员；网页常驻 leader、多轮流式、Markdown、工具折叠、组员状态和待拍板；网页刷新重放、服务重启后同 ID 恢复；CLI `leader start` 转到运行中的网页服务。成员继续沿用上次确定的终端启动方式。
+- 已修复同 ID 多 PID 导致重复候选、busy 被 idle 盖掉、旧进程钩子状态遮住当前进程的问题；原始 agents 列表仍保留所有 PID。`spawn_id` 重新登记和 join 后保留，避免丢失恢复所需的任务文件标识。
+- 集成分支已通过 139 个测试（含 `spawn_id` 回归），JS 语法检查和 diff 检查通过。真实隔离 HTTP/SSE 与浏览器验收已通过：多轮、服务重启恢复、无重复用户消息、流式文本与完整回复一致、Markdown、忙时禁用发送、刷新历史。所有探针都正常 EOF 退出，未操作用户现有会话。
+- 实机证据：`Temp/leader-probe/http-20261021-201342/state.json`、`history-after-browser.json`。界面示例 `Temp/chat-preview.jpg`，实机截图 `Temp/chat-live-check.jpg`。
+- 任务一底层在独立分支 `codex/open-vscode`，提交 `5368f42`，worktree `Temp/wt/open-vscode`。包含空闲/入口/PID 创建时间检查和两阶段函数，**CLI/API 尚未接线**。不能直接宣称 `crew open` 可用。该分支的 spawn_id 单行修复已先带进集成分支。
+- VS Code 已查明：`code <cwd>` 返回不等窗口 ready，`code --open-url` 同时带目录会忽略目录。已问用户是否接受两步：先开对应目录，窗口就绪后再点一次打开会话；**尚未答复，不能自行按两步方案启用入口**。
+- 网页 leader 的进程入口是 `sdk-cli`。未来接任务一时：先用 `chat.Manager.is_owned/busy` 判断；用户第二次确认后走 `Manager.detach(session_id)`，只关自己的 stdin 并等正常退出，再开原 ID 的 URI。不要把 SDK 进程交给 `TerminateProcess`。现有终端进程关闭仍须空闲和用户明确确认，VS Code 进程永远不关。
+- 用户还未回答新组员要不要也改后台；保持原来的终端方案，别扩到后台成员。
+- 已查旧看板正在监听 `127.0.0.1:47811`，当时 PID `16156`，命令为主目录 `plugin/crew_cli.py web --port 47811`。已请求允许合入并重启这一个看板服务，**尚未答复**。合入前重新核对进程身份。不要先更新 main 的前端，否则旧内存后端会配上新静态页面，接口错位。确认后先停止旧看板、再合入并启动新版；不关其他会话或终端窗口。
+
+后台 leader 最小实验结论：本机 CLI 2.1.306 的 stream-json（不用 --bare）有跨会话收件箱，空闲时能双向接 SendMessage；--resume 同 ID 多轮可行；完整插件/守则加载且 bypassPermissions 下 Crew 守卫仍有效。Python SDK 未安装，不需新增依赖。详见 `Temp/leader-probe/REPORT.json`。
+
 ## 最重要的一条
 
 **Crew 是一个人用的工作流工具（用户 Akito，只在他自己这台 Windows 机器上跑），不是产品。**

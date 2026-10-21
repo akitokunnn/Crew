@@ -154,6 +154,12 @@ raise SystemExit(main(sys.argv[3:]))
 
 
 class SessionTests(CoreCase):
+    def test_register_and_join_preserve_spawn_id(self):
+        board.register_session(self.conn, "s1", "demo", self.root, self.root, "main", spawn_id="crew-spawn", now=NOW)
+        board.register_session(self.conn, "s1", "demo", self.root, self.root, "main", entrypoint="claude-vscode", now=NOW)
+        board.join(self.conn, "s1", "demo", "one", self.root, self.root, "main", now=NOW)
+        self.assertEqual(board.session(self.conn, "s1")["spawn_id"], "crew-spawn")
+
     def test_join_duplicate_online_then_reuse_offline(self):
         self.assert_cli(["join", "one"], sid="s2", code=3)
         self.assertEqual(board.session(self.conn, "s2")["crew_name"], "two")

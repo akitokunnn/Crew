@@ -7,7 +7,7 @@
     return linkOpen(tokens, i, options, env, renderer);
   };
   let selected = null, stream = null, messages = [], byId = new Map(), results = new Map(), cursor = 0;
-  let busy = false, running = false, loading = false, generation = 0, frame = null;
+  let busy = false, running = false, loading = false, generation = 0, frame = null, followOnRender = false;
   const drafts = new Map();
   const leaders = () => allSessions().filter(s => s.role === "leader" && s.web_chat);
   const leader = () => leaders().find(s => s.session_id === selected);
@@ -34,6 +34,7 @@
     } else if (event.type === "assistant") {
       const message = addMessage({id:event.id, role:"assistant"});
       message.content = event.content;
+      message.text = "";
     } else if (event.type === "tool_result") results.set(event.tool_use_id, event);
     else if (event.type === "status") { busy = event.status === "working"; running = event.status !== "offline"; }
     else if (event.type === "error") error(event.text);
@@ -48,11 +49,12 @@
   function body(message) {
     if (message.role === "user") return `<div class="message-text">${esc(message.text)}</div>`;
     const blocks = message.content || [{type:"text", text:message.text || ""}];
-    return blocks.map(block => block.type === "text" ? `<div class="markdown">${md.render(block.text)}</div>` : block.type === "tool_use" ? tool(block) : "").join("");
+    return blocks.map(block => block.type === "text" ? `<div class="markdown">${md.render(block.text)}</div>` : block.type === "tool_use" ? tool(block) : "").join("") + (message.content && message.text ? `<div class="markdown">${md.render(message.text)}</div>` : "");
   }
   function render() {
     frame = null;
-    const log = $("chat-log"), follow = log.scrollHeight - log.scrollTop - log.clientHeight < 100;
+    const log = $("chat-log"), follow = followOnRender || log.scrollHeight - log.scrollTop - log.clientHeight < 100;
+    followOnRender = false;
     const openTools = new Set([...log.querySelectorAll("[data-tool][open]")].map(d => d.dataset.tool));
     if (!selected) {
       log.innerHTML = `<div class="chat-welcome"><div class="welcome-mark">C<span>·</span></div><small>CREW / 你的协作空间</small><h1>想法交给你。<br>推进交给 leader。</h1><p>召集已有的会话，把目标说清楚。<br>让每个组员各司其职，让你随时知道事情到了哪。</p><button class="primary" data-chat-create>创建第一个 leader ↗</button><div class="welcome-features"><span>◌ 直接收编已有会话</span><span>↗ 实时沟通与跟进</span><span>◇ 需要你时再拍板</span></div></div>`;
@@ -99,6 +101,7 @@
       const data = await request(endpoint("/api/chat/history", id));
       if (token !== generation) return;
       for (const event of data.events) apply(event);
+      followOnRender = true;
       busy = data.busy; running = data.running;
       stream = new EventSource(endpoint("/api/chat/events", id, cursor));
       let connectionIssue = false;
