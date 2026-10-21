@@ -155,6 +155,9 @@ def parser():
     a = command("web")
     a.add_argument("--port", type=int, default=47811)
     a.add_argument("--open", action="store_true")
+    c = command("autostart").add_subparsers(dest="action", required=True)
+    for action in ("install", "status", "uninstall"):
+        c.add_parser(action).add_argument("--json", action="store_true")
     c = command("events")
     c.add_argument("--session", dest="session_name")
     c.add_argument("--limit", type=int, default=50)
@@ -407,6 +410,11 @@ def main(argv=None, agents_provider=claude_agents, cwd=None, plugin_root=None):
         args = parser().parse_args(argv)
         cwd = Path.cwd() if cwd is None else Path(cwd)
         plugin_root = Path(__file__).resolve().parents[1] if plugin_root is None else Path(plugin_root)
+        if args.command == "autostart":
+            from . import autostart
+            value = autostart.configure(args.action, args.home, plugin_root)
+            print(json.dumps(value, ensure_ascii=False, indent=2) if args.json else autostart.describe(value, args.action))
+            return 0
         if args.command == "spawn" or (args.command == "leader" and args.action == "start"):
             from . import spawn
             value = spawn.cli_dispatch(args, cwd, plugin_root)
