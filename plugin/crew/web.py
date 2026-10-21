@@ -12,7 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from . import board, hooks, spawn, store, usage, usage_cli
+from . import board, chat, hooks, spawn, store, usage, usage_cli
 
 
 def _text(data, key):
@@ -28,12 +28,13 @@ def _optional_text(data, key):
 
 class Service:
     def __init__(self, home, plugin_root, agents_provider=None, launcher=spawn.launch,
-                 claude_root=None, codex_root=None, runs_file=None, now=None, cwd=None):
+                 claude_root=None, codex_root=None, runs_file=None, now=None, cwd=None, process_factory=subprocess.Popen):
         if agents_provider is None:
             from .cli import claude_agents
             agents_provider = claude_agents
         self.home, self.plugin_root = Path(home), Path(plugin_root)
         self.agents_provider, self.launcher, self.clock = agents_provider, launcher, now
+        self.chat = chat.Manager(home, plugin_root, agents_provider, process_factory)
         self.claude_root = Path.home() / ".claude" / "projects" if claude_root is None else Path(claude_root)
         self.codex_root = Path.home() / ".codex" / "sessions" if codex_root is None else Path(codex_root)
         self.runs_file = self.home / "codex_runs.jsonl" if runs_file is None else Path(runs_file)
@@ -83,6 +84,7 @@ class Service:
 
     def close(self):
         self.stop.set()
+        self.chat.close()
         if self.worker is not None:
             self.worker.join(timeout=1)
 
@@ -137,6 +139,10 @@ class Service:
                 # Passing every stored identity preserves the board statuses while process state is unknown.
                 identities = [{"sessionId": s["session_id"]} for s in board.sessions(conn, name)] if error else agents
                 result = board.status(conn, name, identities)
+                for session in [*result["ungrouped"], *(s for group in result["groups"] for s in group["members"])]:
+                    session["web_chat"] = self.chat.path(session["session_id"]).exists()
+                    if self.chat.running(session["session_id"]):
+                        session["status"] = self.chat.journal(session["session_id"]).status
                 decisions = board.decisions(conn, name, all=True)
                 result.update(candidates=self.candidates(conn, name), resources=board.resources(conn, name),
                               decisions=[d for d in decisions if d["status"] == "open"] +
@@ -178,12 +184,15 @@ class Service:
                     names.add(member_name)
                 # Check the leader and existing members before adopting anyone.
                 spawn.leader_start(conn, self.home, self.plugin_root, project, name, members,
-                                   task, launcher=self.launcher, now=now, dry_run=True)
+                                   task, cwd=_optional_text(data, "cwd"), new_worktree=_optional_text(data, "new_worktree"),
+                                   launcher=self.launcher, now=now, dry_run=True)
                 for candidate, member_name in candidate_members:
                     self.adopt(conn, project, candidate, member_name, None, now)
-                return spawn.leader_start(conn, self.home, self.plugin_root, project, name,
-                                          members + [member_name for _, member_name in candidate_members],
-                                          task, launcher=self.launcher, now=now)
+                return self.chat.start(conn, project, name, members + [member_name for _, member_name in candidate_members],
+                                       task, cwd=_optional_text(data, "cwd"),
+                                       new_worktree=_optional_text(data, "new_worktree"), now=now)
+            if path == "/api/chat/send":
+                return self.chat.send(self.chat_session(conn, project, _text(data, "session_id")), _text(data, "text"))
             if path == "/api/lease/give":
                 board.give(conn, project, _text(data, "resource"), board.HUMAN, force=True, reason=_text(data, "reason"), now=now)
             elif path == "/api/roster/move":
@@ -192,6 +201,17 @@ class Service:
                 candidate = self.candidate(conn, project, _text(data, "session_id"))
                 return self.adopt(conn, project, candidate, _text(data, "name"), _optional_text(data, "group"), now)
             return {"ok": True}
+
+    def chat_session(self, conn, project, session_id):
+        session = board.session(conn, session_id)
+        if session["project"] != project or not self.chat.path(session_id).exists():
+            raise board.BoardError("当前项目中没有这个网页 leader")
+        return session
+
+    def chat_history(self, session_id, project_name=None):
+        with closing(store.connect(self.home)) as conn:
+            self.chat_session(conn, self.selected_project(conn, project_name), session_id)
+        return self.chat.history(session_id)
 
     def usage(self, period="week", what=None):
         try:
@@ -214,12 +234,33 @@ class Service:
             return result
 
 
-POST_PATHS = {"/api/answer", "/api/spawn", "/api/leader", "/api/lease/give", "/api/roster/move", "/api/roster/adopt"}
+POST_PATHS = {"/api/answer", "/api/spawn", "/api/leader", "/api/lease/give", "/api/roster/move", "/api/roster/adopt", "/api/chat/send"}
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"),
-          "/style.css": ("style.css", "text/css; charset=utf-8")}
+          "/style.css": ("style.css", "text/css; charset=utf-8"), "/chat.js": ("chat.js", "text/javascript; charset=utf-8"),
+          "/vendor/markdown-it.min.js": ("vendor/markdown-it.min.js", "text/javascript; charset=utf-8")}
 
 
 class Handler(BaseHTTPRequestHandler):
+    def _chat_events(self, journal, sequence):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+        try:
+            while not self.server.service.stop.is_set():
+                events = journal.after(sequence, wait=True)
+                for event in events:
+                    self.wfile.write(("id: %s\ndata: %s\n\n" %
+                                      (event["seq"], json.dumps(event, ensure_ascii=False))).encode("utf-8"))
+                    sequence = event["seq"]
+                if not events:
+                    self.wfile.write(b": heartbeat\n\n")
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
+
     def _send(self, code, content, content_type="application/json; charset=utf-8", attachment=None):
         if isinstance(content, (dict, list)):
             content = json.dumps(content, ensure_ascii=False).encode("utf-8")
@@ -250,6 +291,14 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, service.post(url.path, data, query.get("project", [None])[0]))
         elif url.path == "/api/state":
             self._send(200, service.state(query.get("project", [None])[0]))
+        elif url.path in ("/api/chat/history", "/api/chat/events"):
+            session_id = query.get("session_id", [""])[0]
+            history = service.chat_history(session_id, query.get("project", [None])[0])
+            if url.path.endswith("/history"):
+                self._send(200, history)
+            else:
+                sequence = max(int(query.get("after", [0])[0]), int(self.headers.get("Last-Event-ID", 0)))
+                self._chat_events(service.chat.journal(session_id), sequence)
         elif url.path in ("/api/usage", "/api/usage/export"):
             period = query.get("period", ["week"])[0]
             if url.path.endswith("/export"):
@@ -294,13 +343,20 @@ class Handler(BaseHTTPRequestHandler):
 
 
 class Server(ThreadingHTTPServer):
+    daemon_threads = True
+
     def __init__(self, service, port=47811):
         super().__init__(("127.0.0.1", port), Handler)
         self.service = service
+        self.url = "http://127.0.0.1:%d" % self.server_port
+        (service.home / "web.json").write_text(json.dumps({"url": self.url}), encoding="utf-8")
         service.start()
 
     def server_close(self):
         self.service.close()
+        address = self.service.home / "web.json"
+        if address.exists() and json.loads(address.read_text(encoding="utf-8"))["url"] == self.url:
+            address.unlink()
         super().server_close()
 
 

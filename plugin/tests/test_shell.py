@@ -10,11 +10,12 @@ import threading
 import unittest
 from pathlib import Path
 from unittest import mock
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from crew import board, cli, spawn, store, usage_cli, web
+from crew import board, chat, cli, spawn, store, usage_cli, web
 from test_usage import UsageFixture, assistant, prompt
+from test_chat import FakeProcess
 
 PLUGIN = Path(__file__).resolve().parents[1]
 NOW = "2026-10-21T08:00:00.000Z"
@@ -232,17 +233,12 @@ class SpawnTests(ShellFixture, unittest.TestCase):
         self.assertEqual(board.session(self.conn, "s1")["group_name"], "lead")
         self.assertEqual(self.commands, [])
 
-    def test_cli_leader_start_and_dry_run(self):
+    def test_cli_leader_dry_run(self):
         code, output, errors = self.run_cli(["leader", "start", "--name", "boss", "--members", "one,two", "--dry-run"])
         self.assertEqual(code, 0, errors)
         self.assertEqual(json.loads(output)["members"], ["one", "two"])
         self.assertEqual(board.session(self.conn, "s1")["group_name"], "lead")
         self.assertFalse((self.home / "spawn").exists())
-        with mock.patch("crew.spawn.launch", side_effect=self.commands.append):
-            code, output, errors = self.run_cli(["leader", "start", "--name", "boss", "--members", "one,two", "--task", "plan"])
-        self.assertEqual(code, 0, errors)
-        self.assertEqual(board.session(self.conn, "s2")["group_name"], "boss")
-        self.assertEqual(len(self.commands), 1)
 
     def test_launch_script_ascii_and_powershell_51_parser(self):
         script = PLUGIN / "launch.ps1"
@@ -298,9 +294,15 @@ class WebTests(ShellFixture, unittest.TestCase):
         board.report(self.conn, "s1", "report", now=NOW)
         self.clock = store.parse_iso(NOW)
         self.provider = mock.Mock(return_value=[{"sessionId":"s1", "name":"cc-one"}, {"sessionId":"s3", "name":"cc-lead"}])
+        self.processes = []
+        def process_factory(command, **options):
+            process = FakeProcess(command, **options)
+            self.processes.append(process)
+            return process
+        self.process_factory = process_factory
         self.server = web.create_server(self.home, PLUGIN, port=0, cwd=self.project, agents_provider=self.provider,
                                         launcher=self.commands.append, claude_root=self.claude, codex_root=self.codex,
-                                        runs_file=self.runs, now=lambda: self.clock)
+                                        runs_file=self.runs, now=lambda: self.clock, process_factory=process_factory)
         self.thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval":.02})
         self.thread.start()
         self.addCleanup(self.close_server)
@@ -430,7 +432,7 @@ class WebTests(ShellFixture, unittest.TestCase):
         self.assertEqual(board.session(self.conn, candidate["session_id"])["group_name"], "boss")
         self.assertEqual(board.session(self.conn, "s2")["group_name"], "boss")
         self.assertEqual(board.session(self.conn, candidate["session_id"])["cc_name"], "cc-vscode")
-        self.assertEqual(len(self.commands), 1)
+        self.assertEqual(len(self.processes), 1)
 
     def test_default_project_uses_startup_directory_then_first_project(self):
         other = self.root / "a-first"
@@ -493,6 +495,125 @@ class WebTests(ShellFixture, unittest.TestCase):
         self.assertEqual(self.get("/api/leader", {"name":"other", "members":["missing"]})[0], 400)
         self.assertEqual(self.get("/api/leader", {"name":"one"})[0], 409)
         self.assertEqual(self.get("/api/leader", {"name":"other", "members":"one,two"})[0], 400)
+
+    def chat_start(self):
+        code, result, _ = self.get("/api/leader", {"name": "web-boss", "task": "manage this group"})
+        self.assertEqual(code, 200)
+        return result["session_id"]
+
+    def chat_wait(self, session_id, predicate):
+        journal = self.server.service.chat.journal(session_id)
+        with journal.condition:
+            self.assertTrue(journal.condition.wait_for(lambda: predicate(journal), timeout=3))
+
+    def test_chat_history_reload_busy_send_and_same_process_next_turn(self):
+        session_id = self.chat_start()
+        process = self.processes[0]
+        self.assertIn("--session-id", process.command)
+        self.assertIn(session_id, process.command)
+        self.assertNotIn("--bare", process.command)
+        spec = self.spec({"id": board.session(self.conn, session_id)["spawn_id"]})
+        self.assertEqual(spec["name"], "web-boss")
+        for _ in range(2):
+            code, history, _ = self.get("/api/chat/history?session_id=" + session_id)
+            self.assertEqual(code, 200)
+            self.assertTrue(history["running"])
+            self.assertTrue(history["busy"])
+        self.assertEqual(len(self.processes), 1)
+        self.assertEqual(self.get("/api/chat/send", {"session_id": session_id, "text": "too soon"})[0], 409)
+        process.emit({"type": "result", "is_error": False})
+        self.chat_wait(session_id, lambda journal: journal.status == "idle")
+        self.assertEqual(self.get("/api/chat/send", {"session_id": session_id, "text": "next turn"})[0], 200)
+        self.assertEqual(len(self.processes), 1)
+        self.assertEqual(json.loads(process.stdin.getvalue().splitlines()[-1])["message"]["content"], "next turn")
+        state = self.get("/api/state")[1]
+        leader = next(s for group in state["groups"] for s in group["members"] if s["session_id"] == session_id)
+        self.assertTrue(leader["web_chat"])
+        self.assertEqual(leader["status"], "working")
+
+    def test_chat_resume_after_service_restart_uses_same_id_and_refuses_external_process(self):
+        session_id = self.chat_start()
+        self.server.service.chat.close()
+        self.server.service.chat = chat.Manager(self.home, PLUGIN, self.provider, self.process_factory)
+        self.assertFalse(self.get("/api/chat/history?session_id=" + session_id)[1]["running"])
+        self.provider.return_value = [{"sessionId": session_id, "name": "web-boss"}]
+        self.assertEqual(self.get("/api/chat/send", {"session_id": session_id, "text": "resume"})[0], 409)
+        self.assertEqual(len(self.processes), 1)
+        self.provider.return_value = []
+        self.assertEqual(self.get("/api/chat/send", {"session_id": session_id, "text": "resume"})[0], 200)
+        self.assertEqual(self.processes[1].command[-2:], ["--resume", session_id])
+        self.assertNotIn("--session-id", self.processes[1].command)
+
+    def test_chat_sse_replays_after_last_event_id_without_restarting_process(self):
+        session_id = self.chat_start()
+        history = self.get("/api/chat/history?session_id=" + session_id)[1]
+        first = history["events"][0]["seq"]
+        request = Request(self.url + "/api/chat/events?session_id=" + session_id + "&after=0", headers={"Last-Event-ID": str(first)})
+        with urlopen(request, timeout=3) as response:
+            self.assertIn("text/event-stream", response.headers["Content-Type"])
+            lines = []
+            while line := response.readline().decode("utf-8").strip():
+                lines.append(line)
+        event = json.loads(next(line[6:] for line in lines if line.startswith("data: ")))
+        self.assertEqual(event["seq"], first + 1)
+        self.assertEqual(len(self.processes), 1)
+
+    def test_chat_reports_malformed_protocol_and_nonzero_exit(self):
+        session_id = self.chat_start()
+        process = self.processes[0]
+        process.stdout.queue.put("not json\n")
+        self.chat_wait(session_id, lambda journal: any(e["type"] == "error" for e in journal.events))
+        process.finish(3)
+        self.chat_wait(session_id, lambda journal: journal.status == "offline")
+        history = self.get("/api/chat/history?session_id=" + session_id)[1]
+        self.assertFalse(history["running"])
+        self.assertEqual(len([e for e in history["events"] if e["type"] == "error"]), 2)
+
+    def test_cli_leader_uses_running_service_custom_port_and_closed_service_error(self):
+        code, output, errors = self.run_cli(["leader", "start", "--name", "cli-boss", "--members", "one,two", "--task", "plan"])
+        self.assertEqual(code, 0, errors)
+        self.assertIn(board.named_session(self.conn, "demo", "cli-boss")["session_id"], output)
+        self.assertEqual(board.session(self.conn, "s2")["group_name"], "cli-boss")
+        with mock.patch("crew.spawn.urlopen", side_effect=URLError("service down")):
+            code, _, errors = self.run_cli(["leader", "start", "--name", "offline-boss"])
+        self.assertEqual(code, 1)
+        self.assertIn("crew web --open", errors)
+
+    def test_detach_only_closes_selected_idle_leader_and_waits_for_exit(self):
+        selected = self.chat_start()
+        other = self.get("/api/leader", {"name": "other-boss"})[1]["session_id"]
+        manager = self.server.service.chat
+        with self.assertRaises(board.Conflict):
+            manager.detach(selected)
+        self.assertTrue(manager.is_owned(selected))
+        self.processes[0].emit({"type": "result"})
+        self.chat_wait(selected, lambda journal: journal.status == "idle")
+        manager.detach(selected)
+        self.assertFalse(manager.running(selected))
+        self.assertTrue(manager.running(other))
+
+    def test_resume_drains_previous_reader_before_new_turn_status(self):
+        session_id = self.chat_start()
+        previous = self.server.service.chat.processes[session_id]
+        process = self.processes[0]
+        process.returncode = 0
+        waiting = threading.Event()
+        original_wait = previous.reader_done.wait
+        def wait_for_reader(timeout):
+            waiting.set()
+            return original_wait(timeout)
+        responses = []
+        with mock.patch.object(previous.reader_done, "wait", side_effect=wait_for_reader):
+            sender = threading.Thread(target=lambda: responses.append(self.get("/api/chat/send", {"session_id": session_id, "text": "resume"})[0]))
+            sender.start()
+            self.assertTrue(waiting.wait(3))
+            self.assertEqual(len(self.processes), 1)
+            process.emit({"type": "result"})
+            process.finish()
+            sender.join(3)
+        self.assertEqual(responses, [200])
+        self.assertTrue(self.get("/api/chat/history?session_id=" + session_id)[1]["busy"])
+        self.assertEqual(self.get("/api/chat/send", {"session_id": session_id, "text": "too soon"})[0], 409)
 
     def test_force_give_requires_reason_records_actor_and_errors(self):
         self.assertEqual(self.get("/api/lease/give", {"resource":"phone"})[0], 400)

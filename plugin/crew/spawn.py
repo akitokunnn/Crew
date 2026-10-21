@@ -7,6 +7,9 @@ import sqlite3
 import subprocess
 import uuid
 from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 from . import board, store
 
@@ -147,6 +150,21 @@ def cli_dispatch(args, cwd, plugin_root):
         if project is None:
             raise board.BoardError("\u5f53\u524d\u76ee\u5f55\u4e0d\u5c5e\u4e8e\u5df2\u542f\u7528\u9879\u76ee\uff0c\u8bf7\u5148 crew init")
         if args.command == "leader":
+            if not args.dry_run:
+                address = Path(args.home) / "web.json"
+                url = json.loads(address.read_text(encoding="utf-8"))["url"] if address.exists() else "http://127.0.0.1:47811"
+                body = {"name": args.name, "members": args.members.split(",") if args.members is not None else [],
+                        "task": args.task, "cwd": str(args.cwd) if args.cwd is not None else None, "new_worktree": args.new_worktree}
+                request = Request(url + "/api/leader?" + urlencode({"project": project["name"]}),
+                                  json.dumps(body).encode("utf-8"), {"X-Crew": "1", "Content-Type": "application/json"})
+                try:
+                    with urlopen(request, timeout=15) as response:
+                        return json.load(response)
+                except HTTPError as exc:
+                    message = json.load(exc)["error"]
+                    raise (board.Conflict if exc.code == 409 else board.BoardError)(message) from exc
+                except URLError as exc:
+                    raise board.BoardError("网页服务未运行，请先 crew web --open；" + str(exc.reason)) from exc
             return leader_start(conn, args.home, plugin_root, project["name"], args.name,
                                 args.members.split(",") if args.members is not None else (), args.task,
                                 args.cwd, args.new_worktree, launcher=launch, dry_run=args.dry_run)
