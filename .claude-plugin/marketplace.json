@@ -1,0 +1,11 @@
+{
+  "name": "crew",
+  "owner": { "name": "akitokunnn" },
+  "plugins": [
+    {
+      "name": "crew",
+      "source": "./plugin",
+      "description": "Coordinate many Claude Code sessions: shared board, leases, file claims, leader groups, guard blacklist, usage analytics."
+    }
+  ]
+}

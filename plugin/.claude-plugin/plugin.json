@@ -1,0 +1,7 @@
+{
+  "name": "crew",
+  "version": "0.1.0",
+  "description": "Coordinate many Claude Code sessions: shared board, leases, file claims, leader groups, guard blacklist, usage analytics.",
+  "author": { "name": "akitokunnn" },
+  "repository": "https://github.com/akitokunnn/Crew"
+}

@@ -1,0 +1,12 @@
+# Crew 守卫黑名单：所有会话、所有权限模式（包括全放行）下都生效，命中就拦下。
+# 只放"任何时候都不能做、用户点头也不行"的事；需要用户先点头的操作写在 CLAUDE.md 等规矩里，不放这里。
+#
+# 一行一条：工具 :: 正则 :: 原因
+#   工具：Bash、PowerShell、Edit、Write、SendMessage 等工具名，多个用英文逗号隔开，* 表示所有工具
+#   正则：Python re，不区分大小写，在命令文本（Bash / PowerShell）、文件路径（Edit / Write / Read 等）或其它工具参数的 JSON 里搜索
+#   原因：被拦时原样告诉 Claude
+# 写错一行会让所有工具调用被拦（只有读写本文件放行），保存后马上生效。
+
+* :: CREW_GUARD_SELFTEST :: 守卫自检，命中说明守卫在工作
+
+Bash,PowerShell :: \bgit\b[^\n;|&]*\bpush\b[^\n;|&]*(--force\b|--force-with-lease|\s-f\b|\s\+\S) :: 禁止强制推送；推送被拒先同步、处理冲突
