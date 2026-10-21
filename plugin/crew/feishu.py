@@ -150,6 +150,13 @@ def questions_card(entries):
             pending += 1
             # A shared footer explains how to identify a question in a text reply.
             elements = card["body"]["elements"][:-1]
+            if entry.get("buttons_enabled", True) is False:
+                elements = elements[:1]
+                if decision.get("options"):
+                    choices = "\n".join("• " + _markdown(option) for option in decision["options"])
+                    elements.append(_block([{"tag": "markdown", "content": "可选答复：\n" + choices}], "default"))
+                elements.append({"tag": "markdown", "text_size": "notation",
+                    "content": "当前未启用卡片按钮，请回复「#%s 答复」。" % identity})
         elif status == "answered":
             card = answered_card(decision, workspace=workspace, leader=leader)
             elements = card["body"]["elements"]

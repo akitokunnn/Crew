@@ -186,6 +186,21 @@ class QuestionsCardTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             feishu.questions_card([{**note, "text": " "}])
 
+    def test_unsubscribed_callback_keeps_choices_as_text_without_dead_buttons(self):
+        entries = [{**self.entries[0], "buttons_enabled": False}, self.entries[1]]
+        card = feishu.questions_card(entries)
+        buttons = [v for v in walk(card) if v.get("tag") == "button"]
+        self.assertEqual({v["behaviors"][0]["value"]["decision_id"] for v in buttons}, {43})
+        content = json.dumps(card, ensure_ascii=False)
+        self.assertIn("可选答复", content)
+        self.assertIn("先上线", content)
+        self.assertIn("先补测试", content)
+        self.assertIn("#42 答复", content)
+        entries[0]["decision"] = {**QUESTION, "status": "answered", "answer": "先补测试"}
+        card = feishu.questions_card(entries)
+        self.assertIn("等待会话下一轮接收", json.dumps(card, ensure_ascii=False))
+        self.assertNotIn("#42 答复", json.dumps(card, ensure_ascii=False))
+
 
 class ClientTests(unittest.TestCase):
     def setUp(self):
