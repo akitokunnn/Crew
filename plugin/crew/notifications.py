@@ -123,7 +123,7 @@ class Inbox:
         except (ValueError, KeyError, TypeError):
             message = '接收连接已停止，请查看服务日志'
         if key == feishu.CARD_EVENT and 'not subscribed' in message:
-            message = '飞书尚未启用卡片按钮回调，当前请用文字答复卡片。醒后需在开放平台启用 card.action.trigger。'
+            message = '飞书卡片按钮尚未启用，请用文字答复；需在开放平台启用 card.action.trigger。'
         self.consumer_errors[key] = message
 
     def _leader(self, conn, session_id):
