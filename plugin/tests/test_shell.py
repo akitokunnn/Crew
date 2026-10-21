@@ -79,6 +79,18 @@ class ShellFixture(UsageFixture):
 
 
 class SpawnTests(ShellFixture, unittest.TestCase):
+    def test_spawn_resolves_native_cli_for_process_ownership(self):
+        shim = self.root / "npm" / "claude.cmd"
+        native = shim.parent / "node_modules" / "@anthropic-ai" / "claude-code" / "bin" / "claude.exe"
+        with mock.patch("crew.chat.shutil.which", return_value=str(shim)):
+            result = self.make_spawn("from-shim")
+        self.assertEqual(result["command"][0], str(native))
+        self.assertTrue(self.manager.owns_pid(result["session_id"], self.processes[0].pid))
+        self.assertFalse(self.manager.owns_pid(result["session_id"], self.processes[0].pid + 1))
+        with mock.patch("crew.chat.shutil.which", return_value=str(native)):
+            direct = self.make_spawn("from-exe")
+        self.assertEqual(direct["command"][0], str(native))
+
     def test_spec_brief_command_and_event(self):
         result = self.make_spawn(group="lead")
         spec = self.spec(result)

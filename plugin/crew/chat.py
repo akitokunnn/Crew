@@ -190,6 +190,9 @@ class Manager:
         exe = shutil.which("claude")
         if exe is None:
             raise FileNotFoundError("claude not found in PATH")
+        if Path(exe).suffix.lower() == ".cmd":
+            # The local npm shim starts a wrapper cmd.exe; agents reports the native child's PID.
+            exe = str(Path(exe).parent / "node_modules" / "@anthropic-ai" / "claude-code" / "bin" / "claude.exe")
         command = spawn.command(session_id, session["crew_name"], session["role"], resume)
         command[0] = exe
         journal = self.journal(session_id)
