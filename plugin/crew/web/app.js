@@ -1,133 +1,125 @@
 "use strict";
 const $ = id => document.getElementById(id);
-const esc = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"}[c]));
-const number = value => value == null ? "—" : Number(value).toLocaleString("zh-CN", {maximumFractionDigits: 2});
-const money = value => value == null ? "未完整计价" : "$" + Number(value).toLocaleString("zh-CN", {minimumFractionDigits: 2, maximumFractionDigits: 2});
+const esc = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const number = value => value == null ? "—" : Number(value).toLocaleString("zh-CN", {maximumFractionDigits:2});
+const money = value => value == null ? "未完整计价" : "$" + Number(value).toLocaleString("zh-CN", {minimumFractionDigits:2,maximumFractionDigits:2});
 const dateTime = value => value ? new Date(value).toLocaleString("zh-CN") : "—";
-const duration = value => {
-  if (value == null) return "—";
-  const minutes = Math.round(value / 60);
-  return minutes < 60 ? `${minutes} 分` : `${Math.floor(minutes / 60)} 小时 ${String(minutes % 60).padStart(2, "0")} 分`;
-};
-const empty = () => '<p class="empty">暂无记录</p>';
-const states = {working:"干活中", waiting:"等你", idle:"空闲", offline:"离线", closed:"已收"};
-let state = null, project = null, activeTab = "board", usageData = null, usagePeriod = "week", stateRequest = 0, usageRequest = 0;
-let sortKey = "total_tokens", sortDirection = -1, currentResource = null;
-let requestedChat = new URLSearchParams(location.hash.slice(1)).get("chat");
-const colors = new Map();
-function color(id) {
-  if (!colors.has(id)) {
-    const index = colors.size;
-    const variable = `--session-${index}`;
-    document.documentElement.style.setProperty(variable, `hsl(${(index * 137.508) % 360} var(--chart-saturation) var(--chart-lightness))`);
-    colors.set(id, `var(${variable})`);
-  }
-  return colors.get(id);
+const duration = value => value == null ? "—" : value < 3600 ? `${Math.round(value/60)} 分` : `${Math.floor(value/3600)} 时 ${Math.floor(value/60)%60} 分`;
+const empty = (text="暂无记录") => `<p class="empty">${esc(text)}</p>`;
+const states = {working:"处理中",waiting:"等你处理",idle:"空闲",offline:"未运行",closed:"已归档"};
+let state=null, project=new URLSearchParams(location.search).get("project"), activeTab="chat", stateRequest=0;
+let requestedChat=new URLSearchParams(location.hash.slice(1)).get("chat"), currentResource=null, managedGroup=null;
+let usageData=null, usagePeriod="week", sortKey="total_tokens", sortDirection=-1, usageRequest=0, noticeTimer, pageErrorKind=null;
+const initialView=location.hash.slice(1).split("=")[0];
+if (["sessions","board","usage"].includes(initialView)) activeTab=initialView;
+const selectedMembers=new Map(), colors=new Map();
+function color(id){if(!colors.has(id)){const variable=`--series-${colors.size}`;document.documentElement.style.setProperty(variable,`hsl(${colors.size*137.508%360} 31% 49%)`);colors.set(id,`var(${variable})`);}return colors.get(id);}
+function ago(value){if(!value)return "暂无活动记录";const seconds=Math.max(0,(Date.now()-new Date(value))/1000);return seconds<60?"刚刚":seconds<3600?`${Math.floor(seconds/60)} 分钟前`:seconds<86400?`${Math.floor(seconds/3600)} 小时前`:`${Math.floor(seconds/86400)} 天前`;}
+function showError(error,kind="action"){pageErrorKind=kind;$("error-text").textContent=error.message||String(error);$("error").hidden=false;$("retry-state").hidden=kind!=="state";}
+function notice(text){clearTimeout(noticeTimer);$("notice").textContent=text;$("notice").hidden=false;noticeTimer=setTimeout(()=>$("notice").hidden=true,5000);}
+async function request(path,data){const response=await fetch(path,data===undefined?{}:{method:"POST",headers:{"Content-Type":"application/json","X-Crew":"1"},body:JSON.stringify(data)});const result=await response.json();if(!response.ok)throw new Error(result.error||"请求失败，请重试");return result;}
+function projectQuery(){return project?"?project="+encodeURIComponent(project):"";}
+const post=(path,data)=>request(path+projectQuery(),data);
+function allSessions(){return state?[...state.groups.flatMap(g=>g.members),...state.ungrouped]:[];}
+function activeGroups(){return state?.groups.filter(g=>!g.closed_at)||[];}
+function sessionName(s){return s?.crew_name||s?.title||s?.session_id?.slice(0,8)||"未命名会话";}
+function displayName(id){return sessionName(allSessions().find(s=>s.session_id===id)||{session_id:id});}
+function currentSession(){return allSessions().find(s=>s.session_id===window.crewChat?.selectedId());}
+function currentGroup(){return activeGroups().find(g=>g.name===currentSession()?.group_name);}
+function locationOf(s){return s.location||s.open?.location||(s.web_chat?"offline":"unknown");}
+function sourceLabel(s){return ({web:"网页运行",vscode:"VS Code",terminal:"终端",offline:s.web_chat?"网页 · 可恢复":"未运行",unknown:s.web_chat?"网页会话":"位置待确认"})[locationOf(s)]||"现有会话";}
+function isArchived(s){return s.status==="closed";}
+function needsName(s){return !s.crew_name&&!isArchived(s)&&s.status!=="offline";}
+function discoveredSessions(){return [...(state?.candidates||[]),...allSessions().filter(needsName)].map(s=>({...s,title:sessionName(s)}));}
+function groupOptions(current=null,allowNone=true){return (allowNone?`<option value="">独立运行 · 未分组</option>`:"")+activeGroups().map(g=>`<option value="${esc(g.name)}" ${g.name===current?"selected":""}>${esc(g.name)}</option>`).join("");}
+function patch(id,html){
+  const node=$(id),focused=document.activeElement;
+  if(!node||node.dataset.content===html||node.contains(focused)&&focused.matches("input,textarea,select,[contenteditable]"))return;
+  const focus=node.contains(focused)?[...focused.attributes].find(a=>a.name.startsWith("data-")):null;
+  const scroll=node.scrollTop,open=[...node.querySelectorAll("details[open][data-key]")].map(n=>n.dataset.key);
+  node.innerHTML=html;node.dataset.content=html;
+  for(const detail of node.querySelectorAll("details[data-key]"))detail.open=open.includes(detail.dataset.key);
+  if(focus){const target=[...node.querySelectorAll(`[${focus.name}]`)].find(n=>n.getAttribute(focus.name)===focus.value);target?.focus({preventScroll:true});}
+  node.scrollTop=scroll;
 }
-function ago(value) {
-  if (!value) return "未知";
-  const seconds = Math.max(0, (Date.now() - new Date(value).getTime()) / 1000);
-  if (seconds < 60) return "刚刚";
-  if (seconds < 3600) return `${Math.floor(seconds / 60)} 分钟前`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)} 小时前`;
-  return `${Math.floor(seconds / 86400)} 天前`;
-}
-function showError(error) { $("error").textContent = error.message; $("error").hidden = false; }
-function notice(text) { $("notice").textContent = text; $("notice").hidden = false; }
-async function request(path, data) {
-  const options = data === undefined ? {} : {method:"POST", headers:{"Content-Type":"application/json", "X-Crew":"1"}, body:JSON.stringify(data)};
-  const response = await fetch(path, options);
-  const result = await response.json();
-  if (!response.ok) throw new Error(result.error);
-  return result;
-}
-function projectQuery() { return project === null ? "" : "?project=" + encodeURIComponent(project); }
-const post = (path, data) => request(path + projectQuery(), data);
-function allSessions() { return state ? [...state.groups.flatMap(g => g.members), ...state.ungrouped] : []; }
-function displayName(id) { const session = allSessions().find(s => s.session_id === id); return session ? session.crew_name || id.slice(0, 8) : id?.slice(0, 8) || "—"; }
-function groupOptions(current = null, ungrouped = false) {
-  return (ungrouped ? '<option value="">未分组</option>' : `<option value="" disabled ${current === null ? "selected" : ""}>挪到分组…</option>`) +
-    state.groups.filter(g => !g.closed_at).map(g => `<option value="${esc(g.name)}" ${current === g.name ? "selected" : ""}>${esc(g.name)}</option>`).join("");
-}
-function sessionCard(s) {
-  const name = s.crew_name || s.session_id.slice(0, 8);
-  const path = (s.worktree || s.cwd || "—").replace(/\\/g, "/").split("/").slice(-3).join("/");
-  const branch = s.branch && s.branch.length > 30 ? "…" + s.branch.slice(-29) : s.branch || "—";
-  return `<article class="card ${s.role === "leader" ? "leader" : ""} ${s.status === "offline" ? "offline-card" : ""}">
-    <div class="card-head"><h3>${s.role === "leader" ? "★ " : ""}${esc(name)}</h3><small>${s.role === "leader" ? "leader" : "成员"}</small><span class="pill ${esc(s.status)}">${states[s.status]}</span></div>
-    <p class="pre">${esc(s.task || "尚未填写在做什么")}</p>${s.status_note ? `<p class="pre">${esc(s.status_note)}</p>` : ""}
-    <small class="short-path" title="${esc(s.worktree || s.cwd)}">${esc(path)}</small><small class="short-path" title="${esc(s.branch)}">分支 ${esc(branch)} · ${ago(s.last_event_at)}</small>
-    <p class="last-message" title="${esc(s.last_message)}">${esc(s.last_message || "暂无最后一句话")}</p>
-    <button class="address" data-copy="${esc(s.cc_name || "")}" ${s.cc_name ? "" : "disabled"} title="点击复制 SendMessage 地址">SendMessage：${esc(s.cc_name || "尚未登记地址")}</button>
-    ${s.open ? `<div class="card-actions"><button data-open="${esc(s.session_id)}" ${s.open.enabled ? "" : "disabled"} title="${esc(s.open.reason || "在 VS Code 打开这段对话")}">在 VS Code 打开 ↗</button></div>` : ""}
-    ${s.web_chat ? `<div class="card-actions"><button class="primary" data-chat="${esc(s.session_id)}">打开网页对话 →</button></div>` : ""}
-    ${s.role !== "leader" ? `<footer><label>挪组 <select data-move="${esc(name)}" aria-label="移动 ${esc(name)}">${groupOptions(s.group_name)}</select></label></footer>` : ""}</article>`;
-}
-function sessionGrid(sessions, group, expanded) {
-  // Same rule as `crew status`: ended sessions pile up over weeks, so fold closed, unnamed and day-old offline ones.
-  const folded = sessions.filter(s => s.status === "closed" || (s.status === "offline" && (!s.crew_name || !s.last_event_at || Date.now() - new Date(s.last_event_at) > 864e5)));
-  const shown = sessions.filter(s => !folded.includes(s)).sort((a,b) => Number(b.role === "leader") - Number(a.role === "leader") || Number(a.status === "offline") - Number(b.status === "offline"));
-  return `<div class="grid">${shown.map(sessionCard).join("") || (folded.length ? "" : empty())}</div>` +
-    (folded.length ? `<details class="folded" data-group="${esc(group)}" ${expanded.has(group) ? "open" : ""}><summary>另有 ${folded.length} 个已结束的会话：已收、未命名，或离线超过一天</summary><div class="grid">${folded.map(sessionCard).join("")}</div></details>` : "");
-}
-function renderCandidates() {
-  const candidates = state.candidates || [];
-  $("candidates-panel").hidden = !candidates.length;
-  $("candidate-count").textContent = candidates.length;
-  $("candidates").innerHTML = candidates.map(s => `<article class="card candidate"><div class="card-head"><h3>${esc(s.title)}</h3><span class="pill ${esc(s.status)}">${states[s.status]}</span></div><small class="short-path" title="${esc(s.cwd)}">${esc(s.cwd)}</small><p class="muted">${esc(s.cc_name)}</p><button data-adopt="${esc(s.session_id)}">收进组</button></article>`).join("");
-}
-function table(rows, fields) {
-  if (!rows.length) return empty();
-  return `<table><thead><tr>${fields.map(([, label]) => `<th>${esc(label)}</th>`).join("")}</tr></thead><tbody>${rows.map(row => `<tr>${fields.map(([key,,format]) => `<td>${format ? format(row[key], row) : esc(row[key] ?? "—")}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
-}
-function renderBoard() {
-  $("project").innerHTML = state.projects.map(p => `<option value="${esc(p.name)}" ${p.name === project ? "selected" : ""}>${esc(p.name)}</option>`).join("");
-  $("new-session").disabled = $("new-leader").disabled = !state.project;
-  const waiting = allSessions().filter(s => s.status === "waiting");
-  const open = state.decisions.filter(d => d.status === "open");
-  $("waiting-count").textContent = `等你 ${waiting.length + open.length}`;
-  $("agents-error").hidden = !state.agents_error;
-  $("agents-error").textContent = state.agents_error ? state.agents_error + "；进程状态未知，以下状态按白板原样显示。" : "";
-  $("freshness").textContent = state.agents_error ? "进程状态未知" : `进程状态 ${Math.floor(state.agents_age_seconds)} 秒前更新`;
-  $("waiting").innerHTML = `<h2>等你 · ${waiting.length + open.length}</h2>` + (waiting.length + open.length ? `<ul>${waiting.map(s => `<li><strong>${esc(s.crew_name || s.session_id.slice(0,8))}</strong>：${esc(s.status_note || "等你处理")} <small>已等 ${ago(s.last_event_at) === "刚刚" ? "不足 1 分钟" : ago(s.last_event_at).replace(/前$/, "")}</small></li>`).join("")}${open.map(d => `<li><a href="#decision-${d.id}">${d.blocking ? "卡流程 · " : ""}${esc(d.question)}</a> · ${esc(displayName(d.session_id))}</li>`).join("")}</ul>` : "当前没有等待处理的事。");
-  const expanded = new Set([...$("groups").querySelectorAll("details[open]")].map(d => d.dataset.group));
-  $("groups").innerHTML = state.groups.filter(g => !g.closed_at).map(g => `<section><h2>${esc(g.name)}</h2>${sessionGrid(g.members, g.name, expanded)}</section>`).join("") + `<section><h2>未分组</h2>${sessionGrid(state.ungrouped, "", expanded)}</section>`;
-  renderCandidates();
-  const resources = state.resources.map(r => ({...r, lease:state.leases.find(l => l.resource === r.name)}));
-  $("leases").innerHTML = table(resources, [["name","资源"],["lease","借用人", l => esc(l ? l.holder_name || displayName(l.holder_session) : "空闲")],["lease","用途",l => esc(l?.purpose || "—")],["lease","借出时间", l => esc(dateTime(l?.taken_at))],["lease","预计归还", l => esc(dateTime(l?.until_at))],["lease","操作",(l,r) => l ? `<button data-give="${esc(r.name)}">强制归还</button>` : "—"]]);
-  $("claims").innerHTML = table(state.claims, [["pattern","路径"],["crew_name","归属人", (v,r) => esc(v || displayName(r.session_id))],["note","说明"],["created_at","声明时间", v => esc(dateTime(v))]]);
-  const focused = document.activeElement;
-  // Keep a reply being edited intact across the three-second board refresh.
-  if (!focused?.closest("#decisions")) {
-    const drafts = new Map([...$("decisions").querySelectorAll("form")].map(form => [form.dataset.answer, form.elements.text.value]));
-    $("decisions").innerHTML = state.decisions.map(d => `<article class="card" id="decision-${d.id}"><div class="card-head"><h3>#${d.id} ${esc(d.question)}</h3><span class="pill ${d.status === "open" ? "waiting" : "idle"}">${d.status === "open" ? "未答" : "已答"}</span></div><p>提问人：${esc(displayName(d.session_id))} · ${ago(d.created_at)}</p><p>是否卡流程：${d.blocking ? "是" : "否"}</p>${d.options.length ? `<ul>${d.options.map(o => `<li>${esc(o)}</li>`).join("")}</ul>` : ""}<p>推荐：${esc(d.recommendation || "无")}</p>${d.status === "open" ? `<form class="answer-form" data-answer="${d.id}"><label>答复<textarea name="text" required rows="2">${esc(drafts.get(String(d.id)) || "")}</textarea></label><button>答复</button><p class="form-error" role="alert"></p></form>` : `<p class="pre">${esc(d.answer)}</p><small>${esc(d.answered_by)} · ${dateTime(d.answered_at)}</small>`}</article>`).join("") || empty();
-  }
-  $("handoffs").innerHTML = state.handoffs.map(h => `<article class="entry"><small>${esc(h.from_name || displayName(h.from_session))} → ${esc(h.to_target)} · ${ago(h.created_at)}</small><p class="pre">${esc(h.body)}</p></article>`).join("") || empty();
-  $("reports").innerHTML = state.reports.map(r => `<article class="entry"><small>${esc(r.crew_name || displayName(r.session_id))} · ${ago(r.created_at)}</small><p class="pre">${esc(r.body)}</p></article>`).join("") || empty();
-  $("events").innerHTML = state.events.map(e => `<div class="entry"><small>${dateTime(e.ts)} · ${esc(displayName(e.session_id))}</small> <strong>${esc(e.kind)}</strong><details><summary>详情</summary><pre class="pre">${esc(JSON.stringify(e.detail, null, 2))}</pre></details></div>`).join("") || empty();
-  window.crewChat?.update();
-}
-async function loadState() {
-  const sequence = ++stateRequest;
-  try {
-    const data = await request("/api/state" + projectQuery());
-    if (sequence !== stateRequest) return;
-    state = data; project = data.project?.name ?? null;
-    $("error").hidden = true;
-    renderBoard();
-  } catch (error) { if (sequence === stateRequest) showError(error); }
-}
-function renderSessions() {
-  const columns = [["display_name","会话"],["project","项目"],["group_name","分组"],["input_tokens","输入"],["cache_write_tokens","缓存写入"],["cache_read_tokens","缓存读取"],["output_tokens","输出"],["total_tokens","总 token"],["cost_usd","金额 USD"],["unpriced_tokens","未计价 token"],["prompts","提示数"],["work_seconds","干活时长"],["compactions","压缩"],["cache_hit_rate","缓存命中"],["subagent_tokens","子 agent token"],["codex_runs","Codex 次数"],["codex_tokens","Codex token"]];
-  const rows = [...usageData.sessions].sort((a,b) => {
-    const x = a[sortKey], y = b[sortKey];
-    if (x == null || y == null) return x == null ? y == null ? 0 : 1 : -1;
-    return sortDirection * (typeof x === "number" ? x - y : String(x).localeCompare(String(y), "zh-CN"));
-  });
-  $("sessions-table").innerHTML = rows.length ? `<table><thead><tr>${columns.map(([key,label]) => `<th><button data-sort="${key}">${label}${sortKey === key ? sortDirection === 1 ? " ↑" : " ↓" : ""}</button></th>`).join("")}</tr></thead><tbody>${rows.map(r => `<tr>${columns.map(([key]) => {
-    let value = key === "cost_usd" ? money(r[key]) : key === "work_seconds" ? duration(r[key]) : key === "cache_hit_rate" ? number(r[key] * 100) + "%" : typeof r[key] === "number" ? number(r[key]) : r[key] ?? "—";
-    return `<td class="${typeof r[key] === "number" ? "num" : ""}">${key === "display_name" ? `<i class="swatch" style="--series-color:${color(r.session_id)}"></i>` : ""}${esc(value)}</td>`;
-  }).join("")}</tr>`).join("")}</tbody></table>` : empty();
+function route(push=false){const url=new URL(location.href);if(project)url.searchParams.set("project",project);else url.searchParams.delete("project");const id=window.crewChat?.selectedId()||requestedChat;url.hash=activeTab==="chat"?"chat"+(id?"="+encodeURIComponent(id):""):activeTab;history[push?"pushState":"replaceState"](null,"",url);}
+function closeSidebar(){const restore=document.body.classList.contains("sidebar-open")&&$("app-sidebar").contains(document.activeElement)&&innerWidth<=760;document.body.classList.remove("sidebar-open");$("sidebar-scrim").hidden=true;$("sidebar-toggle").setAttribute("aria-expanded","false");$("app-sidebar").removeAttribute("role");$("app-sidebar").removeAttribute("aria-modal");if(restore)$("sidebar-toggle").focus();}
+function closeContext(){const restore=document.body.classList.contains("context-open")&&$("chat-context").contains(document.activeElement)&&innerWidth<=1000;document.body.classList.remove("context-open");$("context-toggle").setAttribute("aria-expanded","false");$("chat-context").removeAttribute("role");$("chat-context").removeAttribute("aria-modal");if(restore)$("context-toggle").focus();}
+function setTab(tab,push=true){if(activeTab==="chat"&&tab!=="chat")window.crewChat?.visibility(false);activeTab=tab;for(const view of ["chat","sessions","board","usage"]){$(view+"-view").hidden=view!==tab;$(view+"-tab").setAttribute("aria-current",view===tab?"page":"false");}$("view-name").textContent=({chat:"工作区",sessions:"会话管理",board:"协作白板",usage:"全机用量"})[tab];$("project-name").textContent=tab==="usage"?"所有本机项目":project||"尚未启用项目";closeSidebar();closeContext();route(push);if(tab==="usage"&&!usageData)loadUsage();if(tab==="chat")window.crewChat?.visibility(true);if(tab==="sessions")renderSessionList();}
+function openDialog(id){for(const dialog of document.querySelectorAll("dialog[open]"))if(dialog.id!==id)dialog.close();if(!$(id).open)$(id).showModal();}
+function requireProject(){if(state?.project)return true;if(project&&!state){notice("正在读取所选项目，请稍候。 ");return false;}openDialog("project-dialog");return false;}
+function renderDirectory(){const sessions=allSessions().filter(s=>!isArchived(s));let html="";const row=s=>`<button class="directory-item ${s.role} ${window.crewChat?.selectedId()===s.session_id?"selected":""}" data-chat="${esc(s.session_id)}"><span class="directory-avatar">${s.role==="leader"?"✳":esc(sessionName(s).slice(0,1))}</span><span><strong>${esc(sessionName(s))}</strong><small>${esc(s.role==="leader"?"leader · "+sourceLabel(s):sourceLabel(s))}</small></span><i class="status-dot ${esc(s.status)}" title="${esc(states[s.status])}"></i></button>`;
+  for(const group of activeGroups()){const members=sessions.filter(s=>s.group_name===group.name).sort((a,b)=>Number(b.role==="leader")-Number(a.role==="leader"));const leader=members.find(s=>s.role==="leader");html+=`<div class="directory-group"><div class="directory-group-title"><button ${leader?`data-chat="${esc(leader.session_id)}"`:`data-manage="${esc(group.name)}"`}>${esc(group.name)}</button><button class="text-button" data-manage="${esc(group.name)}" aria-label="管理${esc(group.name)}">···</button></div>${members.map(row).join("")||'<p class="sidebar-empty">还没有会话</p>'}</div>`;}
+  const independent=sessions.filter(s=>!s.group_name);if(independent.length)html+=`<div class="directory-group"><div class="directory-group-title">独立会话</div>${independent.map(row).join("")}</div>`;
+  if(discoveredSessions().length)html+=`<button class="directory-discovery" data-discover><span>${discoveredSessions().length} 个会话待命名收编</span><span>↗</span></button>`;
+  patch("session-directory",html||'<p class="sidebar-empty">把已有会话组织起来，<br>或开一个新的组员。</p>');}
+function sessionRow(s,candidate=false){return `<article class="session-row ${candidate?"candidate":""}"><span class="session-avatar">${candidate?"↗":s.role==="leader"?"✳":esc(sessionName(s).slice(0,1))}</span><div class="session-info"><div class="session-title"><h3>${esc(sessionName(s))}</h3><span class="source-badge">${esc(sourceLabel(s))}</span><span class="pill ${esc(s.status)}">${candidate?"待收编 · ":""}${esc(states[s.status])}</span></div><p title="${esc(s.task||s.title||s.cwd)}">${esc(s.task||s.title||s.cwd||"尚未填写任务")}</p><small>${esc(candidate?s.cwd:(s.group_name||"未分组")+" · "+ago(s.last_event_at))}</small></div><div class="actions">${candidate?`<button class="primary" data-adopt="${esc(s.session_id)}">收编</button>`:`<button ${s.web_chat?'class="primary"':""} data-chat="${esc(s.session_id)}">${s.web_chat?s.status==="closed"?"查看记录":"打开对话":"查看会话"}</button>`}<button class="icon-button" data-detail="${esc(s.session_id)}" aria-label="${esc(sessionName(s))}的详情">···</button></div></article>`;}
+function renderSessionList(){if(!state)return;const term=$("session-search").value.trim().toLowerCase(),filter=$("session-filter").value;const matches=s=>[s.crew_name,s.title,s.task,s.cwd,s.group_name].filter(Boolean).join(" ").toLowerCase().includes(term);const sessions=allSessions().filter(s=>matches(s)&&(!["active","all"].includes(filter)||!needsName(s))&&(filter==="all"||filter==="active"&&!isArchived(s)||filter==="archived"&&isArchived(s)||filter==="web"&&s.web_chat||filter==="vscode"&&locationOf(s)==="vscode"));const candidates=discoveredSessions().filter(matches);let html="";
+  if(["active","candidates","all"].includes(filter)&&candidates.length)html+=`<section class="session-section"><div class="session-section-heading"><h2>发现的已有会话 <span class="count">${candidates.length}</span></h2><button class="text-button" data-create-group>选几个，一起组建协作组 →</button></div>${candidates.map(s=>sessionRow(s,true)).join("")}</section>`;
+  if(filter!=="candidates"){for(const name of [...new Set(sessions.map(s=>s.group_name||""))]){const members=sessions.filter(s=>(s.group_name||"")===name);html+=`<section class="session-section"><div class="session-section-heading"><h2>${esc(name||"独立与未分组会话")} <span class="count">${members.length}</span></h2>${name&&activeGroups().some(g=>g.name===name)?`<button class="text-button" data-manage="${esc(name)}">管理协作组</button>`:""}</div>${members.map(s=>sessionRow(s)).join("")}</section>`;}}
+  $("sessions-summary").textContent=`本项目 ${allSessions().length} 个已登记会话 · ${discoveredSessions().length} 个待命名收编 · 名字与任务均可搜索`;
+  patch("session-list",html||empty(term?"没有匹配的会话，换个名字或任务关键词试试。":filter==="candidates"?"当前没有待收编的活会话。已收编的会话仍可在其他筛选中找到。":"这里还没有会话。可以组建协作组，或先开一个独立会话。"));}
+function table(rows,fields){return rows.length?`<table><thead><tr>${fields.map(f=>`<th>${f[1]}</th>`).join("")}</tr></thead><tbody>${rows.map(r=>`<tr>${fields.map(([key,,format])=>`<td>${format?format(r[key],r):esc(r[key]??"—")}</td>`).join("")}</tr>`).join("")}</tbody></table>`:empty();}
+function decisionDraft(id){return localStorage.getItem(`crew.decision:${project}:${id}`)||"";}
+function decisionCard(d){const open=d.status==="open";return `<article class="decision-card ${open?"open":"answered"}"><div class="decision-meta"><span>${esc(displayName(d.session_id))} · #${d.id}${d.created_at?" · "+esc(ago(d.created_at)):""}</span><span>${open?d.blocking?"阻塞进行中":"待你拍板":d.delivered_at?"已交给会话":"已保存 · 待接收"}</span></div><h3>${esc(d.question)}</h3>${open?`${d.options?.length?`<div class="decision-options">${d.options.map(o=>`<button type="button" data-option="${esc(o)}" data-decision="${d.id}">${esc(o)}</button>`).join("")}</div>`:""}${d.recommendation?`<p class="recommendation">会话建议：${esc(d.recommendation)}</p>`:""}<form class="answer-form" data-answer="${d.id}"><textarea aria-label="答复这个问题" name="text" rows="2" placeholder="写下你的决定…" required>${esc(decisionDraft(d.id))}</textarea><div class="form-actions"><button class="primary" type="submit">保存答复 ↗</button></div><p class="form-error" role="alert"></p></form>`:`<p class="decision-answer">${esc(d.answer)}</p><p class="delivery-state">${d.delivered_at?"已交给会话 · "+esc(ago(d.delivered_at)):"答复已保存，等待会话下一轮开始时接收。"}</p>`}</article>`;}
+function renderBoard(){if(!state)return;patch("decisions",state.decisions.map(decisionCard).join("")||empty("暂时没有需要你拍板的事。"));const resources=state.resources.map(r=>({...r,lease:state.leases.find(l=>l.resource===r.name)}));patch("leases",table(resources,[["name","资源"],["lease","借用人",l=>esc(l?l.holder_name||displayName(l.holder_session):"空闲")],["lease","用途",l=>esc(l?.purpose||"—")],["lease","预计归还",l=>esc(l?.until_at||"未填写")],["lease","协调",(l,r)=>l?`<details data-key="lease-${esc(r.name)}"><summary>协调</summary><button class="text-button" data-give="${esc(r.name)}">强制归还</button></details>`:"—"]]));patch("claims",table(state.claims,[["pattern","文件范围"],["crew_name","归属会话",(v,r)=>`<button class="text-button" data-chat="${esc(r.session_id)}">${esc(v||displayName(r.session_id))}</button>`],["note","说明"]]));patch("handoffs",state.handoffs.map(h=>`<article class="entry"><small>${esc(h.from_name||displayName(h.from_session))} → ${esc(h.to_target)} · ${ago(h.created_at)}</small><p>${esc(h.body)}</p></article>`).join("")||empty("会话之间的重要交接会记在这里。"));patch("reports",state.reports.map(r=>`<article class="entry"><small>${esc(r.crew_name||displayName(r.session_id))} · ${ago(r.created_at)}</small><p>${esc(r.body)}</p></article>`).join("")||empty("还没有汇报。可以在和 leader 的对话中询问当前进展。"));patch("events",state.events.map(e=>`<div class="entry"><small>${dateTime(e.ts)} · ${esc(displayName(e.session_id))}</small> <strong>${esc(e.kind)}</strong><details data-key="event-${e.id}"><summary>详情</summary><pre>${esc(JSON.stringify(e.detail,null,2))}</pre></details></div>`).join(""));}
+function renderChrome(){if(!state)return;patch("project",state.projects.length?state.projects.map(p=>`<option value="${esc(p.name)}" ${p.name===project?"selected":""}>${esc(p.name)}</option>`).join(""):'<option value="">尚未启用项目</option>');$("project-name").textContent=activeTab==="usage"?"所有本机项目":project||"尚未启用项目";$("new-session").disabled=$("new-leader").disabled=!state.project;$("session-count").textContent=allSessions().filter(s=>!isArchived(s)).length;const count=state.decisions.filter(d=>d.status==="open").length;$("waiting-count").textContent=count;$("attention-count").textContent=count;$("attention-count").hidden=!count;$("freshness").textContent=state.agents_error?"进程状态暂不可用":`本机服务已连接 · ${Math.floor(state.agents_age_seconds||0)} 秒前更新`;$("service-dot").className="status-dot "+(state.agents_error?"waiting":"idle");$("agents-error").hidden=!state.agents_error;$("agents-error").textContent=state.agents_error?"进程状态暂不可用，当前显示白板最后记录。可点击刷新重试。 "+state.agents_error:"";renderDirectory();if(activeTab==="sessions")renderSessionList();renderBoard();window.crewChat?.update();}
+async function loadState(){const sequence=++stateRequest;try{const data=await request("/api/state"+projectQuery());if(sequence!==stateRequest)return;state=data;project=data.project?.name||null;if(pageErrorKind==="state"){$("error").hidden=true;pageErrorKind=null;}renderChrome();route();}catch(error){if(sequence===stateRequest){showError(error,"state");$("freshness").textContent="本机服务暂不可达";$("service-dot").className="status-dot waiting";}}}
+function openCreateGroup(preselect=null){if(!requireProject())return;selectedMembers.clear();if(preselect)selectedMembers.set(preselect,true);$("leader-form").reset();$("leader-form").querySelector(".form-error").textContent="";$("member-search").value="";groupStep(1);renderMemberPicker();openDialog("leader-dialog");}
+function groupStep(step){$("group-pick-step").hidden=step!==1;$("group-goal-step").hidden=step!==2;$("group-step-label").textContent=step+" / 2";if(step===2){const selected=pickerSessions().filter(s=>selectedMembers.has(s.session_id));$("selected-members").innerHTML=selected.length?`<p class="muted">本组将加入 ${selected.length} 个会话</p>`+selected.map(s=>s._candidate?`<div class="selected-member"><small>${esc(s.title)} · ${esc(sourceLabel(s))}</small><label>协作时怎么称呼它<input data-member-name="${esc(s.session_id)}" value="${esc(typeof selectedMembers.get(s.session_id)==="string"?selectedMembers.get(s.session_id):s.title.slice(0,20))}" required></label></div>`:`<div class="selected-member"><small>${esc(sessionName(s))} · ${esc(s.group_name?"从「"+s.group_name+"」移入":"未分组")} · ${esc(sourceLabel(s))}</small></div>`).join(""):'<p class="muted">先启动 leader，之后随时加入组员。</p>';$("leader-form").elements.name.focus();}}
+function pickerSessions(){return [...allSessions().filter(s=>s.role!=="leader"&&s.crew_name&&!isArchived(s)),...discoveredSessions().map(s=>({...s,_candidate:true}))];}
+function renderMemberPicker(){const term=$("member-search").value.toLowerCase();$("member-picker").innerHTML=pickerSessions().filter(s=>[sessionName(s),s.task,s.group_name].join(" ").toLowerCase().includes(term)).map(s=>`<label class="member-pick-row"><input type="checkbox" data-pick="${esc(s.session_id)}" ${selectedMembers.has(s.session_id)?"checked":""}><span><strong>${esc(sessionName(s))}</strong><small>${esc(s.task||s.cwd||"现有会话")}</small><small>${esc(s._candidate?"待收编":s.group_name||"未分组")} · ${esc(sourceLabel(s))}</small></span></label>`).join("")||empty("没有匹配的现有会话。可以先启动 leader，再开新组员。 ");const missing=[...selectedMembers.keys()].filter(id=>!pickerSessions().some(s=>s.session_id===id));if(missing.length)$("member-picker").innerHTML+=missing.map(id=>`<div class="unavailable-pick"><span>会话 ${esc(id.slice(0,8))} 已不再可用</span><button type="button" data-remove-pick="${esc(id)}">移除选择</button></div>`).join("");$("selection-summary").textContent=selectedMembers.size?`已选择 ${selectedMembers.size} 个会话` :"暂不选组员也可以继续";}
+function openSpawn(groupName=currentSession()?.group_name){if(!requireProject())return;const form=$("spawn-form");form.reset();form.querySelector(".form-error").textContent="";form.elements.group.innerHTML=groupOptions(groupName);openDialog("spawn-dialog");}
+function openAdopt(id){const s=state.candidates.find(s=>s.session_id===id)||allSessions().find(s=>s.session_id===id&&!s.crew_name);if(!s){notice("该会话的状态已变化，请刷新后再试。");return;}const form=$("adopt-form");form.reset();form.querySelector(".form-error").textContent="";form.elements.session_id.value=id;form.elements.name.value=sessionName(s).slice(0,20);form.elements.group.innerHTML=groupOptions(currentSession()?.group_name);$("adopt-title").textContent=sessionName(s);openDialog("adopt-dialog");}
+function openMove(id){const s=allSessions().find(s=>s.session_id===id);const form=$("move-form");form.reset();form.querySelector(".form-error").textContent="";form.elements.name.value=s.crew_name;form.elements.from.value=s.group_name||"";form.elements.to.innerHTML=`<option value="">${s.group_name?"移出当前组 · 独立运行":"保持未分组"}</option>`+groupOptions(s.group_name,false);$("move-name").textContent=sessionName(s);openDialog("move-dialog");}
+function showManageGroup(name){const group=activeGroups().find(g=>g.name===name);if(!group)return;managedGroup=name;$("manage-form").reset();$("manage-form").querySelector(".form-error").textContent="";$("manage-title").textContent=name;$("manage-members").innerHTML=group.members.map(s=>`<div class="manage-member"><span><strong>${esc(sessionName(s))}</strong><small>${s.role==="leader"?"leader":esc(sourceLabel(s))}</small></span>${s.role!=="leader"?`<button type="button" data-move="${esc(s.session_id)}">调整分组</button>`:""}</div>`).join("")+`<button type="button" class="text-button" data-create-session="${esc(group.name)}">＋ 开新组员</button>`;openDialog("manage-dialog");}
+function showDetail(id){const s=allSessions().find(s=>s.session_id===id)||state.candidates.find(s=>s.session_id===id);if(!s)return;const candidate=!allSessions().some(s=>s.session_id===id)||needsName(s);$("session-detail").innerHTML=`<div class="dialog-eyebrow">${candidate?"待收编会话":s.role==="leader"?"leader":"组员会话"}</div><h2>${esc(sessionName(s))}</h2><div class="actions"><span class="source-badge">${esc(sourceLabel(s))}</span><span class="pill ${esc(s.status)}">${esc(states[s.status])}</span></div><dl class="detail-list"><dt>当前任务</dt><dd>${esc(s.task||"尚未填写")}</dd><dt>分组</dt><dd>${esc(s.group_name||"未分组")}</dd><dt>会话目录</dt><dd>${esc(s.cwd||"—")}</dd><dt>分支</dt><dd>${esc(s.branch||"—")}</dd>${s.title?`<dt>原会话标题</dt><dd>${esc(s.title)}</dd>`:""}<dt>SendMessage 地址</dt><dd>${esc(s.cc_name||"尚未登记")}</dd></dl><div class="actions">${candidate?`<button class="primary" data-adopt="${esc(id)}">收编这个会话</button>`:`<button class="primary" data-chat="${esc(id)}">${s.web_chat?"查看网页对话":"查看运行位置"}</button>`}${s.open?`<button data-open="${esc(id)}" ${s.open.enabled&&s.status!=="closed"?"":"disabled"} title="${esc(s.open.reason||"")}">在 VS Code 接续</button>`:""}${!candidate&&s.role!=="leader"&&s.crew_name?`<button data-move="${esc(id)}">调整分组</button>`:""}${s.cc_name?`<button data-copy="${esc(s.cc_name)}">复制消息地址</button>`:""}</div>`;openDialog("session-dialog");}
+async function beginOpen(id){try{notice("正在打开会话所在的 VS Code 目录…");const result=await post("/api/open",{session_id:id});const form=$("open-form");form.reset();form.querySelector(".form-error").textContent="";form.elements.session_id.value=id;$("open-name").textContent=displayName(id);$("open-cwd").textContent=result.cwd;$("open-action").textContent=result.location==="web"?"下一步会让这段空闲的网页会话正常退出，再接续同一段对话。":result.location==="terminal"?"下一步会关闭这段已确认空闲的终端会话，再接续同一段对话。":"下一步会在 VS Code 中打开同一段对话。";openDialog("open-dialog");}catch(error){showError(error);}finally{await loadState();}}
+function renderContext(){if(!state)return;const session=currentSession(),group=currentGroup()||state.groups.find(g=>g.name===session?.group_name),members=(group?.members||[]).filter(s=>s.session_id!==session?.session_id&&s.status!=="closed");const ids=new Set((group?.members||[]).map(s=>s.session_id));if(session)ids.add(session.session_id);const decisions=state.decisions.filter(d=>ids.has(d.session_id));const open=decisions.filter(d=>d.status==="open");$("context-attention").textContent=open.length;$("chat-decision-count").textContent=open.length;$("chat-team-count").textContent=members.length;$("context-manage").disabled=!group||!!group.closed_at;
+  patch("context-goal",group?`<div class="group-goal"><small>${group.closed_at?"已归档协作组":"协作组"} · ${esc(group.name)}</small><h3>${esc(group.name)}</h3><p>${esc(group.members.find(s=>s.role==="leader")?.task||"在对话中和 leader 一起明确这组的目标。")}</p></div>`:'<p class="context-empty">选定协作组后，在这里集中查看进展和需要你拍板的事。</p>');patch("chat-decisions",[...decisions.filter(d=>d.status==="open"||!d.delivered_at),...decisions.filter(d=>d.status!=="open"&&d.delivered_at).slice(0,2)].map(decisionCard).join("")||'<p class="context-empty">暂时没有需要你拍板的事。</p>');patch("chat-members",members.map(s=>`<button class="team-member" data-chat="${esc(s.session_id)}"><span class="team-member-head"><span class="member-avatar">${s.role==="leader"?"✳":esc(sessionName(s).slice(0,1))}</span><strong>${esc(sessionName(s))}</strong><span class="pill ${esc(s.status)}">${esc(states[s.status])}</span></span><p>${esc(s.status_note||s.task||"尚未填写任务")}</p><small>${esc(sourceLabel(s))} · ${esc(ago(s.last_event_at))}</small></button>`).join("")||(group?.closed_at?'<p class="context-empty">这组会话已归档，历史仍保留在会话管理中。</p>':group?'<p class="context-empty">这一组还没有其他成员。<button class="text-button" data-create-session>开一个新组员 →</button></p>':'<p class="context-empty">独立会话不属于协作组。</p>'));patch("chat-reports",state.reports.filter(r=>ids.has(r.session_id)).slice(0,4).map(r=>`<article class="report-item"><small>${esc(r.crew_name||displayName(r.session_id))} · ${ago(r.created_at)}</small><p>${esc(r.body)}</p></article>`).join("")||'<p class="context-empty">还没有汇报。可以直接问 leader 当前进展。</p>');}
+document.addEventListener("click",async event=>{const button=event.target.closest("button,a");if(!button)return;const data=button.dataset;if(!state&&project&&(data.chat||data.adopt||data.detail||data.manage||data.move||data.open||data.give)){notice("正在读取所选项目，请稍候。");return;}if(data.removePick){selectedMembers.delete(data.removePick);renderMemberPicker();return;}if(data.view){event.preventDefault();setTab(data.view);return;}if(data.close!==undefined){button.closest("dialog").close();return;}if(data.createGroup!==undefined){openCreateGroup();return;}if(data.createSession!==undefined){openSpawn(data.createSession||undefined);return;}if(data.discover!==undefined){$("session-filter").value="candidates";setTab("sessions");return;}if(data.chat){for(const dialog of document.querySelectorAll("dialog[open]"))dialog.close();await window.crewChat.select(data.chat);return;}if(data.adopt){openAdopt(data.adopt);return;}if(data.detail){showDetail(data.detail);return;}if(data.manage){showManageGroup(data.manage);return;}if(data.move){openMove(data.move);return;}if(data.open){button.disabled=true;await beginOpen(data.open);button.disabled=false;return;}if(data.copy){try{await navigator.clipboard.writeText(data.copy);notice("已复制 SendMessage 地址");}catch(error){showError(error);}return;}if(data.give){currentResource=data.give;$("give-form").reset();$("give-resource").textContent=data.give;openDialog("give-dialog");return;}if(data.option!==undefined){const form=button.closest(".decision-card").querySelector("form");form.elements.text.value=data.option;form.elements.text.dispatchEvent(new Event("input",{bubbles:true}));form.elements.text.focus();return;}if(data.usageDetail){showUsageDetail(data.usageDetail);return;}if(data.sort){sortDirection=sortKey===data.sort?-sortDirection:-1;sortKey=data.sort;renderSessions();}});
+document.addEventListener("input",event=>{if(event.target.closest(".answer-form"))localStorage.setItem(`crew.decision:${project}:${event.target.closest("form").dataset.answer}`,event.target.value);if(event.target.dataset.memberName)selectedMembers.set(event.target.dataset.memberName,event.target.value);});
+document.addEventListener("change",event=>{if(event.target.dataset.pick){if(event.target.checked)selectedMembers.set(event.target.dataset.pick,true);else selectedMembers.delete(event.target.dataset.pick);$("selection-summary").textContent=`已选择 ${selectedMembers.size} 个会话`;}});
+document.addEventListener("submit",async event=>{const form=event.target;if(!form.matches("#project-form,#leader-form,#spawn-form,#adopt-form,#move-form,#manage-form,#give-form,#open-form,.answer-form"))return;event.preventDefault();const submit=form.querySelector('[type="submit"]'),error=form.querySelector(".form-error"),originalLabel=submit.textContent,actionProject=project;submit.disabled=true;submit.textContent=["leader-form","spawn-form"].includes(form.id)?"正在启动…":form.id==="open-form"?"正在接续…":"正在保存…";error.textContent="";try{if(!state&&project&&form.id!=="project-form")throw new Error("正在读取所选项目，请稍候再试。");let result,message="";
+  if(form.id==="project-form"){result=await post("/api/project/init",{name:form.elements.name.value,root:form.elements.root.value});window.crewChat.reset();document.activeElement?.blur();state=null;project=result.name;requestedChat=null;message="项目已启用，可以开始组织会话了。";}
+  else if(form.id==="leader-form"){const available=pickerSessions(),missing=[...selectedMembers.keys()].filter(id=>!available.some(s=>s.session_id===id));if(missing.length)throw new Error("选中的会话已不再可用，请返回上一步移除后再试："+missing.map(id=>id.slice(0,8)).join("、"));const picked=available.filter(s=>selectedMembers.has(s.session_id));result=await post("/api/leader",{name:form.elements.name.value,task:form.elements.task.value||null,members:picked.filter(s=>!s._candidate).map(s=>s.crew_name),candidate_members:picked.filter(s=>s._candidate).map(s=>({session_id:s.session_id,name:typeof selectedMembers.get(s.session_id)==="string"?selectedMembers.get(s.session_id):s.title.slice(0,20)}))});message="协作组已启动。和 leader 继续聊目标吧。";}
+  else if(form.id==="spawn-form"){result=await post("/api/spawn",{name:form.elements.name.value,task:form.elements.task.value,group:form.elements.group.value||null,role:"member",new_worktree:form.elements.new_worktree.value||null});message="组员已在网页后台启动。";}
+  else if(form.id==="adopt-form"){await post("/api/roster/adopt",{session_id:form.elements.session_id.value,name:form.elements.name.value,group:form.elements.group.value||null});message="会话已纳入协作，仍在原来的位置运行。";}
+  else if(form.id==="move-form"){const name=form.elements.name.value,to=form.elements.to.value,from=form.elements.from.value;if(to)await post("/api/roster/move",{name,to});else if(from)await post("/api/roster/remove",{name,group:from});message=to?`已移入「${to}」` :"已移出分组，会话继续独立运行。";}
+  else if(form.id==="manage-form"){const withMembers=form.elements.with_members.value==="true";await post("/api/group/close",{group:managedGroup,with_members:withMembers});message=withMembers?"已归档组和会话，进程没有停止。":"分组已解散，会话回到未分组继续运行。";}
+  else if(form.id==="give-form"){await post("/api/lease/give",{resource:currentResource,reason:form.elements.reason.value});message="资源已归还，原因已记入白板。";}
+  else if(form.id==="open-form"){const id=form.elements.session_id.value;await post("/api/open/continue",{session_id:id,confirm:true});window.crewChat.transfer(id);message="已请求在 VS Code 接续。首次打开请留意 VS Code 的链接确认。";}
+  else{await post("/api/answer",{id:Number(form.dataset.answer),text:form.elements.text.value});localStorage.removeItem(`crew.decision:${actionProject}:${form.dataset.answer}`);document.activeElement?.blur();message="答复已保存，等待会话下一轮接收。";}
+  form.closest("dialog")?.close();await loadState();if(form.id==="project-form")setTab("chat");if(result?.session_id)await window.crewChat.select(result.session_id);notice(message);
+  }catch(failure){error.textContent=failure.message;}finally{submit.disabled=false;submit.textContent=originalLabel;}});
+$("project").onchange=()=>{const nextProject=$("project").value;window.crewChat.reset();document.activeElement?.blur();state=null;project=nextProject;requestedChat=null;for(const dialog of document.querySelectorAll("dialog[open]"))dialog.close();route(true);loadState();};
+$("new-leader").onclick=()=>openCreateGroup();$("new-session").onclick=()=>openSpawn();$("add-project").onclick=()=>{$("project-form").reset();openDialog("project-dialog");};
+$("group-next").onclick=()=>groupStep(2);$("group-back").onclick=()=>groupStep(1);$("member-search").oninput=renderMemberPicker;$("member-search").onkeydown=e=>{if(e.key==="Enter"){e.preventDefault();groupStep(2);}};
+$("adopt-new-group").onclick=()=>{const form=$("adopt-form"),id=form.elements.session_id.value,name=form.elements.name.value;openCreateGroup(id);selectedMembers.set(id,name);};$("session-search").oninput=renderSessionList;$("session-filter").onchange=renderSessionList;
+$("sidebar-toggle").onclick=()=>{closeContext();document.body.classList.add("sidebar-open");$("sidebar-scrim").hidden=false;$("sidebar-toggle").setAttribute("aria-expanded","true");$("app-sidebar").setAttribute("role","dialog");$("app-sidebar").setAttribute("aria-modal","true");$("project").focus();};$("sidebar-scrim").onclick=closeSidebar;
+$("context-toggle").onclick=()=>{if(document.body.classList.contains("context-open")){closeContext();return;}closeSidebar();document.body.classList.add("context-open");$("context-toggle").setAttribute("aria-expanded","true");$("chat-context").setAttribute("role","dialog");$("chat-context").setAttribute("aria-modal","true");$("context-close").focus();};$("context-close").onclick=$("context-scrim").onclick=closeContext;
+$("context-manage").onclick=()=>{if(currentGroup())showManageGroup(currentGroup().name);};$("waiting-button").onclick=()=>{setTab("board");$("decisions").scrollIntoView({block:"start"});};
+$("dismiss-error").onclick=()=>{$("error").hidden=true;pageErrorKind=null;};$("refresh-state").onclick=$("retry-state").onclick=loadState;$("refresh-usage").onclick=$("usage-retry").onclick=loadUsage;$("period").onchange=()=>{$("dates").hidden=$("period").value!=="custom";if($("period").value!=="custom"){usagePeriod=$("period").value;loadUsage();}};$("dates").onsubmit=e=>{e.preventDefault();usagePeriod=$("date-from").value+".."+$("date-to").value;loadUsage();};
+window.addEventListener("popstate",()=>{window.crewChat.reset();document.activeElement?.blur();state=null;project=new URLSearchParams(location.search).get("project");const hash=location.hash.slice(1);requestedChat=new URLSearchParams(hash).get("chat");setTab(["sessions","board","usage"].includes(hash)?hash:"chat",false);loadState();});
+document.addEventListener("keydown",event=>{
+  if(event.key==="Escape"){closeSidebar();closeContext();return;}
+  if(event.key!=="Tab"||document.querySelector("dialog[open]"))return;
+  const drawer=document.body.classList.contains("sidebar-open")&&innerWidth<=760?$("app-sidebar"):document.body.classList.contains("context-open")&&innerWidth<=1000?$("chat-context"):null;
+  if(!drawer)return;
+  const items=[...drawer.querySelectorAll('button:not([disabled]),a[href],input:not([disabled]),select:not([disabled]),textarea:not([disabled]),summary,[tabindex]:not([tabindex="-1"])')].filter(n=>!n.closest("[hidden]"));
+  const first=items[0],last=items[items.length-1];if(!first)return;
+  if(event.shiftKey&&(document.activeElement===first||!drawer.contains(document.activeElement))){event.preventDefault();last.focus();}
+  else if(!event.shiftKey&&(document.activeElement===last||!drawer.contains(document.activeElement))){event.preventDefault();first.focus();}
+});
+window.addEventListener("resize",()=>{if(innerWidth>760)closeSidebar();if(innerWidth>1000)closeContext();});
+document.addEventListener("visibilitychange",()=>{if(!document.hidden)loadState();});setInterval(()=>{if(!document.hidden)loadState();},3000);
+const usageColumns=[["display_name","会话"],["project","项目"],["group_name","分组"],["input_tokens","输入 token"],["cache_write_tokens","缓存写入 token"],["cache_read_tokens","缓存读取 token"],["output_tokens","输出 token"],["total_tokens","总 token"],["cost_usd","金额 USD"],["unpriced_tokens","未计价 token"],["prompts","提示数"],["work_seconds","干活时长"],["compactions","压缩次数"],["cache_hit_rate","缓存命中"],["subagent_tokens","子 agent token"],["codex_runs","Codex 次数"],["codex_tokens","Codex token"]];
+function usageValue(row,key){return key==="cost_usd"?money(row[key]):key==="work_seconds"?duration(row[key]):key==="cache_hit_rate"?row[key]==null?"—":number(row[key]*100)+"%":typeof row[key]==="number"?number(row[key]):row[key]??"—";}
+function showUsageDetail(id){const row=usageData?.sessions.find(s=>s.session_id===id);if(!row)return;$("session-detail").innerHTML=`<div class="dialog-eyebrow">会话用量明细 · 全机统计</div><h2>${esc(row.display_name)}</h2><dl class="detail-list usage-detail">${usageColumns.filter(([key])=>key!=="display_name").map(([key,label])=>`<dt>${label}</dt><dd>${esc(usageValue(row,key))}</dd>`).join("")}</dl><p class="muted">金额按 API 价格折算。完整数据可从本页底部导出 CSV。</p>`;openDialog("session-dialog");}
+function renderSessions(){
+  const columns=usageColumns.filter(([key])=>["display_name","project","total_tokens","cost_usd","work_seconds","codex_tokens"].includes(key));
+  const rows=[...usageData.sessions].sort((a,b)=>{const x=a[sortKey],y=b[sortKey];if(x==null||y==null)return x==null?y==null?0:1:-1;return sortDirection*(typeof x==="number"?x-y:String(x).localeCompare(String(y),"zh-CN"));});
+  $("sessions-table").innerHTML=rows.length?`<table><thead><tr>${columns.map(([key,label])=>`<th aria-sort="${sortKey===key?sortDirection===1?"ascending":"descending":"none"}"><button data-sort="${key}">${label}${sortKey===key?sortDirection===1?" ↑":" ↓":""}</button></th>`).join("")}<th>明细</th></tr></thead><tbody>${rows.map(row=>`<tr>${columns.map(([key])=>`<td class="${typeof row[key]==="number"?"num":""}">${key==="display_name"?`<i class="swatch" style="--series-color:${color(row.session_id)}"></i>`:""}${esc(usageValue(row,key))}${key==="display_name"&&row.group_name?`<small class="table-subtitle">${esc(row.group_name)}</small>`:""}</td>`).join("")}<td><button class="text-button" data-usage-detail="${esc(row.session_id)}" aria-label="查看${esc(row.display_name)}的用量明细">展开</button></td></tr>`).join("")}</tbody></table>`:empty("这个时间范围内没有用量记录。");
 }
 function renderChart(rows) {
   if (!rows.length) { $("daily-chart").innerHTML = empty(); $("legend").innerHTML = ""; return; }
@@ -164,68 +156,12 @@ function renderUsage() {
 }
 async function loadUsage() {
   const sequence = ++usageRequest;
-  $("usage-loading").hidden = false;
+  $("usage-loading").hidden = false;$("usage-error").hidden=true;
   try {
     const data = await request("/api/usage?period=" + encodeURIComponent(usagePeriod));
     if (sequence !== usageRequest) return;
-    usageData = data; renderUsage(); $("error").hidden = true;
-  } catch (error) { if (sequence === usageRequest) showError(error); }
+    usageData = data; renderUsage();
+  } catch (error) { if (sequence === usageRequest){$("usage-error").hidden=false;$("usage-error-text").textContent=error.message;} }
   finally { if (sequence === usageRequest) $("usage-loading").hidden = true; }
 }
-function setTab(tab) {
-  if (tab === activeTab) return;
-  activeTab = tab;
-  $("board-view").hidden = tab !== "board"; $("usage-view").hidden = tab !== "usage";
-  $("chat-view").hidden = tab !== "chat";
-  $("board-tab").setAttribute("aria-pressed", String(tab === "board")); $("usage-tab").setAttribute("aria-pressed", String(tab === "usage"));
-  $("chat-tab").setAttribute("aria-pressed", String(tab === "chat"));
-  const chatId = window.crewChat?.selectedId() || requestedChat;
-  history.replaceState(null, "", tab === "usage" ? "#usage" : tab === "chat" ? "#chat" + (chatId ? "=" + encodeURIComponent(chatId) : "") : location.pathname + location.search);
-  document.body.classList.toggle("chat-active", tab === "chat");
-  window.scrollTo(0, 0);
-  window.crewChat?.visibility(tab === "chat");
-  if (tab === "usage") loadUsage(); else loadState();
-}
-$("board-tab").onclick = () => setTab("board"); $("usage-tab").onclick = () => setTab("usage");
-$("chat-tab").onclick = () => setTab("chat");
-$("project").onchange = () => { project = $("project").value; window.crewChat?.reset(); loadState(); };
-$("new-session").onclick = () => { const form = $("spawn-form"); form.reset(); form.querySelector(".form-error").textContent = ""; form.elements.group.innerHTML = groupOptions(null, true); $("spawn-dialog").showModal(); };
-$("new-leader").onclick = () => { const form = $("leader-form"); form.reset(); form.querySelector(".form-error").textContent = ""; form.elements.members.innerHTML = allSessions().filter(s => s.role !== "leader" && s.crew_name).map(s => `<option value="${esc(s.crew_name)}">${esc(s.crew_name)} · ${esc(s.group_name || "未分组")}</option>`).join(""); $("leader-candidates").innerHTML = (state.candidates || []).length ? '<p class="muted">也可以选尚未登记的会话，并给它起个名字。</p>' + state.candidates.map(s => `<div class="candidate-choice"><label><input type="checkbox" value="${esc(s.session_id)}">${esc(s.title)}</label><input data-candidate-name="${esc(s.session_id)}" aria-label="${esc(s.title)} 的组员名字" placeholder="组员名字" value="${esc(s.title)}"></div>`).join("") : ""; $("leader-dialog").showModal(); };
-document.addEventListener("click", async event => {
-  const close = event.target.closest("[data-close]"); if (close) close.closest("dialog").close();
-  const copy = event.target.closest("[data-copy]"); if (copy) { try { await navigator.clipboard.writeText(copy.dataset.copy); notice("已复制 SendMessage 地址"); } catch (error) { showError(error); } }
-  const give = event.target.closest("[data-give]"); if (give) { currentResource = give.dataset.give; $("give-form").reset(); $("give-form").querySelector(".form-error").textContent = ""; $("give-resource").textContent = currentResource; $("give-dialog").showModal(); }
-  const sort = event.target.closest("[data-sort]"); if (sort) { sortDirection = sortKey === sort.dataset.sort ? -sortDirection : -1; sortKey = sort.dataset.sort; renderSessions(); }
-  const adopt = event.target.closest("[data-adopt]"); if (adopt) { const s = state.candidates.find(s => s.session_id === adopt.dataset.adopt), form = $("adopt-form"); form.reset(); form.querySelector(".form-error").textContent = ""; form.elements.session_id.value = s.session_id; form.elements.name.value = s.title; form.elements.group.innerHTML = groupOptions(null, true); $("adopt-title").textContent = s.title; $("adopt-dialog").showModal(); }
-  const open = event.target.closest("[data-open]"); if (open) { open.disabled = true; try { const result = await post("/api/open", {session_id:open.dataset.open}), s = allSessions().find(s => s.session_id === result.session_id), form = $("open-form"); form.reset(); form.elements.session_id.value = result.session_id; form.querySelector(".form-error").textContent = ""; $("open-name").textContent = s?.crew_name || result.session_id.slice(0,8); $("open-cwd").textContent = result.cwd; $("open-action").textContent = result.location === "web" ? "继续时会结束这段空闲的网页会话，并在 VS Code 续上同一段对话。" : result.location === "terminal" ? "继续时会关闭这段空闲的终端会话，并在 VS Code 续上同一段对话。" : "继续时会在 VS Code 打开同一段对话。"; $("open-dialog").showModal(); } catch (error) { showError(error); } finally { open.disabled = false; } }
-});
-document.addEventListener("change", async event => {
-  const select = event.target.closest("[data-move]");
-  if (select && select.value) { select.disabled = true; try { await post("/api/roster/move", {name:select.dataset.move, to:select.value}); await loadState(); } catch (error) { await loadState(); showError(error); } finally { select.disabled = false; } }
-});
-document.addEventListener("submit", async event => {
-  const form = event.target;
-  if (!form.matches("#spawn-form, #leader-form, #give-form, #adopt-form, #open-form, .answer-form")) return;
-  event.preventDefault();
-  const button = form.querySelector('button[type="submit"], button:not([type])'), error = form.querySelector(".form-error");
-  button.disabled = true; error.textContent = "";
-  try {
-    if (form.id === "spawn-form") { const result = await post("/api/spawn", {name:form.elements.name.value, task:form.elements.task.value, group:form.elements.group.value || null, role:"member", new_worktree:form.elements.new_worktree.value || null}); window.crewChat?.select(result.session_id); }
-    else if (form.id === "leader-form") { const result = await post("/api/leader", {name:form.elements.name.value, members:[...form.elements.members.selectedOptions].map(o => o.value), candidate_members:[...$("leader-candidates").querySelectorAll('input[type="checkbox"]:checked')].map(input => ({session_id:input.value, name:[...$("leader-candidates").querySelectorAll("[data-candidate-name]")].find(n => n.dataset.candidateName === input.value).value})), task:form.elements.task.value || null}); window.crewChat?.select(result.session_id); }
-    else if (form.id === "adopt-form") await post("/api/roster/adopt", {session_id:form.elements.session_id.value, name:form.elements.name.value, group:form.elements.group.value || null});
-    else if (form.id === "open-form") await post("/api/open/continue", {session_id:form.elements.session_id.value, confirm:true});
-    else if (form.id === "give-form") await post("/api/lease/give", {resource:currentResource, reason:form.elements.reason.value});
-    else await post("/api/answer", {id:Number(form.dataset.answer), text:form.elements.text.value});
-    form.closest("dialog")?.close();
-    if (form.matches(".answer-form")) document.activeElement?.blur();
-    notice("操作完成"); await loadState();
-  } catch (failure) { error.textContent = failure.message; }
-  finally { button.disabled = false; }
-});
-$("period").onchange = () => { $("dates").hidden = $("period").value !== "custom"; if ($("period").value !== "custom") { usagePeriod = $("period").value; loadUsage(); } };
-$("dates").onsubmit = event => { event.preventDefault(); usagePeriod = $("date-from").value + ".." + $("date-to").value; loadUsage(); };
-document.addEventListener("visibilitychange", () => { if (!document.hidden && activeTab !== "usage") loadState(); });
-setInterval(() => { if (!document.hidden && activeTab !== "usage") loadState(); }, 3000);
-loadState();
-if (location.hash === "#usage") setTab("usage");
-if (location.hash.startsWith("#chat")) setTab("chat");
+setTab(activeTab,false);loadState();

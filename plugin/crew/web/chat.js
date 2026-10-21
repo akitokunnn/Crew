@@ -1,149 +1,52 @@
 "use strict";
 (() => {
-  const md = window.markdownit({html:false, breaks:true});
-  const linkOpen = md.renderer.rules.link_open || ((tokens, i, options, env, renderer) => renderer.renderToken(tokens, i, options));
-  md.renderer.rules.link_open = (tokens, i, options, env, renderer) => {
-    tokens[i].attrSet("target", "_blank"); tokens[i].attrSet("rel", "noopener noreferrer");
-    return linkOpen(tokens, i, options, env, renderer);
-  };
-  let selected = null, stream = null, messages = [], byId = new Map(), results = new Map(), cursor = 0;
-  let busy = false, running = false, loading = false, generation = 0, frame = null, followOnRender = false;
-  const drafts = new Map();
-  const webSessions = () => allSessions().filter(s => s.web_chat && s.status !== "closed");
-  const currentSession = () => webSessions().find(s => s.session_id === selected);
-  function error(text) { $("chat-error").hidden = !text; $("chat-error").textContent = text || ""; }
-  function status() {
-    const badge = $("chat-status");
-    const inVscode = currentSession()?.open?.location === "vscode";
-    badge.className = "pill " + (busy ? "working" : running ? "idle" : "offline");
-    badge.textContent = loading ? "连接中" : inVscode ? "在 VS Code 中" : busy ? "正在处理" : running ? "在线" : selected ? "已暂停" : "未连接";
-    $("chat-input").disabled = !selected || loading || inVscode;
-    $("chat-send").disabled = !selected || busy || loading || inVscode;
-    $("chat-hint").textContent = inVscode ? "这段对话正在 VS Code 中继续" : busy ? "当前会话正在处理，也会接收同组消息" : !running && selected ? "发送消息后继续这段对话" : "Enter 发送 · Shift + Enter 换行";
+  const md=window.markdownit({html:false,breaks:true});
+  const linkOpen=md.renderer.rules.link_open||((tokens,i,options,env,renderer)=>renderer.renderToken(tokens,i,options));
+  md.renderer.rules.link_open=(tokens,i,options,env,renderer)=>{tokens[i].attrSet("target","_blank");tokens[i].attrSet("rel","noopener noreferrer");return linkOpen(tokens,i,options,env,renderer);};
+  let selected=null,stream=null,messages=[],byId=new Map(),results=new Map(),cursor=0;
+  let busy=false,running=false,loading=false,generation=0,frame=null,connection="idle",restoreScroll=null,scrollTimer;
+  let logKind="",autoSelecting=false,suspendedScroll=null,errorKind=null;
+  const transfers=new Set();
+  const current=()=>allSessions().find(s=>s.session_id===selected);
+  const key=kind=>`crew.${kind}:${project||""}:${selected||""}`;
+  function saveDraft(){if(selected)localStorage.setItem(key("draft"),$("chat-input").value);}
+  function saveScroll(){if(selected&&logKind==="messages"&&activeTab==="chat")localStorage.setItem(key("scroll"),String($("chat-log").scrollTop));}
+  function error(text,kind="action"){if(text&&kind==="connection"&&errorKind==="action")return;errorKind=text?kind:null;$("chat-error").hidden=!text;$("chat-error").querySelector("span").textContent=text||"";$("chat-retry").hidden=kind!=="connection";}
+  function clearConnectionError(){if(errorKind==="connection")error(null);}
+  function canSend(){const s=current(),location=s&&locationOf(s);return !!s&&s.web_chat&&s.status!=="closed"&&!loading&&!transfers.has(selected)&&location!=="vscode"&&location!=="terminal"&&connection!=="failed"&&connection!=="retrying"&&!(location==="unknown"&&!running&&s.status!=="offline");}
+  function status(){const s=current(),location=s&&locationOf(s),archived=s?.status==="closed",transferring=transfers.has(selected);const badge=$("chat-status");let label="未选择会话",tone="";
+    if(s){if(archived)label="已归档 · 查看历史";else if(transferring){label="等待 VS Code 接续";tone="waiting";}else if(loading)label="正在读取记录…";else if(!s.web_chat)label=sourceLabel(s)+" · "+(states[s.status]||"");else if(location==="vscode"||location==="terminal")label=sourceLabel(s)+" · "+(states[s.status]||"");else if(connection==="failed"||connection==="retrying"){label="连接暂时中断";tone="waiting";}else if(busy){label="正在处理";tone="working";}else if(running)label="空闲 · 可继续";else label="未运行 · 可接续";}
+    badge.textContent=label;badge.className="pill "+(archived?"closed":tone);$("chat-form").hidden=!s?.web_chat||archived||location==="vscode"||location==="terminal"||transferring;$("chat-input").disabled=!canSend();$("chat-send").disabled=!canSend()||busy;
+    $("chat-hint").textContent=busy?"正在处理这一轮 · 可以先写下一条草稿":!running?"发送后接续原会话 · Enter 发送":"Enter 发送 · Shift + Enter 换行";
+    $("chat-open").hidden=!s?.open;$("chat-open").dataset.open=selected||"";$("chat-open").disabled=!s?.open?.enabled||transferring||archived;$("chat-open").title=archived?"已归档，仅查看历史":s?.open?.reason||"转到 VS Code 接着聊";
+    $("chat-role").textContent=s?(s.role==="leader"?"协作组 leader":"组员 · 直接沟通"):"你的工作区";$("chat-title").textContent=s?sessionName(s):"让 leader 帮你集中推进。";$("chat-avatar").textContent=s?.role==="leader"?"✳":"C";$("chat-subtitle").textContent=s?s.task||s.group_name||"独立会话 · 一件事，专注推进":"先组织已有的会话，或者开一个新的协作组。";
+    const note=$("chat-source-note");let text="";if(s?.web_chat&&location==="vscode")text="这段对话正在 VS Code 中继续。这里保留网页聊天记录，不会显示之后在 VS Code 里新增的对话。";else if(transferring)text="已请求接续，请留意 VS Code 首次协议链接的确认。尚未检测到时，可以刷新状态后再确认运行位置。";else if(s?.web_chat&&s.role!=="leader"&&s.group_name)text="你正在直接和组员沟通。要让整组了解结果，可以请它把结论写进汇报或交接。";else if(s?.status==="closed")text="这是已归档的会话，保留历史记录；不会继续向它发送消息。";note.hidden=!text;note.textContent=text;
+    if(transferring&&location==="offline")note.innerHTML=esc(text)+' <button class="text-button" data-resume-web>确认未在 VS Code 打开，回到网页继续</button>';
+    $("chat-footnote").textContent=s?.role==="leader"?"安排、进展和需要你拍板的事，在这一段对话里集中处理。":"空闲表示这一轮已结束，任务是否完成以会话汇报为准。";
   }
-  function addMessage(message) {
-    if (byId.has(message.id)) return byId.get(message.id);
-    messages.push(message); byId.set(message.id, message); return message;
+  function add(message){if(byId.has(message.id))return byId.get(message.id);messages.push(message);byId.set(message.id,message);return message;}
+  function apply(event){if(event.seq<=cursor)return;cursor=event.seq;if(event.type==="message"){add({...event});}else if(event.type==="text"){const message=add({id:event.id,role:"assistant",text:""});message.text=(message.text||"")+event.text;}else if(event.type==="assistant"){const message=add({id:event.id,role:"assistant"});message.content=event.content;message.text="";}else if(event.type==="tool_result")results.set(event.tool_use_id,event);else if(event.type==="status"){busy=event.status==="working";running=event.status!=="offline";}else if(event.type==="error")error(event.text,"session");schedule();status();}
+  function tool(block){const result=results.get(block.id),content=result?.content;const output=typeof content==="string"?content:JSON.stringify(content,null,2);return `<details class="tool-call" data-tool="${esc(block.id)}"><summary><span>${esc(block.name)}</span><small class="${result?.is_error?"tool-failed":""}">${result?result.is_error?"执行失败":"已完成":"调用中"}</small></summary><div class="tool-body"><small>参数</small><pre>${esc(JSON.stringify(block.input,null,2))}</pre>${result?`<small>结果</small><pre>${esc(output)}</pre>`:""}</div></details>`;}
+  function body(message){if(message.role==="user")return `<div class="message-text">${esc(message.text)}</div>`;const blocks=message.content||[{type:"text",text:message.text||""}];return blocks.map(block=>block.type==="text"?`<div class="markdown">${md.render(block.text)}</div>`:block.type==="tool_use"?tool(block):"").join("")+(message.content&&message.text?`<div class="markdown">${md.render(message.text)}</div>`:"");}
+  function welcome(){if(!state)return '<div class="welcome"><div class="welcome-wordmark">c<span>·</span></div><h2>正在连接你的工作区…</h2><p>读取本机的项目、会话和协作记录。</p></div>';if(!state.project)return '<div class="welcome"><div class="welcome-wordmark">c<span>·</span></div><div class="eyebrow">从一个项目开始</div><h2>给分散的对话，<br>一个共同的方向。</h2><p>先启用本机的项目目录。Crew 会发现目录下已有的会话，<br>让你直接把它们组织起来。</p><button class="primary" data-init-project>启用第一个项目 →</button><div class="welcome-foot"><span>本机运行</span><span>保留已有会话</span><span>按需转到 VS Code</span></div></div>';
+    const count=discoveredSessions().length;return `<div class="welcome"><div class="welcome-wordmark">c<span>·</span></div><div class="eyebrow">把一件事情交给一组会话</div><h2>你把方向说清楚。<br>让 leader 帮你往前推进。</h2><p>把已有会话召集起来，或者开几个新的组员。<br>在一段对话里掌握安排、进展和需要你拍板的事。</p><div class="welcome-actions"><button class="primary" data-create-group>组建第一个协作组 →</button><button data-create-session>先开独立会话</button></div>${count?`<p><button class="text-button" data-discover>已发现 ${count} 个正在运行的会话，可以直接收编 ↗</button></p>`:""}<div class="welcome-foot"><span>已有会话，无需重开</span><span>组员各司其职</span><span>需要你时再拍板</span></div></div>`;}
+  function external(s){const location=locationOf(s),group=activeGroups().find(g=>g.name===s.group_name),leader=group?.members.find(m=>m.role==="leader"&&m.session_id!==s.session_id);return `<div class="external-view"><div class="external-symbol">${s.status==="closed"?"◇":location==="vscode"?"↗":"◌"}</div><div class="eyebrow">${esc(sourceLabel(s))}</div><h2>${s.status==="closed"?"这段会话已归档":location==="vscode"?"在 VS Code 里继续这段对话。":"这是一段已有的会话。"}</h2><p>${s.status==="closed"?"它已从活跃列表收起。需要继续开展新工作时，可以开一个新的会话。":needsName(s)?"给它一个协作名字，就能加入分组。<br>现有对话保持原来的运行位置。":"它已纳入 Crew 协作，保留原来的运行位置。<br>这里可以查看归属和状态；原对话不会被复制成网页聊天。"}</p><div class="actions">${needsName(s)?`<button class="primary" data-adopt="${esc(s.session_id)}">命名并纳入协作</button>`:""}${s.open?`<button class="primary" data-open="${esc(s.session_id)}" ${s.open.enabled&&s.status!=="closed"?"":"disabled"}>在 VS Code 接续 ↗</button>`:""}${leader?`<button data-chat="${esc(leader.session_id)}">和本组 leader 讨论</button>`:""}<button data-detail="${esc(s.session_id)}">会话详情</button></div>${s.open?.reason?`<p class="muted">${esc(s.open.reason)}</p>`:""}<div class="external-details"><strong>${esc(s.group_name||"独立会话")}</strong>${esc(s.task||s.title||"尚未填写任务")}<br>${esc(s.cwd||"")}</div></div>`;}
+  function render(){frame=null;if(activeTab!=="chat")return;const log=$("chat-log"),s=current();if(!selected||!s||!s.web_chat){const kind=selected&&s?"external:"+JSON.stringify(s):"welcome:"+Boolean(state?.project)+":"+(state?discoveredSessions().length:0);if(logKind!==kind){log.innerHTML=selected&&s?external(s):welcome();logKind=kind;log.scrollTop=0;}$("chat-latest").hidden=true;return;}
+    const follow=log.scrollHeight-log.scrollTop-log.clientHeight<90;if(logKind!=="messages"){log.innerHTML="";logKind="messages";}
+    for(const message of messages){let node=[...log.children].find(n=>n.dataset.message===message.id);if(!node){node=document.createElement("article");node.dataset.message=message.id;node.className="chat-message "+(message.role==="user"?message.source==="peer"?"peer-message":"human-message":"assistant-message");log.append(node);}const html=`<div class="message-byline">${message.role==="assistant"?`<span class="mini-avatar">${s.role==="leader"?"✳":"C"}</span>${esc(sessionName(s))}`:message.source==="peer"?`<span>↳</span>${esc(message.sender||"组员")}<span class="peer-label">会话间消息</span>`:"你"}</div>${body(message)}`;if(node.dataset.html!==html){const open=[...node.querySelectorAll("[data-tool][open]")].map(n=>n.dataset.tool);node.innerHTML=html;node.dataset.html=html;for(const detail of node.querySelectorAll("[data-tool]"))detail.open=open.includes(detail.dataset.tool);}}
+    let indicator=log.querySelector(".typing-indicator");if(busy&&!indicator){indicator=document.createElement("div");indicator.className="typing-indicator";indicator.setAttribute("aria-label","会话正在处理");indicator.innerHTML="<i></i><i></i><i></i>";log.append(indicator);}else if(!busy&&indicator)indicator.remove();else if(indicator)log.append(indicator);
+    if(restoreScroll!==null){log.scrollTop=restoreScroll==="bottom"?log.scrollHeight:Number(restoreScroll);restoreScroll=null;}else if(follow)log.scrollTop=log.scrollHeight;$("chat-latest").hidden=log.scrollHeight-log.scrollTop-log.clientHeight<90;
   }
-  function apply(event) {
-    if (event.seq <= cursor) return;
-    cursor = event.seq;
-    if (event.type === "message") { error(null); addMessage({...event}); }
-    else if (event.type === "text") {
-      const message = addMessage({id:event.id, role:"assistant", text:""});
-      message.text = (message.text || "") + event.text;
-    } else if (event.type === "assistant") {
-      const message = addMessage({id:event.id, role:"assistant"});
-      message.content = event.content;
-      message.text = "";
-    } else if (event.type === "tool_result") results.set(event.tool_use_id, event);
-    else if (event.type === "status") { busy = event.status === "working"; running = event.status !== "offline"; }
-    else if (event.type === "error") error(event.text);
-    scheduleRender(); status();
-  }
-  function tool(block) {
-    const result = results.get(block.id);
-    const content = result?.content;
-    const output = typeof content === "string" ? content : JSON.stringify(content, null, 2);
-    return `<details class="tool-call" data-tool="${esc(block.id)}"><summary><span class="tool-icon">⌘</span><span>${esc(block.name)}</span><small class="${result?.is_error ? "tool-failed" : ""}">${result ? result.is_error ? "执行失败" : "已完成" : "调用工具"}</small></summary><div class="tool-body"><small>参数</small><pre>${esc(JSON.stringify(block.input, null, 2))}</pre>${result ? `<small>结果</small><pre>${esc(output)}</pre>` : ""}</div></details>`;
-  }
-  function body(message) {
-    if (message.role === "user") return `<div class="message-text">${esc(message.text)}</div>`;
-    const blocks = message.content || [{type:"text", text:message.text || ""}];
-    return blocks.map(block => block.type === "text" ? `<div class="markdown">${md.render(block.text)}</div>` : block.type === "tool_use" ? tool(block) : "").join("") + (message.content && message.text ? `<div class="markdown">${md.render(message.text)}</div>` : "");
-  }
-  function render() {
-    frame = null;
-    const log = $("chat-log"), follow = followOnRender || log.scrollHeight - log.scrollTop - log.clientHeight < 100;
-    followOnRender = false;
-    const openTools = new Set([...log.querySelectorAll("[data-tool][open]")].map(d => d.dataset.tool));
-    if (!selected) {
-      log.innerHTML = `<div class="chat-welcome"><div class="welcome-mark">C<span>·</span></div><small>CREW / 你的协作空间</small><h1>想法交给你。<br>推进交给会话。</h1><p>在网页开新会话，或召集已有的会话。<br>让组员各司其职，让 leader 帮你掌握进展。</p><div class="actions"><button class="primary" data-chat-create>开一个 leader ↗</button><button data-chat-spawn>开新会话</button></div><div class="welcome-features"><span>◌ 直接收编已有会话</span><span>↗ 按需转到 VS Code</span><span>◇ 需要你时再拍板</span></div></div>`;
-      return;
-    }
-    log.innerHTML = messages.length ? messages.map(message => `<article class="chat-message ${message.role === "user" ? message.source === "peer" ? "peer-message" : "human-message" : "assistant-message"}" data-message="${esc(message.id)}"><div class="message-byline">${message.role === "assistant" ? `<span class="mini-avatar">C</span>${esc(currentSession()?.crew_name || "会话")}` : message.source === "peer" ? `<span class="peer-symbol">↳</span>${esc(message.sender || "组员")} <span class="peer-label">同组消息</span>` : "你"}</div>${body(message)}</article>`).join("") + (busy ? '<div class="typing-indicator" aria-label="当前会话正在处理"><i></i><i></i><i></i></div>' : "") : `<div class="conversation-empty"><span class="welcome-mark">C<span>·</span></span><h2>${loading ? "正在读取这段对话…" : "从目标开始聊聊"}</h2><p>${loading ? "" : "说说想完成什么，或者问问当前进展。"}</p><div class="suggestions"><button data-suggest="帮我看看当前进展，告诉我现在需要关注什么。">看看当前进展 ↗</button><button data-suggest="我们一起梳理下一步的目标和分工。">梳理下一步安排 ↗</button></div></div>`;
-    for (const detail of log.querySelectorAll("[data-tool]")) detail.open = openTools.has(detail.dataset.tool);
-    if (follow) log.scrollTop = log.scrollHeight;
-  }
-  function scheduleRender() { if (frame === null) frame = requestAnimationFrame(render); }
-  function update() {
-    if (!state) return;
-    const available = webSessions();
-    const groupNames = [...new Set(available.map(s => s.group_name || ""))];
-    $("chat-sessions").innerHTML = groupNames.map(name => `<div class="chat-group-label">${esc(name || "未分组")}</div>` + available.filter(s => (s.group_name || "") === name).sort((a,b) => Number(b.role === "leader") - Number(a.role === "leader")).map(s => `<button class="leader-choice ${selected === s.session_id ? "selected" : ""}" data-chat="${esc(s.session_id)}"><span class="leader-choice-icon">${s.role === "leader" ? "★" : esc((s.crew_name || "?").slice(0, 1))}</span><span><strong>${esc(s.crew_name)}</strong><small>${esc(s.task || (s.role === "leader" ? "leader" : "组员"))}</small></span><i class="status-dot ${esc(s.status)}"></i></button>`).join("")).join("") || '<p class="sidebar-empty">还没有网页会话<br>点右上角 ＋ 开始。</p>';
-    const current = currentSession();
-    $("chat-title").textContent = current?.crew_name || (selected ? "会话" : "选择一个会话");
-    $("chat-subtitle").textContent = current?.task || (selected ? "一起推进这个分组。" : "你的工作，从一次对话开始。");
-    $("chat-open").hidden = !current?.open;
-    $("chat-open").dataset.open = selected || "";
-    $("chat-open").disabled = !current?.open?.enabled;
-    $("chat-open").title = current?.open?.reason || "在 VS Code 接着聊";
-    const group = state.groups.find(g => g.name === current?.group_name);
-    const members = (group?.members || []).filter(s => s.session_id !== selected);
-    $("chat-team-count").textContent = members.length;
-    $("chat-members").innerHTML = members.map(s => `<article class="team-member"><div><span class="member-avatar">${esc((s.crew_name || "?").slice(0,1))}</span><strong>${esc(s.crew_name || s.session_id.slice(0,8))}</strong><i class="status-dot ${esc(s.status)}" title="${esc(states[s.status])}"></i></div><small>${states[s.status]} · ${ago(s.last_event_at)}</small><p>${esc(s.status_note || s.task || "尚未填写任务")}</p></article>`).join("") || `<p class="sidebar-empty">${selected ? "还没有组员。<br>去看板收进几个已有会话吧。" : "选定分组后，<br>在这里查看组员动态。"}</p>`;
-    const memberIds = new Set((group?.members || []).map(s => s.session_id));
-    if (selected) memberIds.add(selected);
-    const decisions = state.decisions.filter(d => d.status === "open" && memberIds.has(d.session_id));
-    $("chat-decisions").innerHTML = decisions.length ? `<h3>等你拍板 <span class="count">${decisions.length}</span></h3>` + decisions.map(d => `<button class="chat-decision" data-decision="${d.id}"><small>${esc(displayName(d.session_id))}</small><span>${esc(d.question)}</span><b>去答复 ↗</b></button>`).join("") : "";
-    if (activeTab === "chat" && !selected && available.length) { const wanted = available.find(s => s.session_id === requestedChat); requestedChat = null; select((wanted || available[0]).session_id); }
-    status();
-  }
-  function endpoint(path, id, after) {
-    const params = new URLSearchParams({session_id:id});
-    if (project) params.set("project", project);
-    if (after !== undefined) params.set("after", after);
-    return path + "?" + params;
-  }
-  async function select(id) {
-    if (!id) return;
-    if (selected === id && stream && !loading) { setTab("chat"); return; }
-    if (selected) drafts.set(selected, $("chat-input").value);
-    stream?.close(); stream = null;
-    selected = id; messages = []; byId = new Map(); results = new Map(); cursor = 0;
-    history.replaceState(null, "", "#chat=" + encodeURIComponent(id));
-    busy = false; running = false; loading = true; const token = ++generation;
-    $("chat-input").value = drafts.get(id) || ""; error(null); status(); scheduleRender();
-    setTab("chat"); update();
-    try {
-      const data = await request(endpoint("/api/chat/history", id));
-      if (token !== generation) return;
-      for (const event of data.events) apply(event);
-      followOnRender = true;
-      busy = data.busy; running = data.running;
-      stream = new EventSource(endpoint("/api/chat/events", id, cursor));
-      let connectionIssue = false;
-      stream.onmessage = event => { if (token === generation) apply(JSON.parse(event.data)); };
-      stream.onerror = () => { if (token === generation) { connectionIssue = true; error("对话连接中断，正在重新连接…"); } };
-      stream.onopen = () => { if (token === generation && connectionIssue) { connectionIssue = false; error(null); } };
-    } catch (failure) { if (token === generation) error(failure.message); }
-    finally { if (token === generation) { loading = false; update(); scheduleRender(); status(); } }
-  }
-  function reset() {
-    if (selected) drafts.set(selected, $("chat-input").value);
-    stream?.close(); stream = null; selected = null; generation++;
-    messages = []; byId = new Map(); results = new Map(); cursor = 0; busy = running = loading = false;
-    $("chat-input").value = ""; error(null); scheduleRender(); status();
-    if (activeTab === "chat") history.replaceState(null, "", "#chat");
-  }
-  $("chat-form").onsubmit = async event => {
-    event.preventDefault(); const text = $("chat-input").value.trim(), id = selected;
-    if (!text || !id || $("chat-send").disabled) return;
-    busy = true; status(); error(null);
-    try {
-      await post("/api/chat/send", {session_id:id, text});
-      if (id === selected) { $("chat-input").value = ""; drafts.delete(id); }
-    } catch (failure) { if (id === selected) { busy = false; error(failure.message); status(); } }
-  };
-  $("chat-input").onkeydown = event => { if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); if (!$("chat-send").disabled) $("chat-form").requestSubmit(); } };
-  $("chat-new").onclick = () => $("new-session").click();
-  document.addEventListener("click", event => {
-    const choice = event.target.closest("[data-chat]"); if (choice) select(choice.dataset.chat);
-    if (event.target.closest("[data-chat-create]")) $("new-leader").click();
-    if (event.target.closest("[data-chat-spawn]")) $("new-session").click();
-    const suggestion = event.target.closest("[data-suggest]"); if (suggestion) { $("chat-input").value = suggestion.dataset.suggest; $("chat-input").focus(); }
-    const decision = event.target.closest("[data-decision]"); if (decision) { setTab("board"); $("decision-" + decision.dataset.decision)?.scrollIntoView({behavior:"smooth", block:"center"}); }
-  });
-  window.crewChat = {select, update, reset, selectedId:() => selected, visibility(visible) { if (visible) { update(); scheduleRender(); } }};
-  update(); scheduleRender(); status();
+  function schedule(){if(frame===null)frame=requestAnimationFrame(render);}
+  function update(){if(!state)return;const s=current();if(s&&locationOf(s)==="vscode")transfers.delete(s.session_id);renderContext();status();if(!s||!s.web_chat)schedule();if(!selected&&!autoSelecting&&activeTab==="chat"){const wanted=allSessions().find(s=>s.session_id===requestedChat);const last=localStorage.getItem(`crew.leader:${project}`);const leader=allSessions().find(s=>s.role==="leader"&&s.status!=="closed"&&s.session_id===last)||allSessions().find(s=>s.role==="leader"&&s.status!=="closed");const next=wanted||leader;requestedChat=null;if(next){autoSelecting=true;select(next.session_id,false).finally(()=>autoSelecting=false);}}}
+  async function select(id,push=true,force=false){if(!id)return;if(selected===id&&!force){setTab("chat",push);closeSidebar();return;}saveDraft();saveScroll();stream?.close();stream=null;selected=id;messages=[];byId=new Map();results=new Map();cursor=0;busy=false;running=false;loading=false;connection="idle";logKind="";suspendedScroll=null;const token=++generation;const s=current();$("chat-input").value=localStorage.getItem(key("draft"))||"";error(null);setTab("chat",push);renderDirectory();renderContext();if(s?.role==="leader")localStorage.setItem(`crew.leader:${project}`,id);if(!s?.web_chat){status();schedule();return;}
+    loading=true;connection="connecting";status();schedule();try{const params=new URLSearchParams({session_id:id});if(project)params.set("project",project);const data=await request("/api/chat/history?"+params);if(token!==generation)return;for(const event of data.events)apply(event);busy=data.busy;running=data.running;restoreScroll=localStorage.getItem(key("scroll"))??"bottom";params.set("after",cursor);stream=new EventSource("/api/chat/events?"+params);stream.onmessage=event=>{if(token===generation)apply(JSON.parse(event.data));};stream.onopen=()=>{if(token===generation){connection="live";clearConnectionError();status();}};stream.onerror=()=>{if(token===generation){connection="retrying";error("对话连接中断，正在重连。记录和草稿会保留。","connection");status();}};}catch(failure){if(token===generation){connection="failed";error(failure.message,"connection");}}finally{if(token===generation){loading=false;status();schedule();}}}
+  function reset(){saveDraft();saveScroll();stream?.close();stream=null;selected=null;messages=[];byId=new Map();results=new Map();cursor=0;busy=running=loading=false;connection="idle";generation++;logKind="";suspendedScroll=null;$("chat-input").value="";error(null);status();schedule();}
+  $("chat-form").onsubmit=async event=>{event.preventDefault();const original=$("chat-input").value,text=original.trim(),id=selected;if(!text||!canSend()||busy)return;saveDraft();busy=true;status();error(null);try{await post("/api/chat/send",{session_id:id,text});if(id===selected&&$("chat-input").value===original){$("chat-input").value="";localStorage.removeItem(key("draft"));}}catch(failure){if(id===selected){busy=false;error("发送失败："+failure.message+"。草稿已保留，可再次发送。","action");status();}}};
+  $("chat-input").oninput=saveDraft;$("chat-input").onkeydown=event=>{if(event.key==="Enter"&&!event.shiftKey&&!event.isComposing){event.preventDefault();if(!$("chat-send").disabled)$("chat-form").requestSubmit();}};
+  $("chat-log").onscroll=()=>{if(activeTab!=="chat")return;clearTimeout(scrollTimer);scrollTimer=setTimeout(saveScroll,180);$("chat-latest").hidden=$("chat-log").scrollHeight-$("chat-log").scrollTop-$("chat-log").clientHeight<90;};$("chat-latest").onclick=()=>{$("chat-log").scrollTop=$("chat-log").scrollHeight;saveScroll();};$("chat-retry").onclick=()=>select(selected,false,true);
+  document.addEventListener("click",event=>{if(event.target.closest("[data-init-project]"))$("add-project").click();const suggestion=event.target.closest("[data-suggest]");if(suggestion){$("chat-input").value=suggestion.dataset.suggest;saveDraft();$("chat-input").focus();}if(event.target.closest("[data-resume-web]")){transfers.delete(selected);status();}});
+  window.addEventListener("beforeunload",()=>{saveDraft();saveScroll();});
+  window.crewChat={select,reset,update,selectedId:()=>selected,visibility(visible){if(!visible){if(logKind==="messages"){saveScroll();suspendedScroll=$("chat-log").scrollTop;}return;}if(suspendedScroll!==null){restoreScroll=suspendedScroll;suspendedScroll=null;}update();schedule();},transfer(id,pending=true){if(pending)transfers.add(id);else transfers.delete(id);status();}};
+  status();schedule();update();
 })();
