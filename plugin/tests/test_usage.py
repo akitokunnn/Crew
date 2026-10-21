@@ -250,6 +250,78 @@ class TestUsage(UsageFixture, unittest.TestCase):
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM codex_rate_limits").fetchone()[0], 1)
         self.assertEqual(self.conn.execute("SELECT offset FROM usage_files WHERE path = ?", (str(path),)).fetchone()[0], path.stat().st_size)
 
+    def test_workspace_reports_use_longest_cwd_root_without_requiring_roster_membership(self):
+        self.conn.executemany("INSERT INTO projects (name, root, created_at) VALUES (?, ?, ?)",
+                              [("parent", "C:\\project", stamp()), ("nested", "C:\\project\\nested", stamp()),
+                               ("other", "C:\\other", stamp())])
+        self.board_session()
+        self.main_file([prompt("parent-p"), assistant("parent-r"),
+                        {"type": "system", "subtype": "compact_boundary", "uuid": "parent-c", "timestamp": stamp(25)}])
+        child = self.claude / "project" / "session-one" / "subagents" / "agent-child.jsonl"
+        self.write(child, [assistant("child-r", 20)])
+        child.with_suffix(".meta.json").write_text(json.dumps({"agentType": "Explore"}), encoding="utf-8")
+        for sid, cwd in (("unjoined-nested", "c:\\PROJECT\\nested\\src"),
+                         ("unjoined-other", "C:\\other"), ("prefix-only", "C:\\project-sibling")):
+            self.main_file([dict(prompt(sid + "-p"), cwd=cwd), dict(assistant(sid + "-r"), cwd=cwd),
+                            {"type": "system", "subtype": "compact_boundary", "uuid": sid + "-c", "timestamp": stamp(25)}], sid)
+        self.rollout("parent-roll")
+        self.rollout("nested-roll", "C:\\project\\nested", records=[token_count(total=1500)])
+        self.rollout("other-roll", "C:\\other", records=[token_count(total=4500)])
+        self.write(self.runs, [self.run_record(), self.run_record("cross-workspace", "C:\\project\\nested")])
+        self.scan()
+
+        for project, requests, codex_tokens in (("parent", 2, 3500), ("nested", 1, 1500), ("other", 1, 4500)):
+            with self.subTest(project=project):
+                report = usage.summary(self.conn, None, None, PRICES, project)
+                self.assertEqual(report["claude"]["requests"], requests)
+                self.assertEqual((report["codex"]["runs"], report["codex"]["total_tokens"]), (1, codex_tokens))
+                self.assertIsNotNone(report["rate_limits"])  # Account limits remain global.
+                sessions = usage.by_session(self.conn, None, None, PRICES, project)
+                self.assertEqual(sum(row["requests"] for row in sessions), requests)
+                self.assertEqual(sum(row["prompts"] for row in sessions), 1)
+                self.assertEqual(sum(row["compactions"] for row in sessions), 1)
+                self.assertEqual(sum(row["work_seconds"] for row in sessions), 20 if project == "parent" else 10)
+                for function in (usage.daily, usage.by_agent_type, usage.requests):
+                    rows = function(self.conn, None, None, PRICES, project)
+                    self.assertEqual(sum(row["total_tokens"] for row in rows), 3600 * requests)
+                models = usage.by_model(self.conn, None, None, PRICES, project)
+                self.assertEqual(sum(row["total_tokens"] for row in models if row["source"] == "claude"), 3600 * requests)
+                self.assertEqual(sum(row["total_tokens"] for row in models if row["source"] == "codex"), codex_tokens)
+                tasks = usage.codex_tasks(self.conn, None, None, project)
+                self.assertEqual([row["project"] for row in tasks], [project])
+
+        parent = usage.by_session(self.conn, None, None, PRICES, "parent")[0]
+        self.assertEqual((parent["display_name"], parent["project"], parent["subagent_requests"]), ("\u89c6\u89c9", "parent", 1))
+        nested = {row["session_id"]: row for row in usage.by_session(self.conn, None, None, PRICES, "nested")}
+        self.assertEqual(nested["unjoined-nested"]["project"], "nested")
+        self.assertEqual((nested["session-one"]["requests"], nested["session-one"]["codex_runs"]), (0, 1))
+        self.assertEqual(usage.summary(self.conn, None, None, PRICES)["claude"]["requests"], 5)
+        self.assertEqual(usage.summary(self.conn, None, None, PRICES, "missing")["claude"]["requests"], 0)
+        self.assertEqual(usage.requests(self.conn, stamp(15), stamp(25), PRICES, "parent")[0]["request_key"], "child-r")
+
+    def test_dispatch_started_and_completed_share_identity_and_orphan_logs_do_not_claim_completion(self):
+        self.rollout()
+        self.rollout("orphan", cwd="C:\\other", records=[token_count(40)])
+        started = dict(self.run_record(), ended_at=None, exit_code=None)
+        self.write(self.runs, [started])
+        self.scan()
+        tasks = {row["run_id"] or row["rollout_id"]: row for row in usage.codex_tasks(self.conn, None, None)}
+        self.assertEqual((tasks["run-one"]["status"], tasks["run-one"]["total_tokens"]), ("running", 3500))
+        self.assertIsNone(tasks["run-one"]["ended_at"])
+        self.assertIsNone(tasks["run-one"]["duration_seconds"])
+        self.assertEqual((tasks["orphan"]["status"], tasks["orphan"]["last_event_at"]), ("unknown", stamp(40)))
+        self.assertIsNone(tasks["orphan"]["ended_at"])
+        self.assertIsNone(tasks["orphan"]["duration_seconds"])
+        self.write(self.runs, [dict(self.run_record(), exit_code=7)], append=True)
+        self.scan()
+        failed = next(row for row in usage.codex_tasks(self.conn, None, None) if row["run_id"] == "run-one")
+        self.assertEqual((failed["status"], failed["exit_code"], failed["duration_seconds"]), ("failed", 7, 120))
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM codex_runs").fetchone()[0], 1)
+        self.write(self.runs, [self.run_record()], append=True)
+        self.scan()
+        self.assertEqual(next(row for row in usage.codex_tasks(self.conn, None, None) if row["run_id"])["status"], "succeeded")
+        self.assertEqual(self.scan()["updated"], 0)
+
     def test_period_local_days_thursday_boundaries_all_and_range(self):
         for day, expected in ((21, 15), (22, 22), (23, 22)):
             with self.subTest(day=day):

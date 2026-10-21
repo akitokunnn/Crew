@@ -17,7 +17,8 @@ EXPORT_FIELDS = {
                  "codex_runs", "codex_tokens", "cache_hit_rate"],
     "daily": ["date", "session_id", "display_name", "project", "group_name", *AGGREGATE_FIELDS],
     "codex": [*usage.CODEX_TOKENS, "run_id", "rollout_id", "session_id", "display_name", "task_name",
-              "started_at", "ended_at", "exit_code", "model", "effort", "sandbox", "duration_seconds"],
+              "started_at", "ended_at", "exit_code", "status", "project", "cwd", "last_event_at",
+              "model", "effort", "sandbox", "duration_seconds"],
     "requests": ["request_key", "session_id", "agent_id", "agent_type", "ts", "model", "effort",
                  *usage.CLAUDE_TOKENS, "service_tier", "speed", "display_name", "total_tokens",
                  "cost_usd", "priced_cost_usd", "unpriced_tokens"],
@@ -39,13 +40,14 @@ LABELS = {
     "inserted": "\u65b0\u589e", "updated": "\u66f4\u65b0", "skipped": "\u8df3\u8fc7\u574f\u884c",
     "used_percent": "\u5df2\u7528(%)", "window_minutes": "\u7a97\u53e3(\u5206)", "resets_at": "\u91cd\u7f6e\u65f6\u95f4",
     "credits_balance": "\u989d\u5ea6\u4f59\u989d", "plan_type": "\u8ba1\u5212", "ts": "\u65f6\u95f4",
+    "status": "\u8fd0\u884c\u72b6\u6001",
 }
 REPORT_FIELDS = {
     "sessions": ["display_name", "project", "group_name", "input_tokens", "cache_write_tokens", "cache_read_tokens",
                  "output_tokens", "total_tokens", "cost_usd", "unpriced_tokens", "prompts", "work_seconds",
                  "compactions", "cache_hit_rate", "subagent_tokens", "codex_runs", "codex_tokens"],
     "daily": ["date", "display_name", "total_tokens", "cost_usd", "unpriced_tokens"],
-    "codex": ["task_name", "display_name", "started_at", "duration_seconds", "total_tokens", "exit_code", "model", "effort"],
+    "codex": ["task_name", "display_name", "status", "started_at", "duration_seconds", "total_tokens", "exit_code", "model", "effort"],
     "agents": ["agent_type", "requests", "total_tokens", "cost_usd", "unpriced_tokens"],
     "models": ["source", "model", "input_tokens", "output_tokens", "total_tokens", "cost_usd", "unpriced_tokens"],
 }
@@ -91,7 +93,7 @@ def _options(parser, defaults):
     values = {
         "claude_root": Path.home() / ".claude" / "projects",
         "codex_root": Path.home() / ".codex" / "sessions",
-        "runs_file": None, "period": "week", "json": False,
+        "runs_file": None, "period": "week", "project": None, "json": False,
     }
     for key, value in values.items():
         kwargs = {"default": value if defaults else argparse.SUPPRESS}
@@ -125,12 +127,12 @@ def main(argv, home):
             start, end = usage.period(args.period, dt.datetime.now().astimezone())
             report = args.what if args.command == "export" else args.command
             if report == "codex":
-                result = usage.codex_tasks(conn, start, end)
+                result = usage.codex_tasks(conn, start, end, args.project)
             else:
                 prices = usage.load_prices(home / "prices.json")
                 function = {"summary": usage.summary, "sessions": usage.by_session, "daily": usage.daily,
                             "agents": usage.by_agent_type, "models": usage.by_model, "requests": usage.requests}[report]
-                result = function(conn, start, end, prices)
+                result = function(conn, start, end, prices, args.project)
             if args.command == "export":
                 with Path(args.out).open("w", encoding="utf-8-sig", newline="") as stream:
                     writer = csv.DictWriter(stream, fieldnames=EXPORT_FIELDS[args.what])

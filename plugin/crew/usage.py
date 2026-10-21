@@ -259,17 +259,16 @@ def _run_line(conn, record, counts):
 def _match_runs(conn, counts):
     for run in conn.execute("SELECT * FROM codex_runs").fetchall():
         earliest = None
-        if run["ended_at"] is not None:
-            lower = _iso(store.parse_iso(run["started_at"]) - dt.timedelta(seconds=60))
-            candidates = conn.execute(
-                "SELECT * FROM codex_sessions WHERE originator = 'codex_exec' "
-                "AND started_at >= ? AND started_at <= ? ORDER BY started_at, rollout_id",
-                (lower, run["ended_at"]),
-            )
-            for candidate in candidates:
-                if store.norm_path(candidate["cwd"]) == store.norm_path(run["workdir"]):
-                    earliest = candidate["rollout_id"]
-                    break
+        lower = _iso(store.parse_iso(run["started_at"]) - dt.timedelta(seconds=60))
+        candidates = conn.execute(
+            "SELECT * FROM codex_sessions WHERE originator = 'codex_exec' "
+            "AND started_at >= ? AND started_at <= ? ORDER BY started_at, rollout_id",
+            (lower, run["ended_at"] or store.now_iso()),
+        )
+        for candidate in candidates:
+            if store.norm_path(candidate["cwd"]) == store.norm_path(run["workdir"]):
+                earliest = candidate["rollout_id"]
+                break
         _save(conn, "codex_runs", "run_id", {"run_id": run["run_id"], "rollout_id": earliest}, counts)
 
 
@@ -438,14 +437,41 @@ def _add(result, request, prices):
     result["cost_usd"] = None if cost is None or result["cost_usd"] is None else result["cost_usd"] + cost
 
 
-def _request_rows(conn, start, end):
+def _request_rows(conn, start, end, project=None):
     condition, args = _window("ts", start, end)
-    return conn.execute("SELECT * FROM claude_requests WHERE " + condition + " ORDER BY ts, request_key", args)
+    rows = conn.execute("SELECT * FROM claude_requests WHERE " + condition + " ORDER BY ts, request_key", args)
+    if project is None:
+        return rows
+    names = _session_names(conn, project)
+    return (row for row in rows if row["session_id"] in names)
 
 
-def _session_names(conn):
+def _project_roots(conn):
+    return sorted(((row["name"], store.norm_path(row["root"]).rstrip("/"))
+                   for row in conn.execute("SELECT name, root FROM projects")),
+                  key=lambda row: len(row[1]), reverse=True)
+
+
+def _project_for_cwd(cwd, roots):
+    if not cwd:
+        return None
+    path = store.norm_path(cwd).rstrip("/")
+    return next((name for name, root in roots if path == root or path.startswith(root + "/")), None)
+
+
+def _codex_rows(conn, start, end, project=None):
+    condition, args = _window("started_at", start, end)
+    rows = conn.execute("SELECT * FROM codex_sessions WHERE " + condition, args)
+    if project is None:
+        return rows
+    roots = _project_roots(conn)
+    return (row for row in rows if _project_for_cwd(row["cwd"], roots) == project)
+
+
+def _session_names(conn, project=None):
+    roots = _project_roots(conn)
     rows = conn.execute(
-        "SELECT ids.session_id, c.ai_title, c.project_dir, c.cwd, c.first_ts, c.last_ts, "
+        "SELECT ids.session_id, c.ai_title, c.project_dir, COALESCE(c.cwd, s.cwd) AS cwd, c.first_ts, c.last_ts, "
         "s.crew_name, s.project, s.group_name FROM "
         "(SELECT session_id FROM claude_sessions UNION SELECT claude_session_id FROM codex_runs "
         "WHERE claude_session_id IS NOT NULL) ids "
@@ -455,6 +481,10 @@ def _session_names(conn):
     result = {}
     for row in rows:
         item = dict(row)
+        inferred_project = _project_for_cwd(row["cwd"], roots)
+        if project is not None and inferred_project != project:
+            continue
+        item["project"] = inferred_project or row["project"]
         item["display_name"] = row["crew_name"] or row["ai_title"] or row["session_id"][:8]
         result[row["session_id"]] = item
     return result
@@ -482,11 +512,12 @@ def _work_seconds(conn, start, end):
     return result
 
 
-def codex_tasks(conn, start, end):
+def codex_tasks(conn, start, end, project=None):
     names = _session_names(conn)
+    roots = _project_roots(conn)
     result = []
     query = (
-        "SELECT r.run_id, r.claude_session_id, r.task_file, r.started_at AS run_start, "
+        "SELECT r.run_id, r.claude_session_id, r.task_file, r.workdir, r.started_at AS run_start, "
         "r.ended_at AS run_end, r.exit_code, r.model AS requested_model, r.effort AS requested_effort, "
         "r.sandbox AS requested_sandbox, c.* FROM codex_runs r "
         "LEFT JOIN codex_sessions c ON c.rollout_id = r.rollout_id"
@@ -494,12 +525,22 @@ def codex_tasks(conn, start, end):
     for row in conn.execute(query):
         if not _in_window(row["run_start"], start, end):
             continue
+        cwd = row["cwd"] if row["rollout_id"] else row["workdir"]
+        task_project = _project_for_cwd(cwd, roots)
+        if project is not None and task_project != project:
+            continue
+        status = "unknown"
+        if row["run_end"] is None and row["exit_code"] is None:
+            status = "running"
+        elif row["run_end"] is not None and row["exit_code"] is not None:
+            status = "succeeded" if row["exit_code"] == 0 else "failed"
         item = {field: row[field] if row["rollout_id"] else 0 for field in CODEX_TOKENS}
         session_id = row["claude_session_id"]
         item.update(run_id=row["run_id"], rollout_id=row["rollout_id"], session_id=session_id,
                     display_name=names[session_id]["display_name"] if session_id is not None else None,
                     task_name=ntpath.basename(row["task_file"]), started_at=row["run_start"],
-                    ended_at=row["run_end"], exit_code=row["exit_code"],
+                    ended_at=row["run_end"], exit_code=row["exit_code"], status=status,
+                    project=task_project, cwd=cwd, last_event_at=row["ended_at"],
                     model=row["model"] if row["rollout_id"] else row["requested_model"],
                     effort=row["effort"] if row["rollout_id"] else row["requested_effort"],
                     sandbox=row["sandbox"] if row["rollout_id"] else row["requested_sandbox"])
@@ -509,23 +550,26 @@ def codex_tasks(conn, start, end):
         "SELECT c.* FROM codex_sessions c WHERE NOT EXISTS "
         "(SELECT 1 FROM codex_runs r WHERE r.rollout_id = c.rollout_id) AND " + condition, args,
     ):
+        task_project = _project_for_cwd(row["cwd"], roots)
+        if project is not None and task_project != project:
+            continue
         item = {field: row[field] for field in CODEX_TOKENS}
         item.update(run_id=None, rollout_id=row["rollout_id"], session_id=None, display_name=None,
-                    task_name=row["first_user_text"], started_at=row["started_at"], ended_at=row["ended_at"],
-                    exit_code=None, model=row["model"], effort=row["effort"], sandbox=row["sandbox"])
+                    task_name=row["first_user_text"], started_at=row["started_at"], ended_at=None,
+                    exit_code=None, status="unknown", project=task_project, cwd=row["cwd"],
+                    last_event_at=row["ended_at"], model=row["model"], effort=row["effort"], sandbox=row["sandbox"])
         result.append(item)
     for item in result:
         item["duration_seconds"] = (store.parse_iso(item["ended_at"]) - store.parse_iso(item["started_at"])).total_seconds() if item["ended_at"] else None
     return sorted(result, key=lambda item: (item["started_at"], item["run_id"] or item["rollout_id"]))
 
 
-def summary(conn, start, end, prices):
+def summary(conn, start, end, prices, project=None):
     claude = _aggregate()
-    for row in _request_rows(conn, start, end):
+    for row in _request_rows(conn, start, end, project):
         _add(claude, row, prices)
-    codex = {**dict.fromkeys(CODEX_TOKENS, 0), "runs": len(codex_tasks(conn, start, end)), "rollouts": 0}
-    condition, args = _window("started_at", start, end)
-    for row in conn.execute("SELECT * FROM codex_sessions WHERE " + condition, args):
+    codex = {**dict.fromkeys(CODEX_TOKENS, 0), "runs": len(codex_tasks(conn, start, end, project)), "rollouts": 0}
+    for row in _codex_rows(conn, start, end, project):
         codex["rollouts"] += 1
         for field in CODEX_TOKENS:
             codex[field] += row[field]
@@ -533,8 +577,9 @@ def summary(conn, start, end, prices):
     return {"claude": claude, "codex": codex, "rate_limits": dict(latest) if latest else None}
 
 
-def by_session(conn, start, end, prices):
+def by_session(conn, start, end, prices, project=None):
     names = _session_names(conn)
+    scoped_names = _session_names(conn, project) if project is not None else names
     rows = {}
     for session_id, name in names.items():
         rows[session_id] = {
@@ -543,7 +588,7 @@ def by_session(conn, start, end, prices):
             "prompts": 0, "compactions": 0, "work_seconds": 0,
             "subagent_tokens": 0, "subagent_requests": 0, "codex_runs": 0, "codex_tokens": 0,
         }
-    for request in _request_rows(conn, start, end):
+    for request in _request_rows(conn, start, end, project):
         row = rows[request["session_id"]]
         _add(row, request, prices)
         if request["agent_id"] is not None:
@@ -552,15 +597,20 @@ def by_session(conn, start, end, prices):
     active_sessions = set()
     condition, args = _window("ts", start, end)
     for prompt in conn.execute("SELECT session_id, SUM(kind = 'user') AS users FROM claude_prompts WHERE " + condition + " GROUP BY session_id", args):
+        if prompt["session_id"] not in scoped_names:
+            continue
         active_sessions.add(prompt["session_id"])
         rows[prompt["session_id"]]["prompts"] = prompt["users"]
     for table, target in (("claude_compactions", "compactions"),):
         condition, args = _window("ts", start, end)
         for row in conn.execute(f"SELECT session_id, COUNT(*) AS n FROM {table} WHERE " + condition + " GROUP BY session_id", args):
+            if row["session_id"] not in scoped_names:
+                continue
             rows[row["session_id"]][target] = row["n"]
     for session_id, seconds in _work_seconds(conn, start, end).items():
-        rows[session_id]["work_seconds"] = seconds
-    for task in codex_tasks(conn, start, end):
+        if session_id in scoped_names:
+            rows[session_id]["work_seconds"] = seconds
+    for task in codex_tasks(conn, start, end, project):
         if task["session_id"] is not None:
             row = rows[task["session_id"]]
             row["codex_runs"] += 1
@@ -570,14 +620,14 @@ def by_session(conn, start, end, prices):
         denominator = row["input_tokens"] + row["cache_write_tokens"] + row["cache_read_tokens"]
         row["cache_hit_rate"] = row["cache_read_tokens"] / denominator if denominator else 0.0
         if (row["requests"] or session_id in active_sessions or row["compactions"] or row["codex_runs"] or row["work_seconds"]
-                or _in_window(names[session_id]["last_ts"], start, end)):
+                or (session_id in scoped_names and _in_window(names[session_id]["last_ts"], start, end))):
             result.append(row)
     return sorted(result, key=lambda row: (row["display_name"], row["session_id"]))
 
 
-def daily(conn, start, end, prices):
+def daily(conn, start, end, prices, project=None):
     names, groups = _session_names(conn), {}
-    for request in _request_rows(conn, start, end):
+    for request in _request_rows(conn, start, end, project):
         day = store.parse_iso(request["ts"]).astimezone().date().isoformat()
         key = day, request["session_id"]
         if key not in groups:
@@ -588,9 +638,9 @@ def daily(conn, start, end, prices):
     return [groups[key] for key in sorted(groups)]
 
 
-def by_agent_type(conn, start, end, prices):
+def by_agent_type(conn, start, end, prices, project=None):
     groups = {}
-    for request in _request_rows(conn, start, end):
+    for request in _request_rows(conn, start, end, project):
         key = request["agent_type"] if request["agent_id"] is not None else "main"
         if key not in groups:
             groups[key] = {"agent_type": key, **_aggregate()}
@@ -598,17 +648,16 @@ def by_agent_type(conn, start, end, prices):
     return sorted(groups.values(), key=lambda row: row["agent_type"])
 
 
-def by_model(conn, start, end, prices):
+def by_model(conn, start, end, prices, project=None):
     groups = {}
-    for request in _request_rows(conn, start, end):
+    for request in _request_rows(conn, start, end, project):
         key = request["model"]
         if key not in groups:
             groups[key] = {"source": "claude", "model": key, **_aggregate()}
         _add(groups[key], request, prices)
     result = list(groups.values())
-    condition, args = _window("started_at", start, end)
     groups = {}
-    for session in conn.execute("SELECT * FROM codex_sessions WHERE " + condition, args):
+    for session in _codex_rows(conn, start, end, project):
         key = session["model"]
         if key not in groups:
             groups[key] = {"source": "codex", "model": key, "runs": 0, **dict.fromkeys(CODEX_TOKENS, 0)}
@@ -619,10 +668,10 @@ def by_model(conn, start, end, prices):
     return sorted(result, key=lambda row: (row["source"], row["model"] or ""))
 
 
-def requests(conn, start, end, prices):
+def requests(conn, start, end, prices, project=None):
     """Flat request rows shared by the CSV exporter and callers needing detail."""
     names, result = _session_names(conn), []
-    for request in _request_rows(conn, start, end):
+    for request in _request_rows(conn, start, end, project):
         row = dict(request)
         row["display_name"] = names[row["session_id"]]["display_name"]
         row["total_tokens"] = _total(row)

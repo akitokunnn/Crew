@@ -87,6 +87,27 @@ class TestUsageCLI(UsageFixture, unittest.TestCase):
         with self.assertRaises(FileNotFoundError):
             self.invoke("summary", "--json")
 
+    def test_project_option_filters_reports_and_exports_in_either_argument_position(self):
+        self.conn.executemany("INSERT INTO projects (name, root, created_at) VALUES (?, ?, ?)",
+                              [("demo", "C:\\project", "2026-10-21T00:00:00Z"),
+                               ("elsewhere", "C:\\elsewhere", "2026-10-21T00:00:00Z")])
+        self.main_file([dict(assistant("outside"), cwd="C:\\elsewhere")], "outside-session")
+        self.rollout("outside-roll", cwd="C:\\elsewhere")
+        for command in ("summary", "sessions", "daily", "codex", "agents", "models"):
+            with self.subTest(command=command):
+                before = json.loads(self.invoke("--project", "demo", command, "--json"))
+                after = json.loads(self.invoke(command, "--project", "demo", "--json"))
+                self.assertEqual(before, after)
+                if command == "summary":
+                    self.assertEqual((after["claude"]["requests"], after["codex"]["runs"]), (1, 1))
+                else:
+                    self.assertEqual(len(after), 2 if command == "models" else 1)
+        for what in usage_cli.EXPORT_FIELDS:
+            path = self.root / ("scoped-" + what + ".csv")
+            result = json.loads(self.invoke("export", "--project", "demo", "--what", what, "--out", str(path), "--json"))
+            self.assertEqual(result["rows"], 1)
+        self.assertEqual(json.loads(self.invoke("summary", "--json"))["claude"]["requests"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()
