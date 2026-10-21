@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Crew · 看板</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header>
+    <div class="brand">Crew <span>协作白板</span></div>
+    <label class="sr-only" for="project">项目</label><select id="project" aria-label="项目"></select>
+    <span class="waiting-count" id="waiting-count">等你 0</span>
+    <span id="freshness" class="muted" aria-live="polite">获取进程状态…</span>
+    <div class="actions"><button id="new-session">开新会话</button><button id="new-leader">开 leader</button></div>
+    <nav aria-label="页面"><button id="board-tab" aria-pressed="true">看板</button><button id="usage-tab" aria-pressed="false">用量</button></nav>
+  </header>
+  <div id="agents-error" class="error" role="alert" hidden></div>
+  <div id="error" class="error" role="alert" hidden></div>
+  <p id="notice" role="status" hidden></p>
+  <main>
+    <section id="board-view" aria-label="看板">
+      <section id="waiting" class="waiting-panel"></section>
+      <div id="groups"></div>
+      <section><h2>资源借还</h2><div id="leases" class="scroll"></div></section>
+      <section><h2>文件归属</h2><div id="claims" class="scroll"></div></section>
+      <section><h2>待拍板</h2><div id="decisions" class="grid"></div></section>
+      <div class="two-column"><section><h2>交接</h2><div id="handoffs"></div></section><section><h2>日报</h2><div id="reports"></div></section></div>
+      <details><summary>最近事件</summary><div id="events"></div></details>
+    </section>
+    <section id="usage-view" aria-label="用量" hidden>
+      <div class="period-bar"><label for="period">时间段</label><select id="period"><option value="today">今天</option><option value="week" selected>本汇报周</option><option value="all">全部</option><option value="custom">自定日期</option></select>
+        <form id="dates" hidden><label>从 <input id="date-from" type="date" required></label><label>到 <input id="date-to" type="date" required></label><button>查询</button></form>
+        <span class="muted">全机用量 · 汇报周从周四开始</span>
+      </div>
+      <p id="usage-loading" role="status" hidden>正在读取用量…</p>
+      <div id="metrics" class="metrics"></div>
+      <section><h2>会话 <small>点击列头排序</small></h2><div id="sessions-table" class="scroll"></div></section>
+      <section><h2>每天的 Claude token</h2><div id="daily-chart" class="scroll"></div><div id="legend" class="legend"></div></section>
+      <section><h2>Codex 任务</h2><div id="codex-table" class="scroll"></div></section>
+      <div class="two-column"><section><h2>Agent 类型</h2><div id="agents-table" class="scroll"></div></section><section><h2>模型分布</h2><div id="models-table" class="scroll"></div></section></div>
+      <section><h2>导出 CSV</h2><div class="actions" id="exports"></div></section>
+    </section>
+  </main>
+  <dialog id="spawn-dialog">
+    <form id="spawn-form">
+      <h2>开新会话</h2><label>名字<input name="name" required></label><label>任务<textarea name="task" rows="6" required></textarea></label>
+      <label>分组<select name="group"></select></label><label>新 worktree 分支（可选）<input name="new_worktree" placeholder="feature/vision"></label>
+      <p class="muted">默认在项目根目录开工。新 worktree 位于 Temp/wt，目录须已被 git 忽略。</p>
+      <p class="form-error" role="alert"></p><div class="actions"><button type="button" data-close>取消</button><button type="submit">启动会话</button></div>
+    </form>
+  </dialog>
+  <dialog id="leader-dialog">
+    <form id="leader-form">
+      <h2>开 leader</h2><label>名字 / 分组名<input name="name" required></label><label>组员（可多选）<select name="members" multiple size="6"></select></label>
+      <label>任务（可选）<textarea name="task" rows="5"></textarea></label><p class="muted">已在其他分组的组员会挪到此组。</p>
+      <p class="form-error" role="alert"></p><div class="actions"><button type="button" data-close>取消</button><button type="submit">启动 leader</button></div>
+    </form>
+  </dialog>
+  <dialog id="give-dialog"><form id="give-form"><h2>强制归还资源</h2><p id="give-resource"></p><label>归还原因<textarea name="reason" rows="3" required></textarea></label><p class="form-error" role="alert"></p><div class="actions"><button type="button" data-close>取消</button><button type="submit">确认归还</button></div></form></dialog>
+</body>
+</html>

@@ -133,6 +133,27 @@ def parser():
     a = c.add_parser("close")
     a.add_argument("group")
     a.add_argument("--with-members", action="store_true")
+    a = c.add_parser("start")
+    a.add_argument("--name", required=True)
+    a.add_argument("--members")
+    a.add_argument("--task")
+    location = a.add_mutually_exclusive_group()
+    location.add_argument("--cwd", type=Path)
+    location.add_argument("--new-worktree")
+    a.add_argument("--dry-run", action="store_true")
+    a = command("spawn", True)
+    a.add_argument("--name", required=True)
+    a.add_argument("--task", required=True)
+    a.add_argument("--group")
+    a.add_argument("--role", choices=("member", "leader"), default="member")
+    location = a.add_mutually_exclusive_group()
+    location.add_argument("--cwd", type=Path)
+    location.add_argument("--new-worktree")
+    a.add_argument("--base")
+    a.add_argument("--dry-run", action="store_true")
+    a = command("web")
+    a.add_argument("--port", type=int, default=47811)
+    a.add_argument("--open", action="store_true")
     c = command("events")
     c.add_argument("--session", dest="session_name")
     c.add_argument("--limit", type=int, default=50)
@@ -365,6 +386,19 @@ def main(argv=None, agents_provider=claude_agents, cwd=None, plugin_root=None):
         args = parser().parse_args(argv)
         cwd = Path.cwd() if cwd is None else Path(cwd)
         plugin_root = Path(__file__).resolve().parents[1] if plugin_root is None else Path(plugin_root)
+        if args.command == "spawn" or (args.command == "leader" and args.action == "start"):
+            from . import spawn
+            value = spawn.cli_dispatch(args, cwd, plugin_root)
+            if args.dry_run:
+                print(json.dumps(value, ensure_ascii=False, indent=2))
+            else:
+                _emit(value, getattr(args, "json", False), args.command)
+            return 0
+        if args.command == "web":
+            from . import web
+            web.serve(args.home, plugin_root, port=args.port, open_browser=args.open, cwd=cwd,
+                      agents_provider=agents_provider)
+            return 0
         if args.command == "install":
             value = install.install(args.home, plugin_root)
             with contextlib.closing(store.connect(args.home)) as conn:
