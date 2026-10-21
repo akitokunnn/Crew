@@ -187,9 +187,13 @@ def _status_text(v):
         lines.append("[%s]%s" % (g["name"], " 已收" if g["closed_at"] else ""))
         members = sorted(g["members"], key=lambda s: (s["role"] != "leader", s["crew_name"] or ""))
         lines.extend(_session_line(s) for s in members) if members else lines.append("  （没有成员）")
-    if v["ungrouped"]:
+    # Unnamed sessions that already ended (one-off probes, short chats) are only counted.
+    shown = [s for s in v["ungrouped"] if s["crew_name"] or s["status"] not in ("offline", "closed")]
+    if shown:
         lines.append("[未分组]")
-        lines.extend(_session_line(s) for s in v["ungrouped"])
+        lines.extend(_session_line(s) for s in shown)
+    if len(shown) < len(v["ungrouped"]):
+        lines.append("  （另有 %d 个未命名、已离线的会话）" % (len(v["ungrouped"]) - len(shown)))
     lines.append("借出：" + ("无" if not v["leases"] else ""))
     lines.extend("  %s ← %s  用途 %s  %s借出  预计 %s" % (l["resource"], l["holder_name"] or l["holder_session"][:8], l["purpose"],
                                                     _ago(l["taken_at"]), l["until_at"] or "-") for l in v["leases"])
