@@ -594,7 +594,9 @@ def apply_hook(conn, event, data, project_name, identity=None, git_info=None, no
         detail["tool_name"] = data["tool_name"]
     if "command" in data.get("tool_input", {}):
         detail["command"] = data["tool_input"]["command"][:200]
-    if event == "session-start":
+    existing_compact = (event == "session-start" and data.get("source") == "compact"
+                        and conn.execute("SELECT 1 FROM sessions WHERE session_id=?", (sid,)).fetchone() is not None)
+    if event == "session-start" and not existing_compact:
         worktree, branch = git_info
         identity = {} if identity is None else identity
         _register(conn, sid, project_name, data["cwd"], worktree, branch, now, data.get("entrypoint"), data.get("permission_mode"), identity.get("spawn_id"))
@@ -604,7 +606,7 @@ def apply_hook(conn, event, data, project_name, identity=None, git_info=None, no
                 # Spawned sessions use --name <crew name>, which is also the SendMessage address.
                 conn.execute("UPDATE sessions SET cc_name=? WHERE session_id=?", (identity["name"], sid))
             if identity.get("task"):
-                # SessionStart repeats on resume / compact; keep a task the session has since changed with `crew task`.
+                # SessionStart repeats on resume; keep a task the session has since changed with `crew task`.
                 conn.execute("UPDATE sessions SET task=? WHERE session_id=? AND task IS NULL", (identity["task"], sid))
         state, note = "idle", None
     else:
@@ -615,7 +617,7 @@ def apply_hook(conn, event, data, project_name, identity=None, git_info=None, no
         s = session(conn, sid)
         if s["project"] != project_name:
             raise Conflict("钩子 cwd 与已登记项目不一致")
-        state = {"user-prompt-submit": "working", "stop": "idle", "notification": "waiting", "pre-ask": "waiting", "post-ask": "working", "session-end": "offline", "guard": s["status"]}[event]
+        state = s["status"] if existing_compact else {"user-prompt-submit": "working", "stop": "idle", "notification": "waiting", "pre-ask": "waiting", "post-ask": "working", "session-end": "offline", "guard": s["status"]}[event]
         note = None
         if event == "guard":
             note = s["status_note"]
@@ -635,9 +637,10 @@ def apply_hook(conn, event, data, project_name, identity=None, git_info=None, no
             detail["last_assistant_message"] = data["last_assistant_message"][:300]
             conn.execute("UPDATE sessions SET last_message=? WHERE session_id=?", (detail["last_assistant_message"], sid))
     ended_at = _time(now) if state == "offline" else None
-    if event != "session-start" and s["status"] == "closed":
-        # Late tools and Stop from the old turn must not reopen an explicitly archived session.
-        state, note, ended_at = "closed", s["status_note"], s["ended_at"]
+    if existing_compact or (event != "session-start" and s["status"] == "closed"):
+        # Compact continues the current run: keep DB identity/status rather than replaying stale spawn settings.
+        # Late tools and Stop from the old turn must not reopen an explicitly archived session either.
+        state, note, ended_at = s["status"], s["status_note"], s["ended_at"]
     conn.execute("UPDATE sessions SET status=?,status_note=?,last_event=?,last_event_at=?,ended_at=? WHERE session_id=?",
                  (state, note, event, _time(now), ended_at, sid))
     result = _deliver(conn, sid, event == "user-prompt-submit", now) if event in ("session-start", "user-prompt-submit") else {"answers": [], "handoffs": []}

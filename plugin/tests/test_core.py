@@ -387,6 +387,68 @@ class DeliveryTests(CoreCase):
 
 
 class HookTests(CoreCase):
+    def start_with_environment(self, sid, source, environ, now=NOW):
+        return hooks.handle("session-start", self.data(sid, source=source), self.home, self.fake_plugin, environ,
+                            git_provider=lambda cwd: (store.norm_path(self.root), "main"), now=now)
+
+    def test_compact_preserves_archived_sessions_and_closed_group(self):
+        environments = {
+            "s1": {"CREW_NAME": "lead", "CREW_ROLE": "leader", "CREW_GROUP": "lead", "CREW_SPAWN_ID": "lead-spawn"},
+            "s2": {"CREW_NAME": "two", "CREW_ROLE": "member", "CREW_GROUP": "lead", "CREW_SPAWN_ID": "member-spawn"},
+        }
+        for sid, environ in environments.items():
+            self.start_with_environment(sid, "startup", environ)
+            board.set_task(self.conn, sid, "current task " + sid, now=NOW)
+        board.close_group(self.conn, "demo", "lead", with_members=True, now=NOW)
+        fields = ("crew_name", "cc_name", "role", "group_name", "status", "status_note", "ended_at", "task", "spawn_id")
+        before = {sid: {field: board.session(self.conn, sid)[field] for field in fields} for sid in environments}
+        later = "2026-10-21T09:00:00.000Z"
+        for sid, environ in environments.items():
+            with self.subTest(sid=sid):
+                self.start_with_environment(sid, "compact", environ, now=later)
+                session = board.session(self.conn, sid)
+                self.assertEqual({field: session[field] for field in fields}, before[sid])
+                self.assertEqual((session["last_event"], session["last_event_at"]), ("session-start", later))
+                self.assertEqual(board.groups(self.conn, "demo")[0]["closed_at"], NOW)
+
+    def test_compact_keeps_current_identity_after_move_and_group_dissolution(self):
+        leader_env = {"CREW_NAME": "old", "CREW_ROLE": "leader", "CREW_GROUP": "old", "CREW_SPAWN_ID": "old-lead-spawn"}
+        member_env = {"CREW_NAME": "original", "CREW_ROLE": "member", "CREW_GROUP": "old", "CREW_SPAWN_ID": "old-member-spawn"}
+        self.start_with_environment("s1", "startup", leader_env)
+        self.start_with_environment("s2", "startup", member_env)
+        board.join(self.conn, "s3", "demo", "new", self.root, self.root, "main", role="leader", now=NOW)
+        board.roster(self.conn, "demo", "move", "new", session_ids=["s2"], now=NOW)
+        board.join(self.conn, "s2", "demo", "renamed", self.root, self.root, "main", task="revised task",
+                   group_name="new", cc_name="current-address", now=NOW)
+        board.register_session(self.conn, "s2", "demo", self.root, self.root, "main", spawn_id="current-spawn", now=NOW)
+        board.set_status(self.conn, "s2", "working", "current status", now=NOW)
+        board.close_group(self.conn, "demo", "old", now=NOW)
+        fields = ("crew_name", "cc_name", "role", "group_name", "status", "status_note", "ended_at", "task", "spawn_id")
+        before = {sid: {field: board.session(self.conn, sid)[field] for field in fields} for sid in ("s1", "s2")}
+        for sid, environ in (("s1", leader_env), ("s2", member_env)):
+            with self.subTest(sid=sid):
+                self.start_with_environment(sid, "compact", environ)
+                self.assertEqual({field: board.session(self.conn, sid)[field] for field in fields}, before[sid])
+                old = next(group for group in board.groups(self.conn, "demo") if group["name"] == "old")
+                self.assertEqual(old["closed_at"], NOW)
+
+    def test_explicit_startup_and_resume_reopen_archived_leader(self):
+        environ = {"CREW_NAME": "lead", "CREW_ROLE": "leader", "CREW_GROUP": "lead", "CREW_SPAWN_ID": "lead-spawn"}
+        self.start_with_environment("s1", "startup", environ)
+        for source in ("startup", "resume"):
+            with self.subTest(source=source):
+                board.close_group(self.conn, "demo", "lead", with_members=True, now=NOW)
+                self.start_with_environment("s1", source, environ)
+                session = board.session(self.conn, "s1")
+                self.assertEqual((session["status"], session["group_name"], session["spawn_id"]), ("idle", "lead", "lead-spawn"))
+                self.assertIsNone(board.groups(self.conn, "demo")[0]["closed_at"])
+
+    def test_first_compact_still_registers_spawn_identity(self):
+        self.start_with_environment("new", "compact", {"CREW_NAME": "fresh", "CREW_ROLE": "member", "CREW_SPAWN_ID": "fresh-spawn"})
+        session = board.session(self.conn, "new")
+        self.assertEqual((session["crew_name"], session["role"], session["status"], session["spawn_id"]),
+                         ("fresh", "member", "idle", "fresh-spawn"))
+
     def test_each_event_state_and_truncation(self):
         steps = [("session-start", {}, "idle", None),
                  ("user-prompt-submit", {"prompt": "p" * 250}, "working", None),
