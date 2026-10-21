@@ -48,9 +48,10 @@ def _block(elements, background):
 def _base_card(workspace, leader, decision_id, answered):
     _text(workspace, "工作区")
     _text(leader, "leader")
-    _decision_id(decision_id)
+    if decision_id is not None:
+        _decision_id(decision_id)
     return {"schema": "2.0", "config": {"update_multi": True, "width_mode": "default", "enable_forward": False},
-            "header": {"title": {"tag": "plain_text", "content": ("答复已保存" if answered else "有件事等你拍板") + " · #%s" % decision_id},
+            "header": {"title": {"tag": "plain_text", "content": ("答复已保存" if answered else "有件事等你拍板") + (" · #%s" % decision_id if decision_id is not None else "")},
                        "subtitle": {"tag": "plain_text", "content": "工作区：%s · leader：%s" % (workspace, leader)},
                        "template": "green" if answered else "yellow",
                        "icon": {"tag": "standard_icon", "token": "approval_colorful"}},
@@ -109,7 +110,7 @@ def answered_card(decision, *, workspace, leader):
         raise ValueError("只能更新已保存答复的卡片")
     question = _text(decision["question"], "问题")
     answer = _text(decision["answer"], "答复")
-    card = _base_card(workspace, leader, decision["id"], True)
+    card = _base_card(workspace, leader, _decision_id(decision["id"]), True)
     state = "已交给会话，实际进展以会话回复为准。" if decision.get("delivered_at") else "已保存，等待会话下一轮接收。"
     card["body"]["elements"] = [
         _block([{"tag": "markdown", "content": _markdown(question)}], "grey-50"),
@@ -117,6 +118,56 @@ def answered_card(decision, *, workspace, leader):
         {"tag": "markdown", "text_size": "notation", "content": state}]
     _card_json(card)
     return card
+
+
+def questions_card(entries):
+    """Scoped questions and plain progress notes share one message and saved-state update."""
+    if not isinstance(entries, (list, tuple)) or not entries:
+        raise ValueError("合并卡片至少需要一条事项")
+    cards, seen, pending, answered = [], set(), 0, 0
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise ValueError("合并卡片的事项记录无效")
+        workspace, leader = _text(entry.get("workspace"), "工作区"), _text(entry.get("leader"), "leader")
+        decision = entry.get("decision")
+        if decision is None:
+            text = _text(entry.get("text"), "进展内容")
+            card = _base_card(workspace, leader, None, False)
+            label = "工作区：%s · leader：%s" % (workspace, leader)
+            cards.append((card, [{"tag": "markdown", "content": "**" + _markdown(label) + "**"},
+                                 _block([{"tag": "markdown", "content": _markdown(text)}], "grey-50")]))
+            continue
+        if not isinstance(decision, dict):
+            raise ValueError("合并卡片的待拍板记录无效")
+        identity = _decision_id(decision.get("id"))
+        key = (workspace, identity)
+        if key in seen:
+            raise ValueError("合并卡片不能重复包含同一条待拍板")
+        seen.add(key)
+        status = decision.get("status", "open")
+        if status == "open":
+            card = question_card(decision, workspace=workspace, leader=leader)
+            pending += 1
+            # A shared footer explains how to identify a question in a text reply.
+            elements = card["body"]["elements"][:-1]
+        elif status == "answered":
+            card = answered_card(decision, workspace=workspace, leader=leader)
+            elements = card["body"]["elements"]
+            answered += 1
+        else:
+            raise ValueError("合并卡片只能包含未答复或已保存答复的待拍板")
+        label = "#%s · 工作区：%s · leader：%s" % (identity, workspace, leader)
+        cards.append((card, [{"tag": "markdown", "content": "**" + _markdown(label) + "**"}, *elements]))
+    result = cards[0][0]
+    result["header"]["title"]["content"] = "有 %s 件事等你拍板" % pending if pending else ("本次答复已保存" if answered else "会话有新进展")
+    result["header"]["subtitle"]["content"] = "共 %s 条事项" % len(entries) + ("，每题分别答复" if pending else "")
+    result["header"]["template"] = "yellow" if pending else ("green" if answered else "blue")
+    result["body"]["elements"] = [element for _, elements in cards for element in elements]
+    if pending:
+        result["body"]["elements"].append({"tag": "markdown", "text_size": "notation",
+            "content": "也可以直接回复这条消息，请写「#编号 答复」，例如「#42 继续」。答复保存后，会话会在下一轮接收。"})
+    _card_json(result)
+    return result
 
 
 def parse_card_action(event, *, owner_id):
@@ -225,11 +276,19 @@ class Client:
         card = question_card(decision, workspace=workspace, leader=leader)
         return self._send(owner_id, "--content", _card_json(card), idempotency_key, "interactive")
 
-    def update_answer(self, message_id, decision, *, workspace, leader):
+    def send_questions(self, owner_id, entries, *, idempotency_key):
+        return self._send(owner_id, "--content", _card_json(questions_card(entries)), idempotency_key, "interactive")
+
+    def _update_card(self, message_id, card):
         _text(message_id, "消息编号")
-        card = answered_card(decision, workspace=workspace, leader=leader)
         return self._invoke(self._command("im", "messages", "patch", "--as", "bot", "--message-id", message_id,
                                           "--data", "-"), json.dumps({"content": _card_json(card)}, ensure_ascii=False))
+
+    def update_answer(self, message_id, decision, *, workspace, leader):
+        return self._update_card(message_id, answered_card(decision, workspace=workspace, leader=leader))
+
+    def update_questions(self, message_id, entries):
+        return self._update_card(message_id, questions_card(entries))
 
     def consumer_command(self, event_key):
         if event_key not in EVENT_KEYS:

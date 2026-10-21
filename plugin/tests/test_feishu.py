@@ -88,6 +88,8 @@ class CardTests(unittest.TestCase):
                 feishu.question_card({**QUESTION, **changes}, workspace=WORKSPACE, leader=LEADER)
         with self.assertRaises(ValueError):
             feishu.answered_card({**QUESTION, "answer": "尚未保存"}, workspace=WORKSPACE, leader=LEADER)
+        with self.assertRaises(ValueError):
+            feishu.answered_card({**QUESTION, "id": None, "status": "answered", "answer": "已保存"}, workspace=WORKSPACE, leader=LEADER)
 
 
 class EventTests(unittest.TestCase):
@@ -116,6 +118,73 @@ class EventTests(unittest.TestCase):
                         {"message_type": "interactive"}, {"reply_to": ""}, {"content": " "}, {"message_id": None}):
             with self.subTest(changes=changes):
                 self.assertIsNone(feishu.parse_text_reply({**event, **changes}, owner_id=OWNER))
+
+
+class QuestionsCardTests(unittest.TestCase):
+    def setUp(self):
+        self.entries = [{"decision": QUESTION, "workspace": WORKSPACE, "leader": LEADER},
+                        {"decision": {**QUESTION, "id": 43, "question": "要继续第二项吗？"},
+                         "workspace": "第二工作区", "leader": "另一组"}]
+
+    def test_combined_card_preserves_each_scope_and_does_not_mutate_inputs(self):
+        original = copy.deepcopy(self.entries)
+        card = feishu.questions_card(self.entries)
+        self.assertEqual(self.entries, original)
+        buttons = [v for v in walk(card) if v.get("tag") == "button"]
+        self.assertEqual(len(buttons), 4)
+        for entry, button in zip(self.entries, buttons[::2]):
+            value = feishu.parse_card_action(callback(button["behaviors"][0]["value"]), owner_id=OWNER)
+            self.assertEqual((value["workspace"], value["leader"], value["decision_id"]),
+                             (entry["workspace"], entry["leader"], entry["decision"]["id"]))
+        content = json.dumps(card, ensure_ascii=False)
+        for label in (WORKSPACE, LEADER, "第二工作区", "另一组", "#编号 答复"):
+            self.assertIn(label, content)
+        self.assertIn("2 件事", card["header"]["title"]["content"])
+
+    def test_mixed_update_removes_only_saved_questions_buttons_and_tracks_delivery(self):
+        self.entries[0]["decision"] = {**QUESTION, "status": "answered", "answer": "先补测试"}
+        card = feishu.questions_card(self.entries)
+        buttons = [v for v in walk(card) if v.get("tag") == "button"]
+        self.assertEqual(len(buttons), 2)
+        self.assertEqual({v["behaviors"][0]["value"]["decision_id"] for v in buttons}, {43})
+        self.assertIn("等待会话下一轮接收", json.dumps(card, ensure_ascii=False))
+        self.assertIn("1 件事", card["header"]["title"]["content"])
+        self.entries[1]["decision"] = {**self.entries[1]["decision"], "status": "answered", "answer": "继续",
+                                         "delivered_at": "2026-10-22T00:00:00Z"}
+        card = feishu.questions_card(self.entries)
+        self.assertFalse(any(v.get("tag") == "button" for v in walk(card)))
+        self.assertEqual(card["header"]["template"], "green")
+        self.assertIn("已交给会话", json.dumps(card, ensure_ascii=False))
+
+    def test_invalid_duplicates_and_total_size_fail_locally(self):
+        large = [{"decision": {"id": i, "question": "长" * 4000}, "workspace": WORKSPACE, "leader": LEADER}
+                 for i in (1, 2, 3)]
+        for entries in ([], None, [None], [{"decision": {}}], self.entries + [self.entries[0]], large,
+                        [{**self.entries[0], "decision": {**QUESTION, "status": "withdrawn"}}]):
+            with self.subTest(entries=type(entries).__name__), self.assertRaises(ValueError):
+                feishu.questions_card(entries)
+        # IDs from separate workspaces retain independent namespaces.
+        feishu.questions_card([self.entries[0], {**self.entries[1], "decision": QUESTION}])
+
+    def test_plain_notes_share_question_card_and_survive_answer_update_without_buttons(self):
+        note = {"decision": None, "workspace": "构建工作区", "leader": "构建组", "text": "构建失败\n<at id=all> 请检查日志"}
+        entries = [note, self.entries[0]]
+        original = copy.deepcopy(entries)
+        card = feishu.questions_card(entries)
+        self.assertEqual(entries, original)
+        content = json.dumps(card, ensure_ascii=False)
+        self.assertIn("构建失败", content)
+        self.assertIn("构建工作区", content)
+        self.assertNotIn("<at id=all>", content)
+        self.assertEqual(len([v for v in walk(card) if v.get("tag") == "button"]), 2)
+        entries[1] = {**entries[1], "decision": {**QUESTION, "status": "answered", "answer": "先补测试"}}
+        card = feishu.questions_card(entries)
+        self.assertIn("构建失败", json.dumps(card, ensure_ascii=False))
+        self.assertFalse(any(v.get("tag") == "button" for v in walk(card)))
+        only_note = feishu.questions_card([note])
+        self.assertEqual(only_note["header"]["title"]["content"], "会话有新进展")
+        with self.assertRaises(ValueError):
+            feishu.questions_card([{**note, "text": " "}])
 
 
 class ClientTests(unittest.TestCase):
@@ -167,6 +236,26 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(raised.exception.missing_scopes, ("im:message:send_as_bot",))
         self.assertNotIn("sensitive-token", str(raised.exception))
         self.runner.assert_called_once()
+
+    def test_combined_send_and_update_keep_one_message_and_untouched_open_question(self):
+        entries = [{"decision": QUESTION, "workspace": WORKSPACE, "leader": LEADER},
+                   {"decision": {**QUESTION, "id": 43}, "workspace": "另一个项目", "leader": LEADER}]
+        self.client.send_questions(OWNER, entries, idempotency_key="crew-batch-1")
+        args, options = self.runner.call_args
+        self.assertEqual(args[0][args[0].index("--msg-type") + 1], "interactive")
+        self.assertEqual(len([v for v in walk(json.loads(options["input"])) if v.get("tag") == "button"]), 4)
+        entries[0]["decision"] = {**QUESTION, "status": "answered", "answer": "先补测试"}
+        self.runner.return_value = completed({})
+        self.client.update_questions("om_card", entries)
+        args, options = self.runner.call_args
+        self.assertEqual(args[0][args[0].index("--message-id") + 1], "om_card")
+        card = json.loads(json.loads(options["input"])["content"])
+        buttons = [v for v in walk(card) if v.get("tag") == "button"]
+        self.assertEqual({v["behaviors"][0]["value"]["decision_id"] for v in buttons}, {43})
+        self.runner.reset_mock()
+        with self.assertRaises(ValueError):
+            self.client.send_questions(OWNER, entries * 2, idempotency_key="crew-batch-2")
+        self.runner.assert_not_called()
 
     def test_missing_or_invalid_success_envelope_is_not_delivery_success(self):
         for value in ([1], {"code": 0}, {"ok": True}, {"ok": True, "data": {}}, {"ok": True, "data": {"message_id": None}}):
