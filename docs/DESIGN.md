@@ -220,11 +220,12 @@ PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stder
 | `GET /api/state?project=P` | 看板，返回带 location 的 candidates；未命名会话补 title，有聊天记录的 session 带 web_chat；保留全部已答待送达和最近 20 条已送达拍板 |
 | `POST /api/project/init` | name、root；启用已有本机目录，无已选项目时也可调用，返回项目对象 |
 | `POST /api/roster/adopt` | session_id、name、可选 group，返回登记后的 session |
-| `POST /api/roster/remove` | name、group；普通成员退出当前分组 |
+| `POST /api/roster/move` | session_id、to；按会话 ID 调整归属，兼容 name 参数 |
+| `POST /api/roster/remove` | session_id、group；普通成员退出当前分组，兼容 name 参数 |
 | `POST /api/group/close` | group、with_members；false 解散并保留会话，true 归档组和会话，均不停止进程 |
 | `POST /api/answer` | id、text；只可回答当前所选项目的问题，交付由下一轮钩子完成 |
 | `POST /api/spawn` | name、task、可选 group / role / cwd / new_worktree / base，默认 member，返回 id、session_id、command、role |
-| `POST /api/leader` | name、members（crew 名）、candidate_members（session_id / name）、可选 task，返回 id、session_id、command、role=leader |
+| `POST /api/leader` | name、member_session_ids（网页精确指定）、members（CLI crew 名）、candidate_members（session_id / name）、可选 task，返回 id、session_id、command、role=leader |
 | `GET /api/chat/history?project=P&session_id=S` | 返回 session_id、events、running、busy |
 | `GET /api/chat/events?project=P&session_id=S&after=N` | SSE 重放 seq 大于 N 的事件，兼读 Last-Event-ID；空闲时发心跳，浏览器断开不关会话 |
 | `POST /api/chat/send` | session_id、text；向当前进程发送，或恢复原会话后发送 |
