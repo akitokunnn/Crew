@@ -363,6 +363,75 @@ class WebTests(ShellFixture, unittest.TestCase):
         self.assertEqual(session["cc_name"], "fresh-address")
         self.assertEqual(board.session(self.conn, "s1")["cc_name"], "cc-one")
 
+    def test_live_unregistered_project_sessions_are_candidates_with_latest_title(self):
+        self.main_file([{"type": "ai-title", "aiTitle": "first"},
+                        {"type": "ai-title", "aiTitle": "latest"}], session="vscode-session")
+        nested = self.project / "nested"
+        nested.mkdir()
+        board.init_project(self.conn, "nested", nested, now=NOW)
+        self.provider.return_value = [
+            {"sessionId": "vscode-session", "name": "cc-vscode", "status": "busy", "cwd": str(self.project)},
+            {"sessionId": "outside", "name": "cc-outside", "status": "idle", "cwd": str(self.root)},
+            {"sessionId": "nested", "name": "cc-nested", "status": "idle", "cwd": str(nested)},
+            {"sessionId": "s1", "name": "cc-one", "status": "busy", "cwd": str(self.project)},
+        ]
+        self.server.service.refresh_agents()
+        state = self.get("/api/state")[1]
+        self.assertEqual(state.get("candidates"), [{"session_id": "vscode-session", "title": "latest",
+                         "cc_name": "cc-vscode", "cwd": str(self.project), "status": "working"}])
+        self.assertIsNone(self.conn.execute("SELECT 1 FROM sessions WHERE session_id='vscode-session'").fetchone())
+
+    def live_candidate(self, session_id="vscode-session", status="busy"):
+        self.provider.return_value = [
+            {"sessionId": session_id, "name": "cc-vscode", "status": status, "cwd": str(self.project)}]
+        self.server.service.refresh_agents()
+        return {"session_id": session_id, "name": "vscode-member"}
+
+    def test_adopt_persists_identity_git_and_address_then_tracks_live_status_until_hook(self):
+        self.git_repo()
+        candidate = self.live_candidate()
+        code, session, _ = self.get("/api/roster/adopt", {**candidate, "group": "lead"})
+        self.assertEqual(code, 200)
+        self.assertEqual((session["crew_name"], session["group_name"], session["cc_name"]),
+                         ("vscode-member", "lead", "cc-vscode"))
+        self.assertEqual((session["worktree"], session["branch"]),
+                         (store.norm_path(self.project), self.git("branch", "--show-current")))
+        self.assertEqual(self.commands, [])
+        self.assertEqual(self.get("/api/state")[1]["candidates"], [])
+        current = lambda: next(s for g in self.get("/api/state")[1]["groups"] for s in g["members"]
+                               if s["session_id"] == candidate["session_id"])
+        self.assertEqual(current()["status"], "working")
+        self.live_candidate(status="idle")
+        self.assertEqual(current()["status"], "idle")
+        board.apply_hook(self.conn, "notification", {"session_id": candidate["session_id"],
+                         "cwd": str(self.project), "message": "waiting for answer"}, "demo", now=NOW)
+        self.live_candidate(status="busy")
+        self.assertEqual(current()["status"], "waiting")
+        self.assertEqual(self.get("/api/roster/adopt", {**candidate, "group": "lead"})[0], 400)
+
+    def test_candidate_titles_increment_and_failures_hide_stale_candidates(self):
+        self.main_file([{"type": "ai-title", "aiTitle": "first"}], session="vscode-session")
+        self.live_candidate()
+        self.assertEqual(self.get("/api/state")[1]["candidates"][0]["title"], "first")
+        self.write(self.claude / "project" / "vscode-session.jsonl",
+                   [{"type": "ai-title", "aiTitle": "new title"}], append=True)
+        self.assertEqual(self.get("/api/state")[1]["candidates"][0]["title"], "new title")
+        self.provider.side_effect = OSError("agents unavailable")
+        self.server.service.refresh_agents()
+        self.assertEqual(self.get("/api/state")[1]["candidates"], [])
+
+    def test_leader_adopts_candidates_and_validates_existing_members_before_writes(self):
+        candidate = self.live_candidate()
+        code, _, _ = self.get("/api/leader", {"name": "boss", "members": ["missing"], "candidate_members": [candidate]})
+        self.assertEqual(code, 400)
+        self.assertIsNone(self.conn.execute("SELECT 1 FROM sessions WHERE session_id=?", (candidate["session_id"],)).fetchone())
+        code, _, _ = self.get("/api/leader", {"name": "boss", "members": ["two"], "candidate_members": [candidate]})
+        self.assertEqual(code, 200)
+        self.assertEqual(board.session(self.conn, candidate["session_id"])["group_name"], "boss")
+        self.assertEqual(board.session(self.conn, "s2")["group_name"], "boss")
+        self.assertEqual(board.session(self.conn, candidate["session_id"])["cc_name"], "cc-vscode")
+        self.assertEqual(len(self.commands), 1)
+
     def test_default_project_uses_startup_directory_then_first_project(self):
         other = self.root / "a-first"
         other.mkdir()

@@ -530,11 +530,18 @@ def events(conn, project_name=None, session_name=None, limit=50):
 
 
 def status(conn, project_name, agents):
-    present = {a["sessionId"] for a in agents}
+    present = {a["sessionId"]: a for a in agents}
+    hooked = {row[0] for row in conn.execute("SELECT DISTINCT session_id FROM events WHERE project=? AND kind LIKE 'hook:%'", (project_name,))}
     members = sessions(conn, project_name)
     for s in members:
         if s["session_id"] not in present:
             s["status"] = "offline"
+        else:
+            agent = present[s["session_id"]]
+            if "name" in agent:
+                s["cc_name"] = agent["name"]
+            if s["session_id"] not in hooked and s["status"] != "closed" and agent.get("status") in ("busy", "idle"):
+                s["status"] = "working" if agent["status"] == "busy" else "idle"
     grouped = groups(conn, project_name)
     for g in grouped:
         g["members"] = [s for s in members if s["group_name"] == g["name"]]

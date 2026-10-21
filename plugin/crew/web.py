@@ -12,7 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from . import board, spawn, store, usage, usage_cli
+from . import board, hooks, spawn, store, usage, usage_cli
 
 
 def _text(data, key):
@@ -41,6 +41,7 @@ class Service:
         self.agents, self.agents_at = [], None
         self.agents_error = "\u6b63\u5728\u83b7\u53d6\u8fdb\u7a0b\u72b6\u6001"
         self.scanned_at = None
+        self.title_cache = {}
         self.stop = threading.Event()
         self.agents_ready = threading.Event()
         self.worker = None
@@ -91,6 +92,38 @@ class Service:
             raise board.BoardError("\u8bf7\u5148 crew init \u542f\u7528\u9879\u76ee")
         return board.project(conn, name)["name"]
 
+    def candidates(self, conn, project_name):
+        with self.agents_lock:
+            agents, error = self.agents, self.agents_error
+        if error is not None:
+            return []
+        registered = {row[0] for row in conn.execute("SELECT session_id FROM sessions")}
+        candidates = []
+        for agent in agents:
+            if agent["sessionId"] in registered or not agent.get("cwd"):
+                continue
+            project = board.project_for_path(conn, agent["cwd"])
+            if project is not None and project["name"] == project_name:
+                candidates.append({"session_id": agent["sessionId"], "cc_name": agent["name"], "cwd": agent["cwd"],
+                                   "status": "working" if agent["status"] == "busy" else "idle"})
+        with self.scan_lock:
+            titles = usage.session_titles(self.claude_root, [s["session_id"] for s in candidates], self.title_cache)
+        for candidate in candidates:
+            candidate["title"] = titles.get(candidate["session_id"]) or candidate["cc_name"]
+        return candidates
+
+    def candidate(self, conn, project_name, session_id):
+        candidate = next((s for s in self.candidates(conn, project_name) if s["session_id"] == session_id), None)
+        if candidate is None:
+            raise board.BoardError("候选会话已离线或不属于当前项目: " + session_id)
+        return candidate
+
+    def adopt(self, conn, project_name, candidate, name, group_name, now):
+        worktree, branch = hooks.git_details(candidate["cwd"])
+        board.register_session(conn, candidate["session_id"], project_name, candidate["cwd"], worktree, branch,
+                               name=name, group_name=group_name, now=now)
+        return board.update_cc_name(conn, candidate["session_id"], candidate["cc_name"], now=now)
+
     def state(self, project_name=None):
         with self.agents_lock:
             agents, error, updated = self.agents, self.agents_error, self.agents_at
@@ -98,19 +131,14 @@ class Service:
             projects = board.projects(conn)
             if not projects and project_name is None:
                 result = {"project": None, "groups": [], "ungrouped": [], "leases": [], "claims": [], "open_decisions": 0,
-                          "resources": [], "decisions": [], "handoffs": [], "reports": [], "events": []}
+                          "resources": [], "decisions": [], "handoffs": [], "reports": [], "events": [], "candidates": []}
             else:
                 name = self.selected_project(conn, project_name)
                 # Passing every stored identity preserves the board statuses while process state is unknown.
                 identities = [{"sessionId": s["session_id"]} for s in board.sessions(conn, name)] if error else agents
                 result = board.status(conn, name, identities)
-                if error is None:
-                    addresses = {agent["sessionId"]: agent["name"] for agent in agents}
-                    for session in [*result["ungrouped"], *(s for g in result["groups"] for s in g["members"])]:
-                        if session["session_id"] in addresses:
-                            session["cc_name"] = addresses[session["session_id"]]
                 decisions = board.decisions(conn, name, all=True)
-                result.update(resources=board.resources(conn, name),
+                result.update(candidates=self.candidates(conn, name), resources=board.resources(conn, name),
                               decisions=[d for d in decisions if d["status"] == "open"] +
                               sorted((d for d in decisions if d["status"] == "answered"),
                                      key=lambda d: (d["answered_at"], d["id"]), reverse=True)[:20],
@@ -139,12 +167,30 @@ class Service:
                 members = data.get("members", [])
                 if not isinstance(members, list) or any(not isinstance(m, str) or not m.strip() for m in members):
                     raise ValueError("members \u5fc5\u987b\u662f\u540d\u5b57\u6570\u7ec4")
-                return spawn.leader_start(conn, self.home, self.plugin_root, project, _text(data, "name"), members,
-                                          _optional_text(data, "task"), launcher=self.launcher, now=now)
+                name, task = _text(data, "name"), _optional_text(data, "task")
+                candidate_members = [(self.candidate(conn, project, _text(member, "session_id")), _text(member, "name"))
+                                     for member in data.get("candidate_members", [])]
+                names = {name, *members}
+                for _, member_name in candidate_members:
+                    board.available_name(conn, project, member_name)
+                    if member_name in names:
+                        raise board.Conflict("组员重名: " + member_name)
+                    names.add(member_name)
+                # Check the leader and existing members before adopting anyone.
+                spawn.leader_start(conn, self.home, self.plugin_root, project, name, members,
+                                   task, launcher=self.launcher, now=now, dry_run=True)
+                for candidate, member_name in candidate_members:
+                    self.adopt(conn, project, candidate, member_name, None, now)
+                return spawn.leader_start(conn, self.home, self.plugin_root, project, name,
+                                          members + [member_name for _, member_name in candidate_members],
+                                          task, launcher=self.launcher, now=now)
             if path == "/api/lease/give":
                 board.give(conn, project, _text(data, "resource"), board.HUMAN, force=True, reason=_text(data, "reason"), now=now)
             elif path == "/api/roster/move":
                 board.roster(conn, project, "move", _text(data, "to"), [_text(data, "name")], now=now)
+            elif path == "/api/roster/adopt":
+                candidate = self.candidate(conn, project, _text(data, "session_id"))
+                return self.adopt(conn, project, candidate, _text(data, "name"), _optional_text(data, "group"), now)
             return {"ok": True}
 
     def usage(self, period="week", what=None):
@@ -168,7 +214,7 @@ class Service:
             return result
 
 
-POST_PATHS = {"/api/answer", "/api/spawn", "/api/leader", "/api/lease/give", "/api/roster/move"}
+POST_PATHS = {"/api/answer", "/api/spawn", "/api/leader", "/api/lease/give", "/api/roster/move", "/api/roster/adopt"}
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"),
           "/style.css": ("style.css", "text/css; charset=utf-8")}
 

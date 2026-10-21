@@ -90,6 +90,31 @@ def _line_number(path, offset):
     return number
 
 
+def session_titles(root, session_ids, cache):
+    """Read the latest ai-title in live main transcripts, incrementally like scan()."""
+    titles = {}
+    for session_id in session_ids:
+        previous = cache.get(session_id)
+        path = previous["path"] if previous else next(Path(root).glob("*/" + session_id + ".jsonl"), None)
+        if path is None:
+            continue
+        stat = path.stat()
+        offset, title = (previous["offset"], previous["title"]) if previous and stat.st_size >= previous["size"] else (0, None)
+        if previous is None or (stat.st_size, stat.st_mtime) != (previous["size"], previous["mtime"]):
+            for _, end, line in _lines(path, offset):
+                try:
+                    record = json.loads(line)
+                    if record["type"] == "ai-title":
+                        title = record["aiTitle"]
+                except (json.JSONDecodeError, KeyError, TypeError):
+                    # Usage scanning also consumes malformed complete lines and keeps going.
+                    pass
+                offset = end
+        cache[session_id] = {"path": path, "offset": offset, "size": stat.st_size, "mtime": stat.st_mtime, "title": title}
+        titles[session_id] = title
+    return titles
+
+
 def _claude_identity(path, root, kind):
     relative = path.relative_to(root)
     if kind == "claude":
