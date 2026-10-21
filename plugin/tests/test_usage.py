@@ -5,6 +5,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from crew import store, usage
 
@@ -192,6 +193,55 @@ class TestUsage(UsageFixture, unittest.TestCase):
         self.scan()
         rows = self.conn.execute("SELECT rollout_id FROM codex_rate_limits ORDER BY rollout_id").fetchall()
         self.assertEqual([row["rollout_id"] for row in rows], ["one", "two"])
+
+    def test_codex_inherited_metadata_does_not_replace_the_file_identity(self):
+        root = self.rollout("a-root")
+        root_meta = json.loads(root.read_text(encoding="utf-8").splitlines()[0])
+        self.write(root, [root_meta, token_count(40, 4000)], append=True)
+        child = self.rollout("b-child", records=[root_meta, token_count(20, 1500)])
+        child_records = [json.loads(line) for line in child.read_text(encoding="utf-8").splitlines()]
+        child_records[0]["payload"].update(
+            session_id="a-root", source={"subagent": {"thread_spawn": {"parent_thread_id": "a-root"}}})
+        self.write(child, child_records)
+
+        self.assertEqual(self.scan()["skipped"], 0)
+        rows = {row["rollout_id"]: row for row in self.conn.execute("SELECT * FROM codex_sessions")}
+        self.assertEqual((rows["a-root"]["path"], rows["a-root"]["total_tokens"]), (str(root), 4000))
+        self.assertEqual((rows["b-child"]["path"], rows["b-child"]["total_tokens"]), (str(child), 1500))
+        self.assertIsInstance(json.loads(rows["b-child"]["source"]), dict)
+
+        self.write(root, [token_count(50, 4500)], append=True)
+        self.assertEqual(self.scan()["skipped"], 0)
+        rows = {row["rollout_id"]: row for row in self.conn.execute("SELECT * FROM codex_sessions")}
+        self.assertEqual((rows["a-root"]["path"], rows["a-root"]["total_tokens"]), (str(root), 4500))
+        self.assertEqual((rows["b-child"]["path"], rows["b-child"]["total_tokens"]), (str(child), 1500))
+
+    def test_codex_missing_path_is_repaired_from_only_the_header_without_resetting_usage(self):
+        root = self.rollout("a-root")
+        child = self.rollout("b-child")
+        self.scan()
+        self.conn.execute("UPDATE codex_sessions SET path = ?, total_tokens = 1234, ended_at = ? "
+                          "WHERE rollout_id = 'a-root'", (str(child), stamp(99)))
+        before = dict(self.conn.execute("SELECT * FROM codex_sessions WHERE rollout_id = 'a-root'").fetchone())
+        read_lines, original_lines = [], usage._lines
+
+        def observed_lines(path, offset):
+            for item in original_lines(path, offset):
+                if path == root:
+                    read_lines.append((offset, item[0]))
+                yield item
+
+        with mock.patch.object(usage, "_lines", observed_lines):
+            result = self.scan()
+        self.assertEqual((result["skipped"], result["updated"]), (0, 1))
+        repaired = dict(self.conn.execute("SELECT * FROM codex_sessions WHERE rollout_id = 'a-root'").fetchone())
+        self.assertEqual(repaired, dict(before, path=str(root)))
+        self.assertEqual(read_lines, [(0, 0)])
+
+        self.write(root, [token_count(110, 4500)], append=True)
+        self.assertEqual(self.scan()["skipped"], 0)
+        repaired = self.conn.execute("SELECT * FROM codex_sessions WHERE rollout_id = 'a-root'").fetchone()
+        self.assertEqual((repaired["total_tokens"], repaired["ended_at"]), (4500, stamp(110)))
 
     def test_codex_first_context_last_totals_and_null_info_rate_limits(self):
         later_context = {"timestamp": stamp(12), "type": "turn_context", "payload": {

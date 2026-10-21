@@ -195,9 +195,32 @@ def _claude_line(conn, record, identity, agent_type, counts):
         }, counts)
 
 
-def _codex_line(conn, record, path, counts):
+def _restore_codex_path(conn, path, counts):
+    """Repair paths overwritten by inherited metadata without replaying usage."""
+    if conn.execute("SELECT 1 FROM codex_sessions WHERE path = ?", (str(path),)).fetchone():
+        return False
+    try:
+        first = next(_lines(path, 0), None)
+        if first is None:
+            return False
+        record = json.loads(first[2])
+        if record["type"] != "session_meta":
+            return False
+        rollout_id = record["payload"]["id"]
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return False
+    if conn.execute("SELECT 1 FROM codex_sessions WHERE rollout_id = ?", (rollout_id,)).fetchone() is None:
+        return False
+    _save(conn, "codex_sessions", "rollout_id", {"rollout_id": rollout_id, "path": str(path)}, counts)
+    return True
+
+
+def _codex_line(conn, record, path, counts, is_header):
     kind, payload = record["type"], record["payload"]
     if kind == "session_meta":
+        # Forks replay ancestors' session_meta after their own leading metadata.
+        if not is_header:
+            return
         # Codex's own sub-agents (e.g. the guardian reviewer) carry source as an object.
         source = payload["source"]
         _save(conn, "codex_sessions", "rollout_id", {
@@ -310,7 +333,8 @@ def scan(conn, claude_root, codex_root, runs_file):
         for path, kind in files:
             stat = path.stat()
             old = conn.execute("SELECT * FROM usage_files WHERE path = ?", (str(path),)).fetchone()
-            if old is not None and stat.st_size == old["size"] and stat.st_mtime == old["mtime"]:
+            restored = kind == "codex" and old is not None and _restore_codex_path(conn, path, counts)
+            if old is not None and stat.st_size == old["size"] and stat.st_mtime == old["mtime"] and not restored:
                 continue
             scanned_files += 1
             offset = old["offset"] if old else 0
@@ -329,7 +353,7 @@ def scan(conn, claude_root, codex_root, runs_file):
                         if kind.startswith("claude"):
                             _claude_line(conn, record, identity, agent_type, counts)
                         elif kind == "codex":
-                            _codex_line(conn, record, path, counts)
+                            _codex_line(conn, record, path, counts, is_header=begin == 0)
                         else:
                             _run_line(conn, record, counts)
                 except (json.JSONDecodeError, KeyError, TypeError) as error:
