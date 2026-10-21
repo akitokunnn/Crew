@@ -74,12 +74,17 @@ def handle(event, data, home, plugin_root, environ, git_provider=git_details, no
         deliveries = board.apply_hook(conn, event, data, p["name"], identity=identity, git_info=git_info, now=now)
         lines = _deliveries_text(deliveries)
         if event == "session-start":
-            s = board.whoami(conn, data["session_id"])
-            leader = s["leader"]
-            lines = ["Crew 项目：%s" % p["name"], "我的 crew 名：%s" % (s["crew_name"] if s["crew_name"] is not None else "尚未认领，请运行 crew join <名字>"),
-                     "分组：%s；leader：%s；SendMessage 地址：%s" % (s["group_name"], leader["crew_name"] if leader else None, leader["cc_name"] if leader else None),
-                     '命令行：python "%s" ...' % (Path(home).resolve() / "crew.py"),
-                     "请遵守 /crew:%s" % ("leader" if s["role"] == "leader" else "member")] + lines
+            if board.is_archived(conn, data["session_id"]):
+                control = board.session_control(conn, data["session_id"])
+                lines = ["Crew 项目：%s" % p["name"], "本会话已%s，本次启动不会重新加入协作。" %
+                         ("从 Crew 移除" if control["removed"] else "归档")]
+            else:
+                s = board.whoami(conn, data["session_id"])
+                leader = s["leader"]
+                lines = ["Crew 项目：%s" % p["name"], "我的 crew 名：%s" % (s["crew_name"] if s["crew_name"] is not None else "尚未认领，请运行 crew join <名字>"),
+                         "分组：%s；leader：%s；SendMessage 地址：%s" % (s["group_name"], leader["crew_name"] if leader else None, leader["cc_name"] if leader else None),
+                         '命令行：python "%s" ...' % (Path(home).resolve() / "crew.py"),
+                         "请遵守 /crew:%s" % ("leader" if s["role"] == "leader" else "member")] + lines
     if lines and event in ("session-start", "user-prompt-submit"):
         name = "SessionStart" if event == "session-start" else "UserPromptSubmit"
         return 0, {"hookSpecificOutput": {"hookEventName": name, "additionalContext": "\n".join(lines)}}

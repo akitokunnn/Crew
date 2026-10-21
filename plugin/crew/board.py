@@ -93,6 +93,27 @@ def session(conn, session_id):
     return dict(row)
 
 
+def session_control(conn, session_id):
+    row = conn.execute("SELECT * FROM session_controls WHERE session_id=?", (session_id,)).fetchone()
+    return dict(row) if row is not None else None
+
+
+def is_archived(conn, session_id):
+    control = session_control(conn, session_id)
+    return bool(control and (control["archived_status"] is not None or control["removed"]))
+
+
+def _registered_identity(conn, session_id, name, role, group_name):
+    """An explicit human rename outranks stale environment variables on resume."""
+    control = session_control(conn, session_id)
+    if control and control["name_override"] is not None:
+        current = session(conn, session_id)
+        name, role, group_name = control["name_override"], current["role"], current["group_name"]
+        if role == "leader":
+            group_name = name
+    return name, role, group_name
+
+
 def sessions(conn, project_name):
     return _rows(conn, "SELECT * FROM sessions WHERE project=? ORDER BY crew_name,started_at", (project_name,))
 
@@ -135,7 +156,7 @@ def _identity(conn, project_name, session_id, name, role, group_name, now):
 
 def _register(conn, session_id, project_name, cwd, worktree, branch, now, entrypoint, permission_mode, spawn_id):
     project(conn, project_name)
-    old = conn.execute("SELECT project FROM sessions WHERE session_id=?", (session_id,)).fetchone()
+    old = conn.execute("SELECT * FROM sessions WHERE session_id=?", (session_id,)).fetchone()
     if old and old["project"] != project_name:
         raise Conflict("会话已经登记在另一项目")
     conn.execute("INSERT INTO sessions(session_id,project,cwd,worktree,branch,started_at,entrypoint,permission_mode,spawn_id) "
@@ -144,13 +165,17 @@ def _register(conn, session_id, project_name, cwd, worktree, branch, now, entryp
                  "permission_mode=excluded.permission_mode,spawn_id=COALESCE(excluded.spawn_id,sessions.spawn_id),status='idle',status_note=NULL,ended_at=NULL",
                  (session_id, project_name, store.norm_path(cwd), None if worktree is None else store.norm_path(worktree),
                   branch, _time(now), entrypoint, permission_mode, spawn_id))
+    if old is not None and is_archived(conn, session_id):
+        conn.execute("UPDATE sessions SET status='closed',status_note=NULL,ended_at=? WHERE session_id=?",
+                     (old["ended_at"] or _time(now), session_id))
 
 
 @atomic
 def register_session(conn, session_id, project_name, cwd, worktree, branch, name=None, role="member",
                      group_name=None, entrypoint=None, permission_mode=None, spawn_id=None, now=None):
     _register(conn, session_id, project_name, cwd, worktree, branch, now, entrypoint, permission_mode, spawn_id)
-    if name is not None:
+    if name is not None and not is_archived(conn, session_id):
+        name, role, group_name = _registered_identity(conn, session_id, name, role, group_name)
         _identity(conn, project_name, session_id, name, role, group_name, now)
     conn.execute("UPDATE sessions SET last_event='session-start',last_event_at=? WHERE session_id=?", (_time(now), session_id))
     _event(conn, "session:register", project_name, session_id, {"cwd": str(cwd)}, now)
@@ -160,6 +185,10 @@ def register_session(conn, session_id, project_name, cwd, worktree, branch, name
 @atomic
 def join(conn, session_id, project_name, name, cwd, worktree, branch, task=None, role="member",
          group_name=None, cc_name=None, now=None):
+    control = session_control(conn, session_id)
+    if control is not None:
+        conn.execute("UPDATE session_controls SET archived_status=NULL,archived_note=NULL,archived_ended_at=NULL,"
+                     "removed=0,name_override=? WHERE session_id=?", (name, session_id))
     _register(conn, session_id, project_name, cwd, worktree, branch, now, None, None, None)
     _identity(conn, project_name, session_id, name, role, group_name, now)
     conn.execute("UPDATE sessions SET cc_name=?,task=?,last_event='join',last_event_at=? WHERE session_id=?",
@@ -494,6 +523,8 @@ def handoffs(conn, session_id):
 
 
 def _deliver(conn, session_id, include_answers, now):
+    if is_archived(conn, session_id):
+        return {"answers": [], "handoffs": []}
     answers = _rows(conn, "SELECT * FROM decisions WHERE session_id=? AND status='answered' AND delivered_at IS NULL ORDER BY id", (session_id,)) if include_answers else []
     pending = handoffs(conn, session_id)
     for d in answers:
@@ -600,8 +631,9 @@ def apply_hook(conn, event, data, project_name, identity=None, git_info=None, no
         worktree, branch = git_info
         identity = {} if identity is None else identity
         _register(conn, sid, project_name, data["cwd"], worktree, branch, now, data.get("entrypoint"), data.get("permission_mode"), identity.get("spawn_id"))
-        if identity.get("name") is not None:
-            _identity(conn, project_name, sid, identity["name"], identity["role"], identity.get("group_name"), now)
+        if identity.get("name") is not None and not is_archived(conn, sid):
+            name, role, group_name = _registered_identity(conn, sid, identity["name"], identity["role"], identity.get("group_name"))
+            _identity(conn, project_name, sid, name, role, group_name, now)
             if identity.get("spawn_id") is not None:
                 # Spawned sessions use --name <crew name>, which is also the SendMessage address.
                 conn.execute("UPDATE sessions SET cc_name=? WHERE session_id=?", (identity["name"], sid))
@@ -637,24 +669,28 @@ def apply_hook(conn, event, data, project_name, identity=None, git_info=None, no
             detail["last_assistant_message"] = data["last_assistant_message"][:300]
             conn.execute("UPDATE sessions SET last_message=? WHERE session_id=?", (detail["last_assistant_message"], sid))
     ended_at = _time(now) if state == "offline" else None
-    if existing_compact or (event != "session-start" and s["status"] == "closed"):
+    archived = is_archived(conn, sid)
+    if archived:
+        s = session(conn, sid)
+        state, note, ended_at = "closed", None, s["ended_at"] or _time(now)
+    elif existing_compact or (event != "session-start" and s["status"] == "closed"):
         # Compact continues the current run: keep DB identity/status rather than replaying stale spawn settings.
         # Late tools and Stop from the old turn must not reopen an explicitly archived session either.
         state, note, ended_at = s["status"], s["status_note"], s["ended_at"]
     conn.execute("UPDATE sessions SET status=?,status_note=?,last_event=?,last_event_at=?,ended_at=? WHERE session_id=?",
                  (state, note, event, _time(now), ended_at, sid))
-    result = _deliver(conn, sid, event == "user-prompt-submit", now) if event in ("session-start", "user-prompt-submit") else {"answers": [], "handoffs": []}
+    result = _deliver(conn, sid, event == "user-prompt-submit", now) if not archived and event in ("session-start", "user-prompt-submit") else {"answers": [], "handoffs": []}
     detail["delivered_answers"] = [d["id"] for d in result["answers"]]
     detail["delivered_handoffs"] = [h["id"] for h in result["handoffs"]]
     _event(conn, "hook:" + event, project_name, sid, detail, now)
     return result
 
 
-def available_name(conn, project_name, name):
+def available_name(conn, project_name, name, session_id=None):
     """Check spawn names with the same online definition as join."""
     project(conn, project_name)
-    if conn.execute("SELECT 1 FROM sessions WHERE project=? AND crew_name=? "
-                    "AND status NOT IN ('offline','closed')", (project_name, name)).fetchone():
+    if conn.execute("SELECT 1 FROM sessions WHERE project=? AND crew_name=? AND (? IS NULL OR session_id<>?) "
+                    "AND status NOT IN ('offline','closed')", (project_name, name, session_id, session_id)).fetchone():
         raise Conflict("\u540c\u9879\u76ee\u5728\u7ebf\u4f1a\u8bdd\u91cd\u540d: " + name)
 
 
