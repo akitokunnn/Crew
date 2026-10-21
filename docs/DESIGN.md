@@ -24,8 +24,8 @@ Crew/
       guard.py                        守卫
       install.py                      写 ~/.crew 下的启动器、PATH 垫片、默认文件
       usage.py  usage_cli.py          用量扫描、汇总、命令行
-      spawn.py                        成员终端启动、任务文件、leader 命令转网页服务
-      chat.py                         后台 leader CLI、流式协议、聊天记录与恢复
+      spawn.py                        后台会话启动计划、任务文件、CLI 转网页服务
+      chat.py                         后台成员/leader CLI、流式协议、聊天记录与恢复
       web.py  web/                    看板和聊天网页，含本地 Markdown 库
     defaults/blacklist.txt  defaults/prices.json
     tests/                            unittest，cd plugin && python -m unittest discover -s tests
@@ -105,7 +105,7 @@ Crew/
 | `events [--session NAME] [--limit N]` | 事件流水 |
 | `doctor` | 检查：数据库能打开、blacklist.txt 每行合法、runtime.json 的 plugin_root 存在、当前目录属于哪个项目 |
 | `usage ...` | 转给 `crew.usage_cli.main(argv, home)`（§8） |
-| `spawn ...` | 在 crew 的 Windows Terminal 窗口开成员会话（§10） |
+| `spawn ...` | 通过运行中的网页服务开后台成员会话；dry-run 只看计划（§10） |
 | `leader start --name N [--members A,B] [--task T] [--dry-run]` | 调用运行中的网页服务开 leader；服务没开时报错，dry-run 只看计划（§10） |
 | `web [--port 47811] [--open]` | 本机看板和 leader 聊天服务（§10） |
 
@@ -201,13 +201,13 @@ PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stder
 
 ## 10. 开新会话和网页
 
-- 成员仍用 `spawn --name N --task T [--group G] [--cwd DIR | --new-worktree BRANCH]` 在 Windows Terminal 启动。任务正文写 `HOME/spawn/<id>.md`，参数写 `<id>.json`；`wt.exe -w crew new-tab` 调 `launch.ps1`，设置 CREW_* 身份后启动 `claude -n N --permission-mode bypassPermissions`。会话退出时标签页随之关闭。
-- `web [--port 47811] [--open]` 只监听 127.0.0.1，运行期间把地址写入 `HOME/web.json`。页面包含看板、用量和 leader 对话；对话里渲染 Markdown、流式文本、可折叠的工具调用/结果，旁边显示组员状态和待拍板。前端用原生 JS 和本地 markdown-it 15.0.2，无构建流程；Python 后端仍只用标准库。
-- `leader start --name N [--members A,B] [--task T]` 调本机网页服务的 `/api/leader`；先运行 `crew web --open`。服务未运行时清楚报错。`--dry-run` 仍只生成启动计划，不连服务、不写白板、不启动进程。
-- leader 启动复用 `spawn.prepare` 和任务文件，建分组、收编/挪入选定成员。后台进程是 PATH 里的 Claude CLI，参数为 `-p --input-format stream-json --output-format stream-json --verbose --include-partial-messages --replay-user-messages --permission-mode bypassPermissions --agent crew:leader --name N`，保持 stdin 打开，不加 `--bare`，因此保留跨会话收件箱和插件钩子/守卫。成员和 leader 的守则仍分别是 `/crew:member` 和 `/crew:leader`。
-- 网页启动前预分配 UUID，首次用 `--session-id`，把 leader 的身份、cwd、spawn_id 记进白板；重启网页服务后，等用户下一次发言再用 `--resume` 恢复同 ID。恢复前直接查活进程，同 ID 已在 VS Code 或其他进程里运行时拒绝双开。
+- `spawn --name N --task T [--group G] [--cwd DIR | --new-worktree BRANCH]` 默认开后台成员，调用网页服务的 `/api/spawn`。任务正文写 `HOME/spawn/<id>.md`，参数写 `<id>.json`；复用 leader 的持久 CLI、聊天记录和恢复逻辑。新会话不再开终端窗口。
+- `web [--port 47811] [--open]` 只监听 127.0.0.1，运行期间把地址写入 `HOME/web.json`。页面包含看板、用量和成员/leader 对话；对话里渲染 Markdown、流式文本、可折叠的工具调用/结果，旁边显示组员状态和待拍板。前端用原生 JS 和本地 markdown-it 15.0.2，无构建流程；Python 后端仍只用标准库。
+- `leader start --name N [--members A,B] [--task T]` 调本机网页服务的 `/api/leader`。`spawn` 和 `leader start` 都先要求运行 `crew web --open`，服务未运行时清楚报错；`--dry-run` 只生成启动计划，不连服务、不写白板、不启动进程。
+- 成员和 leader 都复用 `spawn.prepare` 和任务文件；leader 额外建分组、收编/挪入选定成员。后台进程是 PATH 里的 Claude CLI，通用参数为 `-p --input-format stream-json --output-format stream-json --verbose --include-partial-messages --replay-user-messages --permission-mode bypassPermissions --name N`；仅 leader 追加 `--agent crew:leader`。保持 stdin 打开，不加 `--bare`，保留跨会话收件箱和插件钩子/守卫。任务 brief 指定相应的 `/crew:member` 或 `/crew:leader` 守则，CREW_ROLE 也按角色设置；未分组成员不设置 CREW_GROUP。
+- 启动计划预分配 UUID，首次用 `--session-id`，把会话的角色、分组、cwd、spawn_id 记进白板；重启网页服务后，等用户下一次发言再用 `--resume` 恢复同 ID，并使用白板里当前的角色和分组。恢复前直接查活进程，同 ID 已在 VS Code 或其他进程里运行时拒绝双开。
 - 浏览器刷新只重放 `HOME/chat/<会话ID>.jsonl`，不会启动新进程。聊天事件不含 thinking；assistant 的同 ID 分块合并，完整块替换对应流式文本，重复的 human replay 不再显示。组员发来的消息取 peer origin 的 body 和 name，不需要网页另投一次 stdin。
-- leader 正在处理时，用户发送返回冲突，让这一轮结束；result 只代表一轮结束，CLI 仍保持在线。服务退出只关闭自己子进程的 stdin，让它正常结束。恢复前先等旧进程输出读完，避免旧状态覆盖新一轮。
+- 会话正在处理时，用户发送返回冲突，让这一轮结束；result 只代表一轮结束，CLI 仍保持在线。服务退出只关闭自己子进程的 stdin，让它正常结束。恢复前先等旧进程输出读完，避免旧状态覆盖新一轮。
 
 网页接口：
 
@@ -215,12 +215,13 @@ PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stder
 |---|---|
 | `GET /api/state?project=P` | 看板，额外返回 candidates；有聊天记录的 session 带 web_chat |
 | `POST /api/roster/adopt` | session_id、name、可选 group，返回登记后的 session |
-| `POST /api/leader` | name、members（crew 名）、candidate_members（session_id / name）、可选 task，返回 session_id |
+| `POST /api/spawn` | name、task、可选 group / role / cwd / new_worktree / base，默认 member，返回 id、session_id、command、role |
+| `POST /api/leader` | name、members（crew 名）、candidate_members（session_id / name）、可选 task，返回 id、session_id、command、role=leader |
 | `GET /api/chat/history?project=P&session_id=S` | 返回 session_id、events、running、busy |
-| `GET /api/chat/events?project=P&session_id=S&after=N` | SSE 重放 seq 大于 N 的事件，兼读 Last-Event-ID；空闲时发心跳，浏览器断开不关 leader |
+| `GET /api/chat/events?project=P&session_id=S&after=N` | SSE 重放 seq 大于 N 的事件，兼读 Last-Event-ID；空闲时发心跳，浏览器断开不关会话 |
 | `POST /api/chat/send` | session_id、text；向当前进程发送，或恢复原会话后发送 |
 
-会话保留在 Claude transcript 中，可供 VS Code 按同 ID 接续；网页与命令行的打开入口仍在完善，尚不能把它当作已完成的日常操作。
+成员和 leader 的聊天接口相同，`web_chat` 由聊天日志是否存在判定。会话保留在 Claude transcript 中，需要时可在 VS Code 按同 ID 接续；网页再次发言时会检查外部进程，避免同时恢复两份。
 
 ## 11. 错误处理
 
@@ -233,9 +234,8 @@ PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stder
 
 | 决定 | 理由 | 没选 |
 |---|---|---|
-| 做成 Claude Code 插件 + 命令行 + 本机网页 | 装一次所有项目可用；复用钩子、守卫和角色定义；网页负责看板和 leader 对话 | 独立桌面壳：目前本机网页已能承载工作流 |
+| 做成 Claude Code 插件 + 命令行 + 本机网页 | 装一次所有项目可用；复用钩子、守卫和角色定义；网页负责看板和会话对话 | 独立桌面壳：目前本机网页已能承载工作流 |
 | 白板用 SQLite，全机一份 | 多会话同时写；借设备要先到先得 | 每项目一堆 JSON 文件：并发写会互相覆盖 |
 | leader 是普通会话 + 角色定义，一个 leader 管一个分组，可以并存 | 用户要能直接点进每个会话；分组按"一个部分"划分 | 官方 Agent teams：队友只能由 leader 新生，不能收编已有会话，恢复后队友丢失，Windows 只能挤在一个终端 |
 | 全放行模式 + 守卫黑名单 | 夜里不卡确认框；模式一致后跨会话消息不用批准 | 逐条确认 + 白名单：写 `.claude` 目录在除全放行外的所有模式都会弹框 |
-| leader 用常驻 CLI，网页收发 stream-json | CLI 实测有跨会话收件箱，保留 transcript 和原会话 ID；可恢复，也具备在 VS Code 接续的能力，打开入口另行完成 | Agent SDK：当前 CLI 已满足持久对话，无需增加 Python 依赖 |
-| 新成员仍开在 Windows Terminal | 沿用已确定的成员启动方式，能带名字和任务直接开跑 | 成员也改成后台托管：还没有确定要改变这一步 |
+| 成员和 leader 统一用常驻 CLI，网页收发 stream-json | 用户默认在网页里看对话和工具，需要时转到 VS Code；CLI 保留跨会话收件箱、transcript 和原会话 ID，可恢复 | 新成员开终端窗口：已按用户确定的工作流改为默认后台；Agent SDK：当前 CLI 已满足需求，无需增加 Python 依赖 |

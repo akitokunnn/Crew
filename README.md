@@ -6,14 +6,14 @@
 - **leader** 会话管一个分组：派活、转达、仲裁设备和文件归属、收集要你拍板的事、汇总进展。leader 可以同时有好几个，各管一组。
 - 所有会话共用一块**白板**：谁在做什么、谁在等你、设备谁借着、文件归谁、待拍板、交接、日报、用量。
 - **守卫**在任何权限模式下都会拦三类事：黑名单上的操作、别人借着的设备、别人宣布归属的文件。所以可以放心开全放行，夜里不会卡在确认框上。
-- **看板网页**一屏看全，直接收编项目里已经开着的会话；和 leader 在网页里聊天，看流式回复、工具调用和组员状态。`crew spawn` 开的成员仍在同一个 Windows Terminal 窗口里，每个会话一个彩色标签页。
+- **看板网页**一屏看全，直接收编项目里已经开着的会话；新成员和 leader 都默认在后台运行，在网页里聊天、看流式回复、工具调用和组员状态，需要时再转到 VS Code 接着聊。
 - **用量分析**：把 Claude 会话、子 agent、Codex 的 token 用量按会话、分组、天、模型汇总，并按 API 价折算成金额。
 
 设计细节和取舍见 [docs/DESIGN.md](docs/DESIGN.md)。
 
 ## 安装
 
-需要：Windows、Python 3.11 以上（在 PATH 里叫 `python`）、Claude Code 2.1 以上、Windows Terminal。
+需要：Windows、Python 3.11 以上（在 PATH 里叫 `python`）、支持 `agents` 和 `stream-json` 的 Claude Code（本机以 2.1.306 验收）。需要在 VS Code 接续时，另需安装 Claude Code 扩展。
 
 1. 拿到代码：`git clone https://github.com/akitokunnn/Crew.git C:\Tools\Crew`
 2. 装插件（用户级，所有项目生效）：
@@ -33,7 +33,7 @@
 |---|---|
 | 让已经开着的会话加入 | 网页看板的“发现的会话”里点“收进组”，起名字、选分组；也可以在那个会话里执行 `crew join 雷达 --task "..."` |
 | 开一个 leader 管一组 | 先运行 `crew web --open`，在网页点“开 leader”，可混选已登记成员和发现的会话；命令行也可用 `crew leader start --name 感知 --members 雷达,视觉 --task "<这一组的目标>"` |
-| 开一个新会话干活 | `crew spawn --name 姿势 --group 感知 --task "<任务>"`，需要独立 worktree 时加 `--new-worktree feature/pose` |
+| 开一个新会话干活 | 网页点“开新会话”；也可在网页服务运行时用 `crew spawn --name 姿势 --group 感知 --task "<任务>"`，需要独立 worktree 时加 `--new-worktree feature/pose` |
 | 一屏看全 | `crew web --open` |
 | 看谁在干什么 | `crew status` |
 | 回答待拍板 | 网页上直接答，或 `crew decisions` 再 `crew answer <编号> "<答复>"`；提问的会话下一轮开始时会收到 |
@@ -44,7 +44,7 @@
 
 “发现的会话”只列当前项目下尚未登记的活会话，标题取 Claude 会话记录里最新的 `ai-title`。收编不必重开会话；还没加载 Crew 钩子的会话，状态先按 Claude 的 busy / idle 显示，SendMessage 地址也直接取活会话列表。
 
-网页服务会在后台保持 leader 的 Claude CLI 进程。浏览器刷新只重读聊天记录，不会重启 leader；网页服务重启后，下一次发言会恢复原会话 ID。若这个 ID 已在 VS Code 或其他进程中运行，网页会拒绝双开。leader 回复时先等这一轮结束再发送；组员消息会自动进入对话。网页服务退出时只关闭自己启动的 leader 的输入，让进程正常结束。
+网页服务会在后台保持新成员和 leader 的 Claude CLI 进程。浏览器刷新只重读聊天记录，不会重启会话；网页服务重启后，下一次发言会恢复原会话 ID。若这个 ID 已在 VS Code 或其他进程中运行，网页会拒绝双开。会话回复时先等这一轮结束再发送；组员消息会自动进入对话。网页服务退出时只关闭自己启动的会话的输入，让进程正常结束。
 
 会话里的守则在技能里：成员是 `/crew:member`，leader 是 `/crew:leader`。会话启动时 Crew 会告诉它是谁、归哪个 leader、怎么调命令。
 
@@ -63,7 +63,7 @@
 | `crew report "<内容>"` / `crew reports` | 日报 |
 | `crew group list` / `crew roster add\|remove\|move` | 分组和花名册 |
 | `crew leader start` / `crew leader close` | 通过正在运行的网页服务开 leader / 收一个分组；`start --dry-run` 只看计划 |
-| `crew spawn` | 在 crew 窗口开新会话 |
+| `crew spawn` | 通过正在运行的网页服务开后台成员；`--dry-run` 只看计划 |
 | `crew web` | 看板网页 |
 | `crew usage scan\|summary\|sessions\|daily\|codex\|agents\|models\|export` | 用量 |
 | `crew events` / `crew doctor` | 事件流水 / 自检 |
@@ -95,7 +95,7 @@
 | `~/.crew/crew.py`、`~/.crew/bin/crew.cmd` | 命令行启动器（每次会话启动时刷新） |
 | `~/.crew/spawn/` | crew 开会话时的任务文件 |
 | `~/.crew/chat/<会话ID>.jsonl` | 网页聊天记录，刷新和重启后重放；不保存思考内容 |
-| `~/.crew/web.json` | 正在运行的网页服务地址，供 `leader start` 连接，支持自定义端口 |
+| `~/.crew/web.json` | 正在运行的网页服务地址，供 `spawn` 和 `leader start` 连接，支持自定义端口 |
 | `~/.crew/codex_runs.jsonl` | 派活记录 |
 
 ## 更新和开发
