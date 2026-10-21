@@ -84,7 +84,8 @@ def prepare(conn, home, plugin_root, project_name, name, task, group=None, role=
     spec = {"id": spawn_id, "name": name, "group": group, "role": role, "task": task,
             "cwd": str(directory), "project": project_name, "agent": "crew:leader" if role == "leader" else None,
             "md": str(md_path), "created_at": store.now_iso() if now is None else now}
-    command = ["wt.exe", "-w", "crew", "new-tab", "--title", name, "--tabColor", tab_color(name, role),
+    # --suppressApplicationTitle: otherwise Claude retitles the tab to "Claude Code" and the crew name is lost.
+    command = ["wt.exe", "-w", "crew", "new-tab", "--title", name, "--suppressApplicationTitle", "--tabColor", tab_color(name, role),
                "-d", str(directory), "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
                "-File", str(Path(plugin_root).resolve() / "launch.ps1"), "-Spec", str(json_path)]
     return {"id": spawn_id, "command": command, "spec": spec,

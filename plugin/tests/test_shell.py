@@ -83,12 +83,13 @@ class SpawnTests(ShellFixture, unittest.TestCase):
         self.assertTrue(brief.endswith(spec["task"]))
         command = result["command"]
         self.assertEqual(self.commands, [command])
-        self.assertEqual(command[:6], ["wt.exe", "-w", "crew", "new-tab", "--title", "new"])
+        self.assertEqual(command[:7], ["wt.exe", "-w", "crew", "new-tab", "--title", "new", "--suppressApplicationTitle"])
         self.assertEqual(command[command.index("--tabColor") + 1], spawn.tab_color("new"))
         self.assertEqual(command[command.index("-d") + 1], spec["cwd"])
         self.assertEqual(command[command.index("-File") + 1], str(PLUGIN / "launch.ps1"))
         self.assertEqual(command[-2:], ["-Spec", str(self.home / "spawn" / (result["id"] + ".json"))])
-        self.assertEqual(command[10:14], ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass"])
+        start = command.index("powershell.exe")
+        self.assertEqual(command[start:start + 4], ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass"])
         self.assertEqual(board.events(self.conn, "demo", limit=1)[0]["kind"], "spawn")
 
     def test_brief_names_live_and_missing_leader(self):
@@ -254,6 +255,31 @@ class SpawnTests(ShellFixture, unittest.TestCase):
             spawn.launch(command)
         process.assert_called_once_with(command)
         process.return_value.wait.assert_not_called()
+
+
+class LaunchScriptTests(unittest.TestCase):
+    def test_strips_inherited_claude_session_markers_and_sets_identity(self):
+        import os
+        import tempfile
+        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent) as temp:
+            temp = Path(temp)
+            dump = temp / "env.txt"
+            # A fake claude on PATH records the environment it was started with.
+            (temp / "claude.cmd").write_text("@set > \"%s\"\n" % dump, encoding="ascii")
+            (temp / "brief.md").write_text("task", encoding="utf-8")
+            spec = temp / "spec.json"
+            spec.write_text(json.dumps({"id": "sid1", "name": "probe", "group": None, "role": "member",
+                                        "cwd": str(temp), "agent": None, "md": str(temp / "brief.md")}), encoding="utf-8")
+            env = {k: v for k, v in os.environ.items() if not k.upper().startswith("CLAUDE")}
+            env.update(PATH=str(temp) + os.pathsep + env["PATH"], CLAUDE_CODE_CHILD_SESSION="1",
+                       CLAUDE_CODE_SESSION_ID="parent", CLAUDECODE="1", CREW_GROUP="stale")
+            subprocess.run(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+                            str(PLUGIN / "launch.ps1"), "-Spec", str(spec)], env=env, check=True, timeout=60)
+            seen = dict(line.split("=", 1) for line in dump.read_text(encoding="mbcs").splitlines() if "=" in line)
+            names = {k.upper() for k in seen}
+            for marker in ("CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_SESSION_ID", "CLAUDECODE", "CREW_GROUP"):
+                self.assertNotIn(marker, names)
+            self.assertEqual((seen["CREW_NAME"], seen["CREW_ROLE"], seen["CREW_SPAWN_ID"]), ("probe", "member", "sid1"))
 
 
 class WebTests(ShellFixture, unittest.TestCase):
