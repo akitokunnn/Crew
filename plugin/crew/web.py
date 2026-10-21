@@ -12,7 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from . import board, chat, hooks, spawn, store, usage, usage_cli
+from . import board, chat, hooks, open_session, spawn, store, usage, usage_cli
 
 
 def _text(data, key):
@@ -143,6 +143,8 @@ class Service:
                     session["web_chat"] = self.chat.path(session["session_id"]).exists()
                     if self.chat.running(session["session_id"]):
                         session["status"] = self.chat.journal(session["session_id"]).status
+                    session["open"] = open_session.availability(session["session_id"], agents,
+                                                                self.claude_root.parent / "sessions", error)
                 decisions = board.decisions(conn, name, all=True)
                 result.update(candidates=self.candidates(conn, name), resources=board.resources(conn, name),
                               decisions=[d for d in decisions if d["status"] == "open"] +
