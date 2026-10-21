@@ -22,14 +22,14 @@
   <div id="error" class="error" role="alert" hidden></div>
   <p id="notice" role="status" hidden></p>
   <main>
-    <section id="chat-view" aria-label="和 leader 对话" hidden>
+    <section id="chat-view" aria-label="会话对话" hidden>
       <div class="chat-shell">
-        <aside class="chat-sidebar"><div class="sidebar-heading"><span>我的分组</span><button id="chat-new" aria-label="新建 leader" title="新建 leader">＋</button></div><div id="chat-leaders"></div><div class="sidebar-note"><span class="live-dot"></span>一起把事情往前推<p>安排、进展、需要你拍板的事，都在这里聊。</p></div></aside>
+        <aside class="chat-sidebar"><div class="sidebar-heading"><span>我的会话</span><button id="chat-new" aria-label="开新会话" title="开新会话">＋</button></div><div id="chat-sessions"></div><div class="sidebar-note"><span class="live-dot"></span>一起把事情往前推<p>安排、进展、需要你拍板的事，都在这里聊。</p></div></aside>
         <div class="conversation">
-          <div class="conversation-heading"><div class="leader-avatar">C</div><div><h2 id="chat-title">选择一个 leader</h2><p id="chat-subtitle">你的工作，从一次对话开始。</p></div><span id="chat-status" class="pill idle">未连接</span></div>
+          <div class="conversation-heading"><div class="leader-avatar">C</div><div><h2 id="chat-title">选择一个会话</h2><p id="chat-subtitle">你的工作，从一次对话开始。</p></div><button id="chat-open" class="chat-open" hidden>VS Code ↗</button><span id="chat-status" class="pill idle">未连接</span></div>
           <div id="chat-log" class="chat-log" role="log" aria-label="对话记录" aria-live="off"></div>
           <div id="chat-error" class="chat-error" role="alert" hidden></div>
-          <form id="chat-form" class="composer"><label class="sr-only" for="chat-input">发给 leader</label><textarea id="chat-input" name="text" rows="2" placeholder="聊聊目标、问问进展，或者把下一步交给 leader…" required></textarea><div class="composer-bottom"><small id="chat-hint">Enter 发送 · Shift + Enter 换行</small><button id="chat-send" type="submit" aria-label="发送消息">发送 ↑</button></div></form>
+          <form id="chat-form" class="composer"><label class="sr-only" for="chat-input">发给当前会话</label><textarea id="chat-input" name="text" rows="2" placeholder="聊聊目标、问问进展，或者交代下一步…" required></textarea><div class="composer-bottom"><small id="chat-hint">Enter 发送 · Shift + Enter 换行</small><button id="chat-send" type="submit" aria-label="发送消息">发送 ↑</button></div></form>
         </div>
         <aside class="chat-team"><div class="sidebar-heading"><span>组员动态</span><span id="chat-team-count" class="count">0</span></div><div id="chat-members"></div><div id="chat-decisions"></div></aside>
       </div>
@@ -62,7 +62,7 @@
     <form id="spawn-form">
       <h2>开新会话</h2><label>名字<input name="name" required></label><label>任务<textarea name="task" rows="6" required></textarea></label>
       <label>分组<select name="group"></select></label><label>新 worktree 分支（可选）<input name="new_worktree" placeholder="feature/vision"></label>
-      <p class="muted">默认在项目根目录开工。新 worktree 位于 Temp/wt，目录须已被 git 忽略。</p>
+      <p class="muted">在网页中启动并查看对话，之后可按需转到 VS Code。默认在项目根目录开工；新 worktree 位于 Temp/wt。</p>
       <p class="form-error" role="alert"></p><div class="actions"><button type="button" data-close>取消</button><button type="submit">启动会话</button></div>
     </form>
   </dialog>
@@ -76,6 +76,6 @@
   </dialog>
   <dialog id="give-dialog"><form id="give-form"><h2>强制归还资源</h2><p id="give-resource"></p><label>归还原因<textarea name="reason" rows="3" required></textarea></label><p class="form-error" role="alert"></p><div class="actions"><button type="button" data-close>取消</button><button type="submit">确认归还</button></div></form></dialog>
   <dialog id="adopt-dialog"><form id="adopt-form"><h2>收进组</h2><p id="adopt-title" class="muted"></p><input name="session_id" type="hidden"><label>给它起个名字<input name="name" required></label><label>分组<select name="group"></select></label><p class="form-error" role="alert"></p><div class="actions"><button type="button" data-close>取消</button><button type="submit">确认加入</button></div></form></dialog>
-  <dialog id="open-dialog"><form id="open-form"><h2>在 VS Code 接着聊</h2><p id="open-name"></p><p>会先关闭这个空闲会话的终端进程，再在 VS Code 打开同一段对话。</p><p class="muted">会话正在干活时不能转移。</p><input name="name" type="hidden"><p class="form-error" role="alert"></p><div class="actions"><button type="button" data-close>取消</button><button type="submit">确认转到 VS Code</button></div></form></dialog>
+  <dialog id="open-dialog"><form id="open-form"><h2>在 VS Code 接着聊</h2><p id="open-name"></p><p>已请求打开下面的目录。请等对应的 VS Code 窗口就绪，并确认当前是这个项目，再点继续。</p><p id="open-cwd" class="pre open-path"></p><p id="open-action"></p><p class="muted">取消会保留原会话；正在干活时不能转移。</p><input name="session_id" type="hidden"><p class="form-error" role="alert"></p><div class="actions"><button type="button" data-close>取消</button><button type="submit">窗口已就绪，继续打开</button></div></form></dialog>
 </body>
 </html>

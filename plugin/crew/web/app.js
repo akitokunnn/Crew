@@ -13,6 +13,7 @@ const empty = () => '<p class="empty">暂无记录</p>';
 const states = {working:"干活中", waiting:"等你", idle:"空闲", offline:"离线", closed:"已收"};
 let state = null, project = null, activeTab = "board", usageData = null, usagePeriod = "week", stateRequest = 0, usageRequest = 0;
 let sortKey = "total_tokens", sortDirection = -1, currentResource = null;
+let requestedChat = new URLSearchParams(location.hash.slice(1)).get("chat");
 const colors = new Map();
 function color(id) {
   if (!colors.has(id)) {
@@ -58,8 +59,8 @@ function sessionCard(s) {
     <small class="short-path" title="${esc(s.worktree || s.cwd)}">${esc(path)}</small><small class="short-path" title="${esc(s.branch)}">分支 ${esc(branch)} · ${ago(s.last_event_at)}</small>
     <p class="last-message" title="${esc(s.last_message)}">${esc(s.last_message || "暂无最后一句话")}</p>
     <button class="address" data-copy="${esc(s.cc_name || "")}" ${s.cc_name ? "" : "disabled"} title="点击复制 SendMessage 地址">SendMessage：${esc(s.cc_name || "尚未登记地址")}</button>
-    ${s.crew_name && s.open ? `<div class="card-actions"><button data-open="${esc(s.crew_name)}" ${s.open.enabled ? "" : "disabled"} title="${esc(s.open.reason || "在 VS Code 打开这段对话")}">在 VS Code 打开 ↗</button></div>` : ""}
-    ${s.web_chat ? `<div class="card-actions"><button class="primary" data-chat="${esc(s.session_id)}">和 leader 聊天 →</button></div>` : ""}
+    ${s.open ? `<div class="card-actions"><button data-open="${esc(s.session_id)}" ${s.open.enabled ? "" : "disabled"} title="${esc(s.open.reason || "在 VS Code 打开这段对话")}">在 VS Code 打开 ↗</button></div>` : ""}
+    ${s.web_chat ? `<div class="card-actions"><button class="primary" data-chat="${esc(s.session_id)}">打开网页对话 →</button></div>` : ""}
     ${s.role !== "leader" ? `<footer><label>挪组 <select data-move="${esc(name)}" aria-label="移动 ${esc(name)}">${groupOptions(s.group_name)}</select></label></footer>` : ""}</article>`;
 }
 function sessionGrid(sessions, group, expanded) {
@@ -178,7 +179,8 @@ function setTab(tab) {
   $("chat-view").hidden = tab !== "chat";
   $("board-tab").setAttribute("aria-pressed", String(tab === "board")); $("usage-tab").setAttribute("aria-pressed", String(tab === "usage"));
   $("chat-tab").setAttribute("aria-pressed", String(tab === "chat"));
-  history.replaceState(null, "", tab === "usage" ? "#usage" : tab === "chat" ? "#chat" : location.pathname + location.search);
+  const chatId = window.crewChat?.selectedId() || requestedChat;
+  history.replaceState(null, "", tab === "usage" ? "#usage" : tab === "chat" ? "#chat" + (chatId ? "=" + encodeURIComponent(chatId) : "") : location.pathname + location.search);
   document.body.classList.toggle("chat-active", tab === "chat");
   window.scrollTo(0, 0);
   window.crewChat?.visibility(tab === "chat");
@@ -195,7 +197,7 @@ document.addEventListener("click", async event => {
   const give = event.target.closest("[data-give]"); if (give) { currentResource = give.dataset.give; $("give-form").reset(); $("give-form").querySelector(".form-error").textContent = ""; $("give-resource").textContent = currentResource; $("give-dialog").showModal(); }
   const sort = event.target.closest("[data-sort]"); if (sort) { sortDirection = sortKey === sort.dataset.sort ? -sortDirection : -1; sortKey = sort.dataset.sort; renderSessions(); }
   const adopt = event.target.closest("[data-adopt]"); if (adopt) { const s = state.candidates.find(s => s.session_id === adopt.dataset.adopt), form = $("adopt-form"); form.reset(); form.querySelector(".form-error").textContent = ""; form.elements.session_id.value = s.session_id; form.elements.name.value = s.title; form.elements.group.innerHTML = groupOptions(null, true); $("adopt-title").textContent = s.title; $("adopt-dialog").showModal(); }
-  const open = event.target.closest("[data-open]"); if (open) { const s = allSessions().find(s => s.crew_name === open.dataset.open); if (s.open.needs_confirmation) { const form = $("open-form"); form.reset(); form.elements.name.value = s.crew_name; form.querySelector(".form-error").textContent = ""; $("open-name").textContent = s.crew_name; $("open-dialog").showModal(); } else { open.disabled = true; try { await post("/api/open", {name:s.crew_name, confirm:false}); notice("已请求 VS Code 打开会话"); await loadState(); } catch (error) { showError(error); } finally { open.disabled = false; } } }
+  const open = event.target.closest("[data-open]"); if (open) { open.disabled = true; try { const result = await post("/api/open", {session_id:open.dataset.open}), s = allSessions().find(s => s.session_id === result.session_id), form = $("open-form"); form.reset(); form.elements.session_id.value = result.session_id; form.querySelector(".form-error").textContent = ""; $("open-name").textContent = s?.crew_name || result.session_id.slice(0,8); $("open-cwd").textContent = result.cwd; $("open-action").textContent = result.location === "web" ? "继续时会结束这段空闲的网页会话，并在 VS Code 续上同一段对话。" : result.location === "terminal" ? "继续时会关闭这段空闲的终端会话，并在 VS Code 续上同一段对话。" : "继续时会在 VS Code 打开同一段对话。"; $("open-dialog").showModal(); } catch (error) { showError(error); } finally { open.disabled = false; } }
 });
 document.addEventListener("change", async event => {
   const select = event.target.closest("[data-move]");
@@ -208,10 +210,10 @@ document.addEventListener("submit", async event => {
   const button = form.querySelector('button[type="submit"], button:not([type])'), error = form.querySelector(".form-error");
   button.disabled = true; error.textContent = "";
   try {
-    if (form.id === "spawn-form") await post("/api/spawn", {name:form.elements.name.value, task:form.elements.task.value, group:form.elements.group.value || null, role:"member", new_worktree:form.elements.new_worktree.value || null});
+    if (form.id === "spawn-form") { const result = await post("/api/spawn", {name:form.elements.name.value, task:form.elements.task.value, group:form.elements.group.value || null, role:"member", new_worktree:form.elements.new_worktree.value || null}); window.crewChat?.select(result.session_id); }
     else if (form.id === "leader-form") { const result = await post("/api/leader", {name:form.elements.name.value, members:[...form.elements.members.selectedOptions].map(o => o.value), candidate_members:[...$("leader-candidates").querySelectorAll('input[type="checkbox"]:checked')].map(input => ({session_id:input.value, name:[...$("leader-candidates").querySelectorAll("[data-candidate-name]")].find(n => n.dataset.candidateName === input.value).value})), task:form.elements.task.value || null}); window.crewChat?.select(result.session_id); }
     else if (form.id === "adopt-form") await post("/api/roster/adopt", {session_id:form.elements.session_id.value, name:form.elements.name.value, group:form.elements.group.value || null});
-    else if (form.id === "open-form") await post("/api/open", {name:form.elements.name.value, confirm:true});
+    else if (form.id === "open-form") await post("/api/open/continue", {session_id:form.elements.session_id.value, confirm:true});
     else if (form.id === "give-form") await post("/api/lease/give", {resource:currentResource, reason:form.elements.reason.value});
     else await post("/api/answer", {id:Number(form.dataset.answer), text:form.elements.text.value});
     form.closest("dialog")?.close();
@@ -226,4 +228,4 @@ document.addEventListener("visibilitychange", () => { if (!document.hidden && ac
 setInterval(() => { if (!document.hidden && activeTab !== "usage") loadState(); }, 3000);
 loadState();
 if (location.hash === "#usage") setTab("usage");
-if (location.hash === "#chat") setTab("chat");
+if (location.hash.startsWith("#chat")) setTab("chat");
