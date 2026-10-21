@@ -551,9 +551,9 @@ def status(conn, project_name, agents):
         "SELECT session_id,MAX(ts) FROM events WHERE project=? AND kind LIKE 'hook:%' GROUP BY session_id", (project_name,))}
     members = sessions(conn, project_name)
     for s in members:
-        if s["session_id"] not in present:
+        if s["session_id"] not in present and s["status"] != "closed":
             s["status"] = "offline"
-        else:
+        elif s["session_id"] in present:
             agent = present[s["session_id"]]
             if "name" in agent:
                 s["cc_name"] = agent["name"]
@@ -616,8 +616,12 @@ def apply_hook(conn, event, data, project_name, identity=None, git_info=None, no
         if event == "stop":
             detail["last_assistant_message"] = data["last_assistant_message"][:300]
             conn.execute("UPDATE sessions SET last_message=? WHERE session_id=?", (detail["last_assistant_message"], sid))
+    ended_at = _time(now) if state == "offline" else None
+    if event != "session-start" and s["status"] == "closed":
+        # Late tools and Stop from the old turn must not reopen an explicitly archived session.
+        state, note, ended_at = "closed", s["status_note"], s["ended_at"]
     conn.execute("UPDATE sessions SET status=?,status_note=?,last_event=?,last_event_at=?,ended_at=? WHERE session_id=?",
-                 (state, note, event, _time(now), _time(now) if state == "offline" else None, sid))
+                 (state, note, event, _time(now), ended_at, sid))
     result = _deliver(conn, sid, event == "user-prompt-submit", now) if event in ("session-start", "user-prompt-submit") else {"answers": [], "handoffs": []}
     detail["delivered_answers"] = [d["id"] for d in result["answers"]]
     detail["delivered_handoffs"] = [h["id"] for h in result["handoffs"]]

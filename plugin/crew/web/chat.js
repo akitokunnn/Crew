@@ -9,7 +9,7 @@
   let selected = null, stream = null, messages = [], byId = new Map(), results = new Map(), cursor = 0;
   let busy = false, running = false, loading = false, generation = 0, frame = null, followOnRender = false;
   const drafts = new Map();
-  const webSessions = () => allSessions().filter(s => s.web_chat);
+  const webSessions = () => allSessions().filter(s => s.web_chat && s.status !== "closed");
   const currentSession = () => webSessions().find(s => s.session_id === selected);
   function error(text) { $("chat-error").hidden = !text; $("chat-error").textContent = text || ""; }
   function status() {

@@ -72,7 +72,7 @@ Crew/
 
 `claude agents --json` 里没有这个会话的进程时，网页和 `crew status` 显示为离线，但不改库。
 
-当前进程还没有 Crew 钩子记录的会话，显示状态取 agents 的 busy → working、idle → idle；钩子生效后保留 waiting 等细分状态。网页服务自己管理的 leader 还会根据发送、流式输出、result 和进程退出更新聊天状态。
+当前进程还没有 Crew 钩子记录的会话，显示状态取 agents 的 busy → working、idle → idle；钩子生效后保留 waiting 等细分状态。网页服务自己管理的会话还会根据发送、流式输出、result 和进程退出更新聊天状态。
 
 ## 4. 命令行
 
@@ -107,7 +107,7 @@ Crew/
 | `usage ...` | 转给 `crew.usage_cli.main(argv, home)`（§8） |
 | `spawn ...` | 通过运行中的网页服务开后台成员会话；dry-run 只看计划（§10） |
 | `leader start --name N [--members A,B] [--task T] [--dry-run]` | 调用运行中的网页服务开 leader；服务没开时报错，dry-run 只看计划（§10） |
-| `web [--port 47811] [--open]` | 本机看板和 leader 聊天服务（§10） |
+| `web [--port 47811] [--open]` | 本机看板和会话聊天服务（§10） |
 
 白板写操作同时写一条 events；聊天输出另记在 `chat/<会话ID>.jsonl`。
 

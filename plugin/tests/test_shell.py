@@ -549,6 +549,35 @@ class WebTests(ShellFixture, unittest.TestCase):
         self.assertEqual(self.get("/api/leader", {"name":"one"})[0], 409)
         self.assertEqual(self.get("/api/leader", {"name":"other", "members":"one,two"})[0], 400)
 
+    def test_close_group_keeps_running_sessions_archived_through_later_hooks(self):
+        leader = self.get("/api/leader", {"name": "archived-leader"})[1]["session_id"]
+        member = self.get("/api/spawn", {"name": "archived-member", "task": "work", "group": "archived-leader"})[1]["session_id"]
+        identities = [leader, member]
+        self.provider.return_value = [{"sessionId": sid, "name": board.session(self.conn, sid)["crew_name"], "status": "busy"}
+                                      for sid in identities]
+        self.server.service.refresh_agents()
+        code, _, errors = self.run_cli(["leader", "close", "archived-leader", "--with-members"])
+        self.assertEqual(code, 0, errors)
+        def assert_archived():
+            sessions = {s["session_id"]: s for s in self.get("/api/state")[1]["ungrouped"]}
+            self.assertEqual([sessions[sid]["status"] for sid in identities], ["closed", "closed"])
+            self.assertTrue(all(self.server.service.chat.running(sid) for sid in identities))
+        assert_archived()
+        for sid in identities:
+            ended_at = board.session(self.conn, sid)["ended_at"]
+            for event, fields in (("stop", {"last_assistant_message": "finished"}), ("post-ask", {}),
+                                  ("user-prompt-submit", {"prompt": "late activity"})):
+                board.apply_hook(self.conn, event, {"session_id": sid, "cwd": str(self.project), **fields},
+                                 "demo", now="2026-10-21T09:00:00.000Z")
+                stored = board.session(self.conn, sid)
+                self.assertEqual((stored["status"], stored["ended_at"]), ("closed", ended_at))
+        self.provider.return_value = []
+        self.server.service.refresh_agents()
+        assert_archived()
+        status_text = self.run_cli(["status"])[1]
+        self.assertNotIn("archived-leader", status_text)
+        self.assertNotIn("archived-member", status_text)
+
     def chat_start(self):
         code, result, _ = self.get("/api/leader", {"name": "web-boss", "task": "manage this group"})
         self.assertEqual(code, 200)

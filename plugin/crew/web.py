@@ -141,7 +141,7 @@ class Service:
                 result = board.status(conn, name, identities)
                 for session in [*result["ungrouped"], *(s for group in result["groups"] for s in group["members"])]:
                     session["web_chat"] = self.chat.path(session["session_id"]).exists()
-                    if self.chat.running(session["session_id"]):
+                    if session["status"] != "closed" and self.chat.running(session["session_id"]):
                         session["status"] = self.chat.journal(session["session_id"]).status
                     session["open"] = open_session.availability(session["session_id"], agents,
                                                                 self.claude_root.parent / "sessions", error, manager=self.chat)
