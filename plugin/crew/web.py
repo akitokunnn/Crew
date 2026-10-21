@@ -107,7 +107,9 @@ class Service:
             project = board.project_for_path(conn, agent["cwd"])
             if project is not None and project["name"] == project_name:
                 candidates.append({"session_id": agent["sessionId"], "cc_name": agent["name"], "cwd": agent["cwd"],
-                                   "status": "working" if agent["status"] == "busy" else "idle"})
+                                   "status": "working" if agent["status"] == "busy" else "idle",
+                                   "location": open_session.availability(agent["sessionId"], agents,
+                                       self.claude_root.parent / "sessions", manager=self.chat)["location"]})
         with self.scan_lock:
             titles = usage.session_titles(self.claude_root, [s["session_id"] for s in candidates], self.title_cache)
         for candidate in candidates:
@@ -139,7 +141,13 @@ class Service:
                 # Passing every stored identity preserves the board statuses while process state is unknown.
                 identities = [{"sessionId": s["session_id"]} for s in board.sessions(conn, name)] if error else agents
                 result = board.status(conn, name, identities)
-                for session in [*result["ungrouped"], *(s for group in result["groups"] for s in group["members"])]:
+                sessions = [*result["ungrouped"], *(s for group in result["groups"] for s in group["members"])]
+                unnamed = [s["session_id"] for s in sessions if not s["crew_name"]]
+                with self.scan_lock:
+                    titles = usage.session_titles(self.claude_root, unnamed, self.title_cache)
+                for session in sessions:
+                    if not session["crew_name"]:
+                        session["title"] = titles.get(session["session_id"])
                     session["web_chat"] = self.chat.path(session["session_id"]).exists()
                     if session["status"] != "closed" and self.chat.running(session["session_id"]):
                         session["status"] = self.chat.journal(session["session_id"]).status
@@ -147,8 +155,9 @@ class Service:
                                                                 self.claude_root.parent / "sessions", error, manager=self.chat)
                 decisions = board.decisions(conn, name, all=True)
                 result.update(candidates=self.candidates(conn, name), resources=board.resources(conn, name),
-                              decisions=[d for d in decisions if d["status"] == "open"] +
-                              sorted((d for d in decisions if d["status"] == "answered"),
+                              decisions=[d for d in decisions if d["status"] == "open" or
+                                         (d["status"] == "answered" and d["delivered_at"] is None)] +
+                              sorted((d for d in decisions if d["status"] == "answered" and d["delivered_at"] is not None),
                                      key=lambda d: (d["answered_at"], d["id"]), reverse=True)[:20],
                               handoffs=board.project_handoffs(conn, name),
                               reports=board.reports(conn, name)[-20:][::-1], events=board.events(conn, name, limit=50))
@@ -161,12 +170,22 @@ class Service:
             raise ValueError("JSON \u8bf7\u6c42\u5fc5\u987b\u662f\u5bf9\u8c61")
         with self.write_lock, closing(store.connect(self.home)) as conn:
             now = self.now().isoformat(timespec="milliseconds").replace("+00:00", "Z")
+            if path == "/api/project/init":
+                root = Path(_text(data, "root")).expanduser().resolve()
+                if not root.is_dir():
+                    raise board.BoardError("项目目录不存在：" + str(root))
+                result = board.init_project(conn, _text(data, "name"), root, now=now)
+                self.default_project = result["name"]
+                return result
+            project = self.selected_project(conn, project_name)
             if path == "/api/answer":
                 if type(data.get("id")) is not int:
                     raise ValueError("id \u5fc5\u987b\u662f\u6574\u6570")
+                decision = conn.execute("SELECT project FROM decisions WHERE id=?", (data["id"],)).fetchone()
+                if decision is not None and decision["project"] != project:
+                    raise board.BoardError("待拍板不属于当前项目")
                 board.answer(conn, data["id"], _text(data, "text"), board.HUMAN, now=now)
                 return {"ok": True}
-            project = self.selected_project(conn, project_name)
             if path in ("/api/open", "/api/open/continue"):
                 target = (board.session(conn, _text(data, "session_id")) if path.endswith("/continue") or data.get("session_id") is not None else
                           board.named_session(conn, project, _text(data, "name")))
@@ -209,6 +228,10 @@ class Service:
                 board.give(conn, project, _text(data, "resource"), board.HUMAN, force=True, reason=_text(data, "reason"), now=now)
             elif path == "/api/roster/move":
                 board.roster(conn, project, "move", _text(data, "to"), [_text(data, "name")], now=now)
+            elif path == "/api/roster/remove":
+                board.roster(conn, project, "remove", _text(data, "group"), [_text(data, "name")], now=now)
+            elif path == "/api/group/close":
+                board.close_group(conn, project, _text(data, "group"), with_members=data.get("with_members") is True, now=now)
             elif path == "/api/roster/adopt":
                 candidate = self.candidate(conn, project, _text(data, "session_id"))
                 return self.adopt(conn, project, candidate, _text(data, "name"), _optional_text(data, "group"), now)
@@ -246,7 +269,7 @@ class Service:
             return result
 
 
-POST_PATHS = {"/api/open", "/api/open/continue", "/api/answer", "/api/spawn", "/api/leader", "/api/lease/give", "/api/roster/move", "/api/roster/adopt", "/api/chat/send"}
+POST_PATHS = {"/api/project/init", "/api/open", "/api/open/continue", "/api/answer", "/api/spawn", "/api/leader", "/api/lease/give", "/api/roster/move", "/api/roster/remove", "/api/group/close", "/api/roster/adopt", "/api/chat/send"}
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"),
           "/style.css": ("style.css", "text/css; charset=utf-8"), "/chat.js": ("chat.js", "text/javascript; charset=utf-8"),
           "/vendor/markdown-it.min.js": ("vendor/markdown-it.min.js", "text/javascript; charset=utf-8")}

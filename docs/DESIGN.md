@@ -217,8 +217,12 @@ PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stder
 
 | 接口 | 内容 |
 |---|---|
-| `GET /api/state?project=P` | 看板，额外返回 candidates；有聊天记录的 session 带 web_chat |
+| `GET /api/state?project=P` | 看板，返回带 location 的 candidates；未命名会话补 title，有聊天记录的 session 带 web_chat；保留全部已答待送达和最近 20 条已送达拍板 |
+| `POST /api/project/init` | name、root；启用已有本机目录，无已选项目时也可调用，返回项目对象 |
 | `POST /api/roster/adopt` | session_id、name、可选 group，返回登记后的 session |
+| `POST /api/roster/remove` | name、group；普通成员退出当前分组 |
+| `POST /api/group/close` | group、with_members；false 解散并保留会话，true 归档组和会话，均不停止进程 |
+| `POST /api/answer` | id、text；只可回答当前所选项目的问题，交付由下一轮钩子完成 |
 | `POST /api/spawn` | name、task、可选 group / role / cwd / new_worktree / base，默认 member，返回 id、session_id、command、role |
 | `POST /api/leader` | name、members（crew 名）、candidate_members（session_id / name）、可选 task，返回 id、session_id、command、role=leader |
 | `GET /api/chat/history?project=P&session_id=S` | 返回 session_id、events、running、busy |
@@ -227,7 +231,7 @@ PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stder
 | `POST /api/open` | session_id（或 name），只打开对应目录，返回 cwd、location、needs_window_ready、needs_confirmation |
 | `POST /api/open/continue` | session_id、confirm=true；重查空闲和进程归属后交接，再打开原 ID 的 VS Code URI |
 
-成员和 leader 的聊天接口相同，`web_chat` 由聊天日志是否存在判定。会话保留在 Claude transcript 中，需要时可在 VS Code 按同 ID 接续；网页再次发言时会检查外部进程，避免同时恢复两份。
+成员和 leader 的聊天接口相同，`web_chat` 由聊天日志是否存在判定。会话保留在 Claude transcript 中，需要时可在 VS Code 按同 ID 接续；网页再次发言时会检查外部进程，避免同时恢复两份；已归档会话的历史可读，发送返回冲突。完整页面流程和状态文案见 [WEB_UX.md](WEB_UX.md)。
 
 ## 11. 错误处理
 

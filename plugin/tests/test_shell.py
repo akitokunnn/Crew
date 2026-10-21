@@ -393,7 +393,7 @@ class WebTests(ShellFixture, unittest.TestCase):
         self.server.service.refresh_agents()
         state = self.get("/api/state")[1]
         self.assertEqual(state.get("candidates"), [{"session_id": "vscode-session", "title": "latest",
-                         "cc_name": "cc-vscode", "cwd": str(self.project), "status": "working"}])
+                         "cc_name": "cc-vscode", "cwd": str(self.project), "status": "working", "location": "unknown"}])
         self.assertIsNone(self.conn.execute("SELECT 1 FROM sessions WHERE session_id='vscode-session'").fetchone())
 
     def live_candidate(self, session_id="vscode-session", status="busy"):
@@ -471,10 +471,14 @@ class WebTests(ShellFixture, unittest.TestCase):
         for i in range(24):
             decision = board.ask(self.conn, "s1", "answered-" + str(i), now=NOW)
             board.answer(self.conn, decision, "yes", now=NOW)
+            if i >= 2:
+                self.conn.execute("UPDATE decisions SET delivered_at=? WHERE id=?", (NOW, decision))
             board.handoff(self.conn, "s1", "*", str(i), now=NOW)
             board.report(self.conn, "s1", str(i), now=NOW)
         state = self.get("/api/state?project=demo")[1]
-        self.assertEqual(len(state["decisions"]), 21)
+        self.assertEqual(len(state["decisions"]), 23)
+        self.assertEqual([d["question"] for d in state["decisions"] if d["status"] == "answered" and d["delivered_at"] is None],
+                         ["answered-0", "answered-1"])
         self.assertEqual(len(state["handoffs"]), 20)
         self.assertEqual(len(state["reports"]), 20)
         self.assertEqual(len(state["events"]), 50)
@@ -486,10 +490,56 @@ class WebTests(ShellFixture, unittest.TestCase):
                 self.assertEqual(self.get(path, {}, crew=False)[0], 403)
 
     def test_answer_success_errors_and_actor(self):
+        other = self.root / "other-project"
+        other.mkdir()
+        board.init_project(self.conn, "other", other, now=NOW)
+        self.assertEqual(self.get("/api/answer?project=other", {"id":self.decision,"text":"wrong project"})[0], 400)
+        self.assertEqual(board.decisions(self.conn, "demo", True)[0]["status"], "open")
         self.assertEqual(self.get("/api/answer", {"id":self.decision,"text":"yes"})[0], 200)
         self.assertEqual(board.decisions(self.conn, "demo", True)[0]["answered_by"], "user")
         for body in ({"id":self.decision,"text":"twice"}, {"id":999,"text":"no"}, {"text":"no"}, {"id":True,"text":"yes"}):
             self.assertEqual(self.get("/api/answer", body)[0], 400)
+
+    def test_first_project_can_be_enabled_from_web_without_existing_selection(self):
+        service = web.Service(self.root / "empty-board", PLUGIN, agents_provider=lambda: [], cwd=self.project)
+        self.addCleanup(service.close)
+        self.assertIsNone(service.state()["project"])
+        result = service.post("/api/project/init", {"name": "first", "root": str(self.project)})
+        self.assertEqual((result["name"], result["root"]), ("first", store.norm_path(self.project)))
+        self.assertEqual(service.state()["project"]["name"], "first")
+        with self.assertRaises(board.Conflict):
+            service.post("/api/project/init", {"name": "duplicate", "root": str(self.project)})
+        with self.assertRaises(board.BoardError):
+            service.post("/api/project/init", {"name": "missing", "root": str(self.root / "missing")})
+
+    def test_web_remove_dissolve_and_archive_preserve_the_running_process(self):
+        self.assertEqual(self.get("/api/roster/remove", {"name": "one", "group": "lead"})[0], 200)
+        self.assertIsNone(board.session(self.conn, "s1")["group_name"])
+        self.assertEqual(self.get("/api/roster/remove", {"name": "lead", "group": "lead"})[0], 400)
+        self.assertEqual(self.get("/api/group/close", {"group": "lead", "with_members": False})[0], 200)
+        self.assertIsNone(board.session(self.conn, "s3")["group_name"])
+        self.assertEqual(board.session(self.conn, "s3")["status"], "idle")
+        result = self.get("/api/leader", {"name": "archive-me", "members": ["one"]})[1]
+        self.assertEqual(self.get("/api/group/close", {"group": "archive-me", "with_members": True})[0], 200)
+        self.assertEqual(board.session(self.conn, result["session_id"])["status"], "closed")
+        self.assertEqual(board.session(self.conn, "s1")["status"], "closed")
+        self.assertTrue(self.server.service.chat.running(result["session_id"]))
+        self.assertEqual(self.get("/api/chat/send", {"session_id": result["session_id"], "text": "stale form"})[0], 409)
+
+    def test_registered_unnamed_session_keeps_transcript_title_and_candidate_location(self):
+        self.main_file([{"type": "ai-title", "aiTitle": "Research notes"}], session="unnamed")
+        board.register_session(self.conn, "unnamed", "demo", self.project, self.project, "main", now=NOW)
+        self.provider.return_value = [{"sessionId": "unnamed", "name": "native-address", "status": "idle", "cwd": str(self.project)},
+                                      {"sessionId": "candidate", "name": "candidate-address", "status": "idle", "cwd": str(self.project), "pid": 99}]
+        directory = self.server.service.claude_root.parent / "sessions"
+        directory.mkdir()
+        (directory / "99.json").write_text(json.dumps({"sessionId": "candidate", "pid": 99, "entrypoint": "claude-vscode",
+            "status": "idle", "cwd": str(self.project)}), encoding="utf-8")
+        self.server.service.refresh_agents()
+        state = self.get("/api/state")[1]
+        current = next(s for s in state["ungrouped"] if s["session_id"] == "unnamed")
+        self.assertEqual(current["title"], "Research notes")
+        self.assertEqual(state["candidates"][0]["location"], "vscode")
 
     def test_spawn_success_and_business_errors(self):
         code, result, _ = self.get("/api/spawn", {"name":"web-member", "task":"work", "group":"lead", "role":"member"})

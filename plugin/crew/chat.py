@@ -256,6 +256,8 @@ class Manager:
         with self.lock:
             if self.closed:
                 raise board.BoardError("网页服务正在关闭")
+            if session["status"] == "closed":
+                raise board.Conflict("会话已归档，不能继续发送消息")
             if not self.path(session_id).exists():
                 raise board.BoardError("该会话没有网页聊天记录")
             if self.running(session_id) and self.journal(session_id).status == "working":
