@@ -14,14 +14,14 @@ description: 在全放行（bypassPermissions，不弹权限框）和逐条确�
 | `%APPDATA%\Code\User\settings.json`（VS Code 新会话的启动模式，优先级最高） | `claudeCode.initialPermissionMode` | `"bypassPermissions"` | `"default"` |
 | 同上 | `claudeCode.allowDangerouslySkipPermissions` | `true` | 不动 |
 | `~/.claude/settings.json`（命令行和其它入口的默认模式） | `permissions.defaultMode` | `"bypassPermissions"` | `"auto"` |
-| 同上 | `permissions.allow` 里的 10 条通配符（见下） | 补齐 | 删掉 |
+| 同上 | `permissions.allow` 里的 8 条通配符（见下） | 补齐 | 删掉 |
 | 同上 | `skipDangerousModePermissionPrompt` | `true` | 不动 |
 
-10 条通配符（全放行模式下 allow 规则本身不起作用；留着是为了会话被切到别的模式时也少弹框）：
+8 条通配符（全放行模式下 allow 规则本身不起作用；留着是为了会话被切到别的模式时也少弹框）。不要加 `Write(...)`：新版 Claude Code 只认 `Edit(...)`，它覆盖所有改文件的工具，写了 `Write(**)` 每次启动都会提示无效。
 
 ```
 "Bash(*)"  "PowerShell(*)"  "WebFetch(*)"  "WebSearch(*)"
-"Edit(**)"  "Edit(//**)"  "Write(**)"  "Write(//**)"  "Read(**)"  "Read(//**)"
+"Edit(**)"  "Edit(//**)"  "Read(**)"  "Read(//**)"
 ```
 
 其它键一律不动，包括 `hooks`、`permissions.deny` / `ask`。守卫在 crew 插件里，黑名单在 `~/.crew/blacklist.txt`，都不归这个开关管。
