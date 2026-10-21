@@ -540,6 +540,10 @@ class WebTests(ShellFixture, unittest.TestCase):
         current = next(s for s in state["ungrouped"] if s["session_id"] == "unnamed")
         self.assertEqual(current["title"], "Research notes")
         self.assertEqual(state["candidates"][0]["location"], "vscode")
+        code, adopted, _ = self.get("/api/roster/adopt", {"session_id": "unnamed", "name": "researcher", "group": "lead"})
+        self.assertEqual(code, 200)
+        self.assertEqual((adopted["crew_name"], adopted["group_name"]), ("researcher", "lead"))
+        self.assertEqual(self.get("/api/roster/adopt", {"session_id": "unnamed", "name": "again"})[0], 400)
 
     def test_spawn_success_and_business_errors(self):
         code, result, _ = self.get("/api/spawn", {"name":"web-member", "task":"work", "group":"lead", "role":"member"})

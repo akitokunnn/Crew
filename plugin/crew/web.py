@@ -94,12 +94,13 @@ class Service:
             raise board.BoardError("\u8bf7\u5148 crew init \u542f\u7528\u9879\u76ee")
         return board.project(conn, name)["name"]
 
-    def candidates(self, conn, project_name):
+    def candidates(self, conn, project_name, for_adoption=False):
         with self.agents_lock:
             agents, error = self.agents, self.agents_error
         if error is not None:
             return []
-        registered = {row[0] for row in conn.execute("SELECT session_id FROM sessions")}
+        registered = {row["session_id"] for row in conn.execute("SELECT session_id,project,crew_name FROM sessions")
+                      if not for_adoption or row["project"] != project_name or row["crew_name"]}
         candidates = []
         for agent in board.live_sessions(agents).values():
             if agent["sessionId"] in registered or not agent.get("cwd"):
@@ -117,7 +118,7 @@ class Service:
         return candidates
 
     def candidate(self, conn, project_name, session_id):
-        candidate = next((s for s in self.candidates(conn, project_name) if s["session_id"] == session_id), None)
+        candidate = next((s for s in self.candidates(conn, project_name, for_adoption=True) if s["session_id"] == session_id), None)
         if candidate is None:
             raise board.BoardError("候选会话已离线或不属于当前项目: " + session_id)
         return candidate
