@@ -529,9 +529,26 @@ def events(conn, project_name=None, session_name=None, limit=50):
     return result
 
 
+def live_sessions(agents):
+    """Collapse processes for display; keep the newest identity and any busy state."""
+    present = {}
+    for agent in agents:
+        sid = agent["sessionId"]
+        previous = present.get(sid)
+        if previous is None:
+            present[sid] = dict(agent)
+            continue
+        latest = agent if (agent.get("startedAt") or 0) >= (previous.get("startedAt") or 0) else previous
+        present[sid] = dict(latest)
+        if previous.get("status") == "busy" or agent.get("status") == "busy":
+            present[sid]["status"] = "busy"
+    return present
+
+
 def status(conn, project_name, agents):
-    present = {a["sessionId"]: a for a in agents}
-    hooked = {row[0] for row in conn.execute("SELECT DISTINCT session_id FROM events WHERE project=? AND kind LIKE 'hook:%'", (project_name,))}
+    present = live_sessions(agents)
+    hook_times = {row[0]: store.parse_iso(row[1]).timestamp() * 1000 for row in conn.execute(
+        "SELECT session_id,MAX(ts) FROM events WHERE project=? AND kind LIKE 'hook:%' GROUP BY session_id", (project_name,))}
     members = sessions(conn, project_name)
     for s in members:
         if s["session_id"] not in present:
@@ -540,7 +557,9 @@ def status(conn, project_name, agents):
             agent = present[s["session_id"]]
             if "name" in agent:
                 s["cc_name"] = agent["name"]
-            if s["session_id"] not in hooked and s["status"] != "closed" and agent.get("status") in ("busy", "idle"):
+            hook_time = hook_times.get(s["session_id"])
+            hooked = hook_time is not None and (not agent.get("startedAt") or hook_time >= agent["startedAt"])
+            if not hooked and s["status"] != "closed" and agent.get("status") in ("busy", "idle"):
                 s["status"] = "working" if agent["status"] == "busy" else "idle"
     grouped = groups(conn, project_name)
     for g in grouped:

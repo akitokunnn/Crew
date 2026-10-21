@@ -99,7 +99,7 @@ class Service:
             return []
         registered = {row[0] for row in conn.execute("SELECT session_id FROM sessions")}
         candidates = []
-        for agent in agents:
+        for agent in board.live_sessions(agents).values():
             if agent["sessionId"] in registered or not agent.get("cwd"):
                 continue
             project = board.project_for_path(conn, agent["cwd"])
