@@ -58,6 +58,8 @@ function sessionCard(s) {
     <small class="short-path" title="${esc(s.worktree || s.cwd)}">${esc(path)}</small><small class="short-path" title="${esc(s.branch)}">分支 ${esc(branch)} · ${ago(s.last_event_at)}</small>
     <p class="last-message" title="${esc(s.last_message)}">${esc(s.last_message || "暂无最后一句话")}</p>
     <button class="address" data-copy="${esc(s.cc_name || "")}" ${s.cc_name ? "" : "disabled"} title="点击复制 SendMessage 地址">SendMessage：${esc(s.cc_name || "尚未登记地址")}</button>
+    ${s.crew_name && s.open ? `<div class="card-actions"><button data-open="${esc(s.crew_name)}" ${s.open.enabled ? "" : "disabled"} title="${esc(s.open.reason || "在 VS Code 打开这段对话")}">在 VS Code 打开 ↗</button></div>` : ""}
+    ${s.web_chat ? `<div class="card-actions"><button class="primary" data-chat="${esc(s.session_id)}">和 leader 聊天 →</button></div>` : ""}
     ${s.role !== "leader" ? `<footer><label>挪组 <select data-move="${esc(name)}" aria-label="移动 ${esc(name)}">${groupOptions(s.group_name)}</select></label></footer>` : ""}</article>`;
 }
 function sessionGrid(sessions, group, expanded) {
@@ -66,6 +68,12 @@ function sessionGrid(sessions, group, expanded) {
   const shown = sessions.filter(s => !folded.includes(s)).sort((a,b) => Number(b.role === "leader") - Number(a.role === "leader") || Number(a.status === "offline") - Number(b.status === "offline"));
   return `<div class="grid">${shown.map(sessionCard).join("") || (folded.length ? "" : empty())}</div>` +
     (folded.length ? `<details class="folded" data-group="${esc(group)}" ${expanded.has(group) ? "open" : ""}><summary>另有 ${folded.length} 个已结束的会话：已收、未命名，或离线超过一天</summary><div class="grid">${folded.map(sessionCard).join("")}</div></details>` : "");
+}
+function renderCandidates() {
+  const candidates = state.candidates || [];
+  $("candidates-panel").hidden = !candidates.length;
+  $("candidate-count").textContent = candidates.length;
+  $("candidates").innerHTML = candidates.map(s => `<article class="card candidate"><div class="card-head"><h3>${esc(s.title)}</h3><span class="pill ${esc(s.status)}">${states[s.status]}</span></div><small class="short-path" title="${esc(s.cwd)}">${esc(s.cwd)}</small><p class="muted">${esc(s.cc_name)}</p><button data-adopt="${esc(s.session_id)}">收进组</button></article>`).join("");
 }
 function table(rows, fields) {
   if (!rows.length) return empty();
@@ -83,6 +91,7 @@ function renderBoard() {
   $("waiting").innerHTML = `<h2>等你 · ${waiting.length + open.length}</h2>` + (waiting.length + open.length ? `<ul>${waiting.map(s => `<li><strong>${esc(s.crew_name || s.session_id.slice(0,8))}</strong>：${esc(s.status_note || "等你处理")} <small>已等 ${ago(s.last_event_at) === "刚刚" ? "不足 1 分钟" : ago(s.last_event_at).replace(/前$/, "")}</small></li>`).join("")}${open.map(d => `<li><a href="#decision-${d.id}">${d.blocking ? "卡流程 · " : ""}${esc(d.question)}</a> · ${esc(displayName(d.session_id))}</li>`).join("")}</ul>` : "当前没有等待处理的事。");
   const expanded = new Set([...$("groups").querySelectorAll("details[open]")].map(d => d.dataset.group));
   $("groups").innerHTML = state.groups.filter(g => !g.closed_at).map(g => `<section><h2>${esc(g.name)}</h2>${sessionGrid(g.members, g.name, expanded)}</section>`).join("") + `<section><h2>未分组</h2>${sessionGrid(state.ungrouped, "", expanded)}</section>`;
+  renderCandidates();
   const resources = state.resources.map(r => ({...r, lease:state.leases.find(l => l.resource === r.name)}));
   $("leases").innerHTML = table(resources, [["name","资源"],["lease","借用人", l => esc(l ? l.holder_name || displayName(l.holder_session) : "空闲")],["lease","用途",l => esc(l?.purpose || "—")],["lease","借出时间", l => esc(dateTime(l?.taken_at))],["lease","预计归还", l => esc(dateTime(l?.until_at))],["lease","操作",(l,r) => l ? `<button data-give="${esc(r.name)}">强制归还</button>` : "—"]]);
   $("claims").innerHTML = table(state.claims, [["pattern","路径"],["crew_name","归属人", (v,r) => esc(v || displayName(r.session_id))],["note","说明"],["created_at","声明时间", v => esc(dateTime(v))]]);
@@ -95,6 +104,7 @@ function renderBoard() {
   $("handoffs").innerHTML = state.handoffs.map(h => `<article class="entry"><small>${esc(h.from_name || displayName(h.from_session))} → ${esc(h.to_target)} · ${ago(h.created_at)}</small><p class="pre">${esc(h.body)}</p></article>`).join("") || empty();
   $("reports").innerHTML = state.reports.map(r => `<article class="entry"><small>${esc(r.crew_name || displayName(r.session_id))} · ${ago(r.created_at)}</small><p class="pre">${esc(r.body)}</p></article>`).join("") || empty();
   $("events").innerHTML = state.events.map(e => `<div class="entry"><small>${dateTime(e.ts)} · ${esc(displayName(e.session_id))}</small> <strong>${esc(e.kind)}</strong><details><summary>详情</summary><pre class="pre">${esc(JSON.stringify(e.detail, null, 2))}</pre></details></div>`).join("") || empty();
+  window.crewChat?.update();
 }
 async function loadState() {
   const sequence = ++stateRequest;
@@ -165,19 +175,26 @@ function setTab(tab) {
   if (tab === activeTab) return;
   activeTab = tab;
   $("board-view").hidden = tab !== "board"; $("usage-view").hidden = tab !== "usage";
+  $("chat-view").hidden = tab !== "chat";
   $("board-tab").setAttribute("aria-pressed", String(tab === "board")); $("usage-tab").setAttribute("aria-pressed", String(tab === "usage"));
-  history.replaceState(null, "", tab === "usage" ? "#usage" : location.pathname + location.search);
+  $("chat-tab").setAttribute("aria-pressed", String(tab === "chat"));
+  history.replaceState(null, "", tab === "usage" ? "#usage" : tab === "chat" ? "#chat" : location.pathname + location.search);
+  document.body.classList.toggle("chat-active", tab === "chat");
+  window.crewChat?.visibility(tab === "chat");
   if (tab === "usage") loadUsage(); else loadState();
 }
 $("board-tab").onclick = () => setTab("board"); $("usage-tab").onclick = () => setTab("usage");
-$("project").onchange = () => { project = $("project").value; loadState(); };
+$("chat-tab").onclick = () => setTab("chat");
+$("project").onchange = () => { project = $("project").value; window.crewChat?.reset(); loadState(); };
 $("new-session").onclick = () => { const form = $("spawn-form"); form.reset(); form.querySelector(".form-error").textContent = ""; form.elements.group.innerHTML = groupOptions(null, true); $("spawn-dialog").showModal(); };
-$("new-leader").onclick = () => { const form = $("leader-form"); form.reset(); form.querySelector(".form-error").textContent = ""; form.elements.members.innerHTML = allSessions().filter(s => s.role !== "leader" && s.crew_name).map(s => `<option value="${esc(s.crew_name)}">${esc(s.crew_name)} · ${esc(s.group_name || "未分组")}</option>`).join(""); $("leader-dialog").showModal(); };
+$("new-leader").onclick = () => { const form = $("leader-form"); form.reset(); form.querySelector(".form-error").textContent = ""; form.elements.members.innerHTML = allSessions().filter(s => s.role !== "leader" && s.crew_name).map(s => `<option value="${esc(s.crew_name)}">${esc(s.crew_name)} · ${esc(s.group_name || "未分组")}</option>`).join(""); $("leader-candidates").innerHTML = (state.candidates || []).length ? '<p class="muted">也可以选尚未登记的会话，并给它起个名字。</p>' + state.candidates.map(s => `<div class="candidate-choice"><label><input type="checkbox" value="${esc(s.session_id)}">${esc(s.title)}</label><input data-candidate-name="${esc(s.session_id)}" aria-label="${esc(s.title)} 的组员名字" placeholder="组员名字" value="${esc(s.title)}"></div>`).join("") : ""; $("leader-dialog").showModal(); };
 document.addEventListener("click", async event => {
   const close = event.target.closest("[data-close]"); if (close) close.closest("dialog").close();
   const copy = event.target.closest("[data-copy]"); if (copy) { try { await navigator.clipboard.writeText(copy.dataset.copy); notice("已复制 SendMessage 地址"); } catch (error) { showError(error); } }
   const give = event.target.closest("[data-give]"); if (give) { currentResource = give.dataset.give; $("give-form").reset(); $("give-form").querySelector(".form-error").textContent = ""; $("give-resource").textContent = currentResource; $("give-dialog").showModal(); }
   const sort = event.target.closest("[data-sort]"); if (sort) { sortDirection = sortKey === sort.dataset.sort ? -sortDirection : -1; sortKey = sort.dataset.sort; renderSessions(); }
+  const adopt = event.target.closest("[data-adopt]"); if (adopt) { const s = state.candidates.find(s => s.session_id === adopt.dataset.adopt), form = $("adopt-form"); form.reset(); form.querySelector(".form-error").textContent = ""; form.elements.session_id.value = s.session_id; form.elements.name.value = s.title; form.elements.group.innerHTML = groupOptions(null, true); $("adopt-title").textContent = s.title; $("adopt-dialog").showModal(); }
+  const open = event.target.closest("[data-open]"); if (open) { const s = allSessions().find(s => s.crew_name === open.dataset.open); if (s.open.needs_confirmation) { const form = $("open-form"); form.reset(); form.elements.name.value = s.crew_name; form.querySelector(".form-error").textContent = ""; $("open-name").textContent = s.crew_name; $("open-dialog").showModal(); } else { open.disabled = true; try { await post("/api/open", {name:s.crew_name, confirm:false}); notice("已请求 VS Code 打开会话"); await loadState(); } catch (error) { showError(error); } finally { open.disabled = false; } } }
 });
 document.addEventListener("change", async event => {
   const select = event.target.closest("[data-move]");
@@ -185,13 +202,15 @@ document.addEventListener("change", async event => {
 });
 document.addEventListener("submit", async event => {
   const form = event.target;
-  if (!form.matches("#spawn-form, #leader-form, #give-form, .answer-form")) return;
+  if (!form.matches("#spawn-form, #leader-form, #give-form, #adopt-form, #open-form, .answer-form")) return;
   event.preventDefault();
   const button = form.querySelector('button[type="submit"], button:not([type])'), error = form.querySelector(".form-error");
   button.disabled = true; error.textContent = "";
   try {
     if (form.id === "spawn-form") await post("/api/spawn", {name:form.elements.name.value, task:form.elements.task.value, group:form.elements.group.value || null, role:"member", new_worktree:form.elements.new_worktree.value || null});
-    else if (form.id === "leader-form") await post("/api/leader", {name:form.elements.name.value, members:[...form.elements.members.selectedOptions].map(o => o.value), task:form.elements.task.value || null});
+    else if (form.id === "leader-form") { const result = await post("/api/leader", {name:form.elements.name.value, members:[...form.elements.members.selectedOptions].map(o => o.value), candidate_members:[...$("leader-candidates").querySelectorAll('input[type="checkbox"]:checked')].map(input => ({session_id:input.value, name:[...$("leader-candidates").querySelectorAll("[data-candidate-name]")].find(n => n.dataset.candidateName === input.value).value})), task:form.elements.task.value || null}); window.crewChat?.select(result.session_id); }
+    else if (form.id === "adopt-form") await post("/api/roster/adopt", {session_id:form.elements.session_id.value, name:form.elements.name.value, group:form.elements.group.value || null});
+    else if (form.id === "open-form") await post("/api/open", {name:form.elements.name.value, confirm:true});
     else if (form.id === "give-form") await post("/api/lease/give", {resource:currentResource, reason:form.elements.reason.value});
     else await post("/api/answer", {id:Number(form.dataset.answer), text:form.elements.text.value});
     form.closest("dialog")?.close();
@@ -202,7 +221,8 @@ document.addEventListener("submit", async event => {
 });
 $("period").onchange = () => { $("dates").hidden = $("period").value !== "custom"; if ($("period").value !== "custom") { usagePeriod = $("period").value; loadUsage(); } };
 $("dates").onsubmit = event => { event.preventDefault(); usagePeriod = $("date-from").value + ".." + $("date-to").value; loadUsage(); };
-document.addEventListener("visibilitychange", () => { if (!document.hidden && activeTab === "board") loadState(); });
-setInterval(() => { if (!document.hidden && activeTab === "board") loadState(); }, 3000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden && activeTab !== "usage") loadState(); });
+setInterval(() => { if (!document.hidden && activeTab !== "usage") loadState(); }, 3000);
 loadState();
 if (location.hash === "#usage") setTab("usage");
+if (location.hash === "#chat") setTab("chat");

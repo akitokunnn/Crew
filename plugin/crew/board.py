@@ -141,7 +141,7 @@ def _register(conn, session_id, project_name, cwd, worktree, branch, now, entryp
     conn.execute("INSERT INTO sessions(session_id,project,cwd,worktree,branch,started_at,entrypoint,permission_mode,spawn_id) "
                  "VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET cwd=excluded.cwd,"
                  "worktree=excluded.worktree,branch=excluded.branch,entrypoint=excluded.entrypoint,"
-                 "permission_mode=excluded.permission_mode,spawn_id=excluded.spawn_id,status='idle',status_note=NULL,ended_at=NULL",
+                 "permission_mode=excluded.permission_mode,spawn_id=COALESCE(excluded.spawn_id,sessions.spawn_id),status='idle',status_note=NULL,ended_at=NULL",
                  (session_id, project_name, store.norm_path(cwd), None if worktree is None else store.norm_path(worktree),
                   branch, _time(now), entrypoint, permission_mode, spawn_id))
 

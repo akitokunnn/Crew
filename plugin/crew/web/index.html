@@ -5,7 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Crew · 看板</title>
   <link rel="stylesheet" href="/style.css">
+  <script src="/vendor/markdown-it.min.js" defer></script>
   <script src="/app.js" defer></script>
+  <script src="/chat.js" defer></script>
 </head>
 <body>
   <header>
@@ -14,15 +16,28 @@
     <span class="waiting-count" id="waiting-count">等你 0</span>
     <span id="freshness" class="muted" aria-live="polite">获取进程状态…</span>
     <div class="actions"><button id="new-session">开新会话</button><button id="new-leader">开 leader</button></div>
-    <nav aria-label="页面"><button id="board-tab" aria-pressed="true">看板</button><button id="usage-tab" aria-pressed="false">用量</button></nav>
+    <nav aria-label="页面"><button id="board-tab" aria-pressed="true">看板</button><button id="chat-tab" aria-pressed="false">对话</button><button id="usage-tab" aria-pressed="false">用量</button></nav>
   </header>
   <div id="agents-error" class="error" role="alert" hidden></div>
   <div id="error" class="error" role="alert" hidden></div>
   <p id="notice" role="status" hidden></p>
   <main>
+    <section id="chat-view" aria-label="和 leader 对话" hidden>
+      <div class="chat-shell">
+        <aside class="chat-sidebar"><div class="sidebar-heading"><span>我的分组</span><button id="chat-new" aria-label="新建 leader" title="新建 leader">＋</button></div><div id="chat-leaders"></div><div class="sidebar-note"><span class="live-dot"></span>一起把事情往前推<p>安排、进展、需要你拍板的事，都在这里聊。</p></div></aside>
+        <div class="conversation">
+          <div class="conversation-heading"><div class="leader-avatar">C</div><div><h2 id="chat-title">选择一个 leader</h2><p id="chat-subtitle">你的工作，从一次对话开始。</p></div><span id="chat-status" class="pill idle">未连接</span></div>
+          <div id="chat-log" class="chat-log" role="log" aria-label="对话记录" aria-live="off"></div>
+          <div id="chat-error" class="chat-error" role="alert" hidden></div>
+          <form id="chat-form" class="composer"><label class="sr-only" for="chat-input">发给 leader</label><textarea id="chat-input" name="text" rows="2" placeholder="聊聊目标、问问进展，或者把下一步交给 leader…" required></textarea><div class="composer-bottom"><small id="chat-hint">Enter 发送 · Shift + Enter 换行</small><button id="chat-send" type="submit" aria-label="发送消息">发送 ↑</button></div></form>
+        </div>
+        <aside class="chat-team"><div class="sidebar-heading"><span>组员动态</span><span id="chat-team-count" class="count">0</span></div><div id="chat-members"></div><div id="chat-decisions"></div></aside>
+      </div>
+    </section>
     <section id="board-view" aria-label="看板">
       <section id="waiting" class="waiting-panel"></section>
       <div id="groups"></div>
+      <section id="candidates-panel" hidden><div class="section-heading"><h2>发现的会话 <span id="candidate-count" class="count"></span></h2><p class="muted">这些会话已经在项目里运行，可以直接收进组。</p></div><div id="candidates" class="grid"></div></section>
       <section><h2>资源借还</h2><div id="leases" class="scroll"></div></section>
       <section><h2>文件归属</h2><div id="claims" class="scroll"></div></section>
       <section><h2>待拍板</h2><div id="decisions" class="grid"></div></section>
@@ -54,10 +69,13 @@
   <dialog id="leader-dialog">
     <form id="leader-form">
       <h2>开 leader</h2><label>名字 / 分组名<input name="name" required></label><label>组员（可多选）<select name="members" multiple size="6"></select></label>
+      <div id="leader-candidates" class="candidate-picker"></div>
       <label>任务（可选）<textarea name="task" rows="5"></textarea></label><p class="muted">已在其他分组的组员会挪到此组。</p>
       <p class="form-error" role="alert"></p><div class="actions"><button type="button" data-close>取消</button><button type="submit">启动 leader</button></div>
     </form>
   </dialog>
   <dialog id="give-dialog"><form id="give-form"><h2>强制归还资源</h2><p id="give-resource"></p><label>归还原因<textarea name="reason" rows="3" required></textarea></label><p class="form-error" role="alert"></p><div class="actions"><button type="button" data-close>取消</button><button type="submit">确认归还</button></div></form></dialog>
+  <dialog id="adopt-dialog"><form id="adopt-form"><h2>收进组</h2><p id="adopt-title" class="muted"></p><input name="session_id" type="hidden"><label>给它起个名字<input name="name" required></label><label>分组<select name="group"></select></label><p class="form-error" role="alert"></p><div class="actions"><button type="button" data-close>取消</button><button type="submit">确认加入</button></div></form></dialog>
+  <dialog id="open-dialog"><form id="open-form"><h2>在 VS Code 接着聊</h2><p id="open-name"></p><p>会先关闭这个空闲会话的终端进程，再在 VS Code 打开同一段对话。</p><p class="muted">会话正在干活时不能转移。</p><input name="name" type="hidden"><p class="form-error" role="alert"></p><div class="actions"><button type="button" data-close>取消</button><button type="submit">确认转到 VS Code</button></div></form></dialog>
 </body>
 </html>
