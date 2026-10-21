@@ -26,7 +26,10 @@ Crew/
       usage.py  usage_cli.py          用量扫描、汇总、命令行
       spawn.py                        后台会话启动计划、任务文件、CLI 转网页服务
       chat.py                         后台成员/leader CLI、流式协议、聊天记录与恢复
-      web.py  web/                    看板和聊天网页，含本地 Markdown 库
+      web.py  web/                    工作区网页和聊天，含本地 Markdown 库
+      presentation.py session_ops.py  关系、待处理、活动记录与可撤销会话整理
+      feishu.py notifications.py      复用本机飞书 CLI 的收发与落库
+      claude_limits.py autostart.py   官方本地额度快照、当前用户登录自启
     defaults/blacklist.txt  defaults/prices.json
     tests/                            unittest，cd plugin && python -m unittest discover -s tests
   docs/DESIGN.md
@@ -46,7 +49,10 @@ Crew/
 | `spawn/<id>.json`、`spawn/<id>.md` | 开新会话时的参数和任务正文，成员和网页 leader 共用 |
 | `chat/<会话ID>.jsonl` | 按 seq 追加的网页聊天事件，含文本、工具调用/结果和状态；不存 thinking |
 | `web.json` | 正在运行的本机网页服务地址，供 CLI 连接；服务退出时移除自己的地址 |
-| `codex_runs.jsonl` | 派活脚本记的派活记录（§9） |
+| `codex_runs.jsonl` | 派活脚本记的派活开始与结束（§9） |
+| `claude-limits.json` | 网页 Claude 的额度事件快照，按窗口保留采集时间 |
+| `feishu.json` | 当前用户通知配置与手动离开状态；没有应用密钥 |
+| `web-autostart.log` | 登录自启入口及后台服务的输出 |
 
 所有函数显式接收 `home` 参数；命令行有全局参数 `--home DIR`（默认 `store.default_home()`），测试一律传临时目录。**不用环境变量改 HOME。**
 
@@ -68,11 +74,11 @@ Crew/
 | waiting | 等人（status_note 写原因） | Notification；PreToolUse 的 AskUserQuestion / ExitPlanMode |
 | idle | 一轮做完，空着 | SessionStart；Stop |
 | offline | 会话退出了 | SessionEnd |
-| closed | 所在分组被收掉了 | `crew leader close --with-members` |
+| closed | 已归档或移出 Crew；不表示进程已停止 | 会话操作，或 `crew leader close --with-members` |
 
-`claude agents --json` 里没有这个会话的进程时，网页和 `crew status` 显示为离线，但不改库。
+`claude agents --json` 里没有这个会话的进程时，网页和 `crew status` 显示为离线，但不改库；closed 始终保留为已归档。
 
-当前进程还没有 Crew 钩子记录的会话，显示状态取 agents 的 busy → working、idle → idle；钩子生效后保留 waiting 等细分状态。网页服务自己管理的会话还会根据发送、流式输出、result 和进程退出更新聊天状态。
+当前进程还没有 Crew 钩子记录的会话，显示状态取 agents 的 busy → working、idle → idle；钩子生效后保留 waiting 等细分状态。网页服务自己管理的会话还会根据发送、流式输出、result 和进程退出更新聊天状态。真实 hook 的 waiting 不会被日志里的旧 idle 覆盖。
 
 ## 4. 命令行
 
@@ -107,7 +113,8 @@ Crew/
 | `usage ...` | 转给 `crew.usage_cli.main(argv, home)`（§8） |
 | `spawn ...` | 通过运行中的网页服务开后台成员会话；dry-run 只看计划（§10） |
 | `leader start --name N [--members A,B] [--task T] [--dry-run]` | 调用运行中的网页服务开 leader；服务没开时报错，dry-run 只看计划（§10） |
-| `web [--port 47811] [--open]` | 本机看板和会话聊天服务（§10） |
+| `web [--port 47811] [--open]` | 本机工作区网页；--open 按 cwd 绑定工作区并复用已有服务（§10） |
+| `autostart install|status|uninstall` | 当前用户登录自启，不立即启动、停止服务或弹浏览器 |
 
 白板写操作同时写一条 events；聊天输出另记在 `chat/<会话ID>.jsonl`。
 
@@ -130,6 +137,8 @@ Crew/
 - 插件装上或项目启用之前就开着的会话没有 SessionStart 记录：它的第一个打卡事件会先补登记再改状态。
 - 打卡类事件出错不能影响会话：打一行原因到 stderr，exit 1。**除 guard 外任何事件都不能 exit 2。**
 - 会话的 crew 名、cc_name 不在钩子里调 `claude agents`（太慢）。
+
+显式 session_controls 的归档/移出高于上述 hook 状态，closed 不因启动、Stop 或 SessionEnd 改回活跃。compact 只续上下文，保留既有身份、分组与状态，不重放旧 CREW_*。没有显式控制记录的旧 close_group 仍保留主动启动后重开的既有行为。
 
 ## 6. 文件归属
 
@@ -189,7 +198,7 @@ PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stder
 
 ### 命令行（`crew/usage_cli.py`：`main(argv, home)`）
 
-`usage scan`；`usage summary [--period P]`；`usage sessions [--period P]`；`usage daily [--period P]`；`usage codex [--period P]`；`usage agents`；`usage models`；`usage export --what sessions|daily|codex|requests --out FILE.csv [--period P]`。默认 period=week。表格用等宽对齐的纯文本；都支持 `--json`。
+`usage [--project NAME] scan`；`usage summary [--period P]`；`usage sessions [--period P]`；`usage daily [--period P]`；`usage codex [--period P]`；`usage agents`；`usage models`；`usage export --what sessions|daily|codex|requests --out FILE.csv [--period P]`。默认 period=week，CLI 默认全机，`--project NAME` 按实际工作目录筛选（包括未收编会话）；网页默认当前工作区。额度始终账户范围。表格用等宽对齐的纯文本；都支持 `--json`。
 
 ## 9. 派活记录
 
@@ -202,7 +211,7 @@ PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stder
 ## 10. 开新会话和网页
 
 - `spawn --name N --task T [--group G] [--cwd DIR | --new-worktree BRANCH]` 默认开后台成员，调用网页服务的 `/api/spawn`。任务正文写 `HOME/spawn/<id>.md`，参数写 `<id>.json`；复用 leader 的持久 CLI、聊天记录和恢复逻辑。新会话不再开终端窗口。
-- `web [--port 47811] [--open]` 只监听 127.0.0.1，运行期间把地址写入 `HOME/web.json`。页面包含看板、用量和成员/leader 对话；对话里渲染 Markdown、流式文本、可折叠的工具调用/结果，旁边显示组员状态和待拍板。前端用原生 JS 和本地 markdown-it 15.0.2，无构建流程；Python 后端仍只用标准库。
+- `web [--port 47811] [--open]` 只监听 127.0.0.1，运行期间把地址写入 `HOME/web.json`。页面只有总览、会话、用量三个导航，裸网址列工作区入口；`/?project=P` 固定绑定工作区，不在页内切项目。页面包含关系图、待处理、用量和成员/leader 对话；对话里渲染 Markdown、流式文本、可折叠的工具调用/结果，旁边显示组员状态和待拍板。前端用原生 JS 和本地 markdown-it 15.0.2，无构建流程；Python 后端仍只用标准库。
 - `leader start --name N [--members A,B] [--task T]` 调本机网页服务的 `/api/leader`。`spawn` 和 `leader start` 都先要求运行 `crew web --open`，服务未运行时清楚报错；`--dry-run` 只生成启动计划，不连服务、不写白板、不启动进程。
 - 成员和 leader 都复用 `spawn.prepare` 和任务文件；leader 额外建分组、收编/挪入选定成员。后台进程是 PATH 里的 Claude CLI，通用参数为 `-p --input-format stream-json --output-format stream-json --verbose --include-partial-messages --replay-user-messages --permission-mode bypassPermissions --name N`；仅 leader 追加 `--agent crew:leader`。保持 stdin 打开，不加 `--bare`，保留跨会话收件箱和插件钩子/守卫。任务 brief 指定相应的 `/crew:member` 或 `/crew:leader` 守则，CREW_ROLE 也按角色设置；未分组成员不设置 CREW_GROUP。
 - 启动计划预分配 UUID，首次用 `--session-id`，把会话的角色、分组、cwd、spawn_id 记进白板；重启网页服务后，等用户下一次发言再用 `--resume` 恢复同 ID，并使用白板里当前的角色和分组。恢复前直接查活进程，同 ID 已在 VS Code 或其他进程里运行时拒绝双开。
@@ -233,6 +242,20 @@ PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stder
 | `POST /api/open/continue` | session_id、confirm=true；重查空闲和进程归属后交接，再打开原 ID 的 VS Code URI |
 
 成员和 leader 的聊天接口相同，`web_chat` 由聊天日志是否存在判定。会话保留在 Claude transcript 中，需要时可在 VS Code 按同 ID 接续；网页再次发言时会检查外部进程，避免同时恢复两份；已归档会话的历史可读，发送返回冲突。完整页面流程和状态文案见 [WEB_UX.md](WEB_UX.md)。
+
+### 会话整理、工作区视图与通知
+
+- `session_controls` 保存显式归档、移出和改名。移出不删会话与历史，hook 不会自动收编回来；主动 join 可重新加入。leader 改名同步组与成员归属，pending handoff 跟随；撤销恢复操作前的记录，不操作进程。
+- `GET /api/state?project=P` 追加 `attention`、`codex_tasks`、`removed_sessions` 和 `notification`。bare API 不假选首个工作区。所有网页请求携带固定项目；`GET /api/session/timeline` 合并业务活动，用实际交接投递身份保存历史。
+- `POST /api/session/rename|archive|remove|restore|undo` 用精确 session_id；返回 `session` 与供撤销的 `before`。`POST /api/attention/dismiss` 可撤销标记，检查事项所属工作区。归档/移出会话的未答题保留记录，但不继续催办。
+- 用量接口及 CSV 接受 `project=P&scope=workspace|machine`。报告函数末尾可选 `project=None`，按 cwd 最长根目录匹配；跨目录 Codex 按任务工作目录统计。`summary.claude_limits` 来自官方本地缓存与 stream-json `rate_limit_event`，不轮询私有 OAuth 接口，不启动模型来查额度。
+- 派活脚本仓库副本在 `integrations/codex-dispatch/run_codex.ps1`：同 run_id 先写开始、再写结束，scanner upsert。只有未关联的 rollout 时状态为 unknown，最后日志时间不当完成时间。
+- 飞书复用既有 lark-cli bot 登录和一个共享事件总线。`notification_messages` 保存实际发送消息与问题/leader的关系，`notification_inbound` 去重，`notification_replies` 排队并记录每条网页来信的回复边界。token、回调临时票据不入库。发失败保留明确错误，不自动重发。
+- 通知只在手动离开或桌面锁屏时主动发送，约 30 秒合并；期间已处理的事项不发送。锁屏来自已有桌面代理的带 token POST `/api/status`，不启动代理、不操作桌面。代理故障单独提示，手动离开与收件仍可用。
+- 用户在飞书答复只处理 Crew 实际发送、属于本人且仍未答的问题；保存后更新卡片，下一轮由原有 deliver 流程接收。CLI 卡片 consumer 未就绪时改为文字选项，避免显示失效按钮。应用未订阅 card.action.trigger 需用户自行在开放平台启用，本轮不代申请。
+- 网页 leader 的飞书消息进入同一 input stream，journal 标记 source=feishu；回复截至这条消息之后第一个 idle/offline，避免和网页下一轮串线。已有 VS Code/终端 leader 用交接保留来信、明确提示下一轮接收，不启动第二份会话。详见 [FEISHU.md](FEISHU.md)。
+- `autostart` 用当前用户 InteractiveToken 计划任务，普通权限、登录触发、隐藏运行，不保存密码。任务指向主检出；默认端口已有 Crew 时保留原服务，不重复启动。不在睡眠、休眠或注销期间维持收信。
+- leader 巡查本轮只讨论场景，不写自动巡查或派活代码；QQ 优先级最低，须其它事项完成且账户周剩余大于 55%、日本时间 10:00 前才继续。
 
 ## 11. 错误处理
 

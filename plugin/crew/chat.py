@@ -247,18 +247,19 @@ class Manager:
         result = spawn._execute(conn, plan, launch, members, member_session_ids)
         return {**result, "session_id": session_id, "role": spec["role"]}
 
-    def _send(self, session_id, text, display_text=None):
+    def _send(self, session_id, text, display_text=None, source='human', identity=None):
         current = self.processes[session_id]
-        identity = str(uuid.uuid4())
+        identity = identity or str(uuid.uuid4())
         message = {"type": "user", "uuid": identity, "session_id": session_id, "parent_tool_use_id": None,
                    "message": {"role": "user", "content": text}}
         with current.input_lock:
-            current.journal.message(identity, text if display_text is None else display_text)
+            current.journal.message(identity, text if display_text is None else display_text, source=source)
             current.journal.set_status("working")
             current.process.stdin.write(json.dumps(message, ensure_ascii=False) + "\n")
             current.process.stdin.flush()
+        return identity
 
-    def send(self, session, text):
+    def send(self, session, text, source='human', identity=None):
         session_id = session["session_id"]
         with self.lock:
             if self.closed:
@@ -275,8 +276,8 @@ class Manager:
                     raise board.BoardError("上一轮会话进程的输出尚未结束，请稍后查看状态")
                 spec = json.loads((self.home / "spawn" / (session["spawn_id"] + ".json")).read_text(encoding="utf-8"))
                 self._launch(session, spec, resume=True)
-            self._send(session_id, text)
-        return {"ok": True}
+            identity = self._send(session_id, text, source=source, identity=identity)
+        return {"ok": True, 'message_id': identity}
 
     def detach(self, session_id):
         """Release an idle session to VS Code by letting its own process finish."""

@@ -288,7 +288,7 @@ class WebTests(ShellFixture, unittest.TestCase):
             return response.status, value, response.headers
 
     def test_state_shape_and_display_offline_does_not_mutate_board(self):
-        code, state, headers = self.get("/api/state")
+        code, state, headers = self.get("/api/state?project=demo")
         self.assertEqual(code, 200)
         self.assertTrue({"projects","project","groups","ungrouped","resources","leases","claims","decisions","handoffs","reports","events","agents_age_seconds","agents_error"} <= state.keys())
         self.assertEqual(state["project"]["name"], "demo")
@@ -318,7 +318,7 @@ class WebTests(ShellFixture, unittest.TestCase):
             self.assertEqual(self.get("/api/open/continue", {"session_id": "s1"})[0], 409)
             self.provider.return_value[0]["status"] = "busy"
             self.server.service.refresh_agents()
-            state = self.get("/api/state")[1]
+            state = self.get("/api/state?project=demo")[1]
             target = next(s for g in state["groups"] for s in g["members"] if s["session_id"] == "s1")
             self.assertFalse(target["open"]["enabled"])
             self.assertEqual(self.get("/api/open/continue", {"session_id": "s1", "confirm": True})[0], 409)
@@ -356,24 +356,24 @@ class WebTests(ShellFixture, unittest.TestCase):
         initial_calls = self.provider.call_count
         self.clock += dt.timedelta(seconds=7)
         for _ in range(2):
-            code, state, _ = self.get("/api/state")
+            code, state, _ = self.get("/api/state?project=demo")
         self.assertEqual(self.provider.call_count, initial_calls)
         self.assertEqual(state["agents_age_seconds"], 7)
         self.provider.side_effect = OSError("fake agents failed")
         self.server.service.refresh_agents()
-        _, state, _ = self.get("/api/state")
+        _, state, _ = self.get("/api/state?project=demo")
         self.assertIn("fake agents failed", state["agents_error"])
         self.assertEqual(state["ungrouped"][0]["status"], "idle")
         self.assertEqual(state["groups"][0]["members"][1]["status"], "waiting")
         self.assertEqual(state["agents_age_seconds"], 7)
         self.provider.side_effect = None
         self.server.service.refresh_agents()
-        self.assertIsNone(self.get("/api/state")[1]["agents_error"])
+        self.assertIsNone(self.get("/api/state?project=demo")[1]["agents_error"])
 
     def test_cached_sendmessage_address_is_current_without_database_write(self):
         self.provider.return_value = [{"sessionId":"s1", "name":"fresh-address"}]
         self.server.service.refresh_agents()
-        state = self.get("/api/state")[1]
+        state = self.get("/api/state?project=demo")[1]
         session = next(s for g in state["groups"] for s in g["members"] if s["session_id"] == "s1")
         self.assertEqual(session["cc_name"], "fresh-address")
         self.assertEqual(board.session(self.conn, "s1")["cc_name"], "cc-one")
@@ -391,7 +391,7 @@ class WebTests(ShellFixture, unittest.TestCase):
             {"sessionId": "s1", "name": "cc-one", "status": "busy", "cwd": str(self.project)},
         ]
         self.server.service.refresh_agents()
-        state = self.get("/api/state")[1]
+        state = self.get("/api/state?project=demo")[1]
         self.assertEqual(state.get("candidates"), [{"session_id": "vscode-session", "title": "latest",
                          "cc_name": "cc-vscode", "cwd": str(self.project), "status": "working", "location": "unknown"}])
         self.assertIsNone(self.conn.execute("SELECT 1 FROM sessions WHERE session_id='vscode-session'").fetchone())
@@ -412,8 +412,8 @@ class WebTests(ShellFixture, unittest.TestCase):
         self.assertEqual((session["worktree"], session["branch"]),
                          (store.norm_path(self.project), self.git("branch", "--show-current")))
         self.assertEqual(self.commands, [])
-        self.assertEqual(self.get("/api/state")[1]["candidates"], [])
-        current = lambda: next(s for g in self.get("/api/state")[1]["groups"] for s in g["members"]
+        self.assertEqual(self.get("/api/state?project=demo")[1]["candidates"], [])
+        current = lambda: next(s for g in self.get("/api/state?project=demo")[1]["groups"] for s in g["members"]
                                if s["session_id"] == candidate["session_id"])
         self.assertEqual(current()["status"], "working")
         self.live_candidate(status="idle")
@@ -427,13 +427,13 @@ class WebTests(ShellFixture, unittest.TestCase):
     def test_candidate_titles_increment_and_failures_hide_stale_candidates(self):
         self.main_file([{"type": "ai-title", "aiTitle": "first"}], session="vscode-session")
         self.live_candidate()
-        self.assertEqual(self.get("/api/state")[1]["candidates"][0]["title"], "first")
+        self.assertEqual(self.get("/api/state?project=demo")[1]["candidates"][0]["title"], "first")
         self.write(self.claude / "project" / "vscode-session.jsonl",
                    [{"type": "ai-title", "aiTitle": "new title"}], append=True)
-        self.assertEqual(self.get("/api/state")[1]["candidates"][0]["title"], "new title")
+        self.assertEqual(self.get("/api/state?project=demo")[1]["candidates"][0]["title"], "new title")
         self.provider.side_effect = OSError("agents unavailable")
         self.server.service.refresh_agents()
-        self.assertEqual(self.get("/api/state")[1]["candidates"], [])
+        self.assertEqual(self.get("/api/state?project=demo")[1]["candidates"], [])
 
     def test_leader_adopts_candidates_and_validates_existing_members_before_writes(self):
         candidate = self.live_candidate()
@@ -456,13 +456,13 @@ class WebTests(ShellFixture, unittest.TestCase):
         inside = web.Service(self.home, PLUGIN, cwd=self.project, **options)
         self.assertEqual(inside.default_project, "demo")
         outside = web.Service(self.home, PLUGIN, cwd=self.root, **options)
-        self.assertEqual(outside.default_project, "a-first")
+        self.assertIsNone(outside.default_project)
 
     def test_first_agents_failure_does_not_mark_idle_offline(self):
         service = web.Service(self.home, PLUGIN, agents_provider=mock.Mock(side_effect=ValueError("bad JSON")),
                               claude_root=self.claude, codex_root=self.codex, runs_file=self.runs, now=self.clock)
         service.refresh_agents()
-        state = service.state()
+        state = service.state("demo")
         self.assertIsNotNone(state["agents_error"])
         self.assertIsNone(state["agents_age_seconds"])
         self.assertEqual(state["ungrouped"][0]["status"], "idle")
@@ -506,7 +506,7 @@ class WebTests(ShellFixture, unittest.TestCase):
         self.assertIsNone(service.state()["project"])
         result = service.post("/api/project/init", {"name": "first", "root": str(self.project)})
         self.assertEqual((result["name"], result["root"]), ("first", store.norm_path(self.project)))
-        self.assertEqual(service.state()["project"]["name"], "first")
+        self.assertEqual(service.state("first")["project"]["name"], "first")
         with self.assertRaises(board.Conflict):
             service.post("/api/project/init", {"name": "duplicate", "root": str(self.project)})
         with self.assertRaises(board.BoardError):
@@ -536,7 +536,7 @@ class WebTests(ShellFixture, unittest.TestCase):
         (directory / "99.json").write_text(json.dumps({"sessionId": "candidate", "pid": 99, "entrypoint": "claude-vscode",
             "status": "idle", "cwd": str(self.project)}), encoding="utf-8")
         self.server.service.refresh_agents()
-        state = self.get("/api/state")[1]
+        state = self.get("/api/state?project=demo")[1]
         current = next(s for s in state["ungrouped"] if s["session_id"] == "unnamed")
         self.assertEqual(current["title"], "Research notes")
         self.assertEqual(state["candidates"][0]["location"], "vscode")
@@ -564,7 +564,7 @@ class WebTests(ShellFixture, unittest.TestCase):
         session = board.session(self.conn, session_id)
         self.assertEqual((session["role"], session["group_name"]), ("member", None))
         self.assertTrue(self.get("/api/chat/history?session_id=" + session_id)[1]["running"])
-        shown = next(s for s in self.get("/api/state")[1]["ungrouped"] if s["session_id"] == session_id)
+        shown = next(s for s in self.get("/api/state?project=demo")[1]["ungrouped"] if s["session_id"] == session_id)
         self.assertTrue(shown["web_chat"])
         manager = self.server.service.chat
         self.assertTrue(manager.owns_pid(session_id, self.processes[0].pid))
@@ -613,7 +613,7 @@ class WebTests(ShellFixture, unittest.TestCase):
         code, _, errors = self.run_cli(["leader", "close", "archived-leader", "--with-members"])
         self.assertEqual(code, 0, errors)
         def assert_archived():
-            sessions = {s["session_id"]: s for s in self.get("/api/state")[1]["ungrouped"]}
+            sessions = {s["session_id"]: s for s in self.get("/api/state?project=demo")[1]["ungrouped"]}
             self.assertEqual([sessions[sid]["status"] for sid in identities], ["closed", "closed"])
             self.assertTrue(all(self.server.service.chat.running(sid) for sid in identities))
         assert_archived()
@@ -662,7 +662,7 @@ class WebTests(ShellFixture, unittest.TestCase):
         self.assertEqual(self.get("/api/chat/send", {"session_id": session_id, "text": "next turn"})[0], 200)
         self.assertEqual(len(self.processes), 1)
         self.assertEqual(json.loads(process.stdin.getvalue().splitlines()[-1])["message"]["content"], "next turn")
-        state = self.get("/api/state")[1]
+        state = self.get("/api/state?project=demo")[1]
         leader = next(s for group in state["groups"] for s in group["members"] if s["session_id"] == session_id)
         self.assertTrue(leader["web_chat"])
         self.assertEqual(leader["status"], "working")
@@ -823,9 +823,9 @@ class WebTests(ShellFixture, unittest.TestCase):
         real_scan = web.usage.scan
         with mock.patch("crew.web.usage.scan", wraps=real_scan) as scan:
             for period in ("today", "week", "all", "2026-10-21..2026-10-21"):
-                code, result, _ = self.get("/api/usage?period=" + period)
+                code, result, _ = self.get("/api/usage?scope=machine&period=" + period)
                 self.assertEqual(code, 200)
-                self.assertEqual(set(result), {"summary","sessions","daily","codex","agents","models"})
+                self.assertEqual(set(result), {"summary","sessions","daily","codex","agents","models","scope","project"})
                 self.assertEqual(result["summary"]["claude"]["requests"], 1)
                 self.assertEqual(len(result["codex"]), 1)
             self.assertEqual(scan.call_count, 1)
@@ -849,7 +849,7 @@ class WebTests(ShellFixture, unittest.TestCase):
 
     def test_export_bom_columns_attachment_and_rows(self):
         for what, fields in usage_cli.EXPORT_FIELDS.items():
-            code, content, headers = self.get("/api/usage/export?what=" + what + "&period=all", raw=True)
+            code, content, headers = self.get("/api/usage/export?scope=machine&what=" + what + "&period=all", raw=True)
             self.assertEqual(code, 200)
             self.assertTrue(content.startswith(b"\xef\xbb\xbf"))
             self.assertIn("attachment;", headers["Content-Disposition"])
@@ -869,7 +869,7 @@ class WebTests(ShellFixture, unittest.TestCase):
 
     def test_unexpected_error_is_500_with_traceback(self):
         with mock.patch.object(self.server.service, "state", side_effect=RuntimeError("true server failure")), contextlib.redirect_stderr(io.StringIO()) as errors:
-            self.assertEqual(self.get("/api/state")[0], 500)
+            self.assertEqual(self.get("/api/state?project=demo")[0], 500)
         self.assertIn("RuntimeError: true server failure", errors.getvalue())
 
     def test_web_cli_dispatch_passes_port_open_and_provider(self):

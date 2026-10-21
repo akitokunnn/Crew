@@ -119,11 +119,15 @@ class WorkspaceViewsTests(UsageFixture, unittest.TestCase):
         board.ask(self.conn, "alpha-leader", "普通选择", blocking=False, now=NOW)
         foreign = board.ask(self.conn, "beta-main", "其他项目选择", blocking=True, now=NOW)
         self.server.service.chat.journal("alpha-leader").emit("error", text="fixture protocol failure")
+        journal = self.server.service.chat.journal('alpha-peer')
+        journal.set_status('idle')
         self.rollout("unknown-alpha", str(self.alpha), originator="desktop")
         self.write(self.runs, [self.dispatch("failed-alpha", "alpha-main", self.alpha, 7),
                               self.dispatch("failed-beta", "beta-main", self.beta, 11),
                               dict(self.dispatch("running-alpha", "alpha-peer", self.alpha / "running"), ended_at=None, exit_code=None)])
-        state = self.state("alpha")
+        with mock.patch.object(self.server.service.chat, 'running', side_effect=lambda sid: sid == 'alpha-peer'):
+            state = self.state("alpha")
+        self.assertEqual(directory(state)['alpha-peer']['status'], 'waiting', 'A stale idle journal cannot erase a real waiting hook')
         items = state["attention"]
         self.assertEqual(items[0]["id"], "decision:" + str(blocking))
         self.assertEqual({i["kind"] for i in items}, {"decision", "waiting", "session_error", "codex_failed"})
@@ -179,7 +183,7 @@ class WorkspaceViewsTests(UsageFixture, unittest.TestCase):
         for identity in ("report:" + str(peer_report), "handoff:" + str(peer_only), "lease:" + str(peer_lease),
                          "decision:" + str(peer_decision), "codex:peer-task", "codex:foreign-task"):
             self.assertNotIn(identity, items)
-        self.assertEqual({i["type"] for i in items.values()}, {"report", "handoff", "lease", "decision", "codex"})
+        self.assertEqual({i["type"] for i in items.values()}, {"report", "handoff", "lease", "decision", "codex", "event"})
         answer = items["answer:" + str(decision)]
         self.assertEqual((answer["source"], answer["status"]), ("飞书", "等待下一轮接收"))
         self.assertEqual(items["codex:main-task"]["status"], "failed")

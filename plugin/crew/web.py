@@ -10,9 +10,11 @@ import webbrowser
 from contextlib import closing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
+from urllib.request import ProxyHandler, build_opener
+from urllib.error import URLError
 
-from . import board, chat, hooks, open_session, spawn, store, usage, usage_cli
+from . import board, chat, claude_limits, hooks, notifications, open_session, presentation, session_ops, spawn, store, usage, usage_cli
 
 
 def _text(data, key):
@@ -28,7 +30,8 @@ def _optional_text(data, key):
 
 class Service:
     def __init__(self, home, plugin_root, agents_provider=None,
-                 claude_root=None, codex_root=None, runs_file=None, now=None, cwd=None, process_factory=subprocess.Popen):
+                 claude_root=None, codex_root=None, runs_file=None, now=None, cwd=None, process_factory=subprocess.Popen,
+                 notification_client=None, lock_status=notifications.desktop_locked, notification_batch_seconds=30):
         if agents_provider is None:
             from .cli import claude_agents
             agents_provider = claude_agents
@@ -46,10 +49,11 @@ class Service:
         self.stop = threading.Event()
         self.agents_ready = threading.Event()
         self.worker = None
+        self.inbox = notifications.Inbox(self, notification_client, lock_status, notification_batch_seconds)
         with closing(store.connect(home)) as conn:
             projects = board.projects(conn)
             project = board.project_for_path(conn, Path.cwd() if cwd is None else cwd)
-            self.default_project = project["name"] if project is not None else projects[0]["name"] if projects else None
+            self.default_project = project["name"] if project is not None else None
 
     def now(self):
         if self.clock is None:
@@ -81,9 +85,11 @@ class Service:
     def start(self):
         self.worker = threading.Thread(target=self._poll_agents, name="crew-agents", daemon=True)
         self.worker.start()
+        self.inbox.start()
 
     def close(self):
         self.stop.set()
+        self.inbox.close()
         self.chat.close()
         if self.worker is not None:
             self.worker.join(timeout=1)
@@ -130,18 +136,26 @@ class Service:
         return board.update_cc_name(conn, candidate["session_id"], candidate["cc_name"], now=now)
 
     def state(self, project_name=None):
+        if project_name is not None:
+            self.scan_usage()
         with self.agents_lock:
             agents, error, updated = self.agents, self.agents_error, self.agents_at
         with closing(store.connect(self.home)) as conn:
             projects = board.projects(conn)
-            if not projects and project_name is None:
+            if project_name is None:
                 result = {"project": None, "groups": [], "ungrouped": [], "leases": [], "claims": [], "open_decisions": 0,
-                          "resources": [], "decisions": [], "handoffs": [], "reports": [], "events": [], "candidates": []}
+                          "resources": [], "decisions": [], "handoffs": [], "reports": [], "events": [], "candidates": [],
+                          "removed_sessions": [], "codex_tasks": [], "attention": []}
             else:
                 name = self.selected_project(conn, project_name)
                 # Passing every stored identity preserves the board statuses while process state is unknown.
                 identities = [{"sessionId": s["session_id"]} for s in board.sessions(conn, name)] if error else agents
                 result = board.status(conn, name, identities)
+                removed = {r[0] for r in conn.execute('SELECT session_id FROM session_controls WHERE removed=1')}
+                result['removed_sessions'] = [s for s in board.sessions(conn, name) if s['session_id'] in removed]
+                result['ungrouped'] = [s for s in result['ungrouped'] if s['session_id'] not in removed]
+                for group in result['groups']:
+                    group['members'] = [s for s in group['members'] if s['session_id'] not in removed]
                 sessions = [*result["ungrouped"], *(s for group in result["groups"] for s in group["members"])]
                 unnamed = [s["session_id"] for s in sessions if not s["crew_name"]]
                 with self.scan_lock:
@@ -151,7 +165,9 @@ class Service:
                         session["title"] = titles.get(session["session_id"])
                     session["web_chat"] = self.chat.path(session["session_id"]).exists()
                     if session["status"] != "closed" and self.chat.running(session["session_id"]):
-                        session["status"] = self.chat.journal(session["session_id"]).status
+                        journal_status = self.chat.journal(session["session_id"]).status
+                        if session['status'] != 'waiting' or journal_status == 'working':
+                            session['status'] = journal_status
                     session["open"] = open_session.availability(session["session_id"], agents,
                                                                 self.claude_root.parent / "sessions", error, manager=self.chat)
                 decisions = board.decisions(conn, name, all=True)
@@ -162,7 +178,11 @@ class Service:
                                      key=lambda d: (d["answered_at"], d["id"]), reverse=True)[:20],
                               handoffs=board.project_handoffs(conn, name),
                               reports=board.reports(conn, name)[-20:][::-1], events=board.events(conn, name, limit=50))
+                result['codex_tasks'] = usage.codex_tasks(conn, None, None, project=name)
+                result['attention'] = presentation.attention(conn, sessions, result['decisions'], result['codex_tasks'],
+                    {s['session_id']: self.chat.history(s['session_id'])['events'] for s in sessions if s['web_chat']})
             return {**result, "projects": projects, "agents_error": error,
+                    "notification": self.notification_status(),
                     "agents_age_seconds": (self.now() - updated).total_seconds() if updated is not None else None,
                     "now": self.now().isoformat()}
 
@@ -178,7 +198,43 @@ class Service:
                 result = board.init_project(conn, _text(data, "name"), root, now=now)
                 self.default_project = result["name"]
                 return result
+            if path == '/api/notifications/away':
+                if type(data.get('away')) is not bool:
+                    raise ValueError('离开状态必须是 true 或 false')
+                return self.set_away(data['away'])
             project = self.selected_project(conn, project_name)
+            if path == '/api/attention/dismiss':
+                identity = _text(data, 'id')
+                kind, _, rest = identity.partition(':')
+                if kind == 'decision':
+                    owner = conn.execute('SELECT project FROM decisions WHERE id=?', (rest,)).fetchone()
+                elif kind in ('waiting', 'error'):
+                    owner = conn.execute('SELECT project FROM sessions WHERE session_id=?', (rest.split(':', 1)[0],)).fetchone()
+                elif kind == 'codex':
+                    owner = (project,) if any((t['run_id'] or t['rollout_id']) == rest for t in usage.codex_tasks(conn, None, None, project=project)) else None
+                else:
+                    owner = None
+                if owner is None or owner[0] != project:
+                    raise board.BoardError('待处理事项不属于当前工作区')
+                if data.get('dismiss') is False:
+                    conn.execute('DELETE FROM attention_resolutions WHERE item_id=?', (identity,))
+                else:
+                    conn.execute('INSERT OR REPLACE INTO attention_resolutions VALUES(?,?)', (identity, now))
+                return {'ok': True}
+            if path.startswith('/api/session/'):
+                target = board.session(conn, _text(data, 'session_id'))
+                if target['project'] != project:
+                    raise board.BoardError('会话不属于当前工作区')
+                if path == '/api/session/rename':
+                    return session_ops.rename(conn, target['session_id'], _text(data, 'name'), now=now)
+                if path == '/api/session/archive':
+                    return session_ops.archive(conn, target['session_id'], now=now)
+                if path == '/api/session/remove':
+                    return session_ops.archive(conn, target['session_id'], removed=True, now=now)
+                if path == '/api/session/restore':
+                    return session_ops.restore(conn, target['session_id'], now=now)
+                if path == '/api/session/undo':
+                    return session_ops.undo(conn, target['session_id'], data['before'], now=now)
             if path == "/api/answer":
                 if type(data.get("id")) is not int:
                     raise ValueError("id \u5fc5\u987b\u662f\u6574\u6570")
@@ -233,13 +289,19 @@ class Service:
             if path == "/api/lease/give":
                 board.give(conn, project, _text(data, "resource"), board.HUMAN, force=True, reason=_text(data, "reason"), now=now)
             elif path == "/api/roster/move":
+                before = session_ops.snapshot(conn, data['session_id']) if data.get('session_id') else None
                 board.roster(conn, project, "move", _text(data, "to"),
                              [] if data.get("session_id") is not None else [_text(data, "name")], now=now,
                              session_ids=[_text(data, "session_id")] if data.get("session_id") is not None else [])
+                if before:
+                    return {'ok': True, 'before': before, 'session': board.session(conn, data['session_id'])}
             elif path == "/api/roster/remove":
+                before = session_ops.snapshot(conn, data['session_id']) if data.get('session_id') else None
                 board.roster(conn, project, "remove", _text(data, "group"),
                              [] if data.get("session_id") is not None else [_text(data, "name")], now=now,
                              session_ids=[_text(data, "session_id")] if data.get("session_id") is not None else [])
+                if before:
+                    return {'ok': True, 'before': before, 'session': board.session(conn, data['session_id'])}
             elif path == "/api/group/close":
                 board.close_group(conn, project, _text(data, "group"), with_members=data.get("with_members") is True, now=now)
             elif path == "/api/roster/adopt":
@@ -258,28 +320,53 @@ class Service:
             self.chat_session(conn, self.selected_project(conn, project_name), session_id)
         return self.chat.history(session_id)
 
-    def usage(self, period="week", what=None):
-        try:
-            start, end = usage.period(period, self.now())
-        except ValueError as exc:
-            raise ValueError("\u65f6\u95f4\u6bb5\u975e\u6cd5: " + period) from exc
+    def scan_usage(self):
         with self.scan_lock, closing(store.connect(self.home)) as conn:
             if self.scanned_at is None or (self.now() - self.scanned_at).total_seconds() >= 60:
                 usage.scan(conn, self.claude_root, self.codex_root, self.runs_file)
                 self.scanned_at = self.now()
+
+    def timeline(self, project_name, session_id):
+        self.scan_usage()
+        with closing(store.connect(self.home)) as conn:
+            if board.session(conn, session_id)['project'] != self.selected_project(conn, project_name):
+                raise board.BoardError('会话不属于当前工作区')
+            return presentation.timeline(conn, session_id, usage.codex_tasks(conn, None, None, project=project_name))
+
+    def notification_status(self):
+        return self.inbox.status()
+
+    def set_away(self, away):
+        return self.inbox.set_away(away)
+
+    def usage(self, period="week", what=None, project_name=None, scope='workspace'):
+        try:
+            start, end = usage.period(period, self.now())
+        except ValueError as exc:
+            raise ValueError("\u65f6\u95f4\u6bb5\u975e\u6cd5: " + period) from exc
+        if scope not in ('workspace', 'machine'):
+            raise ValueError('用量范围必须是 workspace 或 machine')
+        self.scan_usage()
+        with closing(store.connect(self.home)) as conn:
+            project = board.project(conn, self.selected_project(conn, project_name)) if scope == 'workspace' else None
+            name = project['name'] if project else None
             if what == "codex":
-                return usage.codex_tasks(conn, start, end)
+                return usage.codex_tasks(conn, start, end, project=name)
             prices = usage.load_prices(self.home / "prices.json")
             functions = {"summary": usage.summary, "sessions": usage.by_session, "daily": usage.daily,
                          "agents": usage.by_agent_type, "models": usage.by_model, "requests": usage.requests}
             if what is not None:
-                return functions[what](conn, start, end, prices)
-            result = {key: fn(conn, start, end, prices) for key, fn in functions.items() if key != "requests"}
-            result["codex"] = usage.codex_tasks(conn, start, end)
+                return functions[what](conn, start, end, prices, project=name)
+            result = {key: fn(conn, start, end, prices, project=name) for key, fn in functions.items() if key != "requests"}
+            result['summary']['claude_limits'] = claude_limits.read(self.home, cache_path=self.claude_root.parent.parent / '.claude.json', now=self.now())
+            result["codex"] = usage.codex_tasks(conn, start, end, project=name)
+            result.update(scope=scope, project=project)
             return result
 
 
 POST_PATHS = {"/api/project/init", "/api/open", "/api/open/continue", "/api/answer", "/api/spawn", "/api/leader", "/api/lease/give", "/api/roster/move", "/api/roster/remove", "/api/group/close", "/api/roster/adopt", "/api/chat/send"}
+POST_PATHS.update('/api/session/' + action for action in ('rename', 'archive', 'remove', 'restore', 'undo'))
+POST_PATHS.update(('/api/attention/dismiss', '/api/notifications/away'))
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"),
           "/style.css": ("style.css", "text/css; charset=utf-8"), "/chat.js": ("chat.js", "text/javascript; charset=utf-8"),
           "/vendor/markdown-it.min.js": ("vendor/markdown-it.min.js", "text/javascript; charset=utf-8")}
@@ -336,6 +423,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, service.post(url.path, data, query.get("project", [None])[0]))
         elif url.path == "/api/state":
             self._send(200, service.state(query.get("project", [None])[0]))
+        elif url.path == '/api/session/timeline':
+            self._send(200, service.timeline(query.get('project', [None])[0], query.get('session_id', [''])[0]))
         elif url.path in ("/api/chat/history", "/api/chat/events"):
             session_id = query.get("session_id", [""])[0]
             history = service.chat_history(session_id, query.get("project", [None])[0])
@@ -350,14 +439,14 @@ class Handler(BaseHTTPRequestHandler):
                 what = query.get("what", [None])[0]
                 if what not in usage_cli.EXPORT_FIELDS:
                     raise ValueError("\u5bfc\u51fa\u7c7b\u578b\u5fc5\u987b\u662f sessions / daily / codex / requests")
-                rows = service.usage(period, what)
+                rows = service.usage(period, what, query.get('project', [None])[0], query.get('scope', ['workspace'])[0])
                 stream = io.StringIO(newline="")
                 writer = csv.DictWriter(stream, fieldnames=usage_cli.EXPORT_FIELDS[what])
                 writer.writeheader()
                 writer.writerows({key: "" if value is None else usage_cli._format(value, key) for key, value in row.items()} for row in rows)
                 self._send(200, stream.getvalue().encode("utf-8-sig"), "text/csv; charset=utf-8", "crew-" + what + ".csv")
             else:
-                self._send(200, service.usage(period))
+                self._send(200, service.usage(period, project_name=query.get('project', [None])[0], scope=query.get('scope', ['workspace'])[0]))
         elif url.path in STATIC:
             filename, content_type = STATIC[url.path]
             self._send(200, (service.plugin_root / "crew" / "web" / filename).read_bytes(), content_type)
@@ -410,11 +499,29 @@ def create_server(home, plugin_root, port=47811, **options):
 
 
 def serve(home, plugin_root, port=47811, open_browser=False, **options):
+    url = 'http://127.0.0.1:%d/' % port
+    with closing(store.connect(home)) as conn:
+        project = board.project_for_path(conn, options.get('cwd') or Path.cwd())
+    workspace_url = url + ('?' + urlencode({'project': project['name']}) if project else '')
+    if open_browser:
+        try:
+            with build_opener(ProxyHandler({})).open(url + 'api/state', timeout=3) as response:
+                state = json.load(response)
+        except URLError as exc:
+            if not isinstance(exc.reason, ConnectionRefusedError):
+                raise
+        else:
+            if not all(key in state for key in ('projects', 'groups', 'ungrouped')):
+                raise board.BoardError('端口已被其他服务占用')
+            print(workspace_url, flush=True)
+            webbrowser.open(workspace_url)
+            return
     with create_server(home, plugin_root, port, **options) as server:
-        url = "http://127.0.0.1:%d/" % server.server_port
+        url = 'http://127.0.0.1:%d/' % server.server_port
+        workspace_url = url + ('?' + urlencode({'project': project['name']}) if project else '')
         print(url, flush=True)
         if open_browser:
-            webbrowser.open(url)
+            webbrowser.open(workspace_url)
         try:
             server.serve_forever()
         except KeyboardInterrupt:

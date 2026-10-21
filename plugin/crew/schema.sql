@@ -49,6 +49,50 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE INDEX IF NOT EXISTS sessions_project ON sessions (project, crew_name);
 
+-- Explicit human choices survive hooks from the original running process.
+CREATE TABLE IF NOT EXISTS session_controls (
+    session_id TEXT PRIMARY KEY REFERENCES sessions(session_id),
+    archived_status TEXT,
+    archived_note TEXT,
+    archived_ended_at TEXT,
+    removed INTEGER NOT NULL DEFAULT 0,
+    name_override TEXT
+);
+
+CREATE TABLE IF NOT EXISTS attention_resolutions (
+    item_id TEXT PRIMARY KEY,
+    resolved_at TEXT NOT NULL
+);
+
+-- A local delivery record ties remote answers to messages actually sent by Crew.
+CREATE TABLE IF NOT EXISTS notification_messages (
+    item_id TEXT PRIMARY KEY,
+    project TEXT NOT NULL,
+    leader_session_id TEXT NOT NULL,
+    decision_id INTEGER,
+    kind TEXT NOT NULL,
+    message_id TEXT,
+    chat_id TEXT,
+    created_at TEXT NOT NULL,
+    content TEXT NOT NULL,
+    status TEXT NOT NULL,
+    error TEXT
+);
+
+CREATE TABLE IF NOT EXISTS notification_inbound (
+    event_id TEXT PRIMARY KEY,
+    received_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS notification_replies (
+    message_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    text TEXT NOT NULL,
+    status TEXT NOT NULL,
+    after_seq INTEGER,
+    created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS resources (
     project      TEXT NOT NULL,
     name         TEXT NOT NULL,
