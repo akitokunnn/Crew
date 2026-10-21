@@ -585,3 +585,32 @@ def apply_hook(conn, event, data, project_name, identity=None, git_info=None, no
     detail["delivered_handoffs"] = [h["id"] for h in result["handoffs"]]
     _event(conn, "hook:" + event, project_name, sid, detail, now)
     return result
+
+
+def available_name(conn, project_name, name):
+    """Check spawn names with the same online definition as join."""
+    project(conn, project_name)
+    if conn.execute("SELECT 1 FROM sessions WHERE project=? AND crew_name=? "
+                    "AND status NOT IN ('offline','closed')", (project_name, name)).fetchone():
+        raise Conflict("\u540c\u9879\u76ee\u5728\u7ebf\u4f1a\u8bdd\u91cd\u540d: " + name)
+
+
+@atomic
+def ensure_spawn_group(conn, project_name, name, now=None):
+    """Create / reopen an empty leader group before SessionStart fills its leader."""
+    project(conn, project_name)
+    old = conn.execute("SELECT * FROM groups WHERE project=? AND name=?", (project_name, name)).fetchone()
+    if old is None:
+        conn.execute("INSERT INTO groups(project,name,created_at) VALUES(?,?,?)", (project_name, name, _time(now)))
+    elif old["closed_at"] is not None:
+        conn.execute("UPDATE groups SET closed_at=NULL,leader_session_id=NULL WHERE project=? AND name=?", (project_name, name))
+    else:
+        return
+    _event(conn, "group:open", project_name, "akito", {"name": name}, now)
+
+
+def project_handoffs(conn, project_name, limit=20):
+    """Recent project handoffs without changing per-session deliveries."""
+    return _rows(conn, "SELECT h.*,s.crew_name AS from_name FROM handoffs h "
+                 "LEFT JOIN sessions s ON s.session_id=h.from_session WHERE h.project=? "
+                 "ORDER BY h.id DESC LIMIT ?", (project_name, limit))
