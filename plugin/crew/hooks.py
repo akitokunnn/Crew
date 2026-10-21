@@ -37,6 +37,15 @@ def _deliveries_text(deliveries):
     return lines
 
 
+def _spawn_task(home, spawn_id):
+    try:
+        spec = json.loads((Path(home).resolve() / "spawn" / (spawn_id + ".json")).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    lines = [line.strip() for line in str(spec.get("task") or "").splitlines() if line.strip()]
+    return lines[0][:80] if lines else None
+
+
 def handle(event, data, home, plugin_root, environ, git_provider=git_details, now=None):
     if event == "guard":
         reason = guard.check(home, data, now=now)
@@ -59,6 +68,8 @@ def handle(event, data, home, plugin_root, environ, git_provider=git_details, no
         if "CREW_NAME" in environ:
             identity = {"name": environ["CREW_NAME"], "role": environ.get("CREW_ROLE", "member"),
                         "group_name": environ.get("CREW_GROUP"), "spawn_id": environ.get("CREW_SPAWN_ID")}
+            if identity["spawn_id"]:
+                identity["task"] = _spawn_task(home, identity["spawn_id"])
     with contextlib.closing(store.connect(home)) as conn:
         deliveries = board.apply_hook(conn, event, data, p["name"], identity=identity, git_info=git_info, now=now)
         lines = _deliveries_text(deliveries)

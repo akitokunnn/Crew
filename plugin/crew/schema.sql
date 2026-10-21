@@ -69,7 +69,7 @@ CREATE TABLE IF NOT EXISTS leases (
     taken_at        TEXT NOT NULL,
     until_at        TEXT,                  -- expected return time
     released_at     TEXT,
-    released_by     TEXT,                  -- session id, or 'akito' from the web page / plain terminal
+    released_by     TEXT,                  -- session id, or 'user' from the web page / plain terminal
     release_note    TEXT                   -- state left behind (e.g. which package is installed now)
 );
 -- First come wins: at most one open lease per resource.

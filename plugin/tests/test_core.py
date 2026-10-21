@@ -141,7 +141,7 @@ raise SystemExit(main(sys.argv[3:]))
         self.assertEqual(event["kind"], "lease:give")
         self.assertEqual(event["detail"]["reason"], "recover")
         self.assertTrue(event["detail"]["force"])
-        self.assertEqual(event["session_id"], "akito")
+        self.assertEqual(event["session_id"], "user")
 
     def test_leader_force_give(self):
         board.join(self.conn, "s2", "demo", "two", self.root, str(self.root), "main", role="leader", now=NOW)
@@ -390,6 +390,7 @@ class HookTests(CoreCase):
                  ("pre-ask", {"tool_name": "ExitPlanMode"}, "waiting", "等你审批计划"),
                  ("post-ask", {"tool_name": "ExitPlanMode"}, "working", None),
                  ("stop", {"last_assistant_message": "m" * 350}, "idle", None),
+                 ("notification", {"message": "Claude is waiting for your input", "notification_type": "idle_prompt"}, "idle", None),
                  ("guard", {"tool_name": "Bash", "tool_input": {"command": "echo ok"}}, "idle", None),
                  ("session-end", {}, "offline", None)]
         before = self.conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
@@ -425,11 +426,14 @@ class HookTests(CoreCase):
         data = self.data("new")
         code, output = hooks.handle("session-start", data, self.home, self.fake_plugin, {}, git_provider=lambda cwd: (str(self.root), "main"), now=NOW)
         self.assertIn("crew join <名字>", output["hookSpecificOutput"]["additionalContext"])
+        (self.home / "spawn").mkdir(parents=True, exist_ok=True)
+        (self.home / "spawn" / "spawn-id.json").write_text(json.dumps({"task": "\n  first line  \nsecond"}), encoding="utf-8")
         hooks.handle("session-start", data, self.home, self.fake_plugin,
                      {"CREW_NAME": "spawned", "CREW_ROLE": "leader", "CREW_GROUP": "spawned", "CREW_SPAWN_ID": "spawn-id"},
                      git_provider=lambda cwd: (str(self.root), "main"), now=NOW)
         s = board.session(self.conn, "new")
-        self.assertEqual((s["crew_name"], s["role"], s["group_name"], s["spawn_id"]), ("spawned", "leader", "spawned", "spawn-id"))
+        self.assertEqual((s["crew_name"], s["role"], s["group_name"], s["spawn_id"], s["cc_name"], s["task"]),
+                         ("spawned", "leader", "spawned", "spawn-id", "spawned", "first line"))
 
     def test_script_json_input_and_output_utf8(self):
         # Existing HOME defaults avoid any dependency on the controller's pending prices file.
@@ -645,7 +649,7 @@ class InstallAndCliTests(CoreCase):
     def test_plain_terminal_answer_records_human(self):
         d = board.ask(self.conn, "s1", "question", now=NOW)
         self.assert_cli(["answer", str(d), "yes"], sid=None)
-        self.assertEqual(board.decisions(self.conn, "demo", True)[0]["answered_by"], "akito")
+        self.assertEqual(board.decisions(self.conn, "demo", True)[0]["answered_by"], "user")
 
     def test_report_filter_and_event_json(self):
         board.report(self.conn, "s1", "old", now="2026-10-01T00:00:00.000Z")

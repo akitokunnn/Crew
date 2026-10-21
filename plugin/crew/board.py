@@ -10,6 +10,8 @@ import re
 
 from . import store
 
+# Actor recorded for actions taken by the human from the web page or a plain terminal.
+HUMAN = "user"
 
 class BoardError(ValueError):
     """A requested operation is invalid."""
@@ -208,7 +210,7 @@ def groups(conn, project_name):
 
 
 @atomic
-def roster(conn, project_name, action, group_name, names, actor="akito", now=None):
+def roster(conn, project_name, action, group_name, names, actor=HUMAN, now=None):
     _group(conn, project_name, group_name)
     for name in names:
         s = named_session(conn, project_name, name)
@@ -224,7 +226,7 @@ def roster(conn, project_name, action, group_name, names, actor="akito", now=Non
 
 
 @atomic
-def close_group(conn, project_name, group_name, with_members=False, actor="akito", now=None):
+def close_group(conn, project_name, group_name, with_members=False, actor=HUMAN, now=None):
     _group(conn, project_name, group_name)
     conn.execute("UPDATE groups SET closed_at=? WHERE project=? AND name=?", (_time(now), project_name, group_name))
     if with_members:
@@ -240,7 +242,7 @@ def resources(conn, project_name):
 
 
 @atomic
-def add_resource(conn, project_name, name, kind="device", description=None, guard_regex=None, actor="akito", now=None):
+def add_resource(conn, project_name, name, kind="device", description=None, guard_regex=None, actor=HUMAN, now=None):
     project(conn, project_name)
     if guard_regex is not None:
         re.compile(guard_regex)
@@ -251,7 +253,7 @@ def add_resource(conn, project_name, name, kind="device", description=None, guar
 
 
 @atomic
-def remove_resource(conn, project_name, name, actor="akito", now=None):
+def remove_resource(conn, project_name, name, actor=HUMAN, now=None):
     if conn.execute("SELECT 1 FROM leases WHERE project=? AND resource=? AND released_at IS NULL", (project_name, name)).fetchone():
         raise Conflict("资源仍在借用: " + name)
     if conn.execute("DELETE FROM resources WHERE project=? AND name=?", (project_name, name)).rowcount == 0:
@@ -307,10 +309,10 @@ def give(conn, project_name, resource, actor, note=None, force=False, reason=Non
     if active["holder_session"] != actor:
         if not force:
             raise Conflict("只能归还自己借用的资源；" + lease_description(active))
-        if actor != "akito":
+        if actor != HUMAN:
             s = session(conn, actor)
             if s["project"] != project_name or s["role"] != "leader":
-                raise BoardError("强制归还仅限 leader 或 akito")
+                raise BoardError("强制归还仅限 leader 或用户本人")
     conn.execute("UPDATE leases SET released_at=?,released_by=?,release_note=? WHERE id=?", (_time(now), actor, note, active["id"]))
     _event(conn, "lease:give", project_name, actor, {"id": active["id"], "resource": resource, "force": force, "reason": reason, "note": note}, now)
 
@@ -442,7 +444,7 @@ def decisions(conn, project_name, all=False):
 
 
 @atomic
-def answer(conn, decision_id, text, actor="akito", now=None):
+def answer(conn, decision_id, text, actor=HUMAN, now=None):
     d = conn.execute("SELECT * FROM decisions WHERE id=?", (decision_id,)).fetchone()
     if d is None or d["status"] != "open":
         raise BoardError("待拍板不存在或已处理: " + str(decision_id))
@@ -554,6 +556,12 @@ def apply_hook(conn, event, data, project_name, identity=None, git_info=None, no
         _register(conn, sid, project_name, data["cwd"], worktree, branch, now, data.get("entrypoint"), data.get("permission_mode"), identity.get("spawn_id"))
         if identity.get("name") is not None:
             _identity(conn, project_name, sid, identity["name"], identity["role"], identity.get("group_name"), now)
+            if identity.get("spawn_id") is not None:
+                # launch.ps1 starts spawned sessions with `claude -n <crew name>`, so that name is the SendMessage address.
+                conn.execute("UPDATE sessions SET cc_name=? WHERE session_id=?", (identity["name"], sid))
+            if identity.get("task"):
+                # SessionStart repeats on resume / compact; keep a task the session has since changed with `crew task`.
+                conn.execute("UPDATE sessions SET task=? WHERE session_id=? AND task IS NULL", (identity["task"], sid))
         state, note = "idle", None
     else:
         if conn.execute("SELECT 1 FROM sessions WHERE session_id=?", (sid,)).fetchone() is None:
@@ -570,6 +578,10 @@ def apply_hook(conn, event, data, project_name, identity=None, git_info=None, no
         if event == "notification":
             note = data["message"]
             detail["message"] = note
+            detail["notification_type"] = data.get("notification_type")
+            if detail["notification_type"] == "idle_prompt":
+                # Sent after a finished turn sits unread for a minute: nothing is pending, the session is just idle.
+                state, note = "idle", None
         if event == "pre-ask":
             note = {"AskUserQuestion": "等你回答提问", "ExitPlanMode": "等你审批计划"}[data["tool_name"]]
         if event == "user-prompt-submit":
@@ -606,7 +618,7 @@ def ensure_spawn_group(conn, project_name, name, now=None):
         conn.execute("UPDATE groups SET closed_at=NULL,leader_session_id=NULL WHERE project=? AND name=?", (project_name, name))
     else:
         return
-    _event(conn, "group:open", project_name, "akito", {"name": name}, now)
+    _event(conn, "group:open", project_name, HUMAN, {"name": name}, now)
 
 
 def project_handoffs(conn, project_name, limit=20):

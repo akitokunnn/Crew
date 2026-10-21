@@ -384,7 +384,8 @@ def _total(row):
 
 def _money(row, prices):
     if row["model"] not in prices:
-        return None, 0.0, _total(row)
+        # Zero-token rows (Claude Code's "<synthetic>" placeholder messages) cost nothing whatever the model.
+        return (0.0 if _total(row) == 0 else None), 0.0, _total(row)
     rates = prices[row["model"]]
     unsplit = row["cache_write_tokens"] - row["cache_write_5m"] - row["cache_write_1h"]
     if unsplit < 0:

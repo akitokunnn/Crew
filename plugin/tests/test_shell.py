@@ -98,6 +98,8 @@ class SpawnTests(ShellFixture, unittest.TestCase):
         board.ensure_spawn_group(self.conn, "demo", "empty", now=NOW)
         second = self.make_spawn("second", group="empty")
         self.assertIn("leader \u8fd8\u6ca1\u4e0a\u7ebf", Path(self.spec(second)["md"]).read_text(encoding="utf-8"))
+        own = self.make_spawn("boss", role="leader", group="boss")
+        self.assertIn("leader\uff1a\u5c31\u662f\u4f60\u81ea\u5df1", Path(self.spec(own)["md"]).read_text(encoding="utf-8"))
 
     def test_task_brief_preserves_original_line_endings(self):
         task = "first\r\nsecond\nthird"
@@ -401,7 +403,7 @@ class WebTests(ShellFixture, unittest.TestCase):
 
     def test_answer_success_errors_and_actor(self):
         self.assertEqual(self.get("/api/answer", {"id":self.decision,"text":"yes"})[0], 200)
-        self.assertEqual(board.decisions(self.conn, "demo", True)[0]["answered_by"], "akito")
+        self.assertEqual(board.decisions(self.conn, "demo", True)[0]["answered_by"], "user")
         for body in ({"id":self.decision,"text":"twice"}, {"id":999,"text":"no"}, {"text":"no"}, {"id":True,"text":"yes"}):
             self.assertEqual(self.get("/api/answer", body)[0], 400)
 
@@ -427,7 +429,7 @@ class WebTests(ShellFixture, unittest.TestCase):
         self.assertEqual(self.get("/api/lease/give", {"resource":"phone"})[0], 400)
         self.assertEqual(self.get("/api/lease/give", {"resource":"phone", "reason":"operator reclaim"})[0], 200)
         row = self.conn.execute("SELECT * FROM leases").fetchone()
-        self.assertEqual(row["released_by"], "akito")
+        self.assertEqual(row["released_by"], "user")
         event = board.events(self.conn, "demo", limit=1)[0]
         self.assertEqual(event["detail"]["reason"], "operator reclaim")
         self.assertEqual(self.get("/api/lease/give", {"resource":"phone", "reason":"again"})[0], 400)

@@ -77,7 +77,12 @@ def prepare(conn, home, plugin_root, project_name, name, task, group=None, role=
     leader = None
     if group in groups and groups[group]["closed_at"] is None and groups[group]["leader_session_id"] is not None:
         leader = board.session(conn, groups[group]["leader_session_id"])
-    leader_name = leader["crew_name"] if leader is not None and leader["status"] not in ("offline", "closed") else "leader \u8fd8\u6ca1\u4e0a\u7ebf"
+    if role == "leader":
+        leader_name = "\u5c31\u662f\u4f60\u81ea\u5df1"
+    elif leader is not None and leader["status"] not in ("offline", "closed"):
+        leader_name = leader["crew_name"]
+    else:
+        leader_name = "leader \u8fd8\u6ca1\u4e0a\u7ebf"
     brief = ("\u4f60\u662f Crew \u4f1a\u8bdd\uff1a%s\uff08%s\uff09\n\u9879\u76ee\uff1a%s\n\u5206\u7ec4\uff1a%s\nleader\uff1a%s\n\n"
              "\u5f00\u5de5\u5148\u8c03\u7528 /crew:%s \u8bfb\u5b88\u5219\u3002\n\n## \u4efb\u52a1\n\n%s" %
              (name, role, project_name, group if group is not None else "\u672a\u5206\u7ec4", leader_name, role, task))
@@ -108,7 +113,7 @@ def _execute(conn, plan, launcher, members=()):
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8", newline="")
     launcher(plan["command"])
-    board.record_event(conn, "spawn", spec["project"], "akito", {"id": plan["id"], "spec": spec, "command": plan["command"]}, spec["created_at"])
+    board.record_event(conn, "spawn", spec["project"], board.HUMAN, {"id": plan["id"], "spec": spec, "command": plan["command"]}, spec["created_at"])
     return {"id": plan["id"], "command": plan["command"]}
 
 

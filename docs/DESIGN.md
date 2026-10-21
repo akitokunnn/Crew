@@ -49,7 +49,7 @@ Crew/
 
 ## 2. 身份和项目
 
-- **会话 ID**：钩子从输入 JSON 的 `session_id` 取；命令行从环境变量 `CLAUDE_CODE_SESSION_ID` 取（Claude Code 会给工具命令设这个变量）。命令行也接受 `--session ID`。需要会话身份的命令拿不到 ID 时报错退出（exit 1），并说明"请在 Claude 会话里运行，或加 --session"。不需要身份的命令（status、decisions、answer 等）在普通终端里也能用，此时操作人记作 `akito`。
+- **会话 ID**：钩子从输入 JSON 的 `session_id` 取；命令行从环境变量 `CLAUDE_CODE_SESSION_ID` 取（Claude Code 会给工具命令设这个变量）。命令行也接受 `--session ID`。需要会话身份的命令拿不到 ID 时报错退出（exit 1），并说明"请在 Claude 会话里运行，或加 --session"。不需要身份的命令（status、decisions、answer 等）在普通终端里也能用，此时操作人记作 `user`。
 - **crew 名**：人起的稳定名字（雷达、视觉）。同一项目里，未离线（status 不是 offline / closed）的会话不能重名，重名时 join 报冲突（exit 3）。
 - **cc_name**：Claude Code 里显示的会话名，也是 SendMessage 的地址。由 `crew join` 和 `crew who` 调 `claude agents --json`（返回数组，元素有 sessionId、name、status、pid、cwd、kind），按 sessionId 匹配取 name。调用失败时 cc_name 留空，并打印一行原因。
 - **spawn 带来的身份**：crew 开的会话启动时带环境变量 `CREW_NAME`、`CREW_GROUP`、`CREW_ROLE`、`CREW_SPAWN_ID`。SessionStart 钩子看到这些变量就直接登记，不用再 join。
@@ -84,12 +84,12 @@ Crew/
 | `status [--project P] [--json]` | 总览：按分组列会话（状态、在做什么、最后活动时间）、未分组的会话、借出的资源、文件归属、未答的待拍板条数 |
 | `who NAME [--json]` | 某个会话的详情和它现在的 SendMessage 地址 |
 | `lease take RES --for T [--until HH:MM] [--overwrites T]` | 借。已被别人借着就打印借用人、用途、借出时间、预计归还，exit 3。自己已借着就更新用途 |
-| `lease give RES [--note T]` | 还。只能还自己借的；`--force --reason T` 可以还别人的（leader 或 akito 用），记事件 |
+| `lease give RES [--note T]` | 还。只能还自己借的；`--force --reason T` 可以还别人的（leader 或用户本人用），记事件 |
 | `lease list [--json]` | 借出中的资源 |
 | `claim PATTERN [--note T]` / `unclaim PATTERN\|--all` / `claims [--json]` | 文件归属（§6） |
 | `ask QUESTION [--option T]... [--recommend T] [--blocking]` | 记一条待拍板，打印编号 |
 | `decisions [--all] [--json]` | 待拍板（默认只列 open） |
-| `answer ID TEXT` | 答复；answered_by 为当前会话 ID，普通终端里为 `akito` |
+| `answer ID TEXT` | 答复；answered_by 为当前会话 ID，普通终端里为 `user` |
 | `withdraw ID` | 撤回自己的问题 |
 | `handoff --to NAME\|GROUP\|* TEXT` / `handoffs [--json]` | 交接。`handoffs` 列出发给我（我的名字、我的分组、*）还没送达我的 |
 | `report TEXT` / `reports [--since YYYY-MM-DD] [--group G] [--json]` | 日报 |

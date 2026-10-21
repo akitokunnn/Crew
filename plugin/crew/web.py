@@ -128,7 +128,7 @@ class Service:
             if path == "/api/answer":
                 if type(data.get("id")) is not int:
                     raise ValueError("id \u5fc5\u987b\u662f\u6574\u6570")
-                board.answer(conn, data["id"], _text(data, "text"), "akito", now=now)
+                board.answer(conn, data["id"], _text(data, "text"), board.HUMAN, now=now)
                 return {"ok": True}
             project = self.selected_project(conn, project_name)
             if path == "/api/spawn":
@@ -142,7 +142,7 @@ class Service:
                 return spawn.leader_start(conn, self.home, self.plugin_root, project, _text(data, "name"), members,
                                           _optional_text(data, "task"), launcher=self.launcher, now=now)
             if path == "/api/lease/give":
-                board.give(conn, project, _text(data, "resource"), "akito", force=True, reason=_text(data, "reason"), now=now)
+                board.give(conn, project, _text(data, "resource"), board.HUMAN, force=True, reason=_text(data, "reason"), now=now)
             elif path == "/api/roster/move":
                 board.roster(conn, project, "move", _text(data, "to"), [_text(data, "name")], now=now)
             return {"ok": True}

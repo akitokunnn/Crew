@@ -300,6 +300,15 @@ class TestUsage(UsageFixture, unittest.TestCase):
         self.assertEqual(row["unpriced_tokens"], 500)
         self.assertAlmostEqual(row["priced_cost_usd"], 0.0085)
 
+    def test_zero_token_unknown_model_keeps_total_priced(self):
+        synthetic = assistant("synthetic", seconds=20, model="<synthetic>", tool="tool-2")
+        synthetic["message"]["usage"] = {"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
+        self.main_file([assistant("priced"), synthetic])
+        self.scan()
+        row = usage.summary(self.conn, None, None, PRICES)["claude"]
+        self.assertEqual((row["requests"], row["unpriced_tokens"]), (2, 0))
+        self.assertAlmostEqual(row["cost_usd"], row["priced_cost_usd"])
+
     def test_bad_lines_report_locations_and_are_not_reconsumed(self):
         path = self.main_file([assistant("good")])
         missing = prompt("missing")

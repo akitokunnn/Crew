@@ -256,7 +256,7 @@ def _session_id(args):
 
 def _actor(args):
     sid = args.session_id if args.session_id is not None else os.environ.get("CLAUDE_CODE_SESSION_ID")
-    return sid if sid else "akito"
+    return sid if sid else board.HUMAN
 
 
 def _project(conn, args, cwd):
