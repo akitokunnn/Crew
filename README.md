@@ -92,8 +92,10 @@
 
 ## 更新和开发
 
-- 改了这个仓库以后：`claude plugin marketplace update crew`，再在会话里 `/reload-plugins`（或重开会话）。
+- 从本地目录装的插件，**运行时直接用仓库里 `plugin/` 这份代码**（不另拷一份）。改 Python 代码对之后的每次钩子调用立刻生效；改了钩子注册、技能、角色定义，要在会话里 `/reload-plugins` 或重开会话。
+- 所以**不要在主检出里直接改代码**：在 `Temp/wt/<名字>` 开 worktree 改，测试通过再合进 main。主检出里的代码一旦出错，所有会话的钩子都会跟着出错。
 - 跑测试：`cd plugin` 后执行 `python -m unittest discover -s tests -v`。
+- `crew spawn` 开的会话用的是 PATH 里的 `claude`（npm 全局安装的命令行版），它的版本可能比 VS Code 扩展里带的旧。旧版本可能缺跨会话消息等功能，要定期 `npm install -g @anthropic-ai/claude-code@latest`。
 
 ## 已知限制
 

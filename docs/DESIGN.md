@@ -109,7 +109,7 @@ Crew/
 
 | 参数 | 事件 | 做什么 | 输出 |
 |---|---|---|---|
-| `session-start` | SessionStart | 先跑 install（刷新 runtime.json）。属于某项目时登记 / 更新会话（带 CREW_* 变量就按它登记；已登记过的会话保留 crew 名）；status=idle | 属于项目时输出 `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"..."}}`，中文告诉会话：项目名、我的 crew 名（没认领就提示 `crew join <名字>`）、分组和 leader（含 leader 的 cc_name）、命令行怎么调（`python "<HOME>/crew.py" ...`）、守则 `/crew:member`（leader 是 `/crew:leader`）、发给我还没送达的交接 |
+| `session-start` | SessionStart | **不管属不属于项目都先跑 install**（刷新 runtime.json；黑名单不存在时复制默认的，守卫在所有会话里都要用到它）。属于某项目时登记 / 更新会话（带 CREW_* 变量就按它登记；已登记过的会话保留 crew 名）；status=idle。cwd 不是 git 仓库时 worktree / branch 记为空 | 属于项目时输出 `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"..."}}`，中文告诉会话：项目名、我的 crew 名（没认领就提示 `crew join <名字>`）、分组和 leader（含 leader 的 cc_name）、命令行怎么调（`python "<HOME>/crew.py" ...`）、守则 `/crew:member`（leader 是 `/crew:leader`）、发给我还没送达的交接 |
 | `user-prompt-submit` | UserPromptSubmit | status=working，last_prompt。查我提的、已答复但没送达（delivered_at 为空）的待拍板，和没送达我的交接 | 有内容时输出 UserPromptSubmit 的 additionalContext，并标记送达 |
 | `stop` | Stop | status=idle，last_message 取输入里的 `last_assistant_message` 前 300 字 | 无 |
 | `notification` | Notification | status=waiting，status_note 取输入里的 `message` | 无 |
@@ -118,7 +118,8 @@ Crew/
 | `session-end` | SessionEnd | status=offline，ended_at | 无 |
 | `guard` | PreToolUse（所有工具） | §7 | 拦截时 stderr + exit 2 |
 
-- 每个事件写一条 events，detail 里记输入 JSON 的键名列表和该事件关心的字段（不存 transcript 全文、不存 tool_input 全文，命令截前 200 字）。
+- 每个打卡事件写一条 events，detail 里记输入 JSON 的键名列表和该事件关心的字段（不存 transcript 全文、不存 tool_input 全文，命令截前 200 字）。守卫只在拦截时写事件，放行的调用不记（否则每次工具调用都写一行）。
+- 插件装上或项目启用之前就开着的会话没有 SessionStart 记录：它的第一个打卡事件会先补登记再改状态。
 - 打卡类事件出错不能影响会话：打一行原因到 stderr，exit 1。**除 guard 外任何事件都不能 exit 2。**
 - 会话的 crew 名、cc_name 不在钩子里调 `claude agents`（太慢）。
 
@@ -159,7 +160,7 @@ PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stder
   - `type == "user"`、不是 isMeta、不是 isCompactSummary、content 是字符串或含 text 块且不含 tool_result → claude_prompts。kind 按行上的 `origin.kind`：`human` → user，`peer` → peer，`task-notification` → task；没有 origin 字段的老记录记 user。prompts 数只算 user，干活时长按所有 kind 的轮次算。
   - `type == "system"` 且 `subtype == "compact_boundary"` → claude_compactions。
   - `type == "ai-title"` → claude_sessions.ai_title（取最后一次）。cwd、entrypoint、version 取最后一次出现的值；first_ts / last_ts 按行的 timestamp。
-- Codex 行：`session_meta`（id、timestamp、cwd、originator、source、cli_version）；第一个 `turn_context`（model、collaboration_mode.settings.reasoning_effort、sandbox_policy.type）；最后一个 `event_msg/token_count` 的 `info.total_token_usage`（input_tokens 含缓存部分）；每个带 rate_limits 的 token_count 写一行 codex_rate_limits（primary.used_percent、window_minutes、resets_at 转 ISO、credits.balance、plan_type）；第一个用户消息文本前 200 字 → first_user_text。
+- Codex 行：`session_meta`（id、timestamp、cwd、originator、source、cli_version）；第一个 `turn_context`（model、collaboration_mode.settings.reasoning_effort、sandbox_policy.type）；最后一个 `event_msg/token_count` 的 `info.total_token_usage`（input_tokens 含缓存部分）；每个带 rate_limits 的 token_count 写一行 codex_rate_limits（主键 rollout_id + ts；primary.used_percent、window_minutes、resets_at 转 ISO、credits.balance、plan_type）；first_user_text 取用户消息里第一个不以 `<` 开头、也不以 `# AGENTS.md instructions` 开头的 input_text 前 200 字（Codex 会先塞 AGENTS.md 和环境信息）。session_meta.source 对 Codex 自己的子 agent 是对象，存成 JSON 字符串。usage 里的细分字段（cache_creation、output_tokens_details、server_tool_use）在老记录里可能是 null，按 0 计。
 - 解析错误：坏行跳过并计数，scan 结束时打印"跳过 N 行（文件:行号 前 3 个）"。
 
 ### 汇总（`crew/usage.py` 的函数，网页和命令行共用）
