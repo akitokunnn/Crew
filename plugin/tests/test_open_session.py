@@ -175,6 +175,23 @@ class OpenSessionTests(CoreCase):
         self.assertEqual(self.closed, [])
         self.assertEqual(self.uris, [])
 
+    def test_web_host_entrypoint_is_owned_by_exact_pid_and_uses_eof(self):
+        self.live_session(entrypoint="crew-web")
+        manager = mock.Mock()
+        manager.is_owned.return_value = True
+        manager.busy.return_value = False
+        manager.owns_pid.return_value = False
+        with self.assertRaises(board.Conflict):
+            open_session.resume(self.conn, "s1", lambda: self.live, True, self.process_dir,
+                                self.closed.append, self.uris.append, manager=manager)
+        manager.detach.assert_not_called()
+        manager.owns_pid.return_value = True
+        open_session.resume(self.conn, "s1", lambda: self.live, True, self.process_dir,
+                            self.closed.append, self.uris.append, manager=manager)
+        manager.detach.assert_called_once_with("s1")
+        self.assertEqual(self.closed, [])
+        self.assertEqual(self.uris, [open_session.session_uri("s1")])
+
     def test_cli_waits_for_window_then_requires_explicit_terminal_confirmation(self):
         first = {"cwd": str(self.root), "needs_confirmation": True, "location": "terminal"}
         with mock.patch("crew.open_session.begin", return_value=first), mock.patch("crew.open_session.resume") as resume:

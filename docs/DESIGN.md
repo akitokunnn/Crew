@@ -209,6 +209,7 @@ PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stder
 - 浏览器刷新只重放 `HOME/chat/<会话ID>.jsonl`，不会启动新进程。聊天事件不含 thinking；assistant 的同 ID 分块合并，完整块替换对应流式文本，重复的 human replay 不再显示。组员发来的消息取 peer origin 的 body 和 name，不需要网页另投一次 stdin。
 - 会话正在处理时，用户发送返回冲突，让这一轮结束；result 只代表一轮结束，CLI 仍保持在线。服务退出只关闭自己子进程的 stdin，让它正常结束。恢复前先等旧进程输出读完，避免旧状态覆盖新一轮。
 - Windows 的 npm `claude.cmd` 会另起原生子进程；托管会话直接启动该安装目录的 `bin/claude.exe`，让 Manager 持有的 PID 与 `claude agents` 一致，交接时可以确认进程归属。
+- 网页作为自己的交互宿主，给子进程设置 `CLAUDE_CODE_ENTRYPOINT=crew-web`。本机 VS Code 扩展会过滤 `sdk-cli` 等程序会话；使用自己的宿主标记后，原 ID 和历史可以被扩展发现。协议仍是 `-p/stream-json`，不修改 transcript 或扩展；交接按 Manager 实际持有的 PID 核对归属。
 - `crew open NAME` 与网页使用相同的两步流程：先 `code <cwd>` 打开正确目录；用户确认窗口已经就绪后，再打开 `vscode://anthropic.claude-code/open?session=<ID>`。第一步不关闭会话，取消保留原运行端。第二步重新查询 agents 和 PID 注册文件；忙会话拒绝交接，网页进程须属于当前 Manager，确认后仅关闭该进程的 stdin 并等正常退出。遗留终端会话只有明确确认且空闲才关闭，并核对 PID 创建时间；VS Code 进程永远不关闭。
 - 有网页聊天记录的 `crew open` 通过 `HOME/web.json` 调同一服务，确保释放的是 Manager 管理的进程。在 VS Code 里继续时网页保留历史并禁用发言，避免同时恢复两份。
 

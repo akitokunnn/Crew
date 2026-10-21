@@ -32,7 +32,7 @@ def _availability(session_id, live, manager=None):
     owned = manager is not None and manager.is_owned(session_id)
     terminal = any(p["entrypoint"] == "cli" for p in live)
     known = all(p["entrypoint"] in ("cli", "claude-vscode") or
-                (p["entrypoint"] == "sdk-cli" and owned and manager.owns_pid(session_id, p["pid"])) for p in live)
+                (p["entrypoint"] in ("crew-web", "sdk-cli") and owned and manager.owns_pid(session_id, p["pid"])) for p in live)
     location = "web" if owned else "terminal" if terminal else "vscode" if live and known else "offline" if not live else "unknown"
     info = {"enabled": False, "reason": None, "location": location, "needs_confirmation": terminal or owned}
     if (owned and manager.busy(session_id)) or any(p["status"] != "idle" for p in live):

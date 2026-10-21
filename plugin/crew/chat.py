@@ -25,7 +25,8 @@ def child_environment(spec, environ=None, persistent_names=None):
     env = {name: value for name, value in env.items()
            if not name.upper().startswith("CREW_")
            and (not name.upper().startswith("CLAUDE") or name.upper() in persistent_names)}
-    env.update(CREW_NAME=spec["name"], CREW_ROLE=spec["role"], CREW_SPAWN_ID=spec["id"])
+    # VS Code hides sdk-cli transcripts; identify this human-facing host explicitly.
+    env.update(CLAUDE_CODE_ENTRYPOINT="crew-web", CREW_NAME=spec["name"], CREW_ROLE=spec["role"], CREW_SPAWN_ID=spec["id"])
     if spec["group"] is not None:
         env["CREW_GROUP"] = spec["group"]
     return env
