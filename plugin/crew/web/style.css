@@ -165,6 +165,8 @@ svg.i.xs{width:12px;height:12px}
 .tray.collapsed .tray-head .chev{transform:rotate(-90deg)}
 .tray.collapsed .tray-list{display:none}
 .tray-list{display:flex;flex-direction:column;gap:6px;margin-top:8px;max-height:46vh;overflow:auto}
+/* Cards clip their own overflow, so as flex items they would shrink and overlap instead of scrolling. */
+.tray-list>.dc{flex:none}
 
 /* decision card */
 .dc{border:1px solid var(--warn-line);background:var(--surface);border-radius:14px;overflow:hidden;transition:border-color .2s,opacity .3s}
@@ -172,7 +174,7 @@ svg.i.xs{width:12px;height:12px}
 .dc-top .q{font-weight:500;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dc.open .dc-top .q{white-space:normal}
 .dc-top .from{font-size:calc(12px * var(--fs));color:var(--text-3);flex:none}
-.dc-top .recp{font-size:calc(11px * var(--fs));color:var(--accent);background:var(--accent-soft);padding:1px 8px;border-radius:999px;flex:none}
+.dc-top .recp{font-size:calc(11px * var(--fs));color:var(--accent);background:var(--accent-soft);padding:1px 8px;border-radius:999px;flex:0 1 auto;max-width:38%;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dc.open .dc-top .recp{display:none}
 .dc-top .chev{color:var(--text-3);transition:transform .2s var(--ease)}
 .dc.open .dc-top .chev{transform:rotate(90deg)}
@@ -436,7 +438,7 @@ svg.i.xs{width:12px;height:12px}
 .li-sub{font-size:calc(12px * var(--fs));color:var(--text-3);font-weight:400;margin-left:8px}
 .li-now{font-size:calc(13px * var(--fs));color:var(--text-2);margin-top:2px}
 .empty{display:flex;flex-direction:column;align-items:center;gap:8px;padding:48px 0;color:var(--text-3);font-size:calc(13.5px * var(--fs))}
-.empty svg{width:22px;height:22px;color:var(--accent)}
+.empty>svg{width:22px;height:22px;color:var(--accent)}
 
 /* Live chat and native controls. */
 html,body{width:100%;max-width:100%;overflow-x:hidden}
