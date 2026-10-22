@@ -297,8 +297,8 @@ svg.i.xs{width:12px;height:12px}
 .tl-i{display:grid;grid-template-columns:44px 1fr;gap:10px;font-size:13px;line-height:1.6;padding:3px 0;position:relative}
 .tl-i .t{color:var(--text-3);font-variant-numeric:tabular-nums;font-size:12px;padding-top:1px}
 .chips{display:flex;flex-direction:column;gap:6px}
-.chip{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--text-2);padding:7px 10px;border-radius:10px;background:var(--hover-2);border:1px solid var(--line)}
-.chip code{font-family:var(--font-mono);font-size:11.5px}
+.chip{display:flex;align-items:center;gap:8px;min-width:0;max-width:100%;overflow-wrap:anywhere;font-size:12.5px;color:var(--text-2);padding:7px 10px;border-radius:10px;background:var(--hover-2);border:1px solid var(--line)}
+.chip code{min-width:0;white-space:normal;overflow-wrap:anywhere;font-family:var(--font-mono);font-size:11.5px}
 .card-foot{border-top:1px solid var(--line);padding:12px 18px;display:flex;align-items:center;gap:10px;font-size:12px;color:var(--text-3)}
 .card-foot a{color:var(--accent);text-decoration:none;display:inline-flex;align-items:center;gap:4px;cursor:pointer}
 .card-foot code{font-family:var(--font-mono);font-size:11px}

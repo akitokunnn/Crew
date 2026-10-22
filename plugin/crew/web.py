@@ -234,8 +234,12 @@ class Service:
     def adopt(self, conn, project_name, candidate, name, group_name, now):
         sid = candidate["session_id"]
         if candidate["crew_name"]:
+            if name.strip() != candidate["crew_name"]:
+                board.available_name(conn, project_name, name.strip(), session_id=sid)
             if group_name is not None:
                 board.roster(conn, project_name, "add", group_name, session_ids=[sid], now=now)
+            if name.strip() != candidate["crew_name"]:
+                session_ops.rename(conn, sid, name, now=now)
         else:
             worktree, branch = hooks.git_details(candidate["cwd"])
             board.register_session(conn, sid, project_name, candidate["cwd"], worktree, branch,
@@ -413,6 +417,11 @@ class Service:
                 asker = board.session(conn, answered['session_id'])
                 leader = asker if asker['role'] == 'leader' else board.leader_of(conn, asker['session_id'])
                 if leader is not None:
+                    with self.agents_lock:
+                        if self.agents_error is None:
+                            live = board.live_sessions(self.agents)
+                            if asker['session_id'] in live:
+                                asker['cc_name'] = live[asker['session_id']]['name']
                     notice = ('拍板 #%s：%s（SendMessage 地址：%s）\n问题：%s\n答复：%s\n'
                               '请马上用 SendMessage 转告并叫它继续' %
                               (data['id'], asker['crew_name'], asker['cc_name'], answered['question'], text))

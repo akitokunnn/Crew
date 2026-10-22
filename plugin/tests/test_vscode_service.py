@@ -278,6 +278,52 @@ class VSCodeServiceTests(unittest.TestCase):
         event = next(event for event in board.events(self.conn, "alpha") if event["kind"] == "roster:add")
         self.assertEqual(event["detail"]["session_ids"], [sid])
 
+    def test_left_adoption_applies_requested_name_and_preserves_card_and_task(self):
+        sid, leader = identity(1), identity(10)
+        self.record(sid)
+        self.register(sid, "old-name")
+        self.register(leader, "lead", role="leader")
+        board.set_task(self.conn, sid, "ongoing task", now=NOW)
+        board.set_card(self.conn, sid, "existing scope", "existing completion", now=NOW)
+        original = board.session(self.conn, sid)
+        self.refresh()
+
+        result = self.service.post("/api/roster/adopt",
+            {"session_id": sid, "name": "new-name", "group": "lead"}, "alpha")
+
+        self.assertEqual((result["crew_name"], result["group_name"]), ("new-name", "lead"))
+        for field in ("started_at", "task", "cwd", "worktree", "branch", "entrypoint", "permission_mode", "status"):
+            self.assertEqual(result[field], original[field], field)
+        self.assertEqual(board.card(self.conn, sid)["scope"], "existing scope")
+        self.assertEqual(board.card(self.conn, sid)["done_when"], "existing completion")
+        self.assertEqual(session_ops.control(self.conn, sid)["name_override"], "new-name")
+        self.assertTrue(board.pending_notices(self.conn, leader)[0]["text"].startswith("new-name 已收编"))
+        self.assertNotIn(sid, self.ids()["left"])
+
+    def test_left_adoption_invalid_destination_does_not_rename(self):
+        sid = identity(1)
+        self.record(sid)
+        self.register(sid, "old-name")
+        self.refresh()
+        with self.assertRaisesRegex(board.BoardError, "分组"):
+            self.service.post("/api/roster/adopt",
+                {"session_id": sid, "name": "new-name", "group": "missing"}, "alpha")
+        saved = board.session(self.conn, sid)
+        self.assertEqual((saved["crew_name"], saved["group_name"]), ("old-name", None))
+
+    def test_left_adoption_conflicting_name_does_not_join_group(self):
+        sid = identity(1)
+        self.record(sid)
+        self.register(sid, "old-name")
+        self.register(identity(2), "taken-name")
+        self.register(identity(10), "lead", role="leader")
+        self.refresh()
+        with self.assertRaisesRegex(board.Conflict, "重名"):
+            self.service.post("/api/roster/adopt",
+                {"session_id": sid, "name": "taken-name", "group": "lead"}, "alpha")
+        saved = board.session(self.conn, sid)
+        self.assertEqual((saved["crew_name"], saved["group_name"]), ("old-name", None))
+
     def test_sibling_nested_and_registered_project_ownership_do_not_leak_candidates(self):
         beta, nested = self.root / "beta", self.alpha / "nested"
         beta.mkdir()

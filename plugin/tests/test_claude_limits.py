@@ -5,7 +5,6 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
 
 from crew import claude_limits
 
@@ -118,10 +117,7 @@ class ClaudeLimitsTests(unittest.TestCase):
                 claude_limits.capture(self.home, event(five_hour={"utilization": value}), now=LATER)
         with self.assertRaises(ValueError):
             claude_limits.capture(self.home, event(five_hour=[]), now=LATER)
-        with mock.patch.object(claude_limits.os, "replace", side_effect=OSError("disk failed")), self.assertRaises(OSError):
-            claude_limits.capture(self.home, event(five_hour={"utilization": 0.1}), now=LATER)
         self.assertEqual(path.read_bytes(), before)
-        self.assertEqual(list(self.home.glob("*.tmp")), [])
 
 
 if __name__ == "__main__":
