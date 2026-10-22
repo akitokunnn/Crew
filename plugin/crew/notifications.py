@@ -20,6 +20,12 @@ HELP = ('/h 帮助\n/ls 所有 leader（带编号）\n/1 切换到编号 1 的 l
         '普通文字和图片发给当前 leader。/1 是 leader 编号；点按钮或引用拍板消息回复。')
 
 
+def leader_parts(project, name, text):
+    """Leader words as QQ Markdown: a small heading with the name, a rule, then the body (user 10-23 chose this)."""
+    for number, part in enumerate(text_parts(text)):
+        yield '### %s · %s%s\n***\n%s' % (name, project, '（续）' if number else '', part)
+
+
 def text_parts(text):
     while len(text) > TEXT_LIMIT:
         end = text.rfind('\n\n', 0, TEXT_LIMIT + 1)
@@ -249,10 +255,10 @@ class Inbox:
                     if not text or conn.execute('SELECT 1 FROM notification_messages WHERE item_id=?', (identity + ':0',)).fetchone():
                         continue
                     entry = dict(workspace=leader['project'], leader_session_id=sid, decision=None)
-                    for number, part in enumerate(text_parts('%s·%s\n%s' % (leader['project'], leader['crew_name'], text))):
+                    for number, part in enumerate(leader_parts(leader['project'], leader['crew_name'], text)):
                         key = '%s:%s' % (identity, number)
                         self.record_message(conn, key, entry, 'turn', self.service.now().isoformat())
-                        self.deliver(conn, [key], self.client.send_text, part)
+                        self.deliver(conn, [key], self.client.send_markdown, part)
 
     def flush(self):
         notes = []
@@ -554,14 +560,13 @@ class Inbox:
             for row in conn.execute("SELECT * FROM notification_replies WHERE status IN ('queued','running') ORDER BY created_at,rowid").fetchall():
                 session = board.session(conn, row['session_id'])
                 sid = session['session_id']
-                label = '%s·%s' % (session['project'], session['crew_name'])
                 journal = self.service.chat.journal(sid)
                 if row['status'] == 'queued':
                     if session['role'] != 'leader':
-                        self._reply(conn, row, label + '\n这个会话已不是 leader，消息未发送。', 'error')
+                        self._reply(conn, row, '这个会话已不是 leader，消息未发送。', 'error')
                         continue
                     if session['status'] == 'closed' or board.is_archived(conn, sid):
-                        self._reply(conn, row, label + '\n这条会话已归档，消息未发送。', 'error')
+                        self._reply(conn, row, '这条会话已归档，消息未发送。', 'error')
                         continue
                     if self.service.chat.busy(sid):
                         continue
@@ -572,7 +577,7 @@ class Inbox:
                     with self.service.agents_lock:
                         external = any(a['sessionId'] == sid for a in self.service.agents) and not self.service.chat.is_owned(sid)
                     if external or not self.service.chat.path(sid).exists() or not spec.exists():
-                        self._reply(conn, row, label + '\n这个 leader 不在网页后台运行，收不到 QQ 消息', 'error')
+                        self._reply(conn, row, '这个 leader 不在网页后台运行，收不到 QQ 消息', 'error')
                         continue
                     payload = json.loads(row['text'])
                     identity = 'qq-' + uuid.uuid5(uuid.NAMESPACE_URL, row['message_id']).hex
@@ -580,7 +585,7 @@ class Inbox:
                         self.service.chat.send(session, payload['text'], images=payload['images'],
                                                source='qq', identity=identity)
                     except (OSError, board.BoardError) as exc:
-                        self._reply(conn, row, label + '\n消息未发送：%s: %s' % (type(exc).__name__, exc), 'error')
+                        self._reply(conn, row, '消息未发送：%s: %s' % (type(exc).__name__, exc), 'error')
                         continue
                     # Resuming may drain the previous process before it writes this message.
                     after = next(e['seq'] for e in journal.events if e['type'] == 'message' and e['id'] == identity)
@@ -595,20 +600,20 @@ class Inbox:
                     assistant = next((e for e in reversed(events) if e['type'] == 'assistant'), None)
                     text = '\n'.join(b['text'] for b in assistant['content'] if b['type'] == 'text') if assistant else ''
                     if error or text:
-                        self._reply(conn, row, label + '\n' + (text or '会话出错：' + error), 'answered')
+                        self._reply(conn, row, text or '会话出错：' + error, 'answered')
                     elif end is not None and events[-1]['status'] == 'idle':
-                        self._reply(conn, row, label + '\n（这一轮没有文字回复）', 'answered')
+                        self._reply(conn, row, '（这一轮没有文字回复）', 'answered')
                     elif not self.service.chat.running(sid):
-                        self._reply(conn, row, label + '\n会话已停止，还没有收到这条消息的回复。请在 Crew 查看会话。', 'error')
+                        self._reply(conn, row, '会话已停止，还没有收到这条消息的回复。请在 Crew 查看会话。', 'error')
 
     def _reply(self, conn, row, text, status):
         identity = 'reply:' + row['message_id']
         # A persisted sending state surfaces uncertain delivery instead of sending twice.
         conn.execute("UPDATE notification_replies SET status='sending' WHERE message_id=?", (row['message_id'],))
         session = board.session(conn, row['session_id'])
-        for index, part in enumerate(text_parts(text)):
+        for index, part in enumerate(leader_parts(session['project'], session['crew_name'], text)):
             key = identity + ':' + str(index)
             entry = dict(workspace=session['project'], leader_session_id=session['session_id'], decision=None)
             self.record_message(conn, key, entry, 'reply', self.service.now().isoformat())
-            self.deliver(conn, [key], self.client.send_text, part)
+            self.deliver(conn, [key], self.client.send_markdown, part)
         conn.execute('UPDATE notification_replies SET status=? WHERE message_id=?', (status, row['message_id']))

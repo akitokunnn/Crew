@@ -627,7 +627,8 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         self.inbox.process_replies()
         self.assertEqual(len(self.client.sent), 2)
         text = self.client.sent[-1]['text']
-        self.assertTrue(text.startswith('demo·lead\n'))
+        self.assertEqual(self.client.sent[-1]['kind'], 'markdown')
+        self.assertTrue(text.startswith('### lead · demo\n***\n'))
         self.assertIn('这一轮的进展', text)
         for excluded in ('旧回复', '中途回复', '网页下一轮的回复'):
             self.assertNotIn(excluded, text)
@@ -661,10 +662,11 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         journal.emit('assistant', id='running-end', content=[dict(type='text', text='还没说完')])
         self.inbox.tick()
         self.inbox.tick()
-        self.assertEqual([m['text'] for m in self.client.sent], ['demo·lead\n#17 已经转给雷达', 'demo·lead\n#17 做完了'])
+        self.assertEqual([(m['kind'], m['text']) for m in self.client.sent],
+                         [('markdown', '### lead · demo\n***\n#17 已经转给雷达'), ('markdown', '### lead · demo\n***\n#17 做完了')])
         journal.set_status('idle')
         self.inbox.tick()
-        self.assertEqual(self.client.sent[-1]['text'], 'demo·lead\n还没说完')
+        self.assertEqual(self.client.sent[-1]['text'], '### lead · demo\n***\n还没说完')
         self.restart()
         self.inbox.tick()
         self.inbox.tick()
@@ -687,8 +689,11 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         self.inbox.process_replies()
         messages = [m['text'] for m in self.client.sent]
         self.assertGreaterEqual(len(messages), 4)
-        self.assertTrue(all(len(text) <= notifications.TEXT_LIMIT for text in messages))
-        body = '\n\n'.join(text.removeprefix('demo·lead\n') for text in messages)
+        heads = ['### lead · demo\n***\n'] + ['### lead · demo（续）\n***\n'] * (len(messages) - 1)
+        self.assertTrue(all(text.startswith(head) for text, head in zip(messages, heads)))
+        parts = [text.removeprefix(head) for text, head in zip(messages, heads)]
+        self.assertTrue(all(len(part) <= notifications.TEXT_LIMIT for part in parts))
+        body = '\n\n'.join(parts)
         for letter, length in (('甲', 1100), ('乙', 1100), ('丙', notifications.TEXT_LIMIT + 30)):
             self.assertEqual(body.count(letter), length)
         self.assertTrue(any('甲' * 1100 in text for text in messages))
