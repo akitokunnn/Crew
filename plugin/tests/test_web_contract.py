@@ -347,6 +347,23 @@ class WebContractTests(ShellFixture, unittest.TestCase):
                 saved = self.conn.execute("SELECT answer,answered_by FROM decisions WHERE id=?", (decision,)).fetchone()
                 self.assertEqual(tuple(saved), ("Use option A", "user"))
 
+    def test_answer_notice_uses_current_sendmessage_address_shown_in_state(self):
+        self.provider.return_value[0]["name"] = "cc-one-resumed"
+        self.service.refresh_agents()
+        member = next(row for row in self.state()["members"] if row["session_id"] == "s1")
+        self.assertEqual(member["cc_name"], "cc-one-resumed")
+        self.assertEqual(board.session(self.conn, "s1")["cc_name"], "cc-one")
+        decision = board.ask(self.conn, "s1", "Continue with the new process", now=NOW)
+        code, response, _ = self.request("/api/answer", {"id": decision, "text": "Continue"})
+        self.assertEqual((code, response), (200, {"ok": True, "routed_to": "lead"}))
+        notice = board.pending_notices(self.conn, "s3")[0]
+        self.assertIn("SendMessage 地址：cc-one-resumed", notice["text"])
+
+    def test_usage_export_requires_an_explicit_type(self):
+        code, response, _ = self.request("/api/usage/export", project="demo", period="all")
+        self.assertEqual(code, 400)
+        self.assertEqual(response, {"error": "导出类型必须是 sessions / daily / codex / requests"})
+
     def test_stop_route_only_accepts_owned_running_busy_session(self):
         sid, process = self.start_leader()
         other = self.root / "other-project"

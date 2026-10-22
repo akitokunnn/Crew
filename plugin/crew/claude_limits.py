@@ -2,8 +2,6 @@
 import datetime as dt
 import json
 import math
-import os
-import tempfile
 import threading
 from pathlib import Path
 
@@ -142,15 +140,6 @@ def capture(home, record, now=None):
             return False
         path = Path(home) / "claude-limits.json"
         path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = None
-        try:
-            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, prefix=path.name + ".",
-                                             suffix=".tmp", delete=False) as stream:
-                temporary = Path(stream.name)
-                json.dump(saved, stream, ensure_ascii=False, allow_nan=False)
-                stream.write("\n")
-            os.replace(temporary, path)
-        finally:
-            if temporary is not None:
-                temporary.unlink(missing_ok=True)
+        # Readers take the same lock; a rename-into-place collides with Windows scanners holding the fresh temp file.
+        path.write_text(json.dumps(saved, ensure_ascii=False, allow_nan=False) + "\n", encoding="utf-8")
     return True

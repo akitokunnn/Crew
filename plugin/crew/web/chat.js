@@ -94,10 +94,33 @@
       } catch (error) { context.toast(error.message); }
     }
   }
+  function crewLabel(command) {
+    if (/[\r\n;&|]/.test(command)) return null;
+    const words = Array.from(command.matchAll(/"[^"]*"|'[^']*'|\S+/g), match => /^['"]/.test(match[0]) ? match[0].slice(1, -1) : match[0]);
+    if (words[0] !== "crew") return null;
+    const verb = words[1];
+    if (verb === "spawn") {
+      const nameIndex = words.indexOf("--name");
+      const name = words[nameIndex === -1 ? 2 : nameIndex + 1];
+      return name !== undefined && !name.startsWith("--") ? `开新下属 ${name}` : null;
+    }
+    if (verb === "answer" && /^\d+$/.test(words[2])) return `答复 #${words[2]}`;
+    if (verb === "withdraw" && /^\d+$/.test(words[2])) return `撤回拍板 #${words[2]}`;
+    if ((verb === "open" || verb === "who" || verb === "join") && words[2] !== undefined) {
+      const label = {open:"在 VS Code 打开", who:"查看下属", join:"登记下属"}[verb];
+      return `${label} ${words[2]}`;
+    }
+    if (verb === "card") return words.includes("--scope") || words.includes("--done-when") ? "更新任务卡" : "查看任务卡";
+    const labels = {status:"查看组员状态", whoami:"查看自己的任务卡", task:"更新当前任务", ask:"发起拍板", decisions:"查看待拍板", report:"汇报进展", reports:"查看进展", claims:"查看文件归属", handoffs:"查看交接", projects:"查看项目"};
+    return Object.hasOwn(labels, verb) ? labels[verb] : null;
+  }
   function toolLabel(context, block) {
     const name = block.name.split("__").pop();
     if (name === "SendMessage") return `给 ${nameOf(context, block.input.recipient)} 发了消息`;
-    if (name === "Bash" || name === "PowerShell") return block.input.command.slice(0, 60);
+    if (name === "Bash" || name === "PowerShell") {
+      const label = crewLabel(block.input.command);
+      return label === null ? block.input.command.slice(0, 60) : label;
+    }
     if (name === "Read" || name === "Edit" || name === "Write") return `${{ Read: "读取", Edit: "修改", Write: "写入" }[name]} ${block.input.file_path.split(/[\\/]/).pop()}`;
     return block.name;
   }
