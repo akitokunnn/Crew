@@ -197,16 +197,16 @@ class ChatTests(UsageFixture, unittest.TestCase):
             self.assertEqual(len(manager.history("s1")["events"]), 3)
             self.assertEqual(reads, [path, path, path])
 
-    def test_crew_and_feishu_sources_survive_cli_echo_and_replay(self):
+    def test_crew_and_qq_sources_survive_cli_echo_and_replay(self):
         manager, process, _ = self.manager_with_process()
-        for source in ("crew", "feishu"):
+        for source in ("crew", "qq"):
             manager._send("s1", "hello from " + source, source=source, identity=source + "-1")
             message = json.loads(process.stdin.getvalue().splitlines()[-1])
             journal = manager.journal("s1")
             journal.consume(message)
             journal.consume(dict(message, isReplay=True))
         messages = [event for event in manager.history("s1")["events"] if event["type"] == "message"]
-        self.assertEqual([(event["id"], event["source"]) for event in messages], [("crew-1", "crew"), ("feishu-1", "feishu")])
+        self.assertEqual([(event["id"], event["source"]) for event in messages], [("crew-1", "crew"), ("qq-1", "qq")])
 
     def test_status_refreshes_before_comparing_and_starting_a_new_message(self):
         first = self.journal

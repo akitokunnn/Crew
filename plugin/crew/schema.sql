@@ -72,7 +72,7 @@ CREATE TABLE IF NOT EXISTS notification_messages (
     decision_id INTEGER,
     kind TEXT NOT NULL,
     message_id TEXT,
-    chat_id TEXT,
+    ref_idx TEXT,
     created_at TEXT NOT NULL,
     content TEXT NOT NULL,
     status TEXT NOT NULL,
@@ -108,13 +108,13 @@ CREATE TABLE IF NOT EXISTS read_cursors (
     updated_at TEXT NOT NULL
 );
 
--- Things Crew itself must tell a leader (an answer saved on the web or Feishu, a member adopted into its group).
+-- Things Crew itself must tell a leader (an answer saved on the web or QQ, a member adopted into its group).
 -- The web service writes them into the leader's input once it is idle; the leader relays to members with SendMessage.
 CREATE TABLE IF NOT EXISTS leader_notices (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     project    TEXT NOT NULL,
     session_id TEXT NOT NULL,              -- the leader
-    source     TEXT NOT NULL CHECK (source IN ('web', 'feishu', 'crew')),
+    source     TEXT NOT NULL CHECK (source IN ('web', 'qq', 'crew')),
     text       TEXT NOT NULL,
     created_at TEXT NOT NULL,
     sent_at    TEXT

@@ -137,6 +137,13 @@ svg.i.xs{width:12px;height:12px}
 .switch.on .track{background:var(--accent)}
 .switch.on .track::after{transform:translateX(12px)}
 .away-note{font-size:11.5px;color:var(--text-3);padding:0 4px;margin-top:-6px}
+.qq-status{font-size:11.5px;color:var(--text-3);padding:0 4px;line-height:1.6}
+.qq-state{display:flex;align-items:center;gap:6px}
+.qq-state i{width:5px;height:5px;border-radius:50%;background:currentColor;flex:none}
+.qq-status.connected .qq-state{color:var(--accent)}
+.qq-status.connecting .qq-state,.qq-status.reconnecting .qq-state,.qq-status.unbound .qq-state{color:var(--warn)}
+.qq-status.rejected,.qq-status.error{color:var(--danger)}
+.qq-detail{padding-left:11px;overflow-wrap:anywhere}
 .icon-btn{width:30px;height:30px;border-radius:9px;display:grid;place-items:center;border:0;background:transparent;color:var(--text-3);cursor:pointer;transition:background .15s,color .15s;flex:none}
 .icon-btn:hover{background:var(--hover);color:var(--text)}
 .icon-btn:disabled{opacity:.35;cursor:not-allowed}
@@ -527,7 +534,7 @@ a.btn{color:inherit;text-decoration:none}
 .workspace-home a.li:hover{background:var(--hover)}
 .error-line{color:var(--danger);font-size:13px;line-height:1.6;overflow-wrap:anywhere}
 .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
-.feishu-meta{opacity:1}
+.qq-meta{opacity:1}
 .chat-host:has(.readonly-note) .jump{bottom:52px}
 
 @media(min-width:1024px) and (max-width:1179px){
