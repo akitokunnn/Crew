@@ -76,7 +76,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
 
     def test_state_exact_shape_and_empty_limits(self):
         expected = {"project", "projects", "now", "agents_error", "notification", "leaders",
-                    "members", "decisions", "candidates", "attention", "limits", "vscode_error"}
+                    "members", "decisions", "candidates", "attention", "limits", "vscode_error", "models"}
         state = self.state()
         self.assertEqual(set(state), expected)
         self.assertEqual(set(state["project"]), {"name", "root"})
@@ -84,7 +84,8 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual(state["limits"], {"claude": {"five_hour": None, "seven_day": None}, "codex": None})
         leader = state["leaders"][0]
         self.assertEqual(set(leader), {"session_id", "name", "goal", "status", "busy", "running", "web_chat",
-            "cc_name", "last_seq", "last_reply_id", "read_seq", "unread", "pending", "notices_pending", "member_ids"})
+            "cc_name", "last_seq", "last_reply_id", "read_seq", "unread", "pending", "notices_pending", "member_ids",
+            "model", "model_seen", "activity"})
         self.assertEqual((leader["session_id"], leader["member_ids"], leader["unread"]), ("s3", ["s1"], 0))
         landing = self.state(None)
         self.assertEqual(set(landing), expected)
@@ -119,7 +120,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         member = members["s1"]
         self.assertEqual(set(member), {"session_id", "name", "title", "leader_session_id", "group", "status",
             "status_note", "where", "task", "scope", "done_when", "branch", "worktree", "cwd", "cc_name",
-            "web_chat", "progress", "codex", "codex_older", "leases", "claims"})
+            "web_chat", "progress", "codex", "codex_older", "leases", "claims", "model", "model_seen", "activity"})
         self.assertEqual((member["name"], member["leader_session_id"], member["group"], member["scope"], member["done_when"]),
                          ("one", "s3", "lead", "Backend", "Tests pass"))
         self.assertEqual([row["text"] for row in member["progress"]], ["progress-" + str(i) for i in (6, 5, 4, 3, 2)])

@@ -139,6 +139,7 @@ class ChatTests(UsageFixture, unittest.TestCase):
         self.assertNotIn("CLAUDE_CODE_CHILD_SESSION", env)
         self.assertEqual(env["CLAUDE_CODE_ENTRYPOINT"], "crew-web")
         self.assertEqual(env["CLAUDE_API_KEY"], "keep")
+        self.assertEqual(env["MSYS_NO_PATHCONV"], "1")
         self.assertEqual((env["CREW_NAME"], env["CREW_GROUP"], env["CREW_ROLE"]), ("boss", "boss", "leader"))
 
     def test_ungrouped_member_environment_does_not_inherit_group(self):
@@ -331,6 +332,111 @@ class ChatTests(UsageFixture, unittest.TestCase):
         with self.assertRaisesRegex(board.BoardError, "没有在运行"):
             manager.interrupt("s1")
         self.assertEqual(process.stdin.getvalue(), "")
+
+    def test_real_stream_tracks_phases_tool_label_exact_tokens_and_actual_model(self):
+        records = [json.loads(line) for line in (Path(__file__).parent / "fixtures" / "wake_stream.jsonl").read_text(encoding="utf-8").splitlines()]
+        phases = []
+        for record in records:
+            if record["type"] == "result":
+                self.assertEqual(self.journal.progress["output_tokens"], 174)
+                self.assertEqual(self.journal.model, "claude-haiku-4-5-20251001")
+            self.journal.consume(record)
+            if self.journal.progress is not None:
+                current = (self.journal.progress["phase"], self.journal.progress["label"])
+                if not phases or phases[-1] != current:
+                    phases.append(current)
+        self.assertEqual(phases, [("requesting", None), ("thinking", None), ("tool", "Bash"),
+                                  ("tool", "打个招呼"), ("requesting", None), ("thinking", None), ("writing", None)])
+        self.assertIsNone(self.journal.progress)
+        persisted = self.journal.path.read_text(encoding="utf-8")
+        for key in ("turn_started_at", "output_tokens", "thinking_tokens"):
+            self.assertNotIn(key, persisted)
+        replay = chat.Journal(self.journal.path)
+        self.assertIsNone(replay.progress)
+        self.assertIsNone(replay.model)
+
+    def test_estimates_use_cumulative_thinking_and_utf8_then_replace_with_real_usage(self):
+        def stream(event):
+            self.journal.consume({"type": "stream_event", "api_message_id": "call", "event": event})
+
+        stream({"type": "message_start", "message": {"id": "call", "model": "haiku"}})
+        started = self.journal.progress["turn_started_at"]
+        stream({"type": "content_block_start", "index": 0, "content_block": {"type": "thinking"}})
+        for total in (10, 13):
+            self.journal.consume({"type": "system", "subtype": "thinking_tokens", "estimated_tokens": total})
+        stream({"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "", "estimated_tokens": 15}})
+        stream({"type": "content_block_start", "index": 1, "content_block": {"type": "thinking"}})
+        stream({"type": "content_block_delta", "index": 1, "delta": {"type": "thinking_delta", "thinking": "", "estimated_tokens": 4}})
+        stream({"type": "content_block_delta", "index": 2, "delta": {"type": "text_delta", "text": "中文"}})
+        stream({"type": "content_block_delta", "index": 3, "delta": {"type": "input_json_delta", "partial_json": "abc"}})
+        self.assertEqual(self.journal.progress["output_tokens"], 22)
+        self.assertEqual(self.journal.progress["turn_started_at"], started)
+        stream({"type": "message_delta", "usage": {"output_tokens": 9}})
+        stream({"type": "message_delta", "usage": {"output_tokens": 9}})
+        self.assertEqual(self.journal.progress["output_tokens"], 9)
+        self.journal.set_status("offline")
+        self.assertIsNone(self.journal.progress)
+
+    def test_subagent_records_do_not_change_progress_tokens_model_or_idle_status(self):
+        records = [{"type": "stream_event", "event": {"type": "message_start", "message": {"id": "sub", "model": "other"}}},
+                   {"type": "stream_event", "event": {"type": "content_block_start", "index": 0, "content_block": {"type": "thinking"}}},
+                   {"type": "system", "subtype": "thinking_tokens", "estimated_tokens": 999},
+                   {"type": "stream_event", "event": {"type": "message_delta", "usage": {"output_tokens": 999}}},
+                   {"type": "assistant", "message": {"id": "sub", "content": [{"type": "tool_use", "id": "t", "name": "Read", "input": {"file_path": "x"}}]}},
+                   {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t", "content": "done"}]}},
+                   {"type": "user", "uuid": "peer", "origin": {"kind": "peer", "name": "child", "body": "done"}, "message": {"content": "done"}},
+                   {"type": "result"}, {"type": "command_lifecycle", "state": "started"}]
+        for status in ("working", "idle"):
+            self.journal.set_status(status)
+            before = dict(self.journal.progress) if self.journal.progress is not None else None
+            for record in records:
+                self.journal.consume(dict(record, parent_tool_use_id="parent"))
+                self.assertEqual(self.journal.progress, before)
+                self.assertEqual(self.journal.status, status)
+                self.assertIsNone(self.journal.model)
+
+    def test_tool_labels_follow_tool_arguments_and_truncate(self):
+        for name, arguments, label in [
+            ("Bash", {"description": "build", "command": "other"}, "build"),
+            ("Bash", {"command": "x" * 70}, "x" * 60),
+            ("Read", {"file_path": "C:\\project\\read.py"}, "read.py"),
+            ("Edit", {"file_path": "/project/edit.py"}, "edit.py"),
+            ("Write", {"file_path": "/project/write.py"}, "write.py"),
+            ("Grep", {"pattern": "needle"}, "needle"), ("Glob", {"pattern": "*.py"}, "*.py"),
+            ("Agent", {"description": "inspect"}, "inspect"), ("Task", {"description": "inspect"}, "inspect"),
+            ("SendMessage", {"to": "leader"}, "发消息给 leader"), ("Skill", {"skill": "crew:member"}, "crew:member"),
+            ("OtherTool", {}, "OtherTool")]:
+            with self.subTest(name=name):
+                self.assertEqual(chat.tool_label(name, arguments), label)
+
+    def test_control_responses_ignore_success_and_record_failure_reason(self):
+        self.journal.consume({"type": "control_response", "response": {"subtype": "success", "request_id": "good"}})
+        self.assertEqual(self.journal.events, [])
+        self.journal.consume({"type": "control_response", "response": {"subtype": "error", "request_id": "bad", "error": "invalid model"}})
+        self.assertEqual([(event["type"], event["text"]) for event in self.journal.events], [("error", "invalid model")])
+
+    def test_tool_phase_remains_until_corresponding_result_even_when_text_arrives(self):
+        self.journal.consume({"type": "stream_event", "event": {"type": "message_start", "message": {"id": "call"}}})
+        self.journal.consume({"type": "assistant", "message": {"id": "call", "content": [
+            {"type": "tool_use", "id": "running-tool", "name": "Bash", "input": {"description": "run command"}}]}})
+        self.journal.consume({"type": "stream_event", "api_message_id": "call", "event": {
+            "type": "content_block_delta", "delta": {"type": "text_delta", "text": "still running"}}})
+        self.assertEqual((self.journal.progress["phase"], self.journal.progress["label"]), ("tool", "run command"))
+        for tool_id, phase in (("other-tool", "tool"), ("running-tool", "requesting")):
+            self.journal.consume({"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": tool_id, "content": "done"}]}})
+            self.assertEqual(self.journal.progress["phase"], phase)
+
+    def test_activity_requires_owned_working_process_and_model_resets_on_launch(self):
+        manager, process, _ = self.manager_with_process("working")
+        self.assertEqual(manager.activity("s1")["phase"], "requesting")
+        self.assertIsNone(manager.activity("external"))
+        manager.journal("s1").consume({"type": "stream_event", "event": {"type": "message_start", "message": {"id": "call", "model": "actual"}}})
+        self.assertEqual(manager.model_seen("s1"), "actual")
+        process.finish()
+        self.assertIsNone(manager.activity("s1"))
+        manager.journal("s1").reset_runtime()
+        self.assertIsNone(manager.model_seen("s1"))
 
 
 if __name__ == "__main__":

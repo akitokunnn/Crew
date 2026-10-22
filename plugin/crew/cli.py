@@ -141,6 +141,7 @@ def parser():
     a.add_argument("--with-members", action="store_true")
     a = c.add_parser("start")
     a.add_argument("--name", required=True)
+    a.add_argument("--model")
     a.add_argument("--members")
     a.add_argument("--task")
     location = a.add_mutually_exclusive_group()
@@ -149,6 +150,7 @@ def parser():
     a.add_argument("--dry-run", action="store_true")
     a = command("spawn", True)
     a.add_argument("--name", required=True)
+    a.add_argument("--model", default=argparse.SUPPRESS)
     a.add_argument("--task", required=True)
     a.add_argument("--group")
     a.add_argument("--role", choices=("member", "leader"), default="member")
@@ -157,6 +159,9 @@ def parser():
     location.add_argument("--new-worktree")
     a.add_argument("--base")
     a.add_argument("--dry-run", action="store_true")
+    a = command("wake", True)
+    a.add_argument("name")
+    a.add_argument("text")
     a = command("web")
     a.add_argument("--port", type=int, default=47811)
     a.add_argument("--open", action="store_true")
@@ -266,6 +271,8 @@ def _emit(value, as_json=False, command=None):
         print(_status_text(value))
     elif command == "open":
         print("已取消，会话继续保持原样" if value.get("cancelled") else "已在 VS Code 打开会话：" + value["session_id"])
+    elif command == "wake":
+        print("已叫醒 %s，它在后台运行，SendMessage 地址：%s" % (value["name"], value["address"]))
     elif command in ("whoami", "who"):
         print(_whoami_text(value))
     else:
@@ -465,6 +472,15 @@ def main(argv=None, agents_provider=claude_agents, cwd=None, plugin_root=None):
             from . import web
             web.serve(args.home, plugin_root, port=args.port, open_browser=args.open, cwd=cwd,
                       agents_provider=agents_provider)
+            return 0
+        if args.command == "wake":
+            from . import spawn
+            with contextlib.closing(store.connect(args.home)) as conn:
+                project = _project(conn, args, cwd)
+            value = spawn.request_start(args.home, project, "/api/wake", {
+                "name": args.name, "text": args.text,
+                "caller_session_id": None if _actor(args) == board.HUMAN else _actor(args)})
+            _emit(value, args.json, args.command)
             return 0
         if args.command == "install":
             value = install.install(args.home, plugin_root)

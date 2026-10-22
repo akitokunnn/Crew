@@ -16,7 +16,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import ProxyHandler, build_opener
 from urllib.error import URLError
 
-from . import board, chat, claude_limits, hooks, notifications, open_session, presentation, session_ops, spawn, store, usage, usage_cli, vscode_sessions
+from . import board, chat, claude_limits, hooks, models, notifications, open_session, presentation, session_ops, spawn, store, usage, usage_cli, vscode_sessions
 
 
 def _text(data, key):
@@ -90,6 +90,11 @@ class Service:
         while not self.stop.is_set():
             self.refresh_agents()
             self._refresh_vscode()
+            with self.agents_lock:
+                agents, error = self.agents, self.agents_error
+            if error is None:
+                with self.write_lock, closing(store.connect(self.home)) as conn:
+                    self.chat.auto_resume(conn, agents, now=self.now().isoformat(timespec="milliseconds").replace("+00:00", "Z"))
             if self.stop.wait(10):
                 break
 
@@ -253,7 +258,8 @@ class Service:
             address = "（SendMessage 地址：%s）" % session["cc_name"] if session["cc_name"] else ""
             board.queue_leader_notice(conn, leader["session_id"],
                 "%s%s 已收编到你组。请用 SendMessage 欢迎它、说明你是它的 leader、守则 /crew:member，"
-                "并请它用 crew card 写下负责范围和完成标准；它没在运行时等它下次上线再说。" % (session["crew_name"], address),
+                "并请它用 crew card 写下负责范围和完成标准；crew who 显示离线时，用 crew wake %s \"要它做的事\" "
+                "叫醒后按 crew 名 SendMessage。" % (session["crew_name"], address, session["crew_name"]),
                 "crew", now=now)
         return session
 
@@ -264,6 +270,7 @@ class Service:
             agents, error = self.agents, self.agents_error
         with closing(store.connect(self.home)) as conn:
             result = {'project': None, 'projects': [{'name': p['name']} for p in board.projects(conn)],
+                      'models': models.MODELS,
                       'now': self.now().isoformat(), 'agents_error': error, 'notification': self.notification_status(),
                       'leaders': [], 'members': [], 'decisions': [], 'attention': [],
                       'candidates': {'running': [], 'others': []},
@@ -311,6 +318,7 @@ class Service:
                         read_seq = board.read_seq(conn, sid)
                         result['leaders'].append(dict(
                             session_id=sid, name=session['crew_name'], goal=session['task'], status=session['status'],
+                            model=models.get(conn, sid), model_seen=self.chat.model_seen(sid), activity=self.chat.activity(sid),
                             busy=self.chat.busy(sid) or (sid in present and present[sid].get('status') == 'busy'),
                             running=self.chat.running(sid) or sid in present, web_chat=session['web_chat'], cc_name=session['cc_name'],
                             last_seq=events[-1]['seq'] if events else 0, read_seq=read_seq,
@@ -330,6 +338,7 @@ class Service:
                                          store.parse_iso(t['ended_at']) >= self.now() - dt.timedelta(hours=24))]
                         result['members'].append(dict(
                             session_id=sid, name=session['crew_name'], title=titles.get(sid),
+                            model=models.get(conn, sid), model_seen=self.chat.model_seen(sid), activity=self.chat.activity(sid),
                             leader_session_id=leader['session_id'] if leader else None, group=session['group_name'],
                             status=session['status'], status_note=session['status_note'],
                             where='bg' if self.chat.running(sid) else 'vscode' if sid in present else 'offline',
@@ -417,6 +426,12 @@ class Service:
                     return session_ops.undo(conn, target['session_id'], data['before'], now=now)
                 if path == '/api/session/stop':
                     return self.chat.interrupt(target['session_id'])
+                if path == '/api/session/model':
+                    model = models.validate(data['model'])
+                    with self.chat.lock:
+                        models.set(conn, target['session_id'], model, now=now)
+                        self.chat.set_model(target['session_id'], model)
+                    return {'ok': True, 'model': model}
             if path in ("/api/answer", "/api/decision/hold", "/api/decision/unhold"):
                 if type(data.get("id")) is not int:
                     raise ValueError("id \u5fc5\u987b\u662f\u6574\u6570")
@@ -457,11 +472,22 @@ class Service:
                                               self.claude_root.parent / "sessions", manager=self.chat)
                 return open_session.resume(conn, target["session_id"], self.agents_provider, data.get("confirm") is True,
                                            self.claude_root.parent / "sessions", now=now, manager=self.chat)
+            if path == "/api/wake":
+                target = (board.session(conn, _text(data, "session_id")) if data.get("session_id") is not None else
+                          board.named_session(conn, project, _text(data, "name")))
+                if target["project"] != project:
+                    raise board.BoardError("会话不属于当前项目")
+                with self.agents_lock:
+                    if not self.agents_ready.is_set() or self.agents_error is not None:
+                        raise board.Conflict("进程状态未知，请稍后再试")
+                return self.chat.wake(conn, target, _text(data, "text"),
+                                      caller_session_id=_optional_text(data, "caller_session_id"), now=now)
             if path == "/api/spawn":
                 return self.chat.start(conn, project, _text(data, "name"), _text(data, "task"),
                                        group=_optional_text(data, "group"), role=data.get("role", "member"),
                                        cwd=_optional_text(data, "cwd"), new_worktree=_optional_text(data, "new_worktree"),
-                                       base=_optional_text(data, "base"), now=now)
+                                       base=_optional_text(data, "base"), now=now,
+                                       model=models.validate(data["model"]) if "model" in data else models.INHERIT)
             if path == "/api/leader":
                 members = data.get("members", [])
                 if not isinstance(members, list) or any(not isinstance(m, str) or not m.strip() for m in members):
@@ -470,6 +496,7 @@ class Service:
                 if not isinstance(member_session_ids, list) or any(not isinstance(sid, str) or not sid.strip() for sid in member_session_ids):
                     raise ValueError("member_session_ids 必须是会话 ID 数组")
                 name, task = _text(data, "name"), _optional_text(data, "task")
+                model = models.validate(data.get("model"))
                 candidate_members = [(self.candidate(conn, project, _text(member, "session_id")), _text(member, "name"))
                                      for member in data.get("candidate_members", [])]
                 names = {name, *members}
@@ -481,13 +508,13 @@ class Service:
                 # Check the leader and existing members before adopting anyone.
                 spawn.leader_plan(conn, self.home, self.plugin_root, project, name, members,
                                   task, cwd=_optional_text(data, "cwd"), new_worktree=_optional_text(data, "new_worktree"), now=now,
-                                  member_session_ids=member_session_ids)
+                                  member_session_ids=member_session_ids, model=model)
                 for candidate, member_name in candidate_members:
                     self.adopt(conn, project, candidate, member_name, None, now)
                 return self.chat.start(conn, project, name, task, role="leader",
                                        members=members, member_session_ids=member_session_ids + [candidate["session_id"] for candidate, _ in candidate_members],
                                        cwd=_optional_text(data, "cwd"),
-                                       new_worktree=_optional_text(data, "new_worktree"), now=now)
+                                       new_worktree=_optional_text(data, "new_worktree"), now=now, model=model)
             if path == "/api/chat/send":
                 session = board.session(conn, _text(data, 'session_id'))
                 if session['project'] != project:
@@ -578,8 +605,8 @@ class Service:
             return result
 
 
-POST_PATHS = {"/api/project/init", "/api/open", "/api/open/continue", "/api/answer", "/api/spawn", "/api/leader", "/api/roster/move", "/api/roster/remove", "/api/group/close", "/api/roster/adopt", "/api/chat/send", '/api/chat/read'}
-POST_PATHS.update('/api/session/' + action for action in ('rename', 'archive', 'remove', 'restore', 'undo', 'stop'))
+POST_PATHS = {"/api/project/init", "/api/open", "/api/open/continue", "/api/answer", "/api/spawn", "/api/leader", "/api/wake", "/api/roster/move", "/api/roster/remove", "/api/group/close", "/api/roster/adopt", "/api/chat/send", '/api/chat/read'}
+POST_PATHS.update('/api/session/' + action for action in ('rename', 'archive', 'remove', 'restore', 'undo', 'stop', 'model'))
 POST_PATHS.update(('/api/attention/dismiss', '/api/notifications/away'))
 POST_PATHS.update(('/api/decision/hold', '/api/decision/unhold'))
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"),

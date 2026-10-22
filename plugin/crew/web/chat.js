@@ -1,5 +1,72 @@
 "use strict";
 (() => {
+  const turns = new Map();
+  const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
+  const escape = value => String(value).replace(/[&<>"']/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]);
+  let clockOffset = 0, frame = null;
+  function tokenCount(turn, now) {
+    if (reducedMotion.matches) return turn.to;
+    const fraction = Math.min(1, (now - turn.changedAt) / 2800);
+    return turn.from + (turn.to - turn.from) * fraction;
+  }
+  function elapsed(at, now) {
+    const seconds = Math.max(0, Math.floor((now + clockOffset - Date.parse(at)) / 1000));
+    return seconds < 60 ? `${seconds}秒` : `${Math.floor(seconds / 60)}分${seconds % 60}秒`;
+  }
+  function tokens(value) {
+    return value < 1000 ? String(Math.floor(value)) : `${(value / 1000).toFixed(1)}k`;
+  }
+  function cancel() {
+    if (frame === null) return;
+    if (frame.animation) cancelAnimationFrame(frame.id); else clearTimeout(frame.id);
+    frame = null;
+  }
+  // Busy turns last hours: draw every frame only while a token count is rolling, otherwise a cheap tick keeps the clock moving.
+  function schedule() {
+    cancel();
+    if (turns.size === 0) return;
+    const now = Date.now();
+    frame = [...turns.values()].some(turn => !reducedMotion.matches && turn.from !== turn.to && now - turn.changedAt < 2800)
+      ? {animation:true, id:requestAnimationFrame(paint)} : {animation:false, id:setTimeout(paint, 250)};
+  }
+  function paint() {
+    frame = null;
+    const now = Date.now();
+    for (const node of document.querySelectorAll("[data-activity]")) {
+      const turn = turns.get(node.dataset.activity);
+      if (turn === undefined) { node.remove(); continue; }
+      const clock = node.querySelector("[data-activity-elapsed]"), count = node.querySelector("[data-activity-tokens]");
+      const clockText = elapsed(turn.startedAt, now), tokenText = `↓ ${tokens(tokenCount(turn, now))} tokens`;
+      if (clock.textContent !== clockText) clock.textContent = clockText;
+      if (count.textContent !== tokenText) count.textContent = tokenText;
+    }
+    schedule();
+  }
+  function sync(state) {
+    const now = Date.now(), present = new Set();
+    clockOffset = Date.parse(state.now) - now;
+    for (const session of state.leaders.concat(state.members)) {
+      const activity = session.activity;
+      if (activity === null) continue;
+      present.add(session.session_id);
+      const previous = turns.get(session.session_id);
+      if (previous !== undefined && previous.startedAt === activity.turn_started_at && previous.to === activity.output_tokens) continue;
+      const from = previous === undefined || previous.startedAt !== activity.turn_started_at ? activity.output_tokens : tokenCount(previous, now);
+      turns.set(session.session_id, {startedAt:activity.turn_started_at, from, to:activity.output_tokens, changedAt:now});
+    }
+    for (const id of turns.keys()) if (!present.has(id)) turns.delete(id);
+    schedule();
+  }
+  function markup(session, compact = false) {
+    const activity = session.activity;
+    if (activity === null) return "";
+    const phase = activity.phase === "tool" ? `在跑：${activity.label}` : {requesting:"等模型回应", thinking:"思考中", writing:"在写回复"}[activity.phase];
+    const turn = turns.get(session.session_id), now = Date.now();
+    return `<span class="activity${compact ? " compact" : ""}" data-activity="${escape(session.session_id)}" role="status"><span class="spin" aria-hidden="true"></span><span class="activity-phase" title="${escape(phase)}">${escape(phase)}</span><span class="activity-elapsed" data-activity-elapsed>${elapsed(turn.startedAt, now)}</span><span class="activity-tokens" data-activity-tokens>↓ ${tokens(tokenCount(turn, now))} tokens</span></span>`;
+  }
+  window.CrewActivity = {sync, markup};
+})();
+(() => {
   const markdown = window.markdownit({ html: false, breaks: true });
   // Same rule as notifications.cjk_bold: "**标题：**正文" is not bold under CommonMark, so move the punctuation outside.
   const BOLD_PUNCT = String.raw`\u2010-\u2027\u3000-\u303f\uff01-\uff0f\uff1a-\uff20\uff3b-\uff40\uff5b-\uff65.,:;!?()\[\]"'`;
@@ -153,7 +220,7 @@
       return html;
     }
     if (item.source === "peer" || item.source === "crew") {
-      const sender = item.source === "crew" ? "Crew" : nameOf(context, item.sender);
+      const sender = item.source === "crew" && !Object.hasOwn(item, "sender") ? "Crew" : item.sender === "user" ? "用户" : nameOf(context, item.sender);
       const foldKey = `peer:${item.id}`;
       const open = context.cache.expanded.has(foldKey);
       return `<button type="button" class="mline indent${open ? " open" : ""}" data-chat-fold="${escape(foldKey)}" aria-expanded="${open}"><span class="who">${escape(sender)} → ${escape(context.session.name)}：</span><span class="txt">${escape(item.text.replace(/\s+/g, " "))}</span>${item.at ? `<span>${timeOf(item.at)}</span>` : ""}${icon("right")}</button><div class="mfull">${escape(item.text).replace(/\n/g, "<br>")}</div>`;
@@ -180,6 +247,7 @@
       if (item.id === context.cache.unreadAnchor) desired.push({ key: "unread", className: "div unread unread-div", html: "以下是你离开后的消息" });
       desired.push({ key: item.id, className: "chat-event", html: itemHTML(context, item) });
     }
+    if (!context.readonly && context.busy && context.session.activity !== null) desired.push({key:"activity", className:"chat-activity", html:CrewActivity.markup(context.session)});
     let position = context.inner.firstChild;
     for (const item of desired) {
       let node = context.nodes.get(item.key);

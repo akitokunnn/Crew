@@ -49,6 +49,12 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE INDEX IF NOT EXISTS sessions_project ON sessions (project, crew_name);
 
+CREATE TABLE IF NOT EXISTS session_models (
+    session_id TEXT PRIMARY KEY REFERENCES sessions(session_id),
+    model TEXT NOT NULL,
+    set_at TEXT NOT NULL
+);
+
 -- Explicit human choices survive hooks from the original running process.
 CREATE TABLE IF NOT EXISTS session_controls (
     session_id TEXT PRIMARY KEY REFERENCES sessions(session_id),

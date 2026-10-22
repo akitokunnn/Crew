@@ -33,13 +33,14 @@
 | 想做的事 | 怎么做 |
 |---|---|
 | 打开网页 | `crew web --open`：按当前目录打开这个项目的页面（一个项目一个标签页），后台已有服务时直接复用 |
-| 起一个 leader | 网页左栏"起 leader"：起名 + 一句它要管什么；命令行 `crew leader start --name 感知 --task "<这一组的目标>"` |
+| 起一个 leader | 网页左栏"起 leader"：起名 + 一句它要管什么 + 模型；命令行 `crew leader start --name 感知 --task "<这一组的目标>" [--model <模型ID>]` |
 | 把 VS Code 里的会话收编进组 | 在那个会话里说"收编到感知"，它会 `crew join` 写好任务卡并通知 leader；或者在网页"待收编"里点它、起名、选 leader |
 | 和 leader 聊 | 网页点左栏的 leader；离开电脑时在 QQ 私聊里 `/ls` 看编号、`/1` 切过去直接说 |
 | 回答待拍板 | 网页对话顶部的卡片、"全部 → 等你拍板"，或 QQ 里点按钮、引用那条拍板消息回复；答完 leader 会去叫醒提问的下属 |
 | 挂起待拍板 | 网页卡片点"挂起"，留到托盘底部默认折叠的"挂起 · N"区或全部页挂起分组；可直接答或取消挂起，挂起题不计待拍板数、不推 QQ |
 | 看某个下属 | 网页右栏点它：负责范围、在做什么、最近进展、Codex、设备和文件；要聊就点"在 VS Code 打开" |
 | 开一个新下属 | 让 leader 开（它不用你批准）；或命令行 `crew spawn --name 姿势 --group 感知 --task "<任务>"`，需要独立 worktree 时加 `--new-worktree feature/pose` |
+| 叫醒离线下属 | 所在组的 leader 或用户执行 `crew wake 姿势 "<接着做什么>"`，后台续跑原会话，之后按 crew 名 SendMessage；不要另开替代下属 |
 | 下属跑歪了 | 卡片上"停下这一轮"（只对网页后台运行的下属有效；开在 VS Code 里的去那边停） |
 | 收尾 | 在 VS Code 里归档会话，Crew 跟着归档；或者卡片上"归档"（可撤销）。leader 发现下属做完了也会问你要不要归档 |
 | 看谁在干什么 | 网页"全部"，或 `crew status` |
@@ -67,6 +68,7 @@
 | `crew group list` / `crew roster add\|remove\|move` | 分组和花名册 |
 | `crew leader start` / `crew leader close` | 通过正在运行的网页服务开 leader / 收一个分组；`start --dry-run` 只看计划 |
 | `crew spawn` | 通过正在运行的网页服务开后台成员；`--dry-run` 只看计划 |
+| `crew wake <名字> "<消息>"` | 所在组的 leader 或用户叫醒离线下属，服务未运行或进程状态未知时报错 |
 | `crew open <名字>` | 两步在 VS Code 接续同一会话，停止空闲的原运行端前须明确确认 |
 | `crew web --open` | 按当前目录打开工作区，已有服务时复用 |
 | `crew autostart install\|status\|uninstall` | 当前用户登录后隐藏运行，不弹浏览器 |
@@ -103,7 +105,7 @@
 | `~/.crew/chat/files/<会话ID>/` | 发给 leader 的截图 |
 | `~/.crew/qq.json` | QQ 机器人 app_id / app_secret，用户自己维护 |
 | `~/.crew/notify.json` | 主人 openid、通知起点、离开状态、当前 leader 与 leader 编号，Crew 维护 |
-| `~/.crew/web.json` | 正在运行的网页服务地址，供 `spawn` 和 `leader start` 连接，支持自定义端口 |
+| `~/.crew/web.json` | 正在运行的网页服务地址，供 `spawn`、`leader start` 和 `wake` 连接，支持自定义端口 |
 | `~/.crew/codex_runs.jsonl` | 派活记录 |
 
 ## 更新和开发
@@ -118,8 +120,11 @@
 ## 已知限制
 
 - 开在 VS Code 里的下属，网页只能看状态和卡片，不能发消息、也停不下它正在跑的一轮。
-- 没在运行的下属被收编后，要等你下次在 VS Code 里和它说话，它才知道自己归谁；leader 的欢迎消息也要等它上线。
-- leader 叫醒下属靠会话间消息。两个会话的权限模式不一样时（比如一个全放行、一个逐条确认），消息会被扣住等对方的人批准；协作的会话统一用全放行（`/crew:trust`）。`crew spawn` / `crew leader start` 开的会话都是全放行。
+- leader 用 SendMessage 联系在线下属；离线时用 `crew wake <名字> "<要它做的事>"` 在后台续跑原会话，再按 crew 名联系。VS Code、终端或后台仍有活进程时拒绝叫醒，进程状态未知时也拒绝启动。
+- **被叫醒的会话如果 VS Code 里还留着旧标签，不要在旧标签里直接打字**，否则可能两个进程同时写一个会话；要接过去请用网页卡片上的“在 VS Code 打开”。
+- 服务启动后会自动续跑聊天日志最后状态仍是 working 的未归档会话；如果原进程还活着，等它退出再续跑，最多等 30 分钟。idle / offline 的不自动续跑。
+- 两个在线会话的权限模式不一样时（比如一个全放行、一个逐条确认），SendMessage 可能等人批准；协作会话统一用全放行（`/crew:trust`）。后台首次启动和所有后台续跑一律全放行，保留 Crew 守卫。
+- leader 起动时可选模型，对话头部可切换，下一次模型调用起用；新下属不写 `--model` 就继承所在组 leader 的设置。默认跟账号设置走；对话头部在收到模型回应后显示实际模型。忙时对话底部和后台下属卡片显示阶段、计时与本轮输出 token。
 - 已经开着的会话要 `/reload-plugins` 或重开，才会加载插件的钩子和守卫；网页收编会登记身份，不会替它加载插件。
 - QQ 长回复按段落分段，目前 `TEXT_LIMIT = 2000`，待主控实测后确认上限。
 

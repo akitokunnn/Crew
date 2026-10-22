@@ -290,7 +290,8 @@ class VSCodeServiceTests(unittest.TestCase):
                 address = "（SendMessage 地址：%s）" % expected_address if running else ""
                 self.assertEqual(notice["text"],
                     name + address + " 已收编到你组。请用 SendMessage 欢迎它、说明你是它的 leader、守则 /crew:member，"
-                    "并请它用 crew card 写下负责范围和完成标准；它没在运行时等它下次上线再说。")
+                    f'并请它用 crew card 写下负责范围和完成标准；crew who 显示离线时，用 crew wake {name} "要它做的事" '
+                    "叫醒后按 crew 名 SendMessage。")
                 self.assertEqual((notice["project"], notice["session_id"], notice["source"], notice["created_at"], notice["sent_at"]),
                                  ("alpha", leader, "crew", NOW, None))
 

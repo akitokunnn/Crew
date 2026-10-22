@@ -156,6 +156,16 @@ svg.i.xs{width:12px;height:12px}
 .head .sub{font-size:calc(12.5px * var(--fs));color:var(--text-3);display:flex;gap:10px;align-items:center}
 .head .sub .sep{width:3px;height:3px;border-radius:50%;background:var(--text-3);opacity:.6}
 .head .right{margin-left:auto;display:flex;gap:4px;align-items:center}
+#chat-head .head{height:auto;min-height:62px;padding-top:10px;padding-bottom:10px}
+#chat-head .heading-meta{flex:1}
+#chat-head .head .sub{flex-wrap:wrap}
+#chat-head .head .right{flex-shrink:0}
+.model-tag{display:flex;align-items:center;gap:6px;white-space:nowrap;padding:5px 9px;border:1px solid var(--line-strong);border-radius:8px;background:var(--surface);color:var(--text-2);font-size:calc(12px * var(--fs));cursor:pointer}
+.model-tag:hover{background:var(--hover)}
+.model-check{width:14px;display:flex;color:var(--accent);flex:none}
+.member-model{display:inline-flex;color:var(--text-2);font-size:calc(11px * var(--fs));font-weight:400}
+.node>.member-model{margin:5px 0 0 35px}
+.ttl>.member-model{margin-left:10px}
 
 /* tray */
 .tray{flex:none;border-bottom:1px solid var(--line);background:var(--bg);box-shadow:0 6px 14px -12px rgba(30,25,10,.25);position:relative;z-index:1}
@@ -205,6 +215,19 @@ svg.i.xs{width:12px;height:12px}
 /* chat */
 .scroll{flex:1;overflow:auto;min-height:0}
 .chat-inner{max-width:808px;margin:0 auto;padding:12px 24px 40px}
+.chat-activity{margin:20px 0 0 42px;min-width:0}
+.activity{display:flex;align-items:center;gap:9px;min-width:0;max-width:100%;color:var(--text-2);font-size:calc(13px * var(--fs));line-height:1.6}
+.activity-phase{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.activity-elapsed,.activity-tokens{font-variant-numeric:tabular-nums;white-space:nowrap;flex:none}
+.activity-elapsed{color:var(--text-2)}
+.activity-tokens{color:var(--accent)}
+.activity.compact{gap:6px;font-size:calc(11px * var(--fs));flex-wrap:wrap;row-gap:2px;margin-top:6px}
+.activity.compact .spin{width:9px;height:9px}
+.node>.activity{margin-left:35px}
+.node>.activity .activity-phase{flex-basis:calc(100% - 17px)}
+.node>.activity .activity-elapsed{margin-left:15px}
+.card-activity{padding:0 20px 10px}
+.card-activity .activity{margin-top:0}
 .date-div,.unread-div{display:flex;align-items:center;gap:12px;margin:26px 0 10px;color:var(--text-3);font-size:calc(12px * var(--fs))}
 .date-div::before,.date-div::after,.unread-div::before,.unread-div::after{content:"";flex:1;height:1px;background:var(--line)}
 .unread-div{color:var(--accent)}
@@ -392,6 +415,12 @@ svg.i.xs{width:12px;height:12px}
 .modal .d{color:var(--text-3);font-size:calc(13px * var(--fs));margin:0 0 16px;line-height:1.6}
 .field{display:flex;flex-direction:column;gap:6px;margin-bottom:14px}
 .field label{font-size:calc(12.5px * var(--fs));color:var(--text-2)}
+.field-label{font-size:calc(12.5px * var(--fs));color:var(--text-2)}
+.leader-modal{width:600px}
+.model-options{display:flex;gap:6px;flex-wrap:wrap}
+.model-option{border:1px solid var(--line-strong);background:var(--surface);border-radius:8px;padding:6px 10px;font-size:calc(12.5px * var(--fs));cursor:pointer}
+.model-option:hover{background:var(--hover)}
+.model-option.on{border-color:var(--accent);background:var(--accent-soft);color:var(--accent-strong)}
 .field input,.field textarea{border:1px solid var(--line-strong);background:var(--surface);border-radius:10px;padding:9px 12px;outline:none;resize:none;transition:border-color .15s}
 .field input:focus,.field textarea:focus{border-color:color-mix(in srgb,var(--accent) 60%,transparent)}
 .modal .acts{display:flex;justify-content:flex-end;gap:8px;margin-top:6px}
@@ -586,6 +615,10 @@ a.btn{color:inherit;text-decoration:none}
   .head .sub>span:last-child{white-space:normal}
   .chat-inner,.tray-in{padding-left:14px;padding-right:14px}
   .composer-wrap{padding-left:14px;padding-right:14px}
+  .chat-activity{margin-left:34px}
+  .chat-activity .activity{flex-wrap:wrap;gap:4px 8px;font-size:calc(12px * var(--fs))}
+  .chat-activity .activity-phase{flex-basis:calc(100% - 24px)}
+  .chat-activity .activity-elapsed{margin-left:20px}
   .page-in{padding-left:16px;padding-right:16px}
   .qcards{grid-template-columns:1fr;gap:10px}
   .dc-top{padding-left:10px;padding-right:10px;gap:7px}
@@ -609,6 +642,7 @@ a.btn{color:inherit;text-decoration:none}
 }
 @media(prefers-reduced-motion:reduce){
   *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}
+  .activity .spin{animation:none!important}
 }
 
 .empty-acts{display:flex;gap:8px;margin-top:6px}
