@@ -3,6 +3,8 @@ import csv
 import datetime as dt
 import io
 import json
+import os
+import sqlite3
 import subprocess
 import threading
 import traceback
@@ -14,7 +16,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import ProxyHandler, build_opener
 from urllib.error import URLError
 
-from . import board, chat, claude_limits, hooks, notifications, open_session, presentation, session_ops, spawn, store, usage, usage_cli
+from . import board, chat, claude_limits, hooks, notifications, open_session, presentation, session_ops, spawn, store, usage, usage_cli, vscode_sessions
 
 
 def _text(data, key):
@@ -31,7 +33,8 @@ def _optional_text(data, key):
 class Service:
     def __init__(self, home, plugin_root, agents_provider=None,
                  claude_root=None, codex_root=None, runs_file=None, now=None, cwd=None, process_factory=subprocess.Popen,
-                 notification_client=None, lock_status=notifications.desktop_locked, notification_batch_seconds=30):
+                 notification_client=None, lock_status=notifications.desktop_locked, notification_batch_seconds=30,
+                 vscode_state_db=None):
         if agents_provider is None:
             from .cli import claude_agents
             agents_provider = claude_agents
@@ -46,6 +49,12 @@ class Service:
         self.agents_error = "\u6b63\u5728\u83b7\u53d6\u8fdb\u7a0b\u72b6\u6001"
         self.scanned_at = None
         self.title_cache = {}
+        self.vscode_state_db = (Path(os.environ["APPDATA"]) / "Code" / "User" / "globalStorage" / "state.vscdb"
+                                if vscode_state_db is None else Path(vscode_state_db))
+        self.vscode_session_caches = {}
+        self.vscode_sessions, self.vscode_record_ids = {}, {}
+        self.vscode_hidden_ids = None
+        self.vscode_error = "还没读到 VS Code 会话列表"
         self.stop = threading.Event()
         self.agents_ready = threading.Event()
         self.worker = None
@@ -79,8 +88,38 @@ class Service:
     def _poll_agents(self):
         while not self.stop.is_set():
             self.refresh_agents()
+            self._refresh_vscode()
             if self.stop.wait(10):
                 break
+
+    def _refresh_vscode(self):
+        with self.write_lock, self.scan_lock, closing(store.connect(self.home)) as conn:
+            projects = board.projects(conn)
+        sessions, record_ids = {}, {}
+        for project in projects:
+            roots = vscode_sessions.project_roots(project["root"])
+            cache = self.vscode_session_caches.setdefault(project["name"], vscode_sessions.SessionList())
+            sessions[project["name"]] = cache.list(self.claude_root, roots)
+            record_ids[project["name"]] = cache.record_ids.copy()
+        try:
+            hidden = vscode_sessions.hidden_ids(self.vscode_state_db)
+        except (sqlite3.Error, OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+            with self.agents_lock:
+                self.vscode_sessions, self.vscode_record_ids = sessions, record_ids
+                reason = "%s: %s" % (type(exc).__name__, exc)
+                self.vscode_error = ("还没读到 VS Code 会话列表；" + reason
+                                     if self.vscode_hidden_ids is None else reason)
+        else:
+            with self.agents_lock:
+                self.vscode_sessions, self.vscode_record_ids = sessions, record_ids
+                self.vscode_hidden_ids, self.vscode_error = hidden, None
+            with self.write_lock, self.scan_lock, closing(store.connect(self.home)) as conn:
+                now = self.now().isoformat(timespec="milliseconds").replace("+00:00", "Z")
+                for session in conn.execute("SELECT session_id,project FROM sessions WHERE crew_name IS NOT NULL AND crew_name<>''"):
+                    sid = session["session_id"]
+                    if sid in hidden and not board.is_archived(conn, sid):
+                        session_ops.archive(conn, sid, now=now)
+                        board.record_event(conn, "vscode:archived", session["project"], sid, {}, now=now)
 
     def start(self):
         self.worker = threading.Thread(target=self._poll_agents, name="crew-agents", daemon=True)
@@ -100,40 +139,74 @@ class Service:
             raise board.BoardError("\u8bf7\u5148 crew init \u542f\u7528\u9879\u76ee")
         return board.project(conn, name)["name"]
 
-    def candidates(self, conn, project_name, for_adoption=False):
+    def candidates(self, conn, project_name):
         with self.agents_lock:
             agents, error = self.agents, self.agents_error
-        if error is not None:
-            return []
-        registered = {row["session_id"] for row in conn.execute("SELECT session_id,project,crew_name FROM sessions")
-                      if not for_adoption or row["project"] != project_name or row["crew_name"]}
-        candidates = []
-        for agent in board.live_sessions(agents).values():
-            if agent["sessionId"] in registered or not agent.get("cwd"):
+            snapshot = self.vscode_sessions.get(project_name, [])
+            record_ids = self.vscode_record_ids.get(project_name, set())
+            hidden = self.vscode_hidden_ids
+        live = board.live_sessions(agents) if error is None else {}
+        project_root = board.project(conn, project_name)["root"]
+        registered = {row["session_id"]: row for row in conn.execute("SELECT * FROM sessions")}
+        sources = {s["session_id"]: s for s in snapshot if hidden is not None or s["session_id"] in live}
+        for sid, agent in live.items():
+            if sid in sources or sid in record_ids or not agent.get("cwd"):
                 continue
             project = board.project_for_path(conn, agent["cwd"])
             if project is not None and project["name"] == project_name:
-                candidates.append({"session_id": agent["sessionId"], "cc_name": agent["name"], "cwd": agent["cwd"],
-                                   "status": "working" if agent["status"] == "busy" else "idle",
-                                   "location": open_session.availability(agent["sessionId"], agents,
-                                       self.claude_root.parent / "sessions", manager=self.chat)["location"]})
-        with self.scan_lock:
-            titles = usage.session_titles(self.claude_root, [s["session_id"] for s in candidates], self.title_cache)
-        for candidate in candidates:
-            candidate["title"] = titles.get(candidate["session_id"]) or candidate["cc_name"]
-        return candidates
+                sources[sid] = {"session_id": sid, "title": agent["name"], "cwd": agent["cwd"],
+                                "mtime": agent["startedAt"] / 1000 if agent.get("startedAt") is not None else None}
+        result = {"running": [], "others": [], "left": []}
+        for sid, source in sources.items():
+            if hidden is not None and sid in hidden:
+                continue
+            project = board.project_for_path(conn, source["cwd"])
+            if project is None or project["name"] != project_name:
+                continue
+            session = registered.get(sid)
+            if session is not None and (session["project"] != project_name or session["role"] == "leader" or session["status"] == "closed"
+                                        or session["group_name"] is not None or board.is_archived(conn, sid)):
+                continue
+            running = sid in live
+            crew_name = session["crew_name"] if session is not None else None
+            candidate = {"session_id": sid, "title": source["title"], "cwd": source["cwd"],
+                         "rel_dir": os.path.relpath(source["cwd"], project_root).replace("\\", "/"),
+                         "last_active": (dt.datetime.fromtimestamp(source["mtime"], dt.timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+                                         if source["mtime"] is not None else None),
+                         "running": running, "status": ("working" if live[sid]["status"] == "busy" else "idle") if running else "offline",
+                         "crew_name": crew_name, "group": session["group_name"] if session is not None else None}
+            result["left" if crew_name else "running" if running else "others"].append(candidate)
+        result["others"].sort(key=lambda candidate: (candidate["last_active"], candidate["session_id"]), reverse=True)
+        return result
 
     def candidate(self, conn, project_name, session_id):
-        candidate = next((s for s in self.candidates(conn, project_name, for_adoption=True) if s["session_id"] == session_id), None)
+        candidate = next((s for bucket in self.candidates(conn, project_name).values() for s in bucket
+                          if s["session_id"] == session_id), None)
         if candidate is None:
-            raise board.BoardError("候选会话已离线或不属于当前项目: " + session_id)
+            raise board.BoardError("会话不在当前项目的待收编列表: " + session_id)
         return candidate
 
     def adopt(self, conn, project_name, candidate, name, group_name, now):
-        worktree, branch = hooks.git_details(candidate["cwd"])
-        board.register_session(conn, candidate["session_id"], project_name, candidate["cwd"], worktree, branch,
-                               name=name, group_name=group_name, now=now)
-        return board.update_cc_name(conn, candidate["session_id"], candidate["cc_name"], now=now)
+        sid = candidate["session_id"]
+        if candidate["crew_name"]:
+            if group_name is not None:
+                board.roster(conn, project_name, "add", group_name, session_ids=[sid], now=now)
+        else:
+            worktree, branch = hooks.git_details(candidate["cwd"])
+            board.register_session(conn, sid, project_name, candidate["cwd"], worktree, branch,
+                                   name=name, group_name=group_name, now=now)
+        with self.agents_lock:
+            live = board.live_sessions(self.agents) if self.agents_error is None else {}
+        cc_name = live[sid]["name"] if sid in live else None
+        session = board.update_cc_name(conn, sid, cc_name, now=now)
+        leader = board.leader_of(conn, sid)
+        if leader is not None:
+            address = "（SendMessage 地址：%s）" % session["cc_name"] if session["cc_name"] else ""
+            board.queue_leader_notice(conn, leader["session_id"],
+                "%s%s 已收编到你组。请用 SendMessage 欢迎它、说明你是它的 leader、守则 /crew:member，"
+                "并请它用 crew card 写下负责范围和完成标准；它没在运行时等它下次上线再说。" % (session["crew_name"], address),
+                "crew", now=now)
+        return session
 
     def state(self, project_name=None):
         if project_name is not None:
@@ -144,7 +217,7 @@ class Service:
             projects = board.projects(conn)
             if project_name is None:
                 result = {"project": None, "groups": [], "ungrouped": [], "leases": [], "claims": [], "open_decisions": 0,
-                          "resources": [], "decisions": [], "handoffs": [], "reports": [], "events": [], "candidates": [],
+                          "resources": [], "decisions": [], "handoffs": [], "reports": [], "events": [], "candidates": {"running": [], "others": [], "left": []},
                           "removed_sessions": [], "codex_tasks": [], "attention": []}
             else:
                 name = self.selected_project(conn, project_name)
@@ -181,7 +254,7 @@ class Service:
                 result['codex_tasks'] = usage.codex_tasks(conn, None, None, project=name)
                 result['attention'] = presentation.attention(conn, sessions, result['decisions'], result['codex_tasks'],
                     {s['session_id']: self.chat.history(s['session_id'])['events'] for s in sessions if s['web_chat']})
-            return {**result, "projects": projects, "agents_error": error,
+            return {**result, "projects": projects, "agents_error": error, "vscode_error": self.vscode_error,
                     "notification": self.notification_status(),
                     "agents_age_seconds": (self.now() - updated).total_seconds() if updated is not None else None,
                     "now": self.now().isoformat()}
