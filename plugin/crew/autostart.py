@@ -125,7 +125,7 @@ def _existing_server():
         if isinstance(exc.reason, ConnectionRefusedError):
             return False
         raise OSError("无法确认默认端口上的服务，不重复启动: " + str(exc)) from exc
-    if not isinstance(state, dict) or not all(key in state for key in ("projects", "groups", "ungrouped")):
+    if not isinstance(state, dict) or not all(key in state for key in ("projects", "leaders", "candidates")):
         raise OSError("47811 端口已被其他服务占用，不启动 Crew")
     return True
 

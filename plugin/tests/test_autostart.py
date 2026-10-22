@@ -149,6 +149,8 @@ $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
             with self.assertRaisesRegex(OSError, "不重复启动"):
                 autostart._existing_server()
             opener.open.side_effect = None
+            opener.open.return_value = contextlib.closing(io.StringIO('{"projects":[],"leaders":[],"candidates":{}}'))
+            self.assertTrue(autostart._existing_server())
             opener.open.return_value = contextlib.closing(io.StringIO('{"service":"other"}'))
             with self.assertRaisesRegex(OSError, "其他服务"):
                 autostart._existing_server()
