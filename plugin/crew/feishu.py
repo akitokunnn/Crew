@@ -98,7 +98,7 @@ def question_card(decision, *, workspace, leader):
                             "behaviors": [{"type": "callback", "value": {"crew_action": "answer", "workspace": workspace,
                                            "leader": leader, "decision_id": identity, "answer": option}}]})
         elements.append(_block(buttons, "default"))
-    elements.append({"tag": "markdown", "text_size": "notation", "content": "也可以直接回复这条消息，写下你的决定。答复保存后，会话会在下一轮接收。"})
+    elements.append({"tag": "markdown", "text_size": "notation", "content": "请发送「#%s 答复」即可拍板，无需引用消息。普通文字会发给当前 leader。答复保存后，会话会在下一轮接收。" % identity})
     card["body"]["elements"] = elements
     _card_json(card)
     return card
@@ -156,7 +156,7 @@ def questions_card(entries):
                     choices = "\n".join("• " + _markdown(option) for option in decision["options"])
                     elements.append(_block([{"tag": "markdown", "content": "可选答复：\n" + choices}], "default"))
                 elements.append({"tag": "markdown", "text_size": "notation",
-                    "content": "当前未启用卡片按钮，请回复「#%s 答复」。" % identity})
+                    "content": "当前未启用卡片按钮，请发送「#%s 答复」，无需引用消息。" % identity})
         elif status == "answered":
             card = answered_card(decision, workspace=workspace, leader=leader)
             elements = card["body"]["elements"]
@@ -172,7 +172,7 @@ def questions_card(entries):
     result["body"]["elements"] = [element for _, elements in cards for element in elements]
     if pending:
         result["body"]["elements"].append({"tag": "markdown", "text_size": "notation",
-            "content": "也可以直接回复这条消息，请写「#编号 答复」，例如「#42 继续」。答复保存后，会话会在下一轮接收。"})
+            "content": "请发送「#题号 答复」，例如「#42 继续」，无需引用消息。普通文字会发给当前 leader。答复保存后，会话会在下一轮接收。"})
     _card_json(result)
     return result
 
@@ -197,16 +197,19 @@ def parse_card_action(event, *, owner_id):
         return None
 
 
-def parse_text_reply(event, *, owner_id):
-    """CLI content is already decoded. Caller maps reply_to to a sent decision."""
+def parse_private_text(event, *, owner_id):
+    """Validate owner private text; preserve decoded content and an optional quote."""
     _text(owner_id, "收件人")
     if not isinstance(event, dict) or event.get("type") != MESSAGE_EVENT or event.get("sender_id") != owner_id:
         return None
     if event.get("sender_type") != "user" or event.get("chat_type") != "p2p" or event.get("message_type") != "text":
         return None
     try:
+        reply_to = event.get("reply_to")
+        if reply_to is not None:
+            _text(reply_to, "原消息")
         return {"message_id": _text(event["message_id"], "消息"), "chat_id": _text(event["chat_id"], "会话"),
-                "reply_to": _text(event["reply_to"], "原消息"), "answer": _text(event["content"], "答复")}
+                "reply_to": reply_to, "answer": _text(event["content"], "正文")}
     except (ValueError, KeyError):
         return None
 
