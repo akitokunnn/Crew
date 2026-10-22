@@ -20,10 +20,22 @@ HELP = ('/h 帮助\n/ls 所有 leader（带编号）\n/1 切换到编号 1 的 l
         '普通文字和图片发给当前 leader。/1 是 leader 编号；点按钮或引用拍板消息回复。')
 
 
+# CommonMark ignores ** that touches punctuation on its inner side and a letter on its outer side, which is
+# exactly how Chinese writes "**标题：**正文"; QQ and the web both left the asterisks visible (user 10-23).
+BOLD_PUNCT = r'‐-‧　-〿！-／：-＠［-｀｛-･.,:;!?()\[\]"\''
+BOLD_TAIL = re.compile(r'\*\*([^*\n]+?)([%s]+)\*\*(?=[^\s*%s])' % (BOLD_PUNCT, BOLD_PUNCT))
+BOLD_HEAD = re.compile(r'(?<=[^\s*%s])\*\*([%s]+)([^*\n]+?)\*\*' % (BOLD_PUNCT, BOLD_PUNCT))
+
+
+def cjk_bold(text):
+    """Move punctuation just inside ** to the outside when it would otherwise stop the bold from rendering."""
+    return BOLD_HEAD.sub(r'\1**\2**', BOLD_TAIL.sub(r'**\1**\2', text))
+
+
 def leader_parts(project, name, text):
     """Leader words as QQ Markdown: a small heading with the name, a rule, then the body (user 10-23 chose this)."""
     for number, part in enumerate(text_parts(text)):
-        yield '### %s · %s%s\n***\n%s' % (name, project, '（续）' if number else '', part)
+        yield '### %s · %s%s\n***\n%s' % (name, project, '（续）' if number else '', cjk_bold(part))
 
 
 def text_parts(text):
@@ -313,7 +325,7 @@ class Inbox:
         if not options or len(options) > 25:
             if options:
                 text += '\n\n' + '\n'.join('%s. %s' % (i + 1, option) for i, option in enumerate(options))
-            return text + '\n\n请引用这条拍板消息回复。', None
+            return cjk_bold(text) + '\n\n请引用这条拍板消息回复。', None
         ordered = sorted(enumerate(options), key=lambda pair: pair[1] != decision['recommendation'])
         buttons = [dict(id=str(index),
                         render_data=dict(label=option, visited_label='已选：' + option,
@@ -322,7 +334,7 @@ class Inbox:
                                     group_id=str(decision['id']), click_limit=1,
                                     unsupport_tips='请引用这条拍板消息回复')) for index, option in ordered]
         keyboard = dict(content=dict(rows=[dict(buttons=buttons[i:i + 5]) for i in range(0, len(buttons), 5)]))
-        return text + '\n\n点按钮或引用拍板消息回复。', keyboard
+        return cjk_bold(text) + '\n\n点按钮或引用拍板消息回复。', keyboard
 
     def receive(self, kind, event):
         try:

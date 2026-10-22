@@ -65,6 +65,25 @@ def buttons(message):
     return [b for row in message['keyboard']['content']['rows'] for b in row['buttons']]
 
 
+class CjkBoldTests(unittest.TestCase):
+    def test_punctuation_inside_bold_moves_out_only_where_bold_would_fail(self):
+        cases = [
+            ("**要你拍板：**本地分支删不删。", "**要你拍板**：本地分支删不删。"),
+            ("**复测：**用 Lightning", "**复测**：用 Lightning"),
+            ("**PR #14 合不合。**合了以后", "**PR #14 合不合**。合了以后"),
+            ("是**「重点」**吧", "是「**重点**」吧"),
+            ("**正常加粗** 后面", "**正常加粗** 后面"),
+            ("**结尾：**", "**结尾：**"),
+            ("a **b** c", "a **b** c"),
+            ("**v1.2**版本", "**v1.2**版本"),
+            ("**标题:**正文", "**标题**:正文"),
+            ("- **#8 串行锁默认开还是关。**PR 里写的是待定。", "- **#8 串行锁默认开还是关**。PR 里写的是待定。"),
+        ]
+        for given, want in cases:
+            with self.subTest(given=given):
+                self.assertEqual(notifications.cjk_bold(given), want)
+
+
 class NotificationTests(ShellFixture, unittest.TestCase):
     def setUp(self):
         super().setUp()
