@@ -167,7 +167,7 @@ svg.i.xs{width:12px;height:12px}
 .dc-top .q{font-weight:500;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dc.open .dc-top .q{white-space:normal}
 .dc-top .from{font-size:12px;color:var(--text-3);flex:none}
-.dc-top .recp{font-size:11px;color:var(--accent);background:var(--accent-soft);padding:1px 8px;border-radius:999px;flex:none}
+.dc-top .recp{font-size:11px;color:var(--accent);background:var(--accent-soft);padding:1px 8px;border-radius:999px;flex:0 1 auto;max-width:38%;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dc.open .dc-top .recp{display:none}
 .dc-top .chev{color:var(--text-3);transition:transform .2s var(--ease)}
 .dc.open .dc-top .chev{transform:rotate(90deg)}
