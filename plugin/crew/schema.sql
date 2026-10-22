@@ -93,6 +93,34 @@ CREATE TABLE IF NOT EXISTS notification_replies (
     created_at TEXT NOT NULL
 );
 
+-- The task card a session writes when it is adopted: its area and when it counts as done. sessions.task stays "what now".
+CREATE TABLE IF NOT EXISTS session_cards (
+    session_id TEXT PRIMARY KEY REFERENCES sessions(session_id),
+    scope      TEXT,
+    done_when  TEXT,
+    updated_at TEXT NOT NULL
+);
+
+-- How far the human has read each web chat journal (leaders). Drives unread counts and the "since you left" divider.
+CREATE TABLE IF NOT EXISTS read_cursors (
+    session_id TEXT PRIMARY KEY,
+    seq        INTEGER NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+-- Things Crew itself must tell a leader (an answer saved on the web or Feishu, a member adopted into its group).
+-- The web service writes them into the leader's input once it is idle; the leader relays to members with SendMessage.
+CREATE TABLE IF NOT EXISTS leader_notices (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    project    TEXT NOT NULL,
+    session_id TEXT NOT NULL,              -- the leader
+    source     TEXT NOT NULL CHECK (source IN ('web', 'feishu', 'crew')),
+    text       TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    sent_at    TEXT
+);
+CREATE INDEX IF NOT EXISTS leader_notices_pending ON leader_notices (session_id, sent_at);
+
 CREATE TABLE IF NOT EXISTS resources (
     project      TEXT NOT NULL,
     name         TEXT NOT NULL,
