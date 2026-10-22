@@ -298,7 +298,7 @@ class Service:
                         asker = board.session(conn, decision['session_id'])
                         leader = asker if asker['role'] == 'leader' else board.leader_of(conn, asker['session_id'])
                         result['decisions'].append({**{key: decision[key] for key in (
-                            'id', 'session_id', 'question', 'options', 'recommendation', 'blocking', 'created_at')},
+                            'id', 'session_id', 'question', 'options', 'recommendation', 'blocking', 'created_at', 'held', 'held_at')},
                             'asker': asker['crew_name'], 'leader_session_id': leader['session_id'] if leader else None})
                 tasks = usage.codex_tasks(conn, None, None, project=name)
                 reports, leases, claims = board.reports(conn, name), board.leases(conn, name), board.claims(conn, name)
@@ -316,7 +316,7 @@ class Service:
                             last_seq=events[-1]['seq'] if events else 0, read_seq=read_seq,
                             last_reply_id=next((e['id'] for e in reversed(events) if e['type'] == 'assistant'), None),
                             unread=len({e['id'] for e in events if e['type'] == 'assistant' and e['seq'] > read_seq}),
-                            pending=sum(d['leader_session_id'] == sid for d in result['decisions']),
+                            pending=sum(d['leader_session_id'] == sid and not d['held'] for d in result['decisions']),
                             notices_pending=len(board.pending_notices(conn, sid)),
                             member_ids=[s['session_id'] for s in sessions if s['role'] != 'leader' and s['crew_name']
                                         and member_leaders[s['session_id']] is not None
@@ -355,6 +355,16 @@ class Service:
             codex = dict(used_percent=latest['used_percent'], resets_at=latest['resets_at'], captured_at=latest['ts'], expired=False)
         return {'claude': claude_limits.read(self.home, cache_path=self.claude_root.parent.parent / '.claude.json', now=self.now()),
                 'codex': codex}
+
+    def decision_participants(self, conn, decision):
+        asker = board.session(conn, decision['session_id'])
+        leader = asker if asker['role'] == 'leader' else board.leader_of(conn, asker['session_id'])
+        with self.agents_lock:
+            if self.agents_error is None:
+                live = board.live_sessions(self.agents)
+                if asker['session_id'] in live:
+                    asker['cc_name'] = live[asker['session_id']]['name']
+        return asker, leader
 
     def post(self, path, data, project_name=None):
         if not isinstance(data, dict):
@@ -407,26 +417,34 @@ class Service:
                     return session_ops.undo(conn, target['session_id'], data['before'], now=now)
                 if path == '/api/session/stop':
                     return self.chat.interrupt(target['session_id'])
-            if path == "/api/answer":
+            if path in ("/api/answer", "/api/decision/hold", "/api/decision/unhold"):
                 if type(data.get("id")) is not int:
                     raise ValueError("id \u5fc5\u987b\u662f\u6574\u6570")
-                decision = conn.execute("SELECT project FROM decisions WHERE id=?", (data["id"],)).fetchone()
-                if decision is not None and decision["project"] != project:
+                decision = conn.execute("SELECT * FROM decisions WHERE id=?", (data["id"],)).fetchone()
+                if decision is None:
+                    raise board.BoardError("待拍板不存在: " + str(data["id"]))
+                if decision["project"] != project:
                     raise board.BoardError("待拍板不属于当前项目")
+                if path == "/api/decision/unhold":
+                    board.unhold(conn, data["id"], now=now)
+                    return {"ok": True}
+                if path == "/api/decision/hold":
+                    if board.hold(conn, data["id"], now=now):
+                        asker, leader = self.decision_participants(conn, decision)
+                        if leader is not None:
+                            notice = ('拍板 #%s：%s（SendMessage 地址：%s）\n问题：%s\n'
+                                      '用户挂起了，暂时不拍。请用 SendMessage 告诉提问的组员：'
+                                      '不卡流程的按推荐继续；卡流程的先做别的，先别再问这道题。' %
+                                      (data['id'], asker['crew_name'], asker['cc_name'], decision['question']))
+                            board.queue_leader_notice(conn, leader['session_id'], notice, 'web', now=now)
+                    return {"ok": True}
                 text = _text(data, 'text')
                 board.answer(conn, data["id"], text, board.HUMAN, now=now)
-                answered = conn.execute('SELECT * FROM decisions WHERE id=?', (data['id'],)).fetchone()
-                asker = board.session(conn, answered['session_id'])
-                leader = asker if asker['role'] == 'leader' else board.leader_of(conn, asker['session_id'])
+                asker, leader = self.decision_participants(conn, decision)
                 if leader is not None:
-                    with self.agents_lock:
-                        if self.agents_error is None:
-                            live = board.live_sessions(self.agents)
-                            if asker['session_id'] in live:
-                                asker['cc_name'] = live[asker['session_id']]['name']
                     notice = ('拍板 #%s：%s（SendMessage 地址：%s）\n问题：%s\n答复：%s\n'
                               '请马上用 SendMessage 转告并叫它继续' %
-                              (data['id'], asker['crew_name'], asker['cc_name'], answered['question'], text))
+                              (data['id'], asker['crew_name'], asker['cc_name'], decision['question'], text))
                     board.queue_leader_notice(conn, leader['session_id'], notice, 'web', now=now)
                 return {"ok": True, 'routed_to': leader['crew_name'] if leader else None}
             if path in ("/api/open", "/api/open/continue"):
@@ -563,6 +581,7 @@ class Service:
 POST_PATHS = {"/api/project/init", "/api/open", "/api/open/continue", "/api/answer", "/api/spawn", "/api/leader", "/api/roster/move", "/api/roster/remove", "/api/group/close", "/api/roster/adopt", "/api/chat/send", '/api/chat/read'}
 POST_PATHS.update('/api/session/' + action for action in ('rename', 'archive', 'remove', 'restore', 'undo', 'stop'))
 POST_PATHS.update(('/api/attention/dismiss', '/api/notifications/away'))
+POST_PATHS.update(('/api/decision/hold', '/api/decision/unhold'))
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"),
           "/sounds.js": ("sounds.js", "text/javascript; charset=utf-8"),
           "/style.css": ("style.css", "text/css; charset=utf-8"), "/chat.js": ("chat.js", "text/javascript; charset=utf-8"),

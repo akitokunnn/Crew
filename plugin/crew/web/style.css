@@ -159,18 +159,24 @@ svg.i.xs{width:12px;height:12px}
 
 /* tray */
 .tray{flex:none;border-bottom:1px solid var(--line);background:var(--bg);box-shadow:0 6px 14px -12px rgba(30,25,10,.25);position:relative;z-index:1}
-.tray-in{max-width:808px;margin:0 auto;padding:10px 24px 12px}
+.tray-in{max-width:808px;max-height:52vh;overflow:auto;margin:0 auto;padding:10px 24px 12px}
 .tray-head{display:flex;align-items:center;gap:8px;font-size:calc(12.5px * var(--fs));color:var(--warn);font-weight:500;cursor:pointer;user-select:none;width:fit-content;padding:2px 0}
 .tray-head .chev{transition:transform .2s var(--ease)}
-.tray.collapsed .tray-head .chev{transform:rotate(-90deg)}
-.tray.collapsed .tray-list{display:none}
-.tray-list{display:flex;flex-direction:column;gap:6px;margin-top:8px;max-height:46vh;overflow:auto}
+.tray-pending.collapsed>.tray-head .chev,.held-group.collapsed>.held-head .chev{transform:rotate(-90deg)}
+.tray-pending.collapsed>.tray-list,.held-group.collapsed>.held-list{display:none}
+.tray-list{display:flex;flex-direction:column;gap:6px;margin-top:8px}
 /* Cards clip their own overflow, so as flex items they would shrink and overlap instead of scrolling. */
 .tray-list>.dc{flex:none}
+.tray-in>.held-group:not(:first-child){margin-top:10px;padding-top:8px;border-top:1px solid var(--line)}
+.held-group>.held-head{color:var(--text-3)}
+.held-list{margin-top:8px}
 
 /* decision card */
 .dc{border:1px solid var(--warn-line);background:var(--surface);border-radius:14px;overflow:hidden;transition:border-color .2s,opacity .3s}
+.dc.held{border-color:var(--line-strong)}
+.dc-head{display:flex;align-items:center}
 .dc-top{display:flex;align-items:center;gap:10px;padding:10px 14px;cursor:pointer}
+.dc-hold{flex:none;margin-right:10px;padding:4px 8px;font-size:calc(12px * var(--fs));color:var(--text-3)}
 .dc-top .q{font-weight:500;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dc.open .dc-top .q{white-space:normal}
 .dc-top .from{font-size:calc(12px * var(--fs));color:var(--text-3);flex:none}
@@ -480,7 +486,7 @@ button.tool.indent,button.mline.indent{width:calc(100% - 42px)}
 .composer textarea:focus-visible{outline:none}
 .btn:disabled,.opt:disabled{opacity:.45}
 .btn.danger,.danger-text{color:var(--danger)}
-.dc-top{width:100%;border:0;background:transparent;text-align:left}
+.dc-top{flex:1;min-width:0;border:0;background:transparent;text-align:left}
 .tray-head{border:0;background:transparent;width:100%;text-align:left}
 .card-back.show{background:transparent}
 .card{max-width:calc(100vw - 20px)}

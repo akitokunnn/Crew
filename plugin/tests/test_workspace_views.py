@@ -170,6 +170,20 @@ class WorkspaceViewsTests(UsageFixture, unittest.TestCase):
         self.assertFalse(any(i["kind"] == "waiting" and i["session_id"] == "alpha-main" for i in after_answer["attention"]),
                          "An answer awaiting the next turn must not immediately ask the user again")
 
+    def test_held_question_suppresses_both_decision_and_duplicate_waiting_attention(self):
+        board.set_status(self.conn, "alpha-main", "waiting", "等待拍板", now=NOW)
+        decision = board.ask(self.conn, "alpha-main", "稍后再定", blocking=True, now=NOW)
+        board.hold(self.conn, decision, now=NOW)
+        state = self.state("alpha")
+        self.assertEqual([(row["id"], row["held"]) for row in state["decisions"]], [(decision, True)])
+        self.assertEqual(state["leaders"][0]["pending"], 0)
+        self.assertFalse(any(row["session_id"] == "alpha-main" for row in state["attention"]))
+        board.unhold(self.conn, decision, now=NOW)
+        state = self.state("alpha")
+        self.assertEqual(state["leaders"][0]["pending"], 1)
+        self.assertEqual([(row["id"], row["kind"]) for row in state["attention"]],
+                         [("decision:" + str(decision), "decision")])
+
     def test_usage_and_csv_switch_workspace_machine_while_quotas_remain_account_wide(self):
         for sid, cwd in (("alpha-main", self.alpha), ("unregistered-alpha", self.alpha / "src"),
                          ("beta-main", self.beta), ("outside", self.root / "outside")):

@@ -173,6 +173,11 @@ CREATE TABLE IF NOT EXISTS decisions (
     delivered_at    TEXT                   -- when the answer was injected into the asking session
 );
 
+CREATE TABLE IF NOT EXISTS decision_holds (
+    decision_id INTEGER PRIMARY KEY REFERENCES decisions(id),
+    held_at     TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS handoffs (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     project       TEXT NOT NULL,

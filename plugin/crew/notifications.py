@@ -16,7 +16,7 @@ TEXT_LIMIT = 2000  # 10-23 实测 5000 字也能发；2000 一段是为了手机
 LOG = logging.getLogger(__name__)
 
 HELP = ('/h 帮助\n/ls 所有 leader（带编号）\n/1 切换到编号 1 的 leader，/2 以此类推\n'
-        '/q 所有项目的待拍板\n/back 我回来了\n'
+        '/q 所有项目未挂起的待拍板\n/back 我回来了\n'
         '普通文字和图片发给当前 leader。/1 是 leader 编号；点按钮或引用拍板消息回复。')
 
 
@@ -226,7 +226,7 @@ class Inbox:
                 leader = self._leader(conn, item['session_id'])
                 label = leader['crew_name'] or '未命名会话'
                 decision = next((d for d in board.decisions(conn, item['project'], all=True)
-                                 if d['id'] == item.get('decision_id') and d['status'] == 'open'), None)
+                                 if d['id'] == item.get('decision_id') and d['status'] == 'open' and not d['held']), None)
                 if item['kind'] == 'decision' and decision is None:
                     continue
                 entry = dict(item=item, decision=decision, workspace=item['project'], leader=label,
@@ -429,7 +429,9 @@ class Inbox:
                 state = board.status(conn, project, identities)
                 states.update((s['session_id'], s['status']) for s in [*state['ungrouped'], *(s for g in state['groups'] for s in g['members'])])
             pending = {}
-            for decision in conn.execute("SELECT session_id FROM decisions WHERE status='open'"):
+            for decision in conn.execute("SELECT d.session_id FROM decisions d "
+                                         "LEFT JOIN decision_holds h ON h.decision_id=d.id "
+                                         "WHERE d.status='open' AND h.decision_id IS NULL"):
                 asker = board.session(conn, decision['session_id'])
                 leader = asker if asker['role'] == 'leader' else board.leader_of(conn, asker['session_id'])
                 if leader is not None:
@@ -464,8 +466,12 @@ class Inbox:
 
     def show_questions(self, conn, identity):
         entries = []
+        held_count = 0
         for project in board.projects(conn):
             for decision in board.decisions(conn, project['name']):
+                if decision['held']:
+                    held_count += 1
+                    continue
                 asker = board.session(conn, decision['session_id'])
                 leader = asker if asker['role'] == 'leader' else board.leader_of(conn, asker['session_id'])
                 label = leader['crew_name'] if leader is not None else '无leader'
@@ -476,9 +482,11 @@ class Inbox:
             self.record_message(conn, key, entry, 'query', self.service.now().isoformat())
             self.deliver(conn, [key], self.client.send_markdown, *self.question_message(entry))
         if not entries:
-            self.send_text('当前没有未答拍板。')
+            self.send_text('当前没有未挂起的待拍板。')
         elif len(entries) > 10:
             self.send_text('本次只显示前 10 道，剩余 %s 道未答拍板。' % (len(entries) - 10))
+        if held_count:
+            self.send_text('另有 %s 道挂起。' % held_count)
 
     def save_answer(self, conn, decision, answer, identity):
         if decision['status'] != 'open':

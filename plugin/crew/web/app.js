@@ -11,7 +11,7 @@
   const waitingSounds = new Map();
   let fontScale = 1;
   const FONT_MIN = .9, FONT_MAX = 1.4;
-  const decisionsOpen = new Set(), usageCollapsed = new Set(), adoptForms = new Map(), adopted = new Map(), operationIds = new Set();
+  const decisionsOpen = new Set(), heldExpanded = new Set(), usageCollapsed = new Set(), adoptForms = new Map(), adopted = new Map(), operationIds = new Set();
   const colors = ["#3E7C74", "#8A5A7E", "#A07A3A", "#4F6B8F", "#5E7F55", "#A8604F", "#8C7650", "#5C5F9E", "#A35D6A", "#4F7A8C", "#77773F"];
   const statusText = {working:"在干活", waiting:"等你", idle:"空闲", offline:"离线", closed:"已归档"};
   const paths = {
@@ -45,7 +45,8 @@
   const leader = id => state.leaders.find(item => item.session_id === id);
   const member = id => state.members.find(item => item.session_id === id);
   const membersOf = id => state.members.filter(item => item.leader_session_id === id);
-  const pendingOf = id => state.decisions.filter(item => item.leader_session_id === id || item.session_id === id);
+  const decisionsOf = id => state.decisions.filter(item => item.leader_session_id === id || item.session_id === id);
+  const pendingOf = id => decisionsOf(id).filter(item => !item.held);
   function queryPath(path) { const url = new URL(path, location.origin); if (project !== null) url.searchParams.set("project", project); return url.pathname + url.search; }
   async function api(path, data) {
     const sentAfter = path === "/api/chat/send" ? leader(data.session_id).last_seq : null;
@@ -69,10 +70,10 @@
     const focusForm = focused?.form;
     const selection = focused && "selectionStart" in focused ? [focused.selectionStart, focused.selectionEnd] : null;
     const values = new Map(Array.from(node.querySelectorAll("[data-preserve]")).filter(item => "value" in item).map(item => [item.dataset.preserve, item.value]));
-    const scroll = Array.from(node.querySelectorAll(".page,.card-body,.tree,.tray-list")).map(item => [item.className, item.scrollTop]);
+    const scroll = Array.from(node.querySelectorAll(".page,.card-body,.tree,.tray-in")).map(item => [item.className, item.scrollTop]);
     node.innerHTML = html; node.dataset.render = html;
     for (const item of node.querySelectorAll("[data-preserve]")) if (values.has(item.dataset.preserve) && "value" in item) item.value = values.get(item.dataset.preserve);
-    for (const [name, top] of scroll) { const item = Array.from(node.querySelectorAll(".page,.card-body,.tree,.tray-list")).find(item => item.className === name); if (item) item.scrollTop = top; }
+    for (const [name, top] of scroll) { const item = Array.from(node.querySelectorAll(".page,.card-body,.tree,.tray-in")).find(item => item.className === name); if (item) item.scrollTop = top; }
     if (focusKey !== undefined) { const item = Array.from(node.querySelectorAll("[data-preserve]")).find(item => item.dataset.preserve === focusKey); if (item) { item.focus({preventScroll:true}); if (selection) item.setSelectionRange(...selection); } }
     else if (focused !== null) {
       const item = Array.from(node.querySelectorAll(focused.tagName)).find(item => item.id === focused.id && item.getAttribute("name") === focused.getAttribute("name") && item.getAttribute("type") === focused.getAttribute("type") && Object.entries(focusData).every(([key, value]) => item.dataset[key] === value) && (focusForm === null || focusForm === undefined || item.form !== null && item.form.id === focusForm.id && Object.entries(focusForm.dataset).every(([key, value]) => item.form.dataset[key] === value)));
@@ -108,8 +109,13 @@
   }
   function decisionCard(item) {
     const opened = decisionsOpen.has(item.id);
-    return `<div class="dc ${opened ? "open" : ""}" data-dc="${item.id}"><button class="dc-top" data-act="decision-toggle" data-id="${item.id}" aria-expanded="${opened}">${av(item.asker, 22, true)}<span class="q">${esc(item.question)}</span><span class="from">${esc(item.asker)}</span>${item.recommendation === null || item.recommendation === "" ? "" : `<span class="recp">推荐 ${esc(item.recommendation)}</span>`}<span class="chev">${ic("right", "sm")}</span></button>
+    return `<div class="dc ${opened ? "open" : ""} ${item.held ? "held" : ""}" data-dc="${item.id}"><div class="dc-head"><button class="dc-top" data-act="decision-toggle" data-id="${item.id}" aria-expanded="${opened}">${av(item.asker, 22, true)}<span class="q">${esc(item.question)}</span><span class="from">${esc(item.asker)}</span>${item.recommendation === null || item.recommendation === "" ? "" : `<span class="recp">推荐 ${esc(item.recommendation)}</span>`}<span class="chev">${ic("right", "sm")}</span></button><button class="btn ghost dc-hold" data-act="${item.held ? "decision-unhold" : "decision-hold"}" data-id="${item.id}">${item.held ? "取消挂起" : "挂起"}</button></div>
       <div class="dc-body"><div class="opts">${item.options.map((option, index) => { const key = String.fromCharCode(65 + index), recommended = item.recommendation === key || item.recommendation === option; return `<button class="opt" data-act="answer-option" data-id="${item.id}" data-option="${index}"><span class="k">${key}</span><span class="t">${esc(option.replace(/^[A-Z][.、．]\s*/, ""))}</span>${recommended ? '<span class="rec">推荐</span>' : ""}</button>`; }).join("")}</div><form class="free" data-answer-form="${item.id}"><input data-preserve="answer-${item.id}" name="answer" placeholder="或者直接说你的想法，回车发送" required aria-label="答复 ${esc(item.asker)}"><button class="icon-btn" type="submit" title="发送答复">${ic("check", "sm")}</button></form></div></div>`;
+  }
+  function heldGroup(items, context) {
+    if (items.length === 0) return "";
+    const expanded = heldExpanded.has(context);
+    return `<section class="held-group ${context === "all" ? "ov-group" : ""} ${expanded ? "" : "collapsed"}" data-holds="${context}"><button class="tray-head held-head" data-act="holds" data-context="${context}" aria-expanded="${expanded}" aria-controls="held-list-${context}">${ic("down", "sm chev")}挂起 · ${items.length}</button><div class="${context === "tray" ? "tray-list" : "ov-list"} held-list" id="held-list-${context}">${items.map(decisionCard).join("")}</div></section>`;
   }
   function codexMarkup(item, cls = "cx") {
     const running = item.status === "running";
@@ -130,7 +136,7 @@
     $("rp-scrim").classList.toggle("show", rightOpen);
   }
   function renderChat() {
-    const item = readOnlyId === null ? leader(leaderId) : member(readOnlyId), group = leader(leaderId), members = membersOf(leaderId), pending = pendingOf(leaderId);
+    const item = readOnlyId === null ? leader(leaderId) : member(readOnlyId), group = leader(leaderId), members = membersOf(leaderId), pending = pendingOf(leaderId), held = decisionsOf(leaderId).filter(item => item.held);
     const identity = `${readOnlyId === null ? "leader" : "history"}:${item.session_id}`;
     if (mountedChat !== identity) {
       CrewChat.unmount();
@@ -140,12 +146,12 @@
       CrewChat.mount({host:$("chat-host"), session:item, readonly:readOnlyId !== null, state, api, toast});
     }
     replace($("chat-head"), `<div class="head">${av(item.name, 34)}<div class="heading-meta"><div class="title">${esc(item.name)}${readOnlyId === null ? "" : " · 对话记录"}</div><div class="sub"><span>${esc(readOnlyId === null ? item.goal : `归 ${item.group} · 只读`)}</span>${group === undefined ? "" : `<span class="sep"></span><span>${members.length} 个下属 · ${members.filter(item => item.status === "working").length} 个在干活</span>`}</div></div><div class="right">${readOnlyId === null ? "" : group === undefined ? '<button class="btn ghost" data-act="view" data-view="all">回到全部</button>' : `<button class="btn ghost" data-act="leader" data-id="${esc(leaderId)}">回到 leader</button>`}${group === undefined ? "" : `<button class="icon-btn rp-toggle" data-act="right-open" title="本组架构图" aria-label="本组架构图">${ic("grid")}</button>`}</div></div>`);
-    replace($("decision-tray"), readOnlyId !== null || pending.length === 0 ? "" : `<div class="tray ${trayCollapsed ? "collapsed" : ""}"><div class="tray-in"><button class="tray-head" data-act="tray" aria-expanded="${!trayCollapsed}">${ic("down", "sm chev")}等你拍板 · ${pending.length}</button><div class="tray-list">${pending.map(decisionCard).join("")}</div></div></div>`);
+    replace($("decision-tray"), readOnlyId !== null || pending.length + held.length === 0 ? "" : `<div class="tray"><div class="tray-in">${pending.length === 0 ? "" : `<section class="tray-pending ${trayCollapsed ? "collapsed" : ""}"><button class="tray-head" data-act="tray" aria-expanded="${!trayCollapsed}">${ic("down", "sm chev")}等你拍板 · ${pending.length}</button><div class="tray-list">${pending.map(decisionCard).join("")}</div></section>`}${heldGroup(held, "tray")}</div></div>`);
     CrewChat.update(state);
   }
   function empty(message) { return `<div class="empty">${ic("check")}<div>${message}</div></div>`; }
   function renderAll() {
-    const working = state.members.filter(item => item.status === "working"), pending = state.decisions;
+    const working = state.members.filter(item => item.status === "working"), pending = state.decisions.filter(item => !item.held), held = state.decisions.filter(item => item.held);
     const chip = (tab, icon, label, amount) => `<button class="pill tab ${allTab === tab ? "on" : ""}" data-act="all-tab" data-tab="${tab}">${icon}${amount === null ? "" : `<b>${amount}</b>`}${label}</button>`;
     let body;
     if (allTab === "tree") body = state.leaders.length === 0 ? `<div class="empty">${ic("grid")}<div>还没有 leader。先起一个 leader，再把 VS Code 里聊清楚的会话收编进它的组。</div><div class="empty-acts"><button class="btn primary" data-act="modal-leader">${ic("plus", "sm")}起 leader</button><button class="btn" data-act="view" data-view="adopt">${ic("inbox", "sm")}去待收编</button></div></div>` : `<div class="lead-grid">${state.leaders.map(item => `<div class="lead-col">${leaderNode(item, true)}<div class="members">${membersOf(item.session_id).map(memberNode).join("")}</div></div>`).join("")}</div>`;
@@ -154,7 +160,8 @@
       body = state.leaders.map(item => { const list = pendingOf(item.session_id); list.forEach(item => grouped.add(item.id)); return list.length === 0 ? "" : `<section class="ov-group"><div class="ov-head">${av(item.name, 26)}<span class="ov-name">${esc(item.name)}</span><span class="ov-count">${list.length} 件</span><button class="btn ghost ov-go" data-act="leader" data-id="${esc(item.session_id)}">进入对话 ${ic("right", "sm")}</button></div><div class="ov-list">${list.map(decisionCard).join("")}</div></section>`; }).join("");
       const ungrouped = pending.filter(item => !grouped.has(item.id));
       if (ungrouped.length > 0) body += `<section class="ov-group"><div class="ov-head"><span class="ov-name">未分组</span><span class="ov-count">${ungrouped.length} 件</span></div><div class="ov-list">${ungrouped.map(decisionCard).join("")}</div></section>`;
-      if (pending.length === 0) body = empty("没有等你拍板的事");
+      if (pending.length === 0 && held.length === 0) body = empty("没有等你拍板的事");
+      body += heldGroup(held, "all");
     } else body = working.length === 0 ? empty("没有正在干活的下属") : `<div class="list">${working.map(item => { return `<button class="li click" data-act="card" data-id="${esc(item.session_id)}">${av(item.name, 32, true)}<span class="grow"><span class="ttl">${esc(item.name)} <span class="where">${ic(item.where === "bg" ? "cloud" : "code", "xs")}</span><span class="li-sub">归 ${esc(item.group)}</span></span><span class="li-now">${item.task === null ? "还没写" : esc(item.task)}</span><span class="sm">${item.codex.filter(item => item.status === "running").map(item => `<span>${ic("bolt", "xs")} ${esc(item.task_name)} · <span class="spin" style="width:9px;height:9px;display:inline-block"></span> ${Math.floor((Date.now() - new Date(item.started_at)) / 60000)} 分钟</span>`).join("")}</span></span>${st(item.status)}</button>`; }).join("")}</div>`;
     replace($("main"), `<div class="head big"><div><div class="title">全部</div><div class="sub">${esc(state.project.name)} 的 ${state.leaders.length} 个 leader，${state.members.length} 个下属</div></div></div><div class="page"><div class="page-in"><div class="summary">${chip("tree", ic("grid", "sm"), "架构图", null)}${chip("pending", '<i class="dot waiting"></i>', " 件等你拍板", pending.length)}${chip("working", '<i class="dot working"></i>', " 个在干活", working.length)}<button class="pill tab" data-act="view" data-view="adopt">${ic("inbox", "sm")}<b>${state.candidates.running.length}</b> 个会话待收编 ${ic("right", "xs")}</button></div>${body}</div></div>`);
   }
@@ -268,7 +275,7 @@
   function render() {
     $("app").classList.toggle("wide", view !== "chat" || leaderId === null); renderSidebar();
     if (view === "chat") renderChat(); else { if (mountedChat !== null) { CrewChat.unmount(); mountedChat = null; } if (view === "all") renderAll(); if (view === "adopt") renderAdopt(); if (view === "usage") renderUsage(); }
-    renderRight(); renderCard(); document.title = `(${state.decisions.length}) ${state.project.name} · Crew`;
+    renderRight(); renderCard(); document.title = `(${state.decisions.filter(item => !item.held).length}) ${state.project.name} · Crew`;
   }
   function watchingChat(id) {
     return view === "chat" && readOnlyId === null && leaderId === id && document.visibilityState === "visible" && document.hasFocus() &&
@@ -276,7 +283,7 @@
       !(rightOpen && window.matchMedia("(max-width:1023px)").matches);
   }
   function notifySounds(previous, fresh, requestedGeneration) {
-    const decisions = state.decisions.filter(item => !previous.decisions.some(old => old.id === item.id));
+    const decisions = state.decisions.filter(item => !item.held && !previous.decisions.some(old => old.id === item.id));
     const errors = state.attention.filter(item => item.kind === "session_error" && !previous.attention.some(old => old.id === item.id));
     const completed = new Set();
     for (const [id, waiting] of waitingSounds) {
@@ -340,7 +347,9 @@
       else if (act === "card") openCard(id);
       else if (act === "card-close") closeCard();
       else if (act === "tray") { trayCollapsed = !trayCollapsed; renderChat(); }
+      else if (act === "holds") { const context = button.dataset.context; if (heldExpanded.has(context)) heldExpanded.delete(context); else heldExpanded.add(context); if (view === "chat") renderChat(); else renderAll(); }
       else if (act === "decision-toggle") { const key = Number(id); if (decisionsOpen.has(key)) decisionsOpen.delete(key); else decisionsOpen.add(key); if (view === "chat") renderChat(); else renderAll(); }
+      else if (act === "decision-hold" || act === "decision-unhold") action(`hold:${id}`, async () => { const held = act === "decision-hold"; await api(`/api/decision/${held ? "hold" : "unhold"}`, {id:Number(id)}); await loadState(true); toast(held ? "已挂起，暂时不拍" : "已取消挂起，放回待拍板"); });
       else if (act === "answer-option") action(`answer:${id}`, () => answer(Number(id), state.decisions.find(item => item.id === Number(id)).options[Number(button.dataset.option)]));
       else if (act === "away") action("away", async () => { await api("/api/notifications/away", {away:!state.notification.manual_away}); await loadState(true); });
       else if (act === "theme") { theme = {system:"light", light:"dark", dark:"system"}[theme]; applyTheme(); try { localStorage.setItem("crew.theme", theme); } catch (error) { toast(error.message); } renderSidebar(); }

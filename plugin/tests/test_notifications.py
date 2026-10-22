@@ -230,6 +230,13 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         self.assertRegex(text, r'待拍板\s*1')
         self.assertEqual(board.read_seq(self.conn, 's3'), 0)
 
+    def test_list_pending_decisions_excludes_held_questions(self):
+        board.ask(self.conn, 's1', '现在要拍板', ['A'], now=NOW)
+        held = board.ask(self.conn, 's1', '可以稍后拍板', ['B'], now=NOW)
+        board.hold(self.conn, held, now=NOW)
+        self.receive('/ls')
+        self.assertRegex(self.client.sent[-1]['text'], r'待拍板\s*1')
+
     def test_numbering_initial_order_uses_project_time_name_session_time_and_id(self):
         self.conn.execute("UPDATE projects SET created_at='2026-10-21T09:00:00.000Z' WHERE name='demo'")
         for project in ('beta', 'alpha'):
@@ -352,8 +359,51 @@ class NotificationTests(ShellFixture, unittest.TestCase):
 
     def test_query_with_no_open_questions_is_a_command_reply(self):
         self.receive('/q')
-        self.assertIn('没有未答拍板', self.client.sent[-1]['text'])
+        self.assertIn('没有未挂起的待拍板', self.client.sent[-1]['text'])
         self.assertEqual(self.replies(), [])
+
+    def test_query_skips_held_questions_and_reports_held_count_across_projects(self):
+        active = board.ask(self.conn, 's1', '现在要拍板', ['A'], now=NOW)
+        first = board.ask(self.conn, 's1', '本项目留着', ['B'], now=NOW)
+        self.add_leader('other-lead', project='other')
+        second = board.ask(self.conn, 'other-lead', '另一项目留着', ['C'], now=NOW)
+        for identity in (first, second):
+            board.hold(self.conn, identity, now=NOW)
+        self.receive('/q')
+        self.assertEqual([m['kind'] for m in self.client.sent], ['markdown', 'text'])
+        self.assertIn('#%s' % active, self.client.sent[0]['text'])
+        self.assertEqual(self.client.sent[-1]['text'], '另有 2 道挂起。')
+        self.assertEqual([r[0] for r in self.conn.execute(
+            "SELECT decision_id FROM notification_messages WHERE kind='query'")], [active])
+
+    def test_query_with_only_held_questions_reports_no_active_questions_and_held_count(self):
+        identity = board.ask(self.conn, 's1', '暂时不拍', ['A'], now=NOW)
+        board.hold(self.conn, identity, now=NOW)
+        self.receive('/q')
+        self.assertEqual([m['kind'] for m in self.client.sent], ['text', 'text'])
+        self.assertIn('没有未挂起的待拍板', self.client.sent[0]['text'])
+        self.assertEqual(self.client.sent[-1]['text'], '另有 1 道挂起。')
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM notification_messages').fetchone()[0], 0)
+
+    def test_manual_away_push_skips_held_questions(self):
+        active = board.ask(self.conn, 's1', '现在要拍板', ['A'], now=NOW)
+        held = board.ask(self.conn, 's1', '暂时不拍', ['B'], now=NOW)
+        board.hold(self.conn, held, now=NOW)
+        self.push()
+        self.assertEqual([m['kind'] for m in self.client.sent], ['markdown'])
+        self.assertIn('#%s' % active, self.client.sent[0]['text'])
+        self.assertEqual([r[0] for r in self.conn.execute(
+            'SELECT decision_id FROM notification_messages')], [active])
+
+    def test_flush_skips_question_held_after_it_entered_the_batch(self):
+        identity = board.ask(self.conn, 's1', '先进入批次再挂起', ['A'], now=NOW)
+        self.locked = True
+        self.inbox.tick()
+        self.assertIn('decision:%s' % identity, self.inbox.pending)
+        board.hold(self.conn, identity, now=NOW)
+        self.inbox.flush()
+        self.assertEqual(self.client.sent, [])
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM notification_messages').fetchone()[0], 0)
 
     def test_presence_batches_notes_but_sends_each_question_once_with_single_choice_buttons(self):
         first = board.ask(self.conn, 's1', '先做哪一个', ['A', 'B'], 'B', True, now=NOW)

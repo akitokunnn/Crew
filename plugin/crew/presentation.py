@@ -11,7 +11,7 @@ def attention(conn, sessions, decisions, tasks, journals):
             continue
         if d['status'] == 'open' or (d['status'] == 'answered' and not d['delivered_at']):
             asking.add(d['session_id'])
-        if d['status'] != 'open':
+        if d['status'] != 'open' or d['held']:
             continue
         items.append(dict(id='decision:' + str(d['id']), kind='decision', priority=0 if d['blocking'] else 3,
                           session_id=d['session_id'], decision_id=d['id'], title=d['question'],

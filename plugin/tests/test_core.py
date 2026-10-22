@@ -336,6 +336,65 @@ class ClaimTests(CoreCase):
                 self.assertEqual(board.patterns_overlap(b, a), expected)
 
 
+class DecisionHoldTests(CoreCase):
+    def test_hold_preserves_open_question_and_member_board_count(self):
+        decision = board.ask(self.conn, "s1", "later?", ["a", "b"], "a", True, now=NOW)
+        self.assertTrue(board.hold(self.conn, decision, now=NOW))
+        saved = board.decisions(self.conn, "demo")[0]
+        self.assertEqual((saved["status"], saved["held"], saved["held_at"]), ("open", True, NOW))
+        self.assertEqual((saved["options"], saved["recommendation"], saved["blocking"]), (["a", "b"], "a", 1))
+        self.assertEqual(board.status(self.conn, "demo", self.agents)["open_decisions"], 1)
+        self.assertEqual(board.deliver(self.conn, "s1", now=NOW)["answers"], [])
+
+    def test_repeated_hold_preserves_first_timestamp_and_event(self):
+        decision = board.ask(self.conn, "s1", "later?", now=NOW)
+        self.assertTrue(board.hold(self.conn, decision, now=NOW))
+        self.assertFalse(board.hold(self.conn, decision, now="2026-10-21T09:00:00.000Z"))
+        self.assertEqual(board.decisions(self.conn, "demo")[0]["held_at"], NOW)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM events WHERE kind='decision:hold'").fetchone()[0], 1)
+
+    def test_unhold_and_repeated_unhold_restore_active_question(self):
+        decision = board.ask(self.conn, "s1", "later?", now=NOW)
+        board.hold(self.conn, decision, now=NOW)
+        self.assertTrue(board.unhold(self.conn, decision, now=NOW))
+        self.assertFalse(board.unhold(self.conn, decision, now=NOW))
+        saved = board.decisions(self.conn, "demo")[0]
+        self.assertEqual((saved["status"], saved["held"], saved["held_at"]), ("open", False, None))
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM events WHERE kind='decision:unhold'").fetchone()[0], 1)
+
+    def test_missing_and_processed_questions_reject_hold_and_unhold(self):
+        answered = board.ask(self.conn, "s1", "answered?", now=NOW)
+        withdrawn = board.ask(self.conn, "s1", "withdrawn?", now=NOW)
+        board.answer(self.conn, answered, "a", now=NOW)
+        board.withdraw(self.conn, "s1", withdrawn, now=NOW)
+        for operation in (board.hold, board.unhold):
+            with self.subTest(operation=operation.__name__, decision="missing"):
+                with self.assertRaisesRegex(board.BoardError, "待拍板不存在"):
+                    operation(self.conn, 999, now=NOW)
+            for decision in (answered, withdrawn):
+                with self.subTest(operation=operation.__name__, decision=decision):
+                    with self.assertRaisesRegex(board.BoardError, "尚未答复"):
+                        operation(self.conn, decision, now=NOW)
+
+    def test_answer_deletes_hold_and_remains_deliverable(self):
+        decision = board.ask(self.conn, "s1", "later?", now=NOW)
+        board.hold(self.conn, decision, now=NOW)
+        board.answer(self.conn, decision, "a", now=NOW)
+        saved = board.decisions(self.conn, "demo", all=True)[0]
+        self.assertEqual((saved["status"], saved["answer"], saved["held"], saved["held_at"]),
+                         ("answered", "a", False, None))
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM decision_holds").fetchone()[0], 0)
+        self.assertEqual([row["id"] for row in board.deliver(self.conn, "s1", now=NOW)["answers"]], [decision])
+
+    def test_withdraw_deletes_hold(self):
+        decision = board.ask(self.conn, "s1", "later?", now=NOW)
+        board.hold(self.conn, decision, now=NOW)
+        board.withdraw(self.conn, "s1", decision, now=NOW)
+        saved = board.decisions(self.conn, "demo", all=True)[0]
+        self.assertEqual((saved["status"], saved["held"], saved["held_at"]), ("withdrawn", False, None))
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM decision_holds").fetchone()[0], 0)
+
+
 class DeliveryTests(CoreCase):
     def test_ask_answer_delivered_once_by_prompt(self):
         d = board.ask(self.conn, "s1", "choose?", ["a", "b"], "a", True, now=NOW)

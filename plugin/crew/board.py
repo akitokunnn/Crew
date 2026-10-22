@@ -486,10 +486,39 @@ def ask(conn, session_id, question, options=(), recommendation=None, blocking=Fa
 
 
 def decisions(conn, project_name, all=False):
-    rows = _rows(conn, "SELECT * FROM decisions WHERE project=?" + ("" if all else " AND status='open'") + " ORDER BY id", (project_name,))
+    rows = _rows(conn, "SELECT d.*,h.held_at FROM decisions d LEFT JOIN decision_holds h ON h.decision_id=d.id "
+                 "WHERE d.project=?" + ("" if all else " AND d.status='open'") + " ORDER BY d.id", (project_name,))
     for row in rows:
         row["options"] = json.loads(row["options"])
+        row["held"] = row["held_at"] is not None
     return rows
+
+
+@atomic
+def hold(conn, decision_id, actor=HUMAN, now=None):
+    d = conn.execute("SELECT * FROM decisions WHERE id=?", (decision_id,)).fetchone()
+    if d is None:
+        raise BoardError("待拍板不存在: " + str(decision_id))
+    if d["status"] != "open":
+        raise BoardError("只能挂起尚未答复的问题: " + str(decision_id))
+    changed = conn.execute("INSERT INTO decision_holds(decision_id,held_at) VALUES(?,?) "
+                           "ON CONFLICT(decision_id) DO NOTHING", (decision_id, _time(now))).rowcount > 0
+    if changed:
+        _event(conn, "decision:hold", d["project"], actor, {"id": decision_id}, now)
+    return changed
+
+
+@atomic
+def unhold(conn, decision_id, actor=HUMAN, now=None):
+    d = conn.execute("SELECT * FROM decisions WHERE id=?", (decision_id,)).fetchone()
+    if d is None:
+        raise BoardError("待拍板不存在: " + str(decision_id))
+    if d["status"] != "open":
+        raise BoardError("只能取消挂起尚未答复的问题: " + str(decision_id))
+    changed = conn.execute("DELETE FROM decision_holds WHERE decision_id=?", (decision_id,)).rowcount > 0
+    if changed:
+        _event(conn, "decision:unhold", d["project"], actor, {"id": decision_id}, now)
+    return changed
 
 
 @atomic
@@ -498,6 +527,7 @@ def answer(conn, decision_id, text, actor=HUMAN, now=None):
     if d is None or d["status"] != "open":
         raise BoardError("待拍板不存在或已处理: " + str(decision_id))
     conn.execute("UPDATE decisions SET status='answered',answer=?,answered_by=?,answered_at=? WHERE id=?", (text, actor, _time(now), decision_id))
+    conn.execute("DELETE FROM decision_holds WHERE decision_id=?", (decision_id,))
     _event(conn, "decision:answer", d["project"], actor, {"id": decision_id, "answer": text}, now)
 
 
@@ -506,6 +536,7 @@ def withdraw(conn, session_id, decision_id, now=None):
     s = session(conn, session_id)
     if conn.execute("UPDATE decisions SET status='withdrawn' WHERE id=? AND session_id=? AND status='open'", (decision_id, session_id)).rowcount == 0:
         raise BoardError("只能撤回自己尚未答复的问题")
+    conn.execute("DELETE FROM decision_holds WHERE decision_id=?", (decision_id,))
     _event(conn, "decision:withdraw", s["project"], session_id, {"id": decision_id}, now)
 
 
