@@ -2,12 +2,13 @@
 
 让一个人同时指挥很多个 Claude Code 会话。
 
-- 每个会话管一个领域（雷达、视觉、声纹……），自己当主控、派 Codex 干活、自己验收提交。
-- **leader** 会话管一个分组：派活、转达、仲裁设备和文件归属、收集要你拍板的事、汇总进展。leader 可以同时有好几个，各管一组。
+- 你先在 VS Code 里和会话聊需求；聊清楚了，这个会话就负责一块范围（雷达、视觉、声纹……），自己派 Codex 干活、自己验收。
+- 用 **leader** 管一组会话，像公司里的 CEO：下属有事报给它，它当中转站——能定的自己定，需要别人知道的转给相关的人，剩下的攒成待拍板等你。leader 可以同时有好几个，各管一组；leader 自己不写代码。
 - 所有会话共用一块**白板**：谁在做什么、谁在等你、设备谁借着、文件归谁、待拍板、交接、日报、用量。
 - **守卫**在任何权限模式下都会拦三类事：黑名单上的操作、别人借着的设备、别人宣布归属的文件。所以可以放心开全放行，夜里不会卡在确认框上。
-- **网页工作区**先列待处理，再看 leader、成员和 Codex 的关系图。导航只有总览、会话、用量；点会话继续聊天，报告、交接、借还和派活放在同一条活动时间线。新成员和 leader 都在网页后台运行，需要时再转到 VS Code。
-- **用量分析**：把 Claude 会话、子 agent、Codex 的 token 用量按会话、分组、天、模型汇总，并按 API 价折算成金额。
+- **网页**主要用来和 leader 聊天：左栏是 leader 列表，中间是对话（待拍板卡片置顶），右栏是这一组的架构图，点下属看它的任务卡。下属不在网页上聊，直接去 VS Code。
+- **飞书**：离开电脑时待拍板推到飞书私聊，用 `/ls`、`/1` 这样的命令切换 leader 直接聊。
+- **用量分析**：把 Claude 会话、子 agent、Codex 的 token 用量按 leader → 下属 → Codex、天、模型汇总，并按 API 价折算成金额。
 
 设计细节和取舍见 [docs/DESIGN.md](docs/DESIGN.md)，完整页面流程和状态说明见 [docs/WEB_UX.md](docs/WEB_UX.md)。
 
@@ -31,31 +32,23 @@
 
 | 想做的事 | 怎么做 |
 |---|---|
-| 让已经开着的会话加入 | 网页“会话”的“可加入”列表里点“加入 Crew”，起名字、选分组；也可以在那个会话里执行 `crew join 雷达 --task "..."` |
-| 开一个 leader 管一组 | 先运行 `crew web --open`，在网页点“组建协作组”，可混选已登记成员和发现的会话；命令行也可用 `crew leader start --name 感知 --members 雷达,视觉 --task "<这一组的目标>"` |
-| 开一个新会话干活 | 网页点“新组员”；也可在网页服务运行时用 `crew spawn --name 姿势 --group 感知 --task "<任务>"`，需要独立 worktree 时加 `--new-worktree feature/pose` |
-| 在 VS Code 接着聊 | 会话详情或对话页点“VS Code”，也可用 `crew open <名字>`；先开对应目录，确认窗口就绪后再继续打开会话 |
-| 进入网页工作区 | `crew web --open`；按当前目录打开固定工作区网页，后台已有服务时直接复用 |
-| 看谁在干什么 | `crew status` |
-| 回答待拍板 | 网页上直接答，或 `crew decisions` 再 `crew answer <编号> "<答复>"`；提问的会话下一轮开始时会收到 |
-| 看用量 | `crew usage summary`、`crew usage sessions`、`crew usage codex`，或网页的用量页 |
-| 收掉一组 | 网页“管理协作组”选择归档组和会话，或解散分组并保留会话；命令行可用 `crew leader close 感知 --with-members` |
+| 打开网页 | `crew web --open`：按当前目录打开这个项目的页面（一个项目一个标签页），后台已有服务时直接复用 |
+| 起一个 leader | 网页左栏"起 leader"：起名 + 一句它要管什么；命令行 `crew leader start --name 感知 --task "<这一组的目标>"` |
+| 把 VS Code 里的会话收编进组 | 在那个会话里说"收编到感知"，它会 `crew join` 写好任务卡并通知 leader；或者在网页"待收编"里点它、起名、选 leader |
+| 和 leader 聊 | 网页点左栏的 leader；离开电脑时在飞书私聊里 `/ls` 看编号、`/1` 切过去直接说 |
+| 回答待拍板 | 网页对话顶部的卡片、"全部 → 等你拍板"，或飞书里 `#题号 答复`；答完 leader 会去叫醒提问的下属 |
+| 看某个下属 | 网页右栏点它：负责范围、在做什么、最近进展、Codex、设备和文件；要聊就点"在 VS Code 打开" |
+| 开一个新下属 | 让 leader 开（它不用你批准）；或命令行 `crew spawn --name 姿势 --group 感知 --task "<任务>"`，需要独立 worktree 时加 `--new-worktree feature/pose` |
+| 下属跑歪了 | 卡片上"停下这一轮"（只对网页后台运行的下属有效；开在 VS Code 里的去那边停） |
+| 收尾 | 在 VS Code 里归档会话，Crew 跟着归档；或者卡片上"归档"（可撤销）。leader 发现下属做完了也会问你要不要归档 |
+| 看谁在干什么 | 网页"全部"，或 `crew status` |
+| 看用量 | 网页"用量"，或 `crew usage summary`、`crew usage sessions`、`crew usage codex` |
 
-工作区侧栏保留当前项目未归档的会话，包括可恢复的网页会话；“会话管理”可按待收编、网页、VS Code、已归档或全部筛选。归档后的历史仍可查看，输入改为只读。`crew status` 的终端摘要只展开在线和近期离线会话，其余计数。
+网页"待收编"和 VS Code 的会话列表一致：正在运行的直接列，没在运行也没归档的折叠在"展开 N 个"里，退了组的单独一组。在 VS Code 里取消归档，Crew 不跟着恢复，要恢复就在网页上操作。
 
-“待收编”包含当前项目下尚未登记、或已经由钩子登记但还没有协作名字的活会话，标题取 Claude 会话记录里最新的 `ai-title`。收编不必重开会话；还没加载 Crew 钩子的会话，状态先按 Claude 的 busy / idle 显示，SendMessage 地址也直接取活会话列表。
+leader 等你回话时，网页会响一声短提示音，标签标题显示待拍板数。锁屏或打开"我已离开"时，待拍板推到飞书。飞书的命令和配置见 [docs/FEISHU.md](docs/FEISHU.md)；leader 巡查目前只按需（你问它才去查），候选场景见 [docs/PATROL.md](docs/PATROL.md)。
 
-一个工作区一个固定网页，标签标题与顶部都写清名字；页面内不切项目，切换工作区另开标签页。各会话的输入草稿与阅读位置会在本机浏览器保留，切换会话或刷新后可继续。大屏同时显示对话和组内上下文，窄屏通过导航和“组员与拍板”抽屉查看。
-
-网页服务会在后台保持新成员和 leader 的 Claude CLI 进程。浏览器刷新只重读聊天记录，不会重启会话；网页服务重启后，下一次发言会恢复原会话 ID。若这个 ID 已在 VS Code 或其他进程中运行，网页会拒绝双开。会话回复时先等这一轮结束再发送；组员消息会自动进入对话。网页服务退出时只关闭自己启动的会话的输入，让进程正常结束。
-
-转到 VS Code 分两步：先打开会话所在的项目目录，等窗口就绪并确认目录正确，再点“窗口已就绪，继续打开”。这时才结束空闲的网页或终端会话，续上原来的会话 ID；取消会保留原会话。正在干活时不能转移，VS Code 里的会话不会被关闭。
-
-会话行和标题旁的操作菜单可直接改名、归档、移出 Crew、退组和恢复。可恢复的整理操作提供撤销；移出后不会被后续打卡自动加回。`Ctrl+K` 快速找会话。用量默认当前工作区，可明确切全机；Claude 5 小时 / 每周与 Codex 每周额度并排显示，标注账户范围和采集时间。
-
-飞书通知、文字答复和登录自启见 [docs/FEISHU.md](docs/FEISHU.md)。leader 巡查仍只讨论，候选场景见 [docs/PATROL.md](docs/PATROL.md)。卡片按钮需要应用启用对应回调；不会自动替用户开公司权限。
-
-会话里的守则在技能里：成员是 `/crew:member`，leader 是 `/crew:leader`。会话启动时 Crew 会告诉它是谁、归哪个 leader、怎么调命令。
+会话里的守则在技能里：成员是 `/crew:member`，leader 是 `/crew:leader`。会话启动时 Crew 会告诉它是谁、归哪个 leader、怎么调命令；还没收编的会话不会被要求自己登记。
 
 ## 命令速查
 
@@ -63,7 +56,7 @@
 |---|---|
 | `crew init` / `crew projects` | 启用项目 / 列项目 |
 | `crew resource add\|list\|rm` | 共享资源，`--guard` 正则让守卫拦住非借用人 |
-| `crew join <名字>` / `crew whoami` / `crew task "<一句话>"` | 认领名字 / 我是谁 / 在做什么 |
+| `crew join <名字> [--group G] [--scope S] [--done-when D]` / `crew whoami` / `crew task "<一句话>"` / `crew card --scope S --done-when D` | 收编进组并写任务卡 / 我是谁 / 现在在做什么 / 改负责范围和完成标准 |
 | `crew status` / `crew who <名字>` | 总览 / 某个会话的详情和发消息地址 |
 | `crew lease take <资源> --for "<用途>"` / `crew lease give <资源> --note "<现状>"` / `crew lease list` | 借 / 还 / 列表 |
 | `crew claim <路径>` / `crew unclaim <路径>` / `crew claims` | 宣布文件归属（目录以 `/` 结尾） |
@@ -106,6 +99,8 @@
 | `~/.crew/crew.py`、`~/.crew/bin/crew.cmd` | 命令行启动器（每次会话启动时刷新） |
 | `~/.crew/spawn/` | crew 开会话时的任务文件 |
 | `~/.crew/chat/<会话ID>.jsonl` | 网页聊天记录，刷新和重启后重放；不保存思考内容 |
+| `~/.crew/chat/files/<会话ID>/` | 发给 leader 的截图 |
+| `~/.crew/feishu.json` | 飞书收件人、离开状态、当前 leader 与 leader 编号 |
 | `~/.crew/web.json` | 正在运行的网页服务地址，供 `spawn` 和 `leader start` 连接，支持自定义端口 |
 | `~/.crew/codex_runs.jsonl` | 派活记录 |
 
@@ -114,13 +109,18 @@
 - 从本地目录装的插件，**运行时直接用仓库里 `plugin/` 这份代码**（不另拷一份）。改 Python 代码对之后的每次钩子调用立刻生效；改了钩子注册、技能、角色定义，要在会话里 `/reload-plugins` 或重开会话。
 - 所以**不要在主检出里直接改代码**：在 `Temp/wt/<名字>` 开 worktree 改，测试通过再合进 main。主检出里的代码一旦出错，所有会话的钩子都会跟着出错。
 - 这是单人本机工具，优先保持代码直白、少配置；测试用临时白板，不随意关闭用户正在使用的会话或窗口。提交信息用中文说明改了什么、为什么，不加署名行。
-- 跑测试：`cd plugin` 后执行 `python -m unittest discover -s tests -v`。
+- 跑测试：`cd plugin` 后执行 `python -m unittest discover -s tests -v`。在 Claude 会话里跑时先清掉环境变量 `CLAUDE_CODE_SESSION_ID`（PowerShell：`Remove-Item Env:CLAUDE_CODE_SESSION_ID`），否则两个命令行测试会拿到外层会话的 ID 而失败。
 - Python 后端只用标准库；网页是原生 JS，Markdown 用仓库内的 markdown-it 15.0.2，不需要构建步骤。
 - 成员和网页 leader 都用 PATH 里的 `claude`（npm 全局安装的命令行版），它的版本可能比 VS Code 扩展里带的旧。旧版本可能缺跨会话消息等功能，要定期 `npm install -g @anthropic-ai/claude-code@latest`。
 
 ## 已知限制
 
-- 待拍板的答复在提问的会话**下一轮开始时**才送到；会话空着时不会被网页叫醒。要立刻生效，就让 leader 用 SendMessage 通知它。
+- 开在 VS Code 里的下属，网页只能看状态和卡片，不能发消息、也停不下它正在跑的一轮。
+- 没在运行的下属被收编后，要等你下次在 VS Code 里和它说话，它才知道自己归谁；leader 的欢迎消息也要等它上线。
+- leader 叫醒下属靠会话间消息。两个会话的权限模式不一样时（比如一个全放行、一个逐条确认），消息会被扣住等对方的人批准；协作的会话统一用全放行（`/crew:trust`）。`crew spawn` / `crew leader start` 开的会话都是全放行。
 - 已经开着的会话要 `/reload-plugins` 或重开，才会加载插件的钩子和守卫；网页收编会登记身份，不会替它加载插件。
-- 两个会话的权限模式不一样时（比如一个全放行、一个逐条确认），SendMessage 发过去会被扣住，等对方那边的人点批准，没人批过一阵就作废。协作的会话统一用全放行（`/crew:trust`）。`crew spawn` / `crew leader start` 开的会话都是全放行。
-- 飞书卡片按钮尚需在开放平台启用回调；VS Code / 终端 leader 的文字来信先以交接送达下一轮。QQ 暂未接入，优先级最低。
+- 飞书卡片按钮尚需在开放平台启用回调；现在用 `#题号 答复` 回答。QQ 暂未接入，优先级最低。
+
+## 字体
+
+网页界面使用华为 HarmonyOS Sans SC 字体（常规、中等两个字重），按其许可证原样随插件分发，许可证在 `plugin/crew/web/fonts/HarmonyOS_Sans_LICENSE.txt`。
