@@ -100,15 +100,15 @@ class VSCodeServiceTests(unittest.TestCase):
         return {key: {item["session_id"] for item in items}
                 for key, items in self.candidates(project).items()}
 
-    def test_until_first_success_only_running_sessions_including_running_left_are_visible(self):
-        running, offline, live_left, offline_left = [identity(i) for i in range(1, 5)]
-        for sid in (running, offline, live_left, offline_left):
+    def test_until_first_success_only_running_sessions_including_named_candidates_are_visible(self):
+        running, offline, named_running, named_offline = [identity(i) for i in range(1, 5)]
+        for sid in (running, offline, named_running, named_offline):
             self.record(sid)
-        self.register(live_left, "live-left")
-        self.register(offline_left, "offline-left")
-        self.agents[:] = [self.agent(running), self.agent(live_left)]
+        self.register(named_running, "named-running")
+        self.register(named_offline, "named-offline")
+        self.agents[:] = [self.agent(running), self.agent(named_running)]
         self.service.refresh_agents()
-        expected = {"running": {running}, "others": set(), "left": {live_left}}
+        expected = {"running": {running, named_running}, "others": set()}
         self.assertEqual(self.ids(), expected)
         self.assertEqual(self.service.state()["vscode_error"], "还没读到 VS Code 会话列表")
         with closing(sqlite3.connect(self.state_db)) as conn:
@@ -121,7 +121,7 @@ class VSCodeServiceTests(unittest.TestCase):
         self.assertIn("KeyError", error)
         self.hidden([])
         self.service._refresh_vscode()
-        self.assertEqual(self.ids(), {"running": {running}, "others": {offline}, "left": {live_left, offline_left}})
+        self.assertEqual(self.ids(), {"running": {running, named_running}, "others": {offline, named_offline}})
         self.assertIsNone(self.service.state()["vscode_error"])
 
     def test_failed_archive_reads_keep_last_successful_hidden_set_and_expose_reason(self):
@@ -141,7 +141,7 @@ class VSCodeServiceTests(unittest.TestCase):
                     conn.commit()
                 self.service._refresh_vscode()
                 self.assertEqual(self.service.vscode_hidden_ids, {hidden})
-                self.assertEqual(self.ids(), {"running": set(), "others": {visible}, "left": set()})
+                self.assertEqual(self.ids(), {"running": set(), "others": {visible}})
                 self.assertIn(error_type + ":", self.service.state()["vscode_error"])
         self.state_db.unlink()
         self.service._refresh_vscode()
@@ -150,14 +150,14 @@ class VSCodeServiceTests(unittest.TestCase):
         self.assertEqual(self.ids()["others"], {visible})
         self.assertIn("OperationalError:", self.service.state()["vscode_error"])
 
-    def test_candidates_have_three_groups_and_exclude_closed_grouped_leader_and_archived(self):
-        running, older, newer, live_left, offline_left, grouped, leader, closed, closed_unnamed, archived, removed, hidden, unnamed = [identity(i) for i in range(1, 14)]
-        for i, sid in enumerate((running, older, newer, live_left, offline_left, grouped, leader,
+    def test_candidates_have_two_groups_and_exclude_closed_grouped_leader_and_archived(self):
+        running, older, newer, named_running, named_offline, grouped, leader, closed, closed_unnamed, archived, removed, hidden, unnamed = [identity(i) for i in range(1, 14)]
+        for i, sid in enumerate((running, older, newer, named_running, named_offline, grouped, leader,
                                  closed, closed_unnamed, archived, removed, hidden, unnamed), 1):
             self.record(sid, mtime=i * 100)
         self.register(leader, "lead", role="leader")
         self.register(grouped, "grouped", group_name="lead")
-        for sid, name in ((live_left, "live-left"), (offline_left, "offline-left"),
+        for sid, name in ((named_running, "named-running"), (named_offline, "named-offline"),
                           (closed, "closed"), (archived, "archived"), (removed, "removed")):
             self.register(sid, name)
         self.register(closed_unnamed)
@@ -169,23 +169,63 @@ class VSCodeServiceTests(unittest.TestCase):
         session_ops.archive(self.conn, removed, removed=True, now=NOW)
         self.hidden([hidden])
         self.agents[:] = [self.agent(sid, status="busy") for sid in
-                         (running, live_left, grouped, leader, closed, closed_unnamed, archived, removed, hidden, unnamed)]
+                         (running, named_running, grouped, leader, closed, closed_unnamed, archived, removed, hidden, unnamed)]
         self.refresh()
-        self.assertEqual(self.ids(), {"running": {running, unnamed}, "others": {older, newer},
-                                     "left": {live_left, offline_left}})
+        self.assertEqual(self.ids(), {"running": {running, unnamed, named_running}, "others": {older, newer, named_offline}})
         candidates = self.candidates()
-        self.assertEqual([item["session_id"] for item in candidates["others"]], [newer, older])
+        self.assertEqual([item["session_id"] for item in candidates["others"]], [named_offline, newer, older])
         fields = {"session_id", "title", "cwd", "rel_dir", "last_active", "running", "status", "crew_name", "group"}
         for items in candidates.values():
             for candidate in items:
                 self.assertEqual(set(candidate), fields)
                 self.assertEqual(candidate["rel_dir"], ".")
                 self.assertIsNone(candidate["group"])
-        left = {item["session_id"]: item for item in candidates["left"]}
-        self.assertEqual((left[live_left]["running"], left[live_left]["status"]), (True, "working"))
-        self.assertEqual((left[offline_left]["running"], left[offline_left]["status"]), (False, "offline"))
+        named = {item["session_id"]: item for items in candidates.values() for item in items if item["crew_name"]}
+        self.assertEqual((named[named_running]["running"], named[named_running]["status"]), (True, "working"))
+        self.assertEqual((named[named_offline]["running"], named[named_offline]["status"]), (False, "offline"))
         with self.assertRaisesRegex(board.BoardError, "待收编列表"):
             self.service.candidate(self.conn, "alpha", closed)
+
+    def test_named_ungrouped_candidates_keep_names_by_running_state_and_are_not_members(self):
+        running, offline = identity(1), identity(2)
+        for sid, name in ((running, "running-name"), (offline, "offline-name")):
+            self.record(sid)
+            self.register(sid, name)
+        self.agents[:] = [self.agent(running, status="busy")]
+        self.refresh()
+
+        state = self.service.state("alpha")
+
+        self.assertEqual(set(state["candidates"]), {"running", "others"})
+        self.assertEqual([(item["session_id"], item["crew_name"], item["status"])
+                          for item in state["candidates"]["running"]], [(running, "running-name", "working")])
+        self.assertEqual([(item["session_id"], item["crew_name"], item["status"])
+                          for item in state["candidates"]["others"]], [(offline, "offline-name", "offline")])
+        self.assertEqual(state["members"], [])
+
+    def test_roster_remove_keeps_name_and_returns_to_candidate_bucket_without_member(self):
+        leader = identity(10)
+        self.register(leader, "lead", role="leader")
+        for number, running in enumerate((False, True), 1):
+            with self.subTest(running=running):
+                sid, name = identity(number), "member-%s" % number
+                self.record(sid)
+                self.register(sid, name, group_name="lead")
+                self.agents[:] = [self.agent(sid)] if running else []
+                self.refresh()
+                before = self.service.state("alpha")
+                self.assertIn(sid, {item["session_id"] for item in before["members"]})
+                self.assertIn(sid, before["leaders"][0]["member_ids"])
+
+                result = self.service.post("/api/roster/remove", {"session_id": sid, "group": "lead"}, "alpha")
+                state = self.service.state("alpha")
+
+                self.assertEqual((result["session"]["crew_name"], result["session"]["group_name"]), (name, None))
+                self.assertNotIn(sid, {item["session_id"] for item in state["members"]})
+                self.assertNotIn(sid, state["leaders"][0]["member_ids"])
+                bucket = "running" if running else "others"
+                candidate = next(item for item in state["candidates"][bucket] if item["session_id"] == sid)
+                self.assertEqual((candidate["crew_name"], candidate["running"]), (name, running))
 
     def test_live_recordless_agents_merge_but_filtered_transcripts_cannot_reenter(self):
         excluded = []
@@ -205,7 +245,7 @@ class VSCodeServiceTests(unittest.TestCase):
         self.hidden([hidden_recordless])
         self.agents[:] = [self.agent(sid) for sid in [*excluded, crew_web, recordless, hidden_recordless]]
         self.refresh()
-        self.assertEqual(self.ids(), {"running": {crew_web, recordless}, "others": set(), "left": set()})
+        self.assertEqual(self.ids(), {"running": {crew_web, recordless}, "others": set()})
         recordless_candidate = self.service.candidate(self.conn, "alpha", recordless)
         self.assertEqual(recordless_candidate["title"], "cc-" + recordless)
         self.assertTrue(recordless_candidate["running"])
@@ -220,7 +260,7 @@ class VSCodeServiceTests(unittest.TestCase):
         self.assertEqual((result["cwd"], result["worktree"], result["branch"]),
                          (store.norm_path(self.alpha), store.norm_path(self.alpha), "main"))
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM leader_notices").fetchone()[0], 0)
-        self.assertEqual(self.ids()["left"], {sid})
+        self.assertEqual(self.ids()["others"], {sid})
 
     def test_adoption_into_group_without_leader_does_not_queue_notice(self):
         sid = identity(1)
@@ -230,7 +270,7 @@ class VSCodeServiceTests(unittest.TestCase):
         result = self.service.post("/api/roster/adopt", {"session_id": sid, "name": "member", "group": "empty-group"}, "alpha")
         self.assertEqual((result["group_name"], result["cc_name"]), ("empty-group", None))
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM leader_notices").fetchone()[0], 0)
-        self.assertEqual(self.ids(), {"running": set(), "others": set(), "left": set()})
+        self.assertEqual(self.ids(), {"running": set(), "others": set()})
 
     def test_adoption_into_leader_group_queues_one_exact_crew_notice_with_live_address_only(self):
         leader = identity(10)
@@ -254,7 +294,7 @@ class VSCodeServiceTests(unittest.TestCase):
                 self.assertEqual((notice["project"], notice["session_id"], notice["source"], notice["created_at"], notice["sent_at"]),
                                  ("alpha", leader, "crew", NOW, None))
 
-    def test_left_adoption_uses_exact_existing_id_without_registering_or_losing_metadata(self):
+    def test_named_candidate_adoption_uses_exact_existing_id_without_registering_or_losing_metadata(self):
         sid, homonym = identity(1), identity(2)
         self.record(sid)
         self.register(sid, "same", entrypoint="original-entrypoint", permission_mode="plan")
@@ -278,7 +318,7 @@ class VSCodeServiceTests(unittest.TestCase):
         event = next(event for event in board.events(self.conn, "alpha") if event["kind"] == "roster:add")
         self.assertEqual(event["detail"]["session_ids"], [sid])
 
-    def test_left_adoption_applies_requested_name_and_preserves_card_and_task(self):
+    def test_named_candidate_adoption_applies_requested_name_and_preserves_card_and_task(self):
         sid, leader = identity(1), identity(10)
         self.record(sid)
         self.register(sid, "old-name")
@@ -298,9 +338,9 @@ class VSCodeServiceTests(unittest.TestCase):
         self.assertEqual(board.card(self.conn, sid)["done_when"], "existing completion")
         self.assertEqual(session_ops.control(self.conn, sid)["name_override"], "new-name")
         self.assertTrue(board.pending_notices(self.conn, leader)[0]["text"].startswith("new-name 已收编"))
-        self.assertNotIn(sid, self.ids()["left"])
+        self.assertNotIn(sid, {candidate_id for ids in self.ids().values() for candidate_id in ids})
 
-    def test_left_adoption_invalid_destination_does_not_rename(self):
+    def test_named_candidate_adoption_invalid_destination_does_not_rename(self):
         sid = identity(1)
         self.record(sid)
         self.register(sid, "old-name")
@@ -311,7 +351,7 @@ class VSCodeServiceTests(unittest.TestCase):
         saved = board.session(self.conn, sid)
         self.assertEqual((saved["crew_name"], saved["group_name"]), ("old-name", None))
 
-    def test_left_adoption_conflicting_name_does_not_join_group(self):
+    def test_named_candidate_adoption_conflicting_name_does_not_join_group(self):
         sid = identity(1)
         self.record(sid)
         self.register(sid, "old-name")
@@ -340,9 +380,9 @@ class VSCodeServiceTests(unittest.TestCase):
         self.register(wrong_owner, "foreign", project="beta", root=beta)
         self.agents[:] = [self.agent(live_a), self.agent(live_b, cwd=beta), self.agent(live_n, cwd=nested)]
         self.refresh()
-        self.assertEqual(self.ids("alpha"), {"running": {live_a}, "others": {a}, "left": set()})
-        self.assertEqual(self.ids("beta"), {"running": {live_b}, "others": {b}, "left": set()})
-        self.assertEqual(self.ids("nested"), {"running": {live_n}, "others": {n}, "left": set()})
+        self.assertEqual(self.ids("alpha"), {"running": {live_a}, "others": {a}})
+        self.assertEqual(self.ids("beta"), {"running": {live_b}, "others": {b}})
+        self.assertEqual(self.ids("nested"), {"running": {live_n}, "others": {n}})
         with self.assertRaisesRegex(board.BoardError, "待收编列表"):
             self.service.post("/api/roster/adopt", {"session_id": b, "name": "wrong-project"}, "alpha")
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM sessions WHERE session_id=?", (b,)).fetchone()[0], 0)
@@ -415,7 +455,7 @@ class VSCodeServiceTests(unittest.TestCase):
         self.assertEqual(self.service.vscode_hidden_ids, set())
         self.assertEqual(session_ops.snapshot(self.conn, sid), archived)
         self.assertTrue(board.is_archived(self.conn, sid))
-        self.assertEqual(self.ids(), {"running": set(), "others": set(), "left": set()})
+        self.assertEqual(self.ids(), {"running": set(), "others": set()})
         self.assertEqual(self.state_db.read_bytes(), state_after_unarchive)
         events = [event for event in board.events(self.conn) if event["kind"] == "vscode:archived"]
         self.assertEqual(len(events), 1)

@@ -201,7 +201,7 @@ class Service:
             if project is not None and project["name"] == project_name:
                 sources[sid] = {"session_id": sid, "title": agent["name"], "cwd": agent["cwd"],
                                 "mtime": agent["startedAt"] / 1000 if agent.get("startedAt") is not None else None}
-        result = {"running": [], "others": [], "left": []}
+        result = {"running": [], "others": []}
         for sid, source in sources.items():
             if hidden is not None and sid in hidden:
                 continue
@@ -220,7 +220,7 @@ class Service:
                                          if source["mtime"] is not None else None),
                          "running": running, "status": ("working" if live[sid]["status"] == "busy" else "idle") if running else "offline",
                          "crew_name": crew_name, "group": session["group_name"] if session is not None else None}
-            result["left" if crew_name else "running" if running else "others"].append(candidate)
+            result["running" if running else "others"].append(candidate)
         result["others"].sort(key=lambda candidate: (candidate["last_active"], candidate["session_id"]), reverse=True)
         return result
 
@@ -266,7 +266,7 @@ class Service:
             result = {'project': None, 'projects': [{'name': p['name']} for p in board.projects(conn)],
                       'now': self.now().isoformat(), 'agents_error': error, 'notification': self.notification_status(),
                       'leaders': [], 'members': [], 'decisions': [], 'attention': [],
-                      'candidates': {'running': [], 'others': [], 'left': []},
+                      'candidates': {'running': [], 'others': []},
                       'limits': self.limits(conn)}
             result['vscode_error'] = self.vscode_error
             if project_name is not None:
@@ -275,6 +275,7 @@ class Service:
                 identities = [{"sessionId": s["session_id"]} for s in board.sessions(conn, name)] if error else agents
                 status = board.status(conn, name, identities)
                 result['project'] = {key: status['project'][key] for key in ('name', 'root')}
+                open_groups = {group['name'] for group in status['groups'] if group['closed_at'] is None}
                 removed = {r[0] for r in conn.execute('SELECT session_id FROM session_controls WHERE removed=1')}
                 sessions = [s for s in [*status['ungrouped'], *(s for group in status['groups'] for s in group['members'])]
                             if s['session_id'] not in removed and s['status'] != 'closed']
@@ -320,7 +321,7 @@ class Service:
                             member_ids=[s['session_id'] for s in sessions if s['role'] != 'leader' and s['crew_name']
                                         and member_leaders[s['session_id']] is not None
                                         and member_leaders[s['session_id']]['session_id'] == sid]))
-                    elif session['crew_name']:
+                    elif session['crew_name'] and session['group_name'] in open_groups:
                         leader = member_leaders[sid]
                         card = board.card(conn, sid)
                         own_tasks = [t for t in tasks if t['session_id'] == sid]

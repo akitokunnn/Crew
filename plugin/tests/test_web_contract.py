@@ -93,6 +93,8 @@ class WebContractTests(ShellFixture, unittest.TestCase):
             self.assertEqual(landing[key], [])
 
     def test_members_project_cards_recent_progress_codex_and_three_locations(self):
+        board.ensure_spawn_group(self.conn, "demo", "without-leader", now=NOW)
+        board.roster(self.conn, "demo", "add", "without-leader", session_ids=["s2"], now=NOW)
         board.set_card(self.conn, "s1", "Backend", "Tests pass", now=NOW)
         board.add_resource(self.conn, "demo", "phone", now=NOW)
         board.take(self.conn, "s1", "phone", "Review", now=NOW)
@@ -148,8 +150,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         board.close_group(self.conn, "demo", "lead", with_members=False, now=NOW)
         state = self.state()
         self.assertEqual(state["leaders"][0]["member_ids"], [])
-        self.assertEqual({row["session_id"] for row in state["members"]}, {"s1", "s2"})
-        self.assertTrue(all(row["leader_session_id"] is None for row in state["members"]))
+        self.assertEqual(state["members"], [])
 
     def test_leader_unread_deduplicates_updates_and_respects_read_cursor(self):
         journal = self.service.chat.journal("s3")
