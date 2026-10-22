@@ -677,12 +677,55 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         self.inbox.process_replies()
         self.assertEqual(len(self.client.sent), 2)
         text = self.client.sent[-1]['text']
-        self.assertTrue(text.startswith('demo·lead\n'))
+        self.assertEqual(self.client.sent[-1]['kind'], 'markdown')
+        self.assertTrue(text.startswith('### lead · demo\n***\n'))
         self.assertIn('这一轮的进展', text)
         for excluded in ('旧回复', '中途回复', '网页下一轮的回复'):
             self.assertNotIn(excluded, text)
         self.inbox.process_replies()
         self.assertEqual(len(self.client.sent), 2)
+
+    def test_away_relays_each_finished_leader_turn_once_but_not_turns_started_from_qq(self):
+        manager, journal = self.web_manager()
+        manager.history.side_effect = lambda sid: dict(session_id=sid, events=journal.events, running=True, busy=False)
+
+        def turn(source, opener, closing):
+            journal.message(opener, opener, source)
+            journal.set_status('working')
+            journal.emit('assistant', id=opener + '-mid', content=[dict(type='text', text='中途的话')])
+            journal.emit('assistant', id=opener + '-end', content=[dict(type='text', text=closing)])
+            journal.set_status('idle')
+
+        turn('crew', 'before', '离开前说的')
+        self.inbox.tick()
+        self.locked = True
+        self.inbox.tick()
+        self.assertEqual(self.client.sent, [])
+        turn('crew', 'notice', '#17 已经转给雷达')
+        turn('peer', 'report', '#17 做完了')
+        journal.message('qq-1', '从 QQ 问的', 'qq')
+        journal.set_status('working')
+        journal.emit('assistant', id='qq-end', content=[dict(type='text', text='QQ 那一轮的回复')])
+        journal.set_status('idle')
+        journal.message('running', '还在跑的一轮', 'crew')
+        journal.set_status('working')
+        journal.emit('assistant', id='running-end', content=[dict(type='text', text='还没说完')])
+        self.inbox.tick()
+        self.inbox.tick()
+        self.assertEqual([(m['kind'], m['text']) for m in self.client.sent],
+                         [('markdown', '### lead · demo\n***\n#17 已经转给雷达'), ('markdown', '### lead · demo\n***\n#17 做完了')])
+        journal.set_status('idle')
+        self.inbox.tick()
+        self.assertEqual(self.client.sent[-1]['text'], '### lead · demo\n***\n还没说完')
+        self.restart()
+        self.inbox.tick()
+        self.inbox.tick()
+        self.assertEqual(len(self.client.sent), 3)
+        self.locked = False
+        self.inbox.tick()
+        turn('crew', 'back', '回来以后说的')
+        self.inbox.tick()
+        self.assertEqual(len(self.client.sent), 3)
 
     def test_long_replies_split_at_paragraphs_and_long_paragraphs_obey_limit(self):
         _, journal = self.web_manager()
@@ -696,8 +739,11 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         self.inbox.process_replies()
         messages = [m['text'] for m in self.client.sent]
         self.assertGreaterEqual(len(messages), 4)
-        self.assertTrue(all(len(text) <= notifications.TEXT_LIMIT for text in messages))
-        body = '\n\n'.join(text.removeprefix('demo·lead\n') for text in messages)
+        heads = ['### lead · demo\n***\n'] + ['### lead · demo（续）\n***\n'] * (len(messages) - 1)
+        self.assertTrue(all(text.startswith(head) for text, head in zip(messages, heads)))
+        parts = [text.removeprefix(head) for text, head in zip(messages, heads)]
+        self.assertTrue(all(len(part) <= notifications.TEXT_LIMIT for part in parts))
+        body = '\n\n'.join(parts)
         for letter, length in (('甲', 1100), ('乙', 1100), ('丙', notifications.TEXT_LIMIT + 30)):
             self.assertEqual(body.count(letter), length)
         self.assertTrue(any('甲' * 1100 in text for text in messages))
