@@ -1,52 +1,399 @@
 "use strict";
 (() => {
-  const md=window.markdownit({html:false,breaks:true});
-  const linkOpen=md.renderer.rules.link_open||((tokens,i,options,env,renderer)=>renderer.renderToken(tokens,i,options));
-  md.renderer.rules.link_open=(tokens,i,options,env,renderer)=>{tokens[i].attrSet("target","_blank");tokens[i].attrSet("rel","noopener noreferrer");return linkOpen(tokens,i,options,env,renderer);};
-  let selected=null,stream=null,messages=[],byId=new Map(),results=new Map(),cursor=0;
-  let busy=false,running=false,loading=false,generation=0,frame=null,connection="idle",restoreScroll=null,scrollTimer;
-  let logKind="",autoSelecting=false,suspendedScroll=null,errorKind=null;
-  const transfers=new Set();
-  const current=()=>allSessions().find(s=>s.session_id===selected);
-  const key=kind=>`crew.${kind}:${project||""}:${selected||""}`;
-  function saveDraft(){if(selected)localStorage.setItem(key("draft"),$("chat-input").value);}
-  function saveScroll(){if(selected&&logKind==="messages"&&activeTab==="chat"&&activeChatPane==="conversation")localStorage.setItem(key("scroll"),String($("chat-log").scrollTop));}
-  function error(text,kind="action"){if(text&&kind==="connection"&&errorKind==="action")return;errorKind=text?kind:null;$("chat-error").hidden=!text;$("chat-error").querySelector("span").textContent=text||"";$("chat-retry").hidden=kind!=="connection";}
-  function clearConnectionError(){if(errorKind==="connection")error(null);}
-  function canSend(){const s=current(),location=s&&locationOf(s);return !!s&&s.web_chat&&s.status!=="closed"&&!isRemoved(s)&&!loading&&!transfers.has(selected)&&location!=="vscode"&&location!=="terminal"&&connection!=="failed"&&connection!=="retrying"&&!(location==="unknown"&&!running&&s.status!=="offline");}
-  function status(){const s=current(),location=s&&locationOf(s),archived=s?.status==="closed",transferring=transfers.has(selected);const badge=$("chat-status");let label="未选择会话",tone="";
-    if(s){if(isRemoved(s))label="已移出 Crew · 查看历史";else if(archived)label="已归档 · 查看历史";else if(transferring){label="等待 VS Code 接续";tone="waiting";}else if(loading)label="正在读取记录…";else if(!s.web_chat)label=sourceLabel(s)+" · "+(states[s.status]||"");else if(location==="vscode"||location==="terminal")label=sourceLabel(s)+" · "+(states[s.status]||"");else if(connection==="failed"||connection==="retrying"){label="连接暂时中断";tone="waiting";}else if(busy){label="正在处理";tone="working";}else if(running)label="本轮结束 · 可继续";else label="未运行 · 可接续";}
-    badge.textContent=label;badge.className="pill "+(archived?"closed":tone);$("chat-form").hidden=activeChatPane!=="conversation"||!s?.web_chat||archived||isRemoved(s)||location==="vscode"||location==="terminal"||transferring;$("chat-input").disabled=!canSend();$("chat-send").disabled=!canSend()||busy;
-    $("chat-hint").textContent=busy?"正在处理这一轮 · 可以先写下一条草稿":!running?"发送后接续原会话 · Enter 发送":"Enter 发送 · Shift + Enter 换行";
-    $("chat-open").hidden=!s?.open||isRemoved(s);$("chat-open").dataset.open=selected||"";$("chat-open").disabled=!s?.open?.enabled||transferring||archived;$("chat-open").title=archived?"已归档，仅查看历史":s?.open?.reason||"转到 VS Code 接着聊";
-    $("chat-role").textContent=s?(s.role==="leader"?"协作组 leader":"组员 · 直接沟通"):"你的工作区";$("chat-title").textContent=s?sessionName(s):"让 leader 帮你集中推进。";$("chat-avatar").textContent=s?.role==="leader"?"L":"C";$("chat-subtitle").textContent=s?s.task||s.group_name||"独立会话 · 一件事，专注推进":"先组织已有的会话，或者开一个新的协作组。";
-    const note=$("chat-source-note");let text="";if(s&&isRemoved(s))text="已移出 Crew，原会话和历史保留。后续打卡不会自动加回，可从操作菜单重新加入。";else if(s?.status==="closed")text="已归档，历史只读。需要继续时，可从会话操作菜单恢复。";else if(s?.web_chat&&location==="vscode")text="这段对话正在 VS Code 中继续。这里保留网页聊天记录，不会显示之后在 VS Code 里新增的对话。";else if(transferring)text="已请求接续，请留意 VS Code 首次协议链接的确认。尚未检测到时，可以刷新状态后再确认运行位置。";else if(s?.web_chat&&s.role!=="leader"&&s.group_name)text="你正在直接和组员沟通。要让整组了解结果，可以请它把结论写进汇报或交接。";else if(s?.status==="closed")text="这是已归档的会话，保留历史记录；不会继续向它发送消息。";note.hidden=!text||activeChatPane!=="conversation";note.textContent=text;
-    if(transferring&&location==="offline")note.innerHTML=esc(text)+' <button class="text-button" data-resume-web>确认未在 VS Code 打开，回到网页继续</button>';
-    $("chat-footnote").textContent=s?.role==="leader"?"安排、进展和需要你拍板的事，在这一段对话里集中处理。":"本轮结束不代表任务完成，完成情况以会话汇报为准。";
-    $("conversation-tab").closest(".conversation-tabs").hidden=!s;$("session-activity").hidden=!s||activeChatPane!=="activity";$("chat-log").hidden=!!s&&activeChatPane!=="conversation";$("chat-footnote").hidden=activeChatPane!=="conversation";
+  const markdown = window.markdownit({ html: false, breaks: true });
+  const linkOpen = markdown.renderer.rules.link_open || ((tokens, index, options, env, renderer) => renderer.renderToken(tokens, index, options));
+  markdown.renderer.rules.link_open = (tokens, index, options, env, renderer) => {
+    tokens[index].attrSet("target", "_blank");
+    tokens[index].attrSet("rel", "noopener noreferrer");
+    return linkOpen(tokens, index, options, env, renderer);
+  };
+  const sessions = new Map();
+  let active = null;
+  const escape = value => String(value).replace(/[&<>"']/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]);
+  const icon = kind => {
+    const paths = {
+      up: '<path d="m5 11 7-7 7 7M12 4v16"/>',
+      down: '<path d="m5 9 7 7 7-7M12 4v12"/>',
+      image: '<rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8" cy="8" r="1.5"/><path d="m3 16 5-5 4 4 3-3 6 6"/>',
+      right: '<path d="m9 5 7 7-7 7"/>',
+      check: '<path d="m5 12 4 4L19 6"/>',
+      close: '<path d="m6 6 12 12M6 18 18 6"/>'
+    };
+    return `<svg class="i ${kind === "right" ? "xs chev" : "sm"}" viewBox="0 0 24 24" aria-hidden="true">${paths[kind]}</svg>`;
+  };
+  const current = context => active === context;
+  const atBottom = context => context.scroll.scrollHeight - context.scroll.scrollTop - context.scroll.clientHeight < 64;
+  const keyFor = context => `crew.draft:${context.state.project.name}:${context.session.session_id}`;
+  const query = context => new URLSearchParams({ project: context.state.project.name, session_id: context.session.session_id });
+
+  function nameOf(context, ccName) {
+    const person = context.state.leaders.concat(context.state.members).find(item => item.cc_name === ccName && item.name !== null);
+    return person ? person.name : ccName;
   }
-  function add(message){if(byId.has(message.id))return byId.get(message.id);messages.push(message);byId.set(message.id,message);return message;}
-  function apply(event){if(event.seq<=cursor)return;cursor=event.seq;if(event.type==="message"){add({...event});}else if(event.type==="text"){const message=add({id:event.id,role:"assistant",text:""});message.text=(message.text||"")+event.text;}else if(event.type==="assistant"){const message=add({id:event.id,role:"assistant"});message.content=event.content;message.text="";}else if(event.type==="tool_result")results.set(event.tool_use_id,event);else if(event.type==="status"){busy=event.status==="working";running=event.status!=="offline";}else if(event.type==="error")error(event.text,"session");schedule();status();}
-  function tool(block){const result=results.get(block.id),content=result?.content;const output=typeof content==="string"?content:JSON.stringify(content,null,2);return `<details class="tool-call" data-tool="${esc(block.id)}"><summary><span>${esc(block.name)}</span><small class="${result?.is_error?"tool-failed":""}">${result?result.is_error?"执行失败":"已完成":"调用中"}</small></summary><div class="tool-body"><small>参数</small><pre>${esc(JSON.stringify(block.input,null,2))}</pre>${result?`<small>结果</small><pre>${esc(output)}</pre>`:""}</div></details>`;}
-  function body(message){if(message.role==="user")return `<div class="message-text">${esc(message.text)}</div>`;const blocks=message.content||[{type:"text",text:message.text||""}];return blocks.map(block=>block.type==="text"?`<div class="markdown">${md.render(block.text)}</div>`:block.type==="tool_use"?tool(block):"").join("")+(message.content&&message.text?`<div class="markdown">${md.render(message.text)}</div>`:"");}
-  function welcome(){if(!state)return '<div class="welcome"><h2>正在读取工作区…</h2></div>';if(!state.project)return '<div class="welcome"><h2>先选择工作区</h2><p>每个工作区固定对应一个本机目录。</p><button class="primary" data-view="overview">查看工作区</button></div>';const sessions=registeredSessions().filter(s=>!isArchived(s)).sort(byRecent),count=discoveredSessions().length;return `<div class="welcome"><h2>${sessions.length?"选择一段会话":count?"把已有会话纳入协作":"新建一段会话"}</h2><p>${sessions.length?"打开会话继续沟通，或查看它的活动记录。":count?`发现 ${count} 个现有会话，可以直接选择加入。`:"交代要做的事，之后可按需要组建协作组。"}</p>${sessions.length?`<div class="welcome-actions">${sessions.slice(0,6).map(s=>`<button data-chat="${esc(s.session_id)}">${esc(sessionName(s))}</button>`).join("")}</div>`:`<button class="primary" ${count?"data-create-group":"data-create-session"}>${count?"选择会话并组建协作组":"新建会话"}</button>`}</div>`;}
-  function external(s){const location=locationOf(s),removed=isRemoved(s),archived=s.status==="closed",group=activeGroups().find(g=>g.name===s.group_name),leader=group?.members.find(m=>m.role==="leader"&&m.session_id!==s.session_id);return `<div class="external-view"><div class="eyebrow">${esc(sourceLabel(s))}</div><h2>${removed?"这段会话已移出 Crew":archived?"这段会话已归档":location==="vscode"?"在 VS Code 里继续对话":"这是一段已有的会话"}</h2><p>${removed?"原会话、历史与文件均保留，后续打卡不会自动加回。":archived?"历史保留。恢复后可继续参与协作。":needsName(s)?"起一个协作名字，就能加入 Crew。现有对话与运行位置保留。":"现有会话保留原来的运行位置。这里可查看状态与活动记录。"}</p><div class="actions">${removed||archived?`<button class="primary" data-mutate="restore" data-id="${esc(s.session_id)}">${removed?"重新加入 Crew":"恢复会话"}</button>`:needsName(s)?`<button class="primary" data-adopt="${esc(s.session_id)}">加入 Crew</button>`:""}${s.open&&!removed&&!archived?`<button class="primary" data-open="${esc(s.session_id)}" ${s.open.enabled?"":"disabled"}>在 VS Code 接续</button>`:""}${leader?`<button data-chat="${esc(leader.session_id)}">和 leader 讨论</button>`:""}<button data-chat-pane="activity">查看活动</button><button data-detail="${esc(s.session_id)}">会话详情</button></div>${s.open?.reason&&!removed&&!archived?`<p class="muted">${esc(s.open.reason)}</p>`:""}<div class="external-details"><strong>${esc(s.group_name||"独立会话")}</strong>${esc(s.task||s.title||"尚未填写任务")}</div></div>`;}
-  function render(){frame=null;if(activeTab!=="chat"||activeChatPane!=="conversation")return;const log=$("chat-log"),s=current();if(!selected||!s||!s.web_chat){const kind=selected&&s?"external:"+JSON.stringify(s):"welcome:"+Boolean(state?.project)+":"+(state?discoveredSessions().length:0);if(logKind!==kind){log.innerHTML=selected&&s?external(s):welcome();logKind=kind;log.scrollTop=0;}$("chat-latest").hidden=true;return;}
-    const follow=log.scrollHeight-log.scrollTop-log.clientHeight<90;if(logKind!=="messages"){log.innerHTML="";logKind="messages";}
-    for(const message of messages){let node=[...log.children].find(n=>n.dataset.message===message.id);if(!node){node=document.createElement("article");node.dataset.message=message.id;node.className="chat-message "+(message.role==="user"?message.source==="peer"?"peer-message":"human-message":"assistant-message");log.append(node);}const html=`<div class="message-byline">${message.role==="assistant"?`<span class="mini-avatar">${s.role==="leader"?icon("leader"):"C"}</span>${esc(sessionName(s))}`:message.source==="peer"?`<span>↳</span>${esc(message.sender||"组员")}<span class="peer-label">会话间消息</span>`:message.source==="feishu"?"你 · 来自飞书":"你"}</div>${body(message)}`;if(node.dataset.html!==html){const open=[...node.querySelectorAll("[data-tool][open]")].map(n=>n.dataset.tool);node.innerHTML=html;node.dataset.html=html;for(const detail of node.querySelectorAll("[data-tool]"))detail.open=open.includes(detail.dataset.tool);}}
-    let indicator=log.querySelector(".typing-indicator");if(busy&&!indicator){indicator=document.createElement("div");indicator.className="typing-indicator";indicator.setAttribute("aria-label","会话正在处理");indicator.innerHTML="<i></i><i></i><i></i>";log.append(indicator);}else if(!busy&&indicator)indicator.remove();else if(indicator)log.append(indicator);
-    if(restoreScroll!==null){log.scrollTop=restoreScroll==="bottom"?log.scrollHeight:Number(restoreScroll);restoreScroll=null;}else if(follow)log.scrollTop=log.scrollHeight;$("chat-latest").hidden=log.scrollHeight-log.scrollTop-log.clientHeight<90;
+  function timeOf(at) {
+    return at ? new Date(at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false }) : "";
   }
-  function schedule(){if(frame===null)frame=requestAnimationFrame(render);}
-  function update(){if(!state)return;const s=current();if(s&&locationOf(s)==="vscode")transfers.delete(s.session_id);renderContext();status();if(!s||!s.web_chat)schedule();if(!selected&&!autoSelecting&&activeTab==="chat"){const wanted=allSessions().find(s=>s.session_id===requestedChat);const last=localStorage.getItem(`crew.leader:${project}`);const leader=allSessions().find(s=>s.role==="leader"&&s.status!=="closed"&&!isRemoved(s)&&s.session_id===last)||allSessions().find(s=>s.role==="leader"&&s.status!=="closed"&&!isRemoved(s));const next=wanted||leader;requestedChat=null;if(next){autoSelecting=true;select(next.session_id,false).finally(()=>autoSelecting=false);}}}
-  async function select(id,push=true,force=false){if(!id)return;if(!allSessions().some(s=>s.session_id===id)){notice("这段会话不在当前工作区中，请刷新后再试。");return;}if(selected===id&&!force){setTab("chat",push);closeSidebar();return;}clearTimeout(scrollTimer);saveDraft();saveScroll();stream?.close();stream=null;selected=id;messages=[];byId=new Map();results=new Map();cursor=0;busy=false;running=false;loading=false;connection="idle";logKind="";suspendedScroll=null;const token=++generation;const s=current();setChatPane("conversation");$("chat-input").value=localStorage.getItem(key("draft"))||"";error(null);setTab("chat",push);renderDirectory();renderContext();if(s?.role==="leader")localStorage.setItem(`crew.leader:${project}`,id);if(!s?.web_chat){status();schedule();return;}
-    loading=true;connection="connecting";status();schedule();try{const params=new URLSearchParams({session_id:id});if(project)params.set("project",project);const data=await request("/api/chat/history?"+params);if(token!==generation)return;for(const event of data.events)apply(event);busy=data.busy;running=data.running;restoreScroll=localStorage.getItem(key("scroll"))??"bottom";params.set("after",cursor);stream=new EventSource("/api/chat/events?"+params);stream.onmessage=event=>{if(token===generation)apply(JSON.parse(event.data));};stream.onopen=()=>{if(token===generation){connection="live";clearConnectionError();status();}};stream.onerror=()=>{if(token===generation){connection="retrying";error("对话连接中断，正在重连。记录和草稿会保留。","connection");status();}};}catch(failure){if(token===generation){connection="failed";error(failure.message,"connection");}}finally{if(token===generation){loading=false;status();schedule();}}}
-  function reset(){clearTimeout(scrollTimer);saveDraft();saveScroll();stream?.close();stream=null;selected=null;messages=[];byId=new Map();results=new Map();cursor=0;busy=running=loading=false;connection="idle";generation++;logKind="";suspendedScroll=null;$("chat-input").value="";error(null);status();schedule();}
-  $("chat-form").onsubmit=async event=>{event.preventDefault();const original=$("chat-input").value,text=original.trim(),id=selected;if(!text||!canSend()||busy)return;saveDraft();busy=true;status();error(null);try{await post("/api/chat/send",{session_id:id,text});if(id===selected&&$("chat-input").value===original){$("chat-input").value="";localStorage.removeItem(key("draft"));}}catch(failure){if(id===selected){busy=false;error("发送失败："+failure.message+"。草稿已保留，可再次发送。","action");status();}}};
-  $("chat-input").oninput=saveDraft;$("chat-input").onkeydown=event=>{if(event.key==="Enter"&&!event.shiftKey&&!event.isComposing){event.preventDefault();if(!$("chat-send").disabled)$("chat-form").requestSubmit();}};
-  $("chat-log").onscroll=()=>{if(activeTab!=="chat")return;clearTimeout(scrollTimer);scrollTimer=setTimeout(saveScroll,180);$("chat-latest").hidden=$("chat-log").scrollHeight-$("chat-log").scrollTop-$("chat-log").clientHeight<90;};$("chat-latest").onclick=()=>{$("chat-log").scrollTop=$("chat-log").scrollHeight;saveScroll();};$("chat-retry").onclick=()=>select(selected,false,true);
-  document.addEventListener("click",event=>{if(event.target.closest("[data-init-project]"))$("add-project").click();const suggestion=event.target.closest("[data-suggest]");if(suggestion){$("chat-input").value=suggestion.dataset.suggest;saveDraft();$("chat-input").focus();}if(event.target.closest("[data-resume-web]")){transfers.delete(selected);status();}});
-  window.addEventListener("beforeunload",()=>{saveDraft();saveScroll();});
-  window.crewChat={select,reset,update,selectedId:()=>selected,visibility(visible){if(!visible){if(logKind==="messages"){saveScroll();suspendedScroll=$("chat-log").scrollTop;}return;}if(suspendedScroll!==null){restoreScroll=suspendedScroll;suspendedScroll=null;}update();schedule();},transfer(id,pending=true){if(pending)transfers.add(id);else transfers.delete(id);status();}};
-  status();schedule();update();
+  function dayOf(at) {
+    const date = new Date(at);
+    const today = new Date();
+    const yesterday = new Date(today);
+    yesterday.setDate(today.getDate() - 1);
+    const day = date.toDateString();
+    const prefix = day === today.toDateString() ? "今天 · " : day === yesterday.toDateString() ? "昨天 · " : date.getFullYear() === today.getFullYear() ? "" : `${date.getFullYear()}年`;
+    return { key: day, label: `${prefix}${date.getMonth() + 1}月${date.getDate()}日 ${["周日", "周一", "周二", "周三", "周四", "周五", "周六"][date.getDay()]}` };
+  }
+  function persistDraft(context) {
+    try {
+      localStorage.setItem(keyFor(context), JSON.stringify({ text: context.cache.text, images: context.cache.images }));
+    } catch (error) { context.toast(error.message); }
+  }
+  function saveDraft(context) {
+    if (context.readonly) return;
+    context.cache.text = context.input.value;
+    persistDraft(context);
+  }
+  function visibleDraft(context) {
+    return active && active.cache === context.cache ? active : null;
+  }
+  function composerState(context) {
+    if (context.readonly) return;
+    const hasContent = context.input.value.trim().length > 0 || context.cache.images.length > 0;
+    context.send.disabled = context.loading || context.busy || context.cache.sending || !hasContent;
+    context.hint.textContent = context.busy ? `${context.session.name} 正在回复…` : context.cache.sending ? "正在发送…" : "Enter 发送 · Shift+Enter 换行";
+    context.send.title = context.busy ? `${context.session.name} 正在回复…` : "发送";
+  }
+  function resizeInput(context) {
+    context.input.style.height = "auto";
+    context.input.style.height = `${Math.min(context.input.scrollHeight, 220)}px`;
+  }
+  function renderAttachments(context) {
+    context.attach.hidden = context.cache.images.length === 0;
+    context.attach.innerHTML = context.cache.images.map((image, index) => `<div class="thumb"><img src="data:${escape(image.media_type)};base64,${image.data}" alt="待发送的图片 ${index + 1}"><button type="button" data-remove-image="${index}" aria-label="移除图片 ${index + 1}">${icon("close")}</button></div>`).join("");
+    composerState(context);
+  }
+  function readImage(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve({ media_type: file.type, data: reader.result.slice(reader.result.indexOf(",") + 1) });
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(file);
+    });
+  }
+  async function addImages(context, files) {
+    for (const file of files) {
+      if (!file.type.startsWith("image/")) { context.toast("请选择图片文件"); continue; }
+      if (file.size > 5 * 1024 * 1024) { context.toast("单张图片不能超过 5 MB"); continue; }
+      try {
+        const image = await readImage(file);
+        if (context.cache.images.length === 5) { context.toast("一次最多发送 5 张图片"); break; }
+        context.cache.images.push(image);
+        context.cache.version += 1;
+        const view = visibleDraft(context);
+        if (view) renderAttachments(view);
+        persistDraft(context);
+      } catch (error) { context.toast(error.message); }
+    }
+  }
+  function toolLabel(context, block) {
+    const name = block.name.split("__").pop();
+    if (name === "SendMessage") return `给 ${nameOf(context, block.input.recipient)} 发了消息`;
+    if (name === "Bash" || name === "PowerShell") return block.input.command.slice(0, 60);
+    if (name === "Read" || name === "Edit" || name === "Write") return `${{ Read: "读取", Edit: "修改", Write: "写入" }[name]} ${block.input.file_path.split(/[\\/]/).pop()}`;
+    return block.name;
+  }
+  function renderTool(context, block) {
+    const result = context.results.get(block.id);
+    const foldKey = `tool:${block.id}`;
+    const open = context.cache.expanded.has(foldKey);
+    const output = result && (typeof result.content === "string" ? result.content : JSON.stringify(result.content, null, 2));
+    return `<button type="button" class="tool indent${result ? "" : " live"}${open ? " open" : ""}" data-chat-fold="${escape(foldKey)}" aria-expanded="${open}">${result ? `<span class="${result.is_error ? "chat-error" : "ok"}">${icon("check")}</span>` : '<span class="spin" aria-label="执行中"></span>'}<span class="label">${escape(toolLabel(context, block))}</span>${icon("right")}</button><div class="tool-steps"><div>输入 · ${escape(block.name)}</div><pre>${escape(JSON.stringify(block.input, null, 2))}</pre>${result ? `<div>${result.is_error ? "执行失败" : "结果"}</div><pre>${escape(output.slice(0, 2000))}</pre>${output.length > 2000 ? '<div>仅显示前 2000 字</div>' : ""}` : "<div>正在执行…</div>"}</div>`;
+  }
+  function assistantText(context, text, item) {
+    return `<div class="m-lead"><div class="av round" style="--s:30px;--tint:var(--accent)">${escape(context.session.name.slice(0, 1))}</div><div class="body"><div class="markdown">${markdown.render(text)}</div><div class="m-meta">${escape(context.session.name)}${item.at ? ` · ${timeOf(item.at)}` : ""}</div></div></div>`;
+  }
+  function itemHTML(context, item) {
+    if (item.kind === "error") return `<div class="chat-error" role="alert">${escape(item.text)}</div>`;
+    if (item.kind === "assistant") {
+      let html = "";
+      if (item.content !== null) {
+        for (const block of item.content) {
+          if (block.type === "text") html += assistantText(context, block.text, item);
+          if (block.type === "tool_use") html += renderTool(context, block);
+        }
+      }
+      if (item.text) html += assistantText(context, item.text, item);
+      return html;
+    }
+    if (item.source === "peer" || item.source === "crew") {
+      const sender = item.source === "crew" ? "Crew" : nameOf(context, item.sender);
+      const foldKey = `peer:${item.id}`;
+      const open = context.cache.expanded.has(foldKey);
+      return `<button type="button" class="mline indent${open ? " open" : ""}" data-chat-fold="${escape(foldKey)}" aria-expanded="${open}"><span class="who">${escape(sender)} → ${escape(context.session.name)}：</span><span class="txt">${escape(item.text.replace(/\s+/g, " "))}</span>${item.at ? `<span>${timeOf(item.at)}</span>` : ""}${icon("right")}</button><div class="mfull">${escape(item.text).replace(/\n/g, "<br>")}</div>`;
+    }
+    const images = item.images ? `<div class="message-images">${item.images.map((name, index) => {
+      const params = query(context);
+      params.set("name", name);
+      const url = `/api/chat/file?${params}`;
+      return `<a href="${escape(url)}" target="_blank" rel="noopener noreferrer"><img src="${escape(url)}" alt="图片 ${index + 1}" loading="lazy"></a>`;
+    }).join("")}</div>` : "";
+    return `<div class="m-user"><div class="bubble"><span class="message-text">${escape(item.text).replace(/\n/g, "<br>")}</span>${images}</div><div class="m-meta${item.source === "feishu" ? " feishu-meta" : ""}">${item.source === "feishu" ? "来自飞书" : ""}${item.at ? `${item.source === "feishu" ? " · " : ""}${timeOf(item.at)}` : ""}</div></div>`;
+  }
+  function render(context) {
+    context.frame = null;
+    if (!current(context)) return;
+    const follow = atBottom(context);
+    const desired = [];
+    let lastDay = null;
+    for (const item of context.items) {
+      if (item.at) {
+        const day = dayOf(item.at);
+        if (day.key !== lastDay) { desired.push({ key: `date:${item.id}`, className: "div date-div", html: escape(day.label) }); lastDay = day.key; }
+      }
+      if (item.id === context.cache.unreadAnchor) desired.push({ key: "unread", className: "div unread unread-div", html: "以下是你离开后的消息" });
+      desired.push({ key: item.id, className: "chat-event", html: itemHTML(context, item) });
+    }
+    let position = context.inner.firstChild;
+    for (const item of desired) {
+      let node = context.nodes.get(item.key);
+      if (!node) { node = document.createElement("div"); context.nodes.set(item.key, node); }
+      node.className = item.className;
+      if (node.dataset.html !== item.html) { node.innerHTML = item.html; node.dataset.html = item.html; }
+      if (node !== position) context.inner.insertBefore(node, position);
+      position = node.nextSibling;
+    }
+    while (position) { const next = position.nextSibling; position.remove(); position = next; }
+    if (context.initialPosition !== null) {
+      if (context.initialPosition === "unread") {
+        const divider = context.nodes.get("unread");
+        context.scroll.scrollTop = divider.getBoundingClientRect().top - context.scroll.getBoundingClientRect().top + context.scroll.scrollTop - 12;
+      } else context.scroll.scrollTop = context.initialPosition === "bottom" ? context.scroll.scrollHeight : context.initialPosition;
+      context.initialPosition = null;
+    } else if (follow) context.scroll.scrollTop = context.scroll.scrollHeight;
+    context.jump.classList.toggle("show", !atBottom(context));
+    scheduleRead(context);
+  }
+  function schedule(context) {
+    if (context.frame === null) context.frame = requestAnimationFrame(() => render(context));
+  }
+  function assistant(context, event) {
+    let item = context.byId.get(event.id);
+    if (!item) {
+      item = { id: event.id, kind: "assistant", seq: event.seq, lastSeq: event.seq, at: event.at, text: "", content: null };
+      context.items.push(item); context.byId.set(item.id, item);
+    }
+    item.lastSeq = event.seq;
+    return item;
+  }
+  function setBusy(context, busy, seq) {
+    if (seq < context.busySeq || (context.cache.pendingSendSeq !== null && seq <= context.cache.pendingSendSeq)) return;
+    context.busy = busy;
+    context.busySeq = seq;
+    context.cache.pendingSendSeq = null;
+  }
+  function apply(context, event, incremental) {
+    if (event.seq <= context.cursor) return;
+    context.cursor = event.seq;
+    if (event.type === "message") {
+      const item = { ...event, kind: "message", lastSeq: event.seq };
+      context.items.push(item); context.byId.set(item.id, item);
+    } else if (event.type === "text") assistant(context, event).text += event.text;
+    else if (event.type === "assistant") {
+      const item = assistant(context, event);
+      item.content = event.content; item.text = "";
+      for (const block of event.content) if (block.type === "tool_use") context.toolOwners.set(block.id, item);
+    }
+    else if (event.type === "tool_result") {
+      context.results.set(event.tool_use_id, event);
+      const owner = context.toolOwners.get(event.tool_use_id);
+      if (owner) owner.lastSeq = event.seq;
+    }
+    else if (event.type === "status") setBusy(context, event.status === "working", event.seq);
+    else if (event.type === "error") context.items.push({ ...event, id: `error:${event.seq}`, kind: "error", lastSeq: event.seq });
+    if (incremental) { composerState(context); schedule(context); }
+  }
+  function scheduleRead(context) {
+    if (context.readonly || context.loading || context.reading || context.readTimer !== null || document.visibilityState !== "visible" || !atBottom(context) || context.cursor <= context.readSeq) return;
+    context.readTimer = setTimeout(async () => {
+      context.readTimer = null;
+      if (!current(context) || document.visibilityState !== "visible" || !atBottom(context)) return;
+      const seq = context.cursor;
+      context.cache.lastReadAt = Date.now(); context.reading = true;
+      try {
+        const result = await context.api("/api/chat/read", { session_id: context.session.session_id, seq });
+        context.readSeq = result.read_seq; context.reading = false;
+        if (current(context)) scheduleRead(context);
+      } catch (error) { context.reading = false; context.toast(error.message); }
+    }, Math.max(0, 1000 - (Date.now() - context.cache.lastReadAt)));
+  }
+  function connectionError(context, message) {
+    context.error.hidden = message === null;
+    context.error.textContent = message;
+  }
+  async function connect(context) {
+    if (!current(context)) return;
+    context.stream = new AbortController();
+    const params = query(context); params.set("after", context.cursor);
+    try {
+      const headers = { Accept: "text/event-stream" };
+      if (context.cursor > 0) headers["Last-Event-ID"] = String(context.cursor);
+      const response = await fetch(`/api/chat/events?${params}`, { headers, signal: context.stream.signal });
+      if (!response.ok) { const failure = await response.json(); throw new Error(failure.error); }
+      if (!current(context)) return;
+      connectionError(context, null);
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "", data = [];
+      while (current(context)) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        buffer += decoder.decode(chunk.value, { stream: true });
+        let newline;
+        while ((newline = buffer.indexOf("\n")) !== -1) {
+          const line = buffer.slice(0, newline).replace(/\r$/, ""); buffer = buffer.slice(newline + 1);
+          if (line === "") { if (data.length > 0) apply(context, JSON.parse(data.join("\n")), true); data = []; }
+          else if (line.startsWith("data:")) data.push(line.slice(5).replace(/^ /, ""));
+        }
+      }
+    } catch (error) {
+      if (!current(context) || error.name === "AbortError") return;
+      connectionError(context, error.message);
+    }
+    if (current(context)) context.reconnectTimer = setTimeout(() => connect(context), 3000);
+  }
+  async function load(context) {
+    try {
+      const history = await context.api(`/api/chat/history?${query(context)}`);
+      if (!current(context)) return;
+      for (const event of history.events) apply(context, event, false);
+      setBusy(context, history.busy, context.cursor);
+      context.readSeq = history.read_seq; context.loading = false;
+      if (context.cache.first && !context.readonly) {
+        const unread = context.items.find(item => item.lastSeq > history.read_seq);
+        context.cache.unreadAnchor = unread ? unread.id : null;
+        context.initialPosition = unread ? "unread" : "bottom";
+      } else context.initialPosition = context.cache.scrollTop === null ? "bottom" : context.cache.scrollTop;
+      context.cache.first = false;
+      composerState(context); render(context); connect(context);
+    } catch (error) {
+      if (current(context)) { context.loading = false; connectionError(context, error.message); composerState(context); }
+    }
+  }
+  async function send(context) {
+    const text = context.input.value.trim();
+    if (context.send.disabled) return;
+    saveDraft(context);
+    const draftVersion = context.cache.version;
+    const previousBusy = context.busy;
+    const sendSeq = context.cursor;
+    const payload = { session_id: context.session.session_id, text };
+    if (context.cache.images.length > 0) payload.images = context.cache.images.slice();
+    context.cache.sending = true;
+    context.cache.pendingSendSeq = sendSeq;
+    context.busy = true;
+    composerState(context);
+    try {
+      await context.api("/api/chat/send", payload);
+      if (context.cache.version === draftVersion) {
+        context.cache.text = ""; context.cache.images = [];
+        const view = visibleDraft(context);
+        if (view) { view.input.value = ""; resizeInput(view); renderAttachments(view); }
+        persistDraft(context);
+      }
+    } catch (error) {
+      if (context.cache.pendingSendSeq === sendSeq) {
+        context.cache.pendingSendSeq = null;
+        const view = visibleDraft(context);
+        if (view) view.busy = previousBusy;
+      }
+      context.toast(error.message);
+    } finally {
+      context.cache.sending = false;
+      const view = visibleDraft(context);
+      if (view) composerState(view);
+    }
+  }
+  function mount(options) {
+    unmount();
+    const cacheKey = `${options.state.project.name}:${options.session.session_id}:${Boolean(options.readonly)}`;
+    let cache = sessions.get(cacheKey);
+    if (!cache) {
+      cache = { expanded: new Set(), scrollTop: null, first: true, unreadAnchor: null, text: "", images: [], version: 0, sending: false, pendingSendSeq: null, lastReadAt: 0 };
+      sessions.set(cacheKey, cache);
+      if (!options.readonly) {
+        try {
+          const saved = localStorage.getItem(`crew.draft:${options.state.project.name}:${options.session.session_id}`);
+          if (saved !== null) { const draft = JSON.parse(saved); cache.text = draft.text; cache.images = draft.images; }
+        } catch (error) { options.toast(error.message); }
+      }
+    }
+    const context = { ...options, cache, items: [], byId: new Map(), nodes: new Map(), results: new Map(), toolOwners: new Map(), cursor: 0, readSeq: 0, busySeq: options.readonly ? 0 : options.session.last_seq, readTimer: null, reconnectTimer: null, frame: null, loading: true, busy: cache.pendingSendSeq === null ? options.session.busy : true, reading: false, initialPosition: null, stream: null };
+    active = context;
+    options.host.classList.add("chat-host");
+    options.host.innerHTML = `<div class="chat-error chat-connection-error" role="alert" hidden></div><div class="scroll chat-scroll" tabindex="0" aria-label="${escape(options.session.name)}的对话记录"><div class="col chat-inner"></div></div><button type="button" class="jump" aria-label="回到最新消息">${icon("down")}回到最新</button>${options.readonly ? '<div class="readonly-note">只读记录 · 下属请在 VS Code 里聊</div>' : `<div class="composer-wrap"><form class="composer"><div class="attach" hidden></div><textarea rows="1" aria-label="给 ${escape(options.session.name)} 发消息" placeholder="跟 ${escape(options.session.name)} 说…（可以直接粘贴截图）"></textarea><div class="c-row"><button type="button" class="icon-btn chat-image-button" title="附截图（也可以直接 Ctrl+V）" aria-label="添加图片">${icon("image")}</button><input class="chat-image-file" type="file" accept="image/*" multiple hidden><span class="hint"></span><button type="submit" class="send" aria-label="发送" disabled>${icon("up")}</button></div></form></div>`}`;
+    context.scroll = options.host.querySelector(".chat-scroll"); context.inner = options.host.querySelector(".chat-inner");
+    context.jump = options.host.querySelector(".jump"); context.error = options.host.querySelector(".chat-connection-error");
+    context.jump.onclick = () => { context.scroll.scrollTop = context.scroll.scrollHeight; context.jump.classList.remove("show"); scheduleRead(context); };
+    context.scroll.onscroll = () => { context.cache.scrollTop = context.scroll.scrollTop; context.jump.classList.toggle("show", !atBottom(context)); scheduleRead(context); };
+    context.inner.onclick = event => {
+      const button = event.target.closest("[data-chat-fold]");
+      if (!button) return;
+      const item = context.items.find(item => context.nodes.get(item.id).contains(button));
+      const node = context.nodes.get(item.id);
+      const unchanged = node.dataset.html === itemHTML(context, item);
+      const key = button.dataset.chatFold;
+      const open = !context.cache.expanded.has(key);
+      if (open) context.cache.expanded.add(key); else context.cache.expanded.delete(key);
+      button.classList.toggle("open", open); button.setAttribute("aria-expanded", String(open));
+      if (unchanged) node.dataset.html = itemHTML(context, item);
+    };
+    context.visibility = () => scheduleRead(context);
+    document.addEventListener("visibilitychange", context.visibility);
+    if (!context.readonly) {
+      context.input = options.host.querySelector("textarea"); context.send = options.host.querySelector(".send");
+      context.hint = options.host.querySelector(".hint"); context.attach = options.host.querySelector(".attach");
+      context.input.value = cache.text;
+      context.input.oninput = () => { context.cache.version += 1; saveDraft(context); resizeInput(context); composerState(context); };
+      context.input.onkeydown = event => {
+        if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); if (!context.send.disabled) send(context); }
+      };
+      context.input.onpaste = event => {
+        const files = Array.from(event.clipboardData.items).filter(item => item.type.startsWith("image/")).map(item => item.getAsFile());
+        if (files.length > 0) { event.preventDefault(); addImages(context, files); }
+      };
+      const fileInput = options.host.querySelector(".chat-image-file");
+      options.host.querySelector(".chat-image-button").onclick = () => fileInput.click();
+      fileInput.onchange = () => { addImages(context, Array.from(fileInput.files)); fileInput.value = ""; };
+      context.attach.onclick = event => {
+        const button = event.target.closest("[data-remove-image]");
+        if (!button) return;
+        context.cache.images.splice(Number(button.dataset.removeImage), 1); context.cache.version += 1;
+        renderAttachments(context); saveDraft(context);
+      };
+      options.host.querySelector("form").onsubmit = event => { event.preventDefault(); send(context); };
+      renderAttachments(context); resizeInput(context);
+    }
+    load(context);
+    return { update, unmount };
+  }
+  function update(state) {
+    if (!active) return;
+    active.state = state;
+    const session = state.leaders.concat(state.members).find(item => item.session_id === active.session.session_id);
+    if (session) {
+      active.session = session;
+      if (!active.readonly && session.last_seq >= active.cursor) setBusy(active, session.busy, session.last_seq);
+    }
+    composerState(active);
+    if (!active.loading) schedule(active);
+  }
+  function unmount() {
+    if (!active) return;
+    const context = active;
+    saveDraft(context); context.cache.scrollTop = context.scroll.scrollTop;
+    context.stream?.abort(); clearTimeout(context.readTimer); clearTimeout(context.reconnectTimer);
+    if (context.frame !== null) cancelAnimationFrame(context.frame);
+    document.removeEventListener("visibilitychange", context.visibility);
+    active = null;
+  }
+  window.CrewChat = { mount, update, unmount };
 })();
