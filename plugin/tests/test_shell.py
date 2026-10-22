@@ -922,7 +922,7 @@ class WebTests(ShellFixture, unittest.TestCase):
         self.assertEqual(self.get("/api/usage/export?what=nope")[0], 400)
 
     def test_static_content_types_and_unknown_path(self):
-        for path, kind in (("/","text/html"), ("/app.js","text/javascript"), ("/style.css","text/css")):
+        for path, kind in (("/","text/html"), ("/app.js","text/javascript"), ("/sounds.js","text/javascript"), ("/style.css","text/css")):
             code, content, headers = self.get(path, raw=True)
             self.assertEqual(code, 200)
             self.assertIn(kind, headers["Content-Type"])

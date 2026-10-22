@@ -84,7 +84,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual(state["limits"], {"claude": {"five_hour": None, "seven_day": None}, "codex": None})
         leader = state["leaders"][0]
         self.assertEqual(set(leader), {"session_id", "name", "goal", "status", "busy", "running", "web_chat",
-            "cc_name", "last_seq", "read_seq", "unread", "pending", "notices_pending", "member_ids"})
+            "cc_name", "last_seq", "last_reply_id", "read_seq", "unread", "pending", "notices_pending", "member_ids"})
         self.assertEqual((leader["session_id"], leader["member_ids"], leader["unread"]), ("s3", ["s1"], 0))
         landing = self.state(None)
         self.assertEqual(set(landing), expected)

@@ -6,7 +6,9 @@
   let state = null, view = "all", leaderId = null, readOnlyId = null, mountedChat = null, pollBusy = false, statePromise = Promise.resolve();
   let allTab = "tree", period = "week", usageTab = "tree", usage = null, usageLoading = false, usageRequest = 0;
   let cardId = null, cardReturn = null, rename = false, handoff = null, rightOpen = false, dialogReturn = null;
-  let theme = "system", trayCollapsed = false, othersOpen = false, audioContext = null, audioReady = false, paletteItems = [], paletteIndex = 0;
+  let theme = "system", trayCollapsed = false, othersOpen = false, paletteItems = [], paletteIndex = 0;
+  let soundGeneration = 0;
+  const waitingSounds = new Map();
   const decisionsOpen = new Set(), usageCollapsed = new Set(), adoptForms = new Map(), adopted = new Map(), operationIds = new Set();
   const colors = ["#3E7C74", "#8A5A7E", "#A07A3A", "#4F6B8F", "#5E7F55", "#A8604F", "#8C7650", "#5C5F9E", "#A35D6A", "#4F7A8C", "#77773F"];
   const statusText = {working:"在干活", waiting:"等你", idle:"空闲", offline:"离线", closed:"已归档"};
@@ -43,9 +45,12 @@
   const pendingOf = id => state.decisions.filter(item => item.leader_session_id === id || item.session_id === id);
   function queryPath(path) { const url = new URL(path, location.origin); if (project !== null) url.searchParams.set("project", project); return url.pathname + url.search; }
   async function api(path, data) {
+    const sentAfter = path === "/api/chat/send" ? leader(data.session_id).last_seq : null;
     const response = await fetch(queryPath(path), data === undefined ? {} : {method:"POST", headers:{"Content-Type":"application/json", "X-Crew":"1"}, body:JSON.stringify(data)});
     const result = await response.json();
     if (!response.ok) throw new Error(result.error);
+    if (path === "/api/chat/send") waitingSounds.set(data.session_id, {generation:++soundGeneration, afterSeq:sentAfter});
+    else if (["/api/session/stop", "/api/session/archive", "/api/session/remove"].includes(path)) waitingSounds.delete(data.session_id);
     return result;
   }
   function toast(message, undo = null) {
@@ -256,26 +261,45 @@
     if (view === "chat") renderChat(); else { if (mountedChat !== null) { CrewChat.unmount(); mountedChat = null; } if (view === "all") renderAll(); if (view === "adopt") renderAdopt(); if (view === "usage") renderUsage(); }
     renderRight(); renderCard(); document.title = `(${state.decisions.length}) ${state.project.name} · Crew`;
   }
-  function unlockAudio() { if (audioReady) return; audioReady = true; audioContext = new AudioContext(); void audioContext.resume(); }
-  function beep() {
-    if (!audioReady || audioContext.state !== "running") return;
-    const oscillator = audioContext.createOscillator(), gain = audioContext.createGain(), at = audioContext.currentTime;
-    oscillator.type = "sine"; oscillator.frequency.setValueAtTime(660, at); oscillator.frequency.exponentialRampToValueAtTime(520, at + .14);
-    gain.gain.setValueAtTime(0, at); gain.gain.linearRampToValueAtTime(.055, at + .012); gain.gain.exponentialRampToValueAtTime(.001, at + .19);
-    oscillator.connect(gain); gain.connect(audioContext.destination); oscillator.start(at); oscillator.stop(at + .2);
+  function watchingChat(id) {
+    return view === "chat" && readOnlyId === null && leaderId === id && document.visibilityState === "visible" && document.hasFocus() &&
+      cardId === null && !$("backdrop").classList.contains("show") && !$("menu").classList.contains("show") &&
+      !(rightOpen && window.matchMedia("(max-width:1023px)").matches);
+  }
+  function notifySounds(previous, fresh, requestedGeneration) {
+    const decisions = state.decisions.filter(item => !previous.decisions.some(old => old.id === item.id));
+    const errors = state.attention.filter(item => item.kind === "session_error" && !previous.attention.some(old => old.id === item.id));
+    const completed = new Set();
+    for (const [id, waiting] of waitingSounds) {
+      // An idle response requested before send succeeded cannot finish the new round.
+      if (waiting.generation > requestedGeneration) continue;
+      const item = leader(id);
+      if (item === undefined || !item.running || errors.some(error => error.session_id === id) || decisions.some(decision => decision.leader_session_id === id || decision.session_id === id)) waitingSounds.delete(id);
+      else if (!item.busy && item.status === "idle" && item.last_seq > waiting.afterSeq) { waitingSounds.delete(id); completed.add(id); }
+    }
+    if (fresh) return;
+    if (decisions.length > 0) CrewSound.play("decision");
+    const failedChannel = notification => ["error", "rejected"].includes(notification.channel.state);
+    const failed = errors.length > 0 || failedChannel(state.notification) && !failedChannel(previous.notification) || state.notification.error !== null && state.notification.error !== previous.notification.error;
+    if (failed) CrewSound.play("error");
+    if (completed.size > 0) CrewSound.play("complete");
+    if (decisions.length > 0 || failed || completed.size > 0) return;
+    // A streamed reply keeps its message id, so only a new id counts; unread can be cleared by auto-read while unfocused.
+    if (state.leaders.some(item => { const old = previous.leaders.find(old => old.session_id === item.session_id); return old !== undefined && item.last_reply_id !== null && item.last_reply_id !== old.last_reply_id && !watchingChat(item.session_id) && !waitingSounds.has(item.session_id); })) CrewSound.play("reply");
   }
   async function loadState(fresh = false) {
     if (pollBusy) { await statePromise; if (fresh) return loadState(true); return; }
     pollBusy = true;
     let complete;
     statePromise = new Promise(resolve => { complete = resolve; });
+    const requestedGeneration = soundGeneration;
     try {
       const result = await api("/api/state"), previous = state; state = result;
       if (project === null) { $("app").className = "workspace-entry"; $("sidebar").hidden = true; $("right-panel").hidden = true; replace($("main"), `<div class="workspace-home"><img src="/logo.svg" width="42" height="42" alt="Crew"><h1>Crew 工作区</h1><p class="note">选一个项目，继续聊。</p><div class="list">${state.projects.map(item => `<a class="li" href="/?project=${encodeURIComponent(item.name)}"><span class="grow">${esc(item.name)}</span>${ic("right")}</a>`).join("")}</div></div>`); document.title = "工作区 · Crew"; return; }
       if (previous === null) readRoute();
-      else if (state.decisions.some(item => !previous.decisions.some(old => old.id === item.id)) || state.leaders.some(item => { const old = previous.leaders.find(old => old.session_id === item.session_id); return item.unread > 0 && (old === undefined || (item.last_seq > old.last_seq && (item.unread > old.unread || item.read_seq > old.read_seq))); })) beep();
       render(); syncRoute();
       if (view === "usage" && usage === null && !usageLoading) loadUsage();
+      if (previous !== null) notifySounds(previous, fresh, requestedGeneration);
     } catch (error) { toast(error.message); if (state === null) $("main").innerHTML = `<div class="workspace-home"><p class="error-line">${esc(error.message)}</p></div>`; }
     finally { pollBusy = false; complete(); }
   }
@@ -292,7 +316,6 @@
     $("overlay-root").innerHTML = '<button class="rp-scrim" id="rp-scrim" data-act="right-close" aria-label="关闭架构图"></button><div class="card-back" id="card-back"></div><section class="card" id="card" role="dialog" aria-modal="true" aria-label="下属卡片" tabindex="-1"></section><div class="menu" id="menu" role="menu"></div><div class="backdrop" id="backdrop"></div>';
     try { const stored = localStorage.getItem("crew.theme"); if (["system", "light", "dark"].includes(stored)) theme = stored; } catch (error) { toast(error.message); }
     applyTheme();
-    document.addEventListener("pointerdown", unlockAudio, {once:true}); document.addEventListener("keydown", unlockAudio, {once:true});
     document.addEventListener("click", event => {
       if (event.target.id === "backdrop") { closeBackdrop(); return; }
       if (event.target.id === "card-back") { closeCard(); return; }

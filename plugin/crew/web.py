@@ -313,6 +313,7 @@ class Service:
                             busy=self.chat.busy(sid) or (sid in present and present[sid].get('status') == 'busy'),
                             running=self.chat.running(sid) or sid in present, web_chat=session['web_chat'], cc_name=session['cc_name'],
                             last_seq=events[-1]['seq'] if events else 0, read_seq=read_seq,
+                            last_reply_id=next((e['id'] for e in reversed(events) if e['type'] == 'assistant'), None),
                             unread=len({e['id'] for e in events if e['type'] == 'assistant' and e['seq'] > read_seq}),
                             pending=sum(d['leader_session_id'] == sid for d in result['decisions']),
                             notices_pending=len(board.pending_notices(conn, sid)),
@@ -562,6 +563,7 @@ POST_PATHS = {"/api/project/init", "/api/open", "/api/open/continue", "/api/answ
 POST_PATHS.update('/api/session/' + action for action in ('rename', 'archive', 'remove', 'restore', 'undo', 'stop'))
 POST_PATHS.update(('/api/attention/dismiss', '/api/notifications/away'))
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+          "/sounds.js": ("sounds.js", "text/javascript; charset=utf-8"),
           "/style.css": ("style.css", "text/css; charset=utf-8"), "/chat.js": ("chat.js", "text/javascript; charset=utf-8"),
           "/vendor/markdown-it.min.js": ("vendor/markdown-it.min.js", "text/javascript; charset=utf-8")}
 STATIC.update({'/logo.svg': ('logo.svg', 'image/svg+xml'),
