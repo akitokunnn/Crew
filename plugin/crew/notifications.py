@@ -1,10 +1,11 @@
 """One local user's Feishu inbox, decision cards and replies.
 
-The CLI owns authentication and its shared websocket bus. Crew records exactly
-which messages it sent, and never accepts an answer for an unrelated message.
+The CLI owns authentication and its shared websocket bus. Crew records which
+questions it has shown before accepting a numbered answer.
 """
 import json
 import re
+import tempfile
 import threading
 import traceback
 import uuid
@@ -14,6 +15,10 @@ from urllib.error import URLError
 from urllib.request import ProxyHandler, Request, build_opener
 
 from . import board, feishu, store
+
+HELP = ('/h 帮助\n/ls 所有 leader（带编号）\n/1 切换到编号 1 的 leader，/2 以此类推\n'
+        '/q 所有项目的待拍板\n/back 我回来了\n'
+        '普通文字发给当前 leader。/1 是 leader 编号；#42 答复 是拍板题号，无需引用消息。')
 
 
 def desktop_locked():
@@ -32,6 +37,8 @@ class Inbox:
         self.service, self.home = service, service.home
         self.config_path = self.home / 'feishu.json'
         self.config = json.loads(self.config_path.read_text(encoding='utf-8')) if self.config_path.exists() else {}
+        self.config.setdefault('current_leader_session_id', None)
+        self.config.setdefault('leader_numbers', {})
         self.client, self.lock_status, self.batch_seconds = client, lock_status, batch_seconds
         self.lock = threading.RLock()
         self.locked, self.error, self.presence_error = False, None, None
@@ -55,9 +62,21 @@ class Inbox:
     def set_away(self, away):
         with self.lock:
             self.config['manual_away'] = away
-            self.config_path.write_text(json.dumps(self.config, ensure_ascii=False, indent=2), encoding='utf-8')
+            self.save_config()
         self.wake.set()
         return self.status()
+
+    def save_config(self):
+        with self.lock:
+            stream = tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=self.home,
+                                                 prefix='feishu-', suffix='.json', delete=False)
+            temporary = Path(stream.name)
+            try:
+                with stream:
+                    stream.write(json.dumps(self.config, ensure_ascii=False, indent=2))
+                temporary.replace(self.config_path)
+            finally:
+                temporary.unlink(missing_ok=True)
 
     def start(self):
         if not self.config.get('enabled'):
@@ -134,7 +153,7 @@ class Inbox:
                              (session['project'], session['group_name'])).fetchone()
         return board.session(conn, group[0]) if group and group[0] else session
 
-    def tick(self):
+    def refresh_presence(self):
         if not self.config.get('manual_away'):
             try:
                 self.locked = self.lock_status()
@@ -142,6 +161,9 @@ class Inbox:
             except (OSError, URLError, ValueError) as exc:
                 self.locked = False
                 self.presence_error = '无法读取锁屏状态，请用“我已离开”开关：' + str(exc)
+
+    def tick(self):
+        self.refresh_presence()
         self.process_replies()
         if not self.status()['away']:
             return
@@ -208,7 +230,7 @@ class Inbox:
                     if is_card:
                         result = self.client.send_questions(self.config['owner_id'], batch, idempotency_key=key)
                     else:
-                        text = '\n\n'.join('%s · %s\n%s\n%s' % (e['workspace'], e['leader'], e['item']['title'], e['item']['detail']) for e in batch)
+                        text = '\n\n'.join('%s·%s\n%s\n%s' % (e['workspace'], e['leader'], e['item']['title'], e['item']['detail']) for e in batch)
                         result = self.client.send_text(self.config['owner_id'], text, idempotency_key=key)
                     for entry in batch:
                         conn.execute("UPDATE notification_messages SET message_id=?,chat_id=?,status='sent' WHERE item_id=?",
@@ -231,106 +253,197 @@ class Inbox:
     def receive(self, event):
         owner = self.config['owner_id']
         action = feishu.parse_card_action(event, owner_id=owner)
-        reply = feishu.parse_text_reply(event, owner_id=owner)
+        reply = None if action else feishu.parse_private_text(event, owner_id=owner)
         if action is None and reply is None:
-            return self.receive_text(event)
+            return
         identity = action['event_id'] if action else reply['message_id']
-        message_id = action['message_id'] if action else reply['reply_to']
         with self.service.write_lock, closing(store.connect(self.home)) as conn:
             if conn.execute('SELECT 1 FROM notification_inbound WHERE event_id=?', (identity,)).fetchone():
                 return
-            rows = list(conn.execute("SELECT * FROM notification_messages WHERE message_id=? AND status='sent'", (message_id,)))
             if action:
-                rows = [r for r in rows if r['project'] == action['workspace'] and r['decision_id'] == action['decision_id']
+                rows = [r for r in conn.execute("SELECT * FROM notification_messages WHERE message_id=? AND status='sent' AND kind='decision'", (action['message_id'],))
+                        if r['project'] == action['workspace'] and r['decision_id'] == action['decision_id']
                         and json.loads(r['content'])['leader'] == action['leader']]
-            questions = [r for r in rows if r['decision_id'] is not None]
-            if not rows:
-                return None if action else self.queue_text(conn, reply, None)
-            if not action:
-                open_ids = {d['id'] for r in rows for d in board.decisions(conn, r['project'])}
-                questions = [r for r in questions if r['decision_id'] in open_ids]
-            if not action:
-                numbered = re.fullmatch(r'#(\d+)\s+(.+)', reply['answer'], flags=re.S)
-                if numbered:
-                    questions = [row for row in questions if row['decision_id'] == int(numbered[1])]
-                    reply['answer'] = numbered[2]
-                if (numbered and len(questions) != 1) or (not numbered and len(questions) > 1):
-                    self.client.send_text(owner, '这张卡有多条问题，请点对应选项，或回复“#编号 答复”，例如“#12 同意”。', idempotency_key=identity)
-                    conn.execute('INSERT INTO notification_inbound VALUES(?,?)', (identity, self.service.now().isoformat()))
+                if not rows:
                     return
-            if not action and not questions:
-                return self.queue_text(conn, reply, rows[0]['leader_session_id'] if len({r['leader_session_id'] for r in rows}) == 1 else None)
-            row = questions[0]
-            decision = next(d for d in board.decisions(conn, row['project'], all=True) if d['id'] == row['decision_id'])
-            answer = action['answer'] if action else reply['answer']
-            if board.session(conn, decision['session_id'])['status'] == 'closed':
-                self.client.send_text(owner, '这条会话已归档或移出 Crew，答复尚未保存。请先在 Crew 恢复会话。', idempotency_key=identity)
-                conn.execute('INSERT INTO notification_inbound VALUES(?,?)', (identity, self.service.now().isoformat()))
-                return
-            if action and answer not in decision['options']:
-                raise board.BoardError('飞书按钮不属于这条问题的选项')
-            if decision['status'] == 'open':
-                board.answer(conn, decision['id'], answer, actor='feishu', now=self.service.now().isoformat())
+                decision = next(d for d in board.decisions(conn, rows[0]['project'], all=True) if d['id'] == action['decision_id'])
+                if action['answer'] not in decision['options']:
+                    raise board.BoardError('飞书按钮不属于这条问题的选项')
+                self.save_answer(conn, decision, action['answer'], identity)
+            elif reply['answer'].startswith('/'):
+                self.handle_command(conn, reply)
+            else:
+                numbered = re.fullmatch(r'#(\d+)\s+(.+)', reply['answer'], flags=re.S)
+                if numbered and numbered[2].strip():
+                    self.answer_numbered(conn, int(numbered[1]), numbered[2], identity)
+                else:
+                    self.queue_text(conn, reply)
             conn.execute('INSERT INTO notification_inbound VALUES(?,?)', (identity, self.service.now().isoformat()))
-            self.refresh_card(conn, message_id)
-
-    def receive_text(self, event):
-        if (event.get('type') != feishu.MESSAGE_EVENT or event.get('sender_id') != self.config['owner_id']
-                or event.get('sender_type') != 'user' or event.get('chat_type') != 'p2p'
-                or event.get('message_type') != 'text' or not isinstance(event.get('content'), str)):
-            return
-        with self.service.write_lock, closing(store.connect(self.home)) as conn:
-            self.queue_text(conn, dict(message_id=event['message_id'], answer=event['content'], chat_id=event['chat_id']), None)
-
-    def queue_text(self, conn, reply, session_id):
-        identity, text = reply['message_id'], reply['answer']
-        if conn.execute('SELECT 1 FROM notification_inbound WHERE event_id=?', (identity,)).fetchone():
-            return
-        leaders = [dict(row) for row in conn.execute("SELECT s.* FROM sessions s LEFT JOIN session_controls c ON s.session_id=c.session_id WHERE role='leader' AND status!='closed' AND COALESCE(c.removed,0)=0")]
-        if text.startswith('@'):
-            matches = []
-            for leader in leaders:
-                for name in (leader['crew_name'], leader['project'] + '/' + leader['crew_name']):
-                    prefix = '@' + name
-                    rest = text[len(prefix):] if text.startswith(prefix) else ''
-                    if rest and rest[0].isspace() and rest.strip():
-                        matches.append((leader, prefix, rest.strip()))
-            longest = max((len(m[1]) for m in matches), default=0)
-            selected = [m for m in matches if len(m[1]) == longest]
-            session_id, text = (selected[0][0]['session_id'], selected[0][2]) if len(selected) == 1 else (None, text)
-        elif session_id is None and len(leaders) == 1:
-            session_id = leaders[0]['session_id']
-        if session_id is None:
-            choices = '\n'.join('@%s/%s 你的消息' % (s['project'], s['crew_name']) for s in leaders)
-            self.client.send_text(self.config['owner_id'], '请指定要找的 leader，或直接回复它发来的消息。\n' + (choices or '目前没有未归档的 leader，请先在 Crew 组建协作组。'), idempotency_key=identity)
-        else:
-            conn.execute('INSERT INTO notification_replies VALUES(?,?,?,?,?,?)', (identity, session_id, text, 'queued', None, self.service.now().isoformat()))
-        conn.execute('INSERT INTO notification_inbound VALUES(?,?)', (identity, self.service.now().isoformat()))
         self.wake.set()
+
+    def leader_catalog(self, conn):
+        leaders = [dict(row) for row in conn.execute(
+            "SELECT s.* FROM sessions s JOIN projects p ON p.name=s.project "
+            "LEFT JOIN session_controls c ON c.session_id=s.session_id "
+            "WHERE s.role='leader' AND s.status!='closed' AND COALESCE(c.removed,0)=0 "
+            "AND c.archived_status IS NULL ORDER BY p.created_at,p.name,s.started_at,s.session_id")]
+        with self.lock:
+            numbers = self.config['leader_numbers']
+            next_number = max(numbers.values(), default=0) + 1
+            changed = False
+            for leader in leaders:
+                sid = leader['session_id']
+                if sid not in numbers:
+                    numbers[sid] = next_number
+                    next_number += 1
+                    changed = True
+                leader['number'] = numbers[sid]
+            if changed:
+                self.save_config()
+        return sorted(leaders, key=lambda s: s['number'])
+
+    def handle_command(self, conn, reply):
+        command, identity = reply['answer'], reply['message_id']
+        if command == '/h':
+            text = HELP
+        elif command == '/back':
+            self.set_away(False)
+            self.refresh_presence()
+            if self.presence_error is not None:
+                text = '已取消手动离开；当前无法确认是否仍因锁屏被视为离开。' + self.presence_error
+            else:
+                text = '已取消手动离开；当前仍因锁屏被视为离开。' if self.locked else '已取消手动离开；当前未因锁屏被视为离开。'
+        elif command == '/q':
+            return self.show_questions(conn, identity)
+        elif command == '/ls':
+            leaders = self.leader_catalog(conn)
+            states = {}
+            with self.service.agents_lock:
+                agents, error = self.service.agents, self.service.agents_error
+            for project in {s['project'] for s in leaders}:
+                identities = [{'sessionId': s['session_id']} for s in board.sessions(conn, project)] if error else agents
+                state = board.status(conn, project, identities)
+                states.update((s['session_id'], s['status']) for s in [*state['ungrouped'], *(s for g in state['groups'] for s in g['members'])])
+            pending = {}
+            for decision in conn.execute("SELECT session_id FROM decisions WHERE status='open'"):
+                asker = board.session(conn, decision['session_id'])
+                leader = asker if asker['role'] == 'leader' else board.leader_of(conn, asker['session_id'])
+                if leader is not None:
+                    sid = leader['session_id']
+                    pending[sid] = pending.get(sid, 0) + 1
+            lines = []
+            for leader in leaders:
+                sid = leader['session_id']
+                journal = self.service.chat.journal(sid)
+                status = states[sid]
+                if self.service.chat.running(sid) and (status != 'waiting' or journal.status == 'working'):
+                    status = journal.status
+                unread = len({e['id'] for e in journal.after(board.read_seq(conn, sid)) if e['type'] == 'assistant'})
+                current = '（当前）' if sid == self.config['current_leader_session_id'] else ''
+                lines.append('%s %s·%s%s %s 未读 %s 待拍板 %s' % (
+                    leader['number'], leader['project'], leader['crew_name'], current, status, unread, pending.get(sid, 0)))
+            text = '\n'.join(lines) if lines else '目前没有有效的 leader。'
+        else:
+            numbered = re.fullmatch(r'/([1-9][0-9]*)', command)
+            if numbered:
+                selected = next((s for s in self.leader_catalog(conn) if s['number'] == int(numbered[1])), None)
+                if selected is None:
+                    text = '这个 leader 编号已失效，请先 /ls。'
+                else:
+                    with self.lock:
+                        self.config['current_leader_session_id'] = selected['session_id']
+                        self.save_config()
+                    text = '已切换到 %s·%s。' % (selected['project'], selected['crew_name'])
+            else:
+                text = '未知命令，请用 /h 查看帮助。'
+        self.client.send_text(self.config['owner_id'], text, idempotency_key=identity)
+
+    def show_questions(self, conn, identity):
+        grouped, entries = {}, []
+        for project in board.projects(conn):
+            for decision in board.decisions(conn, project['name']):
+                asker = board.session(conn, decision['session_id'])
+                leader = asker if asker['role'] == 'leader' else board.leader_of(conn, asker['session_id'])
+                label = leader['crew_name'] if leader is not None else '无leader'
+                grouped.setdefault((project['name'], label), []).append(decision)
+                entries.append(dict(decision=decision, workspace=project['name'], leader=label,
+                                    leader_session_id=leader['session_id'] if leader is not None else asker['session_id']))
+        lines = []
+        for (project, leader), decisions in grouped.items():
+            lines.append('%s·%s' % (project, leader))
+            for decision in decisions:
+                asker = board.session(conn, decision['session_id'])
+                lines.append('#%s 提问者：%s\n问题：%s\n推荐：%s' % (
+                    decision['id'], asker['crew_name'], decision['question'],
+                    decision['recommendation'] if decision['recommendation'] is not None else '无'))
+        result = self.client.send_text(self.config['owner_id'], '\n\n'.join(lines) if lines else '当前没有未答拍板。', idempotency_key=identity)
+        for entry in entries:
+            conn.execute('INSERT INTO notification_messages(item_id,project,leader_session_id,decision_id,kind,message_id,chat_id,created_at,content,status) VALUES(?,?,?,?,?,?,?,?,?,?)',
+                         ('query:%s:%s' % (identity, entry['decision']['id']), entry['workspace'], entry['leader_session_id'],
+                          entry['decision']['id'], 'query', result['message_id'], result.get('chat_id'), self.service.now().isoformat(),
+                          json.dumps(entry, ensure_ascii=False), 'sent'))
+
+    def answer_numbered(self, conn, decision_id, answer, identity):
+        shown = conn.execute("SELECT project FROM notification_messages WHERE decision_id=? AND status='sent' AND kind IN ('decision','query') LIMIT 1", (decision_id,)).fetchone()
+        if shown is None:
+            self.client.send_text(self.config['owner_id'], '这道题尚未展示，请先 /q 查看待拍板。', idempotency_key=identity)
+            return
+        decision = next(d for d in board.decisions(conn, shown['project'], all=True) if d['id'] == decision_id)
+        self.save_answer(conn, decision, answer, identity)
+
+    def save_answer(self, conn, decision, answer, identity):
+        if decision['status'] != 'open':
+            self.client.send_text(self.config['owner_id'], '这道题已处理，请先 /q 查看待拍板。', idempotency_key=identity)
+            return
+        asker = board.session(conn, decision['session_id'])
+        if asker['status'] == 'closed' or board.is_archived(conn, asker['session_id']):
+            self.client.send_text(self.config['owner_id'], '这条会话已归档或移出 Crew，答复尚未保存。请先在 Crew 恢复会话。', idempotency_key=identity)
+            return
+        now = self.service.now().isoformat()
+        board.answer(conn, decision['id'], answer, actor='feishu', now=now)
+        leader = asker if asker['role'] == 'leader' else board.leader_of(conn, asker['session_id'])
+        if leader is not None:
+            notice = '#%s\n提问者：%s（cc_name：%s）\n问题：%s\n答复：%s\n请马上用 SendMessage 转告并叫它继续' % (
+                decision['id'], asker['crew_name'], asker['cc_name'], decision['question'], answer)
+            board.queue_leader_notice(conn, leader['session_id'], notice, 'feishu', now=now)
+        cards = conn.execute("SELECT DISTINCT message_id FROM notification_messages WHERE decision_id=? AND status='sent' AND kind='decision'", (decision['id'],)).fetchall()
+        for card in cards:
+            self.refresh_card(conn, card['message_id'])
+        self.client.send_text(self.config['owner_id'], '#%s 答复已保存。' % decision['id'], idempotency_key=identity)
+
+    def queue_text(self, conn, reply):
+        session_id = self.config['current_leader_session_id']
+        leaders = self.leader_catalog(conn)
+        if session_id not in {s['session_id'] for s in leaders}:
+            self.client.send_text(self.config['owner_id'], '先用 /ls 和 /1 选一个 leader。', idempotency_key=reply['message_id'])
+            return
+        conn.execute('INSERT INTO notification_replies VALUES(?,?,?,?,?,?)',
+                     (reply['message_id'], session_id, reply['answer'], 'queued', None, self.service.now().isoformat()))
 
     def process_replies(self):
         with self.service.write_lock, closing(store.connect(self.home)) as conn:
-            for row in conn.execute("SELECT * FROM notification_replies WHERE status IN ('queued','running') ORDER BY created_at").fetchall():
+            for row in conn.execute("SELECT * FROM notification_replies WHERE status IN ('queued','running') ORDER BY created_at,rowid").fetchall():
                 session = board.session(conn, row['session_id'])
                 sid = session['session_id']
-                label = '%s · %s' % (session['project'], session['crew_name'] or '会话')
+                label = '%s·%s' % (session['project'], session['crew_name'])
                 journal = self.service.chat.journal(sid)
                 if row['status'] == 'queued':
-                    if session['status'] == 'closed':
+                    if session['role'] != 'leader':
+                        self._reply(conn, row, label + '\n这个会话已不是 leader，消息未发送。', 'error')
+                        continue
+                    if session['status'] == 'closed' or board.is_archived(conn, sid):
                         self._reply(conn, row, label + '\n这条会话已归档，消息未发送。', 'error')
                         continue
                     if self.service.chat.busy(sid):
                         continue
                     if conn.execute("SELECT 1 FROM notification_replies WHERE session_id=? AND status='running'", (sid,)).fetchone():
                         continue
-                    # Web leaders have an owned input stream (or a saved resume spec).
+                    # A saved web journal/spec can resume; external processes cannot receive our input.
                     spec = self.home / 'spawn' / ((session['spawn_id'] or '') + '.json')
                     with self.service.agents_lock:
                         external = any(a['sessionId'] == sid for a in self.service.agents) and not self.service.chat.is_owned(sid)
-                    if external or not spec.exists():
-                        board.handoff(conn, sid, session['crew_name'], '来自飞书：\n' + row['text'], now=self.service.now().isoformat())
-                        board.record_event(conn, 'feishu:message', session['project'], sid, {'text': row['text']}, now=self.service.now().isoformat())
-                        self._reply(conn, row, label + '\n消息已写入交接。这条会话在 VS Code 或终端中，会在下一轮收到；可在网页查看交接。', 'handed_off')
+                    if external or not self.service.chat.path(sid).exists() or not spec.exists():
+                        self._reply(conn, row, label + '\n这个 leader 不在网页后台运行，收不到飞书消息', 'error')
                         continue
                     after = len(journal.events)
                     try:
@@ -339,7 +452,7 @@ class Inbox:
                         self._reply(conn, row, label + '\n消息未发送：' + str(exc), 'error')
                         continue
                     conn.execute("UPDATE notification_replies SET status='running',after_seq=? WHERE message_id=?", (after, row['message_id']))
-                elif self.status()['away']:
+                else:
                     events = journal.after(row['after_seq'])
                     end = next((i for i, e in enumerate(events) if e['type'] == 'status' and e['status'] in ('idle', 'offline')), None)
                     if end is None and self.service.chat.running(sid):
@@ -350,6 +463,8 @@ class Inbox:
                     text = '\n'.join(b['text'] for b in assistant['content'] if b['type'] == 'text') if assistant else ''
                     if error or text:
                         self._reply(conn, row, label + '\n' + (text or '会话出错：' + error), 'answered')
+                    elif end is not None and events[-1]['status'] == 'idle':
+                        self._reply(conn, row, label + '\n（这一轮没有文字回复）', 'answered')
                     elif not self.service.chat.running(sid):
                         self._reply(conn, row, label + '\n会话已停止，还没有收到这条消息的回复。请在 Crew 查看会话。', 'error')
 

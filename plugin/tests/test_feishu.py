@@ -58,10 +58,13 @@ class CardTests(unittest.TestCase):
             "workspace": WORKSPACE, "leader": LEADER, "decision_id": 42, "answer": "先补测试",
             "event_id": "event-1", "message_id": "om_card", "chat_id": "oc_private"})
 
-    def test_no_choices_invites_an_explicit_reply_and_does_not_invent_an_answer(self):
+    def test_no_choices_requires_question_number_without_quote_and_routes_plain_text_to_leader(self):
         card = feishu.question_card({"id": 1, "question": "你希望怎么调整？"}, workspace=WORKSPACE, leader=LEADER)
         self.assertFalse(any(v.get("tag") == "button" for v in walk(card)))
-        self.assertIn("直接回复这条消息", json.dumps(card, ensure_ascii=False))
+        content = json.dumps(card, ensure_ascii=False)
+        self.assertIn("#1 答复", content)
+        self.assertIn("无需引用消息", content)
+        self.assertIn("普通文字会发给当前 leader", content)
 
     def test_question_markup_cannot_inject_mentions_and_long_labels_keep_full_answers(self):
         choice = "引号\"、换行\n" + "很长的答案" * 30
@@ -108,16 +111,42 @@ class EventTests(unittest.TestCase):
         self.assertIsNone(feishu.parse_card_action(None, owner_id=OWNER))
         self.assertNotIn("token", feishu.parse_card_action(event, owner_id=OWNER))
 
-    def test_text_reply_keeps_decoded_content_and_requires_private_owner_reply(self):
-        event = {"type": feishu.MESSAGE_EVENT, "sender_id": OWNER, "sender_type": "user", "chat_type": "p2p",
-                 "message_type": "text", "message_id": "om_reply", "chat_id": "oc_private", "reply_to": "om_card",
-                 "content": "{不用再转 JSON} 先补测试\n保留原文"}
-        self.assertEqual(feishu.parse_text_reply(event, owner_id=OWNER), {
-            "message_id": "om_reply", "chat_id": "oc_private", "reply_to": "om_card", "answer": event["content"]})
-        for changes in ({"sender_id": "ou_other"}, {"sender_type": "bot"}, {"chat_type": "group"},
-                        {"message_type": "interactive"}, {"reply_to": ""}, {"content": " "}, {"message_id": None}):
+    def private_text(self, **changes):
+        return {"type": feishu.MESSAGE_EVENT, "sender_id": OWNER, "sender_type": "user", "chat_type": "p2p",
+                "message_type": "text", "message_id": "om_reply", "chat_id": "oc_private",
+                "content": "  {不用再转 JSON} 先补测试\n保留原文  ", **changes}
+
+    def test_private_text_without_quote_keeps_entire_decoded_content(self):
+        event = self.private_text()
+        self.assertEqual(feishu.parse_private_text(event, owner_id=OWNER), {
+            "message_id": "om_reply", "chat_id": "oc_private", "reply_to": None, "answer": event["content"]})
+
+    def test_private_text_keeps_an_optional_quote_and_accepts_explicit_none(self):
+        for reply_to in ("om_card", None):
+            with self.subTest(quoted=reply_to is not None):
+                event = self.private_text(reply_to=reply_to)
+                self.assertEqual(feishu.parse_private_text(event, owner_id=OWNER), {
+                    "message_id": "om_reply", "chat_id": "oc_private", "reply_to": reply_to, "answer": event["content"]})
+
+    def test_private_text_rejects_unrelated_unauthorized_group_and_nontext_events(self):
+        for changes in ({"type": feishu.CARD_EVENT}, {"sender_id": "other-owner"}, {"sender_type": "bot"},
+                        {"chat_type": "group"}, {"message_type": "interactive"}):
+            with self.subTest(field=next(iter(changes))):
+                self.assertIsNone(feishu.parse_private_text(self.private_text(**changes), owner_id=OWNER))
+        self.assertIsNone(feishu.parse_private_text(None, owner_id=OWNER))
+
+    def test_private_text_rejects_empty_body_invalid_ids_and_invalid_quotes(self):
+        for changes in ({"content": " "}, {"content": ""}, {"content": None}, {"content": []},
+                        {"message_id": None}, {"message_id": ""}, {"message_id": " "}, {"message_id": 42},
+                        {"chat_id": None}, {"chat_id": ""}, {"chat_id": " "}, {"chat_id": []},
+                        {"reply_to": ""}, {"reply_to": " "}, {"reply_to": 42}, {"reply_to": []}):
             with self.subTest(changes=changes):
-                self.assertIsNone(feishu.parse_text_reply({**event, **changes}, owner_id=OWNER))
+                self.assertIsNone(feishu.parse_private_text(self.private_text(**changes), owner_id=OWNER))
+        for key in ("message_id", "chat_id", "content"):
+            with self.subTest(missing=key):
+                event = self.private_text()
+                del event[key]
+                self.assertIsNone(feishu.parse_private_text(event, owner_id=OWNER))
 
 
 class QuestionsCardTests(unittest.TestCase):
@@ -137,7 +166,7 @@ class QuestionsCardTests(unittest.TestCase):
             self.assertEqual((value["workspace"], value["leader"], value["decision_id"]),
                              (entry["workspace"], entry["leader"], entry["decision"]["id"]))
         content = json.dumps(card, ensure_ascii=False)
-        for label in (WORKSPACE, LEADER, "第二工作区", "另一组", "#编号 答复"):
+        for label in (WORKSPACE, LEADER, "第二工作区", "另一组", "#题号 答复", "无需引用消息", "普通文字会发给当前 leader"):
             self.assertIn(label, content)
         self.assertIn("2 件事", card["header"]["title"]["content"])
 
