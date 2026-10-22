@@ -158,6 +158,8 @@ svg.i.xs{width:12px;height:12px}
 .tray.collapsed .tray-head .chev{transform:rotate(-90deg)}
 .tray.collapsed .tray-list{display:none}
 .tray-list{display:flex;flex-direction:column;gap:6px;margin-top:8px;max-height:46vh;overflow:auto}
+/* Cards clip their own overflow, so as flex items they would shrink and overlap instead of scrolling. */
+.tray-list>.dc{flex:none}
 
 /* decision card */
 .dc{border:1px solid var(--warn-line);background:var(--surface);border-radius:14px;overflow:hidden;transition:border-color .2s,opacity .3s}
