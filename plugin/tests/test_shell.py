@@ -4,6 +4,7 @@ import csv
 import datetime as dt
 import io
 import json
+import sqlite3
 import subprocess
 import threading
 import unittest
@@ -12,17 +13,31 @@ from unittest import mock
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from crew import board, chat, cli, spawn, store, usage_cli, web
+from crew import board, chat, cli, spawn, store, usage_cli, vscode_sessions, web
 from test_usage import UsageFixture, assistant, prompt
 from test_chat import FakeProcess
 
 PLUGIN = Path(__file__).resolve().parents[1]
 NOW = "2026-10-21T08:00:00.000Z"
+VSCODE_SESSION = "11111111-1111-4111-8111-111111111111"
+
+
+def make_vscode_state_db(path):
+    with contextlib.closing(sqlite3.connect(path)) as conn:
+        conn.execute("CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT)")
+        conn.execute("INSERT INTO ItemTable VALUES (?, ?)",
+                     ("Anthropic.claude-code", json.dumps({"hiddenSessionIds": []})))
+        conn.commit()
+    return path
 
 
 class ShellFixture(UsageFixture):
     def setUp(self):
         super().setUp()
+        self.vscode_state_db = make_vscode_state_db(self.root / "state.vscdb")
+        roots = mock.patch("crew.vscode_sessions.project_roots", side_effect=lambda root: [Path(root)])
+        roots.start()
+        self.addCleanup(roots.stop)
         real_popen = subprocess.Popen
 
         def no_real_session(command, *args, **kwargs):
@@ -261,7 +276,8 @@ class WebTests(ShellFixture, unittest.TestCase):
         self.provider = mock.Mock(return_value=[{"sessionId":"s1", "name":"cc-one"}, {"sessionId":"s3", "name":"cc-lead"}])
         self.server = web.create_server(self.home, PLUGIN, port=0, cwd=self.project, agents_provider=self.provider,
                                         claude_root=self.claude, codex_root=self.codex,
-                                        runs_file=self.runs, now=lambda: self.clock, process_factory=self.process_factory)
+                                        runs_file=self.runs, now=lambda: self.clock, process_factory=self.process_factory,
+                                        vscode_state_db=self.vscode_state_db)
         self.thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval":.02})
         self.thread.start()
         self.addCleanup(self.close_server)
@@ -379,27 +395,43 @@ class WebTests(ShellFixture, unittest.TestCase):
         self.assertEqual(board.session(self.conn, "s1")["cc_name"], "cc-one")
 
     def test_live_unregistered_project_sessions_are_candidates_with_latest_title(self):
-        self.main_file([{"type": "ai-title", "aiTitle": "first"},
-                        {"type": "ai-title", "aiTitle": "latest"}], session="vscode-session")
+        self.vscode_file([{"type": "ai-title", "aiTitle": "first"},
+                          {"type": "ai-title", "aiTitle": "latest"}])
         nested = self.project / "nested"
         nested.mkdir()
         board.init_project(self.conn, "nested", nested, now=NOW)
         self.provider.return_value = [
-            {"sessionId": "vscode-session", "name": "cc-vscode", "status": "busy", "cwd": str(self.project)},
+            {"sessionId": VSCODE_SESSION, "name": "cc-vscode", "status": "busy", "cwd": str(self.project)},
             {"sessionId": "outside", "name": "cc-outside", "status": "idle", "cwd": str(self.root)},
             {"sessionId": "nested", "name": "cc-nested", "status": "idle", "cwd": str(nested)},
             {"sessionId": "s1", "name": "cc-one", "status": "busy", "cwd": str(self.project)},
         ]
         self.server.service.refresh_agents()
+        self.server.service._refresh_vscode()
         state = self.get("/api/state?project=demo")[1]
-        self.assertEqual(state.get("candidates"), [{"session_id": "vscode-session", "title": "latest",
-                         "cc_name": "cc-vscode", "cwd": str(self.project), "status": "working", "location": "unknown"}])
-        self.assertIsNone(self.conn.execute("SELECT 1 FROM sessions WHERE session_id='vscode-session'").fetchone())
+        running = state["candidates"]["running"]
+        self.assertEqual(len(running), 1)
+        self.assertEqual(set(running[0]), {"session_id", "title", "cwd", "rel_dir", "last_active",
+                                         "running", "status", "crew_name", "group"})
+        self.assertEqual({key: running[0][key] for key in ("session_id", "title", "cwd", "running", "status", "crew_name", "group")},
+                         {"session_id": VSCODE_SESSION, "title": "latest", "cwd": str(self.project),
+                          "running": True, "status": "working", "crew_name": None, "group": None})
+        self.assertEqual(state["candidates"]["others"], [])
+        self.assertIsNone(self.conn.execute("SELECT 1 FROM sessions WHERE session_id=?", (VSCODE_SESSION,)).fetchone())
 
-    def live_candidate(self, session_id="vscode-session", status="busy"):
+    def vscode_file(self, records, session=VSCODE_SESSION):
+        return self.write(self.claude / vscode_sessions.bucket_name(self.project) / (session + ".jsonl"),
+                          [{"cwd": str(self.project), **record} for record in records])
+
+    def candidate_ids(self):
+        groups = self.get("/api/state?project=demo")[1]["candidates"]
+        return {candidate["session_id"] for candidates in groups.values() for candidate in candidates}
+
+    def live_candidate(self, session_id=VSCODE_SESSION, status="busy"):
         self.provider.return_value = [
             {"sessionId": session_id, "name": "cc-vscode", "status": status, "cwd": str(self.project)}]
         self.server.service.refresh_agents()
+        self.server.service._refresh_vscode()
         return {"session_id": session_id, "name": "vscode-member"}
 
     def test_adopt_persists_identity_git_and_address_then_tracks_live_status_until_hook(self):
@@ -412,7 +444,7 @@ class WebTests(ShellFixture, unittest.TestCase):
         self.assertEqual((session["worktree"], session["branch"]),
                          (store.norm_path(self.project), self.git("branch", "--show-current")))
         self.assertEqual(self.commands, [])
-        self.assertEqual(self.get("/api/state?project=demo")[1]["candidates"], [])
+        self.assertNotIn(candidate["session_id"], self.candidate_ids())
         current = lambda: next(s for g in self.get("/api/state?project=demo")[1]["groups"] for s in g["members"]
                                if s["session_id"] == candidate["session_id"])
         self.assertEqual(current()["status"], "working")
@@ -424,16 +456,20 @@ class WebTests(ShellFixture, unittest.TestCase):
         self.assertEqual(current()["status"], "waiting")
         self.assertEqual(self.get("/api/roster/adopt", {**candidate, "group": "lead"})[0], 400)
 
-    def test_candidate_titles_increment_and_failures_hide_stale_candidates(self):
-        self.main_file([{"type": "ai-title", "aiTitle": "first"}], session="vscode-session")
+    def test_candidate_titles_refresh_and_agents_failures_keep_vscode_candidates(self):
+        path = self.vscode_file([{"type": "ai-title", "aiTitle": "first"}])
         self.live_candidate()
-        self.assertEqual(self.get("/api/state?project=demo")[1]["candidates"][0]["title"], "first")
-        self.write(self.claude / "project" / "vscode-session.jsonl",
-                   [{"type": "ai-title", "aiTitle": "new title"}], append=True)
-        self.assertEqual(self.get("/api/state?project=demo")[1]["candidates"][0]["title"], "new title")
+        self.assertEqual(self.get("/api/state?project=demo")[1]["candidates"]["running"][0]["title"], "first")
+        self.write(path, [{"type": "ai-title", "aiTitle": "new title"}], append=True)
+        self.server.service._refresh_vscode()
+        self.assertEqual(self.get("/api/state?project=demo")[1]["candidates"]["running"][0]["title"], "new title")
         self.provider.side_effect = OSError("agents unavailable")
         self.server.service.refresh_agents()
-        self.assertEqual(self.get("/api/state?project=demo")[1]["candidates"], [])
+        state = self.get("/api/state?project=demo")[1]
+        retained = [item for candidates in state["candidates"].values() for item in candidates
+                    if item["session_id"] == VSCODE_SESSION]
+        self.assertEqual([item["title"] for item in retained], ["new title"])
+        self.assertIn("agents unavailable", state["agents_error"])
 
     def test_leader_adopts_candidates_and_validates_existing_members_before_writes(self):
         candidate = self.live_candidate()
@@ -452,7 +488,8 @@ class WebTests(ShellFixture, unittest.TestCase):
         other.mkdir()
         board.init_project(self.conn, "a-first", other, now=NOW)
         options = {"agents_provider":self.provider,
-                   "claude_root":self.claude, "codex_root":self.codex, "runs_file":self.runs, "now":self.clock}
+                   "claude_root":self.claude, "codex_root":self.codex, "runs_file":self.runs, "now":self.clock,
+                   "vscode_state_db":self.vscode_state_db}
         inside = web.Service(self.home, PLUGIN, cwd=self.project, **options)
         self.assertEqual(inside.default_project, "demo")
         outside = web.Service(self.home, PLUGIN, cwd=self.root, **options)
@@ -460,7 +497,8 @@ class WebTests(ShellFixture, unittest.TestCase):
 
     def test_first_agents_failure_does_not_mark_idle_offline(self):
         service = web.Service(self.home, PLUGIN, agents_provider=mock.Mock(side_effect=ValueError("bad JSON")),
-                              claude_root=self.claude, codex_root=self.codex, runs_file=self.runs, now=self.clock)
+                              claude_root=self.claude, codex_root=self.codex, runs_file=self.runs, now=self.clock,
+                              vscode_state_db=self.vscode_state_db)
         service.refresh_agents()
         state = service.state("demo")
         self.assertIsNotNone(state["agents_error"])
@@ -501,7 +539,9 @@ class WebTests(ShellFixture, unittest.TestCase):
             self.assertEqual(self.get("/api/answer", body)[0], 400)
 
     def test_first_project_can_be_enabled_from_web_without_existing_selection(self):
-        service = web.Service(self.root / "empty-board", PLUGIN, agents_provider=lambda: [], cwd=self.project)
+        service = web.Service(self.root / "empty-board", PLUGIN, agents_provider=lambda: [], cwd=self.project,
+                              claude_root=self.claude, codex_root=self.codex, runs_file=self.runs,
+                              vscode_state_db=self.vscode_state_db)
         self.addCleanup(service.close)
         self.assertIsNone(service.state()["project"])
         result = service.post("/api/project/init", {"name": "first", "root": str(self.project)})
@@ -526,7 +566,7 @@ class WebTests(ShellFixture, unittest.TestCase):
         self.assertTrue(self.server.service.chat.running(result["session_id"]))
         self.assertEqual(self.get("/api/chat/send", {"session_id": result["session_id"], "text": "stale form"})[0], 409)
 
-    def test_registered_unnamed_session_keeps_transcript_title_and_candidate_location(self):
+    def test_registered_unnamed_session_keeps_title_and_candidate_identity(self):
         self.main_file([{"type": "ai-title", "aiTitle": "Research notes"}], session="unnamed")
         board.register_session(self.conn, "unnamed", "demo", self.project, self.project, "main", now=NOW)
         self.provider.return_value = [{"sessionId": "unnamed", "name": "native-address", "status": "idle", "cwd": str(self.project)},
@@ -539,7 +579,9 @@ class WebTests(ShellFixture, unittest.TestCase):
         state = self.get("/api/state?project=demo")[1]
         current = next(s for s in state["ungrouped"] if s["session_id"] == "unnamed")
         self.assertEqual(current["title"], "Research notes")
-        self.assertEqual(state["candidates"][0]["location"], "vscode")
+        running = {s["session_id"]: s for s in state["candidates"]["running"]}
+        self.assertEqual(set(running), {"unnamed", "candidate"})
+        self.assertTrue(all(s["running"] and s["crew_name"] is None for s in running.values()))
         code, adopted, _ = self.get("/api/roster/adopt", {"session_id": "unnamed", "name": "researcher", "group": "lead"})
         self.assertEqual(code, 200)
         self.assertEqual((adopted["crew_name"], adopted["group_name"]), ("researcher", "lead"))

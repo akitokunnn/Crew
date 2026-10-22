@@ -2,8 +2,10 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from crew import board, store, web
+from test_shell import make_vscode_state_db
 
 
 EARLIER = "2026-10-21T08:00:00.000Z"
@@ -14,12 +16,16 @@ PLUGIN = Path(__file__).resolve().parents[1]
 
 class LiveSessionsTests(unittest.TestCase):
     def setUp(self):
-        temp = tempfile.TemporaryDirectory()
+        temp = tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent)
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
         self.project = self.root / "project"
         self.project.mkdir()
         self.home = self.root / "board"
+        self.vscode_state_db = make_vscode_state_db(self.root / "state.vscdb")
+        roots = mock.patch("crew.vscode_sessions.project_roots", side_effect=lambda root: [Path(root)])
+        roots.start()
+        self.addCleanup(roots.stop)
         self.conn = store.connect(self.home)
         self.addCleanup(self.conn.close)
         board.init_project(self.conn, "demo", self.project, now=EARLIER)
@@ -45,15 +51,18 @@ class LiveSessionsTests(unittest.TestCase):
     def test_candidates_and_registered_status_share_deduplication(self):
         agents = [self.agent(pid=1, startedAt=STARTED - 1000, status="busy"), self.agent()]
         service = web.Service(self.home, PLUGIN, agents_provider=lambda: agents,
-                              claude_root=self.root / "transcripts", cwd=self.project)
+                              claude_root=self.root / "transcripts", codex_root=self.root / "codex",
+                              cwd=self.project, vscode_state_db=self.vscode_state_db)
+        self.addCleanup(service.close)
         service.refresh_agents()
         candidates = service.state("demo")["candidates"]
-        self.assertEqual(len(candidates), 1)
-        self.assertEqual((candidates[0]["cc_name"], candidates[0]["status"]), ("new-name", "working"))
+        self.assertEqual(len(candidates["running"]), 1)
+        self.assertEqual((candidates["running"][0]["session_id"], candidates["running"][0]["status"]), ("shared", "working"))
         # Opening a session still needs both original PIDs for its safety checks.
         self.assertEqual(len(service.agents), 2)
         board.join(self.conn, "shared", "demo", "member", self.project, None, None, now=EARLIER)
         self.assertEqual(service.state("demo")["ungrouped"][0]["status"], "working")
+        self.assertEqual(service.state("demo")["candidates"]["left"][0]["crew_name"], "member")
 
     def test_old_hooks_do_not_override_a_resumed_process_without_hooks(self):
         self.register()

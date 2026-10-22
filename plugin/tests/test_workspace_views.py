@@ -14,6 +14,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 
 from crew import board, claude_limits, store, web
 from test_usage import PRICES, UsageFixture, assistant, stamp, token_count
+from test_shell import make_vscode_state_db
 
 
 PLUGIN = Path(__file__).resolve().parents[1]
@@ -28,6 +29,10 @@ def directory(state):
 class WorkspaceViewsTests(UsageFixture, unittest.TestCase):
     def setUp(self):
         super().setUp()
+        self.vscode_state_db = make_vscode_state_db(self.root / "state.vscdb")
+        roots = mock.patch("crew.vscode_sessions.project_roots", side_effect=lambda root: [Path(root)])
+        roots.start()
+        self.addCleanup(roots.stop)
         self.claude = self.root / ".claude" / "projects"
         self.claude.mkdir(parents=True)
         self.alpha, self.beta = self.root / "alpha", self.root / "beta"
@@ -47,7 +52,8 @@ class WorkspaceViewsTests(UsageFixture, unittest.TestCase):
         self.launch = mock.Mock(side_effect=AssertionError("A view test must never start a model"))
         self.server = web.create_server(self.home, PLUGIN, port=0, cwd=self.alpha,
             agents_provider=lambda: list(self.members.values()), claude_root=self.claude, codex_root=self.codex,
-            runs_file=self.runs, now=lambda: self.clock, process_factory=self.launch, lock_status=lambda: False)
+            runs_file=self.runs, now=lambda: self.clock, process_factory=self.launch, lock_status=lambda: False,
+            vscode_state_db=self.vscode_state_db)
         self.thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": .01})
         self.thread.start()
         self.addCleanup(self.close_server)
@@ -91,6 +97,7 @@ class WorkspaceViewsTests(UsageFixture, unittest.TestCase):
         self.assertEqual({p["name"] for p in landing["projects"]}, {"alpha", "beta"})
         for key in ("groups", "ungrouped", "decisions", "attention", "codex_tasks", "removed_sessions"):
             self.assertEqual(landing[key], [])
+        self.assertEqual(landing["candidates"], {"running": [], "others": [], "left": []})
         self.assertEqual(self.request("/", raw=True, project="beta")[0], 200)
         beta = self.state("beta")
         self.assertEqual(beta["project"]["name"], "beta")
@@ -100,6 +107,7 @@ class WorkspaceViewsTests(UsageFixture, unittest.TestCase):
         self.assertEqual(code, 200, removed)
         alpha = self.state("alpha")
         self.assertNotIn("alpha-peer", directory(alpha))
+        self.assertNotIn("alpha-peer", {s["session_id"] for items in alpha["candidates"].values() for s in items})
         self.assertEqual([(s["session_id"], s["status"]) for s in alpha["removed_sessions"]], [("alpha-peer", "closed")])
         self.assertEqual(self.state("beta")["removed_sessions"], [])
         self.assertEqual(self.request("/api/session/restore", {"session_id": "alpha-peer"}, project="beta")[0], 400)
@@ -110,6 +118,7 @@ class WorkspaceViewsTests(UsageFixture, unittest.TestCase):
         archived = directory(self.state("alpha"))["alpha-peer"]
         self.assertEqual(archived["status"], "closed")
         self.assertIsNotNone(archived["ended_at"])
+        self.assertNotIn("alpha-peer", {s["session_id"] for items in self.state("alpha")["candidates"].values() for s in items})
         self.assertEqual(set(directory(self.state("beta"))), set(directory(beta)))
 
     def test_attention_orders_facts_deduplicates_questions_and_supports_dismiss_undo(self):

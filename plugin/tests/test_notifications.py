@@ -31,7 +31,8 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         self.service = web.Service(self.home, PLUGIN, cwd=self.project, agents_provider=lambda: [
             {'sessionId': sid, 'name': sid} for sid in ('s1', 's2', 's3')],
             claude_root=self.claude, codex_root=self.codex, runs_file=self.runs,
-            now=lambda: self.clock, notification_client=self.client, lock_status=lambda: self.locked)
+            now=lambda: self.clock, notification_client=self.client, lock_status=lambda: self.locked,
+            vscode_state_db=self.vscode_state_db)
         self.addCleanup(self.service.close)
         self.service.refresh_agents()
         self.inbox = self.service.inbox
