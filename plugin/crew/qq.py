@@ -426,7 +426,8 @@ class Client:
                     self._heartbeat_error = QQError(self._redact('Heartbeat send failed: %s' % exc), kind='network')
                     ws.drop()
                     return
-                next_beat = now + interval
+                # Keep a fixed cadence: Windows wakes ~16 ms late, and drift would let the ACK timeout win.
+                next_beat += interval
             if now >= self._token_expires - 50:
                 try:
                     self._token()
