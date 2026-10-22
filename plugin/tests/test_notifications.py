@@ -392,6 +392,21 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         self.inbox.tick()
         self.assertEqual(len(self.client.sent), 3)
 
+    def test_manual_away_pushes_at_once_but_later_items_still_batch(self):
+        first = board.ask(self.conn, 's1', '先做哪一个', ['A', 'B'], 'B', True, now=NOW)
+        self.inbox.set_away(True)
+        self.inbox.tick()
+        self.assertEqual([m['kind'] for m in self.client.sent], ['markdown'])
+        self.assertIn('#%s' % first, self.client.sent[0]['text'])
+        second = board.ask(self.conn, 's3', '是否发布', ['是', '否'], '否', True, now=NOW)
+        self.inbox.tick()
+        self.clock += dt.timedelta(seconds=29)
+        self.inbox.tick()
+        self.assertEqual(len(self.client.sent), 1)
+        self.clock += dt.timedelta(seconds=1)
+        self.inbox.tick()
+        self.assertIn('#%s' % second, self.client.sent[1]['text'])
+
     def test_empty_and_more_than_twenty_five_options_require_quoted_reply(self):
         for options in ([], ['选项%s' % n for n in range(26)]):
             identity = board.ask(self.conn, 's1', '怎么处理', options, now=NOW)
@@ -407,10 +422,13 @@ class NotificationTests(ShellFixture, unittest.TestCase):
 
     def test_resolved_before_batch_is_not_sent_and_manual_away_survives_restart(self):
         identity = board.ask(self.conn, 's1', '是否继续', ['继续'], now=NOW)
-        self.inbox.set_away(True)
+        self.locked = True
         self.inbox.tick()
         board.answer(self.conn, identity, '继续', now=NOW)
         self.clock += dt.timedelta(seconds=31)
+        self.inbox.tick()
+        self.assertEqual(self.client.sent, [])
+        self.inbox.set_away(True)
         self.inbox.tick()
         self.assertEqual(self.client.sent, [])
         self.restart()
@@ -419,7 +437,7 @@ class NotificationTests(ShellFixture, unittest.TestCase):
     def test_failed_question_send_does_not_record_unattempted_notes_or_lose_them(self):
         board.report(self.conn, 's3', '必须保留的进展', now=NOW)
         identity = board.ask(self.conn, 's1', '随后发送的问题', ['A'], now=NOW)
-        self.inbox.set_away(True)
+        self.locked = True
         self.inbox.tick()
         self.inbox.pending = dict(sorted(self.inbox.pending.items(), key=lambda pair: pair[1]['kind'] == 'decision'))
         self.client.send_errors.append(qq.QQError('markdown unavailable', kind='network'))

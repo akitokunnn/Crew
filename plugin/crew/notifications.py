@@ -12,7 +12,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 
 from . import board, chat, qq, store
 
-TEXT_LIMIT = 2000  # 待主控实测 QQ 的文字长度限制。
+TEXT_LIMIT = 2000  # 10-23 实测 5000 字也能发；2000 一段是为了手机上好读。
 LOG = logging.getLogger(__name__)
 
 HELP = ('/h 帮助\n/ls 所有 leader（带编号）\n/1 切换到编号 1 的 leader，/2 以此类推\n'
@@ -65,6 +65,8 @@ class Inbox:
         if failed or uncertain_reply:
             self.error = '上次 QQ 投递未完成，请检查服务日志。' + ((failed['error'] or '') if failed else '')
         self.pending, self.pending_at = {}, None
+        # Switching "我已离开" on by hand means the user has gone; only lock-screen absence waits out the batch window.
+        self.push_now = False
         self.stop, self.wake = threading.Event(), threading.Event()
         self.worker, self.receiver = None, None
 
@@ -79,6 +81,7 @@ class Inbox:
         with self.lock:
             self.config['manual_away'] = away
             self.save_config()
+            self.push_now = away
         self.wake.set()
         return self.status()
 
@@ -205,11 +208,12 @@ class Inbox:
                     self.pending[identity] = dict(id=identity, kind='report', project=project['name'],
                         session_id=report['session_id'], title='阶段进展', detail=report['body'], created_at=report['created_at'])
         self.pending = {key: item for key, item in self.pending.items() if key in active}
+        push_now, self.push_now = self.push_now, False
         if not self.pending:
             self.pending_at = None
         else:
             self.pending_at = self.pending_at or now
-            if (now - self.pending_at).total_seconds() >= self.batch_seconds:
+            if push_now or (now - self.pending_at).total_seconds() >= self.batch_seconds:
                 self.flush()
                 self.pending.clear()
                 self.pending_at = None
