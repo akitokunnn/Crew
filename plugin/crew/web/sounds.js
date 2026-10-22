@@ -77,7 +77,14 @@
     if (timer === null) timer = setTimeout(flush, 80);
   }
 
+  function preview(kind) {
+    // Settings "试听" ignores cooldowns so volume can be judged by ear; it still respects mute.
+    if (muted || volume === 0 || context === null || context.state !== "running") return;
+    const at = context.currentTime + .005;
+    for (const [offset, startHz, endHz, duration, peak] of sounds[kind].notes) note(at + offset, startHz, endHz, duration, peak);
+  }
+
   document.addEventListener("pointerdown", unlockAudio, {once:true});
   document.addEventListener("keydown", unlockAudio, {once:true});
-  window.CrewSound = Object.freeze({play, setMuted, setVolume, getSettings:() => ({muted, volume})});
+  window.CrewSound = Object.freeze({play, preview, setMuted, setVolume, getSettings:() => ({muted, volume})});
 })();

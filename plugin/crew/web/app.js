@@ -9,7 +9,8 @@
   let theme = "system", trayCollapsed = false, othersOpen = false, paletteItems = [], paletteIndex = 0;
   let soundGeneration = 0;
   const waitingSounds = new Map();
-  let fontScale = "1";
+  let fontScale = 1;
+  const FONT_MIN = .9, FONT_MAX = 1.4;
   const decisionsOpen = new Set(), usageCollapsed = new Set(), adoptForms = new Map(), adopted = new Map(), operationIds = new Set();
   const colors = ["#3E7C74", "#8A5A7E", "#A07A3A", "#4F6B8F", "#5E7F55", "#A8604F", "#8C7650", "#5C5F9E", "#A35D6A", "#4F7A8C", "#77773F"];
   const statusText = {working:"在干活", waiting:"等你", idle:"空闲", offline:"离线", closed:"已归档"};
@@ -82,9 +83,11 @@
   function quotas() { return [["Claude 每周", state.limits.claude.seven_day], ["Claude 5 小时", state.limits.claude.five_hour], ["Codex 每周", state.limits.codex]]; }
   function quotaRow(label, limit) { return `<div class="qrow"><span>${label}</span><span class="pct">${limit === null ? "未采集" : `${count(limit.used_percent)}%`}</span>${limit === null ? "" : `<span class="bar"><i class="${limit.used_percent >= 80 ? "hi" : ""}" style="width:${limit.used_percent}%"></i></span>`}</div>`; }
   function applyTheme() { if (theme === "system") delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = theme; }
-  function applyFontScale() { document.documentElement.style.setProperty("--fs", fontScale); }
+  function applyFontScale() { document.documentElement.style.setProperty("--fs", String(fontScale)); }
+  function setFontScale(value) { fontScale = value; applyFontScale(); try { localStorage.setItem("crew.fontScale", String(value)); } catch (error) { toast(error.message); } }
   function renderSettings() {
-    replace($("settings"), `<h3 id="settings-title">设置</h3><section class="settings-section" aria-labelledby="font-size-label"><h4 id="font-size-label">字号</h4><div class="settings-options" role="radiogroup" aria-labelledby="font-size-label">${[["1", "标准"], ["1.125", "大"], ["1.25", "更大"]].map(([scale, label]) => `<button type="button" role="radio" aria-checked="${fontScale === scale}" data-act="font-size" data-scale="${scale}">${label}</button>`).join("")}</div></section>`);
+    const sound = CrewSound.getSettings(), pct = value => `${Math.round(value * 100)}%`;
+    replace($("settings"), `<h3 id="settings-title">设置</h3><section class="settings-section"><div class="settings-row"><h4>字号</h4><span class="settings-value" id="font-scale-value">${pct(fontScale)}</span><button type="button" class="settings-link" data-act="font-reset" ${fontScale === 1 ? "disabled" : ""}>恢复标准</button></div><input class="settings-range" type="range" min="${FONT_MIN}" max="${FONT_MAX}" step="0.01" value="${fontScale}" data-setting="font" aria-label="字号"></section><section class="settings-section"><div class="settings-row"><h4>提示音</h4><span class="gap"></span><button class="switch ${sound.muted ? "" : "on"}" data-act="sound-mute" role="switch" aria-checked="${!sound.muted}" aria-label="提示音"><span class="track"></span></button></div><div class="settings-row"><span class="settings-sub">音量</span><span class="settings-value" id="sound-volume-value">${pct(sound.volume)}</span><button type="button" class="settings-link" data-act="sound-test" ${sound.muted ? "disabled" : ""}>试听</button></div><input class="settings-range" type="range" min="0" max="1" step="0.01" value="${sound.volume}" data-setting="volume" aria-label="提示音音量" ${sound.muted ? "disabled" : ""}></section>`);
   }
   function notificationChannel() {
     const channel = state.notification.channel;
@@ -322,7 +325,7 @@
   function setup() {
     $("overlay-root").innerHTML = '<button class="rp-scrim" id="rp-scrim" data-act="right-close" aria-label="关闭架构图"></button><div class="card-back" id="card-back"></div><section class="card" id="card" role="dialog" aria-modal="true" aria-label="下属卡片" tabindex="-1"></section><div class="menu" id="menu" role="menu"></div><div class="backdrop" id="backdrop"></div><section class="settings-popover" id="settings" popover aria-labelledby="settings-title"></section>';
     try { const stored = localStorage.getItem("crew.theme"); if (["system", "light", "dark"].includes(stored)) theme = stored; } catch (error) { toast(error.message); }
-    try { const stored = localStorage.getItem("crew.fontScale"); if (["1", "1.125", "1.25"].includes(stored)) fontScale = stored; } catch (error) { toast(error.message); }
+    try { const stored = Number(localStorage.getItem("crew.fontScale")); if (stored >= FONT_MIN && stored <= FONT_MAX) fontScale = stored; } catch (error) { toast(error.message); }
     applyTheme(); applyFontScale(); renderSettings();
     document.addEventListener("click", event => {
       if (event.target.id === "backdrop") { closeBackdrop(); return; }
@@ -341,7 +344,9 @@
       else if (act === "answer-option") action(`answer:${id}`, () => answer(Number(id), state.decisions.find(item => item.id === Number(id)).options[Number(button.dataset.option)]));
       else if (act === "away") action("away", async () => { await api("/api/notifications/away", {away:!state.notification.manual_away}); await loadState(true); });
       else if (act === "theme") { theme = {system:"light", light:"dark", dark:"system"}[theme]; applyTheme(); try { localStorage.setItem("crew.theme", theme); } catch (error) { toast(error.message); } renderSidebar(); }
-      else if (act === "font-size") { fontScale = button.dataset.scale; applyFontScale(); try { localStorage.setItem("crew.fontScale", fontScale); } catch (error) { toast(error.message); } renderSettings(); }
+      else if (act === "font-reset") { setFontScale(1); renderSettings(); }
+      else if (act === "sound-mute") { CrewSound.setMuted(!CrewSound.getSettings().muted); renderSettings(); }
+      else if (act === "sound-test") CrewSound.preview("decision");
       else if (act === "right-open") { rightOpen = true; renderRight(); $("right-panel").querySelector('[data-act="right-close"]').focus(); }
       else if (act === "right-close") { rightOpen = false; renderRight(); $("main").querySelector('[data-act="right-open"]')?.focus(); }
       else if (act === "modal-leader") openModalLeader();
@@ -368,7 +373,10 @@
       else if (act === "handoff-go") action("continue", async () => { await api("/api/open/continue", {session_id:cardId, confirm:handoff.needs_confirmation}); handoff = null; await loadState(true); toast("已在 VS Code 接上同一个会话"); });
       else if (act === "member-history") { const item = member(cardId); closeCard(); navigate("chat", item.leader_session_id, item.session_id); }
     });
-    document.addEventListener("input", event => { const form = event.target.closest("[data-adopt-form]"); if (form && event.target.name === "name") adoptForms.get(form.dataset.adoptForm).name = event.target.value; });
+    document.addEventListener("input", event => {
+      // Update only the readout while dragging; re-rendering would steal the slider from the pointer.
+      if (event.target.dataset.setting === "font") { setFontScale(Number(event.target.value)); $("font-scale-value").textContent = `${Math.round(fontScale * 100)}%`; $("settings").querySelector('[data-act="font-reset"]').disabled = fontScale === 1; return; }
+      if (event.target.dataset.setting === "volume") { CrewSound.setVolume(Number(event.target.value)); $("sound-volume-value").textContent = `${Math.round(Number(event.target.value) * 100)}%`; return; } const form = event.target.closest("[data-adopt-form]"); if (form && event.target.name === "name") adoptForms.get(form.dataset.adoptForm).name = event.target.value; });
     document.addEventListener("submit", event => {
       const form = event.target;
       if (form.dataset.answerForm !== undefined) { event.preventDefault(); const text = form.elements.answer.value.trim(); if (text !== "") action(`answer:${form.dataset.answerForm}`, () => answer(Number(form.dataset.answerForm), text)); }
