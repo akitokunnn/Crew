@@ -28,8 +28,8 @@ Crew/
       chat.py                         后台成员/leader CLI、流式协议、聊天记录与恢复
       web.py  web/                    工作区网页和 leader 聊天，含本地 Markdown 库、HarmonyOS Sans 字体、logo
       vscode_sessions.py              复现 VS Code 会话列表与归档名单（只读），供待收编和归档同步
-      presentation.py session_ops.py  待处理事项（飞书推送用）与可撤销会话整理
-      feishu.py notifications.py      复用本机飞书 CLI 的收发与落库
+      presentation.py session_ops.py  待处理事项（QQ 推送用）与可撤销会话整理
+      qq.py notifications.py          QQ 官方机器人传输、收发与落库
       claude_limits.py autostart.py   官方本地额度快照、当前用户登录自启
     defaults/blacklist.txt  defaults/prices.json
     tests/                            unittest，cd plugin && python -m unittest discover -s tests
@@ -53,7 +53,8 @@ Crew/
 | `web.json` | 正在运行的本机网页服务地址，供 CLI 连接；服务退出时移除自己的地址 |
 | `codex_runs.jsonl` | 派活脚本记的派活开始与结束（§9） |
 | `claude-limits.json` | 网页 Claude 的额度事件快照，按窗口保留采集时间 |
-| `feishu.json` | 当前用户通知配置、手动离开状态、飞书当前 leader 与 leader 编号；没有应用密钥 |
+| `qq.json` | 用户维护的 QQ 机器人 app_id / app_secret；只读，不存在时不启动收发线程 |
+| `notify.json` | Crew 维护 owner_openid、since、manual_away、current_leader_session_id、leader_numbers；加锁直接写 |
 | `web-autostart.log` | 登录自启入口及后台服务的输出 |
 
 所有函数显式接收 `home` 参数；命令行有全局参数 `--home DIR`（默认 `store.default_home()`），测试一律传临时目录。**不用环境变量改 HOME。**
@@ -229,7 +230,7 @@ PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stder
 
 | 接口 | 内容 |
 |---|---|
-| `GET /api/state?project=P` | `project`、`projects`（只有名字）、`leaders`（状态、未读、`read_seq`、本组待拍板数、待发通知数、成员）、`members`（有名字的非 leader：所在位置 bg / vscode / offline、任务、任务卡、最近 5 条进展、运行中和 24 小时内的 Codex、借用与文件归属）、`decisions`（只含未答，带提问者与其 leader）、`candidates`（三组）、`limits`（Claude 两个窗口、Codex，拿不到为 null）、`attention`（飞书推送用）、`notification`、`agents_error`、`vscode_error`。journal 按文件签名缓存 |
+| `GET /api/state?project=P` | `project`、`projects`（只有名字）、`leaders`（状态、未读、`read_seq`、本组待拍板数、待发通知数、成员）、`members`（有名字的非 leader：所在位置 bg / vscode / offline、任务、任务卡、最近 5 条进展、运行中和 24 小时内的 Codex、借用与文件归属）、`decisions`（只含未答，带提问者与其 leader）、`candidates`（三组）、`limits`（Claude 两个窗口、Codex，拿不到为 null）、`attention`（QQ 推送用）、`notification`（含 channel 状态与 detail）、`agents_error`、`vscode_error`。journal 按文件签名缓存 |
 | `POST /api/project/init` | name、root；启用已有本机目录 |
 | `POST /api/roster/adopt` | session_id、name、可选 group；没在运行的候选也能收编；进有 leader 的组时排 leader 通知 |
 | `POST /api/roster/move` / `POST /api/roster/remove` | 换组 / 退组，按 session_id |
@@ -253,18 +254,20 @@ PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stder
 ### 会话整理、工作区视图与通知
 
 - `session_controls` 保存显式归档、移出和改名。移出不删会话与历史，hook 不会自动收编回来；主动 join 可重新加入。leader 改名同步组与成员归属，pending handoff 跟随；撤销恢复操作前的记录，不操作进程。
-- **leader 通知**：Crew 自己不发会话间消息。要告诉下属的事（网页 / 飞书答完拍板、收编进组、`crew join` 入组）写进 `leader_notices`；网页服务每 2 秒把待发通知合并成一条 `[Crew]` 消息写进空闲的 leader（journal 记 source=crew），由 leader 用 SendMessage 转告下属。leader 在别的进程里运行或进程状态未知时不投递。
+- **leader 通知**：Crew 自己不发会话间消息。要告诉下属的事（网页 / QQ 答完拍板、收编进组、`crew join` 入组）写进 `leader_notices`；网页服务每 2 秒把待发通知合并成一条 `[Crew]` 消息写进空闲的 leader（journal 记 source=crew），由 leader 用 SendMessage 转告下属。leader 在别的进程里运行或进程状态未知时不投递。
 - **归档同步**：现有 10 秒轮询里读 VS Code 归档名单，已收编会话被 VS Code 归档就 `session_ops.archive`，记 `vscode:archived`；VS Code 取消归档不跟随。
 - **已读与任务卡**：`read_cursors` 记用户读到 leader journal 的哪条，算未读和"离开后"分隔线；`session_cards` 记下属的负责范围和完成标准，`sessions.task` 仍是"现在在做什么"。
 - `POST /api/session/rename|archive|remove|restore|undo` 用精确 session_id；返回 `session` 与供撤销的 `before`。`POST /api/attention/dismiss` 可撤销标记，检查事项所属工作区。归档/移出会话的未答题保留记录，但不继续催办。
 - 用量接口及 CSV 接受 `project=P&scope=workspace|machine`。报告函数末尾可选 `project=None`，按 cwd 最长根目录匹配；跨目录 Codex 按任务工作目录统计。`summary.claude_limits` 来自官方本地缓存与 stream-json `rate_limit_event`，不轮询私有 OAuth 接口，不启动模型来查额度。
 - 派活脚本仓库副本在 `integrations/codex-dispatch/run_codex.ps1`：同 run_id 先写开始、再写结束，scanner upsert。只有未关联的 rollout 时状态为 unknown，最后日志时间不当完成时间。
-- 飞书复用既有 lark-cli bot 登录和一个共享事件总线。`notification_messages` 保存实际发送消息与问题/leader的关系，`notification_inbound` 去重，`notification_replies` 排队并记录每条网页来信的回复边界。token、回调临时票据不入库。发失败保留明确错误，不自动重发。
-- 通知只在手动离开或桌面锁屏时主动发送，约 30 秒合并；期间已处理的事项不发送。锁屏来自已有桌面代理的带 token POST `/api/status`，不启动代理、不操作桌面。代理故障单独提示，手动离开与收件仍可用。
-- 飞书私聊用命令集（`/h`、`/ls`、`/1`、`/q`、`/back`），普通文字发给当前 leader；`#题号 答复` 只接受 Crew 展示过的未答题，保存后给 leader 排通知。CLI 卡片 consumer 未就绪时改为文字选项。
-- 网页 leader 的飞书消息进入同一 input stream，journal 标记 source=feishu；回复截至这条消息之后第一个 idle/offline，总会回传；不在网页后台运行的 leader 明确拒绝。详见 [FEISHU.md](FEISHU.md)。
+- QQ 由 `qq.Client(app_id, app_secret)` 通过 WebSocket 收事件、HTTPS 主动发送；重连交给传输层。`run` 抛 `QQError` 时保留真实原因并停止收发，不在通知层重试。首次私聊绑定主人，此后其他人的消息和按钮只记日志。
+- `notification_messages` 保存发送结果的 `id` / `ref_idx` 与问题、leader 的关系；`notification_inbound` 按 message_id / interaction_id 去重；`notification_replies` 排队并记录每条 QQ 来信的回复边界。凭证和回调临时票据不入库。发送失败保留明确错误，不自动重发；拒收时提示在手机 QQ 打开“允许主动发送”，下一次发送成功恢复通道状态。
+- 通知只在手动离开或桌面锁屏时主动发送，约 30 秒合批；每道未答拍板单独发 Markdown 和单选回调按钮，推荐项在前，无选项或超过 5×5 容量时提示引用回复，其余事项合成一条文字。期间已处理的事项不发送，已推送的事项不再推。锁屏来自已有桌面代理的带 token POST `/api/status`，不启动代理、不操作桌面；代理故障单独提示。
+- QQ 私聊用命令集（`/h`、`/ls`、`/1`、`/q`、`/back`），普通文字发给当前 leader。拍板通过按钮或引用该条拍板消息答复；按钮先应答 interaction，再校验题号、选项和题目状态。保存答复的 actor 与给 leader 排的通知 source 均为 `qq`。`/q` 逐题重发，最多 10 题并说明剩余数。
+- 网页 leader 的 QQ 消息进入同一 input stream，journal 标记 source=qq；马上回执已转交或忙时排队，回复截至这条消息之后第一个 idle/offline，结束后发回最后一段文字。长回复按段落切分，`TEXT_LIMIT = 2000` 待主控实测；没有文字、启动失败等都给明确答复，不在网页后台运行的 leader 明确拒绝。截图复用网页图片校验和保存（最多 5 张、单张 ≤ 5 MB），语音用平台识别文字，视频和文件明确拒绝。详见 [QQ.md](QQ.md)。
+- 网页 `notification.channel` 提供 unconfigured、unbound、connecting、connected、reconnecting、rejected、error 和真实 detail；左下角显示 QQ 状态与绑定、拒收操作提示，无通道开关。
 - `autostart` 用当前用户 InteractiveToken 计划任务，普通权限、登录触发、隐藏运行，不保存密码。任务指向主检出；默认端口已有 Crew 时保留原服务，不重复启动。不在睡眠、休眠或注销期间维持收信。
-- leader 巡查只按需：用户问时 leader 再去查，不做定时巡查；QQ 优先级最低，须其它事项完成且账户周剩余大于 55%、日本时间 10:00 前才继续。
+- leader 巡查只按需：用户问时 leader 再去查，不做定时巡查。
 
 ## 11. 错误处理
 

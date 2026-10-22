@@ -1,23 +1,33 @@
-"""One local user's Feishu inbox, decision cards and replies.
-
-The CLI owns authentication and its shared websocket bus. Crew records which
-questions it has shown before accepting a numbered answer.
-"""
+"""One owner's QQ inbox, decision buttons and queued leader conversations."""
+import base64
 import json
+import logging
 import re
 import threading
-import traceback
 import uuid
 from contextlib import closing
 from pathlib import Path
 from urllib.error import URLError
 from urllib.request import ProxyHandler, Request, build_opener
 
-from . import board, feishu, store
+from . import board, chat, qq, store
+
+TEXT_LIMIT = 2000  # 待主控实测 QQ 的文字长度限制。
+LOG = logging.getLogger(__name__)
 
 HELP = ('/h 帮助\n/ls 所有 leader（带编号）\n/1 切换到编号 1 的 leader，/2 以此类推\n'
         '/q 所有项目的待拍板\n/back 我回来了\n'
-        '普通文字发给当前 leader。/1 是 leader 编号；#42 答复 是拍板题号，无需引用消息。')
+        '普通文字和图片发给当前 leader。/1 是 leader 编号；点按钮或引用拍板消息回复。')
+
+
+def text_parts(text):
+    while len(text) > TEXT_LIMIT:
+        end = text.rfind('\n\n', 0, TEXT_LIMIT + 1)
+        end = end + 2 if end > 0 and end + 2 <= TEXT_LIMIT else TEXT_LIMIT
+        yield text[:end]
+        text = text[end:]
+    if text:
+        yield text
 
 
 def desktop_locked():
@@ -34,29 +44,36 @@ def desktop_locked():
 class Inbox:
     def __init__(self, service, client=None, lock_status=desktop_locked, batch_seconds=30):
         self.service, self.home = service, service.home
-        self.config_path = self.home / 'feishu.json'
-        self.config = json.loads(self.config_path.read_text(encoding='utf-8')) if self.config_path.exists() else {}
-        self.config.setdefault('current_leader_session_id', None)
-        self.config.setdefault('leader_numbers', {})
+        credentials_path = self.home / 'qq.json'
+        self.credentials = None
+        if credentials_path.exists():
+            credentials = json.loads(credentials_path.read_text(encoding='utf-8'))
+            self.credentials = (credentials['app_id'], credentials['app_secret'])
+        self.config_path = self.home / 'notify.json'
+        self.config = (json.loads(self.config_path.read_text(encoding='utf-8')) if self.config_path.exists()
+                       else dict(owner_openid=None, since=None, manual_away=False,
+                                 current_leader_session_id=None, leader_numbers={}))
         self.client, self.lock_status, self.batch_seconds = client, lock_status, batch_seconds
         self.lock = threading.RLock()
         self.locked, self.error, self.presence_error = False, None, None
-        self.ready, self.consumer_errors = set(), {}
+        self.connection_state = 'connecting'
+        self.channel = dict(state=('unconfigured' if self.credentials is None else
+                                   'unbound' if self.config['owner_openid'] is None else 'connecting'), detail=None)
         with closing(store.connect(self.home)) as conn:
             failed = conn.execute("SELECT error FROM notification_messages WHERE status IN ('error','sending') ORDER BY created_at DESC LIMIT 1").fetchone()
             uncertain_reply = conn.execute("SELECT 1 FROM notification_replies WHERE status='sending' LIMIT 1").fetchone()
         if failed or uncertain_reply:
-            self.error = '上次飞书投递未完成，请检查服务日志。' + ((failed['error'] or '') if failed else '')
+            self.error = '上次 QQ 投递未完成，请检查服务日志。' + ((failed['error'] or '') if failed else '')
         self.pending, self.pending_at = {}, None
         self.stop, self.wake = threading.Event(), threading.Event()
-        self.worker, self.consumers, self.readers = None, [], []
+        self.worker, self.receiver = None, None
 
     def status(self):
         with self.lock:
-            manual = self.config.get('manual_away', False)
+            manual = self.config['manual_away']
             return dict(manual_away=manual, locked=self.locked, away=manual or self.locked,
-                        enabled=self.config.get('enabled', False), card_ready=feishu.CARD_EVENT in self.ready,
-                        error=self.error or '；'.join(self.consumer_errors.values()) or self.presence_error)
+                        enabled=self.credentials is not None, channel=self.channel.copy(),
+                        error=self.error or self.presence_error)
 
     def set_away(self, away):
         with self.lock:
@@ -71,71 +88,72 @@ class Inbox:
             self.config_path.write_text(json.dumps(self.config, ensure_ascii=False, indent=2), encoding='utf-8')
 
     def start(self):
-        if not self.config.get('enabled'):
+        if self.credentials is None:
             return
-        self.worker = threading.Thread(target=self.run, name='crew-feishu', daemon=True)
+        self.client = qq.Client(*self.credentials) if self.client is None else self.client
+        self.receiver = threading.Thread(target=self.receive_loop, name='crew-qq-receive', daemon=True)
+        self.worker = threading.Thread(target=self.run, name='crew-qq-notify', daemon=True)
+        self.receiver.start()
         self.worker.start()
 
     def run(self):
-        try:
-            self.client = self.client or feishu.Client()
-            for key in feishu.EVENT_KEYS:
-                process = self.client.start_consumer(key)
-                self.consumers.append(process)
-                for pipe, target, args in ((process.stdout, self._read_events, (process.stdout,)),
-                                           (process.stderr, self._read_errors, (process.stderr, key))):
-                    thread = threading.Thread(target=target, args=args, daemon=True)
-                    thread.start()
-                    self.readers.append(thread)
-            while not self.stop.is_set():
+        while not self.stop.is_set():
+            try:
                 self.tick()
-                self.wake.wait(2)
-                self.wake.clear()
-        except Exception as exc:
-            self.error = str(exc)
-            traceback.print_exc()
-        finally:
-            for process in self.consumers:
-                if process.poll() is None:
-                    process.stdin.close()
-            for process in self.consumers:
-                try:
-                    process.wait(timeout=5)
-                except Exception as exc:
-                    self.error = '飞书接收进程未正常结束：' + str(exc)
+            except (qq.QQError, OSError, board.BoardError) as exc:
+                self.error = '%s: %s' % (type(exc).__name__, exc)
+                LOG.exception('QQ notification processing failed')
+            self.wake.wait(2)
+            self.wake.clear()
+
+    def receive_loop(self):
+        try:
+            self.client.run(self.receive, self.on_state, self.stop)
+        except qq.QQError as exc:
+            self.stop.set()
+            self.fail_channel(exc)
+            self.wake.set()
+
+    def on_state(self, state, detail):
+        with self.lock:
+            self.connection_state = state
+            if state == 'stopped':
+                if not self.stop.is_set():
+                    self.channel = dict(state='error', detail=detail or 'QQ 接收连接已停止')
+            elif self.channel['state'] not in ('rejected', 'error'):
+                self.channel = dict(state=('unbound' if state == 'connected' and
+                                          self.config['owner_openid'] is None else state), detail=detail)
+
+    def fail_channel(self, exc):
+        reason = '%s(%s): %s' % (type(exc).__name__, exc.kind, exc)
+        with self.lock:
+            self.channel = dict(state='rejected' if exc.kind == 'rejected' else 'error',
+                                detail=(reason + '；请在手机 QQ 打开“允许主动发送”'
+                                        if exc.kind == 'rejected' else reason))
+            self.error = reason
+
+    def send(self, method, *args):
+        try:
+            result = method(self.config['owner_openid'], *args)
+        except qq.QQError as exc:
+            self.fail_channel(exc)
+            raise
+        with self.lock:
+            if not self.stop.is_set() and self.channel['state'] in ('rejected', 'error', 'unbound', 'connecting'):
+                self.channel = dict(state='reconnecting' if self.connection_state == 'reconnecting' else 'connected', detail=None)
+                self.error = None
+        return result
+
+    def send_text(self, text):
+        return self.send(self.client.send_text, text)
 
     def close(self):
         self.stop.set()
         self.wake.set()
         if self.worker:
             self.worker.join(timeout=12)
-
-    def _read_events(self, stream):
-        for line in stream:
-            try:
-                self.receive(json.loads(line))
-            except Exception as exc:
-                self.error = '飞书消息处理失败：' + str(exc)
-                traceback.print_exc()
-
-    def _read_errors(self, stream, key):
-        lines = []
-        for line in stream:
-            if '[event] ready' in line:
-                self.ready.add(key)
-                continue
-            lines.append(line)
-        self.ready.discard(key)
-        if self.stop.is_set():
-            return
-        try:
-            envelope = json.loads(''.join(lines))
-            message = envelope['error']['message']
-        except (ValueError, KeyError, TypeError):
-            message = '接收连接已停止，请查看服务日志'
-        if key == feishu.CARD_EVENT and 'not subscribed' in message:
-            message = '飞书卡片按钮尚未启用，请用文字答复；需在开放平台启用 card.action.trigger。'
-        self.consumer_errors[key] = message
+        if self.receiver:
+            self.receiver.join(timeout=12)
 
     def _leader(self, conn, session_id):
         session = board.session(conn, session_id)
@@ -146,15 +164,17 @@ class Inbox:
         return board.session(conn, group[0]) if group and group[0] else session
 
     def refresh_presence(self):
-        if not self.config.get('manual_away'):
+        if not self.config['manual_away']:
             try:
                 self.locked = self.lock_status()
                 self.presence_error = None
             except (OSError, URLError, ValueError) as exc:
                 self.locked = False
-                self.presence_error = '无法读取锁屏状态，请用“我已离开”开关：' + str(exc)
+                self.presence_error = '无法读取锁屏状态，请用“我已离开”开关：%s: %s' % (type(exc).__name__, exc)
 
     def tick(self):
+        if self.config['owner_openid'] is None:
+            return
         self.refresh_presence()
         self.process_replies()
         if not self.status()['away']:
@@ -167,16 +187,16 @@ class Inbox:
         for project in projects:
             state = self.service.state(project['name'])
             for item in state['attention']:
-                if item['kind'] != 'decision' and (item['created_at'] or '') < self.config.get('since', ''):
+                if item['kind'] != 'decision' and (item['created_at'] or '') < self.config['since']:
                     continue
                 if item['id'] not in sent and item['session_id']:
                     active.add(item['id'])
                     self.pending[item['id']] = {**item, 'project': project['name']}
             with closing(store.connect(self.home)) as conn:
-                reports = board.reports(conn, project['name'], since=self.config.get('since'))
+                reports = board.reports(conn, project['name'], since=self.config['since'])
             for report in reports:
                 identity = 'report:' + str(report['id'])
-                if report['created_at'] < self.config.get('since', '') or identity in sent:
+                if report['created_at'] < self.config['since'] or identity in sent:
                     continue
                 with closing(store.connect(self.home)) as conn:
                     session = board.session(conn, report['session_id'])
@@ -195,7 +215,7 @@ class Inbox:
                 self.pending_at = None
 
     def flush(self):
-        entries, notes = [], []
+        notes = []
         now = self.service.now().isoformat()
         with closing(store.connect(self.home)) as conn:
             for item in self.pending.values():
@@ -206,72 +226,160 @@ class Inbox:
                 if item['kind'] == 'decision' and decision is None:
                     continue
                 entry = dict(item=item, decision=decision, workspace=item['project'], leader=label,
-                             leader_session_id=leader['session_id'], buttons_enabled=feishu.CARD_EVENT in self.ready)
-                if decision is None:
-                    entry['text'] = item['title'] + '\n' + item['detail']
-                (entries if decision else notes).append(entry)
-                conn.execute('INSERT INTO notification_messages(item_id,project,leader_session_id,decision_id,kind,created_at,content,status) VALUES(?,?,?,?,?,?,?,?)',
-                             (item['id'], item['project'], leader['session_id'], item.get('decision_id'), item['kind'], now,
-                              json.dumps(entry, ensure_ascii=False), 'sending'))
-            batches = [(entries + notes, True)] if entries else [(notes, False)]
-            for batch, is_card in batches:
-                if not batch:
-                    continue
-                key = str(uuid.uuid5(uuid.NAMESPACE_URL, '|'.join(sorted(e['item']['id'] for e in batch))))
-                try:
-                    if is_card:
-                        result = self.client.send_questions(self.config['owner_id'], batch, idempotency_key=key)
-                    else:
-                        text = '\n\n'.join('%s·%s\n%s\n%s' % (e['workspace'], e['leader'], e['item']['title'], e['item']['detail']) for e in batch)
-                        result = self.client.send_text(self.config['owner_id'], text, idempotency_key=key)
-                    for entry in batch:
-                        conn.execute("UPDATE notification_messages SET message_id=?,chat_id=?,status='sent' WHERE item_id=?",
-                                     (result['message_id'], result.get('chat_id'), entry['item']['id']))
-                except Exception as exc:
-                    for entry in batch:
-                        conn.execute("UPDATE notification_messages SET status='error',error=? WHERE item_id=?", (str(exc), entry['item']['id']))
-                    raise
-
-    def refresh_card(self, conn, message_id):
-        entries = []
-        for row in conn.execute('SELECT * FROM notification_messages WHERE message_id=?', (message_id,)):
-            entry = json.loads(row['content'])
-            if row['decision_id'] is not None:
-                entry['decision'] = next(d for d in board.decisions(conn, row['project'], all=True) if d['id'] == row['decision_id'])
-            entries.append(entry)
-        if entries:
-            self.client.update_questions(message_id, entries)
-
-    def receive(self, event):
-        owner = self.config['owner_id']
-        action = feishu.parse_card_action(event, owner_id=owner)
-        reply = None if action else feishu.parse_private_text(event, owner_id=owner)
-        if action is None and reply is None:
-            return
-        identity = action['event_id'] if action else reply['message_id']
-        with self.service.write_lock, closing(store.connect(self.home)) as conn:
-            if conn.execute('SELECT 1 FROM notification_inbound WHERE event_id=?', (identity,)).fetchone():
-                return
-            if action:
-                rows = [r for r in conn.execute("SELECT * FROM notification_messages WHERE message_id=? AND status='sent' AND kind='decision'", (action['message_id'],))
-                        if r['project'] == action['workspace'] and r['decision_id'] == action['decision_id']
-                        and json.loads(r['content'])['leader'] == action['leader']]
-                if not rows:
-                    return
-                decision = next(d for d in board.decisions(conn, rows[0]['project'], all=True) if d['id'] == action['decision_id'])
-                if action['answer'] not in decision['options']:
-                    raise board.BoardError('飞书按钮不属于这条问题的选项')
-                self.save_answer(conn, decision, action['answer'], identity)
-            elif reply['answer'].startswith('/'):
-                self.handle_command(conn, reply)
-            else:
-                numbered = re.fullmatch(r'#(\d+)\s+(.+)', reply['answer'], flags=re.S)
-                if numbered and numbered[2].strip():
-                    self.answer_numbered(conn, int(numbered[1]), numbered[2], identity)
+                             leader_session_id=leader['session_id'])
+                if decision:
+                    self.record_message(conn, item['id'], entry, item['kind'], now)
+                    self.deliver(conn, [item['id']], self.client.send_markdown, *self.question_message(entry))
                 else:
-                    self.queue_text(conn, reply)
-            conn.execute('INSERT INTO notification_inbound VALUES(?,?)', (identity, self.service.now().isoformat()))
+                    notes.append(entry)
+            if notes:
+                text = '\n\n'.join('%s·%s\n%s\n%s' % (
+                    e['workspace'], e['leader'], e['item']['title'], e['item']['detail']) for e in notes)
+                for entry in notes:
+                    self.record_message(conn, entry['item']['id'], entry, entry['item']['kind'], now)
+                self.deliver(conn, [e['item']['id'] for e in notes], self.client.send_text, text)
+
+    def record_message(self, conn, identity, entry, kind, now):
+        conn.execute('INSERT INTO notification_messages(item_id,project,leader_session_id,decision_id,kind,created_at,content,status) VALUES(?,?,?,?,?,?,?,?)',
+                     (identity, entry['workspace'], entry['leader_session_id'],
+                      entry['decision']['id'] if entry['decision'] else None, kind, now,
+                      json.dumps(entry, ensure_ascii=False), 'sending'))
+
+    def deliver(self, conn, identities, method, *args):
+        try:
+            result = self.send(method, *args)
+        except qq.QQError as exc:
+            for identity in identities:
+                conn.execute("UPDATE notification_messages SET status='error',error=? WHERE item_id=?",
+                             ('%s(%s): %s' % (type(exc).__name__, exc.kind, exc), identity))
+            raise
+        for identity in identities:
+            conn.execute("UPDATE notification_messages SET message_id=?,ref_idx=?,status='sent' WHERE item_id=?",
+                         (result['id'], result['ref_idx'], identity))
+
+    def question_message(self, entry):
+        decision = entry['decision']
+        text = '%s·%s #%s 待拍板\n\n%s' % (
+            entry['workspace'], entry['leader'], decision['id'], decision['question'])
+        if decision['recommendation'] is not None:
+            text += '\n\n建议：' + decision['recommendation']
+        options = decision['options']
+        if not options or len(options) > 25:
+            if options:
+                text += '\n\n' + '\n'.join('%s. %s' % (i + 1, option) for i, option in enumerate(options))
+            return text + '\n\n请引用这条拍板消息回复。', None
+        ordered = sorted(enumerate(options), key=lambda pair: pair[1] != decision['recommendation'])
+        buttons = [dict(id=str(index),
+                        render_data=dict(label=option, visited_label='已选：' + option,
+                                         style=int(option == decision['recommendation'])),
+                        action=dict(type=1, permission=dict(type=2), data='%s:%s' % (decision['id'], index),
+                                    group_id=str(decision['id']), click_limit=1,
+                                    unsupport_tips='请引用这条拍板消息回复')) for index, option in ordered]
+        keyboard = dict(content=dict(rows=[dict(buttons=buttons[i:i + 5]) for i in range(0, len(buttons), 5)]))
+        return text + '\n\n点按钮或引用拍板消息回复。', keyboard
+
+    def receive(self, kind, event):
+        try:
+            if kind == 'interaction':
+                with self.lock:
+                    owner = self.config['owner_openid']
+                if event['openid'] != owner:
+                    LOG.info('Ignored QQ interaction from non-owner %s', event['openid'])
+                    return
+                # Leader startup and outbound sends can hold write_lock for seconds.
+                self.client.ack_interaction(event['interaction_id'])
+            with self.service.write_lock, closing(store.connect(self.home)) as conn:
+                owner = self.config['owner_openid']
+                if owner is None and kind == 'message':
+                    with self.lock:
+                        self.config['owner_openid'] = event['openid']
+                        self.config['since'] = self.service.now().isoformat()
+                        self.save_config()
+                    owner = event['openid']
+                    bound = True
+                else:
+                    bound = False
+                if event['openid'] != owner:
+                    LOG.info('Ignored QQ %s from non-owner %s', kind, event['openid'])
+                    return
+                if kind == 'interaction':
+                    identity = event['interaction_id']
+                else:
+                    identity = event['message_id']
+                if conn.execute('SELECT 1 FROM notification_inbound WHERE event_id=?', (identity,)).fetchone():
+                    return
+                conn.execute('INSERT INTO notification_inbound VALUES(?,?)', (identity, self.service.now().isoformat()))
+                if bound:
+                    self.send_text('已绑定为主人。发 /h 看命令；先用 /ls 和 /1 选择 leader。')
+                elif kind == 'interaction':
+                    self.answer_button(conn, event['data'], identity)
+                else:
+                    try:
+                        self.receive_message(conn, event)
+                    except (board.BoardError, OSError) as exc:
+                        reason = '%s: %s' % (type(exc).__name__, exc)
+                        self.error = reason
+                        LOG.exception('QQ message processing failed')
+                        self.send_text('消息未处理：' + reason)
+        except qq.QQError as exc:
+            self.fail_channel(exc)
+            LOG.exception('QQ event processing failed')
         self.wake.set()
+
+    def receive_message(self, conn, event):
+        text, attachments = event['text'], event['attachments']
+        if any(a['kind'] in ('video', 'file') for a in attachments):
+            self.send_text('暂不支持')
+            return
+        voices = [a for a in attachments if a['kind'] == 'voice']
+        if any(not a['voice_text'] for a in voices):
+            self.send_text('没听清，请打字')
+            return
+        text = '\n'.join(part for part in [text, *(a['voice_text'] for a in voices)] if part)
+        images = [a for a in attachments if a['kind'] == 'image']
+        if text.startswith('/'):
+            self.handle_command(conn, dict(answer=text, message_id=event['message_id']))
+            return
+        if len(images) > 5:
+            raise board.BoardError('一次最多发送 5 张图片')
+        validated = []
+        for image in images:
+            if image['size'] is not None and image['size'] > chat.MAX_IMAGE_BYTES:
+                raise board.BoardError('单张图片解码后不能超过 5 MB')
+            try:
+                raw = self.client.download(image['url'], chat.MAX_IMAGE_BYTES)
+            except qq.QQError as exc:
+                raise board.BoardError('图片下载失败：%s(%s): %s' % (type(exc).__name__, exc.kind, exc)) from exc
+            validated.append(dict(media_type=image['content_type'], data=base64.b64encode(raw).decode('ascii')))
+        validated = chat.validate_images(validated)
+        shown = conn.execute("SELECT * FROM notification_messages WHERE ref_idx=? AND status='sent' AND kind IN ('decision','query') LIMIT 1",
+                             (event['quoted_ref'],)).fetchone() if event['quoted_ref'] else None
+        if shown is not None:
+            if not text.strip():
+                raise board.BoardError('请用文字答复这道拍板题')
+            decision = next(d for d in board.decisions(conn, shown['project'], all=True) if d['id'] == shown['decision_id'])
+            self.save_answer(conn, decision, text, event['message_id'])
+        elif text.strip() or validated:
+            self.queue_text(conn, dict(answer=text, images=validated, message_id=event['message_id']))
+        else:
+            self.send_text('请提供文字或图片')
+
+    def answer_button(self, conn, data, identity):
+        match = re.fullmatch(r'([1-9][0-9]*):([0-9]+)', data)
+        if match is None:
+            self.send_text('按钮题号或选项序号无效，请先 /q。')
+            return
+        decision_id, index = int(match[1]), int(match[2])
+        shown = conn.execute("SELECT project,content FROM notification_messages WHERE decision_id=? AND status='sent' AND kind IN ('decision','query') LIMIT 1",
+                             (decision_id,)).fetchone()
+        if shown is None:
+            self.send_text('这道题尚未展示，请先 /q 查看待拍板。')
+            return
+        decision = next(d for d in board.decisions(conn, shown['project'], all=True) if d['id'] == decision_id)
+        if index >= len(decision['options']):
+            self.send_text('按钮选项序号无效，请先 /q。')
+            return
+        self.save_answer(conn, decision, decision['options'][index], identity)
 
     def leader_catalog(self, conn):
         leaders = [dict(row) for row in conn.execute(
@@ -348,69 +456,58 @@ class Inbox:
                     text = '已切换到 %s·%s。' % (selected['project'], selected['crew_name'])
             else:
                 text = '未知命令，请用 /h 查看帮助。'
-        self.client.send_text(self.config['owner_id'], text, idempotency_key=identity)
+        self.send_text(text)
 
     def show_questions(self, conn, identity):
-        grouped, entries = {}, []
+        entries = []
         for project in board.projects(conn):
             for decision in board.decisions(conn, project['name']):
                 asker = board.session(conn, decision['session_id'])
                 leader = asker if asker['role'] == 'leader' else board.leader_of(conn, asker['session_id'])
                 label = leader['crew_name'] if leader is not None else '无leader'
-                grouped.setdefault((project['name'], label), []).append(decision)
                 entries.append(dict(decision=decision, workspace=project['name'], leader=label,
                                     leader_session_id=leader['session_id'] if leader is not None else asker['session_id']))
-        lines = []
-        for (project, leader), decisions in grouped.items():
-            lines.append('%s·%s' % (project, leader))
-            for decision in decisions:
-                asker = board.session(conn, decision['session_id'])
-                lines.append('#%s 提问者：%s\n问题：%s\n推荐：%s' % (
-                    decision['id'], asker['crew_name'], decision['question'],
-                    decision['recommendation'] if decision['recommendation'] is not None else '无'))
-        result = self.client.send_text(self.config['owner_id'], '\n\n'.join(lines) if lines else '当前没有未答拍板。', idempotency_key=identity)
-        for entry in entries:
-            conn.execute('INSERT INTO notification_messages(item_id,project,leader_session_id,decision_id,kind,message_id,chat_id,created_at,content,status) VALUES(?,?,?,?,?,?,?,?,?,?)',
-                         ('query:%s:%s' % (identity, entry['decision']['id']), entry['workspace'], entry['leader_session_id'],
-                          entry['decision']['id'], 'query', result['message_id'], result.get('chat_id'), self.service.now().isoformat(),
-                          json.dumps(entry, ensure_ascii=False), 'sent'))
-
-    def answer_numbered(self, conn, decision_id, answer, identity):
-        shown = conn.execute("SELECT project FROM notification_messages WHERE decision_id=? AND status='sent' AND kind IN ('decision','query') LIMIT 1", (decision_id,)).fetchone()
-        if shown is None:
-            self.client.send_text(self.config['owner_id'], '这道题尚未展示，请先 /q 查看待拍板。', idempotency_key=identity)
-            return
-        decision = next(d for d in board.decisions(conn, shown['project'], all=True) if d['id'] == decision_id)
-        self.save_answer(conn, decision, answer, identity)
+        for entry in entries[:10]:
+            key = 'query:%s:%s' % (identity, entry['decision']['id'])
+            self.record_message(conn, key, entry, 'query', self.service.now().isoformat())
+            self.deliver(conn, [key], self.client.send_markdown, *self.question_message(entry))
+        if not entries:
+            self.send_text('当前没有未答拍板。')
+        elif len(entries) > 10:
+            self.send_text('本次只显示前 10 道，剩余 %s 道未答拍板。' % (len(entries) - 10))
 
     def save_answer(self, conn, decision, answer, identity):
         if decision['status'] != 'open':
-            self.client.send_text(self.config['owner_id'], '这道题已处理，请先 /q 查看待拍板。', idempotency_key=identity)
+            self.send_text('这道题已处理，请先 /q 查看待拍板。')
             return
         asker = board.session(conn, decision['session_id'])
         if asker['status'] == 'closed' or board.is_archived(conn, asker['session_id']):
-            self.client.send_text(self.config['owner_id'], '这条会话已归档或移出 Crew，答复尚未保存。请先在 Crew 恢复会话。', idempotency_key=identity)
+            self.send_text('这条会话已归档或移出 Crew，答复尚未保存。请先在 Crew 恢复会话。')
             return
         now = self.service.now().isoformat()
-        board.answer(conn, decision['id'], answer, actor='feishu', now=now)
+        board.answer(conn, decision['id'], answer, actor='qq', now=now)
         leader = asker if asker['role'] == 'leader' else board.leader_of(conn, asker['session_id'])
         if leader is not None:
             notice = '#%s\n提问者：%s（cc_name：%s）\n问题：%s\n答复：%s\n请马上用 SendMessage 转告并叫它继续' % (
                 decision['id'], asker['crew_name'], asker['cc_name'], decision['question'], answer)
-            board.queue_leader_notice(conn, leader['session_id'], notice, 'feishu', now=now)
-        cards = conn.execute("SELECT DISTINCT message_id FROM notification_messages WHERE decision_id=? AND status='sent' AND kind='decision'", (decision['id'],)).fetchall()
-        for card in cards:
-            self.refresh_card(conn, card['message_id'])
-        self.client.send_text(self.config['owner_id'], '#%s 答复已保存。' % decision['id'], idempotency_key=identity)
+            board.queue_leader_notice(conn, leader['session_id'], notice, 'qq', now=now)
+        self.send_text('#%s 答复已保存%s。' % (decision['id'], '，已转告 leader' if leader else ''))
 
     def queue_text(self, conn, reply):
         session_id = self.config['current_leader_session_id']
         leaders = self.leader_catalog(conn)
         if session_id not in {s['session_id'] for s in leaders}:
-            self.client.send_text(self.config['owner_id'], '先用 /ls 和 /1 选一个 leader。', idempotency_key=reply['message_id'])
+            self.send_text('先用 /ls 和 /1 选一个 leader。')
             return
         conn.execute('INSERT INTO notification_replies VALUES(?,?,?,?,?,?)',
-                     (reply['message_id'], session_id, reply['answer'], 'queued', None, self.service.now().isoformat()))
+                     (reply['message_id'], session_id,
+                      json.dumps(dict(text=reply['answer'], images=reply['images']), ensure_ascii=False),
+                      'queued', None, self.service.now().isoformat()))
+        leader = next(s for s in leaders if s['session_id'] == session_id)
+        label = '%s·%s' % (leader['project'], leader['crew_name'])
+        queued = conn.execute("SELECT 1 FROM notification_replies WHERE session_id=? AND status IN ('queued','running') AND message_id!=?",
+                              (session_id, reply['message_id'])).fetchone()
+        self.send_text(label + ' 正忙，排在后面' if self.service.chat.busy(session_id) or queued else '已转给 ' + label)
 
     def process_replies(self):
         with self.service.write_lock, closing(store.connect(self.home)) as conn:
@@ -435,14 +532,18 @@ class Inbox:
                     with self.service.agents_lock:
                         external = any(a['sessionId'] == sid for a in self.service.agents) and not self.service.chat.is_owned(sid)
                     if external or not self.service.chat.path(sid).exists() or not spec.exists():
-                        self._reply(conn, row, label + '\n这个 leader 不在网页后台运行，收不到飞书消息', 'error')
+                        self._reply(conn, row, label + '\n这个 leader 不在网页后台运行，收不到 QQ 消息', 'error')
                         continue
-                    after = len(journal.events)
+                    payload = json.loads(row['text'])
+                    identity = 'qq-' + uuid.uuid5(uuid.NAMESPACE_URL, row['message_id']).hex
                     try:
-                        self.service.chat.send(session, row['text'], source='feishu', identity='feishu:' + row['message_id'])
+                        self.service.chat.send(session, payload['text'], images=payload['images'],
+                                               source='qq', identity=identity)
                     except (OSError, board.BoardError) as exc:
-                        self._reply(conn, row, label + '\n消息未发送：' + str(exc), 'error')
+                        self._reply(conn, row, label + '\n消息未发送：%s: %s' % (type(exc).__name__, exc), 'error')
                         continue
+                    # Resuming may drain the previous process before it writes this message.
+                    after = next(e['seq'] for e in journal.events if e['type'] == 'message' and e['id'] == identity)
                     conn.execute("UPDATE notification_replies SET status='running',after_seq=? WHERE message_id=?", (after, row['message_id']))
                 else:
                     events = journal.after(row['after_seq'])
@@ -464,9 +565,10 @@ class Inbox:
         identity = 'reply:' + row['message_id']
         # A persisted sending state surfaces uncertain delivery instead of sending twice.
         conn.execute("UPDATE notification_replies SET status='sending' WHERE message_id=?", (row['message_id'],))
-        result = self.client.send_text(self.config['owner_id'], text, idempotency_key=str(uuid.uuid5(uuid.NAMESPACE_URL, identity)))
         session = board.session(conn, row['session_id'])
-        conn.execute('INSERT INTO notification_messages VALUES(?,?,?,?,?,?,?,?,?,?,?)',
-                     (identity, session['project'], session['session_id'], None, 'reply', result['message_id'], result.get('chat_id'),
-                      self.service.now().isoformat(), '{}', 'sent', None))
+        for index, part in enumerate(text_parts(text)):
+            key = identity + ':' + str(index)
+            entry = dict(workspace=session['project'], leader_session_id=session['session_id'], decision=None)
+            self.record_message(conn, key, entry, 'reply', self.service.now().isoformat())
+            self.deliver(conn, [key], self.client.send_text, part)
         conn.execute('UPDATE notification_replies SET status=? WHERE message_id=?', (status, row['message_id']))

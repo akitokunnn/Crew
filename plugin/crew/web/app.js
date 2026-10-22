@@ -75,6 +75,13 @@
   function quotas() { return [["Claude 每周", state.limits.claude.seven_day], ["Claude 5 小时", state.limits.claude.five_hour], ["Codex 每周", state.limits.codex]]; }
   function quotaRow(label, limit) { return `<div class="qrow"><span>${label}</span><span class="pct">${limit === null ? "未采集" : `${count(limit.used_percent)}%`}</span>${limit === null ? "" : `<span class="bar"><i class="${limit.used_percent >= 80 ? "hi" : ""}" style="width:${limit.used_percent}%"></i></span>`}</div>`; }
   function applyTheme() { if (theme === "system") delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = theme; }
+  function notificationChannel() {
+    const channel = state.notification.channel;
+    const labels = {unconfigured:"未配置", unbound:"未绑定", connecting:"连接中", connected:"已连上", reconnecting:"重连中", rejected:"被拒收", error:"出错"};
+    const hints = {unbound:"去 QQ 给机器人发一句话", rejected:"在手机 QQ 打开允许主动发送"};
+    const hint = channel.state === "unbound" || channel.state === "rejected" ? hints[channel.state] : channel.detail;
+    return `<div class="qq-status ${esc(channel.state)}" role="status"><div class="qq-state"><i></i>QQ · ${labels[channel.state]}</div>${hint === null ? "" : `<div class="qq-detail">${esc(hint)}</div>`}</div>`;
+  }
   function renderSidebar() {
     const themeIcon = {system:"auto", light:"sun", dark:"moon"}[theme], themeName = {system:"跟随系统", light:"浅色", dark:"深色"}[theme];
     replace($("sidebar"), `<div class="brand"><img class="brand-logo" src="/logo.svg" alt=""><div><div class="proj">${esc(state.project.name)}</div><div class="sub">Crew 工作区</div></div></div>
@@ -83,7 +90,7 @@
       <div class="sec-label">Leader</div>${state.leaders.map(item => `<button class="leader-item ${view === "chat" && leaderId === item.session_id && readOnlyId === null ? "active" : ""}" data-act="leader" data-id="${esc(item.session_id)}">${av(item.name, 32)}<span class="meta"><span class="nm">${esc(item.name)}${item.busy ? '<span class="typing" title="正在回复"><i></i><i></i><i></i></span>' : ""}</span><span class="goal">${esc(item.goal)}</span></span><span class="badges">${item.pending > 0 ? `<span class="b-pending" title="${item.pending} 件等你拍板">${item.pending}</span>` : ""}${item.unread > 0 ? `<span class="b-unread" title="未读">${item.unread}</span>` : ""}</span></button>`).join("")}
       <button class="leader-item add-leader" data-act="modal-leader"><span class="plus">${ic("plus", "sm")}</span><span>起 leader</span></button>
       <div class="sb-mid"><button class="nav-item ${view === "adopt" ? "active" : ""}" data-act="view" data-view="adopt">${ic("inbox")}<span>待收编</span><span class="count">${state.candidates.running.length} 个在运行</span></button><button class="nav-item ${view === "usage" ? "active" : ""}" data-act="view" data-view="usage">${ic("chart")}<span>用量</span></button></div>
-      <div class="sb-foot"><button class="quota" data-act="view" data-view="usage" aria-label="查看额度和用量">${quotas().map(([label, limit]) => quotaRow(label, limit)).join("")}</button><div class="foot-row"><button class="switch ${state.notification.manual_away ? "on" : ""}" data-act="away" role="switch" aria-checked="${state.notification.manual_away}"><span class="track"></span><span>我已离开</span></button><span class="gap"></span><button class="icon-btn" data-act="theme" title="${themeName}" aria-label="主题：${themeName}">${ic(themeIcon)}</button></div>${state.notification.away ? '<div class="away-note">离开中：待拍板会推到飞书</div>' : ""}${state.notification.error === null ? "" : `<div class="error-line">${esc(state.notification.error)}</div>`}</div>`);
+      <div class="sb-foot"><button class="quota" data-act="view" data-view="usage" aria-label="查看额度和用量">${quotas().map(([label, limit]) => quotaRow(label, limit)).join("")}</button>${notificationChannel()}<div class="foot-row"><button class="switch ${state.notification.manual_away ? "on" : ""}" data-act="away" role="switch" aria-checked="${state.notification.manual_away}"><span class="track"></span><span>我已离开</span></button><span class="gap"></span><button class="icon-btn" data-act="theme" title="${themeName}" aria-label="主题：${themeName}">${ic(themeIcon)}</button></div>${state.notification.away ? '<div class="away-note">离开中：待拍板会推到 QQ</div>' : ""}${state.notification.error === null ? "" : `<div class="error-line">${esc(state.notification.error)}</div>`}</div>`);
   }
   function decisionCard(item) {
     const opened = decisionsOpen.has(item.id);

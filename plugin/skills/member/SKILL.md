@@ -27,7 +27,7 @@ description: Crew 成员守则。在启用了 Crew 的项目里干活时，怎�
 
 1. `crew ask "<问题>" --option "<A>" --option "<B>" --recommend "<A>" [--blocking]`，记下编号。
 2. 用 SendMessage 告诉你的 leader 一句话："#<编号> 等用户拍板：<问题>"。leader 能定的会直接答你。
-3. 不卡流程的先按推荐继续做；卡流程的先做别的事。用户在网页或飞书答完，leader 会发消息叫醒你；没有 leader 时，答复在你下一轮开始时自动带给你。
+3. 不卡流程的先按推荐继续做；卡流程的先做别的事。用户在网页或 QQ 答完，leader 会发消息叫醒你；没有 leader 时，答复在你下一轮开始时自动带给你。
 
 ## 向 leader 汇报
 
