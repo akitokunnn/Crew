@@ -180,6 +180,12 @@ class VscodeSessionParserTests(unittest.TestCase):
         snapshot.list(self.projects, [])
         self.assertEqual(snapshot.record_ids, set())
 
+    def test_transcript_without_cwd_in_bounded_reads_belongs_to_its_bucket_root(self):
+        image = {"type": "user", "message": {"content": [{"type": "image", "source": {"data": "x" * 200000}}]}}
+        self.transcript([{"type": "queue-operation"}, image, image, {"type": "ai-title", "aiTitle": "带截图的会话"}])
+        sessions = vscode_sessions.list_sessions(self.projects, [self.project])
+        self.assertEqual([(s["session_id"], s["cwd"]) for s in sessions], [(SID, str(self.project))])
+
     def test_reads_only_head_and_tail_and_does_not_recurse_subagents(self):
         self.transcript([self.user(), {"type": "padding", "text": "x" * 140000}, {"aiTitle": "tail title"}])
         subagents = self.bucket / "subagents"

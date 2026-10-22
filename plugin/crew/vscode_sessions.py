@@ -156,8 +156,8 @@ class SessionList:
         cache = {}
         record_ids = set()
         buckets = {store.norm_path(Path(projects_dir) / bucket_name(root)):
-                   Path(projects_dir) / bucket_name(root) for root in roots}
-        for bucket in buckets.values():
+                   (Path(projects_dir) / bucket_name(root), root) for root in roots}
+        for bucket, root in buckets.values():
             for path in bucket.glob("*.jsonl"):
                 if not UUID_NAME.fullmatch(path.name) or not path.is_file():
                     continue
@@ -178,6 +178,10 @@ class SessionList:
                     session = _read_session(path, stat, custom_title)
                 cache[key] = (metadata, session)
                 if session is not None:
+                    if session["cwd"] is None:
+                        # A transcript can open with megabytes of pasted images, so no cwd lies in the bounded reads;
+                        # the extension still lists it under the workspace whose bucket holds it.
+                        session = {**session, "cwd": str(root)}
                     existing = sessions.get(session["session_id"])
                     if existing is None or session["mtime"] > existing["mtime"]:
                         sessions[session["session_id"]] = session
