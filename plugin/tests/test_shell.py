@@ -304,6 +304,7 @@ class WebTests(ShellFixture, unittest.TestCase):
             return response.status, value, response.headers
 
     def test_state_shape_and_display_offline_does_not_mutate_board(self):
+        board.roster(self.conn, "demo", "add", "lead", ["two"], now=NOW)
         code, state, headers = self.get("/api/state?project=demo")
         self.assertEqual(code, 200)
         self.assertTrue({"projects", "project", "now", "agents_error", "notification", "leaders", "members",
@@ -320,7 +321,7 @@ class WebTests(ShellFixture, unittest.TestCase):
         self.assertNotIn("crew_name", members["s1"])
         self.assertNotIn("open", members["s1"])
         self.assertEqual(state["leaders"][0]["session_id"], "s3")
-        self.assertEqual(state["leaders"][0]["member_ids"], ["s1"])
+        self.assertEqual(state["leaders"][0]["member_ids"], ["s1", "s2"])
         self.assertEqual(self.server.server_address[0], "127.0.0.1")
         self.assertIsNone(state["agents_error"])
 
@@ -380,6 +381,7 @@ class WebTests(ShellFixture, unittest.TestCase):
         uri.assert_called_once_with("vscode://anthropic.claude-code/open?session=" + session_id)
 
     def test_agents_cache_age_failure_preserves_original_states_then_recovers(self):
+        board.roster(self.conn, "demo", "add", "lead", ["two"], now=NOW)
         initial_calls = self.provider.call_count
         sampled_at = self.server.service.agents_at
         self.clock += dt.timedelta(seconds=7)
@@ -509,6 +511,7 @@ class WebTests(ShellFixture, unittest.TestCase):
         self.assertIsNone(outside.default_project)
 
     def test_first_agents_failure_does_not_mark_idle_offline(self):
+        board.roster(self.conn, "demo", "add", "lead", ["two"], now=NOW)
         service = web.Service(self.home, PLUGIN, agents_provider=mock.Mock(side_effect=ValueError("bad JSON")),
                               claude_root=self.claude, codex_root=self.codex, runs_file=self.runs, now=self.clock,
                               vscode_state_db=self.vscode_state_db)
@@ -624,9 +627,7 @@ class WebTests(ShellFixture, unittest.TestCase):
         session = board.session(self.conn, session_id)
         self.assertEqual((session["role"], session["group_name"]), ("member", None))
         self.assertTrue(self.get("/api/chat/history?session_id=" + session_id)[1]["running"])
-        shown = next(s for s in self.get("/api/state?project=demo")[1]["members"] if s["session_id"] == session_id)
-        self.assertTrue(shown["web_chat"])
-        self.assertEqual(shown["where"], "bg")
+        self.assertNotIn(session_id, {s["session_id"] for s in self.get("/api/state?project=demo")[1]["members"]})
         manager = self.server.service.chat
         self.assertTrue(manager.owns_pid(session_id, self.processes[0].pid))
         self.assertFalse(manager.owns_pid(session_id, -1))
@@ -639,6 +640,9 @@ class WebTests(ShellFixture, unittest.TestCase):
         self.assertEqual(len(self.processes), 1)
         manager.send(board.session(self.conn, session_id), "continue")
         board.roster(self.conn, "demo", "move", "lead", ["web-member"], now=NOW)
+        shown = next(s for s in self.get("/api/state?project=demo")[1]["members"] if s["session_id"] == session_id)
+        self.assertTrue(shown["web_chat"])
+        self.assertEqual(shown["where"], "bg")
         manager.close()
         self.server.service.chat = chat.Manager(self.home, PLUGIN, self.provider, self.process_factory)
         code, error, _ = self.get("/api/chat/send", {"session_id": session_id, "text": "resume"})

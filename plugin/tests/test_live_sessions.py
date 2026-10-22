@@ -61,8 +61,10 @@ class LiveSessionsTests(unittest.TestCase):
         # Opening a session still needs both original PIDs for its safety checks.
         self.assertEqual(len(service.agents), 2)
         board.join(self.conn, "shared", "demo", "member", self.project, None, None, now=EARLIER)
-        self.assertEqual(service.state("demo")["members"][0]["status"], "working")
-        self.assertEqual(service.state("demo")["candidates"]["left"][0]["crew_name"], "member")
+        state = service.state("demo")
+        self.assertEqual(state["members"], [])
+        self.assertEqual((state["candidates"]["running"][0]["crew_name"],
+                          state["candidates"]["running"][0]["status"]), ("member", "working"))
 
     def test_old_hooks_do_not_override_a_resumed_process_without_hooks(self):
         self.register()

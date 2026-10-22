@@ -97,7 +97,7 @@ class WorkspaceViewsTests(UsageFixture, unittest.TestCase):
         self.assertEqual({p["name"] for p in landing["projects"]}, {"alpha", "beta"})
         for key in ("leaders", "members", "decisions", "attention"):
             self.assertEqual(landing[key], [])
-        self.assertEqual(landing["candidates"], {"running": [], "others": [], "left": []})
+        self.assertEqual(landing["candidates"], {"running": [], "others": []})
         self.assertEqual(self.request("/", raw=True, project="beta")[0], 200)
         beta = self.state("beta")
         self.assertEqual(beta["project"]["name"], "beta")
