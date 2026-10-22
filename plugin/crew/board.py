@@ -191,8 +191,10 @@ def join(conn, session_id, project_name, name, cwd, worktree, branch, task=None,
                      "removed=0,name_override=? WHERE session_id=?", (name, session_id))
     _register(conn, session_id, project_name, cwd, worktree, branch, now, None, None, None)
     _identity(conn, project_name, session_id, name, role, group_name, now)
-    conn.execute("UPDATE sessions SET cc_name=?,task=?,last_event='join',last_event_at=? WHERE session_id=?",
-                 (cc_name, task, _time(now), session_id))
+    conn.execute("UPDATE sessions SET cc_name=?,last_event='join',last_event_at=? WHERE session_id=?",
+                 (cc_name, _time(now), session_id))
+    if task is not None:
+        conn.execute("UPDATE sessions SET task=? WHERE session_id=?", (task, session_id))
     _event(conn, "session:join", project_name, session_id, {"name": name, "role": role, "group": group_name}, now)
     return whoami(conn, session_id)
 
@@ -713,3 +715,65 @@ def project_handoffs(conn, project_name, limit=20):
     return _rows(conn, "SELECT h.*,s.crew_name AS from_name FROM handoffs h "
                  "LEFT JOIN sessions s ON s.session_id=h.from_session WHERE h.project=? "
                  "ORDER BY h.id DESC LIMIT ?", (project_name, limit))
+
+
+# ---------------------------------------------------------------- task cards, read cursors, leader notices
+
+@atomic
+def set_card(conn, session_id, scope, done_when, now=None):
+    s = session(conn, session_id)
+    conn.execute("INSERT INTO session_cards(session_id,scope,done_when,updated_at) VALUES(?,?,?,?) "
+                 "ON CONFLICT(session_id) DO UPDATE SET scope=excluded.scope,done_when=excluded.done_when,updated_at=excluded.updated_at",
+                 (session_id, scope, done_when, _time(now)))
+    _event(conn, "session:card", s["project"], session_id, {"scope": scope, "done_when": done_when}, now)
+
+
+def card(conn, session_id):
+    row = conn.execute("SELECT scope,done_when,updated_at FROM session_cards WHERE session_id=?", (session_id,)).fetchone()
+    return dict(row) if row is not None else None
+
+
+@atomic
+def mark_read(conn, session_id, seq, now=None):
+    """Move the human's read position forward; an older position never moves it back."""
+    if type(seq) is not int or seq < 0:
+        raise BoardError("已读位置必须是非负整数")
+    conn.execute("INSERT INTO read_cursors(session_id,seq,updated_at) VALUES(?,?,?) "
+                 "ON CONFLICT(session_id) DO UPDATE SET seq=MAX(seq,excluded.seq),updated_at=excluded.updated_at",
+                 (session_id, seq, _time(now)))
+
+
+def read_seq(conn, session_id):
+    row = conn.execute("SELECT seq FROM read_cursors WHERE session_id=?", (session_id,)).fetchone()
+    return row[0] if row is not None else 0
+
+
+def leader_of(conn, session_id):
+    """The leader session of a member's open group; None for leaders, ungrouped sessions and closed groups."""
+    s = session(conn, session_id)
+    if s["role"] == "leader" or s["group_name"] is None:
+        return None
+    row = conn.execute("SELECT s.* FROM groups g JOIN sessions s ON s.session_id=g.leader_session_id "
+                       "WHERE g.project=? AND g.name=? AND g.closed_at IS NULL", (s["project"], s["group_name"])).fetchone()
+    return dict(row) if row is not None else None
+
+
+@atomic
+def queue_leader_notice(conn, leader_session_id, text, source, now=None):
+    s = session(conn, leader_session_id)
+    if s["role"] != "leader":
+        raise BoardError("只能给 leader 排通知: " + leader_session_id)
+    notice_id = conn.execute("INSERT INTO leader_notices(project,session_id,source,text,created_at) VALUES(?,?,?,?,?)",
+                             (s["project"], leader_session_id, source, text, _time(now))).lastrowid
+    _event(conn, "leader:notice", s["project"], leader_session_id, {"id": notice_id, "source": source}, now)
+    return notice_id
+
+
+def pending_notices(conn, leader_session_id):
+    return _rows(conn, "SELECT * FROM leader_notices WHERE session_id=? AND sent_at IS NULL ORDER BY id", (leader_session_id,))
+
+
+@atomic
+def mark_notice_sent(conn, notice_id, now=None):
+    if conn.execute("UPDATE leader_notices SET sent_at=? WHERE id=? AND sent_at IS NULL", (_time(now), notice_id)).rowcount == 0:
+        raise BoardError("通知不存在或已送出: " + str(notice_id))

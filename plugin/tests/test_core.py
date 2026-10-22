@@ -493,7 +493,7 @@ class HookTests(CoreCase):
     def test_start_unclaimed_and_spawn_identity(self):
         data = self.data("new")
         code, output = hooks.handle("session-start", data, self.home, self.fake_plugin, {}, git_provider=lambda cwd: (str(self.root), "main"), now=NOW)
-        self.assertIn("crew join <名字>", output["hookSpecificOutput"]["additionalContext"])
+        self.assertIn("未收编（不要自己 crew join", output["hookSpecificOutput"]["additionalContext"])
         (self.home / "spawn").mkdir(parents=True, exist_ok=True)
         (self.home / "spawn" / "spawn-id.json").write_text(json.dumps({"task": "\n  first line  \nsecond"}), encoding="utf-8")
         hooks.handle("session-start", data, self.home, self.fake_plugin,

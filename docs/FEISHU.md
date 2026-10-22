@@ -21,6 +21,8 @@ Crew 通过本机已有的 `lark-cli` 机器人身份，把离开时需要处理
 | `owner_id` | 唯一收件人。仅接受此人发来的机器人私聊文字或 Crew 卡片操作。 |
 | `since` | 错误、等待提示和阶段报告的通知起点，使用带时区的 UTC 时间。尚未答复的待拍板仍属于当前待办，不因创建时间较早而忽略。 |
 | `manual_away` | 网页“我已离开”开关的持久状态，服务重启后保留。 |
+| `current_leader_session_id` | 飞书私聊当前在和哪个 leader 说话，由 `/1`、`/2` 切换，Crew 自己维护。 |
+| `leader_numbers` | 每个 leader 的全局编号，首次出现时按项目创建时间、项目名、会话开始时间分配；之后只追加，归档的 leader 保留号码不复用。Crew 自己维护。 |
 
 配置在服务启动时读取；手工修改后需重新启动 Crew 网页服务。“我已离开”开关会直接保存 `manual_away`。
 
@@ -42,39 +44,39 @@ Crew 通过本机已有的 `lark-cli` 机器人身份，把离开时需要处理
 
 发送记录保存在本机数据库，用事项编号去重，并使用 CLI 幂等编号。超时或错误会保留投递状态，不会把无法确认的发送直接当成功，也不会自动重复发送。卡片总大小超过 30 KB 会报错，不会静默截掉问题或拆成多条。网页提示通知错误时，应查看本机记录与服务日志。
 
+## 私聊命令
+
+所有项目的 leader 都在同一个机器人私聊里。不带 `/` 的文字发给当前 leader；以 `/` 开头的是命令，Crew 自己回答，不交给模型：
+
+| 命令 | 作用 |
+| --- | --- |
+| `/h` | 帮助 |
+| `/ls` | 列出所有项目的 leader：编号、`项目·leader`、状态、未读、待拍板，当前 leader 有标记 |
+| `/1`、`/2`… | 切换当前 leader（编号来自 `/ls`，长期不变） |
+| `/q` | 列出所有未答的待拍板，按 `项目·leader` 分组，带题号、提问者、推荐 |
+| `/back` | 我回来了：关掉手动离开，并说明是否仍因锁屏被视为离开 |
+
+还没选 leader 时发普通文字，机器人会提示先 `/ls` 再 `/1`，不会替你猜。leader 的回复总会回传到飞书，开头带 `项目·leader`；"我已离开"只决定 Crew 是否主动推送提醒，不影响对话回传。
+
+网页后台的 leader 会收到这条消息（聊天记录里标"来自飞书"），忙时排队，空闲时发出；已经停止的网页 leader 会按原会话 ID 恢复。leader 若在 VS Code 或其他进程里运行，机器人回"这个 leader 不在网页后台运行，收不到飞书消息"，不会再起第二份。leader 一轮结束却没有文字时，回"（这一轮没有文字回复）"，不卡住后面的消息。
+
 ## 答复待拍板
 
-可以点击已启用的卡片选项，或回复这条卡片消息：
+直接发：
 
 ```text
 #42 先补测试，再继续发布
 ```
 
-同一张卡有多个问题时，用编号明确指向某一题。自由文字答复会保留原文，不要求只能选预设选项。机器人会检查原消息是 Crew 发出的、待拍板属于该工作区和收件人身份，才保存答案。
+不需要引用卡片，但题号必须是 Crew 发给你过的（推送卡片或 `/q` 列出过的）。自由文字答复会保留原文。答复保存后，Crew 给提问者的 leader 排一条通知，leader 立刻用会话间消息把答复转给提问的下属、叫它继续；提问者自己就是 leader 时直接通知它。提问者已归档或移出时不保存，并提示先恢复。
 
-“答复已保存”表示答案已经进入 Crew 白板；“等待会话下一轮接收”表示会话尚未读取；“已交给会话”表示已完成交付，不代表任务完成。卡片更新后，已答题移除按钮，其余问题仍可作答。最终进展以会话回复或报告为准。
+卡片按钮可用时也可以直接点选项；已答的题移除按钮，其余照旧可答。
 
 ### 卡片按钮当前需要启用回调
 
 2026-10-22 本机实际启动 CLI consumer 核查结果：普通消息事件达到 ready 并正常退出；`card.action.trigger` consumer 以退出码 2 报 `failed_precondition`，明确指出该回调尚未在应用后台订阅。当前按钮回调尚未通过真人验收。
 
-因此，回调未就绪时发送的卡片会显示文字选项和“回复 #编号 答复”，不显示点击后无法生效的按钮。文字私聊回复可以作为当前答复方式。要使用按钮，需要应用管理员在[飞书开放平台](https://open.feishu.cn/app)进入该应用的“事件与回调 → 回调配置”，启用 `card.action.trigger` 长连接回调；按平台提示完成发布后，再让 Crew 重新建立 consumer，并由真人点击一张新卡验证保存、更新和下一轮交付。修改订阅没有在本轮自动执行。
-
-CLI 接收回调只证明事件到达，不等于 Crew 已保存答案。旧卡的运行时显示保持原样；回调真正 ready 后，新卡才带按钮。
-
-## 与多个 leader 对话
-
-只有一个未归档 leader 时，可以直接给机器人发消息。有多个时，写清目标：
-
-```text
-@Crew/主控 帮我看看今天的进展
-```
-
-名字唯一时也可用 `@主控 你的消息`。这里的 `@工作区/名字` 是 Crew 的文字路由标记，不是飞书通讯录里的 @ 提及。或者直接回复该 leader 发来的原消息。若一条合并消息涉及多个 leader，机器人会要求指定目标，不会随意选一个。
-
-网页后台管理的 leader 可以继续使用自己的输入流；空闲且已经停止的网页会话可按原会话恢复。忙时消息排队，聊天记录标记来源为飞书；离开时，将本条新消息对应的回复回传。若同一会话已在 VS Code 或其他进程运行，Crew 不会再启动一份。
-
-当前原生 VS Code/终端会话的路径是：把消息写成发给该会话的交接，并明确回复“下一轮收到”。它需要在该会话下一次提交提示或启动时由 Crew hook 取走，不会因为飞书来信而立即开始一轮，也不保证自动回传原生会话的最终回复。网页会话转到 VS Code 后也受原生会话边界约束。
+因此，回调未就绪时发送的卡片会显示文字选项和"回复 #编号 答复"，不显示点击后无法生效的按钮。要使用按钮，需要应用管理员在[飞书开放平台](https://open.feishu.cn/app)进入该应用的"事件与回调 → 回调配置"，启用 `card.action.trigger` 长连接回调；按平台提示完成发布后，再让 Crew 重新建立 consumer，并由真人点击一张新卡验证。修改订阅没有自动执行。
 
 ## 服务与登录自启
 
@@ -95,12 +97,8 @@ crew autostart status
 
 每种飞书事件各有一个 `lark-cli event consume` 子进程，复用 CLI 同一个事件 bus。CLI 以 stderr 的 ready 标记报告就绪，Crew 据此决定是否显示卡片按钮；正常关闭自己的 consumer 时关闭 stdin 并等待退出，不停止其他程序共用的 bus。不要同时为同一应用另开独立 SDK WebSocket 客户端：飞书多连接按集群分发，可能让事件被另一连接取走。
 
-## 验收范围与原生入口调查
+## 验收范围
 
-隔离测试使用模拟进程和飞书客户端，覆盖合并、去重、账号/原消息校验、编号路由、保存与交付状态；它们不代替真人飞书收件、卡片点击、锁屏及完整对话验收。消费者的 ready 和正常 EOF 退出已经做过有限实机检查；按钮订阅失败已单独记录。
+隔离测试使用模拟进程和飞书客户端，覆盖命令、编号、路由、答题授权、leader 通知、回传与合并去重；它们不代替真人飞书收件、卡片点击、锁屏及完整对话验收。
 
-本机 Claude Code 2.1.306 已提供官方跨会话收件入口：hook 可取得 `CLAUDE_CODE_MESSAGING_SOCKET` 和 `CLAUDE_CODE_MESSAGING_TOKEN`，Windows 使用认证命名管道。安装包带有 auth 行加 user 消息行的发送示例；本轮只读核查，未向任何现有会话发消息。
-
-这个入口不会在同一连接返回消息接收 ACK；当前 `UserPromptSubmit` 和 `Stop` hook 输入也没有共同的消息/轮次编号。直接把某次 Stop 当作某条飞书来信的最终答复，会受到中断、其他提示和 Stop hook 继续执行的影响。现有实现因此保留原生交接边界，没有把管道写入描述成可靠的完整远程对话。
-
-官方资料：[飞书消息发送](https://open.feishu.cn/document/server-docs/im-v1/message/create)、[飞书长连接事件](https://open.feishu.cn/document/server-docs/event-subscription-guide/event-subscription-configure-/request-url-configuration-case)、[Claude 会话收件入口](https://code.claude.com/docs/en/cross-session-messaging#the-sessions-inbox-socket)、[Claude hook 输入与触发时机](https://code.claude.com/docs/en/hooks)、[Claude Channels 的启动要求](https://code.claude.com/docs/en/channels-reference)。
+官方资料：[飞书消息发送](https://open.feishu.cn/document/server-docs/im-v1/message/create)、[飞书长连接事件](https://open.feishu.cn/document/server-docs/event-subscription-guide/event-subscription-configure-/request-url-configuration-case)。

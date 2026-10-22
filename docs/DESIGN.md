@@ -26,8 +26,9 @@ Crew/
       usage.py  usage_cli.py          用量扫描、汇总、命令行
       spawn.py                        后台会话启动计划、任务文件、CLI 转网页服务
       chat.py                         后台成员/leader CLI、流式协议、聊天记录与恢复
-      web.py  web/                    工作区网页和聊天，含本地 Markdown 库
-      presentation.py session_ops.py  关系、待处理、活动记录与可撤销会话整理
+      web.py  web/                    工作区网页和 leader 聊天，含本地 Markdown 库、HarmonyOS Sans 字体、logo
+      vscode_sessions.py              复现 VS Code 会话列表与归档名单（只读），供待收编和归档同步
+      presentation.py session_ops.py  待处理事项（飞书推送用）与可撤销会话整理
       feishu.py notifications.py      复用本机飞书 CLI 的收发与落库
       claude_limits.py autostart.py   官方本地额度快照、当前用户登录自启
     defaults/blacklist.txt  defaults/prices.json
@@ -47,11 +48,12 @@ Crew/
 | `crew.py` | 启动器：读 runtime.json，把 plugin_root 加进 sys.path，调用 `crew.cli.main(sys.argv[1:])` |
 | `bin/crew.cmd` | PATH 垫片：`@python "%USERPROFILE%\.crew\crew.py" %*` |
 | `spawn/<id>.json`、`spawn/<id>.md` | 开新会话时的参数和任务正文，成员和网页 leader 共用 |
-| `chat/<会话ID>.jsonl` | 按 seq 追加的网页聊天事件，含文本、工具调用/结果和状态；不存 thinking |
+| `chat/<会话ID>.jsonl` | 按 seq 追加的网页聊天事件，含文本、工具调用/结果和状态，新事件带 `at`；不存 thinking |
+| `chat/files/<会话ID>/` | 发给 leader 的截图，journal 只记文件名 |
 | `web.json` | 正在运行的本机网页服务地址，供 CLI 连接；服务退出时移除自己的地址 |
 | `codex_runs.jsonl` | 派活脚本记的派活开始与结束（§9） |
 | `claude-limits.json` | 网页 Claude 的额度事件快照，按窗口保留采集时间 |
-| `feishu.json` | 当前用户通知配置与手动离开状态；没有应用密钥 |
+| `feishu.json` | 当前用户通知配置、手动离开状态、飞书当前 leader 与 leader 编号；没有应用密钥 |
 | `web-autostart.log` | 登录自启入口及后台服务的输出 |
 
 所有函数显式接收 `home` 参数；命令行有全局参数 `--home DIR`（默认 `store.default_home()`），测试一律传临时目录。**不用环境变量改 HOME。**
@@ -61,7 +63,7 @@ Crew/
 - **会话 ID**：钩子从输入 JSON 的 `session_id` 取；命令行从环境变量 `CLAUDE_CODE_SESSION_ID` 取（Claude Code 会给工具命令设这个变量）。命令行也接受 `--session ID`。需要会话身份的命令拿不到 ID 时报错退出（exit 1），并说明"请在 Claude 会话里运行，或加 --session"。不需要身份的命令（status、decisions、answer 等）在普通终端里也能用，此时操作人记作 `user`。
 - **crew 名**：人起的稳定名字（雷达、视觉）。同一项目里，未离线（status 不是 offline / closed）的会话不能重名，重名时 join 报冲突（exit 3）。
 - **cc_name**：Claude Code 里显示的会话名，也是 SendMessage 的地址。由 `crew join` 和 `crew who` 调 `claude agents --json`（返回数组，元素有 sessionId、name、status、pid、cwd、kind），按 sessionId 匹配取 name。调用失败时 cc_name 留空，并打印一行原因。
-- **网页收编**：从 `claude agents --json` 找出当前项目里尚未登记的活会话，按会话 ID 列为候选；标题取主 transcript 最后一条 `ai-title`。用户给它起 crew 名并选分组后，调用 `board.register_session`，保存 agents 的 name 为 cc_name。leader 表单可以混选已登记成员和候选会话。
+- **网页收编**：候选和 VS Code 会话列表一致（`vscode_sessions`）：项目根目录及其下 git worktree 的会话记录，按扩展规则排除程序会话、sidechain 等，减去 VS Code 的 `hiddenSessionIds`（只读 `state.vscdb`，读失败保留上次名单并报 `vscode_error`）；再并入还没有会话记录的活进程。分三组：`running`（在运行、未归组）、`others`（没在运行、未归档）、`left`（有 crew 名但不在任何组）；leader、已入组、Crew 已归档或移出、status=closed 的不列。收编时调用 `board.register_session`（已有名字的走改组和改名），进有 leader 的组时给 leader 排通知。也可以在会话里由用户说"收编到某某"，会话自己 `crew join --group 某某 --scope … --done-when …`。
 - **spawn 带来的身份**：crew 开的会话启动时带环境变量 `CREW_NAME`、`CREW_GROUP`、`CREW_ROLE`、`CREW_SPAWN_ID`。SessionStart 钩子看到这些变量就直接登记，不用再 join。
 - **项目判定**：会话的 cwd 落在某个已 init 项目的 root 下（`store.is_under`），就属于这个项目；多个项目嵌套时取 root 最长的。不属于任何项目的会话：钩子只做守卫的黑名单检查，其它什么都不写。
 - **worktree / branch**：cwd 所在 git 仓库的 toplevel 和当前分支（`git -C cwd rev-parse --show-toplevel`、`git -C cwd branch --show-current`），在 SessionStart、join 和网页收编时用 `hooks.git_details` 取。
@@ -90,8 +92,9 @@ Crew/
 | `init [--name N] [--root DIR]` | 启用项目。root 默认是当前目录的 git toplevel，name 默认取 root 的目录名 |
 | `projects` | 列出项目 |
 | `resource add NAME [--kind device\|dir\|app\|other] [--desc T] [--guard REGEX]` / `resource list` / `resource rm NAME` | 资源。guard 正则先 `re.compile` 校验，非法就报错 |
-| `join NAME [--task T] [--role member\|leader] [--group G]` | 当前会话认领 crew 名。role=leader 时同时建（或接管）同名分组 |
-| `whoami [--json]` | 我是谁、属于哪个项目和分组、我的 leader 是谁（含 leader 的 cc_name） |
+| `join NAME [--task T] [--scope S] [--done-when D] [--role member\|leader] [--group G]` | 当前会话认领 crew 名，可同时写任务卡；省略 --task 保留原任务。role=leader 时同时建（或接管）同名分组；进了有 leader 的组时给 leader 排通知 |
+| `card [--scope S] [--done-when D] [--json]` | 更新当前会话任务卡（只改给出的字段） |
+| `whoami [--json]` | 我是谁、属于哪个项目和分组、我的 leader 是谁（含 leader 的 cc_name）、任务卡 |
 | `task TEXT` | 更新"在做什么" |
 | `status [--project P] [--json]` | 总览：按分组列会话（状态、在做什么、最后活动时间）、未分组的会话、借出的资源、文件归属、未答的待拍板条数 |
 | `who NAME [--json]` | 某个会话的详情和它现在的 SendMessage 地址 |
@@ -124,7 +127,7 @@ Crew/
 
 | 参数 | 事件 | 做什么 | 输出 |
 |---|---|---|---|
-| `session-start` | SessionStart | **不管属不属于项目都先跑 install**（刷新 runtime.json；黑名单不存在时复制默认的，守卫在所有会话里都要用到它）。属于某项目时登记 / 更新会话（带 CREW_* 变量就按它登记；已登记过的会话保留 crew 名）；status=idle。cwd 不是 git 仓库时 worktree / branch 记为空 | 属于项目时输出 `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"..."}}`，中文告诉会话：项目名、我的 crew 名（没认领就提示 `crew join <名字>`）、分组和 leader（含 leader 的 cc_name）、命令行怎么调（`python "<HOME>/crew.py" ...`）、守则 `/crew:member`（leader 是 `/crew:leader`）、发给我还没送达的交接 |
+| `session-start` | SessionStart | **不管属不属于项目都先跑 install**（刷新 runtime.json；黑名单不存在时复制默认的，守卫在所有会话里都要用到它）。属于某项目时登记 / 更新会话（带 CREW_* 变量就按它登记；已登记过的会话保留 crew 名）；status=idle。cwd 不是 git 仓库时 worktree / branch 记为空 | 属于项目时输出 `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"..."}}`，中文告诉会话：项目名、我的 crew 名（没收编时写明不要自己 crew join，等用户说收编）、分组和 leader（含 leader 的 cc_name）、命令行怎么调（`python "<HOME>/crew.py" ...`）、守则 `/crew:member`（leader 是 `/crew:leader`）、发给我还没送达的交接 |
 | `user-prompt-submit` | UserPromptSubmit | status=working，last_prompt。查我提的、已答复但没送达（delivered_at 为空）的待拍板，和没送达我的交接 | 有内容时输出 UserPromptSubmit 的 additionalContext，并标记送达 |
 | `stop` | Stop | status=idle，last_message 取输入里的 `last_assistant_message` 前 300 字 | 无 |
 | `notification` | Notification | status=waiting，status_note 取输入里的 `message` | 无 |
@@ -211,7 +214,7 @@ PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stder
 ## 10. 开新会话和网页
 
 - `spawn --name N --task T [--group G] [--cwd DIR | --new-worktree BRANCH]` 默认开后台成员，调用网页服务的 `/api/spawn`。任务正文写 `HOME/spawn/<id>.md`，参数写 `<id>.json`；复用 leader 的持久 CLI、聊天记录和恢复逻辑。新会话不再开终端窗口。
-- `web [--port 47811] [--open]` 只监听 127.0.0.1，运行期间把地址写入 `HOME/web.json`。页面只有总览、会话、用量三个导航，裸网址列工作区入口；`/?project=P` 固定绑定工作区，不在页内切项目。页面包含关系图、待处理、用量和成员/leader 对话；对话里渲染 Markdown、流式文本、可折叠的工具调用/结果，旁边显示组员状态和待拍板。前端用原生 JS 和本地 markdown-it 15.0.2，无构建流程；Python 后端仍只用标准库。
+- `web [--port 47811] [--open]` 只监听 127.0.0.1，运行期间把地址写入 `HOME/web.json`。一个项目一个标签页（`/?project=P`），裸网址列项目入口，页内不切项目。页面以和 leader 聊天为主：左栏 leader 列表、中间对话（待拍板托盘置顶）、右栏本组架构图与下属卡片，另有全部、待收编、用量页；下属不在网页发言。页面结构和交互见 [WEB_UX.md](WEB_UX.md)。前端用原生 JS 和本地 markdown-it 15.0.2，无构建流程；Python 后端仍只用标准库。
 - `leader start --name N [--members A,B] [--task T]` 调本机网页服务的 `/api/leader`。`spawn` 和 `leader start` 都先要求运行 `crew web --open`，服务未运行时清楚报错；`--dry-run` 只生成启动计划，不连服务、不写白板、不启动进程。
 - 成员和 leader 都复用 `spawn.prepare` 和任务文件；leader 额外建分组、收编/挪入选定成员。后台进程是 PATH 里的 Claude CLI，通用参数为 `-p --input-format stream-json --output-format stream-json --verbose --include-partial-messages --replay-user-messages --permission-mode bypassPermissions --name N`；仅 leader 追加 `--agent crew:leader`。保持 stdin 打开，不加 `--bare`，保留跨会话收件箱和插件钩子/守卫。任务 brief 指定相应的 `/crew:member` 或 `/crew:leader` 守则，CREW_ROLE 也按角色设置；未分组成员不设置 CREW_GROUP。
 - 启动计划预分配 UUID，首次用 `--session-id`，把会话的角色、分组、cwd、spawn_id 记进白板；重启网页服务后，等用户下一次发言再用 `--resume` 恢复同 ID，并使用白板里当前的角色和分组。恢复前直接查活进程，同 ID 已在 VS Code 或其他进程里运行时拒绝双开。
@@ -226,36 +229,42 @@ PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stder
 
 | 接口 | 内容 |
 |---|---|
-| `GET /api/state?project=P` | 看板，返回带 location 的 candidates；未命名会话补 title，有聊天记录的 session 带 web_chat；保留全部已答待送达和最近 20 条已送达拍板 |
-| `POST /api/project/init` | name、root；启用已有本机目录，无已选项目时也可调用，返回项目对象 |
-| `POST /api/roster/adopt` | session_id、name、可选 group，返回登记后的 session |
-| `POST /api/roster/move` | session_id、to；按会话 ID 调整归属，兼容 name 参数 |
-| `POST /api/roster/remove` | session_id、group；普通成员退出当前分组，兼容 name 参数 |
-| `POST /api/group/close` | group、with_members；false 解散并保留会话，true 归档组和会话，均不停止进程 |
-| `POST /api/answer` | id、text；只可回答当前所选项目的问题，交付由下一轮钩子完成 |
-| `POST /api/spawn` | name、task、可选 group / role / cwd / new_worktree / base，默认 member，返回 id、session_id、command、role |
-| `POST /api/leader` | name、member_session_ids（网页精确指定）、members（CLI crew 名）、candidate_members（session_id / name）、可选 task，返回 id、session_id、command、role=leader |
-| `GET /api/chat/history?project=P&session_id=S` | 返回 session_id、events、running、busy |
-| `GET /api/chat/events?project=P&session_id=S&after=N` | SSE 重放 seq 大于 N 的事件，兼读 Last-Event-ID；空闲时发心跳，浏览器断开不关会话 |
-| `POST /api/chat/send` | session_id、text；向当前进程发送，或恢复原会话后发送 |
-| `POST /api/open` | session_id（或 name），只打开对应目录，返回 cwd、location、needs_window_ready、needs_confirmation |
-| `POST /api/open/continue` | session_id、confirm=true；重查空闲和进程归属后交接，再打开原 ID 的 VS Code URI |
+| `GET /api/state?project=P` | `project`、`projects`（只有名字）、`leaders`（状态、未读、`read_seq`、本组待拍板数、待发通知数、成员）、`members`（有名字的非 leader：所在位置 bg / vscode / offline、任务、任务卡、最近 5 条进展、运行中和 24 小时内的 Codex、借用与文件归属）、`decisions`（只含未答，带提问者与其 leader）、`candidates`（三组）、`limits`（Claude 两个窗口、Codex，拿不到为 null）、`attention`（飞书推送用）、`notification`、`agents_error`、`vscode_error`。journal 按文件签名缓存 |
+| `POST /api/project/init` | name、root；启用已有本机目录 |
+| `POST /api/roster/adopt` | session_id、name、可选 group；没在运行的候选也能收编；进有 leader 的组时排 leader 通知 |
+| `POST /api/roster/move` / `POST /api/roster/remove` | 换组 / 退组，按 session_id |
+| `POST /api/group/close` | group、with_members；均不停止进程 |
+| `POST /api/answer` | id、text；保存后给提问者的 leader 排通知（来源 web），返回 `routed_to` |
+| `POST /api/spawn` | name、task、可选 group / role / cwd / new_worktree / base |
+| `POST /api/leader` | name、task（成员可选）；起 leader |
+| `GET /api/chat/history?project=P&session_id=S` | session_id、events、running、busy、read_seq |
+| `GET /api/chat/events?project=P&session_id=S&after=N` | SSE 重放 seq 大于 N 的事件，兼读 Last-Event-ID |
+| `POST /api/chat/send` | session_id、text、可选 images（最多 5 张、单张 ≤ 5 MB）；只允许 leader |
+| `POST /api/chat/read` | session_id、seq；已读位置只前进 |
+| `GET /api/chat/file?project=P&session_id=S&name=N` | 读截图，只允许 journal 里出现过的文件名 |
+| `POST /api/session/stop` | session_id；向本服务托管且正在干活的会话写 stream-json `control_request`（subtype=interrupt） |
+| `POST /api/session/rename\|archive\|remove\|restore\|undo` | 精确 session_id；返回 `session` 与供撤销的 `before` |
+| `POST /api/open` / `POST /api/open/continue` | 两步转到 VS Code |
+| `POST /api/notifications/away`、`POST /api/attention/dismiss` | 手动离开、收起待处理 |
+| `GET /api/usage` / `GET /api/usage/export` | 用量（含 leader → 下属 → Codex 的 `tree`）与 CSV |
 
-成员和 leader 的聊天接口相同，`web_chat` 由聊天日志是否存在判定。会话保留在 Claude transcript 中，需要时可在 VS Code 按同 ID 接续；网页再次发言时会检查外部进程，避免同时恢复两份；已归档会话的历史可读，发送返回冲突。完整页面流程和状态文案见 [WEB_UX.md](WEB_UX.md)。
+静态文件只有白名单路径；`/logo.svg` 和两个字体带一周缓存，其余 `no-store`。
 
 ### 会话整理、工作区视图与通知
 
 - `session_controls` 保存显式归档、移出和改名。移出不删会话与历史，hook 不会自动收编回来；主动 join 可重新加入。leader 改名同步组与成员归属，pending handoff 跟随；撤销恢复操作前的记录，不操作进程。
-- `GET /api/state?project=P` 追加 `attention`、`codex_tasks`、`removed_sessions` 和 `notification`。bare API 不假选首个工作区。所有网页请求携带固定项目；`GET /api/session/timeline` 合并业务活动，用实际交接投递身份保存历史。
+- **leader 通知**：Crew 自己不发会话间消息。要告诉下属的事（网页 / 飞书答完拍板、收编进组、`crew join` 入组）写进 `leader_notices`；网页服务每 2 秒把待发通知合并成一条 `[Crew]` 消息写进空闲的 leader（journal 记 source=crew），由 leader 用 SendMessage 转告下属。leader 在别的进程里运行或进程状态未知时不投递。
+- **归档同步**：现有 10 秒轮询里读 VS Code 归档名单，已收编会话被 VS Code 归档就 `session_ops.archive`，记 `vscode:archived`；VS Code 取消归档不跟随。
+- **已读与任务卡**：`read_cursors` 记用户读到 leader journal 的哪条，算未读和"离开后"分隔线；`session_cards` 记下属的负责范围和完成标准，`sessions.task` 仍是"现在在做什么"。
 - `POST /api/session/rename|archive|remove|restore|undo` 用精确 session_id；返回 `session` 与供撤销的 `before`。`POST /api/attention/dismiss` 可撤销标记，检查事项所属工作区。归档/移出会话的未答题保留记录，但不继续催办。
 - 用量接口及 CSV 接受 `project=P&scope=workspace|machine`。报告函数末尾可选 `project=None`，按 cwd 最长根目录匹配；跨目录 Codex 按任务工作目录统计。`summary.claude_limits` 来自官方本地缓存与 stream-json `rate_limit_event`，不轮询私有 OAuth 接口，不启动模型来查额度。
 - 派活脚本仓库副本在 `integrations/codex-dispatch/run_codex.ps1`：同 run_id 先写开始、再写结束，scanner upsert。只有未关联的 rollout 时状态为 unknown，最后日志时间不当完成时间。
 - 飞书复用既有 lark-cli bot 登录和一个共享事件总线。`notification_messages` 保存实际发送消息与问题/leader的关系，`notification_inbound` 去重，`notification_replies` 排队并记录每条网页来信的回复边界。token、回调临时票据不入库。发失败保留明确错误，不自动重发。
 - 通知只在手动离开或桌面锁屏时主动发送，约 30 秒合并；期间已处理的事项不发送。锁屏来自已有桌面代理的带 token POST `/api/status`，不启动代理、不操作桌面。代理故障单独提示，手动离开与收件仍可用。
-- 用户在飞书答复只处理 Crew 实际发送、属于本人且仍未答的问题；保存后更新卡片，下一轮由原有 deliver 流程接收。CLI 卡片 consumer 未就绪时改为文字选项，避免显示失效按钮。应用未订阅 card.action.trigger 需用户自行在开放平台启用，本轮不代申请。
-- 网页 leader 的飞书消息进入同一 input stream，journal 标记 source=feishu；回复截至这条消息之后第一个 idle/offline，避免和网页下一轮串线。已有 VS Code/终端 leader 用交接保留来信、明确提示下一轮接收，不启动第二份会话。详见 [FEISHU.md](FEISHU.md)。
+- 飞书私聊用命令集（`/h`、`/ls`、`/1`、`/q`、`/back`），普通文字发给当前 leader；`#题号 答复` 只接受 Crew 展示过的未答题，保存后给 leader 排通知。CLI 卡片 consumer 未就绪时改为文字选项。
+- 网页 leader 的飞书消息进入同一 input stream，journal 标记 source=feishu；回复截至这条消息之后第一个 idle/offline，总会回传；不在网页后台运行的 leader 明确拒绝。详见 [FEISHU.md](FEISHU.md)。
 - `autostart` 用当前用户 InteractiveToken 计划任务，普通权限、登录触发、隐藏运行，不保存密码。任务指向主检出；默认端口已有 Crew 时保留原服务，不重复启动。不在睡眠、休眠或注销期间维持收信。
-- leader 巡查本轮只讨论场景，不写自动巡查或派活代码；QQ 优先级最低，须其它事项完成且账户周剩余大于 55%、日本时间 10:00 前才继续。
+- leader 巡查只按需：用户问时 leader 再去查，不做定时巡查；QQ 优先级最低，须其它事项完成且账户周剩余大于 55%、日本时间 10:00 前才继续。
 
 ## 11. 错误处理
 
@@ -273,3 +282,6 @@ PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stder
 | leader 是普通会话 + 角色定义，一个 leader 管一个分组，可以并存 | 用户要能直接点进每个会话；分组按"一个部分"划分 | 官方 Agent teams：队友只能由 leader 新生，不能收编已有会话，恢复后队友丢失，Windows 只能挤在一个终端 |
 | 全放行模式 + 守卫黑名单 | 夜里不卡确认框；模式一致后跨会话消息不用批准 | 逐条确认 + 白名单：写 `.claude` 目录在除全放行外的所有模式都会弹框 |
 | 成员和 leader 统一用常驻 CLI，网页收发 stream-json | 用户默认在网页里看对话和工具，需要时转到 VS Code；CLI 保留跨会话收件箱、transcript 和原会话 ID，可恢复 | 新成员开终端窗口：已按用户确定的工作流改为默认后台；Agent SDK：当前 CLI 已满足需求，无需增加 Python 依赖 |
+| 网页只和 leader 聊，下属在 VS Code 里聊；leader 当中转站（2026-10-22 用户拍板，参照 Paperclip 的 CEO） | 用户先在 VS Code 里和会话聊出需求，收编后仍习惯在那里直接说；集中处理进展和拍板靠 leader | 网页上也和下属聊：同一会话同时只能在一个进程里跑，VS Code 里的会话收不到可靠的网页消息 |
+| Crew 不发会话间消息，要告诉下属的事写 leader 通知，由 leader 转告 | 只有会话自己能调用 SendMessage；leader 本来就在网页托管，能直接写进它的输入 | Crew 自己做一套发消息机制：官方跨会话收件入口没有可靠送达确认 |
+| 待收编按 VS Code 会话列表口径，VS Code 归档单向同步 | 用户在 VS Code 侧栏里管理会话，两边看到的应一致 | 只列活进程（漏掉没在运行的会话）；跟随取消归档（少见，代码量约三倍） |

@@ -81,7 +81,7 @@ def handle(event, data, home, plugin_root, environ, git_provider=git_details, no
             else:
                 s = board.whoami(conn, data["session_id"])
                 leader = s["leader"]
-                lines = ["Crew 项目：%s" % p["name"], "我的 crew 名：%s" % (s["crew_name"] if s["crew_name"] is not None else "尚未认领，请运行 crew join <名字>"),
+                lines = ["Crew 项目：%s" % p["name"], "我的 crew 名：%s" % (s["crew_name"] if s["crew_name"] is not None else "未收编（不要自己 crew join；用户说“收编到某某”时再照 /crew:member 收编）"),
                          "分组：%s；leader：%s；SendMessage 地址：%s" % (s["group_name"], leader["crew_name"] if leader else None, leader["cc_name"] if leader else None),
                          '命令行：python "%s" ...' % (Path(home).resolve() / "crew.py"),
                          "请遵守 /crew:%s" % ("leader" if s["role"] == "leader" else "member")] + lines
