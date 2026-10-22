@@ -67,6 +67,8 @@ class Inbox:
         self.pending, self.pending_at = {}, None
         # Switching "我已离开" on by hand means the user has gone; only lock-screen absence waits out the batch window.
         self.push_now = False
+        # Journal position per leader when the user left; None while present.
+        self.relay_after = None
         self.stop, self.wake = threading.Event(), threading.Event()
         self.worker, self.receiver = None, None
 
@@ -181,7 +183,9 @@ class Inbox:
         self.refresh_presence()
         self.process_replies()
         if not self.status()['away']:
+            self.relay_after = None
             return
+        self.relay_turns()
         now = self.service.now()
         with closing(store.connect(self.home)) as conn:
             sent = {row[0] for row in conn.execute('SELECT item_id FROM notification_messages')}
@@ -217,6 +221,38 @@ class Inbox:
                 self.flush()
                 self.pending.clear()
                 self.pending_at = None
+
+    def relay_turns(self):
+        """While the user is away, send each leader's closing words of every finished turn to QQ."""
+        with self.service.write_lock, closing(store.connect(self.home)) as conn:
+            leaders = [s for s in self.leader_catalog(conn) if self.service.chat.path(s['session_id']).exists()]
+            if self.relay_after is None:
+                # Turns that ended before the user left were already seen on the web.
+                self.relay_after = {s['session_id']: len(self.service.chat.journal(s['session_id']).events) for s in leaders}
+                return
+            for leader in leaders:
+                sid = leader['session_id']
+                events = self.service.chat.journal(sid).after(self.relay_after.setdefault(sid, 0))
+                start = 0
+                for index, event in enumerate(events):
+                    if event['type'] != 'status' or event['status'] != 'idle':
+                        continue
+                    turn, start = events[start:index], index + 1
+                    self.relay_after[sid] = event['seq']
+                    opener = next((e for e in turn if e['type'] == 'message'), None)
+                    closing_words = next((e for e in reversed(turn) if e['type'] == 'assistant'), None)
+                    # A turn started from QQ is answered by process_replies already.
+                    if closing_words is None or opener is not None and opener['source'] == 'qq':
+                        continue
+                    text = '\n'.join(b['text'] for b in closing_words['content'] if b['type'] == 'text')
+                    identity = 'turn:%s:%s' % (sid, event['seq'])
+                    if not text or conn.execute('SELECT 1 FROM notification_messages WHERE item_id=?', (identity + ':0',)).fetchone():
+                        continue
+                    entry = dict(workspace=leader['project'], leader_session_id=sid, decision=None)
+                    for number, part in enumerate(text_parts('%s·%s\n%s' % (leader['project'], leader['crew_name'], text))):
+                        key = '%s:%s' % (identity, number)
+                        self.record_message(conn, key, entry, 'turn', self.service.now().isoformat())
+                        self.deliver(conn, [key], self.client.send_text, part)
 
     def flush(self):
         notes = []

@@ -634,6 +634,47 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         self.inbox.process_replies()
         self.assertEqual(len(self.client.sent), 2)
 
+    def test_away_relays_each_finished_leader_turn_once_but_not_turns_started_from_qq(self):
+        manager, journal = self.web_manager()
+        manager.history.side_effect = lambda sid: dict(session_id=sid, events=journal.events, running=True, busy=False)
+
+        def turn(source, opener, closing):
+            journal.message(opener, opener, source)
+            journal.set_status('working')
+            journal.emit('assistant', id=opener + '-mid', content=[dict(type='text', text='中途的话')])
+            journal.emit('assistant', id=opener + '-end', content=[dict(type='text', text=closing)])
+            journal.set_status('idle')
+
+        turn('crew', 'before', '离开前说的')
+        self.inbox.tick()
+        self.locked = True
+        self.inbox.tick()
+        self.assertEqual(self.client.sent, [])
+        turn('crew', 'notice', '#17 已经转给雷达')
+        turn('peer', 'report', '#17 做完了')
+        journal.message('qq-1', '从 QQ 问的', 'qq')
+        journal.set_status('working')
+        journal.emit('assistant', id='qq-end', content=[dict(type='text', text='QQ 那一轮的回复')])
+        journal.set_status('idle')
+        journal.message('running', '还在跑的一轮', 'crew')
+        journal.set_status('working')
+        journal.emit('assistant', id='running-end', content=[dict(type='text', text='还没说完')])
+        self.inbox.tick()
+        self.inbox.tick()
+        self.assertEqual([m['text'] for m in self.client.sent], ['demo·lead\n#17 已经转给雷达', 'demo·lead\n#17 做完了'])
+        journal.set_status('idle')
+        self.inbox.tick()
+        self.assertEqual(self.client.sent[-1]['text'], 'demo·lead\n还没说完')
+        self.restart()
+        self.inbox.tick()
+        self.inbox.tick()
+        self.assertEqual(len(self.client.sent), 3)
+        self.locked = False
+        self.inbox.tick()
+        turn('crew', 'back', '回来以后说的')
+        self.inbox.tick()
+        self.assertEqual(len(self.client.sent), 3)
+
     def test_long_replies_split_at_paragraphs_and_long_paragraphs_obey_limit(self):
         _, journal = self.web_manager()
         self.select()

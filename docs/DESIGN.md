@@ -262,6 +262,7 @@ PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stder
 - 派活脚本仓库副本在 `integrations/codex-dispatch/run_codex.ps1`：同 run_id 先写开始、再写结束，scanner upsert。只有未关联的 rollout 时状态为 unknown，最后日志时间不当完成时间。
 - QQ 由 `qq.Client(app_id, app_secret)` 通过 WebSocket 收事件、HTTPS 主动发送；重连交给传输层。`run` 抛 `QQError` 时保留真实原因并停止收发，不在通知层重试。首次私聊绑定主人，此后其他人的消息和按钮只记日志。
 - `notification_messages` 保存发送结果的 `id` / `ref_idx` 与问题、leader 的关系；`notification_inbound` 按 message_id / interaction_id 去重；`notification_replies` 排队并记录每条 QQ 来信的回复边界。凭证和回调临时票据不入库。发送失败保留明确错误，不自动重发；拒收时提示在手机 QQ 打开“允许主动发送”，下一次发送成功恢复通道状态。
+- 离开期间 leader 每跑完一轮，最后一段话立即发到 QQ（以进入离开时各 leader 的对话位置为起点，QQ 发起的轮次除外，按 `turn:<会话>:<idle 序号>` 记录防重发）。
 - 通知只在手动离开或桌面锁屏时主动发送：手动点“我已离开”时当下待推的立即发出（用户 10-23：手动应该秒推）；锁屏和离开期间新出现的事项约 30 秒合批；每道未答拍板单独发 Markdown 和单选回调按钮，推荐项在前，无选项或超过 5×5 容量时提示引用回复，其余事项合成一条文字。期间已处理的事项不发送，已推送的事项不再推。锁屏来自已有桌面代理的带 token POST `/api/status`，不启动代理、不操作桌面；代理故障单独提示。
 - QQ 私聊用命令集（`/h`、`/ls`、`/1`、`/q`、`/back`），普通文字发给当前 leader。拍板通过按钮或引用该条拍板消息答复；按钮先应答 interaction，再校验题号、选项和题目状态。保存答复的 actor 与给 leader 排的通知 source 均为 `qq`。`/q` 逐题重发，最多 10 题并说明剩余数。
 - 网页 leader 的 QQ 消息进入同一 input stream，journal 标记 source=qq；马上回执已转交或忙时排队，回复截至这条消息之后第一个 idle/offline，结束后发回最后一段文字。长回复按段落切分，`TEXT_LIMIT = 2000` 待主控实测；没有文字、启动失败等都给明确答复，不在网页后台运行的 leader 明确拒绝。截图复用网页图片校验和保存（最多 5 张、单张 ≤ 5 MB），语音用平台识别文字，视频和文件明确拒绝。详见 [QQ.md](QQ.md)。
