@@ -191,8 +191,10 @@ def join(conn, session_id, project_name, name, cwd, worktree, branch, task=None,
                      "removed=0,name_override=? WHERE session_id=?", (name, session_id))
     _register(conn, session_id, project_name, cwd, worktree, branch, now, None, None, None)
     _identity(conn, project_name, session_id, name, role, group_name, now)
-    conn.execute("UPDATE sessions SET cc_name=?,task=?,last_event='join',last_event_at=? WHERE session_id=?",
-                 (cc_name, task, _time(now), session_id))
+    conn.execute("UPDATE sessions SET cc_name=?,last_event='join',last_event_at=? WHERE session_id=?",
+                 (cc_name, _time(now), session_id))
+    if task is not None:
+        conn.execute("UPDATE sessions SET task=? WHERE session_id=?", (task, session_id))
     _event(conn, "session:join", project_name, session_id, {"name": name, "role": role, "group": group_name}, now)
     return whoami(conn, session_id)
 

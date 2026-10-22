@@ -58,6 +58,7 @@ class Service:
         self.stop = threading.Event()
         self.agents_ready = threading.Event()
         self.worker = None
+        self.notice_worker = None
         self.inbox = notifications.Inbox(self, notification_client, lock_status, notification_batch_seconds)
         with closing(store.connect(home)) as conn:
             projects = board.projects(conn)
@@ -124,14 +125,58 @@ class Service:
     def start(self):
         self.worker = threading.Thread(target=self._poll_agents, name="crew-agents", daemon=True)
         self.worker.start()
+        self.notice_worker = threading.Thread(target=self._poll_notices, name="crew-leader-notices", daemon=True)
+        self.notice_worker.start()
         self.inbox.start()
 
     def close(self):
         self.stop.set()
         self.inbox.close()
+        if self.notice_worker is not None:
+            self.notice_worker.join()
         self.chat.close()
         if self.worker is not None:
             self.worker.join(timeout=1)
+
+    def _poll_notices(self):
+        while not self.stop.wait(2):
+            self.deliver_notices()
+
+    def deliver_notices(self):
+        with self.write_lock, closing(store.connect(self.home)) as conn:
+            leaders = [dict(row) for row in conn.execute(
+                "SELECT DISTINCT s.* FROM sessions s JOIN leader_notices n ON n.session_id=s.session_id "
+                "WHERE n.sent_at IS NULL AND s.role='leader' AND s.status!='closed'")]
+            for leader in leaders:
+                sid = leader['session_id']
+                try:
+                    with self.chat.lock:
+                        if self.chat.running(sid):
+                            if self.chat.busy(sid):
+                                continue
+                        else:
+                            with self.agents_lock:
+                                agents, agents_error = self.agents, self.agents_error
+                            # Unknown process state could mean the leader runs elsewhere; resuming then would start a second copy.
+                            if agents_error is not None or not self.agents_ready.is_set():
+                                continue
+                            if any(agent['sessionId'] == sid for agent in agents):
+                                if conn.execute("SELECT 1 FROM events WHERE session_id=? AND kind='leader:notice_blocked'",
+                                                (sid,)).fetchone() is None:
+                                    board.record_event(conn, 'leader:notice_blocked', leader['project'], sid,
+                                                       {'reason': '会话正在其他进程中运行'}, now=self.now().isoformat())
+                                continue
+                            if not self.chat.path(sid).exists():
+                                continue
+                        pending = board.pending_notices(conn, sid)
+                        text = '[Crew]\n' + '\n'.join('%s. %s' % (index, notice['text'])
+                                                       for index, notice in enumerate(pending, 1))
+                        self.chat.send(leader, text, source='crew')
+                        for notice in pending:
+                            board.mark_notice_sent(conn, notice['id'], now=self.now().isoformat())
+                except (board.BoardError, OSError) as exc:
+                    board.record_event(conn, 'leader:notice_error', leader['project'], sid,
+                                       {'error': '%s: %s' % (type(exc).__name__, exc)}, now=self.now().isoformat())
 
     def selected_project(self, conn, name):
         name = self.default_project if name is None else name
@@ -212,52 +257,98 @@ class Service:
         if project_name is not None:
             self.scan_usage()
         with self.agents_lock:
-            agents, error, updated = self.agents, self.agents_error, self.agents_at
+            agents, error = self.agents, self.agents_error
         with closing(store.connect(self.home)) as conn:
-            projects = board.projects(conn)
-            if project_name is None:
-                result = {"project": None, "groups": [], "ungrouped": [], "leases": [], "claims": [], "open_decisions": 0,
-                          "resources": [], "decisions": [], "handoffs": [], "reports": [], "events": [], "candidates": {"running": [], "others": [], "left": []},
-                          "removed_sessions": [], "codex_tasks": [], "attention": []}
-            else:
+            result = {'project': None, 'projects': [{'name': p['name']} for p in board.projects(conn)],
+                      'now': self.now().isoformat(), 'agents_error': error, 'notification': self.notification_status(),
+                      'leaders': [], 'members': [], 'decisions': [], 'attention': [],
+                      'candidates': {'running': [], 'others': [], 'left': []},
+                      'limits': self.limits(conn)}
+            result['vscode_error'] = self.vscode_error
+            if project_name is not None:
                 name = self.selected_project(conn, project_name)
                 # Passing every stored identity preserves the board statuses while process state is unknown.
                 identities = [{"sessionId": s["session_id"]} for s in board.sessions(conn, name)] if error else agents
-                result = board.status(conn, name, identities)
+                status = board.status(conn, name, identities)
+                result['project'] = {key: status['project'][key] for key in ('name', 'root')}
                 removed = {r[0] for r in conn.execute('SELECT session_id FROM session_controls WHERE removed=1')}
-                result['removed_sessions'] = [s for s in board.sessions(conn, name) if s['session_id'] in removed]
-                result['ungrouped'] = [s for s in result['ungrouped'] if s['session_id'] not in removed]
-                for group in result['groups']:
-                    group['members'] = [s for s in group['members'] if s['session_id'] not in removed]
-                sessions = [*result["ungrouped"], *(s for group in result["groups"] for s in group["members"])]
-                unnamed = [s["session_id"] for s in sessions if not s["crew_name"]]
+                sessions = [s for s in [*status['ungrouped'], *(s for group in status['groups'] for s in group['members'])]
+                            if s['session_id'] not in removed and s['status'] != 'closed']
+                present = board.live_sessions(agents)
                 with self.scan_lock:
-                    titles = usage.session_titles(self.claude_root, unnamed, self.title_cache)
+                    titles = usage.session_titles(self.claude_root, [s['session_id'] for s in sessions], self.title_cache)
+                histories = {}
                 for session in sessions:
-                    if not session["crew_name"]:
-                        session["title"] = titles.get(session["session_id"])
-                    session["web_chat"] = self.chat.path(session["session_id"]).exists()
-                    if session["status"] != "closed" and self.chat.running(session["session_id"]):
-                        journal_status = self.chat.journal(session["session_id"]).status
+                    sid = session['session_id']
+                    session['web_chat'] = self.chat.path(sid).exists()
+                    if session['web_chat']:
+                        histories[sid] = self.chat.history(sid)
+                    if self.chat.running(sid):
+                        journal_status = self.chat.journal(sid).status
                         if session['status'] != 'waiting' or journal_status == 'working':
                             session['status'] = journal_status
-                    session["open"] = open_session.availability(session["session_id"], agents,
-                                                                self.claude_root.parent / "sessions", error, manager=self.chat)
                 decisions = board.decisions(conn, name, all=True)
-                result.update(candidates=self.candidates(conn, name), resources=board.resources(conn, name),
-                              decisions=[d for d in decisions if d["status"] == "open" or
-                                         (d["status"] == "answered" and d["delivered_at"] is None)] +
-                              sorted((d for d in decisions if d["status"] == "answered" and d["delivered_at"] is not None),
-                                     key=lambda d: (d["answered_at"], d["id"]), reverse=True)[:20],
-                              handoffs=board.project_handoffs(conn, name),
-                              reports=board.reports(conn, name)[-20:][::-1], events=board.events(conn, name, limit=50))
-                result['codex_tasks'] = usage.codex_tasks(conn, None, None, project=name)
-                result['attention'] = presentation.attention(conn, sessions, result['decisions'], result['codex_tasks'],
-                    {s['session_id']: self.chat.history(s['session_id'])['events'] for s in sessions if s['web_chat']})
-            return {**result, "projects": projects, "agents_error": error, "vscode_error": self.vscode_error,
-                    "notification": self.notification_status(),
-                    "agents_age_seconds": (self.now() - updated).total_seconds() if updated is not None else None,
-                    "now": self.now().isoformat()}
+                for decision in decisions:
+                    if decision['status'] == 'open':
+                        asker = board.session(conn, decision['session_id'])
+                        leader = asker if asker['role'] == 'leader' else board.leader_of(conn, asker['session_id'])
+                        result['decisions'].append({**{key: decision[key] for key in (
+                            'id', 'session_id', 'question', 'options', 'recommendation', 'blocking', 'created_at')},
+                            'asker': asker['crew_name'], 'leader_session_id': leader['session_id'] if leader else None})
+                tasks = usage.codex_tasks(conn, None, None, project=name)
+                reports, leases, claims = board.reports(conn, name), board.leases(conn, name), board.claims(conn, name)
+                member_leaders = {s['session_id']: board.leader_of(conn, s['session_id'])
+                                  for s in sessions if s['role'] != 'leader'}
+                for session in sessions:
+                    sid = session['session_id']
+                    if session['role'] == 'leader':
+                        events = histories[sid]['events'] if sid in histories else []
+                        read_seq = board.read_seq(conn, sid)
+                        result['leaders'].append(dict(
+                            session_id=sid, name=session['crew_name'], goal=session['task'], status=session['status'],
+                            busy=self.chat.busy(sid) or (sid in present and present[sid].get('status') == 'busy'),
+                            running=self.chat.running(sid) or sid in present, web_chat=session['web_chat'], cc_name=session['cc_name'],
+                            last_seq=events[-1]['seq'] if events else 0, read_seq=read_seq,
+                            unread=len({e['id'] for e in events if e['type'] == 'assistant' and e['seq'] > read_seq}),
+                            pending=sum(d['leader_session_id'] == sid for d in result['decisions']),
+                            notices_pending=len(board.pending_notices(conn, sid)),
+                            member_ids=[s['session_id'] for s in sessions if s['role'] != 'leader' and s['crew_name']
+                                        and member_leaders[s['session_id']] is not None
+                                        and member_leaders[s['session_id']]['session_id'] == sid]))
+                    elif session['crew_name']:
+                        leader = member_leaders[sid]
+                        card = board.card(conn, sid)
+                        own_tasks = [t for t in tasks if t['session_id'] == sid]
+                        recent_tasks = [t for t in own_tasks if t['status'] == 'running' or
+                                        (t['ended_at'] is not None and
+                                         store.parse_iso(t['ended_at']) >= self.now() - dt.timedelta(hours=24))]
+                        result['members'].append(dict(
+                            session_id=sid, name=session['crew_name'], title=titles.get(sid),
+                            leader_session_id=leader['session_id'] if leader else None, group=session['group_name'],
+                            status=session['status'], status_note=session['status_note'],
+                            where='bg' if self.chat.running(sid) else 'vscode' if sid in present else 'offline',
+                            **{key: session[key] for key in ('task', 'branch', 'worktree', 'cwd', 'cc_name', 'web_chat')},
+                            scope=card['scope'] if card else None, done_when=card['done_when'] if card else None,
+                            progress=[{'at': r['created_at'], 'text': r['body']} for r in reversed(reports) if r['session_id'] == sid][:5],
+                            codex=[{'id': t['run_id'] or t['rollout_id'], **{key: t[key] for key in
+                                   ('task_name', 'status', 'started_at', 'ended_at', 'duration_seconds')}} for t in recent_tasks],
+                            codex_older=len(own_tasks) - len(recent_tasks),
+                            leases=[{key: lease[key] for key in ('resource', 'purpose', 'taken_at', 'until_at')}
+                                    for lease in leases if lease['holder_session'] == sid],
+                            claims=[{key: claim[key] for key in ('pattern', 'note')} for claim in claims if claim['session_id'] == sid]))
+                result['candidates'] = self.candidates(conn, name)
+                result['attention'] = presentation.attention(conn, sessions, decisions, tasks,
+                    {sid: history['events'] for sid, history in histories.items()})
+            return result
+
+    def limits(self, conn):
+        latest = conn.execute('SELECT * FROM codex_rate_limits ORDER BY ts DESC LIMIT 1').fetchone()
+        codex = None
+        if (latest is not None and latest['used_percent'] is not None and latest['resets_at'] is not None
+                and store.parse_iso(latest['resets_at']) > self.now()):
+            codex = dict(used_percent=latest['used_percent'], resets_at=latest['resets_at'], captured_at=latest['ts'], expired=False)
+        return {'claude': claude_limits.read(self.home, cache_path=self.claude_root.parent.parent / '.claude.json', now=self.now()),
+                'codex': codex}
 
     def post(self, path, data, project_name=None):
         if not isinstance(data, dict):
@@ -308,14 +399,25 @@ class Service:
                     return session_ops.restore(conn, target['session_id'], now=now)
                 if path == '/api/session/undo':
                     return session_ops.undo(conn, target['session_id'], data['before'], now=now)
+                if path == '/api/session/stop':
+                    return self.chat.interrupt(target['session_id'])
             if path == "/api/answer":
                 if type(data.get("id")) is not int:
                     raise ValueError("id \u5fc5\u987b\u662f\u6574\u6570")
                 decision = conn.execute("SELECT project FROM decisions WHERE id=?", (data["id"],)).fetchone()
                 if decision is not None and decision["project"] != project:
                     raise board.BoardError("待拍板不属于当前项目")
-                board.answer(conn, data["id"], _text(data, "text"), board.HUMAN, now=now)
-                return {"ok": True}
+                text = _text(data, 'text')
+                board.answer(conn, data["id"], text, board.HUMAN, now=now)
+                answered = conn.execute('SELECT * FROM decisions WHERE id=?', (data['id'],)).fetchone()
+                asker = board.session(conn, answered['session_id'])
+                leader = asker if asker['role'] == 'leader' else board.leader_of(conn, asker['session_id'])
+                if leader is not None:
+                    notice = ('拍板 #%s：%s（SendMessage 地址：%s）\n问题：%s\n答复：%s\n'
+                              '请马上用 SendMessage 转告并叫它继续' %
+                              (data['id'], asker['crew_name'], asker['cc_name'], answered['question'], text))
+                    board.queue_leader_notice(conn, leader['session_id'], notice, 'web', now=now)
+                return {"ok": True, 'routed_to': leader['crew_name'] if leader else None}
             if path in ("/api/open", "/api/open/continue"):
                 target = (board.session(conn, _text(data, "session_id")) if path.endswith("/continue") or data.get("session_id") is not None else
                           board.named_session(conn, project, _text(data, "name")))
@@ -358,10 +460,21 @@ class Service:
                                        cwd=_optional_text(data, "cwd"),
                                        new_worktree=_optional_text(data, "new_worktree"), now=now)
             if path == "/api/chat/send":
-                return self.chat.send(self.chat_session(conn, project, _text(data, "session_id")), _text(data, "text"))
-            if path == "/api/lease/give":
-                board.give(conn, project, _text(data, "resource"), board.HUMAN, force=True, reason=_text(data, "reason"), now=now)
-            elif path == "/api/roster/move":
+                session = board.session(conn, _text(data, 'session_id'))
+                if session['project'] != project:
+                    raise board.BoardError('会话不属于当前工作区')
+                if session['role'] != 'leader':
+                    raise board.BoardError('下属请在 VS Code 里聊')
+                self.chat_session(conn, project, session['session_id'])
+                text, images = data.get('text', ''), chat.validate_images(data.get('images', []))
+                if not isinstance(text, str) or (not text.strip() and not images):
+                    raise ValueError('请提供文字或图片')
+                return self.chat.send(session, text, images=images)
+            if path == '/api/chat/read':
+                session = self.chat_session(conn, project, _text(data, 'session_id'))
+                board.mark_read(conn, session['session_id'], data.get('seq'), now=now)
+                return {'read_seq': board.read_seq(conn, session['session_id'])}
+            if path == "/api/roster/move":
                 before = session_ops.snapshot(conn, data['session_id']) if data.get('session_id') else None
                 board.roster(conn, project, "move", _text(data, "to"),
                              [] if data.get("session_id") is not None else [_text(data, "name")], now=now,
@@ -391,20 +504,19 @@ class Service:
     def chat_history(self, session_id, project_name=None):
         with closing(store.connect(self.home)) as conn:
             self.chat_session(conn, self.selected_project(conn, project_name), session_id)
-        return self.chat.history(session_id)
+            return {**self.chat.history(session_id), 'read_seq': board.read_seq(conn, session_id)}
+
+    def chat_file(self, session_id, name, project_name=None):
+        with closing(store.connect(self.home)) as conn:
+            self.chat_session(conn, self.selected_project(conn, project_name), session_id)
+            path, media_type = self.chat.file(session_id, name)
+            return path.read_bytes(), media_type
 
     def scan_usage(self):
         with self.scan_lock, closing(store.connect(self.home)) as conn:
             if self.scanned_at is None or (self.now() - self.scanned_at).total_seconds() >= 60:
                 usage.scan(conn, self.claude_root, self.codex_root, self.runs_file)
                 self.scanned_at = self.now()
-
-    def timeline(self, project_name, session_id):
-        self.scan_usage()
-        with closing(store.connect(self.home)) as conn:
-            if board.session(conn, session_id)['project'] != self.selected_project(conn, project_name):
-                raise board.BoardError('会话不属于当前工作区')
-            return presentation.timeline(conn, session_id, usage.codex_tasks(conn, None, None, project=project_name))
 
     def notification_status(self):
         return self.inbox.status()
@@ -427,7 +539,7 @@ class Service:
                 return usage.codex_tasks(conn, start, end, project=name)
             prices = usage.load_prices(self.home / "prices.json")
             functions = {"summary": usage.summary, "sessions": usage.by_session, "daily": usage.daily,
-                         "agents": usage.by_agent_type, "models": usage.by_model, "requests": usage.requests}
+                         "agents": usage.by_agent_type, "models": usage.by_model, "requests": usage.requests, 'tree': usage.tree}
             if what is not None:
                 return functions[what](conn, start, end, prices, project=name)
             result = {key: fn(conn, start, end, prices, project=name) for key, fn in functions.items() if key != "requests"}
@@ -437,12 +549,16 @@ class Service:
             return result
 
 
-POST_PATHS = {"/api/project/init", "/api/open", "/api/open/continue", "/api/answer", "/api/spawn", "/api/leader", "/api/lease/give", "/api/roster/move", "/api/roster/remove", "/api/group/close", "/api/roster/adopt", "/api/chat/send"}
-POST_PATHS.update('/api/session/' + action for action in ('rename', 'archive', 'remove', 'restore', 'undo'))
+POST_PATHS = {"/api/project/init", "/api/open", "/api/open/continue", "/api/answer", "/api/spawn", "/api/leader", "/api/roster/move", "/api/roster/remove", "/api/group/close", "/api/roster/adopt", "/api/chat/send", '/api/chat/read'}
+POST_PATHS.update('/api/session/' + action for action in ('rename', 'archive', 'remove', 'restore', 'undo', 'stop'))
 POST_PATHS.update(('/api/attention/dismiss', '/api/notifications/away'))
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"),
           "/style.css": ("style.css", "text/css; charset=utf-8"), "/chat.js": ("chat.js", "text/javascript; charset=utf-8"),
           "/vendor/markdown-it.min.js": ("vendor/markdown-it.min.js", "text/javascript; charset=utf-8")}
+STATIC.update({'/logo.svg': ('logo.svg', 'image/svg+xml'),
+               '/fonts/HarmonyOS_Sans_SC_Regular.woff2': ('fonts/HarmonyOS_Sans_SC_Regular.woff2', 'font/woff2'),
+               '/fonts/HarmonyOS_Sans_SC_Medium.woff2': ('fonts/HarmonyOS_Sans_SC_Medium.woff2', 'font/woff2')})
+STATIC_CACHED = {'/logo.svg', '/fonts/HarmonyOS_Sans_SC_Regular.woff2', '/fonts/HarmonyOS_Sans_SC_Medium.woff2'}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -466,13 +582,13 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass
 
-    def _send(self, code, content, content_type="application/json; charset=utf-8", attachment=None):
+    def _send(self, code, content, content_type="application/json; charset=utf-8", attachment=None, cache_control='no-store'):
         if isinstance(content, (dict, list)):
             content = json.dumps(content, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(content)))
-        self.send_header("Cache-Control", "no-store")
+        self.send_header("Cache-Control", cache_control)
         if attachment is not None:
             self.send_header("Content-Disposition", 'attachment; filename="%s"' % attachment)
         self.end_headers()
@@ -499,8 +615,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, service.post(url.path, data, query.get("project", [None])[0]))
         elif url.path == "/api/state":
             self._send(200, service.state(query.get("project", [None])[0]))
-        elif url.path == '/api/session/timeline':
-            self._send(200, service.timeline(query.get('project', [None])[0], query.get('session_id', [''])[0]))
+        elif url.path == '/api/chat/file':
+            content, media_type = service.chat_file(query.get('session_id', [''])[0], query.get('name', [''])[0],
+                                                    query.get('project', [None])[0])
+            self._send(200, content, media_type)
         elif url.path in ("/api/chat/history", "/api/chat/events"):
             session_id = query.get("session_id", [""])[0]
             history = service.chat_history(session_id, query.get("project", [None])[0])
@@ -525,7 +643,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, service.usage(period, project_name=query.get('project', [None])[0], scope=query.get('scope', ['workspace'])[0]))
         elif url.path in STATIC:
             filename, content_type = STATIC[url.path]
-            self._send(200, (service.plugin_root / "crew" / "web" / filename).read_bytes(), content_type)
+            self._send(200, (service.plugin_root / "crew" / "web" / filename).read_bytes(), content_type,
+                       cache_control='public, max-age=604800' if url.path in STATIC_CACHED else 'no-store')
         else:
             self._send(404, {"error": "\u9875\u9762\u4e0d\u5b58\u5728"})
 
@@ -587,7 +706,7 @@ def serve(home, plugin_root, port=47811, open_browser=False, **options):
             if not isinstance(exc.reason, ConnectionRefusedError):
                 raise
         else:
-            if not all(key in state for key in ('projects', 'groups', 'ungrouped')):
+            if not all(key in state for key in ('projects', 'leaders', 'members')):
                 raise board.BoardError('端口已被其他服务占用')
             print(workspace_url, flush=True)
             webbrowser.open(workspace_url)

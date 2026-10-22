@@ -52,7 +52,7 @@ class LiveSessionsTests(unittest.TestCase):
         agents = [self.agent(pid=1, startedAt=STARTED - 1000, status="busy"), self.agent()]
         service = web.Service(self.home, PLUGIN, agents_provider=lambda: agents,
                               claude_root=self.root / "transcripts", codex_root=self.root / "codex",
-                              cwd=self.project, vscode_state_db=self.vscode_state_db)
+                              runs_file=self.root / "runs.jsonl", cwd=self.project, vscode_state_db=self.vscode_state_db)
         self.addCleanup(service.close)
         service.refresh_agents()
         candidates = service.state("demo")["candidates"]
@@ -61,7 +61,7 @@ class LiveSessionsTests(unittest.TestCase):
         # Opening a session still needs both original PIDs for its safety checks.
         self.assertEqual(len(service.agents), 2)
         board.join(self.conn, "shared", "demo", "member", self.project, None, None, now=EARLIER)
-        self.assertEqual(service.state("demo")["ungrouped"][0]["status"], "working")
+        self.assertEqual(service.state("demo")["members"][0]["status"], "working")
         self.assertEqual(service.state("demo")["candidates"]["left"][0]["crew_name"], "member")
 
     def test_old_hooks_do_not_override_a_resumed_process_without_hooks(self):

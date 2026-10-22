@@ -5,7 +5,6 @@ questions it has shown before accepting a numbered answer.
 """
 import json
 import re
-import tempfile
 import threading
 import traceback
 import uuid
@@ -67,16 +66,9 @@ class Inbox:
         return self.status()
 
     def save_config(self):
+        # A rename-into-place collides with Windows scanners holding the fresh temp file; the file is tiny.
         with self.lock:
-            stream = tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=self.home,
-                                                 prefix='feishu-', suffix='.json', delete=False)
-            temporary = Path(stream.name)
-            try:
-                with stream:
-                    stream.write(json.dumps(self.config, ensure_ascii=False, indent=2))
-                temporary.replace(self.config_path)
-            finally:
-                temporary.unlink(missing_ok=True)
+            self.config_path.write_text(json.dumps(self.config, ensure_ascii=False, indent=2), encoding='utf-8')
 
     def start(self):
         if not self.config.get('enabled'):

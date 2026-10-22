@@ -76,8 +76,13 @@ def parser():
     c.add_argument("--task")
     c.add_argument("--role", choices=("member", "leader"), default="member")
     c.add_argument("--group")
+    c.add_argument("--scope")
+    c.add_argument("--done-when")
     command("whoami", True)
     command("task").add_argument("text")
+    c = command("card", True)
+    c.add_argument("--scope")
+    c.add_argument("--done-when")
     c = command("status", True)
     c.add_argument("--project")
     command("who", True).add_argument("name")
@@ -170,7 +175,8 @@ LABELS = {"project": "项目", "groups": "分组", "ungrouped": "未分组", "me
           "open_decisions": "待拍板条数", "session_id": "会话", "crew_name": "名字", "cc_name": "SendMessage 地址", "role": "角色",
           "group_name": "分组", "status": "状态", "task": "任务", "last_event_at": "最后活动", "leader": "leader", "name": "名称",
           "root": "目录", "purpose": "用途", "taken_at": "借出时间", "until_at": "预计归还", "holder_name": "借用人", "pattern": "归属路径",
-          "note": "说明", "question": "问题", "answer": "答复", "body": "内容", "created_at": "创建时间", "kind": "类型", "detail": "详情"}
+          "note": "说明", "question": "问题", "answer": "答复", "body": "内容", "created_at": "创建时间", "kind": "类型", "detail": "详情",
+          "scope": "负责范围", "done_when": "完成标准"}
 
 
 def _human(value):
@@ -244,6 +250,8 @@ def _whoami_text(s):
              "项目 %s  分组 %s  leader %s（地址 %s）" % (s["project"], s["group_name"] or "-",
                                                     leader["crew_name"] if leader else "-", leader["cc_name"] if leader else "-"),
              "worktree %s  分支 %s  会话 %s" % (s["worktree"] or "-", s["branch"] or "-", s["session_id"])]
+    lines.append("负责范围：%s  完成标准：%s" % (s["scope"] if s["scope"] is not None else "-",
+                                               s["done_when"] if s["done_when"] is not None else "-"))
     if s["last_message"]:
         lines.append("最后一句：" + s["last_message"])
     return "\n".join(lines)
@@ -307,6 +315,23 @@ def _usage(argv):
     return False, None
 
 
+def _with_card(conn, value):
+    card = board.card(conn, value["session_id"])
+    value["scope"] = None if card is None else card["scope"]
+    value["done_when"] = None if card is None else card["done_when"]
+    return value
+
+
+def _set_card(conn, session_id, scope, done_when):
+    card = board.card(conn, session_id)
+    if scope is None and card is not None:
+        scope = card["scope"]
+    if done_when is None and card is not None:
+        done_when = card["done_when"]
+    board.set_card(conn, session_id, scope, done_when)
+    return board.card(conn, session_id)
+
+
 def execute(conn, args, cwd, agents_provider):
     cmd = args.command
     actor = _actor(args)
@@ -324,11 +349,24 @@ def execute(conn, args, cwd, agents_provider):
         sid = _session_id(args)
         worktree, branch = git_details(cwd)
         agents = _agents(agents_provider, allow_failure=True)
-        return board.join(conn, sid, p["name"], args.name, cwd, worktree, branch, args.task, args.role, args.group, _cc_name(agents, sid))
+        value = board.join(conn, sid, p["name"], args.name, cwd, worktree, branch, args.task, args.role, args.group, _cc_name(agents, sid))
+        if args.scope is not None or args.done_when is not None:
+            _set_card(conn, sid, args.scope, args.done_when)
+        value = _with_card(conn, value)
+        leader = board.leader_of(conn, sid)
+        if leader is not None:
+            board.queue_leader_notice(conn, leader["session_id"],
+                                      "%s 用 crew join 加入你组，负责：%s。请用 SendMessage 欢迎它并确认分工" %
+                                      (value["crew_name"], value["scope"] or "未写"), "crew")
+        return value
     if cmd == "whoami":
-        return board.whoami(conn, _session_id(args))
+        return _with_card(conn, board.whoami(conn, _session_id(args)))
     if cmd == "task":
         return board.set_task(conn, _session_id(args), args.text)
+    if cmd == "card":
+        if args.scope is None and args.done_when is None:
+            raise board.BoardError("请至少提供 --scope 或 --done-when")
+        return _set_card(conn, _session_id(args), args.scope, args.done_when)
     if cmd == "answer":
         return board.answer(conn, args.id, args.text, actor)
     if cmd == "withdraw":
@@ -360,7 +398,7 @@ def execute(conn, args, cwd, agents_provider):
     if cmd == "who":
         s = board.named_session(conn, p, args.name)
         agents = _agents(agents_provider, allow_failure=True)
-        return board.update_cc_name(conn, s["session_id"], _cc_name(agents, s["session_id"]))
+        return _with_card(conn, board.update_cc_name(conn, s["session_id"], _cc_name(agents, s["session_id"])))
     if cmd == "lease":
         if args.action == "list":
             return board.leases(conn, p)

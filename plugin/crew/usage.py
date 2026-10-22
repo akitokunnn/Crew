@@ -649,6 +649,51 @@ def by_session(conn, start, end, prices, project=None):
     return sorted(result, key=lambda row: (row["display_name"], row["session_id"]))
 
 
+def tree(conn, start, end, prices, project=None):
+    """Group scoped Claude totals by current leaders, with dispatched Codex usage separate.
+
+    Both group and member shares use all Claude tokens in the requested scope.
+    Unpriced Claude usage retains a null cost, as in the other usage reports.
+    """
+    sessions = by_session(conn, start, end, prices, project)
+    relations = {row["session_id"]: row for row in conn.execute(
+        "SELECT s.session_id, g.leader_session_id, leader.crew_name AS leader_name "
+        "FROM sessions s JOIN groups g ON g.project=s.project AND g.name=s.group_name "
+        "JOIN sessions leader ON leader.session_id=g.leader_session_id WHERE g.closed_at IS NULL"
+    )}
+    groups = {}
+    ungrouped = {"leader_session_id": None, "name": "未收编的会话",
+                 "self": {"tokens": 0, "cost": 0.0}, "members": []}
+    total = sum(row["total_tokens"] for row in sessions)
+    for row in sessions:
+        session_id = row["session_id"]
+        relation = relations.get(session_id)
+        if relation is None:
+            group = ungrouped
+        else:
+            leader_id = relation["leader_session_id"]
+            if leader_id not in groups:
+                groups[leader_id] = {"leader_session_id": leader_id, "name": relation["leader_name"],
+                                     "self": {"tokens": 0, "cost": 0.0}, "members": []}
+            group = groups[leader_id]
+        if session_id == group["leader_session_id"]:
+            group["self"] = {"tokens": row["total_tokens"], "cost": row["cost_usd"]}
+        else:
+            group["members"].append({
+                "session_id": session_id, "name": row["display_name"],
+                "tokens": row["total_tokens"], "cost": row["cost_usd"],
+                "share": row["total_tokens"] / total * 100 if total else 0.0,
+                "codex_runs": row["codex_runs"], "codex_tokens": row["codex_tokens"],
+            })
+    result = sorted(groups.values(), key=lambda row: (row["name"], row["leader_session_id"])) + [ungrouped]
+    for group in result:
+        rows = [group["self"], *group["members"]]
+        group["tokens"] = sum(row["tokens"] for row in rows)
+        group["cost"] = None if any(row["cost"] is None for row in rows) else sum(row["cost"] for row in rows)
+        group["share"] = group["tokens"] / total * 100 if total else 0.0
+    return result
+
+
 def daily(conn, start, end, prices, project=None):
     names, groups = _session_names(conn), {}
     for request in _request_rows(conn, start, end, project):

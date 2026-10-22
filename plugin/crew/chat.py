@@ -1,4 +1,5 @@
 """Persistent Claude stream-json sessions and their replayable web journals."""
+import base64
 import collections
 import json
 import os
@@ -8,7 +9,33 @@ import threading
 import uuid
 from pathlib import Path
 
-from . import board, claude_limits, hooks, spawn
+from . import board, claude_limits, hooks, spawn, store
+
+
+IMAGE_TYPES = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif"}
+MAX_IMAGE_BYTES = 5 * 1024 * 1024
+
+
+def validate_images(images):
+    if images is None:
+        return []
+    if not isinstance(images, list):
+        raise board.BoardError("images 必须是图片列表")
+    if len(images) > 5:
+        raise board.BoardError("一次最多发送 5 张图片")
+    for image in images:
+        if (not isinstance(image, dict) or not isinstance(image.get("media_type"), str)
+                or image["media_type"] not in IMAGE_TYPES):
+            raise board.BoardError("图片只支持 image/png、image/jpeg、image/webp、image/gif")
+        if not isinstance(image.get("data"), str):
+            raise board.BoardError("图片 data 必须是 base64 字符串")
+        try:
+            raw = base64.b64decode(image["data"], validate=True)
+        except ValueError as exc:
+            raise board.BoardError("图片 data 不是有效的 base64") from exc
+        if len(raw) > MAX_IMAGE_BYTES:
+            raise board.BoardError("单张图片解码后不能超过 5 MB")
+    return images
 
 
 def child_environment(spec, environ=None, persistent_names=None):
@@ -36,35 +63,61 @@ class Journal:
     def __init__(self, path):
         self.path = path
         self.condition = threading.Condition(threading.RLock())
-        self.events = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()] if path.exists() else []
+        self.events = []
+        self.signature = None
+        self._index()
+        self.refresh()
+
+    def _index(self):
         self.messages = {event["id"] for event in self.events if event["type"] == "message"}
         self.results = {event["tool_use_id"] for event in self.events if event["type"] == "tool_result"}
         self.assistant = {event["id"]: event["content"] for event in self.events if event["type"] == "assistant"}
         self.status = next((event["status"] for event in reversed(self.events) if event["type"] == "status"), "offline")
 
+    def refresh(self):
+        with self.condition:
+            try:
+                stat = self.path.stat()
+            except FileNotFoundError:
+                signature = None
+            else:
+                signature = (stat.st_size, stat.st_mtime_ns)
+            if signature != self.signature:
+                self.events = ([json.loads(line) for line in self.path.read_text(encoding="utf-8").splitlines()]
+                               if signature is not None else [])
+                self.signature = signature
+                self._index()
+
     def emit(self, kind, **fields):
         with self.condition:
-            event = {"seq": len(self.events) + 1, "type": kind, **fields}
+            self.refresh()
+            event = {"seq": len(self.events) + 1, "type": kind, "at": store.now_iso(), **fields}
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with self.path.open("a", encoding="utf-8") as stream:
                 stream.write(json.dumps(event, ensure_ascii=False) + "\n")
             self.events.append(event)
+            stat = self.path.stat()
+            self.signature = (stat.st_size, stat.st_mtime_ns)
             self.condition.notify_all()
             return event
 
     def set_status(self, status):
         with self.condition:
+            self.refresh()
             if self.status != status:
                 self.status = status
                 self.emit("status", status=status)
 
-    def message(self, identity, text, source="human", sender=None):
+    def message(self, identity, text, source="human", sender=None, images=None):
         with self.condition:
+            self.refresh()
             if identity not in self.messages:
                 self.messages.add(identity)
                 fields = {"id": identity, "role": "user", "text": text, "source": source}
                 if sender is not None:
                     fields["sender"] = sender
+                if images:
+                    fields["images"] = images
                 self.emit("message", **fields)
 
     def consume(self, record):
@@ -79,6 +132,7 @@ class Journal:
             message = record["message"]
             content = [block for block in message["content"] if block["type"] in ("text", "tool_use")]
             with self.condition:
+                self.refresh()
                 previous = self.assistant.get(message["id"], [])
                 merged = list(previous)
                 for block in content:
@@ -95,11 +149,13 @@ class Journal:
                 self.message(origin.get("msg_id", record["uuid"]), origin["body"], "peer", origin.get("name"))
                 self.set_status("working")
             elif isinstance(record["message"]["content"], list):
-                for block in record["message"]["content"]:
-                    if block["type"] == "tool_result" and block["tool_use_id"] not in self.results:
-                        self.results.add(block["tool_use_id"])
-                        self.emit("tool_result", tool_use_id=block["tool_use_id"], content=block.get("content", ""),
-                                  is_error=block.get("is_error", False))
+                with self.condition:
+                    self.refresh()
+                    for block in record["message"]["content"]:
+                        if block["type"] == "tool_result" and block["tool_use_id"] not in self.results:
+                            self.results.add(block["tool_use_id"])
+                            self.emit("tool_result", tool_use_id=block["tool_use_id"], content=block.get("content", ""),
+                                      is_error=block.get("is_error", False))
             elif not record.get("isReplay") and not record.get("isSynthetic"):
                 self.message(record["uuid"], record["message"]["content"])
         elif kind == "result":
@@ -111,6 +167,7 @@ class Journal:
 
     def after(self, sequence, wait=False):
         with self.condition:
+            self.refresh()
             if wait and len(self.events) <= sequence:
                 self.condition.wait(10)
             return list(self.events[sequence:])
@@ -139,7 +196,19 @@ class Manager:
         with self.lock:
             if session_id not in self.journals:
                 self.journals[session_id] = Journal(self.path(session_id))
+            else:
+                self.journals[session_id].refresh()
             return self.journals[session_id]
+
+    def file(self, session_id, name):
+        if not isinstance(name, str) or not name or Path(name).name != name or "/" in name or "\\" in name:
+            raise board.BoardError("图片文件名不能包含路径")
+        journal = self.journal(session_id)
+        with journal.condition:
+            if not any(name in event.get("images", []) for event in journal.events if event["type"] == "message"):
+                raise board.BoardError("该图片不在会话聊天记录中")
+        media_type = next(media for media, suffix in IMAGE_TYPES.items() if name.endswith(suffix))
+        return self.home / "chat" / "files" / session_id / name, media_type
 
     def running(self, session_id):
         current = self.processes.get(session_id)
@@ -239,7 +308,7 @@ class Manager:
                 with self.lock:
                     plan["command"] = self._launch(session, spec)
                     self._send(session_id, "Read the file " + spec["md"] +
-                               " with the Read tool and follow it. It is your task brief from Crew.", spec["task"])
+                               " with the Read tool and follow it. It is your task brief from Crew.", spec["task"], source="crew")
             except Exception:
                 board.set_status(conn, session_id, "offline", now=now)
                 raise
@@ -247,19 +316,32 @@ class Manager:
         result = spawn._execute(conn, plan, launch, members, member_session_ids)
         return {**result, "session_id": session_id, "role": spec["role"]}
 
-    def _send(self, session_id, text, display_text=None, source='human', identity=None):
+    def _send(self, session_id, text, display_text=None, source='human', identity=None, images=None):
         current = self.processes[session_id]
         identity = identity or str(uuid.uuid4())
+        files = []
+        content = text
+        if images:
+            directory = self.home / "chat" / "files" / session_id
+            directory.mkdir(parents=True, exist_ok=True)
+            for index, image in enumerate(images, 1):
+                name = identity + "-" + str(index) + IMAGE_TYPES[image["media_type"]]
+                (directory / name).write_bytes(base64.b64decode(image["data"], validate=True))
+                files.append(name)
+            content = [{"type": "image", "source": {"type": "base64", "media_type": image["media_type"],
+                                                     "data": image["data"]}} for image in images]
+            content.append({"type": "text", "text": text})
         message = {"type": "user", "uuid": identity, "session_id": session_id, "parent_tool_use_id": None,
-                   "message": {"role": "user", "content": text}}
+                   "message": {"role": "user", "content": content}}
         with current.input_lock:
-            current.journal.message(identity, text if display_text is None else display_text, source=source)
+            current.journal.message(identity, text if display_text is None else display_text, source=source, images=files)
             current.journal.set_status("working")
             current.process.stdin.write(json.dumps(message, ensure_ascii=False) + "\n")
             current.process.stdin.flush()
         return identity
 
-    def send(self, session, text, source='human', identity=None):
+    def send(self, session, text, source='human', identity=None, images=None):
+        images = validate_images(images)
         session_id = session["session_id"]
         with self.lock:
             if self.closed:
@@ -276,8 +358,23 @@ class Manager:
                     raise board.BoardError("上一轮会话进程的输出尚未结束，请稍后查看状态")
                 spec = json.loads((self.home / "spawn" / (session["spawn_id"] + ".json")).read_text(encoding="utf-8"))
                 self._launch(session, spec, resume=True)
-            identity = self._send(session_id, text, source=source, identity=identity)
+            identity = self._send(session_id, text, source=source, identity=identity, images=images)
         return {"ok": True, 'message_id': identity}
+
+    def interrupt(self, session_id):
+        with self.lock:
+            current = self.processes.get(session_id)
+            if current is None:
+                raise board.BoardError("网页服务没有管理这个会话进程")
+            if not self.running(session_id):
+                raise board.BoardError("会话没有在运行")
+            if not self.busy(session_id):
+                raise board.Conflict("会话当前空闲，没有正在进行的轮次")
+            request = {"type": "control_request", "request_id": str(uuid.uuid4()), "request": {"subtype": "interrupt"}}
+            with current.input_lock:
+                current.process.stdin.write(json.dumps(request) + "\n")
+                current.process.stdin.flush()
+        return {"ok": True}
 
     def detach(self, session_id):
         """Release an idle session to VS Code by letting its own process finish."""

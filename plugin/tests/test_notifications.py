@@ -227,14 +227,6 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         self.assertIn('无法确认', self.client.sent[-1][1])
         self.assertIn('锁屏', self.client.sent[-1][1])
 
-    def test_atomic_config_replace_failure_preserves_file_and_surfaces_error(self):
-        before = self.config()
-        with mock.patch('crew.notifications.Path.replace', side_effect=OSError('replace failed')):
-            with self.assertRaisesRegex(OSError, 'replace failed'):
-                self.inbox.set_away(True)
-        self.assertEqual(self.config(), before)
-        self.assertEqual(list(self.home.glob('feishu-*.json')), [])
-
     def test_query_lists_all_open_questions_grouped_by_project_and_leader(self):
         first = board.ask(self.conn, 's1', '第一项目的问题', ['A', 'B'], 'A', now=NOW)
         self.add_leader('other-lead', project='other', name='lead')

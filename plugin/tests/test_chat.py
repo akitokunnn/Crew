@@ -1,11 +1,15 @@
 """Stream protocol and persistent-process tests without starting Claude."""
+import base64
 import io
 import json
+import os
 import queue
 import threading
 import unittest
+import uuid
+from pathlib import Path
 from unittest import mock
-from crew import chat, claude_limits
+from crew import board, chat, claude_limits
 from test_usage import UsageFixture
 
 
@@ -142,6 +146,191 @@ class ChatTests(UsageFixture, unittest.TestCase):
                                      {"CREW_GROUP": "old-group"}, set())
         self.assertEqual(env["CREW_ROLE"], "member")
         self.assertNotIn("CREW_GROUP", env)
+
+    def manager_with_process(self, status="idle"):
+        manager = chat.Manager(self.home, self.root, lambda: [])
+        journal = manager.journal("s1")
+        journal.set_status(status)
+        process = FakeProcess([])
+        manager.processes["s1"] = chat.Running(process, journal)
+        session = {"session_id": "s1", "status": "active"}
+        return manager, process, session
+
+    def test_new_events_have_utc_millisecond_timestamps_and_old_events_are_unchanged(self):
+        old = {"seq": 1, "type": "message", "id": "old", "text": "legacy", "source": "human"}
+        self.write(self.journal.path, [old])
+        journal = chat.Journal(self.journal.path)
+        with mock.patch.object(chat.store, "now_iso", return_value="2026-10-23T12:34:56.789Z"):
+            journal.message("new", "current")
+        self.assertEqual(journal.events[0], old)
+        self.assertEqual(journal.events[1]["at"], "2026-10-23T12:34:56.789Z")
+        self.assertRegex(journal.emit("text", text="chunk")["at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$")
+        self.assertEqual(chat.Journal(self.journal.path).events, journal.events)
+
+    def test_history_cache_uses_size_and_mtime_and_updates_after_external_writes(self):
+        path = self.journal.path
+        old = {"seq": 1, "type": "message", "id": "old", "text": "old", "source": "human"}
+        self.write(path, [old])
+        manager = chat.Manager(self.home, self.root, lambda: [])
+        original_read = Path.read_text
+        reads = []
+
+        def read_text(current, *args, **kwargs):
+            reads.append(current)
+            return original_read(current, *args, **kwargs)
+
+        with mock.patch.object(Path, "read_text", read_text):
+            self.assertEqual(manager.history("s1")["events"], [old])
+            self.assertEqual(manager.history("s1")["events"], [old])
+            self.assertEqual(reads, [path])
+            # A rewrite with the same size must still refresh when mtime changes.
+            modified = dict(old, text="new")
+            self.write(path, [modified])
+            stat = path.stat()
+            os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1000000))
+            self.assertEqual(manager.history("s1")["events"], [modified])
+            self.assertEqual(reads, [path, path])
+            self.write(path, [{"seq": 2, "type": "status", "status": "idle"}], append=True)
+            self.assertEqual(len(manager.history("s1")["events"]), 2)
+            self.assertEqual(reads, [path, path, path])
+            manager.journal("s1").message("own", "no reread")
+            self.assertEqual(len(manager.history("s1")["events"]), 3)
+            self.assertEqual(reads, [path, path, path])
+
+    def test_crew_and_feishu_sources_survive_cli_echo_and_replay(self):
+        manager, process, _ = self.manager_with_process()
+        for source in ("crew", "feishu"):
+            manager._send("s1", "hello from " + source, source=source, identity=source + "-1")
+            message = json.loads(process.stdin.getvalue().splitlines()[-1])
+            journal = manager.journal("s1")
+            journal.consume(message)
+            journal.consume(dict(message, isReplay=True))
+        messages = [event for event in manager.history("s1")["events"] if event["type"] == "message"]
+        self.assertEqual([(event["id"], event["source"]) for event in messages], [("crew-1", "crew"), ("feishu-1", "feishu")])
+
+    def test_status_refreshes_before_comparing_and_starting_a_new_message(self):
+        first = self.journal
+        first.set_status("working")
+        second = chat.Journal(first.path)
+        second.set_status("idle")
+        first.set_status("working")
+        first.refresh()
+        self.assertEqual(first.status, "working")
+        self.assertEqual([event["status"] for event in first.events], ["working", "idle", "working"])
+        second.set_status("idle")
+        first.consume({"type": "stream_event", "event": {"type": "message_start"}})
+        self.assertEqual(first.status, "working")
+        self.assertEqual(chat.Journal(first.path).status, "working")
+        self.assertEqual([event["status"] for event in first.events], ["working", "idle", "working", "idle", "working"])
+
+    def test_assistant_merge_refreshes_external_content_before_using_cached_blocks(self):
+        def answer(text):
+            return {"type": "assistant", "message": {"id": "answer", "content": [{"type": "text", "text": text}]}}
+
+        first = self.journal
+        first.consume(answer("a"))
+        second = chat.Journal(first.path)
+        second.consume(answer("b"))
+        first.consume(answer("c"))
+        expected = [{"type": "text", "text": text} for text in ("a", "b", "c")]
+        self.assertEqual(first.events[-1]["content"], expected)
+        self.assertEqual(first.assistant["answer"], expected)
+        second.consume(answer("c"))
+        persisted = chat.Journal(first.path)
+        self.assertEqual(len(persisted.events), 3)
+        self.assertEqual(persisted.assistant["answer"], expected)
+
+    def test_tool_result_deduplication_refreshes_external_ids_before_replay(self):
+        result = {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "tool-1", "content": "done"}]}}
+        first = self.journal
+        second = chat.Journal(first.path)
+        second.consume(result)
+        first.consume(result)
+        self.assertEqual(len(first.events), 1)
+        self.assertEqual(first.results, {"tool-1"})
+        self.assertEqual(len(chat.Journal(first.path).events), 1)
+
+    def test_image_send_writes_cli_blocks_and_only_filenames_to_journal(self):
+        manager, process, session = self.manager_with_process()
+        raw = b"test-image-binary"
+        encoded = base64.b64encode(raw).decode("ascii")
+        result = manager.send(session, "look", images=[{"media_type": "image/png", "data": encoded}])
+        message = json.loads(process.stdin.getvalue())
+        self.assertEqual(message["message"]["content"], [
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": encoded}},
+            {"type": "text", "text": "look"}])
+        journal = manager.journal("s1")
+        event = next(event for event in journal.events if event["type"] == "message")
+        expected_name = result["message_id"] + "-1.png"
+        self.assertEqual(event["images"], [expected_name])
+        self.assertEqual(event["text"], "look")
+        self.assertNotIn(encoded, journal.path.read_text(encoding="utf-8"))
+        path, media_type = manager.file("s1", expected_name)
+        self.assertEqual(path, self.home / "chat" / "files" / "s1" / expected_name)
+        self.assertEqual((path.read_bytes(), media_type), (raw, "image/png"))
+        journal.consume(message)
+        self.assertEqual(len([event for event in journal.events if event["type"] == "message"]), 1)
+
+    def test_image_only_messages_and_supported_media_types(self):
+        for media_type, suffix in chat.IMAGE_TYPES.items():
+            with self.subTest(media_type=media_type):
+                manager, process, session = self.manager_with_process()
+                manager.send(session, "", images=[{"media_type": media_type, "data": "AA=="}])
+                message = json.loads(process.stdin.getvalue())
+                self.assertEqual(message["message"]["content"][-1], {"type": "text", "text": ""})
+                event = [event for event in manager.journal("s1").events if event["type"] == "message"][-1]
+                self.assertTrue(event["images"][0].endswith(suffix))
+
+    def test_invalid_images_are_rejected_before_any_chat_write(self):
+        manager, process, session = self.manager_with_process()
+        image = {"media_type": "image/png", "data": "AA=="}
+        too_large = base64.b64encode(b"a" * (chat.MAX_IMAGE_BYTES + 1)).decode("ascii")
+        for images, error in (({}, "图片列表"), ([image] * 6, "最多发送 5"),
+                              ([dict(image, media_type="image/svg+xml")], "只支持"),
+                              ([dict(image, media_type=[])], "只支持"),
+                              ([dict(image, data=1)], "base64 字符串"),
+                              ([dict(image, data="not base64")], "有效的 base64"),
+                              ([dict(image, data=too_large)], "5 MB")):
+            with self.subTest(error=error), self.assertRaisesRegex(board.BoardError, error):
+                manager.send(session, "look", images=images)
+        self.assertEqual(process.stdin.getvalue(), "")
+        self.assertEqual([event for event in manager.history("s1")["events"] if event["type"] == "message"], [])
+
+    def test_image_size_and_count_boundaries_are_accepted(self):
+        image = {"media_type": "image/png", "data": base64.b64encode(b"a" * chat.MAX_IMAGE_BYTES).decode("ascii")}
+        self.assertEqual(chat.validate_images([image]), [image])
+        self.assertEqual(len(chat.validate_images([dict(image, data="AA==")] * 5)), 5)
+
+    def test_image_file_requires_journal_membership_and_rejects_path_traversal(self):
+        manager, _, _ = self.manager_with_process()
+        for name in ("unlisted.png", "../image.png", "..\\image.png", "/image.png", ""):
+            with self.subTest(name=name), self.assertRaises(board.BoardError):
+                manager.file("s1", name)
+
+    def test_interrupt_writes_control_request_only_for_owned_working_session(self):
+        manager, process, _ = self.manager_with_process("working")
+        before = manager.history("s1")["events"]
+        self.assertEqual(manager.interrupt("s1"), {"ok": True})
+        request = json.loads(process.stdin.getvalue())
+        self.assertEqual(request["type"], "control_request")
+        self.assertEqual(request["request"], {"subtype": "interrupt"})
+        self.assertEqual(uuid.UUID(request["request_id"]).version, 4)
+        manager.journal("s1").consume({"type": "control_response", "response": {
+            "subtype": "success", "request_id": request["request_id"]}})
+        self.assertEqual(manager.history("s1")["events"], before)
+        self.assertTrue(manager.busy("s1"))
+
+    def test_interrupt_rejects_external_stopped_and_idle_sessions(self):
+        manager, process, _ = self.manager_with_process()
+        with self.assertRaisesRegex(board.BoardError, "没有管理"):
+            manager.interrupt("external")
+        with self.assertRaisesRegex(board.Conflict, "空闲"):
+            manager.interrupt("s1")
+        process.finish()
+        with self.assertRaisesRegex(board.BoardError, "没有在运行"):
+            manager.interrupt("s1")
+        self.assertEqual(process.stdin.getvalue(), "")
 
 
 if __name__ == "__main__":
