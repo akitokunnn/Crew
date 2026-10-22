@@ -290,11 +290,21 @@ class WebTests(ShellFixture, unittest.TestCase):
     def test_state_shape_and_display_offline_does_not_mutate_board(self):
         code, state, headers = self.get("/api/state?project=demo")
         self.assertEqual(code, 200)
-        self.assertTrue({"projects","project","groups","ungrouped","resources","leases","claims","decisions","handoffs","reports","events","agents_age_seconds","agents_error"} <= state.keys())
+        self.assertTrue({"projects", "project", "now", "agents_error", "notification", "leaders", "members",
+                         "decisions", "candidates", "limits", "attention"} <= state.keys())
+        self.assertFalse({"groups", "ungrouped", "removed_sessions", "open_decisions", "resources", "leases", "claims",
+                          "handoffs", "reports", "events", "codex_tasks", "agents_age_seconds"} & state.keys())
         self.assertEqual(state["project"]["name"], "demo")
-        self.assertEqual(state["ungrouped"][0]["status"], "offline")
+        self.assertEqual(state["projects"], [{"name": "demo"}])
+        members = {s["session_id"]: s for s in state["members"]}
+        self.assertEqual(members["s2"]["status"], "offline")
         self.assertEqual(board.session(self.conn, "s2")["status"], "idle")
-        self.assertEqual(state["groups"][0]["members"][1]["status"], "waiting")
+        self.assertEqual((members["s1"]["name"], members["s1"]["status"]), ("one", "waiting"))
+        self.assertEqual((members["s1"]["where"], members["s2"]["where"]), ("vscode", "offline"))
+        self.assertNotIn("crew_name", members["s1"])
+        self.assertNotIn("open", members["s1"])
+        self.assertEqual(state["leaders"][0]["session_id"], "s3")
+        self.assertEqual(state["leaders"][0]["member_ids"], ["s1"])
         self.assertEqual(self.server.server_address[0], "127.0.0.1")
         self.assertIsNone(state["agents_error"])
 
@@ -319,8 +329,9 @@ class WebTests(ShellFixture, unittest.TestCase):
             self.provider.return_value[0]["status"] = "busy"
             self.server.service.refresh_agents()
             state = self.get("/api/state?project=demo")[1]
-            target = next(s for g in state["groups"] for s in g["members"] if s["session_id"] == "s1")
-            self.assertFalse(target["open"]["enabled"])
+            target = next(s for s in state["members"] if s["session_id"] == "s1")
+            self.assertEqual(target["where"], "vscode")
+            self.assertNotIn("open", target)
             self.assertEqual(self.get("/api/open/continue", {"session_id": "s1", "confirm": True})[0], 409)
             closer.assert_not_called()
             self.provider.return_value[0]["status"] = "idle"
@@ -354,18 +365,20 @@ class WebTests(ShellFixture, unittest.TestCase):
 
     def test_agents_cache_age_failure_preserves_original_states_then_recovers(self):
         initial_calls = self.provider.call_count
+        sampled_at = self.server.service.agents_at
         self.clock += dt.timedelta(seconds=7)
         for _ in range(2):
             code, state, _ = self.get("/api/state?project=demo")
         self.assertEqual(self.provider.call_count, initial_calls)
-        self.assertEqual(state["agents_age_seconds"], 7)
+        self.assertEqual((self.clock - self.server.service.agents_at).total_seconds(), 7)
         self.provider.side_effect = OSError("fake agents failed")
         self.server.service.refresh_agents()
         _, state, _ = self.get("/api/state?project=demo")
         self.assertIn("fake agents failed", state["agents_error"])
-        self.assertEqual(state["ungrouped"][0]["status"], "idle")
-        self.assertEqual(state["groups"][0]["members"][1]["status"], "waiting")
-        self.assertEqual(state["agents_age_seconds"], 7)
+        members = {s["session_id"]: s for s in state["members"]}
+        self.assertEqual(members["s2"]["status"], "idle")
+        self.assertEqual(members["s1"]["status"], "waiting")
+        self.assertEqual(self.server.service.agents_at, sampled_at)
         self.provider.side_effect = None
         self.server.service.refresh_agents()
         self.assertIsNone(self.get("/api/state?project=demo")[1]["agents_error"])
@@ -374,7 +387,7 @@ class WebTests(ShellFixture, unittest.TestCase):
         self.provider.return_value = [{"sessionId":"s1", "name":"fresh-address"}]
         self.server.service.refresh_agents()
         state = self.get("/api/state?project=demo")[1]
-        session = next(s for g in state["groups"] for s in g["members"] if s["session_id"] == "s1")
+        session = next(s for s in state["members"] if s["session_id"] == "s1")
         self.assertEqual(session["cc_name"], "fresh-address")
         self.assertEqual(board.session(self.conn, "s1")["cc_name"], "cc-one")
 
@@ -413,7 +426,7 @@ class WebTests(ShellFixture, unittest.TestCase):
                          (store.norm_path(self.project), self.git("branch", "--show-current")))
         self.assertEqual(self.commands, [])
         self.assertEqual(self.get("/api/state?project=demo")[1]["candidates"], [])
-        current = lambda: next(s for g in self.get("/api/state?project=demo")[1]["groups"] for s in g["members"]
+        current = lambda: next(s for s in self.get("/api/state?project=demo")[1]["members"]
                                if s["session_id"] == candidate["session_id"])
         self.assertEqual(current()["status"], "working")
         self.live_candidate(status="idle")
@@ -464,8 +477,8 @@ class WebTests(ShellFixture, unittest.TestCase):
         service.refresh_agents()
         state = service.state("demo")
         self.assertIsNotNone(state["agents_error"])
-        self.assertIsNone(state["agents_age_seconds"])
-        self.assertEqual(state["ungrouped"][0]["status"], "idle")
+        self.assertIsNone(service.agents_at)
+        self.assertEqual(next(s for s in state["members"] if s["session_id"] == "s2")["status"], "idle")
 
     def test_project_selection_and_recent_limits(self):
         for i in range(24):
@@ -476,12 +489,16 @@ class WebTests(ShellFixture, unittest.TestCase):
             board.handoff(self.conn, "s1", "*", str(i), now=NOW)
             board.report(self.conn, "s1", str(i), now=NOW)
         state = self.get("/api/state?project=demo")[1]
-        self.assertEqual(len(state["decisions"]), 23)
-        self.assertEqual([d["question"] for d in state["decisions"] if d["status"] == "answered" and d["delivered_at"] is None],
-                         ["answered-0", "answered-1"])
-        self.assertEqual(len(state["handoffs"]), 20)
-        self.assertEqual(len(state["reports"]), 20)
-        self.assertEqual(len(state["events"]), 50)
+        self.assertEqual([d["id"] for d in state["decisions"]], [self.decision])
+        self.assertEqual((state["decisions"][0]["asker"], state["decisions"][0]["leader_session_id"]), ("one", "s3"))
+        self.assertNotIn("status", state["decisions"][0])
+        stored_decisions = board.decisions(self.conn, "demo", all=True)
+        self.assertEqual(len(stored_decisions), 25)
+        self.assertEqual({d["question"] for d in stored_decisions if d["status"] == "answered" and d["delivered_at"] is None},
+                         {"answered-0", "answered-1"})
+        member = next(s for s in state["members"] if s["session_id"] == "s1")
+        self.assertEqual([r["text"] for r in member["progress"]], ["23", "22", "21", "20", "19"])
+        self.assertEqual(member["progress"][0]["at"], NOW)
         self.assertEqual(self.get("/api/state?project=missing")[0], 400)
 
     def test_all_posts_require_crew_header(self):
@@ -501,7 +518,8 @@ class WebTests(ShellFixture, unittest.TestCase):
             self.assertEqual(self.get("/api/answer", body)[0], 400)
 
     def test_first_project_can_be_enabled_from_web_without_existing_selection(self):
-        service = web.Service(self.root / "empty-board", PLUGIN, agents_provider=lambda: [], cwd=self.project)
+        service = web.Service(self.root / "empty-board", PLUGIN, agents_provider=lambda: [], cwd=self.project,
+                              claude_root=self.claude, codex_root=self.codex, runs_file=self.runs, now=self.clock)
         self.addCleanup(service.close)
         self.assertIsNone(service.state()["project"])
         result = service.post("/api/project/init", {"name": "first", "root": str(self.project)})
@@ -537,12 +555,13 @@ class WebTests(ShellFixture, unittest.TestCase):
             "status": "idle", "cwd": str(self.project)}), encoding="utf-8")
         self.server.service.refresh_agents()
         state = self.get("/api/state?project=demo")[1]
-        current = next(s for s in state["ungrouped"] if s["session_id"] == "unnamed")
-        self.assertEqual(current["title"], "Research notes")
+        self.assertNotIn("unnamed", {s["session_id"] for s in state["members"]})
         self.assertEqual(state["candidates"][0]["location"], "vscode")
         code, adopted, _ = self.get("/api/roster/adopt", {"session_id": "unnamed", "name": "researcher", "group": "lead"})
         self.assertEqual(code, 200)
         self.assertEqual((adopted["crew_name"], adopted["group_name"]), ("researcher", "lead"))
+        current = next(s for s in self.get("/api/state?project=demo")[1]["members"] if s["session_id"] == "unnamed")
+        self.assertEqual((current["name"], current["title"]), ("researcher", "Research notes"))
         self.assertEqual(self.get("/api/roster/adopt", {"session_id": "unnamed", "name": "again"})[0], 400)
 
     def test_spawn_success_and_business_errors(self):
@@ -554,7 +573,7 @@ class WebTests(ShellFixture, unittest.TestCase):
         self.assertEqual(self.get("/api/spawn", {"name":"fresh", "task":"work", "group":"missing"})[0], 400)
         self.assertEqual(self.get("/api/spawn", {"name":"fresh"})[0], 400)
 
-    def test_member_chat_resume_uses_current_group_and_keeps_member_role(self):
+    def test_member_web_send_refused_and_manager_resume_keeps_current_group_and_member_role(self):
         code, result, _ = self.get("/api/spawn", {"name": "web-member", "task": "implement the feature"})
         self.assertEqual(code, 200)
         session_id = result["session_id"]
@@ -564,18 +583,27 @@ class WebTests(ShellFixture, unittest.TestCase):
         session = board.session(self.conn, session_id)
         self.assertEqual((session["role"], session["group_name"]), ("member", None))
         self.assertTrue(self.get("/api/chat/history?session_id=" + session_id)[1]["running"])
-        shown = next(s for s in self.get("/api/state?project=demo")[1]["ungrouped"] if s["session_id"] == session_id)
+        shown = next(s for s in self.get("/api/state?project=demo")[1]["members"] if s["session_id"] == session_id)
         self.assertTrue(shown["web_chat"])
+        self.assertEqual(shown["where"], "bg")
         manager = self.server.service.chat
         self.assertTrue(manager.owns_pid(session_id, self.processes[0].pid))
         self.assertFalse(manager.owns_pid(session_id, -1))
         self.processes[0].emit({"type": "result"})
         self.chat_wait(session_id, lambda journal: journal.status == "idle")
-        self.assertEqual(self.get("/api/chat/send", {"session_id": session_id, "text": "continue"})[0], 200)
+        original_input = self.processes[0].stdin.getvalue()
+        code, error, _ = self.get("/api/chat/send", {"session_id": session_id, "text": "continue"})
+        self.assertEqual((code, error["error"]), (400, "下属请在 VS Code 里聊"))
+        self.assertEqual(self.processes[0].stdin.getvalue(), original_input)
+        self.assertEqual(len(self.processes), 1)
+        manager.send(board.session(self.conn, session_id), "continue")
         board.roster(self.conn, "demo", "move", "lead", ["web-member"], now=NOW)
         manager.close()
         self.server.service.chat = chat.Manager(self.home, PLUGIN, self.provider, self.process_factory)
-        self.assertEqual(self.get("/api/chat/send", {"session_id": session_id, "text": "resume"})[0], 200)
+        code, error, _ = self.get("/api/chat/send", {"session_id": session_id, "text": "resume"})
+        self.assertEqual((code, error["error"]), (400, "下属请在 VS Code 里聊"))
+        self.assertEqual(len(self.processes), 1)
+        self.server.service.chat.send(board.session(self.conn, session_id), "resume")
         process = self.processes[1]
         self.assertEqual(process.command[-2:], ["--resume", session_id])
         self.assertNotIn("--agent", process.command)
@@ -613,8 +641,10 @@ class WebTests(ShellFixture, unittest.TestCase):
         code, _, errors = self.run_cli(["leader", "close", "archived-leader", "--with-members"])
         self.assertEqual(code, 0, errors)
         def assert_archived():
-            sessions = {s["session_id"]: s for s in self.get("/api/state?project=demo")[1]["ungrouped"]}
-            self.assertEqual([sessions[sid]["status"] for sid in identities], ["closed", "closed"])
+            state = self.get("/api/state?project=demo")[1]
+            visible = {s["session_id"] for s in state["leaders"] + state["members"]}
+            self.assertTrue(visible.isdisjoint(identities))
+            self.assertEqual([board.session(self.conn, sid)["status"] for sid in identities], ["closed", "closed"])
             self.assertTrue(all(self.server.service.chat.running(sid) for sid in identities))
         assert_archived()
         for sid in identities:
@@ -663,7 +693,7 @@ class WebTests(ShellFixture, unittest.TestCase):
         self.assertEqual(len(self.processes), 1)
         self.assertEqual(json.loads(process.stdin.getvalue().splitlines()[-1])["message"]["content"], "next turn")
         state = self.get("/api/state?project=demo")[1]
-        leader = next(s for group in state["groups"] for s in group["members"] if s["session_id"] == session_id)
+        leader = next(s for s in state["leaders"] if s["session_id"] == session_id)
         self.assertTrue(leader["web_chat"])
         self.assertEqual(leader["status"], "working")
 
@@ -751,15 +781,6 @@ class WebTests(ShellFixture, unittest.TestCase):
         self.assertTrue(self.get("/api/chat/history?session_id=" + session_id)[1]["busy"])
         self.assertEqual(self.get("/api/chat/send", {"session_id": session_id, "text": "too soon"})[0], 409)
 
-    def test_force_give_requires_reason_records_actor_and_errors(self):
-        self.assertEqual(self.get("/api/lease/give", {"resource":"phone"})[0], 400)
-        self.assertEqual(self.get("/api/lease/give", {"resource":"phone", "reason":"operator reclaim"})[0], 200)
-        row = self.conn.execute("SELECT * FROM leases").fetchone()
-        self.assertEqual(row["released_by"], "user")
-        event = board.events(self.conn, "demo", limit=1)[0]
-        self.assertEqual(event["detail"]["reason"], "operator reclaim")
-        self.assertEqual(self.get("/api/lease/give", {"resource":"phone", "reason":"again"})[0], 400)
-
     def test_roster_move_success_and_error(self):
         board.ensure_spawn_group(self.conn, "demo", "next", now=NOW)
         self.assertEqual(self.get("/api/roster/move", {"name":"one", "to":"next"})[0], 200)
@@ -825,9 +846,10 @@ class WebTests(ShellFixture, unittest.TestCase):
             for period in ("today", "week", "all", "2026-10-21..2026-10-21"):
                 code, result, _ = self.get("/api/usage?scope=machine&period=" + period)
                 self.assertEqual(code, 200)
-                self.assertEqual(set(result), {"summary","sessions","daily","codex","agents","models","scope","project"})
+                self.assertEqual(set(result), {"summary","sessions","daily","codex","agents","models","tree","scope","project"})
                 self.assertEqual(result["summary"]["claude"]["requests"], 1)
                 self.assertEqual(len(result["codex"]), 1)
+                self.assertEqual(sum(row["tokens"] for row in result["tree"]), result["summary"]["claude"]["total_tokens"])
             self.assertEqual(scan.call_count, 1)
             self.clock += dt.timedelta(seconds=60)
             self.get("/api/usage?period=all")
