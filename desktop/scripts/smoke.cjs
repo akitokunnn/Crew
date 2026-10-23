@@ -1,0 +1,27 @@
+'use strict';
+const fs = require('node:fs/promises'); const path = require('node:path'); const { spawn } = require('node:child_process');
+const { Backend, projects } = require('../src/core.cjs');
+(async () => {
+  const values = process.argv.slice(2), reuse = values.includes('--reuse'), binary = values.find(value => value !== '--reuse');
+  const root = path.resolve(__dirname, '..'), executable = binary ? path.resolve(binary) : require('electron');
+  const kind = (binary ? (executable.endsWith('-portable.exe') ? 'portable' : 'packaged') : 'source') + (reuse ? '-reuse' : '');
+  const home = await fs.mkdtemp(path.join(root, '.cache', 'smoke-'));
+  const output = path.join(root, 'smoke-output', kind + '.json');
+  const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
+  const extractTemp = path.join(root, '.cache', 'portable-temp'); await fs.mkdir(extractTemp, { recursive: true });
+  env.TEMP = extractTemp; env.TMP = extractTemp;
+  const args = [...(!binary ? [root] : []), '--smoke-test', '--home', home, '--smoke-output', output, '--isolated-sources'];
+  const borrowed = reuse ? new Backend({ home, backendDir: path.resolve(root, '../plugin'), python: 'python', port: 0, isolated: true, smoke: true }) : null;
+  if (borrowed) await borrowed.start();
+  try {
+  const child = spawn(executable, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env });
+  let errors = ''; child.stderr.on('data', data => { errors = (errors + data).slice(-12000); });
+  const timeout = kind.startsWith('portable') ? 120000 : 45000;
+  const code = await new Promise((resolve, reject) => { const timer = setTimeout(() => { child.kill(); reject(new Error('Electron smoke timed out: ' + errors)); }, timeout); child.once('error', error => { clearTimeout(timer); reject(error); }); child.once('exit', value => { clearTimeout(timer); resolve(value); }); });
+  if (code !== 0) throw new Error('Electron exited ' + code + ': ' + errors);
+  const result = JSON.parse(await fs.readFile(output, 'utf8'));
+  if (result.home !== home || !result.window || !result.contextIsolation || result.nodeIntegration || !result.sandbox || result.renderer.nodeAvailable || !result.ownedServiceExited) throw new Error('Desktop smoke invariant failed: ' + JSON.stringify(result));
+  if (borrowed && (result.service.owned || !result.borrowedServiceStillAvailable || !Array.isArray(await projects(borrowed.url)))) throw new Error('Borrowed service was stopped by the app');
+  console.log(JSON.stringify({ executable, evidence: output, ...result }, null, 2));
+  } finally { if (borrowed) await borrowed.stop(); }
+})().catch(error => { console.error(error); process.exitCode = 1; });

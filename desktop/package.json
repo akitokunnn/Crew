@@ -1,0 +1,29 @@
+{
+  "name": "crew-desktop",
+  "version": "0.1.0",
+  "description": "Native Crew workspace launcher",
+  "author": "Crew contributors",
+  "license": "UNLICENSED",
+  "private": true,
+  "main": "src/main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/*.test.cjs",
+    "build": "node scripts/icon.cjs && electron-builder --win portable --x64",
+    "build:dir": "node scripts/icon.cjs && electron-builder --win dir --x64"
+  },
+  "devDependencies": {
+    "electron": "45.0.0",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "local.crew.desktop",
+    "productName": "Crew",
+    "asar": true,
+    "directories": {"output": "dist", "buildResources": "assets"},
+    "files": ["src/**/*", "assets/**/*", "package.json"],
+    "extraResources": [{"from": "../plugin", "to": "backend", "filter": ["**/*", "!tests{,/**}", "!**/__pycache__/**", "!**/*.pyc", "!*-test-*/**"]}],
+    "win": {"target": "portable", "signAndEditExecutable": false},
+    "portable": {"artifactName": "Crew-${version}-portable.exe"}
+  }
+}

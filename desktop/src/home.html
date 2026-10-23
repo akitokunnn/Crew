@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<title>Crew · 工作区</title><link rel="stylesheet" href="home.css"></head>
+<body><aside><div class="brand"><span class="mark">C</span><strong>Crew</strong></div><div class="nav active">◫ <span>工作区</span></div><div class="aside-bottom"><span class="dot"></span>你的 AI 团队，随时接着工作</div></aside>
+<main><header><div class="eyebrow">YOUR WORKSPACE</div><span id="service" class="service">正在连接 Crew…</span></header>
+<section class="intro"><h1>从一个工作区开始。</h1><p>让不同的 Agent 围绕同一个目标协作。<br>打开已有项目，或为下一个想法建一个新家。</p></section>
+<section class="actions"><button id="existing" class="action"><span class="action-icon">↗</span><span><strong>打开已有项目</strong><small>选择一个 Git 文件夹，继续工作</small></span><b>→</b></button><button id="new" class="action"><span class="action-icon plus">＋</span><span><strong>新建工作区</strong><small>选择保存位置，创建新的 Git 项目</small></span><b>→</b></button></section>
+<section id="create-panel" class="create-panel" hidden><h2>创建工作区</h2><label for="name">项目名称</label><input id="name" maxlength="100" placeholder="例如：我的新项目" autocomplete="off"><div class="location"><span id="location">尚未选择保存位置</span><button id="choose-parent" class="secondary">选择位置</button></div><div class="create-footer"><button id="cancel" class="secondary">取消</button><button id="create" class="primary">创建并打开</button></div></section>
+<section class="recent"><div class="section-heading"><h2>你的工作区</h2><button id="refresh" class="text-button">刷新 ↻</button></div><div id="projects" class="projects"><p class="empty">正在读取工作区…</p></div></section>
+<p id="error" class="error" role="alert" hidden></p><footer>关闭窗口后，Crew 会留在托盘中继续工作。<span>Ctrl + Shift + O 返回工作区首页</span></footer></main>
+<script src="home.js"></script></body></html>
