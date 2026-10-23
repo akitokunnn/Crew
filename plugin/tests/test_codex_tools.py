@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from crew import board, codex_tools, store
+from crew import board, codex_tools, decision_briefs, runtimes, store, todo
 
 
 class CodexToolsTests(unittest.TestCase):
@@ -94,6 +94,75 @@ class CodexToolsTests(unittest.TestCase):
         self.assertIn("error", data)
         self.assertNotIn("id", data)
         self.assertEqual(board.decisions(self.conn, "first"), [])
+
+    def structured(self):
+        return {"title": "是否安排今天发布？", "context": "", "why_user": "发布时间影响用户安排。",
+                "recommendation_reason": "等待验收可以减少返工。", "impact": "",
+                "options": [{"label": "今天发布已验证版本", "consequence": "用户今天就会看到改动。"},
+                            {"label": "等待用户验收后发布", "consequence": "上线时间延后。"}]}
+
+    def test_dynamic_ask_can_save_a_real_structured_choice(self):
+        brief = self.structured()
+        asked = self.call("crew_ask", {"question": "原始上下文保持原样", "recommendation": "等待用户验收后发布", "brief": brief})
+        self.assertEqual(asked["brief"], brief)
+        self.assertEqual(asked["options"], [item["label"] for item in brief["options"]])
+        self.assertEqual(decision_briefs.get(self.conn, asked["id"]), brief)
+        self.assertEqual(self.call("crew_decisions"), [asked])
+
+    def test_dynamic_structured_ask_rejects_bad_content_and_nested_identity_forgery(self):
+        malformed = self.structured()
+        malformed["session_id"] = "foreign-crew"
+        self.call("crew_ask", {"question": "x", "brief": malformed}, success=False)
+        markers = self.structured()
+        markers["options"] = [{"label": "A", "consequence": "first"}, {"label": "B", "consequence": "second"}]
+        self.call("crew_ask", {"question": "x", "brief": markers}, success=False)
+        missing = self.structured()
+        del missing["why_user"]
+        self.call("crew_ask", {"question": "x", "brief": missing}, success=False)
+        self.assertEqual(board.decisions(self.conn, "first"), [])
+
+    def test_dynamic_revision_keeps_the_id_and_checks_the_actual_current_leader(self):
+        number = board.ask(self.conn, "codex-crew", "unclear original", ["A", "B"])
+        peer = codex_tools.CodexTools(self.home, "peer-leader")
+        args = {"id": number, "question": "明确问题", "brief": self.structured(), "recommendation": "等待用户验收后发布"}
+        self.call("crew_decision_revise", args, tools=peer, success=False, threadId="leader-crew")
+        revised = self.call("crew_decision_revise", args, tools=self.leader, threadId="foreign-crew")
+        self.assertEqual(revised["id"], number)
+        self.assertEqual(revised["session_id"], "codex-crew")
+        self.assertEqual(revised["brief"], self.structured())
+        foreign = board.ask(self.conn, "foreign-crew", "foreign question")
+        self.call("crew_decision_revise", {**args, "id": foreign}, tools=self.leader, success=False)
+        self.assertEqual(board.decisions(self.conn, "other")[0]["question"], "foreign question")
+        self.assertEqual(len(board.decisions(self.conn, "first")), 1)
+
+    def test_dynamic_manual_actions_keep_human_completion_separate_from_agent_withdrawal(self):
+        added = self.call("crew_todo_add", {"title": "Connect device", "steps": "Plug in cable",
+                                             "verification": "Device is listed", "blocking": True}, threadId="claude-crew")
+        self.assertEqual(added["session_id"], "codex-crew")
+        self.assertEqual(added["status"], "open")
+        self.assertEqual(self.call("crew_todo_list"), [added])
+        peer = codex_tools.CodexTools(self.home, "peer-leader")
+        self.call("crew_todo_withdraw", {"id": added["id"], "reason": "not needed"}, tools=peer, success=False)
+        self.call("crew_todo_resolve", {"id": added["id"], "status": "done"}, success=False)
+        withdrawn = self.call("crew_todo_withdraw", {"id": added["id"], "reason": "Solved automatically"}, tools=self.leader)
+        self.assertEqual(withdrawn["todo"]["status"], "withdrawn")
+        self.assertEqual(self.call("crew_todo_list"), [])
+        self.assertEqual(self.call("crew_todo_list", {"all": True})[0]["id"], added["id"])
+
+    def test_dynamic_manual_actions_reject_foreign_access_and_model_selected_identity(self):
+        foreign = todo.add(self.conn, "foreign-crew", "Other project", "Do it", "Check result")
+        self.assertEqual(self.call("crew_todo_list"), [])
+        self.call("crew_todo_withdraw", {"id": foreign["id"], "reason": "Not ours"}, tools=self.leader, success=False)
+        self.call("crew_todo_add", {"title": "forged", "steps": "x", "verification": "x", "session_id": "foreign-crew"}, success=False)
+        self.call("crew_todo_list", {"project": "other"}, success=False)
+        self.assertEqual(todo.get(self.conn, "other", foreign["id"])["status"], "open")
+
+    def test_dynamic_identity_shows_runtime_without_using_it_as_a_credential(self):
+        runtimes.set(self.conn, "codex-crew", "codex", "native-thread")
+        identity = self.call("crew_whoami", threadId="unrelated-native-thread")
+        self.assertEqual(identity["runtime"], "codex")
+        self.assertEqual(identity["leader"]["runtime"], "claude")
+        self.assertEqual(identity["session_id"], "codex-crew")
 
     def test_only_the_own_group_leader_can_answer(self):
         number = self.call("crew_ask", {"question": "Choose internal format?"})["id"]

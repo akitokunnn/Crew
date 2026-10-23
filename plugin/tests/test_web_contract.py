@@ -79,7 +79,8 @@ class WebContractTests(ShellFixture, unittest.TestCase):
 
     def test_state_exact_shape_and_empty_limits(self):
         expected = {"project", "projects", "now", "agents_error", "notification", "leaders",
-                    "members", "decisions", "candidates", "attention", "limits", "vscode_error", "models", "efforts", "channel", "themes"}
+                    "members", "decisions", "candidates", "attention", "limits", "vscode_error", "models", "efforts", "channel", "themes",
+                    "runtimes", "trust", "todos", "todo_count"}
         state = self.state()
         self.assertEqual(set(state), expected)
         self.assertEqual(set(state["project"]), {"name", "root", "theme"})
@@ -91,7 +92,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         leader = state["leaders"][0]
         self.assertEqual(set(leader), {"session_id", "name", "goal", "status", "busy", "running", "web_chat",
             "cc_name", "last_seq", "last_reply_id", "read_seq", "unread", "pending", "notices_pending", "member_ids",
-            "model", "effort", "applied", "activity", "context", "where", "codex", "codex_older", "is_git_admin", "priority"})
+            "model", "effort", "applied", "activity", "context", "where", "codex", "codex_older", "is_git_admin", "priority", "runtime"})
         self.assertIsNone(leader['priority'])
         self.assertEqual((leader["session_id"], leader["member_ids"], leader["unread"]), ("s3", ["s1"], 0))
         # Leaders dispatch Codex for their own bulk work too (user 10-23), listed like members'.
@@ -151,7 +152,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual(set(member), {"session_id", "name", "title", "leader_session_id", "group", "status",
             "status_note", "where", "task", "scope", "done_when", "branch", "worktree", "cwd", "cc_name",
             "web_chat", "progress", "codex", "codex_older", "leases", "claims", "model", "effort", "applied", "activity",
-            "context", "busy", "running"})
+            "context", "busy", "running", "runtime"})
         self.assertEqual((member["name"], member["leader_session_id"], member["group"], member["scope"], member["done_when"]),
                          ("one", "s3", "lead", "Backend", "Tests pass"))
         self.assertEqual([row["text"] for row in member["progress"]], ["progress-" + str(i) for i in (6, 5, 4, 3, 2)])
@@ -173,7 +174,9 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual({row["id"] for row in state["decisions"]}, {opened, own})
         decision = next(row for row in state["decisions"] if row["id"] == opened)
         self.assertEqual(set(decision), {"id", "session_id", "asker", "leader_session_id", "question",
-                                        "options", "recommendation", "blocking", "created_at", "held", "held_at"})
+                                        "options", "recommendation", "blocking", "created_at", "held", "held_at", "brief", "needs_review"})
+        self.assertTrue(decision['needs_review'])
+        self.assertIsNone(decision['brief'])
         self.assertEqual((decision["asker"], decision["leader_session_id"]), ("one", "s3"))
         self.assertEqual((decision["held"], decision["held_at"]), (False, None))
         self.assertEqual(state["leaders"][0]["pending"], 2)

@@ -11,7 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import board, channel, guard, install, store, vscode_sessions
+from . import board, channel, guard, install, runtimes, store, vscode_sessions
 from .hooks import git_details, git_toplevel
 
 
@@ -46,9 +46,38 @@ def _cc_name(agents, session_id):
     return next((a["name"] for a in agents if a["sessionId"] == session_id), None)
 
 
+def _default_home():
+    return Path(os.environ["CREW_HOME"]) if os.environ.get("CREW_HOME") else store.default_home()
+
+
+def _brief_flags(parser):
+    for flag in ("title", "context", "why-user", "recommend-reason", "impact"):
+        parser.add_argument("--" + flag, default=argparse.SUPPRESS)
+    parser.add_argument("--consequence", action="append", default=argparse.SUPPRESS)
+
+
+def _brief_arguments(args, labels, existing=None):
+    fields = {"title": "title", "context": "context", "why_user": "why_user",
+              "recommend_reason": "recommendation_reason", "impact": "impact"}
+    if not any(hasattr(args, key) for key in (*fields, "consequence")):
+        return None
+    value = dict(existing or {})
+    value.update({field: getattr(args, attr) for attr, field in fields.items() if hasattr(args, attr)})
+    if hasattr(args, "consequence"):
+        if len(labels) != len(args.consequence):
+            raise board.BoardError("--option 与 --consequence 必须按顺序一一对应")
+        value["options"] = [{"label": label, "consequence": consequence}
+                            for label, consequence in zip(labels, args.consequence)]
+    elif value.get("options") is None or [item["label"] for item in value["options"]] != labels:
+        raise board.BoardError("每个 --option 都需要对应的 --consequence，说明选择后会怎样")
+    value.setdefault("context", "")
+    value.setdefault("impact", "")
+    return value
+
+
 def parser():
     p = argparse.ArgumentParser(prog="crew", description="Crew 共享白板")
-    p.add_argument("--home", type=Path, default=store.default_home())
+    p.add_argument("--home", type=Path, default=_default_home())
     p.add_argument("--session", dest="session_id")
     commands = p.add_subparsers(dest="command", required=True)
 
@@ -132,7 +161,23 @@ def parser():
     c.add_argument("--option", action="append", default=[])
     c.add_argument("--recommend")
     c.add_argument("--blocking", action="store_true")
+    _brief_flags(c)
     command("decisions", True).add_argument("--all", action="store_true")
+    c = command("decision", True).add_subparsers(dest="action", required=True)
+    a = c.add_parser("revise")
+    a.add_argument("id", type=int)
+    a.add_argument("--question", default=argparse.SUPPRESS)
+    a.add_argument("--option", action="append", default=argparse.SUPPRESS)
+    a.add_argument("--recommend", default=argparse.SUPPRESS)
+    a.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
+    _brief_flags(a)
+    c = command("trust", True).add_subparsers(dest="action")
+    for action in ("status", "report"):
+        c.add_parser(action).add_argument("--json", action="store_true", default=argparse.SUPPRESS)
+    a = c.add_parser("set")
+    a.add_argument("enabled", choices=("on", "off"))
+    a.add_argument("--goal")
+    a.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
     c = command("answer")
     c.add_argument("id", type=int)
     c.add_argument("text")
@@ -151,6 +196,23 @@ def parser():
     c = command("reports", True)
     c.add_argument("--since", type=datetime.date.fromisoformat)
     c.add_argument("--group")
+    c = command("todo", True)
+    c.add_argument("--all", action="store_true")
+    todos = c.add_subparsers(dest="action")
+    a = todos.add_parser("list")
+    a.add_argument("--all", action="store_true", default=argparse.SUPPRESS)
+    a.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
+    a = todos.add_parser("add")
+    a.add_argument("title")
+    a.add_argument("--steps", required=True)
+    a.add_argument("--verify", dest="verification", required=True)
+    a.add_argument("--blocking", action="store_true")
+    a.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
+    a = todos.add_parser("withdraw")
+    a.add_argument("id", type=int)
+    a.add_argument("--reason", required=True)
+    a.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
+    command("todos", True).add_argument("--all", action="store_true")
     c = command("group").add_subparsers(dest="action", required=True)
     c.add_parser("list").add_argument("--json", action="store_true")
     c = command("roster").add_subparsers(dest="action", required=True)
@@ -169,6 +231,7 @@ def parser():
     a.add_argument("--name", required=True)
     a.add_argument("--model")
     a.add_argument("--effort")
+    a.add_argument("--runtime", choices=runtimes.RUNTIMES, default=argparse.SUPPRESS)
     a.add_argument("--members")
     a.add_argument("--task")
     location = a.add_mutually_exclusive_group()
@@ -179,6 +242,7 @@ def parser():
     a.add_argument("--name", required=True)
     a.add_argument("--model", default=argparse.SUPPRESS)
     a.add_argument("--effort", default=argparse.SUPPRESS)
+    a.add_argument("--runtime", choices=runtimes.RUNTIMES, default=argparse.SUPPRESS)
     a.add_argument("--task", required=True)
     a.add_argument("--group")
     a.add_argument("--role", choices=("member", "leader"), default="member")
@@ -188,6 +252,9 @@ def parser():
     a.add_argument("--base")
     a.add_argument("--dry-run", action="store_true")
     a = command("wake", True)
+    a.add_argument("name")
+    a.add_argument("text")
+    a = command("send", True)
     a.add_argument("name")
     a.add_argument("text")
     a = command("web")
@@ -298,6 +365,7 @@ def _whoami_text(s):
              "项目 %s  分组 %s  leader %s（地址 %s）" % (s["project"], s["group_name"] or "-",
                                                     leader["crew_name"] if leader else "-", leader["cc_name"] if leader else "-"),
              "worktree %s  分支 %s  会话 %s" % (s["worktree"] or "-", s["branch"] or "-", s["session_id"])]
+    lines.append("运行端 %s  leader 运行端 %s" % (s.get("runtime", "claude"), leader.get("runtime", "claude") if leader else "-"))
     lines.append("负责范围：%s  完成标准：%s" % (s["scope"] if s["scope"] is not None else "-",
                                                s["done_when"] if s["done_when"] is not None else "-"))
     if s["last_message"]:
@@ -332,10 +400,14 @@ def _emit(value, as_json=False, command=None, channel_card=None):
     elif command == "wake":
         if "notice_id" in value:
             print(value["message"])
+        elif value.get("runtime") == "codex":
+            print('已叫醒 %s，它在后台运行，消息用 crew send %s "<内容>"' % (value["name"], value["name"]))
         else:
             print("已叫醒 %s，它在后台运行，SendMessage 地址：%s" % (value["name"], value["address"]))
     elif command == "compact":
         print(value["message"] if "message" in value else "已开始压缩")
+    elif command == "send":
+        print(value.get("message", "消息已交给 Crew"))
     elif command == "whoami":
         print(_whoami_text(value))
     elif command == "who":
@@ -356,21 +428,21 @@ def _emit(value, as_json=False, command=None, channel_card=None):
 
 
 def _session_id(args):
-    sid = args.session_id if args.session_id is not None else os.environ.get("CLAUDE_CODE_SESSION_ID")
+    sid = args.session_id if args.session_id is not None else (os.environ.get("CREW_SESSION_ID") or os.environ.get("CLAUDE_CODE_SESSION_ID"))
     if not sid:
-        raise board.BoardError("请在 Claude 会话里运行，或加 --session")
+        raise board.BoardError("请在 Claude 会话里运行，或加 --session；Codex 会话需由 Crew 绑定身份")
     return sid
 
 
 def _actor(args):
-    sid = args.session_id if args.session_id is not None else os.environ.get("CLAUDE_CODE_SESSION_ID")
+    sid = args.session_id if args.session_id is not None else (os.environ.get("CREW_SESSION_ID") or os.environ.get("CLAUDE_CODE_SESSION_ID"))
     return sid if sid else board.HUMAN
 
 
 def _project(conn, args, cwd):
     if getattr(args, "project", None) is not None:
         return board.project(conn, args.project)["name"]
-    if args.session_id is not None or os.environ.get("CLAUDE_CODE_SESSION_ID"):
+    if args.session_id is not None or os.environ.get("CREW_SESSION_ID") or os.environ.get("CLAUDE_CODE_SESSION_ID"):
         return board.session(conn, _session_id(args))["project"]
     p = board.project_for_path(conn, cwd)
     if p is None:
@@ -390,7 +462,7 @@ def _usage(argv):
             break
     if index < len(argv) and argv[index] == "usage":
         globals_parser = argparse.ArgumentParser(prog="crew")
-        globals_parser.add_argument("--home", type=Path, default=store.default_home())
+        globals_parser.add_argument("--home", type=Path, default=_default_home())
         globals_parser.add_argument("--session")
         args = globals_parser.parse_args(argv[:index])
         from . import usage_cli
@@ -402,6 +474,9 @@ def _with_card(conn, value):
     card = board.card(conn, value["session_id"])
     value["scope"] = None if card is None else card["scope"]
     value["done_when"] = None if card is None else card["done_when"]
+    value.update(runtimes.get(conn, value["session_id"]))
+    if isinstance(value.get("leader"), dict):
+        value["leader"].update(runtimes.get(conn, value["leader"]["session_id"]))
     return value
 
 
@@ -454,9 +529,11 @@ def execute(conn, args, cwd, agents_provider):
         value = _with_card(conn, value)
         leader = board.leader_of(conn, sid)
         if leader is not None:
+            mixed = any(runtimes.get(conn, person["session_id"])["runtime"] == "codex" for person in (value, leader))
+            welcome = 'crew send %s "<欢迎与分工>"' % value["crew_name"] if mixed else "SendMessage"
             board.queue_leader_notice(conn, leader["session_id"],
-                                      "%s 用 crew join 加入你组，负责：%s。请用 SendMessage 欢迎它并确认分工" %
-                                      (value["crew_name"], value["scope"] or "未写"), "crew")
+                                      "%s 用 crew join 加入你组，负责：%s。请用 %s 欢迎它并确认分工" %
+                                      (value["crew_name"], value["scope"] or "未写", welcome), "crew")
         return value
     if cmd == "whoami":
         return _with_card(conn, board.whoami(conn, _session_id(args)))
@@ -471,7 +548,34 @@ def execute(conn, args, cwd, agents_provider):
     if cmd == "withdraw":
         return board.withdraw(conn, _session_id(args), args.id)
     if cmd == "ask":
-        return board.ask(conn, _session_id(args), args.question, args.option, args.recommend, args.blocking)
+        brief = _brief_arguments(args, args.option)
+        if brief is None:
+            print("提示：这道拍板还没有结构化摘要。请补充短标题、为什么需用户决定、推荐理由和每个选项后果；"
+                  "可用 crew decision revise 原位补清，不要另发重复题。", file=sys.stderr)
+        return board.ask(conn, _session_id(args), args.question, args.option, args.recommend, args.blocking, brief=brief)
+    if cmd == "decision":
+        from . import decision_briefs
+        sid = _session_id(args)
+        project = _project(conn, args, cwd)
+        decision = next((d for d in board.decisions(conn, project, all=True) if d["id"] == args.id), None)
+        if decision is None:
+            raise board.BoardError("拍板不属于当前项目或不存在")
+        labels = getattr(args, "option", decision["options"])
+        kwargs = {"question": getattr(args, "question", decision_briefs.INHERIT),
+                  "options": getattr(args, "option", decision_briefs.INHERIT),
+                  "recommendation": getattr(args, "recommend", decision_briefs.INHERIT)}
+        brief = _brief_arguments(args, labels, decision_briefs.get(conn, args.id))
+        if brief is not None:
+            kwargs["brief"] = brief
+        return decision_briefs.revise(conn, sid, args.id, **kwargs)
+    if cmd == "trust":
+        from . import trust_mode
+        project = _project(conn, args, cwd)
+        if args.action == "set":
+            return trust_mode.set(conn, project, args.enabled == "on", args.goal)
+        if args.action == "report":
+            return trust_mode.report(conn, project)
+        return trust_mode.get(conn, project)
     if cmd == "claim":
         return board.claim(conn, _session_id(args), args.pattern, args.note)
     if cmd == "unclaim":
@@ -482,6 +586,15 @@ def execute(conn, args, cwd, agents_provider):
         return board.handoffs(conn, _session_id(args))
     if cmd == "report":
         return board.report(conn, _session_id(args), args.text)
+    if cmd in ("todo", "todos"):
+        from . import todo
+        project = _project(conn, args, cwd)
+        action = getattr(args, "action", None) or "list"
+        if action == "add":
+            return todo.add(conn, _session_id(args), args.title, args.steps, args.verification, args.blocking)
+        if action == "withdraw":
+            return todo.withdraw(conn, _session_id(args), args.id, args.reason)
+        return todo.list(conn, project, all=args.all)
     if cmd == "say":
         speaker = conn.execute("SELECT project FROM sessions WHERE session_id=?", (actor,)).fetchone()
         if speaker is None or speaker["project"] is None:
@@ -525,8 +638,11 @@ def execute(conn, args, cwd, agents_provider):
         return open_session.cli_open(conn, args.home, board.named_session(conn, p, args.name)["session_id"], agents_provider)
     if cmd == "who":
         s = board.named_session(conn, p, args.name)
-        agents = _agents(agents_provider, allow_failure=True)
-        value = _with_card(conn, board.update_cc_name(conn, s["session_id"], _cc_name(agents, s["session_id"])))
+        if runtimes.get(conn, s["session_id"])["runtime"] == "codex":
+            value = _with_card(conn, s)
+        else:
+            agents = _agents(agents_provider, allow_failure=True)
+            value = _with_card(conn, board.update_cc_name(conn, s["session_id"], _cc_name(agents, s["session_id"])))
         _with_context(args.home, p, [value])
         return value
     if cmd == "lease":
@@ -543,7 +659,8 @@ def execute(conn, args, cwd, agents_provider):
     if cmd == "claims":
         return board.claims(conn, p)
     if cmd == "decisions":
-        return board.decisions(conn, p, args.all)
+        from . import decision_briefs
+        return decision_briefs.enrich(conn, board.decisions(conn, p, args.all))
     if cmd == "reports":
         return board.reports(conn, p, args.since.isoformat() if args.since is not None else None, args.group)
     if cmd == "group":
@@ -610,9 +727,21 @@ def main(argv=None, agents_provider=claude_agents, cwd=None, plugin_root=None):
             from . import spawn
             with contextlib.closing(store.connect(args.home)) as conn:
                 project = _project(conn, args, cwd)
+                target = board.named_session(conn, project, args.name)
+                runtime = runtimes.get(conn, target["session_id"])["runtime"]
             value = spawn.request_start(args.home, project, "/api/wake", {
                 "name": args.name, "text": args.text,
                 "caller_session_id": None if _actor(args) == board.HUMAN else _actor(args)})
+            value = {**value, "runtime": runtime}
+            _emit(value, args.json, args.command)
+            return 0
+        if args.command == "send":
+            from . import spawn
+            caller = _session_id(args)
+            with contextlib.closing(store.connect(args.home)) as conn:
+                project = _project(conn, args, cwd)
+            value = spawn.request_start(args.home, project, "/api/messages", {
+                "name": args.name, "text": args.text, "caller_session_id": caller})
             _emit(value, args.json, args.command)
             return 0
         if args.command == "compact":

@@ -17,7 +17,7 @@ from urllib.parse import parse_qs, quote, urlencode, urlsplit
 from urllib.request import ProxyHandler, build_opener
 from urllib.error import URLError
 
-from . import board, channel, channel_digest, chat, claude_limits, git_admin, git_ci, git_view, hooks, models, notifications, open_session, presentation, session_ops, spawn, store, themes, usage, usage_cli, vscode_sessions
+from . import board, channel, channel_digest, chat, claude_limits, git_admin, git_ci, git_view, hooks, messaging, models, notifications, open_session, presentation, runtime_catalog, runtimes, session_ops, spawn, store, themes, todo, trust_mode, usage, usage_cli, vscode_sessions
 
 
 def _text(data, key):
@@ -35,13 +35,15 @@ class Service:
     def __init__(self, home, plugin_root, agents_provider=None,
                  claude_root=None, codex_root=None, runs_file=None, now=None, cwd=None, process_factory=subprocess.Popen,
                  notification_client=None, lock_status=notifications.desktop_locked, notification_batch_seconds=30,
-                 vscode_state_db=None):
+                 vscode_state_db=None, migrate_manual_work=False):
         if agents_provider is None:
             from .cli import claude_agents
             agents_provider = claude_agents
         self.home, self.plugin_root = Path(home), Path(plugin_root)
         self.agents_provider, self.clock = agents_provider, now
         self.chat = chat.Manager(home, plugin_root, agents_provider, process_factory)
+        self.runtime_catalog = runtime_catalog.Catalog()
+        self.migrate_manual_work = migrate_manual_work
         self.claude_root = Path.home() / ".claude" / "projects" if claude_root is None else Path(claude_root)
         self.codex_root = Path.home() / ".codex" / "sessions" if codex_root is None else Path(codex_root)
         self.runs_file = self.home / "codex_runs.jsonl" if runs_file is None else Path(runs_file)
@@ -98,9 +100,9 @@ class Service:
             self.digest_channels()
             with self.agents_lock:
                 agents, error = self.agents, self.agents_error
-            if error is None:
-                with self.write_lock, closing(store.connect(self.home)) as conn:
-                    self.chat.auto_resume(conn, agents, now=self.now().isoformat(timespec="milliseconds").replace("+00:00", "Z"))
+            with self.write_lock, closing(store.connect(self.home)) as conn:
+                self.chat.auto_resume(conn, agents, now=self.now().isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+                                      runtime=None if error is None else 'codex')
             if self.stop.wait(10):
                 break
 
@@ -139,6 +141,14 @@ class Service:
                         board.record_event(conn, "vscode:archived", session["project"], sid, {}, now=now)
 
     def start(self):
+        if self.migrate_manual_work:
+            with closing(store.connect(self.home)) as conn:
+                todo.backfill(conn)
+                from . import decision_briefs
+                for project in board.projects(conn):
+                    for item in board.decisions(conn, project['name']):
+                        if decision_briefs.get(conn, item['id']) is None:
+                            decision_briefs.queue_review(conn, item['id'])
         self.worker = threading.Thread(target=self._poll_agents, name="crew-agents", daemon=True)
         self.worker.start()
         self.notice_worker = threading.Thread(target=self._poll_notices, name="crew-leader-notices", daemon=True)
@@ -161,6 +171,7 @@ class Service:
 
     def _poll_notices(self):
         while not self.stop.wait(2):
+            self.chat.deliver_messages()
             self.deliver_notices()
 
     def _poll_git_ci(self):
@@ -186,9 +197,10 @@ class Service:
                             with self.agents_lock:
                                 agents, agents_error = self.agents, self.agents_error
                             # Unknown process state could mean the leader runs elsewhere; resuming then would start a second copy.
-                            if agents_error is not None or not self.agents_ready.is_set():
+                            claude = runtimes.get(conn, sid)['runtime'] == 'claude'
+                            if claude and (agents_error is not None or not self.agents_ready.is_set()):
                                 continue
-                            if any(agent['sessionId'] == sid for agent in agents):
+                            if claude and any(agent['sessionId'] == sid for agent in agents):
                                 if conn.execute("SELECT 1 FROM events WHERE session_id=? AND kind='leader:notice_blocked'",
                                                 (sid,)).fetchone() is None:
                                     board.record_event(conn, 'leader:notice_blocked', leader['project'], sid,
@@ -219,9 +231,10 @@ class Service:
             try:
                 with self.chat.lock:
                     with self.agents_lock:
-                        if self.agents_error is not None or not self.agents_ready.is_set():
+                        claude = runtimes.get(conn, sid)['runtime'] == 'claude'
+                        if claude and not self.chat.running(sid) and (self.agents_error is not None or not self.agents_ready.is_set()):
                             continue
-                        external = any(agent['sessionId'] == sid for agent in self.agents)
+                        external = claude and any(agent['sessionId'] == sid for agent in self.agents)
                     if self.chat.running(sid):
                         if self.chat.busy(sid):
                             continue
@@ -311,11 +324,17 @@ class Service:
         session = board.update_cc_name(conn, sid, cc_name, now=now)
         leader = board.leader_of(conn, sid)
         if leader is not None:
+            peer = any(runtimes.get(conn, s['session_id'])['runtime'] == 'codex' for s in (session, leader))
             address = "（SendMessage 地址：%s）" % session["cc_name"] if session["cc_name"] else ""
-            board.queue_leader_notice(conn, leader["session_id"],
-                "%s%s 已收编到你组。请用 SendMessage 欢迎它、说明你是它的 leader、守则 /crew:member，"
+            notice = ("%s%s 已收编到你组。请用 SendMessage 欢迎它、说明你是它的 leader、守则 /crew:member，"
                 "并请它用 crew card 写下负责范围和完成标准；crew who 显示离线时，用 crew wake %s \"要它做的事\" "
-                "叫醒后按 crew 名 SendMessage。" % (session["crew_name"], address, session["crew_name"]),
+                "叫醒后按 crew 名 SendMessage。" % (session["crew_name"], address, session["crew_name"]))
+            if peer:
+                notice = ('%s 已收编到你组。请用 crew send %s "<欢迎与分工>"，说明你是它的 leader，'
+                          '请它阅读成员守则并用 crew card 写下负责范围和完成标准。离线时用 crew wake 接续原会话。' %
+                          (session['crew_name'], session['crew_name']))
+            board.queue_leader_notice(conn, leader["session_id"],
+                notice,
                 "crew", now=now)
         return session
 
@@ -327,14 +346,18 @@ class Service:
             result = {'project': None, 'projects': [{key: p[key] for key in ('name', 'theme')} for p in board.projects(conn)],
                       'themes': themes.THEMES,
                       'models': models.MODELS, 'efforts': models.EFFORTS,
+                      'runtimes': self.runtime_catalog.snapshot(),
                       'now': self.now().isoformat(), 'agents_error': error, 'notification': self.notification_status(),
                       'leaders': [], 'members': [], 'decisions': [], 'attention': [],
+                      'todos': [], 'todo_count': 0,
+                      'trust': {'enabled': False, 'goal': None, 'updated_at': None},
                       'candidates': {'running': [], 'others': []},
                       'channel': {'unread': 0, 'latest_id': 0, 'digesting': False, 'digest_error': None, 'digest_id': None},
                       'limits': self.limits(conn)}
             result['vscode_error'] = self.vscode_error
             if project_name is not None:
                 name = self.selected_project(conn, project_name)
+                agents = self.managed_agents(conn, agents)
                 card = channel.digest(conn, name)
                 result['channel'] = {**channel.state(conn, name), **self.channel_digest.state(name),
                                      'digest_id': card['id'] if card is not None else None}
@@ -343,6 +366,9 @@ class Service:
                 status = board.status(conn, name, identities)
                 git_config = board.git_config(conn, name)
                 result['project'] = {key: status['project'][key] for key in ('name', 'root', 'theme')}
+                result['todos'] = todo.list(conn, name)
+                result['todo_count'] = len(result['todos'])
+                result['trust'] = trust_mode.get(conn, name)
                 open_groups = {group['name'] for group in status['groups'] if group['closed_at'] is None}
                 removed = {r[0] for r in conn.execute('SELECT session_id FROM session_controls WHERE removed=1')}
                 sessions = [s for s in [*status['ungrouped'], *(s for group in status['groups'] for s in group['members'])]
@@ -388,6 +414,7 @@ class Service:
                         read_seq = board.read_seq(conn, sid)
                         result['leaders'].append(dict(
                             session_id=sid, name=session['crew_name'], goal=session['task'], status=session['status'],
+                            runtime=runtimes.get(conn, sid)['runtime'],
                             is_git_admin=git_config is not None and git_config['admin_session_id'] == sid,
                             **models.get(conn, sid), applied=self.chat.applied(sid), activity=self.chat.activity(sid),
                             context=context, **codex,
@@ -407,6 +434,7 @@ class Service:
                         card = board.card(conn, sid)
                         result['members'].append(dict(
                             session_id=sid, name=session['crew_name'], title=titles.get(sid),
+                            runtime=runtimes.get(conn, sid)['runtime'],
                             **models.get(conn, sid), applied=self.chat.applied(sid), activity=self.chat.activity(sid),
                             context=context, busy=self.chat.busy(sid) or (sid in present and present[sid].get('status') == 'busy'),
                             running=self.chat.running(sid) or sid in present,
@@ -425,9 +453,22 @@ class Service:
                 for leader in result['leaders']:
                     leader['priority'] = priorities.get(leader['session_id'])
                 result['candidates'] = self.candidates(conn, name)
+                from . import decision_briefs
+                result['decisions'] = decision_briefs.enrich(conn, result['decisions'])
                 result['attention'] = presentation.attention(conn, sessions, decisions, tasks,
                     {sid: history['events'] for sid, history in histories.items()})
             return result
+
+    def managed_agents(self, conn, agents):
+        result = list(agents)
+        with self.chat.lock:
+            for sid, current in self.chat.processes.items():
+                if current.process.poll() is None:
+                    session = board.session(conn, sid)
+                    result.append({'sessionId': sid, 'name': session['crew_name'], 'pid': current.process.pid,
+                                   'cwd': session['cwd'], 'kind': 'crew',
+                                   'status': 'busy' if self.chat.busy(sid) else 'idle'})
+        return result
 
     def limits(self, conn):
         latest = conn.execute('SELECT * FROM codex_rate_limits ORDER BY ts DESC LIMIT 1').fetchone()
@@ -540,6 +581,47 @@ class Service:
                     self.stop_archived(result['before'])
                 return {'ok': True}
             project = self.selected_project(conn, project_name)
+            if path == '/api/trust':
+                return trust_mode.set(conn, project, data.get('enabled'), data.get('goal'), now=now)
+            if path == '/api/decision/clarify':
+                from . import decision_briefs
+                if type(data.get('id')) is not int:
+                    raise ValueError('id 必须是整数')
+                item = conn.execute('SELECT project FROM decisions WHERE id=?', (data['id'],)).fetchone()
+                if item is None or item['project'] != project:
+                    raise board.BoardError('拍板不属于当前工作区')
+                identity = decision_briefs.queue_review(conn, data['id'], now=now)
+                return {'ok': True, 'notice_id': identity, 'message': '已请 leader 重新说明这项选择'}
+            if path == '/api/comments':
+                sid, text = _text(data, 'session_id'), _text(data, 'text')
+                session = board.session(conn, sid)
+                if session['project'] != project or session['status'] == 'closed' or board.is_archived(conn, sid):
+                    raise board.BoardError('评论对象不属于当前工作区或已归档')
+                if len(text) > 10000:
+                    raise ValueError('评论不能超过 10000 字')
+                with board.transaction(conn):
+                    identity = conn.execute('INSERT INTO workspace_comments(project,session_id,text,created_at) VALUES(?,?,?,?)',
+                                            (project, sid, text, now)).lastrowid
+                    leader = session if session['role'] == 'leader' else board.leader_of(conn, sid)
+                    if leader is not None:
+                        board._queue_leader_notice(conn, leader['session_id'],
+                            '用户在总览中给「%s」的评论：\n%s' % (session['crew_name'], text), 'web', now=now)
+                return dict(conn.execute('SELECT * FROM workspace_comments WHERE id=?', (identity,)).fetchone())
+            if path in ('/api/todo/resolve', '/api/todo/undo'):
+                if type(data.get('id')) is not int:
+                    raise ValueError('id 必须是整数')
+                if path.endswith('/undo'):
+                    return todo.undo(conn, project, data['id'], data.get('before'), data.get('version'), now=now)
+                return todo.resolve(conn, project, data['id'], _text(data, 'status'),
+                                    note=data.get('note'), expected_version=data.get('expected_version'), now=now)
+            if path == '/api/messages':
+                caller = board.session(conn, _text(data, 'caller_session_id'))
+                if caller['project'] != project:
+                    raise board.BoardError('发件人不属于当前工作区')
+                name = _text(data, 'name')
+                row = conn.execute('SELECT session_id FROM sessions WHERE session_id=? AND project=?', (name, project)).fetchone()
+                target = row['session_id'] if row else board.named_session(conn, project, name)['session_id']
+                return self.chat.send_message(caller['session_id'], target, _text(data, 'text'), data.get('message_id'))
             if path == '/api/leaders/order':
                 _text(data, 'project')
                 return board.set_leader_order(conn, project, data.get('order'))
@@ -617,6 +699,10 @@ class Service:
                                       '用户挂起了，暂时不拍。请用 SendMessage 告诉提问的组员：'
                                       '不卡流程的按推荐继续；卡流程的先做别的，先别再问这道题。' %
                                       (data['id'], asker['crew_name'], asker['cc_name'], decision['question']))
+                            if any(runtimes.get(conn, s['session_id'])['runtime'] == 'codex' for s in (asker, leader)):
+                                notice = ('拍板 #%s：%s\n问题：%s\n用户挂起了，暂时不拍。请用 crew send %s "<处理安排>" 转告：'
+                                          '不卡流程的按推荐继续；卡流程的先做别的，先别再问这道题。' %
+                                          (data['id'], asker['crew_name'], decision['question'], asker['crew_name']))
                             board.queue_leader_notice(conn, leader['session_id'], notice, 'web', now=now)
                     return {"ok": True}
                 text = _text(data, 'text')
@@ -626,6 +712,11 @@ class Service:
                     notice = ('拍板 #%s：%s（SendMessage 地址：%s）\n问题：%s\n答复：%s\n'
                               '请马上用 SendMessage 转告并叫它继续' %
                               (data['id'], asker['crew_name'], asker['cc_name'], decision['question'], text))
+                    if any(runtimes.get(conn, s['session_id'])['runtime'] == 'codex' for s in (asker, leader)):
+                        action = ('请按用户答复继续。' if asker['session_id'] == leader['session_id'] else
+                                  '请用 crew send %s "<答复与后续安排>" 转告；离线时用 crew wake 接续原会话。' % asker['crew_name'])
+                        notice = ('拍板 #%s：%s\n问题：%s\n答复：%s\n%s' %
+                                  (data['id'], asker['crew_name'], decision['question'], text, action))
                     board.queue_leader_notice(conn, leader['session_id'], notice, 'web', now=now)
                 return {"ok": True, 'routed_to': leader['crew_name'] if leader else None}
             if path in ("/api/open", "/api/open/continue"):
@@ -644,7 +735,8 @@ class Service:
                 if target["project"] != project:
                     raise board.BoardError("会话不属于当前项目")
                 with self.agents_lock:
-                    if not self.agents_ready.is_set() or self.agents_error is not None:
+                    if (target['role'] != 'leader' and runtimes.get(conn, target['session_id'])['runtime'] == 'claude' and
+                            (not self.agents_ready.is_set() or self.agents_error is not None)):
                         raise board.Conflict("进程状态未知，请稍后再试")
                 return self.chat.wake(conn, target, _text(data, "text"),
                                       caller_session_id=_optional_text(data, "caller_session_id"), now=now)
@@ -654,7 +746,8 @@ class Service:
                                        cwd=_optional_text(data, "cwd"), new_worktree=_optional_text(data, "new_worktree"),
                                        base=_optional_text(data, "base"), now=now,
                                        model=data["model"] if "model" in data else models.INHERIT,
-                                       effort=data["effort"] if "effort" in data else models.INHERIT)
+                                       effort=data["effort"] if "effort" in data else models.INHERIT,
+                                       runtime=data["runtime"] if "runtime" in data else models.INHERIT)
             if path == "/api/leader":
                 members = data.get("members", [])
                 if not isinstance(members, list) or any(not isinstance(m, str) or not m.strip() for m in members):
@@ -663,8 +756,9 @@ class Service:
                 if not isinstance(member_session_ids, list) or any(not isinstance(sid, str) or not sid.strip() for sid in member_session_ids):
                     raise ValueError("member_session_ids 必须是会话 ID 数组")
                 name, task = _text(data, "name"), _optional_text(data, "task")
-                model = models.validate(data.get("model"))
-                effort = models.validate_effort(data.get("effort"))
+                runtime = runtimes.validate(data.get("runtime") or "claude")
+                model = models.validate(data.get("model"), runtime=runtime)
+                effort = models.validate_effort(data.get("effort"), runtime=runtime)
                 candidate_members = [(self.candidate(conn, project, _text(member, "session_id")), _text(member, "name"))
                                      for member in data.get("candidate_members", [])]
                 names = {name, *members}
@@ -676,13 +770,13 @@ class Service:
                 # Check the leader and existing members before adopting anyone.
                 spawn.leader_plan(conn, self.home, self.plugin_root, project, name, members,
                                   task, cwd=_optional_text(data, "cwd"), new_worktree=_optional_text(data, "new_worktree"), now=now,
-                                  member_session_ids=member_session_ids, model=model, effort=effort)
+                                  member_session_ids=member_session_ids, model=model, effort=effort, runtime=runtime)
                 for candidate, member_name in candidate_members:
                     self.adopt(conn, project, candidate, member_name, None, now)
                 return self.chat.start(conn, project, name, task, role="leader",
                                        members=members, member_session_ids=member_session_ids + [candidate["session_id"] for candidate, _ in candidate_members],
                                        cwd=_optional_text(data, "cwd"),
-                                       new_worktree=_optional_text(data, "new_worktree"), now=now, model=model, effort=effort)
+                                       new_worktree=_optional_text(data, "new_worktree"), now=now, model=model, effort=effort, runtime=runtime)
             if path == "/api/chat/send":
                 session = board.session(conn, _text(data, 'session_id'))
                 if session['project'] != project:
@@ -848,6 +942,8 @@ class Service:
 
 
 POST_PATHS = {"/api/project/init", "/api/project/theme", "/api/open", "/api/open/continue", "/api/answer", "/api/spawn", "/api/leader", "/api/wake", "/api/roster/move", "/api/roster/remove", "/api/group/close", "/api/group/undo", "/api/roster/adopt", "/api/chat/send", '/api/chat/read'}
+POST_PATHS.update({'/api/messages', '/api/todo/resolve', '/api/todo/undo'})
+POST_PATHS.update({'/api/trust', '/api/comments', '/api/decision/clarify'})
 POST_PATHS.update('/api/session/' + action for action in ('rename', 'archive', 'remove', 'restore', 'undo', 'stop', 'options', 'compact'))
 POST_PATHS.update(('/api/attention/dismiss', '/api/notifications/away'))
 POST_PATHS.update(('/api/decision/hold', '/api/decision/unhold'))
@@ -946,6 +1042,29 @@ class Handler(BaseHTTPRequestHandler):
             self.send_file_content(content, media_type)
         elif url.path == "/api/state":
             self._send(200, service.state(query.get("project", [None])[0]))
+        elif url.path == '/api/runtimes':
+            self._send(200, {'runtimes': service.runtime_catalog.refresh()})
+        elif url.path == '/api/projects':
+            with closing(store.connect(service.home)) as conn:
+                self._send(200, {'projects': board.projects(conn)})
+        elif url.path == '/api/trust/report':
+            with closing(store.connect(service.home)) as conn:
+                project = service.selected_project(conn, query.get('project', [None])[0])
+                self._send(200, trust_mode.report(conn, project).encode('utf-8'),
+                           'text/markdown; charset=utf-8', attachment='crew-report.md')
+        elif url.path == '/api/comments':
+            with closing(store.connect(service.home)) as conn:
+                project = service.selected_project(conn, query.get('project', [None])[0])
+                sid = query.get('session_id', [None])[0]
+                if sid is not None and board.session(conn, sid)['project'] != project:
+                    raise board.BoardError('评论对象不属于当前工作区')
+                rows = board._rows(conn, 'SELECT * FROM workspace_comments WHERE project=?' +
+                                   (' AND session_id=?' if sid else '') + ' ORDER BY id', (project, sid) if sid else (project,))
+                self._send(200, {'comments': rows})
+        elif url.path == '/api/todos':
+            with closing(store.connect(service.home)) as conn:
+                project = service.selected_project(conn, query.get('project', [None])[0])
+                self._send(200, {'todos': todo.list(conn, project)})
         elif url.path == '/api/channel':
             before = int(query['before'][0]) if 'before' in query else None
             self._send(200, service.channel_messages(query.get('project', [None])[0],
@@ -1038,6 +1157,7 @@ def project_url(port, project_name=None):
 
 
 def serve(home, plugin_root, port=47811, open_browser=False, **options):
+    options.setdefault('migrate_manual_work', True)
     url = project_url(port)
     with closing(store.connect(home)) as conn:
         project = board.project_for_path(conn, options.get('cwd') or Path.cwd())

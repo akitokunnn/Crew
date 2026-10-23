@@ -164,7 +164,10 @@ def main(argv=None, stdin=None, stdout=None, stderr=None):
     if reason is None:
         return 0
     json.dump({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
-                                      "permissionDecisionReason": reason}}, stdout, ensure_ascii=False)
+                                      "permissionDecisionReason": reason}}, stdout, ensure_ascii=True)
     stdout.write("\n")
     print(reason, file=stderr)
-    return 2
+    # Codex executes Windows hooks through PowerShell -Command, which can map
+    # native exit 2 to 1. Exit 0 plus an explicit JSON deny is supported on all
+    # platforms and preserves the blocking decision through that wrapper.
+    return 0

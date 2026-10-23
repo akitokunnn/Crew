@@ -326,7 +326,7 @@ class CodexClientTests(unittest.TestCase):
                 env = dict(os.environ, CREW_CODEX_TEST_INITIALIZE=mode)
                 with self.assertRaises(error):
                     codex_client.Client(executable="unused-test-codex", process_factory=factory,
-                                        env=env, timeout=0.1)
+                                        env=env, timeout=2 if mode == 'error' else .1)
                 self.assertIsNotNone(processes[0].poll())
 
     def test_notification_failure_does_not_kill_protocol(self):

@@ -28,7 +28,7 @@ import json
 from pathlib import Path
 import sqlite3
 
-from . import board, store
+from . import board, decision_briefs, runtimes, store, todo
 
 
 class ToolError(ValueError):
@@ -49,6 +49,19 @@ def _spec(name, description, properties=None, required=()):
 
 
 _TARGET = _text("A Crew session id or Crew name in this project.", max_length=512)
+_BRIEF_SCHEMA = {"type": "object", "additionalProperties": False,
+                 "properties": {
+                     "title": _text("A short title about one decision.", max_length=100),
+                     "context": {**_text("Background the user needs."), "minLength": 0},
+                     "why_user": _text("Why the user must make this choice."),
+                     "recommendation_reason": _text("Why you recommend the stated option, or why you cannot choose."),
+                     "impact": {**_text("What this choice changes for the user."), "minLength": 0},
+                     "options": {"type": "array", "minItems": 2, "maxItems": 12,
+                                 "items": {"type": "object", "additionalProperties": False,
+                                           "properties": {"label": _text("The full action, not just A/B or a number.", max_length=2000),
+                                                          "consequence": _text("What happens if this action is chosen.")},
+                                           "required": ["label", "consequence"]}}},
+                 "required": ["title", "why_user", "recommendation_reason", "options"]}
 _SPECS = [
     _spec("crew_whoami", "Read your registered Crew identity, role, group and leader."),
     _spec("crew_status", "Read this project's Crew board, including mixed-runtime groups. "
@@ -61,13 +74,14 @@ _SPECS = [
           "Omitted fields retain their saved values.",
           {"scope": _text("Your area of responsibility."),
            "done_when": _text("How to tell that your work is complete.")}),
-    _spec("crew_ask", "Save a question for the user and return its real decision number. "
-          "Refer to this number when reporting a pending decision.",
+    _spec("crew_ask", "Save one real choice for the user. Supply brief with a clear short title, "
+          "why the user must choose, your reason and the consequence of each full action. "
+          "Manual user work belongs in crew_todo_add. Trust mode records your explicit recommendation.",
           {"question": _text("The decision needed from the user."),
            "options": {"type": "array", "items": _text("One answer option.", max_length=2000),
                        "maxItems": 12},
            "recommendation": _text("Your recommended answer or course of action."),
-           "blocking": {"type": "boolean"}}, ("question",)),
+           "blocking": {"type": "boolean"}, "brief": _BRIEF_SCHEMA}, ("question",)),
     _spec("crew_decisions", "Read only this project's decisions; include answered/withdrawn "
           "questions with all=true.", {"all": {"type": "boolean"}}),
     _spec("crew_answer", "A leader may record an answer to a question belonging to its own group. "
@@ -76,6 +90,23 @@ _SPECS = [
            "text": _text("The answer to record.")}, ("id", "text")),
     _spec("crew_withdraw", "Withdraw only a question you asked that is still open.",
           {"id": {"type": "integer", "minimum": 1}}, ("id",)),
+    _spec("crew_decision_revise", "Clarify an existing open question in place, preserving its id. "
+          "Only its proposer or its current group leader may revise it. Supply a complete brief; "
+          "do not issue a duplicate question.",
+          {"id": {"type": "integer", "minimum": 1}, "question": _text("The clarified question."),
+           "options": {"type": "array", "items": _text("One full action.", max_length=2000), "maxItems": 12},
+           "recommendation": _text("One complete action label from the options."), "brief": _BRIEF_SCHEMA}, ("id",)),
+    _spec("crew_todo_add", "Register something the user must physically or manually do. "
+          "Provide concrete steps and how completion will be confirmed; agents cannot mark it done.",
+          {"title": _text("The manual action.", max_length=500), "steps": _text("The user's exact steps."),
+           "verification": _text("How the user can confirm success."), "blocking": {"type": "boolean"}},
+          ("title", "steps", "verification")),
+    _spec("crew_todo_list", "Read manual user actions from this project; all=true includes closed items.",
+          {"all": {"type": "boolean"}}),
+    _spec("crew_todo_withdraw", "Withdraw a manual action you proposed, or that belongs to your own group "
+          "when you are its leader. State why it is no longer needed; do not mark user work complete.",
+          {"id": {"type": "integer", "minimum": 1}, "reason": _text("Why this user action is no longer needed.")},
+          ("id", "reason")),
     _spec("crew_handoff", "Save a handoff for a colleague, group or * within this project. "
           "This writes a board record; it does not launch a recipient.",
           {"to": _text("A Crew session id/name, group name, or * in this project.", max_length=512),
@@ -117,11 +148,11 @@ def _validate(value, schema, path="arguments"):
         for key, item in value.items():
             _validate(item, properties[key], path + "." + key)
     elif kind == "string":
-        if not value.strip() or len(value) > schema.get("maxLength", 20000):
+        if (schema.get("minLength", 1) and not value.strip()) or len(value) > schema.get("maxLength", 20000):
             raise ToolError("invalid_arguments", "%s must be nonempty and within its length limit" % path)
     elif kind == "array":
-        if len(value) > schema.get("maxItems", 12):
-            raise ToolError("invalid_arguments", "%s contains too many items" % path)
+        if not schema.get("minItems", 0) <= len(value) <= schema.get("maxItems", 12):
+            raise ToolError("invalid_arguments", "%s has an invalid number of items" % path)
         for item in value:
             _validate(item, schema["items"], path + "[]")
     elif kind == "integer" and value < schema.get("minimum", 0):
@@ -217,17 +248,27 @@ class CodexTools:
                          if d["id"] == decision_id), None)
         if decision is None:
             raise ToolError("forbidden", "Decision is absent from this Crew project")
-        return decision
+        brief = decision_briefs.get(conn, decision_id)
+        return {**decision, "brief": brief} if brief is not None else decision
+
+    def _identity(self, conn, identity):
+        identity.update(runtimes.get(conn, identity["session_id"]))
+        if isinstance(identity.get("leader"), dict):
+            identity["leader"].update(runtimes.get(conn, identity["leader"]["session_id"]))
+        return identity
 
     def _dispatch(self, conn, actor, name, args):
         sid, project = self._session_id, self._project
         if name == "crew_whoami":
-            return board.whoami(conn, sid)
+            return self._identity(conn, board.whoami(conn, sid))
         if name == "crew_who":
-            return self._target(conn, args["target"])
+            return self._identity(conn, self._target(conn, args["target"]))
         if name == "crew_status":
-            return {"project": board.project(conn, project), "groups": board.groups(conn, project),
-                    "ungrouped": [s for s in board.sessions(conn, project) if s["group_name"] is None],
+            groups = board.groups(conn, project)
+            for group in groups:
+                group["members"] = [self._identity(conn, member) for member in group["members"]]
+            return {"project": board.project(conn, project), "groups": groups,
+                    "ungrouped": [self._identity(conn, s) for s in board.sessions(conn, project) if s["group_name"] is None],
                     "leases": board.leases(conn, project), "claims": board.claims(conn, project),
                     "open_decisions": len(board.decisions(conn, project)), "status_source": "crew_board"}
         if name == "crew_task":
@@ -241,10 +282,19 @@ class CodexTools:
             return {"session_id": sid, "card": board.card(conn, sid)}
         if name == "crew_ask":
             number = board.ask(conn, sid, args["question"], args.get("options", ()),
-                               args.get("recommendation"), args.get("blocking", False))
+                               args.get("recommendation"), args.get("blocking", False), brief=args.get("brief"))
             return self._decision(conn, number)
         if name == "crew_decisions":
-            return board.decisions(conn, project, all=args.get("all", False))
+            return [self._decision(conn, decision["id"]) for decision in board.decisions(conn, project, all=args.get("all", False))]
+        if name == "crew_decision_revise":
+            self._decision(conn, args["id"])
+            return decision_briefs.revise(conn, sid, args["id"], **{key: value for key, value in args.items() if key != "id"})
+        if name == "crew_todo_add":
+            return todo.add(conn, sid, args["title"], args["steps"], args["verification"], args.get("blocking", False))
+        if name == "crew_todo_list":
+            return todo.list(conn, project, all=args.get("all", False))
+        if name == "crew_todo_withdraw":
+            return todo.withdraw(conn, sid, args["id"], args["reason"])
         if name == "crew_answer":
             decision = self._decision(conn, args["id"])
             questioner = board.session(conn, decision["session_id"])

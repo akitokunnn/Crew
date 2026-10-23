@@ -912,7 +912,7 @@ class InstallAndCliTests(CoreCase):
         self.assertEqual(set(first), {"plugin_root", "python", "updated_at"})
         self.assertEqual(first["python"], sys.executable)
         self.assertTrue((self.home / "crew.py").is_file())
-        self.assertEqual((self.home / "bin" / "crew.cmd").read_text(encoding="utf-8"), '@python "%USERPROFILE%\\.crew\\crew.py" %*\n')
+        self.assertEqual((self.home / "bin" / "crew.cmd").read_text(encoding="utf-8"), '@python "%~dp0..\\crew.py" %*\n')
         for name in ("blacklist.txt", "prices.json"):
             (self.home / name).write_text("custom", encoding="utf-8")
         install.install(self.home, self.fake_plugin, now="2026-10-22T00:00:00.000Z")

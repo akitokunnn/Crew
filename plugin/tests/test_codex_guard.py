@@ -2,6 +2,7 @@
 import tests  # Install the production-service connection guard.
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -9,7 +10,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from crew import board, codex_guard, store
+from crew import board, codex_guard, codex_runtime, store
 
 
 PLUGIN = Path(__file__).resolve().parents[1]
@@ -157,17 +158,17 @@ class CodexGuardTests(unittest.TestCase):
 
     def test_cli_emits_supported_deny_and_success_contracts(self):
         args = ["--home", str(self.home), "--session", "member"]
-        for payload, expected in ((self.payload(), 0), (self.payload(tool_name="unknown"), 2)):
+        for payload, denied in ((self.payload(), False), (self.payload(tool_name="unknown"), True)):
             out, err = io.StringIO(), io.StringIO()
             result = codex_guard.main(args, stdin=io.StringIO(json.dumps(payload)), stdout=out, stderr=err)
-            self.assertEqual(result, expected)
-            if expected:
+            self.assertEqual(result, 0)
+            if denied:
                 self.assertEqual(json.loads(out.getvalue())["hookSpecificOutput"]["permissionDecision"], "deny")
                 self.assertIn("BLOCKED", err.getvalue())
             else:
                 self.assertEqual(out.getvalue(), "")
         out, err = io.StringIO(), io.StringIO()
-        self.assertEqual(codex_guard.main(args, stdin=io.StringIO("invalid json"), stdout=out, stderr=err), 2)
+        self.assertEqual(codex_guard.main(args, stdin=io.StringIO("invalid json"), stdout=out, stderr=err), 0)
         self.assertEqual(json.loads(out.getvalue())["hookSpecificOutput"]["hookEventName"], "PreToolUse")
 
     def test_real_entrypoint_uses_supplied_temporary_identity(self):
@@ -176,9 +177,21 @@ class CodexGuardTests(unittest.TestCase):
         result = subprocess.run([sys.executable, str(PLUGIN / "crew_codex_hook.py"), "--home", str(self.home),
                                  "--session", "member"], input=json.dumps(payload), capture_output=True,
                                 text=True, encoding="utf-8", timeout=10)
-        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("文件归属", result.stderr)
         self.assertEqual(json.loads(result.stdout)["hookSpecificOutput"]["permissionDecision"], "deny")
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows native hook shell wrapper')
+    def test_powershell_wrapper_preserves_explicit_deny(self):
+        board.claim(self.conn, 'other', 'taken.txt')
+        handler = codex_runtime.hook_config(self.home, PLUGIN, 'member')['hooks']['PreToolUse'][0]['hooks'][0]
+        payload = self.payload(self.patch('*** Delete File: taken.txt'), 'apply_patch')
+        result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', handler['commandWindows']],
+                                input=json.dumps(payload), capture_output=True, text=True, encoding='utf-8', timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = json.loads(result.stdout)
+        self.assertEqual(output['hookSpecificOutput']['permissionDecision'], 'deny')
+        self.assertIn('文件归属', output['hookSpecificOutput']['permissionDecisionReason'])
 
 
 if __name__ == "__main__":

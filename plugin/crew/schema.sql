@@ -53,6 +53,87 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE INDEX IF NOT EXISTS sessions_project ON sessions (project, crew_name);
 
+-- Crew identity stays stable while each execution tool has its own native id.
+CREATE TABLE IF NOT EXISTS session_runtimes (
+    session_id TEXT PRIMARY KEY REFERENCES sessions(session_id),
+    runtime TEXT NOT NULL CHECK (runtime IN ('claude', 'codex')),
+    native_id TEXT,
+    updated_at TEXT NOT NULL,
+    UNIQUE (runtime, native_id)
+);
+
+-- Durable, runtime-neutral peer messages. External Claude sessions consume
+-- them through their hooks; managed sessions receive them when idle.
+CREATE TABLE IF NOT EXISTS peer_messages (
+    id TEXT PRIMARY KEY,
+    project TEXT NOT NULL REFERENCES projects(name),
+    sender_session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    target_session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    body TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    delivered_at TEXT,
+    error TEXT
+);
+CREATE INDEX IF NOT EXISTS peer_messages_target ON peer_messages(target_session_id, delivered_at);
+
+-- Manual actions are separate from questions that need a choice.
+CREATE TABLE IF NOT EXISTS todos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project TEXT NOT NULL REFERENCES projects(name),
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    title TEXT NOT NULL,
+    steps TEXT NOT NULL,
+    verification TEXT NOT NULL,
+    blocking INTEGER NOT NULL DEFAULT 0 CHECK (blocking IN (0, 1)),
+    status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'done', 'cancelled', 'withdrawn')),
+    note TEXT,
+    resolved_by TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    resolved_at TEXT,
+    version INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS todos_project ON todos(project, status, created_at);
+CREATE TABLE IF NOT EXISTS todo_backfills (
+    leader_session_id TEXT PRIMARY KEY REFERENCES sessions(session_id),
+    notice_id INTEGER REFERENCES leader_notices(id),
+    queued_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS trust_settings (
+    project TEXT PRIMARY KEY REFERENCES projects(name),
+    enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0,1)),
+    goal TEXT,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS trust_decisions (
+    decision_id INTEGER PRIMARY KEY REFERENCES decisions(id),
+    reason TEXT NOT NULL,
+    recorded_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS decision_briefs (
+    decision_id INTEGER PRIMARY KEY REFERENCES decisions(id),
+    title TEXT NOT NULL,
+    context TEXT NOT NULL,
+    why_user TEXT NOT NULL,
+    recommendation_reason TEXT NOT NULL,
+    impact TEXT NOT NULL,
+    options_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS decision_reviews (
+    decision_id INTEGER PRIMARY KEY REFERENCES decisions(id),
+    notice_id INTEGER REFERENCES leader_notices(id),
+    queued_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS workspace_comments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project TEXT NOT NULL REFERENCES projects(name),
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    text TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS leader_order (
     project TEXT NOT NULL REFERENCES projects(name),
     session_id TEXT NOT NULL REFERENCES sessions(session_id),

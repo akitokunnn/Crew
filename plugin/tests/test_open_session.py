@@ -3,7 +3,7 @@ import tests  # Install the production-service connection guard.
 import json
 from unittest import mock
 
-from crew import board, open_session
+from crew import board, open_session, runtimes
 from test_core import CoreCase, NOW
 
 
@@ -47,6 +47,18 @@ class OpenSessionTests(CoreCase):
         self.assertEqual(self.folders, [str(self.root)])
         self.assertEqual(self.closed, [])
         self.assertEqual(self.uris, [])
+
+    def test_codex_never_opens_a_claude_editor_or_detaches_the_runtime(self):
+        runtimes.set(self.conn, 's1', 'codex', native_id='native-thread')
+        manager = mock.Mock()
+        provider = mock.Mock(side_effect=AssertionError('must not probe Claude processes'))
+        with self.assertRaisesRegex(board.BoardError, 'Codex'):
+            open_session.begin(self.conn, 's1', provider, folder_opener=self.folders.append, manager=manager)
+        with self.assertRaisesRegex(board.BoardError, 'Codex'):
+            open_session.resume(self.conn, 's1', provider, confirm=True, uri_opener=self.uris.append, manager=manager)
+        self.assertEqual(self.folders, [])
+        self.assertEqual(self.uris, [])
+        manager.detach.assert_not_called()
 
     def test_terminal_confirmation_closes_only_cli_and_records_event(self):
         terminal = self.live_session()

@@ -9,6 +9,14 @@ description: Crew 成员守则。在启用了 Crew 的项目里干活时，怎�
 
 收到“Crew 守则有更新”的提示时，先重读 `/crew:member` 守则，再继续。
 
+## 执行工具、模式与人工事项
+
+- `crew who <名字>` / `crew whoami` 会显示执行工具。跨 Claude Code / Codex 联系用 `crew send <crew名> "<内容>"`；双方都是 Claude Code 才使用原生 SendMessage。消息身份与归属以 Crew 白板为准。
+- 项目启用**信任模式**时，以给定目标自主决定方案、排程和收尾，不再把目标范围内的决定交还用户。把关键取舍、理由、实际验证与 commit SHA 写进报告。本文后面的拍板要求适用于普通协作模式；信任模式登记决定时带推荐与理由，Crew 会记录自主答复。
+- **需要用户亲手做的事一律登记人工待办**，无论用户当前是否在看：`crew todo add "<要做什么>" --steps "<在哪做、具体步骤>" --verify "<做完怎么验证>" [--blocking]`。例如编辑器操作、真人测设备、登录或提供密钥、人工验收。聊天只用一句话说明，不用拍板代替待办；卡进度的标 blocking，先推进其他工作。
+- 找到替代办法、不再需要用户做时，`crew todo withdraw <编号> --reason "<为什么不需要了>"`。用户点做完只代表用户已执行，收到通知后仍核对验证标准，再继续工作。
+- 普通模式确实需要用户选择时，一题只问一件事。用简短标题、为什么必须由用户决定、推荐理由和每个选项的后果说明白；不要把进展、几项排程、人工验收和归档塞在一道题里，不用“继续①②”这类引用选项。
+
 ## 派 Codex
 
 体力活默认交给 Codex（照 `codex-dispatch` 技能）：
@@ -21,7 +29,7 @@ description: Crew 成员守则。在启用了 Crew 的项目里干活时，怎�
 
 ## 命令怎么调
 
-`crew <子命令>`；找不到 `crew` 时用 `python ~/.crew/crew.py <子命令>`（PowerShell 里写 `python "$env:USERPROFILE\.crew\crew.py" <子命令>`）。`crew --help`、`crew <子命令> --help` 看参数。
+`crew <子命令>`；找不到 `crew` 时使用启动上下文提供的 Crew launcher。托管会话的 `CREW_HOME` 是本次数据目录，PowerShell 可用 `python "$env:CREW_HOME\crew.py" <子命令>`；未设置时才使用 `~/.crew/crew.py`。`crew --help`、`crew <子命令> --help` 看参数。
 
 ## 收编和任务卡
 

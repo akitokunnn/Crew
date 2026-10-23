@@ -728,11 +728,19 @@ def unclaim(conn, session_id, pattern=None, now=None):
 
 
 @atomic
-def ask(conn, session_id, question, options=(), recommendation=None, blocking=False, now=None):
+def ask(conn, session_id, question, options=(), recommendation=None, blocking=False, now=None, *, brief=None):
     s = session(conn, session_id)
+    from . import decision_briefs, trust_mode
+    if brief is not None:
+        decision_briefs._text(question, "问题")
+        brief = decision_briefs.validate(brief, options=list(options) if options else None, recommendation=recommendation)
+        options = [entry["label"] for entry in brief["options"]]
     decision_id = conn.execute("INSERT INTO decisions(project,session_id,question,options,recommendation,blocking,created_at) VALUES(?,?,?,?,?,?,?)",
                                (s["project"], session_id, question, json.dumps(list(options), ensure_ascii=False), recommendation, int(blocking), _time(now))).lastrowid
     _event(conn, "decision:ask", s["project"], session_id, {"id": decision_id, "question": question}, now)
+    if brief is not None:
+        decision_briefs._save(conn, decision_id, brief, now)
+    trust_mode.auto_answer(conn, decision_id, reason=brief["recommendation_reason"] if brief is not None else None, now=now)
     return decision_id
 
 

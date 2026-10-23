@@ -12,6 +12,10 @@ from test_usage import UsageFixture
 
 class ContextRuntimeTests(UsageFixture, unittest.TestCase):
     def manager(self):
+        defaults = self.root / 'defaults'
+        defaults.mkdir(exist_ok=True)
+        (defaults / 'blacklist.txt').write_text('', encoding='utf-8')
+        (defaults / 'prices.json').write_text('{}', encoding='utf-8')
         return chat.Manager(self.home, self.root, lambda: [], process_factory=FakeProcess)
 
     def running(self, status="idle"):

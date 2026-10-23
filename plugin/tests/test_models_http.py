@@ -358,7 +358,7 @@ class ModelWakeTests(shell.ShellFixture, unittest.TestCase):
         service = self.server.service
         resumed = []
 
-        def inspect(conn, agents, now):
+        def inspect(conn, agents, now, runtime=None):
             self.assertTrue(board.is_archived(conn, "s1"))
             resumed.append("checked")
 
