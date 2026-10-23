@@ -1,4 +1,5 @@
 """Project palette persistence and HTTP changes use temporary homes only."""
+import tests  # Install the production-service connection guard.
 import json
 import tempfile
 import threading

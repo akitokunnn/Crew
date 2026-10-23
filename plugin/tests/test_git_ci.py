@@ -32,7 +32,7 @@ class GitCiTests(CoreCase):
             payload = self.base_runs
         elif args[args.index("--state") + 1] == "open":
             payload = [{"number": 12, "title": "topic", "headRefName": "topic", "headRefOid": self.sha,
-                        "baseRefName": "main", "state": "OPEN", "isDraft": False, "closedAt": None,
+                        "mergeCommit": None, "baseRefName": "main", "state": "OPEN", "isDraft": False, "closedAt": None,
                         "url": "https://github.com/example/repo/pull/12",
                         "statusCheckRollup": [{"status": "IN_PROGRESS" if self.status == "IN_PROGRESS" else "COMPLETED",
                                                "conclusion": "" if self.status == "IN_PROGRESS" else self.status,

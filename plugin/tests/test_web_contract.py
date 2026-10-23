@@ -620,6 +620,15 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertIn('setInterval(() => load(), 30000)', script)
         self.assertIn('prefers-reduced-motion:reduce', assets["/git.css"])
         self.assertIn('var(--fs)', assets["/git.css"])
+        for contract in ('ROW = 34', 'tabindex="0"', 'aria-haspopup="dialog"',
+                         'git-merge-node', 'git-merge-label', 'git-stable-marker',
+                         'git-recent-merge', '/api/git/commit?project=', 'copy-sha',
+                         'expand-body', 'close-detail', 'pointerover', 'pointerout'):
+            self.assertIn(contract, script)
+        self.assertIn('-webkit-line-clamp:8', assets["/git.css"])
+        self.assertNotIn('git-commit-top', script)
+        self.assertNotIn('git-commit-bottom', script)
+        self.assertNotIn('66px', assets["/git.css"])
         _, app, _ = self.request("/app.js", raw=True)
         self.assertIn('data-view="git"', app.decode("utf-8"))
         self.assertIn('CrewGit.mount', app.decode("utf-8"))
@@ -761,6 +770,149 @@ assert.equal(root.dataset.projectTheme, "celadon");
                                                          palette[background]), 4.5)
                     for button in ("--accent", "--accent-strong"):
                         self.assertGreaterEqual(contrast(palette["--on-accent"], palette[button]), 4.5)
+
+
+class FrontendGitContractTests(unittest.TestCase):
+    def run_component(self, scenario):
+        bootstrap = r'''
+const assert = require("node:assert/strict");
+const fs = require("node:fs"), vm = require("node:vm");
+const documentListeners = new Map(), windowListeners = new Map();
+const document = {addEventListener:(name, fn) => documentListeners.set(name, fn), removeEventListener:name => documentListeners.delete(name)};
+const sandbox = {document, navigator:{clipboard:{writeText:async text => { copied.push(text); }}}, setTimeout, clearTimeout,
+  setInterval:fn => { interval = fn; return 1; }, clearInterval:() => {},
+  addEventListener:(name, fn) => windowListeners.set(name, fn), removeEventListener:name => windowListeners.delete(name), innerWidth:1000, innerHeight:800};
+sandbox.window = sandbox;
+vm.createContext(sandbox);
+vm.runInContext(fs.readFileSync(process.argv[1], "utf8"), sandbox);
+sandbox.CrewGit = vm.runInContext("CrewGit", sandbox);
+const flush = async () => { for (let index = 0; index < 20; index++) await Promise.resolve(); };
+const copied = [], calls = [], pending = [], rejecters = [], toasts = [];
+let interval;
+const sha = n => n.toString(16).padStart(40, "0");
+const pr = {number:17,title:'NewID <ready>',head:'feature/NewID',base:'develop',head_sha:sha(10),merge_sha:sha(9),state:'MERGED',draft:false,ci:'success',url:'https://github.com/fixture/demo/pull/17'};
+const commit = (n, parents, refs = []) => ({sha:sha(n),parents:parents.map(sha),refs,subject:'提交 <' + n + '>',body:'正文 <script>\n'.repeat(14),author:'作者',time:'2026-10-24T01:00:00Z',parent_branches:parents.map((_,i) => i === 0 ? 'develop' : 'feature/NewID'),pull_requests:n >= 9 ? [pr] : []});
+const commits = [commit(10,[9],['develop']),commit(9,[8,7]),commit(8,[7],['master'])];
+const latest = n => commits.find(item => item.sha === sha(n));
+const branch = (name,n) => ({name,latest:latest(n),origin_relation:'',sessions:[],worktrees:[],ahead:0,behind:0,merged:true,conflicts:[]});
+const fixture = {enabled:true,repository:'Demo',config:{base:'develop',stable:'master',admin_session_id:'git-admin'},requests:[],base:{name:'develop',latest:latest(10),origin_relation:''},stable:{name:'master',latest:latest(8),ahead:2,origin_relation:''},branches:[branch('develop',10),branch('master',8)],remote_only:[],ref_unique_commits:{develop:[],master:[]},commits,next_offset:3,recent_merge:commits[1],github:{pull_requests:[pr],runs:[]},last_fetch_at:null};
+const body = {scrollHeight:300,clientHeight:100}, expand = {hidden:false};
+const classes = new Set();
+const popup = {hidden:true,innerHTML:'',dataset:{},style:{},classList:{toggle:(name,on) => on ? classes.add(name) : classes.delete(name)},getBoundingClientRect:() => ({width:520,height:460}),querySelector:selector => selector === '.git-detail-body' ? body : expand,closest:selector => selector === '#git-detail' ? popup : null,contains:node => node === popup};
+const listeners = new Map(), page = {scrollTop:0};
+const host = {innerHTML:'',addEventListener:(name,fn) => listeners.set(name,fn),removeEventListener:name => listeners.delete(name),querySelector:selector => selector === '#git-detail' ? popup : selector === '.git-page' ? page : null,querySelectorAll:() => []};
+const row = n => { const node = {dataset:{gitSha:sha(n)},getBoundingClientRect:() => ({left:800,right:950,top:700}),matches:selector => selector === '[data-git-sha]',contains:other => other === node}; node.closest = selector => selector === '[data-git-sha], [data-git-node]' ? node : null; return node; };
+const button = act => { const node = {dataset:{gitAct:act}}; node.closest = selector => selector === '[data-git-act]' ? node : selector === '#git-detail' && ['copy-sha','expand-body','close-detail'].includes(act) ? popup : null; return node; };
+const api = async route => { calls.push(route); if (route.startsWith('/api/git/commit?')) return new Promise((resolve,reject) => { pending.push(resolve); rejecters.push(reject); }); if (route === '/api/git?offset=3') return {...fixture,commits:[commit(7,[])],next_offset:null}; return fixture; };
+const mount = project => sandbox.CrewGit.mount(host,{project,api,toast:text => toasts.push(text)});
+const hover = n => listeners.get('pointerover')({target:row(n),relatedTarget:null,clientX:800,clientY:700});
+let pointer = 0;
+const move = n => documentListeners.get('pointermove')({target:row(n),clientX:++pointer,clientY:100});
+const click = target => listeners.get('click')({target,clientX:800,clientY:700});
+const key = (key,target) => documentListeners.get('keydown')({key,target,preventDefault:() => { prevented++; }});
+let prevented = 0;
+const stats = {sha:sha(10),file_count:12,additions:139,deletions:27,files:Array.from({length:12},(_,i) => ({path:'file-'+i+'.txt',added:10,deleted:2,binary:false}))};
+'''
+        script = bootstrap + "\n(async () => {\n" + scenario + "\n})().catch(error => { console.error(error); process.exitCode = 1; });"
+        result = subprocess.run(["node", "-e", script, str(PLUGIN / "crew" / "web" / "git.js")],
+                                capture_output=True, text=True, encoding="utf-8", timeout=10)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_git_origin_relations_in_both_cards_and_local_branch_rows(self):
+        self.run_component(r'''
+mount('demo'); await flush();
+for (const relation of ['落后 origin 15 个提交','领先 origin 2 个提交','与 origin 分叉（领先 3、落后 1 个提交）','：没有 origin']) {
+  fixture.base.origin_relation = '本地 develop ' + relation;
+  fixture.stable.origin_relation = '本地 master ' + relation;
+  fixture.branches[0].origin_relation = fixture.base.origin_relation;
+  fixture.branches[1].origin_relation = fixture.stable.origin_relation;
+  interval(); await flush();
+  assert(host.innerHTML.includes(fixture.base.origin_relation));
+  assert(host.innerHTML.includes(fixture.stable.origin_relation));
+  const target = {dataset:{gitTab:'branches'},closest:selector => selector === '[data-git-tab]' ? target : null};
+  click(target);
+  assert(host.innerHTML.includes('data-git-row="develop"'));
+  assert(host.innerHTML.includes('data-git-row="master"'));
+  assert(host.innerHTML.includes(fixture.base.origin_relation));
+  assert(host.innerHTML.includes(fixture.stable.origin_relation));
+}
+fixture.base.origin_relation = ''; fixture.stable.origin_relation = '';
+fixture.branches.forEach(branch => branch.origin_relation = ''); interval(); await flush();
+assert(!host.innerHTML.includes('本地 develop'));
+assert(!host.innerHTML.includes('本地 master'));
+sandbox.CrewGit.unmount();
+''')
+
+    def test_git_hover_statistics_pin_keyboard_and_cleanup(self):
+        self.run_component(r'''
+mount('demo'); await flush();
+assert.equal(calls.filter(route => route.startsWith('/api/git/commit?')).length,0);
+assert(host.innerHTML.includes('git-stable-marker'));
+assert(host.innerHTML.includes('master 在这里'));
+assert(host.innerHTML.includes('git-merge-node'));
+assert(host.innerHTML.includes('最近一次合入：'));
+assert(host.innerHTML.includes('PR #17 NewID &lt;ready&gt;'));
+hover(10); await flush();
+assert.equal(popup.hidden,false);
+assert(popup.innerHTML.includes('统计中…'));
+assert(popup.innerHTML.includes('&lt;script&gt;'));
+assert(popup.innerHTML.includes('已合并'));
+assert(popup.innerHTML.includes(sha(10)));
+assert.equal(popup.style.left,'268px');
+assert.equal(popup.style.top,'328px');
+assert.equal(expand.hidden,false);
+pending.shift()(stats); await flush();
+assert(popup.innerHTML.includes('12 个文件'));
+assert(popup.innerHTML.includes('file-9.txt'));
+assert(!popup.innerHTML.includes('file-10.txt'));
+click(row(10)); assert(classes.has('is-pinned'));
+hover(9); assert.equal(popup.dataset.gitDetailSha,sha(10));
+click(button('expand-body')); assert(!popup.innerHTML.includes('git-detail-body clamped'));
+click(button('copy-sha')); await flush(); assert.deepEqual(copied,[sha(10)]);
+interval(); await flush(); assert(classes.has('is-pinned')); assert.equal(popup.hidden,false);
+move(10); key('Escape',row(10)); assert.equal(popup.hidden,true);
+hover(10); assert.equal(popup.hidden,true);
+documentListeners.get('pointermove')({target:row(10),clientX:pointer,clientY:100}); assert.equal(popup.hidden,true);
+move(10); await flush(); assert(!popup.innerHTML.includes('统计中…')); assert.equal(popup.hidden,false);
+click(button('close-detail')); hover(10); assert.equal(popup.hidden,true);
+move(10); assert.equal(popup.hidden,false);
+assert.equal(calls.filter(route => route.startsWith('/api/git/commit?')).length,1);
+key('Enter',row(9)); assert.equal(prevented,1); assert(classes.has('is-pinned'));
+assert(popup.innerHTML.includes('合并 #17 feature/NewID → develop'));
+documentListeners.get('pointerdown')({target:{closest:() => null}}); assert.equal(popup.hidden,true);
+sandbox.CrewGit.unmount(); assert.equal(listeners.size,0); assert.equal(documentListeners.size,0); assert.equal(windowListeners.size,0);
+''')
+
+    def test_git_paging_and_project_isolation_for_inflight_statistics(self):
+        self.run_component(r'''
+mount('first'); await flush(); hover(10); await flush();
+sandbox.CrewGit.unmount(); mount('second'); await flush(); hover(10); await flush();
+assert.equal(calls.filter(route => route.startsWith('/api/git/commit?')).length,2);
+assert(calls.includes('/api/git/commit?project=first&sha='+sha(10)));
+assert(calls.includes('/api/git/commit?project=second&sha='+sha(10)));
+pending.shift()(stats); await flush(); assert(popup.innerHTML.includes('统计中…'));
+pending.shift()({...stats,file_count:2}); await flush(); assert(popup.innerHTML.includes('2 个文件'));
+click(button('load-more')); await flush();
+assert(calls.includes('/api/git?offset=3'));
+assert(host.innerHTML.includes('data-git-from="'+sha(8)+'" data-git-to="'+sha(7)+'"'));
+assert.equal([...host.innerHTML.matchAll(/class="git-commit /g)].length,4);
+sandbox.CrewGit.unmount();
+''')
+
+    def test_git_failed_statistics_show_reason_and_retry_on_next_open(self):
+        self.run_component(r'''
+mount('demo'); await flush(); hover(10); await flush();
+rejecters.shift()(new Error('fixture detail unavailable')); await flush();
+assert(popup.innerHTML.includes('统计失败：fixture detail unavailable'));
+key('Escape',row(10)); move(10); await flush();
+assert(popup.innerHTML.includes('统计中…'));
+assert.equal(calls.filter(route => route.startsWith('/api/git/commit?')).length,2);
+pending.pop()(stats); await flush();
+key('Escape',row(10)); move(10); await flush();
+assert(popup.innerHTML.includes('12 个文件'));
+assert.equal(calls.filter(route => route.startsWith('/api/git/commit?')).length,2);
+sandbox.CrewGit.unmount();
+''')
 
 
 class FrontendChannelContractTests(unittest.TestCase):

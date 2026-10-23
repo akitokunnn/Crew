@@ -1,4 +1,5 @@
 """Compact forwarding and CLI context display use isolated boards and HTTP stubs."""
+import tests  # Install the production-service connection guard.
 import contextlib
 import io
 import json

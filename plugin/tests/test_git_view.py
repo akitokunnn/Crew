@@ -60,7 +60,8 @@ class GitViewTests(unittest.TestCase):
             {"session_id": "unrelated", "crew_name": "other", "group_name": None, "role": "member",
              "status": "idle", "branch": "other", "worktree": None},
         ]
-        for cache in (git_view._refs_cache, git_view._dirty_cache, git_view._github_cache, git_view._last_fetch):
+        for cache in (git_view._refs_cache, git_view._dirty_cache, git_view._github_cache, git_view._history_cache,
+                      git_view._commit_cache, git_view._last_fetch):
             cache.clear()
 
     def git(self, *args):
@@ -81,6 +82,202 @@ class GitViewTests(unittest.TestCase):
     def view(self, **kwargs):
         with mock.patch.object(git_view, "_github", return_value=(None, "fixture offline")):
             return git_view.view(self.root, self.config, self.sessions, **kwargs)
+
+    def extend_develop(self, count):
+        stream = []
+        parent = self.merge
+        for index in range(count):
+            message = "recent " + str(index)
+            stream.append("commit refs/heads/develop\nmark :%d\ncommitter Git View Test <git-view@example.invalid> 1792800000 +0000\ndata %d\n%s\nfrom %s\n\n" %
+                          (index + 1, len(message), message, parent))
+            parent = ":" + str(index + 1)
+        result = subprocess.run(["git", "fast-import", "--quiet", "--force"], cwd=self.root,
+                                input="".join(stream).encode("utf-8"), capture_output=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr.decode("utf-8"))
+
+    def check_calculation_refs(self, base_sha, stable_sha):
+        with mock.patch.object(git_view, "_git", wraps=git_view._git) as run:
+            data = self.view()
+        self.assertEqual(data["base"]["latest"]["sha"], base_sha)
+        self.assertEqual(data["stable"]["latest"]["sha"], stable_sha)
+        base_ref, stable_ref = data["base"]["ref"], data["stable"]["ref"]
+        self.assertEqual(data["stable"]["ahead"], int(self.git("rev-list", "--count", stable_ref + ".." + base_ref)))
+        for branch in data["branches"]:
+            behind, ahead = map(int, self.git("rev-list", "--left-right", "--count", base_ref + "...refs/heads/" + branch["name"]).split())
+            self.assertEqual((branch["behind"], branch["ahead"], branch["merged"]), (behind, ahead, ahead == 0))
+            if ahead:
+                self.assertTrue(any(call.args[1:3] == ("merge-tree", "--write-tree") and call.args[-2:] == (base_ref, "refs/heads/" + branch["name"]) for call in run.call_args_list))
+        _, refs = git_view._refs(self.root)
+        plan = git_view._history_plan(self.root, refs, "master")
+        recent = self.git("rev-list", "--topo-order", *[r["ref"] for r in refs if r["ref"].startswith(("refs/heads/", "refs/remotes/origin/")) and not r["symbolic"]], "--not", stable_ref).splitlines() + [stable_sha]
+        self.assertEqual(plan["shas"][:plan["recent_count"]], recent)
+        expected_merge = self.git("log", "--first-parent", "--merges", "-1", "--format=%H", base_ref).strip()
+        self.assertEqual(None if data["recent_merge"] is None else data["recent_merge"]["sha"], expected_merge or None)
+        for name in ("develop", "master"):
+            branch = next(b for b in data["branches"] if b["name"] == name)
+            self.assertEqual(branch["origin_relation"], data["base" if name == "develop" else "stable"]["origin_relation"])
+        return data
+
+    def test_origin_ahead_of_local_controls_all_calculations(self):
+        self.git("update-ref", "refs/remotes/origin/develop", self.merge)
+        self.git("update-ref", "refs/heads/develop", self.develop)
+        self.git("update-ref", "refs/remotes/origin/master", self.develop)
+        data = self.check_calculation_refs(self.merge, self.develop)
+        self.assertEqual(data["base"]["ref"], "refs/remotes/origin/develop")
+        self.assertEqual(data["base"]["origin_relation"], "本地 develop 落后 origin 2 个提交")
+        self.assertEqual(data["stable"]["origin_relation"], "本地 master 落后 origin 1 个提交")
+        self.assertTrue(next(b for b in data["branches"] if b["name"] == "merged")["merged"])
+
+    def test_local_ahead_of_origin_still_uses_origin(self):
+        self.git("update-ref", "refs/remotes/origin/develop", self.develop)
+        self.git("update-ref", "refs/remotes/origin/master", self.initial)
+        self.git("update-ref", "refs/heads/master", self.develop)
+        data = self.check_calculation_refs(self.develop, self.initial)
+        self.assertEqual(data["base"]["origin_relation"], "本地 develop 领先 origin 2 个提交")
+        self.assertEqual(data["stable"]["origin_relation"], "本地 master 领先 origin 1 个提交")
+        self.assertFalse(next(b for b in data["branches"] if b["name"] == "merged")["merged"])
+
+    def test_missing_origin_uses_local_and_labels_cards(self):
+        self.git("remote", "remove", "origin")
+        data = self.check_calculation_refs(self.merge, self.initial)
+        self.assertEqual(data["base"]["ref"], "refs/heads/develop")
+        self.assertEqual(data["base"]["origin_relation"], "本地 develop：没有 origin")
+        self.assertEqual(data["stable"]["origin_relation"], "本地 master：没有 origin")
+
+    def test_diverged_origin_and_equal_origin_labels(self):
+        self.git("update-ref", "refs/remotes/origin/develop", self.conflict)
+        self.git("update-ref", "refs/remotes/origin/master", self.initial)
+        data = self.check_calculation_refs(self.conflict, self.initial)
+        self.assertEqual(data["base"]["origin_relation"], "本地 develop 与 origin 分叉（领先 3、落后 1 个提交）")
+        self.assertEqual(data["stable"]["origin_relation"], "")
+
+    def test_recent_default_stops_at_stable_and_more_loads_ancestors_without_duplicates(self):
+        self.git("switch", "master")
+        self.write("stable.txt", "earlier\n")
+        earlier = self.commit("stable earlier")
+        self.write("stable.txt", "latest\n")
+        stable = self.commit("stable latest")
+        self.git("switch", "develop")
+        first = self.view()
+        shas = [commit["sha"] for commit in first["commits"]]
+        self.assertEqual(set(shas), {self.develop, self.merged, self.merge, self.ahead, self.conflict, stable})
+        self.assertEqual(shas[-1], stable)
+        self.assertEqual(first["next_offset"], len(shas))
+        older = self.view(offset=first["next_offset"])
+        self.assertEqual([commit["sha"] for commit in older["commits"]], [earlier, self.initial])
+        self.assertIsNone(older["next_offset"])
+        self.assertTrue(set(shas).isdisjoint(commit["sha"] for commit in older["commits"]))
+        self.assertEqual(first["commits"][-1]["parents"], [older["commits"][0]["sha"]])
+
+    def test_recent_pages_are_capped_and_stable_boundary_can_arrive_on_second_page(self):
+        self.extend_develop(81)
+        first = self.view()
+        self.assertEqual(len(first["commits"]), 80)
+        self.assertEqual(first["next_offset"], 80)
+        self.assertNotIn(self.initial, [commit["sha"] for commit in first["commits"]])
+        second = self.view(offset=first["next_offset"])
+        self.assertEqual(second["commits"][-1]["sha"], self.initial)
+        all_shas = [commit["sha"] for commit in first["commits"] + second["commits"]]
+        self.assertEqual(len(all_shas), 87)
+        self.assertEqual(len(set(all_shas)), len(all_shas))
+        self.assertIsNone(second["next_offset"])
+        self.assertEqual(len(self.view(limit=300)["commits"]), 80)
+        self.config["stable"] = None
+        plain = self.view()
+        expected = self.git("log", "--all", "--topo-order", "--max-count=80", "--format=%H").splitlines()
+        self.assertEqual([commit["sha"] for commit in plain["commits"]], expected)
+        self.assertEqual(plain["next_offset"], 80)
+
+    def test_load_earlier_includes_tag_only_history_outside_default_branch_range(self):
+        self.git("switch", "--orphan", "tag-only")
+        self.write("tag.txt", "tag-only history\n")
+        tag_sha = self.commit("tagged orphan")
+        self.git("tag", "archive", tag_sha)
+        self.git("switch", "develop")
+        self.git("branch", "-D", "tag-only")
+        first = self.view()
+        self.assertNotIn(tag_sha, [commit["sha"] for commit in first["commits"]])
+        older = self.view(offset=first["next_offset"])
+        self.assertEqual([commit["sha"] for commit in older["commits"]], [tag_sha])
+        self.assertIsNone(older["next_offset"])
+
+    def test_commit_body_parent_branches_and_latest_first_parent_merge(self):
+        self.git("commit", "--allow-empty", "-m", "after merge", "-m", "line one\nline two")
+        sha = self.git("rev-parse", "HEAD").strip()
+        data = self.view()
+        latest = next(commit for commit in data["commits"] if commit["sha"] == sha)
+        self.assertEqual(latest["body"], "line one\nline two")
+        self.assertEqual(latest["parent_branches"], ["develop"])
+        recent = data["recent_merge"]
+        self.assertEqual(recent["sha"], self.merge)
+        self.assertEqual(recent["parents"], [self.develop, self.merged])
+        self.assertEqual(recent["parent_branches"], ["develop", "merged"])
+        self.assertEqual(self.view(offset=100)["recent_merge"]["sha"], self.merge)
+        self.config["base"] = "master"
+        self.assertIsNone(self.view()["recent_merge"])
+
+    def test_prs_match_head_commit_and_merge_commit(self):
+        pr = {"number": 17, "title": "completed work", "head": "merged", "base": "develop", "state": "MERGED",
+              "draft": False, "ci": "success", "url": "https://github.com/example/repo/pull/17",
+              "head_sha": self.merged, "merge_sha": self.merge}
+        with mock.patch.object(git_view, "_github", return_value=({"pull_requests": [pr], "runs": []}, None)):
+            data = git_view.view(self.root, self.config, [])
+        by_sha = {commit["sha"]: commit for commit in data["commits"]}
+        self.assertEqual(by_sha[self.merged]["pull_requests"], [pr])
+        self.assertEqual(by_sha[self.merge]["pull_requests"], [pr])
+        self.assertEqual(by_sha[self.develop]["pull_requests"], [])
+        self.assertEqual(data["recent_merge"]["pull_requests"], [pr])
+
+    def test_commit_detail_numstat_binary_cache_and_merge_first_parent(self):
+        self.write("shared.txt", "develop\nextra\n")
+        (self.root / "binary.dat").write_bytes(b"\x00binary\x00")
+        self.git("add", "shared.txt", "binary.dat")
+        self.git("commit", "-m", "text and binary")
+        sha = self.git("rev-parse", "HEAD").strip()
+        detail = git_view.commit_detail(self.root, sha)
+        files = {item["path"]: item for item in detail["files"]}
+        self.assertEqual((detail["file_count"], detail["additions"], detail["deletions"]), (2, 1, 0))
+        self.assertEqual(files["binary.dat"], {"path": "binary.dat", "added": None, "deleted": None, "binary": True})
+        self.assertEqual(files["shared.txt"]["added"], 1)
+        with mock.patch.object(git_view, "_git", side_effect=AssertionError("cached SHA must not run git")):
+            cached = git_view.commit_detail(self.root, sha)
+        cached["files"].clear()
+        self.assertEqual(git_view.commit_detail(self.root, sha), detail)
+        self.assertEqual(git_view.commit_detail(self.root, sha[:8]), detail)
+        merge = git_view.commit_detail(self.root, self.merge)
+        self.assertEqual((merge["file_count"], merge["additions"], merge["deletions"]), (1, 1, 0))
+        self.assertEqual(merge["files"][0]["path"], "merged.txt")
+
+    def test_commit_detail_counts_pure_rename_as_one_unchanged_file(self):
+        self.git("mv", "merged.txt", "renamed.txt")
+        self.git("commit", "-m", "rename only")
+        sha = self.git("rev-parse", "HEAD").strip()
+        detail = git_view.commit_detail(self.root, sha)
+        self.assertEqual((detail["file_count"], detail["additions"], detail["deletions"]), (1, 0, 0))
+        self.assertEqual(detail["files"], [{"path": "renamed.txt", "previous_path": "merged.txt",
+                                            "added": 0, "deleted": 0, "binary": False}])
+
+    def test_commit_detail_preserves_tab_and_newline_in_git_tree_path(self):
+        path = "tab\tand\nnewline.txt"
+        blob = subprocess.run(["git", "hash-object", "-w", "--stdin"], cwd=self.root, input=b"special\n",
+                              capture_output=True, check=True, timeout=20).stdout.decode("ascii").strip()
+        tree = subprocess.run(["git", "mktree", "-z"], cwd=self.root,
+                              input=("100644 blob " + blob + "\t" + path + "\0").encode("utf-8"), capture_output=True,
+                              check=True, timeout=20).stdout.decode("ascii").strip()
+        sha = self.git("commit-tree", tree, "-m", "special path object").strip()
+        detail = git_view.commit_detail(self.root, sha)
+        self.assertEqual(detail["files"], [{"path": path, "added": 1, "deleted": 0, "binary": False}])
+
+    def test_commit_detail_rejects_missing_sha_and_cache_is_project_isolated(self):
+        git_view.commit_detail(self.root, self.merge)
+        other = Path(self.temp.name) / "other-repo"
+        other.mkdir()
+        subprocess.run(["git", "init", "-b", "main", str(other)], check=True, capture_output=True, timeout=20)
+        with self.assertRaises(git_view.GitError):
+            git_view.commit_detail(other, self.merge)
+        for sha in ("0" * 40, "main", "--help", ""):
+            with self.subTest(sha=sha), self.assertRaises(git_view.GitError):
+                git_view.commit_detail(self.root, sha)
 
     def test_branch_defaults_and_remote_only(self):
         choices = git_view.branch_choices(self.root)
@@ -183,9 +380,10 @@ class GitViewTests(unittest.TestCase):
 class GitHubTests(unittest.TestCase):
     def pr(self, number, state, closed_at, checks):
         return {"number": number, "title": "PR " + str(number), "headRefName": "topic/" + str(number),
-                "baseRefName": "develop", "headRefOid": "sha-" + str(number), "state": state, "isDraft": number == 1,
+                "baseRefName": "develop", "state": state, "isDraft": number == 1,
                 "statusCheckRollup": checks, "url": "https://github.com/example/repo/pull/" + str(number),
-                "closedAt": closed_at}
+                "closedAt": closed_at, "headRefOid": "head-" + str(number),
+                "mergeCommit": {"oid": "merge-" + str(number)} if state == "MERGED" else None}
 
     def test_github_pr_states_ci_and_recent_runs(self):
         calls = []
@@ -219,6 +417,13 @@ class GitHubTests(unittest.TestCase):
         self.assertEqual(data["runs"][0]["sha"], "abc123")
         self.assertEqual(calls[0][calls[0].index("--limit") + 1], "2147483647")
         self.assertEqual(calls[-1][calls[-1].index("--branch") + 1], "develop")
+        self.assertIn("headRefOid", calls[0][calls[0].index("--json") + 1])
+        self.assertIn("mergeCommit", calls[0][calls[0].index("--json") + 1])
+        self.assertEqual(prs[0]["head_sha"], "head-1")
+        self.assertEqual(prs[0]["sha"], "head-1")
+        self.assertEqual(json.loads(prs[0]["run_key"])[0], "head-1")
+        self.assertIsNone(prs[0]["merge_sha"])
+        self.assertEqual(next(pr for pr in prs if pr["number"] == 29)["merge_sha"], "merge-29")
 
     def test_missing_gh_preserves_reason(self):
         failure = FileNotFoundError(2, "No such file or directory", "gh")

@@ -1,4 +1,5 @@
 """Explorer menu tests replace every registry and GUI operation."""
+import tests  # Install the production-service connection guard.
 import contextlib
 import ctypes
 import io

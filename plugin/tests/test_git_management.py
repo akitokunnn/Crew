@@ -364,6 +364,33 @@ class GitHttpTests(ShellFixture, unittest.TestCase):
                 self.assertEqual(self.request("/api/git/fetch?project=demo", {}), (200, result))
                 fetch.assert_called_once_with(board.project(self.conn, "demo")["root"])
 
+    def test_commit_detail_returns_real_stats_and_invalid_sha_is_400(self):
+        self.assertEqual(self.request("/api/git/commit?project=demo&sha=0000")[0], 400)
+        self.assertEqual(self.request("/api/git/enable?project=demo", {})[0], 200)
+        sha = self.git("rev-parse", "HEAD")
+        code, result = self.request("/api/git/commit?project=demo&sha=" + sha)
+        self.assertEqual(code, 200, result)
+        self.assertEqual(result["sha"], sha)
+        self.assertEqual(result["file_count"], 2)
+        self.assertEqual(result["additions"], 2)
+        self.assertEqual(result["deletions"], 0)
+        for invalid in ("0" * 40, "--help", ""):
+            code, result = self.request("/api/git/commit?project=demo&sha=" + invalid)
+            self.assertEqual(code, 400, result)
+            self.assertTrue(result["error"])
+        self.assertEqual(self.request("/api/git/commit?project=unknown&sha=" + sha)[0], 400)
+
+    def test_commit_detail_selects_only_requested_project(self):
+        other = self.root / "other-project"
+        other.mkdir()
+        board.init_project(self.conn, "other", other, now=NOW)
+        self.request("/api/git/enable?project=demo", {})
+        board.enable_git(self.conn, "other", "develop", None, now=NOW)
+        payload = {"sha": "a" * 40, "files": [], "file_count": 0, "additions": 0, "deletions": 0}
+        with mock.patch("crew.git_view.commit_detail", return_value=payload) as detail:
+            self.assertEqual(self.request("/api/git/commit?project=other&sha=" + payload["sha"]), (200, payload))
+            detail.assert_called_once_with(board.project(self.conn, "other")["root"], payload["sha"])
+
     def test_invalid_project_branch_and_offset_and_csrf(self):
         self.assertEqual(self.request("/api/git?project=unknown")[0], 400)
         self.assertEqual(self.request("/api/git?project=demo&offset=-1")[0], 400)

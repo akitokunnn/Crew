@@ -1,4 +1,5 @@
 """Quick start tests use temporary repositories and fake service/browser calls."""
+import tests  # Install the production-service connection guard.
 import base64
 import contextlib
 import io
