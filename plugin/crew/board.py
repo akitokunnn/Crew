@@ -92,6 +92,14 @@ def project_for_path(conn, cwd):
     return max(matches, key=lambda p: len(store.norm_path(p["root"]))) if matches else None
 
 
+def project_for_session(conn, session_id, cwd):
+    """Registered membership takes precedence; only new sessions are located by cwd."""
+    registered = conn.execute("SELECT project FROM sessions WHERE session_id=?", (session_id,)).fetchone()
+    if registered is not None:
+        return dict(conn.execute("SELECT * FROM projects WHERE name=?", (registered["project"],)).fetchone())
+    return project_for_path(conn, cwd)
+
+
 def project(conn, name):
     row = conn.execute("SELECT * FROM projects WHERE name=?", (name,)).fetchone()
     if row is None:
@@ -860,8 +868,6 @@ def apply_hook(conn, event, data, project_name, identity=None, git_info=None, no
             worktree, branch = git_info
             _register(conn, sid, project_name, data["cwd"], worktree, branch, now, data.get("entrypoint"), data.get("permission_mode"), None)
         s = session(conn, sid)
-        if s["project"] != project_name:
-            raise Conflict("钩子 cwd 与已登记项目不一致")
         state = s["status"] if existing_compact else {"user-prompt-submit": "working", "stop": "idle", "notification": "waiting", "pre-ask": "waiting", "post-ask": "working", "session-end": "offline", "guard": s["status"]}[event]
         note = None
         if event == "guard":

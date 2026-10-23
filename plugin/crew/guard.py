@@ -111,14 +111,14 @@ def readonly(home):
     return conn
 
 
-def enabled_project(home, cwd):
+def enabled_project(home, session_id, cwd):
     # No database means no project has been enabled. Never create one just to inspect membership.
     if Path(home).exists() and not Path(home).is_dir():
         raise NotADirectoryError(str(home))
     if not store.db_path(home).exists():
         return None
     with contextlib.closing(readonly(home)) as conn:
-        return board.project_for_path(conn, cwd)
+        return board.project_for_session(conn, session_id, cwd)
 
 
 def check(home, data, now=None):
@@ -133,7 +133,7 @@ def check(home, data, now=None):
         if not store.db_path(home).exists():
             return reason
         with contextlib.closing(readonly(home)) as conn:
-            p = board.project_for_path(conn, data["cwd"])
+            p = board.project_for_session(conn, data["session_id"], data["cwd"])
             if p is None:
                 return reason
             sid = data["session_id"]

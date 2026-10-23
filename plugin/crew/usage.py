@@ -123,7 +123,7 @@ def session_titles(root, session_ids, cache):
                                     "max": maximum, "source": "transcript",
                                 }
                         elif record["type"] == "system" and record.get("subtype") == "compact_boundary" and context is not None:
-                            context = dict(context, used=record["compact_metadata"]["post_tokens"])
+                            context = dict(context, used=record["compactMetadata"]["postTokens"])
                 except (json.JSONDecodeError, KeyError, TypeError):
                     # Usage scanning also consumes malformed complete lines and keeps going.
                     pass

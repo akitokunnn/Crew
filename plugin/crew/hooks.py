@@ -53,7 +53,7 @@ def handle(event, data, home, plugin_root, environ, git_provider=git_details, no
             print(reason, file=sys.stderr)
             return 2, None
         role = rules.SKILLS.get(data["tool_input"].get("skill")) if data.get("tool_name") == "Skill" else None
-        if role is not None and guard.enabled_project(home, data["cwd"]) is not None:
+        if role is not None and guard.enabled_project(home, data["session_id"], data["cwd"]) is not None:
             with contextlib.closing(store.connect(home)) as conn:
                 if conn.execute("SELECT 1 FROM sessions WHERE session_id=?", (data["session_id"],)).fetchone() is not None:
                     rules.record_read(conn, data["session_id"], role, plugin_root, now=now)
@@ -61,7 +61,7 @@ def handle(event, data, home, plugin_root, environ, git_provider=git_details, no
     if event == "session-start":
         # Refresh HOME for every session, inside a project or not: the guard needs blacklist.txt everywhere.
         install.install(home, plugin_root, now=now)
-    p = guard.enabled_project(home, data["cwd"])
+    p = guard.enabled_project(home, data["session_id"], data["cwd"])
     if p is None:
         return 0, None
     identity, git_info = None, None

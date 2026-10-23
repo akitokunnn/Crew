@@ -707,11 +707,15 @@ class RuleReadTests(CoreCase):
                         board.set_status(self.conn, sid, "closed", now=NOW)
                     self.assertNotIn("有更新", self.context(event, sid, **extra))
 
-    def test_unsupported_role_and_disabled_project_do_not_remind(self):
+    def test_unsupported_role_and_unregistered_outside_project_do_not_remind(self):
         self.conn.execute("PRAGMA ignore_check_constraints=ON")
         self.conn.execute("UPDATE sessions SET role='observer' WHERE session_id='s1'")
         self.assertEqual(self.context(), "")
         data = {"session_id": "s2", "cwd": str(self.base), "prompt": "continue"}
+        code, output = hooks.handle("user-prompt-submit", data, self.home, self.fake_plugin, {})
+        self.assertEqual(code, 0)
+        self.assertIn("有更新", output["hookSpecificOutput"]["additionalContext"])
+        data["session_id"] = "unregistered"
         self.assertEqual(hooks.handle("user-prompt-submit", data, self.home, self.fake_plugin, {}), (0, None))
 
     def test_missing_rule_file_is_an_error(self):

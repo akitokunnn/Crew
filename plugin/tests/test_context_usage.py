@@ -16,7 +16,7 @@ def assistant(model="claude-opus-5-5", tokens=(1000, 2000, 500)):
 
 
 def boundary(post_tokens):
-    return {"type": "system", "subtype": "compact_boundary", "compact_metadata": {"post_tokens": post_tokens}}
+    return {"type": "system", "subtype": "compact_boundary", "compactMetadata": {"postTokens": post_tokens}}
 
 
 class TestTranscriptContext(unittest.TestCase):
@@ -67,6 +67,14 @@ class TestTranscriptContext(unittest.TestCase):
         self.write([assistant(model="claude-sonnet-5-5", tokens=(1000, 25000, 4000))], append=True)
         self.read()
         self.assertEqual(self.context(), {"used": 30000, "max": 1000000, "source": "transcript"})
+
+    def test_camel_case_compact_boundary_after_cached_assistant(self):
+        self.write([assistant(tokens=(1000, 520000, 4786))])
+        self.read()
+        self.assertEqual(self.context()["used"], 525786)
+        self.write([boundary(17175)], append=True)
+        self.read()
+        self.assertEqual(self.context(), {"used": 17175, "max": 1000000, "source": "transcript"})
 
     def test_unknown_model_clears_context_and_compaction_cannot_guess_its_window(self):
         self.write([assistant(), assistant(model="claude-unknown"), boundary(9925)])

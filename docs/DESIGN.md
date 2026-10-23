@@ -102,7 +102,7 @@ Crew/
 - **cc_name**：Claude Code 里显示的会话名，也是 SendMessage 的地址。由 `crew join` 和 `crew who` 调 `claude agents --json`（返回数组，元素有 sessionId、name、status、pid、cwd、kind），按 sessionId 匹配取 name。调用失败时 cc_name 留空，并打印一行原因。
 - **网页收编**：候选和 VS Code 会话列表一致（`vscode_sessions`）：项目根目录及其下 git worktree 的会话记录，按扩展规则排除程序会话、sidechain 等，减去 VS Code 的 `hiddenSessionIds`（只读 `state.vscdb`，读失败保留上次名单并报 `vscode_error`）；再并入还没有会话记录的活进程。分三组：`running`（在运行、未归组）、`others`（没在运行、未归档）、`left`（有 crew 名但不在任何组）；leader、已入组、Crew 已归档或移出、status=closed 的不列。收编时调用 `board.register_session`（已有名字的走改组和改名），进有 leader 的组时给 leader 排通知。也可以在会话里由用户说"收编到某某"，会话自己 `crew join --group 某某 --scope … --done-when …`。
 - **spawn 带来的身份**：crew 开的会话启动时带环境变量 `CREW_NAME`、`CREW_GROUP`、`CREW_ROLE`、`CREW_SPAWN_ID`。SessionStart 钩子看到这些变量就直接登记，不用再 join。
-- **项目判定**：会话的 cwd 落在某个已 init 项目的 root 下（`store.is_under`），就属于这个项目；多个项目嵌套时取 root 最长的。不属于任何项目的会话：钩子只做守卫的黑名单检查，其它什么都不写。
+- **项目判定**：钩子和守卫优先使用 `sessions` 表中会话登记的项目；未登记时才按 cwd 匹配已 init 项目的 root（`store.is_under`），多个项目嵌套时取 root 最长的。未登记且 cwd 不属于任何项目的会话：钩子只做守卫的黑名单检查，其它什么都不写。
 - **worktree / branch**：cwd 所在 git 仓库的 toplevel 和当前分支（`git -C cwd rev-parse --show-toplevel`、`git -C cwd branch --show-current`），在 SessionStart、join 和网页收编时用 `hooks.git_details` 取。
 
 ## 3. 状态
