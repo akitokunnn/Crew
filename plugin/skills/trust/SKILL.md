@@ -17,7 +17,7 @@ description: 在全放行（bypassPermissions，不弹权限框）和逐条确�
 | 同上 | `permissions.allow` 里的 8 条通配符（见下） | 补齐 | 删掉 |
 | 同上 | `skipDangerousModePermissionPrompt` | `true` | 不动 |
 
-8 条通配符（全放行模式下 allow 规则本身不起作用；留着是为了会话被切到别的模式时也少弹框）。不要加 `Write(...)`：新版 Claude Code 只认 `Edit(...)`，它覆盖所有改文件的工具，写了 `Write(**)` 每次启动都会提示无效。
+8 条通配符供其它模式减少确认；全放行时 allow 不起作用。不要加 `Write(...)`：Claude Code 只认覆盖所有改文件工具的 `Edit(...)`，`Write(**)` 会导致启动时提示无效。
 
 ```
 "Bash(*)"  "PowerShell(*)"  "WebFetch(*)"  "WebSearch(*)"

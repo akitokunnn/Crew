@@ -83,7 +83,7 @@ Crew/
 
 `schema.sql` 删除旧的单项模型设置表，再用 `CREATE TABLE IF NOT EXISTS` 建立 `session_options` 和 `rule_reads`。模型与 effort 清单只在 `crew/models.py` 定义，`/api/state.models` 带出 id、显示名和上下文上限 `context_window`，`efforts` 带出 low / medium / high / xhigh / max，前端从这份数据生成选项。可选 Opus 5.5、Sonnet 5.5、Fable 5.1、Haiku 4.5；默认跟账号设置走。Haiku 不支持 effort，显式同时指定 Haiku 和非空 effort 报错，切换到 Haiku 会清除原存 effort。
 
-交流区只加三张新表，不改变已有表结构：
+交流区表：
 
 | 表 | 字段与约束 |
 |---|---|
@@ -91,11 +91,11 @@ Crew/
 | `channel_mentions` | `message_id INTEGER NOT NULL REFERENCES channel_messages(id)`、`session_id TEXT NOT NULL REFERENCES sessions(session_id)`、`name TEXT NOT NULL`、`notice_id INTEGER REFERENCES leader_notices(id)`；联合主键 `(message_id, session_id)` |
 | `channel_reads` | `project TEXT NOT NULL REFERENCES projects(name)`、`reader TEXT NOT NULL`（会话 session_id 或 `user`）、`message_id INTEGER NOT NULL`、`updated_at TEXT NOT NULL`；联合主键 `(project, reader)` |
 
-发言人名字和点名名字保留发言时的快照。`channel_mentions.notice_id` 关联本次点名的 leader 通知；非空表示已排通知，摘要据此排除该点名发言，不依赖 `leader_notices.sent_at`；自己点自己保留点名但 notice_id 为 null，仍按自己的发言排除。每个 leader、读全文的组员与用户分别维护游标，更新只前进；用户未读数不含自己发的言，空频道最新 id 为 0。这三表由连接数据库时的 `CREATE TABLE IF NOT EXISTS` 创建；合并后照常重启网页服务，无需迁移已有表。
+发言人名字和点名名字保留发言时的快照。`channel_mentions.notice_id` 关联本次点名的 leader 通知；非空表示已排通知，摘要据此排除该点名发言，不依赖 `leader_notices.sent_at`；自己点自己保留点名但 notice_id 为 null，仍按自己的发言排除。每个 leader、读全文的组员与用户分别维护游标，更新只前进；用户未读数不含自己发的言，空频道最新 id 为 0。连接数据库时用 `CREATE TABLE IF NOT EXISTS` 创建缺失表；部署后重启网页服务。
 
 ## 2. 身份和项目
 
-- **项目主题**：`themes.py` 定义六套主题，state 下发完整的浅 / 深色 token。新项目在启用事务内保存主题，先取目录中尚未被任何项目使用的第一套；都用过后按已分配项目数取模轮转。旧项目首次读取时，按 `projects.created_at, projects.rowid` 补齐缺失记录并写入 `project_themes`；已有记录保持不变，切换主题更新该表并记录 `project:theme` 事件。浅 / 深 / 跟随系统是浏览器独立设置。
+- **项目主题**：`themes.py` 定义六套主题，state 下发浅 / 深色 token。分配与切换规则见 [WEB_UX.md 的外观](WEB_UX.md#外观)；存储在 `project_themes`，切换记录 `project:theme` 事件。浅 / 深 / 跟随系统是浏览器独立设置。
 
 - **会话 ID**：钩子从输入 JSON 的 `session_id` 取；命令行从环境变量 `CLAUDE_CODE_SESSION_ID` 取（Claude Code 会给工具命令设这个变量）。命令行也接受 `--session ID`。需要会话身份的命令拿不到 ID 时报错退出（exit 1），并说明"请在 Claude 会话里运行，或加 --session"。不需要身份的命令（status、decisions、answer 等）在普通终端里也能用，此时操作人记作 `user`。
 - **crew 名**：人起的稳定名字（雷达、视觉）。同一项目里，未离线（status 不是 offline / closed）的会话不能重名，重名时 join 报冲突（exit 3）。
@@ -181,11 +181,11 @@ Crew/
 | `session-end` | SessionEnd | status=offline，ended_at | 无 |
 | `guard` | PreToolUse（所有工具） | §7；收到 `Skill` 调用且 `tool_input.skill` 是 `crew:leader` / `crew:member` / `crew:git` 时，记录对应技能文件当前 digest | 拦截时 stderr + exit 2 |
 
-- 每个打卡事件写一条 events，detail 里记输入 JSON 的键名列表和该事件关心的字段（不存 transcript 全文、不存 tool_input 全文，命令截前 200 字）。守卫只在拦截时写事件，放行的调用不记（否则每次工具调用都写一行）。
+- 每个打卡事件写一条 events，detail 里记输入 JSON 的键名列表和该事件关心的字段（不存 transcript 全文、不存 tool_input 全文，命令截前 200 字）。守卫只在拦截时写事件，放行的调用不记。
 - 插件装上或项目启用之前就开着的会话没有 SessionStart 记录：它的第一个打卡事件会先补登记再改状态。
 - 打卡类事件出错不能影响会话：打一行原因到 stderr，exit 1。**除 guard 外任何事件都不能 exit 2。**
 - 会话的 crew 名、cc_name 不在钩子里调 `claude agents`（太慢）。
-- 守则版本取 `plugin/skills/<role>/SKILL.md` 内容的 sha256，普通会话使用白板 `sessions.role`，`git_management.admin_session_id` 指向的 leader 使用 git 守则。已启用项目中已收编、未归档的 leader / member，在每次 UserPromptSubmit（含会话间消息）和 resume / compact 的 SessionStart 比较 `rule_reads`；没有阅读记录或 digest 不同，就在 additionalContext 加“Crew 守则（/crew:<role>）有更新，你上次读的不是最新版。先调用 /crew:<role> 重读一遍，再处理这条消息。”调用相应 Skill 后写入新 digest，下次不再提醒；文件再次变化后恢复提醒。未收编、归档、角色不符、未启用项目不提醒。热路径只读技能小文件计算摘要，不启动进程或发网络请求。
+- 守则版本是 `plugin/skills/<role>/SKILL.md` 的 sha256；角色取 `sessions.role`，Git 管理员按 `git_management.admin_session_id` 使用 git 守则。已启用项目中已收编、未归档的 leader / member，在 UserPromptSubmit（含会话间消息）和 resume / compact 的 SessionStart 检查 `rule_reads`；无记录或 digest 不同，在 additionalContext 提醒先调用 `/crew:<role>` 重读。调用相应 Skill 后更新 digest，文件再变则重新提醒。其余会话不提醒。热路径只读技能文件，不启动进程或联网。
 
 Git 管理启用时，所有会话的 SessionStart 再附两段：管理员统一推送和合并、做完用 `crew git request` 转交的提示；`branch_rules` 前 6 行与“全文用 crew git policy 看”。规则为空时改为“git 管理员还没写分支规则，开工前先问它”。未收编会话同样收到，Git 管理员启动时的守则指向 `/crew:git`。
 - 交流区摘要只在 leader 的 UserPromptSubmit 中追加，与守则提醒共用 additionalContext。按读到位置取本项目新发言，排除自己发的，以及点名当前 leader 且 `channel_mentions.notice_id` 非空的发言；无论通知是否已送达，都不重复进入摘要。无新发言不附加。有内容时第一行为“[Crew 交流区] 你上次看之后有 N 条新发言：”，每条一行 `- HH:MM <名字>（→ @A、@B）：<正文第一行>`，正文超过 120 字截断加“…”；最多 10 条，超过时追加“还有 M 条”，末尾写“全文用 crew channel 看”。读取后把该 leader 的位置推到最新；组员钩子不附交流区摘要。
@@ -223,15 +223,15 @@ PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stder
 | Codex | `~/.codex/sessions/**/rollout-*.jsonl` | 见下 |
 | 派活记录 | `HOME/codex_runs.jsonl` | §9 |
 
-- 增量：`usage_files` 记每个文件已读到的字节偏移（只停在完整行的末尾）。文件变小了就从头重扫，并先删掉这个文件产生的行（要能按文件删，按需要在扫描时记住来源；schema 里没有来源列时，按 session_id / rollout_id 删）。
-- 历史 peer 补录：首次用量扫描在同一事务内读取已有 Claude 主会话和子 agent 文件旧 offset 之前的 peer 消息，只向 `claude_prompts` 按 UUID 补缺，不改请求、其它表或扫描偏移。完成后将 SQLite `user_version` 推进至 2；失败时补录与版本号一起回滚。连接时不再把版本固定写回 1，无需改变表结构，合并后重启即可。
+- 增量：`usage_files` 记每个文件已读到的字节偏移（只停在完整行的末尾）。文件变小了就从头重扫，并先删掉这个文件产生的行。
+- 历史 peer 补录：首次扫描按 UUID 向 `claude_prompts` 补缺，不改请求、其它表或扫描偏移；补录与 SQLite `user_version=2` 在同一事务提交，失败一起回滚。
 - Claude 行：
   - `type == "assistant"` 且有 `message.usage`：一个请求一行，键 = `message.id`，没有就用 `requestId`；同一个键出现多次只记一次。字段：model、`effort`（行顶层）、usage 里的 input_tokens、cache_creation_input_tokens、cache_creation.ephemeral_5m_input_tokens / ephemeral_1h_input_tokens、cache_read_input_tokens、output_tokens、output_tokens_details.thinking_tokens、server_tool_use.web_search_requests / web_fetch_requests、service_tier、speed。output_tokens 已包含思考，thinking_tokens 只是细分。
   - 同一行 message.content 里的 `tool_use` 块 → claude_tool_calls。
   - `type == "user"`、不是 isCompactSummary、content 是字符串或含 text 块且不含 tool_result → claude_prompts。kind 按行上的 `origin.kind`：`human` → user，`peer` → peer，`task-notification` → task；没有 origin 字段的老记录记 user。`origin.kind == "peer"` 的消息即使 `isMeta: true` 也记为新的 peer 轮次，涵盖 SendMessage 叫醒后台会话；其它 isMeta 仍跳过。prompts 数只算 user，干活时长按所有 kind 的轮次算。
   - `type == "system"` 且 `subtype == "compact_boundary"` → claude_compactions。
   - `type == "ai-title"` → claude_sessions.ai_title（取最后一次）。cwd、entrypoint、version 取最后一次出现的值；first_ts / last_ts 按行的 timestamp。
-- Codex 行：`session_meta`（id、timestamp、cwd、originator、source、cli_version）；第一个 `turn_context`（model、collaboration_mode.settings.reasoning_effort、sandbox_policy.type）；最后一个 `event_msg/token_count` 的 `info.total_token_usage`（input_tokens 含缓存部分）；每个带 rate_limits 的 token_count 写一行 codex_rate_limits（主键 rollout_id + ts；primary.used_percent、window_minutes、resets_at 转 ISO、credits.balance、plan_type）；first_user_text 取用户消息里第一个不以 `<` 开头、也不以 `# AGENTS.md instructions` 开头的 input_text 前 200 字（Codex 会先塞 AGENTS.md 和环境信息）。session_meta.source 对 Codex 自己的子 agent 是对象，存成 JSON 字符串。usage 里的细分字段（cache_creation、output_tokens_details、server_tool_use）在老记录里可能是 null，按 0 计。
+- Codex 行：`session_meta`（id、timestamp、cwd、originator、source、cli_version）；第一个 `turn_context`（model、collaboration_mode.settings.reasoning_effort、sandbox_policy.type）；最后一个 `event_msg/token_count` 的 `info.total_token_usage`（input_tokens 含缓存部分）；每个带 rate_limits 的 token_count 写一行 codex_rate_limits（主键 rollout_id + ts；primary.used_percent、window_minutes、resets_at 转 ISO、credits.balance、plan_type）；first_user_text 取用户消息里第一个不以 `<` 开头、也不以 `# AGENTS.md instructions` 开头的 input_text 前 200 字。session_meta.source 对 Codex 自己的子 agent 是对象，存成 JSON 字符串。usage 里的细分字段（cache_creation、output_tokens_details、server_tool_use）在老记录里可能是 null，按 0 计。
 - 解析错误：坏行跳过并计数，scan 结束时打印"跳过 N 行（文件:行号 前 3 个）"。
 
 ### 汇总（`crew/usage.py` 的函数，网页和命令行共用）
@@ -266,31 +266,31 @@ PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stder
 
 ## 10. 开新会话和网页
 
-- `spawn --name N --task T [--group G] [--cwd DIR | --new-worktree BRANCH]` 默认开后台成员，调用网页服务的 `/api/spawn`。任务正文写 `HOME/spawn/<id>.md`，参数写 `<id>.json`；复用 leader 的持久 CLI、聊天记录和恢复逻辑。新会话不再开终端窗口。
+- `spawn --name N --task T [--group G] [--cwd DIR | --new-worktree BRANCH]` 默认开后台成员，调用网页服务的 `/api/spawn`。任务正文写 `HOME/spawn/<id>.md`，参数写 `<id>.json`；复用 leader 的持久 CLI、聊天记录和恢复逻辑。
 - `web [--port 47811] [--open]` 只监听 127.0.0.1，运行期间把地址写入 `HOME/web.json`。一个项目一个标签页（`/?project=P`），裸网址列项目入口，页内不切项目。页面以和 leader 聊天为主：左栏 leader 列表、中间对话（待拍板托盘置顶）、右栏本组架构图与下属卡片，另有全部、交流区、待收编、用量页；交流区供用户和 leader 公共发言，下属不在网页发言。页面结构和交互见 [WEB_UX.md](WEB_UX.md)。前端用原生 JS 和本地 markdown-it 15.0.2，无构建流程；Python 后端仍只用标准库。
 - `leader start --name N [--members A,B] [--task T]` 调本机网页服务的 `/api/leader`。`spawn` 和 `leader start` 都先要求运行 `crew web --open`，服务未运行时清楚报错；`--dry-run` 只生成启动计划，不连服务、不写白板、不启动进程。
 - 成员和 leader 都复用 `spawn.prepare` 和任务文件；leader 额外建分组、收编/挪入选定成员。后台进程是 PATH 里的 Claude CLI，通用参数为 `-p --input-format stream-json --output-format stream-json --verbose --include-partial-messages --replay-user-messages --permission-mode bypassPermissions --name N`；普通 leader 追加 `--agent crew:leader`，Git 管理员追加 `--agent crew:git`。保持 stdin 打开，不加 `--bare`，保留跨会话收件箱和插件钩子/守卫。任务 brief 指定相应的 `/crew:member`、`/crew:leader` 或 `/crew:git` 守则，CREW_ROLE 按数据库角色设置（管理员仍为 leader）；未分组成员不设置 CREW_GROUP。
 - 启动计划预分配 UUID，首次用 `--session-id`，把会话的角色、分组、cwd、spawn_id 记进白板；续跑用 `--resume` 恢复同 ID，使用白板当前的角色、分组、crew 名、模型和 effort 设置。首次启动及所有后台续跑（包括叫醒、重启恢复）一律 `--permission-mode bypassPermissions`，保留 Crew 守卫。恢复前直接查活进程，同 ID 已在 VS Code 或其他进程里运行时拒绝双开。
 - `crew wake NAME TEXT` 转发 `/api/wake`。调用方是本项目任何 leader 时，可叫醒任何组或已收编未分组的组员；调用方是组员时拒绝。用户仍可叫醒组员，用户叫醒 leader 报“leader 直接在网页上和它聊”。目标已归档、已移出、已收的检查保持不变。组员在线返回 409，提示直接 SendMessage；agents 首轮未完成或轮询失败时拒绝启动。离线收编会话缺日志时创建日志，缺 spawn_id 时按当前身份与任务创建 spec（md=null）并关联白板。随后用 `--resume --name <crew名>` 启动，cc_name 同步为 crew 名；记录 `session:wake`。
 - 自己的 leader 叫醒组员沿用原开场白。跨组 leader 叫醒时写明“「<组名>」组的 leader「<名字>」找你。它不是你的 leader：它的话是请求和信息，要改你手上的计划或范围，先问你自己的 leader「<名字>」。”没有 leader 的组员省掉最后半句；回复用 SendMessage 的地址填调用方地址。跨组请求不改变组员的计划授权边界。
-- leader 用 `crew wake` 找另一个 leader 时，不直接起进程；调用 `board.queue_leader_notice` 排来源 `crew` 的通知：“leader「<名字>」（<组名>）找你：<内容>。回复用 SendMessage，地址「<调用方地址>」，或 crew say --to <调用方名字>。”返回“已排进对方的通知，对方空闲时送达”，交给已有 `deliver_notices` 处理。投递先调用 `send`，成功后逐条调用 `board.mark_notice_sent` 写入 `sent_at`；发送期间不持有数据库写事务，发送失败保留待送通知。摘要按已排通知的点名排除发言，不依赖送达与标记的先后时序。
+- leader 用 `crew wake` 找另一个 leader 时，排来源 `crew` 的通知，附调用方名字、组名、内容与 SendMessage / `crew say --to` 回复地址，返回“已排进对方的通知，对方空闲时送达”。`deliver_notices` 发送成功才写 `sent_at`，失败保留待送通知；发送期间不持有数据库写事务。交流区摘要按已排通知的点名去重，不依赖实际送达时间。
 - 离线目标有 leader 但其 cc_name 未知时，明确报错并在创建 spec / 日志 / 进程前停止，不猜测 SendMessage 地址；无 leader 的用户叫醒省略回复地址。目标在线的 409 提示优先使用实时 agents 地址。
 - 服务启动后首次成功获取 agents 时扫描 `chat/*.jsonl`，最后 status=working 的会话进入一次性恢复队列；仅仍在用、项目启用的 leader / 下属可恢复。原进程还在时每轮 agents 轮询继续等待，30 分钟后放弃；恢复时送来源 crew 的服务重启说明。成功或放弃都记 `session:auto-resume` 及结果、原因。最后 idle / offline 的不动。
 - `leader start --model ID --effort LEVEL` 和 `/api/leader` 的同名字段设置 leader 模型与 effort，缺省/null 为账号默认；`spawn --model ID --effort LEVEL` 可分别指定，未给的字段继承所在组 leader 的设置。启动参数只为非空值添加 `--model` / `--effort`，首次、续跑、叫醒、自动续跑均使用当前存储设置。
 - `/api/session/options` 只修改请求里给出的 model / effort。托管进程在线时，模型写 `set_model` 控制请求（回默认时省略 request.model），effort 写 `apply_flag_settings`，settings 为 `{"effortLevel":"<档位>"}`。运行中不接受 `effort:null`：CLI 对它会应用 medium，不能恢复账号默认；停止后可存 null，下次启动不带参数。成功回执后查询 `get_settings`，失败回执写 error；后续续跑按库中设置启动。
-- 进程启动后和每次设置成功后，发送带唯一 request_id 的 `get_settings` 控制请求；只处理自己发出的该请求成功回执，从 `response.response.applied` 取 model / effort，在内存中保留为 `applied`，供前端显示实际值，无需等待首轮回复。其他 request_id 的设置回执不改变实际值。
-- 上下文占用有两个来源：本服务托管且进程在跑时，在启动、每个主链 `result`、主链 `system/compact_boundary` 后发送 `get_context_usage` 控制请求。复用 request_id 对应机制，只接收本次请求的成功回执，从 `response.response.totalTokens` / `maxTokens` 取精确已用量和上限，不使用取整后的 percentage。进程对象持有 `context={used,max,source:"live"}`，停止后不再返回；尚未回执时为 null。
-- 其他会话沿 `usage.session_titles` 的同一次增量读取估算上下文，不另读全文：按 size / mtime 缓存、从完整行 offset 继续，state 每 3 秒调用。取最后一条非 sidechain、非 `<synthetic>` 且带 usage 的 assistant，已用为 input_tokens + cache_read_input_tokens + cache_creation_input_tokens；后续主链 compact_boundary 改用 compact_metadata.post_tokens，直到新的有效 assistant。上限只查 `models.MODELS.context_window`：Opus 5.5 / Sonnet 5.5 / Fable 5.1 为 1000000，Haiku 4.5 为 200000；未知模型返回 null。结果为 `{used,max,source:"transcript"}`。state 的 leader / member 都带 context，托管进程在跑时优先 live。
+- 启动及设置成功后用 `get_settings` 查询实际值，仅接受对应 request_id 的成功回执；`response.response.applied` 中的 model / effort 存为 `applied` 供前端显示，无需等首轮回复。
+- 托管进程的上下文：启动、主链 `result` / `system/compact_boundary` 后请求 `get_context_usage`，只接受对应 request_id 的成功回执。取 `response.response.totalTokens` / `maxTokens`，返回 `context={used,max,source:"live"}`，不使用取整 percentage；未回执或进程已停时为 null。
+- 其他会话的上下文：复用 `usage.session_titles` 的增量读取与 size / mtime 缓存，state 每 3 秒查询，不重读全文。取最后一条非 sidechain、非 `<synthetic>` 的 assistant usage，已用量为 input_tokens + cache_read_input_tokens + cache_creation_input_tokens；之后主链 compact_boundary 的 post_tokens 优先，直到下一条有效 assistant。上限取 `models.MODELS.context_window`（Opus 5.5 / Sonnet 5.5 / Fable 5.1：1000000；Haiku 4.5：200000），未知模型返回 null。返回 `{used,max,source:"transcript"}`；state 的 leader / member 均带 context，在线托管进程优先 live。
 - `crew compact [NAME]` 带调用方 `caller_session_id` 请求 `/api/session/compact`，复用 `chat.Manager.compact` 发送 `/compact` 的路径；服务没开时报错，不直接操作会话。目标须属于当前工作区，调用方只有目标所在组的 leader 或用户（HUMAN）可通过，其它返回“只有它自己的 leader 或用户能压缩它”。网页按钮未带调用方时仍按用户处理。
 - 有网页日志与 spawn 记录的后台 leader / 下属空闲时可压缩，离线时先按既有逻辑续跑原会话。忙返回 409“正在干活，等这一轮结束再压缩”；外部在线返回 409“它在 VS Code 里运行，去那边输入 /compact”；没有托管记录的离线会话提示先叫醒或在 VS Code 打开。CLI 将这些原始错误文字带回调用方。
-- 网页托管的 leader 用 `crew compact`（省略名字或指定自己）时，Manager 记一次待压缩标记，返回“这一轮说完后压缩”；本轮主链 `result` 到达、Journal 进入 idle 后消费标记，调用既有压缩路径发送 `/compact`，聊天分隔行和进度照常显示。标记只用一次；进程提前退出就丢弃，写 `compact_cancelled` 事件。非网页托管的 leader 自压提示去 VS Code 输入 `/compact`。
-- `/compact` 请求和 `<command-name>/compact</command-name>` 回显记为 `compact_request` 系统分隔事件，按消息 id 去重；`system/status` 的 compacting 切换进度阶段，compact_boundary 记 `compact` 日志事件（pre_tokens / post_tokens）。浏览器用它显示完成分隔行和 toast。`local_command:"compact"` 的 result 照常回到 idle，SessionStart(source=compact) 钩子沿用既有处理。
-- `Journal` 只在内存保留本轮 activity：requesting / thinking / writing / tool / compacting、工具摘要、开始时间和输出 token。累计已完成调用的真实 `message_delta.usage.output_tokens`，加当前调用估算（thinking 用本块累计 estimated_tokens，text / input_json 按 UTF-8 字节数 / 3），结束后以真实值替换；子代理事件不改阶段、不计 token。idle / offline 清空进度。进度不写入聊天日志。
+- 网页托管 leader 用 `crew compact`（省略名字或指定自己）时返回“这一轮说完后压缩”，在本轮主链 result 后执行一次压缩。进程提前退出则取消并记 `compact_cancelled` 事件；非网页托管 leader 自压提示去 VS Code 输入 `/compact`。
+- `/compact` 请求与回显记 `compact_request` 分隔事件，按消息 id 去重；compacting 状态更新进度，compact_boundary 记 `compact`（pre_tokens / post_tokens），供浏览器显示完成分隔行和 toast。压缩 result 回到 idle，SessionStart(source=compact) 保留既有身份与状态。
+- `Journal` 进度仅存内存：requesting / thinking / writing / tool / compacting、工具摘要、开始时间和输出 token。已完成调用用真实 output_tokens，当前调用用 estimated_tokens（thinking）或 UTF-8 字节数 / 3（text / input_json）估算，结束后替换为真实值；子代理不计入。idle / offline 清空，不写聊天日志。
 - 浏览器刷新只重放 `HOME/chat/<会话ID>.jsonl`，不会启动新进程。聊天事件不含 thinking；assistant 的同 ID 分块合并，完整块替换对应流式文本，重复的 human replay 不再显示。组员发来的消息取 peer origin 的 body 和 name，不需要网页另投一次 stdin。
 - 会话正在处理时，用户发送返回冲突，让这一轮结束；result 只代表一轮结束，CLI 仍保持在线。服务退出只关闭自己子进程的 stdin，让它正常结束。恢复前先等旧进程输出读完，避免旧状态覆盖新一轮。
-- `Manager.close` 保持关闭 stdin、读线程最多等待 1 秒的原流程。正常结束且读线程已写 offline 的会话，下次不自动续跑；如果退出时输出还未读完、日志仍停在 working，下次按中断轮次处理，有原进程时继续等待它退出。
+- `Manager.close` 关闭 stdin，最多等待读线程 1 秒。日志已写 offline 的不自动续跑；未读完且仍为 working 的按中断轮次恢复，原进程存活时等待其退出。
 - Windows 的 npm `claude.cmd` 会另起原生子进程；托管会话直接启动该安装目录的 `bin/claude.exe`，让 Manager 持有的 PID 与 `claude agents` 一致，交接时可以确认进程归属。
-- 网页作为自己的交互宿主，给子进程设置 `CLAUDE_CODE_ENTRYPOINT=crew-web`。本机 VS Code 扩展会过滤 `sdk-cli` 等程序会话；使用自己的宿主标记后，原 ID 和历史可以被扩展发现。协议仍是 `-p/stream-json`，不修改 transcript 或扩展；交接按 Manager 实际持有的 PID 核对归属。
+- 子进程设置 `CLAUDE_CODE_ENTRYPOINT=crew-web`，使 VS Code 扩展能发现原 ID 和历史；`sdk-cli` 等程序会话会被扩展过滤。仍用 `-p/stream-json`，不修改 transcript 或扩展，交接按 Manager 持有的 PID 核对归属。
 - 后台子进程环境设置 `MSYS_NO_PATHCONV=1`，避免 Git Bash 转换任务正文中的 Windows 路径；不修改系统或用户环境。
 - `crew open NAME` 与网页使用相同的两步流程：先 `code <cwd>` 打开正确目录；用户确认窗口已经就绪后，再打开 `vscode://anthropic.claude-code/open?session=<ID>`。第一步不关闭会话，取消保留原运行端。第二步重新查询 agents 和 PID 注册文件；忙会话拒绝交接，网页进程须属于当前 Manager，确认后仅关闭该进程的 stdin 并等正常退出。遗留终端会话只有明确确认且空闲才关闭，并核对 PID 创建时间；VS Code 进程永远不关闭。
 - 有网页聊天记录的 `crew open` 通过 `HOME/web.json` 调同一服务，确保释放的是 Manager 管理的进程。在 VS Code 里继续时网页保留历史并禁用发言，避免同时恢复两份。
@@ -336,18 +336,18 @@ PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stder
 - `session_controls` 保存显式归档、移出和改名。移出不删会话与历史，hook 不会自动收编回来；主动 join 可重新加入。leader 改名同步组与成员归属，pending handoff 跟随；撤销恢复操作前的记录，不操作进程。
 - **leader 通知**：Crew 自己不发会话间消息。网页 / QQ 答完拍板、网页挂起拍板、收编进组、`crew join` 入组，以及 leader 用 `crew wake` 找 leader、交流区点名，都写进 `leader_notices`；网页服务每 2 秒把待发通知合并成一条 `[Crew]` 消息，经 `deliver_notices` 写进空闲的 leader（journal 记 source=crew）。在线空闲就送，离线且有网页日志就续跑后送；在 VS Code 等其他进程运行或进程状态未知时等现有逻辑送达。需要转告下属的事由 leader 用 SendMessage 转告。挂起通知附题号、提问者名字与 cc_name，要求转告"不卡流程的按推荐继续；卡流程的先做别的，先别再问这道题"；没有 leader 时不排。leader 对挂起题不催用户，汇报时单独列出。
 - **交流区发言与点名**：每项目一条发言流，leader 用 `crew say` 发言，用户通过网页发言；组员和未收编会话发言报“交流区只给 leader 用；有事告诉你的 leader”。`--to` / `to` 只能点同项目 leader，名字不存在先报错，不写入发言；自己点自己不排通知。leader 点名调用 `queue_leader_notice`，source 为 `crew`，内容为“交流区：「<名字>」点名你：\n<全文>\n\n回复用 crew say --to <名字> \"…\"；只是回\"收到\"就不用回。”用户点名 source 为 `web`，写明“交流区：用户点名你：”和“这是用户本人的话”。两者都复用 `deliver_notices`，不另起投递逻辑。未点名不叫醒，下一轮钩子顺带摘要；新发言不响网页提示音，也不推 QQ。
-- **拍板挂起**：托盘底部的"挂起 · N"区默认折叠，全部页等你拍板下单独分组；可直接作答或取消挂起。leader 角标、左栏待拍板数、全部页统计与标签标题只数未挂起题；新题提示音只响未挂起的新题，挂起或取消挂起本身不响。取消挂起不通知任何人。
+- **拍板挂起**：页面展示及计数规则见 [WEB_UX.md](WEB_UX.md)。取消挂起不排通知；归档或移出会话的未答题保留记录，但不继续催办。
 - **归档同步**：现有 10 秒轮询里读 VS Code 归档名单，已收编会话被 VS Code 归档就 `session_ops.archive`，记 `vscode:archived`；VS Code 取消归档不跟随。
 - **已读与任务卡**：`read_cursors` 记用户读到 leader journal 的哪条，算未读和"离开后"分隔线；`session_cards` 记下属的负责范围和完成标准，`sessions.task` 仍是"现在在做什么"。
-- `POST /api/session/rename|archive|remove|restore|undo` 用精确 session_id；返回 `session` 与供撤销的 `before`。`POST /api/attention/dismiss` 可撤销标记，检查事项所属工作区。归档/移出会话的未答题保留记录，但不继续催办。
+- `POST /api/attention/dismiss` 可撤销标记，并检查事项所属工作区；会话整理接口见上表。
 - 用量接口及 CSV 接受 `project=P&scope=workspace|machine`。报告函数末尾可选 `project=None`，按 cwd 最长根目录匹配；跨目录 Codex 按任务工作目录统计。`summary.claude_limits` 来自官方本地缓存与 stream-json `rate_limit_event`，不轮询私有 OAuth 接口，不启动模型来查额度。
 - 派活脚本仓库副本在 `integrations/codex-dispatch/run_codex.ps1`：同 run_id 先写开始、再写结束，scanner upsert。只有未关联的 rollout 时状态为 unknown，最后日志时间不当完成时间。
 - QQ 由 `qq.Client(app_id, app_secret)` 通过 WebSocket 收事件、HTTPS 主动发送；重连交给传输层。`run` 抛 `QQError` 时保留真实原因并停止收发，不在通知层重试。首次私聊绑定主人，此后其他人的消息和按钮只记日志。
 - `notification_messages` 保存发送结果的 `id` / `ref_idx` 与问题、leader 的关系；`notification_inbound` 按 message_id / interaction_id 去重；`notification_replies` 排队并记录每条 QQ 来信的回复边界。凭证和回调临时票据不入库。发送失败保留明确错误，不自动重发；拒收时提示在手机 QQ 打开“允许主动发送”，下一次发送成功恢复通道状态。
-- 离开期间 leader 每跑完一轮，最后一段话立即发到 QQ（以进入离开时各 leader 的对话位置为起点，QQ 发起的轮次除外，按 `turn:<会话>:<idle 序号>` 记录防重发）。
-- 通知只在手动离开或桌面锁屏时主动发送：手动点“我已离开”时当下待推的立即发出（用户 10-23：手动应该秒推）；锁屏和离开期间新出现的事项约 30 秒合批；每道未挂起的未答拍板单独发 Markdown 和单选回调按钮，推荐项在前，无选项或超过 5×5 容量时提示引用回复，其余事项合成一条文字。期间已处理或挂起的事项不发送，发送前再次读取挂起标记，已推送的事项不再推。锁屏来自已有桌面代理的带 token POST `/api/status`，不启动代理、不操作桌面；代理故障单独提示。
-- QQ 私聊用命令集（`/h`、`/ls`、`/1`、`/q`、`/back`），普通文字发给当前 leader。拍板通过按钮或引用该条拍板消息答复；按钮先应答 interaction，再校验题号、选项和题目状态。保存答复的 actor 与给 leader 排的通知 source 均为 `qq`。`/q` 只重发未挂起题，最多 10 题并说明剩余数，末尾有挂起题时说明"另有 N 道挂起"；`/ls` 的待拍板数同样排除挂起题。
-- 网页 leader 的 QQ 消息进入同一 input stream，journal 标记 source=qq；马上回执已转交或忙时排队，回复截至这条消息之后第一个 idle/offline，结束后发回最后一段文字。长回复按段落切分，`TEXT_LIMIT = 2000` 是为了手机好读；10-23 主控实测 5000 字能发。没有文字、启动失败等都给明确答复，不在网页后台运行的 leader 明确拒绝。截图复用网页图片校验和保存（最多 5 张、单张 ≤ 5 MB），语音用平台识别文字，视频和文件明确拒绝。详见 [QQ.md](QQ.md)。
+- QQ 推送时机、命令与附件限制见 [QQ.md](QQ.md)；离开期间的轮次回复按 `turn:<会话>:<idle 序号>` 防重发。
+- 通知仅在手动离开或锁屏时主动发送。用户口径（2026-10-23）：手动离开立即推送当前待办。锁屏来自已有桌面代理的带 token POST `/api/status`，不启动代理或操作桌面；代理故障单独提示。
+- QQ 拍板答复的 actor 与 leader 通知 source 均为 `qq`，按钮先应答 interaction 再校验题号、选项和状态。用户操作见 [QQ.md 的答拍板](QQ.md#答拍板)。
+- QQ 消息进入 leader 同一 input stream，journal 标记 source=qq；回复边界为来信后的首个 idle/offline，回传最后一段文字。长回复按段落切分（`TEXT_LIMIT = 2000`），无文字、启动失败或非网页后台运行均明确答复。
 - 网页 `notification.channel` 提供 unconfigured、unbound、connecting、connected、reconnecting、rejected、error 和真实 detail；左下角显示 QQ 状态与绑定、拒收操作提示，无通道开关。
 - `autostart` 用当前用户 InteractiveToken 计划任务，普通权限、登录触发、隐藏运行，不保存密码。任务指向主检出；默认端口已有 Crew 时保留原服务，不重复启动。不在睡眠、休眠或注销期间维持收信。
 
@@ -380,7 +380,7 @@ PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stder
 
 ## 13. Git 管理
 
-Git 管理按项目选择启用。沿用 `git_management` 的 `admin_session_id`、`branch_rules`，只新增请求表与 CI 状态表，不改变已有表。启用时保存时间与 base / stable，使用现有 `spawn --new-worktree` 机制在独立 worktree 开「git管理员」：数据库角色 leader、分组 git、agent `crew:git`、模型 `claude-sonnet-5-5`、effort high，预分配的会话 ID 写入配置。网页可沿用 leader 模型菜单改模型和 effort。停用照 `crew leader close` 收掉管理员分组，再删除配置。
+Git 管理按项目启用。启用时保存时间与 base / stable，使用现有 `spawn --new-worktree` 机制在独立 worktree 开「git管理员」：数据库角色 leader、分组 git、agent `crew:git`、模型 `claude-sonnet-5-5`、effort high，预分配的会话 ID 写入配置。网页可沿用 leader 模型菜单改模型和 effort。停用照 `crew leader close` 收掉管理员分组，再删除配置。
 
 ```sql
 CREATE TABLE IF NOT EXISTS git_management (
@@ -467,7 +467,7 @@ CREATE TABLE IF NOT EXISTS git_result_handoffs (
 
 ### 后台 CI 变化通知
 
-`Service` 运行单独的 CI 线程，每 300 秒调用 `git_ci.Poller.poll`，通过第一期的 `git_view._github` / `_gh_json` 读取 GitHub。`gh` 未安装时不发查询；未登录、非 GitHub 远端或查询失败时不处理 CI 状态，Git 页面沿用 `github_reason` 显示原文。
+`Service` 运行单独的 CI 线程，每 300 秒调用 `git_ci.Poller.poll`，通过 `git_view` 读取 GitHub。`gh` 未安装时不发查询；未登录、非 GitHub 远端或查询失败时不处理 CI 状态，Git 页面沿用 `github_reason` 显示原文。
 
 轮询只针对启用并记录管理员的项目：base 最新提交最近一次 CI 已完成且失败时通知；活动合并请求记录了 PR 号，且同一提交的 PR CI 从 pending 进入 success / failure 时通知。通知包含结论、提交 SHA 和链接，经既有 leader 通知送达。观察和通知去重在同一事务持久化，同一次运行重查或服务重启后不重复通知。
 
@@ -484,4 +484,4 @@ CREATE TABLE IF NOT EXISTS git_ci_state (
 );
 ```
 
-`subject` 为 `base:<分支>` 或 `pr:<编号>`，`run_key` 区分运行，`sha` 将 PR 状态变化关联到同一提交；`notified` 记录这次运行是否已排通知。三张新表都无需修改已有表或执行迁移；部署后重启服务即可创建。
+`subject` 为 `base:<分支>` 或 `pr:<编号>`，`run_key` 区分运行，`sha` 将 PR 状态变化关联到同一提交；`notified` 记录这次运行是否已排通知。缺失表在部署后重启服务时自动创建，无需迁移已有表。

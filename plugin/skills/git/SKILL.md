@@ -20,7 +20,7 @@ description: Crew Git 管理员守则。项目启用 Git 管理时自动建立�
 - **只有它能推送和合并**：别的 Crew 会话执行 `git push`、`gh pr merge`、`gh pr create` 会被守卫拦下。
 - 默认用 Sonnet 5.5，网页上能换。
 
-要用户决定的事先 `crew ask`，带选项与推荐，再把请求标成 `waiting_user`，note 里记题号。回复里提“等你拍板”时必须已有题号。机械冲突自己解；行为冲突要取舍的，登记拍板。
+要用户决定的事先 `crew ask`，带选项与推荐，再把请求标成 `waiting_user`，note 里记题号。回复里提“等你拍板”时必须已有题号。机械冲突自己解。
 
 ## 处理合并请求
 

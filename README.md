@@ -11,7 +11,7 @@
 - **用量分析**：把 Claude 会话、子 agent、Codex 的 token 用量按 leader → 下属 → Codex、天、模型汇总，并按 API 价折算成金额。
 - **Git 管理员**：项目启用 Git 管理后自动开出「git管理员」，在独立 worktree 里统一定分支规则、检查请求、推送、开 PR、等 CI 和合进 base；默认 Sonnet 5.5 / high，网页可换。
 
-设计细节和取舍见 [docs/DESIGN.md](docs/DESIGN.md)，完整页面流程和状态说明见 [docs/WEB_UX.md](docs/WEB_UX.md)。
+设计细节见 [docs/DESIGN.md](docs/DESIGN.md)，完整页面流程和状态说明见 [docs/WEB_UX.md](docs/WEB_UX.md)。
 
 ## 安装
 
@@ -59,9 +59,9 @@
 
 有新的未挂起拍板或 leader 新回复时，网页会响一声短提示音，标签标题显示未挂起的待拍板数；挂起、取消挂起本身不响。锁屏或打开"我已离开"时，未挂起的待拍板推到 QQ；`/q` 只列未挂起题，末尾说明挂起数。挂起时 leader 会收到通知，转告提问者：不卡流程的按推荐继续，卡流程的先做别的、先别再问这道题。左下角显示 QQ 连接、绑定和拒收状态。QQ 的命令和配置见 [docs/QQ.md](docs/QQ.md)；leader 巡查目前只按需（你问它才去查），候选场景见 [docs/PATROL.md](docs/PATROL.md)。
 
-交流区新发言不响提示音，也不推 QQ。左栏角标显示用户未读数，打开交流区或滚到底时记为已读；不点名就不叫醒 leader，下一轮摘要每次最多 10 条、每条正文第一行最多 120 字，全文按需查看。
+交流区新发言不响提示音、不推 QQ；左栏显示未读数，打开或滚到底记为已读。不点名的发言在 leader 下一轮附摘要，全文用 `crew channel` 查看。
 
-会话里的守则在技能里：成员是 `/crew:member`，leader 是 `/crew:leader`，Git 管理员是 `/crew:git`。会话启动时 Crew 会告诉它是谁、归哪个 leader、怎么调命令；还没收编的会话不会被要求自己登记。启用 Git 管理的项目还会附管理员提示和分支规则前 6 行，全文用 `crew git policy` 看。Crew 记录每个会话读过的守则内容摘要；守则更新后，在下一条消息或 resume / compact 时提醒已收编会话先重读，调用对应技能后停止提醒。
+会话里的守则在技能里：成员是 `/crew:member`，leader 是 `/crew:leader`，Git 管理员是 `/crew:git`。会话启动时 Crew 会告诉它是谁、归哪个 leader、怎么调命令；还没收编的会话不会被要求自己登记。启用 Git 管理的项目还会附管理员提示和分支规则前 6 行，全文用 `crew git policy` 看。守则更新后，在下一条消息或 resume / compact 时提醒已收编会话重读对应技能。
 
 ## 命令速查
 
@@ -152,7 +152,6 @@ Git 管理员可以自行定分支规则、推功能分支、开 PR、CI 绿后�
 - 两个在线会话的权限模式不一样时（比如一个全放行、一个逐条确认），SendMessage 可能等人批准；协作会话统一用全放行（`/crew:trust`）。后台首次启动和所有后台续跑一律全放行，保留 Crew 守卫。
 - leader 起动时可选模型和 effort（low / medium / high / xhigh / max），默认跟账号设置走；新下属不写 `--model` / `--effort` 就继承所在组 leader 对应设置。Haiku 4.5 不支持 effort。对话头部显示进程回报的实际“模型 · effort”，菜单可切换，toast 提示“下一步起用 …”；运行中 effort 只能切具体档位，恢复账号默认需在停止后设置。后台下属卡片只读显示这两项。忙时对话底部和后台下属卡片显示阶段、计时与本轮输出 token。
 - 已经开着的会话要 `/reload-plugins` 或重开，才会加载插件的钩子和守卫；网页收编会登记身份，不会替它加载插件。
-- QQ 长回复按段落分段，`TEXT_LIMIT = 2000` 是为了手机好读；10-23 主控实测 5000 字能发。
 
 ## 字体
 
