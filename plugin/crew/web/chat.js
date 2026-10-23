@@ -342,9 +342,9 @@
     }
     if (item.source === "peer" || item.source === "crew") {
       const sender = item.source === "crew" && !Object.hasOwn(item, "sender") ? "Crew" : item.sender === "user" ? "用户" : nameOf(context, item.sender);
-      const pathSession = item.source === "peer"
-        ? context.state.leaders.concat(context.state.members).find(person => person.cc_name === item.sender).session_id
-        : context.session.session_id;
+      // The sender may have been ended or archived since; its relative paths then resolve against the project root.
+      const peer = item.source === "peer" ? context.state.leaders.concat(context.state.members).find(person => person.cc_name === item.sender) : undefined;
+      const pathSession = item.source !== "peer" ? context.session.session_id : peer === undefined ? "" : peer.session_id;
       const foldKey = `peer:${item.id}`;
       const open = context.cache.expanded.has(foldKey);
       return `<button type="button" class="mline indent${open ? " open" : ""}" data-chat-fold="${escape(foldKey)}" aria-expanded="${open}"><span class="who">${escape(sender)} → ${escape(context.session.name)}：</span><span class="txt">${renderInline(item.text.replace(/\s+/g, " "), pathSession)}</span>${item.at ? `<span>${timeOf(item.at)}</span>` : ""}${icon("right")}</button><div class="mfull">${renderMarkdown(item.text, pathSession)}</div>`;
