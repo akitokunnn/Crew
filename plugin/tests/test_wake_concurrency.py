@@ -38,6 +38,8 @@ class WakeConcurrencyTests(ShellFixture, unittest.TestCase):
 
     def test_auto_resume_and_wake_launch_only_one_process(self):
         self.manager.journal("s1").set_status("working")
+        # Snapshot the interrupted session before wake can turn it into a newly owned process.
+        self.manager.auto_resume(self.conn, [{"sessionId": "s1"}], now=NOW)
         ready = threading.Barrier(2)
 
         def wake():

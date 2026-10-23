@@ -71,7 +71,7 @@ Crew/
 
 `decision_holds` 由 `schema.sql` 的 `CREATE TABLE IF NOT EXISTS` 在连接数据库时创建，不改变现有表结构、不需要迁移。`board.decisions` 返回 `held` 布尔值和可空的 `held_at`，默认仍列出全部 open 题，供下属侧 `crew` 沿用未答逻辑。
 
-`schema.sql` 删除旧的单项模型设置表，再用 `CREATE TABLE IF NOT EXISTS` 建立 `session_options` 和 `rule_reads`。模型与 effort 清单只在 `crew/models.py` 定义，`/api/state.models` 带出 id 与显示名，`efforts` 带出 low / medium / high / xhigh / max，前端从这份数据生成选项。可选 Opus 5.5、Sonnet 5.5、Fable 5.1、Haiku 4.5；默认跟账号设置走。Haiku 不支持 effort，显式同时指定 Haiku 和非空 effort 报错，切换到 Haiku 会清除原存 effort。
+`schema.sql` 删除旧的单项模型设置表，再用 `CREATE TABLE IF NOT EXISTS` 建立 `session_options` 和 `rule_reads`。模型与 effort 清单只在 `crew/models.py` 定义，`/api/state.models` 带出 id、显示名和上下文上限 `context_window`，`efforts` 带出 low / medium / high / xhigh / max，前端从这份数据生成选项。可选 Opus 5.5、Sonnet 5.5、Fable 5.1、Haiku 4.5；默认跟账号设置走。Haiku 不支持 effort，显式同时指定 Haiku 和非空 effort 报错，切换到 Haiku 会清除原存 effort。
 
 ## 2. 身份和项目
 
@@ -241,7 +241,11 @@ PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stder
 - `leader start --model ID --effort LEVEL` 和 `/api/leader` 的同名字段设置 leader 模型与 effort，缺省/null 为账号默认；`spawn --model ID --effort LEVEL` 可分别指定，未给的字段继承所在组 leader 的设置。启动参数只为非空值添加 `--model` / `--effort`，首次、续跑、叫醒、自动续跑均使用当前存储设置。
 - `/api/session/options` 只修改请求里给出的 model / effort。托管进程在线时，模型写 `set_model` 控制请求（回默认时省略 request.model），effort 写 `apply_flag_settings`，settings 为 `{"effortLevel":"<档位>"}`。运行中不接受 `effort:null`：CLI 对它会应用 medium，不能恢复账号默认；停止后可存 null，下次启动不带参数。成功回执后查询 `get_settings`，失败回执写 error；后续续跑按库中设置启动。
 - 进程启动后和每次设置成功后，发送带唯一 request_id 的 `get_settings` 控制请求；只处理自己发出的该请求成功回执，从 `response.response.applied` 取 model / effort，在内存中保留为 `applied`，供前端显示实际值，无需等待首轮回复。其他 request_id 的设置回执不改变实际值。
-- `Journal` 只在内存保留本轮 activity：requesting / thinking / writing / tool、工具摘要、开始时间和输出 token。累计已完成调用的真实 `message_delta.usage.output_tokens`，加当前调用估算（thinking 用本块累计 estimated_tokens，text / input_json 按 UTF-8 字节数 / 3），结束后以真实值替换；子代理事件不改阶段、不计 token。idle / offline 清空进度。进度不写入聊天日志。
+- 上下文占用有两个来源：本服务托管且进程在跑时，在启动、每个主链 `result`、主链 `system/compact_boundary` 后发送 `get_context_usage` 控制请求。复用 request_id 对应机制，只接收本次请求的成功回执，从 `response.response.totalTokens` / `maxTokens` 取精确已用量和上限，不使用取整后的 percentage。进程对象持有 `context={used,max,source:"live"}`，停止后不再返回；尚未回执时为 null。
+- 其他会话沿 `usage.session_titles` 的同一次增量读取估算上下文，不另读全文：按 size / mtime 缓存、从完整行 offset 继续，state 每 3 秒调用。取最后一条非 sidechain、非 `<synthetic>` 且带 usage 的 assistant，已用为 input_tokens + cache_read_input_tokens + cache_creation_input_tokens；后续主链 compact_boundary 改用 compact_metadata.post_tokens，直到新的有效 assistant。上限只查 `models.MODELS.context_window`：Opus 5.5 / Sonnet 5.5 / Fable 5.1 为 1000000，Haiku 4.5 为 200000；未知模型返回 null。结果为 `{used,max,source:"transcript"}`。state 的 leader / member 都带 context，托管进程在跑时优先 live。
+- `/api/session/compact` 复用 Manager 发送 `/compact` 的路径；有网页日志与 spawn 记录的后台 leader / 下属空闲时可压缩，离线时先按既有逻辑续跑原会话。忙返回 409“正在干活，等这一轮结束再压缩”；外部在线返回 409“它在 VS Code 里运行，去那边输入 /compact”；没有托管记录的离线会话提示先叫醒或在 VS Code 打开。请求仍须属于当前工作区。
+- `/compact` 请求和 `<command-name>/compact</command-name>` 回显记为 `compact_request` 系统分隔事件，按消息 id 去重；`system/status` 的 compacting 切换进度阶段，compact_boundary 记 `compact` 日志事件（pre_tokens / post_tokens）。浏览器用它显示完成分隔行和 toast。`local_command:"compact"` 的 result 照常回到 idle，SessionStart(source=compact) 钩子沿用既有处理。
+- `Journal` 只在内存保留本轮 activity：requesting / thinking / writing / tool / compacting、工具摘要、开始时间和输出 token。累计已完成调用的真实 `message_delta.usage.output_tokens`，加当前调用估算（thinking 用本块累计 estimated_tokens，text / input_json 按 UTF-8 字节数 / 3），结束后以真实值替换；子代理事件不改阶段、不计 token。idle / offline 清空进度。进度不写入聊天日志。
 - 浏览器刷新只重放 `HOME/chat/<会话ID>.jsonl`，不会启动新进程。聊天事件不含 thinking；assistant 的同 ID 分块合并，完整块替换对应流式文本，重复的 human replay 不再显示。组员发来的消息取 peer origin 的 body 和 name，不需要网页另投一次 stdin。
 - 会话正在处理时，用户发送返回冲突，让这一轮结束；result 只代表一轮结束，CLI 仍保持在线。服务退出只关闭自己子进程的 stdin，让它正常结束。恢复前先等旧进程输出读完，避免旧状态覆盖新一轮。
 - `Manager.close` 保持关闭 stdin、读线程最多等待 1 秒的原流程。正常结束且读线程已写 offline 的会话，下次不自动续跑；如果退出时输出还未读完、日志仍停在 working，下次按中断轮次处理，有原进程时继续等待它退出。
@@ -267,6 +271,7 @@ PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stder
 | `POST /api/leader` | name、task（成员可选）、可选 model / effort；起 leader，null 为账号默认 |
 | `POST /api/wake` | name 或 session_id、text、调用者会话 id；叫醒离线下属，返回 ok / session_id / name / address |
 | `POST /api/session/options` | session_id、可选 model / effort；仅修改给出的字段，在线时写 set_model / apply_flag_settings，运行中 effort 不接受 null |
+| `POST /api/session/compact` | session_id；托管会话空闲时发送 `/compact`，离线有托管记录时续跑后发送；忙或 VS Code 在线返回 409 |
 | `GET /api/chat/history?project=P&session_id=S` | session_id、events、running、busy、read_seq |
 | `GET /api/chat/events?project=P&session_id=S&after=N` | SSE 重放 seq 大于 N 的事件，兼读 Last-Event-ID |
 | `POST /api/chat/send` | session_id、text、可选 images（最多 5 张、单张 ≤ 5 MB）；只允许 leader |

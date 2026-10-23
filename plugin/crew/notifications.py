@@ -608,7 +608,8 @@ class Inbox:
                         self._reply(conn, row, '消息未发送：%s: %s' % (type(exc).__name__, exc), 'error')
                         continue
                     # Resuming may drain the previous process before it writes this message.
-                    after = next(e['seq'] for e in journal.events if e['type'] == 'message' and e['id'] == identity)
+                    after = next(e['seq'] for e in journal.events
+                                 if e['type'] in ('message', 'compact_request') and e['id'] == identity)
                     conn.execute("UPDATE notification_replies SET status='running',after_seq=? WHERE message_id=?", (after, row['message_id']))
                 else:
                     events = journal.after(row['after_seq'])

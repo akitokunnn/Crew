@@ -187,7 +187,7 @@ class ModelWakeTests(shell.ShellFixture, unittest.TestCase):
         initial = self.controls(process)[0]
         self.assertEqual(initial["request"], {"subtype": "get_settings"})
         self.assertEqual([json.loads(line)["type"] for line in process.stdin.getvalue().splitlines()],
-                         ["control_request", "user"])
+                         ["control_request", "control_request", "user"])
         process.emit({"type": "control_response", "response": {"subtype": "success", "request_id": initial["request_id"],
                       "response": {"applied": {"model": OPUS, "effort": "xhigh"}}}})
         self.wait_for(lambda: manager.applied(sid) == {"model": OPUS, "effort": "xhigh"})
@@ -219,7 +219,7 @@ class ModelWakeTests(shell.ShellFixture, unittest.TestCase):
         manager._control_response(current, {"subtype": "success", "request_id": "unrelated",
                                            "response": {"applied": {"model": HAIKU, "effort": None}}})
         self.assertIsNone(manager.applied(sid))
-        self.assertEqual(len(self.controls(process)), 1)
+        self.assertEqual(len(self.controls(process)), 2)
         manager._control_response(current, {"subtype": "success", "request_id": initial["request_id"],
                                            "response": {"applied": {"model": OPUS, "effort": "xhigh"}}})
         for changes in ({"model": HAIKU}, {"model": OPUS, "effort": "high"}):

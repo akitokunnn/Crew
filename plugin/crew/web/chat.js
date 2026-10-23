@@ -1,5 +1,17 @@
 "use strict";
 (() => {
+  const CONTEXT_WARN = 0.5, CONTEXT_DANGER = 0.8;
+  const tokens = value => value >= 10000 ? `${(value / 10000).toFixed(1)} 万` : String(Math.round(value));
+  function ring(context) {
+    if (context === null || context.used / context.max < CONTEXT_WARN) return "";
+    const ratio = context.used / context.max, percent = Math.round(ratio * 100);
+    const maximum = context.max >= 10000 ? `${Number((context.max / 10000).toFixed(1))} 万` : tokens(context.max);
+    const label = `上下文 已用 ${tokens(context.used)} / ${maximum}（${percent}%）`;
+    return `<span class="context-ring ${ratio >= CONTEXT_DANGER ? "danger" : "warn"}" role="img" title="${label}" aria-label="${label}"><svg viewBox="0 0 20 20" aria-hidden="true"><circle class="context-track" cx="10" cy="10" r="7.5"/><circle class="context-arc" cx="10" cy="10" r="7.5" pathLength="100" stroke-dasharray="${Math.min(100, ratio * 100)} 100"/></svg><span class="context-pct" aria-hidden="true">${percent}%</span></span>`;
+  }
+  window.CrewContext = {tokens, ring};
+})();
+(() => {
   const turns = new Map();
   const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
   const escape = value => String(value).replace(/[&<>"']/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]);
@@ -38,7 +50,7 @@
       const clock = node.querySelector("[data-activity-elapsed]"), count = node.querySelector("[data-activity-tokens]");
       const clockText = elapsed(turn.startedAt, now), tokenText = `↓ ${tokens(tokenCount(turn, now))} tokens`;
       if (clock.textContent !== clockText) clock.textContent = clockText;
-      if (count.textContent !== tokenText) count.textContent = tokenText;
+      if (count !== null && count.textContent !== tokenText) count.textContent = tokenText;
     }
     schedule();
   }
@@ -60,9 +72,9 @@
   function markup(session, compact = false) {
     const activity = session.activity;
     if (activity === null) return "";
-    const phase = activity.phase === "tool" ? `在跑：${activity.label}` : {requesting:"等模型回应", thinking:"思考中", writing:"在写回复"}[activity.phase];
+    const phase = activity.phase === "tool" ? `在跑：${activity.label}` : {requesting:"等模型回应", thinking:"思考中", writing:"在写回复", compacting:"压缩中"}[activity.phase];
     const turn = turns.get(session.session_id), now = Date.now();
-    return `<span class="activity${compact ? " compact" : ""}" data-activity="${escape(session.session_id)}" role="status"><span class="spin" aria-hidden="true"></span><span class="activity-phase" title="${escape(phase)}">${escape(phase)}</span><span class="activity-elapsed" data-activity-elapsed>${elapsed(turn.startedAt, now)}</span><span class="activity-tokens" data-activity-tokens>↓ ${tokens(tokenCount(turn, now))} tokens</span></span>`;
+    return `<span class="activity${compact ? " compact" : ""}" data-activity="${escape(session.session_id)}" role="status"><span class="spin" aria-hidden="true"></span><span class="activity-phase" title="${escape(phase)}">${escape(phase)}</span><span class="activity-elapsed" data-activity-elapsed>${elapsed(turn.startedAt, now)}</span>${activity.phase === "compacting" ? "" : `<span class="activity-tokens" data-activity-tokens>↓ ${tokens(tokenCount(turn, now))} tokens</span>`}</span>`;
   }
   window.CrewActivity = {sync, markup};
 })();
@@ -80,6 +92,7 @@
     return linkOpen(tokens, index, options, env, renderer);
   };
   const sessions = new Map();
+  const compactNotified = new Map();
   let active = null;
   const escape = value => String(value).replace(/[&<>"']/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]);
   const icon = kind => {
@@ -207,6 +220,7 @@
     return `<div class="m-lead"><div class="av round" style="--s:30px;--tint:var(--accent)">${escape(context.session.name.slice(0, 1))}</div><div class="body"><div class="markdown">${markdown.render(cjkBold(text))}</div><div class="m-meta">${escape(context.session.name)}${item.at ? ` · ${timeOf(item.at)}` : ""}</div></div></div>`;
   }
   function itemHTML(context, item) {
+    if (item.kind === "compact_request" || item.kind === "compact") return `<div class="context-divider">${item.kind === "compact_request" ? "压缩上下文" : `上下文已压缩：${CrewContext.tokens(item.pre_tokens)} → ${CrewContext.tokens(item.post_tokens)}`}</div>`;
     if (item.kind === "error") return `<div class="chat-error" role="alert">${escape(item.text)}</div>`;
     if (item.kind === "assistant") {
       let html = "";
@@ -304,6 +318,10 @@
       if (owner) owner.lastSeq = event.seq;
     }
     else if (event.type === "status") setBusy(context, event.status === "working", event.seq);
+    else if (event.type === "compact_request" || event.type === "compact") {
+      context.items.push({...event, id:`${event.type}:${event.seq}`, kind:event.type, lastSeq:event.seq});
+      if (incremental && event.type === "compact") notifyCompact(context.session.session_id, event, context.toast);
+    }
     else if (event.type === "error") context.items.push({ ...event, id: `error:${event.seq}`, kind: "error", lastSeq: event.seq });
     if (incremental) { composerState(context); schedule(context); }
   }
@@ -491,5 +509,22 @@
     document.removeEventListener("visibilitychange", context.visibility);
     active = null;
   }
-  window.CrewChat = { mount, update, unmount };
+  function notifyCompact(id, event, toast) {
+    if (event.seq <= (compactNotified.has(id) ? compactNotified.get(id) : 0)) return;
+    compactNotified.set(id, event.seq);
+    toast(`压缩完成：${CrewContext.tokens(event.pre_tokens)} → ${CrewContext.tokens(event.post_tokens)}`);
+  }
+  async function watchCompact(id, options) {
+    const history = await options.api(`/api/chat/history?session_id=${encodeURIComponent(id)}`);
+    const params = new URLSearchParams({session_id:id, project:options.state.project.name, after:history.events.length === 0 ? 0 : history.events[history.events.length - 1].seq});
+    const stream = new EventSource(`/api/chat/events?${params}`);
+    const close = () => stream.close();
+    stream.onmessage = message => {
+      const event = JSON.parse(message.data);
+      if (event.type === "compact") { notifyCompact(id, event, options.toast); close(); }
+      else if (event.type === "error" || event.type === "status" && event.status === "offline") close();
+    };
+    return close;
+  }
+  window.CrewChat = {mount, update, unmount, watchCompact};
 })();

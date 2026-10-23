@@ -289,6 +289,7 @@ class Service:
                 present = board.live_sessions(agents)
                 with self.scan_lock:
                     titles = usage.session_titles(self.claude_root, [s['session_id'] for s in sessions], self.title_cache)
+                    contexts = {sid: cached['context'] for sid, cached in self.title_cache.items()}
                 histories = {}
                 for session in sessions:
                     sid = session['session_id']
@@ -313,12 +314,15 @@ class Service:
                                   for s in sessions if s['role'] != 'leader'}
                 for session in sessions:
                     sid = session['session_id']
+                    context = self.chat.context(sid) if self.chat.running(sid) else contexts.get(sid)
                     if session['role'] == 'leader':
                         events = histories[sid]['events'] if sid in histories else []
                         read_seq = board.read_seq(conn, sid)
                         result['leaders'].append(dict(
                             session_id=sid, name=session['crew_name'], goal=session['task'], status=session['status'],
                             **models.get(conn, sid), applied=self.chat.applied(sid), activity=self.chat.activity(sid),
+                            context=context,
+                            where='bg' if self.chat.running(sid) else 'vscode' if sid in present else 'offline',
                             busy=self.chat.busy(sid) or (sid in present and present[sid].get('status') == 'busy'),
                             running=self.chat.running(sid) or sid in present, web_chat=session['web_chat'], cc_name=session['cc_name'],
                             last_seq=events[-1]['seq'] if events else 0, read_seq=read_seq,
@@ -339,6 +343,8 @@ class Service:
                         result['members'].append(dict(
                             session_id=sid, name=session['crew_name'], title=titles.get(sid),
                             **models.get(conn, sid), applied=self.chat.applied(sid), activity=self.chat.activity(sid),
+                            context=context, busy=self.chat.busy(sid) or (sid in present and present[sid].get('status') == 'busy'),
+                            running=self.chat.running(sid) or sid in present,
                             leader_session_id=leader['session_id'] if leader else None, group=session['group_name'],
                             status=session['status'], status_note=session['status_note'],
                             where='bg' if self.chat.running(sid) else 'vscode' if sid in present else 'offline',
@@ -426,6 +432,8 @@ class Service:
                     return session_ops.undo(conn, target['session_id'], data['before'], now=now)
                 if path == '/api/session/stop':
                     return self.chat.interrupt(target['session_id'])
+                if path == '/api/session/compact':
+                    return self.chat.compact(target)
                 if path == '/api/session/options':
                     options = self.chat.set_options(conn, target['session_id'],
                                                     {key: data[key] for key in ('model', 'effort') if key in data}, now=now)
@@ -606,7 +614,7 @@ class Service:
 
 
 POST_PATHS = {"/api/project/init", "/api/open", "/api/open/continue", "/api/answer", "/api/spawn", "/api/leader", "/api/wake", "/api/roster/move", "/api/roster/remove", "/api/group/close", "/api/roster/adopt", "/api/chat/send", '/api/chat/read'}
-POST_PATHS.update('/api/session/' + action for action in ('rename', 'archive', 'remove', 'restore', 'undo', 'stop', 'options'))
+POST_PATHS.update('/api/session/' + action for action in ('rename', 'archive', 'remove', 'restore', 'undo', 'stop', 'options', 'compact'))
 POST_PATHS.update(('/api/attention/dismiss', '/api/notifications/away'))
 POST_PATHS.update(('/api/decision/hold', '/api/decision/unhold'))
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"),

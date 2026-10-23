@@ -17,6 +17,11 @@ IMAGE_TYPES = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp",
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
 
 
+def compact_command(text):
+    return isinstance(text, str) and (text.strip() == "/compact" or
+        text.lstrip().startswith("<command-name>/compact</command-name>"))
+
+
 def tool_label(name, arguments):
     if name == "Bash":
         label = arguments.get("description") or arguments.get("command") or name
@@ -91,7 +96,7 @@ class Journal:
         self.refresh()
 
     def _index(self):
-        self.messages = {event["id"] for event in self.events if event["type"] == "message"}
+        self.messages = {event["id"] for event in self.events if event["type"] in ("message", "compact_request")}
         self.results = {event["tool_use_id"] for event in self.events if event["type"] == "tool_result"}
         self.assistant = {event["id"]: event["content"] for event in self.events if event["type"] == "assistant"}
         self.status = next((event["status"] for event in reversed(self.events) if event["type"] == "status"), "offline")
@@ -147,7 +152,7 @@ class Journal:
 
     def _phase(self, phase, label=None):
         if self.progress is not None:
-            if self._tools and phase != "tool":
+            if self._tools and phase not in ("tool", "compacting"):
                 return
             self.progress.update(phase=phase, label=label)
 
@@ -163,6 +168,9 @@ class Journal:
         if kind == "system" and record.get("subtype") == "status" and record["status"] == "requesting":
             self.set_status("working")
             self._phase("requesting")
+        elif kind == "system" and record.get("subtype") == "status" and record["status"] == "compacting":
+            self.set_status("working")
+            self._phase("compacting")
         elif kind == "stream_event":
             event = record["event"]
             event_type = event["type"]
@@ -222,6 +230,9 @@ class Journal:
             self.refresh()
             if identity not in self.messages:
                 self.messages.add(identity)
+                if compact_command(text):
+                    self.emit("compact_request", id=identity)
+                    return
                 fields = {"id": identity, "role": "user", "text": text, "source": source}
                 if sender is not None:
                     fields["sender"] = sender
@@ -258,6 +269,9 @@ class Journal:
                 self.message(origin.get("msg_id", record["uuid"]), origin["body"], "peer", origin.get("name"))
                 if not record.get("parent_tool_use_id"):
                     self.set_status("working")
+            elif compact_command(record["message"]["content"]):
+                # The CLI echoes /compact once more under a new uuid; _send already logged the request.
+                pass
             elif isinstance(record["message"]["content"], list):
                 with self.condition:
                     self.refresh()
@@ -268,6 +282,9 @@ class Journal:
                                       is_error=block.get("is_error", False))
             elif not record.get("isReplay") and not record.get("isSynthetic"):
                 self.message(record["uuid"], record["message"]["content"])
+        elif kind == "system" and record.get("subtype") == "compact_boundary" and not record.get("parent_tool_use_id"):
+            metadata = record["compact_metadata"]
+            self.emit("compact", pre_tokens=metadata["pre_tokens"], post_tokens=metadata["post_tokens"])
         elif kind == "result":
             if record.get("is_error"):
                 self.emit("error", text="\n".join(record.get("errors", [])) or record.get("result") or record["subtype"])
@@ -293,6 +310,7 @@ class Running:
         self.input_lock = threading.Lock()
         self.control_requests = {}
         self.applied = None
+        self.context = None
         self.stderr = collections.deque(maxlen=20)
         self.reader_done = threading.Event()
 
@@ -357,6 +375,14 @@ class Manager:
             with current.input_lock:
                 return dict(current.applied) if current.applied is not None else None
 
+    def context(self, session_id):
+        with self.lock:
+            current = self.processes.get(session_id)
+            if current is None or not self.running(session_id):
+                return None
+            with current.input_lock:
+                return dict(current.context) if current.context is not None else None
+
     def history(self, session_id):
         journal = self.journal(session_id)
         with journal.condition:
@@ -376,6 +402,9 @@ class Manager:
                             claude_limits.capture(self.home, record)
                         except OSError as exc:
                             current.journal.emit("error", text="Claude 额度记录失败：" + str(exc))
+                    if not record.get("parent_tool_use_id") and (record["type"] == "result" or
+                            record["type"] == "system" and record.get("subtype") == "compact_boundary"):
+                        self._control(current, "get_context_usage")
                     current.journal.consume(record)
                 except (ValueError, KeyError, TypeError) as exc:
                     current.journal.emit("error", text="Claude 协议错误：" + str(exc))
@@ -436,6 +465,7 @@ class Manager:
         current = Running(process, journal)
         self.processes[session_id] = current
         self._control(current, "get_settings")
+        self._control(current, "get_context_usage")
         current.stderr_reader = threading.Thread(target=self._stderr, args=(current,), name="crew-chat-stderr", daemon=True)
         current.stderr_reader.start()
         current.reader = threading.Thread(target=self._read, args=(session_id, current), name="crew-chat", daemon=True)
@@ -516,6 +546,19 @@ class Manager:
                 self._launch(session, spec, resume=True)
             identity = self._send(session_id, text, source=source, identity=identity, images=images)
         return {"ok": True, 'message_id': identity}
+
+    def compact(self, session):
+        session_id = session["session_id"]
+        with self.lock:
+            if self.running(session_id):
+                if self.busy(session_id):
+                    raise board.Conflict("正在干活，等这一轮结束再压缩")
+            elif any(agent["sessionId"] == session_id for agent in self._external_agents()):
+                raise board.Conflict("它在 VS Code 里运行，去那边输入 /compact")
+            if (not self.path(session_id).exists() or session["spawn_id"] is None or
+                    not (self.home / "spawn" / (session["spawn_id"] + ".json")).exists()):
+                raise board.BoardError("会话没有网页聊天记录或启动记录，请先叫醒它，或在 VS Code 打开后输入 /compact")
+            return self.send(session, "/compact")
 
     def _resume_spec(self, conn, session, now=None):
         session_id = session["session_id"]
@@ -638,6 +681,9 @@ class Manager:
             if subtype == "get_settings" and response["subtype"] == "success":
                 applied = response["response"]["applied"]
                 current.applied = {"model": applied["model"], "effort": applied["effort"]}
+            elif subtype == "get_context_usage" and response["subtype"] == "success":
+                usage = response["response"]
+                current.context = {"used": usage["totalTokens"], "max": usage["maxTokens"], "source": "live"}
         if subtype in ("set_model", "apply_flag_settings") and response["subtype"] == "success":
             self._control(current, "get_settings")
 

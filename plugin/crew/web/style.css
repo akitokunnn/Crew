@@ -166,6 +166,24 @@ svg.i.xs{width:12px;height:12px}
 .member-model{display:inline-flex;color:var(--text-2);font-size:calc(11px * var(--fs));font-weight:400}
 .node>.member-model{margin:5px 0 0 35px}
 .ttl>.member-model{margin-left:10px}
+/* A gauge, not a spinner: full faint track, square caps and the percentage beside it. */
+.context-ring{display:inline-flex;align-items:center;gap:3px;vertical-align:middle;flex:none;line-height:1}
+.context-ring svg{width:16px;height:16px;fill:none;stroke-width:3}
+.context-pct{font-size:calc(11px * var(--fs));font-weight:600;font-variant-numeric:tabular-nums}
+.context-ring.warn{color:var(--warn)}
+.context-ring.danger{color:var(--danger)}
+.context-track{stroke:currentColor;opacity:.28}
+.context-arc{stroke:currentColor;transform:rotate(-90deg);transform-origin:center;stroke-linecap:butt}
+.context-controls{display:inline-flex;align-items:center;gap:5px;flex:none}
+.context-compact{padding:4px 8px;font-size:calc(12px * var(--fs));line-height:1.35}
+.context-hint{font-size:calc(11px * var(--fs));font-weight:400;color:var(--text-2)}
+.leader-item .nm>.context-ring{margin-left:5px}
+.ttl>.context-ring{margin-left:6px}
+.card-head .nm{display:flex;align-items:center;flex-wrap:wrap;gap:8px}
+.menu-context{border-top:1px solid var(--line);margin-top:5px;padding-top:5px}
+.menu-context>.context-hint{display:block;padding:6px 10px}
+.context-divider{display:flex;align-items:center;gap:10px;margin:18px 0;color:var(--text-3);font-size:calc(12px * var(--fs))}
+.context-divider::before,.context-divider::after{content:"";height:1px;flex:1;background:var(--line)}
 
 /* tray */
 .tray{flex:none;border-bottom:1px solid var(--line);background:var(--bg);box-shadow:0 6px 14px -12px rgba(30,25,10,.25);position:relative;z-index:1}

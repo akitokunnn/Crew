@@ -3,10 +3,10 @@ from . import store
 
 
 MODELS = [
-    {"id": "claude-opus-5-5", "name": "Opus 5.5"},
-    {"id": "claude-sonnet-5-5", "name": "Sonnet 5.5"},
-    {"id": "claude-fable-5-1", "name": "Fable 5.1"},
-    {"id": "claude-haiku-4-5-20251001", "name": "Haiku 4.5"},
+    {"id": "claude-opus-5-5", "name": "Opus 5.5", "context_window": 1000000},
+    {"id": "claude-sonnet-5-5", "name": "Sonnet 5.5", "context_window": 1000000},
+    {"id": "claude-fable-5-1", "name": "Fable 5.1", "context_window": 1000000},
+    {"id": "claude-haiku-4-5-20251001", "name": "Haiku 4.5", "context_window": 200000},
 ]
 EFFORTS = ["low", "medium", "high", "xhigh", "max"]
 HAIKU = "claude-haiku-4-5-20251001"

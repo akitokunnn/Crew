@@ -6,7 +6,7 @@ import sys
 from contextlib import contextmanager
 from pathlib import Path
 
-from . import store
+from . import models, store
 
 
 CLAUDE_TOKENS = (
@@ -91,26 +91,42 @@ def _line_number(path, offset):
 
 
 def session_titles(root, session_ids, cache):
-    """Read the latest ai-title in live main transcripts, incrementally like scan()."""
+    """Read titles and context usage from main transcripts incrementally like scan()."""
     titles = {}
+    windows = {model["id"]: model["context_window"] for model in models.MODELS}
     for session_id in session_ids:
         previous = cache.get(session_id)
         path = previous["path"] if previous else next(Path(root).glob("*/" + session_id + ".jsonl"), None)
         if path is None:
             continue
         stat = path.stat()
-        offset, title = (previous["offset"], previous["title"]) if previous and stat.st_size >= previous["size"] else (0, None)
+        offset, title, context = ((previous["offset"], previous["title"], previous["context"])
+                                  if previous and stat.st_size >= previous["size"] else (0, None, None))
         if previous is None or (stat.st_size, stat.st_mtime) != (previous["size"], previous["mtime"]):
             for _, end, line in _lines(path, offset):
                 try:
                     record = json.loads(line)
                     if record["type"] == "ai-title":
                         title = record["aiTitle"]
+                    elif not record.get("isSidechain"):
+                        if record["type"] == "assistant":
+                            message = record["message"]
+                            if "usage" in message and message["model"] != "<synthetic>":
+                                maximum = windows.get(message["model"])
+                                tokens = message["usage"]
+                                context = None if maximum is None else {
+                                    "used": tokens["input_tokens"] + tokens["cache_read_input_tokens"]
+                                            + tokens["cache_creation_input_tokens"],
+                                    "max": maximum, "source": "transcript",
+                                }
+                        elif record["type"] == "system" and record.get("subtype") == "compact_boundary" and context is not None:
+                            context = dict(context, used=record["compact_metadata"]["post_tokens"])
                 except (json.JSONDecodeError, KeyError, TypeError):
                     # Usage scanning also consumes malformed complete lines and keeps going.
                     pass
                 offset = end
-        cache[session_id] = {"path": path, "offset": offset, "size": stat.st_size, "mtime": stat.st_mtime, "title": title}
+        cache[session_id] = {"path": path, "offset": offset, "size": stat.st_size, "mtime": stat.st_mtime,
+                             "title": title, "context": context}
         titles[session_id] = title
     return titles
 

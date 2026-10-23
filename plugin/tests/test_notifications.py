@@ -805,6 +805,35 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         self.assertEqual(manager.send.call_args.args[1], '第二条继续处理')
         self.assertIn('（这一轮没有文字回复）', self.client.sent[-1]['text'])
 
+    def test_queued_compact_request_uses_separator_boundary_and_unblocks_next_reply(self):
+        self.select()
+        journal = self.manager.journal('s3')
+        journal.set_status('idle')
+        process = FakeProcess([])
+        current = chat.Running(process, journal)
+        current.reader = mock.Mock()
+        self.manager.processes['s3'] = current
+        self.service.chat = self.manager
+        folder = self.home / 'spawn'
+        folder.mkdir(exist_ok=True)
+        (folder / 's3.json').write_text('{}', encoding='utf-8')
+        self.conn.execute("UPDATE sessions SET spawn_id='s3' WHERE session_id='s3'")
+        self.inbox.queue_text(self.conn, dict(answer='/compact', images=[], message_id='queued-compact'))
+        self.clock += dt.timedelta(seconds=1)
+        self.receive('压缩后继续')
+        self.inbox.process_replies()
+        compact = next(event for event in journal.events if event['type'] == 'compact_request')
+        self.assertEqual(self.replies()[0]['after_seq'], compact['seq'])
+        self.assertEqual([row['status'] for row in self.replies()], ['running', 'queued'])
+        self.assertEqual(json.loads(process.stdin.getvalue().splitlines()[-1])['message']['content'], '/compact')
+        self.assertNotIn('/compact', journal.path.read_text(encoding='utf-8'))
+        journal.consume(dict(type='system', subtype='compact_boundary', compact_metadata=dict(pre_tokens=46123, post_tokens=9925)))
+        journal.consume(dict(type='result', local_command='compact'))
+        self.inbox.process_replies()
+        self.assertEqual([row['status'] for row in self.replies()], ['answered', 'running'])
+        self.assertEqual(json.loads(process.stdin.getvalue().splitlines()[-1])['message']['content'], '压缩后继续')
+        self.assertIn('（这一轮没有文字回复）', self.client.sent[-1]['text'])
+
     def test_busy_leader_keeps_messages_queued_and_runs_in_order(self):
         manager, journal = self.web_manager()
         self.select()
