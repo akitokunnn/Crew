@@ -94,6 +94,13 @@ class ChatTests(UsageFixture, unittest.TestCase):
         self.assertNotIn("private", self.journal.path.read_text(encoding="utf-8"))
         self.assertEqual(chat.Journal(self.journal.path).events, events)
 
+    def test_reload_keeps_unicode_line_separators_inside_text(self):
+        # Misdecoded tool output (10-23) carried U+2028; str.splitlines cut that record in half.
+        text = "a b c\x1cd\x85e"
+        self.journal.consume({"type": "user", "uuid": "u1", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": text}]}})
+        self.assertEqual([e["content"] for e in chat.Journal(self.journal.path).events if e["type"] == "tool_result"], [text])
+
     def read_process(self, records):
         process = FakeProcess([])
         for record in records:

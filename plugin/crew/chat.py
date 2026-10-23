@@ -105,7 +105,8 @@ class Journal:
             else:
                 signature = (stat.st_size, stat.st_mtime_ns)
             if signature != self.signature:
-                self.events = ([json.loads(line) for line in self.path.read_text(encoding="utf-8").splitlines()]
+                # Split on newlines only: str.splitlines also breaks at U+2028 and friends, which JSON keeps raw inside strings.
+                self.events = ([json.loads(line) for line in self.path.read_text(encoding="utf-8").split("\n") if line]
                                if signature is not None else [])
                 self.signature = signature
                 self._index()
