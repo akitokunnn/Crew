@@ -23,7 +23,7 @@ class AutoResumeTests(ShellFixture, unittest.TestCase):
         return [event for event in board.events(self.conn, "demo") if event["kind"] == "session:auto-resume"]
 
     def test_interrupted_member_and_leader_resume_once_with_crew_message_and_current_model(self):
-        models.set(self.conn, "s1", "claude-sonnet-5-5", now=NOW)
+        models.set(self.conn, "s1", "claude-sonnet-5-5", "high", now=NOW)
         self.interrupted("s1")
         self.interrupted("s3")
         self.recover()
@@ -34,12 +34,14 @@ class AutoResumeTests(ShellFixture, unittest.TestCase):
             session = board.session(self.conn, session_id)
             self.assertEqual(process.command[process.command.index("--name") + 1], session["crew_name"])
             self.assertEqual(process.command[process.command.index("--permission-mode") + 1], "bypassPermissions")
-            sent = json.loads(process.stdin.getvalue())
+            sent = json.loads(process.stdin.getvalue().splitlines()[-1])
             self.assertEqual(sent["message"]["content"], "[Crew] Crew 服务刚重启，你上一轮做到一半被打断了。先看看做到哪了再接着做；如果其实已经做完，就照常收尾、按守则汇报。")
             message = next(event for event in self.manager.journal(session_id).events if event["type"] == "message")
             self.assertEqual(message["source"], "crew")
         self.assertEqual(self.commands[0][self.commands[0].index("--model") + 1], "claude-sonnet-5-5")
+        self.assertEqual(self.commands[0][self.commands[0].index("--effort") + 1], "high")
         self.assertNotIn("--model", self.commands[1])
+        self.assertNotIn("--effort", self.commands[1])
         self.recover()
         self.assertEqual(len(self.processes), 2)
         self.assertEqual(len(self.resume_events()), 2)

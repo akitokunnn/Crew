@@ -26,7 +26,7 @@ Crew/
       usage.py  usage_cli.py          用量扫描、汇总、命令行
       spawn.py                        后台会话启动计划、任务文件、CLI 转网页服务
       chat.py                         后台成员/leader CLI、流式协议、聊天记录与恢复
-      models.py                       可选模型唯一清单与会话模型设置
+      models.py                       模型 / effort 唯一清单与会话设置
       web.py  web/                    工作区网页和 leader 聊天，含本地 Markdown 库、HarmonyOS Sans 字体、logo
       vscode_sessions.py              复现 VS Code 会话列表与归档名单（只读），供待收编和归档同步
       presentation.py session_ops.py  待处理事项（QQ 推送用）与可撤销会话整理
@@ -60,17 +60,18 @@ Crew/
 
 所有函数显式接收 `home` 参数；命令行有全局参数 `--home DIR`（默认 `store.default_home()`），测试一律传临时目录。**不用环境变量改 HOME。**
 
-拍板与模型存储：
+拍板、会话设置与守则阅读记录：
 
 | 表 | 内容 |
 |---|---|
 | `decisions` | 题目、选项、建议、答复与状态；挂起时 `status` 仍为 `open` |
 | `decision_holds` | `decision_id PRIMARY KEY REFERENCES decisions(id)`、`held_at TEXT NOT NULL`；只记录挂起标记，答复或撤回时删除 |
-| `session_models` | `session_id TEXT PRIMARY KEY REFERENCES sessions(session_id)`、`model TEXT NOT NULL`、`set_at TEXT NOT NULL`；无记录表示账号默认 |
+| `session_options` | `session_id TEXT PRIMARY KEY REFERENCES sessions(session_id)`、`model TEXT`、`effort TEXT`、`set_at TEXT NOT NULL`；两项都为 null 时删行，无记录表示账号默认 |
+| `rule_reads` | `session_id TEXT PRIMARY KEY REFERENCES sessions(session_id)`、`role TEXT NOT NULL`、`digest TEXT NOT NULL`、`read_at TEXT NOT NULL`；记录会话读过的角色守则 sha256 |
 
 `decision_holds` 由 `schema.sql` 的 `CREATE TABLE IF NOT EXISTS` 在连接数据库时创建，不改变现有表结构、不需要迁移。`board.decisions` 返回 `held` 布尔值和可空的 `held_at`，默认仍列出全部 open 题，供下属侧 `crew` 沿用未答逻辑。
 
-`session_models` 同样由 `CREATE TABLE IF NOT EXISTS` 自动建表，不修改现有表、不写迁移。模型清单只在 `crew/models.py` 定义，`/api/state.models` 带出 id 与显示名，前端从这份数据生成选项。可选 Opus 5.5、Sonnet 5.5、Fable 5.1、Haiku 4.5；默认跟账号设置走。
+`schema.sql` 删除旧的单项模型设置表，再用 `CREATE TABLE IF NOT EXISTS` 建立 `session_options` 和 `rule_reads`。模型与 effort 清单只在 `crew/models.py` 定义，`/api/state.models` 带出 id 与显示名，`efforts` 带出 low / medium / high / xhigh / max，前端从这份数据生成选项。可选 Opus 5.5、Sonnet 5.5、Fable 5.1、Haiku 4.5；默认跟账号设置走。Haiku 不支持 effort，显式同时指定 Haiku 和非空 effort 报错，切换到 Haiku 会清除原存 effort。
 
 ## 2. 身份和项目
 
@@ -142,19 +143,20 @@ Crew/
 
 | 参数 | 事件 | 做什么 | 输出 |
 |---|---|---|---|
-| `session-start` | SessionStart | **不管属不属于项目都先跑 install**（刷新 runtime.json；黑名单不存在时复制默认的，守卫在所有会话里都要用到它）。属于某项目时登记 / 更新会话（带 CREW_* 变量就按它登记；已登记过的会话保留 crew 名）；status=idle。cwd 不是 git 仓库时 worktree / branch 记为空 | 属于项目时输出 `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"..."}}`，中文告诉会话：项目名、我的 crew 名（没收编时写明不要自己 crew join，等用户说收编）、分组和 leader（含 leader 的 cc_name）、命令行怎么调（`python "<HOME>/crew.py" ...`）、守则 `/crew:member`（leader 是 `/crew:leader`）、发给我还没送达的交接 |
-| `user-prompt-submit` | UserPromptSubmit | status=working，last_prompt。查我提的、已答复但没送达（delivered_at 为空）的待拍板，和没送达我的交接 | 有内容时输出 UserPromptSubmit 的 additionalContext，并标记送达 |
+| `session-start` | SessionStart | **不管属不属于项目都先跑 install**（刷新 runtime.json；黑名单不存在时复制默认的，守卫在所有会话里都要用到它）。属于某项目时登记 / 更新会话（带 CREW_* 变量就按它登记；已登记过的会话保留 crew 名）；status=idle。cwd 不是 git 仓库时 worktree / branch 记为空。source 是 resume / compact 时检查守则版本，startup 不重复提醒 | 属于项目时输出 `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"..."}}`，中文告诉会话：项目名、我的 crew 名（没收编时写明不要自己 crew join，等用户说收编）、分组和 leader（含 leader 的 cc_name）、命令行怎么调（`python "<HOME>/crew.py" ...`）、守则 `/crew:member`（leader 是 `/crew:leader`）、发给我还没送达的交接；需要时附守则更新提醒 |
+| `user-prompt-submit` | UserPromptSubmit | status=working，last_prompt。查我提的、已答复但没送达（delivered_at 为空）的待拍板，和没送达我的交接；检查守则版本 | 有内容时输出 UserPromptSubmit 的 additionalContext，并标记送达；需要时附守则更新提醒 |
 | `stop` | Stop | status=idle，last_message 取输入里的 `last_assistant_message` 前 300 字 | 无 |
 | `notification` | Notification | status=waiting，status_note 取输入里的 `message` | 无 |
 | `pre-ask` | PreToolUse（AskUserQuestion、ExitPlanMode） | status=waiting，note 写"等你回答提问"或"等你审批计划" | 无 |
 | `post-ask` | PostToolUse（同上） | status=working | 无 |
 | `session-end` | SessionEnd | status=offline，ended_at | 无 |
-| `guard` | PreToolUse（所有工具） | §7 | 拦截时 stderr + exit 2 |
+| `guard` | PreToolUse（所有工具） | §7；收到 `Skill` 调用且 `tool_input.skill` 是 `crew:leader` / `crew:member` 时，记录对应技能文件当前 digest | 拦截时 stderr + exit 2 |
 
 - 每个打卡事件写一条 events，detail 里记输入 JSON 的键名列表和该事件关心的字段（不存 transcript 全文、不存 tool_input 全文，命令截前 200 字）。守卫只在拦截时写事件，放行的调用不记（否则每次工具调用都写一行）。
 - 插件装上或项目启用之前就开着的会话没有 SessionStart 记录：它的第一个打卡事件会先补登记再改状态。
 - 打卡类事件出错不能影响会话：打一行原因到 stderr，exit 1。**除 guard 外任何事件都不能 exit 2。**
 - 会话的 crew 名、cc_name 不在钩子里调 `claude agents`（太慢）。
+- 守则版本取 `plugin/skills/<role>/SKILL.md` 内容的 sha256，role 使用白板 `sessions.role`。已启用项目中已收编、未归档的 leader / member，在每次 UserPromptSubmit（含会话间消息）和 resume / compact 的 SessionStart 比较 `rule_reads`；没有阅读记录或 digest 不同，就在 additionalContext 加“Crew 守则（/crew:<role>）有更新，你上次读的不是最新版。先调用 /crew:<role> 重读一遍，再处理这条消息。”调用相应 Skill 后写入新 digest，下次不再提醒；文件再次变化后恢复提醒。未收编、归档、角色不符、未启用项目不提醒。热路径只读技能小文件计算摘要，不启动进程或发网络请求。
 
 显式 session_controls 的归档/移出高于上述 hook 状态，closed 不因启动、Stop 或 SessionEnd 改回活跃。compact 只续上下文，保留既有身份、分组与状态，不重放旧 CREW_*。没有显式控制记录的旧 close_group 仍保留主动启动后重开的既有行为。
 
@@ -232,12 +234,14 @@ PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stder
 - `web [--port 47811] [--open]` 只监听 127.0.0.1，运行期间把地址写入 `HOME/web.json`。一个项目一个标签页（`/?project=P`），裸网址列项目入口，页内不切项目。页面以和 leader 聊天为主：左栏 leader 列表、中间对话（待拍板托盘置顶）、右栏本组架构图与下属卡片，另有全部、待收编、用量页；下属不在网页发言。页面结构和交互见 [WEB_UX.md](WEB_UX.md)。前端用原生 JS 和本地 markdown-it 15.0.2，无构建流程；Python 后端仍只用标准库。
 - `leader start --name N [--members A,B] [--task T]` 调本机网页服务的 `/api/leader`。`spawn` 和 `leader start` 都先要求运行 `crew web --open`，服务未运行时清楚报错；`--dry-run` 只生成启动计划，不连服务、不写白板、不启动进程。
 - 成员和 leader 都复用 `spawn.prepare` 和任务文件；leader 额外建分组、收编/挪入选定成员。后台进程是 PATH 里的 Claude CLI，通用参数为 `-p --input-format stream-json --output-format stream-json --verbose --include-partial-messages --replay-user-messages --permission-mode bypassPermissions --name N`；仅 leader 追加 `--agent crew:leader`。保持 stdin 打开，不加 `--bare`，保留跨会话收件箱和插件钩子/守卫。任务 brief 指定相应的 `/crew:member` 或 `/crew:leader` 守则，CREW_ROLE 也按角色设置；未分组成员不设置 CREW_GROUP。
-- 启动计划预分配 UUID，首次用 `--session-id`，把会话的角色、分组、cwd、spawn_id 记进白板；续跑用 `--resume` 恢复同 ID，使用白板当前的角色、分组、crew 名和模型设置。首次启动及所有后台续跑（包括叫醒、重启恢复）一律 `--permission-mode bypassPermissions`，保留 Crew 守卫。恢复前直接查活进程，同 ID 已在 VS Code 或其他进程里运行时拒绝双开。
+- 启动计划预分配 UUID，首次用 `--session-id`，把会话的角色、分组、cwd、spawn_id 记进白板；续跑用 `--resume` 恢复同 ID，使用白板当前的角色、分组、crew 名、模型和 effort 设置。首次启动及所有后台续跑（包括叫醒、重启恢复）一律 `--permission-mode bypassPermissions`，保留 Crew 守卫。恢复前直接查活进程，同 ID 已在 VS Code 或其他进程里运行时拒绝双开。
 - `crew wake NAME TEXT` 转发 `/api/wake`，只允许所在组 leader 或无会话身份的用户调用；leader、已归档、已移出、已收会话拒绝。在线返回 409，提示直接 SendMessage；agents 首轮未完成或轮询失败时拒绝启动。离线收编会话缺日志时创建日志，缺 spawn_id 时按当前身份与任务创建 spec（md=null）并关联白板。随后用 `--resume --name <crew名>` 启动，cc_name 同步为 crew 名，来源 crew 的叫醒消息显示来自 leader；记录 `session:wake`。
 - 离线目标有 leader 但其 cc_name 未知时，明确报错并在创建 spec / 日志 / 进程前停止，不猜测 SendMessage 地址；无 leader 的用户叫醒省略回复地址。目标在线的 409 提示优先使用实时 agents 地址。
 - 服务启动后首次成功获取 agents 时扫描 `chat/*.jsonl`，最后 status=working 的会话进入一次性恢复队列；仅仍在用、项目启用的 leader / 下属可恢复。原进程还在时每轮 agents 轮询继续等待，30 分钟后放弃；恢复时送来源 crew 的服务重启说明。成功或放弃都记 `session:auto-resume` 及结果、原因。最后 idle / offline 的不动。
-- `leader start --model ID` 和 `/api/leader.model` 设置 leader 模型，缺省/null 为账号默认；`spawn --model ID` 可指定，不指定继承所在组 leader 的设置。`/api/session/model` 写入当前设置；托管进程在线时写 `set_model` 控制请求，回默认时省略 request.model。成功回执静默，失败回执写 error；下一次模型调用起用，后续续跑按库中设置启动。
-- `Journal` 只在内存保留本轮 activity：requesting / thinking / writing / tool、工具摘要、开始时间和输出 token。累计已完成调用的真实 `message_delta.usage.output_tokens`，加当前调用估算（thinking 用本块累计 estimated_tokens，text / input_json 按 UTF-8 字节数 / 3），结束后以真实值替换；子代理事件不改阶段、不计 token。idle / offline 清空进度；最近 message_start 的实际模型单独作为 model_seen，进程重启后为 null。进度不写入聊天日志。
+- `leader start --model ID --effort LEVEL` 和 `/api/leader` 的同名字段设置 leader 模型与 effort，缺省/null 为账号默认；`spawn --model ID --effort LEVEL` 可分别指定，未给的字段继承所在组 leader 的设置。启动参数只为非空值添加 `--model` / `--effort`，首次、续跑、叫醒、自动续跑均使用当前存储设置。
+- `/api/session/options` 只修改请求里给出的 model / effort。托管进程在线时，模型写 `set_model` 控制请求（回默认时省略 request.model），effort 写 `apply_flag_settings`，settings 为 `{"effortLevel":"<档位>"}`。运行中不接受 `effort:null`：CLI 对它会应用 medium，不能恢复账号默认；停止后可存 null，下次启动不带参数。成功回执后查询 `get_settings`，失败回执写 error；后续续跑按库中设置启动。
+- 进程启动后和每次设置成功后，发送带唯一 request_id 的 `get_settings` 控制请求；只处理自己发出的该请求成功回执，从 `response.response.applied` 取 model / effort，在内存中保留为 `applied`，供前端显示实际值，无需等待首轮回复。其他 request_id 的设置回执不改变实际值。
+- `Journal` 只在内存保留本轮 activity：requesting / thinking / writing / tool、工具摘要、开始时间和输出 token。累计已完成调用的真实 `message_delta.usage.output_tokens`，加当前调用估算（thinking 用本块累计 estimated_tokens，text / input_json 按 UTF-8 字节数 / 3），结束后以真实值替换；子代理事件不改阶段、不计 token。idle / offline 清空进度。进度不写入聊天日志。
 - 浏览器刷新只重放 `HOME/chat/<会话ID>.jsonl`，不会启动新进程。聊天事件不含 thinking；assistant 的同 ID 分块合并，完整块替换对应流式文本，重复的 human replay 不再显示。组员发来的消息取 peer origin 的 body 和 name，不需要网页另投一次 stdin。
 - 会话正在处理时，用户发送返回冲突，让这一轮结束；result 只代表一轮结束，CLI 仍保持在线。服务退出只关闭自己子进程的 stdin，让它正常结束。恢复前先等旧进程输出读完，避免旧状态覆盖新一轮。
 - `Manager.close` 保持关闭 stdin、读线程最多等待 1 秒的原流程。正常结束且读线程已写 offline 的会话，下次不自动续跑；如果退出时输出还未读完、日志仍停在 working，下次按中断轮次处理，有原进程时继续等待它退出。
@@ -259,10 +263,10 @@ PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stder
 | `POST /api/answer` | id、text；保存后给提问者的 leader 排通知（来源 web），返回 `routed_to` |
 | `POST /api/decision/hold` | id；挂起未答题，首次挂起时给提问者的 leader 排通知（来源 web，无 leader 时不排），重复挂起不重复通知 |
 | `POST /api/decision/unhold` | id；取消挂起，放回待拍板，不排通知 |
-| `POST /api/spawn` | name、task、可选 group / role / cwd / new_worktree / base / model；未指定模型继承组 leader |
-| `POST /api/leader` | name、task（成员可选）、可选 model；起 leader |
+| `POST /api/spawn` | name、task、可选 group / role / cwd / new_worktree / base / model / effort；未给的模型与 effort 分别继承组 leader |
+| `POST /api/leader` | name、task（成员可选）、可选 model / effort；起 leader，null 为账号默认 |
 | `POST /api/wake` | name 或 session_id、text、调用者会话 id；叫醒离线下属，返回 ok / session_id / name / address |
-| `POST /api/session/model` | session_id、model 或 null；保存设置，并向托管在线进程写 set_model 控制请求 |
+| `POST /api/session/options` | session_id、可选 model / effort；仅修改给出的字段，在线时写 set_model / apply_flag_settings，运行中 effort 不接受 null |
 | `GET /api/chat/history?project=P&session_id=S` | session_id、events、running、busy、read_seq |
 | `GET /api/chat/events?project=P&session_id=S&after=N` | SSE 重放 seq 大于 N 的事件，兼读 Last-Event-ID |
 | `POST /api/chat/send` | session_id、text、可选 images（最多 5 张、单张 ≤ 5 MB）；只允许 leader |
@@ -276,7 +280,7 @@ PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stder
 
 静态文件只有白名单路径；`/logo.svg` 和两个字体带一周缓存，其余 `no-store`。
 
-`/api/state` 顶层还带 `models`（id / name）和服务器 `now`；leader 与下属各带 `model`（选择的 id 或 null）、`model_seen`（最近主调用的实际模型或 null）、`activity`。activity 仅托管进程在线且忙时非 null，字段为 phase、label、turn_started_at、output_tokens。
+`/api/state` 顶层还带 `models`（id / name）、`efforts`（五档字符串）和服务器 `now`；leader 与下属各带 `model` / `effort`（存储选择或 null）、`applied`（进程回报的 `{model, effort}` 或 null）、`activity`。activity 仅托管进程在线且忙时非 null，字段为 phase、label、turn_started_at、output_tokens。
 
 ### 会话整理、工作区视图与通知
 
@@ -293,7 +297,7 @@ PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stder
 - 离开期间 leader 每跑完一轮，最后一段话立即发到 QQ（以进入离开时各 leader 的对话位置为起点，QQ 发起的轮次除外，按 `turn:<会话>:<idle 序号>` 记录防重发）。
 - 通知只在手动离开或桌面锁屏时主动发送：手动点“我已离开”时当下待推的立即发出（用户 10-23：手动应该秒推）；锁屏和离开期间新出现的事项约 30 秒合批；每道未挂起的未答拍板单独发 Markdown 和单选回调按钮，推荐项在前，无选项或超过 5×5 容量时提示引用回复，其余事项合成一条文字。期间已处理或挂起的事项不发送，发送前再次读取挂起标记，已推送的事项不再推。锁屏来自已有桌面代理的带 token POST `/api/status`，不启动代理、不操作桌面；代理故障单独提示。
 - QQ 私聊用命令集（`/h`、`/ls`、`/1`、`/q`、`/back`），普通文字发给当前 leader。拍板通过按钮或引用该条拍板消息答复；按钮先应答 interaction，再校验题号、选项和题目状态。保存答复的 actor 与给 leader 排的通知 source 均为 `qq`。`/q` 只重发未挂起题，最多 10 题并说明剩余数，末尾有挂起题时说明"另有 N 道挂起"；`/ls` 的待拍板数同样排除挂起题。
-- 网页 leader 的 QQ 消息进入同一 input stream，journal 标记 source=qq；马上回执已转交或忙时排队，回复截至这条消息之后第一个 idle/offline，结束后发回最后一段文字。长回复按段落切分，`TEXT_LIMIT = 2000` 待主控实测；没有文字、启动失败等都给明确答复，不在网页后台运行的 leader 明确拒绝。截图复用网页图片校验和保存（最多 5 张、单张 ≤ 5 MB），语音用平台识别文字，视频和文件明确拒绝。详见 [QQ.md](QQ.md)。
+- 网页 leader 的 QQ 消息进入同一 input stream，journal 标记 source=qq；马上回执已转交或忙时排队，回复截至这条消息之后第一个 idle/offline，结束后发回最后一段文字。长回复按段落切分，`TEXT_LIMIT = 2000` 是为了手机好读；10-23 主控实测 5000 字能发。没有文字、启动失败等都给明确答复，不在网页后台运行的 leader 明确拒绝。截图复用网页图片校验和保存（最多 5 张、单张 ≤ 5 MB），语音用平台识别文字，视频和文件明确拒绝。详见 [QQ.md](QQ.md)。
 - 网页 `notification.channel` 提供 unconfigured、unbound、connecting、connected、reconnecting、rejected、error 和真实 detail；左下角显示 QQ 状态与绑定、拒收操作提示，无通道开关。
 - `autostart` 用当前用户 InteractiveToken 计划任务，普通权限、登录触发、隐藏运行，不保存密码。任务指向主检出；默认端口已有 Crew 时保留原服务，不重复启动。不在睡眠、休眠或注销期间维持收信。
 - leader 巡查只按需：用户问时 leader 再去查，不做定时巡查。

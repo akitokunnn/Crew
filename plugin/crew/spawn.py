@@ -12,8 +12,8 @@ from urllib.request import Request, urlopen
 
 from . import board, models, store
 
-def command(session_id, name, role, resume=False, model=None):
-    models.validate(model)
+def command(session_id, name, role, resume=False, model=None, effort=None):
+    models.validate_options(model, effort)
     args = ["claude", "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
             "--include-partial-messages", "--replay-user-messages", "--permission-mode", "bypassPermissions",
             "--name", name]
@@ -21,6 +21,8 @@ def command(session_id, name, role, resume=False, model=None):
         args += ["--agent", "crew:leader"]
     if model is not None:
         args += ["--model", model]
+    if effort is not None:
+        args += ["--effort", effort]
     return args + ["--resume" if resume else "--session-id", session_id]
 
 
@@ -31,7 +33,7 @@ def _text(value, label):
 
 
 def prepare(conn, home, plugin_root, project_name, name, task, group=None, role="member",
-            cwd=None, new_worktree=None, base=None, now=None, model=models.INHERIT):
+            cwd=None, new_worktree=None, base=None, now=None, model=models.INHERIT, effort=models.INHERIT):
     _text(name, "\u540d\u5b57")
     _text(task, "\u4efb\u52a1")
     if role not in ("member", "leader"):
@@ -78,9 +80,12 @@ def prepare(conn, home, plugin_root, project_name, name, task, group=None, role=
     leader = None
     if group in groups and groups[group]["closed_at"] is None and groups[group]["leader_session_id"] is not None:
         leader = board.session(conn, groups[group]["leader_session_id"])
+    inherited = models.get(conn, leader["session_id"]) if role == "member" and leader is not None else {"model": None, "effort": None}
     if model is models.INHERIT:
-        model = models.get(conn, leader["session_id"]) if role == "member" and leader is not None else None
-    models.validate(model)
+        model = inherited["model"]
+    if effort is models.INHERIT:
+        effort = None if model == models.HAIKU else inherited["effort"]
+    models.validate_options(model, effort)
     if role == "leader":
         leader_name = "\u5c31\u662f\u4f60\u81ea\u5df1"
     elif leader is not None and leader["status"] not in ("offline", "closed"):
@@ -92,8 +97,8 @@ def prepare(conn, home, plugin_root, project_name, name, task, group=None, role=
              (name, role, project_name, group if group is not None else "\u672a\u5206\u7ec4", leader_name, role, task))
     spec = {"id": spawn_id, "name": name, "group": group, "role": role, "task": task,
             "cwd": str(directory), "project": project_name, "agent": "crew:leader" if role == "leader" else None,
-            "md": str(md_path), "model": model, "created_at": store.now_iso() if now is None else now}
-    return {"id": spawn_id, "session_id": session_id, "command": command(session_id, name, role, model=model), "spec": spec,
+            "md": str(md_path), "model": model, "effort": effort, "created_at": store.now_iso() if now is None else now}
+    return {"id": spawn_id, "session_id": session_id, "command": command(session_id, name, role, model=model, effort=effort), "spec": spec,
             "files": {str(json_path): json.dumps(spec, ensure_ascii=False, indent=2) + "\n", str(md_path): brief},
             "worktree_command": worktree_command}
 
@@ -119,9 +124,9 @@ def _execute(conn, plan, launcher, members=(), member_session_ids=()):
 
 
 def leader_plan(conn, home, plugin_root, project_name, name, members=(), task=None, cwd=None,
-                new_worktree=None, base=None, now=None, member_session_ids=(), model=None):
+                new_worktree=None, base=None, now=None, member_session_ids=(), model=None, effort=None):
     plan = prepare(conn, home, plugin_root, project_name, name, "\u7ba1\u7406\u5206\u7ec4 " + name if task is None else task,
-                   role="leader", cwd=cwd, new_worktree=new_worktree, base=base, now=now, model=model)
+                   role="leader", cwd=cwd, new_worktree=new_worktree, base=base, now=now, model=model, effort=effort)
     for member in members:
         _text(member, "\u7ec4\u5458\u540d\u5b57")
     for s in board.roster_targets(conn, project_name, members, member_session_ids):
@@ -159,18 +164,21 @@ def cli_dispatch(args, cwd, plugin_root):
             if not args.dry_run:
                 body = {"name": args.name, "members": args.members.split(",") if args.members is not None else [],
                         "task": args.task, "cwd": str(args.cwd) if args.cwd is not None else None, "new_worktree": args.new_worktree,
-                        "model": args.model}
+                        "model": args.model, "effort": args.effort}
                 return request_start(args.home, project["name"], "/api/leader", body)
             return leader_plan(conn, args.home, plugin_root, project["name"], args.name,
                                args.members.split(",") if args.members is not None else (), args.task,
-                               args.cwd, args.new_worktree, model=args.model)
+                               args.cwd, args.new_worktree, model=args.model, effort=args.effort)
         if not args.dry_run:
             body = {
                 "name": args.name, "task": args.task, "group": args.group, "role": args.role,
                 "cwd": str(args.cwd) if args.cwd is not None else None, "new_worktree": args.new_worktree, "base": args.base}
             if hasattr(args, "model"):
                 body["model"] = args.model
+            if hasattr(args, "effort"):
+                body["effort"] = args.effort
             return request_start(args.home, project["name"], "/api/spawn", body)
         plan = prepare(conn, args.home, plugin_root, project["name"], args.name, args.task, args.group,
-                       args.role, args.cwd, args.new_worktree, args.base, model=getattr(args, "model", models.INHERIT))
+                       args.role, args.cwd, args.new_worktree, args.base, model=getattr(args, "model", models.INHERIT),
+                       effort=getattr(args, "effort", models.INHERIT))
         return plan

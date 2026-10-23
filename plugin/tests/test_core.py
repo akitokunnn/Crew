@@ -1,5 +1,6 @@
 """Core integration tests: temporary homes only, no Claude or terminal launches."""
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -11,7 +12,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from crew import board, cli, guard, hooks, install, store
+from crew import board, cli, guard, hooks, install, rules, session_ops, store
 
 PLUGIN = Path(__file__).resolve().parents[1]
 NOW = "2026-10-21T08:00:00.000Z"
@@ -35,12 +36,17 @@ class CoreCase(unittest.TestCase):
         defaults.mkdir(parents=True)
         shutil.copyfile(PLUGIN / "defaults" / "blacklist.txt", defaults / "blacklist.txt")
         (defaults / "prices.json").write_text('{"fake-model": {"input": 1}}', encoding="utf-8")
+        for role in ("leader", "member"):
+            skill = self.fake_plugin / "skills" / role / "SKILL.md"
+            skill.parent.mkdir(parents=True)
+            skill.write_text("# " + role + " rules\n", encoding="utf-8")
         install.install(self.home, self.fake_plugin, now=NOW)
         self.conn = store.connect(self.home)
         self.addCleanup(self.conn.close)
         board.init_project(self.conn, "demo", self.root, now=NOW)
         for sid, name in (("s1", "one"), ("s2", "two"), ("s3", "three")):
             board.join(self.conn, sid, "demo", name, self.root, store.norm_path(self.root), "main", cc_name="cc-" + name, now=NOW)
+            rules.record_read(self.conn, sid, "member", self.fake_plugin, now=NOW)
         self.agents = [{"sessionId": "s" + str(i), "name": "cc-" + name, "status": "idle", "pid": i,
                         "cwd": str(self.root), "kind": "cli"} for i, name in enumerate(("one", "two", "three"), 1)]
 
@@ -245,10 +251,11 @@ class ProjectTests(CoreCase):
         self.assertIsNone(reason)
 
     def test_non_git_project_registers_without_worktree(self):
-        # Outside the repository that holds the test tree, so git finds no checkout.
+        # Stop Git from walking into the repository that contains the test tree.
         outside = tempfile.TemporaryDirectory(prefix="crew-plain-")
         self.addCleanup(outside.cleanup)
         plain = Path(outside.name)
+        (plain / ".git").write_text("gitdir: missing-git-metadata\n", encoding="ascii")
         board.init_project(self.conn, "plain", plain, now=NOW)
         code, output = hooks.handle("session-start", {"session_id": "p1", "cwd": str(plain)}, self.home,
                                     self.fake_plugin, {}, now=NOW)
@@ -408,6 +415,7 @@ class DeliveryTests(CoreCase):
 
     def test_handoffs_name_group_star_each_session_once(self):
         board.join(self.conn, "s1", "demo", "lead", self.root, str(self.root), "main", role="leader", now=NOW)
+        rules.record_read(self.conn, "s1", "leader", self.fake_plugin, now=NOW)
         board.roster(self.conn, "demo", "add", "lead", ["two"], now=NOW)
         one = board.handoff(self.conn, "s3", "two", "named", now=NOW)
         group = board.handoff(self.conn, "s3", "lead", "group", now=NOW)
@@ -597,6 +605,135 @@ class HookTests(CoreCase):
         detail = board.events(self.conn, "demo", limit=1)[0]["detail"]
         self.assertEqual(len(detail["command"]), 200)
         self.assertNotIn("tool_input", detail)
+
+
+class RuleReadTests(CoreCase):
+    def setUp(self):
+        super().setUp()
+        self.conn.execute("DELETE FROM rule_reads")
+
+    def read(self, sid="s1", role="member"):
+        self.assertEqual(self.hook("guard", sid, tool_name="Skill", tool_input={"skill": "crew:" + role}), (0, None))
+
+    def context(self, event="user-prompt-submit", sid="s1", **extra):
+        if event == "user-prompt-submit":
+            extra["prompt"] = "continue"
+        code, output = self.hook(event, sid, **extra)
+        self.assertEqual(code, 0)
+        return "" if output is None else output["hookSpecificOutput"]["additionalContext"]
+
+    def test_skill_guard_records_called_role_current_digest_and_time(self):
+        for sid, role in (("s1", "leader"), ("s2", "member")):
+            with self.subTest(role=role):
+                self.read(sid, role)
+                row = dict(self.conn.execute("SELECT * FROM rule_reads WHERE session_id=?", (sid,)).fetchone())
+                content = (self.fake_plugin / "skills" / role / "SKILL.md").read_bytes()
+                self.assertEqual(row, {"session_id": sid, "role": role, "digest": hashlib.sha256(content).hexdigest(), "read_at": NOW})
+
+    def test_other_skill_and_tool_calls_do_not_record_reads(self):
+        for tool, tool_input in (("Skill", {"skill": "crew:trust"}), ("Bash", {"command": "echo ok", "skill": "crew:member"})):
+            self.assertEqual(self.hook("guard", tool_name=tool, tool_input=tool_input), (0, None))
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM rule_reads").fetchone()[0], 0)
+
+    def test_skill_outside_project_or_without_registered_session_does_not_write(self):
+        data = {"session_id": "outside", "cwd": str(self.base), "tool_name": "Skill", "tool_input": {"skill": "crew:member"}}
+        before = store.db_path(self.home).read_bytes()
+        self.assertEqual(hooks.handle("guard", data, self.home, self.fake_plugin, {}), (0, None))
+        self.assertEqual(store.db_path(self.home).read_bytes(), before)
+        self.read("unregistered")
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM rule_reads").fetchone()[0], 0)
+        self.assertIsNone(self.conn.execute("SELECT 1 FROM sessions WHERE session_id='unregistered'").fetchone())
+
+    def test_prompt_missing_or_outdated_read_reminds_both_roles(self):
+        board.join(self.conn, "s1", "demo", "lead", self.root, self.root, "main", role="leader", now=NOW)
+        for sid, role in (("s1", "leader"), ("s2", "member")):
+            with self.subTest(role=role):
+                expected = "Crew 守则（/crew:%s）有更新，你上次读的不是最新版。先调用 /crew:%s 重读一遍，再处理这条消息。" % (role, role)
+                self.assertEqual(self.context(sid=sid), expected)
+                self.read(sid, role)
+                self.assertEqual(self.context(sid=sid), "")
+                self.conn.execute("UPDATE rule_reads SET digest='old' WHERE session_id=?", (sid,))
+                self.assertEqual(self.context(sid=sid), expected)
+
+    def test_resume_and_compact_remind_until_current_rules_are_read(self):
+        for source in ("resume", "compact"):
+            with self.subTest(source=source):
+                self.conn.execute("DELETE FROM rule_reads WHERE session_id='s1'")
+                self.assertIn("有更新", self.context("session-start", source=source))
+                self.read()
+                self.assertNotIn("有更新", self.context("session-start", source=source))
+                self.conn.execute("UPDATE rule_reads SET digest='old' WHERE session_id='s1'")
+                self.assertIn("有更新", self.context("session-start", source=source))
+
+    def test_startup_never_adds_update_reminder(self):
+        self.assertNotIn("有更新", self.context("session-start", source="startup"))
+        self.read()
+        self.conn.execute("UPDATE rule_reads SET digest='old' WHERE session_id='s1'")
+        self.assertNotIn("有更新", self.context("session-start", source="startup"))
+
+    def test_editing_rules_repeats_reminder_and_read_refreshes_digest(self):
+        self.read()
+        path = self.fake_plugin / "skills" / "member" / "SKILL.md"
+        path.write_text("# revised member rules\n", encoding="utf-8")
+        self.assertIn("有更新", self.context())
+        self.read()
+        self.assertEqual(self.context(), "")
+        row = self.conn.execute("SELECT digest FROM rule_reads WHERE session_id='s1'").fetchone()
+        self.assertEqual(row["digest"], hashlib.sha256(path.read_bytes()).hexdigest())
+
+    def test_each_role_uses_its_own_file_and_role_changes_require_a_read(self):
+        self.read("s1", "member")
+        self.read("s2", "member")
+        board.join(self.conn, "s1", "demo", "lead", self.root, self.root, "main", role="leader", now=NOW)
+        self.assertIn("/crew:leader", self.context(sid="s1"))
+        self.read("s1", "leader")
+        (self.fake_plugin / "skills" / "leader" / "SKILL.md").write_text("# new leader rules\n", encoding="utf-8")
+        self.assertIn("有更新", self.context(sid="s1"))
+        self.assertEqual(self.context(sid="s2"), "")
+
+    def test_unclaimed_archived_removed_and_closed_sessions_do_not_remind(self):
+        board.register_session(self.conn, "unclaimed", "demo", self.root, self.root, "main", now=NOW)
+        session_ops.archive(self.conn, "s1", now=NOW)
+        session_ops.archive(self.conn, "s2", removed=True, now=NOW)
+        board.set_status(self.conn, "s3", "closed", now=NOW)
+        for sid in ("unclaimed", "s1", "s2", "s3"):
+            for event, extra in (("user-prompt-submit", {}), ("session-start", {"source": "compact"}), ("session-start", {"source": "resume"})):
+                if sid == "s3" and extra.get("source") == "resume":
+                    continue
+                with self.subTest(sid=sid, event=event, extra=extra):
+                    if sid == "s3":
+                        board.set_status(self.conn, sid, "closed", now=NOW)
+                    self.assertNotIn("有更新", self.context(event, sid, **extra))
+
+    def test_unsupported_role_and_disabled_project_do_not_remind(self):
+        self.conn.execute("PRAGMA ignore_check_constraints=ON")
+        self.conn.execute("UPDATE sessions SET role='observer' WHERE session_id='s1'")
+        self.assertEqual(self.context(), "")
+        data = {"session_id": "s2", "cwd": str(self.base), "prompt": "continue"}
+        self.assertEqual(hooks.handle("user-prompt-submit", data, self.home, self.fake_plugin, {}), (0, None))
+
+    def test_missing_rule_file_is_an_error(self):
+        (self.fake_plugin / "skills" / "member" / "SKILL.md").unlink()
+        with self.assertRaises(FileNotFoundError):
+            self.context()
+        with self.assertRaises(FileNotFoundError):
+            self.read()
+
+
+class RuleTextTests(unittest.TestCase):
+    def test_decision_scope_and_reread_are_explicit_in_all_role_instructions(self):
+        paths = (PLUGIN / "skills" / "leader" / "SKILL.md", PLUGIN / "skills" / "member" / "SKILL.md", PLUGIN / "agents" / "leader.md")
+        for path in paths:
+            with self.subTest(path=path):
+                content = path.read_text(encoding="utf-8")
+                for phrase in ("要用户点头的事一律算拍板", "合不合 PR", "合不合进 develop", "等你点头 / 要你定 / 等你拍板", "必须已经有题号", "crew ask", "然后只提题号", "Crew 守则有更新", "先重读"):
+                    self.assertIn(phrase, content)
+                # Only the leader registers on someone else's behalf.
+                if path.parent.name != "member":
+                    for phrase in ("哪个组员的什么事", "带选项和推荐"):
+                        self.assertIn(phrase, content)
+        self.assertIn("**硬规矩：", (PLUGIN / "agents" / "leader.md").read_text(encoding="utf-8"))
+        self.assertIn("等用户点头合并", (PLUGIN / "skills" / "member" / "SKILL.md").read_text(encoding="utf-8"))
 
 
 class GuardTests(CoreCase):

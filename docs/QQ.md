@@ -46,7 +46,7 @@ Crew 自己的状态写在 HOME 的 `notify.json`，包括 `owner_openid`（主�
 
 还没选 leader 时，先 `/ls`，再发 `/1` 这样的编号命令。普通文字入队后马上收到“已转给 项目·名字”；leader 正忙时收到“项目·名字 正忙，排在后面”。网页聊天记录标“来自 QQ”。“我已离开”只决定提醒是否主动推送，聊天回传始终工作。
 
-网页后台停止的 leader 会按原会话 ID 恢复；在 VS Code 或其他进程运行的 leader 会明确提示无法接收，不会另起一份。leader 这一轮结束后，最后一段文字带 `项目·名字` 前缀发回；没有文字或启动、运行失败也会回复原因。长回复按段落分段，当前 `TEXT_LIMIT = 2000` 是占位上限，**待主控实测**。
+网页后台停止的 leader 会按原会话 ID 恢复；在 VS Code 或其他进程运行的 leader 会明确提示无法接收，不会另起一份。leader 这一轮结束后，最后一段文字以 Markdown 发回，标题是 `### 名字 · 项目`，带分隔线（见 `notifications.leader_parts`）；没有文字或启动、运行失败也会回复原因。长回复按段落分段，`TEXT_LIMIT = 2000` 是为了手机好读；10-23 主控实测 5000 字能发。
 
 截图与文字一起发给当前 leader，沿用网页图片校验和保存：最多 5 张、单张不超过 5 MB。语音使用 QQ 自带的识别文字；没有识别文字时回“没听清，请打字”。视频、文件回“暂不支持”。
 
@@ -62,4 +62,4 @@ Crew 自己的状态写在 HOME 的 `notify.json`，包括 `owner_openid`（主�
 
 平台规则以 [QQ 官方消息总览](https://bot.q.qq.com/wiki/develop/api-v2/server-inter/message/overview.html)、[单聊消息接口](https://bot.q.qq.com/wiki/develop/api-v2/autogen/api/v2_users_user_openid_messages.post.html)和[消息按钮](https://bot.q.qq.com/wiki/develop/api-v2/server-inter/message/trans/msg-btn.html)为依据。通知层按 `qq.py` 的事件和方法契约调用传输层，不管理额外的事件子进程。
 
-隔离测试使用假 QQ 客户端和假模型进程，验证推送、绑定、命令、拍板、附件、回传和错误状态；真实 QQ 收件、按钮点击、手机主动发送权限和文字长度上限由主控实测确认。
+隔离测试使用假 QQ 客户端和假模型进程，验证推送、绑定、命令、拍板、附件、回传和错误状态；真实 QQ 收件、按钮点击、手机主动发送权限由主控实测确认。文字发送已在 10-23 主控实测中验证 5000 字能发，2000 字分段用于手机阅读。

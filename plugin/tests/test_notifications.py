@@ -923,7 +923,7 @@ class NotificationTests(ShellFixture, unittest.TestCase):
             self.assertTrue(validate.called)
             self.inbox.process_replies()
         self.assertEqual(self.client.downloads, [(a['url'], chat.MAX_IMAGE_BYTES) for a in attachments])
-        content = json.loads(process.stdin.getvalue())['message']['content']
+        content = json.loads(process.stdin.getvalue().splitlines()[-1])['message']['content']
         self.assertEqual(len([b for b in content if b['type'] == 'image']), 5)
         sent = next(e for e in journal.events if e['type'] == 'message')
         self.assertEqual((sent['text'], sent['source']), ('检查截图', 'qq'))

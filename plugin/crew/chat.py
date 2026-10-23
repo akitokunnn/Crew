@@ -141,7 +141,7 @@ class Journal:
 
     def reset_runtime(self):
         with self.condition:
-            self.progress, self.model = None, None
+            self.progress = None
             self._calls, self._tools = {}, {}
             self._call_id, self._thinking_index = None, None
 
@@ -170,8 +170,6 @@ class Journal:
                 self.set_status("working")
                 self._phase("requesting")
                 message = event.get("message", {})
-                if "model" in message:
-                    self.model = message["model"]
                 self._call_id = message.get("id", record.get("api_message_id"))
                 self._calls[self._call_id] = {"real": None, "thinking": {}, "bytes": 0}
                 self._thinking_index = None
@@ -293,6 +291,8 @@ class Running:
     def __init__(self, process, journal):
         self.process, self.journal = process, journal
         self.input_lock = threading.Lock()
+        self.control_requests = {}
+        self.applied = None
         self.stderr = collections.deque(maxlen=20)
         self.reader_done = threading.Event()
 
@@ -348,9 +348,14 @@ class Manager:
             with journal.condition:
                 return dict(journal.progress) if journal.progress is not None else None
 
-    def model_seen(self, session_id):
+    def applied(self, session_id):
         with self.lock:
-            return self.journal(session_id).model
+            # A finished process keeps its last reading; options changed while offline must not show stale values.
+            current = self.processes.get(session_id)
+            if current is None or not self.running(session_id):
+                return None
+            with current.input_lock:
+                return dict(current.applied) if current.applied is not None else None
 
     def history(self, session_id):
         journal = self.journal(session_id)
@@ -364,6 +369,8 @@ class Manager:
             for line in current.process.stdout:
                 try:
                     record = json.loads(line)
+                    if record["type"] == "control_response":
+                        self._control_response(current, record["response"])
                     if record["type"] == "rate_limit_event":
                         try:
                             claude_limits.capture(self.home, record)
@@ -417,8 +424,8 @@ class Manager:
             # The local npm shim starts a wrapper cmd.exe; agents reports the native child's PID.
             exe = str(Path(exe).parent / "node_modules" / "@anthropic-ai" / "claude-code" / "bin" / "claude.exe")
         with closing(store.connect(self.home)) as conn:
-            model = models.get(conn, session_id)
-        command = spawn.command(session_id, session["crew_name"], session["role"], resume, model=model)
+            options = models.get(conn, session_id)
+        command = spawn.command(session_id, session["crew_name"], session["role"], resume, **options)
         command[0] = exe
         journal = self.journal(session_id)
         journal.reset_runtime()
@@ -428,6 +435,7 @@ class Manager:
                                        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
         current = Running(process, journal)
         self.processes[session_id] = current
+        self._control(current, "get_settings")
         current.stderr_reader = threading.Thread(target=self._stderr, args=(current,), name="crew-chat-stderr", daemon=True)
         current.stderr_reader.start()
         current.reader = threading.Thread(target=self._read, args=(session_id, current), name="crew-chat", daemon=True)
@@ -435,16 +443,16 @@ class Manager:
         return command
 
     def start(self, conn, project_name, name, task=None, group=None, role="member", members=(), cwd=None,
-              new_worktree=None, base=None, now=None, member_session_ids=(), model=models.INHERIT):
+              new_worktree=None, base=None, now=None, member_session_ids=(), model=models.INHERIT, effort=models.INHERIT):
         if role == "leader":
             if group not in (None, name):
                 raise board.BoardError("leader 分组必须与 crew 名同名")
             plan = spawn.leader_plan(conn, self.home, self.plugin_root, project_name, name, members, task,
                                      cwd=cwd, new_worktree=new_worktree, base=base, now=now,
-                                     member_session_ids=member_session_ids, model=model)
+                                     member_session_ids=member_session_ids, model=model, effort=effort)
         else:
             plan = spawn.prepare(conn, self.home, self.plugin_root, project_name, name, task, group, role,
-                                 cwd=cwd, new_worktree=new_worktree, base=base, now=now, model=model)
+                                 cwd=cwd, new_worktree=new_worktree, base=base, now=now, model=model, effort=effort)
         session_id = plan["session_id"]
         spec = plan["spec"]
 
@@ -454,7 +462,7 @@ class Manager:
                                              role=spec["role"], group_name=spec["group"], spawn_id=spec["id"],
                                              permission_mode="bypassPermissions", now=now)
             board.update_cc_name(conn, session_id, name, now=now)
-            models.set(conn, session_id, spec["model"], now=now)
+            models.set(conn, session_id, spec["model"], spec["effort"], now=now)
             try:
                 with self.lock:
                     plan["command"] = self._launch(session, spec)
@@ -519,7 +527,7 @@ class Manager:
                 "role": session["role"], "task": session["task"], "cwd": session["cwd"],
                 "project": session["project"], "agent": "crew:leader" if session["role"] == "leader" else None,
                 "md": None, "created_at": store.now_iso() if now is None else now,
-                "model": models.get(conn, session_id)}
+                **models.get(conn, session_id)}
         path = self.home / "spawn" / (spawn_id + ".json")
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(spec, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -616,17 +624,46 @@ class Manager:
                                                 "reason": reason or "服务重启时上一轮仍在 working"}, now)
                 del self.auto_candidates[session_id]
 
-    def set_model(self, session_id, model):
+    def _control(self, current, subtype, **fields):
+        identity = str(uuid.uuid4())
+        request = {"type": "control_request", "request_id": identity, "request": {"subtype": subtype, **fields}}
+        with current.input_lock:
+            current.control_requests[identity] = subtype
+            current.process.stdin.write(json.dumps(request) + "\n")
+            current.process.stdin.flush()
+
+    def _control_response(self, current, response):
+        with current.input_lock:
+            subtype = current.control_requests.pop(response["request_id"], None)
+            if subtype == "get_settings" and response["subtype"] == "success":
+                applied = response["response"]["applied"]
+                current.applied = {"model": applied["model"], "effort": applied["effort"]}
+        if subtype in ("set_model", "apply_flag_settings") and response["subtype"] == "success":
+            self._control(current, "get_settings")
+
+    def set_options(self, conn, session_id, changes, now=None):
         with self.lock:
+            if not changes:
+                raise ValueError("至少提供 model 或 effort")
+            if "effort" in changes and changes["effort"] is None and self.running(session_id):
+                raise ValueError("运行中的会话不能将 effort 恢复默认；请选择具体档位，或停止后设为 null 以在下次启动跟随账号设置")
+            options = {**models.get(conn, session_id), **changes}
+            if changes.get("model") == models.HAIKU and "effort" not in changes:
+                options["effort"] = None
+            if "model" not in changes and options["model"] is None and self.running(session_id):
+                applied = self.applied(session_id)
+                if applied is not None and applied["model"] == models.HAIKU:
+                    models.validate_options(applied["model"], options["effort"])
+            models.validate_options(**options)
+            models.set(conn, session_id, **options, now=now)
             if not self.running(session_id):
-                return
-            request = {"type": "control_request", "request_id": str(uuid.uuid4()), "request": {"subtype": "set_model"}}
-            if model is not None:
-                request["request"]["model"] = model
+                return options
             current = self.processes[session_id]
-            with current.input_lock:
-                current.process.stdin.write(json.dumps(request) + "\n")
-                current.process.stdin.flush()
+            if "model" in changes:
+                self._control(current, "set_model", **({"model": options["model"]} if options["model"] is not None else {}))
+            if "effort" in changes:
+                self._control(current, "apply_flag_settings", settings={"effortLevel": options["effort"]})
+            return options
 
     def interrupt(self, session_id):
         with self.lock:

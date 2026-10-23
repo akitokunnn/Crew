@@ -1,4 +1,4 @@
-"""Supported model choices and per-session selection."""
+"""Supported model and effort choices and per-session options."""
 from . import store
 
 
@@ -8,6 +8,8 @@ MODELS = [
     {"id": "claude-fable-5-1", "name": "Fable 5.1"},
     {"id": "claude-haiku-4-5-20251001", "name": "Haiku 4.5"},
 ]
+EFFORTS = ["low", "medium", "high", "xhigh", "max"]
+HAIKU = "claude-haiku-4-5-20251001"
 INHERIT = object()
 
 
@@ -17,16 +19,29 @@ def validate(model):
     return model
 
 
-def get(conn, session_id):
-    row = conn.execute("SELECT model FROM session_models WHERE session_id=?", (session_id,)).fetchone()
-    return row["model"] if row is not None else None
+def validate_effort(effort):
+    if effort is not None and effort not in EFFORTS:
+        raise ValueError("不支持的 effort: " + str(effort))
+    return effort
 
 
-def set(conn, session_id, model, now=None):
+def validate_options(model, effort):
     validate(model)
-    if model is None:
-        conn.execute("DELETE FROM session_models WHERE session_id=?", (session_id,))
+    validate_effort(effort)
+    if model == HAIKU and effort is not None:
+        raise ValueError("Haiku 4.5 不支持 effort，请将 effort 设为 null")
+
+
+def get(conn, session_id):
+    row = conn.execute("SELECT model,effort FROM session_options WHERE session_id=?", (session_id,)).fetchone()
+    return dict(row) if row is not None else {"model": None, "effort": None}
+
+
+def set(conn, session_id, model, effort, now=None):
+    validate_options(model, effort)
+    if model is None and effort is None:
+        conn.execute("DELETE FROM session_options WHERE session_id=?", (session_id,))
     else:
-        conn.execute("INSERT INTO session_models(session_id,model,set_at) VALUES(?,?,?) "
-                     "ON CONFLICT(session_id) DO UPDATE SET model=excluded.model,set_at=excluded.set_at",
-                     (session_id, model, store.now_iso() if now is None else now))
+        conn.execute("INSERT INTO session_options(session_id,model,effort,set_at) VALUES(?,?,?,?) "
+                     "ON CONFLICT(session_id) DO UPDATE SET model=excluded.model,effort=excluded.effort,set_at=excluded.set_at",
+                     (session_id, model, effort, store.now_iso() if now is None else now))

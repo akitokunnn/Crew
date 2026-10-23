@@ -1,5 +1,6 @@
-"""Model selection and wake routes using isolated data and fake processes."""
+"""Session options and wake routes using isolated data and fake processes."""
 import json
+import time
 import threading
 import unittest
 from unittest import mock
@@ -49,71 +50,147 @@ class ModelWakeTests(shell.ShellFixture, unittest.TestCase):
     def wake(self, session_id="s1", **values):
         return self.request("/api/wake", {"session_id": session_id, "text": "继续原来的任务", **values})
 
-    def test_spawn_command_models_and_resume(self):
+    def controls(self, process=None):
+        return [json.loads(line) for line in (process or self.processes[-1]).stdin.getvalue().splitlines()
+                if json.loads(line)["type"] == "control_request"]
+
+    def wait_for(self, predicate):
+        deadline = time.monotonic() + 3
+        while not predicate() and time.monotonic() < deadline:
+            time.sleep(.01)
+        self.assertTrue(predicate())
+
+    def test_spawn_command_options_and_resume(self):
         plain = spawn.command("sid", "name", "member", resume=True)
         self.assertNotIn("--model", plain)
-        selected = spawn.command("sid", "name", "leader", resume=True, model=HAIKU)
-        self.assertEqual(selected[selected.index("--model") + 1], HAIKU)
+        self.assertNotIn("--effort", plain)
+        selected = spawn.command("sid", "name", "leader", resume=True, model=OPUS, effort="max")
+        self.assertEqual(selected[selected.index("--model") + 1], OPUS)
+        self.assertEqual(selected[selected.index("--effort") + 1], "max")
         self.assertEqual(selected[-2:], ["--resume", "sid"])
+        with self.assertRaisesRegex(ValueError, "Haiku.*不支持 effort"):
+            spawn.command("sid", "name", "member", model=HAIKU, effort="low")
 
-    def test_leader_model_is_saved_and_invalid_models_fail_before_launch(self):
-        code, result = self.request("/api/leader", {"name": "model-boss", "model": HAIKU})
+    def test_leader_options_saved_and_invalid_choices_fail_before_launch(self):
+        code, result = self.request("/api/leader", {"name": "option-boss", "model": OPUS, "effort": "xhigh"})
         self.assertEqual(code, 200, result)
-        self.assertEqual(models.get(self.conn, result["session_id"]), HAIKU)
-        self.assertEqual(self.processes[-1].command[self.processes[-1].command.index("--model") + 1], HAIKU)
+        self.assertEqual(models.get(self.conn, result["session_id"]), {"model": OPUS, "effort": "xhigh"})
+        command = self.processes[-1].command
+        self.assertEqual(command[command.index("--effort") + 1], "xhigh")
         count = len(self.processes)
         for path, body in (("/api/leader", {"name": "bad-boss", "model": "unknown"}),
+                           ("/api/leader", {"name": "bad-effort", "effort": "ultra"}),
+                           ("/api/leader", {"name": "bad-haiku", "model": HAIKU, "effort": "low"}),
                            ("/api/spawn", {"name": "bad-member", "task": "work", "model": "unknown"}),
-                           ("/api/session/model", {"session_id": "s3", "model": "unknown"})):
-            with self.subTest(path=path):
+                           ("/api/spawn", {"name": "bad-effort-member", "task": "work", "effort": "ultra"}),
+                           ("/api/session/options", {"session_id": "s3", "model": "unknown"}),
+                           ("/api/session/options", {"session_id": "s3", "effort": "ultra"})):
+            with self.subTest(path=path, body=body):
                 self.assertEqual(self.request(path, body)[0], 400)
         self.assertEqual(len(self.processes), count)
 
-    def test_spawn_inherits_leader_model_and_explicit_null_uses_default(self):
-        models.set(self.conn, "s3", OPUS, now=shell.NOW)
-        for name, extra, expected in (("inherit", {}, OPUS), ("default", {"model": None}, None),
-                                      ("chosen", {"model": HAIKU}, HAIKU)):
+    def test_spawn_inherits_both_leader_options_and_explicit_null_uses_default(self):
+        models.set(self.conn, "s3", OPUS, "high", now=shell.NOW)
+        cases = (("inherit", {}, OPUS, "high"),
+                 ("default", {"model": None, "effort": None}, None, None),
+                 ("chosen", {"model": HAIKU}, HAIKU, None),
+                 ("effort-only", {"effort": "low"}, OPUS, "low"))
+        for name, extra, model, effort in cases:
             with self.subTest(name=name):
                 code, result = self.request("/api/spawn", {"name": name, "task": "work", "group": "lead", **extra})
                 self.assertEqual(code, 200, result)
-                self.assertEqual(models.get(self.conn, result["session_id"]), expected)
-                self.assertEqual("--model" in self.processes[-1].command, expected is not None)
+                self.assertEqual(models.get(self.conn, result["session_id"]), {"model": model, "effort": effort})
+                self.assertEqual("--model" in self.processes[-1].command, model is not None)
+                self.assertEqual("--effort" in self.processes[-1].command, effort is not None)
+        code, body = self.request("/api/spawn", {"name": "invalid-haiku", "task": "work", "group": "lead",
+                                                "model": HAIKU, "effort": "high"})
+        self.assertEqual(code, 400)
+        self.assertIn("Haiku", body["error"])
 
-    def test_spawn_inherits_default_leader_without_model_flag(self):
+    def test_spawn_inherits_default_leader_without_option_flags(self):
         code, result = self.request("/api/spawn", {"name": "default-inherit", "task": "work", "group": "lead"})
         self.assertEqual(code, 200, result)
-        self.assertIsNone(models.get(self.conn, result["session_id"]))
+        self.assertEqual(models.get(self.conn, result["session_id"]), {"model": None, "effort": None})
         self.assertNotIn("--model", self.processes[-1].command)
+        self.assertNotIn("--effort", self.processes[-1].command)
 
-    def test_set_running_model_writes_control_and_default_omits_model(self):
-        _, result = self.request("/api/leader", {"name": "switcher"})
+    def test_running_options_write_controls_and_reject_effort_default(self):
+        _, result = self.request("/api/leader", {"name": "switcher", "effort": "high"})
         sid = result["session_id"]
-        for selected in (HAIKU, None):
-            with self.subTest(model=selected):
-                code, body = self.request("/api/session/model", {"session_id": sid, "model": selected})
-                self.assertEqual((code, body), (200, {"ok": True, "model": selected}))
-                self.assertEqual(models.get(self.conn, sid), selected)
-                control = json.loads(self.processes[-1].stdin.getvalue().splitlines()[-1])
-                self.assertEqual(control["type"], "control_request")
-                self.assertTrue(control["request_id"])
-                self.assertEqual(control["request"], {"subtype": "set_model", **({"model": selected} if selected else {})})
+        for changes, expected_request, expected in (
+                ({"model": OPUS}, {"subtype": "set_model", "model": OPUS}, {"model": OPUS, "effort": "high"}),
+                ({"effort": "max"}, {"subtype": "apply_flag_settings", "settings": {"effortLevel": "max"}}, {"model": OPUS, "effort": "max"}),
+                ({"model": None}, {"subtype": "set_model"}, {"model": None, "effort": "max"}),
+                ({"model": HAIKU}, {"subtype": "set_model", "model": HAIKU}, {"model": HAIKU, "effort": None})):
+            with self.subTest(changes=changes):
+                code, body = self.request("/api/session/options", {"session_id": sid, **changes})
+                self.assertEqual((code, body), (200, {"ok": True, **expected}))
+                self.assertEqual(models.get(self.conn, sid), expected)
+                self.assertEqual(self.controls()[-1]["request"], expected_request)
+        before = self.processes[-1].stdin.getvalue()
+        code, body = self.request("/api/session/options", {"session_id": sid, "effort": None})
+        self.assertEqual(code, 400)
+        self.assertIn("运行中", body["error"])
+        self.assertEqual(self.processes[-1].stdin.getvalue(), before)
+        self.assertEqual(self.request("/api/session/options", {"session_id": sid, "effort": "low"})[0], 400)
+        self.assertEqual(self.request("/api/session/options", {"session_id": sid, "model": HAIKU, "effort": "low"})[0], 400)
 
-    def test_set_offline_model_only_saves_and_state_exposes_single_catalog(self):
-        code, _ = self.request("/api/session/model", {"session_id": "s3", "model": HAIKU})
-        self.assertEqual(code, 200)
+    def test_offline_options_update_only_given_fields_delete_empty_row_and_remove_old_route(self):
+        for changes, expected in (({"model": OPUS, "effort": "high"}, {"model": OPUS, "effort": "high"}),
+                                  ({"effort": None}, {"model": OPUS, "effort": None}),
+                                  ({"model": None}, {"model": None, "effort": None})):
+            self.assertEqual(self.request("/api/session/options", {"session_id": "s3", **changes})[0], 200)
+            self.assertEqual(models.get(self.conn, "s3"), expected)
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM session_options").fetchone()[0], 0)
         self.assertEqual(self.processes, [])
-        code, state = self.request("/api/state?project=demo")
-        self.assertEqual(code, 200)
-        self.assertEqual(state["models"], models.MODELS)
-        leader = next(item for item in state["leaders"] if item["session_id"] == "s3")
-        self.assertEqual((leader["model"], leader["model_seen"], leader["activity"]), (HAIKU, None, None))
-        member = next(item for item in state["members"] if item["session_id"] == "s1")
-        self.assertEqual((member["model"], member["model_seen"], member["activity"]), (None, None, None))
+        self.assertEqual(self.request("/api/session/model", {"session_id": "s3", "model": OPUS})[0], 404)
+        self.assertEqual(self.request("/api/session/options", {"session_id": "s3"})[0], 400)
+        self.assertEqual(self.conn.execute("SELECT name FROM sqlite_master WHERE name='session_models'").fetchall(), [])
+        self.conn.execute("CREATE TABLE session_models(session_id TEXT PRIMARY KEY,model TEXT,set_at TEXT)")
+        migrated = store.connect(self.home)
+        migrated.close()
+        self.assertEqual(self.conn.execute("SELECT name FROM sqlite_master WHERE name='session_models'").fetchall(), [])
 
-    def test_state_actual_model_activity_and_resume_use_updated_choice(self):
-        _, result = self.request("/api/leader", {"name": "resume-model"})
+    def test_haiku_switch_clears_offline_effort_and_explicit_effort_is_invalid(self):
+        models.set(self.conn, "s3", OPUS, "xhigh")
+        code, body = self.request("/api/session/options", {"session_id": "s3", "model": HAIKU})
+        self.assertEqual((code, body), (200, {"ok": True, "model": HAIKU, "effort": None}))
+        self.assertEqual(self.request("/api/session/options", {"session_id": "s3", "effort": "high"})[0], 400)
+
+    def test_default_actual_haiku_rejects_effort_only_but_allows_explicit_model_switch(self):
+        _, result = self.request("/api/leader", {"name": "default-haiku"})
         sid = result["session_id"]
         manager = self.server.service.chat
+        process = self.processes[-1]
+        initial = self.controls(process)[0]
+        manager._control_response(manager.processes[sid], {
+            "subtype": "success", "request_id": initial["request_id"],
+            "response": {"applied": {"model": HAIKU, "effort": None}}})
+        before = process.stdin.getvalue()
+        code, body = self.request("/api/session/options", {"session_id": sid, "effort": "high"})
+        self.assertEqual(code, 400)
+        self.assertIn("Haiku", body["error"])
+        self.assertEqual(process.stdin.getvalue(), before)
+        self.assertEqual(models.get(self.conn, sid), {"model": None, "effort": None})
+        code, body = self.request("/api/session/options", {"session_id": sid, "model": OPUS, "effort": "high"})
+        self.assertEqual((code, body), (200, {"ok": True, "model": OPUS, "effort": "high"}))
+        self.assertEqual(models.get(self.conn, sid), {"model": OPUS, "effort": "high"})
+        self.assertEqual([control["request"] for control in self.controls(process)[-2:]], [
+            {"subtype": "set_model", "model": OPUS},
+            {"subtype": "apply_flag_settings", "settings": {"effortLevel": "high"}}])
+
+    def test_state_catalogs_applied_and_activity_without_legacy_field(self):
+        _, result = self.request("/api/leader", {"name": "applied-model"})
+        sid = result["session_id"]
+        process = self.processes[-1]
+        manager = self.server.service.chat
+        initial = self.controls(process)[0]
+        self.assertEqual(initial["request"], {"subtype": "get_settings"})
+        self.assertEqual([json.loads(line)["type"] for line in process.stdin.getvalue().splitlines()],
+                         ["control_request", "user"])
+        process.emit({"type": "control_response", "response": {"subtype": "success", "request_id": initial["request_id"],
+                      "response": {"applied": {"model": OPUS, "effort": "xhigh"}}}})
+        self.wait_for(lambda: manager.applied(sid) == {"model": OPUS, "effort": "xhigh"})
         journal = manager.journal(sid)
         journal.consume({"type": "stream_event", "api_message_id": "call", "event": {
             "type": "message_start", "message": {"id": "call", "model": HAIKU}}})
@@ -121,24 +198,77 @@ class ModelWakeTests(shell.ShellFixture, unittest.TestCase):
             "type": "content_block_start", "index": 0, "content_block": {"type": "thinking"}}})
         journal.consume({"type": "system", "subtype": "thinking_tokens", "estimated_tokens": 30})
         _, state = self.request("/api/state?project=demo")
+        self.assertEqual(state["models"], models.MODELS)
+        self.assertEqual(state["efforts"], models.EFFORTS)
         leader = next(item for item in state["leaders"] if item["session_id"] == sid)
-        self.assertEqual((leader["model"], leader["model_seen"]), (None, HAIKU))
+        self.assertEqual((leader["model"], leader["effort"], leader["applied"]), (None, None, {"model": OPUS, "effort": "xhigh"}))
         self.assertEqual(leader["activity"]["phase"], "thinking")
         self.assertEqual(leader["activity"]["output_tokens"], 30)
-        self.assertIsNotNone(leader["activity"]["turn_started_at"])
+        member = next(item for item in state["members"] if item["session_id"] == "s1")
+        self.assertEqual((member["model"], member["effort"], member["applied"]), (None, None, None))
+        for item in (leader, member):
+            self.assertNotIn("model_seen", item)
+
+    def test_get_settings_correlates_own_requests_and_refreshes_after_success_only(self):
+        _, result = self.request("/api/leader", {"name": "controls"})
+        sid = result["session_id"]
+        process = self.processes[-1]
+        manager = self.server.service.chat
+        current = manager.processes[sid]
+        initial = self.controls(process)[0]
+        manager._control_response(current, {"subtype": "success", "request_id": "unrelated",
+                                           "response": {"applied": {"model": HAIKU, "effort": None}}})
+        self.assertIsNone(manager.applied(sid))
+        self.assertEqual(len(self.controls(process)), 1)
+        manager._control_response(current, {"subtype": "success", "request_id": initial["request_id"],
+                                           "response": {"applied": {"model": OPUS, "effort": "xhigh"}}})
+        for changes in ({"model": HAIKU}, {"model": OPUS, "effort": "high"}):
+            self.assertEqual(self.request("/api/session/options", {"session_id": sid, **changes})[0], 200)
+            controls = [request for request in self.controls(process) if request["request"]["subtype"] in ("set_model", "apply_flag_settings")
+                        and request["request_id"] in current.control_requests]
+            for request in controls:
+                count = len(self.controls(process))
+                manager._control_response(current, {"subtype": "success", "request_id": request["request_id"]})
+                self.assertEqual(len(self.controls(process)), count + 1)
+                settings = self.controls(process)[-1]
+                self.assertEqual(settings["request"], {"subtype": "get_settings"})
+                applied = {"model": HAIKU, "effort": None} if changes["model"] == HAIKU else {"model": OPUS, "effort": "high"}
+                manager._control_response(current, {"subtype": "success", "request_id": settings["request_id"], "response": {"applied": applied}})
+                self.assertEqual(manager.applied(sid), applied)
+        self.assertEqual(self.request("/api/session/options", {"session_id": sid, "effort": "low"})[0], 200)
+        failed = self.controls(process)[-1]
+        count = len(self.controls(process))
+        manager._control_response(current, {"subtype": "error", "request_id": failed["request_id"], "error": "rejected"})
+        self.assertEqual(len(self.controls(process)), count)
+        manager._control(current, "get_settings")
+        failed = self.controls(process)[-1]
+        manager._control_response(current, {"subtype": "error", "request_id": failed["request_id"], "error": "rejected"})
+        self.assertEqual(manager.applied(sid), {"model": OPUS, "effort": "high"})
+
+    def test_resume_uses_updated_options_and_clears_previous_applied(self):
+        _, result = self.request("/api/leader", {"name": "resume-options"})
+        sid = result["session_id"]
+        manager = self.server.service.chat
+        current = manager.processes[sid]
+        initial = self.controls()[0]
+        manager._control_response(current, {"subtype": "success", "request_id": initial["request_id"],
+                                           "response": {"applied": {"model": OPUS, "effort": "xhigh"}}})
         self.processes[-1].finish()
-        self.assertTrue(manager.processes[sid].reader_done.wait(5))
-        self.assertEqual(self.request("/api/session/model", {"session_id": sid, "model": OPUS})[0], 200)
+        self.assertTrue(current.reader_done.wait(5))
+        # Options change while offline: the last reading must not be shown as current.
+        self.assertIsNone(manager.applied(sid))
+        self.assertEqual(self.request("/api/session/options", {"session_id": sid, "model": OPUS, "effort": "low"})[0], 200)
         self.assertEqual(self.request("/api/chat/send", {"session_id": sid, "text": "continue"})[0], 200)
         command = self.processes[-1].command
         self.assertEqual(command[-2:], ["--resume", sid])
         self.assertEqual(command[command.index("--model") + 1], OPUS)
-        self.assertIsNone(manager.model_seen(sid))
+        self.assertEqual(command[command.index("--effort") + 1], "low")
+        self.assertIsNone(manager.applied(sid))
 
     def test_wake_adopted_member_creates_spec_log_and_resumes_with_identity(self):
         board.set_status(self.conn, "s1", "offline", now=shell.NOW)
         board.set_task(self.conn, "s1", "白板当前任务", now=shell.NOW)
-        models.set(self.conn, "s1", HAIKU, now=shell.NOW)
+        models.set(self.conn, "s1", OPUS, "high", now=shell.NOW)
         self.assertFalse(self.server.service.chat.path("s1").exists())
         code, body = self.wake(caller_session_id="s3")
         self.assertEqual((code, body), (200, {"ok": True, "session_id": "s1", "name": "one", "address": "one"}))
@@ -150,7 +280,8 @@ class ModelWakeTests(shell.ShellFixture, unittest.TestCase):
         process = self.processes[-1]
         self.assertEqual(process.command[-2:], ["--resume", "s1"])
         self.assertEqual(process.command[process.command.index("--name") + 1], "one")
-        self.assertEqual(process.command[process.command.index("--model") + 1], HAIKU)
+        self.assertEqual(process.command[process.command.index("--model") + 1], OPUS)
+        self.assertEqual(process.command[process.command.index("--effort") + 1], "high")
         text = json.loads(process.stdin.getvalue().splitlines()[-1])["message"]["content"]
         self.assertEqual(text, '[Crew] 你的 leader「lead」把你叫醒了（你原来的会话进程已经结束，Crew 在后台接着运行你）：\n\n'
                               '继续原来的任务\n\n回复 leader 用 SendMessage，地址「cc-lead」。')
@@ -239,16 +370,30 @@ class ModelWakeTests(shell.ShellFixture, unittest.TestCase):
             service._poll_agents()
         self.assertEqual(resumed, ["checked"])
 
-    def test_cli_model_flags_reach_http_and_service_unavailable_matches_spawn(self):
+    def test_cli_option_flags_reach_http_and_service_unavailable_matches_spawn(self):
         with mock.patch.object(spawn, "request_start", return_value={"ok": True}) as request:
-            self.assertEqual(self.run_cli(["leader", "start", "--name", "boss", "--model", HAIKU])[0], 0)
-            self.assertEqual(request.call_args.args[3]["model"], HAIKU)
-            self.assertEqual(self.run_cli(["spawn", "--name", "member", "--task", "work", "--model", HAIKU])[0], 0)
-            self.assertEqual(request.call_args.args[3]["model"], HAIKU)
+            self.assertEqual(self.run_cli(["leader", "start", "--name", "boss", "--model", OPUS, "--effort", "max"])[0], 0)
+            self.assertEqual(request.call_args.args[3]["model"], OPUS)
+            self.assertEqual(request.call_args.args[3]["effort"], "max")
+            self.assertEqual(self.run_cli(["spawn", "--name", "member", "--task", "work", "--model", OPUS, "--effort", "low"])[0], 0)
+            self.assertEqual(request.call_args.args[3]["model"], OPUS)
+            self.assertEqual(request.call_args.args[3]["effort"], "low")
             self.assertEqual(self.run_cli(["spawn", "--name", "member", "--task", "work"])[0], 0)
             self.assertNotIn("model", request.call_args.args[3])
+            self.assertNotIn("effort", request.call_args.args[3])
         with mock.patch.object(spawn, "urlopen", side_effect=URLError("not running")):
             wake = self.run_cli(["wake", "one", "继续"])
             create = self.run_cli(["spawn", "--name", "member", "--task", "work"])
         self.assertEqual(wake[0], 1)
         self.assertEqual(wake[2], create[2])
+
+    def test_cli_dry_run_options_reach_launch_plan(self):
+        for args in (("leader", "start", "--name", "dry-leader"),
+                     ("spawn", "--name", "dry-member", "--task", "work")):
+            with self.subTest(args=args):
+                code, output, errors = self.run_cli([*args, "--model", OPUS, "--effort", "medium", "--dry-run"])
+                self.assertEqual(code, 0, errors)
+                plan = json.loads(output)
+                self.assertEqual(plan["spec"]["model"], OPUS)
+                self.assertEqual(plan["spec"]["effort"], "medium")
+                self.assertEqual(plan["command"][plan["command"].index("--effort") + 1], "medium")

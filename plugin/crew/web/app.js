@@ -45,8 +45,10 @@
   const leader = id => state.leaders.find(item => item.session_id === id);
   const member = id => state.members.find(item => item.session_id === id);
   function modelName(id) { const model = state.models.find(item => item.id === id); return model === undefined ? id : model.name; }
-  function modelLabel(item) { return item.model === null ? `默认${item.model_seen === null ? "" : ` · ${modelName(item.model_seen)}`}` : modelName(item.model); }
-  const memberModel = item => item.where === "bg" ? `<span class="member-model">${esc(modelLabel(item))}</span>` : "";
+  const HAIKU = "claude-haiku-4-5-20251001";
+  const currentOptions = item => item.applied === null ? item : item.applied;
+  function optionsLabel(item) { const options = currentOptions(item), model = options.model === null ? "默认" : modelName(options.model); return options.model === HAIKU ? model : `${model} · ${options.effort === null ? "默认" : options.effort}`; }
+  const memberModel = item => item.where === "bg" ? `<span class="member-model">${esc(optionsLabel(item))}</span>` : "";
   const memberActivity = item => item.where === "bg" ? CrewActivity.markup(item, true) : "";
   const membersOf = id => state.members.filter(item => item.leader_session_id === id);
   const decisionsOf = id => state.decisions.filter(item => item.leader_session_id === id || item.session_id === id);
@@ -149,7 +151,7 @@
       mountedChat = identity;
       CrewChat.mount({host:$("chat-host"), session:item, readonly:readOnlyId !== null, state, api, toast});
     }
-    replace($("chat-head"), `<div class="head">${av(item.name, 34)}<div class="heading-meta"><div class="title">${esc(item.name)}${readOnlyId === null ? "" : " · 对话记录"}</div><div class="sub"><span>${esc(readOnlyId === null ? item.goal : `归 ${item.group} · 只读`)}</span>${group === undefined ? "" : `<span class="sep"></span><span>${members.length} 个下属 · ${members.filter(item => item.status === "working").length} 个在干活</span>`}</div></div><div class="right">${readOnlyId === null ? `<button class="model-tag" data-act="model-menu" data-id="${esc(item.session_id)}" aria-haspopup="menu" title="切换模型">${esc(modelLabel(item))}${ic("down", "xs")}</button>` : group === undefined ? '<button class="btn ghost" data-act="view" data-view="all">回到全部</button>' : `<button class="btn ghost" data-act="leader" data-id="${esc(leaderId)}">回到 leader</button>`}${group === undefined ? "" : `<button class="icon-btn rp-toggle" data-act="right-open" title="本组架构图" aria-label="本组架构图">${ic("grid")}</button>`}</div></div>`);
+    replace($("chat-head"), `<div class="head">${av(item.name, 34)}<div class="heading-meta"><div class="title">${esc(item.name)}${readOnlyId === null ? "" : " · 对话记录"}</div><div class="sub"><span>${esc(readOnlyId === null ? item.goal : `归 ${item.group} · 只读`)}</span>${group === undefined ? "" : `<span class="sep"></span><span>${members.length} 个下属 · ${members.filter(item => item.status === "working").length} 个在干活</span>`}</div></div><div class="right">${readOnlyId === null ? `<button class="model-tag" data-act="model-menu" data-id="${esc(item.session_id)}" aria-haspopup="menu" title="切换模型和 effort">${esc(optionsLabel(item))}${ic("down", "xs")}</button>` : group === undefined ? '<button class="btn ghost" data-act="view" data-view="all">回到全部</button>' : `<button class="btn ghost" data-act="leader" data-id="${esc(leaderId)}">回到 leader</button>`}${group === undefined ? "" : `<button class="icon-btn rp-toggle" data-act="right-open" title="本组架构图" aria-label="本组架构图">${ic("grid")}</button>`}</div></div>`);
     replace($("decision-tray"), readOnlyId !== null || pending.length + held.length === 0 ? "" : `<div class="tray"><div class="tray-in">${pending.length === 0 ? "" : `<section class="tray-pending ${trayCollapsed ? "collapsed" : ""}"><button class="tray-head" data-act="tray" aria-expanded="${!trayCollapsed}">${ic("down", "sm chev")}等你拍板 · ${pending.length}</button><div class="tray-list">${pending.map(decisionCard).join("")}</div></section>`}${heldGroup(held, "tray")}</div></div>`);
     CrewChat.update(state);
   }
@@ -229,14 +231,14 @@
   function showMenu(anchor, html) {
     const menu = $("menu"), rect = anchor.getBoundingClientRect(); menu.innerHTML = html; menu.classList.add("show");
     menu.style.left = `${Math.max(8, Math.min(innerWidth - menu.offsetWidth - 12, rect.right - menu.offsetWidth))}px`;
-    menu.style.top = `${Math.min(innerHeight - menu.offsetHeight - 8, rect.bottom + 6)}px`;
+    menu.style.top = `${Math.max(8, Math.min(innerHeight - menu.offsetHeight - 8, rect.bottom + 6))}px`;
     menu.querySelector("button")?.focus({preventScroll:true});
   }
   function hideMenu() { $("menu").classList.remove("show"); }
   function closeBackdrop() { $("backdrop").classList.remove("show"); $("backdrop").innerHTML = ""; returnFocus(dialogReturn); }
   function openModalLeader() {
     dialogReturn = focusDescriptor(document.activeElement);
-    $("backdrop").innerHTML = `<form class="modal leader-modal" id="leader-form" role="dialog" aria-modal="true" aria-labelledby="leader-title"><h3 id="leader-title">起一个 leader</h3><p class="d">它在后台运行，你在这里跟它聊。下属可以以后再收编进来，它也能自己开新下属。</p><div class="field"><label for="leader-name">叫它</label><input id="leader-name" name="name" placeholder="比如：打包" required></div><div class="field"><label for="leader-task">它要管什么</label><textarea id="leader-task" name="task" rows="3" placeholder="一两句话，比如：安卓打包和推包流程跑通，能无人值守出包" required></textarea></div><div class="field"><span class="field-label" id="leader-model-label">用什么模型</span><input type="hidden" name="model" value=""><div class="model-options" role="group" aria-labelledby="leader-model-label"><button type="button" class="model-option on" data-act="leader-model" data-model="" aria-pressed="true">默认</button>${state.models.map(model => `<button type="button" class="model-option" data-act="leader-model" data-model="${esc(model.id)}" aria-pressed="false">${esc(model.name)}</button>`).join("")}</div></div><p class="error-line" id="leader-error"></p><div class="acts"><button class="btn ghost" type="button" data-act="modal-close">取消</button><button class="btn primary" type="submit">起 leader</button></div></form>`;
+    $("backdrop").innerHTML = `<form class="modal leader-modal" id="leader-form" role="dialog" aria-modal="true" aria-labelledby="leader-title"><h3 id="leader-title">起一个 leader</h3><p class="d">它在后台运行，你在这里跟它聊。下属可以以后再收编进来，它也能自己开新下属。</p><div class="field"><label for="leader-name">叫它</label><input id="leader-name" name="name" placeholder="比如：打包" required></div><div class="field"><label for="leader-task">它要管什么</label><textarea id="leader-task" name="task" rows="3" placeholder="一两句话，比如：安卓打包和推包流程跑通，能无人值守出包" required></textarea></div><div class="field"><span class="field-label" id="leader-model-label">用什么模型</span><input type="hidden" name="model" value=""><div class="model-options" role="group" aria-labelledby="leader-model-label"><button type="button" class="model-option on" data-act="leader-model" data-model="" aria-pressed="true">默认</button>${state.models.map(model => `<button type="button" class="model-option" data-act="leader-model" data-model="${esc(model.id)}" aria-pressed="false">${esc(model.name)}</button>`).join("")}</div></div><div class="field" id="leader-effort-field"><span class="field-label" id="leader-effort-label">effort<span class="effort-note" id="leader-effort-note" hidden>Haiku 不支持</span></span><input type="hidden" name="effort" value=""><div class="model-options effort-options" role="group" aria-labelledby="leader-effort-label" aria-disabled="false"><button type="button" class="model-option on" data-act="leader-effort" data-effort="" aria-pressed="true">默认</button>${state.efforts.map(effort => `<button type="button" class="model-option" data-act="leader-effort" data-effort="${esc(effort)}" aria-pressed="false">${esc(effort)}</button>`).join("")}</div></div><p class="error-line" id="leader-error"></p><div class="acts"><button class="btn ghost" type="button" data-act="modal-close">取消</button><button class="btn primary" type="submit">起 leader</button></div></form>`;
     $("backdrop").classList.add("show"); $("leader-name").focus();
   }
   function openPalette() {
@@ -364,9 +366,31 @@
       else if (act === "right-open") { rightOpen = true; renderRight(); $("right-panel").querySelector('[data-act="right-close"]').focus(); }
       else if (act === "right-close") { rightOpen = false; renderRight(); $("main").querySelector('[data-act="right-open"]')?.focus(); }
       else if (act === "modal-leader") openModalLeader();
-      else if (act === "leader-model") { const form = $("leader-form"); form.elements.model.value = button.dataset.model; for (const option of form.querySelectorAll(".model-option")) { const selected = option === button; option.classList.toggle("on", selected); option.setAttribute("aria-pressed", String(selected)); } }
-      else if (act === "model-menu") { const item = leader(id); showMenu(button, `<div class="mtitle">下一次模型调用起用</div>${[{id:null, name:"默认"}].concat(state.models).map(model => `<button role="menuitemradio" aria-checked="${item.model === model.id}" data-act="set-model" data-id="${esc(id)}" data-model="${model.id === null ? "" : esc(model.id)}"><span class="model-check">${item.model === model.id ? ic("check", "sm") : ""}</span>${esc(model.name)}</button>`).join("")}`); }
-      else if (act === "set-model") action(`model:${id}`, async () => { const model = button.dataset.model === "" ? null : button.dataset.model; hideMenu(); await api("/api/session/model", {session_id:id, model}); await loadState(true); toast(`下一步起用 ${model === null ? "默认" : modelName(model)}`); });
+      else if (act === "leader-model" || act === "leader-effort") {
+        const form = $("leader-form"), field = act === "leader-model" ? "model" : "effort";
+        form.elements[field].value = button.dataset[field];
+        for (const option of form.querySelectorAll(`[data-act="${act}"]`)) { const selected = option === button; option.classList.toggle("on", selected); option.setAttribute("aria-pressed", String(selected)); }
+        if (field === "model") {
+          const unsupported = form.elements.model.value === HAIKU;
+          $("leader-effort-note").hidden = !unsupported;
+          form.querySelector(".effort-options").setAttribute("aria-disabled", String(unsupported));
+          if (unsupported) form.elements.effort.value = "";
+          for (const option of form.querySelectorAll('[data-act="leader-effort"]')) {
+            option.disabled = unsupported;
+            const selected = option.dataset.effort === form.elements.effort.value;
+            option.classList.toggle("on", selected); option.setAttribute("aria-pressed", String(selected));
+          }
+        }
+      }
+      else if (act === "model-menu") {
+        const item = leader(id), options = currentOptions(item), unsupported = options.model === HAIKU;
+        showMenu(button, `<div role="group" aria-labelledby="menu-model-label"><div class="mtitle" id="menu-model-label">模型</div>${[{id:null, name:"默认"}].concat(state.models).map(model => `<button role="menuitemradio" aria-checked="${item.model === model.id}" data-act="set-model" data-id="${esc(id)}" data-model="${model.id === null ? "" : esc(model.id)}"><span class="model-check">${item.model === model.id ? ic("check", "sm") : ""}</span>${esc(model.name)}</button>`).join("")}</div><div role="group" aria-labelledby="menu-effort-label" aria-disabled="${unsupported}"><div class="mtitle" id="menu-effort-label">effort${unsupported ? " · Haiku 不支持" : ""}</div>${state.efforts.map(effort => `<button role="menuitemradio" aria-checked="${options.effort === effort}" data-act="set-effort" data-id="${esc(id)}" data-effort="${esc(effort)}" ${unsupported ? "disabled" : ""}><span class="model-check">${options.effort === effort ? ic("check", "sm") : ""}</span>${esc(effort)}</button>`).join("")}</div>`);
+      }
+      else if (act === "set-model" || act === "set-effort") action(`options:${id}`, async () => {
+        const field = act === "set-model" ? "model" : "effort", value = button.dataset[field] === "" ? null : button.dataset[field];
+        hideMenu(); await api("/api/session/options", {session_id:id, [field]:value}); await loadState(true);
+        toast(`下一步起用 ${field === "model" ? value === null ? "默认" : modelName(value) : value}`);
+      });
       else if (act === "modal-close") closeBackdrop();
       else if (act === "palette") openPalette();
       else if (act === "palette-go") { const item = paletteItems[Number(button.dataset.index)]; closeBackdrop(); item.go(); }
@@ -399,7 +423,7 @@
       if (form.dataset.answerForm !== undefined) { event.preventDefault(); const text = form.elements.answer.value.trim(); if (text !== "") action(`answer:${form.dataset.answerForm}`, () => answer(Number(form.dataset.answerForm), text)); }
       else if (form.dataset.adoptForm !== undefined) { event.preventDefault(); const id = form.dataset.adoptForm; action(`adopt:${id}`, async () => { const group = adoptForms.get(id).group, bucket = Object.keys(state.candidates).find(bucket => state.candidates[bucket].some(item => item.session_id === id)), item = state.candidates[bucket].find(item => item.session_id === id); await api("/api/roster/adopt", {session_id:id, name:form.elements.name.value.trim(), group}); adopted.set(id, {item, bucket, group}); adoptForms.delete(id); await loadState(true); }); }
       else if (form.id === "rename-form") { event.preventDefault(); action("rename", async () => { await api("/api/session/rename", {session_id:cardId, name:form.elements.name.value.trim()}); rename = false; await loadState(true); toast("已改名"); }); }
-      else if (form.id === "leader-form") { event.preventDefault(); action("leader", async () => { const button = form.querySelector('[type="submit"]'); button.disabled = true; try { const result = await api("/api/leader", {name:form.elements.name.value.trim(), task:form.elements.task.value.trim(), model:form.elements.model.value === "" ? null : form.elements.model.value}); closeBackdrop(); await loadState(true); navigate("chat", result.session_id); } catch (error) { $("leader-error").textContent = error.message; } finally { button.disabled = false; } }); }
+      else if (form.id === "leader-form") { event.preventDefault(); action("leader", async () => { const button = form.querySelector('[type="submit"]'); button.disabled = true; try { const result = await api("/api/leader", {name:form.elements.name.value.trim(), task:form.elements.task.value.trim(), model:form.elements.model.value === "" ? null : form.elements.model.value, effort:form.elements.effort.value === "" ? null : form.elements.effort.value}); closeBackdrop(); await loadState(true); navigate("chat", result.session_id); } catch (error) { $("leader-error").textContent = error.message; } finally { button.disabled = false; } }); }
     });
     document.addEventListener("keydown", event => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k" && state !== null && project !== null) { event.preventDefault(); openPalette(); return; }

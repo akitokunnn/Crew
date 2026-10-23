@@ -340,13 +340,12 @@ class ChatTests(UsageFixture, unittest.TestCase):
             manager.interrupt("s1")
         self.assertEqual(process.stdin.getvalue(), "")
 
-    def test_real_stream_tracks_phases_tool_label_exact_tokens_and_actual_model(self):
+    def test_real_stream_tracks_phases_tool_label_and_exact_tokens(self):
         records = [json.loads(line) for line in (Path(__file__).parent / "fixtures" / "wake_stream.jsonl").read_text(encoding="utf-8").splitlines()]
         phases = []
         for record in records:
             if record["type"] == "result":
                 self.assertEqual(self.journal.progress["output_tokens"], 174)
-                self.assertEqual(self.journal.model, "claude-haiku-4-5-20251001")
             self.journal.consume(record)
             if self.journal.progress is not None:
                 current = (self.journal.progress["phase"], self.journal.progress["label"])
@@ -360,7 +359,6 @@ class ChatTests(UsageFixture, unittest.TestCase):
             self.assertNotIn(key, persisted)
         replay = chat.Journal(self.journal.path)
         self.assertIsNone(replay.progress)
-        self.assertIsNone(replay.model)
 
     def test_estimates_use_cumulative_thinking_and_utf8_then_replace_with_real_usage(self):
         def stream(event):
@@ -384,7 +382,7 @@ class ChatTests(UsageFixture, unittest.TestCase):
         self.journal.set_status("offline")
         self.assertIsNone(self.journal.progress)
 
-    def test_subagent_records_do_not_change_progress_tokens_model_or_idle_status(self):
+    def test_subagent_records_do_not_change_progress_tokens_or_idle_status(self):
         records = [{"type": "stream_event", "event": {"type": "message_start", "message": {"id": "sub", "model": "other"}}},
                    {"type": "stream_event", "event": {"type": "content_block_start", "index": 0, "content_block": {"type": "thinking"}}},
                    {"type": "system", "subtype": "thinking_tokens", "estimated_tokens": 999},
@@ -400,7 +398,6 @@ class ChatTests(UsageFixture, unittest.TestCase):
                 self.journal.consume(dict(record, parent_tool_use_id="parent"))
                 self.assertEqual(self.journal.progress, before)
                 self.assertEqual(self.journal.status, status)
-                self.assertIsNone(self.journal.model)
 
     def test_tool_labels_follow_tool_arguments_and_truncate(self):
         for name, arguments, label in [
@@ -434,16 +431,12 @@ class ChatTests(UsageFixture, unittest.TestCase):
                 {"type": "tool_result", "tool_use_id": tool_id, "content": "done"}]}})
             self.assertEqual(self.journal.progress["phase"], phase)
 
-    def test_activity_requires_owned_working_process_and_model_resets_on_launch(self):
+    def test_activity_requires_owned_working_process(self):
         manager, process, _ = self.manager_with_process("working")
         self.assertEqual(manager.activity("s1")["phase"], "requesting")
         self.assertIsNone(manager.activity("external"))
-        manager.journal("s1").consume({"type": "stream_event", "event": {"type": "message_start", "message": {"id": "call", "model": "actual"}}})
-        self.assertEqual(manager.model_seen("s1"), "actual")
         process.finish()
         self.assertIsNone(manager.activity("s1"))
-        manager.journal("s1").reset_runtime()
-        self.assertIsNone(manager.model_seen("s1"))
 
 
 if __name__ == "__main__":

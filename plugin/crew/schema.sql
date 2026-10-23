@@ -49,10 +49,19 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE INDEX IF NOT EXISTS sessions_project ON sessions (project, crew_name);
 
-CREATE TABLE IF NOT EXISTS session_models (
+DROP TABLE IF EXISTS session_models;
+CREATE TABLE IF NOT EXISTS session_options (
     session_id TEXT PRIMARY KEY REFERENCES sessions(session_id),
-    model TEXT NOT NULL,
+    model TEXT,
+    effort TEXT,
     set_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS rule_reads (
+    session_id TEXT PRIMARY KEY REFERENCES sessions(session_id),
+    role TEXT NOT NULL,
+    digest TEXT NOT NULL,
+    read_at TEXT NOT NULL
 );
 
 -- Explicit human choices survive hooks from the original running process.

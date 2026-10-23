@@ -76,7 +76,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
 
     def test_state_exact_shape_and_empty_limits(self):
         expected = {"project", "projects", "now", "agents_error", "notification", "leaders",
-                    "members", "decisions", "candidates", "attention", "limits", "vscode_error", "models"}
+                    "members", "decisions", "candidates", "attention", "limits", "vscode_error", "models", "efforts"}
         state = self.state()
         self.assertEqual(set(state), expected)
         self.assertEqual(set(state["project"]), {"name", "root"})
@@ -85,7 +85,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         leader = state["leaders"][0]
         self.assertEqual(set(leader), {"session_id", "name", "goal", "status", "busy", "running", "web_chat",
             "cc_name", "last_seq", "last_reply_id", "read_seq", "unread", "pending", "notices_pending", "member_ids",
-            "model", "model_seen", "activity"})
+            "model", "effort", "applied", "activity"})
         self.assertEqual((leader["session_id"], leader["member_ids"], leader["unread"]), ("s3", ["s1"], 0))
         landing = self.state(None)
         self.assertEqual(set(landing), expected)
@@ -120,7 +120,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         member = members["s1"]
         self.assertEqual(set(member), {"session_id", "name", "title", "leader_session_id", "group", "status",
             "status_note", "where", "task", "scope", "done_when", "branch", "worktree", "cwd", "cc_name",
-            "web_chat", "progress", "codex", "codex_older", "leases", "claims", "model", "model_seen", "activity"})
+            "web_chat", "progress", "codex", "codex_older", "leases", "claims", "model", "effort", "applied", "activity"})
         self.assertEqual((member["name"], member["leader_session_id"], member["group"], member["scope"], member["done_when"]),
                          ("one", "s3", "lead", "Backend", "Tests pass"))
         self.assertEqual([row["text"] for row in member["progress"]], ["progress-" + str(i) for i in (6, 5, 4, 3, 2)])
@@ -373,7 +373,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual(len(self.processes), 2)
         resumed = self.processes[-1]
         self.assertEqual(resumed.command[-2:], ["--resume", sid])
-        self.assertEqual(json.loads(resumed.stdin.getvalue())["session_id"], sid)
+        self.assertEqual(json.loads(resumed.stdin.getvalue().splitlines()[-1])["session_id"], sid)
         self.assertEqual(board.pending_notices(self.conn, sid), [])
 
     def test_notice_delivery_records_expected_errors_continues_and_propagates_unexpected_errors(self):

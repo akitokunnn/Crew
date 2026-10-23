@@ -340,10 +340,12 @@ svg.i.xs{width:12px;height:12px}
 .card-foot{border-top:1px solid var(--line);padding:12px 18px;display:flex;align-items:center;gap:10px;font-size:calc(12px * var(--fs));color:var(--text-3)}
 .card-foot a{color:var(--accent);text-decoration:none;display:inline-flex;align-items:center;gap:4px;cursor:pointer}
 .card-foot code{font-family:var(--font-mono);font-size:calc(11px * var(--fs))}
-.menu{position:absolute;background:var(--surface);border:1px solid var(--line-strong);border-radius:12px;box-shadow:var(--shadow-lg);padding:5px;min-width:168px;z-index:30;display:none}
+.menu{position:absolute;background:var(--surface);border:1px solid var(--line-strong);border-radius:12px;box-shadow:var(--shadow-lg);padding:5px;min-width:168px;max-height:calc(100vh - 16px);overflow-y:auto;z-index:30;display:none}
 .menu.show{display:block}
 .menu button{display:flex;align-items:center;gap:9px;width:100%;padding:7px 10px;border:0;background:transparent;border-radius:8px;cursor:pointer;font-size:calc(13px * var(--fs));text-align:left}
-.menu button:hover{background:var(--hover)}
+.menu button:hover:not(:disabled){background:var(--hover)}
+.menu button:disabled{color:var(--text-3);cursor:default}
+.menu [role="group"]+[role="group"]{border-top:1px solid var(--line);margin-top:5px;padding-top:3px}
 .menu button.danger{color:var(--danger)}
 .menu .mtitle{font-size:calc(11.5px * var(--fs));color:var(--text-3);padding:6px 10px 4px}
 .step{display:flex;flex-direction:column;gap:8px;margin:12px 18px 0;padding:12px;border-radius:12px;background:var(--accent-softer);border:1px solid color-mix(in srgb,var(--accent) 25%,transparent);font-size:calc(13px * var(--fs))}
@@ -419,8 +421,10 @@ svg.i.xs{width:12px;height:12px}
 .leader-modal{width:600px}
 .model-options{display:flex;gap:6px;flex-wrap:wrap}
 .model-option{border:1px solid var(--line-strong);background:var(--surface);border-radius:8px;padding:6px 10px;font-size:calc(12.5px * var(--fs));cursor:pointer}
-.model-option:hover{background:var(--hover)}
+.model-option:hover:not(:disabled){background:var(--hover)}
 .model-option.on{border-color:var(--accent);background:var(--accent-soft);color:var(--accent-strong)}
+.model-option:disabled{opacity:.45;cursor:default}
+.effort-note{margin-left:10px;color:var(--text-3)}
 .field input,.field textarea{border:1px solid var(--line-strong);background:var(--surface);border-radius:10px;padding:9px 12px;outline:none;resize:none;transition:border-color .15s}
 .field input:focus,.field textarea:focus{border-color:color-mix(in srgb,var(--accent) 60%,transparent)}
 .modal .acts{display:flex;justify-content:flex-end;gap:8px;margin-top:6px}

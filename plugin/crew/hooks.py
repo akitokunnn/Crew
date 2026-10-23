@@ -8,7 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import board, guard, install, store
+from . import board, guard, install, rules, store
 
 EVENTS = ("session-start", "user-prompt-submit", "stop", "notification", "pre-ask", "post-ask", "session-end", "guard")
 
@@ -52,6 +52,11 @@ def handle(event, data, home, plugin_root, environ, git_provider=git_details, no
         if reason is not None:
             print(reason, file=sys.stderr)
             return 2, None
+        role = rules.SKILLS.get(data["tool_input"].get("skill")) if data.get("tool_name") == "Skill" else None
+        if role is not None and guard.enabled_project(home, data["cwd"]) is not None:
+            with contextlib.closing(store.connect(home)) as conn:
+                if conn.execute("SELECT 1 FROM sessions WHERE session_id=?", (data["session_id"],)).fetchone() is not None:
+                    rules.record_read(conn, data["session_id"], role, plugin_root, now=now)
         return 0, None
     if event == "session-start":
         # Refresh HOME for every session, inside a project or not: the guard needs blacklist.txt everywhere.
@@ -85,6 +90,10 @@ def handle(event, data, home, plugin_root, environ, git_provider=git_details, no
                          "分组：%s；leader：%s；SendMessage 地址：%s" % (s["group_name"], leader["crew_name"] if leader else None, leader["cc_name"] if leader else None),
                          '命令行：python "%s" ...' % (Path(home).resolve() / "crew.py"),
                          "请遵守 /crew:%s" % ("leader" if s["role"] == "leader" else "member")] + lines
+        if event == "user-prompt-submit" or (event == "session-start" and data.get("source") in ("resume", "compact")):
+            reminder = rules.reminder(conn, data["session_id"], plugin_root)
+            if reminder is not None:
+                lines.append(reminder)
     if lines and event in ("session-start", "user-prompt-submit"):
         name = "SessionStart" if event == "session-start" else "UserPromptSubmit"
         return 0, {"hookSpecificOutput": {"hookEventName": name, "additionalContext": "\n".join(lines)}}
