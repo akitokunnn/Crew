@@ -315,13 +315,20 @@ class Service:
                 for session in sessions:
                     sid = session['session_id']
                     context = self.chat.context(sid) if self.chat.running(sid) else contexts.get(sid)
+                    own_tasks = [t for t in tasks if t['session_id'] == sid]
+                    recent_tasks = [t for t in own_tasks if t['status'] == 'running' or
+                                    (t['ended_at'] is not None and
+                                     store.parse_iso(t['ended_at']) >= self.now() - dt.timedelta(hours=24))]
+                    codex = dict(codex=[{'id': t['run_id'] or t['rollout_id'], **{key: t[key] for key in
+                                        ('task_name', 'status', 'started_at', 'ended_at', 'duration_seconds')}} for t in recent_tasks],
+                                 codex_older=len(own_tasks) - len(recent_tasks))
                     if session['role'] == 'leader':
                         events = histories[sid]['events'] if sid in histories else []
                         read_seq = board.read_seq(conn, sid)
                         result['leaders'].append(dict(
                             session_id=sid, name=session['crew_name'], goal=session['task'], status=session['status'],
                             **models.get(conn, sid), applied=self.chat.applied(sid), activity=self.chat.activity(sid),
-                            context=context,
+                            context=context, **codex,
                             where='bg' if self.chat.running(sid) else 'vscode' if sid in present else 'offline',
                             busy=self.chat.busy(sid) or (sid in present and present[sid].get('status') == 'busy'),
                             running=self.chat.running(sid) or sid in present, web_chat=session['web_chat'], cc_name=session['cc_name'],
@@ -336,10 +343,6 @@ class Service:
                     elif session['crew_name'] and session['group_name'] in open_groups:
                         leader = member_leaders[sid]
                         card = board.card(conn, sid)
-                        own_tasks = [t for t in tasks if t['session_id'] == sid]
-                        recent_tasks = [t for t in own_tasks if t['status'] == 'running' or
-                                        (t['ended_at'] is not None and
-                                         store.parse_iso(t['ended_at']) >= self.now() - dt.timedelta(hours=24))]
                         result['members'].append(dict(
                             session_id=sid, name=session['crew_name'], title=titles.get(sid),
                             **models.get(conn, sid), applied=self.chat.applied(sid), activity=self.chat.activity(sid),
@@ -351,9 +354,7 @@ class Service:
                             **{key: session[key] for key in ('task', 'branch', 'worktree', 'cwd', 'cc_name', 'web_chat')},
                             scope=card['scope'] if card else None, done_when=card['done_when'] if card else None,
                             progress=[{'at': r['created_at'], 'text': r['body']} for r in reversed(reports) if r['session_id'] == sid][:5],
-                            codex=[{'id': t['run_id'] or t['rollout_id'], **{key: t[key] for key in
-                                   ('task_name', 'status', 'started_at', 'ended_at', 'duration_seconds')}} for t in recent_tasks],
-                            codex_older=len(own_tasks) - len(recent_tasks),
+                            **codex,
                             leases=[{key: lease[key] for key in ('resource', 'purpose', 'taken_at', 'until_at')}
                                     for lease in leases if lease['holder_session'] == sid],
                             claims=[{key: claim[key] for key in ('pattern', 'note')} for claim in claims if claim['session_id'] == sid]))

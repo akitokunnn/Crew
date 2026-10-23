@@ -170,6 +170,7 @@ svg.i.xs{width:12px;height:12px}
 .context-ring{display:inline-flex;align-items:center;gap:3px;vertical-align:middle;flex:none;line-height:1}
 .context-ring svg{width:16px;height:16px;fill:none;stroke-width:3}
 .context-pct{font-size:calc(11px * var(--fs));font-weight:600;font-variant-numeric:tabular-nums}
+.context-ring.calm{color:var(--text-3)}
 .context-ring.warn{color:var(--warn)}
 .context-ring.danger{color:var(--danger)}
 .context-track{stroke:currentColor;opacity:.28}

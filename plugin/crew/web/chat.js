@@ -3,13 +3,15 @@
   const CONTEXT_WARN = 0.5, CONTEXT_DANGER = 0.8;
   const tokens = value => value >= 10000 ? `${(value / 10000).toFixed(1)} 万` : String(Math.round(value));
   function ring(context) {
-    if (context === null || context.used / context.max < CONTEXT_WARN) return "";
+    if (context === null) return "";
     const ratio = context.used / context.max, percent = Math.round(ratio * 100);
     const maximum = context.max >= 10000 ? `${Number((context.max / 10000).toFixed(1))} 万` : tokens(context.max);
     const label = `上下文 已用 ${tokens(context.used)} / ${maximum}（${percent}%）`;
-    return `<span class="context-ring ${ratio >= CONTEXT_DANGER ? "danger" : "warn"}" role="img" title="${label}" aria-label="${label}"><svg viewBox="0 0 20 20" aria-hidden="true"><circle class="context-track" cx="10" cy="10" r="7.5"/><circle class="context-arc" cx="10" cy="10" r="7.5" pathLength="100" stroke-dasharray="${Math.min(100, ratio * 100)} 100"/></svg><span class="context-pct" aria-hidden="true">${percent}%</span></span>`;
+    return `<span class="context-ring ${ratio >= CONTEXT_DANGER ? "danger" : ratio >= CONTEXT_WARN ? "warn" : "calm"}" role="img" title="${label}" aria-label="${label}"><svg viewBox="0 0 20 20" aria-hidden="true"><circle class="context-track" cx="10" cy="10" r="7.5"/><circle class="context-arc" cx="10" cy="10" r="7.5" pathLength="100" stroke-dasharray="${Math.min(100, ratio * 100)} 100"/></svg><span class="context-pct" aria-hidden="true">${percent}%</span></span>`;
   }
-  window.CrewContext = {tokens, ring};
+  // The ring is always shown (user 10-23); the compact button only once it is worth compacting.
+  const worthCompacting = context => context !== null && context.used / context.max >= CONTEXT_WARN;
+  window.CrewContext = {tokens, ring, worthCompacting};
 })();
 (() => {
   const turns = new Map();

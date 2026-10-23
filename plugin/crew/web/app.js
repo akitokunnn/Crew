@@ -58,7 +58,7 @@
   }
   function contextControls(item) {
     const ring = contextRing(item);
-    return ring === "" ? "" : `<span class="context-controls">${ring}${compactControl(item)}</span>`;
+    return ring === "" ? "" : `<span class="context-controls">${ring}${CrewContext.worthCompacting(item.context) ? compactControl(item) : ""}</span>`;
   }
   const membersOf = id => state.members.filter(item => item.leader_session_id === id);
   const decisionsOf = id => state.decisions.filter(item => item.leader_session_id === id || item.session_id === id);
@@ -137,12 +137,13 @@
     const running = item.status === "running";
     return `<div class="${cls}">${ic("bolt", "xs")}<span class="${cls === "cx" ? "n" : "grow"}">${esc(item.task_name)}</span><span class="s">${running ? `<span class="spin" style="width:10px;height:10px"></span>${Math.max(0, Math.floor((Date.now() - new Date(item.started_at)) / 60000))} 分钟` : `${ic("check", "xs ok")}${item.ended_at === null ? esc(item.status) : time(item.ended_at)}`}</span></div>`;
   }
+  const codexList = item => item.codex.length > 0 || item.codex_older > 0 ? `<span class="cx-list">${item.codex.map(item => codexMarkup(item)).join("")}${item.codex_older > 0 ? `<span class="cx older">${ic("more", "xs")}<span class="n">更早 ${item.codex_older} 个</span></span>` : ""}</span>` : "";
   function memberNode(item) {
     const where = item.where === "bg" ? "cloud" : item.where === "vscode" ? "code" : "clock";
-    return `<button class="node click ${cardId === item.session_id ? "sel" : ""}" data-act="card" data-id="${esc(item.session_id)}"><span class="node-top">${av(item.name, 26, true)}<span class="nm">${esc(item.name)}${contextRing(item)}<span class="where" title="${item.where === "bg" ? "后台运行" : item.where === "vscode" ? "开在 VS Code" : "没在运行"}">${ic(where, "xs")}</span></span>${st(item.status)}</span>${memberModel(item)}<span class="now">${item.task === null ? "还没写" : esc(item.task)}</span>${memberActivity(item)}${item.codex.length > 0 || item.codex_older > 0 ? `<span class="cx-list">${item.codex.map(item => codexMarkup(item)).join("")}${item.codex_older > 0 ? `<span class="cx older">${ic("more", "xs")}<span class="n">更早 ${item.codex_older} 个</span></span>` : ""}</span>` : ""}</button>`;
+    return `<button class="node click ${cardId === item.session_id ? "sel" : ""}" data-act="card" data-id="${esc(item.session_id)}"><span class="node-top">${av(item.name, 26, true)}<span class="nm">${esc(item.name)}${contextRing(item)}<span class="where" title="${item.where === "bg" ? "后台运行" : item.where === "vscode" ? "开在 VS Code" : "没在运行"}">${ic(where, "xs")}</span></span>${st(item.status)}</span>${memberModel(item)}<span class="now">${item.task === null ? "还没写" : esc(item.task)}</span>${memberActivity(item)}${codexList(item)}</button>`;
   }
   function leaderNode(item, clickable) {
-    return `<${clickable ? "button" : "div"} class="node ${clickable ? "click" : ""} leader-node" ${clickable ? `data-act="leader" data-id="${esc(item.session_id)}"` : ""}><span class="node-top">${av(item.name, 30)}<span class="nm">${esc(item.name)}<span class="tag" style="background:var(--hover);color:var(--text-3)">leader</span></span>${item.pending > 0 ? `<span class="b-pending" style="margin-left:auto">${item.pending}</span>` : st(item.status)}</span><span class="now" style="margin-left:39px">${esc(item.goal)}</span></${clickable ? "button" : "div"}>`;
+    return `<${clickable ? "button" : "div"} class="node ${clickable ? "click" : ""} leader-node" ${clickable ? `data-act="leader" data-id="${esc(item.session_id)}"` : ""}><span class="node-top">${av(item.name, 30)}<span class="nm">${esc(item.name)}<span class="tag" style="background:var(--hover);color:var(--text-3)">leader</span></span>${item.pending > 0 ? `<span class="b-pending" style="margin-left:auto">${item.pending}</span>` : st(item.status)}</span><span class="now" style="margin-left:39px">${esc(item.goal)}</span>${codexList(item)}</${clickable ? "button" : "div"}>`;
   }
   function renderRight() {
     if (view !== "chat" || leaderId === null) { $("right-panel").innerHTML = ""; delete $("right-panel").dataset.render; return; }

@@ -85,8 +85,10 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         leader = state["leaders"][0]
         self.assertEqual(set(leader), {"session_id", "name", "goal", "status", "busy", "running", "web_chat",
             "cc_name", "last_seq", "last_reply_id", "read_seq", "unread", "pending", "notices_pending", "member_ids",
-            "model", "effort", "applied", "activity", "context", "where"})
+            "model", "effort", "applied", "activity", "context", "where", "codex", "codex_older"})
         self.assertEqual((leader["session_id"], leader["member_ids"], leader["unread"]), ("s3", ["s1"], 0))
+        # Leaders dispatch Codex for their own bulk work too (user 10-23), listed like members'.
+        self.assertEqual((leader["codex"], leader["codex_older"]), ([], 0))
         landing = self.state(None)
         self.assertEqual(set(landing), expected)
         self.assertIsNone(landing["project"])
@@ -112,8 +114,13 @@ class WebContractTests(ShellFixture, unittest.TestCase):
                           ended_at=None if end is None else (self.clock + dt.timedelta(seconds=end)).isoformat(),
                           exit_code=None if end is None else 0)
             records.append(record)
+        leader_run = self.run_record("leader-run", str(self.project))
+        leader_run.update(claude_session_id="s3", started_at=(self.clock - dt.timedelta(seconds=30)).isoformat(),
+                          ended_at=None, exit_code=None)
+        records.append(leader_run)
         self.write(self.runs, records)
         state = self.state()
+        self.assertEqual([row["id"] for row in state["leaders"][0]["codex"]], ["leader-run"])
         members = {member["session_id"]: member for member in state["members"]}
         self.assertEqual({sid: row["where"] for sid, row in members.items()},
                          {"s1": "vscode", "s2": "offline", created["session_id"]: "bg"})
