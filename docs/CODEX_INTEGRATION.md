@@ -6,7 +6,7 @@
 
 2026-10-24，接入分支 `codex/multi-runtime` 从 `e45420a` 建立，位置 `Temp/wt/multi-runtime`。只在该 worktree 开发。用户已表示会协调隔壁 Claude，让它先完成当前工作。
 
-`Temp/wt/chandigest` 正在修改交流区摘要，涉及 `chat.py` 的 executable helper / `_launch`，以及 CLI、schema、Web 服务、前端主文件与测试。独立 worktree 不能避免这些位置的合并冲突。当前先新增 Codex 客户端、事件转换和独立测试，不修改这些共享文件；待摘要提交后，基于最新代码接入，保留它的行为与测试。
+先提交独立 Codex 模块，随后合入 Claude 已提交的交流区摘要、leader 优先级和隐藏题号。成员叫醒自己的 leader 已以 `a04ac3f` 推上 main。本轮其余功能仅在该分支开发与隔离验证，未重启正式 47811 服务、未向正式组员发迁移通知。
 
 ## 实施顺序与验收
 
@@ -27,15 +27,25 @@
 
 `codex_events.Events` 将 Codex 通知转成现有网页能理解的 text / assistant / tool_result / status 等事件。activity、context 仅用于内存实时状态；不保存思考内容。只有 `turn.status == completed` 记为成功，failed、interrupted 和未知状态均不记为成功。上下文使用最近请求的 token usage，累计计费用量不当作当前上下文。
 
-## 已有模块与待接入项
+## 已接入模块
 
 - `crew/codex_client.py`：双向 JSONL 客户端。直接启动 npm 安装的原生 Codex，而非 Node 包装进程，使持有的 PID 对应实际运行端。RPC 接受与轮次完成分开；超时不隐式重启或记成功。模型列表来自原生 `model/list`。
 - `crew/codex_events.py`：独立事件转换；兼容当前 contextCompaction item 和旧压缩通知，最终消息覆盖流式片段，忽略重复完成及旧轮次事件。
 - `crew/codex_tools.py`：由宿主绑定 Crew 身份的白板动态工具。可读写自身任务卡、登记真实拍板题号、交接和报告。消息投递通过宿主 callback，未接路由时明确失败；消息幂等和重投由宿主负责。
 - `crew/codex_guard.py`、`crew_codex_hook.py`：Codex Bash / apply_patch 到现有守卫的桥接；完整检查多文件 patch 与移动的两端。身份绑定到启动参数，原生 thread ID 不作为 Crew 权限身份。
 
-目前这些模块独立存在，现有服务和创建页面仍按 Claude 运行。尚未接入运行时选择、Crew ID / Codex ID 持久化、跨工具投递、真实模型多轮执行、桌面入口或远程路由。
+- `crew/codex_runtime.py`：原生 thread 生命周期、Crew 映射、每线程守卫、角色守则、动态白板工具、模型/effort 回报、图片、中断、压缩和恢复。原生 PID 与创建时间的租约防止服务重启后重复启动仍存活的会话。
+- `crew/runtimes.py`、`runtime_catalog.py`：执行工具记录与本机动态模型清单。state 轮询不启动新进程；显式刷新才访问 `model/list`。跨工具不继承不兼容的模型。
+- `crew/messaging.py`、`chat.py`、`hooks.py`：持久混合工具投递，绑定可信 Crew 发信人，工作中排队；外部 Claude 下一次 hook 收取。两种托管会话均将 `CREW_HOME` 与自身 launcher 放入环境，避免隔离测试调用正式 home。
+- `desktop/`：Electron 窗口、工作区选择/新建、托盘、已有服务复用和自有后端的优雅退出。源码、未压缩 exe 和 portable 均使用独立 home 做 smoke。
 
-验证范围：原有 766 项测试基线通过；新增模块使用隔离白板与模拟协议子进程验证。真实本机 CLI 已验证初始化、动态模型清单、原生 PID 和正常退出；隔离 CODEX_HOME 的无模型线程创建已验证每线程 hooks 配置可被解析。以上均不代替真实模型执行与完整应用流程验收。
+验证分层：原有 766 项基线通过；新增白板、权限、消息和协议使用临时数据库 / 假进程回归。真实 Codex 已在临时 Git 项目与 CODEX_HOME 完成动态工具、连续对话、停止后同 thread 恢复、真实 shell 黑名单拒绝、真实 apply_patch 文件归属拒绝且文件未变、模型 effort 回报、手动压缩、中断及中断后继续。真实模型测试不访问正式 Crew home，临时认证配置在测试结束移除。混合工具方向使用宿主集成测试，没有把它说成两家真实模型的对话验收。
 
-每次创建和恢复 Codex 线程时须重新传入宿主生成的 hooks 配置，避免恢复时丢失 Crew 绑定。已核实本机 `config.bypass_hook_trust` 接受布尔值，可仅作用于该线程的已知 Crew hook，无需更改用户全局配置。还须验证实际 hook 执行与命令引用；Codex 对 hook 超时、外部崩溃可能继续执行，且已启动 exec 的 write_stdin 不重复触发 PreToolUse。不能据此承诺所有工具路径均经过守卫。
+每次创建和恢复线程均重新传宿主生成的 hooks 配置。`config.bypass_hook_trust` 仅信任该线程的已知 Crew hook，不更改全局配置。Windows PowerShell 可能把原生 exit 2 映射成 1，本桥使用 exit 0 加显式 JSON deny；真实原生通知已验证状态为 blocked。参考 [官方 hook 输出协议](https://learn.chatgpt.com/docs/hooks) 与 [Windows 退出码问题](https://github.com/openai/codex/issues/54072)。
+
+## 明确边界
+
+- Codex 对 hook 超时、外部崩溃可能继续执行；Crew 观察到执行前 hook 失败会停止自己的会话，但这是故障收敛，不能承诺抢在所有副作用前。已启动 exec 的 `write_stdin` 不重复执行 PreToolUse。其他原生工具或 MCP 需要自己的守卫适配，不能声称所有路径都有同等覆盖。
+- 不在运行中的 Claude 历史上切换执行工具；Codex 原生映射缺失则明确报错，避免悄悄新建历史。Codex 暂不支持转交 VS Code，相关按钮和服务端均阻止误开 Claude URI。
+- Lark 本轮完成交互方案与接入清单，尚未配置专用机器人或验证真实收发。QQ 的新路由与旧按钮保护通过 FakeQQ 验证，未向正式账号发送测试消息。
+- 分支版默认桌面入口会复用指定 home 的健康服务；如果正式旧服务仍在运行，验收新功能请使用独立 `--home`，不要把复用旧服务当成新版本已上线。

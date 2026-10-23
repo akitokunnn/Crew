@@ -1,11 +1,13 @@
 # Crew
 
-让一个人同时指挥很多个 Claude Code 会话。
+让一个人同时指挥多个 Claude Code / Codex 会话。leader、成员、分组和白板保持统一，创建时选择由哪种执行工具干活。
+
+本轮新增桌面工作区入口、人工待办、按项目启用的信任模式、横排总览与评论，以及结构化拍板。使用方法见 [工作流程](docs/WORKFLOWS.md)，Codex 运行时与限制见 [接入说明](docs/CODEX_INTEGRATION.md)，桌面构建与隔离验收见 [desktop/README.md](desktop/README.md)。
 
 - 你先在 VS Code 里和会话聊需求；聊清楚了，这个会话就负责一块范围（雷达、视觉、声纹……），自己派 Codex 干活、自己验收。
 - 用 **leader** 管一组会话，像公司里的 CEO：下属有事报给它，它当中转站——能定的自己定，需要别人知道的转给相关的人，剩下的攒成待拍板等你。leader 可以同时有好几个，各管一组；leader 自己不写代码。
 - 所有会话共用一块**白板**：谁在做什么、谁在等你、设备谁借着、文件归谁、待拍板、交接、日报、用量。
-- **守卫**在任何权限模式下都会拦黑名单上的操作、别人借着的设备、别人宣布归属的文件；启用 Git 管理后，还会拦已收编普通会话的推送、开 PR 和合并操作。所以可以放心开全放行，夜里不会卡在确认框上。
+- **守卫**检查黑名单、设备借用、文件归属和启用后的 Git 管理规则。Claude 使用原有 hooks；Codex 对接原生 shell / apply_patch 执行前 hook，具体覆盖边界见接入说明。项目的信任模式管理自主决策与报告，不会移除守卫。
 - **网页**主要用来和 leader 聊天：左栏是 leader 列表，中间是对话（待拍板卡片置顶），右栏是这一组的架构图，点下属看它的任务卡。左栏"交流区"是所有 leader 和用户的公共频道；下属直接去 VS Code 聊。
 - **QQ**：离开电脑时待拍板推到 QQ 私聊，用 `/leader`、`/1` 这样的命令切换 leader 直接聊。
 - **用量分析**：把 Claude 会话、子 agent、Codex 的 token 用量按 leader → 下属 → Codex、天、模型汇总，并按 API 价折算成金额。
@@ -15,7 +17,7 @@
 
 ## 安装
 
-需要：Windows、Python 3.11 以上（在 PATH 里叫 `python`）、支持 `agents` 和 `stream-json` 的 Claude Code（本机以 2.1.306 验收）。需要在 VS Code 接续时，另需安装 Claude Code 扩展，并由用户信任会话所在的目录；扩展不支持 Restricted Mode。
+需要：Windows、Python 3.11 以上（在 PATH 里叫 `python`）、Git，以及实际选择的 Claude Code（支持 `agents` 和 `stream-json`，本机 2.1.306）或 Codex CLI（本机 0.163.0）。仅用 Codex 可以从桌面入口开始，无需安装 Claude 插件。需要在 VS Code 接续 Claude 会话时，另需 Claude Code 扩展并信任目录；Codex 会话在 Crew 内继续，暂不支持转交给 Claude 编辑器。
 
 1. 拿到代码：`git clone https://github.com/akitokunnn/Crew.git C:\Tools\Crew`
 2. 装插件（用户级，所有项目生效）：
