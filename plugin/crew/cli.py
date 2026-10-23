@@ -92,6 +92,7 @@ def parser():
     c = command("status", True)
     c.add_argument("--project")
     command("who", True).add_argument("name")
+    command("compact", True).add_argument("name", nargs="?")
     command("open").add_argument("name")
     c = command("lease").add_subparsers(dest="action", required=True)
     a = c.add_parser("take")
@@ -223,6 +224,16 @@ def _ago(ts):
     return "%d 天前" % (seconds // 86400)
 
 
+def _context_text(s):
+    context = s["context"]
+    if context is None:
+        return "上下文 未知（%s）" % s["context_reason"]
+    return "上下文 %.0f%%（%s 万 / %s 万）" % (
+        100 * context["used"] / context["max"],
+        format(context["used"] / 10000, ".1f").removesuffix(".0"),
+        format(context["max"] / 10000, ".1f").removesuffix(".0"))
+
+
 def _session_line(s):
     name = ("★ " if s["role"] == "leader" else "") + (s["crew_name"] or s["session_id"][:8])
     state = STATUS_TEXT[s["status"]] + ("（%s）" % s["status_note"] if s["status_note"] else "")
@@ -247,11 +258,11 @@ def _status_text(v, now=None):
             continue
         lines.append("[%s]" % g["name"])
         members = sorted(g["members"], key=lambda s: (s["role"] != "leader", s["crew_name"] or ""))
-        lines.extend(_session_line(s) for s in members) if members else lines.append("  （没有成员）")
+        lines.extend(_session_line(s) + "  " + _context_text(s) for s in members) if members else lines.append("  （没有成员）")
     shown = [s for s in v["ungrouped"] if not inactive(s, now)]
     if shown:
         lines.append("[未分组]")
-        lines.extend(_session_line(s) for s in shown)
+        lines.extend(_session_line(s) + "  " + _context_text(s) for s in shown)
     if len(shown) < len(v["ungrouped"]):
         lines.append("  （另有 %d 个已结束的会话没列出：已收、未命名，或离线超过一天）" % (len(v["ungrouped"]) - len(shown)))
     lines.append("借出：" + ("无" if not v["leases"] else ""))
@@ -294,8 +305,12 @@ def _emit(value, as_json=False, command=None):
             print(value["message"])
         else:
             print("已叫醒 %s，它在后台运行，SendMessage 地址：%s" % (value["name"], value["address"]))
-    elif command in ("whoami", "who"):
+    elif command == "compact":
+        print(value["message"] if "message" in value else "已开始压缩")
+    elif command == "whoami":
         print(_whoami_text(value))
+    elif command == "who":
+        print(_whoami_text(value) + "\n" + _context_text(value))
     elif command == "channel":
         blocks = []
         for message in value:
@@ -365,6 +380,22 @@ def _set_card(conn, session_id, scope, done_when):
         done_when = card["done_when"]
     board.set_card(conn, session_id, scope, done_when)
     return board.card(conn, session_id)
+
+
+def _with_context(home, project_name, sessions):
+    from . import spawn
+    try:
+        state = spawn.request_state(home, project_name)
+    except spawn.ServiceUnavailable as exc:
+        for session in sessions:
+            session.update(context=None, context_reason=str(exc))
+        return
+    contexts = {session["session_id"]: session["context"] for session in [*state["leaders"], *state["members"]]}
+    for session in sessions:
+        sid = session["session_id"]
+        session["context"] = contexts.get(sid)
+        session["context_reason"] = None if session["context"] is not None else (
+            "网页尚无上下文数据" if sid in contexts else "会话未出现在网页状态中")
 
 
 def execute(conn, args, cwd, agents_provider):
@@ -441,14 +472,18 @@ def execute(conn, args, cwd, agents_provider):
             return board.remove_resource(conn, p, args.name, actor)
         return board.resources(conn, p)
     if cmd == "status":
-        return board.status(conn, p, _agents(agents_provider))
+        value = board.status(conn, p, _agents(agents_provider))
+        _with_context(args.home, p, [*value["ungrouped"], *(s for g in value["groups"] for s in g["members"])])
+        return value
     if cmd == "open":
         from . import open_session
         return open_session.cli_open(conn, args.home, board.named_session(conn, p, args.name)["session_id"], agents_provider)
     if cmd == "who":
         s = board.named_session(conn, p, args.name)
         agents = _agents(agents_provider, allow_failure=True)
-        return _with_card(conn, board.update_cc_name(conn, s["session_id"], _cc_name(agents, s["session_id"])))
+        value = _with_card(conn, board.update_cc_name(conn, s["session_id"], _cc_name(agents, s["session_id"])))
+        _with_context(args.home, p, [value])
+        return value
     if cmd == "lease":
         if args.action == "list":
             return board.leases(conn, p)
@@ -523,6 +558,15 @@ def main(argv=None, agents_provider=claude_agents, cwd=None, plugin_root=None):
             value = spawn.request_start(args.home, project, "/api/wake", {
                 "name": args.name, "text": args.text,
                 "caller_session_id": None if _actor(args) == board.HUMAN else _actor(args)})
+            _emit(value, args.json, args.command)
+            return 0
+        if args.command == "compact":
+            from . import spawn
+            with contextlib.closing(store.connect(args.home)) as conn:
+                project = _project(conn, args, cwd)
+                sid = _session_id(args) if args.name is None else board.named_session(conn, project, args.name)["session_id"]
+            value = spawn.request_start(args.home, project, "/api/session/compact", {
+                "session_id": sid, "caller_session_id": _actor(args)})
             _emit(value, args.json, args.command)
             return 0
         if args.command == "install":

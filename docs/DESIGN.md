@@ -124,8 +124,8 @@ Crew/
 | `card [--scope S] [--done-when D] [--json]` | 更新当前会话任务卡（只改给出的字段） |
 | `whoami [--json]` | 我是谁、属于哪个项目和分组、我的 leader 是谁（含 leader 的 cc_name）、任务卡 |
 | `task TEXT` | 更新"在做什么" |
-| `status [--project P] [--json]` | 总览：按分组列会话（状态、在做什么、最后活动时间）、未分组的会话、借出的资源、文件归属、未答的待拍板条数 |
-| `who NAME [--json]` | 某个会话的详情和它现在的 SendMessage 地址 |
+| `status [--project P] [--json]` | 总览：按分组列会话（状态、在做什么、最后活动时间、上下文占比）、未分组的会话、借出的资源、文件归属、未答的待拍板条数 |
+| `who NAME [--json]` | 某个会话的详情、上下文占比和它现在的 SendMessage 地址 |
 | `lease take RES --for T [--until HH:MM] [--overwrites T]` | 借。已被别人借着就打印借用人、用途、借出时间、预计归还，exit 3。自己已借着就更新用途 |
 | `lease give RES [--note T]` | 还。只能还自己借的；`--force --reason T` 可以还别人的（leader 或用户本人用），记事件 |
 | `lease list [--json]` | 借出中的资源 |
@@ -146,9 +146,12 @@ Crew/
 | `usage ...` | 转给 `crew.usage_cli.main(argv, home)`（§8） |
 | `spawn ...` | 通过运行中的网页服务开后台成员会话；dry-run 只看计划（§10） |
 | `wake NAME TEXT` | 同项目任何 leader 或用户叫醒离线组员，在后台续跑同 ID；leader 找别的 leader 时排通知，等它空闲送达（§10） |
+| `compact [NAME]` | 经网页服务压缩会话；只有它自己的 leader 或用户可调用，网页 leader 省略 NAME 或指定自己时排到本轮结束后（§10） |
 | `leader start --name N [--members A,B] [--task T] [--dry-run]` | 调用运行中的网页服务开 leader；服务没开时报错，dry-run 只看计划（§10） |
 | `web [--port 47811] [--open]` | 本机工作区网页；--open 按 cwd 绑定工作区并复用已有服务（§10） |
 | `autostart install\|status\|uninstall` | 当前用户登录自启，不立即启动、停止服务或弹浏览器 |
+
+`status` / `who` 从网页服务 `/api/state` 的会话 `context` 原值取上下文用量，文本显示“上下文 42%（42.1 万 / 100 万）”；服务未运行时显示“上下文 未知”并写明“网页服务没开”，`context` 为 null 时同样显示未知及原因。`--json` 在每个会话里保留 `context` 的原始 `used` / `max`，并用 `context_reason` 说明未知原因，不另算一套用量。
 
 白板写操作同时写一条 events；聊天输出另记在 `chat/<会话ID>.jsonl`。
 
@@ -264,7 +267,9 @@ PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stder
 - 进程启动后和每次设置成功后，发送带唯一 request_id 的 `get_settings` 控制请求；只处理自己发出的该请求成功回执，从 `response.response.applied` 取 model / effort，在内存中保留为 `applied`，供前端显示实际值，无需等待首轮回复。其他 request_id 的设置回执不改变实际值。
 - 上下文占用有两个来源：本服务托管且进程在跑时，在启动、每个主链 `result`、主链 `system/compact_boundary` 后发送 `get_context_usage` 控制请求。复用 request_id 对应机制，只接收本次请求的成功回执，从 `response.response.totalTokens` / `maxTokens` 取精确已用量和上限，不使用取整后的 percentage。进程对象持有 `context={used,max,source:"live"}`，停止后不再返回；尚未回执时为 null。
 - 其他会话沿 `usage.session_titles` 的同一次增量读取估算上下文，不另读全文：按 size / mtime 缓存、从完整行 offset 继续，state 每 3 秒调用。取最后一条非 sidechain、非 `<synthetic>` 且带 usage 的 assistant，已用为 input_tokens + cache_read_input_tokens + cache_creation_input_tokens；后续主链 compact_boundary 改用 compact_metadata.post_tokens，直到新的有效 assistant。上限只查 `models.MODELS.context_window`：Opus 5.5 / Sonnet 5.5 / Fable 5.1 为 1000000，Haiku 4.5 为 200000；未知模型返回 null。结果为 `{used,max,source:"transcript"}`。state 的 leader / member 都带 context，托管进程在跑时优先 live。
-- `/api/session/compact` 复用 Manager 发送 `/compact` 的路径；有网页日志与 spawn 记录的后台 leader / 下属空闲时可压缩，离线时先按既有逻辑续跑原会话。忙返回 409“正在干活，等这一轮结束再压缩”；外部在线返回 409“它在 VS Code 里运行，去那边输入 /compact”；没有托管记录的离线会话提示先叫醒或在 VS Code 打开。请求仍须属于当前工作区。
+- `crew compact [NAME]` 带调用方 `caller_session_id` 请求 `/api/session/compact`，复用 `chat.Manager.compact` 发送 `/compact` 的路径；服务没开时报错，不直接操作会话。目标须属于当前工作区，调用方只有目标所在组的 leader 或用户（HUMAN）可通过，其它返回“只有它自己的 leader 或用户能压缩它”。网页按钮未带调用方时仍按用户处理。
+- 有网页日志与 spawn 记录的后台 leader / 下属空闲时可压缩，离线时先按既有逻辑续跑原会话。忙返回 409“正在干活，等这一轮结束再压缩”；外部在线返回 409“它在 VS Code 里运行，去那边输入 /compact”；没有托管记录的离线会话提示先叫醒或在 VS Code 打开。CLI 将这些原始错误文字带回调用方。
+- 网页托管的 leader 用 `crew compact`（省略名字或指定自己）时，Manager 记一次待压缩标记，返回“这一轮说完后压缩”；本轮主链 `result` 到达、Journal 进入 idle 后消费标记，调用既有压缩路径发送 `/compact`，聊天分隔行和进度照常显示。标记只用一次；进程提前退出就丢弃，写 `compact_cancelled` 事件。非网页托管的 leader 自压提示去 VS Code 输入 `/compact`。
 - `/compact` 请求和 `<command-name>/compact</command-name>` 回显记为 `compact_request` 系统分隔事件，按消息 id 去重；`system/status` 的 compacting 切换进度阶段，compact_boundary 记 `compact` 日志事件（pre_tokens / post_tokens）。浏览器用它显示完成分隔行和 toast。`local_command:"compact"` 的 result 照常回到 idle，SessionStart(source=compact) 钩子沿用既有处理。
 - `Journal` 只在内存保留本轮 activity：requesting / thinking / writing / tool / compacting、工具摘要、开始时间和输出 token。累计已完成调用的真实 `message_delta.usage.output_tokens`，加当前调用估算（thinking 用本块累计 estimated_tokens，text / input_json 按 UTF-8 字节数 / 3），结束后以真实值替换；子代理事件不改阶段、不计 token。idle / offline 清空进度。进度不写入聊天日志。
 - 浏览器刷新只重放 `HOME/chat/<会话ID>.jsonl`，不会启动新进程。聊天事件不含 thinking；assistant 的同 ID 分块合并，完整块替换对应流式文本，重复的 human replay 不再显示。组员发来的消息取 peer origin 的 body 和 name，不需要网页另投一次 stdin。
@@ -295,7 +300,7 @@ PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stder
 | `POST /api/channel` | `project`、`body`、`to`（同项目 leader 名字数组）；用户发言并为点名对象排来源 `web` 的通知，返回 `{message}` |
 | `POST /api/channel/read` | `project`、`id`；推进用户已读位置，返回 `read_id`、`unread`、`latest_id` |
 | `POST /api/session/options` | session_id、可选 model / effort；仅修改给出的字段，在线时写 set_model / apply_flag_settings，运行中 effort 不接受 null |
-| `POST /api/session/compact` | session_id；托管会话空闲时发送 `/compact`，离线有托管记录时续跑后发送；忙或 VS Code 在线返回 409 |
+| `POST /api/session/compact` | session_id、可选 caller_session_id；用户或目标自己的 leader 可调用；网页 leader 自压排到本轮 result 后，其它托管会话空闲时发送 `/compact`，离线有托管记录时续跑后发送；忙或 VS Code 在线返回 409 |
 | `GET /api/chat/history?project=P&session_id=S` | session_id、events、running、busy、read_seq |
 | `GET /api/chat/events?project=P&session_id=S&after=N` | SSE 重放 seq 大于 N 的事件，兼读 Last-Event-ID |
 | `POST /api/chat/send` | session_id、text、可选 images（最多 5 张、单张 ≤ 5 MB）；只允许 leader |

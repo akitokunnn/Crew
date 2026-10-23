@@ -1,5 +1,6 @@
 """Context controls and compact lifecycle using fake Claude processes."""
 import json
+import threading
 import unittest
 from unittest import mock
 
@@ -25,6 +26,22 @@ class ContextRuntimeTests(UsageFixture, unittest.TestCase):
 
     def requests(self, current):
         return [json.loads(line) for line in current.process.stdin.getvalue().splitlines()]
+
+    def running_leader(self, read=True):
+        manager, current, session = self.running("working")
+        board.init_project(self.conn, "demo", self.root)
+        board.join(self.conn, "s1", "demo", "lead", self.root, self.root, "main", role="leader")
+        session = {**board.session(self.conn, "s1"), "spawn_id": session["spawn_id"]}
+        current.stderr_reader = mock.Mock()
+        current.reader = threading.Thread(target=manager._read, args=("s1", current))
+        if read:
+            current.reader.start()
+            self.addCleanup(manager.close)
+        return manager, current, session
+
+    def wait_status(self, current, status):
+        with current.journal.condition:
+            self.assertTrue(current.journal.condition.wait_for(lambda: current.journal.status == status, timeout=3))
 
     def launch(self, manager, session):
         session.update(crew_name="member", role="member", group_name=None, cwd=str(self.root))
@@ -107,6 +124,136 @@ class ContextRuntimeTests(UsageFixture, unittest.TestCase):
         with self.assertRaisesRegex(board.Conflict, "正在干活，等这一轮结束再压缩"):
             manager.compact(session)
         self.assertEqual(current.process.stdin.getvalue(), "")
+
+    def test_self_compact_queues_once_and_result_sends_existing_compact_protocol(self):
+        manager, current, session = self.running_leader()
+        for _ in range(2):
+            self.assertEqual(manager.compact(session, caller_session_id="s1"),
+                             {"ok": True, "message": "这一轮说完后压缩"})
+        self.assertTrue(current.pending_compact)
+        self.assertEqual(self.requests(current), [])
+        current.process.emit({"type": "result", "parent_tool_use_id": "child"})
+        current.process.emit({"type": "assistant", "message": {
+            "id": "child-done", "content": [{"type": "text", "text": "child finished"}]}})
+        with current.journal.condition:
+            self.assertTrue(current.journal.condition.wait_for(
+                lambda: "child-done" in current.journal.assistant, timeout=3))
+        self.assertEqual(self.requests(current), [])
+        self.assertTrue(current.pending_compact)
+        current.process.emit({"type": "result"})
+        with current.journal.condition:
+            self.assertTrue(current.journal.condition.wait_for(
+                lambda: any(event["type"] == "compact_request" for event in current.journal.events), timeout=3))
+        with current.input_lock:
+            sent = [record for record in self.requests(current) if record["type"] == "user"]
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0]["message"]["content"], "/compact")
+        self.assertFalse(current.pending_compact)
+        current.process.emit({"type": "system", "subtype": "status", "status": "compacting"})
+        with current.journal.condition:
+            self.assertTrue(current.journal.condition.wait_for(
+                lambda: current.journal.progress["phase"] == "compacting", timeout=3))
+        current.process.emit({"type": "system", "subtype": "compact_boundary", "compact_metadata": {
+            "pre_tokens": 46123, "post_tokens": 9925}})
+        current.process.emit({"type": "result", "local_command": "compact"})
+        self.wait_status(current, "idle")
+        with current.input_lock:
+            sent = [record for record in self.requests(current) if record["type"] == "user"]
+        self.assertEqual(len(sent), 1)
+        self.assertEqual([event["type"] for event in current.journal.events].count("compact_request"), 1)
+        self.assertEqual([event["type"] for event in current.journal.events].count("compact"), 1)
+
+    def test_self_compact_process_exit_discards_pending_and_records_event(self):
+        manager, current, session = self.running_leader()
+        manager.compact(session, caller_session_id="s1")
+        current.process.finish()
+        self.assertTrue(current.reader_done.wait(3))
+        self.assertFalse(current.pending_compact)
+        self.assertEqual(self.requests(current), [])
+        cancelled = [event for event in current.journal.events if event["type"] == "compact_cancelled"]
+        self.assertEqual(len(cancelled), 1)
+        self.assertEqual(cancelled[0]["reason"], "会话进程已退出，取消这一轮结束后的压缩")
+        self.assertEqual(current.journal.status, "offline")
+
+    def test_self_compact_buffered_result_after_exit_allows_offline_check_and_never_resumes(self):
+        manager, current, session = self.running_leader(read=False)
+        manager.compact(session, caller_session_id="s1")
+        current.process.emit({"type": "result"})
+        current.process.finish()
+        with mock.patch.object(manager, "_launch") as launch:
+            with manager.lock:
+                current.reader.start()
+                manager._check_offline(session)
+            current.reader.join(3)
+            self.assertFalse(current.reader.is_alive())
+        launch.assert_not_called()
+        self.assertFalse(current.pending_compact)
+        self.assertFalse(any(record["type"] == "user" for record in self.requests(current)))
+        self.assertEqual([event["type"] for event in current.journal.events].count("compact_cancelled"), 1)
+
+    def test_self_compact_request_during_result_waits_for_turn_transition(self):
+        manager, current, session = self.running_leader()
+        entered, release, returned = threading.Event(), threading.Event(), threading.Event()
+        self.addCleanup(release.set)
+        original = current.journal.consume
+        response = []
+
+        def consume(record):
+            original(record)
+            if record["type"] == "result":
+                entered.set()
+                self.assertTrue(release.wait(3))
+
+        def request():
+            response.append(manager.compact(session, caller_session_id="s1"))
+            returned.set()
+
+        with mock.patch.object(current.journal, "consume", side_effect=consume):
+            current.process.emit({"type": "result"})
+            self.assertTrue(entered.wait(3))
+            requester = threading.Thread(target=request)
+            requester.start()
+            self.assertFalse(returned.wait(.05))
+            release.set()
+            self.assertTrue(returned.wait(3))
+            requester.join(3)
+        self.assertFalse(requester.is_alive())
+        self.assertEqual(len(response), 1)
+        self.assertTrue(response[0]["ok"])
+        self.assertFalse(current.pending_compact)
+        sent = [record for record in self.requests(current) if record["type"] == "user"]
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0]["message"]["content"], "/compact")
+
+    def test_self_compact_exit_during_validation_never_resumes(self):
+        manager, current, session = self.running_leader()
+        original_path = manager.path
+
+        def exit_before_web_record_check(session_id):
+            current.process.finish()
+            self.assertTrue(current.reader_done.wait(3))
+            return original_path(session_id)
+
+        with mock.patch.object(manager, "path", side_effect=exit_before_web_record_check), \
+                mock.patch.object(manager, "_launch") as launch:
+            with self.assertRaisesRegex(board.Conflict, "去那边输入 /compact"):
+                manager.compact(session, caller_session_id="s1")
+        launch.assert_not_called()
+        self.assertFalse(current.pending_compact)
+        self.assertFalse(any(record["type"] == "user" for record in self.requests(current)))
+
+    def test_idle_self_compact_uses_current_process_without_offline_send_path(self):
+        manager, current, session = self.running_leader()
+        current.journal.set_status("idle")
+        with mock.patch.object(manager, "send") as send, mock.patch.object(manager, "_launch") as launch:
+            result = manager.compact(session, caller_session_id="s1")
+        send.assert_not_called()
+        launch.assert_not_called()
+        sent = self.requests(current)
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0]["message"]["content"], "/compact")
+        self.assertEqual(result, {"ok": True, "message_id": sent[0]["uuid"]})
+        self.assertFalse(current.pending_compact)
 
     def test_compact_external_online_precedes_missing_web_log_error(self):
         manager = self.manager()

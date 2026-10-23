@@ -307,10 +307,12 @@ class Journal:
 class Running:
     def __init__(self, process, journal):
         self.process, self.journal = process, journal
-        self.input_lock = threading.Lock()
+        # A finished turn can start its queued compact through _send under this same lock.
+        self.input_lock = threading.RLock()
         self.control_requests = {}
         self.applied = None
         self.context = None
+        self.pending_compact = False
         self.stderr = collections.deque(maxlen=20)
         self.reader_done = threading.Event()
 
@@ -405,7 +407,14 @@ class Manager:
                     if not record.get("parent_tool_use_id") and (record["type"] == "result" or
                             record["type"] == "system" and record.get("subtype") == "compact_boundary"):
                         self._control(current, "get_context_usage")
-                    current.journal.consume(record)
+                    if record["type"] == "result" and not record.get("parent_tool_use_id"):
+                        with current.input_lock:
+                            current.journal.consume(record)
+                            if current.pending_compact and current.process.poll() is None:
+                                current.pending_compact = False
+                                self._send(session_id, "/compact")
+                    else:
+                        current.journal.consume(record)
                 except (ValueError, KeyError, TypeError) as exc:
                     current.journal.emit("error", text="Claude 协议错误：" + str(exc))
             code = current.process.wait()
@@ -416,7 +425,11 @@ class Manager:
             current.journal.emit("error", text=str(exc))
         finally:
             try:
-                current.journal.set_status("offline")
+                with current.input_lock:
+                    if current.pending_compact:
+                        current.pending_compact = False
+                        current.journal.emit("compact_cancelled", reason="会话进程已退出，取消这一轮结束后的压缩")
+                    current.journal.set_status("offline")
             finally:
                 current.reader_done.set()
 
@@ -547,17 +560,40 @@ class Manager:
             identity = self._send(session_id, text, source=source, identity=identity, images=images)
         return {"ok": True, 'message_id': identity}
 
-    def compact(self, session):
+    def compact(self, session, caller_session_id=None):
         session_id = session["session_id"]
+        self_compact = caller_session_id not in (None, board.HUMAN) and caller_session_id == session_id
         with self.lock:
+            if caller_session_id not in (None, board.HUMAN):
+                with closing(store.connect(self.home)) as conn:
+                    leader = conn.execute(
+                        "SELECT s.* FROM groups g JOIN sessions s ON s.session_id=g.leader_session_id "
+                        "WHERE g.project=? AND g.name=? AND g.closed_at IS NULL AND s.session_id=? "
+                        "AND s.role='leader' AND s.status!='closed' AND s.project=g.project",
+                        (session["project"], session["group_name"], caller_session_id)).fetchone()
+                    if leader is None or board.is_archived(conn, caller_session_id):
+                        raise board.BoardError("只有它自己的 leader 或用户能压缩它")
+                if self_compact and not self.running(session_id):
+                    raise board.Conflict("它在 VS Code 里运行，去那边输入 /compact")
             if self.running(session_id):
-                if self.busy(session_id):
+                if self.busy(session_id) and not self_compact:
                     raise board.Conflict("正在干活，等这一轮结束再压缩")
             elif any(agent["sessionId"] == session_id for agent in self._external_agents()):
                 raise board.Conflict("它在 VS Code 里运行，去那边输入 /compact")
             if (not self.path(session_id).exists() or session["spawn_id"] is None or
                     not (self.home / "spawn" / (session["spawn_id"] + ".json")).exists()):
                 raise board.BoardError("会话没有网页聊天记录或启动记录，请先叫醒它，或在 VS Code 打开后输入 /compact")
+            if self_compact:
+                current = self.processes[session_id]
+                with current.input_lock:
+                    if current.process.poll() is not None:
+                        raise board.Conflict("它在 VS Code 里运行，去那边输入 /compact")
+                    if self.closed:
+                        raise board.BoardError("网页服务正在关闭")
+                    if current.journal.status == "working":
+                        current.pending_compact = True
+                        return {"ok": True, "message": "这一轮说完后压缩"}
+                    return {"ok": True, "message_id": self._send(session_id, "/compact")}
             return self.send(session, "/compact")
 
     def _resume_spec(self, conn, session, now=None):
