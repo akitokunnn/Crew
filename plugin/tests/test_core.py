@@ -759,7 +759,7 @@ class RuleTextTests(unittest.TestCase):
         leader = (PLUGIN / "skills" / "leader" / "SKILL.md").read_text(encoding="utf-8")
         agent = (PLUGIN / "agents" / "leader.md").read_text(encoding="utf-8")
         for content in (leader, agent):
-            for phrase in ("找人不受分组限制", "crew group list", "crew who", "crew say", "--to", "crew channel", "合完 develop", "公共约定", "空闲时送达"):
+            for phrase in ("找人不受分组限制", "crew group list", "crew who", "crew say", "--to", "crew channel", "只放值得用户看的跨组讨论", "公共约定", "空闲时送达", "一条消息说完"):
                 self.assertIn(phrase, content)
         for phrase in ("## 交流区", "只是告知或回\"收到\"不点名", "下一轮开始时自动附上摘要", "等同用户直接对你说"):
             self.assertIn(phrase, leader)

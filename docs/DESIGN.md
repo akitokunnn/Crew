@@ -464,7 +464,7 @@ CREATE TABLE IF NOT EXISTS git_result_handoffs (
 );
 ```
 
-管理员按请求与任务卡核对范围，用 `git merge-tree` 预合并，按规则选择直接合或推分支开 PR，等待 CI 通知后合并，再 resolve、在交流区说明结果、通知受影响和要 rebase 的负责人，最后清理已合并分支与 worktree。机械冲突自己解决；行为冲突要取舍、合 stable 或发版、force push 或改写已推送历史、删除未合并分支、编辑器或设备亲手验收，都先 `crew ask` 登记拍板。读大 diff 和 CI 日志等检查派只读 Codex。多请求先处理小且无冲突的，在交流区说明顺序。
+管理员按请求与任务卡核对范围，用 `git merge-tree` 预合并，按规则选择直接合或推分支开 PR，等待 CI 通知后合并，再 resolve（结果送回提出者，不发交流区；只有改变别组做法的合并才在交流区说一条）、直接通知有在途分支要 rebase 的负责人，最后清理已合并分支与 worktree。机械冲突自己解决；行为冲突要取舍、合 stable 或发版、force push 或改写已推送历史、删除未合并分支、编辑器或设备亲手验收，都先 `crew ask` 登记拍板。读大 diff 和 CI 日志等检查派只读 Codex。多请求先处理小且无冲突的，顺序影响到谁就直接告诉谁。
 
 网页 state 的 leader 项通过管理员 ID 返回 `is_git_admin`，左栏显示“Git”小标。Git 查询返回合并请求，页头“和 git 管理员聊”进入该会话的现有 leader 对话；请求区块活动在前，显示状态、分支、提出者和 PR。
 
