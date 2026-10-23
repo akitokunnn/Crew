@@ -16,7 +16,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import ProxyHandler, build_opener
 from urllib.error import URLError
 
-from . import board, channel, chat, claude_limits, git_view, hooks, models, notifications, open_session, presentation, session_ops, spawn, store, usage, usage_cli, vscode_sessions
+from . import board, channel, chat, claude_limits, git_view, hooks, models, notifications, open_session, presentation, session_ops, spawn, store, themes, usage, usage_cli, vscode_sessions
 
 
 def _text(data, key):
@@ -269,7 +269,8 @@ class Service:
         with self.agents_lock:
             agents, error = self.agents, self.agents_error
         with closing(store.connect(self.home)) as conn:
-            result = {'project': None, 'projects': [{'name': p['name']} for p in board.projects(conn)],
+            result = {'project': None, 'projects': [{key: p[key] for key in ('name', 'theme')} for p in board.projects(conn)],
+                      'themes': themes.THEMES,
                       'models': models.MODELS, 'efforts': models.EFFORTS,
                       'now': self.now().isoformat(), 'agents_error': error, 'notification': self.notification_status(),
                       'leaders': [], 'members': [], 'decisions': [], 'attention': [],
@@ -282,7 +283,7 @@ class Service:
                 # Passing every stored identity preserves the board statuses while process state is unknown.
                 identities = [{"sessionId": s["session_id"]} for s in board.sessions(conn, name)] if error else agents
                 status = board.status(conn, name, identities)
-                result['project'] = {key: status['project'][key] for key in ('name', 'root')}
+                result['project'] = {key: status['project'][key] for key in ('name', 'root', 'theme')}
                 open_groups = {group['name'] for group in status['groups'] if group['closed_at'] is None}
                 removed = {r[0] for r in conn.execute('SELECT session_id FROM session_controls WHERE removed=1')}
                 sessions = [s for s in [*status['ungrouped'], *(s for group in status['groups'] for s in group['members'])]
@@ -431,7 +432,7 @@ class Service:
                 if type(data.get('away')) is not bool:
                     raise ValueError('离开状态必须是 true 或 false')
                 return self.set_away(data['away'])
-            if path in ('/api/channel', '/api/channel/read') and 'project' in data:
+            if path in ('/api/channel', '/api/channel/read', '/api/project/theme') and 'project' in data:
                 body_project = _text(data, 'project')
                 if project_name is not None and body_project != project_name:
                     raise board.BoardError('请求正文和地址中的项目不一致')
@@ -445,6 +446,8 @@ class Service:
                     return board.enable_git(conn, project, _optional_text(data, "base"), stable, now=now)
                 return board.disable_git(conn, project)
             project = self.selected_project(conn, project_name)
+            if path == '/api/project/theme':
+                return board.set_project_theme(conn, project, _text(data, 'theme'), now=now)
             if path == '/api/channel':
                 message = channel.post(conn, project, board.HUMAN, _text(data, 'body'),
                                        data.get('to', []), source='web', now=now)
@@ -676,13 +679,14 @@ class Service:
             return result
 
 
-POST_PATHS = {"/api/project/init", "/api/open", "/api/open/continue", "/api/answer", "/api/spawn", "/api/leader", "/api/wake", "/api/roster/move", "/api/roster/remove", "/api/group/close", "/api/roster/adopt", "/api/chat/send", '/api/chat/read'}
+POST_PATHS = {"/api/project/init", "/api/project/theme", "/api/open", "/api/open/continue", "/api/answer", "/api/spawn", "/api/leader", "/api/wake", "/api/roster/move", "/api/roster/remove", "/api/group/close", "/api/roster/adopt", "/api/chat/send", '/api/chat/read'}
 POST_PATHS.update('/api/session/' + action for action in ('rename', 'archive', 'remove', 'restore', 'undo', 'stop', 'options', 'compact'))
 POST_PATHS.update(('/api/attention/dismiss', '/api/notifications/away'))
 POST_PATHS.update(('/api/decision/hold', '/api/decision/unhold'))
 POST_PATHS.update(('/api/channel', '/api/channel/read'))
 POST_PATHS.update(('/api/git/enable', '/api/git/disable', '/api/git/fetch'))
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+          "/themes.js": ("themes.js", "text/javascript; charset=utf-8"),
           "/sounds.js": ("sounds.js", "text/javascript; charset=utf-8"),
           "/channel.js": ("channel.js", "text/javascript; charset=utf-8"),
           "/git.js": ("git.js", "text/javascript; charset=utf-8"),
@@ -833,11 +837,16 @@ def create_server(home, plugin_root, port=47811, **options):
     return Server(Service(home, plugin_root, **options), port)
 
 
-def serve(home, plugin_root, port=47811, open_browser=False, **options):
+def project_url(port, project_name=None):
     url = 'http://127.0.0.1:%d/' % port
+    return url + ('?' + urlencode({'project': project_name}) if project_name is not None else '')
+
+
+def serve(home, plugin_root, port=47811, open_browser=False, **options):
+    url = project_url(port)
     with closing(store.connect(home)) as conn:
         project = board.project_for_path(conn, options.get('cwd') or Path.cwd())
-    workspace_url = url + ('?' + urlencode({'project': project['name']}) if project else '')
+    workspace_url = project_url(port, project['name'] if project else None)
     if open_browser:
         try:
             with build_opener(ProxyHandler({})).open(url + 'api/state', timeout=3) as response:
@@ -852,8 +861,8 @@ def serve(home, plugin_root, port=47811, open_browser=False, **options):
             webbrowser.open(workspace_url)
             return
     with create_server(home, plugin_root, port, **options) as server:
-        url = 'http://127.0.0.1:%d/' % server.server_port
-        workspace_url = url + ('?' + urlencode({'project': project['name']}) if project else '')
+        url = project_url(server.server_port)
+        workspace_url = project_url(server.server_port, project['name'] if project else None)
         print(url, flush=True)
         if open_browser:
             webbrowser.open(workspace_url)

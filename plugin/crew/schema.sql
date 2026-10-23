@@ -10,6 +10,12 @@ CREATE TABLE IF NOT EXISTS projects (
     created_at  TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS project_themes (
+    project     TEXT PRIMARY KEY REFERENCES projects(name),
+    theme       TEXT NOT NULL,
+    assigned_at TEXT NOT NULL
+);
+
 -- A group is one leader and the members it manages. Group name == the leader's crew name.
 CREATE TABLE IF NOT EXISTS groups (
     project            TEXT NOT NULL,

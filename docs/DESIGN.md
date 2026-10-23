@@ -20,6 +20,8 @@ Crew/
       store.py  schema.sql            存储（主控）
       board.py                        白板读写（项目、会话、分组、资源、借还、归属、拍板、交接、日报、事件）
       cli.py                          命令行解析和输出
+      startup.py menu.py              git 项目快速启动、当前用户右键菜单与 pythonw 入口
+      themes.py                       项目主题目录及浅 / 深色 token
       hooks.py                        各钩子事件
       guard.py                        守卫
       install.py                      写 ~/.crew 下的启动器、PATH 垫片、默认文件
@@ -71,6 +73,7 @@ Crew/
 | `session_options` | `session_id TEXT PRIMARY KEY REFERENCES sessions(session_id)`、`model TEXT`、`effort TEXT`、`set_at TEXT NOT NULL`；两项都为 null 时删行，无记录表示账号默认 |
 | `rule_reads` | `session_id TEXT PRIMARY KEY REFERENCES sessions(session_id)`、`role TEXT NOT NULL`、`digest TEXT NOT NULL`、`read_at TEXT NOT NULL`；记录会话读过的角色守则 sha256 |
 | `git_management` | `project TEXT PRIMARY KEY REFERENCES projects(name)`、`enabled_at TEXT NOT NULL`、`base TEXT NOT NULL`、`stable TEXT`、`admin_session_id TEXT REFERENCES sessions(session_id)`、`branch_rules TEXT`；每项目一行，后两项留给第二期 |
+| `project_themes` | `project TEXT PRIMARY KEY REFERENCES projects(name)`、`theme TEXT NOT NULL`、`assigned_at TEXT NOT NULL`；每项目一套主题，独立新表，不改变 `projects` |
 
 `decision_holds` 由 `schema.sql` 的 `CREATE TABLE IF NOT EXISTS` 在连接数据库时创建，不改变现有表结构、不需要迁移。`board.decisions` 返回 `held` 布尔值和可空的 `held_at`，默认仍列出全部 open 题，供下属侧 `crew` 沿用未答逻辑。
 
@@ -87,6 +90,8 @@ Crew/
 发言人名字和点名名字保留发言时的快照。`channel_mentions.notice_id` 关联本次点名的 leader 通知；非空表示已排通知，摘要据此排除该点名发言，不依赖 `leader_notices.sent_at`；自己点自己保留点名但 notice_id 为 null，仍按自己的发言排除。每个 leader、读全文的组员与用户分别维护游标，更新只前进；用户未读数不含自己发的言，空频道最新 id 为 0。这三表由连接数据库时的 `CREATE TABLE IF NOT EXISTS` 创建；合并后照常重启网页服务，无需迁移已有表。
 
 ## 2. 身份和项目
+
+- **项目主题**：`themes.py` 定义六套主题，state 下发完整的浅 / 深色 token。新项目在启用事务内保存主题，先取目录中尚未被任何项目使用的第一套；都用过后按已分配项目数取模轮转。旧项目首次读取时，按 `projects.created_at, projects.rowid` 补齐缺失记录并写入 `project_themes`；已有记录保持不变，切换主题更新该表并记录 `project:theme` 事件。浅 / 深 / 跟随系统是浏览器独立设置。
 
 - **会话 ID**：钩子从输入 JSON 的 `session_id` 取；命令行从环境变量 `CLAUDE_CODE_SESSION_ID` 取（Claude Code 会给工具命令设这个变量）。命令行也接受 `--session ID`。需要会话身份的命令拿不到 ID 时报错退出（exit 1），并说明"请在 Claude 会话里运行，或加 --session"。不需要身份的命令（status、decisions、answer 等）在普通终端里也能用，此时操作人记作 `user`。
 - **crew 名**：人起的稳定名字（雷达、视觉）。同一项目里，未离线（status 不是 offline / closed）的会话不能重名，重名时 join 报冲突（exit 3）。
@@ -118,6 +123,8 @@ Crew/
 |---|---|
 | `install` | 写 HOME 下的 runtime.json、crew.py、bin/crew.cmd；blacklist.txt、prices.json 不存在时从 defaults 复制。可重复执行 |
 | `init [--name N] [--root DIR]` | 启用项目。root 默认是当前目录的 git toplevel，name 默认取 root 的目录名 |
+| `start [--cwd DIR] [--name N]` | 从当前目录或指定目录找 git 根，未启用时自动启用；确保默认网页服务运行并打开项目页 |
+| `menu install\|status\|uninstall` | 管理当前用户的文件夹与空白处右键入口，输出安装状态和实际命令 |
 | `projects` | 列出项目 |
 | `resource add NAME [--kind device\|dir\|app\|other] [--desc T] [--guard REGEX]` / `resource list` / `resource rm NAME` | 资源。guard 正则先 `re.compile` 校验，非法就报错 |
 | `join NAME [--task T] [--scope S] [--done-when D] [--role member\|leader] [--group G]` | 当前会话认领 crew 名，可同时写任务卡；省略 --task 保留原任务。role=leader 时同时建（或接管）同名分组；进了有 leader 的组时给 leader 排通知 |
@@ -280,7 +287,8 @@ PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stder
 
 | 接口 | 内容 |
 |---|---|
-| `GET /api/state?project=P` | `project`、`projects`（只有名字）、`leaders`（状态、未读、`read_seq`、本组未挂起的待拍板数 `pending`、待发通知数、成员）、`members`（有名字的非 leader：所在位置 bg / vscode / offline、任务、任务卡、最近 5 条进展、运行中和 24 小时内的 Codex、借用与文件归属）、`decisions`（只含未答，带提问者、其 leader、`held` 布尔值、可空 `held_at`）、`candidates`（三组）、`channel`（用户交流区 `unread` 未读数、`latest_id` 最新发言 id）、`limits`（Claude 两个窗口、Codex，拿不到为 null）、`attention`（QQ 推送用，跳过挂起题）、`notification`（含 channel 状态与 detail）、`agents_error`、`vscode_error`。journal 按文件签名缓存 |
+| `GET /api/state?project=P` | `project`（含 `name/root/theme`）、`projects`（每项 `name/theme`）、`themes`（完整主题目录及浅 / 深 token）、`leaders`（状态、未读、`read_seq`、本组未挂起的待拍板数 `pending`、待发通知数、成员）、`members`（有名字的非 leader：所在位置 bg / vscode / offline、任务、任务卡、最近 5 条进展、运行中和 24 小时内的 Codex、借用与文件归属）、`decisions`（只含未答，带提问者、其 leader、`held` 布尔值、可空 `held_at`）、`candidates`（三组）、`channel`（用户交流区 `unread` 未读数、`latest_id` 最新发言 id）、`limits`（Claude 两个窗口、Codex，拿不到为 null）、`attention`（QQ 推送用，跳过挂起题）、`notification`（含 channel 状态与 detail）、`agents_error`、`vscode_error`。journal 按文件签名缓存 |
+| `POST /api/project/theme` | `{project,theme}` 保存当前项目主题，返回 `{ok:true,theme}`；正文和地址的项目必须一致，未知主题或项目返回错误 |
 | `POST /api/project/init` | name、root；启用已有本机目录 |
 | `POST /api/roster/adopt` | session_id、name、可选 group；没在运行的候选也能收编；进有 leader 的组时排 leader 通知 |
 | `POST /api/roster/move` / `POST /api/roster/remove` | 换组 / 退组，按 session_id |
@@ -330,6 +338,12 @@ PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stder
 - 网页 leader 的 QQ 消息进入同一 input stream，journal 标记 source=qq；马上回执已转交或忙时排队，回复截至这条消息之后第一个 idle/offline，结束后发回最后一段文字。长回复按段落切分，`TEXT_LIMIT = 2000` 是为了手机好读；10-23 主控实测 5000 字能发。没有文字、启动失败等都给明确答复，不在网页后台运行的 leader 明确拒绝。截图复用网页图片校验和保存（最多 5 张、单张 ≤ 5 MB），语音用平台识别文字，视频和文件明确拒绝。详见 [QQ.md](QQ.md)。
 - 网页 `notification.channel` 提供 unconfigured、unbound、connecting、connected、reconnecting、rejected、error 和真实 detail；左下角显示 QQ 状态与绑定、拒收操作提示，无通道开关。
 - `autostart` 用当前用户 InteractiveToken 计划任务，普通权限、登录触发、隐藏运行，不保存密码。任务指向主检出；默认端口已有 Crew 时保留原服务，不重复启动。不在睡眠、休眠或注销期间维持收信。
+
+### 快速启动与资源管理器入口
+
+`crew start` 先执行 `git -C <cwd> rev-parse --show-toplevel`，非 git 目录报错。按根目录精确匹配已启用项目；未启用时调用 `board.init_project`，名字取根文件夹名或 `--name`，同名或目录冲突明确报错。已启用则沿用原项目名。检查默认端口 47811 的 Crew 服务，未运行时调用当前用户已安装的 `Crew Web (<SID>)` 计划任务；任务不存在时输出 `crew autostart install` 的完整命令。等待服务最多 20 秒，超时报错；不安装任务、不直接起第二个网页服务。就绪后与 `web.serve` 共用 `project_url` 生成 `http://127.0.0.1:47811/?project=<编码后的名字>`，打开浏览器并输出“Crew 已启动：<项目名> → <地址>”。
+
+`menu.py` 集中操作当前用户注册表 HKCU，键为 `Software\Classes\Directory\shell\Crew` 与 `Software\Classes\Directory\Background\shell\Crew`。两处默认值均为“在这里启动 Crew”，`Icon` 指向仓库内 `web/logo.ico`，各自 `command` 默认值为带引号的 `pythonw.exe`、`menu.py` 绝对路径、`--home "<HOME>" --cwd "%V\."`。`\.` 让驱动器根目录等带尾反斜线的路径不会转义结束引号，随后归一化为原目录。入口调用同一 `crew start`；git 和计划任务调用隐藏控制台，失败通过 Windows 消息框展示原因。`install` 可重装以刷新路径，`status` 列出两处实际指向，`uninstall` 仅删除这两个 Crew 键。测试注入假注册表和计划任务 runner，不操作系统资源。
 - leader 巡查只按需：用户问时 leader 再去查，不做定时巡查。
 
 ## 11. 错误处理

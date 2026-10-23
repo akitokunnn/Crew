@@ -61,6 +61,24 @@ $result | ConvertTo-Json -Compress
 '''
 
 
+START_SCRIPT = r'''
+$ErrorActionPreference = 'Stop'
+[Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+$request = [Console]::In.ReadToEnd() | ConvertFrom-Json
+$sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$name = 'Crew Web (' + $sid + ')'
+$scheduler = New-Object -ComObject Schedule.Service
+$scheduler.Connect()
+$folder = $scheduler.GetFolder('\')
+$task = @($folder.GetTasks(1) | Where-Object { $_.Name -eq $name })[0]
+if ($null -ne $task) {
+    $null = $task.Run($null)
+}
+@{installed=($null -ne $task); task_name=$name} | ConvertTo-Json -Compress
+'''
+
+
 def _windows():
     if sys.platform != "win32":
         raise OSError("登录自启只支持 Windows")
@@ -74,10 +92,10 @@ def _hidden_console():
 
 
 def configure(action, home, plugin_root, runner=subprocess.run, executable=None):
-    """Install/query/remove only this user's task, without a board connection."""
+    """Operate only this user's task, without a board connection."""
     _windows()
-    if action not in ("install", "status", "uninstall"):
-        raise ValueError("登录自启操作必须是 install / status / uninstall")
+    if action not in ("install", "status", "uninstall", "start"):
+        raise ValueError("登录自启操作必须是 install / status / uninstall / start")
     request = {"action": action}
     if action == "install":
         common = runner(["git", "-C", str(plugin_root), "rev-parse", "--path-format=absolute", "--git-common-dir"],
@@ -92,7 +110,8 @@ def configure(action, home, plugin_root, runner=subprocess.run, executable=None)
             raise FileNotFoundError("找不到隐藏启动解释器: " + str(pythonw))
         request.update(executable=str(pythonw), root=str(root),
                        arguments=subprocess.list2cmdline([str(entry), "--home", str(Path(home).resolve())]))
-    encoded = base64.b64encode(TASK_SCRIPT.encode("utf-16-le")).decode("ascii")
+    script = START_SCRIPT if action == "start" else TASK_SCRIPT
+    encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
     # CREATE_NO_WINDOW already hides this host. -WindowStyle requires a console
     # window and can abort Windows PowerShell before it executes the script.
     result = runner(["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
@@ -115,11 +134,11 @@ def describe(result, action):
     return "\n".join(lines)
 
 
-def _existing_server():
+def _existing_server(timeout=3):
     # A manually started Crew may already own the default port at logon.
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
-        with opener.open("http://127.0.0.1:47811/api/state", timeout=3) as response:
+        with opener.open("http://127.0.0.1:47811/api/state", timeout=timeout) as response:
             state = json.load(response)
     except urllib.error.URLError as exc:
         if isinstance(exc.reason, ConnectionRefusedError):

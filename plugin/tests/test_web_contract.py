@@ -11,7 +11,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import ProxyHandler, Request, build_opener
 
-from crew import board, store, usage, web
+from crew import board, store, themes, usage, web
 from test_shell import NOW, PLUGIN, ShellFixture
 from test_usage import assistant
 
@@ -78,11 +78,13 @@ class WebContractTests(ShellFixture, unittest.TestCase):
 
     def test_state_exact_shape_and_empty_limits(self):
         expected = {"project", "projects", "now", "agents_error", "notification", "leaders",
-                    "members", "decisions", "candidates", "attention", "limits", "vscode_error", "models", "efforts", "channel"}
+                    "members", "decisions", "candidates", "attention", "limits", "vscode_error", "models", "efforts", "channel", "themes"}
         state = self.state()
         self.assertEqual(set(state), expected)
-        self.assertEqual(set(state["project"]), {"name", "root"})
-        self.assertEqual(state["projects"], [{"name": "demo"}])
+        self.assertEqual(set(state["project"]), {"name", "root", "theme"})
+        self.assertEqual(state["projects"], [{"name": "demo", "theme": "celadon"}])
+        self.assertEqual(state["project"]["theme"], "celadon")
+        self.assertEqual(state["themes"], themes.THEMES)
         self.assertEqual(state["channel"], {"unread": 0, "latest_id": 0})
         self.assertEqual(state["limits"], {"claude": {"five_hour": None, "seven_day": None}, "codex": None})
         leader = state["leaders"][0]
@@ -98,6 +100,20 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual(landing["channel"], {"unread": 0, "latest_id": 0})
         for key in ("leaders", "members", "decisions", "attention"):
             self.assertEqual(landing[key], [])
+
+    def test_project_theme_api_persists_choice_and_rejects_invalid_theme(self):
+        before = self.state()["project"]
+        self.assertEqual(self.request("/api/project/theme", {"project": "demo", "theme": "wisteria"})[:2],
+                         (200, {"ok": True, "theme": "wisteria"}))
+        selected = self.state()
+        self.assertEqual(selected["project"], {**before, "theme": "wisteria"})
+        self.assertEqual(selected["projects"], [{"name": "demo", "theme": "wisteria"}])
+        self.assertEqual(self.state(None)["projects"], [{"name": "demo", "theme": "wisteria"}])
+        self.assertEqual(board.project(self.conn, "demo")["theme"], "wisteria")
+        code, response, _ = self.request("/api/project/theme", {"project": "demo", "theme": "neon"})
+        self.assertEqual(code, 400)
+        self.assertIn("主题", response["error"])
+        self.assertEqual(self.state()["project"]["theme"], "wisteria")
 
     def test_members_project_cards_recent_progress_codex_and_three_locations(self):
         board.ensure_spawn_group(self.conn, "demo", "without-leader", now=NOW)
@@ -568,7 +584,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
                 self.assertTrue(content)
                 self.assertEqual(headers["Content-Type"], media)
                 self.assertEqual(headers["Cache-Control"], "public, max-age=604800")
-        for path in ("/", "/app.js", "/chat.js", "/channel.js", "/style.css", "/vendor/markdown-it.min.js", "/api/state"):
+        for path in ("/", "/app.js", "/chat.js", "/channel.js", "/themes.js", "/style.css", "/vendor/markdown-it.min.js", "/api/state"):
             with self.subTest(path=path):
                 code, _, headers = self.request(path, raw=True)
                 self.assertEqual(code, 200)
@@ -602,6 +618,97 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         _, app, _ = self.request("/app.js", raw=True)
         self.assertIn('data-view="git"', app.decode("utf-8"))
         self.assertIn('CrewGit.mount', app.decode("utf-8"))
+
+
+class FrontendThemeContractTests(unittest.TestCase):
+    def test_theme_assets_settings_and_project_list_contract(self):
+        assets = PLUGIN / "crew" / "web"
+        index = (assets / "index.html").read_text(encoding="utf-8")
+        app = (assets / "app.js").read_text(encoding="utf-8")
+        css = (assets / "style.css").read_text(encoding="utf-8")
+        self.assertIn('id="project-favicon"', index)
+        self.assertLess(index.index('src="/themes.js"'), index.index('src="/app.js"'))
+        for contract in ('data-act="project-theme"', 'class="theme-swatches"',
+                         'aria-pressed="${state.project.theme === item.id}"',
+                         'api("/api/project/theme", {project:state.project.name, theme:button.dataset.themeId})',
+                         'CrewTheme.projectStyle(state.themes, item.theme)',
+                         'addEventListener("change", applyTheme)'):
+            self.assertIn(contract, app)
+        self.assertIn('.dot.working{background:var(--working)', css)
+        self.assertIn('.st.working{color:var(--working-text)}', css)
+        self.assertIn('.m-lead .body a{color:var(--accent-text)', css)
+        self.assertIn('.theme-option[aria-pressed="true"]', css)
+
+    def test_each_project_theme_applies_all_tokens_and_favicon_in_both_modes(self):
+        script = r'''
+const assert = require("node:assert/strict"), fs = require("node:fs"), vm = require("node:vm");
+const themes = JSON.parse(process.argv[2]);
+let systemDark = false;
+const values = new Map(), favicon = {href:""};
+const root = {dataset:{}, style:{setProperty:(key, value) => values.set(key, value)}};
+const sandbox = {document:{documentElement:root, getElementById:id => {assert.equal(id,"project-favicon"); return favicon;}}, matchMedia:() => ({matches:systemDark})};
+sandbox.window = sandbox;
+vm.createContext(sandbox);
+vm.runInContext(fs.readFileSync(process.argv[1], "utf8"), sandbox);
+const component = sandbox.CrewTheme;
+for (const item of themes) for (const mode of ["light", "dark"]) {
+  component.setMode(mode); component.apply(themes, item.id, mode);
+  assert.equal(root.dataset.projectTheme, item.id);
+  assert.equal(root.dataset.theme, mode);
+  assert.equal(values.size, Object.keys(item[mode]).length);
+  for (const [token, value] of Object.entries(item[mode])) assert.equal(values.get(token), value);
+  const icon = decodeURIComponent(favicon.href.slice("data:image/svg+xml,".length));
+  assert(icon.includes('fill="' + item[mode]["--accent"] + '"'));
+  assert(icon.includes('stroke="' + item[mode]["--on-accent"] + '"'));
+  assert(icon.includes('cx="17.4"'));
+  const row = component.projectStyle(themes, item.id);
+  assert(row.includes("--project-accent-light:" + item.light["--accent"]));
+  assert(row.includes("--project-accent-dark:" + item.dark["--accent"]));
+}
+component.setMode("system");
+assert(!Object.hasOwn(root.dataset, "theme"));
+systemDark = true; component.apply(themes, "lotus", "system");
+assert.equal(values.get("--accent"), themes[3].dark["--accent"]);
+systemDark = false; component.apply(themes, "lotus", "system");
+assert.equal(values.get("--accent"), themes[3].light["--accent"]);
+component.apply(themes, "lotus", "dark");
+assert.equal(values.get("--accent"), themes[3].dark["--accent"]);
+component.apply(themes, null, "light");
+assert.equal(root.dataset.projectTheme, "celadon");
+'''
+        result = subprocess.run(["node", "-e", script, str(PLUGIN / "crew" / "web" / "themes.js"),
+                                 json.dumps(themes.THEMES)],
+                                capture_output=True, text=True, encoding="utf-8", timeout=10)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_all_six_palettes_share_tokens_and_body_button_link_contrast_is_aa(self):
+        def luminance(color):
+            channels = [int(color[index:index + 2], 16) / 255 for index in (1, 3, 5)]
+            linear = [value / 12.92 if value <= .04045 else ((value + .055) / 1.055) ** 2.4
+                      for value in channels]
+            return sum(value * weight for value, weight in zip(linear, (.2126, .7152, .0722)))
+
+        def contrast(first, second):
+            low, high = sorted((luminance(first), luminance(second)))
+            return (high + .05) / (low + .05)
+
+        self.assertEqual(len(themes.THEMES), 6)
+        self.assertEqual(themes.THEMES[0]["light"]["--accent"], "#3E7C74")
+        self.assertEqual(themes.THEMES[0]["dark"]["--accent"], "#7DB3AA")
+        expected_tokens = {"--accent", "--accent-strong", "--accent-text", "--on-accent",
+                           "--accent-soft", "--accent-softer", "--bg", "--panel", "--panel-2",
+                           "--surface", "--surface-2", "--user-bubble"}
+        for item in themes.THEMES:
+            for mode in ("light", "dark"):
+                with self.subTest(theme=item["id"], mode=mode):
+                    palette = item[mode]
+                    self.assertEqual(set(palette), expected_tokens)
+                    for background in ("--bg", "--panel", "--panel-2", "--surface", "--surface-2"):
+                        self.assertGreaterEqual(contrast(palette["--accent-text"], palette[background]), 4.5)
+                        self.assertGreaterEqual(contrast("#2C2B27" if mode == "light" else "#E7E4DB",
+                                                         palette[background]), 4.5)
+                    for button in ("--accent", "--accent-strong"):
+                        self.assertGreaterEqual(contrast(palette["--on-accent"], palette[button]), 4.5)
 
 
 class FrontendChannelContractTests(unittest.TestCase):

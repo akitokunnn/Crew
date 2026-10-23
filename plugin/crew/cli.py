@@ -62,6 +62,9 @@ def parser():
     c = command("init")
     c.add_argument("--name")
     c.add_argument("--root", type=Path)
+    c = command("start")
+    c.add_argument("--cwd", type=Path)
+    c.add_argument("--name")
     command("projects")
     c = command("git").add_subparsers(dest="action", required=True)
     a = c.add_parser("enable")
@@ -181,6 +184,9 @@ def parser():
     c = command("autostart").add_subparsers(dest="action", required=True)
     for action in ("install", "status", "uninstall"):
         c.add_parser(action).add_argument("--json", action="store_true")
+    c = command("menu").add_subparsers(dest="action", required=True)
+    for action in ("install", "status", "uninstall"):
+        c.add_parser(action)
     c = command("events")
     c.add_argument("--session", dest="session_name")
     c.add_argument("--limit", type=int, default=50)
@@ -502,6 +508,15 @@ def main(argv=None, agents_provider=claude_agents, cwd=None, plugin_root=None):
             from . import autostart
             value = autostart.configure(args.action, args.home, plugin_root)
             print(json.dumps(value, ensure_ascii=False, indent=2) if args.json else autostart.describe(value, args.action))
+            return 0
+        if args.command == "menu":
+            from . import menu
+            print(menu.describe(menu.configure(args.action, args.home, plugin_root), args.action))
+            return 0
+        if args.command == "start":
+            from . import startup
+            value = startup.start(args.home, plugin_root, cwd if args.cwd is None else args.cwd, args.name)
+            print("Crew 已启动：%s → %s" % (value["name"], value["url"]))
             return 0
         if args.command == "spawn" or (args.command == "leader" and args.action == "start"):
             from . import spawn

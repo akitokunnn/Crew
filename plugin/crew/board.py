@@ -8,7 +8,7 @@ import json
 import os
 import re
 
-from . import store
+from . import store, themes
 
 # Actor recorded for actions taken by the human from the web page or a plain terminal.
 HUMAN = "user"
@@ -58,8 +58,32 @@ def record_event(conn, kind, project=None, session_id=None, detail=None, now=Non
     _event(conn, kind, project, session_id, detail, now)
 
 
+def _assign_project_themes(conn, now):
+    assigned = [row[0] for row in conn.execute("SELECT theme FROM project_themes")]
+    missing = conn.execute("SELECT p.name FROM projects p LEFT JOIN project_themes t ON t.project=p.name "
+                           "WHERE t.project IS NULL ORDER BY p.created_at,p.rowid").fetchall()
+    for row in missing:
+        unused = [theme for theme in themes.IDS if theme not in assigned]
+        theme = unused[0] if unused else themes.IDS[len(assigned) % len(themes.IDS)]
+        conn.execute("INSERT INTO project_themes(project,theme,assigned_at) VALUES(?,?,?)",
+                     (row[0], theme, _time(now)))
+        assigned.append(theme)
+
+
+def _ensure_project_themes(conn, now=None):
+    if conn.execute("SELECT 1 FROM projects p LEFT JOIN project_themes t ON t.project=p.name "
+                    "WHERE t.project IS NULL LIMIT 1").fetchone() is None:
+        return
+    if conn.in_transaction:
+        _assign_project_themes(conn, now)
+    else:
+        with transaction(conn):
+            _assign_project_themes(conn, now)
+
+
 def projects(conn):
-    return _rows(conn, "SELECT * FROM projects ORDER BY name")
+    _ensure_project_themes(conn)
+    return _rows(conn, "SELECT p.*,t.theme FROM projects p JOIN project_themes t ON t.project=p.name ORDER BY p.name")
 
 
 def project_for_path(conn, cwd):
@@ -71,7 +95,18 @@ def project(conn, name):
     row = conn.execute("SELECT * FROM projects WHERE name=?", (name,)).fetchone()
     if row is None:
         raise BoardError("项目不存在: " + name)
-    return dict(row)
+    _ensure_project_themes(conn)
+    return {**dict(row), "theme": conn.execute("SELECT theme FROM project_themes WHERE project=?", (name,)).fetchone()[0]}
+
+
+@atomic
+def set_project_theme(conn, project_name, theme, now=None):
+    project(conn, project_name)
+    if theme not in themes.IDS:
+        raise BoardError("主题不存在: %s" % theme)
+    conn.execute("UPDATE project_themes SET theme=?,assigned_at=? WHERE project=?", (theme, _time(now), project_name))
+    _event(conn, "project:theme", project_name, HUMAN, {"theme": theme}, now)
+    return {"ok": True, "theme": theme}
 
 
 def git_config(conn, project_name):
@@ -118,6 +153,7 @@ def init_project(conn, name, root, now=None):
         raise Conflict("项目名称或目录已被使用: " + old["name"])
     if old is None:
         conn.execute("INSERT INTO projects VALUES(?,?,?)", (name, root, _time(now)))
+    _ensure_project_themes(conn, now)
     _event(conn, "project:init", name, None, {"root": root}, now)
     return project(conn, name)
 

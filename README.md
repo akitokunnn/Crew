@@ -22,7 +22,7 @@
    - `claude plugin install crew@crew --scope user`
 3. 新开一个 Claude 会话。会话启动时会自动在 `~/.crew/` 下生成启动器、默认黑名单和价格表。已经开着的会话执行 `/reload-plugins`，或者重开。
 4. 让终端能直接敲 `crew`：把 `%USERPROFILE%\.crew\bin` 加进用户 PATH。加完以后新开的终端才生效；在那之前用 `python %USERPROFILE%\.crew\crew.py`。
-5. 在项目里启用：在项目根目录执行 `crew init`，再登记共享资源，例如：
+5. 安装隐藏启动和右键入口：执行一次 `crew autostart install`、`crew menu install`。之后在任意 git 项目文件夹上或文件夹内空白处右键，选“在这里启动 Crew”，会自动启用项目并打开它的网页；也可以在项目里执行 `crew start`。再按需登记共享资源，例如：
    - `crew resource add 舱体.127 --kind device --desc "主力舱体" --guard "10\.245\.1\.127|f9d7400653b03b50"`
    - `crew resource add 主目录 --kind dir --desc "主工作区 develop"`
    - `crew resource add UE编辑器 --kind app`
@@ -32,6 +32,7 @@
 
 | 想做的事 | 怎么做 |
 |---|---|
+| 在另一个 git 项目打开 Crew | 文件夹或文件夹内空白处右键“在这里启动 Crew”；命令行 `crew start`，也可 `crew start --cwd "C:\项目目录" --name 项目名`。首次自动启用，已有项目直接打开；服务未运行时调用已安装的登录自启任务，最多等 20 秒 |
 | 打开网页 | `crew web --open`：按当前目录打开这个项目的页面（一个项目一个标签页），后台已有服务时直接复用 |
 | 起一个 leader | 网页左栏"起 leader"：起名 + 一句它要管什么 + 模型 + effort；命令行 `crew leader start --name 感知 --task "<这一组的目标>" [--model <模型ID>] [--effort <档位>]` |
 | 把 VS Code 里的会话收编进组 | 在那个会话里说"收编到感知"，它会 `crew join` 写好任务卡并通知 leader；或者在网页"待收编"里点它、起名、选 leader |
@@ -52,6 +53,8 @@
 
 网页"待收编"和 VS Code 的会话列表一致：正在运行的直接列，没在运行也没归档的折叠在"展开 N 个"里，退了组的单独一组。在 VS Code 里取消归档，Crew 不跟着恢复，要恢复就在网页上操作。
 
+每个项目会保存一套主题色，新项目优先分到还没被用的主题，用满六套后轮流分配。左下角齿轮的“主题”可随时切换，按钮、选中态、链接、logo 和标签页图标一起变化；裸地址的项目列表也显示各自配色。浅色 / 深色 / 跟随系统仍由旁边的外观按钮独立切换。
+
 有新的未挂起拍板或 leader 新回复时，网页会响一声短提示音，标签标题显示未挂起的待拍板数；挂起、取消挂起本身不响。锁屏或打开"我已离开"时，未挂起的待拍板推到 QQ；`/q` 只列未挂起题，末尾说明挂起数。挂起时 leader 会收到通知，转告提问者：不卡流程的按推荐继续，卡流程的先做别的、先别再问这道题。左下角显示 QQ 连接、绑定和拒收状态。QQ 的命令和配置见 [docs/QQ.md](docs/QQ.md)；leader 巡查目前只按需（你问它才去查），候选场景见 [docs/PATROL.md](docs/PATROL.md)。
 
 交流区新发言不响提示音，也不推 QQ。左栏角标显示用户未读数，打开交流区或滚到底时记为已读；不点名就不叫醒 leader，下一轮摘要每次最多 10 条、每条正文第一行最多 120 字，全文按需查看。
@@ -63,6 +66,8 @@
 | 命令 | 作用 |
 |---|---|
 | `crew init` / `crew projects` | 启用项目 / 列项目 |
+| `crew start [--cwd DIR] [--name N]` | 找到 git 根目录、首次启用、通过登录自启任务拉起服务并打开项目；非 git 目录或同名项目冲突时明确报错 |
+| `crew menu install\|status\|uninstall` | 安装 / 查看 / 移除当前用户的资源管理器右键入口，无需管理员权限；右键启动不弹终端，失败会弹窗说明原因 |
 | `crew resource add\|list\|rm` | 共享资源，`--guard` 正则让守卫拦住非借用人 |
 | `crew join <名字> [--group G] [--scope S] [--done-when D]` / `crew whoami` / `crew task "<一句话>"` / `crew card --scope S --done-when D` | 收编进组并写任务卡 / 我是谁 / 现在在做什么 / 改负责范围和完成标准 |
 | `crew status` / `crew who <名字>` | 总览 / 某个会话的详情和发消息地址 |
