@@ -735,6 +735,18 @@ class RuleTextTests(unittest.TestCase):
         self.assertIn("**硬规矩：", (PLUGIN / "agents" / "leader.md").read_text(encoding="utf-8"))
         self.assertIn("等用户点头合并", (PLUGIN / "skills" / "member" / "SKILL.md").read_text(encoding="utf-8"))
 
+    def test_channel_and_cross_group_requests_are_explicit(self):
+        leader = (PLUGIN / "skills" / "leader" / "SKILL.md").read_text(encoding="utf-8")
+        agent = (PLUGIN / "agents" / "leader.md").read_text(encoding="utf-8")
+        for content in (leader, agent):
+            for phrase in ("找人不受分组限制", "crew group list", "crew who", "crew say", "--to", "crew channel", "合完 develop", "公共约定", "空闲时送达"):
+                self.assertIn(phrase, content)
+        for phrase in ("## 交流区", "只是告知或回\"收到\"不点名", "下一轮开始时自动附上摘要", "等同用户直接对你说"):
+            self.assertIn(phrase, leader)
+        member = (PLUGIN / "skills" / "member" / "SKILL.md").read_text(encoding="utf-8")
+        for phrase in ("别的组的 leader 找你时照常回答", "要改你手上的计划或范围，先问你自己的 leader", "被别的 leader 用 `crew wake` 叫醒时同样处理"):
+            self.assertIn(phrase, member)
+
 
 class GuardTests(CoreCase):
     def test_blacklist_force_push_variants_and_safe_pushes(self):

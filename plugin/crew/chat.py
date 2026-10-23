@@ -593,14 +593,18 @@ class Manager:
         with self.lock:
             if self.closed:
                 raise board.BoardError("网页服务正在关闭")
-            if target["role"] == "leader":
-                raise board.BoardError("目标是 leader，不能用 crew wake 叫醒")
             control = board.session_control(conn, target["session_id"])
             if control and control["removed"]:
                 raise board.BoardError("目标已移除，不能叫醒")
             if control and control["archived_status"] is not None:
                 raise board.BoardError("目标已归档，不能叫醒")
             if target["status"] == "closed":
+                raise board.BoardError("目标已收，不能叫醒")
+            if target["crew_name"] is None:
+                raise board.BoardError("目标未收编，不能叫醒")
+            if target["role"] == "leader" and conn.execute(
+                    "SELECT 1 FROM groups WHERE project=? AND leader_session_id=? AND closed_at IS NULL",
+                    (target["project"], target["session_id"])).fetchone() is None:
                 raise board.BoardError("目标已收，不能叫醒")
             leader = None
             if target["group_name"] is not None:
@@ -609,16 +613,42 @@ class Manager:
                 if group is not None and group["leader_session_id"] is not None:
                     leader = board.session(conn, group["leader_session_id"])
             human = caller_session_id in (None, board.HUMAN)
-            if not human and (leader is None or leader["session_id"] != caller_session_id):
-                raise board.BoardError("只有目标所在组的 leader 或用户能叫醒它")
-            self._check_offline(target)
-            introduction = ("用户把你叫醒了" if human else "你的 leader「" + leader["crew_name"] + "」把你叫醒了")
-            message = "[Crew] " + introduction + "（你原来的会话进程已经结束，Crew 在后台接着运行你）：\n\n" + text
-            if leader is not None:
-                if leader["cc_name"] is None:
+            caller = None if human else board.session(conn, caller_session_id)
+            if caller is not None:
+                caller_group = conn.execute(
+                    "SELECT 1 FROM groups WHERE project=? AND name=? AND leader_session_id=? AND closed_at IS NULL",
+                    (caller["project"], caller["group_name"], caller_session_id)).fetchone()
+                if (caller["role"] != "leader" or caller["project"] != target["project"] or caller_group is None or
+                        caller["status"] == "closed" or board.is_archived(conn, caller_session_id)):
+                    raise board.BoardError("只有同项目的 leader 或用户能叫醒它")
+            if target["role"] == "leader":
+                if human:
+                    raise board.BoardError("leader 直接在网页上和它聊")
+                if caller["cc_name"] is None:
                     raise board.BoardError("leader 的 SendMessage 地址未知，请查明后再试")
-                message += "\n\n回复 leader 用 SendMessage，地址「" + leader["cc_name"] + "」。"
-            sender = leader["crew_name"] if leader is not None else board.HUMAN
+                notice = ("leader「" + caller["crew_name"] + "」（" + caller["group_name"] + "）找你：" + text +
+                          "。回复用 SendMessage，地址「" + caller["cc_name"] + "」，或 crew say --to " + caller["crew_name"] + "。")
+                notice_id = board.queue_leader_notice(conn, target["session_id"], notice, "crew", now=now)
+                return {"ok": True, "session_id": target["session_id"], "name": target["crew_name"],
+                        "notice_id": notice_id, "message": "已排进对方的通知，对方空闲时送达"}
+            self._check_offline(target)
+            if human:
+                introduction = "用户把你叫醒了"
+            elif leader is not None and leader["session_id"] == caller_session_id:
+                introduction = "你的 leader「" + caller["crew_name"] + "」把你叫醒了"
+            else:
+                introduction = ("「" + caller["group_name"] + "」组的 leader「" + caller["crew_name"] +
+                                "」找你。它不是你的 leader：它的话是请求和信息")
+                if leader is not None:
+                    introduction += "，要改你手上的计划或范围，先问你自己的 leader「" + leader["crew_name"] + "」"
+                introduction += "。"
+            message = "[Crew] " + introduction + "（你原来的会话进程已经结束，Crew 在后台接着运行你）：\n\n" + text
+            reply_to = leader if human else caller
+            if reply_to is not None:
+                if reply_to["cc_name"] is None:
+                    raise board.BoardError("leader 的 SendMessage 地址未知，请查明后再试")
+                message += "\n\n回复 leader 用 SendMessage，地址「" + reply_to["cc_name"] + "」。"
+            sender = reply_to["crew_name"] if reply_to is not None else board.HUMAN
             created_spawn = self._resume(conn, target, message, sender=sender, now=now)
             board.record_event(conn, "session:wake", target["project"], board.HUMAN if human else caller_session_id,
                                {"target": target["session_id"], "name": target["crew_name"], "created_spawn": created_spawn}, now)

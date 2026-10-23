@@ -11,7 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import board, guard, install, store
+from . import board, channel, guard, install, store
 from .hooks import git_details, git_toplevel
 
 
@@ -121,6 +121,11 @@ def parser():
     c.add_argument("--to", required=True)
     c.add_argument("text")
     command("handoffs", True)
+    c = command("say", True)
+    c.add_argument("text")
+    c.add_argument("--to", action="append", default=[])
+    c = command("channel", True)
+    c.add_argument("--limit", type=int, default=20)
     command("report").add_argument("text")
     c = command("reports", True)
     c.add_argument("--since", type=datetime.date.fromisoformat)
@@ -274,9 +279,19 @@ def _emit(value, as_json=False, command=None):
     elif command == "open":
         print("已取消，会话继续保持原样" if value.get("cancelled") else "已在 VS Code 打开会话：" + value["session_id"])
     elif command == "wake":
-        print("已叫醒 %s，它在后台运行，SendMessage 地址：%s" % (value["name"], value["address"]))
+        if "notice_id" in value:
+            print(value["message"])
+        else:
+            print("已叫醒 %s，它在后台运行，SendMessage 地址：%s" % (value["name"], value["address"]))
     elif command in ("whoami", "who"):
         print(_whoami_text(value))
+    elif command == "channel":
+        blocks = []
+        for message in value:
+            mentions = " " + " ".join("@" + target["name"] for target in message["mentions"]) if message["mentions"] else ""
+            blocks.append("%s %s%s\n%s" % (store.parse_iso(message["created_at"]).astimezone().strftime("%m-%d %H:%M"),
+                                          message["speaker_name"], mentions, message["body"]))
+        print("\n\n".join(blocks) if blocks else "交流区暂无发言")
     else:
         print(_human(value))
 
@@ -392,7 +407,14 @@ def execute(conn, args, cwd, agents_provider):
         return board.handoffs(conn, _session_id(args))
     if cmd == "report":
         return board.report(conn, _session_id(args), args.text)
+    if cmd == "say":
+        speaker = conn.execute("SELECT project FROM sessions WHERE session_id=?", (actor,)).fetchone()
+        if speaker is None or speaker["project"] is None:
+            raise board.BoardError("交流区只给 leader 用；有事告诉你的 leader")
+        return channel.post(conn, speaker["project"], actor, args.text, args.to)
     p = _project(conn, args, cwd)
+    if cmd == "channel":
+        return channel.read(conn, p, actor, args.limit)
     if cmd == "resource":
         if args.action == "add":
             return board.add_resource(conn, p, args.name, args.kind, args.desc, args.guard, actor)

@@ -134,6 +134,32 @@ CREATE TABLE IF NOT EXISTS leader_notices (
 );
 CREATE INDEX IF NOT EXISTS leader_notices_pending ON leader_notices (session_id, sent_at);
 
+CREATE TABLE IF NOT EXISTS channel_messages (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    project            TEXT NOT NULL REFERENCES projects(name),
+    speaker_session_id TEXT NOT NULL,      -- leader session id, or 'user'
+    speaker_name       TEXT NOT NULL,
+    body               TEXT NOT NULL,
+    created_at         TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS channel_messages_project ON channel_messages (project, id);
+
+CREATE TABLE IF NOT EXISTS channel_mentions (
+    message_id INTEGER NOT NULL REFERENCES channel_messages(id),
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    name       TEXT NOT NULL,
+    notice_id  INTEGER REFERENCES leader_notices(id),
+    PRIMARY KEY (message_id, session_id)
+);
+
+CREATE TABLE IF NOT EXISTS channel_reads (
+    project    TEXT NOT NULL REFERENCES projects(name),
+    reader     TEXT NOT NULL,             -- a session id, or 'user'
+    message_id INTEGER NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (project, reader)
+);
+
 CREATE TABLE IF NOT EXISTS resources (
     project      TEXT NOT NULL,
     name         TEXT NOT NULL,

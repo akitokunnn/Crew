@@ -4,6 +4,7 @@
   const esc = value => String(value).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
   const project = new URLSearchParams(location.search).get("project");
   let state = null, view = "all", leaderId = null, readOnlyId = null, mountedChat = null, pollBusy = false, statePromise = Promise.resolve();
+  let mountedChannel = false;
   let allTab = "tree", period = "week", usageTab = "tree", usage = null, usageLoading = false, usageRequest = 0;
   let cardId = null, cardReturn = null, rename = false, handoff = null, rightOpen = false, dialogReturn = null;
   let theme = "system", trayCollapsed = false, othersOpen = false, paletteItems = [], paletteIndex = 0;
@@ -127,6 +128,7 @@
     replace($("sidebar"), `<div class="brand"><img class="brand-logo" src="/logo.svg?v=c-dot" alt=""><div><div class="proj">${esc(state.project.name)}</div><div class="sub">Crew 工作区</div></div></div>
       <button class="search-btn" data-act="palette">${ic("search", "sm")}<span>找 leader 或下属</span><span class="kbd">Ctrl K</span></button>
       <button class="nav-item ${view === "all" ? "active" : ""}" data-act="view" data-view="all">${ic("grid")}<span>全部</span></button>
+      <button class="nav-item ${view === "channel" ? "active" : ""}" data-act="view" data-view="channel">${ic("msg")}<span>交流区</span>${state.channel.unread > 0 ? `<span class="b-unread channel-unread" title="交流区未读">${state.channel.unread}</span>` : ""}</button>
       <div class="sec-label">Leader</div>${state.leaders.map(item => `<button class="leader-item ${view === "chat" && leaderId === item.session_id && readOnlyId === null ? "active" : ""}" data-act="leader" data-id="${esc(item.session_id)}">${av(item.name, 32)}<span class="meta"><span class="nm">${esc(item.name)}${contextRing(item)}${item.busy ? '<span class="typing" title="正在回复"><i></i><i></i><i></i></span>' : ""}</span><span class="goal">${esc(item.goal)}</span></span><span class="badges">${item.pending > 0 ? `<span class="b-pending" title="${item.pending} 件等你拍板">${item.pending}</span>` : ""}${item.unread > 0 ? `<span class="b-unread" title="未读">${item.unread}</span>` : ""}</span></button>`).join("")}
       <button class="leader-item add-leader" data-act="modal-leader"><span class="plus">${ic("plus", "sm")}</span><span>起 leader</span></button>
       <div class="sb-mid"><button class="nav-item ${view === "adopt" ? "active" : ""}" data-act="view" data-view="adopt">${ic("inbox")}<span>待收编</span><span class="count">${state.candidates.running.length} 个在运行</span></button><button class="nav-item ${view === "usage" ? "active" : ""}" data-act="view" data-view="usage">${ic("chart")}<span>用量</span></button></div>
@@ -176,6 +178,15 @@
     CrewChat.update(state);
   }
   function empty(message) { return `<div class="empty">${ic("check")}<div>${message}</div></div>`; }
+  function renderChannel() {
+    if (!mountedChannel) {
+      $("main").innerHTML = '<div class="head"><div><div class="title">交流区</div><div class="sub">所有 leader 和用户的公共频道 · 点名才叫醒</div></div></div><div id="channel-host" class="chat-host"></div>';
+      delete $("main").dataset.render;
+      mountedChannel = true;
+      CrewChannel.mount({host:$("channel-host"), state, api, toast, onRead:channel => { state.channel = {unread:channel.unread, latest_id:channel.latest_id}; renderSidebar(); }});
+    }
+    CrewChannel.update(state);
+  }
   function renderAll() {
     const working = state.members.filter(item => item.status === "working"), pending = state.decisions.filter(item => !item.held), held = state.decisions.filter(item => item.held);
     const chip = (tab, icon, label, amount) => `<button class="pill tab ${allTab === tab ? "on" : ""}" data-act="all-tab" data-tab="${tab}">${icon}${amount === null ? "" : `<b>${amount}</b>`}${label}</button>`;
@@ -300,14 +311,15 @@
     const hash = location.hash.slice(1), params = new URLSearchParams(hash);
     if (params.has("history")) { readOnlyId = params.get("history"); const item = member(readOnlyId); leaderId = item === undefined ? null : item.leader_session_id; view = "chat"; }
     else if (params.has("leader")) { leaderId = params.get("leader"); readOnlyId = null; view = "chat"; }
-    else if (["all", "adopt", "usage"].includes(hash)) { view = hash; readOnlyId = null; }
+    else if (["all", "channel", "adopt", "usage"].includes(hash)) { view = hash; readOnlyId = null; }
     else if (state.leaders.length > 0) { leaderId = state.leaders[0].session_id; readOnlyId = null; view = "chat"; }
     else view = "all";
     if (view === "chat" && (readOnlyId === null ? leader(leaderId) === undefined : member(readOnlyId) === undefined)) { view = "all"; leaderId = null; readOnlyId = null; }
   }
   function render() {
     $("app").classList.toggle("wide", view !== "chat" || leaderId === null); renderSidebar();
-    if (view === "chat") renderChat(); else { if (mountedChat !== null) { CrewChat.unmount(); mountedChat = null; } if (view === "all") renderAll(); if (view === "adopt") renderAdopt(); if (view === "usage") renderUsage(); }
+    if (view !== "channel" && mountedChannel) { CrewChannel.unmount(); mountedChannel = false; }
+    if (view === "chat") renderChat(); else { if (mountedChat !== null) { CrewChat.unmount(); mountedChat = null; } if (view === "all") renderAll(); if (view === "channel") renderChannel(); if (view === "adopt") renderAdopt(); if (view === "usage") renderUsage(); }
     renderRight(); renderCard(); document.title = `(${state.decisions.filter(item => !item.held).length}) ${state.project.name} · Crew`;
   }
   function watchingChat(id) {

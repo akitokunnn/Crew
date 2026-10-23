@@ -16,7 +16,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import ProxyHandler, build_opener
 from urllib.error import URLError
 
-from . import board, chat, claude_limits, hooks, models, notifications, open_session, presentation, session_ops, spawn, store, usage, usage_cli, vscode_sessions
+from . import board, channel, chat, claude_limits, hooks, models, notifications, open_session, presentation, session_ops, spawn, store, usage, usage_cli, vscode_sessions
 
 
 def _text(data, key):
@@ -273,11 +273,12 @@ class Service:
                       'models': models.MODELS, 'efforts': models.EFFORTS,
                       'now': self.now().isoformat(), 'agents_error': error, 'notification': self.notification_status(),
                       'leaders': [], 'members': [], 'decisions': [], 'attention': [],
-                      'candidates': {'running': [], 'others': []},
+                      'candidates': {'running': [], 'others': []}, 'channel': {'unread': 0, 'latest_id': 0},
                       'limits': self.limits(conn)}
             result['vscode_error'] = self.vscode_error
             if project_name is not None:
                 name = self.selected_project(conn, project_name)
+                result['channel'] = channel.state(conn, name)
                 # Passing every stored identity preserves the board statuses while process state is unknown.
                 identities = [{"sessionId": s["session_id"]} for s in board.sessions(conn, name)] if error else agents
                 status = board.status(conn, name, identities)
@@ -408,7 +409,18 @@ class Service:
                 if type(data.get('away')) is not bool:
                     raise ValueError('离开状态必须是 true 或 false')
                 return self.set_away(data['away'])
+            if path in ('/api/channel', '/api/channel/read') and 'project' in data:
+                body_project = _text(data, 'project')
+                if project_name is not None and body_project != project_name:
+                    raise board.BoardError('请求正文和地址中的项目不一致')
+                project_name = body_project
             project = self.selected_project(conn, project_name)
+            if path == '/api/channel':
+                message = channel.post(conn, project, board.HUMAN, _text(data, 'body'),
+                                       data.get('to', []), source='web', now=now)
+                return {'message': message}
+            if path == '/api/channel/read':
+                return channel.mark_read(conn, project, board.HUMAN, data['id'], now=now)
             if path == '/api/attention/dismiss':
                 identity = _text(data, 'id')
                 kind, _, rest = identity.partition(':')
@@ -581,6 +593,10 @@ class Service:
             self.chat_session(conn, self.selected_project(conn, project_name), session_id)
             return {**self.chat.history(session_id), 'read_seq': board.read_seq(conn, session_id)}
 
+    def channel_messages(self, project_name=None, limit=20, before=None):
+        with closing(store.connect(self.home)) as conn:
+            return channel.messages(conn, self.selected_project(conn, project_name), limit=limit, before=before)
+
     def chat_file(self, session_id, name, project_name=None):
         with closing(store.connect(self.home)) as conn:
             self.chat_session(conn, self.selected_project(conn, project_name), session_id)
@@ -634,8 +650,10 @@ POST_PATHS = {"/api/project/init", "/api/open", "/api/open/continue", "/api/answ
 POST_PATHS.update('/api/session/' + action for action in ('rename', 'archive', 'remove', 'restore', 'undo', 'stop', 'options', 'compact'))
 POST_PATHS.update(('/api/attention/dismiss', '/api/notifications/away'))
 POST_PATHS.update(('/api/decision/hold', '/api/decision/unhold'))
+POST_PATHS.update(('/api/channel', '/api/channel/read'))
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"),
           "/sounds.js": ("sounds.js", "text/javascript; charset=utf-8"),
+          "/channel.js": ("channel.js", "text/javascript; charset=utf-8"),
           "/style.css": ("style.css", "text/css; charset=utf-8"), "/chat.js": ("chat.js", "text/javascript; charset=utf-8"),
           "/vendor/markdown-it.min.js": ("vendor/markdown-it.min.js", "text/javascript; charset=utf-8")}
 STATIC.update({'/logo.svg': ('logo.svg', 'image/svg+xml'),
@@ -698,6 +716,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, service.post(url.path, data, query.get("project", [None])[0]))
         elif url.path == "/api/state":
             self._send(200, service.state(query.get("project", [None])[0]))
+        elif url.path == '/api/channel':
+            before = int(query['before'][0]) if 'before' in query else None
+            self._send(200, service.channel_messages(query.get('project', [None])[0],
+                                                    int(query.get('limit', [20])[0]), before))
         elif url.path == '/api/chat/file':
             content, media_type = service.chat_file(query.get('session_id', [''])[0], query.get('name', [''])[0],
                                                     query.get('project', [None])[0])

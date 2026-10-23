@@ -26,6 +26,7 @@ Crew/
       usage.py  usage_cli.py          用量扫描、汇总、命令行
       spawn.py                        后台会话启动计划、任务文件、CLI 转网页服务
       chat.py                         后台成员/leader CLI、流式协议、聊天记录与恢复
+      channel.py                      项目交流区、点名通知与每轮未读摘要
       models.py                       模型 / effort 唯一清单与会话设置
       web.py  web/                    工作区网页和 leader 聊天，含本地 Markdown 库、HarmonyOS Sans 字体、logo
       vscode_sessions.py              复现 VS Code 会话列表与归档名单（只读），供待收编和归档同步
@@ -72,6 +73,16 @@ Crew/
 `decision_holds` 由 `schema.sql` 的 `CREATE TABLE IF NOT EXISTS` 在连接数据库时创建，不改变现有表结构、不需要迁移。`board.decisions` 返回 `held` 布尔值和可空的 `held_at`，默认仍列出全部 open 题，供下属侧 `crew` 沿用未答逻辑。
 
 `schema.sql` 删除旧的单项模型设置表，再用 `CREATE TABLE IF NOT EXISTS` 建立 `session_options` 和 `rule_reads`。模型与 effort 清单只在 `crew/models.py` 定义，`/api/state.models` 带出 id、显示名和上下文上限 `context_window`，`efforts` 带出 low / medium / high / xhigh / max，前端从这份数据生成选项。可选 Opus 5.5、Sonnet 5.5、Fable 5.1、Haiku 4.5；默认跟账号设置走。Haiku 不支持 effort，显式同时指定 Haiku 和非空 effort 报错，切换到 Haiku 会清除原存 effort。
+
+交流区只加三张新表，不改变已有表结构：
+
+| 表 | 字段与约束 |
+|---|---|
+| `channel_messages` | `id INTEGER PRIMARY KEY AUTOINCREMENT`、`project TEXT NOT NULL REFERENCES projects(name)`、`speaker_session_id TEXT NOT NULL`（leader 的 session_id 或 `user`）、`speaker_name TEXT NOT NULL`、`body TEXT NOT NULL`、`created_at TEXT NOT NULL`；索引 `channel_messages_project(project, id)` |
+| `channel_mentions` | `message_id INTEGER NOT NULL REFERENCES channel_messages(id)`、`session_id TEXT NOT NULL REFERENCES sessions(session_id)`、`name TEXT NOT NULL`、`notice_id INTEGER REFERENCES leader_notices(id)`；联合主键 `(message_id, session_id)` |
+| `channel_reads` | `project TEXT NOT NULL REFERENCES projects(name)`、`reader TEXT NOT NULL`（会话 session_id 或 `user`）、`message_id INTEGER NOT NULL`、`updated_at TEXT NOT NULL`；联合主键 `(project, reader)` |
+
+发言人名字和点名名字保留发言时的快照。`channel_mentions.notice_id` 关联本次点名的 leader 通知；非空表示已排通知，摘要据此排除该点名发言，不依赖 `leader_notices.sent_at`；自己点自己保留点名但 notice_id 为 null，仍按自己的发言排除。每个 leader、读全文的组员与用户分别维护游标，更新只前进；用户未读数不含自己发的言，空频道最新 id 为 0。这三表由连接数据库时的 `CREATE TABLE IF NOT EXISTS` 创建；合并后照常重启网页服务，无需迁移已有表。
 
 ## 2. 身份和项目
 
@@ -123,6 +134,8 @@ Crew/
 | `withdraw ID` | 撤回自己的问题 |
 | `handoff --to NAME\|GROUP\|* TEXT` / `handoffs [--json]` | 交接。`handoffs` 列出发给我（我的名字、我的分组、*）还没送达我的 |
 | `report TEXT` / `reports [--since YYYY-MM-DD] [--group G] [--json]` | 日报 |
+| `say TEXT [--to NAME]...` | 本项目 leader 在交流区发言，可重复点名同项目 leader；组员和未收编会话拒绝，点名不存在时报错（§10） |
+| `channel [--limit N]` | leader 和组员看交流区全文，默认最近 20 条，按时间正序列出并把自己的读到位置推到最新 |
 | `group list [--json]` | 分组和成员 |
 | `roster add GROUP NAME...` / `roster remove GROUP NAME...` / `roster move NAME --to GROUP` | 花名册。一个会话只在一个分组里 |
 | `leader close GROUP [--with-members]` | 收掉分组：closed_at 置上；成员的 group_name 清空，带 `--with-members` 时成员 status 改为 closed。不杀进程 |
@@ -130,7 +143,7 @@ Crew/
 | `doctor` | 检查：数据库能打开、blacklist.txt 每行合法、runtime.json 的 plugin_root 存在、当前目录属于哪个项目 |
 | `usage ...` | 转给 `crew.usage_cli.main(argv, home)`（§8） |
 | `spawn ...` | 通过运行中的网页服务开后台成员会话；dry-run 只看计划（§10） |
-| `wake NAME TEXT` | 所在组 leader 或用户叫醒离线下属，在后台续跑同 ID（§10） |
+| `wake NAME TEXT` | 同项目任何 leader 或用户叫醒离线组员，在后台续跑同 ID；leader 找别的 leader 时排通知，等它空闲送达（§10） |
 | `leader start --name N [--members A,B] [--task T] [--dry-run]` | 调用运行中的网页服务开 leader；服务没开时报错，dry-run 只看计划（§10） |
 | `web [--port 47811] [--open]` | 本机工作区网页；--open 按 cwd 绑定工作区并复用已有服务（§10） |
 | `autostart install\|status\|uninstall` | 当前用户登录自启，不立即启动、停止服务或弹浏览器 |
@@ -144,7 +157,7 @@ Crew/
 | 参数 | 事件 | 做什么 | 输出 |
 |---|---|---|---|
 | `session-start` | SessionStart | **不管属不属于项目都先跑 install**（刷新 runtime.json；黑名单不存在时复制默认的，守卫在所有会话里都要用到它）。属于某项目时登记 / 更新会话（带 CREW_* 变量就按它登记；已登记过的会话保留 crew 名）；status=idle。cwd 不是 git 仓库时 worktree / branch 记为空。source 是 resume / compact 时检查守则版本，startup 不重复提醒 | 属于项目时输出 `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"..."}}`，中文告诉会话：项目名、我的 crew 名（没收编时写明不要自己 crew join，等用户说收编）、分组和 leader（含 leader 的 cc_name）、命令行怎么调（`python "<HOME>/crew.py" ...`）、守则 `/crew:member`（leader 是 `/crew:leader`）、发给我还没送达的交接；需要时附守则更新提醒 |
-| `user-prompt-submit` | UserPromptSubmit | status=working，last_prompt。查我提的、已答复但没送达（delivered_at 为空）的待拍板，和没送达我的交接；检查守则版本 | 有内容时输出 UserPromptSubmit 的 additionalContext，并标记送达；需要时附守则更新提醒 |
+| `user-prompt-submit` | UserPromptSubmit | status=working，last_prompt。查我提的、已答复但没送达（delivered_at 为空）的待拍板，和没送达我的交接；检查守则版本；leader 读取交流区未读摘要 | 有内容时输出 UserPromptSubmit 的 additionalContext，并标记送达；需要时附守则更新提醒与交流区摘要 |
 | `stop` | Stop | status=idle，last_message 取输入里的 `last_assistant_message` 前 300 字 | 无 |
 | `notification` | Notification | status=waiting，status_note 取输入里的 `message` | 无 |
 | `pre-ask` | PreToolUse（AskUserQuestion、ExitPlanMode） | status=waiting，note 写"等你回答提问"或"等你审批计划" | 无 |
@@ -157,6 +170,7 @@ Crew/
 - 打卡类事件出错不能影响会话：打一行原因到 stderr，exit 1。**除 guard 外任何事件都不能 exit 2。**
 - 会话的 crew 名、cc_name 不在钩子里调 `claude agents`（太慢）。
 - 守则版本取 `plugin/skills/<role>/SKILL.md` 内容的 sha256，role 使用白板 `sessions.role`。已启用项目中已收编、未归档的 leader / member，在每次 UserPromptSubmit（含会话间消息）和 resume / compact 的 SessionStart 比较 `rule_reads`；没有阅读记录或 digest 不同，就在 additionalContext 加“Crew 守则（/crew:<role>）有更新，你上次读的不是最新版。先调用 /crew:<role> 重读一遍，再处理这条消息。”调用相应 Skill 后写入新 digest，下次不再提醒；文件再次变化后恢复提醒。未收编、归档、角色不符、未启用项目不提醒。热路径只读技能小文件计算摘要，不启动进程或发网络请求。
+- 交流区摘要只在 leader 的 UserPromptSubmit 中追加，与守则提醒共用 additionalContext。按读到位置取本项目新发言，排除自己发的，以及点名当前 leader 且 `channel_mentions.notice_id` 非空的发言；无论通知是否已送达，都不重复进入摘要。无新发言不附加。有内容时第一行为“[Crew 交流区] 你上次看之后有 N 条新发言：”，每条一行 `- HH:MM <名字>（→ @A、@B）：<正文第一行>`，正文超过 120 字截断加“…”；最多 10 条，超过时追加“还有 M 条”，末尾写“全文用 crew channel 看”。读取后把该 leader 的位置推到最新；组员钩子不附交流区摘要。
 
 显式 session_controls 的归档/移出高于上述 hook 状态，closed 不因启动、Stop 或 SessionEnd 改回活跃。compact 只续上下文，保留既有身份、分组与状态，不重放旧 CREW_*。没有显式控制记录的旧 close_group 仍保留主动启动后重开的既有行为。
 
@@ -234,11 +248,13 @@ PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stder
 ## 10. 开新会话和网页
 
 - `spawn --name N --task T [--group G] [--cwd DIR | --new-worktree BRANCH]` 默认开后台成员，调用网页服务的 `/api/spawn`。任务正文写 `HOME/spawn/<id>.md`，参数写 `<id>.json`；复用 leader 的持久 CLI、聊天记录和恢复逻辑。新会话不再开终端窗口。
-- `web [--port 47811] [--open]` 只监听 127.0.0.1，运行期间把地址写入 `HOME/web.json`。一个项目一个标签页（`/?project=P`），裸网址列项目入口，页内不切项目。页面以和 leader 聊天为主：左栏 leader 列表、中间对话（待拍板托盘置顶）、右栏本组架构图与下属卡片，另有全部、待收编、用量页；下属不在网页发言。页面结构和交互见 [WEB_UX.md](WEB_UX.md)。前端用原生 JS 和本地 markdown-it 15.0.2，无构建流程；Python 后端仍只用标准库。
+- `web [--port 47811] [--open]` 只监听 127.0.0.1，运行期间把地址写入 `HOME/web.json`。一个项目一个标签页（`/?project=P`），裸网址列项目入口，页内不切项目。页面以和 leader 聊天为主：左栏 leader 列表、中间对话（待拍板托盘置顶）、右栏本组架构图与下属卡片，另有全部、交流区、待收编、用量页；交流区供用户和 leader 公共发言，下属不在网页发言。页面结构和交互见 [WEB_UX.md](WEB_UX.md)。前端用原生 JS 和本地 markdown-it 15.0.2，无构建流程；Python 后端仍只用标准库。
 - `leader start --name N [--members A,B] [--task T]` 调本机网页服务的 `/api/leader`。`spawn` 和 `leader start` 都先要求运行 `crew web --open`，服务未运行时清楚报错；`--dry-run` 只生成启动计划，不连服务、不写白板、不启动进程。
 - 成员和 leader 都复用 `spawn.prepare` 和任务文件；leader 额外建分组、收编/挪入选定成员。后台进程是 PATH 里的 Claude CLI，通用参数为 `-p --input-format stream-json --output-format stream-json --verbose --include-partial-messages --replay-user-messages --permission-mode bypassPermissions --name N`；仅 leader 追加 `--agent crew:leader`。保持 stdin 打开，不加 `--bare`，保留跨会话收件箱和插件钩子/守卫。任务 brief 指定相应的 `/crew:member` 或 `/crew:leader` 守则，CREW_ROLE 也按角色设置；未分组成员不设置 CREW_GROUP。
 - 启动计划预分配 UUID，首次用 `--session-id`，把会话的角色、分组、cwd、spawn_id 记进白板；续跑用 `--resume` 恢复同 ID，使用白板当前的角色、分组、crew 名、模型和 effort 设置。首次启动及所有后台续跑（包括叫醒、重启恢复）一律 `--permission-mode bypassPermissions`，保留 Crew 守卫。恢复前直接查活进程，同 ID 已在 VS Code 或其他进程里运行时拒绝双开。
-- `crew wake NAME TEXT` 转发 `/api/wake`，只允许所在组 leader 或无会话身份的用户调用；leader、已归档、已移出、已收会话拒绝。在线返回 409，提示直接 SendMessage；agents 首轮未完成或轮询失败时拒绝启动。离线收编会话缺日志时创建日志，缺 spawn_id 时按当前身份与任务创建 spec（md=null）并关联白板。随后用 `--resume --name <crew名>` 启动，cc_name 同步为 crew 名，来源 crew 的叫醒消息显示来自 leader；记录 `session:wake`。
+- `crew wake NAME TEXT` 转发 `/api/wake`。调用方是本项目任何 leader 时，可叫醒任何组或已收编未分组的组员；调用方是组员时拒绝。用户仍可叫醒组员，用户叫醒 leader 报“leader 直接在网页上和它聊”。目标已归档、已移出、已收的检查保持不变。组员在线返回 409，提示直接 SendMessage；agents 首轮未完成或轮询失败时拒绝启动。离线收编会话缺日志时创建日志，缺 spawn_id 时按当前身份与任务创建 spec（md=null）并关联白板。随后用 `--resume --name <crew名>` 启动，cc_name 同步为 crew 名；记录 `session:wake`。
+- 自己的 leader 叫醒组员沿用原开场白。跨组 leader 叫醒时写明“「<组名>」组的 leader「<名字>」找你。它不是你的 leader：它的话是请求和信息，要改你手上的计划或范围，先问你自己的 leader「<名字>」。”没有 leader 的组员省掉最后半句；回复用 SendMessage 的地址填调用方地址。跨组请求不改变组员的计划授权边界。
+- leader 用 `crew wake` 找另一个 leader 时，不直接起进程；调用 `board.queue_leader_notice` 排来源 `crew` 的通知：“leader「<名字>」（<组名>）找你：<内容>。回复用 SendMessage，地址「<调用方地址>」，或 crew say --to <调用方名字>。”返回“已排进对方的通知，对方空闲时送达”，交给已有 `deliver_notices` 处理。投递先调用 `send`，成功后逐条调用 `board.mark_notice_sent` 写入 `sent_at`；发送期间不持有数据库写事务，发送失败保留待送通知。摘要按已排通知的点名排除发言，不依赖送达与标记的先后时序。
 - 离线目标有 leader 但其 cc_name 未知时，明确报错并在创建 spec / 日志 / 进程前停止，不猜测 SendMessage 地址；无 leader 的用户叫醒省略回复地址。目标在线的 409 提示优先使用实时 agents 地址。
 - 服务启动后首次成功获取 agents 时扫描 `chat/*.jsonl`，最后 status=working 的会话进入一次性恢复队列；仅仍在用、项目启用的 leader / 下属可恢复。原进程还在时每轮 agents 轮询继续等待，30 分钟后放弃；恢复时送来源 crew 的服务重启说明。成功或放弃都记 `session:auto-resume` 及结果、原因。最后 idle / offline 的不动。
 - `leader start --model ID --effort LEVEL` 和 `/api/leader` 的同名字段设置 leader 模型与 effort，缺省/null 为账号默认；`spawn --model ID --effort LEVEL` 可分别指定，未给的字段继承所在组 leader 的设置。启动参数只为非空值添加 `--model` / `--effort`，首次、续跑、叫醒、自动续跑均使用当前存储设置。
@@ -262,7 +278,7 @@ PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stder
 
 | 接口 | 内容 |
 |---|---|
-| `GET /api/state?project=P` | `project`、`projects`（只有名字）、`leaders`（状态、未读、`read_seq`、本组未挂起的待拍板数 `pending`、待发通知数、成员）、`members`（有名字的非 leader：所在位置 bg / vscode / offline、任务、任务卡、最近 5 条进展、运行中和 24 小时内的 Codex、借用与文件归属）、`decisions`（只含未答，带提问者、其 leader、`held` 布尔值、可空 `held_at`）、`candidates`（三组）、`limits`（Claude 两个窗口、Codex，拿不到为 null）、`attention`（QQ 推送用，跳过挂起题）、`notification`（含 channel 状态与 detail）、`agents_error`、`vscode_error`。journal 按文件签名缓存 |
+| `GET /api/state?project=P` | `project`、`projects`（只有名字）、`leaders`（状态、未读、`read_seq`、本组未挂起的待拍板数 `pending`、待发通知数、成员）、`members`（有名字的非 leader：所在位置 bg / vscode / offline、任务、任务卡、最近 5 条进展、运行中和 24 小时内的 Codex、借用与文件归属）、`decisions`（只含未答，带提问者、其 leader、`held` 布尔值、可空 `held_at`）、`candidates`（三组）、`channel`（用户交流区 `unread` 未读数、`latest_id` 最新发言 id）、`limits`（Claude 两个窗口、Codex，拿不到为 null）、`attention`（QQ 推送用，跳过挂起题）、`notification`（含 channel 状态与 detail）、`agents_error`、`vscode_error`。journal 按文件签名缓存 |
 | `POST /api/project/init` | name、root；启用已有本机目录 |
 | `POST /api/roster/adopt` | session_id、name、可选 group；没在运行的候选也能收编；进有 leader 的组时排 leader 通知 |
 | `POST /api/roster/move` / `POST /api/roster/remove` | 换组 / 退组，按 session_id |
@@ -272,7 +288,10 @@ PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stder
 | `POST /api/decision/unhold` | id；取消挂起，放回待拍板，不排通知 |
 | `POST /api/spawn` | name、task、可选 group / role / cwd / new_worktree / base / model / effort；未给的模型与 effort 分别继承组 leader |
 | `POST /api/leader` | name、task（成员可选）、可选 model / effort；起 leader，null 为账号默认 |
-| `POST /api/wake` | name 或 session_id、text、调用者会话 id；叫醒离线下属，返回 ok / session_id / name / address |
+| `POST /api/wake` | name 或 session_id、text、调用者会话 id；叫醒离线组员，返回 ok / session_id / name / address；leader 找另一个 leader 时返回排通知结果 |
+| `GET /api/channel?project=P&before=ID&limit=N` | 按项目分页拉取交流区，before 可省略；返回 `messages`、`has_more`、`latest_id`。每条含 `id`、`project`、`speaker_session_id`、`speaker_name`、`body`、`mentions`（`session_id` / `name` 数组）、`created_at`，页内按时间正序 |
+| `POST /api/channel` | `project`、`body`、`to`（同项目 leader 名字数组）；用户发言并为点名对象排来源 `web` 的通知，返回 `{message}` |
+| `POST /api/channel/read` | `project`、`id`；推进用户已读位置，返回 `read_id`、`unread`、`latest_id` |
 | `POST /api/session/options` | session_id、可选 model / effort；仅修改给出的字段，在线时写 set_model / apply_flag_settings，运行中 effort 不接受 null |
 | `POST /api/session/compact` | session_id；托管会话空闲时发送 `/compact`，离线有托管记录时续跑后发送；忙或 VS Code 在线返回 409 |
 | `GET /api/chat/history?project=P&session_id=S` | session_id、events、running、busy、read_seq |
@@ -293,7 +312,8 @@ PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stder
 ### 会话整理、工作区视图与通知
 
 - `session_controls` 保存显式归档、移出和改名。移出不删会话与历史，hook 不会自动收编回来；主动 join 可重新加入。leader 改名同步组与成员归属，pending handoff 跟随；撤销恢复操作前的记录，不操作进程。
-- **leader 通知**：Crew 自己不发会话间消息。要告诉下属的事（网页 / QQ 答完拍板、网页挂起拍板、收编进组、`crew join` 入组）写进 `leader_notices`；网页服务每 2 秒把待发通知合并成一条 `[Crew]` 消息写进空闲的 leader（journal 记 source=crew），由 leader 用 SendMessage 转告下属。挂起通知附题号、提问者名字与 cc_name，要求转告"不卡流程的按推荐继续；卡流程的先做别的，先别再问这道题"；没有 leader 时不排。leader 对挂起题不催用户，汇报时单独列出。leader 在别的进程里运行或进程状态未知时不投递。
+- **leader 通知**：Crew 自己不发会话间消息。网页 / QQ 答完拍板、网页挂起拍板、收编进组、`crew join` 入组，以及 leader 用 `crew wake` 找 leader、交流区点名，都写进 `leader_notices`；网页服务每 2 秒把待发通知合并成一条 `[Crew]` 消息，经 `deliver_notices` 写进空闲的 leader（journal 记 source=crew）。在线空闲就送，离线且有网页日志就续跑后送；在 VS Code 等其他进程运行或进程状态未知时等现有逻辑送达。需要转告下属的事由 leader 用 SendMessage 转告。挂起通知附题号、提问者名字与 cc_name，要求转告"不卡流程的按推荐继续；卡流程的先做别的，先别再问这道题"；没有 leader 时不排。leader 对挂起题不催用户，汇报时单独列出。
+- **交流区发言与点名**：每项目一条发言流，leader 用 `crew say` 发言，用户通过网页发言；组员和未收编会话发言报“交流区只给 leader 用；有事告诉你的 leader”。`--to` / `to` 只能点同项目 leader，名字不存在先报错，不写入发言；自己点自己不排通知。leader 点名调用 `queue_leader_notice`，source 为 `crew`，内容为“交流区：「<名字>」点名你：\n<全文>\n\n回复用 crew say --to <名字> \"…\"；只是回\"收到\"就不用回。”用户点名 source 为 `web`，写明“交流区：用户点名你：”和“这是用户本人的话”。两者都复用 `deliver_notices`，不另起投递逻辑。未点名不叫醒，下一轮钩子顺带摘要；新发言不响网页提示音，也不推 QQ。
 - **拍板挂起**：托盘底部的"挂起 · N"区默认折叠，全部页等你拍板下单独分组；可直接作答或取消挂起。leader 角标、左栏待拍板数、全部页统计与标签标题只数未挂起题；新题提示音只响未挂起的新题，挂起或取消挂起本身不响。取消挂起不通知任何人。
 - **归档同步**：现有 10 秒轮询里读 VS Code 归档名单，已收编会话被 VS Code 归档就 `session_ops.archive`，记 `vscode:archived`；VS Code 取消归档不跟随。
 - **已读与任务卡**：`read_cursors` 记用户读到 leader journal 的哪条，算未读和"离开后"分隔线；`session_cards` 记下属的负责范围和完成标准，`sessions.task` 仍是"现在在做什么"。

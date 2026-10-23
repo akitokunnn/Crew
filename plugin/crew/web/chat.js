@@ -87,6 +87,7 @@
   const BOLD_TAIL = new RegExp(`\\*\\*([^*\\n]+?)([${BOLD_PUNCT}]+)\\*\\*(?=[^\\s*${BOLD_PUNCT}])`, 'g');
   const BOLD_HEAD = new RegExp(`(?<=[^\\s*${BOLD_PUNCT}])\\*\\*([${BOLD_PUNCT}]+)([^*\\n]+?)\\*\\*`, 'g');
   const cjkBold = text => text.replace(BOLD_TAIL, '**$1**$2').replace(BOLD_HEAD, '$1**$2**');
+  const renderMarkdown = text => markdown.render(cjkBold(text));
   const linkOpen = markdown.renderer.rules.link_open || ((tokens, index, options, env, renderer) => renderer.renderToken(tokens, index, options));
   markdown.renderer.rules.link_open = (tokens, index, options, env, renderer) => {
     tokens[index].attrSet("target", "_blank");
@@ -219,7 +220,7 @@
     return `<button type="button" class="tool indent${result ? "" : " live"}${open ? " open" : ""}" data-chat-fold="${escape(foldKey)}" aria-expanded="${open}">${result ? `<span class="${result.is_error ? "chat-error" : "ok"}">${icon("check")}</span>` : '<span class="spin" aria-label="执行中"></span>'}<span class="label">${escape(toolLabel(context, block))}</span>${icon("right")}</button><div class="tool-steps"><div>输入 · ${escape(block.name)}</div><pre>${escape(JSON.stringify(block.input, null, 2))}</pre>${result ? `<div>${result.is_error ? "执行失败" : "结果"}</div><pre>${escape(output.slice(0, 2000))}</pre>${output.length > 2000 ? '<div>仅显示前 2000 字</div>' : ""}` : "<div>正在执行…</div>"}</div>`;
   }
   function assistantText(context, text, item) {
-    return `<div class="m-lead"><div class="av round" style="--s:30px;--tint:var(--accent)">${escape(context.session.name.slice(0, 1))}</div><div class="body"><div class="markdown">${markdown.render(cjkBold(text))}</div><div class="m-meta">${escape(context.session.name)}${item.at ? ` · ${timeOf(item.at)}` : ""}</div></div></div>`;
+    return `<div class="m-lead"><div class="av round" style="--s:30px;--tint:var(--accent)">${escape(context.session.name.slice(0, 1))}</div><div class="body"><div class="markdown">${renderMarkdown(text)}</div><div class="m-meta">${escape(context.session.name)}${item.at ? ` · ${timeOf(item.at)}` : ""}</div></div></div>`;
   }
   function itemHTML(context, item) {
     if (item.kind === "compact_request" || item.kind === "compact") return `<div class="context-divider">${item.kind === "compact_request" ? "压缩上下文" : `上下文已压缩：${CrewContext.tokens(item.pre_tokens)} → ${CrewContext.tokens(item.post_tokens)}`}</div>`;
@@ -528,5 +529,5 @@
     };
     return close;
   }
-  window.CrewChat = {mount, update, unmount, watchCompact};
+  window.CrewChat = {mount, update, unmount, watchCompact, renderMarkdown};
 })();
