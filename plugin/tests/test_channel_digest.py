@@ -73,6 +73,7 @@ class DigestTests(unittest.TestCase):
                          (CARD, first['id'], 1, 'manual', models.HAIKU, .012, 1))
         data = json.loads(process.input.split("新发言全文（JSON）：\n")[1])
         self.assertEqual(data, [{key: first[key] for key in ('speaker_name', 'created_at', 'mentions', 'body')}])
+        self.assertIn("上一张要点卡：\n（无，这是第一张要点卡）\n", process.input)
         self.assertNotIn("生成期间到达", process.input)
         command = self.factory.call_args.args[0]
         self.assertTrue(command[0].replace('\\', '/').endswith('/node_modules/@anthropic-ai/claude-code/bin/claude.exe'))
@@ -113,7 +114,9 @@ class DigestTests(unittest.TestCase):
             (FakeProcess(timeout=True, errors='hung upstream'), 'TimeoutError: 300 秒超时；stderr: hung upstream'),
             (FakeProcess(output='not json', errors='broken output'), 'ValueError: 输出不是 JSON'),
             (FakeProcess(output='[]'), '输出不是预期 JSON'),
-            (FakeProcess(output=json.dumps({'is_error': False, 'result': '', 'total_cost_usd': 0})), '输出不是预期 JSON')]:
+            (FakeProcess(output=json.dumps({'is_error': False, 'result': '', 'total_cost_usd': 0})), '输出不是预期 JSON'),
+            (FakeProcess(output=json.dumps({'is_error': False, 'result': '请提供上一张要点卡的完整内容', 'total_cost_usd': .01})),
+             'ValueError: 输出缺少固定小标题 ## 已定结论')]:
             with self.subTest(reason=reason):
                 self.factory.return_value = process
                 manager.start(self.conn, 'demo')
