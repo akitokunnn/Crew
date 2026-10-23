@@ -727,3 +727,9 @@ a.btn{color:inherit;text-decoration:none}
 .theme-swatches i{display:block;width:10px;height:19px}
 .settings-hint{margin:7px 0 0;font-size:calc(11px * var(--fs));color:var(--text-2)}
 .candidate-name{display:inline-block;max-width:100%;margin-left:6px;vertical-align:middle;white-space:normal;overflow-wrap:anywhere}
+#sidebar .leader-item[draggable] { position: relative; }
+#sidebar .leader-item.dragging { opacity: .45; }
+#sidebar .leader-item.drop-before::before,
+#sidebar .leader-item.drop-after::after { content: ""; position: absolute; left: 8px; right: 8px; height: 3px; background: var(--accent); border-radius: 2px; pointer-events: none; }
+#sidebar .leader-item.drop-before::before { top: -2px; }
+#sidebar .leader-item.drop-after::after { bottom: -2px; }

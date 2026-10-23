@@ -53,6 +53,13 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE INDEX IF NOT EXISTS sessions_project ON sessions (project, crew_name);
 
+CREATE TABLE IF NOT EXISTS leader_order (
+    project TEXT NOT NULL REFERENCES projects(name),
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    position INTEGER NOT NULL,
+    PRIMARY KEY (project, session_id)
+);
+
 CREATE TABLE IF NOT EXISTS git_management (
     project TEXT PRIMARY KEY REFERENCES projects(name),
     enabled_at TEXT NOT NULL,

@@ -77,6 +77,7 @@ Crew/
 | `git_merge_requests` | 项目、提出会话、分支、说明、状态、PR 号、结果说明、创建与更新时间；详见 §13 |
 | `git_ci_state` | 按项目、检查对象与 CI 运行记录状态和通知去重；详见 §13 |
 | `git_result_handoffs` | Git 结果与 handoff、接收组员及发送管理员的关联，沿用 handoff_deliveries 记账；详见 §13 |
+| `leader_order` | `project TEXT NOT NULL REFERENCES projects(name)`、`session_id TEXT NOT NULL REFERENCES sessions(session_id)`、`position INTEGER NOT NULL`；联合主键 `(project, session_id)`，每项目独立保存左栏顺序，新 leader 排在已保存位置后并保持原相对顺序；连接数据库时通过 `CREATE TABLE IF NOT EXISTS` 创建 |
 | `project_themes` | `project TEXT PRIMARY KEY REFERENCES projects(name)`、`theme TEXT NOT NULL`、`assigned_at TEXT NOT NULL`；每项目一套主题，独立新表，不改变 `projects` |
 
 `decision_holds` 由 `schema.sql` 的 `CREATE TABLE IF NOT EXISTS` 在连接数据库时创建，不改变现有表结构、不需要迁移。`board.decisions` 返回 `held` 布尔值和可空的 `held_at`，默认仍列出全部 open 题，供下属侧 `crew` 沿用未答逻辑。
@@ -309,6 +310,7 @@ PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stder
 | `POST /api/decision/hold` | id；挂起未答题，首次挂起时给提问者的 leader 排通知（来源 web，无 leader 时不排），重复挂起不重复通知 |
 | `POST /api/decision/unhold` | id；取消挂起，放回待拍板，不排通知 |
 | `POST /api/spawn` | name、task、可选 group / role / cwd / new_worktree / base / model / effort；未给的模型与 effort 分别继承组 leader |
+| `POST /api/leaders/order` | project、order（当前项目左栏全部 leader 的 session_id 数组）；保存拖动顺序，重复、非本项目可见 leader 或缺少 leader 时返回 400 并说明原因 |
 | `POST /api/leader` | name、task（成员可选）、可选 model / effort；起 leader，null 为账号默认 |
 | `POST /api/wake` | name 或 session_id、text、调用者会话 id；叫醒离线组员，返回 ok / session_id / name / address；leader 找另一个 leader 时返回排通知结果 |
 | `GET /api/channel?project=P&before=ID&limit=N` | 按项目分页拉取交流区，before 可省略；返回 `messages`、`has_more`、`latest_id`。每条含 `id`、`project`、`speaker_session_id`、`speaker_name`、`body`、`mentions`（`session_id` / `name` 数组）、`created_at`，页内按时间正序 |
@@ -344,6 +346,7 @@ PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stder
 - 派活脚本仓库副本在 `integrations/codex-dispatch/run_codex.ps1`：同 run_id 先写开始、再写结束，scanner upsert。只有未关联的 rollout 时状态为 unknown，最后日志时间不当完成时间。
 - QQ 由 `qq.Client(app_id, app_secret)` 通过 WebSocket 收事件、HTTPS 主动发送；重连交给传输层。`run` 抛 `QQError` 时保留真实原因并停止收发，不在通知层重试。首次私聊绑定主人，此后其他人的消息和按钮只记日志。
 - `notification_messages` 保存发送结果的 `id` / `ref_idx` 与问题、leader 的关系；`notification_inbound` 按 message_id / interaction_id 去重；`notification_replies` 排队并记录每条 QQ 来信的回复边界。凭证和回调临时票据不入库。发送失败保留明确错误，不自动重发；拒收时提示在手机 QQ 打开“允许主动发送”，下一次发送成功恢复通道状态。
+- QQ 命令忽略首尾空白且不分大小写：`/help`（`/h`）帮助、`/leader`（`/l`）列表、`/leader 2`（`/l 2`、`/2`）切换、`/decisions`（`/d`）未挂起待拍板、`/back`（`/b`）我回来了。列表沿用项目顺序，项目内按 `leader_order` 排列，稳定编号独立分配且归档后不复用。
 - QQ 推送时机、命令与附件限制见 [QQ.md](QQ.md)；离开期间的轮次回复按 `turn:<会话>:<idle 序号>` 防重发。
 - 通知仅在手动离开或锁屏时主动发送。用户口径（2026-10-23）：手动离开立即推送当前待办。锁屏来自已有桌面代理的带 token POST `/api/status`，不启动代理或操作桌面；代理故障单独提示。
 - QQ 拍板答复的 actor 与 leader 通知 source 均为 `qq`，按钮先应答 interaction 再校验题号、选项和状态。用户操作见 [QQ.md 的答拍板](QQ.md#答拍板)。

@@ -5,6 +5,7 @@
   const project = new URLSearchParams(location.search).get("project");
   let state = null, view = "all", leaderId = null, readOnlyId = null, mountedChat = null, pollBusy = false, statePromise = Promise.resolve();
   let mountedChannel = false;
+  let leaderDrag = null, leaderOrderSaving = false;
   let allTab = "tree", period = "week", usageTab = "tree", usage = null, usageLoading = false, usageRequest = 0;
   let cardId = null, cardReturn = null, rename = false, handoff = null, rightOpen = false, dialogReturn = null;
   let theme = "system", trayCollapsed = false, othersOpen = false, paletteItems = [], paletteIndex = 0;
@@ -125,17 +126,66 @@
     return `<div class="qq-status ${esc(channel.state)}" role="status"><div class="qq-state"><i></i>QQ · ${labels[channel.state]}</div>${hint === null ? "" : `<div class="qq-detail">${esc(hint)}</div>`}</div>`;
   }
   function renderSidebar() {
+    if (leaderDrag !== null || leaderOrderSaving) return;
     const themeIcon = {system:"auto", light:"sun", dark:"moon"}[theme], themeName = {system:"跟随系统", light:"浅色", dark:"深色"}[theme];
     replace($("sidebar"), `<div class="brand"><span class="brand-logo" aria-hidden="true">${CrewTheme.logo()}</span><div><div class="proj">${esc(state.project.name)}</div><div class="sub">Crew 工作区</div></div></div>
       <button class="search-btn" data-act="palette">${ic("search", "sm")}<span>找 leader 或下属</span><span class="kbd">Ctrl K</span></button>
       <button class="nav-item ${view === "all" ? "active" : ""}" data-act="view" data-view="all">${ic("grid")}<span>全部</span></button>
       <button class="nav-item ${view === "channel" ? "active" : ""}" data-act="view" data-view="channel">${ic("msg")}<span>交流区</span>${state.channel.unread > 0 ? `<span class="b-unread channel-unread" title="交流区未读">${state.channel.unread}</span>` : ""}</button>
       <button class="nav-item ${view === "git" ? "active" : ""}" data-act="view" data-view="git">${ic("branch")}<span>Git</span></button>
-      <div class="sec-label">Leader</div>${state.leaders.map(item => `<button class="leader-item ${view === "chat" && leaderId === item.session_id && readOnlyId === null ? "active" : ""}" data-act="leader" data-id="${esc(item.session_id)}">${av(item.name, 32)}<span class="meta"><span class="nm">${esc(item.name)}${item.is_git_admin ? '<span class="tag git-admin-tag">Git</span>' : ""}${contextRing(item)}${item.busy ? '<span class="typing" title="正在回复"><i></i><i></i><i></i></span>' : ""}</span><span class="goal">${esc(item.goal)}</span></span><span class="badges">${item.pending > 0 ? `<span class="b-pending" title="${item.pending} 件等你拍板">${item.pending}</span>` : ""}${item.unread > 0 ? `<span class="b-unread" title="未读">${item.unread}</span>` : ""}</span></button>`).join("")}
+      <div class="sec-label">Leader</div>${state.leaders.map(item => `<button draggable="true" class="leader-item ${view === "chat" && leaderId === item.session_id && readOnlyId === null ? "active" : ""}" data-act="leader" data-id="${esc(item.session_id)}">${av(item.name, 32)}<span class="meta"><span class="nm">${esc(item.name)}${item.is_git_admin ? '<span class="tag git-admin-tag">Git</span>' : ""}${contextRing(item)}${item.busy ? '<span class="typing" title="正在回复"><i></i><i></i><i></i></span>' : ""}</span><span class="goal">${esc(item.goal)}</span></span><span class="badges">${item.pending > 0 ? `<span class="b-pending" title="${item.pending} 件等你拍板">${item.pending}</span>` : ""}${item.unread > 0 ? `<span class="b-unread" title="未读">${item.unread}</span>` : ""}</span></button>`).join("")}
       <button class="leader-item add-leader" data-act="modal-leader"><span class="plus">${ic("plus", "sm")}</span><span>起 leader</span></button>
       <div class="sb-mid"><button class="nav-item ${view === "adopt" ? "active" : ""}" data-act="view" data-view="adopt">${ic("inbox")}<span>待收编</span><span class="count">${state.candidates.running.length} 个在运行</span></button><button class="nav-item ${view === "usage" ? "active" : ""}" data-act="view" data-view="usage">${ic("chart")}<span>用量</span></button></div>
       <div class="sb-foot"><button class="quota" data-act="view" data-view="usage" aria-label="查看额度和用量">${quotas().map(([label, limit]) => quotaRow(label, limit)).join("")}</button>${notificationChannel()}<div class="foot-row"><button class="switch ${state.notification.manual_away ? "on" : ""}" data-act="away" role="switch" aria-checked="${state.notification.manual_away}"><span class="track"></span><span>我已离开</span></button><span class="gap"></span><button class="icon-btn" data-act="settings" popovertarget="settings" title="设置" aria-label="设置">${ic("settings")}</button><button class="icon-btn" data-act="theme" title="${themeName}" aria-label="主题：${themeName}">${ic(themeIcon)}</button></div>${state.notification.away ? '<div class="away-note">离开中：待拍板会推到 QQ</div>' : ""}${state.notification.error === null ? "" : `<div class="error-line">${esc(state.notification.error)}</div>`}</div>`);
   }
+  function clearLeaderDrop() {
+    $("sidebar").querySelectorAll(".drop-before,.drop-after").forEach(item => item.classList.remove("drop-before", "drop-after"));
+  }
+  document.addEventListener("dragstart", event => {
+    const item = event.target.closest('#sidebar [data-act="leader"]');
+    if (item === null) return;
+    if (leaderOrderSaving) { event.preventDefault(); return; }
+    leaderDrag = item;
+    item.classList.add("dragging");
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", item.dataset.id);
+  });
+  document.addEventListener("dragover", event => {
+    if (leaderDrag === null) return;
+    clearLeaderDrop();
+    const item = event.target.closest('#sidebar [data-act="leader"]');
+    if (item === null) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    if (item !== leaderDrag) item.classList.add(event.clientY < item.getBoundingClientRect().top + item.offsetHeight / 2 ? "drop-before" : "drop-after");
+  });
+  document.addEventListener("drop", async event => {
+    if (leaderDrag === null) return;
+    const item = event.target.closest('#sidebar [data-act="leader"]');
+    if (item === null) return;
+    event.preventDefault();
+    const after = item.classList.contains("drop-after"), moved = item !== leaderDrag;
+    if (moved) {
+      item.parentNode.insertBefore(leaderDrag, after ? item.nextSibling : item);
+      delete $("sidebar").dataset.render;
+    }
+    leaderDrag.classList.remove("dragging");
+    clearLeaderDrop();
+    leaderDrag = null;
+    if (!moved) { renderSidebar(); return; }
+    const order = Array.from($("sidebar").querySelectorAll('[data-act="leader"]'), item => item.dataset.id);
+    leaderOrderSaving = true;
+    try { await api("/api/leaders/order", {project:state.project.name, order}); }
+    catch (error) { toast(error.message); }
+    finally { leaderOrderSaving = false; await loadState(true); }
+  });
+  document.addEventListener("dragend", () => {
+    if (leaderDrag === null) return;
+    leaderDrag.classList.remove("dragging");
+    leaderDrag = null;
+    clearLeaderDrop();
+    renderSidebar();
+  });
   function decisionCard(item) {
     const opened = decisionsOpen.has(item.id);
     return `<div class="dc ${opened ? "open" : ""} ${item.held ? "held" : ""}" data-dc="${item.id}"><div class="dc-head"><button class="dc-top" data-act="decision-toggle" data-id="${item.id}" aria-expanded="${opened}">${av(item.asker, 22, true)}<span class="q">${esc(item.question)}</span><span class="from">${esc(item.asker)}</span>${item.recommendation === null || item.recommendation === "" ? "" : `<span class="recp">推荐 ${esc(item.recommendation)}</span>`}<span class="chev">${ic("right", "sm")}</span></button><button class="btn ghost dc-hold" data-act="${item.held ? "decision-unhold" : "decision-hold"}" data-id="${item.id}">${item.held ? "取消挂起" : "挂起"}</button></div>

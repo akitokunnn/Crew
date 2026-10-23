@@ -15,8 +15,9 @@ from . import board, chat, qq, store
 TEXT_LIMIT = 2000  # 10-23 实测 5000 字也能发；2000 一段是为了手机上好读。
 LOG = logging.getLogger(__name__)
 
-HELP = ('/h 帮助\n/ls 所有 leader（带编号）\n/1 切换到编号 1 的 leader，/2 以此类推\n'
-        '/q 所有项目未挂起的待拍板\n/back 我回来了\n'
+HELP = ('/help（/h）帮助\n/leader（/l）所有 leader（带编号）\n'
+        '/leader 2（/l 2、/2）切换到编号 2 的 leader，/1 以此类推\n'
+        '/decisions（/d）所有项目未挂起的待拍板\n/back（/b）我回来了\n'
         '普通文字和图片发给当前 leader。/1 是 leader 编号；点按钮或引用拍板消息回复。')
 
 
@@ -368,7 +369,7 @@ class Inbox:
                     return
                 conn.execute('INSERT INTO notification_inbound VALUES(?,?)', (identity, self.service.now().isoformat()))
                 if bound:
-                    self.send_text('已绑定为主人。发 /h 看命令；先用 /ls 和 /1 选择 leader。')
+                    self.send_text('已绑定为主人。发 /h 看命令；先用 /leader 和 /1 选择 leader。')
                 elif kind == 'interaction':
                     self.answer_button(conn, event['data'], identity)
                 else:
@@ -395,7 +396,7 @@ class Inbox:
             return
         text = '\n'.join(part for part in [text, *(a['voice_text'] for a in voices)] if part)
         images = [a for a in attachments if a['kind'] == 'image']
-        if text.startswith('/'):
+        if text.strip().startswith('/'):
             self.handle_command(conn, dict(answer=text, message_id=event['message_id']))
             return
         if len(images) > 5:
@@ -425,17 +426,17 @@ class Inbox:
     def answer_button(self, conn, data, identity):
         match = re.fullmatch(r'([1-9][0-9]*):([0-9]+)', data)
         if match is None:
-            self.send_text('按钮题号或选项序号无效，请先 /q。')
+            self.send_text('按钮题号或选项序号无效，请先 /decisions。')
             return
         decision_id, index = int(match[1]), int(match[2])
         shown = conn.execute("SELECT project,content FROM notification_messages WHERE decision_id=? AND status='sent' AND kind IN ('decision','query') LIMIT 1",
                              (decision_id,)).fetchone()
         if shown is None:
-            self.send_text('这道题尚未展示，请先 /q 查看待拍板。')
+            self.send_text('这道题尚未展示，请先 /decisions 查看待拍板。')
             return
         decision = next(d for d in board.decisions(conn, shown['project'], all=True) if d['id'] == decision_id)
         if index >= len(decision['options']):
-            self.send_text('按钮选项序号无效，请先 /q。')
+            self.send_text('按钮选项序号无效，请先 /decisions。')
             return
         self.save_answer(conn, decision, decision['options'][index], identity)
 
@@ -458,22 +459,23 @@ class Inbox:
                 leader['number'] = numbers[sid]
             if changed:
                 self.save_config()
-        return sorted(leaders, key=lambda s: s['number'])
+        return [leader for project in dict.fromkeys(s['project'] for s in leaders)
+                for leader in board.sort_leaders(conn, project, [s for s in leaders if s['project'] == project])]
 
     def handle_command(self, conn, reply):
-        command, identity = reply['answer'], reply['message_id']
-        if command == '/h':
+        command, identity = reply['answer'].strip().lower(), reply['message_id']
+        if command in ('/help', '/h'):
             text = HELP
-        elif command == '/back':
+        elif command in ('/back', '/b'):
             self.set_away(False)
             self.refresh_presence()
             if self.presence_error is not None:
                 text = '已取消手动离开；当前无法确认是否仍因锁屏被视为离开。' + self.presence_error
             else:
                 text = '已取消手动离开；当前仍因锁屏被视为离开。' if self.locked else '已取消手动离开；当前未因锁屏被视为离开。'
-        elif command == '/q':
+        elif command in ('/decisions', '/d'):
             return self.show_questions(conn, identity)
-        elif command == '/ls':
+        elif command in ('/leader', '/l'):
             leaders = self.leader_catalog(conn)
             states = {}
             with self.service.agents_lock:
@@ -504,11 +506,11 @@ class Inbox:
                     leader['number'], leader['project'], leader['crew_name'], current, status, unread, pending.get(sid, 0)))
             text = '\n'.join(lines) if lines else '目前没有有效的 leader。'
         else:
-            numbered = re.fullmatch(r'/([1-9][0-9]*)', command)
+            numbered = re.fullmatch(r'/(?:leader\s+|l\s+)?([1-9][0-9]*)', command)
             if numbered:
                 selected = next((s for s in self.leader_catalog(conn) if s['number'] == int(numbered[1])), None)
                 if selected is None:
-                    text = '这个 leader 编号已失效，请先 /ls。'
+                    text = '这个 leader 编号已失效，请先 /leader。'
                 else:
                     with self.lock:
                         self.config['current_leader_session_id'] = selected['session_id']
@@ -544,7 +546,7 @@ class Inbox:
 
     def save_answer(self, conn, decision, answer, identity):
         if decision['status'] != 'open':
-            self.send_text('这道题已处理，请先 /q 查看待拍板。')
+            self.send_text('这道题已处理，请先 /decisions 查看待拍板。')
             return
         asker = board.session(conn, decision['session_id'])
         if asker['status'] == 'closed' or board.is_archived(conn, asker['session_id']):
@@ -563,7 +565,7 @@ class Inbox:
         session_id = self.config['current_leader_session_id']
         leaders = self.leader_catalog(conn)
         if session_id not in {s['session_id'] for s in leaders}:
-            self.send_text('先用 /ls 和 /1 选一个 leader。')
+            self.send_text('先用 /leader 和 /1 选一个 leader。')
             return
         conn.execute('INSERT INTO notification_replies VALUES(?,?,?,?,?,?)',
                      (reply['message_id'], session_id,

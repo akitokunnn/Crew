@@ -300,6 +300,34 @@ def sessions(conn, project_name):
     return _rows(conn, "SELECT * FROM sessions WHERE project=? ORDER BY crew_name,started_at", (project_name,))
 
 
+def sort_leaders(conn, project_name, leaders):
+    positions = {row['session_id']: row['position'] for row in conn.execute(
+        'SELECT session_id,position FROM leader_order WHERE project=?', (project_name,))}
+    return sorted(leaders, key=lambda leader: (leader['session_id'] not in positions,
+                  positions.get(leader['session_id'])))
+
+
+@atomic
+def set_leader_order(conn, project_name, order):
+    project(conn, project_name)
+    if not isinstance(order, list) or any(not isinstance(sid, str) for sid in order):
+        raise BoardError('order 必须是 session_id 数组')
+    if len(order) != len(set(order)):
+        raise BoardError('order 包含重复的 leader')
+    leaders = {s['session_id'] for s in sessions(conn, project_name)
+               if s['role'] == 'leader' and s['status'] != 'closed' and not is_archived(conn, s['session_id'])}
+    foreign = set(order) - leaders
+    if foreign:
+        raise BoardError('id 不属于该项目当前显示的 leader：' + '、'.join(sorted(foreign)))
+    missing = leaders - set(order)
+    if missing:
+        raise BoardError('缺少当前显示的 leader：' + '、'.join(sorted(missing)))
+    conn.execute('DELETE FROM leader_order WHERE project=?', (project_name,))
+    conn.executemany('INSERT INTO leader_order(project,session_id,position) VALUES(?,?,?)',
+                     [(project_name, sid, position) for position, sid in enumerate(order)])
+    return {'ok': True}
+
+
 def named_session(conn, project_name, name):
     rows = _rows(conn, "SELECT * FROM sessions WHERE project=? AND crew_name=? "
                  "ORDER BY (status NOT IN ('offline','closed')) DESC, last_event_at DESC, started_at DESC",
