@@ -1,3 +1,4 @@
+import tests  # Install the production-service connection guard.
 import contextlib
 import csv
 import io

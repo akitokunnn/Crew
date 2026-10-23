@@ -12,13 +12,13 @@ from urllib.request import Request, urlopen
 
 from . import board, models, store
 
-def command(session_id, name, role, resume=False, model=None, effort=None):
+def command(session_id, name, role, resume=False, model=None, effort=None, agent=None):
     models.validate_options(model, effort)
     args = ["claude", "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
             "--include-partial-messages", "--replay-user-messages", "--permission-mode", "bypassPermissions",
             "--name", name]
     if role == "leader":
-        args += ["--agent", "crew:leader"]
+        args += ["--agent", "crew:leader" if agent is None else agent]
     if model is not None:
         args += ["--model", model]
     if effort is not None:
@@ -33,7 +33,7 @@ def _text(value, label):
 
 
 def prepare(conn, home, plugin_root, project_name, name, task, group=None, role="member",
-            cwd=None, new_worktree=None, base=None, now=None, model=models.INHERIT, effort=models.INHERIT):
+            cwd=None, new_worktree=None, base=None, now=None, model=models.INHERIT, effort=models.INHERIT, agent=None):
     _text(name, "\u540d\u5b57")
     _text(task, "\u4efb\u52a1")
     if role not in ("member", "leader"):
@@ -46,9 +46,7 @@ def prepare(conn, home, plugin_root, project_name, name, task, group=None, role=
         raise ValueError("--base \u5fc5\u987b\u4e0e --new-worktree \u4e00\u8d77\u4f7f\u7528")
     groups = {g["name"]: g for g in board.groups(conn, project_name)}
     if role == "leader":
-        if group is not None and group != name:
-            raise board.BoardError("leader \u5206\u7ec4\u5fc5\u987b\u4e0e crew \u540d\u540c\u540d")
-        group = name
+        group = board.leader_group(name, group)
     elif group is not None and (group not in groups or groups[group]["closed_at"] is not None):
         raise board.BoardError("\u5206\u7ec4\u4e0d\u5b58\u5728\u6216\u5df2\u5173\u95ed: " + group)
     worktree_command = None
@@ -94,11 +92,12 @@ def prepare(conn, home, plugin_root, project_name, name, task, group=None, role=
         leader_name = "leader \u8fd8\u6ca1\u4e0a\u7ebf"
     brief = ("\u4f60\u662f Crew \u4f1a\u8bdd\uff1a%s\uff08%s\uff09\n\u9879\u76ee\uff1a%s\n\u5206\u7ec4\uff1a%s\nleader\uff1a%s\n\n"
              "\u5f00\u5de5\u5148\u8c03\u7528 /crew:%s \u8bfb\u5b88\u5219\u3002\n\n## \u4efb\u52a1\n\n%s" %
-             (name, role, project_name, group if group is not None else "\u672a\u5206\u7ec4", leader_name, role, task))
+             (name, role, project_name, group if group is not None else "\u672a\u5206\u7ec4", leader_name,
+              "git" if agent == "crew:git" else role, task))
     spec = {"id": spawn_id, "name": name, "group": group, "role": role, "task": task,
-            "cwd": str(directory), "project": project_name, "agent": "crew:leader" if role == "leader" else None,
+            "cwd": str(directory), "project": project_name, "agent": ("crew:leader" if agent is None else agent) if role == "leader" else None,
             "md": str(md_path), "model": model, "effort": effort, "created_at": store.now_iso() if now is None else now}
-    return {"id": spawn_id, "session_id": session_id, "command": command(session_id, name, role, model=model, effort=effort), "spec": spec,
+    return {"id": spawn_id, "session_id": session_id, "command": command(session_id, name, role, model=model, effort=effort, agent=agent), "spec": spec,
             "files": {str(json_path): json.dumps(spec, ensure_ascii=False, indent=2) + "\n", str(md_path): brief},
             "worktree_command": worktree_command}
 
@@ -110,9 +109,9 @@ def _execute(conn, plan, launcher, members=(), member_session_ids=()):
         if result.returncode != 0:
             raise board.BoardError("\u521b\u5efa worktree \u5931\u8d25: " + result.stderr.strip())
     if spec["role"] == "leader":
-        board.ensure_spawn_group(conn, spec["project"], spec["name"], now=spec["created_at"])
+        board.ensure_spawn_group(conn, spec["project"], spec["group"], now=spec["created_at"])
     if members or member_session_ids:
-        board.roster(conn, spec["project"], "move", spec["name"], members, now=spec["created_at"],
+        board.roster(conn, spec["project"], "move", spec["group"], members, now=spec["created_at"],
                      session_ids=member_session_ids)
     for path, content in plan["files"].items():
         target = Path(path)
@@ -124,9 +123,10 @@ def _execute(conn, plan, launcher, members=(), member_session_ids=()):
 
 
 def leader_plan(conn, home, plugin_root, project_name, name, members=(), task=None, cwd=None,
-                new_worktree=None, base=None, now=None, member_session_ids=(), model=None, effort=None):
+                new_worktree=None, base=None, now=None, member_session_ids=(), model=None, effort=None, group=None, agent=None):
     plan = prepare(conn, home, plugin_root, project_name, name, "\u7ba1\u7406\u5206\u7ec4 " + name if task is None else task,
-                   role="leader", cwd=cwd, new_worktree=new_worktree, base=base, now=now, model=model, effort=effort)
+                   role="leader", cwd=cwd, new_worktree=new_worktree, base=base, now=now, model=model, effort=effort,
+                   group=group, agent=agent)
     for member in members:
         _text(member, "\u7ec4\u5458\u540d\u5b57")
     for s in board.roster_targets(conn, project_name, members, member_session_ids):

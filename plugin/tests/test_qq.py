@@ -1,3 +1,4 @@
+import tests  # Install the production-service connection guard.
 import base64
 import concurrent.futures
 import contextlib

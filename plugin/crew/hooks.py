@@ -89,7 +89,12 @@ def handle(event, data, home, plugin_root, environ, git_provider=git_details, no
                 lines = ["Crew 项目：%s" % p["name"], "我的 crew 名：%s" % (s["crew_name"] if s["crew_name"] is not None else "未收编（不要自己 crew join；用户说“收编到某某”时再照 /crew:member 收编）"),
                          "分组：%s；leader：%s；SendMessage 地址：%s" % (s["group_name"], leader["crew_name"] if leader else None, leader["cc_name"] if leader else None),
                          '命令行：python "%s" ...' % (Path(home).resolve() / "crew.py"),
-                         "请遵守 /crew:%s" % ("leader" if s["role"] == "leader" else "member")] + lines
+                         "请遵守 /crew:%s" % rules.skill_role(conn, s)] + lines
+            config = board.git_config(conn, p["name"])
+            if config is not None:
+                lines.append("本项目由 git 管理员「git管理员」统一推送和合并。做完用 `crew git request` 交给它，不要自己 push、开 PR、合并。")
+                lines.append("分支规则（全文用 crew git policy 看）：\n" + "\n".join(config["branch_rules"].splitlines()[:6])
+                             if config["branch_rules"] else "git 管理员还没写分支规则，开工前先问它。全文用 crew git policy 看。")
         if event == "user-prompt-submit" or (event == "session-start" and data.get("source") in ("resume", "compact")):
             reminder = rules.reminder(conn, data["session_id"], plugin_root)
             if reminder is not None:

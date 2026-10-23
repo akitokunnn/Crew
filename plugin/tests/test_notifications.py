@@ -1,4 +1,5 @@
 """QQ business contracts with fake transport and fake model processes."""
+import tests  # Install the production-service connection guard.
 import base64
 import contextlib
 import datetime as dt

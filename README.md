@@ -5,10 +5,11 @@
 - 你先在 VS Code 里和会话聊需求；聊清楚了，这个会话就负责一块范围（雷达、视觉、声纹……），自己派 Codex 干活、自己验收。
 - 用 **leader** 管一组会话，像公司里的 CEO：下属有事报给它，它当中转站——能定的自己定，需要别人知道的转给相关的人，剩下的攒成待拍板等你。leader 可以同时有好几个，各管一组；leader 自己不写代码。
 - 所有会话共用一块**白板**：谁在做什么、谁在等你、设备谁借着、文件归谁、待拍板、交接、日报、用量。
-- **守卫**在任何权限模式下都会拦三类事：黑名单上的操作、别人借着的设备、别人宣布归属的文件。所以可以放心开全放行，夜里不会卡在确认框上。
+- **守卫**在任何权限模式下都会拦黑名单上的操作、别人借着的设备、别人宣布归属的文件；启用 Git 管理后，还会拦已收编普通会话的推送、开 PR 和合并操作。所以可以放心开全放行，夜里不会卡在确认框上。
 - **网页**主要用来和 leader 聊天：左栏是 leader 列表，中间是对话（待拍板卡片置顶），右栏是这一组的架构图，点下属看它的任务卡。左栏"交流区"是所有 leader 和用户的公共频道；下属直接去 VS Code 聊。
 - **QQ**：离开电脑时待拍板推到 QQ 私聊，用 `/ls`、`/1` 这样的命令切换 leader 直接聊。
 - **用量分析**：把 Claude 会话、子 agent、Codex 的 token 用量按 leader → 下属 → Codex、天、模型汇总，并按 API 价折算成金额。
+- **Git 管理员**：项目启用 Git 管理后自动开出「git管理员」，在独立 worktree 里统一定分支规则、检查请求、推送、开 PR、等 CI 和合进 base；默认 Sonnet 5.5 / high，网页可换。
 
 设计细节和取舍见 [docs/DESIGN.md](docs/DESIGN.md)，完整页面流程和状态说明见 [docs/WEB_UX.md](docs/WEB_UX.md)。
 
@@ -48,6 +49,7 @@
 | 收尾 | 在 VS Code 里归档会话，Crew 跟着归档；或者卡片上"归档"（可撤销）。leader 发现下属做完了也会问你要不要归档 |
 | 看谁在干什么 | 网页"全部"，或 `crew status` |
 | 看 Git 分支和提交关系 | 网页左栏"Git"；首次选择 base / stable 后启用，可查看提交树、分支检查、worktree、负责会话与 GitHub PR / CI，手动"刷新（fetch）"更新远端引用 |
+| 把提交交给 Git 管理员 | 开工前 `crew git policy` 看规则，做完提交自己的分支后 `crew git request "<做了什么、测过什么、有没有要用户亲手验收的>"`；Git 页面看请求状态，点“和 git 管理员聊”进对话 |
 | 看用量 | 网页"用量"，或 `crew usage summary`、`crew usage sessions`、`crew usage codex` |
 | 看上下文、手动压缩 | 上下文占用达到 50% 显示橙圈，80% 变红；悬停看已用与上限。后台空闲会话点圈旁“压缩”并确认，leader 模型菜单任何占比都能压缩；VS Code 会话去那边输入 `/compact` |
 
@@ -59,7 +61,7 @@
 
 交流区新发言不响提示音，也不推 QQ。左栏角标显示用户未读数，打开交流区或滚到底时记为已读；不点名就不叫醒 leader，下一轮摘要每次最多 10 条、每条正文第一行最多 120 字，全文按需查看。
 
-会话里的守则在技能里：成员是 `/crew:member`，leader 是 `/crew:leader`。会话启动时 Crew 会告诉它是谁、归哪个 leader、怎么调命令；还没收编的会话不会被要求自己登记。Crew 记录每个会话读过的守则内容摘要；守则更新后，在下一条消息或 resume / compact 时提醒已收编会话先重读，调用对应技能后停止提醒。
+会话里的守则在技能里：成员是 `/crew:member`，leader 是 `/crew:leader`，Git 管理员是 `/crew:git`。会话启动时 Crew 会告诉它是谁、归哪个 leader、怎么调命令；还没收编的会话不会被要求自己登记。启用 Git 管理的项目还会附管理员提示和分支规则前 6 行，全文用 `crew git policy` 看。Crew 记录每个会话读过的守则内容摘要；守则更新后，在下一条消息或 resume / compact 时提醒已收编会话先重读，调用对应技能后停止提醒。
 
 ## 命令速查
 
@@ -85,7 +87,10 @@
 | `crew compact [<名字>]` | 通过网页服务压缩自己的组员，用户也可指定会话；网页 leader 不带名字或指定自己时，等这一轮说完后压缩 |
 | `crew open <名字>` | 两步在 VS Code 接续同一会话，停止空闲的原运行端前须明确确认 |
 | `crew web --open` | 按当前目录打开工作区，已有服务时复用 |
-| `crew git enable [--base 分支] [--stable 分支]` / `crew git disable` / `crew git status` | 按项目启用 / 停用 Git 管理 / 查看配置；base 自动依次选 develop、dev、main、master，stable 选与 base 不同的 master 或 main |
+| `crew git enable [--base 分支] [--stable 分支]` / `crew git disable` / `crew git status` | 启用并自动开 Git 管理员 / 收掉管理员的组并停用 / 查看配置；base 自动依次选 develop、dev、main、master，stable 选与 base 不同的 master 或 main |
+| `crew git policy` / `crew git policy --set "<正文>"` | 看分支规则全文 / Git 管理员设置规则 |
+| `crew git request [--branch 分支] "<说明>"` / `crew git requests [--all]` | 已收编会话提交合并请求（默认当前分支） / 看活动队列或全部请求 |
+| `crew git resolve <编号> <merged\|rejected\|waiting_user\|merging> --note "<说明>" [--pr <号>]` | Git 管理员更新请求状态并给提出者排消息 |
 | `crew autostart install\|status\|uninstall` | 当前用户登录后隐藏运行，不弹浏览器 |
 | `crew usage scan\|summary\|sessions\|daily\|codex\|agents\|models\|export` | 用量 |
 | `crew events` / `crew doctor` | 事件流水 / 自检 |
@@ -97,6 +102,10 @@
 黑名单在 `~/.crew/blacklist.txt`，一行一条：`工具 :: 正则 :: 原因`，保存后马上生效。只放"任何时候都不能做、你点头也不行"的事；需要你先点头的操作写在 CLAUDE.md 之类的规矩里。
 
 守卫另外两条检查不用配置：资源被别人借着时，命令里出现它的守卫正则就拦；文件被别人 `crew claim` 了，用 Edit / Write 改它就拦。
+
+项目启用 Git 管理时，已收编会话在 Bash / PowerShell 执行 `git push`、`gh pr create`、`gh pr merge` 会被拦，按提示用 `crew git request` 交给 Git 管理员。Git 全局参数、可执行文件路径和连接命令同样检查；帮助命令与引号中的普通文本放行。Git 管理员可执行这些操作；未收编会话只在启动时看到协作提示。
+
+Git 管理员可以自行定分支规则、推功能分支、开 PR、CI 绿后合进 base、安排合并顺序、删已合并分支。合进 stable 或发版、force push 或改写已推送历史、删未合并分支、需要用户在编辑器或设备亲手验收、行为冲突要取舍，仍须 `crew ask` 登记拍板。Crew 后台每 5 分钟检查 base 最新提交失败的 CI 和请求对应 PR 的 CI 完成变化，排通知叫醒管理员，同一次运行只通知一次；GitHub 不可用时 Git 页面显示原因。
 
 ## 用量分析
 

@@ -1,4 +1,5 @@
 """Task cards, read cursors and the queue of things Crew must tell a leader."""
+import tests  # Install the production-service connection guard.
 from crew import board
 from test_core import CoreCase, NOW
 

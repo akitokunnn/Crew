@@ -1,4 +1,5 @@
 """Git graph integration tests use only repositories created under plugin/."""
+import tests  # Install the production-service connection guard.
 import json
 from pathlib import Path
 import subprocess
@@ -182,7 +183,7 @@ class GitViewTests(unittest.TestCase):
 class GitHubTests(unittest.TestCase):
     def pr(self, number, state, closed_at, checks):
         return {"number": number, "title": "PR " + str(number), "headRefName": "topic/" + str(number),
-                "baseRefName": "develop", "state": state, "isDraft": number == 1,
+                "baseRefName": "develop", "headRefOid": "sha-" + str(number), "state": state, "isDraft": number == 1,
                 "statusCheckRollup": checks, "url": "https://github.com/example/repo/pull/" + str(number),
                 "closedAt": closed_at}
 

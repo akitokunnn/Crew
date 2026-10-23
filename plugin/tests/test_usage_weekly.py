@@ -1,3 +1,4 @@
+import tests  # Install the production-service connection guard.
 import datetime as dt
 import unittest
 

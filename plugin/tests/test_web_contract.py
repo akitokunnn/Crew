@@ -1,4 +1,5 @@
 """New web contracts exercised with temporary storage and fake model processes."""
+import tests  # Install the production-service connection guard.
 import datetime as dt
 import json
 import subprocess
@@ -90,10 +91,11 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         leader = state["leaders"][0]
         self.assertEqual(set(leader), {"session_id", "name", "goal", "status", "busy", "running", "web_chat",
             "cc_name", "last_seq", "last_reply_id", "read_seq", "unread", "pending", "notices_pending", "member_ids",
-            "model", "effort", "applied", "activity", "context", "where", "codex", "codex_older"})
+            "model", "effort", "applied", "activity", "context", "where", "codex", "codex_older", "is_git_admin"})
         self.assertEqual((leader["session_id"], leader["member_ids"], leader["unread"]), ("s3", ["s1"], 0))
         # Leaders dispatch Codex for their own bulk work too (user 10-23), listed like members'.
         self.assertEqual((leader["codex"], leader["codex_older"]), ([], 0))
+        self.assertFalse(leader["is_git_admin"])
         landing = self.state(None)
         self.assertEqual(set(landing), expected)
         self.assertIsNone(landing["project"])
@@ -438,7 +440,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual(self.state()["leaders"][0]["notices_pending"], 1)
         self.assertEqual(self.processes, [])
 
-    def test_notice_worker_starts_and_close_stops_both_background_threads(self):
+    def test_workers_start_and_close_stops_all_background_threads(self):
         lifecycle = web.Service(self.root / "lifecycle-home", PLUGIN, cwd=self.project,
             agents_provider=self.provider, claude_root=self.claude, codex_root=self.codex,
             runs_file=self.runs, now=lambda: self.clock, process_factory=self.process_factory,
@@ -448,10 +450,12 @@ class WebContractTests(ShellFixture, unittest.TestCase):
             lifecycle.start()
         self.assertTrue(lifecycle.agents_ready.wait(3))
         self.assertTrue(lifecycle.notice_worker.is_alive())
+        self.assertTrue(lifecycle.ci_worker.is_alive())
         self.assertTrue(lifecycle.worker.is_alive())
         lifecycle.close()
         self.assertTrue(lifecycle.stop.is_set())
         self.assertFalse(lifecycle.notice_worker.is_alive())
+        self.assertFalse(lifecycle.ci_worker.is_alive())
         self.assertFalse(lifecycle.worker.is_alive())
 
     def test_notice_resumes_stopped_web_leader_through_manager_send_with_same_id(self):
@@ -610,6 +614,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         for contract in ('data-git-branch=', 'data-git-tab="graph"', 'data-git-tab="branches"',
                          'class="git-conflicts"', 'data-git-act="load-more"', 'data-git-act="active"',
                          'data-git-act="confirm-disable"', 'git-github-unavailable',
+                         'data-git-request=', 'git-requests-title', '和 git 管理员聊',
                          'aria-pressed=', 'aria-selected=', 'data-git-from=', 'data-git-to='):
             self.assertIn(contract, script)
         self.assertIn('setInterval(() => load(), 30000)', script)
@@ -618,6 +623,53 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         _, app, _ = self.request("/app.js", raw=True)
         self.assertIn('data-view="git"', app.decode("utf-8"))
         self.assertIn('CrewGit.mount', app.decode("utf-8"))
+        self.assertIn('item.is_git_admin', app.decode("utf-8"))
+        self.assertIn('git-admin-tag', app.decode("utf-8"))
+
+
+class GitCiScheduleTests(unittest.TestCase):
+    def test_poll_immediately_and_every_five_minutes_until_shutdown(self):
+        service = web.Service.__new__(web.Service)
+        service.stop, service.git_ci = mock.Mock(), mock.Mock()
+        service.stop.is_set.return_value = False
+        service.stop.wait.side_effect = [False, True]
+        service.now = mock.Mock(return_value=store.parse_iso(NOW))
+        service._poll_git_ci()
+        self.assertEqual(service.git_ci.poll.call_args_list, [mock.call(now=service.now().isoformat())] * 2)
+        self.assertEqual(service.stop.wait.call_args_list, [mock.call(300)] * 2)
+
+
+class FrontendGitContractTests(unittest.TestCase):
+    def test_merge_requests_active_first_escaped_details_and_admin_chat(self):
+        script = r'''
+const assert = require("node:assert/strict"), fs = require("node:fs"), vm = require("node:vm");
+const callbacks = new Map(), page = {scrollTop:0};
+const host = {innerHTML:"", querySelector:selector => selector === ".git-page" ? page : null,
+  querySelectorAll:() => [], addEventListener:(name, fn) => callbacks.set(name, fn), removeEventListener:() => {}};
+const latest = {sha:"abcdef123", subject:"Fixture", author:"Crew", time:"2026-10-24T00:00:00Z"};
+const request = (id, status) => ({id, status, branch:"feature/<review>", session_id:"member", requester_name:"<member>",
+  description:"Done <script>alert(1)</script>", note:"Tested & reviewed", pr_number:42, created_at:latest.time});
+const data = {enabled:true, repository:"Fixture", config:{base:"develop", stable:null, admin_session_id:"git-admin"},
+  base:{name:"develop", latest}, stable:null, requests:[request(7,"merged"),request(1,"open"),request(8,"rejected"),request(2,"waiting_user"),request(3,"merging")],
+  branches:[], remote_only:[], commits:[], ref_unique_commits:{}, next_offset:null, last_fetch_at:null,
+  github:{runs:[], pull_requests:[{number:42, title:"Feature PR", state:"OPEN", head:"feature/<review>", ci:"success", url:"https://example.test/pull/42", draft:false}]}};
+const sandbox = {setInterval:() => 1, clearInterval:() => {}};
+vm.createContext(sandbox);
+vm.runInContext(fs.readFileSync(process.argv[1], "utf8") + "\nglobalThis.component = CrewGit;", sandbox);
+sandbox.component.mount(host, {project:"demo", api:async () => data, toast:() => {}, onChanged:async () => {}});
+setImmediate(() => {
+  const html = host.innerHTML;
+  assert.ok(html.includes('data-act="leader" data-id="git-admin">和 git 管理员聊'));
+  assert.deepEqual(Array.from(html.matchAll(/data-git-request="(\d+)"/g), match => Number(match[1])), [3,2,1,8,7]);
+  for (const label of ["合并中", "等用户拍板", "待处理", "已拒绝", "已合并", "3 件待处理"]) assert.ok(html.includes(label), label);
+  for (const value of ["feature/&lt;review&gt;", "&lt;member&gt;", "&lt;script&gt;", "Tested &amp; reviewed", 'href="https://example.test/pull/42"']) assert.ok(html.includes(value), value);
+  assert.ok(!html.includes("<script>alert(1)</script>"));
+  sandbox.component.unmount();
+});
+'''
+        result = subprocess.run(["node", "-e", script, str(PLUGIN / "crew" / "web" / "git.js")],
+                                capture_output=True, text=True, encoding="utf-8", timeout=10)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
 class FrontendThemeContractTests(unittest.TestCase):

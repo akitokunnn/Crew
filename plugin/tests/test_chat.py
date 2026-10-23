@@ -1,4 +1,5 @@
 """Stream protocol and persistent-process tests without starting Claude."""
+import tests  # Install the production-service connection guard.
 import base64
 import io
 import json

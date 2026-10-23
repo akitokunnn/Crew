@@ -1,4 +1,5 @@
 """Concurrent wake paths must serialize before launching a session."""
+import tests  # Install the production-service connection guard.
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 import threading

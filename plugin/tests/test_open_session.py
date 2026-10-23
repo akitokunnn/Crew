@@ -1,4 +1,5 @@
 """VS Code handoff never touches user processes or windows in tests."""
+import tests  # Install the production-service connection guard.
 import json
 from unittest import mock
 

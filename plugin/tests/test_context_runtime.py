@@ -1,4 +1,5 @@
 """Context controls and compact lifecycle using fake Claude processes."""
+import tests  # Install the production-service connection guard.
 import json
 import threading
 import unittest
@@ -45,7 +46,7 @@ class ContextRuntimeTests(UsageFixture, unittest.TestCase):
 
     def launch(self, manager, session):
         session.update(crew_name="member", role="member", group_name=None, cwd=str(self.root))
-        spec = {"id": "spawn-1", "name": "member", "role": "member", "group": None}
+        spec = {"id": "spawn-1", "name": "member", "role": "member", "group": None, "agent": None}
         (self.home / "spawn" / "spawn-1.json").parent.mkdir(parents=True, exist_ok=True)
         (self.home / "spawn" / "spawn-1.json").write_text(json.dumps(spec), encoding="utf-8")
         with mock.patch.object(chat.shutil, "which", return_value="claude.exe"):

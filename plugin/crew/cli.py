@@ -72,6 +72,16 @@ def parser():
     a.add_argument("--stable")
     c.add_parser("disable")
     c.add_parser("status")
+    c.add_parser("policy").add_argument("--set", dest="policy_text")
+    a = c.add_parser("request")
+    a.add_argument("description")
+    a.add_argument("--branch")
+    c.add_parser("requests").add_argument("--all", action="store_true")
+    a = c.add_parser("resolve")
+    a.add_argument("id", type=int)
+    a.add_argument("status", choices=("merged", "rejected", "waiting_user", "merging"))
+    a.add_argument("--note", required=True)
+    a.add_argument("--pr", dest="pr_number", type=int)
     c = command("resource").add_subparsers(dest="action", required=True)
     a = c.add_parser("add")
     a.add_argument("name")
@@ -300,7 +310,17 @@ def _emit(value, as_json=False, command=None):
     elif command == "status":
         print(_status_text(value))
     elif command == "git":
-        if value["enabled"]:
+        if "policy" in value:
+            print(value["policy"] if value["policy"] is not None else "git 管理员还没写分支规则，开工前先问它")
+        elif "request" in value:
+            item = value["request"]
+            print("合并请求 #%s · %s · %s\n%s" % (item["id"], item["status"], item["branch"], item["note"] or item["description"]))
+        elif "requests" in value:
+            print("\n".join("#%s · %s · %s · %s · PR %s\n%s" %
+                            (item["id"], item["status"], item["branch"], item["requester_name"],
+                             item["pr_number"] if item["pr_number"] is not None else "-", item["description"])
+                            for item in value["requests"]) if value["requests"] else "暂无合并请求")
+        elif value["enabled"]:
             print("Git 管理已启用 · base: %s · stable: %s" % (value["base"], value["stable"] or "未设置"))
         else:
             print("Git 管理未启用")
@@ -464,10 +484,21 @@ def execute(conn, args, cwd, agents_provider):
     if cmd == "channel":
         return channel.read(conn, p, actor, args.limit)
     if cmd == "git":
-        if args.action == "enable":
-            board.enable_git(conn, p, args.base, args.stable)
-        elif args.action == "disable":
-            board.disable_git(conn, p)
+        if args.action in ("enable", "disable"):
+            from . import spawn
+            spawn.request_start(args.home, p, "/api/git/" + args.action,
+                                {"base": args.base, "stable": args.stable} if args.action == "enable" else {})
+        elif args.action == "policy":
+            return {"policy": (board.git_policy(conn, p) if args.policy_text is None else
+                               board.set_git_policy(conn, p, _session_id(args), args.policy_text))}
+        elif args.action == "request":
+            branch = git_details(cwd)[1] if args.branch is None else args.branch
+            return {"request": board.request_git_merge(conn, p, _session_id(args), branch, args.description)}
+        elif args.action == "requests":
+            return {"requests": board.git_requests(conn, p, args.all)}
+        elif args.action == "resolve":
+            return {"request": board.resolve_git_request(conn, p, _session_id(args), args.id, args.status,
+                                                          args.note, args.pr_number)}
         config = board.git_config(conn, p)
         return {"enabled": config is not None, "base": None if config is None else config["base"],
                 "stable": None if config is None else config["stable"]}

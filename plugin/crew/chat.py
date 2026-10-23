@@ -467,7 +467,7 @@ class Manager:
             exe = str(Path(exe).parent / "node_modules" / "@anthropic-ai" / "claude-code" / "bin" / "claude.exe")
         with closing(store.connect(self.home)) as conn:
             options = models.get(conn, session_id)
-        command = spawn.command(session_id, session["crew_name"], session["role"], resume, **options)
+        command = spawn.command(session_id, session["crew_name"], session["role"], resume, **options, agent=spec["agent"])
         command[0] = exe
         journal = self.journal(session_id)
         journal.reset_runtime()
@@ -486,13 +486,11 @@ class Manager:
         return command
 
     def start(self, conn, project_name, name, task=None, group=None, role="member", members=(), cwd=None,
-              new_worktree=None, base=None, now=None, member_session_ids=(), model=models.INHERIT, effort=models.INHERIT):
+              new_worktree=None, base=None, now=None, member_session_ids=(), model=models.INHERIT, effort=models.INHERIT, agent=None):
         if role == "leader":
-            if group not in (None, name):
-                raise board.BoardError("leader 分组必须与 crew 名同名")
             plan = spawn.leader_plan(conn, self.home, self.plugin_root, project_name, name, members, task,
                                      cwd=cwd, new_worktree=new_worktree, base=base, now=now,
-                                     member_session_ids=member_session_ids, model=model, effort=effort)
+                                     member_session_ids=member_session_ids, model=model, effort=effort, group=group, agent=agent)
         else:
             plan = spawn.prepare(conn, self.home, self.plugin_root, project_name, name, task, group, role,
                                  cwd=cwd, new_worktree=new_worktree, base=base, now=now, model=model, effort=effort)

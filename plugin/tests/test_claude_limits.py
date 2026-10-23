@@ -1,4 +1,5 @@
 """Account quota snapshots from captured protocol/cache data, without credentials or network."""
+import tests  # Install the production-service connection guard.
 import concurrent.futures
 import datetime as dt
 import json
