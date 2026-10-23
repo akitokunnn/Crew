@@ -2,8 +2,6 @@
 -- Times are UTC ISO-8601 strings with millisecond precision and a trailing Z.
 -- Owned by the main controller; tasks extend it only through docs/DESIGN.md.
 
-PRAGMA user_version = 1;
-
 -- ---------------------------------------------------------------- board
 
 CREATE TABLE IF NOT EXISTS projects (

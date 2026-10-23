@@ -100,7 +100,14 @@
   function quotas() { return [["Claude 每周", state.limits.claude.seven_day], ["Claude 5 小时", state.limits.claude.five_hour], ["Codex 每周", state.limits.codex]]; }
   // A window past its reset keeps used_percent null until the next observation.
   function quotaText(limit) { return limit === null ? "未采集" : limit.used_percent === null ? (limit.expired ? "已重置" : "未采集") : `${count(limit.used_percent)}%`; }
-  function quotaRow(label, limit) { return `<div class="qrow"><span>${label}</span><span class="pct">${quotaText(limit)}</span>${limit === null || limit.used_percent === null ? "" : `<span class="bar"><i class="${limit.used_percent >= 80 ? "hi" : ""}" style="width:${limit.used_percent}%"></i></span>`}</div>`; }
+  const crewPercent = value => `${value < 1 ? "<1" : Math.round(value)}%`;
+  function crewQuota(limit, withCost = false) {
+    if (limit === null || limit.crew === undefined || limit.crew.points === null) return "";
+    const crew = limit.crew, cost = `$${Math.round(crew.cost_usd).toLocaleString("zh-CN")}`;
+    const title = `按每 1% ≈ $${crew.usd_per_point} 折算（社区实测 $${crew.usd_per_point_range[0]}～${crew.usd_per_point_range[1]}，对应 ${crewPercent(crew.low)}～${crewPercent(crew.high)}）。Crew = 进了组的 leader 和组员，含子 agent；本周 Crew 折合 ${cost}。`;
+    return `<div class="quota-crew" title="${esc(title)}">其中 Crew ≈ ${esc(crewPercent(crew.points))}${withCost ? `（折合 ${cost}）` : ""}</div>`;
+  }
+  function quotaRow(label, limit) { return `<div class="qrow"><span>${label}</span><span class="pct">${quotaText(limit)}</span>${limit === null || limit.used_percent === null ? "" : `<span class="bar"><i class="${limit.used_percent >= 80 ? "hi" : ""}" style="width:${limit.used_percent}%"></i></span>`}${crewQuota(limit)}</div>`; }
   function applyTheme() { if (theme === "system") delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = theme; }
   function applyFontScale() { document.documentElement.style.setProperty("--fs", String(fontScale)); }
   function setFontScale(value) { fontScale = value; applyFontScale(); try { localStorage.setItem("crew.fontScale", String(value)); } catch (error) { toast(error.message); } }
@@ -193,7 +200,7 @@
     replace($("main"), `<div class="head big"><div><div class="title">待收编</div><div class="sub">${esc(state.project.name)} 下还没归到 leader 的会话</div></div></div><div class="page"><div class="page-in" style="max-width:860px">${state.vscode_error === null ? "" : `<p class="error-line">${esc(state.vscode_error)}</p>`}<div class="group-h"><i class="dot working"></i>正在运行 · ${state.candidates.running.length}</div><div class="list">${list("running").map(item => row(item, "running")).join("")}</div><div class="group-h">${ic("archive", "sm")}没在运行、也没归档 · ${state.candidates.others.length}</div><div class="list">${othersOpen ? `${list("others").map(item => row(item, "others")).join("")}<button class="more-btn" data-act="others">${ic("down", "sm")}收起</button>` : `<button class="more-btn" data-act="others">${ic("right", "sm")}展开 ${state.candidates.others.length} 个（跟 VS Code 会话列表一致，已归档的不在这里）</button>`}</div><p class="note">也可以在那个 VS Code 会话里说「收编到某某」。</p></div></div>`);
   }
   function quotaCard(label, limit) {
-    return `<div class="qcard"><div class="lbl"><span>${label}</span><span>账户</span></div>${limit === null ? '<div class="big" style="font-size:calc(22px * var(--fs))">未采集</div>' : `${limit.used_percent === null ? `<div class="big" style="font-size:calc(22px * var(--fs))">${quotaText(limit)}</div>` : `<div class="big">${count(limit.used_percent)}%<small>已用</small></div><div class="bar"><i style="width:${limit.used_percent}%;${limit.used_percent >= 80 ? "background:var(--warn)" : ""}"></i></div>`}<div class="rs">${date(limit.resets_at)} 重置 · ${time(limit.captured_at)} 采集${limit.expired ? " · 采集已过期" : ""}</div>`}</div>`;
+    return `<div class="qcard"><div class="lbl"><span>${label}</span><span>账户</span></div>${limit === null ? '<div class="big" style="font-size:calc(22px * var(--fs))">未采集</div>' : `${limit.used_percent === null ? `<div class="big" style="font-size:calc(22px * var(--fs))">${quotaText(limit)}</div>` : `<div class="big">${count(limit.used_percent)}%<small>已用</small></div><div class="bar"><i style="width:${limit.used_percent}%;${limit.used_percent >= 80 ? "background:var(--warn)" : ""}"></i></div>`}${crewQuota(limit, true)}<div class="rs">${date(limit.resets_at)} 重置 · ${time(limit.captured_at)} 采集${limit.expired ? " · 采集已过期" : ""}</div>`}</div>`;
   }
   function renderUsage() {
     let table = '<p class="note">正在读取用量…</p>', total = "";

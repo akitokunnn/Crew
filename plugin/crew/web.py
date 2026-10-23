@@ -48,6 +48,7 @@ class Service:
         self.agents, self.agents_at = [], None
         self.agents_error = "\u6b63\u5728\u83b7\u53d6\u8fdb\u7a0b\u72b6\u6001"
         self.scanned_at = None
+        self.crew_usage = (None, None)
         self.title_cache = {}
         self.vscode_state_db = (Path(os.environ["APPDATA"]) / "Code" / "User" / "globalStorage" / "state.vscdb"
                                 if vscode_state_db is None else Path(vscode_state_db))
@@ -264,8 +265,7 @@ class Service:
         return session
 
     def state(self, project_name=None):
-        if project_name is not None:
-            self.scan_usage()
+        self.scan_usage()
         with self.agents_lock:
             agents, error = self.agents, self.agents_error
         with closing(store.connect(self.home)) as conn:
@@ -369,8 +369,18 @@ class Service:
         if (latest is not None and latest['used_percent'] is not None and latest['resets_at'] is not None
                 and store.parse_iso(latest['resets_at']) > self.now()):
             codex = dict(used_percent=latest['used_percent'], resets_at=latest['resets_at'], captured_at=latest['ts'], expired=False)
-        return {'claude': claude_limits.read(self.home, cache_path=self.claude_root.parent.parent / '.claude.json', now=self.now()),
+        return {'claude': self._claude_limits(),
                 'codex': codex}
+
+    def _claude_limits(self):
+        limits = claude_limits.read(self.home, cache_path=self.claude_root.parent.parent / '.claude.json', now=self.now())
+        seven_day = limits['seven_day']
+        reset, crew = self.crew_usage
+        # A new or expired account window must not inherit the previous week's estimate.
+        if (seven_day is not None and seven_day['used_percent'] is not None
+                and crew is not None and seven_day['resets_at'] == reset):
+            seven_day['crew'] = crew
+        return limits
 
     def decision_participants(self, conn, decision):
         asker = board.session(conn, decision['session_id'])
@@ -579,9 +589,15 @@ class Service:
 
     def scan_usage(self):
         with self.scan_lock, closing(store.connect(self.home)) as conn:
-            if self.scanned_at is None or (self.now() - self.scanned_at).total_seconds() >= 60:
+            now = self.now()
+            if self.scanned_at is None or (now - self.scanned_at).total_seconds() >= 60:
                 usage.scan(conn, self.claude_root, self.codex_root, self.runs_file)
-                self.scanned_at = self.now()
+                seven_day = claude_limits.read(self.home, cache_path=self.claude_root.parent.parent / '.claude.json', now=now)['seven_day']
+                crew = None
+                if seven_day is not None and seven_day['used_percent'] is not None and seven_day['resets_at'] is not None:
+                    crew = usage.crew_weekly(conn, seven_day, usage.load_prices(self.home / 'prices.json'), now)
+                self.crew_usage = (seven_day['resets_at'] if seven_day is not None else None, crew)
+                self.scanned_at = now
 
     def notification_status(self):
         return self.inbox.status()
@@ -608,7 +624,7 @@ class Service:
             if what is not None:
                 return functions[what](conn, start, end, prices, project=name)
             result = {key: fn(conn, start, end, prices, project=name) for key, fn in functions.items() if key != "requests"}
-            result['summary']['claude_limits'] = claude_limits.read(self.home, cache_path=self.claude_root.parent.parent / '.claude.json', now=self.now())
+            result['summary']['claude_limits'] = self._claude_limits()
             result["codex"] = usage.codex_tasks(conn, start, end, project=name)
             result.update(scope=scope, project=project)
             return result

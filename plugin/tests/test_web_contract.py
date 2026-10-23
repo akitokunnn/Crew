@@ -10,8 +10,9 @@ from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import ProxyHandler, Request, build_opener
 
-from crew import board, store, web
+from crew import board, store, usage, web
 from test_shell import NOW, PLUGIN, ShellFixture
+from test_usage import assistant
 
 
 class WebContractTests(ShellFixture, unittest.TestCase):
@@ -313,6 +314,72 @@ class WebContractTests(ShellFixture, unittest.TestCase):
                                         "captured_at": "2026-10-21T07:59:00.000Z", "expired": False})
         self.clock += dt.timedelta(hours=1)
         self.assertIsNone(self.state()["limits"]["codex"])
+
+    def week_limit(self, reset, percent=25):
+        (self.home / "claude-limits.json").write_text(json.dumps({"seven_day": {
+            "used_percent": percent, "resets_at": reset,
+            "captured_at": self.clock.isoformat(), "source": "stream"}}), encoding="utf-8")
+
+    def test_claude_crew_week_state_shape_and_usage_contract(self):
+        self.week_limit((self.clock + dt.timedelta(days=1)).isoformat())
+        self.main_file([assistant("crew-leader")], session="s3")
+        crew = self.state(None)["limits"]["claude"]["seven_day"]["crew"]
+        self.assertEqual(set(crew), {"cost_usd", "points", "low", "high", "usd_per_point",
+                                     "usd_per_point_range", "since"})
+        self.assertAlmostEqual(crew["cost_usd"], 0.01275)
+        self.assertAlmostEqual(crew["points"], 0.01275 / 20)
+        self.assertAlmostEqual(crew["low"], 0.01275 / 27)
+        self.assertAlmostEqual(crew["high"], 0.01275 / 16)
+        self.assertEqual((crew["usd_per_point"], crew["usd_per_point_range"], crew["since"]),
+                         (20, [16, 27], "2026-10-15T08:00:00.000Z"))
+        code, report, _ = self.request("/api/usage", project="demo")
+        self.assertEqual(code, 200, report)
+        self.assertEqual(report["summary"]["claude_limits"]["seven_day"]["crew"], crew)
+
+    def test_claude_crew_reuses_cache_until_next_usage_scan(self):
+        self.week_limit((self.clock + dt.timedelta(days=1)).isoformat())
+        path = self.main_file([assistant("first-crew-request")], session="s3")
+        with mock.patch.object(usage, "crew_weekly", wraps=usage.crew_weekly) as estimate, \
+                mock.patch.object(usage, "scan", wraps=usage.scan) as scan:
+            first = self.state()["limits"]["claude"]["seven_day"]["crew"]
+            self.write(path, [assistant("second-crew-request", seconds=20, tool="second-tool")], append=True)
+            self.clock += dt.timedelta(seconds=59)
+            self.assertEqual(self.state()["limits"]["claude"]["seven_day"]["crew"], first)
+            self.assertEqual((scan.call_count, estimate.call_count), (1, 1))
+            self.clock += dt.timedelta(seconds=1)
+            updated = self.state()["limits"]["claude"]["seven_day"]["crew"]
+            self.assertAlmostEqual(updated["cost_usd"], first["cost_usd"] * 2)
+            self.assertEqual((scan.call_count, estimate.call_count), (2, 2))
+
+    def test_claude_crew_missing_unknown_or_expired_window_is_omitted(self):
+        self.assertIsNone(self.state()["limits"]["claude"]["seven_day"])
+        for reset, percent in ((None, 25), ((self.clock + dt.timedelta(days=1)).isoformat(), None),
+                               (self.clock.isoformat(), 25)):
+            with self.subTest(reset=reset, percent=percent):
+                self.week_limit(reset, percent)
+                self.service.scanned_at = None
+                self.assertNotIn("crew", self.state()["limits"]["claude"]["seven_day"])
+
+    def test_claude_crew_expiry_and_new_window_do_not_reuse_previous_cache(self):
+        self.week_limit((self.clock + dt.timedelta(seconds=5)).isoformat())
+        with mock.patch.object(usage, "crew_weekly", wraps=usage.crew_weekly) as estimate:
+            self.assertIn("crew", self.state()["limits"]["claude"]["seven_day"])
+            self.clock += dt.timedelta(seconds=6)
+            self.assertNotIn("crew", self.state()["limits"]["claude"]["seven_day"])
+            self.week_limit((self.clock + dt.timedelta(days=7)).isoformat())
+            self.assertNotIn("crew", self.state()["limits"]["claude"]["seven_day"])
+            self.assertEqual(estimate.call_count, 1)
+            self.clock += dt.timedelta(seconds=54)
+            self.assertIn("crew", self.state()["limits"]["claude"]["seven_day"])
+            self.assertEqual(estimate.call_count, 2)
+
+    def test_claude_crew_unpriced_request_keeps_null_contract(self):
+        self.week_limit((self.clock + dt.timedelta(days=1)).isoformat())
+        self.main_file([assistant("unpriced-crew-request", model="unpriced")], session="s3")
+        crew = self.state()["limits"]["claude"]["seven_day"]["crew"]
+        for field in ("cost_usd", "points", "low", "high"):
+            self.assertIsNone(crew[field], field)
+        self.assertEqual(crew["usd_per_point_range"], [16, 27])
 
     def test_notice_delivery_waits_while_busy_then_merges_all_and_marks_sent(self):
         sid, process = self.start_leader()

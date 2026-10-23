@@ -191,10 +191,11 @@ PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stder
 | 派活记录 | `HOME/codex_runs.jsonl` | §9 |
 
 - 增量：`usage_files` 记每个文件已读到的字节偏移（只停在完整行的末尾）。文件变小了就从头重扫，并先删掉这个文件产生的行（要能按文件删，按需要在扫描时记住来源；schema 里没有来源列时，按 session_id / rollout_id 删）。
+- 历史 peer 补录：首次用量扫描在同一事务内读取已有 Claude 主会话和子 agent 文件旧 offset 之前的 peer 消息，只向 `claude_prompts` 按 UUID 补缺，不改请求、其它表或扫描偏移。完成后将 SQLite `user_version` 推进至 2；失败时补录与版本号一起回滚。连接时不再把版本固定写回 1，无需改变表结构，合并后重启即可。
 - Claude 行：
   - `type == "assistant"` 且有 `message.usage`：一个请求一行，键 = `message.id`，没有就用 `requestId`；同一个键出现多次只记一次。字段：model、`effort`（行顶层）、usage 里的 input_tokens、cache_creation_input_tokens、cache_creation.ephemeral_5m_input_tokens / ephemeral_1h_input_tokens、cache_read_input_tokens、output_tokens、output_tokens_details.thinking_tokens、server_tool_use.web_search_requests / web_fetch_requests、service_tier、speed。output_tokens 已包含思考，thinking_tokens 只是细分。
   - 同一行 message.content 里的 `tool_use` 块 → claude_tool_calls。
-  - `type == "user"`、不是 isMeta、不是 isCompactSummary、content 是字符串或含 text 块且不含 tool_result → claude_prompts。kind 按行上的 `origin.kind`：`human` → user，`peer` → peer，`task-notification` → task；没有 origin 字段的老记录记 user。prompts 数只算 user，干活时长按所有 kind 的轮次算。
+  - `type == "user"`、不是 isCompactSummary、content 是字符串或含 text 块且不含 tool_result → claude_prompts。kind 按行上的 `origin.kind`：`human` → user，`peer` → peer，`task-notification` → task；没有 origin 字段的老记录记 user。`origin.kind == "peer"` 的消息即使 `isMeta: true` 也记为新的 peer 轮次，涵盖 SendMessage 叫醒后台会话；其它 isMeta 仍跳过。prompts 数只算 user，干活时长按所有 kind 的轮次算。
   - `type == "system"` 且 `subtype == "compact_boundary"` → claude_compactions。
   - `type == "ai-title"` → claude_sessions.ai_title（取最后一次）。cwd、entrypoint、version 取最后一次出现的值；first_ts / last_ts 按行的 timestamp。
 - Codex 行：`session_meta`（id、timestamp、cwd、originator、source、cli_version）；第一个 `turn_context`（model、collaboration_mode.settings.reasoning_effort、sandbox_policy.type）；最后一个 `event_msg/token_count` 的 `info.total_token_usage`（input_tokens 含缓存部分）；每个带 rate_limits 的 token_count 写一行 codex_rate_limits（主键 rollout_id + ts；primary.used_percent、window_minutes、resets_at 转 ISO、credits.balance、plan_type）；first_user_text 取用户消息里第一个不以 `<` 开头、也不以 `# AGENTS.md instructions` 开头的 input_text 前 200 字（Codex 会先塞 AGENTS.md 和环境信息）。session_meta.source 对 Codex 自己的子 agent 是对象，存成 JSON 字符串。usage 里的细分字段（cache_creation、output_tokens_details、server_tool_use）在老记录里可能是 null，按 0 计。
@@ -215,6 +216,8 @@ PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stder
 - 干活秒数：每个 prompt（任何 kind）到下一个 prompt 之前，最后一个请求的时间减 prompt 时间，求和。
 - 金额：`prices.json` 形如 `{"claude-opus-5-5": {"input": 5, "output": 25, "cache_write_5m": 6.25, "cache_write_1h": 10, "cache_read": 0.5}}`，单位美元 / 百万 token。模型不在表里时金额为 null，汇总时单列"未计价 token"。
 - 会话 → 分组：LEFT JOIN sessions。没加入 crew 的会话照样统计。
+- Crew 周额度折合单独按账户汇总，不限项目：从 Claude `seven_day.resets_at` 往前 7 天到扫描时刻，计入当前 `sessions.role='leader'` 或 `group_name` 不为空的会话及其子 agent 请求；不计未收编会话和 Codex。复用 `load_prices` / `_money` 的 API 价计费；有未定价模型时折合金额与占比均为 null。
+- 固定每 1% 周额度折合 $20，区间 $16～27；`points = cost_usd / 20`，`low = cost_usd / 27`，`high = cost_usd / 16`。常量集中在计算模块，不自动校准。`/api/state` 的 `limits.claude.seven_day.crew` 包含 `cost_usd`、`points`、`low`、`high`、`usd_per_point`、`usd_per_point_range` 和窗口起点 `since`；只在用量扫描后计算并缓存（扫描最多 60 秒一次），3 秒 state 轮询读缓存。seven_day 未采集、已过期或没有 resets_at 时不附 Crew 折合；seven_day 自身为 null 时保持 null。
 
 ### 命令行（`crew/usage_cli.py`：`main(argv, home)`）
 

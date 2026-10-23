@@ -129,6 +129,8 @@ svg.i.xs{width:12px;height:12px}
 .qrow .bar{grid-column:1/-1;height:4px;border-radius:2px;background:var(--line-strong);overflow:hidden}
 .qrow .bar i{display:block;height:100%;border-radius:2px;background:var(--accent)}
 .qrow .bar i.hi{background:var(--warn)}
+.quota-crew{font-size:calc(11.5px * var(--fs));color:var(--text-2);line-height:1.5}
+.qrow .quota-crew{grid-column:1/-1}
 .qrow .reset{grid-column:1/-1;font-size:calc(11px * var(--fs));color:var(--text-3);margin-top:-2px}
 .foot-row{display:flex;align-items:center;gap:8px;padding:0 4px}
 .switch{display:flex;align-items:center;gap:8px;font-size:calc(12.5px * var(--fs));color:var(--text-2);cursor:pointer;user-select:none;background:none;border:0;padding:4px 0}
@@ -393,6 +395,7 @@ svg.i.xs{width:12px;height:12px}
 .qcard .bar{height:6px;border-radius:3px;background:var(--line-strong);overflow:hidden}
 .qcard .bar i{display:block;height:100%;background:var(--accent);border-radius:3px}
 .qcard .bar i.hi{background:var(--warn)}
+.qcard .quota-crew{margin-top:8px}
 .qcard .rs{font-size:calc(11.5px * var(--fs));color:var(--text-3);margin-top:8px}
 .utable{width:100%;border-collapse:separate;border-spacing:0;background:var(--surface);border:1px solid var(--line);border-radius:14px;overflow:hidden;font-size:calc(13px * var(--fs))}
 .utable th{font-weight:400;color:var(--text-3);font-size:calc(12px * var(--fs));text-align:left;padding:10px 14px;border-bottom:1px solid var(--line);background:var(--hover-2)}

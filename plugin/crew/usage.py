@@ -16,6 +16,9 @@ CLAUDE_TOKENS = (
 CODEX_TOKENS = (
     "input_tokens", "cached_input_tokens", "output_tokens", "reasoning_tokens", "total_tokens",
 )
+# 2026-10 社区实测，Max 20x、Opus 5.5 为主：单账号 Claude Code 5 个周期 $23.5～27/点，17 账号网关中位数 $16.4/点；本机下限 $14.6/点
+CLAUDE_WEEKLY_USD_PER_POINT = 20
+CLAUDE_WEEKLY_USD_PER_POINT_RANGE = (16, 27)
 
 
 def _iso(value):
@@ -138,6 +141,29 @@ def _claude_identity(path, root, kind):
     return relative.parts[0], relative.parts[1], path.stem.removeprefix("agent-")
 
 
+def _claude_prompt(conn, record, session_id, counts):
+    origin = record["origin"]["kind"] if "origin" in record else "human"
+    if record.get("isCompactSummary") or (record.get("isMeta") and origin != "peer"):
+        return
+    content = record["message"]["content"]
+    if isinstance(content, str):
+        text = content
+    elif isinstance(content, list):
+        if any(block["type"] == "tool_result" for block in content):
+            return
+        texts = [block["text"] for block in content if block["type"] == "text"]
+        if not texts:
+            return
+        text = "".join(texts)
+    else:
+        raise TypeError("message.content must be a string or list")
+    prompt_kind = {"human": "user", "peer": "peer", "task-notification": "task"}[origin]
+    _insert_once(conn, "claude_prompts", "uuid", {
+        "uuid": record["uuid"], "session_id": session_id,
+        "ts": _timestamp(record["timestamp"]), "kind": prompt_kind, "chars": len(text),
+    }, counts)
+
+
 def _claude_line(conn, record, identity, agent_type, counts):
     project_dir, session_id, agent_id = identity
     kind = record["type"]
@@ -186,25 +212,8 @@ def _claude_line(conn, record, identity, agent_type, counts):
                     "tool_use_id": block["id"], "session_id": session_id, "agent_id": agent_id,
                     "ts": values["ts"], "tool_name": block["name"],
                 }, counts)
-    elif kind == "user" and not record.get("isMeta") and not record.get("isCompactSummary"):
-        content = record["message"]["content"]
-        if isinstance(content, str):
-            text = content
-        elif isinstance(content, list):
-            if any(block["type"] == "tool_result" for block in content):
-                return
-            texts = [block["text"] for block in content if block["type"] == "text"]
-            if not texts:
-                return
-            text = "".join(texts)
-        else:
-            raise TypeError("message.content must be a string or list")
-        origin = record["origin"]["kind"] if "origin" in record else "human"
-        prompt_kind = {"human": "user", "peer": "peer", "task-notification": "task"}[origin]
-        _insert_once(conn, "claude_prompts", "uuid", {
-            "uuid": record["uuid"], "session_id": session_id,
-            "ts": _timestamp(record["timestamp"]), "kind": prompt_kind, "chars": len(text),
-        }, counts)
+    elif kind == "user":
+        _claude_prompt(conn, record, session_id, counts)
     elif kind == "system" and record.get("subtype") == "compact_boundary":
         _insert_once(conn, "claude_compactions", "uuid", {
             "uuid": record["uuid"], "session_id": session_id, "ts": _timestamp(record["timestamp"]),
@@ -311,6 +320,34 @@ def _match_runs(conn, counts):
         _save(conn, "codex_runs", "run_id", {"run_id": run["run_id"], "rollout_id": earliest}, counts)
 
 
+def _backfill_peer_prompts(conn, files, claude_root, counts):
+    if conn.execute("PRAGMA user_version").fetchone()[0] >= 2:
+        return
+    for path, kind in files:
+        if not kind.startswith("claude"):
+            continue
+        old = conn.execute("SELECT offset FROM usage_files WHERE path = ?", (str(path),)).fetchone()
+        if old is None:
+            continue
+        session_id = _claude_identity(path, claude_root, kind)[1]
+        for begin, end, line in _lines(path, 0):
+            if end > old["offset"]:
+                break
+            before = counts["inserted"], counts["updated"]
+            try:
+                with _transaction(conn, "usage_line"):
+                    record = json.loads(line)
+                    if not isinstance(record, dict):
+                        raise TypeError("JSON line must be an object")
+                    if record["type"] == "user" and "origin" in record and record["origin"]["kind"] == "peer":
+                        _claude_prompt(conn, record, session_id, counts)
+            except (json.JSONDecodeError, KeyError, TypeError) as error:
+                counts["inserted"], counts["updated"] = before
+                counts["skipped"] += 1
+                counts["bad_lines"].append({"path": str(path), "line": _line_number(path, begin), "error": str(error)})
+    conn.execute("PRAGMA user_version = 2")
+
+
 def scan(conn, claude_root, codex_root, runs_file):
     """Return inserted/updated domain rows, skipped lines and their locations.
 
@@ -325,6 +362,8 @@ def scan(conn, claude_root, codex_root, runs_file):
         files.append((runs_file, "codex_runs"))
     counts = {"inserted": 0, "updated": 0, "skipped": 0, "bad_lines": []}
     with _transaction(conn, "usage_scan"):
+        # Replay only peer prompts, never the shrink/reset path that deletes whole session families.
+        _backfill_peer_prompts(conn, files, claude_root, counts)
         reset_sessions = set()
         for path, kind in files:
             old = conn.execute("SELECT * FROM usage_files WHERE path = ?", (str(path),)).fetchone()
@@ -459,6 +498,35 @@ def _money(row, prices):
             + row["cache_write_1h"] * rates["cache_write_1h"]
             + row["cache_read_tokens"] * rates["cache_read"]) / 1_000_000
     return (None if unsplit else cost), cost, unsplit
+
+
+def crew_weekly(conn, seven_day, prices, now):
+    """Estimate current Crew's account-wide Claude weekly quota points from API cost."""
+    if seven_day is None or seven_day["used_percent"] is None or not seven_day.get("resets_at"):
+        return None
+    reset = store.parse_iso(seven_day["resets_at"])
+    if reset <= now:
+        return None
+    since = _iso(reset - dt.timedelta(days=7))
+    cost = 0.0
+    for row in conn.execute(
+        "SELECT r.* FROM claude_requests r JOIN sessions s ON s.session_id = r.session_id "
+        "WHERE (s.role = 'leader' OR (s.group_name IS NOT NULL AND s.group_name != '')) "
+        "AND r.ts >= ? AND r.ts <= ?", (since, _iso(now)),
+    ):
+        request_cost = _money(row, prices)[0]
+        if request_cost is None:
+            cost = None
+            break
+        cost += request_cost
+    low_price, high_price = CLAUDE_WEEKLY_USD_PER_POINT_RANGE
+    return {
+        "cost_usd": cost, "points": None if cost is None else cost / CLAUDE_WEEKLY_USD_PER_POINT,
+        "low": None if cost is None else cost / high_price,
+        "high": None if cost is None else cost / low_price,
+        "usd_per_point": CLAUDE_WEEKLY_USD_PER_POINT,
+        "usd_per_point_range": list(CLAUDE_WEEKLY_USD_PER_POINT_RANGE), "since": since,
+    }
 
 
 def _aggregate():
