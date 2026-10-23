@@ -329,11 +329,8 @@ class ModelWakeTests(shell.ShellFixture, unittest.TestCase):
         self.assertEqual(self.wake()[0], 409)
         self.assertEqual(self.processes, [])
 
-    def test_wake_rejects_other_callers_leaders_archived_removed_and_closed(self):
-        board.join(self.conn, "s4", "demo", "other-lead", self.project, self.project, "main", role="leader", now=shell.NOW)
-        for caller in ("s2", "s4"):
-            with self.subTest(caller=caller):
-                self.assertNotEqual(self.wake(caller_session_id=caller)[0], 200)
+    def test_wake_rejects_members_human_to_leader_archived_removed_and_closed(self):
+        self.assertNotEqual(self.wake(caller_session_id="s2")[0], 200)
         self.assertNotEqual(self.wake("s3")[0], 200)
         session_ops.archive(self.conn, "s1", now=shell.NOW)
         self.assertNotEqual(self.wake()[0], 200)

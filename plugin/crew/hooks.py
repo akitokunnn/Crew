@@ -8,7 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import board, guard, install, rules, store
+from . import board, channel, guard, install, rules, store
 
 EVENTS = ("session-start", "user-prompt-submit", "stop", "notification", "pre-ask", "post-ask", "session-end", "guard")
 
@@ -94,6 +94,10 @@ def handle(event, data, home, plugin_root, environ, git_provider=git_details, no
             reminder = rules.reminder(conn, data["session_id"], plugin_root)
             if reminder is not None:
                 lines.append(reminder)
+        if event == "user-prompt-submit":
+            summary = channel.summary(conn, data["session_id"], now=now)
+            if summary is not None:
+                lines.append(summary)
     if lines and event in ("session-start", "user-prompt-submit"):
         name = "SessionStart" if event == "session-start" else "UserPromptSubmit"
         return 0, {"hookSpecificOutput": {"hookEventName": name, "additionalContext": "\n".join(lines)}}

@@ -1,6 +1,7 @@
 """New web contracts exercised with temporary storage and fake model processes."""
 import datetime as dt
 import json
+import subprocess
 import threading
 import unittest
 import uuid
@@ -76,11 +77,12 @@ class WebContractTests(ShellFixture, unittest.TestCase):
 
     def test_state_exact_shape_and_empty_limits(self):
         expected = {"project", "projects", "now", "agents_error", "notification", "leaders",
-                    "members", "decisions", "candidates", "attention", "limits", "vscode_error", "models", "efforts"}
+                    "members", "decisions", "candidates", "attention", "limits", "vscode_error", "models", "efforts", "channel"}
         state = self.state()
         self.assertEqual(set(state), expected)
         self.assertEqual(set(state["project"]), {"name", "root"})
         self.assertEqual(state["projects"], [{"name": "demo"}])
+        self.assertEqual(state["channel"], {"unread": 0, "latest_id": 0})
         self.assertEqual(state["limits"], {"claude": {"five_hour": None, "seven_day": None}, "codex": None})
         leader = state["leaders"][0]
         self.assertEqual(set(leader), {"session_id", "name", "goal", "status", "busy", "running", "web_chat",
@@ -92,6 +94,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         landing = self.state(None)
         self.assertEqual(set(landing), expected)
         self.assertIsNone(landing["project"])
+        self.assertEqual(landing["channel"], {"unread": 0, "latest_id": 0})
         for key in ("leaders", "members", "decisions", "attention"):
             self.assertEqual(landing[key], [])
 
@@ -498,13 +501,167 @@ class WebContractTests(ShellFixture, unittest.TestCase):
                 self.assertTrue(content)
                 self.assertEqual(headers["Content-Type"], media)
                 self.assertEqual(headers["Cache-Control"], "public, max-age=604800")
-        for path in ("/", "/app.js", "/chat.js", "/style.css", "/vendor/markdown-it.min.js", "/api/state"):
+        for path in ("/", "/app.js", "/chat.js", "/channel.js", "/style.css", "/vendor/markdown-it.min.js", "/api/state"):
             with self.subTest(path=path):
                 code, _, headers = self.request(path, raw=True)
                 self.assertEqual(code, 200)
                 self.assertEqual(headers["Cache-Control"], "no-store")
         self.assertEqual(self.request("/api/session/timeline", project="demo", session_id="s1")[0], 404)
         self.assertEqual(self.request("/api/lease/give", {"resource": "phone", "reason": "old control"})[0], 404)
+
+
+class FrontendChannelContractTests(unittest.TestCase):
+    def run_component(self, scenario):
+        bootstrap = r'''
+const assert = require("node:assert/strict");
+const fs = require("node:fs"), path = require("node:path"), vm = require("node:vm");
+const folder = process.argv[1];
+const listeners = new Map();
+const document = {visibilityState:"visible", addEventListener:(name, fn) => listeners.set(name, fn), removeEventListener:(name, fn) => { if (listeners.get(name) === fn) listeners.delete(name); }};
+const sandbox = {document, matchMedia:() => ({matches:false}), setTimeout, clearTimeout, atob};
+sandbox.window = sandbox;
+vm.createContext(sandbox);
+for (const file of ["vendor/markdown-it.min.js", "chat.js", "channel.js"]) vm.runInContext(fs.readFileSync(path.join(folder, file), "utf8"), sandbox);
+const flush = async () => { for (let index = 0; index < 12; index++) await Promise.resolve(); };
+function element() {
+  let html = "", buttons = [];
+  return {hidden:false, disabled:false, value:"", style:{}, textContent:"", scrollHeight:26,
+    get innerHTML() { return html; },
+    set innerHTML(value) {
+      html = value;
+      buttons = [...value.matchAll(/data-channel-to="([^"]+)" aria-pressed="([^"]+)" ([^>]*)/g)].map(match => {
+        const button = {dataset:{channelTo:match[1]}, disabled:match[3].includes("disabled"), pressed:match[2]};
+        button.closest = () => button;
+        return button;
+      });
+    }, querySelectorAll:() => buttons};
+}
+function fixture() {
+  const scroll = {scrollHeight:40, clientHeight:400, top:0, get scrollTop() { return this.top; }, set scrollTop(value) { this.top = Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight)); }};
+  const inner = element(), older = element(), targets = element(), input = element(), send = element(), form = element();
+  const original = Object.getOwnPropertyDescriptor(inner, "innerHTML");
+  Object.defineProperty(inner, "innerHTML", {get:original.get, set(value) { original.set.call(inner, value); scroll.scrollHeight = 40 + [...value.matchAll(/data-channel-id=/g)].length * 100; }});
+  const nodes = {".channel-scroll":scroll, ".channel-inner":inner, ".channel-older":older, ".channel-targets":targets, textarea:input, ".channel-send":send, form};
+  const host = {innerHTML:"", querySelector:selector => nodes[selector]};
+  const state = {project:{name:"demo"}, leaders:[{session_id:"git",name:"Git"},{session_id:"design",name:"Design"}], channel:{latest_id:25}};
+  const message = (id, body = "发言 " + id, speaker = "git") => ({id, speaker_session_id:speaker, speaker_name:speaker === "user" ? "用户" : "Git", body, mentions:[], created_at:"2026-10-23T08:30:00Z"});
+  const messages = Array.from({length:25}, (_, index) => message(index + 1));
+  const calls = [], toasts = [], reads = [];
+  let interloper = false;
+  const api = async (route, data) => {
+    calls.push({route, data});
+    if (route === "/api/channel/read") return {read_id:data.id, unread:0, latest_id:messages[messages.length - 1].id};
+    if (route === "/api/channel") {
+      if (interloper) messages.push(message(messages.length + 1, "发送期间到达的发言"));
+      const posted = message(messages.length + 1, data.body, "user");
+      posted.mentions = data.to.map(name => ({session_id:state.leaders.find(item => item.name === name).session_id, name}));
+      messages.push(posted);
+      return {message:posted};
+    }
+    const params = new URL(route, "http://fixture").searchParams;
+    const before = params.has("before") ? Number(params.get("before")) : Infinity;
+    const eligible = messages.filter(item => item.id < before);
+    return {messages:eligible.slice(-20), has_more:eligible.length > 20, latest_id:messages[messages.length - 1].id};
+  };
+  const mount = () => sandbox.CrewChannel.mount({host, state, api, toast:text => toasts.push(text), onRead:result => reads.push(result.read_id)});
+  const select = id => { const button = targets.querySelectorAll().find(item => item.dataset.channelTo === id); targets.onclick({target:button}); };
+  return {...nodes, scroll, inner, older, targets, input, send, form, state, messages, message, calls, toasts, reads, mount, select, setInterloper:() => { interloper = true; }};
+}
+'''
+        script = bootstrap + "\n(async () => {\n" + scenario + "\n})().catch(error => { console.error(error); process.exitCode = 1; });"
+        result = subprocess.run(["node", "-e", script, str(PLUGIN / "crew" / "web")],
+                                capture_output=True, text=True, encoding="utf-8", timeout=10)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_channel_assets_navigation_and_shared_markdown_renderer(self):
+        assets = PLUGIN / "crew" / "web"
+        index = (assets / "index.html").read_text(encoding="utf-8")
+        app = (assets / "app.js").read_text(encoding="utf-8")
+        self.assertLess(index.index('src="/chat.js"'), index.index('src="/channel.js"'))
+        self.assertLess(index.index('src="/channel.js"'), index.index('src="/app.js"'))
+        self.assertLess(app.index('data-view="all"'), app.index('data-view="channel"'))
+        self.assertIn('state.channel.unread', app)
+        self.assertIn('"channel", "adopt"', app)
+        self.run_component(r'''
+const f = fixture();
+f.messages[24].body = '**标题：**正文\n\n<script>alert(1)</script>\n\n[链接](https://example.com)';
+f.messages[24].mentions = [{session_id:"design", name:'<Design>"'}];
+f.messages[24].speaker_name = '<Git>"';
+f.mount(); await flush();
+const html = f.inner.innerHTML;
+assert(html.includes('<strong>标题</strong>：正文'));
+assert(html.includes('&lt;script&gt;alert(1)&lt;/script&gt;'));
+assert(!html.includes('<script>'));
+assert(html.includes('target="_blank" rel="noopener noreferrer"'));
+assert(html.includes('&lt;Git&gt;&quot;'));
+assert(html.includes('class="channel-mention">@&lt;Design&gt;&quot;'));
+assert.deepEqual(f.reads, [25]);
+assert(!f.older.hidden);
+sandbox.CrewChannel.unmount();
+assert.equal(listeners.size, 0);
+''')
+
+    def test_channel_input_ime_multiselect_send_and_clear(self):
+        self.run_component(r'''
+const f = fixture(); f.mount(); await flush();
+f.select("git"); f.select("design");
+assert.equal(f.targets.querySelectorAll().filter(item => item.pressed === "true").length, 2);
+f.input.value = "**确认**发布"; f.input.oninput();
+let prevented = 0;
+const enter = extra => ({key:"Enter", shiftKey:false, isComposing:false, keyCode:13, preventDefault:() => prevented++, ...extra});
+f.input.oncompositionstart(); f.input.onkeydown(enter({}));
+f.input.oncompositionend(); f.input.onkeydown(enter({isComposing:true}));
+f.input.onkeydown(enter({keyCode:229})); f.input.onkeydown(enter({shiftKey:true}));
+await flush();
+assert.equal(f.calls.filter(item => item.route === "/api/channel").length, 0);
+assert.equal(prevented, 0);
+f.input.onkeydown(enter({})); await flush();
+const posted = f.calls.find(item => item.route === "/api/channel");
+assert.deepEqual(JSON.parse(JSON.stringify(posted.data)), {project:"demo", body:"**确认**发布", to:["Git", "Design"]});
+assert.equal(prevented, 1);
+assert.equal(f.input.value, "");
+assert.equal(f.targets.querySelectorAll().filter(item => item.pressed === "true").length, 0);
+assert(f.send.disabled);
+assert(f.inner.innerHTML.includes('channel-user'));
+assert(f.inner.innerHTML.includes('<strong>确认</strong>发布'));
+assert.equal(f.toasts[0], "已发到交流区，点名的 Git、Design 会被叫醒");
+sandbox.CrewChannel.unmount();
+''')
+
+    def test_channel_paging_refresh_and_bottom_read(self):
+        self.run_component(r'''
+const f = fixture(); f.mount(); await flush();
+assert(!f.inner.innerHTML.includes('data-channel-id="1"'));
+f.scroll.scrollTop = 0; f.older.onclick(); await flush();
+assert(f.calls.some(item => item.route === "/api/channel?limit=20&before=6"));
+assert(f.inner.innerHTML.includes('data-channel-id="1"'));
+assert(f.older.hidden);
+assert.equal(f.scroll.scrollTop, 500);
+f.scroll.scrollTop = 0;
+f.messages.push(f.message(26, "新增发言"));
+f.state.channel.latest_id = 26;
+sandbox.CrewChannel.update(f.state); await flush();
+assert.equal(f.scroll.scrollTop, 0);
+assert(f.inner.innerHTML.includes('新增发言'));
+assert.deepEqual(f.reads, [25]);
+f.scroll.scrollTop = f.scroll.scrollHeight; f.scroll.onscroll(); await flush();
+assert.deepEqual(f.reads, [25, 26]);
+assert.equal([...f.inner.innerHTML.matchAll(/data-channel-id="26"/g)].length, 1);
+sandbox.CrewChannel.unmount();
+''')
+
+    def test_channel_send_fetches_posts_arriving_during_request(self):
+        self.run_component(r'''
+const f = fixture(); f.mount(); await flush(); f.setInterloper();
+f.input.value = "我的发言"; f.input.oninput();
+f.form.onsubmit({preventDefault:() => {}}); await flush();
+assert(f.inner.innerHTML.includes('发送期间到达的发言'));
+assert(f.inner.innerHTML.includes('我的发言'));
+assert(f.inner.innerHTML.indexOf('data-channel-id="26"') < f.inner.innerHTML.indexOf('data-channel-id="27"'));
+assert.equal(f.toasts[0], "已发到交流区");
+assert.deepEqual(f.reads, [25, 27]);
+sandbox.CrewChannel.unmount();
+''')
 
 
 if __name__ == "__main__":

@@ -20,6 +20,7 @@ description: Crew leader 守则。一个 leader 管一个分组，像公司里�
 
 - 组员做完一段、卡住、要用户拍板时会用 SendMessage 找你。你决定：自己能定的直接定；需要别的组员知道的，只转给相关的人；剩下的等用户。
 - 组员之间不互相通知，都经过你。转达时写清楚谁说的、要对方做什么；用户的原话原样引用。
+- **找人不受分组限制**。需要时直接 SendMessage 任何会话，包括别的组的 leader 和组员，地址用 `crew group list` / `crew who <名字>` 查。对别的组的组员只问情况、请它配合；要改它的计划，找它的 leader。
 - 发消息地址用 `crew who <名字>` 查。等组员做完用 SendMessage 的 `notify_when_idle` 订阅，不要轮询、不要发"做完了吗"。
 
 ## 以 "[Crew]" 开头的消息
@@ -41,9 +42,17 @@ description: Crew leader 守则。一个 leader 管一个分组，像公司里�
 
 ## 组员不在线
 
-`crew who <名字>` / `crew status` 显示组员离线时，用 `crew wake <名字> "<要它做的事>"` 叫醒。Crew 会在后台接着运行它原来的会话，之后按它的 crew 名用 SendMessage 联系它。在线时直接用 SendMessage；进程状态未知时等状态查明再试。
+`crew who <名字>` / `crew status` 显示组员离线时，用 `crew wake <名字> "<要它做的事>"` 叫醒本项目任何组员，不受分组限制。Crew 会在后台接着运行它原来的会话，之后按它的 crew 名用 SendMessage 联系它。在线时直接用 SendMessage；进程状态未知时等状态查明再试。对别的 leader 也能用 `crew wake`，Crew 会排进它的通知，它空闲时送达。
 
 **不要为了离线的组员另开新下属**；`crew spawn` 只用于新开一块活。
+
+## 交流区
+
+- 交流区是所有 leader 和用户的公共频道。
+- 发言用 `crew say "…"`。需要谁做事、回答，才用 `--to <leader名字>` 点名，可重复点名多人；只是告知或回"收到"不点名，免得互相叫醒。
+- 这些事要先在交流区说一声：合进 develop、推送、改共享文档或公共约定、动设备、动别的组也可能在用的分支或文件。合完 develop 再发一条，说合了什么。
+- 没点名你的发言，会在你下一轮开始时自动附上摘要。要看全文用 `crew channel`，默认最近 20 条，可用 `--limit N` 调整。
+- 用户也会在交流区发言。点名你的，等同用户直接对你说。
 
 ## 开新下属
 
@@ -60,7 +69,7 @@ description: Crew leader 守则。一个 leader 管一个分组，像公司里�
 
 ## 设备和文件冲突
 
-- 设备：组内由你定先后，告诉双方；跨组找对方的 leader 协商（`crew group list` 查）。确实需要时 `crew lease give <资源> --force --reason "<原因>"`，并通知原借用人。协调不了的才变成要用户拍板的事。
+- 设备：组内由你定先后，告诉双方；跨组直接找对方 leader 或在交流区点名它（`crew group list` 查）。确实需要时 `crew lease give <资源> --force --reason "<原因>"`，并通知原借用人。协调不了的才变成要用户拍板的事。
 - 文件归属：你定谁改，让另一方 `crew unclaim`。
 
 ## 进展

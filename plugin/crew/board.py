@@ -789,8 +789,7 @@ def leader_of(conn, session_id):
     return dict(row) if row is not None else None
 
 
-@atomic
-def queue_leader_notice(conn, leader_session_id, text, source, now=None):
+def _queue_leader_notice(conn, leader_session_id, text, source, now=None):
     s = session(conn, leader_session_id)
     if s["role"] != "leader":
         raise BoardError("只能给 leader 排通知: " + leader_session_id)
@@ -798,6 +797,11 @@ def queue_leader_notice(conn, leader_session_id, text, source, now=None):
                              (s["project"], leader_session_id, source, text, _time(now))).lastrowid
     _event(conn, "leader:notice", s["project"], leader_session_id, {"id": notice_id, "source": source}, now)
     return notice_id
+
+
+@atomic
+def queue_leader_notice(conn, leader_session_id, text, source, now=None):
+    return _queue_leader_notice(conn, leader_session_id, text, source, now)
 
 
 def pending_notices(conn, leader_session_id):
