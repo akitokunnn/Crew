@@ -65,3 +65,5 @@ Crew 自己的状态写在 HOME 的 `notify.json`，包括 `owner_openid`（主�
 平台规则以 [QQ 官方消息总览](https://bot.q.qq.com/wiki/develop/api-v2/server-inter/message/overview.html)、[单聊消息接口](https://bot.q.qq.com/wiki/develop/api-v2/autogen/api/v2_users_user_openid_messages.post.html)和[消息按钮](https://bot.q.qq.com/wiki/develop/api-v2/server-inter/message/trans/msg-btn.html)为依据。通知层按 `qq.py` 的事件和方法契约调用传输层，不管理额外的事件子进程。
 
 隔离测试使用假 QQ 客户端和假模型进程，验证推送、绑定、命令、拍板、附件、回传和错误状态；真实 QQ 收件、按钮点击、手机主动发送权限由主控实测确认。
+
+`/leader` 列表中，优先 leader 按有效级别排在最前，名字前加“★1”“★2”“★3”；原有编号保持不变。

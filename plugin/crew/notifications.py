@@ -477,6 +477,10 @@ class Inbox:
             return self.show_questions(conn, identity)
         elif command in ('/leader', '/l'):
             leaders = self.leader_catalog(conn)
+            priorities = {}
+            for project in dict.fromkeys(s['project'] for s in leaders):
+                priorities.update(board.leader_priorities(conn, project, [s for s in leaders if s['project'] == project]))
+            leaders.sort(key=lambda leader: priorities.get(leader['session_id'], 4))
             states = {}
             with self.service.agents_lock:
                 agents, error = self.service.agents, self.service.agents_error
@@ -503,7 +507,9 @@ class Inbox:
                 unread = len({e['id'] for e in journal.after(board.read_seq(conn, sid)) if e['type'] == 'assistant'})
                 current = '（当前）' if sid == self.config['current_leader_session_id'] else ''
                 lines.append('%s %s·%s%s %s 未读 %s 待拍板 %s' % (
-                    leader['number'], leader['project'], leader['crew_name'], current, status, unread, pending.get(sid, 0)))
+                    leader['number'], leader['project'],
+                    ('★%s ' % priorities[sid] if sid in priorities else '') + leader['crew_name'],
+                    current, status, unread, pending.get(sid, 0)))
             text = '\n'.join(lines) if lines else '目前没有有效的 leader。'
         else:
             numbered = re.fullmatch(r'/(?:leader\s+|l\s+)?([1-9][0-9]*)', command)

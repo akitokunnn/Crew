@@ -295,6 +295,31 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         self.assertTrue(lines[2].startswith('4 demo·aaa'))
         self.assertTrue(lines[3].startswith('3 other·other'))
 
+    def test_priority_list_sorts_globally_marks_ranks_and_keeps_numbers(self):
+        self.add_leader('second', name='second')
+        self.add_leader('third', name='third')
+        self.add_leader('other', project='other')
+        self.receive('/leader')
+        numbers = self.config()['leader_numbers'].copy()
+        board.set_leader_priority(self.conn, 'demo', ['third', 'second', 's3'])
+        board.set_leader_priority(self.conn, 'other', ['other'])
+        self.restart()
+        self.receive('/leader')
+        lines = self.client.sent[-1]['text'].splitlines()
+        self.assertEqual([line.split(' 未读')[0].split('·')[1].split('（')[0].rsplit(' ', 1)[0]
+                          for line in lines], ['★1 third', '★1 other', '★2 second', '★3 lead'])
+        self.assertEqual([int(line.split()[0]) for line in lines],
+                         [numbers[sid] for sid in ('third', 'other', 'second', 's3')])
+        self.assertEqual(self.config()['leader_numbers'], numbers)
+        result = session_ops.archive(self.conn, 'third', now=NOW)
+        self.receive('/l')
+        self.assertIn('demo·★1 second', self.client.sent[-1]['text'])
+        self.assertIn('demo·★2 lead', self.client.sent[-1]['text'])
+        session_ops.undo(self.conn, 'third', result['before'], now=NOW)
+        self.receive('/leader')
+        self.assertIn('demo·★1 third', self.client.sent[-1]['text'])
+        self.assertEqual(self.config()['leader_numbers'], numbers)
+
     def test_deleted_commands_and_unknown_commands_suggest_help(self):
         for command in ('/ls', '/q', '/LS', '/Q', '/unknown', '/leader 0', '/l 02'):
             with self.subTest(command=command):

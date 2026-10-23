@@ -60,6 +60,14 @@ CREATE TABLE IF NOT EXISTS leader_order (
     PRIMARY KEY (project, session_id)
 );
 
+CREATE TABLE IF NOT EXISTS leader_priority (
+    project TEXT NOT NULL REFERENCES projects(name),
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    position INTEGER NOT NULL CHECK (position BETWEEN 0 AND 2),
+    PRIMARY KEY (project, session_id),
+    UNIQUE (project, position)
+);
+
 CREATE TABLE IF NOT EXISTS git_management (
     project TEXT PRIMARY KEY REFERENCES projects(name),
     enabled_at TEXT NOT NULL,

@@ -410,6 +410,9 @@ class Service:
                                     for lease in leases if lease['holder_session'] == sid],
                             claims=[{key: claim[key] for key in ('pattern', 'note')} for claim in claims if claim['session_id'] == sid]))
                 result['leaders'] = board.sort_leaders(conn, name, result['leaders'])
+                priorities = board.leader_priorities(conn, name, result['leaders'])
+                for leader in result['leaders']:
+                    leader['priority'] = priorities.get(leader['session_id'])
                 result['candidates'] = self.candidates(conn, name)
                 result['attention'] = presentation.attention(conn, sessions, decisions, tasks,
                     {sid: history['events'] for sid, history in histories.items()})
@@ -508,7 +511,7 @@ class Service:
                 if type(data.get('away')) is not bool:
                     raise ValueError('离开状态必须是 true 或 false')
                 return self.set_away(data['away'])
-            if path in ('/api/channel', '/api/channel/read', '/api/project/theme', '/api/leaders/order') and 'project' in data:
+            if path in ('/api/channel', '/api/channel/read', '/api/project/theme', '/api/leaders/order', '/api/leaders/priority') and 'project' in data:
                 body_project = _text(data, 'project')
                 if project_name is not None and body_project != project_name:
                     raise board.BoardError('请求正文和地址中的项目不一致')
@@ -529,6 +532,9 @@ class Service:
             if path == '/api/leaders/order':
                 _text(data, 'project')
                 return board.set_leader_order(conn, project, data.get('order'))
+            if path == '/api/leaders/priority':
+                _text(data, 'project')
+                return board.set_leader_priority(conn, project, data.get('ranks'))
             if path == '/api/project/theme':
                 return board.set_project_theme(conn, project, _text(data, 'theme'), now=now)
             if path == '/api/channel':
@@ -831,6 +837,7 @@ POST_PATHS.update(('/api/attention/dismiss', '/api/notifications/away'))
 POST_PATHS.update(('/api/decision/hold', '/api/decision/unhold'))
 POST_PATHS.update(('/api/channel', '/api/channel/read'))
 POST_PATHS.add('/api/leaders/order')
+POST_PATHS.add('/api/leaders/priority')
 POST_PATHS.update(('/api/files/resolve', '/api/files/open', '/api/files/reveal'))
 POST_PATHS.update(('/api/git/enable', '/api/git/disable', '/api/git/fetch'))
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"),

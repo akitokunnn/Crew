@@ -17,8 +17,12 @@ def _palette(accent, strong, backgrounds, dark):
 
 
 def _theme(identity, name, light, dark):
+    priority = {'--p1': '#008F88' if identity == 'mist' else '#008FA8',
+                '--p2': '#687700' if identity == 'lotus' else '#B52B96',
+                '--p3': '#687700' if identity == 'indigo' else '#5555DC'}
     return {'id': identity, 'name': name,
-            'light': _palette(*light, dark=False), 'dark': _palette(*dark, dark=True)}
+            'light': {**_palette(*light, dark=False), **priority},
+            'dark': {**_palette(*dark, dark=True), **priority}}
 
 
 THEMES = [
