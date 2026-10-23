@@ -87,7 +87,8 @@ def projects(conn):
 
 
 def project_for_path(conn, cwd):
-    matches = [p for p in projects(conn) if store.is_under(cwd, p["root"])]
+    # The guard reads through a read-only connection; membership must not depend on tables a newer schema adds.
+    matches = [dict(p) for p in conn.execute("SELECT * FROM projects") if store.is_under(cwd, p["root"])]
     return max(matches, key=lambda p: len(store.norm_path(p["root"]))) if matches else None
 
 

@@ -162,7 +162,8 @@ def request_start(home, project_name, path, body):
     request = Request(url + path + "?" + urlencode({"project": project_name}),
                       json.dumps(body).encode("utf-8"), {"X-Crew": "1", "Content-Type": "application/json"})
     try:
-        with urlopen(request, timeout=15) as response:
+        # Starting a session may first check out a worktree of a large repository.
+        with urlopen(request, timeout=120) as response:
             return json.load(response)
     except HTTPError as exc:
         message = json.load(exc)["error"]
