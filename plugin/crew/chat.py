@@ -657,16 +657,26 @@ class Manager:
                 caller_group = conn.execute(
                     "SELECT 1 FROM groups WHERE project=? AND name=? AND leader_session_id=? AND closed_at IS NULL",
                     (caller["project"], caller["group_name"], caller_session_id)).fetchone()
-                if (caller["role"] != "leader" or caller["project"] != target["project"] or caller_group is None or
+                own_leader = board.leader_of(conn, caller_session_id) if caller["role"] == "member" else None
+                member_to_leader = (caller["role"] == "member" and caller["crew_name"] is not None and
+                                    target["role"] == "leader" and own_leader is not None and
+                                    own_leader["session_id"] == target["session_id"])
+                leader_to_session = caller["role"] == "leader" and caller_group is not None
+                if (not (leader_to_session or member_to_leader) or caller["project"] != target["project"] or
                         caller["status"] == "closed" or board.is_archived(conn, caller_session_id)):
-                    raise board.BoardError("只有同项目的 leader 或用户能叫醒它")
+                    raise board.BoardError("只有同项目的 leader 或用户能叫醒它；组员只能叫醒自己的 leader")
             if target["role"] == "leader":
                 if human:
                     raise board.BoardError("leader 直接在网页上和它聊")
-                if caller["cc_name"] is None:
-                    raise board.BoardError("leader 的 SendMessage 地址未知，请查明后再试")
-                notice = ("leader「" + caller["crew_name"] + "」（" + caller["group_name"] + "）找你：" + text +
-                          "。回复用 SendMessage，地址「" + caller["cc_name"] + "」，或 crew say --to " + caller["crew_name"] + "。")
+                if caller["role"] == "member":
+                    reply = ("回复用 SendMessage，地址「" + caller["cc_name"] + "」。" if caller["cc_name"] else
+                             "回复前用 crew who " + caller["crew_name"] + " 查地址；离线时用 crew wake 接续原会话。")
+                    notice = ("组员「" + caller["crew_name"] + "」（" + caller["group_name"] + "）找你：" + text + "。" + reply)
+                else:
+                    if caller["cc_name"] is None:
+                        raise board.BoardError("leader 的 SendMessage 地址未知，请查明后再试")
+                    notice = ("leader「" + caller["crew_name"] + "」（" + caller["group_name"] + "）找你：" + text +
+                              "。回复用 SendMessage，地址「" + caller["cc_name"] + "」，或 crew say --to " + caller["crew_name"] + "。")
                 notice_id = board.queue_leader_notice(conn, target["session_id"], notice, "crew", now=now)
                 return {"ok": True, "session_id": target["session_id"], "name": target["crew_name"],
                         "notice_id": notice_id, "message": "已排进对方的通知，对方空闲时送达"}

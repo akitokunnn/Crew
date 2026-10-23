@@ -85,7 +85,7 @@ QQ 命令不分大小写、忽略首尾空白：`/help`（`/h`）帮助，`/lead
 | `crew group list` / `crew roster add\|remove\|move` | 分组和花名册 |
 | `crew leader start` / `crew leader close` | 通过正在运行的网页服务开 leader / 收一个分组；`start --dry-run` 只看计划 |
 | `crew spawn` | 通过正在运行的网页服务开后台成员；`--dry-run` 只看计划 |
-| `crew wake <名字> "<消息>"` | 同项目任何 leader 或用户叫醒离线组员；leader 找别的 leader 时排通知，用户找 leader 直接在网页聊；服务未运行或组员进程状态未知时报错 |
+| `crew wake <名字> "<消息>"` | 同项目任何 leader 或用户叫醒离线组员；leader 找别的 leader、组员找自己的 leader 时排通知，空闲时送达；用户找 leader 直接在网页聊；服务未运行或组员进程状态未知时报错 |
 | `crew compact [<名字>]` | 通过网页服务压缩自己的组员，用户也可指定会话；网页 leader 不带名字或指定自己时，等这一轮说完后压缩 |
 | `crew open <名字>` | 两步在 VS Code 接续同一会话，停止空闲的原运行端前须明确确认 |
 | `crew web --open` | 按当前目录打开工作区，已有服务时复用 |
