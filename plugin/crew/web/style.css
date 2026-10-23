@@ -733,3 +733,10 @@ a.btn{color:inherit;text-decoration:none}
 #sidebar .leader-item.drop-after::after { content: ""; position: absolute; left: 8px; right: 8px; height: 3px; background: var(--accent); border-radius: 2px; pointer-events: none; }
 #sidebar .leader-item.drop-before::before { top: -2px; }
 #sidebar .leader-item.drop-after::after { bottom: -2px; }
+
+.file-preview{width:680px;z-index:45}
+.file-title{overflow-wrap:anywhere;min-width:0;font-family:var(--font-mono);font-size:13px}
+.file-body{padding-top:14px}
+.file-image,.file-body .markdown img{max-width:100%;height:auto}
+.file-text{font-family:var(--font-mono);white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px}
+[data-file-path]{color:var(--accent-text);text-decoration:underline;cursor:pointer;overflow-wrap:anywhere}

@@ -117,3 +117,19 @@ favicon 用项目主题主色与按钮文字色绘制同一个 SVG logo，写入
 进度使用现有浅 / 深色 token，字号按 `calc(<px> * var(--fs))` 缩放。`prefers-reduced-motion` 时关闭转圈与数字平滑变化，保留阶段文字和逐秒计时。
 
 Git 页面复用同一套浅 / 深色 token、按钮与标签，字号同样跟随 `--fs`；泳道、连线、ref 与 CI 色点在两种主题下都保持可辨。`prefers-reduced-motion` 时关闭 Git 页面的非必要动效。
+
+## 打开文件和网址
+
+网页中 AI 写的 http / https 网址可以点击，在新标签页打开。leader 聊天、下属只读对话、交流区、拍板问题与选项、下属卡片进展等文字共用链接渲染。
+
+Windows 绝对路径支持正斜杠和反斜杠；含 `/` 或 `\` 且以扩展名结尾的相对路径也可以点击，包括行内反引号中的路径。Markdown 链接可以指向本地文件。相对路径先按发言会话的 cwd 解析，找不到再按项目根目录解析；Markdown 预览中的相对图片和文件按该文档所在目录解析。
+
+Markdown、文本、日志、JSON、CSV、代码和 PNG / JPG / JPEG / GIF / WebP / SVG / BMP 图片在右侧文件面板预览。Markdown 保留标题、列表等排版，文本以等宽字体显示，图片按比例缩放。文本最多读取 256 KiB，日志显示末尾，其它文本显示开头，截断时有提示。HTML / HTM、PDF、Office 文档直接调用电脑默认程序打开；HTML 由默认浏览器打开本地文件，保留相对资源。
+
+打开方式由服务端白名单决定，前端使用解析接口的 `open_with` 字段：
+
+- 文档类（md、txt、log、json、csv、xml、yaml、yml、toml、ini、cfg、html、htm、pdf、doc、docx、xls、xlsx、ppt、pptx、png、jpg、jpeg、gif、webp、svg、bmp）显示“用默认程序打开”。
+- 代码 / 脚本类（py、js、cjs、mjs、ts、tsx、jsx、css、scss、ps1、bat、cmd、sh、c、h、cpp、hpp、cs、java、go、rs、rb、php、sql、vue、svelte、uproject、uplugin；Build.cs 属于 cs）显示“在 VS Code 打开”，通过 `vscode://file/` 打开文件。
+- 其它所有类型，包括 exe、msi、com、scr、lnk、vbs、wsf、reg、jar、未知扩展名和无扩展名文件，只显示“这类文件不直接打开，请用‘在文件夹中显示’”及“在文件夹中显示”按钮，不执行打开操作。
+
+扩展名匹配不区分大小写。面板提供“在文件夹中显示”，在资源管理器中选中文件。关闭按钮或 Escape 可关闭面板。文件不存在或路径是目录时显示原因，不打开空面板。

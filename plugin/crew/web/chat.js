@@ -81,19 +81,123 @@
   window.CrewActivity = {sync, markup};
 })();
 (() => {
-  const markdown = window.markdownit({ html: false, breaks: true });
+  const markdown = window.markdownit({ html: false, breaks: true, linkify: true });
   // Same rule as notifications.cjk_bold: "**标题：**正文" is not bold under CommonMark, so move the punctuation outside.
   const BOLD_PUNCT = String.raw`\u2010-\u2027\u3000-\u303f\uff01-\uff0f\uff1a-\uff20\uff3b-\uff40\uff5b-\uff65.,:;!?()\[\]"'`;
   const BOLD_TAIL = new RegExp(`\\*\\*([^*\\n]+?)([${BOLD_PUNCT}]+)\\*\\*(?=[^\\s*${BOLD_PUNCT}])`, 'g');
   const BOLD_HEAD = new RegExp(`(?<=[^\\s*${BOLD_PUNCT}])\\*\\*([${BOLD_PUNCT}]+)([^*\\n]+?)\\*\\*`, 'g');
   const cjkBold = text => text.replace(BOLD_TAIL, '**$1**$2').replace(BOLD_HEAD, '$1**$2**');
-  const renderMarkdown = text => markdown.render(cjkBold(text));
+  const localPath = value => !value.startsWith("#") && (!/^[a-z][a-z0-9+.-]*:/i.test(value) || /^[a-z]:[\\/]/i.test(value) || /^file:/i.test(value));
+  const pathPattern = /(?:[A-Za-z]:[\\/][^\r\n<>"'`|?*\uFF0C\u3002\uFF1B\uFF01\uFF1F\uFF08\uFF09\u3010\u3011]*?|(?:\.\.?[\\/]|[\p{L}\p{N}_-]+[\\/])[^\s<>"'`|?*\uFF0C\u3002\uFF1B\uFF01\uFF1F\uFF08\uFF09\u3010\u3011]*?)\.[A-Za-z0-9]+(?=$|[\s<>"'`|\uFF0C\u3002\uFF1B\uFF01\uFF1F\uFF08\uFF09\u3010\u3011)\]#:])/gu;
+  const fileAttrs = (path, env) => `href="#" data-file-path="${escape(path)}" data-file-session="${escape(env.sessionId)}"${env.base === null ? "" : ` data-file-base="${escape(env.base)}"`}`;
+  function linkedText(value, env) {
+    let output = "", end = 0;
+    for (const match of value.matchAll(pathPattern)) {
+      const start = match.index;
+      if (/https?:\/\/[^\s]*$/.test(value.slice(0, start))) continue;
+      output += escape(value.slice(end, start)) + `<a ${fileAttrs(match[0], env)}>${escape(match[0])}</a>`;
+      end = start + match[0].length;
+    }
+    return output + escape(value.slice(end));
+  }
+  const renderMarkdown = (text, sessionId = "", base = null) => markdown.render(cjkBold(text), {sessionId, base});
+  const renderInline = (text, sessionId) => markdown.renderInline(cjkBold(text), {sessionId, base:null});
+  markdown.renderer.rules.text = (tokens, index, options, env) => tokens[index].meta === "inside-link" ? escape(tokens[index].content) : linkedText(tokens[index].content, env);
+  markdown.renderer.rules.code_inline = (tokens, index, options, env) => {
+    const token = tokens[index], value = token.content;
+    const wholePath = /[\\/]/.test(value) && /\.[A-Za-z0-9]+$/.test(value) && localPath(value);
+    const content = token.meta === "inside-link" ? escape(value) : wholePath ? `<a ${fileAttrs(value, env)}>${escape(value)}</a>` : linkedText(value, env);
+    return `<code>${content}</code>`;
+  };
+  markdown.core.ruler.after("linkify", "file-link-context", state => {
+    for (const block of state.tokens) {
+      if (block.children === null) continue;
+      let inside = false;
+      for (const token of block.children) {
+        if (token.type === "link_open") inside = true;
+        else if (token.type === "link_close") inside = false;
+        else if (inside && (token.type === "text" || token.type === "code_inline")) token.meta = "inside-link";
+      }
+    }
+  });
+  const originalImage = markdown.renderer.rules.image;
+  markdown.renderer.rules.image = (tokens, index, options, env, renderer) => {
+    const token = tokens[index], src = decodeURIComponent(token.attrGet("src"));
+    if (localPath(src)) token.attrSet("src", fileContentUrl(src, env.sessionId, env.base, true));
+    return originalImage(tokens, index, options, env, renderer);
+  };
   const linkOpen = markdown.renderer.rules.link_open || ((tokens, index, options, env, renderer) => renderer.renderToken(tokens, index, options));
   markdown.renderer.rules.link_open = (tokens, index, options, env, renderer) => {
+    const token = tokens[index], href = decodeURIComponent(token.attrGet("href"));
+    if (localPath(href)) {
+      token.attrSet("href", "#");
+      token.attrSet("data-file-path", href.replace(/^file:\/\/\//i, ""));
+      token.attrSet("data-file-session", env.sessionId);
+      if (env.base !== null) token.attrSet("data-file-base", env.base);
+    }
     tokens[index].attrSet("target", "_blank");
     tokens[index].attrSet("rel", "noopener noreferrer");
     return linkOpen(tokens, index, options, env, renderer);
   };
+  function fileContentUrl(path, sessionId, base, raw = false) {
+    const params = new URLSearchParams(location.search);
+    params.set("path", path);
+    if (sessionId !== "") params.set("session_id", sessionId);
+    if (base !== null) params.set("base", base);
+    if (raw) params.set("raw", "1");
+    return "/api/files/content?" + params;
+  }
+  function initFiles(api, toast) {
+    let request = 0;
+    const panel = document.createElement("section");
+    panel.id = "file-preview";
+    panel.className = "card file-preview";
+    panel.setAttribute("role", "dialog");
+    panel.setAttribute("aria-label", "\u6587\u4ef6\u9884\u89c8");
+    document.body.append(panel);
+    document.addEventListener("click", async event => {
+      const link = event.target.closest("[data-file-path]");
+      if (link === null) {
+        if (event.target.closest('a[target="_blank"]') !== null) event.stopImmediatePropagation();
+        return;
+      }
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      const sequence = ++request;
+      const data = {path:link.dataset.filePath, session_id:link.dataset.fileSession};
+      if (link.hasAttribute("data-file-base")) data.base = link.dataset.fileBase;
+      try {
+        const info = await api("/api/files/resolve", data);
+        if (sequence !== request) return;
+        if (info.error !== null) throw Error(info.error);
+        const resolved = {path:info.path, session_id:data.session_id};
+        if (info.type === "external" && info.open_with === "default") { await api("/api/files/open", resolved); return; }
+        let content;
+        if (info.type === "preview" && info.kind !== "image") {
+          const response = await fetch(fileContentUrl(info.path, data.session_id, null));
+          content = await response.json();
+          if (!response.ok) throw Error(content.error);
+        }
+        if (sequence !== request) return;
+        const openLabel = info.open_with === "vscode" ? "在 VS Code 打开" : "用默认程序打开";
+        const openButton = info.open_with === "blocked" ? "" : `<button class="btn file-open">${openLabel}</button>`;
+        panel.innerHTML = `<div class="card-head"><div class="file-title">${escape(info.path)}</div><button class="icon-btn file-close" aria-label="\u5173\u95ed">&times;</button></div><div class="card-actions">${openButton}<button class="btn file-reveal">\u5728\u6587\u4ef6\u5939\u4e2d\u663e\u793a</button></div><div class="card-body file-body"></div>`;
+        const body = panel.querySelector(".file-body");
+        if (info.open_with === "blocked") body.textContent = "这类文件不直接打开，请用‘在文件夹中显示’";
+        else if (info.kind === "image") body.innerHTML = `<img class="file-image" alt="${escape(info.path)}" src="${escape(fileContentUrl(info.path, data.session_id, null, true))}">`;
+        else {
+          if (content.truncated) body.innerHTML = `<p class="note">\u6587\u4ef6\u8f83\u5927\uff0c\u4ec5\u663e\u793a${escape(content.portion)} 256 KiB</p>`;
+          body.innerHTML += info.kind === "markdown" ? `<div class="markdown">${renderMarkdown(content.content, data.session_id, info.path)}</div>` : `<pre class="file-text">${escape(content.content)}</pre>`;
+        }
+        panel.querySelector(".file-close").onclick = () => { request++; panel.classList.remove("show"); };
+        for (const action of (info.open_with === "blocked" ? ["reveal"] : ["open", "reveal"])) panel.querySelector(".file-" + action).onclick = async () => {
+          try { await api("/api/files/" + action, resolved); } catch (error) { toast(error.message); }
+        };
+        panel.classList.add("show");
+      } catch (error) { toast(error.message); }
+    }, true);
+    document.addEventListener("keydown", event => { if (event.key === "Escape") { request++; panel.classList.remove("show"); } });
+  }
   const sessions = new Map();
   const compactNotified = new Map();
   let active = null;
@@ -220,7 +324,7 @@
     return `<button type="button" class="tool indent${result ? "" : " live"}${open ? " open" : ""}" data-chat-fold="${escape(foldKey)}" aria-expanded="${open}">${result ? `<span class="${result.is_error ? "chat-error" : "ok"}">${icon("check")}</span>` : '<span class="spin" aria-label="执行中"></span>'}<span class="label">${escape(toolLabel(context, block))}</span>${icon("right")}</button><div class="tool-steps"><div>输入 · ${escape(block.name)}</div><pre>${escape(JSON.stringify(block.input, null, 2))}</pre>${result ? `<div>${result.is_error ? "执行失败" : "结果"}</div><pre>${escape(output.slice(0, 2000))}</pre>${output.length > 2000 ? '<div>仅显示前 2000 字</div>' : ""}` : "<div>正在执行…</div>"}</div>`;
   }
   function assistantText(context, text, item) {
-    return `<div class="m-lead"><div class="av round" style="--s:30px;--tint:var(--accent)">${escape(context.session.name.slice(0, 1))}</div><div class="body"><div class="markdown">${renderMarkdown(text)}</div><div class="m-meta">${escape(context.session.name)}${item.at ? ` · ${timeOf(item.at)}` : ""}</div></div></div>`;
+    return `<div class="m-lead"><div class="av round" style="--s:30px;--tint:var(--accent)">${escape(context.session.name.slice(0, 1))}</div><div class="body"><div class="markdown">${renderMarkdown(text, context.session.session_id)}</div><div class="m-meta">${escape(context.session.name)}${item.at ? ` · ${timeOf(item.at)}` : ""}</div></div></div>`;
   }
   function itemHTML(context, item) {
     if (item.kind === "compact_request" || item.kind === "compact") return `<div class="context-divider">${item.kind === "compact_request" ? "压缩上下文" : `上下文已压缩：${CrewContext.tokens(item.pre_tokens)} → ${CrewContext.tokens(item.post_tokens)}`}</div>`;
@@ -238,9 +342,12 @@
     }
     if (item.source === "peer" || item.source === "crew") {
       const sender = item.source === "crew" && !Object.hasOwn(item, "sender") ? "Crew" : item.sender === "user" ? "用户" : nameOf(context, item.sender);
+      const pathSession = item.source === "peer"
+        ? context.state.leaders.concat(context.state.members).find(person => person.cc_name === item.sender).session_id
+        : context.session.session_id;
       const foldKey = `peer:${item.id}`;
       const open = context.cache.expanded.has(foldKey);
-      return `<button type="button" class="mline indent${open ? " open" : ""}" data-chat-fold="${escape(foldKey)}" aria-expanded="${open}"><span class="who">${escape(sender)} → ${escape(context.session.name)}：</span><span class="txt">${escape(item.text.replace(/\s+/g, " "))}</span>${item.at ? `<span>${timeOf(item.at)}</span>` : ""}${icon("right")}</button><div class="mfull">${escape(item.text).replace(/\n/g, "<br>")}</div>`;
+      return `<button type="button" class="mline indent${open ? " open" : ""}" data-chat-fold="${escape(foldKey)}" aria-expanded="${open}"><span class="who">${escape(sender)} → ${escape(context.session.name)}：</span><span class="txt">${renderInline(item.text.replace(/\s+/g, " "), pathSession)}</span>${item.at ? `<span>${timeOf(item.at)}</span>` : ""}${icon("right")}</button><div class="mfull">${renderMarkdown(item.text, pathSession)}</div>`;
     }
     const images = item.images ? `<div class="message-images">${item.images.map((name, index) => {
       const params = query(context);
@@ -529,5 +636,5 @@
     };
     return close;
   }
-  window.CrewChat = {mount, update, unmount, watchCompact, renderMarkdown};
+  window.CrewChat = {mount, update, unmount, watchCompact, renderMarkdown, renderInline, initFiles};
 })();

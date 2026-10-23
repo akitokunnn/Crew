@@ -323,11 +323,21 @@ PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stder
 | `POST /api/chat/send` | session_id、text、可选 images（最多 5 张、单张 ≤ 5 MB）；只允许 leader |
 | `POST /api/chat/read` | session_id、seq；已读位置只前进 |
 | `GET /api/chat/file?project=P&session_id=S&name=N` | 读截图，只允许 journal 里出现过的文件名 |
+| `POST /api/files/resolve` | `project`, `session_id`, `path`, optional `base`; returns absolute `path`, `exists`, `kind` (markdown/text/image/external), `type` (preview/external), `open_with` (default/vscode/blocked), `error` (null or reason). Relative paths: session cwd, then project root if missing; `base` means the containing Markdown file, resolved relative to its directory. |
+| `GET /api/files/content?project=P&session_id=S&path=F` | Text preview JSON: `content`, `truncated`, `portion` and resolution fields; `raw=1` returns image bytes; optional `base`. Exact Host must be `127.0.0.1:<listening port>` or `localhost:<listening port>` (otherwise 403, including duplicate Host headers). Text limit 256 KiB: logs tail, other text head. SVG/image responses use CSP sandbox and nosniff. |
+| `POST /api/files/open` | `project`, `session_id`, `path`, optional `base`; validates file and `open_with`: `default` invokes `os.startfile(path)`, `vscode` invokes `os.startfile("vscode://file/" + encoded absolute path)` (forward slashes; URL-encoded except `/` and `:`), `blocked` returns 400 without a desktop call. Returns `ok` on success. |
+| `POST /api/files/reveal` | Same fields; validates file, invokes `explorer /select,<absolute path>`, returns `ok`. All file POST APIs require `X-Crew: 1`. |
 | `POST /api/session/stop` | session_id；向本服务托管且正在干活的会话写 stream-json `control_request`（subtype=interrupt） |
 | `POST /api/session/rename\|archive\|remove\|restore\|undo` | 精确 session_id；返回 `session` 与供撤销的 `before` |
 | `POST /api/open` / `POST /api/open/continue` | 两步转到 VS Code |
 | `POST /api/notifications/away`、`POST /api/attention/dismiss` | 手动离开、收起待处理 |
 | `GET /api/usage` / `GET /api/usage/export` | 用量（含 leader → 下属 → Codex 的 `tree`）与 CSV |
+
+File resolution also returns `open_with` from a server-side allowlist (case-insensitive final extension):
+
+- `default`: md, txt, log, json, csv, xml, yaml, yml, toml, ini, cfg, html, htm, pdf, doc, docx, xls, xlsx, ppt, pptx, png, jpg, jpeg, gif, webp, svg, bmp.
+- `vscode`: py, js, cjs, mjs, ts, tsx, jsx, css, scss, ps1, bat, cmd, sh, c, h, cpp, hpp, cs (including Build.cs), java, go, rs, rb, php, sql, vue, svelte, uproject, uplugin.
+- `blocked`: all other extensions and extensionless files, including exe, msi, com, scr, lnk, vbs, wsf, reg, jar. Error: “这类文件不直接打开，请用‘在文件夹中显示’”. The UI uses this field for actions, without its own extension table. HTML/HTM, PDF and Office files open directly; other allowed types preview. Blocked types show the message and only the reveal action.
 
 静态文件只有白名单路径；`/logo.svg` 和两个字体带一周缓存，其余 `no-store`。
 

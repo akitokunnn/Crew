@@ -21,7 +21,7 @@
   }
   function messageHTML(message) {
     const user = message.speaker_session_id === "user";
-    return `<article class="m-lead channel-message ${user ? "channel-user" : ""}" data-channel-id="${message.id}"><span class="av round" style="--s:30px;--tint:var(--accent)">${escape(message.speaker_name.slice(0, 1))}</span><div class="body"><div class="channel-meta"><strong>${escape(message.speaker_name)}</strong><time datetime="${escape(message.created_at)}">${escape(time(message.created_at))}</time></div><div class="${user ? "bubble" : "channel-content"}"><div class="markdown">${CrewChat.renderMarkdown(message.body)}</div>${message.mentions.length === 0 ? "" : `<div class="channel-mentions">${message.mentions.map(item => `<span class="channel-mention">@${escape(item.name)}</span>`).join("")}</div>`}</div></div></article>`;
+    return `<article class="m-lead channel-message ${user ? "channel-user" : ""}" data-channel-id="${message.id}"><span class="av round" style="--s:30px;--tint:var(--accent)">${escape(message.speaker_name.slice(0, 1))}</span><div class="body"><div class="channel-meta"><strong>${escape(message.speaker_name)}</strong><time datetime="${escape(message.created_at)}">${escape(time(message.created_at))}</time></div><div class="${user ? "bubble" : "channel-content"}"><div class="markdown">${CrewChat.renderMarkdown(message.body, message.speaker_session_id)}</div>${message.mentions.length === 0 ? "" : `<div class="channel-mentions">${message.mentions.map(item => `<span class="channel-mention">@${escape(item.name)}</span>`).join("")}</div>`}</div></div></article>`;
   }
   function renderMessages(context, position = "keep") {
     const height = context.scroll.scrollHeight, top = context.scroll.scrollTop;

@@ -3,6 +3,7 @@ import csv
 import datetime as dt
 import io
 import json
+import mimetypes
 import os
 import sqlite3
 import subprocess
@@ -12,7 +13,7 @@ import webbrowser
 from contextlib import closing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlencode, urlsplit
+from urllib.parse import parse_qs, quote, urlencode, urlsplit
 from urllib.request import ProxyHandler, build_opener
 from urllib.error import URLError
 
@@ -471,6 +472,22 @@ class Service:
     def post(self, path, data, project_name=None):
         if not isinstance(data, dict):
             raise ValueError("JSON \u8bf7\u6c42\u5fc5\u987b\u662f\u5bf9\u8c61")
+        if path in ("/api/files/resolve", "/api/files/open", "/api/files/reveal"):
+            info = self.resolve_file(data.get("session_id"), _text(data, "path"),
+                                     project_name if project_name is not None else data.get("project"), data.get("base"))
+            if path == "/api/files/resolve":
+                return info
+            if info["error"] is not None:
+                raise board.BoardError(info["error"])
+            if path == "/api/files/open":
+                if info["open_with"] == "blocked":
+                    raise board.BoardError("这类文件不直接打开，请用‘在文件夹中显示’")
+                target = ("vscode://file/" + quote(Path(info["path"]).as_posix(), safe="/:")
+                          if info["open_with"] == "vscode" else info["path"])
+                os.startfile(target)
+            else:
+                subprocess.Popen(["explorer", "/select," + info["path"]])
+            return {"ok": True}
         if path == "/api/git/fetch":
             with closing(store.connect(self.home)) as conn:
                 project = self.selected_project(conn, project_name if project_name is not None else data.get("project"))
@@ -693,6 +710,55 @@ class Service:
         with closing(store.connect(self.home)) as conn:
             return channel.messages(conn, self.selected_project(conn, project_name), limit=limit, before=before)
 
+    def resolve_file(self, session_id, text, project_name=None, base=None):
+        with closing(store.connect(self.home)) as conn:
+            project = self.selected_project(conn, project_name)
+            root = Path(board.project(conn, project)["root"])
+            if session_id:
+                session = board.session(conn, session_id)
+                if session["project"] != project:
+                    raise board.BoardError("\u4f1a\u8bdd\u4e0d\u5c5e\u4e8e\u5f53\u524d\u9879\u76ee")
+                cwd = Path(session["cwd"])
+            else:
+                cwd = root
+        path = Path(text.replace("\\", "/"))
+        if not path.is_absolute():
+            path = (Path(base).parent if base is not None else cwd) / path
+            if base is None and not path.exists():
+                path = root / text.replace("\\", "/")
+        path = path.resolve()
+        exists = path.exists()
+        error = "\u6587\u4ef6\u4e0d\u5b58\u5728\uff1a" + str(path) if not exists else "\u8fd9\u662f\u76ee\u5f55\uff1a" + str(path) if path.is_dir() else None
+        suffix = path.suffix.lower()
+        images = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp"}
+        documents = {".md", ".txt", ".log", ".json", ".csv", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg"}
+        external_documents = {".html", ".htm", ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx"}
+        code = {".py", ".js", ".cjs", ".mjs", ".ts", ".tsx", ".jsx", ".css", ".scss", ".ps1", ".bat", ".cmd", ".sh", ".c", ".h", ".cpp", ".hpp", ".cs", ".java", ".go", ".rs", ".rb", ".php", ".sql", ".vue", ".svelte", ".uproject", ".uplugin"}
+        open_with = ("default" if suffix in documents | external_documents | images else
+                     "vscode" if suffix in code else "blocked")
+        kind = "image" if suffix in images else "markdown" if suffix == ".md" else "text" if suffix in documents | code else "external"
+        return {"path": str(path), "exists": exists, "kind": kind,
+                "type": "external" if kind == "external" else "preview",
+                "open_with": open_with, "error": error}
+
+    def read_file(self, info, raw=False):
+        if info["error"] is not None:
+            raise board.BoardError(info["error"])
+        path = Path(info["path"])
+        if info["kind"] == "image" and raw:
+            return path.read_bytes(), mimetypes.guess_type(path)[0]
+        if info["kind"] not in ("text", "markdown"):
+            raise board.BoardError("\u6b64\u7c7b\u578b\u8bf7\u7528\u9ed8\u8ba4\u7a0b\u5e8f\u6253\u5f00")
+        limit = 256 * 1024
+        size = path.stat().st_size
+        tail = path.suffix.lower() == ".log"
+        with path.open("rb") as stream:
+            if tail and size > limit:
+                stream.seek(size - limit)
+            content = stream.read(limit)
+        return {**info, "content": content.decode("utf-8-sig", errors="replace"),
+                "truncated": size > limit, "portion": "\u672b\u5c3e" if tail else "\u5f00\u5934"}, "application/json; charset=utf-8"
+
     def chat_file(self, session_id, name, project_name=None):
         with closing(store.connect(self.home)) as conn:
             self.chat_session(conn, self.selected_project(conn, project_name), session_id)
@@ -748,6 +814,7 @@ POST_PATHS.update(('/api/attention/dismiss', '/api/notifications/away'))
 POST_PATHS.update(('/api/decision/hold', '/api/decision/unhold'))
 POST_PATHS.update(('/api/channel', '/api/channel/read'))
 POST_PATHS.add('/api/leaders/order')
+POST_PATHS.update(('/api/files/resolve', '/api/files/open', '/api/files/reveal'))
 POST_PATHS.update(('/api/git/enable', '/api/git/disable', '/api/git/fetch'))
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"),
           "/themes.js": ("themes.js", "text/javascript; charset=utf-8"),
@@ -796,6 +863,19 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(content)
 
+    def send_file_content(self, content, media_type):
+        # SVG must remain an image even when the resource URL is opened directly.
+        if isinstance(content, dict):
+            content = json.dumps(content, ensure_ascii=False).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", media_type)
+        self.send_header("Content-Length", str(len(content)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Security-Policy", "sandbox; default-src 'none'; style-src 'unsafe-inline'")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(content)
+
     def _dispatch(self, method):
         url = urlsplit(self.path)
         query = parse_qs(url.query)
@@ -815,6 +895,15 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("\u8bf7\u63d0\u4f9b JSON \u8bf7\u6c42\u4f53")
             data = json.loads(payload.decode("utf-8"))
             self._send(200, service.post(url.path, data, query.get("project", [None])[0]))
+        elif url.path == "/api/files/content":
+            hosts = {"127.0.0.1:%d" % self.server.server_port, "localhost:%d" % self.server.server_port}
+            if self.headers.get_all("Host") not in ([host] for host in hosts):
+                self._send(403, {"error": "\u6587\u4ef6\u8bfb\u53d6\u53ea\u5141\u8bb8\u672c\u673a Host"})
+                return
+            info = service.resolve_file(query.get("session_id", [None])[0], query["path"][0],
+                                        query.get("project", [None])[0], query.get("base", [None])[0])
+            content, media_type = service.read_file(info, raw=query.get("raw") == ["1"])
+            self.send_file_content(content, media_type)
         elif url.path == "/api/state":
             self._send(200, service.state(query.get("project", [None])[0]))
         elif url.path == '/api/channel':
