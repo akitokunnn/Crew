@@ -74,6 +74,42 @@ def project(conn, name):
     return dict(row)
 
 
+def git_config(conn, project_name):
+    project(conn, project_name)
+    row = conn.execute("SELECT * FROM git_management WHERE project=?", (project_name,)).fetchone()
+    return None if row is None else dict(row)
+
+
+@atomic
+def enable_git(conn, project_name, base=None, stable=None, now=None):
+    from . import git_view
+    choices = git_view.branch_choices(project(conn, project_name)["root"])
+    base = choices["base"] if base is None else base
+    if base is None:
+        raise BoardError("没有可自动识别的主干分支，请指定 --base")
+    if base not in choices["branches"]:
+        raise BoardError("分支不存在: " + base)
+    if stable is None:
+        stable = next((name for name in ("master", "main") if name in choices["branches"] and name != base), None)
+    elif stable == "":
+        stable = None
+    if stable is not None and stable not in choices["branches"]:
+        raise BoardError("分支不存在: " + stable)
+    if stable == base:
+        raise BoardError("稳定分支必须与主干分支不同")
+    conn.execute("INSERT INTO git_management(project,enabled_at,base,stable) VALUES(?,?,?,?) "
+                 "ON CONFLICT(project) DO UPDATE SET base=excluded.base,stable=excluded.stable",
+                 (project_name, _time(now), base, stable))
+    return git_config(conn, project_name)
+
+
+@atomic
+def disable_git(conn, project_name):
+    project(conn, project_name)
+    conn.execute("DELETE FROM git_management WHERE project=?", (project_name,))
+    return {"ok": True}
+
+
 @atomic
 def init_project(conn, name, root, now=None):
     root = store.norm_path(root)
