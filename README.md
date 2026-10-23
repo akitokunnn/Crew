@@ -44,6 +44,7 @@
 | 下属跑歪了 | 卡片上"停下这一轮"（只对网页后台运行的下属有效；开在 VS Code 里的去那边停） |
 | 收尾 | 在 VS Code 里归档会话，Crew 跟着归档；或者卡片上"归档"（可撤销）。leader 发现下属做完了也会问你要不要归档 |
 | 看谁在干什么 | 网页"全部"，或 `crew status` |
+| 看 Git 分支和提交关系 | 网页左栏"Git"；首次选择 base / stable 后启用，可查看提交树、分支检查、worktree、负责会话与 GitHub PR / CI，手动"刷新（fetch）"更新远端引用 |
 | 看用量 | 网页"用量"，或 `crew usage summary`、`crew usage sessions`、`crew usage codex` |
 | 看上下文、手动压缩 | 上下文占用达到 50% 显示橙圈，80% 变红；悬停看已用与上限。后台空闲会话点圈旁“压缩”并确认，leader 模型菜单任何占比都能压缩；VS Code 会话去那边输入 `/compact` |
 
@@ -72,6 +73,7 @@
 | `crew wake <名字> "<消息>"` | 所在组的 leader 或用户叫醒离线下属，服务未运行或进程状态未知时报错 |
 | `crew open <名字>` | 两步在 VS Code 接续同一会话，停止空闲的原运行端前须明确确认 |
 | `crew web --open` | 按当前目录打开工作区，已有服务时复用 |
+| `crew git enable [--base 分支] [--stable 分支]` / `crew git disable` / `crew git status` | 按项目启用 / 停用 Git 管理 / 查看配置；base 自动依次选 develop、dev、main、master，stable 选与 base 不同的 master 或 main |
 | `crew autostart install\|status\|uninstall` | 当前用户登录后隐藏运行，不弹浏览器 |
 | `crew usage scan\|summary\|sessions\|daily\|codex\|agents\|models\|export` | 用量 |
 | `crew events` / `crew doctor` | 事件流水 / 自检 |

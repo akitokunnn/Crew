@@ -16,7 +16,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import ProxyHandler, build_opener
 from urllib.error import URLError
 
-from . import board, chat, claude_limits, hooks, models, notifications, open_session, presentation, session_ops, spawn, store, usage, usage_cli, vscode_sessions
+from . import board, chat, claude_limits, git_view, hooks, models, notifications, open_session, presentation, session_ops, spawn, store, usage, usage_cli, vscode_sessions
 
 
 def _text(data, key):
@@ -382,9 +382,31 @@ class Service:
                     asker['cc_name'] = live[asker['session_id']]['name']
         return asker, leader
 
+    def git(self, project_name=None, offset=0):
+        if offset < 0:
+            raise ValueError("offset 必须大于或等于 0")
+        with closing(store.connect(self.home)) as conn:
+            name = self.selected_project(conn, project_name)
+            project = board.project(conn, name)
+            config = board.git_config(conn, name)
+            sessions = board.sessions(conn, name)
+        result = {"enabled": config is not None, "config": config,
+                  "choices": git_view.branch_choices(project["root"]),
+                  "repository": Path(project["root"]).name, "last_fetch_at": None}
+        if config is not None:
+            result.update(git_view.view(project["root"], config, sessions, offset=offset))
+        return result
+
     def post(self, path, data, project_name=None):
         if not isinstance(data, dict):
             raise ValueError("JSON \u8bf7\u6c42\u5fc5\u987b\u662f\u5bf9\u8c61")
+        if path == "/api/git/fetch":
+            with closing(store.connect(self.home)) as conn:
+                project = self.selected_project(conn, project_name if project_name is not None else data.get("project"))
+                if board.git_config(conn, project) is None:
+                    raise board.BoardError("请先启用 Git 管理")
+                root = board.project(conn, project)["root"]
+            return git_view.fetch(root)
         with self.write_lock, closing(store.connect(self.home)) as conn:
             now = self.now().isoformat(timespec="milliseconds").replace("+00:00", "Z")
             if path == "/api/project/init":
@@ -398,6 +420,14 @@ class Service:
                 if type(data.get('away')) is not bool:
                     raise ValueError('离开状态必须是 true 或 false')
                 return self.set_away(data['away'])
+            if path in ("/api/git/enable", "/api/git/disable"):
+                project = self.selected_project(conn, project_name if project_name is not None else data.get("project"))
+                if path == "/api/git/enable":
+                    stable = data.get("stable")
+                    if stable is not None and not isinstance(stable, str):
+                        raise ValueError("stable 必须是分支名或 null")
+                    return board.enable_git(conn, project, _optional_text(data, "base"), stable, now=now)
+                return board.disable_git(conn, project)
             project = self.selected_project(conn, project_name)
             if path == '/api/attention/dismiss':
                 identity = _text(data, 'id')
@@ -618,8 +648,11 @@ POST_PATHS = {"/api/project/init", "/api/open", "/api/open/continue", "/api/answ
 POST_PATHS.update('/api/session/' + action for action in ('rename', 'archive', 'remove', 'restore', 'undo', 'stop', 'options', 'compact'))
 POST_PATHS.update(('/api/attention/dismiss', '/api/notifications/away'))
 POST_PATHS.update(('/api/decision/hold', '/api/decision/unhold'))
+POST_PATHS.update(('/api/git/enable', '/api/git/disable', '/api/git/fetch'))
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"),
           "/sounds.js": ("sounds.js", "text/javascript; charset=utf-8"),
+          "/git.js": ("git.js", "text/javascript; charset=utf-8"),
+          "/git.css": ("git.css", "text/css; charset=utf-8"),
           "/style.css": ("style.css", "text/css; charset=utf-8"), "/chat.js": ("chat.js", "text/javascript; charset=utf-8"),
           "/vendor/markdown-it.min.js": ("vendor/markdown-it.min.js", "text/javascript; charset=utf-8")}
 STATIC.update({'/logo.svg': ('logo.svg', 'image/svg+xml'),
@@ -682,6 +715,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, service.post(url.path, data, query.get("project", [None])[0]))
         elif url.path == "/api/state":
             self._send(200, service.state(query.get("project", [None])[0]))
+        elif url.path == "/api/git":
+            self._send(200, service.git(query.get("project", [None])[0], int(query.get("offset", [0])[0])))
         elif url.path == '/api/chat/file':
             content, media_type = service.chat_file(query.get('session_id', [''])[0], query.get('name', [''])[0],
                                                     query.get('project', [None])[0])

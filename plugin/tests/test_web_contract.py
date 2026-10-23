@@ -506,6 +506,33 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual(self.request("/api/session/timeline", project="demo", session_id="s1")[0], 404)
         self.assertEqual(self.request("/api/lease/give", {"resource": "phone", "reason": "old control"})[0], 404)
 
+    def test_git_frontend_assets_are_loaded_with_no_store_and_native_page_contract(self):
+        code, html, _ = self.request("/", raw=True)
+        self.assertEqual(code, 200)
+        html = html.decode("utf-8")
+        self.assertIn('href="/git.css"', html)
+        self.assertLess(html.index('src="/git.js"'), html.index('src="/app.js"'))
+        assets = {}
+        for path, media in (("/git.js", "text/javascript"), ("/git.css", "text/css")):
+            with self.subTest(path=path):
+                code, content, headers = self.request(path, raw=True)
+                self.assertEqual(code, 200)
+                self.assertEqual(headers["Content-Type"].split(";")[0], media)
+                self.assertEqual(headers["Cache-Control"], "no-store")
+                assets[path] = content.decode("utf-8")
+        script = assets["/git.js"]
+        for contract in ('data-git-branch=', 'data-git-tab="graph"', 'data-git-tab="branches"',
+                         'class="git-conflicts"', 'data-git-act="load-more"', 'data-git-act="active"',
+                         'data-git-act="confirm-disable"', 'git-github-unavailable',
+                         'aria-pressed=', 'aria-selected=', 'data-git-from=', 'data-git-to='):
+            self.assertIn(contract, script)
+        self.assertIn('setInterval(() => load(), 30000)', script)
+        self.assertIn('prefers-reduced-motion:reduce', assets["/git.css"])
+        self.assertIn('var(--fs)', assets["/git.css"])
+        _, app, _ = self.request("/app.js", raw=True)
+        self.assertIn('data-view="git"', app.decode("utf-8"))
+        self.assertIn('CrewGit.mount', app.decode("utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -63,6 +63,12 @@ def parser():
     c.add_argument("--name")
     c.add_argument("--root", type=Path)
     command("projects")
+    c = command("git").add_subparsers(dest="action", required=True)
+    a = c.add_parser("enable")
+    a.add_argument("--base")
+    a.add_argument("--stable")
+    c.add_parser("disable")
+    c.add_parser("status")
     c = command("resource").add_subparsers(dest="action", required=True)
     a = c.add_parser("add")
     a.add_argument("name")
@@ -271,6 +277,11 @@ def _emit(value, as_json=False, command=None):
         print("完成")
     elif command == "status":
         print(_status_text(value))
+    elif command == "git":
+        if value["enabled"]:
+            print("Git 管理已启用 · base: %s · stable: %s" % (value["base"], value["stable"] or "未设置"))
+        else:
+            print("Git 管理未启用")
     elif command == "open":
         print("已取消，会话继续保持原样" if value.get("cancelled") else "已在 VS Code 打开会话：" + value["session_id"])
     elif command == "wake":
@@ -393,6 +404,14 @@ def execute(conn, args, cwd, agents_provider):
     if cmd == "report":
         return board.report(conn, _session_id(args), args.text)
     p = _project(conn, args, cwd)
+    if cmd == "git":
+        if args.action == "enable":
+            board.enable_git(conn, p, args.base, args.stable)
+        elif args.action == "disable":
+            board.disable_git(conn, p)
+        config = board.git_config(conn, p)
+        return {"enabled": config is not None, "base": None if config is None else config["base"],
+                "stable": None if config is None else config["stable"]}
     if cmd == "resource":
         if args.action == "add":
             return board.add_resource(conn, p, args.name, args.kind, args.desc, args.guard, actor)

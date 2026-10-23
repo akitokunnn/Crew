@@ -27,6 +27,7 @@ Crew/
       spawn.py                        后台会话启动计划、任务文件、CLI 转网页服务
       chat.py                         后台成员/leader CLI、流式协议、聊天记录与恢复
       models.py                       模型 / effort 唯一清单与会话设置
+      git_view.py                     Git 管理配置、分支检查、提交树、GitHub PR / CI 与缓存
       web.py  web/                    工作区网页和 leader 聊天，含本地 Markdown 库、HarmonyOS Sans 字体、logo
       vscode_sessions.py              复现 VS Code 会话列表与归档名单（只读），供待收编和归档同步
       presentation.py session_ops.py  待处理事项（QQ 推送用）与可撤销会话整理
@@ -68,6 +69,7 @@ Crew/
 | `decision_holds` | `decision_id PRIMARY KEY REFERENCES decisions(id)`、`held_at TEXT NOT NULL`；只记录挂起标记，答复或撤回时删除 |
 | `session_options` | `session_id TEXT PRIMARY KEY REFERENCES sessions(session_id)`、`model TEXT`、`effort TEXT`、`set_at TEXT NOT NULL`；两项都为 null 时删行，无记录表示账号默认 |
 | `rule_reads` | `session_id TEXT PRIMARY KEY REFERENCES sessions(session_id)`、`role TEXT NOT NULL`、`digest TEXT NOT NULL`、`read_at TEXT NOT NULL`；记录会话读过的角色守则 sha256 |
+| `git_management` | `project TEXT PRIMARY KEY REFERENCES projects(name)`、`enabled_at TEXT NOT NULL`、`base TEXT NOT NULL`、`stable TEXT`、`admin_session_id TEXT REFERENCES sessions(session_id)`、`branch_rules TEXT`；每项目一行，后两项留给第二期 |
 
 `decision_holds` 由 `schema.sql` 的 `CREATE TABLE IF NOT EXISTS` 在连接数据库时创建，不改变现有表结构、不需要迁移。`board.decisions` 返回 `held` 布尔值和可空的 `held_at`，默认仍列出全部 open 题，供下属侧 `crew` 沿用未答逻辑。
 
@@ -326,3 +328,43 @@ PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stder
 | 网页只和 leader 聊，下属在 VS Code 里聊；leader 当中转站（2026-10-22 用户拍板，参照 Paperclip 的 CEO） | 用户先在 VS Code 里和会话聊出需求，收编后仍习惯在那里直接说；集中处理进展和拍板靠 leader | 网页上也和下属聊：同一会话同时只能在一个进程里跑，VS Code 里的会话收不到可靠的网页消息 |
 | Crew 不发会话间消息，要告诉下属的事写 leader 通知，由 leader 转告 | 只有会话自己能调用 SendMessage；leader 本来就在网页托管，能直接写进它的输入 | Crew 自己做一套发消息机制：官方跨会话收件入口没有可靠送达确认 |
 | 待收编按 VS Code 会话列表口径，VS Code 归档单向同步 | 用户在 VS Code 侧栏里管理会话，两边看到的应一致 | 只列活进程（漏掉没在运行的会话）；跟随取消归档（少见，代码量约三倍） |
+
+## 13. Git 管理（第一期）
+
+Git 管理按项目选择启用。新表 `git_management` 只通过 `CREATE TABLE IF NOT EXISTS` 增加，不改变已有表。启用时保存时间与 base / stable；`admin_session_id` 和 `branch_rules` 本期保持 null，管理员角色、合并决策与守卫在第二期实现。停用删除这一行。
+
+```sql
+CREATE TABLE IF NOT EXISTS git_management (
+    project TEXT PRIMARY KEY REFERENCES projects(name),
+    enabled_at TEXT NOT NULL,
+    base TEXT NOT NULL,
+    stable TEXT,
+    admin_session_id TEXT REFERENCES sessions(session_id),
+    branch_rules TEXT
+);
+```
+
+`crew git enable [--base 分支] [--stable 分支]` 从当前项目的本地分支中校验选项。省略 base 时依次选择存在的 develop、dev、main、master；省略 stable 时按 master、main 顺序选择与 base 不同的分支，没有则留空。指定不存在的分支直接报错。`crew git disable` 停用，`crew git status` 显示是否启用及 base / stable。
+
+### 数据与接口
+
+所有 Git 命令在 `board.project(...)["root"]` 运行。页面查询与检查只读；手动 fetch 是第一期唯一的仓库更新入口。
+
+| 接口 | 内容 |
+|---|---|
+| `GET /api/git?project=P&offset=0` | 启用状态、配置、本地分支候选与自动选择值、仓库名；启用后返回本地分支、远端独有分支、提交页、base / stable 概况、GitHub 数据或失败原因、上次 fetch 时间 |
+| `POST /api/git/enable` | `{project, base?, stable?}`；校验本地分支并保存启用配置 |
+| `POST /api/git/disable` | `{project}`；删除启用配置 |
+| `POST /api/git/fetch` | `{project}`；运行 `git fetch --prune origin`，返回执行结果，失败保留命令报错原文 |
+
+启用接口的 `stable` 省略或 null 表示自动识别，显式 `""` 表示不配置 stable。
+
+本地分支给出最新提交（sha、标题、作者、时间）、上游、领先 / 落后 base 的提交数及是否已合入。预合并使用 `git merge-tree --write-tree --name-only --no-messages <base> <分支>`，退出码 1 时返回冲突文件。worktree 由 `git worktree list` 对应，dirty 检查使用 `git status --porcelain --untracked-files=no`，不把未跟踪文件算作未提交改动。同项目 `sessions` 按 branch 或 worktree 匹配，显示会话名、组、角色、状态。本地不存在的 `origin/*` 分支单独返回；`origin/HEAD` 不作为分支。
+
+提交树读取 `git log --all --topo-order`，每页最近 300 个提交，包含 sha、父提交、ref 标签、标题、作者与时间；`offset` 与 `next_offset` 供“加载更早的”追加。`ref_unique_commits` 按本地分支与 `origin/*` 名称给出相对 base 的独有 sha，供所有分支标签点击高亮。base / stable 概况包含 base 最新提交及 base 领先 stable 的提交数；base 的 CI 只匹配最新提交 sha，没有对应运行时明确显示“最新提交暂无 CI”。
+
+GitHub 查询使用本机 `gh`：开着的 PR、最近 20 个已合并 / 关闭 PR（编号、标题、head / base、状态、草稿、CI 汇总、链接），以及 base 最近 5 次 CI 运行（结论、提交、时间、链接）。`gh` 未安装、未登录、origin 不是 GitHub 或命令失败时，`github` 返回 null，`github_reason` 保留实际错误文字，页面原样显示原因；分支、worktree 和提交树继续显示。这是独立的 GitHub 状态，不隐藏失败。
+
+### 缓存
+
+按项目根与 base / stable 区分缓存，使用 `git for-each-ref` 输出的哈希作为 refs 签名。签名未变时复用分支统计、预合并结果和全部本地 / origin 分支的 `ref_unique_commits`；worktree dirty 与 GitHub 查询分别缓存 60 秒。会话对应关系随读取重新关联。Git 页面打开时每 30 秒重新 GET，手动 fetch 返回执行结果并刷新页面数据。上次 fetch 时间只记录当前服务进程内成功执行的手动 fetch，不持久化；服务重启后尚未成功 fetch 时显示未刷新。

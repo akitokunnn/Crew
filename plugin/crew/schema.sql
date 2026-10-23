@@ -49,6 +49,15 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE INDEX IF NOT EXISTS sessions_project ON sessions (project, crew_name);
 
+CREATE TABLE IF NOT EXISTS git_management (
+    project TEXT PRIMARY KEY REFERENCES projects(name),
+    enabled_at TEXT NOT NULL,
+    base TEXT NOT NULL,
+    stable TEXT,
+    admin_session_id TEXT REFERENCES sessions(session_id),
+    branch_rules TEXT
+);
+
 DROP TABLE IF EXISTS session_models;
 CREATE TABLE IF NOT EXISTS session_options (
     session_id TEXT PRIMARY KEY REFERENCES sessions(session_id),
