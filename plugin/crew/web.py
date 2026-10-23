@@ -489,7 +489,7 @@ class Service:
                 if path == '/api/session/stop':
                     return self.chat.interrupt(target['session_id'])
                 if path == '/api/session/compact':
-                    return self.chat.compact(target)
+                    return self.chat.compact(target, caller_session_id=_optional_text(data, 'caller_session_id'))
                 if path == '/api/session/options':
                     options = self.chat.set_options(conn, target['session_id'],
                                                     {key: data[key] for key in ('model', 'effort') if key in data}, now=now)

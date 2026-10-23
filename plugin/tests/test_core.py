@@ -59,7 +59,8 @@ class CoreCase(unittest.TestCase):
         real_get = os.environ.get
         def get(key, default=None):
             return None if key == "CLAUDE_CODE_SESSION_ID" else real_get(key, default)
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), mock.patch.object(os.environ, "get", side_effect=get):
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), mock.patch.object(os.environ, "get", side_effect=get), \
+                mock.patch("crew.spawn.request_state", return_value={"leaders": [], "members": []}):
             try:
                 code = cli.main(prefix + argv, agents_provider=(lambda: self.agents) if provider is None else provider,
                                 cwd=self.root if cwd is None else cwd, plugin_root=self.fake_plugin)
@@ -721,6 +722,20 @@ class RuleReadTests(CoreCase):
 
 
 class RuleTextTests(unittest.TestCase):
+    def test_leader_compact_policy_requires_checkpoint_and_written_progress(self):
+        leader = (PLUGIN / "skills" / "leader" / "SKILL.md").read_text(encoding="utf-8")
+        agent = (PLUGIN / "agents" / "leader.md").read_text(encoding="utf-8")
+        for content in (leader, agent):
+            for phrase in ("35% 以上", "告一段落", "白板", "crew compact <名字>", "`crew compact`", "不用问用户"):
+                self.assertIn(phrase, content)
+        for phrase in ("## 压缩上下文", "刚汇报完一段、在等拍板、空闲", "SendMessage", "现在适合压缩吗？要的话先把进度写进白板。", "等它回答再压", "任务卡、report", "这一轮说完后压缩", '用户说"压缩一下"时', "再排自己的", "列出压了谁", "谁因为在干活或在 VS Code 里没压"):
+            self.assertIn(phrase, leader)
+
+    def test_member_compact_consent_follows_progress_report(self):
+        member = (PLUGIN / "skills" / "member" / "SKILL.md").read_text(encoding="utf-8")
+        for phrase in ('leader 问"现在适合压缩吗"时照实回答', "做到一半就说不行", "说明大概什么时候可以", "先 `crew report` 写下进度、下一步和没写进任务卡的要紧细节，再回\"可以\""):
+            self.assertIn(phrase, member)
+
     def test_decision_scope_and_reread_are_explicit_in_all_role_instructions(self):
         paths = (PLUGIN / "skills" / "leader" / "SKILL.md", PLUGIN / "skills" / "member" / "SKILL.md", PLUGIN / "agents" / "leader.md")
         for path in paths:
@@ -852,7 +867,8 @@ class InstallAndCliTests(CoreCase):
     def test_status_text_hides_closed_groups_and_ended_sessions(self):
         def s(name, status, at="2026-10-21T07:00:00.000Z", role="member"):
             return {"crew_name": name, "status": status, "last_event_at": at, "role": role, "status_note": None,
-                    "task": None, "cc_name": None, "session_id": "abcdef0123"}
+                    "task": None, "cc_name": None, "session_id": "abcdef0123",
+                    "context": None, "context_reason": "网页服务没开"}
         view = {"project": {"name": "demo", "root": "c:/demo"}, "open_decisions": 0, "leases": [], "claims": [],
                 "groups": [{"name": "old", "closed_at": NOW, "members": []},
                            {"name": "live", "closed_at": None, "members": [s("lead", "idle", role="leader")]}],

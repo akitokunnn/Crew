@@ -133,6 +133,61 @@ class ContextHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(self.request("/api/session/compact", {"session_id": sid})[0], 200)
         self.assertEqual(json.loads(process.stdin.getvalue().splitlines()[-1])["message"]["content"], "/compact")
 
+    def test_compact_own_leader_and_explicit_user_are_allowed(self):
+        sid, process = self.start_session("member")
+        for caller in ("s3", board.HUMAN):
+            with self.subTest(caller=caller):
+                self.finish_turn(sid, process)
+                code, result = self.request("/api/session/compact", {
+                    "session_id": sid, "caller_session_id": caller})
+                self.assertEqual(code, 200, result)
+                self.assertEqual(json.loads(process.stdin.getvalue().splitlines()[-1])["message"]["content"], "/compact")
+
+    def test_compact_foreign_leader_and_members_are_denied_before_writing(self):
+        sid, process = self.start_session("member")
+        self.finish_turn(sid, process)
+        board.join(self.conn, "other-lead", "demo", "other", self.project, self.project, "main", role="leader", now=NOW)
+        before = process.stdin.getvalue()
+        for caller in ("other-lead", "s2", sid, "missing"):
+            with self.subTest(caller=caller):
+                self.assertEqual(self.request("/api/session/compact", {
+                    "session_id": sid, "caller_session_id": caller}),
+                    (400, {"error": "只有它自己的 leader 或用户能压缩它"}))
+        self.assertEqual(process.stdin.getvalue(), before)
+
+    def test_compact_leader_receives_original_busy_vscode_and_missing_record_errors(self):
+        sid, process = self.start_session("member")
+        before = process.stdin.getvalue()
+        self.assertEqual(self.request("/api/session/compact", {"session_id": sid, "caller_session_id": "s3"}),
+                         (409, {"error": "正在干活，等这一轮结束再压缩"}))
+        self.assertEqual(process.stdin.getvalue(), before)
+        self.provider.return_value = [{"sessionId": "s1", "name": "cc-one", "status": "idle"}]
+        self.server.service.refresh_agents()
+        self.assertEqual(self.request("/api/session/compact", {"session_id": "s1", "caller_session_id": "s3"}),
+                         (409, {"error": "它在 VS Code 里运行，去那边输入 /compact"}))
+        self.provider.return_value = []
+        self.server.service.refresh_agents()
+        self.assertEqual(self.request("/api/session/compact", {"session_id": "s1", "caller_session_id": "s3"}),
+                         (400, {"error": "会话没有网页聊天记录或启动记录，请先叫醒它，或在 VS Code 打开后输入 /compact"}))
+        self.assertEqual(len(self.processes), 1)
+
+    def test_self_compact_http_queues_busy_web_leader_and_rejects_unmanaged_leader(self):
+        sid, process = self.start_session()
+        before = process.stdin.getvalue()
+        self.assertEqual(self.request("/api/session/compact", {"session_id": sid, "caller_session_id": sid}),
+                         (200, {"ok": True, "message": "这一轮说完后压缩"}))
+        self.assertEqual(process.stdin.getvalue(), before)
+        self.assertTrue(self.chat.processes[sid].pending_compact)
+        process.emit({"type": "result"})
+        journal = self.chat.journal(sid)
+        with journal.condition:
+            self.assertTrue(journal.condition.wait_for(
+                lambda: any(event["type"] == "compact_request" for event in journal.events), timeout=3))
+        with self.chat.processes[sid].input_lock:
+            self.assertEqual(json.loads(process.stdin.getvalue().splitlines()[-1])["message"]["content"], "/compact")
+        self.assertEqual(self.request("/api/session/compact", {"session_id": "s3", "caller_session_id": "s3"}),
+                         (409, {"error": "它在 VS Code 里运行，去那边输入 /compact"}))
+
     def test_busy_session_returns_exact_conflict_without_writing(self):
         sid, process = self.start_session()
         before = process.stdin.getvalue()

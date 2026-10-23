@@ -135,6 +135,27 @@ def leader_plan(conn, home, plugin_root, project_name, name, members=(), task=No
     return {**plan, "members": list(members), "member_session_ids": list(member_session_ids)}
 
 
+class ServiceUnavailable(board.BoardError):
+    pass
+
+
+def request_state(home, project_name):
+    address = Path(home) / "web.json"
+    if not address.exists():
+        raise ServiceUnavailable("网页服务没开")
+    url = json.loads(address.read_text(encoding="utf-8"))["url"]
+    request = Request(url + "/api/state?" + urlencode({"project": project_name}), headers={"X-Crew": "1"})
+    try:
+        with urlopen(request, timeout=15) as response:
+            return json.load(response)
+    except HTTPError as exc:
+        raise board.BoardError(json.load(exc)["error"]) from exc
+    except URLError as exc:
+        raise ServiceUnavailable("网页服务没开：" + str(exc.reason)) from exc
+    except TimeoutError as exc:
+        raise ServiceUnavailable("网页服务请求超时：" + str(exc)) from exc
+
+
 def request_start(home, project_name, path, body):
     address = Path(home) / "web.json"
     url = json.loads(address.read_text(encoding="utf-8"))["url"] if address.exists() else "http://127.0.0.1:47811"

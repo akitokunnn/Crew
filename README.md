@@ -70,7 +70,7 @@
 | `crew menu install\|status\|uninstall` | 安装 / 查看 / 移除当前用户的资源管理器右键入口，无需管理员权限；右键启动不弹终端，失败会弹窗说明原因 |
 | `crew resource add\|list\|rm` | 共享资源，`--guard` 正则让守卫拦住非借用人 |
 | `crew join <名字> [--group G] [--scope S] [--done-when D]` / `crew whoami` / `crew task "<一句话>"` / `crew card --scope S --done-when D` | 收编进组并写任务卡 / 我是谁 / 现在在做什么 / 改负责范围和完成标准 |
-| `crew status` / `crew who <名字>` | 总览 / 某个会话的详情和发消息地址 |
+| `crew status` / `crew who <名字>` | 总览 / 某个会话的详情和发消息地址，含上下文占比；拿不到时显示未知和原因 |
 | `crew lease take <资源> --for "<用途>"` / `crew lease give <资源> --note "<现状>"` / `crew lease list` | 借 / 还 / 列表 |
 | `crew claim <路径>` / `crew unclaim <路径>` / `crew claims` | 宣布文件归属（目录以 `/` 结尾） |
 | `crew ask "<问题>" --option A --option B --recommend A` / `crew decisions` / `crew answer <编号> "<答复>"` | 待拍板 |
@@ -82,6 +82,7 @@
 | `crew leader start` / `crew leader close` | 通过正在运行的网页服务开 leader / 收一个分组；`start --dry-run` 只看计划 |
 | `crew spawn` | 通过正在运行的网页服务开后台成员；`--dry-run` 只看计划 |
 | `crew wake <名字> "<消息>"` | 同项目任何 leader 或用户叫醒离线组员；leader 找别的 leader 时排通知，用户找 leader 直接在网页聊；服务未运行或组员进程状态未知时报错 |
+| `crew compact [<名字>]` | 通过网页服务压缩自己的组员，用户也可指定会话；网页 leader 不带名字或指定自己时，等这一轮说完后压缩 |
 | `crew open <名字>` | 两步在 VS Code 接续同一会话，停止空闲的原运行端前须明确确认 |
 | `crew web --open` | 按当前目录打开工作区，已有服务时复用 |
 | `crew git enable [--base 分支] [--stable 分支]` / `crew git disable` / `crew git status` | 按项目启用 / 停用 Git 管理 / 查看配置；base 自动依次选 develop、dev、main、master，stable 选与 base 不同的 master 或 main |
