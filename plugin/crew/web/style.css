@@ -740,3 +740,10 @@ a.btn{color:inherit;text-decoration:none}
 .file-image,.file-body .markdown img{max-width:100%;height:auto}
 .file-text{font-family:var(--font-mono);white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px}
 [data-file-path]{color:var(--accent-text);text-decoration:underline;cursor:pointer;overflow-wrap:anywhere}
+/* Session context menus share the model picker and support nested panels. */
+.menu{position:fixed;overflow-y:auto;max-width:calc(100vw - 16px)}
+.menu .sub-menu{position:fixed;min-width:220px;z-index:31}
+.menu .sub-menu[hidden]{display:none}
+.menu small{display:block;margin-top:4px;color:var(--text-3);font-size:calc(11.5px * var(--fs));font-weight:400}
+.menu button:focus-visible{outline:2px solid var(--accent);outline-offset:-2px;background:var(--hover)}
+.menu .git-menu-link{color:var(--text-3)}

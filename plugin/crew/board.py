@@ -508,17 +508,6 @@ def roster(conn, project_name, action, group_name, names=(), actor=HUMAN, now=No
             "session_ids": [s["session_id"] for s in targets]}, now)
 
 
-@atomic
-def close_group(conn, project_name, group_name, with_members=False, actor=HUMAN, now=None):
-    _group(conn, project_name, group_name)
-    conn.execute("UPDATE groups SET closed_at=? WHERE project=? AND name=?", (_time(now), project_name, group_name))
-    if with_members:
-        conn.execute("UPDATE sessions SET group_name=NULL,status='closed',ended_at=? WHERE project=? AND group_name=?",
-                     (_time(now), project_name, group_name))
-    else:
-        conn.execute("UPDATE sessions SET group_name=NULL WHERE project=? AND group_name=?", (project_name, group_name))
-    _event(conn, "leader:close", project_name, actor, {"group": group_name, "with_members": with_members}, now)
-
 
 def resources(conn, project_name):
     return _rows(conn, "SELECT * FROM resources WHERE project=? ORDER BY name", (project_name,))

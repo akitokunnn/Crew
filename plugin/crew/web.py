@@ -128,7 +128,7 @@ class Service:
                 for session in conn.execute("SELECT session_id,project FROM sessions WHERE crew_name IS NOT NULL AND crew_name<>''"):
                     sid = session["session_id"]
                     if sid in hidden and not board.is_archived(conn, sid):
-                        session_ops.archive(conn, sid, now=now)
+                        self.archive_session(conn, sid, now=now)
                         board.record_event(conn, "vscode:archived", session["project"], sid, {}, now=now)
 
     def start(self):
@@ -521,7 +521,10 @@ class Service:
                         raise ValueError("stable 必须是分支名或 null")
                     return git_admin.enable(conn, self.home, self.plugin_root, project, self.chat.start,
                                             base=_optional_text(data, "base"), stable=stable, now=now)
-                return git_admin.disable(conn, project, now=now)
+                result = git_admin.disable(conn, project, now=now)
+                if 'before' in result:
+                    self.stop_archived(result['before'])
+                return {'ok': True}
             project = self.selected_project(conn, project_name)
             if path == '/api/leaders/order':
                 _text(data, 'project')
@@ -559,9 +562,9 @@ class Service:
                 if path == '/api/session/rename':
                     return session_ops.rename(conn, target['session_id'], _text(data, 'name'), now=now)
                 if path == '/api/session/archive':
-                    return session_ops.archive(conn, target['session_id'], now=now)
+                    return self.archive_session(conn, target['session_id'], now=now)
                 if path == '/api/session/remove':
-                    return session_ops.archive(conn, target['session_id'], removed=True, now=now)
+                    return self.archive_session(conn, target['session_id'], removed=True, now=now)
                 if path == '/api/session/restore':
                     return session_ops.restore(conn, target['session_id'], now=now)
                 if path == '/api/session/undo':
@@ -689,11 +692,25 @@ class Service:
                 if before:
                     return {'ok': True, 'before': before, 'session': board.session(conn, data['session_id'])}
             elif path == "/api/group/close":
-                board.close_group(conn, project, _text(data, "group"), with_members=data.get("with_members") is True, now=now)
+                result = session_ops.close_group(conn, project, _text(data, "group"), with_members=data.get("with_members") is True, now=now)
+                self.stop_archived(result['before'], with_members=data.get('with_members') is True)
+                return result
+            elif path == "/api/group/undo":
+                return session_ops.undo_group(conn, project, _text(data, 'group'), data['before'], now=now)
             elif path == "/api/roster/adopt":
                 candidate = self.candidate(conn, project, _text(data, "session_id"))
                 return self.adopt(conn, project, candidate, _text(data, "name"), _optional_text(data, "group"), now)
             return {"ok": True}
+
+    def archive_session(self, conn, session_id, removed=False, now=None):
+        result = session_ops.archive(conn, session_id, removed=removed, now=now)
+        self.chat.stop_managed(session_id)
+        return result
+
+    def stop_archived(self, before, with_members=True):
+        for entry in before['sessions']:
+            if with_members or entry['session_id'] == before['group']['leader_session_id']:
+                self.chat.stop_managed(entry['session_id'])
 
     def chat_session(self, conn, project, session_id):
         session = board.session(conn, session_id)
@@ -808,7 +825,7 @@ class Service:
             return result
 
 
-POST_PATHS = {"/api/project/init", "/api/project/theme", "/api/open", "/api/open/continue", "/api/answer", "/api/spawn", "/api/leader", "/api/wake", "/api/roster/move", "/api/roster/remove", "/api/group/close", "/api/roster/adopt", "/api/chat/send", '/api/chat/read'}
+POST_PATHS = {"/api/project/init", "/api/project/theme", "/api/open", "/api/open/continue", "/api/answer", "/api/spawn", "/api/leader", "/api/wake", "/api/roster/move", "/api/roster/remove", "/api/group/close", "/api/group/undo", "/api/roster/adopt", "/api/chat/send", '/api/chat/read'}
 POST_PATHS.update('/api/session/' + action for action in ('rename', 'archive', 'remove', 'restore', 'undo', 'stop', 'options', 'compact'))
 POST_PATHS.update(('/api/attention/dismiss', '/api/notifications/away'))
 POST_PATHS.update(('/api/decision/hold', '/api/decision/unhold'))

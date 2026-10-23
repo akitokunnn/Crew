@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from crew import board, channel, cli, hooks, rules, store
+from crew import session_ops, board, channel, cli, hooks, rules, store
 
 PLUGIN = Path(__file__).resolve().parents[1]
 NOW = "2026-10-23T08:00:00.000Z"
@@ -75,7 +75,7 @@ class ChannelTests(unittest.TestCase):
         board.join(self.conn, "c", "other", "gamma", self.base / "other", None, None, role="leader", now=NOW)
         with self.assertRaises(board.BoardError):
             self.post(to=["gamma"])
-        board.close_group(self.conn, "demo", "beta", actor=board.HUMAN, now=NOW)
+        session_ops.close_group(self.conn, "demo", "beta", actor=board.HUMAN, now=NOW)
         with self.assertRaises(board.BoardError):
             self.post(to=["beta"])
 

@@ -54,6 +54,9 @@ class FakeProcess:
     def emit(self, record):
         self.stdout.queue.put(json.dumps(record) + "\n")
 
+    def terminate(self):
+        self.finish()
+
     def finish(self, code=0):
         self.returncode = code
         self.stdout.queue.put(None)
@@ -442,3 +445,32 @@ class ChatTests(UsageFixture, unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StopManagedTests(UsageFixture, unittest.TestCase):
+    def test_termination_timeout_and_unfinished_reader_are_explicit_errors(self):
+        import subprocess
+        manager = chat.Manager(self.home, self.root, lambda: [], process_factory=mock.Mock())
+        current = chat.Running(mock.Mock(), manager.journal('s1'))
+        manager.processes['s1'] = current
+        current.process.poll.return_value = None
+        current.process.wait.side_effect = subprocess.TimeoutExpired('fake', 10)
+        with self.assertRaisesRegex(board.BoardError, '仍未退出'):
+            manager.stop_managed('s1')
+        current.process.terminate.assert_called_once_with()
+        current.process.wait.side_effect = None
+        current.process.poll.return_value = 0
+        with mock.patch.object(current.reader_done, 'wait', return_value=False):
+            with self.assertRaisesRegex(board.BoardError, '输出尚未读完'):
+                manager.stop_managed('s1')
+        current.reader_done.set()
+        current.stderr_reader = mock.Mock()
+        current.stderr_reader.is_alive.return_value = True
+        with self.assertRaisesRegex(board.BoardError, '错误输出尚未读完'):
+            manager.stop_managed('s1')
+
+    def test_stopping_unowned_session_does_not_touch_external_processes(self):
+        manager = chat.Manager(self.home, self.root, lambda: [], process_factory=mock.Mock())
+        manager.stop_managed('external')
+        manager.process_factory.assert_not_called()
+        self.assertEqual(manager.processes, {})

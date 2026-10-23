@@ -1,6 +1,6 @@
 """Task cards, read cursors and the queue of things Crew must tell a leader."""
 import tests  # Install the production-service connection guard.
-from crew import board
+from crew import session_ops, board
 from test_core import CoreCase, NOW
 
 LATER = "2026-10-22T09:00:00.000Z"
@@ -34,7 +34,7 @@ class CardsNoticesTests(CoreCase):
         self.assertEqual(board.leader_of(self.conn, "s2")["session_id"], "s1")
         self.assertIsNone(board.leader_of(self.conn, "s1"))
         self.assertIsNone(board.leader_of(self.conn, "s3"))
-        board.close_group(self.conn, "demo", "lead", now=NOW)
+        session_ops.close_group(self.conn, "demo", "lead", now=NOW)
         self.assertIsNone(board.leader_of(self.conn, "s2"))
 
     def test_notices_queue_in_order_and_send_once(self):

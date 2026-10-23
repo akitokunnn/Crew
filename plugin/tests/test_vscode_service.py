@@ -389,7 +389,7 @@ class VSCodeServiceTests(unittest.TestCase):
             self.service.post("/api/roster/adopt", {"session_id": b, "name": "wrong-project"}, "alpha")
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM sessions WHERE session_id=?", (b,)).fetchone()[0], 0)
 
-    def test_archive_sync_covers_all_service_projects_is_idempotent_and_never_touches_processes_or_sources(self):
+    def test_archive_sync_covers_all_service_projects_is_idempotent_and_stops_managed_processes(self):
         beta = self.root / "beta"
         beta.mkdir()
         board.init_project(self.conn, "beta", beta, now=NOW)
@@ -407,7 +407,12 @@ class VSCodeServiceTests(unittest.TestCase):
         self.agents[:] = [self.agent(a), self.agent(b, cwd=beta)]
         self.service.refresh_agents()
         process = mock.Mock(name="managed_process")
-        managed = SimpleNamespace(process=process)
+        process.poll.return_value = None
+        process.terminate.side_effect = lambda: setattr(process.poll, 'return_value', 0)
+        managed = SimpleNamespace(process=process, input_lock=threading.RLock(), pending_compact=False,
+                                  reader_done=threading.Event(), stderr_reader=mock.Mock())
+        managed.stderr_reader.is_alive.return_value = False
+        managed.reader_done.set()
         self.service.chat.processes[a] = managed
         state_before = self.state_db.read_bytes()
         records_before = {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in paths}
@@ -437,7 +442,8 @@ class VSCodeServiceTests(unittest.TestCase):
         self.assertEqual(len(sync_events), 2)
         self.assertEqual(self.state_db.read_bytes(), state_before)
         self.assertEqual({path: (path.read_bytes(), path.stat().st_mtime_ns) for path in paths}, records_before)
-        self.assertEqual(process.mock_calls, [])
+        process.terminate.assert_called_once_with()
+        process.wait.assert_called_once_with(timeout=10)
         self.assertIs(self.service.chat.processes[a], managed)
         self.assertEqual(self.service.agents, self.agents)
         self.assertFalse(self.service.stop.is_set())

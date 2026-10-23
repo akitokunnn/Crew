@@ -68,9 +68,8 @@ def rename(conn, session_id, name, now=None):
     return {'ok':True,'session':board.session(conn, session_id),'before':before}
 
 
-@board.atomic
-def archive(conn, session_id, removed=False, now=None):
-    session, before = board.session(conn, session_id), snapshot(conn, session_id)
+def _archive(conn, session, removed, now):
+    session_id = session["session_id"]
     previous = control(conn, session_id)
     if not previous or previous['archived_status'] is None:
         _set_control(conn, session_id, archived_status=session['status'], archived_note=session['status_note'],
@@ -79,6 +78,15 @@ def archive(conn, session_id, removed=False, now=None):
     ended_at = session['ended_at'] if previous and previous['archived_status'] is not None else board._time(now)
     conn.execute("UPDATE sessions SET status='closed',status_note=NULL,ended_at=? WHERE session_id=?", (ended_at,session_id))
     board._event(conn, 'session:remove' if removed else 'session:archive', session['project'], session_id, {}, now)
+
+
+@board.atomic
+def archive(conn, session_id, removed=False, now=None):
+    session, before = board.session(conn, session_id), snapshot(conn, session_id)
+    config = board.git_config(conn, session['project'])
+    if config is not None and config['admin_session_id'] == session_id:
+        raise board.BoardError('到 Git 页关闭 Git 管理')
+    _archive(conn, session, removed, now)
     return {'ok':True,'session':board.session(conn, session_id),'before':before}
 
 
@@ -93,8 +101,7 @@ def restore(conn, session_id, now=None):
     return {'ok':True,'session':board.session(conn, session_id),'before':before}
 
 
-@board.atomic
-def undo(conn, session_id, before, now=None):
+def _undo(conn, session_id, before, now):
     session, previous = board.session(conn, session_id), snapshot(conn, session_id)
     required = ('crew_name', 'group_name', 'status', 'status_note', 'ended_at', 'control')
     if not isinstance(before, dict) or any(key not in before for key in required):
@@ -129,3 +136,92 @@ def undo(conn, session_id, before, now=None):
             _set_control(conn, related['session_id'], **{key:member['control'][key] for key in CONTROL_FIELDS})
     board._event(conn, 'session:undo', session['project'], session_id, {}, now)
     return {'ok':True,'session':board.session(conn,session_id),'before':previous}
+
+
+@board.atomic
+def undo(conn, session_id, before, now=None):
+    return _undo(conn, session_id, before, now)
+
+
+def _group_target(conn, project_name, group_name):
+    row = conn.execute('SELECT * FROM groups WHERE project=? AND name=?', (project_name, group_name)).fetchone()
+    if row is None:
+        raise board.BoardError('协作组不存在')
+    group = dict(row)
+    leader = board.session(conn, group['leader_session_id']) if group['leader_session_id'] is not None else None
+    if leader is not None and leader['project'] != project_name:
+        raise board.BoardError('leader 不属于当前项目')
+    config = board.git_config(conn, project_name)
+    if config is not None and leader is not None and config['admin_session_id'] == leader['session_id']:
+        raise board.BoardError('到 Git 页关闭 Git 管理')
+    return group, leader
+
+
+def _close_group(conn, project_name, group_name, with_members, actor, now):
+    group, leader = _group_target(conn, project_name, group_name)
+    if group['closed_at'] is not None:
+        raise board.Conflict('协作组已经关闭')
+    sessions = board._rows(conn, 'SELECT * FROM sessions WHERE project=? AND group_name=? ORDER BY session_id',
+                           (project_name, group_name))
+    if leader is not None and all(s['session_id'] != leader['session_id'] for s in sessions):
+        raise board.BoardError('leader 不在自己的协作组')
+    before = {'group': group, 'sessions': [{'session_id': s['session_id'], 'before': snapshot(conn, s['session_id'])}
+                                         for s in sessions]}
+    conn.execute('UPDATE groups SET closed_at=? WHERE project=? AND name=?', (board._time(now), project_name, group_name))
+    for session in sessions:
+        if with_members or leader is not None and session['session_id'] == leader['session_id']:
+            _archive(conn, session, False, now)
+        conn.execute('UPDATE sessions SET group_name=NULL WHERE session_id=?', (session['session_id'],))
+    board._event(conn, 'leader:close', project_name, actor, {'group': group_name, 'with_members': with_members}, now)
+    return {'ok': True, 'before': before}
+
+
+@board.atomic
+def close_group(conn, project_name, group_name, with_members=False, actor=board.HUMAN, now=None):
+    return _close_group(conn, project_name, group_name, with_members, actor, now)
+
+
+@board.atomic
+def undo_group(conn, project_name, group_name, before, now=None):
+    group, leader = _group_target(conn, project_name, group_name)
+    fields = {'project', 'name', 'leader_session_id', 'note', 'created_at', 'closed_at'}
+    if (not isinstance(before, dict) or set(before) != {'group', 'sessions'}
+            or not isinstance(before['group'], dict) or set(before['group']) != fields
+            or not isinstance(before['sessions'], list)):
+        raise board.BoardError('整组撤销记录不完整')
+    original = before['group']
+    if (original['project'] != project_name or original['name'] != group_name
+            or original['leader_session_id'] != group['leader_session_id']
+            or original['created_at'] != group['created_at'] or original['closed_at'] is not None
+            or original['note'] is not None and not isinstance(original['note'], str)):
+        raise board.BoardError('整组撤销记录不属于原协作组')
+    if group['closed_at'] is None:
+        raise board.Conflict('协作组已经重新打开')
+    ids = set()
+    for entry in before['sessions']:
+        if (not isinstance(entry, dict) or set(entry) != {'session_id', 'before'}
+                or not isinstance(entry['session_id'], str) or entry['session_id'] in ids
+                or not isinstance(entry['before'], dict)
+                or set(entry['before']) != {'crew_name', 'group_name', 'status', 'status_note', 'ended_at', 'control'}
+                or entry['before']['group_name'] != group_name):
+            raise board.BoardError('整组撤销成员记录无效')
+        ids.add(entry['session_id'])
+        session = board.session(conn, entry['session_id'])
+        if session['project'] != project_name or session['group_name'] is not None:
+            raise board.Conflict('撤销成员已加入其他协作组或不属于当前项目')
+        control_row = entry['before'].get('control')
+        if control_row is not None and (not isinstance(control_row, dict)
+                or set(control_row) != {'session_id', *CONTROL_FIELDS}
+                or control_row['session_id'] != entry['session_id']
+                or control_row['removed'] not in (0, 1)
+                or any(control_row[k] is not None and not isinstance(control_row[k], str)
+                       for k in CONTROL_FIELDS if k != 'removed')):
+            raise board.BoardError('撤销控制记录无效')
+    if leader is not None and leader['session_id'] not in ids:
+        raise board.BoardError('整组撤销缺少 leader')
+    for entry in before['sessions']:
+        _undo(conn, entry['session_id'], entry['before'], now)
+    conn.execute('UPDATE groups SET note=?,closed_at=? WHERE project=? AND name=?',
+                 (original['note'], original['closed_at'], project_name, group_name))
+    board._event(conn, 'leader:undo', project_name, board.HUMAN, {'group': group_name}, now)
+    return {'ok': True}

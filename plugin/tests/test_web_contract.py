@@ -12,7 +12,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import ProxyHandler, Request, build_opener
 
-from crew import board, store, themes, usage, web
+from crew import session_ops, board, store, themes, usage, web
 from test_shell import NOW, PLUGIN, ShellFixture
 from test_usage import assistant
 
@@ -268,10 +268,16 @@ class WebContractTests(ShellFixture, unittest.TestCase):
 
     def test_closed_group_leader_has_no_independent_members(self):
         self.assertEqual(self.state()["leaders"][0]["member_ids"], ["s1"])
-        board.close_group(self.conn, "demo", "lead", with_members=False, now=NOW)
+        session_ops.close_group(self.conn, "demo", "lead", with_members=False, now=NOW)
         state = self.state()
-        self.assertEqual(state["leaders"][0]["member_ids"], [])
+        self.assertEqual(state["leaders"], [])
         self.assertEqual(state["members"], [])
+        candidates = state["candidates"]["running"] + state["candidates"]["others"]
+        self.assertNotIn("s3", [item["session_id"] for item in candidates])
+        member = next(item for item in candidates if item["session_id"] == "s1")
+        self.assertEqual(member["crew_name"], board.session(self.conn, "s1")["crew_name"])
+        self.assertTrue(member["crew_name"])
+        self.assertIsNone(member["group"])
 
     def test_leader_unread_deduplicates_updates_and_respects_read_cursor(self):
         journal = self.service.chat.journal("s3")

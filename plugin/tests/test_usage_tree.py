@@ -1,7 +1,7 @@
 import tests  # Install the production-service connection guard.
 import unittest
 
-from crew import board, usage
+from crew import session_ops, board, usage
 from test_usage import PRICES, UsageFixture, assistant, stamp, token_count
 
 
@@ -69,7 +69,7 @@ class UsageTreeTests(UsageFixture, unittest.TestCase):
                          ("new-leader", {"tokens": 0, "cost": 0.0}))
         self.assertEqual(team["members"][0]["session_id"], "worker")
         self.assertEqual(ungrouped["tokens"], 0)
-        board.close_group(self.conn, "demo", "新组", now=stamp(100))
+        session_ops.close_group(self.conn, "demo", "新组", now=stamp(100))
         self.assertEqual(len(self.tree()), 1)
         self.assertEqual(self.tree()[0]["members"][0]["session_id"], "worker")
 

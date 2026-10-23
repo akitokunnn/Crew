@@ -39,7 +39,7 @@ class SessionOpsTests(CoreCase):
     def test_archived_leader_does_not_reopen_closed_group(self):
         self.leader()
         session_ops.archive(self.conn, "s1", now=NOW)
-        board.close_group(self.conn, "demo", "lead", with_members=True, now=NOW)
+        session_ops.close_group(self.conn, "demo", "lead", with_members=True, now=NOW)
         self.start(name="lead", role="leader", group="lead")
         self.assertEqual(board.groups(self.conn, "demo")[0]["closed_at"], NOW)
         self.assertIsNone(board.session(self.conn, "s1")["group_name"])
@@ -156,3 +156,101 @@ class SessionOpsTests(CoreCase):
         with self.assertRaises(board.Conflict):
             session_ops.rename(self.conn, "s1", "occupied", now=LATER)
         self.assertEqual(board.session(self.conn, "s2")["group_name"], "lead")
+
+
+class GroupUndoTests(CoreCase):
+    def prepare_group(self):
+        board.join(self.conn, 's1', 'demo', 'lead', self.root, self.root, 'main', role='leader', now=NOW)
+        board.roster(self.conn, 'demo', 'add', 'lead', session_ids=['s2', 's3'], now=NOW)
+        session_ops.rename(self.conn, 's2', 'renamed', now=NOW)
+        board.set_status(self.conn, 's2', 'working', 'busy', now=NOW)
+
+    def test_close_both_modes_and_undo_restore_exact_group_and_controls(self):
+        self.prepare_group()
+        for together in (False, True):
+            with self.subTest(together=together):
+                original = {sid: session_ops.snapshot(self.conn, sid) for sid in ('s1', 's2', 's3')}
+                group = dict(self.conn.execute("SELECT * FROM groups WHERE name='lead'").fetchone())
+                result = session_ops.close_group(self.conn, 'demo', 'lead', together, now=LATER)
+                self.assertEqual(result['before']['group'], group)
+                self.assertTrue(board.is_archived(self.conn, 's1'))
+                for sid in ('s2', 's3'):
+                    self.assertEqual(board.is_archived(self.conn, sid), together)
+                    self.assertEqual(board.session(self.conn, sid)['crew_name'], original[sid]['crew_name'])
+                self.assertTrue(all(board.session(self.conn, sid)['group_name'] is None for sid in original))
+                self.assertEqual(self.conn.execute("SELECT closed_at FROM groups WHERE name='lead'").fetchone()[0], LATER)
+                session_ops.undo_group(self.conn, 'demo', 'lead', result['before'], now=LATER)
+                self.assertEqual({sid: session_ops.snapshot(self.conn, sid) for sid in original}, original)
+                self.assertEqual(dict(self.conn.execute("SELECT * FROM groups WHERE name='lead'").fetchone()), group)
+
+    def test_empty_group_close_and_undo(self):
+        board.join(self.conn, 's1', 'demo', 'lead', self.root, self.root, 'main', role='leader', now=NOW)
+        before = session_ops.close_group(self.conn, 'demo', 'lead', now=LATER)['before']
+        self.assertEqual(len(before['sessions']), 1)
+        self.assertTrue(board.is_archived(self.conn, 's1'))
+        session_ops.undo_group(self.conn, 'demo', 'lead', before, now=LATER)
+        self.assertFalse(board.is_archived(self.conn, 's1'))
+
+    def test_undo_name_conflict_rolls_back_previously_restored_members(self):
+        self.prepare_group()
+        before = session_ops.close_group(self.conn, 'demo', 'lead', True, now=LATER)['before']
+        board.join(self.conn, 'occupier', 'demo', 'renamed', self.root, self.root, 'main', now=LATER)
+        archived = {sid: session_ops.snapshot(self.conn, sid) for sid in ('s1', 's2', 's3')}
+        with self.assertRaises(board.Conflict):
+            session_ops.undo_group(self.conn, 'demo', 'lead', before, now=LATER)
+        self.assertEqual({sid: session_ops.snapshot(self.conn, sid) for sid in archived}, archived)
+        self.assertEqual(self.conn.execute("SELECT closed_at FROM groups WHERE name='lead'").fetchone()[0], LATER)
+
+    def test_undo_rejects_foreign_member_changed_group_and_malformed_snapshot(self):
+        import copy
+        self.prepare_group()
+        before = session_ops.close_group(self.conn, 'demo', 'lead', True, now=LATER)['before']
+        invalid = copy.deepcopy(before)
+        invalid['group']['project'] = 'other'
+        malformed = copy.deepcopy(before)
+        malformed['sessions'][-1]['before']['status'] = 'invalid'
+        duplicate = copy.deepcopy(before)
+        duplicate['sessions'].append(duplicate['sessions'][0])
+        for value in (invalid, malformed, duplicate, {}):
+            with self.subTest(value=value), self.assertRaises(board.BoardError):
+                session_ops.undo_group(self.conn, 'demo', 'lead', value, now=LATER)
+            self.assertTrue(all(board.is_archived(self.conn, sid) for sid in ('s1', 's2', 's3')))
+        board.init_project(self.conn, 'other', self.root / 'other', now=NOW)
+        self.conn.execute("UPDATE sessions SET project='other' WHERE session_id='s3'")
+        with self.assertRaises(board.BoardError):
+            session_ops.undo_group(self.conn, 'demo', 'lead', before, now=LATER)
+
+    def test_git_administrator_cannot_close_or_undo_through_generic_operations(self):
+        self.prepare_group()
+        self.conn.execute("INSERT INTO git_management(project,enabled_at,base,admin_session_id) VALUES('demo',?,'main','s1')", (NOW,))
+        with self.assertRaisesRegex(board.BoardError, 'Git'):
+            session_ops.close_group(self.conn, 'demo', 'lead', True, now=LATER)
+        with self.assertRaisesRegex(board.BoardError, 'Git'):
+            session_ops.undo_group(self.conn, 'demo', 'lead', {}, now=LATER)
+        self.assertFalse(board.is_archived(self.conn, 's1'))
+
+    def test_close_write_failure_rolls_back_group_and_all_archive_controls(self):
+        from unittest import mock
+        import sqlite3
+        self.prepare_group()
+        original = {sid: session_ops.snapshot(self.conn, sid) for sid in ('s1', 's2', 's3')}
+        archive = session_ops._archive
+        def fail_after_first(conn, session, removed, now):
+            if session['session_id'] == 's2':
+                raise sqlite3.IntegrityError('injected archive failure')
+            archive(conn, session, removed, now)
+        with mock.patch('crew.session_ops._archive', side_effect=fail_after_first):
+            with self.assertRaises(sqlite3.IntegrityError):
+                session_ops.close_group(self.conn, 'demo', 'lead', True, now=LATER)
+        self.assertEqual({sid: session_ops.snapshot(self.conn, sid) for sid in original}, original)
+        self.assertIsNone(self.conn.execute("SELECT closed_at FROM groups WHERE name='lead'").fetchone()[0])
+
+    def test_undo_rejects_member_joined_elsewhere_without_partial_restore(self):
+        self.prepare_group()
+        before = session_ops.close_group(self.conn, 'demo', 'lead', False, now=LATER)['before']
+        board.join(self.conn, 'new-leader', 'demo', 'other', self.root, self.root, 'main', role='leader', now=LATER)
+        board.roster(self.conn, 'demo', 'move', 'other', session_ids=['s3'], now=LATER)
+        with self.assertRaises(board.Conflict):
+            session_ops.undo_group(self.conn, 'demo', 'lead', before, now=LATER)
+        self.assertTrue(board.is_archived(self.conn, 's1'))
+        self.assertEqual(board.session(self.conn, 's3')['group_name'], 'other')

@@ -90,7 +90,7 @@ class LeaderWakeTests(ShellFixture, unittest.TestCase):
             self.wake(caller='foreign')
 
     def test_closed_group_or_archived_caller_is_rejected(self):
-        board.close_group(self.conn, 'demo', 'git', with_members=False, now=NOW)
+        session_ops.close_group(self.conn, 'demo', 'git', with_members=False, now=NOW)
         with self.assertRaisesRegex(board.BoardError, '同项目的 leader'):
             self.wake(caller='other')
         session_ops.archive(self.conn, 's3', now=NOW)
@@ -99,8 +99,8 @@ class LeaderWakeTests(ShellFixture, unittest.TestCase):
         self.assertEqual(self.processes, [])
 
     def test_closed_leader_group_and_unadopted_target_are_rejected(self):
-        board.close_group(self.conn, 'demo', 'git', with_members=False, now=NOW)
-        with self.assertRaisesRegex(board.BoardError, '目标已收'):
+        session_ops.close_group(self.conn, 'demo', 'git', with_members=False, now=NOW)
+        with self.assertRaisesRegex(board.BoardError, '目标已归档，不能叫醒'):
             self.wake('other')
         board.register_session(self.conn, 'unnamed', 'demo', self.project, None, None, now=NOW)
         with self.assertRaisesRegex(board.BoardError, '目标未收编'):

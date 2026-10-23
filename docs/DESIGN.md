@@ -152,7 +152,7 @@ Crew/
 | `channel [--limit N]` | leader 和组员看交流区全文，默认最近 20 条，按时间正序列出并把自己的读到位置推到最新 |
 | `group list [--json]` | 分组和成员 |
 | `roster add GROUP NAME...` / `roster remove GROUP NAME...` / `roster move NAME --to GROUP` | 花名册。一个会话只在一个分组里 |
-| `leader close GROUP [--with-members]` | 收掉分组：closed_at 置上；成员的 group_name 清空，带 `--with-members` 时成员 status 改为 closed。不杀进程 |
+| `leader close GROUP [--with-members]` | 转发网页服务关闭分组并归档 leader；成员退组，带 `--with-members` 时一起归档。归档会停止网页托管进程 |
 | `events [--session NAME] [--limit N]` | 事件流水 |
 | `doctor` | 检查：数据库能打开、blacklist.txt 每行合法、runtime.json 的 plugin_root 存在、当前目录属于哪个项目 |
 | `usage ...` | 转给 `crew.usage_cli.main(argv, home)`（§8） |
@@ -191,7 +191,7 @@ Crew/
 Git 管理启用时，所有会话的 SessionStart 再附两段：管理员统一推送和合并、做完用 `crew git request` 转交的提示；`branch_rules` 前 6 行与“全文用 crew git policy 看”。规则为空时改为“git 管理员还没写分支规则，开工前先问它”。未收编会话同样收到，Git 管理员启动时的守则指向 `/crew:git`。
 - 交流区摘要只在 leader 的 UserPromptSubmit 中追加，与守则提醒共用 additionalContext。按读到位置取本项目新发言，排除自己发的，以及点名当前 leader 且 `channel_mentions.notice_id` 非空的发言；无论通知是否已送达，都不重复进入摘要。无新发言不附加。有内容时第一行为“[Crew 交流区] 你上次看之后有 N 条新发言：”，每条一行 `- HH:MM <名字>（→ @A、@B）：<正文第一行>`，正文超过 120 字截断加“…”；最多 10 条，超过时追加“还有 M 条”，末尾写“全文用 crew channel 看”。读取后把该 leader 的位置推到最新；组员钩子不附交流区摘要。
 
-显式 session_controls 的归档/移出高于上述 hook 状态，closed 不因启动、Stop 或 SessionEnd 改回活跃。compact 只续上下文，保留既有身份、分组与状态，不重放旧 CREW_*。没有显式控制记录的旧 close_group 仍保留主动启动后重开的既有行为。
+显式 session_controls 的归档/移出高于上述 hook 状态，closed 不因启动、Stop 或 SessionEnd 改回活跃。compact 只续上下文，保留既有身份、分组与状态，不重放旧 CREW_*。整组关闭同样写入 session_controls，启动 hook 不会重新打开已归档的 leader 或下属。
 
 ## 6. 文件归属
 
@@ -349,7 +349,7 @@ File resolution also returns `open_with` from a server-side allowlist (case-inse
 - **leader 通知**：Crew 自己不发会话间消息。网页 / QQ 答完拍板、网页挂起拍板、收编进组、`crew join` 入组，以及 leader 用 `crew wake` 找 leader、交流区点名，都写进 `leader_notices`；网页服务每 2 秒把待发通知合并成一条 `[Crew]` 消息，经 `deliver_notices` 写进空闲的 leader（journal 记 source=crew）。在线空闲就送，离线且有网页日志就续跑后送；在 VS Code 等其他进程运行或进程状态未知时等现有逻辑送达。需要转告下属的事由 leader 用 SendMessage 转告。挂起通知附题号、提问者名字与 cc_name，要求转告"不卡流程的按推荐继续；卡流程的先做别的，先别再问这道题"；没有 leader 时不排。leader 对挂起题不催用户，汇报时单独列出。
 - **交流区发言与点名**：每项目一条发言流，leader 用 `crew say` 发言，用户通过网页发言；组员和未收编会话发言报“交流区只给 leader 用；有事告诉你的 leader”。`--to` / `to` 只能点同项目 leader，名字不存在先报错，不写入发言；自己点自己不排通知。leader 点名调用 `queue_leader_notice`，source 为 `crew`，内容为“交流区：「<名字>」点名你：\n<全文>\n\n回复用 crew say --to <名字> \"…\"；只是回\"收到\"就不用回。”用户点名 source 为 `web`，写明“交流区：用户点名你：”和“这是用户本人的话”。两者都复用 `deliver_notices`，不另起投递逻辑。未点名不叫醒，下一轮钩子顺带摘要；新发言不响网页提示音，也不推 QQ。
 - **拍板挂起**：页面展示及计数规则见 [WEB_UX.md](WEB_UX.md)。取消挂起不排通知；归档或移出会话的未答题保留记录，但不继续催办。
-- **归档同步**：现有 10 秒轮询里读 VS Code 归档名单，已收编会话被 VS Code 归档就 `session_ops.archive`，记 `vscode:archived`；VS Code 取消归档不跟随。
+- **归档同步**：现有 10 秒轮询里读 VS Code 归档名单，已收编会话被 VS Code 归档就经 `Service.archive_session` 写入归档控制并停止对应网页托管进程，记 `vscode:archived`；VS Code 取消归档不跟随。
 - **已读与任务卡**：`read_cursors` 记用户读到 leader journal 的哪条，算未读和"离开后"分隔线；`session_cards` 记下属的负责范围和完成标准，`sessions.task` 仍是"现在在做什么"。
 - `POST /api/attention/dismiss` 可撤销标记，并检查事项所属工作区；会话整理接口见上表。
 - 用量接口及 CSV 接受 `project=P&scope=workspace|machine`。报告函数末尾可选 `project=None`，按 cwd 最长根目录匹配；跨目录 Codex 按任务工作目录统计。`summary.claude_limits` 来自官方本地缓存与 stream-json `rate_limit_event`，不轮询私有 OAuth 接口，不启动模型来查额度。
@@ -393,7 +393,7 @@ File resolution also returns `open_with` from a server-side allowlist (case-inse
 
 ## 13. Git 管理
 
-Git 管理按项目启用。启用时保存时间与 base / stable，使用现有 `spawn --new-worktree` 机制在独立 worktree 开「git管理员」：数据库角色 leader、分组 git、agent `crew:git`、模型 `claude-sonnet-5-5`、effort high，预分配的会话 ID 写入配置。网页可沿用 leader 模型菜单改模型和 effort。停用照 `crew leader close` 收掉管理员分组，再删除配置。
+Git 管理按项目启用。启用时保存时间与 base / stable，使用现有 `spawn --new-worktree` 机制在独立 worktree 开「git管理员」：数据库角色 leader、分组 git、agent `crew:git`、模型 `claude-sonnet-5-5`、effort high，预分配的会话 ID 写入配置。网页可沿用 leader 模型菜单改模型和 effort。停用在同一数据库事务中先删除 `git_management` 配置，再归档管理员和组员；提交后由 Service 停止对应网页托管进程。失败整体回滚。
 
 ```sql
 CREATE TABLE IF NOT EXISTS git_management (
@@ -498,3 +498,27 @@ CREATE TABLE IF NOT EXISTS git_ci_state (
 ```
 
 `subject` 为 `base:<分支>` 或 `pr:<编号>`，`run_key` 区分运行，`sha` 将 PR 状态变化关联到同一提交；`notified` 记录这次运行是否已排通知。缺失表在部署后重启服务时自动创建，无需迁移已有表。
+
+
+### 整组关闭、撤销与托管进程
+
+`POST /api/group/close` 接收 `{group, with_members}`，从当前项目查找分组及 leader，拒绝 Git 管理员。总是归档 leader 并关闭分组；`with_members=true` 归档全部下属，false 则下属保留名字和状态、退出分组，进入待收编的“有名字但不在组里”。无下属时同样归档 leader。响应为 `{ok:true, before}`。
+
+`POST /api/group/undo` 接收 `{group, before}`，校验当前项目、原组标识、leader、快照字段、控制记录、成员项目和当前分组关系；原组已经重新打开、成员已进入别组或恢复名字冲突时拒绝。响应为 `{ok:true}`。快照只由前端 toast 的撤销动作持有，不新增表、不单独落库：
+
+```json
+{
+  "group": {"project":"demo", "name":"lead", "leader_session_id":"leader-id", "note":null, "created_at":"…", "closed_at":null},
+  "sessions": [
+    {"session_id":"leader-id", "before":{"crew_name":"lead", "group_name":"lead", "status":"idle", "status_note":null, "ended_at":null, "control":null}}
+  ]
+}
+```
+
+`sessions` 包含操作前组内全部会话及 leader；`control` 是完整的原 `session_controls` 行（`session_id, archived_status, archived_note, archived_ended_at, removed, name_override`），原来没有行时为 null。`session_ops.close_group` 和 `undo_group` 各自使用一个事务；归档复用单会话的事务内 `_archive`，撤销复用 `_undo`，恢复组记录、分组关系、状态与完整控制行，任意成员失败整体回滚。`board.close_group` 已删除，生产调用方使用 session_ops 或 Service 编排。
+
+网页单会话归档/移出、整组归档和 VS Code 归档同步先提交数据库，再调用 `Manager.stop_managed`：无论 busy 或 idle，都终止对应网页托管进程，最多等待退出 10 秒，再最多等待输出读完 10 秒；失败显式报错，数据库保持已归档，避免后续 hook 复活会话。保留下属的关闭方式只停止 leader。外部 VS Code/终端进程不属于 Manager，不由它终止。CLI 整组关闭通过 `/api/group/close` 使用相同编排。
+
+Git 页停用在一个数据库事务中先删除 `git_management` 配置，再调用同一事务内整组关闭逻辑归档管理员和下属；失败整体回滚。提交后 Service 停止对应托管进程。通用整组结束/撤销及单会话归档/移出都拒绝当前 Git 管理员，必须从 Git 页停用。
+
+撤销只恢复数据库，不自动启动进程。恢复后 leader 在下次收到用户网页消息时续跑，下属在下次发消息或叫醒时按现有恢复逻辑续跑；“停下这一轮”仍只发送 interrupt，与归档终止进程是两个动作。

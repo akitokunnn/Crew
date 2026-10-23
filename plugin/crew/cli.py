@@ -548,7 +548,8 @@ def execute(conn, args, cwd, agents_provider):
     if cmd == "roster":
         return board.roster(conn, p, args.action, args.to if args.action == "move" else args.group, [args.name] if args.action == "move" else args.names, actor)
     if cmd == "leader":
-        return board.close_group(conn, p, args.group, args.with_members, actor)
+        from . import spawn
+        return spawn.request_start(args.home, p, "/api/group/close", {"group": args.group, "with_members": args.with_members})
     if cmd == "events":
         if args.limit < 1:
             raise board.BoardError("--limit 必须大于 0")

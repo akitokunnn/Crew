@@ -14,7 +14,7 @@ from unittest import mock
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from crew import board, chat, cli, spawn, store, usage_cli, vscode_sessions, web
+from crew import session_ops, board, chat, cli, spawn, store, usage_cli, vscode_sessions, web
 from test_usage import UsageFixture, assistant, prompt
 from test_chat import FakeProcess
 
@@ -151,7 +151,7 @@ class SpawnTests(ShellFixture, unittest.TestCase):
         self.assertEqual(group["leader_session_id"], result["session_id"])
 
     def test_reopen_closed_leader_group(self):
-        board.close_group(self.conn, "demo", "lead", with_members=True, now=NOW)
+        session_ops.close_group(self.conn, "demo", "lead", with_members=True, now=NOW)
         result = self.make_spawn("lead", role="leader")
         group = board.groups(self.conn, "demo")[0]
         self.assertIsNone(group["closed_at"])
@@ -172,7 +172,7 @@ class SpawnTests(ShellFixture, unittest.TestCase):
     def test_missing_and_closed_groups_fail_without_launch(self):
         for group in ("missing", "lead"):
             if group == "lead":
-                board.close_group(self.conn, "demo", "lead", now=NOW)
+                session_ops.close_group(self.conn, "demo", "lead", now=NOW)
             with self.assertRaises(board.BoardError):
                 self.make_spawn(group=group)
         self.assertEqual(self.commands, [])
@@ -573,18 +573,18 @@ class WebTests(ShellFixture, unittest.TestCase):
         with self.assertRaises(board.BoardError):
             service.post("/api/project/init", {"name": "missing", "root": str(self.root / "missing")})
 
-    def test_web_remove_dissolve_and_archive_preserve_the_running_process(self):
+    def test_web_remove_dissolve_and_archive_stop_managed_process(self):
         self.assertEqual(self.get("/api/roster/remove", {"name": "one", "group": "lead"})[0], 200)
         self.assertIsNone(board.session(self.conn, "s1")["group_name"])
         self.assertEqual(self.get("/api/roster/remove", {"name": "lead", "group": "lead"})[0], 400)
         self.assertEqual(self.get("/api/group/close", {"group": "lead", "with_members": False})[0], 200)
         self.assertIsNone(board.session(self.conn, "s3")["group_name"])
-        self.assertEqual(board.session(self.conn, "s3")["status"], "idle")
+        self.assertEqual(board.session(self.conn, "s3")["status"], "closed")
         result = self.get("/api/leader", {"name": "archive-me", "members": ["one"]})[1]
         self.assertEqual(self.get("/api/group/close", {"group": "archive-me", "with_members": True})[0], 200)
         self.assertEqual(board.session(self.conn, result["session_id"])["status"], "closed")
         self.assertEqual(board.session(self.conn, "s1")["status"], "closed")
-        self.assertTrue(self.server.service.chat.running(result["session_id"]))
+        self.assertFalse(self.server.service.chat.running(result["session_id"]))
         self.assertEqual(self.get("/api/chat/send", {"session_id": result["session_id"], "text": "stale form"})[0], 409)
 
     def test_registered_unnamed_session_keeps_title_and_candidate_identity(self):
@@ -691,7 +691,8 @@ class WebTests(ShellFixture, unittest.TestCase):
             visible = {s["session_id"] for s in state["leaders"] + state["members"]}
             self.assertTrue(visible.isdisjoint(identities))
             self.assertEqual([board.session(self.conn, sid)["status"] for sid in identities], ["closed", "closed"])
-            self.assertTrue(all(self.server.service.chat.running(sid) for sid in identities))
+            self.assertTrue(all(not self.server.service.chat.running(sid) for sid in identities))
+            self.assertTrue(all(self.server.service.chat.processes[sid].reader_done.is_set() for sid in identities))
         assert_archived()
         for sid in identities:
             ended_at = board.session(self.conn, sid)["ended_at"]
@@ -707,6 +708,51 @@ class WebTests(ShellFixture, unittest.TestCase):
         status_text = self.run_cli(["status"])[1]
         self.assertNotIn("archived-leader", status_text)
         self.assertNotIn("archived-member", status_text)
+
+    def test_archive_and_remove_stop_busy_and_idle_and_undo_does_not_restart(self):
+        for action in ('archive', 'remove'):
+            for busy in (False, True):
+                with self.subTest(action=action, busy=busy):
+                    sid = self.get('/api/leader', {'name': action + str(busy), 'task': 'work'})[1]['session_id']
+                    manager = self.server.service.chat
+                    manager.journal(sid).set_status('working' if busy else 'idle')
+                    count = len(self.processes)
+                    code, result, _ = self.get('/api/session/' + action, {'session_id': sid})
+                    self.assertEqual(code, 200)
+                    self.assertFalse(manager.running(sid))
+                    self.assertTrue(manager.processes[sid].reader_done.is_set())
+                    self.assertEqual(self.get('/api/session/undo', {'session_id': sid, 'before': result['before']})[0], 200)
+                    self.assertEqual(len(self.processes), count)
+                    self.assertFalse(manager.running(sid))
+
+    def test_group_http_modes_undo_and_project_boundary(self):
+        for together in (False, True):
+            with self.subTest(together=together):
+                name = 'http-group-' + str(together)
+                leader = self.get('/api/leader', {'name': name, 'task': 'lead'})[1]['session_id']
+                member = self.get('/api/spawn', {'name': 'member-' + str(together), 'group': name, 'task': 'work'})[1]['session_id']
+                manager = self.server.service.chat
+                manager.journal(leader).set_status('idle')
+                original = {sid: session_ops.snapshot(self.conn, sid) for sid in (leader, member)}
+                code, result, _ = self.get('/api/group/close', {'group': name, 'with_members': together})
+                self.assertEqual(code, 200)
+                self.assertFalse(manager.running(leader))
+                self.assertEqual(manager.running(member), not together)
+                self.assertEqual(board.is_archived(self.conn, member), together)
+                count = len(self.processes)
+                self.assertEqual(self.get('/api/group/undo', {'group': name, 'before': result['before']})[0], 200)
+                self.assertEqual({sid: session_ops.snapshot(self.conn, sid) for sid in original}, original)
+                self.assertEqual(len(self.processes), count)
+        board.init_project(self.conn, 'other', self.root / 'other', now=NOW)
+        self.assertEqual(self.get('/api/group/close?project=other', {'group': 'lead'})[0], 400)
+        self.assertEqual(self.get('/api/group/undo?project=other', {'group': 'lead', 'before': {}})[0], 400)
+
+    def test_group_http_rejects_git_administrator_and_session_archive(self):
+        self.conn.execute("INSERT INTO git_management(project,enabled_at,base,admin_session_id) VALUES('demo',?,'main','s3')", (NOW,))
+        self.assertEqual(self.get('/api/group/close', {'group': 'lead', 'with_members': True})[0], 400)
+        self.assertEqual(self.get('/api/group/undo', {'group': 'lead', 'before': {}})[0], 400)
+        self.assertEqual(self.get('/api/session/archive', {'session_id': 's3'})[0], 400)
+        self.assertEqual(self.get('/api/session/remove', {'session_id': 's3'})[0], 400)
 
     def chat_start(self):
         code, result, _ = self.get("/api/leader", {"name": "web-boss", "task": "manage this group"})

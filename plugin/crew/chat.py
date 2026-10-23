@@ -790,6 +790,26 @@ class Manager:
                 current.process.stdin.flush()
         return {"ok": True}
 
+    def stop_managed(self, session_id):
+        """Terminate an owned process, including busy turns, and drain its output."""
+        with self.lock:
+            current = self.processes.get(session_id)
+            if current is None:
+                return
+            with current.input_lock:
+                current.pending_compact = False
+                if current.process.poll() is None:
+                    current.process.terminate()
+            try:
+                current.process.wait(timeout=10)
+            except subprocess.TimeoutExpired as exc:
+                raise board.BoardError('托管会话终止后仍未退出') from exc
+            if not current.reader_done.wait(10):
+                raise board.BoardError('托管会话进程已退出，但输出尚未读完')
+            current.stderr_reader.join(timeout=10)
+            if current.stderr_reader.is_alive():
+                raise board.BoardError('托管会话进程已退出，但错误输出尚未读完')
+
     def detach(self, session_id):
         """Release an idle session to VS Code by letting its own process finish."""
         with self.lock:

@@ -1,7 +1,7 @@
 """Git administrator lifecycle shared by CLI-backed HTTP and the web page."""
 import uuid
 
-from . import board
+from . import board, session_ops
 
 
 TASK = """你是本项目的 git 管理员，开工先读 /crew:leader，再读 /crew:git，Git 权限按后者。
@@ -22,9 +22,11 @@ def enable(conn, home, plugin_root, project_name, launcher, base=None, stable=No
                             admin_session_id=result["session_id"])
 
 
+@board.atomic
 def disable(conn, project_name, now=None):
     config = board.git_config(conn, project_name)
+    conn.execute("DELETE FROM git_management WHERE project=?", (project_name,))
     if config is not None and config["admin_session_id"] is not None:
         administrator = board.session(conn, config["admin_session_id"])
-        board.close_group(conn, project_name, administrator["group_name"], with_members=True, now=now)
-    return board.disable_git(conn, project_name)
+        return session_ops._close_group(conn, project_name, administrator["group_name"], True, board.HUMAN, now)
+    return {"ok": True}

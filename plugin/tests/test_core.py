@@ -175,7 +175,9 @@ class SessionTests(CoreCase):
         self.assert_cli(["join", "one"], sid="s2")
         self.assertEqual(board.named_session(self.conn, "demo", "one")["session_id"], "s2")
 
-    def test_leader_join_roster_and_close(self):
+    @mock.patch('crew.spawn.request_start')
+    def test_leader_join_roster_and_close(self, request):
+        request.side_effect = lambda home, project, path, data: session_ops.close_group(self.conn, project, data['group'], data['with_members'])
         self.assert_cli(["join", "lead", "--role", "leader"])
         self.assertEqual(board.groups(self.conn, "demo")[0]["leader_session_id"], "s1")
         self.assert_cli(["roster", "add", "lead", "two", "three"])
@@ -468,7 +470,7 @@ class HookTests(CoreCase):
         for sid, environ in environments.items():
             self.start_with_environment(sid, "startup", environ)
             board.set_task(self.conn, sid, "current task " + sid, now=NOW)
-        board.close_group(self.conn, "demo", "lead", with_members=True, now=NOW)
+        session_ops.close_group(self.conn, "demo", "lead", with_members=True, now=NOW)
         fields = ("crew_name", "cc_name", "role", "group_name", "status", "status_note", "ended_at", "task", "spawn_id")
         before = {sid: {field: board.session(self.conn, sid)[field] for field in fields} for sid in environments}
         later = "2026-10-21T09:00:00.000Z"
@@ -491,7 +493,7 @@ class HookTests(CoreCase):
                    group_name="new", cc_name="current-address", now=NOW)
         board.register_session(self.conn, "s2", "demo", self.root, self.root, "main", spawn_id="current-spawn", now=NOW)
         board.set_status(self.conn, "s2", "working", "current status", now=NOW)
-        board.close_group(self.conn, "demo", "old", now=NOW)
+        session_ops.close_group(self.conn, "demo", "old", now=NOW)
         fields = ("crew_name", "cc_name", "role", "group_name", "status", "status_note", "ended_at", "task", "spawn_id")
         before = {sid: {field: board.session(self.conn, sid)[field] for field in fields} for sid in ("s1", "s2")}
         for sid, environ in (("s1", leader_env), ("s2", member_env)):
@@ -501,16 +503,16 @@ class HookTests(CoreCase):
                 old = next(group for group in board.groups(self.conn, "demo") if group["name"] == "old")
                 self.assertEqual(old["closed_at"], NOW)
 
-    def test_explicit_startup_and_resume_reopen_archived_leader(self):
+    def test_explicit_startup_and_resume_preserve_archive_control(self):
         environ = {"CREW_NAME": "lead", "CREW_ROLE": "leader", "CREW_GROUP": "lead", "CREW_SPAWN_ID": "lead-spawn"}
         self.start_with_environment("s1", "startup", environ)
+        session_ops.close_group(self.conn, "demo", "lead", with_members=True, now=NOW)
         for source in ("startup", "resume"):
             with self.subTest(source=source):
-                board.close_group(self.conn, "demo", "lead", with_members=True, now=NOW)
                 self.start_with_environment("s1", source, environ)
                 session = board.session(self.conn, "s1")
-                self.assertEqual((session["status"], session["group_name"], session["spawn_id"]), ("idle", "lead", "lead-spawn"))
-                self.assertIsNone(board.groups(self.conn, "demo")[0]["closed_at"])
+                self.assertEqual((session['status'], session['group_name']), ('closed', None))
+                self.assertEqual(board.groups(self.conn, 'demo')[0]['closed_at'], NOW)
 
     def test_first_compact_still_registers_spawn_identity(self):
         self.start_with_environment("new", "compact", {"CREW_NAME": "fresh", "CREW_ROLE": "member", "CREW_SPAWN_ID": "fresh-spawn"})
@@ -920,7 +922,9 @@ class InstallAndCliTests(CoreCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)["session_id"], "s1")
 
-    def test_every_command_smoke(self):
+    @mock.patch('crew.spawn.request_start')
+    def test_every_command_smoke(self, request):
+        request.side_effect = lambda home, project, path, data: session_ops.close_group(self.conn, project, data['group'], data['with_members'])
         commands = [["install"], ["init", "--name", "demo", "--root", str(self.root)], ["projects"],
                     ["resource", "add", "phone", "--kind", "device", "--desc", "test", "--guard", "adb"],
                     ["resource", "list"], ["join", "lead", "--role", "leader", "--task", "plan"],
