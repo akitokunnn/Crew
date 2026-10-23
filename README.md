@@ -61,7 +61,7 @@
 
 QQ 命令不分大小写、忽略首尾空白：`/help`（`/h`）帮助，`/leader`（`/l`）列表，`/leader 2`（`/l 2`、`/2`）切换，`/decisions`（`/d`）待拍板，`/back`（`/b`）我回来了。
 
-交流区新发言不响提示音、不推 QQ；左栏显示未读数，打开或滚到底记为已读。不点名的发言在 leader 下一轮附摘要，全文用 `crew channel` 查看。
+交流区新发言不响提示音、不推 QQ；左栏显示未读数，打开或滚到底记为已读。不点名的发言在 leader 下一轮附摘要，网页可手动“整理”，新增满 20 条也会自动生成置顶要点卡；原文默认折叠。`crew channel` 先看卡再看卡后的新发言，`crew channel --raw` 查看原文。
 
 会话里的守则在技能里：成员是 `/crew:member`，leader 是 `/crew:leader`，Git 管理员是 `/crew:git`。会话启动时 Crew 会告诉它是谁、归哪个 leader、怎么调命令；还没收编的会话不会被要求自己登记。启用 Git 管理的项目还会附管理员提示和分支规则前 6 行，全文用 `crew git policy` 看。守则更新后，在下一条消息或 resume / compact 时提醒已收编会话重读对应技能。
 
@@ -81,7 +81,7 @@ QQ 命令不分大小写、忽略首尾空白：`/help`（`/h`）帮助，`/lead
 | `crew handoff --to <名字\|分组\|*> "<内容>"` / `crew handoffs` | 交接 |
 | `crew report "<内容>"` / `crew reports` | 日报 |
 | `crew say "<内容>" [--to <leader名字> ...]` | leader 在本项目交流区发言；可重复点名多人，点名才排通知叫醒 |
-| `crew channel [--limit N]` | leader 和组员查看交流区全文，默认最近 20 条，按时间正序并推进已读位置 |
+| `crew channel [--limit N] [--raw]` | 默认先看要点卡，再看卡后最近 N 条全文（默认 20 条）；`--raw` 看最近 N 条原文。无卡时直接看原文，按时间正序并推进已读位置 |
 | `crew group list` / `crew roster add\|remove\|move` | 分组和花名册 |
 | `crew leader start` / `crew leader close` | 通过正在运行的网页服务开 leader / 收一个分组；`start --dry-run` 只看计划 |
 | `crew spawn` | 通过正在运行的网页服务开后台成员；`--dry-run` 只看计划 |

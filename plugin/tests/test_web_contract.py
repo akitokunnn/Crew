@@ -86,12 +86,13 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual(state["projects"], [{"name": "demo", "theme": "celadon"}])
         self.assertEqual(state["project"]["theme"], "celadon")
         self.assertEqual(state["themes"], themes.THEMES)
-        self.assertEqual(state["channel"], {"unread": 0, "latest_id": 0})
+        self.assertEqual(state["channel"], {"unread": 0, "latest_id": 0, "digesting": False, "digest_error": None, "digest_id": None})
         self.assertEqual(state["limits"], {"claude": {"five_hour": None, "seven_day": None}, "codex": None})
         leader = state["leaders"][0]
         self.assertEqual(set(leader), {"session_id", "name", "goal", "status", "busy", "running", "web_chat",
             "cc_name", "last_seq", "last_reply_id", "read_seq", "unread", "pending", "notices_pending", "member_ids",
-            "model", "effort", "applied", "activity", "context", "where", "codex", "codex_older", "is_git_admin"})
+            "model", "effort", "applied", "activity", "context", "where", "codex", "codex_older", "is_git_admin", "priority"})
+        self.assertIsNone(leader['priority'])
         self.assertEqual((leader["session_id"], leader["member_ids"], leader["unread"]), ("s3", ["s1"], 0))
         # Leaders dispatch Codex for their own bulk work too (user 10-23), listed like members'.
         self.assertEqual((leader["codex"], leader["codex_older"]), ([], 0))
@@ -99,7 +100,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         landing = self.state(None)
         self.assertEqual(set(landing), expected)
         self.assertIsNone(landing["project"])
-        self.assertEqual(landing["channel"], {"unread": 0, "latest_id": 0})
+        self.assertEqual(landing["channel"], {"unread": 0, "latest_id": 0, "digesting": False, "digest_error": None, "digest_id": None})
         for key in ("leaders", "members", "decisions", "attention"):
             self.assertEqual(landing[key], [])
 
@@ -764,7 +765,7 @@ assert.equal(root.dataset.projectTheme, "celadon");
         self.assertEqual(themes.THEMES[0]["dark"]["--accent"], "#7DB3AA")
         expected_tokens = {"--accent", "--accent-strong", "--accent-text", "--on-accent",
                            "--accent-soft", "--accent-softer", "--bg", "--panel", "--panel-2",
-                           "--surface", "--surface-2", "--user-bubble"}
+                           "--surface", "--surface-2", "--user-bubble", "--p1", "--p2", "--p3"}
         for item in themes.THEMES:
             for mode in ("light", "dark"):
                 with self.subTest(theme=item["id"], mode=mode):
@@ -952,9 +953,9 @@ function fixture() {
   const inner = element(), older = element(), targets = element(), input = element(), send = element(), form = element();
   const original = Object.getOwnPropertyDescriptor(inner, "innerHTML");
   Object.defineProperty(inner, "innerHTML", {get:original.get, set(value) { original.set.call(inner, value); scroll.scrollHeight = 40 + [...value.matchAll(/data-channel-id=/g)].length * 100; }});
-  const nodes = {".channel-scroll":scroll, ".channel-inner":inner, ".channel-older":older, ".channel-targets":targets, textarea:input, ".channel-send":send, form};
+  const nodes = {".channel-pin":element(), ".channel-scroll":scroll, ".channel-inner":inner, ".channel-older":older, ".channel-targets":targets, textarea:input, ".channel-send":send, form};
   const host = {innerHTML:"", querySelector:selector => nodes[selector]};
-  const state = {project:{name:"demo"}, leaders:[{session_id:"git",name:"Git"},{session_id:"design",name:"Design"}], channel:{latest_id:25}};
+  const state = {project:{name:"demo"}, leaders:[{session_id:"git",name:"Git"},{session_id:"design",name:"Design"}], channel:{latest_id:25,digest_id:null,digesting:false,digest_error:null}};
   const message = (id, body = "发言 " + id, speaker = "git") => ({id, speaker_session_id:speaker, speaker_name:speaker === "user" ? "用户" : "Git", body, mentions:[], created_at:"2026-10-23T08:30:00Z"});
   const messages = Array.from({length:25}, (_, index) => message(index + 1));
   const calls = [], toasts = [], reads = [];
@@ -972,9 +973,9 @@ function fixture() {
     const params = new URL(route, "http://fixture").searchParams;
     const before = params.has("before") ? Number(params.get("before")) : Infinity;
     const eligible = messages.filter(item => item.id < before);
-    return {messages:eligible.slice(-20), has_more:eligible.length > 20, latest_id:messages[messages.length - 1].id};
+    return {messages:eligible.slice(-20), has_more:eligible.length > 20, latest_id:messages[messages.length - 1].id, digest:null};
   };
-  const mount = () => sandbox.CrewChannel.mount({host, state, api, toast:text => toasts.push(text), onRead:result => reads.push(result.read_id)});
+  const mount = () => sandbox.CrewChannel.mount({host, digestButton:element(), state, api, toast:text => toasts.push(text), onRead:result => reads.push(result.read_id)});
   const select = id => { const button = targets.querySelectorAll().find(item => item.dataset.channelTo === id); targets.onclick({target:button}); };
   return {...nodes, scroll, inner, older, targets, input, send, form, state, messages, message, calls, toasts, reads, mount, select, setInterloper:() => { interloper = true; }};
 }

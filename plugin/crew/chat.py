@@ -317,6 +317,16 @@ class Running:
         self.reader_done = threading.Event()
 
 
+def claude_executable():
+    exe = shutil.which("claude")
+    if exe is None:
+        raise FileNotFoundError("claude not found in PATH")
+    if Path(exe).suffix.lower() == ".cmd":
+        # The local npm shim starts a wrapper cmd.exe; agents reports the native child's PID.
+        exe = str(Path(exe).parent / "node_modules" / "@anthropic-ai" / "claude-code" / "bin" / "claude.exe")
+    return exe
+
+
 class Manager:
     def __init__(self, home, plugin_root, agents_provider, process_factory=subprocess.Popen):
         self.home, self.plugin_root = Path(home), Path(plugin_root)
@@ -459,12 +469,7 @@ class Manager:
         session_id = session["session_id"]
         if resume:
             self._check_offline(session)
-        exe = shutil.which("claude")
-        if exe is None:
-            raise FileNotFoundError("claude not found in PATH")
-        if Path(exe).suffix.lower() == ".cmd":
-            # The local npm shim starts a wrapper cmd.exe; agents reports the native child's PID.
-            exe = str(Path(exe).parent / "node_modules" / "@anthropic-ai" / "claude-code" / "bin" / "claude.exe")
+        exe = claude_executable()
         with closing(store.connect(self.home)) as conn:
             options = models.get(conn, session_id)
         command = spawn.command(session_id, session["crew_name"], session["role"], resume, **options, agent=spec["agent"])

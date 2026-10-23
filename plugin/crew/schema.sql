@@ -60,6 +60,14 @@ CREATE TABLE IF NOT EXISTS leader_order (
     PRIMARY KEY (project, session_id)
 );
 
+CREATE TABLE IF NOT EXISTS leader_priority (
+    project TEXT NOT NULL REFERENCES projects(name),
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    position INTEGER NOT NULL CHECK (position BETWEEN 0 AND 2),
+    PRIMARY KEY (project, session_id),
+    UNIQUE (project, position)
+);
+
 CREATE TABLE IF NOT EXISTS git_management (
     project TEXT PRIMARY KEY REFERENCES projects(name),
     enabled_at TEXT NOT NULL,
@@ -206,6 +214,19 @@ CREATE TABLE IF NOT EXISTS channel_reads (
     updated_at TEXT NOT NULL,
     PRIMARY KEY (project, reader)
 );
+
+CREATE TABLE IF NOT EXISTS channel_digests (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    project         TEXT NOT NULL REFERENCES projects(name),
+    upto_message_id INTEGER NOT NULL REFERENCES channel_messages(id),
+    body            TEXT NOT NULL,
+    message_count   INTEGER NOT NULL,
+    trigger         TEXT NOT NULL CHECK (trigger IN ('manual', 'auto')),
+    model           TEXT NOT NULL,
+    cost_usd        REAL NOT NULL,
+    created_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS channel_digests_project ON channel_digests (project, id);
 
 CREATE TABLE IF NOT EXISTS resources (
     project      TEXT NOT NULL,

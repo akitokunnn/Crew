@@ -346,6 +346,34 @@ def set_leader_order(conn, project_name, order):
     return {'ok': True}
 
 
+def leader_priorities(conn, project_name, leaders):
+    visible = {leader['session_id'] for leader in leaders}
+    ordered = [row['session_id'] for row in conn.execute(
+        'SELECT session_id FROM leader_priority WHERE project=? ORDER BY position', (project_name,))
+        if row['session_id'] in visible]
+    return {sid: rank for rank, sid in enumerate(ordered, 1)}
+
+
+@atomic
+def set_leader_priority(conn, project_name, ranks):
+    project(conn, project_name)
+    if not isinstance(ranks, list) or any(not isinstance(sid, str) for sid in ranks):
+        raise BoardError('ranks 必须是 session_id 数组')
+    if len(ranks) > 3:
+        raise BoardError('最多设置 3 个优先 leader')
+    if len(ranks) != len(set(ranks)):
+        raise BoardError('ranks 包含重复的 leader')
+    leaders = {s['session_id'] for s in sessions(conn, project_name)
+               if s['role'] == 'leader' and s['status'] != 'closed' and not is_archived(conn, s['session_id'])}
+    foreign = set(ranks) - leaders
+    if foreign:
+        raise BoardError('id 不属于该项目当前显示的 leader：' + '、'.join(sorted(foreign)))
+    conn.execute('DELETE FROM leader_priority WHERE project=?', (project_name,))
+    conn.executemany('INSERT INTO leader_priority(project,session_id,position) VALUES(?,?,?)',
+                     [(project_name, sid, position) for position, sid in enumerate(ranks)])
+    return {'ok': True}
+
+
 def named_session(conn, project_name, name):
     rows = _rows(conn, "SELECT * FROM sessions WHERE project=? AND crew_name=? "
                  "ORDER BY (status NOT IN ('offline','closed')) DESC, last_event_at DESC, started_at DESC",

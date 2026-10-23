@@ -25,7 +25,8 @@
   }
   function renderMessages(context, position = "keep") {
     const height = context.scroll.scrollHeight, top = context.scroll.scrollTop;
-    context.inner.innerHTML = context.messages.length === 0 ? '<div class="channel-empty">还没有发言。在这里和所有 leader 交流。</div>' : context.messages.map(messageHTML).join("");
+    const originals = context.digest === null ? "" : `<div class="channel-originals"><button class="channel-originals-toggle" type="button" aria-expanded="${context.originalsOpen}">已整理的 ${context.digest.total_message_count} 条原始发言 ${context.originalsOpen ? "▾" : "▸"}</button>${context.originalsOpen ? `<div class="channel-original-list">${context.originalMessages.map(messageHTML).join("")}${context.hasMoreOriginals ? `<button type="button" class="btn ghost channel-originals-older" ${context.loadingOriginals ? "disabled" : ""}>${context.loadingOriginals ? "正在加载…" : "加载更早的"}</button>` : ""}</div>` : ""}</div>`;
+    context.inner.innerHTML = originals + (context.messages.length === 0 ? `<div class="channel-empty">${context.digest === null ? "还没有发言。在这里和所有 leader 交流。" : "要点之后暂无新发言"}</div>` : context.messages.map(messageHTML).join(""));
     context.older.hidden = !context.hasMore;
     context.older.disabled = context.loadingOlder;
     context.older.textContent = context.loadingOlder ? "正在加载…" : "加载更早的";
@@ -33,6 +34,46 @@
     else if (position === "prepend") context.scroll.scrollTop = top + context.scroll.scrollHeight - height;
     else context.scroll.scrollTop = top;
     markRead(context);
+  }
+  function renderDigest(context) {
+    context.pin.hidden = context.digest === null;
+    if (context.digest === null) { context.pin.innerHTML = ""; return; }
+    context.pin.innerHTML = `<details class="channel-digest" open><summary>要点 · 截至 ${escape(time(context.digest.created_at))} · 累计整理 ${context.digest.total_message_count} 条</summary><div class="m-lead"><div class="body"><div class="markdown">${CrewChat.renderMarkdown(context.digest.body, "user")}</div></div></div></details>`;
+  }
+  function digestState(context) {
+    context.digestButton.disabled = context.requestingDigest || context.state.channel.digesting;
+    context.digestButton.textContent = context.digestButton.disabled ? "整理中…" : "整理";
+    const reason = context.state.channel.digest_error;
+    if (!context.digestButton.disabled) {
+      if (reason !== null && reason !== context.digestError) context.toast(reason);
+      context.digestError = reason;
+    }
+  }
+  async function organize(context) {
+    if (context.digestButton.disabled) return;
+    context.requestingDigest = true; digestState(context);
+    try {
+      await context.api("/api/channel/digest", {project:context.state.project.name});
+      context.state.channel.digesting = true; context.digestError = null;
+    } catch (error) {
+      if (current(context)) context.toast(error.message);
+    } finally {
+      context.requestingDigest = false;
+      if (current(context)) digestState(context);
+    }
+  }
+  async function originals(context) {
+    if (context.loadingOriginals || !context.hasMoreOriginals) return;
+    const digestId = context.digest.id;
+    context.loadingOriginals = true; renderMessages(context);
+    try {
+      const before = context.originalMessages.length === 0 ? context.digest.upto_message_id + 1 : context.originalMessages[0].id;
+      const result = await context.api(`/api/channel?limit=20&before=${before}`);
+      if (!current(context) || context.digest.id !== digestId) return;
+      context.originalMessages = [...result.messages, ...context.originalMessages];
+      context.hasMoreOriginals = result.has_more;
+    } catch (error) { if (current(context)) context.toast(error.message); }
+    finally { context.loadingOriginals = false; if (current(context)) renderMessages(context); }
   }
   function merge(context, messages, advance = true) {
     const byId = new Map(context.messages.map(item => [item.id, item]));
@@ -53,10 +94,17 @@
     finally { context.reading = false; if (succeeded && current(context)) markRead(context); }
   }
   async function load(context) {
+    context.loading = true;
     try {
       const result = await context.api("/api/channel?limit=20");
       if (!current(context)) return;
-      merge(context, result.messages); context.hasMore = result.has_more; context.loading = false;
+      context.digest = result.digest; context.messages = []; context.originalMessages = [];
+      context.originalsOpen = false; context.hasMoreOriginals = context.digest !== null;
+      merge(context, result.messages.filter(item => context.digest === null || item.id > context.digest.upto_message_id));
+      if (context.digest !== null) context.latestId = Math.max(context.latestId, context.digest.upto_message_id);
+      context.pageBefore = result.messages.length === 0 ? null : result.messages[0].id;
+      context.hasMore = result.has_more && (context.digest === null || context.pageBefore > context.digest.upto_message_id);
+      context.loading = false; renderDigest(context);
       renderMessages(context, "bottom");
       if (context.state.channel.latest_id > context.latestId) refresh(context);
     } catch (error) {
@@ -67,9 +115,11 @@
     if (context.loadingOlder || !context.hasMore) return;
     context.loadingOlder = true; context.older.disabled = true; context.older.textContent = "正在加载…";
     try {
-      const result = await context.api(`/api/channel?limit=20&before=${context.messages[0].id}`);
+      const result = await context.api(`/api/channel?limit=20&before=${context.pageBefore}`);
       if (!current(context)) return;
-      merge(context, result.messages); context.hasMore = result.has_more;
+      merge(context, result.messages.filter(item => context.digest === null || item.id > context.digest.upto_message_id));
+      context.pageBefore = result.messages[0].id;
+      context.hasMore = result.has_more && (context.digest === null || context.pageBefore > context.digest.upto_message_id);
       renderMessages(context, "prepend");
     } catch (error) { if (current(context)) context.toast(error.message); }
     finally { context.loadingOlder = false; if (current(context)) { context.older.disabled = false; context.older.textContent = "加载更早的"; } }
@@ -83,6 +133,9 @@
       while (true) {
         const result = await context.api(`/api/channel?limit=20${before === null ? "" : `&before=${before}`}`);
         if (!current(context)) return;
+        if ((result.digest === null ? null : result.digest.id) !== (context.digest === null ? null : context.digest.id)) {
+          await load(context); return;
+        }
         messages.push(...result.messages.filter(item => item.id > known));
         if (!result.has_more || result.messages[0].id <= known) break;
         before = result.messages[0].id;
@@ -113,13 +166,21 @@
   }
   function mount(options) {
     unmount();
-    const context = {...options, messages:[], selected:new Set(), latestId:0, readId:0, loading:true, loadingOlder:false, refreshing:false, reading:false, sending:false, composing:false, version:0};
+    const context = {...options, digest:null, digestError:null, requestingDigest:false, originalMessages:[], originalsOpen:false, hasMoreOriginals:false, loadingOriginals:false, messages:[], selected:new Set(), latestId:0, readId:0, loading:true, loadingOlder:false, refreshing:false, reading:false, sending:false, composing:false, version:0};
     active = context;
-    options.host.innerHTML = '<div class="scroll channel-scroll" tabindex="0" aria-label="交流区发言"><div class="channel-history"><button type="button" class="btn ghost channel-older" hidden>加载更早的</button></div><div class="chat-inner channel-inner"><div class="channel-empty">正在加载…</div></div></div><div class="composer-wrap channel-composer-wrap"><div class="channel-targets" role="group" aria-label="点名 leader"></div><form class="composer channel-composer"><textarea rows="1" aria-label="发到交流区" placeholder="和所有 leader 说…"></textarea><div class="c-row"><span class="hint">Enter 发送 · Shift+Enter 换行</span><button type="submit" class="send channel-send" aria-label="发送到交流区" disabled><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 11 7-7 7 7M12 4v16"/></svg></button></div></form></div>';
+    options.host.innerHTML = '<div class="channel-pin" hidden></div><div class="scroll channel-scroll" tabindex="0" aria-label="交流区发言"><div class="channel-history"><button type="button" class="btn ghost channel-older" hidden>加载更早的</button></div><div class="chat-inner channel-inner"><div class="channel-empty">正在加载…</div></div></div><div class="composer-wrap channel-composer-wrap"><div class="channel-targets" role="group" aria-label="点名 leader"></div><form class="composer channel-composer"><textarea rows="1" aria-label="发到交流区" placeholder="和所有 leader 说…"></textarea><div class="c-row"><span class="hint">Enter 发送 · Shift+Enter 换行</span><button type="submit" class="send channel-send" aria-label="发送到交流区" disabled><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 11 7-7 7 7M12 4v16"/></svg></button></div></form></div>';
+    context.pin = options.host.querySelector(".channel-pin");
+    context.digestButton.onclick = () => organize(context);
     context.scroll = options.host.querySelector(".channel-scroll"); context.inner = options.host.querySelector(".channel-inner");
     context.older = options.host.querySelector(".channel-older"); context.targets = options.host.querySelector(".channel-targets");
     context.input = options.host.querySelector("textarea"); context.send = options.host.querySelector(".channel-send");
     context.older.onclick = () => older(context);
+    context.inner.onclick = event => {
+      if (event.target.closest(".channel-originals-toggle")) {
+        context.originalsOpen = !context.originalsOpen; renderMessages(context);
+        if (context.originalsOpen && context.originalMessages.length === 0) originals(context);
+      } else if (event.target.closest(".channel-originals-older")) originals(context);
+    };
     context.scroll.onscroll = () => markRead(context);
     context.visibility = () => markRead(context);
     document.addEventListener("visibilitychange", context.visibility);
@@ -137,13 +198,13 @@
       if (event.key === "Enter" && !event.shiftKey && !event.isComposing && !context.composing && event.keyCode !== 229) { event.preventDefault(); send(context); }
     };
     options.host.querySelector("form").onsubmit = event => { event.preventDefault(); if (!context.composing) send(context); };
-    renderTargets(context); load(context);
+    renderTargets(context); digestState(context); load(context);
     return {update, unmount};
   }
   function update(state) {
     if (!active) return;
-    active.state = state; renderTargets(active);
-    if (state.channel.latest_id > active.latestId) refresh(active);
+    active.state = state; renderTargets(active); digestState(active);
+    if (state.channel.latest_id > active.latestId || state.channel.digest_id !== (active.digest === null ? null : active.digest.id)) refresh(active);
   }
   function unmount() {
     if (!active) return;

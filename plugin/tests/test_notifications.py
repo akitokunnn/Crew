@@ -168,7 +168,8 @@ class NotificationTests(ShellFixture, unittest.TestCase):
 
     def query(self, identity):
         self.receive('/decisions')
-        return next(m for m in self.client.sent if m['kind'] == 'markdown' and '#%s' % identity in m['text'])
+        row = self.conn.execute('SELECT message_id FROM notification_messages WHERE decision_id=? ORDER BY rowid DESC LIMIT 1', (identity,)).fetchone()
+        return next(m for m in self.client.sent if m['result']['id'] == row['message_id'])
 
     def push(self):
         self.inbox.set_away(True)
@@ -294,6 +295,31 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         lines = self.client.sent[-1]['text'].splitlines()
         self.assertTrue(lines[2].startswith('4 demo·aaa'))
         self.assertTrue(lines[3].startswith('3 other·other'))
+
+    def test_priority_list_sorts_globally_marks_ranks_and_keeps_numbers(self):
+        self.add_leader('second', name='second')
+        self.add_leader('third', name='third')
+        self.add_leader('other', project='other')
+        self.receive('/leader')
+        numbers = self.config()['leader_numbers'].copy()
+        board.set_leader_priority(self.conn, 'demo', ['third', 'second', 's3'])
+        board.set_leader_priority(self.conn, 'other', ['other'])
+        self.restart()
+        self.receive('/leader')
+        lines = self.client.sent[-1]['text'].splitlines()
+        self.assertEqual([line.split(' 未读')[0].split('·')[1].split('（')[0].rsplit(' ', 1)[0]
+                          for line in lines], ['★1 third', '★1 other', '★2 second', '★3 lead'])
+        self.assertEqual([int(line.split()[0]) for line in lines],
+                         [numbers[sid] for sid in ('third', 'other', 'second', 's3')])
+        self.assertEqual(self.config()['leader_numbers'], numbers)
+        result = session_ops.archive(self.conn, 'third', now=NOW)
+        self.receive('/l')
+        self.assertIn('demo·★1 second', self.client.sent[-1]['text'])
+        self.assertIn('demo·★2 lead', self.client.sent[-1]['text'])
+        session_ops.undo(self.conn, 'third', result['before'], now=NOW)
+        self.receive('/leader')
+        self.assertIn('demo·★1 third', self.client.sent[-1]['text'])
+        self.assertEqual(self.config()['leader_numbers'], numbers)
 
     def test_deleted_commands_and_unknown_commands_suggest_help(self):
         for command in ('/ls', '/q', '/LS', '/Q', '/unknown', '/leader 0', '/l 02'):
@@ -421,7 +447,7 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         self.receive('/decisions')
         self.assertEqual([m['kind'] for m in self.client.sent], ['markdown', 'markdown'])
         for identity, label in ((first, 'demo·lead'), (second, 'other·lead')):
-            message = next(m for m in self.client.sent if '#%s' % identity in m['text'])
+            message = next(m for m in self.client.sent if buttons(m)[0]['action']['group_id'] == str(identity))
             self.assertIn(label, message['text'])
             self.assertTrue(buttons(message))
             row = self.conn.execute('SELECT * FROM notification_messages WHERE decision_id=?', (identity,)).fetchone()
@@ -456,7 +482,7 @@ class NotificationTests(ShellFixture, unittest.TestCase):
             board.hold(self.conn, identity, now=NOW)
         self.receive('/decisions')
         self.assertEqual([m['kind'] for m in self.client.sent], ['markdown', 'text'])
-        self.assertIn('#%s' % active, self.client.sent[0]['text'])
+        self.assertIn('现在要拍板', self.client.sent[0]['text'])
         self.assertEqual(self.client.sent[-1]['text'], '另有 2 道挂起。')
         self.assertEqual([r[0] for r in self.conn.execute(
             "SELECT decision_id FROM notification_messages WHERE kind='query'")], [active])
@@ -476,7 +502,7 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         board.hold(self.conn, held, now=NOW)
         self.push()
         self.assertEqual([m['kind'] for m in self.client.sent], ['markdown'])
-        self.assertIn('#%s' % active, self.client.sent[0]['text'])
+        self.assertIn('现在要拍板', self.client.sent[0]['text'])
         self.assertEqual([r[0] for r in self.conn.execute(
             'SELECT decision_id FROM notification_messages')], [active])
 
@@ -510,7 +536,7 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         self.assertEqual(len(notes), 1)
         self.assertEqual(notes[0]['text'].count('阶段进展 '), 4)
         for identity, recommendation in ((first, 'B'), (second, '否')):
-            message = next(m for m in questions if '#%s' % identity in m['text'])
+            message = next(m for m in questions if buttons(m)[0]['action']['group_id'] == str(identity))
             self.assertIn('待拍板', message['text'])
             choices = buttons(message)
             self.assertIn(recommendation, choices[0]['render_data']['label'])
@@ -532,7 +558,8 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         self.inbox.set_away(True)
         self.inbox.tick()
         self.assertEqual([m['kind'] for m in self.client.sent], ['markdown'])
-        self.assertIn('#%s' % first, self.client.sent[0]['text'])
+        self.assertIn('先做哪一个', self.client.sent[0]['text'])
+        self.assertEqual(buttons(self.client.sent[0])[0]['action']['group_id'], str(first))
         second = board.ask(self.conn, 's3', '是否发布', ['是', '否'], '否', True, now=NOW)
         self.inbox.tick()
         self.clock += dt.timedelta(seconds=29)
@@ -540,7 +567,39 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         self.assertEqual(len(self.client.sent), 1)
         self.clock += dt.timedelta(seconds=1)
         self.inbox.tick()
-        self.assertIn('#%s' % second, self.client.sent[1]['text'])
+        self.assertIn('是否发布', self.client.sent[1]['text'])
+        self.assertEqual(buttons(self.client.sent[1])[0]['action']['group_id'], str(second))
+
+    def test_question_push_title_omits_decision_number(self):
+        identity = board.ask(self.conn, 's1', '声纹门槛怎么定', ['先按半秒'], now=NOW)
+        self.push()
+        message = self.client.sent[0]
+        self.assertEqual(message['text'].splitlines()[0], 'demo·lead 待拍板')
+        self.assertNotIn('#', message['text'])
+        self.assertEqual(buttons(message)[0]['action']['data'], '%s:0' % identity)
+
+    def test_answer_receipt_shows_first_twenty_question_characters_without_number(self):
+        question = '声纹门槛是否先按半秒执行并等实测结果再调整方案'
+        identity = board.ask(self.conn, 's1', question, ['继续'], now=NOW)
+        self.query(identity)
+        self.click(identity)
+        receipt = self.client.sent[-1]['text']
+        self.assertEqual(receipt, '已保存：%s…，已转告 leader。' % question[:20])
+        self.assertNotIn(question[20:], receipt)
+        self.assertNotIn('#', receipt)
+        self.assertNotIn(str(identity), receipt)
+
+    def test_answer_receipt_keeps_short_and_twenty_character_questions_without_ellipsis(self):
+        for question in ('是否继续', '一二三四五六七八九十一二三四五六七八九十'):
+            with self.subTest(question=question):
+                identity = board.ask(self.conn, 's1', question, ['继续'], now=NOW)
+                message = self.query(identity)
+                self.receive('继续', message['result']['ref_idx'])
+                receipt = self.client.sent[-1]['text']
+                self.assertEqual(receipt, '已保存：%s，已转告 leader。' % question)
+                self.assertNotIn('…', receipt)
+                self.assertNotIn('#', receipt)
+                self.assertNotIn(str(identity), receipt)
 
     def test_empty_and_more_than_twenty_five_options_require_quoted_reply(self):
         for options in ([], ['选项%s' % n for n in range(26)]):
@@ -609,21 +668,26 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         self.assertEqual(sum(op[0] == 'save' for op in self.client.operations), 1)
         self.assertEqual((self.decision(identity)['answer'], self.decision(identity)['answered_by']), ('停止', 'qq'))
         self.assertEqual(len(board.pending_notices(self.conn, 's3')), 1)
-        self.assertIn('已保存', self.client.sent[-1]['text'])
-        self.assertIn('leader', self.client.sent[-1]['text'])
+        self.assertEqual(self.client.sent[-1]['text'], '已保存：是否继续，已转告 leader。')
         self.assertEqual(board.deliver(self.conn, 's1')['answers'][0]['answer'], '停止')
         self.assertEqual(board.deliver(self.conn, 's1')['answers'], [])
 
     def test_invalid_button_data_and_out_of_range_options_ack_without_saving(self):
         identity = board.ask(self.conn, 's1', '是否继续', ['继续'], now=NOW)
         self.query(identity)
-        for data in ('%s:1' % identity, '%s:-1' % identity, '99999:0', 'broken', '%s:继续' % identity):
+        for data, expected in (('%s:1' % identity, '按钮选项序号无效，请先 /decisions。'),
+                               ('%s:-1' % identity, '按钮无效，请先 /decisions。'),
+                               ('99999:0', '这道题尚未展示，请先 /decisions 查看待拍板。'),
+                               ('broken', '按钮无效，请先 /decisions。'),
+                               ('%s:继续' % identity, '按钮无效，请先 /decisions。')):
             with self.subTest(data=data):
                 self.client.operations.clear()
                 event = self.click(identity, data=data)
                 self.assertEqual(self.client.operations[0], ('ack', event['interaction_id']))
                 self.assertEqual(self.decision(identity)['status'], 'open')
                 self.assertEqual(self.client.operations[1][0], 'send')
+                self.assertEqual(self.client.sent[-1]['text'], expected)
+                self.assertNotIn('题号', self.client.sent[-1]['text'])
 
     def test_button_ack_does_not_wait_for_service_write_lock(self):
         identity = board.ask(self.conn, 's1', '立即 ack', ['A'], now=NOW)
@@ -700,6 +764,7 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         self.receive('A', message['result']['ref_idx'])
         self.assertEqual(self.decision(identity)['answer'], 'A')
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM leader_notices').fetchone()[0], 0)
+        self.assertEqual(self.client.sent[-1]['text'], '已保存：没有分组的问题。')
 
     def test_answer_to_leader_question_queues_notice_to_itself(self):
         board.update_cc_name(self.conn, 's3', 'cc-lead', now=NOW)
