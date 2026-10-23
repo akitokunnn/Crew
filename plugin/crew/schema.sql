@@ -215,6 +215,19 @@ CREATE TABLE IF NOT EXISTS channel_reads (
     PRIMARY KEY (project, reader)
 );
 
+CREATE TABLE IF NOT EXISTS channel_digests (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    project         TEXT NOT NULL REFERENCES projects(name),
+    upto_message_id INTEGER NOT NULL REFERENCES channel_messages(id),
+    body            TEXT NOT NULL,
+    message_count   INTEGER NOT NULL,
+    trigger         TEXT NOT NULL CHECK (trigger IN ('manual', 'auto')),
+    model           TEXT NOT NULL,
+    cost_usd        REAL NOT NULL,
+    created_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS channel_digests_project ON channel_digests (project, id);
+
 CREATE TABLE IF NOT EXISTS resources (
     project      TEXT NOT NULL,
     name         TEXT NOT NULL,

@@ -77,14 +77,22 @@ def post(conn, project_name, actor, body, to=(), source="crew", now=None):
     return _message(conn, conn.execute("SELECT * FROM channel_messages WHERE id=?", (message_id,)).fetchone())
 
 
-def messages(conn, project_name, limit=20, before=None):
+def digest(conn, project_name):
+    row = conn.execute(
+        "SELECT d.*, (SELECT COUNT(*) FROM channel_messages m WHERE m.project=d.project "
+        "AND m.id<=d.upto_message_id) AS total_message_count FROM channel_digests d "
+        "WHERE d.project=? ORDER BY d.id DESC LIMIT 1", (project_name,)).fetchone()
+    return dict(row) if row is not None else None
+
+
+def messages(conn, project_name, limit=20, before=None, after=0):
     board.project(conn, project_name)
     if type(limit) is not int or limit < 1:
         raise board.BoardError("--limit 必须大于 0")
     if before is not None and (type(before) is not int or before < 1):
         raise board.BoardError("before 必须是正整数")
-    sql = "SELECT * FROM channel_messages WHERE project=?"
-    args = [project_name]
+    sql = "SELECT * FROM channel_messages WHERE project=? AND id>?"
+    args = [project_name, after]
     if before is not None:
         sql += " AND id<?"
         args.append(before)
@@ -113,8 +121,8 @@ def mark_read(conn, project_name, reader, message_id=None, now=None):
 
 
 @board.atomic
-def read(conn, project_name, reader, limit=20, now=None):
-    result = messages(conn, project_name, limit)
+def read(conn, project_name, reader, limit=20, now=None, after=0):
+    result = messages(conn, project_name, limit, after=after)
     _mark_read(conn, project_name, reader, result["latest_id"], now)
     return result["messages"]
 
@@ -124,14 +132,18 @@ def summary(conn, session_id, now=None):
     s = board.session(conn, session_id)
     if _leader(conn, s["project"], session_id) is None:
         return None
+    read_id = _read_id(conn, s["project"], session_id)
+    card = digest(conn, s["project"])
+    show_card = card is not None and card["upto_message_id"] > read_id
+    after = card["upto_message_id"] if show_card else read_id
     rows = conn.execute(
         "SELECT m.* FROM channel_messages m WHERE m.project=? AND m.id>? AND m.speaker_session_id<>? "
         "AND NOT EXISTS (SELECT 1 FROM channel_mentions t "
         "WHERE t.message_id=m.id AND t.session_id=? AND t.notice_id IS NOT NULL) ORDER BY m.id",
-        (s["project"], _read_id(conn, s["project"], session_id), session_id, session_id)).fetchall()
+        (s["project"], after, session_id, session_id)).fetchall()
     _mark_read(conn, s["project"], session_id, _latest(conn, s["project"]), now)
     if not rows:
-        return None
+        return "[Crew 交流区要点]\n" + card["body"] if show_card else None
     lines = ["[Crew 交流区] 你上次看之后有 %d 条新发言：" % len(rows)]
     for row in rows[:10]:
         message = _message(conn, row)
@@ -144,4 +156,5 @@ def summary(conn, session_id, now=None):
     if len(rows) > 10:
         lines.append("还有 %d 条" % (len(rows) - 10))
     lines.append("全文用 crew channel 看")
-    return "\n".join(lines)
+    text = "\n".join(lines)
+    return "[Crew 交流区要点]\n" + card["body"] + "\n\n" + text if show_card else text

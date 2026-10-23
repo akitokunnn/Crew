@@ -11,6 +11,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 
 from crew import board, channel, session_ops, store, web
 from test_shell import NOW, PLUGIN, ShellFixture
+import test_channel_digest as digest_fixture
 
 
 class LeaderWakeTests(ShellFixture, unittest.TestCase):
@@ -167,12 +168,84 @@ class ChannelHttpTests(ShellFixture, unittest.TestCase):
         self.assertIn('用户点名你', notice['text'])
         self.assertIn('这是用户本人的话', notice['text'])
         self.assertIn(message['body'], notice['text'])
-        self.assertEqual(self.state()['channel'], {'unread': 0, 'latest_id': message['id']})
+        self.assertEqual(self.state()['channel'], {'unread': 0, 'latest_id': message['id'], 'digesting': False, 'digest_error': None, 'digest_id': None})
+
+    def digest_process(self, process):
+        manager = self.server.service.channel_digest
+        manager.process_factory = mock.Mock(return_value=process)
+        executable = mock.patch('crew.chat.shutil.which', return_value='claude.exe')
+        executable.start()
+        self.addCleanup(executable.stop)
+        self.addCleanup(manager.close)
+        return manager
+
+    def finish_digest(self, manager):
+        for worker in manager.workers.values():
+            worker.join(5)
+            self.assertFalse(worker.is_alive())
+
+    def test_digest_http_no_new_concurrent_and_success_fields(self):
+        manager = self.digest_process(digest_fixture.FakeProcess())
+        code, result = self.request('/api/channel/digest', {'project': 'demo'})
+        self.assertEqual(code, 400)
+        self.assertIn('没有新发言需要整理', result['error'])
+        self.assertIsNone(self.request('/api/channel', project='demo')[1]['digest'])
+        post = channel.post(self.conn, 'demo', 's3', '待整理全文', now=NOW)
+        gate = threading.Event()
+        process = digest_fixture.FakeProcess(gate=gate)
+        manager.process_factory.return_value = process
+        try:
+            self.assertEqual(self.request('/api/channel/digest', {'project': 'demo'}), (200, {'ok': True}))
+            self.assertTrue(process.entered.wait(5))
+            self.assertTrue(self.state()['channel']['digesting'])
+            code, result = self.request('/api/channel/digest', {'project': 'demo'})
+            self.assertEqual(code, 400)
+            self.assertIn('正在整理', result['error'])
+        finally:
+            gate.set()
+        self.finish_digest(manager)
+        card = self.request('/api/channel', project='demo')[1]['digest']
+        self.assertEqual((card['body'], card['upto_message_id']), (digest_fixture.CARD, post['id']))
+        self.assertEqual(self.state()['channel'], {'unread': 1, 'latest_id': post['id'], 'digesting': False,
+                                                  'digest_error': None, 'digest_id': card['id']})
+
+    def test_digest_http_failure_reason_and_manual_retry(self):
+        manager = self.digest_process(digest_fixture.FakeProcess(code=8, errors='真实鉴权错误'))
+        channel.post(self.conn, 'demo', 's3', '待整理', now=NOW)
+        self.assertEqual(self.request('/api/channel/digest', {'project': 'demo'})[0], 200)
+        self.finish_digest(manager)
+        state = self.state()['channel']
+        self.assertFalse(state['digesting'])
+        self.assertIn('RuntimeError: 退出码 8；stderr: 真实鉴权错误', state['digest_error'])
+        self.assertIsNone(state['digest_id'])
+        self.assertIsNone(self.request('/api/channel', project='demo')[1]['digest'])
+        manager.process_factory.return_value = digest_fixture.FakeProcess()
+        self.assertEqual(self.request('/api/channel/digest', {'project': 'demo'})[0], 200)
+        self.finish_digest(manager)
+        self.assertIsNone(self.state()['channel']['digest_error'])
+
+    def test_periodic_digest_detects_direct_database_posts(self):
+        manager = self.digest_process(digest_fixture.FakeProcess())
+        self.assertTrue(self.server.service.agents_ready.wait(5))
+        for n in range(19):
+            channel.post(self.conn, 'demo', 's3', str(n), now=NOW)
+        self.server.service.digest_channels()
+        manager.process_factory.assert_not_called()
+        channel.post(self.conn, 'demo', 's3', 'twentieth', now=NOW)
+        self.server.service.digest_channels()
+        self.finish_digest(manager)
+        self.assertEqual(channel.digest(self.conn, 'demo')['trigger'], 'auto')
+
+    def test_digest_project_body_query_conflict_is_rejected(self):
+        board.init_project(self.conn, 'another', self.root / 'another', now=NOW)
+        code, result = self.request('/api/channel/digest', {'project': 'another'}, project='demo')
+        self.assertEqual(code, 400)
+        self.assertIn('项目不一致', result['error'])
 
     def test_pagination_and_read_state(self):
         first = channel.post(self.conn, 'demo', 's3', 'first\n全文', now=NOW)
         second = channel.post(self.conn, 'demo', 's3', 'second', now=NOW)
-        self.assertEqual(self.state()['channel'], {'unread': 2, 'latest_id': second['id']})
+        self.assertEqual(self.state()['channel'], {'unread': 2, 'latest_id': second['id'], 'digesting': False, 'digest_error': None, 'digest_id': None})
         code, result = self.request('/api/channel', project='demo', limit=1)
         self.assertEqual(code, 200, result)
         self.assertEqual([item['id'] for item in result['messages']], [second['id']])

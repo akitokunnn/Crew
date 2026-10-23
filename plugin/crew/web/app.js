@@ -275,10 +275,10 @@
   function empty(message) { return `<div class="empty">${ic("check")}<div>${message}</div></div>`; }
   function renderChannel() {
     if (!mountedChannel) {
-      $("main").innerHTML = '<div class="head"><div><div class="title">交流区</div><div class="sub">所有 leader 和用户的公共频道 · 点名才叫醒</div></div></div><div id="channel-host" class="chat-host"></div>';
+      $("main").innerHTML = '<div class="head"><div><div class="title">交流区</div><div class="sub">所有 leader 和用户的公共频道 · 点名才叫醒</div></div><button id="channel-digest-button" class="btn">整理</button></div><div id="channel-host" class="chat-host"></div>';
       delete $("main").dataset.render;
       mountedChannel = true;
-      CrewChannel.mount({host:$("channel-host"), state, api, toast, onRead:channel => { state.channel = {unread:channel.unread, latest_id:channel.latest_id}; renderSidebar(); }});
+      CrewChannel.mount({host:$("channel-host"), digestButton:$("channel-digest-button"), state, api, toast, onRead:channel => { Object.assign(state.channel, {unread:channel.unread, latest_id:channel.latest_id}); renderSidebar(); }});
     }
     CrewChannel.update(state);
   }

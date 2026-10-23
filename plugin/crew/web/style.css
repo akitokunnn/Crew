@@ -536,6 +536,18 @@ button.tool.indent,button.mline.indent{width:calc(100% - 42px)}
 .m-lead .body th,.m-lead .body td{padding:6px 10px;border:1px solid var(--line);text-align:left}
 .m-lead .body hr{border:0;border-top:1px solid var(--line);margin:16px 0}
 .channel-history{text-align:center;padding:14px 24px 0}
+.channel-pin{flex:none;padding:12px 24px 0}
+#channel-digest-button{margin-left:auto}
+.channel-pin[hidden]{display:none}
+.channel-digest{max-width:760px;margin:auto;background:var(--surface);border:1px solid var(--line-strong);border-radius:12px;overflow:hidden}
+.channel-digest>summary{padding:12px 16px;cursor:pointer;color:var(--accent-text);font-size:calc(13px * var(--fs))}
+.channel-digest>.m-lead{margin:0;padding:0 16px 12px;max-height:32vh;overflow:auto}
+.channel-digest .body{width:100%;font-size:calc(13px * var(--fs));line-height:1.7}
+.channel-digest h2{font-size:calc(14px * var(--fs));font-weight:500;line-height:1.5;margin:12px 0 6px}
+.channel-digest h2:first-child{margin-top:0}
+.channel-originals{border-bottom:1px solid var(--line);padding:12px 0}
+.channel-originals-toggle{border:0;background:transparent;color:var(--text-2);font:inherit;font-size:calc(12px * var(--fs));cursor:pointer;padding:6px 0}
+.channel-original-list{padding:0 12px}
 .channel-history:has([hidden]){display:none}
 .channel-inner{padding-top:4px;padding-bottom:24px}
 .channel-message{margin:24px 0}

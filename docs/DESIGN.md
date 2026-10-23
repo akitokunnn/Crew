@@ -29,6 +29,7 @@ Crew/
       spawn.py                        后台会话启动计划、任务文件、CLI 转网页服务
       chat.py                         后台成员/leader CLI、流式协议、聊天记录与恢复
       channel.py                      项目交流区、点名通知与每轮未读摘要
+      channel_digest.py               Haiku 累积要点卡与后台整理互斥
       models.py                       模型 / effort 唯一清单与会话设置
       git_view.py                     Git 管理配置、分支检查、提交树、GitHub PR / CI 与缓存
       git_admin.py  git_ci.py          Git 管理员生命周期与后台 CI 通知
@@ -92,8 +93,9 @@ Crew/
 | `channel_messages` | `id INTEGER PRIMARY KEY AUTOINCREMENT`、`project TEXT NOT NULL REFERENCES projects(name)`、`speaker_session_id TEXT NOT NULL`（leader 的 session_id 或 `user`）、`speaker_name TEXT NOT NULL`、`body TEXT NOT NULL`、`created_at TEXT NOT NULL`；索引 `channel_messages_project(project, id)` |
 | `channel_mentions` | `message_id INTEGER NOT NULL REFERENCES channel_messages(id)`、`session_id TEXT NOT NULL REFERENCES sessions(session_id)`、`name TEXT NOT NULL`、`notice_id INTEGER REFERENCES leader_notices(id)`；联合主键 `(message_id, session_id)` |
 | `channel_reads` | `project TEXT NOT NULL REFERENCES projects(name)`、`reader TEXT NOT NULL`（会话 session_id 或 `user`）、`message_id INTEGER NOT NULL`、`updated_at TEXT NOT NULL`；联合主键 `(project, reader)` |
+| `channel_digests` | `id INTEGER PRIMARY KEY AUTOINCREMENT`、`project TEXT NOT NULL REFERENCES projects(name)`、`upto_message_id INTEGER NOT NULL REFERENCES channel_messages(id)`、`body TEXT NOT NULL`、`message_count INTEGER NOT NULL`（本次新整理条数）、`trigger TEXT NOT NULL CHECK (trigger IN ('manual', 'auto'))`、`model TEXT NOT NULL`、`cost_usd REAL NOT NULL`、`created_at TEXT NOT NULL`；索引 `channel_digests_project(project, id)` |
 
-发言人名字和点名名字保留发言时的快照。`channel_mentions.notice_id` 关联本次点名的 leader 通知；非空表示已排通知，摘要据此排除该点名发言，不依赖 `leader_notices.sent_at`；自己点自己保留点名但 notice_id 为 null，仍按自己的发言排除。每个 leader、读全文的组员与用户分别维护游标，更新只前进；用户未读数不含自己发的言，空频道最新 id 为 0。连接数据库时用 `CREATE TABLE IF NOT EXISTS` 创建缺失表；部署后重启网页服务。
+发言人名字和点名名字保留发言时的快照。`channel_mentions.notice_id` 关联本次点名的 leader 通知；非空表示已排通知，摘要据此排除该点名发言，不依赖 `leader_notices.sent_at`；自己点自己保留点名但 notice_id 为 null，仍按自己的发言排除。每个 leader、读全文的组员与用户分别维护游标，更新只前进；用户未读数不含自己发的言，空频道最新 id 为 0。连接数据库时用 `CREATE TABLE IF NOT EXISTS` 创建缺失表。每项目 id 最新的一张是当前累积卡，原始发言不删除；返回的 `total_message_count` 按该项目 id ≤ `upto_message_id` 的原文实数计算。上线由主控先建 `channel_digests` 表，再重启网页服务。
 
 ## 2. 身份和项目
 
@@ -150,7 +152,7 @@ Crew/
 | `handoff --to NAME\|GROUP\|* TEXT` / `handoffs [--json]` | 交接。`handoffs` 列出发给我（我的名字、我的分组、*）还没送达我的 |
 | `report TEXT` / `reports [--since YYYY-MM-DD] [--group G] [--json]` | 日报 |
 | `say TEXT [--to NAME]...` | 本项目 leader 在交流区发言，可重复点名同项目 leader；组员和未收编会话拒绝，点名不存在时报错（§10） |
-| `channel [--limit N]` | leader 和组员看交流区全文，默认最近 20 条，按时间正序列出并把自己的读到位置推到最新 |
+| `channel [--limit N] [--raw]` | 默认先打印当前要点卡，再按时间正序列卡后最近 N 条全文（默认 20 条），没有新发言显示“要点之后暂无新发言”；无卡时看最近 N 条；`--raw` 跳过卡看最近 N 条原文。推进自己的读到位置；`--json` 保留消息数组，只含所选消息 |
 | `group list [--json]` | 分组和成员 |
 | `roster add GROUP NAME...` / `roster remove GROUP NAME...` / `roster move NAME --to GROUP` | 花名册。一个会话只在一个分组里 |
 | `leader close GROUP [--with-members]` | 转发网页服务关闭分组并归档 leader；成员退组，带 `--with-members` 时一起归档。归档会停止网页托管进程 |
@@ -190,7 +192,7 @@ Crew/
 - 守则版本是 `plugin/skills/<role>/SKILL.md` 的 sha256；角色取 `sessions.role`，Git 管理员按 `git_management.admin_session_id` 使用 git 守则。已启用项目中已收编、未归档的 leader / member，在 UserPromptSubmit（含会话间消息）和 resume / compact 的 SessionStart 检查 `rule_reads`；无记录或 digest 不同，在 additionalContext 提醒先调用 `/crew:<role>` 重读。调用相应 Skill 后更新 digest，文件再变则重新提醒。其余会话不提醒。热路径只读技能文件，不启动进程或联网。
 
 Git 管理启用时，所有会话的 SessionStart 再附两段：管理员统一推送和合并、做完用 `crew git request` 转交的提示；`branch_rules` 前 6 行与“全文用 crew git policy 看”。规则为空时改为“git 管理员还没写分支规则，开工前先问它”。未收编会话同样收到，Git 管理员启动时的守则指向 `/crew:git`。
-- 交流区摘要只在 leader 的 UserPromptSubmit 中追加，与守则提醒共用 additionalContext。按读到位置取本项目新发言，排除自己发的，以及点名当前 leader 且 `channel_mentions.notice_id` 非空的发言；无论通知是否已送达，都不重复进入摘要。无新发言不附加。有内容时第一行为“[Crew 交流区] 你上次看之后有 N 条新发言：”，每条一行 `- HH:MM <名字>（→ @A、@B）：<正文第一行>`，正文超过 120 字截断加“…”；最多 10 条，超过时追加“还有 M 条”，末尾写“全文用 crew channel 看”。读取后把该 leader 的位置推到最新；组员钩子不附交流区摘要。
+- 交流区摘要只在 leader 的 UserPromptSubmit 中追加，与守则提醒共用 additionalContext。按读到位置取本项目新发言，排除自己发的，以及点名当前 leader 且 `channel_mentions.notice_id` 非空的发言；无论通知是否已送达，都不重复进入摘要。当前卡覆盖到 leader 尚未读过的发言时，先附“[Crew 交流区要点]”与卡片正文，只列卡之后的未读发言；推进原有游标，所以卡片只在更新后第一次符合条件时出现。无卡或卡已经读过时沿用原逻辑。没有新发言与未读卡时不附加。新发言摘要第一行为“[Crew 交流区] 你上次看之后有 N 条新发言：”，每条一行 `- HH:MM <名字>（→ @A、@B）：<正文第一行>`，正文超过 120 字截断加“…”；最多 10 条，超过时追加“还有 M 条”，末尾写“全文用 crew channel 看”。读取后把该 leader 的位置推到最新；组员钩子不附交流区摘要。
 
 显式 session_controls 的归档/移出高于上述 hook 状态，closed 不因启动、Stop 或 SessionEnd 改回活跃。compact 只续上下文，保留既有身份、分组与状态，不重放旧 CREW_*。整组关闭同样写入 session_controls，启动 hook 不会重新打开已归档的 leader 或下属。
 
@@ -301,7 +303,7 @@ PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stder
 
 | 接口 | 内容 |
 |---|---|
-| `GET /api/state?project=P` | `project`（含 `name/root/theme`）、`projects`（每项 `name/theme`）、`themes`（完整主题目录及浅 / 深 token）、`leaders`（状态、未读、`read_seq`、本组未挂起的待拍板数 `pending`、待发通知数、成员）、`members`（有名字的非 leader：所在位置 bg / vscode / offline、任务、任务卡、最近 5 条进展、运行中和 24 小时内的 Codex、借用与文件归属）、`decisions`（只含未答，带提问者、其 leader、`held` 布尔值、可空 `held_at`）、`candidates`（三组）、`channel`（用户交流区 `unread` 未读数、`latest_id` 最新发言 id）、`limits`（Claude 两个窗口、Codex，拿不到为 null）、`attention`（QQ 推送用，跳过挂起题）、`notification`（含 channel 状态与 detail）、`agents_error`、`vscode_error`。journal 按文件签名缓存 |
+| `GET /api/state?project=P` | `project`（含 `name/root/theme`）、`projects`（每项 `name/theme`）、`themes`（完整主题目录及浅 / 深 token）、`leaders`（状态、未读、`read_seq`、本组未挂起的待拍板数 `pending`、待发通知数、成员）、`members`（有名字的非 leader：所在位置 bg / vscode / offline、任务、任务卡、最近 5 条进展、运行中和 24 小时内的 Codex、借用与文件归属）、`decisions`（只含未答，带提问者、其 leader、`held` 布尔值、可空 `held_at`）、`candidates`（三组）、`channel`（用户交流区 `unread` 未读数、`latest_id` 最新发言 id、`digesting` 是否整理中、可空的 `digest_error` 最近失败原因、可空的 `digest_id` 当前卡 id）、`limits`（Claude 两个窗口、Codex，拿不到为 null）、`attention`（QQ 推送用，跳过挂起题）、`notification`（含 channel 状态与 detail）、`agents_error`、`vscode_error`。journal 按文件签名缓存 |
 | `POST /api/project/theme` | `{project,theme}` 保存当前项目主题，返回 `{ok:true,theme}`；正文和地址的项目必须一致，未知主题或项目返回错误 |
 | `POST /api/project/init` | name、root；启用已有本机目录 |
 | `POST /api/roster/adopt` | session_id、name、可选 group；没在运行的候选也能收编；进有 leader 的组时排 leader 通知 |
@@ -315,9 +317,10 @@ PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stder
 | `POST /api/leaders/priority` | project、ranks（0～3 个 session_id 的完整新顺序）；首位为第 1 优先。重复、超过三个、非本项目当前显示的 leader 或项目不一致返回 400。`/api/state` 每个 leader 带 `priority: 1 / 2 / 3 / null`；归档、移出、结束项不展示，后面的有效级别依次补位。优先标记仅供用户查看，不传给 leader |
 | `POST /api/leader` | name、task（成员可选）、可选 model / effort；起 leader，null 为账号默认 |
 | `POST /api/wake` | name 或 session_id、text、调用者会话 id；叫醒离线组员，返回 ok / session_id / name / address；leader 找另一个 leader 时返回排通知结果 |
-| `GET /api/channel?project=P&before=ID&limit=N` | 按项目分页拉取交流区，before 可省略；返回 `messages`、`has_more`、`latest_id`。每条含 `id`、`project`、`speaker_session_id`、`speaker_name`、`body`、`mentions`（`session_id` / `name` 数组）、`created_at`，页内按时间正序 |
+| `GET /api/channel?project=P&before=ID&limit=N` | 按项目分页拉取交流区，before 可省略；返回 `messages`、`has_more`、`latest_id`、`digest`（当前卡及 `total_message_count`，无卡为 null）。每条含 `id`、`project`、`speaker_session_id`、`speaker_name`、`body`、`mentions`（`session_id` / `name` 数组）、`created_at`，页内按时间正序 |
 | `POST /api/channel` | `project`、`body`、`to`（同项目 leader 名字数组）；用户发言并为点名对象排来源 `web` 的通知，返回 `{message}` |
 | `POST /api/channel/read` | `project`、`id`；推进用户已读位置，返回 `read_id`、`unread`、`latest_id` |
+| `POST /api/channel/digest` | `{project}`，立即返回 `{ok: true}` 并后台整理；同项目进行中返回 400“正在整理”，无新发言返回 400“没有新发言需要整理”。正文与 query 项目冲突也返回 400 |
 | `POST /api/session/options` | session_id、可选 model / effort；仅修改给出的字段，在线时写 set_model / apply_flag_settings，运行中 effort 不接受 null |
 | `POST /api/session/compact` | session_id、可选 caller_session_id；用户或目标自己的 leader 可调用；网页 leader 自压排到本轮 result 后，其它托管会话空闲时发送 `/compact`，离线有托管记录时续跑后发送；忙或 VS Code 在线返回 409 |
 | `GET /api/chat/history?project=P&session_id=S` | session_id、events、running、busy、read_seq |
@@ -350,6 +353,10 @@ File resolution also returns `open_with` from a server-side allowlist (case-inse
 - `session_controls` 保存显式归档、移出和改名。移出不删会话与历史，hook 不会自动收编回来；主动 join 可重新加入。leader 改名同步组与成员归属，pending handoff 跟随；撤销恢复操作前的记录，不操作进程。
 - **leader 通知**：Crew 自己不发会话间消息。网页 / QQ 答完拍板、网页挂起拍板、收编进组、`crew join` 入组，以及 leader 用 `crew wake` 找 leader、交流区点名，都写进 `leader_notices`；网页服务每 2 秒把待发通知合并成一条 `[Crew]` 消息，经 `deliver_notices` 写进空闲的 leader（journal 记 source=crew）。在线空闲就送，离线且有网页日志就续跑后送；在 VS Code 等其他进程运行或进程状态未知时等现有逻辑送达。需要转告下属的事由 leader 用 SendMessage 转告。挂起通知附题号、提问者名字与 cc_name，要求转告"不卡流程的按推荐继续；卡流程的先做别的，先别再问这道题"；没有 leader 时不排。leader 对挂起题不催用户，汇报时单独列出。
 - **交流区发言与点名**：每项目一条发言流，leader 用 `crew say` 发言，用户通过网页发言；组员和未收编会话发言报“交流区只给 leader 用；有事告诉你的 leader”。`--to` / `to` 只能点同项目 leader，名字不存在先报错，不写入发言；自己点自己不排通知。leader 点名调用 `queue_leader_notice`，source 为 `crew`，内容为“交流区：「<名字>」点名你：\n<全文>\n\n回复用 crew say --to <名字> \"…\"；只是回\"收到\"就不用回。”用户点名 source 为 `web`，写明“交流区：用户点名你：”和“这是用户本人的话”。两者都复用 `deliver_notices`，不另起投递逻辑。未点名不叫醒，下一轮钩子顺带摘要；新发言不响网页提示音，也不推 QQ。
+- **交流区累积要点卡**：网页头部“整理”手动触发；服务既有 `_poll_agents` 每轮（间隔 10 秒）调用 `digest_channels`，检查所有项目自上一张卡后是否新增满 20 条，因此 `crew say` 直接写库也会被发现。每项目同时只跑一个后台线程。失败不写卡、不立即重试，以失败快照最后 id 为新计数基点，之后再满 20 条才自动尝试；手动随时可重试。失败原因和计数基点保存在服务内存中，重启后重新按当前卡计数。成功清空失败状态。
+- **生成输入与执行**：`channel_digest.py` 输入上一张卡全文（首次为空）与卡后全部发言的名字、时间、点名和正文 JSON，快照后新增的发言留到下一次。用 `models.HAIKU`，命令为 `claude -p --model claude-haiku-4-5-20251001 --output-format json --no-session-persistence --settings '{"disableAllHooks":true}' --strict-mcp-config --tools "" --disable-slash-commands`；stdin 送提示词，cwd 为 Crew home，继承环境时移除 `CLAUDE_CODE_SESSION_ID`。可执行文件与 chat 相同方式解析，Windows 无窗口，300 秒超时并终止子进程；从 JSON 取 `result` 与 `total_cost_usd`。退出码非零、`is_error`、超时或 JSON 非预期时，把真实错误类型及 stderr / result 摘要（最多 500 字）放入 state，不写卡。测试全部注入假进程。
+- **卡片内容与呈现**：中文 Markdown，固定“已定结论”“未定的事 · 在等谁”“各组跨组相关进展”，空块写“暂无”，约 1200 字内；保留有效旧结论、标明谁定的，已解决事项移到结论或删除。过滤 git 合并 / PR / CI、“收到”、用户原话转述、一对一事务与拍板编号。网页卡钉在滚动列表外，正文过长可独立滚动或收成标题；原文默认折叠并可分页，卡后发言正常显示，未读和点名通知口径不变。
+
 - **拍板挂起**：页面展示及计数规则见 [WEB_UX.md](WEB_UX.md)。取消挂起不排通知；归档或移出会话的未答题保留记录，但不继续催办。
 - **归档同步**：现有 10 秒轮询里读 VS Code 归档名单，已收编会话被 VS Code 归档就经 `Service.archive_session` 写入归档控制并停止对应网页托管进程，记 `vscode:archived`；VS Code 取消归档不跟随。
 - **已读与任务卡**：`read_cursors` 记用户读到 leader journal 的哪条，算未读和"离开后"分隔线；`session_cards` 记下属的负责范围和完成标准，`sessions.task` 仍是"现在在做什么"。

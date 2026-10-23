@@ -146,6 +146,7 @@ def parser():
     c.add_argument("--to", action="append", default=[])
     c = command("channel", True)
     c.add_argument("--limit", type=int, default=20)
+    c.add_argument("--raw", action="store_true", help="跳过要点卡，查看最近 N 条原始发言")
     command("report").add_argument("text")
     c = command("reports", True)
     c.add_argument("--since", type=datetime.date.fromisoformat)
@@ -304,7 +305,7 @@ def _whoami_text(s):
     return "\n".join(lines)
 
 
-def _emit(value, as_json=False, command=None):
+def _emit(value, as_json=False, command=None, channel_card=None):
     if as_json:
         print(json.dumps(value, ensure_ascii=False))
     elif value is None:
@@ -341,10 +342,14 @@ def _emit(value, as_json=False, command=None):
         print(_whoami_text(value) + "\n" + _context_text(value))
     elif command == "channel":
         blocks = []
+        if channel_card is not None:
+            blocks.append("[Crew 交流区要点]\n" + channel_card['body'])
         for message in value:
             mentions = " " + " ".join("@" + target["name"] for target in message["mentions"]) if message["mentions"] else ""
             blocks.append("%s %s%s\n%s" % (store.parse_iso(message["created_at"]).astimezone().strftime("%m-%d %H:%M"),
                                           message["speaker_name"], mentions, message["body"]))
+        if channel_card is not None and not value:
+            blocks.append("要点之后暂无新发言")
         print("\n\n".join(blocks) if blocks else "交流区暂无发言")
     else:
         print(_human(value))
@@ -483,8 +488,6 @@ def execute(conn, args, cwd, agents_provider):
             raise board.BoardError("交流区只给 leader 用；有事告诉你的 leader")
         return channel.post(conn, speaker["project"], actor, args.text, args.to)
     p = _project(conn, args, cwd)
-    if cmd == "channel":
-        return channel.read(conn, p, actor, args.limit)
     if cmd == "git":
         if args.action in ("enable", "disable"):
             from . import spawn
@@ -620,6 +623,14 @@ def main(argv=None, agents_provider=claude_agents, cwd=None, plugin_root=None):
             value = spawn.request_start(args.home, project, "/api/session/compact", {
                 "session_id": sid, "caller_session_id": _actor(args)})
             _emit(value, args.json, args.command)
+            return 0
+        if args.command == "channel":
+            with contextlib.closing(store.connect(args.home)) as conn:
+                project = _project(conn, args, cwd)
+                card = None if args.raw else channel.digest(conn, project)
+                value = channel.read(conn, project, _actor(args), args.limit,
+                                     after=card['upto_message_id'] if card is not None else 0)
+            _emit(value, args.json, args.command, channel_card=card)
             return 0
         if args.command == "install":
             value = install.install(args.home, plugin_root)

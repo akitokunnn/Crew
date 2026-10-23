@@ -17,7 +17,7 @@ from urllib.parse import parse_qs, quote, urlencode, urlsplit
 from urllib.request import ProxyHandler, build_opener
 from urllib.error import URLError
 
-from . import board, channel, chat, claude_limits, git_admin, git_ci, git_view, hooks, models, notifications, open_session, presentation, session_ops, spawn, store, themes, usage, usage_cli, vscode_sessions
+from . import board, channel, channel_digest, chat, claude_limits, git_admin, git_ci, git_view, hooks, models, notifications, open_session, presentation, session_ops, spawn, store, themes, usage, usage_cli, vscode_sessions
 
 
 def _text(data, key):
@@ -46,6 +46,7 @@ class Service:
         self.codex_root = Path.home() / ".codex" / "sessions" if codex_root is None else Path(codex_root)
         self.runs_file = self.home / "codex_runs.jsonl" if runs_file is None else Path(runs_file)
         self.agents_lock, self.scan_lock, self.write_lock = threading.Lock(), threading.Lock(), threading.Lock()
+        self.channel_digest = channel_digest.Manager(home, self.write_lock, process_factory)
         self.agents, self.agents_at = [], None
         self.agents_error = "\u6b63\u5728\u83b7\u53d6\u8fdb\u7a0b\u72b6\u6001"
         self.scanned_at = None
@@ -94,6 +95,7 @@ class Service:
         while not self.stop.is_set():
             self.refresh_agents()
             self._refresh_vscode()
+            self.digest_channels()
             with self.agents_lock:
                 agents, error = self.agents, self.agents_error
             if error is None:
@@ -101,6 +103,11 @@ class Service:
                     self.chat.auto_resume(conn, agents, now=self.now().isoformat(timespec="milliseconds").replace("+00:00", "Z"))
             if self.stop.wait(10):
                 break
+
+    def digest_channels(self):
+        with self.write_lock, closing(store.connect(self.home)) as conn:
+            for project in board.projects(conn):
+                self.channel_digest.start(conn, project['name'], trigger='auto')
 
     def _refresh_vscode(self):
         with self.write_lock, self.scan_lock, closing(store.connect(self.home)) as conn:
@@ -150,6 +157,7 @@ class Service:
         self.chat.close()
         if self.worker is not None:
             self.worker.join(timeout=1)
+        self.channel_digest.close()
 
     def _poll_notices(self):
         while not self.stop.wait(2):
@@ -321,12 +329,15 @@ class Service:
                       'models': models.MODELS, 'efforts': models.EFFORTS,
                       'now': self.now().isoformat(), 'agents_error': error, 'notification': self.notification_status(),
                       'leaders': [], 'members': [], 'decisions': [], 'attention': [],
-                      'candidates': {'running': [], 'others': []}, 'channel': {'unread': 0, 'latest_id': 0},
+                      'candidates': {'running': [], 'others': []},
+                      'channel': {'unread': 0, 'latest_id': 0, 'digesting': False, 'digest_error': None, 'digest_id': None},
                       'limits': self.limits(conn)}
             result['vscode_error'] = self.vscode_error
             if project_name is not None:
                 name = self.selected_project(conn, project_name)
-                result['channel'] = channel.state(conn, name)
+                card = channel.digest(conn, name)
+                result['channel'] = {**channel.state(conn, name), **self.channel_digest.state(name),
+                                     'digest_id': card['id'] if card is not None else None}
                 # Passing every stored identity preserves the board statuses while process state is unknown.
                 identities = [{"sessionId": s["session_id"]} for s in board.sessions(conn, name)] if error else agents
                 status = board.status(conn, name, identities)
@@ -511,7 +522,7 @@ class Service:
                 if type(data.get('away')) is not bool:
                     raise ValueError('离开状态必须是 true 或 false')
                 return self.set_away(data['away'])
-            if path in ('/api/channel', '/api/channel/read', '/api/project/theme', '/api/leaders/order', '/api/leaders/priority') and 'project' in data:
+            if path in ('/api/channel', '/api/channel/read', '/api/channel/digest', '/api/project/theme', '/api/leaders/order', '/api/leaders/priority') and 'project' in data:
                 body_project = _text(data, 'project')
                 if project_name is not None and body_project != project_name:
                     raise board.BoardError('请求正文和地址中的项目不一致')
@@ -543,6 +554,10 @@ class Service:
                 return {'message': message}
             if path == '/api/channel/read':
                 return channel.mark_read(conn, project, board.HUMAN, data['id'], now=now)
+            if path == '/api/channel/digest':
+                _text(data, 'project')
+                self.channel_digest.start(conn, project)
+                return {'ok': True}
             if path == '/api/attention/dismiss':
                 identity = _text(data, 'id')
                 kind, _, rest = identity.partition(':')
@@ -731,7 +746,8 @@ class Service:
 
     def channel_messages(self, project_name=None, limit=20, before=None):
         with closing(store.connect(self.home)) as conn:
-            return channel.messages(conn, self.selected_project(conn, project_name), limit=limit, before=before)
+            project = self.selected_project(conn, project_name)
+            return {**channel.messages(conn, project, limit=limit, before=before), 'digest': channel.digest(conn, project)}
 
     def resolve_file(self, session_id, text, project_name=None, base=None):
         with closing(store.connect(self.home)) as conn:
@@ -835,7 +851,7 @@ POST_PATHS = {"/api/project/init", "/api/project/theme", "/api/open", "/api/open
 POST_PATHS.update('/api/session/' + action for action in ('rename', 'archive', 'remove', 'restore', 'undo', 'stop', 'options', 'compact'))
 POST_PATHS.update(('/api/attention/dismiss', '/api/notifications/away'))
 POST_PATHS.update(('/api/decision/hold', '/api/decision/unhold'))
-POST_PATHS.update(('/api/channel', '/api/channel/read'))
+POST_PATHS.update(('/api/channel', '/api/channel/read', '/api/channel/digest'))
 POST_PATHS.add('/api/leaders/order')
 POST_PATHS.add('/api/leaders/priority')
 POST_PATHS.update(('/api/files/resolve', '/api/files/open', '/api/files/reveal'))
