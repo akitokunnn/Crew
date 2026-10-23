@@ -189,16 +189,30 @@ def set_git_policy(conn, project_name, session_id, text, now=None):
     return text
 
 
+# Sessions not adopted into Crew may also hand branches to the git admin (user 2026-10-24). Callers that can read
+# transcripts replace an unadopted requester's name with its VS Code title (vscode_sessions.session_title).
+REQUESTER_NAME = ("COALESCE(s.crew_name,s.cc_name,substr(s.session_id,1,8)) AS requester_name,"
+                  "s.crew_name IS NULL AS requester_unadopted")
+
+
+def titled_requests(requests, title_of):
+    for request in requests:
+        title = title_of(request["session_id"]) if request["requester_unadopted"] else None
+        if title is not None:
+            request["requester_name"] = title
+    return requests
+
+
 def git_requests(conn, project_name, all=False):
     project(conn, project_name)
-    return _rows(conn, "SELECT r.*,s.crew_name AS requester_name FROM git_merge_requests r "
+    return _rows(conn, "SELECT r.*," + REQUESTER_NAME + " FROM git_merge_requests r "
                  "JOIN sessions s ON s.session_id=r.session_id WHERE r.project=? " +
                  ("" if all else "AND r.status IN ('open','merging','waiting_user') ") +
                  "ORDER BY (r.status IN ('merged','rejected')),r.id", (project_name,))
 
 
 def _git_request(conn, project_name, request_id):
-    row = conn.execute("SELECT r.*,s.crew_name AS requester_name FROM git_merge_requests r "
+    row = conn.execute("SELECT r.*," + REQUESTER_NAME + " FROM git_merge_requests r "
                        "JOIN sessions s ON s.session_id=r.session_id WHERE r.project=? AND r.id=?",
                        (project_name, request_id)).fetchone()
     if row is None:
@@ -207,23 +221,26 @@ def _git_request(conn, project_name, request_id):
 
 
 @atomic
-def request_git_merge(conn, project_name, session_id, branch, description, now=None):
+def request_git_merge(conn, project_name, session_id, branch, description, *, title, now=None):
     config = _git_enabled(conn, project_name)
     requester = session(conn, session_id)
-    if (requester["project"] != project_name or requester["crew_name"] is None or
-            requester["status"] == "closed" or is_archived(conn, session_id)):
-        raise BoardError("只有本项目已收编的会话能提交合并请求")
+    if requester["project"] != project_name:
+        raise BoardError("会话不属于本项目，不能提交本项目的合并请求")
     if not branch or not branch.strip():
         raise BoardError("请在分支上提交请求，或用 --branch 指定分支")
     if not description.strip():
         raise BoardError("合并请求说明不能为空")
     request_id = conn.execute("INSERT INTO git_merge_requests(project,session_id,branch,description,created_at,updated_at) "
                               "VALUES(?,?,?,?,?,?)", (project_name, session_id, branch, description, _time(now), _time(now))).lastrowid
+    request = titled_requests([_git_request(conn, project_name, request_id)], lambda _: title)[0]
+    who = request["requester_name"]
+    if request["requester_unadopted"]:
+        who += "（未收编%s）" % ("" if requester["cc_name"] is None else "，SendMessage 地址：" + requester["cc_name"])
     _queue_leader_notice(conn, config["admin_session_id"],
                          "合并请求 #%s，%s 提交分支 %s：%s。用 crew git requests 查看并处理。" %
-                         (request_id, requester["crew_name"], branch, description), "crew", now)
+                         (request_id, who, branch, description), "crew", now)
     _event(conn, "git:request", project_name, session_id, {"id": request_id, "branch": branch}, now)
-    return _git_request(conn, project_name, request_id)
+    return request
 
 
 @atomic
@@ -246,10 +263,11 @@ def resolve_git_request(conn, project_name, session_id, request_id, status, note
     if requester["role"] == "leader":
         _queue_leader_notice(conn, requester["session_id"], text, "crew", now)
     else:
+        target = requester["crew_name"] or requester["session_id"]
         handoff_id = conn.execute("INSERT INTO handoffs(project,from_session,to_target,body,created_at) VALUES(?,?,?,?,?)",
-                                  (project_name, session_id, requester["crew_name"], text, _time(now))).lastrowid
+                                  (project_name, session_id, target, text, _time(now))).lastrowid
         _event(conn, "handoff", project_name, session_id,
-               {"id": handoff_id, "to": requester["crew_name"], "body": text}, now)
+               {"id": handoff_id, "to": target, "body": text}, now)
         conn.execute("INSERT INTO git_result_handoffs VALUES(?,?,?)", (handoff_id, requester["session_id"], session_id))
     _event(conn, "git:resolve", project_name, session_id, {"id": request_id, "status": status, "note": note, "pr_number": pr_number}, now)
     return _git_request(conn, project_name, request_id)
@@ -766,9 +784,9 @@ def handoff(conn, session_id, to_target, body, now=None):
 
 def handoffs(conn, session_id):
     s = session(conn, session_id)
-    return _rows(conn, "SELECT h.* FROM handoffs h WHERE project=? AND (to_target='*' OR to_target=? OR to_target=?) "
+    return _rows(conn, "SELECT h.* FROM handoffs h WHERE project=? AND (to_target='*' OR to_target=? OR to_target=? OR to_target=?) "
                  "AND NOT EXISTS(SELECT 1 FROM handoff_deliveries d WHERE d.handoff_id=h.id AND d.session_id=?) ORDER BY h.id",
-                 (s["project"], s["crew_name"], s["group_name"], session_id))
+                 (s["project"], s["crew_name"], s["group_name"], session_id, session_id))
 
 
 def _deliver(conn, session_id, include_answers, now):

@@ -11,7 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import board, channel, guard, install, store
+from . import board, channel, guard, install, store, vscode_sessions
 from .hooks import git_details, git_toplevel
 
 
@@ -224,6 +224,8 @@ def _human(value):
     return str(value)
 
 
+# Where Claude Code keeps transcripts; the VS Code session list names sessions from them.
+CLAUDE_PROJECTS = Path.home() / ".claude" / "projects"
 STATUS_TEXT = {"working": "干活中", "waiting": "等你", "idle": "空闲", "offline": "离线", "closed": "已收"}
 
 
@@ -493,9 +495,12 @@ def execute(conn, args, cwd, agents_provider):
                                board.set_git_policy(conn, p, _session_id(args), args.policy_text))}
         elif args.action == "request":
             branch = git_details(cwd)[1] if args.branch is None else args.branch
-            return {"request": board.request_git_merge(conn, p, _session_id(args), branch, args.description)}
+            sid = _session_id(args)
+            return {"request": board.request_git_merge(conn, p, sid, branch, args.description,
+                                                       title=vscode_sessions.session_title(CLAUDE_PROJECTS, sid))}
         elif args.action == "requests":
-            return {"requests": board.git_requests(conn, p, args.all)}
+            return {"requests": board.titled_requests(board.git_requests(conn, p, args.all),
+                                                      lambda sid: vscode_sessions.session_title(CLAUDE_PROJECTS, sid))}
         elif args.action == "resolve":
             return {"request": board.resolve_git_request(conn, p, _session_id(args), args.id, args.status,
                                                           args.note, args.pr_number)}

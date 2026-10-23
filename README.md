@@ -91,7 +91,7 @@ QQ 命令不分大小写、忽略首尾空白：`/help`（`/h`）帮助，`/lead
 | `crew web --open` | 按当前目录打开工作区，已有服务时复用 |
 | `crew git enable [--base 分支] [--stable 分支]` / `crew git disable` / `crew git status` | 启用并自动开 Git 管理员 / 收掉管理员的组并停用 / 查看配置；base 自动依次选 develop、dev、main、master，stable 选与 base 不同的 master 或 main |
 | `crew git policy` / `crew git policy --set "<正文>"` | 看分支规则全文 / Git 管理员设置规则 |
-| `crew git request [--branch 分支] "<说明>"` / `crew git requests [--all]` | 已收编会话提交合并请求（默认当前分支） / 看活动队列或全部请求 |
+| `crew git request [--branch 分支] "<说明>"` / `crew git requests [--all]` | 本项目任何会话（含没收编的）提交合并请求（默认当前分支） / 看活动队列或全部请求 |
 | `crew git resolve <编号> <merged\|rejected\|waiting_user\|merging> --note "<说明>" [--pr <号>]` | Git 管理员更新请求状态并给提出者排消息 |
 | `crew autostart install\|status\|uninstall` | 当前用户登录后隐藏运行，不弹浏览器 |
 | `crew usage scan\|summary\|sessions\|daily\|codex\|agents\|models\|export` | 用量 |

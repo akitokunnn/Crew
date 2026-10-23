@@ -452,7 +452,7 @@ CREATE INDEX IF NOT EXISTS git_merge_requests_project
     ON git_merge_requests (project, status, id);
 ```
 
-`crew git request [--branch <分支>] "<做了什么、测过什么、有没有要用户亲手验收的>"` 只允许本项目已收编、未关闭、未归档的会话使用。省略分支时读取调用目录的当前 Git 分支，不使用可能过时的会话记录。写入 open 请求后，在同一事务给管理员排现有 `leader_notices`，由 `Service.deliver_notices` 在管理员空闲时送达或续跑，叫醒它检查队列。
+`crew git request [--branch <分支>] "<做了什么、测过什么、有没有要用户亲手验收的>"` 本项目的任何会话都能用，包括没收编的（用户 2026-10-24 定）；没收编的在请求列表和管理员通知里用 VS Code 会话列表里的名字（`vscode_sessions.session_title`：改过的名字、自动标题、最近提问依次取），没有就用 cc_name，再没有用会话 ID 前 8 位；管理员通知另标“未收编”和 SendMessage 地址（有的话），处理结果以 to_target=会话 ID 的交接在它下一条消息时送到，Crew 不叫醒它。省略分支时读取调用目录的当前 Git 分支，不使用可能过时的会话记录。写入 open 请求后，在同一事务给管理员排现有 `leader_notices`，由 `Service.deliver_notices` 在管理员空闲时送达或续跑，叫醒它检查队列。
 
 `crew git requests` 列 open / merging / waiting_user；`--all` 加上 merged / rejected，活动状态在前、各组内按编号排序。`crew git resolve <编号> <merged|rejected|waiting_user|merging> --note "<说明>" [--pr <号>]` 只允许管理员会话，说明不能为空、PR 号必须大于 0；merged / rejected 是终态，不能再次修改。每次更新给提出者排消息：提出者是 leader 时用 `leader_notices`；组员写既有 `handoffs`，并以 `git_result_handoffs` 记录接收会话和发送管理员。每两秒的现有通知轮询检查未送达结果：后台空闲用既有 `chat.send`；已结束进程用与 `crew wake` 相同的 `chat.wake` 入口恢复，发送者为管理员；VS Code 在线时保留 handoff，下一次打卡送达。忙碌、进程状态未知时等待，发送失败记事件并保留队列。成功后写既有 `handoff_deliveries`，避免再次送达。
 

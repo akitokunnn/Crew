@@ -192,3 +192,14 @@ class SessionList:
 
 def list_sessions(projects_dir, roots):
     return SessionList().list(projects_dir, roots)
+
+
+def session_title(projects_dir, session_id):
+    """The name the VS Code session list shows for one session, or None when it lists none."""
+    path = next(Path(projects_dir).glob("*/" + session_id + ".jsonl"), None)
+    if path is None:
+        return None
+    sidecar = path.parent / session_id / "custom-title.json"
+    custom_title = json.loads(sidecar.read_text(encoding="utf-8"))["customTitle"] if sidecar.is_file() else None
+    session = _read_session(path, path.stat(), custom_title)
+    return None if session is None else session["title"]

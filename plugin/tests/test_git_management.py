@@ -26,6 +26,11 @@ class GitCommandTests(CoreCase):
         patcher = mock.patch("crew.spawn.request_start", side_effect=self.service_request)
         self.service = patcher.start()
         self.addCleanup(patcher.stop)
+        self.transcripts = self.base / "claude-projects"
+        self.transcripts.mkdir()
+        patcher = mock.patch("crew.cli.CLAUDE_PROJECTS", self.transcripts)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def service_request(self, home, project_name, path, body):
         if path == "/api/git/enable":
@@ -170,17 +175,46 @@ class GitCommandTests(CoreCase):
         self.assert_cli(["git", "request", "指定分支", "--branch", "topic"])
         self.assertEqual(board.git_requests(self.conn, "demo")[1]["branch"], "topic")
 
-    def test_request_requires_enabled_project_and_adopted_session(self):
+    def test_request_requires_enabled_project_session_identity_and_text(self):
         self.assert_cli(["git", "request", "未启用"], code=1)
         self.enable()
-        board.register_session(self.conn, "unjoined", "demo", self.root, self.root, "main", now=NOW)
-        self.assertIn("已收编", self.assert_cli(["git", "request", "未收编"], sid="unjoined", code=1)[2])
         self.assert_cli(["git", "request", "无身份"], sid=None, code=1)
-        board.set_status(self.conn, "s2", "closed", now=NOW)
-        self.assert_cli(["git", "request", "已关闭"], sid="s2", code=1)
         self.assert_cli(["git", "request", " "], code=1)
         self.assert_cli(["git", "request", "空分支", "--branch", " "], code=1)
+        board.init_project(self.conn, "other", self.base / "other", now=NOW)
+        board.register_session(self.conn, "outsider", "other", self.base / "other", self.base / "other", "main", now=NOW)
+        with self.assertRaisesRegex(board.BoardError, "不属于本项目"):
+            board.request_git_merge(self.conn, "demo", "outsider", "main", "跨项目", title=None, now=NOW)
         self.assertEqual(board.git_requests(self.conn, "demo"), [])
+
+    def test_unadopted_and_closed_sessions_can_request_and_receive_the_result(self):
+        administrator = self.enable()
+        board.register_session(self.conn, "unjoined-session", "demo", self.root, self.root, "main", now=NOW)
+        self.assert_cli(["git", "request", "没有标题时用编号"], sid="unjoined-session")
+        self.assertIn("unjoined（未收编） 提交分支 main", board.pending_notices(self.conn, administrator)[0]["text"])
+        board.update_cc_name(self.conn, "unjoined-session", "cc-outsource", now=NOW)
+        self.assertEqual(board.git_requests(self.conn, "demo")[0]["requester_name"], "cc-outsource")
+        bucket = self.transcripts / "bucket"
+        bucket.mkdir()
+        (bucket / "unjoined-session.jsonl").write_text("".join(json.dumps(record, ensure_ascii=False) + "\n" for record in (
+            {"type": "user", "cwd": str(self.root), "message": {"role": "user", "content": "修登录页"}},
+            {"type": "ai-title", "aiTitle": "外包修复登录页"})), encoding="utf-8")
+        self.assert_cli(["git", "request", "外包改动；测试通过"], sid="unjoined-session")
+        self.assertIn("外包修复登录页（未收编，SendMessage 地址：cc-outsource） 提交分支 main",
+                      board.pending_notices(self.conn, administrator)[1]["text"])
+        self.assertIn("外包修复登录页", self.assert_cli(["git", "requests"])[1])
+        (bucket / "unjoined-session").mkdir()
+        (bucket / "unjoined-session" / "custom-title.json").write_text(json.dumps({"customTitle": "我改的名字"}), encoding="utf-8")
+        self.assertIn("我改的名字", self.assert_cli(["git", "requests"])[1])
+        request = board.git_requests(self.conn, "demo")[0]
+        board.set_status(self.conn, "s2", "closed", now=NOW)
+        self.assert_cli(["git", "request", "已关闭的会话也能交"], sid="s2")
+        self.assert_cli(["git", "resolve", str(request["id"]), "merged", "--note", "已合入 base"], sid=administrator)
+        delivered = board.deliver(self.conn, "unjoined-session", now=NOW)["handoffs"]
+        self.assertEqual(len(delivered), 1)
+        self.assertIn("已合入 base", delivered[0]["body"])
+        self.assertEqual(board.handoffs(self.conn, "unjoined-session"), [])
+        self.assertEqual(board.handoffs(self.conn, "s1"), [])
 
     def test_resolve_transitions_preserves_pr_and_member_delivery(self):
         administrator = self.enable()
@@ -341,9 +375,9 @@ class GitHttpTests(ShellFixture, unittest.TestCase):
         sid = config["admin_session_id"]
         self.assertEqual(self.request("/api/git/enable?project=demo", {"base": "topic"})[1]["admin_session_id"], sid)
         self.assertEqual(len(self.processes), 1)
-        merged = board.request_git_merge(self.conn, "demo", "s1", "topic", "Implementation and tests", now=NOW)
+        merged = board.request_git_merge(self.conn, "demo", "s1", "topic", "Implementation and tests", title=None, now=NOW)
         board.resolve_git_request(self.conn, "demo", sid, merged["id"], "merged", "CI passed", pr_number=17, now=NOW)
-        opened = board.request_git_merge(self.conn, "demo", "s2", "master", "Needs review", now=NOW)
+        opened = board.request_git_merge(self.conn, "demo", "s2", "master", "Needs review", title=None, now=NOW)
         with mock.patch("crew.git_view.view", return_value={}):
             code, result = self.request("/api/git?project=demo")
         self.assertEqual(code, 200, result)
@@ -411,7 +445,7 @@ class GitHttpTests(ShellFixture, unittest.TestCase):
         board.update_cc_name(self.conn, "s3", "cc-lead", now=NOW)
         self.conn.execute("INSERT INTO git_management(project,enabled_at,base,admin_session_id) VALUES(?,?,?,?)",
                           ("demo", NOW, "develop", "s3"))
-        request = board.request_git_merge(self.conn, "demo", "s1", "topic", "tests passed", now=NOW)
+        request = board.request_git_merge(self.conn, "demo", "s1", "topic", "tests passed", title=None, now=NOW)
         board.resolve_git_request(self.conn, "demo", "s3", request["id"], "merged", "CI passed", now=NOW)
         return board.handoffs(self.conn, "s1")[0]
 

@@ -218,7 +218,8 @@ class Service:
                             continue
                         self.chat.send(target, '[Crew]\n' + result['body'], source='crew')
                     else:
-                        if external:
+                        # Unadopted requesters cannot be woken; their next prompt picks the result up as a handoff.
+                        if external or target['crew_name'] is None:
                             continue
                         self.chat.wake(conn, target, result['body'],
                                        caller_session_id=result['admin_session_id'], now=self.now().isoformat())
@@ -452,7 +453,7 @@ class Service:
             sessions = board.sessions(conn, name)
             requests = board.git_requests(conn, name, all=True) if config is not None else []
         result = {"enabled": config is not None, "config": config,
-                  "requests": requests,
+                  "requests": board.titled_requests(requests, lambda sid: vscode_sessions.session_title(self.claude_root, sid)),
                   "choices": git_view.branch_choices(project["root"]),
                   "repository": Path(project["root"]).name, "last_fetch_at": None}
         if config is not None:
