@@ -64,6 +64,46 @@ class LeaderWakeTests(ShellFixture, unittest.TestCase):
             self.wake(caller='s2')
         self.assertEqual(self.processes, [])
 
+    def test_member_can_queue_own_leader_without_starting_or_interrupting_process(self):
+        board.update_cc_name(self.conn, 's1', 'cc-radar', now=NOW)
+        with mock.patch.object(self.manager, '_check_offline') as check:
+            result = self.wake('s3', 's1')
+        check.assert_not_called()
+        self.assertEqual(self.processes, [])
+        self.assertEqual(result['message'], '已排进对方的通知，对方空闲时送达')
+        notice = board.pending_notices(self.conn, 's3')[0]
+        self.assertEqual(notice['source'], 'crew')
+        self.assertIn('组员「one」（lead）找你：核对分支', notice['text'])
+        self.assertIn('地址「cc-radar」', notice['text'])
+        self.assertNotIn('crew say --to one', notice['text'])
+
+    def test_member_can_queue_own_leader_when_its_reply_address_is_unknown(self):
+        board.update_cc_name(self.conn, 's1', None, now=NOW)
+        self.wake('s3', 's1')
+        self.assertIn('crew who one', board.pending_notices(self.conn, 's3')[0]['text'])
+
+    def test_member_cannot_wake_other_leader_or_member(self):
+        for target, caller in [('other', 's1'), ('s2', 's1'), ('s3', 's2')]:
+            with self.subTest(target=target, caller=caller), self.assertRaisesRegex(board.BoardError, '组员只能叫醒自己的 leader'):
+                self.wake(target, caller)
+        self.assertEqual(board.pending_notices(self.conn, 'other'), [])
+        self.assertEqual(self.processes, [])
+
+    def test_archived_member_cannot_queue_own_leader(self):
+        session_ops.archive(self.conn, 's1', now=NOW)
+        with self.assertRaisesRegex(board.BoardError, '组员只能叫醒自己的 leader'):
+            self.wake('s3', 's1')
+        self.assertEqual(board.pending_notices(self.conn, 's3'), [])
+
+    def test_member_cli_wake_uses_same_queue_endpoint(self):
+        result = {'ok': True, 'notice_id': 1, 'message': '已排进对方的通知，对方空闲时送达'}
+        with mock.patch('crew.spawn.request_start', return_value=result) as request:
+            code, output, errors = self.run_cli(['--session', 's1', 'wake', 'lead', '帮我确认'])
+        self.assertEqual(code, 0, errors)
+        self.assertEqual(request.call_args.args[2], '/api/wake')
+        self.assertEqual(request.call_args.args[3]['caller_session_id'], 's1')
+        self.assertIn('已排进对方的通知', output)
+
     def test_human_leader_target_errors_with_web_instruction(self):
         with self.assertRaisesRegex(board.BoardError, 'leader 直接在网页上和它聊'):
             self.wake('s3', board.HUMAN)
@@ -155,6 +195,17 @@ class ChannelHttpTests(ShellFixture, unittest.TestCase):
         code, result = self.request('/api/state', project='demo')
         self.assertEqual(code, 200, result)
         return result
+
+    def test_member_wakes_only_own_leader_through_http(self):
+        code, result = self.request('/api/wake', {'name': 'lead', 'text': '请处理我的汇报',
+                                                'caller_session_id': 's1'}, project='demo')
+        self.assertEqual(code, 200, result)
+        self.assertIn('已排进对方的通知', result['message'])
+        self.assertIn('组员「one」', board.pending_notices(self.conn, 's3')[0]['text'])
+        code, result = self.request('/api/wake', {'name': 'two', 'text': '不能叫醒同伴',
+                                                'caller_session_id': 's1'}, project='demo')
+        self.assertEqual(code, 400, result)
+        self.assertIn('组员只能叫醒自己的 leader', result['error'])
 
     def test_user_post_and_mention(self):
         code, result = self.request('/api/channel', {'body': '**用户安排**\n核对 develop', 'to': ['lead']}, project='demo')

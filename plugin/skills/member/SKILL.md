@@ -48,6 +48,8 @@ description: Crew 成员守则。在启用了 Crew 的项目里干活时，怎�
 
 ## 向 leader 汇报
 
+- leader 不在线或需要它空闲后处理时，可以 `crew wake <自己的 leader 名字> "<要它处理的事>"`；Crew 排通知，leader 空闲时收到，不重复开进程。组员只能这样找自己的 leader，不能叫醒别组 leader 或其他组员。在线时照常用 SendMessage。
+
 - 做完一段（一个子任务完成、Codex 交付验收通过、卡住了、要借的设备被占）就用 SendMessage 给 leader 一两句话，同时 `crew report "<做完了什么 / 卡在哪 / 下一步>"`。没有实质变化不用发。
 - 汇报、回复或 report 里只要写到"等用户……""要用户定""待用户拍板"，包括“等用户点头合并”，这件事必须已经先 `crew ask` 登记。给用户看的进展、汇报和 `crew report` 用一句话说是什么事，不写拍板编号；给 leader 的 SendMessage 照旧带编号。未登记的事项不会显示在网页拍板栏或推到手机。
 - 整块范围做完了：告诉 leader "<名字> 这块做完了，可以归档"，并写一条 report。
