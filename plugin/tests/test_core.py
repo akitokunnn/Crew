@@ -748,7 +748,7 @@ class RuleTextTests(unittest.TestCase):
         for path in paths:
             with self.subTest(path=path):
                 content = path.read_text(encoding="utf-8")
-                for phrase in ("要用户点头的事一律算拍板", "合不合 PR", "合不合进 develop", "等你点头 / 要你定 / 等你拍板", "必须已经有题号", "crew ask", "然后只提题号", "Crew 守则有更新", "先重读"):
+                for phrase in ("要用户点头的事一律算拍板", "合不合 PR", "合不合进 develop", "等你点头 / 要你定 / 等你拍板", "必须已经 `crew ask` 登记", "对用户用一句话说是什么事，不写拍板编号", "Crew 守则有更新", "先重读"):
                     self.assertIn(phrase, content)
                 # Only the leader registers on someone else's behalf.
                 if path.parent.name != "member":
@@ -756,6 +756,24 @@ class RuleTextTests(unittest.TestCase):
                         self.assertIn(phrase, content)
         self.assertIn("**硬规矩：", (PLUGIN / "agents" / "leader.md").read_text(encoding="utf-8"))
         self.assertIn("等用户点头合并", (PLUGIN / "skills" / "member" / "SKILL.md").read_text(encoding="utf-8"))
+
+    def test_user_facing_decisions_name_the_matter_and_keep_numbers_internal(self):
+        paths = (PLUGIN / "skills" / "leader" / "SKILL.md", PLUGIN / "skills" / "member" / "SKILL.md", PLUGIN / "skills" / "git" / "SKILL.md", PLUGIN / "agents" / "leader.md")
+        for path in paths:
+            with self.subTest(path=path):
+                content = path.read_text(encoding="utf-8")
+                for phrase in ("网页聊天回复", "QQ 推送的回复", "一句话说是什么事", "不写拍板编号", "编号只用于命令和 leader、组员之间的内部消息", "必须已经 `crew ask` 登记"):
+                    self.assertIn(phrase, content)
+                for phrase in ("必须已经有题号", "必须已有题号", "然后只提题号", "再提题号", "并写上 #编号", "note 里记题号", '"#<编号> 需要你拍板"'):
+                    self.assertNotIn(phrase, content)
+        member = paths[1].read_text(encoding="utf-8")
+        self.assertIn("进展、汇报和 `crew report`", member)
+        self.assertIn('"#<编号> 等用户拍板：<问题>"', member)
+        self.assertIn("给 leader 的 SendMessage 照旧带编号", member)
+        leader = paths[0].read_text(encoding="utf-8")
+        self.assertIn("声纹门槛那件事要你定，卡片在上面", leader)
+        self.assertIn('`crew answer <编号> "<答复>"`', leader)
+        self.assertIn("note 里写要用户决定的事，不写拍板编号", paths[2].read_text(encoding="utf-8"))
 
     def test_channel_and_cross_group_requests_are_explicit(self):
         leader = (PLUGIN / "skills" / "leader" / "SKILL.md").read_text(encoding="utf-8")

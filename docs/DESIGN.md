@@ -368,7 +368,7 @@ File resolution also returns `open_with` from a server-side allowlist (case-inse
 - QQ 命令忽略首尾空白且不分大小写：`/help`（`/h`）帮助、`/leader`（`/l`）列表、`/leader 2`（`/l 2`、`/2`）切换、`/decisions`（`/d`）未挂起待拍板、`/back`（`/b`）我回来了。列表优先展示已标记 leader（按有效级别，名字前加 ★1 / ★2 / ★3），其余沿用项目顺序及项目内 `leader_order`；稳定编号独立分配且归档后不复用。
 - QQ 推送时机、命令与附件限制见 [QQ.md](QQ.md)；离开期间的轮次回复按 `turn:<会话>:<idle 序号>` 防重发。
 - 通知仅在手动离开或锁屏时主动发送。用户口径（2026-10-23）：手动离开立即推送当前待办。锁屏来自已有桌面代理的带 token POST `/api/status`，不启动代理或操作桌面；代理故障单独提示。
-- QQ 拍板答复的 actor 与 leader 通知 source 均为 `qq`，按钮先应答 interaction 再校验题号、选项和状态。用户操作见 [QQ.md 的答拍板](QQ.md#答拍板)。
+- QQ 拍板答复的 actor 与 leader 通知 source 均为 `qq`，按钮先应答 interaction 再校验内部问题标识、选项和状态。QQ 标题为 `项目·leader 待拍板`，回执为 `已保存：<问题前 20 字>…，已转告 leader。`；问题不超过 20 字不加省略号，没有 leader 时去掉转告语。网页操作行显示“答复拍板：<答复>”或“撤回一道拍板”。网页 / QQ 回复、组员进展和汇报都写事情；提到等用户拍板时必须已经 `crew ask` 登记，编号只留在命令和 leader、组员间的内部消息里。用户操作见 [QQ.md 的答拍板](QQ.md#答拍板)。
 - QQ 消息进入 leader 同一 input stream，journal 标记 source=qq；回复边界为来信后的首个 idle/offline，回传最后一段文字。长回复按段落切分（`TEXT_LIMIT = 2000`），无文字、启动失败或非网页后台运行均明确答复。
 - 网页 `notification.channel` 提供 unconfigured、unbound、connecting、connected、reconnecting、rejected、error 和真实 detail；左下角显示 QQ 状态与绑定、拒收操作提示，无通道开关。
 - `autostart` 用当前用户 InteractiveToken 计划任务，普通权限、登录触发、隐藏运行，不保存密码。任务指向主检出；默认端口已有 Crew 时保留原服务，不重复启动。不在睡眠、休眠或注销期间维持收信。

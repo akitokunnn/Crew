@@ -318,8 +318,8 @@ class Inbox:
 
     def question_message(self, entry):
         decision = entry['decision']
-        text = '%s·%s #%s 待拍板\n\n%s' % (
-            entry['workspace'], entry['leader'], decision['id'], decision['question'])
+        text = '%s·%s 待拍板\n\n%s' % (
+            entry['workspace'], entry['leader'], decision['question'])
         if decision['recommendation'] is not None:
             text += '\n\n建议：' + decision['recommendation']
         options = decision['options']
@@ -426,7 +426,7 @@ class Inbox:
     def answer_button(self, conn, data, identity):
         match = re.fullmatch(r'([1-9][0-9]*):([0-9]+)', data)
         if match is None:
-            self.send_text('按钮题号或选项序号无效，请先 /decisions。')
+            self.send_text('按钮无效，请先 /decisions。')
             return
         decision_id, index = int(match[1]), int(match[2])
         shown = conn.execute("SELECT project,content FROM notification_messages WHERE decision_id=? AND status='sent' AND kind IN ('decision','query') LIMIT 1",
@@ -565,7 +565,8 @@ class Inbox:
             notice = '#%s\n提问者：%s（cc_name：%s）\n问题：%s\n答复：%s\n请马上用 SendMessage 转告并叫它继续' % (
                 decision['id'], asker['crew_name'], asker['cc_name'], decision['question'], answer)
             board.queue_leader_notice(conn, leader['session_id'], notice, 'qq', now=now)
-        self.send_text('#%s 答复已保存%s。' % (decision['id'], '，已转告 leader' if leader else ''))
+        preview = decision['question'][:20] + ('…' if len(decision['question']) > 20 else '')
+        self.send_text('已保存：%s%s。' % (preview, '，已转告 leader' if leader else ''))
 
     def queue_text(self, conn, reply):
         session_id = self.config['current_leader_session_id']

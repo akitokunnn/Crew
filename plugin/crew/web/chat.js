@@ -296,8 +296,8 @@
       const name = words[nameIndex === -1 ? 2 : nameIndex + 1];
       return name !== undefined && !name.startsWith("--") ? `开新下属 ${name}` : null;
     }
-    if (verb === "answer" && /^\d+$/.test(words[2])) return `答复 #${words[2]}`;
-    if (verb === "withdraw" && /^\d+$/.test(words[2])) return `撤回拍板 #${words[2]}`;
+    if (verb === "answer" && /^\d+$/.test(words[2])) return `答复拍板：${words.slice(3).join(" ")}`;
+    if (verb === "withdraw" && /^\d+$/.test(words[2])) return "撤回一道拍板";
     if ((verb === "open" || verb === "who" || verb === "join") && words[2] !== undefined) {
       const label = {open:"在 VS Code 打开", who:"查看下属", join:"登记下属"}[verb];
       return `${label} ${words[2]}`;
