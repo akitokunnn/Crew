@@ -19,8 +19,11 @@ _lock = threading.RLock()
 _refs_cache = {}
 _dirty_cache = {}
 _github_cache = {}
+_history_cache = {}
+_commit_cache = {}
 _last_fetch = {}
 _OPEN_PR_LIMIT = 2 ** 31 - 1
+_COMMIT_FORMAT = "%H%x00%P%x00%s%x00%an%x00%cI%x00%b"
 
 _REF_FORMAT = ("%(refname)%00%(objectname)%00%(subject)%00%(authorname)%00"
                "%(committerdate:iso-strict)%00%(upstream:short)%00%(symref)")
@@ -120,7 +123,7 @@ def _worktrees(root):
     return trees
 
 
-def _commits(root, refs, offset, limit):
+def _commit_labels(refs):
     labels = {}
     for ref in refs:
         if ref["symbolic"]:
@@ -132,15 +135,126 @@ def _commits(root, refs, offset, limit):
         else:
             continue
         labels.setdefault(ref["latest"]["sha"], []).append(name)
-    output = _git(root, "log", "--all", "--topo-order", "--skip=" + str(offset),
-                  "--max-count=" + str(limit + 1),
-                  "--format=%H%x00%P%x00%s%x00%an%x00%cI").stdout
+    return labels
+
+
+def _commit_records(output, refs):
+    labels = _commit_labels(refs)
+    fields = output.split("\0")[:-1]
     commits = []
-    for line in output.splitlines():
-        sha, parents, subject, author, timestamp = line.split("\0")
+    for index in range(0, len(fields), 6):
+        sha, parents, subject, author, timestamp, body = fields[index:index + 6]
         commits.append({"sha": sha, "parents": parents.split(), "refs": labels.get(sha, []),
-                        "subject": subject, "author": author, "time": timestamp})
-    return commits[:limit], offset + limit if len(commits) > limit else None
+                        "subject": subject, "body": body.rstrip("\n"), "author": author, "time": timestamp})
+    return commits
+
+
+def _history_plan(root, refs, stable):
+    signature = tuple((ref["ref"], ref["latest"]["sha"], ref["symbolic"]) for ref in refs)
+    key = _root(root)
+    cached = _history_cache.get(key)
+    if cached is not None and cached[0] == (signature, stable):
+        return cached[1]
+    history = _git(root, "log", "--all", "--topo-order", "--format=%H").stdout.splitlines()
+    if stable is None:
+        recent = history
+    else:
+        branches = [ref["ref"] for ref in refs if not ref["symbolic"] and
+                    (ref["ref"].startswith("refs/heads/") or ref["ref"].startswith("refs/remotes/origin/"))]
+        recent = _git(root, "rev-list", "--topo-order", *branches,
+                      "--not", "refs/heads/" + stable).stdout.splitlines()
+        recent.append(next(ref["latest"]["sha"] for ref in refs if ref["ref"] == "refs/heads/" + stable))
+    shown = set(recent)
+    plan = {"shas": recent + [sha for sha in history if sha not in shown], "recent_count": len(recent)}
+    _history_cache[key] = ((signature, stable), plan)
+    return plan
+
+
+def _commits(root, refs, offset, limit, stable):
+    plan = _history_plan(root, refs, stable)
+    end = min(offset + limit, len(plan["shas"]))
+    if offset == 0:
+        end = min(end, plan["recent_count"])
+    shas = plan["shas"][offset:end]
+    commits = []
+    if shas:
+        output = _git(root, "log", "--no-walk=unsorted", "-z", "--format=" + _COMMIT_FORMAT, *shas).stdout
+        commits = _commit_records(output, refs)
+    return commits, end if end < len(plan["shas"]) else None
+
+
+def _latest_merge(root, refs, base):
+    output = _git(root, "log", "--first-parent", "--merges", "-1", "-z", "--format=" + _COMMIT_FORMAT,
+                  "refs/heads/" + base).stdout
+    commits = _commit_records(output, refs)
+    return commits[0] if commits else None
+
+
+def _commit_context(root, commits, refs, base, github):
+    labels = _commit_labels(refs)
+    parents = list(dict.fromkeys(parent for commit in commits for parent in commit["parents"]))
+    unresolved = [sha for sha in parents if sha not in labels]
+    names = {}
+    for patterns in (("refs/heads/" + base,), ("refs/heads/*", "refs/remotes/origin/*")):
+        if not unresolved:
+            break
+        output = _git(root, "name-rev", "--name-only", "--always",
+                      *("--refs=" + pattern for pattern in patterns), *unresolved).stdout.splitlines()
+        for sha, name in zip(unresolved, output):
+            # A second-parent route cannot identify the branch that was merged.
+            if "^" not in name and name != sha:
+                names[sha] = re.sub(r"~\d+$", "", name).removeprefix("remotes/")
+        unresolved = [sha for sha in unresolved if sha not in names]
+    names.update((sha, sha[:7]) for sha in unresolved)
+    prs = [] if github is None else github["pull_requests"]
+    for commit in commits:
+        commit["parent_branches"] = [sorted(labels[sha], key=lambda name: (name != base, name.startswith("origin/"), name))[0]
+                                     if sha in labels else names[sha] for sha in commit["parents"]]
+        commit["pull_requests"] = [copy.deepcopy(pr) for pr in prs
+                                   if commit["sha"] in (pr["head_sha"], pr["merge_sha"])]
+
+
+def _numstat(output):
+    records = output.split("\0")[:-1]
+    files = []
+    index = 0
+    while index < len(records):
+        added, deleted, path = records[index].split("\t", 2)
+        previous_path = None
+        if path == "":
+            previous_path, path = records[index + 1:index + 3]
+            index += 2
+        binary = added == "-"
+        item = {"path": path, "added": None if binary else int(added),
+                "deleted": None if binary else int(deleted), "binary": binary}
+        if previous_path is not None:
+            item["previous_path"] = previous_path
+        files.append(item)
+        index += 1
+    return files
+
+
+def commit_detail(root, sha):
+    """Read immutable first-parent file statistics without sharing projects' caches."""
+    if re.fullmatch(r"[0-9a-fA-F]{4,64}", sha) is None:
+        raise GitError("提交 SHA 必须是 4 至 64 位十六进制字符")
+    key = _root(root)
+    with _lock:
+        cached = _commit_cache.get((key, sha.lower()))
+        if cached is not None:
+            return copy.deepcopy(cached)
+        full_sha = _git(root, "rev-parse", "--verify", sha + "^{commit}").stdout.strip()
+        cached = _commit_cache.get((key, full_sha))
+        if cached is not None:
+            return copy.deepcopy(cached)
+        output = _git(root, "show", "--numstat", "--format=", "--find-renames", "--diff-merges=first-parent",
+                      "-z", full_sha).stdout
+        files = _numstat(output)
+        detail = {"sha": full_sha, "files": files, "file_count": len(files),
+                  "additions": sum(item["added"] for item in files if not item["binary"]),
+                  "deletions": sum(item["deleted"] for item in files if not item["binary"])}
+        _commit_cache[(key, full_sha)] = detail
+        return copy.deepcopy(detail)
 
 
 def _ci(checks):
@@ -173,7 +287,7 @@ def _github_repo(root):
 def _github(root, base, github_repo=None):
     try:
         repo = _github_repo(root) if github_repo is None else github_repo
-        fields = "number,title,headRefName,baseRefName,state,isDraft,statusCheckRollup,url,closedAt"
+        fields = "number,title,headRefName,headRefOid,baseRefName,mergeCommit,state,isDraft,statusCheckRollup,url,closedAt"
         opened = _gh_json(root, "pr", "list", "--repo", repo, "--state", "open",
                           "--limit", str(_OPEN_PR_LIMIT), "--json", fields)
         merged = _gh_json(root, "pr", "list", "--repo", repo, "--state", "merged", "--limit", "20", "--json", fields)
@@ -182,7 +296,8 @@ def _github(root, base, github_repo=None):
         recent = sorted(recent_by_number.values(), key=lambda pr: pr["closedAt"], reverse=True)[:20]
         prs = [{"number": pr["number"], "title": pr["title"], "head": pr["headRefName"],
                 "base": pr["baseRefName"], "state": pr["state"], "draft": pr["isDraft"],
-                "ci": _ci(pr["statusCheckRollup"]), "url": pr["url"]} for pr in opened + recent]
+                "ci": _ci(pr["statusCheckRollup"]), "url": pr["url"], "head_sha": pr["headRefOid"],
+                "merge_sha": pr["mergeCommit"]["oid"] if pr["mergeCommit"] is not None else None} for pr in opened + recent]
         runs = _gh_json(root, "run", "list", "--repo", repo, "--branch", base, "--limit", "5",
                         "--json", "conclusion,status,headSha,createdAt,url")
         return {"pull_requests": prs,
@@ -194,10 +309,11 @@ def _github(root, base, github_repo=None):
         return None, str(exc)
 
 
-def view(root, config, sessions, offset=0, limit=300, github_repo=None):
+def view(root, config, sessions, offset=0, limit=80, github_repo=None):
     """Return one graph page and current branch/worktree/session/GitHub details."""
     if offset < 0 or limit < 1:
         raise ValueError("offset 必须非负，limit 必须大于零")
+    limit = min(limit, 80)
     key = _root(root)
     base, stable = config["base"], config["stable"]
     with _lock:
@@ -206,6 +322,7 @@ def view(root, config, sessions, offset=0, limit=300, github_repo=None):
         cache_key = (signature, base, stable)
         if cached is None or cached[0] != cache_key:
             data = _branch_data(root, refs, base, stable)
+            data["recent_merge"] = _latest_merge(root, refs, base)
             _refs_cache[key] = (cache_key, data)
         else:
             data = cached[1]
@@ -219,7 +336,7 @@ def view(root, config, sessions, offset=0, limit=300, github_repo=None):
                                    "group": session["group_name"], "role": session["role"], "status": session["status"]}
                                   for session in sessions if session["branch"] == branch["name"]
                                   or session["worktree"] is not None and _root(session["worktree"]) in paths]
-        commits, next_offset = _commits(root, refs, offset, limit)
+        commits, next_offset = _commits(root, refs, offset, limit, stable)
         gh_key = (key, base, github_repo)
         now = time.monotonic()
         gh_cached = _github_cache.get(gh_key)
@@ -228,6 +345,7 @@ def view(root, config, sessions, offset=0, limit=300, github_repo=None):
             _github_cache[gh_key] = (now, github, reason)
         else:
             _, github, reason = gh_cached
+        _commit_context(root, commits + ([] if data["recent_merge"] is None else [data["recent_merge"]]), refs, base, github)
         data.update(repository=Path(root).name, commits=commits, next_offset=next_offset,
                     github=copy.deepcopy(github), github_reason=reason, last_fetch_at=_last_fetch.get(key))
         return data

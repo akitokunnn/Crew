@@ -376,6 +376,7 @@ CREATE TABLE IF NOT EXISTS git_management (
 | 接口 | 内容 |
 |---|---|
 | `GET /api/git?project=P&offset=0` | 启用状态、配置、本地分支候选与自动选择值、仓库名；启用后返回本地分支、远端独有分支、提交页、base / stable 概况、GitHub 数据或失败原因、上次 fetch 时间 |
+| `GET /api/git/commit?project=P&sha=S` | 已启用项目的单个提交改动统计：完整 sha、文件数、增删行数、文件清单（路径、增删行数、是否二进制，页面列前 10 个）；sha 无效或不存在返回 400 和原因 |
 | `POST /api/git/enable` | `{project, base?, stable?}`；校验本地分支并保存启用配置 |
 | `POST /api/git/disable` | `{project}`；删除启用配置 |
 | `POST /api/git/fetch` | `{project}`；运行 `git fetch --prune origin`，返回执行结果，失败保留命令报错原文 |
@@ -384,10 +385,14 @@ CREATE TABLE IF NOT EXISTS git_management (
 
 本地分支给出最新提交（sha、标题、作者、时间）、上游、领先 / 落后 base 的提交数及是否已合入。预合并使用 `git merge-tree --write-tree --name-only --no-messages <base> <分支>`，退出码 1 时返回冲突文件。worktree 由 `git worktree list` 对应，dirty 检查使用 `git status --porcelain --untracked-files=no`，不把未跟踪文件算作未提交改动。同项目 `sessions` 按 branch 或 worktree 匹配，显示会话名、组、角色、状态。本地不存在的 `origin/*` 分支单独返回；`origin/HEAD` 不作为分支。
 
-提交树读取 `git log --all --topo-order`，每页最近 300 个提交，包含 sha、父提交、ref 标签、标题、作者与时间；`offset` 与 `next_offset` 供“加载更早的”追加。`ref_unique_commits` 按本地分支与 `origin/*` 名称给出相对 base 的独有 sha，供所有分支标签点击高亮。base / stable 概况包含 base 最新提交及 base 领先 stable 的提交数；base 的 CI 只匹配最新提交 sha，没有对应运行时明确显示“最新提交暂无 CI”。
+提交树默认范围由所有本地分支及非符号 `origin/*` 分支的 `git log --topo-order <refs> --not <stable>` 加 stable 最新提交自身组成；stable 自身在该范围最后一行，供页面显示带日期的横向分隔标。首批最多 80 条，短于 80 条时不补入旧历史。无 stable 时首批取完整历史最近 80 条。`offset` / `next_offset` 是追加游标：先补完默认范围，再按原 `git log --all --topo-order` 顺序追加未出现的完整历史，每次最多 80 条，提交不重复。提交字段包含 sha、父提交、父提交所在分支、ref 标签、标题、正文、作者、绝对时间与精确关联的 PR。
 
-GitHub 查询使用本机 `gh`：开着的 PR、最近 20 个已合并 / 关闭 PR（编号、标题、head / base、状态、草稿、CI 汇总、链接），以及 base 最近 5 次 CI 运行（结论、提交、时间、链接）。`gh` 未安装、未登录、origin 不是 GitHub 或命令失败时，`github` 返回 null，`github_reason` 保留实际错误文字，页面原样显示原因；分支、worktree 和提交树继续显示。这是独立的 GitHub 状态，不隐藏失败。
+`ref_unique_commits` 按本地分支与 `origin/*` 名称给出相对 base 的独有 sha，供所有分支标签点击高亮。base / stable 概况包含 base 最新提交及 base 领先 stable 的提交数；`recent_merge` 取 `git log --first-parent --merges -1 <base>`，不受当前提交页影响，字段同提交结构。base 的 CI 只匹配最新提交 sha，没有对应运行时明确显示“最新提交暂无 CI”。改动统计在浮层首次打开时请求，使用 `git show --numstat --format=` 读取；二进制文件 `-` 转为 `null` 并标记 `binary`，不计入增删行数。
+
+GitHub 查询使用本机 `gh`：开着的 PR、最近 20 个已合并 / 关闭 PR（编号、标题、head / base、headRefOid、mergeCommit、状态、草稿、CI 汇总、链接），以及 base 最近 5 次 CI 运行（结论、提交、时间、链接）。PR 的 `head_sha` 来自 `headRefOid`，`merge_sha` 来自 `mergeCommit.oid`；提交 sha 与其中一个相同才关联 PR，不根据分支标签猜测。`gh` 未安装、未登录、origin 不是 GitHub 或命令失败时，`github` 返回 null，`github_reason` 保留实际错误文字，页面原样显示原因；分支、worktree 和提交树继续显示。这是独立的 GitHub 状态，不隐藏失败。
 
 ### 缓存
 
-按项目根与 base / stable 区分缓存，使用 `git for-each-ref` 输出的哈希作为 refs 签名。签名未变时复用分支统计、预合并结果和全部本地 / origin 分支的 `ref_unique_commits`；worktree dirty 与 GitHub 查询分别缓存 60 秒。会话对应关系随读取重新关联。Git 页面打开时每 30 秒重新 GET，手动 fetch 返回执行结果并刷新页面数据。上次 fetch 时间只记录当前服务进程内成功执行的手动 fetch，不持久化；服务重启后尚未成功 fetch 时显示未刷新。
+按项目根与 base / stable 区分缓存，使用 `git for-each-ref` 输出的哈希作为 refs 签名。签名未变时复用分支统计、预合并结果和全部本地 / origin 分支的 `ref_unique_commits`；历史分页计划按项目根、refs 与 stable 缓存 SHA 序列，正文仅按当前页批量读取。worktree dirty 与 GitHub 查询分别缓存 60 秒。会话对应关系随读取重新关联。Git 页面打开时每 30 秒重新 GET，手动 fetch 返回执行结果并刷新页面数据。上次 fetch 时间只记录当前服务进程内成功执行的手动 fetch，不持久化；服务重启后尚未成功 fetch 时显示未刷新。
+
+提交改动统计按规范化项目根和完整 sha 缓存在服务进程内，不设过期时间，fetch 不清除；同 sha 不跨项目共用。前端同样缓存已取到的统计并合并同 sha 的在途请求。缓存利用提交内容不可变的性质，不增加数据库表或磁盘持久化。

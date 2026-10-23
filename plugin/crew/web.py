@@ -408,6 +408,14 @@ class Service:
             result.update(git_view.view(project["root"], config, sessions, offset=offset))
         return result
 
+    def git_commit(self, project_name, sha):
+        with closing(store.connect(self.home)) as conn:
+            name = self.selected_project(conn, project_name)
+            if board.git_config(conn, name) is None:
+                raise board.BoardError("请先启用 Git 管理")
+            root = board.project(conn, name)["root"]
+        return git_view.commit_detail(root, sha)
+
     def post(self, path, data, project_name=None):
         if not isinstance(data, dict):
             raise ValueError("JSON \u8bf7\u6c42\u5fc5\u987b\u662f\u5bf9\u8c61")
@@ -755,6 +763,8 @@ class Handler(BaseHTTPRequestHandler):
                                                     int(query.get('limit', [20])[0]), before))
         elif url.path == "/api/git":
             self._send(200, service.git(query.get("project", [None])[0], int(query.get("offset", [0])[0])))
+        elif url.path == "/api/git/commit":
+            self._send(200, service.git_commit(query.get("project", [None])[0], query.get("sha", [""])[0]))
         elif url.path == '/api/chat/file':
             content, media_type = service.chat_file(query.get('session_id', [''])[0], query.get('name', [''])[0],
                                                     query.get('project', [None])[0])
