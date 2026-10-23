@@ -173,7 +173,7 @@ def _github_repo(root):
 def _github(root, base, github_repo=None):
     try:
         repo = _github_repo(root) if github_repo is None else github_repo
-        fields = "number,title,headRefName,baseRefName,state,isDraft,statusCheckRollup,url,closedAt"
+        fields = "number,title,headRefName,headRefOid,baseRefName,state,isDraft,statusCheckRollup,url,closedAt"
         opened = _gh_json(root, "pr", "list", "--repo", repo, "--state", "open",
                           "--limit", str(_OPEN_PR_LIMIT), "--json", fields)
         merged = _gh_json(root, "pr", "list", "--repo", repo, "--state", "merged", "--limit", "20", "--json", fields)
@@ -182,7 +182,10 @@ def _github(root, base, github_repo=None):
         recent = sorted(recent_by_number.values(), key=lambda pr: pr["closedAt"], reverse=True)[:20]
         prs = [{"number": pr["number"], "title": pr["title"], "head": pr["headRefName"],
                 "base": pr["baseRefName"], "state": pr["state"], "draft": pr["isDraft"],
-                "ci": _ci(pr["statusCheckRollup"]), "url": pr["url"]} for pr in opened + recent]
+                "ci": _ci(pr["statusCheckRollup"]), "url": pr["url"], "sha": pr["headRefOid"],
+                "run_key": json.dumps([pr["headRefOid"], sorted(
+                    ((check.get("detailsUrl"), check.get("targetUrl"), check.get("startedAt"))
+                     for check in pr["statusCheckRollup"]), key=json.dumps)], ensure_ascii=False)} for pr in opened + recent]
         runs = _gh_json(root, "run", "list", "--repo", repo, "--branch", base, "--limit", "5",
                         "--json", "conclusion,status,headSha,createdAt,url")
         return {"pull_requests": prs,

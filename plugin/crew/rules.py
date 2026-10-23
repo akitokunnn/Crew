@@ -4,7 +4,14 @@ from pathlib import Path
 
 from . import board, store
 
-SKILLS = {"crew:leader": "leader", "crew:member": "member"}
+SKILLS = {"crew:leader": "leader", "crew:member": "member", "crew:git": "git"}
+
+
+def skill_role(conn, session):
+    config = board.git_config(conn, session["project"])
+    if config is not None and config["admin_session_id"] == session["session_id"]:
+        return "git"
+    return session["role"]
 
 
 def digest(plugin_root, role):
@@ -19,11 +26,11 @@ def record_read(conn, session_id, role, plugin_root, now=None):
 
 
 def reminder(conn, session_id, plugin_root):
-    session = conn.execute("SELECT crew_name,role,status FROM sessions WHERE session_id=?", (session_id,)).fetchone()
+    session = conn.execute("SELECT session_id,project,crew_name,role,status FROM sessions WHERE session_id=?", (session_id,)).fetchone()
     if (session is None or not session["crew_name"] or session["role"] not in SKILLS.values()
             or session["status"] == "closed" or board.is_archived(conn, session_id)):
         return None
-    role = session["role"]
+    role = skill_role(conn, session)
     current = digest(plugin_root, role)
     read = conn.execute("SELECT role,digest FROM rule_reads WHERE session_id=?", (session_id,)).fetchone()
     if read is not None and (read["role"], read["digest"]) == (role, current):

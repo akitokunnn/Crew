@@ -12,8 +12,8 @@ Crew/
   plugin/                             插件根目录（运行时的 ${CLAUDE_PLUGIN_ROOT}）
     .claude-plugin/plugin.json
     hooks/hooks.json                  钩子注册（主控写）
-    agents/leader.md                  leader 角色（主控写）
-    skills/member|leader|trust/       守则和 /crew:trust（主控写）
+    agents/leader.md  agents/git.md   leader 与 Git 管理员角色
+    skills/member|leader|git|trust/   守则和 /crew:trust
     crew_hook.py                      钩子入口：python crew_hook.py <事件>
     crew_cli.py                       命令行入口：python crew_cli.py <子命令>
     crew/                             Python 包，只用标准库（Python 3.11+）
@@ -29,6 +29,7 @@ Crew/
       channel.py                      项目交流区、点名通知与每轮未读摘要
       models.py                       模型 / effort 唯一清单与会话设置
       git_view.py                     Git 管理配置、分支检查、提交树、GitHub PR / CI 与缓存
+      git_admin.py  git_ci.py          Git 管理员生命周期与后台 CI 通知
       web.py  web/                    工作区网页和 leader 聊天，含本地 Markdown 库、HarmonyOS Sans 字体、logo
       vscode_sessions.py              复现 VS Code 会话列表与归档名单（只读），供待收编和归档同步
       presentation.py session_ops.py  待处理事项（QQ 推送用）与可撤销会话整理
@@ -70,7 +71,10 @@ Crew/
 | `decision_holds` | `decision_id PRIMARY KEY REFERENCES decisions(id)`、`held_at TEXT NOT NULL`；只记录挂起标记，答复或撤回时删除 |
 | `session_options` | `session_id TEXT PRIMARY KEY REFERENCES sessions(session_id)`、`model TEXT`、`effort TEXT`、`set_at TEXT NOT NULL`；两项都为 null 时删行，无记录表示账号默认 |
 | `rule_reads` | `session_id TEXT PRIMARY KEY REFERENCES sessions(session_id)`、`role TEXT NOT NULL`、`digest TEXT NOT NULL`、`read_at TEXT NOT NULL`；记录会话读过的角色守则 sha256 |
-| `git_management` | `project TEXT PRIMARY KEY REFERENCES projects(name)`、`enabled_at TEXT NOT NULL`、`base TEXT NOT NULL`、`stable TEXT`、`admin_session_id TEXT REFERENCES sessions(session_id)`、`branch_rules TEXT`；每项目一行，后两项留给第二期 |
+| `git_management` | `project TEXT PRIMARY KEY REFERENCES projects(name)`、`enabled_at TEXT NOT NULL`、`base TEXT NOT NULL`、`stable TEXT`、`admin_session_id TEXT REFERENCES sessions(session_id)`、`branch_rules TEXT`；每项目一行，记录 Git 管理员与分支规则 |
+| `git_merge_requests` | 项目、提出会话、分支、说明、状态、PR 号、结果说明、创建与更新时间；详见 §13 |
+| `git_ci_state` | 按项目、检查对象与 CI 运行记录状态和通知去重；详见 §13 |
+| `git_result_handoffs` | Git 结果与 handoff、接收组员及发送管理员的关联，沿用 handoff_deliveries 记账；详见 §13 |
 
 `decision_holds` 由 `schema.sql` 的 `CREATE TABLE IF NOT EXISTS` 在连接数据库时创建，不改变现有表结构、不需要迁移。`board.decisions` 返回 `held` 布尔值和可空的 `held_at`，默认仍列出全部 open 题，供下属侧 `crew` 沿用未答逻辑。
 
@@ -158,20 +162,22 @@ Crew/
 
 | 参数 | 事件 | 做什么 | 输出 |
 |---|---|---|---|
-| `session-start` | SessionStart | **不管属不属于项目都先跑 install**（刷新 runtime.json；黑名单不存在时复制默认的，守卫在所有会话里都要用到它）。属于某项目时登记 / 更新会话（带 CREW_* 变量就按它登记；已登记过的会话保留 crew 名）；status=idle。cwd 不是 git 仓库时 worktree / branch 记为空。source 是 resume / compact 时检查守则版本，startup 不重复提醒 | 属于项目时输出 `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"..."}}`，中文告诉会话：项目名、我的 crew 名（没收编时写明不要自己 crew join，等用户说收编）、分组和 leader（含 leader 的 cc_name）、命令行怎么调（`python "<HOME>/crew.py" ...`）、守则 `/crew:member`（leader 是 `/crew:leader`）、发给我还没送达的交接；需要时附守则更新提醒 |
+| `session-start` | SessionStart | **不管属不属于项目都先跑 install**（刷新 runtime.json；黑名单不存在时复制默认的，守卫在所有会话里都要用到它）。属于某项目时登记 / 更新会话（带 CREW_* 变量就按它登记；已登记过的会话保留 crew 名）；status=idle。cwd 不是 git 仓库时 worktree / branch 记为空。source 是 resume / compact 时检查守则版本，startup 不重复提醒 | 属于项目时输出 `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"..."}}`，中文告诉会话：项目名、我的 crew 名（没收编时写明不要自己 crew join，等用户说收编）、分组和 leader（含 leader 的 cc_name）、命令行怎么调（`python "<HOME>/crew.py" ...`）、守则 `/crew:member`（普通 leader 是 `/crew:leader`，Git 管理员是 `/crew:git`）、发给我还没送达的交接；需要时附守则更新提醒及 Git 管理提示 |
 | `user-prompt-submit` | UserPromptSubmit | status=working，last_prompt。查我提的、已答复但没送达（delivered_at 为空）的待拍板，和没送达我的交接；检查守则版本；leader 读取交流区未读摘要 | 有内容时输出 UserPromptSubmit 的 additionalContext，并标记送达；需要时附守则更新提醒与交流区摘要 |
 | `stop` | Stop | status=idle，last_message 取输入里的 `last_assistant_message` 前 300 字 | 无 |
 | `notification` | Notification | status=waiting，status_note 取输入里的 `message` | 无 |
 | `pre-ask` | PreToolUse（AskUserQuestion、ExitPlanMode） | status=waiting，note 写"等你回答提问"或"等你审批计划" | 无 |
 | `post-ask` | PostToolUse（同上） | status=working | 无 |
 | `session-end` | SessionEnd | status=offline，ended_at | 无 |
-| `guard` | PreToolUse（所有工具） | §7；收到 `Skill` 调用且 `tool_input.skill` 是 `crew:leader` / `crew:member` 时，记录对应技能文件当前 digest | 拦截时 stderr + exit 2 |
+| `guard` | PreToolUse（所有工具） | §7；收到 `Skill` 调用且 `tool_input.skill` 是 `crew:leader` / `crew:member` / `crew:git` 时，记录对应技能文件当前 digest | 拦截时 stderr + exit 2 |
 
 - 每个打卡事件写一条 events，detail 里记输入 JSON 的键名列表和该事件关心的字段（不存 transcript 全文、不存 tool_input 全文，命令截前 200 字）。守卫只在拦截时写事件，放行的调用不记（否则每次工具调用都写一行）。
 - 插件装上或项目启用之前就开着的会话没有 SessionStart 记录：它的第一个打卡事件会先补登记再改状态。
 - 打卡类事件出错不能影响会话：打一行原因到 stderr，exit 1。**除 guard 外任何事件都不能 exit 2。**
 - 会话的 crew 名、cc_name 不在钩子里调 `claude agents`（太慢）。
-- 守则版本取 `plugin/skills/<role>/SKILL.md` 内容的 sha256，role 使用白板 `sessions.role`。已启用项目中已收编、未归档的 leader / member，在每次 UserPromptSubmit（含会话间消息）和 resume / compact 的 SessionStart 比较 `rule_reads`；没有阅读记录或 digest 不同，就在 additionalContext 加“Crew 守则（/crew:<role>）有更新，你上次读的不是最新版。先调用 /crew:<role> 重读一遍，再处理这条消息。”调用相应 Skill 后写入新 digest，下次不再提醒；文件再次变化后恢复提醒。未收编、归档、角色不符、未启用项目不提醒。热路径只读技能小文件计算摘要，不启动进程或发网络请求。
+- 守则版本取 `plugin/skills/<role>/SKILL.md` 内容的 sha256，普通会话使用白板 `sessions.role`，`git_management.admin_session_id` 指向的 leader 使用 git 守则。已启用项目中已收编、未归档的 leader / member，在每次 UserPromptSubmit（含会话间消息）和 resume / compact 的 SessionStart 比较 `rule_reads`；没有阅读记录或 digest 不同，就在 additionalContext 加“Crew 守则（/crew:<role>）有更新，你上次读的不是最新版。先调用 /crew:<role> 重读一遍，再处理这条消息。”调用相应 Skill 后写入新 digest，下次不再提醒；文件再次变化后恢复提醒。未收编、归档、角色不符、未启用项目不提醒。热路径只读技能小文件计算摘要，不启动进程或发网络请求。
+
+Git 管理启用时，所有会话的 SessionStart 再附两段：管理员统一推送和合并、做完用 `crew git request` 转交的提示；`branch_rules` 前 6 行与“全文用 crew git policy 看”。规则为空时改为“git 管理员还没写分支规则，开工前先问它”。未收编会话同样收到，Git 管理员启动时的守则指向 `/crew:git`。
 - 交流区摘要只在 leader 的 UserPromptSubmit 中追加，与守则提醒共用 additionalContext。按读到位置取本项目新发言，排除自己发的，以及点名当前 leader 且 `channel_mentions.notice_id` 非空的发言；无论通知是否已送达，都不重复进入摘要。无新发言不附加。有内容时第一行为“[Crew 交流区] 你上次看之后有 N 条新发言：”，每条一行 `- HH:MM <名字>（→ @A、@B）：<正文第一行>`，正文超过 120 字截断加“…”；最多 10 条，超过时追加“还有 M 条”，末尾写“全文用 crew channel 看”。读取后把该 leader 的位置推到最新；组员钩子不附交流区摘要。
 
 显式 session_controls 的归档/移出高于上述 hook 状态，closed 不因启动、Stop 或 SessionEnd 改回活跃。compact 只续上下文，保留既有身份、分组与状态，不重放旧 CREW_*。没有显式控制记录的旧 close_group 仍保留主动启动后重开的既有行为。
@@ -187,9 +193,10 @@ Crew/
 PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stderr 写原因、exit 2，否则 exit 0：
 
 1. **黑名单**：`HOME/blacklist.txt`，格式见 defaults/blacklist.txt 文件头（`工具 :: 正则 :: 原因`，不区分大小写）。检查对象：Bash / PowerShell 用 command；有 file_path / notebook_path 的工具用路径；其它工具用 tool_input 的 JSON。任何一行非法 → 拦截所有调用，只放行目标是 blacklist.txt 本身的 Edit / Write / Read。对所有会话生效，不管属不属于项目。
-2. **设备借用**（只对属于项目的会话、只查 Bash / PowerShell）：项目里每个有 guard_regex 的资源，如果有未归还的借用、借用人不是本会话、command 匹配 guard_regex → 拦截，原因写借用人（crew 名或会话 ID 前 8 位）、用途、借出时间、预计归还，并提示"等对方归还，或用 SendMessage 找对方 / leader 协商"。没人借着就放行。
-3. **文件归属**（只对属于项目的会话、只查 Edit / Write / NotebookEdit）：路径命中别的在线会话的 claim → 拦截，原因写对方和 note。
-4. **白板读不了**（数据库打不开、锁超时）：拦截 Bash / PowerShell / Edit / Write / NotebookEdit，原因写真实错误；但命令里含 `crew.py`、`crew_cli.py` 或以 `crew ` 开头的放行（留出查问题的路）。
+2. **集中 Git 操作**（Bash / PowerShell）：当前项目启用 Git 管理时，已收编、未关闭且未归档、属于该项目的普通会话执行 `git push`、`gh pr merge`、`gh pr create` → 拦截，提示“本项目由 git 管理员统一推送和合并：用 crew git request 交给它。”解析引号和命令连接符，识别 Git 全局参数、可执行文件路径与 PowerShell `&` 调用；帮助命令和引号中的普通字符串放行。管理员会话豁免；未收编会话、其它项目或没启用 Git 管理时不拦。
+3. **设备借用**（只对属于项目的会话、只查 Bash / PowerShell）：项目里每个有 guard_regex 的资源，如果有未归还的借用、借用人不是本会话、command 匹配 guard_regex → 拦截，原因写借用人（crew 名或会话 ID 前 8 位）、用途、借出时间、预计归还，并提示"等对方归还，或用 SendMessage 找对方 / leader 协商"。没人借着就放行。
+4. **文件归属**（只对属于项目的会话、只查 Edit / Write / NotebookEdit）：路径命中别的在线会话的 claim → 拦截，原因写对方和 note。
+5. **白板读不了**（数据库打不开、锁超时）：拦截 Bash / PowerShell / Edit / Write / NotebookEdit，原因写真实错误；但命令里含 `crew.py`、`crew_cli.py` 或以 `crew ` 开头的放行（留出查问题的路）。
 
 拦截信息末尾统一加一句："Do not retry or work around it; tell the user."
 
@@ -252,7 +259,7 @@ PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stder
 - `spawn --name N --task T [--group G] [--cwd DIR | --new-worktree BRANCH]` 默认开后台成员，调用网页服务的 `/api/spawn`。任务正文写 `HOME/spawn/<id>.md`，参数写 `<id>.json`；复用 leader 的持久 CLI、聊天记录和恢复逻辑。新会话不再开终端窗口。
 - `web [--port 47811] [--open]` 只监听 127.0.0.1，运行期间把地址写入 `HOME/web.json`。一个项目一个标签页（`/?project=P`），裸网址列项目入口，页内不切项目。页面以和 leader 聊天为主：左栏 leader 列表、中间对话（待拍板托盘置顶）、右栏本组架构图与下属卡片，另有全部、交流区、待收编、用量页；交流区供用户和 leader 公共发言，下属不在网页发言。页面结构和交互见 [WEB_UX.md](WEB_UX.md)。前端用原生 JS 和本地 markdown-it 15.0.2，无构建流程；Python 后端仍只用标准库。
 - `leader start --name N [--members A,B] [--task T]` 调本机网页服务的 `/api/leader`。`spawn` 和 `leader start` 都先要求运行 `crew web --open`，服务未运行时清楚报错；`--dry-run` 只生成启动计划，不连服务、不写白板、不启动进程。
-- 成员和 leader 都复用 `spawn.prepare` 和任务文件；leader 额外建分组、收编/挪入选定成员。后台进程是 PATH 里的 Claude CLI，通用参数为 `-p --input-format stream-json --output-format stream-json --verbose --include-partial-messages --replay-user-messages --permission-mode bypassPermissions --name N`；仅 leader 追加 `--agent crew:leader`。保持 stdin 打开，不加 `--bare`，保留跨会话收件箱和插件钩子/守卫。任务 brief 指定相应的 `/crew:member` 或 `/crew:leader` 守则，CREW_ROLE 也按角色设置；未分组成员不设置 CREW_GROUP。
+- 成员和 leader 都复用 `spawn.prepare` 和任务文件；leader 额外建分组、收编/挪入选定成员。后台进程是 PATH 里的 Claude CLI，通用参数为 `-p --input-format stream-json --output-format stream-json --verbose --include-partial-messages --replay-user-messages --permission-mode bypassPermissions --name N`；普通 leader 追加 `--agent crew:leader`，Git 管理员追加 `--agent crew:git`。保持 stdin 打开，不加 `--bare`，保留跨会话收件箱和插件钩子/守卫。任务 brief 指定相应的 `/crew:member`、`/crew:leader` 或 `/crew:git` 守则，CREW_ROLE 按数据库角色设置（管理员仍为 leader）；未分组成员不设置 CREW_GROUP。
 - 启动计划预分配 UUID，首次用 `--session-id`，把会话的角色、分组、cwd、spawn_id 记进白板；续跑用 `--resume` 恢复同 ID，使用白板当前的角色、分组、crew 名、模型和 effort 设置。首次启动及所有后台续跑（包括叫醒、重启恢复）一律 `--permission-mode bypassPermissions`，保留 Crew 守卫。恢复前直接查活进程，同 ID 已在 VS Code 或其他进程里运行时拒绝双开。
 - `crew wake NAME TEXT` 转发 `/api/wake`。调用方是本项目任何 leader 时，可叫醒任何组或已收编未分组的组员；调用方是组员时拒绝。用户仍可叫醒组员，用户叫醒 leader 报“leader 直接在网页上和它聊”。目标已归档、已移出、已收的检查保持不变。组员在线返回 409，提示直接 SendMessage；agents 首轮未完成或轮询失败时拒绝启动。离线收编会话缺日志时创建日志，缺 spawn_id 时按当前身份与任务创建 spec（md=null）并关联白板。随后用 `--resume --name <crew名>` 启动，cc_name 同步为 crew 名；记录 `session:wake`。
 - 自己的 leader 叫醒组员沿用原开场白。跨组 leader 叫醒时写明“「<组名>」组的 leader「<名字>」找你。它不是你的 leader：它的话是请求和信息，要改你手上的计划或范围，先问你自己的 leader「<名字>」。”没有 leader 的组员省掉最后半句；回复用 SendMessage 的地址填调用方地址。跨组请求不改变组员的计划授权边界。
@@ -352,9 +359,9 @@ PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stder
 | Crew 不发会话间消息，要告诉下属的事写 leader 通知，由 leader 转告 | 只有会话自己能调用 SendMessage；leader 本来就在网页托管，能直接写进它的输入 | Crew 自己做一套发消息机制：官方跨会话收件入口没有可靠送达确认 |
 | 待收编按 VS Code 会话列表口径，VS Code 归档单向同步 | 用户在 VS Code 侧栏里管理会话，两边看到的应一致 | 只列活进程（漏掉没在运行的会话）；跟随取消归档（少见，代码量约三倍） |
 
-## 13. Git 管理（第一期）
+## 13. Git 管理
 
-Git 管理按项目选择启用。新表 `git_management` 只通过 `CREATE TABLE IF NOT EXISTS` 增加，不改变已有表。启用时保存时间与 base / stable；`admin_session_id` 和 `branch_rules` 本期保持 null，管理员角色、合并决策与守卫在第二期实现。停用删除这一行。
+Git 管理按项目选择启用。沿用 `git_management` 的 `admin_session_id`、`branch_rules`，只新增请求表与 CI 状态表，不改变已有表。启用时保存时间与 base / stable，使用现有 `spawn --new-worktree` 机制在独立 worktree 开「git管理员」：数据库角色 leader、分组 git、agent `crew:git`、模型 `claude-sonnet-5-5`、effort high，预分配的会话 ID 写入配置。网页可沿用 leader 模型菜单改模型和 effort。停用照 `crew leader close` 收掉管理员分组，再删除配置。
 
 ```sql
 CREATE TABLE IF NOT EXISTS git_management (
@@ -371,13 +378,13 @@ CREATE TABLE IF NOT EXISTS git_management (
 
 ### 数据与接口
 
-所有 Git 命令在 `board.project(...)["root"]` 运行。页面查询与检查只读；手动 fetch 是第一期唯一的仓库更新入口。
+页面查询、检查与手动 fetch 在 `board.project(...)["root"]` 运行。查询与检查只读；Git 管理员的推送、合并与清理只在它自己的 worktree 进行，不动用户主工作区或组员未提交的内容。
 
 | 接口 | 内容 |
 |---|---|
-| `GET /api/git?project=P&offset=0` | 启用状态、配置、本地分支候选与自动选择值、仓库名；启用后返回本地分支、远端独有分支、提交页、base / stable 概况、GitHub 数据或失败原因、上次 fetch 时间 |
-| `POST /api/git/enable` | `{project, base?, stable?}`；校验本地分支并保存启用配置 |
-| `POST /api/git/disable` | `{project}`；删除启用配置 |
+| `GET /api/git?project=P&offset=0` | 启用状态、配置、本地分支候选与自动选择值、仓库名；启用后返回本地分支、远端独有分支、提交页、base / stable 概况、GitHub 数据或失败原因、上次 fetch 时间与合并请求 |
+| `POST /api/git/enable` | `{project, base?, stable?}`；校验本地分支、保存配置并开 Git 管理员 |
+| `POST /api/git/disable` | `{project}`；收管理员的组并删除启用配置 |
 | `POST /api/git/fetch` | `{project}`；运行 `git fetch --prune origin`，返回执行结果，失败保留命令报错原文 |
 
 启用接口的 `stable` 省略或 null 表示自动识别，显式 `""` 表示不配置 stable。
@@ -391,3 +398,64 @@ GitHub 查询使用本机 `gh`：开着的 PR、最近 20 个已合并 / 关闭 
 ### 缓存
 
 按项目根与 base / stable 区分缓存，使用 `git for-each-ref` 输出的哈希作为 refs 签名。签名未变时复用分支统计、预合并结果和全部本地 / origin 分支的 `ref_unique_commits`；worktree dirty 与 GitHub 查询分别缓存 60 秒。会话对应关系随读取重新关联。Git 页面打开时每 30 秒重新 GET，手动 fetch 返回执行结果并刷新页面数据。上次 fetch 时间只记录当前服务进程内成功执行的手动 fetch，不持久化；服务重启后尚未成功 fetch 时显示未刷新。
+
+### 分支规则与合并请求
+
+Git 管理员第一次开工先读项目 AGENTS.md、CLAUDE.md 和贡献文档，确定直接合进 base 或开分支走 PR 的范围、分支命名和提交信息格式。`crew git policy` 读取全文；`crew git policy --set "<正文>"` 只允许配置中记录的管理员会话设置，正文不能为空。数据库角色仍为 leader；守则阅读记录按管理员 ID 区分 `/crew:git`，普通 leader 继续读 `/crew:leader`。
+
+请求表由连接数据库时的 `CREATE TABLE IF NOT EXISTS` 新增：
+
+```sql
+CREATE TABLE IF NOT EXISTS git_merge_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project TEXT NOT NULL REFERENCES projects(name),
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    branch TEXT NOT NULL,
+    description TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open'
+        CHECK (status IN ('open', 'merging', 'waiting_user', 'merged', 'rejected')),
+    pr_number INTEGER,
+    note TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS git_merge_requests_project
+    ON git_merge_requests (project, status, id);
+```
+
+`crew git request [--branch <分支>] "<做了什么、测过什么、有没有要用户亲手验收的>"` 只允许本项目已收编、未关闭、未归档的会话使用。省略分支时读取调用目录的当前 Git 分支，不使用可能过时的会话记录。写入 open 请求后，在同一事务给管理员排现有 `leader_notices`，由 `Service.deliver_notices` 在管理员空闲时送达或续跑，叫醒它检查队列。
+
+`crew git requests` 列 open / merging / waiting_user；`--all` 加上 merged / rejected，活动状态在前、各组内按编号排序。`crew git resolve <编号> <merged|rejected|waiting_user|merging> --note "<说明>" [--pr <号>]` 只允许管理员会话，说明不能为空、PR 号必须大于 0；merged / rejected 是终态，不能再次修改。每次更新给提出者排消息：提出者是 leader 时用 `leader_notices`；组员写既有 `handoffs`，并以 `git_result_handoffs` 记录接收会话和发送管理员。每两秒的现有通知轮询检查未送达结果：后台空闲用既有 `chat.send`；已结束进程用与 `crew wake` 相同的 `chat.wake` 入口恢复，发送者为管理员；VS Code 在线时保留 handoff，下一次打卡送达。忙碌、进程状态未知时等待，发送失败记事件并保留队列。成功后写既有 `handoff_deliveries`，避免再次送达。
+
+```sql
+CREATE TABLE IF NOT EXISTS git_result_handoffs (
+    handoff_id INTEGER PRIMARY KEY REFERENCES handoffs(id),
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    admin_session_id TEXT NOT NULL REFERENCES sessions(session_id)
+);
+```
+
+管理员按请求与任务卡核对范围，用 `git merge-tree` 预合并，按规则选择直接合或推分支开 PR，等待 CI 通知后合并，再 resolve、在交流区说明结果、通知受影响和要 rebase 的负责人，最后清理已合并分支与 worktree。机械冲突自己解决；行为冲突要取舍、合 stable 或发版、force push 或改写已推送历史、删除未合并分支、编辑器或设备亲手验收，都先 `crew ask` 登记拍板。读大 diff 和 CI 日志等检查派只读 Codex。多请求先处理小且无冲突的，在交流区说明顺序。
+
+网页 state 的 leader 项通过管理员 ID 返回 `is_git_admin`，左栏显示“Git”小标。Git 查询返回合并请求，页头“和 git 管理员聊”进入该会话的现有 leader 对话；请求区块活动在前，显示状态、分支、提出者和 PR。
+
+### 后台 CI 变化通知
+
+`Service` 运行单独的 CI 线程，每 300 秒调用 `git_ci.Poller.poll`，通过第一期的 `git_view._github` / `_gh_json` 读取 GitHub。`gh` 未安装时不发查询；未登录、非 GitHub 远端或查询失败时不处理 CI 状态，Git 页面沿用 `github_reason` 显示原文。
+
+轮询只针对启用并记录管理员的项目：base 最新提交最近一次 CI 已完成且失败时通知；活动合并请求记录了 PR 号，且同一提交的 PR CI 从 pending 进入 success / failure 时通知。通知包含结论、提交 SHA 和链接，经既有 leader 通知送达。观察和通知去重在同一事务持久化，同一次运行重查或服务重启后不重复通知。
+
+```sql
+CREATE TABLE IF NOT EXISTS git_ci_state (
+    project TEXT NOT NULL REFERENCES projects(name),
+    subject TEXT NOT NULL,
+    run_key TEXT NOT NULL,
+    sha TEXT NOT NULL,
+    status TEXT NOT NULL,
+    notified INTEGER NOT NULL CHECK (notified IN (0, 1)),
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (project, subject, run_key)
+);
+```
+
+`subject` 为 `base:<分支>` 或 `pr:<编号>`，`run_key` 区分运行，`sha` 将 PR 状态变化关联到同一提交；`notified` 记录这次运行是否已排通知。三张新表都无需修改已有表或执行迁移；部署后重启服务即可创建。

@@ -1,4 +1,5 @@
 """Core integration tests: temporary homes only, no Claude or terminal launches."""
+import tests  # Install the production-service connection guard.
 import contextlib
 import hashlib
 import io

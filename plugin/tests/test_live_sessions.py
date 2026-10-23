@@ -1,4 +1,5 @@
 """Live snapshots may contain multiple processes and history from earlier runs."""
+import tests  # Install the production-service connection guard.
 import tempfile
 import unittest
 from pathlib import Path

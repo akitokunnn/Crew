@@ -13,6 +13,38 @@ TAIL = "Do not retry or work around it; tell the user."
 SHELLS = ("Bash", "PowerShell")
 WRITES = ("Edit", "Write", "NotebookEdit")
 REPAIR_BLACKLIST = object()
+SHELL_WORDS = re.compile(r'''(?:"(?:`.|\\.|[^"\\])*"|'(?:''|[^'])*'|[^\s;&|()"'])+|&&|\|\||[;&|()\n]''')
+
+
+def git_operation(command):
+    commands = [[]]
+    for match in SHELL_WORDS.finditer(command):
+        word = match.group()
+        if word in ("&&", "||", ";", "|", "&", "(", ")", "\n"):
+            commands.append([])
+        else:
+            commands[-1].append(word.strip("\"'"))
+    for words in commands:
+        if not words:
+            continue
+        executable = words[0].replace("\\", "/").rsplit("/", 1)[-1].casefold()
+        arguments = words[1:]
+        if executable in ("git", "git.exe"):
+            index = 0
+            while index < len(arguments) and arguments[index].startswith("-"):
+                option = arguments[index]
+                if option in ("--help", "--version"):
+                    break
+                index += 2 if option in ("-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env") else 1
+            if (index < len(arguments) and arguments[index].casefold() == "push"
+                    and not any(arg in ("--help", "-h") for arg in arguments[index + 1:])):
+                return True
+        elif executable in ("gh", "gh.exe"):
+            if (len(arguments) >= 2 and arguments[0].casefold() == "pr"
+                    and arguments[1].casefold() in ("merge", "create")
+                    and not any(arg in ("--help", "-h") for arg in arguments[2:])):
+                return True
+    return False
 
 
 class BlacklistError(ValueError):
@@ -105,6 +137,13 @@ def check(home, data, now=None):
             if p is None:
                 return reason
             sid = data["session_id"]
+            if reason is None and tool in SHELLS and git_operation(command):
+                config = board.git_config(conn, p["name"])
+                member = conn.execute("SELECT crew_name,status FROM sessions WHERE session_id=? AND project=?",
+                                      (sid, p["name"])).fetchone()
+                if (config is not None and config["admin_session_id"] != sid and member is not None
+                        and member["crew_name"] and member["status"] != "closed" and not board.is_archived(conn, sid)):
+                    reason = "本项目由 git 管理员统一推送和合并：用 crew git request 交给它。 " + TAIL
             if reason is None and tool in SHELLS:
                 active = {l["resource"]: l for l in board.leases(conn, p["name"])}
                 for resource in board.resources(conn, p["name"]):

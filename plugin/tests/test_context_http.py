@@ -1,4 +1,5 @@
 """Context state and compaction routes with isolated transcripts and fake processes."""
+import tests  # Install the production-service connection guard.
 import json
 import threading
 import unittest

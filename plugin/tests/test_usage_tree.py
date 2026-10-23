@@ -1,3 +1,4 @@
+import tests  # Install the production-service connection guard.
 import unittest
 
 from crew import board, usage

@@ -1,4 +1,5 @@
 """Restart recovery with isolated journals and fake Claude processes."""
+import tests  # Install the production-service connection guard.
 import json
 import unittest
 from unittest import mock

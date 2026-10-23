@@ -1,4 +1,5 @@
 """Execute the repository dispatch script with a fake process, never Codex or its viewer."""
+import tests  # Install the production-service connection guard.
 import json
 import os
 import shutil

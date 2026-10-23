@@ -1,4 +1,5 @@
 """Explicit human choices survive running processes and can be undone without process I/O."""
+import tests  # Install the production-service connection guard.
 from crew import board, hooks, session_ops, store
 from test_core import CoreCase, NOW
 

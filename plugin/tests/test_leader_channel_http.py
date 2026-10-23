@@ -1,4 +1,5 @@
 """Leader wake permissions and channel HTTP with isolated storage and fake processes."""
+import tests  # Install the production-service connection guard.
 import json
 from contextlib import closing
 import threading

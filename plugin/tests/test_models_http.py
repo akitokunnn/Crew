@@ -1,4 +1,5 @@
 """Session options and wake routes using isolated data and fake processes."""
+import tests  # Install the production-service connection guard.
 import json
 import time
 import threading

@@ -1,4 +1,5 @@
 """Workspace task flows through a real temporary HTTP service; no external apps or models."""
+import tests  # Install the production-service connection guard.
 import contextlib
 import csv
 import datetime as dt

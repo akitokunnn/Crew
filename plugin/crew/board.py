@@ -80,8 +80,7 @@ def git_config(conn, project_name):
     return None if row is None else dict(row)
 
 
-@atomic
-def enable_git(conn, project_name, base=None, stable=None, now=None):
+def git_branches(conn, project_name, base=None, stable=None):
     from . import git_view
     choices = git_view.branch_choices(project(conn, project_name)["root"])
     base = choices["base"] if base is None else base
@@ -97,9 +96,17 @@ def enable_git(conn, project_name, base=None, stable=None, now=None):
         raise BoardError("分支不存在: " + stable)
     if stable == base:
         raise BoardError("稳定分支必须与主干分支不同")
+    return base, stable
+
+
+@atomic
+def enable_git(conn, project_name, base=None, stable=None, now=None, admin_session_id=None):
+    base, stable = git_branches(conn, project_name, base, stable)
     conn.execute("INSERT INTO git_management(project,enabled_at,base,stable) VALUES(?,?,?,?) "
                  "ON CONFLICT(project) DO UPDATE SET base=excluded.base,stable=excluded.stable",
                  (project_name, _time(now), base, stable))
+    if admin_session_id is not None:
+        conn.execute("UPDATE git_management SET admin_session_id=? WHERE project=?", (admin_session_id, project_name))
     return git_config(conn, project_name)
 
 
@@ -108,6 +115,100 @@ def disable_git(conn, project_name):
     project(conn, project_name)
     conn.execute("DELETE FROM git_management WHERE project=?", (project_name,))
     return {"ok": True}
+
+
+def _git_enabled(conn, project_name):
+    config = git_config(conn, project_name)
+    if config is None:
+        raise BoardError("本项目未启用 Git 管理")
+    return config
+
+
+def _git_admin(conn, project_name, session_id):
+    config = _git_enabled(conn, project_name)
+    if session_id is None or config["admin_session_id"] != session_id:
+        raise BoardError("只有 git 管理员能执行此操作")
+    return config
+
+
+def git_policy(conn, project_name):
+    return _git_enabled(conn, project_name)["branch_rules"]
+
+
+@atomic
+def set_git_policy(conn, project_name, session_id, text, now=None):
+    _git_admin(conn, project_name, session_id)
+    if not text.strip():
+        raise BoardError("分支规则不能为空")
+    conn.execute("UPDATE git_management SET branch_rules=? WHERE project=?", (text, project_name))
+    _event(conn, "git:policy", project_name, session_id, {"text": text}, now)
+    return text
+
+
+def git_requests(conn, project_name, all=False):
+    project(conn, project_name)
+    return _rows(conn, "SELECT r.*,s.crew_name AS requester_name FROM git_merge_requests r "
+                 "JOIN sessions s ON s.session_id=r.session_id WHERE r.project=? " +
+                 ("" if all else "AND r.status IN ('open','merging','waiting_user') ") +
+                 "ORDER BY (r.status IN ('merged','rejected')),r.id", (project_name,))
+
+
+def _git_request(conn, project_name, request_id):
+    row = conn.execute("SELECT r.*,s.crew_name AS requester_name FROM git_merge_requests r "
+                       "JOIN sessions s ON s.session_id=r.session_id WHERE r.project=? AND r.id=?",
+                       (project_name, request_id)).fetchone()
+    if row is None:
+        raise BoardError("合并请求不存在: " + str(request_id))
+    return dict(row)
+
+
+@atomic
+def request_git_merge(conn, project_name, session_id, branch, description, now=None):
+    config = _git_enabled(conn, project_name)
+    requester = session(conn, session_id)
+    if (requester["project"] != project_name or requester["crew_name"] is None or
+            requester["status"] == "closed" or is_archived(conn, session_id)):
+        raise BoardError("只有本项目已收编的会话能提交合并请求")
+    if not branch or not branch.strip():
+        raise BoardError("请在分支上提交请求，或用 --branch 指定分支")
+    if not description.strip():
+        raise BoardError("合并请求说明不能为空")
+    request_id = conn.execute("INSERT INTO git_merge_requests(project,session_id,branch,description,created_at,updated_at) "
+                              "VALUES(?,?,?,?,?,?)", (project_name, session_id, branch, description, _time(now), _time(now))).lastrowid
+    _queue_leader_notice(conn, config["admin_session_id"],
+                         "合并请求 #%s，%s 提交分支 %s：%s。用 crew git requests 查看并处理。" %
+                         (request_id, requester["crew_name"], branch, description), "crew", now)
+    _event(conn, "git:request", project_name, session_id, {"id": request_id, "branch": branch}, now)
+    return _git_request(conn, project_name, request_id)
+
+
+@atomic
+def resolve_git_request(conn, project_name, session_id, request_id, status, note, pr_number=None, now=None):
+    _git_admin(conn, project_name, session_id)
+    request = _git_request(conn, project_name, request_id)
+    if status not in ("merged", "rejected", "waiting_user", "merging"):
+        raise BoardError("合并请求状态无效: " + status)
+    if request["status"] in ("merged", "rejected"):
+        raise BoardError("合并请求已结束: " + str(request_id))
+    if not note.strip():
+        raise BoardError("处理说明不能为空")
+    if pr_number is not None and pr_number < 1:
+        raise BoardError("PR 编号必须大于 0")
+    conn.execute("UPDATE git_merge_requests SET status=?,note=?,updated_at=? WHERE id=?", (status, note, _time(now), request_id))
+    if pr_number is not None:
+        conn.execute("UPDATE git_merge_requests SET pr_number=? WHERE id=?", (pr_number, request_id))
+    text = "合并请求 #%s（%s）已更新为 %s：%s" % (request_id, request["branch"], status, note)
+    requester = session(conn, request["session_id"])
+    if requester["role"] == "leader":
+        _queue_leader_notice(conn, requester["session_id"], text, "crew", now)
+    else:
+        handoff_id = conn.execute("INSERT INTO handoffs(project,from_session,to_target,body,created_at) VALUES(?,?,?,?,?)",
+                                  (project_name, session_id, requester["crew_name"], text, _time(now))).lastrowid
+        _event(conn, "handoff", project_name, session_id,
+               {"id": handoff_id, "to": requester["crew_name"], "body": text}, now)
+        conn.execute("INSERT INTO git_result_handoffs VALUES(?,?,?)", (handoff_id, requester["session_id"], session_id))
+    _event(conn, "git:resolve", project_name, session_id, {"id": request_id, "status": status, "note": note, "pr_number": pr_number}, now)
+    return _git_request(conn, project_name, request_id)
 
 
 @atomic
@@ -178,16 +279,22 @@ def _identity(conn, project_name, session_id, name, role, group_name, now):
     if duplicate:
         raise Conflict("同项目在线会话重名: " + name)
     if role == "leader":
-        if group_name is not None and group_name != name:
-            raise BoardError("leader 分组必须与 crew 名同名")
-        group_name = name
+        group_name = leader_group(name, group_name)
         conn.execute("INSERT INTO groups(project,name,leader_session_id,created_at) VALUES(?,?,?,?) "
                      "ON CONFLICT(project,name) DO UPDATE SET leader_session_id=excluded.leader_session_id,closed_at=NULL",
-                     (project_name, name, session_id, _time(now)))
+                     (project_name, group_name, session_id, _time(now)))
     elif group_name is not None:
         _group(conn, project_name, group_name)
     conn.execute("UPDATE sessions SET crew_name=?,role=?,group_name=? WHERE session_id=?",
                  (name, role, group_name, session_id))
+
+
+def leader_group(name, group_name):
+    if name == "git管理员" and group_name == "git":
+        return group_name
+    if group_name is not None and group_name != name:
+        raise BoardError("leader 分组必须与 crew 名同名")
+    return name
 
 
 def _register(conn, session_id, project_name, cwd, worktree, branch, now, entrypoint, permission_mode, spawn_id):

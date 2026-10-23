@@ -1,4 +1,5 @@
 """The VS Code list comes from bounded transcript reads and persisted archives."""
+import tests  # Install the production-service connection guard.
 import json
 import os
 import sqlite3

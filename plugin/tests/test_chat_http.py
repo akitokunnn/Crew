@@ -1,4 +1,5 @@
 """Chat HTTP contracts with isolated data and fake Claude processes."""
+import tests  # Install the production-service connection guard.
 import base64
 import json
 import threading

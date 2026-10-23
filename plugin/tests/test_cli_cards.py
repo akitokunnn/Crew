@@ -1,4 +1,5 @@
 """CLI task cards and join notifications use temporary board data only."""
+import tests  # Install the production-service connection guard.
 import json
 from unittest import mock
 

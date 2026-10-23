@@ -16,7 +16,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import ProxyHandler, build_opener
 from urllib.error import URLError
 
-from . import board, channel, chat, claude_limits, git_view, hooks, models, notifications, open_session, presentation, session_ops, spawn, store, usage, usage_cli, vscode_sessions
+from . import board, channel, chat, claude_limits, git_admin, git_ci, git_view, hooks, models, notifications, open_session, presentation, session_ops, spawn, store, usage, usage_cli, vscode_sessions
 
 
 def _text(data, key):
@@ -60,6 +60,8 @@ class Service:
         self.agents_ready = threading.Event()
         self.worker = None
         self.notice_worker = None
+        self.git_ci = git_ci.Poller(self.home, self.write_lock)
+        self.ci_worker = None
         self.inbox = notifications.Inbox(self, notification_client, lock_status, notification_batch_seconds)
         with closing(store.connect(home)) as conn:
             projects = board.projects(conn)
@@ -133,6 +135,8 @@ class Service:
         self.worker.start()
         self.notice_worker = threading.Thread(target=self._poll_notices, name="crew-leader-notices", daemon=True)
         self.notice_worker.start()
+        self.ci_worker = threading.Thread(target=self._poll_git_ci, name="crew-git-ci", daemon=True)
+        self.ci_worker.start()
         self.inbox.start()
 
     def close(self):
@@ -140,6 +144,8 @@ class Service:
         self.inbox.close()
         if self.notice_worker is not None:
             self.notice_worker.join()
+        if self.ci_worker is not None:
+            self.ci_worker.join()
         self.chat.close()
         if self.worker is not None:
             self.worker.join(timeout=1)
@@ -148,8 +154,15 @@ class Service:
         while not self.stop.wait(2):
             self.deliver_notices()
 
+    def _poll_git_ci(self):
+        while not self.stop.is_set():
+            self.git_ci.poll(now=self.now().isoformat())
+            if self.stop.wait(300):
+                break
+
     def deliver_notices(self):
         with self.write_lock, closing(store.connect(self.home)) as conn:
+            self.deliver_git_results(conn)
             leaders = [dict(row) for row in conn.execute(
                 "SELECT DISTINCT s.* FROM sessions s JOIN leader_notices n ON n.session_id=s.session_id "
                 "WHERE n.sent_at IS NULL AND s.role='leader' AND s.status!='closed'")]
@@ -183,6 +196,38 @@ class Service:
                 except (board.BoardError, OSError) as exc:
                     board.record_event(conn, 'leader:notice_error', leader['project'], sid,
                                        {'error': '%s: %s' % (type(exc).__name__, exc)}, now=self.now().isoformat())
+
+    def deliver_git_results(self, conn):
+        pending = conn.execute(
+            "SELECT q.*,h.body FROM git_result_handoffs q JOIN handoffs h ON h.id=q.handoff_id "
+            "WHERE NOT EXISTS(SELECT 1 FROM handoff_deliveries d "
+            "WHERE d.handoff_id=q.handoff_id AND d.session_id=q.session_id) ORDER BY q.handoff_id").fetchall()
+        for result in pending:
+            sid = result['session_id']
+            target = board.session(conn, sid)
+            if target['status'] == 'closed' or board.is_archived(conn, sid):
+                continue
+            try:
+                with self.chat.lock:
+                    with self.agents_lock:
+                        if self.agents_error is not None or not self.agents_ready.is_set():
+                            continue
+                        external = any(agent['sessionId'] == sid for agent in self.agents)
+                    if self.chat.running(sid):
+                        if self.chat.busy(sid):
+                            continue
+                        self.chat.send(target, '[Crew]\n' + result['body'], source='crew')
+                    else:
+                        if external:
+                            continue
+                        self.chat.wake(conn, target, result['body'],
+                                       caller_session_id=result['admin_session_id'], now=self.now().isoformat())
+                    conn.execute("INSERT OR IGNORE INTO handoff_deliveries VALUES(?,?,?)",
+                                 (result['handoff_id'], sid, self.now().isoformat()))
+            except (board.BoardError, OSError) as exc:
+                board.record_event(conn, 'git:result_error', target['project'], sid,
+                                   {'handoff_id': result['handoff_id'], 'error': '%s: %s' % (type(exc).__name__, exc)},
+                                   now=self.now().isoformat())
 
     def selected_project(self, conn, name):
         name = self.default_project if name is None else name
@@ -282,6 +327,7 @@ class Service:
                 # Passing every stored identity preserves the board statuses while process state is unknown.
                 identities = [{"sessionId": s["session_id"]} for s in board.sessions(conn, name)] if error else agents
                 status = board.status(conn, name, identities)
+                git_config = board.git_config(conn, name)
                 result['project'] = {key: status['project'][key] for key in ('name', 'root')}
                 open_groups = {group['name'] for group in status['groups'] if group['closed_at'] is None}
                 removed = {r[0] for r in conn.execute('SELECT session_id FROM session_controls WHERE removed=1')}
@@ -328,6 +374,7 @@ class Service:
                         read_seq = board.read_seq(conn, sid)
                         result['leaders'].append(dict(
                             session_id=sid, name=session['crew_name'], goal=session['task'], status=session['status'],
+                            is_git_admin=git_config is not None and git_config['admin_session_id'] == sid,
                             **models.get(conn, sid), applied=self.chat.applied(sid), activity=self.chat.activity(sid),
                             context=context, **codex,
                             where='bg' if self.chat.running(sid) else 'vscode' if sid in present else 'offline',
@@ -401,7 +448,9 @@ class Service:
             project = board.project(conn, name)
             config = board.git_config(conn, name)
             sessions = board.sessions(conn, name)
+            requests = board.git_requests(conn, name, all=True) if config is not None else []
         result = {"enabled": config is not None, "config": config,
+                  "requests": requests,
                   "choices": git_view.branch_choices(project["root"]),
                   "repository": Path(project["root"]).name, "last_fetch_at": None}
         if config is not None:
@@ -442,8 +491,9 @@ class Service:
                     stable = data.get("stable")
                     if stable is not None and not isinstance(stable, str):
                         raise ValueError("stable 必须是分支名或 null")
-                    return board.enable_git(conn, project, _optional_text(data, "base"), stable, now=now)
-                return board.disable_git(conn, project)
+                    return git_admin.enable(conn, self.home, self.plugin_root, project, self.chat.start,
+                                            base=_optional_text(data, "base"), stable=stable, now=now)
+                return git_admin.disable(conn, project, now=now)
             project = self.selected_project(conn, project_name)
             if path == '/api/channel':
                 message = channel.post(conn, project, board.HUMAN, _text(data, 'body'),

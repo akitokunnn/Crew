@@ -1,4 +1,5 @@
 """VS Code adoption and one-way archive sync use isolated persisted sources."""
+import tests  # Install the production-service connection guard.
 import json
 import os
 import sqlite3

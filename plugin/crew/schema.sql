@@ -56,6 +56,31 @@ CREATE TABLE IF NOT EXISTS git_management (
     branch_rules TEXT
 );
 
+CREATE TABLE IF NOT EXISTS git_merge_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project TEXT NOT NULL REFERENCES projects(name),
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    branch TEXT NOT NULL,
+    description TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'merging', 'waiting_user', 'merged', 'rejected')),
+    pr_number INTEGER,
+    note TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS git_merge_requests_project ON git_merge_requests (project, status, id);
+
+CREATE TABLE IF NOT EXISTS git_ci_state (
+    project TEXT NOT NULL REFERENCES projects(name),
+    subject TEXT NOT NULL,
+    run_key TEXT NOT NULL,
+    sha TEXT NOT NULL,
+    status TEXT NOT NULL,
+    notified INTEGER NOT NULL CHECK (notified IN (0, 1)),
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (project, subject, run_key)
+);
+
 DROP TABLE IF EXISTS session_models;
 CREATE TABLE IF NOT EXISTS session_options (
     session_id TEXT PRIMARY KEY REFERENCES sessions(session_id),
@@ -241,6 +266,12 @@ CREATE TABLE IF NOT EXISTS handoff_deliveries (
     session_id    TEXT NOT NULL,
     delivered_at  TEXT NOT NULL,
     PRIMARY KEY (handoff_id, session_id)
+);
+
+CREATE TABLE IF NOT EXISTS git_result_handoffs (
+    handoff_id INTEGER PRIMARY KEY REFERENCES handoffs(id),
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    admin_session_id TEXT NOT NULL REFERENCES sessions(session_id)
 );
 
 CREATE TABLE IF NOT EXISTS reports (

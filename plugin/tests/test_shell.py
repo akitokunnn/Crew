@@ -1,4 +1,5 @@
 """Shell integration tests: isolated HOME, fake launchers, loopback port zero."""
+import tests  # Install the production-service connection guard.
 import contextlib
 import csv
 import datetime as dt
