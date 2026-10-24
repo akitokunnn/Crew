@@ -86,7 +86,7 @@
   const BOLD_PUNCT = String.raw`\u2010-\u2027\u3000-\u303f\uff01-\uff0f\uff1a-\uff20\uff3b-\uff40\uff5b-\uff65.,:;!?()\[\]"'`;
   const BOLD_TAIL = new RegExp(`\\*\\*([^*\\n]+?)([${BOLD_PUNCT}]+)\\*\\*(?=[^\\s*${BOLD_PUNCT}])`, 'g');
   const BOLD_HEAD = new RegExp(`(?<=[^\\s*${BOLD_PUNCT}])\\*\\*([${BOLD_PUNCT}]+)([^*\\n]+?)\\*\\*`, 'g');
-  const cjkBold = text => text.replace(BOLD_TAIL, '**$1**$2').replace(BOLD_HEAD, '$1**$2**');
+  const cjkBold = text => (text ?? "").replace(BOLD_TAIL, '**$1**$2').replace(BOLD_HEAD, '$1**$2**');
   const localPath = value => !value.startsWith("#") && (!/^[a-z][a-z0-9+.-]*:/i.test(value) || /^[a-z]:[\\/]/i.test(value) || /^file:/i.test(value));
   const pathPattern = /(?:[A-Za-z]:[\\/][^\r\n<>"'`|?*\uFF0C\u3002\uFF1B\uFF01\uFF1F\uFF08\uFF09\u3010\u3011]*?|(?:\.\.?[\\/]|[\p{L}\p{N}_-]+[\\/])[^\s<>"'`|?*\uFF0C\u3002\uFF1B\uFF01\uFF1F\uFF08\uFF09\u3010\u3011]*?)\.[A-Za-z0-9]+(?=$|[\s<>"'`|\uFF0C\u3002\uFF1B\uFF01\uFF1F\uFF08\uFF09\u3010\u3011)\]#:])/gu;
   const fileAttrs = (path, env) => `href="#" data-file-path="${escape(path)}" data-file-session="${escape(env.sessionId)}"${env.base === null ? "" : ` data-file-base="${escape(env.base)}"`}`;
