@@ -10,7 +10,17 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from . import board, codex_client, models, runtimes, store
+from . import board, codex_client, git_process, models, runtimes, store
+
+
+def _check_ignore(root):
+    """Bound a read-only Git probe even if a wrapper child inherits output."""
+    try:
+        return git_process.run(['-C',str(root),'check-ignore','-q','Temp/wt/'],timeout=10)
+    except subprocess.TimeoutExpired as exc:
+        raise board.BoardError('检查 Git 工作区忽略规则超过 10 秒，请检查 Git 是否响应后重试；尚未创建工作区或启动成员') from exc
+    except OSError as exc:
+        raise board.BoardError('Git 工作区忽略规则检查无法执行：'+str(exc)) from exc
 
 def command(session_id, name, role, resume=False, model=None, effort=None, agent=None, runtime="claude"):
     models.validate_options(model, effort, runtime=runtime)
@@ -68,8 +78,7 @@ def prepare(conn, home, plugin_root, project_name, name, task, group=None, role=
         directory = (root / "Temp" / "wt" / slug).resolve()
         if not store.is_under(directory, root):
             raise board.BoardError("worktree \u76ee\u5f55\u5fc5\u987b\u5728\u9879\u76ee root \u4e0b")
-        ignored = subprocess.run(["git", "-C", str(root), "check-ignore", "-q", "Temp/wt/"],
-                                 capture_output=True, text=True, encoding="utf-8")
+        ignored = _check_ignore(root)
         if ignored.returncode == 1:
             raise board.BoardError("\u8bf7\u5148\u8ba9 git \u5ffd\u7565 Temp/wt")
         if ignored.returncode != 0:
@@ -126,7 +135,7 @@ def prepare(conn, home, plugin_root, project_name, name, task, group=None, role=
 def _execute(conn, plan, launcher, members=(), member_session_ids=()):
     spec = plan["spec"]
     if plan["worktree_command"] is not None:
-        result = subprocess.run(plan["worktree_command"], capture_output=True, text=True, encoding="utf-8")
+        result = git_process.run(plan["worktree_command"][1:],timeout=None)
         if result.returncode != 0:
             raise board.BoardError("\u521b\u5efa worktree \u5931\u8d25: " + result.stderr.strip())
     if spec["role"] == "leader":

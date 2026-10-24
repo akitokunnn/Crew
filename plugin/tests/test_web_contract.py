@@ -80,7 +80,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
     def test_state_exact_shape_and_empty_limits(self):
         expected = {"project", "projects", "now", "agents_error", "notification", "leaders",
                     "members", "decisions", "candidates", "attention", "limits", "vscode_error", "models", "efforts", "channel", "themes",
-                    "runtimes", "trust", "todos", "todo_count"}
+                    "runtimes", "todos", "todo_count"}
         state = self.state()
         self.assertEqual(set(state), expected)
         self.assertEqual(set(state["project"]), {"name", "root", "theme"})
@@ -92,7 +92,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         leader = state["leaders"][0]
         self.assertEqual(set(leader), {"session_id", "name", "goal", "status", "busy", "running", "web_chat",
             "cc_name", "last_seq", "last_reply_id", "read_seq", "unread", "pending", "notices_pending", "member_ids",
-            "model", "effort", "applied", "activity", "context", "where", "codex", "codex_older", "is_git_admin", "priority", "runtime"})
+            "model", "effort", "applied", "activity", "context", "where", "codex", "codex_older", "is_git_admin", "priority", "runtime", "trust"})
         self.assertIsNone(leader['priority'])
         self.assertEqual((leader["session_id"], leader["member_ids"], leader["unread"]), ("s3", ["s1"], 0))
         # Leaders dispatch Codex for their own bulk work too (user 10-23), listed like members'.
@@ -152,7 +152,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual(set(member), {"session_id", "name", "title", "leader_session_id", "group", "status",
             "status_note", "where", "task", "scope", "done_when", "branch", "worktree", "cwd", "cc_name",
             "web_chat", "progress", "codex", "codex_older", "leases", "claims", "model", "effort", "applied", "activity",
-            "context", "busy", "running", "runtime"})
+            "context", "busy", "running", "runtime", "runtime_switch"})
         self.assertEqual((member["name"], member["leader_session_id"], member["group"], member["scope"], member["done_when"]),
                          ("one", "s3", "lead", "Backend", "Tests pass"))
         self.assertEqual([row["text"] for row in member["progress"]], ["progress-" + str(i) for i in (6, 5, 4, 3, 2)])

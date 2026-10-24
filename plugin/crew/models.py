@@ -86,3 +86,6 @@ def set(conn, session_id, model, effort, now=None, runtime=None, catalog=None):
         conn.execute("INSERT INTO session_options(session_id,model,effort,set_at) VALUES(?,?,?,?) "
                      "ON CONFLICT(session_id) DO UPDATE SET model=excluded.model,effort=excluded.effort,set_at=excluded.set_at",
                      (session_id, model, effort, store.now_iso() if now is None else now))
+    current=runtimes.get(conn,session_id)
+    conn.execute('INSERT INTO session_runtime_bindings(session_id,runtime,native_id,model,effort,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(session_id,runtime) DO UPDATE SET model=excluded.model,effort=excluded.effort,updated_at=excluded.updated_at',
+                 (session_id,runtime,current['native_id'] if current['runtime']==runtime else None,model,effort,store.now_iso() if now is None else now))

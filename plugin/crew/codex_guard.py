@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 import sys
 
-from . import board, guard, store
+from . import board, guard, runtimes, store
 
 
 class InvalidHook(ValueError):
@@ -94,6 +94,8 @@ def _identity(home, session_id):
         session = board.session(conn, session_id)
         if session["project"] is None or session["status"] == "closed" or board.is_archived(conn, session_id):
             raise InvalidHook("Crew session is not an active project member")
+        if runtimes.get(conn, session_id)['runtime'] != 'codex':
+            raise InvalidHook('Crew active runtime is not codex; this Codex carrier is inactive')
         board.project(conn, session["project"])
         # Check the guard's required read paths up front. In particular, its
         # diagnostic-command recovery exception must not hide a broken board.

@@ -639,7 +639,7 @@ class VSCodeServiceTests(unittest.TestCase):
         release_scan = threading.Event()
         refresh_progress = threading.Event()
         refresh_finished = threading.Event()
-        scan_lock = self.service.scan_lock
+        write_lock = self.service.write_lock
         errors = []
         original_save = usage._save
 
@@ -650,14 +650,14 @@ class VSCodeServiceTests(unittest.TestCase):
                 self.assertTrue(release_scan.wait(5), "Usage scan was not released")
             return original_save(conn, table, key, values, counts)
 
-        class ObservedScanLock:
+        class ObservedWriteLock:
             def __enter__(inner):
                 if threading.current_thread() is refresh_thread:
                     refresh_progress.set()
-                scan_lock.acquire()
+                write_lock.acquire()
 
             def __exit__(inner, *exc):
-                scan_lock.release()
+                write_lock.release()
 
         def scan_usage():
             try:
@@ -674,7 +674,7 @@ class VSCodeServiceTests(unittest.TestCase):
                 refresh_finished.set()
                 refresh_progress.set()
 
-        self.service.scan_lock = ObservedScanLock()
+        self.service.write_lock = ObservedWriteLock()
         scan_thread = threading.Thread(target=scan_usage, name="usage-snapshot-regression")
         refresh_thread = threading.Thread(target=refresh_vscode, name="vscode-archive-regression")
         refresh_started = False

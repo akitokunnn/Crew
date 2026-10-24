@@ -9,13 +9,14 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import board, channel, guard, install, messaging, rules, runtimes, store, trust_mode
+from . import board, channel, git_process, guard, install, messaging, rules, runtimes, store, trust_mode
 
 EVENTS = ("session-start", "user-prompt-submit", "stop", "notification", "pre-ask", "post-ask", "session-end", "guard")
 
 
 def _git(cwd, *args):
-    result = subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True, encoding="utf-8", check=True)
+    result = git_process.run(["-C", str(cwd), *args], timeout=10)
+    result.check_returncode()
     return result.stdout.strip()
 
 
@@ -24,8 +25,10 @@ def git_toplevel(cwd):
 
 
 def git_details(cwd):
-    result = subprocess.run(["git", "-C", str(cwd), "rev-parse", "--show-toplevel"],
-                            capture_output=True, text=True, encoding="utf-8")
+    # A failed probe may describe a plain directory; a timeout is an attendance
+    # error and must reach main's diagnostic boundary instead of registering
+    # the checkout as a non-Git project.
+    result = git_process.run(["-C", str(cwd), "rev-parse", "--show-toplevel"], timeout=10)
     if result.returncode != 0:
         # A project directory does not have to be a git checkout; record it without worktree / branch.
         return None, None
@@ -47,7 +50,29 @@ def _spawn_task(home, spawn_id):
     return lines[0][:80] if lines else None
 
 
+def _inactive_claude_runtime(home, session_id):
+    """Read the host's current carrier choice without creating/migrating HOME."""
+    if not store.db_path(home).exists():
+        return False
+    try:
+        with contextlib.closing(guard.readonly(home)) as conn:
+            registered = conn.execute('SELECT 1 FROM sessions WHERE session_id=?', (session_id,)).fetchone()
+            return bool(registered and runtimes.get(conn, session_id)['runtime'] != 'claude')
+    except (OSError, sqlite3.Error):
+        # No positive inactive identity can be established. Preserve the
+        # existing guard's explicit diagnostic/board-repair exceptions; normal
+        # writes remain fail-closed in guard.check on an unreadable board.
+        return False
+
+
 def handle(event, data, home, plugin_root, environ, git_provider=git_details, now=None):
+    if _inactive_claude_runtime(home, data['session_id']):
+        if event == 'guard':
+            print('BLOCKED by Crew: 此 Crew 会话当前使用 Codex，旧 Claude 载体不能继续执行工具。' + guard.TAIL, file=sys.stderr)
+            return 2, None
+        # Late stop/session-end and prompt hooks from a superseded process may
+        # neither overwrite the new carrier's status nor consume its mailbox.
+        return 0, None
     if event == "guard":
         reason = guard.check(home, data, now=now)
         if reason is not None:

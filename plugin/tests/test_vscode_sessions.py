@@ -82,7 +82,7 @@ class VscodeSessionParserTests(unittest.TestCase):
                     native.parent.mkdir(parents=True)
                     native.touch()
                     with mock.patch.object(vscode_sessions.sys, "platform", "win32"), \
-                            mock.patch.object(vscode_sessions.shutil, "which", return_value=str(selected)):
+                            mock.patch('crew.git_process.which', return_value=str(selected)):
                         self.assertEqual(vscode_sessions._git_executable(), str(native))
 
     def test_custom_or_missing_native_git_keeps_the_selected_executable(self):
@@ -90,9 +90,9 @@ class VscodeSessionParserTests(unittest.TestCase):
         missing_native = self.root / "Git" / "cmd" / "git.exe"
         for selected in (custom, missing_native):
             with mock.patch.object(vscode_sessions.sys, "platform", "win32"), \
-                    mock.patch.object(vscode_sessions.shutil, "which", return_value=str(selected)):
+                    mock.patch('crew.git_process.which', return_value=str(selected)):
                 self.assertEqual(vscode_sessions._git_executable(), str(selected))
-        with mock.patch.object(vscode_sessions.shutil, "which", return_value=None):
+        with mock.patch('crew.git_process.which', return_value=None):
             self.assertEqual(vscode_sessions._git_executable(), "git")
 
     def test_failed_worktree_discovery_preserves_command_output(self):

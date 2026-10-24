@@ -27,6 +27,8 @@ class CodexToolsTests(unittest.TestCase):
         self.join("peer-leader", "peer", role="leader")
         self.join("peer-member", "peer-worker", group="peer")
         self.join("foreign-crew", "outsider", project="other")
+        for sid in ('codex-crew', 'leader-crew', 'peer-leader'):
+            runtimes.set(self.conn, sid, 'codex')
         self.tools = codex_tools.CodexTools(self.home, "codex-crew")
         self.leader = codex_tools.CodexTools(self.home, "leader-crew")
 
@@ -159,10 +161,21 @@ class CodexToolsTests(unittest.TestCase):
 
     def test_dynamic_identity_shows_runtime_without_using_it_as_a_credential(self):
         runtimes.set(self.conn, "codex-crew", "codex", "native-thread")
+        runtimes.set(self.conn, 'leader-crew', 'claude')
         identity = self.call("crew_whoami", threadId="unrelated-native-thread")
         self.assertEqual(identity["runtime"], "codex")
         self.assertEqual(identity["leader"]["runtime"], "claude")
         self.assertEqual(identity["session_id"], "codex-crew")
+
+    def test_old_native_tool_callback_is_inactive_after_switch_to_claude(self):
+        self.call('crew_task', {'text':'before switch'})
+        runtimes.set(self.conn, 'codex-crew', 'claude')
+        before=self.conn.total_changes
+        with mock.patch('crew.store.connect', side_effect=AssertionError('inactive callback cannot migrate or write')):
+            result=self.call('crew_task', {'text':'late old thread'}, success=False)
+        self.assertEqual(result['error']['code'],'inactive_runtime')
+        self.assertEqual(self.conn.total_changes,before)
+        self.assertEqual(board.session(self.conn,'codex-crew')['task'],'before switch')
 
     def test_document_registration_uses_bound_identity_and_does_not_change_user_pin(self):
         path = self.root / "first" / "handoff.md"
@@ -233,6 +246,15 @@ class CodexToolsTests(unittest.TestCase):
         self.assertEqual(self.call("crew_decisions"), [])
         self.assertEqual(self.call("crew_decisions", {"all": True}), [answered])
 
+    def test_question_original_leader_can_answer_after_member_moves_but_new_leader_cannot(self):
+        number=self.call('crew_ask',{'question':'Original group decision'})['id']
+        board.roster(self.conn,'first','move','peer',session_ids=['codex-crew'])
+        peer=codex_tools.CodexTools(self.home,'peer-leader')
+        self.call('crew_answer',{'id':number,'text':'wrong group'},tools=peer,success=False)
+        saved=self.call('crew_answer',{'id':number,'text':'original scope'},tools=self.leader)
+        self.assertEqual(saved['answered_by'],'leader-crew')
+        self.assertEqual(saved['leader_session_id'],'leader-crew')
+
     def test_cross_project_decision_answer_and_withdraw_are_denied(self):
         number = board.ask(self.conn, "foreign-crew", "Foreign decision")
         for tool, args, handler in (("crew_answer", {"id": number, "text": "yes"}, self.leader),
@@ -250,6 +272,7 @@ class CodexToolsTests(unittest.TestCase):
     def test_handoffs_use_crew_identity_and_are_limited_to_the_project(self):
         result = self.call("crew_handoff", {"to": "reviewer", "text": "Review runtime changes"})
         self.assertEqual(result["to_target"], "claude-crew")
+        runtimes.set(self.conn, 'claude-crew', 'codex')
         reviewer = codex_tools.CodexTools(self.home, "claude-crew")
         self.assertEqual(self.call("crew_handoffs", tools=reviewer), [result])
         self.assertEqual(board.handoffs(self.conn, "claude-crew"), [result])
@@ -263,6 +286,7 @@ class CodexToolsTests(unittest.TestCase):
     def test_handoff_to_crew_id_is_readable_and_actually_delivered_to_the_recipient(self):
         saved = self.call("crew_handoff", {"to": "claude-crew", "text": "Check the Codex event mapping"})
         self.assertEqual(saved["to_target"], "claude-crew")
+        runtimes.set(self.conn, 'claude-crew', 'codex')
         recipient = codex_tools.CodexTools(self.home, "claude-crew")
         pending = self.call("crew_handoffs", tools=recipient)
         self.assertEqual([h["body"] for h in pending], ["Check the Codex event mapping"])

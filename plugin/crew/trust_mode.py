@@ -1,4 +1,4 @@
-"""Per-project autonomy, recorded choices and a reviewable report draft.
+"""Per-leader autonomy, recorded choices and a reviewable group report draft.
 
 This module changes no global permissions and never infers completion from a
 command exit code. The host chooses when to enable trust mode and injects the
@@ -25,12 +25,43 @@ def _table(conn, name):
     return conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone() is not None
 
 
-def get(conn, project):
+def _leader(conn, project, leader_session_id):
     board.project(conn, project)
-    row = (conn.execute("SELECT enabled,goal,updated_at FROM trust_settings WHERE project=?", (project,)).fetchone()
-           if _table(conn, "trust_settings") else None)
-    return {"enabled": bool(row["enabled"]), "goal": row["goal"], "updated_at": row["updated_at"]} if row else {
-        "enabled": False, "goal": None, "updated_at": None}
+    if not isinstance(leader_session_id, str) or not leader_session_id.strip():
+        raise board.BoardError("请选择具体 leader 的信任设置")
+    leader = board.session(conn, leader_session_id)
+    if leader['project'] != project or leader['role'] != 'leader':
+        raise board.BoardError("信任设置的 leader 不属于当前项目")
+    return leader
+
+
+def resolve_leader(conn, session_id, project=None):
+    """Resolve Crew membership only; native runtime IDs confer no authority."""
+    session = board.session(conn, session_id)
+    if project is not None and session['project'] != project:
+        raise board.BoardError("会话不属于当前项目")
+    if session['role'] == 'leader':
+        return session['session_id']
+    row = conn.execute("SELECT g.leader_session_id FROM groups g JOIN sessions l "
+                       "ON l.session_id=g.leader_session_id AND l.project=g.project AND l.role='leader' "
+                       "WHERE g.project=? AND g.name=? AND g.closed_at IS NULL",
+                       (session['project'], session['group_name'])).fetchone()
+    return row[0] if row else None
+
+
+def get(conn, project, leader_session_id):
+    _leader(conn, project, leader_session_id)
+    row = (conn.execute("SELECT enabled,goal,updated_at FROM leader_trust_settings WHERE leader_session_id=? AND project=?",
+                        (leader_session_id, project)).fetchone() if _table(conn, 'leader_trust_settings') else None)
+    return {"leader_session_id": leader_session_id,
+            "enabled": bool(row['enabled']) if row else False,
+            "goal": row['goal'] if row else None, "updated_at": row['updated_at'] if row else None}
+
+
+def _leader_active(conn, leader):
+    return (leader['role'] == 'leader' and leader['status'] != 'closed' and not board.is_archived(conn, leader['session_id']) and
+            conn.execute('SELECT 1 FROM groups WHERE project=? AND leader_session_id=? AND closed_at IS NULL',
+                         (leader['project'], leader['session_id'])).fetchone() is not None)
 
 
 def _text(value, label, *, required=False):
@@ -41,16 +72,8 @@ def _text(value, label, *, required=False):
     return value.strip()
 
 
-def _active_leaders(conn, project):
-    leaders = conn.execute("SELECT DISTINCT s.* FROM sessions s JOIN groups g "
-                           "ON g.project=s.project AND g.leader_session_id=s.session_id "
-                           "WHERE s.project=? AND s.role='leader' AND s.crew_name IS NOT NULL "
-                           "AND s.status!='closed' AND g.closed_at IS NULL ORDER BY s.started_at,s.session_id", (project,))
-    return [dict(row) for row in leaders if not board.is_archived(conn, row["session_id"])]
-
-
 def _instructions(goal):
-    return ("本项目已启用信任模式。用户给定目标：\n" + goal +
+    return ("本组已启用信任模式。用户给定目标：\n" + goal +
             "\n\n围绕此目标自行理解需求、选择方案、实施和验收，不再把工程技术取舍交回用户拍板。"
             "判断前读取相关代码和约定，自己提出建议并写清取舍理由；登记决定时必须给出 recommendation，"
             "Crew 会依据该建议记录自主答复。没有建议时先由 AI 自己判断，不能默认选择第一项。"
@@ -62,10 +85,13 @@ def _instructions(goal):
 
 
 @_atomic
-def set(conn, project, enabled, goal=None, now=None):
+def set(conn, project, enabled, goal=None, now=None, *, leader_session_id):
     if type(enabled) is not bool:
         raise board.BoardError("enabled 必须是布尔值")
-    before = get(conn, project)
+    leader = _leader(conn, project, leader_session_id)
+    if leader['status'] == 'closed' or board.is_archived(conn, leader_session_id):
+        raise board.BoardError('不能修改已归档 leader 的信任设置')
+    before = get(conn, project, leader_session_id)
     if not enabled and (goal is None or isinstance(goal, str) and not goal.strip()):
         goal = before["goal"]
     else:
@@ -73,27 +99,55 @@ def set(conn, project, enabled, goal=None, now=None):
     if before["enabled"] == enabled and before["goal"] == goal:
         return before
     timestamp = store.now_iso() if now is None else now
-    conn.execute("INSERT INTO trust_settings(project,enabled,goal,updated_at) VALUES(?,?,?,?) "
-                 "ON CONFLICT(project) DO UPDATE SET enabled=excluded.enabled,goal=excluded.goal,updated_at=excluded.updated_at",
-                 (project, int(enabled), goal, timestamp))
-    if enabled:
-        notice = ("项目的信任模式已启用或目标已更新，请重读当前角色守则并通知你的成员。\n" + _instructions(goal))
-    else:
-        notice = ("项目的信任模式已关闭。请重读当前角色守则并通知你的成员，后续决定恢复普通模式的拍板流程；"
-                  "此前自主决定、报告和 commits 继续保留。用户亲手操作的事项仍登记为人工待办。")
-    notices = [board._queue_leader_notice(conn, leader["session_id"], notice, "crew", now)
-               for leader in _active_leaders(conn, project)]
+    conn.execute("INSERT INTO leader_trust_settings(leader_session_id,project,enabled,goal,updated_at) VALUES(?,?,?,?,?) "
+                 "ON CONFLICT(leader_session_id) DO UPDATE SET enabled=excluded.enabled,goal=excluded.goal,updated_at=excluded.updated_at",
+                 (leader_session_id, project, int(enabled), goal, timestamp))
     board._event(conn, "trust:set", project, board.HUMAN,
-                 {"enabled": enabled, "goal": goal, "previous": before, "notice_ids": notices}, now)
-    return get(conn, project)
+                 {"leader_session_id": leader_session_id, "enabled": enabled, "goal": goal, "previous": before}, now)
+    return get(conn, project, leader_session_id)
 
 
 def context(conn, session_id):
     session = board.session(conn, session_id)
     if session["project"] is None or session["status"] == "closed" or board.is_archived(conn, session_id):
         return None
-    settings = get(conn, session["project"])
-    return _instructions(settings["goal"]) if settings["enabled"] else None
+    leader_id = resolve_leader(conn, session_id)
+    if leader_id is None:
+        return '本轮最新信任设置：关闭。当前会话没有所属 leader，不继承任何其他组的授权；本条覆盖此前的信任模式说明。'
+    settings = get(conn, session['project'], leader_id)
+    leader = board.session(conn, leader_id)
+    if not _leader_active(conn, leader):
+        settings = {**settings, 'enabled': False}
+    prefix = ('本轮最新信任设置（仅属于 leader ' + (leader['crew_name'] or leader_id) + '，Crew ID ' + leader_id +
+              '）：' + ('开启' if settings['enabled'] else '关闭') + '。本条覆盖此前的信任模式说明，不授权其他组。\n')
+    if settings['enabled']:
+        return prefix + _instructions(settings['goal'])
+    return (prefix + '当前按普通模式协作；不得继续沿用此前开启信任模式的自主授权。真正需要用户决定的取舍按拍板流程，'
+            '用户亲手操作仍登记人工待办。保留目标记录：\n' + (settings['goal'] or '未设置') +
+            '\n保存设置不会启动任务；等待正常对话中的具体安排。')
+
+
+def record_decision_scope(conn, decision_id, session_id):
+    conn.execute('INSERT INTO decision_leader_scopes(decision_id,leader_session_id) VALUES(?,?)',
+                 (decision_id, resolve_leader(conn, session_id)))
+
+
+def _decision_leader(conn, decision):
+    scope = conn.execute('SELECT leader_session_id FROM decision_leader_scopes WHERE decision_id=?', (decision['id'],)).fetchone()
+    return scope[0] if scope is not None else resolve_leader(conn, decision['session_id'], decision['project'])
+
+
+def decision_leader(conn, decision_id):
+    """Authoritative ask-time Crew leader SID, including a deliberate NULL."""
+    decision = _decision(conn, decision_id)
+    leader_id = _decision_leader(conn, decision)
+    if leader_id is not None:
+        # This is a historical owner reference. A later role change must not
+        # rewrite that reference or make the whole question list unreadable;
+        # action callers separately check whether the owner is still eligible.
+        if board.session(conn, leader_id)['project'] != decision['project']:
+            raise board.BoardError('拍板所属 leader 的项目绑定无效')
+    return leader_id
 
 
 def _decision(conn, decision_id):
@@ -110,7 +164,9 @@ def _decision(conn, decision_id):
 @_atomic
 def auto_answer(conn, decision_id, reason=None, now=None):
     decision = _decision(conn, decision_id)
-    if not get(conn, decision["project"])["enabled"]:
+    leader_id = _decision_leader(conn, decision)
+    if (leader_id is None or not _leader_active(conn, board.session(conn, leader_id))
+            or not get(conn, decision["project"], leader_id)["enabled"]):
         return None
     existing = conn.execute("SELECT reason,recorded_at FROM trust_decisions WHERE decision_id=?", (decision_id,)).fetchone()
     if decision["status"] != "open":
@@ -139,11 +195,15 @@ def _field(label, value):
     return "**" + label + "**\n\n" + _quote(value if value not in (None, "") else "未记录")
 
 
-def report(conn, project):
+def report(conn, project, leader_session_id):
     """Return a DB-only Markdown draft; do not launch tests, Git or a model."""
     project_record = board.project(conn, project)
-    settings = get(conn, project)
-    sections = ["# " + project + " · 信任模式工作报告草稿",
+    settings = get(conn, project, leader_session_id)
+    leader = _leader(conn, project, leader_session_id)
+    session_ids = {row[0] for row in conn.execute('SELECT s.session_id FROM sessions s JOIN groups g ON g.project=s.project '
+                  'AND g.name=s.group_name WHERE s.project=? AND g.leader_session_id=?', (project, leader_session_id))}
+    session_ids.add(leader_session_id)
+    sections = ["# " + project + ' / ' + (leader['crew_name'] or leader_session_id) + " · 信任模式工作报告草稿",
                 "生成时间：" + store.now_iso(),
                 "本稿汇总 Crew 已保存的记录，尚未独立检查代码、测试产物、CI、设备或当前 Git 状态。"
                 "不据此自动宣告目标已完成。",
@@ -152,7 +212,9 @@ def report(conn, project):
                 "模式：" + ("信任模式" if settings["enabled"] else "普通模式") +
                 "；设置更新时间：" + str(settings["updated_at"] or "未记录"),
                 _field("项目工作区", project_record["root"])]
-    decisions = board.decisions(conn, project, all=True)
+    sections.append('范围：仅本 leader 组。决定按提出时绑定的 leader；升级前旧题只按迁移当时归属保存一次，不能据此回溯历史归属。'
+                    '会话报告、人工待办与工作区记录按当前组成员归属汇总。')
+    decisions = [item for item in board.decisions(conn, project, all=True) if _decision_leader(conn, item) == leader_session_id]
     audits = ({row["decision_id"]: dict(row) for row in conn.execute(
         "SELECT t.* FROM trust_decisions t JOIN decisions d ON d.id=t.decision_id WHERE d.project=?", (project,))}
         if _table(conn, "trust_decisions") else {})
@@ -176,7 +238,7 @@ def report(conn, project):
         elif str(item["answered_by"] or "").startswith("trust:"):
             sections.append("来源标为信任模式，但取舍理由记录缺失，需补查。")
     sections.append("## 人工待办")
-    items = todo.list(conn, project, all=True) if _table(conn, "todos") else []
+    items = [item for item in todo.list(conn, project, all=True) if item['session_id'] in session_ids] if _table(conn, "todos") else []
     for status, label in (("open", "待用户操作"), ("done", "用户已标记完成"),
                           ("cancelled", "用户已取消"), ("withdrawn", "会话已撤回")):
         matching = [item for item in items if item["status"] == status]
@@ -190,7 +252,7 @@ def report(conn, project):
     sections.extend(["## 进展与验证依据", "以下是会话自报的原始记录，尚未独立复核；人工待办的完成标记来自用户操作。"
                      "验证方法是计划，命令 exit 0 是一次执行结果，都不能单独证明整个目标完成。"
                      "缺少具体范围、命令、结果或产物的部分仍需补充验证依据。"])
-    reports = board.reports(conn, project)
+    reports = [item for item in board.reports(conn, project) if item['session_id'] in session_ids]
     if not reports:
         sections.append("尚无进展报告或可引用的验证记录。")
     for item in reports:
@@ -200,6 +262,8 @@ def report(conn, project):
                      "以下分支与 worktree 来自登记记录，未现场运行 git 验证。分支名本身不证明已提交或合并；"
                      "应由交付会话在最终报告补齐实际 commit SHA、改动文件、验证范围与遗留项。"])
     for session in board.sessions(conn, project):
+        if session['session_id'] not in session_ids:
+            continue
         card = board.card(conn, session["session_id"]) or {}
         sections.extend(["### " + (session["crew_name"] or session["session_id"]),
                          _field("Crew 会话 / 状态", session["session_id"] + " / " + session["status"]),
@@ -208,6 +272,8 @@ def report(conn, project):
                          _field("分支", session["branch"])])
     if _table(conn, "git_merge_requests"):
         for request in conn.execute("SELECT * FROM git_merge_requests WHERE project=? ORDER BY id", (project,)):
+            if request['session_id'] not in session_ids:
+                continue
             sections.extend(["### Git 交付请求 #" + str(request["id"]) + " · " + request["status"],
                              _field("分支 / PR", request["branch"] + " / " + ("#" + str(request["pr_number"]) if request["pr_number"] else "未记录")),
                              _field("提交者说明（自报）", request["description"]), _field("处理记录", request["note"])])

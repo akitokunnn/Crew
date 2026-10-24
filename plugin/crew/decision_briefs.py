@@ -130,10 +130,9 @@ def _authorized(conn, session_id, decision):
     if (not actor["crew_name"] or actor["status"] == "closed" or board.is_archived(conn, session_id)):
         raise board.BoardError("归档或未收编的会话不能修改拍板")
     if session_id != decision["session_id"]:
-        proposer = board.session(conn, decision["session_id"])
-        leader = board.leader_of(conn, proposer["session_id"])
-        if actor["role"] != "leader" or leader is None or leader["session_id"] != session_id:
-            raise board.BoardError("只有原提出者或它当前所属的 leader 可以修改拍板")
+        from . import trust_mode
+        if actor["role"] != "leader" or trust_mode.decision_leader(conn, decision['id']) != session_id:
+            raise board.BoardError("只有原提出者或这道题提出时所属的 leader 可以修改拍板")
     if decision["status"] != "open":
         raise board.BoardError("只能修改尚未答复的拍板")
     return actor
@@ -173,7 +172,9 @@ def queue_review(conn, decision_id, now=None):
     if conn.execute("SELECT 1 FROM decision_reviews WHERE decision_id=?", (decision_id,)).fetchone():
         return None
     proposer = board.session(conn, decision["session_id"])
-    leader = proposer if proposer["role"] == "leader" else board.leader_of(conn, proposer["session_id"])
+    from . import trust_mode
+    leader_id = trust_mode.decision_leader(conn, decision_id)
+    leader = board.session(conn, leader_id) if leader_id is not None else None
     if (leader is not None and (leader["project"] != decision["project"] or leader["status"] == "closed"
                                or board.is_archived(conn, leader["session_id"]))):
         leader = None

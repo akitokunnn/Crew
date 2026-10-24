@@ -737,6 +737,7 @@ def ask(conn, session_id, question, options=(), recommendation=None, blocking=Fa
         options = [entry["label"] for entry in brief["options"]]
     decision_id = conn.execute("INSERT INTO decisions(project,session_id,question,options,recommendation,blocking,created_at) VALUES(?,?,?,?,?,?,?)",
                                (s["project"], session_id, question, json.dumps(list(options), ensure_ascii=False), recommendation, int(blocking), _time(now))).lastrowid
+    trust_mode.record_decision_scope(conn, decision_id, session_id)
     _event(conn, "decision:ask", s["project"], session_id, {"id": decision_id, "question": question}, now)
     if brief is not None:
         decision_briefs._save(conn, decision_id, brief, now)
@@ -745,11 +746,13 @@ def ask(conn, session_id, question, options=(), recommendation=None, blocking=Fa
 
 
 def decisions(conn, project_name, all=False):
+    from . import trust_mode
     rows = _rows(conn, "SELECT d.*,h.held_at FROM decisions d LEFT JOIN decision_holds h ON h.decision_id=d.id "
                  "WHERE d.project=?" + ("" if all else " AND d.status='open'") + " ORDER BY d.id", (project_name,))
     for row in rows:
         row["options"] = json.loads(row["options"])
         row["held"] = row["held_at"] is not None
+        row['leader_session_id'] = trust_mode.decision_leader(conn, row['id'])
     return rows
 
 

@@ -17,7 +17,7 @@ from urllib.parse import parse_qs, quote, urlencode, urlsplit
 from urllib.request import ProxyHandler, build_opener
 from urllib.error import URLError
 
-from . import board, channel, channel_digest, chat, claude_limits, documents, git_admin, git_ci, git_view, hooks, messaging, models, notifications, open_session, presentation, runtime_catalog, runtimes, session_ops, spawn, store, themes, todo, trust_mode, usage, usage_cli, vscode_sessions
+from . import board, channel, channel_digest, chat, claude_limits, documents, git_admin, git_ci, git_view, hooks, messaging, models, notifications, open_session, presentation, runtime_catalog, runtime_switch, runtimes, session_ops, spawn, store, themes, todo, trust_mode, usage, usage_cli, vscode_sessions
 
 
 def _text(data, key):
@@ -129,24 +129,36 @@ class Service:
     def _read_vscode(self):
         with self.write_lock, self.scan_lock, closing(store.connect(self.home)) as conn:
             projects = board.projects(conn)
-        sessions, record_ids = {}, {}
+        sessions, record_ids, errors = {}, {}, []
+        with self.agents_lock:
+            previous_sessions = self.vscode_sessions.copy()
+            previous_ids = self.vscode_record_ids.copy()
         for project in projects:
-            roots = vscode_sessions.project_roots(project["root"])
-            cache = self.vscode_session_caches.setdefault(project["name"], vscode_sessions.SessionList())
-            sessions[project["name"]] = cache.list(self.claude_root, roots)
-            record_ids[project["name"]] = cache.record_ids.copy()
+            name = project["name"]
+            try:
+                roots = vscode_sessions.project_roots(project["root"])
+                cache = self.vscode_session_caches.setdefault(name, vscode_sessions.SessionList())
+                sessions[name] = cache.list(self.claude_root, roots)
+                record_ids[name] = cache.record_ids.copy()
+                errors.extend(name + ": " + error for error in cache.errors)
+            except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError) as exc:
+                sessions[name] = previous_sessions.get(name, [])
+                record_ids[name] = previous_ids.get(name, set())
+                errors.append("%s: %s: %s" % (name, type(exc).__name__, exc))
+        source_error = "VS Code 来源读取失败（10 秒后重试）：" + "; ".join(errors[:10]) if errors else None
         try:
             hidden = vscode_sessions.hidden_ids(self.vscode_state_db)
         except (sqlite3.Error, OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
             with self.agents_lock:
                 self.vscode_sessions, self.vscode_record_ids = sessions, record_ids
                 reason = "%s: %s" % (type(exc).__name__, exc)
-                self.vscode_error = ("还没读到 VS Code 会话列表；" + reason
-                                     if self.vscode_hidden_ids is None else reason)
+                archive_error = ("还没读到 VS Code 会话列表；" + reason
+                                 if self.vscode_hidden_ids is None else reason)
+                self.vscode_error = archive_error + ("；" + source_error if source_error else "")
         else:
             with self.agents_lock:
                 self.vscode_sessions, self.vscode_record_ids = sessions, record_ids
-                self.vscode_hidden_ids, self.vscode_error = hidden, None
+                self.vscode_hidden_ids, self.vscode_error = hidden, source_error
             with self.write_lock, self.scan_lock, closing(store.connect(self.home)) as conn:
                 now = self.now().isoformat(timespec="milliseconds").replace("+00:00", "Z")
                 for session in conn.execute("SELECT session_id,project FROM sessions WHERE crew_name IS NOT NULL AND crew_name<>''"):
@@ -365,7 +377,6 @@ class Service:
                       'now': self.now().isoformat(), 'agents_error': error, 'notification': self.notification_status(),
                       'leaders': [], 'members': [], 'decisions': [], 'attention': [],
                       'todos': [], 'todo_count': 0,
-                      'trust': {'enabled': False, 'goal': None, 'updated_at': None},
                       'candidates': {'running': [], 'others': []},
                       'channel': {'unread': 0, 'latest_id': 0, 'digesting': False, 'digest_error': None, 'digest_id': None},
                       'limits': self.limits(conn)}
@@ -383,7 +394,6 @@ class Service:
                 result['project'] = {key: status['project'][key] for key in ('name', 'root', 'theme')}
                 result['todos'] = todo.list(conn, name)
                 result['todo_count'] = len(result['todos'])
-                result['trust'] = trust_mode.get(conn, name)
                 open_groups = {group['name'] for group in status['groups'] if group['closed_at'] is None}
                 removed = {r[0] for r in conn.execute('SELECT session_id FROM session_controls WHERE removed=1')}
                 sessions = [s for s in [*status['ungrouped'], *(s for group in status['groups'] for s in group['members'])]
@@ -406,10 +416,10 @@ class Service:
                 for decision in decisions:
                     if decision['status'] == 'open':
                         asker = board.session(conn, decision['session_id'])
-                        leader = asker if asker['role'] == 'leader' else board.leader_of(conn, asker['session_id'])
+                        leader_id=trust_mode.decision_leader(conn,decision['id'])
                         result['decisions'].append({**{key: decision[key] for key in (
                             'id', 'session_id', 'question', 'options', 'recommendation', 'blocking', 'created_at', 'held', 'held_at')},
-                            'asker': asker['crew_name'], 'leader_session_id': leader['session_id'] if leader else None})
+                            'asker': asker['crew_name'], 'leader_session_id': leader_id})
                 tasks = usage.codex_tasks(conn, None, None, project=name)
                 reports, leases, claims = board.reports(conn, name), board.leases(conn, name), board.claims(conn, name)
                 member_leaders = {s['session_id']: board.leader_of(conn, s['session_id'])
@@ -430,6 +440,7 @@ class Service:
                         result['leaders'].append(dict(
                             session_id=sid, name=session['crew_name'], goal=session['task'], status=session['status'],
                             runtime=runtimes.get(conn, sid)['runtime'],
+                            trust=trust_mode.get(conn,name,sid),
                             is_git_admin=git_config is not None and git_config['admin_session_id'] == sid,
                             **models.get(conn, sid), applied=self.chat.applied(sid), activity=self.chat.activity(sid),
                             context=context, **codex,
@@ -450,6 +461,7 @@ class Service:
                         result['members'].append(dict(
                             session_id=sid, name=session['crew_name'], title=titles.get(sid),
                             runtime=runtimes.get(conn, sid)['runtime'],
+                            runtime_switch=runtime_switch.state(conn,session,self.chat,agents,error),
                             **models.get(conn, sid), applied=self.chat.applied(sid), activity=self.chat.activity(sid),
                             context=context, busy=self.chat.busy(sid) or (sid in present and present[sid].get('status') == 'busy'),
                             running=self.chat.running(sid) or sid in present,
@@ -506,7 +518,11 @@ class Service:
 
     def decision_participants(self, conn, decision):
         asker = board.session(conn, decision['session_id'])
-        leader = asker if asker['role'] == 'leader' else board.leader_of(conn, asker['session_id'])
+        leader_id=trust_mode.decision_leader(conn,decision['id'])
+        leader=board.session(conn,leader_id) if leader_id is not None else None
+        if leader is not None and (leader['project']!=decision['project'] or leader['role']!='leader'
+                                  or leader['status']=='closed' or board.is_archived(conn,leader_id)):
+            leader=None
         with self.agents_lock:
             if self.agents_error is None:
                 live = board.live_sessions(self.agents)
@@ -542,6 +558,26 @@ class Service:
     def post(self, path, data, project_name=None):
         if not isinstance(data, dict):
             raise ValueError("JSON \u8bf7\u6c42\u5fc5\u987b\u662f\u5bf9\u8c61")
+        if path in ('/api/session/runtime/prepare','/api/session/runtime/switch'):
+            with closing(store.connect(self.home)) as conn:
+                project=self.selected_project(conn,project_name if project_name is not None else data.get('project'))
+                target=board.session(conn,_text(data,'session_id'))
+                if target['project']!=project or data.get('project',project)!=project:
+                    raise board.BoardError('会话不属于当前工作区')
+                if path.endswith('/prepare'):
+                    desired=runtimes.validate(data.get('runtime'))
+                else:
+                    receipt=conn.execute('SELECT to_runtime,status FROM runtime_switches WHERE id=? AND session_id=? AND project=?',(_text(data,'preview_id'),target['session_id'],project)).fetchone()
+                    if receipt is None:raise board.Conflict('更换预览已失效，请重新检查')
+                    if receipt['status']=='configured':
+                        return self.chat.switch_runtime(conn,target['session_id'],data['preview_id'],data.get('confirm'),[],now=self.now().isoformat(timespec='milliseconds').replace('+00:00','Z'))
+                    desired=receipt['to_runtime']
+            catalog=self.runtime_catalog.refresh(force=True) if desired=='codex' else self.runtime_catalog.snapshot()
+            with self.write_lock,closing(store.connect(self.home)) as conn:
+                stamp=self.now().isoformat(timespec='milliseconds').replace('+00:00','Z')
+                if path.endswith('/prepare'):
+                    return self.chat.prepare_runtime(conn,target['session_id'],desired,catalog,model=data.get('model'),effort=data.get('effort'),handoff=data.get('handoff'),now=stamp)
+                return self.chat.switch_runtime(conn,target['session_id'],data['preview_id'],data.get('confirm'),catalog,now=stamp)
         if path in ("/api/files/resolve", "/api/files/open", "/api/files/reveal"):
             if project_name is not None and data.get('project') is not None and data['project'] != project_name:
                 raise board.BoardError('请求正文和地址中的项目不一致')
@@ -611,7 +647,7 @@ class Service:
                 scan=documents.refresh(conn,self.home,project,now=now)
                 return {'documents':documents.list(conn,project), 'scan':scan}
             if path == '/api/trust':
-                return trust_mode.set(conn, project, data.get('enabled'), data.get('goal'), now=now)
+                return trust_mode.set(conn, project, data.get('enabled'), data.get('goal'), now=now,leader_session_id=_text(data,'leader_session_id'))
             if path == '/api/decision/clarify':
                 from . import decision_briefs
                 if type(data.get('id')) is not int:
@@ -953,7 +989,7 @@ class Service:
             return path.read_bytes(), media_type
 
     def scan_usage(self):
-        with self.scan_lock, closing(store.connect(self.home)) as conn:
+        with self.write_lock, self.scan_lock, closing(store.connect(self.home)) as conn:
             now = self.now()
             if self.scanned_at is None or (now - self.scanned_at).total_seconds() >= 60:
                 usage.scan(conn, self.claude_root, self.codex_root, self.runs_file)
@@ -999,6 +1035,7 @@ POST_PATHS = {"/api/project/init", "/api/project/theme", "/api/open", "/api/open
 POST_PATHS.update({'/api/messages', '/api/todo/resolve', '/api/todo/undo'})
 POST_PATHS.update({'/api/trust', '/api/comments', '/api/decision/clarify'})
 POST_PATHS.update('/api/session/' + action for action in ('rename', 'archive', 'remove', 'restore', 'undo', 'stop', 'options', 'compact'))
+POST_PATHS.update(('/api/session/runtime/prepare','/api/session/runtime/switch'))
 POST_PATHS.update(('/api/attention/dismiss', '/api/notifications/away'))
 POST_PATHS.update(('/api/decision/hold', '/api/decision/unhold'))
 POST_PATHS.update(('/api/channel', '/api/channel/read', '/api/channel/digest'))
@@ -1016,6 +1053,10 @@ STATIC = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js",
           "/style.css": ("style.css", "text/css; charset=utf-8"), "/chat.js": ("chat.js", "text/javascript; charset=utf-8"),
           "/vendor/markdown-it.min.js": ("vendor/markdown-it.min.js", "text/javascript; charset=utf-8")}
 STATIC.update({'/logo.svg': ('logo.svg', 'image/svg+xml'),
+               '/runtime-switch-ui.js':('runtime-switch-ui.js','text/javascript; charset=utf-8'),
+               '/runtime-switch-ui.css':('runtime-switch-ui.css','text/css; charset=utf-8'),
+               '/leader-trust-ui.js':('leader-trust-ui.js','text/javascript; charset=utf-8'),
+               '/leader-trust-ui.css':('leader-trust-ui.css','text/css; charset=utf-8'),
                '/documents.js': ('documents.js','text/javascript; charset=utf-8'),
                '/documents.css': ('documents.css','text/css; charset=utf-8'),
                '/fonts/HarmonyOS_Sans_SC_Regular.woff2': ('fonts/HarmonyOS_Sans_SC_Regular.woff2', 'font/woff2'),
@@ -1098,6 +1139,12 @@ class Handler(BaseHTTPRequestHandler):
                                         query.get("project", [None])[0], query.get("base", [None])[0],document_id)
             content, media_type = service.read_file(info, raw=query.get("raw") == ["1"])
             self.send_file_content(content, media_type)
+        elif url.path == '/api/admin/health':
+            workers = {name: bool(worker and worker.is_alive()) for name, worker in (
+                ('agents', service.worker), ('notices', service.notice_worker), ('git_ci', service.ci_worker))}
+            self._send(200, {'ok': True, 'service': 'crew', 'home': str(Path(service.home).resolve()),
+                             'pid': os.getpid(), 'workers': workers,
+                             'warnings': [name for name, running in workers.items() if not running]})
         elif url.path == "/api/state":
             self._send(200, service.state(query.get("project", [None])[0]))
         elif url.path == '/api/runtimes':
@@ -1110,7 +1157,7 @@ class Handler(BaseHTTPRequestHandler):
         elif url.path == '/api/trust/report':
             with closing(store.connect(service.home)) as conn:
                 project = service.selected_project(conn, query.get('project', [None])[0])
-                self._send(200, trust_mode.report(conn, project).encode('utf-8'),
+                self._send(200, trust_mode.report(conn, project,_text({'leader_session_id':query.get('leader_session_id',[None])[0]},'leader_session_id')).encode('utf-8'),
                            'text/markdown; charset=utf-8', attachment='crew-report.md')
         elif url.path == '/api/comments':
             with closing(store.connect(service.home)) as conn:

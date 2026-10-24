@@ -197,12 +197,91 @@ class RuntimeFeatureHttpTests(ShellFixture, unittest.TestCase):
 
     def test_trust_goal_is_explicit_and_report_is_downloadable(self):
         self.assertEqual(self.request('/api/trust', {'enabled': True, 'goal': ''})[0], 400)
-        self.assertEqual(self.request('/api/trust', {'enabled': True, 'goal': '交付可复查的测试目标'})[0], 200)
+        self.assertEqual(self.request('/api/trust', {'enabled': True, 'goal': '交付可复查的测试目标','leader_session_id':'s3'})[0], 200)
         state = self.request('/api/state')[1]
-        self.assertTrue(state['trust']['enabled'])
-        code, report = self.request('/api/trust/report')
+        self.assertTrue(next(leader for leader in state['leaders'] if leader['session_id']=='s3')['trust']['enabled'])
+        self.assertNotIn('trust',state)
+        code, report = self.request('/api/trust/report?leader_session_id=s3')
         self.assertEqual(code, 200)
         self.assertIn('交付可复查的测试目标', report)
+        self.assertEqual(self.request('/api/trust/report')[0],400)
+        self.assertEqual(self.request('/api/trust', {'enabled':True,'goal':'bad member target','leader_session_id':'s1'})[0],400)
+
+    def test_runtime_prepare_confirm_and_idempotent_retry_are_scoped_and_never_start_a_process(self):
+        catalog=[{'id':'claude','available':True},{'id':'codex','available':True,'models':[]}]
+        self.server.service.runtime_catalog=mock.Mock(snapshot=lambda:catalog,refresh=lambda **kw:catalog)
+        code,preview=self.request('/api/session/runtime/prepare',{'session_id':'s1','runtime':'codex'})
+        self.assertEqual(code,200,preview);self.assertFalse(preview['starts_turn'])
+        self.assertEqual(runtimes.get(self.conn,'s1')['runtime'],'claude')
+        self.assertEqual(self.request('/api/session/runtime/switch',{'session_id':'s1','preview_id':preview['preview_id'],'confirm':False})[0],400)
+        code,result=self.request('/api/session/runtime/switch',{'session_id':'s1','preview_id':preview['preview_id'],'confirm':True})
+        self.assertEqual(code,200,result);self.assertEqual(result['status'],'configured')
+        self.assertFalse(result['starts_turn']);self.assertEqual(self.processes,[])
+        self.server.service.runtime_catalog.refresh=mock.Mock(side_effect=AssertionError('receipt retries must not inspect native tools'))
+        self.assertEqual(self.request('/api/session/runtime/switch',{'session_id':'s1','preview_id':preview['preview_id'],'confirm':True})[1],result)
+        board.init_project(self.conn,'foreign',self.root/'foreign')
+        code,_=self.request('/api/session/runtime/prepare?project=foreign',{'session_id':'s1','runtime':'claude'})
+        self.assertEqual(code,400)
+
+    def test_runtime_stale_confirmation_is_409_and_state_disables_external_sessions(self):
+        catalog=[{'id':'claude','available':True},{'id':'codex','available':True,'models':[]}]
+        self.server.service.runtime_catalog=mock.Mock(snapshot=lambda:catalog,refresh=lambda **kw:catalog)
+        code,preview=self.request('/api/session/runtime/prepare',{'session_id':'s1','runtime':'codex'})
+        self.assertEqual(code,200,preview)
+        self.server.service.chat.journal('s1').message('new-message','changed after preview')
+        self.assertEqual(self.request('/api/session/runtime/switch',{'session_id':'s1','preview_id':preview['preview_id'],'confirm':True})[0],409)
+        with self.server.service.agents_lock:
+            self.server.service.agents=[{'sessionId':'s1','pid':32,'name':'external','status':'idle','cwd':str(self.project)}]
+        state=self.request('/api/state')[1]
+        member=next(row for row in state['members'] if row['session_id']=='s1')
+        self.assertFalse(member['runtime_switch']['allowed']);self.assertIn('外部',member['runtime_switch']['reason'])
+
+    def test_old_question_keeps_its_original_leader_after_member_moves(self):
+        number=board.ask(self.conn,'s1','Original group owns this question',options=('yes','no'))
+        ungrouped=board.ask(self.conn,'s2','No leader owned this question',options=('yes','no'))
+        board.join(self.conn,'new-chief','demo','other',self.project,self.project,'main',role='leader')
+        board.roster(self.conn,'demo','move','other',session_ids=['s1','s2'])
+        state=self.request('/api/state')[1]
+        scopes={row['id']:row['leader_session_id'] for row in state['decisions']}
+        self.assertEqual(scopes[number],'s3');self.assertIsNone(scopes[ungrouped])
+        code,result=self.request('/api/answer',{'id':number,'text':'yes'})
+        self.assertEqual(code,200,result);self.assertEqual(result['routed_to'],'lead')
+        self.assertEqual(board.pending_notices(self.conn,'new-chief'),[])
+        self.assertIn('Original group owns this question',board.pending_notices(self.conn,'s3')[0]['text'])
+        code,result=self.request('/api/answer',{'id':ungrouped,'text':'yes'})
+        self.assertEqual(code,200,result);self.assertIsNone(result['routed_to'])
+        self.assertEqual(board.pending_notices(self.conn,'new-chief'),[])
+
+    def test_usage_scan_does_not_upgrade_a_stale_snapshot_after_a_service_writer(self):
+        service=self.server.service
+        service.scanned_at=None
+        snapshot=threading.Event();attempted=threading.Event();written=threading.Event()
+        writer_errors=[]
+        def scan(conn,*args):
+            # Reproduce SQLite's deferred read -> write hazard. The competing
+            # service writer must wait until this complete scan releases its lock.
+            conn.execute('SAVEPOINT timing_scan')
+            conn.execute('SELECT COUNT(*) FROM sessions').fetchone()
+            snapshot.set()
+            if not attempted.wait(3):raise AssertionError('writer never attempted')
+            written.wait(.15)
+            conn.execute('PRAGMA user_version=2')
+            conn.execute('RELEASE timing_scan')
+        def write():
+            try:
+                if not snapshot.wait(3):raise AssertionError('scan never read')
+                attempted.set()
+                with service.write_lock,closing(store.connect(self.home)) as conn:
+                    conn.execute("UPDATE sessions SET last_prompt='parallel service writer' WHERE session_id='s1'")
+                written.set()
+            except BaseException as exc:writer_errors.append(exc)
+        writer=threading.Thread(target=write)
+        writer.start()
+        try:
+            with mock.patch('crew.web.usage.scan',side_effect=scan):service.scan_usage()
+        finally:writer.join(5)
+        self.assertFalse(writer.is_alive());self.assertEqual(writer_errors,[])
+        self.assertTrue(written.is_set())
 
     def test_comments_have_project_scope_and_notify_leader(self):
         code, comment = self.request('/api/comments', {'session_id': 's1', 'text': '请解释这里的进度'})

@@ -135,6 +135,7 @@ class CodexRuntimeTests(unittest.TestCase):
         self.assertEqual(start["approvalPolicy"], "on-request")
         self.assertIn("# member role rules", start["developerInstructions"])
         self.assertIn("crew_send_message", start["developerInstructions"])
+        self.assertIn('初始化授权只是快照',start['developerInstructions'])
         self.assertTrue(start["dynamicTools"])
         self.assertTrue(start["config"]["features"]["hooks"])
         self.assertTrue(start["config"]["bypass_hook_trust"])
@@ -162,11 +163,16 @@ class CodexRuntimeTests(unittest.TestCase):
             self.make_running()
         self.assertFalse(self.clients)
 
-    def test_project_trust_goal_is_injected_into_native_developer_instructions(self):
+    def trust_leaders(self):
         with closing(store.connect(self.home)) as conn:
-            conn.execute("CREATE TABLE IF NOT EXISTS trust_settings (project TEXT PRIMARY KEY, "
-                         "enabled INTEGER NOT NULL, goal TEXT, updated_at TEXT NOT NULL)")
-            trust_mode.set(conn, "demo", True, "完成目标并保留可修改的提交")
+            board.join(conn,'leader-a','demo','chief-a',self.root,self.root,'main',role='leader')
+            board.join(conn,'leader-b','demo','chief-b',self.root,self.root,'main',role='leader')
+            board.roster(conn,'demo','add','chief-a',session_ids=['worker'])
+
+    def test_leader_trust_goal_is_injected_into_native_developer_instructions(self):
+        self.trust_leaders()
+        with closing(store.connect(self.home)) as conn:
+            trust_mode.set(conn, "demo", True, "完成目标并保留可修改的提交",leader_session_id='leader-a')
         running, client = self.make_running()
         instructions = client.calls[0][1]["developerInstructions"]
         self.assertIn("完成目标并保留可修改的提交", instructions)
@@ -186,14 +192,47 @@ class CodexRuntimeTests(unittest.TestCase):
         result = running.send("actual brief", "message-1", display_text="task", source="crew", sender="leader",
                               images=[{"media_type": "image/png", "data": "aGVsbG8="}], image_files=["saved.png"])
         self.assertEqual(result, "message-1")
-        self.assertEqual(client.calls[-1], ("turn/start", {"input": [
-            {"type": "image", "url": "data:image/png;base64,aGVsbG8="}, {"type": "text", "text": "actual brief"}]}))
+        self.assertEqual(client.calls[-1][0], 'turn/start')
+        self.assertEqual(client.calls[-1][1]['input'][0],{"type": "image", "url": "data:image/png;base64,aGVsbG8="})
+        self.assertTrue(client.calls[-1][1]['input'][1]['text'].endswith('\n\nactual brief'))
+        self.assertIn('关闭',client.calls[-1][1]['input'][1]['text'])
         message = next(event for event in running.journal.events if event["type"] == "message")
         self.assertEqual((message["text"], message["sender"], message["images"]), ("task", "leader", ["saved.png"]))
         with closing(store.connect(self.home)) as conn:
             self.assertEqual(board.session(conn, "worker")["status"], "working")
+            self.assertEqual(board.session(conn, "worker")['last_prompt'],'task')
         client.finish()
         self.assertEqual(running.journal.status, "idle")
+
+    def test_living_native_thread_reads_own_leader_trust_on_and_off_each_turn(self):
+        self.trust_leaders()
+        running,client=self.make_running()
+        running.send('first','m1');client.finish()
+        self.assertIn('关闭',client.calls[-1][1]['input'][0]['text'])
+        with closing(store.connect(self.home)) as conn:
+            trust_mode.set(conn,'demo',True,'OTHER GROUP SECRET GOAL',leader_session_id='leader-b')
+            trust_mode.set(conn,'demo',True,'THIS GROUP GOAL',leader_session_id='leader-a')
+            self.assertEqual(conn.execute('SELECT COUNT(*) FROM leader_notices').fetchone()[0],0)
+        self.assertEqual(sum(name=='turn/start' for name,_ in client.calls),1)
+        running.send('second','m2');client.finish()
+        native=client.calls[-1][1]['input'][0]['text']
+        self.assertIn('THIS GROUP GOAL',native);self.assertNotIn('OTHER GROUP SECRET GOAL',native)
+        with closing(store.connect(self.home)) as conn:
+            trust_mode.set(conn,'demo',False,leader_session_id='leader-a')
+            disabled_context=trust_mode.context(conn,'worker')
+        self.assertEqual(sum(name=='turn/start' for name,_ in client.calls),2)
+        running.compact();client.finish()
+        running.send('third','m3');client.finish()
+        native=client.calls[-1][1]['input'][0]['text']
+        self.assertIn(disabled_context,native)
+        self.assertIn('不得继续',native)
+        self.assertEqual([e['text'] for e in running.journal.events if e['type']=='message'],['first','second','third'])
+        self.assertEqual([name for name,_ in client.calls].count('thread/start'),1)
+        running.close();self.assertTrue(running.reader_done.wait(2))
+        resumed,resume_client=self.make_running(resume=True)
+        resumed.send('after resume','m4')
+        self.assertEqual(resume_client.calls[0][0],'thread/resume')
+        self.assertIn('关闭',resume_client.calls[-1][1]['input'][0]['text'])
 
     def test_live_context_and_activity_are_not_persisted(self):
         running, client = self.make_running()

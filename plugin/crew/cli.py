@@ -171,12 +171,17 @@ def parser():
     a.add_argument("--recommend", default=argparse.SUPPRESS)
     a.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
     _brief_flags(a)
-    c = command("trust", True).add_subparsers(dest="action")
+    trust_parser = command("trust", True)
+    trust_parser.add_argument("--leader")
+    c = trust_parser.add_subparsers(dest="action")
     for action in ("status", "report"):
-        c.add_parser(action).add_argument("--json", action="store_true", default=argparse.SUPPRESS)
+        a = c.add_parser(action)
+        a.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
+        a.add_argument("--leader", default=argparse.SUPPRESS)
     a = c.add_parser("set")
     a.add_argument("enabled", choices=("on", "off"))
     a.add_argument("--goal")
+    a.add_argument("--leader", default=argparse.SUPPRESS)
     a.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
     c = command("answer")
     c.add_argument("id", type=int)
@@ -556,6 +561,23 @@ def execute(conn, args, cwd, agents_provider):
             raise board.BoardError("请至少提供 --scope 或 --done-when")
         return _set_card(conn, _session_id(args), args.scope, args.done_when)
     if cmd == "answer":
+        bound = (args.session_id is not None or os.environ.get("CREW_SESSION_ID")
+                 or os.environ.get("CLAUDE_CODE_SESSION_ID"))
+        if bound:
+            from . import trust_mode
+            # Keep eligibility and answer in one transaction: a concurrent
+            # archive/group close must not race this authorization check.
+            with board.transaction(conn):
+                sid = _session_id(args)
+                session = board.session(conn, sid)
+                group = conn.execute("SELECT 1 FROM groups WHERE project=? AND name=? "
+                                     "AND leader_session_id=? AND closed_at IS NULL",
+                                     (session["project"], session["group_name"], sid)).fetchone()
+                if (session["role"] != "leader" or not session["crew_name"]
+                        or session["status"] == "closed" or board.is_archived(conn, sid)
+                        or group is None or trust_mode.decision_leader(conn, args.id) != sid):
+                    raise board.BoardError("只能由题目原归属组中未归档、未关闭的 leader 答复")
+                return board.answer.__wrapped__(conn, args.id, args.text, actor=sid)
         return board.answer(conn, args.id, args.text, actor)
     if cmd == "withdraw":
         return board.withdraw(conn, _session_id(args), args.id)
@@ -583,11 +605,27 @@ def execute(conn, args, cwd, agents_provider):
     if cmd == "trust":
         from . import trust_mode
         project = _project(conn, args, cwd)
+        if args.leader:
+            row = conn.execute('SELECT session_id,project FROM sessions WHERE session_id=?', (args.leader,)).fetchone()
+            if row is not None:
+                if row['project'] != project:
+                    raise board.BoardError('leader 不属于当前项目')
+                leader_id = row['session_id']
+            else:
+                leader_id = board.named_session(conn, project, args.leader)['session_id']
+        elif _actor(args) != board.HUMAN:
+            leader_id = trust_mode.resolve_leader(conn, _session_id(args), project)
+        else:
+            leader_id = None
+        if not leader_id:
+            raise board.BoardError('请用 --leader 指定具体 leader；成员会话可默认使用所属 leader')
+        if _actor(args) != board.HUMAN and trust_mode.resolve_leader(conn, _session_id(args), project) != leader_id:
+            raise board.BoardError('会话只能访问自己所属 leader 的信任设置')
         if args.action == "set":
-            return trust_mode.set(conn, project, args.enabled == "on", args.goal)
+            return trust_mode.set(conn, project, args.enabled == "on", args.goal, leader_session_id=leader_id)
         if args.action == "report":
-            return trust_mode.report(conn, project)
-        return trust_mode.get(conn, project)
+            return trust_mode.report(conn, project, leader_id)
+        return trust_mode.get(conn, project, leader_id)
     if cmd == "claim":
         return board.claim(conn, _session_id(args), args.pattern, args.note)
     if cmd == "unclaim":

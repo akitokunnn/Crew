@@ -3,7 +3,9 @@ import contextlib
 import datetime as dt
 import io
 import json
+import sqlite3
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -101,6 +103,43 @@ class UsageFixture:
 
 
 class TestUsage(UsageFixture, unittest.TestCase):
+    def test_scan_reserves_writer_before_reading_migration_version(self):
+        outcomes = []
+        original = usage._backfill_peer_prompts
+
+        def competing_writer():
+            other = sqlite3.connect(store.db_path(self.home), timeout=0.05, isolation_level=None)
+            try:
+                other.execute("PRAGMA user_version = 2")
+                outcomes.append("committed")
+            except sqlite3.OperationalError as error:
+                outcomes.append(str(error))
+            finally:
+                other.close()
+
+        def read_then_compete(conn, *args):
+            conn.execute("PRAGMA user_version").fetchone()
+            writer = threading.Thread(target=competing_writer)
+            writer.start()
+            writer.join(5)
+            self.assertFalse(writer.is_alive())
+            return original(conn, *args)
+
+        with mock.patch.object(usage, "_backfill_peer_prompts", side_effect=read_then_compete):
+            self.scan()
+        self.assertEqual(outcomes, ["database is locked"])
+        self.assertEqual(self.conn.execute("PRAGMA user_version").fetchone()[0], 2)
+        self.assertFalse(self.conn.in_transaction)
+
+    def test_scan_keeps_callers_transaction_owned_by_caller(self):
+        self.main_file([assistant("one")])
+        self.conn.execute("BEGIN IMMEDIATE")
+        self.scan()
+        self.assertTrue(self.conn.in_transaction)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM claude_requests").fetchone()[0], 1)
+        self.conn.rollback()
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM claude_requests").fetchone()[0], 0)
+
     def test_deduplicate_message_and_request_ids_but_keep_tools(self):
         first = assistant("one")
         repeated = assistant("one", tool="tool-2")

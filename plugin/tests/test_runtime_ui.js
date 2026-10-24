@@ -33,6 +33,7 @@ function harness(state = fixture(), fetcher = () => { throw new Error("Unexpecte
     location:{search:"?project=fixture", origin:"http://fixture.local", hash:""}, URLSearchParams, URL, fetch:fetcher, console,
     CrewChat:{renderInline:escape, renderMarkdown:text => `<p>${escape(text)}</p>`}};
   vm.createContext(sandbox);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, "../crew/web/leader-trust-ui.js"), "utf8"), sandbox);
   // Expose lexical UI functions while leaving setup and its state-poll timer off.
   const end = "  setup();\n})();";
   assert(source.endsWith(end + "\n") || source.endsWith(end));
@@ -40,7 +41,7 @@ function harness(state = fixture(), fetcher = () => { throw new Error("Unexpecte
     optionsLabel, leaderPayload, renderLeaderRuntime, refreshRuntimes, editorHandoffReason, sessionMenu,
     openTodos, todosOf, pendingOf, todoCard, todoTray, todoExpanded, todoTrayExpanded, todoActions,
     todoResolvePayload, resolveTodo, renderTodos, replace,
-    workspaceTrust, trustIndicator, trustSettings, trustPayload, readTrustReport,
+    decisionTrust, trustReportUrl, readTrustReport,
     compactDecisionText, decisionOptions, decisionCard, decisionsOpen,
     commentButton, commentsMarkup, sessionComments, loadComments, postComment,
     route() {readRoute(); return {view,leaderId,readOnlyId};},
@@ -258,33 +259,26 @@ test("a stale action retains the user's reason and asks them to review updated c
   assert.equal(ui.todoExpanded.has("44"), true);
 });
 
-test("workspace trust requires a goal when enabled, retains it when disabled, and escapes displayed scope", () => {
-  const state = todoState();
-  state.trust = {enabled:true, goal:'完成迁移 <script>unsafe</script>', updated_at:null};
+test("decision trust follows its explicit leader and ignores legacy project mode", () => {
+  const state = todoState(); state.trust = {enabled:true, goal:"obsolete project goal"};
+  state.leaders[0].trust = {enabled:false, goal:"leader one"};
+  state.leaders.push({session_id:"leader-other", name:"Other", trust:{enabled:true, goal:"leader two"}});
   const {ui} = harness(state);
-  assert.throws(() => ui.trustPayload({elements:{enabled:{checked:true}, goal:{value:"  "}}}), /目标和授权范围/);
-  assert.deepEqual(plain(ui.trustPayload({elements:{enabled:{checked:true}, goal:{value:" 完成迁移 "}}})), {enabled:true, goal:"完成迁移"});
-  assert.deepEqual(plain(ui.trustPayload({elements:{enabled:{checked:false}, goal:{value:" 原目标 "}}})), {enabled:false, goal:"原目标"});
-  const indicator = ui.trustIndicator(), settings = ui.trustSettings();
-  assert(indicator.includes("信任模式 · 开"));
-  assert(settings.includes("我的待办"));
-  assert(settings.includes("&lt;script&gt;unsafe&lt;/script&gt;"));
-  assert(!settings.includes("<script>"));
-  assert(settings.includes('/api/trust/report?project=fixture'));
-  assert(settings.includes("download"));
-  delete state.trust;
-  assert.equal(ui.trustIndicator(), "");
+  assert.equal(ui.decisionTrust({leader_session_id:"leader-1"}).enabled, false);
+  assert.equal(ui.decisionTrust({leader_session_id:"leader-other"}).goal, "leader two");
+  assert.equal(ui.decisionTrust({session_id:"absent"}).enabled, false);
 });
 
-test("detailed reports are fetched as Markdown attachments, with useful server errors", async () => {
+test("reports require an explicit current leader and scope the Markdown URL", async () => {
   const {ui} = harness(todoState(), async (url, options) => {
-    assert.equal(url, "/api/trust/report?project=fixture");
+    assert.equal(url, "/api/trust/report?leader_session_id=leader-1&project=fixture");
     assert.equal(options.headers["X-Crew"], "1");
-    return {ok:true, text:async () => "# 报告\n\n已完成的工作"};
+    return {ok:true, text:async () => "# 本组报告"};
   });
-  assert.equal(await ui.readTrustReport(), "# 报告\n\n已完成的工作");
-  const error = harness(todoState(), async () => ({ok:false, text:async () => JSON.stringify({error:"项目不存在"})}));
-  await assert.rejects(error.ui.readTrustReport(), /项目不存在/);
+  assert.equal(await ui.readTrustReport("leader-1"), "# 本组报告");
+  await assert.rejects(ui.readTrustReport(), /当前项目的 leader/);
+  const error = harness(todoState(), async () => ({ok:false, text:async () => JSON.stringify({error:"leader不存在"})}));
+  await assert.rejects(error.ui.readTrustReport("leader-1"), /leader不存在/);
 });
 
 const decision = extra => ({id:71, asker:"连接助手", session_id:"member-1", leader_session_id:"leader-1",

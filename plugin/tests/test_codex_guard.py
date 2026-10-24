@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from crew import board, codex_guard, codex_runtime, store
+from crew import board, codex_guard, codex_runtime, runtimes, store
 
 
 PLUGIN = Path(__file__).resolve().parents[1]
@@ -29,6 +29,7 @@ class CodexGuardTests(unittest.TestCase):
         board.init_project(self.conn, "demo", self.root)
         for identity in ("member", "other", "admin"):
             board.register_session(self.conn, identity, "demo", self.root, None, "main", name=identity)
+            runtimes.set(self.conn, identity, 'codex')
 
     def payload(self, command="echo ok", tool="Bash", **extra):
         return {"hook_event_name": "PreToolUse", "session_id": "native-codex-thread", "turn_id": "turn-1",
@@ -50,6 +51,15 @@ class CodexGuardTests(unittest.TestCase):
         board.take(self.conn, "other", "phone", "test")
         self.assertIn("设备正在被借用", self.check("adb devices"))
         self.assertIsNone(self.check("adb devices", session="other"))
+
+    def test_old_codex_carrier_is_denied_after_switch_back_without_writes_or_migration(self):
+        self.assertIsNone(self.check())
+        runtimes.set(self.conn, 'member', 'claude')
+        before = self.conn.total_changes
+        with mock.patch('crew.store.connect', side_effect=AssertionError('guard must stay read-only')), \
+             mock.patch('crew.guard.check', side_effect=AssertionError('inactive carrier cannot reach policy execution')):
+            self.assertIn('inactive', self.check())
+        self.assertEqual(self.conn.total_changes, before)
 
     def test_git_admin_guard_uses_bound_crew_identity(self):
         self.conn.execute("INSERT INTO git_management(project,enabled_at,base,admin_session_id) VALUES(?,?,?,?)",

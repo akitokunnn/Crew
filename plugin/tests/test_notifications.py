@@ -769,6 +769,28 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM leader_notices').fetchone()[0], 0)
         self.assertEqual(self.client.sent[-1]['text'], '已保存：没有分组的问题。')
 
+    def test_moved_member_question_and_qq_answer_keep_the_original_leader(self):
+        identity=board.ask(self.conn,'s1','原组的问题',['采用原方案'],now=NOW)
+        self.add_leader('next-leader',name='新组')
+        board.roster(self.conn,'demo','move','新组',session_ids=['s1'])
+        message=self.query(identity)
+        self.assertIn('demo·lead',message['text'])
+        self.assertNotIn('demo·新组',message['text'])
+        row=self.conn.execute('SELECT leader_session_id FROM notification_messages WHERE decision_id=?',(identity,)).fetchone()
+        self.assertEqual(row[0],'s3')
+        self.receive('采用原方案',message['result']['ref_idx'])
+        self.assertEqual(len(board.pending_notices(self.conn,'s3')),1)
+        self.assertEqual(board.pending_notices(self.conn,'next-leader'),[])
+
+    def test_qq_question_originally_without_leader_does_not_adopt_later_group(self):
+        identity=board.ask(self.conn,'s2','原来没有leader的问题',['选项'],now=NOW)
+        board.roster(self.conn,'demo','move','lead',session_ids=['s2'])
+        message=self.query(identity)
+        self.assertIn('demo·无leader',message['text'])
+        self.receive('选项',message['result']['ref_idx'])
+        self.assertEqual(self.decision(identity)['answer'],'选项')
+        self.assertEqual(board.pending_notices(self.conn,'s3'),[])
+
     def test_answer_to_leader_question_queues_notice_to_itself(self):
         board.update_cc_name(self.conn, 's3', 'cc-lead', now=NOW)
         identity = board.ask(self.conn, 's3', 'leader 自己的问题', ['A'], now=NOW)

@@ -75,13 +75,40 @@ class DecisionBriefTests(RuntimeFixture):
         self.assertEqual(len(board.decisions(self.conn, "demo")), 1)
         self.assertEqual(len([e for e in board.events(self.conn, "demo") if e["kind"] == "decision:revise"]), 2)
 
-    def test_past_group_leader_cannot_revise_after_the_member_moves(self):
+    def test_original_question_leader_can_revise_after_member_moves_and_new_leader_cannot(self):
         number = self.ask()
         board.join(self.conn, "next-chief", "demo", "next", self.root, self.root, "main", role="leader")
         board.roster(self.conn, "demo", "move", "next", session_ids=["member-id"])
         with self.assertRaises(board.BoardError):
-            decision_briefs.revise(self.conn, "chief-id", number, brief={"title": "旧 leader 不能修改"})
-        self.assertEqual(decision_briefs.revise(self.conn, "next-chief", number, brief={"title": "当前 leader 可以澄清"})["id"], number)
+            decision_briefs.revise(self.conn, "next-chief", number, brief={"title": "新组 leader 不能修改旧题"})
+        self.assertEqual(decision_briefs.revise(self.conn, "chief-id", number, brief={"title": "原 leader 可以澄清"})["id"], number)
+        self.assertEqual(board.decisions(self.conn,'demo')[0]['leader_session_id'],'chief-id')
+
+    def test_review_routes_to_question_scope_after_move_and_null_scope_is_not_reassigned(self):
+        number=board.ask(self.conn,'member-id','Old unclear question')
+        board.join(self.conn,'next-chief','demo','next',self.root,self.root,'main',role='leader')
+        board.roster(self.conn,'demo','move','next',session_ids=['member-id'])
+        decision_briefs.queue_review(self.conn,number)
+        self.assertEqual(len(board.pending_notices(self.conn,'chief-id')),1)
+        self.assertEqual(board.pending_notices(self.conn,'next-chief'),[])
+        board.join(self.conn,'solo','demo','solo',self.root,self.root,'main')
+        solo=board.ask(self.conn,'solo','Originally ungrouped')
+        board.roster(self.conn,'demo','move','next',session_ids=['solo'])
+        decision_briefs.queue_review(self.conn,solo)
+        self.assertEqual(board.pending_notices(self.conn,'next-chief'),[])
+        self.assertEqual(len(board.deliver(self.conn,'solo')['handoffs']),1)
+
+    def test_member_revision_cannot_reuse_archived_original_leader_authority_or_new_group_trust(self):
+        number=self.ask()
+        trust_mode.set(self.conn,'demo',True,'A组旧授权',leader_session_id='chief-id')
+        board.join(self.conn,'next-chief','demo','next',self.root,self.root,'main',role='leader')
+        trust_mode.set(self.conn,'demo',True,'B组独立授权',leader_session_id='next-chief')
+        self.conn.execute("INSERT INTO session_controls(session_id,archived_status) VALUES('chief-id','idle')")
+        board.roster(self.conn,'demo','move','next',session_ids=['member-id'])
+        changed=decision_briefs.revise(self.conn,'member-id',number,brief={'title':'原题澄清后仍须人工处理'})
+        self.assertEqual(changed['status'],'open')
+        self.assertEqual(changed['leader_session_id'],'chief-id')
+        self.assertIsNone(changed['answer'])
 
     def test_revise_cannot_cross_projects_or_change_answered_questions(self):
         number = self.ask()
@@ -137,7 +164,7 @@ class DecisionBriefTests(RuntimeFixture):
         self.assertEqual(board.deliver(self.conn, "solo")["handoffs"], [])
 
     def test_trust_mode_uses_the_explicit_recommendation_and_its_real_reason(self):
-        trust_mode.set(self.conn, "demo", True, "Finish and verify the requested work")
+        trust_mode.set(self.conn, "demo", True, "Finish and verify the requested work", leader_session_id='chief-id')
         number = self.ask()
         decision = board.decisions(self.conn, "demo", all=True)[0]
         self.assertEqual(decision["id"], number)
@@ -151,7 +178,7 @@ class DecisionBriefTests(RuntimeFixture):
 
     def test_revising_existing_question_in_trust_mode_answers_it_without_a_new_question(self):
         number = board.ask(self.conn, "member-id", "Old question", ["A", "B"])
-        trust_mode.set(self.conn, "demo", True, "Finish and verify")
+        trust_mode.set(self.conn, "demo", True, "Finish and verify", leader_session_id='chief-id')
         with self.assertRaises(board.BoardError):
             decision_briefs.revise(self.conn, "chief-id", number, question="do not partly save", brief=brief())
         self.assertEqual(board.decisions(self.conn, "demo")[0]["question"], "Old question")

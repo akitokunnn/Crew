@@ -28,7 +28,7 @@ import json
 from pathlib import Path
 import sqlite3
 
-from . import board, decision_briefs, documents, runtimes, store, todo
+from . import board, decision_briefs, documents, guard, runtimes, store, todo
 
 
 class ToolError(ValueError):
@@ -84,14 +84,14 @@ _SPECS = [
            "blocking": {"type": "boolean"}, "brief": _BRIEF_SCHEMA}, ("question",)),
     _spec("crew_decisions", "Read only this project's decisions; include answered/withdrawn "
           "questions with all=true.", {"all": {"type": "boolean"}}),
-    _spec("crew_answer", "A leader may record an answer to a question belonging to its own group. "
+    _spec("crew_answer", "A question's original Crew leader may record an answer for that question. "
           "Use only for decisions you are authorized to make.",
           {"id": {"type": "integer", "minimum": 1},
            "text": _text("The answer to record.")}, ("id", "text")),
     _spec("crew_withdraw", "Withdraw only a question you asked that is still open.",
           {"id": {"type": "integer", "minimum": 1}}, ("id",)),
     _spec("crew_decision_revise", "Clarify an existing open question in place, preserving its id. "
-          "Only its proposer or its current group leader may revise it. Supply a complete brief; "
+          "Only its proposer or the leader bound when it was asked may revise it. Supply a complete brief; "
           "do not issue a duplicate question.",
           {"id": {"type": "integer", "minimum": 1}, "question": _text("The clarified question."),
            "options": {"type": "array", "items": _text("One full action.", max_length=2000), "maxItems": 12},
@@ -193,7 +193,7 @@ class CodexTools:
         self._home = Path(home).expanduser().resolve()
         self._session_id = session_id
         self._send_message = send_message
-        with contextlib.closing(store.connect(self._home)) as conn:
+        with contextlib.closing(guard.readonly(self._home)) as conn:
             actor = board.session(conn, self._session_id)
             if not actor["project"]:
                 raise ValueError("Crew tools require registered project membership")
@@ -204,6 +204,8 @@ class CodexTools:
         actor = board.session(conn, self._session_id)
         if actor["project"] != self._project:
             raise ToolError("forbidden", "Crew project membership changed; rebind tools in the host")
+        if runtimes.get(conn, self._session_id)['runtime'] != 'codex':
+            raise ToolError('inactive_runtime', 'The Crew identity now uses another runtime; this Codex carrier is inactive')
         if actor["role"] not in ("member", "leader") or not actor["crew_name"]:
             raise ToolError("forbidden", "A named Crew member or leader is required")
         if actor["status"] == "closed" or board.is_archived(conn, self._session_id):
@@ -241,6 +243,8 @@ class CodexTools:
             _validate(args, _SCHEMAS[name])
             # Transport params (threadId, turnId, callId, etc.) deliberately do
             # not influence authorization, storage location or actor identity.
+            with contextlib.closing(guard.readonly(self._home)) as conn:
+                self._actor(conn)
             with contextlib.closing(store.connect(self._home)) as conn:
                 actor = self._actor(conn)
                 data = self._dispatch(conn, actor, name, args)
@@ -328,7 +332,7 @@ class CodexTools:
             group = next((g for g in board.groups(conn, project)
                           if g["name"] == actor["group_name"] and g["closed_at"] is None), None)
             if (actor["role"] != "leader" or group is None or group["leader_session_id"] != sid
-                    or questioner["project"] != project or questioner["group_name"] != group["name"]):
+                    or questioner["project"] != project or decision['leader_session_id'] != sid):
                 raise ToolError("forbidden", "Only this group's leader can answer its Crew decisions")
             board.answer(conn, args["id"], args["text"], actor=sid)
             return self._decision(conn, args["id"])

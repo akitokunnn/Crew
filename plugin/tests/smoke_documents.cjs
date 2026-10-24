@@ -8,16 +8,22 @@ const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 if (!process.versions.electron) {
   (async () => {
+    const launchedAt = Date.now();
     const home = await fs.mkdtemp(path.join(desktop, '.cache/documents-smoke-'));
     const env = {...process.env}; delete env.ELECTRON_RUN_AS_NODE;
     const child = spawn(require(require.resolve('electron', {paths:[desktop]})), ['--require', __filename, desktop, '--smoke-test', '--isolated-sources', '--home', home, '--smoke-output', path.join(output, 'unused.json')], {cwd:desktop, env, windowsHide:true, stdio:['ignore','pipe','pipe']});
     child.stdout.pipe(process.stdout); child.stderr.pipe(process.stderr);
-    const timer = setTimeout(() => { child.kill(); process.exitCode = 1; }, 90000);
+    const timer = setTimeout(() => { child.kill(); process.exitCode = 1; }, 120000);
     child.once('error', error => { clearTimeout(timer); console.error(error); process.exitCode = 1; });
-    child.once('exit', async code => {
+    child.once('exit', async (code, signal) => {
+      const exitedAt = Date.now();
       clearTimeout(timer); child.stdout.destroy(); child.stderr.destroy();
       try {
         const result = JSON.parse(await fs.readFile(path.join(output,'evidence.json'),'utf8'));
+        assert.equal(result.home,home, 'Evidence belongs to a prior run');
+        result.timing = {...result.timing, launched_at:launchedAt, process_exit_at:exitedAt, total_ms:exitedAt-launchedAt, quit_to_exit_ms:result.timing?.quit_requested_at ? exitedAt-result.timing.quit_requested_at : null, exit_code:code, signal};
+        await fs.writeFile(path.join(output,'evidence.json'),JSON.stringify(result,null,2));
+        console.log(JSON.stringify({timing:result.timing}));
         assert.equal(code,0); assert.equal(result.home,home); assert.equal(result.ok,true); assert.equal(result.errors.length,0);
         try { await fs.access(path.join(home,'web.json')); throw Error('Owned service registry remains'); } catch (error) { if(error.code!=='ENOENT')throw error; }
         console.log(JSON.stringify({ok:true,checks:result.checks.length,evidence:path.join(output,'evidence.json'),ownedServiceExited:true}));
@@ -27,16 +33,25 @@ if (!process.versions.electron) {
 } else {
   const {app,ipcMain,webContents} = require('electron');
   const core = require(path.join(desktop,'src/core.cjs'));
-  const evidence={checks:[],errors:[],screenshots:[],modelTurnsStarted:0,scope:'real isolated HTTP, database, document files, renderer, pin and preview; external editor/open actions covered by transport/backend tests'};
+  const evidence={checks:[],errors:[],screenshots:[],modelTurnsStarted:0,timing:{hook_loaded_at:Date.now(),phases:[]},scope:'real isolated HTTP, database, document files, renderer, pin and preview; external editor/open actions covered by transport/backend tests'};
+  const flushTiming=()=>{try{require('node:fs').writeFileSync(path.join(output,'evidence.json'),JSON.stringify(evidence,null,2));}catch(_){}};
+  const stop=core.Backend.prototype.stop;
+  core.Backend.prototype.stop=async function(...args){evidence.timing.backend_stop_started_at=Date.now();try{return await stop.apply(this,args);}finally{evidence.timing.backend_stop_finished_at=Date.now();evidence.timing.backend_exit_code=this.child?.exitCode;flushTiming();}};
+  app.on('before-quit',()=>{evidence.timing.before_quit_at??=Date.now();flushTiming();});
+  app.on('will-quit',()=>{evidence.timing.will_quit_at=Date.now();flushTiming();});
+  process.once('exit',()=>{evidence.timing.electron_exit_at=Date.now();flushTiming();});
   app.once('browser-window-created',(_event,win)=>{
+    evidence.timing.window_created_at=Date.now();
+    win.webContents.setBackgroundThrottling(false);
     ipcMain.removeHandler('desktop:ready');ipcMain.handle('desktop:ready',()=>{});
     win.webContents.once('did-finish-load',async()=>{
+      evidence.timing.home_loaded_at=Date.now();
       let contents;
       const js=source=>contents.executeJavaScript(source,true);
       async function until(callback,label){const end=Date.now()+15000;while(Date.now()<end){if(await callback())return;await pause(40);}throw Error('Timed out: '+label);}
       const wait=(source,label)=>until(()=>js(source),label);
       const click=selector=>js(`document.querySelector(${JSON.stringify(selector)}).click()`);
-      async function check(label,source){assert(await js(source),label);evidence.checks.push(label);}
+      async function check(label,source){assert(await js(source),label);evidence.checks.push(label);evidence.timing.phases.push({label,at:Date.now()});}
       async function capture(name){
         await js('document.fonts.ready.then(()=>true)');await pause(400);
         let timer;contents.debugger.attach('1.3');
@@ -48,16 +63,18 @@ if (!process.versions.electron) {
       try{
         await fs.mkdir(output,{recursive:true});
         await until(()=>win.webContents.executeJavaScript('Boolean(window.crewDesktop)&&document.querySelector("#service").textContent==="已连接"'),'home bootstrap');
+        evidence.timing.home_ready_at=Date.now();
         const state=await win.webContents.executeJavaScript('window.crewDesktop.bootstrap()');evidence.service=state.service;
         assert.notEqual(new URL(state.service.url).port,'47811');
         const home=process.argv[process.argv.indexOf('--home')+1];evidence.home=home;
         const parent=path.join(home,'projects');await fs.mkdir(parent,{recursive:true});
         await core.newWorkspace(parent,'文档验收',state.service.url);await core.newWorkspace(parent,'另一个项目',state.service.url);
-        const projects=await core.projects(state.service.url);
+        const projects=await core.projects(state.service.url);evidence.timing.projects_created_at=Date.now();
         const seed=`import json,sys\nfrom pathlib import Path\nfrom contextlib import closing\nsys.path.insert(0,sys.argv[1])\nfrom crew import board,store,documents\nhome=Path(sys.argv[2]); projects={p['name']:p for p in json.loads(sys.argv[3])}\nwith closing(store.connect(home)) as conn:\n for sid,project,name in [('docs-leader-a','文档验收','交付'),('docs-leader-b','文档验收','测试'),('docs-leader-foreign','另一个项目','外部')]:\n  p=projects[project];board.join(conn,sid,project,name,p['root'],p['root'],'main',role='leader')\n  (home/'chat').mkdir(exist_ok=True);(home/'chat'/(sid+'.jsonl')).touch()\n p=Path(projects['文档验收']['root'])/'reports';p.mkdir()\n (p/'child.txt').write_text('嵌套文件正常',encoding='utf8')\n rows=[('summary.md','交付总览','本轮交付结果与后续安排。','summary',True,'docs-leader-a','manual'),('report.md','测试报告','测试结果和待确认项目。','report',True,'docs-leader-b','manual'),('guide.md','使用指南','工作区操作和文档预览说明。','guide',False,'docs-leader-a','manual'),('legacy.md','旧说明',None,'other',False,'docs-leader-a','journal'),('missing.md','已归档文档','用于检查文件移动后的提示。','report',False,'docs-leader-a','manual'),('escaped.md','<script>window.__docXss=1</script>','标题中的标记只作为文字显示。','other',False,'docs-leader-a','manual')]\n result=[]\n for filename,title,summary,kind,important,sid,source in rows:\n  target=p/filename;target.write_text('# 文件预览测试\\n\\n这是隔离 QA 文档。\\n\\n[子文件](./child.txt)',encoding='utf8')\n  result.append(documents.register(conn,sid,str(target),title=title,summary=summary,kind=kind,important=important,source=source))\n (p/'missing.md').unlink()\n print(json.dumps(result,ensure_ascii=False))\n`;
         const seeded=spawnSync('python',['-',path.join(root,'plugin'),home,JSON.stringify(projects)],{input:seed,encoding:'utf8',windowsHide:true,env:{...process.env,PYTHONIOENCODING:'utf-8'}});
         assert.equal(seeded.status,0,seeded.stderr);const docs=JSON.parse(seeded.stdout);evidence.documents=docs.map(doc=>({id:doc.id,title:doc.title,kind:doc.kind,important:doc.important}));
         const summaryId=docs.find(doc=>doc.kind==='summary').id;
+        evidence.timing.fixture_seeded_at=Date.now();
         await win.webContents.executeJavaScript('window.crewDesktop.openProject("文档验收")');
         contents=webContents.getAllWebContents().find(item=>item.getURL().includes(encodeURIComponent('文档验收')));assert(contents);
         contents.setBackgroundThrottling(false);contents.on('console-message',event=>{if(event.level==='error')evidence.errors.push(event.message);});
@@ -111,6 +128,11 @@ if (!process.versions.electron) {
         evidence.checks.push('explicit refresh rebuilds the index while preserving the usable document center');
         for(const sid of ['docs-leader-a','docs-leader-b','docs-leader-foreign'])assert.equal((await fs.stat(path.join(home,'chat',sid+'.jsonl'))).size,0);
         assert.equal(evidence.errors.length,0,JSON.stringify(evidence.errors));evidence.ok=true;
+        evidence.timing.fixture_cleanup_started_at=Date.now();
+        evidence.timing.debuggers_before_cleanup=webContents.getAllWebContents().filter(item=>!item.isDestroyed()).map(item=>({id:item.id,type:item.getType(),attached:item.debugger.isAttached()}));
+        for(const item of webContents.getAllWebContents())if(!item.isDestroyed()&&item.debugger.isAttached())item.debugger.detach();
+        evidence.timing.fixture_cleanup_finished_at=Date.now();
+        evidence.timing.quit_requested_at=Date.now();evidence.timing.ui_elapsed_ms=evidence.timing.quit_requested_at-evidence.timing.hook_loaded_at;
         await fs.writeFile(path.join(output,'evidence.json'),JSON.stringify(evidence,null,2));app.quit();
       }catch(error){
         evidence.errors.push(error.stack||String(error));

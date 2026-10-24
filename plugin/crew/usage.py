@@ -6,7 +6,7 @@ import sys
 from contextlib import contextmanager
 from pathlib import Path
 
-from . import models, store
+from . import board, models, store
 
 
 CLAUDE_TOKENS = (
@@ -30,7 +30,13 @@ def _timestamp(value):
 
 
 @contextmanager
-def _transaction(conn, name):
+def _transaction(conn, name, *, immediate=False):
+    # The scan reads before writing. Reserve its writer up front so another
+    # connection cannot invalidate a deferred WAL snapshot between those steps.
+    if immediate and not conn.in_transaction:
+        with board.transaction(conn):
+            yield
+        return
     conn.execute("SAVEPOINT " + name)
     succeeded = False
     try:
@@ -361,7 +367,7 @@ def scan(conn, claude_root, codex_root, runs_file):
     if runs_file.exists():
         files.append((runs_file, "codex_runs"))
     counts = {"inserted": 0, "updated": 0, "skipped": 0, "bad_lines": []}
-    with _transaction(conn, "usage_scan"):
+    with _transaction(conn, "usage_scan", immediate=True):
         # Replay only peer prompts, never the shrink/reset path that deletes whole session families.
         _backfill_peer_prompts(conn, files, claude_root, counts)
         reset_sessions = set()

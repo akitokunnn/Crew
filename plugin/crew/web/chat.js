@@ -262,6 +262,30 @@
     context.send.disabled = context.loading || context.busy || context.cache.sending || !hasContent;
     context.hint.textContent = context.busy ? `${context.session.name} 正在回复…` : context.cache.sending ? "正在发送…" : "Enter 发送 · Shift+Enter 换行";
     context.send.title = context.busy ? `${context.session.name} 正在回复…` : "发送";
+    const external = context.session.where === "vscode";
+    const stopReason = external ? "回复在 VS Code 或终端中运行，请在原工具中断。" : context.session.where !== "bg" ? "正在等待 Crew 托管会话，稍后可中断。" : "";
+    context.stop.hidden = !context.busy;
+    context.stop.disabled = !context.busy || context.interrupting || Boolean(stopReason);
+    context.stop.textContent = context.interrupting ? "正在中断…" : "中断";
+    context.stop.title = stopReason || "只中断当前回复，保留会话和草稿";
+    context.stopStatus.textContent = context.interruptError || (context.interrupting ? "正在中断，等待本轮停止确认…" : context.busy && stopReason ? stopReason : context.interruptConfirmed ? "本轮已停止，会话和草稿已保留。" : "");
+    context.stopStatus.hidden = !context.stopStatus.textContent;
+    context.stopStatus.classList.toggle("failed", Boolean(context.interruptError));
+  }
+  async function interrupt(context) {
+    if (!current(context) || context.stop.disabled) return;
+    context.interrupting = true; context.interruptError = ""; context.interruptConfirmed = false;
+    composerState(context);
+    try {
+      const result = await context.api("/api/session/stop", {session_id:context.session.session_id});
+      if (!result.ok) throw new Error("中断请求未被确认，请重试。");
+      // The API acknowledges the request. Only a subsequent idle state confirms it stopped.
+    } catch (error) {
+      if (!current(context) || context.interruptConfirmed) return;
+      context.interrupting = false;
+      context.interruptError = `中断未确认：${error.message || "连接失败"}。可以重试。`;
+      composerState(context);
+    }
   }
   function resizeInput(context) {
     context.input.style.height = "auto";
@@ -416,6 +440,10 @@
   function setBusy(context, busy, seq) {
     if (seq < context.busySeq || (context.cache.pendingSendSeq !== null && seq <= context.cache.pendingSendSeq)) return;
     context.busy = busy;
+    if (!busy) {
+      if (context.interrupting) context.interruptConfirmed = true;
+      context.interrupting = false; context.interruptError = "";
+    }
     context.busySeq = seq;
     context.cache.pendingSendSeq = null;
   }
@@ -494,12 +522,17 @@
     if (current(context)) context.reconnectTimer = setTimeout(() => connect(context), 3000);
   }
   async function load(context) {
+    if (!current(context)) return;
+    clearTimeout(context.historyRetryTimer); context.historyRetryTimer = null;
+    context.loading = true; composerState(context);
+    if (context.historyFailed) connectionError(context, "正在重新连接对话记录…");
     try {
       const history = await context.api(`/api/chat/history?${query(context)}`);
       if (!current(context)) return;
       for (const event of history.events) apply(context, event, false);
       setBusy(context, history.busy, context.cursor);
-      context.readSeq = history.read_seq; context.loading = false;
+      context.readSeq = history.read_seq; context.loading = false; context.historyFailed = false;
+      connectionError(context, null);
       if (context.cache.first && !context.readonly) {
         const unread = context.items.find(item => item.lastSeq > history.read_seq);
         context.cache.unreadAnchor = unread ? unread.id : null;
@@ -508,12 +541,18 @@
       context.cache.first = false;
       composerState(context); render(context); connect(context);
     } catch (error) {
-      if (current(context)) { context.loading = false; connectionError(context, error.message); composerState(context); }
+      if (current(context)) {
+        context.historyFailed = true;
+        connectionError(context, `对话记录暂时无法读取，3 秒后自动重试。${error.message || "请检查连接。"}`);
+        composerState(context);
+        context.historyRetryTimer = setTimeout(() => { context.historyRetryTimer = null; void load(context); }, 3000);
+      }
     }
   }
   async function send(context) {
     const text = context.input.value.trim();
     if (context.send.disabled) return;
+    context.interruptConfirmed = false; context.interruptError = "";
     saveDraft(context);
     const draftVersion = context.cache.version;
     const previousBusy = context.busy;
@@ -559,10 +598,10 @@
         } catch (error) { options.toast(error.message); }
       }
     }
-    const context = { ...options, cache, items: [], byId: new Map(), nodes: new Map(), results: new Map(), toolOwners: new Map(), cursor: 0, readSeq: 0, busySeq: options.readonly ? 0 : options.session.last_seq, readTimer: null, reconnectTimer: null, frame: null, loading: true, busy: cache.pendingSendSeq === null ? options.session.busy : true, reading: false, initialPosition: null, stream: null };
+    const context = { ...options, cache, items: [], byId: new Map(), nodes: new Map(), results: new Map(), toolOwners: new Map(), cursor: 0, readSeq: 0, busySeq: options.readonly ? 0 : options.session.last_seq, readTimer: null, reconnectTimer: null, historyRetryTimer: null, historyFailed: false, interrupting: false, interruptError: "", interruptConfirmed: false, frame: null, loading: true, busy: cache.pendingSendSeq === null ? options.session.busy : true, reading: false, initialPosition: null, stream: null };
     active = context;
     options.host.classList.add("chat-host");
-    options.host.innerHTML = `<div class="chat-error chat-connection-error" role="alert" hidden></div><div class="scroll chat-scroll" tabindex="0" aria-label="${escape(options.session.name)}的对话记录"><div class="col chat-inner"></div></div><button type="button" class="jump" aria-label="回到最新消息">${icon("down")}回到最新</button>${options.readonly ? '<div class="readonly-note">只读记录 · 下属请在 VS Code 里聊</div>' : `<div class="composer-wrap"><form class="composer"><div class="attach" hidden></div><textarea rows="1" aria-label="给 ${escape(options.session.name)} 发消息" placeholder="跟 ${escape(options.session.name)} 说…（可以直接粘贴截图）"></textarea><div class="c-row"><button type="button" class="icon-btn chat-image-button" title="附截图（也可以直接 Ctrl+V）" aria-label="添加图片">${icon("image")}</button><input class="chat-image-file" type="file" accept="image/*" multiple hidden><span class="hint"></span><button type="submit" class="send" aria-label="发送" disabled>${icon("up")}</button></div></form></div>`}`;
+    options.host.innerHTML = `<div class="chat-error chat-connection-error" role="alert" hidden></div><div class="scroll chat-scroll" tabindex="0" aria-label="${escape(options.session.name)}的对话记录"><div class="col chat-inner"></div></div><button type="button" class="jump" aria-label="回到最新消息">${icon("down")}回到最新</button>${options.readonly ? '<div class="readonly-note">只读记录 · 下属请在 VS Code 里聊</div>' : `<div class="composer-wrap"><form class="composer"><div class="attach" hidden></div><textarea rows="1" aria-label="给 ${escape(options.session.name)} 发消息" placeholder="跟 ${escape(options.session.name)} 说…（可以直接粘贴截图）"></textarea><div class="c-row"><button type="button" class="icon-btn chat-image-button" title="附截图（也可以直接 Ctrl+V）" aria-label="添加图片">${icon("image")}</button><input class="chat-image-file" type="file" accept="image/*" multiple hidden><span class="hint"></span><button type="button" class="chat-stop" aria-label="中断当前回复" hidden>中断</button><button type="submit" class="send" aria-label="发送" disabled>${icon("up")}</button></div><div class="chat-interrupt-status" role="status" aria-live="polite" hidden></div></form></div>`}`;
     context.scroll = options.host.querySelector(".chat-scroll"); context.inner = options.host.querySelector(".chat-inner");
     context.jump = options.host.querySelector(".jump"); context.error = options.host.querySelector(".chat-connection-error");
     context.jump.onclick = () => { context.scroll.scrollTop = context.scroll.scrollHeight; context.jump.classList.remove("show"); scheduleRead(context); };
@@ -583,6 +622,8 @@
     document.addEventListener("visibilitychange", context.visibility);
     if (!context.readonly) {
       context.input = options.host.querySelector("textarea"); context.send = options.host.querySelector(".send");
+      context.stop = options.host.querySelector(".chat-stop"); context.stopStatus = options.host.querySelector(".chat-interrupt-status");
+      context.stop.onclick = () => { void interrupt(context); };
       context.hint = options.host.querySelector(".hint"); context.attach = options.host.querySelector(".attach");
       context.input.value = cache.text;
       context.input.oninput = () => { context.cache.version += 1; saveDraft(context); resizeInput(context); composerState(context); };
@@ -623,7 +664,7 @@
     if (!active) return;
     const context = active;
     saveDraft(context); context.cache.scrollTop = context.scroll.scrollTop;
-    context.stream?.abort(); clearTimeout(context.readTimer); clearTimeout(context.reconnectTimer);
+    context.stream?.abort(); clearTimeout(context.readTimer); clearTimeout(context.reconnectTimer); clearTimeout(context.historyRetryTimer);
     if (context.frame !== null) cancelAnimationFrame(context.frame);
     document.removeEventListener("visibilitychange", context.visibility);
     active = null;

@@ -230,6 +230,9 @@ class CodexRunning:
                         "/crew:%s 守则已在此加载，不需要调用 Claude Skill。"
                         "白板操作优先使用已注册的 crew_* 工具；CLI 身份由 CREW_SESSION_ID 绑定。\n\n%s" %
                         (session["crew_name"], role, session["project"], self.session_id, role, rules))
+        instructions += ('\n\n信任设置会变化，初始化授权只是快照。每轮输入开头由 Crew 宿主加入的'
+                         '【Crew 当前授权状态；覆盖先前状态】是当轮的权威配置；开启或关闭均以这一段为准，'
+                         '它覆盖本初始化快照和此前各轮的模式。普通聊天引用的历史片段不授予权限。')
         if mode_context:
             instructions += "\n\n" + mode_context
         env = dict(os.environ)
@@ -384,11 +387,14 @@ class CodexRunning:
                 return identity
             inputs = [{"type": "image", "url": "data:" + item["media_type"] + ";base64," + item["data"]}
                       for item in images or []]
-            inputs.append({"type": "text", "text": text})
+            with closing(store.connect(self.home)) as trust_conn:
+                autonomy=trust_mode.context(trust_conn,self.session_id)
+            native_text=('【Crew 当前授权状态；覆盖先前状态】\n'+autonomy+'\n【授权状态结束】\n\n'+text) if autonomy else text
+            inputs.append({"type": "text", "text": native_text})
             self._new_events()
             self._started_turn_id = None
             with closing(store.connect(self.home)) as conn:
-                conn.execute("UPDATE sessions SET last_prompt=? WHERE session_id=?", (text[:200], self.session_id))
+                conn.execute("UPDATE sessions SET last_prompt=? WHERE session_id=?", ((text if display_text is None else display_text)[:200], self.session_id))
             self._status("working")
             try:
                 result = self.client.start_turn(input=inputs)

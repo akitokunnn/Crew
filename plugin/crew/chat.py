@@ -5,12 +5,13 @@ from contextlib import closing
 import json
 import os
 import shutil
+import sqlite3
 import subprocess
 import threading
 import uuid
 from pathlib import Path
 
-from . import board, claude_limits, hooks, install, messaging, models, runtimes, spawn, store
+from . import board, claude_limits, hooks, install, messaging, models, runtime_switch, runtimes, spawn, store
 
 
 IMAGE_TYPES = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif"}
@@ -316,6 +317,8 @@ class Running:
         self.pending_compact = False
         self.stderr = collections.deque(maxlen=20)
         self.reader_done = threading.Event()
+        self.pending_native_accept = None
+        self.native_binding_confirmed = False
 
 
 def claude_executable():
@@ -367,7 +370,10 @@ class Manager:
         return self.running(session_id)
 
     def owns_pid(self, session_id, pid):
-        return self.is_owned(session_id) and self.processes[session_id].process.pid == pid
+        with self.lock:
+            current=self.processes.get(session_id)
+            return (current is not None and current.process.poll() is None
+                    and self.processes.get(session_id) is current and current.process.pid==pid)
 
     def busy(self, session_id):
         return self.running(session_id) and self.journal(session_id).status == "working"
@@ -409,6 +415,27 @@ class Manager:
             for line in current.process.stdout:
                 try:
                     record = json.loads(line)
+                    if (self.processes.get(session_id) is current and record.get('session_id') == session_id
+                            and not record.get('parent_tool_use_id')):
+                        known_native = (record.get('type')=='assistant' or
+                            record.get('type')=='system' and record.get('subtype')=='init')
+                        receipt=current.pending_native_accept
+                        acknowledged=(record.get('type')=='user' and receipt is not None and record.get('uuid')==receipt[0]
+                                      and record.get('message',{}).get('role')=='user')
+                        if known_native and not current.native_binding_confirmed or acknowledged:
+                            try:
+                                with closing(store.connect(self.home)) as native_conn:
+                                    if runtimes.get(native_conn,session_id)['runtime']=='claude':
+                                        if runtimes.get(native_conn,session_id)['native_id'] is None:
+                                            runtimes.set(native_conn,session_id,'claude',session_id)
+                                        current.native_binding_confirmed=True
+                                        if acknowledged:
+                                            runtime_switch.accepted(native_conn,session_id,receipt[0],receipt[1])
+                                            current.pending_native_accept=None
+                            except sqlite3.Error as exc:
+                                # Keep draining native output and retain the handoff for
+                                # the next accepted input rather than losing the reader.
+                                current.journal.emit('error',text='原生会话确认记录失败，交接会保留重试：'+str(exc))
                     if record["type"] == "control_response":
                         self._control_response(current, record["response"])
                     if record["type"] == "rate_limit_event":
@@ -468,30 +495,53 @@ class Manager:
             raise board.Conflict("它在后台在线，直接用 SendMessage 发给 " + session["crew_name"])
         with closing(store.connect(self.home)) as conn:
             runtime = runtimes.get(conn, session_id)["runtime"]
-        for agent in ([] if runtime == "codex" else self._external_agents()):
+            prior_claude=conn.execute("SELECT 1 FROM session_runtime_bindings WHERE session_id=? AND runtime='claude' AND native_id IS NOT NULL",(session_id,)).fetchone()
+            prior_codex=conn.execute("SELECT 1 FROM session_runtime_bindings WHERE session_id=? AND runtime='codex' AND native_id IS NOT NULL",(session_id,)).fetchone()
+        for agent in ([] if runtime == "codex" and not prior_claude else self._external_agents()):
             if agent["sessionId"] == session_id:
-                raise board.Conflict("它在 VS Code 里在线，直接用 SendMessage 发给 " + agent["name"])
+                if runtime=='claude':
+                    raise board.Conflict("它在 VS Code 里在线，直接用 SendMessage 发给 " + agent["name"])
+                raise board.Conflict("它的 Claude 会话在 VS Code 或终端里在线，请先关闭该外部会话")
         previous = self.processes.get(session_id)
         if previous is not None and not previous.reader_done.wait(10):
             raise board.BoardError("上一轮会话进程的输出尚未结束，请稍后查看状态")
+        if runtime=='claude' and prior_codex:
+            from .codex_runtime import RuntimeLease
+            lease=RuntimeLease(self.home,session_id).acquire()
+            lease.release()
 
     def _launch(self, session, spec, resume=False):
+        try:
+            return self._launch_native(session,spec,resume=resume)
+        except Exception as exc:
+            with closing(store.connect(self.home)) as conn:
+                runtime_switch.failed(conn,session['session_id'],exc)
+            raise
+
+    def _launch_native(self, session, spec, resume=False):
         session_id = session["session_id"]
         if resume:
             self._check_offline(session)
         with closing(store.connect(self.home)) as conn:
             options = models.get(conn, session_id)
             runtime = runtimes.get(conn, session_id)["runtime"]
+            native_id=runtimes.get(conn,session_id)['native_id']
+            pending=runtime_switch.pending(conn,session_id)
+        if resume and native_id is None and (pending is None or pending['to_runtime']!=runtime):
+            raise board.BoardError('原生会话 ID 丢失，不能猜测恢复或偷偷新建')
+        native_resume=resume and native_id is not None
         if runtime == "codex":
             from .codex_runtime import CodexRunning
             current = CodexRunning(self.home, self.plugin_root, session, spec, options,
                                    self.journal(session_id), self.send_message,
-                                   process_factory=self.process_factory, resume=resume)
+                                   process_factory=self.process_factory, resume=native_resume)
             self.processes[session_id] = current
             return spawn.command(session_id, session["crew_name"], session["role"], runtime="codex", **options)
         exe = claude_executable()
+        if native_id not in (None,session_id):
+            raise board.BoardError('Claude 原生身份与 Crew 身份不一致，不能恢复错误会话')
         install.install(self.home, self.plugin_root)
-        command = spawn.command(session_id, session["crew_name"], session["role"], resume, **options, agent=spec["agent"])
+        command = spawn.command(session_id, session["crew_name"], session["role"], native_resume, **options, agent=spec["agent"])
         command[0] = exe
         journal = self.journal(session_id)
         journal.reset_runtime()
@@ -550,6 +600,11 @@ class Manager:
     def _send(self, session_id, text, display_text=None, source='human', identity=None, images=None, sender=None):
         current = self.processes[session_id]
         identity = identity or str(uuid.uuid4())
+        original_text=text if display_text is None else display_text
+        handoff_id=None
+        if text.strip()!='/compact':
+            with closing(store.connect(self.home)) as handoff_conn:
+                text,handoff_id=runtime_switch.input_text(handoff_conn,session_id,text,identity)
         files = []
         content = text
         if images:
@@ -563,16 +618,37 @@ class Manager:
                                                      "data": image["data"]}} for image in images]
             content.append({"type": "text", "text": text})
         if getattr(current, "runtime", "claude") == "codex":
-            return current.send(text, identity, display_text=display_text, source=source,
-                                images=images, sender=sender, image_files=files)
+            try:
+                result=current.send(text, identity, display_text=original_text, source=source,
+                                    images=images, sender=sender, image_files=files)
+                if handoff_id is not None:
+                    with closing(store.connect(self.home)) as handoff_conn:
+                        runtime_switch.accepted(handoff_conn,session_id,identity,handoff_id)
+                return result
+            except Exception as exc:
+                with closing(store.connect(self.home)) as handoff_conn:runtime_switch.failed(handoff_conn,session_id,exc)
+                raise
         message = {"type": "user", "uuid": identity, "session_id": session_id, "parent_tool_use_id": None,
                    "message": {"role": "user", "content": content}}
-        with current.input_lock:
-            current.journal.message(identity, text if display_text is None else display_text, source=source, images=files, sender=sender)
-            current.journal.set_status("working")
-            current.process.stdin.write(json.dumps(message, ensure_ascii=False) + "\n")
-            current.process.stdin.flush()
+        try:
+            with current.input_lock:
+                current.journal.message(identity, original_text, source=source, images=files, sender=sender)
+                current.pending_native_accept=(identity,handoff_id) if handoff_id is not None else None
+                current.journal.set_status("working")
+                current.process.stdin.write(json.dumps(message, ensure_ascii=False) + "\n")
+                current.process.stdin.flush()
+        except Exception as exc:
+            with closing(store.connect(self.home)) as handoff_conn:runtime_switch.failed(handoff_conn,session_id,exc)
+            raise
         return identity
+
+    def prepare_runtime(self,conn,session_id,runtime,catalog,model=None,effort=None,handoff=None,now=None):
+        with self.lock:
+            return runtime_switch.prepare(conn,board.session(conn,session_id),self,runtime,catalog,model,effort,handoff,now)
+
+    def switch_runtime(self,conn,session_id,preview_id,confirm,catalog,now=None):
+        with self.lock:
+            return runtime_switch.switch(conn,board.session(conn,session_id),self,preview_id,confirm,catalog,now)
 
     def send_message(self, sender_id, target_id, text, message_id=None):
         with closing(store.connect(self.home)) as conn:

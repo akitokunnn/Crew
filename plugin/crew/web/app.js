@@ -5,7 +5,7 @@
   const project = new URLSearchParams(location.search).get("project");
   let state = null, view = "all", leaderId = null, readOnlyId = null, mountedChat = null, pollBusy = false, statePromise = Promise.resolve();
   let mountedChannel = false;
-  let documents = null;
+  let documents = null, leaderTrust = null, runtimeSwitch = null;
   let leaderDrag = null, leaderOrderSaving = false;
   let allTab = "tree", period = "week", usageTab = "tree", usage = null, usageLoading = false, usageRequest = 0;
   let cardId = null, cardReturn = null, rename = false, handoff = null, rightOpen = false, dialogReturn = null;
@@ -126,7 +126,7 @@
     const sentAfter = path === "/api/chat/send" ? leader(data.session_id).last_seq : null;
     const response = await fetch(queryPath(path), data === undefined ? {} : {method:"POST", headers:{"Content-Type":"application/json", "X-Crew":"1"}, body:JSON.stringify(data)});
     const result = await response.json();
-    if (!response.ok) throw new Error(result.error);
+    if (!response.ok) { const error = new Error(result.error || "请求失败，请重试。"); error.status = response.status; error.details = result; throw error; }
     if (path === "/api/chat/send") waitingSounds.set(data.session_id, {generation:++soundGeneration, afterSeq:sentAfter});
     else if (["/api/session/stop", "/api/session/archive", "/api/session/remove"].includes(path)) waitingSounds.delete(data.session_id);
     return result;
@@ -169,21 +169,24 @@
   function applyTheme() { CrewTheme.setMode(theme); if (state !== null) CrewTheme.apply(state.themes, state.project === null ? null : state.project.theme, theme); }
   function applyFontScale() { document.documentElement.style.setProperty("--fs", String(fontScale)); }
   function setFontScale(value) { fontScale = value; applyFontScale(); try { localStorage.setItem("crew.fontScale", String(value)); } catch (error) { toast(error.message); } }
-  const workspaceTrust = () => state?.trust || {enabled:false, goal:"", updated_at:null};
-  function trustIndicator() {
-    if (project === null || state?.trust === undefined) return "";
-    const trust = workspaceTrust();
-    return `<button class="trust-indicator ${trust.enabled ? "on" : ""}" data-act="trust-settings" title="${esc(trust.enabled ? trust.goal : "设置这个工作区的目标和自主范围")}"><i></i>信任模式 · ${trust.enabled ? "开" : "关"}</button>`;
+  function decisionTrust(item) {
+    const owner = leader(item.leader_session_id) || leader(item.session_id);
+    return window.CrewLeaderTrust?.trustFor(owner) || {enabled:false};
   }
-  function trustSettings() {
-    if (project === null || state?.trust === undefined) return "";
-    const trust = workspaceTrust();
-    return `<section class="settings-section trust-settings"><div class="settings-row"><h4>工作区信任模式</h4><span class="trust-state ${trust.enabled ? "on" : ""}">${trust.enabled ? "已开启" : "未开启"}</span></div><p class="settings-hint">${trust.enabled ? esc(trust.goal) : "设定目标后，授权范围内的判断由 AI 自主推进。"}</p><p class="settings-hint">需要你亲自动手的事会进入“我的待办”。</p><div class="trust-links"><button type="button" class="settings-link" data-act="trust-settings">${trust.enabled ? "编辑目标和模式" : "设置目标和模式"}</button><button type="button" class="settings-link" data-act="trust-report">查看详细报告</button><a class="settings-link" href="${esc(queryPath("/api/trust/report"))}" download>下载报告</a></div></section>`;
+  function trustReportUrl(id) {
+    return queryPath(`/api/trust/report?leader_session_id=${encodeURIComponent(id)}`);
+  }
+  async function readTrustReport(id) {
+    if (!leader(id)) throw new Error("请先选择当前项目的 leader。");
+    const response = await fetch(trustReportUrl(id), {headers:{"X-Crew":"1"}});
+    const text = await response.text();
+    if (!response.ok) { let error; try { error = JSON.parse(text).error; } catch (_) {} throw new Error(error || "报告读取失败，请稍后重试。"); }
+    return text;
   }
   function renderSettings() {
     const sound = CrewSound.getSettings(), pct = value => `${Math.round(value * 100)}%`;
     const themes = state !== null && project !== null ? `<section class="settings-section"><h4 id="project-theme-title">主题</h4><div class="theme-options" role="group" aria-labelledby="project-theme-title">${state.themes.map(item => `<button type="button" class="theme-option" data-act="project-theme" data-theme-id="${esc(item.id)}" aria-pressed="${state.project.theme === item.id}"><span class="theme-swatches" aria-hidden="true"><i style="background:${item.light["--accent"]}"></i><i style="background:${item.dark["--accent"]}"></i></span><span>${esc(item.name)}</span>${state.project.theme === item.id ? ic("check", "sm") : ""}</button>`).join("")}</div><p class="settings-hint">左浅右深 · 为这个项目保存</p></section>` : "";
-    replace($("settings"), `<h3 id="settings-title">设置</h3>${trustSettings()}${themes}<section class="settings-section"><div class="settings-row"><h4>字号</h4><span class="settings-value" id="font-scale-value">${pct(fontScale)}</span><button type="button" class="settings-link" data-act="font-reset" ${fontScale === 1 ? "disabled" : ""}>恢复标准</button></div><input class="settings-range" type="range" min="${FONT_MIN}" max="${FONT_MAX}" step="0.01" value="${fontScale}" data-setting="font" aria-label="字号"></section><section class="settings-section"><div class="settings-row"><h4>提示音</h4><span class="gap"></span><button class="switch ${sound.muted ? "" : "on"}" data-act="sound-mute" role="switch" aria-checked="${!sound.muted}" aria-label="提示音"><span class="track"></span></button></div><div class="settings-row"><span class="settings-sub">音量</span><span class="settings-value" id="sound-volume-value">${pct(sound.volume)}</span><button type="button" class="settings-link" data-act="sound-test" ${sound.muted ? "disabled" : ""}>试听</button></div><input class="settings-range" type="range" min="0" max="1" step="0.01" value="${sound.volume}" data-setting="volume" aria-label="提示音音量" ${sound.muted ? "disabled" : ""}></section>`);
+    replace($("settings"), `<h3 id="settings-title">设置</h3>${themes}<section class="settings-section"><div class="settings-row"><h4>字号</h4><span class="settings-value" id="font-scale-value">${pct(fontScale)}</span><button type="button" class="settings-link" data-act="font-reset" ${fontScale === 1 ? "disabled" : ""}>恢复标准</button></div><input class="settings-range" type="range" min="${FONT_MIN}" max="${FONT_MAX}" step="0.01" value="${fontScale}" data-setting="font" aria-label="字号"></section><section class="settings-section"><div class="settings-row"><h4>提示音</h4><span class="gap"></span><button class="switch ${sound.muted ? "" : "on"}" data-act="sound-mute" role="switch" aria-checked="${!sound.muted}" aria-label="提示音"><span class="track"></span></button></div><div class="settings-row"><span class="settings-sub">音量</span><span class="settings-value" id="sound-volume-value">${pct(sound.volume)}</span><button type="button" class="settings-link" data-act="sound-test" ${sound.muted ? "disabled" : ""}>试听</button></div><input class="settings-range" type="range" min="0" max="1" step="0.01" value="${sound.volume}" data-setting="volume" aria-label="提示音音量" ${sound.muted ? "disabled" : ""}></section>`);
   }
   function notificationChannel() {
     const channel = state.notification.channel;
@@ -231,7 +234,7 @@
   function renderSidebar() {
     if (leaderDrag !== null || leaderOrderSaving) return;
     const themeIcon = {system:"auto", light:"sun", dark:"moon"}[theme], themeName = {system:"跟随系统", light:"浅色", dark:"深色"}[theme];
-    replace($("sidebar"), `<div class="brand"><span class="brand-logo" aria-hidden="true">${CrewTheme.logo()}</span><div><div class="proj">${esc(state.project.name)}</div><div class="sub">Crew 工作区</div>${trustIndicator()}</div></div>
+    replace($("sidebar"), `<div class="brand"><span class="brand-logo" aria-hidden="true">${CrewTheme.logo()}</span><div><div class="proj">${esc(state.project.name)}</div><div class="sub">Crew 工作区</div></div></div>
       <button class="search-btn" data-act="palette">${ic("search", "sm")}<span>找 leader 或下属</span><span class="kbd">Ctrl K</span></button>
       <button class="nav-item ${view === "all" ? "active" : ""}" data-act="view" data-view="all">${ic("grid")}<span>全部</span></button>
       <button class="nav-item ${view === "channel" ? "active" : ""}" data-act="view" data-view="channel">${ic("msg")}<span>交流区</span>${state.channel.unread > 0 ? `<span class="b-unread channel-unread" title="交流区未读">${state.channel.unread}</span>` : ""}</button>
@@ -327,7 +330,7 @@
     const missing = !brief || !brief.why_user || options.some(option => !option.consequence) || (item.recommendation && !brief.recommendation_reason);
     const context = brief ? brief.context : item.question;
     const longBrief = brief && ([brief.why_user, brief.recommendation_reason, brief.impact, ...options.flatMap(option => [option.label, option.consequence])].some(value => Array.from(String(value || "")).length > 280) || options.some(option => Array.from(option.label).length > 140));
-    return `<article class="dc decision-card ${item.held ? "held" : ""}" data-dc="${item.id}"><div class="dc-head"><div class="dc-top">${av(item.asker, 22, true)}<h3 class="q">${CrewChat.renderInline(title, item.session_id)}</h3>${priorityBadge(decisionPriority(item))}<span class="from">${esc(item.asker)}</span></div><button class="btn ghost dc-hold" data-act="${item.held ? "decision-unhold" : "decision-hold"}" data-id="${item.id}">${item.held ? "取消挂起" : "挂起"}</button></div><div class="decision-summary">${brief?.why_user ? `<p class="decision-why"><span>为什么需要你</span>${decisionPreview(brief.why_user, item.session_id)}</p>` : '<p class="decision-missing">缺少说明：还没说清为什么需要你来决定。</p>'}${brief?.recommendation_reason ? `<div class="decision-recommendation"><strong>${recommended ? `建议：${decisionPreview(recommended.label, item.session_id, 140)}` : "推荐理由"}</strong><p>${decisionPreview(brief.recommendation_reason, item.session_id)}</p></div>` : ""}${brief?.impact ? `<p class="decision-impact"><span>影响</span>${decisionPreview(brief.impact, item.session_id)}</p>` : ""}${missing ? `<div class="decision-clarify"><span>这张卡的说明还不完整</span><button type="button" class="text-link" data-act="decision-clarify" data-id="${item.id}">让 leader 说明白</button></div>` : ""}</div><div class="dc-body"><div class="opts">${options.map(option => `<button class="opt ${option.recommended ? "recommended" : ""}" data-act="answer-option" data-id="${item.id}" data-option="${option.index}"><span class="t"><strong>${decisionPreview(option.label, item.session_id, 140)}</strong><small class="${option.consequence ? "" : "missing-consequence"}">${option.consequence ? decisionPreview(option.consequence, item.session_id) : "尚未说明这个选择的结果"}</small></span>${option.recommended ? '<span class="rec">推荐</span>' : ""}</button>`).join("")}</div><form class="free" data-answer-form="${item.id}"><input data-preserve="answer-${item.id}" name="answer" placeholder="或者直接说你的想法，回车发送" required aria-label="答复 ${esc(item.asker)}"><button class="icon-btn" type="submit" title="发送答复">${ic("check", "sm")}</button></form>${context || !brief || longBrief ? `<details class="decision-context" data-decision-context="${item.id}" ${opened ? "open" : ""}><summary>${brief ? longBrief ? "完整说明与技术背景" : "技术背景" : "查看原文和原选项"}</summary><div class="markdown">${longBrief ? decisionLongExplanation(item, options) : ""}${context ? CrewChat.renderMarkdown(context, item.session_id) : ""}${brief ? "" : `<ul>${(item.options || []).map(option => `<li>${CrewChat.renderInline(option, item.session_id)}</li>`).join("")}</ul>`}</div></details>` : ""}${workspaceTrust().enabled ? '<p class="decision-trust-note">信任模式已开：已授权范围内由 AI 自主推进，需要亲自动手的事见“我的待办”。</p>' : ""}</div></article>`;
+    return `<article class="dc decision-card ${item.held ? "held" : ""}" data-dc="${item.id}"><div class="dc-head"><div class="dc-top">${av(item.asker, 22, true)}<h3 class="q">${CrewChat.renderInline(title, item.session_id)}</h3>${priorityBadge(decisionPriority(item))}<span class="from">${esc(item.asker)}</span></div><button class="btn ghost dc-hold" data-act="${item.held ? "decision-unhold" : "decision-hold"}" data-id="${item.id}">${item.held ? "取消挂起" : "挂起"}</button></div><div class="decision-summary">${brief?.why_user ? `<p class="decision-why"><span>为什么需要你</span>${decisionPreview(brief.why_user, item.session_id)}</p>` : '<p class="decision-missing">缺少说明：还没说清为什么需要你来决定。</p>'}${brief?.recommendation_reason ? `<div class="decision-recommendation"><strong>${recommended ? `建议：${decisionPreview(recommended.label, item.session_id, 140)}` : "推荐理由"}</strong><p>${decisionPreview(brief.recommendation_reason, item.session_id)}</p></div>` : ""}${brief?.impact ? `<p class="decision-impact"><span>影响</span>${decisionPreview(brief.impact, item.session_id)}</p>` : ""}${missing ? `<div class="decision-clarify"><span>这张卡的说明还不完整</span><button type="button" class="text-link" data-act="decision-clarify" data-id="${item.id}">让 leader 说明白</button></div>` : ""}</div><div class="dc-body"><div class="opts">${options.map(option => `<button class="opt ${option.recommended ? "recommended" : ""}" data-act="answer-option" data-id="${item.id}" data-option="${option.index}"><span class="t"><strong>${decisionPreview(option.label, item.session_id, 140)}</strong><small class="${option.consequence ? "" : "missing-consequence"}">${option.consequence ? decisionPreview(option.consequence, item.session_id) : "尚未说明这个选择的结果"}</small></span>${option.recommended ? '<span class="rec">推荐</span>' : ""}</button>`).join("")}</div><form class="free" data-answer-form="${item.id}"><input data-preserve="answer-${item.id}" name="answer" placeholder="或者直接说你的想法，回车发送" required aria-label="答复 ${esc(item.asker)}"><button class="icon-btn" type="submit" title="发送答复">${ic("check", "sm")}</button></form>${context || !brief || longBrief ? `<details class="decision-context" data-decision-context="${item.id}" ${opened ? "open" : ""}><summary>${brief ? longBrief ? "完整说明与技术背景" : "技术背景" : "查看原文和原选项"}</summary><div class="markdown">${longBrief ? decisionLongExplanation(item, options) : ""}${context ? CrewChat.renderMarkdown(context, item.session_id) : ""}${brief ? "" : `<ul>${(item.options || []).map(option => `<li>${CrewChat.renderInline(option, item.session_id)}</li>`).join("")}</ul>`}</div></details>` : ""}${decisionTrust(item).enabled ? '<p class="decision-trust-note">信任模式已开：已授权范围内由 AI 自主推进，需要亲自动手的事见“我的待办”。</p>' : ""}</div></article>`;
   }
   function heldGroup(items, context) {
     if (items.length === 0) return "";
@@ -366,13 +369,20 @@
     const identity = `${readOnlyId === null ? "leader" : "history"}:${item.session_id}`;
     if (mountedChat !== identity) {
       CrewChat.unmount();
-      $("main").innerHTML = '<div id="chat-head"></div><div id="decision-tray"></div><div id="chat-host" class="chat-host"></div>';
+      $("main").innerHTML = '<div id="chat-head"></div><div id="leader-trust-note"></div><div id="decision-tray"></div><div id="chat-host" class="chat-host"></div>';
       delete $("main").dataset.render;
       mountedChat = identity;
       CrewChat.mount({host:$("chat-host"), session:item, readonly:readOnlyId !== null, state, api, toast});
     }
     replace($("chat-head"), `<div class="head">${av(item.name, 34)}<div class="heading-meta"><div class="title">${esc(item.name)}${readOnlyId === null ? priorityBadge(item.priority) : ""}${readOnlyId === null ? "" : " · 对话记录"}${runtimeBadge(item)}</div><div class="sub"><span>${esc(readOnlyId === null ? (item.goal ?? "") : `归 ${item.group} · 只读`)}</span>${group === undefined ? "" : `<span class="sep"></span><span>${members.length} 个下属 · ${members.filter(item => item.status === "working").length} 个在干活</span>`}</div></div><div class="right">${readOnlyId === null ? contextControls(item) : contextRing(item)}${readOnlyId === null ? `<button class="model-tag" data-act="model-menu" data-id="${esc(item.session_id)}" aria-haspopup="menu" title="切换模型和 effort">${esc(optionsLabel(item))}${ic("down", "xs")}</button>` : group === undefined ? '<button class="btn ghost" data-act="view" data-view="all">回到全部</button>' : `<button class="btn ghost" data-act="leader" data-id="${esc(leaderId)}">回到 leader</button>`}${readOnlyId === null ? `<button class="icon-btn" data-act="session-menu" data-id="${esc(item.session_id)}" aria-haspopup="menu" title="leader 操作" aria-label="leader 操作">⋯</button>` : ""}${group === undefined ? "" : `<button class="icon-btn rp-toggle" data-act="right-open" title="本组架构图" aria-label="本组架构图">${ic("grid")}</button>`}</div></div>`);
     replace($("decision-tray"), readOnlyId !== null || pending.length + held.length + groupTodos.length === 0 ? "" : `<div class="tray"><div class="tray-in">${todoTray(groupTodos, leaderId)}${pending.length === 0 ? "" : `<section class="tray-pending ${trayCollapsed ? "collapsed" : ""}"><button class="tray-head" data-act="tray" aria-expanded="${!trayCollapsed}">${ic("down", "sm chev")}等你拍板 · ${pending.length}</button><div class="tray-list">${pending.map(decisionCard).join("")}</div></section>`}${heldGroup(held, "tray")}</div></div>`);
+    replace($("leader-trust-note"), readOnlyId === null && group ? window.CrewLeaderTrust?.note(group) || "" : "");
+    if (readOnlyId === null && leaderTrust !== null) {
+      const slot = document.createElement("span"); slot.innerHTML = leaderTrust.indicator(item);
+      const anchor = $("chat-head").querySelector('[data-act="session-menu"]');
+      const existing = $("chat-head").querySelector('[data-act="leader-trust"]');
+      if (existing) { if (existing.outerHTML !== slot.firstElementChild.outerHTML) existing.replaceWith(slot.firstElementChild); } else if (anchor) anchor.before(slot.firstElementChild);
+    }
     CrewChat.update(state);
     if (documents !== null && group !== undefined) {
       let button = $("chat-head").querySelector('[data-act="documents-open"]');
@@ -514,6 +524,7 @@
     replace($("card"), `<div class="card-head" data-session-menu="${esc(item.session_id)}" tabindex="0">${av(item.name, 44, true)}<div style="min-width:0;flex:1"><div class="nm">${name}${contextControls(item)}</div><div class="meta">${runtimeBadge(item)}${st(item.status)}<span>${ic(background ? "cloud" : item.where === "vscode" ? "code" : "clock", "xs")} ${background ? "后台运行" : item.where === "vscode" ? "开在 VS Code" : "没在运行"}</span><span>归 ${esc(item.group)}</span>${memberModel(item)}</div></div><button class="icon-btn" data-act="card-close" aria-label="关闭下属卡片">${ic("x")}</button></div>
       ${background && item.activity !== null ? `<div class="card-activity">${memberActivity(item)}</div>` : ""}
       <div class="card-actions"><button class="btn primary" data-act="open-vscode" ${editorHandoffReason(item) ? `disabled title="${esc(editorHandoffReason(item))}"` : item.status === "working" ? 'disabled title="会话正在工作，请等它空闲后再打开"' : ""}>${ic("code", "sm")}在 VS Code 打开</button><span class="gap"></span><button class="icon-btn" data-act="rename" title="改名" aria-label="改名">${ic("pencil")}</button><button class="icon-btn" data-act="move-menu" title="换组" aria-label="换组">${ic("swap")}</button><button class="icon-btn" data-act="archive" title="归档" aria-label="归档">${ic("archive")}</button><button class="icon-btn" data-act="stop" ${canStop ? "" : "disabled"} title="${canStop ? "停下这一轮" : stopReason}" aria-label="停下这一轮">${ic("stop")}</button><button class="icon-btn" data-act="more-menu" title="更多" aria-label="更多">${ic("more")}</button></div>
+      ${runtimeSwitch?.entry(item) || ""}
       ${editorHandoffReason(item) ? `<p class="editor-handoff-note">${esc(editorHandoffReason(item))}</p>` : ""}
       ${handoff === null ? "" : `<div class="step"><div class="row"><span class="n">${ic("check", "xs")}</span><span>已打开目录，等 VS Code 窗口准备好<br><code>${esc(handoff.cwd)}</code></span></div><div class="row"><span class="n todo">2</span><span style="flex:1">窗口好了以后，${handoff.needs_confirmation ? "停掉后台或终端这一份，在 VS Code 里接上同一个会话" : "在 VS Code 里接上同一个会话"}<br><button class="btn primary" data-act="handoff-go" style="margin-top:8px">窗口好了，接上</button><button class="btn ghost" data-act="handoff-cancel" style="margin-top:8px">先不了</button></span></div></div>`}
       <div class="card-body"><div class="sec"><h4>负责范围</h4><p>${item.scope === null || item.scope === "" ? "还没写" : CrewChat.renderInline(item.scope, item.session_id)}</p></div><div class="sec"><h4>现在在做</h4><p>${item.task === null ? "还没写" : CrewChat.renderInline(item.task, item.session_id)}</p></div><div class="sec"><h4>完成标准</h4><p>${item.done_when === null || item.done_when === "" ? "还没写" : CrewChat.renderInline(item.done_when, item.session_id)}</p></div><div class="sec"><h4>最近进展</h4>${item.progress.length === 0 ? '<p class="note">还没写</p>' : `<div class="tl">${item.progress.map(progress => `<div class="tl-i"><span class="t" title="${esc(date(progress.at))}">${time(progress.at)}</span><span>${CrewChat.renderInline(progress.text, item.session_id)}</span></div>`).join("")}</div>`}</div><div class="sec"><h4>派出去的 Codex</h4><div class="chips">${item.codex.map(task => codexMarkup(task, "chip", item.session_id)).join("")}${item.codex_older > 0 ? `<div class="chip" style="color:var(--text-3)">更早 ${item.codex_older} 个（已完成）</div>` : ""}${item.codex.length === 0 && item.codex_older === 0 ? '<p class="note">还没有</p>' : ""}</div></div><div class="sec"><h4>设备和文件</h4><div class="chips">${item.leases.map(lease => `<div class="chip" title="${esc(lease.purpose)} · ${date(lease.taken_at)} 至 ${lease.until_at === null ? "未写归还时间" : date(lease.until_at)}">${ic("device", "xs")}${esc(lease.resource)}<span class="grow"></span>${esc(lease.purpose)}</div>`).join("")}${item.claims.map(claim => `<div class="chip" title="${esc(claim.pattern)}${claim.note === null || claim.note === "" ? "" : ` · ${esc(claim.note)}`}">${ic("file", "xs")}<code>${esc(claim.pattern)}</code></div>`).join("")}${item.leases.length === 0 && item.claims.length === 0 ? '<p class="note">没有占用的设备和文件</p>' : ""}</div></div></div>
@@ -546,12 +557,14 @@
     if (!isLeader && item.web_chat) html += btn("member-history", "看对话记录");
     html += btn("stop", "停下这一轮", stopReason) + btn("compact", "压缩上下文", compactReason) + submenu(item, "模型和 effort", modelMenu(item)) + btn("comments", "评论") + btn("session-rename", "改名");
     if (isLeader) {
+      html += btn("leader-trust", "本组信任模式") + btn("leader-trust-report", "本组信任报告");
       const siblings = sortableLeaders(item), index = siblings.indexOf(item), members = membersOf(item.session_id), busy = members.filter(compactBusy).length;
       html += submenu(item, "设为优先", [1, 2, 3, 0].map(rank => `<button role="menuitemradio" aria-checked="${item.priority === (rank === 0 ? null : rank)}" data-act="set-priority" data-id="${esc(item.session_id)}" data-rank="${rank}"><span class="model-check">${item.priority === (rank === 0 ? null : rank) ? ic("check", "sm") : ""}</span>${rank === 0 ? "取消优先" : `第 ${rank} 优先`}</button>`).join(""));
       html += btn("leader-up", "上移", index === 0 ? "已经在最上面" : "") + btn("leader-down", "下移", index === siblings.length - 1 ? "已经在最下面" : "") + btn("group-tree", "看本组架构图") + btn("open-vscode", "转到 VS Code 里聊", editorHandoffReason(item) || (compactBusy(item) ? "会话正在工作，请等它空闲后再打开" : ""));
       if (item.is_git_admin) html += `<button role="menuitem" class="git-menu-link" aria-disabled="true" title="管理员由 Git 页统一关闭" data-act="view" data-view="git">到 Git 页关闭 Git 管理</button>`;
       else html += submenu(item, "结束这个 leader", members.length === 0 ? btn("close-group", "结束（组里没有下属）", "", true, 'data-with-members="false"') : btn("close-group", `<span>连下属一起归档<small>连 ${members.length} 个下属一起归档，其中 ${busy} 个在干活</small></span>`, "", true, 'data-with-members="true"') + btn("close-group", `<span>只结束 leader，下属退回待收编<small>${members.length} 个下属退回待收编，其中 ${busy} 个在干活</small></span>`, "", true, 'data-with-members="false"'), true);
     } else {
+      if (runtimeSwitch) html += btn("runtime-switch", "更换执行工具…", runtimeSwitch.reason(item));
       const groups = state.leaders.filter(group => group.session_id !== item.leader_session_id);
       html += groups.length ? submenu(item, "换组", groups.map(group => btn("move-to", esc(group.name), "", false, `data-group="${esc(group.name)}"`)).join("")) : btn("move-menu", "换组", "没有其他协作组");
       html += btn("leave-group", "退组", item.leader_session_id === null ? "当前没有加入协作组" : "") + btn("archive", "归档", "", true) + btn("remove-session", "移出 Crew", "", true);
@@ -599,37 +612,6 @@
   }
   function closeBackdrop() { auxiliaryDialog += 1; commentsSession = null; $("backdrop").classList.remove("show"); $("backdrop").innerHTML = ""; delete $("backdrop").dataset.render; returnFocus(dialogReturn); }
   function hideSettings() { const settings = $("settings"); if (settings?.matches(":popover-open")) settings.hidePopover(); }
-  function trustPayload(form) {
-    const enabled = form.elements.enabled.checked, goal = form.elements.goal.value.trim();
-    if (enabled && goal === "") throw new Error("开启信任模式前，请先写清目标和授权范围。");
-    return {enabled, goal};
-  }
-  function openTrustDialog() {
-    dialogReturn = focusDescriptor(document.activeElement); hideSettings(); commentsSession = null; auxiliaryDialog += 1;
-    const trust = workspaceTrust(); delete $("backdrop").dataset.render;
-    $("backdrop").innerHTML = `<form class="modal trust-modal" id="trust-form" role="dialog" aria-modal="true" aria-labelledby="trust-title"><h3 id="trust-title">工作区信任模式</h3><p class="d">已授权目标范围内由 AI 自主推进；需要你亲自动手的事会进入“我的待办”。</p><label class="trust-toggle"><input type="checkbox" name="enabled" ${trust.enabled ? "checked" : ""}><span>开启信任模式</span></label><div class="field"><label for="trust-goal">目标和授权范围</label><textarea id="trust-goal" name="goal" rows="5" placeholder="写清要完成什么、可以自主处理到什么程度" ${trust.enabled ? "required" : ""}>${esc(trust.goal || "")}</textarea></div><p class="error-line" id="trust-error" role="alert"></p><div class="acts"><button type="button" class="btn ghost" data-act="modal-close">取消</button><button type="submit" class="btn primary">保存</button></div></form>`;
-    $("backdrop").classList.add("show"); $("trust-goal").focus();
-  }
-  async function saveTrust(form) {
-    const button = form.querySelector('[type="submit"]'); button.disabled = true;
-    try { const payload = trustPayload(form); await api("/api/trust", payload); if ($("trust-form") === form) closeBackdrop(); await loadState(true); toast(payload.enabled ? "信任模式已开启" : "信任模式已关闭"); }
-    catch (error) { if ($("trust-form") === form && $("trust-error")) $("trust-error").textContent = error.message; }
-    finally { button.disabled = false; }
-  }
-  async function readTrustReport() {
-    const response = await fetch(queryPath("/api/trust/report"), {headers:{"X-Crew":"1"}});
-    const text = await response.text();
-    if (!response.ok) { let error; try { error = JSON.parse(text).error; } catch (_) {} throw new Error(error || "报告读取失败，请稍后重试。"); }
-    return text;
-  }
-  async function openTrustReport() {
-    dialogReturn = focusDescriptor(document.activeElement); hideSettings(); commentsSession = null;
-    const request = ++auxiliaryDialog; delete $("backdrop").dataset.render;
-    $("backdrop").innerHTML = `<div class="modal report-modal" role="dialog" aria-modal="true" aria-labelledby="trust-report-title"><div class="report-head"><h3 id="trust-report-title">工作区详细报告</h3><a class="btn" href="${esc(queryPath("/api/trust/report"))}" download>下载 Markdown</a><button class="icon-btn" data-act="modal-close" aria-label="关闭报告">${ic("x")}</button></div><div class="markdown report-body" id="trust-report-body"><p class="note">正在读取报告…</p></div></div>`;
-    $("backdrop").classList.add("show"); $("backdrop").querySelector('[data-act="modal-close"]').focus();
-    try { const text = await readTrustReport(); if (request === auxiliaryDialog && $("trust-report-body")) $("trust-report-body").innerHTML = CrewChat.renderMarkdown(text); }
-    catch (error) { if (request === auxiliaryDialog && $("trust-report-body")) $("trust-report-body").textContent = error.message; }
-  }
   function sessionComments(id) {
     if (!commentsCache.has(id)) commentsCache.set(id, {comments:[], draft:"", error:null, loading:false, saving:false, request:null});
     return commentsCache.get(id);
@@ -821,6 +803,13 @@
         const owner = leader(item.leader_session_id) || leader(item.session_id) || leader(member(item.session_id)?.leader_session_id);
         if (owner) navigate("chat", owner.session_id); else toast("来源 leader 已不在当前列表中。");
       }});
+    if (window.CrewLeaderTrust) leaderTrust = window.CrewLeaderTrust.create({
+      getLeader:id => state?.leaders.find(item => item.session_id === id), reportUrl:trustReportUrl, readReport:readTrustReport,
+      renderMarkdown:(text,id) => CrewChat.renderMarkdown(text,id), save:body => api("/api/trust",body), onSaved:() => loadState(true), toast});
+    if (window.CrewRuntimeSwitch) runtimeSwitch = window.CrewRuntimeSwitch.create({
+      getMember:id => state?.members.find(item => item.session_id === id), catalog:runtimeList, effortsFor:modelEfforts,
+      refreshCatalog:refreshRuntimes, prepare:body => api("/api/session/runtime/prepare",body),
+      switchRuntime:body => api("/api/session/runtime/switch",body), onChanged:() => loadState(true), toast});
     applyTheme(); applyFontScale(); renderSettings();
     window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyTheme);
     document.addEventListener("contextmenu", event => {
@@ -886,8 +875,9 @@
       else if (act === "away") action("away", async () => { await api("/api/notifications/away", {away:!state.notification.manual_away}); await loadState(true); });
       else if (act === "theme") { theme = {system:"light", light:"dark", dark:"system"}[theme]; applyTheme(); try { localStorage.setItem("crew.theme", theme); } catch (error) { toast(error.message); } renderSidebar(); }
       else if (act === "project-theme") action("project-theme", async () => { const result = await api("/api/project/theme", {project:state.project.name, theme:button.dataset.themeId}); state.project.theme = result.theme; state.projects.find(item => item.name === state.project.name).theme = result.theme; applyTheme(); renderSettings(); renderSidebar(); await loadState(true); });
-      else if (act === "trust-settings") openTrustDialog();
-      else if (act === "trust-report") action("trust-report", openTrustReport);
+      else if (act === "leader-trust") leaderTrust?.open(id);
+      else if (act === "leader-trust-report") leaderTrust?.open(id, true);
+      else if (act === "runtime-switch") runtimeSwitch?.open(id);
       else if (act === "comments") openComments(id);
       else if (act === "comments-refresh") action(`comments:${id}`, () => loadComments(id));
       else if (act === "font-reset") { setFontScale(1); renderSettings(); }
@@ -946,7 +936,7 @@
       else if (act === "leave-group") action("leave", async () => { const item = member(id); await api("/api/roster/remove", {session_id:item.session_id, name:item.name, group:item.group}); hideMenu(); closeCard(); await loadState(true); toast("已退组，可以在待收编里重新收编"); });
       else if (act === "archive") action("archive", () => changeSession(id, "/api/session/archive", "已归档", true));
       else if (act === "remove-session") action("remove", () => changeSession(id, "/api/session/remove", "已移出 Crew", true));
-      else if (act === "stop") action("stop", async () => { await api("/api/session/stop", {session_id:id}); await loadState(true); toast("已停下这一轮"); });
+      else if (act === "stop") action("stop", async () => { await api("/api/session/stop", {session_id:id}); await loadState(true); toast("已请求中断本轮，正在等待停止确认"); });
       else if (act === "open-vscode") action(`open:${id}`, async () => {
         const reason = editorHandoffReason(sessionItem(id));
         if (reason) throw new Error(reason);
@@ -959,8 +949,6 @@
       else if (act === "member-history") { const item = member(id); if (cardId !== null) closeCard(); navigate("chat", item.leader_session_id, item.session_id); }
     });
     document.addEventListener("input", event => {
-      const trustForm = event.target.closest("#trust-form");
-      if (trustForm) { trustForm.elements.goal.required = trustForm.elements.enabled.checked; return; }
       const commentForm = event.target.closest("#comments-form");
       if (commentForm && event.target.name === "text") { sessionComments(commentForm.dataset.sessionId).draft = event.target.value; return; }
       const todoForm = event.target.closest("[data-todo-form]");
@@ -970,8 +958,7 @@
       if (event.target.dataset.setting === "volume") { CrewSound.setVolume(Number(event.target.value)); $("sound-volume-value").textContent = `${Math.round(Number(event.target.value) * 100)}%`; return; } const form = event.target.closest("[data-adopt-form]"); if (form && event.target.name === "name") adoptForms.get(form.dataset.adoptForm).name = event.target.value; });
     document.addEventListener("submit", event => {
       const form = event.target;
-      if (form.id === "trust-form") { event.preventDefault(); action("trust", () => saveTrust(form)); }
-      else if (form.id === "comments-form") { event.preventDefault(); action(`comment-post:${form.dataset.sessionId}`, () => postComment(form.dataset.sessionId, form.elements.text.value)); }
+      if (form.id === "comments-form") { event.preventDefault(); action(`comment-post:${form.dataset.sessionId}`, () => postComment(form.dataset.sessionId, form.elements.text.value)); }
       else if (form.dataset.todoForm !== undefined) { event.preventDefault(); const id = form.dataset.todoForm, draft = todoActions.get(id); if (draft) draft.note = form.elements.note.value; action(`todo:${id}`, () => resolveTodo(id)); }
       else if (form.dataset.answerForm !== undefined) { event.preventDefault(); const text = form.elements.answer.value.trim(); if (text !== "") action(`answer:${form.dataset.answerForm}`, () => answer(Number(form.dataset.answerForm), text)); }
       else if (form.dataset.adoptForm !== undefined) { event.preventDefault(); const id = form.dataset.adoptForm; action(`adopt:${id}`, async () => { const group = adoptForms.get(id).group, bucket = Object.keys(state.candidates).find(bucket => state.candidates[bucket].some(item => item.session_id === id)), item = state.candidates[bucket].find(item => item.session_id === id); await api("/api/roster/adopt", {session_id:id, name:form.elements.name.value.trim(), group}); adopted.set(id, {item, bucket, group}); adoptForms.delete(id); await loadState(true); }); }

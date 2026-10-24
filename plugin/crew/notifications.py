@@ -11,7 +11,7 @@ from pathlib import Path
 from urllib.error import URLError
 from urllib.request import ProxyHandler, Request, build_opener
 
-from . import board, chat, decision_briefs, qq, runtimes, store, todo
+from . import board, chat, decision_briefs, qq, runtimes, store, todo, trust_mode
 
 TEXT_LIMIT = 2000  # 10-23 实测 5000 字也能发；2000 一段是为了手机上好读。
 LOG = logging.getLogger(__name__)
@@ -212,6 +212,16 @@ class Inbox:
                              (session['project'], session['group_name'])).fetchone()
         return board.session(conn, group[0]) if group and group[0] else session
 
+    def _decision_leader(self, conn, decision):
+        sid = trust_mode.decision_leader(conn, decision['id'])
+        if sid is None:
+            return None
+        leader = board.session(conn, sid)
+        if (leader['project'] != decision['project'] or leader['role'] != 'leader' or
+                leader['status'] == 'closed' or board.is_archived(conn, sid)):
+            return None
+        return leader
+
     def refresh_presence(self):
         if not self.config['manual_away']:
             try:
@@ -303,14 +313,14 @@ class Inbox:
         now = self.service.now().isoformat()
         with closing(store.connect(self.home)) as conn:
             for item in self.pending.values():
-                leader = self._leader(conn, item['session_id'])
-                label = leader['crew_name'] or '未命名会话'
                 decision = next((d for d in board.decisions(conn, item['project'], all=True)
                                  if d['id'] == item.get('decision_id') and d['status'] == 'open' and not d['held']), None)
                 if item['kind'] == 'decision' and decision is None:
                     continue
+                leader = self._decision_leader(conn, decision) if decision else self._leader(conn, item['session_id'])
+                label = (leader['crew_name'] or '未命名会话') if leader else '无leader'
                 entry = dict(item=item, decision=decision, workspace=item['project'], leader=label,
-                             leader_session_id=leader['session_id'])
+                             leader_session_id=leader['session_id'] if leader else decision['session_id'])
                 if decision:
                     self.record_message(conn, item['id'], entry, item['kind'], now)
                     self.deliver(conn, [item['id']], self.client.send_markdown, *self.question_message(entry))
@@ -620,11 +630,10 @@ class Inbox:
                 state = board.status(conn, project, identities)
                 states.update((s['session_id'], s['status']) for s in [*state['ungrouped'], *(s for g in state['groups'] for s in g['members'])])
             pending = {}
-            for decision in conn.execute("SELECT d.session_id FROM decisions d "
+            for decision in conn.execute("SELECT d.id,d.project,d.session_id FROM decisions d "
                                          "LEFT JOIN decision_holds h ON h.decision_id=d.id "
                                          "WHERE d.status='open' AND h.decision_id IS NULL"):
-                asker = board.session(conn, decision['session_id'])
-                leader = asker if asker['role'] == 'leader' else board.leader_of(conn, asker['session_id'])
+                leader = self._decision_leader(conn, decision)
                 if leader is not None:
                     sid = leader['session_id']
                     pending[sid] = pending.get(sid, 0) + 1
@@ -675,7 +684,7 @@ class Inbox:
                     held_count += 1
                     continue
                 asker = board.session(conn, decision['session_id'])
-                leader = asker if asker['role'] == 'leader' else board.leader_of(conn, asker['session_id'])
+                leader = self._decision_leader(conn, decision)
                 label = leader['crew_name'] if leader is not None else '无leader'
                 entries.append(dict(decision=decision, workspace=project['name'], leader=label,
                                     leader_session_id=leader['session_id'] if leader is not None else asker['session_id']))
@@ -709,7 +718,7 @@ class Inbox:
                     error = '这条会话已归档或移出 Crew，答复尚未保存。请先在 Crew 恢复会话。'
                 else:
                     board.answer.__wrapped__(conn, decision['id'], answer, actor='qq', now=now)
-                    leader = asker if asker['role'] == 'leader' else board.leader_of(conn, asker['session_id'])
+                    leader = self._decision_leader(conn, decision)
                     if leader is not None:
                         mixed = any(runtimes.get(conn, person['session_id'])['runtime'] == 'codex'
                                     for person in (asker, leader))
