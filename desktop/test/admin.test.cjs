@@ -42,3 +42,12 @@ test('maintenance and stale state cannot silently restart Crew',async t=>{
   await fs.writeFile(path.join(directory,'maintenance.json'),'{');
   await assert.rejects(admin.request('check'),/维护记录/);
 });
+
+test('file-backed incident report remains readable without supervisor or Web, and cannot read outside HOME',async t=>{
+  const {admin,directory}=await setup(t),root=path.join(directory,'operations');await fs.mkdir(root);
+  const report=path.join(root,'report.html');await fs.writeFile(report,'<!doctype html><p>before broken → after fixed</p>');
+  await fs.writeFile(path.join(root,'state.json'),JSON.stringify({active_worker:null,incidents:[{id:'fixture',status:'awaiting_merge',attempts:1,report}]}));
+  const offline=await admin.snapshot();assert.equal(offline.state,'unmanaged');assert.match(offline.operations.report.html,/broken/);assert.equal(offline.operations.incidents[0].attempts,1);
+  await fs.writeFile(path.join(root,'state.json'),JSON.stringify({incidents:[{id:'fixture',report:path.join(directory,'status.json')}]}));
+  assert.match((await admin.snapshot()).operations.error,/InvalidReportPath/);
+});

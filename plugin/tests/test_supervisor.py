@@ -207,6 +207,36 @@ class SupervisorTests(unittest.TestCase):
         self.assertFalse(supervisor._pid_alive(status["service_pid"]))
         self.assertEqual(len(lines), 1)
 
+    def test_retained_flat_backend_launches_sibling_entrypoint_without_repo_plugin_prefix(self):
+        # Portable retains <HOME>/desktop/backend/<content-id>/crew/*.py;
+        # its entrypoint is a sibling of crew/, not ../plugin/crew_desktop.py.
+        backend = self.base / 'retained' / 'content-id'
+        (backend / 'crew').mkdir(parents=True)
+        module = backend / 'crew' / 'supervisor.py'
+        module.write_text('# retained module location\n', encoding='utf-8')
+        launcher = backend / 'crew_desktop.py'
+        launcher.write_text('import sys\nsys.path.insert(0,' + repr(str(PLUGIN)) + ')\n' + FAKE_BACKEND,
+                            encoding='utf-8')
+        with mock.patch.object(supervisor, '__file__', str(module)):
+            admin = supervisor.Supervisor(self.home, isolated_sources=True, check_interval=.04, health_timeout=.2,
+                                          backoffs=(.02,), startup_timeout=1)
+            result = []
+            worker = threading.Thread(target=lambda: result.append(admin.run(stdin=io.StringIO(''))), daemon=True)
+            worker.start()
+            try:
+                def healthy():
+                    value = supervisor.read_status(self.home)
+                    return value if value and value['state'] == 'healthy' else None
+                status = wait_for(healthy, timeout=4)
+                self.assertEqual(status['ownership'], 'owned')
+                self.assertTrue(supervisor._pid_alive(status['service_pid']))
+                self.assertEqual(len(self.launches()), 1)
+            finally:
+                admin.shutdown()
+                worker.join(timeout=10)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(result, [0])
+
     def test_crashed_backend_recovers_same_port_and_desktop_eof_does_not_stop_it(self):
         process, lines = self.launch()
         first = self.status(lambda value: value["state"] == "healthy")

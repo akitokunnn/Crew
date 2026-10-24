@@ -38,7 +38,7 @@ function harness(state = fixture(), fetcher = () => { throw new Error("Unexpecte
   const end = "  setup();\n})();";
   assert(source.endsWith(end + "\n") || source.endsWith(end));
   vm.runInContext(source.replace(end, `  window.ui = {runtimeList, runtimeInfo, modelEfforts, modelMenu, optionChange,
-    optionsLabel, leaderPayload, renderLeaderRuntime, refreshRuntimes, editorHandoffReason, sessionMenu,
+    optionsLabel, leaderPayload, renderLeaderRuntime, refreshRuntimes, editorHandoffReason, sessionMenu, chatAccess,
     openTodos, todosOf, pendingOf, todoCard, todoTray, todoExpanded, todoTrayExpanded, todoActions,
     todoResolvePayload, resolveTodo, renderTodos, replace,
     decisionTrust, trustReportUrl, readTrustReport,
@@ -51,6 +51,22 @@ function harness(state = fixture(), fetcher = () => { throw new Error("Unexpecte
   return {ui:sandbox.window.ui, nodes, location:sandbox.location};
 }
 const plain = value => JSON.parse(JSON.stringify(value));
+
+test("collected offline people can start a conversation while known external sessions stay readonly", () => {
+  const {ui}=harness();
+  for(const role of ["leader","member"]){
+    const person={role,web_chat:false,running:false,where:"offline"};
+    assert.deepEqual(plain(ui.chatAccess(person,null)),{readonly:false});
+    assert.deepEqual(plain(ui.chatAccess({...person,running:true,where:"bg",busy:true},null)),{readonly:false});
+    const external=ui.chatAccess({...person,running:true,where:"vscode"},null);assert.equal(external.readonly,true);assert.match(external.readonlyReason,/原工具退出/);
+  }
+});
+
+test("goal status controls composer access independently of the person's general chat history", () => {
+  const {ui}=harness(),person={web_chat:false,running:true,where:"vscode"};
+  for(const status of ["paused","pausing","completed","failed","cancelled","awaiting_acceptance"]){const access=ui.chatAccess(person,{status});assert.equal(access.readonly,true);assert.match(access.readonlyReason,/总对话可讨论；继续工作先恢复\/再开一轮/);}
+  for(const status of ["queued","running","waiting_user"])assert.deepEqual(plain(ui.chatAccess(person,{status})),{readonly:false});
+});
 
 test("existing session model menus use its own tool catalog and never expose runtime conversion", () => {
   const {ui} = harness();
@@ -87,7 +103,7 @@ test("Codex editor handoff is disabled while leader chat and member history rema
     assert(markup.includes('<p class="editor-handoff-note">' + reason + '</p>'));
   }
   assert.match(ui.sessionMenu(leader), /data-act="leader"[^>]*>打开对话/);
-  assert.match(ui.sessionMenu(member), /data-act="member-history"[^>]*>看对话记录/);
+  assert.match(ui.sessionMenu(member), /data-act="member-history"[^>]*>进入本人对话/);
   assert.equal(ui.editorHandoffReason({runtime:"claude"}), "");
   const claude = {...member, runtime:"claude"};
   assert.match(ui.sessionMenu(claude), /data-act="open-vscode"[^>]*>在 VS Code 打开/);
@@ -281,12 +297,21 @@ test("reports require an explicit current leader and scope the Markdown URL", as
   await assert.rejects(error.ui.readTrustReport("leader-1"), /leader不存在/);
 });
 
-const decision = extra => ({id:71, asker:"连接助手", session_id:"member-1", leader_session_id:"leader-1",
+const decision = extra => ({id:71, asker:"连接助手", session_id:"member-1", leader_session_id:"leader-1", presentation_stage:"ready",
   question:"是否继续连接？", options:["A. 继续连接", "B. 暂缓连接"], recommendation:"A", held:false,
   brief:{title:"是否允许连接测试设备", context:"technical-only-context", why_user:"设备需要使用你的个人账户。",
     recommendation_reason:"可以继续验证连接功能。", impact:"会在本机保存一次登录状态。",
     options:[{label:"允许使用这个账户", consequence:"继续连接验证，登录状态会保存在本机。"},
       {label:"暂缓连接", consequence:"暂停相关验证，先处理其他功能。"}]}, ...extra});
+
+test("a decision first invites discussion and exposes structured choices only after ready", () => {
+  const {ui}=harness(todoState());
+  const notice=ui.decisionCard(decision({presentation_stage:undefined}));
+  assert(notice.includes("这里需要你"));assert(notice.includes("听它说明"));assert(!notice.includes("answer-option"));assert(!notice.includes("账户"));
+  const discussing=ui.decisionCard(decision({presentation_stage:"discussion"}));
+  assert(discussing.includes("聊清楚了，给我选项"));assert(!discussing.includes("answer-option"));
+  assert(ui.decisionCard(decision()).includes("answer-option"));
+});
 
 test("decision briefs show human context, rationale and independent consequences while preserving original choice indices", () => {
   const state = todoState(); state.leaders[0].priority = null;

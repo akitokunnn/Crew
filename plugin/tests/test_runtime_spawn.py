@@ -29,7 +29,11 @@ class RuntimeSpawnTests(RuntimeFixture):
 
     def run_cli(self, argv, **environment):
         output, errors = io.StringIO(), io.StringIO()
-        with mock.patch.dict(os.environ, {"CREW_SESSION_ID": "", "CLAUDE_CODE_SESSION_ID": "", **environment}), \
+        process_environment = dict(os.environ)
+        for key in ('CREW_SESSION_ID','CLAUDE_CODE_SESSION_ID','CREW_EXECUTION_ID','CREW_GOAL_ID'):
+            process_environment.pop(key, None)
+        process_environment.update(environment)
+        with mock.patch.dict(os.environ, process_environment, clear=True), \
                 contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
             code = cli.main(["--home", str(self.home), *argv], cwd=self.root, plugin_root=PLUGIN,
                             agents_provider=lambda: [])
@@ -131,7 +135,14 @@ class RuntimeSpawnTests(RuntimeFixture):
             self.assertEqual(code, 0, errors)
             self.assertEqual(json.loads(output), {"ok": True, "queued": True})
             self.assertEqual(request.call_args.args[1:], ("demo", "/api/messages", {
-                "name": "reviewer", "text": "review this", "caller_session_id": "member-id"}))
+                "name": "reviewer", "text": "review this", "caller_session_id": "member-id",
+                'execution_id': None, 'kind': 'information'}))
+            request.reset_mock()
+            code, _, errors = self.run_cli(['send','reviewer','Verified result','--kind','result'],
+                                          CREW_SESSION_ID='member-id', CREW_EXECUTION_ID='current-execution')
+            self.assertEqual(code, 0, errors)
+            self.assertEqual(request.call_args.args[-1], {'name':'reviewer','text':'Verified result',
+                'caller_session_id':'member-id','execution_id':'current-execution','kind':'result'})
             request.reset_mock()
             self.assertEqual(self.run_cli(["send", "reviewer", "anonymous"])[0], 1)
             request.assert_not_called()

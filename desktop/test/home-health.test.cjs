@@ -65,3 +65,10 @@ test('a later matching receipt shows the actual refusal and never imports anothe
   status=healthy({state:'stopping',last_request_id:'current',last_request_error:'后台仍然运行，恢复已拒绝。'});const [id,timer]=[...h.timers][0];h.timers.delete(id);timer.fn();await tick();
   assert.match(h.nodes.get('admin-error').textContent,/后台仍然运行/);assert.equal(h.nodes.get('admin-state').textContent,'正在停止');assert.equal(h.nodes.get('admin-note').hidden,true);
 });
+
+test('operations shows independently verified commit and an unprivileged HTML report while Web is down',async()=>{
+  const operations={incidents:[{id:'incident',status:'awaiting_merge',goals:['goal-a'],attempts:1,result:{commit:'abcdef0123456789'}}],report:{incident_id:'incident',html:'<!doctype html><p>before broken → after fixed</p>'}};
+  const h=harness({adminStatus:async()=>healthy({state:'failed',operations}),adminCheck:async()=>({ok:true}),adminRestart:async()=>({ok:true})});
+  h.ui.show();await tick();const row=h.nodes.get('admin-operations').children[0];assert.match(row.children[0].textContent,/等待项目合并/);assert.match(row.children[1].textContent,/abcdef012345/);
+  const frame=row.children[2].children[1];assert.equal(frame.attributes.sandbox,'');assert.match(frame.srcdoc,/broken/);
+});

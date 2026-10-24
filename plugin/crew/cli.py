@@ -274,6 +274,30 @@ def parser():
     a = command("send", True)
     a.add_argument("name")
     a.add_argument("text")
+    a.add_argument('--kind', choices=('task','result','blocker','decision','user_answer','information','ack'), default='information')
+    for namespace, actions in (('goal', ('create','status','start','pause','resume','cancel','reopen','amend','assign','report-template','finish')),
+                               ('context', ('inspect','put','correct','expire'))):
+        goal_parser = command(namespace, True)
+        goal_parser.set_defaults(json=True)
+        goal_commands = goal_parser.add_subparsers(dest='action', required=True)
+        for action in actions:
+            entry = goal_commands.add_parser(action)
+            if action != 'create':
+                entry.add_argument('goal_id', nargs='?')
+            entry.add_argument('--project')
+            entry.add_argument('--execution-id')
+            entry.add_argument('--json', action='store_true', default=argparse.SUPPRESS)
+            payload = entry.add_mutually_exclusive_group()
+            payload.add_argument('--data', help='JSON object containing action data')
+            payload.add_argument('--file', type=Path, help='UTF-8 JSON action data/report file')
+            for name in ('title','request','leader','to','task','text','reason','item','kind','source'):
+                entry.add_argument('--' + name, default=argparse.SUPPRESS)
+            entry.add_argument('--acceptance', '--accept', action='append', default=argparse.SUPPRESS)
+            entry.add_argument('--constraint', action='append', default=argparse.SUPPRESS)
+            entry.add_argument('--dependency', action='append', default=argparse.SUPPRESS)
+            entry.add_argument('--priority', type=int, default=argparse.SUPPRESS)
+            entry.add_argument('--confirmed', action='store_true', default=argparse.SUPPRESS)
+            entry.add_argument('--start', action='store_true', default=argparse.SUPPRESS)
     a = command("web")
     a.add_argument("--port", type=int, default=47811)
     a.add_argument("--open", action="store_true")
@@ -467,6 +491,61 @@ def _project(conn, args, cwd):
     return p["name"]
 
 
+def _goal_command(args, cwd):
+    from . import goal_actions, spawn
+    payload = {}
+    if args.file is not None:
+        if args.file.stat().st_size > 1024 * 1024:
+            raise board.BoardError('目标 JSON 文件超过 1 MiB')
+        payload = json.loads(args.file.read_text(encoding='utf-8-sig'))
+    elif args.data is not None:
+        payload = json.loads(args.data)
+    if not isinstance(payload, dict):
+        raise board.BoardError('目标 data/JSON 文件必须为对象')
+    action = args.action if args.command == 'goal' else 'context.' + args.action
+    if action == 'finish' and 'report' not in payload:
+        payload = {'report': payload}
+    if action == 'finish' and isinstance(payload.get('report'), dict) and payload['report'].get('goal_id'):
+        payload.setdefault('goal_id', payload['report']['goal_id'])
+    for flag, field in (('title','title'),('request','request'),('leader','leader'),('to','to'),('task','task'),
+                        ('text','text'),('reason','reason'),('item','item_id'),('kind','kind'),('acceptance','acceptance'),
+                        ('constraint','constraints'),('dependency','dependencies'),('priority','priority'),('confirmed','confirmed'),('start','start')):
+        if hasattr(args, flag):
+            payload[field] = getattr(args, flag)
+    if hasattr(args, 'source'):
+        payload['source'] = json.loads(args.source)
+    selected = getattr(args, 'goal_id', None) or os.environ.get('CREW_GOAL_ID')
+    if selected:
+        if payload.get('goal_id') is not None and payload['goal_id'] != selected:
+            raise board.BoardError('目标编号与绑定目标冲突')
+        payload['goal_id'] = selected
+    execution_id = args.execution_id or os.environ.get('CREW_EXECUTION_ID')
+    with contextlib.closing(store.connect(args.home)) as conn:
+        project = _project(conn, args, cwd)
+    payload.setdefault('project', project)
+    if action in goal_actions.READ_ACTIONS:
+        return goal_actions.dispatch(args.home, _actor(args), execution_id, action, payload)
+    # All CLI mutations go through the existing owner process; no offline
+    # fallback can accidentally launch or duplicate an execution.
+    return spawn.request_start(args.home, project, '/api/goals/agent',
+                               {'action': action, 'data': payload, 'actor_session_id': _actor(args), 'execution_id': execution_id})
+
+
+def _goal_item_execution(conn, args):
+    from . import goals
+    execution_id = os.environ.get('CREW_EXECUTION_ID')
+    if execution_id:
+        execution = goals.get_execution(conn, execution_id)
+        if execution['session_id'] != _session_id(args):
+            raise board.BoardError('execution 与调用会话不匹配')
+        if os.environ.get('CREW_GOAL_ID') and os.environ['CREW_GOAL_ID'] != execution['goal_id']:
+            raise board.BoardError('执行与目标环境不匹配')
+        gate = goals.dispatch_check(conn, execution['goal_id'], execution_id=execution_id)
+        if not gate['allowed']:
+            raise board.Conflict(gate['reason'])
+    return execution_id
+
+
 def _usage(argv):
     # Only global options precede the command. Everything after usage belongs to its owner.
     index = 0
@@ -586,6 +665,13 @@ def execute(conn, args, cwd, agents_provider):
         if brief is None:
             print("提示：这道拍板还没有结构化摘要。请补充短标题、为什么需用户决定、推荐理由和每个选项后果；"
                   "可用 crew decision revise 原位补清，不要另发重复题。", file=sys.stderr)
+        execution_id = _goal_item_execution(conn, args)
+        if execution_id:
+            from . import goal_links, goals
+            with goals.transaction(conn):
+                number = board.ask.__wrapped__(conn, _session_id(args), args.question, args.option, args.recommend, args.blocking, brief=brief)
+                goal_links.bind(conn, 'decision', number, execution_id)
+                return number
         return board.ask(conn, _session_id(args), args.question, args.option, args.recommend, args.blocking, brief=brief)
     if cmd == "decision":
         from . import decision_briefs
@@ -641,6 +727,13 @@ def execute(conn, args, cwd, agents_provider):
         project = _project(conn, args, cwd)
         action = getattr(args, "action", None) or "list"
         if action == "add":
+            execution_id = _goal_item_execution(conn, args)
+            if execution_id:
+                from . import goal_links, goals
+                with goals.transaction(conn):
+                    result = todo.add.__wrapped__(conn, _session_id(args), args.title, args.steps, args.verification, args.blocking)
+                    goal_links.bind(conn, 'todo', result['id'], execution_id)
+                    return result
             return todo.add(conn, _session_id(args), args.title, args.steps, args.verification, args.blocking)
         if action == "withdraw":
             return todo.withdraw(conn, _session_id(args), args.id, args.reason)
@@ -804,8 +897,13 @@ def main(argv=None, agents_provider=claude_agents, cwd=None, plugin_root=None):
             with contextlib.closing(store.connect(args.home)) as conn:
                 project = _project(conn, args, cwd)
             value = spawn.request_start(args.home, project, "/api/messages", {
-                "name": args.name, "text": args.text, "caller_session_id": caller})
+                "name": args.name, "text": args.text, "caller_session_id": caller,
+                'execution_id': os.environ.get('CREW_EXECUTION_ID'), 'kind': args.kind})
             _emit(value, args.json, args.command)
+            return 0
+        if args.command in ('goal', 'context'):
+            value = _goal_command(args, cwd)
+            _emit(value, True, args.command)
             return 0
         if args.command == "compact":
             from . import spawn

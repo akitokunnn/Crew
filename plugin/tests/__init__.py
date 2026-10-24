@@ -9,8 +9,8 @@ def deny_production(event, args):
     if event != "socket.connect":
         return
     address = args[1]
-    if isinstance(address, tuple) and len(address) >= 2 and address[1] == 47811:
-        reason = "测试隔离：禁止连接正式 Crew 服务 127.0.0.1:47811；请使用替身或临时端口 (%r)" % (address,)
+    if isinstance(address, tuple) and len(address) >= 2 and address[1] in (47811, 7122):
+        reason = "测试隔离：禁止连接正式 Crew 服务端口 47811/7122；请使用替身或临时端口 (%r)" % (address,)
         violations.append(reason)
         raise AssertionError(reason)
 

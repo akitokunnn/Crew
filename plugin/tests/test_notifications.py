@@ -9,7 +9,7 @@ import threading
 import unittest
 from unittest import mock
 
-from crew import board, chat, notifications, qq, session_ops, store, web
+from crew import board, chat, goal_runtime, notifications, qq, session_ops, store, web
 from test_chat import FakeProcess
 from test_shell import NOW, PLUGIN, ShellFixture
 
@@ -149,6 +149,8 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         self.conn.execute('UPDATE sessions SET spawn_id=? WHERE session_id=?', (sid, sid))
         manager = mock.Mock()
         manager.lock, manager.processes = threading.RLock(), {}
+        manager.home, manager.plugin_root = self.home, PLUGIN
+        manager.goal_controller = goal_runtime.Controller(manager)
         manager.journal.return_value, manager.path.return_value = journal, journal.path
         manager.busy.side_effect = lambda sid: journal.status == 'working'
         manager.running.return_value = manager.is_owned.return_value = True
@@ -160,6 +162,13 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         manager.send.side_effect = send
         self.service.chat = manager
         return manager, journal
+
+    def test_mock_legacy_transport_uses_real_goal_identity_catalog(self):
+        manager, _ = self.web_manager()
+        self.assertIsInstance(manager.goal_controller, goal_runtime.Controller)
+        self.assertEqual(manager.goal_controller.native_ids(self.conn), set())
+        agents = self.service.managed_agents(self.conn, [{'sessionId':'s1','name':'one'}])
+        self.assertEqual([item['sessionId'] for item in agents], ['s1'])
 
     def decision(self, identity):
         return dict(self.conn.execute('SELECT * FROM decisions WHERE id=?', (identity,)).fetchone())

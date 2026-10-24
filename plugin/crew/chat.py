@@ -2,6 +2,7 @@
 import base64
 import collections
 from contextlib import closing
+import hashlib
 import json
 import os
 import shutil
@@ -11,7 +12,7 @@ import threading
 import uuid
 from pathlib import Path
 
-from . import board, claude_limits, hooks, install, messaging, models, runtime_switch, runtimes, spawn, store
+from . import board, claude_limits, codex_client, hooks, install, messaging, models, runtime_switch, runtimes, spawn, store
 
 
 IMAGE_TYPES = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif"}
@@ -98,6 +99,7 @@ class Journal:
 
     def _index(self):
         self.messages = {event["id"] for event in self.events if event["type"] in ("message", "compact_request")}
+        self.inputs = {event.get('message_id', event.get('id')): event for event in self.events if event["type"] == "input_delivery"}
         self.results = {event["tool_use_id"] for event in self.events if event["type"] == "tool_result"}
         self.assistant = {event["id"]: event["content"] for event in self.events if event["type"] == "assistant"}
         self.status = next((event["status"] for event in reversed(self.events) if event["type"] == "status"), "offline")
@@ -125,6 +127,8 @@ class Journal:
             with self.path.open("a", encoding="utf-8") as stream:
                 stream.write(json.dumps(event, ensure_ascii=False) + "\n")
             self.events.append(event)
+            if kind == "input_delivery":
+                self.inputs[fields['message_id']] = event
             stat = self.path.stat()
             self.signature = (stat.st_size, stat.st_mtime_ns)
             self.condition.notify_all()
@@ -308,6 +312,8 @@ class Journal:
 class Running:
     def __init__(self, process, journal):
         self.runtime = "claude"
+        self.execution = None
+        self.goal_manifests = {}
         self.process, self.journal = process, journal
         # A finished turn can start its queued compact through _send under this same lock.
         self.input_lock = threading.RLock()
@@ -340,6 +346,8 @@ class Manager:
         self.closed = False
         self.auto_candidates = None
         self.message_wait_errors = {}
+        from .goal_runtime import Controller
+        self.goal_controller = Controller(self)
 
     def path(self, session_id):
         return self.home / "chat" / (session_id + ".jsonl")
@@ -415,7 +423,7 @@ class Manager:
             for line in current.process.stdout:
                 try:
                     record = json.loads(line)
-                    if (self.processes.get(session_id) is current and record.get('session_id') == session_id
+                    if (self.processes.get(session_id) is current and record.get('session_id') == (current.native_id if current.execution else session_id)
                             and not record.get('parent_tool_use_id')):
                         known_native = (record.get('type')=='assistant' or
                             record.get('type')=='system' and record.get('subtype')=='init')
@@ -425,7 +433,9 @@ class Manager:
                         if known_native and not current.native_binding_confirmed or acknowledged:
                             try:
                                 with closing(store.connect(self.home)) as native_conn:
-                                    if runtimes.get(native_conn,session_id)['runtime']=='claude':
+                                    if current.execution:
+                                        current.native_binding_confirmed = True
+                                    elif runtimes.get(native_conn,session_id)['runtime']=='claude':
                                         if runtimes.get(native_conn,session_id)['native_id'] is None:
                                             runtimes.set(native_conn,session_id,'claude',session_id)
                                         current.native_binding_confirmed=True
@@ -436,6 +446,13 @@ class Manager:
                                 # Keep draining native output and retain the handoff for
                                 # the next accepted input rather than losing the reader.
                                 current.journal.emit('error',text='原生会话确认记录失败，交接会保留重试：'+str(exc))
+                    if (current.execution and record.get('type') == 'user' and record.get('session_id') == current.native_id
+                            and record.get('message', {}).get('role') == 'user' and not record.get('parent_tool_use_id')
+                            and record.get('uuid') in current.goal_manifests):
+                        from . import goal_context
+                        with closing(store.connect(self.home)) as goal_conn:
+                            goal_context.mark_applied(goal_conn, current.goal_manifests.pop(record['uuid']),
+                                                      execution_id=current.execution['id'])
                     if record["type"] == "control_response":
                         self._control_response(current, record["response"])
                     if record["type"] == "rate_limit_event":
@@ -519,6 +536,8 @@ class Manager:
             raise
 
     def _launch_native(self, session, spec, resume=False):
+        if '_execution' in session:
+            return self.goal_controller.launch(session, spec)
         session_id = session["session_id"]
         if resume:
             self._check_offline(session)
@@ -534,7 +553,8 @@ class Manager:
             from .codex_runtime import CodexRunning
             current = CodexRunning(self.home, self.plugin_root, session, spec, options,
                                    self.journal(session_id), self.send_message,
-                                   process_factory=self.process_factory, resume=native_resume)
+                                   process_factory=self.process_factory, resume=native_resume,
+                                   goal_handler=self.goal_controller.agent_action)
             self.processes[session_id] = current
             return spawn.command(session_id, session["crew_name"], session["role"], runtime="codex", **options)
         exe = claude_executable()
@@ -602,7 +622,7 @@ class Manager:
         identity = identity or str(uuid.uuid4())
         original_text=text if display_text is None else display_text
         handoff_id=None
-        if text.strip()!='/compact':
+        if text.strip()!='/compact' and current.execution is None:
             with closing(store.connect(self.home)) as handoff_conn:
                 text,handoff_id=runtime_switch.input_text(handoff_conn,session_id,text,identity)
         files = []
@@ -628,7 +648,8 @@ class Manager:
             except Exception as exc:
                 with closing(store.connect(self.home)) as handoff_conn:runtime_switch.failed(handoff_conn,session_id,exc)
                 raise
-        message = {"type": "user", "uuid": identity, "session_id": session_id, "parent_tool_use_id": None,
+        message = {"type": "user", "uuid": identity,
+                   "session_id": current.native_id if current.execution else session_id, "parent_tool_use_id": None,
                    "message": {"role": "user", "content": content}}
         try:
             with current.input_lock:
@@ -650,13 +671,21 @@ class Manager:
         with self.lock:
             return runtime_switch.switch(conn,board.session(conn,session_id),self,preview_id,confirm,catalog,now)
 
-    def send_message(self, sender_id, target_id, text, message_id=None):
-        with closing(store.connect(self.home)) as conn:
+    def send_message(self, sender_id, target_id, text, message_id=None, execution_id=None, kind='information'):
+        with self.lock, closing(store.connect(self.home)) as conn:
+            if execution_id:
+                from . import goal_messages
+                return goal_messages.queue(conn, sender_id, target_id, text, execution_id,
+                                           message_id=message_id, kind=kind)
             return messaging.queue(conn, sender_id, target_id, text, message_id=message_id)
 
     def deliver_messages(self):
         """Deliver only to an idle owned runtime, or resume a confirmed offline one."""
         with self.lock, closing(store.connect(self.home)) as conn:
+            from . import goal_messages
+            from . import goal_links
+            goal_links.deliver(self.goal_controller, conn)
+            goal_messages.deliver(self.goal_controller, conn)
             for message in messaging.pending(conn):
                 sid = message["target_session_id"]
                 target = board.session(conn, sid)
@@ -684,9 +713,15 @@ class Manager:
                         board.record_event(conn, "peer:delivery_wait", target["project"], sid,
                                            {"id": message["id"], "reason": str(exc)})
 
-    def send(self, session, text, source='human', identity=None, images=None):
+    def send(self, session, text, source='human', identity=None, images=None, display_text=None):
         images = validate_images(images)
-        session_id = session["session_id"]
+        session_id = session.get('_storage_id', session["session_id"])
+        identity = str(uuid.uuid4()) if identity is None else identity
+        if not isinstance(identity, str) or not identity.strip() or len(identity) > 160:
+            raise board.BoardError("消息标识必须是非空文本，最多 160 个字符")
+        digest = hashlib.sha256(json.dumps({'text': text if display_text is None else display_text,
+                                          'images': images, 'source': source},
+                                          ensure_ascii=False, sort_keys=True).encode('utf-8')).hexdigest()
         with self.lock:
             if self.closed:
                 raise board.BoardError("网页服务正在关闭")
@@ -694,13 +729,41 @@ class Manager:
                 raise board.Conflict("会话已归档，不能继续发送消息")
             if not self.path(session_id).exists():
                 raise board.BoardError("该会话没有网页聊天记录")
-            if self.running(session_id) and self.journal(session_id).status == "working":
-                raise board.Conflict("会话正在回复，请等这一轮结束")
+            journal = self.journal(session_id)
+            prior = journal.inputs.get(identity)
+            if prior is not None:
+                if prior['digest'] != digest:
+                    raise board.Conflict("同一消息标识不能发送不同内容")
+                if prior['status'] == 'accepted':
+                    return {'ok': True, 'message_id': identity, 'accepted': True,
+                            'delivery': prior['delivery'], 'duplicate': True}
+                if prior['status'] != 'rejected':
+                    raise board.Conflict("上次输入的原生接收状态未确认，请先核对会话，避免重复执行")
+            elif identity in journal.messages:
+                raise board.Conflict("这条历史输入没有可确认的接收回执，请先核对会话")
+            steering = self.running(session_id) and self.journal(session_id).status == "working"
+            if steering and source not in ("human", "qq", "lark"):
+                raise board.Conflict("会话正在回复，自动消息等待当前轮次结束")
             if not self.running(session_id):
-                spec = json.loads((self.home / "spawn" / (session["spawn_id"] + ".json")).read_text(encoding="utf-8"))
+                with closing(store.connect(self.home)) as spec_conn:
+                    spec, _ = self._resume_spec(spec_conn, session)
                 self._launch(session, spec, resume=True)
-            identity = self._send(session_id, text, source=source, identity=identity, images=images)
-        return {"ok": True, 'message_id': identity}
+            delivery = 'steered' if steering else 'started'
+            journal.emit('input_delivery', message_id=identity, digest=digest, status='submitted', delivery=delivery)
+            try:
+                identity = self._send(session_id, text, display_text=display_text,
+                                      source=source, identity=identity, images=images)
+            except (codex_client.RpcError, board.BoardError) as exc:
+                journal.emit('input_delivery', message_id=identity, digest=digest, status='rejected',
+                             delivery=delivery, error=type(exc).__name__, detail=str(exc))
+                raise
+            except (codex_client.TransportError, codex_client.RequestTimeout, OSError) as exc:
+                journal.emit('input_delivery', message_id=identity, digest=digest, status='unknown',
+                             delivery=delivery, error=type(exc).__name__, detail=str(exc))
+                raise
+            journal.emit('input_delivery', message_id=identity, digest=digest, status='accepted', delivery=delivery)
+        return {"ok": True, 'message_id': identity, 'accepted': True,
+                'delivery': delivery}
 
     def compact(self, session, caller_session_id=None):
         session_id = session["session_id"]
@@ -856,7 +919,9 @@ class Manager:
             if self.auto_candidates is None:
                 # The snapshot waits for the first agents poll; sessions this service already launched are not leftovers.
                 self.auto_candidates = {path.stem: now for path in sorted((self.home / "chat").glob("*.jsonl"))
-                                        if path.stem not in self.processes and self.journal(path.stem).status == "working"}
+                                        if path.stem not in self.processes and self.journal(path.stem).status == "working"
+                                        and conn.execute('SELECT 1 FROM sessions WHERE session_id=?', (path.stem,)).fetchone()}
+            self.goal_controller.recover(conn, agents, runtime=runtime)
             projects = {project["name"] for project in board.projects(conn)}
             live = {agent["sessionId"] for agent in agents}
             for session_id, started in list(self.auto_candidates.items()):
