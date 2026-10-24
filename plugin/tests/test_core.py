@@ -12,6 +12,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
+from tests.fixture_cleanup import cleanup_directory
 
 from crew import board, cli, guard, hooks, install, rules, session_ops, store
 
@@ -22,7 +23,7 @@ NOW = "2026-10-21T08:00:00.000Z"
 class CoreCase(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(dir=PLUGIN, prefix="core-test-")
-        self.addCleanup(self.temp.cleanup)
+        self.addCleanup(cleanup_directory,self.temp)
         self.base = Path(self.temp.name)
         self.home = self.base / "home"
         self.root = self.base / "project"

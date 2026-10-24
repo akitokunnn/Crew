@@ -9,6 +9,7 @@ import threading
 import unittest
 from pathlib import Path
 from unittest import mock
+from tests.fixture_cleanup import cleanup_directory
 
 from crew import store, usage
 
@@ -52,7 +53,7 @@ def token_count(seconds=30, total=3500, info=True):
 class UsageFixture:
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent)
-        self.addCleanup(self.temp.cleanup)
+        self.addCleanup(cleanup_directory,self.temp)
         self.root = Path(self.temp.name)
         self.home = self.root / "home"
         self.claude = self.root / "claude"
