@@ -255,7 +255,7 @@
     persistDraft(context);
   }
   function visibleDraft(context) {
-    return active && active.cache === context.cache ? active : null;
+    return active && !active.readonly && active.cache === context.cache ? active : null;
   }
   function composerState(context) {
     if (context.readonly) return;
@@ -612,17 +612,15 @@
   }
   function mount(options) {
     unmount();
-    const cacheKey = `${options.state.project.name}:${options.session.session_id}:${Boolean(options.readonly)}:${options.goalId ?? ""}`;
+    const cacheKey = `${options.state.project.name}:${options.session.session_id}:${options.goalId ?? ""}`;
     let cache = sessions.get(cacheKey);
     if (!cache) {
       cache = { expanded: new Set(), scrollTop: null, first: true, unreadAnchor: null, text: "", images: [], version: 0, sending: false, pendingSendSeq: null, lastReadAt: 0 };
       sessions.set(cacheKey, cache);
-      if (!options.readonly) {
-        try {
-          const saved = localStorage.getItem(keyFor(options));
-          if (saved !== null) { const draft = JSON.parse(saved); cache.text = draft.text; cache.images = draft.images; }
-        } catch (error) { options.toast(error.message); }
-      }
+      try {
+        const saved = localStorage.getItem(keyFor(options));
+        if (saved !== null) { const draft = JSON.parse(saved); cache.text = draft.text; cache.images = draft.images; }
+      } catch (error) { options.toast(error.message); }
     }
     const context = { ...options, session:options.goalId == null ? options.session : {...options.session,activity:null}, cache, items: [], byId: new Map(), nodes: new Map(), results: new Map(), toolOwners: new Map(), cursor: 0, readSeq: 0, busySeq: options.readonly || options.goalId != null ? 0 : options.session.last_seq, executionId:null, connectionGeneration:0, loadGeneration:0, readTimer: null, reconnectTimer: null, historyRetryTimer: null, historyFailed: false, interrupting: false, interruptError: "", interruptConfirmed: false, frame: null, loading: true, busy: cache.pendingSendSeq === null ? options.goalId == null && options.session.busy : true, reading: false, initialPosition: null, stream: null };
     active = context;

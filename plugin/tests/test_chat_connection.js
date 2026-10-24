@@ -110,3 +110,30 @@ test("first goal send and later execution rotation rebind history and SSE withou
   assert.equal(sends,2);assert.equal(h.streams.length,3);assert.equal(calls.filter(call=>call.url.includes("history?")).length,3);
   assert(h.streams.every(url=>url.includes("goal_id=goal")));assert.equal(target.querySelector(".chat-connection-error").hidden,true);h.chat.unmount();
 });
+
+test("readonly status transitions preserve the same goal draft and reading position without sending",async()=>{
+  const h=harness(),calls=[],api=async url=>{calls.push(url);return history();};
+  const editable=h.mount("member",api,{web_chat:false,where:"offline"},{goalId:"goal",readonly:false});await tick();
+  editable.querySelector("textarea").value="恢复后继续编辑的草稿";editable.querySelector("textarea").oninput();
+  const scroll=editable.querySelector(".chat-scroll");scroll.scrollTop=123;scroll.onscroll();
+  const paused=h.mount("member",api,{web_chat:false,where:"offline"},{goalId:"goal",readonly:true,readonlyReason:"总对话可讨论；继续工作先恢复/再开一轮。"});await tick();
+  assert(paused.innerHTML.includes('class="readonly-note"'));assert(!paused.innerHTML.includes('class="composer-wrap"'));assert.equal(paused.querySelector(".chat-scroll").scrollTop,123);
+  const resumed=h.mount("member",api,{web_chat:false,where:"offline"},{goalId:"goal",readonly:false});await tick();
+  assert.equal(resumed.querySelector("textarea").value,"恢复后继续编辑的草稿");assert.equal(resumed.querySelector(".chat-scroll").scrollTop,123);
+  assert(calls.every(url=>url.startsWith("/api/chat/history?")));h.chat.unmount();
+});
+
+test("opening readonly first restores a persisted draft when work is explicitly resumed",async()=>{
+  const h=harness();h.saved.set("crew.draft:fixture:member:goal:goal",JSON.stringify({text:"上次保留的草稿",images:[]}));
+  h.mount("member",async()=>history(),{web_chat:false},{goalId:"goal",readonly:true});await tick();
+  const resumed=h.mount("member",async()=>history(),{web_chat:false},{goalId:"goal",readonly:false});await tick();
+  assert.equal(resumed.querySelector("textarea").value,"上次保留的草稿");h.chat.unmount();
+});
+
+test("an accepted in-flight send can finish after readonly remount without restoring an already sent draft",async()=>{
+  const h=harness();let release,sends=0;const api=async(url)=>{if(url==="/api/chat/send"){sends++;return new Promise(resolve=>{release=resolve;});}return history();};
+  const target=h.mount("member",api,{},{goalId:"goal",readonly:false});await tick();target.querySelector("textarea").value="这条已经提交";target.querySelector("textarea").oninput();target.querySelector("form").onsubmit({preventDefault(){}});await tick();
+  h.mount("member",api,{},{goalId:"goal",readonly:true});await tick();release({accepted:true,delivery:"started"});await tick();
+  assert.equal(JSON.parse(h.saved.get("crew.draft:fixture:member:goal:goal")).text,"");
+  const resumed=h.mount("member",api,{},{goalId:"goal",readonly:false});await tick();assert.equal(resumed.querySelector("textarea").value,"");assert.match(resumed.querySelector(".chat-delivery-status").textContent,/已接收消息/);assert.equal(sends,1);h.chat.unmount();
+});

@@ -38,7 +38,7 @@ function harness(state = fixture(), fetcher = () => { throw new Error("Unexpecte
   const end = "  setup();\n})();";
   assert(source.endsWith(end + "\n") || source.endsWith(end));
   vm.runInContext(source.replace(end, `  window.ui = {runtimeList, runtimeInfo, modelEfforts, modelMenu, optionChange,
-    optionsLabel, leaderPayload, renderLeaderRuntime, refreshRuntimes, editorHandoffReason, sessionMenu,
+    optionsLabel, leaderPayload, renderLeaderRuntime, refreshRuntimes, editorHandoffReason, sessionMenu, chatAccess,
     openTodos, todosOf, pendingOf, todoCard, todoTray, todoExpanded, todoTrayExpanded, todoActions,
     todoResolvePayload, resolveTodo, renderTodos, replace,
     decisionTrust, trustReportUrl, readTrustReport,
@@ -51,6 +51,22 @@ function harness(state = fixture(), fetcher = () => { throw new Error("Unexpecte
   return {ui:sandbox.window.ui, nodes, location:sandbox.location};
 }
 const plain = value => JSON.parse(JSON.stringify(value));
+
+test("collected offline people can start a conversation while known external sessions stay readonly", () => {
+  const {ui}=harness();
+  for(const role of ["leader","member"]){
+    const person={role,web_chat:false,running:false,where:"offline"};
+    assert.deepEqual(plain(ui.chatAccess(person,null)),{readonly:false});
+    assert.deepEqual(plain(ui.chatAccess({...person,running:true,where:"bg",busy:true},null)),{readonly:false});
+    const external=ui.chatAccess({...person,running:true,where:"vscode"},null);assert.equal(external.readonly,true);assert.match(external.readonlyReason,/原工具退出/);
+  }
+});
+
+test("goal status controls composer access independently of the person's general chat history", () => {
+  const {ui}=harness(),person={web_chat:false,running:true,where:"vscode"};
+  for(const status of ["paused","pausing","completed","failed","cancelled","awaiting_acceptance"]){const access=ui.chatAccess(person,{status});assert.equal(access.readonly,true);assert.match(access.readonlyReason,/总对话可讨论；继续工作先恢复\/再开一轮/);}
+  for(const status of ["queued","running","waiting_user"])assert.deepEqual(plain(ui.chatAccess(person,{status})),{readonly:false});
+});
 
 test("existing session model menus use its own tool catalog and never expose runtime conversion", () => {
   const {ui} = harness();

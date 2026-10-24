@@ -371,16 +371,17 @@
     const pending = pendingOf(leaderId).filter(inGoal), held = decisionsOf(leaderId).filter(item => item.held && inGoal(item));
     const groupTodos = todosOf(leaderId).filter(inGoal);
     goals?.sync(leaderId, goalId);
+    const access = chatAccess(item, goalId == null ? null : goals?.currentGoal());
     const execution = goalId == null ? null : goals?.executionFor(item.session_id);
     const chatRuntime = goalId == null ? runtimeBadge(item) : execution ? runtimeBadge(execution) : '<span class="runtime-tag">本目标尚未启动</span>';
     const chatModel = goalId == null ? `<button class="model-tag" data-act="model-menu" data-id="${esc(item.session_id)}" aria-haspopup="menu" title="切换模型和 effort">${esc(optionsLabel(item))}${ic("down", "xs")}</button>` : execution ? `<span class="model-tag" title="本目标执行配置；如需更换，回总对话并先暂停仍在推进的目标">${esc(optionsLabel({...execution, applied:null}))}</span>` : "";
-    const identity = `${item.session_id}:${goalId ?? ""}:${!item.web_chat}`;
+    const identity = `${item.session_id}:${goalId ?? ""}:${access.readonly}`;
     if (mountedChat !== identity) {
       CrewChat.unmount();
       $("main").innerHTML = '<div id="chat-head"></div><div id="goal-head"></div><div id="leader-trust-note"></div><div id="decision-tray"></div><div id="chat-host" class="chat-host"></div>';
       delete $("main").dataset.render;
       mountedChat = identity;
-      CrewChat.mount({host:$("chat-host"), session:item, readonly:!item.web_chat, goalId, state, api, toast, onExecutionChange:() => goals?.refresh(goalId)});
+      CrewChat.mount({host:$("chat-host"), session:item, ...access, goalId, state, api, toast, onExecutionChange:() => goals?.refresh(goalId)});
     }
     replace($("chat-head"), `<div class="head">${av(item.name, 34)}<div class="heading-meta"><div class="title">${esc(item.name)}${readOnlyId === null ? priorityBadge(item.priority) : ""}${chatRuntime}</div><div class="sub"><span>${esc(readOnlyId === null ? (item.goal ?? "") : `归 ${item.group} · 成员本人对话`)}</span>${group === undefined ? "" : `<span class="sep"></span><span>${members.length} 个下属 · ${members.filter(item => item.status === "working").length} 个在干活</span>`}</div></div><div class="right">${goalId == null ? contextControls(item) : ""}${chatModel}${readOnlyId === null ? "" : `<button class="btn ghost" data-act="leader" data-id="${esc(leaderId)}">回到 leader</button><button class="btn ghost" data-act="card" data-id="${esc(item.session_id)}">资料</button>`}<button class="icon-btn" data-act="session-menu" data-id="${esc(item.session_id)}" aria-haspopup="menu" title="会话操作" aria-label="会话操作">⋯</button>${group === undefined ? "" : `<button class="icon-btn rp-toggle" data-act="right-open" title="本组架构图" aria-label="本组架构图">${ic("grid")}</button>`}</div></div>`);
     replace($("goal-head"), group ? goals?.groupMarkup(leaderId) || "" : "");
@@ -403,6 +404,12 @@
       const amount = documents.groupCount(leaderId);
       button.innerHTML = `${ic("file", "sm")}文档${amount == null ? "" : ` <span>${amount}</span>`}`;
     }
+  }
+  function chatAccess(item, goal) {
+    if (goal != null) return ["paused","pausing","completed","failed","cancelled","awaiting_acceptance"].includes(goal.status)
+      ? {readonly:true,readonlyReason:"该目标当前只读。总对话可讨论；继续工作先恢复/再开一轮。"} : {readonly:false};
+    return item.running && item.where === "vscode"
+      ? {readonly:true,readonlyReason:"该会话仍在 VS Code 或终端中运行。请先在原工具退出，再由 Crew 接管；打开记录不会启动 AI。"} : {readonly:false};
   }
   function empty(message) { return `<div class="empty">${ic("check")}<div>${message}</div></div>`; }
   function todoInstructions(value, item, ordered = false) {
