@@ -48,6 +48,7 @@
         <section class="admin-actions" aria-label="后台维护"><div><button id="admin-check" class="button secondary" type="button">重新检测</button><button id="admin-restart" class="button secondary" type="button" disabled>尝试恢复</button></div><p id="admin-restart-reason"></p><p class="admin-policy">只尝试恢复确认已退出的后台；不会强制结束运行中的会话。</p></section>
         <p id="admin-error" class="error" role="alert" hidden></p><p id="admin-note" class="admin-note" role="status" hidden></p>
         <section class="admin-incidents-section"><h2>最近异常与恢复</h2><div id="admin-incidents" class="admin-incidents"></div></section>
+        <section class="admin-incidents-section"><h2>事故处理</h2><p class="admin-policy">正常巡检不调用模型；故障按证据合并，修复在独立分支验证后等待项目合并。</p><div id="admin-operations" class="admin-incidents"></div></section>
         <details class="admin-details"><summary>连接详情</summary><dl><dt>管理员进程</dt><dd id="admin-supervisor-pid"></dd><dt>后台进程</dt><dd id="admin-service-pid"></dd><dt>服务地址</dt><dd id="admin-service-url"></dd><dt>实例</dt><dd id="admin-instance"></dd></dl></details>
       </div>
     </section>
