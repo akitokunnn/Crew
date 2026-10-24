@@ -1,0 +1,336 @@
+<div id="crew-goal-trial" aria-label="Crew 目标工作区交互预览">
+  <style>
+    #crew-goal-trial{--ct-bg:light-dark(#fafaf8,#171a17);--ct-side:light-dark(#f0f1ec,#1e231e);--ct-paper:light-dark(#ffffff,#242a24);--ct-ink:light-dark(#263029,#e7eee6);--ct-muted:light-dark(#69756b,#a9b6a8);--ct-line:light-dark(#dfe5dc,#3a453a);--ct-hover:light-dark(#e8ede5,#303b2f);--ct-accent:light-dark(#294b37,#b3d5b8);--ct-on:light-dark(#ffffff,#172a1c);--ct-soft:light-dark(#e8f0e8,#2c3c2e);--ct-warn:light-dark(#876125,#edc586);--ct-warn-bg:light-dark(#faf3e5,#3c3121);--ct-red:light-dark(#945b52,#e1afa2);--ct-red-bg:light-dark(#f7eeea,#3b2b27);font-family:"Segoe UI Variable","Segoe UI","Microsoft YaHei",sans-serif;font-size:14px;line-height:1.6;color:var(--ct-ink);width:100%;background:transparent;color-scheme:light dark}
+    #crew-goal-trial *{box-sizing:border-box}
+    #crew-goal-trial [hidden]{display:none!important}
+    #crew-goal-trial button,#crew-goal-trial input,#crew-goal-trial textarea{font:inherit;color:inherit}
+    #crew-goal-trial button{cursor:inherit}
+    #crew-goal-trial button:disabled{opacity:.5;cursor:default}
+    #crew-goal-trial h2,#crew-goal-trial h3,#crew-goal-trial p{margin:0}
+    #crew-goal-trial h2{font-size:23px;font-weight:500;line-height:1.4;letter-spacing:-.6px}
+    #crew-goal-trial h3{font-size:15px;font-weight:500;line-height:1.5}
+    #crew-goal-trial strong{font-weight:500}
+    #crew-goal-trial .ct-window{border:1px solid var(--ct-line);border-radius:13px;background:var(--ct-bg);overflow:hidden}
+    #crew-goal-trial .ct-top{display:flex;align-items:center;gap:10px;padding:11px 110px 11px 17px;border-bottom:1px solid var(--ct-line);min-height:49px;background:var(--ct-side)}
+    #crew-goal-trial .ct-mark{width:23px;height:23px;display:grid;place-items:center;background:var(--ct-accent);color:var(--ct-on);border-radius:7px;font-weight:500;font-size:16px}
+    #crew-goal-trial .ct-slash{color:var(--ct-muted);margin:0 2px}
+    #crew-goal-trial .ct-demo{font-size:11px;color:var(--ct-muted);margin-left:8px}
+    #crew-goal-trial .ct-layout{display:grid;grid-template-columns:172px minmax(0,1fr);min-height:690px}
+    #crew-goal-trial aside{background:var(--ct-side);padding:23px 11px 18px;border-right:1px solid var(--ct-line);display:flex;flex-direction:column;gap:26px;min-width:0}
+    #crew-goal-trial .ct-section{font-size:11px;color:var(--ct-muted);padding:0 12px 7px}
+    #crew-goal-trial .ct-nav{display:flex;align-items:center;gap:9px;width:100%;border:0;background:transparent;border-radius:7px;padding:9px 11px;text-align:left;margin-bottom:4px;min-height:38px}
+    #crew-goal-trial .ct-nav:hover{background:var(--ct-hover)}
+    #crew-goal-trial .ct-nav[aria-current="page"]{background:var(--ct-hover);font-weight:500}
+    #crew-goal-trial .ct-nav i,#crew-goal-trial .ct-nav svg{width:16px;height:16px;flex:none}
+    #crew-goal-trial .ct-count{margin-left:auto;font-size:11px;color:var(--ct-muted);font-variant-numeric:tabular-nums}
+    #crew-goal-trial .ct-avatar{display:grid;place-items:center;width:24px;height:24px;border-radius:7px;background:var(--ct-paper);border:1px solid var(--ct-line);font-size:11px;color:var(--ct-muted);flex:none}
+    #crew-goal-trial .ct-side-note{font-size:11px;color:var(--ct-muted);padding:0 12px;margin-top:auto}
+    #crew-goal-trial main{min-width:0;padding:29px 30px 18px}
+    #crew-goal-trial .ct-heading{display:flex;justify-content:space-between;gap:20px;align-items:flex-start;margin-bottom:23px}
+    #crew-goal-trial .ct-sub{font-size:12px;color:var(--ct-muted);margin-top:7px}
+    #crew-goal-trial .ct-button{border:1px solid var(--ct-line);border-radius:7px;background:var(--ct-paper);padding:7px 11px;display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:34px;text-align:center;font-size:12px;flex:none}
+    #crew-goal-trial .ct-button:hover{background:var(--ct-hover)}
+    #crew-goal-trial .ct-button i,#crew-goal-trial .ct-button svg{width:14px;height:14px;flex:none}
+    #crew-goal-trial .ct-primary{background:var(--ct-accent);color:var(--ct-on);border-color:var(--ct-accent)}
+    #crew-goal-trial .ct-primary:hover{opacity:.88;background:var(--ct-accent)}
+    #crew-goal-trial .ct-link{padding:4px 0;border:0;background:transparent;color:var(--ct-muted);display:inline-flex;gap:5px;align-items:center;font-size:12px}
+    #crew-goal-trial .ct-link:hover{color:var(--ct-ink)}
+    #crew-goal-trial .ct-link i,#crew-goal-trial .ct-link svg{width:14px;height:14px}
+    #crew-goal-trial .ct-list{display:flex;flex-direction:column;gap:12px}
+    #crew-goal-trial .ct-goal{background:var(--ct-paper);border:1px solid var(--ct-line);border-radius:10px;padding:18px 19px;position:relative}
+    #crew-goal-trial .ct-goal.attention{border-color:var(--ct-warn)}
+    #crew-goal-trial .ct-row{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+    #crew-goal-trial .ct-status{font-size:11px;display:inline-flex;align-items:center;gap:6px;color:var(--ct-muted)}
+    #crew-goal-trial .ct-status:before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;flex:none}
+    #crew-goal-trial .ct-status.attention{color:var(--ct-warn)}
+    #crew-goal-trial .ct-status.working{color:var(--ct-accent)}
+    #crew-goal-trial .ct-status.failed{color:var(--ct-red)}
+    #crew-goal-trial .ct-owner{font-size:11px;color:var(--ct-muted)}
+    #crew-goal-trial .ct-goal h3{margin-top:10px;margin-bottom:6px;font-size:16px}
+    #crew-goal-trial .ct-desc{font-size:13px;color:var(--ct-muted)}
+    #crew-goal-trial .ct-card-bottom{display:flex;justify-content:space-between;gap:15px;align-items:center;margin-top:17px;flex-wrap:wrap}
+    #crew-goal-trial .ct-next{font-size:11px;color:var(--ct-muted)}
+    #crew-goal-trial .ct-footnote{margin-top:22px;color:var(--ct-muted);font-size:11px}
+    #crew-goal-trial .ct-back{margin-bottom:19px}
+    #crew-goal-trial .ct-detail-title{margin:10px 0 9px;font-size:21px;line-height:1.4;font-weight:500;letter-spacing:-.4px}
+    #crew-goal-trial .ct-divider{border:0;border-top:1px solid var(--ct-line);margin:22px 0}
+    #crew-goal-trial .ct-tabs{display:flex;gap:21px;border-bottom:1px solid var(--ct-line);margin:23px 0 20px}
+    #crew-goal-trial .ct-tab{border:0;border-bottom:2px solid transparent;background:transparent;padding:9px 0;font-size:12px;color:var(--ct-muted)}
+    #crew-goal-trial .ct-tab[aria-selected="true"]{border-bottom-color:var(--ct-accent);color:var(--ct-ink);font-weight:500}
+    #crew-goal-trial .ct-verdict{padding:17px 18px;background:var(--ct-red-bg);border-radius:8px;margin-bottom:21px}
+    #crew-goal-trial .ct-verdict strong{display:block;font-size:16px;margin-bottom:5px}
+    #crew-goal-trial .ct-verdict p{font-size:13px;color:var(--ct-muted)}
+    #crew-goal-trial .ct-facts{display:grid;grid-template-columns:84px minmax(0,1fr);gap:15px 16px;font-size:13px;margin:0}
+    #crew-goal-trial .ct-facts dt{color:var(--ct-muted)}
+    #crew-goal-trial .ct-facts dd{margin:0;overflow-wrap:anywhere}
+    #crew-goal-trial .ct-file{display:flex;align-items:center;gap:12px;padding:13px 0;border-bottom:1px solid var(--ct-line);width:100%;background:transparent;border-top:0;border-left:0;border-right:0;text-align:left}
+    #crew-goal-trial .ct-file i,#crew-goal-trial .ct-file svg{width:19px;height:19px;color:var(--ct-muted);flex:none}
+    #crew-goal-trial .ct-file small{display:block;font-size:11px;color:var(--ct-muted);margin-top:2px}
+    #crew-goal-trial .ct-file .ct-chevron{margin-left:auto}
+    #crew-goal-trial .ct-steps{padding-left:19px;font-size:13px;margin:0}
+    #crew-goal-trial .ct-steps li{padding:0 0 15px 5px}
+    #crew-goal-trial .ct-steps small{display:block;color:var(--ct-muted);font-size:12px;margin-top:3px}
+    #crew-goal-trial details{margin-top:15px;font-size:12px;color:var(--ct-muted)}
+    #crew-goal-trial summary{padding:7px 0}
+    #crew-goal-trial .ct-log{border-left:2px solid var(--ct-line);padding-left:12px;margin-top:9px;font-size:12px}
+    #crew-goal-trial .ct-chat{display:flex;flex-direction:column;gap:17px}
+    #crew-goal-trial .ct-chat-label{font-size:11px;color:var(--ct-muted);margin-bottom:6px}
+    #crew-goal-trial .ct-bubble{font-size:13px;padding:14px 16px;background:var(--ct-paper);border:1px solid var(--ct-line);border-radius:9px;max-width:100%;overflow-wrap:anywhere}
+    #crew-goal-trial .ct-bubble p+p{margin-top:10px}
+    #crew-goal-trial .ct-human{align-self:flex-end;max-width:90%}
+    #crew-goal-trial .ct-human .ct-bubble{background:var(--ct-soft);border-color:transparent}
+    #crew-goal-trial .ct-replies{display:flex;gap:8px;flex-wrap:wrap;margin-top:15px}
+    #crew-goal-trial .ct-question{padding:17px;border:1px solid var(--ct-warn);border-radius:9px;background:var(--ct-paper)}
+    #crew-goal-trial .ct-question h3{margin:5px 0 8px}
+    #crew-goal-trial .ct-option{display:flex;align-items:flex-start;gap:10px;padding:12px 0;border-top:1px solid var(--ct-line);font-size:13px}
+    #crew-goal-trial .ct-option input{margin-top:5px;flex:none;accent-color:var(--ct-accent)}
+    #crew-goal-trial .ct-option small{display:block;font-size:12px;color:var(--ct-muted);margin-top:3px}
+    #crew-goal-trial .ct-option em{font-size:11px;font-style:normal;color:var(--ct-accent);margin-left:6px}
+    #crew-goal-trial .ct-confirmed{background:var(--ct-soft);padding:18px;border-radius:9px;font-size:13px}
+    #crew-goal-trial .ct-confirmed strong{display:block;margin-bottom:6px}
+    #crew-goal-trial .ct-composer{margin-top:20px}
+    #crew-goal-trial textarea{display:block;width:100%;resize:vertical;min-height:85px;background:var(--ct-paper);border:1px solid var(--ct-line);border-radius:8px;padding:11px 12px;font-size:13px}
+    #crew-goal-trial .ct-actions{display:flex;gap:8px;justify-content:flex-end;align-items:center;margin-top:10px;flex-wrap:wrap}
+    #crew-goal-trial .ct-notice{color:var(--ct-muted);font-size:12px;margin-top:15px;overflow-wrap:anywhere}
+    #crew-goal-trial .ct-empty{padding:35px 0;color:var(--ct-muted);font-size:13px}
+    #crew-goal-trial .ct-checkline{display:flex;gap:10px;align-items:flex-start;font-size:13px;padding:10px 0;border-bottom:1px solid var(--ct-line)}
+    #crew-goal-trial .ct-checkline span:last-child{margin-left:auto;color:var(--ct-muted);font-size:11px;flex:none}
+    #crew-goal-trial .ct-checkline i,#crew-goal-trial .ct-checkline svg{width:16px;height:16px;color:var(--ct-muted);flex:none;margin-top:2px}
+    #crew-goal-trial .ct-document{font-size:13px}
+    #crew-goal-trial .ct-document h3{margin:22px 0 7px}
+    #crew-goal-trial .ct-document p{color:var(--ct-muted)}
+    #crew-goal-trial .ct-document ul{padding-left:19px}
+    #crew-goal-trial .ct-pause{display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap;margin-top:24px;padding-top:17px;border-top:1px solid var(--ct-line)}
+    #crew-goal-trial .ct-budget{margin:14px 0;color:var(--ct-muted);font-size:12px}
+    #crew-goal-trial .ct-budget input{background:var(--ct-paper);border:1px solid var(--ct-line);border-radius:5px;padding:6px 8px;width:125px;max-width:100%;margin-top:8px}
+    #crew-goal-trial .ct-tools{display:flex;gap:8px;flex-wrap:wrap;margin:15px 0}
+    #crew-goal-trial .ct-split{display:grid;grid-template-columns:minmax(0,1fr) 170px;gap:22px;align-items:start}
+    #crew-goal-trial .ct-people{border-left:1px solid var(--ct-line);padding-left:14px;min-width:0}
+    #crew-goal-trial .ct-person{display:flex;align-items:center;gap:8px;background:transparent;border:0;border-radius:7px;width:100%;text-align:left;padding:9px 7px;margin-top:6px;font-size:12px;min-height:44px}
+    #crew-goal-trial .ct-person[aria-pressed="true"]{background:var(--ct-hover)}
+    #crew-goal-trial .ct-person small{display:block;font-size:11px;color:var(--ct-muted)}
+    #crew-goal-trial .ct-examples{display:flex;gap:7px;flex-wrap:wrap;margin:15px 0}
+    #crew-goal-trial .ct-state-note{font-size:12px;padding:12px 14px;background:var(--ct-soft);border-radius:7px;margin:15px 0}
+    #crew-goal-trial .ct-context-item{padding:15px 0;border-bottom:1px solid var(--ct-line);font-size:13px}
+    #crew-goal-trial .ct-context-item p{margin-top:7px}
+    #crew-goal-trial .ct-context-item small{font-size:11px;color:var(--ct-muted)}
+    #crew-goal-trial .ct-memory-excluded{color:var(--ct-muted);text-decoration:line-through}
+    #crew-goal-trial .ct-lane{display:grid;grid-template-columns:64px minmax(0,1fr);gap:10px;align-items:center;margin:12px 0;font-size:12px}
+    #crew-goal-trial .ct-segments{display:flex;gap:4px;min-width:0}
+    #crew-goal-trial .ct-segment{flex:1;text-align:center;background:var(--ct-soft);border-radius:4px;padding:10px 5px;min-width:0;overflow-wrap:anywhere}
+    #crew-goal-trial .ct-segment.wrong{background:var(--ct-red-bg)}
+    #crew-goal-trial .ct-stage-flow{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:20px 0;font-size:12px}
+    #crew-goal-trial .ct-stage{background:var(--ct-side);padding:12px 10px;border-radius:7px;min-width:0}
+    #crew-goal-trial .ct-stage.active{background:var(--ct-soft)}
+    #crew-goal-trial .ct-stage small{display:block;font-size:11px;color:var(--ct-muted);margin-top:5px}
+    @media(max-width:760px){#crew-goal-trial .ct-layout{grid-template-columns:145px minmax(0,1fr)}#crew-goal-trial main{padding:24px 19px 17px}#crew-goal-trial .ct-top{padding-right:100px}#crew-goal-trial .ct-demo{margin-left:0}#crew-goal-trial .ct-heading{gap:10px}#crew-goal-trial .ct-split{grid-template-columns:minmax(0,1fr)}#crew-goal-trial .ct-people{border-left:0;border-top:1px solid var(--ct-line);padding:12px 0 0;display:flex;flex-wrap:wrap;gap:7px}#crew-goal-trial .ct-person{width:auto}#crew-goal-trial .ct-stage-flow{grid-template-columns:repeat(2,minmax(0,1fr))}}
+    @media(max-width:540px){#crew-goal-trial .ct-layout{grid-template-columns:minmax(0,1fr);min-height:0}#crew-goal-trial aside{border-right:0;border-bottom:1px solid var(--ct-line);padding:10px;display:block}#crew-goal-trial aside nav{display:flex;gap:4px;flex-wrap:wrap}#crew-goal-trial .ct-nav{width:auto;margin:0;flex:1;justify-content:center;padding:8px 7px;font-size:12px}#crew-goal-trial .ct-side-teams,#crew-goal-trial .ct-side-note{display:none}#crew-goal-trial main{padding:23px 16px 17px}#crew-goal-trial h2{font-size:21px}#crew-goal-trial .ct-top{flex-wrap:wrap;gap:7px;padding-right:100px}#crew-goal-trial .ct-demo{width:100%;padding-left:30px}#crew-goal-trial .ct-heading{flex-wrap:wrap}#crew-goal-trial .ct-goal{padding:16px}#crew-goal-trial .ct-facts{grid-template-columns:minmax(0,1fr);gap:4px}#crew-goal-trial .ct-facts dd{margin-bottom:11px}#crew-goal-trial .ct-tabs{gap:17px}#crew-goal-trial .ct-detail-title{font-size:19px}#crew-goal-trial .ct-human{max-width:96%}}
+    @media(pointer:coarse){#crew-goal-trial .ct-button,#crew-goal-trial .ct-link,#crew-goal-trial .ct-nav,#crew-goal-trial .ct-tab{min-height:44px}#crew-goal-trial textarea{font-size:16px}}
+  </style>
+  <div class="ct-window">
+    <header class="ct-top"><span class="ct-mark" aria-hidden="true">C</span><strong>Crew</strong><span class="ct-slash">/</span><span>MIB</span><span class="ct-demo">交互预览 · 不执行真实任务</span></header>
+    <div class="ct-layout">
+      <aside aria-label="工作区导航">
+        <nav aria-label="工作区页面">
+          <button type="button" class="ct-nav cursor-interaction" data-nav="goals" aria-current="page"><i data-lucide="layers" aria-hidden="true"></i>目标<span class="ct-count" data-count="all">3</span></button>
+          <button type="button" class="ct-nav cursor-interaction" data-nav="attention"><i data-lucide="message-circle" aria-hidden="true"></i>需要你<span class="ct-count" data-count="attention">1</span></button>
+          <button type="button" class="ct-nav cursor-interaction" data-nav="documents"><i data-lucide="files" aria-hidden="true"></i>交付物</button>
+          <button type="button" class="ct-nav cursor-interaction" data-nav="members"><i data-lucide="messages-square" aria-hidden="true"></i>成员直聊</button>
+          <button type="button" class="ct-nav cursor-interaction" data-nav="context"><i data-lucide="notebook-tabs" aria-hidden="true"></i>它记得什么</button>
+          <button type="button" class="ct-nav cursor-interaction" data-nav="operations"><i data-lucide="shield-check" aria-hidden="true"></i>系统运维</button>
+        </nav>
+        <div class="ct-side-teams"><div class="ct-section">LEADERS</div><button type="button" class="ct-nav cursor-interaction" data-nav="voice"><span class="ct-avatar">声</span>语音和声纹</button><button type="button" class="ct-nav cursor-interaction" data-nav="performance"><span class="ct-avatar">性</span>性能优化</button></div>
+        <div class="ct-side-note">没有待处理事项时，<br>不需要你盯着这里。</div>
+      </aside>
+      <main id="ct-content"></main>
+    </div>
+  </div>
+  <div id="ct-announcement" class="ct-notice" role="status" aria-live="polite"></div>
+  <script>
+    (()=>{
+      const root=document.getElementById('crew-goal-trial');
+      const main=root.querySelector('#ct-content');
+      const announcement=root.querySelector('#ct-announcement');
+      const display={showProgress:true};
+      const state={nav:'goals',selected:null,tab:'outcome',step:0,choice:null,option:'results',paused:false,draft:'',supplements:[],custom:[],document:null,chatOwner:'member',memberNotes:[],leaderNotes:[],chatDrafts:{leader:'',member:''},memoryPending:false,memoryExcluded:false,opsStep:0,reportCase:0,runtime:'codex',leaderRuntime:'claude',runtimePreview:false};
+      const safe=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+      const button=(label,action,primary=false,icon='')=>`<button type="button" class="ct-button ${primary?'ct-primary ':''}cursor-interaction" data-act="${action}">${icon?`<i data-lucide="${icon}" aria-hidden="true"></i>`:''}${label}</button>`;
+      const back=()=>`<button type="button" class="ct-link ct-back cursor-interaction" data-act="back"><i data-lucide="arrow-left" aria-hidden="true"></i>返回目标</button>`;
+      const goals=()=>[
+        {id:'recording',title:'确认测试录音的保存范围',owner:'语音和声纹',type:state.choice?'working':'attention',status:state.choice?'本轮结束 · 已确认':'需要你聊一下',description:state.choice?(state.choice==='results'?'只保存评测结果，原始录音不长期保留。':'仅本地保留本轮录音，结束时再确认处理。'):'涉及你的资料使用偏好，leader 需要先听听你的想法。',next:state.choice?'决定已记录，不再反复询问':'这项已暂停；不影响其他目标继续',cta:state.choice?'查看决定':'听它说明',demo:true},
+        {id:'latency',title:'缩短唤醒后的首句等待',owner:'性能优化',type:state.paused?'neutral':'working',status:state.paused?'已暂停':'正在推进',description:state.paused?'执行已暂停，保留当前结果，等你继续。':'正在对比冷启动与热启动，先定位时间花在哪一段。',next:state.paused?'不会再自行启动成员':'下一步：用相同输入复验优化效果',cta:'查看进展',demo:true},
+        {id:'speaker',title:'三种对话场景正确分人、分段',owner:'语音和声纹',type:'failed',status:'本轮结束 · 未达标',description:'保留了本地评测与代码；短句和混说仍未满足最终要求。',next:'已收束，内部消息不会重新开启本轮',cta:'查看最终答复',demo:false},
+        ...state.custom.map((title,index)=>({id:'new-'+index,title,owner:'语音和声纹',type:'neutral',status:'待规划 · 演示目标',description:'需求已保存在本次演示中，没有派发给真实 AI。',next:'开工前由 leader 制定交付与验收标准',cta:'查看需求',demo:true}))
+      ];
+      function remember(){
+        if(!window.openai?.setWidgetState)return;
+        const compactNotes=items=>items.slice(-2).map(note=>({text:note.text.slice(0,180),reply:note.reply.slice(0,180),changed:note.changed}));
+        const privateState={...state,draft:state.draft.slice(0,200),supplements:state.supplements.slice(-2).map(text=>text.slice(0,300)),custom:state.custom.slice(-4).map(text=>text.slice(0,200)),memberNotes:compactNotes(state.memberNotes),leaderNotes:compactNotes(state.leaderNotes),chatDrafts:{leader:state.chatDrafts.leader.slice(0,200),member:state.chatDrafts.member.slice(0,200)}};
+        while(new TextEncoder().encode(JSON.stringify(privateState)).length>14000){
+          const key=['memberNotes','leaderNotes','supplements','custom'].find(name=>privateState[name].length);
+          if(!key)break;privateState[key].shift();
+        }
+        const result=window.openai.setWidgetState({modelContent:{prototype:'Crew 目标工作区',openedGoal:state.selected,openedView:state.document||state.nav,decision:state.choice,homeShowsProgress:display.showProgress},privateContent:{crewGoalTrial:privateState}});
+        result?.catch(()=>{});
+      }
+      function restore(saved){
+        const value=saved?.privateContent?.crewGoalTrial;
+        if(!value||typeof value!=='object')return;
+        for(const key of ['nav','selected','tab','draft','document'])if(typeof value[key]==='string'||value[key]===null)state[key]=value[key];
+        if(['results','local',null].includes(value.choice))state.choice=value.choice;
+        if(Number.isInteger(value.step))state.step=Math.max(0,Math.min(3,value.step));
+        state.paused=value.paused===true;
+        if(Array.isArray(value.custom))state.custom=value.custom.filter(v=>typeof v==='string').slice(-4);
+        if(Array.isArray(value.supplements))state.supplements=value.supplements.filter(v=>typeof v==='string').slice(-3);
+        if(['leader','member'].includes(value.chatOwner))state.chatOwner=value.chatOwner;
+        for(const key of ['memberNotes','leaderNotes'])if(Array.isArray(value[key]))state[key]=value[key].filter(v=>v&&typeof v.text==='string'&&typeof v.reply==='string').map(v=>({text:v.text.slice(0,600),reply:v.reply.slice(0,600),changed:v.changed===true})).slice(-3);
+        for(const key of ['leader','member'])if(typeof value.chatDrafts?.[key]==='string')state.chatDrafts[key]=value.chatDrafts[key].slice(0,600);
+        state.memoryPending=value.memoryPending===true;state.memoryExcluded=value.memoryExcluded===true;
+        if(Number.isInteger(value.opsStep))state.opsStep=Math.max(0,Math.min(3,value.opsStep));
+        if(Number.isInteger(value.reportCase))state.reportCase=Math.max(0,Math.min(2,value.reportCase));
+        if(['codex','claude'].includes(value.runtime))state.runtime=value.runtime;
+        if(['codex','claude'].includes(value.leaderRuntime))state.leaderRuntime=value.leaderRuntime;
+      }
+      function announce(text){announcement.textContent=text;}
+      function icons(){if(globalThis.lucide)lucide.createIcons({attrs:{width:16,height:16}});}
+      function cards(){
+        let items=goals();
+        if(state.nav==='attention')items=items.filter(g=>g.id==='recording'&&!state.choice);
+        if(state.nav==='voice')items=items.filter(g=>g.owner==='语音和声纹');
+        if(state.nav==='performance')items=items.filter(g=>g.owner==='性能优化');
+        const title=({goals:'你的目标',attention:'需要你',voice:'语音和声纹',performance:'性能优化'})[state.nav]||'你的目标';
+        const subtitle=state.nav==='attention'?'先把情况聊清楚，再决定。':'看结果离目标还有多远，过程由 leader 协调。';
+        return `<div class="ct-heading"><div><h2>${title}</h2><p class="ct-sub">${subtitle}</p></div>${button('交给 Crew','new',true,'plus')}</div><div class="ct-list">${items.length?items.map(g=>`<article class="ct-goal ${g.type==='attention'?'attention':''}" aria-label="${safe(g.title)}"><div class="ct-row"><span class="ct-status ${g.type}">${safe(g.status)}</span><span class="ct-owner">${g.owner}${g.demo?' · 示例':''}</span></div><h3>${safe(g.title)}</h3>${display.showProgress?`<p class="ct-desc">${safe(g.description)}</p>`:''}<div class="ct-card-bottom"><span class="ct-next">${safe(g.next)}</span><button type="button" class="ct-button ${g.type==='attention'?'ct-primary ':''}cursor-interaction" data-act="open" data-id="${g.id}">${g.cta}<i data-lucide="arrow-up-right" aria-hidden="true"></i></button></div></article>`).join(''):'<div class="ct-empty">没有需要你处理的事项。leader 会自行推进其他目标。</div>'}</div><p class="ct-footnote">声纹结论摘自 10 月 24 日记录，其余任务和交互为演示。</p>`;
+      }
+      function heading(goal){return `${back()}<div class="ct-row"><span class="ct-status ${goal.type}">${safe(goal.status)}</span><span class="ct-owner">${goal.owner}</span></div><h2 class="ct-detail-title">${safe(goal.title)}</h2>`;}
+      function tabs(){return `<div class="ct-tabs" role="tablist" aria-label="目标详情">${[['outcome','交付结论'],['evidence','验收依据'],['process','执行过程']].map(([id,label])=>`<button type="button" class="ct-tab cursor-interaction" role="tab" aria-selected="${state.tab===id}" aria-controls="ct-tab-panel" data-act="tab" data-tab="${id}" id="ct-tab-${id}">${label}</button>`).join('')}</div>`;}
+      function speaker(){
+        const goal=goals().find(g=>g.id==='speaker');
+        let body='';
+        if(state.tab==='outcome')body=`<div class="ct-verdict"><strong>这轮没有完成你的最终目标。</strong><p>代码和评测产物已保留；不能把“编译通过、评测跑完”当成三场景已经正确。</p></div><dl class="ct-facts"><dt>已经交付</dt><dd>本地模拟服务端、可复现评测，以及代码提交 <code>861ecb4</code>。</dd><dt>尚未解决</dt><dd>短句、相近音色与混说仍有识别错误，不能保证正确的说话人和段落。</dd><dt>当前边界</dt><dd>本地 STT 与网络条件是模拟值；没有完成真实设备与线上服务的整体验收。</dd><dt>接下来</dt><dd>当前轮保持结束。继续时应针对失败样本形成新假设，不因旧确认消息重开。</dd></dl><hr class="ct-divider">${file('声纹阶段交付报告','做到了什么、没有做到什么、证据在哪里','speaker-report')}<div class="ct-pause"><span class="ct-owner">有新的要求，可以直接告诉 leader。</span>${button('补充要求','supplement',false,'message-circle')}</div>${supplements()}`;
+        if(state.tab==='evidence')body=`<h3>逐项对照你的目标</h3><div class="ct-checkline"><i data-lucide="circle-dashed" aria-hidden="true"></i><div>A 说完，B 停顿后接上<br><span class="ct-sub">需核对说话人、段落与上行的一致性。</span></div><span>未确认达标</span></div><div class="ct-checkline"><i data-lucide="circle-dashed" aria-hidden="true"></i><div>连续换人，包含很短的句子<br><span class="ct-sub">后续纠正也必须落到正确的段落。</span></div><span>仍有失败</span></div><div class="ct-checkline"><i data-lucide="circle-dashed" aria-hidden="true"></i><div>A / B 交替后混说<br><span class="ct-sub">混说标记与上行结果需可靠对应。</span></div><span>仍有失败</span></div><p class="ct-notice">现有记录中的“580 条完成”是评测覆盖量，不代表 580 条全部识别正确。未提供可核验的达标率时，不显示完成百分比。</p>`;
+        if(state.tab==='process')body=`<ol class="ct-steps"><li>建立本地端到端评测<small>用模拟服务端核对说话人、段号和文字对应。</small></li><li>多轮修改与复验<small>记录失败样本、运行条件和代码版本。</small></li><li>保留结果，明确未达标<small>编译与测试结果保留；识别目标没有被改写成“代码能跑”。</small></li></ol><details><summary class="cursor-interaction">展开内部通信示例</summary><div class="ct-log">成员：旧通知对应的修改已经完成，没有新进展。<br>协调记录：该消息仅存档，不触发新的工作或向用户转述。</div></details><p class="ct-notice">这里只展示影响交付的阶段变化，日常确认不进入主时间线。</p>`;
+        return heading(goal)+tabs()+`<section id="ct-tab-panel" role="tabpanel" aria-labelledby="ct-tab-${state.tab}">${body}</section>`;
+      }
+      function file(title,description,id){return `<button type="button" class="ct-file cursor-interaction" data-act="document" data-doc="${id}"><i data-lucide="file-text" aria-hidden="true"></i><span>${title}<small>${description}</small></span><i data-lucide="chevron-right" class="ct-chevron" aria-hidden="true"></i></button>`;}
+      function bubble(who,text,human=false){return `<div class="${human?'ct-human':''}"><div class="ct-chat-label">${who}</div><div class="ct-bubble">${text}</div></div>`;}
+      function recording(){
+        const goal=goals().find(g=>g.id==='recording');
+        if(state.choice)return heading(goal)+`<p class="ct-sub">这项决定已经收束。</p><hr class="ct-divider"><div class="ct-confirmed"><strong>${state.choice==='results'?'只保存评测结果，不长期保留原始录音。':'本地保留本轮录音，不上传，结束时确认处理。'}</strong>leader 已有明确方向，后续按这个约定安排；同一事项不会再次生成拍板。</div><p class="ct-notice">这里只改变演示状态，没有真实保存、删除或上传任何录音。</p><div class="ct-actions">${button('返回目标','back',true)}</div>`;
+        let conversation=bubble('语音和声纹 · leader','为了复查识别错误，测试时会产生录音片段。是否长期留下这些原始录音，涉及你的资料使用偏好，我需要先听你的意见。<p>这项先暂停，不影响其他本地评测继续。我不会替你默认长期保存。</p>');
+        if(state.step>=1)conversation+=bubble('你','为什么需要保存？',true)+bubble('语音和声纹 · leader','保留原始片段，之后可以用完全相同的音频复现问题；只保存评分、失败位置和配置，也能查结论，但将来想重放就需要重新提供样本。<p>默认可以不长期保留原始录音。我想先确认：这些测试录音，对你来说是否属于需要谨慎处理的私人资料？</p>');
+        if(state.step>=2)conversation+=bubble('你','按私人资料处理。先别长期留原始录音。',true)+bubble('语音和声纹 · leader','明白。我会把“默认少保留原始资料”作为约束，评测记录与原始录音分开处理。下面把行动与后果写清楚，你再选。');
+        if(state.step>=3)conversation+=`<section class="ct-question" aria-label="聊清楚之后的拍板"><span class="ct-status attention">请确认这一项</span><h3>这轮测试结束后，怎样处理原始录音？</h3><p class="ct-desc">这是你的资料保留偏好，工程参数仍由 leader 自行决定。</p><label class="ct-option cursor-interaction"><input type="radio" name="ct-recording-choice" value="results" ${state.option==='results'?'checked':''}><span>只保存评测结果，不长期保留原始录音<em>推荐</em><small>保留评分、配置和失败位置；以后重放问题时可能需要你重新提供样本。</small></span></label><label class="ct-option cursor-interaction"><input type="radio" name="ct-recording-choice" value="local" ${state.option==='local'?'checked':''}><span>本地保留本轮录音，结束时再确认处理<small>方便原样复核，不上传；这轮结束后再按你的要求处理。</small></span></label><div class="ct-actions">${button('还想再聊聊','discuss')}${button('按这个约定做','confirm',true)}</div></section>`;
+        let actions='';
+        if(state.step===0)actions=button('为什么需要保存？','why',false,'message-circle');
+        if(state.step===1)actions=button('按私人资料处理，先别长期留','privacy',false,'message-circle');
+        if(state.step===2)actions=button('说清楚了，给我选项','options',true);
+        return heading(goal)+`<p class="ct-sub">先了解情况，不急着选。</p><hr class="ct-divider"><div class="ct-chat">${conversation}</div><div class="ct-replies">${actions}</div>${state.step<3?'<p class="ct-notice">聊清之前，这里只有说明和沟通，没有拍板卡。</p>':''}`;
+      }
+      function latency(){
+        const goal=goals().find(g=>g.id==='latency');
+        return heading(goal)+`<p class="ct-sub">目标是让唤醒后的第一句话更快出现。</p><hr class="ct-divider"><dl class="ct-facts"><dt>当前在做</dt><dd>${state.paused?'已暂停，保留测量记录。':'对比相同输入下的冷启动、热启动，定位主要等待环节。'}</dd><dt>已有结论</dt><dd>还没有足够证据确认优化效果，不提前宣称更快。</dd><dt>下一步</dt><dd>改动后重测；只有可复验的改善才进入交付结论。</dd><dt>工作安排</dt><dd>leader 自行排查，暂不增加成员。确需并行时再拆出明确工作。</dd><dt>需要你吗</dt><dd>目前不需要。工程排查由 leader 自己处理。</dd></dl><div class="ct-tools">${button('与 leader 插话','leader-chat',false,'message-circle')}${button('试试成员直聊','member-chat',false,'messages-square')}</div><div class="ct-pause"><span class="ct-owner">${state.paused?'暂停后不会继续处理本轮内部消息。':'你可以随时暂停本轮。'}</span>${button(state.paused?'继续本轮':'暂停本轮',state.paused?'resume':'pause',false,state.paused?'play':'pause')}</div><p class="ct-notice">这是交互示例，暂停和继续不会操作真实进程。成员直聊页另外展示需要成员时的交互，不代表此目标已派出成员。</p>`;
+      }
+      function supplements(){return state.supplements.length?`<hr class="ct-divider"><h3>本轮补充</h3>${state.supplements.map(t=>`<p class="ct-notice">${safe(t)}</p>`).join('')}`:'';}
+      function compose(isNew){return `${back()}<h2>${isNew?'把目标交给 Crew':'给 leader 补充要求'}</h2><p class="ct-sub">${isNew?'描述你最后想得到什么，如何分工交给 leader。':'这条补充关联当前目标，不会凭空另开成员。'}</p><form class="ct-composer" id="ct-form"><label for="ct-draft" class="ct-chat-label">${isNew?'你的目标':'你的补充'}</label><textarea id="ct-draft" required maxlength="1500" placeholder="用你自己的话描述，不必先拆成技术步骤。">${safe(state.draft)}</textarea>${isNew?'<details class="ct-budget"><summary class="cursor-interaction">投入上限（可选）</summary><label for="ct-time-budget">如果希望限定本轮时间，可以填写分钟数。</label><br><input id="ct-time-budget" type="number" min="1" step="1" placeholder="不设置"></details>':''}<div class="ct-actions">${button('取消','back')}<button type="button" data-act="save-draft" class="ct-button ct-primary cursor-interaction">${isNew?'加入演示目标':'保存补充'}</button></div><p class="ct-notice">仅在本次演示中保存，不会派发真实任务。</p></form>`;}
+      function documentView(){
+        if(state.document==='ops-report')return `${back()}<span class="ct-owner">系统运维 · 故障处理示例</span><h2 class="ct-detail-title">重复消息循环：怎样恢复</h2><div class="ct-state-note">演示报告，没有执行真实修复、重启或模型调用。</div><dl class="ct-facts"><dt>具体例子</dt><dd>成员说“收到” → leader 回“好的” → 成员再次确认。新协议让确认仅存档，不再要求答复。</dd><dt>处理流程</dt><dd>局部暂停派发 → 保存现场 → 隔离分支复现并修复 → 验证 → 按项目规则应用 → 恢复原来运行的目标。</dd><dt>验证标准</dt><dd>重放同一段确认消息，不增加模型轮次；手动暂停的目标仍暂停。</dd><dt>代码与证据</dt><dd>真实修复报告必须链接实际 commit、复现记录和验证输出。本演示没有生成这些证据。</dd></dl>`;
+        const examples=[
+          {title:'例子：A 说完，B 停顿后接上',input:'A：“你好。”　停顿　B：“我来了。”',expected:['A · 你好','停顿','B · 我来了'],actual:['A · 你好','停顿','A · 我来了 ✕'],reason:'示意输出把 B 的话仍归给 A。真实报告必须以对应录音和日志判断是否发生此问题。'},
+          {title:'例子：B 紧接 A，说一个很短的句子',input:'A：“明天出发。”　B 紧接：“几点？”',expected:['A · 明天出发','B · 几点'],actual:['A · 明天出发','A · 几点 ✕'],reason:'短句也要对照段落和说话人。工程测试通过不能代替这个场景的实测。'},
+          {title:'例子：A、B 交替后混说',input:'A 单独说话 → A、B 同时说话 → B 单独说话。',expected:['A','A + B · 混说','B'],actual:['A','A · 漏掉混说 ✕','B'],reason:'混说标记、段号和上行必须一致；真实报告应能定位失败片段，而不是只报总条数。'}
+        ];
+        const example=examples[state.reportCase];
+        return `${back()}<span class="ct-owner">语音和声纹 · HTML 报告阅读示例</span><h2 class="ct-detail-title">声纹三场景：本轮交付结论</h2><div class="ct-verdict"><strong>旧记录：本轮未达标。</strong><p>代码和本地评测已保留，短句和混说仍有失败。这里不展示未经核验的正确率。</p></div><div class="ct-document"><h3>用具体例子说明</h3><p class="ct-notice">下面是呈现方式的示意例子，不是从真实音频提取的实测输出，也不能作为新验收结果。</p><div class="ct-examples" aria-label="报告例子">${['停顿换人','连续短句','交替混说'].map((label,index)=>`<button type="button" class="ct-button cursor-interaction" aria-pressed="${state.reportCase===index}" data-act="report-case" data-index="${index}">${label}</button>`).join('')}</div><h3>${example.title}</h3><p>${example.input}</p><div role="img" aria-label="示意对照：期望说话人与错误输出"><div class="ct-lane"><span>期望归属</span><div class="ct-segments">${example.expected.map(text=>`<span class="ct-segment">${text}</span>`).join('')}</div></div><div class="ct-lane"><span>示意输出</span><div class="ct-segments">${example.actual.map(text=>`<span class="ct-segment ${text.includes('✕')?'wrong':''}">${text}</span>`).join('')}</div></div></div><p>${example.reason}</p><h3>旧记录保留的产物</h3><ul><li>本地 STT / 服务端模拟与评测方式。</li><li>代码提交 <code>861ecb4</code> 与对应构建测试记录。</li><li>失败样本、运行条件及模拟边界。</li></ul><h3>验收边界</h3><p>580 条完成是评测覆盖量，364 项工程测试也不能证明声纹三场景达标。真实设备与线上服务的整体验收仍需有独立证据。</p><h3>下一轮</h3><p>对失败样本提出新的可检验假设，再开启后续轮次。旧确认消息不构成继续工作理由。</p><details><summary class="cursor-interaction">真实交付时，这里还必须有什么？</summary><p>实际输入与输出、证据位置、代码版本、逐项验收结论、限制、时间和可得用量。每份最终报告至少一个可理解的 example。</p></details></div>`;
+      }
+      function memberChat(){
+        const isLeader=state.chatOwner==='leader',name=isLeader?'性能优化':'延迟复测',role=isLeader?'leader':'成员',runtime=isLeader?state.leaderRuntime:state.runtime;
+        const notes=isLeader?state.leaderNotes:state.memberNotes;
+        let conversation=bubble(name+' · '+role+' · 预设演示','我正在用相同输入复验冷启动和热启动，确认等待主要发生在哪一段。你可以直接补充要求。');
+        for(const note of notes)conversation+=bubble('你',safe(note.text),true)+bubble(name+' · 预设演示回复',safe(note.reply));
+        return `${back()}<div class="ct-row"><div><span class="ct-status working">正在工作 · 交互示例</span><h2 class="ct-detail-title">${name}</h2></div>${button('查看交接与更换载体','runtime-preview',false,'arrow-left-right')}</div><p class="ct-sub">${role} · 首句等待示例目标 · ${runtime==='codex'?'Codex':'Claude Code'}</p><div class="ct-state-note">工作中可以插话。以下回复均为预设演示，不连接真实 AI。</div>${state.runtimePreview?`<section class="ct-question"><h3>更换为 ${runtime==='codex'?'Claude Code':'Codex'}？</h3><p class="ct-desc">身份和目标保留；原生历史各自保存。下次发消息会读取交接，可能增加用量。</p><details><summary class="cursor-interaction">交接预览</summary><p>目标：缩短首句等待。已有测量需复核，按最新要求调整测量顺序。保留原始验收标准和证据引用。</p></details><div class="ct-actions">${button('取消','runtime-cancel')}${button('确认演示切换','runtime-confirm',true)}</div><p class="ct-notice">这里只切换演示标签，正式版已有 leader 的切换尚未接通。</p></section>`:''}<div class="ct-split"><div><div class="ct-chat">${conversation}</div><div class="ct-examples">${button('问它正在测什么','chat-question')}${button('插话：先测冷启动','chat-change')}</div><form id="ct-member-form" class="ct-composer"><label class="ct-chat-label" for="ct-member-message">直接和 ${name} 说</label><textarea id="ct-member-message" required maxlength="600" placeholder="工作中也可以发消息。">${safe(state.chatDrafts[state.chatOwner])}</textarea><div class="ct-actions">${button('发送演示消息','chat-send',true,'arrow-up')}</div></form><p class="ct-notice">演示展示“同一 AI 接话再继续”的设计；正式实现需要分别验证 CC 和 Codex 的原生接收与实际回复。</p></div><div class="ct-people" aria-label="对话对象"><span class="ct-owner">本目标 · 示例角色</span><button type="button" class="ct-person cursor-interaction" aria-pressed="${isLeader}" data-act="chat-leader"><span class="ct-avatar">性</span><span>性能优化<small>leader</small></span></button><button type="button" class="ct-person cursor-interaction" aria-pressed="${!isLeader}" data-act="chat-member"><span class="ct-avatar">测</span><span>延迟复测<small>成员 · 工作中</small></span></button><details><summary class="cursor-interaction">leader 知道什么？</summary><p>${notes.some(note=>note.changed)?'演示：测量顺序的变更写回目标，leader 下次工作读取。':'关键任务变更写回目标，普通说明保留在成员对话。'}</p></details></div></div>`;
+      }
+      function contextView(){
+        return `<div class="ct-heading"><div><h2>它记得什么</h2><p class="ct-sub">声纹三场景 · 本次采用的上下文示例</p></div></div><div class="ct-state-note">本版计划加入动态上下文。此页只演示检查、纠正与装载状态，不代表正式模型已采用。</div><div class="ct-context-item"><div class="ct-row"><strong>原始要求</strong><small>本目标 · 用户原话</small></div><p>停顿换人、紧接短句、交替混说，都要正确分人、切段和上行。</p><details><summary class="cursor-interaction">查看来源与装载理由</summary><p>来自原目标需求；作为本目标验收标准，每次工作必须带入，不受摘要覆盖。</p></details></div><div class="ct-context-item"><div class="ct-row"><strong>已确认决定</strong><small>本目标 · 明确约束</small></div><p>不要 PR，等着。</p><details><summary class="cursor-interaction">查看来源与范围</summary><p>来自旧目标内的明确用户指令。适用于此目标；不会自动扩散成整个 Crew 永远不发 PR 的规则。</p></details></div><div class="ct-context-item"><div class="ct-row"><strong>历史评测记录</strong><small>${state.memoryExcluded?'已从本次上下文排除':state.memoryPending?'纠正已保存 · 尚未装载':'历史事实 · 待核对时效'}</small></div><p class="${state.memoryExcluded?'ct-memory-excluded':''}">旧报告：已跑完 580 条评测覆盖，未确认全面正确率。</p><details><summary class="cursor-interaction">查看来源</summary><p>2026-10-24 的阶段报告；它只证明旧版本的覆盖，不能作为下一轮新版本已经通过的依据。</p></details><div class="ct-tools">${state.memoryExcluded?'<span class="ct-owner">旧条目仍保留在历史中。</span>':state.memoryPending?button('模拟下一次装载','memory-apply',true):button('标记这条已过期','memory-outdated')}</div></div><p class="ct-notice">普通纠正留在当前目标；明确说“以后都这样”才成为长期规则，并注明 leader／项目／Crew 范围。</p>`;
+      }
+      function operationsView(){
+        const descriptions=['正常巡检由程序完成，没有调用运维 AI。','程序识别重复确认循环，暂停受影响目标的自动派发。','运维 AI 按事故读取现场，在隔离分支修复并验证；需要时重启服务。','演示恢复结束：原来运行的目标可以接续，用户手动暂停的目标保持暂停。'];
+        const phases=[['监测','程序持续守护'],['收束异常','局部暂停并保留现场'],['修复','独立进程与分支'],['恢复','核对原运行状态']];
+        return `<div class="ct-heading"><div><h2>系统运维</h2><p class="ct-sub">整个 Crew 一个 · 独立于 leader</p></div></div><div class="ct-state-note">故障演练 · 全部操作为本地示意，不重启服务、不修代码、不调用模型。</div><div class="ct-stage-flow" role="img" aria-label="故障流程：监测、收束异常、修复、恢复">${phases.map(([title,sub],index)=>`<div class="ct-stage ${index<=state.opsStep?'active':''}">${title}<small>${sub}</small></div>`).join('')}</div><h3>${['正常守护','发现消息循环','隔离修复与重启','已恢复 · 演示结果'][state.opsStep]}</h3><p class="ct-desc">${descriptions[state.opsStep]}</p><hr class="ct-divider"><dl class="ct-facts"><dt>受影响目标</dt><dd>${state.opsStep===0?'无 · 这是正常状态的示例':state.opsStep===3?'示例目标已解除故障；恢复前核对用户最新指令。':'仅暂停出现循环的示例目标，其他正常目标继续。'}</dd><dt>手动暂停</dt><dd>${state.paused?'首句等待目标：保持用户暂停。':'用户手动暂停的目标始终不会被此次恢复自动启动。'}</dd><dt>允许处理</dt><dd>重启自有服务、限制异常派发、修复 Crew 自身 bug。修复保留 commit，PR／合并遵循项目规则。</dd><dt>通知方式</dt><dd>结束后一次简报，附带有具体例子的 HTML 事故报告。巡检保持安静。</dd></dl><div class="ct-tools">${state.opsStep===0?button('模拟消息循环','ops-incident',true):state.opsStep===1?button('模拟隔离修复','ops-repair',true):state.opsStep===2?button('查看恢复结果','ops-recover',true):button('回到正常演示','ops-reset')}${state.opsStep===3?file('事故报告示例','怎么修、怎么验证、哪些目标被恢复','ops-report'):''}</div>`;
+      }
+      function render(){
+        for(const nav of root.querySelectorAll('[data-nav]')){
+          if(nav.dataset.nav===state.nav)nav.setAttribute('aria-current','page');else nav.removeAttribute('aria-current');
+        }
+        root.querySelector('[data-count="all"]').textContent=String(goals().length);
+        root.querySelector('[data-count="attention"]').textContent=state.choice?'0':'1';
+        let html;
+        if(state.document)html=documentView();
+        else if(state.selected==='new'||state.selected==='supplement')html=compose(state.selected==='new');
+        else if(state.selected==='speaker')html=speaker();
+        else if(state.selected==='recording')html=recording();
+        else if(state.selected==='latency')html=latency();
+        else if(state.selected?.startsWith('new-')){const goal=goals().find(g=>g.id===state.selected);html=goal?heading(goal)+`<p class="ct-desc">${safe(goal.title)}</p><p class="ct-notice">需求仅保存在本次演示中，尚未派发给真实 leader。</p>`:cards();}
+        else if(state.nav==='documents')html=`<div class="ct-heading"><div><h2>交付物</h2><p class="ct-sub">每轮最终交付必须有 HTML、可视化与具体例子。</p></div></div>${file('声纹阶段交付报告','本轮未达标 · 三个 example 与验收边界','speaker-report')}${file('运维事故报告示例','消息循环 → 隔离修复 → 核对恢复','ops-report')}<p class="ct-footnote">声纹结论引用旧记录；报告图示和运维流程均为明确标注的示意。</p>`;
+        else if(state.nav==='members')html=memberChat();
+        else if(state.nav==='context')html=contextView();
+        else if(state.nav==='operations')html=operationsView();
+        else html=cards();
+        main.innerHTML=html;icons();
+      }
+      root.addEventListener('click',event=>{
+        const trigger=event.target.closest('button');if(!trigger||!root.contains(trigger))return;
+        const nav=trigger.dataset.nav,action=trigger.dataset.act;
+        if(nav){state.nav=nav;state.selected=null;state.document=null;}
+        else if(action==='back'){state.selected=null;state.document=null;state.draft='';}
+        else if(action==='open'){state.selected=trigger.dataset.id;state.tab='outcome';state.document=null;}
+        else if(action==='tab')state.tab=trigger.dataset.tab;
+        else if(action==='why')state.step=1;
+        else if(action==='privacy')state.step=2;
+        else if(action==='options')state.step=3;
+        else if(action==='discuss'){state.step=1;announce('演示回到说明阶段；真实使用时可继续和 leader 讨论。');}
+        else if(action==='confirm'){state.choice=state.option;announce('演示：这项决定已记录，“需要你”已清零。没有操作真实录音或任务。');}
+        else if(action==='pause'){state.paused=true;announce('演示：本轮已暂停，没有中断真实进程。');}
+        else if(action==='resume'){state.paused=false;announce('演示：目标恢复为推进中，没有启动真实成员。');}
+        else if(action==='new'){state.selected='new';state.draft='';}
+        else if(action==='supplement'){state.selected='supplement';state.draft='';}
+        else if(action==='save-draft'){
+          const form=root.querySelector('#ct-form');if(!form.reportValidity())return;
+          const value=form.querySelector('#ct-draft').value.trim();if(!value)return;
+          if(state.selected==='new'){state.custom.push(value);state.selected='new-'+(state.custom.length-1);state.nav='goals';announce('已加入本地演示目标，没有启动任何 AI。');}
+          else{state.supplements.push(value);state.selected='speaker';announce('补充已保存在演示中，没有发送给真实 leader。');}
+          state.draft='';
+        }
+        else if(action==='document')state.document=trigger.dataset.doc;
+        else if(action==='report-case')state.reportCase=Number(trigger.dataset.index);
+        else if(action==='member-chat'||action==='leader-chat'){state.nav='members';state.selected=null;state.document=null;state.chatOwner=action==='leader-chat'?'leader':'member';state.runtimePreview=false;}
+        else if(action==='chat-leader'||action==='chat-member'){state.chatOwner=action==='chat-leader'?'leader':'member';state.runtimePreview=false;}
+        else if(action==='chat-question'||action==='chat-change'||action==='chat-send'){
+          let text,changed=action==='chat-change';
+          if(action==='chat-question')text='你现在验证的是哪一种情况？';
+          else if(changed)text='先测冷启动，热启动放后面。';
+          else{const form=root.querySelector('#ct-member-form');if(!form.reportValidity())return;text=form.querySelector('textarea').value.trim();if(!text)return;}
+          const reply=changed?'收到。我会先复验冷启动，把热启动放到后面；这次顺序变更写回当前目标，leader 后续读取。':action==='chat-question'?'我正在对比同一输入的冷启动和热启动，核对启动、加载、首句输出各段等待。回答后继续当前验证。':'这是预设演示回复：实际产品中，同一 AI 会读取你的补充，先回应，再判断继续还是调整工作。';
+          const key=state.chatOwner==='leader'?'leaderNotes':'memberNotes';state[key].push({text,reply,changed});state[key]=state[key].slice(-3);state.chatDrafts[state.chatOwner]='';announce('仅追加预设演示对话，没有发送给真实 AI。');
+        }
+        else if(action==='runtime-preview')state.runtimePreview=true;
+        else if(action==='runtime-cancel')state.runtimePreview=false;
+        else if(action==='runtime-confirm'){const key=state.chatOwner==='leader'?'leaderRuntime':'runtime';state[key]=state[key]==='codex'?'claude':'codex';state.runtimePreview=false;announce('只更改当前演示对象的载体标签，没有启动、切换或停止真实会话。');}
+        else if(action==='memory-outdated'){state.memoryPending=true;announce('演示：纠正已保存，尚未应用到下一次装载。');}
+        else if(action==='memory-apply'){state.memoryExcluded=true;state.memoryPending=false;announce('演示：下次上下文排除过期条目，原始历史保留。');}
+        else if(action==='ops-incident')state.opsStep=1;
+        else if(action==='ops-repair')state.opsStep=2;
+        else if(action==='ops-recover')state.opsStep=3;
+        else if(action==='ops-reset')state.opsStep=0;
+        else return;
+        render();remember();
+      });
+      root.addEventListener('change',event=>{if(event.target.name==='ct-recording-choice'){state.option=event.target.value;remember();}});
+      root.addEventListener('input',event=>{if(event.target.id==='ct-draft')state.draft=event.target.value;if(event.target.id==='ct-member-message')state.chatDrafts[state.chatOwner]=event.target.value;});
+      root.addEventListener('submit',event=>event.preventDefault());
+      restore(window.openai?.widgetState);render();
+      window.addEventListener('openai:set_globals',event=>{if(event.detail?.globals?.widgetState){restore(event.detail.globals.widgetState);render();}});
+      if(globalThis.Tweak){const tweak=new Tweak({container:root,onChange:()=>{render();remember();}});tweak.addToggle(display,'showProgress',{label:'首页显示最近有效进展'});}
+    })();
+  </script>
+</div>
