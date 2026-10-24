@@ -1,12 +1,57 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
-<title>Crew · 工作区</title><link rel="stylesheet" href="home.css"></head>
-<body><aside><div class="brand"><span class="mark">C</span><strong>Crew</strong></div><div class="nav active">◫ <span>工作区</span></div><div class="aside-bottom"><span class="dot"></span>你的 AI 团队，随时接着工作</div></aside>
-<main><header><div class="eyebrow">YOUR WORKSPACE</div><span id="service" class="service">正在连接 Crew…</span></header>
-<section class="intro"><h1>从一个工作区开始。</h1><p>让不同的 Agent 围绕同一个目标协作。<br>打开已有项目，或为下一个想法建一个新家。</p></section>
-<section class="actions"><button id="existing" class="action"><span class="action-icon">↗</span><span><strong>打开已有项目</strong><small>选择一个 Git 文件夹，继续工作</small></span><b>→</b></button><button id="new" class="action"><span class="action-icon plus">＋</span><span><strong>新建工作区</strong><small>选择保存位置，创建新的 Git 项目</small></span><b>→</b></button></section>
-<section id="create-panel" class="create-panel" hidden><h2>创建工作区</h2><label for="name">项目名称</label><input id="name" maxlength="100" placeholder="例如：我的新项目" autocomplete="off"><div class="location"><span id="location">尚未选择保存位置</span><button id="choose-parent" class="secondary">选择位置</button></div><div class="create-footer"><button id="cancel" class="secondary">取消</button><button id="create" class="primary">创建并打开</button></div></section>
-<section class="recent"><div class="section-heading"><h2>你的工作区</h2><button id="refresh" class="text-button">刷新 ↻</button></div><div id="projects" class="projects"><p class="empty">正在读取工作区…</p></div></section>
-<p id="error" class="error" role="alert" hidden></p><footer>关闭窗口后，Crew 会留在托盘中继续工作。<span>Ctrl + Shift + O 返回工作区首页</span></footer></main>
-<script src="home.js"></script></body></html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>Crew · 工作区</title>
+  <link rel="stylesheet" href="home.css">
+  <link rel="stylesheet" href="home-tools.css">
+</head>
+<body>
+  <aside aria-label="导航">
+    <div class="brand"><img class="mark" src="../assets/crew.svg" width="27" height="27" alt=""><strong>Crew</strong></div>
+    <nav><button id="nav-workspaces" type="button" class="nav active" aria-current="page"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span>工作区</span></button><button id="nav-tools" type="button" class="nav" hidden><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14.8 6.2a5 5 0 0 0-6.6 6.6L3 18a2.1 2.1 0 0 0 3 3l5.2-5.2a5 5 0 0 0 6.6-6.6L14 13l-3-3 3.8-3.8Z"/></svg><span>工具与更新</span></button></nav>
+    <div class="aside-bottom"><div class="service-line"><span class="status-dot" aria-hidden="true"></span><span id="service" class="service">正在连接…</span></div><div class="shortcut"><span>打开工作区页</span><kbd>Ctrl T</kbd></div></div>
+  </aside>
+  <main>
+    <div id="workspaces-page" class="home-page">
+    <header class="workspace-header">
+      <div><h1>工作区</h1><p>在标签页中打开项目，继续工作。</p></div>
+      <div class="actions">
+        <button id="existing" class="button secondary" type="button"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v2M3 7h15a2 2 0 0 1 1.9 2.6l-2.3 7A2 2 0 0 1 15.7 18H4a2 2 0 0 1-2-2V9a2 2 0 0 1 1-2Z"/></svg>打开文件夹</button>
+        <button id="new" class="button primary" type="button"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>新建工作区</button>
+      </div>
+    </header>
+    <div class="workspace-content">
+      <section id="create-panel" class="create-panel" aria-labelledby="create-title" hidden>
+        <div class="panel-heading"><h2 id="create-title">新建工作区</h2><span>创建一个新的 Git 项目</span></div>
+        <form id="create-form">
+          <label for="name">名称</label><input id="name" maxlength="100" placeholder="工作区名称" autocomplete="off" required>
+          <div class="location-row"><span class="location-label">保存到</span><span id="location">尚未选择文件夹</span><button id="choose-parent" class="button secondary" type="button">选择文件夹</button></div>
+          <div class="create-footer"><button id="cancel" class="button secondary" type="button">取消</button><button id="create" class="button primary" type="submit">创建并打开</button></div>
+        </form>
+      </section>
+      <p id="error" class="error" role="alert" hidden></p>
+      <section class="recent" aria-labelledby="projects-title">
+        <div class="section-heading"><h2 id="projects-title">所有工作区 <span id="project-count" class="project-count"></span></h2><button id="refresh" class="refresh-button" type="button" aria-label="刷新工作区"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M6 7a7 7 0 0 1 11-2l3 3M4 16l3 3a7 7 0 0 0 11-2"/></svg>刷新</button></div>
+        <div id="projects" class="projects" aria-busy="true"><p class="empty">正在读取工作区…</p></div>
+      </section>
+    </div>
+    <footer>关闭窗口后，Crew 会继续在托盘运行。</footer>
+    </div>
+    <section id="tools-page" class="home-page tools-page" aria-labelledby="tools-title" hidden>
+      <header class="tools-header"><div><h1 id="tools-title" tabindex="-1">工具与更新</h1><p>查看本机 Claude Code 和 Codex 的版本。</p></div><button id="tools-check" class="button secondary" type="button">检查更新</button></header>
+      <div class="tools-content">
+        <div class="tools-preferences"><div><label class="tools-auto-label"><input id="tools-auto" type="checkbox">空闲时自动更新</label><p>有会话正在运行时会等待，更新队列可以取消。</p></div><span id="tools-setting-status" role="status"></span></div>
+        <p id="tools-global-error" class="error" role="alert" hidden></p>
+        <p id="tools-check-status" class="tools-check-status" role="status">正在读取工具版本…</p>
+        <div id="tools-list" class="tools-list" aria-live="polite"></div>
+        <p class="tools-note">启动时检查更新，此后每 6 小时检查一次。自动更新默认关闭。</p>
+      </div>
+    </section>
+  </main>
+  <script src="home-tools.js"></script>
+  <script src="home.js"></script>
+</body>
+</html>

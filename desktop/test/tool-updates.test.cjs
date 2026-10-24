@@ -88,3 +88,18 @@ test('a fresh check cannot retain a stale successful-update badge for a differen
   const state=await f.manager.check();assert.equal(state.tools[0].phase,'idle');assert.equal(state.tools[0].message,null);
   assert.equal(state.tools[0].can_update,false);assert.equal(state.tools[0].blocked_reason,'来源未知');
 });
+
+test('turning auto-update off while a busy guard runs cancels its eventual blocked retry',async t=>{
+  let started,release;const running=new Promise(resolve=>{started=resolve;}),gate=new Promise(resolve=>{release=resolve;});
+  let updates=0;
+  const f=await fixture(t,async(operation,id)=>{
+    if(operation==='check') return {...checked(),runtimes:['claude','codex'].map(id=>({...record(id),can_update:false,can_queue:true,running_count:2}))};
+    updates++;started();await gate;
+    return {ok:false,operation:'update',runtime:id,status:'blocked',before:{...record(id),can_update:false,can_queue:true},blocked_reason:'会话使用中'};
+  });
+  await f.manager.settings({autoUpdate:true});await running;
+  const draining=f.manager._draining;await f.manager.settings({autoUpdate:false});release();await draining;
+  await f.manager._drain();assert.equal(updates,1);
+  assert.equal(f.manager.snapshot().tools[0].phase,'idle');
+  assert.deepEqual(JSON.parse(await fs.readFile(f.manager.file,'utf8')).queue,[]);
+});

@@ -82,7 +82,7 @@ class ToolUpdates {
           }
         }
         this.checkedAt = result.checked_at || this.clock(); this.lastError = null;
-        if (this.autoUpdate) for (const item of result.runtimes) if (item.update_available && item.can_update && !this.queue.has(item.id)) this.queue.set(item.id, 'auto');
+        if (this.autoUpdate) for (const item of result.runtimes) if (item.update_available && (item.can_update || item.can_queue) && !this.queue.has(item.id)) this.queue.set(item.id, 'auto');
         await this._save();
       } catch (error) { this.lastError = '检查失败：' + error.message; }
       finally { this._checking = null; this._emit(); }
@@ -107,6 +107,11 @@ class ToolUpdates {
     this._draining = Promise.resolve().then(async () => {
       for (const id of [...this.queue.keys()]) {
         if (this.closed || !this.queue.has(id)) continue;
+        if (this.queue.get(id) === 'auto' && !this.autoUpdate) {
+          this.queue.delete(id);
+          this.records.set(id, { ...this.records.get(id), phase:'idle', message:'自动更新已关闭', blocked_reason:null });
+          await this._save(); this._emit(); continue;
+        }
         this.records.set(id, { ...this.records.get(id), phase:'updating', error:null, message:'正在检查运行状态并更新…' }); this._emit();
         try {
           const result = await this._helper('update', id);
@@ -114,7 +119,10 @@ class ToolUpdates {
           const record = result.after || result.before;
           if (record) { if (record.id !== id) throw new Error('更新后的工具身份不一致'); this._record(record); }
           if (result.status === 'blocked') {
-            this.records.set(id, { ...this.records.get(id), phase:'queued', blocked_reason:result.blocked_reason,
+            if (this.queue.get(id) === 'auto' && !this.autoUpdate) {
+              this.queue.delete(id);
+              this.records.set(id, { ...this.records.get(id), phase:'idle', message:'自动更新已关闭', blocked_reason:null });
+            } else this.records.set(id, { ...this.records.get(id), phase:'queued', blocked_reason:result.blocked_reason,
               running_count:result.running_count, message:result.blocked_reason || '等待使用这个版本的会话退出后更新' });
           } else {
             this.queue.delete(id);

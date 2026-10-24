@@ -18,20 +18,29 @@ function loopback(value) {
 
 function options(args) {
   const result = { home: path.join(os.homedir(), '.crew'), python: 'python', port: 0 };
-  const fields = { '--home': 'home', '--python': 'python', '--port': 'port', '--backend-dir': 'backendDir', '--smoke-output': 'smokeOutput' };
+  const fields = { '--home': 'home', '--python': 'python', '--port': 'port', '--backend-dir': 'backendDir', '--smoke-output': 'smokeOutput', '--service-url': 'serviceUrl', '--profile': 'profile' };
   for (let index = 0; index < args.length; index++) {
-    const argument = args[index];
+    const argument = args[index], separator=argument.indexOf('=');
+    const key=separator<0?argument:argument.slice(0,separator);
     if (argument === '--isolated-sources') { result.isolated = true; continue; }
     if (argument === '--smoke-test') { result.smoke = true; continue; }
-    if (!(argument in fields)) continue; // Electron may add its own switches.
-    const value = args[++index];
-    if (!value || value.startsWith('--')) throw new Error('参数缺少值：' + argument);
-    result[fields[argument]] = argument === '--port' ? Number(value) : value;
+    if (argument === '--smoke-visual') { result.smokeVisual = true; continue; }
+    if (!(key in fields)) continue; // Electron may add its own switches.
+    const value = separator<0?args[++index]:argument.slice(separator+1);
+    if (!value || value.startsWith('--')) throw new Error('参数缺少值：' + key);
+    result[fields[key]] = key === '--port' ? Number(value) : value;
   }
   if (!Number.isInteger(result.port) || result.port < 0 || result.port > 65535) throw new Error('端口必须在 0 到 65535 之间');
-  if (result.smoke && (!args.includes('--home') || !result.smokeOutput)) throw new Error('smoke 必须显式指定 --home 和 --smoke-output');
+  if (result.smoke && (!args.some(value=>value==='--home'||value.startsWith('--home=')) || !result.smokeOutput)) throw new Error('smoke 必须显式指定 --home 和 --smoke-output');
+  if (result.smokeVisual && !result.smoke) throw new Error('视觉验收只允许使用隔离 smoke 模式');
   result.home = path.resolve(result.home);
   if (result.smoke && (result.home === path.resolve(os.homedir(), '.crew') || result.port === 47811)) throw new Error('smoke 必须使用隔离 home 和测试端口');
+  if (result.serviceUrl) {
+    result.serviceUrl = loopback(result.serviceUrl);
+    if (result.smoke && new URL(result.serviceUrl).port === '47811') throw new Error('smoke 不得连接正式端口');
+  }
+  if (result.profile && (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(result.profile) || workspaceName(result.profile) !== result.profile)) throw new Error('profile 必须是安全的短名称');
+  result.userData = result.profile ? path.join(result.home, 'desktop', 'profiles', result.profile) : path.join(result.home, 'desktop', 'ui');
   return result;
 }
 
@@ -41,8 +50,10 @@ async function request(base, route, body) {
   const response = await fetch(origin + route, { method: body === undefined ? 'GET' : 'POST',
     headers: { 'X-Crew': '1', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
     body: body === undefined ? undefined : JSON.stringify(body), redirect: 'error', signal: AbortSignal.timeout(5000) });
-  const payload = await response.json();
-  if (!response.ok) throw new Error(payload.error || `Crew 服务返回 ${response.status}`);
+  let payload;
+  try { payload = await response.json(); }
+  catch (_) { const error = new Error(`Crew 服务返回了无效内容 (${response.status})`); error.status = response.status; throw error; }
+  if (!response.ok) { const error = new Error(payload.error || `Crew 服务返回 ${response.status}`); error.status = response.status; throw error; }
   return payload;
 }
 
@@ -50,13 +61,25 @@ async function projects(base) {
   let data;
   try { data = await request(base, '/api/projects'); }
   catch (error) {
+    if (![404,405].includes(error.status)) throw error;
     data = await request(base, '/api/state');
     if (!Array.isArray(data.leaders) || !Array.isArray(data.members)) throw error;
   }
-  if (!Array.isArray(data.projects) || data.projects.some(item => typeof item.name !== 'string' || typeof item.root !== 'string')) {
+  if (!Array.isArray(data.projects) || data.projects.some(item => !item || typeof item.name !== 'string' || !item.name)) {
     throw new Error('此地址没有返回有效的 Crew 工作区列表');
   }
-  return data.projects;
+  return Promise.all(data.projects.map(async item => {
+    if (typeof item.root === 'string' && item.root) return item;
+    const state = await request(base, '/api/state?project=' + encodeURIComponent(item.name));
+    if (state.project?.name !== item.name || typeof state.project?.root !== 'string' || !state.project.root) throw new Error('Crew 工作区没有有效的目录信息');
+    return { ...item, ...state.project };
+  }));
+}
+
+function connectionRefused(error) {
+  if (Array.isArray(error?.errors) && error.errors.length > 0) return error.errors.every(connectionRefused);
+  if (error?.cause) return connectionRefused(error.cause);
+  return error?.code === 'ECONNREFUSED';
 }
 
 async function materializeBackend(source, home) {
@@ -89,33 +112,53 @@ async function materializeBackend(source, home) {
 class Backend {
   constructor(config, dependencies = {}) { this.config = config; this.spawn = dependencies.spawn || spawn; this.child = null; this.url = null; this.owned = false; this.errors = ''; }
   async start() {
-    try {
-      const record = JSON.parse(await fs.readFile(path.join(this.config.home, 'web.json'), 'utf8'));
-      const candidate = loopback(record.url);
+    if (this.config.serviceUrl) {
+      const candidate = loopback(this.config.serviceUrl);
       if (this.config.smoke && new URL(candidate).port === '47811') throw new Error('smoke 不得连接正式端口');
-      await projects(candidate);
+      try { await projects(candidate); }
+      catch (error) { throw new Error('指定的 Crew 服务不可用：' + error.message); }
       this.url = candidate;
       return { url: candidate, owned: false };
-    } catch (error) {
-      if (this.config.smoke && error.message === 'smoke 不得连接正式端口') throw error;
+    }
+    let record;
+    try { record = JSON.parse(await fs.readFile(path.join(this.config.home, 'web.json'), 'utf8')); }
+    catch (error) { if (error.code !== 'ENOENT') throw new Error('无法读取 Crew 服务登记：' + error.message); }
+    if (record !== undefined) {
+      let candidate;
+      try { candidate = loopback(record.url); }
+      catch (error) { throw new Error('Crew 服务登记无效：' + error.message); }
+      if (this.config.smoke && new URL(candidate).port === '47811') throw new Error('smoke 不得连接正式端口');
+      try { await projects(candidate); this.url = candidate; return { url:candidate, owned:false }; }
+      catch (error) {
+        // A reachable or ambiguous service may still own live sessions. Only
+        // a refused connection proves that starting a replacement is safe.
+        if (!connectionRefused(error)) throw new Error('现有 Crew 服务暂时不可用，请稍后重试：' + error.message);
+      }
     }
     const script = path.join(this.config.backendDir, 'crew_desktop.py');
     await fs.access(script);
     await fs.mkdir(this.config.home, { recursive: true });
+    const logHeader = 'Crew service started ' + new Date().toISOString() + '\n';
+    this.logWrites=Promise.resolve();
+    const saveLog=()=>{if(!this.logPath)return;const snapshot=logHeader+this.errors;this.logWrites=this.logWrites.then(()=>fs.writeFile(this.logPath,snapshot)).catch(()=>{});};
+    const beginLog=async name=>{
+      this.logPath=path.join(this.config.home,'desktop','logs',name);
+      await fs.mkdir(path.dirname(this.logPath),{recursive:true});saveLog();
+    };
     const args = [script, '--home', this.config.home, '--port', String(this.config.port)];
     if (this.config.isolated || this.config.smoke) args.push('--isolated-sources');
     this.child = this.spawn(this.config.python, args, { cwd: this.config.backendDir, windowsHide: true,
       stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' } });
     this.owned = true;
     const child = this.child;
-    child.on('error', error => { this.errors = (this.errors + '\n' + error.message).slice(-6000); });
-    child.stderr.on('data', value => { this.errors = (this.errors + value.toString()).slice(-6000); });
+    child.on('error', error => { this.errors = (this.errors + '\n' + error.message).slice(-6000); saveLog(); });
+    child.stderr.on('data', value => { this.errors = (this.errors + value.toString()).slice(-6000); saveLog(); });
     try {
       this.url = await new Promise((resolve, reject) => {
         let pending = '';
         const timer = setTimeout(() => finish(new Error('Crew 服务启动超时。' + this.errors)), 30000);
         const onError = error => finish(new Error('无法启动 Python：' + error.message));
-        const onExit = code => finish(new Error(`Crew 服务已退出 (${code})。${this.errors}`));
+        const onExit = code => { const error=new Error(`Crew 服务已退出 (${code})。${this.errors}`);error.exitCode=code;finish(error); };
         const onData = buffer => {
           pending += buffer.toString();
           let index;
@@ -136,12 +179,32 @@ class Backend {
         child.once('error', onError); child.once('exit', onExit); child.stdout.on('data', onData);
       });
       child.stdout.resume();
+      await beginLog('service.log');
       await projects(this.url);
       return { url: this.url, owned: true };
-    } catch (error) { await this.stop(); throw error; }
+    } catch (error) {
+      if(error.exitCode===75){
+        // The Python helper lost the OS home lock before touching shared state.
+        // Borrow the winner; never launch a second replacement on this path.
+        this.owned=false;child.stdout.resume();
+        const deadline=Date.now()+30000;
+        let lastError=error;
+        while(Date.now()<deadline){
+          try{
+            const record=JSON.parse(await fs.readFile(path.join(this.config.home,'web.json'),'utf8'));
+            const candidate=loopback(record.url);
+            if(this.config.smoke&&new URL(candidate).port==='47811')throw new Error('smoke 不得连接正式端口');
+            await projects(candidate);this.url=candidate;return{url:candidate,owned:false};
+          }catch(waitError){lastError=waitError;}
+          await new Promise(resolve=>setTimeout(resolve,100));
+        }
+        throw new Error('另一个 Crew 正在启动，但尚未能连接，请稍后重试：'+lastError.message);
+      }
+      await beginLog('startup-'+process.pid+'.log');await this.stop();throw error;
+    }
   }
   async stop() {
-    if (!this.owned || !this.child || this.child.exitCode !== null) return;
+    if (!this.owned || !this.child || this.child.exitCode !== null) { await this.logWrites; return; }
     const child = this.child;
     await new Promise(resolve => {
       const timeout = setTimeout(() => { child.kill(); }, 6000);
@@ -151,6 +214,7 @@ class Backend {
       child.once('exit', done);
       if (child.stdin.writable) child.stdin.end('shutdown\n'); else child.kill();
     });
+    await this.logWrites;
   }
 }
 

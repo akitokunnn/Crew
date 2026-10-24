@@ -64,6 +64,86 @@ test('healthy registry service is reused and never spawned or stopped by the des
   assert.deepEqual(await core.projects(service.url), []);
   assert.equal(JSON.parse(await fs.readFile(path.join(root, 'web.json'), 'utf8')).url, service.url);
 });
+
+test('explicit service is borrowed without changing another service registry', async t => {
+  const root = await directory(t), selected = await fixture(t), other = await fixture(t);
+  const registry = JSON.stringify({ url:other.url }); await fs.writeFile(path.join(root,'web.json'),registry);
+  const backend = new core.Backend({ home:root, serviceUrl:selected.url }, { spawn:()=>{ throw new Error('must not spawn'); } });
+  assert.deepEqual(await backend.start(), { url:selected.url, owned:false }); await backend.stop();
+  assert.deepEqual(await core.projects(selected.url), []);
+  assert.equal(other.calls.length, 0); assert.equal(await fs.readFile(path.join(root,'web.json'),'utf8'),registry);
+});
+
+test('failed explicit service refuses registry fallback and never launches another backend', async t => {
+  const root = await directory(t), other = await fixture(t), invalid = http.createServer((_request,response)=>{response.writeHead(503);response.end('{"error":"offline"}');});
+  await new Promise(resolve=>invalid.listen(0,'127.0.0.1',resolve)); t.after(()=>new Promise(resolve=>invalid.close(resolve)));
+  const registry = JSON.stringify({ url:other.url }); await fs.writeFile(path.join(root,'web.json'),registry);
+  const backend = new core.Backend({ home:root, serviceUrl:`http://127.0.0.1:${invalid.address().port}` }, { spawn:()=>{ throw new Error('must not spawn'); } });
+  await assert.rejects(backend.start(), /指定的 Crew 服务不可用/);
+  assert.equal(backend.child, null); assert.equal(backend.owned, false); assert.equal(other.calls.length, 0);
+  assert.equal(await fs.readFile(path.join(root,'web.json'),'utf8'),registry);
+});
+
+test('UI profiles have separate local lock paths and cannot escape their home', () => {
+  const normal = core.options(['--home','test']), separate = core.options(['--home','test','--profile','ui-011']);
+  assert.equal(normal.userData,path.join(normal.home,'desktop','ui'));
+  assert.equal(separate.userData,path.join(separate.home,'desktop','profiles','ui-011'));
+  assert.notEqual(normal.userData,separate.userData);
+  for (const name of ['../escape','C:\\other','CON','ui one','ui/other']) assert.throws(()=>core.options(['--profile',name]));
+  assert.throws(()=>core.options(['--service-url','https://example.com/']));
+  assert.throws(()=>core.options(['--smoke-visual']));
+  assert.equal(core.options(['--service-url=http://127.0.0.1:12345','--profile=ui-new']).serviceUrl,'http://127.0.0.1:12345');
+  assert.equal(core.options(['--service-url=http://127.0.0.1:12345','--profile=ui-new']).profile,'ui-new');
+});
+
+test('connected incompatible registry service never starts a second backend', async t => {
+  const root=await directory(t), server=http.createServer((_request,response)=>{response.setHeader('Content-Type','application/json');response.end('{"something":"else"}');});
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve)); t.after(()=>new Promise(resolve=>server.close(resolve)));
+  await fs.writeFile(path.join(root,'web.json'),JSON.stringify({url:`http://127.0.0.1:${server.address().port}`}));
+  const backend=new core.Backend({home:root},{spawn:()=>{throw new Error('must not spawn');}});
+  await assert.rejects(backend.start(),/现有 Crew 服务暂时不可用/); assert.equal(backend.child,null);
+});
+
+test('ambiguous registry timeout never starts a second backend', async t => {
+  const root=await directory(t); await fs.writeFile(path.join(root,'web.json'),'{"url":"http://127.0.0.1:12345"}');
+  const original=global.fetch; global.fetch=async()=>{throw new DOMException('test timeout','TimeoutError');};
+  t.after(()=>{global.fetch=original;});
+  const backend=new core.Backend({home:root},{spawn:()=>{throw new Error('must not spawn');}});
+  await assert.rejects(backend.start(),/现有 Crew 服务暂时不可用/); assert.equal(backend.child,null);
+});
+
+test('malformed registry is reported without spawning a replacement', async t => {
+  const root=await directory(t); await fs.writeFile(path.join(root,'web.json'),'{invalid json');
+  const backend=new core.Backend({home:root},{spawn:()=>{throw new Error('must not spawn');}});
+  await assert.rejects(backend.start(),/无法读取 Crew 服务登记/); assert.equal(backend.child,null);
+});
+
+test('legacy service project roots are hydrated from matching per-project state', async t => {
+  const root=await directory(t), requests=[];
+  const server=http.createServer((request,response)=>{
+    requests.push(request.url); response.setHeader('Content-Type','application/json');
+    if(request.url==='/api/projects'){response.writeHead(404);response.end('{"error":"old service"}');}
+    else if(request.url==='/api/state')response.end(JSON.stringify({projects:[{name:'old project',theme:'gray'}],leaders:[],members:[]}));
+    else if(request.url==='/api/state?project=old%20project')response.end(JSON.stringify({project:{name:'old project',root,theme:'gray'}}));
+    else{response.writeHead(404);response.end('{}');}
+  });
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve)); t.after(()=>new Promise(resolve=>server.close(resolve)));
+  const url=`http://127.0.0.1:${server.address().port}`; await fs.writeFile(path.join(root,'web.json'),JSON.stringify({url}));
+  const backend=new core.Backend({home:root},{spawn:()=>{throw new Error('must not spawn');}});
+  assert.deepEqual(await backend.start(),{url,owned:false});
+  assert.deepEqual(await core.projects(url),[{name:'old project',root,theme:'gray'}]);
+  assert(requests.includes('/api/state?project=old%20project')); await backend.stop();
+});
+
+test('owned Python diagnostics survive exit in a bounded local log', async t => {
+  const root=await directory(t), service=await fixture(t), backendDir=path.join(root,'backend');
+  await fs.mkdir(backendDir);
+  await fs.writeFile(path.join(backendDir,'crew_desktop.py'), 'import sys\nprint('+JSON.stringify(service.url)+', flush=True)\nprint("diagnostic marker", file=sys.stderr, flush=True)\nsys.stdin.readline()\n');
+  const backend=new core.Backend({home:path.join(root,'home'),backendDir,python:'python',port:0,isolated:true,smoke:true});
+  t.after(()=>backend.stop()); await backend.start(); await backend.stop();
+  const text=await fs.readFile(backend.logPath,'utf8'); assert(text.includes('diagnostic marker')); assert(text.length<6200);
+  assert.equal(backend.child.exitCode,0);
+});
 test('portable backend is retained by content identity after extraction disappears', async t => {
   const root = await directory(t), source = path.join(root, 'extracted'), home = path.join(root, 'home');
   await fs.mkdir(source); await fs.writeFile(path.join(source, 'crew_desktop.py'), '# backend v1');
@@ -92,4 +172,15 @@ test('isolated Python service binds port zero and exits gracefully without stale
   const repo = await core.newWorkspace(root, 'isolated-project', result.url); assert.equal(repo.name, 'isolated-project');
   await backend.stop(); assert.equal(backend.child.exitCode, 0, backend.errors);
   await assert.rejects(fs.access(path.join(root, 'web.json')));
+});
+test('simultaneous UI profiles share one OS-locked service and the loser only borrows', {timeout:45000},async t=>{
+  const root=await directory(t), config={home:root,backendDir:path.resolve(__dirname,'../../plugin'),python:'python',port:0,isolated:true,smoke:true};
+  const first=new core.Backend(config),second=new core.Backend(config);t.after(()=>Promise.all([first.stop(),second.stop()]));
+  const results=await Promise.all([first.start(),second.start()]);
+  assert.equal(results.filter(result=>result.owned).length,1);assert.equal(results[0].url,results[1].url);
+  const owner=first.owned?first:second,borrower=first.owned?second:first;
+  assert.equal(borrower.child.exitCode,75);assert.equal(borrower.logPath,undefined);
+  await borrower.stop();assert.deepEqual(await core.projects(owner.url),[]);
+  assert((await fs.readFile(owner.logPath,'utf8')).startsWith('Crew service started '));
+  await owner.stop();assert.equal(owner.child.exitCode,0);
 });
