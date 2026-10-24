@@ -506,6 +506,47 @@ class VSCodeServiceTests(unittest.TestCase):
         self.assertIsNone(self.service.worker)
         self.assertIsNone(self.service.inbox.worker)
 
+    def test_partial_transcript_does_not_kill_polling_and_next_pass_recovers(self):
+        sid = identity(1)
+        path = self.record(sid)
+        complete = path.read_text(encoding="utf-8")
+        # The extension appends JSONL while Crew reads it. The first snapshot
+        # can catch the final record halfway through a write.
+        path.write_text(complete + '{"type":"user",', encoding="utf-8")
+        stop = mock.Mock()
+        stop.is_set.return_value = False
+        errors = []
+
+        def next_pass(seconds):
+            errors.append(self.service.vscode_error)
+            if len(errors) == 1:
+                path.write_text(complete, encoding="utf-8")
+                return False
+            return True
+
+        stop.wait.side_effect = next_pass
+        self.service.stop = stop
+        with mock.patch.object(self.service.chat, "auto_resume") as resume:
+            self.service._poll_agents()
+        self.assertEqual(stop.wait.call_count, 2)
+        self.assertIn("JSONDecodeError", errors[0])
+        self.assertIn("重试", errors[0])
+        self.assertIsNone(errors[1])
+        self.assertEqual(self.ids()["others"], {sid})
+        self.assertEqual(resume.call_count, 2)
+
+    def test_git_discovery_failure_keeps_snapshot_and_recovers(self):
+        sid = identity(1)
+        self.record(sid)
+        self.refresh()
+        with mock.patch("crew.vscode_sessions.project_roots", side_effect=OSError("temporary git failure")):
+            self.service._refresh_vscode()
+        self.assertEqual(self.ids()["others"], {sid})
+        self.assertIn("temporary git failure", self.service.vscode_error)
+        self.service._refresh_vscode()
+        self.assertIsNone(self.service.vscode_error)
+        self.assertEqual(self.ids()["others"], {sid})
+
     def test_refresh_waits_for_usage_scan_snapshot_before_committing_archive(self):
         sid = identity(1)
         self.record(sid, uuid="prompt-1", timestamp=NOW)

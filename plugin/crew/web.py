@@ -112,6 +112,16 @@ class Service:
                 self.channel_digest.start(conn, project['name'], trigger='auto')
 
     def _refresh_vscode(self):
+        try:
+            self._read_vscode()
+        except (sqlite3.Error, OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError) as exc:
+            # Transcripts and worktrees can change during a read. A source
+            # failure must not terminate the shared agents/auto-resume worker.
+            # Keep the last good snapshot and retry on the next poll.
+            with self.agents_lock:
+                self.vscode_error = "VS Code 会话扫描失败（10 秒后重试）：%s: %s" % (type(exc).__name__, exc)
+
+    def _read_vscode(self):
         with self.write_lock, self.scan_lock, closing(store.connect(self.home)) as conn:
             projects = board.projects(conn)
         sessions, record_ids = {}, {}
