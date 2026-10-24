@@ -156,6 +156,21 @@ $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
             with self.assertRaisesRegex(OSError, "其他服务"):
                 autostart._existing_server()
 
+    def test_probe_uses_registered_desktop_port_and_rejects_invalid_registry(self):
+        self.home.mkdir()
+        registry = self.home / "web.json"
+        registry.write_text(json.dumps({"url": "http://127.0.0.1:7122"}), encoding="utf-8")
+        opener = Mock()
+        opener.open.return_value = contextlib.closing(io.StringIO('{"projects":[],"leaders":[],"candidates":{}}'))
+        with patch.object(autostart.urllib.request, "build_opener", return_value=opener):
+            self.assertTrue(autostart._existing_server(home=self.home))
+        opener.open.assert_called_once_with("http://127.0.0.1:7122/api/state", timeout=3)
+        for value in ("https://example.com", "http://user@127.0.0.1:7122", "http://@127.0.0.1:7122",
+                      "http://127.0.0.1:7122/api/state", None, 123):
+            registry.write_text(json.dumps({"url": value}), encoding="utf-8")
+            with self.assertRaises(OSError):
+                autostart._existing_server(home=self.home)
+
     def test_cli_routes_without_board_or_agent_discovery(self):
         for action in ("install", "status", "uninstall"):
             with self.subTest(action=action), patch.object(autostart, "configure", return_value={"installed": False}) as configure:

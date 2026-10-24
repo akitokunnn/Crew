@@ -5,7 +5,7 @@
     {
       "name": "crew",
       "source": "./plugin",
-      "description": "Coordinate many Claude Code sessions: shared board, leases, file claims, leader groups, guard blacklist, usage analytics."
+      "description": "Coordinate Claude Code and Codex sessions with leader groups, shared workspaces, handoffs, decisions, documents and runtime guards."
     }
   ]
 }

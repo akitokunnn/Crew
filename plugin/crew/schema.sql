@@ -53,6 +53,122 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE INDEX IF NOT EXISTS sessions_project ON sessions (project, crew_name);
 
+-- Crew identity stays stable while each execution tool has its own native id.
+CREATE TABLE IF NOT EXISTS session_runtimes (
+    session_id TEXT PRIMARY KEY REFERENCES sessions(session_id),
+    runtime TEXT NOT NULL CHECK (runtime IN ('claude', 'codex')),
+    native_id TEXT,
+    updated_at TEXT NOT NULL,
+    UNIQUE (runtime, native_id)
+);
+
+-- Durable, runtime-neutral peer messages. External Claude sessions consume
+-- them through their hooks; managed sessions receive them when idle.
+CREATE TABLE IF NOT EXISTS peer_messages (
+    id TEXT PRIMARY KEY,
+    project TEXT NOT NULL REFERENCES projects(name),
+    sender_session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    target_session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    body TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    delivered_at TEXT,
+    error TEXT
+);
+CREATE INDEX IF NOT EXISTS peer_messages_target ON peer_messages(target_session_id, delivered_at);
+
+-- Manual actions are separate from questions that need a choice.
+CREATE TABLE IF NOT EXISTS todos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project TEXT NOT NULL REFERENCES projects(name),
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    title TEXT NOT NULL,
+    steps TEXT NOT NULL,
+    verification TEXT NOT NULL,
+    blocking INTEGER NOT NULL DEFAULT 0 CHECK (blocking IN (0, 1)),
+    status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'done', 'cancelled', 'withdrawn')),
+    note TEXT,
+    resolved_by TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    resolved_at TEXT,
+    version INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS todos_project ON todos(project, status, created_at);
+CREATE TABLE IF NOT EXISTS todo_backfills (
+    leader_session_id TEXT PRIMARY KEY REFERENCES sessions(session_id),
+    notice_id INTEGER REFERENCES leader_notices(id),
+    queued_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS trust_settings (
+    project TEXT PRIMARY KEY REFERENCES projects(name),
+    enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0,1)),
+    goal TEXT,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS trust_decisions (
+    decision_id INTEGER PRIMARY KEY REFERENCES decisions(id),
+    reason TEXT NOT NULL,
+    recorded_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS decision_briefs (
+    decision_id INTEGER PRIMARY KEY REFERENCES decisions(id),
+    title TEXT NOT NULL,
+    context TEXT NOT NULL,
+    why_user TEXT NOT NULL,
+    recommendation_reason TEXT NOT NULL,
+    impact TEXT NOT NULL,
+    options_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS decision_reviews (
+    decision_id INTEGER PRIMARY KEY REFERENCES decisions(id),
+    notice_id INTEGER REFERENCES leader_notices(id),
+    queued_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS workspace_comments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project TEXT NOT NULL REFERENCES projects(name),
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    text TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+-- Original deliverable files stay in their project/worktree. Only metadata is
+-- indexed here; a user's pin is independent from the submitting AI's choice.
+CREATE TABLE IF NOT EXISTS documents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project TEXT NOT NULL REFERENCES projects(name),
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    leader_session_id TEXT,
+    submitter TEXT NOT NULL,
+    group_name TEXT,
+    path TEXT NOT NULL,
+    path_key TEXT NOT NULL,
+    title TEXT NOT NULL,
+    summary TEXT,
+    kind TEXT NOT NULL CHECK(kind IN ('summary','report','guide','other')),
+    ai_important INTEGER NOT NULL DEFAULT 0 CHECK(ai_important IN (0,1)),
+    user_important INTEGER CHECK(user_important IN (0,1)),
+    source TEXT NOT NULL CHECK(source IN ('manual','journal','report')),
+    source_seq INTEGER,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(project,path_key)
+);
+CREATE INDEX IF NOT EXISTS documents_project ON documents(project,leader_session_id,updated_at);
+CREATE TABLE IF NOT EXISTS document_scans (
+    project TEXT NOT NULL REFERENCES projects(name),
+    source TEXT NOT NULL,
+    offset INTEGER NOT NULL DEFAULT 0,
+    size INTEGER NOT NULL DEFAULT 0,
+    mtime_ns INTEGER NOT NULL DEFAULT 0,
+    identity TEXT,
+    error TEXT,
+    scanned_at TEXT NOT NULL,
+    PRIMARY KEY(project,source)
+);
+
 CREATE TABLE IF NOT EXISTS leader_order (
     project TEXT NOT NULL REFERENCES projects(name),
     session_id TEXT NOT NULL REFERENCES sessions(session_id),
@@ -444,3 +560,80 @@ CREATE TABLE IF NOT EXISTS codex_rate_limits (
     credits_balance  TEXT,
     PRIMARY KEY (rollout_id, ts)
 );
+
+-- A Crew identity can return to each runtime's own native history/options.
+CREATE TABLE IF NOT EXISTS session_runtime_bindings (
+ session_id TEXT NOT NULL REFERENCES sessions(session_id),
+ runtime TEXT NOT NULL CHECK(runtime IN ('claude','codex')),
+ native_id TEXT,
+ model TEXT,
+ effort TEXT,
+ updated_at TEXT NOT NULL,
+ PRIMARY KEY(session_id,runtime),
+ UNIQUE(runtime,native_id)
+);
+CREATE TABLE IF NOT EXISTS runtime_switches (
+ id TEXT PRIMARY KEY,
+ session_id TEXT NOT NULL REFERENCES sessions(session_id),
+ project TEXT NOT NULL REFERENCES projects(name),
+ from_runtime TEXT NOT NULL CHECK(from_runtime IN ('claude','codex')),
+ to_runtime TEXT NOT NULL CHECK(to_runtime IN ('claude','codex')),
+ target_model TEXT,
+ target_effort TEXT,
+ revision TEXT NOT NULL,
+ handoff TEXT NOT NULL,
+ created_at TEXT NOT NULL,
+ expires_at TEXT NOT NULL,
+ status TEXT NOT NULL CHECK(status IN ('preview','configured')),
+ preview_json TEXT NOT NULL,
+ configured_at TEXT,
+ result_json TEXT,
+ superseded_at TEXT,
+ attempted_message_id TEXT,
+ attempted_at TEXT,
+ accepted_message_id TEXT,
+ consumed_at TEXT,
+ last_error TEXT
+);
+CREATE INDEX IF NOT EXISTS runtime_switches_session ON runtime_switches(session_id,status,configured_at);
+
+-- Leader-scoped trust. Legacy project settings seed only the leaders present
+-- at upgrade time; later leaders start in ordinary mode.
+CREATE TABLE IF NOT EXISTS leader_trust_settings (
+ leader_session_id TEXT PRIMARY KEY REFERENCES sessions(session_id),
+ project TEXT NOT NULL REFERENCES projects(name),
+ enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0,1)),
+ goal TEXT,
+ updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS trust_leader_migrations (
+ project TEXT PRIMARY KEY REFERENCES projects(name), migrated_at TEXT NOT NULL
+);
+INSERT OR IGNORE INTO leader_trust_settings
+ SELECT s.session_id,s.project,t.enabled,t.goal,t.updated_at FROM sessions s
+ JOIN trust_settings t ON t.project=s.project WHERE s.role='leader'
+ AND NOT EXISTS(SELECT 1 FROM trust_leader_migrations m WHERE m.project=s.project);
+INSERT OR IGNORE INTO trust_leader_migrations
+ SELECT name,strftime('%Y-%m-%dT%H:%M:%fZ','now') FROM projects;
+CREATE TABLE IF NOT EXISTS decision_leader_scopes (
+ decision_id INTEGER PRIMARY KEY REFERENCES decisions(id),
+ leader_session_id TEXT REFERENCES sessions(session_id)
+);
+CREATE TABLE IF NOT EXISTS trust_schema_migrations (
+ name TEXT PRIMARY KEY, applied_at TEXT NOT NULL
+);
+-- Historical scopes reflect upgrade-time membership, not reconstructed past
+-- membership. NULL is deliberate and never guessed again after migration.
+INSERT OR IGNORE INTO decision_leader_scopes
+ SELECT d.id,CASE WHEN s.role='leader' THEN s.session_id ELSE
+   (SELECT g.leader_session_id FROM groups g WHERE g.project=s.project AND g.name=s.group_name) END
+ FROM decisions d LEFT JOIN sessions s ON s.session_id=d.session_id
+ WHERE NOT EXISTS(SELECT 1 FROM trust_schema_migrations WHERE name='decision-leader-v1');
+DELETE FROM leader_notices
+ WHERE source='crew' AND sent_at IS NULL AND id IN
+ (SELECT n.id FROM events e JOIN json_each(CASE WHEN json_valid(e.detail) THEN e.detail ELSE '{}' END,'$.notice_ids') j
+  JOIN leader_notices n ON n.id=j.value AND n.project=e.project
+  WHERE e.kind='trust:set' AND j.type='integer'
+  AND NOT EXISTS(SELECT 1 FROM trust_schema_migrations WHERE name='decision-leader-v1'));
+INSERT OR IGNORE INTO trust_schema_migrations
+ VALUES('decision-leader-v1',strftime('%Y-%m-%dT%H:%M:%fZ','now'));

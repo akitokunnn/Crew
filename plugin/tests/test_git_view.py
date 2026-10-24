@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import unittest
 from unittest import mock
+from tests.fixture_cleanup import cleanup_directory
 
 from crew import git_view
 
@@ -16,7 +17,7 @@ PLUGIN = Path(__file__).resolve().parents[1]
 class GitViewTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(dir=PLUGIN, prefix="git-view-test-")
-        self.addCleanup(self.temp.cleanup)
+        self.addCleanup(cleanup_directory,self.temp)
         self.root = Path(self.temp.name) / "repo"
         self.root.mkdir()
         self.hooks = Path(self.temp.name) / "empty-hooks"

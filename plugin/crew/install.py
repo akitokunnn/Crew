@@ -34,7 +34,12 @@ sys.stderr.reconfigure(encoding="utf-8")
 raise SystemExit(main(["--home", str(home), *sys.argv[1:]]))
 '''
     (home / "crew.py").write_text(launcher, encoding="utf-8")
-    (home / "bin" / "crew.cmd").write_text('@python "%USERPROFILE%\\.crew\\crew.py" %*\n', encoding="utf-8")
+    (home / "bin" / "crew.cmd").write_text('@python "%~dp0..\\crew.py" %*\n', encoding="utf-8")
+    command = home / "bin" / "crew"
+    command.write_text('#!/usr/bin/env python3\nimport runpy\nfrom pathlib import Path\n'
+                       'runpy.run_path(str(Path(__file__).resolve().parent.parent / "crew.py"), run_name="__main__")\n',
+                       encoding="utf-8")
+    command.chmod(0o755)
     for name in missing:
         shutil.copyfile(plugin_root / "defaults" / name, home / name)
     return runtime

@@ -9,7 +9,14 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from . import board
+from . import board, runtimes
+
+
+def _editor_session(conn, session_id):
+    session = board.session(conn, session_id)
+    if runtimes.get(conn, session_id)['runtime'] != 'claude':
+        raise board.BoardError('Codex 会话请在 Crew 内继续；暂不支持转到 VS Code')
+    return session
 
 
 def processes(session_id, agents, sessions_dir=None):
@@ -112,7 +119,7 @@ def session_uri(session_id):
 
 
 def begin(conn, session_id, agents_provider, sessions_dir=None, folder_opener=None, manager=None):
-    session = board.session(conn, session_id)
+    session = _editor_session(conn, session_id)
     live, info = _checked(session_id, agents_provider, sessions_dir, manager)
     cwd = live[0]["cwd"] if live else session["cwd"]
     (open_folder if folder_opener is None else folder_opener)(cwd)
@@ -122,7 +129,7 @@ def begin(conn, session_id, agents_provider, sessions_dir=None, folder_opener=No
 
 def resume(conn, session_id, agents_provider, confirm=False, sessions_dir=None,
            closer=None, uri_opener=None, now=None, manager=None):
-    session = board.session(conn, session_id)
+    session = _editor_session(conn, session_id)
     live, info = _checked(session_id, agents_provider, sessions_dir, manager)
     terminals = [p for p in live if p["entrypoint"] == "cli"]
     if info["needs_confirmation"] and confirm is not True:
@@ -160,7 +167,7 @@ def _web_post(home, project, path, data):
 
 
 def cli_open(conn, home, session_id, agents_provider):
-    session = board.session(conn, session_id)
+    session = _editor_session(conn, session_id)
     managed = (Path(home) / "chat" / (session_id + ".jsonl")).exists()
     first = (_web_post(home, session["project"], "/api/open", {"session_id": session_id}) if managed else
              begin(conn, session_id, agents_provider))

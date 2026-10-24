@@ -12,6 +12,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
+from tests.fixture_cleanup import cleanup_directory
 
 from crew import board, cli, guard, hooks, install, rules, session_ops, store
 
@@ -22,7 +23,7 @@ NOW = "2026-10-21T08:00:00.000Z"
 class CoreCase(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(dir=PLUGIN, prefix="core-test-")
-        self.addCleanup(self.temp.cleanup)
+        self.addCleanup(cleanup_directory,self.temp)
         self.base = Path(self.temp.name)
         self.home = self.base / "home"
         self.root = self.base / "project"
@@ -415,7 +416,9 @@ class DeliveryTests(CoreCase):
         self.assertIn("choose b", out["hookSpecificOutput"]["additionalContext"])
         self.assertEqual(out["hookSpecificOutput"]["hookEventName"], "UserPromptSubmit")
         self.assertEqual(self.conn.execute("SELECT delivered_at FROM decisions WHERE id=?", (d,)).fetchone()[0], NOW)
-        self.assertEqual(self.hook("user-prompt-submit", prompt="again"), (0, None))
+        code, output = self.hook("user-prompt-submit", prompt="again")
+        self.assertEqual(code, 0)
+        self.assertNotIn('待拍板 #', output['hookSpecificOutput']['additionalContext'])
 
     def test_handoffs_name_group_star_each_session_once(self):
         board.join(self.conn, "s1", "demo", "lead", self.root, str(self.root), "main", role="leader", now=NOW)
@@ -428,7 +431,9 @@ class DeliveryTests(CoreCase):
             self.assertEqual({h["id"] for h in board.handoffs(self.conn, sid)}, expected)
             self.hook("user-prompt-submit", sid, prompt="deliver")
             self.assertEqual(board.handoffs(self.conn, sid), [])
-            self.assertEqual(self.hook("user-prompt-submit", sid, prompt="again"), (0, None))
+            code, output = self.hook("user-prompt-submit", sid, prompt="again")
+            self.assertEqual(code, 0)
+            self.assertNotIn('交接 #', output['hookSpecificOutput']['additionalContext'])
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM handoff_deliveries").fetchone()[0], 6)
 
     def test_session_start_delivers_handoff_but_not_answer(self):
@@ -653,11 +658,11 @@ class RuleReadTests(CoreCase):
         for sid, role in (("s1", "leader"), ("s2", "member")):
             with self.subTest(role=role):
                 expected = "Crew 守则（/crew:%s）有更新，你上次读的不是最新版。先调用 /crew:%s 重读一遍，再处理这条消息。" % (role, role)
-                self.assertEqual(self.context(sid=sid), expected)
+                self.assertEqual(self.context(sid=sid).splitlines()[-1], expected)
                 self.read(sid, role)
-                self.assertEqual(self.context(sid=sid), "")
+                self.assertNotIn('有更新', self.context(sid=sid))
                 self.conn.execute("UPDATE rule_reads SET digest='old' WHERE session_id=?", (sid,))
-                self.assertEqual(self.context(sid=sid), expected)
+                self.assertEqual(self.context(sid=sid).splitlines()[-1], expected)
 
     def test_resume_and_compact_remind_until_current_rules_are_read(self):
         for source in ("resume", "compact"):
@@ -681,7 +686,7 @@ class RuleReadTests(CoreCase):
         path.write_text("# revised member rules\n", encoding="utf-8")
         self.assertIn("有更新", self.context())
         self.read()
-        self.assertEqual(self.context(), "")
+        self.assertNotIn('有更新', self.context())
         row = self.conn.execute("SELECT digest FROM rule_reads WHERE session_id='s1'").fetchone()
         self.assertEqual(row["digest"], hashlib.sha256(path.read_bytes()).hexdigest())
 
@@ -693,7 +698,7 @@ class RuleReadTests(CoreCase):
         self.read("s1", "leader")
         (self.fake_plugin / "skills" / "leader" / "SKILL.md").write_text("# new leader rules\n", encoding="utf-8")
         self.assertIn("有更新", self.context(sid="s1"))
-        self.assertEqual(self.context(sid="s2"), "")
+        self.assertNotIn('有更新', self.context(sid="s2"))
 
     def test_unclaimed_archived_removed_and_closed_sessions_do_not_remind(self):
         board.register_session(self.conn, "unclaimed", "demo", self.root, self.root, "main", now=NOW)
@@ -712,7 +717,7 @@ class RuleReadTests(CoreCase):
     def test_unsupported_role_and_unregistered_outside_project_do_not_remind(self):
         self.conn.execute("PRAGMA ignore_check_constraints=ON")
         self.conn.execute("UPDATE sessions SET role='observer' WHERE session_id='s1'")
-        self.assertEqual(self.context(), "")
+        self.assertNotIn('有更新', self.context())
         data = {"session_id": "s2", "cwd": str(self.base), "prompt": "continue"}
         code, output = hooks.handle("user-prompt-submit", data, self.home, self.fake_plugin, {})
         self.assertEqual(code, 0)
@@ -912,7 +917,7 @@ class InstallAndCliTests(CoreCase):
         self.assertEqual(set(first), {"plugin_root", "python", "updated_at"})
         self.assertEqual(first["python"], sys.executable)
         self.assertTrue((self.home / "crew.py").is_file())
-        self.assertEqual((self.home / "bin" / "crew.cmd").read_text(encoding="utf-8"), '@python "%USERPROFILE%\\.crew\\crew.py" %*\n')
+        self.assertEqual((self.home / "bin" / "crew.cmd").read_text(encoding="utf-8"), '@python "%~dp0..\\crew.py" %*\n')
         for name in ("blacklist.txt", "prices.json"):
             (self.home / name).write_text("custom", encoding="utf-8")
         install.install(self.home, self.fake_plugin, now="2026-10-22T00:00:00.000Z")

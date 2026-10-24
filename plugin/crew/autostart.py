@@ -14,6 +14,7 @@ import traceback
 import urllib.error
 import urllib.request
 from pathlib import Path
+from urllib.parse import urlsplit
 
 
 TASK_SCRIPT = r'''
@@ -134,25 +135,53 @@ def describe(result, action):
     return "\n".join(lines)
 
 
-def _existing_server(timeout=3):
-    # A manually started Crew may already own the default port at logon.
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+def service_url(home=None):
+    """Honor the desktop's registered loopback port; invalid records fail closed."""
+    if home is None:
+        return "http://127.0.0.1:47811"
     try:
-        with opener.open("http://127.0.0.1:47811/api/state", timeout=timeout) as response:
+        value = json.loads((Path(home) / "web.json").read_text(encoding="utf-8"))["url"]
+        if not isinstance(value, str):
+            raise ValueError("服务地址必须是文本")
+        url = urlsplit(value)
+        valid = (url.scheme == "http" and url.hostname in ("127.0.0.1", "localhost", "::1")
+                 and url.port and url.username is None and url.password is None
+                 and url.path in ("", "/") and not url.query and not url.fragment)
+        if not valid:
+            raise ValueError("服务地址必须是本机 HTTP 根地址")
+        return value.rstrip("/")
+    except FileNotFoundError:
+        return "http://127.0.0.1:47811"
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise OSError("Crew 服务登记无效，不重复启动：" + str(exc)) from exc
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise OSError("Crew 服务地址发生重定向，不重复启动")
+
+
+def _existing_server(timeout=3, home=None):
+    url = service_url(home)
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+    try:
+        with opener.open(url + "/api/state", timeout=timeout) as response:
             state = json.load(response)
     except urllib.error.URLError as exc:
         if isinstance(exc.reason, ConnectionRefusedError):
             return False
-        raise OSError("无法确认默认端口上的服务，不重复启动: " + str(exc)) from exc
+        raise OSError("无法确认登记地址上的服务，不重复启动: " + str(exc)) from exc
     if not isinstance(state, dict) or not all(key in state for key in ("projects", "leaders", "candidates")):
-        raise OSError("47811 端口已被其他服务占用，不启动 Crew")
+        raise OSError("登记地址已被其他服务占用，不启动 Crew")
     return True
 
 
-def run(home, root=None, process_factory=subprocess.Popen, executable=None, probe=_existing_server):
+def run(home, root=None, process_factory=subprocess.Popen, executable=None, probe=None):
     """Task entry point: wait for one hidden CLI process, without restart/kill."""
     _windows()
     home = Path(home).resolve()
+    if probe is None:
+        probe = lambda: _existing_server(home=home)
     root = Path(__file__).resolve().parents[2] if root is None else Path(root).resolve()
     python = Path(sys.executable if executable is None else executable).with_name("python.exe")
     command = [str(python), "-u", str(root / "plugin" / "crew_cli.py"), "--home", str(home), "web", "--port", "47811"]
@@ -160,7 +189,7 @@ def run(home, root=None, process_factory=subprocess.Popen, executable=None, prob
     with (home / "web-autostart.log").open("a", encoding="utf-8") as log:
         try:
             if probe():
-                log.write("默认端口已有 Crew 网页服务，保留原服务，不重复启动。\n")
+                log.write("已有 Crew 网页服务，保留原服务，不重复启动。\n")
                 return 0
             child = process_factory(command, cwd=str(root), stdin=subprocess.DEVNULL, stdout=log,
                                     stderr=subprocess.STDOUT, **_hidden_console())

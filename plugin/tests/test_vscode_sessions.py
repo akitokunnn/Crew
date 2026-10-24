@@ -4,7 +4,9 @@ import json
 import os
 import sqlite3
 import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -56,10 +58,84 @@ class VscodeSessionParserTests(unittest.TestCase):
         nested = self.project / "Temp" / "wt" / "member"
         outside = self.root / "elsewhere"
         output = f"worktree {str(self.project).upper()}\nHEAD aaa\n\nworktree {nested}\nHEAD bbb\n\nworktree {outside}\nHEAD ccc\n"
-        with mock.patch.object(vscode_sessions.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, output)) as run:
+        def run_git(command, **options):
+            options["stdout"].write(output.encode("utf-8"))
+            self.assertEqual(options["stdin"], subprocess.DEVNULL)
+            self.assertEqual(options["timeout"], 10)
+            self.assertNotIn("capture_output", options)
+            if sys.platform == "win32":
+                self.assertEqual(options["creationflags"], subprocess.CREATE_NO_WINDOW)
+            return subprocess.CompletedProcess(command, 0)
+        with mock.patch.object(vscode_sessions, "_git_executable", return_value="git"), \
+                mock.patch.object(vscode_sessions.subprocess, "run", side_effect=run_git) as run:
             self.assertEqual(vscode_sessions.project_roots(self.project), [self.project, nested])
-        run.assert_called_once_with(["git", "-C", str(self.project), "worktree", "list", "--porcelain"],
-                                    check=True, capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(run.call_args.args[0], ["git", "-C", str(self.project), "worktree", "list", "--porcelain"])
+        self.assertEqual(run.call_count, 1)
+
+    def test_windows_git_launchers_use_an_existing_native_sibling(self):
+        for architecture in ("mingw64", "mingw32"):
+            for launcher in ("cmd", "bin"):
+                with self.subTest(architecture=architecture, launcher=launcher):
+                    install = self.root / (architecture + "-" + launcher)
+                    selected = install / launcher / "git.exe"
+                    native = install / architecture / "bin" / "git.exe"
+                    native.parent.mkdir(parents=True)
+                    native.touch()
+                    with mock.patch.object(vscode_sessions.sys, "platform", "win32"), \
+                            mock.patch('crew.git_process.which', return_value=str(selected)):
+                        self.assertEqual(vscode_sessions._git_executable(), str(native))
+
+    def test_custom_or_missing_native_git_keeps_the_selected_executable(self):
+        custom = self.root / "custom" / "git.exe"
+        missing_native = self.root / "Git" / "cmd" / "git.exe"
+        for selected in (custom, missing_native):
+            with mock.patch.object(vscode_sessions.sys, "platform", "win32"), \
+                    mock.patch('crew.git_process.which', return_value=str(selected)):
+                self.assertEqual(vscode_sessions._git_executable(), str(selected))
+        with mock.patch('crew.git_process.which', return_value=None):
+            self.assertEqual(vscode_sessions._git_executable(), "git")
+
+    def test_failed_worktree_discovery_preserves_command_output(self):
+        def failed(command, **options):
+            options["stdout"].write(b"partial worktree output")
+            options["stderr"].write(b"fatal: isolated fixture")
+            return subprocess.CompletedProcess(command, 128)
+        with mock.patch.object(vscode_sessions.subprocess, "run", side_effect=failed), \
+                self.assertRaises(subprocess.CalledProcessError) as caught:
+            vscode_sessions.project_roots(self.project)
+        self.assertEqual(caught.exception.returncode, 128)
+        self.assertEqual(caught.exception.output, "partial worktree output")
+        self.assertEqual(caught.exception.stderr, "fatal: isolated fixture")
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows communicate waits on inherited descendant pipes")
+    def test_wrapper_descendant_cannot_extend_the_worktree_poll_timeout(self):
+        # Both short-lived children are test-owned Python helpers. No Git,
+        # Claude/Codex process or production PID is launched or signalled.
+        real_run = subprocess.run
+        child = "import time; time.sleep(2.5)"
+        def wrapper(marker):
+            return ("import pathlib,subprocess,sys,time; subprocess.Popen([sys.executable,'-c'," + repr(child) + "]); "
+                    "pathlib.Path(" + repr(str(marker)) + ").write_text('started'); time.sleep(10)")
+        old_marker = self.root / "old-wrapper-started"
+        start = time.monotonic()
+        with self.assertRaises(subprocess.TimeoutExpired):
+            real_run([sys.executable, "-c", wrapper(old_marker)], stdin=subprocess.DEVNULL,
+                     capture_output=True, timeout=0.6, creationflags=subprocess.CREATE_NO_WINDOW)
+        old_elapsed = time.monotonic() - start
+        self.assertTrue(old_marker.exists(), "Fixture child must hold the inherited pipe before timeout")
+        self.assertGreater(old_elapsed, 2, "The old capture_output path must reproduce the Windows hang")
+
+        new_marker = self.root / "new-wrapper-started"
+        def owned_tree(command, **options):
+            options["timeout"] = 0.6
+            return real_run([sys.executable, "-c", wrapper(new_marker)], **options)
+        start = time.monotonic()
+        with mock.patch.object(vscode_sessions.subprocess, "run", side_effect=owned_tree), \
+                self.assertRaises(subprocess.TimeoutExpired):
+            vscode_sessions.project_roots(self.project)
+        elapsed = time.monotonic() - start
+        self.assertTrue(new_marker.exists())
+        self.assertLess(elapsed, 1.8, "Poll must return before the descendant closes its inherited handles")
 
     def test_programmatic_daemon_sidechain_empty_and_invalid_names_are_excluded(self):
         for fields in ({"entrypoint": "sdk-cli"}, {"entrypoint": "sdk-ts"}, {"entrypoint": "sdk-py"},

@@ -1,0 +1,35 @@
+{
+  "source": "plugin/crew/web/logo.svg",
+  "mark": "open ring plus separate point",
+  "palette": {
+    "tile": "#29312E",
+    "ring": "#F6F5F1",
+    "point": "#8AC6B8"
+  },
+  "icoSizes": [
+    16,
+    24,
+    32,
+    48,
+    64,
+    128,
+    256
+  ],
+  "files": {
+    "crew.svg": "4dd3ed34a5a04691454f66e5dcca4d1dc435547ae2ab2dcddf5a39bd2404ca23",
+    "crew.png": "8f0641e1bc37b6ac60062a1073a41b3c0403c297a589e385b69d868e7fbd3572",
+    "crew-tray.png": "df672ec8b8c1fcadde948d193f13ba786bed99c3d012971911f0b13d5c1296d3",
+    "crew.ico": "18b6e04760c4c4897db2cf7a754477b26f1864a38ca7574a4f153d316efdb766",
+    "crew-16.png": "c05961618ee81a47641e7aa212df58e5b670ddff630c4cf7fb5267d4c2b62384",
+    "crew-20.png": "6a7d4e2d0f3a1f1d2f8af119374dacd9552b5c3c97faa0ef29201f0ec1494e59",
+    "crew-24.png": "37e7ae91959425e155844f05eedfff39be35859f83a7b687baacb56c1eb46157",
+    "crew-32.png": "df672ec8b8c1fcadde948d193f13ba786bed99c3d012971911f0b13d5c1296d3",
+    "crew-40.png": "3993cf0d7bd850923e4b003c6218782e6fc55b8bb06b7290dada93190fe1a8fe",
+    "crew-48.png": "3f95b6c09a7602adb25d999df8c72beb713283f85297dbabb01389862c77f2f0",
+    "crew-64.png": "04eb2b78c3124ffaefa4118259a2b24c3d848f51b9b03a1daa0ef08631186186",
+    "crew-128.png": "8baa8b7fe95cfc02dad50f9d960a8090ad059e013c366dc4a1b4392a73dd719f",
+    "crew-256.png": "8f0641e1bc37b6ac60062a1073a41b3c0403c297a589e385b69d868e7fbd3572",
+    "crew-512.png": "d3ecbcd66e1ba2575763f67ed43472de8e686fa18dd8449e26b9cc8d544e0dc8",
+    "crew-1024.png": "a963db052e3913c0b7b45cdfc94d211f2db6e350f153de4d3d48a54880af4006"
+  }
+}

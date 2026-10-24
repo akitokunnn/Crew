@@ -1,0 +1,69 @@
+{
+  "name": "crew-desktop",
+  "version": "0.1.1",
+  "description": "Native Crew workspace launcher",
+  "author": "Crew contributors",
+  "license": "UNLICENSED",
+  "private": true,
+  "main": "src/main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/*.test.cjs",
+    "build": "node scripts/icon.cjs && electron-builder --win portable nsis --x64",
+    "build:dir": "node scripts/icon.cjs && electron-builder --win dir --x64"
+  },
+  "devDependencies": {
+    "electron": "45.0.0",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "local.crew.desktop",
+    "productName": "Crew",
+    "asar": true,
+    "directories": {
+      "output": "dist",
+      "buildResources": "assets"
+    },
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../plugin",
+        "to": "backend",
+        "filter": [
+          "**/*",
+          "!tests{,/**}",
+          "!**/__pycache__/**",
+          "!**/*.pyc",
+          "!*-test-*/**"
+        ]
+      }
+    ],
+    "win": {
+      "target": ["portable", "nsis"],
+      "icon": "assets/crew.ico",
+      "signExecutable": false
+    },
+    "portable": {
+      "artifactName": "Crew-${version}-portable.exe"
+    },
+    "nsis": {
+      "artifactName": "Crew-${version}-setup.exe",
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Crew",
+      "uninstallDisplayName": "Crew",
+      "deleteAppDataOnUninstall": false,
+      "installerIcon": "assets/crew.ico",
+      "uninstallerIcon": "assets/crew.ico",
+      "installerHeaderIcon": "assets/crew.ico"
+    }
+  }
+}

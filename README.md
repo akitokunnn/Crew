@@ -1,33 +1,69 @@
 # Crew
 
-让一个人同时指挥很多个 Claude Code 会话。
+让一个人同时指挥多个 Claude Code / Codex 会话。用 Windows 桌面应用或浏览器打开 Git 工作区，让 leader 管分工、成员干活，共用一块白板。
 
-- 你先在 VS Code 里和会话聊需求；聊清楚了，这个会话就负责一块范围（雷达、视觉、声纹……），自己派 Codex 干活、自己验收。
-- 用 **leader** 管一组会话，像公司里的 CEO：下属有事报给它，它当中转站——能定的自己定，需要别人知道的转给相关的人，剩下的攒成待拍板等你。leader 可以同时有好几个，各管一组；leader 自己不写代码。
-- 所有会话共用一块**白板**：谁在做什么、谁在等你、设备谁借着、文件归谁、待拍板、交接、日报、用量。
-- **守卫**在任何权限模式下都会拦黑名单上的操作、别人借着的设备、别人宣布归属的文件；启用 Git 管理后，还会拦已收编普通会话的推送、开 PR 和合并操作。所以可以放心开全放行，夜里不会卡在确认框上。
-- **网页**主要用来和 leader 聊天：左栏是 leader 列表，中间是对话（待拍板卡片置顶），右栏是这一组的架构图，点下属看它的任务卡。左栏"交流区"是所有 leader 和用户的公共频道；下属直接去 VS Code 聊。
-- **QQ**：离开电脑时待拍板推到 QQ 私聊，用 `/leader`、`/1` 这样的命令切换 leader 直接聊。
-- **用量分析**：把 Claude 会话、子 agent、Codex 的 token 用量按 leader → 下属 → Codex、天、模型汇总，并按 API 价折算成金额。
-- **Git 管理员**：项目启用 Git 管理后自动开出「git管理员」，在独立 worktree 里统一定分支规则、检查请求、推送、开 PR、等 CI 和合进 base；默认 Sonnet 5.5 / high，网页可换。
+## 能做什么
 
-设计细节见 [docs/DESIGN.md](docs/DESIGN.md)，完整页面流程和状态说明见 [docs/WEB_UX.md](docs/WEB_UX.md)。
+- **桌面工作区**：选择已有 Git 文件夹，或新建空目录和 Git 仓库；多个项目各有标签，切换保留草稿和页面状态。关闭窗口隐藏到托盘，后台任务继续运行。
+- **系统管理员**：整个 Crew 只有一个，位于所有工作区和 leader 之上；独立守护进程检查连接、记录异常，后台退出时恢复同一端口。活进程响应异常时保留现场，维护暂停时禁止自动拉起。它不调用模型、不参与工程分工。
+- **文档中心**：统一收录 AI 提交的文档、摘要和来源，重要汇总优先。对话右侧用窄栏展示本组文档，窄窗口收成抽屉。
+- **工具与更新**：检查 Claude Code / Codex CLI 当前和最新版本，支持更新排队与取消；工具空闲并确认安装来源后才更新，自动更新默认关闭。
+- **两种执行工具**：创建 leader、成员时选择 Claude Code 或 Codex，可以混编在同一组。保留已有 Claude 会话，也能从 VS Code 收编进来。
+- **对话中断**：输入区旁直接中断当前一轮，等待运行端确认，保留会话、历史与草稿。读取聊天短暂失败会自动重试。
+- **leader 和白板**：每组一个 leader 管协调，多组可并行。任务卡、设备借用、文件归属、交接、日报和用量集中保存；跨工具消息由 Crew 投递，忙时排队。
+- **拍板和人工待办**：要你选择的事进入拍板，说明为什么要你决定、推荐理由和各选项的后果；要你亲手做的事进入“我的待办”，写清步骤和验收方法。
+- **信任模式**：每个 leader 单独开关和填写目标，所属成员继承；保存不主动唤醒，下次对话再传达。保留取舍、待办、报告、验证和 Git 提交。
+- **横排总览与评论**：“全部”页每组一列，可横向滚动；组和成员可加评论。leader 可标第 1～3 优先，并调整普通组的顺序。
+- **Git 管理员**：在独立 worktree 中统一定分支规则、检查合并请求、推送、开 PR、等 CI 和合进 base；默认使用 Claude Sonnet 5.5 / high，网页可换模型。
+- **守卫**：检查黑名单、设备借用、文件归属和 Git 管理规则。Claude 使用插件 hooks，Codex 接入原生 shell / apply_patch 执行前 hook，覆盖边界见 [Codex 接入说明](docs/CODEX_INTEGRATION.md)。
+- **远程与用量**：QQ 私聊可按项目和 leader 继续对话、答复拍板、查看待办；用量页按组、会话、日期和模型汇总 Claude / Codex token，并按价格表折算参考金额。
 
-## 安装
+详细用法见 [工作流程](docs/WORKFLOWS.md) 和 [页面说明](docs/WEB_UX.md)，实现设计见 [docs/DESIGN.md](docs/DESIGN.md)，0.1.1 变更与验证见 [交付记录](docs/DESKTOP_0.1.1.md)。
 
-需要：Windows、Python 3.11 以上（在 PATH 里叫 `python`）、支持 `agents` 和 `stream-json` 的 Claude Code（本机以 2.1.306 验收）。需要在 VS Code 接续时，另需安装 Claude Code 扩展，并由用户信任会话所在的目录；扩展不支持 Restricted Mode。
+## 安装与启动
 
-1. 拿到代码：`git clone https://github.com/akitokunnn/Crew.git C:\Tools\Crew`
-2. 装插件（用户级，所有项目生效）：
-   - `claude plugin marketplace add C:\Tools\Crew`
-   - `claude plugin install crew@crew --scope user`
-3. 新开一个 Claude 会话。会话启动时会自动在 `~/.crew/` 下生成启动器、默认黑名单和价格表。已经开着的会话执行 `/reload-plugins`，或者重开。
-4. 让终端能直接敲 `crew`：把 `%USERPROFILE%\.crew\bin` 加进用户 PATH。加完以后新开的终端才生效；在那之前用 `python %USERPROFILE%\.crew\crew.py`。
-5. 安装隐藏启动和右键入口：执行一次 `crew autostart install`、`crew menu install`。之后在任意 git 项目文件夹上或文件夹内空白处右键，选“在这里启动 Crew”，会自动启用项目并打开它的网页；也可以在项目里执行 `crew start`。再按需登记共享资源，例如：
-   - `crew resource add 舱体.127 --kind device --desc "主力舱体" --guard "10\.245\.1\.127|f9d7400653b03b50"`
-   - `crew resource add 主目录 --kind dir --desc "主工作区 develop"`
-   - `crew resource add UE编辑器 --kind app`
-6. 建议所有协作的会话统一用全放行模式：在会话里说"开权限"，或执行 `/crew:trust`。
+需要 Windows、Python 3.11 以上（在 PATH 中可运行 `python`）、Git，以及已安装并登录的 Claude Code 或 Codex CLI。两种工具按需安装；只用 Codex 时，无需装 Claude 插件。从源码运行桌面应用还需要 Node.js / npm。已有验证使用 Claude Code 2.1.306、Codex CLI 0.163.0，具体模型和 effort 以本机执行工具返回的列表为准。
+
+先取得源码：
+
+```powershell
+git clone https://github.com/akitokunnn/Crew.git C:\Tools\Crew
+```
+
+### 桌面应用
+
+```powershell
+cd C:\Tools\Crew\desktop
+$env:ELECTRON_CACHE = Join-Path (Get-Location) '.cache/electron'
+$env:ELECTRON_BUILDER_CACHE = Join-Path (Get-Location) '.cache/electron-builder'
+npm install
+npm start
+```
+
+首页选择已有 Git 项目，或填写名称、选择保存位置来新建工作区。进入项目后，点“起 leader”，选择执行工具、模型和任务即可开始。`Ctrl+T` 返回工作区首页，`Ctrl+Tab` 切换标签，`Ctrl+W` 关闭当前项目标签。
+
+关闭窗口会隐藏到托盘；“退出 Crew”才退出应用。桌面版优先复用当前 home 中已登记的健康服务，复用时继续使用该服务的版本；自行启动的后端在退出应用时关闭，借用的服务保持运行。
+
+`npm run build` 生成 `desktop/dist/Crew-0.1.1-portable.exe` 和 `Crew-0.1.1-setup.exe`，直接运行仍需本机 Python、Git 和所选模型 CLI。构建、独立数据目录和隔离验收见 [桌面版说明](desktop/README.md)。
+
+### Claude 插件与 VS Code
+
+需要从 Claude 会话收编成员、使用插件 hooks 或在 VS Code 接续 Claude 会话时，再安装插件：
+
+```powershell
+claude plugin marketplace add C:\Tools\Crew
+claude plugin install crew@crew --scope user
+```
+
+新开 Claude 会话后，会在 `~/.crew/` 下生成命令行启动器、默认黑名单和价格表；已有会话执行 `/reload-plugins` 或重开。VS Code 接续还需要 Claude Code 扩展，并信任项目目录。Codex 会话在 Crew 中继续，暂不支持转交到 Claude 编辑器。
+
+### 命令行、浏览器与右键入口
+
+桌面首次启动或 Claude 插件初始化后，把 `%USERPROFILE%\.crew\bin` 加进用户 PATH，新终端即可使用 `crew`。配置 PATH 前，可在 PowerShell 使用 `python "$env:USERPROFILE\.crew\crew.py" <命令>`。
+
+使用浏览器和登录自启时，执行 `crew autostart install`；需要文件夹右键入口时，再执行 `crew menu install`。之后在 Git 项目里运行 `crew start`，或右键选择“在这里启动 Crew”，会自动启用项目并打开网页。已有服务时用 `crew web --open` 打开当前项目。
+
+Claude 协作会话建议统一权限模式；`/crew:trust` 用于 Claude 的工具权限。下面的 `crew trust set on --leader ... --goal ...` 用于单个 leader 组的自主决策目标，两者分别配置。
 
 ## 日常怎么用
 
@@ -35,35 +71,53 @@
 |---|---|
 | 在另一个 git 项目打开 Crew | 文件夹或文件夹内空白处右键“在这里启动 Crew”；命令行 `crew start`，也可 `crew start --cwd "C:\项目目录" --name 项目名`。首次自动启用，已有项目直接打开；服务未运行时调用已安装的登录自启任务，最多等 20 秒 |
 | 打开网页 | `crew web --open`：按当前目录打开这个项目的页面（一个项目一个标签页），后台已有服务时直接复用 |
-| 起一个 leader | 网页左栏"起 leader"：起名 + 一句它要管什么 + 模型 + effort；命令行 `crew leader start --name 感知 --task "<这一组的目标>" [--model <模型ID>] [--effort <档位>]` |
+| 起一个 leader | 左栏“起 leader”：起名、填写目标、选择执行工具和模型；命令行 `crew leader start --name 感知 --task "<这一组的目标>" --runtime codex`，也可选 `claude`，另有 `--model` / `--effort` |
 | 把 VS Code 里的会话收编进组 | 在那个会话里说"收编到感知"，它会 `crew join` 写好任务卡并通知 leader；或者在网页"待收编"里点它、起名、选 leader |
 | 和 leader 聊 | 网页点左栏的 leader；离开电脑时在 QQ 私聊里 `/leader` 看编号、`/1` 切过去直接说 |
 | 在公共交流区发言 | 网页左栏"交流区"，可点选本项目 leader 点名；leader 用 `crew say "<内容>" [--to <leader名字> ...]`。需要对方做事、回答才点名，点名后它空闲时收到通知；普通发言在 leader 下一轮附摘要 |
 | 看交流区全文 | 网页"交流区"往上加载更早的发言；leader 和组员都可用 `crew channel [--limit N]`，默认最近 20 条 |
-| 回答待拍板 | 网页对话顶部的卡片、"全部 → 等你拍板"，或 QQ 里点按钮、引用那条拍板消息回复；答完 leader 会去叫醒提问的下属 |
+| 回答待拍板 | 对话顶部的卡片、“全部 → 等你拍板”，或 QQ 按钮 / 引用回复；先看决定事项、推荐理由和后果。旧题看不懂时点“让 leader 说明白”；答复后由 leader 协调继续 |
+| 处理人工待办 | 左栏“我的待办”，阻塞 AI 的事项排在前面；展开看步骤和验收方法，可点“做完了”“不做了”或“去问它”，误操作可撤销；有待办时，项目默认进入此页 |
+| 开启信任模式 | leader 对话头部或菜单里填写本组目标；普通终端用 `crew trust set on --leader 名字 --goal "<目标>"`，保存不唤醒；该 leader 的报告也在同一入口 |
 | 挂起待拍板 | 网页卡片点"挂起"，留到托盘底部默认折叠的"挂起 · N"区或全部页挂起分组；可直接答或取消挂起，挂起题不计待拍板数、不推 QQ |
-| 看某个下属 | 网页右栏点它：负责范围、在做什么、最近进展、Codex、设备和文件；要聊就点"在 VS Code 打开" |
-| 开一个新下属 | 让 leader 开（它不用你批准）；或命令行 `crew spawn --name 姿势 --group 感知 --task "<任务>"`，需要独立 worktree 时加 `--new-worktree feature/pose` |
-| 找人、叫醒离线下属 | 同项目任何 leader 或用户执行 `crew wake 姿势 "<接着做什么>"`，后台续跑原会话，之后按 crew 名 SendMessage；leader 也可用它找别的 leader，排进通知等它空闲时送达。跨组请求要改组员计划时，先找它自己的 leader |
+| 看某个下属 | 总览或组内点它，查看负责范围、进展、执行工具、设备和文件；Claude 会话可点“在 VS Code 打开”，Codex 成员可查看记录并由 leader 协调 |
+| 给成员更换执行工具 | 卡片或菜单点“更换…”，选择 CC/Codex 和兼容模型，检查交接内容及用量提示；确认后下次发消息/唤醒才启动，原生历史分别保留 |
+| 开一个新下属 | 让 leader 开；或命令行 `crew spawn --name 姿势 --group 感知 --task "<任务>" --runtime codex`，需要独立 worktree 时加 `--new-worktree feature/pose`；不写执行工具则继承 leader |
+| 跨工具发消息 | 已加入 Crew 的会话用 `crew send <名字> "<内容>"`，Codex 也有 `crew_send_message` 动态工具；忙时排队，外部 Claude 会话在下一次 hook 收取 |
+| 找人、叫醒离线下属 | `crew wake 姿势 "<接着做什么>"` 后台续跑原会话。leader 可联系同项目其他 leader，成员可给自己的 leader 排唤醒通知；跨组改计划先找对方 leader |
 | 下属跑歪了 | 卡片上"停下这一轮"（只对网页后台运行的下属有效；开在 VS Code 里的去那边停） |
 | 收尾 | 在 VS Code 里归档会话，Crew 跟着归档；或者卡片上"归档"（可撤销）。leader 发现下属做完了也会问你要不要归档 |
-| 看谁在干什么 | 网页"全部"，或 `crew status` |
+| 看谁在干什么、留评论 | “全部”页每组一列，横向滚动查看，组或成员可加评论并通知所属 leader；命令行 `crew status` |
+| 找 AI 交付的文档 | 左栏“文档”可搜索、按组和类型筛选、只看重要；对话右侧显示本组最近文档，窄窗口点“文档”展开 |
+| 同时打开多个工作区 | 桌面首页选择项目，会分别保留在顶部标签中；`Ctrl+Tab` 切换，关闭标签不停止后台任务 |
+| 检查 Claude Code / Codex 更新 | 桌面首页或应用菜单打开“工具与更新”；忙时可排队，工具空闲并通过安装来源检查后才更新；自动更新默认关闭 |
+| 调整 leader 优先级 | 右键 leader，可标第 1～3 优先；优先组置顶，普通组可调整顺序 |
 | 看 Git 分支和提交关系 | 网页左栏"Git"；首次选择 base / stable 后启用，可查看提交树、分支检查、worktree、负责会话与 GitHub PR / CI，手动"刷新（fetch）"更新远端引用 |
 | 把提交交给 Git 管理员 | 开工前 `crew git policy` 看规则，做完提交自己的分支后 `crew git request "<做了什么、测过什么、有没有要用户亲手验收的>"`；Git 页面看请求状态，点“和 git 管理员聊”进对话 |
 | 看用量 | 网页"用量"，或 `crew usage summary`、`crew usage sessions`、`crew usage codex` |
 | 看上下文、手动压缩 | 上下文占用达到 50% 显示橙圈，80% 变红；悬停看已用与上限。后台空闲会话点圈旁“压缩”并确认，leader 模型菜单任何占比都能压缩；VS Code 会话去那边输入 `/compact` |
 
-网页"待收编"和 VS Code 的会话列表一致：正在运行的直接列，没在运行也没归档的折叠在"展开 N 个"里，退了组的单独一组。在 VS Code 里取消归档，Crew 不跟着恢复，要恢复就在网页上操作。
+### 拍板、待办与信任模式
+
+拍板只问一个需要你决定的取舍。新卡片先写为什么需要你决定，再给推荐理由和每个选项的后果，技术背景默认收起；旧题可原位补写，QQ 的过期选项会要求刷新。
+
+人工待办用于上机验收、登录账号、操作编辑器或设备等必须亲手做的事。AI 登记事项、步骤、确认方法和阻塞状态；完成或取消后，结果送回所属 leader，由它协调提出者继续。点“做完了”代表你已操作，AI 仍需验证结果。首次上线会通知现有 leader 盘点未完成的人工事项。
+
+信任模式按 leader 独立生效：你给本组目标，AI 在授权范围内推进、记录推荐与取舍；需要你动手的事项继续进入待办，Crew 守卫继续生效。设置只保存，下次正常对话传达；详细报告只汇总本组，leader 仍须补齐测试证据、产物、未验证项和 commit SHA。
+
+### 会话、主题与通知
+
+“待收编”读取本机 Claude / VS Code 会话来源：正在运行的直接列，没在运行也没归档的折叠在“展开 N 个”里，退了组的单独一组。在 VS Code 里取消归档，Crew 不跟着恢复，要恢复就在页面上操作。
 
 每个项目会保存一套主题色，新项目优先分到还没被用的主题，用满六套后轮流分配。左下角齿轮的“主题”可随时切换，按钮、选中态、链接、logo 和标签页图标一起变化；裸地址的项目列表也显示各自配色。浅色 / 深色 / 跟随系统仍由旁边的外观按钮独立切换。
 
 有新的未挂起拍板或 leader 新回复时，网页会响一声短提示音，标签标题显示未挂起的待拍板数；挂起、取消挂起本身不响。锁屏或打开"我已离开"时，未挂起的待拍板推到 QQ；`/decisions` 只列未挂起题，末尾说明挂起数。挂起时 leader 会收到通知，转告提问者：不卡流程的按推荐继续，卡流程的先做别的、先别再问这道题。左下角显示 QQ 连接、绑定和拒收状态。QQ 的命令和配置见 [docs/QQ.md](docs/QQ.md)；leader 巡查目前只按需（你问它才去查），候选场景见 [docs/PATROL.md](docs/PATROL.md)。
 
-QQ 命令不分大小写、忽略首尾空白：`/help`（`/h`）帮助，`/leader`（`/l`）列表，`/leader 2`（`/l 2`、`/2`）切换，`/decisions`（`/d`）待拍板，`/back`（`/b`）我回来了。
+QQ 命令不分大小写、忽略首尾空白：`/help`（`/h`）帮助，`/projects`（`/p`）列项目，`/project 项目名` 选项目，`/leader 名字` 选该项目的 leader，`/where`（`/w`）确认收件人；原有 `/leader 2`（`/l 2`、`/2`）编号保持可用。`/decisions`（`/d`）查看拍板，`/todo`（`/t`）查看人工待办，`/back`（`/b`）我回来了。引用旧消息会回到原 leader，不改变普通聊天的当前选择；人工待办在离开电脑时不主动推送。远程路由与 Lark 状态见 [docs/REMOTE_CHANNELS.md](docs/REMOTE_CHANNELS.md)。
 
 交流区新发言不响提示音、不推 QQ；左栏显示未读数，打开或滚到底记为已读。不点名的发言在 leader 下一轮附摘要，网页可手动“整理”，新增满 20 条也会自动生成置顶要点卡；原文默认折叠。`crew channel` 先看卡再看卡后的新发言，`crew channel --raw` 查看原文。
 
-会话里的守则在技能里：成员是 `/crew:member`，leader 是 `/crew:leader`，Git 管理员是 `/crew:git`。会话启动时 Crew 会告诉它是谁、归哪个 leader、怎么调命令；还没收编的会话不会被要求自己登记。启用 Git 管理的项目还会附管理员提示和分支规则前 6 行，全文用 `crew git policy` 看。守则更新后，在下一条消息或 resume / compact 时提醒已收编会话重读对应技能。
+会话里的守则在 `plugin/skills/`：Claude 成员是 `/crew:member`，leader 是 `/crew:leader`，Git 管理员是 `/crew:git`；Codex 由宿主加载同一角色守则，绑定 Crew 身份和动态白板工具。启动时 Crew 会说明身份、所属组和命令入口；还没收编的会话不会被要求自己登记。启用 Git 管理的项目还会附管理员提示和分支规则前 6 行，全文用 `crew git policy` 看。守则更新后，在下一条消息或 resume / compact 时提醒已收编会话重读。
 
 ## 命令速查
 
@@ -77,15 +131,21 @@ QQ 命令不分大小写、忽略首尾空白：`/help`（`/h`）帮助，`/lead
 | `crew status` / `crew who <名字>` | 总览 / 某个会话的详情和发消息地址，含上下文占比；拿不到时显示未知和原因 |
 | `crew lease take <资源> --for "<用途>"` / `crew lease give <资源> --note "<现状>"` / `crew lease list` | 借 / 还 / 列表 |
 | `crew claim <路径>` / `crew unclaim <路径>` / `crew claims` | 宣布文件归属（目录以 `/` 结尾） |
-| `crew ask "<问题>" --option A --option B --recommend A` / `crew decisions` / `crew answer <编号> "<答复>"` | 待拍板 |
+| `crew ask "<问题>" --title "<短标题>" --why-user "<为什么要用户决定>" --recommend-reason "<推荐理由>" --option "<行动>" --consequence "<后果>" --option "<另一行动>" --consequence "<后果>" --recommend "<行动>"` | 登记结构化拍板，每个选项对应一个后果；完整示例见工作流程 |
+| `crew decisions` / `crew answer <编号> "<答复>"` / `crew decision revise <编号> ...` | 查看、答复、原位补写拍板说明 |
+| `crew todo add "<事项>" --steps "<操作步骤>" --verify "<确认方法>" [--blocking]` | AI 登记需要用户亲手做的事项 |
+| `crew todo list [--all]` / `crew todo withdraw <编号> --reason "<原因>"` | 查看人工待办 / AI 撤回不再需要的事项；用户完成、取消和撤销在页面操作 |
+| `crew trust set on --leader 名字 --goal "<目标>"` / `crew trust set off --leader 名字` / `crew trust status --leader 名字` / `crew trust report --leader 名字` | 设置指定 leader 的信任模式、查看本组状态与报告草稿；已绑定会话缺省用自己的组 |
 | `crew handoff --to <名字\|分组\|*> "<内容>"` / `crew handoffs` | 交接 |
 | `crew report "<内容>"` / `crew reports` | 日报 |
+| `crew doc add <路径> --title "<标题>" --summary "<摘要>" [--kind summary\|report\|guide\|other] [--important]` / `crew doc list [--leader 名字]` / `crew doc refresh` | 提交交付文档 / 查看列表 / 从历史会话增量整理；标题和摘要必填，原文件留在项目或提交者工作树 |
 | `crew say "<内容>" [--to <leader名字> ...]` | leader 在本项目交流区发言；可重复点名多人，点名才排通知叫醒 |
 | `crew channel [--limit N] [--raw]` | 默认先看要点卡，再看卡后最近 N 条全文（默认 20 条）；`--raw` 看最近 N 条原文。无卡时直接看原文，按时间正序并推进已读位置 |
 | `crew group list` / `crew roster add\|remove\|move` | 分组和花名册 |
-| `crew leader start` / `crew leader close` | 通过正在运行的网页服务开 leader / 收一个分组；`start --dry-run` 只看计划 |
-| `crew spawn` | 通过正在运行的网页服务开后台成员；`--dry-run` 只看计划 |
-| `crew wake <名字> "<消息>"` | 同项目任何 leader 或用户叫醒离线组员；leader 找别的 leader、组员找自己的 leader 时排通知，空闲时送达；用户找 leader 直接在网页聊；服务未运行或组员进程状态未知时报错 |
+| `crew leader start --name <名字> --task "<目标>" [--runtime claude\|codex]` / `crew leader close <组名>` | 通过正在运行的服务开 leader / 收一个分组；`start --dry-run` 只看计划 |
+| `crew spawn --name <名字> --group <组名> --task "<任务>" [--runtime claude\|codex]` | 开后台成员；同工具时继承 leader 的模型设置，跨工具重新选择；`--dry-run` 只看计划 |
+| `crew send <名字> "<消息>"` | Crew 会话按名字或 Crew 会话 ID 投递，支持 Claude / Codex 混合协作 |
+| `crew wake <名字> "<消息>"` | leader 或用户叫醒离线组员；leader 找别的 leader、组员找自己的 leader 时排通知，空闲时送达；用户找 leader 直接在页面聊；服务未运行或组员进程状态未知时报错 |
 | `crew compact [<名字>]` | 通过网页服务压缩自己的组员，用户也可指定会话；网页 leader 不带名字或指定自己时，等这一轮说完后压缩 |
 | `crew open <名字>` | 两步在 VS Code 接续同一会话，停止空闲的原运行端前须明确确认 |
 | `crew web --open` | 按当前目录打开工作区，已有服务时复用 |
@@ -103,7 +163,7 @@ QQ 命令不分大小写、忽略首尾空白：`/help`（`/h`）帮助，`/lead
 
 黑名单在 `~/.crew/blacklist.txt`，一行一条：`工具 :: 正则 :: 原因`，保存后马上生效。只放"任何时候都不能做、你点头也不行"的事；需要你先点头的操作写在 CLAUDE.md 之类的规矩里。
 
-守卫另外两条检查不用配置：资源被别人借着时，命令里出现它的守卫正则就拦；文件被别人 `crew claim` 了，用 Edit / Write 改它就拦。
+守卫另外两条检查不用配置：资源被别人借着时，命令里出现它的守卫正则就拦；文件被别人 `crew claim` 了，Claude 的 Edit / Write 和已接入的 Codex apply_patch 会检查归属。
 
 项目启用 Git 管理时，已收编会话在 Bash / PowerShell 执行 `git push`、`gh pr create`、`gh pr merge` 会被拦，按提示用 `crew git request` 交给 Git 管理员。Git 全局参数、可执行文件路径和连接命令同样检查；帮助命令与引号中的普通文本放行。Git 管理员可执行这些操作；未收编会话只在启动时看到协作提示。
 
@@ -134,26 +194,46 @@ Git 管理员可以自行定分支规则、推功能分支、开 PR、CI 绿后�
 | `~/.crew/qq.json` | QQ 机器人 app_id / app_secret，用户自己维护 |
 | `~/.crew/notify.json` | 主人 openid、通知起点、离开状态、当前 leader 与 leader 编号，Crew 维护 |
 | `~/.crew/web.json` | 正在运行的网页服务地址，供 `spawn`、`leader start` 和 `wake` 连接，支持自定义端口 |
+| `~/.crew/runtime.json` | 命令行启动器当前使用的 Python 和后端路径 |
+| `~/.crew/desktop/backend/` | 打包桌面版保留的后端源码，供 CLI 和 Codex 守卫继续使用 |
 | `~/.crew/codex_runs.jsonl` | 派活记录 |
+
+`~/.crew` 是默认数据目录；桌面 `--home <目录>` 和 CLI `crew --home <目录> ...` 可使用独立目录，适合隔离测试。
 
 ## 更新和开发
 
 - 从本地目录装的插件，**运行时直接用仓库里 `plugin/` 这份代码**（不另拷一份）。改 Python 代码对之后的每次钩子调用立刻生效；改了钩子注册、技能、角色定义，要在会话里 `/reload-plugins` 或重开会话。
 - 所以**不要在主检出里直接改代码**：在 `Temp/wt/<名字>` 开 worktree 改，测试通过再合进 main。主检出里的代码一旦出错，所有会话的钩子都会跟着出错。
+- 本仓库的远程 `main` 要求通过 PR 合并，至少 1 个有写入权限的账号批准。当前审核账号为 `qianlong-ai` 和 `akitokunnn`，任意一个批准即可；本机 AI 可以使用用户已授权的账号代为审核。GitHub 不允许 PR 发起账号批准自己的 PR，因此由这两个账号交叉审核；推送新提交后，原审核批准失效，需要重新审核。
 - 这是单人本机工具，优先保持代码直白、少配置；测试用临时白板，不随意关闭用户正在使用的会话或窗口。提交信息用中文说明改了什么、为什么，不加署名行。
-- 跑测试：`cd plugin` 后执行 `python -m unittest discover -s tests -v`。在 Claude 会话里跑时先清掉环境变量 `CLAUDE_CODE_SESSION_ID`（PowerShell：`Remove-Item Env:CLAUDE_CODE_SESSION_ID`），否则两个命令行测试会拿到外层会话的 ID 而失败。
+- 跑后端测试：`cd plugin` 后执行 `python -m unittest discover -s tests -v`；网页行为回归是 `node tests/test_runtime_ui.js`。在 Crew / Claude 会话里跑测试前，清掉继承的 `CREW_SESSION_ID`、`CLAUDE_CODE_SESSION_ID`，避免把外层会话身份带入临时白板。桌面测试在 `desktop` 下执行 `npm test`；打包与真实窗口 smoke 见桌面说明。
 - Python 后端只用标准库；网页是原生 JS，Markdown 用仓库内的 markdown-it 15.0.2，不需要构建步骤。
-- 成员和网页 leader 都用 PATH 里的 `claude`（npm 全局安装的命令行版），它的版本可能比 VS Code 扩展里带的旧。旧版本可能缺跨会话消息等功能，要定期 `npm install -g @anthropic-ai/claude-code@latest`。
+- Claude 会话使用 PATH 中的 `claude`，Codex 会话使用本机 Codex CLI；分别维护安装与登录。Claude CLI 版本可能与 VS Code 扩展内置版本不同，模型和 effort 清单随执行工具变化。
 
 ## 已知限制
 
 - 开在 VS Code 里的下属，网页只能看状态和卡片，不能发消息、也停不下它正在跑的一轮。
-- leader 用 SendMessage 联系在线下属；离线时用 `crew wake <名字> "<要它做的事>"` 在后台续跑原会话，再按 crew 名联系。VS Code、终端或后台仍有活进程时拒绝叫醒，进程状态未知时也拒绝启动。
+- 混合工具消息使用 `crew send` / `crew_send_message`；Claude 原生 SendMessage 不能直接寻址 Codex。离线成员用 `crew wake <名字> "<要它做的事>"` 恢复原会话；VS Code、终端或后台仍有活进程时拒绝重复启动，进程状态未知时也拒绝启动。
 - **被叫醒的会话如果 VS Code 里还留着旧标签，不要在旧标签里直接打字**，否则可能两个进程同时写一个会话；要接过去请用网页卡片上的“在 VS Code 打开”。
 - 服务启动后会自动续跑聊天日志最后状态仍是 working 的未归档会话；如果原进程还活着，等它退出再续跑，最多等 30 分钟。idle / offline 的不自动续跑。
-- 两个在线会话的权限模式不一样时（比如一个全放行、一个逐条确认），SendMessage 可能等人批准；协作会话统一用全放行（`/crew:trust`）。后台首次启动和所有后台续跑一律全放行，保留 Crew 守卫。
-- leader 起动时可选模型和 effort（low / medium / high / xhigh / max），默认跟账号设置走；新下属不写 `--model` / `--effort` 就继承所在组 leader 对应设置。Haiku 4.5 不支持 effort。对话头部显示进程回报的实际“模型 · effort”，菜单可切换，toast 提示“下一步起用 …”；运行中 effort 只能切具体档位，恢复账号默认需在停止后设置。后台下属卡片只读显示这两项。忙时对话底部和后台下属卡片显示阶段、计时与本轮输出 token。
+- Claude 在线会话的权限模式不同时，原生 SendMessage 可能等人批准；后台 Claude 会话使用全放行模式并保留 Crew 守卫。项目的信任目标不会替代执行工具的权限配置。
+- leader 起动时可选模型和 effort，默认跟账号设置走；同工具的新下属可继承 leader 设置，跨工具不继承不兼容模型。Haiku 4.5 不支持 effort，Codex 的可选模型与档位来自本机原生列表。对话头部显示进程回报的实际“模型 · effort”，菜单可切换；后台下属卡片只读显示。忙时显示阶段、计时与本轮输出 token。
 - 已经开着的会话要 `/reload-plugins` 或重开，才会加载插件的钩子和守卫；网页收编会登记身份，不会替它加载插件。
+- 旧 Claude 会话不会因为更改字段就变成 Codex 历史；Codex 暂不支持转交到 VS Code 的 Claude 编辑器。
+- 交流区自动摘要仍依赖 Claude / Haiku；只装 Codex 可运行核心 Codex 会话，摘要另需 Claude。Git 管理员的自动创建入口也仍使用 Claude。
+- Codex 守卫覆盖已接入的 shell / apply_patch；已启动命令的 `write_stdin` 不重新触发执行前 hook，其他原生工具或 MCP 需单独适配。hook 超时或崩溃后的停会话措施不能保证阻止所有副作用。
+- Lark 尚未接通，当前远程入口是 QQ。“全部”采用横排列组，尚未实现无限蓝图画布与拖动连线。信任报告是记录汇总草稿，实际验证和提交仍须由负责的 leader 补齐。
+
+## 桌面版 0.1.1
+
+本版功能与实际验证记录见 [DESKTOP_0.1.1.md](docs/DESKTOP_0.1.1.md)。使用时以实际打包产物和已启动服务为准：
+
+- 桌面多标签工作区：同一窗口打开多个项目，切换保留聊天草稿、所选 leader 和滚动位置；关闭标签保留后台任务。
+- 桌面外壳与安装入口：细标题栏、原生窗口按钮、统一应用 / 托盘图标，以及安装版。
+- “工具与更新”：检查 Claude Code / Codex 的本机与最新版本，提供更新、忙时排队、取消和自动更新开关。
+- “文档中心”：集中整理 AI 交付的文档、重要汇总、摘要与来源，在对话旁提供本组文档入口。
+- VS Code 历史会话发现、后台扫描重试及桌面服务复用的稳定性修复。
+- 成员 CC / Codex 往返切换、交接预览，以及每个 leader 独立且不主动唤醒的信任模式。
 
 ## 字体
 

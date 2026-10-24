@@ -1,5 +1,6 @@
 """One owner's QQ inbox, decision buttons and queued leader conversations."""
 import base64
+import hashlib
 import json
 import logging
 import re
@@ -10,15 +11,18 @@ from pathlib import Path
 from urllib.error import URLError
 from urllib.request import ProxyHandler, Request, build_opener
 
-from . import board, chat, qq, store
+from . import board, chat, decision_briefs, qq, runtimes, store, todo, trust_mode
 
 TEXT_LIMIT = 2000  # 10-23 实测 5000 字也能发；2000 一段是为了手机上好读。
 LOG = logging.getLogger(__name__)
 
 HELP = ('/help（/h）帮助\n/leader（/l）所有 leader（带编号）\n'
         '/leader 2（/l 2、/2）切换到编号 2 的 leader，/1 以此类推\n'
-        '/decisions（/d）所有项目未挂起的待拍板\n/back（/b）我回来了\n'
-        '普通文字和图片发给当前 leader。/1 是 leader 编号；点按钮或引用拍板消息回复。')
+        '/projects（/p）查看项目；/project 项目名 选择项目，再用 /leader 名字 选择 leader\n'
+        '/where（/w）确认普通消息将发给谁\n'
+        '/decisions（/d）所有项目未挂起的待拍板\n/todo（/t）查看要你亲手做的待办\n/back（/b）我回来了\n'
+        '普通文字和图片发给当前 leader。引用 leader 的消息会回复原 leader，不改变当前选择。'
+        '/1 是 leader 编号；点按钮或引用拍板消息回复。')
 
 
 # CommonMark ignores ** that touches punctuation on its inner side and a letter on its outer side, which is
@@ -49,6 +53,26 @@ def text_parts(text):
         yield text
 
 
+def decision_snapshot(decision, brief=None):
+    return {key: decision.get(key) for key in ('id', 'project', 'session_id', 'question', 'options', 'recommendation', 'blocking')} | {
+        'brief': brief}
+
+
+def snapshot_hash(snapshot):
+    content = json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+    return hashlib.sha256(content.encode('utf-8')).hexdigest()[:24]
+
+
+def saved_snapshot(shown):
+    content = json.loads(shown['content'])
+    if not isinstance(content, dict):
+        return None
+    if isinstance(content.get('decision_snapshot'), dict):
+        return content['decision_snapshot']
+    decision = content.get('decision')
+    return decision_snapshot(decision, decision.get('brief')) if isinstance(decision, dict) else None
+
+
 def desktop_locked():
     token = (Path.home() / 'RemoteDev' / 'desk_token').read_text(encoding='ascii').strip()
     request = Request('http://127.0.0.1:47800/api/status', data=b'{}', method='POST',
@@ -72,6 +96,7 @@ class Inbox:
         self.config = (json.loads(self.config_path.read_text(encoding='utf-8')) if self.config_path.exists()
                        else dict(owner_openid=None, since=None, manual_away=False,
                                  current_leader_session_id=None, leader_numbers={}))
+        self.config.setdefault('current_project', None)
         self.client, self.lock_status, self.batch_seconds = client, lock_status, batch_seconds
         self.lock = threading.RLock()
         self.locked, self.error, self.presence_error = False, None, None
@@ -187,6 +212,16 @@ class Inbox:
                              (session['project'], session['group_name'])).fetchone()
         return board.session(conn, group[0]) if group and group[0] else session
 
+    def _decision_leader(self, conn, decision):
+        sid = trust_mode.decision_leader(conn, decision['id'])
+        if sid is None:
+            return None
+        leader = board.session(conn, sid)
+        if (leader['project'] != decision['project'] or leader['role'] != 'leader' or
+                leader['status'] == 'closed' or board.is_archived(conn, sid)):
+            return None
+        return leader
+
     def refresh_presence(self):
         if not self.config['manual_away']:
             try:
@@ -278,14 +313,14 @@ class Inbox:
         now = self.service.now().isoformat()
         with closing(store.connect(self.home)) as conn:
             for item in self.pending.values():
-                leader = self._leader(conn, item['session_id'])
-                label = leader['crew_name'] or '未命名会话'
                 decision = next((d for d in board.decisions(conn, item['project'], all=True)
                                  if d['id'] == item.get('decision_id') and d['status'] == 'open' and not d['held']), None)
                 if item['kind'] == 'decision' and decision is None:
                     continue
+                leader = self._decision_leader(conn, decision) if decision else self._leader(conn, item['session_id'])
+                label = (leader['crew_name'] or '未命名会话') if leader else '无leader'
                 entry = dict(item=item, decision=decision, workspace=item['project'], leader=label,
-                             leader_session_id=leader['session_id'])
+                             leader_session_id=leader['session_id'] if leader else decision['session_id'])
                 if decision:
                     self.record_message(conn, item['id'], entry, item['kind'], now)
                     self.deliver(conn, [item['id']], self.client.send_markdown, *self.question_message(entry))
@@ -299,6 +334,8 @@ class Inbox:
                 self.deliver(conn, [e['item']['id'] for e in notes], self.client.send_text, text)
 
     def record_message(self, conn, identity, entry, kind, now):
+        if entry.get('decision') is not None:
+            entry['decision_snapshot'] = decision_snapshot(entry['decision'], decision_briefs.get(conn, entry['decision']['id']))
         conn.execute('INSERT INTO notification_messages(item_id,project,leader_session_id,decision_id,kind,created_at,content,status) VALUES(?,?,?,?,?,?,?,?)',
                      (identity, entry['workspace'], entry['leader_session_id'],
                       entry['decision']['id'] if entry['decision'] else None, kind, now,
@@ -318,10 +355,19 @@ class Inbox:
 
     def question_message(self, entry):
         decision = entry['decision']
+        snapshot = entry.get('decision_snapshot') or decision_snapshot(decision, decision.get('brief'))
+        brief = snapshot['brief']
         text = '%s·%s 待拍板\n\n%s' % (
-            entry['workspace'], entry['leader'], decision['question'])
+            entry['workspace'], entry['leader'], brief['title'] if brief else decision['question'])
+        if brief:
+            for label, field in (('背景', 'context'), ('为什么请你决定', 'why_user'), ('影响', 'impact')):
+                if brief.get(field):
+                    text += '\n\n%s：%s' % (label, brief[field])
         if decision['recommendation'] is not None:
             text += '\n\n建议：' + decision['recommendation']
+        if brief:
+            text += '\n推荐理由：' + brief['recommendation_reason']
+            text += '\n\n' + '\n'.join('%s：%s' % (option['label'], option['consequence']) for option in brief['options'])
         options = decision['options']
         if not options or len(options) > 25:
             if options:
@@ -331,7 +377,7 @@ class Inbox:
         buttons = [dict(id=str(index),
                         render_data=dict(label=option, visited_label='已选：' + option,
                                          style=int(option == decision['recommendation'])),
-                        action=dict(type=1, permission=dict(type=2), data='%s:%s' % (decision['id'], index),
+                        action=dict(type=1, permission=dict(type=2), data='%s:%s:%s' % (decision['id'], index, snapshot_hash(snapshot)),
                                     group_id=str(decision['id']), click_limit=1,
                                     unsupport_tips='请引用这条拍板消息回复')) for index, option in ordered]
         keyboard = dict(content=dict(rows=[dict(buttons=buttons[i:i + 5]) for i in range(0, len(buttons), 5)]))
@@ -411,34 +457,66 @@ class Inbox:
                 raise board.BoardError('图片下载失败：%s(%s): %s' % (type(exc).__name__, exc.kind, exc)) from exc
             validated.append(dict(media_type=image['content_type'], data=base64.b64encode(raw).decode('ascii')))
         validated = chat.validate_images(validated)
-        shown = conn.execute("SELECT * FROM notification_messages WHERE ref_idx=? AND status='sent' AND kind IN ('decision','query') LIMIT 1",
-                             (event['quoted_ref'],)).fetchone() if event['quoted_ref'] else None
+        quoted = conn.execute("SELECT * FROM notification_messages WHERE ref_idx=? AND status='sent' ORDER BY rowid DESC",
+                              (event['quoted_ref'],)).fetchall() if event['quoted_ref'] else []
+        shown = next((row for row in quoted if row['kind'] in ('decision', 'query')), None)
         if shown is not None:
             if not text.strip():
                 raise board.BoardError('请用文字答复这道拍板题')
-            decision = next(d for d in board.decisions(conn, shown['project'], all=True) if d['id'] == shown['decision_id'])
-            self.save_answer(conn, decision, text, event['message_id'])
+            decision = next((d for d in board.decisions(conn, shown['project'], all=True) if d['id'] == shown['decision_id']), None)
+            if decision is None or not self.snapshot_matches(conn, decision, shown):
+                self.send_text('这道题已更新，请先 /decisions 查看新内容后再回复。')
+                return
+            self.save_answer(conn, decision, text, event['message_id'], expected_snapshot=saved_snapshot(shown))
         elif text.strip() or validated:
-            self.queue_text(conn, dict(answer=text, images=validated, message_id=event['message_id']))
+            targets = {(row['project'], row['leader_session_id']) for row in quoted}
+            if len(targets) > 1:
+                self.send_text('这条消息涉及多个 leader，请先 /leader 选择要回复的人。')
+                return
+            project, target = next(iter(targets)) if targets else (None, None)
+            self.queue_text(conn, dict(answer=text, images=validated, message_id=event['message_id']),
+                            session_id=target, project_name=project)
         else:
             self.send_text('请提供文字或图片')
 
     def answer_button(self, conn, data, identity):
-        match = re.fullmatch(r'([1-9][0-9]*):([0-9]+)', data)
+        match = re.fullmatch(r'([1-9][0-9]*):([0-9]+)(?::([0-9a-f]{24}))?', data)
         if match is None:
             self.send_text('按钮无效，请先 /decisions。')
             return
         decision_id, index = int(match[1]), int(match[2])
-        shown = conn.execute("SELECT project,content FROM notification_messages WHERE decision_id=? AND status='sent' AND kind IN ('decision','query') LIMIT 1",
-                             (decision_id,)).fetchone()
-        if shown is None:
+        shown = conn.execute("SELECT * FROM notification_messages WHERE decision_id=? AND status='sent' AND kind IN ('decision','query') ORDER BY rowid DESC",
+                             (decision_id,)).fetchall()
+        if not shown:
             self.send_text('这道题尚未展示，请先 /decisions 查看待拍板。')
             return
-        decision = next(d for d in board.decisions(conn, shown['project'], all=True) if d['id'] == decision_id)
+        decision = next((d for d in board.decisions(conn, shown[0]['project'], all=True) if d['id'] == decision_id), None)
+        token = match[3]
+        matching = [row for row in shown if self.snapshot_matches(conn, decision, row)] if decision is not None else []
+        if token is not None:
+            matching = [row for row in matching if snapshot_hash(saved_snapshot(row)) == token]
+            valid = bool(matching)
+        else:
+            # Old buttons carried only a numeric index. Once the decision has
+            # changed, that index cannot identify the choice the user saw.
+            revised = any(json.loads(row[0]).get('id') == decision_id for row in conn.execute(
+                "SELECT detail FROM events WHERE project=? AND kind='decision:revise'", (shown[0]['project'],)))
+            valid = not revised and len(matching) == len(shown)
+        if not valid:
+            self.send_text('这道题已更新，请先 /decisions 查看新内容后再选择。')
+            return
         if index >= len(decision['options']):
             self.send_text('按钮选项序号无效，请先 /decisions。')
             return
-        self.save_answer(conn, decision, decision['options'][index], identity)
+        self.save_answer(conn, decision, decision['options'][index], identity, expected_snapshot=saved_snapshot(matching[0]))
+
+    def snapshot_matches(self, conn, decision, shown):
+        if decision is None:
+            return False
+        try:
+            return saved_snapshot(shown) == decision_snapshot(decision, decision_briefs.get(conn, decision['id']))
+        except (TypeError, ValueError, KeyError):
+            return False
 
     def leader_catalog(self, conn):
         leaders = [dict(row) for row in conn.execute(
@@ -462,10 +540,61 @@ class Inbox:
         return [leader for project in dict.fromkeys(s['project'] for s in leaders)
                 for leader in board.sort_leaders(conn, project, [s for s in leaders if s['project'] == project])]
 
+    def project_list(self, conn):
+        leaders = self.leader_catalog(conn)
+        current = self.config['current_project']
+        if current is None:
+            current = next((leader['project'] for leader in leaders
+                            if leader['session_id'] == self.config['current_leader_session_id']), None)
+        lines = ['项目列表 · 用 /project 项目名 查看该项目的 leader']
+        for project in board.projects(conn):
+            count = sum(leader['project'] == project['name'] for leader in leaders)
+            lines.append('%s%s · %s 个 leader' % (project['name'], '（当前）' if project['name'] == current else '', count))
+        return '\n'.join(lines)
+
+    def select_project(self, conn, project_name):
+        if project_name not in {project['name'] for project in board.projects(conn)}:
+            return '没有这个项目，请用 /projects 查看名称。'
+        leaders = self.leader_catalog(conn)
+        with self.lock:
+            self.config['current_project'] = project_name
+            if not any(leader['session_id'] == self.config['current_leader_session_id'] and leader['project'] == project_name
+                       for leader in leaders):
+                self.config['current_leader_session_id'] = None
+            self.save_config()
+        choices = [leader for leader in leaders if leader['project'] == project_name]
+        if not choices:
+            return '当前项目：%s。这个项目暂时没有可用的 leader。' % project_name
+        return ('当前项目：%s。请用 /leader 名字 或 /编号 选择要聊天的 leader。\n' % project_name +
+                '\n'.join('%s %s·%s' % (leader['number'], project_name, leader['crew_name']) for leader in choices))
+
+    def select_leader(self, selected):
+        with self.lock:
+            self.config['current_leader_session_id'] = selected['session_id']
+            self.config['current_project'] = selected['project']
+            self.save_config()
+        return '已切换到 %s·%s。' % (selected['project'], selected['crew_name'])
+
+    def current_target(self, conn):
+        selected = next((leader for leader in self.leader_catalog(conn)
+                         if leader['session_id'] == self.config['current_leader_session_id']), None)
+        if selected is None:
+            project = self.config['current_project']
+            return ('当前项目：%s，还没有选择 leader。请用 /leader 名字 或 /编号 选择。' % project
+                    if project else '还没有选择项目和 leader。请先 /projects，或用 /leader 和 /编号 选择。')
+        return '普通文字和图片将发给 %s·%s。引用其他 leader 的消息会只回复原 leader。' % (selected['project'], selected['crew_name'])
+
     def handle_command(self, conn, reply):
-        command, identity = reply['answer'].strip().lower(), reply['message_id']
+        raw, identity = reply['answer'].strip(), reply['message_id']
+        command = raw.lower()
         if command in ('/help', '/h'):
             text = HELP
+        elif command in ('/projects', '/project', '/p'):
+            text = self.project_list(conn)
+        elif command.startswith(('/project ', '/p ')):
+            text = self.select_project(conn, raw.split(None, 1)[1].strip())
+        elif command in ('/where', '/w'):
+            text = self.current_target(conn)
         elif command in ('/back', '/b'):
             self.set_away(False)
             self.refresh_presence()
@@ -475,6 +604,18 @@ class Inbox:
                 text = '已取消手动离开；当前仍因锁屏被视为离开。' if self.locked else '已取消手动离开；当前未因锁屏被视为离开。'
         elif command in ('/decisions', '/d'):
             return self.show_questions(conn, identity)
+        elif command in ('/todo', '/t'):
+            items = todo.list(conn)
+            if not items:
+                text = '目前没有要你亲手做的待办。'
+            else:
+                lines = ['我的待办 · %s 件（回到电脑后在 Crew 查看步骤并处理）' % len(items)]
+                for item in items[:20]:
+                    label = '%s · %s · %s' % (item['project'], item.get('group') or '未分组', item['proposer_name'])
+                    lines.append('%s%s\n%s' % ('卡着 ' + item['proposer_name'] + ' · ' if item['blocking'] else '', item['title'], label))
+                if len(items) > 20:
+                    lines.append('另有 %s 件，请在 Crew 查看。' % (len(items) - 20))
+                text = '\n\n'.join(lines)
         elif command in ('/leader', '/l'):
             leaders = self.leader_catalog(conn)
             priorities = {}
@@ -485,15 +626,14 @@ class Inbox:
             with self.service.agents_lock:
                 agents, error = self.service.agents, self.service.agents_error
             for project in {s['project'] for s in leaders}:
-                identities = [{'sessionId': s['session_id']} for s in board.sessions(conn, project)] if error else agents
+                identities = [{'sessionId': s['session_id']} for s in board.sessions(conn, project)] if error else self.service.managed_agents(conn, agents)
                 state = board.status(conn, project, identities)
                 states.update((s['session_id'], s['status']) for s in [*state['ungrouped'], *(s for g in state['groups'] for s in g['members'])])
             pending = {}
-            for decision in conn.execute("SELECT d.session_id FROM decisions d "
+            for decision in conn.execute("SELECT d.id,d.project,d.session_id FROM decisions d "
                                          "LEFT JOIN decision_holds h ON h.decision_id=d.id "
                                          "WHERE d.status='open' AND h.decision_id IS NULL"):
-                asker = board.session(conn, decision['session_id'])
-                leader = asker if asker['role'] == 'leader' else board.leader_of(conn, asker['session_id'])
+                leader = self._decision_leader(conn, decision)
                 if leader is not None:
                     sid = leader['session_id']
                     pending[sid] = pending.get(sid, 0) + 1
@@ -518,12 +658,21 @@ class Inbox:
                 if selected is None:
                     text = '这个 leader 编号已失效，请先 /leader。'
                 else:
-                    with self.lock:
-                        self.config['current_leader_session_id'] = selected['session_id']
-                        self.save_config()
-                    text = '已切换到 %s·%s。' % (selected['project'], selected['crew_name'])
+                    text = self.select_leader(selected)
             else:
-                text = '未知命令，请用 /h 查看帮助。'
+                named = re.fullmatch(r'/(?:leader|l)\s+(.+)', raw, re.IGNORECASE)
+                if named and not named[1].strip().isdigit():
+                    project = self.config['current_project']
+                    selected = [leader for leader in self.leader_catalog(conn)
+                                if leader['crew_name'] == named[1].strip() and (project is None or leader['project'] == project)]
+                    if len(selected) == 1:
+                        text = self.select_leader(selected[0])
+                    elif len(selected) > 1:
+                        text = '多个项目有这个 leader 名字，请先用 /project 项目名 指定项目，再选择。'
+                    else:
+                        text = '当前项目没有这个 leader，请用 /leader 查看，或用 /h 查看帮助。'
+                else:
+                    text = '未知命令，请用 /h 查看帮助。'
         self.send_text(text)
 
     def show_questions(self, conn, identity):
@@ -535,7 +684,7 @@ class Inbox:
                     held_count += 1
                     continue
                 asker = board.session(conn, decision['session_id'])
-                leader = asker if asker['role'] == 'leader' else board.leader_of(conn, asker['session_id'])
+                leader = self._decision_leader(conn, decision)
                 label = leader['crew_name'] if leader is not None else '无leader'
                 entries.append(dict(decision=decision, workspace=project['name'], leader=label,
                                     leader_session_id=leader['session_id'] if leader is not None else asker['session_id']))
@@ -550,35 +699,59 @@ class Inbox:
         if held_count:
             self.send_text('另有 %s 道挂起。' % held_count)
 
-    def save_answer(self, conn, decision, answer, identity):
-        if decision['status'] != 'open':
-            self.send_text('这道题已处理，请先 /decisions 查看待拍板。')
-            return
-        asker = board.session(conn, decision['session_id'])
-        if asker['status'] == 'closed' or board.is_archived(conn, asker['session_id']):
-            self.send_text('这条会话已归档或移出 Crew，答复尚未保存。请先在 Crew 恢复会话。')
-            return
+    def save_answer(self, conn, decision, answer, identity, expected_snapshot=None):
+        error = None
         now = self.service.now().isoformat()
-        board.answer(conn, decision['id'], answer, actor='qq', now=now)
-        leader = asker if asker['role'] == 'leader' else board.leader_of(conn, asker['session_id'])
-        if leader is not None:
-            notice = '#%s\n提问者：%s（cc_name：%s）\n问题：%s\n答复：%s\n请马上用 SendMessage 转告并叫它继续' % (
-                decision['id'], asker['crew_name'], asker['cc_name'], decision['question'], answer)
-            board.queue_leader_notice(conn, leader['session_id'], notice, 'qq', now=now)
+        # The CLI can revise a question without the service's Python lock. Keep
+        # the final snapshot check, answer and leader notice in one DB write
+        # transaction, so a concurrent revision cannot change what was chosen.
+        with board.transaction(conn):
+            current = next((item for item in board.decisions(conn, decision['project'], all=True) if item['id'] == decision['id']), None)
+            if current is None or current['status'] != 'open':
+                error = '这道题已处理，请先 /decisions 查看待拍板。'
+            elif expected_snapshot is not None and expected_snapshot != decision_snapshot(current, decision_briefs.get(conn, current['id'])):
+                error = '这道题已更新，请先 /decisions 查看新内容后再选择。'
+            else:
+                decision = current
+                asker = board.session(conn, decision['session_id'])
+                if asker['status'] == 'closed' or board.is_archived(conn, asker['session_id']):
+                    error = '这条会话已归档或移出 Crew，答复尚未保存。请先在 Crew 恢复会话。'
+                else:
+                    board.answer.__wrapped__(conn, decision['id'], answer, actor='qq', now=now)
+                    leader = self._decision_leader(conn, decision)
+                    if leader is not None:
+                        mixed = any(runtimes.get(conn, person['session_id'])['runtime'] == 'codex'
+                                    for person in (asker, leader))
+                        if mixed:
+                            action = ('请按用户答复继续' if asker['session_id'] == leader['session_id'] else
+                                      '请马上用 crew send %s "<用户答复>" 转告并叫它继续；Codex 也可用 crew_send_message' % asker['crew_name'])
+                            notice = '#%s\n提问者：%s（Crew ID：%s）\n问题：%s\n答复：%s\n%s' % (
+                                decision['id'], asker['crew_name'], asker['session_id'], decision['question'], answer, action)
+                        else:
+                            notice = '#%s\n提问者：%s（cc_name：%s）\n问题：%s\n答复：%s\n请马上用 SendMessage 转告并叫它继续' % (
+                                decision['id'], asker['crew_name'], asker['cc_name'], decision['question'], answer)
+                        board._queue_leader_notice(conn, leader['session_id'], notice, 'qq', now=now)
+        if error:
+            self.send_text(error)
+            return
         preview = decision['question'][:20] + ('…' if len(decision['question']) > 20 else '')
         self.send_text('已保存：%s%s。' % (preview, '，已转告 leader' if leader else ''))
 
-    def queue_text(self, conn, reply):
-        session_id = self.config['current_leader_session_id']
+    def queue_text(self, conn, reply, session_id=None, project_name=None):
+        quoted = session_id is not None
+        session_id = session_id if quoted else self.config['current_leader_session_id']
         leaders = self.leader_catalog(conn)
         if session_id not in {s['session_id'] for s in leaders}:
-            self.send_text('先用 /leader 和 /1 选一个 leader。')
+            self.send_text('引用的 leader 已归档或失效，请先 /leader 重新选择。' if quoted else '先用 /leader 和 /1 选一个 leader。')
+            return
+        leader = next(s for s in leaders if s['session_id'] == session_id)
+        if project_name is not None and leader['project'] != project_name:
+            self.send_text('引用消息的项目与 leader 不匹配，请先 /leader 重新选择。')
             return
         conn.execute('INSERT INTO notification_replies VALUES(?,?,?,?,?,?)',
                      (reply['message_id'], session_id,
                       json.dumps(dict(text=reply['answer'], images=reply['images']), ensure_ascii=False),
                       'queued', None, self.service.now().isoformat()))
-        leader = next(s for s in leaders if s['session_id'] == session_id)
         label = '%s·%s' % (leader['project'], leader['crew_name'])
         queued = conn.execute("SELECT 1 FROM notification_replies WHERE session_id=? AND status IN ('queued','running') AND message_id!=?",
                               (session_id, reply['message_id'])).fetchone()

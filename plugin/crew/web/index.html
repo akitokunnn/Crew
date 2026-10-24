@@ -8,20 +8,28 @@
   <link id="project-favicon" rel="icon" type="image/svg+xml" href="/logo.svg?v=c-dot">
   <link rel="stylesheet" href="/style.css">
   <link rel="stylesheet" href="/git.css">
+  <link rel="stylesheet" href="/documents.css">
+  <link rel="stylesheet" href="/leader-trust-ui.css">
+  <link rel="stylesheet" href="/runtime-switch-ui.css">
   <script src="/vendor/markdown-it.min.js" defer></script>
   <script src="/chat.js" defer></script>
   <script src="/channel.js" defer></script>
   <script src="/sounds.js" defer></script>
   <script src="/git.js" defer></script>
   <script src="/themes.js" defer></script>
+  <script src="/documents.js" defer></script>
+  <script src="/leader-trust-ui.js" defer></script>
+  <script src="/runtime-switch-ui.js" defer></script>
   <script src="/app.js" defer></script>
 </head>
 <body>
   <div class="app" id="app">
     <aside class="sb" id="sidebar" aria-label="工作区导航"></aside>
     <main class="main" id="main" aria-label="工作区内容"></main>
+    <aside class="documents-rail" id="documents-rail" aria-label="本组文档" hidden></aside>
     <aside class="rp" id="right-panel" aria-label="本组架构图"></aside>
   </div>
+  <button class="documents-scrim" id="documents-scrim" aria-label="关闭本组文档" hidden></button>
   <div id="overlay-root"></div>
   <div id="toast-root" aria-live="polite" aria-atomic="true"></div>
 </body>

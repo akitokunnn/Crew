@@ -15,9 +15,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlencode, urlsplit
 from urllib.request import ProxyHandler, build_opener
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 
-from . import board, channel, channel_digest, chat, claude_limits, git_admin, git_ci, git_view, hooks, models, notifications, open_session, presentation, session_ops, spawn, store, themes, usage, usage_cli, vscode_sessions
+from . import board, channel, channel_digest, chat, claude_limits, documents, git_admin, git_ci, git_view, hooks, messaging, models, notifications, open_session, presentation, runtime_catalog, runtime_switch, runtimes, session_ops, spawn, store, themes, todo, trust_mode, usage, usage_cli, vscode_sessions
+from .service_lock import HomeServiceLock
 
 
 def _text(data, key):
@@ -35,13 +36,15 @@ class Service:
     def __init__(self, home, plugin_root, agents_provider=None,
                  claude_root=None, codex_root=None, runs_file=None, now=None, cwd=None, process_factory=subprocess.Popen,
                  notification_client=None, lock_status=notifications.desktop_locked, notification_batch_seconds=30,
-                 vscode_state_db=None):
+                 vscode_state_db=None, migrate_manual_work=False):
         if agents_provider is None:
             from .cli import claude_agents
             agents_provider = claude_agents
         self.home, self.plugin_root = Path(home), Path(plugin_root)
         self.agents_provider, self.clock = agents_provider, now
         self.chat = chat.Manager(home, plugin_root, agents_provider, process_factory)
+        self.runtime_catalog = runtime_catalog.Catalog()
+        self.migrate_manual_work = migrate_manual_work
         self.claude_root = Path.home() / ".claude" / "projects" if claude_root is None else Path(claude_root)
         self.codex_root = Path.home() / ".codex" / "sessions" if codex_root is None else Path(codex_root)
         self.runs_file = self.home / "codex_runs.jsonl" if runs_file is None else Path(runs_file)
@@ -95,12 +98,17 @@ class Service:
         while not self.stop.is_set():
             self.refresh_agents()
             self._refresh_vscode()
-            self.digest_channels()
-            with self.agents_lock:
-                agents, error = self.agents, self.agents_error
-            if error is None:
+            try:
+                self.digest_channels()
+                with self.agents_lock:
+                    agents, error = self.agents, self.agents_error
                 with self.write_lock, closing(store.connect(self.home)) as conn:
-                    self.chat.auto_resume(conn, agents, now=self.now().isoformat(timespec="milliseconds").replace("+00:00", "Z"))
+                    self.chat.auto_resume(conn, agents, now=self.now().isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+                                          runtime=None if error is None else 'codex')
+            except (sqlite3.Error, OSError, subprocess.SubprocessError):
+                # A temporary failure in another task sharing this worker must
+                # not permanently disable agent discovery and VS Code scans.
+                traceback.print_exc()
             if self.stop.wait(10):
                 break
 
@@ -110,26 +118,48 @@ class Service:
                 self.channel_digest.start(conn, project['name'], trigger='auto')
 
     def _refresh_vscode(self):
+        try:
+            self._read_vscode()
+        except (sqlite3.Error, OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError) as exc:
+            # Transcripts and worktrees can change during a read. A source
+            # failure must not terminate the shared agents/auto-resume worker.
+            # Keep the last good snapshot and retry on the next poll.
+            with self.agents_lock:
+                self.vscode_error = "VS Code 会话扫描失败（10 秒后重试）：%s: %s" % (type(exc).__name__, exc)
+
+    def _read_vscode(self):
         with self.write_lock, self.scan_lock, closing(store.connect(self.home)) as conn:
             projects = board.projects(conn)
-        sessions, record_ids = {}, {}
+        sessions, record_ids, errors = {}, {}, []
+        with self.agents_lock:
+            previous_sessions = self.vscode_sessions.copy()
+            previous_ids = self.vscode_record_ids.copy()
         for project in projects:
-            roots = vscode_sessions.project_roots(project["root"])
-            cache = self.vscode_session_caches.setdefault(project["name"], vscode_sessions.SessionList())
-            sessions[project["name"]] = cache.list(self.claude_root, roots)
-            record_ids[project["name"]] = cache.record_ids.copy()
+            name = project["name"]
+            try:
+                roots = vscode_sessions.project_roots(project["root"])
+                cache = self.vscode_session_caches.setdefault(name, vscode_sessions.SessionList())
+                sessions[name] = cache.list(self.claude_root, roots)
+                record_ids[name] = cache.record_ids.copy()
+                errors.extend(name + ": " + error for error in cache.errors)
+            except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError) as exc:
+                sessions[name] = previous_sessions.get(name, [])
+                record_ids[name] = previous_ids.get(name, set())
+                errors.append("%s: %s: %s" % (name, type(exc).__name__, exc))
+        source_error = "VS Code 来源读取失败（10 秒后重试）：" + "; ".join(errors[:10]) if errors else None
         try:
             hidden = vscode_sessions.hidden_ids(self.vscode_state_db)
         except (sqlite3.Error, OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
             with self.agents_lock:
                 self.vscode_sessions, self.vscode_record_ids = sessions, record_ids
                 reason = "%s: %s" % (type(exc).__name__, exc)
-                self.vscode_error = ("还没读到 VS Code 会话列表；" + reason
-                                     if self.vscode_hidden_ids is None else reason)
+                archive_error = ("还没读到 VS Code 会话列表；" + reason
+                                 if self.vscode_hidden_ids is None else reason)
+                self.vscode_error = archive_error + ("；" + source_error if source_error else "")
         else:
             with self.agents_lock:
                 self.vscode_sessions, self.vscode_record_ids = sessions, record_ids
-                self.vscode_hidden_ids, self.vscode_error = hidden, None
+                self.vscode_hidden_ids, self.vscode_error = hidden, source_error
             with self.write_lock, self.scan_lock, closing(store.connect(self.home)) as conn:
                 now = self.now().isoformat(timespec="milliseconds").replace("+00:00", "Z")
                 for session in conn.execute("SELECT session_id,project FROM sessions WHERE crew_name IS NOT NULL AND crew_name<>''"):
@@ -139,6 +169,14 @@ class Service:
                         board.record_event(conn, "vscode:archived", session["project"], sid, {}, now=now)
 
     def start(self):
+        if self.migrate_manual_work:
+            with closing(store.connect(self.home)) as conn:
+                todo.backfill(conn)
+                from . import decision_briefs
+                for project in board.projects(conn):
+                    for item in board.decisions(conn, project['name']):
+                        if decision_briefs.get(conn, item['id']) is None:
+                            decision_briefs.queue_review(conn, item['id'])
         self.worker = threading.Thread(target=self._poll_agents, name="crew-agents", daemon=True)
         self.worker.start()
         self.notice_worker = threading.Thread(target=self._poll_notices, name="crew-leader-notices", daemon=True)
@@ -161,6 +199,7 @@ class Service:
 
     def _poll_notices(self):
         while not self.stop.wait(2):
+            self.chat.deliver_messages()
             self.deliver_notices()
 
     def _poll_git_ci(self):
@@ -186,9 +225,10 @@ class Service:
                             with self.agents_lock:
                                 agents, agents_error = self.agents, self.agents_error
                             # Unknown process state could mean the leader runs elsewhere; resuming then would start a second copy.
-                            if agents_error is not None or not self.agents_ready.is_set():
+                            claude = runtimes.get(conn, sid)['runtime'] == 'claude'
+                            if claude and (agents_error is not None or not self.agents_ready.is_set()):
                                 continue
-                            if any(agent['sessionId'] == sid for agent in agents):
+                            if claude and any(agent['sessionId'] == sid for agent in agents):
                                 if conn.execute("SELECT 1 FROM events WHERE session_id=? AND kind='leader:notice_blocked'",
                                                 (sid,)).fetchone() is None:
                                     board.record_event(conn, 'leader:notice_blocked', leader['project'], sid,
@@ -219,9 +259,10 @@ class Service:
             try:
                 with self.chat.lock:
                     with self.agents_lock:
-                        if self.agents_error is not None or not self.agents_ready.is_set():
+                        claude = runtimes.get(conn, sid)['runtime'] == 'claude'
+                        if claude and not self.chat.running(sid) and (self.agents_error is not None or not self.agents_ready.is_set()):
                             continue
-                        external = any(agent['sessionId'] == sid for agent in self.agents)
+                        external = claude and any(agent['sessionId'] == sid for agent in self.agents)
                     if self.chat.running(sid):
                         if self.chat.busy(sid):
                             continue
@@ -311,11 +352,17 @@ class Service:
         session = board.update_cc_name(conn, sid, cc_name, now=now)
         leader = board.leader_of(conn, sid)
         if leader is not None:
+            peer = any(runtimes.get(conn, s['session_id'])['runtime'] == 'codex' for s in (session, leader))
             address = "（SendMessage 地址：%s）" % session["cc_name"] if session["cc_name"] else ""
-            board.queue_leader_notice(conn, leader["session_id"],
-                "%s%s 已收编到你组。请用 SendMessage 欢迎它、说明你是它的 leader、守则 /crew:member，"
+            notice = ("%s%s 已收编到你组。请用 SendMessage 欢迎它、说明你是它的 leader、守则 /crew:member，"
                 "并请它用 crew card 写下负责范围和完成标准；crew who 显示离线时，用 crew wake %s \"要它做的事\" "
-                "叫醒后按 crew 名 SendMessage。" % (session["crew_name"], address, session["crew_name"]),
+                "叫醒后按 crew 名 SendMessage。" % (session["crew_name"], address, session["crew_name"]))
+            if peer:
+                notice = ('%s 已收编到你组。请用 crew send %s "<欢迎与分工>"，说明你是它的 leader，'
+                          '请它阅读成员守则并用 crew card 写下负责范围和完成标准。离线时用 crew wake 接续原会话。' %
+                          (session['crew_name'], session['crew_name']))
+            board.queue_leader_notice(conn, leader["session_id"],
+                notice,
                 "crew", now=now)
         return session
 
@@ -327,14 +374,17 @@ class Service:
             result = {'project': None, 'projects': [{key: p[key] for key in ('name', 'theme')} for p in board.projects(conn)],
                       'themes': themes.THEMES,
                       'models': models.MODELS, 'efforts': models.EFFORTS,
+                      'runtimes': self.runtime_catalog.snapshot(),
                       'now': self.now().isoformat(), 'agents_error': error, 'notification': self.notification_status(),
                       'leaders': [], 'members': [], 'decisions': [], 'attention': [],
+                      'todos': [], 'todo_count': 0,
                       'candidates': {'running': [], 'others': []},
                       'channel': {'unread': 0, 'latest_id': 0, 'digesting': False, 'digest_error': None, 'digest_id': None},
                       'limits': self.limits(conn)}
             result['vscode_error'] = self.vscode_error
             if project_name is not None:
                 name = self.selected_project(conn, project_name)
+                agents = self.managed_agents(conn, agents)
                 card = channel.digest(conn, name)
                 result['channel'] = {**channel.state(conn, name), **self.channel_digest.state(name),
                                      'digest_id': card['id'] if card is not None else None}
@@ -343,6 +393,8 @@ class Service:
                 status = board.status(conn, name, identities)
                 git_config = board.git_config(conn, name)
                 result['project'] = {key: status['project'][key] for key in ('name', 'root', 'theme')}
+                result['todos'] = todo.list(conn, name)
+                result['todo_count'] = len(result['todos'])
                 open_groups = {group['name'] for group in status['groups'] if group['closed_at'] is None}
                 removed = {r[0] for r in conn.execute('SELECT session_id FROM session_controls WHERE removed=1')}
                 sessions = [s for s in [*status['ungrouped'], *(s for group in status['groups'] for s in group['members'])]
@@ -365,10 +417,10 @@ class Service:
                 for decision in decisions:
                     if decision['status'] == 'open':
                         asker = board.session(conn, decision['session_id'])
-                        leader = asker if asker['role'] == 'leader' else board.leader_of(conn, asker['session_id'])
+                        leader_id=trust_mode.decision_leader(conn,decision['id'])
                         result['decisions'].append({**{key: decision[key] for key in (
                             'id', 'session_id', 'question', 'options', 'recommendation', 'blocking', 'created_at', 'held', 'held_at')},
-                            'asker': asker['crew_name'], 'leader_session_id': leader['session_id'] if leader else None})
+                            'asker': asker['crew_name'], 'leader_session_id': leader_id})
                 tasks = usage.codex_tasks(conn, None, None, project=name)
                 reports, leases, claims = board.reports(conn, name), board.leases(conn, name), board.claims(conn, name)
                 member_leaders = {s['session_id']: board.leader_of(conn, s['session_id'])
@@ -388,6 +440,8 @@ class Service:
                         read_seq = board.read_seq(conn, sid)
                         result['leaders'].append(dict(
                             session_id=sid, name=session['crew_name'], goal=session['task'], status=session['status'],
+                            runtime=runtimes.get(conn, sid)['runtime'],
+                            trust=trust_mode.get(conn,name,sid),
                             is_git_admin=git_config is not None and git_config['admin_session_id'] == sid,
                             **models.get(conn, sid), applied=self.chat.applied(sid), activity=self.chat.activity(sid),
                             context=context, **codex,
@@ -407,6 +461,8 @@ class Service:
                         card = board.card(conn, sid)
                         result['members'].append(dict(
                             session_id=sid, name=session['crew_name'], title=titles.get(sid),
+                            runtime=runtimes.get(conn, sid)['runtime'],
+                            runtime_switch=runtime_switch.state(conn,session,self.chat,agents,error),
                             **models.get(conn, sid), applied=self.chat.applied(sid), activity=self.chat.activity(sid),
                             context=context, busy=self.chat.busy(sid) or (sid in present and present[sid].get('status') == 'busy'),
                             running=self.chat.running(sid) or sid in present,
@@ -425,9 +481,22 @@ class Service:
                 for leader in result['leaders']:
                     leader['priority'] = priorities.get(leader['session_id'])
                 result['candidates'] = self.candidates(conn, name)
+                from . import decision_briefs
+                result['decisions'] = decision_briefs.enrich(conn, result['decisions'])
                 result['attention'] = presentation.attention(conn, sessions, decisions, tasks,
                     {sid: history['events'] for sid, history in histories.items()})
             return result
+
+    def managed_agents(self, conn, agents):
+        result = list(agents)
+        with self.chat.lock:
+            for sid, current in self.chat.processes.items():
+                if current.process.poll() is None:
+                    session = board.session(conn, sid)
+                    result.append({'sessionId': sid, 'name': session['crew_name'], 'pid': current.process.pid,
+                                   'cwd': session['cwd'], 'kind': 'crew',
+                                   'status': 'busy' if self.chat.busy(sid) else 'idle'})
+        return result
 
     def limits(self, conn):
         latest = conn.execute('SELECT * FROM codex_rate_limits ORDER BY ts DESC LIMIT 1').fetchone()
@@ -450,7 +519,11 @@ class Service:
 
     def decision_participants(self, conn, decision):
         asker = board.session(conn, decision['session_id'])
-        leader = asker if asker['role'] == 'leader' else board.leader_of(conn, asker['session_id'])
+        leader_id=trust_mode.decision_leader(conn,decision['id'])
+        leader=board.session(conn,leader_id) if leader_id is not None else None
+        if leader is not None and (leader['project']!=decision['project'] or leader['role']!='leader'
+                                  or leader['status']=='closed' or board.is_archived(conn,leader_id)):
+            leader=None
         with self.agents_lock:
             if self.agents_error is None:
                 live = board.live_sessions(self.agents)
@@ -486,9 +559,31 @@ class Service:
     def post(self, path, data, project_name=None):
         if not isinstance(data, dict):
             raise ValueError("JSON \u8bf7\u6c42\u5fc5\u987b\u662f\u5bf9\u8c61")
+        if path in ('/api/session/runtime/prepare','/api/session/runtime/switch'):
+            with closing(store.connect(self.home)) as conn:
+                project=self.selected_project(conn,project_name if project_name is not None else data.get('project'))
+                target=board.session(conn,_text(data,'session_id'))
+                if target['project']!=project or data.get('project',project)!=project:
+                    raise board.BoardError('会话不属于当前工作区')
+                if path.endswith('/prepare'):
+                    desired=runtimes.validate(data.get('runtime'))
+                else:
+                    receipt=conn.execute('SELECT to_runtime,status FROM runtime_switches WHERE id=? AND session_id=? AND project=?',(_text(data,'preview_id'),target['session_id'],project)).fetchone()
+                    if receipt is None:raise board.Conflict('更换预览已失效，请重新检查')
+                    if receipt['status']=='configured':
+                        return self.chat.switch_runtime(conn,target['session_id'],data['preview_id'],data.get('confirm'),[],now=self.now().isoformat(timespec='milliseconds').replace('+00:00','Z'))
+                    desired=receipt['to_runtime']
+            catalog=self.runtime_catalog.refresh(force=True) if desired=='codex' else self.runtime_catalog.snapshot()
+            with self.write_lock,closing(store.connect(self.home)) as conn:
+                stamp=self.now().isoformat(timespec='milliseconds').replace('+00:00','Z')
+                if path.endswith('/prepare'):
+                    return self.chat.prepare_runtime(conn,target['session_id'],desired,catalog,model=data.get('model'),effort=data.get('effort'),handoff=data.get('handoff'),now=stamp)
+                return self.chat.switch_runtime(conn,target['session_id'],data['preview_id'],data.get('confirm'),catalog,now=stamp)
         if path in ("/api/files/resolve", "/api/files/open", "/api/files/reveal"):
-            info = self.resolve_file(data.get("session_id"), _text(data, "path"),
-                                     project_name if project_name is not None else data.get("project"), data.get("base"))
+            if project_name is not None and data.get('project') is not None and data['project'] != project_name:
+                raise board.BoardError('请求正文和地址中的项目不一致')
+            info = self.resolve_file(data.get("session_id"), None if 'document_id' in data else _text(data, "path"),
+                                     project_name if project_name is not None else data.get("project"), data.get("base"), data.get('document_id'))
             if path == "/api/files/resolve":
                 return info
             if info["error"] is not None:
@@ -522,7 +617,7 @@ class Service:
                 if type(data.get('away')) is not bool:
                     raise ValueError('离开状态必须是 true 或 false')
                 return self.set_away(data['away'])
-            if path in ('/api/channel', '/api/channel/read', '/api/channel/digest', '/api/project/theme', '/api/leaders/order', '/api/leaders/priority') and 'project' in data:
+            if path in ('/api/channel', '/api/channel/read', '/api/channel/digest', '/api/project/theme', '/api/leaders/order', '/api/leaders/priority', '/api/documents', '/api/documents/pin', '/api/documents/refresh') and 'project' in data:
                 body_project = _text(data, 'project')
                 if project_name is not None and body_project != project_name:
                     raise board.BoardError('请求正文和地址中的项目不一致')
@@ -540,6 +635,59 @@ class Service:
                     self.stop_archived(result['before'])
                 return {'ok': True}
             project = self.selected_project(conn, project_name)
+            if path in ('/api/documents', '/api/documents/pin', '/api/documents/refresh'):
+                if 'project' in data and data['project'] != project:
+                    raise board.BoardError('请求正文和地址中的项目不一致')
+                if path == '/api/documents':
+                    return documents.register(conn, _text(data,'session_id'), _text(data,'path'),
+                        title=data.get('title'), summary=data.get('summary'), kind=data.get('kind','other'),
+                        important=data.get('important',False), project=project, now=now)
+                if path == '/api/documents/pin':
+                    if 'important' not in data: raise ValueError('缺少 important 字段')
+                    return documents.pin(conn,project,data.get('id'),data['important'],now=now)
+                scan=documents.refresh(conn,self.home,project,now=now)
+                return {'documents':documents.list(conn,project), 'scan':scan}
+            if path == '/api/trust':
+                return trust_mode.set(conn, project, data.get('enabled'), data.get('goal'), now=now,leader_session_id=_text(data,'leader_session_id'))
+            if path == '/api/decision/clarify':
+                from . import decision_briefs
+                if type(data.get('id')) is not int:
+                    raise ValueError('id 必须是整数')
+                item = conn.execute('SELECT project FROM decisions WHERE id=?', (data['id'],)).fetchone()
+                if item is None or item['project'] != project:
+                    raise board.BoardError('拍板不属于当前工作区')
+                identity = decision_briefs.queue_review(conn, data['id'], now=now)
+                return {'ok': True, 'notice_id': identity, 'message': '已请 leader 重新说明这项选择'}
+            if path == '/api/comments':
+                sid, text = _text(data, 'session_id'), _text(data, 'text')
+                session = board.session(conn, sid)
+                if session['project'] != project or session['status'] == 'closed' or board.is_archived(conn, sid):
+                    raise board.BoardError('评论对象不属于当前工作区或已归档')
+                if len(text) > 10000:
+                    raise ValueError('评论不能超过 10000 字')
+                with board.transaction(conn):
+                    identity = conn.execute('INSERT INTO workspace_comments(project,session_id,text,created_at) VALUES(?,?,?,?)',
+                                            (project, sid, text, now)).lastrowid
+                    leader = session if session['role'] == 'leader' else board.leader_of(conn, sid)
+                    if leader is not None:
+                        board._queue_leader_notice(conn, leader['session_id'],
+                            '用户在总览中给「%s」的评论：\n%s' % (session['crew_name'], text), 'web', now=now)
+                return dict(conn.execute('SELECT * FROM workspace_comments WHERE id=?', (identity,)).fetchone())
+            if path in ('/api/todo/resolve', '/api/todo/undo'):
+                if type(data.get('id')) is not int:
+                    raise ValueError('id 必须是整数')
+                if path.endswith('/undo'):
+                    return todo.undo(conn, project, data['id'], data.get('before'), data.get('version'), now=now)
+                return todo.resolve(conn, project, data['id'], _text(data, 'status'),
+                                    note=data.get('note'), expected_version=data.get('expected_version'), now=now)
+            if path == '/api/messages':
+                caller = board.session(conn, _text(data, 'caller_session_id'))
+                if caller['project'] != project:
+                    raise board.BoardError('发件人不属于当前工作区')
+                name = _text(data, 'name')
+                row = conn.execute('SELECT session_id FROM sessions WHERE session_id=? AND project=?', (name, project)).fetchone()
+                target = row['session_id'] if row else board.named_session(conn, project, name)['session_id']
+                return self.chat.send_message(caller['session_id'], target, _text(data, 'text'), data.get('message_id'))
             if path == '/api/leaders/order':
                 _text(data, 'project')
                 return board.set_leader_order(conn, project, data.get('order'))
@@ -617,6 +765,10 @@ class Service:
                                       '用户挂起了，暂时不拍。请用 SendMessage 告诉提问的组员：'
                                       '不卡流程的按推荐继续；卡流程的先做别的，先别再问这道题。' %
                                       (data['id'], asker['crew_name'], asker['cc_name'], decision['question']))
+                            if any(runtimes.get(conn, s['session_id'])['runtime'] == 'codex' for s in (asker, leader)):
+                                notice = ('拍板 #%s：%s\n问题：%s\n用户挂起了，暂时不拍。请用 crew send %s "<处理安排>" 转告：'
+                                          '不卡流程的按推荐继续；卡流程的先做别的，先别再问这道题。' %
+                                          (data['id'], asker['crew_name'], decision['question'], asker['crew_name']))
                             board.queue_leader_notice(conn, leader['session_id'], notice, 'web', now=now)
                     return {"ok": True}
                 text = _text(data, 'text')
@@ -626,6 +778,11 @@ class Service:
                     notice = ('拍板 #%s：%s（SendMessage 地址：%s）\n问题：%s\n答复：%s\n'
                               '请马上用 SendMessage 转告并叫它继续' %
                               (data['id'], asker['crew_name'], asker['cc_name'], decision['question'], text))
+                    if any(runtimes.get(conn, s['session_id'])['runtime'] == 'codex' for s in (asker, leader)):
+                        action = ('请按用户答复继续。' if asker['session_id'] == leader['session_id'] else
+                                  '请用 crew send %s "<答复与后续安排>" 转告；离线时用 crew wake 接续原会话。' % asker['crew_name'])
+                        notice = ('拍板 #%s：%s\n问题：%s\n答复：%s\n%s' %
+                                  (data['id'], asker['crew_name'], decision['question'], text, action))
                     board.queue_leader_notice(conn, leader['session_id'], notice, 'web', now=now)
                 return {"ok": True, 'routed_to': leader['crew_name'] if leader else None}
             if path in ("/api/open", "/api/open/continue"):
@@ -644,7 +801,8 @@ class Service:
                 if target["project"] != project:
                     raise board.BoardError("会话不属于当前项目")
                 with self.agents_lock:
-                    if not self.agents_ready.is_set() or self.agents_error is not None:
+                    if (target['role'] != 'leader' and runtimes.get(conn, target['session_id'])['runtime'] == 'claude' and
+                            (not self.agents_ready.is_set() or self.agents_error is not None)):
                         raise board.Conflict("进程状态未知，请稍后再试")
                 return self.chat.wake(conn, target, _text(data, "text"),
                                       caller_session_id=_optional_text(data, "caller_session_id"), now=now)
@@ -654,7 +812,8 @@ class Service:
                                        cwd=_optional_text(data, "cwd"), new_worktree=_optional_text(data, "new_worktree"),
                                        base=_optional_text(data, "base"), now=now,
                                        model=data["model"] if "model" in data else models.INHERIT,
-                                       effort=data["effort"] if "effort" in data else models.INHERIT)
+                                       effort=data["effort"] if "effort" in data else models.INHERIT,
+                                       runtime=data["runtime"] if "runtime" in data else models.INHERIT)
             if path == "/api/leader":
                 members = data.get("members", [])
                 if not isinstance(members, list) or any(not isinstance(m, str) or not m.strip() for m in members):
@@ -663,8 +822,9 @@ class Service:
                 if not isinstance(member_session_ids, list) or any(not isinstance(sid, str) or not sid.strip() for sid in member_session_ids):
                     raise ValueError("member_session_ids 必须是会话 ID 数组")
                 name, task = _text(data, "name"), _optional_text(data, "task")
-                model = models.validate(data.get("model"))
-                effort = models.validate_effort(data.get("effort"))
+                runtime = runtimes.validate(data.get("runtime") or "claude")
+                model = models.validate(data.get("model"), runtime=runtime)
+                effort = models.validate_effort(data.get("effort"), runtime=runtime)
                 candidate_members = [(self.candidate(conn, project, _text(member, "session_id")), _text(member, "name"))
                                      for member in data.get("candidate_members", [])]
                 names = {name, *members}
@@ -676,13 +836,13 @@ class Service:
                 # Check the leader and existing members before adopting anyone.
                 spawn.leader_plan(conn, self.home, self.plugin_root, project, name, members,
                                   task, cwd=_optional_text(data, "cwd"), new_worktree=_optional_text(data, "new_worktree"), now=now,
-                                  member_session_ids=member_session_ids, model=model, effort=effort)
+                                  member_session_ids=member_session_ids, model=model, effort=effort, runtime=runtime)
                 for candidate, member_name in candidate_members:
                     self.adopt(conn, project, candidate, member_name, None, now)
                 return self.chat.start(conn, project, name, task, role="leader",
                                        members=members, member_session_ids=member_session_ids + [candidate["session_id"] for candidate, _ in candidate_members],
                                        cwd=_optional_text(data, "cwd"),
-                                       new_worktree=_optional_text(data, "new_worktree"), now=now, model=model, effort=effort)
+                                       new_worktree=_optional_text(data, "new_worktree"), now=now, model=model, effort=effort, runtime=runtime)
             if path == "/api/chat/send":
                 session = board.session(conn, _text(data, 'session_id'))
                 if session['project'] != project:
@@ -749,36 +909,61 @@ class Service:
             project = self.selected_project(conn, project_name)
             return {**channel.messages(conn, project, limit=limit, before=before), 'digest': channel.digest(conn, project)}
 
-    def resolve_file(self, session_id, text, project_name=None, base=None):
+    def document_list(self, project_name=None, leader_session_id=None):
+        with self.write_lock, closing(store.connect(self.home)) as conn:
+            project=self.selected_project(conn,project_name)
+            try:
+                scan=documents.refresh(conn,self.home,project)
+            except (OSError, sqlite3.Error, ValueError) as exc:
+                scan={'indexed':0,'scanned':0,'has_more':False,'errors':[{'source':'index','error':str(exc)}]}
+            return {'documents':documents.list(conn,project,leader_session_id), 'scan':scan}
+
+    def resolve_file(self, session_id, text, project_name=None, base=None, document_id=None):
         with closing(store.connect(self.home)) as conn:
             project = self.selected_project(conn, project_name)
+            if document_id is not None:
+                document=documents.get(conn,project,document_id)
+                session_id=document['session_id']
+                text=str(documents.resolve_path(conn,session_id,document['path'],project,must_exist=False))
+                base=None
             root = Path(board.project(conn, project)["root"])
+            allowed_roots=[root.resolve()]
             if session_id:
                 session = board.session(conn, session_id)
                 if session["project"] != project:
                     raise board.BoardError("\u4f1a\u8bdd\u4e0d\u5c5e\u4e8e\u5f53\u524d\u9879\u76ee")
                 cwd = Path(session["cwd"])
+                if session.get('worktree'):
+                    allowed_roots.append(Path(session['worktree']).resolve())
             else:
                 cwd = root
+        text = _text({'path':text},'path')
+        if base is not None and (not isinstance(base,str) or not any(store.is_under(Path(base).resolve(),allowed) for allowed in allowed_roots)):
+            raise board.BoardError('文件来源不在当前项目或会话工作区内')
         path = Path(text.replace("\\", "/"))
         if not path.is_absolute():
             path = (Path(base).parent if base is not None else cwd) / path
             if base is None and not path.exists():
                 path = root / text.replace("\\", "/")
         path = path.resolve()
+        if not any(store.is_under(path,allowed) for allowed in allowed_roots):
+            raise board.BoardError('文件路径不在当前项目或会话工作区内')
         exists = path.exists()
         error = "\u6587\u4ef6\u4e0d\u5b58\u5728\uff1a" + str(path) if not exists else "\u8fd9\u662f\u76ee\u5f55\uff1a" + str(path) if path.is_dir() else None
         suffix = path.suffix.lower()
         images = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp"}
-        documents = {".md", ".txt", ".log", ".json", ".csv", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg"}
-        external_documents = {".html", ".htm", ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx"}
+        text_documents = {".md", ".markdown", ".rst", ".adoc", ".txt", ".log", ".json", ".csv", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg"}
+        external_documents = {".html", ".htm", ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".rtf", ".odt", ".ods", ".odp"}
         code = {".py", ".js", ".cjs", ".mjs", ".ts", ".tsx", ".jsx", ".css", ".scss", ".ps1", ".bat", ".cmd", ".sh", ".c", ".h", ".cpp", ".hpp", ".cs", ".java", ".go", ".rs", ".rb", ".php", ".sql", ".vue", ".svelte", ".uproject", ".uplugin"}
-        open_with = ("default" if suffix in documents | external_documents | images else
+        open_with = ("default" if suffix in text_documents | external_documents | images else
                      "vscode" if suffix in code else "blocked")
-        kind = "image" if suffix in images else "markdown" if suffix == ".md" else "text" if suffix in documents | code else "external"
-        return {"path": str(path), "exists": exists, "kind": kind,
+        kind = "image" if suffix in images else "markdown" if suffix in (".md", ".markdown") else "text" if suffix in text_documents | code else "external"
+        result={"path": str(path), "exists": exists, "kind": kind,
                 "type": "external" if kind == "external" else "preview",
                 "open_with": open_with, "error": error}
+        if document_id is not None:
+            result.update(document_id=document_id,session_id=session_id)
+        return result
 
     def read_file(self, info, raw=False):
         if info["error"] is not None:
@@ -805,7 +990,7 @@ class Service:
             return path.read_bytes(), media_type
 
     def scan_usage(self):
-        with self.scan_lock, closing(store.connect(self.home)) as conn:
+        with self.write_lock, self.scan_lock, closing(store.connect(self.home)) as conn:
             now = self.now()
             if self.scanned_at is None or (now - self.scanned_at).total_seconds() >= 60:
                 usage.scan(conn, self.claude_root, self.codex_root, self.runs_file)
@@ -848,13 +1033,17 @@ class Service:
 
 
 POST_PATHS = {"/api/project/init", "/api/project/theme", "/api/open", "/api/open/continue", "/api/answer", "/api/spawn", "/api/leader", "/api/wake", "/api/roster/move", "/api/roster/remove", "/api/group/close", "/api/group/undo", "/api/roster/adopt", "/api/chat/send", '/api/chat/read'}
+POST_PATHS.update({'/api/messages', '/api/todo/resolve', '/api/todo/undo'})
+POST_PATHS.update({'/api/trust', '/api/comments', '/api/decision/clarify'})
 POST_PATHS.update('/api/session/' + action for action in ('rename', 'archive', 'remove', 'restore', 'undo', 'stop', 'options', 'compact'))
+POST_PATHS.update(('/api/session/runtime/prepare','/api/session/runtime/switch'))
 POST_PATHS.update(('/api/attention/dismiss', '/api/notifications/away'))
 POST_PATHS.update(('/api/decision/hold', '/api/decision/unhold'))
 POST_PATHS.update(('/api/channel', '/api/channel/read', '/api/channel/digest'))
 POST_PATHS.add('/api/leaders/order')
 POST_PATHS.add('/api/leaders/priority')
 POST_PATHS.update(('/api/files/resolve', '/api/files/open', '/api/files/reveal'))
+POST_PATHS.update(('/api/documents','/api/documents/pin','/api/documents/refresh'))
 POST_PATHS.update(('/api/git/enable', '/api/git/disable', '/api/git/fetch'))
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"),
           "/themes.js": ("themes.js", "text/javascript; charset=utf-8"),
@@ -865,6 +1054,12 @@ STATIC = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js",
           "/style.css": ("style.css", "text/css; charset=utf-8"), "/chat.js": ("chat.js", "text/javascript; charset=utf-8"),
           "/vendor/markdown-it.min.js": ("vendor/markdown-it.min.js", "text/javascript; charset=utf-8")}
 STATIC.update({'/logo.svg': ('logo.svg', 'image/svg+xml'),
+               '/runtime-switch-ui.js':('runtime-switch-ui.js','text/javascript; charset=utf-8'),
+               '/runtime-switch-ui.css':('runtime-switch-ui.css','text/css; charset=utf-8'),
+               '/leader-trust-ui.js':('leader-trust-ui.js','text/javascript; charset=utf-8'),
+               '/leader-trust-ui.css':('leader-trust-ui.css','text/css; charset=utf-8'),
+               '/documents.js': ('documents.js','text/javascript; charset=utf-8'),
+               '/documents.css': ('documents.css','text/css; charset=utf-8'),
                '/fonts/HarmonyOS_Sans_SC_Regular.woff2': ('fonts/HarmonyOS_Sans_SC_Regular.woff2', 'font/woff2'),
                '/fonts/HarmonyOS_Sans_SC_Medium.woff2': ('fonts/HarmonyOS_Sans_SC_Medium.woff2', 'font/woff2')})
 STATIC_CACHED = {'/logo.svg', '/fonts/HarmonyOS_Sans_SC_Regular.woff2', '/fonts/HarmonyOS_Sans_SC_Medium.woff2'}
@@ -940,12 +1135,44 @@ class Handler(BaseHTTPRequestHandler):
             if self.headers.get_all("Host") not in ([host] for host in hosts):
                 self._send(403, {"error": "\u6587\u4ef6\u8bfb\u53d6\u53ea\u5141\u8bb8\u672c\u673a Host"})
                 return
-            info = service.resolve_file(query.get("session_id", [None])[0], query["path"][0],
-                                        query.get("project", [None])[0], query.get("base", [None])[0])
+            document_id=int(query['document_id'][0]) if 'document_id' in query else None
+            info = service.resolve_file(query.get("session_id", [None])[0], query.get("path",[None])[0],
+                                        query.get("project", [None])[0], query.get("base", [None])[0],document_id)
             content, media_type = service.read_file(info, raw=query.get("raw") == ["1"])
             self.send_file_content(content, media_type)
+        elif url.path == '/api/admin/health':
+            workers = {name: bool(worker and worker.is_alive()) for name, worker in (
+                ('agents', service.worker), ('notices', service.notice_worker), ('git_ci', service.ci_worker))}
+            self._send(200, {'ok': True, 'service': 'crew', 'home': str(Path(service.home).resolve()),
+                             'pid': os.getpid(), 'workers': workers,
+                             'warnings': [name for name, running in workers.items() if not running]})
         elif url.path == "/api/state":
             self._send(200, service.state(query.get("project", [None])[0]))
+        elif url.path == '/api/runtimes':
+            self._send(200, {'runtimes': service.runtime_catalog.refresh()})
+        elif url.path == '/api/projects':
+            with closing(store.connect(service.home)) as conn:
+                self._send(200, {'projects': board.projects(conn)})
+        elif url.path == '/api/documents':
+            self._send(200,service.document_list(query.get('project',[None])[0],query.get('leader_session_id',[None])[0]))
+        elif url.path == '/api/trust/report':
+            with closing(store.connect(service.home)) as conn:
+                project = service.selected_project(conn, query.get('project', [None])[0])
+                self._send(200, trust_mode.report(conn, project,_text({'leader_session_id':query.get('leader_session_id',[None])[0]},'leader_session_id')).encode('utf-8'),
+                           'text/markdown; charset=utf-8', attachment='crew-report.md')
+        elif url.path == '/api/comments':
+            with closing(store.connect(service.home)) as conn:
+                project = service.selected_project(conn, query.get('project', [None])[0])
+                sid = query.get('session_id', [None])[0]
+                if sid is not None and board.session(conn, sid)['project'] != project:
+                    raise board.BoardError('评论对象不属于当前工作区')
+                rows = board._rows(conn, 'SELECT * FROM workspace_comments WHERE project=?' +
+                                   (' AND session_id=?' if sid else '') + ' ORDER BY id', (project, sid) if sid else (project,))
+                self._send(200, {'comments': rows})
+        elif url.path == '/api/todos':
+            with closing(store.connect(service.home)) as conn:
+                project = service.selected_project(conn, query.get('project', [None])[0])
+                self._send(200, {'todos': todo.list(conn, project)})
         elif url.path == '/api/channel':
             before = int(query['before'][0]) if 'before' in query else None
             self._send(200, service.channel_messages(query.get('project', [None])[0],
@@ -1038,6 +1265,68 @@ def project_url(port, project_name=None):
 
 
 def serve(home, plugin_root, port=47811, open_browser=False, **options):
+    # CLI/autostart owns the same lifetime lock as crew_desktop. Acquire before
+    # store.connect (which can migrate the DB) or starting any service workers.
+    lock = HomeServiceLock(home)
+    if not lock.acquire():
+        if open_browser:
+            return _open_registered_service(home, options.get('cwd') or Path.cwd())
+        raise board.BoardError("CREW_BACKEND_IN_USE: 此 Crew 工作区已有后台在运行，请打开现有 Crew 应用。")
+    try:
+        return _serve_locked(home, plugin_root, port, open_browser, **options)
+    finally:
+        lock.release()
+
+
+def _open_registered_service(home, cwd):
+    """Open a contended HOME using HTTP only; never initialize local storage."""
+    from . import autostart
+    try:
+        # A lock can be acquired before a starting backend publishes web.json.
+        # Missing registration must not fall back to the unrelated default port.
+        if not (Path(home) / 'web.json').is_file():
+            raise ValueError('服务尚未登记地址')
+        url = autostart.service_url(home)
+        opener = build_opener(ProxyHandler({}), autostart._NoRedirect())
+        def read(route):
+            with opener.open(url + route, timeout=3) as response:
+                return json.load(response)
+        state = read('/api/state')
+        if not isinstance(state, dict) or not all(key in state for key in ('projects', 'leaders', 'candidates')):
+            raise ValueError('登记地址不是可识别的 Crew 服务')
+        try:
+            projects = read('/api/projects')['projects']
+        except HTTPError as exc:
+            if exc.code != 404:
+                raise
+            projects = state['projects']
+        if not isinstance(projects, list):
+            raise ValueError('项目列表格式无效')
+        matches = []
+        for project in projects:
+            name = project['name']
+            if not isinstance(name, str) or not name:
+                raise ValueError('项目名称无效')
+            if not project.get('root'):
+                project = read('/api/state?' + urlencode({'project': name}))['project']
+                if project['name'] != name:
+                    raise ValueError('登记项目与服务响应不一致')
+            root = project['root']
+            if not isinstance(root, str) or not root:
+                raise ValueError('项目目录无效')
+            if store.is_under(cwd, root):
+                matches.append((len(store.norm_path(root)), name))
+        selected = max(matches)[1] if matches else None
+        target = url + '/' + ('?' + urlencode({'project': selected}) if selected is not None else '')
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise board.BoardError('CREW_BACKEND_IN_USE: 已有后台，但暂时无法确认其登记地址；不重复启动。' + str(exc)) from exc
+    if not webbrowser.open(target):
+        raise board.BoardError('已有 Crew 后台，请手动打开：' + target)
+    print(target, flush=True)
+
+
+def _serve_locked(home, plugin_root, port, open_browser, **options):
+    options.setdefault('migrate_manual_work', True)
     url = project_url(port)
     with closing(store.connect(home)) as conn:
         project = board.project_for_path(conn, options.get('cwd') or Path.cwd())

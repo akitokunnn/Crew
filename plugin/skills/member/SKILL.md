@@ -9,6 +9,14 @@ description: Crew 成员守则。在启用了 Crew 的项目里干活时，怎�
 
 收到“Crew 守则有更新”的提示时，先重读 `/crew:member` 守则，再继续。
 
+## 执行工具、模式与人工事项
+
+- `crew who <名字>` / `crew whoami` 会显示执行工具。跨 Claude Code / Codex 联系用 `crew send <crew名> "<内容>"`；双方都是 Claude Code 才使用原生 SendMessage。消息身份与归属以 Crew 白板为准。
+- **信任模式只继承你所属 leader 的设置**，以本轮上下文传达的最新开关和目标为准，不使用其他组的授权。设置修改不会主动唤醒会话；下次正常对话收到更新。开启时以给定目标自主决定方案、排程和收尾，把关键取舍、理由、实际验证与 commit SHA 写进报告，决定带推荐与理由。关闭时恢复普通拍板流程，不沿用旧授权。
+- **需要用户亲手做的事一律登记人工待办**，无论用户当前是否在看：`crew todo add "<要做什么>" --steps "<在哪做、具体步骤>" --verify "<做完怎么验证>" [--blocking]`。例如编辑器操作、真人测设备、登录或提供密钥、人工验收。聊天只用一句话说明，不用拍板代替待办；卡进度的标 blocking，先推进其他工作。
+- 找到替代办法、不再需要用户做时，`crew todo withdraw <编号> --reason "<为什么不需要了>"`。用户点做完只代表用户已执行，收到通知后仍核对验证标准，再继续工作。
+- 普通模式确实需要用户选择时，一题只问一件事。用简短标题、为什么必须由用户决定、推荐理由和每个选项的后果说明白；不要把进展、几项排程、人工验收和归档塞在一道题里，不用“继续①②”这类引用选项。
+
 ## 派 Codex
 
 体力活默认交给 Codex（照 `codex-dispatch` 技能）：
@@ -21,7 +29,7 @@ description: Crew 成员守则。在启用了 Crew 的项目里干活时，怎�
 
 ## 命令怎么调
 
-`crew <子命令>`；找不到 `crew` 时用 `python ~/.crew/crew.py <子命令>`（PowerShell 里写 `python "$env:USERPROFILE\.crew\crew.py" <子命令>`）。`crew --help`、`crew <子命令> --help` 看参数。
+`crew <子命令>`；找不到 `crew` 时使用启动上下文提供的 Crew launcher。托管会话的 `CREW_HOME` 是本次数据目录，PowerShell 可用 `python "$env:CREW_HOME\crew.py" <子命令>`；未设置时才使用 `~/.crew/crew.py`。`crew --help`、`crew <子命令> --help` 看参数。
 
 ## 收编和任务卡
 
@@ -95,3 +103,7 @@ description: Crew 成员守则。在启用了 Crew 的项目里干活时，怎�
 - 开工前用 `crew git policy` 看分支规则，按规则选分支；规则还没写时先问 git 管理员。
 - 做完先提交在自己的分支上，再 `crew git request "<做了什么、测过什么、有没有要用户亲手验收的>"`；需要指定分支时加 `--branch <分支>`。
 - git 管理员要你 rebase 或修冲突时照做，再把结果告诉它。
+
+## 提交给用户的文档
+
+交付报告、重要汇总、操作指南或验收文档时，先保存原文件，再登记到文档中心：`crew doc add "<路径>" --title "<好读的名称>" --summary "<这份文档解决什么、用户先看哪里>" --kind summary --important`。普通报告用 `--kind report`，指南用 `--kind guide`；只有确实重要的最终汇总或关键说明才加 `--important`，不要把每份日志和草稿都标重要。同一路径更新后重新登记会更新原条目，保留用户自己的标星选择。聊天里只提一句并给链接，不能只把文档埋在聊天中。`crew doc list` 查看本项目交付，`crew doc refresh` 整理已有历史链接。Codex 可用原生 `crew_doc_add` / `crew_doc_list` / `crew_doc_refresh` 工具，身份由 Crew 绑定。

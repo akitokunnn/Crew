@@ -148,6 +148,7 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         (folder / (sid + '.json')).write_text('{}', encoding='utf-8')
         self.conn.execute('UPDATE sessions SET spawn_id=? WHERE session_id=?', (sid, sid))
         manager = mock.Mock()
+        manager.lock, manager.processes = threading.RLock(), {}
         manager.journal.return_value, manager.path.return_value = journal, journal.path
         manager.busy.side_effect = lambda sid: journal.status == 'working'
         manager.running.return_value = manager.is_owned.return_value = True
@@ -540,13 +541,13 @@ class NotificationTests(ShellFixture, unittest.TestCase):
             self.assertIn('待拍板', message['text'])
             choices = buttons(message)
             self.assertIn(recommendation, choices[0]['render_data']['label'])
-            self.assertEqual(choices[0]['action']['data'], '%s:1' % identity)
+            self.assertTrue(choices[0]['action']['data'].startswith('%s:1:' % identity))
             self.assertEqual(len({b['action']['group_id'] for b in choices}), 1)
             for button in choices:
                 self.assertEqual(button['action']['type'], 1)
                 self.assertEqual(button['action']['click_limit'], 1)
                 self.assertTrue(button['render_data']['visited_label'].startswith('已选：'))
-                self.assertRegex(button['action']['data'], r'^\d+:\d+$')
+                self.assertRegex(button['action']['data'], r'^\d+:\d+:[0-9a-f]{24}$')
             row = self.conn.execute('SELECT * FROM notification_messages WHERE decision_id=?', (identity,)).fetchone()
             self.assertEqual((row['message_id'], row['ref_idx']), (message['result']['id'], message['result']['ref_idx']))
         self.clock += dt.timedelta(minutes=1)
@@ -576,7 +577,7 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         message = self.client.sent[0]
         self.assertEqual(message['text'].splitlines()[0], 'demo·lead 待拍板')
         self.assertNotIn('#', message['text'])
-        self.assertEqual(buttons(message)[0]['action']['data'], '%s:0' % identity)
+        self.assertTrue(buttons(message)[0]['action']['data'].startswith('%s:0:' % identity))
 
     def test_answer_receipt_shows_first_twenty_question_characters_without_number(self):
         question = '声纹门槛是否先按半秒执行并等实测结果再调整方案'
@@ -612,7 +613,8 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         identity = board.ask(self.conn, 's1', '最多按钮', ['完整原文%s' % n for n in range(25)], now=NOW)
         message = self.query(identity)
         self.assertEqual([len(r['buttons']) for r in message['keyboard']['content']['rows']], [5] * 5)
-        self.assertEqual({b['action']['data'] for b in buttons(message)}, {'%s:%s' % (identity, n) for n in range(25)})
+        self.assertEqual({':'.join(b['action']['data'].split(':')[:2]) for b in buttons(message)},
+                         {'%s:%s' % (identity, n) for n in range(25)})
 
     def test_resolved_before_batch_is_not_sent_and_manual_away_survives_restart(self):
         identity = board.ask(self.conn, 's1', '是否继续', ['继续'], now=NOW)
@@ -654,13 +656,14 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         self.query(identity)
         self.client.sent.clear()
         self.client.operations.clear()
-        real_answer = board.answer
+        real_event = board._event
 
-        def answer(*args, **kwargs):
-            self.client.operations.append(('save', identity))
-            return real_answer(*args, **kwargs)
+        def event(conn, kind, *args, **kwargs):
+            if kind == 'decision:answer':
+                self.client.operations.append(('save', identity))
+            return real_event(conn, kind, *args, **kwargs)
 
-        with mock.patch('crew.notifications.board.answer', side_effect=answer):
+        with mock.patch('crew.notifications.board._event', side_effect=event):
             event = self.click(identity, 1, event_id='click-once')
             self.inbox.receive('interaction', event)
         self.assertEqual(self.client.operations[0], ('ack', 'click-once'))
@@ -765,6 +768,28 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         self.assertEqual(self.decision(identity)['answer'], 'A')
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM leader_notices').fetchone()[0], 0)
         self.assertEqual(self.client.sent[-1]['text'], '已保存：没有分组的问题。')
+
+    def test_moved_member_question_and_qq_answer_keep_the_original_leader(self):
+        identity=board.ask(self.conn,'s1','原组的问题',['采用原方案'],now=NOW)
+        self.add_leader('next-leader',name='新组')
+        board.roster(self.conn,'demo','move','新组',session_ids=['s1'])
+        message=self.query(identity)
+        self.assertIn('demo·lead',message['text'])
+        self.assertNotIn('demo·新组',message['text'])
+        row=self.conn.execute('SELECT leader_session_id FROM notification_messages WHERE decision_id=?',(identity,)).fetchone()
+        self.assertEqual(row[0],'s3')
+        self.receive('采用原方案',message['result']['ref_idx'])
+        self.assertEqual(len(board.pending_notices(self.conn,'s3')),1)
+        self.assertEqual(board.pending_notices(self.conn,'next-leader'),[])
+
+    def test_qq_question_originally_without_leader_does_not_adopt_later_group(self):
+        identity=board.ask(self.conn,'s2','原来没有leader的问题',['选项'],now=NOW)
+        board.roster(self.conn,'demo','move','lead',session_ids=['s2'])
+        message=self.query(identity)
+        self.assertIn('demo·无leader',message['text'])
+        self.receive('选项',message['result']['ref_idx'])
+        self.assertEqual(self.decision(identity)['answer'],'选项')
+        self.assertEqual(board.pending_notices(self.conn,'s3'),[])
 
     def test_answer_to_leader_question_queues_notice_to_itself(self):
         board.update_cc_name(self.conn, 's3', 'cc-lead', now=NOW)

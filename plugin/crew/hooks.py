@@ -4,17 +4,19 @@ import contextlib
 import json
 import os
 import re
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
 
-from . import board, channel, guard, install, rules, store
+from . import board, channel, git_process, guard, install, messaging, rules, runtimes, store, trust_mode
 
 EVENTS = ("session-start", "user-prompt-submit", "stop", "notification", "pre-ask", "post-ask", "session-end", "guard")
 
 
 def _git(cwd, *args):
-    result = subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True, encoding="utf-8", check=True)
+    result = git_process.run(["-C", str(cwd), *args], timeout=10)
+    result.check_returncode()
     return result.stdout.strip()
 
 
@@ -23,8 +25,10 @@ def git_toplevel(cwd):
 
 
 def git_details(cwd):
-    result = subprocess.run(["git", "-C", str(cwd), "rev-parse", "--show-toplevel"],
-                            capture_output=True, text=True, encoding="utf-8")
+    # A failed probe may describe a plain directory; a timeout is an attendance
+    # error and must reach main's diagnostic boundary instead of registering
+    # the checkout as a non-Git project.
+    result = git_process.run(["-C", str(cwd), "rev-parse", "--show-toplevel"], timeout=10)
     if result.returncode != 0:
         # A project directory does not have to be a git checkout; record it without worktree / branch.
         return None, None
@@ -46,7 +50,29 @@ def _spawn_task(home, spawn_id):
     return lines[0][:80] if lines else None
 
 
+def _inactive_claude_runtime(home, session_id):
+    """Read the host's current carrier choice without creating/migrating HOME."""
+    if not store.db_path(home).exists():
+        return False
+    try:
+        with contextlib.closing(guard.readonly(home)) as conn:
+            registered = conn.execute('SELECT 1 FROM sessions WHERE session_id=?', (session_id,)).fetchone()
+            return bool(registered and runtimes.get(conn, session_id)['runtime'] != 'claude')
+    except (OSError, sqlite3.Error):
+        # No positive inactive identity can be established. Preserve the
+        # existing guard's explicit diagnostic/board-repair exceptions; normal
+        # writes remain fail-closed in guard.check on an unreadable board.
+        return False
+
+
 def handle(event, data, home, plugin_root, environ, git_provider=git_details, now=None):
+    if _inactive_claude_runtime(home, data['session_id']):
+        if event == 'guard':
+            print('BLOCKED by Crew: 此 Crew 会话当前使用 Codex，旧 Claude 载体不能继续执行工具。' + guard.TAIL, file=sys.stderr)
+            return 2, None
+        # Late stop/session-end and prompt hooks from a superseded process may
+        # neither overwrite the new carrier's status nor consume its mailbox.
+        return 0, None
     if event == "guard":
         reason = guard.check(home, data, now=now)
         if reason is not None:
@@ -57,6 +83,25 @@ def handle(event, data, home, plugin_root, environ, git_provider=git_details, no
             with contextlib.closing(store.connect(home)) as conn:
                 if conn.execute("SELECT 1 FROM sessions WHERE session_id=?", (data["session_id"],)).fetchone() is not None:
                     rules.record_read(conn, data["session_id"], role, plugin_root, now=now)
+        try:
+            project_for_mail = guard.enabled_project(home, data["session_id"], data["cwd"])
+        except (OSError, sqlite3.Error, ValueError):
+            # guard.check already applied its explicit recovery exceptions.
+            # Peer mail must not revoke permission to repair a broken board.
+            project_for_mail = None
+        if project_for_mail is not None:
+            # Most tool calls have no peer mail. Keep that hot path read-only:
+            # guard checks must not migrate the schema or obtain a write lock.
+            with contextlib.closing(guard.readonly(home)) as conn:
+                has_table = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='peer_messages'").fetchone()
+                waiting = bool(has_table and messaging.pending(conn, data["session_id"]))
+                row = conn.execute("SELECT status,crew_name FROM sessions WHERE session_id=?", (data["session_id"],)).fetchone()
+                active = row is not None and row["crew_name"] and row["status"] != "closed" and not board.is_archived(conn, data["session_id"])
+            if waiting and active:
+                with contextlib.closing(store.connect(home)) as conn:
+                    lines = messaging.take_for_hook(conn, data["session_id"], now=now)
+                    if lines:
+                        return 0, {"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": "\n\n".join(lines)}}
         return 0, None
     if event == "session-start":
         # Refresh HOME for every session, inside a project or not: the guard needs blacklist.txt everywhere.
@@ -78,6 +123,13 @@ def handle(event, data, home, plugin_root, environ, git_provider=git_details, no
     with contextlib.closing(store.connect(home)) as conn:
         deliveries = board.apply_hook(conn, event, data, p["name"], identity=identity, git_info=git_info, now=now)
         lines = _deliveries_text(deliveries)
+        if event in ("session-start", "user-prompt-submit"):
+            session = board.session(conn, data["session_id"])
+            if session["crew_name"] and session["status"] != "closed" and not board.is_archived(conn, data["session_id"]):
+                lines.extend(messaging.take_for_hook(conn, data["session_id"], now=now))
+                autonomy = trust_mode.context(conn, data["session_id"])
+                if autonomy:
+                    lines.append(autonomy)
         if event == "session-start":
             if board.is_archived(conn, data["session_id"]):
                 control = board.session_control(conn, data["session_id"])
@@ -90,6 +142,7 @@ def handle(event, data, home, plugin_root, environ, git_provider=git_details, no
                          "分组：%s；leader：%s；SendMessage 地址：%s" % (s["group_name"], leader["crew_name"] if leader else None, leader["cc_name"] if leader else None),
                          '命令行：python "%s" ...' % (Path(home).resolve() / "crew.py"),
                          "请遵守 /crew:%s" % rules.skill_role(conn, s)] + lines
+                lines.append("跨执行工具的会话消息用 crew send <crew名> \"<内容>\"；crew who <名字> 可查 runtime。双方都是 Claude Code 时仍可用 SendMessage。")
             config = board.git_config(conn, p["name"])
             if config is not None:
                 lines.append("本项目由 git 管理员「git管理员」统一推送和合并。做完用 `crew git request` 交给它，不要自己 push、开 PR、合并。")
@@ -111,7 +164,7 @@ def handle(event, data, home, plugin_root, environ, git_provider=git_details, no
 
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="crew_hook.py")
-    parser.add_argument("--home", type=Path, default=store.default_home())
+    parser.add_argument("--home", type=Path, default=Path(os.environ['CREW_HOME']) if os.environ.get('CREW_HOME') else store.default_home())
     parser.add_argument("event", choices=EVENTS)
     # Hook argument errors are attendance failures too: only guard may exit 2.
     try:
@@ -122,6 +175,8 @@ def main(argv=None):
         try:
             data = json.loads(sys.stdin.read())
             code, output = handle(args.event, data, args.home, Path(__file__).resolve().parents[1], os.environ)
+            if output is not None:
+                print(json.dumps(output, ensure_ascii=False))
             return code
         except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError, re.error) as exc:
             print("%s: %s. %s" % (type(exc).__name__, str(exc).replace("\n", " "), guard.TAIL), file=sys.stderr)

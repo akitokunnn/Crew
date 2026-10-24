@@ -64,6 +64,13 @@ class StartupTests(unittest.TestCase):
         self.assertEqual("自定名", self.start(name="自定名")["name"])
         self.assertEqual("自定名", self.projects()[0]["name"])
 
+    def test_registered_desktop_service_port_is_used_by_quick_start(self):
+        self.home.mkdir()
+        (self.home / "web.json").write_text(json.dumps({"url": "http://127.0.0.1:7122"}), encoding="utf-8")
+        result = self.start()
+        self.assertTrue(result["url"].startswith("http://127.0.0.1:7122/?project="))
+        self.task.assert_not_called()
+
     def test_name_conflict_does_not_start_service_or_open_browser(self):
         other = self.base / "other"
         other.mkdir()

@@ -1,8 +1,20 @@
 # Crew 设计
 
-Crew 让一个人同时指挥多个 Claude Code 会话：每个会话管一个领域、自己派 Codex 干活；leader 会话管一组会话；所有人共用一块白板（谁在干什么、设备谁借着、文件归谁、等人拍板的事、交接、日报、用量）。
+Crew 让一个人同时指挥多个 Claude Code / Codex 会话：每个会话管一个领域，leader 管一组会话；所有人共用白板（任务、设备、文件归属、拍板、人工待办、交接、日报、用量）。执行工具由创建时选择，组织概念保持统一。
 
 本文是施工依据。表结构以 [plugin/crew/schema.sql](../plugin/crew/schema.sql) 为准，存储入口以 [plugin/crew/store.py](../plugin/crew/store.py) 为准，这两个文件只由主控改。
+
+## 0. 2026-10-24 更新
+
+- `session_runtimes` 保存 Crew ID → 执行工具 / 原生 ID；缺记录的旧会话仍是 Claude。`chat.Manager` 保持统一入口，Codex 由独立 driver 处理协议、状态、线程恢复与生命周期。
+- `peer_messages` 保存混合工具消息；消息身份来自宿主，原生 thread ID 不充当 Crew 权限。忙时排队，托管空闲时投递，外部 Claude 由下次 hook 收取。
+- `todos` 是需要用户动手的事项；处理、审计与 leader 通知同事务，版本防止错误撤销。`todo_backfills` 去重首次盘点通知。
+- `decision_briefs` 保存显式拍板摘要，`decision_reviews` 去重旧题补写；不自动猜测旧题意思。题目修订后远程旧按钮必须失效。
+- `trust_settings` 按项目保存目标与模式，`trust_decisions` 保存自主取舍理由。报告汇总现有记录，不冒充独立验收。
+- `workspace_comments` 绑定项目与 Crew 会话；横排总览可给组或成员留言，并通过既有 leader 通知链回流。
+- `desktop/` 是独立 Electron 壳及工作区首页；Python 后端仍只用标准库。只退出自己启动的服务，不关闭借用服务。
+
+当前用户流程以 [WORKFLOWS.md](WORKFLOWS.md) 和 [CODEX_INTEGRATION.md](CODEX_INTEGRATION.md) 为准；下文保留原有 Claude 工作流与既有功能细节。
 
 ## 1. 结构
 
