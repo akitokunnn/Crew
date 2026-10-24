@@ -1,9 +1,11 @@
 """Read the persisted VS Code Claude session list without changing its files."""
 import json
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from . import store
@@ -38,15 +40,39 @@ def bucket_name(path):
     return encoded[:200] + "-" + (suffix or "0")
 
 
+def _git_executable():
+    """Skip Git for Windows' cmd/bin launcher when its native sibling exists."""
+    executable = shutil.which("git")
+    if executable is None:
+        return "git"
+    selected = Path(executable)
+    if (sys.platform == "win32" and selected.name.lower() == "git.exe" and
+            selected.parent.name.lower() in ("cmd", "bin")):
+        for architecture in ("mingw64", "mingw32"):
+            native = selected.parent.parent / architecture / "bin" / "git.exe"
+            if native.is_file():
+                return str(native)
+    return str(selected)
+
+
 def project_roots(root):
     """Include only git worktrees below the project's own root."""
     root = Path(root)
     options = {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {}
-    result = subprocess.run(["git", "-C", str(root), "worktree", "list", "--porcelain"],
-                            check=True, capture_output=True, text=True, encoding="utf-8",
-                            stdin=subprocess.DEVNULL, timeout=10, **options)
+    command = [_git_executable(), "-C", str(root), "worktree", "list", "--porcelain"]
+    # On Windows run(capture_output=True) kills only a timed-out launcher, then
+    # waits indefinitely for inherited stdout/stderr pipes held by its child.
+    # Files keep the poller's wait bounded even for an unknown custom wrapper.
+    with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+        result = subprocess.run(command, stdout=stdout, stderr=stderr,
+                                stdin=subprocess.DEVNULL, timeout=10, **options)
+        stdout.seek(0)
+        stderr.seek(0)
+        output, error = stdout.read().decode("utf-8"), stderr.read().decode("utf-8", errors="replace")
+    if result.returncode:
+        raise subprocess.CalledProcessError(result.returncode, command, output=output, stderr=error)
     roots = {store.norm_path(root): root}
-    for line in result.stdout.splitlines():
+    for line in output.splitlines():
         if line.startswith("worktree "):
             worktree = Path(line[len("worktree "):])
             if store.is_under(worktree, root):
