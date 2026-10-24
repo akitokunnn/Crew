@@ -284,6 +284,23 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(len(self.launches()), 1)
         self.assertEqual(self.status()["state"], "failed")
 
+    def test_missing_registry_with_held_service_lock_refuses_probe_and_launch(self):
+        lock = HomeServiceLock(self.home)
+        self.assertTrue(lock.acquire())
+        try:
+            self.assertFalse((self.home / "web.json").exists())
+            probe = supervisor.probe_home(self.home, timeout=.12)
+            self.assertFalse(probe["can_start"])
+            self.assertIn("后端锁", probe["reason"])
+            process, lines = self.launch()
+            self.assertEqual(process.wait(timeout=10), 76)
+            self.assertEqual(lines, [])
+            self.assertEqual(self.launches(), [])
+            self.assertFalse((self.home / "web.json").exists())
+            self.assertEqual(self.status()["state"], "failed")
+        finally:
+            lock.release()
+
     def test_one_os_lock_per_home_and_competitor_does_not_overwrite_status(self):
         process, lines = self.launch()
         first = self.status(lambda value: value["state"] == "healthy")
