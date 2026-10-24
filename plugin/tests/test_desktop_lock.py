@@ -44,6 +44,21 @@ class DesktopLockTests(unittest.TestCase):
         self.assertTrue(lock.acquire())
         lock.release()
 
+    def test_competing_backend_exits_before_install_or_database_changes(self):
+        lock = HomeServiceLock(self.home)
+        self.assertTrue(lock.acquire())
+        try:
+            result = subprocess.run([sys.executable, str(PLUGIN / "crew_desktop.py"),
+                                     "--home", str(self.home), "--port", "0", "--isolated-sources"],
+                                    cwd=PLUGIN, capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 75, result.stderr)
+            self.assertIn("CREW_BACKEND_IN_USE", result.stderr)
+            self.assertEqual(result.stdout, "")
+            for name in ("crew.db", "web.json", "runtime.json", "crew.py"):
+                self.assertFalse((self.home / name).exists(), name)
+        finally:
+            lock.release()
+
 
 if __name__ == "__main__":
     unittest.main()
