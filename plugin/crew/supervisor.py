@@ -322,7 +322,10 @@ class Supervisor:
         value = {"instance_id": self.instance_id, "state": self.state, "checked_at": _now(),
                  "supervisor_pid": os.getpid(),
                  "service_pid": self.service_pid if self.service_pid is not None else evidence.get("service_pid"),
-                 "url": self.url if self.url is not None else evidence.get("url"),
+                 # A current process without an announced URL must never be
+                 # paired with a previous process's address. Keep history only
+                 # in backend_evidence while the new backend initializes.
+                 "url": self.url if self.service_pid is not None else (self.url or evidence.get("url")),
                  "backend_evidence": self._evidence,
                  "recoveries": self.recoveries, "last_recovery_at": self.last_recovery_at,
                  "incidents": list(self.incidents), "restart": restart,
@@ -541,9 +544,9 @@ class Supervisor:
             if not self._free_service_lock():
                 return {**result, "reason": "此 HOME 的后端锁仍被占用"}, None
             return {**result, "kind": "dead", "can_start": True, "reason": "原后端进程已退出且端口、服务锁均空闲"}, None
-        pid = evidence.get("service_pid")
-        if type(pid) is int and _pid_alive(pid) is not False:
-            return {**result, "reason": "已登记后端进程仍存活或无法确认；不会另启"}, None
+        # With no registry, a historical PID can belong to an unrelated process
+        # after reuse. All production backend entrypoints share service.lock;
+        # that actual lifetime lock, rather than a stale PID, owns this choice.
         if not self._free_service_lock():
             return {**result, "reason": "此 HOME 的后端锁仍被占用"}, None
         return {**result, "kind": "empty", "can_start": True, "reason": "没有后端登记且服务锁空闲"}, None

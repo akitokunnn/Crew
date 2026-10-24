@@ -216,7 +216,15 @@ handle('desktop:admin-status',async()=>{
   if(backend?.startupError&&['healthy','degraded'].includes(status.state)&&status.url){
     const recovered=core.loopback(status.url);
     if(tabs&&tabs.state().tabs.every(tab=>tab.project===null)){
-      tabs.reconnect(recovered);backend.url=recovered;backend.startupError=null;
+      try { await core.projects(recovered); }
+      catch(error) {
+        // Keep the file-backed health page usable while HTTP is still down.
+        // An old or not-yet-ready URL must never replace the offline origin.
+        return {...status,incidents:[...status.incidents,{at:new Date().toISOString(),level:'warning',message:'后台尚不能读取工作区：'+error.message}]};
+      }
+      if(backend.startupError&&tabs.state().tabs.every(tab=>tab.project===null)){
+        tabs.reconnect(recovered);backend.url=recovered;backend.startupError=null;
+      }
     }
   }
   return status;

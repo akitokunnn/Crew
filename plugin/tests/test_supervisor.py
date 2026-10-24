@@ -45,6 +45,7 @@ class Handler(BaseHTTPRequestHandler):
         body=json.dumps(data).encode();self.send_response(200);self.send_header('Content-Length',str(len(body)));self.end_headers()
         try:self.wfile.write(body)
         except OSError:pass
+time.sleep(mode().get('startup_delay',0))
 server=ThreadingHTTPServer(('127.0.0.1',args.port),Handler);server.daemon_threads=True
 url='http://127.0.0.1:'+str(server.server_port)
 (home/'web.json').write_text(json.dumps({'url':url}),encoding='utf-8')
@@ -77,9 +78,10 @@ from crew.supervisor import Supervisor
 sys.stdout.reconfigure(encoding='utf-8');sys.stderr.reconfigure(encoding='utf-8')
 home=Path(sys.argv[1]);fake=Path(sys.argv[2])
 delay=float(sys.argv[3]) if len(sys.argv)>3 else .05
+startup_timeout=float(sys.argv[4]) if len(sys.argv)>4 else 3
 admin=Supervisor(home,isolated_sources=True,command_factory=lambda port:[sys.executable,str(fake)],
                  check_interval=.08,health_timeout=.12,backoffs=(delay,max(delay,.08),max(delay,.1),max(delay,.12),max(delay,.15)),
-                 restart_limit=3,restart_window=30,startup_timeout=3)
+                 restart_limit=3,restart_window=30,startup_timeout=startup_timeout)
 original_check=admin._check
 def check():
     if (home/'read-error.flag').exists():
@@ -116,15 +118,17 @@ class SupervisorTests(unittest.TestCase):
         self.children = []
         self.addCleanup(self.cleanup_children)
 
-    def launch(self, *, backend=False, real=False, recovery_delay=None):
+    def launch(self, *, backend=False, real=False, recovery_delay=None, startup_timeout=None):
         if backend:
             command = [sys.executable, str(self.fake), "--home", str(self.home), "--port", "0", "--isolated-sources"]
         elif real:
             command = [sys.executable, str(PLUGIN / "crew_supervisor.py"), "--home", str(self.home), "--port", "0", "--isolated-sources"]
         else:
             command = [sys.executable, "-c", SUPERVISOR_CHILD, str(self.home), str(self.fake)]
-            if recovery_delay is not None:
-                command.append(str(recovery_delay))
+            if recovery_delay is not None or startup_timeout is not None:
+                command.append(str(.05 if recovery_delay is None else recovery_delay))
+            if startup_timeout is not None:
+                command.append(str(startup_timeout))
         errors = (self.base / ("stderr-" + str(len(self.children)) + ".log")).open("w+", encoding="utf-8")
         options = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
         environment = {**os.environ, "PYTHONPATH": str(PLUGIN)}
@@ -506,6 +510,48 @@ class SupervisorTests(unittest.TestCase):
         self.assertIsNone(process.poll())
         self.assertTrue(supervisor._pid_alive(first["service_pid"]))
         self.assertEqual(len(self.launches()), 1)
+
+    def test_normal_shutdown_without_registry_ignores_reused_old_service_pid(self):
+        first, lines = self.launch(real=True)
+        self.status(lambda value: value["state"] == "healthy")
+        first.stdin.write("shutdown\n");first.stdin.flush()
+        self.assertEqual(first.wait(timeout=15), 0)
+        self.assertFalse((self.home / "web.json").exists())
+        status = self.status()
+        status["service_pid"] = os.getpid()  # Real, live, unrelated process.
+        status["backend_evidence"]["service_pid"] = os.getpid()
+        supervisor._atomic_json(self.home / "desktop" / "admin" / "status.json", status)
+        self.assertTrue(supervisor.probe_home(self.home, timeout=.12)["can_start"])
+        second, second_lines = self.launch(real=True)
+        healthy = self.status(lambda value: value["state"] == "healthy" and value["supervisor_pid"] == second.pid)
+        self.assertNotEqual(healthy["service_pid"], os.getpid())
+        self.assertTrue(supervisor._pid_alive(healthy["service_pid"]))
+
+    def test_new_process_degraded_without_url_keeps_old_address_only_as_evidence(self):
+        old, old_lines = self.launch(backend=True)
+        wait_for(lambda: old_lines)
+        old_url = old_lines[0]
+        old.stdin.write("shutdown\n");old.stdin.flush()
+        self.assertEqual(old.wait(timeout=10), 0)
+        (self.home / "web.json").unlink()
+        supervisor._atomic_json(self.home / "desktop" / "admin" / "status.json",
+                                {"instance_id": "previous", "state": "stopped", "supervisor_pid": old.pid,
+                                 "service_pid": old.pid, "url": old_url})
+        # Keep Y occupied (without listening) so a genuine port-0 allocation
+        # must choose another Z when the new backend eventually initializes.
+        occupied = socket.socket()
+        if os.name == "nt":
+            occupied.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        occupied.bind(("127.0.0.1", supervisor._url(old_url)[1]))
+        self.addCleanup(occupied.close)
+        self.mode(startup_delay=.8)
+        process, lines = self.launch(startup_timeout=.15)
+        degraded = self.status(lambda value: value["state"] == "degraded" and value["service_pid"] != old.pid)
+        self.assertIsNone(degraded["url"])
+        self.assertEqual(degraded["backend_evidence"], {"service_pid": old.pid, "url": old_url})
+        healthy = self.status(lambda value: value["state"] == "healthy")
+        self.assertNotEqual(healthy["url"], old_url)
+        self.assertEqual(healthy["backend_evidence"], {"service_pid": healthy["service_pid"], "url": healthy["url"]})
 
 
 class SupervisorUtilityTests(unittest.TestCase):
