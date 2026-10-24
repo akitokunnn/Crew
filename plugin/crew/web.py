@@ -423,6 +423,9 @@ class Service:
                         journal_status = self.chat.journal(sid).status
                         if session['status'] != 'waiting' or journal_status == 'working':
                             session['status'] = journal_status
+                    elif sid in present and present[sid].get('kind') == 'crew':
+                        if session['status'] != 'waiting' or present[sid]['status'] == 'busy':
+                            session['status'] = 'working' if present[sid]['status'] == 'busy' else 'idle'
                 decisions = board.decisions(conn, name, all=True)
                 for decision in decisions:
                     if decision['status'] == 'open':
@@ -457,7 +460,7 @@ class Service:
                             is_git_admin=git_config is not None and git_config['admin_session_id'] == sid,
                             **models.get(conn, sid), applied=self.chat.applied(sid), activity=self.chat.activity(sid),
                             context=context, **codex,
-                            where='bg' if self.chat.running(sid) else 'vscode' if sid in present else 'offline',
+                            where='bg' if self.chat.running(sid) or sid in present and present[sid].get('kind') == 'crew' else 'vscode' if sid in present else 'offline',
                             busy=self.chat.busy(sid) or (sid in present and present[sid].get('status') == 'busy'),
                             running=self.chat.running(sid) or sid in present, web_chat=session['web_chat'], cc_name=session['cc_name'],
                             last_seq=events[-1]['seq'] if events else 0, read_seq=read_seq,
@@ -480,7 +483,7 @@ class Service:
                             running=self.chat.running(sid) or sid in present,
                             leader_session_id=leader['session_id'] if leader else None, group=session['group_name'],
                             status=session['status'], status_note=session['status_note'],
-                            where='bg' if self.chat.running(sid) else 'vscode' if sid in present else 'offline',
+                            where='bg' if self.chat.running(sid) or sid in present and present[sid].get('kind') == 'crew' else 'vscode' if sid in present else 'offline',
                             **{key: session[key] for key in ('task', 'branch', 'worktree', 'cwd', 'cc_name', 'web_chat')},
                             scope=card['scope'] if card else None, done_when=card['done_when'] if card else None,
                             progress=[{'at': r['created_at'], 'text': r['body']} for r in reversed(reports) if r['session_id'] == sid][:5],

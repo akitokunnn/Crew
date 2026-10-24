@@ -63,6 +63,8 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(code, 200, state)
         self.assertEqual(len([s for s in state['leaders'] if s['session_id'] == 's3']), 1)
         self.assertTrue(next(s for s in state['leaders'] if s['session_id'] == 's3')['busy'])
+        identity = next(s for s in state['leaders'] if s['session_id'] == 's3')
+        self.assertEqual((identity['where'], identity['status']), ('bg', 'working'))
 
     def test_pause_is_durable_before_interrupt_and_late_native_hooks_cannot_reopen(self):
         goal = self.goal()
