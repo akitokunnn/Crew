@@ -123,26 +123,68 @@
     #crew-goal-trial .ct-stage{background:var(--ct-side);padding:12px 10px;border-radius:7px;min-width:0}
     #crew-goal-trial .ct-stage.active{background:var(--ct-soft)}
     #crew-goal-trial .ct-stage small{display:block;font-size:11px;color:var(--ct-muted);margin-top:5px}
+    #crew-goal-trial .ct-workspace{display:grid;grid-template-columns:minmax(0,1fr);min-width:0}
+    #crew-goal-trial .ct-workspace.with-team{grid-template-columns:minmax(0,1fr) 210px}
+    #crew-goal-trial .ct-group-rail{background:var(--ct-side);border-left:1px solid var(--ct-line);padding:21px 12px;min-width:0}
+    #crew-goal-trial .ct-rail-title{display:flex;justify-content:space-between;gap:7px;align-items:center;margin-bottom:12px;font-size:13px}
+    #crew-goal-trial .ct-rail-title strong{overflow-wrap:anywhere}
+    #crew-goal-trial .ct-roster{display:flex;flex-direction:column;gap:8px}
+    #crew-goal-trial .ct-node{display:block;width:100%;background:var(--ct-paper);border:1px solid var(--ct-line);border-radius:8px;padding:12px;text-align:left;color:var(--ct-ink);font-size:13px;min-width:0}
+    #crew-goal-trial .ct-node:hover,#crew-goal-trial .ct-node[aria-pressed="true"]{background:var(--ct-hover)}
+    #crew-goal-trial .ct-node-leader{background:var(--ct-soft)}
+    #crew-goal-trial .ct-node-name{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+    #crew-goal-trial .ct-node-name strong{overflow-wrap:anywhere}
+    #crew-goal-trial .ct-node small{display:block;color:var(--ct-muted);font-size:11px;margin-top:5px;overflow-wrap:anywhere}
+    #crew-goal-trial .ct-node-task{display:block;font-size:12px;margin-top:8px;overflow-wrap:anywhere}
+    #crew-goal-trial .ct-node-state{font-size:11px;margin-left:auto;color:var(--ct-muted)}
+    #crew-goal-trial .ct-node-state.working{color:var(--ct-accent)}
+    #crew-goal-trial .ct-tree-members{display:flex;flex-direction:column;gap:10px;padding:13px 0 0 16px;margin-left:13px;border-left:1px solid var(--ct-line)}
+    #crew-goal-trial .ct-tree-member{position:relative}
+    #crew-goal-trial .ct-tree-member:before{content:"";position:absolute;top:24px;left:-16px;width:16px;border-top:1px solid var(--ct-line)}
+    #crew-goal-trial .ct-groups-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:23px;align-items:start}
+    #crew-goal-trial .ct-group-column{min-width:0}
+    #crew-goal-trial .ct-group-column-head{display:flex;align-items:center;justify-content:space-between;gap:9px;margin-bottom:13px;color:var(--ct-muted);font-size:12px}
+    #crew-goal-trial .ct-priority{background:var(--ct-warn-bg);color:var(--ct-warn);border-radius:4px;padding:1px 5px;font-size:11px;flex:none}
+    #crew-goal-trial .ct-mini-label{font-size:11px;color:var(--ct-muted)}
+    #crew-goal-trial .ct-side-bottom{margin-top:auto;padding:16px 8px 0;border-top:1px solid var(--ct-line);font-size:11px;color:var(--ct-muted)}
+    #crew-goal-trial .ct-side-bottom .ct-link{font-size:11px}
+    #crew-goal-trial .ct-away{display:flex;gap:7px;align-items:center;margin-top:10px}
+    #crew-goal-trial .ct-away input{accent-color:var(--ct-accent)}
+    #crew-goal-trial .ct-sidebar-extras{display:flex;gap:15px;flex-wrap:wrap;margin-top:12px}
+    #crew-goal-trial .ct-group-strip{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-bottom:18px;padding-bottom:12px;border-bottom:1px solid var(--ct-line);font-size:12px}
+    #crew-goal-trial .ct-group-strip .ct-tools{margin:0}
+    #crew-goal-trial .ct-local-tray{margin:0 0 20px;color:var(--ct-ink)}
+    #crew-goal-trial .ct-local-tray summary{font-size:12px;color:var(--ct-muted)}
+    #crew-goal-trial .ct-goal-short{display:flex;justify-content:space-between;align-items:center;gap:10px;width:100%;padding:9px 0;border:0;border-bottom:1px solid var(--ct-line);background:transparent;text-align:left;font-size:12px}
+    #crew-goal-trial .ct-goal-short span:last-child{font-size:11px;color:var(--ct-muted);flex:none}
+    #crew-goal-trial .ct-rail-section{margin-top:21px;padding-top:15px;border-top:1px solid var(--ct-line)}
+    #crew-goal-trial .ct-rail-section .ct-file{font-size:12px;align-items:flex-start;gap:7px}
+    #crew-goal-trial .ct-rail-section .ct-file small{font-size:11px}
+    #crew-goal-trial .ct-rail-section .ct-button{width:100%;justify-content:flex-start;font-size:12px;margin-top:10px}
+    #crew-goal-trial .ct-layout>aside{gap:20px}
+    #crew-goal-trial .ct-header-admin{margin-left:auto}
+    #crew-goal-trial .ct-side-teams .ct-nav{font-size:12px;gap:7px}
+    #crew-goal-trial .ct-button[aria-pressed="true"]{background:var(--ct-hover)}
+    @media(max-width:850px){#crew-goal-trial .ct-workspace.with-team{grid-template-columns:minmax(0,1fr) 180px}#crew-goal-trial .ct-group-rail{padding:18px 9px}#crew-goal-trial .ct-node{padding:10px}#crew-goal-trial .ct-workspace.with-team main{padding-left:16px;padding-right:16px}}
+    @media(max-width:700px){#crew-goal-trial .ct-workspace.with-team{grid-template-columns:minmax(0,1fr)}#crew-goal-trial .ct-group-rail{border-left:0;border-top:1px solid var(--ct-line)}#crew-goal-trial .ct-roster{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}#crew-goal-trial .ct-groups-grid{grid-template-columns:minmax(0,1fr)}#crew-goal-trial .ct-side-bottom{padding-top:12px}}
     @media(max-width:760px){#crew-goal-trial .ct-layout{grid-template-columns:145px minmax(0,1fr)}#crew-goal-trial main{padding:24px 19px 17px}#crew-goal-trial .ct-top{padding-right:100px}#crew-goal-trial .ct-demo{margin-left:0}#crew-goal-trial .ct-heading{gap:10px}#crew-goal-trial .ct-split{grid-template-columns:minmax(0,1fr)}#crew-goal-trial .ct-people{border-left:0;border-top:1px solid var(--ct-line);padding:12px 0 0;display:flex;flex-wrap:wrap;gap:7px}#crew-goal-trial .ct-person{width:auto}#crew-goal-trial .ct-stage-flow{grid-template-columns:repeat(2,minmax(0,1fr))}}
     @media(max-width:540px){#crew-goal-trial .ct-layout{grid-template-columns:minmax(0,1fr);min-height:0}#crew-goal-trial aside{border-right:0;border-bottom:1px solid var(--ct-line);padding:10px;display:block}#crew-goal-trial aside nav{display:flex;gap:4px;flex-wrap:wrap}#crew-goal-trial .ct-nav{width:auto;margin:0;flex:1;justify-content:center;padding:8px 7px;font-size:12px}#crew-goal-trial .ct-side-teams,#crew-goal-trial .ct-side-note{display:none}#crew-goal-trial main{padding:23px 16px 17px}#crew-goal-trial h2{font-size:21px}#crew-goal-trial .ct-top{flex-wrap:wrap;gap:7px;padding-right:100px}#crew-goal-trial .ct-demo{width:100%;padding-left:30px}#crew-goal-trial .ct-heading{flex-wrap:wrap}#crew-goal-trial .ct-goal{padding:16px}#crew-goal-trial .ct-facts{grid-template-columns:minmax(0,1fr);gap:4px}#crew-goal-trial .ct-facts dd{margin-bottom:11px}#crew-goal-trial .ct-tabs{gap:17px}#crew-goal-trial .ct-detail-title{font-size:19px}#crew-goal-trial .ct-human{max-width:96%}}
     @media(pointer:coarse){#crew-goal-trial .ct-button,#crew-goal-trial .ct-link,#crew-goal-trial .ct-nav,#crew-goal-trial .ct-tab{min-height:44px}#crew-goal-trial textarea{font-size:16px}}
   </style>
   <div class="ct-window">
-    <header class="ct-top"><span class="ct-mark" aria-hidden="true">C</span><strong>Crew</strong><span class="ct-slash">/</span><span>MIB</span><span class="ct-demo">交互预览 · 不执行真实任务</span></header>
+    <header class="ct-top"><span class="ct-mark" aria-hidden="true">C</span><strong>Crew</strong><span class="ct-slash">/</span><span>MIB</span><span class="ct-demo">交互预览 · 状态均为示例</span><button type="button" class="ct-link ct-header-admin cursor-interaction" data-nav="operations"><i data-lucide="shield-check" aria-hidden="true"></i>系统运维</button></header>
     <div class="ct-layout">
       <aside aria-label="工作区导航">
         <nav aria-label="工作区页面">
-          <button type="button" class="ct-nav cursor-interaction" data-nav="goals" aria-current="page"><i data-lucide="layers" aria-hidden="true"></i>目标<span class="ct-count" data-count="all">3</span></button>
-          <button type="button" class="ct-nav cursor-interaction" data-nav="attention"><i data-lucide="message-circle" aria-hidden="true"></i>需要你<span class="ct-count" data-count="attention">1</span></button>
-          <button type="button" class="ct-nav cursor-interaction" data-nav="documents"><i data-lucide="files" aria-hidden="true"></i>交付物</button>
-          <button type="button" class="ct-nav cursor-interaction" data-nav="members"><i data-lucide="messages-square" aria-hidden="true"></i>成员直聊</button>
-          <button type="button" class="ct-nav cursor-interaction" data-nav="context"><i data-lucide="notebook-tabs" aria-hidden="true"></i>它记得什么</button>
-          <button type="button" class="ct-nav cursor-interaction" data-nav="operations"><i data-lucide="shield-check" aria-hidden="true"></i>系统运维</button>
+          <button type="button" class="ct-nav cursor-interaction" data-nav="all" aria-current="page"><i data-lucide="network" aria-hidden="true"></i>全部</button>
+          <button type="button" class="ct-nav cursor-interaction" data-nav="channel"><i data-lucide="messages-square" aria-hidden="true"></i>交流区</button>
+          <button type="button" class="ct-nav cursor-interaction" data-nav="git"><i data-lucide="git-branch" aria-hidden="true"></i>Git</button>
+          <button type="button" class="ct-nav cursor-interaction" data-nav="todos"><i data-lucide="list-checks" aria-hidden="true"></i>我的待办</button>
         </nav>
-        <div class="ct-side-teams"><div class="ct-section">LEADERS</div><button type="button" class="ct-nav cursor-interaction" data-nav="voice"><span class="ct-avatar">声</span>语音和声纹</button><button type="button" class="ct-nav cursor-interaction" data-nav="performance"><span class="ct-avatar">性</span>性能优化</button></div>
-        <div class="ct-side-note">没有待处理事项时，<br>不需要你盯着这里。</div>
+        <div class="ct-side-teams" id="ct-leader-list"></div>
+        <div class="ct-side-bottom"><div>额度 · 本预览未采集</div><p class="ct-notice">QQ · 状态示意</p><label class="ct-away"><input type="checkbox" id="ct-away">我已离开</label><div class="ct-sidebar-extras"><button type="button" class="ct-link cursor-interaction" data-nav="adopt">待收编</button><button type="button" class="ct-link cursor-interaction" data-nav="usage">用量</button><button type="button" class="ct-link cursor-interaction" data-nav="settings">设置</button></div></div>
       </aside>
-      <main id="ct-content"></main>
+      <div class="ct-workspace" id="ct-workspace"><main id="ct-content"></main><section class="ct-group-rail" id="ct-group-panel" aria-label="当前组的常驻成员与资料" hidden></section></div>
     </div>
   </div>
   <div id="ct-announcement" class="ct-notice" role="status" aria-live="polite"></div>
@@ -152,47 +194,94 @@
       const main=root.querySelector('#ct-content');
       const announcement=root.querySelector('#ct-announcement');
       const display={showProgress:true};
-      const state={nav:'goals',selected:null,tab:'outcome',step:0,choice:null,option:'results',paused:false,draft:'',supplements:[],custom:[],document:null,chatOwner:'member',memberNotes:[],leaderNotes:[],chatDrafts:{leader:'',member:''},memoryPending:false,memoryExcluded:false,opsStep:0,reportCase:0,runtime:'codex',leaderRuntime:'claude',runtimePreview:false};
+      const teams=[
+        {id:'voice',name:'语音和声纹',mark:'声',leader:{id:'voice-leader',name:'语音和声纹',role:'leader',runtime:'claude',working:false,task:'协调三场景验收与后续工作',goal:'speaker'},members:[{id:'voice-build',name:'声纹施工',role:'成员',runtime:'codex',working:false,task:'代码和评测已保留，等待新安排',goal:'speaker'},{id:'voice-check',name:'声纹识别实际',role:'成员',runtime:'claude',working:false,task:'已记录短句与混说的失败边界',goal:'speaker'}]},
+        {id:'performance',name:'性能优化',mark:'性',leader:{id:'performance-leader',name:'性能优化',role:'leader',runtime:'claude',working:true,task:'定位唤醒到首句的主要等待',goal:'latency'},members:[{id:'performance-test',name:'延迟复测',role:'成员',runtime:'codex',working:true,task:'对比相同输入的冷启动和热启动',goal:'latency'}]}
+      ];
+      const people=teams.flatMap(team=>[team.leader,...team.members].map(person=>({...person,group:team.id})));
+      const state={schema:2,nav:'all',group:null,pane:'goals',allTab:'tree',activeGoal:null,person:null,priority:['voice'],away:false,selected:null,tab:'outcome',step:0,choice:null,option:'results',paused:false,draft:'',supplements:[],custom:[],customGroups:[],document:null,chats:{},chatDrafts:{},personRuntimes:{},memoryPending:false,memoryExcluded:false,opsStep:0,reportCase:0,runtimePreview:false};
       const safe=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
       const button=(label,action,primary=false,icon='')=>`<button type="button" class="ct-button ${primary?'ct-primary ':''}cursor-interaction" data-act="${action}">${icon?`<i data-lucide="${icon}" aria-hidden="true"></i>`:''}${label}</button>`;
-      const back=()=>`<button type="button" class="ct-link ct-back cursor-interaction" data-act="back"><i data-lucide="arrow-left" aria-hidden="true"></i>返回目标</button>`;
+      const back=()=>`<button type="button" class="ct-link ct-back cursor-interaction" data-act="back"><i data-lucide="arrow-left" aria-hidden="true"></i>返回${state.group?'本组目标':'全部'}</button>`;
+      const teamOf=id=>teams.find(team=>team.id===id);
+      const currentPerson=()=>people.find(person=>person.id===state.person)||people.find(person=>person.group===state.group&&person.role==='leader');
+      const runtimeOf=person=>state.personRuntimes[person.id]||person.runtime;
+      const groupOfGoal=id=>id==='latency'?'performance':String(id).startsWith('new-')?state.customGroups[Number(id.slice(4))]||'voice':'voice';
+      const shortGoalStatus=goal=>goal.id==='recording'?(state.choice?'已确认':'需要你'):goal.id==='latency'?(state.paused?'已暂停':'推进中'):goal.id==='speaker'?'未达标':'待规划';
+      function enterGroup(group,pane='goals',goal=null){state.nav=group;state.group=group;state.pane=pane;state.selected=null;state.document=null;state.runtimePreview=false;state.activeGoal=goal;if(!people.some(person=>person.id===state.person&&person.group===group))state.person=teamOf(group).leader.id;}
+      function openPerson(id){const person=people.find(item=>item.id===id);if(!person)return;const goal=person.role==='leader'&&state.group===person.group?state.activeGoal||person.goal:person.goal;enterGroup(person.group,'chat',goal);state.person=id;}
+      function openGoal(id){enterGroup(groupOfGoal(id),'goals',id);state.selected=id;state.tab='outcome';}
       const goals=()=>[
         {id:'recording',title:'确认测试录音的保存范围',owner:'语音和声纹',type:state.choice?'working':'attention',status:state.choice?'本轮结束 · 已确认':'需要你聊一下',description:state.choice?(state.choice==='results'?'只保存评测结果，原始录音不长期保留。':'仅本地保留本轮录音，结束时再确认处理。'):'涉及你的资料使用偏好，leader 需要先听听你的想法。',next:state.choice?'决定已记录，不再反复询问':'这项已暂停；不影响其他目标继续',cta:state.choice?'查看决定':'听它说明',demo:true},
         {id:'latency',title:'缩短唤醒后的首句等待',owner:'性能优化',type:state.paused?'neutral':'working',status:state.paused?'已暂停':'正在推进',description:state.paused?'执行已暂停，保留当前结果，等你继续。':'正在对比冷启动与热启动，先定位时间花在哪一段。',next:state.paused?'不会再自行启动成员':'下一步：用相同输入复验优化效果',cta:'查看进展',demo:true},
         {id:'speaker',title:'三种对话场景正确分人、分段',owner:'语音和声纹',type:'failed',status:'本轮结束 · 未达标',description:'保留了本地评测与代码；短句和混说仍未满足最终要求。',next:'已收束，内部消息不会重新开启本轮',cta:'查看最终答复',demo:false},
-        ...state.custom.map((title,index)=>({id:'new-'+index,title,owner:'语音和声纹',type:'neutral',status:'待规划 · 演示目标',description:'需求已保存在本次演示中，没有派发给真实 AI。',next:'开工前由 leader 制定交付与验收标准',cta:'查看需求',demo:true}))
+        ...state.custom.map((title,index)=>({id:'new-'+index,title,owner:teamOf(groupOfGoal('new-'+index)).name,type:'neutral',status:'待规划 · 演示目标',description:'需求已保存在本次演示中，没有派发给真实 AI。',next:'开工前由 leader 制定交付与验收标准',cta:'查看需求',demo:true}))
       ];
       function remember(){
         if(!window.openai?.setWidgetState)return;
-        const compactNotes=items=>items.slice(-2).map(note=>({text:note.text.slice(0,180),reply:note.reply.slice(0,180),changed:note.changed}));
-        const privateState={...state,draft:state.draft.slice(0,200),supplements:state.supplements.slice(-2).map(text=>text.slice(0,300)),custom:state.custom.slice(-4).map(text=>text.slice(0,200)),memberNotes:compactNotes(state.memberNotes),leaderNotes:compactNotes(state.leaderNotes),chatDrafts:{leader:state.chatDrafts.leader.slice(0,200),member:state.chatDrafts.member.slice(0,200)}};
+        const compactNotes=items=>items.slice(-2).map(note=>({text:note.text.slice(0,160),reply:note.reply.slice(0,160),changed:note.changed}));
+        const privateState={...state,draft:state.draft.slice(0,200),supplements:state.supplements.slice(-2).map(text=>text.slice(0,300)),custom:state.custom.slice(-4).map(text=>text.slice(0,200)),chats:Object.fromEntries(Object.entries(state.chats).map(([id,items])=>[id,compactNotes(items)])),chatDrafts:Object.fromEntries(Object.entries(state.chatDrafts).map(([id,text])=>[id,text.slice(0,160)]))};
         while(new TextEncoder().encode(JSON.stringify(privateState)).length>14000){
-          const key=['memberNotes','leaderNotes','supplements','custom'].find(name=>privateState[name].length);
+          const chat=Object.keys(privateState.chats).find(id=>privateState.chats[id].length);
+          if(chat){privateState.chats[chat].shift();continue;}
+          const key=['supplements','custom'].find(name=>privateState[name].length);
           if(!key)break;privateState[key].shift();
         }
-        const result=window.openai.setWidgetState({modelContent:{prototype:'Crew 目标工作区',openedGoal:state.selected,openedView:state.document||state.nav,decision:state.choice,homeShowsProgress:display.showProgress},privateContent:{crewGoalTrial:privateState}});
+        const result=window.openai.setWidgetState({modelContent:{prototype:'Crew 渐进迭代',openedGroup:state.group,openedGoal:state.activeGoal,openedView:state.document||(state.group?state.pane:state.nav),openedPerson:state.person,decision:state.choice,homeShowsProgress:display.showProgress},privateContent:{crewGoalTrial:privateState}});
         result?.catch(()=>{});
       }
       function restore(saved){
         const value=saved?.privateContent?.crewGoalTrial;
         if(!value||typeof value!=='object')return;
-        for(const key of ['nav','selected','tab','draft','document'])if(typeof value[key]==='string'||value[key]===null)state[key]=value[key];
         if(['results','local',null].includes(value.choice))state.choice=value.choice;
         if(Number.isInteger(value.step))state.step=Math.max(0,Math.min(3,value.step));
         state.paused=value.paused===true;
         if(Array.isArray(value.custom))state.custom=value.custom.filter(v=>typeof v==='string').slice(-4);
         if(Array.isArray(value.supplements))state.supplements=value.supplements.filter(v=>typeof v==='string').slice(-3);
-        if(['leader','member'].includes(value.chatOwner))state.chatOwner=value.chatOwner;
-        for(const key of ['memberNotes','leaderNotes'])if(Array.isArray(value[key]))state[key]=value[key].filter(v=>v&&typeof v.text==='string'&&typeof v.reply==='string').map(v=>({text:v.text.slice(0,600),reply:v.reply.slice(0,600),changed:v.changed===true})).slice(-3);
-        for(const key of ['leader','member'])if(typeof value.chatDrafts?.[key]==='string')state.chatDrafts[key]=value.chatDrafts[key].slice(0,600);
+        if(value.schema!==2)return;
+        state.customGroups=state.custom.map((_,index)=>teamOf(value.customGroups?.[index])?value.customGroups[index]:'voice');
+        if(['all','channel','git','todos','voice','performance','operations','adopt','usage','settings'].includes(value.nav))state.nav=value.nav;
+        state.group=['voice','performance'].includes(state.nav)?state.nav:null;
+        if(['goals','chat','documents','context'].includes(value.pane))state.pane=value.pane;
+        for(const key of ['selected','activeGoal','tab','draft','document'])if(typeof value[key]==='string'||value[key]===null)state[key]=value[key];
+        if(['tree','goals'].includes(value.allTab))state.allTab=value.allTab;
+        if(Array.isArray(value.priority))state.priority=[...new Set(value.priority.filter(id=>teamOf(id)))].slice(0,3);
+        state.away=value.away===true;
+        if(people.some(person=>person.id===value.person&&person.group===state.group))state.person=value.person;
+        else if(state.group)state.person=teamOf(state.group).leader.id;
+        for(const person of people){
+          const id=person.id;
+          if(Array.isArray(value.chats?.[id]))state.chats[id]=value.chats[id].filter(note=>note&&typeof note.text==='string'&&typeof note.reply==='string').map(note=>({text:note.text.slice(0,600),reply:note.reply.slice(0,600),changed:note.changed===true})).slice(-3);
+          if(typeof value.chatDrafts?.[id]==='string')state.chatDrafts[id]=value.chatDrafts[id].slice(0,600);
+          if(['claude','codex'].includes(value.personRuntimes?.[id]))state.personRuntimes[id]=value.personRuntimes[id];
+        }
         state.memoryPending=value.memoryPending===true;state.memoryExcluded=value.memoryExcluded===true;
         if(Number.isInteger(value.opsStep))state.opsStep=Math.max(0,Math.min(3,value.opsStep));
         if(Number.isInteger(value.reportCase))state.reportCase=Math.max(0,Math.min(2,value.reportCase));
-        if(['codex','claude'].includes(value.runtime))state.runtime=value.runtime;
-        if(['codex','claude'].includes(value.leaderRuntime))state.leaderRuntime=value.leaderRuntime;
       }
       function announce(text){announcement.textContent=text;}
       function icons(){if(globalThis.lucide)lucide.createIcons({attrs:{width:16,height:16}});}
+      function personNode(person,compact=false){
+        const working=person.working&&!(person.group==='performance'&&state.paused),rank=state.priority.indexOf(person.group)+1;
+        return `<button type="button" class="ct-node ${person.role==='leader'?'ct-node-leader':''} cursor-interaction" data-act="person" data-person="${person.id}" aria-pressed="${state.pane==='chat'&&state.person===person.id}"><span class="ct-node-name"><span class="ct-avatar">${safe(person.name.slice(0,1))}</span><strong>${safe(person.name)}</strong>${person.role==='leader'&&rank?`<span class="ct-priority">${rank}</span>`:''}${compact?'':`<span class="ct-node-state ${working?'working':''}">${working?'工作中':person.group==='performance'&&state.paused?'已暂停':'空闲'}</span>`}</span><small>${person.role} · ${runtimeOf(person)==='codex'?'Codex':'Claude Code'}${compact?' · '+(working?'工作中':person.group==='performance'&&state.paused?'已暂停':'空闲'):''}</small><span class="ct-node-task">${safe(person.task)}</span></button>`;
+      }
+      function renderLeaders(){
+        const ordered=[...teams].sort((a,b)=>(state.priority.includes(a.id)?state.priority.indexOf(a.id):99)-(state.priority.includes(b.id)?state.priority.indexOf(b.id):99));
+        const item=team=>`<button type="button" class="ct-nav cursor-interaction" data-nav="${team.id}" ${state.group===team.id?'aria-current="page"':''}><span class="ct-avatar">${team.mark}</span>${team.name}${state.priority.includes(team.id)?`<span class="ct-priority">${state.priority.indexOf(team.id)+1}</span>`:''}</button>`;
+        root.querySelector('#ct-leader-list').innerHTML=`<div class="ct-section">置顶 · 优先</div>${ordered.filter(team=>state.priority.includes(team.id)).map(item).join('')||'<div class="ct-section">还没有置顶</div>'}<div class="ct-section" style="margin-top:15px">LEADER</div>${ordered.filter(team=>!state.priority.includes(team.id)).map(item).join('')}`;
+      }
+      function overviewTabs(){return `<div class="ct-tools" aria-label="全部的视图"><button type="button" class="ct-button cursor-interaction" data-act="overview-tree" aria-pressed="${state.allTab==='tree'}">架构图</button><button type="button" class="ct-button cursor-interaction" data-act="overview-goals" aria-pressed="${state.allTab==='goals'}">目标进展 · ${goals().length}</button></div>`;}
+      function architectureView(){
+        return `<div class="ct-heading"><div><h2>全部</h2><p class="ct-sub">MIB · 2 个 leader，3 个成员 · 示例状态</p></div>${button('交给 Crew','new',true,'plus')}</div>${overviewTabs()}${!state.choice?`<button type="button" class="ct-link cursor-interaction" data-act="open" data-id="recording">语音和声纹：有一项需要先和你聊清楚</button>`:''}<div class="ct-groups-grid" style="margin-top:20px">${teams.map(team=>`<section class="ct-group-column" aria-label="${team.name}架构图"><div class="ct-group-column-head"><span>${team.name}</span><span>${team.members.length} 个成员</span></div>${personNode(people.find(person=>person.id===team.leader.id))}<div class="ct-tree-members">${team.members.map(person=>`<div class="ct-tree-member">${personNode(people.find(item=>item.id===person.id))}</div>`).join('')}</div><button type="button" class="ct-link cursor-interaction" data-act="team-goals" data-group="${team.id}" style="margin-top:14px">看本组 ${goals().filter(goal=>groupOfGoal(goal.id)===team.id).length} 个目标</button></section>`).join('')}</div><p class="ct-footnote">每个节点都可以直接进入对应人的对话。此页保留架构总览，目标进展在同页切换。</p>`;
+      }
+      function renderTeam(){
+        const panel=root.querySelector('#ct-group-panel'),team=teamOf(state.group);
+        root.querySelector('#ct-workspace').classList.toggle('with-team',Boolean(team));panel.hidden=!team;
+        if(!team){panel.innerHTML='';return;}
+        const goal=goals().find(item=>item.id===state.activeGoal);
+        panel.innerHTML=`<div class="ct-rail-title"><strong>${team.name}</strong><span class="ct-mini-label">本组</span></div><div class="ct-roster">${personNode(people.find(person=>person.id===team.leader.id),true)}${team.members.map(person=>personNode(people.find(item=>item.id===person.id),true)).join('')}</div><div class="ct-rail-section"><strong class="ct-mini-label">本组目标</strong>${goals().filter(item=>groupOfGoal(item.id)===team.id).map(item=>`<button type="button" class="ct-goal-short cursor-interaction" data-act="open" data-id="${item.id}"><span>${safe(item.title)}</span><span>${shortGoalStatus(item)}</span></button>`).join('')}</div><div class="ct-rail-section"><strong class="ct-mini-label">本组交付物</strong>${team.id==='voice'?file('声纹阶段报告','三场景 · 结论与具体例子','speaker-report'):'<p class="ct-notice">这个示例目标还没有最终交付。</p>'}${button('本组交付物','group-documents',false,'files')}</div><div class="ct-rail-section"><strong class="ct-mini-label">${goal?'当前目标的上下文':'目标上下文'}</strong><p class="ct-notice">${goal?safe(goal.title):'打开目标后，查看它实际采用的需求和证据。'}</p><button type="button" class="ct-button cursor-interaction" data-act="group-context" ${goal?'':'disabled'}><i data-lucide="notebook-tabs" aria-hidden="true"></i>它记得什么</button></div>`;
+      }
+      function groupStrip(){const team=teamOf(state.group);return `<div class="ct-group-strip"><span>${team.name} · 本组工作区</span><div class="ct-tools">${button('本组目标','group-home')}<button type="button" class="ct-button cursor-interaction" data-act="priority-group">${state.priority.includes(team.id)?'取消置顶':'置顶 leader'}</button></div></div>`;}
       function cards(){
         let items=goals();
         if(state.nav==='attention')items=items.filter(g=>g.id==='recording'&&!state.choice);
@@ -243,14 +332,25 @@
         const example=examples[state.reportCase];
         return `${back()}<span class="ct-owner">语音和声纹 · HTML 报告阅读示例</span><h2 class="ct-detail-title">声纹三场景：本轮交付结论</h2><div class="ct-verdict"><strong>旧记录：本轮未达标。</strong><p>代码和本地评测已保留，短句和混说仍有失败。这里不展示未经核验的正确率。</p></div><div class="ct-document"><h3>用具体例子说明</h3><p class="ct-notice">下面是呈现方式的示意例子，不是从真实音频提取的实测输出，也不能作为新验收结果。</p><div class="ct-examples" aria-label="报告例子">${['停顿换人','连续短句','交替混说'].map((label,index)=>`<button type="button" class="ct-button cursor-interaction" aria-pressed="${state.reportCase===index}" data-act="report-case" data-index="${index}">${label}</button>`).join('')}</div><h3>${example.title}</h3><p>${example.input}</p><div role="img" aria-label="示意对照：期望说话人与错误输出"><div class="ct-lane"><span>期望归属</span><div class="ct-segments">${example.expected.map(text=>`<span class="ct-segment">${text}</span>`).join('')}</div></div><div class="ct-lane"><span>示意输出</span><div class="ct-segments">${example.actual.map(text=>`<span class="ct-segment ${text.includes('✕')?'wrong':''}">${text}</span>`).join('')}</div></div></div><p>${example.reason}</p><h3>旧记录保留的产物</h3><ul><li>本地 STT / 服务端模拟与评测方式。</li><li>代码提交 <code>861ecb4</code> 与对应构建测试记录。</li><li>失败样本、运行条件及模拟边界。</li></ul><h3>验收边界</h3><p>580 条完成是评测覆盖量，364 项工程测试也不能证明声纹三场景达标。真实设备与线上服务的整体验收仍需有独立证据。</p><h3>下一轮</h3><p>对失败样本提出新的可检验假设，再开启后续轮次。旧确认消息不构成继续工作理由。</p><details><summary class="cursor-interaction">真实交付时，这里还必须有什么？</summary><p>实际输入与输出、证据位置、代码版本、逐项验收结论、限制、时间和可得用量。每份最终报告至少一个可理解的 example。</p></details></div>`;
       }
-      function memberChat(){
-        const isLeader=state.chatOwner==='leader',name=isLeader?'性能优化':'延迟复测',role=isLeader?'leader':'成员',runtime=isLeader?state.leaderRuntime:state.runtime;
-        const notes=isLeader?state.leaderNotes:state.memberNotes;
-        let conversation=bubble(name+' · '+role+' · 预设演示','我正在用相同输入复验冷启动和热启动，确认等待主要发生在哪一段。你可以直接补充要求。');
-        for(const note of notes)conversation+=bubble('你',safe(note.text),true)+bubble(name+' · 预设演示回复',safe(note.reply));
-        return `${back()}<div class="ct-row"><div><span class="ct-status working">正在工作 · 交互示例</span><h2 class="ct-detail-title">${name}</h2></div>${button('查看交接与更换载体','runtime-preview',false,'arrow-left-right')}</div><p class="ct-sub">${role} · 首句等待示例目标 · ${runtime==='codex'?'Codex':'Claude Code'}</p><div class="ct-state-note">工作中可以插话。以下回复均为预设演示，不连接真实 AI。</div>${state.runtimePreview?`<section class="ct-question"><h3>更换为 ${runtime==='codex'?'Claude Code':'Codex'}？</h3><p class="ct-desc">身份和目标保留；原生历史各自保存。下次发消息会读取交接，可能增加用量。</p><details><summary class="cursor-interaction">交接预览</summary><p>目标：缩短首句等待。已有测量需复核，按最新要求调整测量顺序。保留原始验收标准和证据引用。</p></details><div class="ct-actions">${button('取消','runtime-cancel')}${button('确认演示切换','runtime-confirm',true)}</div><p class="ct-notice">这里只切换演示标签，正式版已有 leader 的切换尚未接通。</p></section>`:''}<div class="ct-split"><div><div class="ct-chat">${conversation}</div><div class="ct-examples">${button('问它正在测什么','chat-question')}${button('插话：先测冷启动','chat-change')}</div><form id="ct-member-form" class="ct-composer"><label class="ct-chat-label" for="ct-member-message">直接和 ${name} 说</label><textarea id="ct-member-message" required maxlength="600" placeholder="工作中也可以发消息。">${safe(state.chatDrafts[state.chatOwner])}</textarea><div class="ct-actions">${button('发送演示消息','chat-send',true,'arrow-up')}</div></form><p class="ct-notice">演示展示“同一 AI 接话再继续”的设计；正式实现需要分别验证 CC 和 Codex 的原生接收与实际回复。</p></div><div class="ct-people" aria-label="对话对象"><span class="ct-owner">本目标 · 示例角色</span><button type="button" class="ct-person cursor-interaction" aria-pressed="${isLeader}" data-act="chat-leader"><span class="ct-avatar">性</span><span>性能优化<small>leader</small></span></button><button type="button" class="ct-person cursor-interaction" aria-pressed="${!isLeader}" data-act="chat-member"><span class="ct-avatar">测</span><span>延迟复测<small>成员 · 工作中</small></span></button><details><summary class="cursor-interaction">leader 知道什么？</summary><p>${notes.some(note=>note.changed)?'演示：测量顺序的变更写回目标，leader 下次工作读取。':'关键任务变更写回目标，普通说明保留在成员对话。'}</p></details></div></div>`;
+      function scopedChat(){
+        const person=currentPerson(),team=teamOf(state.group),runtime=runtimeOf(person),notes=state.chats[person.id]||[];
+        const working=person.working&&!(person.group==='performance'&&state.paused);
+        let conversation=bubble(person.name+' · '+person.role+' · 预设演示',person.group==='performance'?'我正在核对首句等待的测量依据。你可以直接补充要求；已有结果保留在当前目标里。':'三场景这轮尚未达标，代码和失败边界已经保留。你可以直接问我细节，或补充下一轮要求。');
+        for(const note of notes)conversation+=bubble('你',safe(note.text),true)+bubble(person.name+' · 预设演示回复',safe(note.reply));
+        const preview=state.runtimePreview?`<section class="ct-question"><h3>更换为 ${runtime==='codex'?'Claude Code':'Codex'}？</h3><p class="ct-desc">正式切换会先保存交接，忙时需要安全暂停当前执行。身份和目标保留，两端历史各自保存；下次对话读取交接，可能增加用量。</p><details><summary class="cursor-interaction">交接预览</summary><p>所属组：${team.name}。保留当前目标的原始要求、决定、已有结果与证据，最新用户要求优先。</p></details><div class="ct-actions">${button('取消','runtime-cancel')}${button('确认演示切换','runtime-confirm',true)}</div><p class="ct-notice">本页只切换当前人物的演示标签，已有 leader 的正式切换仍待实现。</p></section>`:'';
+        const goal=goals().find(item=>item.id===state.activeGoal);
+        return `<div class="ct-row"><div><span class="ct-status ${working?'working':''}">${working?'工作中':'空闲'} · 示例</span><h2 class="ct-detail-title">${person.name}</h2></div>${button('更换载体','runtime-preview',false,'arrow-left-right')}</div><p class="ct-sub">${person.role} · ${runtime==='codex'?'Codex':'Claude Code'}${goal?' · '+safe(goal.title):''}</p><details class="ct-local-tray"><summary class="cursor-interaction">本组目标 · ${goals().filter(item=>groupOfGoal(item.id)===state.group).length}</summary>${goals().filter(item=>groupOfGoal(item.id)===state.group).map(item=>`<button type="button" class="ct-goal-short cursor-interaction" data-act="open" data-id="${item.id}"><span>${safe(item.title)}</span><span>${safe(item.status)}</span></button>`).join('')}</details><div class="ct-state-note">与右栏选中的人直接交流。以下为预设演示，不连接真实 AI。</div>${preview}<div class="ct-chat">${conversation}</div><div class="ct-examples">${button('问它目前的情况','chat-question')}${button(person.group==='performance'?'插话：先测冷启动':'补充：下一轮先测混说','chat-change')}</div><form id="ct-member-form" class="ct-composer"><label class="ct-chat-label" for="ct-member-message">给 ${person.name} 发消息</label><textarea id="ct-member-message" required maxlength="600" placeholder="可以直接补充要求，工作中也能插话。">${safe(state.chatDrafts[person.id]||'')}</textarea><div class="ct-actions">${button('发送演示消息','chat-send',true,'arrow-up')}</div></form><details><summary class="cursor-interaction">这段对话如何进入协调记录？</summary><p>关键任务变更写回本目标，leader 下次工作读取；普通问答保留在该成员会话。每个人的对话、草稿和载体设置分别保存。</p></details>`;
       }
-      function contextView(){
+      function scopedContext(){
+        if(state.activeGoal==='speaker')return speakerContext();
+        const goal=goals().find(item=>item.id===state.activeGoal),privacy=state.activeGoal==='recording';
+        if(!goal)return `<h2>目标上下文</h2><p class="ct-notice">先从本组目标中选择要查看的一项。</p>`;
+        if(goal.id.startsWith('new-'))return `${back()}<h2>它记得什么</h2><p class="ct-sub">${teamOf(state.group).name} · 当前目标</p><div class="ct-context-item"><strong>你的原始要求</strong><p>${safe(goal.title)}</p></div><p class="ct-notice">尚未派发这条演示目标，没有新增事实或已确认决定。</p>`;
+        const change=Object.entries(state.chats).some(([id,notes])=>people.find(person=>person.id===id)?.group===state.group&&notes.some(note=>note.changed));
+        return `${back()}<h2>它记得什么</h2><p class="ct-sub">${safe(goal.title)} · 当前目标</p><div class="ct-state-note">上下文检查的交互示例，没有修改正式 AI 的记忆。</div><div class="ct-context-item"><strong>原始要求</strong><p>${privacy?'先聊清测试录音的保留偏好，再决定如何处理原始资料。':'缩短唤醒后的首句等待；效果需要用相同输入复验。'}</p><details><summary class="cursor-interaction">查看来源与范围</summary><p>本目标的用户要求，装载到本目标；其他目标的日志和未确认结论不会整段带入。</p></details></div><div class="ct-context-item"><strong>当前决定与补充</strong><p>${privacy?(state.choice?state.choice==='results'?'只保存评测结果，不长期保留原始录音。':'本地保留本轮录音，结束时确认处理。':'尚未拍板，先等待你把资料偏好说明白。'):change?'演示：收到用户补充，先测冷启动，再测热启动。':'还没有证明优化已经达标，继续核对测量。'}</p></div><p class="ct-notice">规则与事实按本组、本目标展示；成员常驻视图仍保留在右侧。</p>`;
+      }
+      function documentsView(){return `<h2>本组交付物</h2><p class="ct-sub">${teamOf(state.group).name} · 报告绑定原目标，保留历史版本</p>${state.group==='voice'?file('声纹阶段交付报告','三场景 · 未达标 · 含具体例子','speaker-report'):'<p class="ct-empty">该示例目标还在验证，尚无最终报告。</p>'}`;}
+      function speakerContext(){
         return `<div class="ct-heading"><div><h2>它记得什么</h2><p class="ct-sub">声纹三场景 · 本次采用的上下文示例</p></div></div><div class="ct-state-note">本版计划加入动态上下文。此页只演示检查、纠正与装载状态，不代表正式模型已采用。</div><div class="ct-context-item"><div class="ct-row"><strong>原始要求</strong><small>本目标 · 用户原话</small></div><p>停顿换人、紧接短句、交替混说，都要正确分人、切段和上行。</p><details><summary class="cursor-interaction">查看来源与装载理由</summary><p>来自原目标需求；作为本目标验收标准，每次工作必须带入，不受摘要覆盖。</p></details></div><div class="ct-context-item"><div class="ct-row"><strong>已确认决定</strong><small>本目标 · 明确约束</small></div><p>不要 PR，等着。</p><details><summary class="cursor-interaction">查看来源与范围</summary><p>来自旧目标内的明确用户指令。适用于此目标；不会自动扩散成整个 Crew 永远不发 PR 的规则。</p></details></div><div class="ct-context-item"><div class="ct-row"><strong>历史评测记录</strong><small>${state.memoryExcluded?'已从本次上下文排除':state.memoryPending?'纠正已保存 · 尚未装载':'历史事实 · 待核对时效'}</small></div><p class="${state.memoryExcluded?'ct-memory-excluded':''}">旧报告：已跑完 580 条评测覆盖，未确认全面正确率。</p><details><summary class="cursor-interaction">查看来源</summary><p>2026-10-24 的阶段报告；它只证明旧版本的覆盖，不能作为下一轮新版本已经通过的依据。</p></details><div class="ct-tools">${state.memoryExcluded?'<span class="ct-owner">旧条目仍保留在历史中。</span>':state.memoryPending?button('模拟下一次装载','memory-apply',true):button('标记这条已过期','memory-outdated')}</div></div><p class="ct-notice">普通纠正留在当前目标；明确说“以后都这样”才成为长期规则，并注明 leader／项目／Crew 范围。</p>`;
       }
       function operationsView(){
@@ -259,74 +359,74 @@
         return `<div class="ct-heading"><div><h2>系统运维</h2><p class="ct-sub">整个 Crew 一个 · 独立于 leader</p></div></div><div class="ct-state-note">故障演练 · 全部操作为本地示意，不重启服务、不修代码、不调用模型。</div><div class="ct-stage-flow" role="img" aria-label="故障流程：监测、收束异常、修复、恢复">${phases.map(([title,sub],index)=>`<div class="ct-stage ${index<=state.opsStep?'active':''}">${title}<small>${sub}</small></div>`).join('')}</div><h3>${['正常守护','发现消息循环','隔离修复与重启','已恢复 · 演示结果'][state.opsStep]}</h3><p class="ct-desc">${descriptions[state.opsStep]}</p><hr class="ct-divider"><dl class="ct-facts"><dt>受影响目标</dt><dd>${state.opsStep===0?'无 · 这是正常状态的示例':state.opsStep===3?'示例目标已解除故障；恢复前核对用户最新指令。':'仅暂停出现循环的示例目标，其他正常目标继续。'}</dd><dt>手动暂停</dt><dd>${state.paused?'首句等待目标：保持用户暂停。':'用户手动暂停的目标始终不会被此次恢复自动启动。'}</dd><dt>允许处理</dt><dd>重启自有服务、限制异常派发、修复 Crew 自身 bug。修复保留 commit，PR／合并遵循项目规则。</dd><dt>通知方式</dt><dd>结束后一次简报，附带有具体例子的 HTML 事故报告。巡检保持安静。</dd></dl><div class="ct-tools">${state.opsStep===0?button('模拟消息循环','ops-incident',true):state.opsStep===1?button('模拟隔离修复','ops-repair',true):state.opsStep===2?button('查看恢复结果','ops-recover',true):button('回到正常演示','ops-reset')}${state.opsStep===3?file('事故报告示例','怎么修、怎么验证、哪些目标被恢复','ops-report'):''}</div>`;
       }
       function render(){
-        for(const nav of root.querySelectorAll('[data-nav]')){
-          if(nav.dataset.nav===state.nav)nav.setAttribute('aria-current','page');else nav.removeAttribute('aria-current');
-        }
-        root.querySelector('[data-count="all"]').textContent=String(goals().length);
-        root.querySelector('[data-count="attention"]').textContent=state.choice?'0':'1';
+        renderLeaders();
+        for(const nav of root.querySelectorAll('[data-nav]')){if(nav.dataset.nav===state.nav)nav.setAttribute('aria-current','page');else nav.removeAttribute('aria-current');}
+        root.querySelector('#ct-away').checked=state.away;
         let html;
         if(state.document)html=documentView();
         else if(state.selected==='new'||state.selected==='supplement')html=compose(state.selected==='new');
         else if(state.selected==='speaker')html=speaker();
         else if(state.selected==='recording')html=recording();
         else if(state.selected==='latency')html=latency();
-        else if(state.selected?.startsWith('new-')){const goal=goals().find(g=>g.id===state.selected);html=goal?heading(goal)+`<p class="ct-desc">${safe(goal.title)}</p><p class="ct-notice">需求仅保存在本次演示中，尚未派发给真实 leader。</p>`:cards();}
-        else if(state.nav==='documents')html=`<div class="ct-heading"><div><h2>交付物</h2><p class="ct-sub">每轮最终交付必须有 HTML、可视化与具体例子。</p></div></div>${file('声纹阶段交付报告','本轮未达标 · 三个 example 与验收边界','speaker-report')}${file('运维事故报告示例','消息循环 → 隔离修复 → 核对恢复','ops-report')}<p class="ct-footnote">声纹结论引用旧记录；报告图示和运维流程均为明确标注的示意。</p>`;
-        else if(state.nav==='members')html=memberChat();
-        else if(state.nav==='context')html=contextView();
+        else if(state.selected?.startsWith('new-')){const goal=goals().find(item=>item.id===state.selected);html=goal?heading(goal)+`<p class="ct-desc">${safe(goal.title)}</p><p class="ct-notice">这是本地保存的演示目标，没有派发工作。</p>`:cards();}
+        else if(state.group)html=state.pane==='chat'?scopedChat():state.pane==='documents'?documentsView():state.pane==='context'?scopedContext():cards();
+        else if(state.nav==='all')html=state.allTab==='tree'?architectureView():overviewTabs()+cards();
         else if(state.nav==='operations')html=operationsView();
-        else html=cards();
-        main.innerHTML=html;icons();
+        else{const pages={channel:['交流区','保留项目内所有 leader 和用户的公共频道与未读入口。'],git:['Git','沿用提交树、分支、合并请求与 CI 的现有页面。'],todos:['我的待办','这里继续汇总需要你亲手操作的事项。示例中暂无人工操作待办；需要讨论的决定留在对应组。'],adopt:['待收编','继续支持发现和收编已有会话。'],usage:['用量','继续保留实际用量、额度与按结构查看的入口。'],settings:['设置','继续保留主题、字号、通知与现有设置。']};const [title,description]=pages[state.nav]||pages.channel;html=`<h2>${title}</h2><p class="ct-sub">${description}</p><div class="ct-state-note">现有功能保留。这张交互预览只演示本轮新增流程，不读取真实数据。</div>`;}
+        main.innerHTML=(state.group?groupStrip():'')+html;renderTeam();icons();
       }
-      root.addEventListener('click',event=>{
+      function handleClick(event){
         const trigger=event.target.closest('button');if(!trigger||!root.contains(trigger))return;
         const nav=trigger.dataset.nav,action=trigger.dataset.act;
-        if(nav){state.nav=nav;state.selected=null;state.document=null;}
-        else if(action==='back'){state.selected=null;state.document=null;state.draft='';}
-        else if(action==='open'){state.selected=trigger.dataset.id;state.tab='outcome';state.document=null;}
+        if(nav){if(teamOf(nav))openPerson(teamOf(nav).leader.id);else{state.nav=nav;state.group=null;state.person=null;state.activeGoal=null;state.selected=null;state.document=null;state.runtimePreview=false;}}
+        else if(action==='person')openPerson(trigger.dataset.person);
+        else if(action==='team-goals')enterGroup(trigger.dataset.group);
+        else if(action==='group-home'||action==='back'){if(state.group)enterGroup(state.group);else{state.nav='all';state.selected=null;state.document=null;}state.draft='';}
+        else if(action==='overview-tree'||action==='overview-goals'){state.nav='all';state.group=null;state.selected=null;state.document=null;state.allTab=action==='overview-tree'?'tree':'goals';}
+        else if(action==='priority-group'){const id=state.group;if(state.priority.includes(id))state.priority=state.priority.filter(item=>item!==id);else state.priority.push(id);announce('只更新本地演示中的置顶顺序。');}
+        else if(action==='group-documents'){state.pane='documents';state.selected=null;state.document=null;}
+        else if(action==='group-context'){state.pane='context';state.selected=null;state.document=null;}
+        else if(action==='open')openGoal(trigger.dataset.id);
         else if(action==='tab')state.tab=trigger.dataset.tab;
         else if(action==='why')state.step=1;
         else if(action==='privacy')state.step=2;
         else if(action==='options')state.step=3;
-        else if(action==='discuss'){state.step=1;announce('演示回到说明阶段；真实使用时可继续和 leader 讨论。');}
-        else if(action==='confirm'){state.choice=state.option;announce('演示：这项决定已记录，“需要你”已清零。没有操作真实录音或任务。');}
-        else if(action==='pause'){state.paused=true;announce('演示：本轮已暂停，没有中断真实进程。');}
-        else if(action==='resume'){state.paused=false;announce('演示：目标恢复为推进中，没有启动真实成员。');}
-        else if(action==='new'){state.selected='new';state.draft='';}
+        else if(action==='discuss')state.step=1;
+        else if(action==='confirm'){state.choice=state.option;announce('演示决定已保存，没有操作真实录音。');}
+        else if(action==='pause'){state.paused=true;announce('演示目标已暂停，没有中断真实进程。');}
+        else if(action==='resume'){state.paused=false;announce('演示目标恢复推进，没有启动真实 AI。');}
+        else if(action==='new'){enterGroup(state.group||'voice');state.selected='new';state.draft='';}
         else if(action==='supplement'){state.selected='supplement';state.draft='';}
         else if(action==='save-draft'){
-          const form=root.querySelector('#ct-form');if(!form.reportValidity())return;
-          const value=form.querySelector('#ct-draft').value.trim();if(!value)return;
-          if(state.selected==='new'){state.custom.push(value);state.selected='new-'+(state.custom.length-1);state.nav='goals';announce('已加入本地演示目标，没有启动任何 AI。');}
-          else{state.supplements.push(value);state.selected='speaker';announce('补充已保存在演示中，没有发送给真实 leader。');}
-          state.draft='';
+          const form=root.querySelector('#ct-form');if(!form.reportValidity())return;const value=form.querySelector('#ct-draft').value.trim();if(!value)return;
+          if(state.selected==='new'){state.custom.push(value);state.customGroups.push(state.group||'voice');openGoal('new-'+(state.custom.length-1));}else{state.supplements.push(value);openGoal('speaker');}state.draft='';announce('已保存在本地预览，没有派发真实任务。');
         }
-        else if(action==='document')state.document=trigger.dataset.doc;
+        else if(action==='document'){if(trigger.dataset.doc==='speaker-report'){enterGroup('voice','documents','speaker');}state.document=trigger.dataset.doc;}
         else if(action==='report-case')state.reportCase=Number(trigger.dataset.index);
-        else if(action==='member-chat'||action==='leader-chat'){state.nav='members';state.selected=null;state.document=null;state.chatOwner=action==='leader-chat'?'leader':'member';state.runtimePreview=false;}
-        else if(action==='chat-leader'||action==='chat-member'){state.chatOwner=action==='chat-leader'?'leader':'member';state.runtimePreview=false;}
+        else if(action==='member-chat'||action==='leader-chat'){const team=teamOf(state.group||'performance');openPerson(action==='leader-chat'?team.leader.id:team.members[0].id);}
         else if(action==='chat-question'||action==='chat-change'||action==='chat-send'){
-          let text,changed=action==='chat-change';
-          if(action==='chat-question')text='你现在验证的是哪一种情况？';
-          else if(changed)text='先测冷启动，热启动放后面。';
+          const person=currentPerson(),changed=action==='chat-change';let text;
+          if(action==='chat-question')text=person.group==='performance'?'目前测到了什么？':'这轮哪些场景还没达标？';
+          else if(changed)text=person.group==='performance'?'先测冷启动，热启动放后面。':'下一轮先验证混说，验收标准保持不变。';
           else{const form=root.querySelector('#ct-member-form');if(!form.reportValidity())return;text=form.querySelector('textarea').value.trim();if(!text)return;}
-          const reply=changed?'收到。我会先复验冷启动，把热启动放到后面；这次顺序变更写回当前目标，leader 后续读取。':action==='chat-question'?'我正在对比同一输入的冷启动和热启动，核对启动、加载、首句输出各段等待。回答后继续当前验证。':'这是预设演示回复：实际产品中，同一 AI 会读取你的补充，先回应，再判断继续还是调整工作。';
-          const key=state.chatOwner==='leader'?'leaderNotes':'memberNotes';state[key].push({text,reply,changed});state[key]=state[key].slice(-3);state.chatDrafts[state.chatOwner]='';announce('仅追加预设演示对话，没有发送给真实 AI。');
+          const reply=changed?'收到你的补充。先按你指定的顺序核对，变更写回本目标，已有结果和验收标准保留。':action==='chat-question'?'我会先说明已有证据、未验证部分和下一步，再继续相应工作。这里是预设对话示例。':'这是预设演示回复。正式产品由当前同一个 AI 读取补充，先回应，再调整或继续工作。';
+          state.chats[person.id]=[...(state.chats[person.id]||[]),{text,reply,changed}].slice(-3);state.chatDrafts[person.id]='';announce('只保存本地演示对话，没有调用真实 AI。');
         }
         else if(action==='runtime-preview')state.runtimePreview=true;
         else if(action==='runtime-cancel')state.runtimePreview=false;
-        else if(action==='runtime-confirm'){const key=state.chatOwner==='leader'?'leaderRuntime':'runtime';state[key]=state[key]==='codex'?'claude':'codex';state.runtimePreview=false;announce('只更改当前演示对象的载体标签，没有启动、切换或停止真实会话。');}
-        else if(action==='memory-outdated'){state.memoryPending=true;announce('演示：纠正已保存，尚未应用到下一次装载。');}
-        else if(action==='memory-apply'){state.memoryExcluded=true;state.memoryPending=false;announce('演示：下次上下文排除过期条目，原始历史保留。');}
+        else if(action==='runtime-confirm'){const person=currentPerson();state.personRuntimes[person.id]=runtimeOf(person)==='codex'?'claude':'codex';state.runtimePreview=false;announce('只更新当前人物的演示载体，没有切换真实会话。');}
+        else if(action==='memory-outdated')state.memoryPending=true;
+        else if(action==='memory-apply'){state.memoryExcluded=true;state.memoryPending=false;}
         else if(action==='ops-incident')state.opsStep=1;
         else if(action==='ops-repair')state.opsStep=2;
         else if(action==='ops-recover')state.opsStep=3;
         else if(action==='ops-reset')state.opsStep=0;
         else return;
         render();remember();
-      });
-      root.addEventListener('change',event=>{if(event.target.name==='ct-recording-choice'){state.option=event.target.value;remember();}});
-      root.addEventListener('input',event=>{if(event.target.id==='ct-draft')state.draft=event.target.value;if(event.target.id==='ct-member-message')state.chatDrafts[state.chatOwner]=event.target.value;});
+      }
+      root.addEventListener('click',handleClick);
+      root.addEventListener('change',event=>{if(event.target.name==='ct-recording-choice'){state.option=event.target.value;remember();}if(event.target.id==='ct-away'){state.away=event.target.checked;remember();announce('仅改变演示中的离开状态，不修改真实 QQ 通知。');}});
+      root.addEventListener('input',event=>{if(event.target.id==='ct-draft')state.draft=event.target.value;if(event.target.id==='ct-member-message'&&state.person)state.chatDrafts[state.person]=event.target.value;});
       root.addEventListener('submit',event=>event.preventDefault());
       restore(window.openai?.widgetState);render();
       window.addEventListener('openai:set_globals',event=>{if(event.detail?.globals?.widgetState){restore(event.detail.globals.widgetState);render();}});
