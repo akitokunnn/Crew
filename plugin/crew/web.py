@@ -15,9 +15,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlencode, urlsplit
 from urllib.request import ProxyHandler, build_opener
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 
 from . import board, channel, channel_digest, chat, claude_limits, documents, git_admin, git_ci, git_view, hooks, messaging, models, notifications, open_session, presentation, runtime_catalog, runtime_switch, runtimes, session_ops, spawn, store, themes, todo, trust_mode, usage, usage_cli, vscode_sessions
+from .service_lock import HomeServiceLock
 
 
 def _text(data, key):
@@ -1264,6 +1265,67 @@ def project_url(port, project_name=None):
 
 
 def serve(home, plugin_root, port=47811, open_browser=False, **options):
+    # CLI/autostart owns the same lifetime lock as crew_desktop. Acquire before
+    # store.connect (which can migrate the DB) or starting any service workers.
+    lock = HomeServiceLock(home)
+    if not lock.acquire():
+        if open_browser:
+            return _open_registered_service(home, options.get('cwd') or Path.cwd())
+        raise board.BoardError("CREW_BACKEND_IN_USE: 此 Crew 工作区已有后台在运行，请打开现有 Crew 应用。")
+    try:
+        return _serve_locked(home, plugin_root, port, open_browser, **options)
+    finally:
+        lock.release()
+
+
+def _open_registered_service(home, cwd):
+    """Open a contended HOME using HTTP only; never initialize local storage."""
+    from . import autostart
+    try:
+        # A lock can be acquired before a starting backend publishes web.json.
+        # Missing registration must not fall back to the unrelated default port.
+        if not (Path(home) / 'web.json').is_file():
+            raise ValueError('服务尚未登记地址')
+        url = autostart.service_url(home)
+        opener = build_opener(ProxyHandler({}), autostart._NoRedirect())
+        def read(route):
+            with opener.open(url + route, timeout=3) as response:
+                return json.load(response)
+        state = read('/api/state')
+        if not isinstance(state, dict) or not all(key in state for key in ('projects', 'leaders', 'candidates')):
+            raise ValueError('登记地址不是可识别的 Crew 服务')
+        try:
+            projects = read('/api/projects')['projects']
+        except HTTPError as exc:
+            if exc.code != 404:
+                raise
+            projects = state['projects']
+        if not isinstance(projects, list):
+            raise ValueError('项目列表格式无效')
+        matches = []
+        for project in projects:
+            name = project['name']
+            if not isinstance(name, str) or not name:
+                raise ValueError('项目名称无效')
+            if not project.get('root'):
+                project = read('/api/state?' + urlencode({'project': name}))['project']
+                if project['name'] != name:
+                    raise ValueError('登记项目与服务响应不一致')
+            root = project['root']
+            if not isinstance(root, str) or not root:
+                raise ValueError('项目目录无效')
+            if store.is_under(cwd, root):
+                matches.append((len(store.norm_path(root)), name))
+        selected = max(matches)[1] if matches else None
+        target = url + '/' + ('?' + urlencode({'project': selected}) if selected is not None else '')
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise board.BoardError('CREW_BACKEND_IN_USE: 已有后台，但暂时无法确认其登记地址；不重复启动。' + str(exc)) from exc
+    if not webbrowser.open(target):
+        raise board.BoardError('已有 Crew 后台，请手动打开：' + target)
+    print(target, flush=True)
+
+
+def _serve_locked(home, plugin_root, port, open_browser, **options):
     options.setdefault('migrate_manual_work', True)
     url = project_url(port)
     with closing(store.connect(home)) as conn:

@@ -1,8 +1,8 @@
 """One OS-owned administrator per HOME, independent of models and leaders.
 
 Only an exited backend is restarted. A live but unresponsive backend is never
-terminated here. Desktop stdin EOF detaches the administrator; ``shutdown`` is
-the explicit instruction to stop its own backend and await its real exit.
+terminated here. Desktop stdin EOF detaches the administrator; ``shutdown`` on
+stdin or the instance-bound control file stops its own backend and awaits exit.
 """
 from collections import deque
 import contextlib
@@ -90,9 +90,29 @@ def read_status(home):
     return value
 
 
+def _backend_evidence(status):
+    if not isinstance(status, dict):
+        return None
+    for value in (status.get("backend_evidence"), status):
+        if not isinstance(value, dict) or type(value.get("service_pid")) is not int or value["service_pid"] < 1:
+            continue
+        try:
+            url, _ = _url(value.get("url"))
+            return {"service_pid": value["service_pid"], "url": url}
+        except SupervisorError:
+            continue
+    return None
+
+
+def _supervisor_lock(home):
+    lock = HomeServiceLock(home)
+    lock.path = Path(home) / "desktop" / "supervisor.lock"
+    return lock
+
+
 def request_action(home, action):
     """Queue an instance-bound control request; the snapshot acknowledges it."""
-    if action not in ("check", "recover"):
+    if action not in ("check", "recover", "shutdown"):
         raise SupervisorError("Unknown administrator action")
     status = read_status(home)
     if status is None or _pid_alive(status["supervisor_pid"]) is not True:
@@ -161,6 +181,8 @@ class Supervisor:
         self.home = Path(home).expanduser().resolve()
         self.directory = _directory(self.home)
         self._previous_status = read_status(self.home)
+        self._evidence = _backend_evidence(self._previous_status)
+        self._holds_lock = False
         self.port, self.isolated_sources = port, isolated_sources
         self.command_factory = command_factory
         self.check_interval, self.health_timeout = check_interval, health_timeout
@@ -179,6 +201,7 @@ class Supervisor:
         self._output, self._generation = queue.Queue(maxsize=256), 0
         self._attempts, self._consecutive = deque(), 0
         self._restart_due, self._recovery_pending = None, False
+        self._manual_recovery = False
         self._startup_deadline = self._healthy_since = None
         self._known_dead, self._death_handled = False, False
         self._blocked, self._detail = None, None
@@ -282,15 +305,27 @@ class Supervisor:
             return {"allowed": False, "reason": "管理员已收到显式停止指令"}
         if self._alive() is not False:
             return {"allowed": False, "reason": "后端仍存活或进程状态无法确认；不会终止会话"}
+        registry, _ = self._reconcile_registry(recovery=True)
+        if registry == "adopted":
+            return {"allowed": False, "reason": "已借用当前登记中的兼容后端"}
+        if registry == "blocked":
+            return {"allowed": False, "reason": self._blocked}
         if self._blocked:
             return {"allowed": False, "reason": self._blocked}
+        if not self.owned:
+            return {"allowed": True, "reason": "借用后端已退出；不会自动重建，需明确手动恢复"}
         return {"allowed": True, "reason": "后端已退出，可恢复；恢复不会终止其他进程"}
 
     def _publish(self):
+        restart = self._restart()  # May discover/adopt a changed registry.
+        evidence = self._evidence or {}
         value = {"instance_id": self.instance_id, "state": self.state, "checked_at": _now(),
-                 "supervisor_pid": os.getpid(), "service_pid": self.service_pid, "url": self.url,
+                 "supervisor_pid": os.getpid(),
+                 "service_pid": self.service_pid if self.service_pid is not None else evidence.get("service_pid"),
+                 "url": self.url if self.url is not None else evidence.get("url"),
+                 "backend_evidence": self._evidence,
                  "recoveries": self.recoveries, "last_recovery_at": self.last_recovery_at,
-                 "incidents": list(self.incidents), "restart": self._restart(),
+                 "incidents": list(self.incidents), "restart": restart,
                  "ownership": "owned" if self.owned else "borrowed" if self.service_pid else None,
                  "last_request_id": self.last_request_id, "last_action": self.last_action,
                  "last_request_error": self.last_request_error}
@@ -338,12 +373,54 @@ class Supervisor:
             lock.release()
         return acquired
 
+    def _registry(self):
+        try:
+            with (self.home / "web.json").open("rb") as stream:
+                version = stream.read(8193)
+        except FileNotFoundError:
+            return None, None
+        if len(version) > 8192:
+            raise SupervisorError("现有后端登记过大，无法验证")
+        try:
+            value = json.loads(version.decode("utf-8"))
+            url, _ = _url(value.get("url") if isinstance(value, dict) else None)
+        except (ValueError, UnicodeError, SupervisorError) as exc:
+            raise SupervisorError("现有后端登记无法验证；不会另启后端") from exc
+        return version, url
+
+    def _reconcile_registry(self, *, recovery=False):
+        """Follow a changed registry before any permission to create a backend."""
+        try:
+            version, url = self._registry()
+            if url is None or url == self.url:
+                return "unchanged", version
+            if self._alive() is not False and (self.process is not None or self.service_pid is not None):
+                raise SupervisorError("服务登记已变更，原后端仍存活；不会另启或替换")
+            state, health, detail = self._probe(url)
+            latest, _ = self._registry()
+            if latest != version:
+                raise SupervisorError("服务登记在检查期间改变；等待重新检测")
+            if state not in ("healthy", "degraded"):
+                raise SupervisorError("服务登记已变更，无法确认新后端：" + str(detail))
+            self._adopt(url, health, state, detail, recovery=recovery)
+            return "adopted", version
+        except (OSError, SupervisorError) as exc:
+            self._blocked = str(exc)
+            self._state("degraded", self._blocked)
+            return "blocked", None
+
     def _adopt(self, url, value, state, detail, *, recovery=False):
+        if self.process is not None and self.process.poll() is not None:
+            with contextlib.suppress(OSError, ValueError):
+                self.process.stdin.close()
+        self._generation += 1  # Late output from an old owned process is stale.
         self.process, self.owned = None, False
         self.url, self.port = _url(url)
         self.service_pid = value["pid"]
+        self._evidence = {"service_pid": self.service_pid, "url": self.url}
         self._known_dead = self._death_handled = False
         self._restart_due = self._blocked = None
+        self._recovery_pending = self._manual_recovery = False
         self._state(state, detail or "复用同 HOME 的现有健康后端")
         if recovery:
             self.recoveries += 1
@@ -367,12 +444,19 @@ class Supervisor:
         finally:
             stream.close()
 
-    def _launch(self, recovery=False):
+    def _launch(self, recovery=False, *, registry_version=None):
         maintenance = self._maintenance()
         if maintenance:
             self._restart_due = None
             self._state("paused", maintenance)
             return
+        if self._stop.is_set():
+            return
+        registry, version = self._reconcile_registry(recovery=recovery)
+        if registry == "adopted":
+            return
+        if registry == "blocked" or version != registry_version:
+            raise SupervisorError(self._blocked or "服务登记在启动前改变；等待重新检测")
         if not self._free_service_lock():
             raise SupervisorError("此 HOME 的后端锁仍被占用；不会启动第二个后端")
         if self.command_factory is None:
@@ -382,9 +466,20 @@ class Supervisor:
         command += ["--home", str(self.home), "--port", str(self.port)]
         if self.isolated_sources:
             command.append("--isolated-sources")
+        latest, _ = self._registry()
+        if latest != registry_version:
+            registry, _ = self._reconcile_registry(recovery=recovery)
+            if registry == "adopted":
+                return
+            raise SupervisorError(self._blocked or "服务登记在启动前改变；不会另启后端")
+        if self._stop.is_set() or self._maintenance():
+            return
         options = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
         process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                    text=True, encoding="utf-8", errors="replace", bufsize=1, **options)
+        if self.process is not None and self.process.poll() is not None:
+            with contextlib.suppress(OSError, ValueError):
+                self.process.stdin.close()
         self.process, self.service_pid, self.owned = process, process.pid, True
         self._generation += 1
         for kind, stream in (("stdout", process.stdout), ("stderr", process.stderr)):
@@ -397,30 +492,30 @@ class Supervisor:
         self._state("starting", "正在启动 Crew 后端" if not recovery else "后端已退出，正在恢复同一端口")
 
     def _bootstrap(self):
-        result, health = self._inspect(ignore_own_supervisor=True)
+        result, health = self._inspect()
         if result["kind"] in ("healthy", "degraded"):
             self._adopt(result["url"], health, result["kind"], result["reason"])
         elif result["can_start"]:
             # Keep a known recorded port when adopting a previous dead service.
             if result["kind"] == "dead":
                 self.url, self.port = _url(result["url"])
-            self._launch()
+            version, _ = self._registry()
+            self._launch(registry_version=version)
         else:
             raise SupervisorError(result["reason"])
 
-    def _inspect(self, *, ignore_own_supervisor=False):
+    def _inspect(self):
         """Non-starting probe shared with Node's optional JSON CLI probe."""
         previous = self._previous_status or {}
+        evidence = self._evidence or {}
         result = {"ok": True, "can_start": False, "kind": "unknown", "reason": None,
-                  "url": None, "service_pid": previous.get("service_pid"),
+                  "url": None, "service_pid": evidence.get("service_pid"),
                   "supervisor_pid": previous.get("supervisor_pid")}
         maintenance = self._maintenance()
         if maintenance:
             return {**result, "kind": "maintenance", "reason": maintenance}, None
-        supervisor_pid = previous.get("supervisor_pid")
-        if (type(supervisor_pid) is int and not (ignore_own_supervisor and supervisor_pid == os.getpid())
-                and _pid_alive(supervisor_pid) is not False):
-            return {**result, "reason": "已有管理员进程仍存活或状态无法确认；等待其监测恢复"}, None
+        if not self._holds_lock:
+            return {**result, "reason": "尚未取得管理员 OS 锁；不会另启后端"}, None
         registry = self.home / "web.json"
         if registry.exists():
             try:
@@ -432,12 +527,12 @@ class Supervisor:
             state, health, detail = self._probe(url)
             if state in ("healthy", "degraded"):
                 return {**result, "kind": state, "service_pid": health["pid"], "reason": detail}, health
-            previous_url = previous.get("url")
+            previous_url = evidence.get("url")
             try:
                 same_url = _url(previous_url)[0] == url
             except SupervisorError:
                 same_url = False
-            pid = previous.get("service_pid")
+            pid = evidence.get("service_pid")
             if not same_url or type(pid) is not int or _pid_alive(pid) is not False:
                 return {**result, "reason": detail or "旧后端进程尚不能确认退出"}, None
             self.service_pid, self._known_dead = pid, True
@@ -446,7 +541,7 @@ class Supervisor:
             if not self._free_service_lock():
                 return {**result, "reason": "此 HOME 的后端锁仍被占用"}, None
             return {**result, "kind": "dead", "can_start": True, "reason": "原后端进程已退出且端口、服务锁均空闲"}, None
-        pid = previous.get("service_pid")
+        pid = evidence.get("service_pid")
         if type(pid) is int and _pid_alive(pid) is not False:
             return {**result, "reason": "已登记后端进程仍存活或无法确认；不会另启"}, None
         if not self._free_service_lock():
@@ -467,6 +562,7 @@ class Supervisor:
                     if self.port and self.port != port:
                         raise SupervisorError("恢复后的端口与原端口不一致")
                     self.url, self.port = url, port
+                    self._evidence = {"service_pid": self.service_pid, "url": self.url}
                     self._next_check = 0
                     continue
                 except SupervisorError:
@@ -492,11 +588,17 @@ class Supervisor:
         self._next_check = time.monotonic() + self.check_interval
         alive = self._alive()
         if alive is False:
+            registry, _ = self._reconcile_registry(recovery=True)
+            if registry in ("adopted", "blocked"):
+                return
             if not self._death_handled:
                 self._death_handled = self._known_dead = True
                 self._event("error", "后端进程已退出：" + str(self.service_pid))
-                self._schedule_recovery()
-            elif self._blocked and self.url and self._port_free(self.url) and self._free_service_lock():
+                if self.owned:
+                    self._schedule_recovery()
+                else:
+                    self._state("degraded", "借用的后端已退出；不自动重建，请确认是否需手动恢复")
+            elif self.owned and self._blocked and self.url and self._port_free(self.url) and self._free_service_lock():
                 self._blocked = None
                 self._schedule_recovery()
             return
@@ -533,6 +635,12 @@ class Supervisor:
             return
         if self._alive() is not False:
             return
+        if not self.owned and not self._manual_recovery:
+            self._state("degraded", "借用的后端已退出；不自动重建")
+            return
+        registry, version = self._reconcile_registry(recovery=True)
+        if registry in ("adopted", "blocked"):
+            return
         if self.url:
             state, health, detail = self._probe(self.url)
             if state in ("healthy", "degraded"):
@@ -549,7 +657,7 @@ class Supervisor:
         self._attempts.append(time.monotonic())
         self._consecutive += 1
         try:
-            self._launch(recovery=True)
+            self._launch(recovery=True, registry_version=version)
         except (OSError, SupervisorError) as exc:
             self._known_dead = True
             if isinstance(exc, SupervisorError):
@@ -595,14 +703,18 @@ class Supervisor:
             else:
                 self._attempts.clear()
                 self._consecutive = 0
+                self._manual_recovery = True
                 self._restart_due = time.monotonic()
                 self._state("recovering", "收到恢复请求；将重新验证后端已退出")
+        elif self.last_action == "shutdown":
+            self.shutdown()
         else:
             self.last_request_error = "Unknown administrator action"
         self._publish()
 
     def shutdown(self):
         """Explicit owner instruction; EOF deliberately does not call this."""
+        self._intentional = True
         self._stop.set()
 
     def _stdin(self, stream):
@@ -634,11 +746,11 @@ class Supervisor:
         self._publish()
 
     def run(self, stdin=None):
-        lock = HomeServiceLock(self.home)
-        lock.path = self.home / "desktop" / "supervisor.lock"
+        lock = _supervisor_lock(self.home)
         if not lock.acquire():
             _print("CREW_SUPERVISOR_IN_USE", error=True)
             return 75
+        self._holds_lock = True
         try:
             maintenance = self._maintenance()
             if maintenance:
@@ -661,40 +773,67 @@ class Supervisor:
                 return 76
             detached_reported = False
             while not self._stop.is_set():
-                self._drain_output()
-                self._control()
-                maintenance = self._maintenance()
-                if maintenance:
-                    self._restart_due = None
-                    self._state("paused", maintenance)
-                    self._publish()
-                else:
-                    if time.monotonic() >= self._next_check:
-                        self._check()
+                try:
+                    self._drain_output()
+                    self._control()
+                    if self._stop.is_set():
+                        break
+                    maintenance = self._maintenance()
+                    if maintenance:
+                        self._restart_due = None
+                        self._state("paused", maintenance)
                         self._publish()
-                    if self._restart_due is not None and time.monotonic() >= self._restart_due:
-                        self._recover()
+                    else:
+                        if time.monotonic() >= self._next_check:
+                            self._check()
+                            self._publish()
+                        if self._restart_due is not None and time.monotonic() >= self._restart_due:
+                            self._recover()
+                            self._publish()
+                    if self._detached.is_set() and not detached_reported:
+                        detached_reported = True
+                        self._event("info", "桌面连接已断开；管理员继续后台监测")
                         self._publish()
-                if self._detached.is_set() and not detached_reported:
-                    detached_reported = True
-                    self._event("info", "桌面连接已断开；管理员继续后台监测")
-                    self._publish()
+                except (OSError, SupervisorError) as exc:
+                    # Transient lock/filesystem errors must not close the
+                    # backend's owned stdin and stop unrelated model work.
+                    self._state("degraded", "管理员监测暂时失败；保留后端进程：" + str(exc))
+                    try:
+                        self._publish()
+                    except (OSError, SupervisorError):
+                        _print("Crew administrator monitor: " + str(exc), error=True)
                 self._stop.wait(0.1)
             self._shutdown()
             return 0
         finally:
+            self._holds_lock = False
             lock.release()
 
 
 def probe_home(home, timeout=2.0):
     """Verify a HOME without launching/stopping it; may probe a dead port by bind.
 
-    A live/unknown old supervisor always owns recovery. An unresponsive legacy
+    An occupied supervisor OS lock always owns recovery. An unresponsive legacy
     URL without a verified dead PID stays unknown, never a reason to launch a
     second service. Non-listening bind is only used for a recorded dead PID.
     """
-    result, _ = Supervisor(home, health_timeout=timeout)._inspect()
-    return result
+    admin = Supervisor(home, health_timeout=timeout)
+    lock = _supervisor_lock(admin.home)
+    try:
+        if not lock.acquire():
+            current = read_status(home) or {}
+            evidence = _backend_evidence(current) or {}
+            return {"ok": True, "can_start": False, "kind": "unknown",
+                    "reason": "已有管理员持有此 HOME 的 OS 锁；等待其监测恢复",
+                    "url": current.get("url") or evidence.get("url"),
+                    "service_pid": current.get("service_pid") or evidence.get("service_pid"),
+                    "supervisor_pid": current.get("supervisor_pid")}
+        admin._holds_lock = True
+        result, _ = admin._inspect()
+        return result
+    finally:
+        admin._holds_lock = False
+        lock.release()
 
 
 def main(argv=None):

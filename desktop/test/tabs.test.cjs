@@ -35,6 +35,15 @@ function fixture(options = {}) {
 }
 function event() { return { prevented: false, preventDefault() { this.prevented = true; } }; }
 
+test('an offline empty shell can reconnect after delayed backend readiness while existing workspace origins cannot be replaced',async()=>{
+  const f=fixture();
+  f.manager.reconnect('http://127.0.0.1:4321');
+  await f.manager.open({name:'recovered',root:'/recovered'});
+  assert.equal(f.views[0].webContents.loads[0],'http://127.0.0.1:4321/?project=recovered');
+  assert.throws(()=>f.manager.reconnect('http://127.0.0.1:5432'),/已有工作区/);
+  const g=fixture();assert.throws(()=>g.manager.reconnect('https://example.com'),/loopback/);
+});
+
 test('projects deduplicate by stable name and switching retains each document without reload', async () => {
   const f = fixture(), first = await f.manager.open({ name: '项目 A', root: '/a' });
   const a = f.views[0], document = a.webContents.document;

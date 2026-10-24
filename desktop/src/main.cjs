@@ -211,7 +211,16 @@ handle('desktop:bootstrap', async () => {
   homeBootstrapped=true;
   return { projects, service: { url:backend.url, owned:backend.owned }, pendingAction:action };
 });
-handle('desktop:admin-status',()=>administrator.snapshot());
+handle('desktop:admin-status',async()=>{
+  const status=await administrator.snapshot();
+  if(backend?.startupError&&['healthy','degraded'].includes(status.state)&&status.url){
+    const recovered=core.loopback(status.url);
+    if(tabs&&tabs.state().tabs.every(tab=>tab.project===null)){
+      tabs.reconnect(recovered);backend.url=recovered;backend.startupError=null;
+    }
+  }
+  return status;
+});
 handle('desktop:home-ready',()=>{
   homeBootstrapped=true;
   if(pendingAction){const action=pendingAction;pendingAction=null;window.webContents.send('desktop:home-action',{action});}

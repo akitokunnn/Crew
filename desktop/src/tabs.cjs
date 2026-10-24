@@ -21,6 +21,11 @@ class WorkspaceTabs {
       ...[...this.entries.values()].map(tab => this._public(tab))], activeId: this.activeId };
   }
   get activeView() { return this.entries.get(this.activeId)?.view || null; }
+  reconnect(origin) {
+    if (this.entries.size !== 0) throw new Error('已有工作区标签时不能更换服务地址');
+    this.origin = loopback(origin);
+    this._notify();
+  }
   _notify() { if (!this.disposed) this.onChange(this.state()); }
   _alive(tab) { return !this.disposed && this.entries.get(tab.id) === tab; }
   _error(tab) {

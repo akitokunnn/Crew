@@ -174,7 +174,7 @@ class Backend {
     try {
       this.url = await new Promise((resolve, reject) => {
         let pending = '';
-        const timer = setTimeout(() => finish(new Error('Crew 服务启动超时。' + this.errors)), 30000);
+        const timer = setTimeout(() => finish(new Error('Crew 服务启动超时。' + this.errors)), this.config.startupTimeoutMs ?? 30000);
         const onError = error => finish(new Error('无法启动 Python：' + error.message));
         const onExit = code => { const error=new Error(`Crew 服务已退出 (${code})。${this.errors}`);error.exitCode=code;finish(error); };
         const onData = buffer => {
@@ -218,7 +218,13 @@ class Backend {
         }
         throw new Error('另一个 Crew 正在启动，但尚未能连接，请稍后重试：'+lastError.message);
       }
-      await beginLog('startup-'+process.pid+'.log');await this.stop();throw error;
+      await beginLog('startup-'+process.pid+'.log');
+      // A supervised startup failure must reach the file-backed health UI.
+      // Keep its administrator alive; waiting for a hung backend to stop here
+      // would prevent the window from ever opening. Explicit quit still owns
+      // the shutdown request and normal exit waits for its actual completion.
+      if (!this.supervised) await this.stop();
+      throw error;
     }
   }
   async stop() {

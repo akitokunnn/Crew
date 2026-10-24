@@ -28,10 +28,10 @@ from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 from crew_desktop import HomeServiceLock
 parser=argparse.ArgumentParser();parser.add_argument('--home');parser.add_argument('--port',type=int);parser.add_argument('--isolated-sources',action='store_true');args=parser.parse_args()
 home=Path(args.home).resolve();lock=HomeServiceLock(home)
-if not lock.acquire():raise SystemExit(75)
 def mode():
     try:return json.loads((home/'mode.json').read_text(encoding='utf-8'))
     except (OSError,ValueError):return {}
+if not mode().get('legacy_unlocked') and not lock.acquire():raise SystemExit(75)
 class Handler(BaseHTTPRequestHandler):
     def log_message(self,*args):pass
     def do_GET(self):
@@ -80,6 +80,12 @@ delay=float(sys.argv[3]) if len(sys.argv)>3 else .05
 admin=Supervisor(home,isolated_sources=True,command_factory=lambda port:[sys.executable,str(fake)],
                  check_interval=.08,health_timeout=.12,backoffs=(delay,max(delay,.08),max(delay,.1),max(delay,.12),max(delay,.15)),
                  restart_limit=3,restart_window=30,startup_timeout=3)
+original_check=admin._check
+def check():
+    if (home/'read-error.flag').exists():
+        (home/'read-error.flag').unlink();raise OSError('isolated administrator read failure')
+    return original_check()
+admin._check=check
 def stop():
     while not (home/'test-explicit-stop').exists():time.sleep(.02)
     admin.shutdown()
@@ -385,6 +391,122 @@ class SupervisorTests(unittest.TestCase):
         self.assertFalse(supervisor._pid_alive(status["service_pid"]))
         self.assertEqual(self.status()["state"], "stopped")
 
+    def test_circuit_new_legacy_registry_is_borrowed_without_spawning_second_backend(self):
+        self.mode(crash_after=.25)
+        process, lines = self.launch()
+        self.status(lambda value: value["state"] == "circuit_open")
+        self.assertEqual(len(self.launches()), 4)
+        self.mode(legacy_unlocked=True)
+        legacy, legacy_lines = self.launch(backend=True)
+        wait_for(lambda: legacy_lines)
+        request = self.control("recover")
+        status = self.status(lambda value: value["ownership"] == "borrowed" and value["service_pid"] == legacy.pid
+                             and value["last_request_id"] == request["request_id"])
+        self.assertEqual(status["url"], legacy_lines[0])
+        self.assertEqual(len(self.launches()), 5)
+        self.assertFalse(status["restart"]["allowed"])
+
+    def test_changed_legacy_registry_with_incompatible_service_blocks_old_port_recovery(self):
+        self.mode(crash_after=.25)
+        process, lines = self.launch()
+        circuit = self.status(lambda value: value["state"] == "circuit_open")
+        self.mode(legacy_unlocked=True, service="unknown-service")
+        legacy, legacy_lines = self.launch(backend=True)
+        wait_for(lambda: legacy_lines)
+        request = self.control("recover")
+        status = self.status(lambda value: value["state"] == "degraded" and value["last_request_id"] == request["request_id"])
+        self.assertEqual(status["service_pid"], circuit["service_pid"])
+        self.assertFalse(status["restart"]["allowed"])
+        self.assertIsNotNone(status["last_request_error"])
+        self.assertEqual(len(self.launches()), 5)
+
+    def test_final_launch_guard_rechecks_registry_after_command_construction(self):
+        old, old_lines = self.launch(backend=True)
+        wait_for(lambda: old_lines)
+        old_url = old_lines[0]
+        old.stdin.write("shutdown\n");old.stdin.flush()
+        self.assertEqual(old.wait(timeout=10), 0)
+        self.mode(legacy_unlocked=True)
+        legacy, legacy_lines = self.launch(backend=True)
+        wait_for(lambda: legacy_lines)
+        supervisor._atomic_json(self.home / "web.json", {"url": old_url})
+        def prepare_command(port):
+            supervisor._atomic_json(self.home / "web.json", {"url": legacy_lines[0]})
+            return [sys.executable, str(self.fake)]
+        admin = supervisor.Supervisor(self.home, command_factory=prepare_command, health_timeout=.12)
+        admin.service_pid, admin.url = old.pid, old_url
+        admin.port = supervisor._url(old_url)[1]
+        admin.owned, admin._known_dead = True, True
+        version, _ = admin._registry()
+        with mock.patch.object(supervisor.subprocess, "Popen", side_effect=AssertionError("Must not spawn after registry changes")), \
+                contextlib.redirect_stdout(io.StringIO()):
+            admin._launch(recovery=True, registry_version=version)
+        self.assertFalse(admin.owned)
+        self.assertEqual(admin.service_pid, legacy.pid)
+        self.assertEqual(admin.url, legacy_lines[0])
+        self.assertEqual(len(self.launches()), 2)
+
+    def test_maintenance_preserves_evidence_and_ignores_unrelated_live_supervisor_pid(self):
+        backend, backend_lines = self.launch(backend=True)
+        wait_for(lambda: backend_lines)
+        old_url = backend_lines[0]
+        backend.stdin.write("shutdown\n");backend.stdin.flush()
+        self.assertEqual(backend.wait(timeout=10), 0)
+        supervisor._atomic_json(self.home / "desktop" / "admin" / "status.json",
+                                {"instance_id": "old", "state": "failed", "supervisor_pid": os.getpid(),
+                                 "service_pid": backend.pid, "url": old_url})
+        # An unrelated live PID has no authority: only the actual OS lock does.
+        self.assertTrue(supervisor.probe_home(self.home, timeout=.12)["can_start"])
+        marker = self.home / "desktop" / "admin" / "maintenance.json"
+        supervisor._atomic_json(marker, {"reason": "repair"})
+        paused, paused_lines = self.launch()
+        self.assertEqual(paused.wait(timeout=10), 78)
+        status = self.status()
+        self.assertEqual(status["supervisor_pid"], paused.pid)
+        self.assertEqual(status["backend_evidence"], {"service_pid": backend.pid, "url": old_url})
+        self.assertEqual((status["service_pid"], status["url"]), (backend.pid, old_url))
+        marker.unlink()
+        process, lines = self.launch()
+        recovered = self.status(lambda value: value["state"] == "healthy")
+        self.assertEqual(recovered["url"], old_url)
+        self.assertNotEqual(recovered["service_pid"], backend.pid)
+
+    def test_borrowed_backend_explicit_exit_is_not_automatically_recreated(self):
+        backend, backend_lines = self.launch(backend=True)
+        wait_for(lambda: backend_lines)
+        process, lines = self.launch()
+        self.status(lambda value: value["state"] == "healthy")
+        backend.stdin.write("shutdown\n");backend.stdin.flush()
+        self.assertEqual(backend.wait(timeout=10), 0)
+        status = self.status(lambda value: value["state"] == "degraded")
+        time.sleep(.4)
+        self.assertEqual(len(self.launches()), 1)
+        self.assertEqual(self.status()["service_pid"], backend.pid)
+        self.assertIsNone(process.poll())
+
+    def test_reconnected_instance_bound_shutdown_stops_owned_backend_after_eof(self):
+        process, lines = self.launch()
+        first = self.status(lambda value: value["state"] == "healthy")
+        process.stdin.close()
+        request = supervisor.request_action(self.home, "shutdown")
+        self.assertEqual(process.wait(timeout=10), 0)
+        status = self.status()
+        self.assertEqual(status["state"], "stopped")
+        self.assertEqual(status["last_request_id"], request["request_id"])
+        self.assertEqual(status["last_action"], "shutdown")
+        self.assertFalse(supervisor._pid_alive(first["service_pid"]))
+
+    def test_monitor_filesystem_error_keeps_owned_backend_alive(self):
+        process, lines = self.launch()
+        first = self.status(lambda value: value["state"] == "healthy")
+        (self.home / "read-error.flag").touch()
+        status = self.status(lambda value: any("isolated administrator read failure" in item["message"]
+                                              for item in value["incidents"]))
+        self.assertEqual(status["service_pid"], first["service_pid"])
+        self.assertIsNone(process.poll())
+        self.assertTrue(supervisor._pid_alive(first["service_pid"]))
+        self.assertEqual(len(self.launches()), 1)
+
 
 class SupervisorUtilityTests(unittest.TestCase):
     def test_loader_does_not_create_home_and_controls_have_fixed_allowlist(self):
@@ -392,7 +514,7 @@ class SupervisorUtilityTests(unittest.TestCase):
             home = Path(directory) / "absent"
             self.assertIsNone(supervisor.read_status(home))
             self.assertFalse(home.exists())
-            for action in ("shutdown", "shell", "", None):
+            for action in ("shell", "", None):
                 with self.subTest(action=action), self.assertRaises(supervisor.SupervisorError):
                     supervisor.request_action(home, action)
             self.assertFalse(home.exists())

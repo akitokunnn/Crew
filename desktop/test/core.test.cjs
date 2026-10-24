@@ -146,6 +146,22 @@ test('malformed registry is reported without spawning a replacement', async t =>
   await assert.rejects(backend.start(),/无法读取 Crew 服务登记/); assert.equal(backend.child,null);
 });
 
+test('a supervised startup timeout reaches recovery without killing or waiting for a hung backend shutdown',async t=>{
+  const {EventEmitter}=require('node:events'),{PassThrough}=require('node:stream');
+  const root=await directory(t),backendDir=path.join(root,'backend');await fs.mkdir(backendDir);
+  await fs.writeFile(path.join(backendDir,'crew_supervisor.py'),'# isolated fake supervisor');
+  const child=new EventEmitter();child.stdout=new PassThrough();child.stderr=new PassThrough();child.stdin=new PassThrough();child.exitCode=null;
+  let kills=0,written='';child.kill=()=>{kills++;};child.stdin.on('data',chunk=>written+=chunk);
+  const backend=new core.Backend({home:root,backendDir,python:'python',port:0,startupTimeoutMs:25},{spawn:()=>child});
+  const began=Date.now();await assert.rejects(backend.start(),/服务启动超时/);
+  assert(Date.now()-began<1000,'A hung supervisor shutdown must not block the recovery UI');
+  assert.equal(kills,0);assert.equal(written,'');assert.equal(backend.owned,true);
+  // Explicit quit still requests shutdown and waits for the real exit.
+  const stopping=backend.stop();assert.equal(written,'shutdown\n');
+  child.exitCode=0;child.emit('exit',0);await stopping;
+  child.stdout.destroy();child.stderr.destroy();child.stdin.destroy();
+});
+
 test('legacy service project roots are hydrated from matching per-project state', async t => {
   const root=await directory(t), requests=[];
   const server=http.createServer((request,response)=>{
