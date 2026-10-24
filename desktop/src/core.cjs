@@ -82,6 +82,18 @@ function connectionRefused(error) {
   return error?.code === 'ECONNREFUSED';
 }
 
+async function confirmedStopped(config, candidate) {
+  if (!config.backendDir) return false;
+  const script = path.join(config.backendDir, 'crew_supervisor.py');
+  try {
+    await fs.access(script);
+    const {stdout} = await run(config.python || 'python', [script, '--home', config.home, '--probe'],
+      {windowsHide:true,timeout:10000,maxBuffer:131072,env:{...process.env,PYTHONIOENCODING:'utf-8'}});
+    const probe = JSON.parse(stdout);
+    return probe.can_start === true && probe.url === candidate;
+  } catch (_) { return false; }
+}
+
 async function materializeBackend(source, home) {
   // NSIS portable resources live in an extraction directory that disappears
   // after exit. Keep content-addressed backend resources so Crew launchers and
@@ -130,12 +142,18 @@ class Backend {
       if (this.config.smoke && new URL(candidate).port === '47811') throw new Error('smoke 不得连接正式端口');
       try { await projects(candidate); this.url = candidate; return { url:candidate, owned:false }; }
       catch (error) {
-        // A reachable or ambiguous service may still own live sessions. Only
-        // a refused connection proves that starting a replacement is safe.
-        if (!connectionRefused(error)) throw new Error('现有 Crew 服务暂时不可用，请稍后重试：' + error.message);
+        // A timeout alone is ambiguous. The administrator's separate probe
+        // also checks the recorded PID, port occupancy and the HOME OS lock.
+        if (!connectionRefused(error) && !await confirmedStopped(this.config,candidate)) throw new Error('现有 Crew 服务暂时不可用，请稍后重试：' + error.message);
       }
     }
-    const script = path.join(this.config.backendDir, 'crew_desktop.py');
+    let script = path.join(this.config.backendDir, 'crew_supervisor.py');
+    try { await fs.access(script); this.supervised = true; }
+    catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+      script = path.join(this.config.backendDir, 'crew_desktop.py');
+      this.supervised = false;
+    }
     await fs.access(script);
     await fs.mkdir(this.config.home, { recursive: true });
     const logHeader = 'Crew service started ' + new Date().toISOString() + '\n';
@@ -206,6 +224,18 @@ class Backend {
   async stop() {
     if (!this.owned || !this.child || this.child.exitCode !== null) { await this.logWrites; return; }
     const child = this.child;
+    if (this.supervised) {
+      // Never kill the administrator and strand its backend during shutdown.
+      await new Promise(resolve => {
+        const done = () => resolve();
+        child.once('exit', done);
+        if (child.exitCode !== null) { child.removeListener('exit',done); resolve(); }
+        else if (child.stdin.writable) child.stdin.end('shutdown\n');
+        else { child.removeListener('exit',done); resolve(); }
+      });
+      await this.logWrites;
+      return;
+    }
     await new Promise(resolve => {
       const timeout = setTimeout(() => { child.kill(); }, 6000);
       const deadline = setTimeout(() => { cleanup(); resolve(); }, 9000);

@@ -29,7 +29,9 @@ const { Backend, projects, newWorkspace } = require('../src/core.cjs');
   try {
   const child = spawn(executable, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env });
   let errors = ''; child.stderr.on('data', data => { errors = (errors + data).slice(-12000); });
-  const timeout = kind.startsWith('portable') ? 120000 : 45000;
+  // Fresh Windows sandboxed profiles can take over a minute to initialize;
+  // retain all completion/ownership assertions and bound every variant alike.
+  const timeout = 120000;
   const code = await new Promise((resolve, reject) => { const timer = setTimeout(() => { child.kill(); reject(new Error('Electron smoke timed out: ' + errors)); }, timeout); child.once('error', error => { clearTimeout(timer); reject(error); }); child.once('exit', value => { clearTimeout(timer); resolve(value); }); });
   if (code !== 0) throw new Error('Electron exited ' + code + ': ' + errors);
   const result = JSON.parse(await fs.readFile(output, 'utf8'));

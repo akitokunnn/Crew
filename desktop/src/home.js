@@ -71,6 +71,8 @@ async function flushHomeActions() {
   try {
     while (homeActions.length && !busy) {
       const next = homeActions.shift();
+      if (next === 'admin') { window.CrewHomeHealth?.show(); continue; }
+      window.CrewHomeHealth?.hide();
       if (next === 'tools') { window.CrewHomeTools?.show(); continue; }
       window.CrewHomeTools?.hide();
       if (next === 'new') { resetCreate(); openCreate(); }
@@ -80,9 +82,12 @@ async function flushHomeActions() {
   } finally { dispatching = false; }
 }
 if (typeof window.crewDesktop.onAction === 'function') window.crewDesktop.onAction(message => {
-  if (!['new', 'open', 'home', 'tools'].includes(message?.action)) return;
+  if (!['new', 'open', 'home', 'tools', 'admin'].includes(message?.action)) return;
+  if (message.action === 'admin') { window.CrewHomeHealth?.show(); return; }
   homeActions.push(message.action); void flushHomeActions();
 });
+// The system administrator must remain reachable even while the workspace bootstrap is pending.
+if (typeof window.crewDesktop.homeReady === 'function') void window.crewDesktop.homeReady().catch(failure);
 $('existing').addEventListener('click', openExisting);
 $('new').addEventListener('click', openCreate);
 function closeCreate() { $('create-panel').hidden = true; $('new').focus(); }
@@ -94,7 +99,7 @@ document.addEventListener('keydown', event => { if (event.key === 'Escape' && !$
 async function finishStartup(state) {
   await window.crewDesktop.ready({ projects: state.projects.length, nodeAvailable: typeof require !== 'undefined',
     bridgeMethods: Object.keys(window.crewDesktop), title: document.title });
-  if (['new', 'open', 'tools'].includes(state.pendingAction)) homeActions.unshift(state.pendingAction);
+  if (['new', 'open', 'tools', 'admin'].includes(state.pendingAction)) homeActions.unshift(state.pendingAction);
   homeReady = true;
   await flushHomeActions();
 }

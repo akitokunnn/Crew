@@ -112,6 +112,34 @@ test('ambiguous registry timeout never starts a second backend', async t => {
   await assert.rejects(backend.start(),/现有 Crew 服务暂时不可用/); assert.equal(backend.child,null);
 });
 
+test('a timeout can delegate startup only after the administrator independently confirms the exact old service is stopped', async t => {
+  const root=await directory(t), service=await fixture(t), backendDir=path.join(root,'backend');
+  await fs.mkdir(backendDir);
+  const old='http://127.0.0.1:12345';
+  await fs.writeFile(path.join(root,'web.json'),JSON.stringify({url:old}));
+  const code='import sys,json\nif "--probe" in sys.argv:\n print(json.dumps({"can_start": True, "url": '+JSON.stringify(old)+'}),flush=True)\nelse:\n print('+JSON.stringify(service.url)+',flush=True)\n sys.stdin.readline()\n';
+  await fs.writeFile(path.join(backendDir,'crew_supervisor.py'),code);
+  const original=global.fetch;global.fetch=async(url,...args)=>{if(String(url).startsWith(old+'/'))throw new DOMException('timeout','TimeoutError');return original(url,...args);};
+  t.after(()=>{global.fetch=original;});
+  const backend=new core.Backend({home:root,backendDir,python:'python',port:0,isolated:true,smoke:true});
+  t.after(()=>backend.stop());
+  assert.deepEqual(await backend.start(),{url:service.url,owned:true});
+  assert.equal(backend.supervised,true);
+  await backend.stop();assert.equal(backend.child.exitCode,0);
+});
+
+test('an administrator probe with an uncertain PID or a different URL cannot authorize startup after a timeout',async t=>{
+  const root=await directory(t),backendDir=path.join(root,'backend');await fs.mkdir(backendDir);
+  await fs.writeFile(path.join(root,'web.json'),'{"url":"http://127.0.0.1:12345"}');
+  const original=global.fetch;global.fetch=async()=>{throw new DOMException('timeout','TimeoutError');};
+  t.after(()=>{global.fetch=original;});
+  for(const probe of [{can_start:false,url:'http://127.0.0.1:12345'},{can_start:true,url:'http://127.0.0.1:12346'}]){
+    await fs.writeFile(path.join(backendDir,'crew_supervisor.py'),'print('+JSON.stringify(JSON.stringify(probe))+')\n');
+    const backend=new core.Backend({home:root,backendDir,python:'python'},{spawn:()=>{throw Error('must not spawn');}});
+    await assert.rejects(backend.start(),/现有 Crew 服务暂时不可用/);assert.equal(backend.child,null);
+  }
+});
+
 test('malformed registry is reported without spawning a replacement', async t => {
   const root=await directory(t); await fs.writeFile(path.join(root,'web.json'),'{invalid json');
   const backend=new core.Backend({home:root},{spawn:()=>{throw new Error('must not spawn');}});

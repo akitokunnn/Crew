@@ -7,11 +7,12 @@
   <title>Crew · 工作区</title>
   <link rel="stylesheet" href="home.css">
   <link rel="stylesheet" href="home-tools.css">
+  <link rel="stylesheet" href="home-health.css">
 </head>
 <body>
   <aside aria-label="导航">
     <div class="brand"><img class="mark" src="../assets/crew.svg" width="27" height="27" alt=""><strong>Crew</strong></div>
-    <nav><button id="nav-workspaces" type="button" class="nav active" aria-current="page"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span>工作区</span></button><button id="nav-tools" type="button" class="nav" hidden><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14.8 6.2a5 5 0 0 0-6.6 6.6L3 18a2.1 2.1 0 0 0 3 3l5.2-5.2a5 5 0 0 0 6.6-6.6L14 13l-3-3 3.8-3.8Z"/></svg><span>工具与更新</span></button></nav>
+    <nav><button id="nav-admin" type="button" class="nav" hidden><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 4 6v6c0 4 4 7 8 9 4-2 8-5 8-9V6l-8-3Z"/><path d="m8 12 3 3 5-6"/></svg><span>系统管理员</span></button><button id="nav-workspaces" type="button" class="nav active" aria-current="page"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span>工作区</span></button><button id="nav-tools" type="button" class="nav" hidden><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14.8 6.2a5 5 0 0 0-6.6 6.6L3 18a2.1 2.1 0 0 0 3 3l5.2-5.2a5 5 0 0 0 6.6-6.6L14 13l-3-3 3.8-3.8Z"/></svg><span>工具与更新</span></button></nav>
     <div class="aside-bottom"><div class="service-line"><span class="status-dot" aria-hidden="true"></span><span id="service" class="service">正在连接…</span></div><div class="shortcut"><span>打开工作区页</span><kbd>Ctrl T</kbd></div></div>
   </aside>
   <main>
@@ -40,6 +41,16 @@
     </div>
     <footer>关闭窗口后，Crew 会继续在托盘运行。</footer>
     </div>
+    <section id="admin-page" class="home-page admin-page" aria-labelledby="admin-title" hidden>
+      <header class="admin-header"><div><h1 id="admin-title" tabindex="-1">系统管理员</h1><p>统一管理本机后台，覆盖所有工作区。</p></div></header>
+      <div class="admin-content">
+        <div class="admin-summary"><section class="admin-stat"><h2>后台状态</h2><strong id="admin-state">正在读取</strong><p>管理后台连接，不派发模型任务。</p></section><section class="admin-stat"><h2>自动恢复次数</h2><strong id="admin-recoveries">—</strong><p id="admin-last-recovery"></p></section><section class="admin-stat"><h2>最近检测</h2><strong id="admin-checked">尚未检测</strong><p>此页打开时每 5 秒更新。</p></section></div>
+        <section class="admin-actions" aria-label="后台维护"><div><button id="admin-check" class="button secondary" type="button">重新检测</button><button id="admin-restart" class="button secondary" type="button" disabled>尝试恢复</button></div><p id="admin-restart-reason"></p><p class="admin-policy">只尝试恢复确认已退出的后台；不会强制结束运行中的会话。</p></section>
+        <p id="admin-error" class="error" role="alert" hidden></p><p id="admin-note" class="admin-note" role="status" hidden></p>
+        <section class="admin-incidents-section"><h2>最近异常与恢复</h2><div id="admin-incidents" class="admin-incidents"></div></section>
+        <details class="admin-details"><summary>连接详情</summary><dl><dt>管理员进程</dt><dd id="admin-supervisor-pid"></dd><dt>后台进程</dt><dd id="admin-service-pid"></dd><dt>服务地址</dt><dd id="admin-service-url"></dd><dt>实例</dt><dd id="admin-instance"></dd></dl></details>
+      </div>
+    </section>
     <section id="tools-page" class="home-page tools-page" aria-labelledby="tools-title" hidden>
       <header class="tools-header"><div><h1 id="tools-title" tabindex="-1">工具与更新</h1><p>查看本机 Claude Code 和 Codex 的版本。</p></div><button id="tools-check" class="button secondary" type="button">检查更新</button></header>
       <div class="tools-content">
@@ -52,6 +63,7 @@
     </section>
   </main>
   <script src="home-tools.js"></script>
+  <script src="home-health.js"></script>
   <script src="home.js"></script>
 </body>
 </html>

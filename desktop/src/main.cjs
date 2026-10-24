@@ -7,7 +7,9 @@ const core = require('./core.cjs');
 const chrome = require('./chrome.cjs');
 const { WorkspaceTabs } = require('./tabs.cjs');
 const { ToolUpdates } = require('./tool-updates.cjs');
+const { Administrator } = require('./admin.cjs');
 const config = core.options(process.argv.slice(1));
+const administrator = new Administrator(config.home);
 app.setName('Crew');
 if (process.platform === 'win32') app.setAppUserModelId('local.crew.desktop');
 config.backendDir = config.backendDir || (app.isPackaged ? path.join(process.resourcesPath, 'backend') : path.resolve(__dirname, '../../plugin'));
@@ -51,6 +53,7 @@ ipcMain.on('desktop:tabs-layout',(event,bounds)=>{
 ipcMain.handle('desktop:chrome-action', async (event, command, value) => {
   trustedChrome(event);
   if (command === 'home') return showHome();
+  if (command === 'admin') return showHome('admin');
   if (command === 'back') return tabs.back();
   if (command === 'retry') return event.senderFrame.url===errorPage ? window.loadURL(homePage) : tabs.reload();
   if (command === 'tab-select') return tabs.select(value);
@@ -78,6 +81,7 @@ function actionError(error) {
 }
 function menuAction(action) { return ()=>{ Promise.resolve().then(action).catch(actionError); }; }
 async function openProject(name) {
+  if(new URL(backend.url).port==='0')throw new Error(backend.startupError||'后台尚未连接，请查看系统管理员');
   const project=(await core.projects(backend.url)).find(item=>item.name===name);
   if(!project)throw new Error('工作区不存在，请刷新列表');
   return tabs.open(project);
@@ -109,6 +113,7 @@ function workspaceMenu() {
     { id:'workspace-new-tab', label:'打开工作区标签', accelerator:'CmdOrCtrl+T', click:menuAction(()=>showHome()) },
     { id:'workspace-new', label:'新建工作区…', accelerator:'CmdOrCtrl+N', click:menuAction(()=>showHome('new')) },
     { id:'workspace-open', label:'打开已有项目…', accelerator:'CmdOrCtrl+O', click:menuAction(()=>showHome('open')) },
+    { id:'system-administrator',label:'系统管理员…',click:menuAction(()=>showHome('admin')) },
     { id:'tools-updates',label:'工具与更新…',click:menuAction(()=>showHome('tools')) },
     { type:'separator' },
     { id:'window-back', label:'返回上一页', accelerator:'Alt+Left', click:menuAction(()=>tabs.back()) },
@@ -201,10 +206,19 @@ async function visualEvidence(target, evidence) {
 }
 
 handle('desktop:bootstrap', async () => {
+  if(new URL(backend.url).port==='0')throw new Error(backend.startupError||'后台尚未连接，请查看系统管理员');
   const projects = await core.projects(backend.url), action = pendingAction; pendingAction = null;
   homeBootstrapped=true;
   return { projects, service: { url:backend.url, owned:backend.owned }, pendingAction:action };
 });
+handle('desktop:admin-status',()=>administrator.snapshot());
+handle('desktop:home-ready',()=>{
+  homeBootstrapped=true;
+  if(pendingAction){const action=pendingAction;pendingAction=null;window.webContents.send('desktop:home-action',{action});}
+  return {ok:true};
+});
+handle('desktop:admin-check',()=>administrator.request('check'));
+handle('desktop:admin-restart',()=>administrator.request('recover'));
 handle('desktop:existing', async () => {
   const result = await dialog.showOpenDialog(window, { title: '选择已有 Git 工作区', buttonLabel: '打开工作区', properties: ['openDirectory'] });
   if (result.canceled) return null;
@@ -263,10 +277,21 @@ else {
     try {
       if (app.isPackaged) config.backendDir = await core.materializeBackend(config.backendDir, config.home);
       backend = new core.Backend(config);
-      await backend.start();
+      try { await backend.start(); }
+      catch (error) {
+        if(config.smoke)throw error;
+        // The administrator must remain reachable even when no workspace can
+        // connect. Keep the shell and its file-backed health page available.
+        console.error('Crew backend unavailable:',error);
+        backend.startupError=error.message;
+        let candidate=config.serviceUrl;
+        if(!candidate)try{candidate=JSON.parse(await fs.readFile(path.join(config.home,'web.json'),'utf8')).url;}catch(_){}
+        try{backend.url=core.loopback(candidate);}catch(_){backend.url='http://127.0.0.1:0';}
+        pendingAction='admin';
+      }
       tools=new ToolUpdates(config,{onChange:state=>{if(window&&!window.webContents.isDestroyed())window.webContents.send('desktop:tools-state',state);}});
       await tools.initialize();
-      if(!config.smoke&&!config.isolated)tools.start();
+      if(!config.smoke&&!config.isolated&&!backend.startupError)tools.start();
       window = new BrowserWindow({ width: 1220, height: 850, minWidth: 820, minHeight: 600,
         show: false, title: 'Crew', icon: path.join(__dirname, '../assets/crew.png'), ...chrome.windowOptions(),
         webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true,
