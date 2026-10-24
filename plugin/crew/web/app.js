@@ -383,7 +383,7 @@
     const execution = goalId == null ? null : goals?.executionFor(item.session_id);
     const chatRuntime = goalId == null ? runtimeBadge(item) : execution ? runtimeBadge(execution) : `<span class="runtime-tag">${readOnlyId !== null ? "还没有该成员的执行记录" : "本目标尚未启动"}</span>`;
     const chatModel = goalId == null ? `<button class="model-tag" data-act="model-menu" data-id="${esc(item.session_id)}" aria-haspopup="menu" title="切换模型和 effort">${esc(optionsLabel(item))}${ic("down", "xs")}</button>` : execution ? `<span class="model-tag" title="本目标执行配置；如需更换，回总对话并先暂停仍在推进的目标">${esc(optionsLabel({...execution, applied:null}))}</span>` : "";
-    const identity = `${item.session_id}:${goalId ?? ""}:${access.readonly}:${execution?.id ?? ""}:${listing}`;
+    const identity = `${item.session_id}:${goalId ?? ""}:${access.readonly}:${execution?.id ?? ""}:${listing}:${access.readonlyReason ?? ""}`;
     if (mountedChat !== identity) {
       CrewChat.unmount();
       $("main").innerHTML = '<div id="chat-head"></div><div id="goal-head"></div><div id="goal-chat-hint"></div><div id="leader-trust-note"></div><div id="native-approval-tray"></div><div id="decision-tray"></div><div id="chat-host" class="chat-host"></div>';
