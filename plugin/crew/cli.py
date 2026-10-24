@@ -213,6 +213,18 @@ def parser():
     a.add_argument("--reason", required=True)
     a.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
     command("todos", True).add_argument("--all", action="store_true")
+    c = command("doc", True).add_subparsers(dest="action")
+    a = c.add_parser("add")
+    a.add_argument("path")
+    a.add_argument("--title", required=True)
+    a.add_argument("--summary", required=True)
+    a.add_argument("--kind", choices=("summary", "report", "guide", "other"), default="other")
+    a.add_argument("--important", action="store_true")
+    a.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
+    a = c.add_parser("list")
+    a.add_argument("--leader")
+    a.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
+    c.add_parser("refresh").add_argument("--json", action="store_true", default=argparse.SUPPRESS)
     c = command("group").add_subparsers(dest="action", required=True)
     c.add_parser("list").add_argument("--json", action="store_true")
     c = command("roster").add_subparsers(dest="action", required=True)
@@ -595,6 +607,19 @@ def execute(conn, args, cwd, agents_provider):
         if action == "withdraw":
             return todo.withdraw(conn, _session_id(args), args.id, args.reason)
         return todo.list(conn, project, all=args.all)
+    if cmd == "doc":
+        from . import documents
+        project = _project(conn, args, cwd)
+        if args.action == "add":
+            return documents.register(conn, _session_id(args), str((Path(cwd) / args.path).resolve()),
+                                      title=args.title, summary=args.summary, kind=args.kind,
+                                      important=args.important, project=project)
+        if args.action == "refresh":
+            scan = documents.refresh(conn, args.home, project)
+            return {"documents": documents.list(conn, project), "scan": scan}
+        leader_name = getattr(args, "leader", None)
+        leader = board.named_session(conn, project, leader_name)["session_id"] if leader_name else None
+        return documents.list(conn, project, leader_session_id=leader)
     if cmd == "say":
         speaker = conn.execute("SELECT project FROM sessions WHERE session_id=?", (actor,)).fetchone()
         if speaker is None or speaker["project"] is None:

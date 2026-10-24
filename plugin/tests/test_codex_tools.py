@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from crew import board, codex_tools, decision_briefs, runtimes, store, todo
+from crew import board, codex_tools, decision_briefs, documents, runtimes, store, todo
 
 
 class CodexToolsTests(unittest.TestCase):
@@ -163,6 +163,63 @@ class CodexToolsTests(unittest.TestCase):
         self.assertEqual(identity["runtime"], "codex")
         self.assertEqual(identity["leader"]["runtime"], "claude")
         self.assertEqual(identity["session_id"], "codex-crew")
+
+    def test_document_registration_uses_bound_identity_and_does_not_change_user_pin(self):
+        path = self.root / "first" / "handoff.md"
+        path.write_text("# Verified deliverable", encoding="utf-8")
+        saved = self.call("crew_doc_add", {"path": str(path), "title": "Runtime guide", "summary": "How to use both tools",
+                                          "kind": "guide", "important": True},
+                          threadId="foreign-crew", session_id="foreign-crew", project="other", home=str(self.root / "wrong-home"))
+        self.assertEqual(saved["session_id"], "codex-crew")
+        self.assertEqual(saved["leader_session_id"], "leader-crew")
+        self.assertEqual(saved["project"], "first")
+        self.assertEqual(saved["kind"], "guide")
+        self.assertTrue(saved["ai_important"])
+        self.assertEqual(self.call("crew_doc_list"), [saved])
+        documents.pin(self.conn, "first", saved["id"], False)
+        resubmitted = self.call("crew_doc_add", {"path": str(path), "title": "Runtime guide", "summary": "The checked runtime guide", "important": True})
+        self.assertFalse(resubmitted["user_important"])
+        self.assertFalse(resubmitted["important"])
+        self.call("crew_doc_pin", {"id": saved["id"], "important": True}, success=False)
+        self.assertEqual(path.read_text(encoding="utf-8"), "# Verified deliverable")
+        self.assertFalse((self.root / "wrong-home").exists())
+
+    def test_document_filters_use_same_project_crew_leaders_and_refresh_only_bound_history(self):
+        own = self.root / "first" / "own.md"; own.write_text("own", encoding="utf-8")
+        peer = self.root / "first" / "peer.md"; peer.write_text("peer", encoding="utf-8")
+        foreign = self.root / "other" / "foreign.md"; foreign.write_text("foreign", encoding="utf-8")
+        own_doc = documents.register(self.conn, "codex-crew", str(own), title="Own report", summary="The caller's checked work")
+        documents.register(self.conn, "peer-member", str(peer), title="Peer report", summary="The peer's checked work")
+        documents.register(self.conn, "foreign-crew", str(foreign), title="Other project report", summary="A separate project's work")
+        self.assertEqual(self.call("crew_doc_list", {"leader": "chief"}), [own_doc])
+        self.assertEqual(self.call("crew_doc_list", {"leader": "leader-crew"}), [own_doc])
+        for target in ("foreign-crew", "outsider", "builder", "native-leader-crew"):
+            self.call("crew_doc_list", {"leader": target}, success=False)
+        new = self.root / "first" / "fresh.md"; new.write_text("indexed", encoding="utf-8")
+        board.report(self.conn, "codex-crew", "Delivered [Fresh](fresh.md)")
+        board.report(self.conn, "foreign-crew", "Delivered [Other](foreign.md)")
+        scan = self.call("crew_doc_refresh", threadId="foreign-crew", home=str(self.root / "wrong-home"))
+        self.assertGreaterEqual(scan["indexed"], 1)
+        self.assertEqual({row["path"] for row in self.call("crew_doc_list")}, {str(own), str(peer), str(new)})
+        self.assertEqual(len(documents.list(self.conn, "other")), 1)
+
+    def test_document_tools_reject_forged_authority_invalid_kind_and_path_escape(self):
+        own = self.root / "first" / "own.md"; own.write_text("own", encoding="utf-8")
+        outside = self.root / "other" / "outside.md"; outside.write_text("private", encoding="utf-8")
+        for args in ({"path": str(own), "session_id": "foreign-crew"}, {"path": str(own), "project": "other"},
+                     {"path": str(own), "home": str(self.root)}, {"path": str(own), "kind": "script"},
+                     {"path": str(own), "important": 1}, {"path": str(outside)}, {"path": "../other/outside.md"},
+                     {"path": "https://example.com/report.md"}, {"path": "missing.md"}):
+            with self.subTest(args=args):
+                rejected = self.call("crew_doc_add", {"title": "Valid title", "summary": "A useful summary", **args}, success=False)
+                if args.get("path") in (str(outside), "../other/outside.md", "https://example.com/report.md", "missing.md"):
+                    self.assertEqual(rejected["error"]["code"], "board_error")
+        for args in ({"path": str(own)}, {"path": str(own), "title": "Title"},
+                     {"path": str(own), "title": " ", "summary": "Summary"}):
+            self.call("crew_doc_add", args, success=False)
+        self.call("crew_doc_list", {"project": "other"}, success=False)
+        self.call("crew_doc_refresh", {"home": str(self.root)}, success=False)
+        self.assertEqual(documents.list(self.conn, "first"), [])
 
     def test_only_the_own_group_leader_can_answer(self):
         number = self.call("crew_ask", {"question": "Choose internal format?"})["id"]

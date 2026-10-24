@@ -5,7 +5,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 const {test} = require("node:test");
 
-const source = fs.readFileSync(path.join(__dirname, "../crew/web/app.js"), "utf8");
+const source = fs.readFileSync(path.join(__dirname, "../crew/web/app.js"), "utf8").replace(/\r\n/g, "\n");
 const fixture = () => ({models:[{id:"claude-sonnet", name:"Sonnet"}, {id:"claude-haiku-4-5-20251001", name:"Haiku"}],
   efforts:["low", "medium", "high", "max"], runtimes:[
     {id:"claude", name:"Claude Code", available:true, error:null,

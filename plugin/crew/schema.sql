@@ -134,6 +134,41 @@ CREATE TABLE IF NOT EXISTS workspace_comments (
     created_at TEXT NOT NULL
 );
 
+-- Original deliverable files stay in their project/worktree. Only metadata is
+-- indexed here; a user's pin is independent from the submitting AI's choice.
+CREATE TABLE IF NOT EXISTS documents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project TEXT NOT NULL REFERENCES projects(name),
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    leader_session_id TEXT,
+    submitter TEXT NOT NULL,
+    group_name TEXT,
+    path TEXT NOT NULL,
+    path_key TEXT NOT NULL,
+    title TEXT NOT NULL,
+    summary TEXT,
+    kind TEXT NOT NULL CHECK(kind IN ('summary','report','guide','other')),
+    ai_important INTEGER NOT NULL DEFAULT 0 CHECK(ai_important IN (0,1)),
+    user_important INTEGER CHECK(user_important IN (0,1)),
+    source TEXT NOT NULL CHECK(source IN ('manual','journal','report')),
+    source_seq INTEGER,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(project,path_key)
+);
+CREATE INDEX IF NOT EXISTS documents_project ON documents(project,leader_session_id,updated_at);
+CREATE TABLE IF NOT EXISTS document_scans (
+    project TEXT NOT NULL REFERENCES projects(name),
+    source TEXT NOT NULL,
+    offset INTEGER NOT NULL DEFAULT 0,
+    size INTEGER NOT NULL DEFAULT 0,
+    mtime_ns INTEGER NOT NULL DEFAULT 0,
+    identity TEXT,
+    error TEXT,
+    scanned_at TEXT NOT NULL,
+    PRIMARY KEY(project,source)
+);
+
 CREATE TABLE IF NOT EXISTS leader_order (
     project TEXT NOT NULL REFERENCES projects(name),
     session_id TEXT NOT NULL REFERENCES sessions(session_id),

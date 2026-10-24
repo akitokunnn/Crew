@@ -103,3 +103,7 @@ description: Crew 成员守则。在启用了 Crew 的项目里干活时，怎�
 - 开工前用 `crew git policy` 看分支规则，按规则选分支；规则还没写时先问 git 管理员。
 - 做完先提交在自己的分支上，再 `crew git request "<做了什么、测过什么、有没有要用户亲手验收的>"`；需要指定分支时加 `--branch <分支>`。
 - git 管理员要你 rebase 或修冲突时照做，再把结果告诉它。
+
+## 提交给用户的文档
+
+交付报告、重要汇总、操作指南或验收文档时，先保存原文件，再登记到文档中心：`crew doc add "<路径>" --title "<好读的名称>" --summary "<这份文档解决什么、用户先看哪里>" --kind summary --important`。普通报告用 `--kind report`，指南用 `--kind guide`；只有确实重要的最终汇总或关键说明才加 `--important`，不要把每份日志和草稿都标重要。同一路径更新后重新登记会更新原条目，保留用户自己的标星选择。聊天里只提一句并给链接，不能只把文档埋在聊天中。`crew doc list` 查看本项目交付，`crew doc refresh` 整理已有历史链接。Codex 可用原生 `crew_doc_add` / `crew_doc_list` / `crew_doc_refresh` 工具，身份由 Crew 绑定。

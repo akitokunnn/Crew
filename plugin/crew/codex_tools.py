@@ -28,7 +28,7 @@ import json
 from pathlib import Path
 import sqlite3
 
-from . import board, decision_briefs, runtimes, store, todo
+from . import board, decision_briefs, documents, runtimes, store, todo
 
 
 class ToolError(ValueError):
@@ -107,6 +107,17 @@ _SPECS = [
           "when you are its leader. State why it is no longer needed; do not mark user work complete.",
           {"id": {"type": "integer", "minimum": 1}, "reason": _text("Why this user action is no longer needed.")},
           ("id", "reason")),
+    _spec("crew_doc_add", "Register an existing deliverable file from your project or worktree. "
+          "The original file stays in place. You may suggest importance; the user's pin is independent.",
+          {"path": _text("A local project/worktree file path.", max_length=4096),
+           "title": _text("A clear document title.", max_length=300),
+           "summary": _text("What this deliverable contains.", max_length=4000),
+           "kind": {"type": "string", "enum": ["summary", "report", "guide", "other"]},
+           "important": {"type": "boolean"}}, ("path", "title", "summary")),
+    _spec("crew_doc_list", "Read this project's registered deliverables, optionally filtered by a "
+          "Crew leader in this project. User pins cannot be changed with this tool.", {"leader": _TARGET}),
+    _spec("crew_doc_refresh", "Index a bounded next batch of deliverable links from this project's "
+          "existing Crew journals and reports. Returns scan counts, remaining-work flag and errors."),
     _spec("crew_handoff", "Save a handoff for a colleague, group or * within this project. "
           "This writes a board record; it does not launch a recipient.",
           {"to": _text("A Crew session id/name, group name, or * in this project.", max_length=512),
@@ -139,6 +150,8 @@ def _validate(value, schema, path="arguments"):
              "integer": lambda: type(value) is int}[kind]()
     if not valid:
         raise ToolError("invalid_arguments", "%s must be %s" % (path, kind))
+    if "enum" in schema and value not in schema["enum"]:
+        raise ToolError("invalid_arguments", "%s must be an allowed value" % path)
     if kind == "object":
         properties = schema["properties"]
         if any(key not in properties for key in value):
@@ -295,6 +308,20 @@ class CodexTools:
             return todo.list(conn, project, all=args.get("all", False))
         if name == "crew_todo_withdraw":
             return todo.withdraw(conn, sid, args["id"], args["reason"])
+        if name == "crew_doc_add":
+            return documents.register(conn, sid, args["path"], title=args.get("title"),
+                                      summary=args.get("summary"), kind=args.get("kind", "other"),
+                                      important=args.get("important", False), project=project)
+        if name == "crew_doc_list":
+            leader_id = None
+            if "leader" in args:
+                leader = self._target(conn, args["leader"])
+                if leader["role"] != "leader":
+                    raise ToolError("forbidden", "Document filtering requires a Crew leader in this project")
+                leader_id = leader["session_id"]
+            return documents.list(conn, project, leader_id)
+        if name == "crew_doc_refresh":
+            return documents.refresh(conn, self._home, project)
         if name == "crew_answer":
             decision = self._decision(conn, args["id"])
             questioner = board.session(conn, decision["session_id"])

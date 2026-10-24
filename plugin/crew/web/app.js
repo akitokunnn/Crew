@@ -5,6 +5,7 @@
   const project = new URLSearchParams(location.search).get("project");
   let state = null, view = "all", leaderId = null, readOnlyId = null, mountedChat = null, pollBusy = false, statePromise = Promise.resolve();
   let mountedChannel = false;
+  let documents = null;
   let leaderDrag = null, leaderOrderSaving = false;
   let allTab = "tree", period = "week", usageTab = "tree", usage = null, usageLoading = false, usageRequest = 0;
   let cardId = null, cardReturn = null, rename = false, handoff = null, rightOpen = false, dialogReturn = null;
@@ -236,6 +237,7 @@
       <button class="nav-item ${view === "channel" ? "active" : ""}" data-act="view" data-view="channel">${ic("msg")}<span>交流区</span>${state.channel.unread > 0 ? `<span class="b-unread channel-unread" title="交流区未读">${state.channel.unread}</span>` : ""}</button>
       <button class="nav-item ${view === "git" ? "active" : ""}" data-act="view" data-view="git">${ic("branch")}<span>Git</span></button>
       <button class="nav-item ${view === "todos" ? "active" : ""}" data-act="view" data-view="todos">${ic("check")}<span>我的待办</span>${openTodos().length > 0 ? `<span class="todo-count">${openTodos().length}</span>` : ""}</button>
+      <button class="nav-item ${view === "documents" ? "active" : ""}" data-act="view" data-view="documents">${ic("file")}<span>文档</span>${documents?.count() == null ? "" : `<span class="count">${documents.count()}</span>`}</button>
       <section class="priority-zone ${priorityIds().length === 0 ? "empty-priority" : ""}" data-leader-zone="priority"><div class="sec-label">置顶 · 优先</div>${priorityLeaders().map(sidebarLeader).join("")}<div class="priority-drop-hint">拖到这里设为优先</div></section>
       <section class="leader-list" data-leader-zone="normal"><div class="sec-label">Leader</div>${state.leaders.filter(item => item.priority === null).map(sidebarLeader).join("")}
       <button class="leader-item add-leader" data-act="modal-leader"><span class="plus">${ic("plus", "sm")}</span><span>起 leader</span></button></section>
@@ -346,6 +348,12 @@
     return `<div class="session-node leader-unit"><${clickable ? "button" : "div"} class="node ${clickable ? "click" : ""} leader-node ${item.priority === null ? "" : "priority"}" ${priorityAttrs(item)} ${clickable ? `data-act="leader" data-id="${esc(item.session_id)}"` : ""}>${priorityBadge(item.priority, true)}<span class="node-top">${av(item.name, 30)}<span class="nm">${esc(item.name)}<span class="tag" style="background:var(--hover);color:var(--text-3)">leader</span>${runtimeBadge(item)}</span>${item.pending > 0 ? `<span class="b-pending" style="margin-left:auto">${item.pending}</span>` : st(item.status)}</span><span class="now" style="margin-left:39px">${CrewChat.renderInline(item.goal, item.session_id)}</span>${codexList(item)}</${clickable ? "button" : "div"}><div class="session-node-actions">${commentButton(item, true)}</div></div>`;
   }
   function renderRight() {
+    const chat = view === "chat" && leaderId !== null;
+    $("app").classList.toggle("documents-layout", chat && documents !== null);
+    $("app").classList.toggle("architecture-open", chat && rightOpen);
+    documents?.renderRail($("documents-rail"), leaderId, chat && !rightOpen);
+    const toggle = $("main").querySelector('[data-act="right-open"]');
+    if (toggle) { toggle.setAttribute("aria-expanded", String(rightOpen)); toggle.classList.toggle("active", rightOpen); }
     if (view !== "chat" || leaderId === null) { $("right-panel").innerHTML = ""; delete $("right-panel").dataset.render; return; }
     const item = leader(leaderId), members = membersOf(leaderId);
     replace($("right-panel"), `<div class="head"><div><div class="title" style="font-size:calc(14.5px * var(--fs))">${esc(item.name)} 组</div><div class="sub">${members.length} 个下属</div></div><div class="right"><button class="btn ghost" data-act="view" data-view="adopt" style="padding:5px 9px;font-size:calc(12.5px * var(--fs))">${ic("plus", "sm")}收编</button><button class="icon-btn rp-close" data-act="right-close" aria-label="关闭架构图">${ic("x")}</button></div></div><div class="tree">${leaderNode(item, false)}<div class="members">${members.map(memberNode).join("")}</div><div class="rp-note">点下属看卡片。${ic("code", "xs")} 开在 VS Code，${ic("cloud", "xs")} 后台运行。</div></div>`);
@@ -366,6 +374,15 @@
     replace($("chat-head"), `<div class="head">${av(item.name, 34)}<div class="heading-meta"><div class="title">${esc(item.name)}${readOnlyId === null ? priorityBadge(item.priority) : ""}${readOnlyId === null ? "" : " · 对话记录"}${runtimeBadge(item)}</div><div class="sub"><span>${esc(readOnlyId === null ? (item.goal ?? "") : `归 ${item.group} · 只读`)}</span>${group === undefined ? "" : `<span class="sep"></span><span>${members.length} 个下属 · ${members.filter(item => item.status === "working").length} 个在干活</span>`}</div></div><div class="right">${readOnlyId === null ? contextControls(item) : contextRing(item)}${readOnlyId === null ? `<button class="model-tag" data-act="model-menu" data-id="${esc(item.session_id)}" aria-haspopup="menu" title="切换模型和 effort">${esc(optionsLabel(item))}${ic("down", "xs")}</button>` : group === undefined ? '<button class="btn ghost" data-act="view" data-view="all">回到全部</button>' : `<button class="btn ghost" data-act="leader" data-id="${esc(leaderId)}">回到 leader</button>`}${readOnlyId === null ? `<button class="icon-btn" data-act="session-menu" data-id="${esc(item.session_id)}" aria-haspopup="menu" title="leader 操作" aria-label="leader 操作">⋯</button>` : ""}${group === undefined ? "" : `<button class="icon-btn rp-toggle" data-act="right-open" title="本组架构图" aria-label="本组架构图">${ic("grid")}</button>`}</div></div>`);
     replace($("decision-tray"), readOnlyId !== null || pending.length + held.length + groupTodos.length === 0 ? "" : `<div class="tray"><div class="tray-in">${todoTray(groupTodos, leaderId)}${pending.length === 0 ? "" : `<section class="tray-pending ${trayCollapsed ? "collapsed" : ""}"><button class="tray-head" data-act="tray" aria-expanded="${!trayCollapsed}">${ic("down", "sm chev")}等你拍板 · ${pending.length}</button><div class="tray-list">${pending.map(decisionCard).join("")}</div></section>`}${heldGroup(held, "tray")}</div></div>`);
     CrewChat.update(state);
+    if (documents !== null && group !== undefined) {
+      let button = $("chat-head").querySelector('[data-act="documents-open"]');
+      if (!button) {
+        button = document.createElement("button"); button.className = "btn ghost doc-rail-toggle"; button.dataset.act = "documents-open";
+        button.setAttribute("aria-label", "本组文档"); button.setAttribute("aria-controls", "documents-rail");
+        $("chat-head").querySelector('[data-act="right-open"]').before(button);
+      }
+      button.innerHTML = `${ic("file", "sm")}文档 <span>${documents.groupCount(leaderId)}</span>`;
+    }
   }
   function empty(message) { return `<div class="empty">${ic("check")}<div>${message}</div></div>`; }
   function todoInstructions(value, item, ordered = false) {
@@ -716,7 +733,7 @@
   }
   function navigate(next, id = null, readonly = null) {
     if (view === "chat" && (next !== "chat" || leaderId !== id || readOnlyId !== readonly)) { CrewChat.unmount(); mountedChat = null; }
-    view = next; leaderId = id; readOnlyId = readonly; rightOpen = false;
+    view = next; leaderId = id; readOnlyId = readonly; rightOpen = false; documents?.closeRail();
     if (next !== "chat") { $("right-panel").classList.remove("show"); $("rp-scrim").classList.remove("show"); }
     render(); syncRoute();
     if (view === "usage" && usage === null && !usageLoading) loadUsage();
@@ -725,7 +742,7 @@
     const hash = location.hash.slice(1), params = new URLSearchParams(hash);
     if (params.has("history")) { readOnlyId = params.get("history"); const item = member(readOnlyId); leaderId = item === undefined ? null : item.leader_session_id; view = "chat"; }
     else if (params.has("leader")) { leaderId = params.get("leader"); readOnlyId = null; view = "chat"; }
-    else if (["all", "channel", "adopt", "usage", "git", "todos"].includes(hash)) { view = hash; readOnlyId = null; }
+    else if (["all", "channel", "adopt", "usage", "git", "todos", "documents"].includes(hash)) { view = hash; readOnlyId = null; }
     else if (hash === "" && openTodos().length > 0) { view = "todos"; leaderId = null; readOnlyId = null; }
     else if (state.leaders.length > 0) { leaderId = state.leaders[0].session_id; readOnlyId = null; view = "chat"; }
     else view = "all";
@@ -735,7 +752,7 @@
     $("app").classList.toggle("wide", view !== "chat" || leaderId === null); renderSidebar();
     if (view !== "channel" && mountedChannel) { CrewChannel.unmount(); mountedChannel = false; }
     if (view !== "git") CrewGit.unmount();
-    if (view === "chat") renderChat(); else { if (mountedChat !== null) { CrewChat.unmount(); mountedChat = null; } if (view === "all") renderAll(); if (view === "todos") renderTodos(); if (view === "channel") renderChannel(); if (view === "adopt") renderAdopt(); if (view === "usage") renderUsage(); if (view === "git") CrewGit.mount($("main"), {project, api, toast, onChanged:() => loadState(true)}); }
+    if (view === "chat") renderChat(); else { if (mountedChat !== null) { CrewChat.unmount(); mountedChat = null; } if (view === "all") renderAll(); if (view === "todos") renderTodos(); if (view === "documents") documents?.mountCenter($("main")); if (view === "channel") renderChannel(); if (view === "adopt") renderAdopt(); if (view === "usage") renderUsage(); if (view === "git") CrewGit.mount($("main"), {project, api, toast, onChanged:() => loadState(true)}); }
     renderRight(); renderCard(); document.title = `(${state.decisions.filter(item => !item.held).length}) ${state.project.name} · Crew`;
   }
   function watchingChat(id) {
@@ -774,6 +791,7 @@
       const result = await api("/api/state"), previous = state; state = result; CrewActivity.sync(state); applyTheme(); renderSettings();
       if (project === null) { $("app").className = "workspace-entry"; $("sidebar").hidden = true; $("right-panel").hidden = true; replace($("main"), `<div class="workspace-home"><span class="workspace-logo" aria-hidden="true">${CrewTheme.logo()}</span><h1>Crew 工作区</h1><p class="note">选一个项目，继续聊。</p><div class="list">${state.projects.map(item => `<a class="li project-entry" style="${CrewTheme.projectStyle(state.themes, item.theme)}" href="/?project=${encodeURIComponent(item.name)}"><span class="project-logo" aria-hidden="true">${CrewTheme.logo()}</span><span class="grow">${esc(item.name)}</span><span class="project-theme-name">${esc(CrewTheme.get(state.themes, item.theme).name)}</span>${ic("right")}</a>`).join("")}</div></div>`); document.title = "工作区 · Crew"; return; }
       if (previous === null) readRoute();
+      if (previous === null && documents !== null) void documents.refresh();
       if (readOnlyId !== null && !state.members.some(item => item.session_id === readOnlyId)) { navigate("all"); toast("该会话已不在下属列表，已返回全部"); }
       else if (view === "chat" && readOnlyId === null && leader(leaderId) === undefined) { navigate("all"); toast("这个 leader 已结束，已返回全部"); }
       else { render(); syncRoute(); }
@@ -796,6 +814,13 @@
     try { const stored = localStorage.getItem("crew.theme"); if (["system", "light", "dark"].includes(stored)) theme = stored; } catch (error) { toast(error.message); }
     try { const stored = Number(localStorage.getItem("crew.fontScale")); if (stored >= FONT_MIN && stored <= FONT_MAX) fontScale = stored; } catch (error) { toast(error.message); }
     CrewChat.initFiles(api, toast);
+    if (window.CrewDocuments && project !== null) documents = window.CrewDocuments.create({project, api, toast,
+      onChange() { if (state !== null && state.project !== null) { renderSidebar(); renderRight(); } },
+      onCenter:() => navigate("documents"),
+      onSource(item) {
+        const owner = leader(item.leader_session_id) || leader(item.session_id) || leader(member(item.session_id)?.leader_session_id);
+        if (owner) navigate("chat", owner.session_id); else toast("来源 leader 已不在当前列表中。");
+      }});
     applyTheme(); applyFontScale(); renderSettings();
     window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyTheme);
     document.addEventListener("contextmenu", event => {
@@ -868,7 +893,8 @@
       else if (act === "font-reset") { setFontScale(1); renderSettings(); }
       else if (act === "sound-mute") { CrewSound.setMuted(!CrewSound.getSettings().muted); renderSettings(); }
       else if (act === "sound-test") CrewSound.preview("decision");
-      else if (act === "right-open") { rightOpen = true; renderRight(); $("right-panel").querySelector('[data-act="right-close"]').focus(); }
+      else if (act === "documents-open") { rightOpen = false; renderRight(); documents?.openRail(); }
+      else if (act === "right-open") { documents?.closeRail(); rightOpen = true; renderRight(); $("right-panel").querySelector('[data-act="right-close"]').focus(); }
       else if (act === "right-close") { rightOpen = false; renderRight(); $("main").querySelector('[data-act="right-open"]')?.focus(); }
       else if (act === "modal-leader") openModalLeader();
       else if (act === "leader-runtime" || act === "leader-model" || act === "leader-effort") {

@@ -17,7 +17,7 @@ from urllib.parse import parse_qs, quote, urlencode, urlsplit
 from urllib.request import ProxyHandler, build_opener
 from urllib.error import URLError
 
-from . import board, channel, channel_digest, chat, claude_limits, git_admin, git_ci, git_view, hooks, messaging, models, notifications, open_session, presentation, runtime_catalog, runtimes, session_ops, spawn, store, themes, todo, trust_mode, usage, usage_cli, vscode_sessions
+from . import board, channel, channel_digest, chat, claude_limits, documents, git_admin, git_ci, git_view, hooks, messaging, models, notifications, open_session, presentation, runtime_catalog, runtimes, session_ops, spawn, store, themes, todo, trust_mode, usage, usage_cli, vscode_sessions
 
 
 def _text(data, key):
@@ -543,8 +543,10 @@ class Service:
         if not isinstance(data, dict):
             raise ValueError("JSON \u8bf7\u6c42\u5fc5\u987b\u662f\u5bf9\u8c61")
         if path in ("/api/files/resolve", "/api/files/open", "/api/files/reveal"):
-            info = self.resolve_file(data.get("session_id"), _text(data, "path"),
-                                     project_name if project_name is not None else data.get("project"), data.get("base"))
+            if project_name is not None and data.get('project') is not None and data['project'] != project_name:
+                raise board.BoardError('请求正文和地址中的项目不一致')
+            info = self.resolve_file(data.get("session_id"), None if 'document_id' in data else _text(data, "path"),
+                                     project_name if project_name is not None else data.get("project"), data.get("base"), data.get('document_id'))
             if path == "/api/files/resolve":
                 return info
             if info["error"] is not None:
@@ -578,7 +580,7 @@ class Service:
                 if type(data.get('away')) is not bool:
                     raise ValueError('离开状态必须是 true 或 false')
                 return self.set_away(data['away'])
-            if path in ('/api/channel', '/api/channel/read', '/api/channel/digest', '/api/project/theme', '/api/leaders/order', '/api/leaders/priority') and 'project' in data:
+            if path in ('/api/channel', '/api/channel/read', '/api/channel/digest', '/api/project/theme', '/api/leaders/order', '/api/leaders/priority', '/api/documents', '/api/documents/pin', '/api/documents/refresh') and 'project' in data:
                 body_project = _text(data, 'project')
                 if project_name is not None and body_project != project_name:
                     raise board.BoardError('请求正文和地址中的项目不一致')
@@ -596,6 +598,18 @@ class Service:
                     self.stop_archived(result['before'])
                 return {'ok': True}
             project = self.selected_project(conn, project_name)
+            if path in ('/api/documents', '/api/documents/pin', '/api/documents/refresh'):
+                if 'project' in data and data['project'] != project:
+                    raise board.BoardError('请求正文和地址中的项目不一致')
+                if path == '/api/documents':
+                    return documents.register(conn, _text(data,'session_id'), _text(data,'path'),
+                        title=data.get('title'), summary=data.get('summary'), kind=data.get('kind','other'),
+                        important=data.get('important',False), project=project, now=now)
+                if path == '/api/documents/pin':
+                    if 'important' not in data: raise ValueError('缺少 important 字段')
+                    return documents.pin(conn,project,data.get('id'),data['important'],now=now)
+                scan=documents.refresh(conn,self.home,project,now=now)
+                return {'documents':documents.list(conn,project), 'scan':scan}
             if path == '/api/trust':
                 return trust_mode.set(conn, project, data.get('enabled'), data.get('goal'), now=now)
             if path == '/api/decision/clarify':
@@ -858,36 +872,61 @@ class Service:
             project = self.selected_project(conn, project_name)
             return {**channel.messages(conn, project, limit=limit, before=before), 'digest': channel.digest(conn, project)}
 
-    def resolve_file(self, session_id, text, project_name=None, base=None):
+    def document_list(self, project_name=None, leader_session_id=None):
+        with self.write_lock, closing(store.connect(self.home)) as conn:
+            project=self.selected_project(conn,project_name)
+            try:
+                scan=documents.refresh(conn,self.home,project)
+            except (OSError, sqlite3.Error, ValueError) as exc:
+                scan={'indexed':0,'scanned':0,'has_more':False,'errors':[{'source':'index','error':str(exc)}]}
+            return {'documents':documents.list(conn,project,leader_session_id), 'scan':scan}
+
+    def resolve_file(self, session_id, text, project_name=None, base=None, document_id=None):
         with closing(store.connect(self.home)) as conn:
             project = self.selected_project(conn, project_name)
+            if document_id is not None:
+                document=documents.get(conn,project,document_id)
+                session_id=document['session_id']
+                text=str(documents.resolve_path(conn,session_id,document['path'],project,must_exist=False))
+                base=None
             root = Path(board.project(conn, project)["root"])
+            allowed_roots=[root.resolve()]
             if session_id:
                 session = board.session(conn, session_id)
                 if session["project"] != project:
                     raise board.BoardError("\u4f1a\u8bdd\u4e0d\u5c5e\u4e8e\u5f53\u524d\u9879\u76ee")
                 cwd = Path(session["cwd"])
+                if session.get('worktree'):
+                    allowed_roots.append(Path(session['worktree']).resolve())
             else:
                 cwd = root
+        text = _text({'path':text},'path')
+        if base is not None and (not isinstance(base,str) or not any(store.is_under(Path(base).resolve(),allowed) for allowed in allowed_roots)):
+            raise board.BoardError('文件来源不在当前项目或会话工作区内')
         path = Path(text.replace("\\", "/"))
         if not path.is_absolute():
             path = (Path(base).parent if base is not None else cwd) / path
             if base is None and not path.exists():
                 path = root / text.replace("\\", "/")
         path = path.resolve()
+        if not any(store.is_under(path,allowed) for allowed in allowed_roots):
+            raise board.BoardError('文件路径不在当前项目或会话工作区内')
         exists = path.exists()
         error = "\u6587\u4ef6\u4e0d\u5b58\u5728\uff1a" + str(path) if not exists else "\u8fd9\u662f\u76ee\u5f55\uff1a" + str(path) if path.is_dir() else None
         suffix = path.suffix.lower()
         images = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp"}
-        documents = {".md", ".txt", ".log", ".json", ".csv", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg"}
-        external_documents = {".html", ".htm", ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx"}
+        text_documents = {".md", ".markdown", ".rst", ".adoc", ".txt", ".log", ".json", ".csv", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg"}
+        external_documents = {".html", ".htm", ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".rtf", ".odt", ".ods", ".odp"}
         code = {".py", ".js", ".cjs", ".mjs", ".ts", ".tsx", ".jsx", ".css", ".scss", ".ps1", ".bat", ".cmd", ".sh", ".c", ".h", ".cpp", ".hpp", ".cs", ".java", ".go", ".rs", ".rb", ".php", ".sql", ".vue", ".svelte", ".uproject", ".uplugin"}
-        open_with = ("default" if suffix in documents | external_documents | images else
+        open_with = ("default" if suffix in text_documents | external_documents | images else
                      "vscode" if suffix in code else "blocked")
-        kind = "image" if suffix in images else "markdown" if suffix == ".md" else "text" if suffix in documents | code else "external"
-        return {"path": str(path), "exists": exists, "kind": kind,
+        kind = "image" if suffix in images else "markdown" if suffix in (".md", ".markdown") else "text" if suffix in text_documents | code else "external"
+        result={"path": str(path), "exists": exists, "kind": kind,
                 "type": "external" if kind == "external" else "preview",
                 "open_with": open_with, "error": error}
+        if document_id is not None:
+            result.update(document_id=document_id,session_id=session_id)
+        return result
 
     def read_file(self, info, raw=False):
         if info["error"] is not None:
@@ -966,6 +1005,7 @@ POST_PATHS.update(('/api/channel', '/api/channel/read', '/api/channel/digest'))
 POST_PATHS.add('/api/leaders/order')
 POST_PATHS.add('/api/leaders/priority')
 POST_PATHS.update(('/api/files/resolve', '/api/files/open', '/api/files/reveal'))
+POST_PATHS.update(('/api/documents','/api/documents/pin','/api/documents/refresh'))
 POST_PATHS.update(('/api/git/enable', '/api/git/disable', '/api/git/fetch'))
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"),
           "/themes.js": ("themes.js", "text/javascript; charset=utf-8"),
@@ -976,6 +1016,8 @@ STATIC = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js",
           "/style.css": ("style.css", "text/css; charset=utf-8"), "/chat.js": ("chat.js", "text/javascript; charset=utf-8"),
           "/vendor/markdown-it.min.js": ("vendor/markdown-it.min.js", "text/javascript; charset=utf-8")}
 STATIC.update({'/logo.svg': ('logo.svg', 'image/svg+xml'),
+               '/documents.js': ('documents.js','text/javascript; charset=utf-8'),
+               '/documents.css': ('documents.css','text/css; charset=utf-8'),
                '/fonts/HarmonyOS_Sans_SC_Regular.woff2': ('fonts/HarmonyOS_Sans_SC_Regular.woff2', 'font/woff2'),
                '/fonts/HarmonyOS_Sans_SC_Medium.woff2': ('fonts/HarmonyOS_Sans_SC_Medium.woff2', 'font/woff2')})
 STATIC_CACHED = {'/logo.svg', '/fonts/HarmonyOS_Sans_SC_Regular.woff2', '/fonts/HarmonyOS_Sans_SC_Medium.woff2'}
@@ -1051,8 +1093,9 @@ class Handler(BaseHTTPRequestHandler):
             if self.headers.get_all("Host") not in ([host] for host in hosts):
                 self._send(403, {"error": "\u6587\u4ef6\u8bfb\u53d6\u53ea\u5141\u8bb8\u672c\u673a Host"})
                 return
-            info = service.resolve_file(query.get("session_id", [None])[0], query["path"][0],
-                                        query.get("project", [None])[0], query.get("base", [None])[0])
+            document_id=int(query['document_id'][0]) if 'document_id' in query else None
+            info = service.resolve_file(query.get("session_id", [None])[0], query.get("path",[None])[0],
+                                        query.get("project", [None])[0], query.get("base", [None])[0],document_id)
             content, media_type = service.read_file(info, raw=query.get("raw") == ["1"])
             self.send_file_content(content, media_type)
         elif url.path == "/api/state":
@@ -1062,6 +1105,8 @@ class Handler(BaseHTTPRequestHandler):
         elif url.path == '/api/projects':
             with closing(store.connect(service.home)) as conn:
                 self._send(200, {'projects': board.projects(conn)})
+        elif url.path == '/api/documents':
+            self._send(200,service.document_list(query.get('project',[None])[0],query.get('leader_session_id',[None])[0]))
         elif url.path == '/api/trust/report':
             with closing(store.connect(service.home)) as conn:
                 project = service.selected_project(conn, query.get('project', [None])[0])

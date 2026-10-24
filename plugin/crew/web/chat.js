@@ -139,11 +139,15 @@
     tokens[index].attrSet("rel", "noopener noreferrer");
     return linkOpen(tokens, index, options, env, renderer);
   };
-  function fileContentUrl(path, sessionId, base, raw = false) {
+  function fileContentUrl(path, sessionId, base, raw = false, documentId = null) {
     const params = new URLSearchParams(location.search);
-    params.set("path", path);
-    if (sessionId !== "") params.set("session_id", sessionId);
-    if (base !== null) params.set("base", base);
+    if (documentId !== null) {
+      params.delete("path"); params.delete("session_id"); params.delete("base"); params.set("document_id", documentId);
+    } else {
+      params.set("path", path);
+      if (sessionId !== "") params.set("session_id", sessionId);
+      if (base !== null) params.set("base", base);
+    }
     if (raw) params.set("raw", "1");
     return "/api/files/content?" + params;
   }
@@ -164,17 +168,22 @@
       event.preventDefault();
       event.stopImmediatePropagation();
       const sequence = ++request;
-      const data = {path:link.dataset.filePath, session_id:link.dataset.fileSession};
-      if (link.hasAttribute("data-file-base")) data.base = link.dataset.fileBase;
+      const documentLink = link.hasAttribute("data-document-id");
+      if (documentLink) panel.classList.remove("show");
+      const rawDocumentId = link.dataset.documentId;
+      if (documentLink && (!/^[1-9]\d*$/.test(rawDocumentId || "") || !Number.isSafeInteger(Number(rawDocumentId)))) { toast("文档编号无效，请重新读取文档列表。"); return; }
+      const data = documentLink ? {document_id:Number(rawDocumentId)} : {path:link.dataset.filePath, session_id:link.dataset.fileSession};
+      if (!documentLink && link.hasAttribute("data-file-base")) data.base = link.dataset.fileBase;
       try {
         const info = await api("/api/files/resolve", data);
         if (sequence !== request) return;
         if (info.error !== null) throw Error(info.error);
-        const resolved = {path:info.path, session_id:data.session_id};
+        const renderingSession = documentLink ? (typeof info.session_id === "string" ? info.session_id : "") : data.session_id;
+        const resolved = documentLink ? {document_id:data.document_id} : {path:info.path, session_id:data.session_id};
         if (info.type === "external" && info.open_with === "default") { await api("/api/files/open", resolved); return; }
         let content;
         if (info.type === "preview" && info.kind !== "image") {
-          const response = await fetch(fileContentUrl(info.path, data.session_id, null));
+          const response = await fetch(fileContentUrl(info.path, data.session_id || "", null, false, documentLink ? data.document_id : null));
           content = await response.json();
           if (!response.ok) throw Error(content.error);
         }
@@ -184,10 +193,10 @@
         panel.innerHTML = `<div class="card-head"><div class="file-title">${escape(info.path)}</div><button class="icon-btn file-close" aria-label="\u5173\u95ed">&times;</button></div><div class="card-actions">${openButton}<button class="btn file-reveal">\u5728\u6587\u4ef6\u5939\u4e2d\u663e\u793a</button></div><div class="card-body file-body"></div>`;
         const body = panel.querySelector(".file-body");
         if (info.open_with === "blocked") body.textContent = "这类文件不直接打开，请用‘在文件夹中显示’";
-        else if (info.kind === "image") body.innerHTML = `<img class="file-image" alt="${escape(info.path)}" src="${escape(fileContentUrl(info.path, data.session_id, null, true))}">`;
+        else if (info.kind === "image") body.innerHTML = `<img class="file-image" alt="${escape(info.path)}" src="${escape(fileContentUrl(info.path, data.session_id || "", null, true, documentLink ? data.document_id : null))}">`;
         else {
           if (content.truncated) body.innerHTML = `<p class="note">\u6587\u4ef6\u8f83\u5927\uff0c\u4ec5\u663e\u793a${escape(content.portion)} 256 KiB</p>`;
-          body.innerHTML += info.kind === "markdown" ? `<div class="markdown">${renderMarkdown(content.content, data.session_id, info.path)}</div>` : `<pre class="file-text">${escape(content.content)}</pre>`;
+          body.innerHTML += info.kind === "markdown" ? `<div class="markdown">${renderMarkdown(content.content, renderingSession, info.path)}</div>` : `<pre class="file-text">${escape(content.content)}</pre>`;
         }
         panel.querySelector(".file-close").onclick = () => { request++; panel.classList.remove("show"); };
         for (const action of (info.open_with === "blocked" ? ["reveal"] : ["open", "reveal"])) panel.querySelector(".file-" + action).onclick = async () => {
