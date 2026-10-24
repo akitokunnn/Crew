@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from crew import board, codex_tools, decision_briefs, documents, runtimes, store, todo
+from crew import board, codex_tools, decision_briefs, documents, goals, runtimes, store, todo
 
 
 class CodexToolsTests(unittest.TestCase):
@@ -44,6 +44,24 @@ class CodexToolsTests(unittest.TestCase):
         self.assertEqual(len(result["contentItems"]), 1)
         self.assertEqual(result["contentItems"][0]["type"], "inputText")
         return json.loads(result["contentItems"][0]["text"])
+
+    def test_stop_tool_uses_bound_actor_and_explicit_host_stop_endpoint(self):
+        with mock.patch('crew.spawn.request_start', return_value={'ok': True, 'stopped': True}) as request:
+            self.call('crew_stop', {'target': 'builder'})
+        self.assertEqual(request.call_args.args[2:], ('/api/session/stop', {
+            'session_id': 'codex-crew', 'caller_session_id': 'codex-crew'}))
+        self.call('crew_stop', {'target': 'builder', 'caller_session_id': 'peer-leader'}, success=False)
+
+    def test_spawn_tool_supplies_only_host_bound_goal_execution_identity(self):
+        goal = goals.create(self.conn, 'first', 'leader-crew', 'Tool spawning', 'Finite request', ['Done'])
+        goals.transition(self.conn, goal['id'], 'running')
+        execution = goals.create_execution(self.conn, goal['id'], 'leader-crew', runtime='codex')
+        tool = codex_tools.CodexTools(self.home, 'leader-crew', execution_id=execution['id'])
+        with mock.patch('crew.spawn.request_start', return_value={'ok': True, 'session_id': 'new-member'}) as request:
+            self.call('crew_spawn', {'name': 'new-member', 'task': 'Finite member task'}, tools=tool)
+        self.assertEqual(request.call_args.args[2:], ('/api/spawn', {
+            'name': 'new-member', 'task': 'Finite member task', 'role': 'member',
+            'caller_session_id': 'leader-crew', 'caller_execution_id': execution['id']}))
 
     def test_specs_use_the_app_server_wire_shape_and_are_independent_copies(self):
         specs = codex_tools.tool_specs()
@@ -196,6 +214,19 @@ class CodexToolsTests(unittest.TestCase):
         self.call("crew_doc_pin", {"id": saved["id"], "important": True}, success=False)
         self.assertEqual(path.read_text(encoding="utf-8"), "# Verified deliverable")
         self.assertFalse((self.root / "wrong-home").exists())
+
+    def test_document_tools_bind_the_host_task_and_do_not_mix_same_leaders_other_tasks(self):
+        goal = goals.create(self.conn, 'first', 'leader-crew', 'First task', 'Deliver it', ['Checked'])
+        other = goals.create(self.conn, 'first', 'leader-crew', 'Other task', 'Different work', ['Checked'])
+        goals.assign(self.conn, goal['id'], 'codex-crew', 'Write the guide')
+        execution = goals.create_execution(self.conn, goal['id'], 'codex-crew', runtime='codex')
+        tools = codex_tools.CodexTools(self.home, 'codex-crew', execution_id=execution['id'])
+        path = self.root / 'first' / 'task-guide.md'
+        path.write_text('Verified guide', encoding='utf-8')
+        saved = self.call('crew_doc_add', {'path':str(path), 'title':'Task guide', 'summary':'Checked steps'}, tools=tools)
+        self.assertEqual(self.call('crew_doc_list', tools=tools), [saved])
+        self.assertEqual(documents.list(self.conn, 'first', goal_id=other['id']), [])
+        self.assertEqual(documents.list(self.conn, 'first', goal_id=goal['id']), [saved])
 
     def test_document_filters_use_same_project_crew_leaders_and_refresh_only_bound_history(self):
         own = self.root / "first" / "own.md"; own.write_text("own", encoding="utf-8")

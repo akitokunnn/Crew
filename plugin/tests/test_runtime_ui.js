@@ -98,10 +98,14 @@ test("collected offline people can start a conversation while known external ses
   }
 });
 
-test("goal status controls composer access independently of the person's general chat history", () => {
+test("goal status controls composer access without promising discussion around a manual pause", () => {
   const {ui}=harness(),person={web_chat:false,running:true,where:"vscode"};
-  for(const status of ["paused","pausing","completed","failed","cancelled","awaiting_acceptance"]){const access=ui.chatAccess(person,{status});assert.equal(access.readonly,true);assert.match(access.readonlyReason,/总对话可讨论；继续工作先恢复\/再开一轮/);}
+  for(const status of ["paused","pausing","completed","failed","cancelled","awaiting_acceptance"]){const access=ui.chatAccess(person,{status});assert.equal(access.readonly,true);assert.match(access.readonlyReason,["paused","pausing"].includes(status)?/明确恢复/:status==="awaiting_acceptance"?/验收/:/总会话.*再开一轮/);}
   for(const status of ["queued","running","waiting_user"])assert.deepEqual(plain(ui.chatAccess(person,{status})),{readonly:false});
+});
+
+test("general chat of a person bound to a manually paused goal is readonly until explicit recovery",()=>{
+  const state=fixture();state.goals=[{id:"goal",status:"paused"}];const {ui}=harness(state),person={active_goal_id:"goal",web_chat:true,running:false,where:"offline"};assert.equal(ui.chatAccess(person,null).readonly,true);assert.match(ui.chatAccess(person,null).readonlyReason,/明确恢复/);state.goals[0].status="completed";assert.equal(ui.chatAccess(person,null).readonly,false);
 });
 
 test("existing session model menus use its own tool catalog and never expose runtime conversion", () => {

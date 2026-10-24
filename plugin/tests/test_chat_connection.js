@@ -101,17 +101,36 @@ test("a late history response from an unmounted leader cannot render into or con
   assert(h.streams.every(url=>url.includes("session_id=b")));assert.equal(h.timers.size,0);h.chat.unmount();
 });
 
-test("the composer interrupt control targets only this turn and waits for actual idle state",async()=>{
+test("the general stop waits for its process-exit receipt and then confirms the identity is stopped",async()=>{
   const h=harness(),calls=[];let acknowledge;
   const target=h.mount("a",async(url,data)=>{calls.push({url,data});if(url==="/api/session/stop")return new Promise(resolve=>{acknowledge=resolve;});return {...history(),busy:true};},{busy:true});await tick();
   assert(target.innerHTML.includes('class="chat-stop"'));const stop=target.querySelector(".chat-stop");assert.equal(stop.hidden,false);assert.equal(stop.disabled,false);
   target.querySelector("textarea").value="中断后继续编辑的草稿";target.querySelector("textarea").oninput();
-  stop.onclick();await tick();assert.equal(stop.disabled,true);assert.match(stop.textContent,/正在中断/);
+  stop.onclick();await tick();assert.equal(stop.disabled,true);assert.match(stop.textContent,/正在停止/);
   const sent=calls.find(call=>call.url==="/api/session/stop");assert.deepEqual(JSON.parse(JSON.stringify(sent.data)),{session_id:"a"});
-  acknowledge({ok:true});await tick();assert.equal(stop.disabled,true);assert.equal(target.querySelector(".send").disabled,false);
+  acknowledge({ok:true});await tick();assert.equal(stop.disabled,true);assert.equal(stop.hidden,true);assert.equal(target.querySelector(".send").disabled,false);
   h.update("a",{busy:false});assert.equal(stop.hidden,true);assert.equal(target.querySelector(".send").disabled,false);
-  assert.match(target.querySelector(".chat-interrupt-status").textContent,/本轮已停止/);assert.equal(target.querySelector("textarea").value,"中断后继续编辑的草稿");
+  assert.match(target.querySelector(".chat-interrupt-status").textContent,/Crew 执行已停止/);assert.equal(target.querySelector("textarea").value,"中断后继续编辑的草稿");
   assert(!calls.some(call=>/send|wake|archive/.test(call.url)));h.chat.unmount();
+});
+
+test("the general stop confirmation locks repeated clicks and cancellation sends no stop request",async()=>{
+  const h=harness(),calls=[];let resolve,confirmations=0;const target=h.mount("leader",async(url)=>{calls.push(url);return history();},{busy:true},{beforeStop:()=>{confirmations++;return new Promise(done=>{resolve=done;});}});await tick();h.update("leader",{busy:true});const button=target.querySelector(".chat-stop");button.onclick();button.onclick();assert.equal(confirmations,1);assert.equal(button.disabled,true);resolve(false);await tick();assert(!calls.includes("/api/session/stop"));assert.equal(button.disabled,false);h.chat.unmount();
+});
+
+test("goal interruption follows its live journal even when the person's general carrier is offline",async()=>{
+  const h=harness(),calls=[];const target=h.mount("a",async(url,data)=>{calls.push({url,data});return url==="/api/chat/interrupt"?{ok:true}:{...history(),busy:true,execution_id:"execution"};},{where:"offline",running:false},{goalId:"goal"});await tick();
+  const stop=target.querySelector(".chat-stop");assert.equal(stop.disabled,false);stop.onclick();await tick();assert.equal(stop.disabled,true);assert.equal(stop.hidden,false,"goal ACK still awaits journal exit");
+  h.connections[0].emit({seq:1,type:"status",status:"idle"});await tick();assert.equal(stop.hidden,true);assert.match(target.querySelector(".chat-interrupt-status").textContent,/本轮已停止/);assert.equal(calls[1].url,"/api/chat/interrupt");h.chat.unmount();
+});
+
+test("an accepted general send follows the backend goal receipt and preserves both scoped drafts without routing a failure",async()=>{
+  const h=harness(),calls=[],routed=[];let failed=true;
+  const goal=h.mount("leader",async()=>({...history(),execution_id:"execution"}),{},{goalId:"goal"});await tick();goal.querySelector("textarea").value="任务未发送草稿";goal.querySelector("textarea").oninput();
+  const general=h.mount("leader",async(url,data)=>{calls.push({url,data});if(url!=="/api/chat/send")return history();if(failed)throw Error("连接失败");return {accepted:true,goal_id:"goal",execution_id:"execution",delivery:"steered"};},{},{onRouted:id=>{routed.push(id);h.mount("leader",async()=>({...history(),execution_id:"execution"}),{},{goalId:id});}});await tick();
+  general.querySelector("textarea").value="开始了吗";general.querySelector("textarea").oninput();general.querySelector("form").onsubmit({preventDefault(){}});await tick();assert.deepEqual(routed,[]);assert.equal(general.querySelector("textarea").value,"开始了吗");
+  failed=false;general.querySelector("form").onsubmit({preventDefault(){}});await tick();assert.deepEqual(routed,["goal"]);assert(h.connections[h.connections.length-2].signal.aborted);assert.equal(JSON.parse(h.saved.get("crew.draft:fixture:leader")).text,"");assert.equal(JSON.parse(h.saved.get("crew.draft:fixture:leader:goal:goal")).text,"任务未发送草稿");
+  const sends=calls.filter(call=>call.url==="/api/chat/send");assert.equal(sends.length,2);assert.equal(sends[0].data.message_id,sends[1].data.message_id);assert(!("goal_id"in sends[0].data));h.chat.unmount();
 });
 
 test("interrupt failure is explicit and can be retried without discarding a draft",async()=>{
@@ -171,6 +190,12 @@ test("readonly status transitions preserve the same goal draft and reading posit
   const resumed=h.mount("member",api,{web_chat:false,where:"offline"},{goalId:"goal",readonly:false});await tick();
   assert.equal(resumed.querySelector("textarea").value,"恢复后继续编辑的草稿");assert.equal(resumed.querySelector(".chat-scroll").scrollTop,123);
   assert(calls.every(url=>url.startsWith("/api/chat/history?")));h.chat.unmount();
+});
+
+test("a detached goal scroll event cannot reset the reading position while the same chat remounts",async()=>{
+  const h=harness();const first=h.mount("leader",async()=>history(),{},{goalId:"goal"});await tick();const detached=first.querySelector(".chat-scroll");detached.scrollTop=160;detached.onscroll();
+  h.mount("member",async()=>history(),{},{goalId:"goal"});await tick();
+  let release;const restored=h.mount("leader",()=>new Promise(resolve=>{release=resolve;}),{},{goalId:"goal"});detached.scrollTop=0;detached.onscroll();release(history());await tick();assert.equal(restored.querySelector(".chat-scroll").scrollTop,160);h.chat.unmount();
 });
 
 test("opening readonly first restores a persisted draft when work is explicitly resumed",async()=>{

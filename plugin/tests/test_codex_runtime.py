@@ -164,6 +164,27 @@ class CodexRuntimeTests(unittest.TestCase):
         self.assertEqual(start["config"]["model_reasoning_effort"], "high")
         self.assertEqual(client.kwargs["env"]["CREW_SESSION_ID"], "worker")
 
+    @unittest.skipUnless(os.name == 'nt', 'Windows path casing regression')
+    def test_start_and_resume_use_disk_casing_without_changing_board_path_keys(self):
+        worktree = self.root / 'Temp' / 'WT' / 'Dashboard'
+        worktree.mkdir(parents=True)
+        with closing(store.connect(self.home)) as conn:
+            board.register_session(conn, 'worker', 'demo', worktree, worktree, 'dashboard', name='worker')
+            self.session = board.session(conn, 'worker')
+        stored = self.session['cwd']
+        actual = str(worktree.resolve())
+        self.assertNotEqual(stored, actual.replace('\\', '/'))
+        running, first = self.make_running()
+        self.assertEqual(first.kwargs['cwd'], actual)
+        self.assertEqual(first.calls[0][1]['cwd'], actual)
+        running.close()
+        self.assertTrue(running.reader_done.wait(2))
+        _, resumed = self.make_running(resume=True)
+        self.assertEqual(resumed.kwargs['cwd'], actual)
+        self.assertEqual(resumed.calls[0][1]['cwd'], actual)
+        with closing(store.connect(self.home)) as conn:
+            self.assertEqual(board.session(conn, 'worker')['cwd'], stored)
+
 
     def test_human_input_steers_active_turn_without_replacing_event_adapter(self):
         running, client = self.make_running()

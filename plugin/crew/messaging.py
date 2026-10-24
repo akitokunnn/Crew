@@ -5,6 +5,14 @@ import uuid
 from . import board
 
 
+def stopped(conn, session_id):
+    return conn.execute('SELECT 1 FROM session_stop_gates WHERE session_id=?', (session_id,)).fetchone() is not None
+
+
+def clear_stop(conn, session_id):
+    conn.execute('DELETE FROM session_stop_gates WHERE session_id=?', (session_id,))
+
+
 def _active(conn, session_id):
     session = board.session(conn, session_id)
     if not session["crew_name"] or session["status"] == "closed" or board.is_archived(conn, session_id):
@@ -63,6 +71,8 @@ def mark_delivered(conn, identity, now=None):
 @board.atomic
 def take_for_hook(conn, session_id, now=None):
     _active(conn, session_id)
+    if stopped(conn, session_id):
+        return []
     messages = pending(conn, session_id)
     lines = [text(conn, message) for message in messages]
     for message in messages:

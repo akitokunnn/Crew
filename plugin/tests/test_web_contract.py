@@ -80,7 +80,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
     def test_state_exact_shape_and_empty_limits(self):
         expected = {"project", "projects", "now", "agents_error", "notification", "leaders",
                     "members", "decisions", "candidates", "attention", "limits", "vscode_error", "models", "efforts", "channel", "themes",
-                    "runtimes", "todos", "todo_count", "goals", "ai"}
+                    "runtimes", "todos", "todo_count", "goals", "ai", "native_approvals"}
         state = self.state()
         self.assertEqual(set(state), expected)
         self.assertEqual(set(state["project"]), {"name", "root", "theme"})
@@ -90,10 +90,12 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual(state["channel"], {"unread": 0, "latest_id": 0, "digesting": False, "digest_error": None, "digest_id": None})
         self.assertEqual(state["limits"], {"claude": {"five_hour": None, "seven_day": None}, "codex": None})
         self.assertEqual(state['goals'], [])
+        self.assertEqual(state['native_approvals'], [])
         leader = state["leaders"][0]
         self.assertEqual(set(leader), {"session_id", "name", "goal", "status", "busy", "running", "web_chat",
             "cc_name", "last_seq", "last_reply_id", "read_seq", "unread", "pending", "notices_pending", "member_ids",
-            "model", "effort", "applied", "activity", "context", "where", "codex", "codex_older", "is_git_admin", "priority", "runtime", "trust", "runtime_switch"})
+            "model", "effort", "applied", "activity", "context", "where", "codex", "codex_older", "is_git_admin", "priority", "runtime", "trust", "runtime_switch", "active_goal_id", "active_execution_id"})
+        self.assertIsNone(leader['active_goal_id']); self.assertIsNone(leader['active_execution_id'])
         self.assertEqual(set(leader['runtime_switch']), {'allowed', 'reason', 'pending_handoff', 'last_switch_at'})
         self.assertFalse(leader['runtime_switch']['allowed'])
         self.assertTrue(leader['runtime_switch']['reason'])  # The fixture leader is external, not owned by Crew.
@@ -136,8 +138,9 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual(self.state()['goals'],[goal])
         self.assertEqual(self.request('/api/goals',project='demo')[:2],(200,{'goals':[goal]}))
         code, detail, _ = self.request('/api/goal',project='demo',id=goal['id'])
-        self.assertEqual(code,200,detail);self.assertEqual(set(detail),{'goal','executions','context','reports'})
+        self.assertEqual(code,200,detail);self.assertEqual(set(detail),{'goal','executions','context','reports','documents','acceptance_review'})
         self.assertEqual(detail['goal'],goal);self.assertEqual(detail['executions'],[]);self.assertEqual(detail['reports'],[])
+        self.assertEqual(detail['documents'],[]); self.assertIsNone(detail['acceptance_review'])
         self.assertEqual(len(self.processes),before)
 
     def test_project_theme_api_persists_choice_and_rejects_invalid_theme(self):
@@ -187,7 +190,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual(set(member), {"session_id", "name", "title", "leader_session_id", "group", "status",
             "status_note", "where", "task", "scope", "done_when", "branch", "worktree", "cwd", "cc_name",
             "web_chat", "progress", "codex", "codex_older", "leases", "claims", "model", "effort", "applied", "activity",
-            "context", "busy", "running", "runtime", "runtime_switch"})
+            "context", "busy", "running", "runtime", "runtime_switch", "active_goal_id", "active_execution_id"})
         self.assertEqual((member["name"], member["leader_session_id"], member["group"], member["scope"], member["done_when"]),
                          ("one", "s3", "lead", "Backend", "Tests pass"))
         self.assertEqual([row["text"] for row in member["progress"]], ["progress-" + str(i) for i in (6, 5, 4, 3, 2)])
@@ -627,7 +630,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual(code, 400)
         self.assertEqual(response, {"error": "导出类型必须是 sessions / daily / codex / requests"})
 
-    def test_stop_route_only_accepts_owned_running_busy_session(self):
+    def test_single_turn_interrupt_only_accepts_owned_running_busy_session(self):
         sid, process = self.start_leader()
         other = self.root / "other-project"
         other.mkdir()
@@ -635,9 +638,9 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         board.join(self.conn, "foreign", "other", "foreign", other, other, "main", now=NOW)
         for rejected in ("s1", "missing", "foreign"):
             with self.subTest(session_id=rejected):
-                self.assertEqual(self.request("/api/session/stop", {"session_id": rejected})[0], 400)
+                self.assertEqual(self.request("/api/chat/interrupt", {"session_id": rejected})[0], 400)
         before = len(process.stdin.getvalue().splitlines())
-        self.assertEqual(self.request("/api/session/stop", {"session_id": sid})[:2], (200, {"ok": True}))
+        self.assertEqual(self.request("/api/chat/interrupt", {"session_id": sid})[:2], (200, {"ok": True}))
         lines = process.stdin.getvalue().splitlines()
         self.assertEqual(len(lines), before + 1)
         control = json.loads(lines[-1])
@@ -645,10 +648,10 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual((control["type"], control["request"]), ("control_request", {"subtype": "interrupt"}))
         self.assertEqual(uuid.UUID(control["request_id"]).version, 4)
         self.service.chat.journal(sid).set_status("idle")
-        self.assertEqual(self.request("/api/session/stop", {"session_id": sid})[0], 409)
+        self.assertEqual(self.request("/api/chat/interrupt", {"session_id": sid})[0], 409)
         process.finish()
         self.assertTrue(self.service.chat.processes[sid].reader_done.wait(3))
-        self.assertEqual(self.request("/api/session/stop", {"session_id": sid})[0], 400)
+        self.assertEqual(self.request("/api/chat/interrupt", {"session_id": sid})[0], 400)
         self.assertEqual(len(process.stdin.getvalue().splitlines()), before + 1)
 
     def test_static_assets_have_exact_mime_and_cache_policy_and_old_routes_are_gone(self):

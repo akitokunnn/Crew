@@ -12,7 +12,7 @@ import threading
 import uuid
 from pathlib import Path
 
-from . import board, claude_limits, codex_client, hooks, install, messaging, models, runtime_switch, runtimes, settings, spawn, store
+from . import board, claude_limits, codex_client, goals, hooks, install, messaging, models, runtime_switch, runtimes, settings, spawn, store
 
 
 IMAGE_TYPES = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif"}
@@ -529,11 +529,49 @@ class Manager:
 
     def _launch(self, session, spec, resume=False):
         try:
+            self._claim_identity(session)
             return self._launch_native(session,spec,resume=resume)
         except Exception as exc:
             with closing(store.connect(self.home)) as conn:
                 runtime_switch.failed(conn,session['session_id'],exc)
             raise
+
+    def _identity_keys(self, conn, session_id):
+        return [session_id] + [row['id'] for row in conn.execute(
+            'SELECT id FROM goal_executions WHERE session_id=?', (session_id,))]
+
+    def _claim_identity(self, session):
+        """Drain other owned natives before one stable Crew identity changes execution."""
+        sid, key = session['session_id'], session.get('_storage_id', session['session_id'])
+        execution = session.get('_execution')
+        with self.lock, closing(store.connect(self.home)) as conn:
+            if messaging.stopped(conn, sid):
+                raise board.Conflict('用户已停止此会话，请明确继续')
+            if execution is None and self.goal_controller.routing_execution(conn, sid) is not None:
+                raise board.Conflict('此人员已有独立目标执行，请向当前目标发送消息')
+            if execution is not None and runtimes.get(conn, sid)['runtime'] == 'claude' and not self.running(sid):
+                owned = self.processes.get(sid)
+                for agent in self._external_agents():
+                    if agent['sessionId'] == sid and (owned is None or agent.get('pid') != owned.process.pid):
+                        raise board.Conflict('此 Crew 身份仍在外部运行，请先停止旧会话后开始目标')
+            for previous in self._identity_keys(conn, sid):
+                if previous == key or not self.running(previous):
+                    continue
+                if previous != sid:
+                    old = goals.get_execution(conn, previous)
+                    old_goal = goals.get(conn, old['goal_id'])
+                    if old['goal_id'] != (execution or {}).get('goal_id') and old_goal['status'] not in goals.TERMINAL:
+                        if old_goal['leader_session_id'] == sid:
+                            goals.request_pause(conn, old['goal_id'], manual=False, reason='该人员切换到另一个执行')
+                        else:
+                            goals.set_execution_status(conn, previous, 'paused')
+                self.journal(previous).emit('identity_handoff', session_id=sid, target_execution=key,
+                                            text='当前 Crew 身份已转交执行；保留此段历史，旧原生进程停止。')
+                self.stop_managed(previous)
+                if self.auto_candidates is not None:
+                    self.auto_candidates.pop(previous, None)
+                if previous != sid:
+                    self.goal_controller.sync(conn, goals.get_execution(conn, previous)['goal_id'])
 
     def _launch_native(self, session, spec, resume=False):
         if '_execution' in session:
@@ -586,7 +624,28 @@ class Manager:
 
     def start(self, conn, project_name, name, task=None, group=None, role="member", members=(), cwd=None,
               new_worktree=None, base=None, now=None, member_session_ids=(), model=models.INHERIT, effort=models.INHERIT, agent=None,
-              runtime=models.INHERIT):
+              runtime=models.INHERIT, caller_session_id=None, caller_execution_id=None):
+        bound_goal = None
+        if caller_execution_id is not None and caller_session_id is None:
+            raise board.BoardError('目标派生人员必须明确调用身份')
+        if caller_session_id is not None:
+            caller = board.session(conn, caller_session_id)
+            if caller['project'] != project_name or caller['role'] != 'leader' or caller['status'] == 'closed' or board.is_archived(conn, caller_session_id):
+                raise board.BoardError('只有本项目当前 leader 可以创建组员')
+            own_group = conn.execute('SELECT name FROM groups WHERE project=? AND leader_session_id=? AND closed_at IS NULL',
+                                     (project_name, caller_session_id)).fetchone()
+            if own_group is None or role != 'member' or group not in (None, own_group['name']):
+                raise board.BoardError('leader 只能在自己的当前组创建成员')
+            group = own_group['name']
+            if caller_execution_id is not None:
+                execution = goals.get_execution(conn, caller_execution_id)
+                goal = goals.get(conn, execution['goal_id'], project_name)
+                if execution['session_id'] != caller_session_id or goal['leader_session_id'] != caller_session_id:
+                    raise board.BoardError('调用执行不属于此目标的 leader')
+                gate = goals.dispatch_check(conn, goal['id'], execution_id=caller_execution_id)
+                if not gate['allowed'] or not self.running(caller_execution_id):
+                    raise board.Conflict(gate['reason'] or '调用目标执行没有在当前宿主运行')
+                bound_goal = goal['id']
         if role == "leader":
             plan = spawn.leader_plan(conn, self.home, self.plugin_root, project_name, name, members, task,
                                      cwd=cwd, new_worktree=new_worktree, base=base, now=now,
@@ -596,6 +655,7 @@ class Manager:
                                  cwd=cwd, new_worktree=new_worktree, base=base, now=now, model=model, effort=effort, runtime=runtime)
         session_id = plan["session_id"]
         spec = plan["spec"]
+        goal_receipt = {}
 
         def launch(_):
             worktree, branch = hooks.git_details(spec["cwd"])
@@ -608,6 +668,10 @@ class Manager:
             models.set(conn, session_id, spec["model"], spec["effort"], now=now)
             try:
                 with self.lock:
+                    if bound_goal is not None:
+                        goals.assign(conn, bound_goal, session_id, task, actor=caller_session_id)
+                        goal_receipt.update(self.goal_controller.send(bound_goal, session_id, task, source='crew'))
+                        return
                     plan["command"] = self._launch(session, spec)
                     text = (spec["task"] if chosen_runtime == "codex" else "Read the file " + spec["md"] +
                             " with the Read tool and follow it. It is your task brief from Crew.")
@@ -617,7 +681,7 @@ class Manager:
                 raise
 
         result = spawn._execute(conn, plan, launch, members, member_session_ids)
-        return {**result, "session_id": session_id, "role": spec["role"]}
+        return {**result, **goal_receipt, "session_id": session_id, "role": spec["role"]}
 
     def _send(self, session_id, text, display_text=None, source='human', identity=None, images=None, sender=None):
         current = self.processes[session_id]
@@ -627,6 +691,9 @@ class Manager:
         if text.strip()!='/compact' and current.execution is None:
             with closing(store.connect(self.home)) as handoff_conn:
                 text,handoff_id=runtime_switch.input_text(handoff_conn,session_id,text,identity)
+                summary = self.goal_controller.general_context(handoff_conn, session_id)
+                if summary:
+                    text = summary + '\n\n' + text
         files = []
         content = text
         if images:
@@ -694,12 +761,18 @@ class Manager:
                 if target["status"] == "closed" or board.is_archived(conn, sid):
                     conn.execute("UPDATE peer_messages SET error=? WHERE id=?", ("目标已归档或移除", message["id"]))
                     continue
-                if self.busy(sid):
+                if messaging.stopped(conn, sid):
+                    continue
+                active = self.goal_controller.routing_execution(conn, sid)
+                if self.busy(active['id'] if active else sid):
                     continue
                 sender = board.session(conn, message["sender_session_id"])
                 body = messaging.text(conn, message)
                 try:
-                    if self.running(sid):
+                    if active is not None:
+                        self.goal_controller.send(active['goal_id'], sid, body, display_text=message['body'], source='peer',
+                            identity='peer:' + message['id'], sender=sender['crew_name'])
+                    elif self.running(sid):
                         self._send(sid, body, display_text=message["body"], source="peer",
                                    identity="peer:" + message["id"], sender=sender["crew_name"])
                     else:
@@ -715,7 +788,7 @@ class Manager:
                         board.record_event(conn, "peer:delivery_wait", target["project"], sid,
                                            {"id": message["id"], "reason": str(exc)})
 
-    def send(self, session, text, source='human', identity=None, images=None, display_text=None):
+    def send(self, session, text, source='human', identity=None, images=None, display_text=None, sender=None):
         images = validate_images(images)
         session_id = session.get('_storage_id', session["session_id"])
         identity = str(uuid.uuid4()) if identity is None else identity
@@ -725,6 +798,16 @@ class Manager:
                                           'images': images, 'source': source},
                                           ensure_ascii=False, sort_keys=True).encode('utf-8')).hexdigest()
         with self.lock:
+            with closing(store.connect(self.home)) as routing_conn:
+                if '_execution' not in session:
+                    active = self.goal_controller.routing_execution(routing_conn, session['session_id'])
+                    if active is not None:
+                        return self.goal_controller.send(active['goal_id'], session['session_id'], text, images=images,
+                            identity=identity, source=source, display_text=display_text, sender=sender)
+                    if messaging.stopped(routing_conn, session['session_id']):
+                        if source not in ('human', 'qq', 'lark'):
+                            raise board.Conflict('用户已停止此会话；排队消息不能自动恢复它')
+                        messaging.clear_stop(routing_conn, session['session_id'])
             if self.closed:
                 raise board.BoardError("网页服务正在关闭")
             if session["status"] == "closed":
@@ -754,7 +837,7 @@ class Manager:
             journal.emit('input_delivery', message_id=identity, digest=digest, status='submitted', delivery=delivery)
             try:
                 identity = self._send(session_id, text, display_text=display_text,
-                                      source=source, identity=identity, images=images)
+                                      source=source, identity=identity, images=images, sender=sender)
             except (codex_client.RpcError, board.BoardError) as exc:
                 journal.emit('input_delivery', message_id=identity, digest=digest, status='rejected',
                              delivery=delivery, error=type(exc).__name__, detail=str(exc))
@@ -822,15 +905,13 @@ class Manager:
         return spec, True
 
     def _resume(self, conn, session, text, sender=None, now=None, identity=None, source="crew", display_text=None):
-        # _launch(resume=True) runs the fresh liveness check right before starting the process.
-        spec, created_spawn = self._resume_spec(conn, session, now=now)
+        previous_spawn = session['spawn_id']
         journal = self.journal(session["session_id"])
         journal.path.parent.mkdir(parents=True, exist_ok=True)
         journal.path.touch(exist_ok=True)
-        self._launch(session, spec, resume=True)
         board.update_cc_name(conn, session["session_id"], session["crew_name"], now=now)
-        self._send(session["session_id"], text, source=source, sender=sender, identity=identity, display_text=display_text)
-        return created_spawn
+        self.send(session, text, source=source, sender=sender, identity=identity, display_text=display_text)
+        return previous_spawn is None and session['spawn_id'] is not None
 
     def wake(self, conn, target, text, caller_session_id=None, now=None):
         with self.lock:
@@ -908,7 +989,7 @@ class Manager:
                 message += ('\n\n回复 leader 用 crew send ' + reply_to['crew_name'] + ' "<回复>"；Codex 也可用 crew_send_message。' if peer else
                             "\n\n回复 leader 用 SendMessage，地址「" + reply_to["cc_name"] + "」。")
             sender = reply_to["crew_name"] if reply_to is not None else board.HUMAN
-            created_spawn = self._resume(conn, target, message, sender=sender, now=now)
+            created_spawn = self._resume(conn, target, message, sender=sender, now=now, source='human' if human else 'crew')
             board.record_event(conn, "session:wake", target["project"], board.HUMAN if human else caller_session_id,
                                {"target": target["session_id"], "name": target["crew_name"], "created_spawn": created_spawn}, now)
             return {"ok": True, "session_id": target["session_id"], "name": target["crew_name"], "address": target["crew_name"]}
@@ -940,6 +1021,10 @@ class Manager:
                     reason = "会话已收"
                 elif session["project"] not in projects:
                     reason = "所在项目未启用"
+                elif messaging.stopped(conn, session_id):
+                    reason = '用户已停止会话'
+                elif self.goal_controller.routing_execution(conn, session_id) is not None:
+                    reason = '当前 Crew 身份已由目标接管'
                 elif self.running(session_id):
                     reason = "会话已由网页继续运行"
                 elif session_id in live:
@@ -1054,6 +1139,78 @@ class Manager:
             current.stderr_reader.join(timeout=10)
             if current.stderr_reader.is_alive():
                 raise board.BoardError('托管会话进程已退出，但错误输出尚未读完')
+
+    def stop_identity(self, session_id, caller_session_id=None):
+        """Persist a stop gate, then confirm every owned native for this person has exited."""
+        actor = board.HUMAN if caller_session_id is None else caller_session_id
+        with self.lock, closing(store.connect(self.home)) as conn:
+            target = board.session(conn, session_id)
+            if actor != board.HUMAN:
+                caller = board.session(conn, actor)
+                leader = board.leader_of(conn, session_id)
+                if caller['project'] != target['project'] or (actor != session_id and
+                        (leader is None or leader['session_id'] != actor or caller['role'] != 'leader')):
+                    raise board.BoardError('只能停止自己或自己组内的成员')
+            conn.execute('INSERT INTO session_stop_gates(session_id,stopped_at,stopped_by) VALUES(?,?,?) '
+                         'ON CONFLICT(session_id) DO UPDATE SET stopped_at=excluded.stopped_at,stopped_by=excluded.stopped_by',
+                         (session_id, store.now_iso(), actor))
+            keys = self._identity_keys(conn, session_id)
+            owned_running = {key for key in keys if self.running(key)}
+            paused = set()
+            for key in keys:
+                if key != session_id:
+                    execution = goals.get_execution(conn, key)
+                    goal = goals.get(conn, execution['goal_id'])
+                    if goal['status'] not in goals.TERMINAL:
+                        if goal['leader_session_id'] == session_id:
+                            goals.request_pause(conn, goal['id'], manual=True, actor=actor, reason='明确停止此人员')
+                            paused.add(goal['id'])
+                        elif execution['status'] not in goals.TERMINAL:
+                            goals.set_execution_status(conn, key, 'paused')
+                if self.running(key) and self.busy(key):
+                    try:
+                        self.interrupt(key)
+                    except (board.BoardError, codex_client.CodexError, OSError) as exc:
+                        self.journal(key).emit('error', text='原生中断未确认，继续关闭托管进程：' + str(exc))
+                self.stop_managed(key)
+                if self.auto_candidates is not None:
+                    self.auto_candidates.pop(key, None)
+            external_claude = set()
+            for key in keys:
+                if key in owned_running:
+                    continue  # Only natives owned at stop entry were confirmed exited above.
+                if key == session_id:
+                    mapping = runtimes.get(conn, key)
+                    bindings = list(conn.execute('SELECT runtime,native_id FROM session_runtime_bindings WHERE session_id=?', (key,)))
+                    if mapping['runtime'] == 'claude':
+                        external_claude.add(mapping['native_id'] or key)
+                else:
+                    execution = goals.get_execution(conn, key)
+                    mapping, bindings = execution, execution['bindings']
+                external_claude.update(binding['native_id'] for binding in bindings
+                                       if binding['runtime'] == 'claude' and binding['native_id'])
+                if mapping['runtime'] == 'codex' or any(binding['runtime'] == 'codex' for binding in bindings):
+                    from .codex_runtime import RuntimeLease
+                    try:
+                        lease = RuntimeLease(self.home, key).acquire()
+                        lease.release()
+                    except board.Conflict as exc:
+                        raise board.Conflict('Codex 执行仍由外部宿主持有或原生进程仍存活，请到原工具停止后重试') from exc
+                    except (OSError, ValueError) as exc:
+                        raise board.Conflict('无法确认外部 Codex 执行已退出，请到原工具确认停止') from exc
+            if external_claude:
+                try:
+                    agents = self._external_agents()
+                except board.Conflict as exc:
+                    raise board.Conflict('无法确认外部 Claude 执行已退出，请到原工具确认停止') from exc
+                if any(agent['sessionId'] in external_claude for agent in agents):
+                    raise board.Conflict('Claude 会话仍在外部运行，Crew 没有持有该进程，请到原工具停止后重试')
+            for goal_id in paused:
+                self.goal_controller.sync(conn, goal_id)
+            self.journal(session_id).emit('manual_stop', stopped_by=actor, text='已停止此人员的所有托管执行；排队消息不能自动恢复。')
+            board.record_event(conn, 'session:stopped', target['project'], session_id, {'actor': actor, 'executions': keys[1:]})
+            return {'ok': True, 'session_id': session_id, 'stopped': True, 'running': False,
+                    'execution_ids': keys[1:]}
 
     def detach(self, session_id):
         """Release an idle session to VS Code by letting its own process finish."""

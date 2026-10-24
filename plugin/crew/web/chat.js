@@ -261,15 +261,16 @@
     if (context.readonly) return;
     const hasContent = context.input.value.trim().length > 0 || context.cache.images.length > 0;
     context.send.disabled = context.loading || context.cache.sending || !hasContent;
-    const external = context.session.where === "vscode";
+    const external = context.goalId == null && context.session.where === "vscode";
     context.hint.textContent = context.cache.sending ? "正在发送…" : external ? "会话仍在原工具中；退出并交给 Crew 后才能接话" : context.busy ? `${context.session.name} 正在工作，可直接补充方向` : "Enter 发送 · Shift+Enter 换行";
     context.send.title = context.busy ? "工作中插话" : "发送";
-    const stopReason = external ? "回复在 VS Code 或终端中运行，请在原工具中断。" : context.session.where !== "bg" ? "正在等待 Crew 托管会话，稍后可中断。" : "";
+    const stopReason = context.goalId != null ? "" : external ? "回复在 VS Code 或终端中运行，请在原工具中断。" : context.session.where !== "bg" && !context.session.running ? "正在等待 Crew 托管会话，稍后可停止。" : "";
     context.stop.hidden = !context.busy;
-    context.stop.disabled = !context.busy || context.interrupting || Boolean(stopReason);
-    context.stop.textContent = context.interrupting ? "正在中断…" : "中断";
-    context.stop.title = stopReason || "只中断当前回复，保留会话和草稿";
-    context.stopStatus.textContent = context.interruptError || (context.interrupting ? "正在中断，等待本轮停止确认…" : context.busy && stopReason ? stopReason : context.interruptConfirmed ? "本轮已停止，会话和草稿已保留。" : "");
+    context.stop.disabled = !context.busy || context.interrupting || context.confirmingStop || Boolean(stopReason);
+    context.stop.textContent = context.confirmingStop ? "等待确认…" : context.interrupting ? "正在停止…" : context.goalId == null ? "停止此人" : "中断本轮";
+    context.stop.setAttribute("aria-label", context.goalId == null ? "停止此身份的 Crew 执行" : "中断当前目标的回复");
+    context.stop.title = stopReason || (context.goalId == null ? "停止此身份的 Crew 执行，保留会话和草稿" : "只中断当前目标的回复，保留会话和草稿");
+    context.stopStatus.textContent = context.interruptError || (context.interrupting ? "正在停止，等待执行退出确认…" : context.busy && stopReason ? stopReason : context.interruptConfirmed ? context.goalId == null ? "此身份的 Crew 执行已停止，记录和草稿已保留。" : "本轮已停止，会话和草稿已保留。" : "");
     context.stopStatus.hidden = !context.stopStatus.textContent;
     context.stopStatus.classList.toggle("failed", Boolean(context.interruptError));
     context.deliveryStatus.textContent = context.cache.deliveryStatus || "";
@@ -277,12 +278,15 @@
   }
   async function interrupt(context) {
     if (!current(context) || context.stop.disabled) return;
+    if (context.goalId == null && context.beforeStop) { context.confirmingStop = true; composerState(context); let allowed; try { allowed = await context.beforeStop(); } finally { context.confirmingStop = false; if (current(context)) composerState(context); } if (!allowed) return; }
+    if (!current(context)) return;
     context.interrupting = true; context.interruptError = ""; context.interruptConfirmed = false;
     composerState(context);
     try {
       const result = await context.api(context.goalId == null ? "/api/session/stop" : "/api/chat/interrupt", {session_id:context.session.session_id, ...goalPayload(context)});
       if (!result.ok) throw new Error("中断请求未被确认，请重试。");
-      // The API acknowledges the request. Only a subsequent idle state confirms it stopped.
+      if (context.goalId == null && current(context)) { context.cache.pendingSendSeq = null; context.busy = false; context.interrupting = false; context.interruptConfirmed = true; composerState(context); }
+      // Goal interruption is acknowledged before exit; its journal confirms the actual stop.
     } catch (error) {
       if (!current(context) || context.interruptConfirmed) return;
       context.interrupting = false;
@@ -588,6 +592,7 @@
         persistDraft(context);
       }
       const view = visibleDraft(context);
+      if (view && current(context) && context.goalId == null && result.goal_id != null) context.onRouted?.(result.goal_id);
       if (view && context.goalId != null && result.execution_id != null && result.execution_id !== view.executionId) {
         // First send and context rotation create a different journal. A history read never creates one.
         view.stream?.abort(); view.connectionGeneration++; clearTimeout(view.reconnectTimer); clearTimeout(view.readTimer);
@@ -629,7 +634,7 @@
     context.scroll = options.host.querySelector(".chat-scroll"); context.inner = options.host.querySelector(".chat-inner");
     context.jump = options.host.querySelector(".jump"); context.error = options.host.querySelector(".chat-connection-error");
     context.jump.onclick = () => { context.scroll.scrollTop = context.scroll.scrollHeight; context.jump.classList.remove("show"); scheduleRead(context); };
-    context.scroll.onscroll = () => { context.cache.scrollTop = context.scroll.scrollTop; context.jump.classList.toggle("show", !atBottom(context)); scheduleRead(context); };
+    context.scroll.onscroll = () => { if (!current(context)) return; context.cache.scrollTop = context.scroll.scrollTop; context.jump.classList.toggle("show", !atBottom(context)); scheduleRead(context); };
     context.inner.onclick = event => {
       const button = event.target.closest("[data-chat-fold]");
       if (!button) return;

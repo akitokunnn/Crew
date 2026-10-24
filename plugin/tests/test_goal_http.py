@@ -1,12 +1,13 @@
 """Goal boundaries exercised through HTTP and owned stream processes."""
 import json
+import os
 import threading
 import unittest
 from urllib.parse import urlencode
 
 import tests
 from unittest import mock
-from crew import board, goals, hooks, store, web
+from crew import board, chat, codex_runtime, goals, hooks, messaging, runtimes, store, web
 import test_chat_http as chat_helpers
 from test_shell import ShellFixture, PLUGIN, NOW
 
@@ -37,6 +38,275 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
 
     def send_goal(self, goal, text='Begin', **data):
         return self.request('/api/chat/send?project=demo', {'session_id': 's3', 'goal_id': goal['id'], 'text': text, **data})
+
+    def test_starting_goal_retires_general_native_before_launching_one_goal_native(self):
+        code, result, _ = self.request('/api/chat/send?project=demo', {
+            'session_id': 's3', 'text': 'General discussion before a concrete goal.', 'message_id': 'general-before-goal'})
+        self.assertEqual(code, 200, result)
+        old = self.processes[-1]
+        goal = self.goal()
+        code, result, _ = self.request('/api/goals/action?project=demo', {
+            'goal_id': goal['id'], 'action': 'start', 'version': goal['version']})
+        self.assertEqual(code, 200, result)
+        self.assertIsNotNone(old.poll(), 'One Crew identity cannot retain an independent general controller')
+        self.assertEqual(sum(process.poll() is None for process in self.processes), 1)
+        self.assertIn('General discussion before a concrete goal.', self.server.service.chat.path('s3').read_text(encoding='utf-8'))
+        execution = self.conn.execute('SELECT id FROM goal_executions WHERE goal_id=?', (goal['id'],)).fetchone()[0]
+        self.assertTrue(self.server.service.chat.running(execution))
+
+    def test_stable_identity_user_and_peer_messages_reach_live_goal_not_general_history(self):
+        goal = self.goal()
+        code, receipt, _ = self.send_goal(goal, message_id='start-routing')
+        self.assertEqual(code, 200, receipt)
+        execution, process = receipt['execution_id'], self.processes[-1]
+        self.finish_turn(execution, process)
+        code, reply, _ = self.request('/api/chat/send?project=demo', {
+            'session_id': 's3', 'text': 'What progress has this goal made?', 'message_id': 'unscoped-status'})
+        self.assertEqual(code, 200, reply)
+        self.assertEqual(reply.get('execution_id'), execution)
+        self.assertEqual(reply.get('goal_id'), goal['id'])
+        self.assertEqual(len(self.processes), 1)
+        self.finish_turn(execution, process)
+        manager = self.server.service.chat
+        peer = manager.send_message('s1', 's3', 'Measured result from the member.', message_id='unscoped-peer')
+        manager.deliver_messages()
+        messages = [event for event in manager.journal(execution).events if event.get('type') == 'message']
+        self.assertTrue(any(event.get('id') == 'peer:' + peer['message_id'] for event in messages))
+        self.assertEqual(len(self.processes), 1)
+        self.assertFalse(manager.running('s3'))
+
+    def test_unscoped_human_answer_resumes_waiting_goal_on_the_same_execution(self):
+        goal = self.goal()
+        _, receipt, _ = self.send_goal(goal, message_id='waiting-owner')
+        process = self.processes[-1]
+        self.finish_turn(receipt['execution_id'], process)
+        goals.transition(self.conn, goal['id'], 'waiting_user')
+        code, answered, _ = self.request('/api/chat/send?project=demo', {
+            'session_id': 's3', 'text': 'Use the supplied short reply recording.', 'message_id': 'unscoped-human-answer'})
+        self.assertEqual(code, 200, answered)
+        self.assertEqual(answered.get('goal_id'), goal['id'])
+        self.assertEqual(answered.get('execution_id'), receipt['execution_id'])
+        self.assertEqual(goals.get(self.conn, goal['id'])['status'], 'running')
+        self.assertEqual(len(self.processes), 1)
+        self.assertFalse(self.server.service.chat.running('s3'))
+
+    def test_unscoped_human_message_resumes_only_the_explicitly_stopped_goal_member(self):
+        goal = self.goal()
+        _, leader, _ = self.send_goal(goal, message_id='member-resume-leader')
+        code, member, _ = self.request('/api/spawn?project=demo', {
+            'name': 'resumable-member', 'task': 'Inspect the assigned sample.',
+            'caller_session_id': 's3', 'caller_execution_id': leader['execution_id']})
+        self.assertEqual(code, 200, member)
+        manager = self.server.service.chat
+        manager.send_message('s3', member['session_id'], 'Queued work must not restart a stopped member.', message_id='waiting-for-human')
+        manager.stop_identity(member['session_id'], caller_session_id='s3')
+        manager.deliver_messages()
+        self.assertEqual(goals.get(self.conn, goal['id'])['status'], 'running')
+        self.assertTrue(messaging.stopped(self.conn, member['session_id']))
+        self.assertEqual(len(self.processes), 2)
+        self.assertFalse(manager.running(member['execution_id']))
+        code, continued, _ = self.request('/api/chat/send?project=demo', {
+            'session_id': member['session_id'], 'text': 'Explicit user continuation of the same sample.',
+            'message_id': 'human-member-resume'})
+        self.assertEqual(code, 200, continued)
+        self.assertEqual(continued.get('goal_id'), goal['id'])
+        self.assertEqual(continued.get('execution_id'), member['execution_id'])
+        self.assertFalse(messaging.stopped(self.conn, member['session_id']))
+        self.assertTrue(manager.running(member['execution_id']))
+        self.assertFalse(manager.running(member['session_id']))
+
+    def test_explicit_member_stop_is_confirmed_and_pending_mail_cannot_restart_it(self):
+        code, result, _ = self.request('/api/chat/send?project=demo', {
+            'session_id': 's1', 'text': 'Work until explicitly stopped.', 'message_id': 'member-work'})
+        self.assertEqual(code, 200, result)
+        process = self.processes[-1]
+        manager = self.server.service.chat
+        manager.send_message('s3', 's1', 'Another queued task.', message_id='queued-before-stop')
+        stopped = manager.stop_identity('s1', caller_session_id='s3')
+        self.assertTrue(stopped['stopped'])
+        self.assertFalse(stopped['running'])
+        self.assertIsNotNone(process.poll())
+        self.assertTrue(manager.processes['s1'].reader_done.is_set())
+        manager.deliver_messages()
+        manager.auto_resume(self.conn, [], now=NOW)
+        self.assertEqual(len(self.processes), 1)
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM peer_messages WHERE delivered_at IS NULL').fetchone()[0], 1)
+
+    def test_stopped_goal_cannot_be_resumed_through_general_chat(self):
+        goal = self.goal()
+        _, receipt, _ = self.send_goal(goal, message_id='goal-to-stop')
+        manager = self.server.service.chat
+        result = manager.stop_identity('s3')
+        self.assertTrue(result['stopped'])
+        current = goals.get(self.conn, goal['id'])
+        self.assertEqual(current['status'], 'paused')
+        self.assertTrue(current['manual_pause'])
+        code, value, _ = self.request('/api/chat/send?project=demo', {
+            'session_id': 's3', 'text': 'Continue?', 'message_id': 'general-must-not-bypass-pause'})
+        self.assertEqual(code, 409, value)
+        self.assertEqual(len(self.processes), 1)
+        self.assertFalse(manager.running(receipt['execution_id']))
+        current = goals.get(self.conn, goal['id'])
+        code, resumed, _ = self.request('/api/goals/action?project=demo', {
+            'goal_id': goal['id'], 'action': 'resume', 'version': current['version']})
+        self.assertEqual(code, 200, resumed)
+        self.assertFalse(messaging.stopped(self.conn, 's3'))
+        self.assertEqual(sum(process.poll() is None for process in self.processes), 1)
+
+    def test_explicit_human_cli_goal_resume_clears_stop_without_starting_general(self):
+        goal = self.goal()
+        _, receipt, _ = self.send_goal(goal, message_id='goal-cli-stop')
+        manager = self.server.service.chat
+        manager.stop_identity('s3')
+        with mock.patch.dict(os.environ, {'CREW_SESSION_ID': '', 'CLAUDE_CODE_SESSION_ID': '', 'CREW_EXECUTION_ID': ''}):
+            code, _, error = self.run_cli(['goal', 'resume', goal['id']])
+        self.assertEqual(code, 0, error)
+        self.assertFalse(messaging.stopped(self.conn, 's3'))
+        self.assertTrue(manager.running(receipt['execution_id']))
+        self.assertFalse(manager.running('s3'))
+
+    def test_goal_notices_wait_for_idle_route_to_goal_and_respect_manual_stop(self):
+        goal = self.goal()
+        _, receipt, _ = self.send_goal(goal, message_id='goal-notice-routing')
+        manager, process = self.server.service.chat, self.processes[-1]
+        board.queue_leader_notice(self.conn, 's3', 'Verified result from the member.', 'crew')
+        before = process.stdin.getvalue()
+        self.server.service.deliver_notices()
+        self.assertEqual(process.stdin.getvalue(), before)
+        self.assertEqual(len(board.pending_notices(self.conn, 's3')), 1)
+        self.finish_turn(receipt['execution_id'], process)
+        self.server.service.deliver_notices()
+        self.assertIn('Verified result from the member.', process.stdin.getvalue())
+        self.assertEqual(board.pending_notices(self.conn, 's3'), [])
+        self.assertEqual(len(self.processes), 1)
+        self.assertFalse(manager.running('s3'))
+        manager.stop_identity('s3')
+        board.queue_leader_notice(self.conn, 's3', 'A queued notice must not revive stopped work.', 'crew')
+        self.server.service.deliver_notices()
+        self.assertEqual(len(board.pending_notices(self.conn, 's3')), 1)
+        self.assertEqual(len(self.processes), 1)
+        self.assertFalse(manager.running(receipt['execution_id']))
+
+    def test_goal_spawn_binds_member_to_the_explicit_running_caller_execution(self):
+        goal = self.goal()
+        _, leader, _ = self.send_goal(goal, message_id='leader-spawning')
+        code, result, _ = self.request('/api/spawn?project=demo', {
+            'name': 'goal-worker', 'task': 'Measure the assigned sample.',
+            'caller_session_id': 's3', 'caller_execution_id': leader['execution_id']})
+        self.assertEqual(code, 200, result)
+        self.assertEqual(result.get('goal_id'), goal['id'])
+        member = board.session(self.conn, result['session_id'])
+        self.assertEqual(member['group_name'], 'lead')
+        self.assertEqual(board.leader_of(self.conn, member['session_id'])['session_id'], 's3')
+        self.assertEqual(goals.get_execution(self.conn, result['execution_id'])['session_id'], member['session_id'])
+        self.assertFalse(self.server.service.chat.running(member['session_id']))
+        self.assertEqual(self.processes[-1].options['env']['CREW_GOAL_ID'], goal['id'])
+        self.assertEqual(self.processes[-1].options['env']['CREW_EXECUTION_ID'], result['execution_id'])
+        before = len(self.processes)
+        code, denied, _ = self.request('/api/spawn?project=demo', {
+            'name': 'spoofed-worker', 'task': 'Do not create this member.',
+            'caller_session_id': 's1', 'caller_execution_id': leader['execution_id']})
+        self.assertEqual(code, 400, denied)
+        self.assertEqual(len(self.processes), before)
+
+    def test_stop_gate_survives_host_recreation_and_explicit_member_message_resumes(self):
+        self.request('/api/chat/send?project=demo', {'session_id': 's1', 'text': 'Member task', 'message_id': 'initial'})
+        manager = self.server.service.chat
+        manager.send_message('s3', 's1', 'Queued task', message_id='pending-after-restart')
+        code, _, error = self.run_cli(['--session', 's3', 'stop', 's1'])
+        self.assertEqual(code, 0, error)
+        self.assertTrue(messaging.stopped(self.conn, 's1'))
+        recreated = chat.Manager(self.home, PLUGIN, lambda: [], self.process_factory)
+        try:
+            recreated.deliver_messages()
+            self.assertEqual(len(self.processes), 1)
+        finally:
+            recreated.close()
+        code, resumed, _ = self.request('/api/chat/send?project=demo', {
+            'session_id': 's1', 'text': 'Explicit user continuation.', 'message_id': 'human-resume'})
+        self.assertEqual(code, 200, resumed)
+        self.assertFalse(messaging.stopped(self.conn, 's1'))
+        self.assertEqual(sum(process.poll() is None for process in self.processes), 1)
+
+    def test_cli_goal_spawn_forwards_the_real_caller_execution_and_keeps_leader(self):
+        goal = self.goal()
+        _, leader, _ = self.send_goal(goal, message_id='cli-leader-spawning')
+        with mock.patch.dict(os.environ, {'CREW_SESSION_ID': 's3', 'CREW_EXECUTION_ID': leader['execution_id']}):
+            code, _, error = self.run_cli(['spawn', '--name', 'cli-goal-worker', '--task', 'CLI assigned sample'])
+        self.assertEqual(code, 0, error)
+        member = board.named_session(self.conn, 'demo', 'cli-goal-worker')
+        execution = self.conn.execute('SELECT id FROM goal_executions WHERE goal_id=? AND session_id=?',
+                                      (goal['id'], member['session_id'])).fetchone()
+        self.assertIsNotNone(execution)
+        self.assertEqual(self.processes[-1].options['env']['CREW_EXECUTION_ID'], execution['id'])
+        code, output, error = self.run_cli(['who', 'cli-goal-worker'])
+        self.assertEqual(code, 0, error)
+        self.assertIn('leader lead', output)
+
+    def test_member_cannot_stop_leader_or_other_group_but_can_stop_self(self):
+        goal = self.goal()
+        _, leader, _ = self.send_goal(goal, message_id='stop-permission-leader')
+        code, denied, _ = self.request('/api/session/stop?project=demo', {
+            'session_id': 's3', 'caller_session_id': 's1'})
+        self.assertEqual(code, 400, denied)
+        self.assertFalse(messaging.stopped(self.conn, 's3'))
+        self.assertTrue(self.server.service.chat.running(leader['execution_id']))
+        code, denied, _ = self.request('/api/session/stop?project=demo', {
+            'session_id': 's1', 'caller_session_id': 's2'})
+        self.assertEqual(code, 400, denied)
+        code, stopped, _ = self.request('/api/session/stop?project=demo', {
+            'session_id': 's1', 'caller_session_id': 's1'})
+        self.assertEqual(code, 200, stopped)
+        self.assertTrue(stopped['stopped'])
+
+    def test_external_claude_stop_cannot_claim_exit_but_keeps_the_stop_gate(self):
+        manager = self.server.service.chat
+        manager.agents_provider.return_value = [{'sessionId': 's1', 'name': 'external-one', 'pid': 123456}]
+        code, refused, _ = self.request('/api/session/stop?project=demo', {'session_id': 's1'})
+        self.assertEqual(code, 409, refused)
+        self.assertIn('外部', refused['error'])
+        self.assertTrue(messaging.stopped(self.conn, 's1'))
+        self.assertEqual(self.processes, [])
+        manager.agents_provider.return_value = []
+        for _ in range(2):
+            code, stopped, _ = self.request('/api/session/stop?project=demo', {'session_id': 's1'})
+            self.assertEqual(code, 200, stopped)
+            self.assertFalse(stopped['running'])
+        self.assertEqual(self.processes, [])
+
+    def test_dead_slot_does_not_hide_the_same_native_reopened_externally(self):
+        code, result, _ = self.request('/api/chat/send?project=demo', {
+            'session_id': 's1', 'text': 'An owned conversation later opened externally.', 'message_id': 'before-detach'})
+        self.assertEqual(code, 200, result)
+        manager, process = self.server.service.chat, self.processes[-1]
+        self.finish_turn('s1', process)
+        manager.detach('s1')
+        self.assertIsNotNone(manager.processes.get('s1'))
+        self.assertIsNotNone(process.poll())
+        manager.agents_provider.return_value = [{'sessionId': 's1', 'name': 'external-one', 'pid': 123456}]
+        code, refused, _ = self.request('/api/session/stop?project=demo', {'session_id': 's1'})
+        self.assertEqual(code, 409, refused)
+        self.assertIn('外部', refused['error'])
+        self.assertTrue(messaging.stopped(self.conn, 's1'))
+
+    def test_unowned_codex_lease_or_unknown_owner_cannot_be_reported_stopped(self):
+        runtimes.set(self.conn, 's2', 'codex', 'native-other-host')
+        lease = codex_runtime.RuntimeLease(self.home, 's2').acquire()
+        try:
+            code, refused, _ = self.request('/api/session/stop?project=demo', {'session_id': 's2'})
+            self.assertEqual(code, 409, refused)
+            self.assertTrue(messaging.stopped(self.conn, 's2'))
+            self.assertEqual(self.processes, [])
+        finally:
+            lease.release()
+        with mock.patch('crew.codex_runtime.RuntimeLease.acquire', side_effect=OSError('native identity unavailable')):
+            code, refused, _ = self.request('/api/session/stop?project=demo', {'session_id': 's2'})
+        self.assertEqual(code, 409, refused)
+        self.assertIn('无法确认', refused['error'])
+        code, stopped, _ = self.request('/api/session/stop?project=demo', {'session_id': 's2'})
+        self.assertEqual(code, 200, stopped)
+        self.assertTrue(stopped['stopped'])
+        self.assertEqual(self.processes, [])
 
     def test_start_button_launches_new_goal_once_without_chat_send(self):
         goal = self.goal()
@@ -205,6 +475,70 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
             'examples': [{'kind': 'actual', 'input': 'A pauses then B speaks', 'expected': 'B', 'actual': 'B', 'conclusion': 'Passed'}],
             'artifacts': ['sample.json'], 'tradeoffs': [], 'follow_up': 'User can replay sample.',
             'investment': {'usage': None, 'roles': []}}
+
+    def awaiting_acceptance(self):
+        goal = self.goal()
+        code, receipt, _ = self.send_goal(goal)
+        self.assertEqual(code, 200, receipt)
+        data = self.report()
+        data['outcome'] = 'awaiting_acceptance'
+        code, finished, _ = self.request('/api/goals/agent?project=demo', {'actor_session_id': 's3',
+            'execution_id': receipt['execution_id'], 'action': 'finish', 'data': {'report': data}})
+        self.assertEqual(code, 200, finished)
+        process = self.processes[-1]
+        self.finish_turn(receipt['execution_id'], process)
+        self.server.service.chat.goal_controller.sync(self.conn, goal['id'])
+        current = goals.get(self.conn, goal['id'])
+        self.assertEqual(current['status'], 'awaiting_acceptance')
+        return current, goals.get_report(self.conn, finished['report_id']), receipt['execution_id'], process
+
+    def test_human_acceptance_closes_idle_native_and_preserves_report_bytes(self):
+        goal, report, execution_id, process = self.awaiting_acceptance()
+        original = tuple(self.conn.execute('SELECT data_json,html,outcome FROM goal_reports WHERE id=?', (report['id'],)).fetchone())
+        code, result, _ = self.request('/api/goals/action?project=demo', {
+            'goal_id': goal['id'], 'action': 'accept', 'version': goal['version'], 'report_id': report['id']})
+        self.assertEqual(code, 200, result)
+        self.assertEqual(result['goal']['status'], 'completed')
+        self.assertIsNotNone(process.poll())
+        self.assertTrue(self.server.service.chat.processes[execution_id].reader_done.is_set())
+        code, detail, _ = self.request('/api/goal?' + urlencode({'project': 'demo', 'id': goal['id']}))
+        self.assertEqual(code, 200, detail)
+        self.assertEqual(detail['acceptance_review']['report_id'], report['id'])
+        self.assertTrue(detail['acceptance_review']['accepted'])
+        self.assertEqual(tuple(self.conn.execute('SELECT data_json,html,outcome FROM goal_reports WHERE id=?', (report['id'],)).fetchone()), original)
+
+    def test_human_rejection_fails_the_round_then_can_explicitly_reopen(self):
+        goal, report, _, process = self.awaiting_acceptance()
+        body = {'goal_id': goal['id'], 'action': 'reject', 'version': goal['version'], 'report_id': report['id']}
+        code, result, _ = self.request('/api/goals/action?project=demo', body)
+        self.assertEqual(code, 400, result)
+        self.assertIsNone(process.poll(), 'Invalid decisions must not close native execution')
+        code, result, _ = self.request('/api/goals/action?project=demo', {**body, 'note': 'The delivered page still fails the replay.'})
+        self.assertEqual(code, 200, result)
+        self.assertEqual(result['goal']['status'], 'failed')
+        self.assertFalse(result['acceptance_review']['accepted'])
+        code, reopened, _ = self.request('/api/goals/action?project=demo', {
+            'goal_id': goal['id'], 'action': 'reopen', 'version': result['goal']['version'], 'reason': 'Fix the observed replay failure.'})
+        self.assertEqual(code, 200, reopened)
+        self.assertEqual(reopened['goal']['current_round'], 2)
+        self.assertEqual(len(self.processes), 1)
+
+    def test_acceptance_rejects_ai_stale_ui_and_a_native_still_actually_busy(self):
+        goal, report, execution_id, process = self.awaiting_acceptance()
+        body = {'goal_id': goal['id'], 'action': 'accept', 'version': goal['version'], 'report_id': report['id']}
+        code, denied, _ = self.request('/api/goals/agent?project=demo', {
+            'actor_session_id': 's3', 'execution_id': execution_id, 'action': 'accept', 'data': {'goal_id': goal['id']}})
+        self.assertEqual(code, 400, denied)
+        code, denied, _ = self.request('/api/goals/action?project=demo', {**body, 'actor_session_id': 's3'})
+        self.assertEqual(code, 400, denied)
+        code, denied, _ = self.request('/api/goals/action?project=demo', {**body, 'version': goal['version'] - 1})
+        self.assertEqual(code, 409, denied)
+        self.assertIsNone(process.poll())
+        self.server.service.chat.journal(execution_id).set_status('working')
+        code, denied, _ = self.request('/api/goals/action?project=demo', body)
+        self.assertEqual(code, 409, denied)
+        self.assertIsNone(process.poll())
+        self.assertEqual(goals.get(self.conn, goal['id'])['status'], 'awaiting_acceptance')
 
     def test_finish_report_is_visible_but_cannot_claim_completion_before_native_result(self):
         goal = self.goal()

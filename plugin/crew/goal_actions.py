@@ -133,7 +133,8 @@ def dispatch(home, actor_session_id, execution_id, action, data, controller=None
                     raise board.Conflict('先启动目标；分配成员本身不隐式开工')
             assigned = goals.assign(conn, goal_id, person['session_id'], data.get('task'), actor=actor_session_id)
             if data.get('start') is True:
-                receipt = controller.send(goal_id, person['session_id'], data['task'], source='crew')
+                receipt = controller.send(goal_id, person['session_id'], data['task'],
+                                          source='human' if actor_session_id == board.HUMAN else 'crew')
                 return {'goal': assigned, 'receipt': receipt}
             return assigned
         if action == 'start':
@@ -145,7 +146,8 @@ def dispatch(home, actor_session_id, execution_id, action, data, controller=None
                 raise board.Conflict(gate['reason'])
             person = _person(conn, project, data.get('session_id') or data.get('to') or goal['leader_session_id'])
             goals._member(conn, goal, person['session_id'])
-            return controller.send(goal_id, person['session_id'], data.get('text') or goal['requirements']['request'], source='crew')
+            return controller.send(goal_id, person['session_id'], data.get('text') or goal['requirements']['request'],
+                                   source='human' if actor_session_id == board.HUMAN else 'crew')
         if action == 'pause':
             return _host(controller).pause(goal_id, manual=actor_session_id == board.HUMAN, actor=actor_session_id)
         if action == 'resume':
@@ -160,7 +162,8 @@ def dispatch(home, actor_session_id, execution_id, action, data, controller=None
                     controller.sync(conn, goal_id)
                     return {'ok': True, 'goal': goals.get(conn, goal_id), 'resumed': 'finalization'}
             return controller.send(goal_id, goal['leader_session_id'],
-                                   data.get('text') or '明确恢复本目标；按原始要求与已有证据续接，先核对进度，不重复已经完成的工作。', source='crew')
+                                   data.get('text') or '明确恢复本目标；按原始要求与已有证据续接，先核对进度，不重复已经完成的工作。',
+                                   source='human' if actor_session_id == board.HUMAN else 'crew')
         if action == 'reopen':
             return goals.reopen(conn, goal_id, data.get('text'), actor=actor_session_id)
         if action == 'cancel':

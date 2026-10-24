@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
-from . import board, store
+from . import board, goals, store
 
 KINDS = {'summary', 'report', 'guide', 'other'}
 EXTENSIONS = {'.md', '.markdown', '.txt', '.rst', '.adoc', '.html', '.htm', '.pdf', '.doc', '.docx',
@@ -125,9 +125,31 @@ def get(conn, project, document_id):
     return _public(conn, row)
 
 
+def _goal(conn, owner, goal_id, execution_id, *, live):
+    if execution_id is not None:
+        execution = goals.get_execution(conn, execution_id)
+        if execution['session_id'] != owner['session_id']:
+            raise board.BoardError('文档执行与提交者不匹配')
+        if goal_id is not None and goal_id != execution['goal_id']:
+            raise board.BoardError('文档执行与目标不匹配')
+        goal_id = execution['goal_id']
+        if live:
+            gate = goals.dispatch_check(conn, goal_id, execution_id=execution_id)
+            if not gate['allowed']:
+                raise board.Conflict(gate['reason'])
+    if goal_id is not None:
+        goal = goals.get(conn, goal_id, owner['project'])
+        if owner['session_id'] != goal['leader_session_id'] and conn.execute(
+                'SELECT 1 FROM goal_assignments WHERE goal_id=? AND session_id=?',
+                (goal_id, owner['session_id'])).fetchone() is None:
+            raise board.BoardError('文档提交者未参与此目标')
+    return goal_id
+
+
 def register(conn, session_id, path, title=None, summary=None, kind='other', important=False, now=None, *,
-             project=None, source='manual', source_seq=None):
+             project=None, source='manual', source_seq=None, goal_id=None, execution_id=None):
     owner, info = _owner(conn, session_id, project)
+    goal_id = _goal(conn, owner, goal_id, execution_id, live=source == 'manual')
     target = resolve_path(conn, session_id, path, info['name'])
     title = _clean(title, 'title', 300, optional=source!='manual')
     summary = _clean(summary, 'summary', 4000, optional=source!='manual')
@@ -137,11 +159,17 @@ def register(conn, session_id, path, title=None, summary=None, kind='other', imp
         raise board.BoardError('文档来源序号无效')
     stamp, key = board._time(now), store.norm_path(target)
     with _atomic(conn):
+        def submitted(document_id):
+            if goal_id is not None:
+                conn.execute('INSERT OR IGNORE INTO goal_documents(goal_id,document_id,execution_id,created_at) VALUES(?,?,?,?)',
+                             (goal_id, document_id, execution_id, stamp))
+            return get(conn, info['name'], document_id)
+
         old = conn.execute('SELECT * FROM documents WHERE project=? AND path_key=?', (info['name'], key)).fetchone()
         # A historical link is evidence of a file, not authority to rewrite a
         # deliberately submitted title, summary, category, author, or AI flag.
         if old is not None and (source != 'manual' and old['source'] == 'manual'):
-            return _public(conn, old)
+            return submitted(old['id']) if old['session_id'] == session_id else _public(conn, old)
         if old is not None and source != 'manual' and old['session_id'] != session_id:
             # Referencing another group's document is not a new submission.
             # Historical mentions cannot move the original card or its author.
@@ -153,19 +181,23 @@ def register(conn, session_id, path, title=None, summary=None, kind='other', imp
         else:
             document_id = old['id']
             if source != 'manual' and stamp < old['updated_at']:
-                return _public(conn, old)
+                return submitted(old['id'])
             conn.execute('UPDATE documents SET session_id=?,leader_session_id=?,submitter=?,group_name=?,path=?,title=?,summary=?,kind=?,ai_important=?,source=?,source_seq=?,updated_at=? WHERE id=?',
                 (session_id, _leader(conn, owner), owner['crew_name'] or session_id, owner['group_name'], str(target),
                  title or old['title'], summary if summary is not None else old['summary'], kind, int(important), source, source_seq, stamp, document_id))
         if source == 'manual':
             board._event(conn, 'document:register', info['name'], session_id, {'id': document_id, 'path': str(target), 'kind': kind}, stamp)
-        return get(conn, info['name'], document_id)
+        return submitted(document_id)
 
 
-def list(conn, project, leader_session_id=None):
+def list(conn, project, leader_session_id=None, *, goal_id=None):
     board.project(conn, project)
     params = [project]
     sql = 'SELECT * FROM documents WHERE project=?'
+    if goal_id is not None:
+        goals.get(conn, goal_id, project)
+        sql += ' AND id IN (SELECT document_id FROM goal_documents WHERE goal_id=?)'
+        params.append(goal_id)
     if leader_session_id is not None:
         owner = board.session(conn, leader_session_id)
         if owner['project'] != project or owner['role'] != 'leader':
@@ -216,7 +248,7 @@ def refresh(conn, home, project, now=None):
     stamp = board._time(now)
     result = {'indexed': 0, 'scanned': 0, 'has_more': False, 'errors': []}
     remaining, lines, scanned_sessions = MAX_BYTES, 0, 0
-    def ingest(session_id, text, source, sequence, at):
+    def ingest(session_id, text, source, sequence, at, execution_id=None):
         for title, target in _links(text):
             try:
                 clean = _path_text(target)
@@ -226,23 +258,27 @@ def refresh(conn, home, project, now=None):
                 kind = ('summary' if any(word in label for word in ('汇总','总结','summary','overview')) else
                         'report' if any(word in label for word in ('报告','report','验收')) else
                         'guide' if any(word in label for word in ('指南','教程','guide','readme','manual')) else 'other')
-                register(conn, session_id, target, title=title, kind=kind, now=at or stamp, project=project, source=source, source_seq=sequence)
+                register(conn, session_id, target, title=title, kind=kind, now=at or stamp, project=project,
+                         source=source, source_seq=sequence, execution_id=execution_id)
                 result['indexed'] += 1
             except (board.BoardError, OSError, RuntimeError):
                 # External links, code links, missing files and escaped paths are
                 # not documents. File/index I/O failures are surfaced separately.
                 continue
     with _atomic(conn):
-        sessions = conn.execute("SELECT s.session_id FROM sessions s LEFT JOIN document_scans d ON d.project=s.project AND d.source='journal:'||s.session_id WHERE s.project=? ORDER BY COALESCE(d.scanned_at,''),s.session_id LIMIT 200", (project,)).fetchall()
+        sessions = conn.execute("SELECT j.* FROM (SELECT session_id,session_id journal_id,NULL execution_id,project FROM sessions "
+                                "UNION ALL SELECT e.session_id,e.id,e.id,g.project FROM goal_executions e JOIN goals g ON g.id=e.goal_id) j "
+                                "LEFT JOIN document_scans d ON d.project=j.project AND d.source='journal:'||j.journal_id "
+                                "WHERE j.project=? ORDER BY COALESCE(d.scanned_at,''),j.journal_id LIMIT 200", (project,)).fetchall()
         for owner in sessions:
             if scanned_sessions >= MAX_SESSIONS or remaining <= 0 or lines >= MAX_LINES:
                 result['has_more'] = True; break
-            sid = owner['session_id']; source = 'journal:' + sid
+            sid = owner['session_id']; source = 'journal:' + owner['journal_id']
             old = conn.execute('SELECT * FROM document_scans WHERE project=? AND source=?', (project, source)).fetchone()
             offset = old['offset'] if old is not None else 0
             size = mtime = 0; identity = ''; error = None
             try:
-                path = Path(home) / 'chat' / (sid + '.jsonl')
+                path = Path(home) / 'chat' / (owner['journal_id'] + '.jsonl')
                 # Session IDs originate in stored sessions, but never allow them
                 # to turn an index scan into reads outside this home/chat folder.
                 if path.resolve().parent != (Path(home) / 'chat').resolve():
@@ -281,7 +317,8 @@ def refresh(conn, home, project, now=None):
                                 sequence=event.get('seq')
                                 sequence=sequence if type(sequence) is int and sequence>=0 else None
                                 at=event.get('at')
-                                ingest(sid, block.get('text'), 'journal', sequence, at if isinstance(at,str) and len(at)<=40 else stamp)
+                                ingest(sid, block.get('text'), 'journal', sequence, at if isinstance(at,str) and len(at)<=40 else stamp,
+                                       owner['execution_id'])
                     if offset < size: result['has_more'] = True
             except FileNotFoundError:
                 offset = 0

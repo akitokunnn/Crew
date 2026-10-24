@@ -137,13 +137,13 @@ _SPECS = [
           {"id": {"type": "integer", "minimum": 1}, "reason": _text("Why this user action is no longer needed.")},
           ("id", "reason")),
     _spec("crew_doc_add", "Register an existing deliverable file from your project or worktree. "
-          "The original file stays in place. You may suggest importance; the user's pin is independent.",
+          "The host binds it to your current task. The original file stays in place; user pins are independent.",
           {"path": _text("A local project/worktree file path.", max_length=4096),
            "title": _text("A clear document title.", max_length=300),
            "summary": _text("What this deliverable contains.", max_length=4000),
            "kind": {"type": "string", "enum": ["summary", "report", "guide", "other"]},
            "important": {"type": "boolean"}}, ("path", "title", "summary")),
-    _spec("crew_doc_list", "Read this project's registered deliverables, optionally filtered by a "
+    _spec("crew_doc_list", "Read deliverables in your current task (or project outside a task), optionally filtered by a "
           "Crew leader in this project. User pins cannot be changed with this tool.", {"leader": _TARGET}),
     _spec("crew_doc_refresh", "Index a bounded next batch of deliverable links from this project's "
           "existing Crew journals and reports. Returns scan counts, remaining-work flag and errors."),
@@ -162,6 +162,13 @@ _SPECS = [
           {"to": _TARGET, "text": _text("Message body; the host supplies the trusted sender."),
            'kind': {'type': 'string', 'enum': ['task','result','blocker','decision','user_answer','information','ack']}},
           ("to", "text")),
+    _spec('crew_stop', 'Explicitly stop yourself or one of your own members now; this closes managed native execution and prevents queued mail from restarting it. Text messages are not stop commands.',
+          {'target': _TARGET}, ('target',)),
+    _spec('crew_spawn', 'Create a member in your own group. The host binds a goal leader caller to its actual running goal execution; no model-supplied identity is accepted.',
+          {'name': _text('New Crew member name.', max_length=512), 'task': _text('Finite task for the member.'),
+           'runtime': {'type': 'string', 'enum': ['claude', 'codex']},
+           'new_worktree': _text('Optional new branch/worktree name.', max_length=512),
+           'base': _text('Optional base Git ref.', max_length=512)}, ('name', 'task')),
 ]
 _SCHEMAS = {spec["name"]: spec["inputSchema"] for spec in _SPECS}
 
@@ -323,6 +330,7 @@ class CodexTools:
 
     def _identity(self, conn, identity):
         identity.update(runtimes.get(conn, identity["session_id"]))
+        identity['leader'] = board.leader_of(conn, identity['session_id'])
         if isinstance(identity.get("leader"), dict):
             identity["leader"].update(runtimes.get(conn, identity["leader"]["session_id"]))
         return identity
@@ -338,6 +346,19 @@ class CodexTools:
 
     def _dispatch(self, conn, actor, name, args):
         sid, project = self._session_id, self._project
+        if name in ('crew_stop', 'crew_spawn'):
+            from . import spawn
+            if name == 'crew_stop':
+                target = self._target(conn, args['target'])
+                return spawn.request_start(self._home, project, '/api/session/stop', {
+                    'session_id': target['session_id'], 'caller_session_id': sid})
+            body = {'name': args['name'], 'task': args['task'], 'role': 'member', 'caller_session_id': sid}
+            if self._execution_id is not None:
+                body['caller_execution_id'] = self._execution_id
+            for field in ('runtime', 'new_worktree', 'base'):
+                if field in args:
+                    body[field] = args[field]
+            return spawn.request_start(self._home, project, '/api/spawn', body)
         if name == 'crew_git':
             action, data = args['action'], args.get('data', {})
             _validate(data, _GIT_DATA[action], 'arguments.data')
@@ -422,7 +443,8 @@ class CodexTools:
         if name == "crew_doc_add":
             return documents.register(conn, sid, args["path"], title=args.get("title"),
                                       summary=args.get("summary"), kind=args.get("kind", "other"),
-                                      important=args.get("important", False), project=project)
+                                      important=args.get("important", False), project=project,
+                                      execution_id=self._execution_id)
         if name == "crew_doc_list":
             leader_id = None
             if "leader" in args:
@@ -430,7 +452,8 @@ class CodexTools:
                 if leader["role"] != "leader":
                     raise ToolError("forbidden", "Document filtering requires a Crew leader in this project")
                 leader_id = leader["session_id"]
-            return documents.list(conn, project, leader_id)
+            goal_id = goals.get_execution(conn, self._execution_id)['goal_id'] if self._execution_id else None
+            return documents.list(conn, project, leader_id, goal_id=goal_id)
         if name == "crew_doc_refresh":
             return documents.refresh(conn, self._home, project)
         if name == "crew_answer":
