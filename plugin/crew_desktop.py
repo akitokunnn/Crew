@@ -1,10 +1,50 @@
 """Desktop-owned HTTP service: port 0 and a private stdin shutdown channel."""
 import argparse
+import errno
+import os
 from pathlib import Path
 import sys
 import threading
 
 from crew import install, web
+
+
+class HomeServiceLock:
+    """OS-owned lock: all desktop profiles share one backend per Crew home."""
+
+    def __init__(self, home):
+        self.path = Path(home) / "desktop" / "service.lock"
+        self.stream = None
+
+    def acquire(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        stream = self.path.open("a+b")
+        try:
+            if os.name == "nt":
+                import msvcrt
+                if self.path.stat().st_size == 0:
+                    stream.write(b"\0")
+                    stream.flush()
+                stream.seek(0)
+                msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            stream.close()
+            if exc.errno in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+                return False
+            raise
+        self.stream = stream
+        return True
+
+    def release(self):
+        if self.stream is None:
+            return
+        stream, self.stream = self.stream, None
+        # Closing the descriptor releases the kernel lock, including after a
+        # crash. The file remains in place, avoiding stale lease/rename races.
+        stream.close()
 
 
 def main(argv=None):
@@ -14,6 +54,17 @@ def main(argv=None):
     parser.add_argument("--isolated-sources", action="store_true")
     args = parser.parse_args(argv)
     home = Path(args.home).resolve()
+    lock = HomeServiceLock(home)
+    if not lock.acquire():
+        print("CREW_BACKEND_IN_USE", file=sys.stderr, flush=True)
+        return 75
+    try:
+        return serve(args, home)
+    finally:
+        lock.release()
+
+
+def serve(args, home):
     plugin_root = Path(__file__).resolve().parent
     install.install(home, plugin_root)
     options = {"cwd": home, "migrate_manual_work": True}
