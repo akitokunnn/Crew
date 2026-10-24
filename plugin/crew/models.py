@@ -44,8 +44,9 @@ def validate(model, runtime="claude", catalog=None):
             raise ValueError("不支持的 Codex 模型: " + str(model))
         if catalog is not None and _choice(model, catalog) is None:
             raise ValueError("Codex 模型不在当前运行时清单中: " + model)
-    elif model is not None and model not in [choice["id"] for choice in MODELS]:
-        raise ValueError("不支持的模型: " + str(model))
+    elif model is not None and (not isinstance(model, str) or
+                               re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}", model) is None):
+        raise ValueError("模型标识格式不正确: " + str(model))
     return model
 
 

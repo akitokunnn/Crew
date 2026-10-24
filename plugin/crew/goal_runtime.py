@@ -108,6 +108,8 @@ class Controller:
             gate = goals.dispatch_check(conn, execution['goal_id'], execution_id=key)
             if not gate['allowed']:
                 raise board.Conflict(gate['reason'])
+            from . import settings
+            permission_mode = settings.get_execution(conn)['claude']
         options = {'model': execution['model'], 'effort': execution['effort']}
         binding = next((item for item in execution['bindings'] if item['runtime'] == execution['runtime']), None)
         if execution['runtime'] == 'claude' and binding is not None:
@@ -130,6 +132,7 @@ class Controller:
         install.install(self.home, self.manager.plugin_root)
         command = spawn.command(native_id, session['crew_name'], session['role'], binding is not None,
                                 instructions='你是 Crew「%s」的当前目标执行。目标规则和用户原始要求由宿主随输入装载；仅当前明确授权有效。' % session['crew_name'],
+                                permission_mode=permission_mode,
                                 **options)
         command[0] = chat.claude_executable()
         command.extend(['--plugin-dir', str(self.manager.plugin_root.resolve())])

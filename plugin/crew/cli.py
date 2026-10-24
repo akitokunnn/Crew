@@ -99,6 +99,7 @@ def parser():
     a = c.add_parser("enable")
     a.add_argument("--base")
     a.add_argument("--stable")
+    a.add_argument("--runtime", choices=runtimes.RUNTIMES, default=argparse.SUPPRESS)
     c.add_parser("disable")
     c.add_parser("status")
     c.add_parser("policy").add_argument("--set", dest="policy_text")
@@ -246,8 +247,8 @@ def parser():
     a.add_argument("--with-members", action="store_true")
     a = c.add_parser("start")
     a.add_argument("--name", required=True)
-    a.add_argument("--model")
-    a.add_argument("--effort")
+    a.add_argument("--model", default=argparse.SUPPRESS)
+    a.add_argument("--effort", default=argparse.SUPPRESS)
     a.add_argument("--runtime", choices=runtimes.RUNTIMES, default=argparse.SUPPRESS)
     a.add_argument("--members")
     a.add_argument("--task")
@@ -594,12 +595,16 @@ def _with_context(home, project_name, sessions):
         for session in sessions:
             session.update(context=None, context_reason=str(exc))
         return
-    contexts = {session["session_id"]: session["context"] for session in [*state["leaders"], *state["members"]]}
+    people = {session["session_id"]: session for session in [*state["leaders"], *state["members"]]}
     for session in sessions:
         sid = session["session_id"]
-        session["context"] = contexts.get(sid)
+        current = people.get(sid)
+        session["context"] = current["context"] if current is not None else None
+        if session.get('runtime') == 'codex' and current is not None:
+            session['status'] = current['status']
+            session['where'] = current['where']
         session["context_reason"] = None if session["context"] is not None else (
-            "网页尚无上下文数据" if sid in contexts else "会话未出现在网页状态中")
+            "网页尚无上下文数据" if sid in people else "会话未出现在网页状态中")
 
 
 def execute(conn, args, cwd, agents_provider):
@@ -760,8 +765,10 @@ def execute(conn, args, cwd, agents_provider):
     if cmd == "git":
         if args.action in ("enable", "disable"):
             from . import spawn
-            spawn.request_start(args.home, p, "/api/git/" + args.action,
-                                {"base": args.base, "stable": args.stable} if args.action == "enable" else {})
+            body = {"base": args.base, "stable": args.stable} if args.action == "enable" else {}
+            if hasattr(args, "runtime"):
+                body["runtime"] = args.runtime
+            spawn.request_start(args.home, p, "/api/git/" + args.action, body)
         elif args.action == "policy":
             return {"policy": (board.git_policy(conn, p) if args.policy_text is None else
                                board.set_git_policy(conn, p, _session_id(args), args.policy_text))}
@@ -786,8 +793,13 @@ def execute(conn, args, cwd, agents_provider):
             return board.remove_resource(conn, p, args.name, actor)
         return board.resources(conn, p)
     if cmd == "status":
-        value = board.status(conn, p, _agents(agents_provider))
-        _with_context(args.home, p, [*value["ungrouped"], *(s for g in value["groups"] for s in g["members"])])
+        needs_claude = any(runtimes.get(conn, s['session_id'])['runtime'] == 'claude'
+                           and s['status'] != 'closed' for s in board.sessions(conn, p))
+        value = board.status(conn, p, _agents(agents_provider) if needs_claude else [])
+        people = [*value["ungrouped"], *(s for g in value["groups"] for s in g["members"])]
+        for person in people:
+            person.update(runtimes.get(conn, person['session_id']))
+        _with_context(args.home, p, people)
         return value
     if cmd == "open":
         from . import open_session

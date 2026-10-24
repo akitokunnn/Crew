@@ -24,7 +24,7 @@ npm start
 已有桌面版正在托管任务时，可以用独立界面配置显式连接它：
 
 ```powershell
-.\Crew-0.2.0-portable.exe --home C:\Temp\crew-private --service-url=http://127.0.0.1:7122 --profile ui-020
+.\Crew-0.2.1-portable.exe --home C:\Temp\crew-private --service-url=http://127.0.0.1:7122 --profile ui-020
 ```
 
 显式地址必须是健康的本机 Crew 服务，失败直接退出，不另起后台。界面默认数据位于 `home/desktop/ui`，`--profile` 使用 `home/desktop/profiles/<安全名称>`，不会争抢旧版界面的实例锁。后台源码仍位于稳定的 `home/desktop/backend`。菜单「查看日志文件夹」可打开本地 `home/desktop/logs`，其中保留后台最近的 stderr 和启动错误。
@@ -37,12 +37,12 @@ npm test
 npm run build
 ```
 
-构建产物为 `dist/Crew-0.2.0-portable.exe`、`dist/Crew-0.2.0-setup.exe`；前者可直接运行，后者是当前用户安装器，提供开始菜单、桌面快捷方式和卸载入口。`dist/win-unpacked/Crew.exe` 是未压缩版本。安装器与应用未做代码签名；EXE 原生图标资源仍正常嵌入。后端源码随应用放在 `resources/backend`，打包版会将后端按内容哈希保留到所选 home 的 `desktop/backend`，保证 portable 解包目录清理后 CLI 和守卫路径仍有效；Python 与 Git 使用本机安装。
+构建产物为 `dist/Crew-0.2.1-portable.exe`、`dist/Crew-0.2.1-setup.exe`；前者可直接运行，后者是当前用户安装器，提供开始菜单、桌面快捷方式和卸载入口。`dist/win-unpacked/Crew.exe` 是未压缩版本。安装器与应用未做代码签名；EXE 原生图标资源仍正常嵌入。后端源码随应用放在 `resources/backend`，打包版会将后端按内容哈希保留到所选 home 的 `desktop/backend`，保证 portable 解包目录清理后 CLI 和守卫路径仍有效；Python 与 Git 使用本机安装。
 
 验收新版本且保留正在运行的正式实例时，使用独立数据目录。此入口不会复制正式会话、QQ 凭据或自动恢复旧任务：
 
 ```powershell
-.\Crew-0.2.0-portable.exe --home C:\Temp\crew-020-acceptance --port 0 --isolated-sources
+.\Crew-0.2.1-portable.exe --home C:\Temp\crew-020-acceptance --port 0 --isolated-sources
 ```
 
 运维管理员常态使用程序监测。AI 修复需要在 `home/desktop/admin/operations/policy.json` 配置可信的 `repository` 绝对 Git 根目录、`reproduce` 和 `verify` 命令数组及固定 `merge_ref`；打包后的后台目录不是 Git 仓库。配置只在具体修复或应用作业开始时验证，配置有误会显示在事故报告中，不阻断健康服务启动。修复始终在隔离工作树里进行，应用前还须遵守项目 PR/合并规则并独立复验。portable 缺少已验证的运行中 Git 回退基线时会以 `NoVerifiedBaseline` 拒绝自动激活，保留 commit 和报告；不会把其它源码目录冒充已经运行过的旧版本。
@@ -60,11 +60,11 @@ npm run build
 ```powershell
 node scripts/smoke.cjs
 node scripts/smoke.cjs dist/win-unpacked/Crew.exe
-node scripts/smoke.cjs dist/Crew-0.2.0-portable.exe
+node scripts/smoke.cjs dist/Crew-0.2.1-portable.exe
 node scripts/smoke.cjs --reuse
 node scripts/smoke.cjs --visual
 node scripts/smoke-workspaces.cjs
-node scripts/verify-icons.cjs dist/win-unpacked/Crew.exe dist/Crew-0.2.0-portable.exe dist/Crew-0.2.0-setup.exe
+node scripts/verify-icons.cjs dist/win-unpacked/Crew.exe dist/Crew-0.2.1-portable.exe dist/Crew-0.2.1-setup.exe
 ```
 
 结果保存在 `smoke-output/source.json` / `packaged.json` / `portable.json` 及同名 PNG。单元测试另外覆盖已有服务复用、Git 根目录解析、新建仓库、已有文件保护与后端端口 0 / 优雅退出。

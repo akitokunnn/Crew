@@ -54,6 +54,7 @@ ipcMain.handle('desktop:chrome-action', async (event, command, value) => {
   trustedChrome(event);
   if (command === 'home') return showHome();
   if (command === 'admin') return showHome('admin');
+  if (command === 'settings') return showHome('settings');
   if (command === 'back') return tabs.back();
   if (command === 'retry') return event.senderFrame.url===errorPage ? window.loadURL(homePage) : tabs.reload();
   if (command === 'tab-select') return tabs.select(value);
@@ -115,6 +116,7 @@ function workspaceMenu() {
     { id:'workspace-open', label:'打开已有项目…', accelerator:'CmdOrCtrl+O', click:menuAction(()=>showHome('open')) },
     { id:'system-administrator',label:'系统管理员…',click:menuAction(()=>showHome('admin')) },
     { id:'tools-updates',label:'工具与更新…',click:menuAction(()=>showHome('tools')) },
+    { id:'app-settings',label:'设置…',accelerator:'CmdOrCtrl+,',click:menuAction(()=>showHome('settings')) },
     { type:'separator' },
     { id:'window-back', label:'返回上一页', accelerator:'Alt+Left', click:menuAction(()=>tabs.back()) },
     { id:'window-reload', label:'刷新当前标签',accelerator:'CmdOrCtrl+R',click:menuAction(()=>tabs.reload()) },
@@ -260,6 +262,24 @@ handle('desktop:tools-check',()=>tools.check());
 handle('desktop:tools-update',id=>tools.update(id));
 handle('desktop:tools-cancel',id=>tools.cancel(id));
 handle('desktop:tools-settings',settings=>tools.settings(settings));
+function settingsRequest(route, body) {
+  if (!backend?.url || new URL(backend.url).port === '0') throw Error(backend?.startupError || '后台尚未连接，请查看后台信息。');
+  return core.request(backend.url, route, body);
+}
+handle('desktop:settings-get',()=>settingsRequest('/api/settings'));
+handle('desktop:settings-save',body=>settingsRequest('/api/settings', {ai:body?.ai, execution:body?.execution}));
+handle('desktop:settings-connection',async()=>({notification:(await settingsRequest('/api/state')).notification}));
+handle('desktop:settings-away',away=>{
+  if (typeof away !== 'boolean') throw Error('离开状态必须是 true 或 false');
+  return settingsRequest('/api/notifications/away', {away});
+});
+handle('desktop:settings-ui',async()=>{
+  // Only trusted home can load these fixed, packaged application assets.
+  const directory = path.join(config.backendDir, 'crew', 'web');
+  await window.webContents.insertCSS(await fs.readFile(path.join(directory, 'settings-ui.css'),'utf8'));
+  await window.webContents.executeJavaScript(await fs.readFile(path.join(directory, 'settings-ui.js'),'utf8'));
+  return {ok:true};
+});
 handle('desktop:ready', async info => {
   if (!config.smoke || smokeStarted) return;
   smokeStarted = true;

@@ -157,6 +157,70 @@ class RuntimeFeatureHttpTests(ShellFixture, unittest.TestCase):
             raw = response.read()
             return response.status, json.loads(raw) if response.headers['Content-Type'].startswith('application/json') else raw.decode('utf-8')
 
+    def test_implicit_leader_and_member_use_codex_when_claude_is_absent(self):
+        from crew import settings
+        settings.save(self.conn, {'default': {'runtime': None, 'model': None, 'effort': None}})
+        with mock.patch.object(runtimes.shutil, 'which', side_effect=lambda name: 'codex.exe' if name == 'codex' else None), \
+                mock.patch('crew.codex_runtime.CodexRunning', FakeCodex), \
+                mock.patch('crew.codex_client.command', return_value=['codex.exe', 'app-server']):
+            code, leader = self.request('/api/leader', {'name': 'codex-only-chief', 'task': 'one finite task'})
+            self.assertEqual(code, 200, leader)
+            sid = leader['session_id']
+            self.assertEqual(runtimes.get(self.conn, sid)['runtime'], 'codex')
+            code, member = self.request('/api/spawn', {'name': 'codex-only-member', 'task': 'parallel check', 'group': 'codex-only-chief'})
+            self.assertEqual(code, 200, member)
+            self.assertEqual(runtimes.get(self.conn, member['session_id'])['runtime'], 'codex')
+            self.assertEqual(self.processes, [])  # No Claude process was launched.
+
+    def test_missing_carriers_reject_leader_before_creating_a_group(self):
+        from crew import settings
+        settings.save(self.conn, {'default': {'runtime': None, 'model': None, 'effort': None}})
+        with mock.patch.object(runtimes.shutil, 'which', return_value=None):
+            code, result = self.request('/api/leader', {'name': 'not-created', 'task': 'work'})
+        self.assertEqual(code, 400, result)
+        self.assertIn('安装并登录', result['error'])
+        self.assertFalse(any(g['name'] == 'not-created' for g in board.groups(self.conn, 'demo')))
+        self.assertEqual(self.processes, [])
+
+    def test_home_settings_save_without_project_does_not_start_ai_or_change_sessions(self):
+        original = runtimes.get(self.conn, 's3')
+        payload = {'ai': {'default': {'runtime': 'codex', 'model': 'gpt-fixture-default', 'effort': 'high'},
+                          'digest': None, 'git': None, 'operations': None}}
+        request = Request(self.server.url + '/api/settings', json.dumps(payload).encode(), {'X-Crew': '1'})
+        with self.opener.open(request, timeout=5) as response:
+            result = json.load(response)
+        self.assertEqual(result['ai'], payload['ai'])
+        self.assertEqual(result['home'], str(self.home.resolve()))
+        self.assertEqual(runtimes.get(self.conn, 's3'), original)
+        self.assertEqual(self.processes, [])
+        with self.opener.open(self.server.url + '/api/settings', timeout=5) as response:
+            self.assertEqual(json.load(response)['ai'], payload['ai'])
+        self.assertEqual(self.request('/api/settings', {'ai': {'default': {'runtime': 'codex'}}})[0], 400)
+        self.assertEqual(self.request('/api/settings', {'ai': payload['ai'], 'unknown': True})[0], 400)
+
+    def test_leader_without_explicit_options_uses_saved_default_brain(self):
+        from crew import settings
+        settings.save(self.conn, {'default': {'runtime': 'codex', 'model': 'gpt-fixture-default', 'effort': 'high'}})
+        with mock.patch('crew.codex_runtime.CodexRunning', FakeCodex), \
+                mock.patch('crew.codex_client.command', return_value=['codex.exe', 'app-server']):
+            code, result = self.request('/api/leader', {'name': 'configured-chief', 'task': 'finite task'})
+        self.assertEqual(code, 200, result)
+        current = self.server.service.chat.processes[result['session_id']]
+        self.assertEqual(current.applied, {'model': 'gpt-fixture-default', 'effort': 'high'})
+
+    def test_settings_and_execution_permissions_save_atomically_without_starting_models(self):
+        from crew import settings
+        original = settings.load(self.conn)
+        ai = {'default': {'runtime': 'codex', 'model': 'gpt-fixture', 'effort': None}}
+        code, _ = self.request('/api/settings', {'ai': ai, 'execution': {'codex': 'invalid', 'claude': 'default'}})
+        self.assertEqual(code, 400)
+        self.assertEqual(settings.load(self.conn), original)
+        execution = {'codex': 'danger-full-access', 'claude': 'acceptEdits'}
+        code, result = self.request('/api/settings', {'ai': ai, 'execution': execution})
+        self.assertEqual(code, 200, result)
+        self.assertEqual(result['execution'], execution)
+        self.assertEqual(self.processes, [])
+
     def test_manual_todo_state_resolve_and_undo_do_not_change_decisions(self):
         item = todo.add(self.conn, 's1', '亲手验收编辑器', '打开测试关卡，点击运行', '人物动作和预期一致', blocking=True)
         before = self.request('/api/state')[1]

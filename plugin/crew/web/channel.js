@@ -38,7 +38,9 @@
   function renderDigest(context) {
     context.pin.hidden = context.digest === null;
     if (context.digest === null) { context.pin.innerHTML = ""; return; }
-    context.pin.innerHTML = `<details class="channel-digest" open><summary>要点 · 截至 ${escape(time(context.digest.created_at))} · 累计整理 ${context.digest.total_message_count} 条</summary><div class="m-lead"><div class="body"><div class="markdown">${CrewChat.renderMarkdown(context.digest.body, "user")}</div></div></div></details>`;
+    const runtime = {claude:"Claude Code",codex:"Codex"}[context.digest.runtime] || "执行工具未知";
+    const cost = context.digest.cost_usd == null ? "费用未知" : `$${Number(context.digest.cost_usd).toFixed(4)}`;
+    context.pin.innerHTML = `<details class="channel-digest" open><summary>要点 · 截至 ${escape(time(context.digest.created_at))} · 累计整理 ${context.digest.total_message_count} 条</summary><div class="m-lead"><div class="body"><div class="markdown">${CrewChat.renderMarkdown(context.digest.body, "user")}</div><p class="note">${escape(runtime)} · ${escape(context.digest.model || "模型未知")} · ${escape(cost)}</p></div></div></details>`;
   }
   function digestState(context) {
     context.digestButton.disabled = context.requestingDigest || context.state.channel.digesting;

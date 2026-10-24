@@ -12,7 +12,7 @@ import sys
 import tempfile
 import threading
 
-from . import board, codex_client, codex_events, codex_tools, goals, install, store, trust_mode
+from . import board, codex_client, codex_events, codex_tools, goals, install, settings, store, trust_mode
 
 
 def process_identity(pid):
@@ -229,6 +229,7 @@ class CodexRunning:
             native_id = mapping.get("native_id")
             role = "git" if spec.get("agent") == "crew:git" else session["role"]
             mode_context = trust_mode.context(conn, self.session_id)
+            sandbox_mode = settings.get_execution(conn)['codex']
         if resume and not native_id:
             raise board.BoardError("Codex 原生会话 ID 丢失，不能恢复原会话")
         skill = self.plugin_root / "skills" / role / "SKILL.md"
@@ -257,7 +258,7 @@ class CodexRunning:
             env.update(CREW_EXECUTION_ID=execution['id'], CREW_GOAL_ID=execution['goal_id'])
         env['PATH'] = str(self.home / 'bin') + os.pathsep + env.get('PATH', '')
         params = {"cwd": session["cwd"], "developerInstructions": instructions, "config": config,
-                  "sandbox": "workspace-write", "approvalPolicy": "on-request"}
+                  "sandbox": sandbox_mode, "approvalPolicy": "never" if sandbox_mode == 'danger-full-access' else 'on-request'}
         if options.get("model") is not None:
             params["model"] = options["model"]
         self._lease = RuntimeLease(self.home, execution['id'] if execution else self.session_id).acquire()

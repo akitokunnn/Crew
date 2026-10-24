@@ -35,6 +35,8 @@ def make_vscode_state_db(path):
 class ShellFixture(UsageFixture):
     def setUp(self):
         super().setUp()
+        from crew import settings
+        settings.save(self.conn, {'default': {'runtime': 'claude', 'model': None, 'effort': None}})
         self.vscode_state_db = make_vscode_state_db(self.root / "state.vscdb")
         roots = mock.patch("crew.vscode_sessions.project_roots", side_effect=lambda root: [Path(root)])
         roots.start()

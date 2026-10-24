@@ -1,0 +1,74 @@
+'use strict';
+// Run with Electron. Uses the actual native renderer/preload and in-memory API fixtures.
+const {app,BrowserWindow,ipcMain}=require('electron');
+const fs=require('node:fs/promises'),path=require('node:path'),os=require('node:os'),assert=require('node:assert/strict');
+const {pathToFileURL}=require('node:url');
+const root=path.resolve(__dirname,'../..'),output=path.join(root,'desktop/smoke-output/settings');
+const source=path.join(root,'desktop/src'),web=path.join(root,'plugin/crew/web');
+const home=pathToFileURL(path.join(source,'home.html')).href,error=pathToFileURL(path.join(source,'error.html')).href;
+let win,temporary,saveFailure=false,saves=0;const calls=[],rendererErrors=[];
+const catalog=[{id:'claude',name:'Claude Code',available:true,models:[{id:'native-a',name:'Native A',efforts:['low','high']}],efforts:['low','high']},{id:'codex',name:'Codex',available:true,models:[{id:'native-b',name:'Native B',efforts:['deep']}],efforts:['deep']}];
+let ai={default:{runtime:null,model:null,effort:null},digest:null,git:null,operations:null};
+let execution={codex:'workspace-write',claude:'default'};
+const snapshot=()=>({ai:JSON.parse(JSON.stringify(ai)),execution:{...execution},runtimes:catalog,home:'C:\\Crew Data',backend:'C:\\Crew\\plugin'});
+const tools={checked_at:new Date().toISOString(),autoUpdate:false,tools:catalog.map(item=>({id:item.id,name:item.name,installed_version:'fixture',latest_version:'fixture',phase:'idle',installation:'native',can_update:false,can_queue:false,update_available:false}))};
+const health={state:'healthy',checked_at:new Date().toISOString(),recoveries:0,incidents:[],restart:{allowed:false,reason:'后台运行正常'},url:'http://127.0.0.1:9999',supervisor_pid:1,service_pid:2};
+const notification={away:false,manual_away:false,error:null,channel:{state:'connected',detail:'隔离测试连接'}};
+const windowOptions=()=>({width:1320,height:1120,show:false,webPreferences:{preload:path.join(source,'preload.cjs'),contextIsolation:true,sandbox:true,nodeIntegration:false,backgroundThrottling:false,offscreen:true,additionalArguments:['--crew-desktop-config='+encodeURIComponent(JSON.stringify({home,error}))]}});
+function handle(name,callback){ipcMain.handle('desktop:'+name,(event,...args)=>{assert.equal(event.senderFrame.url,home);calls.push(name);return callback(...args);});}
+handle('home-ready',()=>({ok:true}));handle('bootstrap',()=>({projects:[],service:{url:'http://127.0.0.1:9999',owned:false}}));handle('ready',()=>({ok:true}));
+handle('chrome-ready',async()=>{await win.webContents.insertCSS(await fs.readFile(path.join(source,'chrome.css'),'utf8'));return {maximized:false,focused:true,canGoBack:false,tabs:{activeId:'home',tabs:[{id:'home',name:'工作区',project:null}]}};});
+handle('settings-ui',async()=>{await win.webContents.insertCSS(await fs.readFile(path.join(web,'settings-ui.css'),'utf8'));await win.webContents.executeJavaScript(await fs.readFile(path.join(web,'settings-ui.js'),'utf8'));await win.webContents.executeJavaScript('(()=>{const create=window.CrewSettings.create;window.CrewSettings.create=options=>(window.__settingsUnderTest=create(options));})()');return{ok:true};});
+handle('settings-get',snapshot);handle('settings-save',body=>{saves++;if(saveFailure){saveFailure=false;throw Error('隔离保存失败，草稿应保留');}ai=JSON.parse(JSON.stringify(body.ai));execution=JSON.parse(JSON.stringify(body.execution));return snapshot();});
+handle('settings-connection',()=>({notification}));handle('settings-away',away=>{notification.manual_away=away;notification.away=away;return notification;});
+handle('tools-snapshot',()=>tools);handle('tools-check',()=>tools);handle('tools-settings',value=>{tools.autoUpdate=value.autoUpdate;return tools;});
+handle('admin-status',()=>health);handle('admin-check',()=>({ok:true}));handle('admin-restart',()=>{throw Error('不允许在 fixture 恢复后台');});
+const run=async script=>{const result=await win.webContents.executeJavaScript(`(async()=>{try{return {value:await (${script})};}catch(error){return {failure:error.stack||String(error)};}})()`);if(result.failure)throw Error(result.failure+'\nExpression: '+script);return result.value;};
+const progress=message=>require('node:fs').appendFileSync(path.join(output,'progress.log'),message+'\n');
+async function waitFor(expression){for(let i=0;i<160;i++){if(await run(expression))return;await new Promise(resolve=>setTimeout(resolve,30));}throw Error('等待超时：'+expression);}
+async function click(selector){await run(`document.querySelector(${JSON.stringify(selector)}).click()`);}
+async function change(key,field,value){await run(`(()=>{const input=document.querySelector('[data-ai-key="${key}"][data-ai-field="${field}"]');input.value=${JSON.stringify(value)};input.dispatchEvent(new Event('change',{bubbles:true}));})()`);}
+async function permission(runtime,value){await run(`(()=>{const input=document.querySelector('[data-execution-runtime="${runtime}"]');input.value=${JSON.stringify(value)};input.dispatchEvent(new Event('change',{bubbles:true}));})()`);}
+async function screenshot(name){progress('capture '+name);await run('Promise.race([document.fonts.ready.then(()=>true),new Promise(resolve=>setTimeout(()=>resolve(false),200))])');await new Promise(resolve=>setTimeout(resolve,100));const image=await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true});assert(!image.isEmpty());await fs.writeFile(path.join(output,name),image.toPNG());}
+async function open(){await click('#nav-settings');await waitFor('!!document.querySelector(\'[data-ai-key="default"]\')');}
+(async()=>{
+  temporary=await fs.mkdtemp(path.join(os.tmpdir(),'crew-settings-'));app.setPath('userData',temporary);
+  await app.whenReady();await fs.mkdir(output,{recursive:true});await fs.writeFile(path.join(output,'progress.log'),'');progress('ready');
+  win=new BrowserWindow(windowOptions());
+  win.webContents.on('console-message',(_event,...args)=>{const message=typeof args[0]==='object'?args[0].message:args[1];if(String(message).includes('Uncaught'))rendererErrors.push(message);});
+  await win.loadURL(home);progress('home loaded');await waitFor('document.documentElement.dataset.crewDesktopChromeReady === "true"');progress('chrome ready');await open();progress('settings open');
+  assert.equal(await run('document.querySelector(\'[data-ai-key="default"][data-ai-field="runtime"]\').value'),'');
+  await change('default','runtime','codex');await change('default','model','native-b');await change('default','effort','deep');
+  await run(`(()=>{const input=document.querySelector('[data-ai-inherit="digest"]');input.checked=false;input.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+  await change('digest','runtime','claude');await change('digest','model','future-summary');await change('digest','effort','future-effort');
+  await click('[data-settings-category="appearance"]');await click('[data-desktop-theme="light"]');await click('[data-settings-category="ai"]');
+  assert.equal(await run('document.querySelector(\'[data-ai-key="digest"][data-ai-field="model"]\').value'),'future-summary');
+  await click('[data-settings-category="execution"]');assert.equal(await run('document.querySelector(\'[data-execution-runtime="codex"]\').value'),'workspace-write');assert.equal(await run('document.querySelector(\'[data-execution-runtime="claude"]\').value'),'default');
+  await permission('codex','danger-full-access');await permission('claude','acceptEdits');await run('window.__settingsUnderTest.reload()');
+  assert.equal(await run('document.querySelector(\'[data-execution-runtime="codex"]\').value'),'danger-full-access');
+  saveFailure=true;await click('[data-settings-action="save"]');await waitFor('document.querySelector(".cs-status").textContent.includes("隔离保存失败")');
+  assert.equal(await run('document.querySelector(\'[data-execution-runtime="codex"]\').value'),'danger-full-access');await click('[data-settings-category="ai"]');
+  assert.equal(await run('document.querySelector(\'[data-ai-key="digest"][data-ai-field="effort"]\').value'),'future-effort');
+  await click('[data-settings-action="save"]');await waitFor('document.querySelector(".cs-status").textContent.includes("已保存")');assert.equal(saves,2);
+  progress('saved');
+  assert.deepEqual(ai,{default:{runtime:'codex',model:'native-b',effort:'deep'},digest:{runtime:'claude',model:'future-summary',effort:'future-effort'},git:null,operations:null});
+  assert.deepEqual(execution,{codex:'danger-full-access',claude:'acceptEdits'});
+  await screenshot('ai-task-allocation-light.png');progress('light screenshot');
+  // Recreate the actual renderer, so readback must come from the saved snapshot.
+  const old=win;win=new BrowserWindow(windowOptions());old.destroy();await win.loadURL(home);progress('reopened home');await waitFor('document.documentElement.dataset.crewDesktopChromeReady === "true"');await open();progress('reopened settings');
+  assert.equal(await run('document.querySelector(\'[data-ai-key="default"][data-ai-field="runtime"]\').value'),'codex');
+  assert.equal(await run('document.querySelector(\'[data-ai-key="digest"][data-ai-field="model"]\').value'),'future-summary');
+  await click('[data-settings-category="appearance"]');await click('[data-desktop-theme="dark"]');await click('[data-settings-category="ai"]');
+  const light=win;win=new BrowserWindow({...windowOptions(),width:980,height:900});light.destroy();await win.loadURL(home);await waitFor('document.documentElement.dataset.crewDesktopChromeReady === "true"');await open();progress('dark narrow reopened');await screenshot('saved-reopened-dark-narrow.png');
+  await click('[data-settings-category="execution"]');assert.equal(await run('document.querySelector(\'[data-execution-runtime="codex"]\').value'),'danger-full-access');assert.equal(await run('document.querySelector(\'[data-execution-runtime="claude"]\').value'),'acceptEdits');await screenshot('execution-permissions-dark.png');
+  const bounds=await run(`(()=>{const root=document.querySelector('#native-settings-root'),content=document.querySelector('.cs-body');return{width:innerWidth,rootWidth:root.getBoundingClientRect().width,bodyWidth:content.clientWidth,bodyScrollWidth:content.scrollWidth,theme:document.documentElement.dataset.theme};})()`);assert.equal(bounds.theme,'dark');assert(bounds.bodyScrollWidth<=bounds.bodyWidth+1);
+  progress('bounds passed');
+  await click('[data-settings-category="tools"]');await waitFor('document.querySelector(".cs-content #tools-list").children.length === 2');
+  progress('tools mounted');
+  const sameTools=await run('document.querySelectorAll("#tools-page").length');assert.equal(sameTools,1);await click('#tools-auto');await waitFor('document.querySelector("#tools-setting-status").textContent.includes("已开启")');assert.equal(tools.autoUpdate,true);
+  await click('[data-settings-category="backend"]');await waitFor('document.querySelector(".cs-content #admin-state").textContent === "运行正常"');assert.equal(await run('document.querySelectorAll("#admin-page").length'),1);
+  await click('[data-settings-category="connections"]');await waitFor('!!document.querySelector("[data-away]")');await click('[data-away]');await waitFor('document.querySelector("[data-away]")?.textContent.includes("回到电脑前")');assert.equal(notification.manual_away,true);
+  await click('#nav-workspaces');assert.equal(await run('document.querySelector("#settings-page").hidden'),true);assert.equal(await run('document.querySelector("#tools-page").parentNode.tagName'),'MAIN');
+  assert.deepEqual(rendererErrors,[]);await fs.writeFile(path.join(output,'evidence.json'),JSON.stringify({ok:true,saves,ai,execution,calls,bounds,rendererErrors,isolatedUserData:temporary,noAIProcesses:true},null,2));
+  await fs.rm(path.join(output,'failure.txt'),{force:true});console.log('Settings renderer smoke passed:',output);win.destroy();app.exit(0);
+})().catch(async error=>{console.error(error);await fs.mkdir(output,{recursive:true});await fs.writeFile(path.join(output,'failure.txt'),error.stack||String(error));win?.destroy();app.exit(1);});

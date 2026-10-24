@@ -12,7 +12,7 @@ import threading
 import uuid
 from pathlib import Path
 
-from . import board, claude_limits, codex_client, hooks, install, messaging, models, runtime_switch, runtimes, spawn, store
+from . import board, claude_limits, codex_client, hooks, install, messaging, models, runtime_switch, runtimes, settings, spawn, store
 
 
 IMAGE_TYPES = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif"}
@@ -546,6 +546,7 @@ class Manager:
             runtime = runtimes.get(conn, session_id)["runtime"]
             native_id=runtimes.get(conn,session_id)['native_id']
             pending=runtime_switch.pending(conn,session_id)
+            permission_mode = settings.get_execution(conn)['claude']
         if resume and native_id is None and (pending is None or pending['to_runtime']!=runtime):
             raise board.BoardError('原生会话 ID 丢失，不能猜测恢复或偷偷新建')
         native_resume=resume and native_id is not None
@@ -561,7 +562,8 @@ class Manager:
         if native_id not in (None,session_id):
             raise board.BoardError('Claude 原生身份与 Crew 身份不一致，不能恢复错误会话')
         install.install(self.home, self.plugin_root)
-        command = spawn.command(session_id, session["crew_name"], session["role"], native_resume, **options, agent=spec["agent"])
+        command = spawn.command(session_id, session["crew_name"], session["role"], native_resume, **options, agent=spec["agent"],
+                                permission_mode=permission_mode)
         command[0] = exe
         journal = self.journal(session_id)
         journal.reset_runtime()

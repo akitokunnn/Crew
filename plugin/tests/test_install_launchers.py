@@ -67,6 +67,19 @@ class InstallLauncherTests(unittest.TestCase):
         self.assertTrue((self.home / 'bin' / 'crew.cmd').is_file())
         self.assertFalse((self.home / 'web.json').exists())
 
+    @unittest.skipUnless(os.name == 'nt', 'Windows command launcher')
+    def test_windows_launcher_does_not_resolve_python_from_sandbox_path(self):
+        (self.traps / 'python.cmd').write_text('@exit /b 96\n', encoding='ascii')
+        env = {key: value for key, value in os.environ.items()
+               if not key.startswith('CREW_') and key != 'CLAUDE_CODE_SESSION_ID'}
+        env['PATH'] = str(self.traps)
+        command = '"' + os.environ['COMSPEC'] + '" /d /s /c ""' + str(self.home / 'bin' / 'crew.cmd') + '" --help"'
+        result = subprocess.run(command,
+                                cwd=self.root, env=env, capture_output=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(b'usage:', result.stdout)
+        self.assertIn(b'goal', result.stdout)
+
     def test_real_git_bash_goal_status_reads_only_its_installed_home_without_ambient_python(self):
         with closing(store.connect(self.home)) as conn:
             board.init_project(conn, 'demo', self.root)

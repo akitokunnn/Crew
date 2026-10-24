@@ -14,7 +14,7 @@ from pathlib import Path
 from unittest import mock
 from tests.fixture_cleanup import cleanup_directory
 
-from crew import board, cli, guard, hooks, install, rules, session_ops, store
+from crew import board, cli, guard, hooks, install, rules, session_ops, settings, store
 
 PLUGIN = Path(__file__).resolve().parents[1]
 NOW = "2026-10-21T08:00:00.000Z"
@@ -45,6 +45,7 @@ class CoreCase(unittest.TestCase):
         install.install(self.home, self.fake_plugin, now=NOW)
         self.conn = store.connect(self.home)
         self.addCleanup(self.conn.close)
+        settings.save(self.conn, {'default': {'runtime': 'claude', 'model': None, 'effort': None}})
         board.init_project(self.conn, "demo", self.root, now=NOW)
         for sid, name in (("s1", "one"), ("s2", "two"), ("s3", "three")):
             board.join(self.conn, sid, "demo", name, self.root, store.norm_path(self.root), "main", cc_name="cc-" + name, now=NOW)
@@ -918,7 +919,8 @@ class InstallAndCliTests(CoreCase):
         self.assertEqual(set(first), {"plugin_root", "python", "updated_at"})
         self.assertEqual(first["python"], sys.executable)
         self.assertTrue((self.home / "crew.py").is_file())
-        self.assertEqual((self.home / "bin" / "crew.cmd").read_text(encoding="utf-8"), '@python "%~dp0..\\crew.py" %*\n')
+        python = str(Path(sys.executable).resolve()).replace('%', '%%')
+        self.assertEqual((self.home / "bin" / "crew.cmd").read_text(encoding="utf-8"), '@"' + python + '" "%~dp0..\\crew.py" %*\n')
         for name in ("blacklist.txt", "prices.json"):
             (self.home / name).write_text("custom", encoding="utf-8")
         install.install(self.home, self.fake_plugin, now="2026-10-22T00:00:00.000Z")

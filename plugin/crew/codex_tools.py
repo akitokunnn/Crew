@@ -62,7 +62,30 @@ _BRIEF_SCHEMA = {"type": "object", "additionalProperties": False,
                                                           "consequence": _text("What happens if this action is chosen.")},
                                            "required": ["label", "consequence"]}}},
                  "required": ["title", "why_user", "recommendation_reason", "options"]}
+_GIT_DATA = {
+    'status': {'type': 'object', 'properties': {}, 'additionalProperties': False},
+    'policy': {'type': 'object', 'additionalProperties': False,
+               'properties': {'text': {**_text('Branch policy to save.'), 'minLength': 0}}},
+    'requests': {'type': 'object', 'additionalProperties': False,
+                 'properties': {'all': {'type': 'boolean'}}},
+    'request': {'type': 'object', 'additionalProperties': False,
+                'properties': {'branch': {**_text('Branch; omitted uses the host-recorded current branch.'), 'minLength': 0},
+                               'description': {**_text('Changes and verification for the Git administrator.'), 'minLength': 0}},
+                'required': ['description']},
+    'resolve': {'type': 'object', 'additionalProperties': False,
+                'properties': {'id': {'type': 'integer', 'minimum': 1},
+                               'status': {**_text('merging, waiting_user, merged or rejected.', max_length=100), 'minLength': 0},
+                               'note': {**_text('What happened and the evidence.'), 'minLength': 0},
+                               'pr_number': {'type': 'integer', 'minimum': 1}},
+                'required': ['id', 'status', 'note']},
+}
 _SPECS = [
+    _spec('crew_git', 'Use the host-bound project Git ledger, without shell commands. Actions: status; policy '
+          '(data.text writes, omitted reads); requests (data.all); request (data.branch optional, data.description required); '
+          'resolve (data.id, data.status, data.note, optional data.pr_number). Only the configured Git administrator '
+          'may write policy or resolve requests. This records requests/results; it does not run Git or merge code.',
+          {'action': {'type': 'string', 'enum': list(_GIT_DATA)},
+           'data': {'type': 'object', 'additionalProperties': True}}, ('action',)),
     _spec('crew_goal', 'Explicit goal actions: status, create, start, pause, resume, cancel, reopen, amend, assign, report-template, finish. Ordinary Q&A creates no goal.',
           {'action': _text('Action name.', max_length=100), 'goal_id': _text('Goal id; omitted uses the bound execution.', max_length=100),
            'data': {'type': 'object', 'additionalProperties': True}}, ('action',)),
@@ -306,6 +329,8 @@ class CodexTools:
 
     @staticmethod
     def _read_only(name, args):
+        if name == 'crew_git':
+            return args['action'] in ('status', 'requests') or args['action'] == 'policy' and 'text' not in args.get('data', {})
         if name in ('crew_goal', 'crew_context'):
             action = args['action'] if name == 'crew_goal' else 'context.' + args['action']
             return action in goal_actions.READ_ACTIONS
@@ -313,6 +338,23 @@ class CodexTools:
 
     def _dispatch(self, conn, actor, name, args):
         sid, project = self._session_id, self._project
+        if name == 'crew_git':
+            action, data = args['action'], args.get('data', {})
+            _validate(data, _GIT_DATA[action], 'arguments.data')
+            if action == 'status':
+                config = board.git_config(conn, project)
+                return {'enabled': config is not None, 'base': config['base'] if config else None,
+                        'stable': config['stable'] if config else None}
+            if action == 'policy':
+                return {'policy': board.set_git_policy(conn, project, sid, data['text']) if 'text' in data
+                        else board.git_policy(conn, project)}
+            if action == 'requests':
+                return {'requests': board.git_requests(conn, project, all=data.get('all', False))}
+            if action == 'request':
+                return {'request': board.request_git_merge(conn, project, sid, data.get('branch', actor['branch']),
+                                                           data['description'], title=None)}
+            return {'request': board.resolve_git_request(conn, project, sid, data['id'], data['status'],
+                                                         data['note'], data.get('pr_number'))}
         if name in ('crew_goal', 'crew_context'):
             action = args['action'] if name == 'crew_goal' else 'context.' + args['action']
             data = dict(args.get('data', {}))

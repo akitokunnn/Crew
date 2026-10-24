@@ -71,6 +71,8 @@ async function flushHomeActions() {
   try {
     while (homeActions.length && !busy) {
       const next = homeActions.shift();
+      if (next === 'settings') { void window.CrewHomeSettings?.show(); continue; }
+      window.CrewHomeSettings?.hide();
       if (next === 'admin') { window.CrewHomeHealth?.show(); continue; }
       window.CrewHomeHealth?.hide();
       if (next === 'tools') { window.CrewHomeTools?.show(); continue; }
@@ -82,7 +84,9 @@ async function flushHomeActions() {
   } finally { dispatching = false; }
 }
 if (typeof window.crewDesktop.onAction === 'function') window.crewDesktop.onAction(message => {
-  if (!['new', 'open', 'home', 'tools', 'admin'].includes(message?.action)) return;
+  if (!['new', 'open', 'home', 'tools', 'admin', 'settings'].includes(message?.action)) return;
+  if (message.action === 'settings') { void window.CrewHomeSettings?.show(); return; }
+  window.CrewHomeSettings?.hide();
   if (message.action === 'admin') { window.CrewHomeHealth?.show(); return; }
   homeActions.push(message.action); void flushHomeActions();
 });
@@ -99,7 +103,7 @@ document.addEventListener('keydown', event => { if (event.key === 'Escape' && !$
 async function finishStartup(state) {
   await window.crewDesktop.ready({ projects: state.projects.length, nodeAvailable: typeof require !== 'undefined',
     bridgeMethods: Object.keys(window.crewDesktop), title: document.title });
-  if (['new', 'open', 'tools', 'admin'].includes(state.pendingAction)) homeActions.unshift(state.pendingAction);
+  if (['new', 'open', 'tools', 'admin', 'settings'].includes(state.pendingAction)) homeActions.unshift(state.pendingAction);
   homeReady = true;
   await flushHomeActions();
 }

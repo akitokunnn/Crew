@@ -8,6 +8,7 @@ import sys
 import time
 
 from crew_desktop import HomeServiceLock
+from . import chat, codex_client, settings
 from .operations import OperationsError, _digest
 from .supervisor import _atomic_json, _read_json
 
@@ -85,7 +86,7 @@ def _policy(policy):
         raise RepairError('Repair timeout must be between 1 and 600 seconds')
     runner = policy.get('runner')
     if runner is None:
-        runner = ['codex', 'exec', '--ephemeral', '--sandbox', 'workspace-write', '-']
+        return timeout, None
     if not isinstance(runner, list) or not runner or any(not isinstance(arg, str) or not arg for arg in runner):
         raise RepairError('Native runner must be an argv array')
     # A configured adapter is trusted local operator code, never model output.
@@ -96,6 +97,25 @@ def _policy(policy):
         if any(flag in runner for flag in ('--dangerously-bypass-approvals-and-sandbox', '--yolo', '--full-auto')):
             raise RepairError('Unsafe Codex repair runner flags')
     return timeout, runner
+
+
+def default_runner(home, which=None):
+    """Use the selected operations brain; native defaults stay native defaults."""
+    selected = settings.resolve(home, 'operations', which=which)
+    if selected['runtime'] == 'codex':
+        command = [codex_client.command()[0], 'exec', '--ephemeral', '--sandbox', 'workspace-write']
+        if selected['model'] is not None:
+            command += ['--model', selected['model']]
+        if selected['effort'] is not None:
+            command += ['-c', 'model_reasoning_effort=' + json.dumps(selected['effort'])]
+        return command + ['-']
+    command = [chat.claude_executable(), '-p', '--no-session-persistence', '--permission-mode', 'acceptEdits',
+               '--strict-mcp-config', '--settings', '{"disableAllHooks":true}', '--tools', 'Read,Edit,Write,Glob,Grep']
+    if selected['model'] is not None:
+        command += ['--model', selected['model']]
+    if selected['effort'] is not None:
+        command += ['--effort', selected['effort']]
+    return command
 
 
 def _verify(policy, tree, job_dir, deadline):
@@ -120,6 +140,8 @@ def run_job(job):
                                 Path(job['home']) / 'desktop' / 'admin' / 'operations' / 'releases', policy)
         return {'status': 'ready_to_activate', 'release_path': str(release), 'repair_commit': repair,
                 'commit': _git(release, 'rev-parse', 'HEAD'), 'verification': 'Trusted reproduce + verify commands passed in clean merged snapshot'}
+    if runner is None:
+        runner = default_runner(job['home'])
     base = _git(repo, 'rev-parse', 'HEAD')
     branch = 'codex/operations-' + job['incident']['id'][:16] + '-' + str(job['incident']['attempts'])
     tree = job_dir / 'worktree'

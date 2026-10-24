@@ -4,6 +4,21 @@
 
 -- ---------------------------------------------------------------- board
 
+CREATE TABLE IF NOT EXISTS ai_settings (
+    singleton   INTEGER PRIMARY KEY CHECK (singleton = 1),
+    ai_json     TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS execution_settings (
+    singleton   INTEGER PRIMARY KEY CHECK (singleton = 1),
+    codex       TEXT NOT NULL DEFAULT 'workspace-write'
+                CHECK (codex IN ('read-only', 'workspace-write', 'danger-full-access')),
+    claude      TEXT NOT NULL DEFAULT 'default'
+                CHECK (claude IN ('default', 'acceptEdits', 'bypassPermissions')),
+    updated_at  TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS projects (
     name        TEXT PRIMARY KEY,
     root        TEXT NOT NULL UNIQUE,      -- absolute path, as given (compare with crew.store.norm_path)
@@ -339,7 +354,8 @@ CREATE TABLE IF NOT EXISTS channel_digests (
     message_count   INTEGER NOT NULL,
     trigger         TEXT NOT NULL CHECK (trigger IN ('manual', 'auto')),
     model           TEXT NOT NULL,
-    cost_usd        REAL NOT NULL,
+    runtime         TEXT NOT NULL DEFAULT 'claude' CHECK (runtime IN ('claude', 'codex')),
+    cost_usd        REAL,
     created_at      TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS channel_digests_project ON channel_digests (project, id);

@@ -18,7 +18,7 @@ const fixture = () => ({models:[{id:"claude-sonnet", name:"Sonnet"}, {id:"claude
   ]});
 const session = extra => ({session_id:"session-codex", runtime:"codex", model:"gpt-a", effort:"medium",
   applied:{model:"gpt-a", effort:"medium"}, where:"bg", running:true, ...extra});
-const form = (runtime="codex", model="", effort="") => ({elements:{name:{value:" fixture "}, task:{value:" work "},
+const form = (runtime="codex", model="", effort="") => ({dataset:{runtimeExplicit:"true"},elements:{name:{value:" fixture "}, task:{value:" work "},
   runtime:{value:runtime}, model:{value:model}, effort:{value:effort}},
   submit:{disabled:false}, refresh:{disabled:false, hidden:false},
   querySelector(selector) { return selector === '[type="submit"]' ? this.submit : this.refresh; }});
@@ -37,8 +37,8 @@ function harness(state = fixture(), fetcher = () => { throw new Error("Unexpecte
   // Expose lexical UI functions while leaving setup and its state-poll timer off.
   const end = "  setup();\n})();";
   assert(source.endsWith(end + "\n") || source.endsWith(end));
-  vm.runInContext(source.replace(end, `  window.ui = {runtimeList, runtimeInfo, modelEfforts, modelMenu, optionChange,
-    optionsLabel, leaderPayload, renderLeaderRuntime, refreshRuntimes, editorHandoffReason, sessionMenu, chatAccess,
+  vm.runInContext(source.replace(end, `  window.ui = {runtimeList, runtimeInfo, defaultRuntime, modelEfforts, modelMenu, optionChange,
+    optionsLabel, leaderPayload, renderLeaderRuntime, selectLeaderOption, refreshRuntimes, editorHandoffReason, sessionMenu, chatAccess,
     openTodos, todosOf, pendingOf, todoCard, todoTray, todoExpanded, todoTrayExpanded, todoActions,
     todoResolvePayload, resolveTodo, renderTodos, replace,
     decisionTrust, trustReportUrl, readTrustReport,
@@ -51,6 +51,42 @@ function harness(state = fixture(), fetcher = () => { throw new Error("Unexpecte
   return {ui:sandbox.window.ui, nodes, location:sandbox.location};
 }
 const plain = value => JSON.parse(JSON.stringify(value));
+
+test("new leader auto selects a sole runtime and asks for a choice when both are installed", () => {
+  for(const installed of [["codex"],["claude"],["claude","codex"],[]]){
+    const state=fixture();state.runtimes.reverse();for(const runtime of state.runtimes)runtime.available=installed.includes(runtime.id);
+    const {ui,nodes}=harness(state),leader=form("");leader.dataset={};nodes.set("leader-form",leader);ui.renderLeaderRuntime();
+    const expected=installed.length===1?installed[0]:"";
+    assert.equal(leader.elements.runtime.value,expected);assert.equal(leader.submit.disabled,expected==="");
+    if(expected)assert.equal(ui.leaderPayload(leader).runtime,expected);else{const reason=installed.length?/选择默认载体/:/没有可用的执行工具/;assert.match(nodes.get("leader-runtime-status").textContent,reason);assert.throws(()=>ui.leaderPayload(leader),reason);ui.selectLeaderOption(leader,"runtime",installed[0]||"");if(installed.length)assert.equal(ui.leaderPayload(leader).runtime,installed[0]);}
+  }
+});
+
+test("runtime refresh corrects an automatic leader default while preserving the name and task draft", async () => {
+  const updated=fixture();updated.runtimes[0].available=false;updated.runtimes[0].models=[];
+  const calls=[],{ui,nodes}=harness(fixture(),async url=>{calls.push(url);return {ok:true,json:async()=>({runtimes:updated.runtimes})};});
+  const leader=form("");leader.dataset={};nodes.set("leader-form",leader);ui.renderLeaderRuntime();assert.equal(leader.elements.runtime.value,"");
+  await ui.refreshRuntimes();assert.equal(leader.elements.runtime.value,"codex");assert.equal(leader.submit.disabled,false);assert.equal(ui.leaderPayload(leader).runtime,"codex");
+  assert.equal(leader.elements.name.value," fixture ");assert.equal(leader.elements.task.value," work ");assert.deepEqual(calls,["/api/runtimes?project=fixture"]);
+});
+
+test("saved default overrides installation order and keeps custom model and effort through catalog refresh",async()=>{
+  const state=fixture();state.ai={default:{runtime:"codex",model:"future-native",effort:"deep"},digest:null,git:null,operations:null};
+  const {ui,nodes}=harness(state,async()=>({ok:true,json:async()=>({runtimes:state.runtimes})}));
+  const leader=form("");leader.dataset={};nodes.set("leader-form",leader);ui.renderLeaderRuntime();await ui.refreshRuntimes();
+  assert.equal(leader.elements.runtime.value,"codex");assert.equal(leader.elements.model.value,"future-native");assert.equal(leader.elements.effort.value,"deep");
+  assert.deepEqual(plain(ui.leaderPayload(leader)),{name:"fixture",task:"work",runtime:"codex",model:"future-native",effort:"deep"});
+  ui.selectLeaderOption(leader,"runtime","claude");ui.renderLeaderRuntime();assert.equal(leader.elements.runtime.value,"claude");assert.equal(leader.elements.model.value,"");
+});
+
+test("explicit runtime and model choices survive a changed installation catalog instead of silently switching tools", async () => {
+  const updated=fixture();updated.runtimes[1]={...updated.runtimes[1],available:false,error:"Codex 检测暂时失败",models:[],efforts:[]};
+  const {ui,nodes}=harness(fixture(),async()=>({ok:true,json:async()=>({runtimes:updated.runtimes})}));
+  const leader=form("");leader.dataset={};nodes.set("leader-form",leader);ui.renderLeaderRuntime();
+  ui.selectLeaderOption(leader,"runtime","codex");ui.selectLeaderOption(leader,"model","gpt-a");ui.selectLeaderOption(leader,"effort","medium");ui.renderLeaderRuntime();
+  await ui.refreshRuntimes();assert.equal(leader.elements.runtime.value,"codex");assert.equal(leader.elements.model.value,"gpt-a");assert.equal(leader.elements.effort.value,"medium");
+  assert.equal(leader.submit.disabled,true);assert.match(nodes.get("leader-runtime-status").textContent,/Codex 检测暂时失败/);assert.throws(()=>ui.leaderPayload(leader),/Codex 检测暂时失败/);
+});
 
 test("collected offline people can start a conversation while known external sessions stay readonly", () => {
   const {ui}=harness();
@@ -110,30 +146,33 @@ test("Codex editor handoff is disabled while leader chat and member history rema
   assert(!ui.sessionMenu(claude).includes(reason));
 });
 
-test("creation form resets foreign models and unsupported efforts on tool/model changes", () => {
+test("creation preserves custom models and explicit efforts and reports known capability conflicts", () => {
   const {ui, nodes} = harness();
-  const leader = form("codex", "claude-sonnet", "max"); nodes.set("leader-form", leader);
+  const leader = form("codex", "future-model", "future-effort"); nodes.set("leader-form", leader);
   ui.renderLeaderRuntime();
-  assert.equal(leader.elements.model.value, "");
+  assert.equal(leader.elements.model.value, "future-model");
   assert(nodes.get("leader-model-options").innerHTML.includes('data-model="gpt-a"'));
-  assert(!nodes.get("leader-model-options").innerHTML.includes('data-model="claude-sonnet"'));
+  assert(nodes.get("leader-model-options").innerHTML.includes('自定义：future-model'));
+  assert.equal(leader.elements.effort.value,"future-effort");
+  assert.equal(ui.leaderPayload(leader).model,"future-model");
   leader.elements.model.value = "gpt-b"; leader.elements.effort.value = "medium";
   ui.renderLeaderRuntime();
-  assert.equal(leader.elements.effort.value, "");
+  assert.equal(leader.elements.effort.value, "medium");
   assert(nodes.get("leader-effort-options").innerHTML.includes('data-effort="high"'));
-  assert(!nodes.get("leader-effort-options").innerHTML.includes('data-effort="medium"'));
-  assert.deepEqual(plain(ui.leaderPayload(leader)), {name:"fixture", task:"work", runtime:"codex", model:"gpt-b", effort:null});
+  assert(nodes.get("leader-effort-options").innerHTML.includes('data-effort="medium"'));
+  assert.throws(()=>ui.leaderPayload(leader),/不支持/);
+  ui.selectLeaderOption(leader,"runtime","claude");assert.equal(leader.elements.model.value,"");assert.equal(leader.elements.effort.value,"");
 });
 
 test("creation and options refuse a model or effort from the other tool", () => {
   const {ui} = harness();
-  assert.throws(() => ui.leaderPayload(form("codex", "claude-sonnet")), /模型列表/);
+  assert.equal(ui.leaderPayload(form("codex", "future-model")).model,"future-model");
   assert.throws(() => ui.leaderPayload(form("codex", "gpt-a", "max")), /不支持/);
   assert.throws(() => ui.optionChange(session(), "model", "claude-sonnet"), /模型列表/);
   assert.throws(() => ui.optionChange(session(), "effort", "max"), /不支持/);
-  assert.deepEqual(plain(ui.optionChange(session({model:"gpt-b", effort:"max", applied:{model:"gpt-b", effort:"max"}}), "model", "gpt-a")), {model:"gpt-a", effort:"medium"});
-  assert.deepEqual(plain(ui.optionChange(session(), "model", "gpt-b")), {model:"gpt-b", effort:"high"});
-  assert.throws(() => ui.optionChange(session(), "model", "gpt-c"), /先停下/);
+  assert.throws(()=>ui.optionChange(session({model:"gpt-b", effort:"max", applied:{model:"gpt-b", effort:"max"}}), "model", "gpt-a"),/不支持当前 effort/);
+  assert.throws(()=>ui.optionChange(session(), "model", "gpt-b"),/不支持当前 effort/);
+  assert.throws(() => ui.optionChange(session(), "model", "gpt-c"), /停下会话/);
   assert.deepEqual(plain(ui.optionChange(session({where:"offline", running:false}), "model", "gpt-c")), {model:"gpt-c", effort:null});
   assert(!("runtime" in ui.optionChange(session(), "effort", "low")));
 });
