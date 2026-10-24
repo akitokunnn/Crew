@@ -67,14 +67,18 @@ class Operations:
 
     Goal callbacks persist a pause token before any repair begins. Resume is a
     compare-and-set against the latest user intent, supplied by the goal store.
-    ``repository`` is an injection point for isolated test repositories; normal
-    operation binds exclusively to Crew's own source checkout.
+    ``repository`` injects an isolated test checkout. Normal jobs use the trusted
+    policy.json ``repository`` absolute path, or this module's source checkout.
+    Flat portable packages require that explicit Crew Git repository plus trusted
+    ``reproduce`` / ``verify`` argv arrays. Configuration is checked only when a
+    repair/application job is actually needed, never during healthy startup.
     """
     def __init__(self, home, *, running_goals=None, pause_goal=None, resume_goal=None, repository=None,
                  activate_release=None):
         self.home = Path(home).resolve()
         self.directory = directory(home)
-        self.repository = Path(repository).resolve() if repository else Path(__file__).resolve().parents[2]
+        self._repository_override = Path(repository).resolve() if repository is not None else None
+        self.repository = self._repository_override or Path(__file__).resolve().parents[2]
         self.running_goals = running_goals or (lambda: ())
         self.pause_goal, self.resume_goal = pause_goal, resume_goal
         self.activate_release = activate_release
@@ -88,6 +92,28 @@ class Operations:
 
     def _save(self):
         _atomic_json(self.directory / 'state.json', self.state)
+
+    def _repository_for_job(self, policy):
+        if self._repository_override is not None:
+            repository = self._repository_override
+        elif 'repository' in policy:
+            configured = policy['repository']
+            if not isinstance(configured, str) or not configured or not Path(configured).is_absolute():
+                raise OperationsError('RepositoryConfigurationRequired: policy.repository must be an absolute Crew Git repository path; '
+                                      'configure trusted reproduce/verify command arrays in policy.json')
+            repository = Path(configured).resolve()
+        else:
+            repository = Path(__file__).resolve().parents[2]
+        # Git validation belongs to the finite worker. Even a slow/unavailable
+        # repository cannot block the supervisor's existing health cadence.
+        self.repository = repository
+        return repository
+
+    def _configuration_error(self, incident, error):
+        message = type(error).__name__ + ': ' + str(error)
+        if incident['summary'] != message:
+            incident['summary'] = message
+            self._save()
 
     def observe_service(self, state, evidence):
         """Consume the existing supervisor probe, never perform another probe."""
@@ -260,6 +286,11 @@ class Operations:
             return
         policy_path = self.directory / 'policy.json'
         if not policy_path.exists():
+            for incident in self.state['incidents']:
+                if incident['status'] == 'queued':
+                    self._configuration_error(incident, OperationsError(
+                        'OperationsConfigurationRequired: configure policy.json repository (absolute Crew Git root) '
+                        'and trusted reproduce/verify command arrays before AI repair'))
             return
         policy = _read_json(policy_path, 65536)
         for incident in self.state['incidents']:
@@ -267,6 +298,13 @@ class Operations:
             if not releasing and (incident['status'] != 'queued' or not incident['analyze'] or incident['attempts'] >= 2 or
                     incident['evidence_hash'] in incident['analyzed_hashes']):
                 continue
+            from .operations_worker import _policy
+            try:
+                _policy(policy)
+                repository = self._repository_for_job(policy)
+            except (OSError, OperationsError, subprocess.SubprocessError) as exc:
+                self._configuration_error(incident, exc)
+                raise
             if not releasing:
                 incident['attempts'] += 1
                 incident['analyzed_hashes'].append(incident['evidence_hash'])
@@ -274,7 +312,7 @@ class Operations:
             name = 'release-' + uuid.uuid4().hex if releasing else str(incident['attempts'])
             job_dir = self.directory / 'incidents' / incident['id'] / name
             job_dir.mkdir(parents=True, exist_ok=True)
-            job = dict(home=str(self.home), repository=str(self.repository), incident=incident,
+            job = dict(home=str(self.home), repository=str(repository), incident=incident,
                        policy=policy, directory=str(job_dir), mode=mode)
             job_path, result_path = job_dir / 'job.json', job_dir / 'result.json'
             _atomic_json(job_path, job)
@@ -284,6 +322,7 @@ class Operations:
                                                 cwd=Path(__file__).resolve().parents[1],
                                                 stdin=subprocess.DEVNULL, stdout=log, stderr=log, **options)
             incident['status'] = 'validating_release' if releasing else 'repairing'
+            incident['summary'] = None
             self.state['active_worker'] = dict(pid=self.process.pid, incident_id=incident['id'], result=str(result_path),
                                               evidence_hash=incident['evidence_hash'], mode=mode)
             self._save()
@@ -302,6 +341,13 @@ class Operations:
         if result.get('status') != 'awaiting_merge':
             raise OperationsError('No independently verified repair commit to apply')
         policy = _read_json(self.directory / 'policy.json', 65536)
+        from .operations_worker import _policy
+        try:
+            _policy(policy)
+            self._repository_for_job(policy)
+        except (OSError, OperationsError, subprocess.SubprocessError) as exc:
+            self._configuration_error(incident, exc)
+            raise
         if policy.get('merge_ref') != merged_ref:
             raise OperationsError('UnapprovedMergeTarget: project merge ref does not match policy')
         if incident.get('pending_merge') or (incident.get('release') or {}).get('status') in ('staged', 'active'):

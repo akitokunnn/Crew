@@ -55,6 +55,22 @@ def _git(repo, *args):
     return result.stdout.strip()
 
 
+def validate_repository(repo):
+    """Validate the exact trusted Crew worktree root; never search or clone."""
+    repo = Path(repo).resolve()
+    hint = ('RepositoryConfigurationRequired: configure policy.json repository as the absolute Crew Git worktree root '
+            'and provide trusted reproduce/verify command arrays')
+    if not (repo / 'plugin' / 'crew' / 'supervisor.py').is_file():
+        raise RepairError(hint + '; NotCrewRepository: plugin/crew/supervisor.py is missing')
+    try:
+        root = Path(_git(repo, 'rev-parse', '--show-toplevel')).resolve()
+    except RepairError as exc:
+        raise RepairError(hint + '; ' + str(exc)) from exc
+    if root != repo:
+        raise RepairError(hint + '; NotGitRoot: repository must be the actual Git root')
+    return repo
+
+
 def _policy(policy):
     if not isinstance(policy, dict):
         raise RepairError('Repair policy must be an object')
@@ -97,8 +113,7 @@ def run_job(job):
     timeout, runner = _policy(policy)
     deadline = time.monotonic() + timeout
     # Never repair a business project selected by incident evidence or the model.
-    if not (repo / 'plugin' / 'crew' / 'supervisor.py').is_file():
-        raise RepairError('NotCrewRepository: repair is restricted to the controller-bound Crew repository')
+    validate_repository(repo)
     if job.get('mode') == 'release':
         repair = job['incident']['result']['commit']
         release = stage_release(repo, repair, job['incident']['pending_merge'],

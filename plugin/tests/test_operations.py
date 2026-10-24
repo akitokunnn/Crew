@@ -3,6 +3,7 @@ import tests
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -11,6 +12,7 @@ import unittest
 
 from crew import operations, operations_worker
 from crew import supervisor
+from unittest import mock
 from crew.supervisor import _atomic_json
 
 
@@ -92,6 +94,135 @@ class OperationsTests(unittest.TestCase):
             admin.tick()
         self.assertFalse(admin.directory.exists())
         self.assertIsNone(admin.state['active_worker'])
+
+    def flat_runtime(self):
+        flat = self.root / 'retained' / 'content-id'
+        flat.mkdir(parents=True)
+        plugin = Path(__file__).resolve().parents[1]
+        shutil.copytree(plugin / 'crew', flat / 'crew', ignore=shutil.ignore_patterns('__pycache__'))
+        shutil.copyfile(plugin / 'crew_desktop.py', flat / 'crew_desktop.py')
+        return flat
+
+    def run_flat_operations(self, flat):
+        script = '''
+import json,sys,time
+from crew import operations
+admin=operations.Operations(sys.argv[1],activate_release=lambda path,incident:True)
+error=None
+try:
+    admin.tick()
+    deadline=time.monotonic()+20
+    while admin.state['active_worker'] and time.monotonic()<deadline:
+        time.sleep(.04);admin.tick()
+except operations.OperationsError as exc:
+    error=type(exc).__name__+': '+str(exc)
+print(json.dumps({'module':operations.__file__,'repository':str(admin.repository),'state':admin.state,'error':error}))
+'''
+        result = subprocess.run([sys.executable, '-c', script, str(self.home)], cwd=flat,
+                                env={**os.environ, 'PYTHONPATH': str(flat)}, capture_output=True,
+                                text=True, encoding='utf-8', timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def test_flat_runtime_uses_explicit_policy_repository_for_actual_repair_and_cli_release(self):
+        flat = self.flat_runtime()
+        policy = {**self.policy(), 'repository': str(self.repo)}
+        _atomic_json(operations.directory(self.home) / 'policy.json', policy)
+        operations.submit_incident(self.home, 'bug', 'crew-only', {'actual': 'broken'})
+        repaired = self.run_flat_operations(flat)
+        self.assertIsNone(repaired['error'])
+        self.assertEqual(Path(repaired['module']).parent.parent, flat)
+        self.assertEqual(Path(repaired['repository']), self.repo)
+        incident = repaired['state']['incidents'][0]
+        self.assertEqual(incident['status'], 'awaiting_merge')
+        self.assertEqual(self.git('rev-parse', incident['result']['branch']), incident['result']['commit'])
+        self.git('merge', '--ff-only', incident['result']['commit'])
+        queued = subprocess.run([sys.executable, '-m', 'crew.operations', '--home', str(self.home),
+                                 '--incident', incident['id'], '--merged-ref', policy['merge_ref']], cwd=flat,
+                                env={**os.environ, 'PYTHONPATH': str(flat)}, capture_output=True,
+                                text=True, encoding='utf-8', timeout=10)
+        self.assertEqual(queued.returncode, 0, queued.stderr)
+        applied = self.run_flat_operations(flat)
+        self.assertIsNone(applied['error'])
+        release = applied['state']['incidents'][0]['release']
+        self.assertEqual(release['status'], 'staged')
+        self.assertEqual((Path(release['release_path']) / 'bug.py').read_text(), 'VALUE = "fixed"\n')
+
+    def test_flat_runtime_missing_repository_is_visible_without_starting_native_or_worktree(self):
+        flat = self.flat_runtime()
+        _atomic_json(operations.directory(self.home) / 'policy.json', self.policy())
+        operations.submit_incident(self.home, 'bug', 'crew-only', {'actual': 'broken'})
+        observed = self.run_flat_operations(flat)
+        self.assertIsNone(observed['error'])
+        incident = observed['state']['incidents'][0]
+        self.assertIn('repository', incident['summary'])
+        self.assertIn('reproduce', incident['summary'])
+        self.assertIsNone(observed['state']['active_worker'])
+        self.assertEqual(incident['status'], 'failed')
+        self.assertIn('RepositoryConfigurationRequired', incident['result']['error'])
+        self.assertIsNone(incident['result'].get('worktree'))
+        self.assertFalse((operations.directory(self.home) / 'incidents' / incident['id'] / '1' / 'native-runner.log').exists())
+
+    def test_bad_optional_repository_policy_does_not_block_healthy_supervisor_ticks(self):
+        admin = operations.Operations(self.home)
+        _atomic_json(admin.directory / 'policy.json', {'repository': 'relative/not-git'})
+        with mock.patch('crew.operations_worker.validate_repository', side_effect=AssertionError('No repair job')):
+            admin.observe_service('healthy', {'state': 'healthy'})
+            admin.tick()
+        self.assertEqual(admin.state['incidents'], [])
+        self.assertIsNone(admin.state['active_worker'])
+
+    def test_repository_git_probe_runs_only_in_worker_not_supervisor_tick(self):
+        admin = operations.Operations(self.home)
+        _atomic_json(admin.directory / 'policy.json', {**self.policy(), 'repository': str(self.repo)})
+        operations.submit_incident(self.home, 'bug', 'crew-only', {'actual': 'broken'})
+        with mock.patch('crew.operations_worker.validate_repository', side_effect=AssertionError('Controller must not probe Git')):
+            admin.tick()
+        self.assertIsNotNone(admin.state['active_worker'])
+        self.wait_worker(admin)
+        self.assertEqual(admin.state['incidents'][0]['status'], 'awaiting_merge')
+
+    def test_worker_git_timeout_is_recorded_before_native_or_worktree(self):
+        job = self.job()
+        path = self.root / 'job.json'
+        _atomic_json(path, job)
+        with mock.patch('crew.operations_worker._git', side_effect=subprocess.TimeoutExpired(['git', 'rev-parse'], .01)):
+            self.assertEqual(operations_worker.main([str(path)]), 1)
+        result = json.loads((Path(job['directory']) / 'result.json').read_text())
+        self.assertIn('TimeoutExpired:', result['error'])
+        self.assertIsNone(result.get('worktree'))
+        self.assertFalse((Path(job['directory']) / 'native-runner.log').exists())
+
+    def test_injected_repository_precedes_policy_and_relative_policy_is_never_guessed(self):
+        policy = {**self.policy(), 'repository': 'relative/not-git'}
+        admin = operations.Operations(self.home)
+        _atomic_json(admin.directory / 'policy.json', policy)
+        operations.submit_incident(self.home, 'bug', 'crew-only', {'actual': 'broken'})
+        with self.assertRaisesRegex(operations.OperationsError, 'absolute'):
+            admin.tick()
+        self.assertIsNone(admin.state['active_worker'])
+        self.assertEqual(admin.state['incidents'][0]['attempts'], 0)
+        injected = operations.Operations(self.home, repository=self.repo)
+        injected.tick()
+        self.wait_worker(injected)
+        self.assertEqual(injected.state['incidents'][0]['status'], 'awaiting_merge')
+
+    def test_worker_rejects_non_git_or_nested_repository_before_native_or_worktree(self):
+        for candidate in (self.root / 'not-git', self.repo / 'nested-not-root'):
+            with self.subTest(repository=candidate):
+                (candidate / 'plugin' / 'crew').mkdir(parents=True)
+                (candidate / 'plugin' / 'crew' / 'supervisor.py').write_text('# fake marker\n')
+                admin = operations.Operations(self.home)
+                _atomic_json(admin.directory / 'policy.json', {**self.policy(), 'repository': str(candidate)})
+                operations.submit_incident(self.home, 'bug', str(candidate), {'actual': 'broken'})
+                admin.tick()
+                self.wait_worker(admin)
+                self.assertIsNone(admin.state['active_worker'])
+                incident = admin.state['incidents'][-1]
+                self.assertEqual(incident['status'], 'failed')
+                self.assertIn('RepositoryConfigurationRequired', incident['result']['error'])
+                self.assertIsNone(incident['result'].get('worktree'))
+                self.assertIn('repository', incident['summary'])
 
     def test_real_isolated_repair_retains_branch_commit_and_independent_before_after(self):
         result = operations_worker.run_job(self.job())
