@@ -1,5 +1,7 @@
 """VS Code adoption and one-way archive sync use isolated persisted sources."""
 import tests  # Install the production-service connection guard.
+import contextlib
+import io
 import json
 import os
 import sqlite3
@@ -545,6 +547,23 @@ class VSCodeServiceTests(unittest.TestCase):
         self.assertIn("temporary git failure", self.service.vscode_error)
         self.service._refresh_vscode()
         self.assertIsNone(self.service.vscode_error)
+        self.assertEqual(self.ids()["others"], {sid})
+
+    def test_temporary_database_error_elsewhere_does_not_stop_session_scans(self):
+        sid = identity(1)
+        self.record(sid)
+        stop = mock.Mock()
+        stop.is_set.return_value = False
+        stop.wait.side_effect = [False, True]
+        self.service.stop = stop
+        with mock.patch.object(self.service, "digest_channels", side_effect=[sqlite3.OperationalError("database is locked"), None]), \
+                mock.patch.object(self.service, "_refresh_vscode", wraps=self.service._refresh_vscode) as refresh, \
+                mock.patch.object(self.service.chat, "auto_resume") as resume, \
+                contextlib.redirect_stderr(io.StringIO()) as log:
+            self.service._poll_agents()
+        self.assertIn("database is locked", log.getvalue())
+        self.assertEqual(refresh.call_count, 2)
+        self.assertEqual(resume.call_count, 1)
         self.assertEqual(self.ids()["others"], {sid})
 
     def test_refresh_waits_for_usage_scan_snapshot_before_committing_archive(self):

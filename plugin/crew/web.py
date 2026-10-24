@@ -97,12 +97,17 @@ class Service:
         while not self.stop.is_set():
             self.refresh_agents()
             self._refresh_vscode()
-            self.digest_channels()
-            with self.agents_lock:
-                agents, error = self.agents, self.agents_error
-            with self.write_lock, closing(store.connect(self.home)) as conn:
-                self.chat.auto_resume(conn, agents, now=self.now().isoformat(timespec="milliseconds").replace("+00:00", "Z"),
-                                      runtime=None if error is None else 'codex')
+            try:
+                self.digest_channels()
+                with self.agents_lock:
+                    agents, error = self.agents, self.agents_error
+                with self.write_lock, closing(store.connect(self.home)) as conn:
+                    self.chat.auto_resume(conn, agents, now=self.now().isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+                                          runtime=None if error is None else 'codex')
+            except (sqlite3.Error, OSError, subprocess.SubprocessError):
+                # A temporary failure in another task sharing this worker must
+                # not permanently disable agent discovery and VS Code scans.
+                traceback.print_exc()
             if self.stop.wait(10):
                 break
 
