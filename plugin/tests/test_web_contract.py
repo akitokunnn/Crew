@@ -12,7 +12,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import ProxyHandler, Request, build_opener
 
-from crew import session_ops, board, store, themes, usage, web
+from crew import session_ops, board, decision_flow, store, themes, usage, web
 from test_shell import NOW, PLUGIN, ShellFixture
 from test_usage import assistant
 
@@ -80,7 +80,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
     def test_state_exact_shape_and_empty_limits(self):
         expected = {"project", "projects", "now", "agents_error", "notification", "leaders",
                     "members", "decisions", "candidates", "attention", "limits", "vscode_error", "models", "efforts", "channel", "themes",
-                    "runtimes", "todos", "todo_count"}
+                    "runtimes", "todos", "todo_count", "goals"}
         state = self.state()
         self.assertEqual(set(state), expected)
         self.assertEqual(set(state["project"]), {"name", "root", "theme"})
@@ -89,10 +89,16 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual(state["themes"], themes.THEMES)
         self.assertEqual(state["channel"], {"unread": 0, "latest_id": 0, "digesting": False, "digest_error": None, "digest_id": None})
         self.assertEqual(state["limits"], {"claude": {"five_hour": None, "seven_day": None}, "codex": None})
+        self.assertEqual(state['goals'], [])
         leader = state["leaders"][0]
         self.assertEqual(set(leader), {"session_id", "name", "goal", "status", "busy", "running", "web_chat",
             "cc_name", "last_seq", "last_reply_id", "read_seq", "unread", "pending", "notices_pending", "member_ids",
-            "model", "effort", "applied", "activity", "context", "where", "codex", "codex_older", "is_git_admin", "priority", "runtime", "trust"})
+            "model", "effort", "applied", "activity", "context", "where", "codex", "codex_older", "is_git_admin", "priority", "runtime", "trust", "runtime_switch"})
+        self.assertEqual(set(leader['runtime_switch']), {'allowed', 'reason', 'pending_handoff', 'last_switch_at'})
+        self.assertFalse(leader['runtime_switch']['allowed'])
+        self.assertTrue(leader['runtime_switch']['reason'])  # The fixture leader is external, not owned by Crew.
+        self.assertFalse(leader['runtime_switch']['pending_handoff'])
+        self.assertIsNone(leader['runtime_switch']['last_switch_at'])
         self.assertIsNone(leader['priority'])
         self.assertEqual((leader["session_id"], leader["member_ids"], leader["unread"]), ("s3", ["s1"], 0))
         # Leaders dispatch Codex for their own bulk work too (user 10-23), listed like members'.
@@ -102,8 +108,37 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual(set(landing), expected)
         self.assertIsNone(landing["project"])
         self.assertEqual(landing["channel"], {"unread": 0, "latest_id": 0, "digesting": False, "digest_error": None, "digest_id": None})
-        for key in ("leaders", "members", "decisions", "attention"):
+        for key in ("leaders", "members", "decisions", "attention", "goals"):
             self.assertEqual(landing[key], [])
+
+    def test_goal_card_exact_shape_matches_create_list_state_and_detail_without_starting_work(self):
+        before = len(self.processes)
+        code, response, _ = self.request('/api/goals/create', {'leader_session_id':'s3', 'title':'验证交付',
+            'request':'完成原始输入要求', 'acceptance':['具体 example 达标']})
+        self.assertEqual(code,200,response)
+        self.assertEqual(set(response),{'goal'})
+        goal = response['goal']
+        self.assertEqual(set(goal),{'id','project','leader_session_id','title','original_request','status',
+            'requirement_version','current_round','priority','manual_pause','reason','version','created_at','updated_at',
+            'dependencies','requirements','assignments','rounds','request','acceptance','constraints','report_available'})
+        self.assertEqual((goal['project'],goal['leader_session_id'],goal['title'],goal['status']),('demo','s3','验证交付','queued'))
+        self.assertEqual((goal['request'],goal['original_request']),('完成原始输入要求','完成原始输入要求'))
+        self.assertEqual((goal['current_round'],goal['requirement_version'],goal['version']),(1,1,1))
+        self.assertEqual(goal['acceptance'],[{'id':'a1','title':'具体 example 达标'}])
+        self.assertFalse(goal['report_available']);self.assertFalse(goal['manual_pause'])
+        self.assertEqual((goal['dependencies'],goal['constraints']),([],[]))
+        self.assertEqual(set(goal['requirements']),{'goal_id','version','request','change_text','actor','created_at','acceptance','constraints','source'})
+        self.assertEqual(goal['requirements']['acceptance'],goal['acceptance'])
+        self.assertEqual(goal['requirements']['goal_id'],goal['id'])
+        self.assertEqual(set(goal['assignments'][0]),{'goal_id','session_id','task','status','created_at','updated_at'})
+        self.assertEqual((goal['assignments'][0]['session_id'],goal['assignments'][0]['status']),('s3','assigned'))
+        self.assertEqual(set(goal['rounds'][0]),{'goal_id','number','requirement_version','status','outcome','reason','opened_at','ended_at'})
+        self.assertEqual(self.state()['goals'],[goal])
+        self.assertEqual(self.request('/api/goals',project='demo')[:2],(200,{'goals':[goal]}))
+        code, detail, _ = self.request('/api/goal',project='demo',id=goal['id'])
+        self.assertEqual(code,200,detail);self.assertEqual(set(detail),{'goal','executions','context','reports'})
+        self.assertEqual(detail['goal'],goal);self.assertEqual(detail['executions'],[]);self.assertEqual(detail['reports'],[])
+        self.assertEqual(len(self.processes),before)
 
     def test_project_theme_api_persists_choice_and_rejects_invalid_theme(self):
         before = self.state()["project"]
@@ -174,12 +209,40 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual({row["id"] for row in state["decisions"]}, {opened, own})
         decision = next(row for row in state["decisions"] if row["id"] == opened)
         self.assertEqual(set(decision), {"id", "session_id", "asker", "leader_session_id", "question",
-                                        "options", "recommendation", "blocking", "created_at", "held", "held_at", "brief", "needs_review"})
+                                        "options", "recommendation", "blocking", "created_at", "held", "held_at", "brief", "needs_review",
+                                        "goal_id", "presentation_stage", "discussed_at", "ready_at", "notice_id"})
         self.assertTrue(decision['needs_review'])
         self.assertIsNone(decision['brief'])
         self.assertEqual((decision["asker"], decision["leader_session_id"]), ("one", "s3"))
         self.assertEqual((decision["held"], decision["held_at"]), (False, None))
+        self.assertEqual((decision['goal_id'],decision['presentation_stage'],decision['discussed_at'],decision['ready_at'],decision['notice_id']),
+                         (None,'notice',None,None,None))
         self.assertEqual(state["leaders"][0]["pending"], 2)
+
+    def test_decision_disclosure_fields_persist_in_exact_state_shape_across_discussion_and_ready(self):
+        brief={'title':'发布时机', 'context':'本地验证完成', 'why_user':'发布时间影响用户安排',
+               'recommendation_reason':'先由用户验收更容易发现实际问题', 'impact':'等待会推迟上线',
+               'options':[{'label':'立即发布','consequence':'用户立即拿到新版本'},
+                          {'label':'等待验收','consequence':'用户验收后再发布'}]}
+        number=board.ask(self.conn,'s1','选择发布时间',brief=brief,recommendation='等待验收',now=NOW)
+        before=len(self.processes)
+        def shown():return next(row for row in self.state()['decisions'] if row['id']==number)
+        notice=shown();keys=set(notice)
+        self.assertEqual(notice['presentation_stage'],'notice');self.assertEqual(notice['brief'],brief)
+        self.assertFalse(notice['needs_review']);self.assertIsNone(notice['notice_id'])
+        # Seed the durable stages directly: this case verifies the read-only HTTP state contract.
+        # Model dispatch from an explicit discuss request is tested by the goal HTTP scenarios.
+        discussion=decision_flow.discuss(self.conn,number,'demo',now=NOW)
+        row=shown();self.assertEqual(set(row),keys)
+        self.assertEqual((row['presentation_stage'],row['discussed_at'],row['ready_at'],row['notice_id']),
+                         ('discussion',NOW,None,discussion['notice_id']))
+        ready_at='2026-10-21T08:01:00.000Z'
+        decision_flow.ready(self.conn,number,'demo',now=ready_at)
+        row=shown();self.assertEqual(set(row),keys)
+        self.assertEqual((row['presentation_stage'],row['discussed_at'],row['ready_at'],row['notice_id']),
+                         ('ready',NOW,ready_at,discussion['notice_id']))
+        self.assertEqual(row['brief'],brief);self.assertEqual(row['options'],['立即发布','等待验收'])
+        self.assertEqual(len(self.processes),before)
 
     def test_hold_state_keeps_question_but_excludes_pending_and_attention(self):
         active = board.ask(self.conn, "s1", "Choose API", now=NOW)

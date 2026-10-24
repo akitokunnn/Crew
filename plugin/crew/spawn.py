@@ -22,7 +22,7 @@ def _check_ignore(root):
     except OSError as exc:
         raise board.BoardError('Git 工作区忽略规则检查无法执行：'+str(exc)) from exc
 
-def command(session_id, name, role, resume=False, model=None, effort=None, agent=None, runtime="claude"):
+def command(session_id, name, role, resume=False, model=None, effort=None, agent=None, runtime="claude", instructions=None):
     models.validate_options(model, effort, runtime=runtime)
     if runtime == "codex":
         # Model, effort, start/resume and native thread id are RPC parameters;
@@ -31,7 +31,9 @@ def command(session_id, name, role, resume=False, model=None, effort=None, agent
     args = ["claude", "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
             "--include-partial-messages", "--replay-user-messages", "--permission-mode", "bypassPermissions",
             "--name", name]
-    if role == "leader":
+    if instructions is not None:
+        args += ['--append-system-prompt', instructions]
+    elif role == "leader":
         args += ["--agent", "crew:leader" if agent is None else agent]
     if model is not None:
         args += ["--model", model]

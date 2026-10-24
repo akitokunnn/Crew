@@ -116,6 +116,10 @@ def _route(conn, item):
 
 
 def _notify(conn, item, text, now, source="web", route=None, sender=board.HUMAN):
+    from . import goal_links
+    link = goal_links.get(conn, 'todo', item['id'])
+    if link:
+        return {'kind': 'goal', 'id': item['id'], 'session_id': item['session_id']}
     route = _route(conn, item) if route is None else route
     target = board.session(conn, route["session_id"])
     if target["project"] != item["project"]:

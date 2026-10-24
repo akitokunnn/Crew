@@ -28,7 +28,7 @@ import json
 from pathlib import Path
 import sqlite3
 
-from . import board, decision_briefs, documents, guard, runtimes, store, todo
+from . import board, decision_briefs, documents, goal_actions, goals, guard, runtimes, store, todo
 
 
 class ToolError(ValueError):
@@ -63,6 +63,12 @@ _BRIEF_SCHEMA = {"type": "object", "additionalProperties": False,
                                            "required": ["label", "consequence"]}}},
                  "required": ["title", "why_user", "recommendation_reason", "options"]}
 _SPECS = [
+    _spec('crew_goal', 'Explicit goal actions: status, create, start, pause, resume, cancel, reopen, amend, assign, report-template, finish. Ordinary Q&A creates no goal.',
+          {'action': _text('Action name.', max_length=100), 'goal_id': _text('Goal id; omitted uses the bound execution.', max_length=100),
+           'data': {'type': 'object', 'additionalProperties': True}}, ('action',)),
+    _spec('crew_context', 'Inspect or correct sourced context for this goal. Actions: inspect, put, correct, expire. Preparing context does not mean the model read it.',
+          {'action': _text('Action name.', max_length=100), 'goal_id': _text('Goal id; omitted uses the bound execution.', max_length=100),
+           'data': {'type': 'object', 'additionalProperties': True}}, ('action',)),
     _spec("crew_whoami", "Read your registered Crew identity, role, group and leader."),
     _spec("crew_status", "Read this project's Crew board, including mixed-runtime groups. "
           "Statuses are the recorded board state; this tool does not probe native processes."),
@@ -130,7 +136,8 @@ _SPECS = [
     _spec("crew_send_message", "Send through Crew's host router to a colleague in this project. "
           "Crew identity determines the recipient across Claude and Codex. Sending information "
           "does not grant permission to change another group's plan.",
-          {"to": _TARGET, "text": _text("Message body; the host supplies the trusted sender.")},
+          {"to": _TARGET, "text": _text("Message body; the host supplies the trusted sender."),
+           'kind': {'type': 'string', 'enum': ['task','result','blocker','decision','user_answer','information','ack']}},
           ("to", "text")),
 ]
 _SCHEMAS = {spec["name"]: spec["inputSchema"] for spec in _SPECS}
@@ -153,13 +160,19 @@ def _validate(value, schema, path="arguments"):
     if "enum" in schema and value not in schema["enum"]:
         raise ToolError("invalid_arguments", "%s must be an allowed value" % path)
     if kind == "object":
-        properties = schema["properties"]
-        if any(key not in properties for key in value):
+        properties = schema.get("properties", {})
+        if schema.get('additionalProperties') is not True and any(key not in properties for key in value):
             raise ToolError("invalid_arguments", "%s contains unsupported fields" % path)
         if any(key not in value for key in schema.get("required", ())):
             raise ToolError("invalid_arguments", "%s is missing required fields" % path)
         for key, item in value.items():
-            _validate(item, properties[key], path + "." + key)
+            if key in properties:
+                _validate(item, properties[key], path + "." + key)
+        if schema.get('additionalProperties') is True:
+            try:
+                json.dumps(value, allow_nan=False)
+            except (ValueError, TypeError, RecursionError):
+                raise ToolError('invalid_arguments', path + ' must be finite JSON data') from None
     elif kind == "string":
         if (schema.get("minLength", 1) and not value.strip()) or len(value) > schema.get("maxLength", 20000):
             raise ToolError("invalid_arguments", "%s must be nonempty and within its length limit" % path)
@@ -185,14 +198,19 @@ class CodexTools:
     prevents an accidental database reassignment from extending this handler's
     authority. Role and archive state are checked afresh for every invocation.
     """
-    def __init__(self, home, session_id, *, send_message=None):
+    def __init__(self, home, session_id, *, send_message=None, execution_id=None, goal_handler=None):
         if not isinstance(session_id, str) or not session_id.strip():
             raise ValueError("A registered Crew session_id is required")
         if send_message is not None and not callable(send_message):
             raise TypeError("send_message must be callable")
+        if goal_handler is not None and not callable(goal_handler):
+            raise TypeError('goal_handler must be callable')
+        if execution_id is not None and (not isinstance(execution_id, str) or not execution_id.strip()):
+            raise ValueError('execution_id must be a nonempty string')
         self._home = Path(home).expanduser().resolve()
         self._session_id = session_id
         self._send_message = send_message
+        self._execution_id, self._goal_handler = execution_id, goal_handler
         with contextlib.closing(guard.readonly(self._home)) as conn:
             actor = board.session(conn, self._session_id)
             if not actor["project"]:
@@ -204,7 +222,14 @@ class CodexTools:
         actor = board.session(conn, self._session_id)
         if actor["project"] != self._project:
             raise ToolError("forbidden", "Crew project membership changed; rebind tools in the host")
-        if runtimes.get(conn, self._session_id)['runtime'] != 'codex':
+        if self._execution_id is not None:
+            execution = goals.get_execution(conn, self._execution_id)
+            goal = goals.get(conn, execution['goal_id'])
+            if execution['session_id'] != self._session_id or goal['project'] != self._project:
+                raise ToolError('forbidden', 'The execution does not belong to this stable Crew identity/project')
+            if execution['runtime'] != 'codex':
+                raise ToolError('inactive_runtime', 'This goal execution now uses another runtime')
+        elif runtimes.get(conn, self._session_id)['runtime'] != 'codex':
             raise ToolError('inactive_runtime', 'The Crew identity now uses another runtime; this Codex carrier is inactive')
         if actor["role"] not in ("member", "leader") or not actor["crew_name"]:
             raise ToolError("forbidden", "A named Crew member or leader is required")
@@ -247,6 +272,11 @@ class CodexTools:
                 self._actor(conn)
             with contextlib.closing(store.connect(self._home)) as conn:
                 actor = self._actor(conn)
+                if self._execution_id is not None and not self._read_only(name, args):
+                    execution = goals.get_execution(conn, self._execution_id)
+                    gate = goals.dispatch_check(conn, execution['goal_id'], execution_id=self._execution_id)
+                    if not gate['allowed']:
+                        raise ToolError('goal_dispatch_blocked', gate['reason'])
                 data = self._dispatch(conn, actor, name, args)
             return _result(data, True)
         except ToolError as exc:
@@ -274,8 +304,31 @@ class CodexTools:
             identity["leader"].update(runtimes.get(conn, identity["leader"]["session_id"]))
         return identity
 
+    @staticmethod
+    def _read_only(name, args):
+        if name in ('crew_goal', 'crew_context'):
+            action = args['action'] if name == 'crew_goal' else 'context.' + args['action']
+            return action in goal_actions.READ_ACTIONS
+        return name in ('crew_whoami','crew_status','crew_who','crew_decisions','crew_todo_list','crew_doc_list','crew_handoffs','crew_reports') or name == 'crew_card' and not args
+
     def _dispatch(self, conn, actor, name, args):
         sid, project = self._session_id, self._project
+        if name in ('crew_goal', 'crew_context'):
+            action = args['action'] if name == 'crew_goal' else 'context.' + args['action']
+            data = dict(args.get('data', {}))
+            if 'goal_id' in args:
+                if data.get('goal_id') is not None and data['goal_id'] != args['goal_id']:
+                    raise ToolError('invalid_arguments', 'Conflicting goal ids')
+                data['goal_id'] = args['goal_id']
+            if self._goal_handler is not None:
+                result = self._goal_handler(action, data, sid, execution_id=self._execution_id)
+            elif action in goal_actions.READ_ACTIONS:
+                result = goal_actions.dispatch(self._home, sid, self._execution_id, action, data)
+            else:
+                raise ToolError('goal_host_unavailable', 'The host has no goal router; no model was started')
+            if isinstance(result, dict) and result.get('ok') is False:
+                raise ToolError('goal_action_failed', str(result.get('error') or result.get('reason') or 'Goal action rejected'))
+            return result
         if name == "crew_whoami":
             return self._identity(conn, board.whoami(conn, sid))
         if name == "crew_who":
@@ -298,6 +351,12 @@ class CodexTools:
                                args.get("done_when", old.get("done_when")))
             return {"session_id": sid, "card": board.card(conn, sid)}
         if name == "crew_ask":
+            if self._execution_id is not None:
+                from . import goal_links
+                with goals.transaction(conn):
+                    number = board.ask.__wrapped__(conn, sid, args['question'], args.get('options', ()), args.get('recommendation'), args.get('blocking', False), brief=args.get('brief'))
+                    goal_links.bind(conn, 'decision', number, self._execution_id)
+                return self._decision(conn, number)
             number = board.ask(conn, sid, args["question"], args.get("options", ()),
                                args.get("recommendation"), args.get("blocking", False), brief=args.get("brief"))
             return self._decision(conn, number)
@@ -307,6 +366,12 @@ class CodexTools:
             self._decision(conn, args["id"])
             return decision_briefs.revise(conn, sid, args["id"], **{key: value for key, value in args.items() if key != "id"})
         if name == "crew_todo_add":
+            if self._execution_id is not None:
+                from . import goal_links
+                with goals.transaction(conn):
+                    result = todo.add.__wrapped__(conn, sid, args['title'], args['steps'], args['verification'], args.get('blocking', False))
+                    goal_links.bind(conn, 'todo', result['id'], self._execution_id)
+                    return result
             return todo.add(conn, sid, args["title"], args["steps"], args["verification"], args.get("blocking", False))
         if name == "crew_todo_list":
             return todo.list(conn, project, all=args.get("all", False))
@@ -366,7 +431,10 @@ class CodexTools:
             if self._send_message is None:
                 raise ToolError("delivery_unavailable", "The host has no Crew message router")
             try:
-                receipt = self._send_message(sid, target["session_id"], args["text"])
+                if 'kind' in args or self._execution_id is not None:
+                    receipt = self._send_message(sid, target['session_id'], args['text'], kind=args.get('kind', 'information'))
+                else:
+                    receipt = self._send_message(sid, target["session_id"], args["text"])
             except Exception:
                 raise ToolError("delivery_failed", "The host could not accept the Crew message") from None
             if not isinstance(receipt, dict) or receipt.get("ok") is not True:

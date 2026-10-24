@@ -192,15 +192,17 @@ class ChatHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual((code, result), (400, {"error": "已读位置必须是非负整数"}))
         self.assertEqual(self.history(session_id)["read_seq"], last_seq)
 
-    def test_member_send_returns_specific_error_with_or_without_web_journal(self):
+    def test_member_direct_chat_accepts_offline_and_busy_managed_members(self):
         self.assertFalse(self.server.service.chat.path("s1").exists())
-        code, result, _ = self.request("/api/chat/send", {"session_id": "s1", "text": "not allowed"})
-        self.assertEqual((code, result), (400, {"error": "下属请在 VS Code 里聊"}))
+        code, result, _ = self.request("/api/chat/send", {"session_id": "s1", "text": "please explain"})
+        self.assertEqual(code, 200, result)
+        self.assertTrue(result['accepted'])
         code, spawned, _ = self.request("/api/spawn", {"name": "web-member", "task": "work"})
         self.assertEqual(code, 200, spawned)
         self.assertTrue(self.server.service.chat.path(spawned["session_id"]).exists())
-        code, result, _ = self.request("/api/chat/send", {"session_id": spawned["session_id"], "text": "not allowed"})
-        self.assertEqual((code, result), (400, {"error": "下属请在 VS Code 里聊"}))
+        code, result, _ = self.request("/api/chat/send", {"session_id": spawned["session_id"], "text": "adjust this"})
+        self.assertEqual(code, 200, result)
+        self.assertEqual(result['delivery'], 'steered')
 
 
 if __name__ == "__main__":

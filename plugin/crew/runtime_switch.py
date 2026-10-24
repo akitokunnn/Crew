@@ -9,10 +9,67 @@ import json
 import secrets
 from contextlib import contextmanager
 
-from . import board, models, runtimes, store
+from . import board, goals, models, runtimes, store
 
 MAX_HANDOFF = 16000
 PREVIEW_SECONDS = 300
+
+
+def scoped_executions(conn, session_id):
+    """All generations are checked for a leftover writer, even after a round ended."""
+    return board._rows(conn, 'SELECT e.*,g.status goal_status,g.current_round,g.requirement_version goal_requirement_version,'
+                       'g.version goal_version,g.title goal_title FROM goal_executions e JOIN goals g ON g.id=e.goal_id '
+                       'WHERE e.session_id=? ORDER BY e.goal_id,e.round,e.generation', (session_id,))
+
+
+def scope_snapshot(conn, session_id, *, include_status=False):
+    fields = ('id', 'goal_id', 'round', 'generation', 'runtime', 'model', 'effort', 'requirement_version',
+              'goal_status', 'current_round', 'goal_requirement_version', 'goal_version')
+    return {'assignments':board._rows(conn, 'SELECT a.goal_id,a.status,g.status goal_status,g.version goal_version '
+                                    'FROM goal_assignments a JOIN goals g ON g.id=a.goal_id WHERE a.session_id=? ORDER BY a.goal_id', (session_id,)),
+            'executions':[{**{field:item[field] for field in fields},
+                           **({'status':item['status']} if include_status else {}),
+                           'bindings':board._rows(conn, 'SELECT runtime,native_id,model,effort FROM goal_execution_bindings '
+                                                 'WHERE execution_id=? ORDER BY runtime', (item['id'],))}
+                          for item in scoped_executions(conn, session_id)]}
+
+
+def goal_reason(conn, session_id, manager):
+    active = conn.execute("SELECT g.title FROM goals g WHERE g.status IN ('running','pausing') AND "
+                          "(g.leader_session_id=? OR EXISTS(SELECT 1 FROM goal_assignments a WHERE a.goal_id=g.id AND a.session_id=? AND a.status='assigned') "
+                          "OR EXISTS(SELECT 1 FROM goal_executions e WHERE e.goal_id=g.id AND e.session_id=? AND e.status NOT IN ('completed','failed','cancelled'))) LIMIT 1",
+                          (session_id, session_id, session_id)).fetchone()
+    if active:
+        return '请先暂停该人员仍在推进的全部目标（包括「%s」），再更换执行工具' % active['title']
+    for execution in scoped_executions(conn, session_id):
+        key = execution['id']
+        if manager.busy(key) or execution['status'] in ('running','pausing'):
+            return '目标「%s」的执行仍在工作或暂停中，请等停止确认' % execution['goal_title']
+        current = manager.processes.get(key)
+        if current is not None and getattr(current, 'pending_compact', False):
+            return '目标执行还有排队压缩，请等它完成'
+    return None
+
+
+def configurable_executions(conn, session_id):
+    candidates = {}
+    for item in scoped_executions(conn, session_id):
+        if (item['goal_status'] in goals.TERMINAL or item['round'] != item['current_round']
+                or item['requirement_version'] != item['goal_requirement_version']):
+            continue
+        previous = candidates.get(item['goal_id'])
+        if previous is None or previous['generation'] < item['generation']:
+            candidates[item['goal_id']] = item
+    return [item for item in candidates.values() if item['status'] not in goals.TERMINAL]
+
+
+def writer_scope(conn, session_id):
+    keys = [session_id] + [item['id'] for item in scoped_executions(conn, session_id)]
+    native_ids = {session_id}
+    native_ids.update(row['native_id'] for row in conn.execute('SELECT b.native_id FROM goal_execution_bindings b '
+                      'JOIN goal_executions e ON e.id=b.execution_id WHERE e.session_id=?', (session_id,)) if row['native_id'])
+    native_ids.update(row['native_id'] for row in conn.execute('SELECT native_id FROM session_runtime_bindings WHERE session_id=?', (session_id,)) if row['native_id'])
+    return keys, native_ids
 
 
 @contextmanager
@@ -49,8 +106,9 @@ def state(conn,session,manager,agents=None,agents_error=None):
     if reason is None and agents_error:
         reason='进程状态未知，请稍后再试'
     if reason is None and agents is not None:
-        if any(agent.get('sessionId')==session['session_id'] and not manager.owns_pid(session['session_id'],agent.get('pid')) for agent in agents):
-            reason='成员在外部会话中在线，请先自行关闭'
+        keys,native_ids = writer_scope(conn,session['session_id'])
+        if any(agent.get('sessionId') in native_ids and not any(manager.owns_pid(key,agent.get('pid')) for key in keys) for agent in agents):
+            reason='会话在外部工具中在线，请先自行关闭'
     row=conn.execute("SELECT configured_at FROM runtime_switches WHERE session_id=? AND status='configured' ORDER BY configured_at DESC,rowid DESC LIMIT 1",(session['session_id'],)).fetchone()
     return {'allowed':reason is None,'reason':reason,'pending_handoff':pending(conn,session['session_id']) is not None,
             'last_switch_at':row[0] if row else None}
@@ -58,13 +116,15 @@ def state(conn,session,manager,agents=None,agents_error=None):
 
 def basic_reason(conn,session,manager):
     sid=session['session_id']
-    if session['role']!='member':return '只有成员可以更换载体'
+    if session['role'] not in ('member','leader'):return '这个会话角色不能更换载体'
     if not session.get('crew_name') or session['status']=='closed' or board.is_archived(conn,sid):return '会话已归档、移除或尚未收编'
     if manager.closed:return 'Crew 正在关闭'
+    reason = goal_reason(conn, sid, manager)
+    if reason:return reason
     if manager.busy(sid) or (session['status']=='working' and not manager.running(sid)):
-        return '成员正在工作，请等这一轮结束'
+        return '会话正在工作，请等这一轮结束'
     current=manager.processes.get(sid)
-    if current is not None and getattr(current,'pending_compact',False):return '成员还有排队压缩，请等它完成'
+    if current is not None and getattr(current,'pending_compact',False):return '会话还有排队压缩，请等它完成'
     return None
 
 
@@ -73,17 +133,19 @@ def check_idle(conn,session,manager):
     if reason:raise board.Conflict(reason)
     # Check Claude even when the active runtime is Codex: a previously opened
     # Claude transcript must not become a second writer for this Crew identity.
+    keys,native_ids = writer_scope(conn,session['session_id'])
     for agent in manager._external_agents():
-        if agent.get('sessionId')!=session['session_id']:continue
-        if manager.owns_pid(session['session_id'],agent.get('pid')):continue
-        raise board.Conflict('这个成员在 VS Code、终端或其他服务中仍在线，请先自行关闭；Crew 不会关闭外部会话')
-    current=manager.processes.get(session['session_id'])
-    if not manager.running(session['session_id']) and current is not None and not current.reader_done.is_set():
-        raise board.Conflict('上一轮进程输出还没有排空，请稍后再试')
-    if not manager.running(session['session_id']) or getattr(current,'runtime',None)!='codex':
-        from .codex_runtime import RuntimeLease
-        lease=RuntimeLease(manager.home,session['session_id']).acquire()
-        lease.release()
+        if agent.get('sessionId') not in native_ids:continue
+        if any(manager.owns_pid(key,agent.get('pid')) for key in keys):continue
+        raise board.Conflict('这个会话在 VS Code、终端或其他服务中仍在线，请先自行关闭；Crew 不会关闭外部会话')
+    from .codex_runtime import RuntimeLease
+    for key in keys:
+        current=manager.processes.get(key)
+        if not manager.running(key) and current is not None and not current.reader_done.is_set():
+            raise board.Conflict('上一轮进程输出还没有排空，请稍后再试')
+        if not manager.running(key) or getattr(current,'runtime',None)!='codex':
+            lease=RuntimeLease(manager.home,key).acquire()
+            lease.release()
 
 
 def _texts(events):
@@ -132,7 +194,8 @@ def revision(conn,session,manager):
     snapshot={'session':{key:session.get(key) for key in ('session_id','project','crew_name','role','group_name','status','task','cwd','worktree','branch','spawn_id')},
         'runtime':runtimes.get(conn,sid),'options':models.get(conn,sid),'bindings':[dict(row) for row in conn.execute('SELECT * FROM session_runtime_bindings WHERE session_id=? ORDER BY runtime',(sid,))],
         'control':control,'card':dict(card) if card else None,'last_seq':last_seq,
-        'owned_pid':current.process.pid if current is not None and manager.running(sid) else None}
+        'owned_pid':current.process.pid if current is not None and manager.running(sid) else None,
+        'goal_scope':scope_snapshot(conn,sid,include_status=True)}
     return hashlib.sha256(json.dumps(snapshot,sort_keys=True,ensure_ascii=False).encode()).hexdigest()
 
 
@@ -143,7 +206,8 @@ def configuration(conn,session_id):
     return {'session':{key:session.get(key) for key in ('session_id','project','crew_name','role','group_name','task','cwd','worktree','branch','spawn_id')},
             'runtime':runtimes.get(conn,session_id),'options':models.get(conn,session_id),
             'bindings':[dict(row) for row in conn.execute('SELECT * FROM session_runtime_bindings WHERE session_id=? ORDER BY runtime',(session_id,))],
-            'control':board.session_control(conn,session_id),'card':dict(card) if card else None}
+            'control':board.session_control(conn,session_id),'card':dict(card) if card else None,
+            'goal_scope':scope_snapshot(conn,session_id)}
 
 
 def validate_target(runtime,model,effort,catalog):
@@ -160,7 +224,7 @@ def validate_target(runtime,model,effort,catalog):
 def prepare(conn,session,manager,runtime,catalog,model=None,effort=None,handoff_text=None,now=None):
     check_idle(conn,session,manager)
     source=runtimes.get(conn,session['session_id'])
-    if source['runtime']==runtime:raise board.Conflict('成员已经使用这个载体')
+    if source['runtime']==runtime:raise board.Conflict('会话已经使用这个载体')
     options=validate_target(runtime,model,effort,catalog)
     preview=handoff(conn,session,manager.journal(session['session_id']))
     if handoff_text is not None:
@@ -170,7 +234,10 @@ def prepare(conn,session,manager,runtime,catalog,model=None,effort=None,handoff_
     identifier=secrets.token_urlsafe(32);digest=revision(conn,session,manager);target=binding(conn,session['session_id'],runtime)
     result={'allowed':True,'preview_id':identifier,'expires_at':expires,'revision':digest,
         'from':{**source,**models.get(conn,session['session_id'])},'to':{'runtime':runtime,**options,'resume_existing':target['native_id'] is not None},
-        'handoff':preview,'cost':{'starts_turn':False,'requires_context_replay':True,'notice':'下次发送或唤醒会重新读取交接上下文，可能增加用量；不估算 token 或价格'},'starts_turn':False}
+        'handoff':preview,'scope':{'kind':'person','session_id':session['session_id'],
+            'executions':[{'id':item['id'],'goal_id':item['goal_id'],'title':item['goal_title'],'status':item['goal_status']} for item in configurable_executions(conn,session['session_id'])],
+            'notice':'更换此人员的默认执行工具及其已暂停/尚未启动的当前目标执行；其他人员与历史代次保持原配置'},
+        'cost':{'starts_turn':False,'requires_context_replay':True,'notice':'下次发送或唤醒会重新读取交接和本目标上下文，可能增加用量；各工具原生历史保留，不估算 token 或价格'},'starts_turn':False}
     with atomic(conn):
         conn.execute("INSERT INTO runtime_switches(id,session_id,project,from_runtime,to_runtime,target_model,target_effort,revision,handoff,created_at,expires_at,status,preview_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,'preview',?)",
             (identifier,session['session_id'],session['project'],source['runtime'],runtime,model,effort,digest,preview['text'],stamp,expires,json.dumps(result,ensure_ascii=False)))
@@ -192,15 +259,17 @@ def switch(conn,session,manager,preview_id,confirm,catalog,now=None):
     if source['runtime']!=row['from_runtime']:raise board.Conflict('当前载体已经变化，请重新检查')
     # This method never terminates an external process. Drain the exact owned
     # idle runner before opening a database transaction or publishing a change.
-    if manager.running(session['session_id']):
-        previous=manager.processes[session['session_id']]
-        manager.detach(session['session_id'])
+    keys = [session['session_id']] + [item['id'] for item in scoped_executions(conn,session['session_id'])]
+    for key in keys:
+        if not manager.running(key):continue
+        previous=manager.processes[key]
+        manager.detach(key)
         if previous.process.poll() is None:
             raise board.Conflict('旧载体进程尚未真正退出，不能更换')
         # A quota/error result can leave an old Claude attendance status at
         # working. The exact owned idle native has now exited; record that
         # observed offline state even if configuring the target later fails.
-        if board.session(conn,session['session_id'])['status']=='working':
+        if key==session['session_id'] and board.session(conn,session['session_id'])['status']=='working':
             board.set_status(conn,session['session_id'],'offline',now=stamp)
     check_idle(conn,board.session(conn,session['session_id']),manager)
     result={'ok':True,'status':'configured','session_id':session['session_id'],'runtime':row['to_runtime'],**options,
@@ -211,6 +280,9 @@ def switch(conn,session,manager,preview_id,confirm,catalog,now=None):
         remember(conn,session['session_id'],source['runtime'],source['native_id'],source_options,stamp)
         runtimes.set.__wrapped__(conn,session['session_id'],row['to_runtime'],target['native_id'],now=stamp)
         models.set(conn,session['session_id'],**options,runtime=row['to_runtime'],now=stamp)
+        for execution in configurable_executions(conn,session['session_id']):
+            if execution['runtime'] == row['to_runtime'] and {key:execution[key] for key in ('model','effort')} == options:continue
+            goals.configure_execution(conn,execution['id'],row['to_runtime'],**options,now=stamp)
         remember(conn,session['session_id'],row['to_runtime'],target['native_id'],options,stamp)
         conn.execute("UPDATE runtime_switches SET superseded_at=? WHERE session_id=? AND status='configured' AND consumed_at IS NULL AND superseded_at IS NULL",(stamp,session['session_id']))
         conn.execute("UPDATE runtime_switches SET status='configured',configured_at=?,result_json=? WHERE id=?",(stamp,json.dumps(result,ensure_ascii=False),preview_id))

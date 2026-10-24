@@ -106,7 +106,7 @@ def command(executable="codex", *, env=None):
 class Client:
     def __init__(self, executable="codex", *, cwd=None, env=None, on_notification=None,
                  tool_handler=None, approval_handler=None, process_factory=None,
-                 timeout=30, client_version="0.1.0"):
+                 timeout=30, client_version="0.2.0"):
         self.timeout = timeout
         self.on_notification = on_notification
         self.tool_handler, self.approval_handler = tool_handler, approval_handler
@@ -357,10 +357,16 @@ class Client:
                 self.turn_status = self._turns[key].get("status")
             return result
 
-    def steer(self, text, *, turn_id=None):
+    def steer(self, text=None, *, input=None, turn_id=None):
+        if text is not None and input is not None:
+            raise ValueError("Provide text or input, not both")
+        if input is None:
+            if not isinstance(text, str):
+                raise ValueError("A text message or input list is required")
+            input = [{"type": "text", "text": text}]
         return self.request("turn/steer", {"threadId": self._thread(),
                             "expectedTurnId": turn_id or self.turn_id,
-                            "input": [{"type": "text", "text": text}]})
+                             "input": input})
 
     def interrupt(self, turn_id=None):
         target = turn_id or self.turn_id

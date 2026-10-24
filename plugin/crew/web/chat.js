@@ -205,7 +205,7 @@
         panel.classList.add("show");
       } catch (error) { toast(error.message); }
     }, true);
-    document.addEventListener("keydown", event => { if (event.key === "Escape") { request++; panel.classList.remove("show"); } });
+    document.addEventListener("keydown", event => { if (event.key === "Escape" && panel.classList.contains("show")) { event.stopImmediatePropagation(); request++; panel.classList.remove("show"); } });
   }
   const sessions = new Map();
   const compactNotified = new Map();
@@ -224,8 +224,9 @@
   };
   const current = context => active === context;
   const atBottom = context => context.scroll.scrollHeight - context.scroll.scrollTop - context.scroll.clientHeight < 64;
-  const keyFor = context => `crew.draft:${context.state.project.name}:${context.session.session_id}`;
-  const query = context => new URLSearchParams({ project: context.state.project.name, session_id: context.session.session_id });
+  const keyFor = context => `crew.draft:${context.state.project.name}:${context.session.session_id}${context.goalId == null ? "" : `:goal:${context.goalId}`}`;
+  const goalPayload = context => context.goalId == null ? {} : {goal_id:context.goalId};
+  const query = context => new URLSearchParams({ project: context.state.project.name, session_id: context.session.session_id, ...goalPayload(context) });
 
   function nameOf(context, ccName) {
     const person = context.state.leaders.concat(context.state.members).find(item => item.cc_name === ccName && item.name !== null);
@@ -259,10 +260,10 @@
   function composerState(context) {
     if (context.readonly) return;
     const hasContent = context.input.value.trim().length > 0 || context.cache.images.length > 0;
-    context.send.disabled = context.loading || context.busy || context.cache.sending || !hasContent;
-    context.hint.textContent = context.busy ? `${context.session.name} 正在回复…` : context.cache.sending ? "正在发送…" : "Enter 发送 · Shift+Enter 换行";
-    context.send.title = context.busy ? `${context.session.name} 正在回复…` : "发送";
+    context.send.disabled = context.loading || context.cache.sending || !hasContent;
     const external = context.session.where === "vscode";
+    context.hint.textContent = context.cache.sending ? "正在发送…" : external ? "会话仍在原工具中；退出并交给 Crew 后才能接话" : context.busy ? `${context.session.name} 正在工作，可直接补充方向` : "Enter 发送 · Shift+Enter 换行";
+    context.send.title = context.busy ? "工作中插话" : "发送";
     const stopReason = external ? "回复在 VS Code 或终端中运行，请在原工具中断。" : context.session.where !== "bg" ? "正在等待 Crew 托管会话，稍后可中断。" : "";
     context.stop.hidden = !context.busy;
     context.stop.disabled = !context.busy || context.interrupting || Boolean(stopReason);
@@ -271,13 +272,15 @@
     context.stopStatus.textContent = context.interruptError || (context.interrupting ? "正在中断，等待本轮停止确认…" : context.busy && stopReason ? stopReason : context.interruptConfirmed ? "本轮已停止，会话和草稿已保留。" : "");
     context.stopStatus.hidden = !context.stopStatus.textContent;
     context.stopStatus.classList.toggle("failed", Boolean(context.interruptError));
+    context.deliveryStatus.textContent = context.cache.deliveryStatus || "";
+    context.deliveryStatus.hidden = !context.cache.deliveryStatus;
   }
   async function interrupt(context) {
     if (!current(context) || context.stop.disabled) return;
     context.interrupting = true; context.interruptError = ""; context.interruptConfirmed = false;
     composerState(context);
     try {
-      const result = await context.api("/api/session/stop", {session_id:context.session.session_id});
+      const result = await context.api(context.goalId == null ? "/api/session/stop" : "/api/chat/interrupt", {session_id:context.session.session_id, ...goalPayload(context)});
       if (!result.ok) throw new Error("中断请求未被确认，请重试。");
       // The API acknowledges the request. Only a subsequent idle state confirms it stopped.
     } catch (error) {
@@ -464,12 +467,13 @@
       const owner = context.toolOwners.get(event.tool_use_id);
       if (owner) owner.lastSeq = event.seq;
     }
-    else if (event.type === "status") setBusy(context, event.status === "working", event.seq);
+    else if (event.type === "status") { setBusy(context, event.status === "working", event.seq); if (incremental && context.goalId != null) context.onExecutionChange?.(); }
     else if (event.type === "compact_request" || event.type === "compact") {
       context.items.push({...event, id:`${event.type}:${event.seq}`, kind:event.type, lastSeq:event.seq});
       if (incremental && event.type === "compact") notifyCompact(context.session.session_id, event, context.toast);
     }
     else if (event.type === "error") context.items.push({ ...event, id: `error:${event.seq}`, kind: "error", lastSeq: event.seq });
+    if (incremental && ["text", "assistant"].includes(event.type)) context.cache.deliveryStatus = "";
     if (incremental) { composerState(context); schedule(context); }
   }
   function scheduleRead(context) {
@@ -480,7 +484,7 @@
       const seq = context.cursor;
       context.cache.lastReadAt = Date.now(); context.reading = true;
       try {
-        const result = await context.api("/api/chat/read", { session_id: context.session.session_id, seq });
+        const result = await context.api("/api/chat/read", { session_id: context.session.session_id, seq, ...goalPayload(context) });
         context.readSeq = result.read_seq; context.reading = false;
         if (current(context)) scheduleRead(context);
       } catch (error) { context.reading = false; context.toast(error.message); }
@@ -492,6 +496,7 @@
   }
   async function connect(context) {
     if (!current(context)) return;
+    const generation = context.connectionGeneration;
     context.stream = new AbortController();
     const params = query(context); params.set("after", context.cursor);
     try {
@@ -499,14 +504,14 @@
       if (context.cursor > 0) headers["Last-Event-ID"] = String(context.cursor);
       const response = await fetch(`/api/chat/events?${params}`, { headers, signal: context.stream.signal });
       if (!response.ok) { const failure = await response.json(); throw new Error(failure.error); }
-      if (!current(context)) return;
+      if (!current(context) || generation !== context.connectionGeneration) return;
       connectionError(context, null);
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "", data = [];
-      while (current(context)) {
+      while (current(context) && generation === context.connectionGeneration) {
         const chunk = await reader.read();
-        if (chunk.done) break;
+        if (chunk.done || generation !== context.connectionGeneration) break;
         buffer += decoder.decode(chunk.value, { stream: true });
         let newline;
         while ((newline = buffer.indexOf("\n")) !== -1) {
@@ -516,19 +521,21 @@
         }
       }
     } catch (error) {
-      if (!current(context) || error.name === "AbortError") return;
+      if (!current(context) || generation !== context.connectionGeneration || error.name === "AbortError") return;
       connectionError(context, error.message);
     }
-    if (current(context)) context.reconnectTimer = setTimeout(() => connect(context), 3000);
+    if (current(context) && generation === context.connectionGeneration) context.reconnectTimer = setTimeout(() => connect(context), 3000);
   }
   async function load(context) {
     if (!current(context)) return;
+    const generation = ++context.loadGeneration;
     clearTimeout(context.historyRetryTimer); context.historyRetryTimer = null;
     context.loading = true; composerState(context);
     if (context.historyFailed) connectionError(context, "正在重新连接对话记录…");
     try {
       const history = await context.api(`/api/chat/history?${query(context)}`);
-      if (!current(context)) return;
+      if (!current(context) || generation !== context.loadGeneration) return;
+      context.executionId = history.execution_id ?? null;
       for (const event of history.events) apply(context, event, false);
       setBusy(context, history.busy, context.cursor);
       context.readSeq = history.read_seq; context.loading = false; context.historyFailed = false;
@@ -541,7 +548,7 @@
       context.cache.first = false;
       composerState(context); render(context); connect(context);
     } catch (error) {
-      if (current(context)) {
+      if (current(context) && generation === context.loadGeneration) {
         context.historyFailed = true;
         connectionError(context, `对话记录暂时无法读取，3 秒后自动重试。${error.message || "请检查连接。"}`);
         composerState(context);
@@ -557,19 +564,37 @@
     const draftVersion = context.cache.version;
     const previousBusy = context.busy;
     const sendSeq = context.cursor;
-    const payload = { session_id: context.session.session_id, text };
+    // Keep this ID with the exact draft until acceptance, including an uncertain network failure.
+    const fingerprint = JSON.stringify([text, context.cache.images]);
+    if (context.cache.pendingMessage?.fingerprint !== fingerprint) {
+      const id = globalThis.crypto?.randomUUID?.() || `web-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+      context.cache.pendingMessage = {fingerprint, id};
+    }
+    const payload = { session_id: context.session.session_id, text, message_id:context.cache.pendingMessage.id, ...goalPayload(context) };
     if (context.cache.images.length > 0) payload.images = context.cache.images.slice();
     context.cache.sending = true;
     context.cache.pendingSendSeq = sendSeq;
     context.busy = true;
     composerState(context);
     try {
-      await context.api("/api/chat/send", payload);
+      const result = await context.api("/api/chat/send", payload);
+      if (result.accepted === false || result.accepted === "unknown" || result.delivery === "unknown") throw Error(result.error || "无法确认当前执行是否已接收，请先核对消息记录，保留同一消息编号。");
+      context.cache.deliveryStatus = result.delivery === "steered" ? "系统：当前执行已接收插话，等待本人回应。" : result.delivery === "started" ? "系统：当前执行已接收消息，等待本人回应。" : "系统：消息已收到，等待本人回应。";
+      context.cache.pendingMessage = null;
       if (context.cache.version === draftVersion) {
         context.cache.text = ""; context.cache.images = [];
         const view = visibleDraft(context);
         if (view) { view.input.value = ""; resizeInput(view); renderAttachments(view); }
         persistDraft(context);
+      }
+      const view = visibleDraft(context);
+      if (view && context.goalId != null && result.execution_id != null && result.execution_id !== view.executionId) {
+        // First send and context rotation create a different journal. A history read never creates one.
+        view.stream?.abort(); view.connectionGeneration++; clearTimeout(view.reconnectTimer); clearTimeout(view.readTimer);
+        if (view.frame !== null) { cancelAnimationFrame(view.frame); view.frame = null; }
+        view.items = []; view.byId.clear(); view.nodes.clear(); view.results.clear(); view.toolOwners.clear(); view.inner.innerHTML = "";
+        view.cursor = 0; view.readSeq = 0; view.busySeq = 0; view.cache.pendingSendSeq = null; view.cache.unreadAnchor = null; view.cache.scrollTop = null;
+        view.readTimer = null; view.reconnectTimer = null; void load(view);
       }
     } catch (error) {
       if (context.cache.pendingSendSeq === sendSeq) {
@@ -577,6 +602,7 @@
         const view = visibleDraft(context);
         if (view) view.busy = previousBusy;
       }
+      context.cache.deliveryStatus = `系统：${error.message}（草稿已保留）`;
       context.toast(error.message);
     } finally {
       context.cache.sending = false;
@@ -586,22 +612,22 @@
   }
   function mount(options) {
     unmount();
-    const cacheKey = `${options.state.project.name}:${options.session.session_id}:${Boolean(options.readonly)}`;
+    const cacheKey = `${options.state.project.name}:${options.session.session_id}:${Boolean(options.readonly)}:${options.goalId ?? ""}`;
     let cache = sessions.get(cacheKey);
     if (!cache) {
       cache = { expanded: new Set(), scrollTop: null, first: true, unreadAnchor: null, text: "", images: [], version: 0, sending: false, pendingSendSeq: null, lastReadAt: 0 };
       sessions.set(cacheKey, cache);
       if (!options.readonly) {
         try {
-          const saved = localStorage.getItem(`crew.draft:${options.state.project.name}:${options.session.session_id}`);
+          const saved = localStorage.getItem(keyFor(options));
           if (saved !== null) { const draft = JSON.parse(saved); cache.text = draft.text; cache.images = draft.images; }
         } catch (error) { options.toast(error.message); }
       }
     }
-    const context = { ...options, cache, items: [], byId: new Map(), nodes: new Map(), results: new Map(), toolOwners: new Map(), cursor: 0, readSeq: 0, busySeq: options.readonly ? 0 : options.session.last_seq, readTimer: null, reconnectTimer: null, historyRetryTimer: null, historyFailed: false, interrupting: false, interruptError: "", interruptConfirmed: false, frame: null, loading: true, busy: cache.pendingSendSeq === null ? options.session.busy : true, reading: false, initialPosition: null, stream: null };
+    const context = { ...options, session:options.goalId == null ? options.session : {...options.session,activity:null}, cache, items: [], byId: new Map(), nodes: new Map(), results: new Map(), toolOwners: new Map(), cursor: 0, readSeq: 0, busySeq: options.readonly || options.goalId != null ? 0 : options.session.last_seq, executionId:null, connectionGeneration:0, loadGeneration:0, readTimer: null, reconnectTimer: null, historyRetryTimer: null, historyFailed: false, interrupting: false, interruptError: "", interruptConfirmed: false, frame: null, loading: true, busy: cache.pendingSendSeq === null ? options.goalId == null && options.session.busy : true, reading: false, initialPosition: null, stream: null };
     active = context;
     options.host.classList.add("chat-host");
-    options.host.innerHTML = `<div class="chat-error chat-connection-error" role="alert" hidden></div><div class="scroll chat-scroll" tabindex="0" aria-label="${escape(options.session.name)}的对话记录"><div class="col chat-inner"></div></div><button type="button" class="jump" aria-label="回到最新消息">${icon("down")}回到最新</button>${options.readonly ? '<div class="readonly-note">只读记录 · 下属请在 VS Code 里聊</div>' : `<div class="composer-wrap"><form class="composer"><div class="attach" hidden></div><textarea rows="1" aria-label="给 ${escape(options.session.name)} 发消息" placeholder="跟 ${escape(options.session.name)} 说…（可以直接粘贴截图）"></textarea><div class="c-row"><button type="button" class="icon-btn chat-image-button" title="附截图（也可以直接 Ctrl+V）" aria-label="添加图片">${icon("image")}</button><input class="chat-image-file" type="file" accept="image/*" multiple hidden><span class="hint"></span><button type="button" class="chat-stop" aria-label="中断当前回复" hidden>中断</button><button type="submit" class="send" aria-label="发送" disabled>${icon("up")}</button></div><div class="chat-interrupt-status" role="status" aria-live="polite" hidden></div></form></div>`}`;
+    options.host.innerHTML = `<div class="chat-error chat-connection-error" role="alert" hidden></div><div class="scroll chat-scroll" tabindex="0" aria-label="${escape(options.session.name)}的对话记录"><div class="col chat-inner"></div></div><button type="button" class="jump" aria-label="回到最新消息">${icon("down")}回到最新</button>${options.readonly ? `<div class="readonly-note">${escape(options.readonlyReason || "此会话尚未由 Crew 托管。请先在原工具退出，再从会话操作中接管；历史记录保留。")}</div>` : `<div class="composer-wrap"><form class="composer"><div class="attach" hidden></div><textarea rows="1" aria-label="给 ${escape(options.session.name)} 发消息" placeholder="跟 ${escape(options.session.name)} 说…（可以直接粘贴截图）"></textarea><div class="c-row"><button type="button" class="icon-btn chat-image-button" title="附截图（也可以直接 Ctrl+V）" aria-label="添加图片">${icon("image")}</button><input class="chat-image-file" type="file" accept="image/*" multiple hidden><span class="hint"></span><button type="button" class="chat-stop" aria-label="中断当前回复" hidden>中断</button><button type="submit" class="send" aria-label="发送" disabled>${icon("up")}</button></div><div class="chat-interrupt-status" role="status" aria-live="polite" hidden></div><div class="chat-delivery-status" role="status" hidden></div></form></div>`}`;
     context.scroll = options.host.querySelector(".chat-scroll"); context.inner = options.host.querySelector(".chat-inner");
     context.jump = options.host.querySelector(".jump"); context.error = options.host.querySelector(".chat-connection-error");
     context.jump.onclick = () => { context.scroll.scrollTop = context.scroll.scrollHeight; context.jump.classList.remove("show"); scheduleRead(context); };
@@ -623,6 +649,7 @@
     if (!context.readonly) {
       context.input = options.host.querySelector("textarea"); context.send = options.host.querySelector(".send");
       context.stop = options.host.querySelector(".chat-stop"); context.stopStatus = options.host.querySelector(".chat-interrupt-status");
+      context.deliveryStatus = options.host.querySelector(".chat-delivery-status");
       context.stop.onclick = () => { void interrupt(context); };
       context.hint = options.host.querySelector(".hint"); context.attach = options.host.querySelector(".attach");
       context.input.value = cache.text;
@@ -654,8 +681,9 @@
     active.state = state;
     const session = state.leaders.concat(state.members).find(item => item.session_id === active.session.session_id);
     if (session) {
-      active.session = session;
-      if (!active.readonly && session.last_seq >= active.cursor) setBusy(active, session.busy, session.last_seq);
+      active.session = active.goalId == null ? session : {...session,activity:null};
+      // Identity state spans goals. Only the selected execution's history/SSE can set its busy state.
+      if (!active.readonly && active.goalId == null && session.last_seq >= active.cursor) setBusy(active, session.busy, session.last_seq);
     }
     composerState(active);
     if (!active.loading) schedule(active);

@@ -109,7 +109,7 @@ class ContextRuntimeTests(UsageFixture, unittest.TestCase):
         result = manager.compact(session)
         sent = self.requests(current)[0]
         self.assertEqual(sent["message"]["content"], "/compact")
-        self.assertEqual(result, {"ok": True, "message_id": sent["uuid"]})
+        self.assertEqual(result, {"ok": True, "message_id": sent["uuid"], 'accepted': True, 'delivery': 'started'})
         echo = dict(sent, isReplay=True, message={"content": "<command-name>/compact</command-name>\n"
                     "<command-message>compact</command-message>\n<command-args></command-args>"})
         current.journal.consume(echo)

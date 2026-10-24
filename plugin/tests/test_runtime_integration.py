@@ -20,6 +20,7 @@ class FakeCodex:
     runtime = 'codex'
 
     def __init__(self, home, plugin_root, session, spec, options, journal, router, **kwargs):
+        self.execution, self.goal_handler = kwargs.get('execution'), kwargs.get('goal_handler')
         self.process = mock.Mock(pid=8123)
         self.process.poll.return_value = None
         self.journal, self.applied = journal, dict(options)

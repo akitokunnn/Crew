@@ -14,7 +14,7 @@
   }
   function create(options) {
     let items = [], loaded = false, loading = false, lastLoad = 0, inflight = null, error = "", scan = null;
-    let centerHost = null, railHost = null, activeLeader = null, railActive = false, drawerOpen = false;
+    let centerHost = null, railHost = null, activeLeader = null, railActive = false, drawerOpen = false, activeLabel = "本组";
     const filters = {query:"", group:"", kind:"", important:false}, saving = new Set();
     const icon = '<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2H5v20h14V8l-6-6Zm0 0v6h6"/></svg>';
     const when = value => { const date = new Date(value); return Number.isNaN(date.valueOf()) ? "时间未记录" : date.toLocaleString("zh-CN", {month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit"}); };
@@ -64,21 +64,22 @@
     }
     function updateDrawer() {
       if (!railHost) return;
+      railHost.hidden = !drawerOpen || !railActive;
       railHost.classList.toggle("open", drawerOpen && railActive);
-      const scrim = document.getElementById("documents-scrim"); if (scrim) scrim.hidden = !drawerOpen || !railActive || innerWidth >= 1360;
+      const scrim = document.getElementById("documents-scrim"); if (scrim) scrim.hidden = true;
       const button = document.querySelector('[data-act="documents-open"]');
-      if (button) { const open = railActive && (innerWidth >= 1360 || drawerOpen); button.setAttribute("aria-expanded", String(open)); button.classList.toggle("active", open); }
+      if (button) { const open = railActive && drawerOpen; button.setAttribute("aria-expanded", String(open)); button.classList.toggle("active", open); }
     }
-    function renderRail(host, leaderId, active) {
+    function renderRail(host, leaderId, active, label) {
       const changed = host && leaderId !== activeLeader;
-      if (host) { railHost = host; activeLeader = leaderId; railActive = active; }
+      if (host) { if (changed) drawerOpen = false; railHost = host; activeLeader = leaderId; railActive = active; activeLabel = label || "本组"; }
       if (!railHost) return;
       railHost.hidden = !railActive;
       const list = groupItems();
-      const markup = `<div class="doc-rail-head"><h2 tabindex="-1">本组文档 <span>${list.length}</span></h2><button class="icon-btn" data-doc-act="more" aria-label="刷新本组文档" title="刷新本组文档">↻</button><button class="icon-btn doc-drawer-close" data-doc-act="close-rail" aria-label="关闭本组文档">×</button></div><div class="doc-rail-body">${error ? `<p class="error-line">${esc(error)}</p><button class="btn ghost" data-doc-act="more">重试</button>` : ""}${list.slice(0, 5).map(item => card(item, true)).join("") || `<p class="doc-rail-empty">${loading && !loaded ? "正在读取…" : "本组还没有文档"}</p>`}</div><button class="btn ghost doc-all" data-doc-act="center">查看本组全部 ${list.length ? `· ${list.length}` : ""}</button>`;
+      const markup = `<div class="doc-rail-head"><h2 tabindex="-1">${esc(activeLabel)} · 组内文档 <span>${list.length}</span></h2><button class="icon-btn" data-doc-act="more" aria-label="刷新本组文档" title="刷新本组文档">↻</button><button class="icon-btn doc-drawer-close" data-doc-act="close-rail" aria-label="关闭本组文档">×</button></div><div class="doc-rail-body">${error ? `<p class="error-line">${esc(error)}</p><button class="btn ghost" data-doc-act="more">重试</button>` : ""}${list.slice(0, 5).map(item => card(item, true)).join("") || `<p class="doc-rail-empty">${loading && !loaded ? "正在读取…" : "本组还没有文档"}</p>`}</div><button class="btn ghost doc-all" data-doc-act="center">查看本组全部 ${list.length ? `· ${list.length}` : ""}</button>`;
       if (railHost.innerHTML !== markup) railHost.innerHTML = markup;
       updateDrawer();
-      if (railActive) void refresh(Boolean(changed));
+      if (railActive && drawerOpen) void refresh(Boolean(changed));
     }
     async function refresh(force = false, rebuild = false) {
       if (inflight) return inflight;
@@ -93,7 +94,7 @@
         } catch (caught) { error = caught.message || String(caught); lastLoad = Date.now(); }
         finally { loading = false; inflight = null; notify(); }
       })();
-      renderResults(); return inflight;
+      renderResults(); renderRail(); return inflight;
     }
     async function pin(item, value) {
       const id = String(item.id); if (saving.has(id)) return; saving.add(id); notify();
@@ -123,12 +124,11 @@
       const fields = {"documents-group":"group", "documents-kind":"kind", "documents-important":"important"}, field = fields[event.target.id];
       if (field) { filters[field] = field === "important" ? event.target.checked : event.target.value; renderResults(); }
     });
-    document.addEventListener("keydown", event => { if (event.key === "Escape") closeRail(); });
     document.getElementById("documents-scrim")?.addEventListener("click", closeRail);
     window.addEventListener("resize", updateDrawer);
     function closeRail() { drawerOpen = false; updateDrawer(); }
-    return {count:() => loaded ? items.length : null, groupCount:id => items.filter(item => item.leader_session_id === id || item.session_id === id).length,
-      mountCenter, renderRail, refresh, closeRail, openRail() { drawerOpen = true; updateDrawer(); railHost?.querySelector("h2")?.focus(); }};
+    return {count:() => loaded ? items.length : null, groupCount:id => loaded ? items.filter(item => item.leader_session_id === id || item.session_id === id).length : null,
+      mountCenter, renderRail, refresh, closeRail, escape() { if (!drawerOpen) return false; closeRail(); return true; }, openRail() { drawerOpen = true; updateDrawer(); void refresh(); railHost?.querySelector("h2")?.focus(); }};
   }
   window.CrewDocuments = {create, sorted, filtered};
 })();

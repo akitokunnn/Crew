@@ -10,7 +10,7 @@ import unittest
 import uuid
 from pathlib import Path
 from unittest import mock
-from crew import board, chat, claude_limits
+from crew import board, chat, claude_limits, codex_client
 from test_usage import UsageFixture
 
 
@@ -343,6 +343,35 @@ class ChatTests(UsageFixture, unittest.TestCase):
         with self.assertRaisesRegex(board.BoardError, "没有在运行"):
             manager.interrupt("s1")
         self.assertEqual(process.stdin.getvalue(), "")
+
+    def test_human_can_add_input_while_claude_is_working(self):
+        manager, process, session = self.manager_with_process('working')
+        result = manager.send(session, '先回答我的补充，再继续', identity='steer-once')
+        messages = [json.loads(line) for line in process.stdin.getvalue().splitlines()]
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0]['message']['content'], '先回答我的补充，再继续')
+        self.assertEqual(result['delivery'], 'steered')
+        self.assertTrue(manager.busy('s1'))
+
+    def test_input_retry_does_not_submit_the_native_request_twice(self):
+        manager, process, session = self.manager_with_process()
+        manager.send(session, 'one instruction', identity='input-once')
+        result = manager.send(session, 'one instruction', identity='input-once')
+        self.assertTrue(result['duplicate'])
+        self.assertEqual(len(process.stdin.getvalue().splitlines()), 1)
+        self.assertEqual(chat.Journal(manager.path('s1')).inputs['input-once']['status'], 'accepted')
+        with self.assertRaises(board.Conflict):
+            manager.send(session, 'different instruction', identity='input-once')
+
+    def test_unconfirmed_native_acceptance_blocks_blind_retry(self):
+        manager, _, session = self.manager_with_process()
+        with mock.patch.object(manager, '_send', side_effect=codex_client.RequestTimeout('native reply timed out')) as send:
+            with self.assertRaises(codex_client.RequestTimeout):
+                manager.send(session, 'one instruction', identity='uncertain')
+            with self.assertRaisesRegex(board.Conflict, '未确认'):
+                manager.send(session, 'one instruction', identity='uncertain')
+        self.assertEqual(send.call_count, 1)
+        self.assertEqual(manager.journal('s1').inputs['uncertain']['status'], 'unknown')
 
     def test_real_stream_tracks_phases_tool_label_and_exact_tokens(self):
         records = [json.loads(line) for line in (Path(__file__).parent / "fixtures" / "wake_stream.jsonl").read_text(encoding="utf-8").splitlines()]

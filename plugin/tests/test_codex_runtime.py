@@ -58,6 +58,10 @@ class FakeClient:
         self.emit("item/started", turnId=self.turn_id, item={"id": "compact", "type": "contextCompaction"})
         return {}
 
+    def steer(self, text=None, *, input=None, turn_id=None):
+        self.calls.append(("turn/steer", {'input': input, 'turnId': turn_id}))
+        return {'turnId': turn_id}
+
     def interrupt(self, turn_id=None):
         self.calls.append(("turn/interrupt", {}))
         self.finish("interrupted")
@@ -143,6 +147,27 @@ class CodexRuntimeTests(unittest.TestCase):
         self.assertEqual(client.kwargs["env"]["CREW_SESSION_ID"], "worker")
         with closing(store.connect(self.home)) as conn:
             self.assertEqual(runtimes.get(conn, "worker")["native_id"], "native-1")
+
+    def test_human_input_steers_active_turn_without_replacing_event_adapter(self):
+        running, client = self.make_running()
+        running.send('start work', 'input-first')
+        adapter = running._events
+        running.send('先说明已有证据，再继续', 'input-steer')
+        self.assertIs(running._events, adapter)
+        self.assertEqual([method for method, _ in client.calls].count('turn/start'), 1)
+        steer = [params for method, params in client.calls if method == 'turn/steer']
+        self.assertEqual(steer, [{'input': [{'type': 'text', 'text': '先说明已有证据，再继续'}], 'turnId': 'turn-1'}])
+        self.assertEqual(running.journal.status, 'working')
+        self.assertEqual([event['id'] for event in running.journal.events if event['type'] == 'message'],
+                         ['input-first', 'input-steer'])
+
+    def test_automatic_message_cannot_steer_a_busy_turn(self):
+        running, client = self.make_running()
+        running.send('start work', 'input-first')
+        with self.assertRaises(board.Conflict):
+            running.send('收到，再确认一次', 'automatic', source='peer')
+        self.assertNotIn('turn/steer', [method for method, _ in client.calls])
+        self.assertEqual([event['id'] for event in running.journal.events if event['type'] == 'message'], ['input-first'])
 
     def test_resume_requires_existing_native_id_and_reinjects_guard_and_rules(self):
         with self.assertRaisesRegex(board.BoardError, "丢失"):
