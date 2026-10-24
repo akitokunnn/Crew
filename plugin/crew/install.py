@@ -1,5 +1,6 @@
 """Install the explicit HOME launchers and missing default files."""
 import json
+import shlex
 import shutil
 import sys
 from pathlib import Path
@@ -36,9 +37,10 @@ raise SystemExit(main(["--home", str(home), *sys.argv[1:]]))
     (home / "crew.py").write_text(launcher, encoding="utf-8")
     (home / "bin" / "crew.cmd").write_text('@python "%~dp0..\\crew.py" %*\n', encoding="utf-8")
     command = home / "bin" / "crew"
-    command.write_text('#!/usr/bin/env python3\nimport runpy\nfrom pathlib import Path\n'
-                       'runpy.run_path(str(Path(__file__).resolve().parent.parent / "crew.py"), run_name="__main__")\n',
-                       encoding="utf-8")
+    python = shlex.quote(Path(sys.executable).resolve().as_posix())
+    entrypoint = shlex.quote((home / 'crew.py').as_posix())
+    command.write_text('#!/bin/sh\nexec ' + python + ' ' + entrypoint + ' "$@"\n',
+                       encoding="utf-8", newline='\n')
     command.chmod(0o755)
     for name in missing:
         shutil.copyfile(plugin_root / "defaults" / name, home / name)
