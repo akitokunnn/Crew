@@ -177,6 +177,34 @@ class ToolUpdateTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(self.installs(), [])
 
+    def test_installer_has_no_deadline_but_inspection_remains_bounded(self):
+        result = tools.update(self.home, "codex", inspector=self.inspector)
+        self.assertTrue(result["ok"], result)
+        for command, options in self.calls:
+            self.assertEqual(options["timeout"], 8 if command[-1] == "--version" else None)
+        child = mock.Mock(returncode=0)
+        with mock.patch.object(tools.subprocess, "Popen", return_value=child), \
+                mock.patch.object(tools.subprocess, "run") as taskkill:
+            tools._run(["fixture-installer.exe"], timeout=None)
+        child.wait.assert_called_once_with(timeout=None)
+        child.kill.assert_not_called()
+        taskkill.assert_not_called()
+
+    def test_failed_install_with_missing_version_explains_how_to_repair(self):
+        original = self.inspector.run
+        def incomplete(command, **options):
+            if command[-1] == "--version":
+                return original(command, **options)
+            self.versions["codex"] = ""
+            return subprocess.CompletedProcess(command, 17, "", "fixture installation incomplete")
+        self.inspector.run = incomplete
+        result = tools.update(self.home, "codex", inspector=self.inspector)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("安装可能不完整", result["error"])
+        self.assertIn("@openai/codex@latest", result["after"]["manual_update"])
+        self.assertIn(str(self.prefix.resolve()), result["after"]["manual_update"])
+
     def test_newer_development_version_is_not_downgraded_even_while_running(self):
         self.versions["codex"] = "0.12.0-alpha.4"
         self.processes[:] = [{"ProcessId": 4, "Name": "codex.exe", "ExecutablePath": str(self.native["codex"]), "CommandLine": "codex"}]

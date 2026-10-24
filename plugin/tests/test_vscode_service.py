@@ -560,6 +560,59 @@ class VSCodeServiceTests(unittest.TestCase):
         self.assertIsNone(self.service.vscode_error)
         self.assertEqual(self.ids()["others"], {sid})
 
+    def test_broken_project_does_not_block_other_projects_on_cold_or_warm_scans(self):
+        beta = self.root / "beta"
+        beta.mkdir()
+        board.init_project(self.conn, "beta", beta, now=NOW)
+        a, b, c = identity(1), identity(2), identity(3)
+        self.record(a)
+        self.record(b, root=beta)
+
+        def roots(root):
+            if Path(root) == self.alpha:
+                raise subprocess.CalledProcessError(128, ["git", "worktree", "list"], stderr="not a git repository")
+            return [Path(root)]
+
+        with mock.patch("crew.vscode_sessions.project_roots", side_effect=roots):
+            self.refresh()
+        self.assertEqual(self.ids("beta")["others"], {b})
+        self.assertIn("alpha", self.service.vscode_error)
+        self.service._refresh_vscode()
+        self.assertEqual(self.ids()["others"], {a})
+        self.record(c, root=beta)
+        with mock.patch("crew.vscode_sessions.project_roots", side_effect=roots):
+            self.service._refresh_vscode()
+        self.assertEqual(self.ids()["others"], {a})
+        self.assertEqual(self.ids("beta")["others"], {b, c})
+
+    def test_corrupt_file_does_not_hide_healthy_files_and_preserves_its_last_result(self):
+        bad, good, newer = identity(1), identity(2), identity(3)
+        broken = self.record(bad)
+        self.record(good)
+        self.refresh()
+        broken.write_text('{broken json}\n', encoding="utf-8")
+        self.record(newer)
+        self.service._refresh_vscode()
+        self.assertEqual(self.ids()["others"], {bad, good, newer})
+        self.assertIn(bad, self.service.vscode_error)
+        self.assertIn("JSONDecodeError", self.service.vscode_error)
+        self.record(bad)
+        self.service._refresh_vscode()
+        self.assertIsNone(self.service.vscode_error)
+
+    def test_cold_scan_skips_malformed_record_shapes_with_visible_file_error(self):
+        bad, good = identity(1), identity(2)
+        self.record(bad).write_text('["not an object"]\n', encoding="utf-8")
+        self.record(good)
+        self.refresh()
+        self.assertEqual(self.ids()["others"], {good})
+        self.assertIn("ValueError", self.service.vscode_error)
+        self.assertIn(bad, self.service.vscode_error)
+        self.record(bad, message={"content": ["not a content block"]}, customTitle=None)
+        self.service._refresh_vscode()
+        self.assertEqual(self.ids()["others"], {good})
+        self.assertIn("block list", self.service.vscode_error)
+
     def test_temporary_database_error_elsewhere_does_not_stop_session_scans(self):
         sid = identity(1)
         self.record(sid)

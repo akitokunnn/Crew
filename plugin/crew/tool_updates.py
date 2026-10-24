@@ -56,7 +56,7 @@ def compare_versions(left, right):
 
 
 def _run(command, timeout=8, env=None):
-    """Bounded direct argv execution; timeout cleanup targets only this child."""
+    """Direct argv execution; inspection is bounded, installers wait to finish."""
     options = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {"start_new_session": True}
     with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
         process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=out, stderr=err,
@@ -394,7 +394,10 @@ def update(home, runtime, *, inspector=None):
                 else:
                     output["command"] = list(before["_update"])
                     output["log_file"] = _log(home, {"phase": "start", "runtime": runtime, "before": output["before"], "command": output["command"]})
-                    result = inspector.run(output["command"], timeout=180)
+                    # Never interrupt npm while it is replacing a global CLI.
+                    # The helper retains its OS lock until installation and
+                    # verification finish, even on a slow download.
+                    result = inspector.run(output["command"], timeout=None)
                     output["exit_code"] = result.returncode
                     after = inspector.inspect(runtime, fetch_latest=False)
                     after["latest_version"] = before["latest_version"]
@@ -408,6 +411,13 @@ def update(home, runtime, *, inspector=None):
                         output.update(ok=True, status="updated")
                     else:
                         output["error"] = "更新结果未通过版本和安装路径验证" + ("：" + result.stderr[-2000:] if result.stderr else "")
+                        if not after["installed_version"]:
+                            repair = ("请使用 Claude 官方原生安装器修复，然后检查 claude --version。"
+                                      if before["installation"] == "native" else
+                                      "请在原安装位置重新运行 npm install -g " + PACKAGES[runtime] +
+                                      '@latest --prefix "' + str(before["prefix"]) + '"，再检查工具版本。')
+                            output["error"] += "；安装可能不完整。" + repair
+                            output["after"]["manual_update"] = repair
                     output["log_file"] = _log(home, {"phase": "result", **output, "stdout": result.stdout[-6000:], "stderr": result.stderr[-6000:]})
                     return output
             output["log_file"] = _log(home, {"phase": "result", **output})

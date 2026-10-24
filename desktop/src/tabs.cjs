@@ -5,11 +5,12 @@ const { loopback } = require('./core.cjs');
 // native visibility/focus; closing it never owns or stops a Crew backend.
 class WorkspaceTabs {
   constructor(window, { origin, createView, onChange = () => {}, onHome = () => {},
-    external = () => {}, openProject = () => {}, onKeyboard = () => {} }) {
+    external = () => {}, openProject = () => {}, onKeyboard = () => {}, onNavigationError = error => console.error('Workspace navigation failed:', error) }) {
     if (!window?.contentView || typeof createView !== 'function') throw new TypeError('A window and view factory are required');
     this.window = window; this.origin = loopback(origin); this.createView = createView;
     this.onChange = onChange; this.onHome = onHome; this.external = external;
     this.openProject = openProject; this.onKeyboard = onKeyboard;
+    this.onNavigationError = onNavigationError;
     this.entries = new Map(); this.activeId = 'home'; this.counter = 0; this.disposed = false;
     this.bounds = { x: 0, y: 76, width: 0, height: 0 };
   }
@@ -30,8 +31,8 @@ class WorkspaceTabs {
   _openProject(tab, name) {
     try {
       const pending = this.openProject(name);
-      if (pending && typeof pending.catch === 'function') pending.catch(() => this._error(tab));
-    } catch (_) { this._error(tab); }
+      if (pending && typeof pending.catch === 'function') pending.catch(error => this.onNavigationError(error));
+    } catch (error) { this.onNavigationError(error); }
   }
 
   _destination(tab, value) {

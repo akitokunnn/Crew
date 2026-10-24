@@ -142,6 +142,10 @@ def register(conn, session_id, path, title=None, summary=None, kind='other', imp
         # deliberately submitted title, summary, category, author, or AI flag.
         if old is not None and (source != 'manual' and old['source'] == 'manual'):
             return _public(conn, old)
+        if old is not None and source != 'manual' and old['session_id'] != session_id:
+            # Referencing another group's document is not a new submission.
+            # Historical mentions cannot move the original card or its author.
+            return _public(conn, old)
         if old is None:
             document_id = conn.execute('INSERT INTO documents(project,session_id,leader_session_id,submitter,group_name,path,path_key,title,summary,kind,ai_important,source,source_seq,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                 (info['name'], session_id, _leader(conn, owner), owner['crew_name'] or session_id, owner['group_name'],

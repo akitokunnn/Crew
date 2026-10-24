@@ -56,7 +56,7 @@ class ToolUpdates {
     const args = [path.join(this.config.backendDir, 'crew_tool_versions.py'), '--home', this.config.home, operation];
     if (id !== undefined) args.push(id);
     const result = await this.run(this.config.python || 'python', args, { cwd:this.config.backendDir, windowsHide:true,
-      timeout:operation === 'update' ? 240000 : 45000, maxBuffer:1024 * 1024,
+      timeout:operation === 'update' ? 0 : 45000, maxBuffer:1024 * 1024,
       env:{...process.env, PYTHONUNBUFFERED:'1', PYTHONIOENCODING:'utf-8'} });
     const value = JSON.parse(result.stdout);
     if (!value || value.operation !== operation || typeof value.ok !== 'boolean') throw new Error('版本工具返回了无效结果');

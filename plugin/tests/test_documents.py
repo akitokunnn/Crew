@@ -68,6 +68,24 @@ class DocumentsTests(DocumentFixture,unittest.TestCase):
                           lambda:documents.list(self.conn,'demo','other-lead'),lambda:self.register('other-lead',str(self.file()),project='demo')):
             with self.assertRaises(board.BoardError):operation()
 
+    def test_later_historical_reference_cannot_steal_another_groups_document(self):
+        self.file()
+        board.join(self.conn,'other-lead','demo','other',self.project,self.project,'main',role='leader',now=NOW)
+        board.roster(self.conn,'demo','move','other',['two'],now=NOW)
+        self.journal([self.assistant('[交付报告](docs/report.md)')],sid='s1')
+        documents.refresh(self.conn,self.home,'demo',now=NOW)
+        first=documents.list(self.conn,'demo')[0]
+        self.journal([self.assistant('[参考旧报告](docs/report.md)',2)],sid='other-lead')
+        documents.refresh(self.conn,self.home,'demo',now='2026-10-22T08:00:00.000Z')
+        after=documents.get(self.conn,'demo',first['id'])
+        self.assertEqual(after['session_id'],'s1')
+        self.assertEqual(after['leader_session_id'],'s3')
+        self.assertEqual(after['submitter'],'one')
+        self.assertEqual(after['group'],'lead')
+        self.assertEqual(after['title'],first['title'])
+        self.assertEqual([row['id'] for row in documents.list(self.conn,'demo','s3')],[first['id']])
+        self.assertEqual(documents.list(self.conn,'demo','other-lead'),[])
+
     def test_paths_require_existing_supported_files_inside_project_or_owner_worktree(self):
         outside=self.root/'private.md';outside.write_text('private')
         for value in (str(outside),'../private.md','https://example.com/report.md','file://remote/share/report.md','//server/report.md',str(self.project),'missing.md',str(self.file('script.exe'))):

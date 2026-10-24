@@ -120,13 +120,19 @@ test('external clicks open a browser, but external redirects and subframes never
   assert.equal(f.manager.activeId, 'workspace-1'); assert.equal(f.external.length, 2);
 });
 
-test('rejected cross-project navigation is handled without an unhandled rejection', async () => {
-  const f = fixture({ openProject: async () => { throw new Error('unknown project'); } });
+test('rejected cross-project navigation reports the error while preserving the healthy source and draft', async () => {
+  const failures=[];
+  const f = fixture({ openProject: async () => { throw new Error('unknown project'); }, onNavigationError:error=>failures.push(error.message) });
   await f.manager.open({ name: 'A' });
+  const original=f.views[0].webContents.document;
+  original.draft='preserve this unsent draft';
   const navigation = event();
   f.views[0].webContents.emit('will-navigate', navigation, 'http://127.0.0.1:1234/?project=unknown');
   await new Promise(resolve => setImmediate(resolve));
-  assert.equal(navigation.prevented, true); assert.equal(f.manager.state().tabs[1].error, true);
+  assert.equal(navigation.prevented, true); assert.equal(f.manager.state().tabs[1].error, false);
+  assert.equal(f.views[0].visible,true);assert.equal(f.views[0].webContents.loads.length,1);
+  assert.strictEqual(f.views[0].webContents.document,original);assert.equal(original.draft,'preserve this unsent draft');
+  assert.deepEqual(failures,['unknown project']);
 });
 
 test('loading, failed requests, crashes and disposal update state without reviving closed views', async () => {

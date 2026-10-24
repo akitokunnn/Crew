@@ -71,10 +71,12 @@ async function showHome(action = null) {
   else if(action)pendingAction=action;
   if (!config.smoke) { window.show(); window.focus(); }
 }
-function menuAction(action) { return ()=>{ Promise.resolve().then(action).catch(async error=>{
+function actionError(error) {
   console.error('Crew action failed:',error);
-  if(!config.smoke)await dialog.showMessageBox(window,{type:'error',title:'Crew',message:'这个操作暂时没有完成',detail:error.message,buttons:['好'],noLink:true});
-}); }; }
+  if(!config.smoke)void dialog.showMessageBox(window,{type:'error',title:'Crew',message:'这个操作暂时没有完成',detail:error.message,buttons:['好'],noLink:true})
+    .catch(failure=>console.error('Crew error dialog failed:',failure));
+}
+function menuAction(action) { return ()=>{ Promise.resolve().then(action).catch(actionError); }; }
 async function openProject(name) {
   const project=(await core.projects(backend.url)).find(item=>item.name===name);
   if(!project)throw new Error('工作区不存在，请刷新列表');
@@ -271,7 +273,7 @@ else {
           additionalArguments: ['--crew-desktop-config=' + encodeURIComponent(JSON.stringify({ home: homePage, origin: backend.url, error:errorPage }))] } });
       tabs=new WorkspaceTabs(window,{origin:backend.url,
         createView:()=>new WebContentsView({webPreferences:{contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true,...(config.smoke?{backgroundThrottling:false}:{})}}),
-        onChange:state=>publishTabs(state),onHome:()=>{},external,openProject,onKeyboard:keyboard});
+        onChange:state=>publishTabs(state),onHome:()=>{},external,openProject,onKeyboard:keyboard,onNavigationError:actionError});
       tabs.setBounds({x:7,y:75,width:1206,height:768});
       window.once('ready-to-show', () => { if (!config.smoke) window.show(); });
       for (const event of ['maximize', 'unmaximize', 'focus', 'blur']) window.on(event, () => {

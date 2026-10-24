@@ -108,7 +108,10 @@ def _records(data, *, clipped_start=False, clipped_end=False):
     if clipped_end:
         boundary = data.rfind(b"\n")
         data = data[:boundary + 1] if boundary >= 0 else b""
-    return [json.loads(line) for line in data.splitlines() if line.strip()]
+    records = [json.loads(line) for line in data.splitlines() if line.strip()]
+    if any(not isinstance(record, dict) for record in records):
+        raise ValueError("transcript records must be JSON objects")
+    return records
 
 
 def _windows(path, size):
@@ -143,6 +146,8 @@ def _first_prompt(records):
         if isinstance(content, str):
             text = content
         else:
+            if not isinstance(content, list) or any(not isinstance(part, dict) for part in content):
+                raise ValueError("user message content must be text or a block list")
             if any(part.get("type") == "tool_result" for part in content):
                 continue
             text = " ".join(part["text"] for part in content if part.get("type") == "text")
@@ -168,8 +173,12 @@ def _read_session(path, stat, custom_title):
              _first_prompt(head))
     if not title:
         return None
+    if not isinstance(title, str):
+        raise ValueError("transcript title must be text")
     cwd = (_last_field(tail, "relocatedCwd") or
            next((record["cwd"] for record in head if "cwd" in record), None))
+    if cwd is not None and not isinstance(cwd, str):
+        raise ValueError("transcript cwd must be text")
     return {"session_id": path.stem, "title": title, "cwd": cwd, "mtime": stat.st_mtime}
 
 
@@ -179,9 +188,11 @@ class SessionList:
     def __init__(self):
         self._cache = {}
         self.record_ids = set()
+        self.errors = []
 
     def list(self, projects_dir, roots):
         sessions = {}
+        self.errors = []
         cache = {}
         record_ids = set()
         buckets = {store.norm_path(Path(projects_dir) / bucket_name(root)):
@@ -191,21 +202,29 @@ class SessionList:
                 if not UUID_NAME.fullmatch(path.name) or not path.is_file():
                     continue
                 record_ids.add(path.stem)
-                stat = path.stat()
-                if not stat.st_size:
-                    continue
-                sidecar = bucket / path.stem / "custom-title.json"
-                side_stat = sidecar.stat() if sidecar.is_file() else None
-                metadata = (stat.st_size, stat.st_mtime_ns,
-                            (side_stat.st_size, side_stat.st_mtime_ns) if side_stat else None)
                 key = store.norm_path(path)
                 previous = self._cache.get(key)
-                if previous is not None and previous[0] == metadata:
-                    session = previous[1]
-                else:
-                    custom_title = json.loads(sidecar.read_text(encoding="utf-8"))["customTitle"] if side_stat else None
-                    session = _read_session(path, stat, custom_title)
-                cache[key] = (metadata, session)
+                try:
+                    stat = path.stat()
+                    if not stat.st_size:
+                        continue
+                    sidecar = bucket / path.stem / "custom-title.json"
+                    side_stat = sidecar.stat() if sidecar.is_file() else None
+                    metadata = (stat.st_size, stat.st_mtime_ns,
+                                (side_stat.st_size, side_stat.st_mtime_ns) if side_stat else None)
+                    if previous is not None and previous[0] == metadata:
+                        session = previous[1]
+                    else:
+                        custom_title = json.loads(sidecar.read_text(encoding="utf-8"))["customTitle"] if side_stat else None
+                        session = _read_session(path, stat, custom_title)
+                    cache[key] = (metadata, session)
+                except (OSError, ValueError, KeyError, TypeError) as exc:
+                    self.errors.append("%s: %s: %s" % (path, type(exc).__name__, exc))
+                    if previous is None:
+                        continue
+                    # Keep only this file's last good result. Other files are
+                    # still refreshed; unchanged bad bytes are retried later.
+                    cache[key], session = previous, previous[1]
                 if session is not None:
                     if session["cwd"] is None:
                         # A transcript can open with megabytes of pasted images, so no cwd lies in the bounded reads;
