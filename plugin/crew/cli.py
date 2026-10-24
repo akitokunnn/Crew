@@ -272,6 +272,8 @@ def parser():
     a = command("wake", True)
     a.add_argument("name")
     a.add_argument("text")
+    a = command('stop', True)
+    a.add_argument('name')
     a = command("send", True)
     a.add_argument("name")
     a.add_argument("text")
@@ -448,6 +450,8 @@ def _emit(value, as_json=False, command=None, channel_card=None):
             print("已叫醒 %s，它在后台运行，SendMessage 地址：%s" % (value["name"], value["address"]))
     elif command == "compact":
         print(value["message"] if "message" in value else "已开始压缩")
+    elif command == 'stop':
+        print('已停止此 Crew 身份的所有托管执行；排队消息不能自动恢复。')
     elif command == "send":
         print(value.get("message", "消息已交给 Crew"))
     elif command == "whoami":
@@ -532,7 +536,7 @@ def _goal_command(args, cwd):
                                {'action': action, 'data': payload, 'actor_session_id': _actor(args), 'execution_id': execution_id})
 
 
-def _goal_item_execution(conn, args):
+def _goal_item_execution(conn, args, *, live=True):
     from . import goals
     execution_id = os.environ.get('CREW_EXECUTION_ID')
     if execution_id:
@@ -541,9 +545,10 @@ def _goal_item_execution(conn, args):
             raise board.BoardError('execution 与调用会话不匹配')
         if os.environ.get('CREW_GOAL_ID') and os.environ['CREW_GOAL_ID'] != execution['goal_id']:
             raise board.BoardError('执行与目标环境不匹配')
-        gate = goals.dispatch_check(conn, execution['goal_id'], execution_id=execution_id)
-        if not gate['allowed']:
-            raise board.Conflict(gate['reason'])
+        if live:
+            gate = goals.dispatch_check(conn, execution['goal_id'], execution_id=execution_id)
+            if not gate['allowed']:
+                raise board.Conflict(gate['reason'])
     return execution_id
 
 
@@ -572,6 +577,7 @@ def _with_card(conn, value):
     value["scope"] = None if card is None else card["scope"]
     value["done_when"] = None if card is None else card["done_when"]
     value.update(runtimes.get(conn, value["session_id"]))
+    value['leader'] = board.leader_of(conn, value['session_id'])
     if isinstance(value.get("leader"), dict):
         value["leader"].update(runtimes.get(conn, value["leader"]["session_id"]))
     return value
@@ -749,12 +755,18 @@ def execute(conn, args, cwd, agents_provider):
         if args.action == "add":
             return documents.register(conn, _session_id(args), str((Path(cwd) / args.path).resolve()),
                                       title=args.title, summary=args.summary, kind=args.kind,
-                                      important=args.important, project=project)
+                                      important=args.important, project=project,
+                                      execution_id=_goal_item_execution(conn, args))
         if args.action == "refresh":
             scan = documents.refresh(conn, args.home, project)
             return {"documents": documents.list(conn, project), "scan": scan}
         leader_name = getattr(args, "leader", None)
         leader = board.named_session(conn, project, leader_name)["session_id"] if leader_name else None
+        execution_id = _goal_item_execution(conn, args, live=False)
+        if execution_id:
+            from . import goals
+            return documents.list(conn, project, leader_session_id=leader,
+                                  goal_id=goals.get_execution(conn, execution_id)['goal_id'])
         return documents.list(conn, project, leader_session_id=leader)
     if cmd == "say":
         speaker = conn.execute("SELECT project FROM sessions WHERE session_id=?", (actor,)).fetchone()
@@ -916,6 +928,16 @@ def main(argv=None, agents_provider=claude_agents, cwd=None, plugin_root=None):
         if args.command in ('goal', 'context'):
             value = _goal_command(args, cwd)
             _emit(value, True, args.command)
+            return 0
+        if args.command == 'stop':
+            from . import spawn
+            with contextlib.closing(store.connect(args.home)) as conn:
+                project = _project(conn, args, cwd)
+                row = conn.execute('SELECT session_id FROM sessions WHERE project=? AND session_id=?', (project, args.name)).fetchone()
+                target = row['session_id'] if row else board.named_session(conn, project, args.name)['session_id']
+            value = spawn.request_start(args.home, project, '/api/session/stop', {
+                'session_id': target, 'caller_session_id': _actor(args)})
+            _emit(value, args.json, args.command)
             return 0
         if args.command == "compact":
             from . import spawn

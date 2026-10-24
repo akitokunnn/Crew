@@ -1,6 +1,7 @@
 """Prepare background Crew sessions and route CLI launches to the web service."""
 import contextlib
 import json
+import os
 import re
 import sqlite3
 import subprocess
@@ -244,6 +245,11 @@ def cli_dispatch(args, cwd, plugin_root):
             body = {
                 "name": args.name, "task": args.task, "group": args.group, "role": args.role,
                 "cwd": str(args.cwd) if args.cwd is not None else None, "new_worktree": args.new_worktree, "base": args.base}
+            caller = args.session_id if args.session_id is not None else (os.environ.get('CREW_SESSION_ID') or os.environ.get('CLAUDE_CODE_SESSION_ID'))
+            if caller:
+                body['caller_session_id'] = caller
+            if os.environ.get('CREW_EXECUTION_ID'):
+                body['caller_execution_id'] = os.environ['CREW_EXECUTION_ID']
             if hasattr(args, "model"):
                 body["model"] = args.model
             if hasattr(args, "effort"):

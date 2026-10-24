@@ -304,9 +304,13 @@ def transition(conn, goal_id, status, *, actor=board.HUMAN, reason=None, expecte
                                          (goal_id, goal['current_round'])).fetchone():
         raise board.Conflict('尚有执行未确认停止，应显示暂停中')
     if status in ('completed', 'failed'):
-        report = conn.execute('SELECT outcome FROM goal_reports WHERE goal_id=? AND round=? AND requirement_version=? ORDER BY version DESC LIMIT 1',
+        report = conn.execute('SELECT id,outcome FROM goal_reports WHERE goal_id=? AND round=? AND requirement_version=? ORDER BY version DESC LIMIT 1',
                               (goal_id, goal['current_round'], goal['requirement_version'])).fetchone()
-        if report is None or report['outcome'] != status:
+        reviewed = (report is not None and report['outcome'] == 'awaiting_acceptance'
+                    and goal['status'] == 'awaiting_acceptance' and actor == board.HUMAN
+                    and conn.execute('SELECT 1 FROM goal_acceptances WHERE goal_id=? AND round=? AND report_id=? AND accepted=? AND actor=?',
+                        (goal_id, goal['current_round'], report['id'], int(status == 'completed'), board.HUMAN)).fetchone() is not None)
+        if (report is None or report['outcome'] != status) and not reviewed:
             raise board.Conflict('当前轮次尚无匹配结论的完整 HTML 交付报告')
     if status in TERMINAL and conn.execute("SELECT 1 FROM goal_executions WHERE goal_id=? AND round=? AND status IN ('running','pausing')",
                                           (goal_id, goal['current_round'])).fetchone():
@@ -608,6 +612,48 @@ def get_report(conn, report_id):
     value['current'] = value['round'] == goal['current_round'] and value['requirement_version'] == goal['requirement_version']
     value['reopened'] = value['round'] < goal['current_round']
     return value
+
+
+def acceptance_review(conn, goal_id):
+    goal = _row(conn, goal_id)
+    row = conn.execute('SELECT * FROM goal_acceptances WHERE goal_id=? AND round=?',
+                       (goal_id, goal['current_round'])).fetchone()
+    return {**dict(row), 'accepted': bool(row['accepted'])} if row else None
+
+
+def acceptance_target(conn, goal_id, accepted, *, note='', actor=board.HUMAN, expected_version=None, report_id=None):
+    """Validate human intent before the host closes any idle native processes."""
+    if actor != board.HUMAN:
+        raise board.BoardError('目标验收决定只能由用户本人提交')
+    if type(accepted) is not bool:
+        raise board.BoardError('验收结果必须为布尔值')
+    if type(expected_version) is not int:
+        raise board.BoardError('验收必须提供当前目标版本')
+    goal = _row(conn, goal_id)
+    _expected(goal, expected_version)
+    if goal['status'] != 'awaiting_acceptance':
+        raise board.Conflict('只有等待用户验收的当前轮次可以决定验收结果')
+    _text(note, '验收说明', required=not accepted, limit=10000)
+    report = conn.execute('SELECT * FROM goal_reports WHERE goal_id=? AND round=? AND requirement_version=? ORDER BY version DESC LIMIT 1',
+                          (goal_id, goal['current_round'], goal['requirement_version'])).fetchone()
+    if report is None or report['outcome'] != 'awaiting_acceptance':
+        raise board.Conflict('当前轮次最新报告不是待用户验收的报告')
+    if report_id is not None and report_id != report['id']:
+        raise board.Conflict('验收报告已变化，请重新查看最新报告')
+    if conn.execute("SELECT 1 FROM goal_executions WHERE goal_id=? AND status IN ('running','pausing')", (goal_id,)).fetchone():
+        raise board.Conflict('尚有执行未确认停止，不能提交验收决定')
+    return dict(report)
+
+
+@atomic
+def review_acceptance(conn, goal_id, accepted, *, note='', actor=board.HUMAN, expected_version=None, report_id=None, now=None):
+    report = acceptance_target(conn, goal_id, accepted, note=note, actor=actor,
+                               expected_version=expected_version, report_id=report_id)
+    goal = _row(conn, goal_id)
+    conn.execute('INSERT INTO goal_acceptances(goal_id,round,report_id,accepted,note,actor,created_at) VALUES(?,?,?,?,?,?,?)',
+                 (goal_id, goal['current_round'], report['id'], int(accepted), note, actor, board._time(now)))
+    reason = ('用户验收通过' + ('：' + note if note else '')) if accepted else '用户要求修改：' + note
+    return transition(conn, goal_id, 'completed' if accepted else 'failed', actor=actor, reason=reason, now=now)
 
 
 def get_finish(conn, goal_id):

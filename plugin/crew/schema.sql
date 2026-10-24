@@ -775,3 +775,22 @@ CREATE TABLE IF NOT EXISTS goal_cancellations (
  goal_id TEXT PRIMARY KEY REFERENCES goals(id), round INTEGER NOT NULL,
  requested_at TEXT NOT NULL, actor TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS session_stop_gates (
+ session_id TEXT PRIMARY KEY REFERENCES sessions(session_id),
+ stopped_at TEXT NOT NULL, stopped_by TEXT NOT NULL
+);
+
+-- Documents belong to explicitly recorded tasks, never inferred from a leader.
+-- One original file may be delivered in more than one task.
+CREATE TABLE IF NOT EXISTS goal_documents (
+ goal_id TEXT NOT NULL REFERENCES goals(id), document_id INTEGER NOT NULL REFERENCES documents(id),
+ execution_id TEXT REFERENCES goal_executions(id), created_at TEXT NOT NULL,
+ PRIMARY KEY(goal_id,document_id)
+);
+CREATE TABLE IF NOT EXISTS goal_acceptances (
+ goal_id TEXT NOT NULL REFERENCES goals(id), round INTEGER NOT NULL,
+ report_id TEXT NOT NULL REFERENCES goal_reports(id),
+ accepted INTEGER NOT NULL CHECK(accepted IN (0,1)), note TEXT NOT NULL,
+ actor TEXT NOT NULL, created_at TEXT NOT NULL,
+ PRIMARY KEY(goal_id,round)
+);

@@ -12,7 +12,7 @@ import sys
 import tempfile
 import threading
 
-from . import board, codex_client, codex_events, codex_tools, goals, install, settings, store, trust_mode
+from . import board, codex_client, codex_events, codex_guard, codex_tools, goals, guard, install, messaging, native_approvals, settings, store, trust_mode
 
 
 def process_identity(pid):
@@ -215,6 +215,14 @@ class CodexRunning:
         self._lease = None
         self._events, self.client, self.process = None, None, None
         self._early_events = []
+        self._approval_paths = {}
+        self._approval_cancelled_turn = None
+        self._approval_process = None
+        self._approvals = native_approvals.Pending(
+            {'session_id': self.session_id, 'project': session['project'],
+             'goal_id': execution['goal_id'] if execution else None,
+             'execution_id': execution['id'] if execution else None},
+            self._validate_approval, self.journal.emit, self.input_lock)
         config = hook_config(self.home, self.plugin_root, self.session_id, execution['id'] if execution else None)
         if options.get("effort") is not None:
             config["model_reasoning_effort"] = options["effort"]
@@ -257,7 +265,11 @@ class CodexRunning:
         if execution:
             env.update(CREW_EXECUTION_ID=execution['id'], CREW_GOAL_ID=execution['goal_id'])
         env['PATH'] = str(self.home / 'bin') + os.pathsep + env.get('PATH', '')
-        params = {"cwd": session["cwd"], "developerInstructions": instructions, "config": config,
+        # Board keys are case-folded on Windows. Native sandbox roots must use
+        # the filesystem's spelling: mixed cwd/root casing can split one root
+        # into incompatible writable policies in the Windows sandbox.
+        cwd = str(Path(session["cwd"]).resolve()) if os.name == 'nt' else session["cwd"]
+        params = {"cwd": cwd, "developerInstructions": instructions, "config": config,
                   "sandbox": sandbox_mode, "approvalPolicy": "never" if sandbox_mode == 'danger-full-access' else 'on-request'}
         if options.get("model") is not None:
             params["model"] = options["model"]
@@ -278,10 +290,12 @@ class CodexRunning:
                 raise
             return process
         try:
-            self.client = _ObservedClient(cwd=session["cwd"], env=env,
+            self.client = _ObservedClient(cwd=cwd, env=env,
                                           on_notification=self._notification, tool_handler=self._tool,
+                                          approval_handler=self._approval,
                                           process_factory=own_process)
             self.process = self.client.process
+            self._approval_process = self.process
             if native_id:
                 result = self.client.resume_thread(native_id, **params)
             else:
@@ -307,6 +321,7 @@ class CodexRunning:
             self.reader = threading.Thread(target=self._watch, daemon=True, name="crew-codex-lifecycle")
             self.reader.start()
         except BaseException:
+            self._approvals.cancel('原生进程未完成启动', close=True)
             if self.client is not None:
                 self._closing = True
                 self.client.close()
@@ -335,6 +350,11 @@ class CodexRunning:
                     return
                 if params.get("threadId") != self.thread_id:
                     return
+                if method == 'item/started' and params.get('item', {}).get('type') == 'fileChange':
+                    item = params['item']
+                    self._approval_paths[(params.get('turnId'), item['id'])] = [
+                        change['path'] for change in item.get('changes', []) if isinstance(change.get('path'), str)]
+                    self._turn_ready.notify_all()
                 if method == 'turn/started':
                     self._started_turn_id = params['turn']['id']
                     self._turn_ready.notify_all()
@@ -368,6 +388,9 @@ class CodexRunning:
                     if kind == "turn_result":
                         terminal = event
                 if terminal is not None:
+                    self._approval_cancelled_turn = terminal.get('turn_id') or self._events.turn_id
+                    self._approvals.cancel('原生轮次已经结束', turn=self._approval_cancelled_turn)
+                    self._approval_paths.clear()
                     self._compacting = False
                     if self.pending_compact:
                         self.pending_compact = False
@@ -379,6 +402,77 @@ class CodexRunning:
             self.journal.emit("error", text="Codex 通知处理失败：" + str(exc))
             # Do not block the notification consumer while it is draining.
             threading.Thread(target=self.close, daemon=True, name="crew-codex-failure").start()
+
+    def pending_approvals(self):
+        return self._approvals.snapshots()
+
+    def resolve_approval(self, identity, allow):
+        return self._approvals.resolve(identity, allow)
+
+    def _approval(self, method, params):
+        if not isinstance(params, dict):
+            return self._approvals.request(method, params)
+        with self.input_lock:
+            key = params.get('turnId'), params.get('itemId')
+            if method == 'item/fileChange/requestApproval' and key not in self._approval_paths:
+                # Native notifications and server requests use separate callback
+                # queues. Drain the preceding fileChange item before displaying it.
+                self._turn_ready.wait_for(lambda: key in self._approval_paths or self._closing
+                    or self.journal.status != 'working', timeout=5)
+            paths = self._approval_paths.get(key, ())
+            params = dict(params)
+            # File-change callbacks omit cwd; bind it to this owned carrier,
+            # rather than accepting a browser-provided working directory.
+            params.setdefault('cwd', str(Path(self.session['cwd']).resolve()) if os.name == 'nt' else self.session['cwd'])
+        return self._approvals.request(method, params, paths=paths)
+
+    def _validate_approval(self, approval):
+        if (self._closing or self.client is None or self.process is not self._approval_process
+                or self.process is not self.client.process or self.process.poll() is not None
+                or self._lease is None or self._lease.stream is None):
+            raise board.Conflict('审批所属的原生进程已经离线或不再由 Crew 持有')
+        turn = self._events.turn_id if self._events else None
+        if (approval['thread'] != getattr(self, 'thread_id', None)
+                or approval['thread'] != self.client.thread_id
+                or approval['turn'] != (turn or self.client.turn_id)
+                or approval['turn'] == self._approval_cancelled_turn
+                or self.journal.status != 'working'):
+            raise board.Conflict('审批不再属于当前原生轮次')
+        from . import runtimes
+        with closing(guard.readonly(self.home)) as conn:
+            session = board.session(conn, self.session_id)
+            if (session['project'] != self.session['project'] or session['status'] == 'closed'
+                    or board.is_archived(conn, self.session_id)
+                    or session['cwd'] != self.session['cwd'] or messaging.stopped(conn, self.session_id)):
+                raise board.Conflict('审批所属的 Crew 会话已经失效')
+            if self.execution:
+                execution = goals.get_execution(conn, self.execution['id'])
+                binding = next((b for b in execution['bindings'] if b['runtime'] == 'codex'), None)
+                if (execution['session_id'] != self.session_id or execution['runtime'] != 'codex'
+                        or binding is None or binding['native_id'] != approval['thread']):
+                    raise board.Conflict('审批所属的目标载体已经失效')
+                gate = goals.dispatch_check(conn, self.execution['goal_id'], execution_id=self.execution['id'])
+                if not gate['allowed']:
+                    raise board.Conflict(gate['reason'])
+            else:
+                mapping = runtimes.get(conn, self.session_id)
+                if mapping['runtime'] != 'codex' or mapping['native_id'] != approval['thread']:
+                    raise board.Conflict('审批所属的 Codex 载体已经失效')
+        if not isinstance(approval['cwd'], str) or not os.path.isabs(approval['cwd']):
+            raise board.BoardError('原生审批缺少绝对工作目录')
+        if approval['kind'] == 'commandExecution':
+            reason = codex_guard.check(self.home, self.session_id,
+                {'hook_event_name': 'PreToolUse', 'session_id': approval['thread'],
+                 'cwd': approval['cwd'], 'tool_name': 'Bash', 'tool_input': {'command': approval['command']}},
+                self.execution['id'] if self.execution else None)
+            if reason:
+                raise board.Conflict(reason)
+        else:
+            for path in approval['paths']:
+                reason = guard.check(self.home, {'session_id': self.session_id, 'cwd': approval['cwd'],
+                    'tool_name': 'Write', 'tool_input': {'file_path': path}})
+                if reason:
+                    raise board.Conflict(reason)
 
     def _tool(self, params):
         call_id = params.get("callId")
@@ -433,6 +527,7 @@ class CodexRunning:
             native_text=('【Crew 当前授权状态；覆盖先前状态】\n'+autonomy+'\n【授权状态结束】\n\n'+text) if autonomy else text
             inputs.append({"type": "text", "text": native_text})
             self._new_events()
+            self._approval_cancelled_turn = None
             self._started_turn_id = None
             with closing(store.connect(self.home)) as conn:
                 conn.execute("UPDATE sessions SET last_prompt=? WHERE session_id=?", ((text if display_text is None else display_text)[:200], self.session_id))
@@ -509,12 +604,17 @@ class CodexRunning:
                 if self.journal.status != 'working' or self._closing:
                     raise board.Conflict('Codex 本轮已结束')
             self.pending_compact = False
-            self.client.interrupt(turn_id=(self._events.turn_id if self._compacting else self.client.turn_id) or self._events.turn_id)
+            self._approval_cancelled_turn = (self._events.turn_id if self._compacting else self.client.turn_id) or self._events.turn_id
+            try:
+                self._approvals.cancel('用户已停止当前原生轮次', turn=self._approval_cancelled_turn)
+            finally:
+                self.client.interrupt(turn_id=(self._events.turn_id if self._compacting else self.client.turn_id) or self._events.turn_id)
         return {"ok": True}
 
     def _watch(self):
         try:
             self.client.transport_done.wait()
+            self._approvals.cancel('原生连接已经结束', close=True)
             self.client.notifications_done.wait()
             with self.input_lock:
                 active = self.journal.status == "working"
@@ -541,9 +641,15 @@ class CodexRunning:
                     self.reader_done.set()
 
     def close(self):
-        with self.input_lock:
-            self._closing = True
-            self.pending_compact = False
-            self._settings.notify_all()
-        if self.client is not None:
-            self.client.close()
+        try:
+            with self.input_lock:
+                self._closing = True
+                try:
+                    self._approvals.cancel('原生进程正在关闭', close=True)
+                finally:
+                    self._turn_ready.notify_all()
+                    self.pending_compact = False
+                    self._settings.notify_all()
+        finally:
+            if self.client is not None:
+                self.client.close()

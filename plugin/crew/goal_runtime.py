@@ -7,7 +7,7 @@ import subprocess
 import threading
 import uuid
 
-from . import board, goal_context, goals, install, models, runtimes, spawn, store, trust_mode
+from . import board, goal_context, goals, install, messaging, models, runtimes, spawn, store, trust_mode
 
 
 BASE_INSTRUCTIONS = """你在 Crew 内执行一个有明确终点的目标；身份、目标与授权由宿主绑定。
@@ -46,6 +46,30 @@ class Controller:
                             'AND requirement_version=? ORDER BY generation DESC',
                             (goal_id, goal['current_round'], session_id, goal['requirement_version'])).fetchall()
         return None if not rows else goals.get_execution(conn, rows[0]['id'])
+
+    def routing_execution(self, conn, session_id):
+        """Resolve a stable person to their current goal; never reuse a different goal's history."""
+        rows = conn.execute("SELECT e.id FROM goal_executions e JOIN goals g ON g.id=e.goal_id "
+            "WHERE e.session_id=? AND e.round=g.current_round AND e.requirement_version=g.requirement_version "
+            "AND g.status IN ('queued','running','pausing','paused','waiting_user') "
+            "AND e.status NOT IN ('completed','failed','cancelled') "
+            "AND e.generation=(SELECT MAX(x.generation) FROM goal_executions x WHERE x.goal_id=e.goal_id "
+            "AND x.round=e.round AND x.session_id=e.session_id) "
+            "ORDER BY CASE WHEN g.status='running' THEN 0 ELSE 1 END,g.updated_at DESC,e.created_at DESC",
+            (session_id,)).fetchall()
+        return None if not rows else goals.get_execution(conn, rows[0]['id'])
+
+    def general_context(self, conn, session_id):
+        rows = conn.execute('SELECT DISTINCT g.id FROM goals g LEFT JOIN goal_assignments a ON a.goal_id=g.id '
+            'WHERE g.leader_session_id=? OR a.session_id=? ORDER BY g.updated_at DESC LIMIT 3',
+            (session_id, session_id)).fetchall()
+        if not rows:
+            return ''
+        lines = ['[Crew 目标索引；原生历史分别保存。需要详情用 crew goal status 查阅，不另起业务方案；暂停/结束不代表获准复工。]']
+        for row in rows:
+            value = goals.get(conn, row['id'])
+            lines.append('%s | %s | %s' % (value['id'], value['title'][:60], value['status']))
+        return '\n'.join(lines)
 
     def ensure(self, conn, goal_id, session_id):
         goal = goals.get(conn, goal_id)
@@ -158,11 +182,18 @@ class Controller:
         current.reader.start()
         return command
 
-    def send(self, goal_id, session_id, text, *, identity=None, images=None, source='human'):
+    def send(self, goal_id, session_id, text, *, identity=None, images=None, source='human', display_text=None, sender=None):
         identity = str(uuid.uuid4()) if identity is None else identity
         with self.manager.lock, closing(store.connect(self.home)) as conn:
             goal = goals.get(conn, goal_id)
             goals._member(conn, goal, session_id)
+            human = source in ('human', 'qq', 'lark')
+            if messaging.stopped(conn, session_id):
+                if not human:
+                    raise board.Conflict('用户已停止此会话；排队消息不能自动恢复它')
+                if goal['manual_pause'] or goal['status'] in ('pausing', 'paused'):
+                    raise board.Conflict('目标已手动暂停，请在目标中明确恢复')
+                messaging.clear_stop(conn, session_id)
             if goal['status'] == 'waiting_user' and source in ('human', 'qq', 'lark') and not goal['manual_pause']:
                 goal = goals.resume(conn, goal_id, actor=board.HUMAN)
                 finish = goals.get_finish(conn, goal_id)
@@ -178,7 +209,8 @@ class Controller:
             target = self.target(conn, execution)
             prior = journal.inputs.get(identity)
             if prior is not None and prior['status'] != 'rejected':
-                result = self.manager.send(target, text, identity=identity, images=images, source=source)
+                result = self.manager.send(target, text, identity=identity, images=images, source=source,
+                                           display_text=display_text, sender=sender)
                 return {**result, 'goal_id': goal_id, 'execution_id': key}
             observed = self.manager.context(key)
             history = {'known': observed is not None, 'tokens': observed['used'] if observed else None,
@@ -207,8 +239,8 @@ class Controller:
                 current.goal_manifests[identity] = prepared['manifest']['id']
             target['_goal_manifests'] = {identity: prepared['manifest']['id']}
             goals.set_execution_status(conn, key, 'running')
-            result = self.manager.send(target, prepared['text'], display_text=text,
-                                       identity=identity, images=images, source=source)
+            result = self.manager.send(target, prepared['text'], display_text=text if display_text is None else display_text,
+                                       identity=identity, images=images, source=source, sender=sender)
             if execution['runtime'] == 'codex' and not result.get('duplicate'):
                 goal_context.mark_applied(conn, prepared['manifest']['id'], execution_id=key)
             return {**result, 'goal_id': goal_id, 'execution_id': key}

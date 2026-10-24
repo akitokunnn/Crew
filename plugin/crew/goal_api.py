@@ -1,7 +1,7 @@
 """Small HTTP adapter; goal state and native execution remain separate."""
 from urllib.parse import urlencode
 
-from . import board, goal_context, goals
+from . import board, documents, goal_context, goals
 
 
 def card(conn, value):
@@ -35,12 +35,55 @@ def detail(conn, project, identity):
                for row in conn.execute('SELECT id,round,outcome,created_at FROM goal_reports WHERE goal_id=? '
                                        'ORDER BY created_at DESC', (identity,))]
     return {'goal': card(conn, value), 'executions': executions,
-            'context': context(conn, identity, current[-1]['id'] if current else None), 'reports': reports}
+            'context': context(conn, identity, current[-1]['id'] if current else None), 'reports': reports,
+            'documents': documents.list(conn, project, goal_id=identity),
+            'acceptance_review': goals.acceptance_review(conn, identity)}
+
+
+def _stop_acceptance_executions(control, conn, goal_id):
+    """Refuse live/unknown writers; drain idle owned runtimes before the human decision."""
+    manager, idle, agents = control.manager, [], None
+    for row in conn.execute('SELECT id FROM goal_executions WHERE goal_id=?', (goal_id,)):
+        key = row['id']
+        current = manager.processes.get(key)
+        if manager.running(key):
+            if manager.busy(key):
+                raise board.Conflict('原生执行仍在工作，尚不能提交验收决定')
+            idle.append(key)
+        elif current is not None:
+            if not current.reader_done.is_set():
+                raise board.Conflict('原生执行输出尚未排空，尚不能提交验收决定')
+        else:
+            execution = goals.get_execution(conn, key)
+            if execution['runtime'] == 'claude':
+                identities = {binding['native_id'] for binding in execution['bindings'] if binding['runtime'] == 'claude'}
+                if identities:
+                    if agents is None:
+                        agents = manager._external_agents()
+                    if any(agent['sessionId'] in identities for agent in agents):
+                        raise board.Conflict('原生执行仍在外部运行，尚不能提交验收决定')
+            else:
+                from .codex_runtime import RuntimeLease
+                lease = RuntimeLease(manager.home, key).acquire()
+                lease.release()
+    for key in idle:
+        manager.stop_managed(key)
+    control.sync(conn, goal_id)
 
 
 def post(service, conn, project, path, data):
     control = service.chat.goal_controller
     if path == '/api/goals/agent':
+        if data.get('actor_session_id') == board.HUMAN:
+            if data.get('execution_id'):
+                raise board.BoardError('用户操作不能冒用原生执行身份')
+            payload = dict(data.get('data', {}))
+            if payload.get('project') not in (None, project):
+                raise board.BoardError('请求项目与当前工作区不匹配')
+            payload['project'] = project
+            if payload.get('goal_id'):
+                goals.get(conn, payload['goal_id'], project)
+            return control.agent_action(data.get('action'), payload, board.HUMAN)
         actor = board.session(conn, data.get('actor_session_id'))
         if actor['project'] != project:
             raise board.BoardError('会话不属于当前工作区')
@@ -54,6 +97,17 @@ def post(service, conn, project, path, data):
     if path == '/api/goals/action':
         goals._expected(value, data.get('version'))
         action = data.get('action')
+        if action in ('accept', 'reject'):
+            if 'actor_session_id' in data or 'execution_id' in data:
+                raise board.BoardError('验收入口由用户本人操作，不能指定 AI 执行身份')
+            options = {'note': data.get('note', ''), 'expected_version': data.get('version'),
+                       'report_id': data.get('report_id')}
+            with control.manager.lock:
+                goals.acceptance_target(conn, identity, action == 'accept', **options)
+                _stop_acceptance_executions(control, conn, identity)
+                goals.review_acceptance(conn, identity, action == 'accept', **options)
+            return {'goal': card(conn, goals.get(conn, identity)),
+                    'acceptance_review': goals.acceptance_review(conn, identity)}
         if action == 'pause':
             control.pause(identity)
         elif action == 'start':

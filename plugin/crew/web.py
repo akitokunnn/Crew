@@ -221,8 +221,13 @@ class Service:
                 sid = leader['session_id']
                 try:
                     with self.chat.lock:
-                        if self.chat.running(sid):
-                            if self.chat.busy(sid):
+                        execution = self.chat.goal_controller.routing_execution(conn, sid)
+                        key = execution['id'] if execution else sid
+                        if messaging.stopped(conn, sid) or execution and not goals.dispatch_check(
+                                conn, execution['goal_id'], execution_id=key)['allowed']:
+                            continue
+                        if self.chat.running(key):
+                            if self.chat.busy(key):
                                 continue
                         else:
                             with self.agents_lock:
@@ -237,7 +242,7 @@ class Service:
                                     board.record_event(conn, 'leader:notice_blocked', leader['project'], sid,
                                                        {'reason': '会话正在其他进程中运行'}, now=self.now().isoformat())
                                 continue
-                            if not self.chat.path(sid).exists():
+                            if not self.chat.path(key).exists():
                                 continue
                         pending = board.pending_notices(conn, sid)
                         text = '[Crew]\n' + '\n'.join('%s. %s' % (index, notice['text'])
@@ -261,13 +266,18 @@ class Service:
                 continue
             try:
                 with self.chat.lock:
+                    execution = self.chat.goal_controller.routing_execution(conn, sid)
+                    key = execution['id'] if execution else sid
+                    if messaging.stopped(conn, sid) or execution and not goals.dispatch_check(
+                            conn, execution['goal_id'], execution_id=key)['allowed']:
+                        continue
                     with self.agents_lock:
                         claude = runtimes.get(conn, sid)['runtime'] == 'claude'
-                        if claude and not self.chat.running(sid) and (self.agents_error is not None or not self.agents_ready.is_set()):
+                        if claude and not self.chat.running(key) and (self.agents_error is not None or not self.agents_ready.is_set()):
                             continue
                         external = claude and any(agent['sessionId'] == sid for agent in self.agents)
-                    if self.chat.running(sid):
-                        if self.chat.busy(sid):
+                    if self.chat.running(key):
+                        if self.chat.busy(key):
                             continue
                         self.chat.send(target, '[Crew]\n' + result['body'], source='crew')
                     else:
@@ -383,7 +393,7 @@ class Service:
                       'ai': settings.load(conn),
                       'now': self.now().isoformat(), 'agents_error': error, 'notification': self.notification_status(),
                       'leaders': [], 'members': [], 'decisions': [], 'attention': [],
-                      'todos': [], 'todo_count': 0, 'goals': [],
+                      'todos': [], 'todo_count': 0, 'goals': [], 'native_approvals': [],
                       'candidates': {'running': [], 'others': []},
                       'channel': {'unread': 0, 'latest_id': 0, 'digesting': False, 'digest_error': None, 'digest_id': None},
                       'limits': self.limits(conn)}
@@ -414,14 +424,18 @@ class Service:
                 with self.scan_lock:
                     titles = usage.session_titles(self.claude_root, [s['session_id'] for s in sessions], self.title_cache)
                     contexts = {sid: cached['context'] for sid, cached in self.title_cache.items()}
-                histories = {}
+                result['native_approvals'] = self.native_approvals(name)
+                histories, process_keys, active_goals = {}, {}, {}
                 for session in sessions:
                     sid = session['session_id']
+                    execution = self.chat.goal_controller.routing_execution(conn, sid)
+                    key = process_keys[sid] = execution['id'] if execution else sid
+                    active_goals[sid] = execution['goal_id'] if execution else None
                     session['web_chat'] = self.chat.path(sid).exists()
                     if session['web_chat']:
                         histories[sid] = self.chat.history(sid)
-                    if self.chat.running(sid):
-                        journal_status = self.chat.journal(sid).status
+                    if self.chat.running(key):
+                        journal_status = self.chat.journal(key).status
                         if session['status'] != 'waiting' or journal_status == 'working':
                             session['status'] = journal_status
                     elif sid in present and present[sid].get('kind') == 'crew':
@@ -442,7 +456,8 @@ class Service:
                                   for s in sessions if s['role'] != 'leader'}
                 for session in sessions:
                     sid = session['session_id']
-                    context = self.chat.context(sid) if self.chat.running(sid) else contexts.get(sid)
+                    key = process_keys[sid]
+                    context = self.chat.context(key) if self.chat.running(key) else contexts.get(sid)
                     own_tasks = [t for t in tasks if t['session_id'] == sid]
                     recent_tasks = [t for t in own_tasks if t['status'] == 'running' or
                                     (t['ended_at'] is not None and
@@ -455,11 +470,12 @@ class Service:
                         read_seq = board.read_seq(conn, sid)
                         result['leaders'].append(dict(
                             session_id=sid, name=session['crew_name'], goal=session['task'], status=session['status'],
+                            active_goal_id=active_goals[sid], active_execution_id=key if key != sid else None,
                             runtime=runtimes.get(conn, sid)['runtime'],
                             runtime_switch=runtime_switch.state(conn,session,self.chat,agents,error),
                             trust=trust_mode.get(conn,name,sid),
                             is_git_admin=git_config is not None and git_config['admin_session_id'] == sid,
-                            **models.get(conn, sid), applied=self.chat.applied(sid), activity=self.chat.activity(sid),
+                            **models.get(conn, sid), applied=self.chat.applied(key), activity=self.chat.activity(key),
                             context=context, **codex,
                             where='bg' if self.chat.running(sid) or sid in present and present[sid].get('kind') == 'crew' else 'vscode' if sid in present else 'offline',
                             busy=self.chat.busy(sid) or (sid in present and present[sid].get('status') == 'busy'),
@@ -477,9 +493,10 @@ class Service:
                         card = board.card(conn, sid)
                         result['members'].append(dict(
                             session_id=sid, name=session['crew_name'], title=titles.get(sid),
+                            active_goal_id=active_goals[sid], active_execution_id=key if key != sid else None,
                             runtime=runtimes.get(conn, sid)['runtime'],
                             runtime_switch=runtime_switch.state(conn,session,self.chat,agents,error),
-                            **models.get(conn, sid), applied=self.chat.applied(sid), activity=self.chat.activity(sid),
+                            **models.get(conn, sid), applied=self.chat.applied(key), activity=self.chat.activity(key),
                             context=context, busy=self.chat.busy(sid) or (sid in present and present[sid].get('status') == 'busy'),
                             running=self.chat.running(sid) or sid in present,
                             leader_session_id=leader['session_id'] if leader else None, group=session['group_name'],
@@ -579,6 +596,33 @@ class Service:
         return {'ai': settings.get(self.home), 'execution': settings.get_execution(self.home), 'runtimes': self.runtime_catalog.snapshot(),
                 'home': str(Path(self.home).resolve()), 'backend': str(Path(self.plugin_root).resolve())}
 
+    def native_approvals(self, project):
+        with self.chat.lock:
+            return sorted([approval for current in self.chat.processes.values()
+                           if getattr(current, 'runtime', 'claude') == 'codex'
+                           for approval in current.pending_approvals() if approval['project'] == project],
+                          key=lambda approval: (approval['created_at'], approval['id']))
+
+    def resolve_native_approval(self, conn, project, identity, allow):
+        if type(allow) is not bool:
+            raise ValueError('allow 必须是 true 或 false')
+        with self.chat.lock:
+            for key, current in self.chat.processes.items():
+                if getattr(current, 'runtime', 'claude') != 'codex':
+                    continue
+                approval = next((item for item in current.pending_approvals()
+                                 if item['id'] == identity and item['project'] == project), None)
+                if approval is None:
+                    continue
+                if not self.chat.running(key) or messaging.stopped(conn, approval['session_id']):
+                    raise board.Conflict('该原生执行已停止，审批已经失效')
+                if approval['execution_id'] is not None:
+                    gate = goals.dispatch_check(conn, approval['goal_id'], execution_id=approval['execution_id'])
+                    if not gate['allowed']:
+                        raise board.Conflict(gate['reason'])
+                return {'approval': current.resolve_approval(identity, allow)}
+        raise board.Conflict('审批已结束或不属于当前工作区，请刷新')
+
     def post(self, path, data, project_name=None):
         if not isinstance(data, dict):
             raise ValueError("JSON \u8bf7\u6c42\u5fc5\u987b\u662f\u5bf9\u8c61")
@@ -649,7 +693,7 @@ class Service:
                 if type(data.get('away')) is not bool:
                     raise ValueError('离开状态必须是 true 或 false')
                 return self.set_away(data['away'])
-            if path in ('/api/channel', '/api/channel/read', '/api/channel/digest', '/api/project/theme', '/api/leaders/order', '/api/leaders/priority', '/api/documents', '/api/documents/pin', '/api/documents/refresh') and 'project' in data:
+            if path in ('/api/channel', '/api/channel/read', '/api/channel/digest', '/api/project/theme', '/api/leaders/order', '/api/leaders/priority', '/api/documents', '/api/documents/pin', '/api/documents/refresh', '/api/native-approval') and 'project' in data:
                 body_project = _text(data, 'project')
                 if project_name is not None and body_project != project_name:
                     raise board.BoardError('请求正文和地址中的项目不一致')
@@ -668,6 +712,8 @@ class Service:
                     self.stop_archived(result['before'])
                 return {'ok': True}
             project = self.selected_project(conn, project_name)
+            if path == '/api/native-approval':
+                return self.resolve_native_approval(conn, project, _text(data, 'id'), data.get('allow'))
             if path.startswith('/api/goals/'):
                 return goal_api.post(self, conn, project, path, data)
             if path in ('/api/documents', '/api/documents/pin', '/api/documents/refresh'):
@@ -676,7 +722,8 @@ class Service:
                 if path == '/api/documents':
                     return documents.register(conn, _text(data,'session_id'), _text(data,'path'),
                         title=data.get('title'), summary=data.get('summary'), kind=data.get('kind','other'),
-                        important=data.get('important',False), project=project, now=now)
+                        important=data.get('important',False), project=project, now=now,
+                        goal_id=data.get('goal_id'), execution_id=data.get('execution_id'))
                 if path == '/api/documents/pin':
                     if 'important' not in data: raise ValueError('缺少 important 字段')
                     return documents.pin(conn,project,data.get('id'),data['important'],now=now)
@@ -799,7 +846,7 @@ class Service:
                 if path == '/api/session/undo':
                     return session_ops.undo(conn, target['session_id'], data['before'], now=now)
                 if path == '/api/session/stop':
-                    return self.chat.interrupt(target['session_id'])
+                    return self.chat.stop_identity(target['session_id'], caller_session_id=_optional_text(data, 'caller_session_id'))
                 if path == '/api/session/compact':
                     return self.chat.compact(target, caller_session_id=_optional_text(data, 'caller_session_id'))
                 if path == '/api/session/options':
@@ -875,6 +922,8 @@ class Service:
                                        group=_optional_text(data, "group"), role=data.get("role", "member"),
                                        cwd=_optional_text(data, "cwd"), new_worktree=_optional_text(data, "new_worktree"),
                                        base=_optional_text(data, "base"), now=now,
+                                       caller_session_id=_optional_text(data, 'caller_session_id'),
+                                       caller_execution_id=_optional_text(data, 'caller_execution_id'),
                                        model=data["model"] if "model" in data else models.INHERIT,
                                        effort=data["effort"] if "effort" in data else models.INHERIT,
                                        runtime=data["runtime"] if "runtime" in data else models.INHERIT)
@@ -926,9 +975,15 @@ class Service:
                 target = board.session(conn, _text(data, 'session_id'))
                 if target['project'] != project:
                     raise board.BoardError('会话不属于当前工作区')
-                execution = self.chat.goal_controller.current(conn, data.get('goal_id'), target['session_id'])
+                if data.get('goal_id'):
+                    goals.get(conn, data['goal_id'], project)
+                    execution = self.chat.goal_controller.current(conn, data['goal_id'], target['session_id'])
+                else:
+                    execution = self.chat.goal_controller.routing_execution(conn, target['session_id'])
                 if execution:
                     return self.chat.interrupt(execution['id'])
+                if not data.get('goal_id'):
+                    return self.chat.interrupt(target['session_id'])
                 return {'ok': True, 'message': '当前没有运行中的会话'}
             if path == '/api/chat/read':
                 if data.get('goal_id'):
@@ -992,14 +1047,16 @@ class Service:
             project = self.selected_project(conn, project_name)
             return {**channel.messages(conn, project, limit=limit, before=before), 'digest': channel.digest(conn, project)}
 
-    def document_list(self, project_name=None, leader_session_id=None):
+    def document_list(self, project_name=None, leader_session_id=None, goal_id=None):
         with self.write_lock, closing(store.connect(self.home)) as conn:
             project=self.selected_project(conn,project_name)
+            if goal_id is not None:
+                goals.get(conn, goal_id, project)
             try:
                 scan=documents.refresh(conn,self.home,project)
             except (OSError, sqlite3.Error, ValueError) as exc:
                 scan={'indexed':0,'scanned':0,'has_more':False,'errors':[{'source':'index','error':str(exc)}]}
-            return {'documents':documents.list(conn,project,leader_session_id), 'scan':scan}
+            return {'documents':documents.list(conn,project,leader_session_id,goal_id=goal_id), 'scan':scan}
 
     def resolve_file(self, session_id, text, project_name=None, base=None, document_id=None):
         with closing(store.connect(self.home)) as conn:
@@ -1137,6 +1194,7 @@ POST_PATHS.update(('/api/files/resolve', '/api/files/open', '/api/files/reveal')
 POST_PATHS.update(('/api/documents','/api/documents/pin','/api/documents/refresh'))
 POST_PATHS.update(('/api/git/enable', '/api/git/disable', '/api/git/fetch'))
 POST_PATHS.add('/api/settings')
+POST_PATHS.add('/api/native-approval')
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"),
           "/themes.js": ("themes.js", "text/javascript; charset=utf-8"),
           "/sounds.js": ("sounds.js", "text/javascript; charset=utf-8"),
@@ -1159,6 +1217,8 @@ STATIC.update({'/goal-ui.js': ('goal-ui.js', 'text/javascript; charset=utf-8'),
                '/goal-ui.css': ('goal-ui.css', 'text/css; charset=utf-8')})
 STATIC.update({'/settings-ui.js': ('settings-ui.js', 'text/javascript; charset=utf-8'),
                '/settings-ui.css': ('settings-ui.css', 'text/css; charset=utf-8')})
+STATIC.update({'/native-approval-ui.js': ('native-approval-ui.js', 'text/javascript; charset=utf-8'),
+               '/native-approval-ui.css': ('native-approval-ui.css', 'text/css; charset=utf-8')})
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1266,7 +1326,8 @@ class Handler(BaseHTTPRequestHandler):
             with closing(store.connect(service.home)) as conn:
                 self._send(200, {'projects': board.projects(conn)})
         elif url.path == '/api/documents':
-            self._send(200,service.document_list(query.get('project',[None])[0],query.get('leader_session_id',[None])[0]))
+            self._send(200,service.document_list(query.get('project',[None])[0],query.get('leader_session_id',[None])[0],
+                                                 query.get('goal_id',[None])[0]))
         elif url.path == '/api/trust/report':
             with closing(store.connect(service.home)) as conn:
                 project = service.selected_project(conn, query.get('project', [None])[0])
