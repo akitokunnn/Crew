@@ -17,7 +17,7 @@ from urllib.parse import parse_qs, quote, urlencode, urlsplit
 from urllib.request import ProxyHandler, build_opener
 from urllib.error import HTTPError, URLError
 
-from . import board, channel, channel_digest, chat, claude_limits, documents, git_admin, git_ci, git_view, goal_api, goals, hooks, messaging, models, notifications, open_session, presentation, runtime_catalog, runtime_switch, runtimes, session_ops, spawn, store, themes, todo, trust_mode, usage, usage_cli, vscode_sessions
+from . import board, channel, channel_digest, chat, claude_limits, documents, git_admin, git_ci, git_view, goal_api, goals, hooks, messaging, models, notifications, open_session, presentation, runtime_catalog, runtime_switch, runtimes, session_ops, settings, spawn, store, themes, todo, trust_mode, usage, usage_cli, vscode_sessions
 from .service_lock import HomeServiceLock
 
 
@@ -380,6 +380,7 @@ class Service:
                       'themes': themes.THEMES,
                       'models': models.MODELS, 'efforts': models.EFFORTS,
                       'runtimes': self.runtime_catalog.snapshot(),
+                      'ai': settings.load(conn),
                       'now': self.now().isoformat(), 'agents_error': error, 'notification': self.notification_status(),
                       'leaders': [], 'members': [], 'decisions': [], 'attention': [],
                       'todos': [], 'todo_count': 0, 'goals': [],
@@ -574,9 +575,22 @@ class Service:
             root = board.project(conn, name)["root"]
         return git_view.commit_detail(root, sha)
 
+    def settings_state(self):
+        return {'ai': settings.get(self.home), 'execution': settings.get_execution(self.home), 'runtimes': self.runtime_catalog.snapshot(),
+                'home': str(Path(self.home).resolve()), 'backend': str(Path(self.plugin_root).resolve())}
+
     def post(self, path, data, project_name=None):
         if not isinstance(data, dict):
             raise ValueError("JSON \u8bf7\u6c42\u5fc5\u987b\u662f\u5bf9\u8c61")
+        if path == '/api/settings':
+            if not data or not set(data) <= {'ai', 'execution'}:
+                raise ValueError('设置请求只能包含 ai 和 execution 配置')
+            with self.write_lock, closing(store.connect(self.home)) as conn, goals.transaction(conn):
+                if 'ai' in data:
+                    settings.save(conn, data['ai'])
+                if 'execution' in data:
+                    settings.save_execution(conn, data['execution'])
+            return self.settings_state()
         if path in ('/api/session/runtime/prepare','/api/session/runtime/switch'):
             with closing(store.connect(self.home)) as conn:
                 project=self.selected_project(conn,project_name if project_name is not None else data.get('project'))
@@ -647,7 +661,8 @@ class Service:
                     if stable is not None and not isinstance(stable, str):
                         raise ValueError("stable 必须是分支名或 null")
                     return git_admin.enable(conn, self.home, self.plugin_root, project, self.chat.start,
-                                            base=_optional_text(data, "base"), stable=stable, now=now)
+                                            base=_optional_text(data, "base"), stable=stable, now=now,
+                                            runtime=data.get("runtime"))
                 result = git_admin.disable(conn, project, now=now)
                 if 'before' in result:
                     self.stop_archived(result['before'])
@@ -871,9 +886,10 @@ class Service:
                 if not isinstance(member_session_ids, list) or any(not isinstance(sid, str) or not sid.strip() for sid in member_session_ids):
                     raise ValueError("member_session_ids 必须是会话 ID 数组")
                 name, task = _text(data, "name"), _optional_text(data, "task")
-                runtime = runtimes.validate(data.get("runtime") or "claude")
-                model = models.validate(data.get("model"), runtime=runtime)
-                effort = models.validate_effort(data.get("effort"), runtime=runtime)
+                selected = settings.resolve(conn) if data.get('runtime') is None else {'runtime': runtimes.validate(data['runtime']), 'model': None, 'effort': None}
+                runtime = selected['runtime']
+                model = models.validate(data['model'] if 'model' in data else selected['model'], runtime=runtime)
+                effort = models.validate_effort(data['effort'] if 'effort' in data else selected['effort'], runtime=runtime)
                 candidate_members = [(self.candidate(conn, project, _text(member, "session_id")), _text(member, "name"))
                                      for member in data.get("candidate_members", [])]
                 names = {name, *members}
@@ -1120,6 +1136,7 @@ POST_PATHS.add('/api/leaders/priority')
 POST_PATHS.update(('/api/files/resolve', '/api/files/open', '/api/files/reveal'))
 POST_PATHS.update(('/api/documents','/api/documents/pin','/api/documents/refresh'))
 POST_PATHS.update(('/api/git/enable', '/api/git/disable', '/api/git/fetch'))
+POST_PATHS.add('/api/settings')
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"),
           "/themes.js": ("themes.js", "text/javascript; charset=utf-8"),
           "/sounds.js": ("sounds.js", "text/javascript; charset=utf-8"),
@@ -1140,6 +1157,8 @@ STATIC.update({'/logo.svg': ('logo.svg', 'image/svg+xml'),
 STATIC_CACHED = {'/logo.svg', '/fonts/HarmonyOS_Sans_SC_Regular.woff2', '/fonts/HarmonyOS_Sans_SC_Medium.woff2'}
 STATIC.update({'/goal-ui.js': ('goal-ui.js', 'text/javascript; charset=utf-8'),
                '/goal-ui.css': ('goal-ui.css', 'text/css; charset=utf-8')})
+STATIC.update({'/settings-ui.js': ('settings-ui.js', 'text/javascript; charset=utf-8'),
+               '/settings-ui.css': ('settings-ui.css', 'text/css; charset=utf-8')})
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1241,6 +1260,8 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_file_content(report['html'].encode('utf-8'), 'text/html; charset=utf-8')
         elif url.path == '/api/runtimes':
             self._send(200, {'runtimes': service.runtime_catalog.refresh()})
+        elif url.path == '/api/settings':
+            self._send(200, service.settings_state())
         elif url.path == '/api/projects':
             with closing(store.connect(service.home)) as conn:
                 self._send(200, {'projects': board.projects(conn)})

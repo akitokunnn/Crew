@@ -10,13 +10,15 @@
 - **动态上下文**：只增量装载当前目标相关材料，可查看来源、纠正与实际应用状态；原生历史独立计量并在超限时换代，保留用户原话与确认约束。字符数和原生 token 分开显示，未知用量不当成零。
 - **文档中心**：统一收录 AI 提交的文档、摘要和来源，重要汇总优先。宽窗口右侧常驻本组关系树，文档、交付物和上下文按需打开资料抽屉。
 - **工具与更新**：检查 Claude Code / Codex CLI 当前和最新版本，支持更新排队与取消；工具空闲并确认安装来源后才更新，自动更新默认关闭。
+- **统一设置**：默认 AI、交流区摘要、Git 管理员和运维可分别配置载体、模型与 effort；内部任务也可跟随默认 AI，留空模型和 effort 使用原生默认。保存设置不启动任务，不改变已有会话。
+- **执行权限**：设置页明确选择 Codex 的只读 / 项目沙箱 / 完全访问，或 Claude 的原生默认 / 允许编辑 / 完全访问；下一次启动载体生效，不改工具全局配置。摘要与后台修复保持各自隔离策略，不随对话权限扩大。
 - **两种执行工具**：创建 leader、成员时选择 Claude Code 或 Codex，可以混编在同一组。保留已有 Claude 会话，也能从 VS Code 收编进来。
 - **对话中断**：输入区旁直接中断当前一轮，等待运行端确认，保留会话、历史与草稿。读取聊天短暂失败会自动重试。
 - **leader 和白板**：leader 可以直接实施，成员优先复用。可直接与 leader 或成员对话，忙时插话进入当前执行；内部有效结果批量送达，ACK 只存档。设备借用、文件归属和 Git 规则继续生效。
 - **拍板和人工待办**：先通知这里需要你，点击听说明、聊清背景后再展示完整选项和后果；要你亲手做的事进入“我的待办”。答复与完成记录回到原目标及提出者，旧轮次不能据此复工。
 - **信任模式**：每个 leader 单独开关和填写目标，所属成员继承；保存不主动唤醒，下次对话再传达。保留取舍、待办、报告、验证和 Git 提交。
 - **横排总览与评论**：“全部”页每组一列，可横向滚动；组和成员可加评论。leader 可标第 1～3 优先，并调整普通组的顺序。
-- **Git 管理员**：在独立 worktree 中统一定分支规则、检查合并请求、推送、开 PR、等 CI 和合进 base；默认使用 Claude Sonnet 5.5 / high，网页可换模型。
+- **Git 管理员**：在独立 worktree 中统一定分支规则、检查合并请求、推送、开 PR、等 CI 和合进 base；支持 Codex 或 Claude，网页可选载体和模型。
 - **守卫**：检查黑名单、设备借用、文件归属和 Git 管理规则。Claude 使用插件 hooks，Codex 接入原生 shell / apply_patch 执行前 hook，覆盖边界见 [Codex 接入说明](docs/CODEX_INTEGRATION.md)。
 - **远程与用量**：QQ 私聊可按项目和 leader 继续对话、答复拍板、查看待办；用量页按组、会话、日期和模型汇总 Claude / Codex token，并按价格表折算参考金额。
 
@@ -24,7 +26,7 @@
 
 ## 安装与启动
 
-需要 Windows、Python 3.11 以上（在 PATH 中可运行 `python`）、Git，以及已安装并登录的 Claude Code 或 Codex CLI。两种工具按需安装；只用 Codex 时，无需装 Claude 插件。从源码运行桌面应用还需要 Node.js / npm。已有验证使用 Claude Code 2.1.306、Codex CLI 0.163.0，具体模型和 effort 以本机执行工具返回的列表为准。
+需要 Windows、Python 3.11 以上（在 PATH 中可运行 `python`）、Git，以及已安装并登录的 Claude Code 或 Codex CLI。两种工具按需安装；仅安装 Codex 也能使用全部内建 AI 功能，无需 Claude 插件。从源码运行桌面应用还需要 Node.js / npm。已有验证使用 Claude Code 2.1.310、Codex CLI 0.164.0，具体模型和 effort 以本机执行工具返回的列表为准。
 
 先取得源码：
 
@@ -46,7 +48,7 @@ npm start
 
 关闭窗口会隐藏到托盘；“退出 Crew”才退出应用。桌面版优先复用当前 home 中已登记的健康服务，复用时继续使用该服务的版本；自行启动的后端在退出应用时关闭，借用的服务保持运行。
 
-`npm run build` 生成 `desktop/dist/Crew-0.2.0-portable.exe` 和 `Crew-0.2.0-setup.exe`，直接运行仍需本机 Python、Git 和所选模型 CLI。构建、独立数据目录和隔离验收见 [桌面版说明](desktop/README.md)。
+`npm run build` 生成 `desktop/dist/Crew-0.2.1-portable.exe` 和 `Crew-0.2.1-setup.exe`，直接运行仍需本机 Python、Git 和所选模型 CLI。构建、独立数据目录和隔离验收见 [桌面版说明](desktop/README.md)。
 
 ### Claude 插件与 VS Code
 
@@ -151,7 +153,7 @@ QQ 命令不分大小写、忽略首尾空白：`/help`（`/h`）帮助，`/proj
 | `crew compact [<名字>]` | 通过网页服务压缩自己的组员，用户也可指定会话；网页 leader 不带名字或指定自己时，等这一轮说完后压缩 |
 | `crew open <名字>` | 两步在 VS Code 接续同一会话，停止空闲的原运行端前须明确确认 |
 | `crew web --open` | 按当前目录打开工作区，已有服务时复用 |
-| `crew git enable [--base 分支] [--stable 分支]` / `crew git disable` / `crew git status` | 启用并自动开 Git 管理员 / 收掉管理员的组并停用 / 查看配置；base 自动依次选 develop、dev、main、master，stable 选与 base 不同的 master 或 main |
+| `crew git enable [--base 分支] [--stable 分支] [--runtime codex\|claude]` / `crew git disable` / `crew git status` | 启用并自动开 Git 管理员 / 收掉管理员的组并停用 / 查看配置；base 自动依次选 develop、dev、main、master，stable 选与 base 不同的 master 或 main |
 | `crew git policy` / `crew git policy --set "<正文>"` | 看分支规则全文 / Git 管理员设置规则 |
 | `crew git request [--branch 分支] "<说明>"` / `crew git requests [--all]` | 本项目任何会话（含没收编的）提交合并请求（默认当前分支） / 看活动队列或全部请求 |
 | `crew git resolve <编号> <merged\|rejected\|waiting_user\|merging> --note "<说明>" [--pr <号>]` | Git 管理员更新请求状态并给提出者排消息 |
@@ -222,7 +224,8 @@ Git 管理员可以自行定分支规则、推功能分支、开 PR、CI 绿后�
 - leader 起动时可选模型和 effort，默认跟账号设置走；同工具的新下属可继承 leader 设置，跨工具不继承不兼容模型。Haiku 4.5 不支持 effort，Codex 的可选模型与档位来自本机原生列表。对话头部显示进程回报的实际“模型 · effort”，菜单可切换；后台下属卡片只读显示。忙时显示阶段、计时与本轮输出 token。
 - 已经开着的会话要 `/reload-plugins` 或重开，才会加载插件的钩子和守卫；网页收编会登记身份，不会替它加载插件。
 - 旧 Claude 会话不会因为更改字段就变成 Codex 历史；Codex 暂不支持转交到 VS Code 的 Claude 编辑器。
-- 交流区自动摘要仍依赖 Claude / Haiku；只装 Codex 可运行核心 Codex 会话，摘要另需 Claude。Git 管理员的自动创建入口也仍使用 Claude。
+- 新建 leader、无分组成员和内部 AI 任务使用设置页的默认或专项配置；成员优先继承所属 leader。未配置时仅装一个工具可自动采用它；两个都安装时请先选默认 AI，不偏向任一载体。执行失败不会自动换工具，已有会话需通过会话菜单显式切换。
+- 本机 Windows Codex 项目沙箱仍可能拒绝 worktree 的 Git 索引写入。完整 Git 管理已在独立验收 HOME 中由用户显式选择“完全访问”后实测通过；不会因权限失败自动扩大范围。保留项目沙箱时应按原生权限限制处理，不能把它视为已验证可完成全部 Git 写操作。
 - Codex 守卫覆盖已接入的 shell / apply_patch；已启动命令的 `write_stdin` 不重新触发执行前 hook，其他原生工具或 MCP 需单独适配。hook 超时或崩溃后的停会话措施不能保证阻止所有副作用。
 - Lark 尚未接通，当前远程入口是 QQ。“全部”采用横排列组，尚未实现无限蓝图画布与拖动连线。信任报告是记录汇总草稿，实际验证和提交仍须由负责的 leader 补齐。
 

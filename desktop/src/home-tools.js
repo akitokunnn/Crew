@@ -87,6 +87,7 @@
   }
   async function read() { await operation('read', () => bridge.toolsSnapshot()); }
   function show() {
+    window.CrewHomeSettings?.hide();
     select(true); if (!supported) return;
     $('tools-title').focus(); void read();
   }
@@ -100,7 +101,8 @@
     catch (error) { globalError = error.message || String(error); }
     finally { setting = false; render(); }
   });
-  window.CrewHomeTools = Object.freeze({show, hide:() => select(false)});
+  function mount(host) { const parent=panel.parentNode; host.append(panel); panel.hidden=false; void read(); return () => { panel.hidden=true; parent.append(panel); }; }
+  window.CrewHomeTools = Object.freeze({show, hide:() => select(false), mount});
   if (supported) {
     $('nav-tools').hidden = false;
     if (typeof bridge.onToolUpdates === 'function') bridge.onToolUpdates(value => { try { consume(value); } catch (error) { globalError = error.message; render(); } });

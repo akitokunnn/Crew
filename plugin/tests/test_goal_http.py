@@ -38,6 +38,40 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
     def send_goal(self, goal, text='Begin', **data):
         return self.request('/api/chat/send?project=demo', {'session_id': 's3', 'goal_id': goal['id'], 'text': text, **data})
 
+    def test_start_button_launches_new_goal_once_without_chat_send(self):
+        goal = self.goal()
+        self.assertEqual(self.processes, [])
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM goal_executions').fetchone()[0], 0)
+        payload = {'goal_id': goal['id'], 'action': 'start', 'version': goal['version']}
+        code, result, _ = self.request('/api/goals/action?project=demo', payload)
+        self.assertEqual(code, 200, result)
+        self.assertEqual(result['goal']['status'], 'running')
+        self.assertEqual(len(self.processes), 1)
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM goal_executions').fetchone()[0], 1)
+        before = self.processes[0].stdin.getvalue()
+        for version in (goal['version'], result['goal']['version']):
+            code, duplicate, _ = self.request('/api/goals/action?project=demo', {**payload, 'version': version})
+            self.assertEqual(code, 409, duplicate)
+        self.assertEqual(len(self.processes), 1)
+        self.assertEqual(self.processes[0].stdin.getvalue(), before)
+
+    def test_start_button_does_not_wake_paused_waiting_or_finished_goal(self):
+        for status in ('paused', 'waiting_user', 'cancelled'):
+            with self.subTest(status=status):
+                goal = self.goal()
+                if status == 'paused':
+                    goals.request_pause(self.conn, goal['id'])
+                elif status == 'waiting_user':
+                    goals.transition(self.conn, goal['id'], 'running')
+                    goals.transition(self.conn, goal['id'], 'waiting_user')
+                else:
+                    goals.transition(self.conn, goal['id'], 'cancelled')
+                current = goals.get(self.conn, goal['id'])
+                code, result, _ = self.request('/api/goals/action?project=demo', {
+                    'goal_id': goal['id'], 'action': 'start', 'version': current['version']})
+                self.assertEqual(code, 409, result)
+        self.assertEqual(self.processes, [])
+
     def test_reading_goal_and_empty_chat_never_starts_ai_and_serves_real_ui(self):
         goal = self.goal()
         for path in ('/api/goals', '/api/goal?' + urlencode({'id': goal['id']})):

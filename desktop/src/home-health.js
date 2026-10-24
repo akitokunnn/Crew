@@ -69,6 +69,7 @@
   function syncVisibility(){const next=isVisible();if(next===visible)return;visible=next;if(next)void request('status');else clear();}
   function hide(){panel.hidden=true;nav.classList.remove('active');nav.removeAttribute('aria-current');visible=false;clear();}
   function show(){
+    window.CrewHomeSettings?.hide();
     if(!supported)return;window.CrewHomeTools?.hide();$('workspaces-page').hidden=true;$('tools-page').hidden=true;panel.hidden=false;
     for(const id of ['nav-workspaces','nav-tools']){$(id).classList.remove('active');$(id).removeAttribute('aria-current');}
     nav.classList.add('active');nav.setAttribute('aria-current','page');$('admin-title').focus();syncVisibility();
@@ -80,5 +81,6 @@
   document.addEventListener('visibilitychange',syncVisibility);
   new MutationObserver(syncVisibility).observe(document.body,{subtree:true,attributes:true,attributeFilter:['hidden']});
   window.addEventListener('pagehide',clear);
-  render();window.CrewHomeHealth={show,hide};
+  function mount(host){const parent=panel.parentNode;host.append(panel);panel.hidden=false;syncVisibility();return()=>{hide();parent.append(panel);};}
+  render();window.CrewHomeHealth={show,hide,mount};
 })();

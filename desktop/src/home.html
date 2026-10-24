@@ -8,11 +8,12 @@
   <link rel="stylesheet" href="home.css">
   <link rel="stylesheet" href="home-tools.css">
   <link rel="stylesheet" href="home-health.css">
+  <link rel="stylesheet" href="home-settings.css">
 </head>
 <body>
   <aside aria-label="导航">
     <div class="brand"><img class="mark" src="../assets/crew.svg" width="27" height="27" alt=""><strong>Crew</strong></div>
-    <nav><button id="nav-admin" type="button" class="nav" hidden><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 4 6v6c0 4 4 7 8 9 4-2 8-5 8-9V6l-8-3Z"/><path d="m8 12 3 3 5-6"/></svg><span>系统管理员</span></button><button id="nav-workspaces" type="button" class="nav active" aria-current="page"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span>工作区</span></button><button id="nav-tools" type="button" class="nav" hidden><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14.8 6.2a5 5 0 0 0-6.6 6.6L3 18a2.1 2.1 0 0 0 3 3l5.2-5.2a5 5 0 0 0 6.6-6.6L14 13l-3-3 3.8-3.8Z"/></svg><span>工具与更新</span></button></nav>
+    <nav><button id="nav-admin" type="button" class="nav" hidden><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 4 6v6c0 4 4 7 8 9 4-2 8-5 8-9V6l-8-3Z"/><path d="m8 12 3 3 5-6"/></svg><span>系统管理员</span></button><button id="nav-workspaces" type="button" class="nav active" aria-current="page"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span>工作区</span></button><button id="nav-tools" type="button" class="nav" hidden><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14.8 6.2a5 5 0 0 0-6.6 6.6L3 18a2.1 2.1 0 0 0 3 3l5.2-5.2a5 5 0 0 0 6.6-6.6L14 13l-3-3 3.8-3.8Z"/></svg><span>工具与更新</span></button><button id="nav-settings" type="button" class="nav"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16M8 3v6M16 9v6M10 15v6"/></svg><span>设置</span></button></nav>
     <div class="aside-bottom"><div class="service-line"><span class="status-dot" aria-hidden="true"></span><span id="service" class="service">正在连接…</span></div><div class="shortcut"><span>打开工作区页</span><kbd>Ctrl T</kbd></div></div>
   </aside>
   <main>
@@ -62,9 +63,12 @@
         <p class="tools-note">启动时检查更新，此后每 6 小时检查一次。自动更新默认关闭。</p>
       </div>
     </section>
+    <section id="settings-page" class="home-page" aria-label="Crew 设置" hidden><div id="native-settings-root"></div></section>
+    <div id="settings-panel-parking" hidden></div>
   </main>
   <script src="home-tools.js"></script>
   <script src="home-health.js"></script>
+  <script src="home-settings.js"></script>
   <script src="home.js"></script>
 </body>
 </html>

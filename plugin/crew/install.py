@@ -35,7 +35,8 @@ sys.stderr.reconfigure(encoding="utf-8")
 raise SystemExit(main(["--home", str(home), *sys.argv[1:]]))
 '''
     (home / "crew.py").write_text(launcher, encoding="utf-8")
-    (home / "bin" / "crew.cmd").write_text('@python "%~dp0..\\crew.py" %*\n', encoding="utf-8")
+    windows_python = str(Path(sys.executable).resolve()).replace('%', '%%')
+    (home / "bin" / "crew.cmd").write_text('@"' + windows_python + '" "%~dp0..\\crew.py" %*\n', encoding="utf-8")
     command = home / "bin" / "crew"
     python = shlex.quote(Path(sys.executable).resolve().as_posix())
     entrypoint = shlex.quote((home / 'crew.py').as_posix())

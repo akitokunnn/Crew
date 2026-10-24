@@ -135,7 +135,18 @@ class HTTPServer:
             def log_message(self, format, *args):
                 pass
 
-        self.server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        class IsolatedServer(ThreadingHTTPServer):
+            # Windows SO_REUSEADDR can share an already listening service.
+            allow_reuse_address = False
+            allow_reuse_port = False
+
+        for _ in range(5):
+            self.server = IsolatedServer(('127.0.0.1', 0), Handler)
+            if self.server.server_port not in (47811, 7122):
+                break
+            self.server.server_close()
+        else:
+            raise AssertionError('Could not allocate an isolated test port')
         self.server.daemon_threads = True
         self.url = 'http://127.0.0.1:%s' % self.server.server_port
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)

@@ -58,3 +58,10 @@ test("the edited handoff is included exactly for a fresh bound preview",()=>{
 test("unavailable tools retain their actionable error and cannot prepare",()=>{
   assert.throws(()=>switching.targetPayload(member(),target(),[{...catalog[1],available:false,error:"请先安装 Codex CLI"}],null),/安装 Codex CLI/);
 });
+
+test("runtime switch does not preselect an unavailable alternative on a Codex-only installation",()=>{
+  const notices=[],overlay={hidden:false,addEventListener(){}},environment={window:{},document:{createElement:()=>overlay,body:{append(){}},addEventListener(){}}};
+  vm.createContext(environment);vm.runInContext(fs.readFileSync(path.join(__dirname,"../crew/web/runtime-switch-ui.js"),"utf8"),environment);
+  const ui=environment.window.CrewRuntimeSwitch.create({getMember:()=>member({runtime:"codex"}),catalog:()=>[{id:"claude",available:false},{id:"codex",available:true}],toast:text=>notices.push(text)});
+  ui.open("member");assert.equal(overlay.hidden,true);assert.match(notices[0],/没有可用的其他执行工具/);
+});

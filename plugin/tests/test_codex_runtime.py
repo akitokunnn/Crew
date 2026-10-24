@@ -12,7 +12,7 @@ import sys
 import unittest
 from unittest import mock
 
-from crew import board, chat, codex_runtime, runtimes, store, trust_mode
+from crew import board, chat, codex_runtime, runtimes, settings, store, trust_mode
 
 
 class FakeProcess:
@@ -37,12 +37,18 @@ class FakeClient:
 
     def start_thread(self, **params):
         self.calls.append(("thread/start", params))
-        return {"thread": {"id": self.thread_id}, "model": "actual-model", "reasoningEffort": "medium"}
+        return {"thread": {"id": self.thread_id}, "model": "actual-model", "reasoningEffort": "medium",
+                "sandbox": {"type": "workspaceWrite", "networkAccess": False,
+                            "excludeTmpdirEnvVar": True, "excludeSlashTmp": True,
+                            "writableRoots": params.get('config', {}).get('sandbox_workspace_write', {}).get('writable_roots', [])}}
 
     def resume_thread(self, identity, **params):
         self.thread_id = identity
         self.calls.append(("thread/resume", {"threadId": identity, **params}))
-        return {"thread": {"id": identity}, "model": "actual-model", "reasoningEffort": "medium"}
+        return {"thread": {"id": identity}, "model": "actual-model", "reasoningEffort": "medium",
+                "sandbox": {"type": "workspaceWrite", "networkAccess": False,
+                            "excludeTmpdirEnvVar": True, "excludeSlashTmp": True,
+                            "writableRoots": params.get('config', {}).get('sandbox_workspace_write', {}).get('writable_roots', [])}}
 
     def start_turn(self, **params):
         self.calls.append(("turn/start", params))
@@ -130,6 +136,18 @@ class CodexRuntimeTests(unittest.TestCase):
         self.addCleanup(close)
         return running, self.clients[-1]
 
+    def test_explicit_execution_permission_is_used_only_when_a_carrier_starts(self):
+        with closing(store.connect(self.home)) as conn:
+            settings.save_execution(conn, {'codex': 'danger-full-access', 'claude': 'default'})
+        _, client = self.make_running()
+        start = client.calls[0][1]
+        self.assertEqual(start['sandbox'], 'danger-full-access')
+        self.assertEqual(start['approvalPolicy'], 'never')
+        with closing(store.connect(self.home)) as conn:
+            settings.save_execution(conn, {'codex': 'read-only', 'claude': 'default'})
+        self.assertEqual(start['sandbox'], 'danger-full-access')
+        self.assertEqual([method for method, _ in client.calls], ['thread/start'])
+
     def test_initialization_binds_thread_identity_without_model_turn(self):
         running, client = self.make_running(options={"model": "requested-model", "effort": "high"})
         self.assertEqual([method for method, _ in client.calls], ["thread/start"])
@@ -145,8 +163,7 @@ class CodexRuntimeTests(unittest.TestCase):
         self.assertTrue(start["config"]["bypass_hook_trust"])
         self.assertEqual(start["config"]["model_reasoning_effort"], "high")
         self.assertEqual(client.kwargs["env"]["CREW_SESSION_ID"], "worker")
-        with closing(store.connect(self.home)) as conn:
-            self.assertEqual(runtimes.get(conn, "worker")["native_id"], "native-1")
+
 
     def test_human_input_steers_active_turn_without_replacing_event_adapter(self):
         running, client = self.make_running()

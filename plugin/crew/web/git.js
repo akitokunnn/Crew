@@ -4,6 +4,7 @@ const CrewGit = (() => {
   const DAY = 86400000, ROW = 34, GAP = 19;
   let host = null, options = null, data = null, timer = null, generation = 0;
   let tab = "graph", activeOnly = false, selectedBranch = null, loading = false, operation = null, errorText = "", pages = 1;
+  let selectedRuntime = "", runtimeExplicit = false;
   const expandedConflicts = new Set();
   const commitStats = new Map();
   let detail = null, detailCloseTimer = null, hoverSuppressed = false, pointerX = null, pointerY = null;
@@ -214,7 +215,11 @@ const CrewGit = (() => {
   }
   function enableCard() {
     const choices = data.choices, option = (name, selected) => `<option value="${esc(name)}" ${name === selected ? "selected" : ""}>${esc(name)}</option>`;
-    return `<div class="page"><div class="git-enable-card"><span class="git-enable-icon">⑂</span><h1>启用 Git 管理</h1><p>Git 管理员会在独立 worktree 中统一推送和合并。选择日常合入的主干和发布用的稳定分支后，即可在这里查看请求、分支与 GitHub 状态。</p><form id="git-enable-form"><label for="git-base">主干分支 <span>日常合入</span></label><select id="git-base" name="base">${choices.branches.map(name => option(name, choices.base)).join("")}</select><label for="git-stable">稳定分支 <span>可留空</span></label><select id="git-stable" name="stable"><option value="" ${choices.stable === null ? "selected" : ""}>不设置稳定分支</option>${choices.branches.map(name => option(name, choices.stable)).join("")}</select><button type="submit" class="btn primary" data-git-act="enable" ${operation !== null || choices.branches.length === 0 ? "disabled" : ""}>${operation === "enable" ? "正在启用…" : "启用"}</button></form>${choices.branches.length === 0 ? '<p class="git-error">仓库没有本地分支，无法启用。</p>' : ""}${errorText === "" ? "" : `<p class="git-error" role="alert">${esc(errorText)}</p>`}</div></div>`;
+    const catalog = options.catalog?.() || [];
+    if (!runtimeExplicit) selectedRuntime = options.defaultRuntime?.() || "";
+    const available = catalog.some(item => item.id === selectedRuntime && item.available);
+    const runtimeError = available ? "" : catalog.some(item => item.available) ? "所选执行工具当前不可用，请重新选择。" : "没有可用的执行工具，请安装并登录 Codex 或 Claude Code 后刷新。";
+    return `<div class="page"><div class="git-enable-card"><span class="git-enable-icon">⑂</span><h1>启用 Git 管理</h1><p>Git 管理员会在独立 worktree 中统一推送和合并。选择日常合入的主干和发布用的稳定分支后，即可在这里查看请求、分支与 GitHub 状态。</p><form id="git-enable-form"><label for="git-base">主干分支 <span>日常合入</span></label><select id="git-base" name="base">${choices.branches.map(name => option(name, choices.base)).join("")}</select><label for="git-stable">稳定分支 <span>可留空</span></label><select id="git-stable" name="stable"><option value="" ${choices.stable === null ? "selected" : ""}>不设置稳定分支</option>${choices.branches.map(name => option(name, choices.stable)).join("")}</select><label for="git-runtime">管理员执行工具</label><select id="git-runtime" name="runtime"><option value="" disabled ${selectedRuntime === "" ? "selected" : ""}>请选择可用工具</option>${catalog.map(item => `<option value="${esc(item.id)}" ${item.id === selectedRuntime ? "selected" : ""} ${item.available ? "" : "disabled"}>${esc(item.name)}${item.available ? "" : " · 未就绪"}</option>`).join("")}</select><p id="git-runtime-status" class="git-error" role="status" ${runtimeError ? "" : "hidden"}>${esc(runtimeError)}</p><button type="submit" class="btn primary" data-git-act="enable" ${operation !== null || choices.branches.length === 0 || !available ? "disabled" : ""}>${operation === "enable" ? "正在启用…" : "启用"}</button></form>${choices.branches.length === 0 ? '<p class="git-error">仓库没有本地分支，无法启用。</p>' : ""}${errorText === "" ? "" : `<p class="git-error" role="alert">${esc(errorText)}</p>`}</div></div>`;
   }
   function mergeRequests() {
     const labels = {open:"待处理", merging:"合并中", waiting_user:"等用户拍板", merged:"已合并", rejected:"已拒绝"};
@@ -311,12 +316,23 @@ const CrewGit = (() => {
   function submit(event) {
     if (event.target.id !== "git-enable-form") return;
     event.preventDefault();
-    mutate("enable", {base:event.target.elements.base.value, stable:event.target.elements.stable.value});
+    const runtime = event.target.elements.runtime.value;
+    if (!(options.catalog?.() || []).some(item => item.id === runtime && item.available)) { errorText = "执行工具不可用，请检查安装和登录后重新选择。"; render(); return; }
+    selectedRuntime = runtime; runtimeExplicit = true;
+    mutate("enable", {base:event.target.elements.base.value, stable:event.target.elements.stable.value, runtime});
+  }
+  function change(event) {
+    if (event.target.id !== "git-runtime") return;
+    selectedRuntime = event.target.value; runtimeExplicit = true;
+    const available = (options.catalog?.() || []).some(item => item.id === selectedRuntime && item.available);
+    host.querySelector('[data-git-act="enable"]').disabled = !available || operation !== null || data.choices.branches.length === 0;
+    const status = host.querySelector('#git-runtime-status');
+    status.textContent = available ? "" : "所选执行工具当前不可用，请重新选择。"; status.hidden = available;
   }
   function mount(element, settings) {
     if (host === element) return;
     unmount(); host = element; options = settings;
-    host.addEventListener("click", click); host.addEventListener("submit", submit);
+    host.addEventListener("click", click); host.addEventListener("submit", submit); host.addEventListener("change", change);
     host.addEventListener("pointerover", hoverCommit); host.addEventListener("pointerout", leaveCommit);
     document.addEventListener("pointerdown", dismissCommitDetail); document.addEventListener("keydown", commitKey);
     document.addEventListener("pointermove", moveCommitPointer);
@@ -325,11 +341,11 @@ const CrewGit = (() => {
   }
   function unmount() {
     generation++; clearInterval(timer); clearTimeout(detailCloseTimer); detail = null; hoverSuppressed = false; pointerX = null; pointerY = null;
-    if (host !== null) { host.removeEventListener("click", click); host.removeEventListener("submit", submit); host.removeEventListener("pointerover", hoverCommit); host.removeEventListener("pointerout", leaveCommit); }
+    if (host !== null) { host.removeEventListener("click", click); host.removeEventListener("submit", submit); host.removeEventListener("change", change); host.removeEventListener("pointerover", hoverCommit); host.removeEventListener("pointerout", leaveCommit); }
     document.removeEventListener("pointerdown", dismissCommitDetail); document.removeEventListener("keydown", commitKey);
     document.removeEventListener("pointermove", moveCommitPointer);
     window.removeEventListener("resize", positionCommitDetail);
-    host = null; options = null; data = null; loading = false; operation = null; errorText = ""; pages = 1; selectedBranch = null;
+    host = null; options = null; data = null; loading = false; operation = null; errorText = ""; pages = 1; selectedBranch = null; selectedRuntime = ""; runtimeExplicit = false;
     expandedConflicts.clear();
   }
   return {mount, unmount};

@@ -144,11 +144,12 @@ class CodexClientTests(unittest.TestCase):
         resume = next(call["params"] for call in calls if call["method"] == "thread/resume")
         self.assertTrue(resume["excludeTurns"])
 
-    def test_named_permissions_do_not_send_conflicting_sandbox(self):
+    def test_explicit_sandbox_is_preserved_without_named_permissions(self):
         client, _ = self.make_client()
-        client.start_thread(permissions="workspace-profile")
+        client.start_thread(sandbox="read-only")
         call = next(c for c in client.request("test/calls") if c["method"] == "thread/start")
-        self.assertNotIn("sandbox", call["params"])
+        self.assertEqual(call["params"]["sandbox"], "read-only")
+        self.assertNotIn("permissions", call["params"])
 
     def test_turn_stream_and_completion(self):
         events, received = [], threading.Event()

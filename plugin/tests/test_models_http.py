@@ -79,12 +79,12 @@ class ModelWakeTests(shell.ShellFixture, unittest.TestCase):
         command = self.processes[-1].command
         self.assertEqual(command[command.index("--effort") + 1], "xhigh")
         count = len(self.processes)
-        for path, body in (("/api/leader", {"name": "bad-boss", "model": "unknown"}),
+        for path, body in (("/api/leader", {"name": "bad-boss", "model": "bad model"}),
                            ("/api/leader", {"name": "bad-effort", "effort": "ultra"}),
                            ("/api/leader", {"name": "bad-haiku", "model": HAIKU, "effort": "low"}),
-                           ("/api/spawn", {"name": "bad-member", "task": "work", "model": "unknown"}),
+                           ("/api/spawn", {"name": "bad-member", "task": "work", "model": "bad model"}),
                            ("/api/spawn", {"name": "bad-effort-member", "task": "work", "effort": "ultra"}),
-                           ("/api/session/options", {"session_id": "s3", "model": "unknown"}),
+                           ("/api/session/options", {"session_id": "s3", "model": "bad model"}),
                            ("/api/session/options", {"session_id": "s3", "effort": "ultra"})):
             with self.subTest(path=path, body=body):
                 self.assertEqual(self.request(path, body)[0], 400)

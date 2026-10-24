@@ -26,7 +26,37 @@ def connect(home):
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA_FILE.read_text(encoding="utf-8"))
+    _migrate_channel_digests(conn)
     return conn
+
+
+def _migrate_channel_digests(conn):
+    """Keep existing paid Claude cards while allowing unknown Codex costs."""
+    if any(row['name'] == 'runtime' for row in conn.execute('PRAGMA table_info(channel_digests)')):
+        return
+    conn.execute('BEGIN IMMEDIATE')
+    try:
+        # Another connection may have completed the migration while we waited.
+        if not any(row['name'] == 'runtime' for row in conn.execute('PRAGMA table_info(channel_digests)')):
+            conn.execute("""CREATE TABLE channel_digests_updated (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project TEXT NOT NULL REFERENCES projects(name),
+                upto_message_id INTEGER NOT NULL REFERENCES channel_messages(id),
+                body TEXT NOT NULL, message_count INTEGER NOT NULL,
+                trigger TEXT NOT NULL CHECK (trigger IN ('manual', 'auto')),
+                model TEXT NOT NULL,
+                runtime TEXT NOT NULL DEFAULT 'claude' CHECK (runtime IN ('claude', 'codex')),
+                cost_usd REAL, created_at TEXT NOT NULL)""")
+            conn.execute("INSERT INTO channel_digests_updated "
+                         "SELECT id,project,upto_message_id,body,message_count,trigger,model,'claude',cost_usd,created_at "
+                         "FROM channel_digests")
+            conn.execute('DROP TABLE channel_digests')
+            conn.execute('ALTER TABLE channel_digests_updated RENAME TO channel_digests')
+            conn.execute('CREATE INDEX channel_digests_project ON channel_digests(project,id)')
+        conn.commit()
+    except sqlite3.Error:
+        conn.rollback()
+        raise
 
 
 def now_iso():

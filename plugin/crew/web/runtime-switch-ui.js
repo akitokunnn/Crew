@@ -44,8 +44,8 @@
     function close() { if (busy) return; overlay.hidden = true; memberId = null; if (returnTo?.isConnected) returnTo.focus({preventScroll:true}); }
     function open(id) {
       const current = options.getMember(id), blocked = reason(current); if (blocked) { options.toast(blocked); return; }
-      const other = catalog().find(item => item.id !== runtimeId(current) && item.available) || catalog().find(item => item.id !== runtimeId(current));
-      if (!other) { options.toast("还没有可选的其他执行工具，请重新检测工具。"); return; }
+      const other = catalog().find(item => item.id !== runtimeId(current) && item.available);
+      if (!other) { options.toast("没有可用的其他执行工具，请安装并登录后重新检测。"); return; }
       memberId = id; returnTo = document.activeElement; target = {runtime:other.id, model:null, effort:null}; preview = null; handoff = ""; edited = false; dirty = false; error = ""; busy = false; overlay.hidden = false; render(); overlay.querySelector("select").focus();
     }
     overlay.addEventListener("change", event => {
