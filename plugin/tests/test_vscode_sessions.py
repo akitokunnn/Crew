@@ -4,6 +4,7 @@ import json
 import os
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -59,7 +60,9 @@ class VscodeSessionParserTests(unittest.TestCase):
         with mock.patch.object(vscode_sessions.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, output)) as run:
             self.assertEqual(vscode_sessions.project_roots(self.project), [self.project, nested])
         run.assert_called_once_with(["git", "-C", str(self.project), "worktree", "list", "--porcelain"],
-                                    check=True, capture_output=True, text=True, encoding="utf-8")
+                                    check=True, capture_output=True, text=True, encoding="utf-8",
+                                    stdin=subprocess.DEVNULL, timeout=10,
+                                    **({"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {}))
 
     def test_programmatic_daemon_sidechain_empty_and_invalid_names_are_excluded(self):
         for fields in ({"entrypoint": "sdk-cli"}, {"entrypoint": "sdk-ts"}, {"entrypoint": "sdk-py"},

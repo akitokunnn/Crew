@@ -3,6 +3,7 @@ import json
 import re
 import sqlite3
 import subprocess
+import sys
 from pathlib import Path
 
 from . import store
@@ -40,8 +41,10 @@ def bucket_name(path):
 def project_roots(root):
     """Include only git worktrees below the project's own root."""
     root = Path(root)
+    options = {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {}
     result = subprocess.run(["git", "-C", str(root), "worktree", "list", "--porcelain"],
-                            check=True, capture_output=True, text=True, encoding="utf-8")
+                            check=True, capture_output=True, text=True, encoding="utf-8",
+                            stdin=subprocess.DEVNULL, timeout=10, **options)
     roots = {store.norm_path(root): root}
     for line in result.stdout.splitlines():
         if line.startswith("worktree "):

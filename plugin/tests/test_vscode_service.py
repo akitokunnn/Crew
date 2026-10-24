@@ -5,6 +5,7 @@ import io
 import json
 import os
 import sqlite3
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -545,6 +546,16 @@ class VSCodeServiceTests(unittest.TestCase):
             self.service._refresh_vscode()
         self.assertEqual(self.ids()["others"], {sid})
         self.assertIn("temporary git failure", self.service.vscode_error)
+        self.service._refresh_vscode()
+        self.assertIsNone(self.service.vscode_error)
+        self.assertEqual(self.ids()["others"], {sid})
+
+    def test_git_timeout_exposes_retry_and_next_pass_recovers(self):
+        sid = identity(1)
+        self.record(sid)
+        with mock.patch("crew.vscode_sessions.project_roots", side_effect=subprocess.TimeoutExpired("git worktree list", 10)):
+            self.service._refresh_vscode()
+        self.assertIn("TimeoutExpired", self.service.vscode_error)
         self.service._refresh_vscode()
         self.assertIsNone(self.service.vscode_error)
         self.assertEqual(self.ids()["others"], {sid})
