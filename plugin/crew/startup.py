@@ -5,6 +5,7 @@ import sys
 import time
 import webbrowser
 from pathlib import Path
+from urllib.parse import urlencode
 
 from . import autostart, board, store
 
@@ -19,9 +20,10 @@ def git_root(cwd, runner=subprocess.run):
 
 
 def start(home, plugin_root, cwd, name=None, *, root_provider=git_root,
-          probe=autostart._existing_server, task=autostart.configure,
+          probe=None, task=autostart.configure,
           open_browser=webbrowser.open, clock=time.monotonic, sleep=time.sleep):
-    from .web import project_url
+    if probe is None:
+        probe = lambda timeout=3: autostart._existing_server(timeout=timeout, home=home)
 
     root = root_provider(Path(cwd).resolve())
     with contextlib.closing(store.connect(home)) as conn:
@@ -43,7 +45,7 @@ def start(home, plugin_root, cwd, name=None, *, root_provider=git_root,
             delay = min(0.2, deadline - clock())
             if delay > 0:
                 sleep(delay)
-    url = project_url(47811, project["name"])
+    url = autostart.service_url(home) + "/?" + urlencode({"project": project["name"]})
     try:
         opened = open_browser(url)
     except webbrowser.Error as exc:
