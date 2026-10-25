@@ -2,6 +2,9 @@
 (() => {
   const esc = value => String(value ?? "").replace(/[&<>"']/g, char => ({"&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"})[char]);
   const labels = {queued:"待规划", running:"推进中", pausing:"暂停中", paused:"已暂停", waiting_user:"等待用户", awaiting_acceptance:"待验收", completed:"本轮已结束", failed:"未达标", cancelled:"已取消"};
+  // Report outcomes and acceptance states are what the AI wrote in its report, not a human or independent verdict.
+  const outcomes = {completed:"已达标", failed:"未达标", awaiting_acceptance:"等待用户验收", cancelled:"已取消"};
+  const acceptanceLabels = [["passed","通过"],["failed","失败"],["unverified","未验证"],["simulated","模拟验证"]];
   const status = value => labels[value] || value || "待规划";
   const ended = value => ["completed", "failed", "cancelled"].includes(value);
   const when = value => value ? new Date(value).toLocaleString("zh-CN", {month:"numeric",day:"numeric",hour:"2-digit",minute:"2-digit"}) : "时间未记录";
@@ -15,15 +18,31 @@
   function cards(goals, leaders = [], selected = null) {
     return goals.length ? `<div class="goal-cards">${goals.map(goal => {
       const owner = leaders.find(item => item.session_id === goal.leader_session_id);
-      return `<button class="goal-card" data-goal-act="open" data-goal-id="${esc(goal.id)}" aria-pressed="${String(selected) === String(goal.id)}"><span class="goal-card-top"><span class="goal-status" data-status="${esc(goal.status)}">${esc(status(goal.status))}</span><span>第 ${esc(goal.current_round || 1)} 轮</span></span><strong>${esc(goal.title)}</strong><span class="goal-card-request">${esc(goal.request)}</span><span class="goal-card-foot">${esc(owner?.name || "负责人")} · ${esc(when(goal.updated_at))}<span>${goal.report_available ? "有交付报告 →" : ended(goal.status) ? "交付报告待齐全" : "进入目标 →"}</span></span></button>`;
+      return `<article class="goal-card"><button class="goal-card-open" data-goal-act="open" data-goal-id="${esc(goal.id)}" aria-pressed="${String(selected) === String(goal.id)}"><span class="goal-card-top"><span class="goal-status" data-status="${esc(goal.status)}">${esc(status(goal.status))}</span><span>第 ${esc(goal.current_round || 1)} 轮</span></span><strong>${esc(goal.title)}</strong><span class="goal-card-request">${esc(goal.request)}</span><span class="goal-card-foot">${esc(owner?.name || "负责人")} · ${esc(when(goal.updated_at))}<span>${ended(goal.status) && !goal.report_available ? "交付报告待齐全" : "进入任务 →"}</span></span></button>${goal.report_available ? `<button class="goal-card-delivery" data-goal-act="delivery" data-goal-id="${esc(goal.id)}" aria-label="查看「${esc(goal.title)}」的交付报告">查看交付报告<span aria-hidden="true">→</span></button>` : ""}</article>`;
     }).join("")}</div>` : '<div class="goals-empty">还没有执行目标。普通问答和讨论直接在对话里进行；明确需要交付时再建立目标。</div>';
+  }
+  // A report's relation is recomputed from the newest goal state, so an open report follows later round,
+  // requirement or report changes. Reports arrive newest first by round and saved report version.
+  const isCurrent = (report, goal) => report.round === goal.current_round && report.requirement_version === goal.requirement_version;
+  const currentReport = (reports, goal) => reports.find(item => isCurrent(item, goal)) || null;
+  function reportScope(report, goal, reports) {
+    if (isCurrent(report, goal)) {
+      const newer = reports.find(item => isCurrent(item, goal) && item.version > report.version);
+      return newer ? {label:"本轮较早报告", current:false, note:`已有更新版本（第 ${newer.version} 稿）`} : {label:"本轮报告", current:true, note:""};
+    }
+    if (currentReport(reports, goal)) return {label:"历史报告", current:false, note:"本轮已有新报告"};
+    return {label:"历史报告", current:false, note:report.round < goal.current_round ? `当前第 ${goal.current_round} 轮暂无新交付` : `需求已更新到 v${goal.requirement_version}，本轮暂无新交付`};
   }
   function create(options) {
     const details = new Map(), loading = new Map(), requestedVersion = new Map(), errors = new Map();
     const documentLoads = new Map(), documentErrors = new Map();
-    const drafts = new Map(), expandedGroups = new Set(), drawerPositions = new Map(), requirementsOpen = new Set();
+    const drafts = new Map(), expandedGroups = new Set(), drawerPositions = new Map(), requirementsOpen = new Set(), conclusionsOpen = new Set();
     let pendingAction = "", actionError = "";
     let ownerId = null, goalId = null, drawer = null, drawerHost = null, reportId = null, reportHTML = null, reportLoading = false, reportError = "", reportGeneration = 0, reader = null, formOverlay = null, actionBusy = false;
+    // reading: the report in the main-area reader. Mode "drawer" returns to the materials drawer; "direct" was
+    // opened by an explicit delivery click and returns to the task. covered: task-area nodes made inert meanwhile.
+    let reading = null, deliveryNotice = null;
+    const covered = new Set();
     const state = () => options.state();
     const goals = () => state()?.goals || [];
     const byId = id => goals().find(item => String(item.id) === String(id));
@@ -40,9 +59,11 @@
       return (current()?.executions || []).filter(item => item.session_id === id && item.round === active?.current_round && item.requirement_version === active?.requirement_version).sort((a,b) => b.generation - a.generation)[0] || null;
     }
     function rememberPosition() { if (drawerHost?.dataset.viewKey) drawerPositions.set(drawerHost.dataset.viewKey, drawerHost.querySelector(".goal-drawer-scroll")?.scrollTop || 0); }
-    function closeReader() { reader?.remove(); reader = null; }
+    function closeReader() { reader?.remove(); reader = null; reading = null; for (const node of covered) node.inert = false; covered.clear(); }
+    // The reader covers the task area: nothing behind it may take focus or input. The sidebar and group tree stay usable.
+    function cover() { for (const node of document.getElementById("main").children) if (node !== reader && !node.inert) { node.inert = true; covered.add(node); } }
     function closeDrawer() {
-      rememberPosition(); drawer = null; reportId = null; reportHTML = null; reportError = ""; reportLoading = false; reportGeneration++; closeReader(); renderDrawer();
+      rememberPosition(); drawer = null; reportId = null; reportHTML = null; reportError = ""; reportLoading = false; reportGeneration++; deliveryNotice = null; closeReader(); renderDrawer();
     }
     async function load(id = goalId) {
       if (id == null) return;
@@ -54,7 +75,7 @@
           if (!result.goal || String(result.goal.id) !== key) throw Error("目标详情不匹配，请重新读取。");
           details.set(key, result);
         } catch (error) { errors.set(key, error.message); }
-        finally { loading.delete(key); if (String(goalId) === key) { changed(); renderDrawer(); } }
+        finally { loading.delete(key); if (String(goalId) === key) { changed(); renderMaterials(); } }
       })();
       loading.set(key, task); return task;
     }
@@ -70,7 +91,20 @@
       if (ownerId !== nextOwner || String(goalId) !== String(nextGoal)) { closeDrawer(); actionError = ""; ownerId = nextOwner; goalId = nextGoal; if (nextGoal != null) expandedGroups.delete(nextOwner); }
       const listed = byId(goalId), key = String(goalId);
       if (goalId != null && !loading.has(key) && (!requestedVersion.has(key) || listed && requestedVersion.get(key) !== signature(goalId))) void load();
-      renderDrawer();
+      renderMaterials();
+    }
+    function renderMaterials() { renderDrawer(); if (reader) renderReader(); }
+    function deliveryMarkup(active, reports) {
+      const key = String(active.id);
+      const notice = deliveryNotice?.goalId !== key ? "" : deliveryNotice.error == null ? '<p class="goal-delivery-status note" role="status">正在打开交付报告…</p>'
+        : `<p class="goal-action-error error-line" role="alert">交付报告未能打开：${esc(deliveryNotice.error)} <button class="text-link" data-goal-act="delivery" data-goal-id="${esc(key)}">重试</button></p>`;
+      if (!reports.length) return notice;
+      const report = currentReport(reports, active);
+      if (!report) return `<div class="goal-delivery goal-delivery-gap"><span>${esc(reportScope(reports[0], active, reports).note)}。</span><button class="text-link" data-goal-act="delivery" data-goal-id="${esc(key)}">查看历史报告（第 ${esc(reports[0].round)} 轮）</button></div>${notice}`;
+      const open = conclusionsOpen.has(`${key}:${report.id}`), counts = report.acceptance_counts, unresolved = report.unresolved;
+      const recorded = acceptanceLabels.filter(([name]) => counts[name] > 0);
+      const folds = report.summary.length > 40 || report.summary.includes("\n") || unresolved.length > 0;
+      return `<section class="goal-delivery" aria-label="本轮交付结论"><div class="goal-delivery-head"><strong>AI 提交的结论</strong><span>第 ${esc(report.round)} 轮报告 · 报告结果：${esc(outcomes[report.status])}</span></div><p class="goal-delivery-summary ${open ? "open" : ""}">${esc(report.summary)}</p>${open && unresolved.length ? `<ul class="goal-delivery-unresolved-list">${unresolved.map(item => `<li>${esc(item)}</li>`).join("")}</ul>` : ""}<div class="goal-delivery-foot"><div class="goal-delivery-meta"><span>报告验收记录（AI 填写）</span>${recorded.length ? recorded.map(([name,label]) => `<span class="goal-acceptance-count" data-kind="${name}">${label} ${esc(counts[name])}</span>`).join("") : "<span>没有逐项验收记录</span>"}${unresolved.length ? `<span class="goal-delivery-unresolved">仍未解决 ${unresolved.length} 项</span>` : ""}</div><div class="goal-delivery-actions">${folds ? `<button class="text-link" data-goal-act="conclusion-toggle" data-report-id="${esc(report.id)}" aria-expanded="${open}">${open ? "收起" : "展开全文"}</button>` : ""}<button class="btn ghost" data-goal-act="delivery" data-goal-id="${esc(key)}">查看完整报告</button></div></div></section>${notice}`;
     }
     function groupMarkup(id) {
       const list = goals().filter(item => item.leader_session_id === id), open = expandedGroups.has(id), active = goal();
@@ -79,11 +113,11 @@
       if (open) return bar + `<section class="group-goal-list" role="tabpanel" aria-label="本组任务清单">${cards(list, state().leaders, goalId)}</section>`;
       if (goalId == null) return bar;
       if (!active) return bar + `<section class="goal-detail"><p class="${errors.has(String(goalId)) ? "error-line" : "note"}">${esc(errors.get(String(goalId)) || "正在读取目标…")}</p><button class="btn ghost" data-goal-act="refresh">重新读取</button></section>`;
-      const result = current(), reports = result?.reports || [], latest = reports[0], review = result?.acceptance_review;
+      const result = current(), reports = result?.reports || [], review = result?.acceptance_review;
       const actions = active.status === "awaiting_acceptance" ? [["accept","验收通过"],["reject","需要修改"]] : active.status === "queued" ? [["start", "开始推进"]] : ["paused","waiting_user"].includes(active.status) ? [["resume", "继续推进"]] : !ended(active.status) && active.status !== "pausing" ? [["pause", "暂停目标"]] : [];
       if (!ended(active.status) && active.status !== "awaiting_acceptance") actions.push(["cancel", "取消目标"]);
       if (ended(active.status)) actions.push(["reopen", "再开一轮"]);
-      return bar + `<section class="goal-detail" data-goal-detail="${esc(active.id)}"><div class="goal-detail-title"><button class="goal-list-back" type="button" data-goal-act="list" aria-label="返回任务清单">‹ 清单</button><span class="goal-status" data-status="${esc(active.status)}">${esc(status(active.status))}</span><h1 title="${esc(active.title)}">${esc(active.title)}</h1><span class="goal-version">第 ${esc(active.current_round || 1)} 轮</span><div class="goal-actions">${actions.map(([action,label]) => `<button class="btn ${["start","resume","reopen","accept"].includes(action) ? "goal-primary-action" : "ghost"}" data-goal-act="action" data-action="${action}" ${actionBusy ? "disabled" : ""}>${pendingAction === action ? "正在处理…" : label}</button>`).join("")}</div></div><div class="goal-materials"><button class="btn ghost" data-goal-act="requirements" aria-expanded="${requirementsOpen.has(String(goalId))}">需求与验收</button><button class="btn ${drawer === "reports" ? "active" : "ghost"}" data-goal-act="drawer" data-kind="reports" aria-expanded="${drawer === "reports"}">交付与文档${reports.length ? ` · ${reports.length}` : ""}</button><button class="btn ${drawer === "context" ? "active" : "ghost"}" data-goal-act="drawer" data-kind="context" aria-expanded="${drawer === "context"}">上下文</button><span class="goal-updated">需求 v${esc(active.requirement_version || 1)}</span></div>${review ? `<details class="goal-review"><summary>${review.accepted ? "你已验收通过" : "你退回修改"}${review.note ? `：${esc(review.note.slice(0,80))}${review.note.length > 80 ? "…" : ""}` : ""}</summary><p>${esc(review.note || "你确认当前轮交付符合验收要求。")}<br><span>原始交付报告保持生成时的内容和状态。</span></p></details>` : ""}${requirementsOpen.has(String(goalId)) ? `<div class="goal-requirements"><strong>原始需求与验收标准</strong><p>${esc(active.request)}</p>${active.acceptance?.length ? `<ol>${active.acceptance.map(item => `<li>${esc(typeof item === "string" ? item : item.title)}</li>`).join("")}</ol>` : '<p class="note">尚未写明验收标准</p>'}${ended(active.status) ? `<p class="goal-conclusion">本轮结论：${esc(status(active.status))}。${latest ? esc(latest.title) : "HTML 交付报告尚未齐全。"}</p>` : ""}</div>` : ""}${actionError || errors.has(String(goalId)) ? `<p class="goal-action-error error-line" role="alert">${esc(actionError || errors.get(String(goalId)))}</p>` : ""}</section>`;
+      return bar + `<section class="goal-detail" data-goal-detail="${esc(active.id)}"><div class="goal-detail-title"><button class="goal-list-back" type="button" data-goal-act="list" aria-label="返回任务清单">‹ 清单</button><span class="goal-status" data-status="${esc(active.status)}">${esc(status(active.status))}</span><h1 title="${esc(active.title)}">${esc(active.title)}</h1><span class="goal-version">第 ${esc(active.current_round || 1)} 轮</span><div class="goal-actions">${actions.map(([action,label]) => `<button class="btn ${["start","resume","reopen","accept"].includes(action) ? "goal-primary-action" : "ghost"}" data-goal-act="action" data-action="${action}" ${actionBusy ? "disabled" : ""}>${pendingAction === action ? "正在处理…" : label}</button>`).join("")}</div></div><div class="goal-materials"><button class="btn ghost" data-goal-act="requirements" aria-expanded="${requirementsOpen.has(String(goalId))}">需求与验收</button><button class="btn ${drawer === "reports" ? "active" : "ghost"}" data-goal-act="drawer" data-kind="reports" aria-expanded="${drawer === "reports"}">交付与文档${reports.length ? ` · ${reports.length}` : ""}</button><button class="btn ${drawer === "context" ? "active" : "ghost"}" data-goal-act="drawer" data-kind="context" aria-expanded="${drawer === "context"}">上下文</button><span class="goal-updated">需求 v${esc(active.requirement_version || 1)}</span></div>${deliveryMarkup(active, reports)}${review ? `<details class="goal-review"><summary>${review.accepted ? "你已验收通过" : "你退回修改"}${review.note ? `：${esc(review.note.slice(0,80))}${review.note.length > 80 ? "…" : ""}` : ""}</summary><p>${esc(review.note || "你确认当前轮交付符合验收要求。")}<br><span>原始交付报告保持生成时的内容和状态。</span></p></details>` : ""}${requirementsOpen.has(String(goalId)) ? `<div class="goal-requirements"><strong>原始需求与验收标准</strong><p>${esc(active.request)}</p>${active.acceptance?.length ? `<ol>${active.acceptance.map(item => `<li>${esc(typeof item === "string" ? item : item.title)}</li>`).join("")}</ol>` : '<p class="note">尚未写明验收标准</p>'}</div>` : ""}${actionError || errors.has(String(goalId)) && deliveryNotice?.goalId !== String(goalId) ? `<p class="goal-action-error error-line" role="alert">${esc(actionError || errors.get(String(goalId)))}</p>` : ""}</section>`;
     }
     function contextMarkup() {
       const context = current()?.context || {items:[],manifest:{}}, list = context.items || [];
@@ -98,7 +132,7 @@
       drawerHost.hidden = !drawer || goalId == null;
       if (drawerHost.hidden) { delete drawerHost.dataset.markup; return; }
       const active = goal(), result = current();
-      const body = !result ? `<p class="note">${esc(errors.get(String(goalId)) || "正在读取…")}</p><button class="btn" data-goal-act="refresh">重试读取</button>` : drawer === "context" ? contextMarkup() : `<p class="goal-drawer-hint">仅收录当前任务的交付报告和相关文档。打开资料不会调用模型。</p>${result.acceptance_review ? `<p class="goal-drawer-hint">${result.acceptance_review.accepted ? "你已验收通过" : "你退回修改"}${result.acceptance_review.note ? `：${esc(result.acceptance_review.note)}` : ""}。原始报告保持生成时的内容和状态。</p>` : ""}<h3 class="goal-material-heading">交付报告</h3><div class="goal-report-list">${(result.reports || []).map(report => `<button class="goal-report-card ${String(reportId) === String(report.id) ? "active" : ""}" data-goal-act="report" data-report-id="${esc(report.id)}"><strong>${esc(report.title)}</strong><span>第 ${esc(report.round)} 轮 · ${esc(status(report.status))} · ${esc(when(report.created_at))}</span></button>`).join("") || '<p class="note">还没有 HTML 交付报告。</p>'}</div>${reportId == null ? "" : `<div class="goal-report-preview"><div class="goal-report-toolbar"><button class="btn ghost" data-goal-act="expand-report" ${reportHTML == null ? "disabled" : ""}>展开到主区</button><span class="note">隔离预览 · 网络与脚本已禁用</span></div>${reportLoading ? '<p class="note">正在读取报告…</p>' : reportError ? `<p class="error-line">${esc(reportError)}</p>` : '<iframe class="goal-report-frame" title="目标交付报告预览" sandbox="" referrerpolicy="no-referrer"></iframe>'}</div>`}<h3 class="goal-material-heading">相关文档</h3><div class="goal-related-documents">${options.renderDocuments?.(result.documents || [], goalId) || '<p class="note">这个任务还没有相关文档。</p>'}</div>`;
+      const body = !result ? `<p class="note">${esc(errors.get(String(goalId)) || "正在读取…")}</p><button class="btn" data-goal-act="refresh">重试读取</button>` : drawer === "context" ? contextMarkup() : `<p class="goal-drawer-hint">仅收录当前任务的交付报告和相关文档。打开资料不会调用模型。</p>${result.acceptance_review ? `<p class="goal-drawer-hint">${result.acceptance_review.accepted ? "你已验收通过" : "你退回修改"}${result.acceptance_review.note ? `：${esc(result.acceptance_review.note)}` : ""}。原始报告保持生成时的内容和状态。</p>` : ""}<h3 class="goal-material-heading">交付报告</h3><div class="goal-report-list">${(result.reports || []).map(report => `<button class="goal-report-card ${String(reportId) === String(report.id) ? "active" : ""}" data-goal-act="report" data-report-id="${esc(report.id)}"><strong>${esc(report.title)}</strong><span>第 ${esc(report.round)} 轮 · 第 ${esc(report.version)} 稿 · ${reportScope(report, active, result.reports).label} · AI 报告结果：${esc(outcomes[report.status])} · ${esc(when(report.created_at))}</span></button>`).join("") || '<p class="note">还没有 HTML 交付报告。</p>'}</div>${reportId == null ? "" : `<div class="goal-report-preview"><div class="goal-report-toolbar"><button class="btn ghost" data-goal-act="expand-report" ${reportHTML == null ? "disabled" : ""}>展开到主区</button><span class="note">隔离预览 · 网络与脚本已禁用</span></div>${reportLoading ? '<p class="note">正在读取报告…</p>' : reportError ? `<p class="error-line">${esc(reportError)}</p>` : '<iframe class="goal-report-frame" title="目标交付报告预览" sandbox="" referrerpolicy="no-referrer"></iframe>'}</div>`}<h3 class="goal-material-heading">相关文档</h3><div class="goal-related-documents">${options.renderDocuments?.(result.documents || [], goalId) || '<p class="note">这个任务还没有相关文档。</p>'}</div>`;
       const markup = `<div class="goal-drawer-head"><div><span>${esc(owner()?.name || "本组")} / ${esc(active?.title || goalId)}</span><h2 tabindex="-1">${drawer === "context" ? "它记得什么" : "交付与文档"}</h2></div><button class="icon-btn" data-goal-act="refresh" aria-label="刷新当前任务资料" ${documentLoads.has(String(goalId)) ? "disabled" : ""}>↻</button><button class="icon-btn" data-goal-act="close-drawer" aria-label="关闭资料抽屉">×</button></div><div class="goal-drawer-scroll">${documentLoads.has(String(goalId)) && drawer === "reports" ? '<p class="note" role="status">正在读取任务文档…</p>' : ""}${documentErrors.has(String(goalId)) && drawer === "reports" ? `<p class="error-line" role="alert">${esc(documentErrors.get(String(goalId)))}</p>` : ""}${body}</div>`;
       if (drawerHost.dataset.markup !== markup) {
         rememberPosition();
@@ -119,14 +153,76 @@
       } catch (error) { if (generation === reportGeneration) reportError = error.message; }
       finally { if (generation === reportGeneration) { reportLoading = false; renderDrawer(); } }
     }
+    function readerHeadMarkup() {
+      const active = goal(), report = reading.report, scope = reportScope(report, active, reading.reports);
+      return `<div class="goal-reader-heading"><div class="title">${esc(active.title)} · 交付报告</div><div class="sub goal-reader-meta"><span class="goal-report-scope" data-current="${scope.current}">${scope.label}</span><span>第 ${esc(report.round)} 轮 · 需求 v${esc(report.requirement_version)} · 第 ${esc(report.version)} 稿</span><span>AI 报告结果：${esc(outcomes[report.status])}</span>${scope.note ? `<span class="goal-reader-gap">${esc(scope.note)}</span>` : ""}<span>${esc(owner()?.name)}组 · 隔离预览</span></div></div><button class="btn" data-goal-act="close-report">${reading.mode === "direct" ? "返回任务" : "返回交付资料"}</button>`;
+    }
+    // Header and status follow the latest goal detail; the report document is written once, so later updates
+    // never reload the iframe or lose the reading position.
+    function renderReader() {
+      if (current()) reading.reports = current().reports;
+      const focused = reader.contains?.(document.activeElement), head = reader.querySelector(".goal-reader-head"), markup = readerHeadMarkup();
+      if (head.dataset.markup !== markup) { head.innerHTML = markup; head.dataset.markup = markup; }
+      const body = reader.querySelector(".goal-reader-body"), status = reading.loading ? '<p class="note goal-reader-status" role="status">正在读取报告…</p>'
+        : reading.error ? `<div class="goal-reader-status"><p class="error-line" role="alert">${esc(reading.error)}</p><button class="btn" data-goal-act="retry-report">重新读取报告</button></div>` : "";
+      if (body.dataset.markup !== status) { body.innerHTML = status; body.dataset.markup = status; body.hidden = !status; }
+      const frame = reader.querySelector(".goal-reader-frame");
+      if (reading.html != null && frame.hidden) { frame.innerHTML = '<iframe title="目标完整交付报告" sandbox="" referrerpolicy="no-referrer"></iframe>'; frame.querySelector("iframe").srcdoc = reportDocument(reading.html); frame.hidden = false; }
+      if (focused && !reader.contains(document.activeElement)) head.querySelector('[data-goal-act="close-report"]').focus();
+    }
+    function openReader(next) {
+      reading = next; reader = document.createElement("section"); reader.className = "goal-report-reader"; reader.setAttribute("aria-label", "目标交付报告");
+      reader.innerHTML = '<div class="head goal-reader-head"></div><div class="goal-reader-body" hidden></div><div class="goal-reader-frame" hidden></div>';
+      document.getElementById("main").append(reader); cover(); renderReader(); reader.querySelector('[data-goal-act="close-report"]').focus();
+    }
+    // app.js rebuilds the chat scaffold when the chat identity changes (read-only, execution, round). An open reader
+    // of the same goal stays mounted and keeps covering the new task area; navigation elsewhere has already closed it.
+    function replaceMain(markup) {
+      const main = document.getElementById("main");
+      if (!reader) { main.innerHTML = markup; return; }
+      for (const node of [...main.childNodes]) if (node !== reader) { covered.delete(node); node.remove(); }
+      reader.insertAdjacentHTML("beforebegin", markup); cover();
+    }
     function expandReport() {
       if (reportHTML == null) return; closeReader();
+      const reports = current().reports;
       rememberPosition(); drawer = null; if (drawerHost) drawerHost.hidden = true;
-      reader = document.createElement("section"); reader.className = "goal-report-reader"; reader.setAttribute("aria-label", "目标交付报告");
-      reader.innerHTML = `<div class="head"><div><div class="title">${esc(goal()?.title)} · 交付报告</div><div class="sub">${esc(owner()?.name)}组 · 隔离预览</div></div><button class="btn" data-goal-act="close-report">返回交付资料</button></div><iframe title="目标完整交付报告" sandbox="" referrerpolicy="no-referrer"></iframe>`;
-      document.getElementById("main").append(reader); reader.querySelector("iframe").srcdoc = reportDocument(reportHTML); reader.querySelector("button").focus();
+      openReader({mode:"drawer", goalId:String(goalId), report:reports.find(item => String(item.id) === String(reportId)), reports, html:reportHTML, loading:false, error:""});
     }
-    function returnFromReport() { closeReader(); drawer = "reports"; renderDrawer(); changed(); document.querySelector?.('[data-goal-act="expand-report"]')?.focus(); }
+    async function readDirect(generation) {
+      const target = reading;
+      try {
+        const response = await fetch(reportPath(options.project, target.goalId, target.report.id), {headers:{Accept:"text/html"}});
+        if (!response.ok) throw Error("报告暂时无法读取，请重试。");
+        const html = await response.text(); if (generation !== reportGeneration) return; target.html = html;
+      } catch (error) { if (generation === reportGeneration) target.error = error.message; }
+      finally { if (generation === reportGeneration) { target.loading = false; renderReader(); } }
+    }
+    // One explicit action: go to the goal, read its detail once, then show the newest current-round report
+    // (or the newest historical one, labelled as such). Every await re-checks the generation, so a late
+    // detail or HTML response can never open a report after the user switched, closed or chose other materials.
+    async function openDelivery(id) {
+      const key = String(id); expandedGroups.delete(byId(id)?.leader_session_id);
+      // Inside the same goal keep the person whose conversation is open; only cards from a list navigate.
+      if (String(goalId) !== key) options.onNavigate(id);
+      if (String(goalId) !== key) return;
+      closeDrawer(); const generation = ++reportGeneration; deliveryNotice = {goalId:key, error:null}; changed();
+      await load(id);
+      if (generation !== reportGeneration || String(goalId) !== key) return;
+      const reports = errors.has(key) ? [] : details.get(key).reports, report = currentReport(reports, goal()) || reports[0];
+      if (!report) { deliveryNotice = {goalId:key, error:errors.has(key) ? errors.get(key) : "这个任务目前没有可阅读的交付报告。"}; changed(); return; }
+      deliveryNotice = null; changed();
+      openReader({mode:"direct", goalId:key, report, reports, html:null, loading:true, error:""});
+      await readDirect(generation);
+    }
+    function retryDirect() {
+      if (reading?.mode !== "direct" || reading.loading) return;
+      const generation = ++reportGeneration; reading.loading = true; reading.error = ""; renderReader(); void readDirect(generation);
+    }
+    function returnFromReport() {
+      if (reading.mode === "direct") { reportGeneration++; closeReader(); changed(); document.querySelector?.('#goal-head [data-goal-act="delivery"]')?.focus(); return; }
+      closeReader(); drawer = "reports"; renderDrawer(); changed(); document.querySelector?.('[data-goal-act="expand-report"]')?.focus();
+    }
     function showActionConfirm(action) {
       const active = goal(); if (!active) return;
       formOverlay?.remove(); formOverlay = document.createElement("div"); formOverlay.className = "session-config-backdrop";
@@ -177,12 +273,15 @@
       const button = event.target.closest("[data-goal-act]"); if (!button || button.disabled) return;
       const act = button.dataset.goalAct;
       if (act === "open") { expandedGroups.delete(byId(button.dataset.goalId)?.leader_session_id); options.onNavigate(button.dataset.goalId); }
+      else if (act === "delivery") void openDelivery(button.dataset.goalId);
+      else if (act === "retry-report") retryDirect();
+      else if (act === "conclusion-toggle") { const key = `${goalId}:${button.dataset.reportId}`; if (conclusionsOpen.has(key)) conclusionsOpen.delete(key); else conclusionsOpen.add(key); changed(); }
       else if (act === "general") { expandedGroups.delete(ownerId); options.onGeneral(ownerId); document.querySelector?.('[data-goal-act="general"]')?.focus(); }
       else if (act === "list") { expandedGroups.add(ownerId); closeDrawer(); changed(); document.querySelector?.('[data-goal-act="list"]')?.focus(); }
       else if (act === "requirements") { const key = String(goalId); if (requirementsOpen.has(key)) requirementsOpen.delete(key); else requirementsOpen.add(key); changed(); }
       else if (act === "create") showCreate(button.dataset.leaderId);
       else if (act === "close-create" && !actionBusy) { const action = formOverlay?.querySelector("[data-goal-confirm]")?.dataset.goalConfirm; formOverlay?.remove(); formOverlay = null; document.querySelector?.(action ? `[data-action="${action}"]` : '[data-goal-act="create"]')?.focus(); }
-      else if (act === "drawer") { if (drawer === button.dataset.kind) closeDrawer(); else { options.onDrawer?.(); closeReader(); drawer = button.dataset.kind; reportId = null; reportHTML = null; reportGeneration++; renderDrawer(); drawerHost.querySelector("h2").focus(); if (drawer === "reports") void loadDocuments(); } changed(); }
+      else if (act === "drawer") { if (drawer === button.dataset.kind) closeDrawer(); else { options.onDrawer?.(); closeReader(); drawer = button.dataset.kind; reportId = null; reportHTML = null; reportGeneration++; deliveryNotice = null; renderDrawer(); drawerHost.querySelector("h2").focus(); if (drawer === "reports") void loadDocuments(); } changed(); }
       else if (act === "close-drawer") { const previous = drawer; closeDrawer(); changed(); document.querySelector?.(`[data-goal-act="drawer"][data-kind="${previous}"]`)?.focus(); }
       else if (act === "refresh") { if (drawer === "reports") void loadDocuments().then(() => load()); else void load(); }
       else if (act === "report") void openReport(button.dataset.reportId);
@@ -211,7 +310,7 @@
       if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
       else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
     });
-    return {sync, closeDrawer, escape, groupMarkup, cards:() => cards(goals(), state()?.leaders), refresh:load, currentGoal:goal, executionFor, showingList:() => expandedGroups.has(ownerId), closeList:() => expandedGroups.delete(ownerId), renderMaterials:renderDrawer,
+    return {sync, closeDrawer, escape, groupMarkup, cards:() => cards(goals(), state()?.leaders), refresh:load, currentGoal:goal, executionFor, showingList:() => expandedGroups.has(ownerId), closeList:() => expandedGroups.delete(ownerId), renderMaterials, replaceMain,
       invalidate() { requestedVersion.clear(); details.clear(); }};
   }
   window.CrewGoals = {create, cards, status, reportPath, reportDocument};

@@ -1,7 +1,22 @@
 """Small HTTP adapter; goal state and native execution remain separate."""
+import json
 from urllib.parse import urlencode
 
 from . import board, documents, goal_context, goals
+
+ACCEPTANCE_STATUSES = ('passed', 'failed', 'unverified', 'simulated')
+
+
+def report_entry(project, value, row):
+    """Read-only projection of the saved, already validated report data; no model or rewrite."""
+    data = json.loads(row['data_json'])
+    statuses = [item['status'] for item in data['acceptance']]
+    return {'id': row['id'], 'round': row['round'], 'requirement_version': row['requirement_version'], 'version': row['version'],
+            'outcome': row['outcome'], 'status': row['outcome'], 'created_at': row['created_at'], 'title': value['title'],
+            'summary': data['summary'], 'acceptance_counts': {key: statuses.count(key) for key in ACCEPTANCE_STATUSES},
+            'unresolved': data['unresolved'],
+            'current': row['round'] == value['current_round'] and row['requirement_version'] == value['requirement_version'],
+            'url': '/api/goals/report?' + urlencode({'project': project, 'goal_id': value['id'], 'report_id': row['id']})}
 
 
 def card(conn, value):
@@ -30,10 +45,11 @@ def detail(conn, project, identity):
         'SELECT id FROM goal_executions WHERE goal_id=? ORDER BY round,generation', (identity,))]
     current = [e for e in executions if e['round'] == value['current_round'] and
                e['requirement_version'] == value['requirement_version'] and e['session_id'] == value['leader_session_id']]
-    reports = [{**dict(row), 'title': value['title'], 'status': row['outcome'],
-                'url': '/api/goals/report?' + urlencode({'project': project, 'goal_id': identity, 'report_id': row['id']})}
-               for row in conn.execute('SELECT id,round,outcome,created_at FROM goal_reports WHERE goal_id=? '
-                                       'ORDER BY created_at DESC', (identity,))]
+    # Newest first by the stored report version within each round, the same order acceptance_target uses;
+    # created_at is display-only because a saved clock can repeat or move backwards.
+    reports = [report_entry(project, value, row) for row in conn.execute(
+        'SELECT id,round,requirement_version,version,outcome,data_json,created_at FROM goal_reports WHERE goal_id=? '
+        'ORDER BY round DESC,version DESC', (identity,))]
     return {'goal': card(conn, value), 'executions': executions,
             'context': context(conn, identity, current[-1]['id'] if current else None), 'reports': reports,
             'documents': documents.list(conn, project, goal_id=identity),

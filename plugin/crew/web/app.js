@@ -386,12 +386,15 @@
     const listing = goals?.showingList() === true;
     const access = chatAccess(item, goalId == null ? null : goals?.currentGoal());
     const execution = goalId == null ? null : goals?.executionFor(item.session_id);
-    const chatRuntime = goalId == null ? runtimeBadge(item) : execution ? runtimeBadge(execution) : `<span class="runtime-tag">${readOnlyId !== null ? "还没有该成员的执行记录" : "本目标尚未启动"}</span>`;
+    const unstarted = goalId == null || execution ? null : goalChatNotes(goals?.currentGoal(), readOnlyId !== null, access.readonly);
+    const chatRuntime = goalId == null ? runtimeBadge(item) : execution ? runtimeBadge(execution) : unstarted.badge ? `<span class="runtime-tag">${unstarted.badge}</span>` : "";
     const chatModel = goalId == null ? `<button class="model-tag" data-act="model-menu" data-id="${esc(item.session_id)}" aria-haspopup="menu" title="切换模型和 effort">${esc(optionsLabel(item))}${ic("down", "xs")}</button>` : execution ? `<span class="model-tag" title="本目标执行配置；如需更换，回总对话并先暂停仍在推进的目标">${esc(optionsLabel({...execution, applied:null}))}</span>` : "";
     const identity = `${item.session_id}:${goalId ?? ""}:${access.readonly}:${execution?.id ?? ""}:${listing}:${access.readonlyReason ?? ""}`;
     if (mountedChat !== identity) {
       CrewChat.unmount();
-      $("main").innerHTML = '<div id="chat-head"></div><div id="goal-head"></div><div id="goal-chat-hint"></div><div id="leader-trust-note"></div><div id="native-approval-tray"></div><div id="decision-tray"></div><div id="chat-host" class="chat-host"></div>';
+      // A report being read in this goal survives a background identity change (read-only, execution, reopened round).
+      const scaffold = '<div id="chat-head"></div><div id="goal-head"></div><div id="goal-chat-hint"></div><div id="leader-trust-note"></div><div id="native-approval-tray"></div><div id="decision-tray"></div><div id="chat-host" class="chat-host"></div>';
+      if (goals) goals.replaceMain(scaffold); else $("main").innerHTML = scaffold;
       delete $("main").dataset.render;
       mountedChat = identity;
       if (!listing) CrewChat.mount({host:$("chat-host"), session:item, ...access, goalId, state, api, toast, beforeStop:() => confirmIdentityStop(item), onExecutionChange:() => goals?.refresh(goalId),
@@ -402,7 +405,7 @@
     $("native-approval-tray").hidden = listing;
     $("goal-chat-hint").hidden = listing;
     const activeGoal = goalId == null && item.active_goal_id != null ? (state.goals || []).find(goal => String(goal.id) === String(item.active_goal_id)) : null;
-    replace($("goal-chat-hint"), activeGoal ? `<div class="goal-chat-hint">${esc(({running:"正在任务中推进",paused:"任务已暂停",pausing:"任务正在暂停",waiting_user:"任务等你补充",awaiting_acceptance:"任务待验收",queued:"任务待启动"})[activeGoal.status] || "任务已有记录")}：${esc(activeGoal.title)} <button type="button" class="text-link" data-act="active-goal" data-goal-id="${esc(activeGoal.id)}" data-id="${esc(item.session_id)}">查看任务 →</button></div>` : goalId != null && !execution ? `<div class="goal-chat-hint">${readOnlyId !== null ? access.readonly ? "该成员在这个目标中还没有执行记录。" : "该成员尚未参与此目标。在此发送消息会启动该成员在本目标中的执行。" : "开始推进会交给 leader 执行；在此发送消息也会开始本任务。先讨论可回到总会话。"}</div>` : "");
+    replace($("goal-chat-hint"), activeGoal ? `<div class="goal-chat-hint">${esc(({running:"正在任务中推进",paused:"任务已暂停",pausing:"任务正在暂停",waiting_user:"任务等你补充",awaiting_acceptance:"任务待验收",queued:"任务待启动"})[activeGoal.status] || "任务已有记录")}：${esc(activeGoal.title)} <button type="button" class="text-link" data-act="active-goal" data-goal-id="${esc(activeGoal.id)}" data-id="${esc(item.session_id)}">查看任务 →</button></div>` : unstarted?.hint ? `<div class="goal-chat-hint">${unstarted.hint}</div>` : "");
     replace($("native-approval-tray"),nativeApprovals?.chatMarkup(item.session_id,goalId,readOnlyId === null) || "");
     replace($("chat-head"), `<div class="head">${av(item.name, 34)}<div class="heading-meta"><div class="title">${esc(item.name)}${readOnlyId === null ? priorityBadge(item.priority) : ""}${chatRuntime}</div><div class="sub"><span>${esc(readOnlyId === null ? (item.goal ?? "") : `归 ${item.group} · 成员本人对话`)}</span>${group === undefined ? "" : `<span class="sep"></span><span>${members.length} 个下属 · ${members.filter(item => item.status === "working").length} 个在干活</span>`}</div></div><div class="right">${goalId == null ? contextControls(item) : ""}${chatModel}${readOnlyId === null ? "" : `<button class="btn ghost" data-act="leader" data-id="${esc(leaderId)}">回到 leader</button><button class="btn ghost" data-act="card" data-id="${esc(item.session_id)}">资料</button>`}<button class="icon-btn" data-act="session-menu" data-id="${esc(item.session_id)}" aria-haspopup="menu" title="会话操作" aria-label="会话操作">⋯</button>${group === undefined ? "" : `<button class="icon-btn rp-toggle" data-act="right-open" title="本组架构图" aria-label="本组架构图">${ic("grid")}</button>`}</div></div>`);
     replace($("goal-head"), group ? goals?.groupMarkup(leaderId) || "" : "");
@@ -415,6 +418,12 @@
       if (existing) { if (existing.outerHTML !== slot.firstElementChild.outerHTML) existing.replaceWith(slot.firstElementChild); } else if (anchor) anchor.before(slot.firstElementChild);
     }
     if (!listing) CrewChat.update(state);
+  }
+  // Only a queued goal without execution metadata is known to be unstarted.
+  function goalChatNotes(goal, member, readonly) {
+    if (member) return {badge:"还没有该成员的执行记录", hint:readonly ? "该成员在这个目标中还没有执行记录。" : "该成员尚未参与此目标。在此发送消息会启动该成员在本目标中的执行。"};
+    if (goal?.status !== "queued") return {badge:"", hint:""};
+    return {badge:"本目标尚未启动", hint:"开始推进会交给 leader 执行；在此发送消息也会开始本任务。先讨论可回到总会话。"};
   }
   function chatAccess(item, goal) {
     if (goal != null) {
