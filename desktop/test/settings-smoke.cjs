@@ -11,14 +11,15 @@ const sessionData=path.join(temporary,'session');require('node:fs').mkdirSync(se
 app.setPath('userData',temporary);app.setPath('sessionData',sessionData);
 let win,saveFailure=false,saves=0,connectionSaveFailure=false;const calls=[],rendererErrors=[],connectionSaves=[],connectionActions=[];
 const catalog=[{id:'claude',name:'Claude Code',available:true,models:[{id:'native-a',name:'Native A',efforts:['low','high']}],efforts:['low','high']},{id:'codex',name:'Codex',available:true,models:[{id:'native-b',name:'Native B',efforts:['deep']}],efforts:['deep']}];
-let ai={default:{runtime:null,model:null,effort:null},digest:null,git:null,operations:null};
+let ai={default:{runtime:null,model:null,effort:null},leader:null,digest:null,git:null,operations:null};
 let execution={codex:'workspace-write',claude:'default'};
 const snapshot=()=>({ai:JSON.parse(JSON.stringify(ai)),execution:{...execution},runtimes:catalog,home:'C:\\Crew Data',backend:'C:\\Crew\\plugin'});
 const tools={checked_at:new Date().toISOString(),autoUpdate:false,tools:catalog.map(item=>({id:item.id,name:item.name,installed_version:'fixture',latest_version:'fixture',phase:'idle',installation:'native',can_update:false,can_queue:false,update_available:false}))};
 const health={state:'healthy',checked_at:new Date().toISOString(),recoveries:0,incidents:[],restart:{allowed:false,reason:'后台运行正常'},url:'http://127.0.0.1:9999',supervisor_pid:1,service_pid:2};
 const notification={away:false,manual_away:false,error:null,channel:{state:'connected',detail:'隔离测试连接'}};
 const channels=['qq','lark'].map(id=>({id,name:id==='qq'?'QQ':'Lark / 飞书',app_id:'',secret_configured:false,enabled:false,domain:'feishu',state:'unconfigured',detail:null,bound:false,binding_code:null,error:null}));
-const connectionSnapshot=()=>({channels:JSON.parse(JSON.stringify(channels)),notification:{...notification}});
+let notificationTarget='both',notificationPreferenceFailure=false;
+const connectionSnapshot=()=>({preferences:{target:notificationTarget},channels:JSON.parse(JSON.stringify(channels)),notification:{...notification}});
 const windowOptions=()=>({width:1320,height:1120,show:false,webPreferences:{preload:path.join(source,'preload.cjs'),contextIsolation:true,sandbox:true,nodeIntegration:false,backgroundThrottling:false,offscreen:true,additionalArguments:['--crew-desktop-config='+encodeURIComponent(JSON.stringify({home,error}))]}});
 function handle(name,callback){ipcMain.handle('desktop:'+name,(event,...args)=>{assert.equal(event.senderFrame.url,home);calls.push(name);return callback(...args);});}
 handle('home-ready',()=>({ok:true}));handle('bootstrap',()=>({projects:[],service:{url:'http://127.0.0.1:9999',owned:false}}));handle('ready',()=>({ok:true}));
@@ -33,6 +34,7 @@ handle('settings-connection-save',body=>{
   Object.assign(channel,{app_id:body.app_id,secret_configured:true,enabled:true,domain:body.domain||'feishu',state:'connecting',detail:'正在建立隔离测试连接',bound:false,binding_code:body.channel==='qq'?'QQ-123456':'LARK-654321',error:null});
   return connectionSnapshot();
 });
+handle('settings-connection-preferences',body=>{if(notificationPreferenceFailure){notificationPreferenceFailure=false;throw Error('隔离通知设置保存失败');}notificationTarget=body.target;return connectionSnapshot();});
 handle('settings-connection-action',body=>{
   connectionActions.push({...body});const channel=channels.find(item=>item.id===body.channel);assert(channel);
   if(body.action==='disconnect')Object.assign(channel,{state:'disabled',enabled:false,detail:'连接已停用'});
@@ -100,8 +102,12 @@ async function open(){await click('#nav-settings');await waitFor('!!document.que
   assert.equal(await run('document.querySelector(\'[data-ai-key="digest"][data-ai-field="effort"]\').value'),'future-effort');
   await click('[data-settings-action="save"]');await waitFor('document.querySelector(".cs-status").textContent.includes("已保存")');assert.equal(saves,2);
   progress('saved');
-  assert.deepEqual(ai,{default:{runtime:'codex',model:'native-b',effort:'deep'},digest:{runtime:'claude',model:'future-summary',effort:'future-effort'},git:null,operations:null});
+  assert.deepEqual(ai,{default:{runtime:'codex',model:'native-b',effort:'deep'},leader:null,digest:{runtime:'claude',model:'future-summary',effort:'future-effort'},git:null,operations:null});
   assert.deepEqual(execution,{codex:'danger-full-access',claude:'acceptEdits'});
+  await run('(()=>{const box=document.querySelector("[data-ai-inherit=leader]");box.checked=false;box.dispatchEvent(new Event("change",{bubbles:true}));})()');
+  await change('leader','runtime','claude');await change('leader','model','native-a');await change('leader','effort','high');
+  await click('[data-settings-action="save"]');await waitFor('document.querySelector(".cs-status").textContent.includes("已保存")');
+  assert.equal(ai.default.runtime,'codex');assert.deepEqual(ai.leader,{runtime:'claude',model:'native-a',effort:'high'});
   await screenshot('ai-task-allocation-light.png');progress('light screenshot');
   // Recreate the actual renderer, so readback must come from the saved snapshot.
   const old=win;win=new BrowserWindow(windowOptions());old.destroy();await win.loadURL(home);progress('reopened home');await waitFor('document.documentElement.dataset.crewDesktopChromeReady === "true"');await open();progress('reopened settings');
@@ -118,7 +124,7 @@ async function open(){await click('#nav-settings');await waitFor('!!document.que
   await click('[data-settings-category="backend"]');await waitFor('!!document.querySelector(".co-composer")');assert.equal(calls.filter(name=>name==='admin-chat-send').length,0);await click('[data-operations-tab="status"]');await waitFor('document.querySelector(".cs-content #admin-state").textContent === "运行正常"');assert.equal(await run('document.querySelectorAll("#admin-page").length'),1);
   // Reproduce dual installed carriers with no selection, then configure only operations.
   const previousAI=structuredClone(ai);
-  ai={default:{runtime:null,model:null,effort:null},digest:null,git:null,operations:null};
+  ai={default:{runtime:null,model:null,effort:null},leader:null,digest:null,git:null,operations:null};
   await run('window.__settingsUnderTest.reload()');
   await waitFor('!!document.querySelector("[data-operations-tab=chat]")');await click('[data-operations-tab="chat"]');
   await waitFor('document.querySelector(".co-chat-status").textContent.includes("多个 AI")');
@@ -140,6 +146,11 @@ async function open(){await click('#nav-settings');await waitFor('!!document.que
   assert.equal(await run('document.querySelector("#crew-settings-title").textContent'),'消息渠道');
   assert.equal(await run('document.querySelectorAll("[data-channel-select]").length'),2);
   assert(await run('!!document.querySelector("[data-channel-select=lark]")'));
+  await run('(()=>{const select=document.querySelector("[data-notification-target]");select.value="qq";select.dispatchEvent(new Event("change",{bubbles:true}));})()');
+  notificationPreferenceFailure=true;await click('[data-connection-action="save-preferences"]');await waitFor('document.querySelector("[data-connection-note]").textContent.includes("隔离通知设置保存失败")');
+  assert.equal(notificationTarget,'both');assert.equal(await run('document.querySelector("[data-notification-target]").value'),'qq');
+  await click('[data-connection-action="save-preferences"]');await waitFor('document.querySelector("[data-notification-summary]").textContent.includes("仅 QQ")');assert.equal(notificationTarget,'qq');
+  await run('document.querySelector(".cs-body").scrollTo(0,0)');
   await screenshot('connections-new-user-dark.png');
   // Exercise the actual form through failed and successful saves. No credentials come back in snapshots.
   await connectionField('app_id','qq-fixture-app');await connectionField('app_secret','qq-fixture-secret');connectionSaveFailure=true;

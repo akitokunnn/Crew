@@ -42,6 +42,29 @@ class WorkspaceSettingsTests(unittest.TestCase):
     def update(self, label=None, root=None, revision=0):
         return settings.apply_update(self.conn, 'stable-key', label, root, revision, now=NOW)
 
+    def test_external_folder_rename_relinks_existing_identities_and_history(self):
+        self.member()
+        goal = goals.create(self.conn, 'stable-key', 'leader', 'Keep task', 'Do useful work', ['Done'])
+        renamed = self.base / 'Renamed folder'
+        self.old.rename(renamed)
+        self.assertEqual(settings.snapshot(self.conn, 'stable-key')['directory_state']['status'], 'missing')
+        value = self.update('Visible new name', str(renamed))
+        self.assertEqual(value['directory_state']['status'], 'ready')
+        self.assertEqual(value['project']['name'], 'stable-key')
+        self.assertEqual(board.session(self.conn, 'leader')['cwd'], str(renamed.resolve()))
+        self.assertEqual(board.session(self.conn, 'member')['cwd'], str((renamed/'src').resolve()))
+        self.assertEqual(goals.get(self.conn, goal['id'])['project'], 'stable-key')
+        self.assertEqual(len(board.projects(self.conn)), 1)
+
+    def test_removed_duplicate_does_not_block_relink_or_resurrect_over_active_project(self):
+        board.init_project(self.conn, 'accidental-duplicate', self.new, now=NOW)
+        settings.remove(self.conn, 'accidental-duplicate', 0, now=NOW)
+        self.update('Original restored', str(self.new))
+        opened = board.init_project(self.conn, 'stable-key', self.new, now=NOW)
+        self.assertEqual(opened['name'], 'stable-key')
+        self.assertEqual(len(board.projects(self.conn)), 1)
+        self.assertIsNotNone(settings.snapshot(self.conn, 'accidental-duplicate', include_removed=True)['removed_at'])
+
     def test_label_changes_only_display_name_and_rejects_stale_revision(self):
         goal = goals.create(self.conn, 'stable-key', 'leader', 'Keep task', 'Do useful work', ['Done'])
         value = self.update('A new label')
@@ -221,9 +244,8 @@ class WorkspaceSettingsTests(unittest.TestCase):
             self.update('Must not be saved', self.new)
         self.assertEqual(list(self.state()), before)
 
-    def test_duplicate_root_including_removed_workspace_is_rejected(self):
+    def test_active_duplicate_root_is_rejected(self):
         board.init_project(self.conn, 'other', self.new)
-        settings.remove(self.conn, 'other', 0, now=NOW)
         before = list(self.state())
         with self.assertRaisesRegex(board.Conflict, '其他工作区'):
             self.update(root=self.new)

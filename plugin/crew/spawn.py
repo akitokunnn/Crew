@@ -108,7 +108,7 @@ def prepare(conn, home, plugin_root, project_name, name, task, group=None, role=
         if leader_runtime is not None:
             runtime = leader_runtime
         else:
-            defaults = settings.resolve(conn)
+            defaults = settings.resolve(conn, 'leader' if role == 'leader' else 'default')
             runtime = defaults['runtime']
     runtimes.validate(runtime)
     inherited = (models.get(conn, leader["session_id"])

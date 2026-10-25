@@ -3,7 +3,7 @@ const {test}=require("node:test"), assert=require("node:assert/strict"), fs=requ
 const sandbox={window:{}};vm.createContext(sandbox);vm.runInContext(fs.readFileSync(path.join(__dirname,"../crew/web/settings-ui.js"),"utf8"),sandbox);
 const ui=sandbox.window.CrewSettings, plain=value=>JSON.parse(JSON.stringify(value));
 const catalog=[{id:"claude",name:"Claude Code",available:true,models:[{id:"native-a",name:"Native A",efforts:["low","high"]}],efforts:["low","high"]},{id:"codex",name:"Codex",available:true,models:[{id:"native-b",efforts:["deep"]}],efforts:["deep"]}];
-const config=()=>({default:{runtime:null,model:null,effort:null},digest:null,git:null,operations:null});
+const config=()=>({default:{runtime:null,model:null,effort:null},leader:null,digest:null,git:null,operations:null});
 test("settings never chooses between two installed tools and follows a sole available tool",()=>{
   assert.equal(ui.defaultRuntime(config(),catalog),"");
   assert.equal(ui.defaultRuntime(config(),[catalog[1]]),"codex");
@@ -35,6 +35,12 @@ test("operations can choose its own carrier without requiring a global default",
   assert.equal(ai.default.runtime,null);
   ai.default.model="unassigned-model";
   assert.throws(()=>ui.validate(ai,catalog),/默认大脑.*请选择执行载体/);
+});
+
+test("new leaders can choose a brain independently of the default and internal tasks",()=>{
+  const ai=config();ai.default.runtime="codex";ai.leader={runtime:"claude",model:"native-a",effort:"high"};
+  assert.deepEqual(plain(ui.validate(ai,catalog)),ai);
+  const restored=ui.initialAI({ai,runtimes:catalog});assert.deepEqual(plain(restored.leader),ai.leader);assert.equal(restored.digest,null);
 });
 test("an automatic sole task runtime supplies its actual model list and model-specific effort choices",()=>{
   const sole=[{...catalog[0],available:false},{...catalog[1],models:[...catalog[1].models,{id:"native-c",efforts:["light"]}]}],selection={runtime:null,model:"native-b",effort:"deep"};

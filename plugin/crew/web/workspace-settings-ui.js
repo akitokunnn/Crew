@@ -20,7 +20,7 @@
     dialog.className = "workspace-settings-dialog";
     dialog.setAttribute("aria-labelledby", "workspace-settings-title");
     host.append(dialog);
-    let snapshot = null, draft = null, project = null, busy = false, loading = false, confirmation = null, generation = 0, returnTo = null;
+    let snapshot = null, draft = null, project = null, busy = false, loading = false, confirmation = null, generation = 0, returnTo = null, selectedRoot = null;
     const drafts = new Map();
     const summary = () => {
       const sessions = snapshot.sessions;
@@ -42,7 +42,7 @@
       if (!snapshot) body = `<div class="wss-loading">${loading ? "正在读取工作区…" : '<button type="button" data-workspace-action="reload">重新读取</button>'}</div>`;
       else if (confirmation === "update") body = `<section class="wss-confirm"><h3>停止并迁移「${esc(name)}」？</h3><p>先停止 ${info.running} 个运行会话，再将全部 ${info.total} 个已有 leader 和成员迁移到新工作目录。</p><dl><dt>当前目录</dt><dd>${esc(snapshot.project.root)}</dd><dt>新目录</dt><dd>${esc(draft.root.trim())}</dd></dl><p>会保留对话和全部历史记录，不搬动磁盘文件，也不会自动重新开工。之后由你主动发送消息或开始任务。</p></section>`;
       else if (confirmation === "remove") body = `<section class="wss-confirm"><h3>从 Crew 移除「${esc(name)}」？</h3><p>将停止 ${info.running} 个运行会话，并从工作区列表移除这一项。</p><p>磁盘文件和全部记录都会保留。以后重新打开同一目录，可以恢复这个工作区。</p><dl><dt>保留的目录</dt><dd>${esc(snapshot.project.root)}</dd></dl><p>其他工作区和标签页不受影响。</p></section>`;
-      else body = `<form id="workspace-settings-form"><label for="workspace-display-name">工作区名称</label><input id="workspace-display-name" name="display_name" maxlength="100" value="${esc(draft.display_name)}" autocomplete="off" required><label for="workspace-root">工作目录</label><div class="wss-directory"><input id="workspace-root" name="root" value="${esc(draft.root)}" autocomplete="off" spellcheck="false" required>${options.pickDirectory ? '<button type="button" data-workspace-action="browse">浏览…</button>' : ""}</div><p class="wss-hint">选择已有文件夹；修改登记位置，不移动磁盘文件。目录改变时，会先停止并迁移已有 leader 和成员。</p><details class="wss-sessions"><summary>${info.running ? `${info.running} 个会话在运行${info.busy ? `，其中 ${info.busy} 个正在工作` : ""}` : "当前没有运行会话"}<span>${info.total} 个已有身份 · ${snapshot.goals_count} 个目标</span></summary><ul>${snapshot.sessions.map(item => `<li><strong>${esc(item.name)}</strong><span>${item.busy ? "正在工作" : item.running ? "运行中 · 空闲" : "已停止"}</span><small title="${esc(item.cwd)}">${esc(item.cwd)}</small></li>`).join("") || '<li class="wss-hint">还没有 leader 或成员。</li>'}</ul></details></form><section class="wss-remove"><div><h3>从 Crew 移除</h3><p>保留磁盘文件和全部记录，重新打开同一目录可恢复。</p></div><button type="button" class="wss-remove-button" data-workspace-action="remove">从 Crew 移除</button></section>`;
+      else body = `${snapshot.directory_state?.status === "missing" ? '<section class="wss-confirm"><h3>原来的文件夹改名或移动了吗？</h3><p>这个工作区的原目录找不到了。请选择现在的位置；leader、成员、目标和聊天记录都会保留，不需要删除或重新新建。</p></section>' : snapshot.directory_state?.status === "error" ? `<p class="is-error">暂时无法访问原目录：${esc(snapshot.directory_state.error)}</p>` : ""}<form id="workspace-settings-form"><label for="workspace-display-name">工作区名称</label><input id="workspace-display-name" name="display_name" maxlength="100" value="${esc(draft.display_name)}" autocomplete="off" required><label for="workspace-root">工作目录</label><div class="wss-directory"><input id="workspace-root" name="root" value="${esc(draft.root)}" autocomplete="off" spellcheck="false" required>${options.pickDirectory ? '<button type="button" data-workspace-action="browse">浏览…</button>' : ""}</div><p class="wss-hint">选择已有文件夹；修改登记位置，不移动磁盘文件。目录改变时，会先停止并迁移已有 leader 和成员。</p><details class="wss-sessions"><summary>${info.running ? `${info.running} 个会话在运行${info.busy ? `，其中 ${info.busy} 个正在工作` : ""}` : "当前没有运行会话"}<span>${info.total} 个已有身份 · ${snapshot.goals_count} 个目标</span></summary><ul>${snapshot.sessions.map(item => `<li><strong>${esc(item.name)}</strong><span>${item.busy ? "正在工作" : item.running ? "运行中 · 空闲" : "已停止"}</span><small title="${esc(item.cwd)}">${esc(item.cwd)}</small></li>`).join("") || '<li class="wss-hint">还没有 leader 或成员。</li>'}</ul></details></form><section class="wss-remove"><div><h3>从 Crew 移除</h3><p>保留磁盘文件和全部记录，重新打开同一目录可恢复。</p></div><button type="button" class="wss-remove-button" data-workspace-action="remove">从 Crew 移除</button></section>`;
       dialog.innerHTML = `<header class="wss-header"><div><span>仅此工作区</span><h2 id="workspace-settings-title">工作区设置</h2><p>${esc(name || project || "")}</p></div><button type="button" class="wss-close" data-workspace-action="close" aria-label="关闭工作区设置">×</button></header><div class="wss-body">${body}</div><footer class="wss-footer"><p data-workspace-note role="${failed ? "alert" : "status"}" class="${failed ? "is-error" : ""}">${esc(message)}</p><div>${footer}</div></footer>`;
       if (busy) controls(true);
     }
@@ -54,8 +54,9 @@
         if (requested !== generation || !dialog.open) return;
         snapshot = next;
         draft = drafts.get(key) || {display_name:displayName(next.project), root:next.project.root};
+        if (selectedRoot) { draft.root = selectedRoot; selectedRoot = null; }
         drafts.set(key, draft); loading = false; render();
-        dialog.querySelector('[name="display_name"]').focus();
+        dialog.querySelector(next.directory_state?.status === "missing" ? '[name="root"]' : '[name="display_name"]').focus();
       } catch (error) {
         if (requested !== generation || !dialog.open) return;
         loading = false; render(error.message, true);
@@ -109,9 +110,9 @@
         finally { busy = false; controls(false); button.focus(); }
       }
     });
-    return {async open(name) {
+    return {async open(name, {root = null} = {}) {
       if (busy) return;
-      returnTo = document.activeElement; project = name; snapshot = null; draft = null; confirmation = null;
+      returnTo = document.activeElement; selectedRoot = root; project = name; snapshot = null; draft = null; confirmation = null;
       if (!dialog.open) dialog.showModal(); await read();
     }, close, save, getDraft:() => draft ? {...draft} : null, isOpen:() => dialog.open};
   }

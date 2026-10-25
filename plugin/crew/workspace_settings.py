@@ -23,7 +23,12 @@ def _stored_project(conn, project, *, include_removed=False):
 
 def snapshot(conn, project, *, include_removed=False):
     settings = _settings(conn, project)
-    return {'project': board.project(conn, project, include_removed=include_removed),
+    item = board.project(conn, project, include_removed=include_removed)
+    try:
+        directory_state = {'status': 'ready' if Path(item['root']).is_dir() else 'missing'}
+    except OSError as error:
+        directory_state = {'status': 'error', 'error': str(error)}
+    return {'project': item, 'directory_state': directory_state,
             'removed_at': settings['removed_at'], 'revision': settings['revision']}
 
 
@@ -74,7 +79,7 @@ def plan_directory_change(conn, project, new_root):
     """Validate every session mapping without modifying storage or processes."""
     current = _stored_project(conn, project)
     destination = _directory(new_root, '工作区目录')
-    for other in conn.execute('SELECT name,root FROM projects WHERE name!=?', (project,)):
+    for other in conn.execute('SELECT p.name,p.root FROM projects p LEFT JOIN project_settings s ON s.project=p.name WHERE p.name!=? AND s.removed_at IS NULL', (project,)):
         if store.norm_path(other['root']) == store.norm_path(destination):
             raise board.Conflict('目录已被其他工作区使用: ' + other['name'])
     changed = store.norm_path(current['root']) != store.norm_path(destination)

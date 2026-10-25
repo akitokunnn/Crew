@@ -11,6 +11,7 @@ function fixture(options = {}) {
     const wc = new EventEmitter();
     wc.loads = []; wc.focused = 0; wc.closed = 0; wc.reloaded = 0; wc.document = {};
     wc.isDestroyed = () => wc.closed > 0;
+    wc.getURL = () => wc.url || '';
     wc.focus = () => wc.focused++;
     wc.close = () => { wc.closed++; wc.emit('destroyed'); };
     wc.reload = () => wc.reloaded++;
@@ -34,6 +35,17 @@ function fixture(options = {}) {
     get homes() { return homes; }, get windowClosed() { return windowClosed; } };
 }
 function event() { return { prevented: false, preventDefault() { this.prevented = true; } }; }
+
+test('a workspace page title change refreshes metadata and preserves its live document',async()=>{
+  const titles=[];const f=fixture({onTitleChange:name=>titles.push(name)});
+  await f.manager.open({name:'stable-key',display_name:'Before',root:'C:/old'});
+  const wc=f.views[0].webContents,loads=wc.loads.length,document=wc.document;
+  wc.emit('page-title-updated',event(),'Renamed · Crew');assert.deepEqual(titles,['stable-key']);
+  f.manager.updateProject({name:'stable-key',display_name:'After',root:'C:/new'});
+  assert.equal(f.manager.state().tabs[1].name,'After');assert.equal(wc.loads.length,loads);assert.equal(wc.document,document);
+  wc.url='https://example.com/';wc.emit('page-title-updated',event(),'Foreign');assert.equal(titles.length,1);
+  f.manager.dispose();
+});
 
 test('an offline empty shell can reconnect after delayed backend readiness while existing workspace origins cannot be replaced',async()=>{
   const f=fixture();
