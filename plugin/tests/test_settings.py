@@ -58,6 +58,13 @@ class SettingsTests(unittest.TestCase):
             settings.resolve(self.home, 'digest', discovery)
         discovery.assert_called_once_with('codex')
 
+    def test_operations_only_choice_resolves_without_a_global_default(self):
+        settings.save(self.home, {'default': choice(), 'operations': choice('codex')})
+        self.assertEqual(settings.resolve(self.home, 'operations', self.installed('codex', 'claude')), choice('codex'))
+        self.assertIsNone(settings.get(self.home)['default']['runtime'])
+        with self.assertRaises(settings.SettingsError):
+            settings.resolve(self.home, 'default', self.installed('codex', 'claude'))
+
     def test_explicit_task_is_whole_override_not_cross_runtime_model_or_effort_merge(self):
         settings.save(self.home, {'default': choice('claude', 'native-alias', 'future-effort'),
                                   'digest': choice('codex')})

@@ -116,6 +116,26 @@ async function open(){await click('#nav-settings');await waitFor('!!document.que
   progress('tools mounted');
   const sameTools=await run('document.querySelectorAll("#tools-page").length');assert.equal(sameTools,1);await click('#tools-auto');await waitFor('document.querySelector("#tools-setting-status").textContent.includes("已开启")');assert.equal(tools.autoUpdate,true);
   await click('[data-settings-category="backend"]');await waitFor('!!document.querySelector(".co-composer")');assert.equal(calls.filter(name=>name==='admin-chat-send').length,0);await click('[data-operations-tab="status"]');await waitFor('document.querySelector(".cs-content #admin-state").textContent === "运行正常"');assert.equal(await run('document.querySelectorAll("#admin-page").length'),1);
+  // Reproduce dual installed carriers with no selection, then configure only operations.
+  const previousAI=structuredClone(ai);
+  ai={default:{runtime:null,model:null,effort:null},digest:null,git:null,operations:null};
+  await run('window.__settingsUnderTest.reload()');
+  await waitFor('!!document.querySelector("[data-operations-tab=chat]")');await click('[data-operations-tab="chat"]');
+  await waitFor('document.querySelector(".co-chat-status").textContent.includes("多个 AI")');
+  await run('(()=>{const input=document.querySelector(".co-composer textarea");input.value="检查后台连接";input.dispatchEvent(new Event("input",{bubbles:true}));})()');
+  assert.equal(await run('document.querySelector("[data-operations-action=send]").disabled'),true);
+  await click('[data-operations-action="setup-brain"]');
+  await waitFor('!!document.querySelector("[data-ai-task=operations]")');
+  await run('(()=>{const box=document.querySelector("[data-ai-inherit=operations]");box.checked=false;box.dispatchEvent(new Event("change",{bubbles:true}));})()');
+  await change('operations','runtime','codex');await click('[data-settings-action="save"]');
+  await waitFor('document.querySelector(".cs-status").textContent.includes("已保存")');
+  assert.equal(ai.default.runtime,null);assert.equal(ai.operations.runtime,'codex');
+  await click('[data-settings-category="backend"]');await click('[data-operations-tab="chat"]');
+  await waitFor('!document.querySelector("[data-operations-action=send]").disabled');
+  assert.equal(await run('document.querySelector(".co-composer textarea").value'),'检查后台连接');
+  await click('[data-operations-action="send"]');await waitFor('document.querySelector(".co-composer textarea").value===""');
+  assert.equal(calls.filter(name=>name==='admin-chat-send').length,1);
+  ai=previousAI;await run('window.__settingsUnderTest.reload()');
   await click('[data-settings-category="connections"]');await waitFor('!!document.querySelector("[data-channel-select=qq]")');
   assert.equal(await run('document.querySelector("#crew-settings-title").textContent'),'消息渠道');
   assert.equal(await run('document.querySelectorAll("[data-channel-select]").length'),2);
