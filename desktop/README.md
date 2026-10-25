@@ -91,3 +91,7 @@ node scripts/verify-icons.cjs dist/win-unpacked/Crew.exe "dist/Crew-$crewVersion
 Renderer 使用 `contextIsolation: true`、`nodeIntegration: false` 和 sandbox；IPC 仅接受自有工作区首页的主 frame，各 IPC 暴露独立函数。项目使用独立 WebContentsView，没有 preload 或文件系统桥接。项目导航严格限制在对应本机项目，外站点击在系统浏览器打开，外站重定向被拒绝。实现依据 Electron 官方的 [安全指南](https://www.electronjs.org/docs/latest/tutorial/security/)、[WebContentsView](https://www.electronjs.org/docs/latest/api/web-contents-view)、[原生标题栏](https://www.electronjs.org/docs/latest/tutorial/custom-title-bar) 和 [Tray](https://www.electronjs.org/docs/latest/api/tray) 文档。
 
 0.2.6 的 Crew 卡片会独立查询 GitHub 最新正式发布和主干版本；没有 Release 如实显示未发布，网络错误单独呈现。「统一后台与插件」仅应用当前桌面自带版本，与线上查询分开。详见 [桌面更新](../docs/DESKTOP_UPDATES.md)。
+
+桌面页面权限按功能处理：Crew 首页和工作区复制内容直接允许；读取剪贴板、通知、摄像头和麦克风、全屏在使用时弹出原生申请，允许结果仅保留到本页关闭或应用退出。文件和目录继续通过原生选择框授权。外部页面和子框架不获得这些权限。绑定命令复制失败时会自动选中，可按 Ctrl+C，状态刷新不取消选中。隔离回归：`electron desktop/test/clipboard-smoke.cjs`（在根目录使用 desktop/node_modules/.bin/electron）。测试查询真实权限，但模拟复制投递，不读写用户系统剪贴板。
+
+运维聊天发送前会显示载体尚未配置或不可用的原因，并提供“选择运维 AI”入口；选择默认大脑或单独配置“运维 AI”后保存，返回即可继续发送，聊天草稿保留。运维的独立选择不要求同时设置全局默认大脑；只有一个可用载体时仍可自动使用。

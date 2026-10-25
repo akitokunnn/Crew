@@ -3,7 +3,7 @@
   const esc = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
   const clone = value => JSON.parse(JSON.stringify(value));
   const empty = () => ({runtime:null, model:null, effort:null});
-  const tasks = [["digest", "频道摘要", "将交流整理成摘要"], ["git", "Git 管理员", "检查改动、整理提交与合并"], ["operations", "后台事故处理", "按证据分析并验证修复"]];
+  const tasks = [["digest", "频道摘要", "将交流整理成摘要"], ["git", "Git 管理员", "检查改动、整理提交与合并"], ["operations", "运维 AI", "后台聊天与事故处理共用此选择；自动修复另按已保存策略执行"]];
   const categories = [["ai", "AI 大脑", "载体、模型与任务分配"], ["execution", "执行权限", "文件与网络的访问范围"], ["appearance", "外观", "让工作区更顺手"], ["tools", "工具与更新", "本机执行工具"], ["connections", "消息渠道", "QQ、Lark / 飞书与远程通知"], ["backend", "后台与运维", "运维对话、状态与配置"]];
   const icons = {
     ai:'<rect x="6" y="6" width="12" height="12" rx="3"/><path d="M9 2v4m6-4v4M9 18v4m6-4v4M2 9h4m-4 6h4m12-6h4m-4 6h4"/><rect x="9" y="9" width="6" height="6" rx="1"/>',
@@ -36,11 +36,12 @@
     return ai;
   }
   function validate(ai, catalog) {
-    if (!defaultRuntime(ai, catalog)) throw Error(catalog.some(item => item.available) ? "请先选择默认载体。" : "没有可用的执行工具，请先安装并登录，再重新检测。");
+    if (!defaultRuntime(ai, catalog) && !tasks.some(([key]) => ai[key]?.runtime)) throw Error(catalog.some(item => item.available) ? "请先选择默认载体。" : "没有可用的执行工具，请先安装并登录，再重新检测。");
     for (const key of ["default", ...tasks.map(item => item[0])]) {
       if (ai[key] === null) continue;
       for (const field of ["model", "effort"]) if (ai[key][field] !== null && !ai[key][field].trim()) throw Error("模型和 effort 为空时请选择原生默认。");
       const selectedRuntime = ai[key].runtime || defaultRuntime(null,catalog);
+      if (key === "default" && !selectedRuntime && ai[key].model === null && ai[key].effort === null) continue;
       if (!selectedRuntime) throw Error(`${key === "default" ? "默认大脑" : tasks.find(item => item[0] === key)[1]}：请选择执行载体，或使用“跟随默认”。`);
       const runtime = catalog.find(item => item.id === selectedRuntime), model = runtime?.models?.find(item => item.id === ai[key].model);
       if (ai[key].effort !== null && model && Array.isArray(model.efforts) && !model.efforts.includes(ai[key].effort)) throw Error(`${model.name || model.id} 不支持所填的 effort，请按实际支持情况修改。`);

@@ -13,6 +13,7 @@
   function mount(host, options) {
     let active = true, snapshot = null, selected = "qq", busy = false, reading = false, timer = null, error = "", note = "", confirming = false, generation = 0;
     const drafts = new Map();
+    let bindingKey = null;
     const channel = () => snapshot.channels.find(item => item.id === selected);
     function draftFor(item) {
       if (!drafts.has(item.id)) drafts.set(item.id, {app_id:item.app_id || "", app_secret:"", domain:item.domain || "feishu"});
@@ -38,7 +39,11 @@
       const step = !item.secret_configured ? 1 : !connected ? 2 : !item.bound ? 3 : 4;
       host.querySelector("[data-connection-steps]").innerHTML = ["创建机器人", "填写凭证", "私聊绑定", "开始使用"].map((title, index) => `<li class="${index + 1 < step ? "complete" : index + 1 === step ? "current" : ""}" ${index + 1 === step ? 'aria-current="step"' : ""}><span>${index + 1 < step ? "✓" : index + 1}</span>${title}</li>`).join("");
       const binding = host.querySelector("[data-connection-binding]");
-      binding.innerHTML = item.bound ? `<div class="cs-card-heading"><div><h3>你的账号已绑定</h3><p>私聊发送 <code>/projects</code> 查看项目，再用 <code>/project 项目名</code> 和 <code>/leader 名字</code> 选择对话。<code>/where</code> 可确认消息发给谁。</p></div><button type="button" class="cs-button" data-connection-action="reset-binding" ${busy ? "disabled" : ""}>重新绑定</button></div>${confirming ? '<p class="cs-warning">重新绑定后，当前账号将不能再控制此渠道。请在自己的机器人私聊中发送新绑定码。</p><div class="cs-connection-actions"><button type="button" class="cs-button" data-connection-action="cancel-binding">保留当前绑定</button><button type="button" class="cs-button" data-connection-action="confirm-binding">确认重新绑定</button></div>' : ""}` : item.binding_code ? `<h3>用你自己的账号私聊机器人</h3><p class="cs-hint">发送以下完整命令，收到“已绑定”回执后，本页会自动更新。请保管好绑定码。</p><div class="cs-binding-command"><code data-binding-command>/bind ${esc(item.binding_code)}</code><button type="button" class="cs-button" data-connection-action="copy-binding">复制命令</button></div><p class="cs-hint">若没有回执：${selected === "qq" ? "检查 QQ 测试范围、单聊事件接收和允许主动发送。" : "检查应用已发布、你在可用范围内、长连接与接收消息事件已保存。"}</p>` : '<h3>连接后绑定你的账号</h3><p class="cs-hint">保存并连接后，这里会显示绑定命令。用你自己的账号私聊机器人完成验证。</p>';
+      const nextBindingKey = JSON.stringify([selected, item.bound, item.binding_code, confirming]);
+      if (bindingKey !== nextBindingKey) {
+        binding.innerHTML = item.bound ? `<div class="cs-card-heading"><div><h3>你的账号已绑定</h3><p>私聊发送 <code>/projects</code> 查看项目，再用 <code>/project 项目名</code> 和 <code>/leader 名字</code> 选择对话。<code>/where</code> 可确认消息发给谁。</p></div><button type="button" class="cs-button" data-connection-action="reset-binding" ${busy ? "disabled" : ""}>重新绑定</button></div>${confirming ? '<p class="cs-warning">重新绑定后，当前账号将不能再控制此渠道。请在自己的机器人私聊中发送新绑定码。</p><div class="cs-connection-actions"><button type="button" class="cs-button" data-connection-action="cancel-binding">保留当前绑定</button><button type="button" class="cs-button" data-connection-action="confirm-binding">确认重新绑定</button></div>' : ""}` : item.binding_code ? `<h3>用你自己的账号私聊机器人</h3><p class="cs-hint">发送以下完整命令，收到“已绑定”回执后，本页会自动更新。请保管好绑定码。</p><div class="cs-binding-command"><input data-binding-command value="/bind ${esc(item.binding_code)}" readonly aria-label="绑定命令" spellcheck="false"><button type="button" class="cs-button" data-connection-action="copy-binding">复制命令</button></div><p class="cs-hint">若没有回执：${selected === "qq" ? "检查 QQ 测试范围、单聊事件接收和允许主动发送。" : "检查应用已发布、你在可用范围内、长连接与接收消息事件已保存。"}</p>` : '<h3>连接后绑定你的账号</h3><p class="cs-hint">保存并连接后，这里会显示绑定命令。用你自己的账号私聊机器人完成验证。</p>';
+        bindingKey = nextBindingKey;
+      }
       const away = snapshot.notification;
       const awayButton = host.querySelector("[data-away]");
       awayButton.textContent = away.manual_away ? "回到电脑前" : "设为离开";
@@ -50,6 +55,7 @@
       setNote();
     }
     function render() {
+      bindingKey = null;
       const item = channel(), draft = draftFor(item);
       host.innerHTML = `<div class="cs-connections"><p class="cs-connection-intro">连接常用聊天工具，在手机上继续和 leader 对话、答复拍板、接收交付。QQ 与 Lark / 飞书可同时启用。</p><div class="cs-channel-picker" role="group" aria-label="选择消息渠道">${snapshot.channels.map(entry => `<button type="button" data-channel-select="${entry.id}" aria-pressed="${entry.id === selected}"><span class="cs-channel-logo" aria-hidden="true">${entry.id === "qq" ? "Q" : "L"}</span><span><strong>${esc(names[entry.id])}</strong><small>${entry.id === "qq" ? "通过 QQ 机器人私聊" : "通过企业自建机器人私聊"}</small></span><span class="cs-badge" data-channel-badge="${entry.id}"></span></button>`).join("")}</div><ol class="cs-connection-steps" aria-label="连接步骤" data-connection-steps></ol><section class="cs-card" data-connection-state aria-live="polite"></section><details class="cs-card cs-connection-preparation" ${item.secret_configured ? "" : "open"}><summary><h2>1. 准备机器人</h2><span>查看接入步骤</span></summary><div data-connection-guide>${guide(selected, draft.domain)}</div></details><section class="cs-card"><h2>2. 填写凭证并连接</h2><form data-connection-form><div class="cs-fields cs-connection-fields">${selected === "lark" ? `<label>平台<select data-connection-field="domain"><option value="feishu" ${draft.domain === "feishu" ? "selected" : ""}>飞书 · 中国版</option><option value="lark" ${draft.domain === "lark" ? "selected" : ""}>Lark · 国际版</option></select></label>` : ""}<label>App ID<input data-connection-field="app_id" value="${esc(draft.app_id)}" placeholder="${selected === "qq" ? "机器人 AppID" : "cli_…"}" required autocomplete="off" spellcheck="false"></label><label>App Secret<span class="cs-secret-input"><input type="password" data-connection-field="app_secret" value="${esc(draft.app_secret)}" placeholder="${item.secret_configured ? "已保存；留空保留现有 Secret" : "粘贴机器人 AppSecret"}" ${item.secret_configured ? "" : "required"} autocomplete="new-password" spellcheck="false"><button type="button" data-connection-action="toggle-secret" aria-label="显示 App Secret">显示</button></span></label></div><p class="cs-hint">凭证保存在本机 Crew 数据目录中，保存后立即生效。已保存的 Secret 不会回显。</p><div class="cs-connection-actions"><button type="submit" class="cs-button cs-primary" data-connection-action="save">保存并连接</button><button type="button" class="cs-button" data-connection-action="reconnect">重新连接</button><button type="button" class="cs-button" data-connection-action="disconnect">断开连接</button></div></form></section><section class="cs-card"><h2>3. 绑定与验证</h2><div class="cs-connection-binding" data-connection-binding></div><div class="cs-connection-actions"><button type="button" class="cs-button" data-connection-action="test">发送测试通知</button><button type="button" class="cs-button" data-connection-action="refresh">刷新状态</button></div><p class="cs-hint">“已连接”表示平台连接建立；绑定账号后可测试通知。在聊天工具中看到测试消息，才说明手机收件正常。</p></section><section class="cs-card"><div class="cs-card-heading"><div><h2>离开电脑后的提醒</h2><p>离开时，待拍板与最终交付会发到已连接并绑定的渠道。机器人私聊始终可用。</p></div><span class="cs-badge" data-presence-label></span></div><div class="cs-tool-row"><div><strong>我已离开</strong><p>手动切换离开状态；自动锁屏规则继续生效。</p></div><button type="button" class="cs-button" data-away></button></div>${snapshot.notification.error ? `<p class="cs-warning">${esc(snapshot.notification.error)}</p>` : ""}</section><p class="cs-status cs-connection-note" role="status" data-connection-note></p></div>`;
       renderState();
@@ -105,6 +111,20 @@
       if (selected === "lark") body.domain = draft.domain;
       void perform("configure", body);
     }
+    async function copyBinding() {
+      const input = host.querySelector("[data-binding-command]"), command = input.value;
+      try {
+        if (!navigator.clipboard?.writeText) throw new Error("当前页面无法使用剪贴板");
+        await navigator.clipboard.writeText(command);
+        if (active && input.isConnected) { note = "绑定命令已复制，请粘贴到机器人私聊中。"; error = ""; setNote(); }
+      } catch (caught) {
+        if (active && input.isConnected) {
+          input.focus(); input.select();
+          error = "复制失败：" + caught.message + "。命令已选中，请按 Ctrl+C 复制，再粘贴到机器人私聊中。";
+          setNote();
+        }
+      }
+    }
     function onClick(event) {
       const button = event.target.closest("button"); if (!button || !host.contains(button) || button.disabled) return;
       if (button.dataset.channelSelect) { selected = button.dataset.channelSelect; confirming = false; error = ""; note = ""; render(); return; }
@@ -113,7 +133,7 @@
       else if (action === "toggle-secret") { const input = host.querySelector('[data-connection-field="app_secret"]'); input.type = input.type === "password" ? "text" : "password"; button.textContent = input.type === "password" ? "显示" : "隐藏"; button.setAttribute("aria-label", button.textContent + " App Secret"); }
       else if (action === "reset-binding" || action === "cancel-binding") { confirming = action === "reset-binding"; renderState(); }
       else if (action === "confirm-binding") void perform("reset-binding");
-      else if (action === "copy-binding") { const command = host.querySelector("[data-binding-command]").textContent; void navigator.clipboard.writeText(command).then(() => { if (active) { note = "绑定命令已复制，请粘贴到机器人私聊中。"; error = ""; setNote(); } }, caught => { if (active) { error = "复制失败，请手动复制绑定命令：" + caught.message; setNote(); } }); }
+      else if (action === "copy-binding") void copyBinding();
       else if (["reconnect", "disconnect", "test"].includes(action)) void perform(action);
       else if (button.hasAttribute("data-away")) void perform("away", !snapshot.notification.manual_away);
     }

@@ -22,11 +22,19 @@ test("settings validates the actual known model capabilities while retaining fut
   ai.git.effort="high";assert.equal(ui.validate(ai,catalog).git.effort,"high");
 });
 test("each explicit task names its missing runtime when two installed carriers make automatic selection ambiguous",()=>{
-  for(const [purpose,label] of [["digest","频道摘要"],["git","Git 管理员"],["operations","后台事故处理"]]){
+  for(const [purpose,label] of [["digest","频道摘要"],["git","Git 管理员"],["operations","运维 AI"]]){
     const ai=config();ai.default.runtime="codex";ai[purpose]={runtime:null,model:null,effort:null};
     assert.throws(()=>ui.validate(ai,catalog),error=>error.message.includes(label)&&error.message.includes("请选择执行载体"));
     ai[purpose]=null;assert.doesNotThrow(()=>ui.validate(ai,catalog));
   }
+});
+
+test("operations can choose its own carrier without requiring a global default",()=>{
+  const ai=config();ai.operations={runtime:"codex",model:null,effort:null};
+  assert.deepEqual(plain(ui.validate(ai,catalog)),ai);
+  assert.equal(ai.default.runtime,null);
+  ai.default.model="unassigned-model";
+  assert.throws(()=>ui.validate(ai,catalog),/默认大脑.*请选择执行载体/);
 });
 test("an automatic sole task runtime supplies its actual model list and model-specific effort choices",()=>{
   const sole=[{...catalog[0],available:false},{...catalog[1],models:[...catalog[1].models,{id:"native-c",efforts:["light"]}]}],selection={runtime:null,model:"native-b",effort:"deep"};
