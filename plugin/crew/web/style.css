@@ -385,6 +385,8 @@ svg.i.xs{width:12px;height:12px}
 .members>.node:not(:last-child)::after{content:"";position:absolute;left:-19px;top:20px;bottom:-11px;border-left:1.5px solid var(--line-strong)}
 .cx-list{margin:8px 0 0 35px;padding-top:7px;border-top:1px dashed var(--line);display:flex;flex-direction:column;gap:3px}
 .cx{display:flex;align-items:center;gap:6px;font-size:calc(12px * var(--fs));color:var(--text-3);line-height:1.5}
+.codex-status-failed .s{color:var(--danger)}
+.codex-status-interrupted .s,.codex-status-unknown .s{color:var(--warn)}
 .cx .n{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--text-2)}
 .cx .s{flex:none;display:flex;align-items:center;gap:4px;font-variant-numeric:tabular-nums}
 .cx.older{color:var(--text-3);cursor:pointer}

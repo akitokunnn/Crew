@@ -190,6 +190,7 @@ Git 管理员可以自行定分支规则、推功能分支、开 PR、CI 绿后�
 - Claude 会话记录 `~/.claude/projects/**`（含子 agent）
 - Codex 会话记录 `~/.codex/sessions/**`（含周额度百分比和点数余额）
 - 派活记录 `~/.crew/codex_runs.jsonl`：codex-dispatch 的派活脚本每次派 Codex 时写一行，这样 Codex 的用量能算到派活的会话头上
+- 原生 Codex `spawn_agent` 子代理不需要登记为组员：其任务名和状态显示在发起者（leader 或成员）的卡片下方，包含目标执行中的子代理；运行时转圈，完成打勾，失败、暂停和关闭分别标记。记录随聊天保存，连接断开后未结束的任务显示“状态未确认”。
 
 金额按 `~/.crew/prices.json` 折算（美元 / 百万 token，初值是 Anthropic 官方 API 价）。用订阅时这只是参考，不是实际账单。价格表里没有的模型只显示 token。
 

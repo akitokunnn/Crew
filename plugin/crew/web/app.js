@@ -38,7 +38,7 @@
     code:'<path d="m8 7-5 5 5 5m8-10 5 5-5 5m-3-12-2 14"/>', cloud:'<path d="M6 18a4 4 0 0 1-1-7.8A7 7 0 0 1 18 8a5 5 0 0 1 0 10H6Z"/>',
     bolt:'<path d="m13 2-9 12h7l-1 8 10-13h-7l1-7Z"/>', pencil:'<path d="m16 3 5 5L8 21H3v-5L16 3Zm-3 3 5 5"/>',
     swap:'<path d="M4 7h16m-4-4 4 4-4 4M20 17H4m4-4-4 4 4 4"/>', archive:'<path d="M4 8v13h16V8M3 3h18v5H3V3Zm6 9h6"/>',
-    stop:'<rect x="5" y="5" width="14" height="14" rx="2"/>', leave:'<path d="M9 3H3v18h6m6-14 5 5-5 5M8 12h12"/>',
+    stop:'<rect x="5" y="5" width="14" height="14" rx="2"/>', pause:'<path d="M8 5v14M16 5v14"/>', leave:'<path d="M9 3H3v18h6m6-14 5 5-5 5M8 12h12"/>',
     folder:'<path d="M3 6h7l2 3h9v11H3V6Z"/>', clock:'<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
     device:'<rect x="5" y="2" width="14" height="20" rx="2"/><path d="M10 18h4"/>', file:'<path d="M13 2H5v20h14V8l-6-6Zm0 0v6h6"/>',
     branch:'<circle cx="6" cy="4" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="6" cy="20" r="2"/><path d="M6 6v12m0-5h5a7 7 0 0 0 7-5"/>',
@@ -355,7 +355,10 @@
   }
   function codexMarkup(item, cls = "cx", sessionId) {
     const running = item.status === "running";
-    return `<div class="${cls}">${ic("bolt", "xs")}<span class="${cls === "cx" ? "n" : "grow"}">${CrewChat.renderInline(item.task_name, sessionId)}</span><span class="s">${running ? `<span class="spin" style="width:10px;height:10px"></span>${Math.max(0, Math.floor((Date.now() - new Date(item.started_at)) / 60000))} 分钟` : `${ic("check", "xs ok")}${item.ended_at === null ? esc(item.status) : time(item.ended_at)}`}</span></div>`;
+    const label = ({running:"运行中",succeeded:"已完成",failed:"失败",interrupted:"已暂停",closed:"已关闭",unknown:"状态未确认"})[item.status] || "状态未确认";
+    const icon = item.status === "succeeded" ? "check" : item.status === "failed" ? "x" : item.status === "interrupted" ? "pause" : item.status === "closed" ? "stop" : "more";
+    const hint = `${item.source === "native_subagent" ? "Codex 子代理" : "Codex 派活"} · ${label}${item.detail ? " · " + item.detail : ""}`;
+    return `<div class="${cls} codex-status-${esc(item.status)}" data-codex-source="${esc(item.source || "dispatch")}" title="${esc(hint)}">${ic("bolt", "xs")}<span class="${cls === "cx" ? "n" : "grow"}">${CrewChat.renderInline(item.task_name, sessionId)}</span><span class="s" aria-label="${esc(label)}">${running ? `<span class="spin" style="width:10px;height:10px"></span>${Math.max(0, Math.floor((Date.now() - new Date(item.started_at)) / 60000))} 分钟` : `${ic(icon, item.status === "succeeded" ? "xs ok" : "xs")}${item.status === "succeeded" && item.ended_at ? time(item.ended_at) : esc(label)}`}</span></div>`;
   }
   const codexList = item => item.codex.length > 0 || item.codex_older > 0 ? `<span class="cx-list">${item.codex.map(task => codexMarkup(task, "cx", item.session_id)).join("")}${item.codex_older > 0 ? `<span class="cx older">${ic("more", "xs")}<span class="n">更早 ${item.codex_older} 个</span></span>` : ""}</span>` : "";
   const commentButton = (item, group = false) => `<button type="button" class="session-comment" data-act="comments" data-id="${esc(item.session_id)}" aria-label="${esc(group ? item.name + "组的评论" : "评论" + item.name)}">${ic("msg", "xs")}${group ? "组评论" : "评论"}</button>`;
