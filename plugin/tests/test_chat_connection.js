@@ -24,6 +24,58 @@ function harness(){
 }
 const history=()=>({events:[],busy:false,read_seq:0});
 
+test("a goal-start tool followed by identity handoff and native interruption renders as transferred, not executing forever",async()=>{
+  // Minimized from the real journal: tool -> handoff -> interrupted turn -> offline; no tool_result exists.
+  const events=[{seq:1,type:"status",status:"working"},
+    {seq:2,type:"assistant",id:"start",content:[{type:"tool_use",id:"call-start",name:"crew_goal",input:{action:"start",goal_id:"goal"}}]},
+    {seq:3,type:"identity_handoff",target_execution:"execution",text:"当前 Crew 身份已转交执行；保留此段历史，旧原生进程停止。"},
+    {seq:4,type:"turn_result",status:"interrupted",success:false},
+    {seq:5,type:"status",status:"offline"}];
+  const h=harness(),calls=[],routed=[];
+  const target=h.mount("leader",async url=>{calls.push(url);return {...history(),events,read_seq:5};},{},{onRouted:id=>routed.push(id)});await tick();h.flushFrames();
+  const html=target.querySelector(".chat-inner").children.map(item=>item.innerHTML).join("");
+  assert(!html.includes("正在执行…"),"the former general turn has already ended");
+  assert(!html.includes('aria-label="执行中"'));assert(html.includes("已转交"));
+  assert(!html.includes("执行失败"));assert(calls.every(url=>url.startsWith("/api/chat/history?")));
+  assert(html.includes('data-chat-goal="goal"'));
+  await target.querySelector(".chat-inner").onclick({target:{closest:selector=>selector==="[data-chat-goal]"?{dataset:{chatGoal:"goal"}}:null}});
+  assert.deepEqual(routed,["goal"]);assert(calls.every(url=>url.startsWith("/api/chat/history?")));
+  h.chat.unmount();
+});
+
+test("live handoff closes a pending tool, while a later native result retains its actual failure and output",async()=>{
+  const h=harness(),target=h.mount("leader",async()=>history());await tick();
+  const stream=h.connections[0],html=()=>target.querySelector(".chat-inner").children.map(item=>item.innerHTML).join("");
+  stream.emit({seq:1,type:"status",status:"working"});
+  stream.emit({seq:2,type:"assistant",id:"call",content:[{type:"tool_use",id:"tool",name:"crew_goal",input:{action:"start",goal_id:"goal"}}]});
+  await tick();h.flushFrames();assert(html().includes("正在执行…"));
+  stream.emit({seq:3,type:"identity_handoff",target_execution:"execution"});
+  stream.emit({seq:4,type:"turn_result",status:"interrupted"});
+  stream.emit({seq:5,type:"status",status:"offline"});await tick();h.flushFrames();
+  assert(html().includes("已转交"));assert(!html().includes("正在执行…"));
+  stream.emit({seq:6,type:"tool_result",tool_use_id:"tool",is_error:true,content:"目标启动被拒绝的真实原因"});await tick();h.flushFrames();
+  assert(html().includes("执行失败"));assert(html().includes("目标启动被拒绝的真实原因"));assert(!html().includes("已转交"));h.chat.unmount();
+});
+
+test("a connection or offline status alone cannot pretend an unfinished tool has ended",async()=>{
+  const h=harness(),target=h.mount("leader",async()=>({...history(),read_seq:2,events:[
+    {seq:1,type:"assistant",id:"call",content:[{type:"tool_use",id:"tool",name:"crew_goal",input:{action:"start"}}]},
+    {seq:2,type:"status",status:"offline"}]}));await tick();h.flushFrames();
+  assert(target.querySelector(".chat-inner").children.some(item=>item.innerHTML.includes("正在执行…")));h.chat.unmount();
+});
+
+test("terminal turns without a tool result remain explicitly unknown, and do not close a later turn's new tool",async()=>{
+  for(const [status,label]of [["completed","本轮已结束"],["interrupted","本轮已中断"],["failed","本轮失败"]]){
+    const h=harness(),target=h.mount("leader",async()=>({...history(),read_seq:2,events:[
+      {seq:1,type:"assistant",id:"old",content:[{type:"tool_use",id:"old-tool",name:"crew_goal",input:{action:"status"}}]},
+      {seq:2,type:"turn_result",status}]}));await tick();h.flushFrames();
+    let html=target.querySelector(".chat-inner").children.map(item=>item.innerHTML).join("");
+    assert(html.includes(label));assert(html.includes("未收到"));assert(!html.includes('class="ok"'));assert(!html.includes("正在执行…"));
+    h.connections[0].emit({seq:3,type:"assistant",id:"new",content:[{type:"tool_use",id:"new-tool",name:"crew_goal",input:{action:"status"}}]});await tick();h.flushFrames();
+    html=target.querySelector(".chat-inner").children.map(item=>item.innerHTML).join("");assert(html.includes(label));assert(html.includes("正在执行…"));h.chat.unmount();
+  }
+});
+
 test("starting a queued goal rebinds the app to the execution journal, closes the empty stream and preserves its draft and reading position",async()=>{
   const h=harness(),nodes=new Map(),calls=[];
   let execution=null;

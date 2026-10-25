@@ -586,6 +586,7 @@ button:disabled:hover{transform:none}
 button.tool,button.mline{border:0;background:transparent;text-align:left;font-family:inherit}
 button.tool.indent,button.mline.indent{width:calc(100% - 42px)}
 .tool .label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tool-state{flex:none;margin-left:4px;font-size:calc(11px * var(--fs));font-weight:400;color:var(--text-3)}
 .tool-steps{overflow-wrap:anywhere}
 .tool-steps pre{margin:5px 0;max-height:260px;overflow:auto;white-space:pre-wrap;font-family:var(--font-mono);font-size:calc(12px * var(--fs));line-height:1.7}
 .mfull{white-space:pre-wrap;overflow-wrap:anywhere}
