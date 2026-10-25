@@ -220,7 +220,8 @@
       image: '<rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8" cy="8" r="1.5"/><path d="m3 16 5-5 4 4 3-3 6 6"/>',
       right: '<path d="m9 5 7 7-7 7"/>',
       check: '<path d="m5 12 4 4L19 6"/>',
-      close: '<path d="m6 6 12 12M6 18 18 6"/>'
+      close: '<path d="m6 6 12 12M6 18 18 6"/>',
+      handoff: '<path d="M4 12h15m-5-5 5 5-5 5"/>'
     };
     return `<svg class="i ${kind === "right" ? "xs chev" : "sm"}" viewBox="0 0 24 24" aria-hidden="true">${paths[kind]}</svg>`;
   };
@@ -362,10 +363,16 @@
   }
   function renderTool(context, block) {
     const result = context.results.get(block.id);
+    const stopped = context.toolStops.get(block.id);
+    const ended = stopped && ({handoff:["已转交执行", "当前会话已转交执行，原工具调用未返回结果。"],
+      interrupted:["本轮已中断", "本轮已中断，未收到此工具的结果。"],
+      failed:["本轮失败", "本轮执行失败，未收到此工具的结果。"],
+      ended:["本轮已结束", "本轮已结束，未收到此工具的结果。"]})[stopped];
+    const goalId = stopped === "handoff" && block.name === "crew_goal" && typeof block.input.goal_id === "string" ? block.input.goal_id : null;
     const foldKey = `tool:${block.id}`;
     const open = context.cache.expanded.has(foldKey);
     const output = result && (typeof result.content === "string" ? result.content : JSON.stringify(result.content, null, 2));
-    return `<button type="button" class="tool indent${result ? "" : " live"}${open ? " open" : ""}" data-chat-fold="${escape(foldKey)}" aria-expanded="${open}">${result ? `<span class="${result.is_error ? "chat-error" : "ok"}">${icon("check")}</span>` : '<span class="spin" aria-label="执行中"></span>'}<span class="label">${escape(toolLabel(context, block))}</span>${icon("right")}</button><div class="tool-steps"><div>输入 · ${escape(block.name)}</div><pre>${escape(JSON.stringify(block.input, null, 2))}</pre>${result ? `<div>${result.is_error ? "执行失败" : "结果"}</div><pre>${escape(output.slice(0, 2000))}</pre>${output.length > 2000 ? '<div>仅显示前 2000 字</div>' : ""}` : "<div>正在执行…</div>"}</div>`;
+    return `<button type="button" class="tool indent${result || ended ? "" : " live"}${open ? " open" : ""}" data-chat-fold="${escape(foldKey)}" aria-expanded="${open}">${result ? `<span class="${result.is_error ? "chat-error" : "ok"}">${icon("check")}</span>` : ended ? icon(stopped === "handoff" ? "handoff" : "close") : '<span class="spin" aria-label="执行中"></span>'}<span class="label">${escape(toolLabel(context, block))}</span>${!result && ended ? `<span class="tool-state">${ended[0]}</span>` : ""}${icon("right")}</button><div class="tool-steps"><div>输入 · ${escape(block.name)}</div><pre>${escape(JSON.stringify(block.input, null, 2))}</pre>${result ? `<div>${result.is_error ? "执行失败" : "结果"}</div><pre>${escape(output.slice(0, 2000))}</pre>${output.length > 2000 ? '<div>仅显示前 2000 字</div>' : ""}` : ended ? `<div>${ended[1]}</div>${goalId && context.onRouted ? `<button type="button" class="text-link" data-chat-goal="${escape(goalId)}">查看任务 →</button>` : ""}` : "<div>正在执行…</div>"}</div>`;
   }
   function assistantText(context, text, item) {
     return `<div class="m-lead"><div class="av round" style="--s:30px;--tint:var(--accent)">${escape(context.session.name.slice(0, 1))}</div><div class="body"><div class="markdown">${renderMarkdown(text, context.session.session_id)}</div><div class="m-meta">${escape(context.session.name)}${item.at ? ` · ${timeOf(item.at)}` : ""}</div></div></div>`;
@@ -479,6 +486,14 @@
       context.results.set(event.tool_use_id, event);
       const owner = context.toolOwners.get(event.tool_use_id);
       if (owner) owner.lastSeq = event.seq;
+    }
+    else if (event.type === "identity_handoff" || event.type === "turn_result") {
+      const stopped = event.type === "identity_handoff" ? "handoff" : event.status === "interrupted" ? "interrupted" : event.status === "failed" ? "failed" : "ended";
+      for (const [id, owner] of context.toolOwners) {
+        if (!context.results.has(id) && !context.toolStops.has(id)) {
+          context.toolStops.set(id, stopped); owner.lastSeq = event.seq;
+        }
+      }
     }
     else if (event.type === "status") { setBusy(context, event.status === "working", event.seq); if (incremental && context.goalId != null) context.onExecutionChange?.(); }
     else if (event.type === "compact_request" || event.type === "compact") {
@@ -635,7 +650,7 @@
         if (saved !== null) { const draft = JSON.parse(saved); cache.text = draft.text; cache.images = draft.images; }
       } catch (error) { options.toast(error.message); }
     }
-    const context = { ...options, session:options.goalId == null ? options.session : {...options.session,activity:null}, cache, items: [], byId: new Map(), nodes: new Map(), results: new Map(), toolOwners: new Map(), cursor: 0, readSeq: 0, busySeq: options.readonly || options.goalId != null ? 0 : options.session.last_seq, executionId:null, connectionGeneration:0, loadGeneration:0, readTimer: null, reconnectTimer: null, historyRetryTimer: null, historyFailed: false, interrupting: false, interruptError: "", interruptConfirmed: false, frame: null, loading: true, busy: cache.pendingSendSeq === null ? options.goalId == null && options.session.busy : true, reading: false, initialPosition: null, stream: null };
+    const context = { ...options, session:options.goalId == null ? options.session : {...options.session,activity:null}, cache, items: [], byId: new Map(), nodes: new Map(), results: new Map(), toolOwners: new Map(), toolStops: new Map(), cursor: 0, readSeq: 0, busySeq: options.readonly || options.goalId != null ? 0 : options.session.last_seq, executionId:null, connectionGeneration:0, loadGeneration:0, readTimer: null, reconnectTimer: null, historyRetryTimer: null, historyFailed: false, interrupting: false, interruptError: "", interruptConfirmed: false, frame: null, loading: true, busy: cache.pendingSendSeq === null ? options.goalId == null && options.session.busy : true, reading: false, initialPosition: null, stream: null };
     active = context;
     options.host.classList.add("chat-host");
     options.host.innerHTML = `<div class="chat-error chat-connection-error" role="alert" hidden></div><div class="scroll chat-scroll" tabindex="0" aria-label="${escape(options.session.name)}的对话记录"><div class="col chat-inner"></div></div><button type="button" class="jump" aria-label="回到最新消息">${icon("down")}回到最新</button>${options.readonly ? `<div class="readonly-note">${escape(options.readonlyReason || "此会话尚未由 Crew 托管。请先在原工具退出，再从会话操作中接管；历史记录保留。")}</div>` : `<div class="composer-wrap"><form class="composer"><div class="attach" hidden></div><textarea rows="1" aria-label="给 ${escape(options.session.name)} 发消息" placeholder="跟 ${escape(options.session.name)} 说…（可以直接粘贴截图）"></textarea><div class="c-row"><button type="button" class="icon-btn chat-image-button" title="附截图（也可以直接 Ctrl+V）" aria-label="添加图片">${icon("image")}</button><input class="chat-image-file" type="file" accept="image/*" multiple hidden><span class="hint"></span><button type="button" class="chat-stop" aria-label="停止当前回复" hidden><svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/></svg></button><button type="submit" class="send" aria-label="发送" disabled>${icon("up")}</button></div><div class="chat-interrupt-status" role="status" aria-live="polite" hidden></div><div class="chat-delivery-status" role="alert" hidden></div></form></div>`}`;
@@ -643,7 +658,13 @@
     context.jump = options.host.querySelector(".jump"); context.error = options.host.querySelector(".chat-connection-error");
     context.jump.onclick = () => { context.scroll.scrollTop = context.scroll.scrollHeight; context.jump.classList.remove("show"); scheduleRead(context); };
     context.scroll.onscroll = () => { if (!current(context)) return; context.cache.scrollTop = context.scroll.scrollTop; context.jump.classList.toggle("show", !atBottom(context)); scheduleRead(context); };
-    context.inner.onclick = event => {
+    context.inner.onclick = async event => {
+      const goalButton = event.target.closest("[data-chat-goal]");
+      if (goalButton) {
+        try { await context.onRouted(goalButton.dataset.chatGoal); }
+        catch (error) { context.toast("打开任务失败：" + error.message); }
+        return;
+      }
       const button = event.target.closest("[data-chat-fold]");
       if (!button) return;
       const item = context.items.find(item => context.nodes.get(item.id).contains(button));

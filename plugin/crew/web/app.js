@@ -8,13 +8,13 @@
   let mountedChannel = false;
   let settingsUI = null, settingsOpen = false, settingsReturn = null;
   let workspaceSettings = null, workspaceOpen = false, maintenance = null;
-  let nativeApprovals = null, memberUI = null, adoptLeaderId = null;
+  let nativeApprovals = null, memberUI = null, adoptLeaderId = null, sessionLibrary = null;
   let stopConfirmation = null;
   let documents = null, leaderTrust = null, runtimeSwitch = null, goals = null, goalId = null;
   let leaderDrag = null, leaderOrderSaving = false;
   let allTab = "tree", period = "week", usageTab = "tree", usage = null, usageLoading = false, usageRequest = 0;
   let cardId = null, cardReturn = null, handoff = null, rightOpen = false, dialogReturn = null;
-  let theme = "system", trayCollapsed = false, othersOpen = false, paletteItems = [], paletteIndex = 0;
+  let theme = "system", trayCollapsed = false, paletteItems = [], paletteIndex = 0;
   let soundGeneration = 0;
   let runtimesCache = null, runtimesPromise = null, runtimesLoading = false, runtimesError = null;
   let commentsSession = null, auxiliaryDialog = 0;
@@ -22,7 +22,7 @@
   const waitingSounds = new Map();
   let fontScale = 1;
   const FONT_MIN = .9, FONT_MAX = 1.4;
-  const decisionsOpen = new Set(), heldExpanded = new Set(), usageCollapsed = new Set(), adoptForms = new Map(), adopted = new Map(), operationIds = new Set();
+  const decisionsOpen = new Set(), heldExpanded = new Set(), usageCollapsed = new Set(), operationIds = new Set();
   const todoExpanded = new Set(), todoTrayExpanded = new Set(), todoActions = new Map(), todoSaving = new Set();
   const colors = ["#3E7C74", "#8A5A7E", "#A07A3A", "#4F6B8F", "#5E7F55", "#A8604F", "#8C7650", "#5C5F9E", "#A35D6A", "#4F7A8C", "#77773F"];
   const statusText = {working:"在干活", waiting:"等你", idle:"空闲", offline:"离线", closed:"已归档"};
@@ -258,7 +258,7 @@
       <div class="sb-leaders"><section class="priority-zone ${priorityIds().length === 0 ? "empty-priority" : ""}" data-leader-zone="priority"><div class="sec-label">置顶 · 优先</div>${priorityLeaders().map(sidebarLeader).join("")}<div class="priority-drop-hint">拖到这里设为优先</div></section>
       <section class="leader-list" data-leader-zone="normal"><div class="sec-label">Leader</div>${state.leaders.filter(item => item.priority === null).map(sidebarLeader).join("")}
       <button class="leader-item add-leader" data-act="modal-leader"><span class="plus">${ic("plus", "sm")}</span><span>起 leader</span></button></section></div>
-      <div class="sb-mid"><button class="nav-item ${view === "adopt" ? "active" : ""}" data-act="view" data-view="adopt">${ic("inbox")}<span>待收编</span><span class="count" title="${state.candidates.running.length} 个在运行">${state.candidates.running.length}<span class="adopt-count-label"> 个在运行</span></span></button><button class="nav-item ${view === "usage" ? "active" : ""}" data-act="view" data-view="usage">${ic("chart")}<span>用量</span></button></div>
+      <div class="sb-mid"><button class="nav-item ${view === "adopt" ? "active" : ""}" data-act="view" data-view="adopt">${ic("inbox")}<span>会话库</span></button><button class="nav-item ${view === "usage" ? "active" : ""}" data-act="view" data-view="usage">${ic("chart")}<span>用量</span></button></div>
       <div class="sb-foot"><button class="quota quota-summary" data-act="view" data-view="usage" title="${esc(quotaTitle)}" aria-label="查看完整额度和用量"><span class="quota-summary-row"><span>Claude</span><span>周 ${quotaText(state.limits.claude.seven_day)} · 5h ${quotaText(state.limits.claude.five_hour)}</span></span><span class="quota-summary-row"><span>Codex</span><span>周 ${quotaText(state.limits.codex)}</span></span></button>${notificationChannel()}<div class="foot-row"><button class="switch ${state.notification.manual_away ? "on" : ""}" data-act="away" role="switch" aria-checked="${state.notification.manual_away}"><span class="track"></span><span>我已离开</span></button><span class="gap"></span><button class="icon-btn" data-act="settings" title="设置" aria-label="设置">${ic("settings")}</button><button class="icon-btn" data-act="theme" title="${themeName}" aria-label="主题：${themeName}">${ic(themeIcon)}</button></div>${state.notification.away ? '<div class="away-note">离开中：待拍板会发到已连接的消息渠道</div>' : ""}${state.notification.error === null ? "" : `<div class="error-line">${esc(state.notification.error)}</div>`}</div>`);
   }
   function clearLeaderDrop() {
@@ -503,7 +503,7 @@
     const working = state.members.filter(item => item.status === "working"), pending = state.decisions.filter(item => !item.held), held = state.decisions.filter(item => item.held);
     const chip = (tab, icon, label, amount) => `<button class="pill tab ${allTab === tab ? "on" : ""}" data-act="all-tab" data-tab="${tab}">${icon}${amount === null ? "" : `<b>${amount}</b>`}${label}</button>`;
     let body;
-    if (allTab === "tree") body = state.leaders.length === 0 ? `<div class="empty">${ic("grid")}<div>还没有 leader。先起一个 leader，再添加新组员或收编已有会话。</div><div class="empty-acts"><button class="btn primary" data-act="modal-leader">${ic("plus", "sm")}起 leader</button><button class="btn" data-act="view" data-view="adopt">${ic("inbox", "sm")}去待收编</button></div></div>` : `<div class="lead-grid" tabindex="0" aria-label="各组架构，可横向滚动查看">${state.leaders.map(item => `<div class="lead-col">${leaderNode(item, true)}<div class="members">${membersOf(item.session_id).map(memberNode).join("")}</div></div>`).join("")}</div>`;
+    if (allTab === "tree") body = state.leaders.length === 0 ? `<div class="empty">${ic("grid")}<div>还没有 leader。先起一个 leader，再添加新组员或收编已有会话。</div><div class="empty-acts"><button class="btn primary" data-act="modal-leader">${ic("plus", "sm")}起 leader</button><button class="btn" data-act="view" data-view="adopt">${ic("inbox", "sm")}打开会话库</button></div></div>` : `<div class="lead-grid" tabindex="0" aria-label="各组架构，可横向滚动查看">${state.leaders.map(item => `<div class="lead-col">${leaderNode(item, true)}<div class="members">${membersOf(item.session_id).map(memberNode).join("")}</div></div>`).join("")}</div>`;
     else if (allTab === "goals") body = goals?.cards() || empty("还没有执行目标");
     else if (allTab === "native-approvals") body = `<div class="native-approval-list">${nativeApprovals?.markup() || empty("没有等待你确认的执行权限")}</div>`;
     else if (allTab === "pending") {
@@ -514,16 +514,16 @@
       if (pending.length === 0 && held.length === 0) body = empty("没有等你拍板的事");
       body += heldGroup(held, "all");
     } else body = working.length === 0 ? empty("没有正在干活的下属") : `<div class="list">${working.map(item => { return `<button class="li click" data-act="member-chat" data-session-menu="${esc(item.session_id)}" data-id="${esc(item.session_id)}">${av(item.name, 32, true)}<span class="grow"><span class="ttl">${esc(item.name)}${runtimeBadge(item, true)}${contextRing(item)} <span class="where">${ic(item.where === "bg" ? "cloud" : "code", "xs")}</span><span class="li-sub">归 ${esc(item.group)}</span>${memberModel(item)}</span><span class="li-now">${item.task === null ? "还没写" : CrewChat.renderInline(item.task, item.session_id)}</span>${memberActivity(item)}<span class="sm">${item.codex.filter(task => task.status === "running").map(task => `<span>${ic("bolt", "xs")} ${CrewChat.renderInline(task.task_name, item.session_id)} · <span class="spin" style="width:9px;height:9px;display:inline-block"></span> ${Math.floor((Date.now() - new Date(task.started_at)) / 60000)} 分钟</span>`).join("")}</span></span>${st(item.status)}</button>`; }).join("")}</div>`;
-    replace($("main"), `<div class="head big"><div><div class="title">全部</div><div class="sub">${esc(projectDisplay(state.project))} 的 ${state.leaders.length} 个 leader，${state.members.length} 个下属</div></div></div><div class="page"><div class="page-in ${allTab === "tree" ? "groups-page" : ""}"><div class="summary">${openTodos().length > 0 ? `<button class="pill todo-summary" data-act="view" data-view="todos">${ic("check", "sm")}<b>${openTodos().length}</b> 件待你动手 ${ic("right", "xs")}</button>` : ""}${nativeApprovals?.count() ? chip("native-approvals", "", " 执行权限待确认", nativeApprovals.count()) : ""}${chip("tree", ic("grid", "sm"), "架构图", null)}${chip("goals", ic("check", "sm"), "目标", (state.goals || []).length)}${chip("pending", '<i class="dot waiting"></i>', " 件等你拍板", pending.length)}${chip("working", '<i class="dot working"></i>', " 个在干活", working.length)}<button class="pill tab" data-act="view" data-view="adopt">${ic("inbox", "sm")}<b>${state.candidates.running.length}</b> 个会话待收编 ${ic("right", "xs")}</button></div>${body}</div></div>`);
+    replace($("main"), `<div class="head big"><div><div class="title">全部</div><div class="sub">${esc(projectDisplay(state.project))} 的 ${state.leaders.length} 个 leader，${state.members.length} 个下属</div></div></div><div class="page"><div class="page-in ${allTab === "tree" ? "groups-page" : ""}"><div class="summary">${openTodos().length > 0 ? `<button class="pill todo-summary" data-act="view" data-view="todos">${ic("check", "sm")}<b>${openTodos().length}</b> 件待你动手 ${ic("right", "xs")}</button>` : ""}${nativeApprovals?.count() ? chip("native-approvals", "", " 执行权限待确认", nativeApprovals.count()) : ""}${chip("tree", ic("grid", "sm"), "架构图", null)}${chip("goals", ic("check", "sm"), "目标", (state.goals || []).length)}${chip("pending", '<i class="dot waiting"></i>', " 件等你拍板", pending.length)}${chip("working", '<i class="dot working"></i>', " 个在干活", working.length)}<button class="pill tab" data-act="view" data-view="adopt">${ic("inbox", "sm")}会话库 · 查找与接入 ${ic("right", "xs")}</button></div>${body}</div></div>`);
   }
   function renderAdopt() {
-    const row = (item, bucket) => {
-      const done = adopted.get(item.session_id), form = adoptForms.get(item.session_id), open = form !== undefined && done === undefined;
-      return `<div class="li">${bucket === "running" ? `<i class="dot ${esc(item.status)}" style="margin:0 4px"></i>` : '<span style="width:15px"></span>'}<div class="grow"><div class="ttl">${esc(item.title)}${item.crew_name === null ? "" : ` <span class="tag candidate-name">${esc(item.crew_name)}</span>`}</div><div class="sm"><span>${ic("folder", "xs")} ${item.rel_dir === "." ? "主目录" : esc(item.rel_dir)}</span><span>${ic("clock", "xs")} ${ago(item.last_active)}</span></div></div>${done === undefined ? `<button class="btn ${open ? "ghost" : ""}" data-act="adopt-open" data-id="${esc(item.session_id)}">${open ? "取消" : "收编"}</button>` : `<span class="st working">${ic("check", "sm")}已收编到 ${esc(done.group)}，通知已交给 leader</span>`}</div>${open ? `<form class="adopt-form" data-adopt-form="${esc(item.session_id)}"><label class="lbl" for="adopt-name-${esc(item.session_id)}">叫它</label><input id="adopt-name-${esc(item.session_id)}" data-preserve="adopt-name-${esc(item.session_id)}" name="name" value="${esc(form.name)}" placeholder="名字" required><span class="lbl">归到</span><div class="lchips">${state.leaders.map(group => `<button type="button" class="lchip ${form.group === group.name ? "on" : ""}" data-act="adopt-leader" data-id="${esc(item.session_id)}" data-group="${esc(group.name)}">${av(group.name, 20)}${esc(group.name)}</button>`).join("")}</div><button class="btn primary" type="submit" style="margin-left:auto" ${state.leaders.length === 0 ? "disabled" : ""}>确认收编</button>${state.leaders.length === 0 ? '<span class="error-line">先起一个 leader，再收编到它的组。</span>' : ""}</form>` : ""}`;
-    };
-    const list = bucket => { const items = state.candidates[bucket].slice(); for (const result of adopted.values()) if (result.bucket === bucket && !items.some(item => item.session_id === result.item.session_id)) items.push(result.item); return items; };
-    replace($("main"), `<div class="head big"><div><div class="title">待收编</div><div class="sub">${esc(projectDisplay(state.project))} 下还没归到 leader 的会话</div></div></div><div class="page"><div class="page-in" style="max-width:860px">${state.vscode_error === null ? "" : `<p class="error-line">${esc(state.vscode_error)}</p>`}<div class="group-h"><i class="dot working"></i>正在运行 · ${state.candidates.running.length}</div><div class="list">${list("running").map(item => row(item, "running")).join("")}</div><div class="group-h">${ic("archive", "sm")}没在运行、也没归档 · ${state.candidates.others.length}</div><div class="list">${othersOpen ? `${list("others").map(item => row(item, "others")).join("")}<button class="more-btn" data-act="others">${ic("down", "sm")}收起</button>` : `<button class="more-btn" data-act="others">${ic("right", "sm")}展开 ${state.candidates.others.length} 个（跟 VS Code 会话列表一致，已归档的不在这里）</button>`}</div><p class="note">也可以在那个 VS Code 会话里说「收编到某某」。</p></div></div>`);
+    if (sessionLibrary === null) sessionLibrary = CrewSessionLibrary.create({api, toast,
+      preferredLeader:() => leader(adoptLeaderId)?.name || "", changed:() => loadState(true),
+      open:item => { const owner = item.role === "leader" ? item : state.leaders.find(person => person.name === item.group);
+        if (owner) navigate("chat", owner.session_id, item.role === "leader" ? null : item.session_id); }});
+    sessionLibrary.mount($("main"), state);
   }
+
   function quotaCard(label, limit) {
     return `<div class="qcard"><div class="lbl"><span>${label}</span><span>账户</span></div>${limit === null ? '<div class="big" style="font-size:calc(22px * var(--fs))">未采集</div>' : `${limit.used_percent === null ? `<div class="big" style="font-size:calc(22px * var(--fs))">${quotaText(limit)}</div>` : `<div class="big">${count(limit.used_percent)}%<small>已用</small></div><div class="bar"><i style="width:${limit.used_percent}%;${limit.used_percent >= 80 ? "background:var(--warn)" : ""}"></i></div>`}${crewQuota(limit, true)}<div class="rs">${date(limit.resets_at)} 重置 · ${time(limit.captured_at)} 采集${limit.expired ? " · 采集已过期" : ""}</div>`}</div>`;
   }
@@ -825,7 +825,7 @@
   function renderPalette(term) {
     const items = state.leaders.map(item => ({group:"Leader", key:item.name + item.goal, html:`${av(item.name, 22)}${esc(item.name)}${priorityBadge(item.priority)}<span class="sm">${CrewChat.renderInline(item.goal, item.session_id)}</span>`, go:() => navigate("chat", item.session_id)}))
       .concat(state.members.map(item => ({group:"下属", key:item.task === null ? item.name : item.name + item.task, html:`${av(item.name, 22, true)}${esc(item.name)}<span class="sm">${esc(item.group)} · ${statusText[item.status]}</span>`, go:() => { goals?.closeList(); if (item.leader_session_id !== null) navigate("chat", item.leader_session_id, item.session_id); }})))
-      .concat([{group:"操作", key:"起 leader 新建", html:`${ic("plus")}起 leader`, go:openModalLeader}, {group:"操作", key:"全部 架构图", html:`${ic("grid")}全部`, go:() => navigate("all")}, {group:"操作", key:"待收编 收编", html:`${ic("inbox")}待收编`, go:() => navigate("adopt")}, {group:"操作", key:"用量 额度", html:`${ic("chart")}用量`, go:() => navigate("usage")}]);
+      .concat([{group:"操作", key:"起 leader 新建", html:`${ic("plus")}起 leader`, go:openModalLeader}, {group:"操作", key:"全部 架构图", html:`${ic("grid")}全部`, go:() => navigate("all")}, {group:"操作", key:"会话库 待收编 接入", html:`${ic("inbox")}会话库`, go:() => navigate("adopt")}, {group:"操作", key:"用量 额度", html:`${ic("chart")}用量`, go:() => navigate("usage")}]);
     paletteItems = items.filter(item => item.key.toLowerCase().includes(term.trim().toLowerCase()));
     let group = "";
     $("palette-results").innerHTML = paletteItems.length === 0 ? '<p class="note" style="padding:12px">没有找到匹配项</p>' : paletteItems.map((item, index) => { const title = group === item.group ? "" : `<div class="grp">${item.group}</div>`; group = item.group; return `${title}<button class="it ${index === paletteIndex ? "on" : ""}" data-act="palette-go" data-index="${index}">${item.html}</button>`; }).join("");
@@ -1094,9 +1094,6 @@
       else if (act === "modal-close") closeBackdrop();
       else if (act === "palette") openPalette();
       else if (act === "palette-go") { const item = paletteItems[Number(button.dataset.index)]; closeBackdrop(); item.go(); }
-      else if (act === "others") { othersOpen = !othersOpen; renderAdopt(); }
-      else if (act === "adopt-open") { if (adoptForms.has(id)) adoptForms.delete(id); else { const item = Object.values(state.candidates).flat().find(item => item.session_id === id); adoptForms.set(id, {name:item.crew_name === null ? item.title.slice(0, 6) : item.crew_name, group:leader(adoptLeaderId)?.name || (state.leaders.length === 0 ? null : state.leaders[0].name)}); } renderAdopt(); }
-      else if (act === "adopt-leader") { adoptForms.get(id).group = button.dataset.group; renderAdopt(); }
       else if (act === "usage-period") { if (period === button.dataset.period) return; period = button.dataset.period; usage = null; renderUsage(); loadUsage(); }
       else if (act === "usage-tab") { usageTab = button.dataset.tab; renderUsage(); }
       else if (act === "usage-fold") { if (usageCollapsed.has(id)) usageCollapsed.delete(id); else usageCollapsed.add(id); renderUsage(); }
@@ -1130,13 +1127,12 @@
       if (todoForm && event.target.name === "note") { const draft = todoActions.get(todoForm.dataset.todoForm); if (draft) draft.note = event.target.value; return; }
       // Update only the readout while dragging; re-rendering would steal the slider from the pointer.
       if (event.target.dataset.setting === "font") { setFontScale(Number(event.target.value)); $("font-scale-value").textContent = `${Math.round(fontScale * 100)}%`; $("settings").querySelector('[data-act="font-reset"]').disabled = fontScale === 1; return; }
-      if (event.target.dataset.setting === "volume") { CrewSound.setVolume(Number(event.target.value)); $("sound-volume-value").textContent = `${Math.round(Number(event.target.value) * 100)}%`; return; } const form = event.target.closest("[data-adopt-form]"); if (form && event.target.name === "name") adoptForms.get(form.dataset.adoptForm).name = event.target.value; });
+      if (event.target.dataset.setting === "volume") { CrewSound.setVolume(Number(event.target.value)); $("sound-volume-value").textContent = `${Math.round(Number(event.target.value) * 100)}%`; return; } });
     document.addEventListener("submit", event => {
       const form = event.target;
       if (form.id === "comments-form") { event.preventDefault(); action(`comment-post:${form.dataset.sessionId}`, () => postComment(form.dataset.sessionId, form.elements.text.value)); }
       else if (form.dataset.todoForm !== undefined) { event.preventDefault(); const id = form.dataset.todoForm, draft = todoActions.get(id); if (draft) draft.note = form.elements.note.value; action(`todo:${id}`, () => resolveTodo(id)); }
       else if (form.dataset.answerForm !== undefined) { event.preventDefault(); const text = form.elements.answer.value.trim(); if (text !== "") action(`answer:${form.dataset.answerForm}`, () => answer(Number(form.dataset.answerForm), text)); }
-      else if (form.dataset.adoptForm !== undefined) { event.preventDefault(); const id = form.dataset.adoptForm; action(`adopt:${id}`, async () => { const group = adoptForms.get(id).group, bucket = Object.keys(state.candidates).find(bucket => state.candidates[bucket].some(item => item.session_id === id)), item = state.candidates[bucket].find(item => item.session_id === id); await api("/api/roster/adopt", {session_id:id, name:form.elements.name.value.trim(), group}); adopted.set(id, {item, bucket, group}); adoptForms.delete(id); await loadState(true); }); }
       else if (form.id === "session-rename-form") { event.preventDefault(); void saveRename(form); }
       else if (form.id === "leader-form") { event.preventDefault(); action("leader", async () => { const button = form.querySelector('[type="submit"]'); button.disabled = true; try { const result = await api("/api/leader", leaderPayload(form)); closeBackdrop(); await loadState(true); navigate("chat", result.session_id); } catch (error) { if ($("leader-error")) $("leader-error").textContent = error.message; } finally { button.disabled = !runtimeInfo(form.elements.runtime.value).available; } }); }
     });
