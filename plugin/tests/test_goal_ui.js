@@ -31,7 +31,7 @@ test("ordinary conversation performs no goal reads and cards preserve status, gr
 test("opening a goal keeps materials collapsed and same-goal person changes retain the drawer",async()=>{
   const h=harness();h.client.sync("leader","a");await tick();assert.equal(h.calls.length,1);assert.equal(h.drawer.hidden,true);
   const main=h.client.groupMarkup("leader");assert(main.includes("需求与验收"));assert(!main.includes("原始需求与验收标准"));assert(main.includes("暂停目标"));assert(!main.includes("goal-context-item"));
-  await h.click("requirements");assert(h.client.groupMarkup("leader").includes("原始需求与验收标准"));await h.click("requirements");
+  await h.click("drawer",{kind:"requirements"});assert(h.drawer.innerHTML.includes("原始需求与验收标准"));assert(!h.client.groupMarkup("leader").includes("原始需求与验收标准"));await h.click("drawer",{kind:"requirements"});
   await h.click("drawer",{kind:"context"});assert.equal(h.drawer.hidden,false);assert(h.drawer.innerHTML.includes("验证组 / 短句验证"));
   h.client.sync("leader","a");assert.equal(h.drawer.hidden,false);assert.equal(h.calls.length,1);
   assert.equal(h.client.escape(),true);assert.equal(h.drawer.hidden,true);assert.equal(h.client.escape(),false);
@@ -103,7 +103,7 @@ test("selecting a goal collapses its group list while keeping the selected detai
 test("goal details show structured acceptance titles, newest report and explicit reopen or resume actions",async()=>{
   for(const status of ["completed","awaiting_acceptance","waiting_user"]){
     const h=harness(async()=>({goal:{...h.state.goals[0],status,current_round:2,acceptance:[{id:"a1",title:"真实输入例子达标"}]},context:{items:[],manifest:{}},reports:[{id:"new",title:"短句验证",round:2,requirement_version:1,version:1,current:true,status:status==="awaiting_acceptance"?status:"completed",summary:"最新结论",acceptance_counts:{passed:1,failed:0,unverified:0,simulated:0},unresolved:[]},{id:"old",title:"短句验证",round:1,requirement_version:1,version:1,current:false,status:"failed",summary:"旧轮次结论",acceptance_counts:{passed:1,failed:0,unverified:0,simulated:0},unresolved:[]}]}));
-    h.client.sync("leader","a");await tick();await h.click("requirements");const markup=h.client.groupMarkup("leader");assert(markup.includes("真实输入例子达标"));assert(!markup.includes("[object Object]"));
+    h.client.sync("leader","a");await tick();await h.click("drawer",{kind:"requirements"});const markup=h.client.groupMarkup("leader");assert(h.drawer.innerHTML.includes("真实输入例子达标"));assert(!h.drawer.innerHTML.includes("[object Object]"));
     assert(markup.includes("最新结论"));assert(!markup.includes("旧轮次结论"),"an older round report is never shown as this round's conclusion");
     if(status==="waiting_user")assert(markup.includes('data-action="resume"'));else if(status==="completed")assert(markup.includes('data-action="reopen"'));else{assert(markup.includes('data-action="accept"'));assert(markup.includes('data-action="reject"'));assert(!markup.includes('data-action="reopen"'));}
     if(status==="awaiting_acceptance")assert(markup.includes("待验收"));

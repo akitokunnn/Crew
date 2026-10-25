@@ -22,9 +22,9 @@ test("leader trust requires a specific leader and a goal only when enabled",()=>
 
 test("trust display and scope are leader specific and escaped",()=>{
   const a={session_id:'a"',name:"A",trust:{enabled:true,goal:"<script>bad</script>"}},b={session_id:"b",name:"B"};
-  assert.equal(trust.trustFor(b).enabled,false);assert.equal(trust.note(b),"");
+  assert.equal(trust.trustFor(b).enabled,false);
   assert.match(trust.indicator(a),/data-id="a&quot;"/);
-  assert.match(trust.note(a),/&lt;script&gt;bad&lt;\/script&gt;/);assert(!trust.note(a).includes("<script>"));
+  assert.match(trust.indicator(a),/&lt;script&gt;bad&lt;\/script&gt;/);assert(!trust.indicator(a).includes("<script>"));
   assert.match(trust.indicator(b),/信任 · 关/);
 });
 
