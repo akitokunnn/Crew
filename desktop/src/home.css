@@ -58,6 +58,11 @@ main h2{margin:0;font-size:12px;line-height:1.5;font-weight:500;color:#5c5c5c}
 .project .arrow{display:flex;align-items:center;color:#aaa;margin-left:12px}
 .project .arrow .icon{width:15px;height:15px}
 .project:hover .arrow{color:#555}
+.project-row{display:flex;align-items:stretch;border-bottom:1px solid var(--line)}
+.project-row:last-child{border-bottom:0}
+.project-row>.project{flex:1;min-width:0;border-bottom:0}
+.project-settings{align-self:center;flex:none;display:grid;place-items:center;width:34px;height:34px;margin-right:13px;padding:0;border:0;border-radius:7px;background:transparent;color:var(--muted)}
+.project-settings:hover{background:var(--hover,#f0f0f0);color:var(--text,#333)}
 .empty{margin:0;padding:43px 20px;text-align:center;font-size:12px;line-height:1.7;color:#888}
 .empty strong{display:block;margin-bottom:5px;color:#555;font-size:13px;font-weight:500}
 .create-panel{padding:21px 22px 19px;margin-bottom:27px;border:1px solid #dedede;border-radius:10px;background:#fff;box-shadow:0 2px 8px #00000003}

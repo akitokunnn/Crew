@@ -155,7 +155,8 @@ class Controller:
                 goals.bind_native(conn, key, 'claude', native_id, **options)
         install.install(self.home, self.manager.plugin_root)
         command = spawn.command(native_id, session['crew_name'], session['role'], binding is not None,
-                                instructions='你是 Crew「%s」的当前目标执行。目标规则和用户原始要求由宿主随输入装载；仅当前明确授权有效。' % session['crew_name'],
+                                instructions=('你是 Crew「%s」的当前目标执行。目标规则和用户原始要求由宿主随输入装载；仅当前明确授权有效。' % session['crew_name']
+                                              + ('\n' + spec['_workspace_notice'] if spec.get('_workspace_notice') else '')),
                                 permission_mode=permission_mode,
                                 **options)
         command[0] = chat.claude_executable()

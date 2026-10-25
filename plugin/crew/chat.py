@@ -12,7 +12,7 @@ import threading
 import uuid
 from pathlib import Path
 
-from . import board, claude_limits, codex_client, goals, hooks, install, messaging, models, runtime_switch, runtimes, settings, spawn, store
+from . import board, claude_limits, codex_client, goals, hooks, install, messaging, models, runtime_switch, runtimes, settings, spawn, store, workspace_execution
 
 
 IMAGE_TYPES = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif"}
@@ -529,6 +529,10 @@ class Manager:
 
     def _launch(self, session, spec, resume=False):
         try:
+            with closing(store.connect(self.home)) as conn:
+                session = workspace_execution.execution_session(conn, session)
+                spec = {**spec, 'cwd': session['cwd'], 'project': session['project'],
+                        '_workspace_notice': workspace_execution.migration_notice(conn, session)}
             self._claim_identity(session)
             return self._launch_native(session,spec,resume=resume)
         except Exception as exc:
@@ -602,6 +606,8 @@ class Manager:
         install.install(self.home, self.plugin_root)
         command = spawn.command(session_id, session["crew_name"], session["role"], native_resume, **options, agent=spec["agent"],
                                 permission_mode=permission_mode)
+        if spec.get('_workspace_notice'):
+            command += ['--append-system-prompt', spec['_workspace_notice']]
         command[0] = exe
         journal = self.journal(session_id)
         journal.reset_runtime()
@@ -625,63 +631,64 @@ class Manager:
     def start(self, conn, project_name, name, task=None, group=None, role="member", members=(), cwd=None,
               new_worktree=None, base=None, now=None, member_session_ids=(), model=models.INHERIT, effort=models.INHERIT, agent=None,
               runtime=models.INHERIT, caller_session_id=None, caller_execution_id=None):
-        bound_goal = None
-        if caller_execution_id is not None and caller_session_id is None:
-            raise board.BoardError('目标派生人员必须明确调用身份')
-        if caller_session_id is not None:
-            caller = board.session(conn, caller_session_id)
-            if caller['project'] != project_name or caller['role'] != 'leader' or caller['status'] == 'closed' or board.is_archived(conn, caller_session_id):
-                raise board.BoardError('只有本项目当前 leader 可以创建组员')
-            own_group = conn.execute('SELECT name FROM groups WHERE project=? AND leader_session_id=? AND closed_at IS NULL',
-                                     (project_name, caller_session_id)).fetchone()
-            if own_group is None or role != 'member' or group not in (None, own_group['name']):
-                raise board.BoardError('leader 只能在自己的当前组创建成员')
-            group = own_group['name']
-            if caller_execution_id is not None:
-                execution = goals.get_execution(conn, caller_execution_id)
-                goal = goals.get(conn, execution['goal_id'], project_name)
-                if execution['session_id'] != caller_session_id or goal['leader_session_id'] != caller_session_id:
-                    raise board.BoardError('调用执行不属于此目标的 leader')
-                gate = goals.dispatch_check(conn, goal['id'], execution_id=caller_execution_id)
-                if not gate['allowed'] or not self.running(caller_execution_id):
-                    raise board.Conflict(gate['reason'] or '调用目标执行没有在当前宿主运行')
-                bound_goal = goal['id']
-        if role == "leader":
-            plan = spawn.leader_plan(conn, self.home, self.plugin_root, project_name, name, members, task,
-                                     cwd=cwd, new_worktree=new_worktree, base=base, now=now,
-                                     member_session_ids=member_session_ids, model=model, effort=effort, group=group, agent=agent, runtime=runtime)
-        else:
-            plan = spawn.prepare(conn, self.home, self.plugin_root, project_name, name, task, group, role,
-                                 cwd=cwd, new_worktree=new_worktree, base=base, now=now, model=model, effort=effort, runtime=runtime)
-        session_id = plan["session_id"]
-        spec = plan["spec"]
-        goal_receipt = {}
+        with self.lock:
+            bound_goal = None
+            if caller_execution_id is not None and caller_session_id is None:
+                raise board.BoardError('目标派生人员必须明确调用身份')
+            if caller_session_id is not None:
+                caller = board.session(conn, caller_session_id)
+                if caller['project'] != project_name or caller['role'] != 'leader' or caller['status'] == 'closed' or board.is_archived(conn, caller_session_id):
+                    raise board.BoardError('只有本项目当前 leader 可以创建组员')
+                own_group = conn.execute('SELECT name FROM groups WHERE project=? AND leader_session_id=? AND closed_at IS NULL',
+                                         (project_name, caller_session_id)).fetchone()
+                if own_group is None or role != 'member' or group not in (None, own_group['name']):
+                    raise board.BoardError('leader 只能在自己的当前组创建成员')
+                group = own_group['name']
+                if caller_execution_id is not None:
+                    execution = goals.get_execution(conn, caller_execution_id)
+                    goal = goals.get(conn, execution['goal_id'], project_name)
+                    if execution['session_id'] != caller_session_id or goal['leader_session_id'] != caller_session_id:
+                        raise board.BoardError('调用执行不属于此目标的 leader')
+                    gate = goals.dispatch_check(conn, goal['id'], execution_id=caller_execution_id)
+                    if not gate['allowed'] or not self.running(caller_execution_id):
+                        raise board.Conflict(gate['reason'] or '调用目标执行没有在当前宿主运行')
+                    bound_goal = goal['id']
+            if role == "leader":
+                plan = spawn.leader_plan(conn, self.home, self.plugin_root, project_name, name, members, task,
+                                         cwd=cwd, new_worktree=new_worktree, base=base, now=now,
+                                         member_session_ids=member_session_ids, model=model, effort=effort, group=group, agent=agent, runtime=runtime)
+            else:
+                plan = spawn.prepare(conn, self.home, self.plugin_root, project_name, name, task, group, role,
+                                     cwd=cwd, new_worktree=new_worktree, base=base, now=now, model=model, effort=effort, runtime=runtime)
+            session_id = plan["session_id"]
+            spec = plan["spec"]
+            goal_receipt = {}
 
-        def launch(_):
-            worktree, branch = hooks.git_details(spec["cwd"])
-            session = board.register_session(conn, session_id, project_name, spec["cwd"], worktree, branch, name=name,
-                                             role=spec["role"], group_name=spec["group"], spawn_id=spec["id"],
-                                             permission_mode="bypassPermissions", now=now)
-            board.update_cc_name(conn, session_id, name, now=now)
-            chosen_runtime = spec.get("runtime", "claude")
-            runtimes.set(conn, session_id, chosen_runtime, session_id if chosen_runtime == "claude" else None, now=now)
-            models.set(conn, session_id, spec["model"], spec["effort"], now=now)
-            try:
-                with self.lock:
-                    if bound_goal is not None:
-                        goals.assign(conn, bound_goal, session_id, task, actor=caller_session_id)
-                        goal_receipt.update(self.goal_controller.send(bound_goal, session_id, task, source='crew'))
-                        return
-                    plan["command"] = self._launch(session, spec)
-                    text = (spec["task"] if chosen_runtime == "codex" else "Read the file " + spec["md"] +
-                            " with the Read tool and follow it. It is your task brief from Crew.")
-                    self._send(session_id, text, spec["task"], source="crew")
-            except Exception:
-                board.set_status(conn, session_id, "offline", now=now)
-                raise
+            def launch(_):
+                worktree, branch = hooks.git_details(spec["cwd"])
+                session = board.register_session(conn, session_id, project_name, spec["cwd"], worktree, branch, name=name,
+                                                 role=spec["role"], group_name=spec["group"], spawn_id=spec["id"],
+                                                 permission_mode="bypassPermissions", now=now)
+                board.update_cc_name(conn, session_id, name, now=now)
+                chosen_runtime = spec.get("runtime", "claude")
+                runtimes.set(conn, session_id, chosen_runtime, session_id if chosen_runtime == "claude" else None, now=now)
+                models.set(conn, session_id, spec["model"], spec["effort"], now=now)
+                try:
+                    with self.lock:
+                        if bound_goal is not None:
+                            goals.assign(conn, bound_goal, session_id, task, actor=caller_session_id)
+                            goal_receipt.update(self.goal_controller.send(bound_goal, session_id, task, source='crew'))
+                            return
+                        plan["command"] = self._launch(session, spec)
+                        text = (spec["task"] if chosen_runtime == "codex" else "Read the file " + spec["md"] +
+                                " with the Read tool and follow it. It is your task brief from Crew.")
+                        self._send(session_id, text, spec["task"], source="crew")
+                except Exception:
+                    board.set_status(conn, session_id, "offline", now=now)
+                    raise
 
-        result = spawn._execute(conn, plan, launch, members, member_session_ids)
-        return {**result, **goal_receipt, "session_id": session_id, "role": spec["role"]}
+            result = spawn._execute(conn, plan, launch, members, member_session_ids)
+            return {**result, **goal_receipt, "session_id": session_id, "role": spec["role"]}
 
     def _send(self, session_id, text, display_text=None, source='human', identity=None, images=None, sender=None):
         current = self.processes[session_id]
@@ -799,6 +806,7 @@ class Manager:
                                           ensure_ascii=False, sort_keys=True).encode('utf-8')).hexdigest()
         with self.lock:
             with closing(store.connect(self.home)) as routing_conn:
+                session = workspace_execution.execution_session(routing_conn, session)
                 if '_execution' not in session:
                     active = self.goal_controller.routing_execution(routing_conn, session['session_id'])
                     if active is not None:
@@ -887,10 +895,12 @@ class Manager:
             return self.send(session, "/compact")
 
     def _resume_spec(self, conn, session, now=None):
+        supplied_session = session
+        session = workspace_execution.execution_session(conn, session)
         session_id = session["session_id"]
         if session["spawn_id"] is not None:
             path = self.home / "spawn" / (session["spawn_id"] + ".json")
-            return json.loads(path.read_text(encoding="utf-8")), False
+            return {**json.loads(path.read_text(encoding="utf-8")), 'cwd': session['cwd'], 'project': session['project']}, False
         spawn_id = uuid.uuid4().hex
         spec = {"id": spawn_id, "name": session["crew_name"], "group": session["group_name"],
                 "role": session["role"], "task": session["task"], "cwd": session["cwd"],
@@ -902,6 +912,7 @@ class Manager:
         path.write_text(json.dumps(spec, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         conn.execute("UPDATE sessions SET spawn_id=? WHERE session_id=?", (spawn_id, session_id))
         session["spawn_id"] = spawn_id
+        supplied_session['spawn_id'] = spawn_id
         return spec, True
 
     def _resume(self, conn, session, text, sender=None, now=None, identity=None, source="crew", display_text=None):
@@ -915,6 +926,7 @@ class Manager:
 
     def wake(self, conn, target, text, caller_session_id=None, now=None):
         with self.lock:
+            target = workspace_execution.execution_session(conn, target)
             if self.closed:
                 raise board.BoardError("网页服务正在关闭")
             control = board.session_control(conn, target["session_id"])
@@ -1155,7 +1167,8 @@ class Manager:
                          'ON CONFLICT(session_id) DO UPDATE SET stopped_at=excluded.stopped_at,stopped_by=excluded.stopped_by',
                          (session_id, store.now_iso(), actor))
             keys = self._identity_keys(conn, session_id)
-            owned_running = {key for key in keys if self.running(key)}
+            owned_claude = {key: getattr(self.processes[key], 'native_id', key) for key in keys
+                            if self.running(key) and getattr(self.processes[key], 'runtime', 'claude') == 'claude'}
             paused = set()
             for key in keys:
                 if key != session_id:
@@ -1165,8 +1178,6 @@ class Manager:
                         if goal['leader_session_id'] == session_id:
                             goals.request_pause(conn, goal['id'], manual=True, actor=actor, reason='明确停止此人员')
                             paused.add(goal['id'])
-                        elif execution['status'] not in goals.TERMINAL:
-                            goals.set_execution_status(conn, key, 'paused')
                 if self.running(key) and self.busy(key):
                     try:
                         self.interrupt(key)
@@ -1177,18 +1188,18 @@ class Manager:
                     self.auto_candidates.pop(key, None)
             external_claude = set()
             for key in keys:
-                if key in owned_running:
-                    continue  # Only natives owned at stop entry were confirmed exited above.
+                native_claude = set()
                 if key == session_id:
                     mapping = runtimes.get(conn, key)
                     bindings = list(conn.execute('SELECT runtime,native_id FROM session_runtime_bindings WHERE session_id=?', (key,)))
                     if mapping['runtime'] == 'claude':
-                        external_claude.add(mapping['native_id'] or key)
+                        native_claude.add(mapping['native_id'] or key)
                 else:
                     execution = goals.get_execution(conn, key)
                     mapping, bindings = execution, execution['bindings']
-                external_claude.update(binding['native_id'] for binding in bindings
-                                       if binding['runtime'] == 'claude' and binding['native_id'])
+                native_claude.update(binding['native_id'] for binding in bindings
+                                     if binding['runtime'] == 'claude' and binding['native_id'])
+                external_claude.update(native_claude - {owned_claude.get(key)})
                 if mapping['runtime'] == 'codex' or any(binding['runtime'] == 'codex' for binding in bindings):
                     from .codex_runtime import RuntimeLease
                     try:
@@ -1205,6 +1216,9 @@ class Manager:
                     raise board.Conflict('无法确认外部 Claude 执行已退出，请到原工具确认停止') from exc
                 if any(agent['sessionId'] in external_claude for agent in agents):
                     raise board.Conflict('Claude 会话仍在外部运行，Crew 没有持有该进程，请到原工具停止后重试')
+            for key in keys[1:]:
+                if goals.get_execution(conn, key)['status'] not in goals.TERMINAL:
+                    goals.set_execution_status(conn, key, 'paused')
             for goal_id in paused:
                 self.goal_controller.sync(conn, goal_id)
             self.journal(session_id).emit('manual_stop', stopped_by=actor, text='已停止此人员的所有托管执行；排队消息不能自动恢复。')

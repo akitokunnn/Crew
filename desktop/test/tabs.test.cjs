@@ -78,6 +78,23 @@ test('closing selects a neighbor, keeps home, and owns no service shutdown', asy
   assert.equal(f.manager.state().tabs.length, 1, 'home close only asks the parent window to hide');
 });
 
+test('workspace display and directory updates retain stable tab identity and live draft', async () => {
+  const f=fixture(),a=await f.manager.open({name:'stable-A',display_name:'展示 A',root:'/old'}),b=await f.manager.open({name:'stable-B',display_name:'展示 B',root:'/b'});
+  const document=f.views[0].webContents.document;document.draft='still unsent';
+  assert.equal(a.name,'展示 A');assert.equal(a.project,'stable-A');
+  assert.equal(f.manager.updateProject({name:'stable-A',display_name:'新的展示名称',root:'/new'}),true);
+  const updated=f.manager.state().tabs.find(tab=>tab.id===a.id);assert.equal(updated.name,'新的展示名称');assert.equal(updated.project,'stable-A');
+  assert.equal(f.views[0].webContents.loads.length,1);assert.equal(f.views[0].webContents.document.draft,'still unsent');assert.equal(f.manager.activeId,b.id);
+  assert.equal(f.manager.closeProject('stable-A'),true);assert.equal(f.views[1].webContents.closed,0);assert.equal(f.manager.activeId,b.id);assert.equal(f.manager.closeProject('missing'),false);
+});
+
+test('only the current main-frame workspace can route its native settings intent', async () => {
+  const opened=[],f=fixture({workspaceSettings:name=>opened.push(name)});await f.manager.open({name:'stable-A'});
+  const wc=f.views[0].webContents,valid=event();wc.emit('will-navigate',valid,'http://127.0.0.1:1234/?workspace-settings=stable-A');assert(valid.prevented);assert.deepEqual(opened,['stable-A']);assert.equal(wc.loads.length,1);
+  wc.emit('will-navigate',event(),'http://127.0.0.1:1234/?workspace-settings=other');
+  wc.emit('will-redirect',event(),'http://127.0.0.1:1234/?workspace-settings=stable-A',false,false);assert.deepEqual(opened,['stable-A']);
+});
+
 test('cycling, bounds, back, reload and keyboard callbacks target the active page', async () => {
   const f = fixture(), a = await f.manager.open({ name: 'A' }), b = await f.manager.open({ name: 'B' });
   f.manager.setBounds({ x: 8, y: 76, width: 900, height: 600 });

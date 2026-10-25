@@ -5,17 +5,17 @@ const { loopback } = require('./core.cjs');
 // native visibility/focus; closing it never owns or stops a Crew backend.
 class WorkspaceTabs {
   constructor(window, { origin, createView, onChange = () => {}, onHome = () => {},
-    external = () => {}, openProject = () => {}, onKeyboard = () => {}, onNavigationError = error => console.error('Workspace navigation failed:', error) }) {
+    external = () => {}, openProject = () => {}, workspaceSettings = () => {}, onKeyboard = () => {}, onNavigationError = error => console.error('Workspace navigation failed:', error) }) {
     if (!window?.contentView || typeof createView !== 'function') throw new TypeError('A window and view factory are required');
     this.window = window; this.origin = loopback(origin); this.createView = createView;
     this.onChange = onChange; this.onHome = onHome; this.external = external;
-    this.openProject = openProject; this.onKeyboard = onKeyboard;
+    this.openProject = openProject; this.workspaceSettings = workspaceSettings; this.onKeyboard = onKeyboard;
     this.onNavigationError = onNavigationError;
     this.entries = new Map(); this.activeId = 'home'; this.counter = 0; this.disposed = false;
     this.bounds = { x: 0, y: 76, width: 0, height: 0 };
   }
 
-  _public(tab) { return { id: tab.id, name: tab.project.name, project: tab.project.name, loading: tab.loading, error: tab.error }; }
+  _public(tab) { return { id: tab.id, name: tab.project.display_name || tab.project.name, project: tab.project.name, loading: tab.loading, error: tab.error }; }
   state() {
     return { tabs: [{ id: 'home', name: '工作区', project: null, loading: false, error: false },
       ...[...this.entries.values()].map(tab => this._public(tab))], activeId: this.activeId };
@@ -45,6 +45,8 @@ class WorkspaceTabs {
     try { url = new URL(value); } catch (_) { return { kind: 'blocked' }; }
     if (url.username || url.password) return { kind: 'blocked' };
     if (url.origin === this.origin && url.pathname === '/') {
+      const settings = url.searchParams.getAll('workspace-settings');
+      if (settings.length === 1 && settings[0] === tab.project.name && url.searchParams.size === 1) return { kind:'workspace-settings' };
       const names = url.searchParams.getAll('project');
       if (names.length === 0 && url.searchParams.size === 0) return { kind: 'home' };
       if (names.length !== 1 || !names[0] || url.searchParams.size !== 1) return { kind: 'blocked' };
@@ -61,6 +63,7 @@ class WorkspaceTabs {
     // A subframe cannot use navigation to select workspaces or open a browser.
     if (!isMainFrame) return;
     if (target.kind === 'home') { this.select('home'); return; }
+    if (target.kind === 'workspace-settings') { this.workspaceSettings(tab.project.name); return; }
     if (target.kind === 'project') { this._openProject(tab, target.name); return; }
     if (target.kind === 'external' && !redirect) this.external(url);
     else this._error(tab);
@@ -75,6 +78,7 @@ class WorkspaceTabs {
         const target = this._destination(tab, url);
         if (target.kind === 'same') this.select(tab.id);
         else if (target.kind === 'home') this.select('home');
+        else if (target.kind === 'workspace-settings') this.workspaceSettings(tab.project.name);
         else if (target.kind === 'project') this._openProject(tab, target.name);
         else if (target.kind === 'external') this.external(url);
       }
@@ -105,7 +109,7 @@ class WorkspaceTabs {
     if (this.disposed) throw new Error('Workspace tabs are closed');
     if (!project || typeof project.name !== 'string' || !project.name.trim()) throw new TypeError('A registered project name is required');
     const existing = [...this.entries.values()].find(tab => tab.project.name === project.name);
-    if (existing) { this.select(existing.id); return this._public(existing); }
+    if (existing) { this.updateProject(project); this.select(existing.id); return this._public(existing); }
     const view = this.createView(project);
     if (!view?.webContents) throw new TypeError('View factory must return a WebContentsView');
     const tab = { id: 'workspace-' + ++this.counter, project: { ...project }, view, loading: true, error: false };
@@ -136,6 +140,16 @@ class WorkspaceTabs {
     }
     this._notify();
     return true;
+  }
+
+  updateProject(project) {
+    const tab = [...this.entries.values()].find(item => item.project.name === project.name);
+    if (!tab) return false;
+    tab.project = {...tab.project, ...project}; this._notify(); return true;
+  }
+  closeProject(name) {
+    const tab = [...this.entries.values()].find(item => item.project.name === name);
+    return tab ? this.close(tab.id) : false;
   }
 
   close(id) {

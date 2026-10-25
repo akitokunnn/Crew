@@ -124,7 +124,7 @@ class SpawnTests(ShellFixture, unittest.TestCase):
         self.assertEqual(command[command.index("--name") + 1], "new")
         self.assertEqual(command[-2:], ["--session-id", result["session_id"]])
         self.assertNotIn("--agent", command)
-        self.assertEqual(self.processes[0].options["cwd"], store.norm_path(self.project))
+        self.assertEqual(self.processes[0].options["cwd"], str(self.project.resolve()))
         self.assertEqual(self.processes[0].options["env"]["CREW_ROLE"], "member")
         self.assertEqual(board.session(self.conn, result["session_id"])["group_name"], "lead")
         self.assertEqual(board.events(self.conn, "demo", limit=1)[0]["kind"], "spawn")

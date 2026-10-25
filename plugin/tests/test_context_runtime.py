@@ -16,6 +16,9 @@ class ContextRuntimeTests(UsageFixture, unittest.TestCase):
         defaults.mkdir(exist_ok=True)
         (defaults / 'blacklist.txt').write_text('', encoding='utf-8')
         (defaults / 'prices.json').write_text('{}', encoding='utf-8')
+        board.init_project(self.conn, 'demo', self.root)
+        board.join(self.conn, 's1', 'demo', 'member', self.root, None, None)
+        self.conn.execute('UPDATE sessions SET spawn_id=? WHERE session_id=?', ('spawn-1', 's1'))
         return chat.Manager(self.home, self.root, lambda: [], process_factory=FakeProcess)
 
     def running(self, status="idle"):
@@ -25,7 +28,7 @@ class ContextRuntimeTests(UsageFixture, unittest.TestCase):
         process = FakeProcess([])
         current = chat.Running(process, journal)
         manager.processes["s1"] = current
-        session = {"session_id": "s1", "status": "active", "spawn_id": "spawn-1"}
+        session = board.session(self.conn, 's1')
         self.write(self.home / "spawn" / "spawn-1.json", [{}])
         return manager, current, session
 
