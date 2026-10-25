@@ -607,6 +607,10 @@ class Service:
                             'asker': asker['crew_name'], 'leader_session_id': leader_id,
                             'goal_id': links.get(('decision', decision['id']))})
                 tasks = usage.codex_tasks(conn, None, None, project=name)
+                subagent_keys = {}
+                for row in conn.execute('SELECT e.id,e.session_id FROM goal_executions e '
+                                        'JOIN goals g ON g.id=e.goal_id WHERE g.project=?', (name,)):
+                    subagent_keys.setdefault(row['session_id'], []).append(row['id'])
                 reports, leases, claims = board.reports(conn, name), board.leases(conn, name), board.claims(conn, name)
                 member_leaders = {s['session_id']: board.leader_of(conn, s['session_id'])
                                   for s in sessions if s['role'] != 'leader'}
@@ -615,11 +619,16 @@ class Service:
                     key = process_keys[sid]
                     context = self.chat.context(key) if self.chat.running(key) else contexts.get(sid)
                     own_tasks = [t for t in tasks if t['session_id'] == sid]
+                    for task_key in [sid, *subagent_keys.get(sid, [])]:
+                        own_tasks.extend(self.chat.subagent_tasks(task_key))
+                    own_tasks.sort(key=lambda task: task['started_at'])
                     recent_tasks = [t for t in own_tasks if t['status'] == 'running' or
-                                    (t['ended_at'] is not None and
-                                     store.parse_iso(t['ended_at']) >= self.now() - dt.timedelta(hours=24))]
-                    codex = dict(codex=[{'id': t['run_id'] or t['rollout_id'], **{key: t[key] for key in
-                                        ('task_name', 'status', 'started_at', 'ended_at', 'duration_seconds')}} for t in recent_tasks],
+                                    store.parse_iso(t.get('updated_at') or t['ended_at'] or t['started_at']) >=
+                                    self.now() - dt.timedelta(hours=24)]
+                    codex = dict(codex=[{'id': t.get('id') or t['run_id'] or t['rollout_id'], **{key: t[key] for key in
+                                        ('task_name', 'status', 'started_at', 'ended_at', 'duration_seconds')},
+                                        'source': t.get('source', 'dispatch'), 'detail': t.get('detail')}
+                                       for t in recent_tasks],
                                  codex_older=len(own_tasks) - len(recent_tasks))
                     if session['role'] == 'leader':
                         events = histories[sid]['events'] if sid in histories else []

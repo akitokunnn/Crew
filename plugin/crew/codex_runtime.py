@@ -12,7 +12,7 @@ import sys
 import tempfile
 import threading
 
-from . import board, codex_client, codex_events, codex_guard, codex_tools, goals, guard, install, messaging, native_approvals, settings, store, trust_mode, workspace_execution
+from . import board, codex_client, codex_events, codex_guard, codex_subagents, codex_tools, goals, guard, install, messaging, native_approvals, settings, store, trust_mode, workspace_execution
 
 
 def process_identity(pid):
@@ -324,6 +324,12 @@ class CodexRunning:
                 raise board.BoardError("Codex 返回了不同的恢复会话，已停止")
             with self.input_lock:
                 self._events = codex_events.Events(self.thread_id)
+                for task in list(self.journal.subagents.values()):
+                    if task['root_thread_id'] == self.thread_id and task['status'] == 'running':
+                        self.journal.emit('subagent', **{**{key: value for key, value in task.items()
+                            if key not in ('started_at', 'ended_at', 'updated_at')},
+                            'status': 'unknown', 'detail': '会话重新连接，子代理状态未确认'})
+                self._subagents = codex_subagents.Events(self.thread_id, self.journal.subagents.values())
                 self.applied = {"model": result["model"], "effort": result.get("reasoningEffort")}
             with closing(store.connect(self.home)) as conn:
                 if execution:
@@ -369,6 +375,8 @@ class CodexRunning:
                 if self._events is None:
                     self._early_events.append((method, params))
                     return
+                for event in self._subagents.consume(method, params):
+                    self.journal.emit(event['type'], **{key: value for key, value in event.items() if key != 'type'})
                 if params.get("threadId") != self.thread_id:
                     return
                 if method == 'item/started' and params.get('item', {}).get('type') == 'fileChange':

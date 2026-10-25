@@ -14,7 +14,7 @@ import threading
 import uuid
 from pathlib import Path
 
-from . import board, claude_limits, codex_client, goals, hooks, install, messaging, models, runtime_switch, runtimes, settings, spawn, store, workspace_execution
+from . import board, claude_limits, codex_client, codex_subagents, goals, hooks, install, messaging, models, runtime_switch, runtimes, settings, spawn, store, workspace_execution
 
 
 PAUSED_FOR_UPDATE = "Crew 正在准备更新，暂不接受新任务；更新完成后再试"
@@ -117,6 +117,10 @@ class Journal:
         self.refresh()
 
     def _index(self):
+        self.subagents = {}
+        for event in self.events:
+            if event['type'] == 'subagent':
+                codex_subagents.apply_task(self.subagents, event)
         self.messages = {event["id"] for event in self.events if event["type"] in ("message", "compact_request")}
         self.inputs = {event.get('message_id', event.get('id')): event for event in self.events if event["type"] == "input_delivery"}
         self.results = {event["tool_use_id"] for event in self.events if event["type"] == "tool_result"}
@@ -146,6 +150,8 @@ class Journal:
             with self.path.open("a", encoding="utf-8") as stream:
                 stream.write(json.dumps(event, ensure_ascii=False) + "\n")
             self.events.append(event)
+            if kind == 'subagent':
+                codex_subagents.apply_task(self.subagents, event)
             if kind == "input_delivery":
                 self.inputs[fields['message_id']] = event
             stat = self.path.stat()
@@ -523,6 +529,15 @@ class Manager:
             running = self.running(session_id)
             return {"session_id": session_id, "events": list(journal.events), "running": running,
                     "busy": running and journal.status == "working"}
+
+    def subagent_tasks(self, session_id):
+        if not self.path(session_id).exists():
+            return []
+        journal = self.journal(session_id)
+        with journal.condition:
+            current = self.processes.get(session_id)
+            active_root = getattr(current, 'thread_id', None) if self.running(session_id) else None
+            return codex_subagents.snapshot(journal.subagents, active_root)
 
     def _read(self, session_id, current):
         try:
