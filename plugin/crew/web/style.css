@@ -183,6 +183,9 @@ svg.i.xs{width:12px;height:12px}
   .sb .quota-summary{padding-top:5px;padding-bottom:5px}
   .sb .qq-status.connected .qq-detail{display:none}
 }
+@media(max-height:620px){
+  .sb .quota-summary{display:none}
+}
 
 /* main */
 .main{display:flex;flex-direction:column;min-width:0;height:100vh;position:relative}

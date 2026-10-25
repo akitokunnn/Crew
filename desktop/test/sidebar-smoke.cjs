@@ -13,8 +13,9 @@ if (typeof electron === 'string') {
   const root = path.resolve(__dirname, '../..');
   const phase = process.argv.includes('--short-before') ? 'short-before' : process.argv.includes('--before') ? 'before' : 'after';
   const captureOnly = process.argv.includes('--capture-only');
+  const probe518 = process.argv.includes('--probe518');
   const web = path.join(root,phase==='short-before'?'desktop/.cache/sidebar-before-short-window':phase==='before'?'desktop/.cache/sidebar-before-b650da6':'plugin/crew/web');
-  const output = path.join(root, 'desktop/smoke-output/sidebar', phase);
+  const output = path.join(root, 'desktop/smoke-output/sidebar', probe518?'probe518':phase);
   const calls=[], errors=[], checks=[], results=[], streams=new Set(); let server, win, origin, temporary;
   temporary=syncFs.mkdtempSync(path.join(os.tmpdir(),'crew-sidebar-smoke-'));
   app.setPath('userData',temporary);app.setPath('sessionData',temporary);
@@ -102,6 +103,7 @@ if (typeof electron === 'string') {
     check(caseId,'middle viewport can contain a current leader card',top.listWindow.cardHeight>0&&top.listWindow.port.height+1>=top.listWindow.cardHeight,top.listWindow);
     check(caseId,'initial list displays at least one complete card',top.listWindow.complete.length>0,top.listWindow);
     check(caseId,'initial complete card title and state are not clipped by list viewport',top.listWindow.readable.length>0,top.listWindow);
+    if(probe518) {results.push({case:caseId,top});win.destroy();win=null;return;}
     for(const leader of top.leaders) {
       check(caseId,leader.id+' title stays on one line',leader.lines===1,leader);
       check(caseId,leader.id+' unread, pending and context remain visible',leader.unread&&leader.pending&&leader.context,leader);
@@ -167,9 +169,11 @@ if (typeof electron === 'string') {
       for(const response of streams)response.end();server.close();console.log('Sidebar captures:',output);app.exit(0);return;
     }
     for(const mode of ['light','dark']) {
+      if(probe518) {await exercise(mode,860,518,1.4);continue;}
       for(const [width,height] of [[1024,700],[860,600],[1440,900]])await exercise(mode,width,height);
       await exercise(mode,1024,700,1.4);
       await exercise(mode,860,600,1.4);
+      await exercise(mode,860,518,1.4);
     }
     check('fixture','no model-execution requests',!calls.some(call=>/\/send$|\/leader$|\/spawn$|\/wake$/.test(call.name)),calls);
     check('fixture','no renderer or fixture API errors',errors.length===0,errors);
