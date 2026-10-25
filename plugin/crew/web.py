@@ -22,7 +22,7 @@ from urllib.error import HTTPError, URLError
 
 from . import board, channel, channel_digest, chat, claude_limits, codex_runtime, documents, git_admin, git_ci, git_view, goal_api, goals, hooks, maintenance, messaging, models, notifications, open_session, presentation, runtime_catalog, runtime_switch, runtimes, session_ops, settings, spawn, store, themes, todo, trust_mode, updater, usage, usage_cli, vscode_sessions, workspace_execution, workspace_settings
 from .service_lock import HomeServiceLock
-from . import operations_chat, operations_settings
+from . import member_defaults, operations_chat, operations_settings
 from . import connections
 
 
@@ -572,6 +572,7 @@ class Service:
                 sessions = [s for s in [*status['ungrouped'], *(s for group in status['groups'] for s in group['members'])]
                             if s['session_id'] not in removed and s['status'] != 'closed']
                 present = board.live_sessions(agents)
+                member_choices = member_defaults.for_project(conn, name)
                 with self.scan_lock:
                     titles = usage.session_titles(self.claude_root, [s['session_id'] for s in sessions], self.title_cache)
                     contexts = {sid: cached['context'] for sid, cached in self.title_cache.items()}
@@ -621,6 +622,7 @@ class Service:
                         read_seq = board.read_seq(conn, sid)
                         result['leaders'].append(dict(
                             session_id=sid, name=session['crew_name'], goal=session['task'], status=session['status'],
+                            member_defaults=member_choices.get(sid),
                             active_goal_id=active_goals[sid], active_execution_id=key if key != sid else None,
                             runtime=runtimes.get(conn, sid)['runtime'],
                             runtime_switch=runtime_switch.state(conn,session,self.chat,agents,error),
@@ -875,6 +877,15 @@ class Service:
             return self.connections.action(data)
         if path == '/api/connections/preferences':
             return self.connections.save_preferences(data)
+        if path == '/api/member-defaults':
+            if set(data) != {'leader_session_id', 'selection'}:
+                raise ValueError('组员默认设置必须包含 leader_session_id 和 selection')
+            with self.write_lock, closing(store.connect(self.home)) as conn:
+                project = self.selected_project(conn, project_name)
+                sid = _text(data, 'leader_session_id')
+                if board.session(conn, sid)['project'] != project:
+                    raise board.BoardError('leader 不属于当前工作区')
+                return member_defaults.save(conn, sid, data['selection'], now=self.now().isoformat(timespec='milliseconds').replace('+00:00', 'Z'))
         if path == '/api/settings':
             if not data or not set(data) <= {'ai', 'execution'}:
                 raise ValueError('设置请求只能包含 ai 和 execution 配置')
@@ -1168,8 +1179,19 @@ class Service:
                 return self.chat.wake(conn, target, _text(data, "text"),
                                       caller_session_id=_optional_text(data, "caller_session_id"), now=now)
             if path == "/api/spawn":
+                group = _optional_text(data, 'group')
+                leader_id = _optional_text(data, 'leader_session_id')
+                if leader_id is not None:
+                    parent = board.session(conn, leader_id)
+                    active_group = conn.execute('SELECT name FROM groups WHERE project=? AND leader_session_id=? AND closed_at IS NULL', (project, leader_id)).fetchone()
+                    if (parent['project'] != project or parent['role'] != 'leader' or parent['status'] == 'closed'
+                            or board.is_archived(conn, leader_id) or active_group is None or data.get('role', 'member') != 'member'):
+                        raise board.BoardError('请选择当前工作区尚未结束的 leader')
+                    if group is not None and group != active_group['name']:
+                        raise board.BoardError('所选 leader 与分组不一致，请刷新后重试')
+                    group = active_group['name']
                 return self.chat.start(conn, project, _text(data, "name"), _text(data, "task"),
-                                       group=_optional_text(data, "group"), role=data.get("role", "member"),
+                                       group=group, role=data.get("role", "member"),
                                        cwd=_optional_text(data, "cwd"), new_worktree=_optional_text(data, "new_worktree"),
                                        base=_optional_text(data, "base"), now=now,
                                        caller_session_id=_optional_text(data, 'caller_session_id'),
@@ -1450,6 +1472,7 @@ POST_PATHS.update(('/api/documents','/api/documents/pin','/api/documents/refresh
 POST_PATHS.update(('/api/git/enable', '/api/git/disable', '/api/git/fetch'))
 POST_PATHS.update(('/api/admin/update/prepare', '/api/admin/update/cancel'))
 POST_PATHS.add('/api/settings')
+POST_PATHS.add('/api/member-defaults')
 POST_PATHS.update(('/api/admin/chat/send', '/api/admin/chat/interrupt', '/api/admin/config'))
 POST_PATHS.add('/api/admin/connection/prepare')
 POST_PATHS.update(('/api/connections/configure', '/api/connections/action', '/api/connections/preferences'))
@@ -1481,6 +1504,7 @@ STATIC.update({'/settings-ui.js': ('settings-ui.js', 'text/javascript; charset=u
                '/settings-ui.css': ('settings-ui.css', 'text/css; charset=utf-8')})
 STATIC.update({'/operations-ui.js': ('operations-ui.js', 'text/javascript; charset=utf-8'),
                '/operations-ui.css': ('operations-ui.css', 'text/css; charset=utf-8')})
+STATIC.update({'/member-ui.js': ('member-ui.js', 'text/javascript; charset=utf-8'), '/member-ui.css': ('member-ui.css', 'text/css; charset=utf-8')})
 STATIC['/launch-settings-ui.js'] = ('launch-settings-ui.js', 'text/javascript; charset=utf-8')
 STATIC.update({'/workspace-settings-ui.js': ('workspace-settings-ui.js', 'text/javascript; charset=utf-8'),
                '/workspace-settings-ui.css': ('workspace-settings-ui.css', 'text/css; charset=utf-8')})

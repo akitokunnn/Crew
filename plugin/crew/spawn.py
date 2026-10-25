@@ -11,7 +11,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from . import board, codex_client, git_process, git_view, models, runtimes, settings, store
+from . import board, codex_client, git_process, git_view, member_defaults, models, runtimes, settings, store
 
 
 def _check_ignore(root):
@@ -102,17 +102,18 @@ def prepare(conn, home, plugin_root, project_name, name, task, group=None, role=
     leader = None
     if group in groups and groups[group]["closed_at"] is None and groups[group]["leader_session_id"] is not None:
         leader = board.session(conn, groups[group]["leader_session_id"])
-    leader_runtime = runtimes.get(conn, leader["session_id"])["runtime"] if leader is not None else None
     defaults = None
+    member_choice = member_defaults.selection(conn, leader) if role == 'member' else None
     if runtime is models.INHERIT or runtime is None:
-        if leader_runtime is not None:
-            runtime = leader_runtime
+        if member_choice is not None:
+            defaults = settings.resolve_choice(member_choice) if member_choice['runtime'] is None else member_choice
+            runtime = defaults['runtime']
         else:
             defaults = settings.resolve(conn, 'leader' if role == 'leader' else 'default')
             runtime = defaults['runtime']
     runtimes.validate(runtime)
-    inherited = (models.get(conn, leader["session_id"])
-                 if role == "member" and leader is not None and runtime == leader_runtime
+    inherited = (member_choice
+                 if member_choice is not None and runtime == member_choice['runtime']
                  else defaults if defaults is not None else {"model": None, "effort": None})
     if model is models.INHERIT:
         model = inherited["model"]

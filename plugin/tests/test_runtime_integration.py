@@ -203,7 +203,7 @@ class RuntimeFeatureHttpTests(ShellFixture, unittest.TestCase):
     def test_home_settings_save_without_project_does_not_start_ai_or_change_sessions(self):
         original = runtimes.get(self.conn, 's3')
         payload = {'ai': {'default': {'runtime': 'codex', 'model': 'gpt-fixture-default', 'effort': 'high'},
-                          'leader': None, 'digest': None, 'git': None, 'operations': None}}
+                          'leader': None, 'member': None, 'digest': None, 'git': None, 'operations': None}}
         request = Request(self.server.url + '/api/settings', json.dumps(payload).encode(), {'X-Crew': '1'})
         with self.opener.open(request, timeout=5) as response:
             result = json.load(response)

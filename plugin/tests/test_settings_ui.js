@@ -3,7 +3,7 @@ const {test}=require("node:test"), assert=require("node:assert/strict"), fs=requ
 const sandbox={window:{}};vm.createContext(sandbox);vm.runInContext(fs.readFileSync(path.join(__dirname,"../crew/web/settings-ui.js"),"utf8"),sandbox);
 const ui=sandbox.window.CrewSettings, plain=value=>JSON.parse(JSON.stringify(value));
 const catalog=[{id:"claude",name:"Claude Code",available:true,models:[{id:"native-a",name:"Native A",efforts:["low","high"]}],efforts:["low","high"]},{id:"codex",name:"Codex",available:true,models:[{id:"native-b",efforts:["deep"]}],efforts:["deep"]}];
-const config=()=>({default:{runtime:null,model:null,effort:null},leader:null,digest:null,git:null,operations:null});
+const config=()=>({default:{runtime:null,model:null,effort:null},leader:null,member:null,digest:null,git:null,operations:null});
 test("settings never chooses between two installed tools and follows a sole available tool",()=>{
   assert.equal(ui.defaultRuntime(config(),catalog),"");
   assert.equal(ui.defaultRuntime(config(),[catalog[1]]),"codex");

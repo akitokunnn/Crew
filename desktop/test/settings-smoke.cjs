@@ -11,7 +11,7 @@ const sessionData=path.join(temporary,'session');require('node:fs').mkdirSync(se
 app.setPath('userData',temporary);app.setPath('sessionData',sessionData);
 let win,saveFailure=false,saves=0,connectionSaveFailure=false;const calls=[],rendererErrors=[],connectionSaves=[],connectionActions=[];
 const catalog=[{id:'claude',name:'Claude Code',available:true,models:[{id:'native-a',name:'Native A',efforts:['low','high']}],efforts:['low','high']},{id:'codex',name:'Codex',available:true,models:[{id:'native-b',name:'Native B',efforts:['deep']}],efforts:['deep']}];
-let ai={default:{runtime:null,model:null,effort:null},leader:null,digest:null,git:null,operations:null};
+let ai={default:{runtime:null,model:null,effort:null},leader:null,member:null,digest:null,git:null,operations:null};
 let execution={codex:'workspace-write',claude:'default'};
 const snapshot=()=>({ai:JSON.parse(JSON.stringify(ai)),execution:{...execution},runtimes:catalog,home:'C:\\Crew Data',backend:'C:\\Crew\\plugin'});
 const tools={checked_at:new Date().toISOString(),autoUpdate:false,tools:catalog.map(item=>({id:item.id,name:item.name,installed_version:'fixture',latest_version:'fixture',phase:'idle',installation:'native',can_update:false,can_queue:false,update_available:false}))};
@@ -102,17 +102,22 @@ async function open(){await click('#nav-settings');await waitFor('!!document.que
   assert.equal(await run('document.querySelector(\'[data-ai-key="digest"][data-ai-field="effort"]\').value'),'future-effort');
   await click('[data-settings-action="save"]');await waitFor('document.querySelector(".cs-status").textContent.includes("已保存")');assert.equal(saves,2);
   progress('saved');
-  assert.deepEqual(ai,{default:{runtime:'codex',model:'native-b',effort:'deep'},leader:null,digest:{runtime:'claude',model:'future-summary',effort:'future-effort'},git:null,operations:null});
+  assert.deepEqual(ai,{default:{runtime:'codex',model:'native-b',effort:'deep'},leader:null,member:null,digest:{runtime:'claude',model:'future-summary',effort:'future-effort'},git:null,operations:null});
   assert.deepEqual(execution,{codex:'danger-full-access',claude:'acceptEdits'});
   await run('(()=>{const box=document.querySelector("[data-ai-inherit=leader]");box.checked=false;box.dispatchEvent(new Event("change",{bubbles:true}));})()');
   await change('leader','runtime','claude');await change('leader','model','native-a');await change('leader','effort','high');
   await click('[data-settings-action="save"]');await waitFor('document.querySelector(".cs-status").textContent.includes("已保存")');
   assert.equal(ai.default.runtime,'codex');assert.deepEqual(ai.leader,{runtime:'claude',model:'native-a',effort:'high'});
+  await run('(()=>{const box=document.querySelector("[data-ai-inherit=member]");box.checked=false;box.dispatchEvent(new Event("change",{bubbles:true}));})()');
+  await change('member','runtime','codex');await change('member','model','native-b');await change('member','effort','deep');
+  await click('[data-settings-action="save"]');await waitFor('document.querySelector(".cs-status").textContent.includes("已保存")');
+  assert.deepEqual(ai.member,{runtime:'codex',model:'native-b',effort:'deep'});assert.deepEqual(ai.leader,{runtime:'claude',model:'native-a',effort:'high'});
   await screenshot('ai-task-allocation-light.png');progress('light screenshot');
   // Recreate the actual renderer, so readback must come from the saved snapshot.
   const old=win;win=new BrowserWindow(windowOptions());old.destroy();await win.loadURL(home);progress('reopened home');await waitFor('document.documentElement.dataset.crewDesktopChromeReady === "true"');await open();progress('reopened settings');
   assert.equal(await run('document.querySelector(\'[data-ai-key="default"][data-ai-field="runtime"]\').value'),'codex');
   assert.equal(await run('document.querySelector(\'[data-ai-key="digest"][data-ai-field="model"]\').value'),'future-summary');
+  assert.equal(await run('document.querySelector(\'[data-ai-key="member"][data-ai-field="model"]\').value'),'native-b');
   await click('[data-settings-category="appearance"]');await click('[data-desktop-theme="dark"]');await click('[data-settings-category="ai"]');
   const light=win;win=new BrowserWindow({...windowOptions(),width:980,height:900});light.destroy();await win.loadURL(home);await waitFor('document.documentElement.dataset.crewDesktopChromeReady === "true"');await open();progress('dark narrow reopened');await screenshot('saved-reopened-dark-narrow.png');
   await click('[data-settings-category="execution"]');assert.equal(await run('document.querySelector(\'[data-execution-runtime="codex"]\').value'),'danger-full-access');assert.equal(await run('document.querySelector(\'[data-execution-runtime="claude"]\').value'),'acceptEdits');await screenshot('execution-permissions-dark.png');
@@ -124,7 +129,7 @@ async function open(){await click('#nav-settings');await waitFor('!!document.que
   await click('[data-settings-category="backend"]');await waitFor('!!document.querySelector(".co-composer")');assert.equal(calls.filter(name=>name==='admin-chat-send').length,0);await click('[data-operations-tab="status"]');await waitFor('document.querySelector(".cs-content #admin-state").textContent === "运行正常"');assert.equal(await run('document.querySelectorAll("#admin-page").length'),1);
   // Reproduce dual installed carriers with no selection, then configure only operations.
   const previousAI=structuredClone(ai);
-  ai={default:{runtime:null,model:null,effort:null},leader:null,digest:null,git:null,operations:null};
+  ai={default:{runtime:null,model:null,effort:null},leader:null,member:null,digest:null,git:null,operations:null};
   await run('window.__settingsUnderTest.reload()');
   await waitFor('!!document.querySelector("[data-operations-tab=chat]")');await click('[data-operations-tab="chat"]');
   await waitFor('document.querySelector(".co-chat-status").textContent.includes("多个 AI")');

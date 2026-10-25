@@ -43,7 +43,7 @@ class SettingsTests(unittest.TestCase):
 
     def test_saved_home_options_survive_connections_and_task_null_follows_default(self):
         ai = {'default': choice('codex', 'future-provider/custom-model', 'future-effort'),
-              'leader': None, 'digest': None, 'git': choice('claude'), 'operations': choice('codex', None, 'low-latency')}
+              'leader': None, 'member': None, 'digest': None, 'git': choice('claude'), 'operations': choice('codex', None, 'low-latency')}
         self.assertEqual(settings.save(self.home, ai), ai)
         with closing(store.connect(self.home)) as conn:
             self.assertEqual(settings.load(conn), ai)
@@ -99,7 +99,7 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.get(self.home), original)
 
     def test_save_and_resolve_use_callers_transaction_without_extra_connection_or_commit(self):
-        original = {'default': choice('claude'), 'leader': None, 'digest': None, 'git': None, 'operations': None}
+        original = {'default': choice('claude'), 'leader': None, 'member': None, 'digest': None, 'git': None, 'operations': None}
         settings.save(self.home, original)
         with closing(store.connect(self.home)) as conn:
             conn.execute('BEGIN IMMEDIATE')
