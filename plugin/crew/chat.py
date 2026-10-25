@@ -14,7 +14,7 @@ import threading
 import uuid
 from pathlib import Path
 
-from . import board, claude_limits, codex_client, codex_subagents, goals, hooks, install, messaging, models, runtime_switch, runtimes, settings, spawn, store, workspace_execution
+from . import board, claude_limits, claude_subagents, codex_client, goals, hooks, install, messaging, models, runtime_switch, runtimes, settings, spawn, store, subagents, workspace_execution
 
 
 PAUSED_FOR_UPDATE = "Crew 正在准备更新，暂不接受新任务；更新完成后再试"
@@ -120,7 +120,7 @@ class Journal:
         self.subagents = {}
         for event in self.events:
             if event['type'] == 'subagent':
-                codex_subagents.apply_task(self.subagents, event)
+                subagents.apply_task(self.subagents, event)
         self.messages = {event["id"] for event in self.events if event["type"] in ("message", "compact_request")}
         self.inputs = {event.get('message_id', event.get('id')): event for event in self.events if event["type"] == "input_delivery"}
         self.results = {event["tool_use_id"] for event in self.events if event["type"] == "tool_result"}
@@ -151,7 +151,7 @@ class Journal:
                 stream.write(json.dumps(event, ensure_ascii=False) + "\n")
             self.events.append(event)
             if kind == 'subagent':
-                codex_subagents.apply_task(self.subagents, event)
+                subagents.apply_task(self.subagents, event)
             if kind == "input_delivery":
                 self.inputs[fields['message_id']] = event
             stat = self.path.stat()
@@ -176,9 +176,14 @@ class Journal:
 
     def reset_runtime(self):
         with self.condition:
+            self._claude_subagents = None
             self.progress = None
             self._calls, self._tools = {}, {}
             self._call_id, self._thinking_index = None, None
+
+    def bind_claude_subagents(self, native_id):
+        with self.condition:
+            self._claude_subagents = claude_subagents.Events(native_id, self.subagents.values())
 
     def _phase(self, phase, label=None):
         if self.progress is not None:
@@ -272,6 +277,12 @@ class Journal:
 
     def consume(self, record):
         with self.condition:
+            self.refresh()
+            if self._claude_subagents is None:
+                self._claude_subagents = claude_subagents.Events(record.get('session_id') or self.path.stem,
+                                                                self.subagents.values())
+            for event in self._claude_subagents.consume(record):
+                self.emit(event['type'], **{key: value for key, value in event.items() if key != 'type'})
             self._consume_progress(record)
         kind = record["type"]
         if kind == "stream_event":
@@ -536,11 +547,14 @@ class Manager:
         journal = self.journal(session_id)
         with journal.condition:
             current = self.processes.get(session_id)
-            active_root = getattr(current, 'thread_id', None) if self.running(session_id) else None
-            return codex_subagents.snapshot(journal.subagents, active_root)
+            runtime = getattr(current, 'runtime', None)
+            active_root = ((getattr(current, 'thread_id', None) if runtime == 'codex' else
+                            getattr(current, 'native_id', session_id)) if self.running(session_id) else None)
+            return subagents.snapshot(journal.subagents, active_root, runtime)
 
     def _read(self, session_id, current):
         try:
+            current.journal.bind_claude_subagents(getattr(current, 'native_id', session_id))
             for line in current.process.stdout:
                 try:
                     record = json.loads(line)

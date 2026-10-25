@@ -4,7 +4,7 @@ The app-server's collabAgentToolCall/subAgentActivity items describe delegation,
 not model turns: completing spawnAgent must never mark the child completed.
 Only explicit child state is used. Snapshots are rebuilt from the chat journal.
 """
-from . import store
+from .subagents import title
 
 
 STATUSES = {'pendingInit': 'running', 'running': 'running', 'completed': 'succeeded',
@@ -12,45 +12,12 @@ STATUSES = {'pendingInit': 'running', 'running': 'running', 'completed': 'succee
             'notFound': 'unknown'}
 
 
-def apply_task(tasks, event):
-    identity = event['agent_id']
-    previous = tasks.get(identity, {})
-    task = {**previous, **{key: value for key, value in event.items() if key not in ('seq', 'type', 'at')}}
-    restarting = task['status'] == 'running' and previous.get('status') in ('succeeded', 'failed', 'interrupted', 'closed')
-    task['started_at'] = event['at'] if restarting else previous.get('started_at', event['at'])
-    task['updated_at'] = event['at']
-    if task['status'] == 'running':
-        task['ended_at'] = None
-    elif task['status'] == 'unknown':
-        task['ended_at'] = previous.get('ended_at')
-    else:
-        task['ended_at'] = previous.get('ended_at') if previous.get('status') == task['status'] else event['at']
-    tasks[identity] = task
-
-
-def snapshot(tasks, active_root):
-    result = []
-    for task in tasks.values():
-        item = {**task, 'id': 'subagent:' + task['root_thread_id'] + ':' + task['agent_id'],
-                'source': 'native_subagent'}
-        if item['status'] == 'running' and item['root_thread_id'] != active_root:
-            item.update(status='unknown', detail='原生连接已断开，子代理状态未确认')
-        item['duration_seconds'] = ((store.parse_iso(item['ended_at']) - store.parse_iso(item['started_at'])).total_seconds()
-                                    if item['ended_at'] else None)
-        result.append(item)
-    return result
-
-
-def title(text):
-    return next((line.strip()[:100] for line in (text or '').splitlines() if line.strip()), '')
-
-
 class Events:
     def __init__(self, root_thread_id, saved=()):
         self.root = root_thread_id
         self.agents = {task['agent_id']: {key: value for key, value in task.items()
                                         if key not in ('started_at', 'ended_at', 'updated_at')}
-                       for task in saved if task['root_thread_id'] == self.root}
+                       for task in saved if task['root_thread_id'] == self.root and task.get('runtime', 'codex') == 'codex'}
         self.turns = {}
         self.finished_items = set()
 
@@ -68,7 +35,7 @@ class Events:
         if task == previous:
             return []
         self.agents[identity] = task
-        return [{'type': 'subagent', **task}]
+        return [{'type': 'subagent', **task, 'runtime': 'codex'}]
 
     def _item(self, thread, item, completed):
         if item['id'] in self.finished_items:
