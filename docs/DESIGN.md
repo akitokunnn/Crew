@@ -116,7 +116,7 @@ Crew/
 - **会话 ID**：钩子从输入 JSON 的 `session_id` 取；命令行从环境变量 `CLAUDE_CODE_SESSION_ID` 取（Claude Code 会给工具命令设这个变量）。命令行也接受 `--session ID`。需要会话身份的命令拿不到 ID 时报错退出（exit 1），并说明"请在 Claude 会话里运行，或加 --session"。不需要身份的命令（status、decisions、answer 等）在普通终端里也能用，此时操作人记作 `user`。
 - **crew 名**：人起的稳定名字（雷达、视觉）。同一项目里，未离线（status 不是 offline / closed）的会话不能重名，重名时 join 报冲突（exit 3）。
 - **cc_name**：Claude Code 里显示的会话名，也是 SendMessage 的地址。由 `crew join` 和 `crew who` 调 `claude agents --json`（返回数组，元素有 sessionId、name、status、pid、cwd、kind），按 sessionId 匹配取 name。调用失败时 cc_name 留空，并打印一行原因。
-- **网页收编**：候选和 VS Code 会话列表一致（`vscode_sessions`）：项目根目录及其下 git worktree 的会话记录，按扩展规则排除程序会话、sidechain 等，减去 VS Code 的 `hiddenSessionIds`（只读 `state.vscdb`，读失败保留上次名单并报 `vscode_error`）；再并入还没有会话记录的活进程。分三组：`running`（在运行、未归组）、`others`（没在运行、未归档）、`left`（有 crew 名但不在任何组）；leader、已入组、Crew 已归档或移出、status=closed 的不列。收编时调用 `board.register_session`（已有名字的走改组和改名），进有 leader 的组时给 leader 排通知。也可以在会话里由用户说"收编到某某"，会话自己 `crew join --group 某某 --scope … --done-when …`。
+- **旧收编 API**（`/api/roster/adopt`；新版会话库见 §15）：候选和 VS Code 会话列表一致（`vscode_sessions`）：项目根目录及其下 git worktree 的会话记录，按扩展规则排除程序会话、sidechain 等，减去 VS Code 的 `hiddenSessionIds`（只读 `state.vscdb`，读失败保留上次名单并报 `vscode_error`）；再并入还没有会话记录的活进程。分三组：`running`（在运行、未归组）、`others`（没在运行、未归档）、`left`（有 crew 名但不在任何组）；leader、已入组、Crew 已归档或移出、status=closed 的不列。收编时调用 `board.register_session`（已有名字的走改组和改名），进有 leader 的组时给 leader 排通知。也可以在会话里由用户说"收编到某某"，会话自己 `crew join --group 某某 --scope … --done-when …`。
 - **spawn 带来的身份**：crew 开的会话启动时带环境变量 `CREW_NAME`、`CREW_GROUP`、`CREW_ROLE`、`CREW_SPAWN_ID`。SessionStart 钩子看到这些变量就直接登记，不用再 join。
 - **项目判定**：钩子和守卫优先使用 `sessions` 表中会话登记的项目；未登记时才按 cwd 匹配已 init 项目的 root（`store.is_under`），多个项目嵌套时取 root 最长的。未登记且 cwd 不属于任何项目的会话：钩子只做守卫的黑名单检查，其它什么都不写。
 - **worktree / branch**：cwd 所在 git 仓库的 toplevel 和当前分支（`git -C cwd rev-parse --show-toplevel`、`git -C cwd branch --show-current`），在 SessionStart、join 和网页收编时用 `hooks.git_details` 取。
@@ -573,3 +573,20 @@ Git 页停用在一个数据库事务中先删除 `git_management` 配置，再�
 - 读路径：`channel.messages / state / summary / digest / read`、`crew channel`、`channel_digest.start` 和 `board.handoffs / project_handoffs` 都只读取边界之后的数据。摘要线程入库前比较清理次数，清理期间生成的旧卡作废并显示原因。旧 leader 的排队通知和待投递邮件按会话 ID 绑定，随身份归档不再投递；新同名 leader 是新会话，不继承这些内容。部门备注保存在作业的 `archived_groups` 后清空活动组，待办原备注保留并追加清理说明。
 - 历史：`GET /api/maintenance/jobs?kind=workspace_cleanup` 返回清理记录与次数；`GET /api/maintenance/archive?job_id&kind=channel|handoffs&before` 只读分页查看该次清理前的交流、最后一张要点卡和交接。部门备注在清理结果里展开查看。清理边界、归档步骤成功、历史区间与作业完成回执在同一事务提交，重启不会出现已清理却无法查阅归档的中间状态；人数与部门数在归档前统计，包含随组归档的成员和 Git 管理员。
 - 不删除项目文件、交付、对话文件或原生历史，不移除工作区，不改项目键或目录，不做数据迁移。
+
+
+## 15. 会话库：发现、辨认与接入（2026-10-26）
+
+用户要求扩大待收编的范围并分类。入口改为会话库，承接已有原生会话、团队身份、退组人员和历史参考，而非只呈现正在运行的 VS Code CC 会话。先看内容再决定是否接入；没有用户操作的读取不启动 AI。
+
+`session_library.py` 合并现有 CC 会话快照、进程快照、Crew 身份及 `codex_sessions` 持久索引。稳定身份优先于目录归属；未登记记录按最长匹配的已登记工作区归属，嵌套工作区不串入父项目。目标原生绑定和载体切换后的旧绑定不产生第二个待接入人员。Codex 后台/子代理记录独立分类，不允许直接收编。当前索引覆盖已扫描的原生存储，不声称已遍历本机任意未登记项目或所有外部归档。
+
+| 路由 | 行为 |
+| --- | --- |
+| `GET /api/session-library?project&scope=project\|all` | 默认当前项目；all 仅包括已登记工作区。返回去掉内部路径的元数据，不做模型发现或唤醒 |
+| `GET /api/session-library/preview?project&scope&key` | 重新查找记录并校验范围，从原生存储或 Crew 日志读取有界文件窗口，最多最近 12 条用户/AI 文字；不返回思考与工具事件。原生文件优先于接入时新建的空 Crew 日志 |
+| `POST /api/session-library/adopt {key,name,group}` | 只接入本项目仍可用且未归档的记录，目标必须是当前开放且有 leader 的部门；归档、后台记录、已入团队、旧 key 和其他项目拒绝 |
+
+CC 复用 `Service.adopt`；整个登记、改名、分组和排通知现在在单一事务中，内部 `_adopt` 使用已有事务内原语。Codex 分配稳定 Crew 身份，保存已存在的 native_id 与原模型/effort，再调用同一收编原语；失败整体回滚，成功后建立空网页日志供既有 native-resume 路径使用。不会自动发送工作指令或创建新原生线程。接入成功后的界面刷新失败不重新提交接入。
+
+`session-library.js/css` 为独立组件，沿用 `#adopt` 路由。默认待接入（包含未分组），另有团队、归档、后台、全部，载体与运行状态为独立维度。按最近活动排序，前端每次渲染 50 条；主区、筛选和预览实例在常规状态轮询时保留，加载使用序号丢弃过期响应。归档只读，不调用恢复接口；跨项目浏览不能借此移动或收编身份。Codex 索引不提供外部进程的实时证据，未观察到时 running=null。
