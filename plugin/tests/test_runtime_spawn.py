@@ -142,7 +142,11 @@ class RuntimeSpawnTests(RuntimeFixture):
             code, output, errors = self.run_cli(["send", "reviewer", "review this", "--json"],
                                                  CREW_SESSION_ID="member-id", CLAUDE_CODE_SESSION_ID="native-id")
             self.assertEqual(code, 0, errors)
-            self.assertEqual(json.loads(output), {"ok": True, "queued": True})
+            receipt = json.loads(output)
+            self.assertEqual((receipt['ok'], receipt['queued'], receipt['status'], receipt['accepted']),
+                             (True, True, 'queued', False))
+            self.assertIsNone(receipt['kind'], 'An old host did not confirm the stored message kind')
+            self.assertIn('尚未交给执行输入', receipt['message'])
             self.assertEqual(request.call_args.args[1:], ("demo", "/api/messages", {
                 "name": "reviewer", "text": "review this", "caller_session_id": "member-id",
                 'execution_id': None, 'kind': 'information'}))

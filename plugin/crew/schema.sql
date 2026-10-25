@@ -100,7 +100,9 @@ CREATE TABLE IF NOT EXISTS peer_messages (
     body TEXT NOT NULL,
     created_at TEXT NOT NULL,
     delivered_at TEXT,
-    error TEXT
+    error TEXT,
+    kind TEXT,                         -- NULL retains the meaning of legacy untyped mail
+    accepted INTEGER NOT NULL DEFAULT 0 -- handed to native input; not execution completion
 );
 CREATE INDEX IF NOT EXISTS peer_messages_target ON peer_messages(target_session_id, delivered_at);
 

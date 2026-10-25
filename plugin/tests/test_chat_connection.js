@@ -57,11 +57,46 @@ test("live handoff closes a pending tool, while a later native result retains it
   assert(html().includes("执行失败"));assert(html().includes("目标启动被拒绝的真实原因"));assert(!html().includes("已转交"));h.chat.unmount();
 });
 
-test("a connection or offline status alone cannot pretend an unfinished tool has ended",async()=>{
+test("legacy offline history stops the spinner but keeps the missing tool result explicitly unconfirmed",async()=>{
   const h=harness(),target=h.mount("leader",async()=>({...history(),read_seq:2,events:[
     {seq:1,type:"assistant",id:"call",content:[{type:"tool_use",id:"tool",name:"crew_goal",input:{action:"start"}}]},
     {seq:2,type:"status",status:"offline"}]}));await tick();h.flushFrames();
+  const html=target.querySelector(".chat-inner").children.map(item=>item.innerHTML).join("");
+  assert(!html.includes("正在执行…"));assert(html.includes("会话已离线"));assert(html.includes("结果未确认"));
+  assert(!html.includes('class="ok"'));assert(!html.includes("执行失败"));h.chat.unmount();
+});
+
+test("a confirmed handoff after native output drains upgrades the interrupted tool and preserves a later real receipt",async()=>{
+  const h=harness(),target=h.mount("member",async()=>history());await tick();
+  const stream=h.connections[0],html=()=>target.querySelector(".chat-inner").children.map(item=>item.innerHTML).join("");
+  stream.emit({seq:1,type:"assistant",id:"old",content:[{type:"tool_use",id:"old-tool",name:"Bash",input:{command:"crew goal start goal"}}]});
+  stream.emit({seq:2,type:"turn_result",status:"interrupted",reason:"identity_handoff"});
+  stream.emit({seq:3,type:"status",status:"offline"});
+  stream.emit({seq:4,type:"identity_handoff",target_execution:"execution"});await tick();h.flushFrames();
+  assert(html().includes("已转交执行"));assert(!html().includes("本轮已中断"));assert(!html().includes("正在执行…"));
+  stream.emit({seq:5,type:"tool_result",tool_use_id:"old-tool",content:"具体执行结果",is_error:false});await tick();h.flushFrames();
+  assert(html().includes("具体执行结果"));assert(!html().includes("已转交执行"));h.chat.unmount();
+});
+
+test("losing the browser stream does not mark a still running native tool offline",async()=>{
+  const h=harness(),target=h.mount("leader",async()=>({...history(),busy:true,events:[
+    {seq:1,type:"assistant",id:"call",content:[{type:"tool_use",id:"tool",name:"Bash",input:{command:"long command"}}]}]}));
+  await tick();h.flushFrames();
   assert(target.querySelector(".chat-inner").children.some(item=>item.innerHTML.includes("正在执行…")));h.chat.unmount();
+});
+
+test("a later handoff never rewrites the failure of an earlier turn's tool",async()=>{
+  const h=harness(),target=h.mount("leader",async()=>({...history(),events:[
+    {seq:1,type:"assistant",id:"old",content:[{type:"tool_use",id:"old-tool",name:"Bash",input:{command:"old failure"}}]},
+    {seq:2,type:"turn_result",status:"failed"},
+    {seq:3,type:"assistant",id:"new",content:[{type:"tool_use",id:"new-tool",name:"crew_goal",input:{action:"start"}}]},
+    {seq:4,type:"turn_result",status:"interrupted",reason:"identity_handoff"},
+    {seq:5,type:"status",status:"offline"},
+    {seq:6,type:"identity_handoff",target_execution:"new-execution"}]}));await tick();h.flushFrames();
+  const rows=target.querySelector(".chat-inner").children;
+  const old=rows.find(item=>item.innerHTML.includes("old failure"));
+  assert(old.innerHTML.includes("本轮失败"));assert(!old.innerHTML.includes("已转交"));
+  assert(rows.some(item=>item.innerHTML.includes("已转交执行")));h.chat.unmount();
 });
 
 test("terminal turns without a tool result remain explicitly unknown, and do not close a later turn's new tool",async()=>{

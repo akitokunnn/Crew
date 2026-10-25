@@ -229,6 +229,7 @@ class CodexRunning:
         self._settings_revision, self._options = 0, dict(options)
         self._send_message, self._tool_lock = send_message, threading.RLock()
         self._tool_results, self._closing, self._compacting = {}, False, False
+        self.stop_reason = None
         self._lease = None
         self._events, self.client, self.process = None, None, None
         self._early_events = []
@@ -518,8 +519,10 @@ class CodexRunning:
             def deliver(sender, target, text, **metadata):
                 if self._send_message is None:
                     raise board.BoardError("Crew 消息路由不可用")
+                if self.execution:
+                    metadata['execution_id'] = self.execution['id']
                 return self._send_message(sender, target, text, message_id=message_id,
-                                          **({'execution_id': self.execution['id'], **metadata} if self.execution else {}))
+                                          **metadata)
             handler = codex_tools.CodexTools(self.home, self.session_id, send_message=deliver,
                                             execution_id=self.execution['id'] if self.execution else None,
                                             goal_handler=self.goal_handler)
@@ -649,8 +652,9 @@ class CodexRunning:
                 active = self.journal.status == "working"
                 if active:
                     self.journal.emit("turn_result", turn_id=self.client.turn_id,
-                                      status="interrupted" if self._closing else "failed", success=False)
-                if not self._closing:
+                                      status="interrupted" if self.stop_reason else "failed", success=False,
+                                      reason=self.stop_reason or "process_exit")
+                if self.stop_reason is None:
                     self.journal.emit("error", text="Codex 会话连接已结束" + ("，本轮未完成" if active else ""))
                 if self.pending_compact:
                     self.pending_compact = False
@@ -672,6 +676,8 @@ class CodexRunning:
     def close(self):
         try:
             with self.input_lock:
+                if self.process is not None and self.process.poll() is None and self.stop_reason is None:
+                    self.stop_reason = 'managed_stop'
                 self._closing = True
                 try:
                     self._approvals.cancel('原生进程正在关闭', close=True)

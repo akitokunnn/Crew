@@ -70,12 +70,12 @@ class MixedMessagingTests(ShellFixture, unittest.TestCase):
 
         def send():
             if sender_runtime == "codex":
-                result = self.tool_send(sender, target_name, body)
+                result = self.tool_send(sender, target_name, body, kind='result')
                 self.assertTrue(result["success"], result)
                 data = json.loads(result["contentItems"][0]["text"])
                 self.assertEqual((data["from_session_id"], data["to_session_id"]), (sender_id, target_id))
                 return data["receipt"]
-            return self.manager.send_message(sender_id, target_id, body, message_id="stable-call")
+            return self.manager.send_message(sender_id, target_id, body, message_id="stable-call", kind='result')
 
         target.journal.set_status("working")
         receipt, repeated = send(), send()
@@ -158,7 +158,7 @@ class MixedMessagingTests(ShellFixture, unittest.TestCase):
     def test_external_claude_gets_codex_mail_on_next_hook_once(self):
         sender = self.attach("s2", "codex")
         self.manager.agents_provider = lambda: [{"sessionId": "s1", "name": "cc-one"}]
-        receipt = self.tool_send(sender, "one", "已完成 Codex 一侧，请核对接口")
+        receipt = self.tool_send(sender, "one", "已完成 Codex 一侧，请核对接口", kind='result')
         self.assertTrue(receipt["success"])
         self.manager.deliver_messages()
         self.assertFalse(self.manager.running("s1"))
@@ -175,7 +175,7 @@ class MixedMessagingTests(ShellFixture, unittest.TestCase):
         self.assertIn("不是用户本人授权", text)
         self.assertEqual(messaging.pending(self.conn, "s1"), [])
         sender._tool_results.clear()
-        self.assertTrue(self.tool_send(sender, "one", "已完成 Codex 一侧，请核对接口")["success"])
+        self.assertTrue(self.tool_send(sender, "one", "已完成 Codex 一侧，请核对接口", kind='result')["success"])
         self.assertEqual(hooks.handle("guard", data, self.home, PLUGIN, {}), (0, None))
         self.assertEqual(len(self.mail_rows()), 1)
 
