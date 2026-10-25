@@ -5,6 +5,7 @@ try { const arg=process.argv.find(value=>value.startsWith('--crew-desktop-config
 const isHome=settings&&location.href===settings.home, isError=settings&&location.href===settings.error;
 const trusted=process.isMainFrame&&(isHome||isError);
 let readyResolve,backButton,titleNode,homePane,viewArea,tabsBar,recovery,lastBounds='';
+let tabPreviewTimer=null,lastActiveTab=null;
 const chromeReady=new Promise(resolve=>{readyResolve=resolve;});
 function windowState(state){
  document.documentElement.classList.toggle('crew-desktop-maximized',Boolean(state.maximized));
@@ -28,13 +29,26 @@ function layoutViews(){
 }
 function tabsState(state){
  if(!tabsBar||!Array.isArray(state.tabs))return;
- const focused=document.hasFocus()&&document.activeElement?.dataset.tabId;tabsBar.replaceChildren();
+ const focused=document.hasFocus()&&document.activeElement?.dataset.tabId,scroll=tabsBar.scrollLeft;tabsBar.replaceChildren();
  for(const tab of state.tabs){
   const item=document.createElement('div');item.className='crew-tab';item.dataset.active=String(state.activeId===tab.id);
   const select=document.createElement('button');select.type='button';select.dataset.tabId=tab.id;if(tab.project)select.dataset.project=tab.project;
-  select.setAttribute('role','tab');select.setAttribute('aria-selected',String(state.activeId===tab.id));select.tabIndex=state.activeId===tab.id?0:-1;select.title=tab.name;
-  select.textContent=(tab.loading?'◌ ':tab.error?'⚠ ':'')+tab.name;select.addEventListener('click',()=>{void invoke('tab-select',tab.id);});
-  select.addEventListener('keydown',event=>{if(['ArrowLeft','ArrowRight','Home','End'].includes(event.key)){event.preventDefault();const index=state.tabs.findIndex(candidate=>candidate.id===tab.id);const next=event.key==='Home'?0:event.key==='End'?state.tabs.length-1:(index+(event.key==='ArrowLeft'?-1:1)+state.tabs.length)%state.tabs.length;void invoke('tab-select',state.tabs[next].id);}});
+  select.setAttribute('role','tab');select.setAttribute('aria-selected',String(state.activeId===tab.id));select.tabIndex=state.activeId===tab.id?0:-1;
+  select.setAttribute('aria-label',tab.name+(tab.activity?'，'+tab.activity.label+(tab.activity.unread?'，有未读动态':''):''));
+  const mark=document.createElement('span');mark.className='crew-tab-mark';mark.textContent=tab.project?Array.from(tab.name)[0]?.toUpperCase():'▦';
+  const name=document.createElement('span');name.className='crew-tab-name';name.textContent=tab.name;select.append(mark,name);
+  if(tab.project){
+   const signal=document.createElement('span');signal.className='crew-tab-signal';signal.setAttribute('aria-hidden','true');
+   signal.dataset.tone=tab.loading?'loading':tab.error?'error':tab.activity?.stale?'stale':tab.activity?.counts?.working?'working':tab.activity?.tone||'unknown';select.append(signal);
+   if(tab.activity?.badge){const badge=document.createElement('span');badge.className='crew-tab-badge';badge.dataset.tone=tab.activity.tone;badge.textContent=tab.activity.badge>99?'99+':String(tab.activity.badge);badge.setAttribute('aria-hidden','true');select.append(badge);}
+   if(tab.activity?.unread){const unread=document.createElement('span');unread.className='crew-tab-unread';unread.setAttribute('aria-hidden','true');mark.append(unread);}
+   const preview=()=>{clearTimeout(tabPreviewTimer);tabPreviewTimer=setTimeout(()=>{if(!select.isConnected)return;const rect=select.getBoundingClientRect();void invoke('tab-preview',{id:tab.id,anchor:{x:rect.x,y:rect.y,width:rect.width,height:rect.height}});},280);};
+   select.addEventListener('mouseenter',preview);select.addEventListener('focus',preview);
+   select.addEventListener('mouseleave',()=>{clearTimeout(tabPreviewTimer);void invoke('tab-preview-hide');});
+   select.addEventListener('blur',()=>{clearTimeout(tabPreviewTimer);void invoke('tab-preview-hide');});
+  }
+  select.addEventListener('click',()=>{clearTimeout(tabPreviewTimer);void invoke('tab-select',tab.id);});
+  select.addEventListener('keydown',event=>{if(event.key==='Escape'){clearTimeout(tabPreviewTimer);void invoke('tab-preview-hide');}if(['ArrowLeft','ArrowRight','Home','End'].includes(event.key)){event.preventDefault();const index=state.tabs.findIndex(candidate=>candidate.id===tab.id);const next=event.key==='Home'?0:event.key==='End'?state.tabs.length-1:(index+(event.key==='ArrowLeft'?-1:1)+state.tabs.length)%state.tabs.length;void invoke('tab-select',state.tabs[next].id);}});
   item.append(select);
   if(tab.project){const close=document.createElement('button');close.type='button';close.className='crew-tab-close';close.dataset.closeTabId=tab.id;close.setAttribute('aria-label','关闭 '+tab.name);close.title='关闭标签';close.append(icon(['m6 6 8 8','m14 6-8 8']));close.addEventListener('click',()=>{void invoke('tab-close',tab.id);});item.append(close);}
   tabsBar.append(item);
@@ -44,7 +58,8 @@ function tabsState(state){
  recovery.hidden=!active?.error;if(active?.error)recovery.querySelector('p').textContent='暂时无法打开这个工作区，请检查连接后重试。其他标签仍然保留。';
  titleNode.textContent=active?.project ? active.name : '工作区';
  const activeButton=tabsBar.querySelector('[data-tab-id="'+CSS.escape(state.activeId)+'"]');
- activeButton?.scrollIntoView({block:'nearest',inline:'nearest'});if(focused)activeButton?.focus();layoutViews();
+ if(lastActiveTab!==state.activeId)activeButton?.scrollIntoView({block:'nearest',inline:'nearest'});else tabsBar.scrollLeft=scroll;
+ lastActiveTab=state.activeId;if(focused)tabsBar.querySelector('[data-tab-id="'+CSS.escape(focused)+'"]')?.focus({preventScroll:true});layoutViews();
 }
 async function mountChrome(){
  if(!trusted||document.getElementById('crew-desktop-titlebar')){readyResolve();return;}

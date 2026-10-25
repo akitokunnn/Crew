@@ -6,6 +6,7 @@ const { pathToFileURL } = require('node:url');
 const core = require('./core.cjs');
 const chrome = require('./chrome.cjs');
 const { WorkspaceTabs } = require('./tabs.cjs');
+const { ActivityPreview } = require('./activity-preview.cjs');
 const { installPermissions } = require('./permissions.cjs');
 const { ToolUpdates } = require('./tool-updates.cjs');
 const { CrewUpdates } = require('./crew-updates.cjs');
@@ -24,7 +25,8 @@ require('node:fs').mkdirSync(config.userData,{recursive:true});
 app.setPath('userData', config.userData);
 const homePage = pathToFileURL(path.join(__dirname, 'home.html')).href;
 const errorPage = pathToFileURL(path.join(__dirname, 'error.html')).href;
-let window, tray, backend, tabs, tools, crewUpdates, launchSettings, windowMenu, quitting = false, finishedQuit = false, parentDirectory = null, smokeStarted = false, pendingAction = null, pendingWorkspace = null, homeBootstrapped = false;
+let lastPublishedTab=null;
+let window, tray, backend, tabs, activityPreview, tools, crewUpdates, launchSettings, windowMenu, quitting = false, finishedQuit = false, parentDirectory = null, smokeStarted = false, pendingAction = null, pendingWorkspace = null, homeBootstrapped = false;
 
 function trusted(event) {
   if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame || event.senderFrame.url !== homePage) {
@@ -40,6 +42,8 @@ function currentWindowState() { return { maximized:window.isMaximized(), focused
 function publishTabs(state=tabs?.state()) {
   if (!window || window.webContents.isDestroyed()) return;
   if (state) window.webContents.send('desktop:tabs-state',state);
+  if(state?.activeId!==lastPublishedTab)activityPreview?.hide();
+  lastPublishedTab=state?.activeId;activityPreview?.refresh();
   window.webContents.send('desktop:window-state',currentWindowState());
   const active=state?.tabs.find(tab=>tab.id===state.activeId);
   window.setTitle(active?.project ? active.name+' — Crew' : 'Crew');
@@ -52,6 +56,9 @@ ipcMain.handle('desktop:chrome-ready', async event => {
   await window.webContents.insertCSS(await fs.readFile(path.join(__dirname, 'chrome.css'), 'utf8'), { cssOrigin: 'author' });
   return { ...currentWindowState(),tabs:tabs?.state() };
 });
+ipcMain.on('desktop:activity-preview-ready',event=>activityPreview?.markReady(event));
+ipcMain.on('desktop:activity-preview-hover',(event,inside)=>{if(activityPreview?.owns(event)){if(inside)activityPreview.cancelHide();else activityPreview.scheduleHide();}});
+ipcMain.on('desktop:activity-preview-open',(event,id)=>activityPreview?.open(event,id));
 ipcMain.on('desktop:tabs-layout',(event,bounds)=>{
   try {
     trusted(event);
@@ -67,7 +74,9 @@ ipcMain.handle('desktop:chrome-action', async (event, command, value) => {
   if (command === 'settings') return showHome('settings');
   if (command === 'back') return tabs.back();
   if (command === 'retry') return event.senderFrame.url===errorPage ? window.loadURL(homePage) : tabs.reload();
-  if (command === 'tab-select') return tabs.select(value);
+  if (command === 'tab-preview') return activityPreview.show(value?.id,value?.anchor);
+  if (command === 'tab-preview-hide') {activityPreview.scheduleHide();return;}
+  if (command === 'tab-select') {activityPreview?.hide();return tabs.select(value);}
   if (command === 'tab-close') return tabs.close(value);
   if (command === 'menu') return new Promise(resolve => windowMenu.popup({ window, callback: resolve }));
   throw new Error('不支持的窗口操作');
@@ -451,7 +460,12 @@ else {
         createView:()=>new WebContentsView({webPreferences:{contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true,...(config.smoke?{backgroundThrottling:false}:{})}}),
         onChange:state=>publishTabs(state),onHome:()=>{},external,openProject,workspaceSettings:name=>{void showHome('workspace-settings',name).catch(actionError);},
         onTitleChange:name=>{void core.projects(backend.url).then(items=>{const item=items.find(project=>project.name===name);if(item)tabs.updateProject(item);}).catch(error=>console.error('Crew workspace metadata refresh failed:',error));},
+        readActivity:names=>core.request(backend.url,'/api/workspaces/activity?'+new URLSearchParams(names.map(name=>['project',name])).toString(),undefined,4000),
         onKeyboard:keyboard,onNavigationError:actionError});
+      activityPreview=new ActivityPreview(window,{
+        createView:()=>new WebContentsView({webPreferences:{preload:path.join(__dirname,'activity-preview-preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true,backgroundThrottling:false}}),
+        getTab:id=>tabs.state().tabs.find(tab=>tab.id===id&&tab.project),onSelect:id=>tabs.select(id)});
+      window.on('blur',()=>activityPreview.hide());window.on('resize',()=>activityPreview.hide());
       tabs.setBounds({x:7,y:75,width:1206,height:768});
       window.once('ready-to-show', () => { if (!config.smoke) window.show(); });
       for (const event of ['maximize', 'unmaximize', 'focus', 'blur']) window.on(event, () => {
@@ -519,6 +533,7 @@ else {
     event.preventDefault();
     if (quitting) return;
     quitting = true;
+    activityPreview?.dispose();
     tabs?.dispose();
     Promise.resolve(crewUpdates?.close()).then(()=>tools?.close()).then(()=>backend?.stop()).finally(() => { finishedQuit = true; tray?.destroy(); app.quit(); });
   });
