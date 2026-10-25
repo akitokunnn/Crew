@@ -264,6 +264,10 @@ class Inbox:
                              (session['project'], session['group_name'])).fetchone()
         return board.session(conn, group[0]) if group and group[0] else session
 
+    def project_label(self, conn, name):
+        project = board.project(conn, name, include_removed=True)
+        return project['display_name'] or project['name']
+
     def _decision_leader(self, conn, decision):
         sid = trust_mode.decision_leader(conn, decision['id'])
         if sid is None:
@@ -288,8 +292,11 @@ class Inbox:
             return
         self.refresh_presence()
         self.process_replies()
-        if not self.status()['away']:
+        manager = getattr(self.service, 'connections', None)
+        if not self.status()['away'] or (manager is not None and not manager.allows_push(self.channel_id)):
             self.relay_after = None
+            self.pending.clear()
+            self.pending_at = None
             return
         self.relay_turns()
         now = self.service.now()
@@ -365,15 +372,15 @@ class Inbox:
                     self.relay_after[sid] = event['seq']
                     opener = next((e for e in turn if e['type'] == 'message'), None)
                     closing_words = next((e for e in reversed(turn) if e['type'] == 'assistant'), None)
-                    # A turn started on this channel is answered by process_replies already.
-                    if closing_words is None or opener is not None and opener['source'] == self.channel_id:
+                    # Remote conversations are answered on their originating inbox.
+                    if closing_words is None or opener is not None and opener['source'] in ('qq', 'lark'):
                         continue
                     text = '\n'.join(b['text'] for b in closing_words['content'] if b['type'] == 'text')
                     identity = 'turn:%s:%s' % (sid, event['seq'])
                     if not text or self.execute(conn, 'SELECT 1 FROM notification_messages WHERE item_id=?', (self.item_key(identity + ':0'),)).fetchone():
                         continue
                     entry = dict(workspace=leader['project'], leader_session_id=sid, decision=None)
-                    for number, part in enumerate(leader_parts(leader['project'], leader['crew_name'], text)):
+                    for number, part in enumerate(leader_parts(leader['project_label'], leader['crew_name'], text)):
                         key = '%s:%s' % (identity, number)
                         self.record_message(conn, key, entry, 'turn', self.service.now().isoformat())
                         self.deliver(conn, [key], self.client.send_markdown, part)
@@ -398,18 +405,19 @@ class Inbox:
                     self.deliver(conn, [item['id']], self.client.send_markdown, *self.question_message(entry))
                 elif item['kind']=='goal_report':
                     self.record_message(conn,item['id'],entry,item['kind'],now)
-                    text='%s·%s\n%s\n%s' % (entry['workspace'],entry['leader'],item['title'],item['detail'])
+                    text='%s·%s\n%s\n%s' % (entry['workspace_label'],entry['leader'],item['title'],item['detail'])
                     self.deliver(conn,[item['id']],self.client.send_text,text)
                 else:
                     notes.append(entry)
             if notes:
                 text = '\n\n'.join('%s·%s\n%s\n%s' % (
-                    e['workspace'], e['leader'], e['item']['title'], e['item']['detail']) for e in notes)
+                    self.project_label(conn,e['workspace']), e['leader'], e['item']['title'], e['item']['detail']) for e in notes)
                 for entry in notes:
                     self.record_message(conn, entry['item']['id'], entry, entry['item']['kind'], now)
                 self.deliver(conn, [e['item']['id'] for e in notes], self.client.send_text, text)
 
     def record_message(self, conn, identity, entry, kind, now):
+        entry['workspace_label'] = self.project_label(conn, entry['workspace'])
         if entry.get('decision') is not None:
             entry['decision_snapshot'] = decision_snapshot(entry['decision'], decision_briefs.get(conn, entry['decision']['id']))
         self.execute(conn, 'INSERT INTO notification_messages(item_id,project,leader_session_id,decision_id,kind,created_at,content,status) VALUES(?,?,?,?,?,?,?,?)',
@@ -434,7 +442,7 @@ class Inbox:
         snapshot = entry.get('decision_snapshot') or decision_snapshot(decision, decision.get('brief'))
         brief = snapshot['brief']
         text = '%s·%s 待拍板\n\n%s' % (
-            entry['workspace'], entry['leader'], brief['title'] if brief else decision['question'])
+            entry['workspace_label'], entry['leader'], brief['title'] if brief else decision['question'])
         if brief:
             for label, field in (('背景', 'context'), ('为什么请你决定', 'why_user'), ('影响', 'impact')):
                 if brief.get(field):
@@ -612,9 +620,10 @@ class Inbox:
 
     def leader_catalog(self, conn):
         leaders = [dict(row) for row in self.execute(conn,
-            "SELECT s.* FROM sessions s JOIN projects p ON p.name=s.project "
+            "SELECT s.*,COALESCE(ps.display_name,p.name) AS project_label FROM sessions s JOIN projects p ON p.name=s.project "
+            "LEFT JOIN project_settings ps ON ps.project=p.name "
             "LEFT JOIN session_controls c ON c.session_id=s.session_id "
-            "WHERE s.role='leader' AND s.status!='closed' AND COALESCE(c.removed,0)=0 "
+            "WHERE s.role='leader' AND s.status!='closed' AND COALESCE(c.removed,0)=0 AND ps.removed_at IS NULL "
             "AND c.archived_status IS NULL ORDER BY p.created_at,p.name,s.started_at,s.session_id")]
         with self.lock:
             numbers = self.config['leader_numbers']
@@ -641,12 +650,21 @@ class Inbox:
         lines = ['项目列表 · 用 /project 项目名 查看该项目的 leader']
         for project in board.projects(conn):
             count = sum(leader['project'] == project['name'] for leader in leaders)
-            lines.append('%s%s · %s 个 leader' % (project['name'], '（当前）' if project['name'] == current else '', count))
+            lines.append('%s%s · %s 个 leader' % (project['display_name'] or project['name'], '（当前）' if project['name'] == current else '', count))
         return '\n'.join(lines)
 
     def select_project(self, conn, project_name):
-        if project_name not in {project['name'] for project in board.projects(conn)}:
+        projects = board.projects(conn)
+        selected = next((project for project in projects if project['name'] == project_name), None)
+        if selected is None:
+            matches = [project for project in projects if project['display_name'] == project_name]
+            if len(matches) > 1:
+                return '多个工作区使用这个显示名，请用 /project 加以下标识选择：' + '、'.join(project['name'] for project in matches)
+            selected = matches[0] if matches else None
+        if selected is None:
             return '没有这个项目，请用 /projects 查看名称。'
+        project_name = selected['name']
+        label = selected['display_name'] or project_name
         leaders = self.leader_catalog(conn)
         with self.lock:
             self.config['current_project'] = project_name
@@ -656,25 +674,25 @@ class Inbox:
             self.save_config()
         choices = [leader for leader in leaders if leader['project'] == project_name]
         if not choices:
-            return '当前项目：%s。这个项目暂时没有可用的 leader。' % project_name
-        return ('当前项目：%s。请用 /leader 名字 或 /编号 选择要聊天的 leader。\n' % project_name +
-                '\n'.join('%s %s·%s' % (leader['number'], project_name, leader['crew_name']) for leader in choices))
+            return '当前项目：%s。这个项目暂时没有可用的 leader。' % label
+        return ('当前项目：%s。请用 /leader 名字 或 /编号 选择要聊天的 leader。\n' % label +
+                '\n'.join('%s %s·%s' % (leader['number'], label, leader['crew_name']) for leader in choices))
 
     def select_leader(self, selected):
         with self.lock:
             self.config['current_leader_session_id'] = selected['session_id']
             self.config['current_project'] = selected['project']
             self.save_config()
-        return '已切换到 %s·%s。' % (selected['project'], selected['crew_name'])
+        return '已切换到 %s·%s。' % (selected['project_label'], selected['crew_name'])
 
     def current_target(self, conn):
         selected = next((leader for leader in self.leader_catalog(conn)
                          if leader['session_id'] == self.config['current_leader_session_id']), None)
         if selected is None:
             project = self.config['current_project']
-            return ('当前项目：%s，还没有选择 leader。请用 /leader 名字 或 /编号 选择。' % project
+            return ('当前项目：%s，还没有选择 leader。请用 /leader 名字 或 /编号 选择。' % self.project_label(conn, project)
                     if project else '还没有选择项目和 leader。请先 /projects，或用 /leader 和 /编号 选择。')
-        return '普通文字和图片将发给 %s·%s。引用其他 leader 的消息会只回复原 leader。' % (selected['project'], selected['crew_name'])
+        return '普通文字和图片将发给 %s·%s。引用其他 leader 的消息会只回复原 leader。' % (selected['project_label'], selected['crew_name'])
 
     def handle_command(self, conn, reply):
         raw, identity = reply['answer'].strip(), reply['message_id']
@@ -739,7 +757,7 @@ class Inbox:
                 unread = len({e['id'] for e in journal.after(board.read_seq(conn, sid)) if e['type'] == 'assistant'})
                 current = '（当前）' if sid == self.config['current_leader_session_id'] else ''
                 lines.append('%s %s·%s%s %s 未读 %s 待拍板 %s' % (
-                    leader['number'], leader['project'],
+                    leader['number'], leader['project_label'],
                     ('★%s ' % priorities[sid] if sid in priorities else '') + leader['crew_name'],
                     current, status, unread, pending.get(sid, 0)))
             text = '\n'.join(lines) if lines else '目前没有有效的 leader。'
@@ -847,7 +865,7 @@ class Inbox:
                      (reply['message_id'], session_id,
                       json.dumps(dict(text=reply['answer'], images=reply['images']), ensure_ascii=False),
                       'queued', None, self.service.now().isoformat()))
-        label = '%s·%s' % (leader['project'], leader['crew_name'])
+        label = '%s·%s' % (self.project_label(conn, leader['project']), leader['crew_name'])
         queued = self.execute(conn, "SELECT 1 FROM notification_replies WHERE session_id=? AND status IN ('queued','running') AND message_id!=?",
                               (session_id, reply['message_id'])).fetchone()
         self.send_text(label + ' 正忙，排在后面' if self.service.chat.busy(session_id) or queued else '已转给 ' + label)
@@ -915,7 +933,7 @@ class Inbox:
         # A persisted sending state surfaces uncertain delivery instead of sending twice.
         self.execute(conn, "UPDATE notification_replies SET status='sending' WHERE message_id=?", (row['message_id'],))
         session = board.session(conn, row['session_id'])
-        for index, part in enumerate(leader_parts(session['project'], session['crew_name'], text)):
+        for index, part in enumerate(leader_parts(self.project_label(conn,session['project']), session['crew_name'], text)):
             key = identity + ':' + str(index)
             entry = dict(workspace=session['project'], leader_session_id=session['session_id'], decision=None)
             self.record_message(conn, key, entry, 'reply', self.service.now().isoformat())

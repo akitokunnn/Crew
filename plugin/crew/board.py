@@ -296,7 +296,8 @@ def resolve_git_request(conn, project_name, session_id, request_id, status, note
 def init_project(conn, name, root, now=None):
     root = store.norm_path(root)
     registered = list(conn.execute("SELECT p.*,s.removed_at FROM projects p LEFT JOIN project_settings s ON s.project=p.name"))
-    old = next((p for p in registered if store.norm_path(p['root']) == root), None)
+    matching = [p for p in registered if store.norm_path(p['root']) == root]
+    old = next((p for p in matching if p['removed_at'] is None), matching[0] if matching else None)
     if old is not None and old['removed_at'] is not None:
         conn.execute("UPDATE project_settings SET removed_at=NULL,revision=revision+1 WHERE project=?", (old['name'],))
         _event(conn, 'project:restore', old['name'], HUMAN, {'root': root}, now)

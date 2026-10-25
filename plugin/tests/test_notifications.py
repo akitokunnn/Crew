@@ -895,6 +895,7 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         journal.set_status('working')
         journal.emit('assistant', id='qq-end', content=[dict(type='text', text='QQ 那一轮的回复')])
         journal.set_status('idle')
+        turn('lark', 'lark-private', 'Lark 私聊回复不转发 QQ')
         journal.message('running', '还在跑的一轮', 'crew')
         journal.set_status('working')
         journal.emit('assistant', id='running-end', content=[dict(type='text', text='还没说完')])

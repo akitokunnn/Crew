@@ -2,6 +2,7 @@
 import tests
 from contextlib import closing
 import copy
+import json
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -42,7 +43,7 @@ class SettingsTests(unittest.TestCase):
 
     def test_saved_home_options_survive_connections_and_task_null_follows_default(self):
         ai = {'default': choice('codex', 'future-provider/custom-model', 'future-effort'),
-              'digest': None, 'git': choice('claude'), 'operations': choice('codex', None, 'low-latency')}
+              'leader': None, 'digest': None, 'git': choice('claude'), 'operations': choice('codex', None, 'low-latency')}
         self.assertEqual(settings.save(self.home, ai), ai)
         with closing(store.connect(self.home)) as conn:
             self.assertEqual(settings.load(conn), ai)
@@ -58,6 +59,29 @@ class SettingsTests(unittest.TestCase):
             settings.resolve(self.home, 'digest', discovery)
         discovery.assert_called_once_with('codex')
 
+    def test_operations_only_choice_resolves_without_a_global_default(self):
+        settings.save(self.home, {'default': choice(), 'operations': choice('codex')})
+        self.assertEqual(settings.resolve(self.home, 'operations', self.installed('codex', 'claude')), choice('codex'))
+        self.assertIsNone(settings.get(self.home)['default']['runtime'])
+        with self.assertRaises(settings.SettingsError):
+            settings.resolve(self.home, 'default', self.installed('codex', 'claude'))
+
+    def test_new_leader_has_an_independent_brain_and_old_settings_follow_default(self):
+        settings.save(self.home, {'default': choice('codex', 'default-model')})
+        self.assertIsNone(settings.get(self.home)['leader'])
+        self.assertEqual(settings.resolve(self.home, 'leader', self.installed('codex', 'claude')), choice('codex', 'default-model'))
+        settings.save(self.home, {'default': choice('codex', 'default-model'), 'leader': choice('claude', 'leader-model', 'high')})
+        self.assertEqual(settings.resolve(self.home, 'leader', self.installed('codex', 'claude')), choice('claude', 'leader-model', 'high'))
+        self.assertEqual(settings.resolve(self.home, 'digest', self.installed('codex', 'claude')), choice('codex', 'default-model'))
+        with closing(store.connect(self.home)) as conn:
+            existing = json.loads(conn.execute('SELECT ai_json FROM ai_settings').fetchone()[0])
+            self.assertEqual(set(existing), {'default','digest','git','operations'})
+            conn.execute('BEGIN IMMEDIATE')
+            settings.save(conn, {**settings.get(conn), 'leader': None})
+            self.assertIsNone(settings.get(conn)['leader'])
+            conn.rollback()
+        self.assertEqual(settings.get(self.home)['leader'], choice('claude', 'leader-model', 'high'))
+
     def test_explicit_task_is_whole_override_not_cross_runtime_model_or_effort_merge(self):
         settings.save(self.home, {'default': choice('claude', 'native-alias', 'future-effort'),
                                   'digest': choice('codex')})
@@ -65,8 +89,17 @@ class SettingsTests(unittest.TestCase):
         with self.assertRaisesRegex(settings.SettingsError, '未知 AI 设置用途'):
             settings.resolve(self.home, 'invented-purpose', self.installed('codex'))
 
+    def test_failure_saving_new_leader_choice_rolls_back_default_and_all_task_choices(self):
+        original = settings.save(self.home, {'default': choice('claude'), 'leader': choice('codex')})
+        with closing(store.connect(self.home)) as conn:
+            conn.execute("CREATE TRIGGER reject_leader BEFORE INSERT ON ai_task_settings BEGIN SELECT RAISE(ABORT,'fixture write failure'); END")
+            with self.assertRaisesRegex(sqlite3.IntegrityError, 'fixture write failure'):
+                settings.save(conn, {**original, 'default': choice('codex'), 'leader': choice('claude')})
+            self.assertFalse(conn.in_transaction)
+        self.assertEqual(settings.get(self.home), original)
+
     def test_save_and_resolve_use_callers_transaction_without_extra_connection_or_commit(self):
-        original = {'default': choice('claude'), 'digest': None, 'git': None, 'operations': None}
+        original = {'default': choice('claude'), 'leader': None, 'digest': None, 'git': None, 'operations': None}
         settings.save(self.home, original)
         with closing(store.connect(self.home)) as conn:
             conn.execute('BEGIN IMMEDIATE')

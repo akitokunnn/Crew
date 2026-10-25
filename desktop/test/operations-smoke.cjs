@@ -30,7 +30,7 @@ if (!process.versions.electron) {
     await run(await fs.readFile(path.join(root,'plugin/crew/web/operations-ui.js'),'utf8'));
     await run(`window.fixture={reads:0,sends:[],interrupts:0,saves:[],configReads:0,healthMounts:0,healthUnmounts:0,brain:0,sendFailure:false,configFailure:false,chat:{messages:[],busy:true,error:null,working_since:new Date().toISOString()},policy:{enabled:false,repository:'C:\\Crew source',reproduce:[],verify:[],timeout_seconds:180,merge_ref:'main'}};
       window.api={snapshot:async()=>{fixture.reads++;return structuredClone(fixture.chat)},send:async body=>{fixture.sends.push(body);if(fixture.sendFailure){fixture.sendFailure=false;throw Error('测试发送失败：载体未安装')}fixture.chat.messages.push({id:body.message_id,role:'user',text:body.text,at:new Date().toISOString()});fixture.chat.busy=true;return structuredClone(fixture.chat)},interrupt:async()=>{fixture.interrupts++;return structuredClone(fixture.chat)},configGet:async()=>{fixture.configReads++;return{policy_path:'C:\\Crew Data\\policy.json',configured:false,policy:structuredClone(fixture.policy)}},configSave:async value=>{fixture.saves.push(value);if(fixture.configFailure){fixture.configFailure=false;throw Error('测试保存失败：目录不是 Crew 源码')}fixture.policy=structuredClone(value);return{policy_path:'C:\\Crew Data\\policy.json',configured:true,policy:structuredClone(value)}}};
-      window.operations=CrewOperations.create({api,onBrain:()=>fixture.brain++,mountHealth:host=>{fixture.healthMounts++;host.textContent='隔离后台状态：运行正常';return()=>fixture.healthUnmounts++;}});operations.mount(document.querySelector('#host'),{home:'C:\\Crew Data',backend:'C:\\Crew\\plugin'});true;`);
+      window.operations=CrewOperations.create({api,onBrain:()=>fixture.brain++,mountHealth:host=>{fixture.healthMounts++;host.textContent='隔离后台状态：运行正常';return()=>fixture.healthUnmounts++;}});window.brainSettings={ai:{default:{runtime:'codex',model:null,effort:null},operations:null},runtimes:[{id:'claude',available:true},{id:'codex',available:true}]};operations.mount(document.querySelector('#host'),{...brainSettings,home:'C:\\Crew Data',backend:'C:\\Crew\\plugin'});true;`);
     await until('document.querySelector(".co-chat-empty h2").textContent.includes("和运维")');
     check('打开后台对话不启动 AI', await run('fixture.sends.length===0&&fixture.reads===1'));
     await input('.co-composer textarea', '还在输入的草稿');
@@ -40,6 +40,15 @@ if (!process.versions.electron) {
     check('AI 文本转义，不执行 HTML', await run('!document.querySelector(".co-messages img")'));
     await run('fixture.chat.messages[0].text="后台连接正常，当前没有需要处理的故障。你可以继续检查具体工作区，或在配置中调整故障处理方式。";');
     await click('[data-operations-tab="status"]');await click('[data-operations-tab="chat"]');await until('document.querySelector(".co-message-text")?.textContent.includes("没有需要处理")');
+    await run('brainSettings.ai.default.runtime=null;operations.hide();operations.mount(document.querySelector("#host"),{...brainSettings});true;');
+    await until('document.querySelector(".co-chat-status").textContent.includes("多个 AI")');
+    check('双载体未选择时主动说明原因并提供配置入口',await run('document.querySelector("[data-operations-action=send]").disabled&&!document.querySelector("[data-operations-action=setup-brain]").hidden'));
+    await run('document.querySelector(".co-composer textarea").dispatchEvent(new KeyboardEvent("keydown",{key:"Enter",bubbles:true}));');
+    check('未配置时按回车也不会调用模型且保留草稿',await run('fixture.sends.length===0&&document.querySelector(".co-composer textarea").value==="还在输入的草稿"'));
+    await click('[data-operations-action="setup-brain"]');check('配置入口连接已有 AI 大脑设置',await run('fixture.brain===1'));
+    await run('fixture.brain=0;brainSettings.ai.operations={runtime:"codex",model:null,effort:null};operations.hide();operations.mount(document.querySelector("#host"),{...brainSettings});true;');
+    await until('!document.querySelector("[data-operations-action=send]").disabled');
+    check('单独配置运维载体后恢复发送，未擅改默认大脑',await run('brainSettings.ai.default.runtime===null&&document.querySelector("[data-operations-action=setup-brain]").hidden&&fixture.sends.length===0'));
     await shot('operations-chat-light.png');
     await run('fixture.chat.messages.push(...Array.from({length:20},(_,i)=>({id:"history-"+i,role:"assistant",text:"历史诊断记录 "+i+"\\n"+"已有的连接与后台检查记录。".repeat(10)})));fixture.chat.busy=true;');
     await click('[data-operations-tab="status"]');await click('[data-operations-tab="chat"]');await until('document.querySelectorAll(".co-message").length===21');
@@ -53,7 +62,7 @@ if (!process.versions.electron) {
     check('切换标签保留聊天草稿', await run('document.querySelector(".co-composer textarea").value==="还在输入的草稿"'));
     await click('[data-operations-tab="config"]');
     check('切换标签保留运维配置草稿', await run('document.querySelector("[data-operations-field=repository]").value==="D:\\\\New Crew"'));
-    await run('operations.hide();document.querySelector("#host").replaceChildren();operations.mount(document.querySelector("#host"),{home:"C:/Crew Data",backend:"C:/Crew/plugin"});true;');
+    await run('operations.hide();document.querySelector("#host").replaceChildren();operations.mount(document.querySelector("#host"),{...brainSettings,home:"C:/Crew Data",backend:"C:/Crew/plugin"});true;');
     check('离开设置后回来保留配置草稿', await run('document.querySelector("[data-operations-field=repository]").value==="D:\\\\New Crew"'));
     await input('[data-operations-field="reproduce"]', 'bad json'); await click('[data-operations-action="save-config"]');
     check('命令格式错误显示字段名，未提交配置', await run('fixture.saves.length===0&&document.querySelector(".co-config-status").textContent.includes("复现命令格式不正确")'));

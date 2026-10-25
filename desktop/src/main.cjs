@@ -6,6 +6,7 @@ const { pathToFileURL } = require('node:url');
 const core = require('./core.cjs');
 const chrome = require('./chrome.cjs');
 const { WorkspaceTabs } = require('./tabs.cjs');
+const { installPermissions } = require('./permissions.cjs');
 const { ToolUpdates } = require('./tool-updates.cjs');
 const { CrewUpdates } = require('./crew-updates.cjs');
 const { Administrator } = require('./admin.cjs');
@@ -95,7 +96,9 @@ async function openProject(name) {
   if(new URL(backend.url).port==='0')throw new Error(backend.startupError||'后台尚未连接，请查看系统管理员');
   const project=(await core.projects(backend.url)).find(item=>item.name===name);
   if(!project)throw new Error('工作区不存在，请刷新列表');
-  return tabs.open(project);
+  const [location]=await core.projectLocations([project]);
+  if(location.directory_state.status!=='ready'){await showHome('workspace-settings',name);return false;}
+  await tabs.open(project);return true;
 }
 function keyboard(event,input){
   if(input.type!=='keyDown')return;
@@ -223,7 +226,8 @@ async function visualEvidence(target, evidence) {
 
 handle('desktop:bootstrap', async () => {
   if(new URL(backend.url).port==='0')throw new Error(backend.startupError||'后台尚未连接，请查看系统管理员');
-  const projects = await core.projects(backend.url), action = pendingAction, workspace = pendingWorkspace; pendingAction = null; pendingWorkspace = null;
+  const projects = await core.projectLocations(await core.projects(backend.url)), action = pendingAction, workspace = pendingWorkspace; pendingAction = null; pendingWorkspace = null;
+  for(const project of projects)tabs.updateProject(project);
   homeBootstrapped=true;
   return { projects, service: { url:backend.url, owned:backend.owned }, pendingAction:action, ...(workspace ? {pendingWorkspace:workspace} : {}) };
 });
@@ -266,6 +270,7 @@ handle('desktop:existing', async () => {
   if (result.canceled) return null;
   return core.existingWorkspace(result.filePaths[0], backend.url);
 });
+handle('desktop:existing-new',directory=>core.existingWorkspace(directory,backend.url,{newProject:true}));
 handle('desktop:parent', async () => {
   const result = await dialog.showOpenDialog(window, { title: '选择新工作区的保存位置', buttonLabel: '选择此位置', properties: ['openDirectory'] });
   if (result.canceled) return null;
@@ -277,8 +282,7 @@ handle('desktop:create', async name => {
   const result=await core.newWorkspace(parentDirectory, name, backend.url);parentDirectory=null;return result;
 });
 handle('desktop:open', async name => {
-  await openProject(name);
-  return { ok: true };
+  return {ok:await openProject(name)};
 });
 handle('desktop:tools-snapshot',()=>tools.snapshot());
 handle('desktop:tools-check',()=>tools.check());
@@ -316,6 +320,7 @@ handle('desktop:launch-settings-pick',async body=>{
 handle('desktop:settings-connection',()=>settingsRequest('/api/connections'));
 handle('desktop:settings-connection-save',body=>settingsRequest('/api/connections/configure',body));
 handle('desktop:settings-connection-action',body=>settingsRequest('/api/connections/action',body));
+handle('desktop:settings-connection-preferences',body=>settingsRequest('/api/connections/preferences',body));
 handle('desktop:settings-away',away=>{
   if (typeof away !== 'boolean') throw Error('离开状态必须是 true 或 false');
   return settingsRequest('/api/notifications/away', {away});
@@ -436,14 +441,23 @@ else {
           additionalArguments: ['--crew-desktop-config=' + encodeURIComponent(JSON.stringify({ home: homePage, origin: backend.url, error:errorPage }))] } });
       tabs=new WorkspaceTabs(window,{origin:backend.url,
         createView:()=>new WebContentsView({webPreferences:{contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true,...(config.smoke?{backgroundThrottling:false}:{})}}),
-        onChange:state=>publishTabs(state),onHome:()=>{},external,openProject,workspaceSettings:name=>{void showHome('workspace-settings',name).catch(actionError);},onKeyboard:keyboard,onNavigationError:actionError});
+        onChange:state=>publishTabs(state),onHome:()=>{},external,openProject,workspaceSettings:name=>{void showHome('workspace-settings',name).catch(actionError);},
+        onTitleChange:name=>{void core.projects(backend.url).then(items=>{const item=items.find(project=>project.name===name);if(item)tabs.updateProject(item);}).catch(error=>console.error('Crew workspace metadata refresh failed:',error));},
+        onKeyboard:keyboard,onNavigationError:actionError});
       tabs.setBounds({x:7,y:75,width:1206,height:768});
       window.once('ready-to-show', () => { if (!config.smoke) window.show(); });
       for (const event of ['maximize', 'unmaximize', 'focus', 'blur']) window.on(event, () => {
         if (!window.webContents.isDestroyed()) window.webContents.send('desktop:window-state', currentWindowState());
       });
-      window.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
-      window.webContents.session.setPermissionCheckHandler(() => false);
+      installPermissions(window.webContents.session, {homeContents:window.webContents, homePage,
+        workspaceContents:contents=>[...tabs.entries.values()].some(tab=>tab.view.webContents===contents),
+        workspaceOrigin:()=>new URL(tabs.origin).origin,
+        requestPermission:async label=>{
+          const result=await dialog.showMessageBox(window,{type:'question',title:'Crew 权限申请',message:'允许 Crew 使用'+label+'？',
+            detail:'由你正在使用的 Crew 功能发起。允许后对当前页面生效，关闭应用后重新申请。',
+            buttons:['允许','暂不允许'],defaultId:0,cancelId:1,noLink:true});
+          return result.response===0;
+        }});
       window.webContents.on('will-attach-webview', event => event.preventDefault());
       window.webContents.on('will-navigate', (event, url) => {
         if ([homePage,errorPage].includes(url)) return;

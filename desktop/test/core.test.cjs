@@ -80,6 +80,16 @@ test('an ordinary folder registers without Git metadata and reopens the register
   assert.deepEqual(await fs.readdir(root),['notes.txt']);assert.equal(await fs.readFile(path.join(root,'notes.txt'),'utf8'),'普通工作区文件');
 });
 
+test('external folder rename offers relinking before creating a duplicate workspace',async t=>{
+  const base=await directory(t),old=path.join(base,'before'),renamed=path.join(base,'after');await fs.mkdir(old);
+  const original={name:'stable-key',display_name:'My project',root:old};const service=await fixture(t,[original]);
+  await fs.rename(old,renamed);
+  const opened=await core.existingWorkspace(renamed,service.url);
+  assert.equal(opened.relocation.directory,await fs.realpath(renamed));assert.equal(opened.relocation.projects[0].name,'stable-key');
+  assert.equal(service.known.length,1);assert.equal(service.calls.filter(value=>value==='/api/project/init').length,0);
+  const created=await core.existingWorkspace(renamed,service.url,{newProject:true});assert.equal(created.name,'after');assert.equal(service.known.length,2);
+});
+
 test('reopening a removed exact workspace restores its stable identity before Git ancestor discovery', async t => {
   const root = await directory(t), selected = path.join(root,'registered child');
   await run('git',['init',root],{windowsHide:true}); await fs.mkdir(selected);

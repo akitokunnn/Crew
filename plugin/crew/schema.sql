@@ -10,6 +10,13 @@ CREATE TABLE IF NOT EXISTS ai_settings (
     updated_at  TEXT NOT NULL
 );
 
+-- New purposes do not change the JSON contract read by an older running service.
+CREATE TABLE IF NOT EXISTS ai_task_settings (
+    purpose        TEXT PRIMARY KEY,
+    selection_json TEXT NOT NULL,
+    updated_at     TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS execution_settings (
     singleton   INTEGER PRIMARY KEY CHECK (singleton = 1),
     codex       TEXT NOT NULL DEFAULT 'workspace-write'

@@ -20,6 +20,7 @@
       read:()=>bridge.settingsConnection(),
       configure:body=>bridge.settingsConnectionSave(body),
       action:body=>bridge.settingsConnectionAction(body),
+      preferences:body=>bridge.settingsConnectionPreferences(body),
       away:value=>bridge.settingsAway(value)
     });
   }

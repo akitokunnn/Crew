@@ -10,6 +10,7 @@ from . import board, notifications, qq, store
 
 CHANNELS = ('qq', 'lark')
 NAMES = {'qq': 'QQ', 'lark': 'Lark / 飞书'}
+NOTIFICATION_TARGETS = ('both', 'qq', 'lark', 'none')
 
 
 def _text(value, label, limit):
@@ -35,6 +36,10 @@ class Manager:
         self.clients = {'qq': client}
         self.lock = threading.RLock()
         self.presence_lock = threading.RLock()
+        self.routing_path = service.home / 'notification-routing.json'
+        self.notification_target = json.loads(self.routing_path.read_text(encoding='utf-8'))['target'] if self.routing_path.exists() else 'both'
+        if self.notification_target not in NOTIFICATION_TARGETS:
+            raise ValueError('主动通知渠道必须是 both、qq、lark 或 none')
         self.inboxes = {channel: self._inbox(channel) for channel in CHANNELS}
         # Absence is a desktop-wide choice; targets and routing stay per channel.
         self.manual_away = self.inboxes['qq'].config['manual_away']
@@ -80,13 +85,27 @@ class Manager:
                       away=self.manual_away or any(item['locked'] for item in active),
                       enabled=bool(active), error='；'.join(item['error'] for item in active if item['error']) or None)
         result['channels'] = [self.channel_state(channel) for channel in CHANNELS]
+        result['target'] = self.notification_target
         for channel in result['channels']:
             channel.pop('binding_code', None)
         return result
 
     def snapshot(self):
         return dict(channels=[self.channel_state(channel) for channel in CHANNELS],
-                    notification=self.notification_status())
+                    notification=self.notification_status(), preferences={'target': self.notification_target})
+
+    def allows_push(self, channel):
+        return self.notification_target in ('both', channel)
+
+    def save_preferences(self, data):
+        if not isinstance(data, dict) or set(data) != {'target'} or data['target'] not in NOTIFICATION_TARGETS:
+            raise ValueError('主动通知渠道必须是 both、qq、lark 或 none')
+        with self.lock:
+            _write(self.routing_path, data)
+            self.notification_target = data['target']
+            for inbox in self.inboxes.values():
+                inbox.wake.set()
+        return self.snapshot()
 
     def set_away(self, away):
         # This short lock is never held while stopping/joining a receiver.

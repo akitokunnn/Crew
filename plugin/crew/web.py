@@ -537,7 +537,7 @@ class Service:
         with self.agents_lock:
             agents, error = self.agents, self.agents_error
         with closing(store.connect(self.home)) as conn:
-            result = {'project': None, 'projects': [{key: p[key] for key in ('name', 'theme')} for p in board.projects(conn)],
+            result = {'project': None, 'projects': [{key: p[key] for key in ('name', 'display_name', 'theme')} for p in board.projects(conn)],
                       'themes': themes.THEMES,
                       'models': models.MODELS, 'efforts': models.EFFORTS,
                       'runtimes': self.runtime_catalog.snapshot(),
@@ -560,7 +560,7 @@ class Service:
                 identities = [{"sessionId": s["session_id"]} for s in board.sessions(conn, name)] if error else agents
                 status = board.status(conn, name, identities)
                 git_config = board.git_config(conn, name)
-                result['project'] = {key: status['project'][key] for key in ('name', 'root', 'theme')}
+                result['project'] = {key: status['project'][key] for key in ('name', 'display_name', 'root', 'theme')}
                 result['todos'] = todo.list(conn, name)
                 links = {(row['kind'], row['item_id']): row['goal_id'] for row in conn.execute(
                     'SELECT l.kind,l.item_id,l.goal_id FROM goal_links l JOIN goals g ON g.id=l.goal_id WHERE g.project=?', (name,))}
@@ -873,6 +873,8 @@ class Service:
             return self.connections.configure(data)
         if path == '/api/connections/action':
             return self.connections.action(data)
+        if path == '/api/connections/preferences':
+            return self.connections.save_preferences(data)
         if path == '/api/settings':
             if not data or not set(data) <= {'ai', 'execution'}:
                 raise ValueError('设置请求只能包含 ai 和 execution 配置')
@@ -1183,7 +1185,7 @@ class Service:
                 if not isinstance(member_session_ids, list) or any(not isinstance(sid, str) or not sid.strip() for sid in member_session_ids):
                     raise ValueError("member_session_ids 必须是会话 ID 数组")
                 name, task = _text(data, "name"), _optional_text(data, "task")
-                selected = settings.resolve(conn) if data.get('runtime') is None else {'runtime': runtimes.validate(data['runtime']), 'model': None, 'effort': None}
+                selected = settings.resolve(conn, 'leader') if data.get('runtime') is None else {'runtime': runtimes.validate(data['runtime']), 'model': None, 'effort': None}
                 runtime = selected['runtime']
                 model = models.validate(data['model'] if 'model' in data else selected['model'], runtime=runtime)
                 effort = models.validate_effort(data['effort'] if 'effort' in data else selected['effort'], runtime=runtime)
@@ -1450,7 +1452,7 @@ POST_PATHS.update(('/api/admin/update/prepare', '/api/admin/update/cancel'))
 POST_PATHS.add('/api/settings')
 POST_PATHS.update(('/api/admin/chat/send', '/api/admin/chat/interrupt', '/api/admin/config'))
 POST_PATHS.add('/api/admin/connection/prepare')
-POST_PATHS.update(('/api/connections/configure', '/api/connections/action'))
+POST_PATHS.update(('/api/connections/configure', '/api/connections/action', '/api/connections/preferences'))
 POST_PATHS.add('/api/native-approval')
 POST_PATHS.update(('/api/maintenance/department/preview', '/api/maintenance/department/compact',
                    '/api/maintenance/cleanup/preview', '/api/maintenance/cleanup'))
@@ -1545,7 +1547,7 @@ class Handler(BaseHTTPRequestHandler):
         url = urlsplit(self.path)
         query = parse_qs(url.query)
         service = self.server.service
-        connection_path = url.path in ('/api/connections', '/api/connections/configure', '/api/connections/action')
+        connection_path = url.path in ('/api/connections', '/api/connections/configure', '/api/connections/action', '/api/connections/preferences')
         if method == "POST":
             length = int(self.headers.get('Content-Length', '0'))
             payload = self.rfile.read(length) if length > 0 else b''

@@ -146,7 +146,7 @@ class ProjectThemeHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertIsNone(landing['project'])
         self.assertEqual(landing['themes'], themes.THEMES)
-        self.assertEqual(landing['projects'], [{'name': 'demo', 'theme': 'celadon'}, {'name': 'other', 'theme': 'indigo'}])
+        self.assertEqual(landing['projects'], [{'name': 'demo', 'display_name': None, 'theme': 'celadon'}, {'name': 'other', 'display_name': None, 'theme': 'indigo'}])
         code, selected = self.request('/api/state?project=other')
         self.assertEqual(code, 200)
         self.assertEqual(selected['project']['theme'], 'indigo')

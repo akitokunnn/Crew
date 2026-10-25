@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from crew import board, cli, models, runtimes, spawn
+from crew import board, cli, models, runtimes, settings, spawn
 from tests.test_runtimes import RuntimeFixture
 
 
@@ -87,6 +87,15 @@ class RuntimeSpawnTests(RuntimeFixture):
         self.assertEqual(plan["spec"]["runtime"], "codex")
         self.assertEqual(plan["command"], CODEX_COMMAND)
         self.assertIn(str(PLUGIN / "skills" / "leader" / "SKILL.md"), plan["files"][plan["spec"]["md"]])
+
+    def test_new_leader_inherits_its_own_brain_without_changing_member_inheritance(self):
+        settings.save(self.conn, {'default': {'runtime':'claude','model':None,'effort':None},
+                                 'leader': {'runtime':'codex','model':'leader-model','effort':'high'}})
+        with mock.patch.object(settings.shutil, 'which', side_effect=lambda name:'/fixture/'+name):
+            plan = spawn.leader_plan(self.conn, self.home, PLUGIN, 'demo', 'new-independent-chief')
+        self.assertEqual(plan['spec']['runtime'], 'codex')
+        self.assertEqual((plan['spec']['model'],plan['spec']['effort']),('leader-model','high'))
+        self.assertEqual(self.plan()['spec']['runtime'], 'claude')
 
     def test_cli_runtime_flag_reaches_service_and_dry_run(self):
         with mock.patch.object(spawn, "request_start", return_value={"ok": True}) as request:

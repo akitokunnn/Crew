@@ -682,6 +682,7 @@
       read:() => api("/api/connections"),
       configure:body => api("/api/connections/configure", body),
       action:body => api("/api/connections/action", body),
+      preferences:body => api("/api/connections/preferences", body),
       away:value => api("/api/notifications/away", {away:value})
     });
   }
@@ -742,8 +743,8 @@
     const form = $("leader-form");
     if (form === null) return;
     if (form.dataset.runtimeExplicit !== "true") {
-      const selected = defaultRuntime();
-      if (form.elements.runtime.value !== selected) { form.elements.runtime.value = selected; form.elements.model.value = state?.ai?.default?.model || ""; form.elements.effort.value = state?.ai?.default?.effort || ""; }
+      const selected = taskRuntime("leader"), selection = state?.ai?.leader ?? state?.ai?.default;
+      if (form.elements.runtime.value !== selected) { form.elements.runtime.value = selected; form.elements.model.value = selection?.model || ""; form.elements.effort.value = selection?.effort || ""; }
     }
     const runtime = runtimeInfo(form.elements.runtime.value);
     $("leader-runtime-options").innerHTML = runtimeList().map(item => `<button type="button" class="model-option runtime-option ${item.id === runtime.id ? "on" : ""}" data-act="leader-runtime" data-runtime="${esc(item.id)}" aria-pressed="${item.id === runtime.id}">${esc(item.name)}${item.available ? "" : '<small>未就绪</small>'}</button>`).join("");
@@ -778,7 +779,7 @@
   }
   function openModalLeader() {
     dialogReturn = focusDescriptor(document.activeElement);
-    const initialRuntime = defaultRuntime(), initialModel = state?.ai?.default?.model || "", initialEffort = state?.ai?.default?.effort || "";
+    const selection = state?.ai?.leader ?? state?.ai?.default, initialRuntime = taskRuntime("leader"), initialModel = selection?.model || "", initialEffort = selection?.effort || "";
     $("backdrop").innerHTML = `<form class="modal leader-modal" id="leader-form" role="dialog" aria-modal="true" aria-labelledby="leader-title"><h3 id="leader-title">起一个 leader</h3><p class="d">它在后台运行，你在这里跟它聊。下属可以以后再收编进来，它也能自己开新下属。</p><div class="field"><label for="leader-name">叫它</label><input id="leader-name" name="name" placeholder="比如：打包" required></div><div class="field"><label for="leader-task">它要管什么</label><textarea id="leader-task" name="task" rows="3" placeholder="一两句话，比如：安卓打包和推包流程跑通，能无人值守出包" required></textarea></div><div class="field"><span class="field-label" id="leader-runtime-label">执行工具</span><input type="hidden" name="runtime" value="${esc(initialRuntime)}"><div class="model-options runtime-options" id="leader-runtime-options" role="group" aria-labelledby="leader-runtime-label"></div><p id="leader-runtime-status" role="status"></p><button type="button" class="runtime-refresh" data-act="runtimes-refresh">重新检测执行工具和模型</button></div><div class="field"><span class="field-label" id="leader-model-label">用什么模型</span><input type="hidden" name="model" value="${esc(initialModel)}"><div class="model-options" id="leader-model-options" role="group" aria-labelledby="leader-model-label"></div></div><div class="field" id="leader-effort-field"><span class="field-label" id="leader-effort-label">effort<span class="effort-note" id="leader-effort-note" hidden>此模型不支持</span></span><input type="hidden" name="effort" value="${esc(initialEffort)}"><div class="model-options effort-options" id="leader-effort-options" role="group" aria-labelledby="leader-effort-label" aria-disabled="false"></div></div><p class="error-line" id="leader-error"></p><div class="acts"><button class="btn ghost" type="button" data-act="modal-close">取消</button><button class="btn primary" type="submit">起 leader</button></div></form>`;
     $("backdrop").classList.add("show"); renderLeaderRuntime(); $("leader-name").focus();
     refreshRuntimes();

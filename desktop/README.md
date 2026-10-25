@@ -91,3 +91,15 @@ node scripts/verify-icons.cjs dist/win-unpacked/Crew.exe "dist/Crew-$crewVersion
 Renderer 使用 `contextIsolation: true`、`nodeIntegration: false` 和 sandbox；IPC 仅接受自有工作区首页的主 frame，各 IPC 暴露独立函数。项目使用独立 WebContentsView，没有 preload 或文件系统桥接。项目导航严格限制在对应本机项目，外站点击在系统浏览器打开，外站重定向被拒绝。实现依据 Electron 官方的 [安全指南](https://www.electronjs.org/docs/latest/tutorial/security/)、[WebContentsView](https://www.electronjs.org/docs/latest/api/web-contents-view)、[原生标题栏](https://www.electronjs.org/docs/latest/tutorial/custom-title-bar) 和 [Tray](https://www.electronjs.org/docs/latest/api/tray) 文档。
 
 0.2.6 的 Crew 卡片会独立查询 GitHub 最新正式发布和主干版本；没有 Release 如实显示未发布，网络错误单独呈现。「统一后台与插件」仅应用当前桌面自带版本，与线上查询分开。详见 [桌面更新](../docs/DESKTOP_UPDATES.md)。
+
+桌面页面权限按功能处理：Crew 首页和工作区复制内容直接允许；读取剪贴板、通知、摄像头和麦克风、全屏在使用时弹出原生申请，允许结果仅保留到本页关闭或应用退出。文件和目录继续通过原生选择框授权。外部页面和子框架不获得这些权限。绑定命令复制失败时会自动选中，可按 Ctrl+C，状态刷新不取消选中。隔离回归：`electron desktop/test/clipboard-smoke.cjs`（在根目录使用 desktop/node_modules/.bin/electron）。测试查询真实权限，但模拟复制投递，不读写用户系统剪贴板。
+
+运维聊天发送前会显示载体尚未配置或不可用的原因，并提供“选择运维 AI”入口；选择默认大脑或单独配置“运维 AI”后保存，返回即可继续发送，聊天草稿保留。运维的独立选择不要求同时设置全局默认大脑；只有一个可用载体时仍可自动使用。
+
+“消息渠道 → 主动通知发到哪里”可选仅 QQ、仅 Lark / 飞书、两边都发或关闭，保存后立即用于离开时的主动通知；私聊回复留在发起渠道，测试通知不受此选择限制。默认沿用两边都发，不会在所选渠道离线时自动切换。若仍在复用旧后台，页面会明确提示先在“工具与更新”统一后台版本。
+
+工作区首页会检测原目录是否可访问。目录改名或移动后，点击工作区重新定位；直接打开新位置时，也会先询问是否关联失效的原工作区。确认后沿用已有的停止与迁移流程，保留身份、目标和对话，不搬动磁盘文件，不自动启动 AI。误建的重复工作区可先从 Crew 移除（记录保留），再将原工作区关联到该位置；活跃工作区不能抢占同一目录。改显示名后，页面、项目列表、桌面标签、窗口标题和远程项目列表同步，内部标识保持稳定。
+
+AI 大脑的任务分配包含“新建 leader”，可单独选择载体、模型和思考强度，或跟随默认。保存只影响之后新建的 leader；已有 leader/成员保持各自设置。新用途单独保存，已有后台读取的默认设置格式保留。目录与改名隔离验收：`node desktop/test/workspace-recovery-smoke.cjs`，测试 HOME 与真实服务独立，测试进程 PATH 不含 AI CLI。
+
+0.2.11 汇合工作区改名/重定位、通知渠道选择与独立 leader 大脑，以及部门压缩、工作区清理和交流区全体点名；保留重新定位提示和清理预览两个独立入口。

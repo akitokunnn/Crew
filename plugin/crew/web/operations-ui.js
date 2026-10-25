@@ -3,6 +3,16 @@
   const esc = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
   const clone = value => JSON.parse(JSON.stringify(value));
   const commandsText = value => JSON.stringify(value, null, 2);
+  function brainIssue(snapshot) {
+    if (!snapshot) return "正在读取 AI 大脑设置…";
+    const catalog = snapshot.runtimes || [], selected = snapshot.ai?.operations ?? snapshot.ai?.default;
+    if (selected?.runtime) {
+      const runtime = catalog.find(item => item.id === selected.runtime);
+      return runtime?.available ? "" : `运维 AI 选择的 ${runtime?.name || selected.runtime} 未就绪，请检查安装与登录，或更改载体。`;
+    }
+    const available = catalog.filter(item => item.available);
+    return available.length === 1 ? "" : available.length ? "检测到多个 AI 载体，请先选择默认大脑，或为运维 AI 单独指定载体。" : "尚未检测到 AI 载体，请先安装并登录 Codex CLI 或 Claude Code，再重新检测。";
+  }
   function parseCommands(text, label) {
     let value;
     try { value = JSON.parse(text); }
@@ -37,15 +47,17 @@
       const send = panel.querySelector('[data-operations-action="send"]');
       if (!send) return;
       const busy = Boolean(chat?.busy), status = panel.querySelector(".co-chat-status");
-      send.disabled = Boolean(pending) || busy || !chatLoaded || !chatDraft.trim();
+      const setupIssue = brainIssue(snapshot);
+      send.disabled = Boolean(pending) || busy || !chatLoaded || !chatDraft.trim() || Boolean(setupIssue);
       send.textContent = pending === "send" ? "正在发送…" : "发送";
       const stop = panel.querySelector('[data-operations-action="interrupt"]');
       stop.hidden = !busy; stop.disabled = Boolean(pending); stop.textContent = pending === "interrupt" ? "正在停止…" : "停止";
       const brain = panel.querySelector(".co-last-brain");
       brain.hidden = !chat?.brain;
       if (chat?.brain) brain.textContent = "上次：" + [({claude:"Claude Code",codex:"Codex"})[chat.brain.runtime] || chat.brain.runtime, chat.brain.model || "原生默认"].filter(Boolean).join(" · ");
-      status.textContent = chatError || chatReadError || chat?.error || chatNote || (busy ? "运维 AI 正在回复…" : "发消息才调用 AI；打开此页不会唤醒模型。");
+      status.textContent = chatError || chatReadError || chat?.error || setupIssue || chatNote || (busy ? "运维 AI 正在回复…" : "发消息才调用 AI；打开此页不会唤醒模型。");
       status.classList.toggle("co-error", Boolean(chatError || chatReadError || chat?.error));
+      panel.querySelector('[data-operations-action="setup-brain"]').hidden = !setupIssue;
       panel.querySelector('[data-operations-action="retry-chat"]').hidden = !chatReadError;
     }
     function messages() {
@@ -71,6 +83,7 @@
     }
     async function send() {
       if (pending || chat?.busy || !chatLoaded || !chatDraft.trim()) return;
+      if (brainIssue(snapshot)) { chatControls(); return; }
       pending = "send"; ++chatRead; chatError = ""; chatNote = "";
       const text = chatDraft, id = messageId || crypto.randomUUID(); messageId = id; chatControls();
       try {
@@ -121,7 +134,7 @@
       finally { configSaving = false; if (active && tab === "config") renderConfig(); }
     }
     function renderChat() {
-      panel.innerHTML = `<section class="co-chat" aria-label="运维 AI 对话"><div class="co-chat-heading"><div><h2>运维 AI</h2><p>所有工作区共用。对话用于诊断；自动修复遵循已保存策略。</p><p class="co-last-brain" hidden></p></div><span class="cs-badge">按需响应</span></div><div class="co-messages" tabindex="0" aria-label="聊天记录"></div><form class="co-composer"><label class="co-sr-only" for="co-chat-input">发给运维 AI</label><textarea id="co-chat-input" rows="3" maxlength="8000" placeholder="例如：为什么这个工作区连不上？">${esc(chatDraft)}</textarea><div class="co-compose-footer"><span>Enter 发送 · Shift + Enter 换行</span><div><button type="button" class="cs-button" data-operations-action="interrupt" hidden>停止</button><button type="submit" class="cs-button cs-primary" data-operations-action="send">发送</button></div></div></form><div class="co-status-row"><p class="co-chat-status" role="status"></p><button type="button" class="co-retry" data-operations-action="retry-chat" hidden>重新连接</button></div></section>`;
+      panel.innerHTML = `<section class="co-chat" aria-label="运维 AI 对话"><div class="co-chat-heading"><div><h2>运维 AI</h2><p>所有工作区共用。对话用于诊断；自动修复遵循已保存策略。</p><p class="co-last-brain" hidden></p></div><span class="cs-badge">按需响应</span></div><div class="co-messages" tabindex="0" aria-label="聊天记录"></div><form class="co-composer"><label class="co-sr-only" for="co-chat-input">发给运维 AI</label><textarea id="co-chat-input" rows="3" maxlength="8000" placeholder="例如：为什么这个工作区连不上？">${esc(chatDraft)}</textarea><div class="co-compose-footer"><span>Enter 发送 · Shift + Enter 换行</span><div><button type="button" class="cs-button" data-operations-action="interrupt" hidden>停止</button><button type="submit" class="cs-button cs-primary" data-operations-action="send">发送</button></div></div></form><div class="co-status-row"><p class="co-chat-status" role="status"></p><button type="button" class="co-retry" data-operations-action="setup-brain" hidden>选择运维 AI</button><button type="button" class="co-retry" data-operations-action="retry-chat" hidden>重新连接</button></div></section>`;
       const list = panel.querySelector(".co-messages"); messageSignature = "";
       messages(); list.scrollTop = chatPinned ? list.scrollHeight : chatScroll;
       list.addEventListener("scroll", () => { chatScroll = list.scrollTop; chatPinned = list.scrollHeight - list.clientHeight - list.scrollTop < 60; });
@@ -158,7 +171,7 @@
       if (button.dataset.operationsTab) { tab = button.dataset.operationsTab; render(); return; }
       if (button.dataset.operationsExample) { chatDraft = button.dataset.operationsExample; messageId = null; const input = panel.querySelector("textarea"); input.value = chatDraft; input.focus(); chatControls(); return; }
       const action = button.dataset.operationsAction;
-      if (action === "brain") options.onBrain();
+      if (action === "brain" || action === "setup-brain") options.onBrain();
       if (action === "launch-settings" && api.launch) { tab = "launch"; render(); }
       if (action === "retry-chat") void readChat();
       if (action === "interrupt") void interrupt();
@@ -187,5 +200,5 @@
     return {mount(host, value) { snapshot = value; active = true; host.append(root); render(); return hide; }, hide,
       getState:() => ({tab, chatDraft, configDraft:configDraft && clone(configDraft), chatLoaded, chatError:chatError || chatReadError})};
   }
-  window.CrewOperations = {create, parseCommands, policyDraft, policyValue};
+  window.CrewOperations = {create, parseCommands, policyDraft, policyValue, brainIssue};
 })();
