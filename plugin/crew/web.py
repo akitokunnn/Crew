@@ -578,8 +578,13 @@ class Service:
             requests = board.git_requests(conn, name, all=True) if config is not None else []
         result = {"enabled": config is not None, "config": config,
                   "requests": board.titled_requests(requests, lambda sid: vscode_sessions.session_title(self.claude_root, sid)),
-                  "choices": git_view.branch_choices(project["root"]),
+                  "choices": {"branches": [], "base": None, "stable": None},
                   "repository": Path(project["root"]).name, "last_fetch_at": None}
+        reason = git_view.unavailable_reason(project["root"])
+        if reason is not None:
+            result.update(available=False, reason=reason)
+            return result
+        result['choices'] = git_view.branch_choices(project['root'])
         if config is not None:
             result.update(git_view.view(project["root"], config, sessions, offset=offset))
         return result
@@ -590,6 +595,7 @@ class Service:
             if board.git_config(conn, name) is None:
                 raise board.BoardError("请先启用 Git 管理")
             root = board.project(conn, name)["root"]
+        git_view.require_repository(root)
         return git_view.commit_detail(root, sha)
 
     def settings_state(self):
@@ -679,6 +685,7 @@ class Service:
                 if board.git_config(conn, project) is None:
                     raise board.BoardError("请先启用 Git 管理")
                 root = board.project(conn, project)["root"]
+            git_view.require_repository(root)
             return git_view.fetch(root)
         with self.write_lock, closing(store.connect(self.home)) as conn:
             now = self.now().isoformat(timespec="milliseconds").replace("+00:00", "Z")
@@ -1319,7 +1326,8 @@ class Handler(BaseHTTPRequestHandler):
                         raise board.BoardError('报告不属于此目标')
                     self.send_file_content(report['html'].encode('utf-8'), 'text/html; charset=utf-8')
         elif url.path == '/api/runtimes':
-            self._send(200, {'runtimes': service.runtime_catalog.refresh()})
+            catalog = service.runtime_catalog.refresh(force=True) if query.get('refresh') == ['1'] else service.runtime_catalog.refresh()
+            self._send(200, {'runtimes': catalog})
         elif url.path == '/api/settings':
             self._send(200, service.settings_state())
         elif url.path == '/api/projects':

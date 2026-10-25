@@ -44,6 +44,76 @@ class StartupTests(unittest.TestCase):
         with contextlib.closing(store.connect(self.home)) as conn:
             return board.projects(conn)
 
+    def plain_folder(self):
+        temporary = tempfile.TemporaryDirectory(prefix='crew-plain-folder-')
+        self.addCleanup(temporary.cleanup)
+        folder = Path(temporary.name) / 'ordinary notes'
+        folder.mkdir()
+        probe = subprocess.run(['git', '-C', str(folder), 'rev-parse', '--show-toplevel'], capture_output=True, text=True)
+        self.assertNotEqual(probe.returncode, 0, 'The fixture must really be outside every Git worktree')
+        return folder
+
+    def test_plain_folder_start_registers_it_without_initializing_git(self):
+        plain = self.plain_folder()
+        result = self.start(cwd=plain)
+        self.assertEqual(result['name'], plain.name)
+        self.assertEqual(self.projects()[0]['root'], store.norm_path(plain))
+        self.assertFalse((plain / '.git').exists())
+        self.task.assert_not_called()
+
+    def test_plain_subfolder_start_reuses_its_registered_workspace(self):
+        plain = self.plain_folder()
+        child = plain / 'inside'
+        child.mkdir()
+        with contextlib.closing(store.connect(self.home)) as conn:
+            board.init_project(conn, 'existing-notes', plain)
+        result = self.start(cwd=child)
+        self.assertEqual(result['name'], 'existing-notes')
+        self.assertEqual(len(self.projects()), 1)
+        self.assertFalse((plain / '.git').exists())
+
+    def test_cli_init_defaults_to_the_real_plain_folder_without_agents_or_git_init(self):
+        plain = self.plain_folder()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as errors:
+            code = cli.main(['--home', str(self.home), 'init', '--name', 'ordinary-work'], cwd=plain,
+                            plugin_root=PLUGIN, agents_provider=lambda: self.fail('init must not contact a model CLI'))
+        self.assertEqual(code, 0, errors.getvalue())
+        self.assertEqual(self.projects()[0]['root'], store.norm_path(plain))
+        self.assertFalse((plain / '.git').exists())
+
+    def test_plain_folder_root_is_available_without_ever_executing_git(self):
+        plain = self.plain_folder()
+        runner = Mock(side_effect=FileNotFoundError('Git is not installed'))
+        self.assertEqual(startup.git_root(plain, runner=runner), plain.resolve())
+        runner.assert_not_called()
+
+    def test_cli_init_in_plain_subfolder_reuses_the_registered_workspace(self):
+        plain = self.plain_folder()
+        child = plain / 'inside'
+        child.mkdir()
+        with contextlib.closing(store.connect(self.home)) as conn:
+            board.init_project(conn, 'registered-notes', plain)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as errors:
+            code = cli.main(['--home', str(self.home), 'init'], cwd=child, plugin_root=PLUGIN)
+        self.assertEqual(code, 0, errors.getvalue())
+        self.assertEqual(len(self.projects()), 1)
+        self.assertEqual(self.projects()[0]['name'], 'registered-notes')
+
+    def test_cli_join_plain_workspace_does_not_need_git_metadata(self):
+        plain = self.plain_folder()
+        with contextlib.closing(store.connect(self.home)) as conn:
+            board.init_project(conn, 'ordinary-work', plain)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as errors:
+            code = cli.main(['--home', str(self.home), '--session', 'plain-member', 'join', 'plain-member'],
+                            cwd=plain, plugin_root=PLUGIN, agents_provider=lambda: [])
+        self.assertEqual(code, 0, errors.getvalue())
+        with contextlib.closing(store.connect(self.home)) as conn:
+            member = board.session(conn, 'plain-member')
+        self.assertEqual(member['project'], 'ordinary-work')
+        self.assertIsNone(member['worktree'])
+        self.assertIsNone(member['branch'])
+        self.assertFalse((plain / '.git').exists())
+
     def test_non_git_directory_reports_error_before_creating_home_or_starting_service(self):
         (self.base / ".git").write_text("gitdir: missing-git-directory\n", encoding="ascii")
         with self.assertRaisesRegex(board.BoardError, "Git 仓库根目录"):

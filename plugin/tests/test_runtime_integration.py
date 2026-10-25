@@ -124,6 +124,24 @@ class ManagedRuntimeTests(ShellFixture, unittest.TestCase):
 
 
 class RuntimeFeatureHttpTests(ShellFixture, unittest.TestCase):
+    def test_explicit_settings_model_refresh_populates_catalog_without_starting_a_session(self):
+        from crew.runtime_catalog import Catalog
+        native = mock.MagicMock()
+        native.__enter__.return_value = native
+        native.list_models.return_value = {'data':[{'id':'future-native', 'displayName':'Detected model',
+            'supportedReasoningEfforts':[{'reasoningEffort':'future-effort'}]}], 'nextCursor':None}
+        factory = mock.Mock(return_value=native)
+        self.server.service.runtime_catalog = Catalog(client_factory=factory, which=lambda name:name)
+        self.assertEqual(self.request('/api/settings')[1]['runtimes'][1]['models'], [])
+        code, result = self.request('/api/runtimes?refresh=1')
+        self.assertEqual(code, 200, result)
+        self.assertEqual(result['runtimes'][1]['models'][0]['id'], 'future-native')
+        self.assertEqual(self.request('/api/settings')[1]['runtimes'][1]['models'][0]['efforts'], ['future-effort'])
+        factory.assert_called_once_with(timeout=15)
+        native.list_models.assert_called_once_with()
+        self.assertEqual(self.processes, [])
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM sessions').fetchone()[0], 3)
+
     def setUp(self):
         super().setUp()
         for method in ('_poll_agents', '_poll_notices', '_poll_git_ci'):

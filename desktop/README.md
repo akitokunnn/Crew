@@ -1,6 +1,6 @@
 # Crew 桌面版
 
-原生 Electron 窗口、工作区首页和系统托盘。需要本机已有 Python 3、Git，以及实际要使用的 Claude Code / Codex；后端继续使用 Python 标准库。
+原生 Electron 窗口、工作区首页和系统托盘。需要本机已有 Python 3，以及实际要使用的 Claude Code / Codex；普通工作文件夹无需 Git，后端继续使用 Python 标准库。
 
 ```powershell
 cd desktop
@@ -11,7 +11,7 @@ npm install
 npm start
 ```
 
-首页可用系统文件夹对话框打开已有 Git 项目，子目录会解析到真实 Git 根目录。新建工作区先填写名称并选择保存位置，再创建一个新空目录和 `main` 分支 Git 仓库。已有目录不会被覆盖。工作区注册到 Crew 后，在原生窗口打开对应项目。
+首页可用系统文件夹对话框打开普通目录；已有 Git 项目的子目录仍会解析到真实仓库根目录，已登记的工作区优先复用。新建工作区只创建空文件夹，不自动初始化 Git，已有目录不会被覆盖。工作区注册到 Crew 后，在原生窗口打开对应项目。分支、提交和独立 worktree 等功能仅在 Git 仓库中使用。
 
 每个工作区有独立标签页，切换时保留聊天草稿、当前 Leader、滚动和页面状态。重复打开同一工作区会切到已有标签。`Ctrl+T` 返回工作区选择，`Ctrl+Tab` / `Ctrl+Shift+Tab` 切换标签；`Ctrl+W` 关闭当前项目标签，不停止该工作区的 AI。只剩首页时 `Ctrl+W` 隐藏窗口。菜单还提供 `Ctrl+N` 新建、`Ctrl+O` 打开、`Alt+Left` 返回以及刷新当前标签。
 

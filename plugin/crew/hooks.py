@@ -25,13 +25,12 @@ def git_toplevel(cwd):
 
 
 def git_details(cwd):
-    # A failed probe may describe a plain directory; a timeout is an attendance
-    # error and must reach main's diagnostic boundary instead of registering
-    # the checkout as a non-Git project.
-    result = git_process.run(["-C", str(cwd), "rev-parse", "--show-toplevel"], timeout=10)
-    if result.returncode != 0:
-        # A project directory does not have to be a git checkout; record it without worktree / branch.
+    if git_process.repository_root(cwd) is None:
         return None, None
+    # A marker means Git must verify it. Broken repositories, missing Git and
+    # timeouts must not silently register this checkout as a plain directory.
+    result = git_process.run(["-C", str(cwd), "rev-parse", "--show-toplevel"], timeout=10)
+    result.check_returncode()
     return store.norm_path(result.stdout.strip()), _git(cwd, "branch", "--show-current")
 
 

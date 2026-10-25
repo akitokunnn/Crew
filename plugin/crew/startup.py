@@ -1,4 +1,4 @@
-"""Open a Git project's Crew page through the installed web-service task."""
+"""Open a workspace's Crew page through the installed web-service task."""
 import contextlib
 import subprocess
 import sys
@@ -7,10 +7,13 @@ import webbrowser
 from pathlib import Path
 from urllib.parse import urlencode
 
-from . import autostart, board, store
+from . import autostart, board, git_process, store
 
 
 def git_root(cwd, runner=subprocess.run):
+    """A plain workspace needs no Git executable; repository markers require a valid Git root."""
+    if git_process.repository_root(cwd) is None:
+        return Path(cwd).resolve()
     options = {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {}
     result = runner(["git", "-C", str(cwd), "rev-parse", "--show-toplevel"],
                     capture_output=True, text=True, encoding="utf-8", **options)
@@ -28,6 +31,8 @@ def start(home, plugin_root, cwd, name=None, *, root_provider=git_root,
     root = root_provider(Path(cwd).resolve())
     with contextlib.closing(store.connect(home)) as conn:
         project = next((p for p in board.projects(conn) if store.norm_path(p["root"]) == store.norm_path(root)), None)
+        if project is None and not (root / '.git').exists():
+            project = board.project_for_path(conn, root)
         if project is None:
             project = board.init_project(conn, root.name if name is None else name, root)
     if not probe():

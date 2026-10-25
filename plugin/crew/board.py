@@ -126,7 +126,10 @@ def git_config(conn, project_name):
 
 def git_branches(conn, project_name, base=None, stable=None):
     from . import git_view
-    choices = git_view.branch_choices(project(conn, project_name)["root"])
+    try:
+        choices = git_view.branch_choices(project(conn, project_name)["root"])
+    except git_view.GitError as exc:
+        raise BoardError(str(exc)) from exc
     base = choices["base"] if base is None else base
     if base is None:
         raise BoardError("没有可自动识别的主干分支，请指定 --base")

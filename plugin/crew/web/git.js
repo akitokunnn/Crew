@@ -250,6 +250,11 @@ const CrewGit = (() => {
     if (host === null) return;
     const scroll = host.querySelector(".git-page")?.scrollTop;
     if (data === null) { host.innerHTML = `<div id="git-view"><div class="head big"><div class="title">Git</div></div><div class="page"><p class="note git-loading">${errorText === "" ? "正在读取仓库…" : esc(errorText)}</p></div></div>`; return; }
+    if (data.available === false) {
+      detail = null;
+      host.innerHTML = `<div id="git-view"><div class="head big git-head"><div><div class="title">Git</div><div class="sub">${esc(data.repository)}</div></div></div><div class="page"><section class="git-enable-card"><span class="git-enable-icon" aria-hidden="true">⑂</span><h1>Git 功能暂不可用</h1><p role="status">${esc(data.reason)}</p><p>此工作区的聊天、任务和其他功能照常使用。Git 分支、提交与 worktree 功能需要 Git 仓库。</p><button type="button" class="btn" data-git-act="check" ${loading ? "disabled" : ""}>${loading ? "正在检查…" : "刷新检查"}</button>${errorText === "" ? "" : `<p class="git-error" role="alert">${esc(errorText)}</p>`}</section></div></div>`;
+      return;
+    }
     if (!data.enabled) detail = null;
     const header = `<div class="head big git-head"><div><div class="title">${esc(data.repository)} <span class="git-heading-label">Git</span></div><div class="sub">${data.enabled ? "分支、提交与合并检查" : "项目 Git 管理"}</div></div>${data.enabled ? `<div class="right">${data.config.admin_session_id === null ? "" : `<button type="button" class="btn" data-act="leader" data-id="${esc(data.config.admin_session_id)}">和 git 管理员聊</button>`}<div class="git-fetch-meta">${data.last_fetch_at === null ? "尚未 fetch" : `上次 fetch · ${esc(at(data.last_fetch_at))}`}</div><button type="button" class="btn" data-git-act="fetch" ${operation !== null ? "disabled" : ""}>${operation === "fetch" ? "正在 fetch…" : "刷新（fetch）"}</button><details class="git-more"><summary aria-label="更多" title="更多">•••</summary><div><button type="button" data-git-act="disable">停用 Git 管理</button></div></details></div>` : ""}</div>`;
     host.innerHTML = `<div id="git-view">${header}${data.enabled ? `<div class="page git-page"><div class="git-page-in">${overview()}${mergeRequests()}${errorText === "" ? "" : `<pre class="git-error" role="alert">${esc(errorText)}</pre>`}${data.github === null ? `<div class="git-github-unavailable"><strong>GitHub 不可用</strong><pre>${esc(data.github_reason)}</pre></div>` : ""}<div class="git-tabs" role="tablist" aria-label="Git 视图"><button type="button" role="tab" id="git-graph-tab" aria-controls="git-panel" aria-selected="${tab === "graph"}" data-git-tab="graph" class="${tab === "graph" ? "on" : ""}">树状图 <span>${data.commits.length}</span></button><button type="button" role="tab" id="git-branches-tab" aria-controls="git-panel" aria-selected="${tab === "branches"}" data-git-tab="branches" class="${tab === "branches" ? "on" : ""}">分支 <span>${data.branches.length}</span></button></div><section id="git-panel" role="tabpanel" aria-labelledby="git-${tab}-tab">${tab === "graph" ? graph() : branchTable()}</section></div></div>` : enableCard()}<dialog id="git-disable-dialog" class="git-disable-dialog" aria-labelledby="git-disable-title"><h2 id="git-disable-title">停用 Git 管理？</h2><p>Git 管理员的组将关闭，此项目的 Git 管理配置将被删除。</p><div><button type="button" class="btn" data-git-act="cancel-disable">取消</button><button type="button" class="btn danger" data-git-act="confirm-disable" ${operation !== null ? "disabled" : ""}>确认停用</button></div></dialog><aside id="git-detail" class="git-detail" role="dialog" aria-label="提交详情" hidden></aside></div>`;
@@ -260,6 +265,7 @@ const CrewGit = (() => {
   async function load(append = false) {
     if (loading) return;
     loading = true;
+    if (data?.available === false) render();
     const requestGeneration = generation, requestedPages = pages;
     try {
       if (append) {
@@ -270,7 +276,7 @@ const CrewGit = (() => {
       } else {
         let fresh = await options.api("/api/git?offset=0");
         if (generation !== requestGeneration) return;
-        for (let page = 1; fresh.enabled && page < requestedPages && fresh.next_offset !== null; page++) {
+        for (let page = 1; fresh.available !== false && fresh.enabled && page < requestedPages && fresh.next_offset !== null; page++) {
           const more = await options.api(`/api/git?offset=${fresh.next_offset}`);
           if (generation !== requestGeneration) return;
           fresh = {...more, commits:[...fresh.commits, ...more.commits]};
@@ -305,7 +311,8 @@ const CrewGit = (() => {
     const button = event.target.closest("[data-git-act]");
     if (button === null) { const target = commitTarget(event.target); if (target !== null) showCommitDetail(target, true, event); return; }
     const act = button.dataset.gitAct;
-    if (act === "active") { activeOnly = !activeOnly; render(); }
+    if (act === "check") load();
+    else if (act === "active") { activeOnly = !activeOnly; render(); }
     else if (act === "clear-selection") { selectedBranch = null; render(); }
     else if (act === "load-more") load(true);
     else if (act === "fetch") mutate("fetch", {});
@@ -314,7 +321,7 @@ const CrewGit = (() => {
     else if (act === "confirm-disable") mutate("disable", {});
   }
   function submit(event) {
-    if (event.target.id !== "git-enable-form") return;
+    if (event.target.id !== "git-enable-form" || data?.available === false) return;
     event.preventDefault();
     const runtime = event.target.elements.runtime.value;
     if (!(options.catalog?.() || []).some(item => item.id === runtime && item.available)) { errorText = "执行工具不可用，请检查安装和登录后重新选择。"; render(); return; }
@@ -337,7 +344,7 @@ const CrewGit = (() => {
     document.addEventListener("pointerdown", dismissCommitDetail); document.addEventListener("keydown", commitKey);
     document.addEventListener("pointermove", moveCommitPointer);
     window.addEventListener("resize", positionCommitDetail);
-    render(); load(); timer = setInterval(() => load(), 30000);
+    render(); load(); timer = setInterval(() => { if (data?.available !== false) load(); }, 30000);
   }
   function unmount() {
     generation++; clearInterval(timer); clearTimeout(detailCloseTimer); detail = null; hoverSuppressed = false; pointerX = null; pointerY = null;

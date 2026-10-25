@@ -119,6 +119,20 @@ class TrustModeTests(unittest.TestCase):
         self.assertIsNone(trust_mode.context(self.conn, "closed"))
         self.assertIsNone(trust_mode.context(self.conn, "archived"))
 
+    def test_plain_workspace_context_preserves_file_evidence_without_creating_git_or_new_settings(self):
+        self.conn.execute("UPDATE sessions SET worktree=NULL,branch=NULL WHERE session_id IN ('lead-a','member')")
+        self.set_mode(True, '整理普通文件夹里的材料', now=NOW)
+        before = self.conn.serialize()
+        with mock.patch('crew.git_process.repository_root', side_effect=AssertionError('context must not detect repositories')), \
+                mock.patch('subprocess.run', side_effect=AssertionError('context must not launch Git or models')):
+            context = trust_mode.context(self.conn, 'member')
+        self.assertIn('项目本来使用 Git 时，按项目规则', context)
+        self.assertIn('普通文件夹保留修改文件与复验入口', context)
+        self.assertIn('不要为满足报告擅自 git init', context)
+        self.assertIn('不再把工程技术取舍交回用户拍板', context)
+        self.assertEqual(self.conn.serialize(), before)
+        self.assertFalse((self.root / '.git').exists())
+
     def test_ordinary_mode_keeps_decision_open_and_no_audit(self):
         decision_id = self.ask()
         self.assertIsNone(trust_mode.auto_answer(self.conn, decision_id, now=NOW))

@@ -873,7 +873,7 @@
   }
   function setup() {
     $("overlay-root").innerHTML = '<button class="rp-scrim" id="rp-scrim" data-act="right-close" aria-label="关闭架构图"></button><div class="card-back" id="card-back"></div><section class="card" id="card" role="dialog" aria-modal="true" aria-label="下属卡片" tabindex="-1"></section><div class="menu" id="menu" role="menu"></div><div class="backdrop" id="backdrop"></div><div id="settings-parking" hidden><section class="settings-popover" id="settings" aria-label="外观设置"></section></div>';
-    settingsUI = window.CrewSettings.create({host:$("settings-surface"), read:() => api("/api/settings"), save:body => api("/api/settings",body), onClose:closeSettings, service:() => location.origin,
+    settingsUI = window.CrewSettings.create({host:$("settings-surface"), read:async() => { await api("/api/runtimes?refresh=1"); return api("/api/settings"); }, save:body => api("/api/settings",body), onClose:closeSettings, service:() => location.origin,
       onSnapshot(value) { if (state !== null) state.ai = value.ai; runtimesCache = value.runtimes; renderLeaderRuntime(); },
       panels:{appearance(host) { host.append($("settings")); return () => $("settings-parking").append($("settings")); }, connections:settingsConnections}});
     try { const stored = localStorage.getItem("crew.theme"); if (["system", "light", "dark"].includes(stored)) theme = stored; } catch (error) { toast(error.message); }
