@@ -11,7 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import board, channel, guard, install, runtimes, store, vscode_sessions
+from . import board, channel, guard, install, message_receipts, runtimes, store, vscode_sessions
 from .hooks import git_details
 
 
@@ -276,8 +276,12 @@ def parser():
     a.add_argument('name')
     a = command("send", True)
     a.add_argument("name")
-    a.add_argument("text")
-    a.add_argument('--kind', choices=('task','result','blocker','decision','user_answer','information','ack'), default='information')
+    body = a.add_mutually_exclusive_group(required=True)
+    body.add_argument('text', nargs='?')
+    body.add_argument('--text-file', type=Path, help='从 UTF-8 文件无损读取正文（含多行和引号）；- 表示标准输入。')
+    a.add_argument('--kind', choices=('task','result','blocker','decision','user_answer','information','ack'), default='information',
+                   help='默认 information 仅归档、不唤醒；决定用 decision，任务用 task，结果用 result，阻塞用 blocker。')
+    a.add_argument('--message-id', help='调用方稳定重试编号；同一编号只用于完全相同的接收者、正文和类型。')
     for namespace, actions in (('goal', ('create','status','start','pause','resume','cancel','reopen','amend','assign','report-template','finish')),
                                ('context', ('inspect','put','correct','expire'))):
         goal_parser = command(namespace, True)
@@ -418,6 +422,8 @@ def _whoami_text(s):
 
 
 def _emit(value, as_json=False, command=None, channel_card=None):
+    if command == 'send' and isinstance(value, dict):
+        value = message_receipts.normalize(value)
     if as_json:
         print(json.dumps(value, ensure_ascii=False))
     elif value is None:
@@ -453,7 +459,9 @@ def _emit(value, as_json=False, command=None, channel_card=None):
     elif command == 'stop':
         print('已停止此 Crew 身份的所有托管执行；排队消息不能自动恢复。')
     elif command == "send":
-        print(value.get("message", "消息已交给 Crew"))
+        print(value['message'])
+        if value.get('message_id'):
+            print('消息编号：' + value['message_id'])
     elif command == "whoami":
         print(_whoami_text(value))
     elif command == "who":
@@ -644,7 +652,7 @@ def execute(conn, args, cwd, agents_provider):
         leader = board.leader_of(conn, sid)
         if leader is not None:
             mixed = any(runtimes.get(conn, person["session_id"])["runtime"] == "codex" for person in (value, leader))
-            welcome = 'crew send %s "<欢迎与分工>"' % value["crew_name"] if mixed else "SendMessage"
+            welcome = 'crew send %s "<欢迎与分工>" --kind task' % value["crew_name"] if mixed else "SendMessage"
             board.queue_leader_notice(conn, leader["session_id"],
                                       "%s 用 crew join 加入你组，负责：%s。请用 %s 欢迎它并确认分工" %
                                       (value["crew_name"], value["scope"] or "未写", welcome), "crew")
@@ -924,12 +932,28 @@ def main(argv=None, agents_provider=claude_agents, cwd=None, plugin_root=None):
             return 0
         if args.command == "send":
             from . import spawn
+            text = args.text
+            if args.text_file is not None:
+                if str(args.text_file) == '-':
+                    # A redirected Windows stdin may use a legacy code page
+                    # and translate CRLF. Read UTF-8 bytes before either happens.
+                    binary_input = getattr(sys.stdin, 'buffer', None)
+                    text = (binary_input.read().decode('utf-8-sig') if binary_input is not None
+                            else sys.stdin.read())
+                else:
+                    try:
+                        with args.text_file.open('r', encoding='utf-8-sig', newline='') as message_file:
+                            text = message_file.read()
+                    except (OSError, UnicodeError) as exc:
+                        raise board.BoardError('读取消息文件失败：%s；%s: %s' %
+                                               (args.text_file, type(exc).__name__, exc)) from exc
             caller = _session_id(args)
             with contextlib.closing(store.connect(args.home)) as conn:
                 project = _project(conn, args, cwd)
             value = spawn.request_start(args.home, project, "/api/messages", {
-                "name": args.name, "text": args.text, "caller_session_id": caller,
-                'execution_id': os.environ.get('CREW_EXECUTION_ID'), 'kind': args.kind})
+                "name": args.name, "text": text, "caller_session_id": caller,
+                'execution_id': os.environ.get('CREW_EXECUTION_ID'), 'kind': args.kind,
+                **({'message_id': args.message_id} if args.message_id else {})})
             _emit(value, args.json, args.command)
             return 0
         if args.command in ('goal', 'context'):

@@ -174,7 +174,34 @@ class SupervisorTests(unittest.TestCase):
             raise AssertionError("Supervisor did not reach expected state: " + repr(supervisor.read_status(self.home))) from exc
 
     def mode(self, **value):
-        supervisor._atomic_json(self.home / "mode.json", value)
+        # The fake backend polls this test-control file every 20 ms. Windows
+        # briefly forbids replacement while its ordinary read handle is open.
+        deadline = time.monotonic() + 1
+        while True:
+            try:
+                supervisor._atomic_json(self.home / "mode.json", value)
+                return
+            except PermissionError:
+                if os.name != 'nt' or time.monotonic() >= deadline:
+                    raise
+                time.sleep(.01)
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows fixture read-handle sharing')
+    def test_fixture_control_write_waits_for_reader_and_keeps_a_real_timeout_error(self):
+        self.mode(hang=False)
+        path = self.home / 'mode.json'
+        with path.open('rb') as reader:
+            release = threading.Timer(.05, reader.close)
+            release.start()
+            try:
+                self.mode(hang=True)
+            finally:
+                release.join(2)
+        self.assertTrue(json.loads(path.read_text(encoding='utf-8'))['hang'])
+        with path.open('rb'), self.assertRaises(PermissionError) as error:
+            self.mode(hang=False)
+        self.assertEqual(error.exception.winerror, 5)
+        self.assertTrue(json.loads(path.read_text(encoding='utf-8'))['hang'])
 
     def launches(self):
         path = self.home / "launches.jsonl"

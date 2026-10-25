@@ -343,7 +343,7 @@ class CodexToolsTests(unittest.TestCase):
         tools = codex_tools.CodexTools(self.home, "codex-crew", send_message=sender)
         result = self.call("crew_send_message", {"to": "reviewer", "text": "Review please"},
                            tools=tools, threadId="foreign-crew")
-        sender.assert_called_once_with("codex-crew", "claude-crew", "Review please")
+        sender.assert_called_once_with("codex-crew", "claude-crew", "Review please", kind='information')
         self.assertEqual(result["from_session_id"], "codex-crew")
         self.assertEqual(result["to_session_id"], "claude-crew")
         self.assertTrue(result["receipt"]["queued"])

@@ -3,10 +3,7 @@ import hashlib
 import uuid
 
 from . import board, codex_client, goals, messaging
-
-KINDS = frozenset(('task', 'result', 'blocker', 'decision', 'user_answer', 'information', 'ack'))
-ACTIONABLE = KINDS - {'information', 'ack'}
-
+from .message_receipts import ACTIONABLE, KINDS
 
 @goals.atomic
 def queue(conn, sender_id, target_id, text, execution_id, *, message_id=None, kind='information'):
@@ -19,16 +16,16 @@ def queue(conn, sender_id, target_id, text, execution_id, *, message_id=None, ki
     goals._member(conn, goal, target_id)
     if kind == 'task' and sender_id != goal['leader_session_id']:
         raise board.BoardError('任务分配由本目标 leader 负责')
-    gate = goals.dispatch_check(conn, goal['id'], execution_id=execution_id)
-    if kind in ACTIONABLE and not gate['allowed']:
-        raise board.Conflict(gate['reason'])
-    receipt = messaging.queue_record(conn, sender_id, target_id, text, message_id)
+    receipt = messaging.queue_record(conn, sender_id, target_id, text, message_id, kind=kind)
     identity = receipt['message_id']
     old = conn.execute('SELECT * FROM goal_message_meta WHERE message_id=?', (identity,)).fetchone()
     if old:
         if old['source_execution'] != execution_id or old['kind'] != kind:
             raise board.Conflict('消息编号的执行或类型已改变')
-        return {**receipt, 'status': old['status']}
+        return messaging.receipt(conn, identity)
+    gate = goals.dispatch_check(conn, goal['id'], execution_id=execution_id)
+    if kind in ACTIONABLE and not gate['allowed']:
+        raise board.Conflict(gate['reason'])
     # The same result sent with a new transport id is still one event.
     fingerprint = hashlib.sha256((execution_id + ':' + target_id + ':' + kind + ':' + text.strip()).encode()).hexdigest()
     duplicate = conn.execute('SELECT message_id FROM goal_message_meta WHERE idempotency_key=?', (fingerprint,)).fetchone()
@@ -40,9 +37,7 @@ def queue(conn, sender_id, target_id, text, execution_id, *, message_id=None, ki
                  (identity, goal['id'], execution['round'], execution['requirement_version'], execution_id, kind,
                   goal['id'] + ':' + str(execution['round']), fingerprint if not duplicate else uuid.uuid4().hex,
                   int(kind in ('task', 'blocker', 'decision')), int(kind == 'task'), status, at, at))
-    if status == 'archived':
-        messaging.mark_delivered(conn, identity)
-    return {**receipt, 'status': status}
+    return messaging.receipt(conn, identity)
 
 
 def _failed(conn, message, error):
@@ -71,7 +66,6 @@ def deliver(controller, conn):
                 continue
             conn.execute("UPDATE goal_message_meta SET status='archived',error=?,updated_at=? WHERE message_id=?",
                          (gate['reason'], board._time(None), message['message_id']))
-            messaging.mark_delivered(conn, message['message_id'])
             continue
         target = controller.current(conn, message['goal_id'], message['target_session_id'])
         if target and controller.manager.busy(target['id']):
@@ -115,5 +109,5 @@ def deliver(controller, conn):
         for item in selected:
             conn.execute("UPDATE goal_message_meta SET status='accepted',target_execution=?,accepted_at=?,error=NULL WHERE message_id=?",
                          (result.get('execution_id'), board._time(None), item['message_id']))
-            messaging.mark_delivered(conn, item['message_id'])
+            messaging.mark_delivered(conn, item['message_id'], accepted=True)
         blocked.add((goal_id, target_id))

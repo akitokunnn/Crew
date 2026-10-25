@@ -328,8 +328,10 @@ class Journal:
             self.emit("compact", pre_tokens=metadata["pre_tokens"], post_tokens=metadata["post_tokens"])
         elif kind == "result":
             if record.get("is_error"):
-                self.emit("error", text="\n".join(record.get("errors", [])) or record.get("result") or record["subtype"])
+                self.emit("error", text="\n".join(record.get("errors", [])) or record.get("result") or record.get("subtype", "Claude 本轮执行失败"))
             if not record.get("parent_tool_use_id"):
+                self.emit("turn_result", status="failed" if record.get("is_error") else "completed",
+                          success=not bool(record.get("is_error")))
                 self.set_status("idle")
         elif kind == "command_lifecycle" and record["state"] == "started" and not record.get("parent_tool_use_id"):
             self.set_status("working")
@@ -357,6 +359,7 @@ class Running:
         self.applied = None
         self.context = None
         self.pending_compact = False
+        self.stop_reason = None
         self.stderr = collections.deque(maxlen=20)
         self.reader_done = threading.Event()
         self.pending_native_accept = None
@@ -553,6 +556,7 @@ class Manager:
             return subagents.snapshot(journal.subagents, active_root, runtime)
 
     def _read(self, session_id, current):
+        code = None
         try:
             current.journal.bind_claude_subagents(getattr(current, 'native_id', session_id))
             for line in current.process.stdout:
@@ -610,13 +614,19 @@ class Manager:
                     current.journal.emit("error", text="Claude 协议错误：" + str(exc))
             code = current.process.wait()
             current.stderr_reader.join(timeout=1)
-            if code:
-                current.journal.emit("error", text="Claude 退出（%s）：%s" % (code, "\n".join(current.stderr)))
+            with current.input_lock:
+                if code and current.stop_reason is None:
+                    current.journal.emit("error", text="Claude 退出（%s）：%s" % (code, "\n".join(current.stderr)))
+                elif not code and current.stop_reason is None and current.journal.status == "working":
+                    current.journal.emit("error", text="Claude 会话连接已结束，本轮未完成")
         except (OSError, ValueError) as exc:
             current.journal.emit("error", text=str(exc))
         finally:
             try:
                 with current.input_lock:
+                    if current.journal.status == "working":
+                        current.journal.emit("turn_result", status="interrupted" if current.stop_reason else "failed",
+                                             success=False, reason=current.stop_reason or "process_exit", exit_code=code)
                     if current.pending_compact:
                         current.pending_compact = False
                         current.journal.emit("compact_cancelled", reason="会话进程已退出，取消这一轮结束后的压缩")
@@ -706,9 +716,9 @@ class Manager:
                             goals.request_pause(conn, old['goal_id'], manual=False, reason='该人员切换到另一个执行')
                         else:
                             goals.set_execution_status(conn, previous, 'paused')
+                self.stop_managed(previous, reason='identity_handoff')
                 self.journal(previous).emit('identity_handoff', session_id=sid, target_execution=key,
-                                            text='当前 Crew 身份已转交执行；保留此段历史，旧原生进程停止。')
-                self.stop_managed(previous)
+                                            text='旧原生进程已停止，此 Crew 身份将使用独立执行；新执行状态以对应任务为准。')
                 if self.auto_candidates is not None:
                     self.auto_candidates.pop(previous, None)
                 if previous != sid:
@@ -897,7 +907,7 @@ class Manager:
                 from . import goal_messages
                 return goal_messages.queue(conn, sender_id, target_id, text, execution_id,
                                            message_id=message_id, kind=kind)
-            return messaging.queue(conn, sender_id, target_id, text, message_id=message_id)
+            return messaging.queue(conn, sender_id, target_id, text, message_id=message_id, kind=kind)
 
     def deliver_messages(self):
         """Deliver only to an idle owned runtime, or resume a confirmed offline one."""
@@ -926,23 +936,35 @@ class Manager:
                 body = messaging.text(conn, message)
                 try:
                     if active is not None:
-                        self.goal_controller.send(active['goal_id'], sid, body, display_text=message['body'], source='peer',
+                        result = self.goal_controller.send(active['goal_id'], sid, body, display_text=message['body'], source='peer',
                             identity='peer:' + message['id'], sender=sender['crew_name'])
-                    elif self.running(sid):
-                        self._send(sid, body, display_text=message["body"], source="peer",
-                                   identity="peer:" + message["id"], sender=sender["crew_name"])
                     else:
-                        self._resume(conn, target, body, sender=sender["crew_name"],
-                                     identity="peer:" + message["id"], source="peer", display_text=message["body"])
-                    messaging.mark_delivered(conn, message["id"])
+                        # Reuse the same durable input identity on retry. A lost
+                        # pipe/RPC receipt must never resubmit an uncertain input.
+                        result = self.send(target, body, display_text=message['body'], source='peer',
+                                           identity='peer:' + message['id'], sender=sender['crew_name'])
+                    if not isinstance(result, dict) or result.get('accepted') is not True:
+                        raise board.Conflict('执行输入尚无确认的接收回执')
+                    messaging.mark_delivered(conn, message["id"], accepted=True)
                     self.message_wait_errors.pop(message["id"], None)
-                except (board.BoardError, OSError, ValueError) as exc:
+                except (board.BoardError, codex_client.CodexError, OSError, ValueError) as exc:
                     # External CC sessions receive through their next hook. Keep
                     # mail durable when liveness is unknown; never start a copy.
-                    if not isinstance(exc, board.Conflict) and self.message_wait_errors.get(message["id"]) != str(exc):
-                        self.message_wait_errors[message["id"]] = str(exc)
-                        board.record_event(conn, "peer:delivery_wait", target["project"], sid,
-                                           {"id": message["id"], "reason": str(exc)})
+                    reason = type(exc).__name__ + ': ' + str(exc)
+                    storage_id = active['id'] if active else sid
+                    if self.path(storage_id).exists():
+                        previous = self.journal(storage_id).inputs.get('peer:' + message['id'])
+                        if previous and previous.get('status') == 'unknown' and previous.get('detail'):
+                            original = previous.get('error', 'InputReceiptUnknown') + ': ' + previous['detail']
+                            if original != reason:
+                                reason = original + '；当前状态：' + reason
+                    if self.message_wait_errors.get(message['id']) != reason:
+                        self.message_wait_errors[message["id"]] = reason
+                        conn.execute('UPDATE peer_messages SET error=? WHERE id=?',
+                                     ('DeliveryWaiting: ' + reason, message['id']))
+                        if not isinstance(exc, board.Conflict):
+                            board.record_event(conn, "peer:delivery_wait", target["project"], sid,
+                                               {"id": message["id"], "reason": reason})
 
     @_admitted
     def send(self, session, text, source='human', identity=None, images=None, display_text=None, sender=None):
@@ -1344,13 +1366,16 @@ class Manager:
                 current.process.stdin.flush()
         return {"ok": True}
 
-    def stop_managed(self, session_id):
+    def stop_managed(self, session_id, *, reason='managed_stop'):
         """Terminate an owned process, including busy turns, and drain its output."""
         with self.lock:
             current = self.processes.get(session_id)
             if current is None:
                 return
             if getattr(current, "runtime", "claude") == "codex":
+                with current.input_lock:
+                    if current.process.poll() is None:
+                        current.stop_reason = reason
                 current.close()
                 if not current.reader_done.wait(10):
                     raise board.BoardError("Codex 进程已关闭，但输出尚未排空")
@@ -1358,7 +1383,12 @@ class Manager:
             with current.input_lock:
                 current.pending_compact = False
                 if current.process.poll() is None:
-                    current.process.terminate()
+                    current.stop_reason = reason
+                    try:
+                        current.process.terminate()
+                    except OSError:
+                        current.stop_reason = None
+                        raise
             try:
                 current.process.wait(timeout=10)
             except subprocess.TimeoutExpired as exc:
@@ -1400,7 +1430,7 @@ class Manager:
                         self.interrupt(key)
                     except (board.BoardError, codex_client.CodexError, OSError) as exc:
                         self.journal(key).emit('error', text='原生中断未确认，继续关闭托管进程：' + str(exc))
-                self.stop_managed(key)
+                self.stop_managed(key, reason='user_stop')
                 if self.auto_candidates is not None:
                     self.auto_candidates.pop(key, None)
             external_claude = set()
@@ -1457,7 +1487,13 @@ class Manager:
                     raise board.BoardError("Codex 进程输出尚未排空")
                 return
             with current.input_lock:
-                current.process.stdin.close()
+                if current.process.poll() is None:
+                    current.stop_reason = 'detach'
+                try:
+                    current.process.stdin.close()
+                except OSError:
+                    current.stop_reason = None
+                    raise
             try:
                 current.process.wait(timeout=10)
             except subprocess.TimeoutExpired as exc:
@@ -1476,7 +1512,12 @@ class Manager:
                         current.close()
                     else:
                         with current.input_lock:
-                            current.process.stdin.close()
+                            current.stop_reason = 'service_close'
+                            try:
+                                current.process.stdin.close()
+                            except OSError:
+                                current.stop_reason = None
+                                raise
             for journal in self.journals.values():
                 with journal.condition:
                     journal.condition.notify_all()

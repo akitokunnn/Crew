@@ -97,8 +97,8 @@ class ManagedRuntimeTests(ShellFixture, unittest.TestCase):
         current = FakeCodex(self.home, PLUGIN, {}, {}, {}, self.manager.journal('s1'), None)
         self.manager.processes['s1'] = current
         current.journal.set_status('working')
-        receipt = self.manager.send_message('s3', 's1', '继续已批准的任务', message_id='stable-call')
-        again = self.manager.send_message('s3', 's1', '继续已批准的任务', message_id='stable-call')
+        receipt = self.manager.send_message('s3', 's1', '继续已批准的任务', message_id='stable-call', kind='task')
+        again = self.manager.send_message('s3', 's1', '继续已批准的任务', message_id='stable-call', kind='task')
         self.assertEqual(receipt['message_id'], again['message_id'])
         self.manager.deliver_messages()
         self.assertEqual(current.calls, [])

@@ -367,6 +367,7 @@
     const ended = stopped && ({handoff:["已转交执行", "当前会话已转交执行，原工具调用未返回结果。"],
       interrupted:["本轮已中断", "本轮已中断，未收到此工具的结果。"],
       failed:["本轮失败", "本轮执行失败，未收到此工具的结果。"],
+      offline:["会话已离线", "会话已离线，未收到此工具的结果，结果未确认。"],
       ended:["本轮已结束", "本轮已结束，未收到此工具的结果。"]})[stopped];
     const goalId = stopped === "handoff" && block.name === "crew_goal" && typeof block.input.goal_id === "string" ? block.input.goal_id : null;
     const foldKey = `tool:${block.id}`;
@@ -488,14 +489,23 @@
       if (owner) owner.lastSeq = event.seq;
     }
     else if (event.type === "identity_handoff" || event.type === "turn_result") {
-      const stopped = event.type === "identity_handoff" ? "handoff" : event.status === "interrupted" ? "interrupted" : event.status === "failed" ? "failed" : "ended";
+      const stopped = event.type === "identity_handoff" || event.reason === "identity_handoff" ? "handoff" : event.status === "interrupted" ? "interrupted" : event.status === "failed" ? "failed" : "ended";
       for (const [id, owner] of context.toolOwners) {
         if (!context.results.has(id) && !context.toolStops.has(id)) {
           context.toolStops.set(id, stopped); owner.lastSeq = event.seq;
         }
       }
     }
-    else if (event.type === "status") { setBusy(context, event.status === "working", event.seq); if (incremental && context.goalId != null) context.onExecutionChange?.(); }
+    else if (event.type === "status") {
+      // Historical journals may predate terminal-turn events. Offline means the
+      // carrier is gone; it does not establish a tool's success or failure.
+      if (event.status === "offline") for (const [id, owner] of context.toolOwners) {
+        if (!context.results.has(id) && !context.toolStops.has(id)) {
+          context.toolStops.set(id, "offline"); owner.lastSeq = event.seq;
+        }
+      }
+      setBusy(context, event.status === "working", event.seq); if (incremental && context.goalId != null) context.onExecutionChange?.();
+    }
     else if (event.type === "compact_request" || event.type === "compact") {
       context.items.push({...event, id:`${event.type}:${event.seq}`, kind:event.type, lastSeq:event.seq});
       if (incremental && event.type === "compact") notifyCompact(context.session.session_id, event, context.toast);

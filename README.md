@@ -94,7 +94,7 @@ Claude 协作会话建议统一权限模式；`/crew:trust` 用于 Claude 的工
 | 和某个下属聊 | 总览或本组关系树点本人进入对话；资料与操作中查看范围、记录和载体。已由外部工具运行的会话需先结束外部进程再接管 |
 | 给成员更换执行工具 | 卡片或菜单点“更换…”，选择 CC/Codex 和兼容模型，检查交接内容及用量提示；确认后下次发消息/唤醒才启动，原生历史分别保留 |
 | 开一个新下属 | 让 leader 开；或命令行 `crew spawn --name 姿势 --group 感知 --task "<任务>" --runtime codex`，需要独立 worktree 时加 `--new-worktree feature/pose`；不写执行工具则继承 leader |
-| 跨工具发消息 | 已加入 Crew 的会话用 `crew send <名字> "<内容>"`，Codex 也有 `crew_send_message` 动态工具；忙时排队，外部 Claude 会话在下一次 hook 收取 |
+| 跨工具发消息 | 已加入 Crew 的会话用 `crew send <名字> "<内容>" --kind decision`，Codex 也有 `crew_send_message` 动态工具；需要行动的消息忙时排队，默认 information 只归档、不唤醒 |
 | 找人、叫醒离线下属 | `crew wake 姿势 "<接着做什么>"` 后台续跑原会话。leader 可联系同项目其他 leader，成员可给自己的 leader 排唤醒通知；跨组改计划先找对方 leader |
 | 下属跑歪了 | 任务输入区“中断本轮”保留会话；菜单“停止此人”确认托管进程退出，排队消息不能复活。外部 VS Code 会话去原工具停止 |
 | 收尾 | 目标每轮生成最终报告；成员与历史保留，后续可复用。明确不再需要时手动归档（可撤销），VS Code 的归档仍同步 |
@@ -158,7 +158,7 @@ QQ 命令不分大小写、忽略首尾空白：`/help`（`/h`）帮助，`/proj
 | `crew group list` / `crew roster add\|remove\|move` | 分组和花名册 |
 | `crew leader start --name <名字> --task "<目标>" [--runtime claude\|codex]` / `crew leader close <组名>` | 通过正在运行的服务开 leader / 收一个分组；`start --dry-run` 只看计划 |
 | `crew spawn --name <名字> --group <组名> --task "<任务>" [--runtime claude\|codex]` | 开后台成员；同工具时继承 leader 的模型设置，跨工具重新选择；`--dry-run` 只看计划 |
-| `crew send <名字> "<消息>"` | Crew 会话按名字或 Crew 会话 ID 投递，支持 Claude / Codex 混合协作 |
+| `crew send <名字> "<消息>" [--kind task\|result\|blocker\|decision\|information] [--message-id <重试编号>]` | 按 Crew 名字或 ID 寻址；多行正文也可用 `--text-file <UTF-8文件>` 代替消息参数；默认 information 只归档 |
 | `crew wake <名字> "<消息>"` | leader 或用户叫醒离线组员；leader 找别的 leader、组员找自己的 leader 时排通知，空闲时送达；用户找 leader 直接在页面聊；服务未运行或组员进程状态未知时报错 |
 | `crew compact [<名字>]` | 通过网页服务压缩自己的组员，用户也可指定会话；网页 leader 不带名字或指定自己时，等这一轮说完后压缩 |
 | `crew stop <名字或会话ID>` | 停止自己或本组成员的 Crew 托管执行；用户可指定项目内人员。确认退出并保留停止门槛，队列不能自动恢复 |
@@ -230,7 +230,7 @@ Git 管理员可以自行定分支规则、推功能分支、开 PR、CI 绿后�
 ## 已知限制
 
 - 开在 VS Code 里的下属，网页只能看状态和卡片，不能发消息、也停不下它正在跑的一轮。
-- 混合工具消息使用 `crew send` / `crew_send_message`；Claude 原生 SendMessage 不能直接寻址 Codex。离线成员用 `crew wake <名字> "<要它做的事>"` 恢复原会话；VS Code、终端或后台仍有活进程时拒绝重复启动，进程状态未知时也拒绝启动。
+- 混合工具消息使用 `crew send` / `crew_send_message`，明确指定 task、result、blocker 或 decision；默认 information 和 ack 仅归档，不会唤醒对方。回执“已交给执行输入”不代表模型已读或任务完成。Claude 原生 SendMessage 不能直接寻址 Codex。离线成员用 `crew wake <名字> "<要它做的事>"` 恢复原会话；VS Code、终端或后台仍有活进程时拒绝重复启动，进程状态未知时也拒绝启动。
 - **被叫醒的会话如果 VS Code 里还留着旧标签，不要在旧标签里直接打字**，否则可能两个进程同时写一个会话；要接过去请用网页卡片上的“在 VS Code 打开”。
 - 服务启动后会续跑聊天日志最后状态仍是 working 的未归档会话；用户停止或手动暂停的不会自动恢复。如果原进程还活着，等它退出再续跑，最多等 30 分钟。idle / offline 的不自动续跑。
 - Claude 在线会话的权限模式不同时，原生 SendMessage 可能等人批准；后台会话使用设置页选择的原生权限模式，并保留 Crew 守卫。项目的信任目标不会替代执行工具的权限配置。

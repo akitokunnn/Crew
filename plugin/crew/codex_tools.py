@@ -12,7 +12,9 @@ The host must construct a separate handler for each registered Crew session.
 
 ``send_message(sender_session_id, target_session_id, text)`` is a host callback.
 It receives *Crew* identities, after same-project validation, and must return a
-JSON-serializable receipt with ``ok is True`` only after actual acceptance. The
+JSON-serializable receipt with ``ok is True`` after durable router acceptance.
+The receipt's status separates archived, queued and accepted execution input;
+accepted input does not prove the model has read, answered or completed it. The
 host owns runtime routing, wake/queue semantics and trusted sender attribution;
 this module does not claim that Claude SendMessage can address Codex. A missing,
 failed or ambiguous callback produces a failed tool result.
@@ -28,7 +30,7 @@ import json
 from pathlib import Path
 import sqlite3
 
-from . import board, decision_briefs, documents, goal_actions, goals, guard, runtimes, store, todo
+from . import board, decision_briefs, documents, goal_actions, goals, guard, message_receipts, runtimes, store, todo
 
 
 class ToolError(ValueError):
@@ -157,8 +159,10 @@ _SPECS = [
     _spec("crew_reports", "Read progress reports from this project. Optionally filter by a "
           "group in this project.", {"group": _text("Crew group name.", max_length=512)}),
     _spec("crew_send_message", "Send through Crew's host router to a colleague in this project. "
-          "Crew identity determines the recipient across Claude and Codex. Sending information "
-          "does not grant permission to change another group's plan.",
+          "Choose kind explicitly: decision for an approved decision, task for a work instruction, result for evidence, blocker for a real blocker. "
+          "Default information and ack are archived without waking the recipient. Read receipt.status: archived is NOT delivered, queued is NOT accepted input; "
+          "accepted is execution-input handoff, not proof the model has read, answered or completed it. Do not repeat a successful operation. "
+          "Crew identity determines the recipient across Claude and Codex; a message grants no new user authorization.",
           {"to": _TARGET, "text": _text("Message body; the host supplies the trusted sender."),
            'kind': {'type': 'string', 'enum': ['task','result','blocker','decision','user_answer','information','ack']}},
           ("to", "text")),
@@ -496,13 +500,13 @@ class CodexTools:
             if self._send_message is None:
                 raise ToolError("delivery_unavailable", "The host has no Crew message router")
             try:
-                if 'kind' in args or self._execution_id is not None:
-                    receipt = self._send_message(sid, target['session_id'], args['text'], kind=args.get('kind', 'information'))
-                else:
-                    receipt = self._send_message(sid, target["session_id"], args["text"])
+                receipt = self._send_message(sid, target['session_id'], args['text'], kind=args.get('kind', 'information'))
+            except board.BoardError as exc:
+                raise ToolError('delivery_conflict' if isinstance(exc, board.Conflict) else 'delivery_failed', str(exc)) from None
             except Exception:
                 raise ToolError("delivery_failed", "The host could not accept the Crew message") from None
             if not isinstance(receipt, dict) or receipt.get("ok") is not True:
                 raise ToolError("delivery_failed", "The host did not confirm acceptance of the Crew message")
+            receipt = message_receipts.normalize(receipt, kind=args.get('kind', 'information'))
             return {"from_session_id": sid, "to_session_id": target["session_id"], "receipt": receipt}
         raise ToolError("unknown_tool", "Unsupported Crew tool")

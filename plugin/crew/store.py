@@ -28,7 +28,38 @@ def connect(home):
     conn.executescript(SCHEMA_FILE.read_text(encoding="utf-8"))
     _migrate_channel_digests(conn)
     _migrate_remote_notice_source(conn)
+    _migrate_peer_message_receipts(conn)
     return conn
+
+
+def _migrate_peer_message_receipts(conn):
+    """Add mail intent and native-input receipts without rebuilding old mail."""
+    required = {'kind', 'accepted'}
+    columns = {row['name'] for row in conn.execute('PRAGMA table_info(peer_messages)')}
+    if required <= columns:
+        return
+    conn.execute('BEGIN IMMEDIATE')
+    try:
+        # Another connector may have added these columns while this one waited.
+        columns = {row['name'] for row in conn.execute('PRAGMA table_info(peer_messages)')}
+        missing = required - columns
+        if 'kind' in missing:
+            conn.execute('ALTER TABLE peer_messages ADD COLUMN kind TEXT')
+        if 'accepted' in missing:
+            conn.execute('ALTER TABLE peer_messages ADD COLUMN accepted INTEGER NOT NULL DEFAULT 0')
+        # Existing goal metadata is the only typed evidence in the old schema.
+        # archived/delivered_at never proves that native input was accepted.
+        if 'kind' in missing:
+            conn.execute('UPDATE peer_messages SET kind=(SELECT m.kind FROM goal_message_meta m '
+                         'WHERE m.message_id=peer_messages.id) WHERE EXISTS '
+                         '(SELECT 1 FROM goal_message_meta m WHERE m.message_id=peer_messages.id)')
+        if 'accepted' in missing:
+            conn.execute("UPDATE peer_messages SET accepted=1 WHERE EXISTS "
+                         "(SELECT 1 FROM goal_message_meta m WHERE m.message_id=peer_messages.id AND m.status='accepted')")
+        conn.commit()
+    except sqlite3.Error:
+        conn.rollback()
+        raise
 
 
 def _migrate_remote_notice_source(conn):

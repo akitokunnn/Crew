@@ -1,2 +1,5 @@
 # Generated SVG bytes are hashed by the icon manifest; preserve generator LF.
 desktop/assets/crew.svg -text
+# Keep the upstream launcher and license bytes reproducible on Windows.
+plugin/crew/vendor/distlib/*.exe -text
+plugin/crew/vendor/distlib/*.txt text eol=lf

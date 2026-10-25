@@ -405,9 +405,38 @@ class CodexRuntimeTests(unittest.TestCase):
         first = handler(params)
         self.assertTrue(first["success"])
         self.assertEqual(handler(params), first)
-        router.assert_called_once_with("worker", "receiver", "done", message_id="codex:native-1:tool-1")
+        router.assert_called_once_with("worker", "receiver", "done", message_id="codex:native-1:tool-1", kind="information")
         self.assertFalse(handler({**params, "arguments": {"to": "receiver", "text": "different"}})["success"])
         self.assertFalse(handler({**params, "threadId": "other"})["success"])
+
+    def test_general_codex_message_keeps_explicit_decision_kind_and_host_retry_key(self):
+        router = mock.Mock(return_value={"ok": True, "message_id": "queued-decision", "status": "queued"})
+        _, client = self.make_running(router=router)
+        result = client.kwargs['tool_handler']({"threadId": "native-1", "callId": "decision", "tool": "crew_send_message",
+            "arguments": {"to": "receiver", "text": "第一点\n第二点", "kind": "decision"}})
+        self.assertTrue(result['success'])
+        router.assert_called_once_with('worker', 'receiver', '第一点\n第二点',
+                                       message_id='codex:native-1:decision', kind='decision')
+
+    def test_host_handoff_close_has_an_explicit_reason_without_a_crash_error(self):
+        running, _ = self.make_running()
+        running.send('work', 'handoff-input')
+        running.stop_reason = 'identity_handoff'
+        running.close()
+        self.assertTrue(running.reader_done.wait(2))
+        self.assertFalse([event for event in running.journal.events if event['type'] == 'error'])
+        terminal = [event for event in running.journal.events if event['type'] == 'turn_result'][-1]
+        self.assertEqual((terminal['status'], terminal['reason']), ('interrupted', 'identity_handoff'))
+
+    def test_close_after_native_has_already_died_cannot_hide_the_failure(self):
+        running, client = self.make_running()
+        running.send('work', 'died-input')
+        client.process.returncode = 1
+        running.close()
+        self.assertTrue(running.reader_done.wait(2))
+        terminal = [event for event in running.journal.events if event['type'] == 'turn_result'][-1]
+        self.assertEqual(terminal['status'], 'failed')
+        self.assertTrue(any('连接已结束' in event.get('text', '') for event in running.journal.events))
 
     def test_interrupt_and_archive_close_do_not_report_success(self):
         running, client = self.make_running()

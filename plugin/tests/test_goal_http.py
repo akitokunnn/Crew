@@ -44,6 +44,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
             'session_id': 's3', 'text': 'General discussion before a concrete goal.', 'message_id': 'general-before-goal'})
         self.assertEqual(code, 200, result)
         old = self.processes[-1]
+        old.terminate = lambda: old.finish(1)
         goal = self.goal()
         code, result, _ = self.request('/api/goals/action?project=demo', {
             'goal_id': goal['id'], 'action': 'start', 'version': goal['version']})
@@ -53,6 +54,24 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.assertIn('General discussion before a concrete goal.', self.server.service.chat.path('s3').read_text(encoding='utf-8'))
         execution = self.conn.execute('SELECT id FROM goal_executions WHERE goal_id=?', (goal['id'],)).fetchone()[0]
         self.assertTrue(self.server.service.chat.running(execution))
+        events = self.server.service.chat.journal('s3').events
+        self.assertFalse([event for event in events if event['type'] == 'error'])
+        self.assertEqual([event['reason'] for event in events if event['type'] == 'turn_result'], ['identity_handoff'])
+        self.assertLess(next(event['seq'] for event in events if event['type'] == 'status' and event['status'] == 'offline'),
+                        next(event['seq'] for event in events if event['type'] == 'identity_handoff'))
+
+    def test_failed_identity_stop_does_not_claim_handoff_or_launch_another_native(self):
+        self.assertEqual(self.request('/api/chat/send?project=demo', {
+            'session_id': 's3', 'text': 'general', 'message_id': 'before-failed-stop'})[0], 200)
+        goal = self.goal()
+        with mock.patch.object(self.server.service.chat, 'stop_managed', side_effect=board.BoardError('still running')):
+            code, result, _ = self.request('/api/goals/action?project=demo', {
+                'goal_id': goal['id'], 'action': 'start', 'version': goal['version']})
+        self.assertNotEqual(code, 200)
+        self.assertIn('still running', str(result))
+        self.assertEqual(len(self.processes), 1)
+        self.assertFalse([event for event in self.server.service.chat.journal('s3').events
+                          if event['type'] == 'identity_handoff'])
 
     def test_stable_identity_user_and_peer_messages_reach_live_goal_not_general_history(self):
         goal = self.goal()
@@ -68,7 +87,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(len(self.processes), 1)
         self.finish_turn(execution, process)
         manager = self.server.service.chat
-        peer = manager.send_message('s1', 's3', 'Measured result from the member.', message_id='unscoped-peer')
+        peer = manager.send_message('s1', 's3', 'Measured result from the member.', message_id='unscoped-peer', kind='result')
         manager.deliver_messages()
         messages = [event for event in manager.journal(execution).events if event.get('type') == 'message']
         self.assertTrue(any(event.get('id') == 'peer:' + peer['message_id'] for event in messages))

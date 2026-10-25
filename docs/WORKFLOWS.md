@@ -8,13 +8,21 @@
 crew leader start --name 感知 --task "交付感知模块" --runtime codex
 crew spawn --name 检查 --group 感知 --task "检查接口并报告" --runtime claude
 # 以下两条由已加入 Crew 的成员或 leader 会话执行，使用它自己的会话身份：
-crew send 感知 "检查完成，接口一致"
+crew send 感知 "检查完成，接口一致" --kind result
 crew wake 感知 "需要处理本组交接"
 ```
 
 成员现在可以叫醒自己的 leader。叫醒通知会排队等 leader 空闲；不能叫醒其他组的 leader。原有 leader 的跨组协调权限保持不变。
 
-混合工具消息使用 `crew send`；Codex 另有同等的 `crew_send_message` 动态工具。消息绑定 Crew 身份，忙时保存在数据库，空闲后投递；外部 Claude 会话通过下一次 hook 收取。原生 Claude `SendMessage` 不负责寻址 Codex。
+混合工具消息使用 `crew send`；Codex 另有同等的 `crew_send_message` 动态工具。消息绑定 Crew 身份，需要对方行动时明确指定 `--kind task|result|blocker|decision`（原生工具使用 `kind`）；默认 `information` 和 `ack` 只归档、不投递或唤醒。执行消息忙时排队，空闲后投递；外部 Claude 会话通过下一次 hook 收取。回执区分仅归档、已排队与已交给执行输入；最后一种仍不代表模型已读或任务完成。同一次重试保留 `--message-id`，相同编号不能换内容或类型。原生 Claude `SendMessage` 不负责寻址 Codex。
+
+开始目标会停止同一 Crew 身份的旧原生进程，使用独立执行继续。旧对话中没有返回结果的工具显示交接或结果未确认，不自动重做命令。宿主主动停止产生的非零退出码属于中断；意外退出仍保留真实错误与 stderr。浏览器暂时断线不会据此结束仍在运行的工具。
+
+Windows 安装生成原生 `crew.exe` 入口，PowerShell 多行参数不再经过 `cmd.exe`。Windows PowerShell 5.1 自身仍可能改写原生参数中的 ASCII 引号；需要逐字保留正文时，使用 Codex 的结构化 `crew_send_message`，或把正文存为 UTF-8 文件再发送：
+
+```powershell
+crew send 文档施工 --text-file C:\Temp\拍板.txt --kind decision --message-id agents-decision-1
+```
 
 ## 拍板只留真正要用户选择的事
 
