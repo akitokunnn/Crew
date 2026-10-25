@@ -1,11 +1,14 @@
 'use strict';
 const { loopback } = require('./core.cjs');
+const { presentation } = require('./workspace-activity.cjs');
 
 // Each workspace owns one persistent document. Selecting a tab changes only
 // native visibility/focus; closing it never owns or stops a Crew backend.
 class WorkspaceTabs {
   constructor(window, { origin, createView, onChange = () => {}, onHome = () => {},
-    external = () => {}, openProject = () => {}, workspaceSettings = () => {}, onTitleChange = () => {}, onKeyboard = () => {}, onNavigationError = error => console.error('Workspace navigation failed:', error) }) {
+    external = () => {}, openProject = () => {}, workspaceSettings = () => {}, onTitleChange = () => {}, onKeyboard = () => {},
+    readActivity = null, setTimer = setInterval, clearTimer = clearInterval,
+    onNavigationError = error => console.error('Workspace navigation failed:', error) }) {
     if (!window?.contentView || typeof createView !== 'function') throw new TypeError('A window and view factory are required');
     this.window = window; this.origin = loopback(origin); this.createView = createView;
     this.onChange = onChange; this.onHome = onHome; this.external = external;
@@ -14,9 +17,29 @@ class WorkspaceTabs {
     this.onNavigationError = onNavigationError;
     this.entries = new Map(); this.activeId = 'home'; this.counter = 0; this.disposed = false;
     this.bounds = { x: 0, y: 76, width: 0, height: 0 };
+    this.readActivity=readActivity;this.activityBusy=false;this.clearTimer=clearTimer;
+    this.activityTimer=readActivity?setTimer(()=>{void this.refreshActivity();},5000):null;
+    this.activityTimer?.unref?.();
   }
 
-  _public(tab) { return { id: tab.id, name: tab.project.display_name || tab.project.name, project: tab.project.name, loading: tab.loading, error: tab.error }; }
+  _public(tab) { return { id: tab.id, name: tab.project.display_name || tab.project.name, project: tab.project.name, loading: tab.loading, error: tab.error,
+    activity:tab.activity||null }; }
+  async refreshActivity() {
+    if(this.disposed||this.activityBusy||!this.readActivity||!this.entries.size)return;
+    this.activityBusy=true;const tabs=[...this.entries.values()];let changed=false;
+    try{
+      const result=await this.readActivity(tabs.map(tab=>tab.project.name));
+      if(!Array.isArray(result?.projects))throw Error('项目动态返回格式不正确');
+      for(const tab of tabs){
+        if(!this._alive(tab))continue;
+        const snapshot=result.projects.find(item=>item.project===tab.project.name);
+        if(!snapshot||snapshot.error){tab.activity=presentation(tab.activitySnapshot,true,snapshot?.error||'暂时没有读到项目动态');}
+        else{tab.activitySnapshot=snapshot;tab.activity=presentation(snapshot);}
+        changed=true;
+      }
+    }catch(error){for(const tab of tabs)if(this._alive(tab)){tab.activity=presentation(tab.activitySnapshot,true,error.message);changed=true;}}
+    finally{this.activityBusy=false;if(changed&&!this.disposed)this._notify();}
+  }
   state() {
     return { tabs: [{ id: 'home', name: '工作区', project: null, loading: false, error: false },
       ...[...this.entries.values()].map(tab => this._public(tab))], activeId: this.activeId };
@@ -130,6 +153,7 @@ class WorkspaceTabs {
     } catch (error) {
       if (this._alive(tab)) { this._error(tab); throw error; }
     }
+    void this.refreshActivity();
     return this._public(tab);
   }
 
@@ -207,6 +231,7 @@ class WorkspaceTabs {
   dispose() {
     if (this.disposed) return;
     this.disposed = true;
+    if(this.activityTimer!==null)this.clearTimer(this.activityTimer);
     for (const tab of this.entries.values()) {
       this.window.contentView.removeChildView(tab.view);
       if (!tab.view.webContents.isDestroyed()) tab.view.webContents.close();
