@@ -6,7 +6,7 @@ import threading
 import unittest
 from urllib.request import urlopen
 
-from crew import board, chat, codex_runtime, codex_subagents, goals, store, web
+from crew import board, chat, codex_runtime, codex_subagents, goals, store, subagents, web
 from tests import test_codex_runtime as helpers
 
 
@@ -70,12 +70,12 @@ class ChildEventsTests(unittest.TestCase):
     def test_saved_tasks_are_running_only_for_the_same_live_native_and_restarted_work_resets_elapsed_time(self):
         tasks = {}
         event = {**self.notify('item/completed', item=collab())[0], 'at': '2026-10-26T01:00:00Z'}
-        codex_subagents.apply_task(tasks, event)
-        self.assertEqual(codex_subagents.snapshot(tasks, 'native-1')[0]['status'], 'running')
+        subagents.apply_task(tasks, event)
+        self.assertEqual(subagents.snapshot(tasks, 'native-1')[0]['status'], 'running')
         for active in (None, 'another-native'):
-            self.assertEqual(codex_subagents.snapshot(tasks, active)[0]['status'], 'unknown')
-        codex_subagents.apply_task(tasks, {**event, 'status': 'succeeded', 'at': '2026-10-26T01:01:00Z'})
-        codex_subagents.apply_task(tasks, {**event, 'at': '2026-10-26T02:00:00Z'})
+            self.assertEqual(subagents.snapshot(tasks, active)[0]['status'], 'unknown')
+        subagents.apply_task(tasks, {**event, 'status': 'succeeded', 'at': '2026-10-26T01:01:00Z'})
+        subagents.apply_task(tasks, {**event, 'at': '2026-10-26T02:00:00Z'})
         self.assertEqual(tasks['child-1']['started_at'], '2026-10-26T02:00:00Z')
         self.assertIsNone(tasks['child-1']['ended_at'])
 

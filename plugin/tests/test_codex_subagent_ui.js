@@ -22,3 +22,8 @@ test("leader and member nodes both include native child task rows while preservi
   const dispatch=ui.codexMarkup(task({source:"dispatch",status:"succeeded",ended_at:new Date().toISOString()}));
   assert(dispatch.includes('data-codex-source="dispatch"'));assert(dispatch.includes("xs ok"));
 });
+test("both carrier labels use the same task rows and distinguish their real source",()=>{
+  for(const [runtime,label] of [["claude","Claude 子代理"],["codex","Codex 子代理"]]){
+    const html=ui.codexMarkup(task({runtime}));assert(html.includes(label));assert(!html.includes(runtime==="claude"?"Codex 子代理":"Claude 子代理"));
+  }
+});

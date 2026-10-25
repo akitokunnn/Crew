@@ -637,7 +637,8 @@ class Service:
                                     self.now() - dt.timedelta(hours=24)]
                     codex = dict(codex=[{'id': t.get('id') or t['run_id'] or t['rollout_id'], **{key: t[key] for key in
                                         ('task_name', 'status', 'started_at', 'ended_at', 'duration_seconds')},
-                                        'source': t.get('source', 'dispatch'), 'detail': t.get('detail')}
+                                        'source': t.get('source', 'dispatch'), 'detail': t.get('detail'),
+                                        'runtime': t.get('runtime', 'codex')}
                                        for t in recent_tasks],
                                  codex_older=len(own_tasks) - len(recent_tasks))
                     if session['role'] == 'leader':
