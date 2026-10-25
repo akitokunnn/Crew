@@ -20,7 +20,7 @@ from urllib.parse import parse_qs, quote, urlencode, urlsplit
 from urllib.request import ProxyHandler, build_opener
 from urllib.error import HTTPError, URLError
 
-from . import board, channel, channel_digest, chat, claude_limits, codex_runtime, documents, git_admin, git_ci, git_view, goal_api, goals, hooks, maintenance, messaging, models, notifications, open_session, presentation, runtime_catalog, runtime_switch, runtimes, session_ops, settings, spawn, store, themes, todo, trust_mode, updater, usage, usage_cli, vscode_sessions, workspace_execution, workspace_settings
+from . import board, channel, channel_digest, chat, claude_limits, codex_runtime, documents, git_admin, git_ci, git_view, goal_api, goals, hooks, maintenance, messaging, models, notifications, open_session, presentation, runtime_catalog, runtime_switch, runtimes, session_library, session_ops, settings, spawn, store, themes, todo, trust_mode, updater, usage, usage_cli, vscode_sessions, workspace_execution, workspace_settings
 from .service_lock import HomeServiceLock
 from . import member_defaults, operations_chat, operations_settings
 from . import connections
@@ -500,22 +500,26 @@ class Service:
         return candidate
 
     def adopt(self, conn, project_name, candidate, name, group_name, now):
+        with board.transaction(conn):
+            return self._adopt(conn, project_name, candidate, name, group_name, now)
+
+    def _adopt(self, conn, project_name, candidate, name, group_name, now):
         sid = candidate["session_id"]
         if candidate["crew_name"]:
             if name.strip() != candidate["crew_name"]:
                 board.available_name(conn, project_name, name.strip(), session_id=sid)
             if group_name is not None:
-                board.roster(conn, project_name, "add", group_name, session_ids=[sid], now=now)
+                board.roster.__wrapped__(conn, project_name, "add", group_name, session_ids=[sid], now=now)
             if name.strip() != candidate["crew_name"]:
-                session_ops.rename(conn, sid, name, now=now)
+                session_ops.rename.__wrapped__(conn, sid, name, now=now)
         else:
             worktree, branch = hooks.git_details(candidate["cwd"])
-            board.register_session(conn, sid, project_name, candidate["cwd"], worktree, branch,
+            board.register_session.__wrapped__(conn, sid, project_name, candidate["cwd"], worktree, branch,
                                    name=name, group_name=group_name, now=now)
         with self.agents_lock:
             live = board.live_sessions(self.agents) if self.agents_error is None else {}
         cc_name = live[sid]["name"] if sid in live else None
-        session = board.update_cc_name(conn, sid, cc_name, now=now)
+        session = board.update_cc_name.__wrapped__(conn, sid, cc_name, now=now)
         leader = board.leader_of(conn, sid)
         if leader is not None:
             peer = any(runtimes.get(conn, s['session_id'])['runtime'] == 'codex' for s in (session, leader))
@@ -527,7 +531,7 @@ class Service:
                 notice = ('%s 已收编到你组。请用 crew send %s "<欢迎与分工>"，说明你是它的 leader，'
                           '请它阅读成员守则并用 crew card 写下负责范围和完成标准。离线时用 crew wake 接续原会话。' %
                           (session['crew_name'], session['crew_name']))
-            board.queue_leader_notice(conn, leader["session_id"],
+            board.queue_leader_notice.__wrapped__(conn, leader["session_id"],
                 notice,
                 "crew", now=now)
         return session
@@ -1288,6 +1292,9 @@ class Service:
             elif path == "/api/roster/adopt":
                 candidate = self.candidate(conn, project, _text(data, "session_id"))
                 return self.adopt(conn, project, candidate, _text(data, "name"), _optional_text(data, "group"), now)
+            elif path == '/api/session-library/adopt':
+                return session_library.adopt(self, conn, project, _text(data, 'key'),
+                                             _text(data, 'name'), _optional_text(data, 'group'), now)
             return {"ok": True}
 
     def archive_session(self, conn, session_id, removed=False, now=None):
@@ -1477,6 +1484,7 @@ POST_PATHS.update(('/api/admin/chat/send', '/api/admin/chat/interrupt', '/api/ad
 POST_PATHS.add('/api/admin/connection/prepare')
 POST_PATHS.update(('/api/connections/configure', '/api/connections/action', '/api/connections/preferences'))
 POST_PATHS.add('/api/native-approval')
+POST_PATHS.add('/api/session-library/adopt')
 POST_PATHS.update(('/api/maintenance/department/preview', '/api/maintenance/department/compact',
                    '/api/maintenance/cleanup/preview', '/api/maintenance/cleanup'))
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"),
@@ -1510,6 +1518,8 @@ STATIC.update({'/workspace-settings-ui.js': ('workspace-settings-ui.js', 'text/j
                '/workspace-settings-ui.css': ('workspace-settings-ui.css', 'text/css; charset=utf-8')})
 STATIC.update({'/native-approval-ui.js': ('native-approval-ui.js', 'text/javascript; charset=utf-8'),
                '/native-approval-ui.css': ('native-approval-ui.css', 'text/css; charset=utf-8')})
+STATIC.update({'/session-library.js': ('session-library.js', 'text/javascript; charset=utf-8'),
+               '/session-library.css': ('session-library.css', 'text/css; charset=utf-8')})
 STATIC.update({'/maintenance-ui.js': ('maintenance-ui.js', 'text/javascript; charset=utf-8'),
                '/maintenance-ui.css': ('maintenance-ui.css', 'text/css; charset=utf-8')})
 
@@ -1619,6 +1629,13 @@ class Handler(BaseHTTPRequestHandler):
                              'update_gate': service.chat.paused() is not None})
         elif url.path == "/api/state":
             self._send(200, service.state(query.get("project", [None])[0]))
+        elif url.path in ('/api/session-library', '/api/session-library/preview'):
+            with closing(store.connect(service.home)) as conn:
+                project = service.selected_project(conn, query.get('project', [None])[0])
+                scope = query.get('scope', ['project'])[0]
+                result = (session_library.preview(service, conn, project, query.get('key', [''])[0], scope)
+                          if url.path.endswith('/preview') else session_library.listing(service, conn, project, scope))
+                self._send(200, result)
         elif url.path in ('/api/goals', '/api/goal', '/api/goals/report'):
             with closing(store.connect(service.home)) as conn:
                 project = service.selected_project(conn, query.get('project', [None])[0])
