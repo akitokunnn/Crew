@@ -12,7 +12,7 @@ import sys
 import unittest
 from unittest import mock
 
-from crew import board, chat, codex_runtime, runtimes, settings, store, trust_mode
+from crew import board, chat, codex_runtime, runtimes, settings, store, trust_mode, workspace_settings
 
 
 class FakeProcess:
@@ -147,6 +147,39 @@ class CodexRuntimeTests(unittest.TestCase):
             settings.save_execution(conn, {'codex': 'read-only', 'claude': 'default'})
         self.assertEqual(start['sandbox'], 'danger-full-access')
         self.assertEqual([method for method, _ in client.calls], ['thread/start'])
+
+    def test_relinked_resume_uses_current_db_cwd_and_does_not_authorize_history_roots(self):
+        first, _ = self.make_running()
+        first.close()
+        self.assertTrue(first.reader_done.wait(2))
+        new_root = self.base / 'RelinkedCase'
+        new_root.mkdir()
+        with closing(store.connect(self.home)) as conn:
+            workspace_settings.apply_update(conn, 'demo', None, new_root, 0)
+            self.assertEqual({store.norm_path(root) for root in workspace_settings.read_roots(conn, 'demo', 'worker')},
+                             {store.norm_path(new_root), store.norm_path(self.root)})
+        old_spec = {'agent': None, 'cwd': str(self.root)}
+        running, client = self.make_running(resume=True, spec=old_spec)
+        method, params = client.calls[0]
+        self.assertEqual(method, 'thread/resume')
+        self.assertEqual(params['threadId'], 'native-1')
+        self.assertEqual(params['cwd'], str(new_root.resolve()))
+        self.assertEqual(client.kwargs['cwd'], str(new_root.resolve()))
+        self.assertEqual(running.session['cwd'], str(new_root.resolve()))
+        self.assertEqual(params['sandbox'], 'workspace-write')
+        self.assertEqual(params['approvalPolicy'], 'on-request')
+        self.assertNotIn('sandbox_workspace_write', params['config'])
+        self.assertIn('工作区目录已迁移', params['developerInstructions'])
+        self.assertIn(str(new_root.resolve()), params['developerInstructions'])
+        self.assertEqual(old_spec['cwd'], str(self.root))
+        self.assertEqual([name for name, _ in client.calls], ['thread/resume'])
+
+    def test_removed_project_is_rejected_before_constructing_native_client(self):
+        with closing(store.connect(self.home)) as conn:
+            workspace_settings.remove(conn, 'demo', 0)
+        with self.assertRaises(board.BoardError):
+            self.make_running()
+        self.assertEqual(self.clients, [])
 
     def test_initialization_binds_thread_identity_without_model_turn(self):
         running, client = self.make_running(options={"model": "requested-model", "effort": "high"})

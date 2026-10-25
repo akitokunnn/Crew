@@ -794,3 +794,19 @@ CREATE TABLE IF NOT EXISTS goal_acceptances (
  actor TEXT NOT NULL, created_at TEXT NOT NULL,
  PRIMARY KEY(goal_id,round)
 );
+
+-- Workspace labels and visibility never change the stable projects.name key.
+CREATE TABLE IF NOT EXISTS project_settings (
+ project TEXT PRIMARY KEY REFERENCES projects(name),
+ display_name TEXT, removed_at TEXT,
+ revision INTEGER NOT NULL DEFAULT 0 CHECK(revision>=0)
+);
+CREATE TABLE IF NOT EXISTS project_directory_changes (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ project TEXT NOT NULL REFERENCES projects(name),
+ revision INTEGER NOT NULL,
+ old_root TEXT NOT NULL, new_root TEXT NOT NULL,
+ session_paths_json TEXT NOT NULL,
+ created_at TEXT NOT NULL,
+ UNIQUE(project,revision)
+);

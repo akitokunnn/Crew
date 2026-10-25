@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
-from . import board, goals, store
+from . import board, goals, store, workspace_settings
 
 KINDS = {'summary', 'report', 'guide', 'other'}
 EXTENSIONS = {'.md', '.markdown', '.txt', '.rst', '.adoc', '.html', '.htm', '.pdf', '.doc', '.docx',
@@ -63,11 +63,13 @@ def _path_text(value):
     return value.replace('\\', '/')
 
 
-def resolve_path(conn, session_id, text, project=None, must_exist=True):
+def resolve_path(conn, session_id, text, project=None, must_exist=True, *, historical=False):
     owner, info = _owner(conn, session_id, project)
-    roots = [Path(info['root']).expanduser().resolve()]
+    roots = [Path(info['root']).expanduser().absolute()]
     if owner.get('worktree'):
-        roots.append(Path(owner['worktree']).expanduser().resolve())
+        roots.append(Path(owner['worktree']).expanduser().absolute())
+    if historical:
+        roots = workspace_settings.read_roots(conn, info['name'], session_id)
     cwd = Path(owner.get('cwd') or info['root']).expanduser().resolve()
     if not any(store.is_under(cwd, root) for root in roots):
         cwd = roots[0]
@@ -75,12 +77,33 @@ def resolve_path(conn, session_id, text, project=None, must_exist=True):
     if value.startswith('//'):
         raise board.BoardError('文档不能使用网络或设备路径')
     candidate = Path(value).expanduser()
-    if not candidate.is_absolute():
+    relative = not candidate.is_absolute()
+    if relative:
         candidate = cwd / candidate
         if not any(store.is_under(Path(os.path.abspath(candidate)), root) for root in roots):
             raise board.BoardError('文档路径不在当前项目或提交者的工作区内')
         if not candidate.exists():
             candidate = roots[0] / value
+    candidates = [candidate]
+    if historical:
+        if relative:
+            candidates.extend(root / value for root in roots)
+        for change in workspace_settings.directory_changes(conn, info['name']):
+            mappings = [(change['old_root'], change['new_root'])]
+            for moved in change['sessions']:
+                if moved['session_id'] == session_id:
+                    mappings.extend((moved.get('old_' + key), moved.get('new_' + key)) for key in ('cwd', 'worktree'))
+            for old, new in mappings:
+                if old is None or new is None:
+                    continue
+                for path in tuple(candidates):
+                    if store.is_under(path, old):
+                        mapped = Path(new) / os.path.relpath(path, old)
+                        if all(store.norm_path(mapped) != store.norm_path(item) for item in candidates):
+                            candidates.append(mapped)
+        candidate = next((path for path in candidates if path.is_file() and
+                          any(store.is_under(Path(os.path.abspath(path)), root) for root in roots) and
+                          any(store.is_under(path.resolve(), root) for root in roots)), candidate)
     if not any(store.is_under(Path(os.path.abspath(candidate)), root) for root in roots):
         raise board.BoardError('文档路径不在当前项目或提交者的工作区内')
     candidate = candidate.resolve()
@@ -109,9 +132,11 @@ def _public(conn, row):
     result['user_important'] = None if result['user_important'] is None else bool(result['user_important'])
     result['important'] = result['ai_important'] if result['user_important'] is None else result['user_important']
     try:
-        resolve_path(conn, result['session_id'], result['path'], result['project'])
+        target = resolve_path(conn, result['session_id'], result['path'], result['project'], historical=True)
+        result['resolved_path'] = str(target)
         result['exists'], result['file_error'] = True, None
     except (board.BoardError, OSError, RuntimeError) as exc:
+        result['resolved_path'] = None
         result['exists'], result['file_error'] = False, str(exc)
     return result
 
@@ -150,7 +175,7 @@ def register(conn, session_id, path, title=None, summary=None, kind='other', imp
              project=None, source='manual', source_seq=None, goal_id=None, execution_id=None):
     owner, info = _owner(conn, session_id, project)
     goal_id = _goal(conn, owner, goal_id, execution_id, live=source == 'manual')
-    target = resolve_path(conn, session_id, path, info['name'])
+    target = resolve_path(conn, session_id, path, info['name'], historical=source != 'manual')
     title = _clean(title, 'title', 300, optional=source!='manual')
     summary = _clean(summary, 'summary', 4000, optional=source!='manual')
     if kind not in KINDS or type(important) is not bool or source not in {'manual', 'journal', 'report'}:

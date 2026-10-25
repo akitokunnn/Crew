@@ -7,11 +7,13 @@ async function directory(t) { const root = await fs.mkdtemp(path.join(os.tmpdir(
 async function fixture(t, known = [], initFailure = null) {
   const calls = []; const server = http.createServer(async (request, response) => {
     calls.push(request.url); response.setHeader('Content-Type', 'application/json');
-    if (request.url === '/api/projects') { response.end(JSON.stringify({ projects: known })); return; }
+    if (request.url.split('?')[0] === '/api/projects') { response.end(JSON.stringify({ projects: known })); return; }
     if (request.url === '/api/project/init') {
       if (initFailure) { response.writeHead(503); response.end(JSON.stringify({error:initFailure})); return; }
       let body = ''; for await (const part of request) body += part;
-      const project = JSON.parse(body); known.push(project); response.end(JSON.stringify(project)); return;
+      const project = JSON.parse(body), removed = known.find(item => item.root === project.root && item.removed_at);
+      if (removed) { removed.removed_at = null; response.end(JSON.stringify(removed)); return; }
+      known.push(project); response.end(JSON.stringify(project)); return;
     }
     response.writeHead(404); response.end(JSON.stringify({ error: 'missing' }));
   });
@@ -61,6 +63,18 @@ test('an ordinary folder registers without Git metadata and reopens the register
   assert.equal(project.root,await fs.realpath(root));assert.equal(project.name,path.basename(root));
   assert.deepEqual(await core.existingWorkspace(root,service.url),project);assert.equal(service.known.length,1);
   assert.deepEqual(await fs.readdir(root),['notes.txt']);assert.equal(await fs.readFile(path.join(root,'notes.txt'),'utf8'),'普通工作区文件');
+});
+
+test('reopening a removed exact workspace restores its stable identity before Git ancestor discovery', async t => {
+  const root = await directory(t), selected = path.join(root,'registered child');
+  await run('git',['init',root],{windowsHide:true}); await fs.mkdir(selected);
+  const registered={name:'stable-project-key',display_name:'原显示名称',root:await fs.realpath(selected),removed_at:'2026-10-25T00:00:00Z'};
+  const service=await fixture(t,[registered]);
+  const restored=await core.existingWorkspace(selected,service.url);
+  assert.equal(restored.name,'stable-project-key');assert.equal(restored.root,registered.root);
+  assert.equal(restored.display_name,'原显示名称');assert.equal(restored.removed_at,null);
+  assert.equal(service.known.length,1);assert(service.calls.includes('/api/projects?include_removed=1'));
+  assert.equal(service.calls.filter(value=>value==='/api/project/init').length,1);
 });
 test('new workspace creates only an ordinary folder then registers it', async t => {
   const root = await directory(t), service = await fixture(t);

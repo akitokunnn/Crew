@@ -2,10 +2,12 @@
 (() => {
   const $ = id => document.getElementById(id);
   const esc = value => String(value).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
+  const projectDisplay = item => item.display_name || item.name;
   const project = new URLSearchParams(location.search).get("project");
   let state = null, view = "all", leaderId = null, readOnlyId = null, mountedChat = null, pollBusy = false, statePromise = Promise.resolve();
   let mountedChannel = false;
   let settingsUI = null, settingsOpen = false, settingsReturn = null;
+  let workspaceSettings = null, workspaceOpen = false;
   let nativeApprovals = null;
   let stopConfirmation = null;
   let documents = null, leaderTrust = null, runtimeSwitch = null, goals = null, goalId = null;
@@ -246,7 +248,7 @@
     if (leaderDrag !== null || leaderOrderSaving) return;
     const themeIcon = {system:"auto", light:"sun", dark:"moon"}[theme], themeName = {system:"跟随系统", light:"浅色", dark:"深色"}[theme];
     const quotaTitle = quotas().map(([label, limit]) => `${label} ${quotaText(limit)}`).join("\n");
-    replace($("sidebar"), `<div class="brand"><span class="brand-logo" aria-hidden="true">${CrewTheme.logo()}</span><div class="brand-copy"><div class="proj" title="${esc(state.project.name)}">${esc(state.project.name)}</div><div class="sub">Crew 工作区</div></div></div>
+    replace($("sidebar"), `<div class="brand"><span class="brand-logo" aria-hidden="true">${CrewTheme.logo()}</span><div class="brand-copy"><div class="proj" title="${esc(projectDisplay(state.project))}">${esc(projectDisplay(state.project))}</div><div class="sub">Crew 工作区</div></div><button class="icon-btn workspace-settings-entry" data-act="workspace-settings" title="当前工作区设置" aria-label="当前工作区设置">${ic("settings", "sm")}</button></div>
       <button class="search-btn" data-act="palette" title="找 leader 或下属 · Ctrl K">${ic("search", "sm")}<span class="search-label">找 leader 或下属</span><span class="kbd">Ctrl K</span></button>
       <button class="nav-item ${view === "all" ? "active" : ""}" data-act="view" data-view="all">${ic("grid")}<span>全部</span>${nativeApprovals?.count() ? `<span class="native-approval-count" title="执行权限待确认">权限 ${nativeApprovals.count()}</span>` : ""}</button>
       <button class="nav-item ${view === "channel" ? "active" : ""}" data-act="view" data-view="channel">${ic("msg")}<span>交流区</span>${state.channel.unread > 0 ? `<span class="b-unread channel-unread" title="交流区未读">${state.channel.unread}</span>` : ""}</button>
@@ -502,7 +504,7 @@
       if (pending.length === 0 && held.length === 0) body = empty("没有等你拍板的事");
       body += heldGroup(held, "all");
     } else body = working.length === 0 ? empty("没有正在干活的下属") : `<div class="list">${working.map(item => { return `<button class="li click" data-act="member-chat" data-session-menu="${esc(item.session_id)}" data-id="${esc(item.session_id)}">${av(item.name, 32, true)}<span class="grow"><span class="ttl">${esc(item.name)}${runtimeBadge(item, true)}${contextRing(item)} <span class="where">${ic(item.where === "bg" ? "cloud" : "code", "xs")}</span><span class="li-sub">归 ${esc(item.group)}</span>${memberModel(item)}</span><span class="li-now">${item.task === null ? "还没写" : CrewChat.renderInline(item.task, item.session_id)}</span>${memberActivity(item)}<span class="sm">${item.codex.filter(task => task.status === "running").map(task => `<span>${ic("bolt", "xs")} ${CrewChat.renderInline(task.task_name, item.session_id)} · <span class="spin" style="width:9px;height:9px;display:inline-block"></span> ${Math.floor((Date.now() - new Date(task.started_at)) / 60000)} 分钟</span>`).join("")}</span></span>${st(item.status)}</button>`; }).join("")}</div>`;
-    replace($("main"), `<div class="head big"><div><div class="title">全部</div><div class="sub">${esc(state.project.name)} 的 ${state.leaders.length} 个 leader，${state.members.length} 个下属</div></div></div><div class="page"><div class="page-in ${allTab === "tree" ? "groups-page" : ""}"><div class="summary">${openTodos().length > 0 ? `<button class="pill todo-summary" data-act="view" data-view="todos">${ic("check", "sm")}<b>${openTodos().length}</b> 件待你动手 ${ic("right", "xs")}</button>` : ""}${nativeApprovals?.count() ? chip("native-approvals", "", " 执行权限待确认", nativeApprovals.count()) : ""}${chip("tree", ic("grid", "sm"), "架构图", null)}${chip("goals", ic("check", "sm"), "目标", (state.goals || []).length)}${chip("pending", '<i class="dot waiting"></i>', " 件等你拍板", pending.length)}${chip("working", '<i class="dot working"></i>', " 个在干活", working.length)}<button class="pill tab" data-act="view" data-view="adopt">${ic("inbox", "sm")}<b>${state.candidates.running.length}</b> 个会话待收编 ${ic("right", "xs")}</button></div>${body}</div></div>`);
+    replace($("main"), `<div class="head big"><div><div class="title">全部</div><div class="sub">${esc(projectDisplay(state.project))} 的 ${state.leaders.length} 个 leader，${state.members.length} 个下属</div></div></div><div class="page"><div class="page-in ${allTab === "tree" ? "groups-page" : ""}"><div class="summary">${openTodos().length > 0 ? `<button class="pill todo-summary" data-act="view" data-view="todos">${ic("check", "sm")}<b>${openTodos().length}</b> 件待你动手 ${ic("right", "xs")}</button>` : ""}${nativeApprovals?.count() ? chip("native-approvals", "", " 执行权限待确认", nativeApprovals.count()) : ""}${chip("tree", ic("grid", "sm"), "架构图", null)}${chip("goals", ic("check", "sm"), "目标", (state.goals || []).length)}${chip("pending", '<i class="dot waiting"></i>', " 件等你拍板", pending.length)}${chip("working", '<i class="dot working"></i>', " 个在干活", working.length)}<button class="pill tab" data-act="view" data-view="adopt">${ic("inbox", "sm")}<b>${state.candidates.running.length}</b> 个会话待收编 ${ic("right", "xs")}</button></div>${body}</div></div>`);
   }
   function renderAdopt() {
     const row = (item, bucket) => {
@@ -510,7 +512,7 @@
       return `<div class="li">${bucket === "running" ? `<i class="dot ${esc(item.status)}" style="margin:0 4px"></i>` : '<span style="width:15px"></span>'}<div class="grow"><div class="ttl">${esc(item.title)}${item.crew_name === null ? "" : ` <span class="tag candidate-name">${esc(item.crew_name)}</span>`}</div><div class="sm"><span>${ic("folder", "xs")} ${item.rel_dir === "." ? "主目录" : esc(item.rel_dir)}</span><span>${ic("clock", "xs")} ${ago(item.last_active)}</span></div></div>${done === undefined ? `<button class="btn ${open ? "ghost" : ""}" data-act="adopt-open" data-id="${esc(item.session_id)}">${open ? "取消" : "收编"}</button>` : `<span class="st working">${ic("check", "sm")}已收编到 ${esc(done.group)}，通知已交给 leader</span>`}</div>${open ? `<form class="adopt-form" data-adopt-form="${esc(item.session_id)}"><label class="lbl" for="adopt-name-${esc(item.session_id)}">叫它</label><input id="adopt-name-${esc(item.session_id)}" data-preserve="adopt-name-${esc(item.session_id)}" name="name" value="${esc(form.name)}" placeholder="名字" required><span class="lbl">归到</span><div class="lchips">${state.leaders.map(group => `<button type="button" class="lchip ${form.group === group.name ? "on" : ""}" data-act="adopt-leader" data-id="${esc(item.session_id)}" data-group="${esc(group.name)}">${av(group.name, 20)}${esc(group.name)}</button>`).join("")}</div><button class="btn primary" type="submit" style="margin-left:auto" ${state.leaders.length === 0 ? "disabled" : ""}>确认收编</button>${state.leaders.length === 0 ? '<span class="error-line">先起一个 leader，再收编到它的组。</span>' : ""}</form>` : ""}`;
     };
     const list = bucket => { const items = state.candidates[bucket].slice(); for (const result of adopted.values()) if (result.bucket === bucket && !items.some(item => item.session_id === result.item.session_id)) items.push(result.item); return items; };
-    replace($("main"), `<div class="head big"><div><div class="title">待收编</div><div class="sub">${esc(state.project.name)} 下还没归到 leader 的会话</div></div></div><div class="page"><div class="page-in" style="max-width:860px">${state.vscode_error === null ? "" : `<p class="error-line">${esc(state.vscode_error)}</p>`}<div class="group-h"><i class="dot working"></i>正在运行 · ${state.candidates.running.length}</div><div class="list">${list("running").map(item => row(item, "running")).join("")}</div><div class="group-h">${ic("archive", "sm")}没在运行、也没归档 · ${state.candidates.others.length}</div><div class="list">${othersOpen ? `${list("others").map(item => row(item, "others")).join("")}<button class="more-btn" data-act="others">${ic("down", "sm")}收起</button>` : `<button class="more-btn" data-act="others">${ic("right", "sm")}展开 ${state.candidates.others.length} 个（跟 VS Code 会话列表一致，已归档的不在这里）</button>`}</div><p class="note">也可以在那个 VS Code 会话里说「收编到某某」。</p></div></div>`);
+    replace($("main"), `<div class="head big"><div><div class="title">待收编</div><div class="sub">${esc(projectDisplay(state.project))} 下还没归到 leader 的会话</div></div></div><div class="page"><div class="page-in" style="max-width:860px">${state.vscode_error === null ? "" : `<p class="error-line">${esc(state.vscode_error)}</p>`}<div class="group-h"><i class="dot working"></i>正在运行 · ${state.candidates.running.length}</div><div class="list">${list("running").map(item => row(item, "running")).join("")}</div><div class="group-h">${ic("archive", "sm")}没在运行、也没归档 · ${state.candidates.others.length}</div><div class="list">${othersOpen ? `${list("others").map(item => row(item, "others")).join("")}<button class="more-btn" data-act="others">${ic("down", "sm")}收起</button>` : `<button class="more-btn" data-act="others">${ic("right", "sm")}展开 ${state.candidates.others.length} 个（跟 VS Code 会话列表一致，已归档的不在这里）</button>`}</div><p class="note">也可以在那个 VS Code 会话里说「收编到某某」。</p></div></div>`);
   }
   function quotaCard(label, limit) {
     return `<div class="qcard"><div class="lbl"><span>${label}</span><span>账户</span></div>${limit === null ? '<div class="big" style="font-size:calc(22px * var(--fs))">未采集</div>' : `${limit.used_percent === null ? `<div class="big" style="font-size:calc(22px * var(--fs))">${quotaText(limit)}</div>` : `<div class="big">${count(limit.used_percent)}%<small>已用</small></div><div class="bar"><i style="width:${limit.used_percent}%;${limit.used_percent >= 80 ? "background:var(--warn)" : ""}"></i></div>`}${crewQuota(limit, true)}<div class="rs">${date(limit.resets_at)} 重置 · ${time(limit.captured_at)} 采集${limit.expired ? " · 采集已过期" : ""}</div>`}</div>`;
@@ -529,7 +531,7 @@
       else if (usageTab === "daily") table = `<table class="utable"><thead><tr><th>日期</th><th>会话</th><th class="num">Token</th><th class="num">折合</th></tr></thead><tbody>${usage.daily.map(row => `<tr><td>${esc(row.date)}</td><td>${esc(row.display_name)}</td><td class="num">${tokens(row.total_tokens)}</td><td class="num">${money(row.cost_usd)}</td></tr>`).join("")}</tbody></table>`;
       else table = `<table class="utable"><thead><tr><th>模型</th><th>来源</th><th class="num">输入</th><th class="num">输出</th><th class="num">合计</th></tr></thead><tbody>${usage.models.map(row => `<tr><td>${esc(row.model)}</td><td>${esc(row.source)}</td><td class="num">${tokens(row.input_tokens)}</td><td class="num">${tokens(row.output_tokens)}</td><td class="num">${tokens(row.total_tokens)}</td></tr>`).join("")}</tbody></table>`;
     }
-    replace($("main"), `<div class="head big"><div><div class="title">用量</div><div class="sub">${esc(state.project.name)} · ${{today:"今天", week:"本周", all:"全部"}[period]}</div></div><div class="right" style="gap:10px"><div class="seg">${[["today", "今天"], ["week", "本周"], ["all", "全部"]].map(([key, name]) => `<button class="${period === key ? "on" : ""}" data-act="usage-period" data-period="${key}">${name}</button>`).join("")}</div><a class="btn" href="${esc(queryPath(`/api/usage/export?period=${period}&what=${usageTab === "daily" ? "daily" : "sessions"}`))}" download>${ic("download", "sm")}导出</a></div></div><div class="page"><div class="page-in"><div class="qcards">${quotas().map(([label, limit]) => quotaCard(label, limit)).join("")}</div><div class="usage-tabs"><div class="seg">${[["tree", "按结构"], ["daily", "按天"], ["models", "按模型"]].map(([key, name]) => `<button class="${usageTab === key ? "on" : ""}" data-act="usage-tab" data-tab="${key}">${name}</button>`).join("")}</div><span style="font-size:calc(12.5px * var(--fs));color:var(--text-3)">${total}</span></div>${table}<div class="note">折合金额按 API 价换算，只用于比较；额度是账户级；界面字体 HarmonyOS Sans（华为，按其许可证随附）</div></div></div>`);
+    replace($("main"), `<div class="head big"><div><div class="title">用量</div><div class="sub">${esc(projectDisplay(state.project))} · ${{today:"今天", week:"本周", all:"全部"}[period]}</div></div><div class="right" style="gap:10px"><div class="seg">${[["today", "今天"], ["week", "本周"], ["all", "全部"]].map(([key, name]) => `<button class="${period === key ? "on" : ""}" data-act="usage-period" data-period="${key}">${name}</button>`).join("")}</div><a class="btn" href="${esc(queryPath(`/api/usage/export?period=${period}&what=${usageTab === "daily" ? "daily" : "sessions"}`))}" download>${ic("download", "sm")}导出</a></div></div><div class="page"><div class="page-in"><div class="qcards">${quotas().map(([label, limit]) => quotaCard(label, limit)).join("")}</div><div class="usage-tabs"><div class="seg">${[["tree", "按结构"], ["daily", "按天"], ["models", "按模型"]].map(([key, name]) => `<button class="${usageTab === key ? "on" : ""}" data-act="usage-tab" data-tab="${key}">${name}</button>`).join("")}</div><span style="font-size:calc(12.5px * var(--fs));color:var(--text-3)">${total}</span></div>${table}<div class="note">折合金额按 API 价换算，只用于比较；额度是账户级；界面字体 HarmonyOS Sans（华为，按其许可证随附）</div></div></div>`);
   }
   async function loadUsage() {
     const sequence = ++usageRequest; usageLoading = true;
@@ -670,6 +672,14 @@
     const button = host.querySelector("[data-settings-away]");
     button.onclick = async () => { button.disabled = true; try { await api("/api/notifications/away", {away:!notification.manual_away}); await loadState(true); settingsConnections(host); } catch (error) { host.querySelector("[data-connection-note]").textContent = error.message; button.disabled = false; } };
   }
+  function openWorkspaceSettings() {
+    if (window.navigator?.userAgent.includes("Electron/")) { location.assign(`/?workspace-settings=${encodeURIComponent(project)}`); return; }
+    workspaceOpen = true;
+    if (mountedChat !== null) { CrewChat.unmount(); mountedChat = null; }
+    if (mountedChannel) { CrewChannel.unmount(); mountedChannel = false; }
+    CrewGit.unmount(); goals?.closeDrawer(); if (cardId !== null) closeCard(); hideMenu();
+    void workspaceSettings.open(project);
+  }
   function sessionComments(id) {
     if (!commentsCache.has(id)) commentsCache.set(id, {comments:[], draft:"", error:null, loading:false, saving:false, request:null});
     return commentsCache.get(id);
@@ -805,16 +815,16 @@
     if (goalId !== null) { const goal = (state.goals || []).find(item => String(item.id) === goalId); if (!goal || goal.leader_session_id !== leaderId) goalId = null; }
   }
   function render() {
-    if (settingsOpen) return;
+    if (settingsOpen || workspaceOpen) return;
     if (view !== "chat") goals?.sync(null, null);
     $("app").classList.toggle("wide", view !== "chat" || leaderId === null); renderSidebar();
     if (view !== "channel" && mountedChannel) { CrewChannel.unmount(); mountedChannel = false; }
     if (view !== "git") CrewGit.unmount();
     if (view === "chat") renderChat(); else { if (mountedChat !== null) { CrewChat.unmount(); mountedChat = null; } if (view === "all") renderAll(); if (view === "todos") renderTodos(); if (view === "channel") renderChannel(); if (view === "adopt") renderAdopt(); if (view === "usage") renderUsage(); if (view === "git") CrewGit.mount($("main"), {project, api, toast, catalog:runtimeList, defaultRuntime:() => taskRuntime("git"), onChanged:() => loadState(true)}); }
-    renderRight(); renderCard(); document.title = `(${state.decisions.filter(item => !item.held).length}) ${state.project.name} · Crew`;
+    renderRight(); renderCard(); document.title = `(${state.decisions.filter(item => !item.held).length}) ${projectDisplay(state.project)} · Crew`;
   }
   function watchingChat(id) {
-    return !settingsOpen && !goals?.showingList() && view === "chat" && readOnlyId === null && leaderId === id && document.visibilityState === "visible" && document.hasFocus() &&
+    return !settingsOpen && !workspaceOpen && !goals?.showingList() && view === "chat" && readOnlyId === null && leaderId === id && document.visibilityState === "visible" && document.hasFocus() &&
       cardId === null && !$("backdrop").classList.contains("show") && !$("menu").classList.contains("show") &&
       !(rightOpen && window.matchMedia("(max-width:1023px)").matches);
   }
@@ -847,7 +857,7 @@
     const requestedGeneration = soundGeneration;
     try {
       const result = await api("/api/state"), previous = state; state = result; nativeApprovals?.sync(state); CrewActivity.sync(state); applyTheme(); renderSettings();
-      if (project === null) { $("app").className = "workspace-entry"; $("sidebar").hidden = true; $("right-panel").hidden = true; replace($("main"), `<div class="workspace-home"><span class="workspace-logo" aria-hidden="true">${CrewTheme.logo()}</span><h1>Crew 工作区</h1><button class="btn ghost" data-act="settings">设置</button><p class="note">选一个项目，继续聊。</p><div class="list">${state.projects.map(item => `<a class="li project-entry" style="${CrewTheme.projectStyle(state.themes, item.theme)}" href="/?project=${encodeURIComponent(item.name)}"><span class="project-logo" aria-hidden="true">${CrewTheme.logo()}</span><span class="grow">${esc(item.name)}</span><span class="project-theme-name">${esc(CrewTheme.get(state.themes, item.theme).name)}</span>${ic("right")}</a>`).join("")}</div></div>`); document.title = "工作区 · Crew"; return; }
+      if (project === null) { $("app").className = "workspace-entry"; $("sidebar").hidden = true; $("right-panel").hidden = true; replace($("main"), `<div class="workspace-home"><span class="workspace-logo" aria-hidden="true">${CrewTheme.logo()}</span><h1>Crew 工作区</h1><button class="btn ghost" data-act="settings">设置</button><p class="note">选一个项目，继续聊。</p><div class="list">${state.projects.map(item => `<a class="li project-entry" style="${CrewTheme.projectStyle(state.themes, item.theme)}" href="/?project=${encodeURIComponent(item.name)}"><span class="project-logo" aria-hidden="true">${CrewTheme.logo()}</span><span class="grow">${esc(projectDisplay(item))}</span><span class="project-theme-name">${esc(CrewTheme.get(state.themes, item.theme).name)}</span>${ic("right")}</a>`).join("")}</div></div>`); document.title = "工作区 · Crew"; return; }
       if (previous === null) readRoute();
       if (readOnlyId !== null && !state.members.some(item => item.session_id === readOnlyId)) { navigate("all"); toast("该会话已不在下属列表，已返回全部"); }
       else if (view === "chat" && readOnlyId === null && leader(leaderId) === undefined) { navigate("all"); toast("这个 leader 已结束，已返回全部"); }
@@ -876,6 +886,10 @@
   }
   function setup() {
     $("overlay-root").innerHTML = '<button class="rp-scrim" id="rp-scrim" data-act="right-close" aria-label="关闭架构图"></button><div class="card-back" id="card-back"></div><section class="card" id="card" role="dialog" aria-modal="true" aria-label="下属卡片" tabindex="-1"></section><div class="menu" id="menu" role="menu"></div><div class="backdrop" id="backdrop"></div><div id="settings-parking" hidden><section class="settings-popover" id="settings" aria-label="外观设置"></section></div>';
+    workspaceSettings = window.CrewWorkspaceSettings.create({read:name => api(`/api/project/settings?project=${encodeURIComponent(name)}`),
+      update:body => api("/api/project/update", body), remove:body => api("/api/project/remove", body),
+      onSaved:() => { void loadState(true); }, onRemoved:() => location.assign("/"),
+      onClose:() => { workspaceOpen = false; if (state !== null && project !== null) { render(); $("sidebar").querySelector('[data-act="workspace-settings"]')?.focus({preventScroll:true}); } }});
     settingsUI = window.CrewSettings.create({host:$("settings-surface"), read:async() => { await api("/api/runtimes?refresh=1"); return api("/api/settings"); }, save:body => api("/api/settings",body), onClose:closeSettings, service:() => location.origin,
       onSnapshot(value) { if (state !== null) state.ai = value.ai; runtimesCache = value.runtimes; renderLeaderRuntime(); },
       panels:{appearance(host) { host.append($("settings")); return () => $("settings-parking").append($("settings")); }, connections:settingsConnections}});
@@ -920,6 +934,7 @@
       if (button === null || button.disabled) return;
       const act = button.dataset.act, id = button.dataset.id;
       if (act === "settings") { openSettings(); return; }
+      if (act === "workspace-settings") { openWorkspaceSettings(); return; }
       if (act === "confirm-stop-person") { const resolve = stopConfirmation; stopConfirmation = null; closeBackdrop(); resolve?.(true); return; }
       if (act === "submenu") { openSubmenu(button); return; }
       if (button.closest("#menu")) hideMenu();
@@ -1074,6 +1089,7 @@
       if (details.open) decisionsOpen.add(id); else decisionsOpen.delete(id);
     }, true);
     document.addEventListener("keydown", event => {
+      if (workspaceOpen) return;
       if (event.key === "ContextMenu" || event.shiftKey && event.key === "F10") {
         const surface = sessionSurface(event.target);
         if (surface !== null) { event.preventDefault(); openSessionMenu(surface, surface.dataset.sessionMenu === undefined ? surface.dataset.id : surface.dataset.sessionMenu); return; }

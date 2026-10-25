@@ -160,12 +160,14 @@ class ChatTests(UsageFixture, unittest.TestCase):
         self.assertNotIn("CREW_GROUP", env)
 
     def manager_with_process(self, status="idle"):
+        board.init_project(self.conn, "demo", self.root)
+        board.join(self.conn, "s1", "demo", "worker", self.root, None, None)
         manager = chat.Manager(self.home, self.root, lambda: [])
         journal = manager.journal("s1")
         journal.set_status(status)
         process = FakeProcess([])
         manager.processes["s1"] = chat.Running(process, journal)
-        session = {"session_id": "s1", "status": "active"}
+        session = board.session(self.conn, "s1")
         return manager, process, session
 
     def test_new_events_have_utc_millisecond_timestamps_and_old_events_are_unchanged(self):

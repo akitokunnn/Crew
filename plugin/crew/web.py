@@ -17,7 +17,7 @@ from urllib.parse import parse_qs, quote, urlencode, urlsplit
 from urllib.request import ProxyHandler, build_opener
 from urllib.error import HTTPError, URLError
 
-from . import board, channel, channel_digest, chat, claude_limits, documents, git_admin, git_ci, git_view, goal_api, goals, hooks, messaging, models, notifications, open_session, presentation, runtime_catalog, runtime_switch, runtimes, session_ops, settings, spawn, store, themes, todo, trust_mode, usage, usage_cli, vscode_sessions
+from . import board, channel, channel_digest, chat, claude_limits, documents, git_admin, git_ci, git_view, goal_api, goals, hooks, messaging, models, notifications, open_session, presentation, runtime_catalog, runtime_switch, runtimes, session_ops, settings, spawn, store, themes, todo, trust_mode, usage, usage_cli, vscode_sessions, workspace_execution, workspace_settings
 from .service_lock import HomeServiceLock
 
 
@@ -602,6 +602,54 @@ class Service:
         return {'ai': settings.get(self.home), 'execution': settings.get_execution(self.home), 'runtimes': self.runtime_catalog.snapshot(),
                 'home': str(Path(self.home).resolve()), 'backend': str(Path(self.plugin_root).resolve())}
 
+    def workspace_state(self, project_name):
+        with self.chat.lock, closing(store.connect(self.home)) as conn:
+            project = self.selected_project(conn, project_name)
+            result = workspace_settings.snapshot(conn, project)
+            with self.agents_lock:
+                live = board.live_sessions(self.agents) if self.agents_error is None else {}
+            sessions = []
+            for row in conn.execute('SELECT * FROM sessions WHERE project=? ORDER BY role,crew_name,session_id', (project,)):
+                keys = self.chat._identity_keys(conn, row['session_id'])
+                running = any(self.chat.running(key) for key in keys)
+                sessions.append({'session_id': row['session_id'], 'name': row['crew_name'] or row['cc_name'] or row['session_id'],
+                                 'cwd': row['cwd'], 'worktree': row['worktree'],
+                                 'running': running or row['session_id'] in live,
+                                 'busy': any(self.chat.busy(key) for key in keys), 'status': row['status']})
+            result.update(sessions=sessions, goals_count=len(goals.list_goals(conn, project)))
+            return result
+
+    def update_workspace(self, path, data, project_name):
+        with self.write_lock, self.chat.lock, closing(store.connect(self.home)) as conn:
+            body_project = _text(data, 'project')
+            if project_name is not None and project_name != body_project:
+                raise board.BoardError('请求正文和地址中的工作区不一致')
+            project = self.selected_project(conn, body_project)
+            revision = data.get('revision')
+            if type(revision) is not int or revision < 0:
+                raise ValueError('revision 必须是非负整数')
+            current = workspace_settings.snapshot(conn, project)
+            if current['revision'] != revision:
+                raise board.Conflict('工作区设置已更改，请重新读取后再保存')
+            now = self.now().isoformat(timespec='milliseconds').replace('+00:00', 'Z')
+            if path == '/api/project/remove':
+                if data.get('stop') is not True:
+                    raise board.BoardError('移除前需明确确认停止该工作区的执行')
+                workspace_execution.stop_project(self.chat, conn, project)
+                workspace_settings.remove(conn, project, revision, now=now)
+                if self.default_project == project:
+                    self.default_project = None
+                return {'ok': True, 'project': project, 'removed': True}
+            display_name = workspace_settings.validate_display_name(data.get('display_name'))
+            root = _text(data, 'root')
+            plan = workspace_settings.plan_directory_change(conn, project, root)
+            if plan['changed']:
+                if data.get('stop') is not True:
+                    raise board.BoardError('更改目录前需明确确认停止并迁移已有会话')
+                workspace_execution.stop_project(self.chat, conn, project)
+            updated = workspace_settings.apply_update(conn, project, display_name, root, revision, now=now)
+            return {**self.workspace_state(project), 'directory_change': updated['directory_change']}
+
     def native_approvals(self, project):
         with self.chat.lock:
             return sorted([approval for current in self.chat.processes.values()
@@ -632,6 +680,8 @@ class Service:
     def post(self, path, data, project_name=None):
         if not isinstance(data, dict):
             raise ValueError("JSON \u8bf7\u6c42\u5fc5\u987b\u662f\u5bf9\u8c61")
+        if path in ('/api/project/update', '/api/project/remove'):
+            return self.update_workspace(path, data, project_name)
         if path == '/api/settings':
             if not data or not set(data) <= {'ai', 'execution'}:
                 raise ValueError('设置请求只能包含 ai 和 execution 配置')
@@ -1071,10 +1121,14 @@ class Service:
             if document_id is not None:
                 document=documents.get(conn,project,document_id)
                 session_id=document['session_id']
-                text=str(documents.resolve_path(conn,session_id,document['path'],project,must_exist=False))
+                text=document['resolved_path']
+                if text is None:
+                    raise board.BoardError(document['file_error'])
                 base=None
             root = Path(board.project(conn, project)["root"])
             allowed_roots=[root.resolve()]
+            if document_id is not None:
+                allowed_roots = workspace_settings.read_roots(conn, project, session_id)
             if session_id:
                 session = board.session(conn, session_id)
                 if session["project"] != project:
@@ -1190,6 +1244,7 @@ POST_PATHS = {"/api/project/init", "/api/project/theme", "/api/open", "/api/open
 POST_PATHS.update({'/api/messages', '/api/todo/resolve', '/api/todo/undo'})
 POST_PATHS.update({'/api/goals/create', '/api/goals/action', '/api/goals/context', '/api/goals/agent', '/api/chat/interrupt', '/api/decision/discuss', '/api/decision/ready'})
 POST_PATHS.update({'/api/trust', '/api/comments', '/api/decision/clarify'})
+POST_PATHS.update({'/api/project/update', '/api/project/remove'})
 POST_PATHS.update('/api/session/' + action for action in ('rename', 'archive', 'remove', 'restore', 'undo', 'stop', 'options', 'compact'))
 POST_PATHS.update(('/api/session/runtime/prepare','/api/session/runtime/switch'))
 POST_PATHS.update(('/api/attention/dismiss', '/api/notifications/away'))
@@ -1224,6 +1279,8 @@ STATIC.update({'/goal-ui.js': ('goal-ui.js', 'text/javascript; charset=utf-8'),
                '/goal-ui.css': ('goal-ui.css', 'text/css; charset=utf-8')})
 STATIC.update({'/settings-ui.js': ('settings-ui.js', 'text/javascript; charset=utf-8'),
                '/settings-ui.css': ('settings-ui.css', 'text/css; charset=utf-8')})
+STATIC.update({'/workspace-settings-ui.js': ('workspace-settings-ui.js', 'text/javascript; charset=utf-8'),
+               '/workspace-settings-ui.css': ('workspace-settings-ui.css', 'text/css; charset=utf-8')})
 STATIC.update({'/native-approval-ui.js': ('native-approval-ui.js', 'text/javascript; charset=utf-8'),
                '/native-approval-ui.css': ('native-approval-ui.css', 'text/css; charset=utf-8')})
 
@@ -1330,9 +1387,11 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {'runtimes': catalog})
         elif url.path == '/api/settings':
             self._send(200, service.settings_state())
+        elif url.path == '/api/project/settings':
+            self._send(200, service.workspace_state(query.get('project', [None])[0]))
         elif url.path == '/api/projects':
             with closing(store.connect(service.home)) as conn:
-                self._send(200, {'projects': board.projects(conn)})
+                self._send(200, {'projects': board.projects(conn, include_removed=True) if query.get('include_removed') == ['1'] else board.projects(conn)})
         elif url.path == '/api/documents':
             self._send(200,service.document_list(query.get('project',[None])[0],query.get('leader_session_id',[None])[0],
                                                  query.get('goal_id',[None])[0]))

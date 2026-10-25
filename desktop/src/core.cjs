@@ -57,9 +57,9 @@ async function request(base, route, body, timeoutMs = 5000) {
   return payload;
 }
 
-async function projects(base) {
+async function projects(base, includeRemoved = false) {
   let data;
-  try { data = await request(base, '/api/projects'); }
+  try { data = await request(base, '/api/projects' + (includeRemoved ? '?include_removed=1' : '')); }
   catch (error) {
     if (![404,405].includes(error.status)) throw error;
     data = await request(base, '/api/state');
@@ -286,13 +286,13 @@ async function optionalGitRoot(selected) {
 
 async function existingWorkspace(directory, base) {
   const selected = await workspaceDirectory(directory);
-  const registered = await projects(base);
+  const registered = await projects(base, true);
   const normalize = value => process.platform === 'win32' ? path.resolve(value).toLowerCase() : path.resolve(value);
   const exact = registered.find(item => normalize(item.root) === normalize(selected));
-  if (exact) return exact;
+  if (exact) return exact.removed_at ? request(base, '/api/project/init', {name:exact.name, root:exact.root}) : exact;
   const root = await optionalGitRoot(selected);
   const present = registered.find(item => normalize(item.root) === normalize(root));
-  if (present) return present;
+  if (present) return present.removed_at ? request(base, '/api/project/init', {name:present.name, root:present.root}) : present;
   const stem = path.basename(root);
   let name = stem, number = 2;
   while (registered.some(item => item.name === name)) name = `${stem} ${number++}`;

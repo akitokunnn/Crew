@@ -17,7 +17,7 @@ require('node:fs').mkdirSync(config.userData,{recursive:true});
 app.setPath('userData', config.userData);
 const homePage = pathToFileURL(path.join(__dirname, 'home.html')).href;
 const errorPage = pathToFileURL(path.join(__dirname, 'error.html')).href;
-let window, tray, backend, tabs, tools, windowMenu, quitting = false, finishedQuit = false, parentDirectory = null, smokeStarted = false, pendingAction = null, homeBootstrapped = false;
+let window, tray, backend, tabs, tools, windowMenu, quitting = false, finishedQuit = false, parentDirectory = null, smokeStarted = false, pendingAction = null, pendingWorkspace = null, homeBootstrapped = false;
 
 function trusted(event) {
   if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame || event.senderFrame.url !== homePage) {
@@ -35,7 +35,10 @@ function publishTabs(state=tabs?.state()) {
   if (state) window.webContents.send('desktop:tabs-state',state);
   window.webContents.send('desktop:window-state',currentWindowState());
   const active=state?.tabs.find(tab=>tab.id===state.activeId);
-  window.setTitle(active?.project ? active.project+' — Crew' : 'Crew');
+  window.setTitle(active?.project ? active.name+' — Crew' : 'Crew');
+  for (const menu of [windowMenu, Menu.getApplicationMenu()]) {
+    const item = menu?.getMenuItemById('workspace-settings'); if (item) item.enabled = Boolean(active?.project);
+  }
 }
 ipcMain.handle('desktop:chrome-ready', async event => {
   trustedChrome(event);
@@ -66,12 +69,13 @@ function external(url) {
   try { const parsed = new URL(url); if (['http:', 'https:'].includes(parsed.protocol) && !parsed.username && !parsed.password) void shell.openExternal(parsed.href); }
   catch (_) { /* Invalid external link: keep the application on its current page. */ }
 }
-async function showHome(action = null) {
+async function showHome(action = null, workspace = null) {
   if (!window) return;
+  pendingWorkspace = action === 'workspace-settings' ? workspace : null;
   if(action==='new')parentDirectory=null;
   if(window.webContents.getURL()!==homePage){homeBootstrapped=false;pendingAction=action;await window.loadURL(homePage);}
   tabs?.select('home');
-  if(action && homeBootstrapped)window.webContents.send('desktop:home-action',{action});
+  if(action && homeBootstrapped){window.webContents.send('desktop:home-action',{action,...(workspace ? {project:workspace} : {})});pendingWorkspace=null;}
   else if(action)pendingAction=action;
   if (!config.smoke) { window.show(); window.focus(); }
 }
@@ -114,6 +118,10 @@ function workspaceMenu() {
     { id:'workspace-new-tab', label:'打开工作区标签', accelerator:'CmdOrCtrl+T', click:menuAction(()=>showHome()) },
     { id:'workspace-new', label:'新建工作区…', accelerator:'CmdOrCtrl+N', click:menuAction(()=>showHome('new')) },
     { id:'workspace-open', label:'打开已有项目…', accelerator:'CmdOrCtrl+O', click:menuAction(()=>showHome('open')) },
+    { id:'workspace-settings', label:'当前工作区设置…', enabled:Boolean(tabs?.state().tabs.find(tab=>tab.id===tabs.state().activeId)?.project), click:menuAction(()=>{
+      const active=tabs.state().tabs.find(tab=>tab.id===tabs.state().activeId);
+      if(active?.project)return showHome('workspace-settings',active.project);
+    }) },
     { id:'system-administrator',label:'系统管理员…',click:menuAction(()=>showHome('admin')) },
     { id:'tools-updates',label:'工具与更新…',click:menuAction(()=>showHome('tools')) },
     { id:'app-settings',label:'设置…',accelerator:'CmdOrCtrl+,',click:menuAction(()=>showHome('settings')) },
@@ -209,9 +217,9 @@ async function visualEvidence(target, evidence) {
 
 handle('desktop:bootstrap', async () => {
   if(new URL(backend.url).port==='0')throw new Error(backend.startupError||'后台尚未连接，请查看系统管理员');
-  const projects = await core.projects(backend.url), action = pendingAction; pendingAction = null;
+  const projects = await core.projects(backend.url), action = pendingAction, workspace = pendingWorkspace; pendingAction = null; pendingWorkspace = null;
   homeBootstrapped=true;
-  return { projects, service: { url:backend.url, owned:backend.owned }, pendingAction:action };
+  return { projects, service: { url:backend.url, owned:backend.owned }, pendingAction:action, ...(workspace ? {pendingWorkspace:workspace} : {}) };
 });
 handle('desktop:admin-status',async()=>{
   const status=await administrator.snapshot();
@@ -233,7 +241,7 @@ handle('desktop:admin-status',async()=>{
 });
 handle('desktop:home-ready',()=>{
   homeBootstrapped=true;
-  if(pendingAction){const action=pendingAction;pendingAction=null;window.webContents.send('desktop:home-action',{action});}
+  if(pendingAction){const action=pendingAction,project=pendingWorkspace;pendingAction=null;pendingWorkspace=null;window.webContents.send('desktop:home-action',{action,...(project?{project}:{})});}
   return {ok:true};
 });
 handle('desktop:admin-check',()=>administrator.request('check'));
@@ -283,6 +291,29 @@ handle('desktop:settings-ui',async()=>{
   await window.webContents.insertCSS(await fs.readFile(path.join(directory, 'settings-ui.css'),'utf8'));
   await window.webContents.executeJavaScript(await fs.readFile(path.join(directory, 'settings-ui.js'),'utf8'));
   return {ok:true};
+});
+handle('desktop:workspace-ui',async()=>{
+  const directory=path.join(config.backendDir,'crew','web');
+  await window.webContents.insertCSS(await fs.readFile(path.join(directory,'workspace-settings-ui.css'),'utf8'));
+  await window.webContents.executeJavaScript(await fs.readFile(path.join(directory,'workspace-settings-ui.js'),'utf8'));
+  return {ok:true};
+});
+handle('desktop:workspace-get',name=>{
+  if(typeof name!=='string'||!name.trim())throw Error('请选择工作区。');
+  return settingsRequest('/api/project/settings?project='+encodeURIComponent(name));
+});
+handle('desktop:workspace-update',async body=>{
+  const result=await settingsRequest('/api/project/update',body,180000);
+  tabs.updateProject(result.project); return result;
+});
+handle('desktop:workspace-remove',async body=>{
+  const result=await settingsRequest('/api/project/remove',body,180000);
+  if(result.removed)tabs.closeProject(result.project); return result;
+});
+handle('desktop:workspace-directory',async current=>{
+  if(typeof current!=='string')throw Error('工作目录必须是路径文本。');
+  const result=await dialog.showOpenDialog(window,{title:'选择工作目录',buttonLabel:'选择此目录',defaultPath:current,properties:['openDirectory']});
+  return result.canceled ? null : result.filePaths[0];
 });
 handle('desktop:ready', async info => {
   if (!config.smoke || smokeStarted) return;
@@ -339,7 +370,7 @@ else {
           additionalArguments: ['--crew-desktop-config=' + encodeURIComponent(JSON.stringify({ home: homePage, origin: backend.url, error:errorPage }))] } });
       tabs=new WorkspaceTabs(window,{origin:backend.url,
         createView:()=>new WebContentsView({webPreferences:{contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true,...(config.smoke?{backgroundThrottling:false}:{})}}),
-        onChange:state=>publishTabs(state),onHome:()=>{},external,openProject,onKeyboard:keyboard,onNavigationError:actionError});
+        onChange:state=>publishTabs(state),onHome:()=>{},external,openProject,workspaceSettings:name=>{void showHome('workspace-settings',name).catch(actionError);},onKeyboard:keyboard,onNavigationError:actionError});
       tabs.setBounds({x:7,y:75,width:1206,height:768});
       window.once('ready-to-show', () => { if (!config.smoke) window.show(); });
       for (const event of ['maximize', 'unmaximize', 'focus', 'blur']) window.on(event, () => {

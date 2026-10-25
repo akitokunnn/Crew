@@ -105,6 +105,8 @@ svg.i.xs{width:12px;height:12px}
 .sb-leaders:hover::-webkit-scrollbar-thumb,.sb-leaders:focus-within::-webkit-scrollbar-thumb{background:var(--line-strong)}
 .brand{display:flex;align-items:center;gap:10px;padding:2px 8px 14px}
 .brand-copy{min-width:0;flex:1}
+.brand>.workspace-settings-entry{width:25px;height:25px;border-radius:7px;opacity:.65}
+.brand>.workspace-settings-entry:hover,.brand>.workspace-settings-entry:focus-visible{opacity:1}
 .logo{width:28px;height:28px;border-radius:9px;background:var(--accent);display:grid;place-items:center;color:var(--on-accent);flex:none}
 .brand .proj{font-weight:500;font-size:calc(15.5px * var(--fs));line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .brand .sub{color:var(--text-3);font-size:calc(11.5px * var(--fs))}

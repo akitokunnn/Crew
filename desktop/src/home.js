@@ -4,6 +4,7 @@ let busy = false;
 let homeReady = false;
 let dispatching = false;
 const homeActions = [];
+let workspaceSettings = null, workspaceSettingsLoading = null;
 function failure(error) { $('error').textContent = error.message || String(error); $('error').hidden = false; }
 async function action(callback) {
   if (busy) return;
@@ -37,22 +38,43 @@ async function refresh() {
       empty.append(heading, document.createTextNode('打开文件夹，或新建一个工作区。')); $('projects').append(empty);
     }
     for (const project of state.projects) {
+      const row = document.createElement('div'); row.className = 'project-row';
       const button = document.createElement('button'); button.className = 'project'; button.type = 'button';
-      button.title = project.root; button.setAttribute('aria-label', '在标签页打开工作区 ' + project.name);
+      const label = project.display_name || project.name;
+      button.title = project.root; button.setAttribute('aria-label', '在标签页打开工作区 ' + label);
       const avatar = document.createElement('span'); avatar.className = 'project-avatar';
       avatar.append(icon(['M3 7V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z']));
       const info = document.createElement('span'); info.className = 'project-info';
-      const name = document.createElement('strong'); name.textContent = project.name;
+      const name = document.createElement('strong'); name.textContent = label;
       const root = document.createElement('small'); root.textContent = project.root; info.append(name, root);
       const arrow = document.createElement('span'); arrow.className = 'arrow'; arrow.append(icon(['m9 5 7 7-7 7']));
       button.append(avatar, info, arrow);
-      button.addEventListener('click', () => action(() => openWorkspace(project.name))); $('projects').append(button);
+      button.addEventListener('click', () => action(() => openWorkspace(project.name)));
+      const settings = document.createElement('button'); settings.type = 'button'; settings.className = 'project-settings';
+      settings.title = '工作区设置 · ' + label; settings.setAttribute('aria-label', settings.title); settings.dataset.projectSettings = project.name;
+      settings.append(icon(['M4 6h16M4 12h16M4 18h16M8 3v6M16 9v6M10 15v6']));
+      settings.addEventListener('click', () => { void openWorkspaceSettings(project.name).catch(failure); });
+      row.append(button, settings); $('projects').append(row);
     }
     return state;
   } catch (error) {
     $('service').textContent = '连接失败'; $('service').classList.add('failed');
     throw error;
   } finally { $('projects').setAttribute('aria-busy', 'false'); }
+}
+async function openWorkspaceSettings(name) {
+  if (!workspaceSettings) {
+    if (!workspaceSettingsLoading) workspaceSettingsLoading = (async () => {
+      await window.crewDesktop.workspaceUI();
+      workspaceSettings = window.CrewWorkspaceSettings.create({host:$('workspace-settings-host'),
+        read:key => window.crewDesktop.workspaceGet(key), update:body => window.crewDesktop.workspaceUpdate(body),
+        remove:body => window.crewDesktop.workspaceRemove(body), pickDirectory:current => window.crewDesktop.workspaceDirectory(current),
+        onSaved:() => { void refresh().catch(failure); }, onRemoved:() => { void refresh().catch(failure); },
+        onClose:key => document.querySelector('[data-project-settings="'+CSS.escape(key)+'"]')?.focus({preventScroll:true})});
+    })();
+    try { await workspaceSettingsLoading; } finally { workspaceSettingsLoading = null; }
+  }
+  await workspaceSettings.open(name);
 }
 async function openWorkspace(name, created = false) {
   await window.crewDesktop.openProject(name);
@@ -84,6 +106,7 @@ async function flushHomeActions() {
   } finally { dispatching = false; }
 }
 if (typeof window.crewDesktop.onAction === 'function') window.crewDesktop.onAction(message => {
+  if (message?.action === 'workspace-settings') { void openWorkspaceSettings(message.project).catch(failure); return; }
   if (!['new', 'open', 'home', 'tools', 'admin', 'settings'].includes(message?.action)) return;
   if (message.action === 'settings') { void window.CrewHomeSettings?.show(); return; }
   window.CrewHomeSettings?.hide();
@@ -105,6 +128,7 @@ async function finishStartup(state) {
     bridgeMethods: Object.keys(window.crewDesktop), title: document.title });
   if (['new', 'open', 'tools', 'admin', 'settings'].includes(state.pendingAction)) homeActions.unshift(state.pendingAction);
   homeReady = true;
+  if (state.pendingAction === 'workspace-settings') await openWorkspaceSettings(state.pendingWorkspace);
   await flushHomeActions();
 }
 refresh().then(finishStartup, async error => {

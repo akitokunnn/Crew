@@ -81,14 +81,25 @@ def _ensure_project_themes(conn, now=None):
             _assign_project_themes(conn, now)
 
 
-def projects(conn):
+def projects(conn, *, include_removed=False):
     _ensure_project_themes(conn)
-    return _rows(conn, "SELECT p.*,t.theme FROM projects p JOIN project_themes t ON t.project=p.name ORDER BY p.name")
+    fields = 'p.*,t.theme,s.display_name' + (',s.removed_at' if include_removed else '')
+    return _rows(conn, "SELECT " + fields + " FROM projects p JOIN project_themes t ON t.project=p.name "
+                 "LEFT JOIN project_settings s ON s.project=p.name " +
+                 ("" if include_removed else "WHERE s.removed_at IS NULL ") + "ORDER BY p.name")
+
+
+def _membership_projects(conn):
+    # Policy hooks also inspect old databases read-only, before store.connect
+    # has migrated them. Only the two membership lookups support that schema.
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='project_settings'").fetchone() is None:
+        return conn.execute("SELECT * FROM projects")
+    return conn.execute("SELECT p.* FROM projects p LEFT JOIN project_settings s ON s.project=p.name "
+                        "WHERE s.removed_at IS NULL")
 
 
 def project_for_path(conn, cwd):
-    # The guard reads through a read-only connection; membership must not depend on tables a newer schema adds.
-    matches = [dict(p) for p in conn.execute("SELECT * FROM projects") if store.is_under(cwd, p["root"])]
+    matches = [dict(p) for p in _membership_projects(conn) if store.is_under(cwd, p["root"])]
     return max(matches, key=lambda p: len(store.norm_path(p["root"]))) if matches else None
 
 
@@ -96,16 +107,21 @@ def project_for_session(conn, session_id, cwd):
     """Registered membership takes precedence; only new sessions are located by cwd."""
     registered = conn.execute("SELECT project FROM sessions WHERE session_id=?", (session_id,)).fetchone()
     if registered is not None:
-        return dict(conn.execute("SELECT * FROM projects WHERE name=?", (registered["project"],)).fetchone())
+        return next((dict(p) for p in _membership_projects(conn) if p['name'] == registered['project']), None)
     return project_for_path(conn, cwd)
 
 
-def project(conn, name):
-    row = conn.execute("SELECT * FROM projects WHERE name=?", (name,)).fetchone()
+def project(conn, name, *, include_removed=False):
+    row = conn.execute("SELECT p.*,s.display_name,s.removed_at FROM projects p "
+                       "LEFT JOIN project_settings s ON s.project=p.name WHERE p.name=?", (name,)).fetchone()
     if row is None:
         raise BoardError("项目不存在: " + name)
+    if row['removed_at'] is not None and not include_removed:
+        raise Conflict("工作区已移除，请先重新打开工作区: " + name)
     _ensure_project_themes(conn)
-    return {**dict(row), "theme": conn.execute("SELECT theme FROM project_themes WHERE project=?", (name,)).fetchone()[0]}
+    value = dict(row)
+    value.pop('removed_at')
+    return {**value, "theme": conn.execute("SELECT theme FROM project_themes WHERE project=?", (name,)).fetchone()[0]}
 
 
 @atomic
@@ -279,7 +295,13 @@ def resolve_git_request(conn, project_name, session_id, request_id, status, note
 @atomic
 def init_project(conn, name, root, now=None):
     root = store.norm_path(root)
-    old = conn.execute("SELECT * FROM projects WHERE name=? OR root=?", (name, root)).fetchone()
+    registered = list(conn.execute("SELECT p.*,s.removed_at FROM projects p LEFT JOIN project_settings s ON s.project=p.name"))
+    old = next((p for p in registered if store.norm_path(p['root']) == root), None)
+    if old is not None and old['removed_at'] is not None:
+        conn.execute("UPDATE project_settings SET removed_at=NULL,revision=revision+1 WHERE project=?", (old['name'],))
+        _event(conn, 'project:restore', old['name'], HUMAN, {'root': root}, now)
+        return project(conn, old['name'])
+    old = old if old is not None else next((p for p in registered if p['name'] == name), None)
     if old and (old["name"] != name or store.norm_path(old["root"]) != root):
         raise Conflict("项目名称或目录已被使用: " + old["name"])
     if old is None:

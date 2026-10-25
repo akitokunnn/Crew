@@ -42,7 +42,7 @@ function tabsState(state){
  tabsBar.append(button('打开工作区标签 · Ctrl+T',['M10 4v12','M4 10h12'],'home','crew-tab-add'));
  const active=state.tabs.find(tab=>tab.id===state.activeId);homePane.hidden=state.activeId!=='home';viewArea.classList.toggle('crew-view-active',state.activeId!=='home');
  recovery.hidden=!active?.error;if(active?.error)recovery.querySelector('p').textContent='暂时无法打开这个工作区，请检查连接后重试。其他标签仍然保留。';
- titleNode.textContent=active?.project||'工作区';
+ titleNode.textContent=active?.project ? active.name : '工作区';
  const activeButton=tabsBar.querySelector('[data-tab-id="'+CSS.escape(state.activeId)+'"]');
  activeButton?.scrollIntoView({block:'nearest',inline:'nearest'});if(focused)activeButton?.focus();layoutViews();
 }
@@ -66,10 +66,11 @@ async function mountChrome(){
 if(trusted){ipcRenderer.on('desktop:window-state',(_event,state)=>windowState(state));ipcRenderer.on('desktop:tabs-state',(_event,state)=>tabsState(state));window.addEventListener('DOMContentLoaded',()=>{void mountChrome();},{once:true});}else readyResolve();
 if(isHome&&process.isMainFrame)contextBridge.exposeInMainWorld('crewDesktop',Object.freeze({
  homeReady:()=>ipcRenderer.invoke('desktop:home-ready'),bootstrap:()=>ipcRenderer.invoke('desktop:bootstrap'),chooseExisting:()=>ipcRenderer.invoke('desktop:existing'),chooseParent:()=>ipcRenderer.invoke('desktop:parent'),createWorkspace:name=>ipcRenderer.invoke('desktop:create',name),openProject:name=>ipcRenderer.invoke('desktop:open',name),
- onAction:callback=>{if(typeof callback!=='function')throw new TypeError('需要工作区操作回调');const listener=(_event,message)=>{if(message&&['home','new','open','tools','admin','settings'].includes(message.action))callback({action:message.action});};ipcRenderer.on('desktop:home-action',listener);return()=>ipcRenderer.removeListener('desktop:home-action',listener);},
+ onAction:callback=>{if(typeof callback!=='function')throw new TypeError('需要工作区操作回调');const listener=(_event,message)=>{if(message&&['home','new','open','tools','admin','settings','workspace-settings'].includes(message.action))callback({action:message.action,...(typeof message.project==='string'?{project:message.project}:{})});};ipcRenderer.on('desktop:home-action',listener);return()=>ipcRenderer.removeListener('desktop:home-action',listener);},
  adminStatus:()=>ipcRenderer.invoke('desktop:admin-status'),adminCheck:()=>ipcRenderer.invoke('desktop:admin-check'),adminRestart:()=>ipcRenderer.invoke('desktop:admin-restart'),
  toolsSnapshot:()=>ipcRenderer.invoke('desktop:tools-snapshot'),toolsCheck:()=>ipcRenderer.invoke('desktop:tools-check'),toolsUpdate:id=>ipcRenderer.invoke('desktop:tools-update',id),toolsCancel:id=>ipcRenderer.invoke('desktop:tools-cancel',id),toolsSettings:settings=>ipcRenderer.invoke('desktop:tools-settings',settings),
  settingsUI:()=>ipcRenderer.invoke('desktop:settings-ui'),settingsGet:()=>ipcRenderer.invoke('desktop:settings-get'),settingsSave:body=>ipcRenderer.invoke('desktop:settings-save',body),settingsConnection:()=>ipcRenderer.invoke('desktop:settings-connection'),settingsAway:away=>ipcRenderer.invoke('desktop:settings-away',away),
+ workspaceUI:()=>ipcRenderer.invoke('desktop:workspace-ui'),workspaceGet:name=>ipcRenderer.invoke('desktop:workspace-get',name),workspaceUpdate:body=>ipcRenderer.invoke('desktop:workspace-update',body),workspaceRemove:body=>ipcRenderer.invoke('desktop:workspace-remove',body),workspaceDirectory:current=>ipcRenderer.invoke('desktop:workspace-directory',current),
  onToolUpdates:callback=>{if(typeof callback!=='function')throw new TypeError('需要工具更新回调');const listener=(_event,state)=>callback(state);ipcRenderer.on('desktop:tools-state',listener);return()=>ipcRenderer.removeListener('desktop:tools-state',listener);},
  ready:info=>chromeReady.then(()=>ipcRenderer.invoke('desktop:ready',info))
 }));

@@ -150,6 +150,7 @@ def prepare(conn, home, plugin_root, project_name, name, task, group=None, role=
 
 def _execute(conn, plan, launcher, members=(), member_session_ids=()):
     spec = plan["spec"]
+    board.project(conn, spec['project'])
     if plan["worktree_command"] is not None:
         result = git_process.run(plan["worktree_command"][1:],timeout=None)
         if result.returncode != 0:
