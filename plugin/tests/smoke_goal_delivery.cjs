@@ -237,6 +237,26 @@ const listCards=`[...document.querySelectorAll('#goal-head .goal-card')].map(car
   await click('[data-goal-act=close-report]');await wait('!document.querySelector(".goal-report-reader")');
   steps.push('窄窗口：卡片、结论面板和阅读层无横向溢出，聊天区仍保留空间');
 
+  // Reproduce the production handoff ordering, with no native tool result to reconcile.
+  const former=journal(board.session_id,null).value;
+  for(const event of [
+    {type:'assistant',id:'start-tool',content:[{type:'tool_use',id:'start-call',name:'crew_goal',input:{action:'start',goal_id:'goal-d'}}]},
+    {type:'identity_handoff',target_execution:'retired-execution',text:'当前 Crew 身份已转交执行；保留此段历史，旧原生进程停止。'},
+    {type:'turn_result',status:'interrupted',success:false},{type:'status',status:'offline'}
+  ])former.events.push({...event,seq:former.events.length+1,at:new Date().toISOString()});
+  former.read_seq=former.events.length;
+  viewports.push(await open(1100,800,`leader=${board.session_id}`));
+  await wait('document.querySelector(".tool-state")?.textContent.includes("已转交")');
+  assert.equal(await run('document.querySelectorAll(".tool.live,.tool .spin").length'),0);
+  await click('[data-chat-fold="tool:start-call"]');
+  assert(await run('document.querySelector(".tool-steps").checkVisibility() && document.querySelector(".tool-steps").textContent.includes("未返回结果")'));
+  assert(!(await text('.tool-steps')).includes('执行失败'));
+  await run('document.querySelector("[data-chat-goal=goal-d]").scrollIntoView({block:"nearest"})');await shot('14-总会话工具已转交.png');
+  await click('[data-chat-goal=goal-d]');
+  await wait('location.hash.includes("goal=goal-d") && !!document.querySelector("[data-goal-detail=goal-d]")');
+  assert((await text('#goal-head')).includes('每周风险摘要邮件'));await shot('15-查看已完成任务.png');
+  steps.push('旧总会话的启动工具在转交、原生中断后显示已转交；无回执时保留结果未知，直接查看已完成任务，读取不会启动或恢复 AI');
+
   const forbidden=calls.filter(call=>['/api/chat/send','/api/goals/action','/api/goals/agent','/api/goals/create','/api/spawn','/api/chat/interrupt','/api/session/stop'].includes(call.name)||/wake|spawn|start/.test(call.name));
   assert.deepEqual(forbidden,[]);const posts=[...new Set(calls.filter(call=>call.method==='POST').map(call=>call.name))];assert(posts.every(name=>name==='/api/chat/read'),posts.join(','));
   assert(calls.filter(call=>call.name==='/api/goals/report').every(call=>details.get(call.query.goal_id)?.reports.some(item=>item.id===call.query.report_id)));
