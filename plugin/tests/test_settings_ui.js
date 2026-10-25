@@ -58,3 +58,27 @@ test("execution permissions start safely and retain an explicitly saved full-acc
   const explicit={codex:"danger-full-access",claude:"bypassPermissions"};assert.deepEqual(plain(ui.validateExecution(ui.initialExecution({execution:explicit}))),explicit);
   assert.throws(()=>ui.validateExecution({codex:"unknown",claude:"default"}),/有效的执行权限/);
 });
+
+function panelHarness(){
+  const nodes=new Map(),element=()=>({classList:{add(){},toggle(){}},setAttribute(){},focus(){},textContent:"",innerHTML:"",disabled:false});
+  const content={...element(),replaceChildren(){this.innerHTML="";},secretDraft:""};
+  const root={...element(),hidden:false,contains:()=>true,querySelectorAll:()=>[],querySelector(selector){if(selector===".cs-content")return content;if(!nodes.has(selector))nodes.set(selector,element());return nodes.get(selector);},addEventListener(){}};
+  return{root,content};
+}
+
+test("opening message channels does not wait for or start AI model discovery",()=>{
+  const {root,content}=panelHarness();let reads=0,mounts=0,cleanups=0;
+  const settings=ui.create({host:root,read:()=>{reads++;return new Promise(()=>{});},save:()=>{throw Error("not saving AI settings");},panels:{connections(host){mounts++;host.secretDraft="new-user-secret";return()=>{cleanups++;};}}});
+  settings.open("connections");
+  assert.equal(reads,0);assert.equal(mounts,1);assert.equal(cleanups,0);assert.equal(content.secretDraft,"new-user-secret");
+  settings.hide();assert.equal(cleanups,1);
+});
+
+test("late AI discovery cannot remount active message channels or discard their credential draft",async()=>{
+  const {root,content}=panelHarness();let resolve,reads=0,mounts=0,cleanups=0;
+  const settings=ui.create({host:root,read:()=>{reads++;return new Promise(done=>{resolve=done;});},save:()=>{throw Error("not saving AI settings");},panels:{connections(host){mounts++;host.secretDraft="";return()=>{cleanups++;host.secretDraft="";};}}});
+  settings.open("ai");assert.equal(reads,1);settings.open("connections");content.secretDraft="typed-while-discovery-pending";
+  resolve({ai:config(),runtimes:catalog});for(let i=0;i<12;i++)await Promise.resolve();
+  assert.equal(mounts,1);assert.equal(cleanups,0);assert.equal(content.secretDraft,"typed-while-discovery-pending");
+  settings.hide();assert.equal(cleanups,1);
+});

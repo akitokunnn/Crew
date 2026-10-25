@@ -4,7 +4,7 @@
   const clone = value => JSON.parse(JSON.stringify(value));
   const empty = () => ({runtime:null, model:null, effort:null});
   const tasks = [["digest", "频道摘要", "将交流整理成摘要"], ["git", "Git 管理员", "检查改动、整理提交与合并"], ["operations", "后台事故处理", "按证据分析并验证修复"]];
-  const categories = [["ai", "AI 大脑", "载体、模型与任务分配"], ["execution", "执行权限", "文件与网络的访问范围"], ["appearance", "外观", "让工作区更顺手"], ["tools", "工具与更新", "本机执行工具"], ["connections", "QQ 与连接", "离开电脑后的通知"], ["backend", "后台与运维", "运维对话、状态与配置"]];
+  const categories = [["ai", "AI 大脑", "载体、模型与任务分配"], ["execution", "执行权限", "文件与网络的访问范围"], ["appearance", "外观", "让工作区更顺手"], ["tools", "工具与更新", "本机执行工具"], ["connections", "消息渠道", "QQ、Lark / 飞书与远程通知"], ["backend", "后台与运维", "运维对话、状态与配置"]];
   const icons = {
     ai:'<rect x="6" y="6" width="12" height="12" rx="3"/><path d="M9 2v4m6-4v4M9 18v4m6-4v4M2 9h4m-4 6h4m12-6h4m-4 6h4"/><rect x="9" y="9" width="6" height="6" rx="1"/>',
     execution:'<path d="m12 3 8 3v6c0 4-4 7-8 9-4-2-8-5-8-9V6l8-3Z"/><path d="m8.5 12 2.5 2.5 4.5-5"/>',
@@ -108,7 +108,7 @@
       const request = ++generation, edited = changed(); loading = true; error = ""; note = ""; render();
       try { const value = await options.read(); if (request !== generation) return; snapshot = value; if (!edited) { draft = initialAI(value); executionDraft = initialExecution(value); } options.onSnapshot?.(value); }
       catch (caught) { if (request === generation) error = caught.message || String(caught); }
-      finally { if (request === generation) { loading = false; render(); } }
+      finally { if (request === generation) { loading = false; if (root.hidden || category === "connections" && cleanup) controls(); else render(); } }
     }
     async function save() {
       if (!snapshot || saving) return;
@@ -155,7 +155,7 @@
         error = ""; note = ""; controls();
       }
     });
-    return {open(next = "ai") { category = next; root.hidden = false; if (!snapshot) void load(); else render(); }, hide() { root.hidden = true; release(); }, reload:load, save, getDraft:() => clone(draft)};
+    return {open(next = "ai") { category = next; root.hidden = false; if (!snapshot && category !== "connections") void load(); else render(); }, hide() { root.hidden = true; release(); }, reload:load, save, getDraft:() => clone(draft)};
   }
   window.CrewSettings = {create, defaultRuntime, initialAI, validate, selectionMarkup, initialExecution, validateExecution, executionMarkup};
 })();

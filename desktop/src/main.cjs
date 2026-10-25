@@ -313,7 +313,9 @@ handle('desktop:launch-settings-pick',async body=>{
     ...(body.current&&path.isAbsolute(body.current)?{defaultPath:body.current}:{}),properties:[file?'openFile':'openDirectory']});
   return {path:result.canceled?null:result.filePaths[0]};
 });
-handle('desktop:settings-connection',async()=>({notification:(await settingsRequest('/api/state')).notification}));
+handle('desktop:settings-connection',()=>settingsRequest('/api/connections'));
+handle('desktop:settings-connection-save',body=>settingsRequest('/api/connections/configure',body));
+handle('desktop:settings-connection-action',body=>settingsRequest('/api/connections/action',body));
 handle('desktop:settings-away',away=>{
   if (typeof away !== 'boolean') throw Error('离开状态必须是 true 或 false');
   return settingsRequest('/api/notifications/away', {away});
@@ -326,6 +328,7 @@ handle('desktop:settings-ui',async()=>{
   await window.webContents.executeJavaScript(await fs.readFile(path.join(directory, 'operations-ui.js'),'utf8'));
   await window.webContents.insertCSS(await fs.readFile(path.join(directory, 'settings-ui.css'),'utf8'));
   await window.webContents.executeJavaScript(await fs.readFile(path.join(directory, 'settings-ui.js'),'utf8'));
+  await window.webContents.executeJavaScript(await fs.readFile(path.join(directory, 'connections-ui.js'),'utf8'));
   return {ok:true};
 });
 handle('desktop:workspace-ui',async()=>{

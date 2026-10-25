@@ -199,11 +199,12 @@
     replace($("settings"), `<section class="settings-section"><h4>显示模式</h4><div class="cs-theme-options">${[["system","跟随系统"],["light","浅色"],["dark","深色"]].map(([id,label]) => `<button type="button" data-act="theme-select" data-theme-mode="${id}" aria-pressed="${theme === id}">${label}</button>`).join("")}</div></section>${themes}<section class="settings-section"><div class="settings-row"><h4>字号</h4><span class="settings-value" id="font-scale-value">${pct(fontScale)}</span><button type="button" class="settings-link" data-act="font-reset" ${fontScale === 1 ? "disabled" : ""}>恢复标准</button></div><input class="settings-range" type="range" min="${FONT_MIN}" max="${FONT_MAX}" step="0.01" value="${fontScale}" data-setting="font" aria-label="字号"></section><section class="settings-section"><div class="settings-row"><h4>提示音</h4><span class="gap"></span><button class="switch ${sound.muted ? "" : "on"}" data-act="sound-mute" role="switch" aria-checked="${!sound.muted}" aria-label="提示音"><span class="track"></span></button></div><div class="settings-row"><span class="settings-sub">音量</span><span class="settings-value" id="sound-volume-value">${pct(sound.volume)}</span><button type="button" class="settings-link" data-act="sound-test" ${sound.muted ? "disabled" : ""}>试听</button></div><input class="settings-range" type="range" min="0" max="1" step="0.01" value="${sound.volume}" data-setting="volume" aria-label="提示音音量" ${sound.muted ? "disabled" : ""}></section>`);
   }
   function notificationChannel() {
-    const channel = state.notification.channel;
-    const labels = {unconfigured:"未配置", unbound:"未绑定", connecting:"连接中", connected:"已连上", reconnecting:"重连中", rejected:"被拒收", error:"出错"};
-    const hints = {unbound:"去 QQ 给机器人发一句话", rejected:"在手机 QQ 打开允许主动发送"};
-    const hint = channel.state === "unbound" || channel.state === "rejected" ? hints[channel.state] : channel.detail;
-    return `<div class="qq-status ${esc(channel.state)}" role="status"${hint === null ? "" : ` title="${esc(hint)}"`}><div class="qq-state"><i></i>QQ · ${labels[channel.state]}</div>${hint === null ? "" : `<div class="qq-detail">${esc(hint)}</div>`}</div>`;
+    const channels = state.notification.channels || [{...state.notification.channel, id:"qq", name:"QQ"}];
+    const labels = {unconfigured:"未配置", disabled:"已断开", disconnected:"已断开", unbound:"等待绑定", connecting:"连接中", connected:"已连接", reconnecting:"重连中", rejected:"被拒收", error:"出错", stopped:"已停止"};
+    return channels.map(channel => {
+      const hint = channel.state === "unbound" ? "在设置的消息渠道中复制绑定命令，私聊机器人完成绑定" : channel.state === "rejected" && channel.id === "qq" ? "在手机 QQ 打开允许主动发送" : channel.detail;
+      return `<div class="qq-status ${esc(channel.state)}" role="status"${hint ? ` title="${esc(hint)}"` : ""}><div class="qq-state"><i></i>${esc(channel.name)} · ${esc(labels[channel.state] || channel.state)}</div>${hint ? `<div class="qq-detail">${esc(hint)}</div>` : ""}</div>`;
+    }).join("");
   }
   const priorityLeaders = () => state.leaders.filter(item => item.priority !== null).sort((a, b) => a.priority - b.priority);
   const priorityIds = () => priorityLeaders().map(item => item.session_id);
@@ -258,7 +259,7 @@
       <section class="leader-list" data-leader-zone="normal"><div class="sec-label">Leader</div>${state.leaders.filter(item => item.priority === null).map(sidebarLeader).join("")}
       <button class="leader-item add-leader" data-act="modal-leader"><span class="plus">${ic("plus", "sm")}</span><span>起 leader</span></button></section></div>
       <div class="sb-mid"><button class="nav-item ${view === "adopt" ? "active" : ""}" data-act="view" data-view="adopt">${ic("inbox")}<span>待收编</span><span class="count" title="${state.candidates.running.length} 个在运行">${state.candidates.running.length}<span class="adopt-count-label"> 个在运行</span></span></button><button class="nav-item ${view === "usage" ? "active" : ""}" data-act="view" data-view="usage">${ic("chart")}<span>用量</span></button></div>
-      <div class="sb-foot"><button class="quota quota-summary" data-act="view" data-view="usage" title="${esc(quotaTitle)}" aria-label="查看完整额度和用量"><span class="quota-summary-row"><span>Claude</span><span>周 ${quotaText(state.limits.claude.seven_day)} · 5h ${quotaText(state.limits.claude.five_hour)}</span></span><span class="quota-summary-row"><span>Codex</span><span>周 ${quotaText(state.limits.codex)}</span></span></button>${notificationChannel()}<div class="foot-row"><button class="switch ${state.notification.manual_away ? "on" : ""}" data-act="away" role="switch" aria-checked="${state.notification.manual_away}"><span class="track"></span><span>我已离开</span></button><span class="gap"></span><button class="icon-btn" data-act="settings" title="设置" aria-label="设置">${ic("settings")}</button><button class="icon-btn" data-act="theme" title="${themeName}" aria-label="主题：${themeName}">${ic(themeIcon)}</button></div>${state.notification.away ? '<div class="away-note">离开中：待拍板会推到 QQ</div>' : ""}${state.notification.error === null ? "" : `<div class="error-line">${esc(state.notification.error)}</div>`}</div>`);
+      <div class="sb-foot"><button class="quota quota-summary" data-act="view" data-view="usage" title="${esc(quotaTitle)}" aria-label="查看完整额度和用量"><span class="quota-summary-row"><span>Claude</span><span>周 ${quotaText(state.limits.claude.seven_day)} · 5h ${quotaText(state.limits.claude.five_hour)}</span></span><span class="quota-summary-row"><span>Codex</span><span>周 ${quotaText(state.limits.codex)}</span></span></button>${notificationChannel()}<div class="foot-row"><button class="switch ${state.notification.manual_away ? "on" : ""}" data-act="away" role="switch" aria-checked="${state.notification.manual_away}"><span class="track"></span><span>我已离开</span></button><span class="gap"></span><button class="icon-btn" data-act="settings" title="设置" aria-label="设置">${ic("settings")}</button><button class="icon-btn" data-act="theme" title="${themeName}" aria-label="主题：${themeName}">${ic(themeIcon)}</button></div>${state.notification.away ? '<div class="away-note">离开中：待拍板会发到已连接的消息渠道</div>' : ""}${state.notification.error === null ? "" : `<div class="error-line">${esc(state.notification.error)}</div>`}</div>`);
   }
   function clearLeaderDrop() {
     $("sidebar").querySelectorAll(".drop-before,.drop-after,.drop-zone").forEach(item => item.classList.remove("drop-before", "drop-after", "drop-zone"));
@@ -667,19 +668,21 @@
     if (state !== null && project !== null) render();
     settingsReturn?.focus?.({preventScroll:true}); settingsReturn = null;
   }
-  function openSettings() {
+  function openSettings(category = "ai") {
     settingsReturn = document.activeElement; settingsOpen = true;
     if (mountedChat !== null) { CrewChat.unmount(); mountedChat = null; }
     if (mountedChannel) { CrewChannel.unmount(); mountedChannel = false; }
     CrewGit.unmount(); goals?.closeDrawer(); if (cardId !== null) closeCard(); hideMenu();
-    $("app").inert = true; settingsUI?.open();
-    $("settings-surface").querySelector('[data-settings-category="ai"]')?.focus();
+    $("app").inert = true; settingsUI?.open(category);
+    $("settings-surface").querySelector(`[data-settings-category="${category}"]`)?.focus();
   }
   function settingsConnections(host) {
-    const notification = state?.notification;
-    host.innerHTML = `<section class="cs-card"><h2>QQ 通知</h2><p class="cs-hint">离开电脑后，待拍板与最终交付通知会通过已有 QQ 连接送达。</p>${notification ? notificationChannel() : '<p class="cs-hint">连接状态暂时无法读取。</p>'}<div class="cs-tool-row"><div><strong>我已离开</strong><p>手动切换离开状态；自动离开规则继续生效。</p></div><button type="button" class="cs-button" data-settings-away ${notification ? "" : "disabled"}>${notification?.manual_away ? "回到电脑前" : "设为离开"}</button></div>${notification?.error ? `<p class="cs-warning">${esc(notification.error)}</p>` : ""}<p role="status" data-connection-note></p></section>`;
-    const button = host.querySelector("[data-settings-away]");
-    button.onclick = async () => { button.disabled = true; try { await api("/api/notifications/away", {away:!notification.manual_away}); await loadState(true); settingsConnections(host); } catch (error) { host.querySelector("[data-connection-note]").textContent = error.message; button.disabled = false; } };
+    return window.CrewConnections.mount(host, {
+      read:() => api("/api/connections"),
+      configure:body => api("/api/connections/configure", body),
+      action:body => api("/api/connections/action", body),
+      away:value => api("/api/notifications/away", {away:value})
+    });
   }
   function openWorkspaceSettings() {
     if (window.navigator?.userAgent.includes("Electron/")) { location.assign(`/?workspace-settings=${encodeURIComponent(project)}`); return; }
@@ -850,7 +853,7 @@
     }
     if (fresh) return;
     if (decisions.length > 0) CrewSound.play("decision");
-    const failedChannel = notification => ["error", "rejected"].includes(notification.channel.state);
+    const failedChannel = notification => (notification.channels || [notification.channel]).some(channel => ["error", "rejected"].includes(channel.state));
     const failed = errors.length > 0 || failedChannel(state.notification) && !failedChannel(previous.notification) || state.notification.error !== null && state.notification.error !== previous.notification.error;
     if (failed) CrewSound.play("error");
     if (completed.size > 0) CrewSound.play("complete");

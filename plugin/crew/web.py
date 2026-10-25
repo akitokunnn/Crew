@@ -23,6 +23,7 @@ from urllib.error import HTTPError, URLError
 from . import board, channel, channel_digest, chat, claude_limits, codex_runtime, documents, git_admin, git_ci, git_view, goal_api, goals, hooks, messaging, models, notifications, open_session, presentation, runtime_catalog, runtime_switch, runtimes, session_ops, settings, spawn, store, themes, todo, trust_mode, updater, usage, usage_cli, vscode_sessions, workspace_execution, workspace_settings
 from .service_lock import HomeServiceLock
 from . import operations_chat, operations_settings
+from . import connections
 
 
 def _text(data, key):
@@ -81,7 +82,8 @@ class Service:
         self.notice_worker = None
         self.git_ci = git_ci.Poller(self.home, self.write_lock)
         self.ci_worker = None
-        self.inbox = notifications.Inbox(self, notification_client, lock_status, notification_batch_seconds)
+        self.connections = connections.Manager(self, notification_client, lock_status, notification_batch_seconds)
+        self.inbox = self.connections.inboxes['qq']
         with closing(store.connect(home)) as conn:
             projects = board.projects(conn)
             project = board.project_for_path(conn, Path.cwd() if cwd is None else cwd)
@@ -197,11 +199,11 @@ class Service:
         self.notice_worker.start()
         self.ci_worker = threading.Thread(target=self._poll_git_ci, name="crew-git-ci", daemon=True)
         self.ci_worker.start()
-        self.inbox.start()
+        self.connections.start()
 
     def close(self):
         self.stop.set()
-        self.inbox.close()
+        self.connections.close()
         if self.notice_worker is not None:
             self.notice_worker.join()
         if self.ci_worker is not None:
@@ -845,6 +847,10 @@ class Service:
             return operations_chat.interrupt(self.home)
         if path == '/api/admin/config':
             return operations_settings.save(self.home, self.plugin_root, data)
+        if path == '/api/connections/configure':
+            return self.connections.configure(data)
+        if path == '/api/connections/action':
+            return self.connections.action(data)
         if path == '/api/settings':
             if not data or not set(data) <= {'ai', 'execution'}:
                 raise ValueError('设置请求只能包含 ai 和 execution 配置')
@@ -1373,10 +1379,10 @@ class Service:
                 self.scanned_at = now
 
     def notification_status(self):
-        return self.inbox.status()
+        return self.connections.notification_status()
 
     def set_away(self, away):
-        return self.inbox.set_away(away)
+        return self.connections.set_away(away)
 
     def usage(self, period="week", what=None, project_name=None, scope='workspace'):
         try:
@@ -1422,6 +1428,7 @@ POST_PATHS.update(('/api/admin/update/prepare', '/api/admin/update/cancel'))
 POST_PATHS.add('/api/settings')
 POST_PATHS.update(('/api/admin/chat/send', '/api/admin/chat/interrupt', '/api/admin/config'))
 POST_PATHS.add('/api/admin/connection/prepare')
+POST_PATHS.update(('/api/connections/configure', '/api/connections/action'))
 POST_PATHS.add('/api/native-approval')
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"),
           "/themes.js": ("themes.js", "text/javascript; charset=utf-8"),
@@ -1444,6 +1451,7 @@ STATIC_CACHED = {'/logo.svg', '/fonts/HarmonyOS_Sans_SC_Regular.woff2', '/fonts/
 STATIC.update({'/goal-ui.js': ('goal-ui.js', 'text/javascript; charset=utf-8'),
                '/goal-ui.css': ('goal-ui.css', 'text/css; charset=utf-8')})
 STATIC.update({'/settings-ui.js': ('settings-ui.js', 'text/javascript; charset=utf-8'),
+               '/connections-ui.js': ('connections-ui.js', 'text/javascript; charset=utf-8'),
                '/settings-ui.css': ('settings-ui.css', 'text/css; charset=utf-8')})
 STATIC.update({'/operations-ui.js': ('operations-ui.js', 'text/javascript; charset=utf-8'),
                '/operations-ui.css': ('operations-ui.css', 'text/css; charset=utf-8')})
@@ -1455,6 +1463,13 @@ STATIC.update({'/native-approval-ui.js': ('native-approval-ui.js', 'text/javascr
 
 
 class Handler(BaseHTTPRequestHandler):
+    def _connection_access(self):
+        port = self.server.server_port
+        hosts = {'127.0.0.1:%d' % port, 'localhost:%d' % port, '[::1]:%d' % port}
+        origins = self.headers.get_all('Origin')
+        return (self.headers.get_all('Host') in ([host] for host in hosts)
+                and (origins is None or len(origins) == 1 and origins[0] in {'http://' + host for host in hosts}))
+
     def _chat_events(self, journal, sequence):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
@@ -1504,9 +1519,13 @@ class Handler(BaseHTTPRequestHandler):
         url = urlsplit(self.path)
         query = parse_qs(url.query)
         service = self.server.service
+        connection_path = url.path in ('/api/connections', '/api/connections/configure', '/api/connections/action')
         if method == "POST":
             length = int(self.headers.get('Content-Length', '0'))
             payload = self.rfile.read(length) if length > 0 else b''
+            if connection_path and not self._connection_access():
+                self._send(403, {'error': '连接设置只允许本机 Crew 页面访问'})
+                return
             # Drain the request before an early error, so Windows can deliver
             # the HTTP response instead of resetting a socket with unread data.
             if self.headers.get("X-Crew") != "1":
@@ -1519,6 +1538,8 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("\u8bf7\u63d0\u4f9b JSON \u8bf7\u6c42\u4f53")
             data = json.loads(payload.decode("utf-8"))
             self._send(200, service.post(url.path, data, query.get("project", [None])[0]))
+        elif connection_path and not self._connection_access():
+            self._send(403, {'error': '连接设置只允许本机 Crew 页面访问'})
         elif url.path == "/api/files/content":
             hosts = {"127.0.0.1:%d" % self.server.server_port, "localhost:%d" % self.server.server_port}
             if self.headers.get_all("Host") not in ([host] for host in hosts):
@@ -1563,6 +1584,8 @@ class Handler(BaseHTTPRequestHandler):
         elif url.path == '/api/runtimes':
             catalog = service.runtime_catalog.refresh(force=True) if query.get('refresh') == ['1'] else service.runtime_catalog.refresh()
             self._send(200, {'runtimes': catalog})
+        elif url.path == '/api/connections':
+            self._send(200, service.connections.snapshot())
         elif url.path == '/api/settings':
             self._send(200, service.settings_state())
         elif url.path == '/api/project/settings':
