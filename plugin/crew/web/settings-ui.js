@@ -4,13 +4,14 @@
   const clone = value => JSON.parse(JSON.stringify(value));
   const empty = () => ({runtime:null, model:null, effort:null});
   const tasks = [["leader", "新建 leader", "新建 leader 时的载体、模型与思考强度；创建时仍可临时调整"], ["member", "leader 召唤组员", "新组员默认使用的大脑；每个 leader 也能单独覆盖。已有组员不受影响"], ["digest", "频道摘要", "将交流整理成摘要"], ["git", "Git 管理员", "检查改动、整理提交与合并"], ["operations", "运维 AI", "后台聊天与事故处理共用此选择；自动修复另按已保存策略执行"]];
-  const categories = [["ai", "AI 大脑", "载体、模型与任务分配"], ["execution", "执行权限", "文件与网络的访问范围"], ["appearance", "外观", "让工作区更顺手"], ["tools", "工具与更新", "本机执行工具"], ["connections", "消息渠道", "QQ、Lark / 飞书与远程通知"], ["backend", "后台与运维", "运维对话、状态与配置"]];
+  const categories = [["ai", "AI 大脑", "载体、模型与任务分配"], ["execution", "执行权限", "文件与网络的访问范围"], ["appearance", "外观", "让工作区更顺手"], ["tools", "工具与更新", "本机执行工具"], ["connections", "消息渠道", "QQ、Lark / 飞书与远程通知"], ["storage", "存储与清理", "空间占用、回收与保留"], ["backend", "后台与运维", "运维对话、状态与配置"]];
   const icons = {
     ai:'<rect x="6" y="6" width="12" height="12" rx="3"/><path d="M9 2v4m6-4v4M9 18v4m6-4v4M2 9h4m-4 6h4m12-6h4m-4 6h4"/><rect x="9" y="9" width="6" height="6" rx="1"/>',
     execution:'<path d="m12 3 8 3v6c0 4-4 7-8 9-4-2-8-5-8-9V6l8-3Z"/><path d="m8.5 12 2.5 2.5 4.5-5"/>',
     appearance:'<circle cx="12" cy="12" r="9"/><path d="M12 3v18"/><path d="M12 3a9 9 0 0 1 0 18Z" fill="currentColor" stroke="none"/>',
     tools:'<path d="M14.8 6.2a5 5 0 0 0-6.6 6.6L3 18a2.1 2.1 0 0 0 3 3l5.2-5.2a5 5 0 0 0 6.6-6.6L14 13l-3-3 3.8-3.8Z"/>',
     connections:'<path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5H4l1.8-4.2A8.5 8.5 0 1 1 21 11.5Z"/><path d="M8 11h8"/>',
+    storage:'<ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v7c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12v7c0 1.7 3.6 3 8 3s8-1.3 8-3v-7"/>',
     backend:'<rect x="3" y="3" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M7 6.5h.01M7 17.5h.01M11 6.5h6m-6 11h6"/>',
     back:'<path d="m10 6-6 6 6 6m-6-6h16"/>',
     close:'<path d="m6 6 12 12M6 18 18 6"/>'
@@ -67,7 +68,7 @@
     const customFields = new Set();
     let snapshot = null, draft = null, executionDraft = null, category = "ai", loading = false, saving = false, error = "", note = "", cleanup = null, generation = 0;
     root.classList.add("crew-settings");
-    root.innerHTML = `<div class="cs-sidebar"><div class="cs-brand"><span class="cs-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M14.26 8.54a4.9 4.9 0 1 0 0 6.92" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"/><circle cx="17.4" cy="16.4" r="1.75" fill="currentColor"/></svg></span><div><strong>设置</strong><small>Crew · 本机偏好</small></div></div><nav aria-label="设置分类">${categories.filter(([id]) => !["appearance", "connections"].includes(id) || options.panels?.[id]).map(([id, label, description]) => `<button type="button" data-settings-category="${id}"><span class="cs-nav-icon">${icon(id)}</span><span>${label}<small>${description}</small></span></button>`).join("")}</nav>${options.onClose ? `<button type="button" class="cs-back" data-settings-action="close">${icon("back")}返回工作区</button>` : ""}<p class="cs-local">本机偏好 · 所有工作区共用<span class="cs-font-credit">HarmonyOS Sans · 华为</span></p></div><div class="cs-body"><header class="cs-header"><div><span class="cs-eyebrow">偏好设置</span><h1 id="crew-settings-title"></h1><p class="cs-subtitle"></p></div>${options.onClose ? `<button type="button" class="cs-close" data-settings-action="close" aria-label="关闭设置">${icon("close")}</button>` : ""}</header><div class="cs-content"></div><footer class="cs-footer"><p class="cs-status" role="status"></p><button type="button" class="cs-button" data-settings-action="reset">撤销更改</button><button type="button" class="cs-button cs-primary" data-settings-action="save">保存设置</button></footer></div>`;
+    root.innerHTML = `<div class="cs-sidebar"><div class="cs-brand"><span class="cs-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M14.26 8.54a4.9 4.9 0 1 0 0 6.92" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"/><circle cx="17.4" cy="16.4" r="1.75" fill="currentColor"/></svg></span><div><strong>设置</strong><small>Crew · 本机偏好</small></div></div><nav aria-label="设置分类">${categories.filter(([id]) => !["appearance", "connections", "storage"].includes(id) || options.panels?.[id]).map(([id, label, description]) => `<button type="button" data-settings-category="${id}"><span class="cs-nav-icon">${icon(id)}</span><span>${label}<small>${description}</small></span></button>`).join("")}</nav>${options.onClose ? `<button type="button" class="cs-back" data-settings-action="close">${icon("back")}返回工作区</button>` : ""}<p class="cs-local">本机偏好 · 所有工作区共用<span class="cs-font-credit">HarmonyOS Sans · 华为</span></p></div><div class="cs-body"><header class="cs-header"><div><span class="cs-eyebrow">偏好设置</span><h1 id="crew-settings-title"></h1><p class="cs-subtitle"></p></div>${options.onClose ? `<button type="button" class="cs-close" data-settings-action="close" aria-label="关闭设置">${icon("close")}</button>` : ""}</header><div class="cs-content"></div><footer class="cs-footer"><p class="cs-status" role="status"></p><button type="button" class="cs-button" data-settings-action="reset">撤销更改</button><button type="button" class="cs-button cs-primary" data-settings-action="save">保存设置</button></footer></div>`;
     const content = root.querySelector(".cs-content"), footer = root.querySelector(".cs-footer"), status = root.querySelector(".cs-status");
     const operations = options.operations ? window.CrewOperations.create({api:options.operations, service:options.service,
       mountHealth:options.panels?.backend, onBrain() { category = "ai"; render(); const card = content.querySelector('[data-ai-task="operations"]'); card?.scrollIntoView({block:"center"}); card?.focus({preventScroll:true}); }}) : null;
@@ -109,7 +110,7 @@
       const request = ++generation, edited = changed(); loading = true; error = ""; note = ""; render();
       try { const value = await options.read(); if (request !== generation) return; snapshot = value; if (!edited) { draft = initialAI(value); executionDraft = initialExecution(value); } options.onSnapshot?.(value); }
       catch (caught) { if (request === generation) error = caught.message || String(caught); }
-      finally { if (request === generation) { loading = false; if (root.hidden || category === "connections" && cleanup) controls(); else render(); } }
+      finally { if (request === generation) { loading = false; if (root.hidden || ["connections", "storage"].includes(category) && cleanup) controls(); else render(); } }
     }
     async function save() {
       if (!snapshot || saving) return;
@@ -156,7 +157,7 @@
         error = ""; note = ""; controls();
       }
     });
-    return {open(next = "ai") { category = next; root.hidden = false; if (!snapshot && category !== "connections") void load(); else render(); }, hide() { root.hidden = true; release(); }, reload:load, save, getDraft:() => clone(draft)};
+    return {open(next = "ai") { category = next; root.hidden = false; if (!snapshot && !["connections", "storage"].includes(category)) void load(); else render(); }, hide() { root.hidden = true; release(); }, reload:load, save, getDraft:() => clone(draft)};
   }
   window.CrewSettings = {create, defaultRuntime, initialAI, validate, selectionMarkup, initialExecution, validateExecution, executionMarkup};
 })();

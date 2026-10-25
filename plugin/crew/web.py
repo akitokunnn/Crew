@@ -23,7 +23,7 @@ from urllib.error import HTTPError, URLError
 from . import board, channel, channel_digest, chat, claude_limits, codex_runtime, documents, git_admin, git_ci, git_view, goal_api, goals, hooks, maintenance, messaging, models, notifications, open_session, presentation, runtime_catalog, runtime_switch, runtimes, session_ops, settings, spawn, store, themes, todo, trust_mode, updater, usage, usage_cli, vscode_sessions, workspace_execution, workspace_settings
 from .service_lock import HomeServiceLock
 from . import member_defaults, operations_chat, operations_settings
-from . import connections
+from . import connections, storage_cleanup
 
 
 def _text(data, key):
@@ -87,6 +87,8 @@ class Service:
         self.inbox = self.connections.inboxes['qq']
         # Marks maintenance left unfinished by a previous service as interrupted; nothing is re-sent.
         self.maintenance = maintenance.Manager(self)
+        self.storage_cleanup = storage_cleanup.Manager(self.home, self.plugin_root, clock=self.now,
+                                                      active_keys=self.storage_active_keys, activity_lock=self.chat.lock)
         with closing(store.connect(home)) as conn:
             projects = board.projects(conn)
             project = board.project_for_path(conn, Path.cwd() if cwd is None else cwd)
@@ -96,6 +98,12 @@ class Service:
         if self.clock is None:
             return dt.datetime.now(dt.timezone.utc)
         return self.clock() if callable(self.clock) else self.clock
+
+    def storage_active_keys(self):
+        # A cached process can still be draining its last journal writes after
+        # exit. Keep its attachment directory protected for this service life.
+        with self.chat.lock:
+            return frozenset(self.chat.processes)
 
     def refresh_agents(self):
         try:
@@ -203,9 +211,11 @@ class Service:
         self.ci_worker = threading.Thread(target=self._poll_git_ci, name="crew-git-ci", daemon=True)
         self.ci_worker.start()
         self.connections.start()
+        self.storage_cleanup.start()
 
     def close(self):
         self.stop.set()
+        self.storage_cleanup.close()
         self.connections.close()
         if self.notice_worker is not None:
             self.notice_worker.join()
@@ -819,6 +829,26 @@ class Service:
             return self.maintenance.cleanup_start(project, data.get('preview_id'), data.get('confirm'))
         raise board.BoardError('未知维护操作')
 
+    def storage_post(self, path, data):
+        fields = {
+            '/api/storage/preview': {'categories'},
+            '/api/storage/clean': {'preview_id'},
+            '/api/storage/restore': {'batch_id'},
+            '/api/storage/trash/empty': {'batch_id'},
+            '/api/storage/policy': {'automatic_enabled', 'retention_days', 'keep_backups', 'recycle_days'},
+        }
+        if path not in fields or set(data) - fields[path]:
+            raise ValueError('存储请求包含不支持的字段')
+        if path == '/api/storage/preview':
+            return self.storage_cleanup.preview(data.get('categories'))
+        if path == '/api/storage/clean':
+            return self.storage_cleanup.clean(_text(data, 'preview_id'))
+        if path == '/api/storage/restore':
+            return self.storage_cleanup.restore(_text(data, 'batch_id'))
+        if path == '/api/storage/trash/empty':
+            return self.storage_cleanup.empty_trash(_optional_text(data, 'batch_id'))
+        return self.storage_cleanup.save_policy(data)
+
     def native_approvals(self, project):
         with self.chat.lock:
             return sorted([approval for current in self.chat.processes.values()
@@ -861,6 +891,8 @@ class Service:
         return self._post(path, data, project_name)
 
     def _post(self, path, data, project_name):
+        if path.startswith('/api/storage/'):
+            return self.storage_post(path, data)
         if path in ('/api/project/update', '/api/project/remove'):
             return self.update_workspace(path, data, project_name)
         if path.startswith('/api/maintenance/'):
@@ -1472,6 +1504,8 @@ POST_PATHS.update(('/api/documents','/api/documents/pin','/api/documents/refresh
 POST_PATHS.update(('/api/git/enable', '/api/git/disable', '/api/git/fetch'))
 POST_PATHS.update(('/api/admin/update/prepare', '/api/admin/update/cancel'))
 POST_PATHS.add('/api/settings')
+POST_PATHS.update(('/api/storage/preview', '/api/storage/clean', '/api/storage/restore',
+                   '/api/storage/trash/empty', '/api/storage/policy'))
 POST_PATHS.add('/api/member-defaults')
 POST_PATHS.update(('/api/admin/chat/send', '/api/admin/chat/interrupt', '/api/admin/config'))
 POST_PATHS.add('/api/admin/connection/prepare')
@@ -1500,6 +1534,8 @@ STATIC_CACHED = {'/logo.svg', '/fonts/HarmonyOS_Sans_SC_Regular.woff2', '/fonts/
 STATIC.update({'/goal-ui.js': ('goal-ui.js', 'text/javascript; charset=utf-8'),
                '/goal-ui.css': ('goal-ui.css', 'text/css; charset=utf-8')})
 STATIC.update({'/settings-ui.js': ('settings-ui.js', 'text/javascript; charset=utf-8'),
+               '/storage-ui.js': ('storage-ui.js', 'text/javascript; charset=utf-8'),
+               '/storage-ui.css': ('storage-ui.css', 'text/css; charset=utf-8'),
                '/connections-ui.js': ('connections-ui.js', 'text/javascript; charset=utf-8'),
                '/settings-ui.css': ('settings-ui.css', 'text/css; charset=utf-8')})
 STATIC.update({'/operations-ui.js': ('operations-ui.js', 'text/javascript; charset=utf-8'),
@@ -1571,12 +1607,13 @@ class Handler(BaseHTTPRequestHandler):
         url = urlsplit(self.path)
         query = parse_qs(url.query)
         service = self.server.service
-        connection_path = url.path in ('/api/connections', '/api/connections/configure', '/api/connections/action', '/api/connections/preferences')
+        local_settings_path = (url.path in ('/api/connections', '/api/connections/configure', '/api/connections/action', '/api/connections/preferences')
+                               or url.path == '/api/storage' or url.path.startswith('/api/storage/'))
         if method == "POST":
             length = int(self.headers.get('Content-Length', '0'))
             payload = self.rfile.read(length) if length > 0 else b''
-            if connection_path and not self._connection_access():
-                self._send(403, {'error': '连接设置只允许本机 Crew 页面访问'})
+            if local_settings_path and not self._connection_access():
+                self._send(403, {'error': '此设置只允许本机 Crew 页面访问'})
                 return
             # Drain the request before an early error, so Windows can deliver
             # the HTTP response instead of resetting a socket with unread data.
@@ -1590,8 +1627,8 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("\u8bf7\u63d0\u4f9b JSON \u8bf7\u6c42\u4f53")
             data = json.loads(payload.decode("utf-8"))
             self._send(200, service.post(url.path, data, query.get("project", [None])[0]))
-        elif connection_path and not self._connection_access():
-            self._send(403, {'error': '连接设置只允许本机 Crew 页面访问'})
+        elif local_settings_path and not self._connection_access():
+            self._send(403, {'error': '此设置只允许本机 Crew 页面访问'})
         elif url.path == "/api/files/content":
             hosts = {"127.0.0.1:%d" % self.server.server_port, "localhost:%d" % self.server.server_port}
             if self.headers.get_all("Host") not in ([host] for host in hosts):
@@ -1640,6 +1677,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, service.connections.snapshot())
         elif url.path == '/api/settings':
             self._send(200, service.settings_state())
+        elif url.path == '/api/storage':
+            self._send(200, service.storage_cleanup.snapshot())
         elif url.path == '/api/project/settings':
             self._send(200, service.workspace_state(query.get('project', [None])[0]))
         elif url.path == '/api/projects':

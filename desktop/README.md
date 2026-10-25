@@ -40,6 +40,8 @@ $crewVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
 
 显式地址必须是健康的本机 Crew 服务，失败直接退出，不另起后台。界面默认数据位于 `home/desktop/ui`，`--profile` 使用 `home/desktop/profiles/<安全名称>`，不会争抢旧版界面的实例锁。后台源码仍位于稳定的 `home/desktop/backend`。菜单「查看日志文件夹」可打开本地 `home/desktop/logs`，其中保留后台最近的 stderr 和启动错误。
 
+「设置 → 存储与清理」使用实际连接的后台 HOME 展示占用和清理预览。旧备份、未引用图片与过期默认导出包移入回收站后保留 7 天，恢复遇到新同名文件时不会覆盖；移动到回收站不会算作已释放空间。自动维护仅清理过期启动日志与到期回收站内容。工作区菜单中的归档清理继续整理工作状态，保留全部历史。保留规则见 [存储管理](../docs/STORAGE_MANAGEMENT.md)，完整隔离交互验收执行 `node desktop/scripts/smoke-storage.cjs`（在仓库根目录）。
+
 Windows 命令行中的服务地址使用上例的 `--service-url=地址` 形式。Electron 会为防止协议启动参数注入而拒绝「独立 URL 参数后还有其他参数」的命令；这发生在应用代码加载之前。也可以在所有应用参数前加 `--`。该行为依据 [Electron 原生参数检查](https://github.com/electron/electron/blob/main/shell/app/command_line_args.cc)，不会通过关闭它来处理。
 
 ```powershell
