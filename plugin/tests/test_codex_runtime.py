@@ -248,12 +248,29 @@ class CodexRuntimeTests(unittest.TestCase):
         self.assertFalse(self.clients)
         with closing(store.connect(self.home)) as conn:
             runtimes.set(conn, "worker", "codex", native_id="existing-thread")
+        with closing(store.connect(self.home)) as conn:
+            conn.execute("INSERT INTO git_management(project,enabled_at,base,admin_session_id) VALUES('demo',?,'main','worker')", (store.now_iso(),))
         running, client = self.make_running(resume=True, spec={"agent": "crew:git"})
         self.assertEqual(client.calls[0][0], "thread/resume")
         self.assertEqual(client.calls[0][1]["threadId"], "existing-thread")
         self.assertNotIn("dynamicTools", client.calls[0][1])
         self.assertIn("# git role rules", client.calls[0][1]["developerInstructions"])
         self.assertIn("PreToolUse", client.calls[0][1]["config"]["hooks"])
+
+    def test_binding_existing_leader_and_later_unbinding_outrank_stale_spawn_agent(self):
+        with closing(store.connect(self.home)) as conn:
+            conn.execute("UPDATE sessions SET role='leader' WHERE session_id='worker'")
+            self.session = board.session(conn, 'worker')
+            conn.execute("INSERT INTO git_management(project,enabled_at,base,admin_session_id) VALUES('demo',?,'main','worker')", (store.now_iso(),))
+        running, client = self.make_running(spec={'agent': 'crew:leader'})
+        self.assertIn('# git role rules', client.calls[0][1]['developerInstructions'])
+        running.close()
+        self.assertTrue(running.reader_done.wait(2))
+        with closing(store.connect(self.home)) as conn:
+            conn.execute("DELETE FROM git_management WHERE project='demo'")
+        _, resumed = self.make_running(resume=True, spec={'agent': 'crew:git'})
+        self.assertIn('# leader role rules', resumed.calls[0][1]['developerInstructions'])
+        self.assertNotIn('# git role rules', resumed.calls[0][1]['developerInstructions'])
 
     def test_missing_hook_stops_before_starting_native_process(self):
         (self.plugin / "crew_codex_hook.py").unlink()

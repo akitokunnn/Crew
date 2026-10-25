@@ -34,6 +34,14 @@ class GitRulesTests(CoreCase):
         self.enable()
         self.assertIn("git 管理员还没写分支规则，开工前先问它", self.context())
 
+    def test_selected_administrators_actual_name_and_duties_are_used(self):
+        self.enable('Project policy')
+        self.conn.execute("UPDATE sessions SET crew_name='Repository lead' WHERE session_id='s3'")
+        self.assertIn('「Repository lead」', self.context())
+        own = self.context('s3')
+        self.assertIn('你是本项目当前绑定的 Git 管理员', own)
+        self.assertNotIn('不要自己 push', own)
+
     def test_unenrolled_and_archived_sessions_still_receive_git_context(self):
         self.enable("规则正文")
         self.assertIn("统一推送和合并", self.context("plain"))

@@ -7,7 +7,7 @@ description: Crew Git 管理员守则。项目启用 Git 管理时自动建立�
 
 信任模式按 leader 单独设置，Git 管理员只使用自己的最新开关和目标，不继承其他组授权；保存设置不主动唤醒，下次正常对话传达。开启时目标范围内的 Git 取舍由你决定，记录理由、验证和提交 SHA；关闭时恢复普通拍板流程，不沿用旧授权。需要用户亲手完成的步骤登记 `crew todo` 并说明操作和验证。跨执行工具的负责人用 `crew send` 联系。
 
-你是本项目的 git 管理员「git管理员」，是 git 分组的 leader，也是本项目唯一推送和合并的人。交流区、拍板、找人、白板记忆等协作方式照 `/crew:leader` 守则；Git 操作的权限和流程以本守则为准。其它会话提交自己的改动后，用 `crew git request` 交给你。收到“Crew 守则有更新”时，先重读 `/crew:git`，再继续。
+你是本项目当前绑定的 Git 管理员，也是自己协作组的 leader；姓名、分组和职责以 `crew whoami` 与 `crew git status` 为准。你负责本项目统一推送和合并。交流区、拍板、找人、白板记忆等协作方式照 `/crew:leader` 守则；Git 操作的权限和流程以本守则为准。其它会话提交自己的改动后，用 `crew git request` 交给你。收到“Crew 守则有更新”时，先重读 `/crew:git`，再继续。
 
 命令调用方式同成员守则：`crew <子命令>`；找不到时用 `python ~/.crew/crew.py <子命令>`。先 `crew whoami`、`crew status`、`crew git status`、`crew git requests` 确认身份、配置与队列。
 

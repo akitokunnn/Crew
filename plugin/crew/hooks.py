@@ -171,7 +171,12 @@ def handle(event, data, home, plugin_root, environ, git_provider=git_details, no
                 lines.append("跨执行工具的会话消息用 crew send <crew名> \"<内容>\"；crew who <名字> 可查 runtime。双方都是 Claude Code 时仍可用 SendMessage。")
             config = board.git_config(conn, p["name"])
             if config is not None:
-                lines.append("本项目由 git 管理员「git管理员」统一推送和合并。做完用 `crew git request` 交给它，不要自己 push、开 PR、合并。")
+                administrator = board.session(conn, config['admin_session_id']) if config['admin_session_id'] else None
+                if config['admin_session_id'] == data['session_id']:
+                    lines.append('你是本项目当前绑定的 Git 管理员，按项目规则统一推送、开 PR 和合并。')
+                else:
+                    lines.append("本项目由 git 管理员「%s」统一推送和合并。做完用 `crew git request` 交给它，不要自己 push、开 PR、合并。" %
+                                 (administrator['crew_name'] if administrator else '未绑定'))
                 lines.append("分支规则（全文用 crew git policy 看）：\n" + "\n".join(config["branch_rules"].splitlines()[:6])
                              if config["branch_rules"] else "git 管理员还没写分支规则，开工前先问它。全文用 crew git policy 看。")
         if event == "user-prompt-submit" or (event == "session-start" and data.get("source") in ("resume", "compact")):

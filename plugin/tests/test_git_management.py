@@ -429,6 +429,104 @@ class GitHttpTests(ShellFixture, unittest.TestCase):
                           requests[merged["id"]]["note"]), ("one", 17, "CI passed"))
         self.assertEqual(requests[opened["id"]]["status"], "open")
 
+    def git_settings_fixture(self):
+        board.join(self.conn, 'chief', 'demo', 'git manager', self.project, self.project,
+                   'develop', role='leader', group_name='git manager', now=NOW)
+        code, snapshot = self.request('/api/git/settings?project=demo')
+        self.assertEqual(code, 200, snapshot)
+        return {'project': 'demo', 'revision': snapshot['revision'], 'admin_session_id': 'chief',
+                'base': 'develop', 'stable': '', 'branch_rules': 'Use PRs, tests and project rules.'}
+
+    def test_settings_binds_existing_leader_and_preserves_its_brain_without_starting_ai(self):
+        body = self.git_settings_fixture()
+        from crew import rules
+        for runtime in ('codex', 'claude'):
+            with self.subTest(runtime=runtime):
+                runtimes.set(self.conn, 'chief', runtime)
+                models.set(self.conn, 'chief', 'native-fixture-model', 'high', now=NOW)
+                code, saved = self.request('/api/git/settings?project=demo', body)
+                self.assertEqual(code, 200, saved)
+                self.assertEqual(saved['config']['admin_session_id'], 'chief')
+                self.assertEqual(saved['config']['branch_rules'], body['branch_rules'])
+                self.assertEqual(rules.skill_role(self.conn, board.session(self.conn, 'chief')), 'git')
+                self.assertEqual(runtimes.get(self.conn, 'chief')['runtime'], runtime)
+                self.assertEqual(models.get(self.conn, 'chief')['model'], 'native-fixture-model')
+                body['revision'] = saved['revision']
+        self.assertTrue(next(row for row in self.request('/api/state?project=demo')[1]['leaders'] if row['session_id'] == 'chief')['is_git_admin'])
+        self.assertEqual(len(self.processes), 0)
+        self.assertEqual(len([s for s in board.sessions(self.conn, 'demo') if s['role'] == 'leader']), 2)
+
+    def test_settings_changes_branches_rules_and_admin_without_restarting_sessions(self):
+        body = self.git_settings_fixture()
+        first = self.request('/api/git/settings?project=demo', body)[1]
+        board.join(self.conn, 'next-chief', 'demo', 'new manager', self.project, self.project,
+                   'topic', role='leader', group_name='new manager', now=NOW)
+        code, updated = self.request('/api/git/settings?project=demo',
+                                    {**body, 'revision': first['revision'], 'base': 'topic', 'stable': 'master',
+                                     'admin_session_id': 'next-chief', 'branch_rules': 'New policy'})
+        self.assertEqual(code, 200, updated)
+        self.assertEqual((updated['config']['base'], updated['config']['stable']), ('topic', 'master'))
+        self.assertEqual(updated['config']['enabled_at'], first['config']['enabled_at'])
+        self.assertEqual(updated['config']['admin_session_id'], 'next-chief')
+        self.assertNotEqual(board.session(self.conn, 'chief')['status'], 'closed')
+        self.assertEqual(len(self.processes), 0)
+
+    def test_settings_rejects_invalid_identity_branch_and_cross_project_writes(self):
+        body = self.git_settings_fixture()
+        other = self.root / 'other-project'; other.mkdir()
+        board.init_project(self.conn, 'other', other, now=NOW)
+        board.join(self.conn, 'outsider', 'other', 'other chief', other, other,
+                   'main', role='leader', group_name='other chief', now=NOW)
+        for changes in ({'admin_session_id': 's1'}, {'admin_session_id': 'outsider'},
+                        {'admin_session_id': ''}, {'base': 'missing'}, {'stable': 'develop'},
+                        {'branch_rules': 42}, {'project': 'other'}):
+            with self.subTest(changes=changes):
+                code, result = self.request('/api/git/settings?project=demo', {**body, **changes})
+                self.assertEqual(code, 400, result)
+                self.assertIsNone(board.git_config(self.conn, 'demo'))
+        self.assertEqual(self.request('/api/git/settings?project=demo', body, header=False)[0], 403)
+        from crew import session_ops
+        session_ops.archive(self.conn, 'chief', now=NOW)
+        self.assertEqual(self.request('/api/git/settings?project=demo', body)[0], 400)
+        self.assertEqual(len(self.processes), 0)
+
+    def test_settings_concurrent_ai_policy_edit_is_not_overwritten(self):
+        body = self.git_settings_fixture()
+        saved = self.request('/api/git/settings?project=demo', body)[1]
+        board.set_git_policy(self.conn, 'demo', 'chief', 'A newer AI policy', now=NOW)
+        code, error = self.request('/api/git/settings?project=demo', {**body, 'revision': saved['revision']})
+        self.assertEqual(code, 409, error)
+        self.assertIn('重新读取', error['error'])
+        self.assertEqual(board.git_policy(self.conn, 'demo'), 'A newer AI policy')
+
+    def test_settings_disable_keeps_leader_group_and_merge_requests(self):
+        body = self.git_settings_fixture()
+        saved = self.request('/api/git/settings?project=demo', body)[1]
+        request = board.request_git_merge(self.conn, 'demo', 's1', 'topic', 'Ready for merge', title=None, now=NOW)
+        before = board.session(self.conn, 'chief')
+        code, result = self.request('/api/git/settings?project=demo',
+                                    {'project': 'demo', 'revision': saved['revision'], 'enabled': False})
+        self.assertEqual(code, 200, result)
+        self.assertIsNone(board.git_config(self.conn, 'demo'))
+        self.assertEqual(board.session(self.conn, 'chief'), before)
+        self.assertEqual(board.git_requests(self.conn, 'demo')[0]['id'], request['id'])
+        self.assertIsNone(next(g for g in board.groups(self.conn, 'demo') if g['name'] == 'git manager')['closed_at'])
+        self.assertEqual(len(self.processes), 0)
+
+    def test_settings_is_independent_of_graph_github_and_keeps_config_on_repository_error(self):
+        body = self.git_settings_fixture()
+        self.request('/api/git/settings?project=demo', body)
+        with mock.patch('crew.git_view.view', side_effect=AssertionError('No graph scan')), \
+                mock.patch('crew.git_view._github', side_effect=AssertionError('No network')), \
+                mock.patch('crew.git_view.branch_choices', side_effect=subprocess.TimeoutExpired(['fixture-git'], 10)):
+            code, result = self.request('/api/git/settings?project=demo')
+        self.assertEqual(code, 200, result)
+        self.assertFalse(result['available'])
+        self.assertIn('timed out', result['reason'])
+        self.assertEqual(result['config']['admin_session_id'], 'chief')
+        self.assertEqual({row['session_id'] for row in result['leaders']}, {'chief', 's3'})
+        self.assertEqual(len(self.processes), 0)
+
     def test_fetch_calls_only_explicit_post_and_returns_raw_error(self):
         with mock.patch("crew.git_view.fetch") as fetch:
             self.assertEqual(self.request("/api/git/fetch?project=demo", {})[0], 400)
