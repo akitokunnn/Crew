@@ -1,6 +1,7 @@
 """Goal-only QQ delivery with real temporary SQLite and the existing fake transport."""
 import tests
 import datetime as dt
+import contextlib
 import json
 import threading
 from types import SimpleNamespace
@@ -22,7 +23,7 @@ class GoalNotificationTests(GoalFixture):
         (self.home/'notify.json').write_text(json.dumps({'owner_openid':'owner','since':NOW,'manual_away':False,
             'current_leader_session_id':'chief-id','leader_numbers':{}}),encoding='utf-8')
         manager=SimpleNamespace(home=self.home,path=lambda sid:self.home/'chat'/(sid+'.jsonl'),journal=self.journal,
-                                busy=mock.Mock(return_value=False))
+                                busy=mock.Mock(return_value=False), work=lambda **kwargs: contextlib.nullcontext(True))
         self.controller=goal_runtime.Controller(manager)
         self.controller.send=mock.Mock(return_value={'accepted':True,'delivery':'started'})
         self.service=SimpleNamespace(home=self.home,now=lambda:self.clock,chat=manager,write_lock=threading.RLock(),

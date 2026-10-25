@@ -184,8 +184,10 @@ def backup(home):
 
 def switch(home, root):
     target = target_info(root)
+    from .home_migration import reset_deployment
+    deployment = reset_deployment({'home': str(Path(home).resolve())})
     runtime = install.install(home, target["root"])
-    return {"target": target, "runtime": runtime}
+    return {"target": target, "runtime": runtime, "archived_deployment": deployment['archived']}
 
 
 def _port_free(port):

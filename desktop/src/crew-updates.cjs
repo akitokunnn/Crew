@@ -22,12 +22,12 @@ class CrewUpdates {
   snapshot() { return JSON.parse(JSON.stringify({ ...this.state, queued: this.queued })); }
   _emit() { this.onChange(this.snapshot()); }
   _phase(phase, message) { Object.assign(this.state, { phase, message, error: null }); this._emit(); }
-  _helperArgs(operation, extra = []) { return [path.join(this.config.backendDir, 'crew_update.py'), '--home', this.config.home, operation, ...extra]; }
-  async _helper(operation, extra = []) {
+  _helperArgs(operation, extra = []) { return [path.join(this.config.helperBackendDir || this.config.backendDir, 'crew_update.py'), '--home', this.config.home, operation, ...extra]; }
+  async _helper(operation, extra = [], python = this.config.python) {
     let result;
     try {
-      result = await this.run(this.config.python, this._helperArgs(operation, extra), {
-        cwd: this.config.backendDir, windowsHide: true, timeout: operation === 'plugin-update' ? 150000 : 45000,
+      result = await this.run(python, this._helperArgs(operation, extra), {
+        cwd: this.config.helperBackendDir || this.config.backendDir, windowsHide: true, timeout: operation === 'plugin-update' ? 150000 : 45000,
         maxBuffer: 1024 * 1024, env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUNBUFFERED: '1' }
       });
     } catch (error) {
@@ -88,10 +88,10 @@ class CrewUpdates {
     })();
     return this.checking;
   }
-  async _lock() {
+  async _lock(python = this.config.python) {
     if (this.acquireLock) return this.acquireLock();
-    const child = this.spawn(this.config.python, this._helperArgs('lock'), { windowsHide: true,
-      cwd: this.config.backendDir, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUNBUFFERED: '1' } });
+    const child = this.spawn(python, this._helperArgs('lock'), { windowsHide: true,
+      cwd: this.config.helperBackendDir || this.config.backendDir, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUNBUFFERED: '1' } });
     let exited = false, stderr = '';
     const exit = new Promise(resolve => child.once('exit', () => { exited = true; resolve(); }));
     child.stderr.on('data', value => { stderr = (stderr + value).slice(-3000); });

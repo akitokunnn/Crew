@@ -236,7 +236,7 @@ app.once('browser-window-created', (_event, win) => {
       await js('document.querySelector("#tools-check").click();document.querySelector("#tools-check").click();document.querySelector("#refresh").click()');
       await wait('!document.querySelector("#refresh").disabled', 'workspace refresh during tool check');
       await check('workspace refresh cannot reenable the tools check button during an ongoing check', 'document.querySelector("#tools-check").disabled');
-      await wait('!document.querySelector("#tools-check").disabled && document.querySelector(".tool-versions").textContent.includes("9.9.1")', 'simulated version check');
+      await wait('!document.querySelector("#tools-check").disabled && document.querySelector("#tools-list .tool-versions").textContent.includes("9.9.1")', 'simulated version check');
       assert.equal(toolFixture.checks, checksBefore + 1);
       evidence.checks.push('double check clicks issue one helper check and display current/latest versions');
       await capture('08-tools-versions');

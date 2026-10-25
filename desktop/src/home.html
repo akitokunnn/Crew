@@ -43,7 +43,7 @@
     <footer>关闭窗口后，Crew 会继续在托盘运行。</footer>
     </div>
     <section id="admin-page" class="home-page admin-page" aria-labelledby="admin-title" hidden>
-      <header class="admin-header"><div><h1 id="admin-title" tabindex="-1">系统管理员</h1><p>统一管理本机后台，覆盖所有工作区。</p></div></header>
+      <header class="admin-header"><div><h1 id="admin-title" tabindex="-1">系统管理员</h1><p>统一管理本机后台，覆盖所有工作区。</p></div><button id="admin-conversation" class="button secondary" type="button">运维对话与设置</button></header>
       <div class="admin-content">
         <div class="admin-summary"><section class="admin-stat"><h2>后台状态</h2><strong id="admin-state">正在读取</strong><p>管理后台连接，不派发模型任务。</p></section><section class="admin-stat"><h2>自动恢复次数</h2><strong id="admin-recoveries">—</strong><p id="admin-last-recovery"></p></section><section class="admin-stat"><h2>最近检测</h2><strong id="admin-checked">尚未检测</strong><p>此页打开时每 5 秒更新。</p></section></div>
         <section class="admin-actions" aria-label="后台维护"><div><button id="admin-check" class="button secondary" type="button">重新检测</button><button id="admin-restart" class="button secondary" type="button" disabled>尝试恢复</button></div><p id="admin-restart-reason"></p><p class="admin-policy">只尝试恢复确认已退出的后台；不会强制结束运行中的会话。</p></section>

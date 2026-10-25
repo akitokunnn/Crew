@@ -30,7 +30,8 @@ npm start
 已有桌面版正在托管任务时，可以用独立界面配置显式连接它：
 
 ```powershell
-.\Crew-0.2.1-portable.exe --home C:\Temp\crew-private --service-url=http://127.0.0.1:7122 --profile ui-020
+$crewVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
+& ".\dist\Crew-$crewVersion-portable.exe" --home C:\Temp\crew-private --service-url=http://127.0.0.1:7122 --profile ui-private
 ```
 
 显式地址必须是健康的本机 Crew 服务，失败直接退出，不另起后台。界面默认数据位于 `home/desktop/ui`，`--profile` 使用 `home/desktop/profiles/<安全名称>`，不会争抢旧版界面的实例锁。后台源码仍位于稳定的 `home/desktop/backend`。菜单「查看日志文件夹」可打开本地 `home/desktop/logs`，其中保留后台最近的 stderr 和启动错误。
@@ -43,15 +44,22 @@ npm test
 npm run build
 ```
 
-构建产物为 `dist/Crew-0.2.1-portable.exe`、`dist/Crew-0.2.1-setup.exe`；前者可直接运行，后者是当前用户安装器，提供开始菜单、桌面快捷方式和卸载入口。`dist/win-unpacked/Crew.exe` 是未压缩版本。安装器与应用未做代码签名；EXE 原生图标资源仍正常嵌入。后端源码随应用放在 `resources/backend`，打包版会将后端按内容哈希保留到所选 home 的 `desktop/backend`，保证 portable 解包目录清理后 CLI 和守卫路径仍有效；Python 与 Git 使用本机安装。
+构建版本读取本目录 `package.json`，产物为 `dist/Crew-<version>-portable.exe`、`dist/Crew-<version>-setup.exe`；前者可直接运行，后者是当前用户安装器，提供开始菜单、桌面快捷方式和卸载入口。`dist/win-unpacked/Crew.exe` 是未压缩版本。安装器与应用未做代码签名；EXE 原生图标资源仍正常嵌入。后端源码随应用放在 `resources/backend`，打包版会将后端按内容哈希保留到所选 home 的 `desktop/backend`，保证 portable 解包目录清理后 CLI 和守卫路径仍有效；Python 与 Git 使用本机安装。
 
 验收新版本且保留正在运行的正式实例时，使用独立数据目录。此入口不会复制正式会话、QQ 凭据或自动恢复旧任务：
 
 ```powershell
-.\Crew-0.2.1-portable.exe --home C:\Temp\crew-020-acceptance --port 0 --isolated-sources
+$crewVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
+& ".\dist\Crew-$crewVersion-portable.exe" --home C:\Temp\crew-acceptance --port 0 --isolated-sources
 ```
 
-运维管理员常态使用程序监测。AI 修复需要在 `home/desktop/admin/operations/policy.json` 配置可信的 `repository` 绝对 Git 根目录、`reproduce` 和 `verify` 命令数组及固定 `merge_ref`；打包后的后台目录不是 Git 仓库。配置只在具体修复或应用作业开始时验证，配置有误会显示在事故报告中，不阻断健康服务启动。修复始终在隔离工作树里进行，应用前还须遵守项目 PR/合并规则并独立复验。portable 缺少已验证的运行中 Git 回退基线时会以 `NoVerifiedBaseline` 拒绝自动激活，保留 commit 和报告；不会把其它源码目录冒充已经运行过的旧版本。
+“设置 → 后台与运维”可以直接和运维 AI 聊天、查看状态、保存自动修复配置；“运维 AI 大脑”跳到载体、模型与思考强度选择。桌面对话和 AI 设置直接访问本机 HOME，网页后台断线时仍可使用。打开页面不调用模型；发送才启动一次诊断回复，可停止，所有工作区共用历史，每轮仅带近期对话和诊断快照。聊天用于诊断，实际代码修复由独立策略执行。
+
+桌面的“连接与目录”可修改数据目录、后台来源、已有后台地址、固定端口和 Python。数据目录变更可复制现有数据并保留旧目录，也可使用目标目录的数据；空目录从零开始。先检查并展示受影响会话，再明确停止会话、暂停目标、确认自有后台退出后应用和重新打开。借用的后台由其原窗口管理。源码可选随应用更新或指定后台程序目录；页面分别展示所选配置和实际运行来源。启动设置保存在 HOME 外的本机应用数据目录，显式命令行参数优先。坏源码或解释器可在此页修正，自带控制程序不随其切换。
+
+隔离连接迁移验收：`node desktop/scripts/smoke-launch-settings.cjs`（在仓库根目录执行），使用两个临时 HOME 和不可发现 AI CLI 的测试环境，验证真实停止、复制、配置重载及新后台启动。
+
+运维管理员常态使用程序监测。“自动修复”可设置启用开关、Crew 源码 Git 根目录、处理时限、复现与验证命令数组及合入分支，保存到 `home/desktop/admin/operations/policy.json`；打包后的后台目录不是 Git 仓库。开启时核实配置；关闭时允许留空，且不会中止已经执行的修复。已有配置未写 `enabled` 时保持旧行为。修复始终在隔离工作树里进行，应用前还须遵守项目 PR/合并规则并独立复验。portable 缺少已验证的运行中 Git 回退基线时会以 `NoVerifiedBaseline` 拒绝自动激活，保留 commit 和报告；不会把其它源码目录冒充已经运行过的旧版本。
 
 `.npmrc` 将 npm 下载缓存放在本目录，以上环境变量将 Electron 和打包下载也限制在本目录。新的终端构建时同样配置缓存：
 
@@ -66,11 +74,12 @@ npm run build
 ```powershell
 node scripts/smoke.cjs
 node scripts/smoke.cjs dist/win-unpacked/Crew.exe
-node scripts/smoke.cjs dist/Crew-0.2.1-portable.exe
+$crewVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
+node scripts/smoke.cjs "dist/Crew-$crewVersion-portable.exe"
 node scripts/smoke.cjs --reuse
 node scripts/smoke.cjs --visual
 node scripts/smoke-workspaces.cjs
-node scripts/verify-icons.cjs dist/win-unpacked/Crew.exe dist/Crew-0.2.1-portable.exe dist/Crew-0.2.1-setup.exe
+node scripts/verify-icons.cjs dist/win-unpacked/Crew.exe "dist/Crew-$crewVersion-portable.exe" "dist/Crew-$crewVersion-setup.exe"
 ```
 
 结果保存在 `smoke-output/source.json` / `packaged.json` / `portable.json` 及同名 PNG。单元测试另外覆盖已有服务复用、Git 根目录解析、新建仓库、已有文件保护与后端端口 0 / 优雅退出。

@@ -53,9 +53,10 @@ class ToolUpdates {
     return this._saving;
   }
   async _helper(operation, id) {
-    const args = [path.join(this.config.backendDir, 'crew_tool_versions.py'), '--home', this.config.home, operation];
+    const backendDir=this.config.helperBackendDir || this.config.backendDir;
+    const args = [path.join(backendDir, 'crew_tool_versions.py'), '--home', this.config.home, operation];
     if (id !== undefined) args.push(id);
-    const result = await this.run(this.config.python || 'python', args, { cwd:this.config.backendDir, windowsHide:true,
+    const result = await this.run(this.config.python || 'python', args, { cwd:backendDir, windowsHide:true,
       timeout:operation === 'update' ? 0 : 45000, maxBuffer:1024 * 1024,
       env:{...process.env, PYTHONUNBUFFERED:'1', PYTHONIOENCODING:'utf-8'} });
     const value = JSON.parse(result.stdout);

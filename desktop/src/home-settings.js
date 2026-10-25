@@ -30,13 +30,12 @@
     }
     void read();return()=>{active=false;};
   }
-  function backend(host,snapshot){
-    host.innerHTML=`${snapshot?`<section class="cs-card"><h2>数据与程序</h2><dl class="cs-paths"><dt>数据目录 · HOME</dt><dd>${esc(snapshot.home)}</dd><dt>后台程序目录</dt><dd>${esc(snapshot.backend)}</dd></dl></section>`:''}<div class="cs-native-health"></div>`;
-    return window.CrewHomeHealth?.mount(host.querySelector('.cs-native-health'));
+  function backend(host){
+    return window.CrewHomeHealth?.mount(host);
   }
   async function ensure(){
     if(ui)return ui;if(creating)return creating;
-    creating=(async()=>{await bridge.settingsUI();ui=window.CrewSettings.create({host:root,read:()=>bridge.settingsGet(),save:body=>bridge.settingsSave(body),panels:{appearance,connections,tools:host=>window.CrewHomeTools?.mount(host),backend}});return ui;})();
+    creating=(async()=>{await bridge.settingsUI();ui=window.CrewSettings.create({host:root,read:()=>bridge.settingsGet(),save:body=>bridge.settingsSave(body),operations:{snapshot:()=>bridge.adminChatSnapshot(),send:body=>bridge.adminChatSend(body),interrupt:()=>bridge.adminChatInterrupt(),configGet:()=>bridge.adminConfigGet(),configSave:body=>bridge.adminConfigSave(body),launch:{get:()=>bridge.launchSettingsGet(),validate:body=>bridge.launchSettingsValidate(body),apply:body=>bridge.launchSettingsApply(body),pick:body=>bridge.launchSettingsPick(body)}},panels:{appearance,connections,tools:host=>window.CrewHomeTools?.mount(host),backend}});return ui;})();
     try{return await creating;}finally{creating=null;}
   }
   async function show(category='ai'){

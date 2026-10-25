@@ -16,20 +16,28 @@ function loopback(value) {
   return url.origin;
 }
 
-function options(args) {
-  const result = { home: path.join(os.homedir(), '.crew'), python: 'python', port: 0 };
-  const fields = { '--home': 'home', '--python': 'python', '--port': 'port', '--backend-dir': 'backendDir', '--smoke-output': 'smokeOutput', '--service-url': 'serviceUrl', '--profile': 'profile' };
+function options(args, {launchSettingsPath} = {}) {
+  const explicit = {};
+  const fields = { '--home': 'home', '--python': 'python', '--port': 'port', '--backend-dir': 'backendDir', '--smoke-output': 'smokeOutput', '--service-url': 'serviceUrl', '--profile': 'profile', '--launch-settings':'launchSettingsPath' };
   for (let index = 0; index < args.length; index++) {
     const argument = args[index], separator=argument.indexOf('=');
     const key=separator<0?argument:argument.slice(0,separator);
-    if (argument === '--isolated-sources') { result.isolated = true; continue; }
-    if (argument === '--smoke-test') { result.smoke = true; continue; }
-    if (argument === '--smoke-visual') { result.smokeVisual = true; continue; }
+    if (argument === '--isolated-sources') { explicit.isolated = true; continue; }
+    if (argument === '--smoke-test') { explicit.smoke = true; continue; }
+    if (argument === '--smoke-visual') { explicit.smokeVisual = true; continue; }
     if (!(key in fields)) continue; // Electron may add its own switches.
     const value = separator<0?args[++index]:argument.slice(separator+1);
     if (!value || value.startsWith('--')) throw new Error('参数缺少值：' + key);
-    result[fields[key]] = key === '--port' ? Number(value) : value;
+    explicit[fields[key]] = key === '--port' ? Number(value) : value;
   }
+  const defaults={home:path.join(os.homedir(),'.crew'),python:'python',port:0};
+  const file=explicit.launchSettingsPath || (explicit.isolated || explicit.smoke ? path.join(path.resolve(explicit.home || defaults.home),'desktop','launch-settings.json') : launchSettingsPath);
+  const saved=require('./launch-settings.cjs').readSync(file);
+  const stored=saved ? {home:saved.home,python:saved.python,port:saved.port,backendSource:saved.source,
+    ...(saved.source==='custom'?{backendDir:saved.backend_directory}:{}),...(saved.mode==='existing'?{serviceUrl:saved.service_url}:{})} : {};
+  const result={...defaults,...stored,...explicit,...(file?{launchSettingsPath:path.resolve(file)}:{})};
+  if (!('serviceUrl' in explicit) && ['home','backendDir','port'].some(key=>key in explicit)) delete result.serviceUrl;
+  result.backendSource=explicit.backendDir ? 'custom' : stored.backendSource || 'bundled';
   if (!Number.isInteger(result.port) || result.port < 0 || result.port > 65535) throw new Error('端口必须在 0 到 65535 之间');
   if (result.smoke && (!args.some(value=>value==='--home'||value.startsWith('--home=')) || !result.smokeOutput)) throw new Error('smoke 必须显式指定 --home 和 --smoke-output');
   if (result.smokeVisual && !result.smoke) throw new Error('视觉验收只允许使用隔离 smoke 模式');
@@ -307,4 +315,4 @@ async function newWorkspace(parent, name, base) {
   return request(base, '/api/project/init', { name, root });
 }
 
-module.exports = { loopback, options, request, projects, Backend, workspaceName, existingWorkspace, newWorkspace, materializeBackend };
+module.exports = { loopback, options, request, projects, Backend, workspaceName, existingWorkspace, newWorkspace, materializeBackend, connectionRefused };
