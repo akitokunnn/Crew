@@ -40,6 +40,7 @@ git log -3 --oneline
 | 目标、轮次、动态上下文 | `plugin/crew/goals.py`、`goal_runtime.py`、`goal_context.py` |
 | 工作区改名、迁移、可恢复移除 | `plugin/crew/workspace_settings.py`、`workspace_execution.py` |
 | 数据与后台守护 | `plugin/crew/store.py`、`schema.sql`、`supervisor.py` |
+| 按需运维对话与修复配置 | `plugin/crew/operations_chat.py`、`operations_settings.py`；桌面入口 `desktop/src/operations.cjs` |
 
 不要直接修改 `desktop/dist/`、`node_modules/`、缓存中的后端或用户 home 来代替源码修复。
 

@@ -4,7 +4,7 @@
   const clone = value => JSON.parse(JSON.stringify(value));
   const empty = () => ({runtime:null, model:null, effort:null});
   const tasks = [["digest", "频道摘要", "将交流整理成摘要"], ["git", "Git 管理员", "检查改动、整理提交与合并"], ["operations", "后台事故处理", "按证据分析并验证修复"]];
-  const categories = [["ai", "AI 大脑", "载体、模型与任务分配"], ["execution", "执行权限", "文件与网络的访问范围"], ["appearance", "外观", "让工作区更顺手"], ["tools", "工具与更新", "本机执行工具"], ["connections", "QQ 与连接", "离开电脑后的通知"], ["backend", "后台信息", "数据与服务位置"]];
+  const categories = [["ai", "AI 大脑", "载体、模型与任务分配"], ["execution", "执行权限", "文件与网络的访问范围"], ["appearance", "外观", "让工作区更顺手"], ["tools", "工具与更新", "本机执行工具"], ["connections", "QQ 与连接", "离开电脑后的通知"], ["backend", "后台与运维", "运维对话、状态与配置"]];
   const icons = {
     ai:'<rect x="6" y="6" width="12" height="12" rx="3"/><path d="M9 2v4m6-4v4M9 18v4m6-4v4M2 9h4m-4 6h4m12-6h4m-4 6h4"/><rect x="9" y="9" width="6" height="6" rx="1"/>',
     execution:'<path d="m12 3 8 3v6c0 4-4 7-8 9-4-2-8-5-8-9V6l8-3Z"/><path d="m8.5 12 2.5 2.5 4.5-5"/>',
@@ -68,6 +68,8 @@
     root.classList.add("crew-settings");
     root.innerHTML = `<div class="cs-sidebar"><div class="cs-brand"><span class="cs-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M14.26 8.54a4.9 4.9 0 1 0 0 6.92" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"/><circle cx="17.4" cy="16.4" r="1.75" fill="currentColor"/></svg></span><div><strong>设置</strong><small>Crew · 本机偏好</small></div></div><nav aria-label="设置分类">${categories.filter(([id]) => !["appearance", "connections"].includes(id) || options.panels?.[id]).map(([id, label, description]) => `<button type="button" data-settings-category="${id}"><span class="cs-nav-icon">${icon(id)}</span><span>${label}<small>${description}</small></span></button>`).join("")}</nav>${options.onClose ? `<button type="button" class="cs-back" data-settings-action="close">${icon("back")}返回工作区</button>` : ""}<p class="cs-local">本机偏好 · 所有工作区共用<span class="cs-font-credit">HarmonyOS Sans · 华为</span></p></div><div class="cs-body"><header class="cs-header"><div><span class="cs-eyebrow">偏好设置</span><h1 id="crew-settings-title"></h1><p class="cs-subtitle"></p></div>${options.onClose ? `<button type="button" class="cs-close" data-settings-action="close" aria-label="关闭设置">${icon("close")}</button>` : ""}</header><div class="cs-content"></div><footer class="cs-footer"><p class="cs-status" role="status"></p><button type="button" class="cs-button" data-settings-action="reset">撤销更改</button><button type="button" class="cs-button cs-primary" data-settings-action="save">保存设置</button></footer></div>`;
     const content = root.querySelector(".cs-content"), footer = root.querySelector(".cs-footer"), status = root.querySelector(".cs-status");
+    const operations = options.operations ? window.CrewOperations.create({api:options.operations, service:options.service,
+      mountHealth:options.panels?.backend, onBrain() { category = "ai"; render(); const card = content.querySelector('[data-ai-task="operations"]'); card?.scrollIntoView({block:"center"}); card?.focus({preventScroll:true}); }}) : null;
     function release() { if (cleanup) { cleanup(); cleanup = null; } }
     function changed() { return snapshot && (JSON.stringify(draft) !== JSON.stringify(snapshot.ai) || JSON.stringify(executionDraft) !== JSON.stringify(initialExecution(snapshot))); }
     function controls() {
@@ -80,7 +82,7 @@
     }
     function renderAI() {
       const catalog = snapshot.runtimes || [];
-      content.innerHTML = `<section class="cs-card cs-default"><div class="cs-card-heading"><div><h2>默认大脑</h2><p>新建 leader 与未单独分配的内部任务使用这里的选择。</p></div><span class="cs-badge">默认</span></div>${selectionMarkup("default", draft.default, catalog, customFields)}<p class="cs-hint">下拉选择本机检测到的模型与强度；也可自定义输入。选择“原生默认”沿用工具配置。</p></section><div class="cs-section-heading"><h2>任务分配</h2><p>按用途选择大脑，也可以全部跟随默认。</p></div><div class="cs-task-list">${tasks.map(([key, title, description]) => `<section class="cs-card"><div class="cs-card-heading"><div><h3>${title}</h3><p>${description}</p></div><label class="cs-inherit"><input type="checkbox" data-ai-inherit="${key}" ${draft[key] === null ? "checked" : ""}>跟随默认</label></div>${draft[key] === null ? '<p class="cs-follow">使用默认大脑的载体、模型与思考强度。</p>' : selectionMarkup(key, draft[key], catalog, customFields)}</section>`).join("")}</div><p class="cs-footnote">保存设置不会运行 AI。新建会话时仍可单独选择；组员沿用 leader 的明确分配。</p>`;
+      content.innerHTML = `<section class="cs-card cs-default"><div class="cs-card-heading"><div><h2>默认大脑</h2><p>新建 leader 与未单独分配的内部任务使用这里的选择。</p></div><span class="cs-badge">默认</span></div>${selectionMarkup("default", draft.default, catalog, customFields)}<p class="cs-hint">下拉选择本机检测到的模型与强度；也可自定义输入。选择“原生默认”沿用工具配置。</p></section><div class="cs-section-heading"><h2>任务分配</h2><p>按用途选择大脑，也可以全部跟随默认。</p></div><div class="cs-task-list">${tasks.map(([key, title, description]) => `<section class="cs-card" data-ai-task="${key}" tabindex="-1"><div class="cs-card-heading"><div><h3>${title}</h3><p>${description}</p></div><label class="cs-inherit"><input type="checkbox" data-ai-inherit="${key}" ${draft[key] === null ? "checked" : ""}>跟随默认</label></div>${draft[key] === null ? '<p class="cs-follow">使用默认大脑的载体、模型与思考强度。</p>' : selectionMarkup(key, draft[key], catalog, customFields)}</section>`).join("")}</div><p class="cs-footnote">保存设置不会运行 AI。新建会话时仍可单独选择；组员沿用 leader 的明确分配。</p>`;
     }
     function renderTools() {
       content.innerHTML = `<section class="cs-card"><div class="cs-card-heading"><div><h2>执行工具</h2><p>以下信息来自本机实际检测。</p></div><button type="button" class="cs-button" data-settings-action="reload">重新检测</button></div>${(snapshot.runtimes || []).map(item => `<div class="cs-tool-row"><div><strong>${esc(item.name || item.id)}</strong><p>${esc(item.error || (item.available ? "已就绪" : "未就绪"))}</p></div><span class="cs-badge ${item.available ? "cs-ready" : ""}">${item.available ? "可用" : "需配置"}</span></div>`).join("")}</section><p class="cs-footnote">安装、登录与工具更新可在 Crew 桌面首页的设置中管理。</p>`;
@@ -92,7 +94,8 @@
       root.querySelector("#crew-settings-title").textContent = info[1];
       root.querySelector(".cs-subtitle").textContent = info[2];
       footer.hidden = !["ai", "execution"].includes(category);
-      if (options.panels?.[category]) { content.replaceChildren(); cleanup = options.panels[category](content, snapshot) || null; }
+      if (category === "backend" && operations) { content.replaceChildren(); cleanup = operations.mount(content, snapshot); }
+      else if (options.panels?.[category]) { content.replaceChildren(); cleanup = options.panels[category](content, snapshot) || null; }
       else if (!snapshot) content.innerHTML = `<div class="cs-empty"><h2>${loading ? "正在读取设置…" : "设置暂时无法读取"}</h2><p>${esc(error)}</p>${loading ? "" : '<button type="button" class="cs-button" data-settings-action="reload">重试</button>'}</div>`;
       else if (category === "ai") renderAI();
       else if (category === "execution") content.innerHTML = executionMarkup(executionDraft);

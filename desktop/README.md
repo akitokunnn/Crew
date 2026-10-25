@@ -51,7 +51,9 @@ $crewVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
 & ".\dist\Crew-$crewVersion-portable.exe" --home C:\Temp\crew-acceptance --port 0 --isolated-sources
 ```
 
-运维管理员常态使用程序监测。AI 修复需要在 `home/desktop/admin/operations/policy.json` 配置可信的 `repository` 绝对 Git 根目录、`reproduce` 和 `verify` 命令数组及固定 `merge_ref`；打包后的后台目录不是 Git 仓库。配置只在具体修复或应用作业开始时验证，配置有误会显示在事故报告中，不阻断健康服务启动。修复始终在隔离工作树里进行，应用前还须遵守项目 PR/合并规则并独立复验。portable 缺少已验证的运行中 Git 回退基线时会以 `NoVerifiedBaseline` 拒绝自动激活，保留 commit 和报告；不会把其它源码目录冒充已经运行过的旧版本。
+“设置 → 后台与运维”可以直接和运维 AI 聊天、查看状态、保存自动修复配置；“运维 AI 大脑”跳到载体、模型与思考强度选择。桌面对话和 AI 设置直接访问本机 HOME，网页后台断线时仍可使用。打开页面不调用模型；发送才启动一次诊断回复，可停止，所有工作区共用历史，每轮仅带近期对话和诊断快照。聊天用于诊断，实际代码修复由独立策略执行。
+
+运维管理员常态使用程序监测。“自动修复”可设置启用开关、Crew 源码 Git 根目录、处理时限、复现与验证命令数组及合入分支，保存到 `home/desktop/admin/operations/policy.json`；打包后的后台目录不是 Git 仓库。开启时核实配置；关闭时允许留空，且不会中止已经执行的修复。已有配置未写 `enabled` 时保持旧行为。修复始终在隔离工作树里进行，应用前还须遵守项目 PR/合并规则并独立复验。portable 缺少已验证的运行中 Git 回退基线时会以 `NoVerifiedBaseline` 拒绝自动激活，保留 commit 和报告；不会把其它源码目录冒充已经运行过的旧版本。
 
 `.npmrc` 将 npm 下载缓存放在本目录，以上环境变量将 Electron 和打包下载也限制在本目录。新的终端构建时同样配置缓存：
 

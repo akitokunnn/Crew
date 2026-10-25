@@ -19,6 +19,7 @@ from urllib.error import HTTPError, URLError
 
 from . import board, channel, channel_digest, chat, claude_limits, documents, git_admin, git_ci, git_view, goal_api, goals, hooks, messaging, models, notifications, open_session, presentation, runtime_catalog, runtime_switch, runtimes, session_ops, settings, spawn, store, themes, todo, trust_mode, usage, usage_cli, vscode_sessions, workspace_execution, workspace_settings
 from .service_lock import HomeServiceLock
+from . import operations_chat, operations_settings
 
 
 def _text(data, key):
@@ -682,6 +683,12 @@ class Service:
             raise ValueError("JSON \u8bf7\u6c42\u5fc5\u987b\u662f\u5bf9\u8c61")
         if path in ('/api/project/update', '/api/project/remove'):
             return self.update_workspace(path, data, project_name)
+        if path == '/api/admin/chat/send':
+            return operations_chat.send(self.home, self.plugin_root, data)
+        if path == '/api/admin/chat/interrupt':
+            return operations_chat.interrupt(self.home)
+        if path == '/api/admin/config':
+            return operations_settings.save(self.home, self.plugin_root, data)
         if path == '/api/settings':
             if not data or not set(data) <= {'ai', 'execution'}:
                 raise ValueError('设置请求只能包含 ai 和 execution 配置')
@@ -1256,6 +1263,7 @@ POST_PATHS.update(('/api/files/resolve', '/api/files/open', '/api/files/reveal')
 POST_PATHS.update(('/api/documents','/api/documents/pin','/api/documents/refresh'))
 POST_PATHS.update(('/api/git/enable', '/api/git/disable', '/api/git/fetch'))
 POST_PATHS.add('/api/settings')
+POST_PATHS.update(('/api/admin/chat/send', '/api/admin/chat/interrupt', '/api/admin/config'))
 POST_PATHS.add('/api/native-approval')
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"),
           "/themes.js": ("themes.js", "text/javascript; charset=utf-8"),
@@ -1279,6 +1287,8 @@ STATIC.update({'/goal-ui.js': ('goal-ui.js', 'text/javascript; charset=utf-8'),
                '/goal-ui.css': ('goal-ui.css', 'text/css; charset=utf-8')})
 STATIC.update({'/settings-ui.js': ('settings-ui.js', 'text/javascript; charset=utf-8'),
                '/settings-ui.css': ('settings-ui.css', 'text/css; charset=utf-8')})
+STATIC.update({'/operations-ui.js': ('operations-ui.js', 'text/javascript; charset=utf-8'),
+               '/operations-ui.css': ('operations-ui.css', 'text/css; charset=utf-8')})
 STATIC.update({'/workspace-settings-ui.js': ('workspace-settings-ui.js', 'text/javascript; charset=utf-8'),
                '/workspace-settings-ui.css': ('workspace-settings-ui.css', 'text/css; charset=utf-8')})
 STATIC.update({'/native-approval-ui.js': ('native-approval-ui.js', 'text/javascript; charset=utf-8'),
@@ -1360,6 +1370,10 @@ class Handler(BaseHTTPRequestHandler):
                                         query.get("project", [None])[0], query.get("base", [None])[0],document_id)
             content, media_type = service.read_file(info, raw=query.get("raw") == ["1"])
             self.send_file_content(content, media_type)
+        elif url.path == '/api/admin/chat':
+            self._send(200, operations_chat.snapshot(service.home))
+        elif url.path == '/api/admin/config':
+            self._send(200, operations_settings.snapshot(service.home, service.plugin_root))
         elif url.path == '/api/admin/health':
             workers = {name: bool(worker and worker.is_alive()) for name, worker in (
                 ('agents', service.worker), ('notices', service.notice_worker), ('git_ci', service.ci_worker))}

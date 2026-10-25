@@ -891,6 +891,9 @@
       onSaved:() => { void loadState(true); }, onRemoved:() => location.assign("/"),
       onClose:() => { workspaceOpen = false; if (state !== null && project !== null) { render(); $("sidebar").querySelector('[data-act="workspace-settings"]')?.focus({preventScroll:true}); } }});
     settingsUI = window.CrewSettings.create({host:$("settings-surface"), read:async() => { await api("/api/runtimes?refresh=1"); return api("/api/settings"); }, save:body => api("/api/settings",body), onClose:closeSettings, service:() => location.origin,
+      operations:{snapshot:() => api('/api/admin/chat'), send:body => api('/api/admin/chat/send',body),
+        interrupt:() => api('/api/admin/chat/interrupt',{}), configGet:() => api('/api/admin/config'),
+        configSave:body => api('/api/admin/config',body)},
       onSnapshot(value) { if (state !== null) state.ai = value.ai; runtimesCache = value.runtimes; renderLeaderRuntime(); },
       panels:{appearance(host) { host.append($("settings")); return () => $("settings-parking").append($("settings")); }, connections:settingsConnections}});
     try { const stored = localStorage.getItem("crew.theme"); if (["system", "light", "dark"].includes(stored)) theme = stored; } catch (error) { toast(error.message); }

@@ -8,8 +8,10 @@ const chrome = require('./chrome.cjs');
 const { WorkspaceTabs } = require('./tabs.cjs');
 const { ToolUpdates } = require('./tool-updates.cjs');
 const { Administrator } = require('./admin.cjs');
+const { OperationsClient } = require('./operations.cjs');
 const config = core.options(process.argv.slice(1));
 const administrator = new Administrator(config.home);
+const operations = new OperationsClient(config);
 app.setName('Crew');
 if (process.platform === 'win32') app.setAppUserModelId('local.crew.desktop');
 config.backendDir = config.backendDir || (app.isPackaged ? path.join(process.resourcesPath, 'backend') : path.resolve(__dirname, '../../plugin'));
@@ -246,6 +248,11 @@ handle('desktop:home-ready',()=>{
 });
 handle('desktop:admin-check',()=>administrator.request('check'));
 handle('desktop:admin-restart',()=>administrator.request('recover'));
+handle('desktop:admin-chat-snapshot',()=>operations.request('snapshot'));
+handle('desktop:admin-chat-send',body=>operations.request('send',body));
+handle('desktop:admin-chat-interrupt',()=>operations.request('interrupt'));
+handle('desktop:admin-config-get',()=>operations.request('config-get'));
+handle('desktop:admin-config-save',body=>operations.request('config-save',body));
 handle('desktop:existing', async () => {
   const result = await dialog.showOpenDialog(window, { title: '选择工作区文件夹', buttonLabel: '打开工作区', properties: ['openDirectory'] });
   if (result.canceled) return null;
@@ -274,12 +281,8 @@ function settingsRequest(route, body, timeoutMs) {
   if (!backend?.url || new URL(backend.url).port === '0') throw Error(backend?.startupError || '后台尚未连接，请查看后台信息。');
   return core.request(backend.url, route, body, timeoutMs);
 }
-handle('desktop:settings-get',async()=>{
-  // Native discovery initializes a client and lists models, each with a 15s budget.
-  await settingsRequest('/api/runtimes?refresh=1', undefined, 45000);
-  return settingsRequest('/api/settings');
-});
-handle('desktop:settings-save',body=>settingsRequest('/api/settings', {ai:body?.ai, execution:body?.execution}));
+handle('desktop:settings-get',()=>operations.request('settings-get'));
+handle('desktop:settings-save',body=>operations.request('settings-save',body));
 handle('desktop:settings-connection',async()=>({notification:(await settingsRequest('/api/state')).notification}));
 handle('desktop:settings-away',away=>{
   if (typeof away !== 'boolean') throw Error('离开状态必须是 true 或 false');
@@ -288,6 +291,8 @@ handle('desktop:settings-away',away=>{
 handle('desktop:settings-ui',async()=>{
   // Only trusted home can load these fixed, packaged application assets.
   const directory = path.join(config.backendDir, 'crew', 'web');
+  await window.webContents.insertCSS(await fs.readFile(path.join(directory, 'operations-ui.css'),'utf8'));
+  await window.webContents.executeJavaScript(await fs.readFile(path.join(directory, 'operations-ui.js'),'utf8'));
   await window.webContents.insertCSS(await fs.readFile(path.join(directory, 'settings-ui.css'),'utf8'));
   await window.webContents.executeJavaScript(await fs.readFile(path.join(directory, 'settings-ui.js'),'utf8'));
   return {ok:true};

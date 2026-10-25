@@ -23,7 +23,7 @@ import urllib.parse
 import urllib.request
 import uuid
 
-from crew_desktop import HomeServiceLock
+from .service_lock import HomeServiceLock
 
 
 MAX_STATUS_BYTES = 128 * 1024
