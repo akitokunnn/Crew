@@ -96,3 +96,14 @@ test("late AI discovery cannot remount active message channels or discard their 
   assert.equal(mounts,1);assert.equal(cleanups,0);assert.equal(content.secretDraft,"typed-while-discovery-pending");
   settings.hide();assert.equal(cleanups,1);
 });
+
+test("storage opens independently and late model discovery preserves its cleanup preview",async()=>{
+  const {root,content}=panelHarness();let resolve,reads=0,mounts=0,cleanups=0;
+  const settings=ui.create({host:root,read:()=>{reads++;return new Promise(done=>{resolve=done;});},save:()=>{throw Error("storage does not save AI settings");},panels:{storage(host){mounts++;host.preview=null;return()=>{cleanups++;host.preview=null;};}}});
+  settings.open("storage");assert.equal(reads,0);assert.equal(mounts,1);
+  settings.open("ai");assert.equal(reads,1);settings.open("storage");
+  content.preview={id:"reviewed-cleanup",files:3};const beforeMounts=mounts,beforeCleanups=cleanups;
+  resolve({ai:config(),runtimes:catalog});for(let i=0;i<12;i++)await Promise.resolve();
+  assert.equal(mounts,beforeMounts);assert.equal(cleanups,beforeCleanups);assert.equal(content.preview.id,"reviewed-cleanup");
+  settings.hide();assert.equal(cleanups,beforeCleanups+1);
+});

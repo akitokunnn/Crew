@@ -707,6 +707,16 @@
       away:value => api("/api/notifications/away", {away:value})
     });
   }
+  function settingsStorage(host) {
+    return window.CrewStorage.mount(host, {
+      read:() => api('/api/storage'),
+      preview:body => api('/api/storage/preview', body),
+      clean:body => api('/api/storage/clean', body),
+      restore:body => api('/api/storage/restore', body),
+      emptyTrash:body => api('/api/storage/trash/empty', body),
+      savePolicy:body => api('/api/storage/policy', body)
+    });
+  }
   function openWorkspaceSettings() {
     if (window.navigator?.userAgent.includes("Electron/")) { location.assign(`/?workspace-settings=${encodeURIComponent(project)}`); return; }
     workspaceOpen = true;
@@ -933,7 +943,7 @@
         interrupt:() => api('/api/admin/chat/interrupt',{}), configGet:() => api('/api/admin/config'),
         configSave:body => api('/api/admin/config',body)},
       onSnapshot(value) { if (state !== null) state.ai = value.ai; runtimesCache = value.runtimes; renderLeaderRuntime(); },
-      panels:{appearance(host) { host.append($("settings")); return () => $("settings-parking").append($("settings")); }, connections:settingsConnections}});
+      panels:{appearance(host) { host.append($("settings")); return () => $("settings-parking").append($("settings")); }, connections:settingsConnections, storage:settingsStorage}});
     try { const stored = localStorage.getItem("crew.theme"); if (["system", "light", "dark"].includes(stored)) theme = stored; } catch (error) { toast(error.message); }
     try { const stored = Number(localStorage.getItem("crew.fontScale")); if (stored >= FONT_MIN && stored <= FONT_MAX) fontScale = stored; } catch (error) { toast(error.message); }
     CrewChat.initFiles(api, toast);

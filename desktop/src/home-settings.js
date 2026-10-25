@@ -27,9 +27,16 @@
   function backend(host){
     return window.CrewHomeHealth?.mount(host);
   }
+  function storage(host){
+    return window.CrewStorage.mount(host,{
+      read:()=>bridge.storageRead(),preview:body=>bridge.storagePreview(body),
+      clean:body=>bridge.storageClean(body),restore:body=>bridge.storageRestore(body),
+      emptyTrash:body=>bridge.storageEmptyTrash(body),savePolicy:body=>bridge.storagePolicy(body)
+    });
+  }
   async function ensure(){
     if(ui)return ui;if(creating)return creating;
-    creating=(async()=>{await bridge.settingsUI();ui=window.CrewSettings.create({host:root,read:()=>bridge.settingsGet(),save:body=>bridge.settingsSave(body),operations:{snapshot:()=>bridge.adminChatSnapshot(),send:body=>bridge.adminChatSend(body),interrupt:()=>bridge.adminChatInterrupt(),configGet:()=>bridge.adminConfigGet(),configSave:body=>bridge.adminConfigSave(body),launch:{get:()=>bridge.launchSettingsGet(),validate:body=>bridge.launchSettingsValidate(body),apply:body=>bridge.launchSettingsApply(body),pick:body=>bridge.launchSettingsPick(body)}},panels:{appearance,connections,tools:host=>window.CrewHomeTools?.mount(host),backend}});return ui;})();
+    creating=(async()=>{await bridge.settingsUI();ui=window.CrewSettings.create({host:root,read:()=>bridge.settingsGet(),save:body=>bridge.settingsSave(body),operations:{snapshot:()=>bridge.adminChatSnapshot(),send:body=>bridge.adminChatSend(body),interrupt:()=>bridge.adminChatInterrupt(),configGet:()=>bridge.adminConfigGet(),configSave:body=>bridge.adminConfigSave(body),launch:{get:()=>bridge.launchSettingsGet(),validate:body=>bridge.launchSettingsValidate(body),apply:body=>bridge.launchSettingsApply(body),pick:body=>bridge.launchSettingsPick(body)}},panels:{appearance,connections,storage,tools:host=>window.CrewHomeTools?.mount(host),backend}});return ui;})();
     try{return await creating;}finally{creating=null;}
   }
   async function show(category='ai'){

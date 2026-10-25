@@ -325,6 +325,12 @@ handle('desktop:settings-away',away=>{
   if (typeof away !== 'boolean') throw Error('离开状态必须是 true 或 false');
   return settingsRequest('/api/notifications/away', {away});
 });
+handle('desktop:storage-read',()=>settingsRequest('/api/storage',undefined,180000));
+handle('desktop:storage-preview',body=>settingsRequest('/api/storage/preview',body,180000));
+handle('desktop:storage-clean',body=>settingsRequest('/api/storage/clean',body,180000));
+handle('desktop:storage-restore',body=>settingsRequest('/api/storage/restore',body,180000));
+handle('desktop:storage-empty-trash',body=>settingsRequest('/api/storage/trash/empty',body,180000));
+handle('desktop:storage-policy',body=>settingsRequest('/api/storage/policy',body));
 handle('desktop:settings-ui',async()=>{
   // Only trusted home can load these fixed, packaged application assets.
   const directory = path.join(config.helperBackendDir, 'crew', 'web');
@@ -334,6 +340,8 @@ handle('desktop:settings-ui',async()=>{
   await window.webContents.insertCSS(await fs.readFile(path.join(directory, 'settings-ui.css'),'utf8'));
   await window.webContents.executeJavaScript(await fs.readFile(path.join(directory, 'settings-ui.js'),'utf8'));
   await window.webContents.executeJavaScript(await fs.readFile(path.join(directory, 'connections-ui.js'),'utf8'));
+  await window.webContents.insertCSS(await fs.readFile(path.join(directory, 'storage-ui.css'),'utf8'));
+  await window.webContents.executeJavaScript(await fs.readFile(path.join(directory, 'storage-ui.js'),'utf8'));
   return {ok:true};
 });
 handle('desktop:workspace-ui',async()=>{
