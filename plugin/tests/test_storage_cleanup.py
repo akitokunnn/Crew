@@ -77,6 +77,20 @@ class StorageCleanupTests(unittest.TestCase):
         self.assertFalse(old.exists()); self.assertFalse(export.exists())
         self.assertTrue(current.exists()); self.assertTrue(service.exists()); self.assertTrue(unknown.exists())
 
+    def test_empty_trash_preserves_completed_and_restored_history(self):
+        self.write('desktop/logs/startup-21.log')
+        logged = self.manager.clean(self.manager.preview(['logs'])['preview_id'])
+        self.orphan()
+        recycled = self.manager.clean(self.manager.preview(['attachments'])['preview_id'])
+        self.manager.restore(recycled['batch_id'])
+        self.orphan('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-1.png')
+        newest = self.manager.clean(self.manager.preview(['attachments'])['preview_id'])
+        self.manager.empty_trash()
+        history = {item['batch_id']: item for item in self.manager.snapshot()['history']}
+        self.assertEqual(history[logged['batch_id']]['status'], 'completed')
+        self.assertEqual(history[recycled['batch_id']]['status'], 'restored')
+        self.assertEqual(history[newest['batch_id']]['status'], 'emptied')
+
     def test_registered_project_inside_home_is_never_scanned_or_cleaned(self):
         path = self.write('desktop/logs/startup-99.log', b'project-owned')
         with closing(store.connect(self.home)) as conn:

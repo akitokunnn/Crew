@@ -919,6 +919,8 @@ class Manager:
         freed, count, errors = 0, 0, []
         for batch in batches:
             self._recover(batch)
+            if not any(item['state'] == 'recycled' for item in batch['entries']):
+                continue
             batch_errors = []
             for item in batch['entries']:
                 if item['state'] != 'recycled':
