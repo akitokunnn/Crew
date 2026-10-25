@@ -346,14 +346,17 @@ svg.i.xs{width:12px;height:12px}
 .composer textarea::placeholder{color:var(--text-3)}
 .c-row{display:flex;align-items:center;gap:6px;margin-top:6px}
 .c-row .hint{font-size:calc(11.5px * var(--fs));color:var(--text-3);margin-left:auto;margin-right:6px}
-.send{width:32px;height:32px;border-radius:11px;background:var(--accent);color:var(--on-accent);border:0;display:grid;place-items:center;cursor:pointer;transition:opacity .15s,transform .1s}
+.send{flex:none;width:32px;height:32px;border-radius:11px;background:var(--accent);color:var(--on-accent);border:0;display:grid;place-items:center;cursor:pointer;transition:opacity .15s,transform .1s}
+.send[hidden]{display:none}
 .send:active{transform:scale(.95)}
 .send:disabled{opacity:.3;cursor:default}
-.chat-stop{flex:none;min-height:32px;padding:5px 11px;border:1px solid var(--line-strong);border-radius:9px;background:var(--surface-2);color:var(--text-2);font:inherit;font-size:calc(12px * var(--fs));cursor:pointer;white-space:nowrap}
-.chat-stop::before{content:"";display:inline-block;width:8px;height:8px;margin-right:6px;border-radius:1px;background:currentColor}
-.chat-stop:hover:not(:disabled){border-color:var(--text-3);background:var(--panel)}.chat-stop:disabled{opacity:.55;cursor:default}.chat-stop[hidden]{display:none}
+.chat-stop{flex:none;width:32px;height:32px;padding:0;border:1px solid var(--line-strong);border-radius:11px;background:var(--surface-2);color:var(--text-2);display:grid;place-items:center;cursor:pointer;transition:background .15s,transform .1s}
+.chat-stop:hover:not(:disabled){border-color:var(--text-3);background:var(--panel)}.chat-stop:active:not(:disabled){transform:scale(.95)}.chat-stop:disabled{opacity:.55;cursor:default}.chat-stop[hidden]{display:none}
+.chat-stop:focus-visible,.send:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
 .chat-interrupt-status{padding:7px 2px 1px;color:var(--text-3);font-size:calc(11.5px * var(--fs));line-height:1.6;overflow-wrap:anywhere}.chat-interrupt-status.failed{color:var(--danger)}
+.chat-delivery-status{padding:7px 2px 1px;color:var(--danger);font-size:calc(11.5px * var(--fs));line-height:1.6;overflow-wrap:anywhere}
 .attach{display:flex;gap:8px;margin-bottom:10px}
+.attach[hidden]{display:none}
 .thumb{position:relative;width:72px;height:52px;border-radius:10px;overflow:hidden;border:1px solid var(--line)}
 .thumb button{position:absolute;top:3px;right:3px;width:18px;height:18px;border-radius:50%;border:0;background:rgba(20,20,18,.65);color:#fff;display:grid;place-items:center;cursor:pointer;padding:0}
 
