@@ -23,7 +23,7 @@ from urllib.error import HTTPError, URLError
 from . import board, channel, channel_digest, chat, claude_limits, codex_runtime, documents, git_admin, git_ci, git_view, goal_api, goals, hooks, maintenance, messaging, models, notifications, open_session, presentation, runtime_catalog, runtime_switch, runtimes, session_library, session_ops, settings, spawn, store, themes, todo, trust_mode, updater, usage, usage_cli, vscode_sessions, workspace_execution, workspace_settings
 from .service_lock import HomeServiceLock
 from . import member_defaults, operations_chat, operations_settings
-from . import connections, storage_cleanup
+from . import connections, storage_cleanup, workspace_activity
 
 
 def _text(data, key):
@@ -1674,6 +1674,15 @@ class Handler(BaseHTTPRequestHandler):
                              'version': service.version, 'plugin_root': str(service.plugin_root.resolve()),
                              'instance_id': service.instance_id, 'port': self.server.server_port,
                              'update_gate': service.chat.paused() is not None})
+        elif url.path == '/api/workspaces/activity':
+            with closing(store.connect(service.home)) as conn:
+                results = []
+                for name in dict.fromkeys(query.get('project', [])):
+                    try:
+                        results.append(workspace_activity.snapshot(service, conn, name))
+                    except board.BoardError as exc:
+                        results.append({'project': name, 'error': str(exc)})
+                self._send(200, {'projects': results})
         elif url.path == "/api/state":
             self._send(200, service.state(query.get("project", [None])[0]))
         elif url.path in ('/api/session-library', '/api/session-library/preview'):

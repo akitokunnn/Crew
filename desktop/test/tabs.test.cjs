@@ -36,6 +36,31 @@ function fixture(options = {}) {
 }
 function event() { return { prevented: false, preventDefault() { this.prevented = true; } }; }
 
+test('one batched activity poll keeps hidden projects current without reloading or acknowledging them',async()=>{
+  let tick,cleared=0;const calls=[];
+  const f=fixture({setTimer:fn=>(tick=fn,1),clearTimer:()=>cleared++,readActivity:async names=>{
+    calls.push(names);return {projects:names.map(project=>({project,counts:{working:2,decisions:1,unread:3},items:[],updated_at:'now'}))};
+  }});
+  const a=await f.manager.open({name:'A'});await f.manager.open({name:'B'});await new Promise(resolve=>setImmediate(resolve));
+  tick();await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(calls.at(-1),['A','B']);
+  for(const tab of f.manager.state().tabs.filter(tab=>tab.project)){assert.equal(tab.activity.badge,1);assert.equal(tab.activity.unread,3);}
+  f.manager.select(a.id);assert.equal(f.manager.state().tabs[1].activity.unread,3);
+  assert(f.views.every(view=>view.webContents.loads.length===1));f.manager.dispose();assert.equal(cleared,1);
+});
+test('activity fetch failure keeps the last facts and explicitly marks them stale',async()=>{
+  let failing=false;
+  const f=fixture({setTimer:()=>1,clearTimer:()=>{},readActivity:async()=>{if(failing)throw Error('connection lost');return {projects:[{project:'A',counts:{working:2},items:[]}]};}});
+  await f.manager.open({name:'A'});await new Promise(resolve=>setImmediate(resolve));failing=true;await f.manager.refreshActivity();
+  const activity=f.manager.state().tabs[1].activity;assert.equal(activity.tone,'stale');assert.equal(activity.counts.working,2);assert.equal(activity.error,'connection lost');f.manager.dispose();
+});
+test('an in-flight activity response cannot revive a closed or disposed project view',async()=>{
+  let resolve;const f=fixture({setTimer:()=>1,clearTimer:()=>{},readActivity:()=>new Promise(done=>resolve=done)});
+  const a=await f.manager.open({name:'A'});f.manager.close(a.id);const b=await f.manager.open({name:'A'});
+  resolve({projects:[{project:'A',counts:{decisions:9}}]});await new Promise(done=>setImmediate(done));
+  assert.equal(f.manager.state().tabs.find(tab=>tab.id===b.id).activity,null);f.manager.dispose();
+});
+
 test('a workspace page title change refreshes metadata and preserves its live document',async()=>{
   const titles=[];const f=fixture({onTitleChange:name=>titles.push(name)});
   await f.manager.open({name:'stable-key',display_name:'Before',root:'C:/old'});
