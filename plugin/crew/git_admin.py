@@ -42,6 +42,11 @@ def enable(conn, home, plugin_root, project_name, launcher, base=None, stable=No
 
 @board.atomic
 def disable(conn, project_name, now=None):
+    return _disable(conn, project_name, now)
+
+
+def _disable(conn, project_name, now):
+    """Close the administrator inside the caller's transaction; Git and branches are untouched."""
     config = board.git_config(conn, project_name)
     conn.execute("DELETE FROM git_management WHERE project=?", (project_name,))
     if config is not None and config["admin_session_id"] is not None:

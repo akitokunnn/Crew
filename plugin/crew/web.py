@@ -20,7 +20,7 @@ from urllib.parse import parse_qs, quote, urlencode, urlsplit
 from urllib.request import ProxyHandler, build_opener
 from urllib.error import HTTPError, URLError
 
-from . import board, channel, channel_digest, chat, claude_limits, codex_runtime, documents, git_admin, git_ci, git_view, goal_api, goals, hooks, messaging, models, notifications, open_session, presentation, runtime_catalog, runtime_switch, runtimes, session_ops, settings, spawn, store, themes, todo, trust_mode, updater, usage, usage_cli, vscode_sessions, workspace_execution, workspace_settings
+from . import board, channel, channel_digest, chat, claude_limits, codex_runtime, documents, git_admin, git_ci, git_view, goal_api, goals, hooks, maintenance, messaging, models, notifications, open_session, presentation, runtime_catalog, runtime_switch, runtimes, session_ops, settings, spawn, store, themes, todo, trust_mode, updater, usage, usage_cli, vscode_sessions, workspace_execution, workspace_settings
 from .service_lock import HomeServiceLock
 from . import operations_chat, operations_settings
 from . import connections
@@ -40,7 +40,8 @@ def _optional_text(data, key):
 # HTTP entries that start or feed model work must pass the update gate before
 # any side effect (adoption, git admin setup, VS Code takeover, digest).
 MODEL_WORK = {"/api/spawn", "/api/leader", "/api/wake", "/api/chat/send", "/api/session/compact",
-              "/api/open", "/api/open/continue", "/api/git/enable", "/api/channel/digest"}
+              "/api/open", "/api/open/continue", "/api/git/enable", "/api/channel/digest",
+              "/api/maintenance/department/compact"}
 
 
 class Service:
@@ -84,6 +85,8 @@ class Service:
         self.ci_worker = None
         self.connections = connections.Manager(self, notification_client, lock_status, notification_batch_seconds)
         self.inbox = self.connections.inboxes['qq']
+        # Marks maintenance left unfinished by a previous service as interrupted; nothing is re-sent.
+        self.maintenance = maintenance.Manager(self)
         with closing(store.connect(home)) as conn:
             projects = board.projects(conn)
             project = board.project_for_path(conn, Path.cwd() if cwd is None else cwd)
@@ -209,6 +212,7 @@ class Service:
         if self.ci_worker is not None:
             self.ci_worker.join()
         self.chat.close()
+        self.maintenance.close()
         if self.worker is not None:
             self.worker.join(timeout=1)
         self.channel_digest.close()
@@ -797,6 +801,22 @@ class Service:
             updated = workspace_settings.apply_update(conn, project, display_name, root, revision, now=now)
             return {**self.workspace_state(project), 'directory_change': updated['directory_change']}
 
+    def maintenance_post(self, path, data, project_name):
+        body_project = _text(data, 'project')
+        if project_name is not None and project_name != body_project:
+            raise board.BoardError('请求正文和地址中的工作区不一致')
+        with closing(store.connect(self.home)) as conn:
+            project = self.selected_project(conn, body_project)
+        if path == '/api/maintenance/department/preview':
+            return self.maintenance.department_preview(project, data.get('leader_session_id'))
+        if path == '/api/maintenance/department/compact':
+            return self.maintenance.department_start(project, data.get('leader_session_id'), data.get('preview_id'), data.get('targets'))
+        if path == '/api/maintenance/cleanup/preview':
+            return self.maintenance.cleanup_preview(project)
+        if path == '/api/maintenance/cleanup':
+            return self.maintenance.cleanup_start(project, data.get('preview_id'), data.get('confirm'))
+        raise board.BoardError('未知维护操作')
+
     def native_approvals(self, project):
         with self.chat.lock:
             return sorted([approval for current in self.chat.processes.values()
@@ -833,7 +853,7 @@ class Service:
             return self.cancel_update(data)
         if path == '/api/admin/connection/prepare':
             return self.prepare_connection(data)
-        if path in MODEL_WORK or path.startswith("/api/goals/") or path in ("/api/native-approval", "/api/decision/discuss", "/api/decision/clarify", "/api/project/update", "/api/project/remove"):
+        if path in MODEL_WORK or path.startswith("/api/goals/") or path in ("/api/native-approval", "/api/decision/discuss", "/api/decision/clarify", "/api/project/update", "/api/project/remove", "/api/maintenance/cleanup"):
             with self.chat.work():
                 return self._post(path, data, project_name)
         return self._post(path, data, project_name)
@@ -841,6 +861,8 @@ class Service:
     def _post(self, path, data, project_name):
         if path in ('/api/project/update', '/api/project/remove'):
             return self.update_workspace(path, data, project_name)
+        if path.startswith('/api/maintenance/'):
+            return self.maintenance_post(path, data, project_name)
         if path == '/api/admin/chat/send':
             return operations_chat.send(self.home, self.plugin_root, data)
         if path == '/api/admin/chat/interrupt':
@@ -1430,6 +1452,8 @@ POST_PATHS.update(('/api/admin/chat/send', '/api/admin/chat/interrupt', '/api/ad
 POST_PATHS.add('/api/admin/connection/prepare')
 POST_PATHS.update(('/api/connections/configure', '/api/connections/action'))
 POST_PATHS.add('/api/native-approval')
+POST_PATHS.update(('/api/maintenance/department/preview', '/api/maintenance/department/compact',
+                   '/api/maintenance/cleanup/preview', '/api/maintenance/cleanup'))
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"),
           "/themes.js": ("themes.js", "text/javascript; charset=utf-8"),
           "/sounds.js": ("sounds.js", "text/javascript; charset=utf-8"),
@@ -1460,6 +1484,8 @@ STATIC.update({'/workspace-settings-ui.js': ('workspace-settings-ui.js', 'text/j
                '/workspace-settings-ui.css': ('workspace-settings-ui.css', 'text/css; charset=utf-8')})
 STATIC.update({'/native-approval-ui.js': ('native-approval-ui.js', 'text/javascript; charset=utf-8'),
                '/native-approval-ui.css': ('native-approval-ui.css', 'text/css; charset=utf-8')})
+STATIC.update({'/maintenance-ui.js': ('maintenance-ui.js', 'text/javascript; charset=utf-8'),
+               '/maintenance-ui.css': ('maintenance-ui.css', 'text/css; charset=utf-8')})
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1610,6 +1636,17 @@ class Handler(BaseHTTPRequestHandler):
                 rows = board._rows(conn, 'SELECT * FROM workspace_comments WHERE project=?' +
                                    (' AND session_id=?' if sid else '') + ' ORDER BY id', (project, sid) if sid else (project,))
                 self._send(200, {'comments': rows})
+        elif url.path in ('/api/maintenance/jobs', '/api/maintenance/archive'):
+            with closing(store.connect(service.home)) as conn:
+                project = service.selected_project(conn, query.get('project', [None])[0])
+                if url.path.endswith('/jobs'):
+                    kind = query.get('kind', [''])[0]
+                    self._send(200, {'jobs': maintenance.jobs(conn, project, kind, query.get('leader_session_id', [None])[0]),
+                                     'cleanups': board.cleanup_boundary(conn, project)['cleanups']})
+                else:
+                    before = int(query['before'][0]) if 'before' in query else None
+                    self._send(200, maintenance.archive(conn, project, query.get('job_id', [''])[0], query.get('kind', [''])[0],
+                                                        before=before))
         elif url.path == '/api/todos':
             with closing(store.connect(service.home)) as conn:
                 project = service.selected_project(conn, query.get('project', [None])[0])

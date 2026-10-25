@@ -122,6 +122,20 @@ class Controller:
 
     def launch(self, session, spec):
         """Called under Manager.lock; never mutates the person's default native binding."""
+        return self._launch(session, spec, None)
+
+    def launch_maintenance(self, session, spec, marker):
+        """Resume an existing goal history only so maintenance can send the native compact command.
+
+        Goal dispatch is not consulted because the goal is not being worked on;
+        without an existing native binding nothing starts.
+        """
+        execution = session['_execution']
+        if not any(item['runtime'] == execution['runtime'] and item['native_id'] for item in execution['bindings']):
+            raise board.BoardError('目标执行没有原生会话，压缩不会新建会话')
+        return self._launch(session, spec, marker)
+
+    def _launch(self, session, spec, maintenance):
         from . import chat
         execution = session['_execution']
         key, logical_id = execution['id'], execution['session_id']
@@ -129,9 +143,10 @@ class Controller:
         if previous is not None and not previous.reader_done.wait(10):
             raise board.BoardError('上一轮目标执行的输出尚未排空，请稍后重试；未启动新进程')
         with closing(store.connect(self.home)) as conn:
-            gate = goals.dispatch_check(conn, execution['goal_id'], execution_id=key)
-            if not gate['allowed']:
-                raise board.Conflict(gate['reason'])
+            if maintenance is None:
+                gate = goals.dispatch_check(conn, execution['goal_id'], execution_id=key)
+                if not gate['allowed']:
+                    raise board.Conflict(gate['reason'])
             from . import settings
             permission_mode = settings.get_execution(conn)['claude']
         options = {'model': execution['model'], 'effort': execution['effort']}
@@ -146,7 +161,8 @@ class Controller:
             from .codex_runtime import CodexRunning
             current = CodexRunning(self.home, self.manager.plugin_root, session, spec, options, journal,
                                    self.manager.send_message, process_factory=self.manager.process_factory,
-                                   resume=binding is not None, execution=execution, goal_handler=self.agent_action)
+                                   resume=binding is not None, execution=execution, goal_handler=self.agent_action,
+                                   maintenance=maintenance)
             self.manager.processes[key] = current
             return spawn.command(key, session['crew_name'], session['role'], runtime='codex', **options)
         native_id = binding['native_id'] if binding else str(uuid.uuid4())
@@ -172,6 +188,7 @@ class Controller:
                                                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
         current = chat.Running(process, journal)
         current.execution, current.identity_session_id, current.native_id = execution, logical_id, native_id
+        current.maintenance = maintenance
         current.goal_manifests = dict(session.get('_goal_manifests', {}))
         self.manager.processes[key] = current
         journal.reset_runtime()
@@ -192,6 +209,10 @@ class Controller:
         with self.manager.lock, closing(store.connect(self.home)) as conn:
             goal = goals.get(conn, goal_id)
             goals._member(conn, goal, session_id)
+            if self.manager.maintenance_held(session_id):
+                # Refuse before any goal or execution state changes.
+                from . import chat
+                raise board.Conflict(chat.MAINTENANCE_HELD)
             human = source in ('human', 'qq', 'lark')
             if messaging.stopped(conn, session_id):
                 if not human:
@@ -276,6 +297,9 @@ class Controller:
             current = self.manager.processes.get(key)
             stale = row['round'] != row['current_round'] or row['requirement_version'] != row['current_version']
             if row['status'] in goals.TERMINAL:
+                continue
+            if getattr(current, 'maintenance', None) is not None:
+                # Maintenance compaction is neither goal work to interrupt nor a state to reconcile.
                 continue
             if row['goal_status'] in ('pausing', 'paused') or row['goal_status'] in goals.TERMINAL or stale:
                 if current is None and row['status'] in ('running', 'pausing'):

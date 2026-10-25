@@ -96,3 +96,10 @@ test("a failed initial read exposes its real error and only retries on the expli
   await h.settings.open("stable-project");assert.equal(reads,1);assert(h.html().includes("后台暂未连接"));assert(h.html().includes('data-workspace-action="reload"'));assert.equal(h.settings.getDraft(),null);
   await h.click("reload");assert.equal(reads,2);assert.equal(h.settings.getDraft().root,"C:/work/old");assert.equal(h.calls.update.length,0);
 });
+
+test("current-workspace cleanup is offered from settings and hands the stable key and label to the cleanup dialog",async()=>{
+  const opened=[];const h=harness({openCleanup:(name,label)=>opened.push([name,label])});await h.settings.open("stable-project");
+  assert(h.html().includes('data-workspace-action="cleanup"'));assert(h.html().includes("清理当前工作区…"));assert(h.html().includes("只针对此工作区"));
+  await h.click("cleanup");
+  assert.deepEqual(opened,[["stable-project","显示名称"]]);assert.equal(h.dialog.open,false);assert.equal(h.calls.closed,1);
+});

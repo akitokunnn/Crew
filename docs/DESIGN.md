@@ -543,3 +543,33 @@ CREATE TABLE IF NOT EXISTS git_ci_state (
 Git 页停用在一个数据库事务中先删除 `git_management` 配置，再调用同一事务内整组关闭逻辑归档管理员和下属；失败整体回滚。提交后 Service 停止对应托管进程。通用整组结束/撤销及单会话归档/移出都拒绝当前 Git 管理员，必须从 Git 页停用。
 
 撤销只恢复数据库，不自动启动进程。恢复后 leader 在下次收到用户网页消息时续跑，下属在下次发消息或叫醒时按现有恢复逻辑续跑；“停下这一轮”仍只发送 interrupt，与归档终止进程是两个动作。
+
+## 14. 部门压缩与当前工作区清理（2026-10-26）
+
+交流区增加“@所有 leader”：前端提交 `to:["*"]`，`channel.post` 在发言事务内展开当前工作区仍在用的 leader，并保存实际接收人。已归档人员、普通成员和其他项目不参与；显式名单与全体合并后按会话去重，leader 本人不收到自己的通知。全体选择保留动态语义，取消其中一人则改为显式名单；没有 leader 时拒绝全体点名，不降成普通未点名发言。
+
+### 数据
+
+- `maintenance_jobs`：一次部门压缩或工作区清理。`request_id` 是预览 ID，`(project, kind, request_id)` 唯一，同部门、同选择的重复提交返回同一作业，换部门或选择则拒绝重用。状态为 running / completed / partial / failed / interrupted；`detail_json` 保存预览摘要、清理边界区间、部门原备注与结果计数。
+- `maintenance_items`：逐项结果，状态为 pending / running / completed / failed / interrupted。失败带 `error_type` 与真实原因：busy、external、identity_in_use、ownership_unknown、no_history、no_web_record、launch_failed、native_error、process_exited、unconfirmed、timeout、stop_failed、interrupted、update_paused、scope_changed、preview_changed、blocked、not_confirmed；worker 边界捕获的意外错误记录异常类名。
+- `workspace_cleanup_boundaries`：每个工作区单调递增的 `channel_after`、`digest_after`、`handoff_after` 与清理次数。原文仍在原表。
+- 服务启动时把仍为 running 的作业及其未结束条目标为 interrupted，不重发任何模型工作。
+
+### 部门压缩
+
+- 入口：leader 菜单“压缩整个部门…”，与单人“压缩上下文”分开。`POST /api/maintenance/department/preview {project, leader_session_id}` 列出 leader 与仍在部门的未归档成员：总对话（有原生绑定或网页记录），以及每个目标中该人员最新一代有原生会话的执行，含已结束和暂停的目标。已换代的旧执行不再被装载，不列入；没用过的上下文不列出、不新建。
+- 可用性：在线空闲的进程原地压缩，之后保持运行；同一人员其他空闲的自有进程可保持原状，旧目标以受限维护进程顺序压缩。正在工作或排队压缩、执行仍标记 queued / running / pausing 时为 busy。同一人员另一上下文正在工作、维护或被外部持有时为 identity_in_use。本上下文在 VS Code、终端或外部 Codex 宿主中运行时为 external。取不到 Claude 进程列表或 Codex 租约状态时为 ownership_unknown。缺网页记录或启动记录时为 no_web_record。以上都不强停。
+- `POST /api/maintenance/department/compact {project, leader_session_id, preview_id, targets}` 经更新闸，建立作业后在后台执行。每人一个线程，按顺序处理自己的上下文；不同人员可以并行。每项在 `Manager.lock` 内复核部门成员与可用性。离线项经 `Manager.maintenance_launch` 恢复已有原生会话：不调用 `_claim_identity`，不建 spawn 记录或原生绑定，不查目标派发授权；`Controller.launch_maintenance` 只接受已有绑定。
+- 维护进程带 `maintenance` 标记：`busy()` 视为工作中；`maintenance_held` 覆盖该人员全部上下文，借用的空闲进程与临时启动的进程都拒绝普通输入。`send`、`_send`、目标发送及身份转交在修改业务状态前返回 409；固定压缩命令走专用路径。`goal_runtime.sync` 跳过维护，不打断也不改状态；Codex 维护期间不写目标执行状态。
+- 只发送固定原生命令：Claude 写入 `/compact` 用户消息，Codex 调用 `thread/compact/start`。只有 `compact` 事件算完成（Claude 为 compact_boundary；Codex 为压缩后的 tokenUsage，压缩前大小未知时 `pre_tokens` 为 null）。轮次失败、压缩取消、进程退出记为失败；请求结束后 30 秒仍无完成事件记 unconfirmed；900 秒超时。完成后停止并移除本次临时启动的进程，已在运行的进程只去掉标记；停止失败记 stop_failed 并保留标记。
+- 查询：`GET /api/maintenance/jobs?project&kind=department_compact&leader_session_id`。重试失败项就是重新预览后再选择。
+
+### 当前工作区清理
+
+- 入口：工作区设置“清理当前工作区…”。网页与桌面首页使用同一 `maintenance-ui.js`，桌面经 `desktop:workspace-maintenance` 只转发维护路由。
+- `POST /api/maintenance/cleanup/preview` 返回部门、身份（leader、成员、待收编、Git 管理员）、运行与外部运行情况、未完成目标，待办、拍板、文件声明、租约、交流、要点卡、交接与上下文计数，以及保留项（项目目录、文档、报告、已结束目标、全局规则、账号连接模型设置）和清理记录。预览 10 分钟有效。指纹覆盖根目录、边界、未归档身份、开放部门、未完成目标、Git 管理员，以及仍持有托管进程的已归档或未收编身份。预览后新增的交流、交接、上下文和开放事项同样早于清理，执行时一并移到边界之后。
+- `POST /api/maintenance/cleanup {project, preview_id, confirm:true}` 经更新闸，先同步复核指纹再建作业。后台在 `write_lock` 与 `Manager.lock` 内再次复核，然后依次：对全部未完成目标 `goals.request_cancel`；对已收编身份及持有托管进程的身份 `stop_identity`，覆盖其全部执行，外部运行或无法确认即失败；`goal_controller.sync` 确认取消。任一项失败时，已发生的停止和取消保持原状，不归档、不建边界，作业为 partial 或 failed。
+- 全部成功后在一个事务内：经 `git_admin._disable` 关闭 Git 管理员（不执行 Git 命令、不改分支）；用 `session_ops._close_group` 关闭全部部门并归档成员，归档其余未归档身份；开放待办改为 cancelled，开放拍板改为 withdrawn，释放文件声明与设备租约；project、leader 与目标范围的 active 上下文以用户身份 invalidate，crew 范围保留；写入新的清理边界与 `workspace:cleanup` 事件。
+- 读路径：`channel.messages / state / summary / digest / read`、`crew channel`、`channel_digest.start` 和 `board.handoffs / project_handoffs` 都只读取边界之后的数据。摘要线程入库前比较清理次数，清理期间生成的旧卡作废并显示原因。旧 leader 的排队通知和待投递邮件按会话 ID 绑定，随身份归档不再投递；新同名 leader 是新会话，不继承这些内容。部门备注保存在作业的 `archived_groups` 后清空活动组，待办原备注保留并追加清理说明。
+- 历史：`GET /api/maintenance/jobs?kind=workspace_cleanup` 返回清理记录与次数；`GET /api/maintenance/archive?job_id&kind=channel|handoffs&before` 只读分页查看该次清理前的交流、最后一张要点卡和交接。部门备注在清理结果里展开查看。清理边界、归档步骤成功、历史区间与作业完成回执在同一事务提交，重启不会出现已清理却无法查阅归档的中间状态；人数与部门数在归档前统计，包含随组归档的成员和 Git 管理员。
+- 不删除项目文件、交付、对话文件或原生历史，不移除工作区，不改项目键或目录，不做数据迁移。

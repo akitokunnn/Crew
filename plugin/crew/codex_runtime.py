@@ -203,9 +203,10 @@ class _ObservedClient(codex_client.Client):
 
 class CodexRunning:
     runtime = "codex"
+    maintenance = None
 
     def __init__(self, home, plugin_root, session, spec, options, journal, send_message,
-                 process_factory=subprocess.Popen, *, resume=False, execution=None, goal_handler=None):
+                 process_factory=subprocess.Popen, *, resume=False, execution=None, goal_handler=None, maintenance=None):
         # Import lazily so this independent driver does not own schema migration.
         from . import runtimes
         self.home, self.plugin_root = Path(home).resolve(), Path(plugin_root).resolve()
@@ -216,6 +217,8 @@ class CodexRunning:
         self.session, self.spec, self.journal = dict(session), dict(spec), journal
         self.session_id, self.input_lock = session["session_id"], threading.RLock()
         self.execution = execution
+        # Known before the first status write: maintenance never changes goal execution state.
+        self.maintenance = maintenance
         self.goal_handler = goal_handler
         self.goal_manifests = dict(session.get('_goal_manifests', {}))
         self.applied, self.context, self.pending_compact = None, None, False
@@ -346,6 +349,8 @@ class CodexRunning:
 
     def _status(self, status):
         self.journal.set_status(status)
+        if self.execution and self.maintenance is not None:
+            return
         with closing(store.connect(self.home)) as conn:
             if self.execution:
                 active = goals.get_execution(conn, self.execution['id'])

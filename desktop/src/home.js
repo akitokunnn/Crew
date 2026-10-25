@@ -4,7 +4,7 @@ let busy = false;
 let homeReady = false;
 let dispatching = false;
 const homeActions = [];
-let workspaceSettings = null, workspaceSettingsLoading = null;
+let workspaceSettings = null, workspaceSettingsLoading = null, workspaceMaintenance = null;
 function failure(error) { $('error').textContent = error.message || String(error); $('error').hidden = false; }
 async function action(callback) {
   if (busy) return;
@@ -66,9 +66,12 @@ async function openWorkspaceSettings(name) {
   if (!workspaceSettings) {
     if (!workspaceSettingsLoading) workspaceSettingsLoading = (async () => {
       await window.crewDesktop.workspaceUI();
+      workspaceMaintenance = window.CrewMaintenance.create({host:$('workspace-settings-host'),
+        api:(route, body) => window.crewDesktop.workspaceMaintenance(route, body), onCleaned:() => { void refresh().catch(failure); }});
       workspaceSettings = window.CrewWorkspaceSettings.create({host:$('workspace-settings-host'),
         read:key => window.crewDesktop.workspaceGet(key), update:body => window.crewDesktop.workspaceUpdate(body),
         remove:body => window.crewDesktop.workspaceRemove(body), pickDirectory:current => window.crewDesktop.workspaceDirectory(current),
+        openCleanup:(key, label) => { void workspaceMaintenance.openCleanup(key, label); },
         onSaved:() => { void refresh().catch(failure); }, onRemoved:() => { void refresh().catch(failure); },
         onClose:key => document.querySelector('[data-project-settings="'+CSS.escape(key)+'"]')?.focus({preventScroll:true})});
     })();

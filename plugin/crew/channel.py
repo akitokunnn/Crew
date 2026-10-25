@@ -57,11 +57,21 @@ def post(conn, project_name, actor, body, to=(), source="crew", now=None):
     if not body:
         raise board.BoardError("交流区发言不能为空")
     targets = []
-    for name in dict.fromkeys(to):
+    names = [name for name in to if name != '*']
+    if '*' in to:
+        leaders = [_leader(conn, project_name, row['leader_session_id']) for row in conn.execute(
+            'SELECT leader_session_id FROM groups WHERE project=? AND closed_at IS NULL ORDER BY name', (project_name,))]
+        names = [leader['crew_name'] for leader in leaders if leader is not None] + names
+        if not names:
+            raise board.BoardError('当前工作区没有可点名的 leader')
+    identities = set()
+    for name in dict.fromkeys(names):
         target = board.named_session(conn, project_name, name)
         if _leader(conn, project_name, target["session_id"]) is None:
             raise board.BoardError("点名对象不是本项目的 leader: " + name)
-        targets.append(target)
+        if target['session_id'] not in identities:
+            targets.append(target)
+            identities.add(target['session_id'])
     message_id = conn.execute(
         "INSERT INTO channel_messages(project,speaker_session_id,speaker_name,body,created_at) VALUES(?,?,?,?,?)",
         (project_name, actor, speaker_name, body, board._time(now))).lastrowid
@@ -78,10 +88,13 @@ def post(conn, project_name, actor, body, to=(), source="crew", now=None):
 
 
 def digest(conn, project_name):
+    """The latest card after the workspace's cleanup boundary; older cards stay history only."""
+    boundary = board.cleanup_boundary(conn, project_name)
     row = conn.execute(
         "SELECT d.*, (SELECT COUNT(*) FROM channel_messages m WHERE m.project=d.project "
-        "AND m.id<=d.upto_message_id) AS total_message_count FROM channel_digests d "
-        "WHERE d.project=? ORDER BY d.id DESC LIMIT 1", (project_name,)).fetchone()
+        "AND m.id>? AND m.id<=d.upto_message_id) AS total_message_count FROM channel_digests d "
+        "WHERE d.project=? AND d.id>? ORDER BY d.id DESC LIMIT 1",
+        (boundary["channel_after"], project_name, boundary["digest_after"])).fetchone()
     return dict(row) if row is not None else None
 
 
@@ -92,7 +105,7 @@ def messages(conn, project_name, limit=20, before=None, after=0):
     if before is not None and (type(before) is not int or before < 1):
         raise board.BoardError("before 必须是正整数")
     sql = "SELECT * FROM channel_messages WHERE project=? AND id>?"
-    args = [project_name, after]
+    args = [project_name, max(after, board.cleanup_boundary(conn, project_name)["channel_after"])]
     if before is not None:
         sql += " AND id<?"
         args.append(before)
@@ -103,8 +116,9 @@ def messages(conn, project_name, limit=20, before=None, after=0):
 
 def state(conn, project_name, reader=board.HUMAN):
     board.project(conn, project_name)
+    after = max(_read_id(conn, project_name, reader), board.cleanup_boundary(conn, project_name)["channel_after"])
     unread = conn.execute("SELECT COUNT(*) FROM channel_messages WHERE project=? AND id>? AND speaker_session_id<>?",
-                          (project_name, _read_id(conn, project_name, reader), reader)).fetchone()[0]
+                          (project_name, after, reader)).fetchone()[0]
     return {"unread": unread, "latest_id": _latest(conn, project_name)}
 
 
@@ -132,7 +146,7 @@ def summary(conn, session_id, now=None):
     s = board.session(conn, session_id)
     if _leader(conn, s["project"], session_id) is None:
         return None
-    read_id = _read_id(conn, s["project"], session_id)
+    read_id = max(_read_id(conn, s["project"], session_id), board.cleanup_boundary(conn, s["project"])["channel_after"])
     card = digest(conn, s["project"])
     show_card = card is not None and card["upto_message_id"] > read_id
     after = card["upto_message_id"] if show_card else read_id

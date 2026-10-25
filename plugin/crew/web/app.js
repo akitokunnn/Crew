@@ -7,7 +7,7 @@
   let state = null, view = "all", leaderId = null, readOnlyId = null, mountedChat = null, pollBusy = false, statePromise = Promise.resolve();
   let mountedChannel = false;
   let settingsUI = null, settingsOpen = false, settingsReturn = null;
-  let workspaceSettings = null, workspaceOpen = false;
+  let workspaceSettings = null, workspaceOpen = false, maintenance = null;
   let nativeApprovals = null;
   let stopConfirmation = null;
   let documents = null, leaderTrust = null, runtimeSwitch = null, goals = null, goalId = null;
@@ -601,6 +601,7 @@
     if (runtimeSwitch) html += btn("runtime-switch", "更换执行工具…", goalId == null ? runtimeSwitch.reason(item) : "请回到本组总对话，先暂停该人员仍在推进的全部目标，再更换执行工具");
     html += btn("stop", "停下这一轮", stopReason) + btn("compact", "压缩上下文", compactReason) + submenu(item, "模型和 effort", modelMenu(item)) + btn("comments", "评论") + btn("session-rename", "改名");
     if (isLeader) {
+      html += btn("compact-department", "压缩整个部门…");
       html += btn("leader-trust", "本组信任模式") + btn("leader-trust-report", "本组信任报告");
       const siblings = sortableLeaders(item), index = siblings.indexOf(item), members = membersOf(item.session_id), busy = members.filter(compactBusy).length;
       html += submenu(item, "设为优先", [1, 2, 3, 0].map(rank => `<button role="menuitemradio" aria-checked="${item.priority === (rank === 0 ? null : rank)}" data-act="set-priority" data-id="${esc(item.session_id)}" data-rank="${rank}"><span class="model-check">${item.priority === (rank === 0 ? null : rank) ? ic("check", "sm") : ""}</span>${rank === 0 ? "取消优先" : `第 ${rank} 优先`}</button>`).join(""));
@@ -898,8 +899,11 @@
   }
   function setup() {
     $("overlay-root").innerHTML = '<button class="rp-scrim" id="rp-scrim" data-act="right-close" aria-label="关闭架构图"></button><div class="card-back" id="card-back"></div><section class="card" id="card" role="dialog" aria-modal="true" aria-label="下属卡片" tabindex="-1"></section><div class="menu" id="menu" role="menu"></div><div class="backdrop" id="backdrop"></div><div id="settings-parking" hidden><section class="settings-popover" id="settings" aria-label="外观设置"></section></div>';
+    maintenance = window.CrewMaintenance.create({api,
+      async onCleaned() { await loadState(true); if (view !== "all") navigate("all"); toast("已归档旧工作，可以重新开始"); }});
     workspaceSettings = window.CrewWorkspaceSettings.create({read:name => api(`/api/project/settings?project=${encodeURIComponent(name)}`),
       update:body => api("/api/project/update", body), remove:body => api("/api/project/remove", body),
+      openCleanup:(name, label) => { void maintenance.openCleanup(name, label); },
       onSaved:() => { void loadState(true); }, onRemoved:() => location.assign("/"),
       onClose:() => { workspaceOpen = false; if (state !== null && project !== null) { render(); $("sidebar").querySelector('[data-act="workspace-settings"]')?.focus({preventScroll:true}); } }});
     settingsUI = window.CrewSettings.create({host:$("settings-surface"), read:async() => { await api("/api/runtimes?refresh=1"); return api("/api/settings"); }, save:body => api("/api/settings",body), onClose:closeSettings, service:() => location.origin,
@@ -1037,6 +1041,7 @@
         refreshing.then(() => { if (menuAnchor === button && $("menu").classList.contains("show")) showMenu(button, modelControls(sessionItem(id))); });
       }
       else if (act === "compact") openCompact(id);
+      else if (act === "compact-department") { const item = leader(id); if (item) void maintenance.openDepartment(project, item); }
       else if (act === "compact-confirm") action(`compact:${id}`, async () => {
         button.disabled = true;
         closeBackdrop();

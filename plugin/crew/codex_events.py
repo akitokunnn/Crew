@@ -46,7 +46,8 @@ class Events:
             self.context = {"used": last["totalTokens"], "max": usage.get("modelContextWindow"), "source": "live"}
             events = [{"type": "context", **self.context},
                       {"type": "activity", "output_tokens": last["outputTokens"]}]
-            if self._compacting and self._pre_compact is not None:
+            # A freshly resumed thread has no measurement yet; its size before compaction stays unknown (None).
+            if self._compacting:
                 events.append({"type": "compact", "pre_tokens": self._pre_compact,
                                "post_tokens": self.context["used"]})
                 self._compacting = False
