@@ -8,12 +8,12 @@
   let mountedChannel = false;
   let settingsUI = null, settingsOpen = false, settingsReturn = null;
   let workspaceSettings = null, workspaceOpen = false, maintenance = null;
-  let nativeApprovals = null;
+  let nativeApprovals = null, memberUI = null, adoptLeaderId = null;
   let stopConfirmation = null;
   let documents = null, leaderTrust = null, runtimeSwitch = null, goals = null, goalId = null;
   let leaderDrag = null, leaderOrderSaving = false;
   let allTab = "tree", period = "week", usageTab = "tree", usage = null, usageLoading = false, usageRequest = 0;
-  let cardId = null, cardReturn = null, rename = false, handoff = null, rightOpen = false, dialogReturn = null;
+  let cardId = null, cardReturn = null, handoff = null, rightOpen = false, dialogReturn = null;
   let theme = "system", trayCollapsed = false, othersOpen = false, paletteItems = [], paletteIndex = 0;
   let soundGeneration = 0;
   let runtimesCache = null, runtimesPromise = null, runtimesLoading = false, runtimesError = null;
@@ -374,7 +374,7 @@
     if (toggle) { toggle.setAttribute("aria-expanded", String(rightOpen)); toggle.classList.toggle("active", rightOpen); }
     if (view !== "chat" || leaderId === null) { $("right-panel").innerHTML = ""; delete $("right-panel").dataset.render; return; }
     const item = leader(leaderId), members = membersOf(leaderId);
-    replace($("right-panel"), `<div class="head"><div><div class="title" style="font-size:calc(14.5px * var(--fs))">${esc(item.name)} 组</div><div class="sub">${members.length} 个下属</div></div><div class="right"><button class="btn ghost" data-act="view" data-view="adopt" style="padding:5px 9px;font-size:calc(12.5px * var(--fs))">${ic("plus", "sm")}收编</button><button class="icon-btn rp-close" data-act="right-close" aria-label="关闭架构图">${ic("x")}</button></div></div><div class="tree">${leaderNode(item, true)}<div class="members">${members.map(memberNode).join("")}</div><div class="rp-note">点任意人进入本人对话；资料与操作或右键可查看卡片。${ic("code", "xs")} VS Code，${ic("cloud", "xs")} Crew 后台。</div></div>`);
+    replace($("right-panel"), `<div class="head"><div><div class="title" style="font-size:calc(14.5px * var(--fs))">${esc(item.name)} 组</div><div class="sub">${members.length} 个下属</div><button class="member-default-entry" data-act="member-defaults" data-id="${esc(item.session_id)}">组员大脑 · ${item.member_defaults || state.ai?.member ? esc((item.member_defaults ?? state.ai.member).runtime ? runtimeInfo((item.member_defaults ?? state.ai.member).runtime).name : "自动选择") : "跟随 leader"} ›</button></div><div class="right"><button class="btn ghost" data-act="member-add-menu" data-id="${esc(item.session_id)}" style="padding:5px 9px;font-size:calc(12.5px * var(--fs))">${ic("plus", "sm")}添加</button><button class="icon-btn rp-close" data-act="right-close" aria-label="关闭架构图">${ic("x")}</button></div></div><div class="tree">${leaderNode(item, true)}<div class="members">${members.map(memberNode).join("")}</div><div class="rp-note">点任意人进入本人对话；资料与操作或右键可查看卡片。${ic("code", "xs")} VS Code，${ic("cloud", "xs")} Crew 后台。</div></div>`);
     $("right-panel").classList.toggle("show", rightOpen);
     $("rp-scrim").classList.toggle("show", rightOpen);
   }
@@ -503,7 +503,7 @@
     const working = state.members.filter(item => item.status === "working"), pending = state.decisions.filter(item => !item.held), held = state.decisions.filter(item => item.held);
     const chip = (tab, icon, label, amount) => `<button class="pill tab ${allTab === tab ? "on" : ""}" data-act="all-tab" data-tab="${tab}">${icon}${amount === null ? "" : `<b>${amount}</b>`}${label}</button>`;
     let body;
-    if (allTab === "tree") body = state.leaders.length === 0 ? `<div class="empty">${ic("grid")}<div>还没有 leader。先起一个 leader，再把 VS Code 里聊清楚的会话收编进它的组。</div><div class="empty-acts"><button class="btn primary" data-act="modal-leader">${ic("plus", "sm")}起 leader</button><button class="btn" data-act="view" data-view="adopt">${ic("inbox", "sm")}去待收编</button></div></div>` : `<div class="lead-grid" tabindex="0" aria-label="各组架构，可横向滚动查看">${state.leaders.map(item => `<div class="lead-col">${leaderNode(item, true)}<div class="members">${membersOf(item.session_id).map(memberNode).join("")}</div></div>`).join("")}</div>`;
+    if (allTab === "tree") body = state.leaders.length === 0 ? `<div class="empty">${ic("grid")}<div>还没有 leader。先起一个 leader，再添加新组员或收编已有会话。</div><div class="empty-acts"><button class="btn primary" data-act="modal-leader">${ic("plus", "sm")}起 leader</button><button class="btn" data-act="view" data-view="adopt">${ic("inbox", "sm")}去待收编</button></div></div>` : `<div class="lead-grid" tabindex="0" aria-label="各组架构，可横向滚动查看">${state.leaders.map(item => `<div class="lead-col">${leaderNode(item, true)}<div class="members">${membersOf(item.session_id).map(memberNode).join("")}</div></div>`).join("")}</div>`;
     else if (allTab === "goals") body = goals?.cards() || empty("还没有执行目标");
     else if (allTab === "native-approvals") body = `<div class="native-approval-list">${nativeApprovals?.markup() || empty("没有等待你确认的执行权限")}</div>`;
     else if (allTab === "pending") {
@@ -556,15 +556,15 @@
     const target = Array.from(document.querySelectorAll("[data-act]")).find(item => item.dataset.act === descriptor.act && item.dataset.id === descriptor.id && item.dataset.view === descriptor.view);
     if (target) target.focus({preventScroll:true});
   }
-  function openCard(id) { cardReturn = focusDescriptor(document.activeElement); cardId = id; rename = false; handoff = null; renderCard(); renderRight(); requestAnimationFrame(() => $("card").querySelector('[data-act="card-close"]').focus({preventScroll:true})); }
-  function closeCard() { cardId = null; rename = false; handoff = null; $("card").classList.remove("show"); $("card-back").classList.remove("show"); hideMenu(); renderRight(); returnFocus(cardReturn); }
+  function openCard(id) { cardReturn = focusDescriptor(document.activeElement); cardId = id; handoff = null; renderCard(); renderRight(); requestAnimationFrame(() => $("card").querySelector('[data-act="card-close"]').focus({preventScroll:true})); }
+  function closeCard() { cardId = null; handoff = null; $("card").classList.remove("show"); $("card-back").classList.remove("show"); hideMenu(); renderRight(); returnFocus(cardReturn); }
   function renderCard() {
     if (cardId === null) return;
     const item = member(cardId);
     if (item === undefined) { closeCard(); return; }
     const background = item.where === "bg", canStop = background && item.status === "working";
     const stopReason = background ? "这一轮没在工作" : item.where === "vscode" ? "开在 VS Code 里，去那边停" : "会话没在运行";
-    const name = rename ? `<form class="rename-form" id="rename-form" data-id="${esc(item.session_id)}"><input name="name" data-preserve="rename-name" value="${esc(item.name)}" required aria-label="新名字"><button class="icon-btn" type="submit" aria-label="保存名字">${ic("check")}</button><button class="icon-btn" type="button" data-act="rename-cancel" aria-label="取消改名">${ic("x")}</button></form>` : esc(item.name);
+    const name = esc(item.name);
     replace($("card"), `<div class="card-head" data-session-menu="${esc(item.session_id)}" tabindex="0">${av(item.name, 44, true)}<div style="min-width:0;flex:1"><div class="nm">${name}${contextControls(item)}</div><div class="meta">${runtimeBadge(item)}${st(item.status)}<span>${ic(background ? "cloud" : item.where === "vscode" ? "code" : "clock", "xs")} ${background ? "后台运行" : item.where === "vscode" ? "开在 VS Code" : "没在运行"}</span><span>归 ${esc(item.group)}</span>${memberModel(item)}</div></div><button class="icon-btn" data-act="card-close" aria-label="关闭下属卡片">${ic("x")}</button></div>
       ${background && item.activity !== null ? `<div class="card-activity">${memberActivity(item)}</div>` : ""}
       <div class="card-actions"><button class="btn primary" data-act="open-vscode" ${editorHandoffReason(item) ? `disabled title="${esc(editorHandoffReason(item))}"` : item.status === "working" ? 'disabled title="会话正在工作，请等它空闲后再打开"' : ""}>${ic("code", "sm")}在 VS Code 打开</button><span class="gap"></span><button class="icon-btn" data-act="rename" title="改名" aria-label="改名">${ic("pencil")}</button><button class="icon-btn" data-act="move-menu" title="换组" aria-label="换组">${ic("swap")}</button><button class="icon-btn" data-act="archive" title="归档" aria-label="归档">${ic("archive")}</button><button class="icon-btn" data-act="stop" ${canStop ? "" : "disabled"} title="${canStop ? "停下这一轮" : stopReason}" aria-label="停下这一轮">${ic("stop")}</button><button class="icon-btn" data-act="more-menu" title="更多" aria-label="更多">${ic("more")}</button></div>
@@ -601,6 +601,7 @@
     if (runtimeSwitch) html += btn("runtime-switch", "更换执行工具…", goalId == null ? runtimeSwitch.reason(item) : "请回到本组总对话，先暂停该人员仍在推进的全部目标，再更换执行工具");
     html += btn("stop", "停下这一轮", stopReason) + btn("compact", "压缩上下文", compactReason) + submenu(item, "模型和 effort", modelMenu(item)) + btn("comments", "评论") + btn("session-rename", "改名");
     if (isLeader) {
+      html += btn("member-create", "新建组员") + btn("member-defaults", "组员默认大脑");
       html += btn("compact-department", "压缩整个部门…");
       html += btn("leader-trust", "本组信任模式") + btn("leader-trust-report", "本组信任报告");
       const siblings = sortableLeaders(item), index = siblings.indexOf(item), members = membersOf(item.session_id), busy = members.filter(compactBusy).length;
@@ -640,21 +641,38 @@
   }
   function hideMenu(restore = false) {
     const menu = $("menu"); closeSubmenu(menu); menu.classList.remove("show");
-    if (restore && menuAnchor.isConnected) menuAnchor.focus({preventScroll:true});
+    if (restore && menuAnchor?.isConnected) menuAnchor.focus({preventScroll:true});
   }
   function openSessionMenu(anchor, id, point = null) { showMenu(anchor, sessionMenu(sessionItem(id)), point); }
   function sessionSurface(target) { return target.closest('[data-session-menu],#sidebar [data-act="leader"],[data-act="card"]'); }
   function openRename(id) {
-    const item = sessionItem(id); hideMenu(); dialogReturn = focusDescriptor(document.activeElement);
-    $("backdrop").innerHTML = `<form class="modal" id="session-rename-form" data-id="${esc(id)}" role="dialog" aria-modal="true" aria-labelledby="rename-title"><h3 id="rename-title">改名</h3><input name="name" value="${esc(item.name)}" required aria-label="新名字"><div class="acts"><button class="btn ghost" type="button" data-act="modal-close">取消</button><button class="btn primary" type="submit">保存</button></div></form>`;
+    const item = sessionItem(id), isLeader = state.leaders.includes(item); hideMenu(); dialogReturn = focusDescriptor(document.activeElement);
+    $("backdrop").innerHTML = `<form class="modal rename-modal" id="session-rename-form" data-id="${esc(id)}" data-original="${esc(item.name)}" role="dialog" aria-modal="true" aria-labelledby="rename-title"><div class="rename-heading"><span class="rename-icon">${ic("pencil")}</span><div><h3 id="rename-title">给${isLeader ? " leader " : "组员"}改名</h3><p class="d">${isLeader ? "本组 leader" : esc(item.group) + " 组的组员"}</p></div><button class="icon-btn" type="button" data-act="modal-close" aria-label="关闭改名">${ic("x")}</button></div><div class="rename-current">${av(item.name,32,!isLeader)}<div><span>当前名字</span><strong>${esc(item.name)}</strong></div></div><div class="field"><label for="session-new-name">新名字</label><input id="session-new-name" name="name" value="${esc(item.name)}" placeholder="取一个好辨认的名字" required maxlength="512" autocomplete="off"></div><p class="error-line" id="rename-error" role="alert"></p><div class="acts"><button class="btn ghost" type="button" data-act="modal-close">取消</button><button class="btn primary" type="submit" disabled>保存名字</button></div></form>`;
     $("backdrop").classList.add("show"); $("session-rename-form").elements.name.select();
+  }
+  async function saveRename(form) {
+    const name = form.elements.name.value.trim();
+    if (!name || name === form.dataset.original || form.dataset.saving === "true") return;
+    form.dataset.saving = "true"; $("rename-error").textContent = "";
+    for (const control of form.querySelectorAll("input,button")) control.disabled = true;
+    try {
+      await api("/api/session/rename", {session_id:form.dataset.id,name});
+    } catch (error) {
+      form.dataset.saving = "false"; $("rename-error").textContent = error.message;
+      for (const control of form.querySelectorAll("input,button")) control.disabled = false;
+      form.elements.name.focus();
+      return;
+    }
+    form.dataset.saving = "false"; closeBackdrop();
+    try { await loadState(true); toast("名字已更新"); }
+    catch (error) { toast("名字已更新，刷新失败：" + error.message); }
   }
   function openHandoff(id, result) {
     dialogReturn = focusDescriptor(document.activeElement); handoff = {...result, session_id:id};
     $("backdrop").innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-labelledby="handoff-title"><h3 id="handoff-title">在 VS Code 接续对话</h3><p>已打开目录，等 VS Code 窗口准备好：<code>${esc(result.cwd)}</code></p><p>${result.needs_confirmation ? "接续时会停掉后台或终端这一份。" : "接上同一个会话。"}</p><div class="acts"><button class="btn ghost" data-act="modal-close">先不了</button><button class="btn primary" data-act="session-handoff" data-id="${esc(id)}">窗口好了，接上</button></div></div>`;
     $("backdrop").classList.add("show"); $("backdrop").querySelector('[data-act="session-handoff"]').focus();
   }
-  function closeBackdrop() { const resolve = stopConfirmation; stopConfirmation = null; resolve?.(false); auxiliaryDialog += 1; commentsSession = null; $("backdrop").classList.remove("show"); $("backdrop").innerHTML = ""; delete $("backdrop").dataset.render; returnFocus(dialogReturn); }
+  function closeBackdrop() { if ($("session-rename-form")?.dataset.saving === "true") return; const resolve = stopConfirmation; stopConfirmation = null; resolve?.(false); auxiliaryDialog += 1; commentsSession = null; $("backdrop").classList.remove("show"); $("backdrop").innerHTML = ""; delete $("backdrop").dataset.render; returnFocus(dialogReturn); }
   function confirmIdentityStop(item) {
     const affected = (state.goals || []).filter(goal => goal.leader_session_id === item.session_id && (["running","pausing","waiting_user"].includes(goal.status) || String(goal.id) === String(item.active_goal_id)));
     if (!affected.length) return Promise.resolve(true);
@@ -923,6 +941,9 @@
         const owner = leader(item.leader_session_id) || leader(item.session_id) || leader(member(item.session_id)?.leader_session_id);
         if (owner) navigate("chat", owner.session_id, member(item.session_id)?.session_id || null, item.goal_id ?? goalId); else toast("来源 leader 已不在当前列表中。");
       }});
+    memberUI = window.CrewMembers.create({api,toast,getLeader:id=>leader(id),globalChoice:()=>state?.ai?.member ?? null,catalog:runtimeList,
+      refresh:async()=>{await refreshRuntimes();if(runtimesError)throw Error(runtimesError);},
+      onChanged:async(id,parent)=>{await loadState(true);if(id){goals?.closeList();navigate("chat",parent,id,null);}}});
     if (window.CrewLeaderTrust) leaderTrust = window.CrewLeaderTrust.create({
       getLeader:id => state?.leaders.find(item => item.session_id === id), reportUrl:trustReportUrl, readReport:readTrustReport,
       renderMarkdown:(text,id) => CrewChat.renderMarkdown(text,id), save:body => api("/api/trust",body), onSaved:() => loadState(true), toast});
@@ -957,8 +978,12 @@
       if (act === "workspace-settings") { openWorkspaceSettings(); return; }
       if (act === "confirm-stop-person") { const resolve = stopConfirmation; stopConfirmation = null; closeBackdrop(); resolve?.(true); return; }
       if (act === "submenu") { openSubmenu(button); return; }
-      if (button.closest("#menu")) hideMenu();
+      if (button.closest("#menu")) hideMenu(["member-create", "member-defaults", "session-rename"].includes(act));
       if (act === "session-menu") openSessionMenu(button, id);
+      else if (act === "member-add-menu") showMenu(button,`<button role="menuitem" data-act="member-create" data-id="${esc(id)}">${ic("plus","sm")}新建组员</button><button role="menuitem" data-act="member-adopt" data-id="${esc(id)}">${ic("inbox","sm")}收编已有会话</button>`);
+      else if (act === "member-create") { hideMenu(); memberUI.openCreate(id); }
+      else if (act === "member-defaults") { hideMenu(); memberUI.openDefaults(id); }
+      else if (act === "member-adopt") { hideMenu();adoptLeaderId=id;navigate("adopt"); }
       else if (act === "session-rename") openRename(id);
       else if (act === "group-tree") { if (cardId !== null) closeCard(); navigate("chat", id); rightOpen = true; renderRight(); }
       else if (act === "set-priority") action("leader-order", () => setPriority(id, Number(button.dataset.rank)));
@@ -1060,13 +1085,12 @@
       else if (act === "palette") openPalette();
       else if (act === "palette-go") { const item = paletteItems[Number(button.dataset.index)]; closeBackdrop(); item.go(); }
       else if (act === "others") { othersOpen = !othersOpen; renderAdopt(); }
-      else if (act === "adopt-open") { if (adoptForms.has(id)) adoptForms.delete(id); else { const item = Object.values(state.candidates).flat().find(item => item.session_id === id); adoptForms.set(id, {name:item.crew_name === null ? item.title.slice(0, 6) : item.crew_name, group:state.leaders.length === 0 ? null : state.leaders[0].name}); } renderAdopt(); }
+      else if (act === "adopt-open") { if (adoptForms.has(id)) adoptForms.delete(id); else { const item = Object.values(state.candidates).flat().find(item => item.session_id === id); adoptForms.set(id, {name:item.crew_name === null ? item.title.slice(0, 6) : item.crew_name, group:leader(adoptLeaderId)?.name || (state.leaders.length === 0 ? null : state.leaders[0].name)}); } renderAdopt(); }
       else if (act === "adopt-leader") { adoptForms.get(id).group = button.dataset.group; renderAdopt(); }
       else if (act === "usage-period") { if (period === button.dataset.period) return; period = button.dataset.period; usage = null; renderUsage(); loadUsage(); }
       else if (act === "usage-tab") { usageTab = button.dataset.tab; renderUsage(); }
       else if (act === "usage-fold") { if (usageCollapsed.has(id)) usageCollapsed.delete(id); else usageCollapsed.add(id); renderUsage(); }
-      else if (act === "rename") { rename = true; renderCard(); $("rename-form").querySelector("input").focus(); }
-      else if (act === "rename-cancel") { rename = false; renderCard(); }
+      else if (act === "rename") openRename(cardId);
       else if (act === "move-menu") { const item = member(id); showMenu(button, state.leaders.filter(group => group.session_id !== item.leader_session_id).map(group => `<button data-act="move-to" data-id="${esc(id)}" data-group="${esc(group.name)}">${av(group.name, 20)}${esc(group.name)}</button>`).join("")); }
       else if (act === "more-menu") showMenu(button, `<button data-act="leave-group" data-id="${esc(id)}">${ic("leave", "sm")}退组</button><button class="danger" data-act="remove-session" data-id="${esc(id)}">${ic("x", "sm")}移出 Crew</button>`);
       else if (act === "move-to") action("move", async () => { const item = member(id); await api("/api/roster/move", {session_id:item.session_id, name:item.name, from:item.group, to:button.dataset.group}); hideMenu(); await loadState(true); toast(`已换到 ${button.dataset.group} 组`); });
@@ -1086,6 +1110,10 @@
       else if (act === "member-history") { const item = member(id); if (cardId !== null) closeCard(); navigate("chat", item.leader_session_id, item.session_id); }
     });
     document.addEventListener("input", event => {
+      if (event.target.closest('#session-rename-form') && event.target.name === 'name') {
+        const form=event.target.form;form.querySelector('[type=submit]').disabled = !event.target.value.trim() || event.target.value.trim() === form.dataset.original;
+        $("rename-error").textContent = "";
+      }
       const commentForm = event.target.closest("#comments-form");
       if (commentForm && event.target.name === "text") { sessionComments(commentForm.dataset.sessionId).draft = event.target.value; return; }
       const todoForm = event.target.closest("[data-todo-form]");
@@ -1099,8 +1127,7 @@
       else if (form.dataset.todoForm !== undefined) { event.preventDefault(); const id = form.dataset.todoForm, draft = todoActions.get(id); if (draft) draft.note = form.elements.note.value; action(`todo:${id}`, () => resolveTodo(id)); }
       else if (form.dataset.answerForm !== undefined) { event.preventDefault(); const text = form.elements.answer.value.trim(); if (text !== "") action(`answer:${form.dataset.answerForm}`, () => answer(Number(form.dataset.answerForm), text)); }
       else if (form.dataset.adoptForm !== undefined) { event.preventDefault(); const id = form.dataset.adoptForm; action(`adopt:${id}`, async () => { const group = adoptForms.get(id).group, bucket = Object.keys(state.candidates).find(bucket => state.candidates[bucket].some(item => item.session_id === id)), item = state.candidates[bucket].find(item => item.session_id === id); await api("/api/roster/adopt", {session_id:id, name:form.elements.name.value.trim(), group}); adopted.set(id, {item, bucket, group}); adoptForms.delete(id); await loadState(true); }); }
-      else if (form.id === "session-rename-form") { event.preventDefault(); action("rename", async () => { await api("/api/session/rename", {session_id:form.dataset.id, name:form.elements.name.value.trim()}); closeBackdrop(); await loadState(true); toast("已改名"); }); }
-      else if (form.id === "rename-form") { event.preventDefault(); action("rename", async () => { await api("/api/session/rename", {session_id:form.dataset.id, name:form.elements.name.value.trim()}); rename = false; await loadState(true); toast("已改名"); }); }
+      else if (form.id === "session-rename-form") { event.preventDefault(); void saveRename(form); }
       else if (form.id === "leader-form") { event.preventDefault(); action("leader", async () => { const button = form.querySelector('[type="submit"]'); button.disabled = true; try { const result = await api("/api/leader", leaderPayload(form)); closeBackdrop(); await loadState(true); navigate("chat", result.session_id); } catch (error) { if ($("leader-error")) $("leader-error").textContent = error.message; } finally { button.disabled = !runtimeInfo(form.elements.runtime.value).available; } }); }
     });
     document.addEventListener("toggle", event => {

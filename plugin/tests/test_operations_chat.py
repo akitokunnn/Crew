@@ -225,7 +225,7 @@ class OperationsChatTests(unittest.TestCase):
 
     def test_ai_settings_are_readable_and_editable_without_http_or_real_catalog_discovery(self):
         catalog = [{'id': 'codex', 'available': True, 'models': [{'id': 'fixture-only-model'}]}]
-        ai = {'default': self.selected, 'leader': None, 'digest': None, 'git': None, 'operations': None}
+        ai = {'default': self.selected, 'leader': None, 'member': None, 'digest': None, 'git': None, 'operations': None}
         execution = {'codex': 'read-only', 'claude': 'default'}
         with (mock.patch.object(operations_chat.runtime_catalog.Catalog, 'refresh', return_value=catalog) as refresh,
               mock.patch.object(operations_chat.subprocess, 'Popen', side_effect=AssertionError('no HTTP or native child'))):
@@ -242,7 +242,7 @@ class OperationsChatTests(unittest.TestCase):
         self.assertEqual(refresh.call_args_list, [mock.call(force=True)] * 3)
 
     def test_ai_settings_save_rolls_back_other_fields_when_execution_validation_fails(self):
-        initial_ai = {'default': self.selected, 'leader': None, 'digest': None, 'git': None, 'operations': None}
+        initial_ai = {'default': self.selected, 'leader': None, 'member': None, 'digest': None, 'git': None, 'operations': None}
         execution = {'codex': 'workspace-write', 'claude': 'default'}
         changed_ai = {**initial_ai, 'default': {**self.selected, 'model': 'must-not-be-saved'}}
         with mock.patch.object(operations_chat.runtime_catalog.Catalog, 'refresh', return_value=[]):

@@ -689,9 +689,6 @@ button.li.click{width:100%;border-top:0;border-left:0;border-right:0;background:
 .usage-tabs{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap}
 .table-toggle{border:0;background:transparent;color:inherit;font:inherit;cursor:pointer;padding:0;text-align:left}
 a.btn{color:inherit;text-decoration:none}
-.rename-form{display:flex;gap:6px;align-items:center;min-width:0}
-.rename-form input{width:100%;min-width:0;border:1px solid var(--line-strong);background:var(--surface);border-radius:9px;padding:6px 9px;outline:none}
-.rename-form input:focus{border-color:var(--accent)}
 .text-link{border:0;background:transparent;color:var(--accent-text);padding:0;font:inherit;cursor:pointer;text-align:left}
 .text-link:hover{text-decoration:underline;text-underline-offset:3px}
 .card-foot code{min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -850,3 +847,8 @@ a.btn{color:inherit;text-decoration:none}
 @property --angle{syntax:'<angle>';initial-value:0deg;inherits:false}
 @keyframes flow{to{--angle:360deg}}
 @keyframes border-breathe{0%,100%{border-color:color-mix(in srgb,var(--p3) 65%,var(--surface))}50%{border-color:color-mix(in srgb,var(--p3) 30%,var(--surface))}}
+
+.rename-modal{width:min(440px,calc(100vw - 32px));padding:24px}.rename-heading{display:flex;align-items:center;gap:12px;margin-bottom:22px}.rename-heading>div{flex:1;min-width:0}.rename-heading .d{margin:4px 0 0;font-size:calc(12px * var(--fs))}.rename-heading .icon-btn{align-self:flex-start;color:var(--text-3)}
+.rename-icon{width:36px;height:36px;display:grid;place-items:center;border:1px solid var(--line);border-radius:11px;background:var(--surface);color:var(--text-2)}
+.rename-current{display:flex;gap:11px;align-items:center;padding:12px 14px;margin:0 0 22px;border:1px solid var(--line);border-radius:10px;background:var(--surface)}.rename-current>div{min-width:0}.rename-current>div>span{display:block;font-size:calc(10.5px * var(--fs));color:var(--text-3);margin-bottom:3px}.rename-current strong{display:block;font-size:calc(13px * var(--fs));font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rename-modal .field input{width:100%;min-height:44px}.rename-modal .acts{padding-top:18px;margin-top:18px;border-top:1px solid var(--line)}.rename-modal .error-line:empty{display:none}

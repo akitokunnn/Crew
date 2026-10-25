@@ -17,6 +17,12 @@ CREATE TABLE IF NOT EXISTS ai_task_settings (
     updated_at     TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS leader_member_settings (
+    leader_session_id TEXT PRIMARY KEY REFERENCES sessions(session_id),
+    selection_json    TEXT NOT NULL,
+    updated_at        TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS execution_settings (
     singleton   INTEGER PRIMARY KEY CHECK (singleton = 1),
     codex       TEXT NOT NULL DEFAULT 'workspace-write'

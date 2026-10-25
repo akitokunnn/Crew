@@ -8,10 +8,11 @@ import sqlite3
 from . import board, guard, store
 
 
-PURPOSES = ('default', 'leader', 'digest', 'git', 'operations')
+PURPOSES = ('default', 'leader', 'member', 'digest', 'git', 'operations')
+TASK_OVERRIDES = ('leader', 'member')
 FIELDS = ('runtime', 'model', 'effort')
 DEFAULT = {'default': {'runtime': None, 'model': None, 'effort': None},
-           'leader': None, 'digest': None, 'git': None, 'operations': None}
+           'leader': None, 'member': None, 'digest': None, 'git': None, 'operations': None}
 EXECUTION_DEFAULT = {'codex': 'workspace-write', 'claude': 'default'}
 EXECUTION_CHOICES = {'codex': ('read-only', 'workspace-write', 'danger-full-access'),
                      'claude': ('default', 'acceptEdits', 'bypassPermissions')}
@@ -38,7 +39,7 @@ def _selection(value, name):
 def validate(ai):
     """A null task follows default; an explicit task replaces all three fields."""
     if not isinstance(ai, dict) or 'default' not in ai or any(key not in PURPOSES for key in ai):
-        raise SettingsError('AI 设置必须包含 default，且只能包含 default、leader、digest、git、operations')
+        raise SettingsError('AI 设置必须包含 default，且只能包含 default、leader、member、digest、git、operations')
     result = {'default': _selection(ai['default'], 'default')}
     for purpose in PURPOSES[1:]:
         value = ai.get(purpose)
@@ -53,9 +54,9 @@ def _load(conn):
     row = conn.execute('SELECT ai_json FROM ai_settings WHERE singleton=1').fetchone()
     value = copy.deepcopy(DEFAULT) if row is None else validate(json.loads(row[0]))
     if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='ai_task_settings'").fetchone():
-        leader = conn.execute("SELECT selection_json FROM ai_task_settings WHERE purpose='leader'").fetchone()
-        if leader is not None:
-            value['leader'] = _selection(json.loads(leader[0]), 'leader')
+        for purpose, selection_json in conn.execute('SELECT purpose,selection_json FROM ai_task_settings'):
+            if purpose in TASK_OVERRIDES:
+                value[purpose] = _selection(json.loads(selection_json), purpose)
     return value
 
 
@@ -123,16 +124,17 @@ def save(source, ai):
         with (nullcontext() if source.in_transaction else board.transaction(source)):
             # Keep existing readers of ai_json working while a desktop reconnects to
             # an older backend; the new purpose has exactly one separate owner.
-            existing = {key: item for key, item in value.items() if key != 'leader'}
+            existing = {key: item for key, item in value.items() if key not in TASK_OVERRIDES}
             source.execute('INSERT INTO ai_settings(singleton,ai_json,updated_at) VALUES(1,?,?) '
                            'ON CONFLICT(singleton) DO UPDATE SET ai_json=excluded.ai_json,updated_at=excluded.updated_at',
                            (json.dumps(existing, ensure_ascii=False, allow_nan=False), store.now_iso()))
-            if value['leader'] is None:
-                source.execute("DELETE FROM ai_task_settings WHERE purpose='leader'")
-            else:
-                source.execute("INSERT INTO ai_task_settings(purpose,selection_json,updated_at) VALUES('leader',?,?) "
-                               'ON CONFLICT(purpose) DO UPDATE SET selection_json=excluded.selection_json,updated_at=excluded.updated_at',
-                               (json.dumps(value['leader'], ensure_ascii=False, allow_nan=False), store.now_iso()))
+            for purpose in TASK_OVERRIDES:
+                if value[purpose] is None:
+                    source.execute('DELETE FROM ai_task_settings WHERE purpose=?', (purpose,))
+                else:
+                    source.execute('INSERT INTO ai_task_settings(purpose,selection_json,updated_at) VALUES(?,?,?) '
+                                   'ON CONFLICT(purpose) DO UPDATE SET selection_json=excluded.selection_json,updated_at=excluded.updated_at',
+                                   (purpose, json.dumps(value[purpose], ensure_ascii=False, allow_nan=False), store.now_iso()))
     else:
         with closing(store.connect(source)) as conn:
             save(conn, value)
@@ -145,6 +147,12 @@ def resolve(source, purpose='default', which=None):
         raise SettingsError('未知 AI 设置用途: ' + str(purpose))
     ai = get(source)
     selected = dict(ai['default'] if purpose == 'default' or ai[purpose] is None else ai[purpose])
+    return resolve_choice(selected, which)
+
+
+def resolve_choice(value, which=None):
+    """Resolve one whole selection; an explicit carrier never silently switches."""
+    selected = dict(value)
     which = shutil.which if which is None else which
     runtime = selected['runtime']
     if runtime is not None:
