@@ -5,11 +5,12 @@ const { loopback } = require('./core.cjs');
 // native visibility/focus; closing it never owns or stops a Crew backend.
 class WorkspaceTabs {
   constructor(window, { origin, createView, onChange = () => {}, onHome = () => {},
-    external = () => {}, openProject = () => {}, workspaceSettings = () => {}, onKeyboard = () => {}, onNavigationError = error => console.error('Workspace navigation failed:', error) }) {
+    external = () => {}, openProject = () => {}, workspaceSettings = () => {}, onTitleChange = () => {}, onKeyboard = () => {}, onNavigationError = error => console.error('Workspace navigation failed:', error) }) {
     if (!window?.contentView || typeof createView !== 'function') throw new TypeError('A window and view factory are required');
     this.window = window; this.origin = loopback(origin); this.createView = createView;
     this.onChange = onChange; this.onHome = onHome; this.external = external;
     this.openProject = openProject; this.workspaceSettings = workspaceSettings; this.onKeyboard = onKeyboard;
+    this.onTitleChange = onTitleChange;
     this.onNavigationError = onNavigationError;
     this.entries = new Map(); this.activeId = 'home'; this.counter = 0; this.disposed = false;
     this.bounds = { x: 0, y: 76, width: 0, height: 0 };
@@ -85,6 +86,10 @@ class WorkspaceTabs {
       return { action: 'deny' };
     });
     wc.on('before-input-event', (event, input) => { if (this._alive(tab)) this.onKeyboard(event, input); });
+    wc.on('page-title-updated', event => {
+      event.preventDefault();
+      if (this._alive(tab) && this._destination(tab, wc.getURL()).kind === 'same') this.onTitleChange(tab.project.name);
+    });
     wc.on('did-start-loading', () => {
       if (this._alive(tab)) {
         tab.loading = true; tab.error = false; tab.view.setVisible(this.activeId === tab.id); this._notify();
@@ -145,7 +150,8 @@ class WorkspaceTabs {
   updateProject(project) {
     const tab = [...this.entries.values()].find(item => item.project.name === project.name);
     if (!tab) return false;
-    tab.project = {...tab.project, ...project}; this._notify(); return true;
+    const changed = tab.project.root !== project.root || tab.project.display_name !== project.display_name;
+    tab.project = {...tab.project, ...project}; if (changed) this._notify(); return true;
   }
   closeProject(name) {
     const tab = [...this.entries.values()].find(item => item.project.name === name);

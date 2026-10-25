@@ -160,3 +160,6 @@
   .cs-card-heading{gap:10px}
 }
 @media(prefers-reduced-motion:reduce){.crew-settings *{transition:none!important}}
+
+.cs-notification-routing{align-items:flex-end}.cs-notification-routing label{display:grid;gap:8px;flex:1;min-width:200px;color:var(--cs-muted);font-size:calc(12px * var(--cs-scale))}
+.cs-notification-routing select{min-height:40px;width:100%;padding:9px 12px;border:1px solid var(--cs-line);border-radius:8px;background:var(--cs-bg);color:var(--cs-text);font:inherit;outline:none}.cs-notification-routing select:focus-visible{border-color:var(--cs-accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--cs-accent) 20%,transparent)}

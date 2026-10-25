@@ -29,7 +29,7 @@ let windows=[];
     assert.equal(await run('navigator.permissions.query({name:"clipboard-read"}).then(p=>p.state)'),'denied');
     assert.equal(await run('Notification.requestPermission()'),'granted');
     await run(script+";void 0;");
-    await run(`window.fixture={channels:[{id:'qq',state:'unbound',enabled:true,secret_configured:true,bound:false,binding_code:'CREW_FAKE_BINDING'}],notification:{}};
+    await run(`window.fixture={preferences:{target:'both'},channels:[{id:'qq',state:'unbound',enabled:true,secret_configured:true,bound:false,binding_code:'CREW_FAKE_BINDING'}],notification:{}};
       window.host=document.querySelector('#host');window.reads=0;
       window.dispose=window.CrewConnections.mount(host,{read:async()=>{reads++;return fixture;}});void 0;`);
     await run(`new Promise(resolve=>setTimeout(resolve,0))`);

@@ -9,7 +9,7 @@ from unittest import mock
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from crew import board, connections, notifications, qq, store, web
+from crew import board, connections, notifications, qq, store, web, workspace_settings
 from test_notifications import FakeQQ
 from test_shell import NOW, PLUGIN, ShellFixture
 
@@ -53,6 +53,68 @@ class ConnectionFixture(ShellFixture):
 
 
 class ConnectionTests(ConnectionFixture, unittest.TestCase):
+    def test_renamed_workspace_is_shown_and_selectable_on_remote_channels_with_stable_routing(self):
+        self.configure('lark')
+        self.bind('lark')
+        workspace_settings.apply_update(self.conn, 'demo', '新的工作区名称', None, 0, now=NOW)
+        self.receive('lark', '/projects', 'renamed-list')
+        self.assertIn('新的工作区名称', self.clients['lark'].sent[-1]['text'])
+        self.receive('lark', '/project 新的工作区名称', 'renamed-select')
+        self.assertEqual(self.manager.inboxes['lark'].config['current_project'], 'demo')
+        self.assertIn('新的工作区名称', self.clients['lark'].sent[-1]['text'])
+        self.receive('lark', '/leader', 'renamed-leaders')
+        self.assertIn('新的工作区名称', self.clients['lark'].sent[-1]['text'])
+        self.service.set_away(True)
+        board.ask(self.conn, 's1', '改名后的问题', ['继续', '停止'], now=NOW)
+        self.manager.inboxes['lark'].tick()
+        self.assertIn('新的工作区名称', self.clients['lark'].sent[-1]['text'])
+        workspace_settings.remove(self.conn, 'demo', 1, now=NOW)
+        self.receive('lark', '/leader', 'removed-leaders')
+        self.assertIn('目前没有有效的 leader', self.clients['lark'].sent[-1]['text'])
+        self.assertEqual(self.manager.inboxes['lark'].project_label(self.conn, 'demo'), '新的工作区名称')
+
+    def test_push_preference_selects_channels_persists_and_keeps_private_commands_available(self):
+        for channel in ('qq', 'lark'):
+            self.configure(channel)
+            self.bind(channel)
+            self.clients[channel].sent.clear()
+        self.service.post('/api/connections/preferences', {'target': 'qq'})
+        self.service.set_away(True)
+        board.ask(self.conn, 's1', '请选择继续方式', ['继续', '停止'], now=NOW)
+        for inbox in self.manager.inboxes.values():
+            inbox.tick()
+        self.assertTrue(self.clients['qq'].sent)
+        self.assertFalse(self.clients['lark'].sent)
+        self.receive('lark', '/where', 'still-usable')
+        self.assertTrue(self.clients['lark'].sent)
+        for channel in ('qq', 'lark'):
+            self.clients[channel].sent.clear()
+        self.service.post('/api/connections/preferences', {'target': 'lark'})
+        self.manager.inboxes['lark'].push_now = True
+        for inbox in self.manager.inboxes.values():
+            inbox.tick()
+        self.assertFalse(self.clients['qq'].sent)
+        self.assertTrue(self.clients['lark'].sent)
+        restored = connections.Manager(self.service, lock_status=lambda: False)
+        self.addCleanup(restored.close)
+        self.assertEqual(restored.snapshot()['preferences'], {'target': 'lark'})
+        self.service.post('/api/connections/preferences', {'target': 'none'})
+        for channel in ('qq', 'lark'):
+            self.clients[channel].sent.clear()
+        board.ask(self.conn, 's1', '另一个选择', ['继续', '停止'], now=NOW)
+        for inbox in self.manager.inboxes.values():
+            inbox.tick()
+        self.assertFalse(any(client.sent for client in self.clients.values()))
+        self.assertFalse(any(inbox.pending for inbox in self.manager.inboxes.values()))
+
+    def test_routing_default_keeps_both_and_invalid_settings_do_not_change_saved_value(self):
+        self.assertEqual(self.manager.snapshot()['preferences'], {'target': 'both'})
+        self.service.post('/api/connections/preferences', {'target': 'qq'})
+        for value in ({}, {'target':'auto'}, {'target':['qq']}, {'target':'qq','other':True}):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                self.service.post('/api/connections/preferences', value)
+        self.assertEqual(self.manager.notification_target, 'qq')
+
     def test_new_user_can_save_bind_and_test_without_secret_in_snapshot(self):
         self.assertEqual([c['state'] for c in self.manager.snapshot()['channels']], ['unconfigured', 'unconfigured'])
         snapshot = self.configure()
