@@ -11,7 +11,9 @@
   }
   // The ring is always shown (user 10-23); the compact button only once it is worth compacting.
   const worthCompacting = context => context !== null && context.used / context.max >= CONTEXT_WARN;
-  window.CrewContext = {tokens, ring, worthCompacting};
+  // A freshly resumed Codex thread reports no size before compaction.
+  const compactSize = value => value === null ? "未知" : tokens(value);
+  window.CrewContext = {tokens, ring, worthCompacting, compactSize};
 })();
 (() => {
   const turns = new Map();
@@ -369,7 +371,7 @@
     return `<div class="m-lead"><div class="av round" style="--s:30px;--tint:var(--accent)">${escape(context.session.name.slice(0, 1))}</div><div class="body"><div class="markdown">${renderMarkdown(text, context.session.session_id)}</div><div class="m-meta">${escape(context.session.name)}${item.at ? ` · ${timeOf(item.at)}` : ""}</div></div></div>`;
   }
   function itemHTML(context, item) {
-    if (item.kind === "compact_request" || item.kind === "compact") return `<div class="context-divider">${item.kind === "compact_request" ? "压缩上下文" : `上下文已压缩：${CrewContext.tokens(item.pre_tokens)} → ${CrewContext.tokens(item.post_tokens)}`}</div>`;
+    if (item.kind === "compact_request" || item.kind === "compact") return `<div class="context-divider">${item.kind === "compact_request" ? "压缩上下文" : `上下文已压缩：${CrewContext.compactSize(item.pre_tokens)} → ${CrewContext.tokens(item.post_tokens)}`}</div>`;
     if (item.kind === "error") return `<div class="chat-error" role="alert">${escape(item.text)}</div>`;
     if (item.kind === "assistant") {
       let html = "";
@@ -709,7 +711,7 @@
   function notifyCompact(id, event, toast) {
     if (event.seq <= (compactNotified.has(id) ? compactNotified.get(id) : 0)) return;
     compactNotified.set(id, event.seq);
-    toast(`压缩完成：${CrewContext.tokens(event.pre_tokens)} → ${CrewContext.tokens(event.post_tokens)}`);
+    toast(`压缩完成：${CrewContext.compactSize(event.pre_tokens)} → ${CrewContext.tokens(event.post_tokens)}`);
   }
   async function watchCompact(id, options) {
     const history = await options.api(`/api/chat/history?session_id=${encodeURIComponent(id)}`);

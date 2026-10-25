@@ -340,7 +340,16 @@ handle('desktop:workspace-ui',async()=>{
   const directory=path.join(config.helperBackendDir,'crew','web');
   await window.webContents.insertCSS(await fs.readFile(path.join(directory,'workspace-settings-ui.css'),'utf8'));
   await window.webContents.executeJavaScript(await fs.readFile(path.join(directory,'workspace-settings-ui.js'),'utf8'));
+  await window.webContents.insertCSS(await fs.readFile(path.join(directory,'maintenance-ui.css'),'utf8'));
+  await window.webContents.executeJavaScript(await fs.readFile(path.join(directory,'maintenance-ui.js'),'utf8'));
   return {ok:true};
+});
+// Workspace cleanup from the settings dialog: only these maintenance routes are reachable.
+handle('desktop:workspace-maintenance',async request=>{
+  const route=request?.route, body=request?.body;
+  const reads=['/api/maintenance/jobs?','/api/maintenance/archive?'], writes=['/api/maintenance/cleanup/preview','/api/maintenance/cleanup'];
+  if(typeof route!=='string'||!(body===undefined?reads.some(prefix=>route.startsWith(prefix)):writes.includes(route)))throw Error('不支持的工作区维护请求。');
+  return settingsRequest(route,body,180000);
 });
 handle('desktop:workspace-get',name=>{
   if(typeof name!=='string'||!name.trim())throw Error('请选择工作区。');

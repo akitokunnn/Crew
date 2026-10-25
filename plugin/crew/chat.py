@@ -18,6 +18,7 @@ from . import board, claude_limits, codex_client, goals, hooks, install, messagi
 
 
 PAUSED_FOR_UPDATE = "Crew 正在准备更新，暂不接受新任务；更新完成后再试"
+MAINTENANCE_HELD = "正在压缩该人员的记忆，完成后再发送"
 
 
 class UpdatePaused(board.Conflict):
@@ -343,6 +344,9 @@ class Running:
         self.reader_done = threading.Event()
         self.pending_native_accept = None
         self.native_binding_confirmed = False
+        # Set while department maintenance compacts this native; owned=True means
+        # maintenance started it and only the fixed compact command may enter.
+        self.maintenance = None
 
 
 def claude_executable():
@@ -424,12 +428,14 @@ class Manager:
             for sid, current in self.processes.items():
                 with current.input_lock:
                     alive = current.process.poll() is None
-                    working = alive and (current.journal.status == "working" or current.pending_compact)
+                    maintaining = alive and getattr(current, "maintenance", None) is not None
+                    working = alive and (current.journal.status == "working" or current.pending_compact or maintaining)
                     draining = not alive and not current.reader_done.is_set()
                 if working or draining:
                     row = conn.execute("SELECT crew_name FROM sessions WHERE session_id=?", (sid,)).fetchone()
                     name = row["crew_name"] if row is not None and row["crew_name"] else sid
-                    reasons.append(("%s 正在回复或排队压缩" if working else "%s 的进程输出尚未排空") % name)
+                    reasons.append(("%s 正在进行部门维护压缩" if maintaining else "%s 正在回复或排队压缩" if working
+                                    else "%s 的进程输出尚未排空") % name)
         return reasons
 
     def managed_pids(self):
@@ -471,7 +477,20 @@ class Manager:
                     and self.processes.get(session_id) is current and current.process.pid==pid)
 
     def busy(self, session_id):
-        return self.running(session_id) and self.journal(session_id).status == "working"
+        # A maintenance-held native counts as working for every other caller.
+        return self.running(session_id) and (self.journal(session_id).status == "working"
+                                             or getattr(self.processes.get(session_id), "maintenance", None) is not None)
+
+    def maintenance_held(self, identity):
+        """Hold business input across a person's contexts, including borrowed idle natives."""
+        # Input readers can check this while another person's maintenance exits.
+        for key, current in list(self.processes.items()):
+            if getattr(current, 'maintenance', None) is None:
+                continue
+            logical = current.execution['session_id'] if current.execution is not None else key
+            if identity in (key, logical) and current.process.poll() is None:
+                return True
+        return False
 
     def activity(self, session_id):
         with self.lock:
@@ -636,6 +655,8 @@ class Manager:
         sid, key = session['session_id'], session.get('_storage_id', session['session_id'])
         execution = session.get('_execution')
         with self.lock, closing(store.connect(self.home)) as conn:
+            if self.maintenance_held(sid):
+                raise board.Conflict(MAINTENANCE_HELD)
             if messaging.stopped(conn, sid):
                 raise board.Conflict('用户已停止此会话，请明确继续')
             if execution is None and self.goal_controller.routing_execution(conn, sid) is not None:
@@ -664,8 +685,10 @@ class Manager:
                 if previous != sid:
                     self.goal_controller.sync(conn, goals.get_execution(conn, previous)['goal_id'])
 
-    def _launch_native(self, session, spec, resume=False):
+    def _launch_native(self, session, spec, resume=False, maintenance=None):
         if '_execution' in session:
+            if maintenance is not None:
+                return self.goal_controller.launch_maintenance(session, spec, maintenance)
             return self.goal_controller.launch(session, spec)
         session_id = session["session_id"]
         if resume:
@@ -684,7 +707,7 @@ class Manager:
             current = CodexRunning(self.home, self.plugin_root, session, spec, options,
                                    self.journal(session_id), self.send_message,
                                    process_factory=self.process_factory, resume=native_resume,
-                                   goal_handler=self.goal_controller.agent_action)
+                                   goal_handler=self.goal_controller.agent_action, maintenance=maintenance)
             self.processes[session_id] = current
             return spawn.command(session_id, session["crew_name"], session["role"], runtime="codex", **options)
         exe = claude_executable()
@@ -706,6 +729,7 @@ class Manager:
                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", bufsize=1,
                                        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
         current = Running(process, journal)
+        current.maintenance = maintenance
         self.processes[session_id] = current
         self._control(current, "get_settings")
         self._control(current, "get_context_usage")
@@ -780,6 +804,9 @@ class Manager:
 
     def _send(self, session_id, text, display_text=None, source='human', identity=None, images=None, sender=None):
         current = self.processes[session_id]
+        logical = current.execution['session_id'] if current.execution is not None else session_id
+        if self.maintenance_held(logical):
+            raise board.Conflict(MAINTENANCE_HELD)
         identity = identity or str(uuid.uuid4())
         original_text=text if display_text is None else display_text
         handoff_id=None
@@ -899,6 +926,8 @@ class Manager:
                                           'images': images, 'source': source},
                                           ensure_ascii=False, sort_keys=True).encode('utf-8')).hexdigest()
         with self.lock:
+            if self.maintenance_held(session['session_id']):
+                raise board.Conflict(MAINTENANCE_HELD)
             with closing(store.connect(self.home)) as routing_conn:
                 session = workspace_execution.execution_session(routing_conn, session)
                 if '_execution' not in session:
@@ -988,6 +1017,63 @@ class Manager:
                         return {"ok": True, "message": "这一轮说完后压缩"}
                     return {"ok": True, "message_id": self._send(session_id, "/compact")}
             return self.send(session, "/compact")
+
+    def maintenance_launch(self, session_id, execution, marker):
+        """Resume one existing native history solely for compaction.
+
+        The caller has confirmed this person has no other working native.
+        Other idle conversations stay resident; business input for this person
+        is held until the fixed maintenance command finishes.
+        Unlike _launch this never claims the identity (nothing else is paused or
+        stopped), never creates a spawn record or native binding, and never
+        consults goal dispatch: a finished or paused goal keeps its state.
+        """
+        with self.lock:
+            with closing(store.connect(self.home)) as conn:
+                target = self.goal_controller.target(conn, execution) if execution is not None else board.session(conn, session_id)
+                target = workspace_execution.execution_session(conn, target)
+                if target['spawn_id'] is None or not (self.home / 'spawn' / (target['spawn_id'] + '.json')).is_file():
+                    raise board.BoardError('没有启动记录，不能恢复原生会话')
+                spec = {**json.loads((self.home / 'spawn' / (target['spawn_id'] + '.json')).read_text(encoding='utf-8')),
+                        'cwd': target['cwd'], 'project': target['project'],
+                        '_workspace_notice': workspace_execution.migration_notice(conn, target)}
+            self._launch_native(target, spec, resume=True, maintenance=marker)
+            return self.processes[execution['id'] if execution is not None else session_id]
+
+    def maintenance_compact(self, key, identity):
+        """Submit only the native compact command to a maintenance-held process.
+
+        Returns the journal position before the request; completion is observed
+        from later native events, never from this submission.
+        """
+        with self.lock:
+            current = self.processes.get(key)
+            if getattr(current, 'maintenance', None) is None or not self.running(key):
+                raise board.Conflict('维护压缩没有持有运行中的原生进程')
+            journal = current.journal
+            with current.input_lock:
+                with journal.condition:
+                    journal.refresh()
+                    start = journal.events[-1]['seq'] if journal.events else 0
+                journal.message(identity, '/compact', source='crew')
+                if getattr(current, 'runtime', 'claude') == 'codex':
+                    current.compact()
+                    return start
+                journal.set_status('working')
+                current.process.stdin.write(json.dumps({
+                    'type': 'user', 'uuid': identity, 'session_id': current.native_id if current.execution else key,
+                    'parent_tool_use_id': None, 'message': {'role': 'user', 'content': '/compact'}}) + '\n')
+                current.process.stdin.flush()
+            return start
+
+    def maintenance_release(self, key, current):
+        """Stop a native that maintenance started; a pre-existing process is only unmarked."""
+        with self.lock:
+            if current.maintenance['owned'] and self.processes.get(key) is current:
+                # The marker stays if stopping fails, so nothing else can feed it.
+                self.stop_managed(key)
+                del self.processes[key]
+            current.maintenance = None
 
     def _resume_spec(self, conn, session, now=None):
         supplied_session = session
@@ -1353,7 +1439,9 @@ class Manager:
     def close(self):
         with self.lock:
             self.closed = True
-            for current in self.processes.values():
+            # Maintenance releases its temporary entries under the lock; join from a snapshot.
+            closing_processes = list(self.processes.values())
+            for current in closing_processes:
                 if current.process.poll() is None:
                     if getattr(current, "runtime", "claude") == "codex":
                         current.close()
@@ -1363,5 +1451,5 @@ class Manager:
             for journal in self.journals.values():
                 with journal.condition:
                     journal.condition.notify_all()
-        for current in self.processes.values():
+        for current in closing_processes:
             current.reader.join(timeout=1)

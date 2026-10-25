@@ -846,3 +846,44 @@ CREATE TABLE IF NOT EXISTS project_directory_changes (
  created_at TEXT NOT NULL,
  UNIQUE(project,revision)
 );
+
+-- Department compaction and current-workspace cleanup. Results survive page
+-- reloads; a compaction item completes only on a native compact event.
+CREATE TABLE IF NOT EXISTS maintenance_jobs (
+ id TEXT PRIMARY KEY,
+ project TEXT NOT NULL REFERENCES projects(name),
+ kind TEXT NOT NULL CHECK(kind IN ('department_compact','workspace_cleanup')),
+ leader_session_id TEXT REFERENCES sessions(session_id),
+ request_id TEXT NOT NULL,
+ status TEXT NOT NULL CHECK(status IN ('running','completed','partial','failed','interrupted')),
+ error_type TEXT, error TEXT,
+ detail_json TEXT NOT NULL,
+ created_at TEXT NOT NULL, updated_at TEXT NOT NULL, finished_at TEXT,
+ UNIQUE(project,kind,request_id)
+);
+CREATE INDEX IF NOT EXISTS maintenance_jobs_project ON maintenance_jobs(project,kind,created_at);
+CREATE TABLE IF NOT EXISTS maintenance_items (
+ job_id TEXT NOT NULL REFERENCES maintenance_jobs(id),
+ position INTEGER NOT NULL,
+ target TEXT NOT NULL,
+ session_id TEXT REFERENCES sessions(session_id),
+ execution_id TEXT REFERENCES goal_executions(id),
+ label TEXT NOT NULL,
+ status TEXT NOT NULL CHECK(status IN ('pending','running','completed','failed','interrupted')),
+ error_type TEXT, error TEXT,
+ detail_json TEXT NOT NULL,
+ updated_at TEXT NOT NULL,
+ PRIMARY KEY(job_id,position)
+);
+-- Monotonic per-workspace boundaries: older channel posts, digests and
+-- handoffs stay stored and readable as history, but are never shown in the
+-- live channel or delivered to sessions created after a cleanup.
+CREATE TABLE IF NOT EXISTS workspace_cleanup_boundaries (
+ project TEXT PRIMARY KEY REFERENCES projects(name),
+ channel_after INTEGER NOT NULL CHECK(channel_after>=0),
+ digest_after INTEGER NOT NULL CHECK(digest_after>=0),
+ handoff_after INTEGER NOT NULL CHECK(handoff_after>=0),
+ cleanups INTEGER NOT NULL CHECK(cleanups>=0),
+ job_id TEXT NOT NULL REFERENCES maintenance_jobs(id),
+ updated_at TEXT NOT NULL
+);

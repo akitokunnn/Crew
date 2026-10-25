@@ -6,7 +6,7 @@
   const current = context => active === context;
   const atBottom = context => context.scroll.scrollHeight - context.scroll.scrollTop - context.scroll.clientHeight < 48;
   function composerState(context) {
-    context.send.disabled = context.sending || context.input.value.trim() === "";
+    context.send.disabled = context.sending || context.input.value.trim() === "" || (context.allLeaders && context.state.leaders.length === 0);
     for (const button of context.targets.querySelectorAll("button")) button.disabled = context.sending;
   }
   function resizeInput(context) {
@@ -16,7 +16,8 @@
   function renderTargets(context) {
     const ids = new Set(context.state.leaders.map(item => item.session_id));
     for (const id of context.selected) if (!ids.has(id)) context.selected.delete(id);
-    const html = `<span class="channel-target-label">点名</span>${context.state.leaders.map(item => `<button type="button" class="channel-target ${context.selected.has(item.session_id) ? "selected" : ""}" data-channel-to="${escape(item.session_id)}" aria-pressed="${context.selected.has(item.session_id)}" ${context.sending ? "disabled" : ""}>@${escape(item.name)}</button>`).join("")}${ids.size === 0 ? '<span class="note">还没有 leader</span>' : ""}`;
+    const all = ids.size || context.allLeaders ? `<button type="button" class="channel-target ${context.allLeaders ? "selected" : ""}" data-channel-to="*" aria-pressed="${Boolean(context.allLeaders)}" title="发送时点名本工作区所有在用的 leader" ${context.sending ? "disabled" : ""}>@所有 leader</button>` : "";
+    const html = `<span class="channel-target-label">点名</span>${all}${context.state.leaders.map(item => `<button type="button" class="channel-target ${context.allLeaders || context.selected.has(item.session_id) ? "selected" : ""}" data-channel-to="${escape(item.session_id)}" aria-pressed="${context.allLeaders || context.selected.has(item.session_id)}" ${context.sending ? "disabled" : ""}>@${escape(item.name)}</button>`).join("")}${ids.size === 0 ? '<span class="note">还没有 leader</span>' : ""}`;
     if (context.targets.innerHTML !== html) context.targets.innerHTML = html;
   }
   function messageHTML(message) {
@@ -153,22 +154,23 @@
   async function send(context) {
     if (context.send.disabled) return;
     const body = context.input.value.trim(), version = context.version;
-    const to = context.state.leaders.filter(item => context.selected.has(item.session_id)).map(item => item.name);
+    const allLeaders = context.allLeaders;
+    const to = allLeaders ? ["*"] : context.state.leaders.filter(item => context.selected.has(item.session_id)).map(item => item.name);
     context.sending = true; composerState(context);
     try {
       const result = await context.api("/api/channel", {project:context.state.project.name, body, to});
       if (!current(context)) return;
       if (context.version === version) { context.input.value = ""; resizeInput(context); }
-      context.selected.clear(); renderTargets(context);
+      context.selected.clear(); context.allLeaders = false; renderTargets(context);
       // Fetch through intervening posts before advancing the cursor to our new message.
       merge(context, [result.message], false); renderMessages(context, "bottom"); refresh(context);
-      context.toast(to.length === 0 ? "已发到交流区" : `已发到交流区，点名的 ${to.join("、")} 会被叫醒`);
+      context.toast(allLeaders ? `已点名本工作区的 ${result.message.mentions.length} 位 leader` : to.length === 0 ? "已发到交流区" : `已发到交流区，点名的 ${to.join("、")} 会被叫醒`);
     } catch (error) { if (current(context)) context.toast(error.message); }
     finally { context.sending = false; if (current(context)) composerState(context); }
   }
   function mount(options) {
     unmount();
-    const context = {...options, digest:null, digestError:null, requestingDigest:false, originalMessages:[], originalsOpen:false, hasMoreOriginals:false, loadingOriginals:false, messages:[], selected:new Set(), latestId:0, readId:0, loading:true, loadingOlder:false, refreshing:false, reading:false, sending:false, composing:false, version:0};
+    const context = {...options, digest:null, digestError:null, requestingDigest:false, originalMessages:[], originalsOpen:false, hasMoreOriginals:false, loadingOriginals:false, messages:[], selected:new Set(), allLeaders:false, latestId:0, readId:0, loading:true, loadingOlder:false, refreshing:false, reading:false, sending:false, composing:false, version:0};
     active = context;
     options.host.innerHTML = '<div class="channel-pin" hidden></div><div class="scroll channel-scroll" tabindex="0" aria-label="交流区发言"><div class="channel-history"><button type="button" class="btn ghost channel-older" hidden>加载更早的</button></div><div class="chat-inner channel-inner"><div class="channel-empty">正在加载…</div></div></div><div class="composer-wrap channel-composer-wrap"><div class="channel-targets" role="group" aria-label="点名 leader"></div><form class="composer channel-composer"><textarea rows="1" aria-label="发到交流区" placeholder="和所有 leader 说…"></textarea><div class="c-row"><span class="hint">Enter 发送 · Shift+Enter 换行</span><button type="submit" class="send channel-send" aria-label="发送到交流区" disabled><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 11 7-7 7 7M12 4v16"/></svg></button></div></form></div>';
     context.pin = options.host.querySelector(".channel-pin");
@@ -190,8 +192,12 @@
       const button = event.target.closest("[data-channel-to]");
       if (!button || button.disabled) return;
       const id = button.dataset.channelTo;
-      if (context.selected.has(id)) context.selected.delete(id); else context.selected.add(id);
-      renderTargets(context);
+      if (id === "*") { context.allLeaders = !context.allLeaders; context.selected.clear(); }
+      else if (context.allLeaders) {
+        context.allLeaders = false; context.selected.clear();
+        for (const item of context.state.leaders) if (item.session_id !== id) context.selected.add(item.session_id);
+      } else if (context.selected.has(id)) context.selected.delete(id); else context.selected.add(id);
+      renderTargets(context); composerState(context);
     };
     context.input.oninput = () => { context.version += 1; resizeInput(context); composerState(context); };
     context.input.oncompositionstart = () => { context.composing = true; };
@@ -205,7 +211,7 @@
   }
   function update(state) {
     if (!active) return;
-    active.state = state; renderTargets(active); digestState(active);
+    active.state = state; renderTargets(active); composerState(active); digestState(active);
     if (state.channel.latest_id > active.latestId || state.channel.digest_id !== (active.digest === null ? null : active.digest.id)) refresh(active);
   }
   function unmount() {

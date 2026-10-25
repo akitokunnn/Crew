@@ -460,3 +460,13 @@ test("live UI refresh preserves horizontal group scroll position", () => {
   assert.equal(after.scrollLeft, 704);
   assert.equal(after.scrollTop, 12);
 });
+
+test("only a leader menu offers whole-department compaction, separate from compacting one session", () => {
+  const state = fixture(), leader = session({session_id:"lead", name:"Leader", runtime:"claude", priority:null, member_ids:["member"]});
+  const member = session({session_id:"member", name:"Member", runtime:"claude", leader_session_id:"lead", status:"idle", web_chat:true});
+  state.leaders = [leader]; state.members = [member];
+  const {ui} = harness(state), menu = ui.sessionMenu(leader);
+  assert.match(menu, /data-act="compact-department" data-id="lead"[^>]*>压缩整个部门…/);
+  assert.match(menu, /data-act="compact" data-id="lead"[^>]*>压缩上下文/);
+  assert(!ui.sessionMenu(member).includes("compact-department"));
+});

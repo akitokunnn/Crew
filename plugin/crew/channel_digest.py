@@ -205,7 +205,8 @@ class Manager:
                     return False
                 raise board.BoardError("正在整理")
             previous = channel.digest(conn, project)
-            after = previous["upto_message_id"] if previous is not None else 0
+            boundary = board.cleanup_boundary(conn, project)
+            after = max(previous["upto_message_id"] if previous is not None else 0, boundary["channel_after"])
             if trigger == "auto":
                 baseline = max(after, self.failed_upto.get(project, 0))
                 count = conn.execute("SELECT COUNT(*) FROM channel_messages WHERE project=? AND id>?",
@@ -218,17 +219,19 @@ class Manager:
                 raise board.BoardError("没有新发言需要整理")
             messages = [channel._message(conn, row) for row in rows]
             self.running.add(project)
-            worker = threading.Thread(target=self._run, args=(project, previous, messages, trigger),
+            worker = threading.Thread(target=self._run, args=(project, previous, messages, trigger, boundary["cleanups"]),
                                       name="crew-channel-digest", daemon=True)
             self.workers[project] = worker
             worker.start()
             return True
 
-    def _run(self, project, previous, messages, trigger):
+    def _run(self, project, previous, messages, trigger, cleanups):
         try:
             body, cost, model, runtime = generate(self.home, prompt(previous["body"] if previous is not None else "", messages),
                                                   self.process_factory)
             with self.write_lock, closing(store.connect(self.home)) as conn:
+                if board.cleanup_boundary(conn, project)["cleanups"] != cleanups:
+                    raise board.Conflict("工作区已在整理期间清理，本次要点卡基于清理前的交流，结果已作废")
                 conn.execute("INSERT INTO channel_digests(project,upto_message_id,body,message_count,trigger,model,"
                              "cost_usd,created_at,runtime) VALUES(?,?,?,?,?,?,?,?,?)",
                              (project, messages[-1]["id"], body, len(messages), trigger, model, cost, store.now_iso(), runtime))

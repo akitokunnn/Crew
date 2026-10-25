@@ -836,11 +836,21 @@ def handoff(conn, session_id, to_target, body, now=None):
     return handoff_id
 
 
+def cleanup_boundary(conn, project_name):
+    """Workspace cleanup cut-offs; a workspace that was never cleaned has none."""
+    row = conn.execute("SELECT channel_after,digest_after,handoff_after,cleanups FROM workspace_cleanup_boundaries "
+                       "WHERE project=?", (project_name,)).fetchone()
+    if row is None:
+        return {"channel_after": 0, "digest_after": 0, "handoff_after": 0, "cleanups": 0}
+    return dict(row)
+
+
 def handoffs(conn, session_id):
     s = session(conn, session_id)
     return _rows(conn, "SELECT h.* FROM handoffs h WHERE project=? AND (to_target='*' OR to_target=? OR to_target=? OR to_target=?) "
-                 "AND NOT EXISTS(SELECT 1 FROM handoff_deliveries d WHERE d.handoff_id=h.id AND d.session_id=?) ORDER BY h.id",
-                 (s["project"], s["crew_name"], s["group_name"], session_id, session_id))
+                 "AND h.id>? AND NOT EXISTS(SELECT 1 FROM handoff_deliveries d WHERE d.handoff_id=h.id AND d.session_id=?) ORDER BY h.id",
+                 (s["project"], s["crew_name"], s["group_name"], session_id,
+                  cleanup_boundary(conn, s["project"])["handoff_after"], session_id))
 
 
 def _deliver(conn, session_id, include_answers, now):
@@ -1031,8 +1041,8 @@ def ensure_spawn_group(conn, project_name, name, now=None):
 def project_handoffs(conn, project_name, limit=20):
     """Recent project handoffs without changing per-session deliveries."""
     return _rows(conn, "SELECT h.*,s.crew_name AS from_name FROM handoffs h "
-                 "LEFT JOIN sessions s ON s.session_id=h.from_session WHERE h.project=? "
-                 "ORDER BY h.id DESC LIMIT ?", (project_name, limit))
+                 "LEFT JOIN sessions s ON s.session_id=h.from_session WHERE h.project=? AND h.id>? "
+                 "ORDER BY h.id DESC LIMIT ?", (project_name, cleanup_boundary(conn, project_name)["handoff_after"], limit))
 
 
 # ---------------------------------------------------------------- task cards, read cursors, leader notices

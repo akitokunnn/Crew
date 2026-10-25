@@ -63,6 +63,40 @@ class ChannelTests(unittest.TestCase):
                 self.post(actor=sid)
         self.assertEqual(channel.messages(self.conn, "demo")["messages"], [])
 
+    def test_user_can_mention_all_current_project_leaders(self):
+        board.join(self.conn, 'c', 'demo', 'charlie', self.root, None, None, role='leader', now=NOW)
+        session_ops.archive(self.conn, 'b', now=NOW)
+        other = self.base / 'other'
+        other.mkdir()
+        board.init_project(self.conn, 'other', other, now=NOW)
+        board.join(self.conn, 'foreign', 'other', 'foreign', other, None, None, role='leader', now=NOW)
+        value = channel.post(self.conn, 'demo', board.HUMAN, '请大家汇报进度', ['*'], source='web', now=NOW)
+        self.assertEqual({item['session_id'] for item in value['mentions']}, {'a', 'c'})
+        for sid in ('a', 'c'):
+            self.assertEqual(len(board.pending_notices(self.conn, sid)), 1)
+        for sid in ('b', 'm', 'foreign'):
+            self.assertEqual(board.pending_notices(self.conn, sid), [])
+
+    def test_all_mentions_deduplicate_and_do_not_wake_the_speaker(self):
+        value = self.post(to=['*', 'beta', 'alpha', '*'])
+        self.assertEqual({item['session_id'] for item in value['mentions']}, {'a', 'b'})
+        self.assertEqual(len(value['mentions']), 2)
+        self.assertEqual(board.pending_notices(self.conn, 'a'), [])
+        self.assertEqual(len(board.pending_notices(self.conn, 'b')), 1)
+
+    def test_all_mentions_do_not_turn_into_an_unmentioned_post_without_leaders(self):
+        for sid in ('a', 'b'):
+            session_ops.archive(self.conn, sid, now=NOW)
+        with self.assertRaisesRegex(board.BoardError, '没有可点名'):
+            channel.post(self.conn, 'demo', board.HUMAN, '请确认', ['*'], source='web', now=NOW)
+        self.assertEqual(channel.messages(self.conn, 'demo')['messages'], [])
+
+    def test_invalid_explicit_recipient_with_all_has_no_partial_delivery(self):
+        with self.assertRaises(board.BoardError):
+            self.post(to=['*', 'missing'])
+        self.assertEqual(channel.messages(self.conn, 'demo')['messages'], [])
+        self.assertEqual(board.pending_notices(self.conn, 'b'), [])
+
     def test_missing_or_member_mention_rejects_without_partial_post(self):
         for target in ("missing", "member"):
             with self.subTest(target=target), self.assertRaises(board.BoardError):
