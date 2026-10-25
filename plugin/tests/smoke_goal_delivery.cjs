@@ -257,11 +257,39 @@ const listCards=`[...document.querySelectorAll('#goal-head .goal-card')].map(car
   assert((await text('#goal-head')).includes('每周风险摘要邮件'));await shot('15-查看已完成任务.png');
   steps.push('旧总会话的启动工具在转交、原生中断后显示已转交；无回执时保留结果未知，直接查看已完成任务，读取不会启动或恢复 AI');
 
+  // Long descriptions and enabled trust must not become a second permanent header card.
+  board.name='股市掌控者 · 大盘与持仓风险分析';board.goal='主控：已将临时并行工作交接给三名正式 Crew 成员，固定美日大盘方案并独立审查解除风险。'.repeat(6);
+  board.trust={enabled:true,goal:'moomoo 持仓卖出与风险提示 App 原型\n'+('授权范围：按用户目标自主协调、验证和交付；需要人工操作时登记待办。\n'.repeat(6))};
+  board.model='fixture-model-with-a-long-discovered-name';
+  addGoal({id:'compact-goal',leader_session_id:board.session_id,title:'大盘顶部预警：图示拆解、因果信号与历史验证，以及完整的边界条件与实际输入样本对照',request:'保留原始输入，分别验证美日大盘；说明未验证部分。',constraints:['不重复启动真实任务'],status:'running',minutes:0},
+    {executions:executions('compact-execution',board.session_id,1,1).map(item=>({...item,model:'fixture-model-with-a-long-discovered-name'})),reports:[]});
+  const compactHeaders=[];
+  await run('localStorage.setItem("crew.fontScale","1.35")');
+  for(const width of [1440,1100,860]){
+    await open(width,800,`leader=${board.session_id}&goal=compact-goal`);await wait('!!document.querySelector("[data-goal-detail=compact-goal]") && !!document.querySelector("#chat-host textarea")');
+    const size=await run('(()=>{const main=document.querySelector("#main").getBoundingClientRect(),chat=document.querySelector("#chat-host").getBoundingClientRect(),scope=document.querySelector(".chat-scope");return {width:innerWidth,top:chat.top-main.top,chat:chat.height,header:document.querySelector("#chat-head").getBoundingClientRect().height,scroll:document.documentElement.scrollWidth,scope:scope.getBoundingClientRect().height,scopeOverflow:scope.scrollWidth>scope.clientWidth};})()');
+    assert(size.top<235,'compact header at 135% scale: '+JSON.stringify(size));assert(size.header<85);assert(size.scope<30);assert(size.scopeOverflow);assert(size.scroll<=size.width);assert(size.chat>500);compactHeaders.push(size);
+    assert.equal(await run('document.querySelectorAll("#leader-trust-note,.leader-trust-note").length'),0);
+    await shot(`16-紧凑顶部-${width}.png`);
+  }
+  await open(1440,900,`leader=${board.session_id}&goal=compact-goal`);await wait('!!document.querySelector("[data-goal-detail=compact-goal]")');
+  await click('[data-goal-act=drawer][data-kind=context]');await wait('!document.querySelector("#goal-drawer").hidden');
+  const selected=await run('(()=>{const active=document.querySelector("[data-kind=context][data-goal-act=drawer]"),idle=document.querySelector("[data-kind=reports][data-goal-act=drawer]");return {expanded:active.getAttribute("aria-expanded"),idle:idle.getAttribute("aria-expanded"),color:getComputedStyle(active).color,idleColor:getComputedStyle(idle).color,marker:getComputedStyle(active).boxShadow};})()');
+  assert.equal(selected.expanded,'true');assert.equal(selected.idle,'false');assert.notEqual(selected.color,selected.idleColor);assert.notEqual(selected.marker,'none');await shot('17-上下文选中反馈.png');
+  await click('[data-goal-act=drawer][data-kind=requirements]');await wait('document.querySelector("#goal-drawer h2").textContent==="需求与验收"');
+  assert.equal(await run('document.querySelectorAll(".goal-materials [aria-expanded=true]").length'),1);assert.equal(await run('document.querySelector("[data-kind=context][data-goal-act=drawer]").getAttribute("aria-expanded")'),'false');
+  assert((await text('#goal-drawer')).includes('保留原始输入'));assert((await text('#goal-drawer')).includes('不重复启动真实任务'));assert.equal(await run('document.querySelectorAll("#goal-head .goal-requirements").length'),0);await shot('18-需求侧栏选中.png');
+  await click('[data-goal-act=drawer][data-kind=reports]');await wait('document.querySelector("#goal-drawer h2").textContent==="交付与文档"');assert.equal(await run('document.querySelectorAll(".goal-materials [aria-expanded=true]").length'),1);
+  await key('Escape');assert.equal(await run('document.querySelectorAll(".goal-materials [aria-expanded=true]").length'),0);
+  await click('#chat-head [data-act=leader-trust]');await wait('!!document.querySelector("#leader-trust-goal")');assert.equal(await run('document.querySelector("#leader-trust-goal").value'),board.trust.goal);await click('[data-lt-act=close]');
+  await run('document.documentElement.dataset.theme="dark"');await click('[data-goal-act=drawer][data-kind=context]');await shot('19-深色选中反馈.png');await key('Escape');
+  steps.push('135% 字号和长职责/长任务名下，信任开启不增加常驻卡片；三种资料共用侧栏并即时同步选中反馈，Esc 清除状态，信任授权全文可读且未保存或执行');
+
   const forbidden=calls.filter(call=>['/api/chat/send','/api/goals/action','/api/goals/agent','/api/goals/create','/api/spawn','/api/chat/interrupt','/api/session/stop'].includes(call.name)||/wake|spawn|start/.test(call.name));
   assert.deepEqual(forbidden,[]);const posts=[...new Set(calls.filter(call=>call.method==='POST').map(call=>call.name))];assert(posts.every(name=>name==='/api/chat/read'),posts.join(','));
   assert(calls.filter(call=>call.name==='/api/goals/report').every(call=>details.get(call.query.goal_id)?.reports.some(item=>item.id===call.query.report_id)));
   assert.equal(errors.length,0,errors.join('\n'));
-  const evidence={ok:true,scope:'real Electron renderer with in-memory loopback fixtures; no model, production HOME, Crew service or user data',viewports,steps,shots,compact,narrow,keyboard,backgroundHeads,forbiddenCalls:forbidden,postEndpoints:posts,
+  const evidence={ok:true,scope:'real Electron renderer with in-memory loopback fixtures; no model, production HOME, Crew service or user data',viewports,steps,shots,compact,narrow,keyboard,backgroundHeads,compactHeaders,selected,forbiddenCalls:forbidden,postEndpoints:posts,
     endpoints:Object.entries(calls.reduce((count,call)=>({...count,[call.name]:(count[call.name]||0)+1}),{})),reportReads:reportCalls(calls),calls,errors,isolatedUserData:temporary};
   await fs.writeFile(path.join(output,'evidence.json'),JSON.stringify(evidence,null,2));console.log('Goal delivery smoke passed:',output);
   win.destroy();for(const stream of streams)stream.response.end();server.close();await fs.rm(temporary,{recursive:true,force:true});app.exit(0);

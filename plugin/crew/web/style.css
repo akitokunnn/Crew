@@ -196,10 +196,23 @@ svg.i.xs{width:12px;height:12px}
 .head .sub{font-size:calc(12.5px * var(--fs));color:var(--text-3);display:flex;gap:10px;align-items:center}
 .head .sub .sep{width:3px;height:3px;border-radius:50%;background:var(--text-3);opacity:.6}
 .head .right{margin-left:auto;display:flex;gap:4px;align-items:center}
-#chat-head .head{height:auto;min-height:62px;padding-top:10px;padding-bottom:10px}
+#chat-head{container-type:inline-size;container-name:crew-chat-head;flex:none}
+#chat-head .head{height:auto;min-height:56px;padding:8px 20px;gap:10px}
 #chat-head .heading-meta{flex:1}
-#chat-head .head .sub{flex-wrap:wrap}
+#chat-head .heading-meta .title{display:flex;align-items:center;gap:7px;min-width:0}
+#chat-head .chat-name{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+#chat-head .heading-meta .title>.runtime-tag{margin-left:0;flex:none}
+#chat-head .head .sub{flex-wrap:nowrap;min-width:0;gap:8px;margin-top:3px;font-size:calc(11.5px * var(--fs))}
+#chat-head .chat-scope{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#chat-head .chat-member-stats,#chat-head .sub .sep{flex:none;white-space:nowrap}
 #chat-head .head .right{flex-shrink:0}
+#chat-head .model-tag{max-width:180px;font-size:calc(11px * var(--fs))}
+#chat-head .model-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@container crew-chat-head (max-width:620px){#chat-head .right>button.model-tag,#chat-head .context-compact{display:none}#chat-head .right>span.model-tag{max-width:100px}}
+@container crew-chat-head (max-width:420px){#chat-head .chat-member-stats,#chat-head .sub .sep{display:none}#chat-head .head{padding-left:14px;padding-right:14px}}
+#right-panel>.head{height:auto;min-height:62px;padding:10px 16px;align-items:flex-start}
+#right-panel>.head>div:first-child{flex:1;min-width:0}
+#right-panel>.head .title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .model-tag{display:flex;align-items:center;gap:6px;white-space:nowrap;padding:5px 9px;border:1px solid var(--line-strong);border-radius:8px;background:var(--surface);color:var(--text-2);font-size:calc(12px * var(--fs));cursor:pointer}
 .model-tag:hover{background:var(--hover)}
 .model-check{width:14px;display:flex;color:var(--accent-text);flex:none}

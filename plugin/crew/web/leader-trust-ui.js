@@ -10,18 +10,16 @@
   }
   function indicator(leader) {
     if (!leader) return ""; const trust = trustFor(leader);
-    return `<button class="leader-trust-indicator ${trust.enabled ? "on" : ""}" data-act="leader-trust" data-id="${esc(leader.session_id)}" title="设置 ${esc(leader.name)} 的信任模式">信任 · ${trust.enabled ? "开" : "关"}</button>`;
-  }
-  function note(leader) {
-    const trust = trustFor(leader); if (!trust.enabled) return "";
-    return `<div class="leader-trust-note"><div><strong>本组信任目标</strong><p>${esc(trust.goal)}</p><span>下次对话、恢复或压缩时传达；需要你动手的事进入“我的待办”。</span></div><button class="btn ghost" data-act="leader-trust" data-id="${esc(leader.session_id)}">设置</button></div>`;
+    const characters = Array.from(trust.goal || ""), preview = characters.slice(0,40).join("") + (characters.length > 40 ? "…" : "");
+    const title = trust.enabled ? `信任已开：${preview}。点击查看完整目标与授权。` : `设置 ${leader.name} 的信任模式`;
+    return `<button class="leader-trust-indicator ${trust.enabled ? "on" : ""}" data-act="leader-trust" data-id="${esc(leader.session_id)}" title="${esc(title)}" aria-haspopup="dialog">信任 · ${trust.enabled ? "开" : "关"}</button>`;
   }
   function create(options) {
     const overlay = document.createElement("div"); overlay.className = "session-config-backdrop"; overlay.hidden = true; document.body.append(overlay);
     let active = null, draft = null, busy = false, error = "", report = null, returnTo = null;
     function render() {
       if (!active) return;
-      overlay.innerHTML = `<section class="session-config-dialog leader-trust-dialog" role="dialog" aria-modal="true" aria-labelledby="leader-trust-title"><div class="session-config-head"><h2 id="leader-trust-title">${esc(active.name)} · 信任模式</h2><button class="icon-btn" data-lt-act="close" aria-label="关闭信任设置" ${busy ? "disabled" : ""}>×</button></div>${report === null ? `<form id="leader-trust-form"><p class="session-config-description">只为这个 leader 保存目标。保存后不会主动发消息或叫醒会话。</p><label class="leader-trust-toggle"><input name="enabled" type="checkbox" ${draft.enabled ? "checked" : ""} ${busy ? "disabled" : ""}>开启本组信任模式</label><label for="leader-trust-goal" class="session-config-label">目标和授权范围</label><textarea id="leader-trust-goal" name="goal" rows="6" maxlength="20000" placeholder="写清这个组要完成什么、可以自主处理到什么程度" ${draft.enabled ? "required" : ""} ${busy ? "disabled" : ""}>${esc(draft.goal)}</textarea><p class="session-config-hint">下次对话、恢复或压缩时，会顺便告知它当前设置。</p><p class="error-line" role="alert">${esc(error)}</p><div class="session-config-actions"><button type="button" class="btn ghost" data-lt-act="report" ${busy ? "disabled" : ""}>查看本组报告</button><a class="btn ghost" href="${esc(options.reportUrl(active.session_id))}" download>下载报告</a><span class="gap"></span><button type="button" class="btn ghost" data-lt-act="close" ${busy ? "disabled" : ""}>取消</button><button type="submit" class="btn primary" ${busy ? "disabled" : ""}>${busy ? "正在保存…" : "保存"}</button></div></form>` : `<p class="session-config-description">仅包含 ${esc(active.name)} 组的信任设置与推进记录。</p><div class="leader-trust-report markdown">${options.renderMarkdown(report, active.session_id)}</div><div class="session-config-actions"><button class="btn ghost" data-lt-act="back">返回设置</button><span class="gap"></span><a class="btn" href="${esc(options.reportUrl(active.session_id))}" download>下载本组报告</a></div>`}</section>`;
+      overlay.innerHTML = `<section class="session-config-dialog leader-trust-dialog" role="dialog" aria-modal="true" aria-labelledby="leader-trust-title"><div class="session-config-head"><h2 id="leader-trust-title">${esc(active.name)} · 信任模式</h2><button class="icon-btn" data-lt-act="close" aria-label="关闭信任设置" ${busy ? "disabled" : ""}>×</button></div>${report === null ? `<form id="leader-trust-form"><p class="session-config-description">只为这个 leader 保存目标。保存后不会主动发消息或叫醒会话。</p><label class="leader-trust-toggle"><input name="enabled" type="checkbox" ${draft.enabled ? "checked" : ""} ${busy ? "disabled" : ""}>开启本组信任模式</label><label for="leader-trust-goal" class="session-config-label">目标和授权范围</label><textarea id="leader-trust-goal" name="goal" rows="6" maxlength="20000" placeholder="写清这个组要完成什么、可以自主处理到什么程度" ${draft.enabled ? "required" : ""} ${busy ? "disabled" : ""}>${esc(draft.goal)}</textarea><p class="session-config-hint">下次对话、恢复或压缩时，会顺便告知它当前设置；需要你动手的事进入“我的待办”。</p><p class="error-line" role="alert">${esc(error)}</p><div class="session-config-actions"><button type="button" class="btn ghost" data-lt-act="report" ${busy ? "disabled" : ""}>查看本组报告</button><a class="btn ghost" href="${esc(options.reportUrl(active.session_id))}" download>下载报告</a><span class="gap"></span><button type="button" class="btn ghost" data-lt-act="close" ${busy ? "disabled" : ""}>取消</button><button type="submit" class="btn primary" ${busy ? "disabled" : ""}>${busy ? "正在保存…" : "保存"}</button></div></form>` : `<p class="session-config-description">仅包含 ${esc(active.name)} 组的信任设置与推进记录。</p><div class="leader-trust-report markdown">${options.renderMarkdown(report, active.session_id)}</div><div class="session-config-actions"><button class="btn ghost" data-lt-act="back">返回设置</button><span class="gap"></span><a class="btn" href="${esc(options.reportUrl(active.session_id))}" download>下载本组报告</a></div>`}</section>`;
     }
     function close() { if (busy) return; overlay.hidden = true; active = null; if (returnTo?.isConnected) returnTo.focus({preventScroll:true}); }
     function open(id, showReport = false) {
@@ -64,7 +62,7 @@
         else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
       }
     }, true);
-    return {open, close, indicator, note};
+    return {open, close, indicator};
   }
-  window.CrewLeaderTrust = {create, payload, trustFor, indicator, note};
+  window.CrewLeaderTrust = {create, payload, trustFor, indicator};
 })();
