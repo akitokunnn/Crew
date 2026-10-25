@@ -397,7 +397,8 @@
       const url = `/api/chat/file?${params}`;
       return `<a href="${escape(url)}" target="_blank" rel="noopener noreferrer"><img src="${escape(url)}" alt="图片 ${index + 1}" loading="lazy"></a>`;
     }).join("")}</div>` : "";
-    return `<div class="m-user"><div class="bubble"><span class="message-text">${escape(item.text).replace(/\n/g, "<br>")}</span>${images}</div><div class="m-meta${item.source === "qq" ? " qq-meta" : ""}">${item.source === "qq" ? "来自 QQ" : ""}${item.at ? `${item.source === "qq" ? " · " : ""}${timeOf(item.at)}` : ""}</div></div>`;
+    const remoteSource = {qq:"QQ", lark:"Lark / 飞书"}[item.source];
+    return `<div class="m-user"><div class="bubble"><span class="message-text">${escape(item.text).replace(/\n/g, "<br>")}</span>${images}</div><div class="m-meta${remoteSource ? " qq-meta" : ""}">${remoteSource ? `来自 ${remoteSource}` : ""}${item.at ? `${remoteSource ? " · " : ""}${timeOf(item.at)}` : ""}</div></div>`;
   }
   function render(context) {
     context.frame = null;

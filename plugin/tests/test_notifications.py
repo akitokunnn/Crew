@@ -200,12 +200,14 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         self.assertEqual(inbox.status()['channel'], {'state': 'unconfigured', 'detail': None})
         self.assertNotIn('card_ready', inbox.status())
 
-    def test_first_message_binds_owner_and_credentials_remain_read_only(self):
+    def test_binding_code_binds_owner_and_credentials_remain_read_only(self):
         self.write_config(dict(owner_openid=None, since=None, manual_away=False,
                                current_leader_session_id=None, leader_numbers={}))
         self.restart()
-        self.assertEqual(self.inbox.status()['channel']['state'], 'unbound')
+        self.assertEqual(self.inbox.status()['channel']['state'], 'connecting')
         self.receive('你好', openid='first-user')
+        self.assertIsNone(self.config()['owner_openid'])
+        self.receive('/bind ' + self.config()['binding_code'], openid='first-user')
         self.assertEqual(self.config()['owner_openid'], 'first-user')
         self.assertEqual(store.parse_iso(self.config()['since']), self.clock)
         self.assertIn('已绑定', self.client.sent[-1]['text'])

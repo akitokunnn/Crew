@@ -16,19 +16,12 @@
     };
   }
   function connections(host){
-    let active=true;
-    host.innerHTML='<section class="cs-card"><h2>QQ 通知</h2><p class="cs-hint">读取本机 QQ 连接…</p><div data-notification></div></section>';
-    const body=host.querySelector('[data-notification]');
-    async function read(){
-      body.textContent='正在读取…';
-      try{
-        const {notification}=await bridge.settingsConnection();if(!active)return;
-        const labels={disconnected:'未连接',connecting:'连接中',connected:'已连接',error:'连接异常',rejected:'登录失效',disabled:'未启用'};
-        body.innerHTML=`<div class="cs-tool-row"><div><strong>QQ · ${esc(labels[notification.channel?.state]||notification.channel?.state||'未知')}</strong><p>${esc(notification.channel?.detail||'离开电脑后，通过现有连接接收待拍板与最终交付通知。')}</p></div><span class="cs-badge">${notification.away?'离开中':'电脑前'}</span></div><div class="cs-tool-row"><div><strong>我已离开</strong><p>手动切换离开状态；自动规则继续生效。</p></div><button type="button" class="cs-button" data-away>${notification.manual_away?'回到电脑前':'设为离开'}</button></div>${notification.error?`<p class="cs-warning">${esc(notification.error)}</p>`:''}<p class="cs-hint">QQ 登录沿用已有连接配置。</p><p role="status" data-note></p>`;
-        const button=body.querySelector('[data-away]');button.onclick=async()=>{button.disabled=true;try{await bridge.settingsAway(!notification.manual_away);if(active)await read();}catch(error){if(active){body.querySelector('[data-note]').textContent=error.message;button.disabled=false;}}};
-      }catch(error){if(active){body.textContent=error.message;const retry=document.createElement('button');retry.type='button';retry.className='cs-button';retry.textContent='重新读取';retry.onclick=read;body.append(retry);}}
-    }
-    void read();return()=>{active=false;};
+    return window.CrewConnections.mount(host,{
+      read:()=>bridge.settingsConnection(),
+      configure:body=>bridge.settingsConnectionSave(body),
+      action:body=>bridge.settingsConnectionAction(body),
+      away:value=>bridge.settingsAway(value)
+    });
   }
   function backend(host){
     return window.CrewHomeHealth?.mount(host);

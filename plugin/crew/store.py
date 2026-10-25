@@ -27,7 +27,45 @@ def connect(home):
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA_FILE.read_text(encoding="utf-8"))
     _migrate_channel_digests(conn)
+    _migrate_remote_notice_source(conn)
     return conn
+
+
+def _migrate_remote_notice_source(conn):
+    """Permit Lark notices while retaining every existing notice and its ID."""
+    sql = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='leader_notices'").fetchone()[0]
+    if "'lark'" in sql:
+        return
+    foreign_keys = conn.execute('PRAGMA foreign_keys').fetchone()[0]
+    # SQLite's documented table-rebuild procedure requires this outside the
+    # transaction. References are verified before commit and enforcement is
+    # restored on both success and rollback.
+    conn.execute('PRAGMA foreign_keys=OFF')
+    try:
+        conn.execute('BEGIN IMMEDIATE')
+        sql = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='leader_notices'").fetchone()[0]
+        if "'lark'" not in sql:
+            sequence = conn.execute("SELECT seq FROM sqlite_sequence WHERE name='leader_notices'").fetchone()
+            conn.execute("""CREATE TABLE leader_notices_updated (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, project TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                source TEXT NOT NULL CHECK (source IN ('web','qq','lark','crew')),
+                text TEXT NOT NULL, created_at TEXT NOT NULL, sent_at TEXT)""")
+            conn.execute('INSERT INTO leader_notices_updated SELECT * FROM leader_notices')
+            if sequence is not None:
+                conn.execute("UPDATE sqlite_sequence SET seq=MAX(seq,?) WHERE name='leader_notices_updated'", (sequence[0],))
+            conn.execute('DROP TABLE leader_notices')
+            conn.execute('ALTER TABLE leader_notices_updated RENAME TO leader_notices')
+            conn.execute('CREATE INDEX leader_notices_pending ON leader_notices(session_id,sent_at)')
+            violations = conn.execute('PRAGMA foreign_key_check').fetchall()
+            if violations:
+                raise sqlite3.IntegrityError('leader_notices 迁移后存在外键引用错误: %s' % (tuple(violations[0]),))
+        conn.commit()
+    except sqlite3.Error:
+        conn.rollback()
+        raise
+    finally:
+        conn.execute('PRAGMA foreign_keys=%d' % foreign_keys)
 
 
 def _migrate_channel_digests(conn):

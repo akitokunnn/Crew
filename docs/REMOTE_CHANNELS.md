@@ -1,117 +1,68 @@
-# QQ 与 Lark 远程交互
+# QQ 与 Lark / 飞书消息渠道
 
-目标是让用户知道自己正在和哪个项目的哪个 leader 交流，并能从原消息直接接着聊。Crew 会话 ID 是路由身份；Claude / Codex 原生 ID 不参与远程寻址。
+打开 **设置 → 消息渠道**。桌面首页和工作区设置使用相同入口，QQ 与 Lark / 飞书可同时启用，不需要手工编辑 JSON 或重启整个 Crew。
 
-## 当前实现与验证边界
+## 新用户连接流程
 
-QQ 已有真实传输实现，本次补齐以下行为：
+### QQ
 
-- `/projects` 或 `/p` 查看项目；`/project 项目名` 选择项目；再用 `/leader 名字` 选择该项目中的 leader。同名 leader 不会跨项目猜选。
-- `/leader` 继续列出所有 leader，`/leader 2`、`/l 2`、`/2` 继续按原持久编号选择。已有编号不会因为排序、优先级或项目选择而重分配。
-- `/where` 或 `/w` 确认普通文字、图片将发给谁。切换确认和每条发送回执都带项目及 leader 名称。只选择项目时，不会自动挑第一个 leader。
-- 引用已保存的 leader 发言或回复，会发给原消息的 leader，且不改变普通聊天的当前选择。原 leader 已归档时不会回退发送给另一个 leader。引用一条涉及多个 leader 的汇总消息时，要求明确选人。
-- 拍板消息保存发送时的完整快照，包含原问题、选项、推荐、阻塞状态及结构化摘要。新按钮携带快照摘要；题目修订后，旧按钮和旧引用不会被映射成新选项。
-- 最终快照检查、保存答复及 leader 通知在同一个数据库写事务中完成，避免 CLI 同时修订题目造成检查后再误存。
-- 历史 `题号:选项序号` 按钮只在题目未修订、已发送快照均仍与当前题一致时兼容接受。新的 `题号:选项序号:快照摘要` 按钮还必须对应一条实际已发送记录。
-- 结构化拍板在 QQ 显示简短标题、为什么需要用户决定、推荐理由及每个选项的后果。
+1. 在 [QQ 开放平台](https://q.qq.com/)创建机器人，启用单聊消息和事件接收；测试阶段把自己的 QQ 号加入测试范围。
+2. 在 Crew 选择 QQ，填写机器人的 App ID 和 App Secret，点击“保存并连接”。
+3. 等待状态变为“等待绑定”，复制页面上的 `/bind 绑定码`，用自己的 QQ 账号私聊机器人。收到绑定回执后，页面自动更新。
+4. 在 QQ 机器人会话中打开“允许主动发送”。点击 Crew 的“发送测试通知”，在手机会话中确认收件。
 
-实现位于 `plugin/crew/notifications.py`。验证使用临时 Crew home、FakeQQ 和替身模型进程；本轮没有读取正式账号秘密、修改远程配置或发送真实消息。
+已有 QQ 主人绑定会保留。新连接不会把第一个任意私聊者自动设为主人；只有输入当前绑定码的账号才能完成绑定。
 
-Lark **尚未接通**。本机已安装 `lark-cli`，但安装 CLI 不等于 Crew 专用机器人已配置、订阅生效或消息可达。下面的共享路由层与 Lark adapter 是后续设计，不应在产品中标记为已连接。
+### Lark / 飞书
 
-## 可复用的远程路由层
+1. 在 [飞书开放平台](https://open.feishu.cn/app)或 [Lark 开放平台](https://open.larksuite.com/app)创建企业自建应用，添加机器人能力。中国版选择“飞书”，国际版选择“Lark”。
+2. 开通应用身份权限 `im:message:send_as_bot` 和 `im:message.p2p_msg:readonly`，分别用于发送消息和接收用户私聊。
+3. 将 App ID 与 App Secret 填入 Crew，点击“保存并连接”。再到平台“事件与回调”，选择“使用长连接接收事件”，订阅 `im.message.receive_v1` 并保存。无需公网回调地址，也不依赖本机 lark-cli 登录。
+4. 创建并发布应用版本，将自己加入可用范围。打开机器人私聊，发送 Crew 页面提供的 `/bind 绑定码`。
+5. 收到绑定回执后，在 Crew 点击“发送测试通知”，确认手机会话收到消息。
 
-QQ 当前仍由单一主人的 Inbox 管理。增加 Lark 时，应抽取消息归一化之后、运行时调用之前的路由和投递记录；不把 QQ 网络协议直接复制成第二套业务逻辑。
+当前支持人类用户与机器人的**私聊文字、命令、引用回复、拍板和通知**。图片、文件、群聊、thread 路由和交互卡片按钮不在当前能力内；拍板请引用机器人发出的原消息，输入答案。
 
-以下为接口约定伪代码，尚未实现共享 router：
+平台说明：[长连接订阅](https://open.feishu.cn/document/ukTMukTMukTM/uYDNxYjL2QTM24iN0EjN/event-subscription-configure-)、[接收消息事件](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/message/events/receive)。传输依据 [官方 Python SDK 长连接实现](https://github.com/larksuite/oapi-sdk-python/blob/v2_main/lark_oapi/ws/client.py)和 [protobuf 定义](https://github.com/larksuite/oapi-sdk-python/blob/v2_main/lark_oapi/ws/pb/pbbp2_pb2.py)，Crew 实现使用 Python 标准库。
 
-```text
-Envelope = {
-    "channel": "qq" | "lark",
-    "account_id": str,       # 当前机器人/应用的稳定标识
-    "event_id": str,
-    "actor_id": str,         # 平台认证过的操作者 ID，不用显示名作为权限
-    "chat_id": str,
-    "thread_id": str | None,
-    "reply_to": str | None,  # 平台消息 ID / 已解析的引用标识
-    "text": str,
-    "attachments": list,
-    "action_token": str | None,
-}
+## 如何开始对话
 
-router.resolve(conn, envelope) -> Intent | NeedsSelection
-router.receive(conn, envelope, host_callbacks) -> DispatchResult
-router.select(conn, scope, project, leader_session_id) -> Target
-router.record_outbound(conn, receipt, target, item_snapshot) -> None
-```
+- `/projects`：查看项目；`/project 项目名`：选择项目。
+- `/leader 名字`：选择该项目的 leader；`/leader` 列出带稳定编号的 leader，`/1` 等编号入口仍可用。
+- `/where`：确认普通消息将发往哪个项目、哪个 leader。
+- 普通文字发给当前选择的 leader；引用机器人已发送的消息，会回到原消息所属的 leader，不改变普通聊天的当前选择。
+- `/decisions`：查看未挂起拍板；引用原拍板消息输入答复。QQ 还可使用原有按钮。
+- `/todo`：查看需要亲手做的待办；`/h`：帮助；`/back`：回到电脑前。
 
-这里的 `scope` 是 `(channel, account_id, actor_id, chat_id, thread_id)`，不能共享一个全局“当前 leader”。收件项目和 leader 最终均从数据库校验；消息正文、卡片参数或模型输出不能改写平台操作者身份。
+同名 leader 不跨项目猜选，已归档的原收件人不会回退到另一个 leader。拍板保存原问题与选项快照；题目修改后，旧按钮或旧引用会要求先查看新内容。
 
-路由按以下顺序解析：
+## 连接管理与状态
 
-1. 已验证且仍有效的动作 token。
-2. 引用消息在出站记录中绑定的项目 / leader / 业务事项。
-3. 当前 thread 的明确绑定。
-4. 用户显式指定的项目和 leader。
-5. 同一 scope 中已确认的普通聊天选择。
+“保存并连接”立即应用凭证。现有 Secret 留空表示保留，不会回显；更换 App ID 时必须填写新 Secret，并重新绑定。Lark 与飞书切换也需要重新绑定。
 
-有多个候选或已知目标失效时返回 `NeedsSelection`。不要选择第一个项目、最近启动的 leader，或把已经识别的引用悄悄回退到另一个当前 leader。
+“重新连接”保留绑定和聊天目标。“断开连接”停止当前渠道收发，保留凭证。“重新绑定”经页面内确认后生成新码，原主人失去该渠道的控制权。
 
-`Intent` 只承载明确操作：选择聊天目标、给 leader 发消息、答复拍板、完成人工待办、取消人工待办、查看状态。删除、部署、Git 操作等业务执行继续由 Crew 会话与其现有规则处理。
+- 待配置：尚未保存凭证。
+- 连接中 / 重连中：传输尚未就绪。
+- 等待绑定：平台长连接已建立，需私聊发送绑定命令。
+- 已就绪：平台连接建立且主人已绑定。测试通知被平台接受后，仍需在手机确认收件。
+- 连接异常 / 发送被拒绝：查看页面的实际错误；检查凭证、权限、发布范围、订阅和网络后重连。
+- 已断开：该渠道停用，凭证保留。
 
-### 宿主接口
+“我已离开”是本机共用状态。手动离开或检测到锁屏时，待拍板与最终交付通过已配置渠道发送；聊天问答不依赖离开开关。电脑睡眠或关机期间无法收发。锁屏检测不可用时可使用手动开关。
 
-```python
-submit_user_message(
-    leader_session_id, text, images,
-    source="qq" | "lark", identity=stable_inbound_identity,
-) -> {"ok": bool, "queued": bool, "message_id": str}
-```
+## 本地存储与隔离
 
-它应复用现有 chat 队列和会话唤醒能力。不能用 `messaging.queue(sender_id="user", ...)` 代替：该模块的发送者必须是真实 Crew 会话。
+| 数据 | QQ | Lark / 飞书 |
+| --- | --- | --- |
+| 凭证与启用状态 | HOME/qq.json | HOME/lark.json |
+| 主人、绑定码、当前项目和 leader | HOME/notify.json | HOME/lark-notify.json |
+| 投递、入站去重、回复队列 | notification_* 表 | lark_notification_* 表 |
 
-拍板和人工待办分别复用现有领域 API、版本检查及所属 leader 通知链；adapter 负责平台消息与回执，不能重新实现一套“完成”“取消”规则。人工待办取消仍必须原因，操作撤销仍要防止覆盖后续修改。
+两个渠道独立保存主人、当前项目、leader 编号和投递记录，平台恰好使用相同消息 ID 也不会互相去重或串投。更换账号或重绑会隔离旧的待回复记录。凭证只保存在所选 HOME，不返回设置读取接口，不写入聊天或日志。
 
-回复任务保存来源 event / message，避免主动转发 finished turn 时又把同一次远程问答发第二遍。普通进展可按用户关注的项目或 leader 汇总；需要用户处理的新事项按现有通知策略呈现，不增加无变化的定时催促。
+## 实现与验证
 
-### 持久化建议
+`connections.py` 管理配置与线程生命周期，`notifications.py` 共用项目/leader 路由、拍板版本检查及回传队列；`qq.py` 与 `lark.py` 分别负责平台传输。API 为 `GET /api/connections`、`POST /api/connections/configure` 和 `POST /api/connections/action`；写操作沿用本机 Web API 的来源检查。
 
-后续迁移应明确增加以下表，而非静默扩展现有 QQ 单账号字段：
-
-| 表 | 必须保存的关系 |
-| --- | --- |
-| `remote_bindings` | 平台账号、允许的用户、可访问项目和接收会话 |
-| `remote_selections` | scope 到项目、Crew leader ID 的选择 |
-| `remote_outbound` | 平台消息 / 引用 ID 到项目、leader、业务事项、发送快照 |
-| `remote_inbound` | `(channel, account_id, event_id)` 唯一；接收、排队、处理、失败状态 |
-| `remote_actions` | 不透明 token 到具体操作、接收者、业务快照 / 版本、过期时间 |
-
-同一事务保存入站去重记录和待处理意图；网络发送放到可追踪的 outbox。回调先及时确认收到，再处理领域操作和发送回复。网络超时后的 `sending` 代表结果不确定，不能直接记成功，也不能无条件重发。
-
-卡片 token 应绑定实际已发送的记录、允许的操作者、项目、事项、版本 / 快照摘要；用户点击后重新验证状态。只携带可复用的选项下标不足以证明用户选择了当前选项。
-
-## Lark 的交互形态
-
-优先使用应用机器人身份接入常驻通道。一个项目可以绑定一个项目群，每个 leader 使用一条独立 thread；用户回复 thread 时自然定位 leader。同一个私人聊天中也可使用项目和 leader 选择卡，仍按 scope 保存状态。
-
-Lark 官方支持通过回复消息创建 thread，并在接收消息事件中取得 thread ID；应以该 ID 绑定路由，不能仅依赖消息中出现的名称。[Thread Introduction](https://open.larksuite.com/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/message/thread-introduction)
-
-桌面端可以使用官方 SDK 的 WebSocket 长连接接收消息，初始化需要应用 ID 和 Secret；不必为此先暴露本地 Crew HTTP 服务。[Receive events through WebSocket](https://open.feishu.cn/document/ukTMukTMukTM/uYDNxYjL2QTM24iN0EjN/event-subscription-configure-)
-
-也可评估官方 Channel SDK，把连接、事件解析、流式回复及卡片交互交给传输层；Crew 继续持有路由、授权和白板业务状态。[Lark Agent integration overview](https://open.larksuite.com/document/mcp_open_tools)
-
-`lark-cli event consume` 适合诊断已有应用和验证事件形状。常驻实现优先一个 SDK 连接注册消息及卡片事件，避免把多个 CLI 进程当成 Crew 的业务状态机。
-
-## Lark 接通前的清单
-
-当前未验证以下配置；不能把“未知”显示成“已授权”：
-
-- Crew 专用应用 ID、Secret 的本地凭证引用，以及 Feishu / Lark 租户域名。秘密应由本地凭证层提供，不进入提示词、数据库事件或仓库。
-- 应用的机器人能力、发布 / 可见范围、目标群成员资格。
-- 机器人的发消息权限（`im:message:send_as_bot`），以及所选私聊 / 群聊接收事件的对应权限。需要读回原消息或卡片时，再配置对应只读权限；不为纯聊天默认申请用户个人资源权限。
-- `im.message.receive_v1` 消息订阅，以及 `card.action.trigger` 卡片回调配置。能够建立连接并不证明这些订阅生效。
-- 允许操作者的稳定 open ID、目标 chat ID / thread ID，以及首次绑定校验流程。不要根据用户显示名或任意转发文本认定身份。
-- 重连、入站去重、卡片重复点击、失效 token、陈旧题目、归档 leader 和跨项目目标的替身测试。
-- 在用户指定的测试聊天完成一次主动发来的消息和一次测试卡片操作，验证真实收发回执、重启后的路由与去重，再标记为已接通。
-
-传输适配器的能力描述应显式说明是否支持 thread、引用、卡片、编辑消息和回调确认。QQ 与 Lark 共用领域路由，不假定两者具有完全相同的消息能力。
+隔离测试覆盖保存、绑定、防抢绑、双平台隔离、失败回执、线程停止、重新连接、旧库升级及真实 Electron 表单。Lark 传输用本机替身服务验证 HTTPS 请求形状、二进制 WebSocket、心跳、ACK 与事件。未读取正式凭证或向真实 QQ / Lark 账号发送消息；实际租户权限与手机收件需在指定机器人中按上述流程确认。

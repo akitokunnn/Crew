@@ -1,9 +1,10 @@
-"""One owner's QQ inbox, decision buttons and queued leader conversations."""
+"""Per-channel owner inboxes, decision replies and queued leader conversations."""
 import base64
 import hashlib
 import json
 import logging
 import re
+import secrets
 import threading
 import uuid
 from contextlib import closing
@@ -105,14 +106,21 @@ def desktop_locked():
 
 
 class Inbox:
-    def __init__(self, service, client=None, lock_status=desktop_locked, batch_seconds=30):
+    def __init__(self, service, client=None, lock_status=desktop_locked, batch_seconds=30, channel_id='qq'):
+        if channel_id not in ('qq', 'lark'):
+            raise ValueError('未知远程通道')
+        self.channel_id = channel_id
+        self.channel_name = {'qq': 'QQ', 'lark': 'Lark / 飞书'}[channel_id]
         self.service, self.home = service, service.home
-        credentials_path = self.home / 'qq.json'
+        credentials_path = self.home / (channel_id + '.json')
         self.credentials = None
+        self.enabled, self.domain = False, 'feishu'
         if credentials_path.exists():
             credentials = json.loads(credentials_path.read_text(encoding='utf-8'))
             self.credentials = (credentials['app_id'], credentials['app_secret'])
-        self.config_path = self.home / 'notify.json'
+            self.enabled = credentials.get('enabled', True)
+            self.domain = credentials.get('domain', 'feishu')
+        self.config_path = self.home / ('notify.json' if channel_id == 'qq' else 'lark-notify.json')
         self.config = (json.loads(self.config_path.read_text(encoding='utf-8')) if self.config_path.exists()
                        else dict(owner_openid=None, since=None, manual_away=False,
                                  current_leader_session_id=None, leader_numbers={}))
@@ -121,13 +129,16 @@ class Inbox:
         self.lock = threading.RLock()
         self.locked, self.error, self.presence_error = False, None, None
         self.connection_state = 'connecting'
-        self.channel = dict(state=('unconfigured' if self.credentials is None else
-                                   'unbound' if self.config['owner_openid'] is None else 'connecting'), detail=None)
+        self.channel = dict(state=('unconfigured' if self.credentials is None else 'disabled' if not self.enabled else
+                                   'connecting'), detail=None)
+        if self.credentials is not None and self.config['owner_openid'] is None and not self.config.get('binding_code'):
+            self.config['binding_code'] = secrets.token_hex(4).upper()
+            self.save_config()
         with closing(store.connect(self.home)) as conn:
-            failed = conn.execute("SELECT error FROM notification_messages WHERE status IN ('error','sending') ORDER BY created_at DESC LIMIT 1").fetchone()
-            uncertain_reply = conn.execute("SELECT 1 FROM notification_replies WHERE status='sending' LIMIT 1").fetchone()
+            failed = self.execute(conn, "SELECT error FROM notification_messages WHERE status IN ('error','sending') ORDER BY created_at DESC LIMIT 1").fetchone()
+            uncertain_reply = self.execute(conn, "SELECT 1 FROM notification_replies WHERE status='sending' LIMIT 1").fetchone()
         if failed or uncertain_reply:
-            self.error = '上次 QQ 投递未完成，请检查服务日志。' + ((failed['error'] or '') if failed else '')
+            self.error = '上次 %s 投递未完成，请检查服务日志。' % self.channel_name + ((failed['error'] or '') if failed else '')
         self.pending, self.pending_at = {}, None
         # Switching "我已离开" on by hand means the user has gone; only lock-screen absence waits out the batch window.
         self.push_now = False
@@ -136,14 +147,30 @@ class Inbox:
         self.stop, self.wake = threading.Event(), threading.Event()
         self.worker, self.receiver = None, None
 
+    def execute(self, conn, statement, parameters=()):
+        # Only these fixed table identifiers vary; message IDs remain bound parameters.
+        if self.channel_id == 'lark':
+            statement = re.sub(r'\bnotification_(messages|inbound|replies)\b', r'lark_notification_\1', statement)
+        return conn.execute(statement, parameters)
+
+    def item_key(self, identity):
+        generation = self.config.get('generation')
+        return generation + ':' + identity if generation else identity
+
     def status(self):
         with self.lock:
             manual = self.config['manual_away']
             return dict(manual_away=manual, locked=self.locked, away=manual or self.locked,
-                        enabled=self.credentials is not None, channel=self.channel.copy(),
+                        enabled=self.enabled, channel=self.channel.copy(),
                         error=self.error or self.presence_error)
 
     def set_away(self, away):
+        manager = getattr(self.service, 'connections', None)
+        if manager is not None and manager.inboxes.get(self.channel_id) is self:
+            return manager.set_away(away)
+        return self._set_away(away)
+
+    def _set_away(self, away):
         with self.lock:
             self.config['manual_away'] = away
             self.save_config()
@@ -157,11 +184,16 @@ class Inbox:
             self.config_path.write_text(json.dumps(self.config, ensure_ascii=False, indent=2), encoding='utf-8')
 
     def start(self):
-        if self.credentials is None:
+        if self.credentials is None or not self.enabled:
             return
-        self.client = qq.Client(*self.credentials) if self.client is None else self.client
-        self.receiver = threading.Thread(target=self.receive_loop, name='crew-qq-receive', daemon=True)
-        self.worker = threading.Thread(target=self.run, name='crew-qq-notify', daemon=True)
+        if self.client is None:
+            if self.channel_id == 'qq':
+                self.client = qq.Client(*self.credentials)
+            else:
+                from . import lark
+                self.client = lark.Client(*self.credentials, domain=self.domain)
+        self.receiver = threading.Thread(target=self.receive_loop, name='crew-%s-receive' % self.channel_id, daemon=True)
+        self.worker = threading.Thread(target=self.run, name='crew-%s-notify' % self.channel_id, daemon=True)
         self.receiver.start()
         self.worker.start()
 
@@ -171,7 +203,7 @@ class Inbox:
                 self.tick()
             except (qq.QQError, OSError, board.BoardError) as exc:
                 self.error = '%s: %s' % (type(exc).__name__, exc)
-                LOG.exception('QQ notification processing failed')
+                LOG.exception('%s notification processing failed', self.channel_name)
             self.wake.wait(2)
             self.wake.clear()
 
@@ -188,7 +220,7 @@ class Inbox:
             self.connection_state = state
             if state == 'stopped':
                 if not self.stop.is_set():
-                    self.channel = dict(state='error', detail=detail or 'QQ 接收连接已停止')
+                    self.channel = dict(state='error', detail=detail or self.channel_name + ' 接收连接已停止')
             elif self.channel['state'] not in ('rejected', 'error'):
                 self.channel = dict(state=('unbound' if state == 'connected' and
                                           self.config['owner_openid'] is None else state), detail=detail)
@@ -198,7 +230,7 @@ class Inbox:
         with self.lock:
             self.channel = dict(state='rejected' if exc.kind == 'rejected' else 'error',
                                 detail=(reason + '；请在手机 QQ 打开“允许主动发送”'
-                                        if exc.kind == 'rejected' else reason))
+                                        if exc.kind == 'rejected' and self.channel_id == 'qq' else reason))
             self.error = reason
 
     def send(self, method, *args):
@@ -228,7 +260,7 @@ class Inbox:
         session = board.session(conn, session_id)
         if session['role'] == 'leader' or not session['group_name']:
             return session
-        group = conn.execute('SELECT leader_session_id FROM groups WHERE project=? AND name=?',
+        group = self.execute(conn, 'SELECT leader_session_id FROM groups WHERE project=? AND name=?',
                              (session['project'], session['group_name'])).fetchone()
         return board.session(conn, group[0]) if group and group[0] else session
 
@@ -262,7 +294,9 @@ class Inbox:
         self.relay_turns()
         now = self.service.now()
         with closing(store.connect(self.home)) as conn:
-            sent = {row[0] for row in conn.execute('SELECT item_id FROM notification_messages')}
+            prefix = self.item_key('')
+            sent = {row[0][len(prefix):] for row in self.execute(conn, 'SELECT item_id FROM notification_messages')
+                    if row[0].startswith(prefix)}
             projects = board.projects(conn)
         active = set()
         for project in projects:
@@ -313,7 +347,7 @@ class Inbox:
                 self.pending_at = None
 
     def relay_turns(self):
-        """While the user is away, send each leader's closing words of every finished turn to QQ."""
+        """While the user is away, relay each leader's closing words on this channel."""
         with self.service.write_lock, closing(store.connect(self.home)) as conn:
             leaders = [s for s in self.leader_catalog(conn) if self.service.chat.path(s['session_id']).exists()]
             if self.relay_after is None:
@@ -331,12 +365,12 @@ class Inbox:
                     self.relay_after[sid] = event['seq']
                     opener = next((e for e in turn if e['type'] == 'message'), None)
                     closing_words = next((e for e in reversed(turn) if e['type'] == 'assistant'), None)
-                    # A turn started from QQ is answered by process_replies already.
-                    if closing_words is None or opener is not None and opener['source'] == 'qq':
+                    # A turn started on this channel is answered by process_replies already.
+                    if closing_words is None or opener is not None and opener['source'] == self.channel_id:
                         continue
                     text = '\n'.join(b['text'] for b in closing_words['content'] if b['type'] == 'text')
                     identity = 'turn:%s:%s' % (sid, event['seq'])
-                    if not text or conn.execute('SELECT 1 FROM notification_messages WHERE item_id=?', (identity + ':0',)).fetchone():
+                    if not text or self.execute(conn, 'SELECT 1 FROM notification_messages WHERE item_id=?', (self.item_key(identity + ':0'),)).fetchone():
                         continue
                     entry = dict(workspace=leader['project'], leader_session_id=sid, decision=None)
                     for number, part in enumerate(leader_parts(leader['project'], leader['crew_name'], text)):
@@ -378,8 +412,8 @@ class Inbox:
     def record_message(self, conn, identity, entry, kind, now):
         if entry.get('decision') is not None:
             entry['decision_snapshot'] = decision_snapshot(entry['decision'], decision_briefs.get(conn, entry['decision']['id']))
-        conn.execute('INSERT INTO notification_messages(item_id,project,leader_session_id,decision_id,kind,created_at,content,status) VALUES(?,?,?,?,?,?,?,?)',
-                     (identity, entry['workspace'], entry['leader_session_id'],
+        self.execute(conn, 'INSERT INTO notification_messages(item_id,project,leader_session_id,decision_id,kind,created_at,content,status) VALUES(?,?,?,?,?,?,?,?)',
+                     (self.item_key(identity), entry['workspace'], entry['leader_session_id'],
                       entry['decision']['id'] if entry['decision'] else None, kind, now,
                       json.dumps(entry, ensure_ascii=False), 'sending'))
 
@@ -388,12 +422,12 @@ class Inbox:
             result = self.send(method, *args)
         except qq.QQError as exc:
             for identity in identities:
-                conn.execute("UPDATE notification_messages SET status='error',error=? WHERE item_id=?",
-                             ('%s(%s): %s' % (type(exc).__name__, exc.kind, exc), identity))
+                self.execute(conn, "UPDATE notification_messages SET status='error',error=? WHERE item_id=?",
+                             ('%s(%s): %s' % (type(exc).__name__, exc.kind, exc), self.item_key(identity)))
             raise
         for identity in identities:
-            conn.execute("UPDATE notification_messages SET message_id=?,ref_idx=?,status='sent' WHERE item_id=?",
-                         (result['id'], result['ref_idx'], identity))
+            self.execute(conn, "UPDATE notification_messages SET message_id=?,ref_idx=?,status='sent' WHERE item_id=?",
+                         (result['id'], result['ref_idx'], self.item_key(identity)))
 
     def question_message(self, entry):
         decision = entry['decision']
@@ -415,6 +449,10 @@ class Inbox:
             if options:
                 text += '\n\n' + '\n'.join('%s. %s' % (i + 1, option) for i, option in enumerate(options))
             return cjk_bold(text) + '\n\n请引用这条拍板消息回复。', None
+        if self.channel_id == 'lark':
+            if not brief:
+                text += '\n\n' + '\n'.join('%s. %s' % (i + 1, option) for i, option in enumerate(options))
+            return cjk_bold(text) + '\n\n请引用这条消息，输入完整选项或你的答复。', None
         ordered = sorted(enumerate(options), key=lambda pair: pair[1] != decision['recommendation'])
         buttons = [dict(id=str(index),
                         render_data=dict(label=option, visited_label='已选：' + option,
@@ -431,31 +469,43 @@ class Inbox:
                 with self.lock:
                     owner = self.config['owner_openid']
                 if event['openid'] != owner:
-                    LOG.info('Ignored QQ interaction from non-owner %s', event['openid'])
+                    LOG.info('Ignored %s interaction from non-owner %s', self.channel_name, event['openid'])
                     return
                 # Leader startup and outbound sends can hold write_lock for seconds.
                 self.client.ack_interaction(event['interaction_id'])
             with self.service.write_lock, closing(store.connect(self.home)) as conn:
                 owner = self.config['owner_openid']
                 if owner is None and kind == 'message':
+                    command = event['text'].strip()
+                    code = self.config.get('binding_code')
+                    if not code or not secrets.compare_digest(command.encode('utf-8'), ('/bind ' + code).encode('ascii')):
+                        LOG.info('Ignored unbound %s message without valid binding code', self.channel_name)
+                        return
                     with self.lock:
                         self.config['owner_openid'] = event['openid']
                         self.config['since'] = self.service.now().isoformat()
+                        self.config.pop('binding_code', None)
                         self.save_config()
+                        self.channel = dict(state='connected' if self.connection_state == 'connected' else self.connection_state,
+                                            detail=None)
                     owner = event['openid']
                     bound = True
                 else:
                     bound = False
                 if event['openid'] != owner:
-                    LOG.info('Ignored QQ %s from non-owner %s', kind, event['openid'])
+                    LOG.info('Ignored %s %s from non-owner %s', self.channel_name, kind, event['openid'])
                     return
                 if kind == 'interaction':
                     identity = event['interaction_id']
                 else:
                     identity = event['message_id']
-                if conn.execute('SELECT 1 FROM notification_inbound WHERE event_id=?', (identity,)).fetchone():
+                if self.config.get('generation'):
+                    identity = self.config['generation'] + ':' + identity
+                    event = dict(event)
+                    event['interaction_id' if kind == 'interaction' else 'message_id'] = identity
+                if self.execute(conn, 'SELECT 1 FROM notification_inbound WHERE event_id=?', (identity,)).fetchone():
                     return
-                conn.execute('INSERT INTO notification_inbound VALUES(?,?)', (identity, self.service.now().isoformat()))
+                self.execute(conn, 'INSERT INTO notification_inbound VALUES(?,?)', (identity, self.service.now().isoformat()))
                 if bound:
                     self.send_text('已绑定为主人。发 /h 看命令；先用 /leader 和 /1 选择 leader。')
                 elif kind == 'interaction':
@@ -466,11 +516,11 @@ class Inbox:
                     except (board.BoardError, OSError) as exc:
                         reason = '%s: %s' % (type(exc).__name__, exc)
                         self.error = reason
-                        LOG.exception('QQ message processing failed')
+                        LOG.exception('%s message processing failed', self.channel_name)
                         self.send_text('消息未处理：' + reason)
         except qq.QQError as exc:
             self.fail_channel(exc)
-            LOG.exception('QQ event processing failed')
+            LOG.exception('%s event processing failed', self.channel_name)
         self.wake.set()
 
     def receive_message(self, conn, event):
@@ -499,7 +549,7 @@ class Inbox:
                 raise board.BoardError('图片下载失败：%s(%s): %s' % (type(exc).__name__, exc.kind, exc)) from exc
             validated.append(dict(media_type=image['content_type'], data=base64.b64encode(raw).decode('ascii')))
         validated = chat.validate_images(validated)
-        quoted = conn.execute("SELECT * FROM notification_messages WHERE ref_idx=? AND status='sent' ORDER BY rowid DESC",
+        quoted = self.execute(conn, "SELECT * FROM notification_messages WHERE ref_idx=? AND status='sent' ORDER BY rowid DESC",
                               (event['quoted_ref'],)).fetchall() if event['quoted_ref'] else []
         shown = next((row for row in quoted if row['kind'] in ('decision', 'query')), None)
         if shown is not None:
@@ -527,7 +577,7 @@ class Inbox:
             self.send_text('按钮无效，请先 /decisions。')
             return
         decision_id, index = int(match[1]), int(match[2])
-        shown = conn.execute("SELECT * FROM notification_messages WHERE decision_id=? AND status='sent' AND kind IN ('decision','query') ORDER BY rowid DESC",
+        shown = self.execute(conn, "SELECT * FROM notification_messages WHERE decision_id=? AND status='sent' AND kind IN ('decision','query') ORDER BY rowid DESC",
                              (decision_id,)).fetchall()
         if not shown:
             self.send_text('这道题尚未展示，请先 /decisions 查看待拍板。')
@@ -541,7 +591,7 @@ class Inbox:
         else:
             # Old buttons carried only a numeric index. Once the decision has
             # changed, that index cannot identify the choice the user saw.
-            revised = any(json.loads(row[0]).get('id') == decision_id for row in conn.execute(
+            revised = any(json.loads(row[0]).get('id') == decision_id for row in self.execute(conn,
                 "SELECT detail FROM events WHERE project=? AND kind='decision:revise'", (shown[0]['project'],)))
             valid = not revised and len(matching) == len(shown)
         if not valid:
@@ -561,7 +611,7 @@ class Inbox:
             return False
 
     def leader_catalog(self, conn):
-        leaders = [dict(row) for row in conn.execute(
+        leaders = [dict(row) for row in self.execute(conn,
             "SELECT s.* FROM sessions s JOIN projects p ON p.name=s.project "
             "LEFT JOIN session_controls c ON c.session_id=s.session_id "
             "WHERE s.role='leader' AND s.status!='closed' AND COALESCE(c.removed,0)=0 "
@@ -672,7 +722,7 @@ class Inbox:
                 state = board.status(conn, project, identities)
                 states.update((s['session_id'], s['status']) for s in [*state['ungrouped'], *(s for g in state['groups'] for s in g['members'])])
             pending = {}
-            for decision in conn.execute("SELECT d.id,d.project,d.session_id FROM decisions d "
+            for decision in self.execute(conn, "SELECT d.id,d.project,d.session_id FROM decisions d "
                                          "LEFT JOIN decision_holds h ON h.decision_id=d.id "
                                          "WHERE d.status='open' AND h.decision_id IS NULL"):
                 leader = self._decision_leader(conn, decision)
@@ -760,7 +810,7 @@ class Inbox:
                 if asker['status'] == 'closed' or board.is_archived(conn, asker['session_id']):
                     error = '这条会话已归档或移出 Crew，答复尚未保存。请先在 Crew 恢复会话。'
                 else:
-                    board.answer.__wrapped__(conn, decision['id'], answer, actor='qq', now=now)
+                    board.answer.__wrapped__(conn, decision['id'], answer, actor=self.channel_id, now=now)
                     linked_goal = goal_links.get(conn,'decision',decision['id'])
                     leader = self._decision_leader(conn, decision) if linked_goal is None else None
                     if leader is not None:
@@ -774,7 +824,7 @@ class Inbox:
                         else:
                             notice = '#%s\n提问者：%s（cc_name：%s）\n问题：%s\n答复：%s\n请马上用 SendMessage 转告并叫它继续' % (
                                 decision['id'], asker['crew_name'], asker['cc_name'], decision['question'], answer)
-                        board._queue_leader_notice(conn, leader['session_id'], notice, 'qq', now=now)
+                        board._queue_leader_notice(conn, leader['session_id'], notice, self.channel_id, now=now)
         if error:
             self.send_text(error)
             return
@@ -793,24 +843,24 @@ class Inbox:
         if project_name is not None and leader['project'] != project_name:
             self.send_text('引用消息的项目与 leader 不匹配，请先 /leader 重新选择。')
             return
-        conn.execute('INSERT INTO notification_replies VALUES(?,?,?,?,?,?)',
+        self.execute(conn, 'INSERT INTO notification_replies VALUES(?,?,?,?,?,?)',
                      (reply['message_id'], session_id,
                       json.dumps(dict(text=reply['answer'], images=reply['images']), ensure_ascii=False),
                       'queued', None, self.service.now().isoformat()))
         label = '%s·%s' % (leader['project'], leader['crew_name'])
-        queued = conn.execute("SELECT 1 FROM notification_replies WHERE session_id=? AND status IN ('queued','running') AND message_id!=?",
+        queued = self.execute(conn, "SELECT 1 FROM notification_replies WHERE session_id=? AND status IN ('queued','running') AND message_id!=?",
                               (session_id, reply['message_id'])).fetchone()
         self.send_text(label + ' 正忙，排在后面' if self.service.chat.busy(session_id) or queued else '已转给 ' + label)
 
     def process_replies(self):
-        # While an update gate holds, queued QQ replies stay queued for the updated service.
+        # While an update gate holds, remote replies stay queued for the updated service.
         with self.service.chat.work(background=True) as admitted:
             if admitted:
                 self._process_replies()
 
     def _process_replies(self):
         with self.service.write_lock, closing(store.connect(self.home)) as conn:
-            for row in conn.execute("SELECT * FROM notification_replies WHERE status IN ('queued','running') ORDER BY created_at,rowid").fetchall():
+            for row in self.execute(conn, "SELECT * FROM notification_replies WHERE status IN ('queued','running') ORDER BY created_at,rowid").fetchall():
                 session = board.session(conn, row['session_id'])
                 sid = session['session_id']
                 journal = self.service.chat.journal(sid)
@@ -823,27 +873,27 @@ class Inbox:
                         continue
                     if self.service.chat.busy(sid):
                         continue
-                    if conn.execute("SELECT 1 FROM notification_replies WHERE session_id=? AND status='running'", (sid,)).fetchone():
+                    if self.execute(conn, "SELECT 1 FROM notification_replies WHERE session_id=? AND status='running'", (sid,)).fetchone():
                         continue
                     # A saved web journal/spec can resume; external processes cannot receive our input.
                     spec = self.home / 'spawn' / ((session['spawn_id'] or '') + '.json')
                     with self.service.agents_lock:
                         external = any(a['sessionId'] == sid for a in self.service.agents) and not self.service.chat.is_owned(sid)
                     if external or not self.service.chat.path(sid).exists() or not spec.exists():
-                        self._reply(conn, row, '这个 leader 不在网页后台运行，收不到 QQ 消息', 'error')
+                        self._reply(conn, row, '这个 leader 不在网页后台运行，收不到 %s 消息' % self.channel_name, 'error')
                         continue
                     payload = json.loads(row['text'])
-                    identity = 'qq-' + uuid.uuid5(uuid.NAMESPACE_URL, row['message_id']).hex
+                    identity = self.channel_id + '-' + uuid.uuid5(uuid.NAMESPACE_URL, row['message_id']).hex
                     try:
                         self.service.chat.send(session, payload['text'], images=payload['images'],
-                                               source='qq', identity=identity)
+                                               source=self.channel_id, identity=identity)
                     except (OSError, board.BoardError) as exc:
                         self._reply(conn, row, '消息未发送：%s: %s' % (type(exc).__name__, exc), 'error')
                         continue
                     # Resuming may drain the previous process before it writes this message.
                     after = next(e['seq'] for e in journal.events
                                  if e['type'] in ('message', 'compact_request') and e['id'] == identity)
-                    conn.execute("UPDATE notification_replies SET status='running',after_seq=? WHERE message_id=?", (after, row['message_id']))
+                    self.execute(conn, "UPDATE notification_replies SET status='running',after_seq=? WHERE message_id=?", (after, row['message_id']))
                 else:
                     events = journal.after(row['after_seq'])
                     end = next((i for i, e in enumerate(events) if e['type'] == 'status' and e['status'] in ('idle', 'offline')), None)
@@ -863,11 +913,11 @@ class Inbox:
     def _reply(self, conn, row, text, status):
         identity = 'reply:' + row['message_id']
         # A persisted sending state surfaces uncertain delivery instead of sending twice.
-        conn.execute("UPDATE notification_replies SET status='sending' WHERE message_id=?", (row['message_id'],))
+        self.execute(conn, "UPDATE notification_replies SET status='sending' WHERE message_id=?", (row['message_id'],))
         session = board.session(conn, row['session_id'])
         for index, part in enumerate(leader_parts(session['project'], session['crew_name'], text)):
             key = identity + ':' + str(index)
             entry = dict(workspace=session['project'], leader_session_id=session['session_id'], decision=None)
             self.record_message(conn, key, entry, 'reply', self.service.now().isoformat())
             self.deliver(conn, [key], self.client.send_markdown, part)
-        conn.execute('UPDATE notification_replies SET status=? WHERE message_id=?', (status, row['message_id']))
+        self.execute(conn, 'UPDATE notification_replies SET status=? WHERE message_id=?', (status, row['message_id']))

@@ -202,8 +202,9 @@ Git 管理员可以自行定分支规则、推功能分支、开 PR、CI 绿后�
 | `~/.crew/spawn/` | crew 开会话时的任务文件 |
 | `~/.crew/chat/<会话ID>.jsonl` | 网页聊天记录，刷新和重启后重放；不保存思考内容 |
 | `~/.crew/chat/files/<会话ID>/` | 发给 leader 的截图 |
-| `~/.crew/qq.json` | QQ 机器人 app_id / app_secret，用户自己维护 |
+| `~/.crew/qq.json`、`~/.crew/lark.json` | QQ / Lark 机器人凭证与启用状态，可在“设置 → 消息渠道”保存并连接 |
 | `~/.crew/notify.json` | 主人 openid、通知起点、离开状态、当前 leader 与 leader 编号，Crew 维护 |
+| `~/.crew/lark-notify.json` | Lark / 飞书独立的主人绑定、当前项目和 leader，Crew 维护 |
 | `~/.crew/web.json` | 正在运行的网页服务地址，供 `spawn`、`leader start` 和 `wake` 连接，支持自定义端口 |
 | `~/.crew/runtime.json` | 命令行启动器当前使用的 Python 和后端路径 |
 | `~/.crew/desktop/backend/` | 打包桌面版保留的后端源码，供 CLI 和 Codex 守卫继续使用 |
@@ -234,7 +235,7 @@ Git 管理员可以自行定分支规则、推功能分支、开 PR、CI 绿后�
 - 新建 leader、无分组成员和内部 AI 任务使用设置页的默认或专项配置；成员优先继承所属 leader。未配置时仅装一个工具可自动采用它；两个都安装时请先选默认 AI，不偏向任一载体。执行失败不会自动换工具，已有会话需通过会话菜单显式切换。
 - Windows Codex 启动与恢复使用磁盘真实路径大小写，避免沙箱把同一目录当作不同写入范围。项目沙箱仍保护 Git 元数据；0.2.2 的可见单次审批已在独立 worktree 中实测完成 Git 提交，默认权限保持不变。此项不代表所有 elevated 沙箱、外部 Python 安装或网络缓存路径均已验证。
 - Codex 守卫覆盖已接入的 shell / apply_patch；已启动命令的 `write_stdin` 不重新触发执行前 hook，其他原生工具或 MCP 需单独适配。hook 超时或崩溃后的停会话措施不能保证阻止所有副作用。
-- Lark 尚未接通，当前远程入口是 QQ。“全部”采用横排列组，尚未实现无限蓝图画布与拖动连线。信任报告是记录汇总草稿，实际验证和提交仍须由负责的 leader 补齐。
+- QQ 与 Lark / 飞书均可在“设置 → 消息渠道”配置、连接、私聊绑定和测试通知；Lark 当前支持私聊文字与引用答复，真实租户权限和手机收件需按[连接流程](docs/REMOTE_CHANNELS.md)确认。“全部”采用横排列组，尚未实现无限蓝图画布与拖动连线。信任报告是记录汇总草稿，实际验证和提交仍须由负责的 leader 补齐。
 
 ## 桌面版 0.1.1
 

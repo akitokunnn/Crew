@@ -292,6 +292,35 @@ CREATE TABLE IF NOT EXISTS notification_replies (
     created_at TEXT NOT NULL
 );
 
+-- Lark has independent owners, delivery receipts and inbound deduplication.
+CREATE TABLE IF NOT EXISTS lark_notification_messages (
+    item_id TEXT PRIMARY KEY,
+    project TEXT NOT NULL,
+    leader_session_id TEXT NOT NULL,
+    decision_id INTEGER,
+    kind TEXT NOT NULL,
+    message_id TEXT,
+    ref_idx TEXT,
+    created_at TEXT NOT NULL,
+    content TEXT NOT NULL,
+    status TEXT NOT NULL,
+    error TEXT
+);
+
+CREATE TABLE IF NOT EXISTS lark_notification_inbound (
+    event_id TEXT PRIMARY KEY,
+    received_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS lark_notification_replies (
+    message_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    text TEXT NOT NULL,
+    status TEXT NOT NULL,
+    after_seq INTEGER,
+    created_at TEXT NOT NULL
+);
+
 -- The task card a session writes when it is adopted: its area and when it counts as done. sessions.task stays "what now".
 CREATE TABLE IF NOT EXISTS session_cards (
     session_id TEXT PRIMARY KEY REFERENCES sessions(session_id),
@@ -313,7 +342,7 @@ CREATE TABLE IF NOT EXISTS leader_notices (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     project    TEXT NOT NULL,
     session_id TEXT NOT NULL,              -- the leader
-    source     TEXT NOT NULL CHECK (source IN ('web', 'qq', 'crew')),
+    source     TEXT NOT NULL CHECK (source IN ('web', 'qq', 'lark', 'crew')),
     text       TEXT NOT NULL,
     created_at TEXT NOT NULL,
     sent_at    TEXT
