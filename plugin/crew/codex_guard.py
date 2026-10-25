@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 import sys
 
-from . import board, guard, runtimes, store
+from . import board, goals, guard, runtimes, store
 
 
 class InvalidHook(ValueError):
@@ -87,14 +87,24 @@ def patch_paths(command):
     return list(dict.fromkeys(paths))
 
 
-def _identity(home, session_id):
+def _identity(home, session_id, execution_id=None, native_id=None):
     _text(session_id, "Crew session")
     # Never create or migrate a database in order to authorize a tool call.
     with closing(guard.readonly(home)) as conn:
         session = board.session(conn, session_id)
         if session["project"] is None or session["status"] == "closed" or board.is_archived(conn, session_id):
             raise InvalidHook("Crew session is not an active project member")
-        if runtimes.get(conn, session_id)['runtime'] != 'codex':
+        if execution_id:
+            execution = goals.get_execution(conn, execution_id)
+            if execution['session_id'] != session_id or execution['runtime'] != 'codex':
+                raise InvalidHook('goal execution identity mismatch')
+            binding = next((b for b in execution['bindings'] if b['runtime'] == 'codex'), None)
+            if binding is None or binding['native_id'] != native_id:
+                raise InvalidHook('goal native thread mismatch')
+            gate = goals.dispatch_check(conn, execution['goal_id'], execution_id=execution_id)
+            if not gate['allowed']:
+                raise InvalidHook(gate['reason'])
+        elif runtimes.get(conn, session_id)['runtime'] != 'codex':
             raise InvalidHook('Crew active runtime is not codex; this Codex carrier is inactive')
         board.project(conn, session["project"])
         # Check the guard's required read paths up front. In particular, its
@@ -107,17 +117,17 @@ def _identity(home, session_id):
     return session
 
 
-def check(home, session_id, payload):
+def check(home, session_id, payload, execution_id=None):
     """Return None to allow, otherwise an explicit blocking reason.
 
     Only the native shell and patch paths are supported. Configure the hook
     matcher accordingly; other tools need an explicit adapter before enabling.
     """
     try:
-        _identity(home, session_id)
         if not isinstance(payload, dict) or payload.get("hook_event_name") != "PreToolUse":
             raise InvalidHook("expected PreToolUse object")
         _text(payload.get("session_id"), "Codex thread")
+        _identity(home, session_id, execution_id, payload['session_id'])
         cwd = _text(payload.get("cwd"), "cwd")
         if not os.path.isabs(cwd):
             raise InvalidHook("cwd must be absolute")
@@ -154,13 +164,14 @@ def main(argv=None, stdin=None, stdout=None, stderr=None):
     parser = argparse.ArgumentParser(description="Crew guard for native Codex hooks")
     parser.add_argument("--home", required=True)
     parser.add_argument("--session", required=True)
+    parser.add_argument("--execution")
     args = parser.parse_args(argv)
     stdin = sys.stdin if stdin is None else stdin
     stdout = sys.stdout if stdout is None else stdout
     stderr = sys.stderr if stderr is None else stderr
     try:
         payload = json.load(stdin)
-        reason = check(args.home, args.session, payload)
+        reason = check(args.home, args.session, payload, args.execution)
     except Exception as exc:
         reason = "BLOCKED by Crew Codex guard: %s: %s. %s" % (type(exc).__name__, exc, guard.TAIL)
     if reason is None:

@@ -14,7 +14,7 @@ from pathlib import Path
 from unittest import mock
 from tests.fixture_cleanup import cleanup_directory
 
-from crew import board, cli, guard, hooks, install, rules, session_ops, store
+from crew import board, cli, guard, hooks, install, rules, session_ops, settings, store
 
 PLUGIN = Path(__file__).resolve().parents[1]
 NOW = "2026-10-21T08:00:00.000Z"
@@ -45,6 +45,7 @@ class CoreCase(unittest.TestCase):
         install.install(self.home, self.fake_plugin, now=NOW)
         self.conn = store.connect(self.home)
         self.addCleanup(self.conn.close)
+        settings.save(self.conn, {'default': {'runtime': 'claude', 'model': None, 'effort': None}})
         board.init_project(self.conn, "demo", self.root, now=NOW)
         for sid, name in (("s1", "one"), ("s2", "two"), ("s3", "three")):
             board.join(self.conn, sid, "demo", name, self.root, store.norm_path(self.root), "main", cc_name="cc-" + name, now=NOW)
@@ -256,11 +257,10 @@ class ProjectTests(CoreCase):
         self.assertIsNone(reason)
 
     def test_non_git_project_registers_without_worktree(self):
-        # Stop Git from walking into the repository that contains the test tree.
+        # A genuine plain folder is outside the repository containing the tests.
         outside = tempfile.TemporaryDirectory(prefix="crew-plain-")
         self.addCleanup(outside.cleanup)
         plain = Path(outside.name)
-        (plain / ".git").write_text("gitdir: missing-git-metadata\n", encoding="ascii")
         board.init_project(self.conn, "plain", plain, now=NOW)
         code, output = hooks.handle("session-start", {"session_id": "p1", "cwd": str(plain)}, self.home,
                                     self.fake_plugin, {}, now=NOW)
@@ -734,63 +734,64 @@ class RuleReadTests(CoreCase):
 
 
 class RuleTextTests(unittest.TestCase):
-    def test_leader_compact_policy_requires_checkpoint_and_written_progress(self):
-        leader = (PLUGIN / "skills" / "leader" / "SKILL.md").read_text(encoding="utf-8")
-        agent = (PLUGIN / "agents" / "leader.md").read_text(encoding="utf-8")
-        for content in (leader, agent):
-            for phrase in ("35% 以上", "告一段落", "白板", "crew compact <名字>", "`crew compact`", "不用问用户"):
-                self.assertIn(phrase, content)
-        for phrase in ("## 压缩上下文", "刚汇报完一段、在等拍板、空闲", "SendMessage", "现在适合压缩吗？要的话先把进度写进白板。", "等它回答再压", "任务卡、report", "这一轮说完后压缩", '用户说"压缩一下"时', "再排自己的", "列出压了谁", "谁因为在干活或在 VS Code 里没压"):
-            self.assertIn(phrase, leader)
-
-    def test_member_compact_consent_follows_progress_report(self):
-        member = (PLUGIN / "skills" / "member" / "SKILL.md").read_text(encoding="utf-8")
-        for phrase in ('leader 问"现在适合压缩吗"时照实回答', "做到一半就说不行", "说明大概什么时候可以", "先 `crew report` 写下进度、下一步和没写进任务卡的要紧细节，再回\"可以\""):
-            self.assertIn(phrase, member)
-
-    def test_decision_scope_and_reread_are_explicit_in_all_role_instructions(self):
+    def roles(self):
         paths = (PLUGIN / "skills" / "leader" / "SKILL.md", PLUGIN / "skills" / "member" / "SKILL.md", PLUGIN / "agents" / "leader.md")
-        for path in paths:
+        return [(path, path.read_text(encoding="utf-8")) for path in paths]
+
+    def test_execution_context_preserves_sources_limits_and_handoff(self):
+        for path, content in self.roles():
             with self.subTest(path=path):
-                content = path.read_text(encoding="utf-8")
-                for phrase in ("要用户点头的事一律算拍板", "合不合 PR", "合不合进 develop", "等你点头 / 要你定 / 等你拍板", "必须已经 `crew ask` 登记", "对用户用一句话说是什么事，不写拍板编号", "Crew 守则有更新", "先重读"):
-                    self.assertIn(phrase, content)
-                # Only the leader registers on someone else's behalf.
-                if path.parent.name != "member":
-                    for phrase in ("哪个组员的什么事", "带选项和推荐"):
-                        self.assertIn(phrase, content)
-        self.assertIn("**硬规矩：", (PLUGIN / "agents" / "leader.md").read_text(encoding="utf-8"))
-        self.assertIn("等用户点头合并", (PLUGIN / "skills" / "member" / "SKILL.md").read_text(encoding="utf-8"))
+                # Assert the current user contract, not one obsolete paragraph.
+                self.assertRegex(content, r"来源|可追溯")
+                self.assertRegex(content, r"限额|超限|限长")
+                self.assertRegex(content, r"约束|用户要求")
+                self.assertRegex(content, r"交接|/crew:leader")
+                self.assertNotIn("35% 以上", content)
+
+    def test_member_results_are_bounded_and_acknowledgements_do_not_loop(self):
+        for path, content in self.roles():
+            with self.subTest(path=path):
+                self.assertRegex(content, r"不再发 ACK|不再确认|不回复确认")
+                self.assertRegex(content, r"不(?:自动)?建目标")
+                self.assertIn("example", content)
+                self.assertIn("HTML", content)
+        member = self.roles()[1][1]
+        self.assertIn("--kind result|blocker|decision", member)
+        self.assertRegex(member, r"不再.*重复 report")
+        self.assertNotIn("同时 `crew report", member)
+
+    def test_decisions_are_discussed_before_registration_and_rules_refresh_on_change(self):
+        for path, content in self.roles():
+            with self.subTest(path=path):
+                self.assertRegex(content, r"先[^\n]*(?:说明|解释|讨论)[^\n]*拍板")
+                self.assertRegex(content, r"用户[^\n]*(?:指令|要求)|明确限制")
+                self.assertRegex(content, r"守则更新[^\n]*重读相关部分")
+                self.assertIn("不每轮整包重读", content)
+                self.assertRegex(content, r"todo")
 
     def test_user_facing_decisions_name_the_matter_and_keep_numbers_internal(self):
-        paths = (PLUGIN / "skills" / "leader" / "SKILL.md", PLUGIN / "skills" / "member" / "SKILL.md", PLUGIN / "skills" / "git" / "SKILL.md", PLUGIN / "agents" / "leader.md")
-        for path in paths:
+        cases = self.roles() + [(PLUGIN / "skills" / "git" / "SKILL.md", (PLUGIN / "skills" / "git" / "SKILL.md").read_text(encoding="utf-8"))]
+        for path, content in cases:
             with self.subTest(path=path):
-                content = path.read_text(encoding="utf-8")
-                for phrase in ("网页聊天回复", "QQ 推送的回复", "一句话说是什么事", "不写拍板编号", "编号只用于命令和 leader、组员之间的内部消息", "必须已经 `crew ask` 登记"):
-                    self.assertIn(phrase, content)
-                for phrase in ("必须已经有题号", "必须已有题号", "然后只提题号", "再提题号", "并写上 #编号", "note 里记题号", '"#<编号> 需要你拍板"'):
-                    self.assertNotIn(phrase, content)
-        member = paths[1].read_text(encoding="utf-8")
-        self.assertIn("进展、汇报和 `crew report`", member)
-        self.assertIn('"#<编号> 等用户拍板：<问题>"', member)
-        self.assertIn("给 leader 的 SendMessage 照旧带编号", member)
-        leader = paths[0].read_text(encoding="utf-8")
-        self.assertIn("声纹门槛那件事要你定，卡片在上面", leader)
-        self.assertIn('`crew answer <编号> "<答复>"`', leader)
-        self.assertIn("note 里写要用户决定的事，不写拍板编号", paths[2].read_text(encoding="utf-8"))
+                self.assertRegex(content, r"事项名称|一句话说是什么事|要用户决定的事")
+                self.assertRegex(content, r"不要用单独题号代替题目|不写拍板编号")
+                self.assertRegex(content, r"内部定位|内部消息")
+                self.assertRegex(content, r"网页|QQ")
+        for path, content in self.roles():
+            with self.subTest(path=path):
+                self.assertIn("对话里直接回复用户", content)
+                self.assertNotIn("然后只提题号", content)
 
-    def test_channel_and_cross_group_requests_are_explicit(self):
-        leader = (PLUGIN / "skills" / "leader" / "SKILL.md").read_text(encoding="utf-8")
-        agent = (PLUGIN / "agents" / "leader.md").read_text(encoding="utf-8")
+    def test_leader_can_work_directly_without_waking_members_to_query_progress(self):
+        leader, member, agent = [content for _, content in self.roles()]
         for content in (leader, agent):
-            for phrase in ("找人不受分组限制", "crew group list", "crew who", "crew say", "--to", "crew channel", "只放值得用户看的跨组讨论", "公共约定", "空闲时送达", "一条消息说完"):
-                self.assertIn(phrase, content)
-        for phrase in ("## 交流区", "只是告知或回\"收到\"不点名", "下一轮开始时自动附上摘要", "等同用户直接对你说"):
-            self.assertIn(phrase, leader)
-        member = (PLUGIN / "skills" / "member" / "SKILL.md").read_text(encoding="utf-8")
-        for phrase in ("别的组的 leader 找你时照常回答", "要改你手上的计划或范围，先问你自己的 leader", "被别的 leader 用 `crew wake` 叫醒时同样处理"):
-            self.assertIn(phrase, member)
+            self.assertRegex(content, r"直接写业务代码|直接实施")
+            self.assertRegex(content, r"不逐个叫醒成员查进度|状态查询读取已有事实，不叫醒成员")
+            self.assertNotIn("你不写业务代码", content)
+        self.assertIn("跨组协助也由你统一验收", leader)
+        self.assertIn("一份最终答复", leader)
+        self.assertIn("不自动归档", leader)
+        self.assertIn("用户新指令优先于 leader 旧安排", member)
 
 
 class GuardTests(CoreCase):
@@ -917,7 +918,8 @@ class InstallAndCliTests(CoreCase):
         self.assertEqual(set(first), {"plugin_root", "python", "updated_at"})
         self.assertEqual(first["python"], sys.executable)
         self.assertTrue((self.home / "crew.py").is_file())
-        self.assertEqual((self.home / "bin" / "crew.cmd").read_text(encoding="utf-8"), '@python "%~dp0..\\crew.py" %*\n')
+        python = str(Path(sys.executable).resolve()).replace('%', '%%')
+        self.assertEqual((self.home / "bin" / "crew.cmd").read_text(encoding="utf-8"), '@"' + python + '" "%~dp0..\\crew.py" %*\n')
         for name in ("blacklist.txt", "prices.json"):
             (self.home / name).write_text("custom", encoding="utf-8")
         install.install(self.home, self.fake_plugin, now="2026-10-22T00:00:00.000Z")
@@ -974,17 +976,16 @@ class InstallAndCliTests(CoreCase):
         self.assert_cli(["events", "--limit", "0"], code=1)
         self.assert_cli(["lease", "take", "missing", "--for", "test", "--until", "25:00"], code=1)
 
-    def test_init_default_only_queries_git_toplevel(self):
+    def test_init_registered_workspace_does_not_query_git(self):
         run = subprocess.run
         with mock.patch("crew.hooks.subprocess.run", wraps=run) as query:
             self.assert_cli(["init", "--name", "demo"])
-        self.assertEqual([c.args[0][3:] for c in query.call_args_list], [["rev-parse", "--show-toplevel"]])
+        query.assert_not_called()
 
     def test_init_default_name_preserves_directory_case(self):
         directory = self.base / "MixedCase"
         directory.mkdir()
-        with mock.patch("crew.cli.git_toplevel", return_value=str(directory)):
-            self.assert_cli(["init"])
+        self.assert_cli(["init", "--root", str(directory)])
         self.assertEqual(board.project(self.conn, "MixedCase")["root"], store.norm_path(directory))
 
     def test_plain_terminal_answer_records_human(self):

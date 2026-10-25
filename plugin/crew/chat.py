@@ -4,6 +4,7 @@ import collections
 import contextlib
 from contextlib import closing
 import functools
+import hashlib
 import json
 import os
 import shutil
@@ -13,7 +14,7 @@ import threading
 import uuid
 from pathlib import Path
 
-from . import board, claude_limits, hooks, install, messaging, models, runtime_switch, runtimes, spawn, store
+from . import board, claude_limits, codex_client, goals, hooks, install, messaging, models, runtime_switch, runtimes, settings, spawn, store, workspace_execution
 
 
 PAUSED_FOR_UPDATE = "Crew 正在准备更新，暂不接受新任务；更新完成后再试"
@@ -116,6 +117,7 @@ class Journal:
 
     def _index(self):
         self.messages = {event["id"] for event in self.events if event["type"] in ("message", "compact_request")}
+        self.inputs = {event.get('message_id', event.get('id')): event for event in self.events if event["type"] == "input_delivery"}
         self.results = {event["tool_use_id"] for event in self.events if event["type"] == "tool_result"}
         self.assistant = {event["id"]: event["content"] for event in self.events if event["type"] == "assistant"}
         self.status = next((event["status"] for event in reversed(self.events) if event["type"] == "status"), "offline")
@@ -143,6 +145,8 @@ class Journal:
             with self.path.open("a", encoding="utf-8") as stream:
                 stream.write(json.dumps(event, ensure_ascii=False) + "\n")
             self.events.append(event)
+            if kind == "input_delivery":
+                self.inputs[fields['message_id']] = event
             stat = self.path.stat()
             self.signature = (stat.st_size, stat.st_mtime_ns)
             self.condition.notify_all()
@@ -326,6 +330,8 @@ class Journal:
 class Running:
     def __init__(self, process, journal):
         self.runtime = "claude"
+        self.execution = None
+        self.goal_manifests = {}
         self.process, self.journal = process, journal
         # A finished turn can start its queued compact through _send under this same lock.
         self.input_lock = threading.RLock()
@@ -362,6 +368,8 @@ class Manager:
         self.admission = threading.Condition()
         self.update_gate, self.in_flight = None, 0
         self._admitted = threading.local()
+        from .goal_runtime import Controller
+        self.goal_controller = Controller(self)
 
     @contextlib.contextmanager
     def work(self, background=False):
@@ -502,7 +510,7 @@ class Manager:
             for line in current.process.stdout:
                 try:
                     record = json.loads(line)
-                    if (self.processes.get(session_id) is current and record.get('session_id') == session_id
+                    if (self.processes.get(session_id) is current and record.get('session_id') == (current.native_id if current.execution else session_id)
                             and not record.get('parent_tool_use_id')):
                         known_native = (record.get('type')=='assistant' or
                             record.get('type')=='system' and record.get('subtype')=='init')
@@ -512,7 +520,9 @@ class Manager:
                         if known_native and not current.native_binding_confirmed or acknowledged:
                             try:
                                 with closing(store.connect(self.home)) as native_conn:
-                                    if runtimes.get(native_conn,session_id)['runtime']=='claude':
+                                    if current.execution:
+                                        current.native_binding_confirmed = True
+                                    elif runtimes.get(native_conn,session_id)['runtime']=='claude':
                                         if runtimes.get(native_conn,session_id)['native_id'] is None:
                                             runtimes.set(native_conn,session_id,'claude',session_id)
                                         current.native_binding_confirmed=True
@@ -523,6 +533,13 @@ class Manager:
                                 # Keep draining native output and retain the handoff for
                                 # the next accepted input rather than losing the reader.
                                 current.journal.emit('error',text='原生会话确认记录失败，交接会保留重试：'+str(exc))
+                    if (current.execution and record.get('type') == 'user' and record.get('session_id') == current.native_id
+                            and record.get('message', {}).get('role') == 'user' and not record.get('parent_tool_use_id')
+                            and record.get('uuid') in current.goal_manifests):
+                        from . import goal_context
+                        with closing(store.connect(self.home)) as goal_conn:
+                            goal_context.mark_applied(goal_conn, current.goal_manifests.pop(record['uuid']),
+                                                      execution_id=current.execution['id'])
                     if record["type"] == "control_response":
                         self._control_response(current, record["response"])
                     if record["type"] == "rate_limit_event":
@@ -599,13 +616,57 @@ class Manager:
 
     def _launch(self, session, spec, resume=False):
         try:
+            with closing(store.connect(self.home)) as conn:
+                session = workspace_execution.execution_session(conn, session)
+                spec = {**spec, 'cwd': session['cwd'], 'project': session['project'],
+                        '_workspace_notice': workspace_execution.migration_notice(conn, session)}
+            self._claim_identity(session)
             return self._launch_native(session,spec,resume=resume)
         except Exception as exc:
             with closing(store.connect(self.home)) as conn:
                 runtime_switch.failed(conn,session['session_id'],exc)
             raise
 
+    def _identity_keys(self, conn, session_id):
+        return [session_id] + [row['id'] for row in conn.execute(
+            'SELECT id FROM goal_executions WHERE session_id=?', (session_id,))]
+
+    def _claim_identity(self, session):
+        """Drain other owned natives before one stable Crew identity changes execution."""
+        sid, key = session['session_id'], session.get('_storage_id', session['session_id'])
+        execution = session.get('_execution')
+        with self.lock, closing(store.connect(self.home)) as conn:
+            if messaging.stopped(conn, sid):
+                raise board.Conflict('用户已停止此会话，请明确继续')
+            if execution is None and self.goal_controller.routing_execution(conn, sid) is not None:
+                raise board.Conflict('此人员已有独立目标执行，请向当前目标发送消息')
+            if execution is not None and runtimes.get(conn, sid)['runtime'] == 'claude' and not self.running(sid):
+                owned = self.processes.get(sid)
+                for agent in self._external_agents():
+                    if agent['sessionId'] == sid and (owned is None or agent.get('pid') != owned.process.pid):
+                        raise board.Conflict('此 Crew 身份仍在外部运行，请先停止旧会话后开始目标')
+            for previous in self._identity_keys(conn, sid):
+                if previous == key or not self.running(previous):
+                    continue
+                if previous != sid:
+                    old = goals.get_execution(conn, previous)
+                    old_goal = goals.get(conn, old['goal_id'])
+                    if old['goal_id'] != (execution or {}).get('goal_id') and old_goal['status'] not in goals.TERMINAL:
+                        if old_goal['leader_session_id'] == sid:
+                            goals.request_pause(conn, old['goal_id'], manual=False, reason='该人员切换到另一个执行')
+                        else:
+                            goals.set_execution_status(conn, previous, 'paused')
+                self.journal(previous).emit('identity_handoff', session_id=sid, target_execution=key,
+                                            text='当前 Crew 身份已转交执行；保留此段历史，旧原生进程停止。')
+                self.stop_managed(previous)
+                if self.auto_candidates is not None:
+                    self.auto_candidates.pop(previous, None)
+                if previous != sid:
+                    self.goal_controller.sync(conn, goals.get_execution(conn, previous)['goal_id'])
+
     def _launch_native(self, session, spec, resume=False):
+        if '_execution' in session:
+            return self.goal_controller.launch(session, spec)
         session_id = session["session_id"]
         if resume:
             self._check_offline(session)
@@ -614,6 +675,7 @@ class Manager:
             runtime = runtimes.get(conn, session_id)["runtime"]
             native_id=runtimes.get(conn,session_id)['native_id']
             pending=runtime_switch.pending(conn,session_id)
+            permission_mode = settings.get_execution(conn)['claude']
         if resume and native_id is None and (pending is None or pending['to_runtime']!=runtime):
             raise board.BoardError('原生会话 ID 丢失，不能猜测恢复或偷偷新建')
         native_resume=resume and native_id is not None
@@ -621,14 +683,18 @@ class Manager:
             from .codex_runtime import CodexRunning
             current = CodexRunning(self.home, self.plugin_root, session, spec, options,
                                    self.journal(session_id), self.send_message,
-                                   process_factory=self.process_factory, resume=native_resume)
+                                   process_factory=self.process_factory, resume=native_resume,
+                                   goal_handler=self.goal_controller.agent_action)
             self.processes[session_id] = current
             return spawn.command(session_id, session["crew_name"], session["role"], runtime="codex", **options)
         exe = claude_executable()
         if native_id not in (None,session_id):
             raise board.BoardError('Claude 原生身份与 Crew 身份不一致，不能恢复错误会话')
         install.ensure(self.home, self.plugin_root)
-        command = spawn.command(session_id, session["crew_name"], session["role"], native_resume, **options, agent=spec["agent"])
+        command = spawn.command(session_id, session["crew_name"], session["role"], native_resume, **options, agent=spec["agent"],
+                                permission_mode=permission_mode)
+        if spec.get('_workspace_notice'):
+            command += ['--append-system-prompt', spec['_workspace_notice']]
         command[0] = exe
         journal = self.journal(session_id)
         journal.reset_runtime()
@@ -652,47 +718,77 @@ class Manager:
     @_admitted
     def start(self, conn, project_name, name, task=None, group=None, role="member", members=(), cwd=None,
               new_worktree=None, base=None, now=None, member_session_ids=(), model=models.INHERIT, effort=models.INHERIT, agent=None,
-              runtime=models.INHERIT):
-        if role == "leader":
-            plan = spawn.leader_plan(conn, self.home, self.plugin_root, project_name, name, members, task,
-                                     cwd=cwd, new_worktree=new_worktree, base=base, now=now,
-                                     member_session_ids=member_session_ids, model=model, effort=effort, group=group, agent=agent, runtime=runtime)
-        else:
-            plan = spawn.prepare(conn, self.home, self.plugin_root, project_name, name, task, group, role,
-                                 cwd=cwd, new_worktree=new_worktree, base=base, now=now, model=model, effort=effort, runtime=runtime)
-        session_id = plan["session_id"]
-        spec = plan["spec"]
+              runtime=models.INHERIT, caller_session_id=None, caller_execution_id=None):
+        with self.lock:
+            bound_goal = None
+            if caller_execution_id is not None and caller_session_id is None:
+                raise board.BoardError('目标派生人员必须明确调用身份')
+            if caller_session_id is not None:
+                caller = board.session(conn, caller_session_id)
+                if caller['project'] != project_name or caller['role'] != 'leader' or caller['status'] == 'closed' or board.is_archived(conn, caller_session_id):
+                    raise board.BoardError('只有本项目当前 leader 可以创建组员')
+                own_group = conn.execute('SELECT name FROM groups WHERE project=? AND leader_session_id=? AND closed_at IS NULL',
+                                         (project_name, caller_session_id)).fetchone()
+                if own_group is None or role != 'member' or group not in (None, own_group['name']):
+                    raise board.BoardError('leader 只能在自己的当前组创建成员')
+                group = own_group['name']
+                if caller_execution_id is not None:
+                    execution = goals.get_execution(conn, caller_execution_id)
+                    goal = goals.get(conn, execution['goal_id'], project_name)
+                    if execution['session_id'] != caller_session_id or goal['leader_session_id'] != caller_session_id:
+                        raise board.BoardError('调用执行不属于此目标的 leader')
+                    gate = goals.dispatch_check(conn, goal['id'], execution_id=caller_execution_id)
+                    if not gate['allowed'] or not self.running(caller_execution_id):
+                        raise board.Conflict(gate['reason'] or '调用目标执行没有在当前宿主运行')
+                    bound_goal = goal['id']
+            if role == "leader":
+                plan = spawn.leader_plan(conn, self.home, self.plugin_root, project_name, name, members, task,
+                                         cwd=cwd, new_worktree=new_worktree, base=base, now=now,
+                                         member_session_ids=member_session_ids, model=model, effort=effort, group=group, agent=agent, runtime=runtime)
+            else:
+                plan = spawn.prepare(conn, self.home, self.plugin_root, project_name, name, task, group, role,
+                                     cwd=cwd, new_worktree=new_worktree, base=base, now=now, model=model, effort=effort, runtime=runtime)
+            session_id = plan["session_id"]
+            spec = plan["spec"]
+            goal_receipt = {}
 
-        def launch(_):
-            worktree, branch = hooks.git_details(spec["cwd"])
-            session = board.register_session(conn, session_id, project_name, spec["cwd"], worktree, branch, name=name,
-                                             role=spec["role"], group_name=spec["group"], spawn_id=spec["id"],
-                                             permission_mode="bypassPermissions", now=now)
-            board.update_cc_name(conn, session_id, name, now=now)
-            chosen_runtime = spec.get("runtime", "claude")
-            runtimes.set(conn, session_id, chosen_runtime, session_id if chosen_runtime == "claude" else None, now=now)
-            models.set(conn, session_id, spec["model"], spec["effort"], now=now)
-            try:
-                with self.lock:
-                    plan["command"] = self._launch(session, spec)
-                    text = (spec["task"] if chosen_runtime == "codex" else "Read the file " + spec["md"] +
-                            " with the Read tool and follow it. It is your task brief from Crew.")
-                    self._send(session_id, text, spec["task"], source="crew")
-            except Exception:
-                board.set_status(conn, session_id, "offline", now=now)
-                raise
+            def launch(_):
+                worktree, branch = hooks.git_details(spec["cwd"])
+                session = board.register_session(conn, session_id, project_name, spec["cwd"], worktree, branch, name=name,
+                                                 role=spec["role"], group_name=spec["group"], spawn_id=spec["id"],
+                                                 permission_mode="bypassPermissions", now=now)
+                board.update_cc_name(conn, session_id, name, now=now)
+                chosen_runtime = spec.get("runtime", "claude")
+                runtimes.set(conn, session_id, chosen_runtime, session_id if chosen_runtime == "claude" else None, now=now)
+                models.set(conn, session_id, spec["model"], spec["effort"], now=now)
+                try:
+                    with self.lock:
+                        if bound_goal is not None:
+                            goals.assign(conn, bound_goal, session_id, task, actor=caller_session_id)
+                            goal_receipt.update(self.goal_controller.send(bound_goal, session_id, task, source='crew'))
+                            return
+                        plan["command"] = self._launch(session, spec)
+                        text = (spec["task"] if chosen_runtime == "codex" else "Read the file " + spec["md"] +
+                                " with the Read tool and follow it. It is your task brief from Crew.")
+                        self._send(session_id, text, spec["task"], source="crew")
+                except Exception:
+                    board.set_status(conn, session_id, "offline", now=now)
+                    raise
 
-        result = spawn._execute(conn, plan, launch, members, member_session_ids)
-        return {**result, "session_id": session_id, "role": spec["role"]}
+            result = spawn._execute(conn, plan, launch, members, member_session_ids)
+            return {**result, **goal_receipt, "session_id": session_id, "role": spec["role"]}
 
     def _send(self, session_id, text, display_text=None, source='human', identity=None, images=None, sender=None):
         current = self.processes[session_id]
         identity = identity or str(uuid.uuid4())
         original_text=text if display_text is None else display_text
         handoff_id=None
-        if text.strip()!='/compact':
+        if text.strip()!='/compact' and current.execution is None:
             with closing(store.connect(self.home)) as handoff_conn:
                 text,handoff_id=runtime_switch.input_text(handoff_conn,session_id,text,identity)
+                summary = self.goal_controller.general_context(handoff_conn, session_id)
+                if summary:
+                    text = summary + '\n\n' + text
         files = []
         content = text
         if images:
@@ -716,7 +812,8 @@ class Manager:
             except Exception as exc:
                 with closing(store.connect(self.home)) as handoff_conn:runtime_switch.failed(handoff_conn,session_id,exc)
                 raise
-        message = {"type": "user", "uuid": identity, "session_id": session_id, "parent_tool_use_id": None,
+        message = {"type": "user", "uuid": identity,
+                   "session_id": current.native_id if current.execution else session_id, "parent_tool_use_id": None,
                    "message": {"role": "user", "content": content}}
         try:
             with current.input_lock:
@@ -738,8 +835,12 @@ class Manager:
         with self.lock:
             return runtime_switch.switch(conn,board.session(conn,session_id),self,preview_id,confirm,catalog,now)
 
-    def send_message(self, sender_id, target_id, text, message_id=None):
-        with closing(store.connect(self.home)) as conn:
+    def send_message(self, sender_id, target_id, text, message_id=None, execution_id=None, kind='information'):
+        with self.lock, closing(store.connect(self.home)) as conn:
+            if execution_id:
+                from . import goal_messages
+                return goal_messages.queue(conn, sender_id, target_id, text, execution_id,
+                                           message_id=message_id, kind=kind)
             return messaging.queue(conn, sender_id, target_id, text, message_id=message_id)
 
     def deliver_messages(self):
@@ -750,18 +851,28 @@ class Manager:
 
     def _deliver_messages(self):
         with self.lock, closing(store.connect(self.home)) as conn:
+            from . import goal_messages
+            from . import goal_links
+            goal_links.deliver(self.goal_controller, conn)
+            goal_messages.deliver(self.goal_controller, conn)
             for message in messaging.pending(conn):
                 sid = message["target_session_id"]
                 target = board.session(conn, sid)
                 if target["status"] == "closed" or board.is_archived(conn, sid):
                     conn.execute("UPDATE peer_messages SET error=? WHERE id=?", ("目标已归档或移除", message["id"]))
                     continue
-                if self.busy(sid):
+                if messaging.stopped(conn, sid):
+                    continue
+                active = self.goal_controller.routing_execution(conn, sid)
+                if self.busy(active['id'] if active else sid):
                     continue
                 sender = board.session(conn, message["sender_session_id"])
                 body = messaging.text(conn, message)
                 try:
-                    if self.running(sid):
+                    if active is not None:
+                        self.goal_controller.send(active['goal_id'], sid, body, display_text=message['body'], source='peer',
+                            identity='peer:' + message['id'], sender=sender['crew_name'])
+                    elif self.running(sid):
                         self._send(sid, body, display_text=message["body"], source="peer",
                                    identity="peer:" + message["id"], sender=sender["crew_name"])
                     else:
@@ -778,23 +889,68 @@ class Manager:
                                            {"id": message["id"], "reason": str(exc)})
 
     @_admitted
-    def send(self, session, text, source='human', identity=None, images=None):
+    def send(self, session, text, source='human', identity=None, images=None, display_text=None, sender=None):
         images = validate_images(images)
-        session_id = session["session_id"]
+        session_id = session.get('_storage_id', session["session_id"])
+        identity = str(uuid.uuid4()) if identity is None else identity
+        if not isinstance(identity, str) or not identity.strip() or len(identity) > 160:
+            raise board.BoardError("消息标识必须是非空文本，最多 160 个字符")
+        digest = hashlib.sha256(json.dumps({'text': text if display_text is None else display_text,
+                                          'images': images, 'source': source},
+                                          ensure_ascii=False, sort_keys=True).encode('utf-8')).hexdigest()
         with self.lock:
+            with closing(store.connect(self.home)) as routing_conn:
+                session = workspace_execution.execution_session(routing_conn, session)
+                if '_execution' not in session:
+                    active = self.goal_controller.routing_execution(routing_conn, session['session_id'])
+                    if active is not None:
+                        return self.goal_controller.send(active['goal_id'], session['session_id'], text, images=images,
+                            identity=identity, source=source, display_text=display_text, sender=sender)
+                    if messaging.stopped(routing_conn, session['session_id']):
+                        if source not in ('human', 'qq', 'lark'):
+                            raise board.Conflict('用户已停止此会话；排队消息不能自动恢复它')
+                        messaging.clear_stop(routing_conn, session['session_id'])
             if self.closed:
                 raise board.BoardError("网页服务正在关闭")
             if session["status"] == "closed":
                 raise board.Conflict("会话已归档，不能继续发送消息")
             if not self.path(session_id).exists():
                 raise board.BoardError("该会话没有网页聊天记录")
-            if self.running(session_id) and self.journal(session_id).status == "working":
-                raise board.Conflict("会话正在回复，请等这一轮结束")
+            journal = self.journal(session_id)
+            prior = journal.inputs.get(identity)
+            if prior is not None:
+                if prior['digest'] != digest:
+                    raise board.Conflict("同一消息标识不能发送不同内容")
+                if prior['status'] == 'accepted':
+                    return {'ok': True, 'message_id': identity, 'accepted': True,
+                            'delivery': prior['delivery'], 'duplicate': True}
+                if prior['status'] != 'rejected':
+                    raise board.Conflict("上次输入的原生接收状态未确认，请先核对会话，避免重复执行")
+            elif identity in journal.messages:
+                raise board.Conflict("这条历史输入没有可确认的接收回执，请先核对会话")
+            steering = self.running(session_id) and self.journal(session_id).status == "working"
+            if steering and source not in ("human", "qq", "lark"):
+                raise board.Conflict("会话正在回复，自动消息等待当前轮次结束")
             if not self.running(session_id):
-                spec = json.loads((self.home / "spawn" / (session["spawn_id"] + ".json")).read_text(encoding="utf-8"))
+                with closing(store.connect(self.home)) as spec_conn:
+                    spec, _ = self._resume_spec(spec_conn, session)
                 self._launch(session, spec, resume=True)
-            identity = self._send(session_id, text, source=source, identity=identity, images=images)
-        return {"ok": True, 'message_id': identity}
+            delivery = 'steered' if steering else 'started'
+            journal.emit('input_delivery', message_id=identity, digest=digest, status='submitted', delivery=delivery)
+            try:
+                identity = self._send(session_id, text, display_text=display_text,
+                                      source=source, identity=identity, images=images, sender=sender)
+            except (codex_client.RpcError, board.BoardError) as exc:
+                journal.emit('input_delivery', message_id=identity, digest=digest, status='rejected',
+                             delivery=delivery, error=type(exc).__name__, detail=str(exc))
+                raise
+            except (codex_client.TransportError, codex_client.RequestTimeout, OSError) as exc:
+                journal.emit('input_delivery', message_id=identity, digest=digest, status='unknown',
+                             delivery=delivery, error=type(exc).__name__, detail=str(exc))
+                raise
+            journal.emit('input_delivery', message_id=identity, digest=digest, status='accepted', delivery=delivery)
+        return {"ok": True, 'message_id': identity, 'accepted': True,
+                'delivery': delivery}
 
     @_admitted
     def compact(self, session, caller_session_id=None):
@@ -834,10 +990,12 @@ class Manager:
             return self.send(session, "/compact")
 
     def _resume_spec(self, conn, session, now=None):
+        supplied_session = session
+        session = workspace_execution.execution_session(conn, session)
         session_id = session["session_id"]
         if session["spawn_id"] is not None:
             path = self.home / "spawn" / (session["spawn_id"] + ".json")
-            return json.loads(path.read_text(encoding="utf-8")), False
+            return {**json.loads(path.read_text(encoding="utf-8")), 'cwd': session['cwd'], 'project': session['project']}, False
         spawn_id = uuid.uuid4().hex
         spec = {"id": spawn_id, "name": session["crew_name"], "group": session["group_name"],
                 "role": session["role"], "task": session["task"], "cwd": session["cwd"],
@@ -849,22 +1007,22 @@ class Manager:
         path.write_text(json.dumps(spec, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         conn.execute("UPDATE sessions SET spawn_id=? WHERE session_id=?", (spawn_id, session_id))
         session["spawn_id"] = spawn_id
+        supplied_session['spawn_id'] = spawn_id
         return spec, True
 
     def _resume(self, conn, session, text, sender=None, now=None, identity=None, source="crew", display_text=None):
-        # _launch(resume=True) runs the fresh liveness check right before starting the process.
-        spec, created_spawn = self._resume_spec(conn, session, now=now)
+        previous_spawn = session['spawn_id']
         journal = self.journal(session["session_id"])
         journal.path.parent.mkdir(parents=True, exist_ok=True)
         journal.path.touch(exist_ok=True)
-        self._launch(session, spec, resume=True)
         board.update_cc_name(conn, session["session_id"], session["crew_name"], now=now)
-        self._send(session["session_id"], text, source=source, sender=sender, identity=identity, display_text=display_text)
-        return created_spawn
+        self.send(session, text, source=source, sender=sender, identity=identity, display_text=display_text)
+        return previous_spawn is None and session['spawn_id'] is not None
 
     @_admitted
     def wake(self, conn, target, text, caller_session_id=None, now=None):
         with self.lock:
+            target = workspace_execution.execution_session(conn, target)
             if self.closed:
                 raise board.BoardError("网页服务正在关闭")
             control = board.session_control(conn, target["session_id"])
@@ -939,7 +1097,7 @@ class Manager:
                 message += ('\n\n回复 leader 用 crew send ' + reply_to['crew_name'] + ' "<回复>"；Codex 也可用 crew_send_message。' if peer else
                             "\n\n回复 leader 用 SendMessage，地址「" + reply_to["cc_name"] + "」。")
             sender = reply_to["crew_name"] if reply_to is not None else board.HUMAN
-            created_spawn = self._resume(conn, target, message, sender=sender, now=now)
+            created_spawn = self._resume(conn, target, message, sender=sender, now=now, source='human' if human else 'crew')
             board.record_event(conn, "session:wake", target["project"], board.HUMAN if human else caller_session_id,
                                {"target": target["session_id"], "name": target["crew_name"], "created_spawn": created_spawn}, now)
             return {"ok": True, "session_id": target["session_id"], "name": target["crew_name"], "address": target["crew_name"]}
@@ -958,7 +1116,9 @@ class Manager:
             if self.auto_candidates is None:
                 # The snapshot waits for the first agents poll; sessions this service already launched are not leftovers.
                 self.auto_candidates = {path.stem: now for path in sorted((self.home / "chat").glob("*.jsonl"))
-                                        if path.stem not in self.processes and self.journal(path.stem).status == "working"}
+                                        if path.stem not in self.processes and self.journal(path.stem).status == "working"
+                                        and conn.execute('SELECT 1 FROM sessions WHERE session_id=?', (path.stem,)).fetchone()}
+            self.goal_controller.recover(conn, agents, runtime=runtime)
             projects = {project["name"] for project in board.projects(conn)}
             live = {agent["sessionId"] for agent in agents}
             for session_id, started in list(self.auto_candidates.items()):
@@ -975,6 +1135,10 @@ class Manager:
                     reason = "会话已收"
                 elif session["project"] not in projects:
                     reason = "所在项目未启用"
+                elif messaging.stopped(conn, session_id):
+                    reason = '用户已停止会话'
+                elif self.goal_controller.routing_execution(conn, session_id) is not None:
+                    reason = '当前 Crew 身份已由目标接管'
                 elif self.running(session_id):
                     reason = "会话已由网页继续运行"
                 elif session_id in live:
@@ -1089,6 +1253,80 @@ class Manager:
             current.stderr_reader.join(timeout=10)
             if current.stderr_reader.is_alive():
                 raise board.BoardError('托管会话进程已退出，但错误输出尚未读完')
+
+    def stop_identity(self, session_id, caller_session_id=None):
+        """Persist a stop gate, then confirm every owned native for this person has exited."""
+        actor = board.HUMAN if caller_session_id is None else caller_session_id
+        with self.lock, closing(store.connect(self.home)) as conn:
+            target = board.session(conn, session_id)
+            if actor != board.HUMAN:
+                caller = board.session(conn, actor)
+                leader = board.leader_of(conn, session_id)
+                if caller['project'] != target['project'] or (actor != session_id and
+                        (leader is None or leader['session_id'] != actor or caller['role'] != 'leader')):
+                    raise board.BoardError('只能停止自己或自己组内的成员')
+            conn.execute('INSERT INTO session_stop_gates(session_id,stopped_at,stopped_by) VALUES(?,?,?) '
+                         'ON CONFLICT(session_id) DO UPDATE SET stopped_at=excluded.stopped_at,stopped_by=excluded.stopped_by',
+                         (session_id, store.now_iso(), actor))
+            keys = self._identity_keys(conn, session_id)
+            owned_claude = {key: getattr(self.processes[key], 'native_id', key) for key in keys
+                            if self.running(key) and getattr(self.processes[key], 'runtime', 'claude') == 'claude'}
+            paused = set()
+            for key in keys:
+                if key != session_id:
+                    execution = goals.get_execution(conn, key)
+                    goal = goals.get(conn, execution['goal_id'])
+                    if goal['status'] not in goals.TERMINAL:
+                        if goal['leader_session_id'] == session_id:
+                            goals.request_pause(conn, goal['id'], manual=True, actor=actor, reason='明确停止此人员')
+                            paused.add(goal['id'])
+                if self.running(key) and self.busy(key):
+                    try:
+                        self.interrupt(key)
+                    except (board.BoardError, codex_client.CodexError, OSError) as exc:
+                        self.journal(key).emit('error', text='原生中断未确认，继续关闭托管进程：' + str(exc))
+                self.stop_managed(key)
+                if self.auto_candidates is not None:
+                    self.auto_candidates.pop(key, None)
+            external_claude = set()
+            for key in keys:
+                native_claude = set()
+                if key == session_id:
+                    mapping = runtimes.get(conn, key)
+                    bindings = list(conn.execute('SELECT runtime,native_id FROM session_runtime_bindings WHERE session_id=?', (key,)))
+                    if mapping['runtime'] == 'claude':
+                        native_claude.add(mapping['native_id'] or key)
+                else:
+                    execution = goals.get_execution(conn, key)
+                    mapping, bindings = execution, execution['bindings']
+                native_claude.update(binding['native_id'] for binding in bindings
+                                     if binding['runtime'] == 'claude' and binding['native_id'])
+                external_claude.update(native_claude - {owned_claude.get(key)})
+                if mapping['runtime'] == 'codex' or any(binding['runtime'] == 'codex' for binding in bindings):
+                    from .codex_runtime import RuntimeLease
+                    try:
+                        lease = RuntimeLease(self.home, key).acquire()
+                        lease.release()
+                    except board.Conflict as exc:
+                        raise board.Conflict('Codex 执行仍由外部宿主持有或原生进程仍存活，请到原工具停止后重试') from exc
+                    except (OSError, ValueError) as exc:
+                        raise board.Conflict('无法确认外部 Codex 执行已退出，请到原工具确认停止') from exc
+            if external_claude:
+                try:
+                    agents = self._external_agents()
+                except board.Conflict as exc:
+                    raise board.Conflict('无法确认外部 Claude 执行已退出，请到原工具确认停止') from exc
+                if any(agent['sessionId'] in external_claude for agent in agents):
+                    raise board.Conflict('Claude 会话仍在外部运行，Crew 没有持有该进程，请到原工具停止后重试')
+            for key in keys[1:]:
+                if goals.get_execution(conn, key)['status'] not in goals.TERMINAL:
+                    goals.set_execution_status(conn, key, 'paused')
+            for goal_id in paused:
+                self.goal_controller.sync(conn, goal_id)
+            self.journal(session_id).emit('manual_stop', stopped_by=actor, text='已停止此人员的所有托管执行；排队消息不能自动恢复。')
+            board.record_event(conn, 'session:stopped', target['project'], session_id, {'actor': actor, 'executions': keys[1:]})
+            return {'ok': True, 'session_id': session_id, 'stopped': True, 'running': False,
+                    'execution_ids': keys[1:]}
 
     def detach(self, session_id):
         """Release an idle session to VS Code by letting its own process finish."""

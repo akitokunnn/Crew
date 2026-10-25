@@ -9,7 +9,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import board, channel, git_process, guard, install, messaging, rules, runtimes, store, trust_mode
+from . import board, channel, git_process, goals, guard, install, messaging, rules, runtimes, store, trust_mode
 
 EVENTS = ("session-start", "user-prompt-submit", "stop", "notification", "pre-ask", "post-ask", "session-end", "guard")
 
@@ -25,13 +25,12 @@ def git_toplevel(cwd):
 
 
 def git_details(cwd):
-    # A failed probe may describe a plain directory; a timeout is an attendance
-    # error and must reach main's diagnostic boundary instead of registering
-    # the checkout as a non-Git project.
-    result = git_process.run(["-C", str(cwd), "rev-parse", "--show-toplevel"], timeout=10)
-    if result.returncode != 0:
-        # A project directory does not have to be a git checkout; record it without worktree / branch.
+    if git_process.repository_root(cwd) is None:
         return None, None
+    # A marker means Git must verify it. Broken repositories, missing Git and
+    # timeouts must not silently register this checkout as a plain directory.
+    result = git_process.run(["-C", str(cwd), "rev-parse", "--show-toplevel"], timeout=10)
+    result.check_returncode()
     return store.norm_path(result.stdout.strip()), _git(cwd, "branch", "--show-current")
 
 
@@ -65,7 +64,33 @@ def _inactive_claude_runtime(home, session_id):
         return False
 
 
+def _goal_hook(event, data, home, plugin_root, environ, now):
+    """Native goal UUIDs never become new people or consume the global inbox."""
+    execution_id = environ.get('CREW_EXECUTION_ID')
+    if not execution_id:
+        return None
+    with contextlib.closing(store.connect(home)) as conn:
+        execution = goals.get_execution(conn, execution_id)
+        native = goals.resolve_native(conn, 'claude', data['session_id'])
+        if (native is None or native['id'] != execution_id or execution['runtime'] != 'claude'
+                or execution['session_id'] != environ.get('CREW_SESSION_ID')):
+            raise board.BoardError('目标执行与 Claude 原生会话不匹配')
+        logical = {**data, 'session_id': execution['session_id']}
+        if event == 'guard':
+            gate = goals.dispatch_check(conn, execution['goal_id'], execution_id=execution_id)
+            reason = None if gate['allowed'] else 'BLOCKED by Crew: ' + gate['reason']
+            reason = reason or guard.check(home, logical, now=now)
+            if reason:
+                print(reason, file=sys.stderr)
+                return 2, None
+        # Process state is reconciled from the owning runtime, not a late hook.
+        return 0, None
+
+
 def handle(event, data, home, plugin_root, environ, git_provider=git_details, now=None):
+    scoped = _goal_hook(event, data, home, plugin_root, environ, now)
+    if scoped is not None:
+        return scoped
     if _inactive_claude_runtime(home, data['session_id']):
         if event == 'guard':
             print('BLOCKED by Crew: 此 Crew 会话当前使用 Codex，旧 Claude 载体不能继续执行工具。' + guard.TAIL, file=sys.stderr)

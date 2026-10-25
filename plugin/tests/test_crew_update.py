@@ -9,11 +9,12 @@ import sys
 import threading
 import time
 import unittest
+from unittest import mock
 from contextlib import closing
 from pathlib import Path
 from urllib.request import urlopen
 
-from crew import board, chat, codex_runtime, hooks, install, messaging, runtimes, store, updater, web
+from crew import board, chat, codex_runtime, goals, hooks, install, messaging, operations, runtimes, store, updater, web
 from test_shell import NOW, PLUGIN, ShellFixture
 
 HELPER = PLUGIN / "crew_update.py"
@@ -42,7 +43,7 @@ raise SystemExit(2)
 
 
 def copy_plugin(target):
-    shutil.copytree(PLUGIN, target, ignore=shutil.ignore_patterns("tests", "__pycache__", "*.pyc"))
+    shutil.copytree(PLUGIN, target, ignore=shutil.ignore_patterns("tests", "*-test-*", "__pycache__", "*.pyc"))
     return target
 
 
@@ -148,6 +149,32 @@ class UpdateGateTests(ShellFixture, unittest.TestCase):
         self.hold()
         with self.assertRaisesRegex(board.Conflict, "实例已变化"):
             self.service.prepare_update({"instance_id": "old-instance"})
+        self.assertIsNone(self.service.chat.paused())
+
+    def test_goal_native_identity_blocks_and_goal_send_is_admitted_before_mutation(self):
+        goal = goals.create(self.conn, "demo", "s3", "Update gate", "Keep this request queued", ["No turn starts"])
+        execution = goals.create_execution(self.conn, goal["id"], "s3", runtime="claude")
+        goals.bind_native(self.conn, execution["id"], "claude", "external-goal-native")
+        self.agents = [{"sessionId": "external-goal-native", "name": "goal-native", "status": "idle"}]
+        self.hold()
+        self.assertIn("Claude 会话仍在外部运行", self.prepare()["reasons"][0])
+        self.agents = []
+        ready = self.prepare()
+        self.assertEqual(ready["status"], "ready")
+        before = goals.get(self.conn, goal["id"])
+        with self.assertRaises(chat.UpdatePaused):
+            self.service.chat.goal_controller.send(goal["id"], "s3", "Cannot start during update")
+        self.assertEqual(goals.get(self.conn, goal["id"]), before)
+        self.assertEqual(self.processes, [])
+
+    def test_operations_cannot_start_during_update_and_existing_worker_blocks_prepare(self):
+        controller = operations.Operations(self.home)
+        self.hold()
+        with mock.patch.object(controller, "_tick") as tick:
+            controller.tick()
+            tick.assert_not_called()
+        with mock.patch("crew.operations.read_operations", return_value={"active_worker": {"pid": os.getpid()}}):
+            self.assertIn("修复工作仍在运行", self.prepare()["reasons"][0])
         self.assertIsNone(self.service.chat.paused())
 
     def test_idle_prepare_closes_new_work_and_cancel_reopens_it(self):

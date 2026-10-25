@@ -207,6 +207,13 @@ class Supervisor:
         self._blocked, self._detail = None, None
         self._next_check = 0.0
         self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+        self.operations = None
+        self._operations_error = None
+        deployment = self.directory / 'deployment.json'
+        self._deployment = (_read_json(deployment) if deployment.exists() else
+                            {'source': str(Path(__file__).resolve().parents[2]), 'staged': None})
+        self._release_trial = None
+        self._launch_version = None
 
     def _load_incidents(self):
         try:
@@ -318,6 +325,20 @@ class Supervisor:
 
     def _publish(self):
         restart = self._restart()  # May discover/adopt a changed registry.
+        if self.operations is not None:
+            from .operations import OperationsError
+            try:
+                self.operations.observe_service(self.state, {'state': self.state, 'detail': self._detail,
+                                                            'service_pid': self.service_pid,
+                                                            'source_commit': (self._deployment.get('verified') or {}).get('commit')})
+                self.operations.tick()
+                self._operations_error = None
+            except (OSError, ValueError, OperationsError) as exc:
+                # Operations failure preserves the independently guarded service.
+                detail = type(exc).__name__ + ': ' + str(exc)
+                if detail != self._operations_error:
+                    self._event('error', '运维处理失败：' + detail)
+                self._operations_error = detail
         evidence = self._evidence or {}
         value = {"instance_id": self.instance_id, "state": self.state, "checked_at": _now(),
                  "supervisor_pid": os.getpid(),
@@ -332,6 +353,9 @@ class Supervisor:
                  "ownership": "owned" if self.owned else "borrowed" if self.service_pid else None,
                  "last_request_id": self.last_request_id, "last_action": self.last_action,
                  "last_request_error": self.last_request_error}
+        if self.operations is not None:
+            value['operations'] = self.operations.snapshot()
+            value['operations']['error'] = self._operations_error
         try:
             _atomic_json(self.directory / "status.json", value)
         except OSError as exc:
@@ -447,6 +471,48 @@ class Supervisor:
         finally:
             stream.close()
 
+    def _stage_verified_release(self, source, incident_id):
+        from .operations import OperationsError
+        source = Path(source).resolve()
+        if not self.owned or self.command_factory is not None:
+            raise OperationsError('ActivationRefused: service is borrowed or uses a custom launcher')
+        if self._intentional or self._maintenance():
+            raise OperationsError('ActivationRefused: explicit stop or maintenance is active')
+        if not source.is_relative_to(self.operations.directory / 'releases'):
+            raise OperationsError('ActivationRefused: release is outside the Crew operations snapshots')
+        if not (source / '.crew-verified-release.json').is_file() or not (source / 'plugin' / 'crew_desktop.py').is_file():
+            raise OperationsError('ActivationRefused: verified Crew release entrypoint is missing')
+        baseline = self._deployment.get('verified')
+        if not baseline or not baseline.get('clean'):
+            raise OperationsError('NoVerifiedBaseline: start the owned service from a clean committed Crew version before application')
+        from .operations_worker import _git
+        previous = self.operations.directory / 'releases' / ('rollback-' + baseline['commit'])
+        if not previous.exists():
+            _git(baseline['source'], 'worktree', 'add', '--detach', str(previous), baseline['commit'])
+        if _git(previous, 'rev-parse', 'HEAD') != baseline['commit'] or _git(previous, 'status', '--porcelain', '--untracked-files=no'):
+            raise OperationsError('InvalidRollbackSnapshot: previous verified version was modified')
+        self._deployment['source'] = str(previous)
+        self._deployment.update(staged=str(source), incident_id=incident_id)
+        _atomic_json(self.directory / 'deployment.json', self._deployment)
+        self._event('info', 'Crew 修复已合并并独立验证；等待自有后台确认退出后切换：' + str(source))
+        if self._alive() is False:
+            self._restart_due = time.monotonic()
+        return True
+
+    def _release_health(self, healthy, detail):
+        if not self._release_trial:
+            return
+        trial = self._release_trial
+        if healthy:
+            self._deployment.update(source=trial['source'], staged=None)
+        else:
+            self._deployment.update(source=trial['previous'], staged=None)
+            self._event('error', 'ReleaseFailed: 新版本已退出；下一次有界恢复使用此前健康版本')
+        _atomic_json(self.directory / 'deployment.json', self._deployment)
+        self._release_trial = None
+        if self.operations is not None:
+            self.operations.release_result(trial['incident_id'], healthy=healthy, detail=detail)
+
     def _launch(self, recovery=False, *, registry_version=None):
         maintenance = self._maintenance()
         if maintenance:
@@ -463,7 +529,23 @@ class Supervisor:
         if not self._free_service_lock():
             raise SupervisorError("此 HOME 的后端锁仍被占用；不会启动第二个后端")
         if self.command_factory is None:
-            command = [sys.executable, str(Path(__file__).resolve().parents[1] / "crew_desktop.py")]
+            source = self._deployment.get('staged') or self._deployment['source']
+            # The original runtime may be repo/plugin or a retained flat
+            # portable backend. Its entrypoint is always next to this package.
+            # Verified Git release snapshots have the repository/plugin layout.
+            original = Path(__file__).resolve()
+            entrypoint = (original.parents[1] / 'crew_desktop.py'
+                          if Path(source).resolve() == original.parents[2]
+                          else Path(source) / 'plugin' / 'crew_desktop.py')
+            command = [sys.executable, str(entrypoint)]
+            if self.operations is not None and (self.operations.directory / 'policy.json').exists():
+                from .operations_worker import _git, RepairError
+                try:
+                    self._launch_version = {'source': source, 'commit': _git(source, 'rev-parse', 'HEAD'),
+                                            'clean': not bool(_git(source, 'status', '--porcelain', '--untracked-files=no'))}
+                except (OSError, RepairError) as exc:
+                    self._launch_version = None
+                    self._event('warning', 'NoVerifiedBaseline: ' + type(exc).__name__ + ': ' + str(exc))
         else:
             command = list(self.command_factory(self.port))
         command += ["--home", str(self.home), "--port", str(self.port)]
@@ -484,6 +566,9 @@ class Supervisor:
             with contextlib.suppress(OSError, ValueError):
                 self.process.stdin.close()
         self.process, self.service_pid, self.owned = process, process.pid, True
+        if self.command_factory is None and self._deployment.get('staged'):
+            self._release_trial = {'source': self._deployment['staged'], 'previous': self._deployment['source'],
+                                   'incident_id': self._deployment['incident_id']}
         self._generation += 1
         for kind, stream in (("stdout", process.stdout), ("stderr", process.stderr)):
             threading.Thread(target=self._reader, args=(stream, self._generation, kind), daemon=True).start()
@@ -591,6 +676,8 @@ class Supervisor:
         self._next_check = time.monotonic() + self.check_interval
         alive = self._alive()
         if alive is False:
+            self._release_health(False, {'error': 'ReleaseFailed: backend exited before a healthy probe',
+                                         'service_pid': self.service_pid, 'restored_source': self._deployment['source']})
             registry, _ = self._reconcile_registry(recovery=True)
             if registry in ("adopted", "blocked"):
                 return
@@ -622,6 +709,12 @@ class Supervisor:
                 self._recovery_pending = False
                 self._event("info", "后端已恢复，端口保持 " + str(self.port))
             if state == "healthy":
+                if self._launch_version is not None:
+                    self._deployment['verified'] = self._launch_version
+                    _atomic_json(self.directory / 'deployment.json', self._deployment)
+                    self._launch_version = None
+                self._release_health(True, {'service_pid': self.service_pid, 'url': self.url,
+                                           'source': self._deployment.get('staged') or self._deployment['source']})
                 self._healthy_since = self._healthy_since or time.monotonic()
                 if time.monotonic() - self._healthy_since >= self.restart_window:
                     self._consecutive = 0
@@ -761,6 +854,10 @@ class Supervisor:
                 self._publish()
                 _print(maintenance, error=True)
                 return 78
+            from .operations import Operations
+            from .goals import operations_callbacks
+            self.operations = Operations(self.home, activate_release=self._stage_verified_release,
+                                         **operations_callbacks(self.home))
             threading.Thread(target=self._stdin, args=(sys.stdin if stdin is None else stdin,), daemon=True).start()
             self._publish()
             if self._stop.is_set():
@@ -773,7 +870,10 @@ class Supervisor:
                 self._state("failed", str(exc))
                 self._publish()
                 _print("Crew administrator: " + str(exc), error=True)
-                return 76
+                # An explicitly configured repair worker and its control channel
+                # stay usable when the Web backend cannot even bootstrap.
+                if not (self.operations.directory / 'policy.json').exists():
+                    return 76
             detached_reported = False
             while not self._stop.is_set():
                 try:

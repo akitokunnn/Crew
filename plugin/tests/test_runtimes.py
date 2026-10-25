@@ -5,7 +5,7 @@ import threading
 import unittest
 from pathlib import Path
 
-from crew import board, models, runtimes, store
+from crew import board, models, runtimes, settings, store
 
 
 class RuntimeFixture(unittest.TestCase):
@@ -16,6 +16,7 @@ class RuntimeFixture(unittest.TestCase):
         self.home = self.root / "home"
         self.conn = store.connect(self.home)
         self.addCleanup(self.conn.close)
+        settings.save(self.conn, {'default': {'runtime': 'claude', 'model': None, 'effort': None}})
         board.init_project(self.conn, "demo", self.root)
         for sid, name, role, group in (("chief-id", "chief", "leader", None),
                                        ("member-id", "builder", "member", "chief"),
@@ -85,7 +86,8 @@ class RuntimeModelTests(RuntimeFixture):
         models.set(self.conn, "member-id", "claude-opus-5-5", "max")
         self.assertEqual(models.get(self.conn, "member-id"), {"model": "claude-opus-5-5", "effort": "max"})
         with self.assertRaises(ValueError):
-            models.validate_options("gpt-custom", "high")
+            models.validate_options("bad model", "high")
+        models.validate_options('claude-future-custom', 'high')
         with self.assertRaises(ValueError):
             models.validate_options(models.HAIKU, "low")
 

@@ -15,6 +15,21 @@
     $('crew-backend-version').textContent = state.backend?.version || '未读取';
     $('crew-target-version').textContent = state.target?.version || '未检查';
     $('crew-plugin-version').textContent = state.plugin?.state === 'not_installed' ? '未安装' : state.plugin?.registered_version || '未读取';
+    const online=state.online;
+    $('crew-release-version').textContent=state.online_checking?'检查中…':online?(online.release?.version||'尚无正式发布包'):state.online_error?'检查失败':'尚未检查';
+    $('crew-main-version').textContent=state.online_checking?'检查中…':online?.main?.version|| (state.online_error?'检查失败':'尚未检查');
+    $('crew-online-error').textContent=state.online_error?'线上检查失败：'+state.online_error:'';
+    $('crew-online-error').hidden=!state.online_error;
+    let onlineMessage=state.online_checking?'正在查询 GitHub 正式发布和主干版本…':'点击检查 Crew 查询线上版本。';
+    if(online){
+      const comparison=online.release_comparison;
+      onlineMessage=comparison>0?'有新的正式发布，可打开发布页查看。':online.main_comparison<0?'当前桌面含未发布更改，版本高于线上主干。':online.main_comparison>0?'主干有更新的源码，尚未正式发布。':'当前桌面与线上主干版本一致。';
+      if(!online.release)onlineMessage+=' 当前尚无正式发布包。';
+      onlineMessage+=' 检查时间：'+new Date(online.checked_at).toLocaleString('zh-CN');
+    }
+    if(state.online_error)onlineMessage='本机检查结果仍可使用，请稍后重试线上查询。';
+    $('crew-online-status').textContent=onlineMessage;
+
     $('crew-update-message').textContent = state.blocked_reason || state.message || '';
     $('crew-update-error').textContent = state.error || ''; $('crew-update-error').hidden = !state.error;
     $('crew-update-backup').textContent = state.backup?.path ? '备份：' + state.backup.path : '';
@@ -27,7 +42,7 @@
     const active = !['idle','queued','done','error'].includes(state.phase);
     $('crew-update-check').disabled = request || active;
     $('crew-update-apply').disabled = request || active || state.queued || !state.can_update;
-    $('crew-update-apply').textContent = state.queued ? '已排队' : '更新 Crew';
+    $('crew-update-apply').textContent = state.queued ? '已排队' : '统一后台与插件';
     $('crew-update-cancel').hidden = !state.queued; $('crew-update-cancel').disabled = request;
   }
   async function operation(action) {
@@ -37,7 +52,12 @@
     catch (error) { state = { ...state, phase:'error', error:error.message || String(error) }; }
     finally { request = false; render(); }
   }
-  $('crew-update-check').addEventListener('click', () => { void operation(() => bridge.crewUpdateCheck()); });
+  function check(){void operation(() => bridge.crewUpdateCheck());}
+  $('crew-update-check').addEventListener('click', check);
+  $('tools-check').addEventListener('click', check);
+  for(const kind of ['release','main'])$('crew-'+kind+'-open').addEventListener('click',()=>{
+    void bridge.crewUpdateOpen(kind).catch(error=>{state={...state,online_error:error.message};render();});
+  });
   $('crew-update-apply').addEventListener('click', () => { void operation(() => bridge.crewUpdateApply()); });
   $('crew-update-cancel').addEventListener('click', () => { void operation(() => bridge.crewUpdateCancel()); });
   bridge.onCrewUpdateState(value => { state = value; render(); });

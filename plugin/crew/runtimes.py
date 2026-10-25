@@ -1,10 +1,17 @@
 """Host-owned mapping from a stable Crew identity to its native runtime thread."""
+import shutil
 import sqlite3
 
 from . import board, store
 
 
 RUNTIMES = ("claude", "codex")
+
+
+def default_runtime(which=None, *, home=None, purpose='default'):
+    """Compatibility carrier view of the persistent HOME/purpose AI choice."""
+    from . import settings
+    return settings.resolve(home, purpose, which=shutil.which if which is None else which)['runtime']
 
 
 def validate(runtime):

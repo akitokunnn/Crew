@@ -1,49 +1,15 @@
-.documents-center{display:flex;flex-direction:column;min-height:0;height:100%}
-.documents-center>.head{justify-content:space-between}
-.documents-scroll{overflow:auto;min-height:0;flex:1}
-.documents-in{padding:25px 28px 40px;max-width:1300px;margin:0 auto}
-.documents-filters{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-bottom:16px}
-.documents-filters input[type="search"],.documents-filters select{height:35px;padding:6px 10px;border:1px solid var(--line-strong);border-radius:8px;background:var(--surface);color:var(--text);font:inherit;font-size:calc(12px * var(--fs));min-width:0}
-.doc-search{flex:1;min-width:190px}.doc-search input{width:100%}
-.documents-filters select{max-width:185px}.doc-important-filter{display:flex;gap:6px;align-items:center;white-space:nowrap;font-size:calc(12px * var(--fs));color:var(--text-2)}
-.doc-important-filter input{accent-color:var(--accent)}
-.documents-note{margin:0 0 15px;color:var(--text-3);font-size:calc(12px * var(--fs))}
-.documents-results{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,330px),1fr));gap:14px;align-items:start}
 .document-card{min-width:0;padding:18px;border:1px solid var(--line);background:var(--surface);border-radius:13px}
 .document-card.important{border-color:color-mix(in srgb,var(--accent) 27%,var(--line))}
 .document-top{display:flex;align-items:center;gap:7px;margin-bottom:8px}
 .doc-kind,.doc-important{font-size:calc(10.5px * var(--fs));line-height:1.7;color:var(--text-3)}
 .doc-important{background:var(--accent-soft);color:var(--accent-text);padding:0 6px;border-radius:5px}
 .doc-pin{margin-left:auto;width:25px;height:25px;font-size:18px}.doc-pin[aria-pressed="true"]{color:var(--accent-text)}
-.doc-title,.doc-rail-title{display:block;color:var(--text);font-weight:500;text-decoration:none;line-height:1.5;overflow-wrap:anywhere}
-.doc-title{font-size:calc(16px * var(--fs))}.doc-title:hover,.doc-rail-title:hover{color:var(--accent-text);text-decoration:underline;text-underline-offset:3px}
+.doc-title{display:block;color:var(--text);font-weight:500;text-decoration:none;line-height:1.5;overflow-wrap:anywhere}
+.doc-title{font-size:calc(16px * var(--fs))}.doc-title:hover{color:var(--accent-text);text-decoration:underline;text-underline-offset:3px}
 .doc-summary{margin:10px 0 0;color:var(--text-2);font-size:calc(12.5px * var(--fs));line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden}
 .doc-summary.missing{color:var(--text-3);font-style:normal}
 .doc-path{font-family:var(--font-mono);font-size:calc(10.5px * var(--fs));color:var(--text-3);white-space:nowrap;text-overflow:ellipsis;overflow:hidden;margin:13px 0 8px}
 .doc-metadata{display:flex;flex-direction:column;gap:3px;font-size:calc(11px * var(--fs));color:var(--text-3);overflow-wrap:anywhere}
 .doc-actions{display:flex;align-items:center;flex-wrap:wrap;gap:3px;margin-top:14px;padding-top:9px;border-top:1px solid var(--line)}
 .doc-actions .btn{padding:4px 7px;font-size:calc(11px * var(--fs))}.doc-reset{margin-left:auto}
-.documents-empty{grid-column:1/-1;padding:50px 20px;color:var(--text-3);text-align:center;font-size:calc(13px * var(--fs))}
 .doc-missing{display:block;color:var(--danger);font-size:calc(12px * var(--fs))}
-#documents-more{margin-top:20px}
-.documents-rail{display:flex;flex-direction:column;min-height:0;min-width:0;border-left:1px solid var(--line);background:var(--panel-2)}
-.documents-rail[hidden]{display:none!important}
-.doc-rail-head{display:flex;align-items:center;gap:5px;min-height:62px;padding:14px 14px 12px;border-bottom:1px solid var(--line)}
-.doc-rail-head h2{margin:0;font-size:calc(13px * var(--fs));font-weight:500}.doc-rail-head h2 span{margin-left:4px;font-size:calc(11px * var(--fs));color:var(--text-3)}
-.doc-rail-head h2:focus{outline:0}
-.doc-drawer-close{display:none;margin-left:auto}
-.doc-rail-body{padding:14px 12px;overflow:auto;min-height:0;flex:1}
-.doc-rail-card{padding:12px 0;border-bottom:1px solid var(--line)}.doc-rail-card:first-child{padding-top:0}.doc-rail-card:last-child{border-bottom:0}
-.doc-rail-meta{display:flex;gap:5px;justify-content:space-between;flex-wrap:wrap;font-size:calc(10px * var(--fs));color:var(--text-3);margin-bottom:6px}
-.doc-rail-title{font-size:calc(12.5px * var(--fs))}.doc-rail-card .doc-summary{font-size:calc(11px * var(--fs));margin-top:5px;-webkit-line-clamp:3}
-.doc-rail-empty{color:var(--text-3);font-size:calc(12px * var(--fs));line-height:1.7}
-.doc-all{justify-content:center;flex:none;margin:0 10px 13px;font-size:calc(11px * var(--fs))}
-.doc-rail-toggle.active,.rp-toggle.active{background:var(--accent-soft);color:var(--accent-text)}
-.app.documents-layout{grid-template-columns:var(--sb-w) minmax(0,1fr) 220px}
-.app.documents-layout.architecture-open{grid-template-columns:var(--sb-w) minmax(0,1fr)}
-.app .rp{position:fixed;top:10px;right:10px;bottom:10px;width:332px;max-width:calc(100vw - 20px);border:1px solid var(--line-strong);border-radius:18px;box-shadow:var(--shadow-lg);z-index:16;transform:translateX(calc(100% + 24px));transition:transform .28s var(--ease);overflow:hidden;visibility:hidden}
-.app .rp.show{display:flex;transform:none;visibility:visible}.app .rp-toggle,.app .rp-close{display:grid}
-.rp-scrim.show{display:block;position:fixed;inset:0;border:0;background:rgba(24,22,16,.2);z-index:15}
-.documents-scrim{position:fixed;inset:0;border:0;background:rgba(24,22,16,.2);z-index:13}.documents-scrim[hidden]{display:none}
-@media(max-width:1359px){.app.documents-layout{grid-template-columns:var(--sb-w) minmax(0,1fr)}.documents-rail{position:fixed;top:10px;right:10px;bottom:10px;width:330px;max-width:calc(100vw - 20px);border:1px solid var(--line-strong);border-radius:16px;z-index:14;box-shadow:var(--shadow-lg);transform:translateX(calc(100% + 24px));visibility:hidden;transition:transform .24s var(--ease)}.documents-rail.open{transform:none;visibility:visible}.doc-drawer-close{display:grid}}
-@media(max-width:760px){.documents-in{padding:18px 16px 30px}.documents-filters{gap:7px}.documents-filters select{max-width:155px}.documents-filters .doc-search{flex-basis:100%}.document-card{padding:15px}.documents-center>.head{padding-top:10px;padding-bottom:10px;height:auto;min-height:62px}}

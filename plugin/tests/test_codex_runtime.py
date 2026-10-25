@@ -12,7 +12,7 @@ import sys
 import unittest
 from unittest import mock
 
-from crew import board, chat, codex_runtime, runtimes, store, trust_mode
+from crew import board, chat, codex_runtime, runtimes, settings, store, trust_mode, workspace_settings
 
 
 class FakeProcess:
@@ -37,12 +37,18 @@ class FakeClient:
 
     def start_thread(self, **params):
         self.calls.append(("thread/start", params))
-        return {"thread": {"id": self.thread_id}, "model": "actual-model", "reasoningEffort": "medium"}
+        return {"thread": {"id": self.thread_id}, "model": "actual-model", "reasoningEffort": "medium",
+                "sandbox": {"type": "workspaceWrite", "networkAccess": False,
+                            "excludeTmpdirEnvVar": True, "excludeSlashTmp": True,
+                            "writableRoots": params.get('config', {}).get('sandbox_workspace_write', {}).get('writable_roots', [])}}
 
     def resume_thread(self, identity, **params):
         self.thread_id = identity
         self.calls.append(("thread/resume", {"threadId": identity, **params}))
-        return {"thread": {"id": identity}, "model": "actual-model", "reasoningEffort": "medium"}
+        return {"thread": {"id": identity}, "model": "actual-model", "reasoningEffort": "medium",
+                "sandbox": {"type": "workspaceWrite", "networkAccess": False,
+                            "excludeTmpdirEnvVar": True, "excludeSlashTmp": True,
+                            "writableRoots": params.get('config', {}).get('sandbox_workspace_write', {}).get('writable_roots', [])}}
 
     def start_turn(self, **params):
         self.calls.append(("turn/start", params))
@@ -57,6 +63,10 @@ class FakeClient:
         self.turn_id = "compact-1"
         self.emit("item/started", turnId=self.turn_id, item={"id": "compact", "type": "contextCompaction"})
         return {}
+
+    def steer(self, text=None, *, input=None, turn_id=None):
+        self.calls.append(("turn/steer", {'input': input, 'turnId': turn_id}))
+        return {'turnId': turn_id}
 
     def interrupt(self, turn_id=None):
         self.calls.append(("turn/interrupt", {}))
@@ -126,6 +136,51 @@ class CodexRuntimeTests(unittest.TestCase):
         self.addCleanup(close)
         return running, self.clients[-1]
 
+    def test_explicit_execution_permission_is_used_only_when_a_carrier_starts(self):
+        with closing(store.connect(self.home)) as conn:
+            settings.save_execution(conn, {'codex': 'danger-full-access', 'claude': 'default'})
+        _, client = self.make_running()
+        start = client.calls[0][1]
+        self.assertEqual(start['sandbox'], 'danger-full-access')
+        self.assertEqual(start['approvalPolicy'], 'never')
+        with closing(store.connect(self.home)) as conn:
+            settings.save_execution(conn, {'codex': 'read-only', 'claude': 'default'})
+        self.assertEqual(start['sandbox'], 'danger-full-access')
+        self.assertEqual([method for method, _ in client.calls], ['thread/start'])
+
+    def test_relinked_resume_uses_current_db_cwd_and_does_not_authorize_history_roots(self):
+        first, _ = self.make_running()
+        first.close()
+        self.assertTrue(first.reader_done.wait(2))
+        new_root = self.base / 'RelinkedCase'
+        new_root.mkdir()
+        with closing(store.connect(self.home)) as conn:
+            workspace_settings.apply_update(conn, 'demo', None, new_root, 0)
+            self.assertEqual({store.norm_path(root) for root in workspace_settings.read_roots(conn, 'demo', 'worker')},
+                             {store.norm_path(new_root), store.norm_path(self.root)})
+        old_spec = {'agent': None, 'cwd': str(self.root)}
+        running, client = self.make_running(resume=True, spec=old_spec)
+        method, params = client.calls[0]
+        self.assertEqual(method, 'thread/resume')
+        self.assertEqual(params['threadId'], 'native-1')
+        self.assertEqual(params['cwd'], str(new_root.resolve()))
+        self.assertEqual(client.kwargs['cwd'], str(new_root.resolve()))
+        self.assertEqual(running.session['cwd'], str(new_root.resolve()))
+        self.assertEqual(params['sandbox'], 'workspace-write')
+        self.assertEqual(params['approvalPolicy'], 'on-request')
+        self.assertNotIn('sandbox_workspace_write', params['config'])
+        self.assertIn('工作区目录已迁移', params['developerInstructions'])
+        self.assertIn(str(new_root.resolve()), params['developerInstructions'])
+        self.assertEqual(old_spec['cwd'], str(self.root))
+        self.assertEqual([name for name, _ in client.calls], ['thread/resume'])
+
+    def test_removed_project_is_rejected_before_constructing_native_client(self):
+        with closing(store.connect(self.home)) as conn:
+            workspace_settings.remove(conn, 'demo', 0)
+        with self.assertRaises(board.BoardError):
+            self.make_running()
+        self.assertEqual(self.clients, [])
+
     def test_initialization_binds_thread_identity_without_model_turn(self):
         running, client = self.make_running(options={"model": "requested-model", "effort": "high"})
         self.assertEqual([method for method, _ in client.calls], ["thread/start"])
@@ -141,8 +196,49 @@ class CodexRuntimeTests(unittest.TestCase):
         self.assertTrue(start["config"]["bypass_hook_trust"])
         self.assertEqual(start["config"]["model_reasoning_effort"], "high")
         self.assertEqual(client.kwargs["env"]["CREW_SESSION_ID"], "worker")
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows path casing regression')
+    def test_start_and_resume_use_disk_casing_without_changing_board_path_keys(self):
+        worktree = self.root / 'Temp' / 'WT' / 'Dashboard'
+        worktree.mkdir(parents=True)
         with closing(store.connect(self.home)) as conn:
-            self.assertEqual(runtimes.get(conn, "worker")["native_id"], "native-1")
+            board.register_session(conn, 'worker', 'demo', worktree, worktree, 'dashboard', name='worker')
+            self.session = board.session(conn, 'worker')
+        stored = self.session['cwd']
+        actual = str(worktree.resolve())
+        self.assertNotEqual(stored, actual.replace('\\', '/'))
+        running, first = self.make_running()
+        self.assertEqual(first.kwargs['cwd'], actual)
+        self.assertEqual(first.calls[0][1]['cwd'], actual)
+        running.close()
+        self.assertTrue(running.reader_done.wait(2))
+        _, resumed = self.make_running(resume=True)
+        self.assertEqual(resumed.kwargs['cwd'], actual)
+        self.assertEqual(resumed.calls[0][1]['cwd'], actual)
+        with closing(store.connect(self.home)) as conn:
+            self.assertEqual(board.session(conn, 'worker')['cwd'], stored)
+
+
+    def test_human_input_steers_active_turn_without_replacing_event_adapter(self):
+        running, client = self.make_running()
+        running.send('start work', 'input-first')
+        adapter = running._events
+        running.send('先说明已有证据，再继续', 'input-steer')
+        self.assertIs(running._events, adapter)
+        self.assertEqual([method for method, _ in client.calls].count('turn/start'), 1)
+        steer = [params for method, params in client.calls if method == 'turn/steer']
+        self.assertEqual(steer, [{'input': [{'type': 'text', 'text': '先说明已有证据，再继续'}], 'turnId': 'turn-1'}])
+        self.assertEqual(running.journal.status, 'working')
+        self.assertEqual([event['id'] for event in running.journal.events if event['type'] == 'message'],
+                         ['input-first', 'input-steer'])
+
+    def test_automatic_message_cannot_steer_a_busy_turn(self):
+        running, client = self.make_running()
+        running.send('start work', 'input-first')
+        with self.assertRaises(board.Conflict):
+            running.send('收到，再确认一次', 'automatic', source='peer')
+        self.assertNotIn('turn/steer', [method for method, _ in client.calls])
+        self.assertEqual([event['id'] for event in running.journal.events if event['type'] == 'message'], ['input-first'])
 
     def test_resume_requires_existing_native_id_and_reinjects_guard_and_rules(self):
         with self.assertRaisesRegex(board.BoardError, "丢失"):

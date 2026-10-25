@@ -5,7 +5,7 @@ const path = require('node:path');
 const { CrewUpdates } = require('../src/crew-updates.cjs');
 
 function fixture(t, options = {}) {
-  const config = { home: path.resolve('fixture-home'), backendDir: path.resolve('fixture-backend'), python: 'fixture-python', desktopVersion: '0.1.2' };
+  const config = { home: path.resolve('fixture-home'), backendDir: path.resolve('fixture-backend'), python: 'fixture-python', desktopVersion: options.desktopVersion || '0.1.2' };
   const calls = [], phases = [];
   let restarted = false, switched = false, pluginUpdated = false, releases = 0;
   const target = { root: config.backendDir, version: '0.1.2', digest: 'production-digest' };
@@ -19,6 +19,7 @@ function fixture(t, options = {}) {
   };
   const manager = new CrewUpdates(config, backend, {
     onChange: state => phases.push(state.phase),
+    checkLatest:async()=>{if(options.onlineError)throw new Error(options.onlineError);return {release:null,main:{version:'0.2.5',sha:'a'.repeat(40),url:'https://github.com/akitokunnn/Crew/tree/'+ 'a'.repeat(40)},checked_at:'2026-10-25T09:00:00Z'};},
     onRestart: async value => { calls.push('reconnect'); assert.equal(value.instance_id, 'new-instance'); },
     acquireLock: async () => {
       calls.push('lock');
@@ -153,3 +154,19 @@ for (const busy of [true, false]) {
     assert.equal(f.releases, 1);
   });
 }
+
+
+test('online main and release are separate from the local target and a newer local build is labelled ahead',async t=>{
+  const f=fixture(t,{desktopVersion:'0.2.6'});
+  const state=await f.manager.check();
+  assert.equal(state.online.main.version,'0.2.5');assert.equal(state.online.release,null);
+  assert.equal(state.online.main_comparison,-1);assert.equal(state.target.version,'0.1.2');
+  assert.equal(state.online_error,null);assert.equal(state.can_update,true);
+});
+
+test('online failure stays visible without replacing latest with a local version or disabling local sync',async t=>{
+  const f=fixture(t,{onlineError:'GitHub rate limited'});
+  const state=await f.manager.check();
+  assert.equal(state.online,null);assert.match(state.online_error,/rate limited/);
+  assert.equal(state.can_update,true);assert.equal(state.phase,'idle');assert.equal(state.online_checking,false);
+});

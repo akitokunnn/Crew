@@ -3,7 +3,7 @@
   const $=id=>document.getElementById(id),bridge=window.crewDesktop,panel=$('admin-page'),nav=$('nav-admin');
   const supported=typeof bridge?.adminStatus==='function'&&typeof bridge?.adminCheck==='function'&&typeof bridge?.adminRestart==='function';
   const labels={starting:'正在启动',healthy:'运行正常',degraded:'服务响应异常',recovering:'正在自动恢复',failed:'无法连接',stopped:'后台已停止',unmanaged:'外部服务',unknown:'状态未知',paused:'维护中 / 已暂停',circuit_open:'自动恢复已暂停',stopping:'正在停止'};
-  let snapshot=null,pending=null,error='',controlError='',receipt=null,note='',timer=null,visible=false,incidentsKey='';
+  let snapshot=null,pending=null,error='',controlError='',receipt=null,note='',timer=null,visible=false,incidentsKey='',operationsKey='';
   const date=value=>{const parsed=new Date(value);return value&&!Number.isNaN(parsed.valueOf())?parsed.toLocaleString('zh-CN',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit'}):'尚未记录';};
   function render(){
     const state=error?'unknown':snapshot?.state||'unknown';
@@ -24,6 +24,19 @@
       for(const incident of incidents.slice().reverse().slice(0,20)){
         const row=document.createElement('article');row.className='admin-incident';row.dataset.level=String(incident.level||'info');
         const at=document.createElement('time');at.textContent=date(incident.at);const message=document.createElement('p');message.textContent=String(incident.message||'未填写说明');row.append(at,message);$('admin-incidents').append(row);
+      }
+    }
+    const operations=snapshot?.operations,opsKey=JSON.stringify(operations||null);
+    if(opsKey!==operationsKey){operationsKey=opsKey;const list=$('admin-operations');list.replaceChildren();
+      const items=Array.isArray(operations?.incidents)?operations.incidents:[];
+      if(!items.length){const empty=document.createElement('p');empty.className='admin-empty';empty.textContent=operations?.error||'尚无需要处理的事故。';list.append(empty);}
+      const states={queued:'等待修复策略',waiting_evidence:'相同故障已有分析，等待新增证据',repairing:'正在隔离修复',awaiting_merge:'已验证并提交，等待项目合并',failed:'修复失败，现场已保留',resolved:'已恢复',validating_release:'正在复验已合并版本',staged:'已验证，等待自有后台退出后切换',active:'修复已应用',rolled_back:'新版本失败，已回到此前健康来源',refused:'应用被拒绝'};
+      for(const item of items.slice().reverse()){
+        const row=document.createElement('article');row.className='admin-incident';
+        const summary=document.createElement('p');summary.textContent=(item.summary||states[item.status]||item.status)+' · 诊断 '+String(item.attempts||0)+'/2 次';
+        const detail=document.createElement('p');detail.textContent='影响目标：'+(item.goals?.join('、')||'Crew 后台')+(item.result?.commit?' · commit '+item.result.commit.slice(0,12):'');row.append(summary,detail);
+        if(operations?.report?.incident_id===item.id){const report=document.createElement('details'),title=document.createElement('summary'),frame=document.createElement('iframe');title.textContent='查看 HTML 事故报告';frame.title='Crew 事故报告';frame.setAttribute('sandbox','');frame.srcdoc=operations.report.html;frame.className='admin-report';report.append(title,frame);row.append(report);}
+        list.append(row);
       }
     }
   }
@@ -56,6 +69,7 @@
   function syncVisibility(){const next=isVisible();if(next===visible)return;visible=next;if(next)void request('status');else clear();}
   function hide(){panel.hidden=true;nav.classList.remove('active');nav.removeAttribute('aria-current');visible=false;clear();}
   function show(){
+    window.CrewHomeSettings?.hide();
     if(!supported)return;window.CrewHomeTools?.hide();$('workspaces-page').hidden=true;$('tools-page').hidden=true;panel.hidden=false;
     for(const id of ['nav-workspaces','nav-tools']){$(id).classList.remove('active');$(id).removeAttribute('aria-current');}
     nav.classList.add('active');nav.setAttribute('aria-current','page');$('admin-title').focus();syncVisibility();
@@ -67,5 +81,6 @@
   document.addEventListener('visibilitychange',syncVisibility);
   new MutationObserver(syncVisibility).observe(document.body,{subtree:true,attributes:true,attributeFilter:['hidden']});
   window.addEventListener('pagehide',clear);
-  render();window.CrewHomeHealth={show,hide};
+  function mount(host){const parent=panel.parentNode;host.append(panel);panel.hidden=false;syncVisibility();return()=>{hide();parent.append(panel);};}
+  render();window.CrewHomeHealth={show,hide,mount};
 })();

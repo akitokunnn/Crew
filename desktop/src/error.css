@@ -1,4 +1,7 @@
-html,body{margin:0;height:100%;font-family:"Segoe UI Variable","Segoe UI","Microsoft YaHei",sans-serif;color:#242424;background:#fff}
+@font-face{font-family:"HarmonyOS Sans SC";src:url("../assets/fonts/HarmonyOS_Sans_SC_Regular.woff2") format("woff2");font-style:normal;font-weight:400;font-display:swap}
+@font-face{font-family:"HarmonyOS Sans SC";src:url("../assets/fonts/HarmonyOS_Sans_SC_Medium.woff2") format("woff2");font-style:normal;font-weight:500;font-display:swap}
+:root{--font-ui:"HarmonyOS Sans SC","PingFang SC","Microsoft YaHei UI",system-ui,sans-serif}
+html,body{margin:0;height:100%;font-family:var(--font-ui);font-synthesis:none;color:#242424;background:#fff}
 *{box-sizing:border-box}.error-view{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:40px;text-align:center}
-.error-view img{margin-bottom:22px}h1{font-size:22px;font-weight:600;letter-spacing:-.5px;margin:0 0 12px}p{font-size:13px;color:#737373;line-height:1.7;margin:0}.error-actions{display:flex;gap:10px;margin-top:26px}
+.error-view img{margin-bottom:22px}h1{font-size:22px;font-weight:500;letter-spacing:-.5px;margin:0 0 12px}p{font-size:13px;color:#737373;line-height:1.7;margin:0}.error-actions{display:flex;gap:10px;margin-top:26px}
 button{font:inherit;font-size:13px;padding:9px 17px;border:1px solid #dedede;border-radius:7px;color:#363636;background:#fff;cursor:pointer}.primary{background:#252525;border-color:#252525;color:#fff}button:hover{filter:brightness(.94)}button:focus-visible{outline:2px solid #777;outline-offset:3px}

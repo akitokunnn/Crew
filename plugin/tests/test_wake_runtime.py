@@ -4,7 +4,7 @@ import json
 import unittest
 from unittest import mock
 
-from crew import board, chat, models, store
+from crew import board, chat, models, settings, store
 from test_shell import NOW, PLUGIN, ShellFixture
 
 
@@ -24,6 +24,7 @@ class AutoResumeTests(ShellFixture, unittest.TestCase):
         return [event for event in board.events(self.conn, "demo") if event["kind"] == "session:auto-resume"]
 
     def test_interrupted_member_and_leader_resume_once_with_crew_message_and_current_model(self):
+        settings.save_execution(self.conn, {'codex': 'workspace-write', 'claude': 'bypassPermissions'})
         models.set(self.conn, "s1", "claude-sonnet-5-5", "high", now=NOW)
         self.interrupted("s1")
         self.interrupted("s3")

@@ -7,7 +7,7 @@ import threading
 import unittest
 from unittest import mock
 
-from crew import board,chat,models,runtimes,runtime_switch,store
+from crew import board,chat,goal_context,goals,models,runtimes,runtime_switch,store
 from tests.test_runtimes import RuntimeFixture
 from tests.test_chat import FakeProcess
 
@@ -62,9 +62,13 @@ class RuntimeSwitchTests(RuntimeFixture):
         self.assertEqual(self.manager.switch_runtime(self.conn,'member-id',preview['preview_id'],True,[],now='2026-10-25T00:00:00Z'),result)
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM events WHERE kind='session:runtime-switch'").fetchone()[0],1)
 
-    def test_only_member_and_proven_idle_local_sessions_can_switch(self):
-        with self.assertRaisesRegex(board.Conflict,'只有成员'):
-            self.manager.prepare_runtime(self.conn,'chief-id','codex',CATALOG)
+    def test_leader_and_member_can_switch_only_when_proven_idle_and_local(self):
+        leader_preview=self.manager.prepare_runtime(self.conn,'chief-id','codex',CATALOG)
+        self.assertFalse(leader_preview['starts_turn'])
+        self.manager.switch_runtime(self.conn,'chief-id',leader_preview['preview_id'],True,CATALOG)
+        back=self.manager.prepare_runtime(self.conn,'chief-id','claude',CATALOG)
+        self.manager.switch_runtime(self.conn,'chief-id',back['preview_id'],True,CATALOG)
+        self.assertEqual(runtimes.get(self.conn,'chief-id')['runtime'],'claude')
         board.set_status(self.conn,'member-id','working')
         with self.assertRaisesRegex(board.Conflict,'正在工作'):self.prepare()
         board.set_status(self.conn,'member-id','idle')
@@ -269,6 +273,98 @@ class RuntimeSwitchTests(RuntimeFixture):
                 self.assertFalse(self.manager.owns_pid('member-id',process.pid))
         finally:worker.join(3);process.finish()
         self.assertFalse(worker.is_alive())
+
+    def goal_execution(self, sid='member-id', *, title='验收目标'):
+        target=goals.create(self.conn,'demo','chief-id',title,'实现需求',['实际 example 达标'])
+        if sid!='chief-id':goals.assign(self.conn,target['id'],sid,'完成可验证工作')
+        execution=goals.create_execution(self.conn,target['id'],sid,runtime='claude')
+        return target,execution
+
+    def owned_execution(self, execution, *, busy=False):
+        current=chat.Running(FakeProcess([]),self.manager.journal(execution['id']))
+        current.execution=execution;current.reader=mock.Mock();current.stderr_reader=mock.Mock()
+        current.journal.set_status('working' if busy else 'idle')
+        self.manager.processes[execution['id']]=current
+        self.addCleanup(current.reader_done.set);self.addCleanup(current.process.finish)
+        return current
+
+    def test_running_goal_blocks_leader_and_assigned_member_even_before_native_launch(self):
+        target=goals.create(self.conn,'demo','chief-id','待处理目标','需求',['example'])
+        goals.assign(self.conn,target['id'],'member-id','执行')
+        goals.transition(self.conn,target['id'],'running')
+        for sid in ('chief-id','member-id'):
+            with self.subTest(sid=sid),self.assertRaisesRegex(board.Conflict,'先暂停'):
+                self.manager.prepare_runtime(self.conn,sid,'codex',CATALOG)
+            self.assertFalse(runtime_switch.state(self.conn,board.session(self.conn,sid),self.manager)['allowed'])
+        # A different unassigned person is not constrained by this goal.
+        self.manager.prepare_runtime(self.conn,'other-id','codex',CATALOG)
+        self.factory.assert_not_called()
+
+    def test_paused_goal_with_an_actual_busy_execution_still_blocks_switch(self):
+        target,execution=self.goal_execution();goals.request_pause(self.conn,target['id'])
+        current=self.owned_execution(execution,busy=True)
+        with self.assertRaisesRegex(board.Conflict,'仍在工作'):
+            self.prepare()
+        self.assertIsNone(current.process.poll())
+        self.assertEqual(runtimes.get(self.conn,'member-id')['runtime'],'claude')
+
+    def test_switch_drains_and_configures_only_this_person_paused_executions_preserving_native_histories(self):
+        target,execution=self.goal_execution()
+        goals.bind_native(self.conn,execution['id'],'claude','scoped-claude')
+        goals.bind_native(self.conn,execution['id'],'codex','scoped-codex')
+        prepared=goal_context.build(self.conn,execution['id'],base='必要规则',latest_input='开始')
+        goal_context.mark_applied(self.conn,prepared['manifest']['id'],execution_id=execution['id'])
+        goals.request_pause(self.conn,target['id'])
+        current=self.owned_execution(execution)
+        other_goal,other_execution=self.goal_execution('other-id',title='其他人的目标')
+        goals.transition(self.conn,other_goal['id'],'running')
+        other_current=self.owned_execution(other_execution,busy=True)
+        preview=self.prepare(model='gpt-test',effort='low')
+        self.assertEqual([item['id'] for item in preview['scope']['executions']],[execution['id']])
+        self.assertIn('本目标上下文',preview['cost']['notice'])
+        detached=[]
+        def detach(key):
+            detached.append(key);self.manager.processes[key].process.finish();self.manager.processes[key].reader_done.set()
+        with mock.patch.object(self.manager,'detach',side_effect=detach):self.switch(preview)
+        self.assertEqual(detached,[execution['id']]);self.assertIsNone(other_current.process.poll())
+        configured=goals.get_execution(self.conn,execution['id'])
+        self.assertEqual((configured['runtime'],configured['model'],configured['effort']),('codex','gpt-test','low'))
+        self.assertEqual({row['runtime']:row['native_id'] for row in configured['bindings']},{'claude':'scoped-claude','codex':'scoped-codex'})
+        self.assertEqual(goals.get_execution(self.conn,other_execution['id'])['runtime'],'claude')
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM goal_context_applied WHERE execution_id=?',(execution['id'],)).fetchone()[0],0)
+        self.assertTrue(goal_context.manifest(self.conn,prepared['manifest']['id'])['applied'])
+        self.factory.assert_not_called()
+
+    def test_goal_resume_or_a_new_binding_invalidates_preview_before_any_process_is_drained(self):
+        target,execution=self.goal_execution();goals.request_pause(self.conn,target['id'])
+        current=self.owned_execution(execution);preview=self.prepare()
+        goals.bind_native(self.conn,execution['id'],'codex','new-native-after-preview')
+        with mock.patch.object(self.manager,'detach') as detach,self.assertRaisesRegex(board.Conflict,'状态已经变化'):
+            self.switch(preview)
+        detach.assert_not_called();self.assertIsNone(current.process.poll())
+        preview=self.prepare();goals.resume(self.conn,target['id'])
+        with mock.patch.object(self.manager,'detach') as detach,self.assertRaisesRegex(board.Conflict,'状态已经变化'):
+            self.switch(preview)
+        detach.assert_not_called()
+
+    def test_external_native_goal_writer_and_unfinished_reader_cannot_be_hidden_by_idle_identity(self):
+        target,execution=self.goal_execution();goals.request_pause(self.conn,target['id'])
+        goals.bind_native(self.conn,execution['id'],'claude','external-native')
+        self.manager.agents_provider=lambda:[{'sessionId':'external-native','pid':123}]
+        self.assertFalse(runtime_switch.state(self.conn,board.session(self.conn,'member-id'),self.manager,agents=self.manager.agents_provider())['allowed'])
+        with self.assertRaisesRegex(board.Conflict,'外部会话'):self.prepare()
+        self.manager.agents_provider=lambda:[]
+        current=self.owned_execution(execution);current.process.finish()
+        with self.assertRaisesRegex(board.Conflict,'输出还没有排空'):self.prepare()
+
+    def test_goal_configuration_failure_rolls_back_person_configuration_and_preview(self):
+        target,execution=self.goal_execution();goals.request_pause(self.conn,target['id'])
+        preview=self.prepare()
+        with mock.patch('crew.runtime_switch.goals.configure_execution',side_effect=board.Conflict('scope changed')):
+            with self.assertRaisesRegex(board.Conflict,'scope changed'):self.switch(preview)
+        self.assertEqual(runtimes.get(self.conn,'member-id')['runtime'],'claude')
+        self.assertEqual(goals.get_execution(self.conn,execution['id'])['runtime'],'claude')
+        self.assertEqual(self.conn.execute('SELECT status FROM runtime_switches WHERE id=?',(preview['preview_id'],)).fetchone()[0],'preview')
 
 
 if __name__=='__main__':unittest.main()

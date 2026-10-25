@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 from . import board, channel, guard, install, runtimes, store, vscode_sessions
-from .hooks import git_details, git_toplevel
+from .hooks import git_details
 
 
 def claude_agents():
@@ -99,6 +99,7 @@ def parser():
     a = c.add_parser("enable")
     a.add_argument("--base")
     a.add_argument("--stable")
+    a.add_argument("--runtime", choices=runtimes.RUNTIMES, default=argparse.SUPPRESS)
     c.add_parser("disable")
     c.add_parser("status")
     c.add_parser("policy").add_argument("--set", dest="policy_text")
@@ -246,8 +247,8 @@ def parser():
     a.add_argument("--with-members", action="store_true")
     a = c.add_parser("start")
     a.add_argument("--name", required=True)
-    a.add_argument("--model")
-    a.add_argument("--effort")
+    a.add_argument("--model", default=argparse.SUPPRESS)
+    a.add_argument("--effort", default=argparse.SUPPRESS)
     a.add_argument("--runtime", choices=runtimes.RUNTIMES, default=argparse.SUPPRESS)
     a.add_argument("--members")
     a.add_argument("--task")
@@ -271,9 +272,35 @@ def parser():
     a = command("wake", True)
     a.add_argument("name")
     a.add_argument("text")
+    a = command('stop', True)
+    a.add_argument('name')
     a = command("send", True)
     a.add_argument("name")
     a.add_argument("text")
+    a.add_argument('--kind', choices=('task','result','blocker','decision','user_answer','information','ack'), default='information')
+    for namespace, actions in (('goal', ('create','status','start','pause','resume','cancel','reopen','amend','assign','report-template','finish')),
+                               ('context', ('inspect','put','correct','expire'))):
+        goal_parser = command(namespace, True)
+        goal_parser.set_defaults(json=True)
+        goal_commands = goal_parser.add_subparsers(dest='action', required=True)
+        for action in actions:
+            entry = goal_commands.add_parser(action)
+            if action != 'create':
+                entry.add_argument('goal_id', nargs='?')
+            entry.add_argument('--project')
+            entry.add_argument('--execution-id')
+            entry.add_argument('--json', action='store_true', default=argparse.SUPPRESS)
+            payload = entry.add_mutually_exclusive_group()
+            payload.add_argument('--data', help='JSON object containing action data')
+            payload.add_argument('--file', type=Path, help='UTF-8 JSON action data/report file')
+            for name in ('title','request','leader','to','task','text','reason','item','kind','source'):
+                entry.add_argument('--' + name, default=argparse.SUPPRESS)
+            entry.add_argument('--acceptance', '--accept', action='append', default=argparse.SUPPRESS)
+            entry.add_argument('--constraint', action='append', default=argparse.SUPPRESS)
+            entry.add_argument('--dependency', action='append', default=argparse.SUPPRESS)
+            entry.add_argument('--priority', type=int, default=argparse.SUPPRESS)
+            entry.add_argument('--confirmed', action='store_true', default=argparse.SUPPRESS)
+            entry.add_argument('--start', action='store_true', default=argparse.SUPPRESS)
     a = command("web")
     a.add_argument("--port", type=int, default=47811)
     a.add_argument("--open", action="store_true")
@@ -423,6 +450,8 @@ def _emit(value, as_json=False, command=None, channel_card=None):
             print("已叫醒 %s，它在后台运行，SendMessage 地址：%s" % (value["name"], value["address"]))
     elif command == "compact":
         print(value["message"] if "message" in value else "已开始压缩")
+    elif command == 'stop':
+        print('已停止此 Crew 身份的所有托管执行；排队消息不能自动恢复。')
     elif command == "send":
         print(value.get("message", "消息已交给 Crew"))
     elif command == "whoami":
@@ -467,6 +496,62 @@ def _project(conn, args, cwd):
     return p["name"]
 
 
+def _goal_command(args, cwd):
+    from . import goal_actions, spawn
+    payload = {}
+    if args.file is not None:
+        if args.file.stat().st_size > 1024 * 1024:
+            raise board.BoardError('目标 JSON 文件超过 1 MiB')
+        payload = json.loads(args.file.read_text(encoding='utf-8-sig'))
+    elif args.data is not None:
+        payload = json.loads(args.data)
+    if not isinstance(payload, dict):
+        raise board.BoardError('目标 data/JSON 文件必须为对象')
+    action = args.action if args.command == 'goal' else 'context.' + args.action
+    if action == 'finish' and 'report' not in payload:
+        payload = {'report': payload}
+    if action == 'finish' and isinstance(payload.get('report'), dict) and payload['report'].get('goal_id'):
+        payload.setdefault('goal_id', payload['report']['goal_id'])
+    for flag, field in (('title','title'),('request','request'),('leader','leader'),('to','to'),('task','task'),
+                        ('text','text'),('reason','reason'),('item','item_id'),('kind','kind'),('acceptance','acceptance'),
+                        ('constraint','constraints'),('dependency','dependencies'),('priority','priority'),('confirmed','confirmed'),('start','start')):
+        if hasattr(args, flag):
+            payload[field] = getattr(args, flag)
+    if hasattr(args, 'source'):
+        payload['source'] = json.loads(args.source)
+    selected = getattr(args, 'goal_id', None) or os.environ.get('CREW_GOAL_ID')
+    if selected:
+        if payload.get('goal_id') is not None and payload['goal_id'] != selected:
+            raise board.BoardError('目标编号与绑定目标冲突')
+        payload['goal_id'] = selected
+    execution_id = args.execution_id or os.environ.get('CREW_EXECUTION_ID')
+    with contextlib.closing(store.connect(args.home)) as conn:
+        project = _project(conn, args, cwd)
+    payload.setdefault('project', project)
+    if action in goal_actions.READ_ACTIONS:
+        return goal_actions.dispatch(args.home, _actor(args), execution_id, action, payload)
+    # All CLI mutations go through the existing owner process; no offline
+    # fallback can accidentally launch or duplicate an execution.
+    return spawn.request_start(args.home, project, '/api/goals/agent',
+                               {'action': action, 'data': payload, 'actor_session_id': _actor(args), 'execution_id': execution_id})
+
+
+def _goal_item_execution(conn, args, *, live=True):
+    from . import goals
+    execution_id = os.environ.get('CREW_EXECUTION_ID')
+    if execution_id:
+        execution = goals.get_execution(conn, execution_id)
+        if execution['session_id'] != _session_id(args):
+            raise board.BoardError('execution 与调用会话不匹配')
+        if os.environ.get('CREW_GOAL_ID') and os.environ['CREW_GOAL_ID'] != execution['goal_id']:
+            raise board.BoardError('执行与目标环境不匹配')
+        if live:
+            gate = goals.dispatch_check(conn, execution['goal_id'], execution_id=execution_id)
+            if not gate['allowed']:
+                raise board.Conflict(gate['reason'])
+    return execution_id
+
+
 def _usage(argv):
     # Only global options precede the command. Everything after usage belongs to its owner.
     index = 0
@@ -492,6 +577,7 @@ def _with_card(conn, value):
     value["scope"] = None if card is None else card["scope"]
     value["done_when"] = None if card is None else card["done_when"]
     value.update(runtimes.get(conn, value["session_id"]))
+    value['leader'] = board.leader_of(conn, value['session_id'])
     if isinstance(value.get("leader"), dict):
         value["leader"].update(runtimes.get(conn, value["leader"]["session_id"]))
     return value
@@ -515,19 +601,30 @@ def _with_context(home, project_name, sessions):
         for session in sessions:
             session.update(context=None, context_reason=str(exc))
         return
-    contexts = {session["session_id"]: session["context"] for session in [*state["leaders"], *state["members"]]}
+    people = {session["session_id"]: session for session in [*state["leaders"], *state["members"]]}
     for session in sessions:
         sid = session["session_id"]
-        session["context"] = contexts.get(sid)
+        current = people.get(sid)
+        session["context"] = current["context"] if current is not None else None
+        if session.get('runtime') == 'codex' and current is not None:
+            session['status'] = current['status']
+            session['where'] = current['where']
         session["context_reason"] = None if session["context"] is not None else (
-            "网页尚无上下文数据" if sid in contexts else "会话未出现在网页状态中")
+            "网页尚无上下文数据" if sid in people else "会话未出现在网页状态中")
 
 
 def execute(conn, args, cwd, agents_provider):
     cmd = args.command
     actor = _actor(args)
     if cmd == "init":
-        root = args.root.resolve() if args.root is not None else Path(git_toplevel(cwd))
+        from . import startup
+        root = args.root.resolve() if args.root is not None else startup.git_root(cwd)
+        if args.root is None and not (root / '.git').exists():
+            existing = board.project_for_path(conn, root)
+            if existing is not None:
+                if args.name is None:
+                    return existing
+                root = Path(existing['root'])
         if not root.is_dir():
             raise board.BoardError("项目目录不存在: " + str(root))
         return board.init_project(conn, args.name if args.name is not None else root.name, root)
@@ -586,6 +683,13 @@ def execute(conn, args, cwd, agents_provider):
         if brief is None:
             print("提示：这道拍板还没有结构化摘要。请补充短标题、为什么需用户决定、推荐理由和每个选项后果；"
                   "可用 crew decision revise 原位补清，不要另发重复题。", file=sys.stderr)
+        execution_id = _goal_item_execution(conn, args)
+        if execution_id:
+            from . import goal_links, goals
+            with goals.transaction(conn):
+                number = board.ask.__wrapped__(conn, _session_id(args), args.question, args.option, args.recommend, args.blocking, brief=brief)
+                goal_links.bind(conn, 'decision', number, execution_id)
+                return number
         return board.ask(conn, _session_id(args), args.question, args.option, args.recommend, args.blocking, brief=brief)
     if cmd == "decision":
         from . import decision_briefs
@@ -641,6 +745,13 @@ def execute(conn, args, cwd, agents_provider):
         project = _project(conn, args, cwd)
         action = getattr(args, "action", None) or "list"
         if action == "add":
+            execution_id = _goal_item_execution(conn, args)
+            if execution_id:
+                from . import goal_links, goals
+                with goals.transaction(conn):
+                    result = todo.add.__wrapped__(conn, _session_id(args), args.title, args.steps, args.verification, args.blocking)
+                    goal_links.bind(conn, 'todo', result['id'], execution_id)
+                    return result
             return todo.add(conn, _session_id(args), args.title, args.steps, args.verification, args.blocking)
         if action == "withdraw":
             return todo.withdraw(conn, _session_id(args), args.id, args.reason)
@@ -651,12 +762,18 @@ def execute(conn, args, cwd, agents_provider):
         if args.action == "add":
             return documents.register(conn, _session_id(args), str((Path(cwd) / args.path).resolve()),
                                       title=args.title, summary=args.summary, kind=args.kind,
-                                      important=args.important, project=project)
+                                      important=args.important, project=project,
+                                      execution_id=_goal_item_execution(conn, args))
         if args.action == "refresh":
             scan = documents.refresh(conn, args.home, project)
             return {"documents": documents.list(conn, project), "scan": scan}
         leader_name = getattr(args, "leader", None)
         leader = board.named_session(conn, project, leader_name)["session_id"] if leader_name else None
+        execution_id = _goal_item_execution(conn, args, live=False)
+        if execution_id:
+            from . import goals
+            return documents.list(conn, project, leader_session_id=leader,
+                                  goal_id=goals.get_execution(conn, execution_id)['goal_id'])
         return documents.list(conn, project, leader_session_id=leader)
     if cmd == "say":
         speaker = conn.execute("SELECT project FROM sessions WHERE session_id=?", (actor,)).fetchone()
@@ -667,8 +784,10 @@ def execute(conn, args, cwd, agents_provider):
     if cmd == "git":
         if args.action in ("enable", "disable"):
             from . import spawn
-            spawn.request_start(args.home, p, "/api/git/" + args.action,
-                                {"base": args.base, "stable": args.stable} if args.action == "enable" else {})
+            body = {"base": args.base, "stable": args.stable} if args.action == "enable" else {}
+            if hasattr(args, "runtime"):
+                body["runtime"] = args.runtime
+            spawn.request_start(args.home, p, "/api/git/" + args.action, body)
         elif args.action == "policy":
             return {"policy": (board.git_policy(conn, p) if args.policy_text is None else
                                board.set_git_policy(conn, p, _session_id(args), args.policy_text))}
@@ -693,8 +812,13 @@ def execute(conn, args, cwd, agents_provider):
             return board.remove_resource(conn, p, args.name, actor)
         return board.resources(conn, p)
     if cmd == "status":
-        value = board.status(conn, p, _agents(agents_provider))
-        _with_context(args.home, p, [*value["ungrouped"], *(s for g in value["groups"] for s in g["members"])])
+        needs_claude = any(runtimes.get(conn, s['session_id'])['runtime'] == 'claude'
+                           and s['status'] != 'closed' for s in board.sessions(conn, p))
+        value = board.status(conn, p, _agents(agents_provider) if needs_claude else [])
+        people = [*value["ungrouped"], *(s for g in value["groups"] for s in g["members"])]
+        for person in people:
+            person.update(runtimes.get(conn, person['session_id']))
+        _with_context(args.home, p, people)
         return value
     if cmd == "open":
         from . import open_session
@@ -804,7 +928,22 @@ def main(argv=None, agents_provider=claude_agents, cwd=None, plugin_root=None):
             with contextlib.closing(store.connect(args.home)) as conn:
                 project = _project(conn, args, cwd)
             value = spawn.request_start(args.home, project, "/api/messages", {
-                "name": args.name, "text": args.text, "caller_session_id": caller})
+                "name": args.name, "text": args.text, "caller_session_id": caller,
+                'execution_id': os.environ.get('CREW_EXECUTION_ID'), 'kind': args.kind})
+            _emit(value, args.json, args.command)
+            return 0
+        if args.command in ('goal', 'context'):
+            value = _goal_command(args, cwd)
+            _emit(value, True, args.command)
+            return 0
+        if args.command == 'stop':
+            from . import spawn
+            with contextlib.closing(store.connect(args.home)) as conn:
+                project = _project(conn, args, cwd)
+                row = conn.execute('SELECT session_id FROM sessions WHERE project=? AND session_id=?', (project, args.name)).fetchone()
+                target = row['session_id'] if row else board.named_session(conn, project, args.name)['session_id']
+            value = spawn.request_start(args.home, project, '/api/session/stop', {
+                'session_id': target, 'caller_session_id': _actor(args)})
             _emit(value, args.json, args.command)
             return 0
         if args.command == "compact":

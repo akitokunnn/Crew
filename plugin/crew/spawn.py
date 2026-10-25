@@ -1,6 +1,7 @@
 """Prepare background Crew sessions and route CLI launches to the web service."""
 import contextlib
 import json
+import os
 import re
 import sqlite3
 import subprocess
@@ -10,7 +11,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from . import board, codex_client, git_process, models, runtimes, store
+from . import board, codex_client, git_process, git_view, models, runtimes, settings, store
 
 
 def _check_ignore(root):
@@ -22,16 +23,21 @@ def _check_ignore(root):
     except OSError as exc:
         raise board.BoardError('Git 工作区忽略规则检查无法执行：'+str(exc)) from exc
 
-def command(session_id, name, role, resume=False, model=None, effort=None, agent=None, runtime="claude"):
+def command(session_id, name, role, resume=False, model=None, effort=None, agent=None, runtime="claude", instructions=None,
+            permission_mode='default'):
     models.validate_options(model, effort, runtime=runtime)
     if runtime == "codex":
         # Model, effort, start/resume and native thread id are RPC parameters;
         # Claude's --session-id/--resume flags do not belong on app-server.
         return codex_client.command()
     args = ["claude", "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
-            "--include-partial-messages", "--replay-user-messages", "--permission-mode", "bypassPermissions",
+            "--include-partial-messages", "--replay-user-messages",
             "--name", name]
-    if role == "leader":
+    if permission_mode != 'default':
+        args += ['--permission-mode', permission_mode]
+    if instructions is not None:
+        args += ['--append-system-prompt', instructions]
+    elif role == "leader":
         args += ["--agent", "crew:leader" if agent is None else agent]
     if model is not None:
         args += ["--model", model]
@@ -72,6 +78,10 @@ def prepare(conn, home, plugin_root, project_name, name, task, group=None, role=
         raise board.BoardError("\u5de5\u4f5c\u76ee\u5f55\u4e0d\u5b58\u5728: " + str(directory))
     if new_worktree is not None:
         _text(new_worktree, "\u5206\u652f")
+        try:
+            git_view.require_repository(root)
+        except git_view.GitError as exc:
+            raise board.BoardError(str(exc)) from exc
         slug = re.sub(r"[^A-Za-z0-9_-]", "", new_worktree.split("/")[-1])
         if not slug:
             raise ValueError("\u5206\u652f\u540d\u6700\u540e\u4e00\u6bb5\u9700\u5305\u542b\u5b57\u6bcd\u3001\u6570\u5b57\u3001- \u6216 _")
@@ -92,13 +102,18 @@ def prepare(conn, home, plugin_root, project_name, name, task, group=None, role=
     leader = None
     if group in groups and groups[group]["closed_at"] is None and groups[group]["leader_session_id"] is not None:
         leader = board.session(conn, groups[group]["leader_session_id"])
-    leader_runtime = runtimes.get(conn, leader["session_id"])["runtime"] if leader is not None else "claude"
+    leader_runtime = runtimes.get(conn, leader["session_id"])["runtime"] if leader is not None else None
+    defaults = None
     if runtime is models.INHERIT or runtime is None:
-        runtime = leader_runtime
+        if leader_runtime is not None:
+            runtime = leader_runtime
+        else:
+            defaults = settings.resolve(conn)
+            runtime = defaults['runtime']
     runtimes.validate(runtime)
     inherited = (models.get(conn, leader["session_id"])
                  if role == "member" and leader is not None and runtime == leader_runtime
-                 else {"model": None, "effort": None})
+                 else defaults if defaults is not None else {"model": None, "effort": None})
     if model is models.INHERIT:
         model = inherited["model"]
     if effort is models.INHERIT:
@@ -127,13 +142,15 @@ def prepare(conn, home, plugin_root, project_name, name, task, group=None, role=
             "cwd": str(directory), "project": project_name, "agent": ("crew:leader" if agent is None else agent) if role == "leader" else None,
             "md": str(md_path), "runtime": runtime, "model": model, "effort": effort,
             "created_at": store.now_iso() if now is None else now}
-    return {"id": spawn_id, "session_id": session_id, "command": command(session_id, name, role, model=model, effort=effort, agent=agent, runtime=runtime), "spec": spec,
+    return {"id": spawn_id, "session_id": session_id, "command": command(session_id, name, role, model=model, effort=effort, agent=agent, runtime=runtime,
+            permission_mode=settings.get_execution(conn)['claude']), "spec": spec,
             "files": {str(json_path): json.dumps(spec, ensure_ascii=False, indent=2) + "\n", str(md_path): brief},
             "worktree_command": worktree_command}
 
 
 def _execute(conn, plan, launcher, members=(), member_session_ids=()):
     spec = plan["spec"]
+    board.project(conn, spec['project'])
     if plan["worktree_command"] is not None:
         result = git_process.run(plan["worktree_command"][1:],timeout=None)
         if result.returncode != 0:
@@ -153,7 +170,7 @@ def _execute(conn, plan, launcher, members=(), member_session_ids=()):
 
 
 def leader_plan(conn, home, plugin_root, project_name, name, members=(), task=None, cwd=None,
-                new_worktree=None, base=None, now=None, member_session_ids=(), model=None, effort=None, group=None, agent=None,
+                new_worktree=None, base=None, now=None, member_session_ids=(), model=models.INHERIT, effort=models.INHERIT, group=None, agent=None,
                 runtime=models.INHERIT):
     plan = prepare(conn, home, plugin_root, project_name, name, "\u7ba1\u7406\u5206\u7ec4 " + name if task is None else task,
                    role="leader", cwd=cwd, new_worktree=new_worktree, base=base, now=now, model=model, effort=effort,
@@ -217,18 +234,27 @@ def cli_dispatch(args, cwd, plugin_root):
             if not args.dry_run:
                 body = {"name": args.name, "members": args.members.split(",") if args.members is not None else [],
                         "task": args.task, "cwd": str(args.cwd) if args.cwd is not None else None, "new_worktree": args.new_worktree,
-                        "model": args.model, "effort": args.effort}
+                        }
+                if hasattr(args, 'model'):
+                    body['model'] = args.model
+                if hasattr(args, 'effort'):
+                    body['effort'] = args.effort
                 if hasattr(args, "runtime"):
                     body["runtime"] = args.runtime
                 return request_start(args.home, project["name"], "/api/leader", body)
             return leader_plan(conn, args.home, plugin_root, project["name"], args.name,
                                args.members.split(",") if args.members is not None else (), args.task,
-                               args.cwd, args.new_worktree, model=args.model, effort=args.effort,
+                               args.cwd, args.new_worktree, model=getattr(args, 'model', models.INHERIT), effort=getattr(args, 'effort', models.INHERIT),
                                runtime=getattr(args, "runtime", models.INHERIT))
         if not args.dry_run:
             body = {
                 "name": args.name, "task": args.task, "group": args.group, "role": args.role,
                 "cwd": str(args.cwd) if args.cwd is not None else None, "new_worktree": args.new_worktree, "base": args.base}
+            caller = args.session_id if args.session_id is not None else (os.environ.get('CREW_SESSION_ID') or os.environ.get('CLAUDE_CODE_SESSION_ID'))
+            if caller:
+                body['caller_session_id'] = caller
+            if os.environ.get('CREW_EXECUTION_ID'):
+                body['caller_execution_id'] = os.environ['CREW_EXECUTION_ID']
             if hasattr(args, "model"):
                 body["model"] = args.model
             if hasattr(args, "effort"):

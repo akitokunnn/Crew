@@ -6,6 +6,7 @@ const {execFile}=require('node:child_process'),{promisify}=require('node:util');
 const run=promisify(execFile),{app,ipcMain}=require('electron');
 const desktop=path.resolve(__dirname,'..'),output=path.join(desktop,'smoke-output','crew-updates');
 const core=require('../src/core.cjs'),{CrewUpdates}=require('../src/crew-updates.cjs');
+CrewUpdates.prototype._online=async function(){this.state.online={release:null,main:{version:'0.2.5',sha:'a'.repeat(40),url:'https://github.com/akitokunnn/Crew/tree/'+ 'a'.repeat(40)},main_comparison:-1,release_comparison:null,checked_at:new Date().toISOString()};this.state.online_error=null;this.state.online_checking=false;this._emit();};
 const original=CrewUpdates.prototype._helper;
 CrewUpdates.prototype._helper=async function(operation,args=[]){
   if(operation!=='inspect')return original.call(this,operation,args);
@@ -29,6 +30,9 @@ app.once('browser-window-created',(_event,win)=>{
       await js('crewDesktop.openProject('+JSON.stringify(project.name)+')');
       await js('crewDesktop.crewUpdateCheck()');
       evidence.before=await js('crewDesktop.crewUpdateSnapshot().then(s=>s.backend)');
+      assert.equal(await js('document.querySelector("#crew-main-version").textContent'),'0.2.5');
+      assert.equal(await js('document.querySelector("#crew-release-version").textContent'),'尚无正式发布包');
+      evidence.online={main:'0.2.5',release:null,fixture:true};
       const old=path.join(evidence.home,'old-cli');await fs.mkdir(path.join(old,'.claude-plugin'),{recursive:true});
       await fs.writeFile(path.join(old,'.claude-plugin','plugin.json'),JSON.stringify({version:'0.0.0'}));
       await fs.writeFile(path.join(evidence.home,'runtime.json'),JSON.stringify({plugin_root:old,python:'python',updated_at:'fixture'}));

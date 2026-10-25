@@ -6,44 +6,22 @@ const vm = require("node:vm");
 const {test} = require("node:test");
 const web = path.join(__dirname, "../crew/web");
 const plain = value => JSON.parse(JSON.stringify(value));
-function documentsHarness(api = async () => ({documents:[]})) {
-  let clock = 100000;
-  class Clock extends Date { static now() { return clock; } }
-  const sandbox = {window:{addEventListener(){}}, document:{addEventListener(){}, getElementById:() => null}, Date:Clock};
+function documentsHarness(api = async () => ({})) {
+  const handlers={},notices=[];
+  const sandbox = {window:{}, document:{addEventListener:(type,fn)=>handlers[type]=fn}};
   vm.createContext(sandbox); vm.runInContext(fs.readFileSync(path.join(web, "documents.js"), "utf8"), sandbox);
-  return {module:sandbox.window.CrewDocuments, create:() => sandbox.window.CrewDocuments.create({project:"alpha", api, toast(){}}), advance:ms => { clock += ms; }};
+  const client=sandbox.window.CrewDocuments.create({project:"alpha",api,toast:text=>notices.push(text),onChange(){}});
+  return {module:sandbox.window.CrewDocuments,client,notices,click:async(act,id)=>{const button={dataset:{docAct:act,docId:String(id)}};handlers.click({target:{closest:()=>button}});for(let i=0;i<12;i++)await Promise.resolve();}};
 }
 
-test("document ordering and filters prioritize important summaries without mixing groups", () => {
-  const {module} = documentsHarness();
-  const docs = [
-    {id:1, title:"普通汇总", kind:"summary", important:false, leader_session_id:"one", updated_at:"2026-10-24"},
-    {id:2, title:"重要报告", kind:"report", important:true, leader_session_id:"two", updated_at:"2026-10-24"},
-    {id:3, title:"重要汇总", summary:null, path:"docs/交付.md", kind:"summary", important:true, leader_session_id:"one", updated_at:"2026-10-23"}
-  ];
-  assert.deepEqual(plain(module.sorted(docs)).map(doc => doc.id), [3, 2, 1]);
-  assert.deepEqual(plain(module.filtered(docs, {query:"交付", group:"one", important:true})).map(doc => doc.id), [3]);
-  assert.deepEqual(plain(module.filtered(docs, {group:"two", kind:"summary"})), []);
-  assert.deepEqual(docs.map(doc => doc.id), [1, 2, 3]);
+test("task documents render only the explicit task list, preserve ordering and escape user text",()=>{
+  const {client,module}=documentsHarness();const docs=[{id:1,title:"普通记录",kind:"other",important:false},{id:2,title:"<script>汇总</script>",path:"docs/a.md",kind:"summary",important:true}];
+  assert.deepEqual(plain(module.sorted(docs)).map(item=>item.id),[2,1]);const first=client.taskCards(docs,"goal-a");assert(first.includes("&lt;script&gt;"));assert(first.indexOf('data-document-card="2"')<first.indexOf('data-document-card="1"'));
+  const other=client.taskCards([{id:3,title:"另一个任务文档"}],"goal-b");assert(!other.includes("普通记录"));assert(!other.includes("汇总"));assert(other.includes("另一个任务文档"));assert.equal(client.taskCards([],"goal-empty"),"");
 });
 
-test("document refresh deduplicates in-flight work and uses a bounded live-view cache", async () => {
-  let requests = 0, release;
-  const ready = new Promise(resolve => { release = resolve; });
-  const harness = documentsHarness(async () => { requests++; await ready; return {documents:[{id:requests}]}; });
-  const client = harness.create();
-  const first = client.refresh(); const duplicate = client.refresh(true); release(); await Promise.all([first, duplicate]);
-  assert.equal(requests, 1); assert.equal(client.count(), 1);
-  await client.refresh(); assert.equal(requests, 1);
-  harness.advance(31000); await client.refresh(); assert.equal(requests, 2);
-});
-
-test("failed document reads are also cached to avoid a retry loop from state renders", async () => {
-  let requests = 0;
-  const harness = documentsHarness(async () => { requests++; throw Error("offline"); });
-  const client = harness.create(); await client.refresh(); await client.refresh();
-  assert.equal(requests, 1); assert.equal(client.count(), null);
-  await client.refresh(true); assert.equal(requests, 2);
+test("task document actions bind numeric document IDs and retain the important mark without a hidden center",async()=>{
+  const calls=[],h=documentsHarness(async(url,body)=>{calls.push({url,body:plain(body)});return {document:{id:7,title:"任务文档",kind:"summary",important:body.important}};});const list=[{id:7,title:"任务文档",kind:"summary",important:false}];h.client.taskCards(list,"goal");await h.click("pin",7);assert(h.client.taskCards(list,"goal").includes('aria-pressed="true"'));await h.click("open",7);assert.deepEqual(calls[1],{url:"/api/files/open",body:{document_id:7}});assert(!calls.some(call=>call.url==="/api/documents"));
 });
 
 function filesHarness() {

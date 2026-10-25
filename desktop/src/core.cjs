@@ -57,9 +57,9 @@ async function request(base, route, body, timeoutMs = 5000) {
   return payload;
 }
 
-async function projects(base) {
+async function projects(base, includeRemoved = false) {
   let data;
-  try { data = await request(base, '/api/projects'); }
+  try { data = await request(base, '/api/projects' + (includeRemoved ? '?include_removed=1' : '')); }
   catch (error) {
     if (![404,405].includes(error.status)) throw error;
     data = await request(base, '/api/state');
@@ -262,14 +262,37 @@ function workspaceName(value) {
   return value.trim();
 }
 
-async function existingWorkspace(directory, base) {
+async function workspaceDirectory(directory) {
   const selected = await fs.realpath(directory);
+  if (!(await fs.stat(selected)).isDirectory()) {
+    const error = new Error('工作区路径不是文件夹：' + selected); error.code = 'ENOTDIR'; throw error;
+  }
+  return selected;
+}
+
+async function optionalGitRoot(selected) {
+  let directory = selected;
+  while (true) {
+    try { await fs.lstat(path.join(directory, '.git')); break; }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+    const parent = path.dirname(directory);
+    if (parent === directory) return selected;
+    directory = parent;
+  }
+  // A Git marker is explicit metadata. Corrupt repositories must keep their real Git error.
   const { stdout } = await run('git', ['-C', selected, 'rev-parse', '--show-toplevel'], { windowsHide: true, timeout: 10000 });
-  const root = await fs.realpath(stdout.trim());
-  const registered = await projects(base);
+  return fs.realpath(stdout.trim());
+}
+
+async function existingWorkspace(directory, base) {
+  const selected = await workspaceDirectory(directory);
+  const registered = await projects(base, true);
   const normalize = value => process.platform === 'win32' ? path.resolve(value).toLowerCase() : path.resolve(value);
+  const exact = registered.find(item => normalize(item.root) === normalize(selected));
+  if (exact) return exact.removed_at ? request(base, '/api/project/init', {name:exact.name, root:exact.root}) : exact;
+  const root = await optionalGitRoot(selected);
   const present = registered.find(item => normalize(item.root) === normalize(root));
-  if (present) return present;
+  if (present) return present.removed_at ? request(base, '/api/project/init', {name:present.name, root:present.root}) : present;
   const stem = path.basename(root);
   let name = stem, number = 2;
   while (registered.some(item => item.name === name)) name = `${stem} ${number++}`;
@@ -278,11 +301,9 @@ async function existingWorkspace(directory, base) {
 
 async function newWorkspace(parent, name, base) {
   name = workspaceName(name);
-  const root = path.join(await fs.realpath(parent), name);
-  await fs.mkdir(root); // Refuse an existing path; never initialize someone else's files.
-  try { await run('git', ['init', '--initial-branch=main', root], { windowsHide: true, timeout: 10000 }); }
-  catch (error) { throw new Error('工作区已创建，但 Git 初始化失败：' + error.message); }
-  // A registration failure retains the new repository for retry, never deletes it.
+  const root = path.join(await workspaceDirectory(parent), name);
+  await fs.mkdir(root); // Refuse an existing path; never overwrite someone else's files.
+  // A registration failure retains the new folder for retry, never deletes it.
   return request(base, '/api/project/init', { name, root });
 }
 

@@ -3,18 +3,20 @@ const path = require('node:path');
 const { spawn, execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const core = require('./core.cjs');
+const {checkLatest:queryLatest,compareVersions}=require('./crew-latest.cjs');
 const execute = promisify(execFile);
 const samePath = (left, right) => typeof left === 'string' && typeof right === 'string' &&
   (process.platform === 'win32' ? path.resolve(left).toLowerCase() === path.resolve(right).toLowerCase() : path.resolve(left) === path.resolve(right));
 
 class CrewUpdates {
   constructor(config, backend, { onChange = () => {}, onRestart = () => {}, run = execute, spawnProcess = spawn,
-    request = core.request, acquireLock = null } = {}) {
+    request = core.request, acquireLock = null, checkLatest = queryLatest } = {}) {
     this.config = config; this.backend = backend; this.onChange = onChange; this.onRestart = onRestart;
-    this.run = run; this.spawn = spawnProcess; this.request = request; this.acquireLock = acquireLock;
+    this.run = run; this.spawn = spawnProcess; this.request = request; this.acquireLock = acquireLock; this.checkLatest = checkLatest;
     this.state = { desktop_version: config.desktopVersion, target: null, backend: null, cli: null, plugin: null,
       phase: 'idle', message: '检查并统一到当前桌面自带版本。', error: null, blocked_reason: null,
-      can_update: false, update_available: false, backup: null, checked_at: null };
+      can_update: false, update_available: false, backup: null, checked_at: null,
+      online:null, online_error:null, online_checking:false };
     this.pending = null; this.checking = null; this.queued = false; this.closed = false; this.timer = null;
   }
   snapshot() { return JSON.parse(JSON.stringify({ ...this.state, queued: this.queued })); }
@@ -61,17 +63,27 @@ class CrewUpdates {
     this.state.checked_at = new Date().toISOString();
     return value;
   }
+  async _online() {
+    this.state.online_checking=true;this.state.online_error=null;this.state.online=null;this._emit();
+    try {
+      const result=await this.checkLatest();
+      this.state.online={...result,main_comparison:compareVersions(result.main.version,this.config.desktopVersion),
+        release_comparison:result.release?compareVersions(result.release.version,this.config.desktopVersion):null};
+    } catch(error) { this.state.online_error=error.message; }
+    finally { this.state.online_checking=false;this._emit(); }
+  }
   check() {
     if (this.pending || this.checking || this.closed) return this.checking || this.pending || Promise.resolve(this.snapshot());
     this.checking = (async () => {
-      this._phase('checking', '正在检查桌面自带版本、后台和插件来源…');
-      try {
-        await this._inspect();
+      this._phase('checking', '正在检查线上版本和本机安装…');
+      const [local]=await Promise.allSettled([this._inspect(),this._online()]);
+      if(local.status==='fulfilled') {
         this._phase(this.queued ? 'queued' : 'idle', this.state.blocked_reason ||
-          (this.state.update_available ? '可以统一到当前桌面自带版本。' : '后台、命令入口和插件已统一。'));
-      } catch (error) {
-        Object.assign(this.state, { phase: 'error', error: error.message, can_update: false }); this._emit();
-      } finally { this.checking = null; }
+          (this.state.update_available ? '可以把后台与插件统一到本机版本。' : '后台、命令入口和插件已统一。'));
+      } else {
+        Object.assign(this.state,{phase:'error',error:local.reason.message,can_update:false});this._emit();
+      }
+      this.checking=null;
       return this.snapshot();
     })();
     return this.checking;

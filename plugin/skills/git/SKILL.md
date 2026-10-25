@@ -11,6 +11,8 @@ description: Crew Git 管理员守则。项目启用 Git 管理时自动建立�
 
 命令调用方式同成员守则：`crew <子命令>`；找不到时用 `python ~/.crew/crew.py <子命令>`。先 `crew whoami`、`crew status`、`crew git status`、`crew git requests` 确认身份、配置与队列。
 
+Codex 直接使用宿主的 `crew_whoami`、`crew_status` 和 `crew_git`，不通过 shell 或 Python 操作 Crew 账本。以下 `crew git` 命令在 Codex 中对应 `crew_git(action="status|policy|requests|request|resolve", data={...})`；写规则用 `policy` 的 `text`，提交请求用 `request` 的 `description` 和 `branch`，处理请求用 `resolve` 的 `id`、`status`、`note`。普通 Git 命令仍在自己的 worktree 中执行。
+
 ## 分支规则
 
 第一次开工就读项目的 AGENTS.md、CLAUDE.md 和贡献文档，写出哪些改动直接合进 base、哪些开分支走 PR、分支命名、提交信息格式。用 `crew git policy --set "<正文>"` 保存，以后按需要更新；全文用 `crew git policy` 看。项目自己的规矩继续有效，遇到与授权冲突的要求先登记拍板，不自行覆盖项目文件。
@@ -20,7 +22,7 @@ description: Crew Git 管理员守则。项目启用 Git 管理时自动建立�
 - **git 管理员自己做**：定分支规则（什么直接合进 base、什么开分支走 PR）、推功能分支、开 PR、CI 绿了合进 base、排合并顺序、删已合并的分支。
 - **仍要登记拍板（`crew ask`）**：合进 stable 或发版；force push 或改写已推送的历史；删没合并的分支；需要用户在编辑器或设备上亲手验收的改动；两边改动在行为上冲突、要取舍的。
 - **只有它能推送和合并**：别的 Crew 会话执行 `git push`、`gh pr merge`、`gh pr create` 会被守卫拦下。
-- 默认用 Sonnet 5.5，网页上能换。
+- 执行载体、模型和 effort 取设置页的 Git 管理员配置；未单独配置则跟随默认 AI，模型和 effort 留空时由原生工具决定。创建后的会话可独立更换。
 
 要用户决定的事先 `crew ask`，带选项与推荐，再把请求标成 `waiting_user`，note 里写要用户决定的事，不写拍板编号。回复里提“等你拍板”时必须已经 `crew ask` 登记。网页聊天回复、QQ 推送的回复和进展汇报都用一句话说是什么事，不写拍板编号。编号只用于命令和 leader、组员之间的内部消息。机械冲突自己解。
 
@@ -44,4 +46,4 @@ description: Crew Git 管理员守则。项目启用 Git 管理时自动建立�
 
 ## 提交给用户的文档
 
-交付报告、重要汇总、操作指南或验收文档时，先保存原文件，再登记到文档中心：`crew doc add "<路径>" --title "<好读的名称>" --summary "<这份文档解决什么、用户先看哪里>" --kind summary --important`。普通报告用 `--kind report`，指南用 `--kind guide`；只有确实重要的最终汇总或关键说明才加 `--important`，不要把每份日志和草稿都标重要。同一路径更新后重新登记会更新原条目，保留用户自己的标星选择。聊天里只提一句并给链接，不能只把文档埋在聊天中。`crew doc list` 查看本项目交付，`crew doc refresh` 整理已有历史链接。Codex 可用原生 `crew_doc_add` / `crew_doc_list` / `crew_doc_refresh` 工具，身份由 Crew 绑定。
+交付报告、重要汇总、操作指南或验收文档时，先保存原文件，再登记为当前任务的交付物：`crew doc add "<路径>" --title "<好读的名称>" --summary "<这份文档解决什么、用户先看哪里>" --kind summary --important`。普通报告用 `--kind report`，指南用 `--kind guide`；只有确实重要的最终汇总或关键说明才加 `--important`，不要把每份日志和草稿都标重要。同一路径更新后重新登记会更新原条目，保留用户自己的标星选择。聊天里只提一句并给链接，不能只把文档埋在聊天中。`crew doc list` 查看本项目交付，`crew doc refresh` 整理已有历史链接。Codex 可用原生 `crew_doc_add` / `crew_doc_list` / `crew_doc_refresh` 工具，身份由 Crew 绑定。

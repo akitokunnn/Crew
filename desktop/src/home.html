@@ -8,11 +8,12 @@
   <link rel="stylesheet" href="home.css">
   <link rel="stylesheet" href="home-tools.css">
   <link rel="stylesheet" href="home-health.css">
+  <link rel="stylesheet" href="home-settings.css">
 </head>
 <body>
   <aside aria-label="导航">
     <div class="brand"><img class="mark" src="../assets/crew.svg" width="27" height="27" alt=""><strong>Crew</strong></div>
-    <nav><button id="nav-admin" type="button" class="nav" hidden><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 4 6v6c0 4 4 7 8 9 4-2 8-5 8-9V6l-8-3Z"/><path d="m8 12 3 3 5-6"/></svg><span>系统管理员</span></button><button id="nav-workspaces" type="button" class="nav active" aria-current="page"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span>工作区</span></button><button id="nav-tools" type="button" class="nav" hidden><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14.8 6.2a5 5 0 0 0-6.6 6.6L3 18a2.1 2.1 0 0 0 3 3l5.2-5.2a5 5 0 0 0 6.6-6.6L14 13l-3-3 3.8-3.8Z"/></svg><span>工具与更新</span></button></nav>
+    <nav><button id="nav-admin" type="button" class="nav" hidden><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 4 6v6c0 4 4 7 8 9 4-2 8-5 8-9V6l-8-3Z"/><path d="m8 12 3 3 5-6"/></svg><span>系统管理员</span></button><button id="nav-workspaces" type="button" class="nav active" aria-current="page"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span>工作区</span></button><button id="nav-tools" type="button" class="nav" hidden><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14.8 6.2a5 5 0 0 0-6.6 6.6L3 18a2.1 2.1 0 0 0 3 3l5.2-5.2a5 5 0 0 0 6.6-6.6L14 13l-3-3 3.8-3.8Z"/></svg><span>工具与更新</span></button><button id="nav-settings" type="button" class="nav"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16M8 3v6M16 9v6M10 15v6"/></svg><span>设置</span></button></nav>
     <div class="aside-bottom"><div class="service-line"><span class="status-dot" aria-hidden="true"></span><span id="service" class="service">正在连接…</span></div><div class="shortcut"><span>打开工作区页</span><kbd>Ctrl T</kbd></div></div>
   </aside>
   <main>
@@ -26,7 +27,7 @@
     </header>
     <div class="workspace-content">
       <section id="create-panel" class="create-panel" aria-labelledby="create-title" hidden>
-        <div class="panel-heading"><h2 id="create-title">新建工作区</h2><span>创建一个新的 Git 项目</span></div>
+        <div class="panel-heading"><h2 id="create-title">新建工作区</h2><span>创建一个新的文件夹工作区</span></div>
         <form id="create-form">
           <label for="name">名称</label><input id="name" maxlength="100" placeholder="工作区名称" autocomplete="off" required>
           <div class="location-row"><span class="location-label">保存到</span><span id="location">尚未选择文件夹</span><button id="choose-parent" class="button secondary" type="button">选择文件夹</button></div>
@@ -48,30 +49,40 @@
         <section class="admin-actions" aria-label="后台维护"><div><button id="admin-check" class="button secondary" type="button">重新检测</button><button id="admin-restart" class="button secondary" type="button" disabled>尝试恢复</button></div><p id="admin-restart-reason"></p><p class="admin-policy">只尝试恢复确认已退出的后台；不会强制结束运行中的会话。</p></section>
         <p id="admin-error" class="error" role="alert" hidden></p><p id="admin-note" class="admin-note" role="status" hidden></p>
         <section class="admin-incidents-section"><h2>最近异常与恢复</h2><div id="admin-incidents" class="admin-incidents"></div></section>
+        <section class="admin-incidents-section"><h2>事故处理</h2><p class="admin-policy">正常巡检不调用模型；故障按证据合并，修复在独立分支验证后等待项目合并。</p><div id="admin-operations" class="admin-incidents"></div></section>
         <details class="admin-details"><summary>连接详情</summary><dl><dt>管理员进程</dt><dd id="admin-supervisor-pid"></dd><dt>后台进程</dt><dd id="admin-service-pid"></dd><dt>服务地址</dt><dd id="admin-service-url"></dd><dt>实例</dt><dd id="admin-instance"></dd></dl></details>
       </div>
     </section>
     <section id="tools-page" class="home-page tools-page" aria-labelledby="tools-title" hidden>
-      <header class="tools-header"><div><h1 id="tools-title" tabindex="-1">工具与更新</h1><p>管理 Crew、Claude Code 和 Codex 的版本。</p></div><button id="tools-check" class="button secondary" type="button">检查工具更新</button></header>
+      <header class="tools-header"><div><h1 id="tools-title" tabindex="-1">工具与更新</h1><p>管理 Crew、Claude Code 和 Codex 的版本。</p></div><button id="tools-check" class="button secondary" type="button">检查更新</button></header>
       <div class="tools-content">
         <article id="crew-update-card" class="tool-card crew-update-card" hidden aria-live="polite">
           <div class="tool-card-header"><h2>Crew</h2><span id="crew-update-phase" class="tool-phase">待检查</span></div>
-          <p class="tool-message">统一到当前桌面自带版本。任务运行时等待，更新前自动备份。</p>
-          <dl class="tool-versions crew-update-versions"><div><dt>桌面</dt><dd id="crew-desktop-version">—</dd></div><div><dt>运行中后台</dt><dd id="crew-backend-version">—</dd></div><div><dt>Claude 插件</dt><dd id="crew-plugin-version">—</dd></div><div><dt>可用版本 · 桌面自带</dt><dd id="crew-target-version">—</dd></div></dl>
+          <p class="tool-message">线上版本会单独查询；统一后台与插件时等待任务空闲并自动备份。</p>
+          <dl class="tool-versions crew-update-versions"><div><dt>当前桌面</dt><dd id="crew-desktop-version">—</dd></div><div><dt>运行中后台</dt><dd id="crew-backend-version">—</dd></div><div><dt>Claude 插件</dt><dd id="crew-plugin-version">—</dd></div><div><dt>本机可应用版本</dt><dd id="crew-target-version">—</dd></div></dl>
+          <section class="crew-online-versions" aria-label="线上版本">
+            <dl class="tool-versions"><div><dt>最新正式发布</dt><dd id="crew-release-version">尚未检查</dd></div><div><dt>主干最新版本</dt><dd id="crew-main-version">尚未检查</dd></div></dl>
+            <p id="crew-online-status" class="tool-message" role="status">点击检查 Crew 查询线上版本。</p><p id="crew-online-error" class="tool-message error" role="alert" hidden></p>
+            <div class="crew-online-links"><button id="crew-release-open" class="button secondary" type="button">查看正式发布</button><button id="crew-main-open" class="button secondary" type="button">查看主干</button></div>
+          </section>
           <details class="crew-update-details"><summary>安装来源</summary><div id="crew-update-sources"></div></details>
-          <div class="tool-card-footer"><div class="tool-messages"><p id="crew-update-message" class="tool-message">点击检查查看版本。</p><p id="crew-update-error" class="tool-message error" role="alert" hidden></p><p id="crew-update-backup" class="tool-message"></p></div><div class="tool-card-actions"><button id="crew-update-check" type="button" class="button secondary">检查 Crew</button><button id="crew-update-apply" type="button" class="button" disabled>更新 Crew</button><button id="crew-update-cancel" type="button" class="button secondary" hidden>取消等待</button></div></div>
+          <div class="tool-card-footer"><div class="tool-messages"><p id="crew-update-message" class="tool-message">点击检查查看版本。</p><p id="crew-update-error" class="tool-message error" role="alert" hidden></p><p id="crew-update-backup" class="tool-message"></p></div><div class="tool-card-actions"><button id="crew-update-check" type="button" class="button secondary">检查 Crew</button><button id="crew-update-apply" type="button" class="button" disabled>统一后台与插件</button><button id="crew-update-cancel" type="button" class="button secondary" hidden>取消等待</button></div></div>
         </article>
-        <div class="tools-preferences"><div><label class="tools-auto-label"><input id="tools-auto" type="checkbox">空闲时自动更新</label><p>有会话正在运行时会等待，更新队列可以取消。</p></div><span id="tools-setting-status" role="status"></span></div>
+        <div class="tools-preferences"><div><label class="tools-auto-label"><input id="tools-auto" type="checkbox">Claude/Codex 空闲时自动更新</label><p>有会话正在运行时会等待，更新队列可以取消。</p></div><span id="tools-setting-status" role="status"></span></div>
         <p id="tools-global-error" class="error" role="alert" hidden></p>
         <p id="tools-check-status" class="tools-check-status" role="status">正在读取工具版本…</p>
         <div id="tools-list" class="tools-list" aria-live="polite"></div>
         <p class="tools-note">启动时检查更新，此后每 6 小时检查一次。自动更新默认关闭。</p>
       </div>
     </section>
+    <section id="settings-page" class="home-page" aria-label="Crew 设置" hidden><div id="native-settings-root"></div></section>
+    <div id="settings-panel-parking" hidden></div>
+    <div id="workspace-settings-host"></div>
   </main>
   <script src="home-tools.js"></script>
   <script src="home-crew-updates.js"></script>
   <script src="home-health.js"></script>
+  <script src="home-settings.js"></script>
   <script src="home.js"></script>
 </body>
 </html>

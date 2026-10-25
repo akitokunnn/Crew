@@ -11,7 +11,7 @@ from pathlib import Path
 from urllib.error import URLError
 from urllib.request import ProxyHandler, Request, build_opener
 
-from . import board, chat, decision_briefs, qq, runtimes, store, todo, trust_mode
+from . import board, chat, decision_briefs, goal_links, qq, runtimes, store, todo, trust_mode
 
 TEXT_LIMIT = 2000  # 10-23 实测 5000 字也能发；2000 一段是为了手机上好读。
 LOG = logging.getLogger(__name__)
@@ -71,6 +71,26 @@ def saved_snapshot(shown):
         return content['decision_snapshot']
     decision = content.get('decision')
     return decision_snapshot(decision, decision.get('brief')) if isinstance(decision, dict) else None
+
+
+def finalized_goal_reports(conn, project, since, report_id=None):
+    """Only a finalized finish identifies a goal's delivery, not an ordinary turn."""
+    sql = ('SELECT r.id report_id,r.goal_id,r.round,r.outcome,r.data_json,f.finalized_at,'
+           'g.project,g.title,g.leader_session_id,g.current_round FROM goal_round_finishes f '
+           'JOIN goal_reports r ON r.id=f.report_id AND r.goal_id=f.goal_id AND r.round=f.round '
+           'AND r.requirement_version=f.requirement_version JOIN goals g ON g.id=f.goal_id '
+           'JOIN sessions s ON s.session_id=g.leader_session_id AND s.project=g.project '
+           'LEFT JOIN session_controls c ON c.session_id=s.session_id '
+           'JOIN groups team ON team.project=g.project AND team.leader_session_id=s.session_id '
+           'AND team.name=s.group_name AND team.closed_at IS NULL '
+           "WHERE g.project=? AND f.status='finalized' AND LENGTH(r.html)>0 "
+           "AND s.role='leader' AND s.status!='closed' AND COALESCE(c.removed,0)=0 AND c.archived_status IS NULL "
+           "AND g.status NOT IN ('paused','pausing') AND g.manual_pause=0 "
+           'AND julianday(f.finalized_at)>=julianday(?)')
+    args = [project,since]
+    if report_id is not None:
+        sql += ' AND r.id=?';args.append(report_id)
+    return board._rows(conn,sql+' ORDER BY f.finalized_at,r.id',args)
 
 
 def desktop_locked():
@@ -255,6 +275,7 @@ class Inbox:
                     self.pending[item['id']] = {**item, 'project': project['name']}
             with closing(store.connect(self.home)) as conn:
                 reports = board.reports(conn, project['name'], since=self.config['since'])
+                deliveries = finalized_goal_reports(conn,project['name'],self.config['since'])
             for report in reports:
                 identity = 'report:' + str(report['id'])
                 if report['created_at'] < self.config['since'] or identity in sent:
@@ -265,6 +286,21 @@ class Inbox:
                     active.add(identity)
                     self.pending[identity] = dict(id=identity, kind='report', project=project['name'],
                         session_id=report['session_id'], title='阶段进展', detail=report['body'], created_at=report['created_at'])
+            for report in deliveries:
+                identity = 'goal-report:'+report['report_id']
+                if identity in sent:
+                    continue
+                active.add(identity)
+                summary = json.loads(report['data_json'])['summary']
+                summary = re.sub(r'https?://(?:localhost|127(?:\.\d{1,3}){3}|\[::1\]|0\.0\.0\.0)(?=[:/?#\s]|$)[^\s<>]*',
+                                 '（本机地址请回 Crew 查看）',summary,flags=re.IGNORECASE)
+                summary = summary[:500]+('…' if len(summary)>500 else '')
+                outcome = {'completed':'已达标','failed':'未达标','awaiting_acceptance':'待用户验收','cancelled':'已取消'}[report['outcome']]
+                self.pending[identity] = dict(id=identity,kind='goal_report',project=project['name'],
+                    session_id=report['leader_session_id'],goal_id=report['goal_id'],report_id=report['report_id'],
+                    title='目标交付 · %s · 第 %s 轮%s' % (report['title'],report['round'],'（已开启后续轮次）' if report['round']<report['current_round'] else ''),
+                    detail='结论：%s\n%s\n完整 HTML 报告请在 Crew 的这个目标内查看。' % (outcome,summary),
+                    created_at=report['finalized_at'])
         self.pending = {key: item for key, item in self.pending.items() if key in active}
         push_now, self.push_now = self.push_now, False
         if not self.pending:
@@ -313,6 +349,8 @@ class Inbox:
         now = self.service.now().isoformat()
         with closing(store.connect(self.home)) as conn:
             for item in self.pending.values():
+                if item['kind']=='goal_report' and not finalized_goal_reports(conn,item['project'],self.config['since'],item['report_id']):
+                    continue
                 decision = next((d for d in board.decisions(conn, item['project'], all=True)
                                  if d['id'] == item.get('decision_id') and d['status'] == 'open' and not d['held']), None)
                 if item['kind'] == 'decision' and decision is None:
@@ -324,6 +362,10 @@ class Inbox:
                 if decision:
                     self.record_message(conn, item['id'], entry, item['kind'], now)
                     self.deliver(conn, [item['id']], self.client.send_markdown, *self.question_message(entry))
+                elif item['kind']=='goal_report':
+                    self.record_message(conn,item['id'],entry,item['kind'],now)
+                    text='%s·%s\n%s\n%s' % (entry['workspace'],entry['leader'],item['title'],item['detail'])
+                    self.deliver(conn,[item['id']],self.client.send_text,text)
                 else:
                     notes.append(entry)
             if notes:
@@ -701,6 +743,7 @@ class Inbox:
 
     def save_answer(self, conn, decision, answer, identity, expected_snapshot=None):
         error = None
+        linked_goal,leader = None,None
         now = self.service.now().isoformat()
         # The CLI can revise a question without the service's Python lock. Keep
         # the final snapshot check, answer and leader notice in one DB write
@@ -718,7 +761,8 @@ class Inbox:
                     error = '这条会话已归档或移出 Crew，答复尚未保存。请先在 Crew 恢复会话。'
                 else:
                     board.answer.__wrapped__(conn, decision['id'], answer, actor='qq', now=now)
-                    leader = self._decision_leader(conn, decision)
+                    linked_goal = goal_links.get(conn,'decision',decision['id'])
+                    leader = self._decision_leader(conn, decision) if linked_goal is None else None
                     if leader is not None:
                         mixed = any(runtimes.get(conn, person['session_id'])['runtime'] == 'codex'
                                     for person in (asker, leader))
@@ -735,7 +779,8 @@ class Inbox:
             self.send_text(error)
             return
         preview = decision['question'][:20] + ('…' if len(decision['question']) > 20 else '')
-        self.send_text('已保存：%s%s。' % (preview, '，已转告 leader' if leader else ''))
+        self.send_text('已保存，将回原目标：%s。' % preview if linked_goal is not None else
+                       '已保存：%s%s。' % (preview, '，已转告 leader' if leader else ''))
 
     def queue_text(self, conn, reply, session_id=None, project_name=None):
         quoted = session_id is not None

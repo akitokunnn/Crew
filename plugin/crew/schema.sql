@@ -4,6 +4,21 @@
 
 -- ---------------------------------------------------------------- board
 
+CREATE TABLE IF NOT EXISTS ai_settings (
+    singleton   INTEGER PRIMARY KEY CHECK (singleton = 1),
+    ai_json     TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS execution_settings (
+    singleton   INTEGER PRIMARY KEY CHECK (singleton = 1),
+    codex       TEXT NOT NULL DEFAULT 'workspace-write'
+                CHECK (codex IN ('read-only', 'workspace-write', 'danger-full-access')),
+    claude      TEXT NOT NULL DEFAULT 'default'
+                CHECK (claude IN ('default', 'acceptEdits', 'bypassPermissions')),
+    updated_at  TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS projects (
     name        TEXT PRIMARY KEY,
     root        TEXT NOT NULL UNIQUE,      -- absolute path, as given (compare with crew.store.norm_path)
@@ -339,7 +354,8 @@ CREATE TABLE IF NOT EXISTS channel_digests (
     message_count   INTEGER NOT NULL,
     trigger         TEXT NOT NULL CHECK (trigger IN ('manual', 'auto')),
     model           TEXT NOT NULL,
-    cost_usd        REAL NOT NULL,
+    runtime         TEXT NOT NULL DEFAULT 'claude' CHECK (runtime IN ('claude', 'codex')),
+    cost_usd        REAL,
     created_at      TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS channel_digests_project ON channel_digests (project, id);
@@ -637,3 +653,160 @@ DELETE FROM leader_notices
   AND NOT EXISTS(SELECT 1 FROM trust_schema_migrations WHERE name='decision-leader-v1'));
 INSERT OR IGNORE INTO trust_schema_migrations
  VALUES('decision-leader-v1',strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+
+-- Goal delivery keeps stable Crew identities separate from native executions.
+CREATE TABLE IF NOT EXISTS goals (
+ id TEXT PRIMARY KEY, project TEXT NOT NULL REFERENCES projects(name),
+ leader_session_id TEXT NOT NULL REFERENCES sessions(session_id), title TEXT NOT NULL,
+ original_request TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN
+ ('queued','running','pausing','paused','waiting_user','awaiting_acceptance','completed','failed','cancelled')),
+ requirement_version INTEGER NOT NULL, current_round INTEGER NOT NULL,
+ priority INTEGER NOT NULL DEFAULT 0, dependencies_json TEXT NOT NULL DEFAULT '[]',
+ manual_pause INTEGER NOT NULL DEFAULT 0 CHECK(manual_pause IN (0,1)), reason TEXT,
+ version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS goals_project_owner ON goals(project,leader_session_id,status);
+CREATE TABLE IF NOT EXISTS goal_requirements (
+ goal_id TEXT NOT NULL REFERENCES goals(id), version INTEGER NOT NULL,
+ request TEXT NOT NULL, acceptance_json TEXT NOT NULL, constraints_json TEXT NOT NULL,
+ change_text TEXT NOT NULL, actor TEXT NOT NULL, source_json TEXT NOT NULL,
+ created_at TEXT NOT NULL, PRIMARY KEY(goal_id,version)
+);
+CREATE TABLE IF NOT EXISTS goal_rounds (
+ goal_id TEXT NOT NULL REFERENCES goals(id), number INTEGER NOT NULL,
+ requirement_version INTEGER NOT NULL, status TEXT NOT NULL, outcome TEXT, reason TEXT,
+ opened_at TEXT NOT NULL, ended_at TEXT, PRIMARY KEY(goal_id,number)
+);
+CREATE TABLE IF NOT EXISTS goal_assignments (
+ goal_id TEXT NOT NULL REFERENCES goals(id), session_id TEXT NOT NULL REFERENCES sessions(session_id),
+ task TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('assigned','released')),
+ created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(goal_id,session_id)
+);
+CREATE TABLE IF NOT EXISTS goal_executions (
+ id TEXT PRIMARY KEY, goal_id TEXT NOT NULL, round INTEGER NOT NULL,
+ session_id TEXT NOT NULL REFERENCES sessions(session_id), generation INTEGER NOT NULL,
+ runtime TEXT NOT NULL CHECK(runtime IN ('claude','codex')), model TEXT, effort TEXT,
+ status TEXT NOT NULL, requirement_version INTEGER NOT NULL,
+ created_at TEXT NOT NULL, updated_at TEXT NOT NULL, ended_at TEXT, error TEXT,
+ FOREIGN KEY(goal_id,round) REFERENCES goal_rounds(goal_id,number),
+ UNIQUE(goal_id,round,session_id,generation)
+);
+CREATE INDEX IF NOT EXISTS goal_executions_goal ON goal_executions(goal_id,round,status);
+CREATE TABLE IF NOT EXISTS goal_execution_bindings (
+ execution_id TEXT NOT NULL REFERENCES goal_executions(id),
+ runtime TEXT NOT NULL CHECK(runtime IN ('claude','codex')), native_id TEXT,
+ model TEXT, effort TEXT, updated_at TEXT NOT NULL,
+ PRIMARY KEY(execution_id,runtime), UNIQUE(runtime,native_id)
+);
+CREATE TABLE IF NOT EXISTS goal_reports (
+ id TEXT PRIMARY KEY, goal_id TEXT NOT NULL, round INTEGER NOT NULL,
+ requirement_version INTEGER NOT NULL, version INTEGER NOT NULL,
+ outcome TEXT NOT NULL, data_json TEXT NOT NULL, html TEXT NOT NULL, created_at TEXT NOT NULL,
+ FOREIGN KEY(goal_id,round) REFERENCES goal_rounds(goal_id,number), UNIQUE(goal_id,round,version)
+);
+CREATE TABLE IF NOT EXISTS goal_context_items (
+ id TEXT PRIMARY KEY, project TEXT REFERENCES projects(name), goal_id TEXT REFERENCES goals(id),
+ leader_session_id TEXT REFERENCES sessions(session_id), scope TEXT NOT NULL,
+ kind TEXT NOT NULL, version INTEGER NOT NULL, state TEXT NOT NULL,
+ protected INTEGER NOT NULL CHECK(protected IN (0,1)), created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS goal_context_scope ON goal_context_items(project,goal_id,scope,state);
+CREATE TABLE IF NOT EXISTS goal_context_versions (
+ item_id TEXT NOT NULL REFERENCES goal_context_items(id), version INTEGER NOT NULL,
+ text TEXT NOT NULL, source_json TEXT NOT NULL, depends_json TEXT NOT NULL,
+ state TEXT NOT NULL, actor TEXT NOT NULL, reason TEXT, created_at TEXT NOT NULL,
+ PRIMARY KEY(item_id,version)
+);
+CREATE TABLE IF NOT EXISTS goal_context_manifests (
+ id TEXT PRIMARY KEY, execution_id TEXT NOT NULL REFERENCES goal_executions(id),
+ goal_id TEXT NOT NULL REFERENCES goals(id), round INTEGER NOT NULL,
+ requirement_version INTEGER NOT NULL, generation INTEGER NOT NULL,
+ manifest_json TEXT NOT NULL, text TEXT NOT NULL, created_at TEXT NOT NULL, applied_at TEXT
+);
+CREATE TABLE IF NOT EXISTS goal_context_applied (
+ execution_id TEXT NOT NULL REFERENCES goal_executions(id), material_key TEXT NOT NULL,
+ version TEXT NOT NULL, manifest_id TEXT NOT NULL REFERENCES goal_context_manifests(id),
+ applied_at TEXT NOT NULL, PRIMARY KEY(execution_id,material_key)
+);
+CREATE TABLE IF NOT EXISTS goal_execution_reads (
+ execution_id TEXT PRIMARY KEY REFERENCES goal_executions(id),
+ read_seq INTEGER NOT NULL DEFAULT 0 CHECK(read_seq>=0), updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS goal_message_meta (
+ message_id TEXT PRIMARY KEY, goal_id TEXT NOT NULL REFERENCES goals(id),
+ round INTEGER NOT NULL, requirement_version INTEGER NOT NULL,
+ source_execution TEXT REFERENCES goal_executions(id), target_execution TEXT REFERENCES goal_executions(id),
+ kind TEXT NOT NULL, correlation_id TEXT NOT NULL, causation_id TEXT,
+ idempotency_key TEXT NOT NULL UNIQUE,
+ requires_reply INTEGER NOT NULL DEFAULT 0 CHECK(requires_reply IN (0,1)),
+ executable INTEGER NOT NULL DEFAULT 0 CHECK(executable IN (0,1)), status TEXT NOT NULL DEFAULT 'queued',
+ attempts INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+ last_attempt_at TEXT, accepted_at TEXT, error TEXT
+);
+CREATE INDEX IF NOT EXISTS goal_message_dispatch ON goal_message_meta(goal_id,round,status,target_execution);
+CREATE TABLE IF NOT EXISTS goal_control_revisions (
+ goal_id TEXT PRIMARY KEY REFERENCES goals(id), revision INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS goal_ops_pauses (
+ goal_id TEXT NOT NULL REFERENCES goals(id), incident_id TEXT NOT NULL,
+ token_json TEXT NOT NULL, created_at TEXT NOT NULL, resumed_at TEXT,
+ PRIMARY KEY(goal_id,incident_id)
+);
+CREATE TABLE IF NOT EXISTS goal_round_finishes (
+ goal_id TEXT NOT NULL REFERENCES goals(id), round INTEGER NOT NULL,
+ requirement_version INTEGER NOT NULL, report_id TEXT NOT NULL REFERENCES goal_reports(id),
+ outcome TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending','finalized','superseded')),
+ actor TEXT NOT NULL, execution_id TEXT REFERENCES goal_executions(id),
+ requested_at TEXT NOT NULL, finalized_at TEXT,
+ PRIMARY KEY(goal_id,round)
+);
+CREATE TABLE IF NOT EXISTS goal_resumption_deliveries (
+ goal_id TEXT NOT NULL REFERENCES goals(id), incident_id TEXT NOT NULL,
+ execution_id TEXT NOT NULL REFERENCES goal_executions(id), message_id TEXT NOT NULL,
+ accepted_at TEXT NOT NULL, PRIMARY KEY(goal_id,incident_id,execution_id)
+);
+CREATE TABLE IF NOT EXISTS goal_links (
+ kind TEXT NOT NULL, item_id INTEGER NOT NULL,
+ goal_id TEXT NOT NULL REFERENCES goals(id), round INTEGER NOT NULL,
+ requirement_version INTEGER NOT NULL, execution_id TEXT NOT NULL REFERENCES goal_executions(id),
+ delivered_version INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(kind,item_id)
+);
+CREATE TABLE IF NOT EXISTS goal_cancellations (
+ goal_id TEXT PRIMARY KEY REFERENCES goals(id), round INTEGER NOT NULL,
+ requested_at TEXT NOT NULL, actor TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS session_stop_gates (
+ session_id TEXT PRIMARY KEY REFERENCES sessions(session_id),
+ stopped_at TEXT NOT NULL, stopped_by TEXT NOT NULL
+);
+
+-- Documents belong to explicitly recorded tasks, never inferred from a leader.
+-- One original file may be delivered in more than one task.
+CREATE TABLE IF NOT EXISTS goal_documents (
+ goal_id TEXT NOT NULL REFERENCES goals(id), document_id INTEGER NOT NULL REFERENCES documents(id),
+ execution_id TEXT REFERENCES goal_executions(id), created_at TEXT NOT NULL,
+ PRIMARY KEY(goal_id,document_id)
+);
+CREATE TABLE IF NOT EXISTS goal_acceptances (
+ goal_id TEXT NOT NULL REFERENCES goals(id), round INTEGER NOT NULL,
+ report_id TEXT NOT NULL REFERENCES goal_reports(id),
+ accepted INTEGER NOT NULL CHECK(accepted IN (0,1)), note TEXT NOT NULL,
+ actor TEXT NOT NULL, created_at TEXT NOT NULL,
+ PRIMARY KEY(goal_id,round)
+);
+
+-- Workspace labels and visibility never change the stable projects.name key.
+CREATE TABLE IF NOT EXISTS project_settings (
+ project TEXT PRIMARY KEY REFERENCES projects(name),
+ display_name TEXT, removed_at TEXT,
+ revision INTEGER NOT NULL DEFAULT 0 CHECK(revision>=0)
+);
+CREATE TABLE IF NOT EXISTS project_directory_changes (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ project TEXT NOT NULL REFERENCES projects(name),
+ revision INTEGER NOT NULL,
+ old_root TEXT NOT NULL, new_root TEXT NOT NULL,
+ session_paths_json TEXT NOT NULL,
+ created_at TEXT NOT NULL,
+ UNIQUE(project,revision)
+);

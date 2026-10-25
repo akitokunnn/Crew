@@ -40,14 +40,14 @@ class ComposerInterruptHttpTests(ShellFixture, unittest.TestCase):
         with response:
             return response.status, json.loads(response.read())
 
-    def test_stop_acknowledges_only_then_actual_result_confirms_idle_without_closing_session(self):
+    def test_interrupt_acknowledges_only_then_actual_result_confirms_idle_without_closing_session(self):
         code, started = self.request("/api/leader?project=demo", {"name": "interrupt-qa", "task": "fake turn"})
         self.assertEqual(code, 200, started)
         sid, process = started["session_id"], self.processes[-1]
         manager = self.server.service.chat
         self.assertTrue(manager.busy(sid))
         before = manager.history(sid)["events"]
-        code, result = self.request("/api/session/stop?project=demo", {"session_id": sid})
+        code, result = self.request("/api/chat/interrupt?project=demo", {"session_id": sid})
         self.assertEqual((code, result), (200, {"ok": True}))
         records = [json.loads(line) for line in process.stdin.getvalue().splitlines()]
         controls = [row for row in records if row.get("type") == "control_request"
@@ -69,14 +69,14 @@ class ComposerInterruptHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(leader["name"], "interrupt-qa")
         self.assertIsNone(process.poll(), "Stopping one turn must preserve the owned native session")
         sent = process.stdin.getvalue()
-        code, result = self.request("/api/session/stop?project=demo", {"session_id": sid})
+        code, result = self.request("/api/chat/interrupt?project=demo", {"session_id": sid})
         self.assertEqual(code, 409, result)
         self.assertIn("空闲", result["error"])
         self.assertEqual(process.stdin.getvalue(), sent)
 
-    def test_unowned_session_stop_fails_without_launching_or_terminating_any_process(self):
+    def test_unowned_session_interrupt_fails_without_launching_or_terminating_any_process(self):
         before = len(self.processes)
-        code, result = self.request("/api/session/stop?project=demo", {"session_id": "s3"})
+        code, result = self.request("/api/chat/interrupt?project=demo", {"session_id": "s3"})
         self.assertEqual(code, 400, result)
         self.assertIn("没有管理", result["error"])
         self.assertEqual(len(self.processes), before)

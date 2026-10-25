@@ -31,3 +31,5 @@
 .tools-content>.error{margin-top:18px;margin-bottom:0}
 @media(max-width:1000px){.tools-header{padding:25px 26px 22px;gap:15px}.tools-content{padding:24px 26px 30px}}
 @media(max-width:850px){.tools-header{align-items:flex-start;flex-wrap:wrap;gap:17px}.tools-preferences{align-items:flex-start;gap:12px}.tool-card{padding:17px}.tool-versions{gap:25px}.tool-card-footer{flex-wrap:wrap;gap:13px}}
+
+.crew-online-versions{margin:16px 0;padding:14px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}.crew-online-versions .tool-versions{margin:0 0 12px}.crew-online-links{display:flex;gap:8px;margin-top:10px}.crew-online-links .button{font-size:11px;min-height:28px;padding:5px 9px}

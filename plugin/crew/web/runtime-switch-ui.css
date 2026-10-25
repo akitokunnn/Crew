@@ -10,3 +10,4 @@
 .member-runtime-switch>.btn{font-size:calc(11.5px * var(--fs));padding:4px 7px}
 .runtime-switch-reason{font-size:calc(11px * var(--fs));line-height:1.6;color:var(--text-3)}
 .member-runtime-switch button:disabled{opacity:.5;cursor:default}
+.runtime-switch-scope{padding:12px 14px;border:1px solid var(--line-strong);border-radius:8px;background:var(--accent-softer);font-size:calc(12px * var(--fs));color:var(--text-2);line-height:1.7;margin:12px 0}.runtime-switch-scope strong{font-weight:500;color:var(--text)}.runtime-switch-scope p{margin:6px 0}.runtime-switch-scope ul{padding-left:20px;margin:6px 0}

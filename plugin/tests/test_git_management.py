@@ -8,7 +8,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 from unittest import mock
 
-from crew import board, git_admin, hooks, models, spawn, store, web
+from crew import board, git_admin, hooks, models, runtimes, settings, spawn, store, web
 from test_core import CoreCase, NOW
 from test_shell import PLUGIN, ShellFixture
 
@@ -16,6 +16,9 @@ from test_shell import PLUGIN, ShellFixture
 class GitCommandTests(CoreCase):
     def setUp(self):
         super().setUp()
+        carrier = mock.patch.object(runtimes, 'default_runtime', return_value='claude')
+        carrier.start()
+        self.addCleanup(carrier.stop)
         (self.root / ".gitignore").write_text("/Temp/wt/\n", encoding="ascii")
         self.git("add", ".gitignore")
         self.git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "-c", "commit.gpgsign=false",
@@ -47,6 +50,7 @@ class GitCommandTests(CoreCase):
             worktree, branch = hooks.git_details(spec["cwd"])
             board.register_session(conn, plan["session_id"], project_name, spec["cwd"], worktree, branch,
                                    name=name, role=spec["role"], group_name=spec["group"], spawn_id=spec["id"], now=NOW)
+            runtimes.set(conn, plan['session_id'], spec['runtime'], plan['session_id'] if spec['runtime'] == 'claude' else None)
             models.set(conn, plan["session_id"], spec["model"], spec["effort"], now=NOW)
 
         result = spawn._execute(conn, plan, register)
@@ -75,12 +79,11 @@ class GitCommandTests(CoreCase):
         self.assertNotEqual(administrator["worktree"], store.norm_path(self.root))
         self.assertTrue(administrator["branch"].startswith("crew/git-admin-"))
         self.assertEqual(plan["worktree_command"][-1], "develop")
-        self.assertEqual(models.get(self.conn, administrator["session_id"]),
-                         {"model": "claude-sonnet-5-5", "effort": "high"})
+        self.assertEqual(models.get(self.conn, administrator["session_id"]), {"model": None, "effort": None})
         command = plan["command"]
         self.assertEqual(command[command.index("--agent") + 1], "crew:git")
-        self.assertEqual(command[command.index("--model") + 1], "claude-sonnet-5-5")
-        self.assertEqual(command[command.index("--effort") + 1], "high")
+        self.assertNotIn('--model', command)
+        self.assertNotIn('--effort', command)
         self.assertIn("/crew:git", plan["files"][plan["spec"]["md"]])
         self.assertIsNone(config["branch_rules"])
         self.assertIsNotNone(config["enabled_at"])
@@ -92,6 +95,45 @@ class GitCommandTests(CoreCase):
         self.assertEqual(config["admin_session_id"], administrator)
         self.assertEqual(config["base"], "topic")
         self.assertEqual(len(self.plans), 1)
+
+    def test_codex_only_git_administrator_reads_both_rules_without_claude_flags(self):
+        settings.save(self.conn, {'default': {'runtime': 'codex', 'model': None, 'effort': None}})
+        with mock.patch.object(spawn.codex_client, 'command', return_value=['codex.exe', 'app-server']):
+            self.assert_cli(['git', 'enable'])
+        plan = self.plans[0]
+        administrator = board.git_config(self.conn, 'demo')['admin_session_id']
+        self.assertEqual(runtimes.get(self.conn, administrator)['runtime'], 'codex')
+        self.assertEqual(models.get(self.conn, administrator), {'model': None, 'effort': None})
+        self.assertEqual(plan['command'], ['codex.exe', 'app-server'])
+        brief = plan['files'][plan['spec']['md']]
+        self.assertIn(str(self.fake_plugin / 'skills' / 'leader' / 'SKILL.md'), brief)
+        self.assertIn(str(self.fake_plugin / 'skills' / 'git' / 'SKILL.md'), brief)
+        self.assertNotIn('/crew:leader', brief)
+        self.assertNotIn('/crew:git', brief)
+
+    def test_explicit_codex_git_enable_reaches_launcher_and_reenable_keeps_identity(self):
+        with mock.patch.object(spawn.codex_client, 'command', return_value=['codex.exe', 'app-server']):
+            self.assert_cli(['git', 'enable', '--runtime', 'codex'])
+        administrator = board.git_config(self.conn, 'demo')['admin_session_id']
+        self.assert_cli(['git', 'enable', '--base', 'topic'])
+        self.assertEqual(board.git_config(self.conn, 'demo')['admin_session_id'], administrator)
+        self.assertEqual(len(self.plans), 1)
+        self.assertIn('会话菜单', self.assert_cli(['git', 'enable', '--runtime', 'claude'], code=3)[2])
+
+    def test_no_ai_carrier_does_not_enable_git_or_create_worktree(self):
+        with mock.patch.object(settings, 'resolve', side_effect=board.BoardError('请先安装并登录 Codex CLI 或 Claude Code')):
+            self.assertIn('安装并登录', self.assert_cli(['git', 'enable'], code=1)[2])
+        self.assertIsNone(board.git_config(self.conn, 'demo'))
+        self.assertFalse((self.root / 'Temp' / 'wt').exists())
+
+    def test_git_brain_settings_supply_model_and_effort_without_changing_other_jobs(self):
+        settings.save(self.conn, {'default': {'runtime': 'claude', 'model': None, 'effort': None},
+                                 'git': {'runtime': 'codex', 'model': 'gpt-fixture-purpose', 'effort': 'high'}})
+        with mock.patch.object(spawn.codex_client, 'command', return_value=['codex.exe', 'app-server']):
+            self.assert_cli(['git', 'enable', '--runtime', 'codex'])
+        self.assertEqual(self.plans[0]['spec']['model'], 'gpt-fixture-purpose')
+        self.assertEqual(self.plans[0]['spec']['effort'], 'high')
+        self.assertIsNone(settings.load(self.conn)['default']['model'])
 
     def test_start_failure_does_not_mark_git_enabled(self):
         with mock.patch.object(self, "launcher", side_effect=OSError("fixture launch failure")):
@@ -317,11 +359,11 @@ class GitHttpTests(ShellFixture, unittest.TestCase):
         self.assertTrue(self.server.service.chat.path(sid).exists())
         command = self.commands[-1]
         self.assertEqual(command[command.index("--agent") + 1], "crew:git")
-        self.assertEqual(command[command.index("--model") + 1], "claude-sonnet-5-5")
+        self.assertNotIn('--model', command)
         state = self.request("/api/state?project=demo")[1]
         admin_state = next(leader for leader in state["leaders"] if leader["session_id"] == sid)
         self.assertTrue(admin_state["is_git_admin"])
-        self.assertEqual((admin_state["model"], admin_state["effort"]), ("claude-sonnet-5-5", "high"))
+        self.assertEqual((admin_state["model"], admin_state["effort"]), (None, None))
         self.assertEqual(self.request("/api/session/options?project=demo", {"session_id": sid, "model": "claude-opus-5-5"})[0], 200)
         self.assertEqual(self.request("/api/git/disable?project=demo", {}), (200, {"ok": True}))
         self.assertIsNone(board.git_config(self.conn, "demo"))

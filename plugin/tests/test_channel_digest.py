@@ -7,7 +7,7 @@ import threading
 import unittest
 from unittest import mock
 
-from crew import board, channel, channel_digest, models
+from crew import board, channel, channel_digest, models, settings
 import test_channel
 
 CARD = "## 已定结论\nalpha 定了接口。\n## 未定的事 · 在等谁\n等 beta 确认。\n## 各组跨组相关进展\n暂无"
@@ -15,7 +15,8 @@ CARD = "## 已定结论\nalpha 定了接口。\n## 未定的事 · 在等谁\n�
 
 class FakeProcess:
     def __init__(self, output=None, errors="", code=0, timeout=False, gate=None):
-        self.output = json.dumps({"is_error": False, "result": CARD, "total_cost_usd": .012}) if output is None else output
+        self.output = json.dumps({"is_error": False, "result": CARD, "total_cost_usd": .012,
+                                  'modelUsage': {models.HAIKU: {}}}) if output is None else output
         self.errors, self.returncode, self.timeout, self.gate = errors, code, timeout, gate
         self.input, self.killed = None, False
         self.entered = threading.Event()
@@ -40,6 +41,9 @@ class DigestTests(unittest.TestCase):
     run_cli = test_channel.ChannelTests.run_cli
 
     def manager(self, process):
+        ai = settings.get(self.conn)
+        ai['digest'] = {'runtime': 'claude', 'model': models.HAIKU, 'effort': None}
+        settings.save(self.conn, ai)
         self.factory = mock.Mock(return_value=process)
         executable = mock.patch("crew.chat.shutil.which", return_value="C:/fake/claude.cmd")
         executable.start()
@@ -77,9 +81,9 @@ class DigestTests(unittest.TestCase):
         self.assertNotIn("生成期间到达", process.input)
         command = self.factory.call_args.args[0]
         self.assertTrue(command[0].replace('\\', '/').endswith('/node_modules/@anthropic-ai/claude-code/bin/claude.exe'))
-        self.assertEqual(command[1:], ['-p', '--model', models.HAIKU, '--output-format', 'json',
+        self.assertEqual(command[1:], ['-p', '--output-format', 'json',
             '--no-session-persistence', '--settings', '{"disableAllHooks":true}', '--strict-mcp-config',
-            '--tools', '', '--disable-slash-commands'])
+            '--tools', '', '--disable-slash-commands', '--model', models.HAIKU])
         options = self.factory.call_args.kwargs
         self.assertEqual(options['cwd'], str(self.home))
         self.assertNotIn('CLAUDE_CODE_SESSION_ID', options['env'])
@@ -99,6 +103,33 @@ class DigestTests(unittest.TestCase):
         self.assertIn('新增全文\\n第二行', process.input)
         self.assertEqual(channel.digest(self.conn, 'demo')['message_count'], 1)
         self.assertEqual(channel.digest(self.conn, 'demo')['total_message_count'], 2)
+
+    def test_native_claude_defaults_omit_model_effort_flags_and_save_reported_model(self):
+        self.post()
+        process = FakeProcess(output=json.dumps({'is_error': False, 'result': CARD,
+                                                  'total_cost_usd': .02, 'model': 'native-resolved-claude'}))
+        manager = self.manager(process)
+        ai = settings.get(self.conn)
+        ai['digest'] = {'runtime': 'claude', 'model': None, 'effort': None}
+        settings.save(self.conn, ai)
+        self.factory.assert_not_called()
+        manager.start(self.conn, 'demo'); self.finish(manager)
+        command = self.factory.call_args.args[0]
+        self.assertNotIn('--model', command)
+        self.assertNotIn('--effort', command)
+        self.assertEqual(channel.digest(self.conn, 'demo')['model'], 'native-resolved-claude')
+
+    def test_claude_configured_options_are_forwarded_but_missing_native_model_is_not_guessed(self):
+        self.post()
+        process = FakeProcess(output=json.dumps({'is_error': False, 'result': CARD, 'total_cost_usd': .02}))
+        manager = self.manager(process)
+        ai = settings.get(self.conn)
+        ai['digest'] = {'runtime': 'claude', 'model': 'configured-native-alias', 'effort': 'configured-effort'}
+        settings.save(self.conn, ai)
+        manager.start(self.conn, 'demo'); self.finish(manager)
+        command = self.factory.call_args.args[0]
+        self.assertEqual(command[-4:], ['--model', 'configured-native-alias', '--effort', 'configured-effort'])
+        self.assertEqual(channel.digest(self.conn, 'demo')['model'], '原生默认（未回报型号）')
 
     def test_failures_preserve_card_and_report_real_reason(self):
         self.post()

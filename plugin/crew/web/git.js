@@ -4,6 +4,7 @@ const CrewGit = (() => {
   const DAY = 86400000, ROW = 34, GAP = 19;
   let host = null, options = null, data = null, timer = null, generation = 0;
   let tab = "graph", activeOnly = false, selectedBranch = null, loading = false, operation = null, errorText = "", pages = 1;
+  let selectedRuntime = "", runtimeExplicit = false;
   const expandedConflicts = new Set();
   const commitStats = new Map();
   let detail = null, detailCloseTimer = null, hoverSuppressed = false, pointerX = null, pointerY = null;
@@ -214,7 +215,11 @@ const CrewGit = (() => {
   }
   function enableCard() {
     const choices = data.choices, option = (name, selected) => `<option value="${esc(name)}" ${name === selected ? "selected" : ""}>${esc(name)}</option>`;
-    return `<div class="page"><div class="git-enable-card"><span class="git-enable-icon">⑂</span><h1>启用 Git 管理</h1><p>Git 管理员会在独立 worktree 中统一推送和合并。选择日常合入的主干和发布用的稳定分支后，即可在这里查看请求、分支与 GitHub 状态。</p><form id="git-enable-form"><label for="git-base">主干分支 <span>日常合入</span></label><select id="git-base" name="base">${choices.branches.map(name => option(name, choices.base)).join("")}</select><label for="git-stable">稳定分支 <span>可留空</span></label><select id="git-stable" name="stable"><option value="" ${choices.stable === null ? "selected" : ""}>不设置稳定分支</option>${choices.branches.map(name => option(name, choices.stable)).join("")}</select><button type="submit" class="btn primary" data-git-act="enable" ${operation !== null || choices.branches.length === 0 ? "disabled" : ""}>${operation === "enable" ? "正在启用…" : "启用"}</button></form>${choices.branches.length === 0 ? '<p class="git-error">仓库没有本地分支，无法启用。</p>' : ""}${errorText === "" ? "" : `<p class="git-error" role="alert">${esc(errorText)}</p>`}</div></div>`;
+    const catalog = options.catalog?.() || [];
+    if (!runtimeExplicit) selectedRuntime = options.defaultRuntime?.() || "";
+    const available = catalog.some(item => item.id === selectedRuntime && item.available);
+    const runtimeError = available ? "" : catalog.some(item => item.available) ? "所选执行工具当前不可用，请重新选择。" : "没有可用的执行工具，请安装并登录 Codex 或 Claude Code 后刷新。";
+    return `<div class="page"><div class="git-enable-card"><span class="git-enable-icon">⑂</span><h1>启用 Git 管理</h1><p>Git 管理员会在独立 worktree 中统一推送和合并。选择日常合入的主干和发布用的稳定分支后，即可在这里查看请求、分支与 GitHub 状态。</p><form id="git-enable-form"><label for="git-base">主干分支 <span>日常合入</span></label><select id="git-base" name="base">${choices.branches.map(name => option(name, choices.base)).join("")}</select><label for="git-stable">稳定分支 <span>可留空</span></label><select id="git-stable" name="stable"><option value="" ${choices.stable === null ? "selected" : ""}>不设置稳定分支</option>${choices.branches.map(name => option(name, choices.stable)).join("")}</select><label for="git-runtime">管理员执行工具</label><select id="git-runtime" name="runtime"><option value="" disabled ${selectedRuntime === "" ? "selected" : ""}>请选择可用工具</option>${catalog.map(item => `<option value="${esc(item.id)}" ${item.id === selectedRuntime ? "selected" : ""} ${item.available ? "" : "disabled"}>${esc(item.name)}${item.available ? "" : " · 未就绪"}</option>`).join("")}</select><p id="git-runtime-status" class="git-error" role="status" ${runtimeError ? "" : "hidden"}>${esc(runtimeError)}</p><button type="submit" class="btn primary" data-git-act="enable" ${operation !== null || choices.branches.length === 0 || !available ? "disabled" : ""}>${operation === "enable" ? "正在启用…" : "启用"}</button></form>${choices.branches.length === 0 ? '<p class="git-error">仓库没有本地分支，无法启用。</p>' : ""}${errorText === "" ? "" : `<p class="git-error" role="alert">${esc(errorText)}</p>`}</div></div>`;
   }
   function mergeRequests() {
     const labels = {open:"待处理", merging:"合并中", waiting_user:"等用户拍板", merged:"已合并", rejected:"已拒绝"};
@@ -245,6 +250,11 @@ const CrewGit = (() => {
     if (host === null) return;
     const scroll = host.querySelector(".git-page")?.scrollTop;
     if (data === null) { host.innerHTML = `<div id="git-view"><div class="head big"><div class="title">Git</div></div><div class="page"><p class="note git-loading">${errorText === "" ? "正在读取仓库…" : esc(errorText)}</p></div></div>`; return; }
+    if (data.available === false) {
+      detail = null;
+      host.innerHTML = `<div id="git-view"><div class="head big git-head"><div><div class="title">Git</div><div class="sub">${esc(data.repository)}</div></div></div><div class="page"><section class="git-enable-card"><span class="git-enable-icon" aria-hidden="true">⑂</span><h1>Git 功能暂不可用</h1><p role="status">${esc(data.reason)}</p><p>此工作区的聊天、任务和其他功能照常使用。Git 分支、提交与 worktree 功能需要 Git 仓库。</p><button type="button" class="btn" data-git-act="check" ${loading ? "disabled" : ""}>${loading ? "正在检查…" : "刷新检查"}</button>${errorText === "" ? "" : `<p class="git-error" role="alert">${esc(errorText)}</p>`}</section></div></div>`;
+      return;
+    }
     if (!data.enabled) detail = null;
     const header = `<div class="head big git-head"><div><div class="title">${esc(data.repository)} <span class="git-heading-label">Git</span></div><div class="sub">${data.enabled ? "分支、提交与合并检查" : "项目 Git 管理"}</div></div>${data.enabled ? `<div class="right">${data.config.admin_session_id === null ? "" : `<button type="button" class="btn" data-act="leader" data-id="${esc(data.config.admin_session_id)}">和 git 管理员聊</button>`}<div class="git-fetch-meta">${data.last_fetch_at === null ? "尚未 fetch" : `上次 fetch · ${esc(at(data.last_fetch_at))}`}</div><button type="button" class="btn" data-git-act="fetch" ${operation !== null ? "disabled" : ""}>${operation === "fetch" ? "正在 fetch…" : "刷新（fetch）"}</button><details class="git-more"><summary aria-label="更多" title="更多">•••</summary><div><button type="button" data-git-act="disable">停用 Git 管理</button></div></details></div>` : ""}</div>`;
     host.innerHTML = `<div id="git-view">${header}${data.enabled ? `<div class="page git-page"><div class="git-page-in">${overview()}${mergeRequests()}${errorText === "" ? "" : `<pre class="git-error" role="alert">${esc(errorText)}</pre>`}${data.github === null ? `<div class="git-github-unavailable"><strong>GitHub 不可用</strong><pre>${esc(data.github_reason)}</pre></div>` : ""}<div class="git-tabs" role="tablist" aria-label="Git 视图"><button type="button" role="tab" id="git-graph-tab" aria-controls="git-panel" aria-selected="${tab === "graph"}" data-git-tab="graph" class="${tab === "graph" ? "on" : ""}">树状图 <span>${data.commits.length}</span></button><button type="button" role="tab" id="git-branches-tab" aria-controls="git-panel" aria-selected="${tab === "branches"}" data-git-tab="branches" class="${tab === "branches" ? "on" : ""}">分支 <span>${data.branches.length}</span></button></div><section id="git-panel" role="tabpanel" aria-labelledby="git-${tab}-tab">${tab === "graph" ? graph() : branchTable()}</section></div></div>` : enableCard()}<dialog id="git-disable-dialog" class="git-disable-dialog" aria-labelledby="git-disable-title"><h2 id="git-disable-title">停用 Git 管理？</h2><p>Git 管理员的组将关闭，此项目的 Git 管理配置将被删除。</p><div><button type="button" class="btn" data-git-act="cancel-disable">取消</button><button type="button" class="btn danger" data-git-act="confirm-disable" ${operation !== null ? "disabled" : ""}>确认停用</button></div></dialog><aside id="git-detail" class="git-detail" role="dialog" aria-label="提交详情" hidden></aside></div>`;
@@ -255,6 +265,7 @@ const CrewGit = (() => {
   async function load(append = false) {
     if (loading) return;
     loading = true;
+    if (data?.available === false) render();
     const requestGeneration = generation, requestedPages = pages;
     try {
       if (append) {
@@ -265,7 +276,7 @@ const CrewGit = (() => {
       } else {
         let fresh = await options.api("/api/git?offset=0");
         if (generation !== requestGeneration) return;
-        for (let page = 1; fresh.enabled && page < requestedPages && fresh.next_offset !== null; page++) {
+        for (let page = 1; fresh.available !== false && fresh.enabled && page < requestedPages && fresh.next_offset !== null; page++) {
           const more = await options.api(`/api/git?offset=${fresh.next_offset}`);
           if (generation !== requestGeneration) return;
           fresh = {...more, commits:[...fresh.commits, ...more.commits]};
@@ -300,7 +311,8 @@ const CrewGit = (() => {
     const button = event.target.closest("[data-git-act]");
     if (button === null) { const target = commitTarget(event.target); if (target !== null) showCommitDetail(target, true, event); return; }
     const act = button.dataset.gitAct;
-    if (act === "active") { activeOnly = !activeOnly; render(); }
+    if (act === "check") load();
+    else if (act === "active") { activeOnly = !activeOnly; render(); }
     else if (act === "clear-selection") { selectedBranch = null; render(); }
     else if (act === "load-more") load(true);
     else if (act === "fetch") mutate("fetch", {});
@@ -309,27 +321,38 @@ const CrewGit = (() => {
     else if (act === "confirm-disable") mutate("disable", {});
   }
   function submit(event) {
-    if (event.target.id !== "git-enable-form") return;
+    if (event.target.id !== "git-enable-form" || data?.available === false) return;
     event.preventDefault();
-    mutate("enable", {base:event.target.elements.base.value, stable:event.target.elements.stable.value});
+    const runtime = event.target.elements.runtime.value;
+    if (!(options.catalog?.() || []).some(item => item.id === runtime && item.available)) { errorText = "执行工具不可用，请检查安装和登录后重新选择。"; render(); return; }
+    selectedRuntime = runtime; runtimeExplicit = true;
+    mutate("enable", {base:event.target.elements.base.value, stable:event.target.elements.stable.value, runtime});
+  }
+  function change(event) {
+    if (event.target.id !== "git-runtime") return;
+    selectedRuntime = event.target.value; runtimeExplicit = true;
+    const available = (options.catalog?.() || []).some(item => item.id === selectedRuntime && item.available);
+    host.querySelector('[data-git-act="enable"]').disabled = !available || operation !== null || data.choices.branches.length === 0;
+    const status = host.querySelector('#git-runtime-status');
+    status.textContent = available ? "" : "所选执行工具当前不可用，请重新选择。"; status.hidden = available;
   }
   function mount(element, settings) {
     if (host === element) return;
     unmount(); host = element; options = settings;
-    host.addEventListener("click", click); host.addEventListener("submit", submit);
+    host.addEventListener("click", click); host.addEventListener("submit", submit); host.addEventListener("change", change);
     host.addEventListener("pointerover", hoverCommit); host.addEventListener("pointerout", leaveCommit);
     document.addEventListener("pointerdown", dismissCommitDetail); document.addEventListener("keydown", commitKey);
     document.addEventListener("pointermove", moveCommitPointer);
     window.addEventListener("resize", positionCommitDetail);
-    render(); load(); timer = setInterval(() => load(), 30000);
+    render(); load(); timer = setInterval(() => { if (data?.available !== false) load(); }, 30000);
   }
   function unmount() {
     generation++; clearInterval(timer); clearTimeout(detailCloseTimer); detail = null; hoverSuppressed = false; pointerX = null; pointerY = null;
-    if (host !== null) { host.removeEventListener("click", click); host.removeEventListener("submit", submit); host.removeEventListener("pointerover", hoverCommit); host.removeEventListener("pointerout", leaveCommit); }
+    if (host !== null) { host.removeEventListener("click", click); host.removeEventListener("submit", submit); host.removeEventListener("change", change); host.removeEventListener("pointerover", hoverCommit); host.removeEventListener("pointerout", leaveCommit); }
     document.removeEventListener("pointerdown", dismissCommitDetail); document.removeEventListener("keydown", commitKey);
     document.removeEventListener("pointermove", moveCommitPointer);
     window.removeEventListener("resize", positionCommitDetail);
-    host = null; options = null; data = null; loading = false; operation = null; errorText = ""; pages = 1; selectedBranch = null;
+    host = null; options = null; data = null; loading = false; operation = null; errorText = ""; pages = 1; selectedBranch = null; selectedRuntime = ""; runtimeExplicit = false;
     expandedConflicts.clear();
   }
   return {mount, unmount};

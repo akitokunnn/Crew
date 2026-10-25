@@ -35,6 +35,8 @@ def make_vscode_state_db(path):
 class ShellFixture(UsageFixture):
     def setUp(self):
         super().setUp()
+        from crew import settings
+        settings.save(self.conn, {'default': {'runtime': 'claude', 'model': None, 'effort': None}})
         self.vscode_state_db = make_vscode_state_db(self.root / "state.vscdb")
         roots = mock.patch("crew.vscode_sessions.project_roots", side_effect=lambda root: [Path(root)])
         roots.start()
@@ -122,7 +124,7 @@ class SpawnTests(ShellFixture, unittest.TestCase):
         self.assertEqual(command[command.index("--name") + 1], "new")
         self.assertEqual(command[-2:], ["--session-id", result["session_id"]])
         self.assertNotIn("--agent", command)
-        self.assertEqual(self.processes[0].options["cwd"], store.norm_path(self.project))
+        self.assertEqual(self.processes[0].options["cwd"], str(self.project.resolve()))
         self.assertEqual(self.processes[0].options["env"]["CREW_ROLE"], "member")
         self.assertEqual(board.session(self.conn, result["session_id"])["group_name"], "lead")
         self.assertEqual(board.events(self.conn, "demo", limit=1)[0]["kind"], "spawn")
@@ -618,7 +620,7 @@ class WebTests(ShellFixture, unittest.TestCase):
         self.assertEqual(self.get("/api/spawn", {"name":"fresh", "task":"work", "group":"missing"})[0], 400)
         self.assertEqual(self.get("/api/spawn", {"name":"fresh"})[0], 400)
 
-    def test_member_web_send_refused_and_manager_resume_keeps_current_group_and_member_role(self):
+    def test_member_web_send_and_resume_keep_current_group_role_and_native_identity(self):
         code, result, _ = self.get("/api/spawn", {"name": "web-member", "task": "implement the feature"})
         self.assertEqual(code, 200)
         session_id = result["session_id"]
@@ -634,26 +636,29 @@ class WebTests(ShellFixture, unittest.TestCase):
         self.assertFalse(manager.owns_pid(session_id, -1))
         self.processes[0].emit({"type": "result"})
         self.chat_wait(session_id, lambda journal: journal.status == "idle")
-        original_input = self.processes[0].stdin.getvalue()
-        code, error, _ = self.get("/api/chat/send", {"session_id": session_id, "text": "continue"})
-        self.assertEqual((code, error["error"]), (400, "下属请在 VS Code 里聊"))
-        self.assertEqual(self.processes[0].stdin.getvalue(), original_input)
+        original = manager.processes[session_id]
+        code, accepted, _ = self.get("/api/chat/send", {"session_id": session_id, "text": "continue", "message_id":"member-continue"})
+        self.assertEqual((code,accepted),(200,{'ok':True,'message_id':'member-continue','accepted':True,'delivery':'started'}))
+        self.assertIs(manager.processes[session_id],original)
+        sent=json.loads(self.processes[0].stdin.getvalue().splitlines()[-1])
+        self.assertEqual((sent['uuid'],sent['session_id'],sent['message']['content']),('member-continue',session_id,'continue'))
         self.assertEqual(len(self.processes), 1)
-        manager.send(board.session(self.conn, session_id), "continue")
         board.roster(self.conn, "demo", "move", "lead", ["web-member"], now=NOW)
         shown = next(s for s in self.get("/api/state?project=demo")[1]["members"] if s["session_id"] == session_id)
         self.assertTrue(shown["web_chat"])
         self.assertEqual(shown["where"], "bg")
         manager.close()
         self.server.service.chat = chat.Manager(self.home, PLUGIN, self.provider, self.process_factory)
-        code, error, _ = self.get("/api/chat/send", {"session_id": session_id, "text": "resume"})
-        self.assertEqual((code, error["error"]), (400, "下属请在 VS Code 里聊"))
-        self.assertEqual(len(self.processes), 1)
-        self.server.service.chat.send(board.session(self.conn, session_id), "resume")
+        code, accepted, _ = self.get("/api/chat/send", {"session_id": session_id, "text": "resume", "message_id":"member-resume"})
+        self.assertEqual((code,accepted),(200,{'ok':True,'message_id':'member-resume','accepted':True,'delivery':'started'}))
+        self.assertEqual(len(self.processes), 2)
         process = self.processes[1]
         self.assertEqual(process.command[-2:], ["--resume", session_id])
         self.assertNotIn("--agent", process.command)
         self.assertEqual((process.options["env"]["CREW_ROLE"], process.options["env"]["CREW_GROUP"]), ("member", "lead"))
+        messages=[event for event in self.get('/api/chat/history?session_id='+session_id)[1]['events'] if event['type']=='message']
+        self.assertEqual([event['text'] for event in messages if event['id'] in ('member-continue','member-resume')],['continue','resume'])
+        self.assertEqual(board.session(self.conn,session_id)['role'],'member')
 
     def test_cli_spawn_uses_web_service_and_reports_conflicts(self):
         code, output, errors = self.run_cli(["spawn", "--name", "cli-member", "--task", "work", "--cwd", str(self.project), "--json"])
@@ -778,7 +783,17 @@ class WebTests(ShellFixture, unittest.TestCase):
             self.assertTrue(history["running"])
             self.assertTrue(history["busy"])
         self.assertEqual(len(self.processes), 1)
-        self.assertEqual(self.get("/api/chat/send", {"session_id": session_id, "text": "too soon"})[0], 409)
+        original=self.server.service.chat.processes[session_id]
+        before=list(history['events'])
+        code, accepted, _=self.get('/api/chat/send',{'session_id':session_id,'text':'先核对新的方向','message_id':'busy-steer'})
+        self.assertEqual((code,accepted),(200,{'ok':True,'message_id':'busy-steer','accepted':True,'delivery':'steered'}))
+        self.assertIs(self.server.service.chat.processes[session_id],original)
+        self.assertIs(original.process,process);self.assertEqual(len(self.processes),1)
+        after=self.get('/api/chat/history?session_id='+session_id)[1]
+        self.assertEqual(after['events'][:len(before)],before)
+        self.assertTrue(after['busy'])
+        self.assertEqual([event['text'] for event in after['events'] if event['type']=='message' and event['id']=='busy-steer'],['先核对新的方向'])
+        self.assertEqual([record['message']['content'] for record in map(json.loads,process.stdin.getvalue().splitlines()) if record.get('uuid')=='busy-steer'],['先核对新的方向'])
         process.emit({"type": "result", "is_error": False})
         self.chat_wait(session_id, lambda journal: journal.status == "idle")
         self.assertEqual(self.get("/api/chat/send", {"session_id": session_id, "text": "next turn"})[0], 200)
@@ -870,8 +885,21 @@ class WebTests(ShellFixture, unittest.TestCase):
             process.finish()
             sender.join(3)
         self.assertEqual(responses, [200])
-        self.assertTrue(self.get("/api/chat/history?session_id=" + session_id)[1]["busy"])
-        self.assertEqual(self.get("/api/chat/send", {"session_id": session_id, "text": "too soon"})[0], 409)
+        history=self.get("/api/chat/history?session_id=" + session_id)[1]
+        self.assertTrue(history["busy"])
+        self.assertTrue(previous.reader_done.is_set())
+        resumed=self.server.service.chat.processes[session_id]
+        self.assertIsNot(resumed,previous)
+        self.assertEqual(len(self.processes),2)
+        self.assertEqual(resumed.process.command[-2:],['--resume',session_id])
+        code, accepted, _=self.get('/api/chat/send',{'session_id':session_id,'text':'继续前先检查这个补充','message_id':'resumed-steer'})
+        self.assertEqual((code,accepted),(200,{'ok':True,'message_id':'resumed-steer','accepted':True,'delivery':'steered'}))
+        self.assertIs(self.server.service.chat.processes[session_id],resumed)
+        self.assertEqual(len(self.processes),2)
+        after=self.get('/api/chat/history?session_id='+session_id)[1]
+        self.assertEqual(after['events'][:len(history['events'])],history['events'])
+        self.assertEqual([event['text'] for event in after['events'] if event['type']=='message' and event['id']=='resumed-steer'],['继续前先检查这个补充'])
+        self.assertEqual([record['message']['content'] for record in map(json.loads,resumed.process.stdin.getvalue().splitlines()) if record.get('uuid')=='resumed-steer'],['继续前先检查这个补充'])
 
     def test_roster_move_success_and_error(self):
         board.ensure_spawn_group(self.conn, "demo", "next", now=NOW)

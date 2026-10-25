@@ -1,6 +1,7 @@
 """HOME launchers: hooks only initialize, explicit installs may switch source."""
 import json
 import os
+import shlex
 import shutil
 import sys
 import uuid
@@ -22,16 +23,11 @@ sys.stdout.reconfigure(encoding="utf-8")
 sys.stderr.reconfigure(encoding="utf-8")
 raise SystemExit(main(["--home", str(home), *sys.argv[1:]]))
 '''
-COMMAND = '@python "%~dp0..\\crew.py" %*\n'
-POSIX_COMMAND = ('#!/usr/bin/env python3\nimport runpy\nfrom pathlib import Path\n'
-                 'runpy.run_path(str(Path(__file__).resolve().parent.parent / "crew.py"), run_name="__main__")\n')
-
-
 def _write(path, text):
     # Replace atomically: a failed write never leaves a truncated entry.
     temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
     try:
-        temporary.write_text(text, encoding="utf-8")
+        temporary.write_text(text, encoding="utf-8", newline="\n")
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
@@ -50,8 +46,14 @@ def _sources(home, plugin_root):
 
 def _launchers(home, only_missing):
     (home / "bin").mkdir(exist_ok=True)
-    for path, text in ((home / "crew.py", LAUNCHER), (home / "bin" / "crew.cmd", COMMAND),
-                       (home / "bin" / "crew", POSIX_COMMAND)):
+    # Preserve the native interpreter and Windows-native paths added in 0.2.x.
+    windows_python = str(Path(sys.executable).resolve()).replace('%', '%%')
+    command = '@"' + windows_python + '" "%~dp0..\\crew.py" %*\n'
+    python = shlex.quote(Path(sys.executable).resolve().as_posix())
+    entrypoint = shlex.quote((home / 'crew.py').as_posix())
+    shell = '#!/bin/sh\nexec ' + python + ' ' + entrypoint + ' "$@"\n'
+    for path, text in ((home / "crew.py", LAUNCHER), (home / "bin" / "crew.cmd", command),
+                       (home / "bin" / "crew", shell)):
         if only_missing and path.exists():
             continue
         _write(path, text)

@@ -11,7 +11,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import ProxyHandler, Request, build_opener
 
-from crew import board, documents, web
+from crew import board, documents, goal_api, goals, web
 from test_shell import NOW, PLUGIN, ShellFixture
 
 
@@ -34,6 +34,69 @@ class DocumentFixture(ShellFixture):
 
 
 class DocumentsTests(DocumentFixture,unittest.TestCase):
+    def goal(self, title='任务'):
+        return goals.create(self.conn, 'demo', 's3', title, '交付这个任务', ['可以验收'])
+
+    def test_task_materials_require_explicit_binding_and_can_reuse_the_original_file(self):
+        first, second = self.goal('第一个'), self.goal('第二个')
+        old = self.register('s3', str(self.file('old.md')))
+        file = self.file('task.md')
+        row = self.register('s3', str(file), goal_id=first['id'])
+        self.assertEqual([d['id'] for d in documents.list(self.conn, 'demo', goal_id=first['id'])], [row['id']])
+        self.assertEqual(documents.list(self.conn, 'demo', goal_id=second['id']), [])
+        self.assertEqual([d['id'] for d in goal_api.detail(self.conn, 'demo', first['id'])['documents']], [row['id']])
+        self.assertNotIn(old['id'], [d['id'] for d in documents.list(self.conn, 'demo', goal_id=first['id'])])
+        repeated = self.register('s3', str(file), goal_id=second['id'])
+        self.assertEqual(repeated['id'], row['id'])
+        self.assertEqual(len(documents.list(self.conn, 'demo')), 2)
+        self.assertEqual([d['id'] for d in documents.list(self.conn, 'demo', goal_id=second['id'])], [row['id']])
+
+    def test_execution_binding_rejects_other_actor_goal_project_and_stopped_execution(self):
+        goal, other = self.goal(), self.goal('其他任务')
+        execution = goals.create_execution(self.conn, goal['id'], 's3', runtime='claude')
+        file = self.file()
+        for sid, extra in (('s1', {'execution_id': execution['id']}),
+                           ('s3', {'execution_id': execution['id'], 'goal_id': other['id']}),
+                           ('s2', {'goal_id': goal['id']})):
+            with self.subTest(sid=sid, extra=extra), self.assertRaises(board.BoardError):
+                self.register(sid, str(file), **extra)
+        self.assertEqual(documents.list(self.conn, 'demo'), [])
+        row = self.register('s3', str(file), execution_id=execution['id'])
+        self.assertEqual(documents.list(self.conn, 'demo', goal_id=goal['id'])[0]['id'], row['id'])
+        board.init_project(self.conn, 'other', self.root, now=NOW)
+        with self.assertRaises(board.BoardError):
+            documents.list(self.conn, 'other', goal_id=goal['id'])
+        goals.request_pause(self.conn, goal['id'])
+        with self.assertRaises(board.Conflict):
+            self.register('s3', str(file), execution_id=execution['id'])
+
+    def test_goal_journal_scan_binds_actual_execution_without_mixing_general_history(self):
+        goal, other = self.goal(), self.goal('其他任务')
+        execution = goals.create_execution(self.conn, goal['id'], 's3', runtime='claude')
+        self.file('general.md'); self.file('task.md')
+        self.journal([self.assistant('[一般聊天](general.md)')], sid='s3')
+        self.journal([self.assistant('[任务汇总](task.md)')], sid=execution['id'])
+        goals.request_pause(self.conn, goal['id'])
+        documents.refresh(self.conn, self.home, 'demo', now=NOW)
+        self.assertEqual(len(documents.list(self.conn, 'demo')), 2)
+        self.assertEqual([d['title'] for d in documents.list(self.conn, 'demo', goal_id=goal['id'])], ['任务汇总'])
+        self.assertEqual(documents.list(self.conn, 'demo', goal_id=other['id']), [])
+        self.assertEqual(documents.refresh(self.conn, self.home, 'demo', now=NOW)['scanned'], 0)
+
+    def test_cli_document_submission_uses_the_bound_execution_and_stays_readable_after_pause(self):
+        goal = self.goal()
+        execution = goals.create_execution(self.conn, goal['id'], 's3', runtime='claude')
+        path = self.file()
+        with mock.patch.dict(os.environ, {'CREW_EXECUTION_ID':execution['id'], 'CREW_GOAL_ID':goal['id']}):
+            code, output, errors = self.run_cli(['--session', 's3', 'doc', 'add', str(path), '--title', '任务报告', '--summary', '已验证的结果', '--json'])
+            self.assertEqual(code, 0, errors)
+            doc = json.loads(output)
+            self.assertEqual(documents.list(self.conn, 'demo', goal_id=goal['id'])[0]['id'], doc['id'])
+            goals.request_pause(self.conn, goal['id'])
+            code, output, errors = self.run_cli(['--session', 's3', 'doc', 'list', '--json'])
+            self.assertEqual(code, 0, errors)
+            self.assertEqual(json.loads(output)[0]['id'], doc['id'])
+
     def test_register_keeps_original_files_and_deduplicates_canonical_paths(self):
         file=self.file(); original=file.read_bytes()
         first=self.register('s1','docs/report.md',title='验证报告',summary='明确摘要',kind='report',important=True,now=NOW)
@@ -207,6 +270,18 @@ class DocumentHTTPTests(DocumentFixture,unittest.TestCase):
             self.assertEqual(self.request('/api/files/open',{'project':'demo','document_id':docid})[0],200)
             opener.assert_called_once_with(str(file))
         self.assertEqual(self.request('/api/documents/refresh',{'project':'demo'})[0],200)
+
+    def test_http_task_materials_are_strictly_scoped_in_list_and_detail(self):
+        goal = goals.create(self.conn, 'demo', 's3', '这个任务', '任务要求', ['可验收'])
+        other = goals.create(self.conn, 'demo', 's3', '下个任务', '另一个要求', ['可验收'])
+        self.register('s3', str(self.file('old.md')))
+        code, doc = self.request('/api/documents', {'project':'demo', 'session_id':'s3',
+            'path':str(self.file('task.md')), 'title':'交付', 'summary':'这个任务的交付', 'goal_id':goal['id']})
+        self.assertEqual(code, 200, doc)
+        self.assertEqual([d['id'] for d in self.request('/api/documents', project='demo', goal_id=goal['id'])[1]['documents']], [doc['id']])
+        self.assertEqual(self.request('/api/documents', project='demo', goal_id=other['id'])[1]['documents'], [])
+        self.assertEqual(self.request('/api/goal', project='demo', id=goal['id'])[1]['documents'][0]['id'], doc['id'])
+        self.assertEqual(self.request('/api/documents', project='demo', goal_id='missing')[0], 400)
 
     def test_http_explicit_registration_requires_a_title_and_summary(self):
         file=self.file()
