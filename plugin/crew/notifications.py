@@ -803,6 +803,12 @@ class Inbox:
         self.send_text(label + ' 正忙，排在后面' if self.service.chat.busy(session_id) or queued else '已转给 ' + label)
 
     def process_replies(self):
+        # While an update gate holds, queued QQ replies stay queued for the updated service.
+        with self.service.chat.work(background=True) as admitted:
+            if admitted:
+                self._process_replies()
+
+    def _process_replies(self):
         with self.service.write_lock, closing(store.connect(self.home)) as conn:
             for row in conn.execute("SELECT * FROM notification_replies WHERE status IN ('queued','running') ORDER BY created_at,rowid").fetchall():
                 session = board.session(conn, row['session_id'])

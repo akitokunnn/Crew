@@ -6,7 +6,10 @@ const {pathToFileURL}=require('node:url');
 const root=path.resolve(__dirname,'../..'),output=path.join(root,'desktop/smoke-output/settings');
 const source=path.join(root,'desktop/src'),web=path.join(root,'plugin/crew/web');
 const home=pathToFileURL(path.join(source,'home.html')).href,error=pathToFileURL(path.join(source,'error.html')).href;
-let win,temporary,saveFailure=false,saves=0;const calls=[],rendererErrors=[];
+const temporary=require('node:fs').mkdtempSync(path.join(os.tmpdir(),'crew-settings-'));
+const sessionData=path.join(temporary,'session');require('node:fs').mkdirSync(sessionData);
+app.setPath('userData',temporary);app.setPath('sessionData',sessionData);
+let win,saveFailure=false,saves=0;const calls=[],rendererErrors=[];
 const catalog=[{id:'claude',name:'Claude Code',available:true,models:[{id:'native-a',name:'Native A',efforts:['low','high']}],efforts:['low','high']},{id:'codex',name:'Codex',available:true,models:[{id:'native-b',name:'Native B',efforts:['deep']}],efforts:['deep']}];
 let ai={default:{runtime:null,model:null,effort:null},digest:null,git:null,operations:null};
 let execution={codex:'workspace-write',claude:'default'};
@@ -18,11 +21,20 @@ const windowOptions=()=>({width:1320,height:1120,show:false,webPreferences:{prel
 function handle(name,callback){ipcMain.handle('desktop:'+name,(event,...args)=>{assert.equal(event.senderFrame.url,home);calls.push(name);return callback(...args);});}
 handle('home-ready',()=>({ok:true}));handle('bootstrap',()=>({projects:[],service:{url:'http://127.0.0.1:9999',owned:false}}));handle('ready',()=>({ok:true}));
 handle('chrome-ready',async()=>{await win.webContents.insertCSS(await fs.readFile(path.join(source,'chrome.css'),'utf8'));return {maximized:false,focused:true,canGoBack:false,tabs:{activeId:'home',tabs:[{id:'home',name:'工作区',project:null}]}};});
-handle('settings-ui',async()=>{await win.webContents.insertCSS(await fs.readFile(path.join(web,'settings-ui.css'),'utf8'));await win.webContents.executeJavaScript(await fs.readFile(path.join(web,'settings-ui.js'),'utf8'));await win.webContents.executeJavaScript('(()=>{const create=window.CrewSettings.create;window.CrewSettings.create=options=>(window.__settingsUnderTest=create(options));})()');return{ok:true};});
+handle('settings-ui',async()=>{await win.webContents.executeJavaScript(await fs.readFile(path.join(web,'launch-settings-ui.js'),'utf8'));for(const name of ['operations-ui','settings-ui']){await win.webContents.insertCSS(await fs.readFile(path.join(web,name+'.css'),'utf8'));await win.webContents.executeJavaScript(await fs.readFile(path.join(web,name+'.js'),'utf8'));}await win.webContents.executeJavaScript('(()=>{const create=window.CrewSettings.create;window.CrewSettings.create=options=>(window.__settingsUnderTest=create(options));})()');return{ok:true};});
 handle('settings-get',snapshot);handle('settings-save',body=>{saves++;if(saveFailure){saveFailure=false;throw Error('隔离保存失败，草稿应保留');}ai=JSON.parse(JSON.stringify(body.ai));execution=JSON.parse(JSON.stringify(body.execution));return snapshot();});
 handle('settings-connection',()=>({notification}));handle('settings-away',away=>{notification.manual_away=away;notification.away=away;return notification;});
 handle('tools-snapshot',()=>tools);handle('tools-check',()=>tools);handle('tools-settings',value=>{tools.autoUpdate=value.autoUpdate;return tools;});
+handle('crew-update-snapshot',()=>({phase:'idle',desktop_version:'fixture',backend:{version:'fixture',plugin_root:'C:\\Crew\\plugin'},target:null,plugin:{state:'not_installed'},online:null,online_checking:false,online_error:null,can_update:false,queued:false,error:null}));
 handle('admin-status',()=>health);handle('admin-check',()=>({ok:true}));handle('admin-restart',()=>{throw Error('不允许在 fixture 恢复后台');});
+const operationsChat={messages:[],busy:false,error:null,working_since:null};
+let operationsConfig={policy_path:'C:\\Crew Data\\desktop\\admin\\operations\\policy.json',configured:false,policy:{enabled:false,repository:'C:\\Crew',reproduce:[],verify:[],timeout_seconds:180,merge_ref:''}};
+handle('admin-chat-snapshot',()=>operationsChat);
+handle('admin-chat-send',body=>{operationsChat.messages.push({id:body.message_id,role:'user',text:body.text,at:new Date().toISOString()});return operationsChat;});
+handle('admin-chat-interrupt',()=>operationsChat);
+handle('admin-config-get',()=>operationsConfig);
+handle('admin-config-save',policy=>(operationsConfig={...operationsConfig,configured:true,policy}));
+handle('launch-settings-get',()=>({actual_service:{home:snapshot().home,plugin_root:snapshot().backend,version:'fixture'},actual_service_error:null}));
 const run=async script=>{const result=await win.webContents.executeJavaScript(`(async()=>{try{return {value:await (${script})};}catch(error){return {failure:error.stack||String(error)};}})()`);if(result.failure)throw Error(result.failure+'\nExpression: '+script);return result.value;};
 const progress=message=>require('node:fs').appendFileSync(path.join(output,'progress.log'),message+'\n');
 async function waitFor(expression){for(let i=0;i<160;i++){if(await run(expression))return;await new Promise(resolve=>setTimeout(resolve,30));}throw Error('等待超时：'+expression);}
@@ -32,7 +44,6 @@ async function permission(runtime,value){await run(`(()=>{const input=document.q
 async function screenshot(name){progress('capture '+name);await run('Promise.race([document.fonts.ready.then(()=>true),new Promise(resolve=>setTimeout(()=>resolve(false),200))])');await new Promise(resolve=>setTimeout(resolve,100));const image=await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true});assert(!image.isEmpty());await fs.writeFile(path.join(output,name),image.toPNG());}
 async function open(){await click('#nav-settings');await waitFor('!!document.querySelector(\'[data-ai-key="default"]\')');}
 (async()=>{
-  temporary=await fs.mkdtemp(path.join(os.tmpdir(),'crew-settings-'));app.setPath('userData',temporary);
   await app.whenReady();await fs.mkdir(output,{recursive:true});await fs.writeFile(path.join(output,'progress.log'),'');progress('ready');
   win=new BrowserWindow(windowOptions());
   win.webContents.on('console-message',(_event,...args)=>{const message=typeof args[0]==='object'?args[0].message:args[1];if(String(message).includes('Uncaught'))rendererErrors.push(message);});
@@ -85,7 +96,7 @@ async function open(){await click('#nav-settings');await waitFor('!!document.que
   await click('[data-settings-category="tools"]');await waitFor('document.querySelector(".cs-content #tools-list").children.length === 2');
   progress('tools mounted');
   const sameTools=await run('document.querySelectorAll("#tools-page").length');assert.equal(sameTools,1);await click('#tools-auto');await waitFor('document.querySelector("#tools-setting-status").textContent.includes("已开启")');assert.equal(tools.autoUpdate,true);
-  await click('[data-settings-category="backend"]');await waitFor('document.querySelector(".cs-content #admin-state").textContent === "运行正常"');assert.equal(await run('document.querySelectorAll("#admin-page").length'),1);
+  await click('[data-settings-category="backend"]');await waitFor('!!document.querySelector(".co-composer")');assert.equal(calls.filter(name=>name==='admin-chat-send').length,0);await click('[data-operations-tab="status"]');await waitFor('document.querySelector(".cs-content #admin-state").textContent === "运行正常"');assert.equal(await run('document.querySelectorAll("#admin-page").length'),1);
   await click('[data-settings-category="connections"]');await waitFor('!!document.querySelector("[data-away]")');await click('[data-away]');await waitFor('document.querySelector("[data-away]")?.textContent.includes("回到电脑前")');assert.equal(notification.manual_away,true);
   await click('#nav-workspaces');assert.equal(await run('document.querySelector("#settings-page").hidden'),true);assert.equal(await run('document.querySelector("#tools-page").parentNode.tagName'),'MAIN');
   assert.deepEqual(rendererErrors,[]);await fs.writeFile(path.join(output,'evidence.json'),JSON.stringify({ok:true,saves,ai,execution,calls,bounds,rendererErrors,isolatedUserData:temporary,noAIProcesses:true},null,2));

@@ -236,6 +236,17 @@ class Operations:
         incident['report'] = str(report)
 
     def tick(self):
+        # Serialize repair launches/activation with the desktop update transaction.
+        from .updater import update_lock
+        lock = update_lock(self.home)
+        if not lock.acquire():
+            return
+        try:
+            return self._tick()
+        finally:
+            lock.release()
+
+    def _tick(self):
         if any(item.get('pending_goals') for item in self.state['incidents']):
             self._resume_ready()
             self._save()
@@ -293,6 +304,9 @@ class Operations:
                         'and trusted reproduce/verify command arrays before AI repair'))
             return
         policy = _read_json(policy_path, 65536)
+        from .operations_settings import enabled
+        if not enabled(self.home, policy=policy):
+            return
         for incident in self.state['incidents']:
             releasing = bool(incident.get('pending_merge'))
             if not releasing and (incident['status'] != 'queued' or not incident['analyze'] or incident['attempts'] >= 2 or

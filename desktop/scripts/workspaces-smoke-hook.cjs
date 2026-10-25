@@ -230,13 +230,13 @@ app.once('browser-window-created', (_event, win) => {
 
       // Exercise the actual home panel through its production bridge/controller.
       menu.getMenuItemById('tools-updates').click();
-      await wait('!document.querySelector("#tools-page").hidden && document.querySelectorAll(".tool-card").length===2', 'native menu opens tools panel');
+      await wait('!document.querySelector("#tools-page").hidden && document.querySelectorAll("#tools-list .tool-card").length===2', 'native menu opens tools panel');
       await check('native tools menu opens a two-tool panel with automatic updating initially off', '!document.querySelector("#tools-auto").checked && document.querySelector("#nav-tools").getAttribute("aria-current")==="page"');
       const checksBefore = toolFixture.checks;
       await js('document.querySelector("#tools-check").click();document.querySelector("#tools-check").click();document.querySelector("#refresh").click()');
       await wait('!document.querySelector("#refresh").disabled', 'workspace refresh during tool check');
       await check('workspace refresh cannot reenable the tools check button during an ongoing check', 'document.querySelector("#tools-check").disabled');
-      await wait('!document.querySelector("#tools-check").disabled && document.querySelector(".tool-versions").textContent.includes("9.9.1")', 'simulated version check');
+      await wait('!document.querySelector("#tools-check").disabled && document.querySelector("#tools-list .tool-versions").textContent.includes("9.9.1")', 'simulated version check');
       assert.equal(toolFixture.checks, checksBefore + 1);
       evidence.checks.push('double check clicks issue one helper check and display current/latest versions');
       await capture('08-tools-versions');
@@ -267,7 +267,7 @@ app.once('browser-window-created', (_event, win) => {
       toolFixture.checkFailure = true;
       await click('#tools-check');
       await wait('!document.querySelector("#tools-global-error").hidden && !document.querySelector("#tools-check").disabled', 'version check error');
-      await check('a failed version check keeps known versions and gives a readable retryable error', 'document.querySelector("#tools-global-error").textContent.includes("版本源暂时不可用") && document.querySelectorAll(".tool-card").length===2');
+      await check('a failed version check keeps known versions and gives a readable retryable error', 'document.querySelector("#tools-global-error").textContent.includes("版本源暂时不可用") && document.querySelectorAll("#tools-list .tool-card").length===2');
       await capture('11-tools-check-failed');
       toolFixture.checkFailure = false; toolFixture.unsupported = true;
       await click('#tools-check');

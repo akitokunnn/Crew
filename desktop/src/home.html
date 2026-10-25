@@ -43,7 +43,7 @@
     <footer>关闭窗口后，Crew 会继续在托盘运行。</footer>
     </div>
     <section id="admin-page" class="home-page admin-page" aria-labelledby="admin-title" hidden>
-      <header class="admin-header"><div><h1 id="admin-title" tabindex="-1">系统管理员</h1><p>统一管理本机后台，覆盖所有工作区。</p></div></header>
+      <header class="admin-header"><div><h1 id="admin-title" tabindex="-1">系统管理员</h1><p>统一管理本机后台，覆盖所有工作区。</p></div><button id="admin-conversation" class="button secondary" type="button">运维对话与设置</button></header>
       <div class="admin-content">
         <div class="admin-summary"><section class="admin-stat"><h2>后台状态</h2><strong id="admin-state">正在读取</strong><p>管理后台连接，不派发模型任务。</p></section><section class="admin-stat"><h2>自动恢复次数</h2><strong id="admin-recoveries">—</strong><p id="admin-last-recovery"></p></section><section class="admin-stat"><h2>最近检测</h2><strong id="admin-checked">尚未检测</strong><p>此页打开时每 5 秒更新。</p></section></div>
         <section class="admin-actions" aria-label="后台维护"><div><button id="admin-check" class="button secondary" type="button">重新检测</button><button id="admin-restart" class="button secondary" type="button" disabled>尝试恢复</button></div><p id="admin-restart-reason"></p><p class="admin-policy">只尝试恢复确认已退出的后台；不会强制结束运行中的会话。</p></section>
@@ -54,9 +54,21 @@
       </div>
     </section>
     <section id="tools-page" class="home-page tools-page" aria-labelledby="tools-title" hidden>
-      <header class="tools-header"><div><h1 id="tools-title" tabindex="-1">工具与更新</h1><p>查看本机 Claude Code 和 Codex 的版本。</p></div><button id="tools-check" class="button secondary" type="button">检查更新</button></header>
+      <header class="tools-header"><div><h1 id="tools-title" tabindex="-1">工具与更新</h1><p>管理 Crew、Claude Code 和 Codex 的版本。</p></div><button id="tools-check" class="button secondary" type="button">检查更新</button></header>
       <div class="tools-content">
-        <div class="tools-preferences"><div><label class="tools-auto-label"><input id="tools-auto" type="checkbox">空闲时自动更新</label><p>有会话正在运行时会等待，更新队列可以取消。</p></div><span id="tools-setting-status" role="status"></span></div>
+        <article id="crew-update-card" class="tool-card crew-update-card" hidden aria-live="polite">
+          <div class="tool-card-header"><h2>Crew</h2><span id="crew-update-phase" class="tool-phase">待检查</span></div>
+          <p class="tool-message">线上版本会单独查询；统一后台与插件时等待任务空闲并自动备份。</p>
+          <dl class="tool-versions crew-update-versions"><div><dt>当前桌面</dt><dd id="crew-desktop-version">—</dd></div><div><dt>运行中后台</dt><dd id="crew-backend-version">—</dd></div><div><dt>Claude 插件</dt><dd id="crew-plugin-version">—</dd></div><div><dt>本机可应用版本</dt><dd id="crew-target-version">—</dd></div></dl>
+          <section class="crew-online-versions" aria-label="线上版本">
+            <dl class="tool-versions"><div><dt>最新正式发布</dt><dd id="crew-release-version">尚未检查</dd></div><div><dt>主干最新版本</dt><dd id="crew-main-version">尚未检查</dd></div></dl>
+            <p id="crew-online-status" class="tool-message" role="status">点击检查 Crew 查询线上版本。</p><p id="crew-online-error" class="tool-message error" role="alert" hidden></p>
+            <div class="crew-online-links"><button id="crew-release-open" class="button secondary" type="button">查看正式发布</button><button id="crew-main-open" class="button secondary" type="button">查看主干</button></div>
+          </section>
+          <details class="crew-update-details"><summary>安装来源</summary><div id="crew-update-sources"></div></details>
+          <div class="tool-card-footer"><div class="tool-messages"><p id="crew-update-message" class="tool-message">点击检查查看版本。</p><p id="crew-update-error" class="tool-message error" role="alert" hidden></p><p id="crew-update-backup" class="tool-message"></p></div><div class="tool-card-actions"><button id="crew-update-check" type="button" class="button secondary">检查 Crew</button><button id="crew-update-apply" type="button" class="button" disabled>统一后台与插件</button><button id="crew-update-cancel" type="button" class="button secondary" hidden>取消等待</button></div></div>
+        </article>
+        <div class="tools-preferences"><div><label class="tools-auto-label"><input id="tools-auto" type="checkbox">Claude/Codex 空闲时自动更新</label><p>有会话正在运行时会等待，更新队列可以取消。</p></div><span id="tools-setting-status" role="status"></span></div>
         <p id="tools-global-error" class="error" role="alert" hidden></p>
         <p id="tools-check-status" class="tools-check-status" role="status">正在读取工具版本…</p>
         <div id="tools-list" class="tools-list" aria-live="polite"></div>
@@ -68,6 +80,7 @@
     <div id="workspace-settings-host"></div>
   </main>
   <script src="home-tools.js"></script>
+  <script src="home-crew-updates.js"></script>
   <script src="home-health.js"></script>
   <script src="home-settings.js"></script>
   <script src="home.js"></script>

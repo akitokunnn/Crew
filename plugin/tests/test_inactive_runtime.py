@@ -21,7 +21,8 @@ class InactiveRuntimeTests(CoreCase):
         for event in ('session-start','user-prompt-submit','stop','notification','pre-ask','post-ask','session-end'):
             with self.subTest(event=event), \
                  mock.patch('crew.store.connect',side_effect=AssertionError('must not migrate or write')), \
-                 mock.patch('crew.install.install',side_effect=AssertionError('stale startup cannot refresh install')):
+                 mock.patch('crew.install.install',side_effect=AssertionError('stale startup cannot refresh install')), \
+                 mock.patch('crew.install.ensure',side_effect=AssertionError('stale startup cannot initialize install')):
                 self.assertEqual(self.hook(event,prompt='old prompt',message='old notification'),(0,None))
         self.assertEqual(board.session(self.conn,'s1'),before)
         self.assertEqual(self.conn.total_changes,changes)

@@ -153,7 +153,7 @@ class Controller:
         if binding is None:
             with closing(store.connect(self.home)) as conn:
                 goals.bind_native(conn, key, 'claude', native_id, **options)
-        install.install(self.home, self.manager.plugin_root)
+        install.ensure(self.home, self.manager.plugin_root)
         command = spawn.command(native_id, session['crew_name'], session['role'], binding is not None,
                                 instructions=('你是 Crew「%s」的当前目标执行。目标规则和用户原始要求由宿主随输入装载；仅当前明确授权有效。' % session['crew_name']
                                               + ('\n' + spec['_workspace_notice'] if spec.get('_workspace_notice') else '')),
@@ -184,6 +184,10 @@ class Controller:
         return command
 
     def send(self, goal_id, session_id, text, *, identity=None, images=None, source='human', display_text=None, sender=None):
+        with self.manager.work():
+            return self._send(goal_id, session_id, text, identity=identity, images=images, source=source, display_text=display_text, sender=sender)
+
+    def _send(self, goal_id, session_id, text, *, identity=None, images=None, source='human', display_text=None, sender=None):
         identity = str(uuid.uuid4()) if identity is None else identity
         with self.manager.lock, closing(store.connect(self.home)) as conn:
             goal = goals.get(conn, goal_id)

@@ -20,6 +20,13 @@ test('administrator reads one global snapshot and never restarts a live backend'
   assert.equal(h.nodes.get('admin-incidents').children[0].textContent,'尚无异常记录。');assert.equal([...h.timers.values()][0].ms,5000);
 });
 
+test('administrator exposes the maintenance conversation and configuration entry',()=>{
+  const opened=[],h=harness({});
+  h.sandbox.window.CrewHomeSettings={show:category=>opened.push(category)};
+  h.nodes.get('admin-conversation').click();
+  assert.deepEqual(opened,['backend']);
+});
+
 test('safe recovery needs an explicit click and refreshes actual state after the receipt',async()=>{
   let status=healthy({state:'stopped',restart:{allowed:true,reason:'后台已退出，可安全恢复。'}}),restarts=0;
   const h=harness({adminStatus:async()=>status,adminCheck:async()=>status,adminRestart:async()=>{restarts++;status=healthy({state:'recovering'});return{ok:true};}});

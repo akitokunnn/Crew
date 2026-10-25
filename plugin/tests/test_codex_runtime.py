@@ -99,6 +99,8 @@ class CodexRuntimeTests(unittest.TestCase):
         self.home, self.root, self.plugin = self.base / "home", self.base / "repo", self.base / "plugin & space's"
         self.root.mkdir()
         self.plugin.mkdir()
+        (self.plugin / '.claude-plugin').mkdir()
+        (self.plugin / '.claude-plugin' / 'plugin.json').write_text('{"name":"crew","version":"0.0.0-test"}', encoding='utf-8')
         (self.plugin / "defaults").mkdir()
         (self.plugin / "defaults" / "blacklist.txt").write_text("# isolated test policy\n", encoding="utf-8")
         (self.plugin / "defaults" / "prices.json").write_text("{}", encoding="utf-8")

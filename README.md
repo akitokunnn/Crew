@@ -2,6 +2,8 @@
 
 让一个人同时指挥多个 Claude Code / Codex 会话。用 Windows 桌面应用或浏览器打开工作文件夹，让 leader 直接推进目标、必要时协调成员，共用一块白板。
 
+开发 AI 请先读 [AGENTS.md](AGENTS.md)。当前检出的桌面版本读取 `desktop/package.json`；历史交付记录和插件版本不代表桌面或运行中服务的版本。
+
 ## 能做什么
 
 - **桌面工作区**：选择普通文件夹或 Git 仓库，也可新建空目录；不会自动初始化 Git。多个项目各有标签，切换保留草稿和页面状态。工作区设置支持改名、更改目录和从 Crew 移除；改目录先停止执行，再迁移已有身份，保留全部记录。关闭窗口隐藏到托盘，后台任务继续运行。
@@ -9,7 +11,7 @@
 - **目标与交付**：普通问答直接聊天。明确执行目标保存原始要求、验收、轮次和独立原生历史；每轮交付由程序生成带证据和具体 example 的 HTML，未达标如实结束。暂停先持久化，再等待成员和原生执行实际停止。
 - **动态上下文**：只增量装载当前目标相关材料，可查看来源、纠正与实际应用状态；原生历史独立计量并在超限时换代，保留用户原话与确认约束。字符数和原生 token 分开显示，未知用量不当成零。
 - **任务资料**：每个任务收录自己的交付报告、文档和重要汇总。宽窗口右侧常驻本组关系树；需求、交付物和上下文按需打开，聊天顶部只保留紧凑任务条。
-- **工具与更新**：检查 Claude Code / Codex CLI 当前和最新版本，支持更新排队与取消；工具空闲并确认安装来源后才更新，自动更新默认关闭。
+- **工具与更新**：检查 Crew 线上发布版本和主干版本，并可手动将后台、命令入口和插件统一到当前桌面包；更新前备份，忙时等待。另支持 Claude Code / Codex CLI 更新，CLI 自动更新默认关闭。见 [Crew 更新说明](docs/DESKTOP_UPDATES.md)。
 - **统一设置**：默认 AI、交流区摘要、Git 管理员和运维可分别配置载体、模型与 effort；内部任务也可跟随默认 AI，留空模型和 effort 使用原生默认。保存设置不启动任务，不改变已有会话。
 - **执行权限**：设置页明确选择 Codex 的只读 / 项目沙箱 / 完全访问，或 Claude 的原生默认 / 允许编辑 / 完全访问；下一次启动载体生效，不改工具全局配置。摘要与后台修复保持各自隔离策略，不随对话权限扩大。
 - **两种执行工具**：创建 leader、成员时选择 Claude Code 或 Codex，可以混编在同一组。保留已有 Claude 会话，也能从 VS Code 收编进来。
@@ -23,7 +25,7 @@
 - **守卫**：检查黑名单、设备借用、文件归属和 Git 管理规则。Claude 使用插件 hooks，Codex 接入原生 shell / apply_patch 执行前 hook，覆盖边界见 [Codex 接入说明](docs/CODEX_INTEGRATION.md)。
 - **远程与用量**：QQ 私聊可按项目和 leader 继续对话、答复拍板、查看待办；用量页按组、会话、日期和模型汇总 Claude / Codex token，并按价格表折算参考金额。
 
-详细用法见 [工作流程](docs/WORKFLOWS.md) 和 [页面说明](docs/WEB_UX.md)，实现设计见 [docs/DESIGN.md](docs/DESIGN.md)，0.1.1 变更与验证见 [交付记录](docs/DESKTOP_0.1.1.md)。
+详细用法见 [工作流程](docs/WORKFLOWS.md) 和 [页面说明](docs/WEB_UX.md)，实现设计见 [docs/DESIGN.md](docs/DESIGN.md)，0.1.1 的历史变更与验证见 [交付记录](docs/DESKTOP_0.1.1.md)。
 
 ## 安装与启动
 
@@ -49,7 +51,7 @@ npm start
 
 关闭窗口会隐藏到托盘；“退出 Crew”才退出应用。桌面版优先复用当前 home 中已登记的健康服务，复用时继续使用该服务的版本；自行启动的后端在退出应用时关闭，借用的服务保持运行。
 
-`npm run build` 生成 `desktop/dist/Crew-0.2.5-portable.exe` 和 `Crew-0.2.5-setup.exe`，直接运行仍需本机 Python 和所选模型 CLI。构建、独立数据目录和隔离验收见 [桌面版说明](desktop/README.md)。
+`npm run build` 按 `desktop/package.json` 的版本生成 `desktop/dist/Crew-<version>-portable.exe` 和 `Crew-<version>-setup.exe`，直接运行仍需本机 Python 和所选模型 CLI。构建、独立数据目录和隔离验收见 [桌面版说明](desktop/README.md)。
 
 ### Claude 插件与 VS Code
 
@@ -213,7 +215,7 @@ Git 管理员可以自行定分支规则、推功能分支、开 PR、CI 绿后�
 - 所以**不要在主检出里直接改代码**：在 `Temp/wt/<名字>` 开 worktree 改，测试通过再合进 main。主检出里的代码一旦出错，所有会话的钩子都会跟着出错。
 - 本仓库的远程 `main` 要求通过 PR 合并，至少 1 个有写入权限的账号批准。当前审核账号为 `qianlong-ai` 和 `akitokunnn`，任意一个批准即可；本机 AI 可以使用用户已授权的账号代为审核。GitHub 不允许 PR 发起账号批准自己的 PR，因此由这两个账号交叉审核；推送新提交后，原审核批准失效，需要重新审核。
 - 这是单人本机工具，优先保持代码直白、少配置；测试用临时白板，不随意关闭用户正在使用的会话或窗口。提交信息用中文说明改了什么、为什么，不加署名行。
-- 跑后端测试：`cd plugin` 后执行 `python -m unittest discover -s tests -v`；网页行为回归是 `node tests/test_runtime_ui.js`。在 Crew / Claude 会话里跑测试前，清掉继承的 `CREW_SESSION_ID`、`CLAUDE_CODE_SESSION_ID`，避免把外层会话身份带入临时白板。桌面测试在 `desktop` 下执行 `npm test`；打包与真实窗口 smoke 见桌面说明。
+- 跑后端测试：`cd plugin` 后执行 `python -m unittest discover -s tests -v`；网页行为回归是 `node --test tests/test_*.js`。在 Crew / Claude 会话里跑测试前，清掉继承的 `CREW_SESSION_ID`、`CLAUDE_CODE_SESSION_ID`，避免把外层会话身份带入临时白板。桌面测试在 `desktop` 下执行 `npm test`；打包与真实窗口 smoke 见桌面说明。
 - Python 后端只用标准库；网页是原生 JS，Markdown 用仓库内的 markdown-it 15.0.2，不需要构建步骤。
 - Claude 会话使用 PATH 中的 `claude`，Codex 会话使用本机 Codex CLI；分别维护安装与登录。Claude CLI 版本可能与 VS Code 扩展内置版本不同，模型和 effort 清单随执行工具变化。
 

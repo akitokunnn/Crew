@@ -95,6 +95,31 @@ class OperationsTests(unittest.TestCase):
         self.assertFalse(admin.directory.exists())
         self.assertIsNone(admin.state['active_worker'])
 
+    def test_disabled_policy_does_not_start_new_repairs_but_collects_existing_worker_result(self):
+        admin = operations.Operations(self.home, repository=self.repo)
+        _atomic_json(admin.directory / 'policy.json', {**self.policy(), 'enabled': False})
+        operations.submit_incident(self.home, 'bug', 'crew-only', {'actual': 'broken'})
+        with mock.patch.object(operations.subprocess, 'Popen', side_effect=AssertionError('repair disabled')):
+            admin.tick()
+            incident = admin.state['incidents'][0]
+            self.assertEqual(incident['status'], 'queued')
+            self.assertEqual(incident['attempts'], 0)
+            self.assertIsNone(admin.state['active_worker'])
+            # A worker already in flight before the user disabled new repairs
+            # must still have its actual outcome and report collected.
+            result_path = self.root / 'existing-worker-result.json'
+            _atomic_json(result_path, {'status': 'awaiting_merge', 'commit': 'a' * 40,
+                                      'verification': 'fixture verified bytes'})
+            incident.update(status='repairing', attempts=1)
+            admin.state['active_worker'] = {'pid': os.getpid(), 'result': str(result_path),
+                                            'incident_id': incident['id'],
+                                            'evidence_hash': incident['evidence_hash'], 'mode': 'repair'}
+            admin.tick()
+        self.assertIsNone(admin.state['active_worker'])
+        self.assertEqual(incident['status'], 'awaiting_merge')
+        self.assertEqual(incident['result']['commit'], 'a' * 40)
+        self.assertIn('fixture verified bytes', Path(incident['report']).read_text(encoding='utf-8'))
+
     def flat_runtime(self):
         flat = self.root / 'retained' / 'content-id'
         flat.mkdir(parents=True)
