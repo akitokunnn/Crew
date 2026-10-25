@@ -36,7 +36,7 @@ def executable():
     return str(path)
 
 
-def run(arguments,timeout=10,*,command_executable=None):
+def run(arguments,timeout=10,*,command_executable=None,cwd=None):
     """Return text CompletedProcess; preserve OSError/TimeoutExpired unchanged.
 
     Read probes default to ten seconds. A caller performing a repository write
@@ -44,6 +44,7 @@ def run(arguments,timeout=10,*,command_executable=None):
     """
     command=[executable() if command_executable is None else command_executable,*arguments]
     options={'creationflags':subprocess.CREATE_NO_WINDOW} if sys.platform=='win32' else {}
+    if cwd is not None:options['cwd']=cwd
     # communicate(PIPE) may wait for a wrapper's surviving descendant after
     # killing the timed-out immediate process. File handles never wait for EOF.
     with tempfile.TemporaryFile() as stdout,tempfile.TemporaryFile() as stderr:

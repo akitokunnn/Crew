@@ -14,7 +14,7 @@ import threading
 import uuid
 from pathlib import Path
 
-from . import board, claude_limits, claude_subagents, codex_client, goals, hooks, install, messaging, models, runtime_switch, runtimes, settings, spawn, store, subagents, workspace_execution
+from . import board, claude_limits, claude_subagents, codex_client, git_admin, goals, hooks, install, messaging, models, runtime_switch, runtimes, settings, spawn, store, subagents, workspace_execution
 
 
 PAUSED_FOR_UPDATE = "Crew 正在准备更新，暂不接受新任务；更新完成后再试"
@@ -849,12 +849,17 @@ class Manager:
         identity = identity or str(uuid.uuid4())
         original_text=text if display_text is None else display_text
         handoff_id=None
-        if text.strip()!='/compact' and current.execution is None:
+        git_revision = getattr(current, 'git_context_revision', None)
+        if text.strip() != '/compact':
             with closing(store.connect(self.home)) as handoff_conn:
-                text,handoff_id=runtime_switch.input_text(handoff_conn,session_id,text,identity)
-                summary = self.goal_controller.general_context(handoff_conn, session_id)
-                if summary:
-                    text = summary + '\n\n' + text
+                git_revision, git_context = git_admin.input_context(handoff_conn, logical, git_revision, self.plugin_root)
+                if current.execution is None:
+                    text,handoff_id=runtime_switch.input_text(handoff_conn,session_id,text,identity)
+                    summary = self.goal_controller.general_context(handoff_conn, session_id)
+                    if summary:
+                        text = summary + '\n\n' + text
+            if git_context:
+                text = git_context + '\n\n' + text
         files = []
         content = text
         if images:
@@ -871,6 +876,7 @@ class Manager:
             try:
                 result=current.send(text, identity, display_text=original_text, source=source,
                                     images=images, sender=sender, image_files=files)
+                current.git_context_revision = git_revision
                 if handoff_id is not None:
                     with closing(store.connect(self.home)) as handoff_conn:
                         runtime_switch.accepted(handoff_conn,session_id,identity,handoff_id)
@@ -888,6 +894,7 @@ class Manager:
                 current.journal.set_status("working")
                 current.process.stdin.write(json.dumps(message, ensure_ascii=False) + "\n")
                 current.process.stdin.flush()
+                current.git_context_revision = git_revision
         except Exception as exc:
             with closing(store.connect(self.home)) as handoff_conn:runtime_switch.failed(handoff_conn,session_id,exc)
             raise

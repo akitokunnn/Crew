@@ -766,6 +766,24 @@ class Service:
             result.update(git_view.view(project["root"], config, sessions, offset=offset))
         return result
 
+    def git_settings(self, project_name=None):
+        with closing(store.connect(self.home)) as conn:
+            name = self.selected_project(conn, project_name)
+            result = git_admin.snapshot(conn, name)
+        root = result['project']['root']
+        result.update(choices={'branches': [], 'base': None, 'stable': None}, remotes=[])
+        try:
+            reason = git_view.unavailable_reason(root)
+            if reason is not None:
+                result.update(available=False, reason=reason)
+                return result
+            result['choices'] = git_view.branch_choices(root)
+            result['remotes'] = git_view.remotes(root)
+            result['available'] = True
+        except (OSError, git_view.GitError, subprocess.TimeoutExpired) as exc:
+            result.update(available=False, reason=str(exc))
+        return result
+
     def git_commit(self, project_name, sha):
         with closing(store.connect(self.home)) as conn:
             name = self.selected_project(conn, project_name)
@@ -1005,6 +1023,11 @@ class Service:
                 if project_name is not None and body_project != project_name:
                     raise board.BoardError('请求正文和地址中的项目不一致')
                 project_name = body_project
+            if path == '/api/git/settings':
+                body_project = _text(data, 'project')
+                if project_name is not None and project_name != body_project:
+                    raise board.BoardError('请求正文和地址中的项目不一致')
+                return git_admin.configure(conn, self.selected_project(conn, body_project), data, now=now)
             if path in ("/api/git/enable", "/api/git/disable"):
                 project = self.selected_project(conn, project_name if project_name is not None else data.get("project"))
                 if path == "/api/git/enable":
@@ -1518,7 +1541,7 @@ POST_PATHS.add('/api/leaders/order')
 POST_PATHS.add('/api/leaders/priority')
 POST_PATHS.update(('/api/files/resolve', '/api/files/open', '/api/files/reveal'))
 POST_PATHS.update(('/api/documents','/api/documents/pin','/api/documents/refresh'))
-POST_PATHS.update(('/api/git/enable', '/api/git/disable', '/api/git/fetch'))
+POST_PATHS.update(('/api/git/enable', '/api/git/disable', '/api/git/fetch', '/api/git/settings'))
 POST_PATHS.update(('/api/admin/update/prepare', '/api/admin/update/cancel'))
 POST_PATHS.add('/api/settings')
 POST_PATHS.update(('/api/storage/preview', '/api/storage/clean', '/api/storage/restore',
@@ -1537,6 +1560,8 @@ STATIC = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js",
           "/channel.js": ("channel.js", "text/javascript; charset=utf-8"),
           "/git.js": ("git.js", "text/javascript; charset=utf-8"),
           "/git.css": ("git.css", "text/css; charset=utf-8"),
+          "/git-settings.js": ("git-settings.js", "text/javascript; charset=utf-8"),
+          "/git-settings.css": ("git-settings.css", "text/css; charset=utf-8"),
           "/style.css": ("style.css", "text/css; charset=utf-8"), "/chat.js": ("chat.js", "text/javascript; charset=utf-8"),
           "/vendor/markdown-it.min.js": ("vendor/markdown-it.min.js", "text/javascript; charset=utf-8")}
 STATIC.update({'/logo.svg': ('logo.svg', 'image/svg+xml'),
@@ -1758,6 +1783,8 @@ class Handler(BaseHTTPRequestHandler):
                                                     int(query.get('limit', [20])[0]), before))
         elif url.path == "/api/git":
             self._send(200, service.git(query.get("project", [None])[0], int(query.get("offset", [0])[0])))
+        elif url.path == '/api/git/settings':
+            self._send(200, service.git_settings(query.get('project', [None])[0]))
         elif url.path == "/api/git/commit":
             self._send(200, service.git_commit(query.get("project", [None])[0], query.get("sha", [""])[0]))
         elif url.path == '/api/chat/file':

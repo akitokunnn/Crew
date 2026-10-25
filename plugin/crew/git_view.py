@@ -52,8 +52,11 @@ def _root(root):
 
 
 def _run(root, args):
-    return subprocess.run(args, cwd=root, capture_output=True, text=True,
-                          encoding="utf-8", timeout=60)
+    # Git for Windows' launcher may leave descendants holding PIPE handles.
+    # Use the shared native executable and file capture so timeouts stay bounded.
+    return git_process.run(args[1:], cwd=root,
+                           command_executable=None if args[0] == 'git' else args[0],
+                           timeout=60 if args[0] != 'git' or args[1] == 'fetch' else 10)
 
 
 def _git(root, *args, allowed=(0,)):
@@ -82,6 +85,18 @@ def branch_choices(root):
     base = next((name for name in ("develop", "dev", "main", "master") if name in branches), None)
     stable = next((name for name in ("master", "main") if name in branches and name != base), None)
     return {"branches": branches, "base": base, "stable": stable}
+
+
+def remotes(root):
+    # Display Git's actual fetch/push destinations; never expose embedded credentials.
+    output = _git(root, 'remote', '-v').stdout
+    result = []
+    for line in output.splitlines():
+        name, destination = line.split('\t', 1)
+        address, direction = destination.rsplit(' ', 1)
+        address = re.sub(r'(https?://)[^/@]+@', r'\1***@', address)
+        result.append({'name': name, 'url': address, 'direction': direction.strip('()')})
+    return result
 
 
 def _calculation_ref(refs, name):
