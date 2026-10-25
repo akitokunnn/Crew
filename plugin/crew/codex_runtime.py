@@ -72,6 +72,17 @@ def process_identity(pid):
     return "ps:" + result.stdout.strip()
 
 
+def lease_alive(home, session_id):
+    """True while a previous service's native Codex process for this session still runs."""
+    path = RuntimeLease(home, session_id).path
+    if not path.exists():
+        return False
+    record = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(record, dict) or not isinstance(record.get("created"), str):
+        raise ValueError("Invalid native Codex lease")
+    return process_identity(record.get("pid")) == record["created"]
+
+
 class RuntimeLease:
     """A live host lock plus a durable native PID/creation-time lease."""
     def __init__(self, home, session_id):
@@ -201,7 +212,7 @@ class CodexRunning:
         with closing(store.connect(self.home)) as conn:
             session = workspace_execution.execution_session(conn, session)
             directory_notice = workspace_execution.migration_notice(conn, session)
-        install.install(self.home, self.plugin_root)
+        install.ensure(self.home, self.plugin_root)
         self.session, self.spec, self.journal = dict(session), dict(spec), journal
         self.session_id, self.input_lock = session["session_id"], threading.RLock()
         self.execution = execution

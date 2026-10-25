@@ -230,7 +230,7 @@ app.once('browser-window-created', (_event, win) => {
 
       // Exercise the actual home panel through its production bridge/controller.
       menu.getMenuItemById('tools-updates').click();
-      await wait('!document.querySelector("#tools-page").hidden && document.querySelectorAll(".tool-card").length===2', 'native menu opens tools panel');
+      await wait('!document.querySelector("#tools-page").hidden && document.querySelectorAll("#tools-list .tool-card").length===2', 'native menu opens tools panel');
       await check('native tools menu opens a two-tool panel with automatic updating initially off', '!document.querySelector("#tools-auto").checked && document.querySelector("#nav-tools").getAttribute("aria-current")==="page"');
       const checksBefore = toolFixture.checks;
       await js('document.querySelector("#tools-check").click();document.querySelector("#tools-check").click();document.querySelector("#refresh").click()');
@@ -267,7 +267,7 @@ app.once('browser-window-created', (_event, win) => {
       toolFixture.checkFailure = true;
       await click('#tools-check');
       await wait('!document.querySelector("#tools-global-error").hidden && !document.querySelector("#tools-check").disabled', 'version check error');
-      await check('a failed version check keeps known versions and gives a readable retryable error', 'document.querySelector("#tools-global-error").textContent.includes("版本源暂时不可用") && document.querySelectorAll(".tool-card").length===2');
+      await check('a failed version check keeps known versions and gives a readable retryable error', 'document.querySelector("#tools-global-error").textContent.includes("版本源暂时不可用") && document.querySelectorAll("#tools-list .tool-card").length===2');
       await capture('11-tools-check-failed');
       toolFixture.checkFailure = false; toolFixture.unsupported = true;
       await click('#tools-check');

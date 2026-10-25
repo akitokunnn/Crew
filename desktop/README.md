@@ -23,6 +23,8 @@ npm start
 
 首页侧栏和应用菜单中的「工具与更新」显示 Claude Code / Codex 的当前版本、最新版本和更新结果。自动更新默认关闭；正常启动后会检查版本，手动点击可再次检查。正在使用某个工具的会话会让更新排队，空闲后再试，也可以取消排队。自动更新需用户主动开启；无法确定安装来源或运行状态时会保留说明，不强行替换。更新失败可查看本地日志；退出应用会等待已开始的更新完成。
 
+0.1.2 另有 Crew 卡片：手动检查并统一到**当前桌面自带版本**，确认空闲后备份、同步已安装插件、重启自有后台并在原端口重连，标签与草稿保留。它不下载互联网新版，也不受 CLI 自动更新开关控制；借用或不支持更新准备的旧后台会说明需先退出原 Crew。已有 Claude 会话需重载插件或重开。流程与限制见 [Crew 更新说明](../docs/DESKTOP_UPDATES.md)。
+
 启动时探测指定 home 的 `web.json`，健康的 Crew 服务直接复用。退出应用不关闭复用的服务。只有登记不存在或连接被明确拒绝时，桌面版才启动自己的 `plugin/crew_desktop.py`，使用系统分配的端口，并通过专用 stdin 通道优雅关闭自己创建的后端。无法判断的超时、HTTP 错误或不兼容服务会明确报错。同一 home 的后台持有 OS 文件锁；多个界面同时首启时只有一个创建服务，另一个等待后复用。不会为了应用启动而重启当前服务。原有服务的版本由原服务决定。
 
 已有桌面版正在托管任务时，可以用独立界面配置显式连接它：
@@ -81,3 +83,5 @@ node scripts/verify-icons.cjs dist/win-unpacked/Crew.exe "dist/Crew-$crewVersion
 `--reuse` 会先创建一个完全隔离的测试服务，再检查真实应用退出后该服务仍存活；随后由测试服务的原始拥有者清理。不会复用生产 home 或正式服务。
 
 Renderer 使用 `contextIsolation: true`、`nodeIntegration: false` 和 sandbox；IPC 仅接受自有工作区首页的主 frame，各 IPC 暴露独立函数。项目使用独立 WebContentsView，没有 preload 或文件系统桥接。项目导航严格限制在对应本机项目，外站点击在系统浏览器打开，外站重定向被拒绝。实现依据 Electron 官方的 [安全指南](https://www.electronjs.org/docs/latest/tutorial/security/)、[WebContentsView](https://www.electronjs.org/docs/latest/api/web-contents-view)、[原生标题栏](https://www.electronjs.org/docs/latest/tutorial/custom-title-bar) 和 [Tray](https://www.electronjs.org/docs/latest/api/tray) 文档。
+
+0.2.6 的 Crew 卡片会独立查询 GitHub 最新正式发布和主干版本；没有 Release 如实显示未发布，网络错误单独呈现。「统一后台与插件」仅应用当前桌面自带版本，与线上查询分开。详见 [桌面更新](../docs/DESKTOP_UPDATES.md)。

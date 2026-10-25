@@ -236,6 +236,17 @@ class Operations:
         incident['report'] = str(report)
 
     def tick(self):
+        # Serialize repair launches/activation with the desktop update transaction.
+        from .updater import update_lock
+        lock = update_lock(self.home)
+        if not lock.acquire():
+            return
+        try:
+            return self._tick()
+        finally:
+            lock.release()
+
+    def _tick(self):
         if any(item.get('pending_goals') for item in self.state['incidents']):
             self._resume_ready()
             self._save()
