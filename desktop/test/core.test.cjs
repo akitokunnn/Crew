@@ -4,11 +4,12 @@ const fs = require('node:fs/promises'); const path = require('node:path'); const
 const http = require('node:http'); const { execFile } = require('node:child_process'); const { promisify } = require('node:util');
 const core = require('../src/core.cjs'); const run = promisify(execFile);
 async function directory(t) { const root = await fs.mkdtemp(path.join(os.tmpdir(), 'crew-desktop-test-')); t.after(() => fs.rm(root, { recursive: true, force: true })); return root; }
-async function fixture(t, known = []) {
+async function fixture(t, known = [], initFailure = null) {
   const calls = []; const server = http.createServer(async (request, response) => {
     calls.push(request.url); response.setHeader('Content-Type', 'application/json');
     if (request.url === '/api/projects') { response.end(JSON.stringify({ projects: known })); return; }
     if (request.url === '/api/project/init') {
+      if (initFailure) { response.writeHead(503); response.end(JSON.stringify({error:initFailure})); return; }
       let body = ''; for await (const part of request) body += part;
       const project = JSON.parse(body); known.push(project); response.end(JSON.stringify(project)); return;
     }
@@ -22,6 +23,16 @@ async function fixture(t, known = []) {
 test('service URLs reject remote hosts, credentials, redirects paths and untrusted protocols', () => {
   assert.equal(core.loopback('http://127.0.0.1:1234/'), 'http://127.0.0.1:1234');
   for (const value of ['https://example.com/', 'http://example.com:1234/', 'file:///x', 'http://user@127.0.0.1:1234/', 'http://127.0.0.1:1234/api/state', 'http://127.0.0.1:1234/?x=1']) assert.throws(() => core.loopback(value));
+});
+
+test('native model discovery can wait beyond the normal API deadline', async t => {
+  const server = http.createServer((request, response) => {
+    setTimeout(() => { response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify({runtimes:[{id:'detected-native'}]})); }, 5200);
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const result = await core.request(`http://127.0.0.1:${server.address().port}`, '/api/runtimes?refresh=1', undefined, 45000);
+  assert.equal(result.runtimes[0].id, 'detected-native');
 });
 test('smoke requires explicit isolated home and cannot bind the production port', () => {
   assert.throws(() => core.options(['--smoke-test']));
@@ -43,18 +54,62 @@ test('existing repository and nested folder register canonical git root without 
   assert.deepEqual(await core.existingWorkspace(repo, service.url), project);
   assert.equal(service.calls.filter(value => value === '/api/project/init').length, 1);
 });
-test('a folder without Git is rejected before registration', async t => {
+test('an ordinary folder registers without Git metadata and reopens the registered workspace', async t => {
   const root = await directory(t), service = await fixture(t);
-  await assert.rejects(core.existingWorkspace(root, service.url)); assert.equal(service.known.length, 0);
+  await fs.writeFile(path.join(root,'notes.txt'),'普通工作区文件');
+  const project = await core.existingWorkspace(root, service.url);
+  assert.equal(project.root,await fs.realpath(root));assert.equal(project.name,path.basename(root));
+  assert.deepEqual(await core.existingWorkspace(root,service.url),project);assert.equal(service.known.length,1);
+  assert.deepEqual(await fs.readdir(root),['notes.txt']);assert.equal(await fs.readFile(path.join(root,'notes.txt'),'utf8'),'普通工作区文件');
 });
-test('new workspace creates an empty main-branch Git repository then registers it', async t => {
+test('new workspace creates only an ordinary folder then registers it', async t => {
   const root = await directory(t), service = await fixture(t);
   const project = await core.newWorkspace(root, 'new-project', service.url);
   assert.equal(project.name, 'new-project');
-  const branch = await run('git', ['-C', project.root, 'symbolic-ref', '--short', 'HEAD'], { windowsHide: true });
-  assert.equal(branch.stdout.trim(), 'main');
+  assert.equal(project.root,path.join(await fs.realpath(root),'new-project'));
+  assert.deepEqual(await fs.readdir(project.root),[]);
   await assert.rejects(core.newWorkspace(root, 'new-project', service.url), /EEXIST/);
   assert.equal(service.known.length, 1);
+});
+
+test('ordinary existing and new workspaces do not require an executable Git command',async t=>{
+  const root=await directory(t),service=await fixture(t),original=process.env.PATH;
+  process.env.PATH=path.join(root,'no-executables');
+  try { const existing=await core.existingWorkspace(root,service.url),created=await core.newWorkspace(root,'plain-child',service.url);assert.equal(existing.root,await fs.realpath(root));assert.deepEqual(await fs.readdir(created.root),[]);assert.equal(service.known.length,2); }
+  finally { if(original===undefined)delete process.env.PATH;else process.env.PATH=original; }
+});
+
+test('an explicitly registered ordinary subfolder stays independent inside a Git parent',async t=>{
+  const root=await directory(t),service=await fixture(t);await run('git',['init',root],{windowsHide:true});
+  const created=await core.newWorkspace(root,'plain-child',service.url);assert.deepEqual(await fs.readdir(created.root),[]);
+  const original=process.env.PATH;process.env.PATH=path.join(root,'no-executables');
+  try { assert.deepEqual(await core.existingWorkspace(created.root,service.url),created); }
+  finally { if(original===undefined)delete process.env.PATH;else process.env.PATH=original; }
+  assert.equal(service.known.length,1);
+});
+
+test('existing workspace validates missing paths and files before any registration request',async t=>{
+  const root=await directory(t),service=await fixture(t),file=path.join(root,'file.txt');await fs.writeFile(file,'keep');
+  await assert.rejects(core.existingWorkspace(path.join(root,'missing'),service.url),{code:'ENOENT'});
+  await assert.rejects(core.existingWorkspace(file,service.url),{code:'ENOTDIR'});assert.equal(service.calls.length,0);
+  await assert.rejects(core.newWorkspace(file,'child',service.url),{code:'ENOTDIR'});
+  await assert.rejects(core.newWorkspace(path.join(root,'missing-parent'),'child',service.url),{code:'ENOENT'});assert.equal(service.calls.length,0);assert.equal(await fs.readFile(file,'utf8'),'keep');
+});
+
+test('a damaged Git marker preserves its real Git error instead of registering as an ordinary folder',async t=>{
+  const root=await directory(t),service=await fixture(t);await fs.writeFile(path.join(root,'.git'),'gitdir: missing-metadata\n');
+  await assert.rejects(core.existingWorkspace(root,service.url),error=>Boolean(error.stderr&&error.stderr.includes('not a git repository')));assert(!service.calls.includes('/api/project/init'));
+});
+
+test('Git file markers still canonicalize a nested folder to the existing worktree root',async t=>{
+  const root=await directory(t),service=await fixture(t),worktree=path.join(root,'worktree'),metadata=path.join(root,'metadata');
+  await run('git',['init','--separate-git-dir',metadata,worktree],{windowsHide:true});await fs.mkdir(path.join(worktree,'src'));
+  assert((await fs.stat(path.join(worktree,'.git'))).isFile());const project=await core.existingWorkspace(path.join(worktree,'src'),service.url);assert.equal(project.root,await fs.realpath(worktree));
+});
+
+test('registration failure retains the new ordinary folder and does not initialize Git',async t=>{
+  const root=await directory(t),service=await fixture(t,[],'registration unavailable');
+  await assert.rejects(core.newWorkspace(root,'retry-me',service.url),/registration unavailable/);assert.deepEqual(await fs.readdir(path.join(root,'retry-me')),[]);assert.equal(service.known.length,0);
 });
 test('healthy registry service is reused and never spawned or stopped by the desktop', async t => {
   const root = await directory(t), service = await fixture(t);

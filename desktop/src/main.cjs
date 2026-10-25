@@ -239,7 +239,7 @@ handle('desktop:home-ready',()=>{
 handle('desktop:admin-check',()=>administrator.request('check'));
 handle('desktop:admin-restart',()=>administrator.request('recover'));
 handle('desktop:existing', async () => {
-  const result = await dialog.showOpenDialog(window, { title: '选择已有 Git 工作区', buttonLabel: '打开工作区', properties: ['openDirectory'] });
+  const result = await dialog.showOpenDialog(window, { title: '选择工作区文件夹', buttonLabel: '打开工作区', properties: ['openDirectory'] });
   if (result.canceled) return null;
   return core.existingWorkspace(result.filePaths[0], backend.url);
 });
@@ -262,11 +262,15 @@ handle('desktop:tools-check',()=>tools.check());
 handle('desktop:tools-update',id=>tools.update(id));
 handle('desktop:tools-cancel',id=>tools.cancel(id));
 handle('desktop:tools-settings',settings=>tools.settings(settings));
-function settingsRequest(route, body) {
+function settingsRequest(route, body, timeoutMs) {
   if (!backend?.url || new URL(backend.url).port === '0') throw Error(backend?.startupError || '后台尚未连接，请查看后台信息。');
-  return core.request(backend.url, route, body);
+  return core.request(backend.url, route, body, timeoutMs);
 }
-handle('desktop:settings-get',()=>settingsRequest('/api/settings'));
+handle('desktop:settings-get',async()=>{
+  // Native discovery initializes a client and lists models, each with a 15s budget.
+  await settingsRequest('/api/runtimes?refresh=1', undefined, 45000);
+  return settingsRequest('/api/settings');
+});
 handle('desktop:settings-save',body=>settingsRequest('/api/settings', {ai:body?.ai, execution:body?.execution}));
 handle('desktop:settings-connection',async()=>({notification:(await settingsRequest('/api/state')).notification}));
 handle('desktop:settings-away',away=>{
@@ -384,7 +388,7 @@ else {
         const directory=path.join(config.home,'desktop','logs');
         try { await fs.mkdir(directory,{recursive:true}); await fs.writeFile(path.join(directory,'app.log'),new Date().toISOString()+'\n'+(error.stack||String(error))); } catch (_) { /* A log failure must not hide the recovery action. */ }
         const result=await dialog.showMessageBox({type:'error',title:'Crew',message:'暂时无法打开 Crew',
-          detail:'请确认 Crew 可以连接，且本机已安装 Python 3 和 Git，然后重试。可在工作区的日志目录查看详细记录。',
+          detail:'请确认 Crew 可以连接，且本机已安装 Python 3，然后重试。可在工作区的日志目录查看详细记录。',
           buttons:['重试','关闭'],defaultId:0,cancelId:1,noLink:true});
         if(result.response===0)app.relaunch();
       }

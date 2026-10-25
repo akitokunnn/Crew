@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 from . import board, channel, guard, install, runtimes, store, vscode_sessions
-from .hooks import git_details, git_toplevel
+from .hooks import git_details
 
 
 def claude_agents():
@@ -617,7 +617,14 @@ def execute(conn, args, cwd, agents_provider):
     cmd = args.command
     actor = _actor(args)
     if cmd == "init":
-        root = args.root.resolve() if args.root is not None else Path(git_toplevel(cwd))
+        from . import startup
+        root = args.root.resolve() if args.root is not None else startup.git_root(cwd)
+        if args.root is None and not (root / '.git').exists():
+            existing = board.project_for_path(conn, root)
+            if existing is not None:
+                if args.name is None:
+                    return existing
+                root = Path(existing['root'])
         if not root.is_dir():
             raise board.BoardError("项目目录不存在: " + str(root))
         return board.init_project(conn, args.name if args.name is not None else root.name, root)

@@ -257,11 +257,10 @@ class ProjectTests(CoreCase):
         self.assertIsNone(reason)
 
     def test_non_git_project_registers_without_worktree(self):
-        # Stop Git from walking into the repository that contains the test tree.
+        # A genuine plain folder is outside the repository containing the tests.
         outside = tempfile.TemporaryDirectory(prefix="crew-plain-")
         self.addCleanup(outside.cleanup)
         plain = Path(outside.name)
-        (plain / ".git").write_text("gitdir: missing-git-metadata\n", encoding="ascii")
         board.init_project(self.conn, "plain", plain, now=NOW)
         code, output = hooks.handle("session-start", {"session_id": "p1", "cwd": str(plain)}, self.home,
                                     self.fake_plugin, {}, now=NOW)
@@ -977,17 +976,16 @@ class InstallAndCliTests(CoreCase):
         self.assert_cli(["events", "--limit", "0"], code=1)
         self.assert_cli(["lease", "take", "missing", "--for", "test", "--until", "25:00"], code=1)
 
-    def test_init_default_only_queries_git_toplevel(self):
+    def test_init_registered_workspace_does_not_query_git(self):
         run = subprocess.run
         with mock.patch("crew.hooks.subprocess.run", wraps=run) as query:
             self.assert_cli(["init", "--name", "demo"])
-        self.assertEqual([c.args[0][3:] for c in query.call_args_list], [["rev-parse", "--show-toplevel"]])
+        query.assert_not_called()
 
     def test_init_default_name_preserves_directory_case(self):
         directory = self.base / "MixedCase"
         directory.mkdir()
-        with mock.patch("crew.cli.git_toplevel", return_value=str(directory)):
-            self.assert_cli(["init"])
+        self.assert_cli(["init", "--root", str(directory)])
         self.assertEqual(board.project(self.conn, "MixedCase")["root"], store.norm_path(directory))
 
     def test_plain_terminal_answer_records_human(self):

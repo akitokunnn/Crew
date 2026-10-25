@@ -693,7 +693,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
                          'data-git-request=', 'git-requests-title', '和 git 管理员聊',
                          'aria-pressed=', 'aria-selected=', 'data-git-from=', 'data-git-to='):
             self.assertIn(contract, script)
-        self.assertIn('setInterval(() => load(), 30000)', script)
+        self.assertIn('setInterval(() => { if (data?.available !== false) load(); }, 30000)', script)
         self.assertIn('prefers-reduced-motion:reduce', assets["/git.css"])
         self.assertIn('var(--fs)', assets["/git.css"])
         for contract in ('ROW = 34', 'tabindex="0"', 'aria-haspopup="dialog"',

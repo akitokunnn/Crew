@@ -11,7 +11,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from . import board, codex_client, git_process, models, runtimes, settings, store
+from . import board, codex_client, git_process, git_view, models, runtimes, settings, store
 
 
 def _check_ignore(root):
@@ -78,6 +78,10 @@ def prepare(conn, home, plugin_root, project_name, name, task, group=None, role=
         raise board.BoardError("\u5de5\u4f5c\u76ee\u5f55\u4e0d\u5b58\u5728: " + str(directory))
     if new_worktree is not None:
         _text(new_worktree, "\u5206\u652f")
+        try:
+            git_view.require_repository(root)
+        except git_view.GitError as exc:
+            raise board.BoardError(str(exc)) from exc
         slug = re.sub(r"[^A-Za-z0-9_-]", "", new_worktree.split("/")[-1])
         if not slug:
             raise ValueError("\u5206\u652f\u540d\u6700\u540e\u4e00\u6bb5\u9700\u5305\u542b\u5b57\u6bcd\u3001\u6570\u5b57\u3001- \u6216 _")

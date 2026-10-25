@@ -6,13 +6,31 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import threading
 import time
 
+from . import git_process
+
 
 class GitError(ValueError):
     """Git rejected a view operation."""
+
+
+def unavailable_reason(root):
+    """Ordinary workspaces do not need Git; marked repositories still use native validation."""
+    if git_process.repository_root(root) is None:
+        return '当前工作区不是 Git 仓库；Git 管理和独立工作树需要已有 Git 仓库。'
+    if shutil.which('git') is None:
+        return '未找到 Git，请先安装 Git 并将其加入 PATH，再使用 Git 功能。'
+    return None
+
+
+def require_repository(root):
+    reason = unavailable_reason(root)
+    if reason is not None:
+        raise GitError(reason)
 
 
 _lock = threading.RLock()
@@ -58,6 +76,7 @@ def _refs(root):
 
 def branch_choices(root):
     """Local branches and the defaults used by both CLI and enable card."""
+    require_repository(root)
     _, refs = _refs(root)
     branches = [r["ref"][11:] for r in refs if r["ref"].startswith("refs/heads/")]
     base = next((name for name in ("develop", "dev", "main", "master") if name in branches), None)

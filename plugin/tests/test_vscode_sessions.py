@@ -55,6 +55,7 @@ class VscodeSessionParserTests(unittest.TestCase):
         self.assertEqual(vscode_sessions.bucket_name("😀" * 101), "-" * 200 + "-kzmx73")
 
     def test_project_roots_include_nested_worktrees_and_deduplicate_case(self):
+        (self.project / '.git').mkdir()
         nested = self.project / "Temp" / "wt" / "member"
         outside = self.root / "elsewhere"
         output = f"worktree {str(self.project).upper()}\nHEAD aaa\n\nworktree {nested}\nHEAD bbb\n\nworktree {outside}\nHEAD ccc\n"
@@ -96,6 +97,7 @@ class VscodeSessionParserTests(unittest.TestCase):
             self.assertEqual(vscode_sessions._git_executable(), "git")
 
     def test_failed_worktree_discovery_preserves_command_output(self):
+        (self.project / '.git').mkdir()
         def failed(command, **options):
             options["stdout"].write(b"partial worktree output")
             options["stderr"].write(b"fatal: isolated fixture")
@@ -109,6 +111,7 @@ class VscodeSessionParserTests(unittest.TestCase):
 
     @unittest.skipUnless(sys.platform == "win32", "Windows communicate waits on inherited descendant pipes")
     def test_wrapper_descendant_cannot_extend_the_worktree_poll_timeout(self):
+        (self.project / '.git').mkdir()
         # Both short-lived children are test-owned Python helpers. No Git,
         # Claude/Codex process or production PID is launched or signalled.
         real_run = subprocess.run
@@ -136,6 +139,19 @@ class VscodeSessionParserTests(unittest.TestCase):
         elapsed = time.monotonic() - start
         self.assertTrue(new_marker.exists())
         self.assertLess(elapsed, 1.8, "Poll must return before the descendant closes its inherited handles")
+
+    def test_plain_workspace_sessions_are_discovered_without_git_installed(self):
+        with tempfile.TemporaryDirectory(prefix='crew-vscode-plain-') as temporary:
+            root = Path(temporary).resolve()
+            bucket = self.projects / vscode_sessions.bucket_name(root)
+            bucket.mkdir()
+            self.transcript([self.user('Ordinary folder session', cwd=str(root))], bucket=bucket)
+            with mock.patch('crew.git_process.run', side_effect=FileNotFoundError('Git is not installed')) as run:
+                roots = vscode_sessions.project_roots(root)
+                sessions = vscode_sessions.list_sessions(self.projects, roots)
+            run.assert_not_called()
+            self.assertEqual(roots, [root])
+            self.assertEqual([session['session_id'] for session in sessions], [SID])
 
     def test_programmatic_daemon_sidechain_empty_and_invalid_names_are_excluded(self):
         for fields in ({"entrypoint": "sdk-cli"}, {"entrypoint": "sdk-ts"}, {"entrypoint": "sdk-py"},

@@ -1,9 +1,28 @@
 """Native Git with closed input and output handles safe for Windows timeouts."""
 from shutil import which
 import subprocess
+import stat
 import sys
 import tempfile
 from pathlib import Path
+
+
+def repository_root(cwd):
+    """Find the nearest .git marker without executing or requiring Git.
+
+    This discovers a possible checkout, not a verified repository. Git remains
+    responsible for reporting damaged markers, missing executables and timeouts.
+    """
+    directory = Path(cwd).expanduser().resolve(strict=True)
+    if not stat.S_ISDIR(directory.stat().st_mode):
+        raise NotADirectoryError(str(directory))
+    for root in (directory, *directory.parents):
+        try:
+            (root / '.git').lstat()
+        except FileNotFoundError:
+            continue
+        return root
+    return None
 
 
 def executable():

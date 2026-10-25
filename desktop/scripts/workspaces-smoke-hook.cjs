@@ -139,9 +139,9 @@ app.once('browser-window-created', (_event, win) => {
       win.setSize(win.getMinimumSize()[0], 700); await capture('03-narrow-workspaces');
       await check('minimum-size layout keeps actions and workspace list inside content', 'document.documentElement.scrollWidth<=innerWidth && document.querySelector(".actions").getBoundingClientRect().right<=innerWidth');
       win.setSize(1220, 850); await click('#new'); await js('document.querySelector("#create-form").requestSubmit()');
-      const created = await opened('新工作区验证'); await fs.access(path.join(parent, '新工作区验证', '.git'));
+      const created = await opened('新工作区验证'); assert((await fs.stat(path.join(parent,'新工作区验证'))).isDirectory());await assert.rejects(fs.access(path.join(parent,'新工作区验证','.git')),{code:'ENOENT'});
       await wait('document.querySelectorAll(".project").length===4 && document.querySelector("#create-panel").hidden', 'created project refreshes persistent home');
-      evidence.checks.push('creation creates a real isolated Git repository, opens its tab and refreshes the persistent home');
+      evidence.checks.push('creation creates a real isolated ordinary folder without Git metadata, opens its tab and refreshes the persistent home');
       const menu = Menu.getApplicationMenu();
       menu.getMenuItemById('workspace-new').click();
       await wait('!document.querySelector("#create-panel").hidden && document.activeElement.id==="name"', 'native new action');

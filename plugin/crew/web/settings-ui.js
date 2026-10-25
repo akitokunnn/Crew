@@ -29,19 +29,30 @@
     for (const key of ["default", ...tasks.map(item => item[0])]) {
       if (ai[key] === null) continue;
       for (const field of ["model", "effort"]) if (ai[key][field] !== null && !ai[key][field].trim()) throw Error("模型和 effort 为空时请选择原生默认。");
-      const runtime = catalog.find(item => item.id === (ai[key].runtime || defaultRuntime(null,catalog))), model = runtime?.models?.find(item => item.id === ai[key].model);
+      const selectedRuntime = ai[key].runtime || defaultRuntime(null,catalog);
+      if (!selectedRuntime) throw Error(`${key === "default" ? "默认大脑" : tasks.find(item => item[0] === key)[1]}：请选择执行载体，或使用“跟随默认”。`);
+      const runtime = catalog.find(item => item.id === selectedRuntime), model = runtime?.models?.find(item => item.id === ai[key].model);
       if (ai[key].effort !== null && model && Array.isArray(model.efforts) && !model.efforts.includes(ai[key].effort)) throw Error(`${model.name || model.id} 不支持所填的 effort，请按实际支持情况修改。`);
     }
     return clone(ai);
   }
-  function selectionMarkup(key, selection, catalog) {
-    const runtime = catalog.find(item => item.id === selection.runtime), model = runtime?.models?.find(item => item.id === selection.model);
+  function choiceOptions(value, choices) {
+    return `<option value="">原生默认</option>${choices.map(item => `<option value="${esc(item.id)}" ${item.id === value ? "selected" : ""}>${esc(item.name || item.id)}</option>`).join("")}${value && !choices.some(item => item.id === value) ? `<option value="${esc(value)}" selected>自定义 · ${esc(value)}</option>` : ""}`;
+  }
+  function choiceMarkup(key, field, value, choices, custom) {
+    const attrs = `data-ai-key="${key}" data-ai-field="${field}"`;
+    const input = custom ? `<input ${attrs} value="${esc(value)}" placeholder="输入工具支持的名称" autocomplete="off">` : `<select ${attrs}>${choiceOptions(value, choices)}</select>`;
+    return `<div class="cs-choice">${input}<button type="button" data-ai-custom="${key}:${field}">${custom ? "返回列表" : "自定义输入"}</button></div>`;
+  }
+  function selectionMarkup(key, selection, catalog, customFields = new Set()) {
+    const runtime = catalog.find(item => item.id === (selection.runtime || defaultRuntime(null,catalog))), model = runtime?.models?.find(item => item.id === selection.model);
     const efforts = model && Array.isArray(model.efforts) ? model.efforts : runtime?.efforts || [];
     const saved = selection.runtime && !runtime ? `<option value="${esc(selection.runtime)}" selected>${esc(selection.runtime)} · 未检测到</option>` : "";
-    return `<div class="cs-fields"><label>执行载体<select data-ai-key="${key}" data-ai-field="runtime"><option value="">${catalog.filter(item => item.available).length === 1 ? "自动使用唯一可用载体" : "请选择载体"}</option>${catalog.map(item => `<option value="${esc(item.id)}" ${item.id === selection.runtime ? "selected" : ""} ${item.available ? "" : "disabled"}>${esc(item.name || item.id)}${item.available ? "" : " · 未就绪"}</option>`).join("")}${saved}</select></label><label>模型<input data-ai-key="${key}" data-ai-field="model" list="cs-model-${key}" value="${esc(selection.model)}" placeholder="原生默认" autocomplete="off"><datalist id="cs-model-${key}">${(runtime?.models || []).map(item => `<option value="${esc(item.id)}">${esc(item.name || item.id)}</option>`).join("")}</datalist></label><label>思考强度 · effort<input data-ai-key="${key}" data-ai-field="effort" list="cs-effort-${key}" value="${esc(selection.effort)}" placeholder="原生默认" autocomplete="off"><datalist id="cs-effort-${key}">${efforts.map(item => `<option value="${esc(item)}"></option>`).join("")}</datalist></label></div>${runtime && !runtime.available ? `<p class="cs-warning">${esc(runtime.error || "该载体暂不可用，请检查安装与登录。已保存的选择会保留。")}</p>` : ""}`;
+    return `<div class="cs-fields"><label>执行载体<select data-ai-key="${key}" data-ai-field="runtime"><option value="">${catalog.filter(item => item.available).length === 1 ? "自动使用唯一可用载体" : "请选择载体"}</option>${catalog.map(item => `<option value="${esc(item.id)}" ${item.id === selection.runtime ? "selected" : ""} ${item.available ? "" : "disabled"}>${esc(item.name || item.id)}${item.available ? "" : " · 未就绪"}</option>`).join("")}${saved}</select></label><label>模型${choiceMarkup(key, "model", selection.model, runtime?.models || [], customFields.has(key+":model"))}</label><label>思考强度 · effort${choiceMarkup(key, "effort", selection.effort, efforts.map(id => ({id})), customFields.has(key+":effort"))}</label></div>${runtime && !runtime.available ? `<p class="cs-warning">${esc(runtime.error || "该载体暂不可用，请检查安装与登录。已保存的选择会保留。")}</p>` : ""}`;
   }
   function create(options) {
     const root = options.host;
+    const customFields = new Set();
     let snapshot = null, draft = null, executionDraft = null, category = "ai", loading = false, saving = false, error = "", note = "", cleanup = null, generation = 0;
     root.classList.add("crew-settings");
     root.innerHTML = `<div class="cs-sidebar"><div class="cs-brand"><span class="cs-mark" aria-hidden="true">C</span><div><strong>设置</strong><small>Crew · 本机偏好</small></div></div><nav aria-label="设置分类">${categories.filter(([id]) => !["appearance", "connections"].includes(id) || options.panels?.[id]).map(([id, label, description], index) => `<button type="button" data-settings-category="${id}"><span class="cs-nav-icon" aria-hidden="true">${["◈", "▣", "◐", "⌘", "↗", "▤"][index]}</span><span>${label}<small>${description}</small></span></button>`).join("")}</nav>${options.onClose ? '<button type="button" class="cs-back" data-settings-action="close">← 返回工作区</button>' : ""}<p class="cs-local">应用于这台电脑上的所有工作区</p></div><div class="cs-body"><header class="cs-header"><div><span class="cs-eyebrow">偏好设置</span><h1 id="crew-settings-title"></h1><p class="cs-subtitle"></p></div>${options.onClose ? '<button type="button" class="cs-close" data-settings-action="close" aria-label="关闭设置">×</button>' : ""}</header><div class="cs-content"></div><footer class="cs-footer"><p class="cs-status" role="status"></p><button type="button" class="cs-button" data-settings-action="reset">撤销更改</button><button type="button" class="cs-button cs-primary" data-settings-action="save">保存设置</button></footer></div>`;
@@ -58,7 +69,7 @@
     }
     function renderAI() {
       const catalog = snapshot.runtimes || [];
-      content.innerHTML = `<section class="cs-card cs-default"><div class="cs-card-heading"><div><h2>默认大脑</h2><p>新建 leader 与未单独分配的内部任务使用这里的选择。</p></div><span class="cs-badge">默认</span></div>${selectionMarkup("default", draft.default, catalog)}<p class="cs-hint">模型和 effort 留空时使用原生默认。可从建议中选择，也可填写工具支持的名称。</p></section><div class="cs-section-heading"><h2>任务分配</h2><p>按用途选择大脑，也可以全部跟随默认。</p></div><div class="cs-task-list">${tasks.map(([key, title, description]) => `<section class="cs-card"><div class="cs-card-heading"><div><h3>${title}</h3><p>${description}</p></div><label class="cs-inherit"><input type="checkbox" data-ai-inherit="${key}" ${draft[key] === null ? "checked" : ""}>跟随默认</label></div>${draft[key] === null ? '<p class="cs-follow">使用默认大脑的载体、模型与思考强度。</p>' : selectionMarkup(key, draft[key], catalog)}</section>`).join("")}</div><p class="cs-footnote">保存设置不会运行 AI。新建会话时仍可单独选择；组员沿用 leader 的明确分配。</p>`;
+      content.innerHTML = `<section class="cs-card cs-default"><div class="cs-card-heading"><div><h2>默认大脑</h2><p>新建 leader 与未单独分配的内部任务使用这里的选择。</p></div><span class="cs-badge">默认</span></div>${selectionMarkup("default", draft.default, catalog, customFields)}<p class="cs-hint">下拉选择本机检测到的模型与强度；也可自定义输入。选择“原生默认”沿用工具配置。</p></section><div class="cs-section-heading"><h2>任务分配</h2><p>按用途选择大脑，也可以全部跟随默认。</p></div><div class="cs-task-list">${tasks.map(([key, title, description]) => `<section class="cs-card"><div class="cs-card-heading"><div><h3>${title}</h3><p>${description}</p></div><label class="cs-inherit"><input type="checkbox" data-ai-inherit="${key}" ${draft[key] === null ? "checked" : ""}>跟随默认</label></div>${draft[key] === null ? '<p class="cs-follow">使用默认大脑的载体、模型与思考强度。</p>' : selectionMarkup(key, draft[key], catalog, customFields)}</section>`).join("")}</div><p class="cs-footnote">保存设置不会运行 AI。新建会话时仍可单独选择；组员沿用 leader 的明确分配。</p>`;
     }
     function renderTools() {
       content.innerHTML = `<section class="cs-card"><div class="cs-card-heading"><div><h2>执行工具</h2><p>以下信息来自本机实际检测。</p></div><button type="button" class="cs-button" data-settings-action="reload">重新检测</button></div>${(snapshot.runtimes || []).map(item => `<div class="cs-tool-row"><div><strong>${esc(item.name || item.id)}</strong><p>${esc(item.error || (item.available ? "已就绪" : "未就绪"))}</p></div><span class="cs-badge ${item.available ? "cs-ready" : ""}">${item.available ? "可用" : "需配置"}</span></div>`).join("")}</section><p class="cs-footnote">安装、登录与工具更新可在 Crew 桌面首页的设置中管理。</p>`;
@@ -95,6 +106,11 @@
     }
     root.addEventListener("click", event => {
       const button = event.target.closest("button"); if (!button || !root.contains(button)) return;
+      if (button.dataset.aiCustom && !saving) {
+        const name = button.dataset.aiCustom, [key, field] = name.split(":");
+        if (customFields.has(name)) customFields.delete(name); else customFields.add(name);
+        render(); content.querySelector(`[data-ai-key="${key}"][data-ai-field="${field}"]`).focus(); return;
+      }
       if (button.dataset.settingsCategory) { category = button.dataset.settingsCategory; render(); return; }
       const action = button.dataset.settingsAction;
       if (action === "close") options.onClose?.();
@@ -111,7 +127,17 @@
         draft[key][field] = element.value.trim() || null;
         if (field === "runtime") { draft[key].model = null; draft[key].effort = null; }
         // A model change never silently invents or replaces an explicit effort.
-        if (field === "runtime" || field === "model") render();
+        if (field === "runtime") {
+          const focused = document.activeElement === element;
+          render();
+          if (focused) content.querySelector(`[data-ai-key="${key}"][data-ai-field="${field}"]`).focus();
+        }
+        if (field === "model") {
+          const runtime = snapshot.runtimes.find(item => item.id === (draft[key].runtime || defaultRuntime(null,snapshot.runtimes))), model = runtime?.models?.find(item => item.id === draft[key].model);
+          const efforts = model && Array.isArray(model.efforts) ? model.efforts : runtime?.efforts || [];
+          const picker = content.querySelector(`[data-ai-key="${key}"][data-ai-field="effort"]`);
+          if (picker.tagName === "SELECT") picker.innerHTML = choiceOptions(draft[key].effort, efforts.map(id => ({id})));
+        }
         error = ""; note = ""; controls();
       }
     });

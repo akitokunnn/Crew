@@ -21,10 +21,33 @@ test("settings validates the actual known model capabilities while retaining fut
   ai.git={runtime:"claude",model:"native-a",effort:"deep"};assert.throws(()=>ui.validate(ai,catalog),/不支持/);
   ai.git.effort="high";assert.equal(ui.validate(ai,catalog).git.effort,"high");
 });
+test("each explicit task names its missing runtime when two installed carriers make automatic selection ambiguous",()=>{
+  for(const [purpose,label] of [["digest","频道摘要"],["git","Git 管理员"],["operations","后台事故处理"]]){
+    const ai=config();ai.default.runtime="codex";ai[purpose]={runtime:null,model:null,effort:null};
+    assert.throws(()=>ui.validate(ai,catalog),error=>error.message.includes(label)&&error.message.includes("请选择执行载体"));
+    ai[purpose]=null;assert.doesNotThrow(()=>ui.validate(ai,catalog));
+  }
+});
+test("an automatic sole task runtime supplies its actual model list and model-specific effort choices",()=>{
+  const sole=[{...catalog[0],available:false},{...catalog[1],models:[...catalog[1].models,{id:"native-c",efforts:["light"]}]}],selection={runtime:null,model:"native-b",effort:"deep"};
+  const html=ui.selectionMarkup("digest",selection,sole);assert(html.includes('value="native-c"'));assert(html.includes('>native-b</option>'));assert(html.includes('>deep</option>'));assert(!html.includes('value="native-a"'));assert(!html.includes('value="high"'));
+  const ai=config();ai.default.runtime="codex";ai.digest=selection;assert.deepEqual(plain(ui.validate(ai,sole).digest),selection);
+});
+test("changing a model under automatic sole runtime refreshes effort options and saves the user's explicit compatible choice",async()=>{
+  const handlers={},nodes=new Map(),picker={tagName:"SELECT",innerHTML:""},element=()=>({classList:{add(){},toggle(){}},setAttribute(){},focus(){},textContent:"",innerHTML:"",disabled:false});
+  const content={...element(),querySelector:()=>picker},root={...element(),contains:()=>true,querySelectorAll:()=>[],querySelector(selector){if(selector===".cs-content")return content;if(!nodes.has(selector))nodes.set(selector,element());return nodes.get(selector);},addEventListener:(type,handler)=>handlers[type]=handler};
+  const ai=config();ai.default.runtime="codex";ai.digest={runtime:null,model:"native-b",effort:"deep"};const snapshot={ai,runtimes:[{...catalog[0],available:false},{...catalog[1],models:[...catalog[1].models,{id:"native-c",efforts:["light"]}]}]};let saved;
+  const settings=ui.create({host:root,read:async()=>snapshot,save:async body=>{saved=plain(body);return {...snapshot,ai:body.ai,execution:body.execution};}});settings.open();for(let i=0;i<12;i++)await Promise.resolve();
+  handlers.change({target:{dataset:{aiKey:"digest",aiField:"model"},value:"native-c"}});assert(picker.innerHTML.includes('value="light"'));assert.equal(settings.getDraft().digest.effort,"deep");assert.equal(saved,undefined);
+  handlers.change({target:{dataset:{aiKey:"digest",aiField:"effort"},value:"light"}});await settings.save();assert.equal(saved.ai.digest.runtime,null);assert.equal(saved.ai.digest.model,"native-c");assert.equal(saved.ai.digest.effort,"light");
+});
 test("model and effort suggestions come from catalogs and custom values are escaped instead of replaced",()=>{
   const selection={runtime:"codex",model:'future<model>"',effort:"future&effort"};const html=ui.selectionMarkup("default",selection,catalog);
   assert(html.includes('value="future&lt;model&gt;&quot;"'));assert(html.includes('value="future&amp;effort"'));assert(html.includes('value="native-b"'));
-  assert(!html.includes('value="native-a"'));assert(!html.includes("haiku"));assert(html.includes('placeholder="原生默认"'));
+  assert(!html.includes('value="native-a"'));assert(!html.includes("haiku"));assert(html.includes('>原生默认</option>'));
+  assert(!html.includes('<datalist'));assert.equal((html.match(/<select /g)||[]).length,3);assert(html.includes('自定义输入'));
+  const custom=ui.selectionMarkup("default",selection,catalog,new Set(["default:model"]));
+  assert(custom.includes('<input data-ai-key="default" data-ai-field="model"'));assert(custom.includes('返回列表'));
 });
 test("execution permissions start safely and retain an explicitly saved full-access choice",()=>{
   const safe=ui.initialExecution({});assert.deepEqual(plain(safe),{codex:"workspace-write",claude:"default"});

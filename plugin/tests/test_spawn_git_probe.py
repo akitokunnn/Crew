@@ -13,6 +13,11 @@ PLUGIN=__import__('pathlib').Path(__file__).resolve().parents[1]
 
 
 class SpawnGitProbeTests(RuntimeFixture):
+    def setUp(self):
+        super().setUp()
+        # Native commands are stubbed below; retain the repository precondition.
+        (self.root/'.git').mkdir()
+
     def plan(self):
         return spawn.prepare(self.conn,self.home,PLUGIN,'demo','new-worker','isolated task',group='chief',new_worktree='feature/probe')
 

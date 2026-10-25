@@ -27,7 +27,7 @@ const run=async script=>{const result=await win.webContents.executeJavaScript(`(
 const progress=message=>require('node:fs').appendFileSync(path.join(output,'progress.log'),message+'\n');
 async function waitFor(expression){for(let i=0;i<160;i++){if(await run(expression))return;await new Promise(resolve=>setTimeout(resolve,30));}throw Error('等待超时：'+expression);}
 async function click(selector){await run(`document.querySelector(${JSON.stringify(selector)}).click()`);}
-async function change(key,field,value){await run(`(()=>{const input=document.querySelector('[data-ai-key="${key}"][data-ai-field="${field}"]');input.value=${JSON.stringify(value)};input.dispatchEvent(new Event('change',{bubbles:true}));})()`);}
+async function change(key,field,value){if(await run(`(()=>{const input=document.querySelector('[data-ai-key="${key}"][data-ai-field="${field}"]');return input.tagName==='SELECT'&&![...input.options].some(option=>option.value===${JSON.stringify(value)});})()`))await click(`[data-ai-custom="${key}:${field}"]`);await run(`(()=>{const input=document.querySelector('[data-ai-key="${key}"][data-ai-field="${field}"]');input.value=${JSON.stringify(value)};input.dispatchEvent(new Event('change',{bubbles:true}));})()`);}
 async function permission(runtime,value){await run(`(()=>{const input=document.querySelector('[data-execution-runtime="${runtime}"]');input.value=${JSON.stringify(value)};input.dispatchEvent(new Event('change',{bubbles:true}));})()`);}
 async function screenshot(name){progress('capture '+name);await run('Promise.race([document.fonts.ready.then(()=>true),new Promise(resolve=>setTimeout(()=>resolve(false),200))])');await new Promise(resolve=>setTimeout(resolve,100));const image=await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true});assert(!image.isEmpty());await fs.writeFile(path.join(output,name),image.toPNG());}
 async function open(){await click('#nav-settings');await waitFor('!!document.querySelector(\'[data-ai-key="default"]\')');}
@@ -38,7 +38,26 @@ async function open(){await click('#nav-settings');await waitFor('!!document.que
   win.webContents.on('console-message',(_event,...args)=>{const message=typeof args[0]==='object'?args[0].message:args[1];if(String(message).includes('Uncaught'))rendererErrors.push(message);});
   await win.loadURL(home);progress('home loaded');await waitFor('document.documentElement.dataset.crewDesktopChromeReady === "true"');progress('chrome ready');await open();progress('settings open');
   assert.equal(await run('document.querySelector(\'[data-ai-key="default"][data-ai-field="runtime"]\').value'),'');
+  assert.deepEqual(await run('[...document.querySelectorAll("[data-ai-key=default]")].map(input=>input.tagName)'),['SELECT','SELECT','SELECT']);
+  for(const task of ['digest','git','operations'])await run(`(()=>{const checkbox=document.querySelector('[data-ai-inherit="${task}"]');checkbox.checked=false;checkbox.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+  win.setSize(1120,740);
+  const scrollBefore=await run('(()=>{const body=document.querySelector(".cs-body");return{height:innerHeight,top:body.scrollTop,body:body.getBoundingClientRect().toJSON(),scrollHeight:body.scrollHeight,clientHeight:body.clientHeight,documentHeight:document.documentElement.scrollHeight};})()');
+  progress('scroll bounds '+JSON.stringify(scrollBefore));
+  assert(scrollBefore.scrollHeight>scrollBefore.clientHeight,'AI settings must have an internal scroll region at a short window height');
+  assert(scrollBefore.body.bottom<=scrollBefore.height+1,'settings scroll region must fit inside the desktop window');
+  win.webContents.debugger.attach('1.3');
+  await win.webContents.debugger.sendCommand('Input.dispatchMouseEvent',{type:'mouseMoved',x:scrollBefore.body.x+scrollBefore.body.width/2,y:scrollBefore.body.y+scrollBefore.body.height/2});
+  await win.webContents.debugger.sendCommand('Input.dispatchMouseEvent',{type:'mouseWheel',x:scrollBefore.body.x+scrollBefore.body.width/2,y:scrollBefore.body.y+scrollBefore.body.height/2,deltaX:0,deltaY:420});
+  await waitFor('document.querySelector(".cs-body").scrollTop>0');
+  win.webContents.debugger.detach();
+  progress('native wheel scroll '+await run('document.querySelector(".cs-body").scrollTop'));
+  await run('document.querySelector(".cs-body").scrollTo(0,10000)');
+  await waitFor('document.querySelector(".cs-body").scrollTop>0');
+  assert(await run('(()=>{const footer=document.querySelector(".cs-footer").getBoundingClientRect();return footer.bottom<=innerHeight+1&&footer.top>=0;})()'),'save controls must remain reachable after scrolling');
+  await run('document.querySelector(".cs-body").scrollTo(0,0)');
+  await click('[data-settings-action="reset"]');
   await change('default','runtime','codex');await change('default','model','native-b');await change('default','effort','deep');
+  assert.deepEqual(await run('[...document.querySelector(\'[data-ai-key="default"][data-ai-field="effort"]\').options].map(option=>option.value)'),['','deep']);
   await run(`(()=>{const input=document.querySelector('[data-ai-inherit="digest"]');input.checked=false;input.dispatchEvent(new Event('change',{bubbles:true}));})()`);
   await change('digest','runtime','claude');await change('digest','model','future-summary');await change('digest','effort','future-effort');
   await click('[data-settings-category="appearance"]');await click('[data-desktop-theme="light"]');await click('[data-settings-category="ai"]');

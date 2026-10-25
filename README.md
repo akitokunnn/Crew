@@ -1,10 +1,10 @@
 # Crew
 
-让一个人同时指挥多个 Claude Code / Codex 会话。用 Windows 桌面应用或浏览器打开 Git 工作区，让 leader 直接推进目标、必要时协调成员，共用一块白板。
+让一个人同时指挥多个 Claude Code / Codex 会话。用 Windows 桌面应用或浏览器打开工作文件夹，让 leader 直接推进目标、必要时协调成员，共用一块白板。
 
 ## 能做什么
 
-- **桌面工作区**：选择已有 Git 文件夹，或新建空目录和 Git 仓库；多个项目各有标签，切换保留草稿和页面状态。关闭窗口隐藏到托盘，后台任务继续运行。
+- **桌面工作区**：选择普通文件夹或 Git 仓库，也可新建空目录；不会自动初始化 Git。多个项目各有标签，切换保留草稿和页面状态。关闭窗口隐藏到托盘，后台任务继续运行。
 - **系统管理员**：整个 Crew 只有一个，独立守护进程检查连接、记录异常，后台退出时恢复同一端口。常态不启动模型；配置可信复现与验证命令后，具体事故可触发有限的隔离修复，保留 commit，经项目合并规则通过才申请应用。人工暂停不自动恢复。
 - **目标与交付**：普通问答直接聊天。明确执行目标保存原始要求、验收、轮次和独立原生历史；每轮交付由程序生成带证据和具体 example 的 HTML，未达标如实结束。暂停先持久化，再等待成员和原生执行实际停止。
 - **动态上下文**：只增量装载当前目标相关材料，可查看来源、纠正与实际应用状态；原生历史独立计量并在超限时换代，保留用户原话与确认约束。字符数和原生 token 分开显示，未知用量不当成零。
@@ -27,7 +27,7 @@
 
 ## 安装与启动
 
-需要 Windows、Python 3.11 以上（在 PATH 中可运行 `python`）、Git，以及已安装并登录的 Claude Code 或 Codex CLI。两种工具按需安装；仅安装 Codex 也能使用全部内建 AI 功能，无需 Claude 插件。从源码运行桌面应用还需要 Node.js / npm。已有验证使用 Claude Code 2.1.310、Codex CLI 0.164.0，具体模型和 effort 以本机执行工具返回的列表为准。
+需要 Windows、Python 3.11 以上（在 PATH 中可运行 `python`），以及已安装并登录的 Claude Code 或 Codex CLI。普通文件夹工作区不需要 Git；分支、提交、合并和独立 worktree 等 Git 功能才需要安装 Git 并使用仓库。两种 AI 工具按需安装；仅安装 Codex 也能使用全部内建 AI 入口，无需 Claude 插件。从源码运行桌面应用还需要 Node.js / npm。已有验证使用 Claude Code 2.1.310、Codex CLI 0.164.0，具体模型和 effort 以本机执行工具返回的列表为准。
 
 先取得源码：
 
@@ -45,11 +45,11 @@ npm install
 npm start
 ```
 
-首页选择已有 Git 项目，或填写名称、选择保存位置来新建工作区。进入项目后，点“起 leader”，选择执行工具、模型和任务即可开始。`Ctrl+T` 返回工作区首页，`Ctrl+Tab` 切换标签，`Ctrl+W` 关闭当前项目标签。
+首页选择已有文件夹，或填写名称、选择保存位置来新建普通工作区。进入项目后，点“起 leader”，选择执行工具、模型和任务即可开始。设置的 AI 大脑页面会检测实际模型清单，模型与思考强度可下拉选择，也保留自定义输入。`Ctrl+T` 返回工作区首页，`Ctrl+Tab` 切换标签，`Ctrl+W` 关闭当前项目标签。
 
 关闭窗口会隐藏到托盘；“退出 Crew”才退出应用。桌面版优先复用当前 home 中已登记的健康服务，复用时继续使用该服务的版本；自行启动的后端在退出应用时关闭，借用的服务保持运行。
 
-`npm run build` 生成 `desktop/dist/Crew-0.2.2-portable.exe` 和 `Crew-0.2.2-setup.exe`，直接运行仍需本机 Python、Git 和所选模型 CLI。构建、独立数据目录和隔离验收见 [桌面版说明](desktop/README.md)。
+`npm run build` 生成 `desktop/dist/Crew-0.2.3-portable.exe` 和 `Crew-0.2.3-setup.exe`，直接运行仍需本机 Python 和所选模型 CLI。构建、独立数据目录和隔离验收见 [桌面版说明](desktop/README.md)。
 
 ### Claude 插件与 VS Code
 
@@ -66,7 +66,7 @@ claude plugin install crew@crew --scope user
 
 桌面首次启动或 Claude 插件初始化后，把 `%USERPROFILE%\.crew\bin` 加进用户 PATH，新终端即可使用 `crew`。配置 PATH 前，可在 PowerShell 使用 `python "$env:USERPROFILE\.crew\crew.py" <命令>`。
 
-使用浏览器和登录自启时，执行 `crew autostart install`；需要文件夹右键入口时，再执行 `crew menu install`。之后在 Git 项目里运行 `crew start`，或右键选择“在这里启动 Crew”，会自动启用项目并打开网页。已有服务时用 `crew web --open` 打开当前项目。
+使用浏览器和登录自启时，执行 `crew autostart install`；需要文件夹右键入口时，再执行 `crew menu install`。之后在工作文件夹里运行 `crew start`，或右键选择“在这里启动 Crew”，会自动启用项目并打开网页。已有服务时用 `crew web --open` 打开当前项目。
 
 Claude 协作会话建议统一权限模式；`/crew:trust` 用于 Claude 的工具权限。下面的 `crew trust set on --leader ... --goal ...` 用于单个 leader 组的自主决策目标，两者分别配置。
 

@@ -47,7 +47,9 @@ def _git_executable():
 
 def project_roots(root):
     """Include only git worktrees below the project's own root."""
-    root = Path(root)
+    root = Path(root).resolve(strict=True)
+    if git_process.repository_root(root) is None:
+        return [root]
     result=git_process.run(['-C',str(root),'worktree','list','--porcelain'],timeout=10,command_executable=_git_executable())
     output,error=result.stdout,result.stderr
     if result.returncode:
