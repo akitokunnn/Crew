@@ -1,7 +1,9 @@
 """Persistent Claude stream-json sessions and their replayable web journals."""
 import base64
 import collections
+import contextlib
 from contextlib import closing
+import functools
 import json
 import os
 import shutil
@@ -12,6 +14,22 @@ import uuid
 from pathlib import Path
 
 from . import board, claude_limits, hooks, install, messaging, models, runtime_switch, runtimes, spawn, store
+
+
+PAUSED_FOR_UPDATE = "Crew 正在准备更新，暂不接受新任务；更新完成后再试"
+
+
+class UpdatePaused(board.Conflict):
+    """New model work is refused while a desktop update holds the gate."""
+
+
+def _admitted(method):
+    # Every entry that can start or feed a model turn passes the update gate.
+    @functools.wraps(method)
+    def admitted(self, *args, **kwargs):
+        with self.work():
+            return method(self, *args, **kwargs)
+    return admitted
 
 
 IMAGE_TYPES = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif"}
@@ -340,6 +358,75 @@ class Manager:
         self.closed = False
         self.auto_candidates = None
         self.message_wait_errors = {}
+        # Update admission: the gate closes new work; in_flight drains accepted work.
+        self.admission = threading.Condition()
+        self.update_gate, self.in_flight = None, 0
+        self._admitted = threading.local()
+
+    @contextlib.contextmanager
+    def work(self, background=False):
+        """Admit new model work. Background workers get False and leave queues untouched."""
+        depth = getattr(self._admitted, "depth", 0)
+        if depth == 0:
+            with self.admission:
+                paused = self.update_gate is not None
+                if not paused:
+                    self.in_flight += 1
+            if paused:
+                if not background:
+                    raise UpdatePaused(PAUSED_FOR_UPDATE)
+                yield False
+                return
+        self._admitted.depth = depth + 1
+        try:
+            yield True
+        finally:
+            self._admitted.depth = depth
+            if depth == 0:
+                with self.admission:
+                    self.in_flight -= 1
+                    self.admission.notify_all()
+
+    def paused(self):
+        with self.admission:
+            return self.update_gate
+
+    def close_admission(self, gate, timeout):
+        """Close the gate and wait for already admitted work to finish starting."""
+        with self.admission:
+            if self.update_gate is not None:
+                raise board.Conflict("已有 Crew 更新正在准备")
+            self.update_gate = gate
+            if self.admission.wait_for(lambda: self.in_flight == 0, timeout):
+                return True
+            self.update_gate = None
+            return False
+
+    def open_admission(self, gate):
+        with self.admission:
+            if self.update_gate != gate:
+                return False
+            self.update_gate = None
+            return True
+
+    def busy_reasons(self, conn):
+        """Real managed process state; pending compaction is queued work, too."""
+        reasons = []
+        with self.lock:
+            for sid, current in self.processes.items():
+                with current.input_lock:
+                    alive = current.process.poll() is None
+                    working = alive and (current.journal.status == "working" or current.pending_compact)
+                    draining = not alive and not current.reader_done.is_set()
+                if working or draining:
+                    row = conn.execute("SELECT crew_name FROM sessions WHERE session_id=?", (sid,)).fetchone()
+                    name = row["crew_name"] if row is not None and row["crew_name"] else sid
+                    reasons.append(("%s 正在回复或排队压缩" if working else "%s 的进程输出尚未排空") % name)
+        return reasons
+
+    def managed_pids(self):
+        with self.lock:
+            return [current.process.pid for current in self.processes.values() if current.process.poll() is None]
 
     def path(self, session_id):
         return self.home / "chat" / (session_id + ".jsonl")
@@ -540,7 +627,7 @@ class Manager:
         exe = claude_executable()
         if native_id not in (None,session_id):
             raise board.BoardError('Claude 原生身份与 Crew 身份不一致，不能恢复错误会话')
-        install.install(self.home, self.plugin_root)
+        install.ensure(self.home, self.plugin_root)
         command = spawn.command(session_id, session["crew_name"], session["role"], native_resume, **options, agent=spec["agent"])
         command[0] = exe
         journal = self.journal(session_id)
@@ -562,6 +649,7 @@ class Manager:
         current.reader.start()
         return command
 
+    @_admitted
     def start(self, conn, project_name, name, task=None, group=None, role="member", members=(), cwd=None,
               new_worktree=None, base=None, now=None, member_session_ids=(), model=models.INHERIT, effort=models.INHERIT, agent=None,
               runtime=models.INHERIT):
@@ -656,6 +744,11 @@ class Manager:
 
     def deliver_messages(self):
         """Deliver only to an idle owned runtime, or resume a confirmed offline one."""
+        with self.work(background=True) as admitted:
+            if admitted:
+                self._deliver_messages()
+
+    def _deliver_messages(self):
         with self.lock, closing(store.connect(self.home)) as conn:
             for message in messaging.pending(conn):
                 sid = message["target_session_id"]
@@ -684,6 +777,7 @@ class Manager:
                         board.record_event(conn, "peer:delivery_wait", target["project"], sid,
                                            {"id": message["id"], "reason": str(exc)})
 
+    @_admitted
     def send(self, session, text, source='human', identity=None, images=None):
         images = validate_images(images)
         session_id = session["session_id"]
@@ -702,6 +796,7 @@ class Manager:
             identity = self._send(session_id, text, source=source, identity=identity, images=images)
         return {"ok": True, 'message_id': identity}
 
+    @_admitted
     def compact(self, session, caller_session_id=None):
         session_id = session["session_id"]
         self_compact = caller_session_id not in (None, board.HUMAN) and caller_session_id == session_id
@@ -767,6 +862,7 @@ class Manager:
         self._send(session["session_id"], text, source=source, sender=sender, identity=identity, display_text=display_text)
         return created_spawn
 
+    @_admitted
     def wake(self, conn, target, text, caller_session_id=None, now=None):
         with self.lock:
             if self.closed:
@@ -849,6 +945,12 @@ class Manager:
             return {"ok": True, "session_id": target["session_id"], "name": target["crew_name"], "address": target["crew_name"]}
 
     def auto_resume(self, conn, agents, now=None, runtime=None):
+        # Check the gate before the leftover snapshot: an updating service resumes nothing.
+        with self.work(background=True) as admitted:
+            if admitted:
+                self._auto_resume(conn, agents, now, runtime)
+
+    def _auto_resume(self, conn, agents, now, runtime):
         now = store.now_iso() if now is None else now
         with self.lock:
             if self.closed:

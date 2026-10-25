@@ -7,6 +7,7 @@ const core = require('./core.cjs');
 const chrome = require('./chrome.cjs');
 const { WorkspaceTabs } = require('./tabs.cjs');
 const { ToolUpdates } = require('./tool-updates.cjs');
+const { CrewUpdates } = require('./crew-updates.cjs');
 const { Administrator } = require('./admin.cjs');
 const config = core.options(process.argv.slice(1));
 const administrator = new Administrator(config.home);
@@ -17,7 +18,7 @@ require('node:fs').mkdirSync(config.userData,{recursive:true});
 app.setPath('userData', config.userData);
 const homePage = pathToFileURL(path.join(__dirname, 'home.html')).href;
 const errorPage = pathToFileURL(path.join(__dirname, 'error.html')).href;
-let window, tray, backend, tabs, tools, windowMenu, quitting = false, finishedQuit = false, parentDirectory = null, smokeStarted = false, pendingAction = null, homeBootstrapped = false;
+let window, tray, backend, tabs, tools, crewUpdates, windowMenu, quitting = false, finishedQuit = false, parentDirectory = null, smokeStarted = false, pendingAction = null, homeBootstrapped = false;
 
 function trusted(event) {
   if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame || event.senderFrame.url !== homePage) {
@@ -260,6 +261,10 @@ handle('desktop:tools-check',()=>tools.check());
 handle('desktop:tools-update',id=>tools.update(id));
 handle('desktop:tools-cancel',id=>tools.cancel(id));
 handle('desktop:tools-settings',settings=>tools.settings(settings));
+handle('desktop:crew-update-snapshot',()=>crewUpdates.snapshot());
+handle('desktop:crew-update-check',()=>crewUpdates.check());
+handle('desktop:crew-update-apply',()=>crewUpdates.update());
+handle('desktop:crew-update-cancel',()=>crewUpdates.cancel());
 handle('desktop:ready', async info => {
   if (!config.smoke || smokeStarted) return;
   smokeStarted = true;
@@ -307,6 +312,12 @@ else {
         pendingAction='admin';
       }
       tools=new ToolUpdates(config,{onChange:state=>{if(window&&!window.webContents.isDestroyed())window.webContents.send('desktop:tools-state',state);}});
+      config.desktopVersion=app.getVersion();
+      crewUpdates=new CrewUpdates(config,backend,{onChange:state=>{if(window&&!window.webContents.isDestroyed())window.webContents.send('desktop:crew-update-state',state);},onRestart:async health=>{
+        backend.startupError=null;
+        if(tabs&&tabs.origin!==backend.url)throw new Error('更新后服务地址变化；工作区标签已保留，请重新打开 Crew。');
+        publishTabs();
+      }});
       await tools.initialize();
       if(!config.smoke&&!config.isolated&&!backend.startupError)tools.start();
       window = new BrowserWindow({ width: 1220, height: 850, minWidth: 820, minHeight: 600,
@@ -377,6 +388,6 @@ else {
     if (quitting) return;
     quitting = true;
     tabs?.dispose();
-    Promise.resolve(tools?.close()).then(()=>backend?.stop()).finally(() => { finishedQuit = true; tray?.destroy(); app.quit(); });
+    Promise.resolve(crewUpdates?.close()).then(()=>tools?.close()).then(()=>backend?.stop()).finally(() => { finishedQuit = true; tray?.destroy(); app.quit(); });
   });
 }

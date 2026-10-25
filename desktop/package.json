@@ -1,6 +1,6 @@
 {
   "name": "crew-desktop",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Native Crew workspace launcher",
   "author": "Crew contributors",
   "license": "UNLICENSED",
@@ -43,7 +43,10 @@
       }
     ],
     "win": {
-      "target": ["portable", "nsis"],
+      "target": [
+        "portable",
+        "nsis"
+      ],
       "icon": "assets/crew.ico",
       "signExecutable": false
     },

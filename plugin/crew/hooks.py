@@ -104,8 +104,9 @@ def handle(event, data, home, plugin_root, environ, git_provider=git_details, no
                         return 0, {"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": "\n\n".join(lines)}}
         return 0, None
     if event == "session-start":
-        # Refresh HOME for every session, inside a project or not: the guard needs blacklist.txt everywhere.
-        install.install(home, plugin_root, now=now)
+        # Initialize HOME for every session, inside a project or not: the guard needs blacklist.txt everywhere.
+        # An existing CLI source is never switched here; only explicit installs and desktop updates switch it.
+        install.ensure(home, plugin_root, now=now)
     p = guard.enabled_project(home, data["session_id"], data["cwd"])
     if p is None:
         return 0, None

@@ -152,6 +152,8 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         manager.journal.return_value, manager.path.return_value = journal, journal.path
         manager.busy.side_effect = lambda sid: journal.status == 'working'
         manager.running.return_value = manager.is_owned.return_value = True
+        # The fake manager admits work like the real update gate when no update holds it.
+        manager.work.side_effect = lambda background=False: contextlib.nullcontext(True)
 
         def send(session, text, source, identity, images):
             journal.message(identity, text, source)

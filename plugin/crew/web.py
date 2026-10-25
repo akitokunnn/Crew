@@ -7,8 +7,10 @@ import mimetypes
 import os
 import sqlite3
 import subprocess
+import sys
 import threading
 import traceback
+import uuid
 import webbrowser
 from contextlib import closing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -17,7 +19,7 @@ from urllib.parse import parse_qs, quote, urlencode, urlsplit
 from urllib.request import ProxyHandler, build_opener
 from urllib.error import HTTPError, URLError
 
-from . import board, channel, channel_digest, chat, claude_limits, documents, git_admin, git_ci, git_view, hooks, messaging, models, notifications, open_session, presentation, runtime_catalog, runtime_switch, runtimes, session_ops, spawn, store, themes, todo, trust_mode, usage, usage_cli, vscode_sessions
+from . import board, channel, channel_digest, chat, claude_limits, codex_runtime, documents, git_admin, git_ci, git_view, hooks, messaging, models, notifications, open_session, presentation, runtime_catalog, runtime_switch, runtimes, session_ops, spawn, store, themes, todo, trust_mode, updater, usage, usage_cli, vscode_sessions
 from .service_lock import HomeServiceLock
 
 
@@ -32,6 +34,12 @@ def _optional_text(data, key):
     return None if data.get(key) is None else _text(data, key)
 
 
+# HTTP entries that start or feed model work must pass the update gate before
+# any side effect (adoption, git admin setup, VS Code takeover, digest).
+MODEL_WORK = {"/api/spawn", "/api/leader", "/api/wake", "/api/chat/send", "/api/session/compact",
+              "/api/open", "/api/open/continue", "/api/git/enable", "/api/channel/digest"}
+
+
 class Service:
     def __init__(self, home, plugin_root, agents_provider=None,
                  claude_root=None, codex_root=None, runs_file=None, now=None, cwd=None, process_factory=subprocess.Popen,
@@ -42,6 +50,10 @@ class Service:
             agents_provider = claude_agents
         self.home, self.plugin_root = Path(home), Path(plugin_root)
         self.agents_provider, self.clock = agents_provider, now
+        # Health reports which bundled source this process really runs.
+        self.instance_id = uuid.uuid4().hex
+        self.version = updater.manifest_version(self.plugin_root)
+        self.update_drain_seconds = 10
         self.chat = chat.Manager(home, plugin_root, agents_provider, process_factory)
         self.runtime_catalog = runtime_catalog.Catalog()
         self.migrate_manual_work = migrate_manual_work
@@ -113,9 +125,12 @@ class Service:
                 break
 
     def digest_channels(self):
-        with self.write_lock, closing(store.connect(self.home)) as conn:
-            for project in board.projects(conn):
-                self.channel_digest.start(conn, project['name'], trigger='auto')
+        with self.chat.work(background=True) as admitted:
+            if not admitted:
+                return
+            with self.write_lock, closing(store.connect(self.home)) as conn:
+                for project in board.projects(conn):
+                    self.channel_digest.start(conn, project['name'], trigger='auto')
 
     def _refresh_vscode(self):
         try:
@@ -199,8 +214,71 @@ class Service:
 
     def _poll_notices(self):
         while not self.stop.wait(2):
+            self.release_abandoned_update()
             self.chat.deliver_messages()
-            self.deliver_notices()
+            with self.chat.work(background=True) as admitted:
+                if admitted:
+                    self.deliver_notices()
+
+    def release_abandoned_update(self):
+        # The gate lives only while an updater holds the HOME update lock.
+        gate = self.chat.paused()
+        if gate is not None and not updater.update_lock_held(self.home) and self.chat.open_admission(gate):
+            print("Crew 更新器已退出，已解除更新闸", file=sys.stderr, flush=True)
+
+    def update_reasons(self, conn):
+        """Whole-HOME idleness from real process/worker state, not sessions.status."""
+        reasons = self.chat.busy_reasons(conn)
+        try:
+            live = {agent["sessionId"] for agent in self.agents_provider()}
+        except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError) as exc:
+            reasons.append("无法确认 Claude 进程状态：%s: %s" % (type(exc).__name__, exc))
+            live = None
+        for row in conn.execute("SELECT session_id,crew_name FROM sessions WHERE crew_name IS NOT NULL "
+                                "AND crew_name<>'' AND status!='closed'").fetchall():
+            sid, name = row["session_id"], row["crew_name"]
+            if board.is_archived(conn, sid) or self.chat.running(sid):
+                continue
+            if live is not None and sid in live:
+                reasons.append("%s 在 VS Code 或终端中运行，请先结束该会话" % name)
+            elif runtimes.get(conn, sid)["runtime"] == "codex":
+                try:
+                    orphan = codex_runtime.lease_alive(self.home, sid)
+                except (OSError, ValueError) as exc:
+                    reasons.append("无法确认 %s 的 Codex 进程状态：%s" % (name, exc))
+                    continue
+                if orphan:
+                    reasons.append("%s 的 Codex 进程仍在运行" % name)
+        with self.channel_digest.lock:
+            reasons.extend("交流区摘要正在生成：" + project for project in sorted(self.channel_digest.running))
+        return reasons
+
+    def prepare_update(self, data):
+        if data.get("instance_id") != self.instance_id:
+            raise board.Conflict("后台实例已变化，请重新检查后再更新")
+        if not updater.update_lock_held(self.home):
+            raise board.Conflict("没有持有更新锁的 Crew 更新器，不能暂停新任务")
+        gate = uuid.uuid4().hex
+        if not self.chat.close_admission(gate, self.update_drain_seconds):
+            return {"ok": False, "status": "busy", "reasons": ["有新任务正在启动，稍后重试"]}
+        reasons = None
+        try:
+            with closing(store.connect(self.home)) as conn:
+                reasons = self.update_reasons(conn)
+        finally:
+            if reasons != []:
+                self.chat.open_admission(gate)
+        if reasons:
+            return {"ok": False, "status": "busy", "reasons": reasons}
+        return {"ok": True, "status": "ready", "gate_id": gate, "instance_id": self.instance_id,
+                "pid": os.getpid(), "managed_pids": self.chat.managed_pids()}
+
+    def cancel_update(self, data):
+        if data.get("instance_id") != self.instance_id:
+            raise board.Conflict("后台实例已变化，更新准备已失效")
+        if not self.chat.open_admission(_text(data, "gate_id")):
+            raise board.Conflict("更新准备已失效")
+        return {"ok": True}
 
     def _poll_git_ci(self):
         while not self.stop.is_set():
@@ -559,6 +637,16 @@ class Service:
     def post(self, path, data, project_name=None):
         if not isinstance(data, dict):
             raise ValueError("JSON \u8bf7\u6c42\u5fc5\u987b\u662f\u5bf9\u8c61")
+        if path == "/api/admin/update/prepare":
+            return self.prepare_update(data)
+        if path == "/api/admin/update/cancel":
+            return self.cancel_update(data)
+        if path in MODEL_WORK:
+            with self.chat.work():
+                return self._post(path, data, project_name)
+        return self._post(path, data, project_name)
+
+    def _post(self, path, data, project_name):
         if path in ('/api/session/runtime/prepare','/api/session/runtime/switch'):
             with closing(store.connect(self.home)) as conn:
                 project=self.selected_project(conn,project_name if project_name is not None else data.get('project'))
@@ -1045,6 +1133,7 @@ POST_PATHS.add('/api/leaders/priority')
 POST_PATHS.update(('/api/files/resolve', '/api/files/open', '/api/files/reveal'))
 POST_PATHS.update(('/api/documents','/api/documents/pin','/api/documents/refresh'))
 POST_PATHS.update(('/api/git/enable', '/api/git/disable', '/api/git/fetch'))
+POST_PATHS.update(('/api/admin/update/prepare', '/api/admin/update/cancel'))
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"),
           "/themes.js": ("themes.js", "text/javascript; charset=utf-8"),
           "/sounds.js": ("sounds.js", "text/javascript; charset=utf-8"),
@@ -1145,7 +1234,10 @@ class Handler(BaseHTTPRequestHandler):
                 ('agents', service.worker), ('notices', service.notice_worker), ('git_ci', service.ci_worker))}
             self._send(200, {'ok': True, 'service': 'crew', 'home': str(Path(service.home).resolve()),
                              'pid': os.getpid(), 'workers': workers,
-                             'warnings': [name for name, running in workers.items() if not running]})
+                             'warnings': [name for name, running in workers.items() if not running],
+                             'version': service.version, 'plugin_root': str(service.plugin_root.resolve()),
+                             'instance_id': service.instance_id, 'port': self.server.server_port,
+                             'update_gate': service.chat.paused() is not None})
         elif url.path == "/api/state":
             self._send(200, service.state(query.get("project", [None])[0]))
         elif url.path == '/api/runtimes':

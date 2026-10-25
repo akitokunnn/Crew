@@ -70,5 +70,7 @@ if(isHome&&process.isMainFrame)contextBridge.exposeInMainWorld('crewDesktop',Obj
  adminStatus:()=>ipcRenderer.invoke('desktop:admin-status'),adminCheck:()=>ipcRenderer.invoke('desktop:admin-check'),adminRestart:()=>ipcRenderer.invoke('desktop:admin-restart'),
  toolsSnapshot:()=>ipcRenderer.invoke('desktop:tools-snapshot'),toolsCheck:()=>ipcRenderer.invoke('desktop:tools-check'),toolsUpdate:id=>ipcRenderer.invoke('desktop:tools-update',id),toolsCancel:id=>ipcRenderer.invoke('desktop:tools-cancel',id),toolsSettings:settings=>ipcRenderer.invoke('desktop:tools-settings',settings),
  onToolUpdates:callback=>{if(typeof callback!=='function')throw new TypeError('需要工具更新回调');const listener=(_event,state)=>callback(state);ipcRenderer.on('desktop:tools-state',listener);return()=>ipcRenderer.removeListener('desktop:tools-state',listener);},
+ crewUpdateSnapshot:()=>ipcRenderer.invoke('desktop:crew-update-snapshot'),crewUpdateCheck:()=>ipcRenderer.invoke('desktop:crew-update-check'),crewUpdateApply:()=>ipcRenderer.invoke('desktop:crew-update-apply'),crewUpdateCancel:()=>ipcRenderer.invoke('desktop:crew-update-cancel'),
+ onCrewUpdateState:callback=>{if(typeof callback!=='function')throw new TypeError('需要 Crew 更新回调');const listener=(_event,state)=>callback(state);ipcRenderer.on('desktop:crew-update-state',listener);return()=>ipcRenderer.removeListener('desktop:crew-update-state',listener);},
  ready:info=>chromeReady.then(()=>ipcRenderer.invoke('desktop:ready',info))
 }));
