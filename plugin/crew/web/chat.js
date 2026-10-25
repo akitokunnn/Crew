@@ -262,36 +262,38 @@
     const hasContent = context.input.value.trim().length > 0 || context.cache.images.length > 0;
     context.send.disabled = context.loading || context.cache.sending || !hasContent;
     const external = context.goalId == null && context.session.where === "vscode";
-    context.hint.textContent = context.cache.sending ? "正在发送…" : external ? "会话仍在原工具中；退出并交给 Crew 后才能接话" : context.busy ? `${context.session.name} 正在工作，可直接补充方向` : "Enter 发送 · Shift+Enter 换行";
+    context.hint.textContent = context.busy || context.cache.sending ? "" : external ? "会话仍在原工具中；退出并交给 Crew 后才能接话" : "Enter 发送 · Shift+Enter 换行";
+    context.send.hidden = context.busy && !hasContent;
     context.send.title = context.busy ? "工作中插话" : "发送";
     const stopReason = context.goalId != null ? "" : external ? "回复在 VS Code 或终端中运行，请在原工具中断。" : context.session.where !== "bg" && !context.session.running ? "正在等待 Crew 托管会话，稍后可停止。" : "";
     context.stop.hidden = !context.busy;
     context.stop.disabled = !context.busy || context.interrupting || context.confirmingStop || Boolean(stopReason);
-    context.stop.textContent = context.confirmingStop ? "等待确认…" : context.interrupting ? "正在停止…" : context.goalId == null ? "停止此人" : "中断本轮";
-    context.stop.setAttribute("aria-label", context.goalId == null ? "停止此身份的 Crew 执行" : "中断当前目标的回复");
-    context.stop.title = stopReason || (context.goalId == null ? "停止此身份的 Crew 执行，保留会话和草稿" : "只中断当前目标的回复，保留会话和草稿");
-    context.stopStatus.textContent = context.interruptError || (context.interrupting ? "正在停止，等待执行退出确认…" : context.busy && stopReason ? stopReason : context.interruptConfirmed ? context.goalId == null ? "此身份的 Crew 执行已停止，记录和草稿已保留。" : "本轮已停止，会话和草稿已保留。" : "");
+    const stopLabel = context.confirmingStop ? "等待确认…" : context.interrupting ? "正在停止…" : context.goalId == null ? "停止运行" : "停止当前回复";
+    context.stop.setAttribute("aria-label", stopLabel);
+    context.stop.setAttribute("aria-busy", String(context.confirmingStop || context.interrupting));
+    context.stop.title = stopReason || (context.confirmingStop || context.interrupting ? stopLabel : context.goalId == null ? "停止运行，暂停关联任务，保留记录和草稿" : "停止当前回复，保留会话和草稿");
+    context.stopStatus.textContent = context.interruptError || (context.busy && stopReason ? stopReason : "");
     context.stopStatus.hidden = !context.stopStatus.textContent;
     context.stopStatus.classList.toggle("failed", Boolean(context.interruptError));
-    context.deliveryStatus.textContent = context.cache.deliveryStatus || "";
-    context.deliveryStatus.hidden = !context.cache.deliveryStatus;
+    context.deliveryStatus.textContent = context.cache.deliveryError || "";
+    context.deliveryStatus.hidden = !context.cache.deliveryError;
   }
   async function interrupt(context) {
     if (!current(context) || context.stop.disabled) return;
-    if (context.goalId == null && context.beforeStop) { context.confirmingStop = true; composerState(context); let allowed; try { allowed = await context.beforeStop(); } finally { context.confirmingStop = false; if (current(context)) composerState(context); } if (!allowed) return; }
+    if (context.goalId == null && context.beforeStop) { context.confirmingStop = true; composerState(context); schedule(context); let allowed; try { allowed = await context.beforeStop(); } finally { context.confirmingStop = false; if (current(context)) { composerState(context); schedule(context); } } if (!allowed) return; }
     if (!current(context)) return;
     context.interrupting = true; context.interruptError = ""; context.interruptConfirmed = false;
-    composerState(context);
+    composerState(context); schedule(context);
     try {
       const result = await context.api(context.goalId == null ? "/api/session/stop" : "/api/chat/interrupt", {session_id:context.session.session_id, ...goalPayload(context)});
       if (!result.ok) throw new Error("中断请求未被确认，请重试。");
-      if (context.goalId == null && current(context)) { context.cache.pendingSendSeq = null; context.busy = false; context.interrupting = false; context.interruptConfirmed = true; composerState(context); }
+      if (context.goalId == null && current(context)) { context.cache.pendingSendSeq = null; context.busy = false; context.interrupting = false; context.interruptConfirmed = true; composerState(context); schedule(context); }
       // Goal interruption is acknowledged before exit; its journal confirms the actual stop.
     } catch (error) {
       if (!current(context) || context.interruptConfirmed) return;
       context.interrupting = false;
       context.interruptError = `中断未确认：${error.message || "连接失败"}。可以重试。`;
-      composerState(context);
+      composerState(context); schedule(context);
     }
   }
   function resizeInput(context) {
@@ -411,7 +413,11 @@
       if (item.id === context.cache.unreadAnchor) desired.push({ key: "unread", className: "div unread unread-div", html: "以下是你离开后的消息" });
       desired.push({ key: item.id, className: "chat-event", html: itemHTML(context, item) });
     }
-    if (!context.readonly && context.busy && context.session.activity !== null) desired.push({key:"activity", className:"chat-activity", html:CrewActivity.markup(context.session)});
+    if (!context.readonly && context.busy) {
+      const phase = context.confirmingStop ? "等待停止确认" : context.interrupting ? "正在停止…" : context.cache.sending ? "正在发送…" : "等模型回应";
+      const html = !context.confirmingStop && !context.interrupting && context.session.activity !== null ? CrewActivity.markup(context.session) : `<span class="activity" role="status"><span class="spin" aria-hidden="true"></span><span class="activity-phase">${phase}</span></span>`;
+      desired.push({key:"activity", className:"chat-activity", html});
+    }
     let position = context.inner.firstChild;
     for (const item of desired) {
       let node = context.nodes.get(item.key);
@@ -477,7 +483,6 @@
       if (incremental && event.type === "compact") notifyCompact(context.session.session_id, event, context.toast);
     }
     else if (event.type === "error") context.items.push({ ...event, id: `error:${event.seq}`, kind: "error", lastSeq: event.seq });
-    if (incremental && ["text", "assistant"].includes(event.type)) context.cache.deliveryStatus = "";
     if (incremental) { composerState(context); schedule(context); }
   }
   function scheduleRead(context) {
@@ -579,11 +584,11 @@
     context.cache.sending = true;
     context.cache.pendingSendSeq = sendSeq;
     context.busy = true;
-    composerState(context);
+    context.cache.deliveryError = "";
+    composerState(context); schedule(context);
     try {
       const result = await context.api("/api/chat/send", payload);
       if (result.accepted === false || result.accepted === "unknown" || result.delivery === "unknown") throw Error(result.error || "无法确认当前执行是否已接收，请先核对消息记录，保留同一消息编号。");
-      context.cache.deliveryStatus = result.delivery === "steered" ? "系统：当前执行已接收插话，等待本人回应。" : result.delivery === "started" ? "系统：当前执行已接收消息，等待本人回应。" : "系统：消息已收到，等待本人回应。";
       context.cache.pendingMessage = null;
       if (context.cache.version === draftVersion) {
         context.cache.text = ""; context.cache.images = [];
@@ -607,12 +612,12 @@
         const view = visibleDraft(context);
         if (view) view.busy = previousBusy;
       }
-      context.cache.deliveryStatus = `系统：${error.message}（草稿已保留）`;
+      context.cache.deliveryError = `${error.message}（草稿已保留）`;
       context.toast(error.message);
     } finally {
       context.cache.sending = false;
       const view = visibleDraft(context);
-      if (view) composerState(view);
+      if (view) { composerState(view); schedule(view); }
     }
   }
   function mount(options) {
@@ -630,7 +635,7 @@
     const context = { ...options, session:options.goalId == null ? options.session : {...options.session,activity:null}, cache, items: [], byId: new Map(), nodes: new Map(), results: new Map(), toolOwners: new Map(), cursor: 0, readSeq: 0, busySeq: options.readonly || options.goalId != null ? 0 : options.session.last_seq, executionId:null, connectionGeneration:0, loadGeneration:0, readTimer: null, reconnectTimer: null, historyRetryTimer: null, historyFailed: false, interrupting: false, interruptError: "", interruptConfirmed: false, frame: null, loading: true, busy: cache.pendingSendSeq === null ? options.goalId == null && options.session.busy : true, reading: false, initialPosition: null, stream: null };
     active = context;
     options.host.classList.add("chat-host");
-    options.host.innerHTML = `<div class="chat-error chat-connection-error" role="alert" hidden></div><div class="scroll chat-scroll" tabindex="0" aria-label="${escape(options.session.name)}的对话记录"><div class="col chat-inner"></div></div><button type="button" class="jump" aria-label="回到最新消息">${icon("down")}回到最新</button>${options.readonly ? `<div class="readonly-note">${escape(options.readonlyReason || "此会话尚未由 Crew 托管。请先在原工具退出，再从会话操作中接管；历史记录保留。")}</div>` : `<div class="composer-wrap"><form class="composer"><div class="attach" hidden></div><textarea rows="1" aria-label="给 ${escape(options.session.name)} 发消息" placeholder="跟 ${escape(options.session.name)} 说…（可以直接粘贴截图）"></textarea><div class="c-row"><button type="button" class="icon-btn chat-image-button" title="附截图（也可以直接 Ctrl+V）" aria-label="添加图片">${icon("image")}</button><input class="chat-image-file" type="file" accept="image/*" multiple hidden><span class="hint"></span><button type="button" class="chat-stop" aria-label="中断当前回复" hidden>中断</button><button type="submit" class="send" aria-label="发送" disabled>${icon("up")}</button></div><div class="chat-interrupt-status" role="status" aria-live="polite" hidden></div><div class="chat-delivery-status" role="status" hidden></div></form></div>`}`;
+    options.host.innerHTML = `<div class="chat-error chat-connection-error" role="alert" hidden></div><div class="scroll chat-scroll" tabindex="0" aria-label="${escape(options.session.name)}的对话记录"><div class="col chat-inner"></div></div><button type="button" class="jump" aria-label="回到最新消息">${icon("down")}回到最新</button>${options.readonly ? `<div class="readonly-note">${escape(options.readonlyReason || "此会话尚未由 Crew 托管。请先在原工具退出，再从会话操作中接管；历史记录保留。")}</div>` : `<div class="composer-wrap"><form class="composer"><div class="attach" hidden></div><textarea rows="1" aria-label="给 ${escape(options.session.name)} 发消息" placeholder="跟 ${escape(options.session.name)} 说…（可以直接粘贴截图）"></textarea><div class="c-row"><button type="button" class="icon-btn chat-image-button" title="附截图（也可以直接 Ctrl+V）" aria-label="添加图片">${icon("image")}</button><input class="chat-image-file" type="file" accept="image/*" multiple hidden><span class="hint"></span><button type="button" class="chat-stop" aria-label="停止当前回复" hidden><svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/></svg></button><button type="submit" class="send" aria-label="发送" disabled>${icon("up")}</button></div><div class="chat-interrupt-status" role="status" aria-live="polite" hidden></div><div class="chat-delivery-status" role="alert" hidden></div></form></div>`}`;
     context.scroll = options.host.querySelector(".chat-scroll"); context.inner = options.host.querySelector(".chat-inner");
     context.jump = options.host.querySelector(".jump"); context.error = options.host.querySelector(".chat-connection-error");
     context.jump.onclick = () => { context.scroll.scrollTop = context.scroll.scrollHeight; context.jump.classList.remove("show"); scheduleRead(context); };
