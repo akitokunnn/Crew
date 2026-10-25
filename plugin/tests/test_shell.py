@@ -315,7 +315,7 @@ class WebTests(ShellFixture, unittest.TestCase):
         self.assertFalse({"groups", "ungrouped", "removed_sessions", "open_decisions", "resources", "leases", "claims",
                           "handoffs", "reports", "events", "codex_tasks", "agents_age_seconds"} & state.keys())
         self.assertEqual(state["project"]["name"], "demo")
-        self.assertEqual(state["projects"], [{"name": "demo", "theme": "celadon"}])
+        self.assertEqual(state["projects"], [{"name": "demo", "display_name": None, "theme": "celadon"}])
         members = {s["session_id"]: s for s in state["members"]}
         self.assertEqual(members["s2"]["status"], "offline")
         self.assertEqual(board.session(self.conn, "s2")["status"], "idle")
