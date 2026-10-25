@@ -38,7 +38,7 @@ function harness(state = fixture(), fetcher = () => { throw new Error("Unexpecte
   const end = "  setup();\n})();";
   assert(source.endsWith(end + "\n") || source.endsWith(end));
   vm.runInContext(source.replace(end, `  window.ui = {runtimeList, runtimeInfo, defaultRuntime, modelEfforts, modelMenu, optionChange,
-    optionsLabel, leaderPayload, renderLeaderRuntime, selectLeaderOption, refreshRuntimes, editorHandoffReason, sessionMenu, chatAccess,
+    optionsLabel, leaderPayload, renderLeaderRuntime, selectLeaderOption, refreshRuntimes, editorHandoffReason, sessionMenu, chatAccess, goalChatNotes,
     openTodos, todosOf, pendingOf, todoCard, todoTray, todoExpanded, todoTrayExpanded, todoActions,
     todoResolvePayload, resolveTodo, renderTodos, replace,
     decisionTrust, trustReportUrl, readTrustReport,
@@ -102,6 +102,14 @@ test("goal status controls composer access without promising discussion around a
   const {ui}=harness(),person={web_chat:false,running:true,where:"vscode"};
   for(const status of ["paused","pausing","completed","failed","cancelled","awaiting_acceptance"]){const access=ui.chatAccess(person,{status});assert.equal(access.readonly,true);assert.match(access.readonlyReason,["paused","pausing"].includes(status)?/明确恢复/:status==="awaiting_acceptance"?/验收/:/总会话.*再开一轮/);}
   for(const status of ["queued","running","waiting_user"])assert.deepEqual(plain(ui.chatAccess(person,{status})),{readonly:false});
+});
+
+test("only a queued goal without native execution claims it has not started", () => {
+  const {ui}=harness();
+  for(const status of ["running","pausing","paused","waiting_user","awaiting_acceptance","completed","failed","cancelled"])assert.deepEqual(plain(ui.goalChatNotes({status},false,true)),{badge:"",hint:""},status);
+  const queued=ui.goalChatNotes({status:"queued"},false,false);assert.equal(queued.badge,"本目标尚未启动");assert.match(queued.hint,/会开始本任务/);
+  assert.deepEqual(plain(ui.goalChatNotes({status:"completed"},true,true)),{badge:"还没有该成员的执行记录",hint:"该成员在这个目标中还没有执行记录。"});
+  assert.match(ui.goalChatNotes({status:"running"},true,false).hint,/会启动该成员/);
 });
 
 test("general chat of a person bound to a manually paused goal is readonly until explicit recovery",()=>{

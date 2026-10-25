@@ -27,6 +27,8 @@
 
 详细用法见 [工作流程](docs/WORKFLOWS.md) 和 [页面说明](docs/WEB_UX.md)，实现设计见 [docs/DESIGN.md](docs/DESIGN.md)，0.1.1 的历史变更与验证见 [交付记录](docs/DESKTOP_0.1.1.md)。
 
+持续产品方向、使用旅程研究与迭代取舍见 [产品演进](docs/PRODUCT_EVOLUTION.md)。
+
 ## 安装与启动
 
 需要 Windows、Python 3.11 以上（在 PATH 中可运行 `python`），以及已安装并登录的 Claude Code 或 Codex CLI。普通文件夹工作区不需要 Git；分支、提交、合并和独立 worktree 等 Git 功能才需要安装 Git 并使用仓库。两种 AI 工具按需安装；仅安装 Codex 也能使用全部内建 AI 入口，无需 Claude 插件。从源码运行桌面应用还需要 Node.js / npm。已有验证使用 Claude Code 2.1.310、Codex CLI 0.164.0，具体模型和 effort 以本机执行工具返回的列表为准。

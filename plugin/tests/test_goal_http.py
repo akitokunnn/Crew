@@ -575,6 +575,77 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(self.processes[-1].stdin.getvalue(), before)
         self.assertEqual(len(self.processes), 1)
 
+    def test_detail_projects_saved_report_conclusion_and_reopen_makes_it_historical(self):
+        code, created, _ = self.request('/api/goals/create?project=demo', {
+            'leader_session_id': 's3', 'title': 'Speaker test', 'request': 'Measure short replies.',
+            'acceptance': ['Second speaker found', 'Short reply kept', 'Mixed speech handled', 'Replay works']})
+        self.assertEqual(code, 200, created)
+        goal = created['goal']
+        summary = 'Two of four criteria hold.\n<script>alert(1)</script> & "quoted"'
+        data = {'outcome': 'failed', 'summary': summary, 'delivered': ['Measurement'],
+                'unresolved': ['Mixed speech still splits <b>', 'Replay not run on device'],
+                'acceptance': [{'criterion_id': 'a1', 'status': 'passed', 'evidence': [{'label': 'Log', 'reference': 'a.json'}]},
+                               {'criterion_id': 'a2', 'status': 'failed', 'evidence': [{'label': 'Log', 'reference': 'b.json'}]},
+                               {'criterion_id': 'a3', 'status': 'unverified'}, {'criterion_id': 'a4', 'status': 'unverified'}],
+                'examples': [{'kind': 'actual', 'input': 'A pauses then B speaks', 'expected': 'B', 'actual': 'A', 'conclusion': 'Failed'}],
+                'artifacts': [], 'tradeoffs': [], 'follow_up': '', 'investment': {'usage': None, 'roles': []}}
+        first = goals.save_report(self.conn, goal['id'], data)
+        goals.transition(self.conn, goal['id'], 'failed')
+
+        def reports():
+            code, detail, _ = self.request('/api/goal?' + urlencode({'project': 'demo', 'id': goal['id']}))
+            self.assertEqual(code, 200, detail)
+            return detail['goal'], detail['reports']
+
+        _, [entry] = reports()
+        stored = json.loads(self.conn.execute('SELECT data_json FROM goal_reports WHERE id=?', (first['id'],)).fetchone()[0])
+        self.assertEqual(entry['summary'], stored['summary'])
+        self.assertEqual(entry['summary'], summary, 'Raw saved text; escaping belongs to the renderer')
+        self.assertEqual(entry['unresolved'], stored['unresolved'])
+        self.assertEqual(entry['acceptance_counts'], {'passed': 1, 'failed': 1, 'unverified': 2, 'simulated': 0})
+        self.assertEqual((entry['id'], entry['round'], entry['requirement_version'], entry['status'], entry['current']),
+                         (first['id'], 1, 1, 'failed', True))
+        code, reopened, _ = self.request('/api/goals/action?project=demo', {
+            'goal_id': goal['id'], 'action': 'reopen', 'version': goals.get(self.conn, goal['id'])['version'],
+            'reason': 'Mixed speech still fails.'})
+        self.assertEqual(code, 200, reopened)
+        current, [entry] = reports()
+        self.assertEqual((current['current_round'], current['requirement_version'], current['status']), (2, 2, 'queued'))
+        self.assertEqual((entry['id'], entry['round'], entry['requirement_version'], entry['current']), (first['id'], 1, 1, False))
+        self.assertEqual((entry['summary'], entry['acceptance_counts']['failed']), (summary, 1))
+        second = goals.save_report(self.conn, goal['id'], {**data, 'summary': 'Round two summary',
+            'acceptance': [{**item, 'status': 'simulated'} if item['criterion_id'] == 'a4' else item for item in data['acceptance']]})
+        _, listed = reports()
+        self.assertEqual([(item['id'], item['round'], item['requirement_version'], item['current']) for item in listed],
+                         [(second['id'], 2, 2, True), (first['id'], 1, 1, False)])
+        self.assertEqual(listed[0]['acceptance_counts'], {'passed': 1, 'failed': 1, 'unverified': 1, 'simulated': 1})
+        self.assertEqual(self.processes, [], 'Reading report conclusions never starts a model')
+        self.assertIsNone(self.conn.execute('SELECT 1 FROM goal_executions WHERE goal_id=?', (goal['id'],)).fetchone())
+
+    def test_detail_orders_reports_by_saved_version_like_acceptance_even_when_the_clock_repeats_or_moves_back(self):
+        code, created, _ = self.request('/api/goals/create?project=demo', {
+            'leader_session_id': 's3', 'title': 'Speaker test', 'request': 'Measure short replies.', 'acceptance': ['Works']})
+        self.assertEqual(code, 200, created)
+        goal = created['goal']
+        goals.transition(self.conn, goal['id'], 'running')
+        data = {'outcome': 'awaiting_acceptance', 'delivered': ['Measurement'], 'unresolved': [],
+                'acceptance': [{'criterion_id': 'a1', 'status': 'passed', 'evidence': [{'label': 'Log', 'reference': 'a.json'}]}],
+                'examples': [{'kind': 'actual', 'input': 'A', 'expected': 'B', 'actual': 'B', 'conclusion': 'Passed'}],
+                'artifacts': [], 'tradeoffs': [], 'follow_up': '', 'investment': {'usage': None, 'roles': []}}
+        saved = [goals.save_report(self.conn, goal['id'], {**data, 'summary': summary}, now=now) for summary, now in (
+            ('first draft', '2026-10-25T10:00:00.000Z'), ('same millisecond, newer version', '2026-10-25T10:00:00.000Z'),
+            ('newest version, clock moved back', '2026-10-25T09:00:00.000Z'))]
+        code, detail, _ = self.request('/api/goal?' + urlencode({'project': 'demo', 'id': goal['id']}))
+        self.assertEqual(code, 200, detail)
+        self.assertEqual([(item['id'], item['version'], item['summary'], item['current']) for item in detail['reports']],
+                         [(report['id'], report['version'], report['data']['summary'], True) for report in reversed(saved)])
+        self.assertEqual([item['created_at'] for item in detail['reports']],
+                         ['2026-10-25T09:00:00.000Z', '2026-10-25T10:00:00.000Z', '2026-10-25T10:00:00.000Z'], 'saved time is shown as stored')
+        goals.transition(self.conn, goal['id'], 'awaiting_acceptance')
+        target = goals.acceptance_target(self.conn, goal['id'], True, expected_version=goals.get(self.conn, goal['id'])['version'])
+        self.assertEqual(target['id'], detail['reports'][0]['id'], 'the newest projected report is the one acceptance reviews')
+        self.assertEqual(self.processes, [])
+
 
 if __name__ == '__main__':
     unittest.main()
