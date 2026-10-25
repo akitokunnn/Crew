@@ -6,6 +6,7 @@ const { pathToFileURL } = require('node:url');
 const core = require('./core.cjs');
 const chrome = require('./chrome.cjs');
 const { WorkspaceTabs } = require('./tabs.cjs');
+const { installPermissions } = require('./permissions.cjs');
 const { ToolUpdates } = require('./tool-updates.cjs');
 const { CrewUpdates } = require('./crew-updates.cjs');
 const { Administrator } = require('./admin.cjs');
@@ -433,8 +434,15 @@ else {
       for (const event of ['maximize', 'unmaximize', 'focus', 'blur']) window.on(event, () => {
         if (!window.webContents.isDestroyed()) window.webContents.send('desktop:window-state', currentWindowState());
       });
-      window.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
-      window.webContents.session.setPermissionCheckHandler(() => false);
+      installPermissions(window.webContents.session, {homeContents:window.webContents, homePage,
+        workspaceContents:contents=>[...tabs.entries.values()].some(tab=>tab.view.webContents===contents),
+        workspaceOrigin:()=>new URL(tabs.origin).origin,
+        requestPermission:async label=>{
+          const result=await dialog.showMessageBox(window,{type:'question',title:'Crew 权限申请',message:'允许 Crew 使用'+label+'？',
+            detail:'由你正在使用的 Crew 功能发起。允许后对当前页面生效，关闭应用后重新申请。',
+            buttons:['允许','暂不允许'],defaultId:0,cancelId:1,noLink:true});
+          return result.response===0;
+        }});
       window.webContents.on('will-attach-webview', event => event.preventDefault());
       window.webContents.on('will-navigate', (event, url) => {
         if ([homePage,errorPage].includes(url)) return;

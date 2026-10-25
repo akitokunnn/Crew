@@ -132,7 +132,7 @@ async function open(){await click('#nav-settings');await waitFor('!!document.que
   assert.equal(await run('document.querySelector(".cs-content").innerHTML.includes("qq-fixture-secret")'),false);
   Object.assign(channels[0],{state:'unbound',detail:'连接已建立，请发送绑定码'});
   await click('[data-connection-action=refresh]');await waitFor('document.querySelector("[data-connection-state]").textContent.includes("绑定")');
-  assert.match(await run('document.querySelector("[data-binding-command]").textContent'),/QQ-123456/);
+  assert.match(await run('document.querySelector("[data-binding-command]").value'),/QQ-123456/);
   assert.match(await run('document.querySelector("[data-connection-steps] [aria-current=step]").textContent'),/私聊绑定/);
   assert.equal(await run('document.querySelector("[data-connection-action=test]").disabled'),true);
   await screenshot('connections-qq-binding-dark.png');
@@ -167,7 +167,7 @@ async function open(){await click('#nav-settings');await waitFor('!!document.que
   await click('[data-connection-action=reset-binding]');await click('[data-connection-action=cancel-binding]');
   assert.equal(connectionActions.filter(item=>item.action==='reset-binding').length,resetCount,'cancel must preserve current binding');
   await click('[data-connection-action=reset-binding]');await click('[data-connection-action=confirm-binding]');
-  await waitFor('!!document.querySelector("[data-binding-command]")');assert.match(await run('document.querySelector("[data-binding-command]").textContent'),/LARK-NEW-4321/);
+  await waitFor('!!document.querySelector("[data-binding-command]")');assert.match(await run('document.querySelector("[data-binding-command]").value'),/LARK-NEW-4321/);
   assert.equal(connectionActions.filter(item=>item.channel==='lark'&&item.action==='reset-binding').length,1);
   await click('[data-away]');await waitFor('document.querySelector("[data-away]")?.textContent.includes("回到电脑前")');assert.equal(notification.manual_away,true);
   await click('#nav-workspaces');assert.equal(await run('document.querySelector("#settings-page").hidden'),true);assert.equal(await run('document.querySelector("#tools-page").parentNode.tagName'),'MAIN');
