@@ -14,6 +14,7 @@ from unittest import mock
 from crew import chat, operations_chat
 from crew.codex_runtime import process_identity
 from crew.supervisor import _atomic_json
+from crew.service_lock import HomeServiceLock
 
 
 class OperationsChatTests(unittest.TestCase):
@@ -43,6 +44,23 @@ class OperationsChatTests(unittest.TestCase):
         self.assertEqual(value, {'messages': [], 'busy': False, 'error': None, 'working_since': None,
                                  'history_count': 0, 'older_count': 0, 'brain': None})
         self.assertFalse(self.home.exists())
+
+    def test_home_migration_excludes_concurrent_ai_and_policy_writes(self):
+        lock = HomeServiceLock(self.home)
+        lock.path = self.home / 'desktop' / 'home-migration.lock'
+        self.assertTrue(lock.acquire())
+        self.addCleanup(lock.release)
+        policy = {'enabled': False, 'repository': '', 'reproduce': [], 'verify': [],
+                  'timeout_seconds': 180, 'merge_ref': ''}
+        with (mock.patch.object(operations_chat.subprocess, 'Popen', side_effect=AssertionError('no native')),
+              mock.patch.object(operations_chat.runtime_catalog.Catalog, 'refresh', side_effect=AssertionError('no discovery'))):
+            for write in (lambda: operations_chat.send(self.home, self.backend, {'text': '检查', 'message_id': 'blocked'}),
+                          lambda: operations_chat.save_settings(self.home, self.backend, {'ai': {'default': self.selected}}),
+                          lambda: operations_chat.operations_settings.save(self.home, self.backend, policy)):
+                with self.assertRaisesRegex(operations_chat.OperationsChatError, '正在切换'):
+                    write()
+        self.assertFalse((self.home / 'crew.db').exists())
+        self.assertFalse((self.home / 'desktop' / 'admin' / 'operations' / 'policy.json').exists())
 
     def test_send_starts_only_a_stub_child_and_duplicate_id_does_not_start_twice(self):
         processes, requests = [], []
@@ -319,11 +337,12 @@ class OperationsChatTests(unittest.TestCase):
               mock.patch.object(operations_chat.subprocess, 'Popen', FakeProcess)):
             with self.assertRaisesRegex(operations_chat.OperationsChatError, 'fixture auth expired'):
                 operations_chat._claude({**self.selected, 'runtime': 'claude'}, 'fixture prompt',
-                                        self.backend, lambda text: None, lambda stop: None)
+                                        self.backend, lambda text: None, lambda stop: None, read_roots=(self.root,))
         argv, kwargs, process = requests[0]
         self.assertEqual(argv[argv.index('--permission-mode') + 1], 'dontAsk')
         self.assertEqual(set(argv[argv.index('--tools') + 1].split(',')), {'Read', 'Grep', 'Glob'})
         self.assertIn('--no-session-persistence', argv)
+        self.assertEqual(argv[argv.index('--add-dir') + 1], str(self.root))
         self.assertEqual(argv[argv.index('--model') + 1], self.selected['model'])
         self.assertEqual(argv[argv.index('--effort') + 1], self.selected['effort'])
         self.assertEqual(process.stdin.captured, 'fixture prompt')

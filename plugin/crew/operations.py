@@ -305,7 +305,7 @@ class Operations:
             return
         policy = _read_json(policy_path, 65536)
         from .operations_settings import enabled
-        if not enabled(self.home):
+        if not enabled(self.home, policy=policy):
             return
         for incident in self.state['incidents']:
             releasing = bool(incident.get('pending_merge'))

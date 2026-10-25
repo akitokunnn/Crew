@@ -19,12 +19,13 @@
   function create(options) {
     const api = options.api, root = document.createElement("section");
     root.className = "co-workspace";
-    root.innerHTML = `<div class="co-toolbar"><div class="co-tabs" role="tablist" aria-label="后台与运维">${[["chat","对话"],["status","状态"],["config","自动修复"]].map(([id,label]) => `<button type="button" role="tab" data-operations-tab="${id}" aria-controls="co-operations-panel" aria-selected="${id === "chat"}" tabindex="${id === "chat" ? 0 : -1}">${label}</button>`).join("")}</div><button type="button" class="co-brain" data-operations-action="brain">运维 AI 大脑 <span aria-hidden="true">↗</span></button></div><div class="co-panel" id="co-operations-panel" role="tabpanel"></div>`;
+    const tabs = [["chat","对话"],["status","状态"],["config","自动修复"], ...(api.launch ? [["launch","连接与目录"]] : [])];
+    root.innerHTML = `<div class="co-toolbar"><div class="co-tabs" role="tablist" aria-label="后台与运维">${tabs.map(([id,label]) => `<button type="button" role="tab" data-operations-tab="${id}" aria-controls="co-operations-panel" aria-selected="${id === "chat"}" tabindex="${id === "chat" ? 0 : -1}">${label}</button>`).join("")}</div><button type="button" class="co-brain" data-operations-action="brain">运维 AI 大脑 <span aria-hidden="true">↗</span></button></div><div class="co-panel" id="co-operations-panel" role="tabpanel"></div>`;
     const panel = root.querySelector(".co-panel");
     let tab = "chat", active = false, timer = null, healthCleanup = null, snapshot = null;
     let chat = null, chatLoaded = false, chatError = "", chatReadError = "", chatRead = 0, chatNote = "", chatDraft = "", pending = null, messageId = null;
     let config = null, configDraft = null, configError = "", configNote = "", configLoading = false, configSaving = false, advanced = false;
-    let chatScroll = 0, chatPinned = true, messageSignature = "";
+    let chatScroll = 0, chatPinned = true, messageSignature = "", launch = null;
     function clearTimer() { clearTimeout(timer); timer = null; }
     function unmountHealth() { if (healthCleanup) { healthCleanup(); healthCleanup = null; } }
     function shown() { return active && !document.hidden; }
@@ -54,7 +55,7 @@
       if (messageSignature !== signature) {
         const nearBottom = list.scrollHeight - list.clientHeight - list.scrollTop < 60;
         const top = list.scrollTop;
-        list.innerHTML = !chatLoaded ? '<div class="co-chat-empty"><h2>正在读取运维对话…</h2></div>' : !chat?.messages?.length ? '<div class="co-chat-empty"><span class="co-ops-mark" aria-hidden="true">⌘</span><h2>和运维 AI 聊聊</h2><p>后台连不上、会话卡住、设置不清楚，都可以直接问。</p><button type="button" data-operations-example="帮我检查一下 Crew 当前的连接和运行状态，告诉我有没有需要处理的问题。">检查当前运行状态 <span aria-hidden="true">↗</span></button></div>' : `${chat.older_count > 0 ? `<p class="co-history-count">显示最近 ${chat.messages.length} 条，更早记录已保留。</p>` : ""}${chat.messages.map(item => `<article class="co-message co-message-${item.role === "user" ? "user" : "assistant"}"><div class="co-message-label">${item.role === "user" ? "你" : "运维 AI"}${item.at ? `<time>${esc(new Date(item.at).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"}))}</time>` : ""}</div><div class="co-message-text">${esc(item.text)}</div></article>`).join("")}`;
+        list.innerHTML = !chatLoaded ? '<div class="co-chat-empty"><h2>正在读取运维对话…</h2></div>' : !chat?.messages?.length ? '<div class="co-chat-empty"><span class="co-ops-mark" aria-hidden="true">⌘</span><h2>和运维 AI 聊聊</h2><p>后台连不上、会话卡住、设置不清楚，都可以直接问。</p><button type="button" data-operations-example="帮我检查一下 Crew 当前的连接和运行状态，告诉我有没有需要处理的问题。">检查当前运行状态 <span aria-hidden="true">↗</span></button></div>' : `${chat.older_count > 0 ? `<p class="co-history-count">显示最近 ${chat.messages.length} 条，更早记录已保留。</p>` : ""}${chat.messages.map(item => `<article class="co-message co-message-${item.role === "user" ? "user" : "assistant"}"><div class="co-message-label">${item.role === "user" ? "你" : "运维 AI"}${item.at ? `<time>${esc(new Date(item.at).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"}))}</time>` : ""}</div><div class="co-message-text">${esc(item.text)}</div>${item.truncated ? '<p class="co-history-count">本条较长，显示前 64000 字；完整记录已保留。</p>' : ""}</article>`).join("")}`;
         messageSignature = signature;
         list.scrollTop = nearBottom && chatPinned ? list.scrollHeight : top;
       }
@@ -136,15 +137,21 @@
       configControls();
     }
     function renderStatus() {
-      panel.innerHTML = `<section class="cs-card co-status-facts"><h2>当前启动位置</h2><p class="cs-hint">这些是实际运行位置，随启动方式确定。工作区路径可在“工作区设置”中修改；运维修复策略在此页“自动修复”中修改。</p><dl class="cs-paths"><dt>数据目录 · HOME</dt><dd>${esc(snapshot?.home || "尚未从后台读取")}</dd><dt>后台程序目录</dt><dd>${esc(snapshot?.backend || "尚未从后台读取")}</dd>${options.service ? `<dt>连接地址</dt><dd>${esc(options.service())}</dd>` : ""}</dl></section><div class="co-native-health"></div>`;
+      panel.innerHTML = `<section class="cs-card co-status-facts"><h2>当前启动位置</h2><p class="cs-hint">${api.launch ? '需要更换数据目录、后台程序或地址，可在“连接与目录”中调整。' : '需要更换数据目录、后台程序或地址，请打开 Crew 桌面设置。'}工作区路径仍在工作区设置中修改。</p><dl class="cs-paths"><dt>数据目录 · HOME</dt><dd>${esc(snapshot?.home || "尚未从后台读取")}</dd><dt>${api.launch ? "桌面运维程序目录" : "后台程序目录"}</dt><dd>${esc(snapshot?.backend || "尚未从后台读取")}</dd>${options.service ? `<dt>连接地址</dt><dd>${esc(options.service())}</dd>` : ""}</dl>${api.launch ? '<div class="co-actual-service"><p class="cs-hint">正在读取实际后台来源…</p></div><button type="button" class="cs-button co-launch-link" data-operations-action="launch-settings">更改连接与目录</button>' : ""}</section><div class="co-native-health"></div>`;
+      if (api.launch) {
+        const actual = panel.querySelector(".co-actual-service");
+        api.launch.get().then(value => { const service = value.actual_service; actual.innerHTML = service ? `<dl class="cs-paths"><dt>实际后台程序目录</dt><dd>${esc(service.plugin_root || "后台未报告程序位置")}</dd><dt>实际后台版本</dt><dd>${esc(service.version || "后台未报告版本")}</dd></dl>` : `<p class="cs-hint">实际后台来源未确认：${esc(value.actual_service_error || "已选择的启动配置不代表当前运行版本。")}</p>`; }).catch(error => { actual.textContent = "实际后台来源读取失败：" + (error.message || String(error)); actual.classList.add("co-error"); });
+      }
       if (options.mountHealth) healthCleanup = options.mountHealth(panel.querySelector(".co-native-health"), snapshot) || null;
     }
     function render() {
       clearTimer(); unmountHealth();
+      launch?.hide();
       for (const button of root.querySelectorAll("[data-operations-tab]")) { const selected = button.dataset.operationsTab === tab; button.setAttribute("aria-selected", String(selected)); button.tabIndex = selected ? 0 : -1; if (selected) panel.setAttribute("aria-label", button.textContent); }
       if (tab === "chat") { renderChat(); if (active) void readChat(); }
       if (tab === "status") renderStatus();
       if (tab === "config") { renderConfig(); if (!config && active) void readConfig(); }
+      if (tab === "launch") { panel.replaceChildren(); if (!launch) launch = window.CrewLaunchSettings.create({api:api.launch}); launch.mount(panel); }
     }
     root.addEventListener("click", event => {
       const button = event.target.closest("button"); if (!button || !root.contains(button)) return;
@@ -152,6 +159,7 @@
       if (button.dataset.operationsExample) { chatDraft = button.dataset.operationsExample; messageId = null; const input = panel.querySelector("textarea"); input.value = chatDraft; input.focus(); chatControls(); return; }
       const action = button.dataset.operationsAction;
       if (action === "brain") options.onBrain();
+      if (action === "launch-settings" && api.launch) { tab = "launch"; render(); }
       if (action === "retry-chat") void readChat();
       if (action === "interrupt") void interrupt();
       if (action === "retry-config") void readConfig();
@@ -168,14 +176,14 @@
     root.addEventListener("submit", event => { event.preventDefault(); if (event.target.matches(".co-composer")) void send(); if (event.target.matches(".co-config")) void saveConfig(); });
     root.addEventListener("keydown", event => {
       if (event.target.dataset.operationsTab && ["ArrowLeft","ArrowRight","Home","End"].includes(event.key)) {
-        event.preventDefault(); const tabs = ["chat","status","config"], index = tabs.indexOf(tab);
-        tab = event.key === "Home" ? tabs[0] : event.key === "End" ? tabs[2] : tabs[(index + (event.key === "ArrowRight" ? 1 : 2)) % tabs.length]; render(); root.querySelector(`[data-operations-tab="${tab}"]`).focus();
+        event.preventDefault(); const names = tabs.map(item => item[0]), index = names.indexOf(tab);
+        tab = event.key === "Home" ? names[0] : event.key === "End" ? names[names.length - 1] : names[(index + (event.key === "ArrowRight" ? 1 : names.length - 1)) % names.length]; render(); root.querySelector(`[data-operations-tab="${tab}"]`).focus();
       }
       if (event.target.matches(".co-composer textarea") && event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); void send(); }
     });
     const visibility = () => { if (!shown()) clearTimer(); else if (tab === "chat") void readChat(); };
     document.addEventListener("visibilitychange", visibility);
-    function hide() { active = false; clearTimer(); unmountHealth(); }
+    function hide() { active = false; clearTimer(); unmountHealth(); launch?.hide(); }
     return {mount(host, value) { snapshot = value; active = true; host.append(root); render(); return hide; }, hide,
       getState:() => ({tab, chatDraft, configDraft:configDraft && clone(configDraft), chatLoaded, chatError:chatError || chatReadError})};
   }

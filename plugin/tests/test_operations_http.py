@@ -4,7 +4,7 @@ import threading
 import unittest
 from unittest import mock
 
-from crew import web
+from crew import updater, web
 import test_chat_http as chat_helpers
 from test_shell import PLUGIN, ShellFixture
 
@@ -12,6 +12,8 @@ from test_shell import PLUGIN, ShellFixture
 class OperationsHttpTests(ShellFixture, unittest.TestCase):
     request = chat_helpers.ChatHttpTests.request
     close_server = chat_helpers.ChatHttpTests.close_server
+    start_leader = chat_helpers.ChatHttpTests.start_leader
+    finish_turn = chat_helpers.ChatHttpTests.finish_turn
 
     def setUp(self):
         super().setUp()
@@ -60,6 +62,49 @@ class OperationsHttpTests(ShellFixture, unittest.TestCase):
             code, data, _ = self.request('/api/admin/chat/interrupt', {})
             self.assertEqual((code, data), (200, result))
             stop.assert_called_once_with(self.home)
+
+    def test_connection_preview_is_read_only_and_prepare_requires_live_instance_and_lock(self):
+        sid, process = self.start_leader()
+        code, plan, _ = self.request('/api/admin/connection/plan')
+        self.assertEqual(code, 200, plan)
+        self.assertTrue(any(item['session_id'] == sid and item['running'] for item in plan['sessions']))
+        self.assertIsNone(process.poll())
+        body = {'instance_id': self.server.service.instance_id}
+        code, denied, _ = self.request('/api/admin/connection/prepare', body)
+        self.assertEqual(code, 409, denied)
+        self.assertIn('切换锁', denied['error'])
+        self.assertIsNone(process.poll())
+        lock = updater.update_lock(self.home)
+        self.assertTrue(lock.acquire())
+        try:
+            code, denied, _ = self.request('/api/admin/connection/prepare', {'instance_id': 'old-instance'})
+            self.assertEqual(code, 409, denied)
+            self.assertIsNone(process.poll())
+            code, prepared, _ = self.request('/api/admin/connection/prepare', body)
+            self.assertEqual(code, 200, prepared)
+            self.assertEqual(prepared['instance_id'], body['instance_id'])
+            self.assertIsNotNone(process.poll())
+            self.assertEqual(self.server.service.chat.paused(), prepared['gate_id'])
+            code, cancelled, _ = self.request('/api/admin/update/cancel',
+                {**body, 'gate_id': prepared['gate_id']})
+            self.assertEqual(code, 200, cancelled)
+        finally:
+            lock.release()
+
+    def test_active_repair_blocks_connection_change_before_stopping_a_session(self):
+        sid, process = self.start_leader()
+        lock = updater.update_lock(self.home)
+        self.assertTrue(lock.acquire())
+        try:
+            with mock.patch('crew.operations.read_operations', return_value={'active_worker': {'pid': 1}}):
+                code, denied, _ = self.request('/api/admin/connection/prepare',
+                                              {'instance_id': self.server.service.instance_id})
+            self.assertEqual(code, 409, denied)
+            self.assertIn('运维修复', denied['error'])
+            self.assertIsNone(process.poll())
+            self.assertIsNone(self.server.service.chat.paused())
+        finally:
+            lock.release()
 
 
 if __name__ == '__main__':

@@ -25,9 +25,9 @@ def _read(home):
     return value
 
 
-def enabled(home):
+def enabled(home, *, policy=None):
     """Old policies retain their behavior; no policy does not start a worker."""
-    value = _read(home)
+    value = _read(home) if policy is None else policy
     result = True if value is None else value.get('enabled', True)
     if type(result) is not bool:
         raise OperationsSettingsError('enabled 必须是 true 或 false')
@@ -87,7 +87,9 @@ def snapshot(home, backend_root):
 
 
 def save(home, backend_root, value):
+    from .operations_chat import configuration_write
     saved = _read(home) or {}
     _validate(value, runner=saved.get('runner'), check_repository=True)
-    _atomic_json(policy_path(home), {**saved, **value})
+    with configuration_write(home):
+        _atomic_json(policy_path(home), {**saved, **value})
     return snapshot(home, backend_root)

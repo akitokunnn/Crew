@@ -9,6 +9,7 @@ import sqlite3
 import subprocess
 import sys
 import threading
+import time
 import traceback
 import uuid
 import webbrowser
@@ -302,6 +303,52 @@ class Service:
         if not self.chat.open_admission(_text(data, "gate_id")):
             raise board.Conflict("更新准备已失效")
         return {"ok": True}
+
+    def connection_plan(self):
+        sessions = []
+        with closing(store.connect(self.home)) as conn:
+            projects = board.projects(conn)
+            goal_count = conn.execute("SELECT COUNT(*) FROM goals WHERE status NOT IN (?,?,?)", tuple(goals.TERMINAL)).fetchone()[0]
+        for project in projects:
+            for session in self.workspace_state(project['name'])['sessions']:
+                sessions.append({key: session[key] for key in ('session_id', 'name', 'running', 'busy')}
+                                | {'project': project['display_name'] or project['name']})
+        from .operations import read_operations
+        return {'sessions': sessions, 'goals_count': goal_count,
+                'running_count': sum(item['running'] for item in sessions),
+                'repair_active': read_operations(self.home)['active_worker'] is not None,
+                'operations_chat_busy': operations_chat.snapshot(self.home)['busy']}
+
+    def prepare_connection(self, data):
+        if data.get('instance_id') != self.instance_id:
+            raise board.Conflict('后台实例已变化，请重新检查连接设置')
+        if not updater.update_lock_held(self.home):
+            raise board.Conflict('未取得后台切换锁，不能停止会话')
+        plan = self.connection_plan()
+        if plan['repair_active']:
+            raise board.Conflict('运维修复仍在运行，请等待本次修复结束后切换')
+        gate = uuid.uuid4().hex
+        if not self.chat.close_admission(gate, self.update_drain_seconds):
+            raise board.Conflict('有新任务正在启动，请稍后重试')
+        try:
+            operations_chat.interrupt(self.home)
+            deadline = time.monotonic() + 15
+            while operations_chat.snapshot(self.home)['busy']:
+                if time.monotonic() >= deadline:
+                    raise board.Conflict('运维 AI 尚未停止，后台目录未切换')
+                self.stop.wait(.1)
+            with self.write_lock, self.chat.lock, closing(store.connect(self.home)) as conn:
+                managed_pids = self.chat.managed_pids()
+                for project in board.projects(conn):
+                    workspace_execution.stop_project(self.chat, conn, project['name'])
+                reasons = self.update_reasons(conn)
+            if reasons:
+                raise board.Conflict('；'.join(reasons))
+            return {'ok': True, 'status': 'ready', 'gate_id': gate, 'instance_id': self.instance_id,
+                    'pid': os.getpid(), 'managed_pids': managed_pids, 'sessions': plan['sessions']}
+        except Exception:
+            self.chat.open_admission(gate)
+            raise
 
     def _poll_git_ci(self):
         while not self.stop.is_set():
@@ -782,6 +829,8 @@ class Service:
             return self.prepare_update(data)
         if path == "/api/admin/update/cancel":
             return self.cancel_update(data)
+        if path == '/api/admin/connection/prepare':
+            return self.prepare_connection(data)
         if path in MODEL_WORK or path.startswith("/api/goals/") or path in ("/api/native-approval", "/api/decision/discuss", "/api/decision/clarify", "/api/project/update", "/api/project/remove"):
             with self.chat.work():
                 return self._post(path, data, project_name)
@@ -1372,6 +1421,7 @@ POST_PATHS.update(('/api/git/enable', '/api/git/disable', '/api/git/fetch'))
 POST_PATHS.update(('/api/admin/update/prepare', '/api/admin/update/cancel'))
 POST_PATHS.add('/api/settings')
 POST_PATHS.update(('/api/admin/chat/send', '/api/admin/chat/interrupt', '/api/admin/config'))
+POST_PATHS.add('/api/admin/connection/prepare')
 POST_PATHS.add('/api/native-approval')
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"),
           "/themes.js": ("themes.js", "text/javascript; charset=utf-8"),
@@ -1397,6 +1447,7 @@ STATIC.update({'/settings-ui.js': ('settings-ui.js', 'text/javascript; charset=u
                '/settings-ui.css': ('settings-ui.css', 'text/css; charset=utf-8')})
 STATIC.update({'/operations-ui.js': ('operations-ui.js', 'text/javascript; charset=utf-8'),
                '/operations-ui.css': ('operations-ui.css', 'text/css; charset=utf-8')})
+STATIC['/launch-settings-ui.js'] = ('launch-settings-ui.js', 'text/javascript; charset=utf-8')
 STATIC.update({'/workspace-settings-ui.js': ('workspace-settings-ui.js', 'text/javascript; charset=utf-8'),
                '/workspace-settings-ui.css': ('workspace-settings-ui.css', 'text/css; charset=utf-8')})
 STATIC.update({'/native-approval-ui.js': ('native-approval-ui.js', 'text/javascript; charset=utf-8'),
@@ -1478,6 +1529,8 @@ class Handler(BaseHTTPRequestHandler):
                                         query.get("project", [None])[0], query.get("base", [None])[0],document_id)
             content, media_type = service.read_file(info, raw=query.get("raw") == ["1"])
             self.send_file_content(content, media_type)
+        elif url.path == '/api/admin/connection/plan':
+            self._send(200, service.connection_plan())
         elif url.path == '/api/admin/chat':
             self._send(200, operations_chat.snapshot(service.home))
         elif url.path == '/api/admin/config':

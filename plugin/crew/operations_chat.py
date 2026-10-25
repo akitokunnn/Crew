@@ -7,6 +7,7 @@ Repair execution continues through the separately configured operations worker.
 import argparse
 import collections
 from contextlib import closing, contextmanager
+from functools import partial
 import json
 import os
 from pathlib import Path
@@ -49,6 +50,18 @@ def _state(home):
         return _read_json(directory(home) / 'state.json')
     except FileNotFoundError:
         return {'busy': False, 'error': None, 'working_since': None, 'worker': None, 'partial': ''}
+
+
+@contextmanager
+def configuration_write(home):
+    lock = HomeServiceLock(home)
+    lock.path = _directory(home).parent / 'home-migration.lock'
+    if not lock.acquire():
+        raise OperationsChatError('后台数据正在切换或保存，请完成后再修改设置或发送消息')
+    try:
+        yield
+    finally:
+        lock.release()
 
 
 def _live(state):
@@ -98,7 +111,7 @@ def send(home, backend_root, value, *, process_factory=subprocess.Popen):
         raise OperationsChatError('请输入 1 到 8000 字的运维问题')
     if not isinstance(identity, str) or not identity or len(identity) > 120:
         raise OperationsChatError('消息缺少有效 message_id')
-    with _locked(home):
+    with _locked(home), configuration_write(home):
         state = _state(home)
         journal = chat.Journal(directory(home) / 'messages.jsonl')
         if any(event.get('id') == identity for event in journal.events):
@@ -212,10 +225,12 @@ def _codex(selected, prompt, cwd, emit, register):
         return '\n\n'.join(pieces.values())
 
 
-def _claude(selected, prompt, cwd, emit, register):
+def _claude(selected, prompt, cwd, emit, register, *, read_roots=()):
     command = [chat.claude_executable(), '-p', '--output-format', 'stream-json', '--verbose',
                '--include-partial-messages', '--no-session-persistence', '--permission-mode', 'dontAsk',
                '--tools', 'Read,Grep,Glob', '--strict-mcp-config', '--settings', '{"disableAllHooks":true}']
+    if read_roots:
+        command += ['--add-dir', *(str(root) for root in read_roots)]
     if selected['model'] is not None:
         command += ['--model', selected['model']]
     if selected['effort'] is not None:
@@ -296,7 +311,8 @@ def worker(home, backend_root, identity, *, runners=None):
         messages = snapshot(home)['messages']
         prompt = context(home, backend_root, messages)
         cwd = Path(backend_root).resolve()
-        run = (runners or {'codex': _codex, 'claude': _claude})[state['selected']['runtime']]
+        read_roots = [path for path in (_directory(home), Path(home) / 'desktop' / 'logs') if path.is_dir()]
+        run = (runners or {'codex': _codex, 'claude': partial(_claude, read_roots=read_roots)})[state['selected']['runtime']]
         text = run(state['selected'], prompt, cwd, emit, register)
         if not cancelled.is_set() and not text.strip():
             raise OperationsChatError('运维 AI 没有返回正文，请重试')
@@ -333,7 +349,7 @@ def settings_snapshot(home, backend_root):
 def save_settings(home, backend_root, value):
     if not isinstance(value, dict) or not value or not set(value) <= {'ai', 'execution'}:
         raise OperationsChatError('设置请求只能包含 ai 和 execution 配置')
-    with closing(store.connect(home)) as conn, board.transaction(conn):
+    with configuration_write(home), closing(store.connect(home)) as conn, board.transaction(conn):
         if 'ai' in value:
             settings.save(conn, value['ai'])
         if 'execution' in value:
@@ -346,7 +362,7 @@ def main(argv=None):
     parser.add_argument('--home', required=True, type=Path)
     parser.add_argument('--backend', required=True, type=Path)
     parser.add_argument('--action', required=True, choices=('snapshot', 'send', 'interrupt', 'config-get', 'config-save',
-                                                          'settings-get', 'settings-save', 'worker'))
+                                                          'settings-get', 'settings-save', 'home-inspect', 'home-copy', 'reset-deployment', 'prepare-home', 'worker'))
     parser.add_argument('--request')
     args = parser.parse_args(argv)
     try:
@@ -364,6 +380,16 @@ def main(argv=None):
             result = settings_snapshot(args.home, args.backend)
         elif args.action == 'settings-save':
             result = save_settings(args.home, args.backend, json.load(sys.stdin))
+        elif args.action in ('home-inspect', 'home-copy'):
+            from . import home_migration
+            value = json.load(sys.stdin)
+            result = home_migration.inspect(value) if args.action == 'home-inspect' else home_migration.copy(value)
+        elif args.action == 'reset-deployment':
+            from . import home_migration
+            result = home_migration.reset_deployment(json.load(sys.stdin))
+        elif args.action == 'prepare-home':
+            from . import home_migration
+            result = home_migration.prepare_home(json.load(sys.stdin))
         else:
             result = worker(args.home, args.backend, args.request)
         print(json.dumps(result, ensure_ascii=False), flush=True)

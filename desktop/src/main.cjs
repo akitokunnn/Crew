@@ -10,17 +10,20 @@ const { ToolUpdates } = require('./tool-updates.cjs');
 const { CrewUpdates } = require('./crew-updates.cjs');
 const { Administrator } = require('./admin.cjs');
 const { OperationsClient } = require('./operations.cjs');
-const config = core.options(process.argv.slice(1));
+const { LaunchSettings, relaunchArgs } = require('./launch-settings.cjs');
+const config = core.options(process.argv.slice(1),{launchSettingsPath:path.join(app.getPath('appData'),'Crew','launch-settings.json')});
 const administrator = new Administrator(config.home);
 const operations = new OperationsClient(config);
 app.setName('Crew');
 if (process.platform === 'win32') app.setAppUserModelId('local.crew.desktop');
-config.backendDir = config.backendDir || (app.isPackaged ? path.join(process.resourcesPath, 'backend') : path.resolve(__dirname, '../../plugin'));
+config.bundledBackendDir = app.isPackaged ? path.join(process.resourcesPath, 'backend') : path.resolve(__dirname, '../../plugin');
+config.backendDir = config.backendDir || config.bundledBackendDir;
+config.helperBackendDir = config.bundledBackendDir;
 require('node:fs').mkdirSync(config.userData,{recursive:true});
 app.setPath('userData', config.userData);
 const homePage = pathToFileURL(path.join(__dirname, 'home.html')).href;
 const errorPage = pathToFileURL(path.join(__dirname, 'error.html')).href;
-let window, tray, backend, tabs, tools, crewUpdates, windowMenu, quitting = false, finishedQuit = false, parentDirectory = null, smokeStarted = false, pendingAction = null, pendingWorkspace = null, homeBootstrapped = false;
+let window, tray, backend, tabs, tools, crewUpdates, launchSettings, windowMenu, quitting = false, finishedQuit = false, parentDirectory = null, smokeStarted = false, pendingAction = null, pendingWorkspace = null, homeBootstrapped = false;
 
 function trusted(event) {
   if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame || event.senderFrame.url !== homePage) {
@@ -250,10 +253,14 @@ handle('desktop:home-ready',()=>{
 handle('desktop:admin-check',()=>administrator.request('check'));
 handle('desktop:admin-restart',()=>administrator.request('recover'));
 handle('desktop:admin-chat-snapshot',()=>operations.request('snapshot'));
-handle('desktop:admin-chat-send',body=>operations.request('send',body));
+function operationsMutation(action,body){
+  if(launchSettings?.pending)throw Error('后台连接正在切换，完成后再发送消息或修改设置。');
+  return operations.request(action,body);
+}
+handle('desktop:admin-chat-send',body=>operationsMutation('send',body));
 handle('desktop:admin-chat-interrupt',()=>operations.request('interrupt'));
 handle('desktop:admin-config-get',()=>operations.request('config-get'));
-handle('desktop:admin-config-save',body=>operations.request('config-save',body));
+handle('desktop:admin-config-save',body=>operationsMutation('config-save',body));
 handle('desktop:existing', async () => {
   const result = await dialog.showOpenDialog(window, { title: '选择工作区文件夹', buttonLabel: '打开工作区', properties: ['openDirectory'] });
   if (result.canceled) return null;
@@ -280,7 +287,7 @@ handle('desktop:tools-cancel',id=>tools.cancel(id));
 handle('desktop:tools-settings',settings=>tools.settings(settings));
 handle('desktop:crew-update-snapshot',()=>crewUpdates.snapshot());
 handle('desktop:crew-update-check',()=>crewUpdates.check());
-handle('desktop:crew-update-apply',()=>crewUpdates.update());
+handle('desktop:crew-update-apply',()=>{if(launchSettings?.pending)throw Error('正在切换后台连接，请等待完成。');return crewUpdates.update();});
 handle('desktop:crew-update-cancel',()=>crewUpdates.cancel());
 handle('desktop:crew-update-open',async kind=>{
   if(!['release','main'].includes(kind))throw new Error('不支持的版本链接');
@@ -295,7 +302,17 @@ function settingsRequest(route, body, timeoutMs) {
   return core.request(backend.url, route, body, timeoutMs);
 }
 handle('desktop:settings-get',()=>operations.request('settings-get'));
-handle('desktop:settings-save',body=>operations.request('settings-save',body));
+handle('desktop:settings-save',body=>operationsMutation('settings-save',body));
+handle('desktop:launch-settings-get',()=>launchSettings.get());
+handle('desktop:launch-settings-validate',body=>launchSettings.validate(body));
+handle('desktop:launch-settings-apply',body=>launchSettings.apply(body));
+handle('desktop:launch-settings-pick',async body=>{
+  if(!body || !['home','backend','python'].includes(body.kind) || typeof body.current!=='string')throw Error('请选择有效的目录或 Python 程序。');
+  const file=body.kind==='python';
+  const result=await dialog.showOpenDialog(window,{title:file?'选择 Python 程序':body.kind==='home'?'选择 Crew 数据目录':'选择后台目录（包含 crew_supervisor.py）',buttonLabel:'选择',
+    ...(body.current&&path.isAbsolute(body.current)?{defaultPath:body.current}:{}),properties:[file?'openFile':'openDirectory']});
+  return {path:result.canceled?null:result.filePaths[0]};
+});
 handle('desktop:settings-connection',async()=>({notification:(await settingsRequest('/api/state')).notification}));
 handle('desktop:settings-away',away=>{
   if (typeof away !== 'boolean') throw Error('离开状态必须是 true 或 false');
@@ -303,7 +320,8 @@ handle('desktop:settings-away',away=>{
 });
 handle('desktop:settings-ui',async()=>{
   // Only trusted home can load these fixed, packaged application assets.
-  const directory = path.join(config.backendDir, 'crew', 'web');
+  const directory = path.join(config.helperBackendDir, 'crew', 'web');
+  await window.webContents.executeJavaScript(await fs.readFile(path.join(directory, 'launch-settings-ui.js'),'utf8'));
   await window.webContents.insertCSS(await fs.readFile(path.join(directory, 'operations-ui.css'),'utf8'));
   await window.webContents.executeJavaScript(await fs.readFile(path.join(directory, 'operations-ui.js'),'utf8'));
   await window.webContents.insertCSS(await fs.readFile(path.join(directory, 'settings-ui.css'),'utf8'));
@@ -311,7 +329,7 @@ handle('desktop:settings-ui',async()=>{
   return {ok:true};
 });
 handle('desktop:workspace-ui',async()=>{
-  const directory=path.join(config.backendDir,'crew','web');
+  const directory=path.join(config.helperBackendDir,'crew','web');
   await window.webContents.insertCSS(await fs.readFile(path.join(directory,'workspace-settings-ui.css'),'utf8'));
   await window.webContents.executeJavaScript(await fs.readFile(path.join(directory,'workspace-settings-ui.js'),'utf8'));
   return {ok:true};
@@ -365,7 +383,10 @@ else {
   app.on('second-instance', () => { if (window) { window.show(); window.focus(); } });
   app.whenReady().then(async () => {
     try {
-      if (app.isPackaged) config.backendDir = await core.materializeBackend(config.backendDir, config.home);
+      if (app.isPackaged) {
+        config.helperBackendDir=await core.materializeBackend(config.bundledBackendDir,config.home);
+        if(config.backendSource==='bundled')config.backendDir=config.helperBackendDir;
+      }
       backend = new core.Backend(config);
       try { await backend.start(); }
       catch (error) {
@@ -385,6 +406,15 @@ else {
         backend.startupError=null;
         if(tabs&&tabs.origin!==backend.url)throw new Error('更新后服务地址变化；工作区标签已保留，请重新打开 Crew。');
         publishTabs();
+      }});
+      launchSettings=new LaunchSettings(config,{backend,updates:crewUpdates,operations,bundledBackend:config.bundledBackendDir,onApplied:async()=>{
+        const portable=process.env.PORTABLE_EXECUTABLE_FILE;
+        try{
+          if(portable && !(await fs.stat(portable)).isFile())throw Error('便携程序文件不可用。');
+          app.relaunch({args:relaunchArgs(process.argv.slice(1),config.launchSettingsPath),...(portable?{execPath:portable}:{})});
+        }
+        catch(error){throw Error('启动设置已保存，但重新启动失败：'+error.message+'；请手动重新打开 Crew。');}
+        setTimeout(()=>app.quit(),250);
       }});
       await tools.initialize();
       if(!config.smoke&&!config.isolated&&!backend.startupError)tools.start();

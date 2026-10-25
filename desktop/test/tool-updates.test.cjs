@@ -31,6 +31,13 @@ test('checks deduplicate, display both versions and never auto-update without op
   assert.equal(f.calls[0].options.timeout,45000);
 });
 
+test('tool checks use bundled control code when the inactive custom backend is missing',async t=>{
+  const f=await fixture(t,async()=>checked()),helper=path.join(f.home,'bundled controls');
+  f.manager.config.backendDir=path.join(f.home,'missing custom backend');f.manager.config.helperBackendDir=helper;
+  const state=await f.manager.check();assert.equal(state.lastError,null);assert.equal(f.calls.length,1);
+  assert.equal(f.calls[0].args[0],path.join(helper,'crew_tool_versions.py'));assert.equal(f.calls[0].options.cwd,helper);
+});
+
 test('busy updates remain queued, retry on a later pass and retain settings across restart',async t=>{
   let busy=true;
   const f=await fixture(t,async(operation,id)=> operation==='check'?checked(): busy ?

@@ -42,6 +42,21 @@ test('smoke requires explicit isolated home and cannot bind the production port'
   assert.throws(() => core.options(['--port', '-1']));
   assert.equal(core.options(['--home', 'test', '--port', '0']).port, 0);
 });
+test('an explicit HOME starts locally instead of retaining the saved existing service URL',async t=>{
+  const root=await directory(t),homeA=path.join(root,'home A'),homeB=path.join(root,'home B'),file=path.join(root,'launch-settings.json');
+  await fs.writeFile(file,JSON.stringify({mode:'existing',home:homeA,source:'bundled',backend_directory:root,service_url:'http://127.0.0.1:12345',port:0,python:'stored-python'}));
+  const local=core.options(['--home',homeB],{launchSettingsPath:file});
+  assert.equal(local.home,homeB);assert.equal(local.serviceUrl,undefined);assert.equal(local.userData,path.join(homeB,'desktop','ui'));
+  assert.equal(core.options(['--python','new-python'],{launchSettingsPath:file}).serviceUrl,'http://127.0.0.1:12345');
+  assert.equal(core.options(['--home',homeB,'--service-url','http://127.0.0.1:12346'],{launchSettingsPath:file}).serviceUrl,'http://127.0.0.1:12346');
+});
+test('an explicit backend or local port clears a saved existing service unless a new URL is explicit',async t=>{
+  const root=await directory(t),file=path.join(root,'launch-settings.json'),source=path.join(root,'selected backend');
+  await fs.writeFile(file,JSON.stringify({mode:'existing',home:root,source:'bundled',backend_directory:root,service_url:'http://127.0.0.1:12345',port:0,python:'stored-python'}));
+  const local=core.options(['--backend-dir',source],{launchSettingsPath:file});
+  assert.equal(local.backendDir,source);assert.equal(local.backendSource,'custom');assert.equal(local.serviceUrl,undefined);
+  assert.equal(core.options(['--port','0'],{launchSettingsPath:file}).serviceUrl,undefined);
+});
 test('new workspace name is a filename rather than an arbitrary path', () => {
   for (const name of ['../escape', 'one/two', 'one\\two', '.', '..', 'CON', 'LPT1.txt', 'name.', '', ' x ']) assert.throws(() => core.workspaceName(name));
   assert.equal(core.workspaceName('我的新项目'), '我的新项目');

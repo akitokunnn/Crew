@@ -401,9 +401,18 @@ class HelperTests(ShellFixture, unittest.TestCase):
         self.assertIn("后台锁仍被占用", value["error"])
 
     def test_explicit_switch_points_cli_at_the_validated_target(self):
+        # The production switch runs after the service and its SQLite handles
+        # exit; finish this fixture's initialization WAL before that boundary.
+        self.conn.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+        deployment = self.home / 'desktop' / 'admin' / 'deployment.json'
+        deployment.parent.mkdir(parents=True, exist_ok=True)
+        previous = json.dumps({'source': str(self.root / 'previous-program'), 'staged': None}).encode('utf-8')
+        deployment.write_bytes(previous)
         target = copy_plugin(self.root / "target")
         code, value = self.helper("switch", "--target", str(target))
         self.assertEqual(code, 0, value)
+        self.assertFalse(deployment.exists())
+        self.assertEqual(Path(value['archived_deployment']).read_bytes(), previous)
         self.assertEqual(json.loads((self.home / "runtime.json").read_text(encoding="utf-8"))["plugin_root"], str(target.resolve()))
         (target / "crew" / "cli.py").unlink()
         code, value = self.helper("switch", "--target", str(target))

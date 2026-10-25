@@ -88,13 +88,24 @@ test('brain settings use the local helper while HTTP is disconnected, with time 
   assert.ok(calls.every(call => !call.args.includes('http://127.0.0.1:0')));
 });
 
+test('control helpers use bundled code even when the selected custom backend is missing',async()=>{
+  const {execute,calls}=helper();
+  const client=new OperationsClient({home:'fixture-home',backendDir:'missing-custom-source',helperBackendDir:'bundled-control-source'},execute);
+  for(const action of ['snapshot','home-inspect','home-copy','reset-deployment','prepare-home'])await client.request(action,{source:'old',target:'new'});
+  assert.ok(calls.every(call=>call.options.cwd==='bundled-control-source'&&call.args[5]==='bundled-control-source'));
+  assert.equal(calls[0].options.timeout,30000);assert.equal(calls[1].options.timeout,60000);assert.equal(calls[2].options.timeout,600000);
+  client.config.python='missing-python';await client.request('home-inspect',{source:'old',target:'new'},{python:'selected-python'});
+  assert.equal(calls.at(-1).file,'selected-python');assert.equal(client.config.python,'missing-python');
+});
+
 test('real Python helper reads and saves isolated policy without HTTP or a model', async t => {
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(),'crew-operations-helper-'));
   t.after(() => fs.rm(temporary,{recursive:true,force:true}));
   const home = path.join(temporary,'测试 HOME');
   const backendDir = path.resolve(__dirname,'../../plugin');
   const client = new OperationsClient({home,backendDir});
-  assert.deepEqual(await client.request('snapshot'),{messages:[],busy:false,error:null,working_since:null});
+  assert.deepEqual(await client.request('snapshot'),{messages:[],busy:false,error:null,working_since:null,
+    history_count:0,older_count:0,brain:null});
   const initial = await client.request('config-get');
   assert.equal(initial.configured,false);
   assert.equal(initial.policy.enabled,false);

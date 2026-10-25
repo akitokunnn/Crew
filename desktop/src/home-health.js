@@ -77,10 +77,11 @@
   nav.hidden=!supported;
   nav.addEventListener('click',show);$('nav-workspaces').addEventListener('click',hide);$('nav-tools').addEventListener('click',hide);
   $('admin-check').addEventListener('click',()=>{void request('check');});
+  $('admin-conversation').addEventListener('click',()=>{void window.CrewHomeSettings.show('backend');});
   $('admin-restart').addEventListener('click',()=>{if(snapshot?.restart?.allowed===true&&!$('admin-restart').disabled)void request('restart');});
   document.addEventListener('visibilitychange',syncVisibility);
   new MutationObserver(syncVisibility).observe(document.body,{subtree:true,attributes:true,attributeFilter:['hidden']});
   window.addEventListener('pagehide',clear);
-  function mount(host){const parent=panel.parentNode;host.append(panel);panel.hidden=false;syncVisibility();return()=>{hide();parent.append(panel);};}
+  function mount(host){const parent=panel.parentNode;host.append(panel);$('admin-conversation').hidden=true;panel.hidden=false;syncVisibility();return()=>{hide();$('admin-conversation').hidden=false;parent.append(panel);};}
   render();window.CrewHomeHealth={show,hide,mount};
 })();

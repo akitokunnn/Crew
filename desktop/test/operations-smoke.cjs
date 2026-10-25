@@ -7,7 +7,10 @@ if (!process.versions.electron) {
   child.on('exit', code => {process.exitCode = code;}); child.on('error', error => {console.error(error); process.exitCode = 1;});
 } else {
   const {app, BrowserWindow} = require('electron'), root = path.resolve(__dirname, '../..'), output = path.join(root, 'desktop/smoke-output/operations');
-  let win, isolated; const errors = [], checks = [];
+  const isolated = require('node:fs').mkdtempSync(path.join(os.tmpdir(), 'crew-ops-ui-'));
+  const sessionData = path.join(isolated, 'session'); require('node:fs').mkdirSync(sessionData);
+  app.setPath('userData', isolated); app.setPath('sessionData', sessionData);
+  let win; const errors = [], checks = [];
   async function run(code) { return win.webContents.executeJavaScript(code); }
   async function until(code) { for (let i = 0; i < 240; i++) { if (await run(code)) return; await new Promise(resolve => setTimeout(resolve,25)); } throw Error('等待超时：' + code); }
   const click = selector => run(`document.querySelector(${JSON.stringify(selector)}).click()`);
@@ -15,7 +18,7 @@ if (!process.versions.electron) {
   const check = (name, value) => {assert(value, name); checks.push(name); require('node:fs').appendFileSync(path.join(output,'progress.log'),name+'\n');};
   async function shot(name) {require('node:fs').appendFileSync(path.join(output,'progress.log'),'capture '+name+'\n');await run('document.fonts.ready.then(()=>true)');await new Promise(resolve=>setTimeout(resolve,120));await fs.writeFile(path.join(output, name), (await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true})).toPNG()); }
   (async () => {
-    isolated = await fs.mkdtemp(path.join(os.tmpdir(), 'crew-ops-ui-')); app.setPath('userData', isolated); await app.whenReady(); await fs.mkdir(output, {recursive:true});await fs.writeFile(path.join(output,'progress.log'),'');
+    await app.whenReady(); await fs.mkdir(output, {recursive:true});await fs.writeFile(path.join(output,'progress.log'),'');
     win = new BrowserWindow({width:1180,height:970,show:false,webPreferences:{offscreen:true,contextIsolation:true,nodeIntegration:false,backgroundThrottling:false}});
     win.webContents.on('console-message', (_event, ...args) => {const message = typeof args[0] === 'object' ? args[0].message : args[1]; if (String(message).includes('Uncaught')) errors.push(message);});
     const page = path.join(isolated,'operations.html');
