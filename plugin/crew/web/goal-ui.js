@@ -36,7 +36,7 @@
   function create(options) {
     const details = new Map(), loading = new Map(), requestedVersion = new Map(), errors = new Map();
     const documentLoads = new Map(), documentErrors = new Map();
-    const drafts = new Map(), expandedGroups = new Set(), drawerPositions = new Map(), conclusionsOpen = new Set();
+    const drafts = new Map(), expandedGroups = new Set(), drawerPositions = new Map(), conclusionsOpen = new Set(), reportNotesOpen = new Set();
     let pendingAction = "", actionError = "";
     let ownerId = null, goalId = null, drawer = null, drawerHost = null, reportId = null, reportHTML = null, reportLoading = false, reportError = "", reportGeneration = 0, reader = null, formOverlay = null, actionBusy = false;
     // reading: the report in the main-area reader. Mode "drawer" returns to the materials drawer; "direct" was
@@ -103,8 +103,11 @@
       if (!report) return `<div class="goal-delivery goal-delivery-gap"><span>${esc(reportScope(reports[0], active, reports).note)}。</span><button class="text-link" data-goal-act="delivery" data-goal-id="${esc(key)}">查看历史报告（第 ${esc(reports[0].round)} 轮）</button></div>${notice}`;
       const open = conclusionsOpen.has(`${key}:${report.id}`), counts = report.acceptance_counts, unresolved = report.unresolved;
       const recorded = acceptanceLabels.filter(([name]) => counts[name] > 0);
-      const folds = report.summary.length > 40 || report.summary.includes("\n") || unresolved.length > 0;
-      return `<section class="goal-delivery" aria-label="本轮交付结论"><div class="goal-delivery-head"><strong>AI 提交的结论</strong><span>第 ${esc(report.round)} 轮报告 · 报告结果：${esc(outcomes[report.status])}</span></div><p class="goal-delivery-summary ${open ? "open" : ""}">${esc(report.summary)}</p>${open && unresolved.length ? `<ul class="goal-delivery-unresolved-list">${unresolved.map(item => `<li>${esc(item)}</li>`).join("")}</ul>` : ""}<div class="goal-delivery-foot"><div class="goal-delivery-meta"><span>报告验收记录（AI 填写）</span>${recorded.length ? recorded.map(([name,label]) => `<span class="goal-acceptance-count" data-kind="${name}">${label} ${esc(counts[name])}</span>`).join("") : "<span>没有逐项验收记录</span>"}${unresolved.length ? `<span class="goal-delivery-unresolved">仍未解决 ${unresolved.length} 项</span>` : ""}</div><div class="goal-delivery-actions">${folds ? `<button class="text-link" data-goal-act="conclusion-toggle" data-report-id="${esc(report.id)}" aria-expanded="${open}">${open ? "收起" : "展开全文"}</button>` : ""}<button class="btn ghost" data-goal-act="delivery" data-goal-id="${esc(key)}">查看完整报告</button></div></div></section>${notice}`;
+      const total = recorded.reduce((sum, [name]) => sum + counts[name], 0);
+      const notesOpen = reportNotesOpen.has(`${key}:${report.id}`);
+      const folds = report.summary.length > 40 || report.summary.includes("\n");
+      const notes = unresolved.length ? `<div class="goal-delivery-notes"><button class="text-link" data-goal-act="report-notes-toggle" data-report-id="${esc(report.id)}" aria-expanded="${notesOpen}">报告补充说明 · ${unresolved.length} 条 · ${notesOpen ? "收起" : "展开"}</button>${notesOpen ? `<p>以下为报告原文中的遗留问题或限制，不作为额外验收项计数。</p><ul class="goal-delivery-unresolved-list">${unresolved.map(item => `<li>${esc(item)}</li>`).join("")}</ul>` : ""}</div>` : "";
+      return `<section class="goal-delivery" aria-label="本轮交付结论"><div class="goal-delivery-head"><strong>AI 提交的结论</strong><span>第 ${esc(report.round)} 轮报告 · 报告结果：${esc(outcomes[report.status])}</span></div><p class="goal-delivery-summary ${open ? "open" : ""}">${esc(report.summary)}</p><div class="goal-delivery-foot"><div class="goal-delivery-meta"><span>报告验收记录（AI 填写）</span>${recorded.length ? `<span class="goal-acceptance-total">共 ${esc(total)} 项</span>${recorded.map(([name,label]) => `<span class="goal-acceptance-count" data-kind="${name}">${label} ${esc(counts[name])}</span>`).join("")}` : "<span>没有逐项验收记录</span>"}</div><div class="goal-delivery-actions">${folds ? `<button class="text-link" data-goal-act="conclusion-toggle" data-report-id="${esc(report.id)}" aria-expanded="${open}">${open ? "收起" : "展开全文"}</button>` : ""}<button class="btn ghost" data-goal-act="delivery" data-goal-id="${esc(key)}">查看完整报告</button></div></div>${notes}</section>${notice}`;
     }
     function groupMarkup(id) {
       const list = goals().filter(item => item.leader_session_id === id), open = expandedGroups.has(id), active = goal();
@@ -278,7 +281,7 @@
       if (act === "open") { expandedGroups.delete(byId(button.dataset.goalId)?.leader_session_id); options.onNavigate(button.dataset.goalId); }
       else if (act === "delivery") void openDelivery(button.dataset.goalId);
       else if (act === "retry-report") retryDirect();
-      else if (act === "conclusion-toggle") { const key = `${goalId}:${button.dataset.reportId}`; if (conclusionsOpen.has(key)) conclusionsOpen.delete(key); else conclusionsOpen.add(key); changed(); }
+      else if (act === "conclusion-toggle" || act === "report-notes-toggle") { const key = `${goalId}:${button.dataset.reportId}`, expanded = act === "report-notes-toggle" ? reportNotesOpen : conclusionsOpen; if (expanded.has(key)) expanded.delete(key); else expanded.add(key); changed(); }
       else if (act === "general") { expandedGroups.delete(ownerId); options.onGeneral(ownerId); document.querySelector?.('[data-goal-act="general"]')?.focus(); }
       else if (act === "list") { expandedGroups.add(ownerId); closeDrawer(); changed(); document.querySelector?.('[data-goal-act="list"]')?.focus(); }
       else if (act === "create") showCreate(button.dataset.leaderId);
