@@ -49,7 +49,7 @@
   const av = (name, size = 30, round = false) => `<span class="av ${round ? "round" : ""}" style="--s:${size}px;--tint:${tint(name)}">${esc(name.slice(0, 1))}</span>`;
   const st = status => `<span class="st ${esc(status)}"><i class="dot ${esc(status)}"></i>${esc(statusText[status])}</span>`;
   const count = value => Number(value).toLocaleString("zh-CN", {maximumFractionDigits:1});
-  const tokens = value => value >= 1000000 ? `${count(value / 1000000)}M` : value >= 1000 ? `${count(value / 1000)}K` : count(value);
+  const tokens = value => value === null ? "未知" : value >= 1000000 ? `${count(value / 1000000)}M` : value >= 1000 ? `${count(value / 1000)}K` : count(value);
   const money = value => value === null ? "未定价" : `$${Number(value).toFixed(2)}`;
   const time = at => new Date(at).toLocaleTimeString("zh-CN", {hour:"2-digit", minute:"2-digit", hour12:false});
   const date = at => new Date(at).toLocaleString("zh-CN", {month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit", hour12:false});
@@ -657,8 +657,10 @@
     if (!name || name === form.dataset.original || form.dataset.saving === "true") return;
     form.dataset.saving = "true"; $("rename-error").textContent = "";
     for (const control of form.querySelectorAll("input,button")) control.disabled = true;
+    let nativeWarnings = [];
     try {
-      await api("/api/session/rename", {session_id:form.dataset.id,name});
+      const result = await api("/api/session/rename", {session_id:form.dataset.id,name});
+      nativeWarnings = result.native_warnings || [];
     } catch (error) {
       form.dataset.saving = "false"; $("rename-error").textContent = error.message;
       for (const control of form.querySelectorAll("input,button")) control.disabled = false;
@@ -666,7 +668,7 @@
       return;
     }
     form.dataset.saving = "false"; closeBackdrop();
-    try { await loadState(true); toast("名字已更新"); }
+    try { await loadState(true); toast(nativeWarnings.length ? "名字已更新；" + nativeWarnings.join("；") : "名字已更新"); }
     catch (error) { toast("名字已更新，刷新失败：" + error.message); }
   }
   function openHandoff(id, result) {

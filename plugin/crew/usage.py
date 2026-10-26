@@ -307,12 +307,18 @@ def _run_line(conn, record, counts):
     )}
     values["started_at"] = _timestamp(record["started_at"])
     values["ended_at"] = _timestamp(record["ended_at"]) if record["ended_at"] is not None else None
+    values['ephemeral'] = int(bool(record.get('ephemeral')))
+    values['usage_json'] = json.dumps(record['usage']) if record.get('usage') is not None else None
     _save(conn, "codex_runs", "run_id", values, counts)
 
 
 def _match_runs(conn, counts):
     for run in conn.execute("SELECT * FROM codex_runs").fetchall():
         earliest = None
+        if run['ephemeral']:
+            # Ephemeral jobs have no rollout. Never assign a nearby user's session.
+            _save(conn, 'codex_runs', 'run_id', {'run_id': run['run_id'], 'rollout_id': None}, counts)
+            continue
         lower = _iso(store.parse_iso(run["started_at"]) - dt.timedelta(seconds=60))
         candidates = conn.execute(
             "SELECT * FROM codex_sessions WHERE originator = 'codex_exec' "
@@ -576,10 +582,28 @@ def _project_for_cwd(cwd, roots):
 def _codex_rows(conn, start, end, project=None):
     condition, args = _window("started_at", start, end)
     rows = conn.execute("SELECT * FROM codex_sessions WHERE " + condition, args)
-    if project is None:
-        return rows
     roots = _project_roots(conn)
-    return (row for row in rows if _project_for_cwd(row["cwd"], roots) == project)
+    for row in rows:
+        if project is None or _project_for_cwd(row['cwd'], roots) == project:
+            yield dict(row)
+    for task in codex_tasks(conn, start, end, project):
+        if task.get('ephemeral') and task['total_tokens'] is not None:
+            yield task
+
+
+def _dispatch_tokens(raw):
+    if raw is None:
+        return dict.fromkeys(CODEX_TOKENS)
+    native = json.loads(raw)
+    for key in ('input_tokens', 'cached_input_tokens', 'output_tokens'):
+        if type(native.get(key)) is not int or native[key] < 0:
+            raise ValueError('Invalid Codex dispatch usage: ' + key)
+    if 'reasoning_output_tokens' in native and (type(native['reasoning_output_tokens']) is not int
+                                              or native['reasoning_output_tokens'] < 0):
+        raise ValueError('Invalid Codex dispatch usage: reasoning_output_tokens')
+    return {**{key: native[key] for key in ('input_tokens', 'cached_input_tokens', 'output_tokens')},
+            'reasoning_tokens': native.get('reasoning_output_tokens', 0),
+            'total_tokens': native['input_tokens'] + native['output_tokens']}
 
 
 def _session_names(conn, project=None):
@@ -633,7 +657,7 @@ def codex_tasks(conn, start, end, project=None):
     query = (
         "SELECT r.run_id, r.claude_session_id, r.task_file, r.workdir, r.started_at AS run_start, "
         "r.ended_at AS run_end, r.exit_code, r.model AS requested_model, r.effort AS requested_effort, "
-        "r.sandbox AS requested_sandbox, c.* FROM codex_runs r "
+        "r.sandbox AS requested_sandbox, r.ephemeral, r.usage_json, c.* FROM codex_runs r "
         "LEFT JOIN codex_sessions c ON c.rollout_id = r.rollout_id"
     )
     for row in conn.execute(query):
@@ -649,8 +673,10 @@ def codex_tasks(conn, start, end, project=None):
         elif row["run_end"] is not None and row["exit_code"] is not None:
             status = "succeeded" if row["exit_code"] == 0 else "failed"
         item = {field: row[field] if row["rollout_id"] else 0 for field in CODEX_TOKENS}
+        if row['ephemeral']:
+            item = _dispatch_tokens(row['usage_json'])
         session_id = row["claude_session_id"]
-        item.update(run_id=row["run_id"], rollout_id=row["rollout_id"], session_id=session_id,
+        item.update(run_id=row["run_id"], rollout_id=row["rollout_id"], session_id=session_id, ephemeral=bool(row['ephemeral']),
                     display_name=names[session_id]["display_name"] if session_id is not None else None,
                     task_name=ntpath.basename(row["task_file"]), started_at=row["run_start"],
                     ended_at=row["run_end"], exit_code=row["exit_code"], status=status,
@@ -668,7 +694,7 @@ def codex_tasks(conn, start, end, project=None):
         if project is not None and task_project != project:
             continue
         item = {field: row[field] for field in CODEX_TOKENS}
-        item.update(run_id=None, rollout_id=row["rollout_id"], session_id=None, display_name=None,
+        item.update(run_id=None, rollout_id=row["rollout_id"], session_id=None, display_name=None, ephemeral=False,
                     task_name=row["first_user_text"], started_at=row["started_at"], ended_at=None,
                     exit_code=None, status="unknown", project=task_project, cwd=row["cwd"],
                     last_event_at=row["ended_at"], model=row["model"], effort=row["effort"], sandbox=row["sandbox"])
@@ -684,7 +710,7 @@ def summary(conn, start, end, prices, project=None):
         _add(claude, row, prices)
     codex = {**dict.fromkeys(CODEX_TOKENS, 0), "runs": len(codex_tasks(conn, start, end, project)), "rollouts": 0}
     for row in _codex_rows(conn, start, end, project):
-        codex["rollouts"] += 1
+        codex["rollouts"] += int(not row.get('ephemeral'))
         for field in CODEX_TOKENS:
             codex[field] += row[field]
     latest = conn.execute("SELECT * FROM codex_rate_limits ORDER BY ts DESC LIMIT 1").fetchone()
@@ -728,7 +754,7 @@ def by_session(conn, start, end, prices, project=None):
         if task["session_id"] is not None:
             row = rows[task["session_id"]]
             row["codex_runs"] += 1
-            row["codex_tokens"] += task["total_tokens"]
+            row["codex_tokens"] += task["total_tokens"] or 0
     result = []
     for session_id, row in rows.items():
         denominator = row["input_tokens"] + row["cache_write_tokens"] + row["cache_read_tokens"]

@@ -83,7 +83,7 @@ $lastFile = "$base`_last.md"
 $errLog = "$base`_codex.log"
 $outLog = "$base`_codex.stdout.log"
 
-$argList = @('exec', '--cd', (ConvertTo-QuotedArg $WorkDir), '--sandbox', $Sandbox, '--color', 'never', '-o', (ConvertTo-QuotedArg $lastFile),
+$argList = @('exec', '--cd', (ConvertTo-QuotedArg $WorkDir), '--ephemeral', '--json', '--sandbox', $Sandbox, '--color', 'never', '-o', (ConvertTo-QuotedArg $lastFile),
     '-c', 'model_reasoning_summary=detailed', '-c', 'model_supports_reasoning_summaries=true')
 foreach ($d in $AddDir) {
     $argList += @('--add-dir', (ConvertTo-QuotedArg (Resolve-Path -LiteralPath $d).Path))
@@ -105,6 +105,8 @@ $run = [ordered]@{
     started_at        = $started.ToUniversalTime().ToString($isoFormat)
     ended_at          = $null
     exit_code         = $null
+    ephemeral         = $true
+    usage             = $null
 }
 # Not -Wait: it also waits for orphaned daemons the task spawned (e.g. adb server started by UE tests).
 $proc = Start-Process -FilePath $codex -ArgumentList ($argList -join ' ') -WorkingDirectory $WorkDir `
@@ -117,7 +119,7 @@ if (-not $NoWatch) {
     $watcher = Join-Path $PSScriptRoot 'watch_log.ps1'
     $title = 'Codex - ' + [IO.Path]::GetFileNameWithoutExtension($TaskPath)
     $watchCmd = 'conhost.exe powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + (ConvertTo-QuotedArg $watcher) +
-        ' -LogPath ' + (ConvertTo-QuotedArg $errLog) + ' -WatchPid ' + $proc.Id + ' -Title ' + (ConvertTo-QuotedArg $title)
+        ' -LogPath ' + (ConvertTo-QuotedArg $outLog) + ' -WatchPid ' + $proc.Id + ' -Title ' + (ConvertTo-QuotedArg $title)
     # Created through WMI so the viewer does not inherit this shell's foreground rights (the shell descends
     # from the editor the user is typing in), and shown minimized without activation (7). Explicit conhost
     # because Windows Terminal's default-terminal handoff ignores that show state.
@@ -138,9 +140,33 @@ $minutes = [math]::Round(($ended - $started).TotalMinutes, 1)
 # Append the completion with the same identity. Crew upserts both records into one run.
 $run.ended_at = $ended.ToUniversalTime().ToString($isoFormat)
 $run.exit_code = $code
+try {
+    $totals = @{ input_tokens = [long]0; cached_input_tokens = [long]0; output_tokens = [long]0; reasoning_output_tokens = [long]0 }
+    $turns = 0
+    foreach ($line in [IO.File]::ReadLines($outLog)) {
+        $event = $line | ConvertFrom-Json
+        if ($event.type -ne 'turn.completed') { continue }
+        foreach ($key in @('input_tokens', 'cached_input_tokens', 'output_tokens')) {
+            $value = $event.usage.$key
+            if ($null -eq $value -or $value -is [bool] -or $value -notmatch '^\d+$') { throw "Invalid Codex usage: $key" }
+            $totals[$key] += [long]$value
+        }
+        if ($null -ne $event.usage.reasoning_output_tokens) {
+            if ($event.usage.reasoning_output_tokens -is [bool] -or $event.usage.reasoning_output_tokens -notmatch '^\d+$') {
+                throw 'Invalid Codex usage: reasoning_output_tokens'
+            }
+            $totals.reasoning_output_tokens += [long]$event.usage.reasoning_output_tokens
+        }
+        $turns++
+    }
+    if ($turns -gt 0) { $run.usage = $totals }
+} catch {
+    Write-Output "WARN: Codex usage not recorded: $($_.Exception.Message)"
+}
 Write-CrewRun $run
 
 Write-Output "codex exit=$code minutes=$minutes sandbox=$Sandbox workdir=$WorkDir"
 Write-Output "last=$lastFile"
 Write-Output "log=$errLog"
+Write-Output "events=$outLog"
 exit $code

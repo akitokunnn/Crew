@@ -14,7 +14,7 @@ import threading
 import uuid
 from pathlib import Path
 
-from . import board, claude_limits, claude_subagents, codex_client, git_admin, goals, hooks, install, messaging, models, runtime_switch, runtimes, settings, spawn, store, subagents, workspace_execution
+from . import board, claude_limits, claude_subagents, codex_client, codex_visibility, git_admin, goals, hooks, install, messaging, models, runtime_switch, runtimes, settings, spawn, store, subagents, workspace_execution
 
 
 PAUSED_FOR_UPDATE = "Crew 正在准备更新，暂不接受新任务；更新完成后再试"
@@ -1322,6 +1322,27 @@ class Manager:
                 current.context = {"used": usage["totalTokens"], "max": usage["maxTokens"], "source": "live"}
         if subtype in ("set_model", "apply_flag_settings") and response["subtype"] == "success":
             self._control(current, "get_settings")
+
+    def sync_native_titles(self, conn, session_id):
+        session = board.session(conn, session_id)
+        warnings, handled = [], set()
+        with self.lock:
+            for current in self.processes.values():
+                if (getattr(current, 'runtime', None) == 'codex' and getattr(current, 'session_id', None) == session_id
+                        and current.process.poll() is None and not current.client.closed):
+                    warning = current.sync_title()
+                    if warning:
+                        warnings.append(warning)
+                    handled.add(current.thread_id)
+        pending = [native_id for native_id in codex_visibility.stored_person_threads(conn, session) if native_id not in handled]
+        if pending:
+            try:
+                with codex_client.Client(process_factory=self.process_factory) as client:
+                    for native_id in pending:
+                        codex_visibility.set_title(client, native_id, session)
+            except (codex_client.CodexError, OSError, ValueError) as exc:
+                warnings.append('Codex 标题同步失败：' + str(exc))
+        return warnings
 
     def set_options(self, conn, session_id, changes, now=None):
         with self.lock:

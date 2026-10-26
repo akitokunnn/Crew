@@ -20,8 +20,8 @@ def literal(value):
 @unittest.skipUnless(os.name == "nt" and POWERSHELL, "Windows PowerShell script")
 class TestCodexDispatch(unittest.TestCase):
     def test_start_is_recorded_before_wait_and_completion_updates_the_same_run(self):
-        for code, log_failure in ((0, False), (7, False), (7, True)):
-            with self.subTest(exit_code=code, log_failure=log_failure), tempfile.TemporaryDirectory() as temp:
+        for code, log_failure, malformed in ((0, False, False), (7, False, False), (7, True, False), (7, False, True)):
+            with self.subTest(exit_code=code, log_failure=log_failure, malformed=malformed), tempfile.TemporaryDirectory() as temp:
                 root = Path(temp)
                 task = root / "task.md"
                 task.write_text("Fake task only. No model will be called.", encoding="utf-8")
@@ -42,7 +42,10 @@ function Start-Process {
     param($FilePath, $ArgumentList, $WorkingDirectory, $RedirectStandardInput,
           $RedirectStandardOutput, $RedirectStandardError, [switch]$NoNewWindow, [switch]$PassThru)
     if ($FilePath -ne 'FAKE-CODEX.exe' -or -not $NoNewWindow -or -not $PassThru) { throw 'Unexpected launch' }
-    if ($ArgumentList -notmatch 'exec --cd' -or $ArgumentList -notmatch '--sandbox read-only') { throw 'Wrong arguments' }
+    if ($ArgumentList -notmatch 'exec --cd' -or $ArgumentList -notmatch '--sandbox read-only' -or $ArgumentList -notmatch '--ephemeral --json') { throw 'Wrong arguments' }
+    $receipt = '{"type":"turn.completed","usage":{"input_tokens":1200,"cached_input_tokens":1000,"output_tokens":100,"reasoning_output_tokens":40}}'
+    if ($env:FAKE_MALFORMED -eq 'yes') { $receipt = 'invalid receipt' }
+    [IO.File]::WriteAllText($RedirectStandardOutput, $receipt)
     $fake = [pscustomobject]@{ Id = 12345; Handle = 1; ExitCode = [int]$env:FAKE_EXIT }
     $fake | Add-Member ScriptMethod WaitForExit {
         if ($env:FAKE_LOG_FAILURE -ne 'yes') {
@@ -61,7 +64,8 @@ exit $LASTEXITCODE
 """.replace("__SCRIPT__", literal(SCRIPT)).replace("__TASK__", literal(task)).replace("__ROOT__", literal(root)),
                                    encoding="utf-8-sig")
                 env = dict(os.environ, USERPROFILE=str(root), CLAUDE_CODE_SESSION_ID="fake-claude",
-                           FAKE_EXIT=str(code), FAKE_LOG_FAILURE="yes" if log_failure else "no")
+                           FAKE_EXIT=str(code), FAKE_LOG_FAILURE="yes" if log_failure else "no",
+                           FAKE_MALFORMED="yes" if malformed else "no")
                 result = subprocess.run([POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(harness)],
                                         capture_output=True, text=True, env=env, timeout=20)
                 self.assertEqual(result.returncode, code, result.stdout + result.stderr)
@@ -79,6 +83,13 @@ exit $LASTEXITCODE
                 self.assertEqual(records[1]["exit_code"], code)
                 self.assertIsNotNone(records[1]["ended_at"])
                 self.assertEqual(records[1]["claude_session_id"], "fake-claude")
+                self.assertTrue(records[1]['ephemeral'])
+                if malformed:
+                    self.assertIsNone(records[1]['usage'])
+                    self.assertIn('WARN: Codex usage not recorded:', result.stdout)
+                else:
+                    self.assertEqual(records[1]['usage'], {'input_tokens': 1200, 'cached_input_tokens': 1000,
+                                                          'output_tokens': 100, 'reasoning_output_tokens': 40})
                 self.assertEqual((records[1]["model"], records[1]["effort"]), ("fake-model", "low"))
                 self.assertEqual(Path(records[1]["workdir"]), root)
 

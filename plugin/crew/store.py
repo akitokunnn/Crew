@@ -29,7 +29,25 @@ def connect(home):
     _migrate_channel_digests(conn)
     _migrate_remote_notice_source(conn)
     _migrate_peer_message_receipts(conn)
+    _migrate_codex_dispatch_usage(conn)
     return conn
+
+
+def _migrate_codex_dispatch_usage(conn):
+    required = {'ephemeral': 'INTEGER NOT NULL DEFAULT 0', 'usage_json': 'TEXT'}
+    columns = {row['name'] for row in conn.execute('PRAGMA table_info(codex_runs)')}
+    if required.keys() <= columns:
+        return
+    conn.execute('BEGIN IMMEDIATE')
+    try:
+        columns = {row['name'] for row in conn.execute('PRAGMA table_info(codex_runs)')}
+        for name, declaration in required.items():
+            if name not in columns:
+                conn.execute('ALTER TABLE codex_runs ADD COLUMN ' + name + ' ' + declaration)
+        conn.commit()
+    except sqlite3.Error:
+        conn.rollback()
+        raise
 
 
 def _migrate_peer_message_receipts(conn):
