@@ -23,7 +23,7 @@ from urllib.error import HTTPError, URLError
 from . import board, channel, channel_digest, chat, claude_limits, codex_runtime, documents, git_admin, git_ci, git_view, goal_api, goals, hooks, maintenance, messaging, models, notifications, open_session, presentation, runtime_catalog, runtime_switch, runtimes, session_library, session_ops, settings, spawn, store, themes, todo, trust_mode, updater, usage, usage_cli, vscode_sessions, workspace_execution, workspace_settings
 from .service_lock import HomeServiceLock
 from . import member_defaults, operations_chat, operations_settings
-from . import connections, storage_cleanup, workspace_activity
+from . import connections, session_presence, storage_cleanup, workspace_activity
 
 
 def _text(data, key):
@@ -566,13 +566,10 @@ class Service:
             if project_name is not None:
                 name = self.selected_project(conn, project_name)
                 result['goals'] = [goal_api.card(conn, goal) for goal in goals.list_goals(conn, name)]
-                agents = self.managed_agents(conn, agents)
                 card = channel.digest(conn, name)
                 result['channel'] = {**channel.state(conn, name), **self.channel_digest.state(name),
                                      'digest_id': card['id'] if card is not None else None}
-                # Passing every stored identity preserves the board statuses while process state is unknown.
-                identities = [{"sessionId": s["session_id"]} for s in board.sessions(conn, name)] if error else agents
-                status = board.status(conn, name, identities)
+                status, present, agents = session_presence.project_status(self, conn, name, agents, error)
                 git_config = board.git_config(conn, name)
                 result['project'] = {key: status['project'][key] for key in ('name', 'display_name', 'root', 'theme')}
                 result['todos'] = todo.list(conn, name)
@@ -585,7 +582,6 @@ class Service:
                 removed = {r[0] for r in conn.execute('SELECT session_id FROM session_controls WHERE removed=1')}
                 sessions = [s for s in [*status['ungrouped'], *(s for group in status['groups'] for s in group['members'])]
                             if s['session_id'] not in removed and s['status'] != 'closed']
-                present = board.live_sessions(agents)
                 member_choices = member_defaults.for_project(conn, name)
                 with self.scan_lock:
                     titles = usage.session_titles(self.claude_root, [s['session_id'] for s in sessions], self.title_cache)
@@ -600,13 +596,7 @@ class Service:
                     session['web_chat'] = self.chat.path(sid).exists()
                     if session['web_chat']:
                         histories[sid] = self.chat.history(sid)
-                    if self.chat.running(key):
-                        journal_status = self.chat.journal(key).status
-                        if session['status'] != 'waiting' or journal_status == 'working':
-                            session['status'] = journal_status
-                    elif sid in present and present[sid].get('kind') == 'crew':
-                        if session['status'] != 'waiting' or present[sid]['status'] == 'busy':
-                            session['status'] = 'working' if present[sid]['status'] == 'busy' else 'idle'
+                    session['status'] = session_presence.status(self.chat, session, present, key)
                 decisions = board.decisions(conn, name, all=True)
                 for decision in decisions:
                     if decision['status'] == 'open':
