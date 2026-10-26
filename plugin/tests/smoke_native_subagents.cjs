@@ -58,11 +58,12 @@ if(!process.versions.electron){
       await capture('02-finished');
       await js('document.querySelector(".leader-node").click();void 0;');await wait('document.querySelector("[data-act=right-open]")','chat header');
       await js('document.querySelector("[data-act=right-open]").click();void 0;');
-      await wait('document.querySelectorAll("#right-panel .leader-node .cx").length===3','chat architecture');
+      await js('document.querySelector("#right-panel .side-agents > summary").click();void 0;');
+      await wait('document.querySelectorAll("#right-panel .side-agents .cx").length===3','chat architecture');
       await check('chat side architecture uses the same native task rows','document.querySelector("#right-panel .codex-status-failed").textContent.includes("失败")');
-      await check('side architecture also keeps legacy names and status in one line',compactNames);
+      await check('side architecture also keeps legacy names and status in one line',compactNames.replaceAll('.leader-node .cx','#right-panel .side-agents .cx'));
       await wc.setZoomFactor(1.5);
-      await check('names and status remain compact with enlarged text',compactNames);
+      await check('names and status remain compact with enlarged text',compactNames.replaceAll('.leader-node .cx','#right-panel .side-agents .cx'));
       await capture('03-chat-architecture');
       await wc.setZoomFactor(1);
       fixture.stdin.write('disconnect\n');await until(()=>messages.some(x=>x.disconnected),'fixture disconnected');

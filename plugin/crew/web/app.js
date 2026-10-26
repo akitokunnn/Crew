@@ -23,7 +23,7 @@
   const waitingSounds = new Map();
   let fontScale = 1;
   const FONT_MIN = .9, FONT_MAX = 1.4;
-  const sideDecisionsOpen = new Set(), decisionsOpen = new Set(), heldExpanded = new Set(), usageCollapsed = new Set(), operationIds = new Set();
+  const sideAgentsOpen = new Set(), sideDecisionsOpen = new Set(), decisionsOpen = new Set(), heldExpanded = new Set(), usageCollapsed = new Set(), operationIds = new Set();
   const todoExpanded = new Set(), todoActions = new Map(), todoSaving = new Set();
   let attentionScope = null, attentionVisible = true, taskVisible = true, sidecarFocus = "attention";
   let composingInput = null, compositionTimer = null, compositionRenderPending = false;
@@ -371,7 +371,7 @@
     return `<details class="side-decision" data-side-decision="${item.id}" ${sideDecisionsOpen.has(item.id) ? "open" : ""}><summary><span>${esc(title)}</span><span class="side-decision-owner">${esc(item.asker)}</span></summary>${decisionCard(item)}</details>`;
   }
   function sidePerson(item, isLeader) {
-    return `<div class="side-person session-surface" data-session-menu="${esc(item.session_id)}"><button type="button" class="side-person-open" data-act="${isLeader ? "leader" : "member-chat"}" data-id="${esc(item.session_id)}" aria-label="进入${esc(item.name)}的对话">${isLeader ? groupAvatar(item, groupWork(item)) : av(item.name,24)}<span class="side-person-name">${esc(item.name)}${runtimeBadge(item,true)}</span><span class="dot ${esc(item.status)}" title="${esc(statusText[item.status])}"></span></button>${contextRing(item)}<button type="button" class="icon-btn" data-act="session-menu" data-id="${esc(item.session_id)}" aria-label="${esc(item.name)}的操作">⋯</button></div>`;
+    return `<div class="side-person-unit"><div class="side-person session-surface" data-session-menu="${esc(item.session_id)}"><button type="button" class="side-person-open" data-act="${isLeader ? "leader" : "member-chat"}" data-id="${esc(item.session_id)}" aria-label="进入${esc(item.name)}的对话">${isLeader ? groupAvatar(item, groupWork(item)) : av(item.name,24)}<span class="side-person-name">${esc(item.name)}${runtimeBadge(item,true)}</span><span class="dot ${esc(item.status)}" title="${esc(statusText[item.status])}"></span></button>${contextRing(item)}<button type="button" class="icon-btn" data-act="session-menu" data-id="${esc(item.session_id)}" aria-label="${esc(item.name)}的操作">⋯</button></div>${item.codex.length || item.codex_older ? `<details class="side-agents" data-side-agents="${esc(item.session_id)}" ${sideAgentsOpen.has(item.session_id) ? "open" : ""}><summary>子代理与派活 · ${item.codex.length + item.codex_older}</summary>${codexList(item)}</details>` : ""}</div>`;
   }
   function heldGroup(items, context) {
     if (items.length === 0) return "";
@@ -1279,6 +1279,7 @@
     });
     document.addEventListener("toggle", event => {
       const details = event.target;
+      if (details.dataset.sideAgents !== undefined) { const id = details.dataset.sideAgents; if (details.open) sideAgentsOpen.add(id); else sideAgentsOpen.delete(id); return; }
       if (details.dataset.sideDecision !== undefined) { const id = Number(details.dataset.sideDecision); if (details.open) sideDecisionsOpen.add(id); else sideDecisionsOpen.delete(id); return; }
       if (details.dataset.decisionContext === undefined) return;
       const id = Number(details.dataset.decisionContext);
@@ -1289,7 +1290,7 @@
       if (event.key === "Escape" && attentionOpen() && !event.isComposing) { event.preventDefault(); closeAttention(true); return; }
       if (event.key === "ContextMenu" || event.shiftKey && event.key === "F10") {
         const surface = sessionSurface(event.target);
-        if (surface !== null) { event.preventDefault(); openSessionMenu(surface, surface.dataset.sessionMenu === undefined ? surface.dataset.id : surface.dataset.sessionMenu); return; }
+        if (surface !== null) { event.preventDefault(); openSessionMenu(surface, surface.dataset.sessionMenu === undefined ? surface.dataset.id : surface.dataset.sessionMenu); closeAttention(); return; }
       }
       if ($("menu").classList.contains("show") && ["ArrowDown", "ArrowUp", "ArrowRight", "ArrowLeft", "Escape", "Home", "End", "Tab"].includes(event.key)) {
         event.preventDefault();
@@ -1305,7 +1306,7 @@
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k" && state !== null && project !== null) { event.preventDefault(); if (stopConfirmation === null) openPalette(); return; }
       if (event.key === "Escape" && settingsOpen) { closeSettings(); return; }
       if (settingsOpen) return;
-      if (event.key === "Escape") { if ($("menu").classList.contains("show")) { hideMenu(); return; } if ($("backdrop").classList.contains("show")) closeBackdrop(); else if (cardId !== null) closeCard(); else if (goals?.escape()) return; }
+      if (event.key === "Escape") { if ($("menu").classList.contains("show")) { hideMenu(); return; } if ($("backdrop").classList.contains("show")) closeBackdrop(); else if (cardId !== null) closeCard(); else if (goals?.escape()) { event.preventDefault(); return; } }
       if (event.key === "Tab") {
         const surface = $("backdrop").classList.contains("show") ? $("backdrop") : cardId !== null ? $("card") : null;
         if (surface === null) return;

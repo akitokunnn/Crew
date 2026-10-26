@@ -920,3 +920,5 @@ a.btn{color:inherit;text-decoration:none}
 .sidecar-section-scroll{flex:1}.sidecar .tree{padding-top:0}
 
 .goal-tools h1{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}.goal-tools .goal-detail-title{flex-wrap:nowrap}
+
+.side-agents{margin:0 0 6px 30px;min-width:0}.side-agents>summary{font-size:calc(10.5px * var(--fs));color:var(--text-3);cursor:pointer}.side-agents .cx-list{margin-left:0}.side-agents .cx{max-width:100%;min-width:0}

@@ -200,10 +200,10 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual([row["text"] for row in member["progress"]], ["progress-" + str(i) for i in (6, 5, 4, 3, 2)])
         self.assertTrue(all(set(row) == {"at", "text"} for row in member["progress"]))
         self.assertEqual({row["id"] for row in member["codex"]}, {"recent", "running"})
-        self.assertTrue(all(set(row) == {"id", "task_name", "status", "started_at", "ended_at", "duration_seconds", "source", "detail", "runtime",
+        self.assertTrue(all(set(row) == {"id", "task_name", "task_description", "status", "started_at", "ended_at", "duration_seconds", "source", "detail", "runtime",
                                         "pid", "cwd", "task_file", "execution_id", "goal_id"}
                             for row in member["codex"]))
-        self.assertTrue(all(row['source'] == 'skill_dispatch' and row['detail'] is None for row in member['codex']))
+        self.assertTrue(all(row['source'] == 'skill_dispatch' and row['detail'] is None and row['task_description'] is None for row in member['codex']))
         self.assertEqual(member["codex_older"], 1)
         self.assertEqual(member["leases"], [{"resource": "phone", "purpose": "Review", "taken_at": NOW, "until_at": None}])
         self.assertEqual(member["claims"], [{"pattern": store.norm_path(self.project / "src") + "/", "note": "API"}])
