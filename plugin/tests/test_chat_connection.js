@@ -2,7 +2,7 @@
 const assert=require("node:assert/strict"),fs=require("node:fs"),path=require("node:path"),vm=require("node:vm");
 const {test}=require("node:test");
 const tick=async()=>{for(let i=0;i<12;i++)await Promise.resolve();};
-function node(){const classes=new Set(),children=[],attributes=new Map();return {value:"",textContent:"",innerHTML:"",hidden:false,disabled:false,style:{},dataset:{},scrollTop:0,scrollHeight:0,clientHeight:200,firstChild:null,children,contains:()=>false,querySelectorAll:()=>[],getBoundingClientRect:()=>({top:0}),setAttribute(name,value){attributes.set(name,String(value));},getAttribute:name=>attributes.get(name)??null,removeAttribute:name=>attributes.delete(name),
+function node(){const classes=new Set(),children=[],attributes=new Map();return {matches:()=>false,value:"",textContent:"",innerHTML:"",hidden:false,disabled:false,style:{},dataset:{},scrollTop:0,scrollHeight:0,clientHeight:200,firstChild:null,children,contains:()=>false,querySelectorAll:()=>[],getBoundingClientRect:()=>({top:0}),setAttribute(name,value){attributes.set(name,String(value));},getAttribute:name=>attributes.get(name)??null,removeAttribute:name=>attributes.delete(name),
   insertBefore(child,before){const old=children.indexOf(child);if(old>=0)children.splice(old,1);const index=before?children.indexOf(before):-1;children.splice(index<0?children.length:index,0,child);child.parentNode=this;this.firstChild=children[0]||null;for(let i=0;i<children.length;i++)children[i].nextSibling=children[i+1]||null;},
   remove(){const parent=this.parentNode;if(!parent)return;const index=parent.children.indexOf(this);if(index>=0)parent.children.splice(index,1);parent.firstChild=parent.children[0]||null;for(let i=0;i<parent.children.length;i++)parent.children[i].nextSibling=parent.children[i+1]||null;this.parentNode=null;},
   classList:{add:x=>classes.add(x),remove:x=>classes.delete(x),toggle(x,on){if(on)classes.add(x);else classes.delete(x);},contains:x=>classes.has(x)}};}
@@ -290,6 +290,7 @@ test("starting a queued goal rebinds the app to the execution journal, closes th
   const goal={id:"goal",leader_session_id:"leader",title:"真实目标",request:"推进并交付",acceptance:[],status:"queued",current_round:1,requirement_version:1,version:1};
   const state={project:{name:"fixture"},leaders:[person],members:[],decisions:[],todos:[],goals:[goal],runtimes:[{id:"codex",name:"Codex",available:true,models:[],efforts:[]}]};
   const main=host();nodes.set("main",main);nodes.set("goal-drawer",host());
+  for(const id of ["chat-attention","attention-scope","attention-empty","native-approval-tray","decision-tray","side-task-section","side-attention-section","side-task-body","side-task-title","side-attention-count","right-panel"])nodes.set(id,host());
   Object.defineProperty(main,"innerHTML",{set(value){this.markup=value;for(const [,id]of value.matchAll(/id="([^"]+)"/g))nodes.set(id,host());},get(){return this.markup||"";}});
   h.sandbox.document.getElementById=id=>nodes.get(id)||null;
   h.sandbox.location={search:"?project=fixture",origin:"http://fixture.local"};

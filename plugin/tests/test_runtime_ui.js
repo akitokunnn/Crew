@@ -44,7 +44,7 @@ function harness(state = fixture(), fetcher = () => { throw new Error("Unexpecte
   vm.runInContext(source.replace(end, `  window.ui = {runtimeList, runtimeInfo, defaultRuntime, modelEfforts, modelMenu, optionChange,
     optionsLabel, leaderPayload, renderLeaderRuntime, selectLeaderOption, refreshRuntimes, editorHandoffReason, sessionMenu, chatAccess, goalChatNotes,
     contextRing, contextControls, sidebarLeader, memberNode, workingRow, compactContext, compactions,
-    openTodos, todosOf, pendingOf, todoCard, todoTray, todoExpanded, todoTrayExpanded, todoActions,
+    openTodos, todosOf, pendingOf, todoCard, todoTray, todoExpanded, todoActions,
     todoResolvePayload, resolveTodo, renderTodos, replace,
     decisionTrust, trustReportUrl, readTrustReport,
     compactDecisionText, decisionOptions, decisionCard, decisionsOpen,
@@ -253,11 +253,10 @@ test("personal action order comes from server and group trays and decisions have
   assert.deepEqual(plain(group.map(item => item.id)), [44, 17]);
   assert.equal(ui.pendingOf("leader-1").length, 1);
   const tray = ui.todoTray(group, "leader-1");
-  assert(tray.includes('class="todo-tray collapsed"'));
-  assert(tray.includes("本组待你动手 · 2"));
+  assert(tray.includes('class="todo-tray"'));
+  assert(tray.includes('待你动手 <span>2</span>'));
   assert(!tray.includes("等你拍板"));
-  ui.todoTrayExpanded.add("leader-1");
-  assert(!ui.todoTray(group, "leader-1").includes('class="todo-tray collapsed"'));
+  assert(tray.indexOf('data-todo-id="44"') < tray.indexOf('data-todo-id="17"'));
 });
 
 test("personal action page renders server order and a useful empty state", () => {
