@@ -4,8 +4,12 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const {app, ipcMain, webContents} = require('electron');
 const core = require('../src/core.cjs');
+// Acceptance windows stay transparent and never take focus. Disable native
+// occlusion throttling so the real child renderer can still produce frames.
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
+app.commandLine.appendSwitch('disable-features','CalculateNativeWinOcclusion');
 const output = path.resolve(__dirname, '../smoke-output/handoff');
-const evidence = {checks:[], screenshots:[], errors:[], scope:'Real desktop and backend, fixture chat journals; no native or model turn requested.'};
+const evidence = {checks:[], screenshots:[], errors:[], scope:'Real desktop and backend, fixture chat journals and response-only overview statuses; no native or model turn requested.'};
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 async function bounded(promise, label, timeout=8000) {
@@ -136,6 +140,90 @@ app.once('browser-window-created', (_event, win) => {
       assert.deepEqual(spawnFiles,[]); assert.deepEqual(leases,[]);
       await assert.rejects(fs.access(path.join(evidence.home,'fixture-model-start-attempts.txt')),{code:'ENOENT'});
       evidence.modelTurnsStarted=0; evidence.checks.push('no fixture identity is running, no spawn or native lease was created, and acceptance sent no chat or goal-start request');
+      // Overview states are response-only fixtures. Persisting a working
+      // journal would let the startup recovery path request a native turn.
+      const workingFile=path.join(evidence.home,'fixture-working.json');
+      async function overview(statuses, amount) {
+        const temporary=workingFile+'.tmp';
+        await fs.writeFile(temporary,JSON.stringify(statuses),'utf8'); await fs.rename(temporary,workingFile);
+        await click(view,'[data-act=view][data-view=all]');
+        await wait(view,`document.querySelector('#main [data-act="all-tab"][data-tab="working"] b')?.textContent === ${JSON.stringify(String(amount))}`);
+        const actual=await core.request(boot.service.url,'/api/state?project=handoff-demo');
+        assert(actual.leaders.every(item=>!item.running&&!item.busy)); assert(actual.members.every(item=>!item.running&&!item.busy));
+        for(const role of ['leaders','members']) for(const [id,status] of Object.entries(statuses[role])) {
+          assert.equal(actual[role].find(item=>item.session_id===id)?.status,status);
+        }
+        return actual;
+      }
+      const listRows=()=>js(view,'[...document.querySelectorAll("#main .list button[data-id]")].map(item=>({id:item.dataset.id,act:item.dataset.act,text:item.textContent}))');
+      const openWorking=async()=>{await click(view,'#main [data-act=all-tab][data-tab=working]');};
+      win.setSize(1180,850);
+      await js(view,'document.documentElement.style.setProperty("--fs","1")');
+      await overview({leaders:{'offline-claude':'working','handoff-codex':'idle'},members:{'failed-member':'waiting','pending-member':'offline'}},1);
+      await click(view,'#main [data-act=all-tab][data-tab=tree]');
+      assert(await js(view,'document.querySelector("#main .leader-node[data-id=offline-claude]").textContent.includes("在干活")'));
+      await capture(view,'06-overview-leader-only');
+      await openWorking();
+      let rows=await listRows();
+      assert.equal(rows.length,1); assert.equal(rows[0].id,'offline-claude'); assert.equal(rows[0].act,'leader');
+      evidence.overview={leaderOnly:rows};
+      assert(rows[0].text.includes('leader')); assert(rows[0].text.includes('核对当前协议与原始证据'));
+      await click(view,'#main .list [data-act=leader][data-id=offline-claude]');
+      await wait(view,'document.querySelector("#chat-head .chat-name")?.textContent === "旧离线记录"');
+      assert.equal(await js(view,'document.querySelector("#chat-head .chat-member-stats").textContent'),'0 个下属 · 本组 1 人在干活');
+      assert.equal(await js(view,'document.querySelector(".composer textarea").value'),draft);
+      evidence.checks.push('a working Claude leader appears once in both overview count and working list, opens its own conversation with its goal and exact draft, and counts itself in the group header');
+
+      await overview({leaders:{'offline-claude':'working','handoff-codex':'working'},members:{'failed-member':'working','pending-member':'working'}},4);
+      await openWorking(); rows=await listRows();
+      evidence.overview.mixed=rows;
+      assert.equal(rows.length,4); assert.equal(new Set(rows.map(item=>item.id)).size,4);
+      assert.deepEqual(rows.filter(item=>item.act==='leader').map(item=>item.id).sort(),['handoff-codex','offline-claude']);
+      assert.deepEqual(rows.filter(item=>item.act==='member-chat').map(item=>item.id).sort(),['failed-member','pending-member']);
+      assert(rows.find(item=>item.id==='handoff-codex').text.includes('接续交接后的独立任务'));
+      assert(rows.find(item=>item.id==='failed-member').text.includes('复核退出 23 的真实失败'));
+      await capture(view,'07-overview-mixed-working');
+      await click(view,'#main .list [data-act=member-chat][data-id=failed-member]');
+      await wait(view,'document.querySelector("#chat-head .chat-name")?.textContent === "真实失败"');
+      assert(await js(view,'document.querySelector("#chat-head .chat-scope").textContent.includes("成员本人对话")'));
+      assert.equal(await js(view,'document.querySelector("#chat-head .chat-member-stats").textContent'),'2 个下属 · 本组 3 人在干活');
+      await wait(view,'document.querySelector(".chat-inner")?.textContent.includes("子命令退出 23")');
+      const memberDraft='成员本人草稿不应被全部页切换丢失\n第二行：只核对真实证据';
+      await js(view,`(()=>{const input=document.querySelector(".composer textarea");input.value=${JSON.stringify(memberDraft)};input.dispatchEvent(new Event("input",{bubbles:true}));})()`);
+      await click(view,'[data-act=view][data-view=all]'); await openWorking();
+      await click(view,'#main .list [data-act=leader][data-id=handoff-codex]');
+      await wait(view,'document.querySelector("#chat-head .chat-name")?.textContent === "执行交接"');
+      assert.equal(await js(view,'document.querySelector("#chat-head .chat-member-stats").textContent'),'2 个下属 · 本组 3 人在干活');
+      await wait(view,'document.querySelector(".chat-inner")?.textContent.includes("已转交执行")');
+      evidence.checks.push('mixed Claude and Codex leaders and members produce four unique people, retain role-specific goal or task text, and both leader and member routes show the same three-person group count');
+
+      await overview({leaders:{'offline-claude':'idle','handoff-codex':'waiting'},members:{'failed-member':'working','pending-member':'offline'}},1);
+      await openWorking(); rows=await listRows();
+      evidence.overview.memberOnly=rows;
+      assert.deepEqual(rows.map(item=>item.id),['failed-member']); assert.equal(rows[0].act,'member-chat');
+      await click(view,'#main .list [data-act=member-chat][data-id=failed-member]');
+      await wait(view,'document.querySelector("#chat-head .chat-name")?.textContent === "真实失败"');
+      assert.equal(await js(view,'document.querySelector("#chat-head .chat-member-stats").textContent'),'2 个下属 · 本组 1 人在干活');
+      assert.equal(await js(view,'document.querySelector(".composer textarea").value'),memberDraft);
+      evidence.checks.push('idle, waiting and offline people are excluded even beside a working member; opening that member preserves its own multiline draft and counts only the one working person in its group');
+
+      await overview({leaders:{'offline-claude':'idle','handoff-codex':'waiting'},members:{'failed-member':'offline','pending-member':'idle'}},0);
+      await openWorking(); assert.deepEqual(await listRows(),[]);
+      assert(await js(view,'document.querySelector("#main .empty")?.textContent.includes("没有正在干活的会话")'));
+      await capture(view,'08-overview-no-working');
+      await fs.unlink(workingFile);
+      await click(view,'[data-act=leader][data-id=offline-claude]');
+      await wait(view,'document.querySelector("#chat-head .chat-name")?.textContent === "旧离线记录"');
+      assert.equal(await js(view,'document.querySelector(".composer textarea").value'),draft);
+      const persisted=await fs.readdir(path.join(evidence.home,'chat'));
+      for(const name of persisted.filter(name=>name.endsWith('.jsonl'))) {
+        const entries=(await fs.readFile(path.join(evidence.home,'chat',name),'utf8')).trim().split('\n').map(line=>JSON.parse(line));
+        assert.notEqual(entries.filter(item=>item.type==='status').at(-1)?.status,'working');
+      }
+      await assert.rejects(fs.access(path.join(evidence.home,'fixture-model-start-attempts.txt')),{code:'ENOENT'});
+      assert.deepEqual(await fs.readdir(path.join(evidence.home,'spawn')).catch(error=>{if(error.code==='ENOENT')return [];throw error;}),[]);
+      assert.deepEqual(await fs.readdir(path.join(evidence.home,'runtime-locks')).catch(error=>{if(error.code==='ENOENT')return [];throw error;}),[]);
+      evidence.checks.push('all nonworking roles yield the exact session empty state, fixture status overrides never persist as working journals, drafts survive overview navigation, and no native/model start or lease was attempted');
       assert.deepEqual(evidence.errors,[]); evidence.ok=true;
       await fs.writeFile(path.join(output,'evidence.json'),JSON.stringify(evidence,null,2));
       app.quit();

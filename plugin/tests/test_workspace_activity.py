@@ -1,10 +1,12 @@
 import tests
+import threading
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 import test_vscode_service as fixtures
 from test_vscode_service import identity, NOW
-from crew import board, goals, session_ops, workspace_activity
+from crew import board, goals, runtimes, session_ops, store, workspace_activity
 
 
 class WorkspaceActivityTests(unittest.TestCase):
@@ -30,10 +32,120 @@ class WorkspaceActivityTests(unittest.TestCase):
         self.register(identity(1), 'leader', role='leader')
         board.set_status(self.conn, identity(1), 'working', now=NOW)
         self.assertEqual(self.snapshot()['counts']['working'], 0)
-        with mock.patch.object(self.service.chat, 'busy', side_effect=lambda key: key == identity(1)):
+        self.service.chat.journal(identity(1)).set_status('working')
+        with mock.patch.object(self.service.chat, 'running', side_effect=lambda key: key == identity(1)):
             value = self.snapshot()
         self.assertEqual(value['counts']['working'], 1)
         self.assertEqual(next(item for item in value['items'] if item['kind'] == 'working')['name'], 'leader')
+
+    def external(self, sid, status='idle', **fields):
+        return fixtures.VSCodeServiceTests.agent(self, sid, status=status, **fields)
+
+    def hook(self, sid, event='user-prompt-submit', at=fixtures.LATER):
+        data = {'session_id': sid, 'cwd': str(self.alpha), 'prompt': 'Keep working',
+                'last_assistant_message': 'Done', 'tool_name': 'AskUserQuestion'}
+        board.apply_hook(self.conn, event, data, 'alpha', now=at)
+
+    def cards(self):
+        with mock.patch.object(self.service, 'scan_usage'):
+            value = self.service.state('alpha')
+        return {person['session_id']: person for person in value['leaders'] + value['members']}
+
+    def test_current_external_hooks_working_override_idle_agents_for_leader_and_member(self):
+        self.register(identity(1), 'leader', role='leader')
+        self.register(identity(2), 'member', group_name='leader')
+        self.agents[:] = [self.external(identity(number)) for number in (1, 2)]
+        self.service.refresh_agents()
+        for number in (1, 2):
+            self.hook(identity(number))
+        cards = self.cards()
+        self.assertEqual([cards[identity(number)]['status'] for number in (1, 2)], ['working', 'working'])
+        self.assertFalse(any(person['busy'] for person in cards.values()))
+        value = self.snapshot()
+        self.assertFalse(value['unknown'])
+        self.assertEqual(value['counts']['working'], 2)
+        self.assertEqual({item['name'] for item in value['items'] if item['kind'] == 'working'}, {'leader', 'member'})
+
+    def test_current_waiting_or_idle_hook_is_not_counted_as_working_by_busy_agent(self):
+        self.register(identity(1), 'leader', role='leader')
+        self.agents[:] = [self.external(identity(1), 'busy')]
+        self.service.refresh_agents()
+        for event, expected in (('pre-ask', 'waiting'), ('stop', 'idle')):
+            with self.subTest(event=event):
+                self.hook(identity(1), event)
+                self.assertEqual(self.cards()[identity(1)]['status'], expected)
+                self.assertEqual(self.snapshot()['counts']['working'], 0)
+
+    def test_old_process_hook_does_not_override_the_resumed_process_observation(self):
+        self.register(identity(1), 'leader', role='leader')
+        self.hook(identity(1), at=NOW)
+        for observed, expected in (('idle', 0), ('busy', 1)):
+            with self.subTest(observed=observed):
+                self.agents[:] = [self.external(identity(1), observed,
+                                                startedAt=int(store.parse_iso(fixtures.LATER).timestamp() * 1000))]
+                self.service.refresh_agents()
+                self.assertEqual(self.cards()[identity(1)]['status'], 'working' if expected else 'idle')
+                self.assertEqual(self.snapshot()['counts']['working'], expected)
+
+    def test_failed_discovery_does_not_count_cached_busy_agent_or_stored_hook_as_working(self):
+        self.register(identity(1), 'leader', role='leader')
+        self.agents[:] = [self.external(identity(1), 'busy')]
+        self.service.refresh_agents()
+        self.hook(identity(1))
+        self.service.agents_error = 'fixture discovery failed'
+        value = self.snapshot()
+        self.assertTrue(value['unknown'])
+        self.assertEqual(value['counts']['working'], 0)
+
+    def owned(self, sid, runtime, execution=None, status='working'):
+        key = execution['id'] if execution else sid
+        self.service.chat.processes[key] = SimpleNamespace(
+            execution=execution, runtime=runtime, maintenance=None,
+            process=SimpleNamespace(poll=lambda: None, pid=1000 + len(self.service.chat.processes)),
+            native_id='native-' + sid, thread_id='native-' + sid,
+            input_lock=threading.RLock(), applied=None, context=None, pending_approvals=lambda: [])
+        self.service.chat.journal(key).set_status(status)
+        return key
+
+    def test_owned_claude_codex_general_and_goal_journals_count_both_roles_when_discovery_unknown(self):
+        self.register(identity(1), 'base-leader', role='leader')
+        expected = set()
+        number = 2
+        for role in ('leader', 'member'):
+            for runtime in ('claude', 'codex'):
+                for scoped in (False, True):
+                    sid, number = identity(number), number + 1
+                    name = '%s-%s-%s' % (role, runtime, 'goal' if scoped else 'general')
+                    self.register(sid, name, role=role, **({'group_name': 'base-leader'} if role == 'member' else {}))
+                    runtimes.set(self.conn, sid, runtime)
+                    execution = None
+                    if scoped:
+                        owner = sid if role == 'leader' else identity(1)
+                        goal = goals.create(self.conn, 'alpha', owner, name, 'Finite fixture request', ['Works'])
+                        if role == 'member':
+                            goals.assign(self.conn, goal['id'], sid, 'Implement fixture')
+                        execution = goals.create_execution(self.conn, goal['id'], sid, runtime=runtime)
+                    self.owned(sid, runtime, execution)
+                    expected.add(sid)
+        value, cards = self.snapshot(), self.cards()
+        self.assertTrue(value['unknown'])
+        self.assertEqual(value['counts']['working'], 8)
+        self.assertEqual({sid for sid, person in cards.items() if person['status'] == 'working'}, expected)
+
+    def test_owned_journal_waiting_precedence_matches_cards_and_stored_execution_is_not_observation(self):
+        self.register(identity(1), 'leader', role='leader')
+        goal = goals.create(self.conn, 'alpha', identity(1), 'Fixture task', 'Finite fixture request', ['Works'])
+        execution = goals.create_execution(self.conn, goal['id'], identity(1), runtime='codex')
+        goals.set_execution_status(self.conn, execution['id'], 'running')
+        board.set_status(self.conn, identity(1), 'working', now=NOW)
+        self.assertEqual(self.snapshot()['counts']['working'], 0)
+        key = self.owned(identity(1), 'codex', execution, status='idle')
+        board.set_status(self.conn, identity(1), 'waiting', 'A human choice is needed', now=NOW)
+        self.assertEqual(self.cards()[identity(1)]['status'], 'waiting')
+        self.assertEqual(self.snapshot()['counts']['working'], 0)
+        self.service.chat.journal(key).set_status('working')
+        self.assertEqual(self.cards()[identity(1)]['status'], 'working')
+        self.assertEqual(self.snapshot()['counts']['working'], 1)
 
     def test_held_and_archived_questions_do_not_become_tab_alerts(self):
         self.register(identity(1), 'leader', role='leader')

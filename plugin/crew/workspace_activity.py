@@ -2,17 +2,18 @@
 import datetime as dt
 import json
 
-from . import board, channel, goals, presentation, store, todo
+from . import board, channel, goals, presentation, session_presence, store, todo
 
 
 def snapshot(service, conn, project):
     board.project(conn, project)
-    people = [person for person in board.sessions(conn, project)
+    with service.agents_lock:
+        agents, agents_error = service.agents, service.agents_error
+        unknown = agents_error is not None
+    state, present, _ = session_presence.project_status(service, conn, project, agents, agents_error)
+    people = [person for person in [*state['ungrouped'], *(member for group in state['groups'] for member in group['members'])]
               if person['crew_name'] and person['status'] != 'closed' and not board.is_archived(conn, person['session_id'])]
     visible = {person['session_id']: person for person in people}
-    with service.agents_lock:
-        agents = board.live_sessions(service.agents) if service.agents_error is None else {}
-        unknown = service.agents_error is not None
     counts = dict.fromkeys(('working', 'decisions', 'todos', 'approvals', 'waiting', 'acceptance', 'unread', 'errors'), 0)
     items, journals = [], {}
     for person in people:
@@ -39,16 +40,16 @@ def snapshot(service, conn, project):
             if unread and person['role'] == 'leader':
                 last = next(reversed(unread.values()))
                 items.append({'kind': 'reply', 'title': last.get('text', '')[:130] or '有新的回复', 'name': person['crew_name'], 'detail': '未读回复'})
-        working = service.chat.busy(key) or agents.get(sid, {}).get('status') == 'busy'
+        person['status'] = session_presence.status(service.chat, person, present, key)
+        # A persisted working hook is meaningful only for this observed live
+        # process. A failed discovery keeps the cache visible but not counted.
+        working = person['status'] == 'working' and (service.chat.running(key) or not unknown and sid in present)
         if working:
-            person['status'] = 'working'
             counts['working'] += 1
             title = person['task'] or '正在处理当前工作'
             if execution:
                 title = goals.get(conn, execution['goal_id'])['title']
             items.append({'kind': 'working', 'title': title[:160], 'name': person['crew_name'], 'detail': '正在推进'})
-        elif service.chat.running(key):
-            person['status'] = service.chat.journal(key).status
     decisions = board.decisions(conn, project, all=True)
     attention = presentation.attention(conn, people, decisions, [], journals)
     for value in attention:

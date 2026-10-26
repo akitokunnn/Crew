@@ -25,6 +25,10 @@ with closing(store.connect(home)) as conn:
   ('failed-member','真实失败','member','执行交接','claude'),
   ('pending-member','下一轮工具','member','执行交接','codex')):
   board.join(conn,sid,'handoff-demo',name,project,project,'main',role=role,group_name=group)
+  board.set_task(conn,sid,{'offline-claude':'核对当前协议与原始证据 · leader 工作目标',
+                          'handoff-codex':'接续交接后的独立任务 · leader 工作目标',
+                          'failed-member':'复核退出 23 的真实失败 · 成员本人任务',
+                          'pending-member':'核对下一轮工具的真实结果 · 成员本人任务'}[sid])
   runtimes.set(conn,sid,runtime)
   board.set_status(conn,sid,'offline')
  goal=goals.create(conn,'handoff-demo','handoff-codex','交接后的独立任务','查看交接说明；验收不会启动任务。',['历史与真实回执保持可追溯'])
@@ -61,7 +65,8 @@ tool(pending,'next-tool','Bash',dict(command='python next_case.py'))
   // Even a future fixture mistake cannot start an installed model CLI.
   const guard = path.join(home, 'fixture-guard');
   await fs.mkdir(guard);
-  await fs.writeFile(path.join(guard, 'sitecustomize.py'), `from pathlib import Path
+  await fs.writeFile(path.join(guard, 'sitecustomize.py'), `import json
+from pathlib import Path
 from crew import chat
 _original_init=chat.Manager.__init__
 def _guarded_init(self,home,plugin_root,agents_provider,process_factory=None):
@@ -71,6 +76,25 @@ def _guarded_init(self,home,plugin_root,agents_provider,process_factory=None):
   raise OSError('隔离验收禁止启动真实模型载体')
  _original_init(self,home,plugin_root,agents_provider,forbidden)
 chat.Manager.__init__=_guarded_init
+from crew import web
+_original_state=web.Service.state
+_fixture_home=Path(__file__).resolve().parent.parent
+def _fixture_state(self,*args,**kwargs):
+ result=_original_state(self,*args,**kwargs)
+ if self.home.resolve()!=_fixture_home:
+  return result
+ path=self.home/'fixture-working.json'
+ if path.is_file():
+  fixture=json.loads(path.read_text(encoding='utf-8'))
+  for role in ('leaders','members'):
+   for person in result[role]:
+    status=fixture.get(role,{}).get(person['session_id'])
+    if status is not None:
+     if status not in ('working','idle','waiting','offline'):
+      raise ValueError('Invalid isolated working-status fixture')
+     person['status']=status
+ return result
+web.Service.state=_fixture_state
 `, 'utf8');
   env.PYTHONPATH = guard + path.delimiter + env.PYTHONPATH;
   const child = spawn(require('electron'), ['--require', path.join(__dirname, 'handoff-smoke-hook.cjs'), desktop,
