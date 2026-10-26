@@ -151,12 +151,42 @@ test("opening a task shows this round's AI conclusion compactly and reads no rep
   h.client.sync("leader","a");await settle();
   assert.equal(h.network.length,0);assert.equal(h.main.appends,undefined);assert.equal(h.drawer.hidden,true);
   let markup=h.client.groupMarkup("leader");
-  for(const text of ["AI 提交的结论","第 2 轮报告 · 报告结果：等待用户验收","报告验收记录（AI 填写）","通过 1","失败 1","未验证 2","仍未解决 1 项","查看完整报告","展开全文"])assert(markup.includes(text),text);
+  for(const text of ["AI 提交的结论","第 2 轮报告 · 报告结果：等待用户验收","报告验收记录（AI 填写）","共 4 项","通过 1","失败 1","未验证 2","报告补充说明 · 1 条","查看完整报告","展开全文"])assert(markup.includes(text),text);
   assert(!markup.includes("模拟验证"),"a zero count is not listed");assert(markup.includes("&lt;script&gt;alert(1)&lt;/script&gt;"));assert(!markup.includes("<script>"));assert(markup.includes("补充说明".repeat(40)),"the full conclusion stays in place");
   assert(!markup.includes("旧轮次结论"));assert(!markup.includes("混说"),"unresolved details stay folded by default");assert(!markup.includes("你已验收"),"an AI report is not shown as the user's acceptance");
   await h.click("conclusion-toggle",{reportId:"r2"});markup=h.client.groupMarkup("leader");
-  assert(markup.includes("goal-delivery-summary open"));assert(markup.includes("混说 &lt;i&gt;仍误判&lt;/i&gt;"));assert(markup.includes("收起"));
+  assert(markup.includes("goal-delivery-summary open"));assert(!markup.includes("混说"));assert(markup.includes("收起"));
+  await h.click("report-notes-toggle",{reportId:"r2"});markup=h.client.groupMarkup("leader");assert(markup.includes("混说 &lt;i&gt;仍误判&lt;/i&gt;"));
   assert(h.calls.every(call=>call.data===undefined&&call.url.startsWith("/api/goal?")));assert.equal(h.network.length,0);
+});
+
+test("five acceptance checks remain five when the report also contains five narrative notes, for either carrier",async()=>{
+  for(const runtime of ["claude","codex"]){
+    const notes=Array.from({length:5},(_,i)=>`遗留说明 ${i+1} <保留原文>`);
+    const h=harness(async()=>deliveryDetail(h,"a",{},[report("counts",1,{current:true,summary:"四项实测通过，一项尚未验证。",acceptance_counts:{passed:4,failed:0,unverified:1,simulated:0},unresolved:notes})]));
+    h.state.leaders[0].runtime=runtime;h.client.sync("leader","a");await settle();
+    let markup=h.client.groupMarkup("leader"),meta=markup.match(/<div class="goal-delivery-meta">([\s\S]*?)<\/div>/)[1];
+    for(const text of ["共 5 项","通过 4","未验证 1"])assert(meta.includes(text),text);
+    assert(!meta.includes("仍未解决"));assert(!meta.includes("补充说明"));assert(markup.includes("报告补充说明 · 5 条"));
+    assert(!markup.includes("遗留说明 1"));assert(!markup.includes("仍未解决 5 项"));
+    await h.click("report-notes-toggle",{reportId:"counts"});markup=h.client.groupMarkup("leader");
+    for(let i=1;i<=5;i++)assert(markup.includes(`遗留说明 ${i} &lt;保留原文&gt;`));
+    assert(!markup.includes("goal-delivery-summary open"),"notes and conclusion expansion are independent");
+    assert(h.calls.every(call=>call.data===undefined),"reading notes never rewrites the stored report");
+  }
+});
+
+test("all-passed acceptance does not hide report notes or convert them into extra failed checks",async()=>{
+  const h=harness(async()=>deliveryDetail(h,"a",{},[report("passed",1,{current:true,summary:"验收通过。",acceptance_counts:{passed:5,failed:0,unverified:0,simulated:0},unresolved:["已通过场景之外仍有限制"]})]));
+  h.client.sync("leader","a");await settle();let markup=h.client.groupMarkup("leader");
+  assert(markup.includes("共 5 项"));assert(markup.includes("通过 5"));assert(markup.includes("报告补充说明 · 1 条"));assert(!markup.includes('data-kind="failed"'));
+  await h.click("report-notes-toggle",{reportId:"passed"});markup=h.client.groupMarkup("leader");assert(markup.includes("已通过场景之外仍有限制"));
+});
+
+test("failed, unverified and simulated acceptance statuses remain distinct from report notes",async()=>{
+  const h=harness(async()=>deliveryDetail(h,"a",{},[report("mixed",1,{current:true,acceptance_counts:{passed:1,failed:1,unverified:1,simulated:1},unresolved:["附加边界说明"]})]));
+  h.client.sync("leader","a");await settle();const markup=h.client.groupMarkup("leader");
+  for(const text of ["共 4 项","通过 1","失败 1","未验证 1","模拟验证 1","报告补充说明 · 1 条"])assert(markup.includes(text),text);
 });
 
 test("a reopened round says it has no new delivery instead of presenting the old report, and goals without reports get no panel",async()=>{
