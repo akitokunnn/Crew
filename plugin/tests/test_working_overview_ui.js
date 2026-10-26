@@ -23,7 +23,7 @@ const person=(id,extra={})=>({session_id:id,name:id,status:"offline",runtime:"co
 const state=(leaders,members=[])=>({project:{name:"fixture"},leaders,members,decisions:[],todos:[],goals:[{id:"g1"},{id:"g2"},{id:"g3"}],
   runtimes:[{id:"codex",name:"Codex",models:[],efforts:[]},{id:"claude",name:"Claude Code",models:[],efforts:[]}]});
 const count=html=>Number(html.match(/data-tab="working"[^>]*>[\s\S]*?<b>(\d+)<\/b>/)[1]);
-const rows=html=>[...html.matchAll(/<button class="li click"[^>]*data-act="([^"]+)"[^>]*data-id="([^"]+)"/g)].map(match=>({action:match[1],id:match[2]}));
+const rows=html=>[...html.matchAll(/<(?:button|div) class="li click(?: session-surface)?"[^>]*data-act="([^"]+)"[^>]*data-id="([^"]+)"/g)].map(match=>({action:match[1],id:match[2]}));
 
 test("the screenshot case counts a working leader with offline members and opens the leader's own conversation",()=>{
   const snapshot=state([person("股市掌控者",{status:"working",goal:"只读验证 OpenD 账户与持仓"})],

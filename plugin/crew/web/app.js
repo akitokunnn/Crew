@@ -19,6 +19,7 @@
   let runtimesCache = null, runtimesPromise = null, runtimesLoading = false, runtimesError = null;
   let commentsSession = null, auxiliaryDialog = 0;
   const commentsCache = new Map();
+  const compactions = new Map();
   const waitingSounds = new Map();
   let fontScale = 1;
   const FONT_MIN = .9, FONT_MAX = 1.4;
@@ -119,16 +120,14 @@
   }
   const memberModel = item => item.where === "bg" ? `<span class="member-model">${esc(optionsLabel(item))}</span>` : "";
   const memberActivity = item => item.where === "bg" ? CrewActivity.markup(item, true) : "";
-  const contextRing = item => CrewContext.ring(item.context);
+  const contextRing = item => CrewContext.ring(item.context, {id:item.session_id, name:item.name, busy:item.busy,
+    external:item.where === "vscode", phase:compactions.get(item.session_id)?.phase || (item.activity?.phase === "compacting" ? "compacting" : null)});
   const compactBusy = item => item.busy || item.status === "working";
-  function compactControl(item) {
-    if (item.where === "vscode") return '<span class="context-hint">去 VS Code 里输入 /compact</span>';
-    return `<button class="btn context-compact" data-act="compact" data-id="${esc(item.session_id)}" ${compactBusy(item) ? 'disabled title="正在干活，等这一轮结束再压缩"' : 'title="压缩上下文"'}>压缩</button>`;
-  }
   function contextControls(item) {
     const ring = contextRing(item);
-    return ring === "" ? "" : `<span class="context-controls">${ring}${CrewContext.worthCompacting(item.context) ? compactControl(item) : ""}</span>`;
+    return ring === "" ? "" : `<span class="context-controls">${ring}</span>`;
   }
+  const sessionOpen = (id, act, label, selected = false) => `<button type="button" class="session-open" data-act="session-open" data-open-act="${act}" data-id="${esc(id)}" aria-label="${esc(label)}" ${selected ? 'aria-current="page"' : ""}></button>`;
   const membersOf = id => state.members.filter(item => item.leader_session_id === id);
   function groupWork(item) {
     const team = membersOf(item.session_id), members = workingPeople(team).length;
@@ -261,7 +260,7 @@
     const approvals = nativeApprovals?.countForLeader(item.session_id) || 0;
     const work = groupWork(item);
     const label = [item.name, item.priority === null ? "" : `第 ${item.priority} 优先`, work.label, item.unread > 0 ? `${item.unread} 条未读` : "", item.pending > 0 ? `${item.pending} 件待拍板` : "", approvals ? `${approvals} 项执行权限待确认` : ""].filter(Boolean).join("，");
-    return `<button draggable="true" class="leader-item ${item.priority === null ? "" : "pinned"} ${selected ? "active" : ""}" data-act="leader" data-id="${esc(item.session_id)}" title="${esc(label)}" aria-label="${esc(label)}" ${selected ? 'aria-current="page"' : ""}>${groupAvatar(item, work)}<span class="meta"><span class="nm"><span class="leader-name">${esc(item.name)}</span>${item.priority === null ? "" : `<span class="leader-priority" title="第 ${item.priority} 优先">优先 ${item.priority}</span>`}</span><span class="goal">${CrewChat.renderInline(item.goal, item.session_id)}</span></span><span class="leader-details">${runtimeBadge(item, true)}${item.is_git_admin ? '<span class="tag git-admin-tag">Git</span>' : ""}${contextRing(item)}${groupWorkLabel(work, true)}<span class="badges">${approvals ? `<span class="native-approval-count" title="${approvals} 项执行权限待确认">权限 ${approvals}</span>` : ""}${item.pending > 0 ? `<span class="b-pending" title="${item.pending} 件等你拍板">${item.pending}</span>` : ""}${item.unread > 0 ? `<span class="b-unread" title="${item.unread} 条未读">${item.unread}</span>` : ""}</span></span></button>`;
+    return `<div draggable="true" class="leader-item session-surface ${item.priority === null ? "" : "pinned"} ${selected ? "active" : ""}" data-act="leader" data-id="${esc(item.session_id)}" title="${esc(label)}" aria-label="${esc(label)}" ${selected ? 'aria-current="page"' : ""}>${sessionOpen(item.session_id, "leader", label, selected)}${groupAvatar(item, work)}<span class="meta"><span class="nm"><span class="leader-name">${esc(item.name)}</span>${item.priority === null ? "" : `<span class="leader-priority" title="第 ${item.priority} 优先">优先 ${item.priority}</span>`}</span><span class="goal">${CrewChat.renderInline(item.goal, item.session_id)}</span></span><span class="leader-details">${runtimeBadge(item, true)}${item.is_git_admin ? '<span class="tag git-admin-tag">Git</span>' : ""}${contextRing(item)}${groupWorkLabel(work, true)}<span class="badges">${approvals ? `<span class="native-approval-count" title="${approvals} 项执行权限待确认">权限 ${approvals}</span>` : ""}${item.pending > 0 ? `<span class="b-pending" title="${item.pending} 件等你拍板">${item.pending}</span>` : ""}${item.unread > 0 ? `<span class="b-unread" title="${item.unread} 条未读">${item.unread}</span>` : ""}</span></span></div>`;
   }
   function renderSidebar() {
     if (leaderDrag !== null || leaderOrderSaving) return;
@@ -382,7 +381,7 @@
   const commentButton = (item, group = false) => `<button type="button" class="session-comment" data-act="comments" data-id="${esc(item.session_id)}" aria-label="${esc(group ? item.name + "组的评论" : "评论" + item.name)}">${ic("msg", "xs")}${group ? "组评论" : "评论"}</button>`;
   function memberNode(item) {
     const where = item.where === "bg" ? "cloud" : item.where === "vscode" ? "code" : "clock";
-    return `<div class="session-node"><button class="node click ${readOnlyId === item.session_id ? "sel" : ""}" data-act="member-chat" data-session-menu="${esc(item.session_id)}" data-id="${esc(item.session_id)}"><span class="node-top">${av(item.name, 26, true)}<span class="nm">${esc(item.name)}${runtimeBadge(item, true)}${contextRing(item)}<span class="where" title="${item.where === "bg" ? "后台运行" : item.where === "vscode" ? "开在 VS Code" : "没在运行"}">${ic(where, "xs")}</span></span>${st(item.status)}</span>${memberModel(item)}<span class="now">${item.task === null ? "还没写" : CrewChat.renderInline(item.task, item.session_id)}</span>${memberActivity(item)}${codexList(item)}</button><div class="session-node-actions">${commentButton(item)}<button class="session-comment" data-act="card" data-id="${esc(item.session_id)}">资料与操作</button></div></div>`;
+    return `<div class="session-node"><div class="node session-surface click ${readOnlyId === item.session_id ? "sel" : ""}" data-act="member-chat" data-session-menu="${esc(item.session_id)}" data-id="${esc(item.session_id)}">${sessionOpen(item.session_id, "member-chat", `和「${item.name}」对话`)}<span class="node-top">${av(item.name, 26, true)}<span class="nm">${esc(item.name)}${runtimeBadge(item, true)}${contextRing(item)}<span class="where" title="${item.where === "bg" ? "后台运行" : item.where === "vscode" ? "开在 VS Code" : "没在运行"}">${ic(where, "xs")}</span></span>${st(item.status)}</span>${memberModel(item)}<span class="now">${item.task === null ? "还没写" : CrewChat.renderInline(item.task, item.session_id)}</span>${memberActivity(item)}${codexList(item)}</div><div class="session-node-actions">${commentButton(item)}<button class="session-comment" data-act="card" data-id="${esc(item.session_id)}">资料与操作</button></div></div>`;
   }
   function leaderNode(item, clickable) {
     const work = groupWork(item);
@@ -391,7 +390,7 @@
   function workingRow(item) {
     const isLeader = leader(item.session_id) !== undefined;
     const task = isLeader ? item.goal : item.task;
-    return `<button class="li click" data-act="${isLeader ? "leader" : "member-chat"}" data-session-menu="${esc(item.session_id)}" data-id="${esc(item.session_id)}">${av(item.name, 32, !isLeader)}<span class="grow"><span class="ttl">${esc(item.name)}${runtimeBadge(item, true)}${contextRing(item)} <span class="where">${ic(item.where === "bg" ? "cloud" : "code", "xs")}</span><span class="li-sub">${isLeader ? "leader" : `归 ${esc(item.group)}`}</span>${memberModel(item)}</span><span class="li-now">${task === null ? "还没写" : CrewChat.renderInline(task, item.session_id)}</span>${memberActivity(item)}<span class="sm">${item.codex.filter(task => task.status === "running").map(task => `<span>${ic("bolt", "xs")} ${CrewChat.renderInline(task.task_name, item.session_id)} · <span class="spin" style="width:9px;height:9px;display:inline-block"></span> ${Math.floor((Date.now() - new Date(task.started_at)) / 60000)} 分钟</span>`).join("")}</span></span>${st(item.status)}</button>`;
+    return `<div class="li click session-surface" data-act="${isLeader ? "leader" : "member-chat"}" data-session-menu="${esc(item.session_id)}" data-id="${esc(item.session_id)}">${sessionOpen(item.session_id, isLeader ? "leader" : "member-chat", `和「${item.name}」对话`)}${av(item.name, 32, !isLeader)}<span class="grow"><span class="ttl">${esc(item.name)}${runtimeBadge(item, true)}${contextRing(item)} <span class="where">${ic(item.where === "bg" ? "cloud" : "code", "xs")}</span><span class="li-sub">${isLeader ? "leader" : `归 ${esc(item.group)}`}</span>${memberModel(item)}</span><span class="li-now">${task === null ? "还没写" : CrewChat.renderInline(task, item.session_id)}</span>${memberActivity(item)}<span class="sm">${item.codex.filter(task => task.status === "running").map(task => `<span>${ic("bolt", "xs")} ${CrewChat.renderInline(task.task_name, item.session_id)} · <span class="spin" style="width:9px;height:9px;display:inline-block"></span> ${Math.floor((Date.now() - new Date(task.started_at)) / 60000)} 分钟</span>`).join("")}</span></span>${st(item.status)}</div>`;
   }
   function workingDispatchRow({person, task}) {
     const isLeader = leader(person.session_id) !== undefined;
@@ -799,6 +798,32 @@
     $("backdrop").innerHTML = `<div class="modal compact-modal" role="dialog" aria-modal="true" aria-labelledby="compact-title"><h3 id="compact-title">压缩「${esc(item.name)}」的上下文？</h3><p class="d">压缩后它只保留摘要，细节以白板为准。</p><div class="acts"><button class="btn ghost" type="button" data-act="modal-close">取消</button><button class="btn primary" type="button" data-act="compact-confirm" data-id="${esc(id)}">压缩</button></div></div>`;
     $("backdrop").classList.add("show"); $("backdrop").querySelector('[data-act="modal-close"]').focus();
   }
+  async function compactContext(id) {
+    const item = sessionItem(id);
+    if (!item || compactions.has(id)) return;
+    if (item.where === "vscode") { toast(`「${item.name}」正在原工具中运行，请在那边输入 /compact。`); return; }
+    const pending = {phase:"submitting"};
+    compactions.set(id, pending); render();
+    let closeStream;
+    const finish = event => {
+      if (compactions.get(id) !== pending) return;
+      compactions.delete(id); render();
+      if (event.type !== "compact") toast(`「${item.name}」：${event.text || event.reason || "会话已离线，压缩未完成"}`);
+    };
+    try {
+      closeStream = await CrewChat.watchCompact(id, {state, api, toast:message => toast(`「${item.name}」：${message}`), onFinish:finish});
+      const result = await api("/api/session/compact", {session_id:id, after_turn:true});
+      if (compactions.get(id) === pending) {
+        pending.phase = result.queued ? "queued" : "compacting";
+        toast(`「${item.name}」：${result.message || "正在压缩上下文…"}`);
+      }
+    } catch (error) {
+      closeStream?.();
+      if (compactions.get(id) === pending) { compactions.delete(id); render(); }
+      throw error;
+    }
+    await loadState(true);
+  }
   function renderLeaderRuntime() {
     const form = $("leader-form");
     if (form === null) return;
@@ -1029,7 +1054,7 @@
       const button = event.target.closest("[data-act]");
       if (!event.target.closest("#menu") && !event.target.closest('[data-act$="-menu"]')) hideMenu();
       if (button === null || button.disabled) return;
-      const act = button.dataset.act, id = button.dataset.id;
+      const act = button.dataset.act === "session-open" ? button.dataset.openAct : button.dataset.act, id = button.dataset.id;
       if (act === "settings") { openSettings(); return; }
       if (act === "git-settings") { hideMenu(); gitSettings.open(project); return; }
       if (act === "workspace-settings") { openWorkspaceSettings(); return; }
@@ -1123,6 +1148,7 @@
         showMenu(button, modelControls(sessionItem(id)));
         refreshing.then(() => { if (menuAnchor === button && $("menu").classList.contains("show")) showMenu(button, modelControls(sessionItem(id))); });
       }
+      else if (act === "context-compact") action(`compact:${id}`, () => compactContext(id));
       else if (act === "compact") openCompact(id);
       else if (act === "compact-department") { const item = leader(id); if (item) void maintenance.openDepartment(project, item); }
       else if (act === "compact-confirm") action(`compact:${id}`, async () => {

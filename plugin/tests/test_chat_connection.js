@@ -24,6 +24,24 @@ function harness(){
 }
 const history=()=>({events:[],busy:false,read_seq:0});
 
+test("compact watcher waits for native completion and reports cancellation or closed transport",async()=>{
+  for(const terminal of [{type:"compact",seq:2,pre_tokens:50000,post_tokens:10000},
+    {type:"compact_cancelled",reason:"上一轮未成功结束"},{type:"status",status:"offline"},{type:"error",text:"native failed"}]){
+    const h=harness(),streams=[],finished=[],toasts=[];
+    h.sandbox.EventSource=class{static CLOSED=2;constructor(url){this.url=url;streams.push(this);}close(){this.closed=true;}};
+    await h.chat.watchCompact("member",{state:{project:{name:"fixture"}},api:async()=>({events:[{seq:1}]}),toast:text=>toasts.push(text),onFinish:event=>finished.push(event)});
+    assert(streams[0].url.includes("session_id=member"));assert(streams[0].url.includes("after=1"));
+    streams[0].onmessage({data:JSON.stringify({type:"turn_result",success:true})});assert.equal(finished.length,0);
+    streams[0].onmessage({data:JSON.stringify(terminal)});assert.equal(finished.length,1);assert(streams[0].closed);
+    assert.equal(toasts.length,terminal.type==="compact"?1:0);
+  }
+  const h=harness(),finished=[];let stream;
+  h.sandbox.EventSource=class{static CLOSED=2;constructor(){stream=this;this.readyState=0;}close(){this.closed=true;}};
+  await h.chat.watchCompact("member",{state:{project:{name:"fixture"}},api:async()=>history(),toast(){},onFinish:event=>finished.push(event)});
+  stream.onerror();assert.equal(finished.length,0,"a reconnect is not a completed or failed compaction");
+  stream.readyState=2;stream.onerror();assert.equal(finished.length,1);assert(stream.closed);
+});
+
 test("a goal-start tool followed by identity handoff and native interruption renders as transferred, not executing forever",async()=>{
   // Minimized from the real journal: tool -> handoff -> interrupted turn -> offline; no tool_result exists.
   const events=[{seq:1,type:"status",status:"working"},

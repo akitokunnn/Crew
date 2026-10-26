@@ -207,6 +207,8 @@ Git 管理员可以自行定分支规则、推功能分支、开 PR、CI 绿后�
 
 Windows 的派工集成源码在 `integrations/codex-dispatch/` 与 `integrations/claude-dispatch/`，分别对应已安装 skill 的脚本与查看器；更新 Crew 安装包不会自动覆盖用户自定义的 skill。托管 CC 使用后台命令的完成/失败回执，禁用会逐事件启动新轮次的 Monitor；普通过程记录不转发给 leader，也不为纯等待另发回复。Mac / Linux 的 skill 脚本不在本次 Windows 集成范围。
 
+左栏、架构图、聊天头部、成员资料和“在干活”列表里的上下文小圈均可点击，直接压缩对应人员的总对话；正在回复时在本轮结束后压缩。小圈显示排队与执行状态，原生压缩完成后才提示完成。外部工具独占的会话会提示在原工具输入 `/compact`，不会启动第二个进程。
+
 金额按 `~/.crew/prices.json` 折算（美元 / 百万 token，初值是 Anthropic 官方 API 价）。用订阅时这只是参考，不是实际账单。价格表里没有的模型只显示 token。
 
 网页 Claude 每周额度下显示“其中 Crew ≈ X%”：按当前 Claude 七天窗口汇总所有项目中 leader、进组成员及其子 agent 的 API 价折合金额，再按固定每 1% ≈ $20 换算（社区实测 $16～27，不自动校准），不计 Codex。窗口未采集、过期或请求含未定价模型时不显示。会话间 SendMessage 即使标记 isMeta，也记为新的 peer 轮次，干活时长按全部轮次分段。

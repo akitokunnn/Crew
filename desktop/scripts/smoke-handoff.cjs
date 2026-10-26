@@ -96,8 +96,26 @@ def _fixture_state(self,*args,**kwargs):
      if status not in ('working','idle','waiting','offline'):
       raise ValueError('Invalid isolated working-status fixture')
      person['status']=status
+ if (self.home/'fixture-context.json').is_file():
+  for person in result['leaders']+result['members']:
+   person['context']={'used':42000,'max':100000,'source':'fixture'}
  return result
 web.Service.state=_fixture_state
+_original_compact=chat.Manager.compact
+def _fixture_compact(self,session,caller_session_id=None,after_turn=False):
+ path=self.home/'fixture-context.json'
+ if self.home.resolve()!=_fixture_home or not path.is_file():
+  return _original_compact(self,session,caller_session_id=caller_session_id,after_turn=after_turn)
+ mode=json.loads(path.read_text(encoding='utf-8'))['mode']
+ with (self.home/'fixture-compacts.jsonl').open('a',encoding='utf-8') as stream:
+  stream.write(json.dumps({'session_id':session['session_id'],'after_turn':after_turn})+'\\n')
+ if mode=='failed':
+  from crew import board
+  raise board.Conflict('FixtureNativeRejected: 压缩被拒绝')
+ if mode=='queued':return {'ok':True,'queued':True,'message':'这一轮说完后压缩'}
+ self.journal(session['session_id']).emit('compact',pre_tokens=42000,post_tokens=10000)
+ return {'ok':True}
+chat.Manager.compact=_fixture_compact
 `, 'utf8');
   env.PYTHONPATH = guard + path.delimiter + env.PYTHONPATH;
   const child = spawn(require('electron'), ['--require', path.join(__dirname, 'handoff-smoke-hook.cjs'), desktop,
