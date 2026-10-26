@@ -58,6 +58,21 @@ class ClaudeChildEventTests(UsageFixture, unittest.TestCase):
         self.journal.consume(task('task_progress', description='迟到进展'))
         self.assertEqual(self.row()['status'], 'failed')
 
+    def test_prompt_without_description_stays_in_details_and_names_are_compact_plain_text(self):
+        record = call()
+        args = record['message']['content'][0]['input']
+        args.pop('description')
+        args['prompt'] = '你在 Crew 内工作。\n用户的原始要求：检查界面'
+        self.journal.consume(record)
+        self.assertEqual(self.row()['task_name'], 'Claude 子代理 call-1')
+        self.assertEqual(self.row()['task_description'], args['prompt'])
+        self.journal.consume(task(description='检查界面\n  保留布局'))
+        self.assertEqual(self.row()['task_name'], '检查界面 保留布局')
+        self.journal.consume(task('task_progress', description='界面' * 100))
+        self.assertLessEqual(len(self.row()['task_name']), 48)
+        self.assertTrue(self.row()['task_name'].endswith('…'))
+        self.assertEqual(chat.Journal(self.journal.path).subagents, self.journal.subagents)
+
     def test_foreground_moved_to_background_requires_notification_even_without_structured_output(self):
         self.journal.consume(call())
         self.journal.consume(task(is_backgrounded=True))
@@ -174,6 +189,7 @@ class ClaudeChildHttpTests(ShellFixture, unittest.TestCase):
             state = self.state()
             owner = next(row for row in state['leaders'] + state['members'] if row['session_id'] == sid)
             self.assertEqual((len(owner['codex']), owner['codex'][0]['runtime'], owner['codex'][0]['status']), (1, 'claude', 'running'))
+            self.assertEqual(owner['codex'][0]['task_description'], '保留用户要求')
             self.emit(current, native, task('task_notification', status='completed', summary='完成'), 'succeeded')
         self.assertEqual(len(board.sessions(self.conn, 'demo')), before)
 

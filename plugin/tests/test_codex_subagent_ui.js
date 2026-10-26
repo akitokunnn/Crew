@@ -27,3 +27,17 @@ test("both carrier labels use the same task rows and distinguish their real sour
     const html=ui.codexMarkup(task({runtime}));assert(html.includes(label));assert(!html.includes(runtime==="claude"?"Codex 子代理":"Claude 子代理"));
   }
 });
+test("native names are single line plain text even for legacy prompt names; full details remain available",()=>{
+  const renderCalls=[];
+  sandbox.CrewChat.renderInline=value=>{renderCalls.push(value);return escape(value);};
+  for(const runtime of ["codex","claude"]){
+    const prompt='你在 Crew 内工作。\n用户的原始要求 <safe>\n只处理当前目标';
+    const html=ui.codexMarkup(task({runtime,task_name:prompt,task_description:prompt}));
+    assert(!renderCalls.length,"native names must not become Markdown blocks or links");
+    assert(html.includes('class="n" title="'+escape(prompt)+'">你在 Crew 内工作。 用户的原始要求 &lt;safe&gt; 只处理当前目标</span>'));
+    assert(!html.includes('<safe>'));
+    const longName='🧪'.repeat(100),longHtml=ui.codexMarkup(task({runtime,task_name:longName}));
+    assert(longHtml.includes('title="'+longName+'">'+'🧪'.repeat(47)+'…</span>'));
+  }
+  sandbox.CrewChat.renderInline=escape;
+});

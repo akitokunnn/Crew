@@ -842,6 +842,15 @@ class _Projector:
             content_hash=_hash(_json([text,group['calls'],partial]).encode())
             message_key=['journal-message',key,logical_hash,content_hash]
             mid=self.id('messages','message',message_key)
+            if group['role']=='tool' and group['tool_use_id'] in calls:
+                # An unchanged result can now refer to a new immutable call
+                # version. Preserve the old message/result and append both.
+                outcome='error' if group['is_error'] else 'success'
+                old=self.conn.execute('SELECT tool_call_id,outcome FROM tool_results WHERE workspace_id=? AND message_id=?',
+                    (self.ws,mid)).fetchone()
+                if old and (old['tool_call_id']!=calls[group['tool_use_id']] or old['outcome']!=outcome):
+                    message_key+=['tool-result-version',calls[group['tool_use_id']],outcome]
+                    mid=self.id('messages','message',message_key)
             previous=self.journal_latest.get((cid,logical_hash))
             if previous==mid:
                 previous=self.conn.execute('SELECT supersedes_message_id FROM messages WHERE id=?',(mid,)).fetchone()[0]
@@ -855,9 +864,15 @@ class _Projector:
                 created_at=at,supersedes=previous)
             self.journal_latest[(cid,logical_hash)]=mid
             for call_index,(native_call,call) in enumerate(group['calls'].items()):
-                call_id=self.id('tool_calls','journal-call',[key,_hash(native_call.encode()),_hash(_json(call).encode())])
+                call_key=[key,_hash(native_call.encode()),_hash(_json(call).encode())]
+                call_id=self.id('tool_calls','journal-call',call_key)
                 old=self.conn.execute('SELECT message_id FROM tool_calls WHERE id=?',(call_id,)).fetchone()
-                self.put('tool_calls',call_id,conversation_id=cid,message_id=old['message_id'] if old else mid,
+                # Native IDs may be replayed or survive a message revision.
+                # Keep existing IDs when their owner matches; otherwise scope
+                # the new call to its message, as required by the composite FK.
+                if old and old['message_id']!=mid:
+                    call_id=self.id('tool_calls','journal-call',call_key,mid)
+                self.put('tool_calls',call_id,conversation_id=cid,message_id=mid,
                     tool_name=call['name'],display_label=call['name'],arguments_json=_json(call['arguments']))
                 calls[native_call]=call_id
                 self.put('message_parts',self.id('message_parts','journal-call',[mid,call_id]),message_id=mid,

@@ -47,7 +47,8 @@ class Events:
     def _update(self, identity, **fields):
         previous = self.agents.get(identity)
         task = {**(previous or {'agent_id': identity, 'root_thread_id': self.root,
-                  'parent_thread_id': self.root, 'runtime': 'claude', 'task_name': 'Claude 子代理',
+                  'parent_thread_id': self.root, 'runtime': 'claude',
+                  'task_name': 'Claude 子代理 ' + identity.rsplit(':', 1)[-1][-8:],
                   'status': 'unknown', 'detail': None}), **fields}
         replaced = self.replacements.pop(identity, None)
         if task == previous and replaced is None:
@@ -69,8 +70,10 @@ class Events:
                     continue
                 args = block['input']
                 identity = self._bind(call=block['id'])
-                events.extend(self._update(identity, tool_use_id=block['id'],
-                    task_name=title(args.get('description') or args.get('prompt')) or block['name'],
+                fields = {'task_description': args.get('prompt')}
+                if title(args.get('description')):
+                    fields['task_name'] = title(args['description'])
+                events.extend(self._update(identity, tool_use_id=block['id'], **fields,
                     parent_thread_id=self.calls.get(parent_call, self.root),
                     background=bool(args.get('run_in_background')), status='running'))
         elif kind == 'user' and isinstance(record['message']['content'], list):
