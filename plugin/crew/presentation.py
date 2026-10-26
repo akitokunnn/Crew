@@ -1,6 +1,29 @@
 """Workspace views composed from recorded facts, without changing the board."""
 
 
+def chat_replies(events, after=0):
+    """Project visible reply text, matching chat.js's stream/snapshot replay.
+
+    Assistant events also carry tool calls. Only a change to reply text can
+    advance its unread cursor; a final snapshot of streamed text is not new.
+    """
+    messages = {}
+    for event in events:
+        if event['type'] not in ('text', 'assistant'):
+            continue
+        state = messages.setdefault(event['id'], {'content': '', 'stream': '', 'reply': None})
+        if event['type'] == 'text':
+            state['stream'] += event['text']
+        else:
+            state['content'] = (''.join(block['text'] for block in event['content'] if block['type'] == 'text')
+                                if 'content' in event else event.get('text', ''))
+            state['stream'] = ''
+        text = state['content'] + state['stream']
+        if state['reply'] is None or state['reply']['text'] != text:
+            state['reply'] = {'id': event['id'], 'seq': event['seq'], 'at': event.get('at'), 'text': text}
+    return sorted((state['reply'] for state in messages.values()
+                   if state['reply']['text'].strip() and state['reply']['seq'] > after), key=lambda reply: reply['seq'])
+
 
 def attention(conn, sessions, decisions, tasks, journals):
     dismissed = {r[0] for r in conn.execute("SELECT item_id FROM attention_resolutions")}

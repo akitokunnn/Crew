@@ -6,7 +6,7 @@ from unittest import mock
 
 import test_vscode_service as fixtures
 from test_vscode_service import identity, NOW
-from crew import board, goals, runtimes, session_ops, store, workspace_activity
+from crew import board, codex_events, goals, runtimes, session_ops, store, workspace_activity
 
 
 class WorkspaceActivityTests(unittest.TestCase):
@@ -179,3 +179,36 @@ class WorkspaceActivityTests(unittest.TestCase):
         self.register(identity(2), 'member', group_name='leader')
         self.service.chat.journal(identity(2)).emit('assistant', id='internal', text='Internal implementation output')
         self.assertEqual(self.snapshot()['counts']['unread'], 0)
+
+    def test_tools_do_not_inflate_general_or_goal_unread_for_either_runtime(self):
+        for index, (runtime, scoped) in enumerate((('claude', False), ('codex', False), ('claude', True), ('codex', True)), 1):
+            with self.subTest(runtime=runtime, goal=scoped):
+                sid = identity(index)
+                self.register(sid, 'leader-' + str(index), role='leader')
+                runtimes.set(self.conn, sid, runtime)
+                execution = None
+                if scoped:
+                    goal = goals.create(self.conn, 'alpha', sid, 'Git check', 'Check the worktree', ['Clean'])
+                    execution = goals.create_execution(self.conn, goal['id'], sid, runtime=runtime)
+                journal = self.service.chat.journal(execution['id'] if execution else sid)
+                parser = codex_events.Events('thread')
+                for number in range(18):
+                    if runtime == 'claude':
+                        journal.consume({'type': 'assistant', 'message': {'id': 'tool-' + str(number), 'content': [
+                            {'type': 'tool_use', 'id': 'call-' + str(number), 'name': 'Bash', 'input': {'command': 'git status'}}]}})
+                    else:
+                        for event in parser.consume('item/completed', {'threadId': 'thread', 'item': {
+                                'id': 'tool-' + str(number), 'type': 'commandExecution', 'command': 'git status',
+                                'cwd': str(self.alpha), 'status': 'completed', 'exitCode': 0, 'aggregatedOutput': 'clean'}}):
+                            journal.emit(event['type'], **{key: value for key, value in event.items() if key != 'type'})
+                self.assertEqual(self.snapshot()['counts']['unread'], 0)
+                seen = journal.emit('text', id='answer', text='Git 检查完成。')
+                value = self.snapshot()
+                self.assertEqual(value['counts']['unread'], 1)
+                self.assertEqual(next(item['title'] for item in value['items'] if item['kind'] == 'reply'), 'Git 检查完成。')
+                if execution:
+                    goals.mark_read(self.conn, execution['id'], seen['seq'])
+                else:
+                    board.mark_read(self.conn, sid, seen['seq'])
+                journal.emit('assistant', id='answer', content=[{'type': 'text', 'text': 'Git 检查完成。'}])
+                self.assertEqual(self.snapshot()['counts']['unread'], 0)

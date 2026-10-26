@@ -12,7 +12,7 @@ from pathlib import Path
 from urllib.error import URLError
 from urllib.request import ProxyHandler, Request, build_opener
 
-from . import board, chat, decision_briefs, goal_links, qq, runtimes, store, todo, trust_mode
+from . import board, chat, decision_briefs, goal_links, presentation, qq, runtimes, store, todo, trust_mode
 
 TEXT_LIMIT = 2000  # 10-23 实测 5000 字也能发；2000 一段是为了手机上好读。
 LOG = logging.getLogger(__name__)
@@ -754,7 +754,7 @@ class Inbox:
                 status = states[sid]
                 if self.service.chat.running(sid) and (status != 'waiting' or journal.status == 'working'):
                     status = journal.status
-                unread = len({e['id'] for e in journal.after(board.read_seq(conn, sid)) if e['type'] == 'assistant'})
+                unread = len(presentation.chat_replies(journal.after(0), after=board.read_seq(conn, sid)))
                 current = '（当前）' if sid == self.config['current_leader_session_id'] else ''
                 lines.append('%s %s·%s%s %s 未读 %s 待拍板 %s' % (
                     leader['number'], leader['project_label'],
