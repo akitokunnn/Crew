@@ -646,6 +646,7 @@ class Service:
                                  codex_older=len(own_tasks) - len(recent_tasks))
                     if session['role'] == 'leader':
                         events = histories[sid]['events'] if sid in histories else []
+                        replies = presentation.chat_replies(events)
                         read_seq = board.read_seq(conn, sid)
                         result['leaders'].append(dict(
                             session_id=sid, name=session['crew_name'], goal=session['task'], status=session['status'],
@@ -662,8 +663,8 @@ class Service:
                             busy=self.chat.busy(sid) or (sid in general_present and general_present[sid].get('status') == 'busy'),
                             running=self.chat.running(sid) or sid in general_present, web_chat=session['web_chat'], cc_name=session['cc_name'],
                             last_seq=events[-1]['seq'] if events else 0, read_seq=read_seq,
-                            last_reply_id=next((e['id'] for e in reversed(events) if e['type'] == 'assistant'), None),
-                            unread=len({e['id'] for e in events if e['type'] == 'assistant' and e['seq'] > read_seq}),
+                            last_reply_id=replies[-1]['id'] if replies else None,
+                            unread=sum(reply['seq'] > read_seq for reply in replies),
                             pending=sum(d['leader_session_id'] == sid and not d['held'] for d in result['decisions']),
                             notices_pending=len(board.pending_notices(conn, sid)),
                             member_ids=[s['session_id'] for s in sessions if s['role'] != 'leader' and s['crew_name']
