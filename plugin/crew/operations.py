@@ -257,8 +257,13 @@ class Operations:
                 path.unlink()
         active = self.state['active_worker']
         if active:
-            if self.process is not None:
-                self.process.poll()
+            # Publishing a result is not process completion. In particular on
+            # Windows the producer can still hold the result file while exiting.
+            # Recovered controllers must observe the same boundary as Popen owners.
+            running = (self.process.poll() is None if self.process is not None
+                       else _pid_alive(active['pid']) is not False)
+            if running:
+                return
             result_path = Path(active['result'])
             if result_path.exists():
                 result = _read_json(result_path, 1024 * 1024)
@@ -282,11 +287,9 @@ class Operations:
                                               incident['attempts'] < 2 else result['status'])
                 self._report(incident)
                 self.state['active_worker'] = None
-                if self.process is not None:
-                    self.process.wait(timeout=5)
                 self.process = None
                 self._save()
-            elif _pid_alive(active['pid']) is False:
+            else:
                 incident = next(item for item in self.state['incidents'] if item['id'] == active['incident_id'])
                 incident['result'] = {'status': 'failed', 'error': 'WorkerExited: no result; inspect worker.log'}
                 if incident['status'] != 'resolved':
