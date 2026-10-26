@@ -23,10 +23,12 @@ class WorkspaceTabs {
   }
 
   _public(tab) { return { id: tab.id, name: tab.project.display_name || tab.project.name, project: tab.project.name, loading: tab.loading, error: tab.error,
-    activity:tab.activity||null }; }
+    readOnly:Boolean(tab.project.read_only), activity:tab.project.read_only ? {tone:'idle',label:'已保存的只读历史',badge:0,unread:0,items:[],stale:false,error:''} : tab.activity||null }; }
   async refreshActivity() {
     if(this.disposed||this.activityBusy||!this.readActivity||!this.entries.size)return;
-    this.activityBusy=true;const tabs=[...this.entries.values()];let changed=false;
+    const tabs=[...this.entries.values()].filter(tab=>!tab.project.read_only);
+    if(!tabs.length)return;
+    this.activityBusy=true;let changed=false;
     try{
       const result=await this.readActivity(tabs.map(tab=>tab.project.name));
       if(!Array.isArray(result?.projects))throw Error('项目动态返回格式不正确');

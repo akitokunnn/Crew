@@ -74,6 +74,13 @@ test('an explicit backend or local port clears a saved existing service unless a
   assert.equal(local.backendDir,source);assert.equal(local.backendSource,'custom');assert.equal(local.serviceUrl,undefined);
   assert.equal(core.options(['--port','0'],{launchSettingsPath:file}).serviceUrl,undefined);
 });
+
+test('production, custom data and isolated windows have distinct visible identities', () => {
+  assert.equal(core.options([]).instanceName, 'Crew');
+  assert.equal(core.options(['--home', path.join(os.tmpdir(), 'crew-independent')]).instanceName, 'Crew · 独立数据');
+  assert.equal(core.options(['--home', path.join(os.tmpdir(), 'crew-test'), '--isolated-sources']).instanceName, 'Crew · 隔离测试');
+  assert.equal(core.options(['--home', path.join(os.tmpdir(), 'crew-smoke'), '--smoke-test', '--smoke-output', 'evidence.json']).instanceName, 'Crew · 隔离测试');
+});
 test('new workspace name is a filename rather than an arbitrary path', () => {
   for (const name of ['../escape', 'one/two', 'one\\two', '.', '..', 'CON', 'LPT1.txt', 'name.', '', ' x ']) assert.throws(() => core.workspaceName(name));
   assert.equal(core.workspaceName('我的新项目'), '我的新项目');

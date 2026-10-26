@@ -6,6 +6,7 @@ let dispatching = false;
 const homeActions = [];
 let workspaceSettings = null, workspaceSettingsLoading = null, workspaceMaintenance = null;
 function failure(error) { $('error').textContent = error.message || String(error); $('error').hidden = false; }
+window.crewDesktop.onStorageProgress?.(message=>{const status=$('storage-progress');if(status){status.textContent=message;status.hidden=!message;}});
 async function action(callback) {
   if (busy) return;
   busy = true; $('error').hidden = true;
@@ -60,7 +61,13 @@ async function refresh() {
       settings.title = '工作区设置 · ' + label; settings.setAttribute('aria-label', settings.title); settings.dataset.projectSettings = project.name;
       settings.append(icon(['M4 6h16M4 12h16M4 18h16M8 3v6M16 9v6M10 15v6']));
       settings.addEventListener('click', () => { void openWorkspaceSettings(project.name).catch(failure); });
-      row.append(button, settings); $('projects').append(row);
+      if(project.read_only){settings.disabled=true;settings.title='导入的历史可查看和导出；执行需要重新绑定本机环境。';}
+      const exportButton=document.createElement('button');exportButton.type='button';exportButton.className='project-settings';exportButton.textContent='导出';exportButton.title='导出完整工作区';exportButton.setAttribute('aria-label','导出工作区 '+label);
+      exportButton.addEventListener('click',()=>action(()=>window.crewDesktop.storageExport(project.name)));
+      row.append(button, exportButton);
+      if(project.workspace_id&&!project.read_only){const history=document.createElement('button');history.type='button';history.className='project-settings';history.textContent='历史';history.title='查看完整保存历史';history.onclick=()=>action(()=>openWorkspace('storage:'+project.workspace_id));row.append(history);}
+      if(project.can_activate){const resume=document.createElement('button');resume.type='button';resume.className='project-settings';resume.textContent='接续';resume.title='绑定本机目录后在Crew接续';resume.onclick=()=>action(async()=>{await window.crewDesktop.storageActivate(project.workspace_id);await refresh();});row.append(resume);}
+      if(!project.read_only)row.append(settings);$('projects').append(row);
     }
     return state;
   } catch (error) {
@@ -120,6 +127,7 @@ function openExisting() { return action(async () => {
   if (choice.kind === 'relink') await openWorkspaceSettings(choice.project, {root:project.relocation.directory});
   if (choice.kind === 'new') { const created = await window.crewDesktop.registerExisting(project.relocation.directory); await openWorkspace(created.name); }
 }); }
+document.getElementById('import-workspace')?.addEventListener('click',()=>action(async()=>{await window.crewDesktop.storageImport();await refresh();}));
 function openCreate() { $('error').hidden = true; $('create-panel').hidden = false; $('name').focus(); }
 function resetCreate() {
   $('create-form').reset(); $('location').textContent = '尚未选择文件夹'; $('location').removeAttribute('title');

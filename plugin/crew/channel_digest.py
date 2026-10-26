@@ -239,6 +239,15 @@ class Manager:
 
     def start(self, conn, project, trigger="manual"):
         board.project(conn, project)
+        if trigger == 'auto' and conn.execute(
+                "SELECT 1 FROM events WHERE project=? AND kind='workspace:recovered' LIMIT 1", (project,)).fetchone():
+            active = conn.execute(
+                "SELECT 1 FROM sessions s LEFT JOIN session_stop_gates g ON g.session_id=s.session_id "
+                "LEFT JOIN session_controls c ON c.session_id=s.session_id "
+                "WHERE s.project=? AND s.role='leader' AND s.status!='closed' AND g.session_id IS NULL "
+                "AND COALESCE(c.removed,0)=0 AND c.archived_status IS NULL LIMIT 1", (project,)).fetchone()
+            if active is None:
+                return False
         with self.lock:
             if self.stopping.is_set():
                 if trigger == 'auto':

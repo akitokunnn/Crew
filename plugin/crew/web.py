@@ -24,6 +24,7 @@ from . import board, channel, channel_digest, chat, claude_limits, codex_runtime
 from .service_lock import HomeServiceLock
 from . import member_defaults, operations_chat, operations_settings
 from . import connections, session_presence, storage_cleanup, workspace_activity
+from .storage_service import StorageService, HISTORY_PREFIX
 
 
 def _text(data, key):
@@ -48,11 +49,13 @@ class Service:
     def __init__(self, home, plugin_root, agents_provider=None,
                  claude_root=None, codex_root=None, runs_file=None, now=None, cwd=None, process_factory=subprocess.Popen,
                  notification_client=None, lock_status=notifications.desktop_locked, notification_batch_seconds=30,
-                 vscode_state_db=None, migrate_manual_work=False):
+                 vscode_state_db=None, isolated_sources=False):
         if agents_provider is None:
             from .cli import claude_agents
             agents_provider = claude_agents
         self.home, self.plugin_root = Path(home), Path(plugin_root)
+        self.storage = StorageService(self.home, isolated=isolated_sources)
+        self.storage.repair_pending()
         self.agents_provider, self.clock = agents_provider, now
         # Health reports which bundled source this process really runs.
         self.instance_id = uuid.uuid4().hex
@@ -60,7 +63,6 @@ class Service:
         self.update_drain_seconds = 10
         self.chat = chat.Manager(home, plugin_root, agents_provider, process_factory)
         self.runtime_catalog = runtime_catalog.Catalog()
-        self.migrate_manual_work = migrate_manual_work
         self.claude_root = Path.home() / ".claude" / "projects" if claude_root is None else Path(claude_root)
         self.codex_root = Path.home() / ".codex" / "sessions" if codex_root is None else Path(codex_root)
         self.runs_file = self.home / "codex_runs.jsonl" if runs_file is None else Path(runs_file)
@@ -201,9 +203,6 @@ class Service:
                         board.record_event(conn, "vscode:archived", session["project"], sid, {}, now=now)
 
     def start(self):
-        if self.migrate_manual_work:
-            with closing(store.connect(self.home)) as conn:
-                todo.backfill(conn)
         self.worker = threading.Thread(target=self._poll_agents, name="crew-agents", daemon=True)
         self.worker.start()
         self.notice_worker = threading.Thread(target=self._poll_notices, name="crew-leader-notices", daemon=True)
@@ -924,6 +923,41 @@ class Service:
         return self._post(path, data, project_name)
 
     def _post(self, path, data, project_name):
+        if path.startswith('/api/workspace-data/'):
+            relocated=False
+            if path=='/api/workspace-data/open' and data.get('action')=='relocate':
+                discovery=self.storage.discover(_text(data,'root'))
+                project=discovery.get('project')
+                if discovery['status']=='relocate_required' and project and not project.get('read_only'):
+                    state=self.workspace_state(project['name'])
+                    self.update_workspace('/api/project/update',{'project':project['name'],'root':data['root'],
+                        'display_name':state['project'].get('display_name'),'revision':state['revision'],'stop':True},None)
+                    relocated=True
+            with self.write_lock:
+                if path == '/api/workspace-data/discover':
+                    return self.storage.discover(_text(data, 'root'))
+                if path == '/api/workspace-data/open':
+                    _text(data,'root')
+                    result = self.storage.open(data,legacy_relocated=relocated)
+                    project = result.get('project', {})
+                    if not project.get('read_only'):
+                        self.default_project = project.get('name', self.default_project)
+                    return result
+                if path == '/api/workspace-data/export':
+                    _text(data,'project' if data.get('project') else 'workspace_id')
+                    if data.get('destination') is not None:_text(data,'destination')
+                    return self.storage.export(data)
+                if path == '/api/workspace-data/preview':
+                    return self.storage.preview(_text(data, 'path'))
+                if path == '/api/workspace-data/import':
+                    _text(data,'path')
+                    return self.storage.import_package(data)
+                if path == '/api/workspace-data/handoff':
+                    _text(data,'project' if data.get('project') else 'workspace_id');_text(data,'destination')
+                    return self.storage.handoff(data)
+                if path == '/api/workspace-data/activate':
+                    _text(data,'workspace_id');_text(data,'root')
+                    return self.storage.activate(data)
         if path.startswith('/api/storage/'):
             return self.storage_post(path, data)
         if path in ('/api/project/update', '/api/project/remove'):
@@ -1544,6 +1578,7 @@ POST_PATHS.add('/api/leaders/order')
 POST_PATHS.add('/api/leaders/priority')
 POST_PATHS.update(('/api/files/resolve', '/api/files/open', '/api/files/reveal'))
 POST_PATHS.update(('/api/documents','/api/documents/pin','/api/documents/refresh'))
+POST_PATHS.update(('/api/workspace-data/discover','/api/workspace-data/open','/api/workspace-data/export','/api/workspace-data/preview','/api/workspace-data/import','/api/workspace-data/handoff','/api/workspace-data/activate'))
 POST_PATHS.update(('/api/git/enable', '/api/git/disable', '/api/git/fetch', '/api/git/settings'))
 POST_PATHS.update(('/api/admin/update/prepare', '/api/admin/update/cancel'))
 POST_PATHS.add('/api/settings')
@@ -1596,6 +1631,8 @@ STATIC.update({'/session-library.js': ('session-library.js', 'text/javascript; c
                '/session-library.css': ('session-library.css', 'text/css; charset=utf-8')})
 STATIC.update({'/maintenance-ui.js': ('maintenance-ui.js', 'text/javascript; charset=utf-8'),
                '/maintenance-ui.css': ('maintenance-ui.css', 'text/css; charset=utf-8')})
+STATIC.update({'/storage-history.js': ('storage-history.js', 'text/javascript; charset=utf-8'),
+               '/storage-history.css': ('storage-history.css', 'text/css; charset=utf-8')})
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1656,12 +1693,30 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(content)
 
+    def _stream_storage_file(self, path, media_type, *, attachment=None, sandbox=False):
+        if not isinstance(media_type,str) or any(c in media_type for c in '\r\n\x00'):
+            media_type='application/octet-stream'
+        with Path(path).open('rb') as source:
+            self.send_response(200)
+            self.send_header('Content-Type', media_type)
+            self.send_header('Content-Length', str(os.fstat(source.fileno()).st_size))
+            self.send_header('Cache-Control', 'no-store')
+            self.send_header('X-Content-Type-Options', 'nosniff')
+            if sandbox:
+                self.send_header('Content-Security-Policy', "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:")
+            if attachment:
+                self.send_header('Content-Disposition', 'attachment; filename="'+attachment+'"')
+            self.end_headers()
+            while chunk := source.read(1024 * 1024):
+                self.wfile.write(chunk)
+
     def _dispatch(self, method):
         url = urlsplit(self.path)
         query = parse_qs(url.query)
         service = self.server.service
         local_settings_path = (url.path in ('/api/connections', '/api/connections/configure', '/api/connections/action', '/api/connections/preferences')
                                or url.path == '/api/storage' or url.path.startswith('/api/storage/'))
+        local_settings_path = local_settings_path or url.path.startswith('/api/workspace-data/')
         if method == "POST":
             length = int(self.headers.get('Content-Length', '0'))
             payload = self.rfile.read(length) if length > 0 else b''
@@ -1682,6 +1737,23 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, service.post(url.path, data, query.get("project", [None])[0]))
         elif local_settings_path and not self._connection_access():
             self._send(403, {'error': '此设置只允许本机 Crew 页面访问'})
+        elif url.path == '/api/workspace-data/history':
+            self._send(200, service.storage.history(query['workspace_id'][0],
+                conversation_id=query.get('conversation_id',[None])[0],
+                collection=query.get('collection',[None])[0],
+                before=json.loads(query['before'][0]) if 'before' in query else None,
+                limit=query.get('limit',[50])[0]))
+        elif url.path == '/api/workspace-data/artifact':
+            file, metadata = service.storage.artifact(query['workspace_id'][0],query['version_id'][0])
+            self._stream_storage_file(file, metadata['mime_type'], sandbox=True)
+        elif url.path == '/api/workspace-data/blob':
+            file, metadata = service.storage.blob(query['workspace_id'][0],query['blob_id'][0])
+            self._stream_storage_file(file, metadata['mime_type'], sandbox=True)
+        elif url.path == '/api/workspace-data/download':
+            file = service.storage.downloads.get(query.get('id',[''])[0])
+            if file is None:
+                raise ValueError('导出文件已失效，请重新导出')
+            self._stream_storage_file(file, 'application/zip', attachment='workspace.crewpack')
         elif url.path == "/api/files/content":
             hosts = {"127.0.0.1:%d" % self.server.server_port, "localhost:%d" % self.server.server_port}
             if self.headers.get_all("Host") not in ([host] for host in hosts):
@@ -1752,7 +1824,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, service.workspace_state(query.get('project', [None])[0]))
         elif url.path == '/api/projects':
             with closing(store.connect(service.home)) as conn:
-                self._send(200, {'projects': board.projects(conn, include_removed=True) if query.get('include_removed') == ['1'] else board.projects(conn)})
+                projects = board.projects(conn, include_removed=True) if query.get('include_removed') == ['1'] else board.projects(conn)
+            self._send(200, {'projects': service.storage.decorate_projects(projects) + service.storage.portable_projects()})
         elif url.path == '/api/documents':
             self._send(200,service.document_list(query.get('project',[None])[0],query.get('leader_session_id',[None])[0],
                                                  query.get('goal_id',[None])[0]))
@@ -1825,6 +1898,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, service.usage(period, project_name=query.get('project', [None])[0], scope=query.get('scope', ['workspace'])[0]))
         elif url.path in STATIC:
             filename, content_type = STATIC[url.path]
+            if url.path == '/' and query.get('project',[''])[0].startswith(HISTORY_PREFIX):
+                filename = 'storage-history.html'
             self._send(200, (service.plugin_root / "crew" / "web" / filename).read_bytes(), content_type,
                        cache_control='public, max-age=604800' if url.path in STATIC_CACHED else 'no-store')
         else:
@@ -1942,7 +2017,6 @@ def _open_registered_service(home, cwd):
 
 
 def _serve_locked(home, plugin_root, port, open_browser, **options):
-    options.setdefault('migrate_manual_work', True)
     url = project_url(port)
     with closing(store.connect(home)) as conn:
         project = board.project_for_path(conn, options.get('cwd') or Path.cwd())

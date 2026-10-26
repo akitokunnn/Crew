@@ -122,7 +122,8 @@ function harness(options = {}) {
     './core.cjs':{ options:() => config, Backend, loopback:value => value,
       projects:async () => projectGate ? projectGate.promise : [{ name:'demo' }],
       projectLocations:async items => items.map(item => ({ ...item, directory_state:{ status:'ready' } })),
-      request:async () => ({}) },
+      request:async (_base,route) => options.storageWrite&&route.startsWith('/api/workspace-data/')?options.storageWrite.promise:{} },
+    './storage.cjs':{ prepare:async (project,base,_choose,_progress,request) => {if(options.storageWrite)await request(base,'/api/workspace-data/open',{});return project;} },
     './chrome.cjs':{ windowOptions:() => ({}) }, './tabs.cjs':{ WorkspaceTabs:Tabs },
     './activity-preview.cjs':{ ActivityPreview:Preview }, './permissions.cjs':{ installPermissions() {} },
     './tool-updates.cjs':{ ToolUpdates:Tools }, './crew-updates.cjs':{ CrewUpdates:Updates },
@@ -150,6 +151,15 @@ test('normal close keeps the shell alive and explicit quit cleans it up exactly 
   assert.equal(h.calls.backendStop,1); assert.equal(h.calls.toolsClose,1); assert.equal(h.calls.updatesClose,1);
   assert.equal(h.calls.nativeQuit,1); assert.equal(h.trays[0].isDestroyed(),true);
   assert.deepEqual(h.logs,[]); assert.deepEqual(h.shutdownErrors,[]);
+});
+
+test('quit waits for a workspace data operation before stopping its backend and never reopens disposed tabs',async()=>{
+  const storageWrite=deferred(),h=harness({storageWrite});await h.boot();
+  const opening=h.invoke('desktop:open','demo');await tick();
+  h.app.quit();await tick();assert.equal(h.calls.backendStop,0);assert.equal(h.calls.nativeQuit,0);
+  storageWrite.resolve({});await opening;await tick();
+  assert.equal(h.calls.backendStop,1);assert.equal(h.calls.nativeQuit,1);assert.equal(h.calls.tabsOpen,0);
+  assert.deepEqual(h.logs,[]);assert.deepEqual(h.shutdownErrors,[]);
 });
 
 test('queued tray, native menu and second-instance callbacks ignore a closed window', async () => {

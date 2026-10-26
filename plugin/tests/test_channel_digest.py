@@ -58,6 +58,30 @@ class DigestTests(unittest.TestCase):
             self.assertFalse(worker.is_alive())
         self.assertFalse(manager.state("demo")["digesting"])
 
+    def test_restored_history_does_not_start_paid_summary_until_user_resumes_a_leader(self):
+        for _ in range(20):
+            self.post('恢复的历史发言')
+        board.record_event(self.conn, 'workspace:recovered', 'demo', board.HUMAN, {}, now=test_channel.NOW)
+        for sid in ('a', 'b'):
+            self.conn.execute('INSERT INTO session_stop_gates VALUES(?,?,?)', (sid, test_channel.NOW, 'workspace-recovery'))
+        manager = self.manager(FakeProcess())
+        self.assertFalse(manager.start(self.conn, 'demo', trigger='auto'))
+        self.factory.assert_not_called()
+        self.conn.execute("DELETE FROM session_stop_gates WHERE session_id='a'")
+        self.assertTrue(manager.start(self.conn, 'demo', trigger='auto'))
+        self.finish(manager)
+        self.factory.assert_called_once()
+
+    def test_explicit_summary_request_can_read_restored_history_without_resuming_leaders(self):
+        self.post('用户明确要求整理的历史')
+        board.record_event(self.conn, 'workspace:recovered', 'demo', board.HUMAN, {}, now=test_channel.NOW)
+        for sid in ('a', 'b'):
+            self.conn.execute('INSERT INTO session_stop_gates VALUES(?,?,?)', (sid, test_channel.NOW, 'workspace-recovery'))
+        manager = self.manager(FakeProcess())
+        self.assertTrue(manager.start(self.conn, 'demo', trigger='manual'))
+        self.finish(manager)
+        self.factory.assert_called_once()
+
     def test_success_full_input_command_and_snapshot_boundary(self):
         first = self.post("第一行\n全文不能截断", to=["beta"])
         gate = threading.Event()

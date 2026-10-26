@@ -4,10 +4,10 @@ import json
 
 from . import board, goal_context, goals, store
 
-READ_ACTIONS = frozenset(('status', 'report-template', 'context.inspect'))
+READ_ACTIONS = frozenset(('status', 'report-template', 'context.inspect', 'context.retrieve'))
 GOAL_ACTIONS = frozenset(('status', 'create', 'start', 'pause', 'resume', 'cancel', 'reopen',
                           'amend', 'assign', 'report-template', 'finish'))
-CONTEXT_ACTIONS = frozenset(('context.inspect', 'context.put', 'context.correct', 'context.expire'))
+CONTEXT_ACTIONS = frozenset(('context.inspect', 'context.retrieve', 'context.put', 'context.correct', 'context.expire'))
 
 
 def report_template(conn, goal_id):
@@ -105,6 +105,11 @@ def dispatch(home, actor_session_id, execution_id, action, data, controller=None
             return goals.create(conn, project, leader['session_id'], data.get('title'), data.get('request'),
                                 data.get('acceptance'), constraints=data.get('constraints', ()), priority=data.get('priority', 0),
                                 dependencies=data.get('dependencies', ()), actor=actor_session_id, source=data.get('source'))
+        if action == 'context.retrieve':
+            from .storage_service import StorageService
+            return StorageService(home).retrieve(project, {**data, 'goal_id':goal_id,
+                'current_requirement_version':goal['requirement_version'] if goal else None,
+                'current_goal_status':goal['status'] if goal else None},actor_session_id=actor_session_id if actor else None)
         if goal is None:
             raise board.BoardError('此操作必须指定目标')
         if action == 'report-template':

@@ -24,6 +24,7 @@
   const FONT_MIN = .9, FONT_MAX = 1.4;
   const decisionsOpen = new Set(), heldExpanded = new Set(), usageCollapsed = new Set(), operationIds = new Set();
   const todoExpanded = new Set(), todoTrayExpanded = new Set(), todoActions = new Map(), todoSaving = new Set();
+  let composingInput = null, compositionTimer = null, compositionRenderPending = false;
   const colors = ["#3E7C74", "#8A5A7E", "#A07A3A", "#4F6B8F", "#5E7F55", "#A8604F", "#8C7650", "#5C5F9E", "#A35D6A", "#4F7A8C", "#77773F"];
   const statusText = {working:"在干活", waiting:"等你", idle:"空闲", offline:"离线", closed:"已归档"};
   const paths = {
@@ -150,6 +151,9 @@
   }
   function replace(node, html) {
     if (node.dataset.render === html) return;
+    // Recreating a textarea commits/discards the native IME session even if its
+    // value and caret are restored. Keep the composing DOM node connected.
+    if (composingInput !== null && node.contains(composingInput)) { compositionRenderPending = true; return; }
     const focused = node.contains(document.activeElement) ? document.activeElement : null;
     const focusKey = focused?.dataset.preserve;
     const focusData = focused === null ? null : {...focused.dataset};
@@ -256,6 +260,7 @@
       <button class="nav-item ${view === "channel" ? "active" : ""}" data-act="view" data-view="channel">${ic("msg")}<span>交流区</span>${state.channel.unread > 0 ? `<span class="b-unread channel-unread" title="交流区未读">${state.channel.unread}</span>` : ""}</button>
       <button class="nav-item ${view === "git" ? "active" : ""}" data-act="view" data-view="git">${ic("branch")}<span>Git</span></button>
       <button class="nav-item ${view === "todos" ? "active" : ""}" data-act="view" data-view="todos">${ic("check")}<span>我的待办</span>${openTodos().length > 0 ? `<span class="todo-count">${openTodos().length}</span>` : ""}</button>
+      <button class="nav-item ${view === "documents" ? "active" : ""}" data-act="view" data-view="documents">${ic("folder")}<span>项目资料</span></button>
       <div class="sb-leaders"><section class="priority-zone ${priorityIds().length === 0 ? "empty-priority" : ""}" data-leader-zone="priority"><div class="sec-label">置顶 · 优先</div>${priorityLeaders().map(sidebarLeader).join("")}<div class="priority-drop-hint">拖到这里设为优先</div></section>
       <section class="leader-list" data-leader-zone="normal"><div class="sec-label">Leader</div>${state.leaders.filter(item => item.priority === null).map(sidebarLeader).join("")}
       <button class="leader-item add-leader" data-act="modal-leader"><span class="plus">${ic("plus", "sm")}</span><span>起 leader</span></button></section></div>
@@ -859,7 +864,7 @@
     goalId = params.get("goal");
     if (params.has("history")) { readOnlyId = params.get("history"); const item = member(readOnlyId); leaderId = item === undefined ? null : item.leader_session_id; view = "chat"; }
     else if (params.has("leader")) { leaderId = params.get("leader"); readOnlyId = null; view = "chat"; }
-    else if (["all", "channel", "adopt", "usage", "git", "todos"].includes(hash)) { view = hash; readOnlyId = null; }
+    else if (["all", "channel", "adopt", "usage", "git", "todos", "documents"].includes(hash)) { view = hash; leaderId = null; readOnlyId = null; }
     else if (hash === "" && openTodos().length > 0) { view = "todos"; leaderId = null; readOnlyId = null; }
     else if (state.leaders.length > 0) { leaderId = state.leaders[0].session_id; readOnlyId = null; view = "chat"; }
     else view = "all";
@@ -872,6 +877,7 @@
     $("app").classList.toggle("wide", view !== "chat" || leaderId === null); renderSidebar();
     if (view !== "channel" && mountedChannel) { CrewChannel.unmount(); mountedChannel = false; }
     if (view !== "git") CrewGit.unmount();
+    if (view === "documents") documents?.mount($("main")); else documents?.unmount();
     if (view === "chat") renderChat(); else { if (mountedChat !== null) { CrewChat.unmount(); mountedChat = null; } if (view === "all") renderAll(); if (view === "todos") renderTodos(); if (view === "channel") renderChannel(); if (view === "adopt") renderAdopt(); if (view === "usage") renderUsage(); if (view === "git") CrewGit.mount($("main"), {project, root:state.project.root, api, toast, catalog:runtimeList, defaultRuntime:() => taskRuntime("git"), onChanged:() => loadState(true), onSettings:() => gitSettings.open(project)}); }
     renderRight(); renderCard(); document.title = `(${state.decisions.filter(item => !item.held).length}) ${projectDisplay(state.project)} · Crew`;
   }
@@ -937,6 +943,17 @@
     hideMenu(); if (cardId === id) closeCard(); await loadState(true); toast(label, undoable ? async () => { await api("/api/session/undo", {session_id:id, before:result.before}); await loadState(true); toast("已撤销"); } : null);
   }
   function setup() {
+    document.addEventListener("compositionstart", event => {
+      clearTimeout(compositionTimer); composingInput = event.target;
+    });
+    document.addEventListener("compositionend", () => {
+      // The final input event follows compositionend. Re-render from current
+      // state/drafts after it, rather than replaying HTML containing raw pinyin.
+      compositionTimer = setTimeout(() => {
+        composingInput = null;
+        if (compositionRenderPending) { compositionRenderPending = false; render(); }
+      }, 0);
+    });
     $("overlay-root").innerHTML = '<button class="rp-scrim" id="rp-scrim" data-act="right-close" aria-label="关闭架构图"></button><div class="card-back" id="card-back"></div><section class="card" id="card" role="dialog" aria-modal="true" aria-label="下属卡片" tabindex="-1"></section><div class="menu" id="menu" role="menu"></div><div class="backdrop" id="backdrop"></div><div id="settings-parking" hidden><section class="settings-popover" id="settings" aria-label="外观设置"></section></div>';
     maintenance = window.CrewMaintenance.create({api,
       async onCleaned() { await loadState(true); if (view !== "all") navigate("all"); toast("已归档旧工作，可以重新开始"); }});
@@ -959,7 +976,7 @@
     CrewChat.initFiles(api, toast);
     if (window.CrewNativeApprovals) nativeApprovals = window.CrewNativeApprovals.create({api,toast,refreshState:() => loadState(true),onChange() { if (!state || project === null) return; renderSidebar(); if (view === "chat") renderChat(); else if (view === "all") renderAll(); }});
     if (window.CrewDocuments && project !== null) documents = window.CrewDocuments.create({project, api, toast,
-      onChange:() => goals?.renderMaterials(),
+      onChange:() => { if (view !== "documents") goals?.renderMaterials(); },
       onSource(item) {
         const owner = leader(item.leader_session_id) || leader(item.session_id) || leader(member(item.session_id)?.leader_session_id);
         if (owner) navigate("chat", owner.session_id, member(item.session_id)?.session_id || null, item.goal_id ?? goalId); else toast("来源 leader 已不在当前列表中。");

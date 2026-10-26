@@ -42,6 +42,9 @@ function options(args, {launchSettingsPath} = {}) {
   if (result.smoke && (!args.some(value=>value==='--home'||value.startsWith('--home=')) || !result.smokeOutput)) throw new Error('smoke 必须显式指定 --home 和 --smoke-output');
   if (result.smokeVisual && !result.smoke) throw new Error('视觉验收只允许使用隔离 smoke 模式');
   result.home = path.resolve(result.home);
+  const normalHome = path.resolve(os.homedir(), '.crew');
+  const sameHome = process.platform === 'win32' ? result.home.toLowerCase() === normalHome.toLowerCase() : result.home === normalHome;
+  result.instanceName = result.isolated || result.smoke ? 'Crew · 隔离测试' : sameHome ? 'Crew' : 'Crew · 独立数据';
   if (result.smoke && (result.home === path.resolve(os.homedir(), '.crew') || result.port === 47811)) throw new Error('smoke 必须使用隔离 home 和测试端口');
   if (result.serviceUrl) {
     result.serviceUrl = loopback(result.serviceUrl);
@@ -66,7 +69,12 @@ async function request(base, route, body, timeoutMs = 5000, signal) {
     if(requestSignal.aborted)throw requestSignal.reason;
     const error = new Error(`Crew 服务返回了无效内容 (${response.status})`); error.status = response.status; throw error;
   }
-  if (!response.ok) { const error = new Error(payload.error || `Crew 服务返回 ${response.status}`); error.status = response.status; throw error; }
+  if (!response.ok) {
+    const message=response.status===404&&route.startsWith('/api/workspace-data/')
+      ? '当前后台版本尚不支持工作区数据功能。请在工具与更新中统一后台与插件，或退出旧 Crew 后重新打开新版。'
+      : payload.error || `Crew 服务返回 ${response.status}`;
+    const error = new Error(message); error.status = response.status; throw error;
+  }
   return payload;
 }
 
@@ -299,6 +307,7 @@ async function optionalGitRoot(selected) {
 
 async function projectLocations(items) {
   return Promise.all(items.map(async item=>{
+    if (item.read_only) return item;
     try { return {...item,directory_state:{status:(await fs.stat(item.root)).isDirectory()?'ready':'missing'}}; }
     catch(error) { return {...item,directory_state:['ENOENT','ENOTDIR'].includes(error.code)?{status:'missing'}:{status:'error',error:error.message}}; }
   }));
@@ -306,7 +315,7 @@ async function projectLocations(items) {
 
 async function existingWorkspace(directory, base, {newProject=false} = {}) {
   const selected = await workspaceDirectory(directory);
-  const registered = await projects(base, true);
+  const registered = (await projects(base, true)).filter(item=>!item.read_only);
   const normalize = value => process.platform === 'win32' ? path.resolve(value).toLowerCase() : path.resolve(value);
   const exact = registered.find(item => !item.removed_at && normalize(item.root) === normalize(selected)) || registered.find(item => normalize(item.root) === normalize(selected));
   if (exact) return exact.removed_at ? request(base, '/api/project/init', {name:exact.name, root:exact.root}) : exact;

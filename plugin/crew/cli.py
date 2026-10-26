@@ -284,7 +284,7 @@ def parser():
                    help='默认 information 仅归档、不唤醒；决定用 decision，任务用 task，结果用 result，阻塞用 blocker。')
     a.add_argument('--message-id', help='调用方稳定重试编号；同一编号只用于完全相同的接收者、正文和类型。')
     for namespace, actions in (('goal', ('create','status','start','pause','resume','cancel','reopen','amend','assign','report-template','finish')),
-                               ('context', ('inspect','put','correct','expire'))):
+                               ('context', ('inspect','retrieve','put','correct','expire'))):
         goal_parser = command(namespace, True)
         goal_parser.set_defaults(json=True)
         goal_commands = goal_parser.add_subparsers(dest='action', required=True)
