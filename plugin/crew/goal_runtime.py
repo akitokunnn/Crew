@@ -341,13 +341,24 @@ class Controller:
                 goal_context.mark_applied(conn, prepared['manifest']['id'], execution_id=key)
             return {**result, 'goal_id': goal_id, 'execution_id': key}
 
-    def history(self, conn, goal_id, session_id):
+    def history(self, conn, goal_id, session_id, *, include_previous=True):
         execution = self.current(conn, goal_id, session_id)
-        if execution is None:
-            return {'session_id': session_id, 'goal_id': goal_id, 'execution_id': None, 'events': [],
-                    'busy': False, 'running': False, 'read_seq': 0}
-        return {**self.manager.history(execution['id']), 'session_id': session_id, 'goal_id': goal_id,
-                'execution_id': execution['id'], 'read_seq': execution.get('read_seq', 0)}
+        value = ({'events': [], 'busy': False, 'running': False} if execution is None
+                 else self.manager.history(execution['id']))
+        value.update(session_id=session_id, goal_id=goal_id,
+                     execution_id=execution['id'] if execution else None,
+                     read_seq=execution.get('read_seq', 0) if execution else 0)
+        if include_previous:
+            # Keep each journal's IDs and sequence local. Only the current
+            # execution supplies the live stream, busy state and read cursor.
+            value['previous_executions'] = []
+            for row in conn.execute('SELECT id,round,generation,requirement_version FROM goal_executions '
+                                    'WHERE goal_id=? AND session_id=? ORDER BY round,generation', (goal_id, session_id)):
+                if row['id'] != value['execution_id']:
+                    value['previous_executions'].append({'execution_id': row['id'], 'round': row['round'],
+                        'generation': row['generation'], 'requirement_version': row['requirement_version'],
+                        'events': self.manager.history(row['id'])['events']})
+        return value
 
     def pause(self, goal_id, *, manual=True, actor=board.HUMAN):
         with self.manager.lock, closing(store.connect(self.home)) as conn:
