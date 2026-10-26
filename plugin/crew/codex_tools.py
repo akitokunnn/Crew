@@ -90,7 +90,7 @@ _SPECS = [
           'Rejection remains actionable. This records requests/results; it does not run Git or merge code.',
           {'action': {'type': 'string', 'enum': list(_GIT_DATA)},
            'data': {'type': 'object', 'additionalProperties': True}}, ('action',)),
-    _spec('crew_goal', 'Explicit goal actions: status, create, start, pause, resume, cancel, reopen, amend, assign, report-template, finish. Ordinary Q&A creates no goal.',
+    _spec('crew_goal', 'Explicit goal actions: status, create, start, pause, resume, cancel, reopen, amend, assign, report-template, finish. For final delivery, design task-specific offline HTML in data.report.document_html alongside acceptance evidence; report-template explains the format. Ordinary Q&A creates no goal.',
           {'action': _text('Action name.', max_length=100), 'goal_id': _text('Goal id; omitted uses the bound execution.', max_length=100),
            'data': {'type': 'object', 'additionalProperties': True}}, ('action',)),
     _spec('crew_context', 'Inspect or correct sourced context for this goal. Actions: inspect, put, correct, expire. Preparing context does not mean the model read it.',

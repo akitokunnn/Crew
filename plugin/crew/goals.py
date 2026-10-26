@@ -8,7 +8,7 @@ import math
 import sqlite3
 import uuid
 
-from . import board, store
+from . import board, report_documents, store
 
 STATES = frozenset(('queued', 'running', 'pausing', 'paused', 'waiting_user',
                     'awaiting_acceptance', 'completed', 'failed', 'cancelled'))
@@ -537,6 +537,11 @@ def validate_report(conn, goal_id, data):
     if outcome not in ('completed', 'failed', 'awaiting_acceptance', 'cancelled'):
         raise board.BoardError('outcome=%r 无效；允许 completed|failed|awaiting_acceptance|cancelled' % str(outcome)[:100])
     _text(result.get('summary'), '报告结论')
+    if 'document_html' in result:
+        document = _text(result['document_html'], 'document_html 自包含 HTML 正文', required=False,
+                         limit=report_documents.MAX_HTML)
+        if len(document.encode('utf-8')) > report_documents.MAX_HTML:
+            raise board.BoardError('document_html 自包含 HTML 正文超过 512 KiB')
     for key in ('delivered', 'unresolved', 'artifacts', 'tradeoffs'):
         result[key] = _strings(result.get(key, []), key)
     result['follow_up'] = _text(result.get('follow_up', ''), '后续修改入口', required=False)
@@ -621,6 +626,8 @@ def render_report(conn, goal_id, data):
                      esc(_json(investment['usage']) if investment.get('usage') is not None else '未知，未估作零用量或费用'),
                      listing([item['role'] + '：' + str(item.get('contribution', '未记录')) for item in investment.get('roles', [])]),
                      esc(investment.get('note', '')), esc(data['follow_up'])))
+    if data.get('document_html', '').strip():
+        return report_documents.render(goal['title'], data['document_html'], ''.join(sections))
     return '<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; base-uri \'none\'; form-action \'none\'"><title>%s</title><style>body{font:16px/1.7 system-ui,sans-serif;max-width:960px;margin:40px auto;padding:0 24px;color:#292929;background:#fafafa}h2{margin-top:32px}svg{width:100%%;max-width:600px}table{border-collapse:collapse;width:100%%}th,td{border:1px solid #ddd;text-align:left;vertical-align:top;padding:10px;white-space:pre-wrap;overflow-wrap:anywhere}th{width:140px}p,li{white-space:pre-wrap;overflow-wrap:anywhere}</style><body>%s</body></html>' % (esc(goal['title']), ''.join(sections))
 
 

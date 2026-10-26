@@ -228,6 +228,53 @@ class GoalActionTests(GoalFixture):
         item = board.decisions(self.conn, 'demo')[0]
         self.assertEqual(goal_links.get(self.conn, 'decision', item['id'])['execution_id'], execution['id'])
 
+    def test_claude_cli_attaches_html_and_codex_tool_saves_the_same_document(self):
+        from crew import spawn
+        document = '<!doctype html><h1>选型结论</h1><button onclick="this.textContent=\'筛选完毕\'">筛选</button>'
+        html_path = self.root / '选型报告.html'
+        html_path.write_text(document, encoding='utf-8-sig')
+        for runtime in ('claude', 'codex'):
+            with self.subTest(runtime=runtime):
+                goal = self.goal()
+                goals.transition(self.conn, goal['id'], 'running')
+                execution = goals.create_execution(self.conn, goal['id'], 'chief-id', runtime=runtime)
+                def handler(action, data, actor, execution_id=None):
+                    return self.dispatch(action, data, actor=actor, execution=execution_id)
+                if runtime == 'claude':
+                    path = self.root / '验收.json'
+                    path.write_text(json.dumps({**self.report(), 'goal_id': goal['id']}), encoding='utf-8')
+                    def route(home, project, endpoint, body):
+                        return handler(body['action'], body['data'], body['actor_session_id'], body['execution_id'])
+                    environment = {'CREW_SESSION_ID':'chief-id','CREW_EXECUTION_ID':execution['id'],'CREW_GOAL_ID':goal['id']}
+                    with mock.patch.object(spawn, 'request_start', side_effect=route):
+                        code, output, errors = self.invoke_cli(['goal','finish','--file',str(path),'--html-file',str(html_path)], environment)
+                    self.assertEqual(code, 0, errors)
+                    result = json.loads(output)
+                else:
+                    result = self.call(self.tool(execution, handler), 'crew_goal', {
+                        'action':'finish', 'data':{'report':{**self.report(), 'document_html':document}}})
+                saved = goals.get_report(self.conn, result['report_id'])
+                self.assertEqual(saved['data']['document_html'], document)
+                self.assertIn('验收证据与交付记录', saved['html'])
+                self.assertFalse(any(call[0] == 'send' for call in self.host.calls))
+
+    def test_cli_does_not_overwrite_an_existing_document_or_submit_an_empty_file(self):
+        from crew import spawn
+        goal = self.goal()
+        path, html_path = self.root / 'report.json', self.root / 'report.html'
+        path.write_text(json.dumps({**self.report(), 'document_html':'<h1>原稿</h1>'}), encoding='utf-8')
+        html_path.write_text('<h1>另一稿</h1>', encoding='utf-8')
+        with mock.patch.object(spawn, 'request_start') as request:
+            code, _, errors = self.invoke_cli(['goal','finish',goal['id'],'--file',str(path),'--html-file',str(html_path)])
+            self.assertNotEqual(code, 0)
+            self.assertIn('不能覆盖已有正文', errors)
+            path.write_text(json.dumps(self.report()), encoding='utf-8')
+            html_path.write_text('  ', encoding='utf-8')
+            code, _, errors = self.invoke_cli(['goal','finish',goal['id'],'--file',str(path),'--html-file',str(html_path)])
+            self.assertNotEqual(code, 0)
+            self.assertIn('不能为空', errors)
+            request.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()

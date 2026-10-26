@@ -18,9 +18,10 @@ def report_template(conn, goal_id):
                             'evidence': [{'label': '', 'reference': ''}]}
                            for item in goal['requirements']['acceptance']],
             'examples': [{'kind': 'actual', 'input': '', 'expected': '', 'actual': '', 'conclusion': ''}],
-            'artifacts': [], 'tradeoffs': [], 'follow_up': '',
+            'document_html': '', 'artifacts': [], 'tradeoffs': [], 'follow_up': '',
             'investment': {'elapsed_seconds': None, 'usage': None, 'roles': [{'role': 'leader', 'contribution': ''}]},
             '_help': {'outcome': 'completed|failed|awaiting_acceptance|cancelled',
+                      'document_html': 'leader 按任务设计的自包含 HTML 正文（最多 512 KiB）；结构、图表和交互按需选择，CSS/JS 内联，图片用 data URI，不加载外网资源。验收记录另行展开。CLI 可用 finish --html-file <报告.html> 读取正文；Codex 在 report.document_html 传同样内容',
                       'acceptance_status': 'passed|failed|unverified|simulated',
                       'evidence': '对象数组，例如 [{"label":"命令实测输出","reference":"artifacts/result.txt"}]；未验证可用 []，不能填字符串数组',
                       'examples_kind': 'actual|illustrative；示意不能冒充实测',

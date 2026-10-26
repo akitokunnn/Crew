@@ -1638,7 +1638,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(content)
 
-    def send_file_content(self, content, media_type):
+    def send_file_content(self, content, media_type, *, interactive_report=False):
         # SVG must remain an image even when the resource URL is opened directly.
         if isinstance(content, dict):
             content = json.dumps(content, ensure_ascii=False).encode("utf-8")
@@ -1646,7 +1646,12 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", media_type)
         self.send_header("Content-Length", str(len(content)))
         self.send_header("Cache-Control", "no-store")
-        self.send_header("Content-Security-Policy", "sandbox; default-src 'none'; style-src 'unsafe-inline'")
+        if interactive_report:
+            from .report_documents import VIEWER_POLICY
+            policy = 'sandbox allow-scripts; ' + VIEWER_POLICY
+        else:
+            policy = "sandbox; default-src 'none'; style-src 'unsafe-inline'"
+        self.send_header("Content-Security-Policy", policy)
         self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(content)
@@ -1733,7 +1738,7 @@ class Handler(BaseHTTPRequestHandler):
                     report = goals.get_report(conn, query.get('report_id', [''])[0])
                     if report['goal_id'] != goal_id:
                         raise board.BoardError('报告不属于此目标')
-                    self.send_file_content(report['html'].encode('utf-8'), 'text/html; charset=utf-8')
+                    self.send_file_content(report['html'].encode('utf-8'), 'text/html; charset=utf-8', interactive_report=True)
         elif url.path == '/api/runtimes':
             catalog = service.runtime_catalog.refresh(force=True) if query.get('refresh') == ['1'] else service.runtime_catalog.refresh()
             self._send(200, {'runtimes': catalog})

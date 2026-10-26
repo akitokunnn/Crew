@@ -3,6 +3,8 @@
 // No model, production HOME or Crew service is used; userData is a fresh temporary directory.
 const {app,BrowserWindow}=require('electron'),fs=require('node:fs/promises'),path=require('node:path'),os=require('node:os'),http=require('node:http'),assert=require('node:assert/strict');
 const root=path.resolve(__dirname,'../..'),web=path.join(root,'plugin/crew/web'),output=path.join(root,'desktop/smoke-output/goal-delivery');
+const temporary=require('node:fs').mkdtempSync(path.join(os.tmpdir(),'crew-goal-delivery-'));
+app.setPath('userData',temporary);app.setPath('sessionData',temporary);
 // A fixed device scale keeps the requested window size equal to the CSS viewport on any display.
 app.commandLine.appendSwitch('force-device-scale-factor','1');
 const calls=[],streams=[],errors=[],steps=[],shots=[];let win,server,origin;
@@ -72,7 +74,7 @@ async function open(width,height,hash){
 }
 const listCards=`[...document.querySelectorAll('#goal-head .goal-card')].map(card=>({open:card.querySelector('[data-goal-act=open]').dataset.goalId,delivery:card.querySelector('[data-goal-act=delivery]')?.dataset.goalId??null}))`;
 (async()=>{
-  const temporary=await fs.mkdtemp(path.join(os.tmpdir(),'crew-goal-delivery-'));app.setPath('userData',temporary);await app.whenReady();await fs.rm(output,{recursive:true,force:true});await fs.mkdir(output,{recursive:true});
+  await app.whenReady();await fs.rm(output,{recursive:true,force:true});await fs.mkdir(output,{recursive:true});
   server=http.createServer((request,response)=>{route(request,response).catch(error=>{errors.push(error.stack);json(response,{error:error.message},500);});});await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));origin='http://127.0.0.1:'+server.address().port;
   const viewports=[await open(1440,900,'leader='+voice.session_id)];
   await wait('!!document.querySelector("#chat-host textarea") && document.querySelector(".chat-inner").textContent.includes("总会话第 6 条")');
@@ -91,7 +93,7 @@ const listCards=`[...document.querySelectorAll('#goal-head .goal-card')].map(car
   await click('[data-goal-act=list]');await wait('!!document.querySelector(".goal-card")');
   mark=Date.now();await click('[data-goal-act=delivery][data-goal-id=goal-a]');await wait('!!document.querySelector(".goal-report-reader iframe")');
   const head=await text('.goal-report-reader .head');for(const part of ['改善短句换人的识别表现 · 交付报告','本轮报告','第 1 轮 · 需求 v1','AI 报告结果：等待用户验收','返回任务'])assert(head.includes(part),part);assert(!head.includes('暂无新交付'));
-  assert.equal(await run('document.querySelector(".goal-report-reader iframe").getAttribute("sandbox")'),'');assert(await run(`document.querySelector(".goal-report-reader iframe").srcdoc.includes("default-src 'none'") && document.querySelector(".goal-report-reader iframe").srcdoc.includes("report-a1")`));
+  assert.equal(await run('document.querySelector(".goal-report-reader iframe").getAttribute("sandbox")'),'allow-scripts');assert(await run(`document.querySelector(".goal-report-reader iframe").srcdoc.includes("default-src 'none'") && document.querySelector(".goal-report-reader iframe").srcdoc.includes("report-a1")`));
   assert.deepEqual(reportCalls(since(mark)),['goal-a/report-a1']);assert.equal(since(mark).filter(call=>call.name==='/api/goal').length,1);
   assert(await run('location.hash.includes("goal=goal-a")'));await shot('02-直接阅读-本轮报告-宽.png');
   steps.push('从清单一次点击「查看交付报告」：进入对应目标，读一次详情，直接在隔离阅读层打开本轮报告并标明轮次、结果和本轮关系');
