@@ -13,7 +13,7 @@
   let documents = null, leaderTrust = null, runtimeSwitch = null, goals = null, goalId = null;
   let leaderDrag = null, leaderOrderSaving = false;
   let allTab = "tree", period = "week", usageTab = "tree", usage = null, usageLoading = false, usageRequest = 0;
-  let cardId = null, cardReturn = null, handoff = null, rightOpen = false, dialogReturn = null;
+  let cardId = null, cardReturn = null, handoff = null, rightOpen = true, dialogReturn = null;
   let theme = "system", paletteItems = [], paletteIndex = 0;
   let soundGeneration = 0;
   let runtimesCache = null, runtimesPromise = null, runtimesLoading = false, runtimesError = null;
@@ -23,9 +23,9 @@
   const waitingSounds = new Map();
   let fontScale = 1;
   const FONT_MIN = .9, FONT_MAX = 1.4;
-  const decisionsOpen = new Set(), heldExpanded = new Set(), usageCollapsed = new Set(), operationIds = new Set();
+  const sideDecisionsOpen = new Set(), decisionsOpen = new Set(), heldExpanded = new Set(), usageCollapsed = new Set(), operationIds = new Set();
   const todoExpanded = new Set(), todoActions = new Map(), todoSaving = new Set();
-  let attentionScope = null;
+  let attentionScope = null, attentionVisible = true, taskVisible = true, sidecarFocus = "attention";
   let composingInput = null, compositionTimer = null, compositionRenderPending = false;
   const colors = ["#3E7C74", "#8A5A7E", "#A07A3A", "#4F6B8F", "#5E7F55", "#A8604F", "#8C7650", "#5C5F9E", "#A35D6A", "#4F7A8C", "#77773F"];
   const statusText = {working:"在干活", waiting:"等你", idle:"空闲", offline:"离线", closed:"已归档"};
@@ -366,6 +366,13 @@
     const longBrief = brief && ([brief.why_user, brief.recommendation_reason, brief.impact, ...options.flatMap(option => [option.label, option.consequence])].some(value => Array.from(String(value || "")).length > 280) || options.some(option => Array.from(option.label).length > 140));
     return `<article class="dc decision-card ${item.held ? "held" : ""}" data-dc="${item.id}"><div class="dc-head"><div class="dc-top">${av(item.asker, 22, true)}<h3 class="q">${CrewChat.renderInline(title, item.session_id)}</h3>${priorityBadge(decisionPriority(item))}<span class="from">${esc(item.asker)}</span></div><button class="btn ghost dc-hold" data-act="${item.held ? "decision-unhold" : "decision-hold"}" data-id="${item.id}">${item.held ? "取消挂起" : "挂起"}</button></div><div class="decision-summary">${brief?.why_user ? `<p class="decision-why"><span>为什么需要你</span>${decisionPreview(brief.why_user, item.session_id)}</p>` : '<p class="decision-missing">缺少说明：还没说清为什么需要你来决定。</p>'}${brief?.recommendation_reason ? `<div class="decision-recommendation"><strong>${recommended ? `建议：${decisionPreview(recommended.label, item.session_id, 140)}` : "推荐理由"}</strong><p>${decisionPreview(brief.recommendation_reason, item.session_id)}</p></div>` : ""}${brief?.impact ? `<p class="decision-impact"><span>影响</span>${decisionPreview(brief.impact, item.session_id)}</p>` : ""}${missing ? `<div class="decision-clarify"><span>这张卡的说明还不完整</span><button type="button" class="text-link" data-act="decision-clarify" data-id="${item.id}">让 leader 说明白</button></div>` : ""}</div><div class="dc-body"><div class="opts">${options.map(option => `<button class="opt ${option.recommended ? "recommended" : ""}" data-act="answer-option" data-id="${item.id}" data-option="${option.index}"><span class="t"><strong>${decisionPreview(option.label, item.session_id, 140)}</strong><small class="${option.consequence ? "" : "missing-consequence"}">${option.consequence ? decisionPreview(option.consequence, item.session_id) : "尚未说明这个选择的结果"}</small></span>${option.recommended ? '<span class="rec">推荐</span>' : ""}</button>`).join("")}</div><form class="free" data-answer-form="${item.id}"><input data-preserve="answer-${item.id}" name="answer" placeholder="或者直接说你的想法，回车发送" required aria-label="答复 ${esc(item.asker)}"><button class="icon-btn" type="submit" title="发送答复">${ic("check", "sm")}</button></form>${context || !brief || longBrief ? `<details class="decision-context" data-decision-context="${item.id}" ${opened ? "open" : ""}><summary>${brief ? longBrief ? "完整说明与技术背景" : "技术背景" : "查看原文和原选项"}</summary><div class="markdown">${longBrief ? decisionLongExplanation(item, options) : ""}${context ? CrewChat.renderMarkdown(context, item.session_id) : ""}${brief ? "" : `<ul>${(item.options || []).map(option => `<li>${CrewChat.renderInline(option, item.session_id)}</li>`).join("")}</ul>`}</div></details>` : ""}${decisionTrust(item).enabled ? '<p class="decision-trust-note">信任模式已开：已授权范围内由 AI 自主推进，需要亲自动手的事见“我的待办”。</p>' : ""}</div></article>`;
   }
+  function sideDecision(item) {
+    const title = item.brief?.title || compactDecisionText(item.question);
+    return `<details class="side-decision" data-side-decision="${item.id}" ${sideDecisionsOpen.has(item.id) ? "open" : ""}><summary><span>${esc(title)}</span><span class="side-decision-owner">${esc(item.asker)}</span></summary>${decisionCard(item)}</details>`;
+  }
+  function sidePerson(item, isLeader) {
+    return `<div class="side-person session-surface" data-session-menu="${esc(item.session_id)}"><button type="button" class="side-person-open" data-act="${isLeader ? "leader" : "member-chat"}" data-id="${esc(item.session_id)}" aria-label="进入${esc(item.name)}的对话">${isLeader ? groupAvatar(item, groupWork(item)) : av(item.name,24)}<span class="side-person-name">${esc(item.name)}${runtimeBadge(item,true)}</span><span class="dot ${esc(item.status)}" title="${esc(statusText[item.status])}"></span></button>${contextRing(item)}<button type="button" class="icon-btn" data-act="session-menu" data-id="${esc(item.session_id)}" aria-label="${esc(item.name)}的操作">⋯</button></div>`;
+  }
   function heldGroup(items, context) {
     if (items.length === 0) return "";
     const expanded = heldExpanded.has(context);
@@ -398,32 +405,52 @@
     return `<button class="li click" data-act="${isLeader ? "leader" : "member-chat"}" data-id="${esc(person.session_id)}" data-dispatch-id="${esc(task.id)}" title="查看发起人对话 · PID ${esc(task.pid)}"><span class="av" style="--s:32px;--tint:var(--working)">${ic("bolt", "sm")}</span><span class="grow"><span class="ttl">${CrewChat.renderInline(task.task_name, person.session_id)}${runtimeBadge(task, true)}</span><span class="li-sub">临时派工 · 由 ${esc(person.name)} 派出</span></span><span class="li-now">PID ${esc(task.pid)}</span>${st("working")}</button>`;
   }
   function renderRight() {
-    const chat = view === "chat" && leaderId !== null;
-    $("right-panel").classList.toggle("show", chat && rightOpen);
-    $("rp-scrim").classList.toggle("show", chat && rightOpen);
-    const toggle = $("main").querySelector('[data-act="right-open"]');
-    if (toggle) { toggle.setAttribute("aria-expanded", String(rightOpen)); toggle.classList.toggle("active", rightOpen); }
     if (view !== "chat" || leaderId === null) { $("right-panel").innerHTML = ""; delete $("right-panel").dataset.render; return; }
     const item = leader(leaderId), members = membersOf(leaderId);
-    replace($("right-panel"), `<div class="head"><div><div class="title" title="${esc(item.name)} 组" style="font-size:calc(14.5px * var(--fs))">${esc(item.name)} 组</div><div class="sub">${members.length} 个下属</div><button class="member-default-entry" data-act="member-defaults" data-id="${esc(item.session_id)}">组员大脑 · ${item.member_defaults || state.ai?.member ? esc((item.member_defaults ?? state.ai.member).runtime ? runtimeInfo((item.member_defaults ?? state.ai.member).runtime).name : "自动选择") : "跟随 leader"} ›</button></div><div class="right"><button class="btn ghost" data-act="member-add-menu" data-id="${esc(item.session_id)}" style="padding:5px 9px;font-size:calc(12.5px * var(--fs))">${ic("plus", "sm")}添加</button><button class="icon-btn rp-close" data-act="right-close" aria-label="关闭架构图">${ic("x")}</button></div></div><div class="tree">${leaderNode(item, true)}<div class="members">${members.map(memberNode).join("")}</div><div class="rp-note">点任意人进入本人对话；资料与操作或右键可查看卡片。${ic("code", "xs")} VS Code，${ic("cloud", "xs")} Crew 后台。</div></div>`);
-    $("right-panel").classList.toggle("show", rightOpen);
-    $("rp-scrim").classList.toggle("show", rightOpen);
+    replace($("right-panel"), `<div class="head"><div><div class="title" title="${esc(item.name)} 组" style="font-size:calc(13px * var(--fs))">本组架构图</div><div class="sub">${members.length} 个下属</div><button class="member-default-entry" data-act="member-defaults" data-id="${esc(item.session_id)}">组员大脑 · ${item.member_defaults || state.ai?.member ? esc((item.member_defaults ?? state.ai.member).runtime ? runtimeInfo((item.member_defaults ?? state.ai.member).runtime).name : "自动选择") : "跟随 leader"} ›</button></div><div class="right"><button class="btn ghost" data-act="member-add-menu" data-id="${esc(item.session_id)}" style="padding:5px 9px;font-size:calc(12.5px * var(--fs))">${ic("plus", "sm")}添加</button><button class="icon-btn rp-close" data-act="right-close" aria-label="关闭架构图">${ic("x")}</button></div></div><div class="tree sidecar-section-scroll">${sidePerson(item,true)}<div class="side-members">${members.map(person => sidePerson(person,false)).join("")}</div><div class="rp-note">点任意人进入本人对话；资料与操作或右键可查看卡片。${ic("code", "xs")} VS Code，${ic("cloud", "xs")} Crew 后台。</div></div>`);
+    syncSidecar();
   }
   function attentionOpen() { return $("chat-attention")?.matches(":popover-open") === true; }
   function closeAttention(restoreFocus = false) {
     if (!attentionOpen()) return;
     $("chat-attention").hidePopover();
-    if (restoreFocus) $("chat-head")?.querySelector('[data-act="attention"]')?.focus({preventScroll:true});
+    if (restoreFocus) $("chat-head")?.querySelector(`[data-act="${({attention:"attention",tasks:"task-panel",tree:"right-open"})[sidecarFocus]}"]`)?.focus({preventScroll:true});
+  }
+  function syncSidecar() {
+    if (!$("side-task-section")) return;
+    $("side-task-section").hidden = !taskVisible;
+    $("side-attention-section").hidden = !attentionVisible;
+    $("right-panel").hidden = !rightOpen || view !== "chat" || leaderId === null;
+    for (const [act, visible] of [["attention",attentionVisible],["task-panel",taskVisible],["right-open",rightOpen]]) {
+      const button = $("chat-head")?.querySelector(`[data-act="${act}"]`);
+      button?.setAttribute("aria-expanded", String(attentionOpen() && visible || act === "task-panel" && goals?.materialsOpen()));
+    }
+    if (!taskVisible && !attentionVisible && !rightOpen) closeAttention();
+    if (attentionOpen()) positionAttention();
+  }
+  function toggleSidecar(section) {
+    if (section === "tasks" && goals?.materialsOpen()) goals.closeDrawer();
+    sidecarFocus = section;
+    const open = attentionOpen();
+    if (section === "tasks") taskVisible = !open || !taskVisible;
+    else if (section === "tree") rightOpen = !open || !rightOpen;
+    else attentionVisible = !open || !attentionVisible;
+    if (!open) $("chat-attention").showPopover();
+    syncSidecar();
+  }
+  function returnToTaskPanel() {
+    taskVisible = true; sidecarFocus = "tasks";
+    if (!attentionOpen()) $("chat-attention").showPopover();
+    syncSidecar();
   }
   function positionAttention() {
-    const anchor = $("chat-head")?.querySelector('[data-act="attention"]');
-    if (!anchor) return;
-    const panel = $("chat-attention"), rect = anchor.getBoundingClientRect();
-    const width = Math.min(460, window.innerWidth - 24);
-    const top = Math.max(12, Math.min(rect.bottom + 10, window.innerHeight - 180));
-    panel.style.left = `${Math.max(12, Math.min(rect.right - width, window.innerWidth - width - 12))}px`;
+    const host = $("goal-head") || $("chat-head");
+    if (!host) return;
+    const panel = $("chat-attention"), rect = host.getBoundingClientRect();
+    const width = Math.min(320, window.innerWidth - 24), top = Math.max(12, Math.min(rect.bottom + 10, window.innerHeight - 180));
+    panel.style.left = `${Math.max(12, window.innerWidth - width - 12)}px`;
     panel.style.top = `${top}px`;
-    panel.style.maxHeight = `${Math.min(640, window.innerHeight - top - 12)}px`;
+    panel.style.maxHeight = `${Math.min(560, window.innerHeight - top - 12)}px`;
   }
   function renderChat() {
     const item = readOnlyId === null ? leader(leaderId) : member(readOnlyId), group = leader(leaderId), members = membersOf(leaderId);
@@ -460,11 +487,14 @@
     attentionScope = scope;
     replace($("native-approval-tray"), nativeApprovals?.chatMarkup(item.session_id, goalId, readOnlyId === null) || "");
     $("attention-scope").textContent = `${readOnlyId === null ? group?.name || item.name : item.name} · ${goalId == null ? "全部任务与总对话" : goals?.currentGoal()?.title || "当前任务"}`;
-    replace($("chat-head"), `<div class="head">${readOnlyId === null ? groupAvatar(item, work) : av(item.name, 30)}<div class="heading-meta"><div class="title"><span class="chat-name" title="${esc(item.name)}">${esc(item.name)}</span>${readOnlyId === null ? priorityBadge(item.priority) : ""}${chatRuntime}</div><div class="sub"><span class="chat-scope" title="${esc(readOnlyId === null ? (item.goal ?? "") : `归 ${item.group} · 成员本人对话`)}">${esc(readOnlyId === null ? (item.goal ?? "") : `归 ${item.group} · 成员本人对话`)}</span>${group === undefined ? "" : `<span class="sep"></span><span class="chat-member-stats ${work.active ? "is-working" : ""}">${members.length} 个下属 · ${work.summary}</span>`}</div></div><div class="right">${!listing ? `<button type="button" class="attention-trigger ${attentionCount ? "has-items" : ""}" data-act="attention" popovertarget="chat-attention" aria-haspopup="dialog" aria-controls="chat-attention" aria-expanded="${attentionOpen()}" aria-label="待处理，${attentionCount} 件${readOnlyId === null && held.length ? `，另有 ${held.length} 件挂起` : ""}">${ic("inbox", "sm")}<span>待处理</span>${attentionCount ? `<span class="attention-count">${attentionCount}</span>` : ""}</button>` : ""}${goalId == null ? contextControls(item) : ""}${chatModel}${readOnlyId === null ? "" : `<button class="btn ghost" data-act="leader" data-id="${esc(leaderId)}">回到 leader</button><button class="btn ghost" data-act="card" data-id="${esc(item.session_id)}">资料</button>`}<button class="icon-btn" data-act="session-menu" data-id="${esc(item.session_id)}" aria-haspopup="menu" title="会话操作" aria-label="会话操作">⋯</button>${group === undefined ? "" : `<button class="icon-btn rp-toggle" data-act="right-open" title="本组架构图" aria-label="本组架构图">${ic("grid")}</button>`}</div></div>`);
+    replace($("chat-head"), `<div class="head">${readOnlyId === null ? groupAvatar(item, work) : av(item.name, 30)}<div class="heading-meta"><div class="title"><span class="chat-name" title="${esc(item.name)}">${esc(item.name)}</span>${readOnlyId === null ? priorityBadge(item.priority) : ""}${chatRuntime}</div><div class="sub"><span class="chat-scope" title="${esc(readOnlyId === null ? (item.goal ?? "") : `归 ${item.group} · 成员本人对话`)}">${esc(readOnlyId === null ? (item.goal ?? "") : `归 ${item.group} · 成员本人对话`)}</span>${group === undefined ? "" : `<span class="sep"></span><span class="chat-member-stats ${work.active ? "is-working" : ""}">${members.length} 个下属 · ${work.summary}</span>`}</div></div><div class="right">${!listing ? `<button type="button" class="attention-trigger ${attentionCount ? "has-items" : ""}" data-act="attention" aria-haspopup="dialog" aria-controls="chat-attention" aria-expanded="${attentionOpen() && attentionVisible}" aria-label="待处理，${attentionCount} 件${readOnlyId === null && held.length ? `，另有 ${held.length} 件挂起` : ""}">${ic("inbox", "sm")}<span>待处理</span>${attentionCount ? `<span class="attention-count">${attentionCount}</span>` : ""}</button>` : ""}${goalId == null ? contextControls(item) : ""}${chatModel}${readOnlyId === null ? "" : `<button class="btn ghost" data-act="leader" data-id="${esc(leaderId)}">回到 leader</button><button class="btn ghost" data-act="card" data-id="${esc(item.session_id)}">资料</button>`}<button class="icon-btn" data-act="session-menu" data-id="${esc(item.session_id)}" aria-haspopup="menu" title="会话操作" aria-label="会话操作">⋯</button>${group === undefined || listing ? "" : `<button type="button" class="attention-trigger" data-act="task-panel" aria-haspopup="dialog" aria-controls="chat-attention" aria-expanded="${attentionOpen() && taskVisible}">${ic("check", "sm")}<span>${goalId == null ? "任务" : "任务资料"}</span></button><button class="icon-btn rp-toggle" data-act="right-open" title="本组架构图" aria-label="本组架构图">${ic("grid")}</button>`}</div></div>`);
     replace($("goal-head"), group ? goals?.groupMarkup(leaderId) || "" : "");
-    replace($("decision-tray"), readOnlyId !== null ? "" : `<div class="tray-in">${todoTray(groupTodos, leaderId)}${pending.length === 0 ? "" : `<section class="tray-pending"><h3 class="attention-section-title">等你拍板 <span>${pending.length}</span></h3><div class="tray-list">${pending.map(decisionCard).join("")}</div></section>`}${heldGroup(held, "tray")}</div>`);
+    replace($("decision-tray"), readOnlyId !== null ? "" : `<div class="tray-in">${todoTray(groupTodos, leaderId)}${pending.length === 0 ? "" : `<section class="tray-pending"><h3 class="attention-section-title">等你拍板 <span>${pending.length}</span></h3><div class="tray-list">${pending.map(sideDecision).join("")}</div></section>`}${heldGroup(held, "tray")}</div>`);
     $("attention-empty").hidden = permissions + (readOnlyId === null ? pending.length + held.length + groupTodos.length : 0) > 0;
-    if (attentionOpen()) positionAttention();
+    replace($("side-task-body"), goals?.sideMarkup(leaderId) || "");
+    $("side-task-title").textContent = goalId == null ? "任务清单" : "当前任务";
+    $("side-attention-count").textContent = String(attentionCount);
+    syncSidecar();
     if (readOnlyId === null && leaderTrust !== null) {
       const slot = document.createElement("span"); slot.innerHTML = leaderTrust.indicator(item);
       const anchor = $("chat-head").querySelector('[data-act="session-menu"]');
@@ -922,7 +952,7 @@
     const sameScope = next === "chat" && view === "chat" && leaderId === id && String(goalId) === String(nextGoal);
     if (!sameScope || readOnlyId !== readonly) closeAttention();
     if (view === "chat" && (!sameScope || readOnlyId !== readonly)) { CrewChat.unmount(); mountedChat = null; }
-    if (!sameScope) { goals?.closeDrawer(); rightOpen = false; }
+    if (!sameScope) goals?.closeDrawer();
     view = next; leaderId = id; readOnlyId = readonly; goalId = next === "chat" ? nextGoal : null;
     if (next !== "chat") { $("right-panel").classList.remove("show"); $("rp-scrim").classList.remove("show"); }
     render(); syncRoute();
@@ -953,7 +983,7 @@
   function watchingChat(id) {
     return !settingsOpen && !workspaceOpen && !goals?.showingList() && view === "chat" && readOnlyId === null && leaderId === id && document.visibilityState === "visible" && document.hasFocus() &&
       cardId === null && !$("backdrop").classList.contains("show") && !$("menu").classList.contains("show") &&
-      !(rightOpen && window.matchMedia("(max-width:1023px)").matches);
+      !(attentionOpen() && window.matchMedia("(max-width:1023px)").matches);
   }
   function notifySounds(previous, fresh, requestedGeneration) {
     const decisions = state.decisions.filter(item => !item.held && !previous.decisions.some(old => old.id === item.id));
@@ -1024,11 +1054,9 @@
       }, 0);
     });
     $("overlay-root").innerHTML = '<button class="rp-scrim" id="rp-scrim" data-act="right-close" aria-label="关闭架构图"></button><div class="card-back" id="card-back"></div><section class="card" id="card" role="dialog" aria-modal="true" aria-label="下属卡片" tabindex="-1"></section><div class="menu" id="menu" role="menu"></div><div class="backdrop" id="backdrop"></div><div id="settings-parking" hidden><section class="settings-popover" id="settings" aria-label="外观设置"></section></div>';
-    document.addEventListener("click", event => { if (event.target.closest('#chat-attention [data-file-path],#chat-attention [data-document-id]')) closeAttention(); }, true);
+    document.addEventListener("click", event => { if (event.target.closest('#chat-attention [data-file-path],#chat-attention [data-document-id],#chat-attention [data-goal-act=drawer],#chat-attention [data-goal-act=delivery],#chat-attention [data-goal-act=create]')) closeAttention(); }, true);
     $("chat-attention").addEventListener("beforetoggle", event => { if (event.newState === "open") positionAttention(); });
-    $("chat-attention").addEventListener("toggle", () => {
-      $("chat-head")?.querySelector('[data-act="attention"]')?.setAttribute("aria-expanded", String(attentionOpen()));
-    });
+    $("chat-attention").addEventListener("toggle", syncSidecar);
     window.addEventListener("resize", () => { if (attentionOpen()) positionAttention(); });
     maintenance = window.CrewMaintenance.create({api,
       async onCleaned() { await loadState(true); if (view !== "all") navigate("all"); toast("已归档旧工作，可以重新开始"); }});
@@ -1067,7 +1095,7 @@
       refreshCatalog:refreshRuntimes, prepare:body => api("/api/session/runtime/prepare",body),
       switchRuntime:body => api("/api/session/runtime/switch",body), onChanged:() => { goals?.invalidate(); return loadState(true); }, toast});
     if (window.CrewGoals && project !== null) goals = window.CrewGoals.create({project, api, toast, state:() => state,
-      refreshState:() => loadState(true), onChange:() => { if (state && view === "chat") renderChat(); },
+      refreshState:() => loadState(true), onChange:() => { if (state && view === "chat") renderChat(); }, onDrawer:closeAttention, onOverlay:closeAttention, onReturn:returnToTaskPanel,
       renderDocuments:(items,id) => documents?.taskCards(items,id),
       onGeneral:id => navigate("chat", id, readOnlyId, null),
       onNavigate:id => { const item = (state.goals || []).find(item => String(item.id) === String(id)); if (item) { if (cardId !== null) closeCard(); navigate("chat", item.leader_session_id, null, item.id); } else toast("目标已不在当前工作区中，请刷新。"); }});
@@ -1076,7 +1104,7 @@
     document.addEventListener("contextmenu", event => {
       const surface = sessionSurface(event.target);
       if (surface === null || state === null) return;
-      event.preventDefault(); openSessionMenu(surface, surface.dataset.sessionMenu === undefined ? surface.dataset.id : surface.dataset.sessionMenu, {x:event.clientX, y:event.clientY});
+      event.preventDefault(); openSessionMenu(surface, surface.dataset.sessionMenu === undefined ? surface.dataset.id : surface.dataset.sessionMenu, {x:event.clientX, y:event.clientY}); closeAttention();
     });
     document.addEventListener("pointerover", event => {
       const button = event.target.closest('#menu [data-act="submenu"]');
@@ -1095,13 +1123,13 @@
       if (act === "confirm-stop-person") { const resolve = stopConfirmation; stopConfirmation = null; closeBackdrop(); resolve?.(true); return; }
       if (act === "submenu") { openSubmenu(button); return; }
       if (button.closest("#menu")) hideMenu(["member-create", "member-defaults", "session-rename"].includes(act));
-      if (act === "session-menu") openSessionMenu(button, id);
-      else if (act === "member-add-menu") showMenu(button,`<button role="menuitem" data-act="member-create" data-id="${esc(id)}">${ic("plus","sm")}新建组员</button><button role="menuitem" data-act="member-adopt" data-id="${esc(id)}">${ic("inbox","sm")}收编已有会话</button>`);
+      if (act === "session-menu") { openSessionMenu(button, id); closeAttention(); }
+      else if (act === "member-add-menu") { showMenu(button,`<button role="menuitem" data-act="member-create" data-id="${esc(id)}">${ic("plus","sm")}新建组员</button><button role="menuitem" data-act="member-adopt" data-id="${esc(id)}">${ic("inbox","sm")}收编已有会话</button>`); closeAttention(); }
       else if (act === "member-create") { hideMenu(); memberUI.openCreate(id); }
       else if (act === "member-defaults") { hideMenu(); memberUI.openDefaults(id); }
       else if (act === "member-adopt") { hideMenu();adoptLeaderId=id;navigate("adopt"); }
       else if (act === "session-rename") openRename(id);
-      else if (act === "group-tree") { if (cardId !== null) closeCard(); navigate("chat", id); rightOpen = true; renderRight(); }
+      else if (act === "group-tree") { if (cardId !== null) closeCard(); navigate("chat", id); rightOpen = true; renderRight(); if (!attentionOpen()) toggleSidecar("tree"); }
       else if (act === "set-priority") action("leader-order", () => setPriority(id, Number(button.dataset.rank)));
       else if (act === "leader-up" || act === "leader-down") action("leader-order", async () => {
         const item = leader(id), order = sortableLeaders(item).map(item => item.session_id), before = order.slice(), index = order.indexOf(id), other = index + (act === "leader-up" ? -1 : 1);
@@ -1160,8 +1188,11 @@
       else if (act === "font-reset") { setFontScale(1); renderSettings(); }
       else if (act === "sound-mute") { CrewSound.setMuted(!CrewSound.getSettings().muted); renderSettings(); }
       else if (act === "sound-test") CrewSound.preview("decision");
-      else if (act === "right-open") { rightOpen = true; renderRight(); $("right-panel").querySelector('[data-act="right-close"]').focus(); }
-      else if (act === "right-close") { rightOpen = false; renderRight(); $("main").querySelector('[data-act="right-open"]')?.focus(); }
+      else if (act === "attention") toggleSidecar("attention");
+      else if (act === "task-panel") toggleSidecar("tasks");
+      else if (act === "right-open") toggleSidecar("tree");
+      else if (act === "right-close") { rightOpen = false; syncSidecar(); $("main").querySelector('[data-act="right-open"]')?.focus(); }
+      else if (act === "side-section-close") { if (button.dataset.section === "tasks") taskVisible = false; else attentionVisible = false; syncSidecar(); }
       else if (act === "modal-leader") openModalLeader();
       else if (act === "leader-runtime" || act === "leader-model" || act === "leader-effort") {
         const form = $("leader-form"), field = {"leader-runtime":"runtime", "leader-model":"model", "leader-effort":"effort"}[act];
@@ -1243,6 +1274,7 @@
     });
     document.addEventListener("toggle", event => {
       const details = event.target;
+      if (details.dataset.sideDecision !== undefined) { const id = Number(details.dataset.sideDecision); if (details.open) sideDecisionsOpen.add(id); else sideDecisionsOpen.delete(id); return; }
       if (details.dataset.decisionContext === undefined) return;
       const id = Number(details.dataset.decisionContext);
       if (details.open) decisionsOpen.add(id); else decisionsOpen.delete(id);
@@ -1268,7 +1300,7 @@
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k" && state !== null && project !== null) { event.preventDefault(); if (stopConfirmation === null) openPalette(); return; }
       if (event.key === "Escape" && settingsOpen) { closeSettings(); return; }
       if (settingsOpen) return;
-      if (event.key === "Escape") { if ($("menu").classList.contains("show")) { hideMenu(); return; } if ($("backdrop").classList.contains("show")) closeBackdrop(); else if (cardId !== null) closeCard(); else if (goals?.escape()) return; else if (rightOpen) { rightOpen = false; renderRight(); } }
+      if (event.key === "Escape") { if ($("menu").classList.contains("show")) { hideMenu(); return; } if ($("backdrop").classList.contains("show")) closeBackdrop(); else if (cardId !== null) closeCard(); else if (goals?.escape()) return; }
       if (event.key === "Tab") {
         const surface = $("backdrop").classList.contains("show") ? $("backdrop") : cardId !== null ? $("card") : null;
         if (surface === null) return;

@@ -49,12 +49,15 @@
     <aside class="sb" id="sidebar" aria-label="工作区导航"></aside>
     <main class="main" id="main" aria-label="工作区内容"></main>
     <aside class="goal-drawer" id="goal-drawer" aria-label="当前目标资料" hidden></aside>
-    <aside class="rp" id="right-panel" aria-label="本组架构图"></aside>
   </div>
   <div id="overlay-root"></div>
-  <section id="chat-attention" class="chat-attention" popover="auto" role="dialog" aria-labelledby="attention-title" aria-describedby="attention-scope">
-    <header class="attention-head"><div><h2 id="attention-title">待你处理</h2><p id="attention-scope"></p></div><button type="button" class="icon-btn" popovertarget="chat-attention" popovertargetaction="hide" aria-label="收起待处理" autofocus>×</button></header>
-    <div class="attention-scroll"><div id="native-approval-tray"></div><div id="decision-tray"></div><p id="attention-empty" class="attention-empty">这里暂时没有待处理事项</p></div>
+  <section id="chat-attention" class="chat-attention sidecar" popover="auto" role="dialog" aria-labelledby="attention-title" aria-describedby="attention-scope">
+    <header class="attention-head"><div><h2 id="attention-title">本组工作</h2><p id="attention-scope"></p></div><button type="button" class="icon-btn" popovertarget="chat-attention" popovertargetaction="hide" aria-label="收起本组工作" autofocus>×</button></header>
+    <div class="sidecar-sections">
+      <section id="side-task-section" class="sidecar-section"><div class="sidecar-section-head"><h3 id="side-task-title">任务清单</h3><button type="button" class="icon-btn" data-act="side-section-close" data-section="tasks" aria-label="收起任务区域">−</button></div><div id="side-task-body" class="sidecar-section-scroll"></div></section>
+      <section id="side-attention-section" class="sidecar-section"><div class="sidecar-section-head"><h3>待你处理 <span id="side-attention-count"></span></h3><button type="button" class="icon-btn" data-act="side-section-close" data-section="attention" aria-label="收起待处理区域">−</button></div><div class="attention-scroll sidecar-section-scroll"><div id="native-approval-tray"></div><div id="decision-tray"></div><p id="attention-empty" class="attention-empty">这里暂时没有待处理事项</p></div></section>
+      <aside class="rp sidecar-section" id="right-panel" aria-label="本组架构图"></aside>
+    </div>
   </section>
   <section id="settings-surface" aria-label="Crew 设置" hidden></section>
   <div id="toast-root" aria-live="polite" aria-atomic="true"></div>

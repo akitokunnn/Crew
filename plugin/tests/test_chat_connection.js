@@ -195,7 +195,7 @@ test("starting a queued goal rebinds the app to the execution journal, closes th
   const goal={id:"goal",leader_session_id:"leader",title:"真实目标",request:"推进并交付",acceptance:[],status:"queued",current_round:1,requirement_version:1,version:1};
   const state={project:{name:"fixture"},leaders:[person],members:[],decisions:[],todos:[],goals:[goal],runtimes:[{id:"codex",name:"Codex",available:true,models:[],efforts:[]}]};
   const main=host();nodes.set("main",main);nodes.set("goal-drawer",host());
-  for(const id of ["chat-attention","attention-scope","attention-empty","native-approval-tray","decision-tray"])nodes.set(id,host());
+  for(const id of ["chat-attention","attention-scope","attention-empty","native-approval-tray","decision-tray","side-task-section","side-attention-section","side-task-body","side-task-title","side-attention-count","right-panel"])nodes.set(id,host());
   Object.defineProperty(main,"innerHTML",{set(value){this.markup=value;for(const [,id]of value.matchAll(/id="([^"]+)"/g))nodes.set(id,host());},get(){return this.markup||"";}});
   h.sandbox.document.getElementById=id=>nodes.get(id)||null;
   h.sandbox.location={search:"?project=fixture",origin:"http://fixture.local"};

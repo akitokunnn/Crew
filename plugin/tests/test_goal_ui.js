@@ -21,6 +21,8 @@ function harness(api,{fetch:fetcher}={}){
   return {module:sandbox.window.CrewGoals,client,drawer,main,state,calls,network,navigations,click,submit};
 }
 
+const surfaces=h=>h.client.groupMarkup("leader")+h.client.sideMarkup("leader");
+
 test("ordinary conversation performs no goal reads and cards preserve status, group and escaped requirements",async()=>{
   const h=harness();h.client.sync("leader",null);await tick();assert.equal(h.calls.length,0);assert.equal(h.drawer.hidden,true);
   const card=h.module.cards([{...h.state.goals[0],title:"<script>alert(1)</script>",report_available:false}],h.state.leaders);
@@ -30,8 +32,8 @@ test("ordinary conversation performs no goal reads and cards preserve status, gr
 
 test("opening a goal keeps materials collapsed and same-goal person changes retain the drawer",async()=>{
   const h=harness();h.client.sync("leader","a");await tick();assert.equal(h.calls.length,1);assert.equal(h.drawer.hidden,true);
-  const main=h.client.groupMarkup("leader");assert(main.includes("需求与验收"));assert(!main.includes("原始需求与验收标准"));assert(main.includes("暂停目标"));assert(!main.includes("goal-context-item"));
-  await h.click("drawer",{kind:"requirements"});assert(h.drawer.innerHTML.includes("原始需求与验收标准"));assert(!h.client.groupMarkup("leader").includes("原始需求与验收标准"));await h.click("drawer",{kind:"requirements"});
+  const main=surfaces(h);assert(main.includes("需求与验收"));assert(!main.includes("原始需求与验收标准"));assert(main.includes("暂停目标"));assert(!main.includes("goal-context-item"));
+  await h.click("drawer",{kind:"requirements"});assert(h.drawer.innerHTML.includes("原始需求与验收标准"));assert(!surfaces(h).includes("原始需求与验收标准"));await h.click("drawer",{kind:"requirements"});
   await h.click("drawer",{kind:"context"});assert.equal(h.drawer.hidden,false);assert(h.drawer.innerHTML.includes("验证组 / 短句验证"));
   h.client.sync("leader","a");assert.equal(h.drawer.hidden,false);assert.equal(h.calls.length,1);
   assert.equal(h.client.escape(),true);assert.equal(h.drawer.hidden,true);assert.equal(h.client.escape(),false);
@@ -68,11 +70,11 @@ test("delivered tasks invite direct follow-up and a new round keeps the earlier 
     context:{items:[],manifest:{}},reports:[],acceptance_review:null,
     previous_acceptance_review:{round:1,accepted:false,note:"报告结尾缺少复测证据"}}));
   h.client.sync("leader","a");await tick();
-  assert(h.client.groupMarkup("leader").includes("第 1 轮 · 你退回修改"));
-  assert(h.client.groupMarkup("leader").includes("报告结尾缺少复测证据"));
+  assert(surfaces(h).includes("第 1 轮 · 你退回修改"));
+  assert(surfaces(h).includes("报告结尾缺少复测证据"));
   for(const status of ["completed","failed","awaiting_acceptance"]){
     h.state.goals[0].status=status;h.state.goals[0].version++;
-    h.client.invalidate();const markup=h.client.groupMarkup("leader");
+    h.client.invalidate();const markup=surfaces(h);
     assert(markup.includes("直接在下方继续聊"),status);
     assert(markup.includes("已有报告与验收记录保留"));
   }
@@ -80,7 +82,7 @@ test("delivered tasks invite direct follow-up and a new round keeps the earlier 
 });
 
 test("human acceptance is displayed separately from the unchanged AI report status",async()=>{
-  const h=harness(async()=>({goal:{...h.state.goals[0],status:"failed"},acceptance_review:{accepted:false,note:"缺少同一录音的对照",actor:"human"},reports:[{id:"r",title:"原始报告",round:1,requirement_version:1,version:1,current:true,status:"awaiting_acceptance",summary:"AI 原始结论",acceptance_counts:{passed:1,failed:0,unverified:0,simulated:0},unresolved:[]}],context:{items:[],manifest:{}}}));h.client.sync("leader","a");await tick();const markup=h.client.groupMarkup("leader");assert(markup.includes("你退回修改"));assert(markup.includes("缺少同一录音的对照"));assert(markup.includes('data-action="reopen"'));await h.click("drawer",{kind:"reports"});assert(h.drawer.innerHTML.includes("原始报告保持生成时的内容和状态"));assert(h.drawer.innerHTML.includes("AI 报告结果：等待用户验收"));
+  const h=harness(async()=>({goal:{...h.state.goals[0],status:"failed"},acceptance_review:{accepted:false,note:"缺少同一录音的对照",actor:"human"},reports:[{id:"r",title:"原始报告",round:1,requirement_version:1,version:1,current:true,status:"awaiting_acceptance",summary:"AI 原始结论",acceptance_counts:{passed:1,failed:0,unverified:0,simulated:0},unresolved:[]}],context:{items:[],manifest:{}}}));h.client.sync("leader","a");await tick();const markup=surfaces(h);assert(markup.includes("你退回修改"));assert(markup.includes("缺少同一录音的对照"));assert(markup.includes('data-action="reopen"'));await h.click("drawer",{kind:"reports"});assert(h.drawer.innerHTML.includes("原始报告保持生成时的内容和状态"));assert(h.drawer.innerHTML.includes("AI 报告结果：等待用户验收"));
 });
 
 test("context corrections carry the exact item version and keep drafts after a failed write",async()=>{
@@ -109,17 +111,17 @@ test("adding a fact uses a typed human source without amending the goal requirem
 });
 
 test("selecting a goal collapses its group list while keeping the selected details available",async()=>{
-  const h=harness();h.client.sync("leader","a");await tick();await h.click("list");assert(h.client.groupMarkup("leader").includes('class="group-goal-list"'));
-  assert.equal(h.client.showingList(),true);assert(!h.client.groupMarkup("leader").includes('data-goal-detail="a"'));
-  assert(h.client.groupMarkup("leader").includes('aria-selected="true" tabindex="0" data-goal-act="list"'));
-  await h.click("open",{goalId:"a"});const markup=h.client.groupMarkup("leader");assert(!markup.includes('class="group-goal-list"'));assert(markup.includes('data-goal-detail="a"'));assert(markup.includes("需求与验收"));
-  await h.click("list");assert(h.client.groupMarkup("leader").includes('class="group-goal-list"'));h.client.sync("leader","b");await tick();assert(!h.client.groupMarkup("leader").includes('class="group-goal-list"'));
+  const h=harness();h.client.sync("leader","a");await tick();await h.click("list");assert(surfaces(h).includes('class="group-goal-list"'));
+  assert.equal(h.client.showingList(),true);assert(!surfaces(h).includes('data-goal-detail="a"'));
+  assert(surfaces(h).includes('aria-selected="true" tabindex="0" data-goal-act="list"'));
+  await h.click("open",{goalId:"a"});const markup=surfaces(h);assert(!markup.includes('class="group-goal-list"'));assert(markup.includes('data-goal-detail="a"'));assert(markup.includes("需求与验收"));
+  await h.click("list");assert(surfaces(h).includes('class="group-goal-list"'));h.client.sync("leader","b");await tick();assert(!surfaces(h).includes('class="group-goal-list"'));
 });
 
 test("goal details show structured acceptance titles, newest report and explicit reopen or resume actions",async()=>{
   for(const status of ["completed","awaiting_acceptance","waiting_user"]){
     const h=harness(async()=>({goal:{...h.state.goals[0],status,current_round:2,acceptance:[{id:"a1",title:"真实输入例子达标"}]},context:{items:[],manifest:{}},reports:[{id:"new",title:"短句验证",round:2,requirement_version:1,version:1,current:true,status:status==="awaiting_acceptance"?status:"completed",summary:"最新结论",acceptance_counts:{passed:1,failed:0,unverified:0,simulated:0},unresolved:[]},{id:"old",title:"短句验证",round:1,requirement_version:1,version:1,current:false,status:"failed",summary:"旧轮次结论",acceptance_counts:{passed:1,failed:0,unverified:0,simulated:0},unresolved:[]}]}));
-    h.client.sync("leader","a");await tick();await h.click("drawer",{kind:"requirements"});const markup=h.client.groupMarkup("leader");assert(h.drawer.innerHTML.includes("真实输入例子达标"));assert(!h.drawer.innerHTML.includes("[object Object]"));
+    h.client.sync("leader","a");await tick();await h.click("drawer",{kind:"requirements"});const markup=surfaces(h);assert(h.drawer.innerHTML.includes("真实输入例子达标"));assert(!h.drawer.innerHTML.includes("[object Object]"));
     assert(markup.includes("最新结论"));assert(!markup.includes("旧轮次结论"),"an older round report is never shown as this round's conclusion");
     if(status==="waiting_user")assert(markup.includes('data-action="resume"'));else if(status==="completed")assert(markup.includes('data-action="reopen"'));else{assert(markup.includes('data-action="accept"'));assert(markup.includes('data-action="reject"'));assert(!markup.includes('data-action="reopen"'));}
     if(status==="awaiting_acceptance")assert(markup.includes("待验收"));
@@ -128,17 +130,17 @@ test("goal details show structured acceptance titles, newest report and explicit
 });
 
 test("task list selection is explicit and general clears it instead of leaving two selected tabs",async()=>{
-  const h=harness();h.client.sync("leader",null);await h.click("list");let markup=h.client.groupMarkup("leader");
+  const h=harness();h.client.sync("leader",null);await h.click("list");let markup=surfaces(h);
   assert(h.client.showingList());assert(markup.includes('aria-selected="false" tabindex="-1" data-goal-act="general"'));assert(markup.includes('role="tabpanel"'));
   await h.click("list");assert(h.client.showingList(),"clicking the selected list stays on the list");
-  await h.click("general");assert(!h.client.showingList());markup=h.client.groupMarkup("leader");assert(markup.includes('aria-selected="true" tabindex="0" data-goal-act="general"'));
+  await h.click("general");assert(!h.client.showingList());markup=surfaces(h);assert(markup.includes('aria-selected="true" tabindex="0" data-goal-act="general"'));
 });
 
 test("task actions show pending and retained failure feedback and allow a deliberate retry",async()=>{
   let reject;const h=harness(async(url,data)=>data?new Promise((_resolve,fail)=>{reject=fail;}):{goal:{...h.state.goals[0]},executions:[],reports:[],context:{items:[],manifest:{}}});
   h.client.sync("leader","a");await tick();const request=h.click("action",{action:"pause"});await tick();
-  assert(h.client.groupMarkup("leader").includes("正在处理…"));reject(Error("本轮尚未停止，请稍后重试"));await request;
-  const markup=h.client.groupMarkup("leader");assert(markup.includes('role="alert"'));assert(markup.includes("本轮尚未停止，请稍后重试"));assert(!markup.includes("正在处理…"));assert(markup.includes("暂停目标"));
+  assert(surfaces(h).includes("正在处理…"));reject(Error("本轮尚未停止，请稍后重试"));await request;
+  const markup=surfaces(h);assert(markup.includes('role="alert"'));assert(markup.includes("本轮尚未停止，请稍后重试"));assert(!markup.includes("正在处理…"));assert(markup.includes("暂停目标"));
 });
 
 test("materials show only documents supplied by the selected goal detail and never fetch a global list",async()=>{
@@ -166,13 +168,13 @@ test("opening a task shows this round's AI conclusion compactly and reads no rep
   const h=harness(async()=>deliveryDetail(h,"a",{status:"awaiting_acceptance",current_round:2,requirement_version:2},[report("r2",2,{current:true,status:"awaiting_acceptance",summary:long,acceptance_counts:{passed:1,failed:1,unverified:2,simulated:0},unresolved:["混说 <i>仍误判</i>"]}),report("r1",1,{summary:"旧轮次结论"})]));
   h.client.sync("leader","a");await settle();
   assert.equal(h.network.length,0);assert.equal(h.main.appends,undefined);assert.equal(h.drawer.hidden,true);
-  let markup=h.client.groupMarkup("leader");
+  let markup=surfaces(h);
   for(const text of ["AI 提交的结论","第 2 轮报告 · 报告结果：等待用户验收","报告验收记录（AI 填写）","共 4 项","通过 1","失败 1","未验证 2","报告补充说明 · 1 条","查看完整报告","展开全文"])assert(markup.includes(text),text);
   assert(!markup.includes("模拟验证"),"a zero count is not listed");assert(markup.includes("&lt;script&gt;alert(1)&lt;/script&gt;"));assert(!markup.includes("<script>"));assert(markup.includes("补充说明".repeat(40)),"the full conclusion stays in place");
   assert(!markup.includes("旧轮次结论"));assert(!markup.includes("混说"),"unresolved details stay folded by default");assert(!markup.includes("你已验收"),"an AI report is not shown as the user's acceptance");
-  await h.click("conclusion-toggle",{reportId:"r2"});markup=h.client.groupMarkup("leader");
+  await h.click("conclusion-toggle",{reportId:"r2"});markup=surfaces(h);
   assert(markup.includes("goal-delivery-summary open"));assert(!markup.includes("混说"));assert(markup.includes("收起"));
-  await h.click("report-notes-toggle",{reportId:"r2"});markup=h.client.groupMarkup("leader");assert(markup.includes("混说 &lt;i&gt;仍误判&lt;/i&gt;"));
+  await h.click("report-notes-toggle",{reportId:"r2"});markup=surfaces(h);assert(markup.includes("混说 &lt;i&gt;仍误判&lt;/i&gt;"));
   assert(h.calls.every(call=>call.data===undefined&&call.url.startsWith("/api/goal?")));assert.equal(h.network.length,0);
 });
 
@@ -181,11 +183,11 @@ test("five acceptance checks remain five when the report also contains five narr
     const notes=Array.from({length:5},(_,i)=>`遗留说明 ${i+1} <保留原文>`);
     const h=harness(async()=>deliveryDetail(h,"a",{},[report("counts",1,{current:true,summary:"四项实测通过，一项尚未验证。",acceptance_counts:{passed:4,failed:0,unverified:1,simulated:0},unresolved:notes})]));
     h.state.leaders[0].runtime=runtime;h.client.sync("leader","a");await settle();
-    let markup=h.client.groupMarkup("leader"),meta=markup.match(/<div class="goal-delivery-meta">([\s\S]*?)<\/div>/)[1];
+    let markup=surfaces(h),meta=markup.match(/<div class="goal-delivery-meta">([\s\S]*?)<\/div>/)[1];
     for(const text of ["共 5 项","通过 4","未验证 1"])assert(meta.includes(text),text);
     assert(!meta.includes("仍未解决"));assert(!meta.includes("补充说明"));assert(markup.includes("报告补充说明 · 5 条"));
     assert(!markup.includes("遗留说明 1"));assert(!markup.includes("仍未解决 5 项"));
-    await h.click("report-notes-toggle",{reportId:"counts"});markup=h.client.groupMarkup("leader");
+    await h.click("report-notes-toggle",{reportId:"counts"});markup=surfaces(h);
     for(let i=1;i<=5;i++)assert(markup.includes(`遗留说明 ${i} &lt;保留原文&gt;`));
     assert(!markup.includes("goal-delivery-summary open"),"notes and conclusion expansion are independent");
     assert(h.calls.every(call=>call.data===undefined),"reading notes never rewrites the stored report");
@@ -194,22 +196,22 @@ test("five acceptance checks remain five when the report also contains five narr
 
 test("all-passed acceptance does not hide report notes or convert them into extra failed checks",async()=>{
   const h=harness(async()=>deliveryDetail(h,"a",{},[report("passed",1,{current:true,summary:"验收通过。",acceptance_counts:{passed:5,failed:0,unverified:0,simulated:0},unresolved:["已通过场景之外仍有限制"]})]));
-  h.client.sync("leader","a");await settle();let markup=h.client.groupMarkup("leader");
+  h.client.sync("leader","a");await settle();let markup=surfaces(h);
   assert(markup.includes("共 5 项"));assert(markup.includes("通过 5"));assert(markup.includes("报告补充说明 · 1 条"));assert(!markup.includes('data-kind="failed"'));
-  await h.click("report-notes-toggle",{reportId:"passed"});markup=h.client.groupMarkup("leader");assert(markup.includes("已通过场景之外仍有限制"));
+  await h.click("report-notes-toggle",{reportId:"passed"});markup=surfaces(h);assert(markup.includes("已通过场景之外仍有限制"));
 });
 
 test("failed, unverified and simulated acceptance statuses remain distinct from report notes",async()=>{
   const h=harness(async()=>deliveryDetail(h,"a",{},[report("mixed",1,{current:true,acceptance_counts:{passed:1,failed:1,unverified:1,simulated:1},unresolved:["附加边界说明"]})]));
-  h.client.sync("leader","a");await settle();const markup=h.client.groupMarkup("leader");
+  h.client.sync("leader","a");await settle();const markup=surfaces(h);
   for(const text of ["共 4 项","通过 1","失败 1","未验证 1","模拟验证 1","报告补充说明 · 1 条"])assert(markup.includes(text),text);
 });
 
 test("a reopened round says it has no new delivery instead of presenting the old report, and goals without reports get no panel",async()=>{
   const h=harness(async url=>url.includes("id=a")?deliveryDetail(h,"a",{status:"running",current_round:2,requirement_version:2},[report("r1",1,{summary:"第一轮结论"})]):deliveryDetail(h,"b",{},[]));
-  h.client.sync("leader","a");await settle();let markup=h.client.groupMarkup("leader");
+  h.client.sync("leader","a");await settle();let markup=surfaces(h);
   assert(markup.includes("当前第 2 轮暂无新交付"));assert(markup.includes("查看历史报告（第 1 轮）"));assert(!markup.includes("AI 提交的结论"));assert(!markup.includes("第一轮结论"));
-  h.client.sync("leader","b");await settle();markup=h.client.groupMarkup("leader");assert(!markup.includes("goal-delivery"));assert(!markup.includes("暂无新交付"));assert.equal(h.network.length,0);
+  h.client.sync("leader","b");await settle();markup=surfaces(h);assert(!markup.includes("goal-delivery"));assert(!markup.includes("暂无新交付"));assert.equal(h.network.length,0);
 });
 
 test("one delivery click from the list opens the selected goal's current report in the isolated reader and returns to the task",async()=>{
@@ -224,7 +226,7 @@ test("one delivery click from the list opens the selected goal's current report 
   assert(!readerText(reader).includes("暂无新交付"));assert(frameOf(reader).srcdoc.includes("default-src 'none'"));assert(frameOf(reader).srcdoc.includes("真实报告"));
   assert(h.calls.every(call=>call.data===undefined),"reading never sends, starts or wakes");assert.equal(h.drawer.hidden,true);
   await h.click("close-report");assert.equal(reader.removed,true);assert.equal(h.drawer.hidden,true);assert.equal(h.client.escape(),false);
-  assert(h.client.groupMarkup("leader").includes('data-goal-detail="a"'),"returns to the task, not the list");assert.equal(h.network.length,1);assert.equal(h.calls.length,1);
+  assert(surfaces(h).includes('data-goal-detail="a"'),"returns to the task, not the list");assert.equal(h.network.length,1);assert.equal(h.calls.length,1);
 });
 
 test("delivery for a reopened goal opens the newest historical report labelled by round, never as this round's completion",async()=>{
@@ -240,11 +242,11 @@ test("failed detail and report reads stay visible with a deliberate retry",async
   const h=harness(async()=>{if(detailFails){detailFails=false;throw Error("目标详情暂时无法读取");}return deliveryDetail(h,"a",{status:"completed",current_round:1,requirement_version:1},[report("r1",1,{current:true})]);},
     {fetch:async()=>{if(htmlFails){htmlFails=false;return {ok:false,text:async()=>""};}return {ok:true,text:async()=>"<h1>重试后的报告</h1>"};}});
   await h.click("delivery",{goalId:"a"});await settle();
-  assert.equal(h.main.appends,undefined);let markup=h.client.groupMarkup("leader");
+  assert.equal(h.main.appends,undefined);let markup=surfaces(h);
   assert(markup.includes("交付报告未能打开：目标详情暂时无法读取"));assert(markup.includes('role="alert"'));assert(markup.includes('data-goal-act="delivery" data-goal-id="a">重试'));
   await h.click("delivery",{goalId:"a"});await settle();
   const reader=h.main.appended;assert(readerText(reader).includes("报告暂时无法读取，请重试。"));assert(readerText(reader).includes('data-goal-act="retry-report"'));assert.equal(frameOf(reader),null);
-  assert(!h.client.groupMarkup("leader").includes("交付报告未能打开"));
+  assert(!surfaces(h).includes("交付报告未能打开"));
   await h.click("retry-report");await settle();assert(frameOf(reader).srcdoc.includes("重试后的报告"));assert.equal(h.main.appends.length,1);
   assert.equal(h.network.length,2);assert.deepEqual(h.navigations,["a"]);assert(h.calls.every(call=>call.data===undefined));
 });
@@ -254,7 +256,7 @@ test("late detail or report HTML never opens on another goal, after closing, or 
   let release;const late=harness(url=>url.includes("id=a")?new Promise(resolve=>{release=resolve;}):Promise.resolve(ready(late,"b","B 的结论")));
   await late.click("delivery",{goalId:"a"});late.client.sync("leader","b");await settle();
   release(ready(late,"a","A 的结论"));await settle();
-  const markup=late.client.groupMarkup("leader");assert.equal(late.main.appends,undefined);assert.equal(late.network.length,0);assert(markup.includes("B 的结论"));assert(!markup.includes("A 的结论"));assert(!markup.includes("正在打开交付报告"));
+  const markup=surfaces(late);assert.equal(late.main.appends,undefined);assert.equal(late.network.length,0);assert(markup.includes("B 的结论"));assert(!markup.includes("A 的结论"));assert(!markup.includes("正在打开交付报告"));
 
   let html;const switched=harness(url=>Promise.resolve(ready(switched,url.includes("id=a")?"a":"b","结论")),{fetch:()=>new Promise(resolve=>{html=resolve;})});
   await switched.click("delivery",{goalId:"a"});await settle();const reader=switched.main.appended;assert(readerText(reader).includes("正在读取报告"));
@@ -304,12 +306,12 @@ test("an open report follows the latest goal state without rewriting its frame, 
   assert(head().includes("历史报告"));assert(head().includes("本轮已有新报告"));unchanged("a new round report arrived");
   assert(h.calls.every(call=>call.data===undefined&&call.url==="/api/goal?id=a"),"only read-only detail refreshes");
 
-  await h.click("close-report");assert.equal(reader.removed,true);assert.equal(rebuilt.inert,false,"closing restores the task area");assert(h.client.groupMarkup("leader").includes('data-goal-detail="a"'));
+  await h.click("close-report");assert.equal(reader.removed,true);assert.equal(rebuilt.inert,false,"closing restores the task area");assert(surfaces(h).includes('data-goal-detail="a"'));
 });
 
 test("a manually opened earlier draft of this round is labelled as superseded, while viewing delivery reads the newest draft",async()=>{
   const h=harness(async()=>deliveryDetail(h,"a",{status:"awaiting_acceptance"},[report("r1b",1,{version:2,current:true,status:"awaiting_acceptance",summary:"第二稿结论"}),report("r1",1,{current:true,status:"failed",summary:"第一稿结论"})]));
-  h.client.sync("leader","a");await settle();const markup=h.client.groupMarkup("leader");assert(markup.includes("第二稿结论"));assert(!markup.includes("第一稿结论"));
+  h.client.sync("leader","a");await settle();const markup=surfaces(h);assert(markup.includes("第二稿结论"));assert(!markup.includes("第一稿结论"));
   await h.click("drawer",{kind:"reports"});assert(h.drawer.innerHTML.includes("第 1 轮 · 第 2 稿 · 本轮报告"));assert(h.drawer.innerHTML.includes("第 1 轮 · 第 1 稿 · 本轮较早报告"));
   await h.click("report",{reportId:"r1"});await settle();await h.click("expand-report");
   const manual=h.main.appended;for(const text of ["本轮较早报告","已有更新版本（第 2 稿）","第 1 轮 · 需求 v1 · 第 1 稿","AI 报告结果：未达标","返回交付资料"])assert(readerText(manual).includes(text),text);assert(!readerText(manual).includes("本轮报告"));
@@ -327,11 +329,19 @@ test("direct and manual readers return the same way after a background update, a
     await source.update({requirement_version:2},[report("r1",1,{requirement_version:1})]);h.client.replaceMain('<div id="chat-head"></div>');const rebuilt=h.main.children[0];
     assert(readerText(reader).includes("需求已更新到 v2，本轮暂无新交付"),mode);assert.equal(frameOf(reader),frame,mode);assert.equal(rebuilt.inert,true,mode);
     assert(h.client.escape(),mode);assert.equal(reader.removed,true,mode);assert.equal(rebuilt.inert,false,mode);
-    if(mode==="direct"){assert.equal(h.drawer.hidden,true);assert(h.client.groupMarkup("leader").includes('data-goal-detail="a"'));}
+    if(mode==="direct"){assert.equal(h.drawer.hidden,true);assert(surfaces(h).includes('data-goal-detail="a"'));}
     else{assert.equal(h.drawer.hidden,false);assert(h.drawer.querySelector("iframe").srcdoc.includes("真实报告"),"the materials preview is still there");}
     if(mode==="drawer")await h.click("expand-report");else await h.click("delivery",{goalId:"a"});await settle();
     const again=h.main.appended;assert.notEqual(again,reader);assert.equal(rebuilt.inert,true,mode);
     h.client.sync("leader","b");await settle();assert.equal(again.removed,true,mode+": switching goals closes the reader");assert.equal(rebuilt.inert,false,mode);assert.equal(h.client.escape(),false,mode);
     assert(h.calls.every(call=>call.data===undefined),mode);
   }
+});
+
+test("task conversation keeps a single compact heading while controls and delivery remain in the side inspector",async()=>{
+  const h=harness();h.client.sync("leader","a");await tick();
+  const heading=h.client.groupMarkup("leader"),side=h.client.sideMarkup("leader");
+  assert(heading.includes("短句验证"));assert(heading.includes("推进中"));assert(heading.includes('data-goal-act="general"'));assert(heading.includes('data-goal-act="list"'));
+  for(const text of ["暂停目标","需求与验收","交付与文档","goal-materials","goal-actions"]){assert(!heading.includes(text),text);assert(side.includes(text),text);}
+  h.client.sync("leader",null);const list=h.client.sideMarkup("leader");assert(list.includes('data-goal-id="a"'));assert(list.includes('data-goal-id="b"'));assert(list.includes("查看完整清单"));
 });
