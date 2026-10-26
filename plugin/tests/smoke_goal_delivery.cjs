@@ -41,7 +41,7 @@ async function route(request,response){
   if(name==='/api/state')return json(response,{...clone(state),project:url.searchParams.has('project')?clone(state.project):null});
   if(name==='/api/runtimes')return json(response,{runtimes:catalog});
   if(name==='/api/goal'){const id=url.searchParams.get('id');if(failDetailOnce.delete(id))return json(response,{error:'隔离详情读取失败，可重试'},503);return json(response,details.get(id));}
-  if(name==='/api/documents')return json(response,{documents:details.get(gid)?.documents||[]});
+  if(name==='/api/documents'){assert(gid,'document reads must name their task');return json(response,{documents:details.get(gid)?.documents||[]});}
   if(name==='/api/chat/history')return json(response,journal(sid,gid).value);
   if(name==='/api/chat/events'){const {key}=journal(sid,gid);response.writeHead(200,{'Content-Type':'text/event-stream','Cache-Control':'no-cache'});response.write(': connected\n\n');const stream={response,key,closed:false};streams.push(stream);response.on('close',()=>{stream.closed=true;});return;}
   if(name==='/api/chat/read'){const {value}=journal(sid,gid);value.read_seq=body.seq;return json(response,{read_seq:body.seq});}
@@ -97,6 +97,8 @@ const listCards=`[...document.querySelectorAll('#goal-head .goal-card')].map(car
   server=http.createServer((request,response)=>{route(request,response).catch(error=>{errors.push(error.stack);json(response,{error:error.message},500);});});await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));origin='http://127.0.0.1:'+server.address().port;
   const viewports=[await open(1440,900,'leader='+voice.session_id)];
   await wait('!!document.querySelector("#chat-host textarea") && document.querySelector(".chat-inner").textContent.includes("总会话第 6 条")');
+  assert.equal(await run('document.querySelectorAll("#sidebar [data-view=documents]").length'),0);
+  assert(!(await text('#sidebar')).match(/项目资料|交付资料|文档中心/));
   await fill('#chat-host textarea','总会话里还没发出的草稿：看完交付再追问数据口径');
 
   await click('[data-goal-act=list]');await wait('document.querySelector("#chat-host").hidden && !!document.querySelector(".goal-card")');
@@ -317,7 +319,7 @@ const listCards=`[...document.querySelectorAll('#goal-head .goal-card')].map(car
   for(const initialStatus of ['awaiting_acceptance','completed']){
     const id='followup-'+initialStatus;
     addGoal({id,leader_session_id:voice.session_id,title:'报告收尾修改',request:'完成交付并保留证据',status:initialStatus,minutes:0},
-      {executions:executions('old-'+id,voice.session_id,1,1,'completed'),reports:[goal=>reportEntry(goal,'old-report-'+id,1,1,true,initialStatus,'原始报告结论',{passed:2,failed:0,unverified:0,simulated:0},[],0)]});
+      {documents:[{id:initialStatus==='completed'?802:801,title:'仅此任务资料-'+initialStatus,path:'docs/'+id+'.md',kind:'report',important:false}],executions:executions('old-'+id,voice.session_id,1,1,'completed'),reports:[goal=>reportEntry(goal,'old-report-'+id,1,1,true,initialStatus,'原始报告结论',{passed:2,failed:0,unverified:0,simulated:0},[],0)]});
     const before=calls.filter(call=>call.name==='/api/chat/send').length;
     await open(1440,900,`leader=${voice.session_id}&goal=${id}`);
     await wait('!!document.querySelector("#chat-host textarea") && !!document.querySelector("[data-goal-detail]")');
@@ -340,8 +342,15 @@ const listCards=`[...document.querySelectorAll('#goal-head .goal-card')].map(car
     assert(await run('!!document.querySelector("#chat-host textarea")'));
     if(initialStatus==='awaiting_acceptance')assert((await text('.goal-review')).includes('第 1 轮 · 你退回修改'));
     assert((await text('.goal-delivery-gap')).includes('历史报告'));
+    await click('[data-goal-act=drawer][data-kind=reports]');
+    await wait(`document.querySelector("#goal-drawer").textContent.includes("仅此任务资料-${initialStatus}")`);
+    assert(!(await text('#goal-drawer')).includes('仅此任务资料-'+(initialStatus==='completed'?'awaiting_acceptance':'completed')));
+    assert.equal(await run('document.querySelectorAll("#sidebar [data-view=documents]").length'),0);
     await shot('21-继续原任务-'+initialStatus+'.png');
+    await key('Escape');
   }
+  assert(calls.filter(call=>call.name==='/api/documents').every(call=>call.query.goal_id));
+  steps.push('侧栏无项目资料/交付资料总览；切换不同任务时交付文档各归本任务，所有文档读取均携带 goal_id');
   steps.push('待验收任务退回后可直接继续输入；已完成任务也可直接聊收尾修改；明确发送后同一任务进入新一轮，旧报告和退回理由仍可查阅');
   assert(calls.filter(call=>call.name==='/api/goals/report').every(call=>details.get(call.query.goal_id)?.reports.some(item=>item.id===call.query.report_id)));
   assert.equal(errors.length,0,errors.join('\n'));
