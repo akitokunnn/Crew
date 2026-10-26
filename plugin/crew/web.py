@@ -1156,7 +1156,9 @@ class Service:
                 if target['project'] != project:
                     raise board.BoardError('会话不属于当前工作区')
                 if path == '/api/session/rename':
-                    return session_ops.rename(conn, target['session_id'], _text(data, 'name'), now=now)
+                    result = session_ops.rename(conn, target['session_id'], _text(data, 'name'), now=now)
+                    result['native_warnings'] = self.chat.sync_native_titles(conn, target['session_id'])
+                    return result
                 if path == '/api/session/archive':
                     return self.archive_session(conn, target['session_id'], now=now)
                 if path == '/api/session/remove':

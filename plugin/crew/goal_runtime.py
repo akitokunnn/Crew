@@ -297,6 +297,11 @@ class Controller:
             current = self.manager.processes.get(key)
             stale = row['round'] != row['current_round'] or row['requirement_version'] != row['current_version']
             if row['status'] in goals.TERMINAL:
+                if (getattr(current, 'runtime', None) == 'codex' and getattr(current, 'maintenance', None) is None
+                        and self.manager.running(key) and not self.manager.busy(key)):
+                    # Completed executions no longer own an interactive native
+                    # sidebar entry; close() archives without deleting history.
+                    current.close()
                 continue
             if getattr(current, 'maintenance', None) is not None:
                 # Maintenance compaction is neither goal work to interrupt nor a state to reconcile.

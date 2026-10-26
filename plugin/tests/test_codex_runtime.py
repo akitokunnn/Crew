@@ -77,8 +77,10 @@ class FakeClient:
         self.emit("turn/completed", turn={"id": self.turn_id, "status": status, "items": [],
                                           "error": {"message": "test failure"} if status == "failed" else None})
 
-    def request(self, method, params):
+    def request(self, method, params, **kwargs):
         self.calls.append((method, params))
+        if method == "thread/list":
+            return {"data": [], "nextCursor": None}
         if method == "thread/settings/update":
             self.emit("thread/settings/updated", threadSettings={"model": params.get("model", "actual-model"),
                                                                  "effort": params.get("effort", "medium")})
@@ -148,7 +150,7 @@ class CodexRuntimeTests(unittest.TestCase):
         with closing(store.connect(self.home)) as conn:
             settings.save_execution(conn, {'codex': 'read-only', 'claude': 'default'})
         self.assertEqual(start['sandbox'], 'danger-full-access')
-        self.assertEqual([method for method, _ in client.calls], ['thread/start'])
+        self.assertEqual([method for method, _ in client.calls], ['thread/start', 'thread/name/set'])
 
     def test_relinked_resume_uses_current_db_cwd_and_does_not_authorize_history_roots(self):
         first, _ = self.make_running()
@@ -174,7 +176,7 @@ class CodexRuntimeTests(unittest.TestCase):
         self.assertIn('工作区目录已迁移', params['developerInstructions'])
         self.assertIn(str(new_root.resolve()), params['developerInstructions'])
         self.assertEqual(old_spec['cwd'], str(self.root))
-        self.assertEqual([name for name, _ in client.calls], ['thread/resume'])
+        self.assertEqual([name for name, _ in client.calls], ['thread/resume', 'thread/name/set'])
 
     def test_removed_project_is_rejected_before_constructing_native_client(self):
         with closing(store.connect(self.home)) as conn:
@@ -185,7 +187,7 @@ class CodexRuntimeTests(unittest.TestCase):
 
     def test_initialization_binds_thread_identity_without_model_turn(self):
         running, client = self.make_running(options={"model": "requested-model", "effort": "high"})
-        self.assertEqual([method for method, _ in client.calls], ["thread/start"])
+        self.assertEqual([method for method, _ in client.calls], ["thread/start", "thread/name/set"])
         self.assertEqual(running.applied, {"model": "actual-model", "effort": "medium"})
         start = client.calls[0][1]
         self.assertEqual(start["sandbox"], "workspace-write")

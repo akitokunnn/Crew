@@ -249,6 +249,7 @@ PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stder
   - `type == "ai-title"` → claude_sessions.ai_title（取最后一次）。cwd、entrypoint、version 取最后一次出现的值；first_ts / last_ts 按行的 timestamp。
 - Codex 行：`session_meta`（id、timestamp、cwd、originator、source、cli_version）；第一个 `turn_context`（model、collaboration_mode.settings.reasoning_effort、sandbox_policy.type）；最后一个 `event_msg/token_count` 的 `info.total_token_usage`（input_tokens 含缓存部分）；每个带 rate_limits 的 token_count 写一行 codex_rate_limits（主键 rollout_id + ts；primary.used_percent、window_minutes、resets_at 转 ISO、credits.balance、plan_type）；first_user_text 取用户消息里第一个不以 `<` 开头、也不以 `# AGENTS.md instructions` 开头的 input_text 前 200 字。session_meta.source 对 Codex 自己的子 agent 是对象，存成 JSON 字符串。usage 里的细分字段（cache_creation、output_tokens_details、server_tool_use）在老记录里可能是 null，按 0 计。
 - 解析错误：坏行跳过并计数，scan 结束时打印"跳过 N 行（文件:行号 前 3 个）"。
+- 临时 Codex 派工在 `codex_runs` 保存 `ephemeral` 和原生 `usage_json`，从 stdout 的 `turn.completed.usage` 汇总输入、缓存输入、输出和推理 token。没有原生会话文件，不参与旧派工的时间窗口配对；总览、人员与模型汇总仍计入实际回执。没有回执的该任务 token 为未知，退出码独立保留。旧表由连接时的幂等加列升级保留原记录。
 
 ### 汇总（`crew/usage.py` 的函数，网页和命令行共用）
 
