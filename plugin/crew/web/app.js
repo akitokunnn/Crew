@@ -24,6 +24,7 @@
   const FONT_MIN = .9, FONT_MAX = 1.4;
   const decisionsOpen = new Set(), heldExpanded = new Set(), usageCollapsed = new Set(), operationIds = new Set();
   const todoExpanded = new Set(), todoTrayExpanded = new Set(), todoActions = new Map(), todoSaving = new Set();
+  let composingInput = null, compositionTimer = null, compositionRenderPending = false;
   const colors = ["#3E7C74", "#8A5A7E", "#A07A3A", "#4F6B8F", "#5E7F55", "#A8604F", "#8C7650", "#5C5F9E", "#A35D6A", "#4F7A8C", "#77773F"];
   const statusText = {working:"在干活", waiting:"等你", idle:"空闲", offline:"离线", closed:"已归档"};
   const paths = {
@@ -150,6 +151,9 @@
   }
   function replace(node, html) {
     if (node.dataset.render === html) return;
+    // Recreating a textarea commits/discards the native IME session even if its
+    // value and caret are restored. Keep the composing DOM node connected.
+    if (composingInput !== null && node.contains(composingInput)) { compositionRenderPending = true; return; }
     const focused = node.contains(document.activeElement) ? document.activeElement : null;
     const focusKey = focused?.dataset.preserve;
     const focusData = focused === null ? null : {...focused.dataset};
@@ -937,6 +941,17 @@
     hideMenu(); if (cardId === id) closeCard(); await loadState(true); toast(label, undoable ? async () => { await api("/api/session/undo", {session_id:id, before:result.before}); await loadState(true); toast("已撤销"); } : null);
   }
   function setup() {
+    document.addEventListener("compositionstart", event => {
+      clearTimeout(compositionTimer); composingInput = event.target;
+    });
+    document.addEventListener("compositionend", () => {
+      // The final input event follows compositionend. Re-render from current
+      // state/drafts after it, rather than replaying HTML containing raw pinyin.
+      compositionTimer = setTimeout(() => {
+        composingInput = null;
+        if (compositionRenderPending) { compositionRenderPending = false; render(); }
+      }, 0);
+    });
     $("overlay-root").innerHTML = '<button class="rp-scrim" id="rp-scrim" data-act="right-close" aria-label="关闭架构图"></button><div class="card-back" id="card-back"></div><section class="card" id="card" role="dialog" aria-modal="true" aria-label="下属卡片" tabindex="-1"></section><div class="menu" id="menu" role="menu"></div><div class="backdrop" id="backdrop"></div><div id="settings-parking" hidden><section class="settings-popover" id="settings" aria-label="外观设置"></section></div>';
     maintenance = window.CrewMaintenance.create({api,
       async onCleaned() { await loadState(true); if (view !== "all") navigate("all"); toast("已归档旧工作，可以重新开始"); }});

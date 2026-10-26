@@ -8,7 +8,7 @@ Crew 让一个人同时指挥多个 Claude Code / Codex 会话：每个会话管
 
 - `session_runtimes` 保存 Crew ID → 执行工具 / 原生 ID；缺记录的旧会话仍是 Claude。`chat.Manager` 保持统一入口，Codex 由独立 driver 处理协议、状态、线程恢复与生命周期。
 - `peer_messages` 保存混合工具消息；消息身份来自宿主，原生 thread ID 不充当 Crew 权限。忙时排队，托管空闲时投递，外部 Claude 由下次 hook 收取。
-- `todos` 是需要用户动手的事项；处理、审计与 leader 通知同事务，版本防止错误撤销。`todo_backfills` 去重首次盘点通知。
+- `todos` 是需要用户动手的事项；处理、审计与 leader 通知同事务，版本防止错误撤销。启动后台或打开项目不自动要求 leader 盘点待办；`todo_backfills` 保留历史盘点的去重记录。
 - `decision_briefs` 保存显式拍板摘要，`decision_reviews` 去重旧题补写；不自动猜测旧题意思。题目修订后远程旧按钮必须失效。
 - `trust_settings` 按项目保存目标与模式，`trust_decisions` 保存自主取舍理由。报告汇总现有记录，不冒充独立验收。
 - `workspace_comments` 绑定项目与 Crew 会话；横排总览可给组或成员留言，并通过既有 leader 通知链回流。
