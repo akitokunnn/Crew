@@ -391,10 +391,8 @@ class Service:
                 sid = leader['session_id']
                 try:
                     with self.chat.lock:
-                        execution = self.chat.goal_controller.routing_execution(conn, sid)
-                        key = execution['id'] if execution else sid
-                        if messaging.stopped(conn, sid) or execution and not goals.dispatch_check(
-                                conn, execution['goal_id'], execution_id=key)['allowed']:
+                        key = sid
+                        if messaging.stopped(conn, sid):
                             continue
                         if self.chat.running(key):
                             if self.chat.busy(key):
@@ -413,7 +411,7 @@ class Service:
                                                        {'reason': '会话正在其他进程中运行'}, now=self.now().isoformat())
                                 continue
                             if not self.chat.path(key).exists():
-                                continue
+                                self.chat.journal(key).set_status('idle')
                         pending = board.pending_notices(conn, sid)
                         text = '[Crew]\n' + '\n'.join('%s. %s' % (index, notice['text'])
                                                        for index, notice in enumerate(pending, 1))
@@ -437,10 +435,8 @@ class Service:
                 continue
             try:
                 with self.chat.lock:
-                    execution = self.chat.goal_controller.routing_execution(conn, sid)
-                    key = execution['id'] if execution else sid
-                    if messaging.stopped(conn, sid) or execution and not goals.dispatch_check(
-                            conn, execution['goal_id'], execution_id=key)['allowed']:
+                    key = sid
+                    if messaging.stopped(conn, sid):
                         continue
                     with self.agents_lock:
                         claude = runtimes.get(conn, sid)['runtime'] == 'claude'
@@ -560,6 +556,7 @@ class Service:
         self.scan_usage()
         with self.agents_lock:
             agents, error = self.agents, self.agents_error
+        general_present = board.live_sessions(agents)
         with closing(store.connect(self.home)) as conn:
             result = {'project': None, 'projects': [{key: p[key] for key in ('name', 'display_name', 'theme')} for p in board.projects(conn)],
                       'themes': themes.THEMES,
@@ -597,12 +594,16 @@ class Service:
                     titles = usage.session_titles(self.claude_root, [s['session_id'] for s in sessions], self.title_cache)
                     contexts = {sid: cached['context'] for sid, cached in self.title_cache.items()}
                 result['native_approvals'] = self.native_approvals(name)
-                histories, process_keys, active_goals = {}, {}, {}
+                histories, active_scopes, active_goals, active_goal_ids = {}, {}, {}, {}
                 for session in sessions:
                     sid = session['session_id']
-                    execution = self.chat.goal_controller.routing_execution(conn, sid)
-                    key = process_keys[sid] = execution['id'] if execution else sid
-                    active_goals[sid] = execution['goal_id'] if execution else None
+                    scopes = active_scopes[sid] = self.chat.goal_controller.active_executions(conn, sid)
+                    coordinated = [goal['id'] for goal in result['goals'] if goal['leader_session_id'] == sid
+                                   and goal['status'] in ('running', 'pausing', 'paused', 'waiting_user')]
+                    active_goal_ids[sid] = list(dict.fromkeys([e['goal_id'] for e in scopes] + coordinated))
+                    execution = scopes[0] if scopes else None
+                    key = sid if self.chat.busy(sid) or execution is None else execution['id']
+                    active_goals[sid] = active_goal_ids[sid][0] if active_goal_ids[sid] else None
                     session['web_chat'] = self.chat.path(sid).exists()
                     if session['web_chat']:
                         histories[sid] = self.chat.history(sid)
@@ -626,7 +627,7 @@ class Service:
                                   for s in sessions if s['role'] != 'leader'}
                 for session in sessions:
                     sid = session['session_id']
-                    key = process_keys[sid]
+                    key = sid
                     context = self.chat.context(key) if self.chat.running(key) else contexts.get(sid)
                     own_tasks = [t for t in tasks if t['session_id'] == sid]
                     for task_key in [sid, *subagent_keys.get(sid, [])]:
@@ -647,16 +648,17 @@ class Service:
                         result['leaders'].append(dict(
                             session_id=sid, name=session['crew_name'], goal=session['task'], status=session['status'],
                             member_defaults=member_choices.get(sid),
-                            active_goal_id=active_goals[sid], active_execution_id=key if key != sid else None,
+                            active_goal_id=active_goals[sid], active_goal_ids=active_goal_ids[sid],
+                            active_execution_id=active_scopes[sid][0]['id'] if active_scopes[sid] else None,
                             runtime=runtimes.get(conn, sid)['runtime'],
                             runtime_switch=runtime_switch.state(conn,session,self.chat,agents,error),
                             trust=trust_mode.get(conn,name,sid),
                             is_git_admin=git_config is not None and git_config['admin_session_id'] == sid,
                             **models.get(conn, sid), applied=self.chat.applied(key), activity=self.chat.activity(key),
                             context=context, **codex,
-                            where='bg' if self.chat.running(sid) or sid in present and present[sid].get('kind') == 'crew' else 'vscode' if sid in present else 'offline',
-                            busy=self.chat.busy(sid) or (sid in present and present[sid].get('status') == 'busy'),
-                            running=self.chat.running(sid) or sid in present, web_chat=session['web_chat'], cc_name=session['cc_name'],
+                            where='bg' if self.chat.running(sid) else 'vscode' if sid in general_present else 'offline',
+                            busy=self.chat.busy(sid) or (sid in general_present and general_present[sid].get('status') == 'busy'),
+                            running=self.chat.running(sid) or sid in general_present, web_chat=session['web_chat'], cc_name=session['cc_name'],
                             last_seq=events[-1]['seq'] if events else 0, read_seq=read_seq,
                             last_reply_id=next((e['id'] for e in reversed(events) if e['type'] == 'assistant'), None),
                             unread=len({e['id'] for e in events if e['type'] == 'assistant' and e['seq'] > read_seq}),
@@ -670,15 +672,16 @@ class Service:
                         card = board.card(conn, sid)
                         result['members'].append(dict(
                             session_id=sid, name=session['crew_name'], title=titles.get(sid),
-                            active_goal_id=active_goals[sid], active_execution_id=key if key != sid else None,
+                            active_goal_id=active_goals[sid], active_goal_ids=active_goal_ids[sid],
+                            active_execution_id=active_scopes[sid][0]['id'] if active_scopes[sid] else None,
                             runtime=runtimes.get(conn, sid)['runtime'],
                             runtime_switch=runtime_switch.state(conn,session,self.chat,agents,error),
                             **models.get(conn, sid), applied=self.chat.applied(key), activity=self.chat.activity(key),
-                            context=context, busy=self.chat.busy(sid) or (sid in present and present[sid].get('status') == 'busy'),
-                            running=self.chat.running(sid) or sid in present,
+                            context=context, busy=self.chat.busy(sid) or (sid in general_present and general_present[sid].get('status') == 'busy'),
+                            running=self.chat.running(sid) or sid in general_present,
                             leader_session_id=leader['session_id'] if leader else None, group=session['group_name'],
                             status=session['status'], status_note=session['status_note'],
-                            where='bg' if self.chat.running(sid) or sid in present and present[sid].get('kind') == 'crew' else 'vscode' if sid in present else 'offline',
+                            where='bg' if self.chat.running(sid) else 'vscode' if sid in general_present else 'offline',
                             **{key: session[key] for key in ('task', 'branch', 'worktree', 'cwd', 'cc_name', 'web_chat')},
                             scope=card['scope'] if card else None, done_when=card['done_when'] if card else None,
                             progress=[{'at': r['created_at'], 'text': r['body']} for r in reversed(reports) if r['session_id'] == sid][:5],
@@ -1357,7 +1360,7 @@ class Service:
                     goals.get(conn, data['goal_id'], project)
                     execution = self.chat.goal_controller.current(conn, data['goal_id'], target['session_id'])
                 else:
-                    execution = self.chat.goal_controller.routing_execution(conn, target['session_id'])
+                    execution = None
                 if execution:
                     return self.chat.interrupt(execution['id'])
                 if not data.get('goal_id'):

@@ -40,77 +40,204 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
     def send_goal(self, goal, text='Begin', **data):
         return self.request('/api/chat/send?project=demo', {'session_id': 's3', 'goal_id': goal['id'], 'text': text, **data})
 
-    def test_starting_goal_retires_general_native_before_launching_one_goal_native(self):
+    def parallel_scopes(self, runtime, sid='s3'):
+        if runtime == 'codex':
+            class IndependentClient(codex_helpers.FakeClient):
+                counter = 0
+                def __init__(self, **options):
+                    super().__init__(**options)
+                    type(self).counter += 1
+                    self.thread_id = 'parallel-native-' + str(type(self).counter)
+            patcher = mock.patch('crew.codex_runtime._ObservedClient', IndependentClient)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+            runtimes.set(self.conn, sid, 'codex', 'general-' + sid)
+        tasks = [self.goal(), self.goal()]
+        for task in tasks:
+            if sid != 's3':
+                goals.assign(self.conn, task['id'], sid, 'Handle this independent task.')
+        receipts = []
+        for index, task in enumerate(tasks):
+            code, result, _ = self.request('/api/chat/send?project=demo', {
+                'session_id': sid, 'goal_id': task['id'], 'text': 'Work on task ' + str(index),
+                'message_id': 'parallel-' + str(index)})
+            self.assertEqual(code, 200, result)
+            receipts.append(result)
+        manager = self.server.service.chat
+        keys = [item['execution_id'] for item in receipts]
+        self.assertTrue(all(manager.busy(key) for key in keys), 'Both task runtimes must keep working')
+        self.assertTrue(all(goals.get(self.conn, task['id'])['status'] == 'running' for task in tasks))
+        code, general, _ = self.request('/api/chat/send?project=demo', {
+            'session_id': sid, 'text': 'Coordinate both tasks and review their evidence.', 'message_id': 'parallel-general'})
+        self.assertEqual(code, 200, general)
+        self.assertNotIn('goal_id', general)
+        self.assertTrue(manager.busy(sid))
+        self.assertTrue(all(manager.busy(key) for key in keys))
+        self.assertTrue(any(event.get('id') == 'parallel-general' for event in manager.journal(sid).events))
+        for key in keys:
+            self.assertFalse(any(event.get('id') == 'parallel-general' for event in manager.journal(key).events))
+        task_inputs = [list(manager.processes[key].client.calls) if runtime == 'codex' else
+                       manager.processes[key].process.stdin.getvalue() for key in keys]
+        code, interrupted, _ = self.request('/api/chat/interrupt?project=demo', {'session_id': sid})
+        self.assertEqual(code, 200, interrupted)
+        self.assertEqual(task_inputs, [list(manager.processes[key].client.calls) if runtime == 'codex' else
+                                      manager.processes[key].process.stdin.getvalue() for key in keys])
+        # Ending one general reply does not hide the tasks or make its own input busy.
+        if runtime == 'codex':
+            manager.processes[sid].client.finish()
+        else:
+            self.finish_turn(sid, manager.processes[sid].process)
+        state = self.request('/api/state?project=demo')[1]
+        person = next(item for item in state['leaders' if sid == 's3' else 'members'] if item['session_id'] == sid)
+        self.assertFalse(person['busy'], 'General composer busy belongs to general history only')
+        self.assertEqual(person['status'], 'working', 'Person still has task work')
+        self.assertEqual(set(person['active_goal_ids']), {task['id'] for task in tasks})
+        # Pausing one task cannot pause the other task or the coordinator.
+        manager.goal_controller.pause(tasks[0]['id'])
+        self.assertTrue(manager.busy(keys[1]))
+        self.assertTrue(manager.running(sid))
+        self.assertEqual(goals.get(self.conn, tasks[1]['id'])['status'], 'running')
+        manager.stop_identity(sid)
+        self.assertFalse(any(manager.running(key) for key in [sid, *keys]))
+        self.assertTrue(messaging.stopped(self.conn, sid))
+
+    def test_claude_leader_general_and_two_tasks_progress_independently(self):
+        self.parallel_scopes('claude')
+
+    def test_codex_leader_general_and_two_tasks_progress_independently(self):
+        self.parallel_scopes('codex')
+
+    def test_claude_member_general_and_two_tasks_progress_independently(self):
+        self.parallel_scopes('claude', 's1')
+
+    def test_codex_member_general_and_two_tasks_progress_independently(self):
+        self.parallel_scopes('codex', 's1')
+
+    def coordinate_member_tasks(self, runtime):
+        if runtime == 'codex':
+            counter = iter(range(20))
+            def client(**options):
+                value = codex_helpers.FakeClient(**options)
+                value.thread_id = 'delegated-' + str(next(counter))
+                return value
+            patcher = mock.patch('crew.codex_runtime._ObservedClient', side_effect=client)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+            for sid in ('s3', 's1'):
+                runtimes.set(self.conn, sid, 'codex', 'general-' + sid)
+        code, general, _ = self.request('/api/chat/send?project=demo', {
+            'session_id': 's3', 'text': 'Arrange the work and review the resulting evidence.', 'message_id': 'coordinate'})
+        self.assertEqual(code, 200, general)
+        tasks = [self.goal(), self.goal()]
+        executions = []
+        for task in tasks:
+            code, value, _ = self.request('/api/goals/agent?project=demo', {'actor_session_id': 's3',
+                'action': 'assign', 'data': {'goal_id': task['id'], 'session_id': 's1', 'task': 'Inspect the assigned evidence.'}})
+            self.assertEqual(code, 200, value)
+            code, started, _ = self.request('/api/goals/agent?project=demo', {'actor_session_id': 's3',
+                'action': 'start', 'data': {'goal_id': task['id'], 'session_id': 's1'}})
+            self.assertEqual(code, 200, started)
+            executions.append(started['execution_id'])
+        manager = self.server.service.chat
+        self.assertTrue(manager.busy('s3'))
+        self.assertTrue(all(manager.busy(key) for key in executions))
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM goal_executions WHERE session_id='s3'").fetchone()[0], 0)
+        state = self.request('/api/state?project=demo')[1]
+        owner = next(person for person in state['leaders'] if person['session_id'] == 's3')
+        self.assertEqual(set(owner['active_goal_ids']), {task['id'] for task in tasks})
+        # Scoped results return to this task's leader review, not another task or general input.
+        if runtime == 'codex':
+            manager.processes[executions[0]].client.finish()
+        else:
+            self.finish_turn(executions[0], manager.processes[executions[0]].process)
+        message = manager.send_message('s1', 's3', 'The first task has concrete evidence.',
+                                       execution_id=executions[0], message_id='scoped-review', kind='result')
+        manager.deliver_messages()
+        meta = self.conn.execute('SELECT goal_id,target_execution,status FROM goal_message_meta WHERE message_id=?',
+                                 (message['message_id'],)).fetchone()
+        self.assertEqual(meta['goal_id'], tasks[0]['id'])
+        self.assertEqual(meta['status'], 'accepted')
+        self.assertNotEqual(meta['target_execution'], executions[1])
+        self.assertTrue(manager.busy('s3'))
+        self.assertTrue(manager.busy(executions[1]))
+        manager.stop_identity('s3')
+        for task in tasks:
+            value = goals.get(self.conn, task['id'])
+            self.assertTrue(value['manual_pause'], 'Stopping the coordinator pauses tasks even without its own task execution')
+            self.assertIn(value['status'], ('pausing', 'paused'))
+
+    def test_claude_coordinator_assigns_two_member_tasks_and_receives_scoped_review(self):
+        self.coordinate_member_tasks('claude')
+
+    def test_codex_coordinator_assigns_two_member_tasks_and_receives_scoped_review(self):
+        self.coordinate_member_tasks('codex')
+
+    def test_starting_goal_keeps_general_native_available(self):
         code, result, _ = self.request('/api/chat/send?project=demo', {
             'session_id': 's3', 'text': 'General discussion before a concrete goal.', 'message_id': 'general-before-goal'})
         self.assertEqual(code, 200, result)
         old = self.processes[-1]
-        old.terminate = lambda: old.finish(1)
         goal = self.goal()
         code, result, _ = self.request('/api/goals/action?project=demo', {
             'goal_id': goal['id'], 'action': 'start', 'version': goal['version']})
         self.assertEqual(code, 200, result)
-        self.assertIsNotNone(old.poll(), 'One Crew identity cannot retain an independent general controller')
-        self.assertEqual(sum(process.poll() is None for process in self.processes), 1)
+        self.assertIsNone(old.poll())
+        self.assertEqual(sum(process.poll() is None for process in self.processes), 2)
         self.assertIn('General discussion before a concrete goal.', self.server.service.chat.path('s3').read_text(encoding='utf-8'))
         execution = self.conn.execute('SELECT id FROM goal_executions WHERE goal_id=?', (goal['id'],)).fetchone()[0]
         self.assertTrue(self.server.service.chat.running(execution))
-        events = self.server.service.chat.journal('s3').events
-        self.assertFalse([event for event in events if event['type'] == 'error'])
-        self.assertEqual([event['reason'] for event in events if event['type'] == 'turn_result'], ['identity_handoff'])
-        self.assertLess(next(event['seq'] for event in events if event['type'] == 'status' and event['status'] == 'offline'),
-                        next(event['seq'] for event in events if event['type'] == 'identity_handoff'))
+        self.assertFalse([event for event in self.server.service.chat.journal('s3').events if event['type'] == 'identity_handoff'])
 
-    def test_failed_identity_stop_does_not_claim_handoff_or_launch_another_native(self):
+    def test_starting_a_task_never_calls_stop_for_general_scope(self):
         self.assertEqual(self.request('/api/chat/send?project=demo', {
-            'session_id': 's3', 'text': 'general', 'message_id': 'before-failed-stop'})[0], 200)
+            'session_id': 's3', 'text': 'general', 'message_id': 'before-task'})[0], 200)
         goal = self.goal()
-        with mock.patch.object(self.server.service.chat, 'stop_managed', side_effect=board.BoardError('still running')):
+        with mock.patch.object(self.server.service.chat, 'stop_managed', side_effect=AssertionError('General must stay alive')) as stop:
             code, result, _ = self.request('/api/goals/action?project=demo', {
                 'goal_id': goal['id'], 'action': 'start', 'version': goal['version']})
-        self.assertNotEqual(code, 200)
-        self.assertIn('still running', str(result))
-        self.assertEqual(len(self.processes), 1)
-        self.assertFalse([event for event in self.server.service.chat.journal('s3').events
-                          if event['type'] == 'identity_handoff'])
+        self.assertEqual(code, 200, result)
+        stop.assert_not_called()
+        self.assertEqual(len(self.processes), 2)
 
-    def test_stable_identity_user_and_peer_messages_reach_live_goal_not_general_history(self):
+    def test_unscoped_user_and_peer_messages_stay_in_general_history(self):
         goal = self.goal()
         code, receipt, _ = self.send_goal(goal, message_id='start-routing')
         self.assertEqual(code, 200, receipt)
-        execution, process = receipt['execution_id'], self.processes[-1]
-        self.finish_turn(execution, process)
+        execution, task_process = receipt['execution_id'], self.processes[-1]
         code, reply, _ = self.request('/api/chat/send?project=demo', {
-            'session_id': 's3', 'text': 'What progress has this goal made?', 'message_id': 'unscoped-status'})
+            'session_id': 's3', 'text': 'Coordinate ongoing goals.', 'message_id': 'unscoped-status'})
         self.assertEqual(code, 200, reply)
-        self.assertEqual(reply.get('execution_id'), execution)
-        self.assertEqual(reply.get('goal_id'), goal['id'])
-        self.assertEqual(len(self.processes), 1)
-        self.finish_turn(execution, process)
+        self.assertNotIn('execution_id', reply)
+        self.assertNotIn('goal_id', reply)
+        self.assertEqual(len(self.processes), 2)
         manager = self.server.service.chat
+        self.finish_turn('s3', manager.processes['s3'].process)
         peer = manager.send_message('s1', 's3', 'Measured result from the member.', message_id='unscoped-peer', kind='result')
         manager.deliver_messages()
-        messages = [event for event in manager.journal(execution).events if event.get('type') == 'message']
-        self.assertTrue(any(event.get('id') == 'peer:' + peer['message_id'] for event in messages))
-        self.assertEqual(len(self.processes), 1)
-        self.assertFalse(manager.running('s3'))
+        self.assertTrue(any(event.get('id') == 'peer:' + peer['message_id'] for event in manager.journal('s3').events))
+        self.assertFalse(any(event.get('id') in ('unscoped-status','peer:' + peer['message_id']) for event in manager.journal(execution).events))
+        self.assertIsNone(task_process.poll())
+        self.assertTrue(manager.busy(execution))
 
-    def test_unscoped_human_answer_resumes_waiting_goal_on_the_same_execution(self):
+    def test_general_discussion_does_not_resume_waiting_task_but_scoped_answer_does(self):
         goal = self.goal()
         _, receipt, _ = self.send_goal(goal, message_id='waiting-owner')
         process = self.processes[-1]
         self.finish_turn(receipt['execution_id'], process)
         goals.transition(self.conn, goal['id'], 'waiting_user')
-        code, answered, _ = self.request('/api/chat/send?project=demo', {
-            'session_id': 's3', 'text': 'Use the supplied short reply recording.', 'message_id': 'unscoped-human-answer'})
+        code, general, _ = self.request('/api/chat/send?project=demo', {
+            'session_id': 's3', 'text': 'Discuss which evidence is still missing.', 'message_id': 'general-discussion'})
+        self.assertEqual(code, 200, general)
+        self.assertNotIn('goal_id', general)
+        self.assertEqual(goals.get(self.conn, goal['id'])['status'], 'waiting_user')
+        code, answered, _ = self.send_goal(goal, 'Use the supplied short reply recording.', message_id='scoped-answer')
         self.assertEqual(code, 200, answered)
-        self.assertEqual(answered.get('goal_id'), goal['id'])
         self.assertEqual(answered.get('execution_id'), receipt['execution_id'])
         self.assertEqual(goals.get(self.conn, goal['id'])['status'], 'running')
-        self.assertEqual(len(self.processes), 1)
-        self.assertFalse(self.server.service.chat.running('s3'))
+        self.assertEqual(len(self.processes), 2)
+        self.assertTrue(self.server.service.chat.running('s3'))
 
-    def test_unscoped_human_message_resumes_only_the_explicitly_stopped_goal_member(self):
+    def test_scoped_human_message_resumes_only_the_explicitly_stopped_goal_member(self):
         goal = self.goal()
         _, leader, _ = self.send_goal(goal, message_id='member-resume-leader')
         code, member, _ = self.request('/api/spawn?project=demo', {
@@ -127,7 +254,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.assertFalse(manager.running(member['execution_id']))
         code, continued, _ = self.request('/api/chat/send?project=demo', {
             'session_id': member['session_id'], 'text': 'Explicit user continuation of the same sample.',
-            'message_id': 'human-member-resume'})
+            'message_id': 'human-member-resume', 'goal_id': goal['id']})
         self.assertEqual(code, 200, continued)
         self.assertEqual(continued.get('goal_id'), goal['id'])
         self.assertEqual(continued.get('execution_id'), member['execution_id'])
@@ -163,15 +290,18 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.assertTrue(current['manual_pause'])
         code, value, _ = self.request('/api/chat/send?project=demo', {
             'session_id': 's3', 'text': 'Continue?', 'message_id': 'general-must-not-bypass-pause'})
-        self.assertEqual(code, 409, value)
-        self.assertEqual(len(self.processes), 1)
+        self.assertEqual(code, 200, value)
+        self.assertNotIn('goal_id', value)
+        self.assertEqual(goals.get(self.conn, goal['id'])['status'], 'paused')
+        self.assertTrue(goals.get(self.conn, goal['id'])['manual_pause'])
+        self.assertEqual(len(self.processes), 2)
         self.assertFalse(manager.running(receipt['execution_id']))
         current = goals.get(self.conn, goal['id'])
         code, resumed, _ = self.request('/api/goals/action?project=demo', {
             'goal_id': goal['id'], 'action': 'resume', 'version': current['version']})
         self.assertEqual(code, 200, resumed)
         self.assertFalse(messaging.stopped(self.conn, 's3'))
-        self.assertEqual(sum(process.poll() is None for process in self.processes), 1)
+        self.assertEqual(sum(process.poll() is None for process in self.processes), 2)
 
     def test_explicit_human_cli_goal_resume_clears_stop_without_starting_general(self):
         goal = self.goal()
@@ -185,26 +315,30 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.assertTrue(manager.running(receipt['execution_id']))
         self.assertFalse(manager.running('s3'))
 
-    def test_goal_notices_wait_for_idle_route_to_goal_and_respect_manual_stop(self):
+    def test_leader_notices_use_general_coordinator_and_respect_manual_stop(self):
         goal = self.goal()
         _, receipt, _ = self.send_goal(goal, message_id='goal-notice-routing')
-        manager, process = self.server.service.chat, self.processes[-1]
+        manager, task_process = self.server.service.chat, self.processes[-1]
         board.queue_leader_notice(self.conn, 's3', 'Verified result from the member.', 'crew')
-        before = process.stdin.getvalue()
+        before = task_process.stdin.getvalue()
         self.server.service.deliver_notices()
-        self.assertEqual(process.stdin.getvalue(), before)
-        self.assertEqual(len(board.pending_notices(self.conn, 's3')), 1)
-        self.finish_turn(receipt['execution_id'], process)
-        self.server.service.deliver_notices()
-        self.assertIn('Verified result from the member.', process.stdin.getvalue())
+        self.assertEqual(task_process.stdin.getvalue(), before)
         self.assertEqual(board.pending_notices(self.conn, 's3'), [])
-        self.assertEqual(len(self.processes), 1)
-        self.assertFalse(manager.running('s3'))
+        self.assertTrue(manager.running('s3'))
+        self.assertIn('Verified result from the member.', manager.processes['s3'].process.stdin.getvalue())
+        board.queue_leader_notice(self.conn, 's3', 'Second result waits for coordinator.', 'crew')
+        self.server.service.deliver_notices()
+        self.assertEqual(len(board.pending_notices(self.conn, 's3')), 1)
+        self.finish_turn('s3', manager.processes['s3'].process)
+        self.server.service.deliver_notices()
+        self.assertEqual(board.pending_notices(self.conn, 's3'), [])
+        self.assertTrue(manager.busy(receipt['execution_id']))
+        self.assertEqual(len(self.processes), 2)
         manager.stop_identity('s3')
         board.queue_leader_notice(self.conn, 's3', 'A queued notice must not revive stopped work.', 'crew')
         self.server.service.deliver_notices()
         self.assertEqual(len(board.pending_notices(self.conn, 's3')), 1)
-        self.assertEqual(len(self.processes), 1)
+        self.assertEqual(len(self.processes), 2)
         self.assertFalse(manager.running(receipt['execution_id']))
 
     def test_goal_spawn_binds_member_to_the_explicit_running_caller_execution(self):
@@ -386,9 +520,10 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         code, state, _ = self.request('/api/state?project=demo')
         self.assertEqual(code, 200, state)
         self.assertEqual(len([s for s in state['leaders'] if s['session_id'] == 's3']), 1)
-        self.assertTrue(next(s for s in state['leaders'] if s['session_id'] == 's3')['busy'])
+        self.assertFalse(next(s for s in state['leaders'] if s['session_id'] == 's3')['busy'])
+        self.assertTrue(all(self.server.service.chat.busy(r['execution_id']) for r in receipts))
         identity = next(s for s in state['leaders'] if s['session_id'] == 's3')
-        self.assertEqual((identity['where'], identity['status']), ('bg', 'working'))
+        self.assertEqual((identity['where'], identity['status']), ('offline', 'working'))
 
     def test_pause_is_durable_before_interrupt_and_late_native_hooks_cannot_reopen(self):
         goal = self.goal()
@@ -549,7 +684,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(current['status'], 'awaiting_acceptance')
         self.assertFalse(current['manual_pause'])
         self.assertEqual(goals.get_finish(self.conn, goal['id'])['status'], 'finalized')
-        self.assertIsNotNone(process.poll())
+        self.assertIsNone(process.poll())
         self.assertEqual(tuple(self.conn.execute('SELECT data_json,html,outcome FROM goal_reports WHERE id=?', (report['id'],)).fetchone()), original)
         code, accepted, _ = self.request('/api/goals/action?project=demo', {
             'goal_id': goal['id'], 'action': 'accept', 'version': current['version'], 'report_id': report['id']})
@@ -566,7 +701,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(goals.get(self.conn, goal['id'])['status'], 'awaiting_acceptance')
         self.assertEqual(goals.get_finish(self.conn, goal['id'])['status'], 'finalized')
         self.assertTrue(manager.running('s3'))
-        self.assertIsNotNone(process.poll())
+        self.assertIsNone(process.poll())
         self.assertEqual(goals.get_report(self.conn, report['id'])['outcome'], 'awaiting_acceptance')
 
     def test_queued_crew_work_after_claude_report_preserves_acceptance(self):
@@ -582,7 +717,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(code, 200, result)
         self.assertEqual(goals.get(self.conn, previous['id'])['status'], 'awaiting_acceptance')
         self.assertEqual(goals.get(self.conn, next_goal['id'])['status'], 'running')
-        self.assertIsNotNone(process.poll())
+        self.assertIsNone(process.poll())
 
     def test_explicit_user_pause_still_pauses_waiting_acceptance(self):
         goal, _, _, _ = self.awaiting_acceptance()
@@ -663,7 +798,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(code, 200, result)
         self.assertEqual(goals.get(self.conn, goal['id'])['status'], 'awaiting_acceptance')
         self.assertNotEqual(goals.get_execution(self.conn, receipt['execution_id'])['status'], 'paused')
-        self.assertIsNotNone(current.process.poll())
+        self.assertIsNone(current.process.poll())
 
     def test_claude_member_handoff_does_not_mark_delivered_work_paused(self):
         self.member_return_after_acceptance('claude')

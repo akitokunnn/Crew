@@ -94,7 +94,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         leader = state["leaders"][0]
         self.assertEqual(set(leader), {"session_id", "name", "goal", "status", "busy", "running", "web_chat",
             "cc_name", "last_seq", "last_reply_id", "read_seq", "unread", "pending", "notices_pending", "member_ids",
-            "model", "effort", "applied", "activity", "context", "where", "codex", "codex_older", "is_git_admin", "priority", "runtime", "trust", "runtime_switch", "active_goal_id", "active_execution_id", "member_defaults"})
+            "model", "effort", "applied", "activity", "context", "where", "codex", "codex_older", "is_git_admin", "priority", "runtime", "trust", "runtime_switch", "active_goal_id", "active_goal_ids", "active_execution_id", "member_defaults"})
         self.assertIsNone(leader['member_defaults'])
         self.assertIsNone(leader['active_goal_id']); self.assertIsNone(leader['active_execution_id'])
         self.assertEqual(set(leader['runtime_switch']), {'allowed', 'reason', 'pending_handoff', 'last_switch_at'})
@@ -139,7 +139,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual(self.state()['goals'],[goal])
         self.assertEqual(self.request('/api/goals',project='demo')[:2],(200,{'goals':[goal]}))
         code, detail, _ = self.request('/api/goal',project='demo',id=goal['id'])
-        self.assertEqual(code,200,detail);self.assertEqual(set(detail),{'goal','executions','context','reports','documents','acceptance_review'})
+        self.assertEqual(code,200,detail);self.assertEqual(set(detail),{'goal','executions','context','reports','documents','acceptance_review','previous_acceptance_review'})
         self.assertEqual(detail['goal'],goal);self.assertEqual(detail['executions'],[]);self.assertEqual(detail['reports'],[])
         self.assertEqual(detail['documents'],[]); self.assertIsNone(detail['acceptance_review'])
         self.assertEqual(len(self.processes),before)
@@ -191,7 +191,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual(set(member), {"session_id", "name", "title", "leader_session_id", "group", "status",
             "status_note", "where", "task", "scope", "done_when", "branch", "worktree", "cwd", "cc_name",
             "web_chat", "progress", "codex", "codex_older", "leases", "claims", "model", "effort", "applied", "activity",
-            "context", "busy", "running", "runtime", "runtime_switch", "active_goal_id", "active_execution_id"})
+            "context", "busy", "running", "runtime", "runtime_switch", "active_goal_id", "active_goal_ids", "active_execution_id"})
         self.assertEqual((member["name"], member["leader_session_id"], member["group"], member["scope"], member["done_when"]),
                          ("one", "s3", "lead", "Backend", "Tests pass"))
         self.assertEqual([row["text"] for row in member["progress"]], ["progress-" + str(i) for i in (6, 5, 4, 3, 2)])

@@ -112,8 +112,8 @@ test("only a queued goal without native execution claims it has not started", ()
   assert.match(ui.goalChatNotes({status:"running"},true,false).hint,/会启动该成员/);
 });
 
-test("general chat of a person bound to a manually paused goal is readonly until explicit recovery",()=>{
-  const state=fixture();state.goals=[{id:"goal",status:"paused"}];const {ui}=harness(state),person={active_goal_id:"goal",web_chat:true,running:false,where:"offline"};assert.equal(ui.chatAccess(person,null).readonly,true);assert.match(ui.chatAccess(person,null).readonlyReason,/明确恢复/);state.goals[0].status="completed";assert.equal(ui.chatAccess(person,null).readonly,false);
+test("a paused task does not lock the person's independent general conversation",()=>{
+  const state=fixture();state.goals=[{id:"goal",status:"paused"}];const {ui}=harness(state),person={active_goal_id:"goal",web_chat:true,running:false,where:"offline"};assert.equal(ui.chatAccess(person,null).readonly,false);assert.equal(ui.chatAccess(person,state.goals[0]).readonly,true);state.goals[0].status="completed";assert.equal(ui.chatAccess(person,null).readonly,false);
 });
 
 test("existing session model menus use its own tool catalog and never expose runtime conversion", () => {

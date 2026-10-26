@@ -61,6 +61,16 @@ async function route(request,response){
     detail.acceptance_review={round:detail.goal.current_round,accepted:false,note:body.note,report_id:detail.reports[0].id};
     return json(response,{goal:detail.goal,acceptance_review:detail.acceptance_review});
   }
+  if(name==='/api/goals/action'&&body?.action==='pause'){
+    const detail=details.get(body.goal_id);detail.goal.status='paused';detail.goal.version++;
+    for(const execution of detail.executions)execution.status='paused';
+    return json(response,{goal:detail.goal});
+  }
+  if(name==='/api/chat/send'&&!gid){
+    const {value}=journal(sid,null);value.busy=true;
+    value.events.push({seq:value.events.length+1,type:'message',id:body.message_id,text:body.text,source:'human',at:new Date().toISOString()});
+    return json(response,{ok:true,accepted:true,message_id:body.message_id});
+  }
   if(name==='/api/chat/send'&&gid){
     const detail=details.get(gid),goal=detail.goal;
     assert(['completed','failed','awaiting_acceptance'].includes(goal.status));
@@ -352,6 +362,34 @@ const listCards=`[...document.querySelectorAll('#goal-head .goal-card')].map(car
   assert(calls.filter(call=>call.name==='/api/documents').every(call=>call.query.goal_id));
   steps.push('侧栏无项目资料/交付资料总览；切换不同任务时交付文档各归本任务，所有文档读取均携带 goal_id');
   steps.push('待验收任务退回后可直接继续输入；已完成任务也可直接聊收尾修改；明确发送后同一任务进入新一轮，旧报告和退回理由仍可查阅');
+
+  const parallelIds=['parallel-a','parallel-b'];
+  for(const id of parallelIds)addGoal({id,leader_session_id:voice.session_id,title:id==='parallel-a'?'声纹资料复核':'报告收尾审查',request:'按本任务范围复核证据',status:'running',minutes:0},
+    {executions:executions('exec-'+id,voice.session_id,1,1,'running'),reports:[]});
+  voice.active_goal_ids=parallelIds;voice.active_goal_id='parallel-a';voice.status='working';voice.running=true;voice.busy=false;
+  await open(1440,900,`leader=${voice.session_id}`);
+  await wait('!!document.querySelector("#chat-host textarea") && document.querySelector("#goal-chat-hint").textContent.includes("2 个任务")');
+  assert((await text('#goal-chat-hint')).includes('总对话可继续安排任务和验收'));
+  await fill('#chat-host textarea','协调两个任务并分别核验，先保留这条草稿。');
+  await click('[data-act=active-goal][data-goal-id=parallel-a]');
+  await wait('!!document.querySelector("[data-goal-detail=parallel-a]") && !!document.querySelector("#chat-host textarea")');
+  assert.equal(await run('document.querySelector("#chat-host textarea").value'),'');
+  await click('[data-action=pause]');
+  await wait('document.querySelector("[data-goal-detail=parallel-a] .goal-status").textContent.includes("暂停")');
+  assert.equal(details.get('parallel-b').goal.status,'running');
+  await click('[data-goal-act=general]');
+  await wait('!!document.querySelector("#chat-host textarea") && !document.querySelector(".readonly-note")');
+  assert.equal(await run('document.querySelector("#chat-host textarea").value'),'协调两个任务并分别核验，先保留这条草稿。');
+  await fill('#chat-host textarea','继续协调报告验收，不改变另一个任务的执行。');
+  await wait('!!document.querySelector("#chat-host .send:not([disabled])")');
+  const generalMark=calls.length;await click('#chat-host .send');
+  await wait('document.querySelector("#chat-host textarea").value===""');
+  const generalSend=calls.slice(generalMark).filter(call=>call.name==='/api/chat/send');
+  assert.equal(generalSend.length,1);assert(!generalSend[0].body.goal_id);
+  assert(!(await run('location.hash')).includes('goal='));
+  assert.equal(details.get('parallel-a').goal.status,'paused');assert.equal(details.get('parallel-b').goal.status,'running');
+  await shot('22-多任务推进时总对话可协调.png');
+  steps.push('同一 leader 的总对话列出两个独立任务；总对话/任务草稿分开保留，暂停 A 不影响 B，总对话仍可输入且发送不会被路由到任一任务');
   assert(calls.filter(call=>call.name==='/api/goals/report').every(call=>details.get(call.query.goal_id)?.reports.some(item=>item.id===call.query.report_id)));
   assert.equal(errors.length,0,errors.join('\n'));
   const evidence={ok:true,scope:'real Electron renderer with in-memory loopback fixtures; no model, production HOME, Crew service or user data',viewports,steps,shots,compact,narrow,keyboard,backgroundHeads,compactHeaders,selected,forbiddenCalls:forbidden,postEndpoints:posts,

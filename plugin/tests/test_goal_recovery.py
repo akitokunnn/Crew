@@ -46,6 +46,18 @@ class GoalRecoveryTests(ShellFixture, unittest.TestCase):
         self.assertEqual(len(self.processes), 2)
         self.assertEqual(len(set(messages) - set(first)), 1)
 
+    def test_general_coordinator_and_two_tasks_recover_without_retiring_each_other(self):
+        _, first, _ = self.running_goal()
+        _, second, _ = self.running_goal()
+        self.manager.journal('s3').message('coordinator-before-restart', 'Coordinate the two tasks.')
+        self.manager.journal('s3').set_status('working')
+        self.manager.goal_controller.live_native = frozenset()
+        self.manager.auto_resume(self.conn, [])
+        self.assertTrue(all(self.manager.running(key) for key in ('s3', first['id'], second['id'])))
+        self.assertEqual(len(self.processes), 3)
+        self.manager.auto_resume(self.conn, [])
+        self.assertEqual(len(self.processes), 3)
+
     def test_codex_recovers_while_claude_discovery_is_unavailable(self):
         _, cc, _ = self.running_goal()
         _, codex, _ = self.running_goal('codex')
