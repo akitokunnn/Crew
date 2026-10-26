@@ -48,7 +48,7 @@ class Service:
     def __init__(self, home, plugin_root, agents_provider=None,
                  claude_root=None, codex_root=None, runs_file=None, now=None, cwd=None, process_factory=subprocess.Popen,
                  notification_client=None, lock_status=notifications.desktop_locked, notification_batch_seconds=30,
-                 vscode_state_db=None, migrate_manual_work=False):
+                 vscode_state_db=None):
         if agents_provider is None:
             from .cli import claude_agents
             agents_provider = claude_agents
@@ -60,7 +60,6 @@ class Service:
         self.update_drain_seconds = 10
         self.chat = chat.Manager(home, plugin_root, agents_provider, process_factory)
         self.runtime_catalog = runtime_catalog.Catalog()
-        self.migrate_manual_work = migrate_manual_work
         self.claude_root = Path.home() / ".claude" / "projects" if claude_root is None else Path(claude_root)
         self.codex_root = Path.home() / ".codex" / "sessions" if codex_root is None else Path(codex_root)
         self.runs_file = self.home / "codex_runs.jsonl" if runs_file is None else Path(runs_file)
@@ -201,9 +200,6 @@ class Service:
                         board.record_event(conn, "vscode:archived", session["project"], sid, {}, now=now)
 
     def start(self):
-        if self.migrate_manual_work:
-            with closing(store.connect(self.home)) as conn:
-                todo.backfill(conn)
         self.worker = threading.Thread(target=self._poll_agents, name="crew-agents", daemon=True)
         self.worker.start()
         self.notice_worker = threading.Thread(target=self._poll_notices, name="crew-leader-notices", daemon=True)
@@ -1942,7 +1938,6 @@ def _open_registered_service(home, cwd):
 
 
 def _serve_locked(home, plugin_root, port, open_browser, **options):
-    options.setdefault('migrate_manual_work', True)
     url = project_url(port)
     with closing(store.connect(home)) as conn:
         project = board.project_for_path(conn, options.get('cwd') or Path.cwd())

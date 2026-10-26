@@ -28,7 +28,7 @@ def main(argv=None):
 def serve(args, home):
     plugin_root = Path(__file__).resolve().parent
     install.install(home, plugin_root)
-    options = {"cwd": home, "migrate_manual_work": True}
+    options = {"cwd": home}
     if args.isolated_sources:
         # Smoke tests must not inspect the user's Claude/Codex/VS Code sessions.
         options.update(agents_provider=lambda: [], claude_root=home / "isolated" / "claude",
