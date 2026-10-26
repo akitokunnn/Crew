@@ -2,7 +2,7 @@
 const assert=require("node:assert/strict"),fs=require("node:fs"),path=require("node:path"),vm=require("node:vm");
 const {test}=require("node:test");
 const tick=async()=>{for(let i=0;i<12;i++)await Promise.resolve();};
-function node(){const classes=new Set(),children=[],attributes=new Map();return {value:"",textContent:"",innerHTML:"",hidden:false,disabled:false,style:{},dataset:{},scrollTop:0,scrollHeight:0,clientHeight:200,firstChild:null,children,contains:()=>false,querySelectorAll:()=>[],setAttribute(name,value){attributes.set(name,String(value));},getAttribute:name=>attributes.get(name)??null,removeAttribute:name=>attributes.delete(name),
+function node(){const classes=new Set(),children=[],attributes=new Map();return {value:"",textContent:"",innerHTML:"",hidden:false,disabled:false,style:{},dataset:{},scrollTop:0,scrollHeight:0,clientHeight:200,firstChild:null,children,contains:()=>false,querySelectorAll:()=>[],getBoundingClientRect:()=>({top:0}),setAttribute(name,value){attributes.set(name,String(value));},getAttribute:name=>attributes.get(name)??null,removeAttribute:name=>attributes.delete(name),
   insertBefore(child,before){const old=children.indexOf(child);if(old>=0)children.splice(old,1);const index=before?children.indexOf(before):-1;children.splice(index<0?children.length:index,0,child);child.parentNode=this;this.firstChild=children[0]||null;for(let i=0;i<children.length;i++)children[i].nextSibling=children[i+1]||null;},
   remove(){const parent=this.parentNode;if(!parent)return;const index=parent.children.indexOf(this);if(index>=0)parent.children.splice(index,1);parent.firstChild=parent.children[0]||null;for(let i=0;i<parent.children.length;i++)parent.children[i].nextSibling=parent.children[i+1]||null;this.parentNode=null;},
   classList:{add:x=>classes.add(x),remove:x=>classes.delete(x),toggle(x,on){if(on)classes.add(x);else classes.delete(x);},contains:x=>classes.has(x)}};}
@@ -23,6 +23,33 @@ function harness(){
   return {chat:sandbox.CrewChat,mount,update,timers,saved,streams,connections,handlers,sandbox,flushFrames(){for(const [id,fn] of frames){frames.delete(id);fn();}}};
 }
 const history=()=>({events:[],busy:false,read_seq:0});
+
+test("general and goal unread dividers follow reply text, excluding tools and unchanged snapshots",async()=>{
+  for(const goalId of [null,"goal"]){
+    const tool={type:"tool_use",id:"call",name:"Shell",input:{command:"git status"}};
+    const events=[{seq:1,type:"text",id:"seen",text:"已读正文"},
+      {seq:2,type:"assistant",id:"seen",content:[{type:"text",text:"已读正文"},tool]},
+      {seq:3,type:"assistant",id:"tool-only",content:[{...tool,id:"another"}]},
+      {seq:4,type:"tool_result",tool_use_id:"another",content:"clean"},
+      {seq:5,type:"text",id:"new",text:"未读正文"},
+      {seq:6,type:"assistant",id:"new",content:[{type:"text",text:"未读正文"}]}];
+    const h=harness(),target=h.mount("leader",async()=>({...history(),events,read_seq:1}),{},{goalId});
+    await tick();h.flushFrames();
+    const children=target.querySelector(".chat-inner").children;
+    const divider=children.findIndex(item=>item.innerHTML==="以下是你离开后的消息");
+    assert(divider>0);
+    assert(children[divider+1].innerHTML.includes("未读正文"));
+    assert(!children[divider+1].innerHTML.includes("已读正文"));
+    assert.equal(target.querySelector(".chat-connection-error").hidden,true);
+    h.chat.unmount();
+
+    const done=harness(),doneTarget=done.mount("leader",async()=>({...history(),events:events.slice(0,4),read_seq:1}),{},{goalId});
+    await tick();done.flushFrames();
+    assert(!doneTarget.querySelector(".chat-inner").children.some(item=>item.innerHTML==="以下是你离开后的消息"));
+    assert.equal(doneTarget.querySelector(".chat-connection-error").hidden,true);
+    done.chat.unmount();
+  }
+});
 
 test("a goal-start tool followed by identity handoff and native interruption renders as transferred, not executing forever",async()=>{
   // Minimized from the real journal: tool -> handoff -> interrupted turn -> offline; no tool_result exists.

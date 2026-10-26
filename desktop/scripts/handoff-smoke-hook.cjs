@@ -304,6 +304,29 @@ app.once('browser-window-created', (_event, win) => {
       await assert.rejects(fs.access(path.join(evidence.home,'fixture-model-start-attempts.txt')),{code:'ENOENT'});
       await capture(view,'12-skill-dispatch-completion');
       evidence.checks.push('both skill carriers appear beneath the correct idle leader with PID and group halo, then independently show success/failure without waking AI or waiting for the full usage scan');
+      // The user-facing unread badge must count the prose reply, not the 18
+      // assistant envelopes carrying tool calls before it.
+      const journalFile=path.join(evidence.home,'chat','handoff-codex.jsonl');
+      const recorded=(await fs.readFile(journalFile,'utf8')).trim().split('\n').map(line=>JSON.parse(line));
+      let seq=recorded.at(-1).seq;
+      const additions=[],at=new Date().toISOString();
+      for(let index=0;index<18;index++) {
+        additions.push({seq:++seq,type:'assistant',at,id:'unread-tool-'+index,content:[{type:'tool_use',id:'unread-call-'+index,name:'Shell',input:{command:'git status'}}]});
+        additions.push({seq:++seq,type:'tool_result',at,tool_use_id:'unread-call-'+index,content:'clean',is_error:false});
+      }
+      additions.push({seq:++seq,type:'assistant',at,id:'unread-answer',content:[{type:'text',text:'Git 检查完成：18 次工具操作，只新增这一条正文回复。'}]});
+      await fs.appendFile(journalFile,additions.map(value=>JSON.stringify(value)).join('\n')+'\n','utf8');
+      await wait(view,'document.querySelector("#sidebar [data-id=handoff-codex] .b-unread")?.textContent === "1"');
+      await capture(view,'13-unread-reply-only');
+      await click(view,'[data-act=leader][data-id=handoff-codex]');
+      await wait(view,'document.querySelector(".chat-inner")?.textContent.includes("只新增这一条正文回复")');
+      // Returning to an existing chat intentionally restores its old scroll
+      // position; actually read the new reply before expecting acknowledgment.
+      await click(view,'.chat-scroll + .jump');
+      await wait(view,'!document.querySelector("#sidebar [data-id=handoff-codex] .b-unread")');
+      assert(await js(view,'document.querySelectorAll(".chat-inner .tool").length >= 18'));
+      await assert.rejects(fs.access(path.join(evidence.home,'fixture-model-start-attempts.txt')),{code:'ENOENT'});
+      evidence.checks.push('18 tool calls plus their outputs produce exactly one unread prose reply; opening and reading it clears the badge while preserving every tool record and never launching AI');
       assert.deepEqual(evidence.errors,[]); evidence.ok=true;
       await fs.writeFile(path.join(output,'evidence.json'),JSON.stringify(evidence,null,2));
       app.quit();

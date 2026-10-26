@@ -34,13 +34,13 @@ def snapshot(service, conn, project):
             events = service.chat.history(context_key)['events']
             if context_key == key:
                 journals[sid] = events
-            unread = {event['id']: event for event in events if event['type'] == 'assistant' and event['seq'] > read}
+            unread = presentation.chat_replies(events, after=read)
             # Members' internal replies are coordinated by their leader. The
             # human unread signal follows the existing leader conversation UI.
             if person['role'] == 'leader':
                 counts['unread'] += len(unread)
             if unread and person['role'] == 'leader':
-                last = next(reversed(unread.values()))
+                last = unread[-1]
                 items.append({'kind': 'reply', 'title': last.get('text', '')[:130] or '有新的回复', 'name': person['crew_name'], 'detail': '未读回复'})
         person['status'] = session_presence.status(service.chat, person, present, key)
         # A persisted working hook is meaningful only for this observed live
