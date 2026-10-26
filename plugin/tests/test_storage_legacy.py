@@ -292,6 +292,68 @@ class LegacyTests(unittest.TestCase):
             self.assertEqual(conn.execute('SELECT created_at FROM messages LIMIT 1').fetchone()[0],STAMP)
             self.assertNotIn('NEVER_PORTABLE_TOOL_SECRET',conn.execute('SELECT arguments_json FROM tool_calls').fetchone()[0])
 
+    def test_repeated_tool_call_in_distinct_messages_keeps_each_owner(self):
+        call={'type':'tool_use','id':'replayed-tool','name':'read','input':{'query':'visible'}}
+        events=[{'type':'assistant','id':'first','content':[call],'at':STAMP},
+                {'type':'assistant','id':'replayed','content':[call],'at':STAMP},
+                {'type':'tool_result','tool_use_id':'replayed-tool','content':'result','at':STAMP}]
+        self.journal.write_text('\n'.join(json.dumps(e) for e in events)+'\n',encoding='utf-8')
+        before=self.db.read_bytes()
+        self.run_import()
+        with closing(self.repo.connect()) as conn:
+            self.assertEqual(conn.execute('PRAGMA foreign_key_check').fetchall(),[])
+            self.assertEqual(conn.execute('SELECT count(*) FROM tool_calls').fetchone()[0],2)
+            self.assertEqual(conn.execute('SELECT count(*) FROM tool_results').fetchone()[0],1)
+            self.assertEqual(conn.execute('SELECT count(*) FROM message_parts p JOIN tool_calls c '
+                'ON c.id=p.tool_call_id AND c.message_id=p.message_id').fetchone()[0],2)
+        self.assertEqual(self.db.read_bytes(),before)
+        self.assertEqual(self.run_import()['status'],'unchanged')
+        with closing(sqlite3.connect(self.db)) as conn:
+            conn.execute("UPDATE reports SET body='force journal replay'");conn.commit()
+        self.run_import()
+        with closing(self.repo.connect()) as conn:
+            self.assertEqual(conn.execute('SELECT count(*) FROM tool_calls').fetchone()[0],2)
+            self.assertEqual(conn.execute('SELECT count(*) FROM tool_results').fetchone()[0],1)
+            self.assertEqual(conn.execute('PRAGMA foreign_key_check').fetchall(),[])
+
+    def test_tool_call_owner_refresh_versions_call_and_unchanged_result(self):
+        call={'type':'tool_use','id':'stable-tool','name':'read','input':{'query':'visible'}}
+        events=[{'type':'assistant','id':'same-message','content':[{'type':'text','text':'draft'},call],'at':STAMP},
+                {'type':'tool_result','tool_use_id':'stable-tool','content':'unchanged result','at':STAMP}]
+        self.journal.write_text('\n'.join(json.dumps(e) for e in events)+'\n',encoding='utf-8')
+        self.run_import()
+        with closing(self.repo.connect()) as conn:
+            old_calls=[tuple(r) for r in conn.execute('SELECT * FROM tool_calls')]
+            old_results=[tuple(r) for r in conn.execute('SELECT * FROM tool_results')]
+            old_messages={r['id'] for r in conn.execute('SELECT id FROM messages')}
+        events[0]['content'][0]['text']='final answer'
+        self.journal.write_text('\n'.join(json.dumps(e) for e in events)+'\n',encoding='utf-8')
+        self.run_import()
+        with closing(self.repo.connect()) as conn:
+            self.assertEqual(conn.execute('PRAGMA foreign_key_check').fetchall(),[])
+            self.assertEqual(conn.execute('SELECT count(*) FROM tool_calls').fetchone()[0],2)
+            self.assertEqual(conn.execute('SELECT count(*) FROM tool_results').fetchone()[0],2)
+            self.assertIn(old_calls[0],[tuple(r) for r in conn.execute('SELECT * FROM tool_calls')])
+            self.assertIn(old_results[0],[tuple(r) for r in conn.execute('SELECT * FROM tool_results')])
+            replacements=conn.execute('SELECT supersedes_message_id FROM messages WHERE supersedes_message_id IS NOT NULL').fetchall()
+            self.assertEqual({r[0] for r in replacements},old_messages)
+        self.assertEqual(self.run_import()['status'],'unchanged')
+
+    def test_tool_result_outcome_refresh_preserves_previous_result(self):
+        call={'type':'tool_use','id':'stable-tool','name':'read','input':{}}
+        events=[{'type':'assistant','id':'call-message','content':[call],'at':STAMP},
+                {'type':'tool_result','tool_use_id':'stable-tool','content':'result','at':STAMP}]
+        self.journal.write_text('\n'.join(json.dumps(e) for e in events)+'\n',encoding='utf-8')
+        self.run_import()
+        events[-1]['is_error']=True
+        self.journal.write_text('\n'.join(json.dumps(e) for e in events)+'\n',encoding='utf-8')
+        self.run_import()
+        with closing(self.repo.connect()) as conn:
+            self.assertEqual({r[0] for r in conn.execute('SELECT outcome FROM tool_results')},{'success','error'})
+            self.assertEqual(conn.execute('SELECT count(*) FROM tool_calls').fetchone()[0],1)
+            self.assertEqual(conn.execute('PRAGMA foreign_key_check').fetchall(),[])
+        self.assertEqual(self.run_import()['status'],'unchanged')
+
     def test_partial_message_adds_superseding_version_without_mutation(self):
         events=[{'type':'text','id':'same-message','text':'hello','at':STAMP},{'type':'status','status':'working'}]
         self.journal.write_text('\n'.join(json.dumps(e) for e in events)+'\n',encoding='utf-8')
