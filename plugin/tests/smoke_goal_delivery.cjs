@@ -99,8 +99,8 @@ const run=async code=>{const result=await win.webContents.executeJavaScript(`(as
 async function wait(expression,label=expression){for(let i=0;i<200;i++){if(await run(expression))return;await new Promise(resolve=>setTimeout(resolve,30));}throw Error('等待超时 '+label);}
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function click(selector){
-  const side=await run(`!!document.querySelector(${JSON.stringify(selector)})?.closest("#chat-attention")`);
-  if(side && !await run('document.querySelector("#chat-attention").matches(":popover-open") && !document.querySelector("#side-task-section").hidden')) await run('document.querySelector("[data-act=task-panel]").click()');
+  const side=await run(`!!document.querySelector(${JSON.stringify(selector)})?.closest("#side-task-section")`);
+  if(side && !await run('!document.querySelector("#side-task-section").hidden')) await run('document.querySelector("[data-act=task-panel]").click()');
   await run('document.querySelector('+JSON.stringify(selector)+')?.scrollIntoView({block:"nearest"})');
   await run(`(()=>{const node=document.querySelector(${JSON.stringify(selector)});if(!node)throw Error("找不到 "+${JSON.stringify(selector)});const process=node.closest('.turn-process-body');if(process && !process.checkVisibility()){process.previousElementSibling.click();node.scrollIntoView({block:"nearest"});}node.click();})()`);}
 async function fill(selector,value){await run(`(()=>{const node=document.querySelector(${JSON.stringify(selector)});node.value=${JSON.stringify(value)};node.dispatchEvent(new Event('input',{bubbles:true}));})()`);}
@@ -209,13 +209,15 @@ const listCards=`[...document.querySelectorAll('#goal-head .goal-card')].map(car
   const focusClose='document.querySelector(".goal-report-reader [data-goal-act=close-report]").focus()';
   await click(`[data-act=leader][data-id="${voice.session_id}"]`);await click('[data-goal-act=list]');await wait('!!document.querySelector(".goal-card")');await click('[data-goal-act=open][data-goal-id=goal-a]');
   await wait('!!document.querySelector("[data-goal-tools=goal-a] [data-action=accept]") && !!document.querySelector("#chat-host .chat-inner")');
+  await click('[data-act=right-open]');await click('[data-act=attention]');await sleep(420);
   const controlsBefore=await run(controls);mark=Date.now();
   await click('#side-task-body [data-goal-act=delivery]');await wait('!!document.querySelector(".goal-report-reader iframe")');
   assert(await run(coveredOnly),'every task-area part behind the reader is inert, the reader is not');
+  assert(await run('document.querySelector("#chat-attention").inert&&!document.querySelector("#right-panel").hidden&&document.querySelector("#attention-slot").dataset.open==="true"'),'reader covers still-open auxiliary panels and prevents background input');
   await run(focusClose);const backwards=[];for(let i=0;i<20;i++){await key('Tab',['shift']);backwards.push(await run(where));}
   await run(focusClose);const forwards=[];for(let i=0;i<20;i++){await key('Tab');forwards.push(await run(where));}
   assert.deepEqual([...backwards,...forwards].filter(item=>item.behind),[],'Tab and Shift+Tab never reach the covered task area');
-  assert(backwards[0].sidebar,'Shift+Tab from 返回任务 moves to the sidebar: '+JSON.stringify(backwards[0]));assert(!forwards.some(item=>item.tree),'the closed floating tree never steals report focus');
+  assert(backwards[0].sidebar,'Shift+Tab from 返回任务 moves to the sidebar: '+JSON.stringify(backwards[0]));assert(!forwards.some(item=>item.tree),'the covered floating tree never steals report focus');
   const blocked=await run('(()=>{const result={};for(const action of ["accept","reject"]){const button=document.querySelector("#side-task-body [data-action="+action+"]");button.focus();result[action]=document.activeElement===button;}const box=document.querySelector("#main").getBoundingClientRect();const x=Math.round(box.left+box.width/2),y=Math.round(box.top+box.height/2),hit=document.elementFromPoint(x,y);return {...result,x,y,hitReader:!!hit.closest(".goal-report-reader"),hitButton:!!hit.closest("button")};})()');
   assert.equal(blocked.accept,false,'验收通过 cannot take focus');assert.equal(blocked.reject,false,'需要修改 cannot take focus');assert.deepEqual([blocked.hitReader,blocked.hitButton],[true,false],'the pointer lands on the reader, not on one of its buttons');
   for(const type of ['mouseDown','mouseUp'])win.webContents.sendInputEvent({type,x:blocked.x,y:blocked.y,button:'left',clickCount:1});await sleep(250);
@@ -224,6 +226,7 @@ const listCards=`[...document.querySelectorAll('#goal-head .goal-card')].map(car
   await run(focusClose);await key('Escape');await wait('!document.querySelector(".goal-report-reader")');
   assert.equal(await run('document.querySelectorAll("#main [inert]").length'),0);assert.equal(await run(controls),controlsBefore,'disabled, hidden and read-only states are unchanged');
   assert.equal(await run('document.activeElement.dataset.goalAct'),'delivery','focus returns to the task');
+  assert(await run('!document.querySelector("#chat-attention").inert&&!document.querySelector("#right-panel").hidden&&document.querySelector("#attention-slot").dataset.open==="true"'),'return from reader restores both auxiliary panels');
   assert(await run('(()=>{const accept=document.querySelector("#side-task-body [data-action=accept]");accept.focus();const ok=document.activeElement===accept;document.querySelector("#side-task-body [data-goal-act=delivery]").focus();return ok;})()'),'task actions are focusable again after closing');
   const keyboard={backwards,forwards,blocked};
   steps.push('阅读层打开时：Tab/Shift+Tab 只在侧栏与阅读层之间移动，浮卡收起，背后的「验收通过/需要修改」既不能聚焦也点不到；Esc 关闭后焦点回到任务，按钮的 disabled/hidden/只读状态不变');
