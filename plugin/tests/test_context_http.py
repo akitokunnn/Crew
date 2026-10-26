@@ -196,6 +196,35 @@ class ContextHttpTests(ShellFixture, unittest.TestCase):
                          (409, {"error": "正在干活，等这一轮结束再压缩"}))
         self.assertEqual(process.stdin.getvalue(), before)
 
+    def test_ring_click_defers_once_until_the_current_turn_finishes_for_both_roles(self):
+        for role in ('leader', 'member'):
+            with self.subTest(role=role):
+                sid, process = self.start_session(role)
+                before = process.stdin.getvalue()
+                for _ in range(2):
+                    code, result = self.request('/api/session/compact', {'session_id': sid, 'after_turn': True})
+                    self.assertEqual((code, result), (200, {'ok': True, 'message': '这一轮说完后压缩', 'queued': True}))
+                self.assertEqual(process.stdin.getvalue(), before)
+                self.assertTrue(self.chat.processes[sid].pending_compact)
+                process.emit({'type': 'result'})
+                journal = self.chat.journal(sid)
+                with journal.condition:
+                    self.assertTrue(journal.condition.wait_for(
+                        lambda: any(event['type'] == 'compact_request' for event in journal.events), timeout=3))
+                with self.chat.processes[sid].input_lock:
+                    sent = [json.loads(line) for line in process.stdin.getvalue().splitlines()]
+                    self.assertEqual(sum(record.get('message', {}).get('content') == '/compact' for record in sent), 1)
+                self.stop_process(sid, process)
+
+    def test_ring_click_requires_a_boolean_and_never_queues_for_another_ai(self):
+        sid, process = self.start_session('member')
+        before = process.stdin.getvalue()
+        self.assertEqual(self.request('/api/session/compact', {'session_id': sid, 'after_turn': 'true'})[0], 400)
+        self.assertEqual(self.request('/api/session/compact', {
+            'session_id': sid, 'after_turn': True, 'caller_session_id': 's3'})[0], 409)
+        self.assertEqual(process.stdin.getvalue(), before)
+        self.assertFalse(self.chat.processes[sid].pending_compact)
+
     def test_vscode_online_returns_guidance_and_offline_without_log_never_launches(self):
         self.provider.return_value = [{"sessionId": "s1", "name": "cc-one", "status": "idle"}]
         self.server.service.refresh_agents()

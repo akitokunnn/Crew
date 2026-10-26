@@ -2,18 +2,18 @@
 (() => {
   const CONTEXT_WARN = 0.5, CONTEXT_DANGER = 0.8;
   const tokens = value => value >= 10000 ? `${(value / 10000).toFixed(1)} 万` : String(Math.round(value));
-  function ring(context) {
+  const escape = value => String(value).replace(/[&<>"']/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]);
+  function ring(context, target) {
     if (context === null) return "";
     const ratio = context.used / context.max, percent = Math.round(ratio * 100);
     const maximum = context.max >= 10000 ? `${Number((context.max / 10000).toFixed(1))} 万` : tokens(context.max);
-    const label = `上下文 已用 ${tokens(context.used)} / ${maximum}（${percent}%）`;
-    return `<span class="context-ring ${ratio >= CONTEXT_DANGER ? "danger" : ratio >= CONTEXT_WARN ? "warn" : "calm"}" role="img" title="${label}" aria-label="${label}"><svg viewBox="0 0 20 20" aria-hidden="true"><circle class="context-track" cx="10" cy="10" r="7.5"/><circle class="context-arc" cx="10" cy="10" r="7.5" pathLength="100" stroke-dasharray="${Math.min(100, ratio * 100)} 100"/></svg><span class="context-pct" aria-hidden="true">${percent}%</span></span>`;
+    const hint = target.phase === "queued" ? "已排队，本轮结束后压缩" : target.phase === "submitting" ? "正在请求压缩…" : target.phase ? "正在压缩上下文…" : target.external ? "点击查看原工具压缩方式" : target.busy ? "点击在本轮结束后压缩" : "点击压缩上下文";
+    const label = `${target.name} · 上下文已用 ${tokens(context.used)} / ${maximum}（${percent}%） · ${hint}`;
+    return `<button type="button" class="context-ring ${ratio >= CONTEXT_DANGER ? "danger" : ratio >= CONTEXT_WARN ? "warn" : "calm"}${target.phase ? " is-compacting" : ""}" data-act="context-compact" data-id="${escape(target.id)}" title="${escape(label)}" aria-label="${escape(label)}" ${target.phase ? 'aria-busy="true" disabled' : ""}><svg viewBox="0 0 20 20" aria-hidden="true"><circle class="context-track" cx="10" cy="10" r="7.5"/><circle class="context-arc" cx="10" cy="10" r="7.5" pathLength="100" stroke-dasharray="${Math.min(100, ratio * 100)} 100"/></svg><span class="context-pct" aria-hidden="true">${percent}%</span></button>`;
   }
-  // The ring is always shown (user 10-23); the compact button only once it is worth compacting.
-  const worthCompacting = context => context !== null && context.used / context.max >= CONTEXT_WARN;
   // A freshly resumed Codex thread reports no size before compaction.
   const compactSize = value => value === null ? "未知" : tokens(value);
-  window.CrewContext = {tokens, ring, worthCompacting, compactSize};
+  window.CrewContext = {tokens, ring, compactSize};
 })();
 (() => {
   const turns = new Map();
@@ -783,11 +783,13 @@
     const params = new URLSearchParams({session_id:id, project:options.state.project.name, after:history.events.length === 0 ? 0 : history.events[history.events.length - 1].seq});
     const stream = new EventSource(`/api/chat/events?${params}`);
     const close = () => stream.close();
+    const finish = event => { close(); options.onFinish?.(event); };
     stream.onmessage = message => {
       const event = JSON.parse(message.data);
-      if (event.type === "compact") { notifyCompact(id, event, options.toast); close(); }
-      else if (event.type === "error" || event.type === "status" && event.status === "offline") close();
+      if (event.type === "compact") { notifyCompact(id, event, options.toast); finish(event); }
+      else if (event.type === "error" || event.type === "compact_cancelled" || event.type === "status" && event.status === "offline") finish(event);
     };
+    stream.onerror = () => { if (stream.readyState === EventSource.CLOSED) finish({type:"error", text:"压缩结果连接已关闭，请检查会话状态"}); };
     return close;
   }
   window.CrewChat = {mount, update, unmount, watchCompact, renderMarkdown, renderInline, initFiles};

@@ -530,11 +530,12 @@ def crew_weekly(conn, seven_day, prices, now):
         return None
     since = _iso(reset - dt.timedelta(days=7))
     cost = 0.0
-    for row in conn.execute(
-        "SELECT r.* FROM claude_requests r JOIN sessions s ON s.session_id = r.session_id "
-        "WHERE (s.role = 'leader' OR (s.group_name IS NOT NULL AND s.group_name != '')) "
-        "AND r.ts >= ? AND r.ts <= ?", (since, _iso(now)),
-    ):
+    names = _session_names(conn)
+    crew = {row['session_id'] for row in conn.execute("SELECT session_id FROM sessions "
+        "WHERE role='leader' OR (group_name IS NOT NULL AND group_name!='')")}
+    for row in conn.execute('SELECT * FROM claude_requests WHERE ts>=? AND ts<=?', (since, _iso(now))):
+        if names[row['session_id']]['crew_session_id'] not in crew:
+            continue
         request_cost = _money(row, prices)[0]
         if request_cost is None:
             cost = None
@@ -592,8 +593,11 @@ def _codex_rows(conn, start, end, project=None):
     condition, args = _window("started_at", start, end)
     rows = conn.execute("SELECT * FROM codex_sessions WHERE " + condition, args)
     roots = _project_roots(conn)
+    people, _, native = _dispatch_owners(conn)
     for row in rows:
-        if project is None or _project_for_cwd(row['cwd'], roots) == project:
+        owner = native.get(('codex', row['rollout_id']))
+        scoped_project = people[owner[0]] if owner else _project_for_cwd(row['cwd'], roots)
+        if project is None or scoped_project == project:
             yield dict(row)
     for task in codex_tasks(conn, start, end, project):
         if task.get('ephemeral') and task['total_tokens'] is not None:
@@ -617,6 +621,9 @@ def _dispatch_tokens(raw):
 
 def _session_names(conn, project=None):
     roots = _project_roots(conn)
+    people = {row['session_id']: dict(row) for row in conn.execute('SELECT * FROM sessions')}
+    native = _dispatch_owners(conn)[2]
+    bound_people = {owner[0] for owner in native.values()}
     rows = conn.execute(
         "SELECT ids.session_id, c.ai_title, c.project_dir, COALESCE(c.cwd, s.cwd) AS cwd, c.first_ts, c.last_ts, "
         "s.crew_name, s.project, s.group_name FROM "
@@ -628,11 +635,16 @@ def _session_names(conn, project=None):
     result = {}
     for row in rows:
         item = dict(row)
+        owner = native.get(('claude', row['session_id']))
+        item['crew_session_id'] = owner[0] if owner else row['session_id']
+        if owner:
+            person = people[owner[0]]
+            item.update(crew_name=person['crew_name'], group_name=person['group_name'], project=person['project'])
         inferred_project = _project_for_cwd(row["cwd"], roots)
-        if project is not None and inferred_project != project:
+        item["project"] = item['project'] if owner or row['session_id'] in bound_people else inferred_project or row["project"]
+        if project is not None and item['project'] != project:
             continue
-        item["project"] = inferred_project or row["project"]
-        item["display_name"] = row["crew_name"] or row["ai_title"] or row["session_id"][:8]
+        item["display_name"] = item["crew_name"] or row["ai_title"] or row["session_id"][:8]
         result[row["session_id"]] = item
     return result
 
@@ -667,6 +679,26 @@ def _dispatch_owners(conn):
     for row in conn.execute('SELECT runtime,native_id,execution_id FROM goal_execution_bindings'):
         execution = executions[row['execution_id']]
         native[(row['runtime'], row['native_id'])] = (execution['session_id'], execution['id'], execution['goal_id'])
+    # Native Codex sub-agents have their own rollouts. Follow explicit parent
+    # thread IDs to the same owner; never infer ownership from names or cwd.
+    parents = {}
+    for row in conn.execute('SELECT rollout_id,source FROM codex_sessions'):
+        try:
+            source = json.loads(row['source'])
+        except (json.JSONDecodeError, TypeError):
+            continue
+        agent = (source.get('subagent') or source.get('subAgent')) if isinstance(source, dict) else None
+        spawn = agent.get('thread_spawn') if isinstance(agent, dict) else None
+        if isinstance(spawn, dict) and isinstance(spawn.get('parent_thread_id'), str):
+            parents[row['rollout_id']] = spawn['parent_thread_id']
+    while parents:
+        resolved = [child for child, parent in parents.items() if ('codex', child) in native or ('codex', parent) in native]
+        if not resolved:
+            break
+        for child in resolved:
+            parent = parents.pop(child)
+            if ('codex', child) not in native:
+                native[('codex', child)] = native[('codex', parent)]
     return people, executions, native
 
 
@@ -743,11 +775,15 @@ def dispatch_tasks(conn, start, end, project=None):
         "SELECT c.* FROM codex_sessions c WHERE NOT EXISTS "
         "(SELECT 1 FROM codex_runs r WHERE r.rollout_id = c.rollout_id) AND " + condition, args,
     ):
-        task_project = _project_for_cwd(row["cwd"], roots)
+        owner = owners[2].get(('codex', row['rollout_id']))
+        task_project = owners[0][owner[0]] if owner else _project_for_cwd(row["cwd"], roots)
         if project is not None and task_project != project:
             continue
         item = {field: row[field] for field in CODEX_TOKENS}
-        item.update(run_id=None, rollout_id=row["rollout_id"], session_id=None, display_name=None, ephemeral=False, runtime='codex',
+        item.update(run_id=None, rollout_id=row["rollout_id"], session_id=owner[0] if owner else None,
+                    display_name=names[owner[0]]['display_name'] if owner else None,
+                    execution_id=owner[1] if owner else None, goal_id=owner[2] if owner else None,
+                    ephemeral=False, runtime='codex',
                     task_name=row["first_user_text"], started_at=row["started_at"], ended_at=None,
                     exit_code=None, status="unknown", project=task_project, cwd=row["cwd"],
                     last_event_at=row["ended_at"], model=row["model"], effort=row["effort"], sandbox=row["sandbox"])
@@ -778,7 +814,9 @@ def by_session(conn, start, end, prices, project=None):
     names = _session_names(conn)
     scoped_names = _session_names(conn, project) if project is not None else names
     rows = {}
-    for session_id, name in names.items():
+    for name in names.values():
+        session_id = name['crew_session_id']
+        name = names[session_id]
         rows[session_id] = {
             "session_id": session_id, "display_name": name["display_name"], "project": name["project"],
             "project_dir": name["project_dir"], "group_name": name["group_name"], **_aggregate(),
@@ -786,27 +824,28 @@ def by_session(conn, start, end, prices, project=None):
             "subagent_tokens": 0, "subagent_requests": 0, "codex_runs": 0, "codex_tokens": 0,
         }
     for request in _request_rows(conn, start, end, project):
-        row = rows[request["session_id"]]
+        row = rows[names[request['session_id']]['crew_session_id']]
         _add(row, request, prices)
         if request["agent_id"] is not None:
             row["subagent_tokens"] += _total(request)
             row["subagent_requests"] += 1
-    active_sessions = set()
+    active_sessions = {name['crew_session_id'] for name in scoped_names.values() if _in_window(name['last_ts'], start, end)}
     condition, args = _window("ts", start, end)
     for prompt in conn.execute("SELECT session_id, SUM(kind = 'user') AS users FROM claude_prompts WHERE " + condition + " GROUP BY session_id", args):
         if prompt["session_id"] not in scoped_names:
             continue
-        active_sessions.add(prompt["session_id"])
-        rows[prompt["session_id"]]["prompts"] = prompt["users"]
+        session_id = names[prompt['session_id']]['crew_session_id']
+        active_sessions.add(session_id)
+        rows[session_id]["prompts"] += prompt["users"]
     for table, target in (("claude_compactions", "compactions"),):
         condition, args = _window("ts", start, end)
         for row in conn.execute(f"SELECT session_id, COUNT(*) AS n FROM {table} WHERE " + condition + " GROUP BY session_id", args):
             if row["session_id"] not in scoped_names:
                 continue
-            rows[row["session_id"]][target] = row["n"]
+            rows[names[row['session_id']]['crew_session_id']][target] += row["n"]
     for session_id, seconds in _work_seconds(conn, start, end).items():
         if session_id in scoped_names:
-            rows[session_id]["work_seconds"] = seconds
+            rows[names[session_id]['crew_session_id']]["work_seconds"] += seconds
     for task in codex_tasks(conn, start, end, project):
         if task["session_id"] is not None:
             row = rows[task["session_id"]]
@@ -836,7 +875,7 @@ def tree(conn, start, end, prices, project=None):
     )}
     groups = {}
     ungrouped = {"leader_session_id": None, "name": "未收编的会话",
-                 "self": {"tokens": 0, "cost": 0.0}, "members": []}
+                 "self": {"tokens": 0, "cost": 0.0, "codex_runs": 0, "codex_tokens": 0}, "members": []}
     total = sum(row["total_tokens"] for row in sessions)
     for row in sessions:
         session_id = row["session_id"]
@@ -847,10 +886,11 @@ def tree(conn, start, end, prices, project=None):
             leader_id = relation["leader_session_id"]
             if leader_id not in groups:
                 groups[leader_id] = {"leader_session_id": leader_id, "name": relation["leader_name"],
-                                     "self": {"tokens": 0, "cost": 0.0}, "members": []}
+                                     "self": {"tokens": 0, "cost": 0.0, "codex_runs": 0, "codex_tokens": 0}, "members": []}
             group = groups[leader_id]
         if session_id == group["leader_session_id"]:
-            group["self"] = {"tokens": row["total_tokens"], "cost": row["cost_usd"]}
+            group["self"] = {"tokens": row["total_tokens"], "cost": row["cost_usd"],
+                             "codex_runs": row['codex_runs'], "codex_tokens": row['codex_tokens']}
         else:
             group["members"].append({
                 "session_id": session_id, "name": row["display_name"],
@@ -862,6 +902,8 @@ def tree(conn, start, end, prices, project=None):
     for group in result:
         rows = [group["self"], *group["members"]]
         group["tokens"] = sum(row["tokens"] for row in rows)
+        group['codex_runs'] = sum(row['codex_runs'] for row in rows)
+        group['codex_tokens'] = sum(row['codex_tokens'] for row in rows)
         group["cost"] = None if any(row["cost"] is None for row in rows) else sum(row["cost"] for row in rows)
         group["share"] = group["tokens"] / total * 100 if total else 0.0
     return result
@@ -871,10 +913,11 @@ def daily(conn, start, end, prices, project=None):
     names, groups = _session_names(conn), {}
     for request in _request_rows(conn, start, end, project):
         day = store.parse_iso(request["ts"]).astimezone().date().isoformat()
-        key = day, request["session_id"]
+        session_id = names[request['session_id']]['crew_session_id']
+        key = day, session_id
         if key not in groups:
             name = names[request["session_id"]]
-            groups[key] = {"date": day, "session_id": request["session_id"], "display_name": name["display_name"],
+            groups[key] = {"date": day, "session_id": session_id, "display_name": name["display_name"],
                            "project": name["project"], "group_name": name["group_name"], **_aggregate()}
         _add(groups[key], request, prices)
     return [groups[key] for key in sorted(groups)]

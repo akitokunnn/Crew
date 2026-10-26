@@ -155,7 +155,7 @@ app.once('browser-window-created', (_event, win) => {
         }
         return actual;
       }
-      const listRows=()=>js(view,'[...document.querySelectorAll("#main .list button[data-id]")].map(item=>({id:item.dataset.id,act:item.dataset.act,text:item.textContent}))');
+      const listRows=()=>js(view,'[...document.querySelectorAll("#main .list .li[data-id]")].map(item=>({id:item.dataset.id,act:item.dataset.act,text:item.textContent}))');
       const openWorking=async()=>{await click(view,'#main [data-act=all-tab][data-tab=working]');};
       win.setSize(1180,850);
       await js(view,'document.documentElement.style.setProperty("--fs","1")');
@@ -304,6 +304,48 @@ app.once('browser-window-created', (_event, win) => {
       await assert.rejects(fs.access(path.join(evidence.home,'fixture-model-start-attempts.txt')),{code:'ENOENT'});
       await capture(view,'12-skill-dispatch-completion');
       evidence.checks.push('both skill carriers appear beneath the correct idle leader with PID and group halo, then independently show success/failure without waking AI or waiting for the full usage scan');
+      const contextFile=path.join(evidence.home,'fixture-context.json'),compactLog=path.join(evidence.home,'fixture-compacts.jsonl');
+      const contextMode=async mode=>{await fs.writeFile(contextFile+'.tmp',JSON.stringify({mode}),'utf8');await fs.rename(contextFile+'.tmp',contextFile);};
+      const compacts=async()=>{try{return (await fs.readFile(compactLog,'utf8')).trim().split('\n').filter(Boolean).map(line=>JSON.parse(line));}catch(error){if(error.code==='ENOENT')return[];throw error;}};
+      await contextMode('complete');
+      await wait(view,'document.querySelector("#sidebar .context-ring[data-id=offline-claude]") !== null');
+      async function compactRing(selector,id) {
+        const before=(await compacts()).length,route=await js(view,'location.hash');
+        await wait(view,`!!document.querySelector(${JSON.stringify(selector)}) && !document.querySelector(${JSON.stringify(selector)}).disabled`);
+        await wait(view,`(()=>{const ring=document.querySelector(${JSON.stringify(selector)});ring.scrollIntoView({block:'nearest'});const r=ring.getBoundingClientRect();return ring.tagName==='BUTTON' && ring.tabIndex===0 && !ring.parentElement.closest('button') && document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)?.closest('.context-ring')===ring;})()`);
+        await click(view,selector);
+        await until(async()=> (await compacts()).length===before+1,'one compact request');
+        assert.deepEqual((await compacts()).at(-1),{session_id:id,after_turn:true});
+        await wait(view,`!document.querySelector(${JSON.stringify(selector)}).disabled`);
+        assert.equal(await js(view,'location.hash'),route,'compacting must not navigate the containing session card');
+      }
+      await compactRing('#sidebar .context-ring[data-id=offline-claude]','offline-claude');
+      await click(view,'#sidebar [data-act=leader][data-id=handoff-codex]');
+      await compactRing('#chat-head .context-ring[data-id=handoff-codex]','handoff-codex');
+      await click(view,'[data-act=view][data-view=all]');await click(view,'#main [data-act=all-tab][data-tab=tree]');
+      await compactRing('#main .node .context-ring[data-id=failed-member]','failed-member');
+      await click(view,'#main [data-act=card][data-id=failed-member]');
+      await compactRing('#card .context-ring[data-id=failed-member]','failed-member');
+      await click(view,'[data-act=card-close]');
+      await overview({leaders:{'offline-claude':'working','handoff-codex':'idle'},members:{'failed-member':'working','pending-member':'offline'}},2);
+      await openWorking();
+      await compactRing('#main .list .context-ring[data-id=offline-claude]','offline-claude');
+      await compactRing('#main .list .context-ring[data-id=failed-member]','failed-member');
+      await contextMode('queued');await click(view,'#sidebar .context-ring[data-id=handoff-codex]');
+      await wait(view,'document.querySelector("#sidebar .context-ring[data-id=handoff-codex]").title.includes("已排队")');
+      assert(await js(view,'document.querySelector("#sidebar .context-ring[data-id=handoff-codex]").disabled'));
+      await capture(view,'13-context-ring-queued');
+      await contextMode('complete');
+      await core.request(boot.service.url,'/api/session/compact?project=handoff-demo',{session_id:'handoff-codex',after_turn:true});
+      await wait(view,'!document.querySelector("#sidebar .context-ring[data-id=handoff-codex]").disabled');
+      await contextMode('failed');await click(view,'#sidebar .context-ring[data-id=handoff-codex]');
+      await wait(view,'[...document.querySelectorAll(".toast.show")].some(item=>item.textContent.includes("FixtureNativeRejected"))');
+      assert(await js(view,'!document.querySelector("#sidebar .context-ring[data-id=handoff-codex]").disabled'));
+      for(let attempt=0;attempt<3 && !await js(view,'document.documentElement.dataset.theme === "dark"');attempt++) await click(view,'[data-act=theme]');
+      assert(await js(view,'document.documentElement.dataset.theme === "dark"'));win.setSize(860,760);
+      await capture(view,'14-context-ring-narrow-dark');
+      await assert.rejects(fs.access(path.join(evidence.home,'fixture-model-start-attempts.txt')),{code:'ENOENT'});
+      evidence.checks.push('all six context-ring surfaces target the correct CC/Codex session, use native keyboard buttons without nested buttons or card-navigation interception, and retain clear queued, completed and failed states with zero native/model starts');
       // The user-facing unread badge must count the prose reply, not the 18
       // assistant envelopes carrying tool calls before it.
       const journalFile=path.join(evidence.home,'chat','handoff-codex.jsonl');

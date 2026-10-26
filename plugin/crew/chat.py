@@ -1024,9 +1024,10 @@ class Manager:
                 'delivery': delivery}
 
     @_admitted
-    def compact(self, session, caller_session_id=None):
+    def compact(self, session, caller_session_id=None, after_turn=False):
         session_id = session["session_id"]
         self_compact = caller_session_id not in (None, board.HUMAN) and caller_session_id == session_id
+        deferred = self_compact or after_turn and caller_session_id in (None, board.HUMAN)
         with self.lock:
             if caller_session_id not in (None, board.HUMAN):
                 with closing(store.connect(self.home)) as conn:
@@ -1039,24 +1040,29 @@ class Manager:
                         raise board.BoardError("只有它自己的 leader 或用户能压缩它")
                 if self_compact and not self.running(session_id):
                     raise board.Conflict("它在 VS Code 里运行，去那边输入 /compact")
-            if self.running(session_id):
-                if self.busy(session_id) and not self_compact:
+            running = self.running(session_id)
+            if running:
+                if self.busy(session_id) and not deferred:
                     raise board.Conflict("正在干活，等这一轮结束再压缩")
             elif self._runs_in_claude(session_id) and any(agent["sessionId"] == session_id for agent in self._external_agents()):
                 raise board.Conflict("它在 VS Code 里运行，去那边输入 /compact")
             if (not self.path(session_id).exists() or session["spawn_id"] is None or
                     not (self.home / "spawn" / (session["spawn_id"] + ".json")).exists()):
                 raise board.BoardError("会话没有网页聊天记录或启动记录，请先叫醒它，或在 VS Code 打开后输入 /compact")
-            if self_compact:
+            if deferred and (self_compact or running):
                 current = self.processes[session_id]
                 with current.input_lock:
                     if current.process.poll() is not None:
                         raise board.Conflict("它在 VS Code 里运行，去那边输入 /compact")
                     if self.closed:
                         raise board.BoardError("网页服务正在关闭")
+                    if self.maintenance_held(session_id):
+                        raise board.Conflict(MAINTENANCE_HELD)
+                    if (current.journal.progress or {}).get('phase') == 'compacting':
+                        return {"ok": True, "message": "正在压缩上下文"}
                     if current.journal.status == "working":
                         current.pending_compact = True
-                        return {"ok": True, "message": "这一轮说完后压缩"}
+                        return {"ok": True, "message": "这一轮说完后压缩", **({'queued': True} if after_turn else {})}
                     return {"ok": True, "message_id": self._send(session_id, "/compact")}
             return self.send(session, "/compact")
 
