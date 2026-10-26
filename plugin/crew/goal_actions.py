@@ -152,6 +152,10 @@ def dispatch(home, actor_session_id, execution_id, action, data, controller=None
             return _host(controller).pause(goal_id, manual=actor_session_id == board.HUMAN, actor=actor_session_id)
         if action == 'resume':
             _host(controller)
+            if not data.get('text'):
+                review = goals.resume_review(conn, goal_id, actor=actor_session_id)
+                if review is not None:
+                    return {'ok': True, 'goal': review, 'resumed': 'acceptance'}
             goals.resume(conn, goal_id, actor=actor_session_id)
             finish = goals.get_finish(conn, goal_id)
             if finish and finish['status'] == 'pending':
@@ -178,6 +182,9 @@ def dispatch(home, actor_session_id, execution_id, action, data, controller=None
                 report = goals.save_report(conn, goal_id, data.get('report'))
                 finish = goals.request_finish(conn, goal_id, report['id'], actor=actor_session_id, execution_id=execution_id)
             # Never interrupt this tool's own native caller or pretend it is idle.
+            message = '报告已收录；本次原生响应实际结束后，程序自动按报告结论收尾，无需重复提交。'
+            if report['outcome'] == 'awaiting_acceptance':
+                message += '收尾后进入等待用户验收；验收决定仍需用户本人提交，不能声称用户无需验收。'
             return {'ok': True, 'pending_finish': True, 'report_id': report['id'], 'finish': finish,
-                    'message': '报告已收录；本次原生响应实际结束后，程序自动按报告结论收尾，不需要用户另行确认或重复提交。'}
+                    'message': message}
     raise board.BoardError('不支持的目标操作')
