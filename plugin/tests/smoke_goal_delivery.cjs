@@ -42,7 +42,12 @@ async function route(request,response){
   if(name==='/api/runtimes')return json(response,{runtimes:catalog});
   if(name==='/api/goal'){const id=url.searchParams.get('id');if(failDetailOnce.delete(id))return json(response,{error:'隔离详情读取失败，可重试'},503);return json(response,details.get(id));}
   if(name==='/api/documents'){assert(gid,'document reads must name their task');return json(response,{documents:details.get(gid)?.documents||[]});}
-  if(name==='/api/chat/history')return json(response,journal(sid,gid).value);
+  if(name==='/api/chat/history'){
+    const value=journal(sid,gid).value;
+    const previous_executions=gid?details.get(gid).executions.filter(item=>item.session_id===sid&&item.id!==value.execution_id)
+      .map(item=>({execution_id:item.id,round:item.round,generation:item.generation,events:journals.get(item.id)?.events||[]})):[];
+    return json(response,{...value,previous_executions});
+  }
   if(name==='/api/chat/events'){const {key}=journal(sid,gid);response.writeHead(200,{'Content-Type':'text/event-stream','Cache-Control':'no-cache'});response.write(': connected\n\n');const stream={response,key,closed:false};streams.push(stream);response.on('close',()=>{stream.closed=true;});return;}
   if(name==='/api/chat/read'){const {value}=journal(sid,gid);value.read_seq=body.seq;return json(response,{read_seq:body.seq});}
   if(name==='/api/goals/report'){
@@ -330,6 +335,10 @@ const listCards=`[...document.querySelectorAll('#goal-head .goal-card')].map(car
     const id='followup-'+initialStatus;
     addGoal({id,leader_session_id:voice.session_id,title:'报告收尾修改',request:'完成交付并保留证据',status:initialStatus,minutes:0},
       {documents:[{id:initialStatus==='completed'?802:801,title:'仅此任务资料-'+initialStatus,path:'docs/'+id+'.md',kind:'report',important:false}],executions:executions('old-'+id,voice.session_id,1,1,'completed'),reports:[goal=>reportEntry(goal,'old-report-'+id,1,1,true,initialStatus,'原始报告结论',{passed:2,failed:0,unverified:0,simulated:0},[],0)]});
+    seed(voice.session_id,id,3,'原任务历史-'+initialStatus);
+    const originalJournal=journal(voice.session_id,id).value;
+    originalJournal.events.push({seq:4,type:'assistant',id:'old-tool-answer',content:[{type:'tool_use',id:'continuity-tool',name:'Bash',input:{command:'verify old report'}}]},
+      {seq:5,type:'tool_result',tool_use_id:'continuity-tool',content:'旧任务复测证据仍可展开'});originalJournal.read_seq=5;
     const before=calls.filter(call=>call.name==='/api/chat/send').length;
     await open(1440,900,`leader=${voice.session_id}&goal=${id}`);
     await wait('!!document.querySelector("#chat-host textarea") && !!document.querySelector("[data-goal-detail]")');
@@ -348,7 +357,16 @@ const listCards=`[...document.querySelectorAll('#goal-head .goal-card')].map(car
     await click('#chat-host .send');
     await wait(`document.querySelector("[data-goal-detail='${id}'] .goal-version").textContent.includes("2")`);
     assert.equal(details.get(id).goal.current_round,2);
+    await wait(`document.querySelector('#chat-host .chat-inner')?.textContent.includes('原任务历史-${initialStatus}第 1 条记录')`);
+    await wait(`document.querySelector('#chat-host .chat-inner')?.textContent.includes('请继续修改报告结尾')`);
+    await open(1440,900,`leader=${voice.session_id}&goal=${id}`);
+    await wait(`document.querySelector('#chat-host .chat-inner')?.textContent.includes('原任务历史-${initialStatus}第 1 条记录')`);
+    await wait(`document.querySelector('#chat-host .chat-inner')?.textContent.includes('请继续修改报告结尾')`);
     assert.equal(calls.filter(call=>call.name==='/api/chat/send').length,before+1);
+    const historicalTool=`#chat-host [data-chat-fold="history:old-${id}:tool:continuity-tool"]`;
+    await click(historicalTool);
+    assert.equal(await run(`document.querySelector(${JSON.stringify(historicalTool)}).getAttribute('aria-expanded')`),'true');
+    await shot('23-续聊保留历史和工具-'+initialStatus+'.png');
     assert(await run('!!document.querySelector("#chat-host textarea")'));
     if(initialStatus==='awaiting_acceptance')assert((await text('.goal-review')).includes('第 1 轮 · 你退回修改'));
     assert((await text('.goal-delivery-gap')).includes('历史报告'));
