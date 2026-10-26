@@ -32,6 +32,7 @@ def command(session_id, name, role, resume=False, model=None, effort=None, agent
         return codex_client.command()
     args = ["claude", "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
             "--include-partial-messages", "--replay-user-messages",
+            "--disallowedTools", "Monitor",
             "--name", name]
     if permission_mode != 'default':
         args += ['--permission-mode', permission_mode]

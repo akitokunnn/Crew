@@ -16,6 +16,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$crewRunHome = if ($env:CREW_HOME) { [IO.Path]::GetFullPath($env:CREW_HOME) } else { Join-Path $env:USERPROFILE '.crew' }
 
 function ConvertTo-QuotedArg([string]$s) {
     return '"' + $s.TrimEnd('\').Replace('"', '\"') + '"'
@@ -31,9 +32,8 @@ function Write-CrewRun([Collections.IDictionary]$Run) {
         try { $locked = $mutex.WaitOne(5000) }
         catch [Threading.AbandonedMutexException] { $locked = $true }
         if (-not $locked) { throw [IO.IOException]::new('Timed out appending the Crew dispatch record') }
-        $crewHome = Join-Path $env:USERPROFILE '.crew'
-        New-Item -ItemType Directory -Force -Path $crewHome | Out-Null
-        [IO.File]::AppendAllText((Join-Path $crewHome 'codex_runs.jsonl'),
+        New-Item -ItemType Directory -Force -Path $crewRunHome | Out-Null
+        [IO.File]::AppendAllText((Join-Path $crewRunHome 'codex_runs.jsonl'),
             (($Run | ConvertTo-Json -Compress) + "`n"), (New-Object Text.UTF8Encoding $false))
     } catch {
         # Analytics must not replace a real Codex result or leave a launched process unobserved.
@@ -97,6 +97,8 @@ $isoFormat = "yyyy-MM-dd'T'HH:mm:ss.fff'Z'"
 $run = [ordered]@{
     run_id            = [guid]::NewGuid().ToString()
     claude_session_id = $env:CLAUDE_CODE_SESSION_ID
+    crew_session_id   = $env:CREW_SESSION_ID
+    crew_execution_id = $env:CREW_EXECUTION_ID
     task_file         = $TaskPath
     workdir           = $WorkDir
     sandbox           = $Sandbox
@@ -107,12 +109,20 @@ $run = [ordered]@{
     exit_code         = $null
     ephemeral         = $true
     usage             = $null
+    pid               = $null
+    pid_created       = $null
+}
+# The executor is a separate process, not a second copy of the parent's Crew identity.
+foreach ($name in @('CLAUDE_CODE_SESSION_ID', 'CREW_SESSION_ID', 'CREW_EXECUTION_ID', 'CREW_GOAL_ID', 'CREW_NAME', 'CREW_ROLE', 'CREW_SPAWN_ID', 'CODEX_THREAD_ID')) {
+    [Environment]::SetEnvironmentVariable($name, $null, 'Process')
 }
 # Not -Wait: it also waits for orphaned daemons the task spawned (e.g. adb server started by UE tests).
 $proc = Start-Process -FilePath $codex -ArgumentList ($argList -join ' ') -WorkingDirectory $WorkDir `
     -RedirectStandardInput $TaskPath -RedirectStandardOutput $outLog -RedirectStandardError $errLog `
-    -NoNewWindow -PassThru
+    -WindowStyle Hidden -PassThru
 $null = $proc.Handle
+$run.pid = $proc.Id
+$run.pid_created = 'win:' + $proc.StartTime.ToFileTimeUtc()
 Write-CrewRun $run
 
 if (-not $NoWatch) {

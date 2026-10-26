@@ -597,7 +597,7 @@ CREATE TABLE IF NOT EXISTS codex_sessions (
     first_user_text     TEXT               -- first 200 chars of the first user message (task title)
 );
 
--- Lines of ~/.crew/codex_runs.jsonl written by the codex-dispatch script.
+-- Skill dispatch receipts. Historical table name; runtime distinguishes both carriers.
 CREATE TABLE IF NOT EXISTS codex_runs (
     run_id             TEXT PRIMARY KEY,
     claude_session_id  TEXT,               -- dispatching Claude session (CLAUDE_CODE_SESSION_ID)
@@ -611,7 +611,13 @@ CREATE TABLE IF NOT EXISTS codex_runs (
     exit_code          INTEGER,
     rollout_id         TEXT,               -- matched codex_sessions row
     ephemeral          INTEGER NOT NULL DEFAULT 0,
-    usage_json         TEXT                -- ephemeral exec's native turn.completed usage
+    usage_json         TEXT,               -- ephemeral Codex exec's native turn.completed usage
+    runtime            TEXT NOT NULL DEFAULT 'codex',
+    crew_session_id    TEXT,
+    crew_execution_id  TEXT,
+    pid                INTEGER,
+    pid_created        TEXT,
+    native_id          TEXT
 );
 
 -- One row per token_count event carrying rate_limits. Several rollouts can report in the same millisecond.

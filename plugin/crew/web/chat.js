@@ -461,11 +461,15 @@
   function assistant(context, event) {
     let item = context.byId.get(event.id);
     if (!item) {
-      item = { id: event.id, kind: "assistant", seq: event.seq, lastSeq: event.seq, at: event.at, text: "", content: null };
+      item = { id: event.id, kind: "assistant", seq: event.seq, lastSeq: event.seq, at: event.at, text: "", content: null, replyText:"", replySeq:0 };
       context.items.push(item); context.byId.set(item.id, item);
     }
     item.lastSeq = event.seq;
     return item;
+  }
+  function trackReply(item, event) {
+    const text = (item.content || []).filter(block => block.type === "text").map(block => block.text).join("") + item.text;
+    if (text !== item.replyText) { item.replyText = text; item.replySeq = event.seq; }
   }
   function setBusy(context, busy, seq) {
     if (seq < context.busySeq || (context.cache.pendingSendSeq !== null && seq <= context.cache.pendingSendSeq)) return;
@@ -484,10 +488,14 @@
     if (event.type === "message") {
       const item = { ...event, kind: "message", lastSeq: event.seq };
       context.items.push(item); context.byId.set(item.id, item);
-    } else if (event.type === "text") assistant(context, event).text += event.text;
+    } else if (event.type === "text") {
+      const item = assistant(context, event);
+      item.text += event.text; trackReply(item, event);
+    }
     else if (event.type === "assistant") {
       const item = assistant(context, event);
       item.content = event.content; item.text = "";
+      trackReply(item, event);
       for (const block of event.content) if (block.type === "tool_use") context.toolOwners.set(block.id, item);
     }
     else if (event.type === "tool_result") {
@@ -603,7 +611,7 @@
       context.readSeq = history.read_seq; context.loading = false; context.historyFailed = false;
       connectionError(context, null);
       if (context.cache.first && !context.readonly) {
-        const unread = context.items.find(item => item.lastSeq > history.read_seq);
+        const unread = context.items.find(item => item.kind === "assistant" && item.replyText.trim() && item.replySeq > history.read_seq);
         context.cache.unreadAnchor = unread ? unread.id : null;
         context.initialPosition = unread ? "unread" : "bottom";
       } else context.initialPosition = context.cache.scrollTop === null ? "bottom" : context.cache.scrollTop;

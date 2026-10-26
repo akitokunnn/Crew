@@ -31,7 +31,7 @@ def connect(home):
     _migrate_peer_message_receipts(conn)
     _migrate_goal_message_scope(conn)
     _migrate_git_result_intent(conn)
-    _migrate_codex_dispatch_usage(conn)
+    _migrate_dispatch_receipts(conn)
     return conn
 
 
@@ -71,8 +71,10 @@ def _migrate_git_result_intent(conn):
         raise
 
 
-def _migrate_codex_dispatch_usage(conn):
-    required = {'ephemeral': 'INTEGER NOT NULL DEFAULT 0', 'usage_json': 'TEXT'}
+def _migrate_dispatch_receipts(conn):
+    required = {'ephemeral': 'INTEGER NOT NULL DEFAULT 0', 'usage_json': 'TEXT',
+                'runtime': "TEXT NOT NULL DEFAULT 'codex'", 'crew_session_id': 'TEXT',
+                'crew_execution_id': 'TEXT', 'pid': 'INTEGER', 'pid_created': 'TEXT', 'native_id': 'TEXT'}
     columns = {row['name'] for row in conn.execute('PRAGMA table_info(codex_runs)')}
     if required.keys() <= columns:
         return

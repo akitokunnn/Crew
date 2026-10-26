@@ -573,7 +573,7 @@ class Service:
         return session
 
     def state(self, project_name=None):
-        self.scan_usage()
+        self.scan_usage(live_dispatch=True)
         with self.agents_lock:
             agents, error = self.agents, self.agents_error
         general_present = board.live_sessions(agents)
@@ -637,7 +637,7 @@ class Service:
                             'id', 'session_id', 'question', 'options', 'recommendation', 'blocking', 'created_at', 'held', 'held_at')},
                             'asker': asker['crew_name'], 'leader_session_id': leader_id,
                             'goal_id': links.get(('decision', decision['id']))})
-                tasks = usage.codex_tasks(conn, None, None, project=name)
+                tasks = usage.dispatch_tasks(conn, None, None, project=name)
                 subagent_keys = {}
                 for row in conn.execute('SELECT e.id,e.session_id FROM goal_executions e '
                                         'JOIN goals g ON g.id=e.goal_id WHERE g.project=?', (name,)):
@@ -659,11 +659,14 @@ class Service:
                     codex = dict(codex=[{'id': t.get('id') or t['run_id'] or t['rollout_id'], **{key: t[key] for key in
                                         ('task_name', 'status', 'started_at', 'ended_at', 'duration_seconds')},
                                         'source': t.get('source', 'dispatch'), 'detail': t.get('detail'),
-                                        'runtime': t.get('runtime', 'codex')}
+                                        'runtime': t.get('runtime', 'codex'),
+                                        **({key: t.get(key) for key in ('pid', 'cwd', 'task_file', 'execution_id', 'goal_id')}
+                                           if t.get('source') == 'skill_dispatch' else {})}
                                        for t in recent_tasks],
                                  codex_older=len(own_tasks) - len(recent_tasks))
                     if session['role'] == 'leader':
                         events = histories[sid]['events'] if sid in histories else []
+                        replies = presentation.chat_replies(events)
                         read_seq = board.read_seq(conn, sid)
                         result['leaders'].append(dict(
                             session_id=sid, name=session['crew_name'], goal=session['task'], status=session['status'],
@@ -680,8 +683,8 @@ class Service:
                             busy=self.chat.busy(sid) or (sid in general_present and general_present[sid].get('status') == 'busy'),
                             running=self.chat.running(sid) or sid in general_present, web_chat=session['web_chat'], cc_name=session['cc_name'],
                             last_seq=events[-1]['seq'] if events else 0, read_seq=read_seq,
-                            last_reply_id=next((e['id'] for e in reversed(events) if e['type'] == 'assistant'), None),
-                            unread=len({e['id'] for e in events if e['type'] == 'assistant' and e['seq'] > read_seq}),
+                            last_reply_id=replies[-1]['id'] if replies else None,
+                            unread=sum(reply['seq'] > read_seq for reply in replies),
                             pending=sum(d['leader_session_id'] == sid and not d['held'] for d in result['decisions']),
                             notices_pending=len(board.pending_notices(conn, sid)),
                             member_ids=[s['session_id'] for s in sessions if s['role'] != 'leader' and s['crew_name']
@@ -1550,11 +1553,13 @@ class Service:
             path, media_type = self.chat.file(session_id, name)
             return path.read_bytes(), media_type
 
-    def scan_usage(self):
+    def scan_usage(self, *, live_dispatch=False):
         with self.write_lock, self.scan_lock, closing(store.connect(self.home)) as conn:
             now = self.now()
-            if self.scanned_at is None or (now - self.scanned_at).total_seconds() >= 60:
-                usage.scan(conn, self.claude_root, self.codex_root, self.runs_file)
+            full = self.scanned_at is None or (now - self.scanned_at).total_seconds() >= 60
+            if full or live_dispatch:
+                usage.scan(conn, self.claude_root, self.codex_root, self.runs_file, receipts_only=not full)
+            if full:
                 seven_day = claude_limits.read(self.home, cache_path=self.claude_root.parent.parent / '.claude.json', now=now)['seven_day']
                 crew = None
                 if seven_day is not None and seven_day['used_percent'] is not None and seven_day['resets_at'] is not None:

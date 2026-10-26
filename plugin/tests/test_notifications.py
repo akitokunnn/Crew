@@ -346,6 +346,9 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         _, journal = self.web_manager()
         for identity, text in (('one', '第一条'), ('one', '第一条的更新'), ('two', '第二条')):
             journal.emit('assistant', id=identity, content=[dict(type='text', text=text)])
+        for index in range(18):
+            journal.emit('assistant', id='shell-' + str(index), content=[
+                dict(type='tool_use', id='call-' + str(index), name='Shell', input={'command': 'git status'})])
         board.ask(self.conn, 's1', '要发布吗', ['发布'], now=NOW)
         self.select()
         self.receive('/leader')
@@ -355,6 +358,15 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         self.assertRegex(text, r'未读\s*2')
         self.assertRegex(text, r'待拍板\s*1')
         self.assertEqual(board.read_seq(self.conn, 's3'), 0)
+
+    def test_list_does_not_repeat_seen_text_when_only_tools_or_stream_snapshot_change(self):
+        _, journal = self.web_manager()
+        seen = journal.emit('text', id='answer', text='检查完成。')
+        board.mark_read(self.conn, 's3', seen['seq'], now=NOW)
+        journal.emit('assistant', id='answer', content=[dict(type='text', text='检查完成。'),
+            dict(type='tool_use', id='call', name='Shell', input={'command': 'git status'})])
+        self.receive('/leader')
+        self.assertRegex(self.client.sent[-1]['text'], r'未读\s*0')
 
     def test_list_pending_decisions_excludes_held_questions(self):
         board.ask(self.conn, 's1', '现在要拍板', ['A'], now=NOW)
