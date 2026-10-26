@@ -2,7 +2,7 @@
 const CrewGit = (() => {
   const esc = value => String(value).replace(/[&<>"']/g, c => ({"&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"})[c]);
   const DAY = 86400000, ROW = 34, GAP = 19;
-  let host = null, options = null, data = null, timer = null, generation = 0;
+  let host = null, options = null, data = null, generation = 0, loadedAt = null, cachedScroll = 0;
   let tab = "graph", activeOnly = false, selectedBranch = null, loading = false, operation = null, errorText = "", pages = 1;
   let selectedRuntime = "", runtimeExplicit = false;
   const expandedConflicts = new Set();
@@ -247,17 +247,19 @@ const CrewGit = (() => {
     return `<div class="git-overview"><section class="git-overview-card base"><div class="git-overview-label"><i></i>主干 <b>${esc(data.base.name)}</b>${baseCI}</div><div class="git-overview-subject">${esc(data.base.latest.subject)}</div><div class="git-overview-meta">${data.base.latest.sha.slice(0, 7)} · ${esc(data.base.latest.author)} · ${ago(data.base.latest.time)}</div>${originRelation(data.base)}${recentMerge()}</section>${data.stable === null ? '<section class="git-overview-card stable"><div class="git-overview-label"><i></i>稳定分支</div><div class="git-overview-subject git-muted">未设置</div><div class="git-overview-meta">启用时可选择发布用的稳定分支</div></section>' : `<section class="git-overview-card stable"><div class="git-overview-label"><i></i>稳定 <b>${esc(data.stable.name)}</b></div><div class="git-overview-subject">${esc(data.base.name)} 领先 <strong>${data.stable.ahead}</strong> 个提交</div><div class="git-overview-meta">${data.stable.latest.sha.slice(0, 7)} · ${esc(data.stable.latest.subject)}</div>${originRelation(data.stable)}</section>`}</div>`;
   }
   const settingsButton = () => `<button type="button" class="btn" data-git-act="settings">Git 设置</button>`;
+  const readStatus = () => loadedAt === null ? "" : `<span class="git-read-meta" role="status">读取于 ${esc(at(loadedAt))} · ${loading ? "正在更新，显示上次结果" : "按需更新"}</span>`;
+  const refreshButton = () => `<button type="button" class="btn" data-git-act="refresh" title="重新读取视图，不拉取远端" ${loading || operation !== null ? "disabled" : ""}>${loading ? "正在更新…" : "更新视图"}</button>`;
   function render() {
     if (host === null) return;
-    const scroll = host.querySelector(".git-page")?.scrollTop;
+    const scroll = host.querySelector(".git-page")?.scrollTop ?? cachedScroll;
     if (data === null) { host.innerHTML = `<div id="git-view"><div class="head big git-head"><div class="title">Git</div>${settingsButton()}</div><div class="page"><div class="git-loading"><p class="note" role="${errorText ? "alert" : "status"}">${errorText === "" ? "正在读取仓库…" : esc(errorText)}</p>${errorText ? '<button type="button" class="btn" data-git-act="check">重新读取</button>' : ""}</div></div></div>`; return; }
     if (data.available === false) {
       detail = null;
-      host.innerHTML = `<div id="git-view"><div class="head big git-head"><div><div class="title">Git</div><div class="sub">${esc(data.repository)}</div></div>${settingsButton()}</div><div class="page"><section class="git-enable-card"><span class="git-enable-icon" aria-hidden="true">⑂</span><h1>Git 功能暂不可用</h1><p role="status">${esc(data.reason)}</p><p>此工作区的聊天、任务和其他功能照常使用。Git 分支、提交与 worktree 功能需要 Git 仓库。</p><button type="button" class="btn" data-git-act="check" ${loading ? "disabled" : ""}>${loading ? "正在检查…" : "刷新检查"}</button>${errorText === "" ? "" : `<p class="git-error" role="alert">${esc(errorText)}</p>`}</section></div></div>`;
+      host.innerHTML = `<div id="git-view"><div class="head big git-head"><div><div class="title">Git</div><div class="sub">${esc(data.repository)}${readStatus()}</div></div>${settingsButton()}</div><div class="page"><section class="git-enable-card"><span class="git-enable-icon" aria-hidden="true">⑂</span><h1>Git 功能暂不可用</h1><p role="status">${esc(data.reason)}</p><p>此工作区的聊天、任务和其他功能照常使用。Git 分支、提交与 worktree 功能需要 Git 仓库。</p><button type="button" class="btn" data-git-act="check" ${loading ? "disabled" : ""}>${loading ? "正在检查…" : "刷新检查"}</button>${errorText === "" ? "" : `<p class="git-error" role="alert">${esc(errorText)}</p>`}</section></div></div>`;
       return;
     }
     if (!data.enabled) detail = null;
-    const header = `<div class="head big git-head"><div><div class="title">${esc(data.repository)} <span class="git-heading-label">Git</span></div><div class="sub">${data.enabled ? "分支、提交与合并检查" : "项目 Git 管理"}</div></div><div class="right">${settingsButton()}${data.enabled ? `${data.config.admin_session_id === null ? "" : `<button type="button" class="btn" data-act="leader" data-id="${esc(data.config.admin_session_id)}">和 git 管理员聊</button>`}<div class="git-fetch-meta">${data.last_fetch_at === null ? "尚未 fetch" : `上次 fetch · ${esc(at(data.last_fetch_at))}`}</div><button type="button" class="btn" data-git-act="fetch" ${operation !== null ? "disabled" : ""}>${operation === "fetch" ? "正在 fetch…" : "刷新（fetch）"}</button><details class="git-more"><summary aria-label="更多" title="更多">•••</summary><div><button type="button" data-git-act="settings">管理设置与停用…</button></div></details>` : ""}</div></div>`;
+    const header = `<div class="head big git-head"><div><div class="title">${esc(data.repository)} <span class="git-heading-label">Git</span></div><div class="sub">${data.enabled ? "分支、提交与合并检查" : "项目 Git 管理"}${readStatus()}</div></div><div class="right">${refreshButton()}${settingsButton()}${data.enabled ? `${data.config.admin_session_id === null ? "" : `<button type="button" class="btn" data-act="leader" data-id="${esc(data.config.admin_session_id)}">和 git 管理员聊</button>`}<div class="git-fetch-meta">${data.last_fetch_at === null ? "尚未 fetch" : `上次 fetch · ${esc(at(data.last_fetch_at))}`}</div><button type="button" class="btn" data-git-act="fetch" title="执行 git fetch --prune origin" ${operation !== null || loading ? "disabled" : ""}>${operation === "fetch" ? "正在拉取…" : "拉取远端"}</button><details class="git-more"><summary aria-label="更多" title="更多">•••</summary><div><button type="button" data-git-act="settings">管理设置与停用…</button></div></details>` : ""}</div></div>`;
     host.innerHTML = `<div id="git-view">${header}${data.enabled ? `<div class="page git-page"><div class="git-page-in">${overview()}${mergeRequests()}${errorText === "" ? "" : `<pre class="git-error" role="alert">${esc(errorText)}</pre>`}${data.github === null ? `<div class="git-github-unavailable"><strong>GitHub 不可用</strong><pre>${esc(data.github_reason)}</pre></div>` : ""}<div class="git-tabs" role="tablist" aria-label="Git 视图"><button type="button" role="tab" id="git-graph-tab" aria-controls="git-panel" aria-selected="${tab === "graph"}" data-git-tab="graph" class="${tab === "graph" ? "on" : ""}">树状图 <span>${data.commits.length}</span></button><button type="button" role="tab" id="git-branches-tab" aria-controls="git-panel" aria-selected="${tab === "branches"}" data-git-tab="branches" class="${tab === "branches" ? "on" : ""}">分支 <span>${data.branches.length}</span></button></div><section id="git-panel" role="tabpanel" aria-labelledby="git-${tab}-tab">${tab === "graph" ? graph() : branchTable()}</section></div></div>` : enableCard()}<aside id="git-detail" class="git-detail" role="dialog" aria-label="提交详情" hidden></aside></div>`;
     if (scroll !== undefined && host.querySelector(".git-page") !== null) host.querySelector(".git-page").scrollTop = scroll;
     renderCommitDetail();
@@ -266,7 +268,7 @@ const CrewGit = (() => {
   async function load(append = false) {
     if (loading) return;
     loading = true;
-    if (data?.available === false) render();
+    render();
     const requestGeneration = generation, requestedPages = pages;
     try {
       if (append) {
@@ -285,7 +287,7 @@ const CrewGit = (() => {
         if (generation !== requestGeneration) return;
         data = fresh;
       }
-      errorText = "";
+      loadedAt = new Date().toISOString(); errorText = "";
     } catch (error) { if (generation === requestGeneration) errorText = error.message; }
     finally { if (generation === requestGeneration) { loading = false; render(); } }
   }
@@ -313,7 +315,7 @@ const CrewGit = (() => {
     if (button === null) { const target = commitTarget(event.target); if (target !== null) showCommitDetail(target, true, event); return; }
     const act = button.dataset.gitAct;
     if (act === "settings") options.onSettings?.();
-    else if (act === "check") load();
+    else if (act === "check" || act === "refresh") load();
     else if (act === "active") { activeOnly = !activeOnly; render(); }
     else if (act === "clear-selection") { selectedBranch = null; render(); }
     else if (act === "load-more") load(true);
@@ -336,24 +338,36 @@ const CrewGit = (() => {
     status.textContent = available ? "" : "所选执行工具当前不可用，请重新选择。"; status.hidden = available;
   }
   function mount(element, settings) {
-    if (host === element) return;
-    unmount(); host = element; options = settings;
+    const sameWorkspace = options !== null && options.project === settings.project && options.root === settings.root;
+    if (host === element && sameWorkspace) { options = settings; return; }
+    unmount();
+    if (!sameWorkspace) resetCache();
+    host = element; options = settings;
     host.addEventListener("click", click); host.addEventListener("submit", submit); host.addEventListener("change", change);
     host.addEventListener("pointerover", hoverCommit); host.addEventListener("pointerout", leaveCommit);
     document.addEventListener("pointerdown", dismissCommitDetail); document.addEventListener("keydown", commitKey);
     document.addEventListener("pointermove", moveCommitPointer);
     window.addEventListener("resize", positionCommitDetail);
-    render(); load(); timer = setInterval(() => { if (data?.available !== false) load(); }, 30000);
+    render(); if (data === null && !errorText) void load();
   }
   function unmount() {
-    generation++; clearInterval(timer); clearTimeout(detailCloseTimer); detail = null; hoverSuppressed = false; pointerX = null; pointerY = null;
+    cachedScroll = host?.querySelector(".git-page")?.scrollTop ?? cachedScroll;
+    clearTimeout(detailCloseTimer); detail = null; hoverSuppressed = false; pointerX = null; pointerY = null;
     if (host !== null) { host.removeEventListener("click", click); host.removeEventListener("submit", submit); host.removeEventListener("change", change); host.removeEventListener("pointerover", hoverCommit); host.removeEventListener("pointerout", leaveCommit); }
     document.removeEventListener("pointerdown", dismissCommitDetail); document.removeEventListener("keydown", commitKey);
     document.removeEventListener("pointermove", moveCommitPointer);
     window.removeEventListener("resize", positionCommitDetail);
-    host = null; options = null; data = null; loading = false; operation = null; errorText = ""; pages = 1; selectedBranch = null; selectedRuntime = ""; runtimeExplicit = false;
-    expandedConflicts.clear();
+    // A workspace owns this renderer. Leaving the Git page only detaches its UI;
+    // keep the snapshot and any pending read so returning never restarts the scan.
+    host = null;
   }
-  function reload() { if (host === null) return; generation++; loading = false; data = null; pages = 1; render(); void load(); }
+  function resetCache() {
+    generation++; data = null; loading = false; operation = null; errorText = ""; pages = 1; loadedAt = null; cachedScroll = 0;
+    tab = "graph"; activeOnly = false; selectedBranch = null; selectedRuntime = ""; runtimeExplicit = false; expandedConflicts.clear();
+  }
+  function reload(project = options?.project) {
+    if (options === null || project !== options.project) return;
+    resetCache(); if (host !== null) { render(); void load(); }
+  }
   return {mount, unmount, reload};
 })();

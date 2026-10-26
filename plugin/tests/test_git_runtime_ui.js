@@ -5,13 +5,13 @@ const web=path.join(__dirname,"../crew/web");
 const tick=async()=>{for(let i=0;i<24;i++)await Promise.resolve();};
 const catalog=(claude,codex)=>[{id:"claude",name:"Claude Code",available:claude},{id:"codex",name:"Codex",available:codex}];
 function harness(initial){
-  const handlers=new Map(),calls=[],button={disabled:false},status={textContent:"",hidden:false},popup={hidden:true};let current=initial,interval,form=null,markup="",changed=0;
+  const handlers=new Map(),calls=[],button={disabled:false},status={textContent:"",hidden:false},popup={hidden:true};let current=initial,form=null,markup="",changed=0;
   const host={get innerHTML(){return markup;},set innerHTML(value){markup=value;
     const selected=name=>{const content=value.match(new RegExp(`<select[^>]*name="${name}"[^>]*>([\\s\\S]*?)<\\/select>`))?.[1]||"";const options=[...content.matchAll(/<option value="([^"]*)"([^>]*)>/g)];return (options.find(item=>/\bselected\b/.test(item[2]))||options[0])?.[1]||"";};
     if(value.includes('id="git-enable-form"')){form={id:"git-enable-form",elements:{base:{value:selected("base")},stable:{value:selected("stable")},runtime:{id:"git-runtime",value:selected("runtime")}}};button.disabled=/data-git-act="enable"[^>]*disabled/.test(value);}
   },querySelector(selector){return selector==="#git-detail"?popup:selector==='[data-git-act="enable"]'?button:selector==="#git-runtime-status"?status:null;},querySelectorAll:()=>[],addEventListener:(name,fn)=>handlers.set(name,fn),removeEventListener:name=>handlers.delete(name)};
   const sandbox={document:{addEventListener(){},removeEventListener(){},getElementById:()=>null},location:{search:"?project=fixture"},URLSearchParams,
-    setInterval:fn=>{interval=fn;return 1;},clearInterval(){},clearTimeout(){},window:{addEventListener(){},removeEventListener(){}}};
+    setInterval:()=>{throw Error("Git 页面不应定时扫描");},clearInterval(){},clearTimeout(){},window:{addEventListener(){},removeEventListener(){}}};
   vm.createContext(sandbox);
   const app=fs.readFileSync(path.join(web,"app.js"),"utf8").replace(/\r\n/g,"\n");
   vm.runInContext(app.replace('  setup();\n})();','window.runtimeFixture={defaultRuntime,set(value){state={runtimes:value};}};\n})();'),sandbox);
@@ -24,7 +24,7 @@ function harness(initial){
   return {host,button,status,calls,get form(){return form;},get changed(){return changed;},ui:sandbox.component,
     choose(id){form.elements.runtime.value=id;handlers.get("change")({target:form.elements.runtime});},
     submit(){handlers.get("submit")({target:form,preventDefault(){}});},
-    async refresh(next=current){current=next;sandbox.window.runtimeFixture.set(next);interval();await tick();}};
+    async refresh(next=current){current=next;sandbox.window.runtimeFixture.set(next);handlers.get("click")({target:{closest:selector=>selector==="[data-git-act]"?{dataset:{gitAct:"refresh"}}:null}});await tick();}};
 }
 
 test("Codex-only Git setup selects Codex and submits it exactly once with the existing branch choices",async()=>{

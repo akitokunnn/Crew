@@ -14,7 +14,7 @@ function harness(initial){
 }
 test("a plain workspace Git page explains optional Git features without an enable form or background Git checks",async()=>{
   const h=harness(unavailable());await tick();assert(h.host.innerHTML.includes("这是普通文件夹"));assert(h.host.innerHTML.includes("其他功能照常"));assert(h.host.innerHTML.includes("worktree"));assert(h.host.innerHTML.includes('data-git-act="check"'));assert(!h.host.innerHTML.includes('id="git-enable-form"'));assert(!h.host.innerHTML.includes('data-git-act="fetch"'));
-  [...h.timers.values()][0]();await tick();assert.equal(h.calls.length,1);assert(h.calls.every(call=>call.body===undefined));h.ui.unmount();
+  assert.equal(h.timers.size,0);await tick();assert.equal(h.calls.length,1);assert(h.calls.every(call=>call.body===undefined));h.ui.unmount();
 });
 test("unavailable Git takes priority over an existing enabled configuration and escapes the actual reason",async()=>{
   const h=harness(unavailable({enabled:true,reason:"未安装 Git <检查路径>"}));await tick();assert(h.host.innerHTML.includes("未安装 Git &lt;检查路径&gt;"));assert(!h.host.innerHTML.includes('data-git-act="enable"'));assert(!h.host.innerHTML.includes('data-git-act="fetch"'));assert(!h.host.innerHTML.includes("和 git 管理员聊"));h.ui.unmount();
