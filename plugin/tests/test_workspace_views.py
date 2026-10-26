@@ -5,6 +5,7 @@ import csv
 import datetime as dt
 import io
 import json
+import os
 import threading
 import unittest
 from pathlib import Path
@@ -13,7 +14,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import ProxyHandler, Request, build_opener
 
-from crew import board, claude_limits, store, web
+from crew import board, claude_limits, codex_runtime, store, web
 from test_usage import PRICES, UsageFixture, assistant, stamp, token_count
 from test_shell import make_vscode_state_db
 
@@ -138,7 +139,8 @@ class WorkspaceViewsTests(UsageFixture, unittest.TestCase):
         self.rollout("unknown-alpha", str(self.alpha), originator="desktop")
         self.write(self.runs, [self.dispatch("failed-alpha", "alpha-main", self.alpha, 7),
                               self.dispatch("failed-beta", "beta-main", self.beta, 11),
-                              dict(self.dispatch("running-alpha", "alpha-peer", self.alpha / "running"), ended_at=None, exit_code=None)])
+                              dict(self.dispatch("running-alpha", "alpha-peer", self.alpha / "running"), ended_at=None, exit_code=None,
+                                   pid=os.getpid(),pid_created=codex_runtime.process_identity(os.getpid()))])
         with mock.patch.object(self.server.service.chat, 'running', side_effect=lambda sid: sid == 'alpha-peer'):
             state = self.state("alpha")
         self.assertEqual(directory(state)['alpha-peer']['status'], 'waiting', 'A stale idle journal cannot erase a real waiting hook')

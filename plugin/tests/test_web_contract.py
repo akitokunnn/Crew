@@ -2,6 +2,7 @@
 import tests  # Install the production-service connection guard.
 import datetime as dt
 import json
+import os
 import subprocess
 import threading
 import unittest
@@ -12,7 +13,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import ProxyHandler, Request, build_opener
 
-from crew import session_ops, board, decision_flow, store, themes, usage, web
+from crew import session_ops, board, codex_runtime, decision_flow, store, themes, usage, web
 from test_shell import NOW, PLUGIN, ShellFixture
 from test_usage import assistant
 
@@ -176,10 +177,12 @@ class WebContractTests(ShellFixture, unittest.TestCase):
             record.update(claude_session_id="s1", started_at=(self.clock + dt.timedelta(seconds=start)).isoformat(),
                           ended_at=None if end is None else (self.clock + dt.timedelta(seconds=end)).isoformat(),
                           exit_code=None if end is None else 0)
+            if end is None:
+                record.update(pid=os.getpid(),pid_created=codex_runtime.process_identity(os.getpid()))
             records.append(record)
         leader_run = self.run_record("leader-run", str(self.project))
         leader_run.update(claude_session_id="s3", started_at=(self.clock - dt.timedelta(seconds=30)).isoformat(),
-                          ended_at=None, exit_code=None)
+                          ended_at=None, exit_code=None,pid=os.getpid(),pid_created=codex_runtime.process_identity(os.getpid()))
         records.append(leader_run)
         self.write(self.runs, records)
         state = self.state()
@@ -197,9 +200,10 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual([row["text"] for row in member["progress"]], ["progress-" + str(i) for i in (6, 5, 4, 3, 2)])
         self.assertTrue(all(set(row) == {"at", "text"} for row in member["progress"]))
         self.assertEqual({row["id"] for row in member["codex"]}, {"recent", "running"})
-        self.assertTrue(all(set(row) == {"id", "task_name", "status", "started_at", "ended_at", "duration_seconds", "source", "detail", "runtime"}
+        self.assertTrue(all(set(row) == {"id", "task_name", "status", "started_at", "ended_at", "duration_seconds", "source", "detail", "runtime",
+                                        "pid", "cwd", "task_file", "execution_id", "goal_id"}
                             for row in member["codex"]))
-        self.assertTrue(all(row['source'] == 'dispatch' and row['detail'] is None for row in member['codex']))
+        self.assertTrue(all(row['source'] == 'skill_dispatch' and row['detail'] is None for row in member['codex']))
         self.assertEqual(member["codex_older"], 1)
         self.assertEqual(member["leases"], [{"resource": "phone", "purpose": "Review", "taken_at": NOW, "until_at": None}])
         self.assertEqual(member["claims"], [{"pattern": store.norm_path(self.project / "src") + "/", "note": "API"}])
@@ -444,11 +448,11 @@ class WebContractTests(ShellFixture, unittest.TestCase):
             self.write(path, [assistant("second-crew-request", seconds=20, tool="second-tool")], append=True)
             self.clock += dt.timedelta(seconds=59)
             self.assertEqual(self.state()["limits"]["claude"]["seven_day"]["crew"], first)
-            self.assertEqual((scan.call_count, estimate.call_count), (1, 1))
+            self.assertEqual((scan.call_count, sum(not call.kwargs['receipts_only'] for call in scan.call_args_list), estimate.call_count), (2, 1, 1))
             self.clock += dt.timedelta(seconds=1)
             updated = self.state()["limits"]["claude"]["seven_day"]["crew"]
             self.assertAlmostEqual(updated["cost_usd"], first["cost_usd"] * 2)
-            self.assertEqual((scan.call_count, estimate.call_count), (2, 2))
+            self.assertEqual((scan.call_count, sum(not call.kwargs['receipts_only'] for call in scan.call_args_list), estimate.call_count), (3, 2, 2))
 
     def test_claude_crew_missing_unknown_or_expired_window_is_omitted(self):
         self.assertIsNone(self.state()["limits"]["claude"]["seven_day"])

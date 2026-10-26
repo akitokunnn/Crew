@@ -114,7 +114,8 @@ class OperationsTests(unittest.TestCase):
             admin.state['active_worker'] = {'pid': os.getpid(), 'result': str(result_path),
                                             'incident_id': incident['id'],
                                             'evidence_hash': incident['evidence_hash'], 'mode': 'repair'}
-            admin.tick()
+            with mock.patch.object(operations, '_pid_alive', return_value=False):
+                admin.tick()
         self.assertIsNone(admin.state['active_worker'])
         self.assertEqual(incident['status'], 'awaiting_merge')
         self.assertEqual(incident['result']['commit'], 'a' * 40)
@@ -127,6 +128,68 @@ class OperationsTests(unittest.TestCase):
         shutil.copytree(plugin / 'crew', flat / 'crew', ignore=shutil.ignore_patterns('__pycache__'))
         shutil.copyfile(plugin / 'crew_desktop.py', flat / 'crew_desktop.py')
         return flat
+
+    def test_result_is_consumed_only_after_worker_exits_including_controller_restart(self):
+        writer = r'''
+import ctypes,json,os,sys,time
+from pathlib import Path
+result,ready,release=map(Path,sys.argv[1:])
+payload=json.dumps({'status':'awaiting_merge','commit':'a'*40}).encode()
+handle=None
+if os.name=='nt':
+    from ctypes import wintypes
+    kernel=ctypes.WinDLL('kernel32',use_last_error=True)
+    kernel.CreateFileW.argtypes=(wintypes.LPCWSTR,wintypes.DWORD,wintypes.DWORD,ctypes.c_void_p,wintypes.DWORD,wintypes.DWORD,wintypes.HANDLE)
+    kernel.CreateFileW.restype=wintypes.HANDLE
+    kernel.WriteFile.argtypes=(wintypes.HANDLE,ctypes.c_void_p,wintypes.DWORD,ctypes.POINTER(wintypes.DWORD),ctypes.c_void_p)
+    kernel.CloseHandle.argtypes=(wintypes.HANDLE,)
+    handle=kernel.CreateFileW(str(result),0x40000000,0,None,2,0,None)
+    assert handle!=wintypes.HANDLE(-1).value,ctypes.get_last_error()
+    written=wintypes.DWORD()
+    assert kernel.WriteFile(handle,payload,len(payload),ctypes.byref(written),None)
+else:
+    result.write_bytes(payload)
+ready.touch()
+deadline=time.monotonic()+10
+try:
+    while not release.exists():
+        assert time.monotonic()<deadline,'fixture was not released'
+        time.sleep(.01)
+finally:
+    if handle is not None:kernel.CloseHandle(handle)
+'''
+        for recovered in (False, True):
+            with self.subTest(recovered=recovered):
+                home = self.root / ('recovered' if recovered else 'attached')
+                admin = operations.Operations(home, repository=self.repo)
+                _atomic_json(admin.directory / 'policy.json', {**self.policy(), 'enabled': False})
+                operations.submit_incident(home, 'bug', 'crew-only', {'actual': 'broken'})
+                admin.tick()
+                incident = admin.state['incidents'][0]
+                result, ready, release = (home / name for name in ('result.json', 'ready', 'release'))
+                worker = subprocess.Popen([sys.executable, '-c', writer, str(result), str(ready), str(release)],
+                                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                try:
+                    deadline = time.monotonic() + 5
+                    while not ready.exists() and time.monotonic() < deadline:
+                        self.assertIsNone(worker.poll(), 'fixture worker exited before opening its result')
+                        time.sleep(.01)
+                    self.assertTrue(ready.exists(), 'fixture worker did not open its result')
+                    incident.update(status='repairing', attempts=1)
+                    admin.state['active_worker'] = {'pid': worker.pid, 'result': str(result),
+                        'incident_id': incident['id'], 'evidence_hash': incident['evidence_hash'], 'mode': 'repair'}
+                    admin.process = None if recovered else worker
+                    admin.tick()
+                    self.assertEqual(incident['status'], 'repairing')
+                    self.assertIsNotNone(admin.state['active_worker'])
+                finally:
+                    release.touch()
+                    _, error = worker.communicate(timeout=5)
+                self.assertEqual(worker.returncode, 0, error.decode())
+                admin.tick()
+                self.assertIsNone(admin.state['active_worker'])
+                self.assertEqual(incident['status'], 'awaiting_merge')
+                self.assertEqual(incident['result']['commit'], 'a' * 40)
 
     def run_flat_operations(self, flat):
         script = '''

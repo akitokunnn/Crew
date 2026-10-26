@@ -202,8 +202,10 @@ Git 管理员可以自行定分支规则、推功能分支、开 PR、CI 绿后�
 
 - Claude 会话记录 `~/.claude/projects/**`（含子 agent）
 - Codex 会话记录 `~/.codex/sessions/**`（含周额度百分比和点数余额）
-- 派活记录 `~/.crew/codex_runs.jsonl`：codex-dispatch 的派活脚本每次派 Codex 时写一行，这样 Codex 的用量能算到派活的会话头上
+- Windows 派工脚本在所选 `CREW_HOME`（未指定时 `~/.crew`）写入 `codex_runs.jsonl` / `claude_runs.jsonl` 起止登记。Crew 按明确身份或原生绑定把进程挂到发起人的卡片下，展示载体、任务、运行与终态；悬停可看 PID 和目录。临时派工与正式组员分开，读取状态不唤醒 AI，只有开始登记且缺少进程身份的旧记录显示“状态未确认”。Codex 原生用量单独归集，Claude 派工不重复计入 Codex。
 - 原生 Claude Code `Agent` / `Task` 和 Codex `spawn_agent` 子代理都不需要登记为组员：其任务名和状态显示在发起者（leader 或成员）的卡片下方，包含总会话、目标执行以及前台和后台子代理；运行时转圈，完成打勾，失败、暂停和关闭分别标记。后台启动回执不算完成，后续按原生通知更新；记录随聊天保存，连接断开后未结束的任务显示“状态未确认”。
+
+Windows 的派工集成源码在 `integrations/codex-dispatch/` 与 `integrations/claude-dispatch/`，分别对应已安装 skill 的脚本与查看器；更新 Crew 安装包不会自动覆盖用户自定义的 skill。托管 CC 使用后台命令的完成/失败回执，禁用会逐事件启动新轮次的 Monitor；普通过程记录不转发给 leader，也不为纯等待另发回复。Mac / Linux 的 skill 脚本不在本次 Windows 集成范围。
 
 金额按 `~/.crew/prices.json` 折算（美元 / 百万 token，初值是 Anthropic 官方 API 价）。用订阅时这只是参考，不是实际账单。价格表里没有的模型只显示 token。
 

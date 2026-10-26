@@ -142,6 +142,7 @@ svg.i.xs{width:12px;height:12px}
 @keyframes group-work-glow{0%,100%{opacity:.25}50%{opacity:.7}}
 .group-work-label{display:inline-flex;align-items:center;gap:5px;color:var(--working-text);font-size:calc(10.5px * var(--fs));font-weight:500;line-height:1.4;white-space:nowrap}
 .group-work-label>i{width:4px;height:4px;border-radius:50%;background:var(--working);flex:none}
+.leader-details .group-work-label{max-width:100%;white-space:normal}
 .leader-work-summary{display:block;margin:5px 0 0 39px;line-height:1}
 .leader-work-summary:empty{display:none}
 .badges{display:flex;gap:4px;align-items:center;flex:none}

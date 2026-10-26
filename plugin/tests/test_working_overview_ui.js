@@ -100,3 +100,19 @@ test("work halos distinguish self and team work, clear on refresh, and ignore pr
   for(const html of [h.sidebar(next),h.node(next)])assert(!html.includes('class="group-work-avatar"'));
   assert.equal(count(h.render("working",next)),0);
 });
+
+test("an observed skill dispatch keeps the group visible without claiming its idle owner is a working member",()=>{
+  for(const runtime of ["claude","codex"]){
+    const job={id:"job",source:"skill_dispatch",runtime,status:"running",task_name:"读取验收证据",pid:123,
+      started_at:"2026-10-26T00:00:00Z",cwd:"C:/fixture",detail:null};
+    const snapshot=state([person("leader",{status:"idle",codex:[job]})]);
+    const h=harness(snapshot),node=h.node();
+    assert(h.sidebar().includes('class="group-work-avatar"'));assert(node.includes("1 个派工在运行"));
+    assert(node.includes('class="st idle"'));assert(node.includes("PID 123"));
+    assert(node.includes(runtime==="claude"?"Claude 派活":"Codex 派活"));
+    const working=h.render("working");assert.equal(count(working),1);assert(working.includes('data-dispatch-id="job"'));
+    assert(working.includes("临时派工 · 由 leader 派出"));assert.deepEqual(rows(working),[{action:"leader",id:"leader"}]);
+    const next=structuredClone(snapshot);next.leaders[0].codex[0].status="unknown";
+    assert(!h.sidebar(next).includes('class="group-work-avatar"'));assert(h.node(next).includes("状态未确认"));
+  }
+});
