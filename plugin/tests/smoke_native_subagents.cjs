@@ -47,6 +47,10 @@ if(!process.versions.electron){
       await wait('document.querySelectorAll(".leader-node .cx .spin").length===3','three spinning native children');
       await check('three native children appear under leader without roster members','document.querySelectorAll(".members .session-node").length===0&&document.querySelectorAll(".leader-node [data-codex-source=native_subagent]").length===3');
       await check('native carrier is correctly labelled',`document.querySelector(".leader-node .cx").title.includes(${JSON.stringify(runtime==='claude'?'Claude 子代理':'Codex 子代理')})`);
+      const compactNames='Array.from(document.querySelectorAll(".leader-node .cx")).every(row=>{const n=row.querySelector(".n"),s=row.querySelector(".s");return Array.from(n.textContent).length<=48&&!n.querySelector("br,a,p")&&row.getBoundingClientRect().height<=parseFloat(getComputedStyle(row).lineHeight)+2&&s.getBoundingClientRect().right<=row.getBoundingClientRect().right+1;})';
+      evidence.names=await js('Array.from(document.querySelectorAll(".leader-node .cx .n")).map(n=>({name:n.textContent,details:n.title}))');
+      await check('task instructions never replace native names','Array.from(document.querySelectorAll(".leader-node .cx .n")).some(n=>n.textContent==="检查登录"&&n.title.includes("用户的原始要求"))');
+      await check('legacy multiline prompt names stay in one line and statuses fit',compactNames);
       await capture('01-running');
       fixture.stdin.write('finish\n');await until(()=>messages.some(x=>x.finished),'fixture completed');
       await wait('document.querySelector(".leader-node .codex-status-succeeded")&&document.querySelector(".leader-node .codex-status-failed")&&document.querySelector(".leader-node .codex-status-interrupted")','three distinct terminal states');
@@ -56,7 +60,11 @@ if(!process.versions.electron){
       await js('document.querySelector("[data-act=right-open]").click();void 0;');
       await wait('document.querySelectorAll("#right-panel .leader-node .cx").length===3','chat architecture');
       await check('chat side architecture uses the same native task rows','document.querySelector("#right-panel .codex-status-failed").textContent.includes("失败")');
+      await check('side architecture also keeps legacy names and status in one line',compactNames);
+      await wc.setZoomFactor(1.5);
+      await check('names and status remain compact with enlarged text',compactNames);
       await capture('03-chat-architecture');
+      await wc.setZoomFactor(1);
       fixture.stdin.write('disconnect\n');await until(()=>messages.some(x=>x.disconnected),'fixture disconnected');
       await wait('document.querySelector("#right-panel .codex-status-unknown")','disconnected child');
       await check('disconnected unfinished child shows unknown and no check or spinner','document.querySelector("#right-panel .codex-status-unknown").textContent.includes("状态未确认")&&!document.querySelector("#right-panel .codex-status-unknown .spin")&&!document.querySelector("#right-panel .codex-status-unknown .ok")');

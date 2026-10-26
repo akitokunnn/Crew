@@ -29,7 +29,7 @@ class Events:
         if identity == self.root or previous is None and not self._known(parent):
             return []
         task = dict(previous or {'agent_id': identity, 'root_thread_id': self.root,
-                                'parent_thread_id': parent, 'task_name': 'Codex 子代理 ' + identity[:8],
+                                'parent_thread_id': parent, 'task_name': 'Codex 子代理 ' + identity[-8:],
                                 'status': 'unknown', 'detail': None})
         task.update(fields)
         if task == previous:
@@ -43,7 +43,7 @@ class Events:
         if item['type'] == 'subAgentActivity':
             self.finished_items.add(item['id'])
             identity, kind = item['agentThreadId'], item['kind']
-            fields = {'task_name': item['agentPath'].rstrip('/').rsplit('/', 1)[-1]}
+            fields = {'task_name': title(item['agentPath'].rstrip('/').rsplit('/', 1)[-1])}
             status = {'started': 'running',
                       'interrupted': 'interrupted', 'completed': 'succeeded'}.get(kind)
             previous = self.agents.get(identity, {})
@@ -72,8 +72,9 @@ class Events:
                           'followupTask': 'running', 'closeAgent': 'closed'}.get(item['tool'])
                 if status:
                     fields.update(status=status, detail=None)
-            if item['tool'] in ('spawnAgent', 'followupTask') and title(item.get('prompt')):
-                fields['task_name'] = title(item['prompt'])
+            if item['tool'] in ('spawnAgent', 'followupTask') and item.get('prompt'):
+                # Prompts include inherited Crew instructions, not a child name.
+                fields['task_description'] = item['prompt']
             events.extend(self._update(identity, thread, **fields))
         return events
 
@@ -87,8 +88,8 @@ class Events:
             if not self._known(parent):
                 return []
             fields = {}
-            name = title(thread.get('name') or thread.get('preview') or thread.get('agentNickname'))
-            if name and thread['id'] not in self.agents:
+            name = title(thread.get('name')) or title(thread.get('agentNickname'))
+            if name:
                 fields['task_name'] = name
             return self._update(thread['id'], parent, **fields)
         thread = params.get('threadId')

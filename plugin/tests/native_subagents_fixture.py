@@ -10,6 +10,7 @@ from test_codex_subagents import NativeChildHttpTests, collab
 
 
 def main(runtime):
+    prompt = '你在 Crew 内工作。\n用户的原始要求：检查界面\n只处理当前目标。\n' * 10
     if runtime == 'claude':
         case = ClaudeChildHttpTests('test_leader_and_member_general_children_have_their_own_task_rows_without_roster_growth')
         case.setUp()
@@ -31,6 +32,7 @@ def main(runtime):
             identity = 'call-' + str(index)
             record = call(identity, name='Task' if index == 2 else 'Agent', background=True)
             record['message']['content'][0]['input']['description'] = name
+            record['message']['content'][0]['input']['prompt'] = prompt
             case.emit(running, native, record, 'running')
             launched = result(identity, status='async_launched')
             launched['tool_use_result']['agentId'] = 'agent-' + str(index)
@@ -38,10 +40,23 @@ def main(runtime):
         else:
             client.emit('item/completed', item={'id': 'start-' + str(index), 'type': 'subAgentActivity',
                 'kind': 'started', 'agentThreadId': 'child-' + str(index), 'agentPath': '/root/' + name})
+            client.emit('item/completed', item=collab('spawn-' + str(index), children=('child-' + str(index),), prompt=prompt))
+
+    def legacy_name():
+        # Replay a legacy row whose name already contains prompt text and Markdown.
+        legacy = list(running.journal.subagents.values())[-1]
+        running.journal.emit('subagent', **{key: value for key, value in legacy.items()
+            if key not in ('started_at', 'ended_at', 'updated_at', 'task_name', 'task_description')},
+            task_name=prompt + '[内部链接](https://example.invalid)')
 
     try:
         for index, name in enumerate(['检查登录', '验证界面', '核对结果'], 1):
             start(index, name)
+        if runtime == 'claude':
+            with running.journal.condition:
+                assert running.journal.condition.wait_for(lambda: any(
+                    row.get('native_task_id') == 'agent-3' for row in running.journal.subagents.values()), timeout=3)
+        legacy_name()
         print(json.dumps({'url': url, 'sid': sid, 'home': str(case.home), 'runtime': runtime}), flush=True)
         for line in sys.stdin:
             command = line.strip()
@@ -59,6 +74,10 @@ def main(runtime):
                     case.emit(running, native, {'type': 'result', 'is_error': False})
                 else:
                     client.finish()
+                with running.journal.condition:
+                    assert running.journal.condition.wait_for(lambda: {row['status'] for row in
+                        running.journal.subagents.values()} == {'succeeded', 'failed', 'interrupted'}, timeout=3)
+                legacy_name()
                 print(json.dumps({'finished': True}), flush=True)
             elif command == 'disconnect':
                 start(4, '等待断线确认')
