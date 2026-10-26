@@ -503,7 +503,7 @@ class WorkspaceCleanupTests(MaintenanceFixture, unittest.TestCase):
         self.populate()
         release, started = threading.Event(), threading.Event()
 
-        def slow(home, text, process_factory):
+        def slow(home, text, process_factory, cancelled=None):
             started.set()
             release.wait(5)
             return '## 已定结论\nstale card\n## 未定的事 · 在等谁\n暂无\n## 各组跨组相关进展\n暂无', 0.0, 'test', 'claude'

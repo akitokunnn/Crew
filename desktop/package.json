@@ -1,6 +1,6 @@
 {
   "name": "crew-desktop",
-  "version": "0.2.20",
+  "version": "0.2.21",
   "description": "Native Crew workspace launcher",
   "author": "Crew contributors",
   "license": "UNLICENSED",
@@ -9,7 +9,7 @@
   "scripts": {
     "start": "electron .",
     "test": "node --test test/*.test.cjs",
-    "build": "node scripts/icon.cjs && electron-builder --win portable nsis --x64",
+    "build": "node scripts/icon.cjs && electron-builder --win zip portable nsis --x64",
     "build:dir": "node scripts/icon.cjs && electron-builder --win dir --x64"
   },
   "devDependencies": {
@@ -43,7 +43,9 @@
       }
     ],
     "win": {
+      "artifactName": "Crew-${version}-win-${arch}.${ext}",
       "target": [
+        "zip",
         "portable",
         "nsis"
       ],

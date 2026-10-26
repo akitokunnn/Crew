@@ -241,6 +241,8 @@ class Manager:
         board.project(conn, project)
         with self.lock:
             if self.stopping.is_set():
+                if trigger == 'auto':
+                    return False
                 raise DigestCancelled('Crew 正在退出，不能启动要点卡整理')
             if project in self.running:
                 if trigger == "auto":

@@ -1,9 +1,10 @@
 'use strict';
-// Compare the same release in unpacked and portable form. Every launch has a
+// Compare the same release in unpacked, portable and extracted ZIP form. Every launch has a
 // private HOME and extraction directory; this never connects an installed HOME.
 const assert=require('node:assert/strict');
 const fs=require('node:fs/promises'),path=require('node:path'),os=require('node:os');
-const {spawn}=require('node:child_process');
+const {spawn,spawnSync}=require('node:child_process');
+const {createHash}=require('node:crypto');
 const {performance}=require('node:perf_hooks');
 const desktop=path.resolve(__dirname,'..');
 const options=Object.fromEntries(process.argv.slice(2).map(value=>{const at=value.indexOf('=');return[value.slice(2,at),value.slice(at+1)];}));
@@ -34,8 +35,50 @@ def guarded_import(*args,**kwargs):
  return result
 builtins.__import__=guarded_import
 `,'utf8');
-  const record={version,temporary,scope:'Private HOME, real packaged binaries, forbidden model factories. Cold HOME does not imply an OS disk-cache flush. pre_electron_ms includes SFX extraction and native process creation.',runs:[]};
-  for(const [kind,executable] of [['unpacked',options.unpacked||path.join(desktop,'dist','win-unpacked','Crew.exe')],['portable',options.portable||path.join(desktop,'dist','Crew-'+version+'-portable.exe')]]){
+  const record={version,temporary,scope:'Private HOME, real packaged binaries, forbidden model factories. Cold HOME does not imply an OS disk-cache flush. pre_electron_ms includes SFX extraction and native process creation. ZIP extraction is measured once, separately from both daily launches.',runs:[]};
+  const unpacked=path.resolve(options.unpacked||path.join(desktop,'dist','win-unpacked','Crew.exe'));
+  const variants=[['unpacked',unpacked],['portable',options.portable||path.join(desktop,'dist','Crew-'+version+'-portable.exe')]];
+  const archive=path.resolve(options.zip||path.join(desktop,'dist','Crew-'+version+'-win-x64.zip'));
+  const zipExists=await fs.access(archive).then(()=>true,error=>{if(error.code==='ENOENT'&&!options.zip)return false;throw error;});
+  if(zipExists){
+    const destination=path.join(temporary,'zip-application'),at=performance.now();
+    const extractionEnv={...process.env,PYTHONPATH:guard,PYTHONIOENCODING:'utf-8'};
+    for(const name of ['ELECTRON_RUN_AS_NODE','CREW_SESSION_ID','CLAUDE_CODE_SESSION_ID'])delete extractionEnv[name];
+    const extraction=spawnSync('python',['-',archive,destination,temporary],{input:`import json,shutil,stat,sys
+from pathlib import Path,PurePosixPath
+from zipfile import ZipFile
+archive=Path(sys.argv[1]).resolve();destination=Path(sys.argv[2]).resolve();private=Path(sys.argv[3]).resolve()
+if destination.parent!=private or not private.name.startswith('crew-packaged-perf-'):
+ raise ValueError('ZIP extraction target must be this benchmark private directory')
+destination.mkdir()
+with ZipFile(archive) as package:
+ members=package.infolist()
+ for member in members:
+  relative=PurePosixPath(member.filename.replace('\\\\','/'))
+  if relative.is_absolute() or '..' in relative.parts or any(':' in part for part in relative.parts) or stat.S_ISLNK(member.external_attr>>16):
+   raise ValueError('Unsafe ZIP entry: '+member.filename)
+  target=(destination/Path(*relative.parts)).resolve()
+  if not target.is_relative_to(destination):raise ValueError('ZIP entry escaped the private directory')
+  if member.is_dir():target.mkdir(parents=True,exist_ok=True)
+  else:
+   target.parent.mkdir(parents=True,exist_ok=True)
+   with package.open(member) as source,target.open('wb') as output:shutil.copyfileobj(source,output)
+ print(json.dumps(dict(file_count=sum(not member.is_dir() for member in members),uncompressed_bytes=sum(member.file_size for member in members))))
+`,encoding:'utf8',windowsHide:true,timeout:60000,env:extractionEnv});
+    assert.equal(extraction.status,0,extraction.stderr||String(extraction.error));
+    const extractionMs=round(performance.now()-at),validated=[];
+    for(const relative of ['resources/app.asar','resources/backend/crew_desktop.py','resources/backend/crew_supervisor.py','resources/backend/crew/chat.py','resources/backend/crew/channel_digest.py']){
+      const source=await fs.readFile(path.join(path.dirname(unpacked),relative)),extracted=await fs.readFile(path.join(destination,relative));
+      const hash=value=>createHash('sha256').update(value).digest('hex');
+      assert(source.length>0);assert.equal(hash(extracted),hash(source),'ZIP resource must equal the final unpacked build: '+relative);
+      if(relative.startsWith('resources/backend/'))assert.equal(hash(source),hash(await fs.readFile(path.join(desktop,'../plugin',relative.slice('resources/backend/'.length)))),'The final backend bundle must match current source: '+relative);
+      validated.push({path:relative,bytes:extracted.length,sha256:hash(extracted)});
+    }
+    record.zip={archive,destination,compressed_bytes:(await fs.stat(archive)).size,extraction_ms:extractionMs,...JSON.parse(extraction.stdout),validated_resources:validated};
+    variants.push(['zip-extracted',path.join(destination,'Crew.exe')]);
+    console.log(JSON.stringify({kind:'zip-one-time-extraction',...record.zip}));
+  }
+  for(const [kind,executable] of variants){
     await fs.access(executable);
     const home=path.join(temporary,kind+'-home');
     for(const pass of ['cold-home','warm-home']){
@@ -67,6 +110,6 @@ builtins.__import__=guarded_import
     }
   }
   record.model_turns_started=0;await fs.mkdir(path.dirname(output),{recursive:true});await fs.writeFile(output,JSON.stringify(record,null,2));
-  console.log(JSON.stringify({output,version,runs:record.runs}));
+  console.log(JSON.stringify({output,version,...(record.zip?{zip:record.zip}:{}),runs:record.runs}));
 }
 main().catch(error=>{console.error(error);process.exitCode=1;});

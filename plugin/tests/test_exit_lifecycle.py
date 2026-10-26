@@ -284,6 +284,8 @@ class DigestExitLifecycleTests(unittest.TestCase):
         factory.assert_not_called()
         self.assertIsNone(channel.digest(self.conn, 'demo'))
         self.assertIn('正在退出', manager.state('demo')['digest_error'])
+        self.assertFalse(manager.start(self.conn, 'demo', trigger='auto'))
+        factory.assert_not_called()
         with self.assertRaisesRegex(channel_digest.DigestCancelled, '正在退出'):
             manager.start(self.conn, 'demo')
 
