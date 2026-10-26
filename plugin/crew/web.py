@@ -659,6 +659,7 @@ class Service:
                     codex = dict(codex=[{'id': t.get('id') or t['run_id'] or t['rollout_id'], **{key: t[key] for key in
                                         ('task_name', 'status', 'started_at', 'ended_at', 'duration_seconds')},
                                         'source': t.get('source', 'dispatch'), 'detail': t.get('detail'),
+                                        'task_description': t.get('task_description'),
                                         'runtime': t.get('runtime', 'codex'),
                                         **({key: t.get(key) for key in ('pid', 'cwd', 'task_file', 'execution_id', 'goal_id')}
                                            if t.get('source') == 'skill_dispatch' else {})}

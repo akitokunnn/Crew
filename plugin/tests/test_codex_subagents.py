@@ -26,7 +26,7 @@ class ChildEventsTests(unittest.TestCase):
     def test_spawn_completion_is_running_until_child_finishes_and_final_replay_cannot_rewind_it(self):
         spawn = collab(states={'child-1': {'status': 'running', 'message': None}})
         created = self.notify('item/completed', item=spawn)
-        self.assertEqual((created[0]['task_name'], created[0]['status']), ('核对登录流程', 'running'))
+        self.assertEqual((created[0]['task_name'], created[0]['status']), ('Codex 子代理 child-1', 'running'))
         self.assertEqual(self.notify('item/completed', item=spawn), [])
         waited = collab('wait-1', 'wait', states={'child-1': {'status': 'completed', 'message': '验收通过'}})
         self.assertEqual(self.notify('item/completed', item=waited)[0]['status'], 'succeeded')
@@ -43,6 +43,34 @@ class ChildEventsTests(unittest.TestCase):
             self.assertEqual(event['detail'], '真实原因' if expected in ('failed', 'interrupted', 'unknown') else None)
         self.assertEqual(self.notify('item/completed', item=collab('resume', 'resumeAgent'))[0]['status'], 'running')
         self.assertEqual(self.notify('item/completed', item=collab('close', 'closeAgent'))[0]['status'], 'closed')
+
+    def test_prompt_is_details_and_never_overwrites_native_names_in_either_event_order(self):
+        prompt = '你在 Crew 内工作。\n用户的原始要求：检查界面\n只处理当前目标。'
+        thread = {'id': 'child-1', 'parentThreadId': 'native-1',
+                  'preview': prompt, 'agentNickname': '界面检查'}
+        for thread_first in (True, False):
+            with self.subTest(thread_first=thread_first):
+                self.events = codex_subagents.Events('native-1')
+                if thread_first:
+                    self.notify('thread/started', thread=thread)
+                self.notify('item/completed', item=collab(prompt=prompt))
+                if not thread_first:
+                    self.notify('thread/started', thread=thread)
+                self.assertEqual(self.events.agents['child-1']['task_name'], '界面检查')
+                self.notify('item/completed', item=collab('followup', 'followupTask', prompt='继续处理\n保留用户原文'))
+                self.assertEqual(self.events.agents['child-1']['task_name'], '界面检查')
+                self.assertEqual(self.events.agents['child-1']['task_description'], '继续处理\n保留用户原文')
+
+    def test_preview_is_not_a_name_and_restored_names_can_be_replaced_by_native_metadata(self):
+        prompt = '你在 Crew 内工作。\n用户的原始要求：检查界面'
+        self.notify('thread/started', thread={'id': 'child-1', 'parentThreadId': 'native-1', 'preview': prompt})
+        self.assertEqual(self.events.agents['child-1']['task_name'], 'Codex 子代理 child-1')
+        self.notify('thread/name/updated', threadId='child-1', threadName='核对界面')
+        self.events = codex_subagents.Events('native-1', self.events.agents.values())
+        self.notify('item/completed', item=collab(prompt=prompt))
+        self.assertEqual(self.events.agents['child-1']['task_name'], '核对界面')
+        self.notify('thread/started', thread={'id': 'child-1', 'parentThreadId': 'native-1', 'name': '修复界面'})
+        self.assertEqual(self.events.agents['child-1']['task_name'], '修复界面')
 
     def test_direct_child_notifications_and_nested_children_are_scoped_and_ignore_old_turns(self):
         self.assertEqual(self.notify('turn/started', threadId='unrelated', turn={'id': 'foreign'}), [])
@@ -119,6 +147,7 @@ class NativeChildHttpTests(unittest.TestCase):
         leader = value['leaders'][0]
         self.assertEqual((len(leader['codex']), len(value['members'])), (3, 0))
         self.assertTrue(all(task['status'] == 'running' and task['source'] == 'native_subagent' for task in leader['codex']))
+        self.assertTrue(all(task['task_description'] == collab()['prompt'] for task in leader['codex']))
         client.finish()
         client.emit('turn/completed', threadId='child-1', turn={'id': 'child-turn', 'status': 'completed'})
         client.emit('turn/completed', threadId='child-2', turn={'id': 'child-turn', 'status': 'failed', 'error': {'message': '隔离验收失败'}})
