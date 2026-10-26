@@ -19,7 +19,7 @@ const reportEntry=(goal,id,round,version,current,status,summary,counts,unresolve
 const details=new Map(),journals=new Map();
 function addGoal(goal,detail){const value={project:state.project.name,request:goal.request,acceptance:[{id:'a1',title:'同一录音前后对照'},{id:'a2',title:'报告带可复现 example'}],constraints:[],version:3,current_round:1,requirement_version:1,priority:0,updated_at:at(goal.minutes),report_available:detail.reports.length>0,...goal};delete value.minutes;state.goals.push(value);details.set(value.id,{goal:value,context:{items:[],manifest:{}},documents:[],acceptance_review:null,...detail,reports:detail.reports.map(make=>make(value))});}
 addGoal({id:'goal-a',leader_session_id:voice.session_id,title:'改善短句换人的识别表现',request:'使用同一段录音对照前后结果，保留原始输入；不要在未验证时宣称成功。',status:'awaiting_acceptance',minutes:12},
-  {executions:executions('exec-a',voice.session_id,1,1),reports:[goal=>reportEntry(goal,'report-a1',1,1,true,'awaiting_acceptance',longSummary,{passed:2,failed:1,unverified:1,simulated:0},['A 停顿后 B 接话仍有 1 条误并入 A','混说场景未在真机麦克风复测'],12)]});
+  {executions:executions('exec-a',voice.session_id,1,1),reports:[goal=>reportEntry(goal,'report-a1',1,1,true,'awaiting_acceptance',longSummary,{passed:4,failed:0,unverified:1,simulated:0},['实物场景尚缺真人展示证据','校准评估只覆盖给定样本','部分旧类别仍有回退风险','部署来源需要另行核对','仓库根目录仍有中间产物待整理'],12)]});
 addGoal({id:'goal-b',leader_session_id:voice.session_id,title:'交付可以直接打开的风险预警看板',request:'看板要给出当前风险、判断理由，并明确哪些结论尚未验证。',status:'running',current_round:2,requirement_version:2,minutes:20},
   {executions:executions('exec-b2',voice.session_id,2,2,'running'),reports:[goal=>reportEntry(goal,'report-b1',1,1,false,'completed','第一轮看板已能打开，风险判断理由齐全。',{passed:2,failed:0,unverified:0,simulated:0},[],300)]});
 addGoal({id:'goal-c',leader_session_id:voice.session_id,title:'确认本周数据的使用范围',request:'待确认输入覆盖范围后继续统计，当前产出已保留。',status:'waiting_user',minutes:40},{executions:executions('exec-c',voice.session_id,1,1),reports:[]});
@@ -97,15 +97,19 @@ const listCards=`[...document.querySelectorAll('#goal-head .goal-card')].map(car
   steps.push('从清单一次点击「查看交付报告」：进入对应目标，读一次详情，直接在隔离阅读层打开本轮报告并标明轮次、结果和本轮关系');
 
   await click('[data-goal-act=close-report]');await wait('!document.querySelector(".goal-report-reader") && !!document.querySelector("[data-goal-detail=goal-a] .goal-delivery")');
-  const panel=await text('.goal-delivery');for(const part of ['AI 提交的结论','第 1 轮报告 · 报告结果：等待用户验收','报告验收记录（AI 填写）','通过 2','失败 1','未验证 1','仍未解决 2 项','查看完整报告'])assert(panel.includes(part),part);assert(!panel.includes('模拟验证'),'zero counts are not listed');
+  const panel=await text('.goal-delivery');for(const part of ['AI 提交的结论','第 1 轮报告 · 报告结果：等待用户验收','报告验收记录（AI 填写）','共 5 项','通过 4','未验证 1','报告补充说明 · 5 条','查看完整报告'])assert(panel.includes(part),part);assert(!panel.includes('模拟验证'),'zero counts are not listed');assert(!panel.includes('仍未解决 5 项'));
+  assert(!(await text('.goal-delivery-meta')).includes('补充说明'),'report notes are outside acceptance counts');
   assert.equal(await run('document.activeElement.textContent'),'查看完整报告');assert.equal(await run('document.querySelector("#goal-drawer").hidden'),true);
   const compact=await run('({head:document.querySelector("#goal-head").getBoundingClientRect().height,panel:document.querySelector(".goal-delivery").getBoundingClientRect().height,chat:document.querySelector("#chat-host").getBoundingClientRect().height})');
-  assert(compact.panel<130,'collapsed conclusion stays compact: '+compact.panel);assert(compact.chat>380,'chat keeps its space: '+compact.chat);
+  // Report notes now have their own row; preserve the existing chat-space requirement.
+  assert(compact.panel<150,'collapsed conclusion and separate notes stay compact: '+compact.panel);assert(compact.chat>380,'chat keeps its space: '+compact.chat);
   await shot('03-返回任务-结论面板-宽.png');
-  await click('[data-goal-act=conclusion-toggle]');await wait('document.querySelector(".goal-delivery-summary").classList.contains("open") && !!document.querySelector(".goal-delivery-unresolved-list")');
+  await click('[data-goal-act=conclusion-toggle]');await wait('document.querySelector(".goal-delivery-summary").classList.contains("open")');
+  assert.equal(await run('document.querySelector(".goal-delivery-unresolved-list")'),null,'conclusion and notes expand independently');
+  await click('[data-goal-act=report-notes-toggle]');await wait('document.querySelectorAll(".goal-delivery-unresolved-list li").length===5');
   assert(await run('document.querySelector(".goal-delivery-summary").textContent.includes("详细对照、失败样本和复测命令见完整报告。详细对照")'));await shot('04-长结论展开-宽.png');
-  await click('[data-goal-act=conclusion-toggle]');await wait('!document.querySelector(".goal-delivery-summary").classList.contains("open")');
-  steps.push('「返回任务」回到原目标；任务头部以「AI 提交的结论 / 报告验收记录（AI 填写）」口径紧凑显示结论、失败/未验证计数与未解决项，长结论可展开');
+  await click('[data-goal-act=report-notes-toggle]');await click('[data-goal-act=conclusion-toggle]');await wait('!document.querySelector(".goal-delivery-summary").classList.contains("open")');
+  steps.push('「返回任务」显示共 5 项验收、通过 4 / 未验证 1；5 条报告补充说明单独展开，原文完整保留，不作为额外验收项，且与结论展开互不干扰');
 
   await click('[data-goal-act=list]');await click('[data-goal-act=open][data-goal-id=goal-b]');
   await wait('!!document.querySelector("[data-goal-detail=goal-b] .goal-delivery-gap") && !!document.querySelector("#chat-host textarea") && document.querySelector(".chat-inner").textContent.includes("看板推进第 40 条")');
