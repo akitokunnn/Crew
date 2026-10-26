@@ -864,7 +864,7 @@
     $("app").classList.toggle("wide", view !== "chat" || leaderId === null); renderSidebar();
     if (view !== "channel" && mountedChannel) { CrewChannel.unmount(); mountedChannel = false; }
     if (view !== "git") CrewGit.unmount();
-    if (view === "chat") renderChat(); else { if (mountedChat !== null) { CrewChat.unmount(); mountedChat = null; } if (view === "all") renderAll(); if (view === "todos") renderTodos(); if (view === "channel") renderChannel(); if (view === "adopt") renderAdopt(); if (view === "usage") renderUsage(); if (view === "git") CrewGit.mount($("main"), {project, api, toast, catalog:runtimeList, defaultRuntime:() => taskRuntime("git"), onChanged:() => loadState(true), onSettings:() => gitSettings.open(project)}); }
+    if (view === "chat") renderChat(); else { if (mountedChat !== null) { CrewChat.unmount(); mountedChat = null; } if (view === "all") renderAll(); if (view === "todos") renderTodos(); if (view === "channel") renderChannel(); if (view === "adopt") renderAdopt(); if (view === "usage") renderUsage(); if (view === "git") CrewGit.mount($("main"), {project, root:state.project.root, api, toast, catalog:runtimeList, defaultRuntime:() => taskRuntime("git"), onChanged:() => loadState(true), onSettings:() => gitSettings.open(project)}); }
     renderRight(); renderCard(); document.title = `(${state.decisions.filter(item => !item.held).length}) ${projectDisplay(state.project)} · Crew`;
   }
   function watchingChat(id) {
@@ -933,8 +933,8 @@
     maintenance = window.CrewMaintenance.create({api,
       async onCleaned() { await loadState(true); if (view !== "all") navigate("all"); toast("已归档旧工作，可以重新开始"); }});
     gitSettings = CrewGitSettings.create({read:name => api(`/api/git/settings?project=${encodeURIComponent(name)}`), save:body => api("/api/git/settings", body),
-      onSaved:() => { CrewGit.reload(); void loadState(true); }, onLeader:id => navigate("chat", id),
-      onDefaults:() => openSettings("ai"), onCreate:() => { navigate("git"); CrewGit.reload(); }});
+      onSaved:() => { CrewGit.reload(project); void loadState(true); }, onLeader:id => navigate("chat", id),
+      onDefaults:() => openSettings("ai"), onCreate:() => { navigate("git"); CrewGit.reload(project); }});
     workspaceSettings = window.CrewWorkspaceSettings.create({read:name => api(`/api/project/settings?project=${encodeURIComponent(name)}`),
       update:body => api("/api/project/update", body), remove:body => api("/api/project/remove", body),
       openCleanup:(name, label) => { void maintenance.openCleanup(name, label); },

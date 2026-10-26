@@ -2,6 +2,7 @@
 // Real renderer + in-memory loopback API. No Crew HOME, CLI or model is used.
 const {app,BrowserWindow}=require('electron'),fs=require('node:fs/promises'),path=require('node:path'),os=require('node:os'),http=require('node:http'),assert=require('node:assert/strict');
 const root=path.resolve(__dirname,'../..'),web=path.join(root,'plugin/crew/web'),output=path.join(root,'desktop/smoke-output/git-settings');
+app.disableHardwareAcceleration();
 app.commandLine.appendSwitch('force-device-scale-factor','1');
 const calls=[],errors=[],checks=[],shots=[],waiting=[];
 let win,server,origin,home,graph='pending',failSave=false,staleSave=false;
@@ -10,6 +11,11 @@ const catalog=[{id:'codex',name:'Codex',available:true,models:[],efforts:[]},{id
 const project={name:'MIB fixture',display_name:'MIB 协作',root:'C:/fixture/MIB',theme:'green'};
 const state={project,projects:[project],themes:[{id:'green',name:'青绿',light:{'--accent':'#3E7C74','--on-accent':'#F7FBFA','--accent-text':'#2E6760'},dark:{'--accent':'#83B9A8','--on-accent':'#182A24','--accent-text':'#A8D6C7'}}],runtimes:catalog,ai:{default:{runtime:'codex',model:null,effort:null},digest:null,git:null,operations:null},leaders:[leader],members:[],goals:[],decisions:[],todos:[],attention:[],candidates:{running:[],others:[]},limits:{claude:{seven_day:null,five_hour:null},codex:null},channel:{unread:0,latest_id:0,digesting:false,digest_error:null,digest_id:null},notification:{manual_away:false,away:false,error:null,channel:{state:'connected',detail:'本地夹具'}},vscode_error:null};
 let settings={project,revision:'initial',config:null,available:true,choices:{branches:['develop','master','feature/long-name'],base:'develop',stable:'master'},leaders:[{session_id:leader.session_id,name:leader.name,cwd:'C:/fixture/MIB/Temp/wt/git',runtime:'codex',model:null,effort:null}],remotes:[{name:'origin',url:'https://github.com/example/project.git',direction:'fetch'},{name:'origin',url:'https://github.com/example/project.git',direction:'push'}]};
+function graphSnapshot(){
+  const commits=Array.from({length:28},(_,index)=>({sha:String(index+1).padStart(40,'0'),parents:index<27?[String(index+2).padStart(40,'0')]:[],refs:index===0?['develop']:[],subject:'缓存验收提交 '+(index+1),body:'',author:'Fixture',time:new Date(Date.now()-index*60000).toISOString(),pull_requests:[],parent_branches:[]}));
+  const base={name:'develop',latest:commits[0],origin_relation:'',sessions:[],worktrees:[],ahead:0,behind:0,conflicts:[],unique_commits:[],merged:true};
+  return {enabled:true,repository:'MIB fixture',choices:settings.choices,config:{base:'develop',stable:null,admin_session_id:leader.session_id},base,stable:null,branches:[base],remote_only:[],recent_merge:null,ref_unique_commits:{develop:[]},requests:[],commits,next_offset:null,github:null,github_reason:'fixture offline',last_fetch_at:null};
+}
 function json(response,value,status=200){response.writeHead(status,{'Content-Type':'application/json'});response.end(JSON.stringify(value));}
 async function route(request,response){
   const url=new URL(request.url,origin),name=url.pathname;let body;
@@ -25,6 +31,7 @@ async function route(request,response){
   if(name==='/api/git'){
     if(graph==='pending'){waiting.push(response);return;}
     if(graph==='error')return json(response,{error:'fixture Git 读取超时，请重试'},503);
+    if(graph==='enabled')return json(response,graphSnapshot());
     return json(response,{enabled:false,repository:'MIB fixture',choices:settings.choices});
   }
   if(name==='/api/git/settings'){
@@ -63,6 +70,24 @@ async function main(){
   await check('图读取失败有真实错误和重试入口，设置仍可打开',async()=>{for(const response of waiting.splice(0))json(response,{error:'fixture Git 读取超时，请重试'},503);await click('[data-git-setting="close"]');await wait(`document.querySelector('[data-git-act="check"]') !== null`);assert.match(await run(`document.querySelector('#git-view').textContent`),/读取超时/);graph='ready';await click('[data-git-act="check"]');await wait(`document.querySelector('#git-enable-form') !== null`);await click('[data-git-act="settings"]');await wait(`document.querySelector('#gits-admin') !== null`);});
   await check('新建专用管理员返回现有创建表单，不自动启动 AI',async()=>{await wait(`document.querySelector('[data-git-setting="create"]')?.disabled === false`);await click('[data-git-setting="create"]');await wait(`document.querySelector('#git-enable-form') !== null`);assert.equal(await run(`document.querySelector('.git-settings-dialog').open`),false);await click('[data-git-act="settings"]');await wait(`document.querySelector('#gits-admin') !== null`);});
   await check('仓库错误仍显示绑定信息与原始原因，禁止误保存',async()=>{await click('[data-git-setting="close"]');settings={...settings,available:false,reason:'fixture repository access denied'};await click('[data-git-act="settings"]');await wait(`document.querySelector('.gits-warning') !== null`);assert.match(await run(`document.querySelector('.gits-warning').textContent`),/access denied/);assert.equal(await run(`document.querySelector('[data-git-setting="save"]').disabled`),true);});
+  await check('切回 Git 直接复用快照和滚动，不再扫描',async()=>{
+    await click('[data-git-setting="close"]');graph='enabled';await click('[data-git-act="refresh"]');await wait(`document.querySelector('.git-graph') !== null`);
+    assert.match(await run(`document.querySelector('.git-read-meta').textContent`),/读取于/);await shot('04-Git缓存与按需更新.png');
+    await run(`document.querySelector('.git-page').scrollTop=320;void 0`);const before=calls.filter(call=>call.name==='/api/git').length;graph='pending';
+    await click('[data-act="view"][data-view="all"]');await click('[data-act="view"][data-view="git"]');
+    assert.equal(await run(`document.querySelector('.git-page').scrollTop`),320);assert.equal(calls.filter(call=>call.name==='/api/git').length,before);
+    await click('#git-branches-tab');await click('[data-act="view"][data-view="all"]');await click('[data-act="view"][data-view="git"]');
+    assert.equal(await run(`document.querySelector('#git-branches-tab').getAttribute('aria-selected')`),'true');assert.equal(calls.filter(call=>call.name==='/api/git').length,before);
+  });
+  await check('更新失败仍保留快照和真实错误',async()=>{
+    graph='error';await click('[data-git-act="refresh"]');await wait(`document.querySelector('.git-error[role="alert"]') !== null`);
+    await click('#git-graph-tab');assert.match(await run(`document.querySelector('.git-page').textContent`),/缓存验收提交/);
+    const before=calls.filter(call=>call.name==='/api/git').length;await click('[data-act="view"][data-view="all"]');await click('[data-act="view"][data-view="git"]');
+    assert.match(await run(`document.querySelector('.git-error').textContent`),/读取超时/);assert.equal(calls.filter(call=>call.name==='/api/git').length,before);
+  });
+  await check('窄窗口下刷新入口和读取时间不溢出',async()=>{
+    for(const width of [1100,860]){win.setSize(width,800);await sleep(160);await shot('05-Git缓存-'+width+'.png');const geometry=await run(`(()=>{const h=document.querySelector('.git-head');return {width:h.clientWidth,scroll:h.scrollWidth,children:[...h.children].map(n=>({width:n.getBoundingClientRect().width,x:n.getBoundingClientRect().x}))};})()`);assert(geometry.scroll<=geometry.width+1,JSON.stringify({width,...geometry}));}
+  });
   assert.deepEqual(calls.filter(call=>call.method==='POST'&&call.name!=='/api/git/settings'),[],'No model start, stop, archive, fetch or other writes');
   assert.deepEqual(errors,[]);
 }
