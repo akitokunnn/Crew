@@ -98,22 +98,26 @@ async function route(request,response){
 const run=async code=>{const result=await win.webContents.executeJavaScript(`(async()=>{try{return{value:await (${code})};}catch(error){return{error:error.stack};}})()`);if(result.error)throw Error(result.error);return result.value;};
 async function wait(expression,label=expression){for(let i=0;i<200;i++){if(await run(expression))return;await new Promise(resolve=>setTimeout(resolve,30));}throw Error('等待超时 '+label);}
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
-async function click(selector){await run(`(()=>{const node=document.querySelector(${JSON.stringify(selector)});if(!node)throw Error("找不到 "+${JSON.stringify(selector)});node.click();})()`);}
+async function click(selector){
+  const side=await run(`!!document.querySelector(${JSON.stringify(selector)})?.closest("#chat-attention")`);
+  if(side && !await run('document.querySelector("#chat-attention").matches(":popover-open") && !document.querySelector("#side-task-section").hidden')) await run('document.querySelector("[data-act=task-panel]").click()');
+  await run('document.querySelector('+JSON.stringify(selector)+')?.scrollIntoView({block:"nearest"})');
+  await run(`(()=>{const node=document.querySelector(${JSON.stringify(selector)});if(!node)throw Error("找不到 "+${JSON.stringify(selector)});node.click();})()`);}
 async function fill(selector,value){await run(`(()=>{const node=document.querySelector(${JSON.stringify(selector)});node.value=${JSON.stringify(value)};node.dispatchEvent(new Event('input',{bubbles:true}));})()`);}
 const text=selector=>run(`document.querySelector(${JSON.stringify(selector)})?.textContent ?? null`);
-async function shot(name){await sleep(160);await fs.writeFile(path.join(output,name),(await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true})).toPNG());shots.push(name);}
+async function shot(name){await sleep(160);const shot=await win.webContents.debugger.sendCommand('Page.captureScreenshot',{format:'png'});await fs.writeFile(path.join(output,name),Buffer.from(shot.data,'base64'));shots.push(name);}
 const since=mark=>calls.filter(call=>call.at>=mark);
 const reportCalls=list=>list.filter(call=>call.name==='/api/goals/report').map(call=>`${call.query.goal_id}/${call.query.report_id}`);
 async function open(width,height,hash){
   // Create the next window before destroying the previous one; closing the last window would quit Electron.
-  const previous=win;win=new BrowserWindow({width,height,useContentSize:true,show:false,webPreferences:{nodeIntegration:false,contextIsolation:true,sandbox:true,offscreen:true,backgroundThrottling:false}});previous?.destroy();
+  const previous=win;win=new BrowserWindow({width,height,useContentSize:true,show:false,webPreferences:{nodeIntegration:false,contextIsolation:true,sandbox:true,offscreen:true,backgroundThrottling:false}});previous?.destroy();win.webContents.debugger.attach("1.3");
   win.webContents.on('console-message',(_event,...args)=>{const message=typeof args[0]==='object'?args[0].message:args[1];if(String(message).includes('Uncaught'))errors.push(message);});
   await win.loadURL(origin+'/?project='+encodeURIComponent(state.project.name)+'#'+hash);
   const viewport=await run('({width:innerWidth,height:innerHeight,dpr:devicePixelRatio})');assert.deepEqual(viewport,{width,height,dpr:1},'predictable viewport');return viewport;
 }
 const listCards=`[...document.querySelectorAll('#goal-head .goal-card')].map(card=>({open:card.querySelector('[data-goal-act=open]').dataset.goalId,delivery:card.querySelector('[data-goal-act=delivery]')?.dataset.goalId??null}))`;
 (async()=>{
-  await app.whenReady();await fs.rm(output,{recursive:true,force:true});await fs.mkdir(output,{recursive:true});
+  await app.whenReady();await fs.mkdir(output,{recursive:true});
   server=http.createServer((request,response)=>{route(request,response).catch(error=>{errors.push(error.stack);json(response,{error:error.message},500);});});await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));origin='http://127.0.0.1:'+server.address().port;
   const viewports=[await open(1440,900,'leader='+voice.session_id)];
   await wait('!!document.querySelector("#chat-host textarea") && document.querySelector(".chat-inner").textContent.includes("总会话第 6 条")');
@@ -139,13 +143,13 @@ const listCards=`[...document.querySelectorAll('#goal-head .goal-card')].map(car
   assert(await run('location.hash.includes("goal=goal-a")'));await shot('02-直接阅读-本轮报告-宽.png');
   steps.push('从清单一次点击「查看交付报告」：进入对应目标，读一次详情，直接在隔离阅读层打开本轮报告并标明轮次、结果和本轮关系');
 
-  await click('[data-goal-act=close-report]');await wait('!document.querySelector(".goal-report-reader") && !!document.querySelector("[data-goal-detail=goal-a] .goal-delivery")');
+  await click('[data-goal-act=close-report]');await wait('!document.querySelector(".goal-report-reader") && !!document.querySelector("[data-goal-tools=goal-a] .goal-delivery")');
   const panel=await text('.goal-delivery');for(const part of ['AI 提交的结论','第 1 轮报告 · 报告结果：等待用户验收','报告验收记录（AI 填写）','共 5 项','通过 4','未验证 1','报告补充说明 · 5 条','查看完整报告'])assert(panel.includes(part),part);assert(!panel.includes('模拟验证'),'zero counts are not listed');assert(!panel.includes('仍未解决 5 项'));
   assert(!(await text('.goal-delivery-meta')).includes('补充说明'),'report notes are outside acceptance counts');
   assert.equal(await run('document.activeElement.textContent'),'查看完整报告');assert.equal(await run('document.querySelector("#goal-drawer").hidden'),true);
   const compact=await run('({head:document.querySelector("#goal-head").getBoundingClientRect().height,panel:document.querySelector(".goal-delivery").getBoundingClientRect().height,chat:document.querySelector("#chat-host").getBoundingClientRect().height})');
   // Report notes now have their own row; preserve the existing chat-space requirement.
-  assert(compact.panel<150,'collapsed conclusion and separate notes stay compact: '+compact.panel);assert(compact.chat>380,'chat keeps its space: '+compact.chat);
+  assert(compact.head<=55,'task header stays one line: '+compact.head);assert(compact.chat>380,'chat keeps its space: '+compact.chat);
   await shot('03-返回任务-结论面板-宽.png');
   await click('[data-goal-act=conclusion-toggle]');await wait('document.querySelector(".goal-delivery-summary").classList.contains("open")');
   assert.equal(await run('document.querySelector(".goal-delivery-unresolved-list")'),null,'conclusion and notes expand independently');
@@ -155,11 +159,11 @@ const listCards=`[...document.querySelectorAll('#goal-head .goal-card')].map(car
   steps.push('「返回任务」显示共 5 项验收、通过 4 / 未验证 1；5 条报告补充说明单独展开，原文完整保留，不作为额外验收项，且与结论展开互不干扰');
 
   await click('[data-goal-act=list]');await click('[data-goal-act=open][data-goal-id=goal-b]');
-  await wait('!!document.querySelector("[data-goal-detail=goal-b] .goal-delivery-gap") && !!document.querySelector("#chat-host textarea") && document.querySelector(".chat-inner").textContent.includes("看板推进第 40 条")');
+  await wait('!!document.querySelector("[data-goal-tools=goal-b] .goal-delivery-gap") && !!document.querySelector("#chat-host textarea") && document.querySelector(".chat-inner").textContent.includes("看板推进第 40 条")');
   assert((await text('.goal-delivery-gap')).includes('当前第 2 轮暂无新交付'));assert(!(await text('#goal-head')).includes('AI 提交的结论'));
   await fill('#chat-host textarea','任务 B 里未发送的草稿');await run('(()=>{const scroll=document.querySelector(".chat-scroll");scroll.scrollTop=260;scroll.dispatchEvent(new Event("scroll"));document.querySelector("#chat-host textarea").dataset.smokeMark="kept";})()');
   const scrollBefore=await run('document.querySelector(".chat-scroll").scrollTop');
-  mark=Date.now();await click('#goal-head [data-goal-act=delivery]');await wait('!!document.querySelector(".goal-report-reader iframe")');
+  mark=Date.now();await click('#side-task-body [data-goal-act=delivery]');await wait('!!document.querySelector(".goal-report-reader iframe")');
   const historyHead=await text('.goal-report-reader .head');for(const part of ['历史报告','第 1 轮 · 需求 v1','AI 报告结果：已达标','当前第 2 轮暂无新交付'])assert(historyHead.includes(part),part);assert(!historyHead.includes('本轮报告'));
   assert.deepEqual(reportCalls(since(mark)),['goal-b/report-b1']);await shot('05-历史报告-宽.png');
   await run('document.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}))');await wait('!document.querySelector(".goal-report-reader")');
@@ -176,18 +180,18 @@ const listCards=`[...document.querySelectorAll('#goal-head .goal-card')].map(car
   assert.equal(await run('document.querySelector(".goal-report-reader")'),null,'closed reader stays closed');delayReport.delete('goal-a');
   steps.push('报告读取中点「返回任务」：晚到的 HTML 不会让阅读层复活');
 
-  failReportOnce.add('goal-a');await click('#goal-head [data-goal-act=delivery]');await wait('!!document.querySelector(".goal-reader-status .error-line")');
+  failReportOnce.add('goal-a');await click('#side-task-body [data-goal-act=delivery]');await wait('!!document.querySelector(".goal-reader-status .error-line")');
   assert((await text('.goal-report-reader')).includes('报告暂时无法读取，请重试。'));await shot('06-报告读取失败-宽.png');
   await click('[data-goal-act=retry-report]');await wait('!!document.querySelector(".goal-report-reader iframe")');await click('[data-goal-act=close-report]');await wait('!document.querySelector(".goal-report-reader")');
-  failDetailOnce.add('goal-a');await click('#goal-head [data-goal-act=delivery]');await wait('document.querySelector("#goal-head [role=alert]")?.textContent.includes("交付报告未能打开")');
-  assert((await text('#goal-head [role=alert]')).includes('隔离详情读取失败，可重试'));assert.equal(await run('document.querySelectorAll("#goal-head [role=alert]").length'),1,'the failure is shown once');await click('#goal-head [role=alert] [data-goal-act=delivery]');await wait('!!document.querySelector(".goal-report-reader iframe")');
+  failDetailOnce.add('goal-a');await click('#side-task-body [data-goal-act=delivery]');await wait('document.querySelector("#side-task-body [role=alert]")?.textContent.includes("交付报告未能打开")');
+  assert((await text('#side-task-body [role=alert]')).includes('隔离详情读取失败，可重试'));assert.equal(await run('document.querySelectorAll("#side-task-body [role=alert]").length'),1,'the failure is shown once');await click('#side-task-body [role=alert] [data-goal-act=delivery]');await wait('!!document.querySelector(".goal-report-reader iframe")');
   await click('[data-goal-act=close-report]');await wait('!document.querySelector(".goal-report-reader")');
   steps.push('报告 HTML 与目标详情读取失败都如实显示错误，可在原位重试成功');
 
-  await click('[data-view=all]');await click('[data-act=all-tab][data-tab=goals]');await wait('document.querySelectorAll("[data-goal-act=delivery]").length===3');
+  await click('[data-view=all]');await click('[data-act=all-tab][data-tab=goals]');await wait('document.querySelectorAll("#main [data-goal-act=delivery]").length===3');
   mark=Date.now();await click('[data-goal-act=delivery][data-goal-id=goal-d]');await wait(`location.hash.includes("leader=${board.session_id}") && location.hash.includes("goal=goal-d") && !!document.querySelector(".goal-report-reader iframe")`);
   assert((await text('.goal-report-reader .head')).includes('本轮报告'));assert.deepEqual(reportCalls(since(mark)),['goal-d/report-d1']);
-  await click('[data-goal-act=close-report]');await wait('!document.querySelector(".goal-report-reader") && !!document.querySelector("[data-goal-detail=goal-d] .goal-delivery")');
+  await click('[data-goal-act=close-report]');await wait('!document.querySelector(".goal-report-reader") && !!document.querySelector("[data-goal-tools=goal-d] .goal-delivery")');
   const closedHead=await text('#chat-head'),closedHint=await text('#goal-chat-hint');
   assert(!closedHead.includes('本目标尚未启动'),closedHead);assert(!closedHint.includes('在此发送'),closedHint);assert(!closedHint.includes('开始本任务'),closedHint);
   assert(await run('!!document.querySelector("#chat-host textarea") && !document.querySelector("#chat-host textarea").disabled'));assert((await text('.goal-followup-hint')).includes('继续聊'));await shot('07-已结束目标可继续聊-宽.png');
@@ -204,15 +208,15 @@ const listCards=`[...document.querySelectorAll('#goal-head .goal-card')].map(car
   const coveredOnly='[...document.querySelector("#main").children].every(node=>node.classList.contains("goal-report-reader")?!node.inert:node.inert)';
   const focusClose='document.querySelector(".goal-report-reader [data-goal-act=close-report]").focus()';
   await click(`[data-act=leader][data-id="${voice.session_id}"]`);await click('[data-goal-act=list]');await wait('!!document.querySelector(".goal-card")');await click('[data-goal-act=open][data-goal-id=goal-a]');
-  await wait('!!document.querySelector("[data-goal-detail=goal-a] [data-action=accept]") && !!document.querySelector("#chat-host .chat-inner")');
+  await wait('!!document.querySelector("[data-goal-tools=goal-a] [data-action=accept]") && !!document.querySelector("#chat-host .chat-inner")');
   const controlsBefore=await run(controls);mark=Date.now();
-  await click('#goal-head [data-goal-act=delivery]');await wait('!!document.querySelector(".goal-report-reader iframe")');
+  await click('#side-task-body [data-goal-act=delivery]');await wait('!!document.querySelector(".goal-report-reader iframe")');
   assert(await run(coveredOnly),'every task-area part behind the reader is inert, the reader is not');
   await run(focusClose);const backwards=[];for(let i=0;i<20;i++){await key('Tab',['shift']);backwards.push(await run(where));}
   await run(focusClose);const forwards=[];for(let i=0;i<20;i++){await key('Tab');forwards.push(await run(where));}
   assert.deepEqual([...backwards,...forwards].filter(item=>item.behind),[],'Tab and Shift+Tab never reach the covered task area');
-  assert(backwards[0].sidebar,'Shift+Tab from 返回任务 moves to the sidebar: '+JSON.stringify(backwards[0]));assert(forwards.some(item=>item.tree),'the group tree stays reachable');
-  const blocked=await run('(()=>{const result={};for(const action of ["accept","reject"]){const button=document.querySelector("#goal-head [data-action="+action+"]");button.focus();result[action]=document.activeElement===button;}const box=document.querySelector("#goal-head [data-action=accept]").getBoundingClientRect();const x=Math.round(box.left+box.width/2),y=Math.round(box.top+box.height/2),hit=document.elementFromPoint(x,y);return {...result,x,y,hitReader:!!hit.closest(".goal-report-reader"),hitButton:!!hit.closest("button")};})()');
+  assert(backwards[0].sidebar,'Shift+Tab from 返回任务 moves to the sidebar: '+JSON.stringify(backwards[0]));assert(!forwards.some(item=>item.tree),'the closed floating tree never steals report focus');
+  const blocked=await run('(()=>{const result={};for(const action of ["accept","reject"]){const button=document.querySelector("#side-task-body [data-action="+action+"]");button.focus();result[action]=document.activeElement===button;}const box=document.querySelector("#main").getBoundingClientRect();const x=Math.round(box.left+box.width/2),y=Math.round(box.top+box.height/2),hit=document.elementFromPoint(x,y);return {...result,x,y,hitReader:!!hit.closest(".goal-report-reader"),hitButton:!!hit.closest("button")};})()');
   assert.equal(blocked.accept,false,'验收通过 cannot take focus');assert.equal(blocked.reject,false,'需要修改 cannot take focus');assert.deepEqual([blocked.hitReader,blocked.hitButton],[true,false],'the pointer lands on the reader, not on one of its buttons');
   for(const type of ['mouseDown','mouseUp'])win.webContents.sendInputEvent({type,x:blocked.x,y:blocked.y,button:'left',clickCount:1});await sleep(250);
   assert(await run('!!document.querySelector(".goal-report-reader")'),'a press over the covered task actions leaves the reader open');
@@ -220,9 +224,9 @@ const listCards=`[...document.querySelectorAll('#goal-head .goal-card')].map(car
   await run(focusClose);await key('Escape');await wait('!document.querySelector(".goal-report-reader")');
   assert.equal(await run('document.querySelectorAll("#main [inert]").length'),0);assert.equal(await run(controls),controlsBefore,'disabled, hidden and read-only states are unchanged');
   assert.equal(await run('document.activeElement.dataset.goalAct'),'delivery','focus returns to the task');
-  assert(await run('(()=>{const accept=document.querySelector("#goal-head [data-action=accept]");accept.focus();const ok=document.activeElement===accept;document.querySelector("#goal-head [data-goal-act=delivery]").focus();return ok;})()'),'task actions are focusable again after closing');
+  assert(await run('(()=>{const accept=document.querySelector("#side-task-body [data-action=accept]");accept.focus();const ok=document.activeElement===accept;document.querySelector("#side-task-body [data-goal-act=delivery]").focus();return ok;})()'),'task actions are focusable again after closing');
   const keyboard={backwards,forwards,blocked};
-  steps.push('阅读层打开时：Tab/Shift+Tab 只在侧栏、阅读层与关系树之间移动，背后的「验收通过/需要修改」既不能聚焦也点不到；Esc 关闭后焦点回到任务，按钮的 disabled/hidden/只读状态不变');
+  steps.push('阅读层打开时：Tab/Shift+Tab 只在侧栏与阅读层之间移动，浮卡收起，背后的「验收通过/需要修改」既不能聚焦也点不到；Esc 关闭后焦点回到任务，按钮的 disabled/hidden/只读状态不变');
 
   // The same goal changes in the background while its report is open: the header follows, the document is never reloaded.
   const goalA=state.goals.find(item=>item.id==='goal-a'),detailA=details.get('goal-a');
@@ -234,7 +238,7 @@ const listCards=`[...document.querySelectorAll('#goal-head .goal-card')].map(car
     assert(calls.filter(call=>call.name==='/api/goal').length>count,'goal detail refreshed after the background change');await sleep(400);
   }
   const frameBox=()=>run('(()=>{const box=document.querySelector(".goal-report-reader iframe").getBoundingClientRect();return {x:Math.round(box.left),y:Math.round(box.top),width:600,height:300};})()');
-  const frameView=async()=>(await win.webContents.capturePage(await frameBox(),{stayHidden:true,stayAwake:true})).toBitmap();
+  const frameView=async()=>{const clip=await frameBox();const shot=await win.webContents.debugger.sendCommand('Page.captureScreenshot',{format:'png',clip:{...clip,scale:1}});return Buffer.from(shot.data,'base64');};
   const readerHead=()=>text('.goal-report-reader .head');
   const preserved=async(label,kept)=>{const result=await run('({marker:document.querySelector(".goal-report-reader iframe")?.dataset.smoke,loads:window.__reportLoads,srcdoc:document.querySelector(".goal-report-reader iframe").srcdoc,covered:'+coveredOnly+'})');assert.deepEqual(result,{marker:'same',loads:0,srcdoc:kept.srcdoc,covered:true},label);assert((await frameView()).equals(kept.view),label+': the rendered report view is unchanged');};
   async function readWithMarker(selector){
@@ -244,7 +248,7 @@ const listCards=`[...document.querySelectorAll('#goal-head .goal-card')].map(car
     // script; so the evidence is that the same frame node never loads again and its rendered view stays identical.
     return {view:await frameView(),srcdoc:await run('document.querySelector(".goal-report-reader iframe").srcdoc')};
   }
-  let view=await readWithMarker('#goal-head [data-goal-act=delivery]');const backgroundHeads=[];
+  let view=await readWithMarker('#side-task-body [data-goal-act=delivery]');const backgroundHeads=[];
   await run('document.querySelector("#chat-head").dataset.smokeOld="1"');
   await background({},[goal=>({...reportEntry(goal,'report-a1b',1,1,true,'awaiting_acceptance','第二稿：补充了混说场景的同一录音复测。',{passed:3,failed:0,unverified:1,simulated:0},[],1),version:2})]);
   let readingHead=await readerHead();backgroundHeads.push(readingHead);for(const part of ['本轮较早报告','已有更新版本（第 2 稿）','第 1 轮 · 需求 v1 · 第 1 稿'])assert(readingHead.includes(part),part);await preserved('a newer draft in the same round',view);await shot('11-阅读中出现新稿-宽.png');
@@ -255,7 +259,7 @@ const listCards=`[...document.querySelectorAll('#goal-head .goal-card')].map(car
   readingHead=await readerHead();backgroundHeads.push(readingHead);assert(readingHead.includes('当前第 2 轮暂无新交付'),readingHead);await preserved('reopened into a new round',view);await shot('12-重开后仍在阅读历史报告-宽.png');
   await background({status:'awaiting_acceptance'},[goal=>({...reportEntry(goal,'report-a2',2,3,true,'awaiting_acceptance','第二轮报告：混说场景已在真机复测。',{passed:2,failed:0,unverified:0,simulated:0},[],0),version:1})]);
   readingHead=await readerHead();backgroundHeads.push(readingHead);for(const part of ['历史报告','本轮已有新报告'])assert(readingHead.includes(part),part);await preserved('a new round report arrived',view);
-  await key('Escape');await wait('!document.querySelector(".goal-report-reader") && (document.querySelector("[data-goal-detail=goal-a] .goal-delivery")?.textContent||"").includes("第二轮报告")');
+  await key('Escape');await wait('!document.querySelector(".goal-report-reader") && (document.querySelector("[data-goal-tools=goal-a] .goal-delivery")?.textContent||"").includes("第二轮报告")');
   assert.equal(await run('document.querySelectorAll("#main [inert]").length'),0);assert.equal(await run('document.activeElement.dataset.goalAct'),'delivery');assert.equal(await run('document.querySelector("#goal-drawer").hidden'),true);
   steps.push('直接阅读中同一目标在后台出现新稿、需求更新（主区重建）、重开换轮、新轮报告：阅读头部依次改为「本轮较早报告/历史报告」并说明原因，同一个 iframe 节点不再触发 load、srcdoc 与渲染画面不变（文档未重载），主区始终不可操作；返回任务后显示新一轮结论');
 
@@ -269,7 +273,7 @@ const listCards=`[...document.querySelectorAll('#goal-head .goal-card')].map(car
   assert.equal(await run('document.querySelectorAll("#main [inert]").length'),0);await click('[data-goal-act=close-drawer]');
   steps.push('手动「交付与文档 → 展开」阅读时出现同轮新稿：头部标为「本轮较早报告 · 已有更新版本」，文档不重载；Esc 与直接阅读一样关闭阅读层并解除遮挡，回到交付资料，列表按稿次标明本轮/较早/历史');
 
-  mark=Date.now();await click('#goal-head [data-goal-act=delivery]');await wait('!!document.querySelector(".goal-report-reader iframe")');
+  mark=Date.now();await click('#side-task-body [data-goal-act=delivery]');await wait('!!document.querySelector(".goal-report-reader iframe")');
   assert(await run(`(()=>{const node=document.querySelector('#sidebar .session-open[data-id="${board.session_id}"]');node.focus();return document.activeElement===node;})()`),'the sidebar navigation button takes focus while reading');
   await key('Enter');await wait(`location.hash==="#leader=${board.session_id}" && !document.querySelector(".goal-report-reader") && !!document.querySelector("#chat-host textarea")`);
   assert.equal(await run('document.querySelectorAll("#main [inert]").length'),0);assert.deepEqual(reportCalls(since(mark)),['goal-a/report-a2b'],'viewing delivery reads the newest draft');
@@ -277,10 +281,10 @@ const listCards=`[...document.querySelectorAll('#goal-head .goal-card')].map(car
 
   viewports.push(await open(860,760,`leader=${voice.session_id}`));await wait('!!document.querySelector("#chat-host textarea")');
   await click('[data-goal-act=list]');await wait('!!document.querySelector(".goal-card")');await shot('08-任务清单-窄.png');
-  await click('[data-goal-act=open][data-goal-id=goal-a]');await wait('!!document.querySelector("[data-goal-detail=goal-a] .goal-delivery")');
+  await click('[data-goal-act=open][data-goal-id=goal-a]');await wait('!!document.querySelector("[data-goal-tools=goal-a] .goal-delivery")');
   const narrow=await run('({width:innerWidth,scroll:document.documentElement.scrollWidth,head:document.querySelector("#goal-head").getBoundingClientRect().height,chat:document.querySelector("#chat-host").getBoundingClientRect().height})');
   assert(narrow.scroll<=narrow.width,'no horizontal overflow');assert(narrow.chat>250,'narrow chat keeps space: '+narrow.chat);await shot('09-结论面板-窄.png');
-  await click('#goal-head [data-goal-act=delivery]');await wait('!!document.querySelector(".goal-report-reader iframe")');assert(await run('document.documentElement.scrollWidth<=innerWidth'));await shot('10-直接阅读-窄.png');
+  await click('#side-task-body [data-goal-act=delivery]');await wait('!!document.querySelector(".goal-report-reader iframe")');assert(await run('document.documentElement.scrollWidth<=innerWidth'));await shot('10-直接阅读-窄.png');
   await click('[data-goal-act=close-report]');await wait('!document.querySelector(".goal-report-reader")');
   steps.push('窄窗口：卡片、结论面板和阅读层无横向溢出，聊天区仍保留空间');
 
@@ -360,7 +364,7 @@ const listCards=`[...document.querySelectorAll('#goal-head .goal-card')].map(car
     await fill('#chat-host textarea','请继续修改报告结尾，说明收尾验证的实际结果。');
     await wait('!!document.querySelector("#chat-host .send:not([disabled])")');
     await click('#chat-host .send');
-    await wait(`document.querySelector("[data-goal-detail='${id}'] .goal-version").textContent.includes("2")`);
+    await wait(`document.querySelector("[data-goal-tools='${id}'] .goal-version").textContent.includes("2")`);
     assert.equal(details.get(id).goal.current_round,2);
     await wait(`document.querySelector('#chat-host .chat-inner')?.textContent.includes('原任务历史-${initialStatus}第 1 条记录')`);
     await wait(`document.querySelector('#chat-host .chat-inner')?.textContent.includes('请继续修改报告结尾')`);
@@ -434,5 +438,5 @@ const listCards=`[...document.querySelectorAll('#goal-head .goal-card')].map(car
   const evidence={ok:true,scope:'real Electron renderer with in-memory loopback fixtures; no model, production HOME, Crew service or user data',viewports,steps,shots,compact,narrow,keyboard,backgroundHeads,compactHeaders,selected,forbiddenCalls:forbidden,postEndpoints:posts,
     endpoints:Object.entries(calls.reduce((count,call)=>({...count,[call.name]:(count[call.name]||0)+1}),{})),reportReads:reportCalls(calls),calls,errors,isolatedUserData:temporary};
   await fs.writeFile(path.join(output,'evidence.json'),JSON.stringify(evidence,null,2));console.log('Goal delivery smoke passed:',output);
-  win.destroy();for(const stream of streams)stream.response.end();server.close();await fs.rm(temporary,{recursive:true,force:true});app.exit(0);
+  win.destroy();for(const stream of streams)stream.response.end();server.close();app.exit(0);
 })().catch(async error=>{console.error(error);await fs.mkdir(output,{recursive:true});await fs.writeFile(path.join(output,'failure.txt'),error.stack||String(error));await fs.writeFile(path.join(output,'evidence.json'),JSON.stringify({ok:false,steps,shots,calls,errors,failure:error.stack||String(error)},null,2));win?.destroy();for(const stream of streams)stream.response.end();server?.close();app.exit(1);});

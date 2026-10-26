@@ -54,6 +54,11 @@
     const owner = () => state()?.leaders.find(item => item.session_id === ownerId);
     const signature = id => { const item = byId(id); return JSON.stringify([item?.version,item?.updated_at,item?.report_available]); };
     const changed = () => options.onChange?.();
+    function restoreFocus(selector) {
+      const target = document.querySelector?.(selector);
+      if (target?.closest?.('#chat-attention')) options.onReturn?.();
+      (document.querySelector?.(selector) || document.querySelector?.('[data-act="task-panel"]'))?.focus();
+    }
     function executionFor(id) {
       const active = goal();
       return (current()?.executions || []).filter(item => item.session_id === id && item.round === active?.current_round && item.requirement_version === active?.requirement_version).sort((a,b) => b.generation - a.generation)[0] || null;
@@ -116,12 +121,21 @@
       if (open) return bar + `<section class="group-goal-list" role="tabpanel" aria-label="本组任务清单">${cards(list, state().leaders, goalId)}</section>`;
       if (goalId == null) return bar;
       if (!active) return bar + `<section class="goal-detail"><p class="${errors.has(String(goalId)) ? "error-line" : "note"}">${esc(errors.get(String(goalId)) || "正在读取目标…")}</p><button class="btn ghost" data-goal-act="refresh">重新读取</button></section>`;
+      return `<section class="goal-detail goal-compact" data-goal-detail="${esc(active.id)}"><div class="goal-detail-title"><button class="btn ghost" type="button" data-goal-act="general">总会话</button><span class="goal-path-separator">/</span><span class="goal-status" data-status="${esc(active.status)}">${esc(status(active.status))}</span><h1 title="${esc(active.title)}">${esc(active.title)}</h1><button class="goal-list-back" type="button" data-goal-act="list" aria-label="返回任务清单">换任务 ▾</button>${actionError || errors.has(String(goalId)) ? '<button class="text-link goal-error-indicator" data-act="task-panel">查看任务提示</button>' : ""}</div></section>`;
+    }
+    function sideMarkup(id = ownerId) {
+      if (goalId == null || expandedGroups.has(id)) {
+        const list = goals().filter(item => item.leader_session_id === id);
+        return `<div class="goal-quick-list">${list.map(item => `<button type="button" class="side-task-row" data-goal-act="open" data-goal-id="${esc(item.id)}" aria-current="${String(item.id) === String(goalId) ? "true" : "false"}"><span class="goal-status" data-status="${esc(item.status)}">${esc(status(item.status))}</span><span>${esc(item.title)}</span><span aria-hidden="true">›</span></button>`).join("") || '<p class="note">本组还没有任务。</p>'}</div><div class="side-task-links"><button class="text-link" data-goal-act="list">查看完整清单</button><button class="text-link" data-goal-act="create" data-leader-id="${esc(id)}">建立目标</button></div>`;
+      }
+      const active = goal();
+      if (!active) return `<p class="note">${esc(errors.get(String(goalId)) || "正在读取任务…")}</p><button class="btn ghost" data-goal-act="refresh">重新读取</button>`;
       const result = current(), reports = result?.reports || [], review = result?.acceptance_review || result?.previous_acceptance_review;
       const followup = ["awaiting_acceptance","completed","failed"].includes(active.status) ? '<p class="goal-followup-hint">可以直接在下方继续聊、补充要求或修改报告。发送后继续本任务的新一轮，已有报告与验收记录保留。</p>' : "";
       const actions = active.status === "awaiting_acceptance" ? [["accept","验收通过"],["reject","需要修改"]] : active.status === "queued" ? [["start", "开始推进"]] : ["paused","waiting_user"].includes(active.status) ? [["resume", "继续推进"]] : !ended(active.status) && active.status !== "pausing" ? [["pause", "暂停目标"]] : [];
       if (!ended(active.status) && active.status !== "awaiting_acceptance") actions.push(["cancel", "取消目标"]);
       if (ended(active.status)) actions.push(["reopen", "再开一轮"]);
-      return bar + `<section class="goal-detail" data-goal-detail="${esc(active.id)}"><div class="goal-detail-title"><button class="goal-list-back" type="button" data-goal-act="list" aria-label="返回任务清单">‹ 清单</button><span class="goal-status" data-status="${esc(active.status)}">${esc(status(active.status))}</span><h1 title="${esc(active.title)}">${esc(active.title)}</h1><span class="goal-version">第 ${esc(active.current_round || 1)} 轮</span><div class="goal-actions">${actions.map(([action,label]) => `<button class="btn ${["start","resume","reopen","accept"].includes(action) ? "goal-primary-action" : "ghost"}" data-goal-act="action" data-action="${action}" ${actionBusy ? "disabled" : ""}>${pendingAction === action ? "正在处理…" : label}</button>`).join("")}</div></div><div class="goal-materials"><button class="btn ghost" data-goal-act="drawer" data-kind="requirements" aria-controls="goal-drawer" aria-expanded="${drawer === "requirements"}">需求与验收</button><button class="btn ghost" data-goal-act="drawer" data-kind="reports" aria-controls="goal-drawer" aria-expanded="${drawer === "reports"}">交付与文档${reports.length ? ` · ${reports.length}` : ""}</button><button class="btn ghost" data-goal-act="drawer" data-kind="context" aria-controls="goal-drawer" aria-expanded="${drawer === "context"}">上下文</button><span class="goal-updated">需求 v${esc(active.requirement_version || 1)}</span></div>${followup}${deliveryMarkup(active, reports)}${review ? `<details class="goal-review"><summary>${review.round < active.current_round ? `第 ${esc(review.round)} 轮 · ` : ""}${review.accepted ? "你已验收通过" : "你退回修改"}${review.note ? `：${esc(review.note.slice(0,80))}${review.note.length > 80 ? "…" : ""}` : ""}</summary><p>${esc(review.note || "你确认当前轮交付符合验收要求。")}<br><span>原始交付报告保持生成时的内容和状态。</span></p></details>` : ""}${actionError || errors.has(String(goalId)) && deliveryNotice?.goalId !== String(goalId) ? `<p class="goal-action-error error-line" role="alert">${esc(actionError || errors.get(String(goalId)))}</p>` : ""}</section>`;
+      return `<section class="goal-tools" data-goal-tools="${esc(active.id)}"><div class="goal-detail-title"><span class="goal-status" data-status="${esc(active.status)}">${esc(status(active.status))}</span><h1 title="${esc(active.title)}">${esc(active.title)}</h1><span class="goal-version">第 ${esc(active.current_round || 1)} 轮</span></div><div class="goal-actions">${actions.map(([action,label]) => `<button class="btn ${["start","resume","reopen","accept"].includes(action) ? "goal-primary-action" : "ghost"}" data-goal-act="action" data-action="${action}" ${actionBusy ? "disabled" : ""}>${pendingAction === action ? "正在处理…" : label}</button>`).join("")}</div><div class="goal-materials"><button class="btn ghost" data-goal-act="drawer" data-kind="requirements" aria-controls="goal-drawer" aria-expanded="${drawer === "requirements"}">需求与验收</button><button class="btn ghost" data-goal-act="drawer" data-kind="reports" aria-controls="goal-drawer" aria-expanded="${drawer === "reports"}">交付与文档${reports.length ? ` · ${reports.length}` : ""}</button><button class="btn ghost" data-goal-act="drawer" data-kind="context" aria-controls="goal-drawer" aria-expanded="${drawer === "context"}">上下文</button><span class="goal-updated">需求 v${esc(active.requirement_version || 1)}</span></div>${followup}${deliveryMarkup(active, reports)}${review ? `<details class="goal-review"><summary>${review.round < active.current_round ? `第 ${esc(review.round)} 轮 · ` : ""}${review.accepted ? "你已验收通过" : "你退回修改"}${review.note ? `：${esc(review.note.slice(0,80))}${review.note.length > 80 ? "…" : ""}` : ""}</summary><p>${esc(review.note || "你确认当前轮交付符合验收要求。")}<br><span>原始交付报告保持生成时的内容和状态。</span></p></details>` : ""}${actionError || errors.has(String(goalId)) && deliveryNotice?.goalId !== String(goalId) ? `<p class="goal-action-error error-line" role="alert">${esc(actionError || errors.get(String(goalId)))}</p>` : ""}</section>`;
     }
     function requirementsMarkup(active) {
       return `<section class="goal-requirements"><h3>${esc(active.title)}</h3><strong>原始需求与验收标准</strong><p>${esc(active.request)}</p>${active.acceptance?.length ? `<ol>${active.acceptance.map(item => `<li>${esc(typeof item === "string" ? item : item.title)}</li>`).join("")}</ol>` : '<p class="note">尚未写明验收标准</p>'}${active.constraints?.length ? `<strong>约束</strong><ul>${active.constraints.map(item => `<li>${esc(item)}</li>`).join("")}</ul>` : ""}</section>`;
@@ -178,6 +192,7 @@
       if (focused && !reader.contains(document.activeElement)) head.querySelector('[data-goal-act="close-report"]').focus();
     }
     function openReader(next) {
+      options.onOverlay?.();
       reading = next; reader = document.createElement("section"); reader.className = "goal-report-reader"; reader.setAttribute("aria-label", "目标交付报告");
       reader.innerHTML = '<div class="head goal-reader-head"></div><div class="goal-reader-body" hidden></div><div class="goal-reader-frame" hidden></div>';
       document.getElementById("main").append(reader); cover(); renderReader(); reader.querySelector('[data-goal-act="close-report"]').focus();
@@ -217,7 +232,7 @@
       await load(id);
       if (generation !== reportGeneration || String(goalId) !== key) return;
       const reports = errors.has(key) ? [] : details.get(key).reports, report = currentReport(reports, goal()) || reports[0];
-      if (!report) { deliveryNotice = {goalId:key, error:errors.has(key) ? errors.get(key) : "这个任务目前没有可阅读的交付报告。"}; changed(); return; }
+      if (!report) { deliveryNotice = {goalId:key, error:errors.has(key) ? errors.get(key) : "这个任务目前没有可阅读的交付报告。"}; changed(); restoreFocus('[data-goal-tools] [data-goal-act="delivery"]'); return; }
       deliveryNotice = null; changed();
       openReader({mode:"direct", goalId:key, report, reports, html:null, loading:true, error:""});
       await readDirect(generation);
@@ -227,13 +242,14 @@
       const generation = ++reportGeneration; reading.loading = true; reading.error = ""; renderReader(); void readDirect(generation);
     }
     function returnFromReport() {
-      if (reading.mode === "direct") { reportGeneration++; closeReader(); changed(); document.querySelector?.('#goal-head [data-goal-act="delivery"]')?.focus(); return; }
+      if (reading.mode === "direct") { reportGeneration++; closeReader(); changed(); restoreFocus('[data-goal-tools] [data-goal-act="delivery"]'); return; }
       closeReader(); drawer = "reports"; renderDrawer(); changed(); document.querySelector?.('[data-goal-act="expand-report"]')?.focus();
     }
     function showActionConfirm(action) {
       const active = goal(); if (!active) return;
       formOverlay?.remove(); formOverlay = document.createElement("div"); formOverlay.className = "session-config-backdrop";
       const cancelling = action === "cancel";
+      options.onOverlay?.();
       formOverlay.innerHTML = `<form class="session-config-dialog goal-create-form" data-goal-confirm="${action}" data-goal-id="${esc(active.id)}" data-version="${active.version}" role="dialog" aria-modal="true" aria-labelledby="goal-confirm-title"><div class="session-config-head"><h2 id="goal-confirm-title">${cancelling ? "取消目标" : "需要修改"}「${esc(active.title)}」${cancelling ? "？" : ""}</h2></div><p class="session-config-description">${cancelling ? "将停止这个目标的执行，保留对话、交付物和相关文档。之后可再开一轮。" : "填写需要修改的具体理由。退回后仍可在本任务中继续聊和修改；原始交付报告与本次验收记录会保留。"}</p>${cancelling ? "" : '<label>修改理由<textarea name="note" required rows="4" placeholder="哪里还不符合验收标准？"></textarea></label>'}<p class="error-line" role="alert"></p><div class="session-config-actions"><button type="button" class="btn ghost" data-goal-act="close-create">返回</button><button type="submit" class="btn primary">${cancelling ? "确认取消这个目标" : "确认需要修改"}</button></div></form>`;
       document.body.append(formOverlay); formOverlay.querySelector(cancelling ? '[data-goal-act="close-create"]' : "textarea").focus();
     }
@@ -246,6 +262,7 @@
     function showCreate(id) {
       const person = state().leaders.find(item => item.session_id === id); if (!person) return;
       formOverlay?.remove(); formOverlay = document.createElement("div"); formOverlay.className = "session-config-backdrop";
+      options.onOverlay?.();
       formOverlay.innerHTML = `<form class="session-config-dialog goal-create-form" data-goal-create="${esc(id)}" role="dialog" aria-modal="true" aria-labelledby="goal-create-title"><div class="session-config-head"><h2 id="goal-create-title">${esc(person.name)}组 · 建立目标</h2><button class="icon-btn" type="button" data-goal-act="close-create" aria-label="关闭">×</button></div><p class="session-config-description">明确需要实施和交付的工作才建立目标。普通问答、解释和小补充直接在对话里说。</p><label>目标标题<input name="title" required maxlength="200"></label><label>原始需求<textarea name="request" required rows="5"></textarea></label><label>验收标准 <span class="note">每行一项，可由 leader 后续完善</span><textarea name="acceptance" rows="3"></textarea></label><p class="error-line" role="alert"></p><div class="session-config-actions"><button class="btn ghost" type="button" data-goal-act="close-create">取消</button><button class="btn primary" type="submit">建立目标</button></div></form>`;
       document.body.append(formOverlay); formOverlay.querySelector("input").focus();
     }
@@ -266,7 +283,7 @@
     document.addEventListener("submit", async event => {
       const form = event.target;
       if (form.hasAttribute("data-goal-confirm")) { event.preventDefault(); if (actionBusy) return; const button = form.querySelector('[type="submit"]'), action = form.dataset.goalConfirm, note = action === "reject" ? form.elements.note.value.trim() : undefined; if (action === "reject" && !note) { form.querySelector(".error-line").textContent = "请填写需要修改的具体理由。"; return; } button.disabled = true;
-        const ok = await runAction({id:form.dataset.goalId,version:Number(form.dataset.version)},action,note); if (ok) { formOverlay?.remove(); formOverlay = null; } else { form.querySelector(".error-line").textContent = actionError; button.disabled = false; } return; }
+        const ok = await runAction({id:form.dataset.goalId,version:Number(form.dataset.version)},action,note); if (ok) { formOverlay?.remove(); formOverlay = null; restoreFocus('[data-goal-tools] [data-goal-act="drawer"]'); } else { form.querySelector(".error-line").textContent = actionError; button.disabled = false; } return; }
       if (form.hasAttribute("data-goal-context-add") || form.hasAttribute("data-goal-context-form")) { event.preventDefault(); if (!actionBusy) void contextAction(form.hasAttribute("data-goal-context-add") ? "add" : "correct", form.dataset.goalContextForm, form.elements.text.value.trim()); return; }
       if (!form.hasAttribute("data-goal-create")) return; event.preventDefault(); const button = form.querySelector('[type="submit"]'); if (button.disabled) return; button.disabled = true;
       const overlay = formOverlay;
@@ -286,9 +303,9 @@
       else if (act === "general") { expandedGroups.delete(ownerId); options.onGeneral(ownerId); document.querySelector?.('[data-goal-act="general"]')?.focus(); }
       else if (act === "list") { expandedGroups.add(ownerId); closeDrawer(); changed(); document.querySelector?.('[data-goal-act="list"]')?.focus(); }
       else if (act === "create") showCreate(button.dataset.leaderId);
-      else if (act === "close-create" && !actionBusy) { const action = formOverlay?.querySelector("[data-goal-confirm]")?.dataset.goalConfirm; formOverlay?.remove(); formOverlay = null; document.querySelector?.(action ? `[data-action="${action}"]` : '[data-goal-act="create"]')?.focus(); }
+      else if (act === "close-create" && !actionBusy) { const action = formOverlay?.querySelector("[data-goal-confirm]")?.dataset.goalConfirm; formOverlay?.remove(); formOverlay = null; restoreFocus(action ? `[data-action="${action}"]` : '[data-goal-act="create"]'); }
       else if (act === "drawer") { if (drawer === button.dataset.kind) closeDrawer(); else { options.onDrawer?.(); closeReader(); drawer = button.dataset.kind; reportId = null; reportHTML = null; reportGeneration++; deliveryNotice = null; renderDrawer(); drawerHost.querySelector("h2").focus(); if (drawer === "reports") void loadDocuments(); } changed(); }
-      else if (act === "close-drawer") { const previous = drawer; closeDrawer(); changed(); document.querySelector?.(`[data-goal-act="drawer"][data-kind="${previous}"]`)?.focus(); }
+      else if (act === "close-drawer") { const previous = drawer; closeDrawer(); changed(); restoreFocus(`[data-goal-act="drawer"][data-kind="${previous}"]`); }
       else if (act === "refresh") { if (drawer === "reports") void loadDocuments().then(() => load()); else void load(); }
       else if (act === "report") void openReport(button.dataset.reportId);
       else if (act === "expand-report") expandReport();
@@ -302,9 +319,9 @@
       }
     });
     function escape() {
-      if (formOverlay) { if (actionBusy) return true; formOverlay.remove(); formOverlay = null; document.querySelector?.('[data-goal-act="create"]')?.focus(); }
+      if (formOverlay) { if (actionBusy) return true; const action = formOverlay.querySelector("[data-goal-confirm]")?.dataset.goalConfirm; formOverlay.remove(); formOverlay = null; restoreFocus(action ? `[data-action="${action}"]` : '[data-goal-act="create"]'); }
       else if (reader) returnFromReport();
-      else if (drawer) { const previous = drawer; closeDrawer(); changed(); document.querySelector?.(`[data-goal-act="drawer"][data-kind="${previous}"]`)?.focus(); }
+      else if (drawer) { const previous = drawer; closeDrawer(); changed(); restoreFocus(`[data-goal-act="drawer"][data-kind="${previous}"]`); }
       else return false;
       return true;
     }
@@ -316,7 +333,7 @@
       if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
       else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
     });
-    return {sync, closeDrawer, escape, groupMarkup, cards:() => cards(goals(), state()?.leaders), refresh:load, currentGoal:goal, executionFor, showingList:() => expandedGroups.has(ownerId), closeList:() => expandedGroups.delete(ownerId), renderMaterials, replaceMain,
+    return {sync, closeDrawer, escape, groupMarkup, sideMarkup, materialsOpen:() => drawer !== null || reading !== null, cards:() => cards(goals(), state()?.leaders), refresh:load, currentGoal:goal, executionFor, showingList:() => expandedGroups.has(ownerId), closeList:() => expandedGroups.delete(ownerId), renderMaterials, replaceMain,
       invalidate() { requestedVersion.clear(); details.clear(); }};
   }
   window.CrewGoals = {create, cards, status, reportPath, reportDocument};

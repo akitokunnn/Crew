@@ -10,7 +10,7 @@ function harness(api){const handlers={},calls=[],notices=[];let ui,state={leader
 }
 test("native approvals are scoped, escaped and only display a single-command choice without any automatic request",()=>{
   const h=harness();h.state.native_approvals.push(approval({id:"b",goal_id:"goal-b",session_id:"leader",command:"<script>bad</script>"}));h.ui.sync(h.state);
-  assert.equal(h.calls.length,0);assert.equal(h.ui.count(),2);assert.equal(h.ui.countForLeader("leader"),2);
+  assert.equal(h.calls.length,0);assert.equal(h.ui.count(),2);assert.equal(h.ui.countForLeader("leader"),2);assert.equal(h.ui.countForChat("leader","goal-a",true),1);assert.equal(h.ui.countForChat("member","goal-b",false),0);assert.equal(h.ui.countForChat("leader",null,false),1);
   const member=h.ui.chatMarkup("member","goal-a",false);assert(member.includes("复核员 · 任务 A"));assert(!member.includes("任务 B"));
   const all=h.ui.markup();assert(all.includes("&lt;script&gt;"));assert(!all.includes("<script>"));assert(all.includes("仅本次命令离开沙箱"));assert(all.includes("允许这一次"));assert(all.includes("拒绝"));assert(!all.includes("acceptForSession"));
   h.state.native_approvals=[approval({kind:"fileChange",command:null})];h.ui.sync(h.state);const fileChange=h.ui.markup();assert(fileChange.includes("仅允许本次列出的文件改动"));assert(!fileChange.includes("仅本次命令离开沙箱"));
