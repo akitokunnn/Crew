@@ -1221,7 +1221,10 @@ class Service:
                 if path == '/api/session/stop':
                     return self.chat.stop_identity(target['session_id'], caller_session_id=_optional_text(data, 'caller_session_id'))
                 if path == '/api/session/compact':
-                    return self.chat.compact(target, caller_session_id=_optional_text(data, 'caller_session_id'))
+                    after_turn = data.get('after_turn', False)
+                    if type(after_turn) is not bool:
+                        raise ValueError('after_turn 必须是布尔值')
+                    return self.chat.compact(target, caller_session_id=_optional_text(data, 'caller_session_id'), after_turn=after_turn)
                 if path == '/api/session/options':
                     options = self.chat.set_options(conn, target['session_id'],
                                                     {key: data[key] for key in ('model', 'effort') if key in data}, now=now)

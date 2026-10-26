@@ -18,6 +18,30 @@ class CodexVisibilityTests(unittest.TestCase):
         running.close()
         self.assertNotIn('thread/archive', [name for name, _ in client.calls])
 
+    def test_ring_compact_queues_on_the_current_codex_thread_without_starting_another_turn(self):
+        running, client = self.make_running()
+        manager = chat.Manager(self.home, self.plugin, agents_provider=lambda: [])
+        manager.processes['worker'] = running
+        self.session['spawn_id'] = 'existing'
+        (self.home / 'spawn').mkdir()
+        (self.home / 'spawn' / 'existing.json').write_text('{}', encoding='utf-8')
+        running.send('current work', 'message-1')
+        calls = len(client.calls)
+        for _ in range(2):
+            self.assertEqual(manager.compact(self.session, after_turn=True),
+                             {'ok': True, 'message': '这一轮说完后压缩', 'queued': True})
+        self.assertEqual(len(client.calls), calls)
+        client.finish()
+        self.assertEqual([name for name, _ in client.calls].count('thread/compact/start'), 1)
+        self.assertEqual(manager.compact(self.session, after_turn=True), {'ok': True, 'message': '正在压缩上下文'})
+        self.assertFalse(running.pending_compact)
+        client.emit('item/completed', turnId='compact-1', item={'id': 'compact', 'type': 'contextCompaction'})
+        client.emit('thread/tokenUsage/updated', tokenUsage={'last': {'totalTokens': 1000, 'outputTokens': 0}, 'total': {}})
+        client.finish()
+        self.assertTrue(any(event['type'] == 'compact' for event in running.journal.events))
+        self.assertEqual([name for name, _ in client.calls].count('thread/start'), 1)
+        self.assertEqual([name for name, _ in client.calls].count('turn/start'), 1)
+
     def test_name_and_position_follow_crew_changes_before_the_next_input(self):
         running, client = self.make_running()
         with closing(store.connect(self.home)) as conn:

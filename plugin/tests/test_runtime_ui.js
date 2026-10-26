@@ -33,19 +33,24 @@ function harness(state = fixture(), fetcher = () => { throw new Error("Unexpecte
     location:{search:"?project=fixture", origin:"http://fixture.local", hash:""}, URLSearchParams, URL, fetch:fetcher, console,
     CrewChat:{renderInline:escape, renderMarkdown:text => `<p>${escape(text)}</p>`}};
   vm.createContext(sandbox);
+  const contextSource=fs.readFileSync(path.join(__dirname, "../crew/web/chat.js"), "utf8");
+  vm.runInContext(contextSource.slice(0, contextSource.indexOf("})();")+5), sandbox);
+  sandbox.CrewContext=sandbox.window.CrewContext;
+  sandbox.CrewActivity={markup:()=>""};
   vm.runInContext(fs.readFileSync(path.join(__dirname, "../crew/web/leader-trust-ui.js"), "utf8"), sandbox);
   // Expose lexical UI functions while leaving setup and its state-poll timer off.
   const end = "  setup();\n})();";
   assert(source.endsWith(end + "\n") || source.endsWith(end));
   vm.runInContext(source.replace(end, `  window.ui = {runtimeList, runtimeInfo, defaultRuntime, modelEfforts, modelMenu, optionChange,
     optionsLabel, leaderPayload, renderLeaderRuntime, selectLeaderOption, refreshRuntimes, editorHandoffReason, sessionMenu, chatAccess, goalChatNotes,
+    contextRing, contextControls, sidebarLeader, memberNode, workingRow, compactContext, compactions,
     openTodos, todosOf, pendingOf, todoCard, todoTray, todoExpanded, todoTrayExpanded, todoActions,
     todoResolvePayload, resolveTodo, renderTodos, replace,
     decisionTrust, trustReportUrl, readTrustReport,
     compactDecisionText, decisionOptions, decisionCard, decisionsOpen,
     commentButton, commentsMarkup, sessionComments, loadComments, postComment,
     route() {readRoute(); return {view,leaderId,readOnlyId};},
-    services(values) {if(values.api)api=values.api;if(values.loadState)loadState=values.loadState;if(values.toast)toast=values.toast;},
+    services(values) {if(values.api)api=values.api;if(values.loadState)loadState=values.loadState;if(values.toast)toast=values.toast;if(values.render)render=values.render;if(values.watchCompact)CrewChat.watchCompact=values.watchCompact;},
     setState(value) {state=value;runtimesCache=null;}};\n})();`), sandbox);
   sandbox.window.ui.setState(state);
   return {ui:sandbox.window.ui, nodes, location:sandbox.location};
@@ -469,4 +474,66 @@ test("only a leader menu offers whole-department compaction, separate from compa
   assert.match(menu, /data-act="compact-department" data-id="lead"[^>]*>压缩整个部门…/);
   assert.match(menu, /data-act="compact" data-id="lead"[^>]*>压缩上下文/);
   assert(!ui.sessionMenu(member).includes("compact-department"));
+});
+
+function contextState(runtime="codex") {
+  const state=fixture(),lead=session({session_id:"lead",name:'Leader <&"',runtime,context:{used:12000,max:100000},
+    status:"idle",busy:false,priority:null,goal:"goal",pending:0,unread:0,codex:[],member_ids:["member"]});
+  const member={...lead,session_id:"member",name:"Member",leader_session_id:"lead",group:"Leader",task:"task"};
+  return {...state,project:{name:"fixture"},leaders:[lead],members:[member],decisions:[]};
+}
+
+test("every context ring is a named native button at low and high usage across both carriers and roles",()=>{
+  for(const runtime of ["claude","codex"])for(const used of [1000,49000,95000]){
+    const state=contextState(runtime),{ui}=harness(state);
+    for(const item of [...state.leaders,...state.members]){
+      item.context.used=used;
+      const html=ui.contextRing(item);
+      assert.match(html,/^<button type="button" class="context-ring /);
+      assert(html.includes(`data-act="context-compact" data-id="${item.session_id}"`));
+      assert(html.includes("点击压缩上下文"));assert(!html.includes('role="img"'));
+      assert(!html.includes(' disabled'));assert(!html.includes('Leader <&"'));
+      assert.equal((ui.contextControls(item).match(/<button /g)||[]).length,1,"the ring replaces the duplicate text control");
+    }
+    assert(ui.sidebarLeader(state.leaders[0]).startsWith('<div draggable="true"'));
+    assert(ui.memberNode(state.members[0]).includes('<div class="node session-surface'));
+    assert(ui.workingRow(state.leaders[0]).includes('class="session-open"'));
+  }
+});
+
+test("a ring queues only its own session, suppresses duplicate clicks, and clears on actual completion",async()=>{
+  for(const runtime of ["claude","codex"])for(const id of ["lead","member"]){
+    const {ui}=harness(contextState(runtime)),writes=[],toasts=[];let watcher,release;
+    ui.services({render(){},loadState:async()=>{},toast:text=>toasts.push(text),
+      watchCompact:async(sid,options)=>{assert.equal(sid,id);watcher=options;return()=>{};},
+      api:async(path,data)=>{writes.push({path,...data});return new Promise(resolve=>{release=resolve;});}});
+    const pending=ui.compactContext(id);await Promise.resolve();await Promise.resolve();
+    await ui.compactContext(id);
+    assert.equal(writes.length,1);assert.deepEqual(plain(writes[0]),{path:"/api/session/compact",session_id:id,after_turn:true});
+    release({ok:true,queued:true,message:"这一轮说完后压缩"});await pending;
+    assert.equal(ui.compactions.get(id).phase,"queued");
+    const own=ui.contextRing({...contextState(runtime).leaders[0],session_id:id});
+    assert(own.includes('aria-busy="true" disabled'));assert(own.includes("已排队"));
+    watcher.onFinish({type:"compact",seq:3});assert.equal(ui.compactions.size,0);
+    assert(toasts.some(text=>text.includes("这一轮说完后压缩")));
+  }
+});
+
+test("failed or cancelled compaction restores its ring; a fast completion cannot be reset by the HTTP receipt",async()=>{
+  for(const kind of ["rejected","cancelled","completed"]){
+    const state=contextState(),{ui}=harness(state),toasts=[];let watcher,closed=0;
+    ui.services({render(){},loadState:async()=>{},toast:text=>toasts.push(text),
+      watchCompact:async(_id,options)=>{watcher=options;return()=>closed++;},
+      api:async()=>{if(kind==="rejected")throw Error("原生压缩拒绝");if(kind==="completed")watcher.onFinish({type:"compact"});return{ok:true};}});
+    if(kind==="rejected"){await assert.rejects(ui.compactContext("member"),/原生压缩拒绝/);assert.equal(closed,1);}
+    else {await ui.compactContext("member");if(kind==="cancelled")watcher.onFinish({type:"compact_cancelled",reason:"进程已退出"});}
+    assert.equal(ui.compactions.size,0);assert(!ui.contextRing(state.members[0]).includes(" disabled"));
+    if(kind==="cancelled")assert(toasts.some(text=>text.includes("进程已退出")));
+  }
+});
+
+test("an externally owned ring gives the exact native-tool instruction without starting another process",async()=>{
+  const state=contextState("claude");state.members[0].where="vscode";
+  const {ui}=harness(state),toasts=[];ui.services({toast:text=>toasts.push(text)});
+  await ui.compactContext("member");assert.equal(ui.compactions.size,0);assert.match(toasts[0],/Member.*原工具.*\/compact/);
 });

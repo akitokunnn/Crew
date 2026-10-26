@@ -227,7 +227,14 @@ svg.i.xs{width:12px;height:12px}
 .node>.member-model{margin:5px 0 0 35px}
 .ttl>.member-model{margin-left:10px}
 /* A gauge, not a spinner: full faint track, square caps and the percentage beside it. */
-.context-ring{display:inline-flex;align-items:center;gap:3px;vertical-align:middle;flex:none;line-height:1}
+.context-ring{display:inline-flex;align-items:center;gap:3px;vertical-align:middle;flex:none;line-height:1;border:0;background:transparent;border-radius:6px;padding:4px;cursor:pointer;transition:background .15s,box-shadow .15s}
+.context-ring:hover{background:var(--accent-soft);box-shadow:0 0 0 1px var(--line-strong)}
+.context-ring:active{background:var(--accent-soft);transform:scale(.96)}
+.context-ring.is-compacting{background:var(--accent-soft);box-shadow:inset 0 0 0 1px var(--accent);color:var(--accent-text);opacity:1;cursor:progress}
+.session-surface{position:relative}
+.session-open{position:absolute;inset:0;width:100%;height:100%;padding:0;border:0;background:transparent;border-radius:inherit;cursor:pointer;z-index:1}
+.session-open:focus-visible{outline-offset:-2px}
+.session-surface :is(a,button):not(.session-open){position:relative;z-index:2}
 .context-ring svg{width:16px;height:16px;fill:none;stroke-width:3}
 .context-pct{font-size:calc(11px * var(--fs));font-weight:600;font-variant-numeric:tabular-nums}
 .context-ring.calm{color:var(--text-3)}
@@ -236,7 +243,6 @@ svg.i.xs{width:12px;height:12px}
 .context-track{stroke:currentColor;opacity:.28}
 .context-arc{stroke:currentColor;transform:rotate(-90deg);transform-origin:center;stroke-linecap:butt}
 .context-controls{display:inline-flex;align-items:center;gap:5px;flex:none}
-.context-compact{padding:4px 8px;font-size:calc(12px * var(--fs));line-height:1.35}
 .context-hint{font-size:calc(11px * var(--fs));font-weight:400;color:var(--text-2)}
 .leader-item .nm>.context-ring{margin-left:5px}
 .ttl>.context-ring{margin-left:6px}
