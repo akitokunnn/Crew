@@ -713,7 +713,10 @@ class Manager:
                 if previous != sid:
                     old = goals.get_execution(conn, previous)
                     old_goal = goals.get(conn, old['goal_id'])
-                    if old['goal_id'] != (execution or {}).get('goal_id') and old_goal['status'] not in goals.TERMINAL:
+                    # Awaiting human review is a delivered phase, independent
+                    # of whether its person's old native is still loaded.
+                    if (old['goal_id'] != (execution or {}).get('goal_id')
+                            and old_goal['status'] not in goals.TERMINAL | {'awaiting_acceptance'}):
                         if old_goal['leader_session_id'] == sid:
                             goals.request_pause(conn, old['goal_id'], manual=False, reason='该人员切换到另一个执行')
                         else:

@@ -9,6 +9,7 @@ import tests
 from unittest import mock
 from crew import board, chat, codex_runtime, goals, hooks, messaging, runtimes, store, web
 import test_chat_http as chat_helpers
+import test_codex_runtime as codex_helpers
 from test_shell import ShellFixture, PLUGIN, NOW
 
 
@@ -495,7 +496,12 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
             'artifacts': ['sample.json'], 'tradeoffs': [], 'follow_up': 'User can replay sample.',
             'investment': {'usage': None, 'roles': []}}
 
-    def awaiting_acceptance(self):
+    def awaiting_acceptance(self, runtime='claude'):
+        if runtime == 'codex':
+            patcher = mock.patch('crew.codex_runtime._ObservedClient', codex_helpers.FakeClient)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+            runtimes.set(self.conn, 's3', 'codex', 'general-native')
         goal = self.goal()
         code, receipt, _ = self.send_goal(goal)
         self.assertEqual(code, 200, receipt)
@@ -504,8 +510,14 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         code, finished, _ = self.request('/api/goals/agent?project=demo', {'actor_session_id': 's3',
             'execution_id': receipt['execution_id'], 'action': 'finish', 'data': {'report': data}})
         self.assertEqual(code, 200, finished)
-        process = self.processes[-1]
-        self.finish_turn(receipt['execution_id'], process)
+        self.assertIn('等待用户验收', finished['message'])
+        self.assertIn('验收决定仍需用户本人提交', finished['message'])
+        current = self.server.service.chat.processes[receipt['execution_id']]
+        process = current.process
+        if runtime == 'codex':
+            current.client.finish()
+        else:
+            self.finish_turn(receipt['execution_id'], process)
         self.server.service.chat.goal_controller.sync(self.conn, goal['id'])
         current = goals.get(self.conn, goal['id'])
         self.assertEqual(current['status'], 'awaiting_acceptance')
@@ -525,6 +537,139 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(detail['acceptance_review']['report_id'], report['id'])
         self.assertTrue(detail['acceptance_review']['accepted'])
         self.assertEqual(tuple(self.conn.execute('SELECT data_json,html,outcome FROM goal_reports WHERE id=?', (report['id'],)).fetchone()), original)
+
+    def test_returning_to_general_chat_preserves_finalized_acceptance(self):
+        goal, report, execution_id, process = self.awaiting_acceptance()
+        original = tuple(self.conn.execute('SELECT data_json,html,outcome FROM goal_reports WHERE id=?', (report['id'],)).fetchone())
+        code, reply, _ = self.request('/api/chat/send?project=demo', {
+            'session_id': 's3', 'text': 'Discuss the next step while I test the delivered result.',
+            'message_id': 'general-after-submitted-report'})
+        self.assertEqual(code, 200, reply)
+        current = goals.get(self.conn, goal['id'])
+        self.assertEqual(current['status'], 'awaiting_acceptance')
+        self.assertFalse(current['manual_pause'])
+        self.assertEqual(goals.get_finish(self.conn, goal['id'])['status'], 'finalized')
+        self.assertIsNotNone(process.poll())
+        self.assertEqual(tuple(self.conn.execute('SELECT data_json,html,outcome FROM goal_reports WHERE id=?', (report['id'],)).fetchone()), original)
+        code, accepted, _ = self.request('/api/goals/action?project=demo', {
+            'goal_id': goal['id'], 'action': 'accept', 'version': current['version'], 'report_id': report['id']})
+        self.assertEqual(code, 200, accepted)
+        self.assertEqual(accepted['goal']['status'], 'completed')
+
+    def background_after_acceptance(self, runtime):
+        goal, report, execution_id, process = self.awaiting_acceptance(runtime)
+        manager = self.server.service.chat
+        manager.journal('s3').message('prior-general', 'General discussion before this goal.')
+        result = manager.send(board.session(self.conn, 's3'), 'Collect remaining user tasks.',
+                              source='crew', identity='housekeeping-after-report')
+        self.assertTrue(result['accepted'])
+        self.assertEqual(goals.get(self.conn, goal['id'])['status'], 'awaiting_acceptance')
+        self.assertEqual(goals.get_finish(self.conn, goal['id'])['status'], 'finalized')
+        self.assertTrue(manager.running('s3'))
+        self.assertIsNotNone(process.poll())
+        self.assertEqual(goals.get_report(self.conn, report['id'])['outcome'], 'awaiting_acceptance')
+
+    def test_queued_crew_work_after_claude_report_preserves_acceptance(self):
+        self.background_after_acceptance('claude')
+
+    def test_queued_crew_work_after_codex_report_preserves_acceptance(self):
+        self.background_after_acceptance('codex')
+
+    def test_starting_next_goal_does_not_pause_previous_acceptance(self):
+        previous, report, _, process = self.awaiting_acceptance()
+        next_goal = self.goal()
+        code, result, _ = self.send_goal(next_goal, 'Begin the separate next goal.')
+        self.assertEqual(code, 200, result)
+        self.assertEqual(goals.get(self.conn, previous['id'])['status'], 'awaiting_acceptance')
+        self.assertEqual(goals.get(self.conn, next_goal['id'])['status'], 'running')
+        self.assertIsNotNone(process.poll())
+
+    def test_explicit_user_pause_still_pauses_waiting_acceptance(self):
+        goal, _, _, _ = self.awaiting_acceptance()
+        code, result, _ = self.request('/api/goals/action?project=demo', {
+            'goal_id': goal['id'], 'action': 'pause', 'version': goal['version']})
+        self.assertEqual(code, 200, result)
+        self.assertTrue(goals.get(self.conn, goal['id'])['manual_pause'])
+        self.assertIn(goals.get(self.conn, goal['id'])['status'], ('pausing', 'paused'))
+
+    def test_resuming_already_paused_finalized_report_restores_review_without_model_work(self):
+        goal, report, execution_id, process = self.awaiting_acceptance()
+        # Persist the same contradiction produced by the older identity handoff.
+        goals.request_pause(self.conn, goal['id'], manual=False, reason='该人员切换到另一个执行')
+        self.server.service.chat.goal_controller.sync(self.conn, goal['id'])
+        current = goals.get(self.conn, goal['id'])
+        self.assertEqual(current['status'], 'paused')
+        original = tuple(self.conn.execute('SELECT data_json,html FROM goal_reports WHERE id=?', (report['id'],)).fetchone())
+        launches, inputs = len(self.processes), len(self.server.service.chat.journal(execution_id).events)
+        code, result, _ = self.request('/api/goals/action?project=demo', {
+            'goal_id': goal['id'], 'action': 'resume', 'version': current['version']})
+        self.assertEqual(code, 200, result)
+        self.assertEqual(result['resumed'], 'acceptance')
+        self.assertEqual(result['goal']['status'], 'awaiting_acceptance')
+        self.assertEqual(len(self.processes), launches)
+        self.assertEqual(len(self.server.service.chat.journal(execution_id).events), inputs)
+        self.assertEqual(tuple(self.conn.execute('SELECT data_json,html FROM goal_reports WHERE id=?', (report['id'],)).fetchone()), original)
+
+    def test_agent_review_resume_cannot_override_manual_pause(self):
+        goal, _, _, _ = self.awaiting_acceptance()
+        goals.request_pause(self.conn, goal['id'], manual=True)
+        self.server.service.chat.goal_controller.sync(self.conn, goal['id'])
+        code, result, _ = self.request('/api/goals/agent?project=demo', {
+            'actor_session_id': 's3', 'action': 'resume', 'data': {'goal_id': goal['id']}})
+        self.assertEqual(code, 409, result)
+        self.assertTrue(goals.get(self.conn, goal['id'])['manual_pause'])
+
+    def test_agent_resumes_finalized_review_without_starting_another_turn(self):
+        goal, _, _, _ = self.awaiting_acceptance()
+        goals.request_pause(self.conn, goal['id'], manual=False)
+        self.server.service.chat.goal_controller.sync(self.conn, goal['id'])
+        launches = len(self.processes)
+        code, result, _ = self.request('/api/goals/agent?project=demo', {
+            'actor_session_id': 's3', 'action': 'resume', 'data': {'goal_id': goal['id']}})
+        self.assertEqual(code, 200, result)
+        self.assertEqual(result['resumed'], 'acceptance')
+        self.assertEqual(result['goal']['status'], 'awaiting_acceptance')
+        self.assertEqual(len(self.processes), launches)
+
+    def test_review_resume_cannot_reuse_an_older_superseded_report(self):
+        goal, _, _, _ = self.awaiting_acceptance()
+        goals.save_report(self.conn, goal['id'], {**self.report(), 'outcome': 'awaiting_acceptance'})
+        goals.request_pause(self.conn, goal['id'], manual=False)
+        self.server.service.chat.goal_controller.sync(self.conn, goal['id'])
+        self.assertIsNone(goals.resume_review(self.conn, goal['id']))
+        self.assertEqual(goals.get(self.conn, goal['id'])['status'], 'paused')
+
+    def member_return_after_acceptance(self, runtime):
+        if runtime == 'codex':
+            patcher = mock.patch('crew.codex_runtime._ObservedClient', codex_helpers.FakeClient)
+            patcher.start(); self.addCleanup(patcher.stop)
+            runtimes.set(self.conn, 's1', 'codex', 'member-general-native')
+        goal = self.goal()
+        goals.transition(self.conn, goal['id'], 'running')
+        goals.assign(self.conn, goal['id'], 's1', 'Measure the assigned sample.')
+        manager = self.server.service.chat
+        receipt = manager.goal_controller.send(goal['id'], 's1', 'Measure the sample.')
+        current = manager.processes[receipt['execution_id']]
+        if runtime == 'codex':
+            current.client.finish()
+        else:
+            self.finish_turn(receipt['execution_id'], current.process)
+        report = goals.save_report(self.conn, goal['id'], {**self.report(), 'outcome': 'awaiting_acceptance'})
+        goals.request_finish(self.conn, goal['id'], report['id'], actor='s3')
+        manager.goal_controller.sync(self.conn, goal['id'])
+        self.assertEqual(goals.get(self.conn, goal['id'])['status'], 'awaiting_acceptance')
+        code, result, _ = self.request('/api/chat/send?project=demo', {
+            'session_id': 's1', 'text': 'Discuss a separate question.', 'message_id': 'member-general-after-report'})
+        self.assertEqual(code, 200, result)
+        self.assertEqual(goals.get(self.conn, goal['id'])['status'], 'awaiting_acceptance')
+        self.assertNotEqual(goals.get_execution(self.conn, receipt['execution_id'])['status'], 'paused')
+        self.assertIsNotNone(current.process.poll())
+
+    def test_claude_member_handoff_does_not_mark_delivered_work_paused(self):
+        self.member_return_after_acceptance('claude')
+
+    def test_codex_member_handoff_does_not_mark_delivered_work_paused(self):
+        self.member_return_after_acceptance('codex')
 
     def test_human_rejection_fails_the_round_then_can_explicitly_reopen(self):
         goal, report, _, process = self.awaiting_acceptance()
