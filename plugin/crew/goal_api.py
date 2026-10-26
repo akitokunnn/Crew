@@ -53,38 +53,14 @@ def detail(conn, project, identity):
     return {'goal': card(conn, value), 'executions': executions,
             'context': context(conn, identity, current[-1]['id'] if current else None), 'reports': reports,
             'documents': documents.list(conn, project, goal_id=identity),
-            'acceptance_review': goals.acceptance_review(conn, identity)}
+            'acceptance_review': goals.acceptance_review(conn, identity),
+            'previous_acceptance_review': _previous_review(conn, identity, value['current_round'])}
 
 
-def _stop_acceptance_executions(control, conn, goal_id):
-    """Refuse live/unknown writers; drain idle owned runtimes before the human decision."""
-    manager, idle, agents = control.manager, [], None
-    for row in conn.execute('SELECT id FROM goal_executions WHERE goal_id=?', (goal_id,)):
-        key = row['id']
-        current = manager.processes.get(key)
-        if manager.running(key):
-            if manager.busy(key):
-                raise board.Conflict('原生执行仍在工作，尚不能提交验收决定')
-            idle.append(key)
-        elif current is not None:
-            if not current.reader_done.is_set():
-                raise board.Conflict('原生执行输出尚未排空，尚不能提交验收决定')
-        else:
-            execution = goals.get_execution(conn, key)
-            if execution['runtime'] == 'claude':
-                identities = {binding['native_id'] for binding in execution['bindings'] if binding['runtime'] == 'claude'}
-                if identities:
-                    if agents is None:
-                        agents = manager._external_agents()
-                    if any(agent['sessionId'] in identities for agent in agents):
-                        raise board.Conflict('原生执行仍在外部运行，尚不能提交验收决定')
-            else:
-                from .codex_runtime import RuntimeLease
-                lease = RuntimeLease(manager.home, key).acquire()
-                lease.release()
-    for key in idle:
-        manager.stop_managed(key)
-    control.sync(conn, goal_id)
+def _previous_review(conn, goal_id, current_round):
+    row = conn.execute('SELECT * FROM goal_acceptances WHERE goal_id=? AND round<? ORDER BY round DESC LIMIT 1',
+                       (goal_id, current_round)).fetchone()
+    return {**dict(row), 'accepted': bool(row['accepted'])} if row else None
 
 
 def post(service, conn, project, path, data):
@@ -120,7 +96,7 @@ def post(service, conn, project, path, data):
                        'report_id': data.get('report_id')}
             with control.manager.lock:
                 goals.acceptance_target(conn, identity, action == 'accept', **options)
-                _stop_acceptance_executions(control, conn, identity)
+                control.stop_delivered(conn, identity)
                 goals.review_acceptance(conn, identity, action == 'accept', **options)
             return {'goal': card(conn, goals.get(conn, identity)),
                     'acceptance_review': goals.acceptance_review(conn, identity)}

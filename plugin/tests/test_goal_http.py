@@ -687,6 +687,90 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(reopened['goal']['current_round'], 2)
         self.assertEqual(len(self.processes), 1)
 
+    def follow_up_delivered_goal(self, runtime, decision=None):
+        goal, report, old_execution, process = self.awaiting_acceptance(runtime)
+        original = goals.get_report(self.conn, report['id'])
+        if decision:
+            code, result, _ = self.request('/api/goals/action?project=demo', {
+                'goal_id': goal['id'], 'action': decision, 'version': goal['version'],
+                'note': 'The report needs the original replay evidence.', 'report_id': report['id']})
+            self.assertEqual(code, 200, result)
+        manager = self.server.service.chat
+        if runtime == 'codex':
+            def fresh_client(**options):
+                client = codex_helpers.FakeClient(**options)
+                client.thread_id = 'followup-native'
+                return client
+            patcher = mock.patch('crew.codex_runtime._ObservedClient', side_effect=fresh_client)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        manager.journal(old_execution).message('earlier-rule', 'Keep original recordings and do not upload them.', source='human')
+        count = len(self.processes)
+        # Reading the completed/rejected task is still passive.
+        self.assertEqual(self.request('/api/goal?' + urlencode({'project': 'demo', 'id': goal['id']}))[0], 200)
+        self.assertEqual(len(self.processes), count)
+        note = 'Please fix the report conclusion and explain the final verification.'
+        code, reply, _ = self.send_goal(goal, note, message_id='human-report-followup')
+        self.assertEqual(code, 200, reply)
+        current = goals.get(self.conn, goal['id'])
+        self.assertEqual((current['current_round'], current['status']), (2, 'running'))
+        self.assertNotEqual(reply['execution_id'], old_execution)
+        self.assertIn(note, current['requirements']['request'])
+        self.assertEqual(goals.get_report(self.conn, report['id'])['html'], original['html'])
+        self.assertFalse(goals.get_report(self.conn, report['id'])['current'])
+        execution = goals.get_execution(self.conn, reply['execution_id'])
+        manifest = self.conn.execute('SELECT id FROM goal_context_manifests WHERE execution_id=?', (execution['id'],)).fetchone()[0]
+        context_text = self.conn.execute('SELECT text FROM goal_context_manifests WHERE id=?', (manifest,)).fetchone()[0]
+        self.assertIn('Keep original recordings and do not upload them.', context_text)
+        self.assertIn(report['id'], context_text)
+        self.assertIn(report['data']['summary'], context_text)
+        if decision:
+            self.assertIn('The report needs the original replay evidence.', context_text)
+            detail = self.request('/api/goal?' + urlencode({'project': 'demo', 'id': goal['id']}))[1]
+            self.assertEqual(detail['previous_acceptance_review']['report_id'], report['id'])
+        count = len(self.processes)
+        # A network retry after reopening cannot create another round/input.
+        code, retry, _ = self.send_goal(goal, note, message_id='human-report-followup')
+        self.assertEqual(code, 200, retry)
+        self.assertTrue(retry['duplicate'])
+        self.assertEqual(retry['execution_id'], reply['execution_id'])
+        self.assertEqual(goals.get(self.conn, goal['id'])['current_round'], 2)
+        self.assertEqual(len(self.processes), count)
+        if runtime == 'codex':
+            manager.processes[reply['execution_id']].client.finish()
+        else:
+            self.finish_turn(reply['execution_id'], self.processes[-1])
+        manager.goal_controller.sync(self.conn, goal['id'])
+        goals.save_report(self.conn, goal['id'], self.report())
+        goals.transition(self.conn, goal['id'], 'completed')
+        code, retry, _ = self.send_goal(goal, note, message_id='human-report-followup')
+        self.assertEqual(code, 200, retry)
+        self.assertTrue(retry['duplicate'])
+        self.assertEqual(goals.get(self.conn, goal['id'])['current_round'], 2)
+
+    def test_internal_message_cannot_reopen_rejected_delivery(self):
+        goal, report, _, _ = self.awaiting_acceptance()
+        goals.review_acceptance(self.conn, goal['id'], False, note='Fix the conclusion.',
+                                expected_version=goal['version'], report_id=report['id'])
+        with self.assertRaises(board.Conflict):
+            self.server.service.chat.goal_controller.send(goal['id'], 's3', 'Old queued result.', source='crew')
+        self.assertEqual(goals.get(self.conn, goal['id'])['current_round'], 1)
+
+    def test_claude_pending_acceptance_can_continue_with_human_message(self):
+        self.follow_up_delivered_goal('claude')
+
+    def test_codex_pending_acceptance_can_continue_with_human_message(self):
+        self.follow_up_delivered_goal('codex')
+
+    def test_claude_rejected_goal_can_continue_with_human_message(self):
+        self.follow_up_delivered_goal('claude', 'reject')
+
+    def test_codex_rejected_goal_can_continue_with_human_message(self):
+        self.follow_up_delivered_goal('codex', 'reject')
+
+    def test_completed_goal_can_continue_with_human_message(self):
+        self.follow_up_delivered_goal('claude', 'accept')
+
     def test_acceptance_rejects_ai_stale_ui_and_a_native_still_actually_busy(self):
         goal, report, execution_id, process = self.awaiting_acceptance()
         body = {'goal_id': goal['id'], 'action': 'accept', 'version': goal['version'], 'report_id': report['id']}
