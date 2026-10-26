@@ -52,6 +52,10 @@
     <aside class="rp" id="right-panel" aria-label="本组架构图"></aside>
   </div>
   <div id="overlay-root"></div>
+  <section id="chat-attention" class="chat-attention" popover="auto" role="dialog" aria-labelledby="attention-title" aria-describedby="attention-scope">
+    <header class="attention-head"><div><h2 id="attention-title">待你处理</h2><p id="attention-scope"></p></div><button type="button" class="icon-btn" popovertarget="chat-attention" popovertargetaction="hide" aria-label="收起待处理" autofocus>×</button></header>
+    <div class="attention-scroll"><div id="native-approval-tray"></div><div id="decision-tray"></div><p id="attention-empty" class="attention-empty">这里暂时没有待处理事项</p></div>
+  </section>
   <section id="settings-surface" aria-label="Crew 设置" hidden></section>
   <div id="toast-root" aria-live="polite" aria-atomic="true"></div>
 </body>

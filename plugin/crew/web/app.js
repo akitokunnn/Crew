@@ -14,7 +14,7 @@
   let leaderDrag = null, leaderOrderSaving = false;
   let allTab = "tree", period = "week", usageTab = "tree", usage = null, usageLoading = false, usageRequest = 0;
   let cardId = null, cardReturn = null, handoff = null, rightOpen = false, dialogReturn = null;
-  let theme = "system", trayCollapsed = false, paletteItems = [], paletteIndex = 0;
+  let theme = "system", paletteItems = [], paletteIndex = 0;
   let soundGeneration = 0;
   let runtimesCache = null, runtimesPromise = null, runtimesLoading = false, runtimesError = null;
   let commentsSession = null, auxiliaryDialog = 0;
@@ -24,7 +24,8 @@
   let fontScale = 1;
   const FONT_MIN = .9, FONT_MAX = 1.4;
   const decisionsOpen = new Set(), heldExpanded = new Set(), usageCollapsed = new Set(), operationIds = new Set();
-  const todoExpanded = new Set(), todoTrayExpanded = new Set(), todoActions = new Map(), todoSaving = new Set();
+  const todoExpanded = new Set(), todoActions = new Map(), todoSaving = new Set();
+  let attentionScope = null;
   let composingInput = null, compositionTimer = null, compositionRenderPending = false;
   const colors = ["#3E7C74", "#8A5A7E", "#A07A3A", "#4F6B8F", "#5E7F55", "#A8604F", "#8C7650", "#5C5F9E", "#A35D6A", "#4F7A8C", "#77773F"];
   const statusText = {working:"在干活", waiting:"等你", idle:"空闲", offline:"离线", closed:"已归档"};
@@ -408,6 +409,22 @@
     $("right-panel").classList.toggle("show", rightOpen);
     $("rp-scrim").classList.toggle("show", rightOpen);
   }
+  function attentionOpen() { return $("chat-attention")?.matches(":popover-open") === true; }
+  function closeAttention(restoreFocus = false) {
+    if (!attentionOpen()) return;
+    $("chat-attention").hidePopover();
+    if (restoreFocus) $("chat-head")?.querySelector('[data-act="attention"]')?.focus({preventScroll:true});
+  }
+  function positionAttention() {
+    const anchor = $("chat-head")?.querySelector('[data-act="attention"]');
+    if (!anchor) return;
+    const panel = $("chat-attention"), rect = anchor.getBoundingClientRect();
+    const width = Math.min(460, window.innerWidth - 24);
+    const top = Math.max(12, Math.min(rect.bottom + 10, window.innerHeight - 180));
+    panel.style.left = `${Math.max(12, Math.min(rect.right - width, window.innerWidth - width - 12))}px`;
+    panel.style.top = `${top}px`;
+    panel.style.maxHeight = `${Math.min(640, window.innerHeight - top - 12)}px`;
+  }
   function renderChat() {
     const item = readOnlyId === null ? leader(leaderId) : member(readOnlyId), group = leader(leaderId), members = membersOf(leaderId);
     const work = group === undefined ? null : groupWork(group);
@@ -425,7 +442,7 @@
     if (mountedChat !== identity) {
       CrewChat.unmount();
       // A report being read in this goal survives a background identity change (read-only, execution, reopened round).
-      const scaffold = '<div id="chat-head"></div><div id="goal-head"></div><div id="goal-chat-hint"></div><div id="native-approval-tray"></div><div id="decision-tray"></div><div id="chat-host" class="chat-host"></div>';
+      const scaffold = '<div id="chat-head"></div><div id="goal-head"></div><div id="goal-chat-hint"></div><div id="chat-host" class="chat-host"></div>';
       if (goals) goals.replaceMain(scaffold); else $("main").innerHTML = scaffold;
       delete $("main").dataset.render;
       mountedChat = identity;
@@ -433,15 +450,21 @@
         async onRouted(id) { let target = (state.goals || []).find(goal => String(goal.id) === String(id)); if (!target) { await loadState(true); if (mountedChat !== identity) return; target = (state.goals || []).find(goal => String(goal.id) === String(id)); } if (target) { toast(`消息已送到任务「${target.title}」。`); navigate("chat", target.leader_session_id, item.session_id === target.leader_session_id ? null : item.session_id, target.id); } }});
     }
     $("main").classList.toggle("goal-list-mode", listing); $("chat-host").hidden = listing;
-    $("decision-tray").hidden = listing;
-    $("native-approval-tray").hidden = listing;
     $("goal-chat-hint").hidden = listing;
     const activeGoals = goalId == null ? (state.goals || []).filter(goal => (item.active_goal_ids || [item.active_goal_id]).some(id => String(id) === String(goal.id))) : [];
     replace($("goal-chat-hint"), activeGoals.length ? `<div class="goal-chat-hint">总对话可继续安排任务和验收。另有 ${activeGoals.length} 个任务：${activeGoals.map(goal => `<button type="button" class="text-link" data-act="active-goal" data-goal-id="${esc(goal.id)}" data-id="${esc(item.session_id)}">${esc(goal.title)} →</button>`).join(" ")}</div>` : unstarted?.hint ? `<div class="goal-chat-hint">${unstarted.hint}</div>` : "");
-    replace($("native-approval-tray"),nativeApprovals?.chatMarkup(item.session_id,goalId,readOnlyId === null) || "");
-    replace($("chat-head"), `<div class="head">${readOnlyId === null ? groupAvatar(item, work) : av(item.name, 30)}<div class="heading-meta"><div class="title"><span class="chat-name" title="${esc(item.name)}">${esc(item.name)}</span>${readOnlyId === null ? priorityBadge(item.priority) : ""}${chatRuntime}</div><div class="sub"><span class="chat-scope" title="${esc(readOnlyId === null ? (item.goal ?? "") : `归 ${item.group} · 成员本人对话`)}">${esc(readOnlyId === null ? (item.goal ?? "") : `归 ${item.group} · 成员本人对话`)}</span>${group === undefined ? "" : `<span class="sep"></span><span class="chat-member-stats ${work.active ? "is-working" : ""}">${members.length} 个下属 · ${work.summary}</span>`}</div></div><div class="right">${goalId == null ? contextControls(item) : ""}${chatModel}${readOnlyId === null ? "" : `<button class="btn ghost" data-act="leader" data-id="${esc(leaderId)}">回到 leader</button><button class="btn ghost" data-act="card" data-id="${esc(item.session_id)}">资料</button>`}<button class="icon-btn" data-act="session-menu" data-id="${esc(item.session_id)}" aria-haspopup="menu" title="会话操作" aria-label="会话操作">⋯</button>${group === undefined ? "" : `<button class="icon-btn rp-toggle" data-act="right-open" title="本组架构图" aria-label="本组架构图">${ic("grid")}</button>`}</div></div>`);
+    const permissions = nativeApprovals?.countForChat(item.session_id, goalId, readOnlyId === null) || 0;
+    const attentionCount = permissions + (readOnlyId === null ? pending.length + groupTodos.length : 0);
+    const scope = `${item.session_id}:${goalId ?? ""}`;
+    if (attentionScope !== scope || listing) closeAttention();
+    attentionScope = scope;
+    replace($("native-approval-tray"), nativeApprovals?.chatMarkup(item.session_id, goalId, readOnlyId === null) || "");
+    $("attention-scope").textContent = `${readOnlyId === null ? group?.name || item.name : item.name} · ${goalId == null ? "全部任务与总对话" : goals?.currentGoal()?.title || "当前任务"}`;
+    replace($("chat-head"), `<div class="head">${readOnlyId === null ? groupAvatar(item, work) : av(item.name, 30)}<div class="heading-meta"><div class="title"><span class="chat-name" title="${esc(item.name)}">${esc(item.name)}</span>${readOnlyId === null ? priorityBadge(item.priority) : ""}${chatRuntime}</div><div class="sub"><span class="chat-scope" title="${esc(readOnlyId === null ? (item.goal ?? "") : `归 ${item.group} · 成员本人对话`)}">${esc(readOnlyId === null ? (item.goal ?? "") : `归 ${item.group} · 成员本人对话`)}</span>${group === undefined ? "" : `<span class="sep"></span><span class="chat-member-stats ${work.active ? "is-working" : ""}">${members.length} 个下属 · ${work.summary}</span>`}</div></div><div class="right">${!listing ? `<button type="button" class="attention-trigger ${attentionCount ? "has-items" : ""}" data-act="attention" popovertarget="chat-attention" aria-haspopup="dialog" aria-controls="chat-attention" aria-expanded="${attentionOpen()}" aria-label="待处理，${attentionCount} 件${readOnlyId === null && held.length ? `，另有 ${held.length} 件挂起` : ""}">${ic("inbox", "sm")}<span>待处理</span>${attentionCount ? `<span class="attention-count">${attentionCount}</span>` : ""}</button>` : ""}${goalId == null ? contextControls(item) : ""}${chatModel}${readOnlyId === null ? "" : `<button class="btn ghost" data-act="leader" data-id="${esc(leaderId)}">回到 leader</button><button class="btn ghost" data-act="card" data-id="${esc(item.session_id)}">资料</button>`}<button class="icon-btn" data-act="session-menu" data-id="${esc(item.session_id)}" aria-haspopup="menu" title="会话操作" aria-label="会话操作">⋯</button>${group === undefined ? "" : `<button class="icon-btn rp-toggle" data-act="right-open" title="本组架构图" aria-label="本组架构图">${ic("grid")}</button>`}</div></div>`);
     replace($("goal-head"), group ? goals?.groupMarkup(leaderId) || "" : "");
-    replace($("decision-tray"), readOnlyId !== null || pending.length + held.length + groupTodos.length === 0 ? "" : `<div class="tray"><div class="tray-in">${todoTray(groupTodos, leaderId)}${pending.length === 0 ? "" : `<section class="tray-pending ${trayCollapsed ? "collapsed" : ""}"><button class="tray-head" data-act="tray" aria-expanded="${!trayCollapsed}">${ic("down", "sm chev")}等你拍板 · ${pending.length}</button><div class="tray-list">${pending.map(decisionCard).join("")}</div></section>`}${heldGroup(held, "tray")}</div></div>`);
+    replace($("decision-tray"), readOnlyId !== null ? "" : `<div class="tray-in">${todoTray(groupTodos, leaderId)}${pending.length === 0 ? "" : `<section class="tray-pending"><h3 class="attention-section-title">等你拍板 <span>${pending.length}</span></h3><div class="tray-list">${pending.map(decisionCard).join("")}</div></section>`}${heldGroup(held, "tray")}</div>`);
+    $("attention-empty").hidden = permissions + (readOnlyId === null ? pending.length + held.length + groupTodos.length : 0) > 0;
+    if (attentionOpen()) positionAttention();
     if (readOnlyId === null && leaderTrust !== null) {
       const slot = document.createElement("span"); slot.innerHTML = leaderTrust.indicator(item);
       const anchor = $("chat-head").querySelector('[data-act="session-menu"]');
@@ -478,8 +501,7 @@
   }
   function todoTray(items, id) {
     if (items.length === 0) return "";
-    const expanded = todoTrayExpanded.has(id);
-    return `<section class="todo-tray ${expanded ? "" : "collapsed"}"><button class="tray-head todo-tray-head" data-act="todo-tray" data-id="${esc(id)}" aria-expanded="${expanded}" aria-controls="todo-tray-${esc(id)}">${ic("down", "sm chev")}本组待你动手 · ${items.length}</button><div class="tray-list todo-tray-list" id="todo-tray-${esc(id)}">${items.map(todoCard).join("")}</div></section>`;
+    return `<section class="todo-tray"><h3 class="attention-section-title">待你动手 <span>${items.length}</span></h3><div class="tray-list todo-tray-list" id="todo-tray-${esc(id)}">${items.map(todoCard).join("")}</div></section>`;
   }
   function renderTodos() {
     const items = openTodos();
@@ -721,6 +743,7 @@
     settingsReturn?.focus?.({preventScroll:true}); settingsReturn = null;
   }
   function openSettings(category = "ai") {
+    closeAttention();
     settingsReturn = document.activeElement; settingsOpen = true;
     if (mountedChat !== null) { CrewChat.unmount(); mountedChat = null; }
     if (mountedChannel) { CrewChannel.unmount(); mountedChannel = false; }
@@ -748,6 +771,7 @@
     });
   }
   function openWorkspaceSettings() {
+    closeAttention();
     if (window.navigator?.userAgent.includes("Electron/")) { location.assign(`/?workspace-settings=${encodeURIComponent(project)}`); return; }
     workspaceOpen = true;
     if (mountedChat !== null) { CrewChat.unmount(); mountedChat = null; }
@@ -896,6 +920,7 @@
   function navigate(next, id = null, readonly = null, nextGoal = undefined) {
     if (nextGoal === undefined) nextGoal = next === "chat" && id === leaderId ? goalId : null;
     const sameScope = next === "chat" && view === "chat" && leaderId === id && String(goalId) === String(nextGoal);
+    if (!sameScope || readOnlyId !== readonly) closeAttention();
     if (view === "chat" && (!sameScope || readOnlyId !== readonly)) { CrewChat.unmount(); mountedChat = null; }
     if (!sameScope) { goals?.closeDrawer(); rightOpen = false; }
     view = next; leaderId = id; readOnlyId = readonly; goalId = next === "chat" ? nextGoal : null;
@@ -916,6 +941,7 @@
     if (goalId !== null) { const goal = (state.goals || []).find(item => String(item.id) === goalId); if (!goal || goal.leader_session_id !== leaderId) goalId = null; }
   }
   function render() {
+    if (view !== "chat" || settingsOpen || workspaceOpen) closeAttention();
     if (settingsOpen || workspaceOpen) return;
     if (view !== "chat") goals?.sync(null, null);
     $("app").classList.toggle("wide", view !== "chat" || leaderId === null); renderSidebar();
@@ -998,6 +1024,12 @@
       }, 0);
     });
     $("overlay-root").innerHTML = '<button class="rp-scrim" id="rp-scrim" data-act="right-close" aria-label="关闭架构图"></button><div class="card-back" id="card-back"></div><section class="card" id="card" role="dialog" aria-modal="true" aria-label="下属卡片" tabindex="-1"></section><div class="menu" id="menu" role="menu"></div><div class="backdrop" id="backdrop"></div><div id="settings-parking" hidden><section class="settings-popover" id="settings" aria-label="外观设置"></section></div>';
+    document.addEventListener("click", event => { if (event.target.closest('#chat-attention [data-file-path],#chat-attention [data-document-id]')) closeAttention(); }, true);
+    $("chat-attention").addEventListener("beforetoggle", event => { if (event.newState === "open") positionAttention(); });
+    $("chat-attention").addEventListener("toggle", () => {
+      $("chat-head")?.querySelector('[data-act="attention"]')?.setAttribute("aria-expanded", String(attentionOpen()));
+    });
+    window.addEventListener("resize", () => { if (attentionOpen()) positionAttention(); });
     maintenance = window.CrewMaintenance.create({api,
       async onCleaned() { await loadState(true); if (view !== "all") navigate("all"); toast("已归档旧工作，可以重新开始"); }});
     gitSettings = CrewGitSettings.create({read:name => api(`/api/git/settings?project=${encodeURIComponent(name)}`), save:body => api("/api/git/settings", body),
@@ -1089,7 +1121,6 @@
       else if (act === "member-chat") { const item = member(id); if (item) { if (cardId !== null) closeCard(); goals?.closeList(); navigate("chat", item.leader_session_id, item.session_id); } }
       else if (act === "view") { if (cardId !== null) closeCard(); navigate(button.dataset.view); }
       else if (act === "todo-toggle") { if (todoExpanded.has(id)) todoExpanded.delete(id); else todoExpanded.add(id); renderTodoSurface(); }
-      else if (act === "todo-tray") { if (todoTrayExpanded.has(id)) todoTrayExpanded.delete(id); else todoTrayExpanded.add(id); renderChat(); }
       else if (act === "todo-action") {
         const item = todoById(id);
         if (item === undefined) return;
@@ -1105,7 +1136,6 @@
       else if (act === "all-tab") { allTab = button.dataset.tab; renderAll(); }
       else if (act === "card") openCard(id);
       else if (act === "card-close") closeCard();
-      else if (act === "tray") { trayCollapsed = !trayCollapsed; renderChat(); }
       else if (act === "holds") { const context = button.dataset.context; if (heldExpanded.has(context)) heldExpanded.delete(context); else heldExpanded.add(context); if (view === "chat") renderChat(); else renderAll(); }
       else if (act === "decision-toggle") { const key = Number(id); if (decisionsOpen.has(key)) decisionsOpen.delete(key); else decisionsOpen.add(key); if (view === "chat") renderChat(); else renderAll(); }
       else if (act === "decision-clarify") action(`clarify:${id}`, async () => { button.disabled = true; try { await api("/api/decision/clarify", {id:Number(id)}); await loadState(true); toast("已请 leader 补充说明"); } finally { button.disabled = false; } });
@@ -1219,6 +1249,7 @@
     }, true);
     document.addEventListener("keydown", event => {
       if (workspaceOpen) return;
+      if (event.key === "Escape" && attentionOpen() && !event.isComposing) { event.preventDefault(); closeAttention(true); return; }
       if (event.key === "ContextMenu" || event.shiftKey && event.key === "F10") {
         const surface = sessionSurface(event.target);
         if (surface !== null) { event.preventDefault(); openSessionMenu(surface, surface.dataset.sessionMenu === undefined ? surface.dataset.id : surface.dataset.sessionMenu); return; }

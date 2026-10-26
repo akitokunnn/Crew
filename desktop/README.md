@@ -2,6 +2,8 @@
 
 原生 Electron 窗口、工作区首页和系统托盘。需要本机已有 Python 3，以及实际要使用的 Claude Code / Codex；普通工作文件夹无需 Git，后端继续使用 Python 标准库。
 
+0.2.33 将对话顶部的人工待办、拍板和原生权限确认收进“待处理”浮卡，数量与打开状态始终可见，内容在浮卡内滚动。支持 Esc / 点击外部收起，保留备注、中文输入和阅读位置；总对话、任务及成员按原归属展示。隔离交互验收：`node plugin/tests/smoke_attention_popover.cjs`（仓库根目录）。
+
 0.2.32 补齐总对话与任务并行时的协作路由。任务中可联系别组 leader，由对方总对话协调；明确回复按原消息回到原任务或总对话。首次总对话与已有任务可共存，停止、等待、失效和原生回执未知分别处理，不盲目重发或误唤醒暂停任务。CC / Codex 共用这套消息归属；外部 Claude 的总对话通过下一次原生 Hook 接收，不另开副本。
 
 隔离交互验收可运行 `node plugin/tests/smoke_conversation_routing.cjs`（仓库根目录），使用真实页面、临时 HTTP 服务和假载体，检查多个任务与总对话并行、跨 leader 请求和原消息答复，以及切换后的草稿和进度状态；结果保存到 `desktop/smoke-output/conversation-routing/`。

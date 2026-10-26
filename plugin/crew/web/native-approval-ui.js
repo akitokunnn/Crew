@@ -31,7 +31,7 @@
     }
     document.addEventListener("click", event => { const button = event.target.closest("[data-native-approval-act]"); if (!button || button.disabled) return; void decide(button.dataset.id,button.dataset.nativeApprovalAct === "allow"); });
     document.addEventListener("toggle", event => { const commandId = event.target.dataset?.nativeCommandDetails; if (commandId !== undefined) { if (event.target.open) commandExpanded.add(commandId); else commandExpanded.delete(commandId); return; } const id = event.target.dataset?.nativeApprovalId; if (id === undefined) return; if (event.target.open) expanded.add(id); else expanded.delete(id); },true);
-    return {sync, markup, count:() => pending().length, countForLeader:id => forPerson(id,null,true).length, chatMarkup:(id,goalId,includeMembers) => markup(forPerson(id,goalId,includeMembers))};
+    return {sync, markup, count:() => pending().length, countForLeader:id => forPerson(id,null,true).length, countForChat:(id,goalId,includeMembers) => forPerson(id,goalId,includeMembers).length, chatMarkup:(id,goalId,includeMembers) => markup(forPerson(id,goalId,includeMembers))};
   }
   window.CrewNativeApprovals = {create};
 })();
