@@ -691,11 +691,12 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         script = assets["/git.js"]
         for contract in ('data-git-branch=', 'data-git-tab="graph"', 'data-git-tab="branches"',
                          'class="git-conflicts"', 'data-git-act="load-more"', 'data-git-act="active"',
-                         'data-git-act="confirm-disable"', 'git-github-unavailable',
+                         'data-git-act="settings"', 'git-github-unavailable',
                          'data-git-request=', 'git-requests-title', '和 git 管理员聊',
                          'aria-pressed=', 'aria-selected=', 'data-git-from=', 'data-git-to='):
             self.assertIn(contract, script)
-        self.assertIn('setInterval(() => { if (data?.available !== false) load(); }, 30000)', script)
+        self.assertNotIn('setInterval(', script)
+        self.assertIn('data-git-act="refresh"', script)
         self.assertIn('prefers-reduced-motion:reduce', assets["/git.css"])
         self.assertIn('var(--fs)', assets["/git.css"])
         for contract in ('ROW = 34', 'tabindex="0"', 'aria-haspopup="dialog"',
@@ -904,7 +905,7 @@ for (const relation of ['落后 origin 15 个提交','领先 origin 2 个提交'
   fixture.stable.origin_relation = '本地 master ' + relation;
   fixture.branches[0].origin_relation = fixture.base.origin_relation;
   fixture.branches[1].origin_relation = fixture.stable.origin_relation;
-  interval(); await flush();
+  click(button('refresh')); await flush();
   assert(host.innerHTML.includes(fixture.base.origin_relation));
   assert(host.innerHTML.includes(fixture.stable.origin_relation));
   const target = {dataset:{gitTab:'branches'},closest:selector => selector === '[data-git-tab]' ? target : null};
@@ -915,7 +916,7 @@ for (const relation of ['落后 origin 15 个提交','领先 origin 2 个提交'
   assert(host.innerHTML.includes(fixture.stable.origin_relation));
 }
 fixture.base.origin_relation = ''; fixture.stable.origin_relation = '';
-fixture.branches.forEach(branch => branch.origin_relation = ''); interval(); await flush();
+fixture.branches.forEach(branch => branch.origin_relation = ''); click(button('refresh')); await flush();
 assert(!host.innerHTML.includes('本地 develop'));
 assert(!host.innerHTML.includes('本地 master'));
 sandbox.CrewGit.unmount();
@@ -947,7 +948,7 @@ click(row(10)); assert(classes.has('is-pinned'));
 hover(9); assert.equal(popup.dataset.gitDetailSha,sha(10));
 click(button('expand-body')); assert(!popup.innerHTML.includes('git-detail-body clamped'));
 click(button('copy-sha')); await flush(); assert.deepEqual(copied,[sha(10)]);
-interval(); await flush(); assert(classes.has('is-pinned')); assert.equal(popup.hidden,false);
+click(button('refresh')); await flush(); assert(classes.has('is-pinned')); assert.equal(popup.hidden,false);
 move(10); key('Escape',row(10)); assert.equal(popup.hidden,true);
 hover(10); assert.equal(popup.hidden,true);
 documentListeners.get('pointermove')({target:row(10),clientX:pointer,clientY:100}); assert.equal(popup.hidden,true);
