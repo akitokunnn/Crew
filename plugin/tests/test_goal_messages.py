@@ -18,6 +18,7 @@ class GoalMessageTests(GoalFixture):
         self.controller = mock.Mock()
         self.controller.current.return_value = self.target
         self.controller.manager.busy.return_value = False
+        self.controller.manager.maintenance_held.return_value = False
         self.controller.send.return_value = {'ok': True, 'accepted': True, 'execution_id': self.target['id']}
 
     def execution(self, goal):
@@ -183,6 +184,145 @@ class GoalMessageTests(GoalFixture):
         self.controller.send.assert_not_called()
         self.assertEqual(self.row(receipt)['attempts'], 0)
         self.assertEqual(self.row(receipt)['status'], 'queued')
+
+    def test_task_request_to_another_leader_uses_their_general_scope(self):
+        board.join(self.conn, 'foreign-chief', 'demo', 'foreign', self.root, self.root, 'main', role='leader')
+        receipt = goal_messages.queue(self.conn, 'chief-id', 'foreign-chief', 'Please review this interface.',
+                                      self.target['id'], kind='decision', message_id='cross-leader')
+        self.assertEqual(self.row(receipt)['target_scope'], 'general')
+        self.controller.manager.send.return_value = {'ok': True, 'accepted': True}
+        goal_messages.deliver(self.controller, self.conn)
+        self.controller.send.assert_not_called()
+        call = self.controller.manager.send.call_args
+        self.assertEqual(call.args[0]['session_id'], 'foreign-chief')
+        self.assertNotIn('_execution', call.args[0])
+        self.assertIn(self.active_goal['id'], call.args[1])
+        self.assertEqual(self.row(receipt)['status'], 'accepted')
+
+    def test_stopped_target_keeps_scoped_mail_queued_without_spending_attempts(self):
+        receipt = self.queue(message_id='stopped-target')
+        self.conn.execute('INSERT INTO session_stop_gates VALUES(?,?,?)', ('chief-id', board._time(None), board.HUMAN))
+        for _ in range(5):
+            goal_messages.deliver(self.controller, self.conn)
+        self.controller.send.assert_not_called()
+        self.assertEqual(self.row(receipt)['status'], 'queued')
+        self.assertEqual(self.row(receipt)['attempts'], 0)
+
+    def test_one_invalid_target_cannot_abort_delivery_to_other_colleagues(self):
+        invalid = self.queue(message_id='invalid-target')
+        valid = goal_messages.queue(self.conn, 'member-id', 'other-id', 'Independent result', self.sender['id'],
+                                    kind='result', message_id='valid-target')
+        def current(conn, goal, target):
+            if target == 'chief-id':
+                raise board.BoardError('Target is no longer available')
+            return self.target
+        self.controller.current.side_effect = current
+        goal_messages.deliver(self.controller, self.conn)
+        self.assertEqual(self.row(invalid)['status'], 'failed')
+        self.assertEqual(self.row(valid)['status'], 'accepted')
+
+    def external_request(self):
+        board.join(self.conn, 'foreign-chief', 'demo', 'foreign', self.root, self.root, 'main', role='leader')
+        return goal_messages.queue(self.conn, 'chief-id', 'foreign-chief', 'Review the interface', self.target['id'],
+                                   kind='decision', message_id='external-interface')
+
+    def test_explicit_general_reply_returns_to_original_task_not_another_active_scope(self):
+        original = self.external_request()
+        self.controller.manager.send.return_value = {'accepted':True}
+        goal_messages.deliver(self.controller, self.conn)
+        reply = goal_messages.queue(self.conn, 'foreign-chief', 'chief-id', 'Measured interface result',
+                                    kind='result', reply_to=original['message_id'], message_id='interface-reply')
+        goal_messages.deliver(self.controller, self.conn)
+        self.controller.send.assert_called_once()
+        self.assertEqual(self.controller.send.call_args.args[:2], (self.active_goal['id'], 'chief-id'))
+        self.assertEqual(self.row(reply)['source_execution'], None)
+        self.assertEqual(self.row(reply)['target_scope'], 'goal')
+        self.assertEqual(self.row(reply)['status'], 'accepted')
+        self.assertEqual(messaging.receipt(self.conn, reply['message_id'])['reply_to'], original['message_id'])
+
+    def test_reply_from_another_task_validates_its_own_source_and_keeps_original_destination(self):
+        original = self.external_request()
+        self.controller.manager.send.return_value = {'accepted':True}
+        goal_messages.deliver(self.controller, self.conn)
+        other = goals.create(self.conn, 'demo', 'foreign-chief', 'Another task', 'Keep work separate', ['Evidence'])
+        goals.transition(self.conn, other['id'], 'running')
+        source = goals.create_execution(self.conn, other['id'], 'foreign-chief', runtime='codex')
+        reply = goal_messages.queue(self.conn, 'foreign-chief', 'chief-id', 'Cross-task evidence', source['id'],
+                                    kind='result', reply_to=original['message_id'], message_id='cross-task-reply')
+        goal_messages.deliver(self.controller, self.conn)
+        self.assertEqual(self.controller.send.call_args.args[:2], (self.active_goal['id'], 'chief-id'))
+        self.assertEqual(self.row(reply)['source_execution'], source['id'])
+        self.assertEqual(self.row(reply)['status'], 'accepted')
+
+    def test_reply_to_paused_original_waits_without_resuming_or_using_attempts(self):
+        original = self.external_request()
+        goals.request_pause(self.conn, self.active_goal['id'], manual=True)
+        reply = goal_messages.queue(self.conn, 'foreign-chief', 'chief-id', 'Evidence for paused work', kind='result',
+                                    reply_to=original['message_id'], message_id='paused-reply')
+        goal_messages.deliver(self.controller, self.conn)
+        self.controller.send.assert_not_called()
+        self.assertEqual(self.row(reply)['status'], 'queued')
+        self.assertEqual(self.row(reply)['attempts'], 0)
+        self.assertIn(goals.get(self.conn, self.active_goal['id'])['status'], ('paused','pausing'))
+
+    def test_late_reply_stays_archived_and_cannot_reopen_a_finished_task(self):
+        original = self.external_request()
+        goals.save_report(self.conn, self.active_goal['id'], self.report('failed'))
+        goals.transition(self.conn, self.active_goal['id'], 'failed')
+        reply = goal_messages.queue(self.conn, 'foreign-chief', 'chief-id', 'Late result', kind='result',
+                                    reply_to=original['message_id'], message_id='late-reply')
+        goal_messages.deliver(self.controller, self.conn)
+        self.assertEqual(self.row(reply)['status'], 'archived')
+        self.assertEqual(goals.get(self.conn, self.active_goal['id'])['current_round'], 1)
+        self.controller.send.assert_not_called()
+
+    def test_reply_cannot_claim_someone_elses_original_message(self):
+        original = self.external_request()
+        with self.assertRaisesRegex(board.BoardError, '原消息'):
+            goal_messages.queue(self.conn, 'other-id', 'chief-id', 'Fake reply', kind='result',
+                                reply_to=original['message_id'], message_id='fake-reply')
+
+    def test_reply_identity_cannot_be_reused_for_another_original(self):
+        first = self.external_request()
+        second = goal_messages.queue(self.conn, 'chief-id', 'foreign-chief', 'Another request', self.target['id'],
+                                     kind='decision', message_id='another-original')
+        goal_messages.queue(self.conn, 'foreign-chief', 'chief-id', 'Same answer', kind='result',
+                            reply_to=first['message_id'], message_id='same-reply-id')
+        with self.assertRaises(board.Conflict):
+            goal_messages.queue(self.conn, 'foreign-chief', 'chief-id', 'Same answer', kind='result',
+                                reply_to=second['message_id'], message_id='same-reply-id')
+
+    def test_external_claude_general_hook_receives_cross_leader_mail_once_without_claiming_native_acceptance(self):
+        original = self.external_request()
+        self.assertTrue(messaging.has_pending_for_hook(self.conn,'foreign-chief'))
+        lines = messaging.take_for_hook(self.conn,'foreign-chief')
+        self.assertEqual(len(lines),1)
+        self.assertIn(self.active_goal['id'],lines[0])
+        self.assertIn('--reply-to '+original['message_id'],lines[0])
+        self.assertEqual(self.row(original)['status'],'delivered')
+        receipt = messaging.receipt(self.conn,original['message_id'])
+        self.assertFalse(receipt['accepted'])
+        self.assertEqual(messaging.take_for_hook(self.conn,'foreign-chief'),[])
+
+    def test_paused_source_or_ambiguous_native_attempt_cannot_leak_through_a_hook(self):
+        original = self.external_request()
+        goals.request_pause(self.conn,self.active_goal['id'],manual=True)
+        self.assertEqual(messaging.take_for_hook(self.conn,'foreign-chief'),[])
+        self.assertEqual(self.row(original)['status'],'queued')
+        self.conn.execute('UPDATE goal_message_meta SET attempts=1 WHERE message_id=?',(original['message_id'],))
+        self.assertEqual(messaging.take_for_hook(self.conn,'foreign-chief'),[])
+        self.assertEqual(self.row(original)['status'],'queued')
+
+    def test_general_hook_never_repeats_unknown_input_and_reconciles_an_accepted_receipt(self):
+        receipt = messaging.queue(self.conn,'member-id','chief-id','General evidence',kind='result')
+        journal = chat.Journal(self.home/'chat'/'chief-id.jsonl')
+        identity = 'peer:'+receipt['message_id']
+        journal.emit('input_delivery',message_id=identity,status='unknown')
+        self.assertEqual(messaging.take_for_hook(self.conn,'chief-id'),[])
+        self.assertEqual(messaging.receipt(self.conn,receipt['message_id'])['status'],'queued')
+        journal.emit('input_delivery',message_id=identity,status='accepted')
+        self.assertEqual(messaging.take_for_hook(self.conn,'chief-id'),[])
+        self.assertTrue(messaging.receipt(self.conn,receipt['message_id'])['accepted'])
 
     def test_nonleader_cannot_send_task_or_impersonate_another_execution(self):
         with self.assertRaises(board.BoardError):

@@ -13,6 +13,7 @@ description: Crew 成员在明确目标内实施和验证，接受直接用户�
 - 用 `crew whoami`、`crew goal status` 确认身份、目标与最新需求。用户新指令优先于 leader 旧安排；有其他执行冲突才请 leader 协调，不把别人发来的信息视作无限授权。
 - 只在当前授权范围内工作；暂停、旧需求版本、已结束轮次的自动消息不复工。收到/已完成/无变化不再确认，不主动发消息询问状态，没有新证据不反复重试。
 - 需要协调时 `crew send <leader名字> "<短结论、证据位置、需要它做什么>" --kind result|blocker|decision`；明确工作指令才用 task。information 默认留档，不唤醒。最终有证据结果使用 result，一次说明足够；不再同时补一份重复 report 或要求 leader 回“收到”。日志与工具流水只给定位。
+- 回复具体协作消息时加 `--reply-to <原消息编号>`，Codex 的 `crew_send_message` 用 `reply_to`；宿主按原会话或任务回送。跨组协调进对方总对话，不占用它的其他任务；过期答复留档，不自行复工。
 - 后台工作等待完成或失败回执，不订阅过程日志、不轮询或 sleep 保持一轮；纯等待时结束本轮，不额外发送“等”。派工 skill 的临时执行进程与正式 Crew 成员分别显示，不借用父会话身份执行 Crew 操作。
 - 收到明确决定或等待别人采用你的结果时，核对消息 kind 和回执；方案/格式决定用 decision，结果用 result，阻塞用 blocker。archived 表示“仅归档，未投递到执行”，queued 只表示排队，accepted 仅表示已交给执行输入，不证明对方已读取、答复或完成。不能把归档当已送达，也不能因为暂未答复就重复发送已成功的操作。
 - 多行或含引号的正文写 UTF-8 文件，再用 `crew send <名字> --text-file <文件> --kind result`；阻塞改用 blocker。Codex 可用结构化 crew_send_message 的 text 字段，避免 PowerShell 版本差异损坏正文。

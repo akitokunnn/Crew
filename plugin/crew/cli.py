@@ -283,6 +283,7 @@ def parser():
     a.add_argument('--kind', choices=('task','result','blocker','decision','user_answer','information','ack'), default='information',
                    help='默认 information 仅归档、不唤醒；决定用 decision，任务用 task，结果用 result，阻塞用 blocker。')
     a.add_argument('--message-id', help='调用方稳定重试编号；同一编号只用于完全相同的接收者、正文和类型。')
+    a.add_argument('--reply-to', help='回复原协作消息编号，按其已记录的会话/任务归属回送。')
     for namespace, actions in (('goal', ('create','status','start','pause','resume','cancel','reopen','amend','assign','report-template','finish')),
                                ('context', ('inspect','retrieve','put','correct','expire'))):
         goal_parser = command(namespace, True)
@@ -970,6 +971,7 @@ def main(argv=None, agents_provider=claude_agents, cwd=None, plugin_root=None):
             value = spawn.request_start(args.home, project, "/api/messages", {
                 "name": args.name, "text": text, "caller_session_id": caller,
                 'execution_id': os.environ.get('CREW_EXECUTION_ID'), 'kind': args.kind,
+                **({'reply_to': args.reply_to} if args.reply_to is not None else {}),
                 **({'message_id': args.message_id} if args.message_id else {})})
             _emit(value, args.json, args.command)
             return 0

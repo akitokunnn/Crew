@@ -420,7 +420,7 @@
     const execution = goalId == null ? null : goals?.executionFor(item.session_id);
     const unstarted = goalId == null || execution ? null : goalChatNotes(goals?.currentGoal(), readOnlyId !== null, access.readonly);
     const chatRuntime = goalId == null ? runtimeBadge(item) : execution ? runtimeBadge(execution) : unstarted.badge ? `<span class="runtime-tag">${unstarted.badge}</span>` : "";
-    const chatModel = goalId == null ? `<button class="model-tag" data-act="model-menu" data-id="${esc(item.session_id)}" aria-haspopup="menu" title="切换模型和 effort"><span class="model-label">${esc(optionsLabel(item))}</span>${ic("down", "xs")}</button>` : execution ? `<span class="model-tag" title="${esc(optionsLabel({...execution, applied:null}))} · 本目标执行配置；如需更换，回总对话并先暂停仍在推进的目标"><span class="model-label">${esc(optionsLabel({...execution, applied:null}))}</span></span>` : "";
+    const chatModel = goalId == null ? `<button class="model-tag" data-act="model-menu" data-id="${esc(item.session_id)}" aria-haspopup="menu" title="切换模型和 effort"><span class="model-label">${esc(optionsLabel(item))}</span>${ic("down", "xs")}</button>` : execution ? `<span class="model-tag" title="${esc(optionsLabel({...execution, applied:null}))} · 本任务执行配置；总对话的模型设置不会改动已有任务"><span class="model-label">${esc(optionsLabel({...execution, applied:null}))}</span></span>` : "";
     const identity = `${item.session_id}:${goalId ?? ""}:${access.readonly}:${execution?.id ?? ""}:${listing}:${access.readonlyReason ?? ""}`;
     if (mountedChat !== identity) {
       CrewChat.unmount();

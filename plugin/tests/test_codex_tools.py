@@ -350,6 +350,12 @@ class CodexToolsTests(unittest.TestCase):
         self.assertIsNone(board.session(self.conn, "claude-crew")["task"])
         self.assertIsNone(board.card(self.conn, "claude-crew"))
 
+    def test_reply_passes_original_message_identity_to_the_host(self):
+        sender = mock.Mock(return_value={'ok':True,'queued':True,'message_id':'reply'})
+        tools = codex_tools.CodexTools(self.home,'codex-crew',send_message=sender)
+        self.call('crew_send_message',{'to':'reviewer','text':'Actual result','kind':'result','reply_to':'original-message'},tools=tools)
+        sender.assert_called_once_with('codex-crew','claude-crew','Actual result',kind='result',reply_to='original-message')
+
     def test_send_rejects_foreign_or_native_address_without_invoking_callback(self):
         sender = mock.Mock(return_value={"ok": True})
         tools = codex_tools.CodexTools(self.home, "codex-crew", send_message=sender)

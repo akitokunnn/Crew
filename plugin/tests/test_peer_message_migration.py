@@ -118,6 +118,27 @@ class PeerMessageMigrationTests(unittest.TestCase):
             self.assertTrue(all(row['kind'] == 'decision' and row['accepted'] == 1 and '\n' in row['body'] for row in rows))
             self.assertEqual(migrated.execute('PRAGMA foreign_key_check').fetchall(), [])
 
+    def test_scope_upgrade_preserves_queued_goal_records_under_concurrent_connections(self):
+        from crew import goal_messages
+        goal = goals.create(self.conn,'demo','leader','Routing upgrade','Keep queued evidence',['Original scope survives'])
+        goals.transition(self.conn,goal['id'],'running')
+        execution = goals.create_execution(self.conn,goal['id'],'leader',runtime='claude')
+        receipt = goal_messages.queue(self.conn,'leader','member','Queued task evidence',execution['id'],kind='result')
+        self.conn.execute('ALTER TABLE goal_message_meta DROP COLUMN target_scope')
+        self.conn.execute('ALTER TABLE peer_messages DROP COLUMN reply_to')
+        before = dict(self.conn.execute('SELECT * FROM goal_message_meta WHERE message_id=?',(receipt['message_id'],)).fetchone())
+        ready = threading.Barrier(5)
+        def connect(_):
+            ready.wait(timeout=10)
+            with closing(store.connect(self.home)) as conn:
+                row = dict(conn.execute('SELECT * FROM goal_message_meta WHERE message_id=?',(receipt['message_id'],)).fetchone())
+                self.assertEqual(row.pop('target_scope'),'goal')
+                self.assertEqual(row,before)
+                self.assertIsNone(conn.execute('SELECT reply_to FROM peer_messages WHERE id=?',(receipt['message_id'],)).fetchone()[0])
+                self.assertEqual(conn.execute('PRAGMA foreign_key_check').fetchall(),[])
+        with ThreadPoolExecutor(max_workers=5) as pool:
+            list(pool.map(connect,range(5)))
+
 
 if __name__ == '__main__':
     unittest.main()

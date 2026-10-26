@@ -264,7 +264,7 @@ class RuntimeFeatureHttpTests(ShellFixture, unittest.TestCase):
         service.chat.path('s3').parent.mkdir(parents=True, exist_ok=True)
         service.chat.path('s3').touch()
         notice_id = board.queue_leader_notice(self.conn, 's3', '测试无 Claude 时的通知', 'crew')
-        with mock.patch.object(service.chat, 'send', return_value={'ok': True}) as send:
+        with mock.patch.object(service.chat, 'send', return_value={'ok': True, 'accepted': True}) as send:
             service.deliver_notices()
         send.assert_called_once()
         self.assertEqual(board.pending_notices(self.conn, 's3'), [])

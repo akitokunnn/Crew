@@ -199,6 +199,110 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         stop.assert_not_called()
         self.assertEqual(len(self.processes), 2)
 
+    def test_first_codex_general_conversation_can_start_beside_an_existing_task(self):
+        class IndependentClient(codex_helpers.FakeClient):
+            counter = 0
+            def __init__(self, **options):
+                super().__init__(**options)
+                type(self).counter += 1
+                self.thread_id = 'first-general-' + str(type(self).counter)
+        with mock.patch('crew.codex_runtime._ObservedClient', IndependentClient):
+            runtimes.set(self.conn, 's3', 'codex')
+            code, task, _ = self.send_goal(self.goal(), message_id='task-before-first-general')
+            self.assertEqual(code, 200, task)
+            code, result, _ = self.request('/api/chat/send?project=demo', {
+                'session_id':'s3', 'text':'Coordinate another leader while the task continues.',
+                'message_id':'first-general'})
+            self.assertEqual(code, 200, result)
+            manager = self.server.service.chat
+            self.assertTrue(manager.busy(task['execution_id']))
+            self.assertTrue(manager.busy('s3'))
+            manager.stop_managed('s3')
+            runtimes.set(self.conn, 's3', 'codex')
+            count = len(self.processes)
+            code, lost, _ = self.request('/api/chat/send?project=demo', {
+                'session_id':'s3', 'text':'Do not replace a lost native history.', 'message_id':'lost-general'})
+            self.assertEqual(code, 400, lost)
+            self.assertIn('原生会话 ID 丢失', lost['error'])
+            self.assertEqual(len(self.processes), count)
+            self.assertTrue(manager.busy(task['execution_id']))
+
+    def test_cross_leader_coordination_and_explicit_replies_keep_parallel_tasks_running(self):
+        class IndependentClient(codex_helpers.FakeClient):
+            counter = 0
+            def __init__(self, **options):
+                super().__init__(**options)
+                type(self).counter += 1
+                self.thread_id = 'cross-leader-' + str(type(self).counter)
+        with mock.patch('crew.codex_runtime._ObservedClient', IndependentClient):
+            for index, (source_runtime, target_runtime) in enumerate((('claude','claude'),('claude','codex'),('codex','claude'),('codex','codex'))):
+                with self.subTest(source=source_runtime, target=target_runtime):
+                    source, target = 'sender-' + str(index), 'receiver-' + str(index)
+                    for sid, runtime in ((source,source_runtime),(target,target_runtime)):
+                        board.join(self.conn, sid, 'demo', sid, self.project, self.project, 'main', role='leader')
+                        runtimes.set(self.conn, sid, runtime)
+                    task_ids = []
+                    for owner, suffix in ((source,'source'),(target,'first'),(target,'second')):
+                        goal = goals.create(self.conn, 'demo', owner, suffix, 'Keep each task independent', ['Actual evidence'])
+                        code, receipt, _ = self.request('/api/chat/send?project=demo', {
+                            'session_id':owner,'goal_id':goal['id'],'text':'Begin ' + suffix,'message_id':owner+suffix})
+                        self.assertEqual(code, 200, receipt)
+                        task_ids.append((goal['id'],receipt['execution_id']))
+                    manager = self.server.service.chat
+                    code, original, _ = self.request('/api/messages?project=demo', {
+                        'caller_session_id':source,'execution_id':task_ids[0][1], 'name':target,
+                        'text':'Please confirm the interface.','kind':'decision','message_id':'interface-'+str(index)})
+                    self.assertEqual(code, 200, original)
+                    manager.deliver_messages()
+                    self.assertTrue(manager.busy(target))
+                    incoming = [e for e in manager.journal(target).events if e.get('source')=='peer']
+                    self.assertEqual(incoming[-1]['sender'],source)
+                    self.assertTrue(all(manager.busy(key) for _,key in task_ids))
+                    self.assertFalse(manager.running(source), 'Only the recipient coordinator should start')
+                    def finish(key, runtime):
+                        current = manager.processes[key]
+                        if runtime == 'codex': current.client.finish()
+                        else: self.finish_turn(key,current.process)
+                    finish(target,target_runtime)
+                    code, raw, error = self.run_cli(['--session',target,'send',source,'Verified interface result',
+                        '--kind','result','--reply-to',original['message_id'],'--message-id','reply-'+str(index),'--json'])
+                    self.assertEqual(code,0,error)
+                    reply = json.loads(raw)
+                    self.assertEqual(reply['target_goal_id'],task_ids[0][0])
+                    finish(task_ids[0][1],source_runtime)
+                    manager.deliver_messages()
+                    self.assertTrue(manager.busy(task_ids[0][1]))
+                    self.assertTrue(all(manager.busy(key) for _,key in task_ids[1:]))
+                    self.assertFalse(manager.running(source))
+                    self.assertFalse(manager.busy(target))
+                    self.assertIn('Verified interface result',manager.path(task_ids[0][1]).read_text(encoding='utf-8'))
+
+    def test_external_claude_main_hook_receives_mail_without_tasks_consuming_it(self):
+        goal = self.goal()
+        _, source, _ = self.send_goal(goal,message_id='source-with-external-peer')
+        board.join(self.conn,'external-chief','demo','external',self.project,self.project,'main',role='leader')
+        other = goals.create(self.conn,'demo','external-chief','Separate work','Keep this task running',['Evidence'])
+        _, target, _ = self.request('/api/chat/send?project=demo',{
+            'session_id':'external-chief','goal_id':other['id'],'text':'Begin independently','message_id':'external-task'})
+        manager = self.server.service.chat
+        receipt = manager.send_message('s3','external-chief','Cross-leader interface request',execution_id=source['execution_id'],kind='decision')
+        with mock.patch.object(manager,'_external_agents',return_value=[{'sessionId':'external-chief','name':'external','status':'busy'}]):
+            for _ in range(4): manager.deliver_messages()
+        meta = dict(self.conn.execute('SELECT * FROM goal_message_meta WHERE message_id=?',(receipt['message_id'],)).fetchone())
+        self.assertEqual((meta['status'],meta['attempts']),('queued',0))
+        self.assertFalse(manager.running('external-chief'))
+        native = manager.processes[target['execution_id']].native_id
+        data = {'session_id':native,'cwd':str(self.project),'tool_name':'Read','tool_input':{'file_path':str(self.project/'sample.py')}}
+        self.assertEqual(hooks.handle('guard',data,self.home,PLUGIN,{
+            'CREW_SESSION_ID':'external-chief','CREW_EXECUTION_ID':target['execution_id']}),(0,None))
+        self.assertTrue(manager.busy(target['execution_id']))
+        code, result = hooks.handle('guard',{**data,'session_id':'external-chief'},self.home,PLUGIN,{})
+        self.assertEqual(code,0)
+        self.assertIn('--reply-to '+receipt['message_id'],result['hookSpecificOutput']['additionalContext'])
+        meta = dict(self.conn.execute('SELECT * FROM goal_message_meta WHERE message_id=?',(receipt['message_id'],)).fetchone())
+        self.assertEqual(meta['status'],'delivered')
+        self.assertIsNone(meta['accepted_at'])
+
     def test_unscoped_user_and_peer_messages_stay_in_general_history(self):
         goal = self.goal()
         code, receipt, _ = self.send_goal(goal, message_id='start-routing')
@@ -340,6 +444,46 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(len(board.pending_notices(self.conn, 's3')), 1)
         self.assertEqual(len(self.processes), 2)
         self.assertFalse(manager.running(receipt['execution_id']))
+
+    def test_unknown_notice_receipt_freezes_the_batch_and_its_native_message_id(self):
+        manager = self.server.service.chat
+        board.queue_leader_notice(self.conn, 's3', 'First actionable result.', 'crew')
+        with mock.patch.object(manager, 'send', side_effect=OSError('native receipt unknown')) as send:
+            self.server.service.deliver_notices()
+            board.queue_leader_notice(self.conn, 's3', 'New evidence after unknown receipt.', 'crew')
+            self.server.service.deliver_notices()
+            self.server.service.deliver_notices()
+        self.assertEqual(send.call_count, 3)
+        self.assertTrue(send.call_args_list[0].kwargs.get('identity'))
+        self.assertEqual(len({call.kwargs['identity'] for call in send.call_args_list}), 1)
+        self.assertEqual(len({call.args[1] for call in send.call_args_list}), 1)
+        self.assertNotIn('New evidence', send.call_args_list[-1].args[1])
+
+    def test_one_codex_notice_error_cannot_block_another_leaders_notice(self):
+        board.join(self.conn, 'other-chief', 'demo', 'other', self.project, self.project, 'main', role='leader')
+        board.queue_leader_notice(self.conn, 's3', 'Unconfirmed result.', 'crew')
+        board.queue_leader_notice(self.conn, 'other-chief', 'Independent result.', 'crew')
+        def send(target, *args, **kwargs):
+            if target['session_id'] == 's3':
+                raise codex_runtime.codex_client.TransportError('Codex transport ended after write')
+            return {'accepted': True}
+        with mock.patch.object(self.server.service.chat, 'send', side_effect=send):
+            self.server.service.deliver_notices()
+        self.assertEqual(board.pending_notices(self.conn, 'other-chief'), [])
+        self.assertEqual(len(board.pending_notices(self.conn, 's3')), 1)
+
+    def test_native_unknown_notice_receipt_is_not_resubmitted_when_new_notices_arrive(self):
+        manager = self.server.service.chat
+        board.queue_leader_notice(self.conn, 's3', 'Original actionable notice.', 'crew')
+        with mock.patch.object(manager, '_send', side_effect=codex_runtime.codex_client.TransportError('lost receipt')) as native:
+            self.server.service.deliver_notices()
+            board.queue_leader_notice(self.conn, 's3', 'New notice must stay separate.', 'crew')
+            for _ in range(4): self.server.service.deliver_notices()
+        self.assertEqual(native.call_count, 1)
+        self.assertEqual(len(board.pending_notices(self.conn, 's3')), 2)
+        batches = [event for event in manager.journal('s3').events if event['type']=='leader_notice_batch']
+        self.assertEqual(len(batches),1)
+        self.assertNotIn('New notice',batches[0]['text'])
 
     def test_goal_spawn_binds_member_to_the_explicit_running_caller_execution(self):
         goal = self.goal()
