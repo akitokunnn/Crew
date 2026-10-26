@@ -51,7 +51,7 @@ test("report reads use selected goal/report IDs and isolate HTML without invokin
   const h=harness(url=>Promise.resolve({goal:{id:"a",title:"短句验证",version:1,current_round:1,requirement_version:1},context:{items:[],manifest:{}},reports:[{id:"r1",title:"第一轮交付",round:1,requirement_version:1,version:1,current:true,status:"completed",summary:"第一轮结论",acceptance_counts:{passed:1,failed:0,unverified:0,simulated:0},unresolved:[],url:"https://untrusted.invalid/report"}]}));
   h.client.sync("leader","a");await tick();await h.click("drawer",{kind:"reports"});assert.equal(h.network.length,0);
   await h.click("report",{reportId:"r1"});assert.equal(h.network[0],"/api/goals/report?project=fixture&goal_id=a&report_id=r1");
-  assert(h.drawer.innerHTML.includes('sandbox=""'));assert(h.drawer.querySelector("iframe").srcdoc.includes("default-src 'none'"));
+  assert(h.drawer.innerHTML.includes('sandbox="allow-scripts"'));assert(h.drawer.querySelector("iframe").srcdoc.includes("default-src 'none'"));
   assert(h.drawer.querySelector("iframe").srcdoc.includes("真实报告"));assert(h.calls.every(call=>call.url.startsWith("/api/goal?")||call.url.startsWith("/api/documents?goal_id=")));
   await h.click("expand-report");assert.equal(h.drawer.hidden,true);assert.equal(h.main.appended.className,"goal-report-reader");assert(readerText(h.main.appended).includes("返回交付资料"));assert(readerText(h.main.appended).includes("本轮报告"));assert(readerText(h.main.appended).includes("第 1 轮 · 需求 v1"));assert(h.client.escape());assert.equal(h.main.appended.removed,true);assert.equal(h.drawer.hidden,false);assert(h.drawer.querySelector("iframe").srcdoc.includes("真实报告"));
 });
@@ -204,7 +204,7 @@ test("one delivery click from the list opens the selected goal's current report 
   assert.equal(h.calls.map(call=>call.url).join(","),"/api/goal?id=a","one detail read for the selected goal");
   assert.equal(h.network.join(","),"/api/goals/report?project=fixture&goal_id=a&report_id=ra2","prefers the current round report");
   const reader=h.main.appended;assert.equal(h.main.appends.length,1);assert.equal(reader.className,"goal-report-reader");
-  for(const text of ["返回任务","本轮报告","第 2 轮 · 需求 v2","AI 报告结果：等待用户验收","短句验证 · 交付报告",'sandbox=""'])assert(readerText(reader).includes(text),text);
+  for(const text of ["返回任务","本轮报告","第 2 轮 · 需求 v2","AI 报告结果：等待用户验收","短句验证 · 交付报告",'sandbox="allow-scripts"'])assert(readerText(reader).includes(text),text);
   assert(!readerText(reader).includes("暂无新交付"));assert(frameOf(reader).srcdoc.includes("default-src 'none'"));assert(frameOf(reader).srcdoc.includes("真实报告"));
   assert(h.calls.every(call=>call.data===undefined),"reading never sends, starts or wakes");assert.equal(h.drawer.hidden,true);
   await h.click("close-report");assert.equal(reader.removed,true);assert.equal(h.drawer.hidden,true);assert.equal(h.client.escape(),false);

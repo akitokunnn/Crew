@@ -722,6 +722,21 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.assertIn(b'A pauses then B speaks', html)
         self.assertIn('sandbox', headers['Content-Security-Policy'])
 
+    def test_authored_report_http_is_isolated_and_keeps_the_saved_document(self):
+        goal = self.goal()
+        document = '<style>h1{color:green}</style><h1>按任务组织的报告</h1><script>window.chartReady=true</script>'
+        saved = goals.save_report(self.conn, goal['id'], {**self.report(), 'document_html': document})
+        path = '/api/goals/report?' + urlencode({'project':'demo','goal_id':goal['id'],'report_id':saved['id']})
+        code, content, headers = self.request(path, raw=True)
+        self.assertEqual(code, 200)
+        self.assertEqual(content.decode('utf-8'), saved['html'])
+        self.assertIn('sandbox allow-scripts;', headers['Content-Security-Policy'])
+        self.assertNotIn('allow-same-origin', headers['Content-Security-Policy'])
+        self.assertIn("default-src 'none'", headers['Content-Security-Policy'])
+        self.assertIn("form-action 'none'", headers['Content-Security-Policy'])
+        self.assertEqual(goals.get_report(self.conn, saved['id'])['data']['document_html'], document)
+        self.assertEqual(self.processes, [])
+
     def test_resume_paused_pending_finish_completes_saved_report_without_another_model_turn(self):
         goal = self.goal()
         _, receipt, _ = self.send_goal(goal)
