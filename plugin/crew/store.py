@@ -29,8 +29,29 @@ def connect(home):
     _migrate_channel_digests(conn)
     _migrate_remote_notice_source(conn)
     _migrate_peer_message_receipts(conn)
+    _migrate_git_result_intent(conn)
     _migrate_codex_dispatch_usage(conn)
     return conn
+
+
+def _migrate_git_result_intent(conn):
+    additions = (('git_merge_requests', 'blocking', 'INTEGER NOT NULL DEFAULT 0 CHECK (blocking IN (0,1))'),
+                 ('git_result_handoffs', 'request_id', 'INTEGER REFERENCES git_merge_requests(id)'))
+    def missing(table, column):
+        return not any(row['name'] == column for row in conn.execute('PRAGMA table_info(' + table + ')'))
+    if not any(missing(table, column) for table, column, _ in additions):
+        return
+    conn.execute('BEGIN IMMEDIATE')
+    try:
+        for table, column, declaration in additions:
+            if missing(table, column):
+                conn.execute('ALTER TABLE ' + table + ' ADD COLUMN ' + column + ' ' + declaration)
+        # Legacy results have no explicit continuation intent. Preserve their
+        # handoff/history; only newly linked actionable results can auto-wake.
+        conn.commit()
+    except sqlite3.Error:
+        conn.rollback()
+        raise
 
 
 def _migrate_codex_dispatch_usage(conn):

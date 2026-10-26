@@ -14,7 +14,7 @@ let settings={project,revision:'initial',config:null,available:true,choices:{bra
 function graphSnapshot(){
   const commits=Array.from({length:28},(_,index)=>({sha:String(index+1).padStart(40,'0'),parents:index<27?[String(index+2).padStart(40,'0')]:[],refs:index===0?['develop']:[],subject:'缓存验收提交 '+(index+1),body:'',author:'Fixture',time:new Date(Date.now()-index*60000).toISOString(),pull_requests:[],parent_branches:[]}));
   const base={name:'develop',latest:commits[0],origin_relation:'',sessions:[],worktrees:[],ahead:0,behind:0,conflicts:[],unique_commits:[],merged:true};
-  return {enabled:true,repository:'MIB fixture',choices:settings.choices,config:{base:'develop',stable:null,admin_session_id:leader.session_id},base,stable:null,branches:[base],remote_only:[],recent_merge:null,ref_unique_commits:{develop:[]},requests:[],commits,next_offset:null,github:null,github_reason:'fixture offline',last_fetch_at:null};
+  return {enabled:true,repository:'MIB fixture',choices:settings.choices,config:{base:'develop',stable:null,admin_session_id:leader.session_id},base,stable:null,branches:[base],remote_only:[],recent_merge:null,ref_unique_commits:{develop:[]},requests:[{id:7,session_id:leader.session_id,requester_name:leader.name,blocking:true,status:'merging',branch:'topic',description:'合入后验证集成',note:null,pr_number:null,created_at:new Date().toISOString()}],commits,next_offset:null,github:null,github_reason:'fixture offline',last_fetch_at:null};
 }
 function json(response,value,status=200){response.writeHead(status,{'Content-Type':'application/json'});response.end(JSON.stringify(value));}
 async function route(request,response){
@@ -72,7 +72,7 @@ async function main(){
   await check('仓库错误仍显示绑定信息与原始原因，禁止误保存',async()=>{await click('[data-git-setting="close"]');settings={...settings,available:false,reason:'fixture repository access denied'};await click('[data-git-act="settings"]');await wait(`document.querySelector('.gits-warning') !== null`);assert.match(await run(`document.querySelector('.gits-warning').textContent`),/access denied/);assert.equal(await run(`document.querySelector('[data-git-setting="save"]').disabled`),true);});
   await check('切回 Git 直接复用快照和滚动，不再扫描',async()=>{
     await click('[data-git-setting="close"]');graph='enabled';await click('[data-git-act="refresh"]');await wait(`document.querySelector('.git-graph') !== null`);
-    assert.match(await run(`document.querySelector('.git-read-meta').textContent`),/读取于/);await shot('04-Git缓存与按需更新.png');
+    assert.match(await run(`document.querySelector('.git-read-meta').textContent`),/读取于/);assert.match(await run(`document.querySelector('.git-request-dependency').textContent`),/合并后继续/);await shot('04-Git缓存与按需更新.png');
     await run(`document.querySelector('.git-page').scrollTop=320;void 0`);const before=calls.filter(call=>call.name==='/api/git').length;graph='pending';
     await click('[data-act="view"][data-view="all"]');await click('[data-act="view"][data-view="git"]');
     assert.equal(await run(`document.querySelector('.git-page').scrollTop`),320);assert.equal(calls.filter(call=>call.name==='/api/git').length,before);

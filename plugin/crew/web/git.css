@@ -18,3 +18,5 @@
 .git-read-meta{display:block;font-size:calc(11px * var(--fs));color:var(--text-3);margin-top:3px}.git-head>.right{gap:8px}
 
 .head.git-head{height:auto;min-height:76px;flex-wrap:wrap;padding-top:12px;padding-bottom:12px}.git-head>div:first-child{flex:1 1 220px;min-width:0}.git-head .title{overflow-wrap:anywhere}.git-head>.right{max-width:100%;flex-wrap:wrap;justify-content:flex-end}
+
+.git-request-dependency{display:inline-block;font-size:calc(10px * var(--fs));font-weight:400;background:var(--accent-soft);color:var(--accent-text);border-radius:4px;padding:1px 5px;margin-right:6px}

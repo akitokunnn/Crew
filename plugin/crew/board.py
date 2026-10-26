@@ -240,7 +240,7 @@ def _git_request(conn, project_name, request_id):
 
 
 @atomic
-def request_git_merge(conn, project_name, session_id, branch, description, *, title, now=None):
+def request_git_merge(conn, project_name, session_id, branch, description, *, title, blocking=False, now=None):
     config = _git_enabled(conn, project_name)
     requester = session(conn, session_id)
     if requester["project"] != project_name:
@@ -249,15 +249,18 @@ def request_git_merge(conn, project_name, session_id, branch, description, *, ti
         raise BoardError("请在分支上提交请求，或用 --branch 指定分支")
     if not description.strip():
         raise BoardError("合并请求说明不能为空")
-    request_id = conn.execute("INSERT INTO git_merge_requests(project,session_id,branch,description,created_at,updated_at) "
-                              "VALUES(?,?,?,?,?,?)", (project_name, session_id, branch, description, _time(now), _time(now))).lastrowid
+    if type(blocking) is not bool:
+        raise BoardError('blocking 必须是 true 或 false')
+    request_id = conn.execute("INSERT INTO git_merge_requests(project,session_id,branch,description,created_at,updated_at,blocking) "
+                              "VALUES(?,?,?,?,?,?,?)", (project_name, session_id, branch, description, _time(now), _time(now), int(blocking))).lastrowid
     request = titled_requests([_git_request(conn, project_name, request_id)], lambda _: title)[0]
     who = request["requester_name"]
     if request["requester_unadopted"]:
         who += "（未收编%s）" % ("" if requester["cc_name"] is None else "，SendMessage 地址：" + requester["cc_name"])
-    _queue_leader_notice(conn, config["admin_session_id"],
-                         "合并请求 #%s，%s 提交分支 %s：%s。用 crew git requests 查看并处理。" %
-                         (request_id, who, branch, description), "crew", now)
+    if session_id != config['admin_session_id']:
+        _queue_leader_notice(conn, config["admin_session_id"],
+                             "合并请求 #%s，%s 提交分支 %s：%s。用 crew git requests 查看并处理。" %
+                             (request_id, who, branch, description), "crew", now)
     _event(conn, "git:request", project_name, session_id, {"id": request_id, "branch": branch}, now)
     return request
 
@@ -277,17 +280,24 @@ def resolve_git_request(conn, project_name, session_id, request_id, status, note
     conn.execute("UPDATE git_merge_requests SET status=?,note=?,updated_at=? WHERE id=?", (status, note, _time(now), request_id))
     if pr_number is not None:
         conn.execute("UPDATE git_merge_requests SET pr_number=? WHERE id=?", (pr_number, request_id))
-    text = "合并请求 #%s（%s）已更新为 %s：%s" % (request_id, request["branch"], status, note)
-    requester = session(conn, request["session_id"])
-    if requester["role"] == "leader":
-        _queue_leader_notice(conn, requester["session_id"], text, "crew", now)
-    else:
-        target = requester["crew_name"] or requester["session_id"]
+    if status in ('merged', 'rejected') and request['session_id'] != session_id:
+        text = "合并请求 #%s（%s）已更新为 %s：%s" % (request_id, request["branch"], status, note)
+        if status == 'rejected':
+            text += '\n这是合并阻塞，请根据拒绝原因修正或调整方案，仅反馈实际处理结果，不回复确认或逐条转述状态。'
+        elif request['blocking']:
+            text += '\n你提交时标记了等待合并后继续，请按约定的后续步骤推进并交付实际结果；后续已经做完则无需回复。'
+        else:
+            text += '\n仅供待阅，无需回复确认或转述给用户。'
+        requester = session(conn, request["session_id"])
+        # Route to the stable identity, so renaming a group cannot lose a result.
+        target = requester['session_id']
         handoff_id = conn.execute("INSERT INTO handoffs(project,from_session,to_target,body,created_at) VALUES(?,?,?,?,?)",
                                   (project_name, session_id, target, text, _time(now))).lastrowid
         _event(conn, "handoff", project_name, session_id,
                {"id": handoff_id, "to": target, "body": text}, now)
-        conn.execute("INSERT INTO git_result_handoffs VALUES(?,?,?)", (handoff_id, requester["session_id"], session_id))
+        if status == 'rejected' or request['blocking']:
+            conn.execute("INSERT INTO git_result_handoffs(handoff_id,session_id,admin_session_id,request_id) VALUES(?,?,?,?)",
+                         (handoff_id, requester['session_id'], session_id, request_id))
     _event(conn, "git:resolve", project_name, session_id, {"id": request_id, "status": status, "note": note, "pr_number": pr_number}, now)
     return _git_request(conn, project_name, request_id)
 

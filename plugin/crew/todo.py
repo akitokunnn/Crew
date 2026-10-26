@@ -124,7 +124,9 @@ def _notify(conn, item, text, now, source="web", route=None, sender=board.HUMAN)
     target = board.session(conn, route["session_id"])
     if target["project"] != item["project"]:
         raise board.BoardError("人工待办的通知目标不属于当前项目")
-    if route["kind"] == "leader_notice" and target["role"] == "leader":
+    if sender == target['session_id']:
+        return {'kind': 'silent', 'session_id': target['session_id']}
+    if route["kind"] in ('leader_notice', 'silent') and target["role"] == "leader":
         notice_id = board._queue_leader_notice(conn, target["session_id"], text, source, now)
         return {"kind": "leader_notice", "id": notice_id, "session_id": target["session_id"]}
     handoff_id = conn.execute("INSERT INTO handoffs(project,from_session,to_target,body,created_at) VALUES(?,?,?,?,?)",

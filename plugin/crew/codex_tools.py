@@ -72,6 +72,7 @@ _GIT_DATA = {
                  'properties': {'all': {'type': 'boolean'}}},
     'request': {'type': 'object', 'additionalProperties': False,
                 'properties': {'branch': {**_text('Branch; omitted uses the host-recorded current branch.'), 'minLength': 0},
+                               'blocking': {'type': 'boolean', 'description': 'Set only when this merge blocks concrete follow-up work. Success then wakes the requester; ordinary success stays passive.'},
                                'description': {**_text('Changes and verification for the Git administrator.'), 'minLength': 0}},
                 'required': ['description']},
     'resolve': {'type': 'object', 'additionalProperties': False,
@@ -83,9 +84,10 @@ _GIT_DATA = {
 }
 _SPECS = [
     _spec('crew_git', 'Use the host-bound project Git ledger, without shell commands. Actions: status; policy '
-          '(data.text writes, omitted reads); requests (data.all); request (data.branch optional, data.description required); '
+          '(data.text writes, omitted reads); requests (data.all); request (data.branch/data.blocking optional, data.description required); '
           'resolve (data.id, data.status, data.note, optional data.pr_number). Only the configured Git administrator '
-          'may write policy or resolve requests. This records requests/results; it does not run Git or merge code.',
+          'may write policy or resolve requests. Progress is silent; success only wakes explicitly blocking requests. '
+          'Rejection remains actionable. This records requests/results; it does not run Git or merge code.',
           {'action': {'type': 'string', 'enum': list(_GIT_DATA)},
            'data': {'type': 'object', 'additionalProperties': True}}, ('action',)),
     _spec('crew_goal', 'Explicit goal actions: status, create, start, pause, resume, cancel, reopen, amend, assign, report-template, finish. Ordinary Q&A creates no goal.',
@@ -377,7 +379,7 @@ class CodexTools:
                 return {'requests': board.git_requests(conn, project, all=data.get('all', False))}
             if action == 'request':
                 return {'request': board.request_git_merge(conn, project, sid, data.get('branch', actor['branch']),
-                                                           data['description'], title=None)}
+                                                           data['description'], title=None, blocking=data.get('blocking', False))}
             return {'request': board.resolve_git_request(conn, project, sid, data['id'], data['status'],
                                                          data['note'], data.get('pr_number'))}
         if name in ('crew_goal', 'crew_context'):
