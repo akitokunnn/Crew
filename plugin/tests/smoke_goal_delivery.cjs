@@ -270,7 +270,7 @@ const listCards=`[...document.querySelectorAll('#goal-head .goal-card')].map(car
   steps.push('手动「交付与文档 → 展开」阅读时出现同轮新稿：头部标为「本轮较早报告 · 已有更新版本」，文档不重载；Esc 与直接阅读一样关闭阅读层并解除遮挡，回到交付资料，列表按稿次标明本轮/较早/历史');
 
   mark=Date.now();await click('#goal-head [data-goal-act=delivery]');await wait('!!document.querySelector(".goal-report-reader iframe")');
-  assert(await run(`(()=>{const node=document.querySelector('#sidebar [data-act=leader][data-id="${board.session_id}"]');node.focus();return document.activeElement===node;})()`),'the sidebar takes focus while reading');
+  assert(await run(`(()=>{const node=document.querySelector('#sidebar .session-open[data-id="${board.session_id}"]');node.focus();return document.activeElement===node;})()`),'the sidebar navigation button takes focus while reading');
   await key('Enter');await wait(`location.hash==="#leader=${board.session_id}" && !document.querySelector(".goal-report-reader") && !!document.querySelector("#chat-host textarea")`);
   assert.equal(await run('document.querySelectorAll("#main [inert]").length'),0);assert.deepEqual(reportCalls(since(mark)),['goal-a/report-a2b'],'viewing delivery reads the newest draft');
   steps.push('阅读中用键盘在侧栏切到另一组：阅读层关闭、主区恢复可操作；查看交付读取最高稿次报告');
