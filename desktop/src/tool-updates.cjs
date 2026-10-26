@@ -3,14 +3,16 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
+const { ReadOnlyCommands } = require('./readonly-command.cjs');
 const execute = promisify(execFile);
 const IDS = ['claude', 'codex'];
 const names = { claude:'Claude Code', codex:'Codex' };
 const clone = value => JSON.parse(JSON.stringify(value));
 
 class ToolUpdates {
-  constructor(config, { onChange = () => {}, run = execute, clock = () => new Date().toISOString() } = {}) {
+  constructor(config, { onChange = () => {}, run = execute, clock = () => new Date().toISOString(), stopReadOnly } = {}) {
     this.config = config; this.onChange = onChange; this.run = run; this.clock = clock;
+    this.reads = new ReadOnlyCommands({ run, stopReadOnly });
     this.file = path.join(config.home, 'desktop', 'tool-update-settings.json');
     this.autoUpdate = false; this.queue = new Map(); this.records = new Map();
     for (const id of IDS) this.records.set(id, { id, name:names[id], installed_version:null, latest_version:null,
@@ -56,7 +58,8 @@ class ToolUpdates {
     const backendDir=this.config.helperBackendDir || this.config.backendDir;
     const args = [path.join(backendDir, 'crew_tool_versions.py'), '--home', this.config.home, operation];
     if (id !== undefined) args.push(id);
-    const result = await this.run(this.config.python || 'python', args, { cwd:backendDir, windowsHide:true,
+    const run = operation === 'check' ? this.reads.run.bind(this.reads) : this.run;
+    const result = await run(this.config.python || 'python', args, { cwd:backendDir, windowsHide:true,
       timeout:operation === 'update' ? 0 : 45000, maxBuffer:1024 * 1024,
       env:{...process.env, PYTHONUNBUFFERED:'1', PYTHONIOENCODING:'utf-8'} });
     const value = JSON.parse(result.stdout);
@@ -74,6 +77,7 @@ class ToolUpdates {
     this._checking = Promise.resolve().then(async () => {
       try {
         const result = await this._helper('check');
+        if (this.closed) return this.snapshot();
         if (!result.ok || !Array.isArray(result.runtimes) || result.runtimes.length !== 2 ||
           new Set(result.runtimes.map(item => item.id)).size !== 2) throw new Error(result.error || '版本检查结果不完整');
         for (const item of result.runtimes) {
@@ -85,7 +89,7 @@ class ToolUpdates {
         this.checkedAt = result.checked_at || this.clock(); this.lastError = null;
         if (this.autoUpdate) for (const item of result.runtimes) if (item.update_available && (item.can_update || item.can_queue) && !this.queue.has(item.id)) this.queue.set(item.id, 'auto');
         await this._save();
-      } catch (error) { this.lastError = '检查失败：' + error.message; }
+      } catch (error) { if (!(this.closed && error.name === 'AbortError')) this.lastError = '检查失败：' + error.message; }
       finally { this._checking = null; this._emit(); }
       if (!this.lastError && this.queue.size) await this._drain();
       return this.snapshot();
@@ -166,8 +170,9 @@ class ToolUpdates {
     for (const timer of this.timers) { clearTimeout(timer); clearInterval(timer); }
     this.timers = [];
     // Finish an installer already in progress; never kill it halfway through.
-    await Promise.allSettled([this._checking, this._draining]);
+    const [reads] = await Promise.allSettled([this.reads.close(), this._checking, this._draining]);
     await this._saving.catch(() => {});
+    if (reads.status === 'rejected') throw reads.reason;
   }
 }
 

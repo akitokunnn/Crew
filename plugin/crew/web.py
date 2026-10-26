@@ -215,17 +215,27 @@ class Service:
 
     def close(self):
         self.stop.set()
-        self.storage_cleanup.close()
-        self.connections.close()
+        # Cancel independent digest natives before joining other pollers.
+        actions = [self.channel_digest.stop, self.storage_cleanup.close, self.connections.close]
         if self.notice_worker is not None:
-            self.notice_worker.join()
+            actions.append(self.notice_worker.join)
         if self.ci_worker is not None:
-            self.ci_worker.join()
-        self.chat.close()
-        self.maintenance.close()
+            actions.append(self.ci_worker.join)
+        actions.extend([self.chat.close, self.maintenance.close])
         if self.worker is not None:
-            self.worker.join(timeout=1)
-        self.channel_digest.close()
+            actions.append(lambda: self.worker.join(timeout=1))
+        actions.append(self.channel_digest.close)
+        errors = []
+        for close in actions:
+            try:
+                close()
+            except Exception as exc:
+                # Preserve every failure while releasing the remaining owned
+                # resources. The owner still receives the original exception.
+                traceback.print_exc()
+                errors.append(exc)
+        if errors:
+            raise errors[0]
 
     def _poll_notices(self):
         while not self.stop.wait(2):

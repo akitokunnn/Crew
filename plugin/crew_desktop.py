@@ -43,7 +43,9 @@ def serve(args, home):
             server.shutdown()
         threading.Thread(target=shutdown, daemon=True, name="crew-desktop-control").start()
         print(server.url, flush=True)
-        server.serve_forever()
+        # The owner shutdown channel should not wait for the default half-second
+        # HTTP polling tick; this changes no in-flight operation deadline.
+        server.serve_forever(poll_interval=.1)
     return 0
 
 

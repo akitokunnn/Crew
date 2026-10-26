@@ -52,15 +52,20 @@ function options(args, {launchSettingsPath} = {}) {
   return result;
 }
 
-async function request(base, route, body, timeoutMs = 5000) {
+async function request(base, route, body, timeoutMs = 5000, signal) {
   const origin = loopback(base);
   if (!route.startsWith('/api/')) throw new Error('不支持的 Crew API');
+  const deadline=AbortSignal.timeout(timeoutMs),requestSignal=signal?AbortSignal.any([signal,deadline]):deadline;
   const response = await fetch(origin + route, { method: body === undefined ? 'GET' : 'POST',
     headers: { 'X-Crew': '1', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
-    body: body === undefined ? undefined : JSON.stringify(body), redirect: 'error', signal: AbortSignal.timeout(timeoutMs) });
+    body: body === undefined ? undefined : JSON.stringify(body), redirect: 'error',
+    signal: requestSignal });
   let payload;
   try { payload = await response.json(); }
-  catch (_) { const error = new Error(`Crew 服务返回了无效内容 (${response.status})`); error.status = response.status; throw error; }
+  catch (_) {
+    if(requestSignal.aborted)throw requestSignal.reason;
+    const error = new Error(`Crew 服务返回了无效内容 (${response.status})`); error.status = response.status; throw error;
+  }
   if (!response.ok) { const error = new Error(payload.error || `Crew 服务返回 ${response.status}`); error.status = response.status; throw error; }
   return payload;
 }

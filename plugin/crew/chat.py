@@ -12,6 +12,7 @@ import sqlite3
 import subprocess
 import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from . import board, claude_limits, claude_subagents, codex_client, codex_visibility, git_admin, goals, hooks, install, messaging, models, runtime_switch, runtimes, settings, spawn, store, subagents, workspace_execution
@@ -385,6 +386,7 @@ class Manager:
         self.agents_provider, self.process_factory = agents_provider, process_factory
         self.journals, self.processes = {}, {}
         self.lock = threading.RLock()
+        self._close_lock = threading.Lock()
         self.closed = False
         self.auto_candidates = None
         self.message_wait_errors = {}
@@ -1530,13 +1532,23 @@ class Manager:
                 raise board.BoardError("会话进程已退出，但输出尚未读完")
 
     def close(self):
-        with self.lock:
-            self.closed = True
-            # Maintenance releases its temporary entries under the lock; join from a snapshot.
-            closing_processes = list(self.processes.values())
-            for current in closing_processes:
+        # Each native owns its own archive/transport deadlines. Waiting for one
+        # under the router lock blocks callbacks and makes those waits additive.
+        # Serialize repeated shutdown requests, but close independent carriers
+        # outside that lock and retain every existing native wait/reader drain.
+        with self._close_lock:
+            with self.lock:
+                self.closed = True
+                closing_processes = list(self.processes.values())
+                for journal in self.journals.values():
+                    with journal.condition:
+                        journal.condition.notify_all()
+
+            def close_current(current):
                 if current.process.poll() is None:
                     if getattr(current, "runtime", "claude") == "codex":
+                        with current.input_lock:
+                            current.stop_reason = 'service_close'
                         current.close()
                     else:
                         with current.input_lock:
@@ -1546,8 +1558,17 @@ class Manager:
                             except OSError:
                                 current.stop_reason = None
                                 raise
-            for journal in self.journals.values():
-                with journal.condition:
-                    journal.condition.notify_all()
-        for current in closing_processes:
-            current.reader.join(timeout=1)
+                current.reader.join(timeout=1)
+
+            errors = []
+            if closing_processes:
+                with ThreadPoolExecutor(max_workers=min(8, len(closing_processes)), thread_name_prefix='crew-native-close') as pool:
+                    pending = [(current, pool.submit(close_current, current)) for current in closing_processes]
+                    for current, result in pending:
+                        try:
+                            result.result()
+                        except Exception as exc:
+                            current.journal.emit('error', text='关闭原生执行失败：' + type(exc).__name__ + ': ' + str(exc))
+                            errors.append(exc)
+            if errors:
+                raise errors[0]
