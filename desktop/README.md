@@ -2,6 +2,8 @@
 
 原生 Electron 窗口、工作区首页和系统托盘。需要本机已有 Python 3，以及实际要使用的 Claude Code / Codex；普通工作文件夹无需 Git，后端继续使用 Python 标准库。
 
+0.2.28 修复会话已经结束或转交执行后仍显示“等模型回应”的问题：结束记录立即收起等待进度，同一条旧状态快照不能重新点亮它；新的实际工作照常显示。总会话、任务及 CC / Codex 使用同一套规则。
+
 ```powershell
 cd desktop
 $env:electron_config_cache = Join-Path (Get-Location) '.cache/electron'

@@ -26,7 +26,7 @@ if(!process.versions.electron){
       const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
       async function until(fn,label){const end=Date.now()+12000;while(Date.now()<end){if(await fn())return;await pause(35);}throw Error('Timed out: '+label);}
       await until(()=>bootstrap,'fixture');assert.notEqual(new URL(bootstrap.url).port,'47811');evidence.fixture=bootstrap;
-      window=new BrowserWindow({width:1220,height:850,show:false,webPreferences:{sandbox:true,contextIsolation:true,nodeIntegration:false,backgroundThrottling:false}});
+      window=new BrowserWindow({width:1220,height:850,show:false,webPreferences:{sandbox:true,contextIsolation:true,nodeIntegration:false,backgroundThrottling:false,offscreen:true}});
       const wc=window.webContents,js=source=>wc.executeJavaScript(source,true),wait=(s,label)=>until(()=>js(s),label);
       wc.on('console-message',event=>{if(event.level==='error'&&!event.message.includes('503'))evidence.errors.push(event.message);});
       async function check(label,source){assert(await js(source),label);evidence.checks.push(label);}
@@ -44,6 +44,26 @@ if(!process.versions.electron){
       await wait('document.querySelector(".chat-stop").hidden&&!document.querySelector(".send").disabled','confirmed idle');
       await check('the actual identity stop hides normal status and leaves the session draft intact','document.querySelector(".chat-interrupt-status").hidden&&document.querySelector(".chat-stop").getAttribute("aria-busy")==="false"&&document.querySelector(".composer textarea").value==="中断时保留的草稿"');
       await capture('03-stopped-draft');fixture.stdin.write('inspect\n');await until(()=>messages.some(row=>row.inspected),'actual process exit inspection');assert(messages.some(row=>row.inspected&&!row.process_alive));assert.equal(evidence.errors.length,0,JSON.stringify(evidence.errors));
+      await js(`window.terminalSession={session_id:"legacy-general",name:"声音部分",busy:true,last_seq:5,activity:null,where:"bg"};
+        window.terminalFetch=window.fetch;window.fetch=(url,options)=>String(url).includes("session_id=legacy-general")
+          ?Promise.resolve(new Response(new ReadableStream({start(controller){options.signal.addEventListener("abort",()=>controller.close(),{once:true});}})))
+          :terminalFetch(url,options);
+        window.terminalState={project:{name:"demo"},leaders:[terminalSession],members:[]};
+        window.terminalEvents=[{seq:1,type:"status",status:"working"},{seq:2,type:"assistant",id:"start",content:[{type:"tool_use",id:"call",name:"Bash",input:{command:"crew goal start task"}}]},
+          {seq:3,type:"turn_result",status:"interrupted",reason:"identity_handoff"},{seq:4,type:"status",status:"offline"},{seq:5,type:"identity_handoff",target_execution:"task"}];
+        window.mountTerminal=()=>{CrewChat.unmount();CrewChat.mount({host:document.querySelector("#chat-host"),session:terminalSession,state:terminalState,
+          api:async()=>({events:terminalEvents,busy:false,read_seq:terminalEvents.length}),toast(){}});};mountTerminal();true;`);
+      await wait('document.querySelector(".tool-state")?.textContent.includes("已转交执行")','legacy handoff replay');
+      await js('CrewChat.update(terminalState);true;');
+      await check('replayed general handoff ignores the same stale busy snapshot and permits a new message','!document.querySelector(".chat-activity")&&document.querySelector(".chat-stop").hidden&&!document.querySelector(".composer textarea").disabled');
+      await capture('04-terminal-with-stale-presence');
+      await js('mountTerminal();true;');await wait('!!document.querySelector(".tool-state")','reopened handoff');await js('CrewChat.update(terminalState);true;');
+      await check('closing and reopening preserves the ended general turn without a waiting spinner','!document.querySelector(".chat-activity")&&document.querySelector(".tool-state").textContent.includes("已转交执行")');
+      await js('terminalEvents=[{seq:1,type:"status",status:"working"},{seq:2,type:"turn_result",status:"completed"}];terminalSession.last_seq=2;mountTerminal();true;');
+      await wait('document.querySelector(".chat-loading")==null','terminal-only history');await js('CrewChat.update(terminalState);true;');
+      await check('a terminal receipt alone clears waiting without relying on a later idle event','!document.querySelector(".chat-activity")&&document.querySelector(".chat-stop").hidden');
+      await js('CrewChat.unmount();window.fetch=terminalFetch;true;');
+      assert.equal(evidence.errors.length,0,JSON.stringify(evidence.errors));
       fixture.stdin.end('shutdown\n');await until(()=>fixtureClosed,'fixture closed');evidence.fixtureExited=true;evidence.ok=true;
       await fs.writeFile(path.join(out,'evidence.json'),JSON.stringify(evidence,null,2));ending=true;app.quit();
     }catch(error){evidence.errors.push(error.stack||String(error));fixture?.stdin.end('shutdown\n');await fs.mkdir(out,{recursive:true});await fs.writeFile(path.join(out,'evidence.json'),JSON.stringify(evidence,null,2));console.error(error);process.exitCode=1;ending=true;app.quit();}

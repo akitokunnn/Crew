@@ -469,6 +469,7 @@
   }
   function setBusy(context, busy, seq) {
     if (seq < context.busySeq || (context.cache.pendingSendSeq !== null && seq <= context.cache.pendingSendSeq)) return;
+    if (busy && context.settledSeq !== null && seq <= context.settledSeq) return;
     context.busy = busy;
     if (!busy) {
       if (context.interrupting) context.interruptConfirmed = true;
@@ -501,6 +502,8 @@
           context.toolStops.set(id, stopped); owner.lastSeq = event.seq;
         }
       }
+      context.settledSeq = event.seq;
+      setBusy(context, false, event.seq);
     }
     else if (event.type === "status") {
       // Historical journals may predate terminal-turn events. Offline means the
@@ -510,6 +513,7 @@
           context.toolStops.set(id, "offline"); owner.lastSeq = event.seq;
         }
       }
+      if (event.status !== "working") context.settledSeq = event.seq;
       setBusy(context, event.status === "working", event.seq); if (incremental && context.goalId != null) context.onExecutionChange?.();
     }
     else if (event.type === "compact_request" || event.type === "compact") {
@@ -582,14 +586,14 @@
         // Keep the visible transcript until the replacement history arrives;
         // a failed read must not leave an accepted continuation looking empty.
         context.items = []; context.previous = []; context.byId.clear(); context.results.clear();
-        context.toolOwners.clear(); context.toolStops.clear(); context.cursor = 0; context.busySeq = 0;
+        context.toolOwners.clear(); context.toolStops.clear(); context.cursor = 0; context.busySeq = 0; context.settledSeq = null;
         context.cache.pendingSendSeq = null;
       }
       context.executionId = history.execution_id ?? null;
       context.historyPrefix = context.goalId != null && context.executionId ? `history:${context.executionId}:` : "";
       context.previous = (history.previous_executions || []).map(value => {
         const scope = {...context, executionId:value.execution_id, historyPrefix:`history:${value.execution_id}:`,
-          items:[], byId:new Map(), results:new Map(), toolOwners:new Map(), toolStops:new Map(), cursor:0, busySeq:0,
+          items:[], byId:new Map(), results:new Map(), toolOwners:new Map(), toolStops:new Map(), cursor:0, busySeq:0, settledSeq:null,
           cache:{...context.cache, pendingSendSeq:null}};
         for (const event of value.events) apply(scope, event, false);
         return scope;
@@ -680,7 +684,7 @@
         if (saved !== null) { const draft = JSON.parse(saved); cache.text = draft.text; cache.images = draft.images; }
       } catch (error) { options.toast(error.message); }
     }
-    const context = { ...options, session:options.goalId == null ? options.session : {...options.session,activity:null}, cache, items: [], byId: new Map(), nodes: new Map(), results: new Map(), toolOwners: new Map(), toolStops: new Map(), cursor: 0, readSeq: 0, busySeq: options.readonly || options.goalId != null ? 0 : options.session.last_seq, executionId:null, connectionGeneration:0, loadGeneration:0, readTimer: null, reconnectTimer: null, historyRetryTimer: null, historyFailed: false, interrupting: false, interruptError: "", interruptConfirmed: false, frame: null, loading: true, busy: cache.pendingSendSeq === null ? options.goalId == null && options.session.busy : true, reading: false, initialPosition: null, stream: null };
+    const context = { ...options, session:options.goalId == null ? options.session : {...options.session,activity:null}, cache, items: [], byId: new Map(), nodes: new Map(), results: new Map(), toolOwners: new Map(), toolStops: new Map(), cursor: 0, readSeq: 0, busySeq: options.readonly || options.goalId != null ? 0 : options.session.last_seq, settledSeq:null, executionId:null, connectionGeneration:0, loadGeneration:0, readTimer: null, reconnectTimer: null, historyRetryTimer: null, historyFailed: false, interrupting: false, interruptError: "", interruptConfirmed: false, frame: null, loading: true, busy: cache.pendingSendSeq === null ? options.goalId == null && options.session.busy : true, reading: false, initialPosition: null, stream: null };
     active = context;
     options.host.classList.add("chat-host");
     options.host.innerHTML = `<div class="chat-error chat-connection-error" role="alert" hidden></div><div class="scroll chat-scroll" tabindex="0" aria-label="${escape(options.session.name)}的对话记录"><div class="col chat-inner"></div></div><button type="button" class="jump" aria-label="回到最新消息">${icon("down")}回到最新</button>${options.readonly ? `<div class="readonly-note">${escape(options.readonlyReason || "此会话尚未由 Crew 托管。请先在原工具退出，再从会话操作中接管；历史记录保留。")}</div>` : `<div class="composer-wrap"><form class="composer"><div class="attach" hidden></div><textarea rows="1" aria-label="给 ${escape(options.session.name)} 发消息" placeholder="跟 ${escape(options.session.name)} 说…（可以直接粘贴截图）"></textarea><div class="c-row"><button type="button" class="icon-btn chat-image-button" title="附截图（也可以直接 Ctrl+V）" aria-label="添加图片">${icon("image")}</button><input class="chat-image-file" type="file" accept="image/*" multiple hidden><span class="hint"></span><button type="button" class="chat-stop" aria-label="停止当前回复" hidden><svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/></svg></button><button type="submit" class="send" aria-label="发送" disabled>${icon("up")}</button></div><div class="chat-interrupt-status" role="status" aria-live="polite" hidden></div><div class="chat-delivery-status" role="alert" hidden></div></form></div>`}`;

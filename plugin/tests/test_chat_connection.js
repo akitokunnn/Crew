@@ -57,6 +57,38 @@ test("live handoff closes a pending tool, while a later native result retains it
   assert(html().includes("执行失败"));assert(html().includes("目标启动被拒绝的真实原因"));assert(!html().includes("已转交"));h.chat.unmount();
 });
 
+test("terminal turn receipts stop waiting before a separate status event arrives",async()=>{
+  for(const event of [{type:"turn_result",status:"completed"},{type:"turn_result",status:"failed"},
+    {type:"turn_result",status:"interrupted"},{type:"identity_handoff",target_execution:"task"}]){
+    const h=harness(),target=h.mount("leader",async()=>history());await tick();
+    const stream=h.connections[0],progress=()=>target.querySelector(".chat-inner").children.filter(item=>item.className==="chat-activity");
+    stream.emit({seq:1,type:"status",status:"working"});await tick();h.flushFrames();assert.equal(progress().length,1);
+    stream.emit({seq:2,...event});await tick();h.flushFrames();
+    assert.equal(progress().length,0,"a terminal receipt is sufficient to stop waiting");
+    assert.equal(target.querySelector(".chat-stop").hidden,true);
+    h.update("leader",{busy:true,last_seq:2});h.flushFrames();assert.equal(progress().length,0,"the same snapshot cannot revive an ended turn");
+    stream.emit({seq:3,type:"status",status:"working"});await tick();h.flushFrames();assert.equal(progress().length,1,"new work still shows progress");
+    h.chat.unmount();
+  }
+});
+
+test("replayed legacy goal handoff cannot regain a waiting spinner from the same presence snapshot",async()=>{
+  const events=[{seq:1,type:"status",status:"working"},
+    {seq:2,type:"assistant",id:"start",content:[{type:"tool_use",id:"call",name:"Bash",input:{command:"crew goal start task"}}]},
+    {seq:3,type:"turn_result",status:"interrupted",reason:"identity_handoff"},
+    {seq:4,type:"status",status:"offline"},{seq:5,type:"identity_handoff",target_execution:"task"}];
+  const h=harness(),read=async()=>({...history(),events,read_seq:5}),extra={busy:true,last_seq:5};
+  for(let opened=0;opened<2;opened++){
+    const target=h.mount("leader",read,extra);await tick();h.flushFrames();
+    h.update("leader",extra);h.flushFrames();
+    const rows=target.querySelector(".chat-inner").children;
+    assert(rows.some(item=>item.innerHTML.includes("已转交执行")));
+    assert.equal(rows.filter(item=>item.className==="chat-activity").length,0);
+    assert.equal(target.querySelector(".chat-stop").hidden,true);
+    h.chat.unmount();
+  }
+});
+
 test("legacy offline history stops the spinner but keeps the missing tool result explicitly unconfirmed",async()=>{
   const h=harness(),target=h.mount("leader",async()=>({...history(),read_seq:2,events:[
     {seq:1,type:"assistant",id:"call",content:[{type:"tool_use",id:"tool",name:"crew_goal",input:{action:"start"}}]},
