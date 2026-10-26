@@ -31,6 +31,7 @@ with closing(store.connect(home)) as conn:
                           'pending-member':'核对下一轮工具的真实结果 · 成员本人任务'}[sid])
   runtimes.set(conn,sid,runtime)
   board.set_status(conn,sid,'offline')
+ board.set_leader_priority(conn,'handoff-demo',['handoff-codex'])
  goal=goals.create(conn,'handoff-demo','handoff-codex','交接后的独立任务','查看交接说明；验收不会启动任务。',['历史与真实回执保持可追溯'])
  todo.backfill(conn)
  conn.execute('UPDATE leader_notices SET sent_at=created_at')
@@ -57,6 +58,8 @@ pending.emit('turn_result',status='completed',success=True); pending.set_status(
 tool(pending,'next-tool','Bash',dict(command='python next_case.py'))
 # The final persisted status is intentionally idle: the unresolved tool is a
 # rendering fixture, not permission to auto-resume a native/model process.
+from crew.storage_service import StorageService
+StorageService(home,isolated=True).refresh('handoff-demo',write_marker=True)
 (home/'handoff-fixture.json').write_text(json.dumps(dict(project=str(project),goal_id=goal['id'])),encoding='utf-8')
 `;
   const prepared = spawnSync('python', ['-', home], {input:seed, encoding:'utf8', env, windowsHide:true});

@@ -135,10 +135,15 @@ svg.i.xs{width:12px;height:12px}
 .leader-details>.badges{margin-left:auto}
 .leader-details .b-unread,.leader-details .b-pending,.leader-details .native-approval-count{min-width:0;height:auto;padding:1px 4px;border-radius:4px;font-size:calc(10px * var(--fs));line-height:1.35;white-space:nowrap}
 .leader-details .b-unread{background:var(--accent-soft);color:var(--accent-text)}
-.leader-item .typing{display:inline-flex;gap:2px}
-.leader-item .typing i{width:3px;height:3px;border-radius:50%;background:var(--working);animation:blink 1.2s infinite}
-.leader-item .typing i:nth-child(2){animation-delay:.2s}.leader-item .typing i:nth-child(3){animation-delay:.4s}
-@keyframes blink{0%,80%,100%{opacity:.25}40%{opacity:1}}
+.group-work-avatar{display:inline-grid;position:relative;flex:none;border-radius:30%;isolation:isolate}
+.group-work-avatar::before,.group-work-avatar::after{content:"";position:absolute;pointer-events:none;border-radius:inherit}
+.group-work-avatar::before{inset:-4px;border:2px solid var(--working);box-shadow:0 0 0 2px color-mix(in srgb,var(--working) 12%,transparent)}
+.group-work-avatar::after{inset:-4px;box-shadow:0 0 10px 4px color-mix(in srgb,var(--working) 30%,transparent);opacity:.35;animation:group-work-glow 2.6s ease-in-out infinite}
+@keyframes group-work-glow{0%,100%{opacity:.25}50%{opacity:.7}}
+.group-work-label{display:inline-flex;align-items:center;gap:5px;color:var(--working-text);font-size:calc(10.5px * var(--fs));font-weight:500;line-height:1.4;white-space:nowrap}
+.group-work-label>i{width:4px;height:4px;border-radius:50%;background:var(--working);flex:none}
+.leader-work-summary{display:block;margin:5px 0 0 39px;line-height:1}
+.leader-work-summary:empty{display:none}
 .badges{display:flex;gap:4px;align-items:center;flex:none}
 .b-unread{min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:var(--accent);color:var(--on-accent);font-size:calc(11px * var(--fs));display:grid;place-items:center;font-weight:500}
 .channel-unread{margin-left:auto}
@@ -205,6 +210,7 @@ svg.i.xs{width:12px;height:12px}
 #chat-head .head .sub{flex-wrap:nowrap;min-width:0;gap:8px;margin-top:3px;font-size:calc(11.5px * var(--fs))}
 #chat-head .chat-scope{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #chat-head .chat-member-stats,#chat-head .sub .sep{flex:none;white-space:nowrap}
+#chat-head .chat-member-stats.is-working{color:var(--working-text);font-weight:500}
 #chat-head .head .right{flex-shrink:0}
 #chat-head .model-tag{max-width:180px;font-size:calc(11px * var(--fs))}
 #chat-head .model-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}

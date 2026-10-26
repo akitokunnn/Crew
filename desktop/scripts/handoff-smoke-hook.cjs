@@ -162,6 +162,8 @@ app.once('browser-window-created', (_event, win) => {
       await overview({leaders:{'offline-claude':'working','handoff-codex':'idle'},members:{'failed-member':'waiting','pending-member':'offline'}},1);
       await click(view,'#main [data-act=all-tab][data-tab=tree]');
       assert(await js(view,'document.querySelector("#main .leader-node[data-id=offline-claude]").textContent.includes("在干活")'));
+      assert(await js(view,'!!document.querySelector("#sidebar [data-id=offline-claude] .group-work-avatar")'));
+      assert.equal(await js(view,'document.querySelector("#main .leader-node[data-id=offline-claude] .group-work-label").textContent'),'本人在干活');
       await capture(view,'06-overview-leader-only');
       await openWorking();
       let rows=await listRows();
@@ -198,16 +200,59 @@ app.once('browser-window-created', (_event, win) => {
       evidence.checks.push('mixed Claude and Codex leaders and members produce four unique people, retain role-specific goal or task text, and both leader and member routes show the same three-person group count');
 
       await overview({leaders:{'offline-claude':'idle','handoff-codex':'waiting'},members:{'failed-member':'working','pending-member':'offline'}},1);
+      await click(view,'#main [data-act=all-tab][data-tab=tree]');
+      const memberWork=await js(view,`(()=>{
+        const sidebar=document.querySelector('#sidebar [data-act=leader][data-id=handoff-codex]');
+        const node=document.querySelector('#main .leader-node[data-id=handoff-codex]');
+        return {sidebar:sidebar.querySelector('.group-work-label')?.textContent,label:sidebar.getAttribute('aria-label'),
+          node:node.querySelector('.group-work-label')?.textContent,own:node.querySelector('.st')?.textContent,
+          rings:document.querySelectorAll('.group-work-avatar').length,
+          idle:!!document.querySelector('#sidebar [data-id=offline-claude] .group-work-avatar')};
+      })()`);
+      assert.equal(memberWork.sidebar,'组员 1 在干活');assert(memberWork.label.includes('1 位组员在干活'));
+      assert.equal(memberWork.node,'1 位组员在干活');assert.equal(memberWork.own,'等你');
+      assert.equal(memberWork.rings,2);assert.equal(memberWork.idle,false);
+      await capture(view,'09-group-members-working-dark');
+      for(let attempt=0;attempt<3 && !await js(view,'document.documentElement.dataset.theme === "light"');attempt++) await click(view,'[data-act=theme]');
+      assert(await js(view,'document.documentElement.dataset.theme === "light"'));
+      win.setMinimumSize(700,600);
+      win.setSize(760,850);
+      await wait(view,'innerWidth <= 760');
+      const narrowWork=await js(view,`(()=>{
+        const button=document.querySelector('#sidebar [data-id=handoff-codex]'),avatar=button.querySelector('.group-work-avatar');
+        return {width:avatar.getBoundingClientRect().width,border:getComputedStyle(avatar,'::before').borderTopWidth,
+          animation:getComputedStyle(avatar,'::after').animationName,overflow:button.scrollWidth>button.clientWidth};
+      })()`);
+      assert(Math.abs(narrowWork.width-26)<.1);assert(parseFloat(narrowWork.border)>0);assert.equal(narrowWork.animation,'group-work-glow');assert.equal(narrowWork.overflow,false);
+      await capture(view,'10-group-members-working-narrow-light');
+      // Reduced motion belongs to the workspace renderer, not the desktop shell.
+      await view.debugger.attach('1.3');
+      try{
+        await view.debugger.sendCommand('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:'reduce'}]});
+        assert.equal(await js(view,'getComputedStyle(document.querySelector(".group-work-avatar"),"::after").animationName'),'none');
+        assert.equal(await js(view,'getComputedStyle(document.querySelector(".group-work-avatar"),"::before").borderTopWidth'),narrowWork.border);
+      }finally{
+        await view.debugger.sendCommand('Emulation.setEmulatedMedia',{features:[]});view.debugger.detach();
+      }
+      win.setSize(1180,850);
+      evidence.groupWork={memberWork,narrowWork,reducedMotion:true};
+      evidence.checks.push('a waiting leader shows member-only work in the sidebar and architecture with a distinct avatar halo, readable in both themes and narrow layout; reduced motion keeps the static ring');
       await openWorking(); rows=await listRows();
       evidence.overview.memberOnly=rows;
       assert.deepEqual(rows.map(item=>item.id),['failed-member']); assert.equal(rows[0].act,'member-chat');
       await click(view,'#main .list [data-act=member-chat][data-id=failed-member]');
       await wait(view,'document.querySelector("#chat-head .chat-name")?.textContent === "真实失败"');
       assert.equal(await js(view,'document.querySelector("#chat-head .chat-member-stats").textContent'),'2 个下属 · 本组 1 人在干活');
+      assert(await js(view,'document.querySelector("#chat-head .chat-member-stats").classList.contains("is-working")'));
+      if(!await js(view,'document.querySelector("#right-panel").classList.contains("show")')) await click(view,'[data-act=right-open]');
+      assert.equal(await js(view,'document.querySelector("#right-panel .leader-node .group-work-label").textContent'),'1 位组员在干活');
       assert.equal(await js(view,'document.querySelector(".composer textarea").value'),memberDraft);
       evidence.checks.push('idle, waiting and offline people are excluded even beside a working member; opening that member preserves its own multiline draft and counts only the one working person in its group');
 
       await overview({leaders:{'offline-claude':'idle','handoff-codex':'waiting'},members:{'failed-member':'offline','pending-member':'idle'}},0);
+      assert.equal(await js(view,'document.querySelectorAll("#sidebar .group-work-avatar").length'),0);
+      await click(view,'#main [data-act=all-tab][data-tab=tree]');
+      assert.equal(await js(view,'document.querySelectorAll("#main .group-work-avatar,.leader-work-summary .group-work-label").length'),0);
       await openWorking(); assert.deepEqual(await listRows(),[]);
       assert(await js(view,'document.querySelector("#main .empty")?.textContent.includes("没有正在干活的会话")'));
       await capture(view,'08-overview-no-working');
