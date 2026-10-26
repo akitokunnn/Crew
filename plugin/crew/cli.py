@@ -298,6 +298,8 @@ def parser():
             payload = entry.add_mutually_exclusive_group()
             payload.add_argument('--data', help='JSON object containing action data')
             payload.add_argument('--file', type=Path, help='UTF-8 JSON action data/report file')
+            if namespace == 'goal' and action == 'finish':
+                entry.add_argument('--html-file', type=Path, help='读取自包含 HTML 正文，与验收 JSON 一起保存')
             for name in ('title','request','leader','to','task','text','reason','item','kind','source'):
                 entry.add_argument('--' + name, default=argparse.SUPPRESS)
             entry.add_argument('--acceptance', '--accept', action='append', default=argparse.SUPPRESS)
@@ -519,6 +521,20 @@ def _goal_command(args, cwd):
     action = args.action if args.command == 'goal' else 'context.' + args.action
     if action == 'finish' and 'report' not in payload:
         payload = {'report': payload}
+    html_file = getattr(args, 'html_file', None)
+    if html_file is not None:
+        from . import report_documents
+        report = payload.get('report')
+        if not isinstance(report, dict):
+            raise board.BoardError('finish.report 必须为对象')
+        if report.get('document_html'):
+            raise board.BoardError('document_html 与 --html-file 只能提供一种，不能覆盖已有正文')
+        if html_file.stat().st_size > report_documents.MAX_HTML:
+            raise board.BoardError('HTML 正文文件超过 512 KiB')
+        document = html_file.read_text(encoding='utf-8-sig')
+        if not document.strip():
+            raise board.BoardError('HTML 正文文件不能为空')
+        report['document_html'] = document
     if action == 'finish' and isinstance(payload.get('report'), dict) and payload['report'].get('goal_id'):
         payload.setdefault('goal_id', payload['report']['goal_id'])
     for flag, field in (('title','title'),('request','request'),('leader','leader'),('to','to'),('task','task'),
