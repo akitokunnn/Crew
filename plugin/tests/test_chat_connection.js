@@ -24,6 +24,89 @@ function harness(){
 }
 const history=()=>({events:[],busy:false,read_seq:0});
 
+const rendered=target=>target.querySelector(".chat-inner").children.map(item=>item.innerHTML);
+const at=seconds=>new Date(Date.UTC(2026,9,27,0,0,seconds)).toISOString();
+const workTurn=(start=1)=>[
+  {seq:start,type:"message",id:`input-${start}`,source:"human",text:"检查并给我结论",at:at(0)},
+  {seq:start+1,type:"status",status:"working",at:at(1)},
+  {seq:start+2,type:"assistant",id:`work-${start}`,at:at(2),content:[{type:"text",text:"先检查现状。"},{type:"tool_use",id:`tool-${start}`,name:"Bash",input:{command:"git status"}}]},
+  {seq:start+3,type:"tool_result",tool_use_id:`tool-${start}`,content:"clean",is_error:false,at:at(8)},
+  {seq:start+4,type:"text",id:`reply-${start}`,text:"**主回复**：检查已完成。",at:at(9)},
+  {seq:start+5,type:"turn_result",status:"completed",success:true,at:at(65)},
+  {seq:start+6,type:"status",status:"idle",at:at(65)}];
+
+test("live steps stay visible and the terminal receipt folds them into a duration above the final reply",async()=>{
+  for(const runtime of ["claude","codex"])for(const goalId of [null,"goal"]){
+    const h=harness(),target=h.mount("leader",async()=>history(),{runtime},{goalId});await tick();
+    const stream=h.connections[0],events=workTurn();
+    for(const event of events.slice(0,5))stream.emit(event);await tick();h.flushFrames();
+    assert(rendered(target).some(html=>html.includes("先检查现状")));assert(!rendered(target).some(html=>html.includes("turn-process")));
+    for(const event of events.slice(5))stream.emit(event);await tick();h.flushFrames();
+    const rows=rendered(target),process=rows.find(html=>html.includes('class="turn-process ')),reply=rows.find(html=>html.startsWith('<div class="m-lead">'));
+    assert(process.includes("用时 1 分 5 秒"));assert(process.includes('class="turn-toggle"'));assert(process.includes('aria-expanded="false"'));
+    assert(process.includes("先检查现状"));assert(process.includes("git status"));assert(process.includes("clean"));
+    assert(!process.includes("主回复"));assert(reply.includes("<strong>主回复</strong>"));
+    assert(rows.indexOf(process)<rows.indexOf(reply));assert(!rows.some(html=>html.includes('class="activity"')));
+    h.chat.unmount();
+  }
+});
+
+test("expanded process survives revisiting and still permits expanding the original tool",async()=>{
+  const h=harness(),read=async()=>({...history(),events:workTurn(),read_seq:7}),target=h.mount("leader",read);await tick();h.flushFrames();
+  const group=target.querySelector(".chat-inner").children.find(item=>item.innerHTML.includes("turn-process"));
+  const button={...node(),dataset:{chatFold:"turn:1"}};group.contains=value=>value===button;
+  await target.querySelector(".chat-inner").onclick({target:{closest:selector=>selector==="[data-chat-fold]"?button:null}});
+  assert.equal(button.getAttribute("aria-expanded"),"true");assert(group.dataset.html.includes('class="turn-toggle open"'));
+  const tool={...node(),dataset:{chatFold:"tool:tool-1"}};group.contains=value=>value===tool;
+  await target.querySelector(".chat-inner").onclick({target:{closest:selector=>selector==="[data-chat-fold]"?tool:null}});
+  assert.equal(tool.getAttribute("aria-expanded"),"true");
+  h.chat.unmount();const reopened=h.mount("leader",read);await tick();h.flushFrames();
+  const html=rendered(reopened).join("");assert(html.includes('class="turn-toggle open"'));assert(html.includes('class="tool indent open"'));
+  h.chat.unmount();
+});
+
+test("failed and interrupted turns keep their actual errors visible and never become successful replies",async()=>{
+  for(const status of ["failed","interrupted"]){
+    const events=workTurn().slice(0,4);events.push({seq:5,type:"error",text:"真实失败原因",at:at(10)},
+      {seq:6,type:"turn_result",status,success:false,at:at(11)});
+    const h=harness(),target=h.mount("leader",async()=>({...history(),events}));await tick();h.flushFrames();
+    const rows=rendered(target);assert(rows.some(html=>html.includes(`turn-incomplete`) && html.includes(status==="failed"?"执行失败":"已中断")));
+    assert(rows.some(html=>html.startsWith('<div class="chat-error"')&&html.includes("真实失败原因")));
+    assert(!rows.some(html=>html.startsWith('<div class="m-lead">')));h.chat.unmount();
+  }
+});
+
+test("text before a final tool is process, not a fabricated final answer, and unknown timing stays unknown",async()=>{
+  const events=workTurn().filter(event=>event.type!=="text").map(({at,...event})=>event);
+  const h=harness(),target=h.mount("leader",async()=>({...history(),events}));await tick();h.flushFrames();
+  const rows=rendered(target),process=rows.find(html=>html.includes("turn-process"));
+  assert(process.includes("过程记录"));assert(process.includes("本轮未提供最终回复"));assert(!process.includes("用时 0"));
+  assert(!rows.some(html=>html.startsWith('<div class="m-lead">')));h.chat.unmount();
+});
+
+test("steering inputs remain in chronological order and a following live turn does not join the prior duration",async()=>{
+  const events=workTurn();events.splice(4,0,{seq:4.5,type:"message",id:"steer",source:"human",text:"补充要求",at:at(8)});
+  events.push({seq:8,type:"message",id:"second",source:"human",text:"再看看另一处",at:at(70)},
+    {seq:9,type:"status",status:"working",at:at(70)},
+    {seq:10,type:"assistant",id:"second-work",content:[{type:"text",text:"第二轮正在检查"}],at:at(71)});
+  const h=harness(),target=h.mount("leader",async()=>({...history(),events,busy:true}));await tick();h.flushFrames();
+  const rows=rendered(target);assert.equal(rows.filter(html=>html.includes('class="turn-process ')).length,1);
+  assert(rows.findIndex(html=>html.includes('class="m-user"')&&html.includes("补充要求"))<rows.findIndex(html=>html.startsWith('<div class="m-lead">')&&html.includes("主回复")));
+  assert(rows.findIndex(html=>html.includes('class="m-user"')&&html.includes("再看看另一处"))>rows.findIndex(html=>html.startsWith('<div class="m-lead">')&&html.includes("主回复")));
+  assert(rows.some(html=>html.startsWith('<div class="m-lead">')&&html.includes("第二轮正在检查")));h.chat.unmount();
+});
+
+test("an idle legacy reply cannot absorb the next prompt and tools with real errors remain visible in the summary",async()=>{
+  const events=[{seq:1,type:"assistant",id:"legacy",content:[{type:"text",text:"历史回复，没有结束回执"}],at:at(0)},
+    ...workTurn(2)];
+  events.find(event=>event.type==="tool_result").is_error=true;
+  const h=harness(),target=h.mount("leader",async()=>({...history(),events}));await tick();h.flushFrames();
+  const rows=rendered(target),groups=rows.filter(html=>html.includes('class="turn-process '));
+  assert.equal(groups.length,2);assert(groups[1].includes("用时 1 分 5 秒"));assert(groups[1].includes("1 项工具报错"));
+  assert(!groups[1].includes("turn-incomplete"),"a recovered tool error is not a failed native turn");
+  assert.equal(rows.filter(html=>html.startsWith('<div class="m-lead">')).length,2);h.chat.unmount();
+});
+
 test("compact watcher waits for native completion and reports cancellation or closed transport",async()=>{
   for(const terminal of [{type:"compact",seq:2,pre_tokens:50000,post_tokens:10000},
     {type:"compact_cancelled",reason:"上一轮未成功结束"},{type:"status",status:"offline"},{type:"error",text:"native failed"}]){

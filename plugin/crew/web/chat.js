@@ -221,7 +221,8 @@
       right: '<path d="m9 5 7 7-7 7"/>',
       check: '<path d="m5 12 4 4L19 6"/>',
       close: '<path d="m6 6 12 12M6 18 18 6"/>',
-      handoff: '<path d="M4 12h15m-5-5 5 5-5 5"/>'
+      handoff: '<path d="M4 12h15m-5-5 5 5-5 5"/>',
+      clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>'
     };
     return `<svg class="i ${kind === "right" ? "xs chev" : "sm"}" viewBox="0 0 24 24" aria-hidden="true">${paths[kind]}</svg>`;
   };
@@ -378,7 +379,48 @@
   function assistantText(context, text, item) {
     return `<div class="m-lead"><div class="av round" style="--s:30px;--tint:var(--accent)">${escape(context.session.name.slice(0, 1))}</div><div class="body"><div class="markdown">${renderMarkdown(text, context.session.session_id)}</div><div class="m-meta">${escape(context.session.name)}${item.at ? ` · ${timeOf(item.at)}` : ""}</div></div></div>`;
   }
+  function turnView(turn) {
+    const parts = turn.items.map(item => ({item, blocks:item.content === null ? (item.text ? [{type:"text", text:item.text}] : []) : item.content}));
+    let final = null, indexes = [];
+    for (const part of parts) for (const [index, block] of part.blocks.entries()) {
+      if (block.type === "tool_use") { final = null; indexes = []; }
+      else if (block.type === "text" && block.text.trim()) {
+        if (final !== part) { final = part; indexes = []; }
+        indexes.push(index);
+      }
+    }
+    const process = [];
+    for (const part of parts) {
+      const blocks = part.blocks.filter((_block, index) => part !== final || !indexes.includes(index));
+      if (blocks.some(block => block.type === "tool_use" || block.type === "text" && block.text.trim())) process.push({...part.item, content:blocks, text:""});
+    }
+    return {turn, process, final:final ? {...final.item, content:indexes.map(index => final.blocks[index]), text:""} : null};
+  }
+  function turnDuration(turn) {
+    const milliseconds = Date.parse(turn.endedAt) - Date.parse(turn.startedAt);
+    if (!Number.isFinite(milliseconds) || milliseconds < 0) return null;
+    const seconds = Math.round(milliseconds / 1000);
+    return seconds < 1 ? "不到 1 秒" : seconds < 60 ? `${seconds} 秒` : seconds < 3600 ? `${Math.floor(seconds / 60)} 分${seconds % 60 ? ` ${seconds % 60} 秒` : ""}` : `${Math.floor(seconds / 3600)} 小时${Math.floor(seconds % 3600 / 60) ? ` ${Math.floor(seconds % 3600 / 60)} 分` : ""}`;
+  }
+  function processHTML(context, view) {
+    const {turn, process} = view, duration = turnDuration(turn);
+    const blocks = turn.items.flatMap(item => item.content || []), tools = blocks.filter(block => block.type === "tool_use");
+    let outcome = turn.status;
+    if (outcome === "handoff" && tools.length && tools.every(block => context.results.has(block.id))) outcome = tools.some(block => context.results.get(block.id).is_error) ? "failed" : "ended";
+    const status = {completed:"", interrupted:"已中断", failed:"执行失败", handoff:"已转交执行", offline:"连接已结束 · 结果未确认", ended:"已结束"}[outcome];
+    const errors = tools.filter(block => context.results.get(block.id)?.is_error).length;
+    const missing = tools.filter(block => !context.results.has(block.id)).length;
+    const label = [status, duration === null ? (status ? "" : "过程记录") : `用时 ${duration}`,
+      errors && outcome !== "failed" ? `${errors} 项工具报错` : "", missing && ["completed", "ended"].includes(outcome) ? `${missing} 项结果未确认` : ""].filter(Boolean).join(" · ");
+    const foldKey = `${context.historyPrefix || ""}turn:${turn.seq}`, open = context.cache.expanded.has(foldKey);
+    const marker = outcome === "failed" ? "close" : outcome === "handoff" ? "handoff" : "clock";
+    const target = outcome === "handoff" && context.onRouted ? blocks.find(block => block.type === "tool_use" && block.name === "crew_goal" && typeof block.input.goal_id === "string") : null;
+    const link = target ? `<button type="button" class="text-link" data-chat-goal="${escape(target.input.goal_id)}">查看任务 →</button>` : "";
+    const head = process.length ? `<button type="button" class="turn-toggle${open ? " open" : ""}" data-chat-fold="${escape(foldKey)}" aria-expanded="${open}" aria-label="本轮过程 · ${escape(label)}">${icon(marker)}<span>${escape(label)}</span>${icon("right")}</button><div class="turn-process-body">${process.map(item => itemHTML(context, item)).join("")}</div>` : `<div class="turn-duration">${icon(marker)}${escape(label)}</div>`;
+    return `<div class="turn-process ${outcome === "failed" || outcome === "interrupted" ? "turn-incomplete" : ""}">${head}${link}${!view.final && outcome === "completed" && process.length ? '<p class="turn-no-reply">本轮未提供最终回复，可展开过程查看结果。</p>' : ""}</div>`;
+  }
   function itemHTML(context, item) {
+    if (item.kind === "process") return processHTML(context, item.view);
     if (item.kind === "compact_request" || item.kind === "compact") return `<div class="context-divider">${item.kind === "compact_request" ? "压缩上下文" : `上下文已压缩：${CrewContext.compactSize(item.pre_tokens)} → ${CrewContext.tokens(item.post_tokens)}`}</div>`;
     if (item.kind === "error") return `<div class="chat-error" role="alert">${escape(item.text)}</div>`;
     if (item.kind === "assistant") {
@@ -412,8 +454,21 @@
     return `<div class="m-user"><div class="bubble"><span class="message-text">${escape(item.text).replace(/\n/g, "<br>")}</span>${images}</div><div class="m-meta${remoteSource ? " qq-meta" : ""}">${remoteSource ? `来自 ${remoteSource}` : ""}${item.at ? `${remoteSource ? " · " : ""}${timeOf(item.at)}` : ""}</div></div>`;
   }
   function* timeline(context) {
-    for (const scope of [...(context.previous || []), context]) for (const item of scope.items) {
-      yield {scope, item, key:`${scope.historyPrefix || ""}${item.id}`};
+    for (const scope of [...(context.previous || []), context]) {
+      const views = new Map();
+      for (const item of scope.items) {
+        const prefix = scope.historyPrefix || "";
+        if (item.kind === "assistant" && item.turn.finished) {
+          let view = views.get(item.turn);
+          if (!view) { view = turnView(item.turn); views.set(item.turn, view); }
+          if (item === item.turn.items[0] && (view.process.length || view.final)) {
+            const id = `turn:${item.turn.seq}`;
+            yield {scope, item:{id, kind:"process", at:item.at, view,
+              unreadIds:view.process.filter(part => part.id !== view.final?.id).map(part => part.id)}, key:`${prefix}${id}`};
+          }
+          if (view.final?.id === item.id) yield {scope, item:view.final, key:`${prefix}${item.id}`};
+        } else yield {scope, item, key:`${prefix}${item.id}`};
+      }
     }
   }
   function render(context) {
@@ -427,13 +482,23 @@
         const day = dayOf(item.at);
         if (day.key !== lastDay) { desired.push({ key: `date:${key}`, className: "div date-div", html: escape(day.label) }); lastDay = day.key; }
       }
-      if (scope === context && item.id === context.cache.unreadAnchor) desired.push({ key: "unread", className: "div unread unread-div", html: "以下是你离开后的消息" });
+      if (scope === context && (item.id === context.cache.unreadAnchor || item.unreadIds?.includes(context.cache.unreadAnchor))) desired.push({ key: "unread", className: "div unread unread-div", html: "以下是你离开后的消息" });
       desired.push({ key, className: "chat-event", html: itemHTML(scope, item) });
     }
     if (!context.readonly && context.busy) {
       const phase = context.confirmingStop ? "等待停止确认" : context.interrupting ? "正在停止…" : context.cache.sending ? "正在发送…" : "等模型回应";
       const html = !context.confirmingStop && !context.interrupting && context.session.activity !== null ? CrewActivity.markup(context.session) : `<span class="activity" role="status"><span class="spin" aria-hidden="true"></span><span class="activity-phase">${phase}</span></span>`;
       desired.push({key:"activity", className:"chat-activity", html});
+    }
+    let anchor = null;
+    if (!follow && context.initialPosition === null) {
+      const viewport = context.scroll.getBoundingClientRect();
+      for (const item of desired) {
+        const node = context.nodes.get(item.key);
+        if (node?.parentNode !== context.inner) continue;
+        const bounds = node.getBoundingClientRect();
+        if (bounds.bottom > viewport.top && bounds.top < viewport.bottom) { anchor = {node, top:bounds.top}; break; }
+      }
     }
     let position = context.inner.firstChild;
     for (const item of desired) {
@@ -452,6 +517,7 @@
       } else context.scroll.scrollTop = context.initialPosition === "bottom" ? context.scroll.scrollHeight : context.initialPosition;
       context.initialPosition = null;
     } else if (follow) context.scroll.scrollTop = context.scroll.scrollHeight;
+    else if (anchor) context.scroll.scrollTop += anchor.node.getBoundingClientRect().top - anchor.top;
     context.jump.classList.toggle("show", !atBottom(context));
     scheduleRead(context);
   }
@@ -461,7 +527,9 @@
   function assistant(context, event) {
     let item = context.byId.get(event.id);
     if (!item) {
-      item = { id: event.id, kind: "assistant", seq: event.seq, lastSeq: event.seq, at: event.at, text: "", content: null, replyText:"", replySeq:0 };
+      context.turn ||= {seq:context.turnStart?.seq ?? event.seq, startedAt:context.turnStart?.at ?? event.at, finished:false, items:[]};
+      item = { id: event.id, kind: "assistant", seq: event.seq, lastSeq: event.seq, at: event.at, text: "", content: null, replyText:"", replySeq:0, turn:context.turn };
+      context.turn.items.push(item);
       context.items.push(item); context.byId.set(item.id, item);
     }
     item.lastSeq = event.seq;
@@ -482,12 +550,18 @@
     context.busySeq = seq;
     context.cache.pendingSendSeq = null;
   }
+  function finishTurn(context, event, status) {
+    if (context.turn) Object.assign(context.turn, {finished:true, endedAt:event.at, status});
+    context.turn = null; context.turnStart = null;
+  }
   function apply(context, event, incremental) {
     if (event.seq <= context.cursor) return;
     context.cursor = event.seq;
     if (event.type === "message") {
+      if (context.turn && !context.busy) finishTurn(context, event, "ended");
       const item = { ...event, kind: "message", lastSeq: event.seq };
       context.items.push(item); context.byId.set(item.id, item);
+      if (!context.turn && !context.turnStart) context.turnStart = {seq:event.seq, at:event.at};
     } else if (event.type === "text") {
       const item = assistant(context, event);
       item.text += event.text; trackReply(item, event);
@@ -511,9 +585,12 @@
         }
       }
       context.settledSeq = event.seq;
+      finishTurn(context, event, stopped === "ended" ? event.status === "completed" ? "completed" : "ended" : stopped);
       setBusy(context, false, event.seq);
     }
     else if (event.type === "status") {
+      if (event.status === "working") { if (!context.turn && !context.turnStart) context.turnStart = {seq:event.seq, at:event.at}; }
+      else finishTurn(context, event, event.status === "offline" ? "offline" : "ended");
       // Historical journals may predate terminal-turn events. Offline means the
       // carrier is gone; it does not establish a tool's success or failure.
       if (event.status === "offline") for (const [id, owner] of context.toolOwners) {
@@ -594,14 +671,14 @@
         // Keep the visible transcript until the replacement history arrives;
         // a failed read must not leave an accepted continuation looking empty.
         context.items = []; context.previous = []; context.byId.clear(); context.results.clear();
-        context.toolOwners.clear(); context.toolStops.clear(); context.cursor = 0; context.busySeq = 0; context.settledSeq = null;
+        context.toolOwners.clear(); context.toolStops.clear(); context.cursor = 0; context.busySeq = 0; context.settledSeq = null; context.turn = null; context.turnStart = null;
         context.cache.pendingSendSeq = null;
       }
       context.executionId = history.execution_id ?? null;
       context.historyPrefix = context.goalId != null && context.executionId ? `history:${context.executionId}:` : "";
       context.previous = (history.previous_executions || []).map(value => {
         const scope = {...context, executionId:value.execution_id, historyPrefix:`history:${value.execution_id}:`,
-          items:[], byId:new Map(), results:new Map(), toolOwners:new Map(), toolStops:new Map(), cursor:0, busySeq:0, settledSeq:null,
+          items:[], byId:new Map(), results:new Map(), toolOwners:new Map(), toolStops:new Map(), cursor:0, busySeq:0, settledSeq:null, turn:null, turnStart:null, busy:false,
           cache:{...context.cache, pendingSendSeq:null}};
         for (const event of value.events) apply(scope, event, false);
         return scope;

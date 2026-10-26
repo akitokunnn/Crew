@@ -98,7 +98,7 @@ async function route(request,response){
 const run=async code=>{const result=await win.webContents.executeJavaScript(`(async()=>{try{return{value:await (${code})};}catch(error){return{error:error.stack};}})()`);if(result.error)throw Error(result.error);return result.value;};
 async function wait(expression,label=expression){for(let i=0;i<200;i++){if(await run(expression))return;await new Promise(resolve=>setTimeout(resolve,30));}throw Error('等待超时 '+label);}
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
-async function click(selector){await run(`(()=>{const node=document.querySelector(${JSON.stringify(selector)});if(!node)throw Error("找不到 "+${JSON.stringify(selector)});node.click();})()`);}
+async function click(selector){await run(`(()=>{const node=document.querySelector(${JSON.stringify(selector)});if(!node)throw Error("找不到 "+${JSON.stringify(selector)});const process=node.closest('.turn-process-body');if(process && !process.checkVisibility())process.previousElementSibling.click();node.click();})()`);}
 async function fill(selector,value){await run(`(()=>{const node=document.querySelector(${JSON.stringify(selector)});node.value=${JSON.stringify(value)};node.dispatchEvent(new Event('input',{bubbles:true}));})()`);}
 const text=selector=>run(`document.querySelector(${JSON.stringify(selector)})?.textContent ?? null`);
 async function shot(name){await sleep(160);await fs.writeFile(path.join(output,name),(await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true})).toPNG());shots.push(name);}
