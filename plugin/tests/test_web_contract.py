@@ -545,11 +545,13 @@ class WebContractTests(ShellFixture, unittest.TestCase):
             self.service.deliver_notices()
         self.assertEqual(sender.call_count, 1)
         self.assertEqual(sender.call_args.args[0]["session_id"], sid)
-        self.assertEqual(sender.call_args.kwargs, {"source": "crew"})
+        self.assertEqual(sender.call_args.kwargs['source'], 'crew')
+        self.assertTrue(sender.call_args.kwargs['identity'].startswith('leader-notices:'))
         self.assertEqual(len(self.processes), 2)
         resumed = self.processes[-1]
         self.assertEqual(resumed.command[-2:], ["--resume", sid])
         self.assertEqual(json.loads(resumed.stdin.getvalue().splitlines()[-1])["session_id"], sid)
+        self.assertEqual(json.loads(resumed.stdin.getvalue().splitlines()[-1])['uuid'], sender.call_args.kwargs['identity'])
         self.assertEqual(board.pending_notices(self.conn, sid), [])
 
     def test_notice_delivery_records_expected_errors_continues_and_propagates_unexpected_errors(self):

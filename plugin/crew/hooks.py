@@ -119,7 +119,7 @@ def handle(event, data, home, plugin_root, environ, git_provider=git_details, no
             # guard checks must not migrate the schema or obtain a write lock.
             with contextlib.closing(guard.readonly(home)) as conn:
                 has_table = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='peer_messages'").fetchone()
-                waiting = bool(has_table and messaging.pending(conn, data["session_id"]))
+                waiting = bool(has_table and messaging.has_pending_for_hook(conn, data["session_id"]))
                 row = conn.execute("SELECT status,crew_name FROM sessions WHERE session_id=?", (data["session_id"],)).fetchone()
                 active = row is not None and row["crew_name"] and row["status"] != "closed" and not board.is_archived(conn, data["session_id"])
             if waiting and active:

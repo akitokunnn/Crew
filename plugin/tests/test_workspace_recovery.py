@@ -35,6 +35,47 @@ class WorkspaceRecoveryTests(unittest.TestCase):
         conn.execute('INSERT INTO ' + table + '(' + ','.join(row) + ') VALUES(' +
                      ','.join('?' for _ in row) + ')', tuple(row.values()))
 
+    def test_reply_links_and_deduplication_survive_recovery(self):
+        from crew import goal_messages, goals
+        with contextlib.closing(store.connect(self.source)) as conn:
+            board.join(conn,'peer-chief','old','peer',self.workspace,self.workspace,'main',role='leader')
+            goal = goals.create(conn,'old','leader','Cross-group request','Keep its original scope',['Evidence'])
+            goals.transition(conn,goal['id'],'running')
+            execution = goals.create_execution(conn,goal['id'],'leader',runtime='claude')
+            request = goal_messages.queue(conn,'leader','peer-chief','Original interface request',execution['id'],kind='decision')
+            reply = goal_messages.queue(conn,'peer-chief','leader','Original reply',kind='result',reply_to=request['message_id'])
+        recovery.import_workspace(self.source,self.target,'old')
+        with contextlib.closing(store.connect(self.target)) as conn:
+            original = conn.execute("SELECT * FROM peer_messages WHERE project='old' AND body='Original interface request'").fetchone()
+            response = conn.execute("SELECT * FROM peer_messages WHERE project='old' AND body='Original reply'").fetchone()
+            self.assertEqual(original['id'],request['message_id'])
+            self.assertEqual(response['reply_to'],original['id'])
+            meta = conn.execute('SELECT * FROM goal_message_meta WHERE message_id=?',(response['id'],)).fetchone()
+            self.assertEqual(meta['causation_id'],original['id'])
+            repeated = goal_messages.queue(conn,response['sender_session_id'],response['target_session_id'],response['body'],
+                                           kind='result',reply_to=original['id'],message_id='same-reply-after-recovery')
+            self.assertEqual(repeated['status'],'archived')
+            self.assertEqual(conn.execute('PRAGMA foreign_key_check').fetchall(),[])
+
+    def test_frozen_notice_batch_remaps_notice_ids_but_keeps_unknown_native_identity(self):
+        from crew import chat
+        with contextlib.closing(store.connect(self.source)) as conn:
+            board.queue_leader_notice(conn,'leader','Pending source notice','crew')
+            notice = conn.execute("SELECT id FROM leader_notices WHERE text='Pending source notice'").fetchone()[0]
+        journal = chat.Journal(self.source/'chat'/'leader.jsonl')
+        journal.emit('leader_notice_batch',id='frozen-native-id',notice_ids=[notice],text='Original frozen input')
+        journal.emit('input_delivery',message_id='frozen-native-id',status='unknown',digest='retained-digest')
+        recovery.import_workspace(self.source,self.target,'old')
+        with contextlib.closing(store.connect(self.target)) as conn:
+            current = conn.execute("SELECT id FROM leader_notices WHERE project='old' AND text='Pending source notice'").fetchone()[0]
+        restored = chat.Journal(self.target/'chat'/'leader.jsonl')
+        batch = next(event for event in restored.events if event['type']=='leader_notice_batch')
+        self.assertNotEqual(current,notice)
+        self.assertEqual(batch['notice_ids'],[current])
+        self.assertEqual(batch['id'],'frozen-native-id')
+        self.assertEqual(batch['text'],'Original frozen input')
+        self.assertEqual(restored.inputs['frozen-native-id']['status'],'unknown')
+
     def test_newer_preferences_maintenance_and_cleanup_boundaries_keep_their_scope(self):
         with contextlib.closing(store.connect(self.source)) as conn:
             self.insert(conn, 'ai_task_settings', purpose='leader', selection_json='{"runtime":"claude"}', updated_at=STAMP)

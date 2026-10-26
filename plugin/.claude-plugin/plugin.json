@@ -1,6 +1,6 @@
 {
   "name": "crew",
-  "version": "0.2.28",
+  "version": "0.2.29",
   "description": "Coordinate Claude Code and Codex sessions with leader groups, shared workspaces, handoffs, decisions, documents and runtime guards.",
   "author": { "name": "akitokunnn" },
   "repository": "https://github.com/akitokunnn/Crew"

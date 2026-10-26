@@ -29,9 +29,26 @@ def connect(home):
     _migrate_channel_digests(conn)
     _migrate_remote_notice_source(conn)
     _migrate_peer_message_receipts(conn)
+    _migrate_goal_message_scope(conn)
     _migrate_git_result_intent(conn)
     _migrate_codex_dispatch_usage(conn)
     return conn
+
+
+def _migrate_goal_message_scope(conn):
+    def missing():
+        return not any(row['name'] == 'target_scope' for row in conn.execute('PRAGMA table_info(goal_message_meta)'))
+    if not missing():
+        return
+    conn.execute('BEGIN IMMEDIATE')
+    try:
+        if missing():
+            conn.execute("ALTER TABLE goal_message_meta ADD COLUMN target_scope TEXT NOT NULL DEFAULT 'goal' "
+                         "CHECK(target_scope IN ('goal','general'))")
+        conn.commit()
+    except sqlite3.Error:
+        conn.rollback()
+        raise
 
 
 def _migrate_git_result_intent(conn):
@@ -73,7 +90,7 @@ def _migrate_codex_dispatch_usage(conn):
 
 def _migrate_peer_message_receipts(conn):
     """Add mail intent and native-input receipts without rebuilding old mail."""
-    required = {'kind', 'accepted'}
+    required = {'kind', 'accepted', 'reply_to'}
     columns = {row['name'] for row in conn.execute('PRAGMA table_info(peer_messages)')}
     if required <= columns:
         return
@@ -86,6 +103,8 @@ def _migrate_peer_message_receipts(conn):
             conn.execute('ALTER TABLE peer_messages ADD COLUMN kind TEXT')
         if 'accepted' in missing:
             conn.execute('ALTER TABLE peer_messages ADD COLUMN accepted INTEGER NOT NULL DEFAULT 0')
+        if 'reply_to' in missing:
+            conn.execute('ALTER TABLE peer_messages ADD COLUMN reply_to TEXT REFERENCES peer_messages(id)')
         # Existing goal metadata is the only typed evidence in the old schema.
         # archived/delivered_at never proves that native input was accepted.
         if 'kind' in missing:

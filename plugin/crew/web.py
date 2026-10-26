@@ -1,6 +1,7 @@
 """Loopback-only board HTTP service with injectable external sources."""
 import csv
 import datetime as dt
+import hashlib
 import io
 import json
 import mimetypes
@@ -22,7 +23,7 @@ from urllib.error import HTTPError, URLError
 
 from . import board, channel, channel_digest, chat, claude_limits, codex_runtime, documents, git_admin, git_ci, git_view, goal_api, goals, hooks, maintenance, messaging, models, notifications, open_session, presentation, runtime_catalog, runtime_switch, runtimes, session_library, session_ops, settings, spawn, store, themes, todo, trust_mode, updater, usage, usage_cli, vscode_sessions, workspace_execution, workspace_settings
 from .service_lock import HomeServiceLock
-from . import member_defaults, operations_chat, operations_settings
+from . import codex_client, member_defaults, operations_chat, operations_settings
 from . import connections, session_presence, storage_cleanup, workspace_activity
 from .storage_service import StorageService, HISTORY_PREFIX
 
@@ -389,10 +390,11 @@ class Service:
                 "WHERE n.sent_at IS NULL AND s.role='leader' AND s.status!='closed'")]
             for leader in leaders:
                 sid = leader['session_id']
+                batch = None
                 try:
                     with self.chat.lock:
                         key = sid
-                        if messaging.stopped(conn, sid):
+                        if messaging.stopped(conn, sid) or self.chat.maintenance_held(sid):
                             continue
                         if self.chat.running(key):
                             if self.chat.busy(key):
@@ -413,14 +415,32 @@ class Service:
                             if not self.chat.path(key).exists():
                                 self.chat.journal(key).set_status('idle')
                         pending = board.pending_notices(conn, sid)
-                        text = '[Crew]\n' + '\n'.join('%s. %s' % (index, notice['text'])
-                                                       for index, notice in enumerate(pending, 1))
-                        self.chat.send(leader, text, source='crew')
-                        for notice in pending:
-                            board.mark_notice_sent(conn, notice['id'], now=self.now().isoformat())
-                except (board.BoardError, OSError) as exc:
+                        if not pending:
+                            continue
+                        pending_ids = {notice['id'] for notice in pending}
+                        journal = self.chat.journal(sid)
+                        batch = next((event for event in reversed(journal.events) if event['type'] == 'leader_notice_batch'
+                                      and pending_ids.intersection(event['notice_ids'])), None)
+                        if batch is None:
+                            identity = 'leader-notices:' + hashlib.sha256(','.join(str(n['id']) for n in pending).encode()).hexdigest()
+                            text = '[Crew]\n' + '\n'.join('%s. %s' % (index, notice['text'])
+                                                           for index, notice in enumerate(pending, 1))
+                            batch = journal.emit('leader_notice_batch', id=identity, text=text, notice_ids=[n['id'] for n in pending])
+                        receipt = self.chat.send(leader, batch['text'], source='crew', identity=batch['id'])
+                        if not isinstance(receipt, dict) or receipt.get('accepted') is not True:
+                            raise board.Conflict('NativeReceiptUnknown: 通知输入尚无确认的接收回执')
+                        for identity in pending_ids.intersection(batch['notice_ids']):
+                            board.mark_notice_sent(conn, identity, now=self.now().isoformat())
+                except (board.BoardError, codex_client.CodexError, OSError) as exc:
+                    detail = '%s: %s' % (type(exc).__name__, exc)
+                    if batch is not None:
+                        text = '协作通知投递未确认，已保留原消息，不重复执行。' + detail
+                        if any(event['type'] == 'error' and event.get('notice_batch') == batch['id']
+                               and event.get('text') == text for event in journal.events):
+                            continue
+                        journal.emit('error', notice_batch=batch['id'], text=text)
                     board.record_event(conn, 'leader:notice_error', leader['project'], sid,
-                                       {'error': '%s: %s' % (type(exc).__name__, exc)}, now=self.now().isoformat())
+                                       {'error': detail}, now=self.now().isoformat())
 
     def deliver_git_results(self, conn):
         pending = conn.execute(
@@ -1162,7 +1182,8 @@ class Service:
                 row = conn.execute('SELECT session_id FROM sessions WHERE session_id=? AND project=?', (name, project)).fetchone()
                 target = row['session_id'] if row else board.named_session(conn, project, name)['session_id']
                 return self.chat.send_message(caller['session_id'], target, _text(data, 'text'), data.get('message_id'),
-                                              execution_id=data.get('execution_id'), kind=data.get('kind', 'information'))
+                                              execution_id=data.get('execution_id'), kind=data.get('kind', 'information'),
+                                              reply_to=data.get('reply_to'))
             if path == '/api/leaders/order':
                 _text(data, 'project')
                 return board.set_leader_order(conn, project, data.get('order'))

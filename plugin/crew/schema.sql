@@ -102,6 +102,7 @@ CREATE TABLE IF NOT EXISTS peer_messages (
     delivered_at TEXT,
     error TEXT,
     kind TEXT,                         -- NULL retains the meaning of legacy untyped mail
+    reply_to TEXT REFERENCES peer_messages(id),
     accepted INTEGER NOT NULL DEFAULT 0 -- handed to native input; not execution completion
 );
 CREATE INDEX IF NOT EXISTS peer_messages_target ON peer_messages(target_session_id, delivered_at);
@@ -789,7 +790,8 @@ CREATE TABLE IF NOT EXISTS goal_message_meta (
  requires_reply INTEGER NOT NULL DEFAULT 0 CHECK(requires_reply IN (0,1)),
  executable INTEGER NOT NULL DEFAULT 0 CHECK(executable IN (0,1)), status TEXT NOT NULL DEFAULT 'queued',
  attempts INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
- last_attempt_at TEXT, accepted_at TEXT, error TEXT
+ last_attempt_at TEXT, accepted_at TEXT, error TEXT,
+ target_scope TEXT NOT NULL DEFAULT 'goal' CHECK(target_scope IN ('goal','general'))
 );
 CREATE INDEX IF NOT EXISTS goal_message_dispatch ON goal_message_meta(goal_id,round,status,target_execution);
 CREATE TABLE IF NOT EXISTS goal_control_revisions (

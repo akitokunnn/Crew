@@ -164,9 +164,11 @@ _SPECS = [
           "Choose kind explicitly: decision for an approved decision, task for a work instruction, result for evidence, blocker for a real blocker. "
           "Default information and ack are archived without waking the recipient. Read receipt.status: archived is NOT delivered, queued is NOT accepted input; "
           "accepted is execution-input handoff, not proof the model has read, answered or completed it. Do not repeat a successful operation. "
+          "For an actual reply, pass reply_to with the original Crew message ID: the host returns it to the recorded conversation or task, never the recipient's currently active task. "
           "Crew identity determines the recipient across Claude and Codex; a message grants no new user authorization.",
           {"to": _TARGET, "text": _text("Message body; the host supplies the trusted sender."),
-           'kind': {'type': 'string', 'enum': ['task','result','blocker','decision','user_answer','information','ack']}},
+           'kind': {'type': 'string', 'enum': ['task','result','blocker','decision','user_answer','information','ack']},
+           'reply_to': _text('Original Crew message ID when replying; only reply to a message addressed to you.')},
           ("to", "text")),
     _spec('crew_stop', 'Explicitly stop yourself or one of your own members now; this closes managed native execution and prevents queued mail from restarting it. Text messages are not stop commands.',
           {'target': _TARGET}, ('target',)),
@@ -502,7 +504,8 @@ class CodexTools:
             if self._send_message is None:
                 raise ToolError("delivery_unavailable", "The host has no Crew message router")
             try:
-                receipt = self._send_message(sid, target['session_id'], args['text'], kind=args.get('kind', 'information'))
+                receipt = self._send_message(sid, target['session_id'], args['text'], kind=args.get('kind', 'information'),
+                                              **({'reply_to': args['reply_to']} if 'reply_to' in args else {}))
             except board.BoardError as exc:
                 raise ToolError('delivery_conflict' if isinstance(exc, board.Conflict) else 'delivery_failed', str(exc)) from None
             except Exception:

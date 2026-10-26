@@ -309,6 +309,8 @@ def _file_plan(source_home, target_home, owned, maps, project):
             for line in source.read_text(encoding='utf-8').splitlines():
                 event = json.loads(line)
                 # Journal seq/id and historical prose retain their original meaning.
+                if event['type'] == 'leader_notice_batch':
+                    event['notice_ids'] = [_mapped(maps, 'leader_notices', identity) for identity in event['notice_ids']]
                 for column in ('delivery', 'digest'):
                     if isinstance(event.get(column), (dict, list)):
                         event[column] = _structured(event[column], maps)

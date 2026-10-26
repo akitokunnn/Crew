@@ -728,7 +728,10 @@ class Manager:
             native_id=runtimes.get(conn,session_id)['native_id']
             pending=runtime_switch.pending(conn,session_id)
             permission_mode = settings.get_execution(conn)['claude']
-        if resume and native_id is None and (pending is None or pending['to_runtime']!=runtime):
+        native_events = {'message', 'assistant', 'text', 'tool_result', 'input_delivery', 'turn_result',
+                         'identity_handoff', 'subagent', 'compact', 'compact_request'}
+        fresh_native = not any(event['type'] in native_events for event in self.journal(session_id).events)
+        if resume and native_id is None and not fresh_native and (pending is None or pending['to_runtime']!=runtime):
             raise board.BoardError('原生会话 ID 丢失，不能猜测恢复或偷偷新建')
         native_resume=resume and native_id is not None
         if runtime == "codex":
@@ -898,12 +901,12 @@ class Manager:
         with self.lock:
             return runtime_switch.switch(conn,board.session(conn,session_id),self,preview_id,confirm,catalog,now)
 
-    def send_message(self, sender_id, target_id, text, message_id=None, execution_id=None, kind='information'):
+    def send_message(self, sender_id, target_id, text, message_id=None, execution_id=None, kind='information', reply_to=None):
         with self.lock, closing(store.connect(self.home)) as conn:
-            if execution_id:
+            if execution_id or reply_to is not None:
                 from . import goal_messages
                 return goal_messages.queue(conn, sender_id, target_id, text, execution_id,
-                                           message_id=message_id, kind=kind)
+                                           message_id=message_id, kind=kind, reply_to=reply_to)
             return messaging.queue(conn, sender_id, target_id, text, message_id=message_id, kind=kind)
 
     def deliver_messages(self):
