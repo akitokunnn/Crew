@@ -107,6 +107,18 @@ test("an idle legacy reply cannot absorb the next prompt and tools with real err
   assert.equal(rows.filter(html=>html.startsWith('<div class="m-lead">')).length,2);h.chat.unmount();
 });
 
+test("folding a turn above a visible steering message preserves that message's viewport position",async()=>{
+  const events=workTurn(),h=harness(),target=h.mount("leader",async()=>({...history(),busy:true,
+    events:[...events.slice(0,4),{seq:4.5,type:"message",id:"steer",source:"human",text:"正在阅读的补充要求",at:at(8)}]}));
+  await tick();h.flushFrames();
+  const inner=target.querySelector(".chat-inner"),scroll=target.querySelector(".chat-scroll");
+  scroll.scrollHeight=2000;scroll.clientHeight=200;scroll.scrollTop=300;scroll.getBoundingClientRect=()=>({top:0,bottom:200});
+  const message=inner.children.find(item=>item.innerHTML.includes("正在阅读的补充要求"));
+  message.getBoundingClientRect=()=>{const folded=inner.children.some(item=>item.innerHTML.includes('class="turn-process '));const top=(folded?20:80)-(scroll.scrollTop-300);return{top,bottom:top+40};};
+  for(const event of events.slice(4))h.connections[0].emit(event);await tick();h.flushFrames();
+  assert.equal(message.getBoundingClientRect().top,80);assert.equal(scroll.scrollTop,240);h.chat.unmount();
+});
+
 test("compact watcher waits for native completion and reports cancellation or closed transport",async()=>{
   for(const terminal of [{type:"compact",seq:2,pre_tokens:50000,post_tokens:10000},
     {type:"compact_cancelled",reason:"上一轮未成功结束"},{type:"status",status:"offline"},{type:"error",text:"native failed"}]){

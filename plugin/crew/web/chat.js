@@ -381,6 +381,7 @@
   }
   function turnView(turn) {
     const parts = turn.items.map(item => ({item, blocks:item.content === null ? (item.text ? [{type:"text", text:item.text}] : []) : item.content}));
+    // Text before a later tool is progress; keep the last post-tool reply outside.
     let final = null, indexes = [];
     for (const part of parts) for (const [index, block] of part.blocks.entries()) {
       if (block.type === "tool_use") { final = null; indexes = []; }
@@ -510,6 +511,8 @@
       position = node.nextSibling;
     }
     while (position) { const next = position.nextSibling; position.remove(); position = next; }
+    const retained = new Set(desired.map(item => item.key));
+    for (const key of context.nodes.keys()) if (!retained.has(key)) context.nodes.delete(key);
     if (context.initialPosition !== null) {
       if (context.initialPosition === "unread") {
         const divider = context.nodes.get("unread");
