@@ -18,8 +18,10 @@ def snapshot(service, conn, project):
     items, journals = [], {}
     for person in people:
         sid = person['session_id']
-        execution = service.chat.goal_controller.routing_execution(conn, sid)
-        key = execution['id'] if execution else sid
+        execution = service.chat.goal_controller.display_execution(conn, sid)
+        key = sid if service.chat.busy(sid) or execution is None else execution['id']
+        if key == sid:
+            execution = None
         contexts = [(sid, board.read_seq(conn, sid))] + [(row['id'], row['read_seq'] or 0) for row in conn.execute(
             'SELECT e.id,r.read_seq FROM goal_executions e JOIN goals g ON g.id=e.goal_id '
             'LEFT JOIN goal_execution_reads r ON r.execution_id=e.id WHERE g.project=? AND e.session_id=? '

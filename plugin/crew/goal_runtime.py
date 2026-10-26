@@ -48,8 +48,8 @@ class Controller:
                             (goal_id, goal['current_round'], session_id, goal['requirement_version'])).fetchall()
         return None if not rows else goals.get_execution(conn, rows[0]['id'])
 
-    def routing_execution(self, conn, session_id):
-        """Resolve a stable person to their current goal; never reuse a different goal's history."""
+    def active_executions(self, conn, session_id):
+        """Current task scopes for display; never infer a message destination."""
         rows = conn.execute("SELECT e.id FROM goal_executions e JOIN goals g ON g.id=e.goal_id "
             "WHERE e.session_id=? AND e.round=g.current_round AND e.requirement_version=g.requirement_version "
             "AND g.status IN ('queued','running','pausing','paused','waiting_user') "
@@ -58,7 +58,13 @@ class Controller:
             "AND x.round=e.round AND x.session_id=e.session_id) "
             "ORDER BY CASE WHEN g.status='running' THEN 0 ELSE 1 END,g.updated_at DESC,e.created_at DESC",
             (session_id,)).fetchall()
-        return None if not rows else goals.get_execution(conn, rows[0]['id'])
+        values = [goals.get_execution(conn, row['id']) for row in rows]
+        return sorted(values, key=lambda item: (not self.manager.busy(item['id']), not self.manager.running(item['id'])))
+
+    def display_execution(self, conn, session_id):
+        """Representative activity only; general inputs always keep their own scope."""
+        values = self.active_executions(conn, session_id)
+        return values[0] if values else None
 
     def general_context(self, conn, session_id):
         rows = conn.execute('SELECT DISTINCT g.id FROM goals g LEFT JOIN goal_assignments a ON a.goal_id=g.id '

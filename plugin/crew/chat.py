@@ -692,7 +692,7 @@ class Manager:
             'SELECT id FROM goal_executions WHERE session_id=?', (session_id,))]
 
     def _claim_identity(self, session):
-        """Drain other owned natives before one stable Crew identity changes execution."""
+        """Only replace an older generation of this task, never another scope."""
         sid, key = session['session_id'], session.get('_storage_id', session['session_id'])
         execution = session.get('_execution')
         with self.lock, closing(store.connect(self.home)) as conn:
@@ -700,34 +700,19 @@ class Manager:
                 raise board.Conflict(MAINTENANCE_HELD)
             if messaging.stopped(conn, sid):
                 raise board.Conflict('用户已停止此会话，请明确继续')
-            if execution is None and self.goal_controller.routing_execution(conn, sid) is not None:
-                raise board.Conflict('此人员已有独立目标执行，请向当前目标发送消息')
-            if execution is not None and runtimes.get(conn, sid)['runtime'] == 'claude' and not self.running(sid):
-                owned = self.processes.get(sid)
-                for agent in self._external_agents():
-                    if agent['sessionId'] == sid and (owned is None or agent.get('pid') != owned.process.pid):
-                        raise board.Conflict('此 Crew 身份仍在外部运行，请先停止旧会话后开始目标')
-            for previous in self._identity_keys(conn, sid):
+            if execution is None:
+                return
+            for row in conn.execute('SELECT id FROM goal_executions WHERE session_id=? AND goal_id=?',
+                                    (sid, execution['goal_id'])):
+                previous = row['id']
                 if previous == key or not self.running(previous):
                     continue
-                if previous != sid:
-                    old = goals.get_execution(conn, previous)
-                    old_goal = goals.get(conn, old['goal_id'])
-                    # Awaiting human review is a delivered phase, independent
-                    # of whether its person's old native is still loaded.
-                    if (old['goal_id'] != (execution or {}).get('goal_id')
-                            and old_goal['status'] not in goals.TERMINAL | {'awaiting_acceptance'}):
-                        if old_goal['leader_session_id'] == sid:
-                            goals.request_pause(conn, old['goal_id'], manual=False, reason='该人员切换到另一个执行')
-                        else:
-                            goals.set_execution_status(conn, previous, 'paused')
                 self.stop_managed(previous, reason='identity_handoff')
                 self.journal(previous).emit('identity_handoff', session_id=sid, target_execution=key,
-                                            text='旧原生进程已停止，此 Crew 身份将使用独立执行；新执行状态以对应任务为准。')
+                    text='本任务旧执行已停止，使用新的执行继续；其他任务和总对话不受影响。')
                 if self.auto_candidates is not None:
                     self.auto_candidates.pop(previous, None)
-                if previous != sid:
-                    self.goal_controller.sync(conn, goals.get_execution(conn, previous)['goal_id'])
+                self.goal_controller.sync(conn, execution['goal_id'])
 
     def _launch_native(self, session, spec, resume=False, maintenance=None):
         if '_execution' in session:
@@ -941,20 +926,15 @@ class Manager:
                     continue
                 if messaging.stopped(conn, sid):
                     continue
-                active = self.goal_controller.routing_execution(conn, sid)
-                if self.busy(active['id'] if active else sid):
+                if self.busy(sid):
                     continue
                 sender = board.session(conn, message["sender_session_id"])
                 body = messaging.text(conn, message)
                 try:
-                    if active is not None:
-                        result = self.goal_controller.send(active['goal_id'], sid, body, display_text=message['body'], source='peer',
-                            identity='peer:' + message['id'], sender=sender['crew_name'])
-                    else:
-                        # Reuse the same durable input identity on retry. A lost
-                        # pipe/RPC receipt must never resubmit an uncertain input.
-                        result = self.send(target, body, display_text=message['body'], source='peer',
-                                           identity='peer:' + message['id'], sender=sender['crew_name'])
+                    if not self.path(sid).exists():
+                        self.journal(sid).set_status('idle')
+                    result = self.send(target, body, display_text=message['body'], source='peer',
+                                       identity='peer:' + message['id'], sender=sender['crew_name'])
                     if not isinstance(result, dict) or result.get('accepted') is not True:
                         raise board.Conflict('执行输入尚无确认的接收回执')
                     messaging.mark_delivered(conn, message["id"], accepted=True)
@@ -963,7 +943,7 @@ class Manager:
                     # External CC sessions receive through their next hook. Keep
                     # mail durable when liveness is unknown; never start a copy.
                     reason = type(exc).__name__ + ': ' + str(exc)
-                    storage_id = active['id'] if active else sid
+                    storage_id = sid
                     if self.path(storage_id).exists():
                         previous = self.journal(storage_id).inputs.get('peer:' + message['id'])
                         if previous and previous.get('status') == 'unknown' and previous.get('detail'):
@@ -994,10 +974,6 @@ class Manager:
             with closing(store.connect(self.home)) as routing_conn:
                 session = workspace_execution.execution_session(routing_conn, session)
                 if '_execution' not in session:
-                    active = self.goal_controller.routing_execution(routing_conn, session['session_id'])
-                    if active is not None:
-                        return self.goal_controller.send(active['goal_id'], session['session_id'], text, images=images,
-                            identity=identity, source=source, display_text=display_text, sender=sender)
                     if messaging.stopped(routing_conn, session['session_id']):
                         if source not in ('human', 'qq', 'lark'):
                             raise board.Conflict('用户已停止此会话；排队消息不能自动恢复它')
@@ -1286,8 +1262,6 @@ class Manager:
                     reason = "所在项目未启用"
                 elif messaging.stopped(conn, session_id):
                     reason = '用户已停止会话'
-                elif self.goal_controller.routing_execution(conn, session_id) is not None:
-                    reason = '当前 Crew 身份已由目标接管'
                 elif self.running(session_id):
                     reason = "会话已由网页继续运行"
                 elif session_id in live:
@@ -1450,14 +1424,12 @@ class Manager:
             owned_claude = {key: getattr(self.processes[key], 'native_id', key) for key in keys
                             if self.running(key) and getattr(self.processes[key], 'runtime', 'claude') == 'claude'}
             paused = set()
+            if target['role'] == 'leader':
+                for row in conn.execute("SELECT id FROM goals WHERE leader_session_id=? AND status NOT IN ('completed','failed','cancelled')",
+                                        (session_id,)):
+                    goals.request_pause(conn, row['id'], manual=True, actor=actor, reason='明确停止此人员')
+                    paused.add(row['id'])
             for key in keys:
-                if key != session_id:
-                    execution = goals.get_execution(conn, key)
-                    goal = goals.get(conn, execution['goal_id'])
-                    if goal['status'] not in goals.TERMINAL:
-                        if goal['leader_session_id'] == session_id:
-                            goals.request_pause(conn, goal['id'], manual=True, actor=actor, reason='明确停止此人员')
-                            paused.add(goal['id'])
                 if self.running(key) and self.busy(key):
                     try:
                         self.interrupt(key)

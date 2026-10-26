@@ -418,8 +418,8 @@
     $("decision-tray").hidden = listing;
     $("native-approval-tray").hidden = listing;
     $("goal-chat-hint").hidden = listing;
-    const activeGoal = goalId == null && item.active_goal_id != null ? (state.goals || []).find(goal => String(goal.id) === String(item.active_goal_id)) : null;
-    replace($("goal-chat-hint"), activeGoal ? `<div class="goal-chat-hint">${esc(({running:"正在任务中推进",paused:"任务已暂停",pausing:"任务正在暂停",waiting_user:"任务等你补充",awaiting_acceptance:"任务待验收",queued:"任务待启动"})[activeGoal.status] || "任务已有记录")}：${esc(activeGoal.title)} <button type="button" class="text-link" data-act="active-goal" data-goal-id="${esc(activeGoal.id)}" data-id="${esc(item.session_id)}">查看任务 →</button></div>` : unstarted?.hint ? `<div class="goal-chat-hint">${unstarted.hint}</div>` : "");
+    const activeGoals = goalId == null ? (state.goals || []).filter(goal => (item.active_goal_ids || [item.active_goal_id]).some(id => String(id) === String(goal.id))) : [];
+    replace($("goal-chat-hint"), activeGoals.length ? `<div class="goal-chat-hint">总对话可继续安排任务和验收。另有 ${activeGoals.length} 个任务：${activeGoals.map(goal => `<button type="button" class="text-link" data-act="active-goal" data-goal-id="${esc(goal.id)}" data-id="${esc(item.session_id)}">${esc(goal.title)} →</button>`).join(" ")}</div>` : unstarted?.hint ? `<div class="goal-chat-hint">${unstarted.hint}</div>` : "");
     replace($("native-approval-tray"),nativeApprovals?.chatMarkup(item.session_id,goalId,readOnlyId === null) || "");
     replace($("chat-head"), `<div class="head">${av(item.name, 30)}<div class="heading-meta"><div class="title"><span class="chat-name" title="${esc(item.name)}">${esc(item.name)}</span>${readOnlyId === null ? priorityBadge(item.priority) : ""}${chatRuntime}</div><div class="sub"><span class="chat-scope" title="${esc(readOnlyId === null ? (item.goal ?? "") : `归 ${item.group} · 成员本人对话`)}">${esc(readOnlyId === null ? (item.goal ?? "") : `归 ${item.group} · 成员本人对话`)}</span>${group === undefined ? "" : `<span class="sep"></span><span class="chat-member-stats">${members.length} 个下属 · 本组 ${workingPeople([group, ...members]).length} 人在干活</span>`}</div></div><div class="right">${goalId == null ? contextControls(item) : ""}${chatModel}${readOnlyId === null ? "" : `<button class="btn ghost" data-act="leader" data-id="${esc(leaderId)}">回到 leader</button><button class="btn ghost" data-act="card" data-id="${esc(item.session_id)}">资料</button>`}<button class="icon-btn" data-act="session-menu" data-id="${esc(item.session_id)}" aria-haspopup="menu" title="会话操作" aria-label="会话操作">⋯</button>${group === undefined ? "" : `<button class="icon-btn rp-toggle" data-act="right-open" title="本组架构图" aria-label="本组架构图">${ic("grid")}</button>`}</div></div>`);
     replace($("goal-head"), group ? goals?.groupMarkup(leaderId) || "" : "");
@@ -443,8 +443,6 @@
       const reasons = {paused:"该目标已暂停，仅供查阅。请明确恢复后继续工作。",pausing:"目标正在暂停，仅供查阅。等待停止后，明确恢复才能继续。",cancelled:"本轮已取消，仅供查阅。可回总会话讨论，或再开一轮。"};
       return reasons[goal.status] ? {readonly:true,readonlyReason:reasons[goal.status]} : {readonly:false};
     }
-    const bound = item.active_goal_id == null ? null : (state?.goals || []).find(goal => String(goal.id) === String(item.active_goal_id));
-    if (bound && ["paused","pausing"].includes(bound.status)) return {readonly:true,readonlyReason:"关联任务已暂停或正在暂停，仅供查阅。请先查看任务并明确恢复，再继续发送。"};
     return item.running && item.where === "vscode"
       ? {readonly:true,readonlyReason:"该会话仍在 VS Code 或终端中运行。请先在原工具退出，再由 Crew 接管；打开记录不会启动 AI。"} : {readonly:false};
   }
