@@ -2,7 +2,7 @@ import tests  # Install the production-service connection guard.
 import datetime as dt
 import unittest
 
-from crew import usage
+from crew import board, goals, runtimes, usage
 from test_usage import PRICES, UsageFixture, assistant, stamp, token_count
 
 
@@ -47,6 +47,24 @@ class CrewWeeklyTests(UsageFixture, unittest.TestCase):
         self.assertAlmostEqual(self.weekly()["cost_usd"], 0.01275 * 4)
         self.conn.execute("UPDATE sessions SET group_name = NULL WHERE session_id = 'member'")
         self.assertAlmostEqual(self.weekly()["cost_usd"], 0.01275 * 2)
+
+    def test_native_general_and_finished_task_bindings_count_for_leader_and_member(self):
+        board.init_project(self.conn, 'demo', 'C:\\project', now=stamp())
+        for sid, role in [('leader', 'leader'), ('worker', 'member')]:
+            board.join(self.conn, sid, 'demo', sid, 'C:\\project', 'C:\\project', 'main',
+                       role=role, group_name=None if role == 'leader' else 'leader', now=stamp())
+            runtimes.set(self.conn, sid, 'claude', sid + '-native', now=stamp())
+            self.request(sid + '-native', sid)
+        goal = goals.create(self.conn, 'demo', 'leader', 'Check', 'Complete the check', ['Passed'], now=stamp())
+        goals.assign(self.conn, goal['id'], 'worker', 'Check', now=stamp())
+        goals.transition(self.conn, goal['id'], 'running', now=stamp())
+        execution = goals.create_execution(self.conn, goal['id'], 'worker', runtime='claude', now=stamp())
+        goals.bind_native(self.conn, execution['id'], 'claude', 'worker-task', now=stamp())
+        goals.set_execution_status(self.conn, execution['id'], 'completed', now=stamp(20))
+        self.request('worker-task', 'task')
+        self.request('unregistered', 'outside')
+        self.scan()
+        self.assertAlmostEqual(self.weekly()['cost_usd'], 0.01275 * 3)
 
     def test_coefficients_and_result_shape(self):
         self.member("leader", role="leader")
