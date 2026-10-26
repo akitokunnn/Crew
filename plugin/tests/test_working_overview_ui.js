@@ -10,9 +10,12 @@ function harness(snapshot){
   vm.createContext(sandbox);
   const source=fs.readFileSync(path.join(__dirname,"../crew/web/app.js"),"utf8").replace(/\r\n/g,"\n");
   vm.runInContext(source.replace("  setup();\n})();",`replace=(node,html)=>{node.innerHTML=html;};
-    window.ui={render(snapshot,tab){state=snapshot;allTab=tab;renderAll();return document.getElementById("main").innerHTML;}};
+    window.ui={render(snapshot,tab){state=snapshot;allTab=tab;renderAll();return document.getElementById("main").innerHTML;},
+      sidebar(snapshot){state=snapshot;view="chat";leaderId=snapshot.leaders[0].session_id;return sidebarLeader(snapshot.leaders[0]);},
+      node(snapshot){state=snapshot;return leaderNode(snapshot.leaders[0],true);}};
     })();`),sandbox);
-  return {render:(tab="tree",next=snapshot)=>sandbox.window.ui.render(next,tab)};
+  return {render:(tab="tree",next=snapshot)=>sandbox.window.ui.render(next,tab),
+    sidebar:(next=snapshot)=>sandbox.window.ui.sidebar(next),node:(next=snapshot)=>sandbox.window.ui.node(next)};
 }
 const person=(id,extra={})=>({session_id:id,name:id,status:"offline",runtime:"codex",where:"offline",busy:false,
   running:false,active_goal_id:null,context:null,applied:null,model:null,effort:null,codex:[],priority:null,
@@ -65,4 +68,35 @@ test("state refresh updates both the count and rows without mutating server snap
   const next=structuredClone(snapshot);next.leaders[0].status="idle";next.members[0].status="working";
   const html=h.render("working",next);assert.equal(count(html),1);assert.deepEqual(rows(html),[{action:"member-chat",id:"member"}]);
   next.members[0].status="idle";assert.equal(count(h.render("working",next)),0);assert.equal(JSON.stringify(snapshot),original);
+});
+
+test("a silent or waiting leader shows its working members in the sidebar and architecture without pretending to work itself",()=>{
+  for(const runtime of ["claude","codex"])for(const status of ["idle","waiting","offline"]){
+    const snapshot=state([person("leader",{runtime,status,priority:1,pending:1,unread:2}),person("other")],
+      [person("worker",{runtime:runtime==="codex"?"claude":"codex",status:"working",leader_session_id:"leader"}),
+       person("waiting",{status:"waiting",busy:true,leader_session_id:"leader"}),
+       person("someone-else",{status:"working",leader_session_id:"other"})]);
+    const original=JSON.stringify(snapshot),h=harness(snapshot),sidebar=h.sidebar(),node=h.node();
+    for(const html of [sidebar,node]){
+      assert(html.includes('class="group-work-avatar"'));assert(html.includes("1 位组员在干活"));
+      assert(!html.includes("本组 2 人在干活"));assert(!html.includes("本人在干活"));
+      assert(html.includes('class="b-pending"'));
+    }
+    assert(sidebar.includes('aria-current="page"'));assert(sidebar.includes("leader-priority"));assert(sidebar.includes('class="b-unread"'));
+    const withoutPending=structuredClone(snapshot);withoutPending.leaders[0].pending=0;
+    assert(h.node(withoutPending).includes(`class="st ${status}"`));
+    assert.equal(JSON.stringify(snapshot),original);
+  }
+});
+
+test("work halos distinguish self and team work, clear on refresh, and ignore process lifetime, busy waits and past tasks",()=>{
+  const snapshot=state([person("leader",{status:"working"})],[person("worker",{status:"working",leader_session_id:"leader"})]);
+  const h=harness(snapshot);
+  assert(h.sidebar().includes("本组 2 人在干活"));assert(h.node().includes("本组 2 人在干活"));
+  const next=structuredClone(snapshot);next.members[0].status="idle";
+  assert(h.sidebar(next).includes('class="group-work-avatar"'));assert(h.node(next).includes("本人在干活"));
+  next.leaders[0].status="waiting";next.leaders[0].busy=true;next.leaders[0].running=true;next.leaders[0].active_goal_id="g1";
+  next.leaders[0].codex=[{status:"running",task_name:"历史条目",started_at:"2026-10-26T00:00:00Z"}];
+  for(const html of [h.sidebar(next),h.node(next)])assert(!html.includes('class="group-work-avatar"'));
+  assert.equal(count(h.render("working",next)),0);
 });
