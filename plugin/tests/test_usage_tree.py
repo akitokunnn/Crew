@@ -1,8 +1,9 @@
 import tests  # Install the production-service connection guard.
 import unittest
+import json
 
-from crew import session_ops, board, usage
-from test_usage import PRICES, UsageFixture, assistant, stamp, token_count
+from crew import session_ops, board, goals, runtimes, usage
+from test_usage import PRICES, UsageFixture, assistant, prompt, stamp, token_count
 
 
 class UsageTreeTests(UsageFixture, unittest.TestCase):
@@ -56,6 +57,111 @@ class UsageTreeTests(UsageFixture, unittest.TestCase):
         self.assertAlmostEqual(sum(row["cost"] for row in self.tree()), summary["cost_usd"])
         self.assertEqual(sum(row["share"] for row in self.tree()), 100.0)
 
+    def bound_member(self, runtime):
+        self.join('leader', '协调', role='leader')
+        self.join('worker', '组员', group='协调')
+        runtimes.set(self.conn, 'worker', runtime, 'native-general', now=stamp())
+        goal = goals.create(self.conn, 'demo', 'leader', '任务', '完成检查', ['有检查结果'], now=stamp())
+        goals.assign(self.conn, goal['id'], 'worker', '执行检查', now=stamp())
+        goals.transition(self.conn, goal['id'], 'running', now=stamp())
+        execution = goals.create_execution(self.conn, goal['id'], 'worker', runtime=runtime, now=stamp())
+        goals.bind_native(self.conn, execution['id'], runtime, 'native-task', now=stamp())
+        return execution
+
+    def test_member_claude_general_and_task_usage_follow_stable_identity(self):
+        self.bound_member('claude')
+        for native in ('leader', 'native-general', 'native-task'):
+            self.requests_for(native)
+        self.scan()
+        team, ungrouped = self.tree()
+        self.assertEqual([member['session_id'] for member in team['members']], ['worker'])
+        self.assertEqual(team['members'][0]['tokens'], 7200)
+        self.assertEqual(team['tokens'], 10800)
+        self.assertEqual(ungrouped['tokens'], 0)
+        self.assertEqual([row['session_id'] for row in usage.by_session(self.conn, None, None, PRICES, 'demo')],
+                         ['leader', 'worker'])
+
+    def test_member_native_history_aggregates_prompts_work_compaction_children_and_old_generations(self):
+        execution = self.bound_member('claude')
+        for native in ('native-general', 'native-task'):
+            self.main_file([prompt(native), assistant(native, tool=native),
+                {'type': 'system', 'subtype': 'compact_boundary', 'uuid': native, 'timestamp': stamp(25)}], native)
+        child = self.claude / 'project' / 'native-task' / 'subagents' / 'agent-child.jsonl'
+        self.write(child, [assistant('child', seconds=20, tool='child')])
+        child.with_suffix('.meta.json').write_text('{"agentType":"Explore"}', encoding='utf-8')
+        goals.set_execution_status(self.conn, execution['id'], 'completed')
+        next_execution = goals.create_execution(self.conn, execution['goal_id'], 'worker', runtime='claude')
+        goals.bind_native(self.conn, next_execution['id'], 'claude', 'next-native-task')
+        self.requests_for('next-native-task')
+        self.scan(); self.scan()
+        team, ungrouped = self.tree()
+        member = team['members'][0]
+        self.assertEqual((member['session_id'], member['tokens']), ('worker', 14400))
+        row = usage.by_session(self.conn, None, None, PRICES, 'demo')[0]
+        self.assertEqual((row['prompts'], row['compactions'], row['work_seconds'], row['subagent_requests']), (2, 2, 30, 1))
+        daily = usage.daily(self.conn, None, None, PRICES, 'demo')
+        self.assertEqual([(row['session_id'], row['total_tokens']) for row in daily], [('worker', 14400)])
+        self.assertEqual(ungrouped['members'], [])
+
+    def test_member_codex_general_and_task_usage_follow_stable_identity(self):
+        self.bound_member('codex')
+        self.requests_for('leader')
+        self.rollout('native-general', records=[token_count(total=3500)])
+        self.rollout('native-task', records=[token_count(total=4500)])
+        runtimes.set(self.conn, 'leader', 'codex', 'native-leader', now=stamp())
+        self.rollout('native-leader', records=[token_count(total=500)])
+        self.scan()
+        team, ungrouped = self.tree()
+        self.assertEqual([member['session_id'] for member in team['members']], ['worker'])
+        member = team['members'][0]
+        self.assertEqual((member['codex_runs'], member['codex_tokens']), (2, 8000))
+        self.assertEqual((team['self']['codex_runs'], team['self']['codex_tokens']), (1, 500))
+        self.assertEqual((team['codex_runs'], team['codex_tokens']), (3, 8500))
+        self.assertEqual(ungrouped['members'], [])
+
+    def test_codex_native_children_follow_explicit_parent_threads_without_double_counting(self):
+        execution = self.bound_member('codex')
+        self.rollout('native-task', records=[token_count(total=4000)])
+        for child, parent, tokens, key in [('first-child', 'native-task', 1000, 'subagent'),
+                                           ('nested-child', 'first-child', 500, 'subAgent'),
+                                           ('unrelated-child', 'unbound-parent', 200, 'subagent')]:
+            path = self.rollout(child, records=[token_count(total=tokens)])
+            lines = [json.loads(line) for line in path.read_text(encoding='utf-8').splitlines()]
+            lines[0]['payload']['source'] = {key: {'thread_spawn': {'parent_thread_id': parent}}}
+            self.write(path, lines)
+        self.scan()
+        tasks = {row['rollout_id']: row for row in usage.codex_tasks(self.conn, None, None, 'demo')}
+        for key in ['native-task', 'first-child', 'nested-child']:
+            self.assertEqual((tasks[key]['session_id'], tasks[key]['execution_id']), ('worker', execution['id']))
+        self.assertIsNone(tasks['unrelated-child']['session_id'])
+        member = self.tree()[0]['members'][0]
+        self.assertEqual((member['codex_runs'], member['codex_tokens']), (3, 5500))
+        self.assertEqual(usage.summary(self.conn, None, None, PRICES, 'demo')['codex']['total_tokens'], 5700)
+
+    def test_bound_usage_stays_in_owner_workspace_after_carrier_switch_without_claiming_unbound_logs(self):
+        execution = self.bound_member('claude')
+        board.init_project(self.conn, 'other', 'C:\\other', now=stamp())
+        self.requests_for('worker', cwd='C:\\other')
+        self.requests_for('native-general', cwd='C:\\other')
+        self.requests_for('native-task', cwd='C:\\other')
+        self.requests_for('unbound', cwd='C:\\other')
+        runtimes.set(self.conn, 'worker', 'codex', 'codex-general', now=stamp())
+        goals.bind_native(self.conn, execution['id'], 'codex', 'codex-task', now=stamp())
+        self.rollout('codex-general', cwd='C:\\other', records=[token_count(total=1000)])
+        self.rollout('codex-task', cwd='C:\\other', records=[token_count(total=2000)])
+        self.rollout('unbound-codex', cwd='C:\\other', records=[token_count(total=300)])
+        self.scan()
+        own = usage.summary(self.conn, None, None, PRICES, 'demo')
+        other = usage.summary(self.conn, None, None, PRICES, 'other')
+        self.assertEqual((own['claude']['total_tokens'], own['codex']['total_tokens']), (10800, 3000))
+        self.assertEqual((other['claude']['total_tokens'], other['codex']['total_tokens']), (3600, 300))
+        member = self.tree()[0]['members'][0]
+        self.assertEqual((member['session_id'], member['tokens'], member['codex_tokens']), ('worker', 10800, 3000))
+        self.join('new-leader', '新组', role='leader')
+        self.join('worker', '组员', group='新组')
+        team = self.tree()[0]
+        self.assertEqual((team['leader_session_id'], team['members'][0]['tokens']), ('new-leader', 10800))
+
     def test_current_leader_relation_reassigns_historical_usage_and_closed_group_is_unadopted(self):
         self.join("old-leader", "旧组", role="leader")
         self.join("new-leader", "新组", role="leader")
@@ -66,7 +172,7 @@ class UsageTreeTests(UsageFixture, unittest.TestCase):
         self.join("worker", "成员", group="新组")
         team, ungrouped = self.tree()
         self.assertEqual((team["leader_session_id"], team["self"]),
-                         ("new-leader", {"tokens": 0, "cost": 0.0}))
+                         ("new-leader", {"tokens": 0, "cost": 0.0, "codex_runs": 0, "codex_tokens": 0}))
         self.assertEqual(team["members"][0]["session_id"], "worker")
         self.assertEqual(ungrouped["tokens"], 0)
         session_ops.close_group(self.conn, "demo", "新组", now=stamp(100))
@@ -107,7 +213,7 @@ class UsageTreeTests(UsageFixture, unittest.TestCase):
     def test_empty_scope_keeps_final_bucket_with_zero_share(self):
         self.assertEqual(self.tree(), [{
             "leader_session_id": None, "name": "未收编的会话", "tokens": 0,
-            "cost": 0.0, "share": 0.0, "self": {"tokens": 0, "cost": 0.0}, "members": [],
+            "cost": 0.0, "share": 0.0, "codex_runs": 0, "codex_tokens": 0, "self": {"tokens": 0, "cost": 0.0, "codex_runs": 0, "codex_tokens": 0}, "members": [],
         }])
 
 
