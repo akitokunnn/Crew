@@ -13,7 +13,7 @@
   let documents = null, leaderTrust = null, runtimeSwitch = null, goals = null, goalId = null;
   let leaderDrag = null, leaderOrderSaving = false;
   let allTab = "tree", period = "week", usageTab = "tree", usage = null, usageLoading = false, usageRequest = 0;
-  let cardId = null, cardReturn = null, handoff = null, rightOpen = true, dialogReturn = null;
+  let cardId = null, cardReturn = null, handoff = null, rightOpen = false, dialogReturn = null;
   let theme = "system", paletteItems = [], paletteIndex = 0;
   let soundGeneration = 0;
   let runtimesCache = null, runtimesPromise = null, runtimesLoading = false, runtimesError = null;
@@ -23,9 +23,10 @@
   const waitingSounds = new Map();
   let fontScale = 1;
   const FONT_MIN = .9, FONT_MAX = 1.4;
-  const sideAgentsOpen = new Set(), sideDecisionsOpen = new Set(), decisionsOpen = new Set(), heldExpanded = new Set(), usageCollapsed = new Set(), operationIds = new Set();
+  const sideDecisionsOpen = new Set(), decisionsOpen = new Set(), heldExpanded = new Set(), usageCollapsed = new Set(), operationIds = new Set();
   const todoExpanded = new Set(), todoActions = new Map(), todoSaving = new Set();
-  let attentionScope = null, attentionVisible = true, taskVisible = true, sidecarFocus = "attention";
+  let reportReaderOpen = false;
+  let attentionScope = null, attentionVisible = false, taskVisible = false, sidecarFocus = "attention";
   let composingInput = null, compositionTimer = null, compositionRenderPending = false;
   const colors = ["#3E7C74", "#8A5A7E", "#A07A3A", "#4F6B8F", "#5E7F55", "#A8604F", "#8C7650", "#5C5F9E", "#A35D6A", "#4F7A8C", "#77773F"];
   const statusText = {working:"在干活", waiting:"等你", idle:"空闲", offline:"离线", closed:"已归档"};
@@ -370,9 +371,6 @@
     const title = item.brief?.title || compactDecisionText(item.question);
     return `<details class="side-decision" data-side-decision="${item.id}" ${sideDecisionsOpen.has(item.id) ? "open" : ""}><summary><span>${esc(title)}</span><span class="side-decision-owner">${esc(item.asker)}</span></summary>${decisionCard(item)}</details>`;
   }
-  function sidePerson(item, isLeader) {
-    return `<div class="side-person-unit"><div class="side-person session-surface" data-session-menu="${esc(item.session_id)}"><button type="button" class="side-person-open" data-act="${isLeader ? "leader" : "member-chat"}" data-id="${esc(item.session_id)}" aria-label="进入${esc(item.name)}的对话">${isLeader ? groupAvatar(item, groupWork(item)) : av(item.name,24)}<span class="side-person-name">${esc(item.name)}${runtimeBadge(item,true)}</span><span class="dot ${esc(item.status)}" title="${esc(statusText[item.status])}"></span></button>${contextRing(item)}<button type="button" class="icon-btn" data-act="session-menu" data-id="${esc(item.session_id)}" aria-label="${esc(item.name)}的操作">⋯</button></div>${item.codex.length || item.codex_older ? `<details class="side-agents" data-side-agents="${esc(item.session_id)}" ${sideAgentsOpen.has(item.session_id) ? "open" : ""}><summary>子代理与派活 · ${item.codex.length + item.codex_older}</summary>${codexList(item)}</details>` : ""}</div>`;
-  }
   function heldGroup(items, context) {
     if (items.length === 0) return "";
     const expanded = heldExpanded.has(context);
@@ -412,50 +410,63 @@
   function renderRight() {
     if (view !== "chat" || leaderId === null) { $("right-panel").innerHTML = ""; delete $("right-panel").dataset.render; return; }
     const item = leader(leaderId), members = membersOf(leaderId);
-    replace($("right-panel"), `<div class="head"><div><div class="title" title="${esc(item.name)} 组" style="font-size:calc(13px * var(--fs))">本组架构图</div><div class="sub">${members.length} 个下属</div><button class="member-default-entry" data-act="member-defaults" data-id="${esc(item.session_id)}">组员大脑 · ${item.member_defaults || state.ai?.member ? esc((item.member_defaults ?? state.ai.member).runtime ? runtimeInfo((item.member_defaults ?? state.ai.member).runtime).name : "自动选择") : "跟随 leader"} ›</button></div><div class="right"><button class="btn ghost" data-act="member-add-menu" data-id="${esc(item.session_id)}" style="padding:5px 9px;font-size:calc(12.5px * var(--fs))">${ic("plus", "sm")}添加</button><button class="icon-btn rp-close" data-act="right-close" aria-label="关闭架构图">${ic("x")}</button></div></div><div class="tree sidecar-section-scroll">${sidePerson(item,true)}<div class="side-members">${members.map(person => sidePerson(person,false)).join("")}</div><div class="rp-note">点任意人进入本人对话；资料与操作或右键可查看卡片。${ic("code", "xs")} VS Code，${ic("cloud", "xs")} Crew 后台。</div></div>`);
+    replace($("right-panel"), `<div class="head"><div><div class="title" title="${esc(item.name)} 组" style="font-size:calc(13px * var(--fs))">本组架构图</div><div class="sub">${members.length} 个下属</div><button class="member-default-entry" data-act="member-defaults" data-id="${esc(item.session_id)}">组员大脑 · ${item.member_defaults || state.ai?.member ? esc((item.member_defaults ?? state.ai.member).runtime ? runtimeInfo((item.member_defaults ?? state.ai.member).runtime).name : "自动选择") : "跟随 leader"} ›</button></div><div class="right"><button class="btn ghost" data-act="member-add-menu" data-id="${esc(item.session_id)}" style="padding:5px 9px;font-size:calc(12.5px * var(--fs))">${ic("plus", "sm")}添加</button><button class="icon-btn rp-close" data-act="right-close" aria-label="关闭架构图">${ic("x")}</button></div></div><div class="tree">${leaderNode(item,true)}<div class="members">${members.map(memberNode).join("")}</div><div class="rp-note">点任意人进入本人对话；资料与操作或右键可查看卡片。${ic("code", "xs")} VS Code，${ic("cloud", "xs")} Crew 后台。</div></div>`);
     syncSidecar();
   }
-  function attentionOpen() { return $("chat-attention")?.matches(":popover-open") === true; }
+  function attentionOpen() { return view === "chat" && (attentionVisible || rightOpen); }
+  function closeTaskTools() { taskVisible = false; $("side-task-section").hidden = true; syncSidecar(); }
   function closeAttention(restoreFocus = false) {
-    if (!attentionOpen()) return;
-    $("chat-attention").hidePopover();
-    if (restoreFocus) $("chat-head")?.querySelector(`[data-act="${({attention:"attention",tasks:"task-panel",tree:"right-open"})[sidecarFocus]}"]`)?.focus({preventScroll:true});
+    attentionVisible = false; rightOpen = false;
+    syncSidecar();
+    if (restoreFocus) $("chat-head")?.querySelector(`[data-act="${sidecarFocus === "tree" ? "right-open" : "attention"}"]`)?.focus({preventScroll:true});
   }
   function syncSidecar() {
-    if (!$("side-task-section")) return;
-    $("side-task-section").hidden = !taskVisible;
-    $("side-attention-section").hidden = !attentionVisible;
-    $("right-panel").hidden = !rightOpen || view !== "chat" || leaderId === null;
-    for (const [act, visible] of [["attention",attentionVisible],["task-panel",taskVisible],["right-open",rightOpen]]) {
-      const button = $("chat-head")?.querySelector(`[data-act="${act}"]`);
-      button?.setAttribute("aria-expanded", String(attentionOpen() && visible || act === "task-panel" && goals?.materialsOpen()));
+    const panel = $("chat-attention"), slot = $("attention-slot");
+    const active = view === "chat" && (leaderId !== null || readOnlyId !== null) && !goals?.showingList() && !settingsOpen && !workspaceOpen;
+    panel.hidden = !active || !attentionVisible && !rightOpen;
+    panel.inert = panel.hidden || reportReaderOpen;
+    $("side-task-section").inert = !taskVisible || reportReaderOpen;
+    $("right-panel").hidden = !active || !rightOpen;
+    $("right-panel").inert = !active || !rightOpen;
+    slot.dataset.open = String(active && attentionVisible);
+    slot.inert = !active || !attentionVisible;
+    slot.setAttribute("aria-hidden", String(slot.inert));
+    for (const [act, visible] of [["attention",attentionVisible],["task-panel",taskVisible || goals?.materialsOpen()],["right-open",rightOpen]]) {
+      $("chat-head")?.querySelector(`[data-act="${act}"]`)?.setAttribute("aria-expanded", String(active && visible));
     }
-    if (!taskVisible && !attentionVisible && !rightOpen) closeAttention();
-    if (attentionOpen()) positionAttention();
+    if (!panel.hidden) positionAttention();
+    else { slot.style.height = "0px"; $("main").style.setProperty("--chat-side-space", "0px"); }
   }
   function toggleSidecar(section) {
-    if (section === "tasks" && goals?.materialsOpen()) goals.closeDrawer();
+    if (section === "tasks") {
+      if (goalId == null) { goals?.showList(); return; }
+      if (goals?.materialsOpen()) goals.closeDrawer();
+      taskVisible = !taskVisible;
+      $("side-task-section").hidden = !taskVisible;
+      syncSidecar();
+      if (taskVisible) $("side-task-section").querySelector("button")?.focus({preventScroll:true});
+      return;
+    }
     sidecarFocus = section;
-    const open = attentionOpen();
-    if (section === "tasks") taskVisible = !open || !taskVisible;
-    else if (section === "tree") rightOpen = !open || !rightOpen;
-    else attentionVisible = !open || !attentionVisible;
-    if (!open) $("chat-attention").showPopover();
+    if (section === "tree") rightOpen = !rightOpen;
+    else attentionVisible = !attentionVisible;
     syncSidecar();
   }
   function returnToTaskPanel() {
-    taskVisible = true; sidecarFocus = "tasks";
-    if (!attentionOpen()) $("chat-attention").showPopover();
-    syncSidecar();
+    taskVisible = true; $("side-task-section").hidden = false; syncSidecar();
   }
   function positionAttention() {
-    const host = $("goal-head") || $("chat-head");
-    if (!host) return;
-    const panel = $("chat-attention"), rect = host.getBoundingClientRect();
-    const width = Math.min(320, window.innerWidth - 24), top = Math.max(12, Math.min(rect.bottom + 10, window.innerHeight - 180));
-    panel.style.left = `${Math.max(12, window.innerWidth - width - 12)}px`;
-    panel.style.top = `${top}px`;
-    panel.style.maxHeight = `${Math.min(560, window.innerHeight - top - 12)}px`;
+    const host = $("goal-head") || $("chat-head"); if (!host) return;
+    const panel = $("chat-attention"), main = $("main"), rect = host.getBoundingClientRect();
+    const width = Math.min(332, window.innerWidth - 24), top = Math.max(12, Math.min(rect.bottom + 10, window.innerHeight - 230));
+    const height = Math.max(180, window.innerHeight - top - 14);
+    panel.style.width = `${width}px`; panel.style.top = `${top}px`; panel.style.height = `${height}px`;
+    panel.style.setProperty("--attention-max-height", `${rightOpen ? Math.max(90, Math.min(320, height * .46)) : Math.max(90, height - 66)}px`);
+    const slot = $("attention-slot");
+    slot.style.height = attentionVisible ? `${$("side-attention-section").getBoundingClientRect().height + 12}px` : "0px";
+    const reserve = main.clientWidth - width - 36 >= 430;
+    main.dataset.sideOverlap = String(!reserve);
+    main.style.setProperty("--chat-side-space", reserve ? `${width + 28}px` : "0px");
   }
   function renderChat() {
     const item = readOnlyId === null ? leader(leaderId) : member(readOnlyId), group = leader(leaderId), members = membersOf(leaderId);
@@ -492,12 +503,12 @@
     attentionScope = scope;
     replace($("native-approval-tray"), nativeApprovals?.chatMarkup(item.session_id, goalId, readOnlyId === null) || "");
     $("attention-scope").textContent = `${readOnlyId === null ? group?.name || item.name : item.name} · ${goalId == null ? "全部任务与总对话" : goals?.currentGoal()?.title || "当前任务"}`;
-    replace($("chat-head"), `<div class="head">${readOnlyId === null ? groupAvatar(item, work) : av(item.name, 30)}<div class="heading-meta"><div class="title"><span class="chat-name" title="${esc(item.name)}">${esc(item.name)}</span>${readOnlyId === null ? priorityBadge(item.priority) : ""}${chatRuntime}</div><div class="sub"><span class="chat-scope" title="${esc(readOnlyId === null ? (item.goal ?? "") : `归 ${item.group} · 成员本人对话`)}">${esc(readOnlyId === null ? (item.goal ?? "") : `归 ${item.group} · 成员本人对话`)}</span>${group === undefined ? "" : `<span class="sep"></span><span class="chat-member-stats ${work.active ? "is-working" : ""}">${members.length} 个下属 · ${work.summary}</span>`}</div></div><div class="right">${!listing ? `<button type="button" class="attention-trigger ${attentionCount ? "has-items" : ""}" data-act="attention" aria-haspopup="dialog" aria-controls="chat-attention" aria-expanded="${attentionOpen() && attentionVisible}" aria-label="待处理，${attentionCount} 件${readOnlyId === null && held.length ? `，另有 ${held.length} 件挂起` : ""}">${ic("inbox", "sm")}<span>待处理</span>${attentionCount ? `<span class="attention-count">${attentionCount}</span>` : ""}</button>` : ""}${goalId == null ? contextControls(item) : ""}${chatModel}${readOnlyId === null ? "" : `<button class="btn ghost" data-act="leader" data-id="${esc(leaderId)}">回到 leader</button><button class="btn ghost" data-act="card" data-id="${esc(item.session_id)}">资料</button>`}<button class="icon-btn" data-act="session-menu" data-id="${esc(item.session_id)}" aria-haspopup="menu" title="会话操作" aria-label="会话操作">⋯</button>${group === undefined || listing ? "" : `<button type="button" class="attention-trigger" data-act="task-panel" aria-haspopup="dialog" aria-controls="chat-attention" aria-expanded="${attentionOpen() && taskVisible}">${ic("check", "sm")}<span>${goalId == null ? "任务" : "任务资料"}</span></button><button class="icon-btn rp-toggle" data-act="right-open" title="本组架构图" aria-label="本组架构图">${ic("grid")}</button>`}</div></div>`);
+    replace($("chat-head"), `<div class="head">${readOnlyId === null ? groupAvatar(item, work) : av(item.name, 30)}<div class="heading-meta"><div class="title"><span class="chat-name" title="${esc(item.name)}">${esc(item.name)}</span>${readOnlyId === null ? priorityBadge(item.priority) : ""}${chatRuntime}</div><div class="sub"><span class="chat-scope" title="${esc(readOnlyId === null ? (item.goal ?? "") : `归 ${item.group} · 成员本人对话`)}">${esc(readOnlyId === null ? (item.goal ?? "") : `归 ${item.group} · 成员本人对话`)}</span>${group === undefined ? "" : `<span class="sep"></span><span class="chat-member-stats ${work.active ? "is-working" : ""}">${members.length} 个下属 · ${work.summary}</span>`}</div></div><div class="right">${!listing ? `<button type="button" class="attention-trigger ${attentionCount ? "has-items" : ""}" data-act="attention" aria-controls="side-attention-section" aria-expanded="${attentionOpen() && attentionVisible}" aria-label="待处理，${attentionCount} 件${readOnlyId === null && held.length ? `，另有 ${held.length} 件挂起` : ""}">${ic("inbox", "sm")}<span>待处理</span>${attentionCount ? `<span class="attention-count">${attentionCount}</span>` : ""}</button>` : ""}${goalId == null ? contextControls(item) : ""}${chatModel}${readOnlyId === null ? "" : `<button class="btn ghost" data-act="leader" data-id="${esc(leaderId)}">回到 leader</button><button class="btn ghost" data-act="card" data-id="${esc(item.session_id)}">资料</button>`}<button class="icon-btn" data-act="session-menu" data-id="${esc(item.session_id)}" aria-haspopup="menu" title="会话操作" aria-label="会话操作">⋯</button>${group === undefined || listing ? "" : `<button type="button" class="attention-trigger" data-act="task-panel" aria-haspopup="dialog" aria-controls="side-task-section" aria-expanded="${taskVisible || goals?.materialsOpen()}">${ic("check", "sm")}<span>${goalId == null ? "任务" : "资料"}</span></button><button class="icon-btn rp-toggle" data-act="right-open" title="本组架构图" aria-label="本组架构图">${ic("grid")}</button>`}</div></div>`);
     replace($("goal-head"), group ? goals?.groupMarkup(leaderId) || "" : "");
     replace($("decision-tray"), readOnlyId !== null ? "" : `<div class="tray-in">${todoTray(groupTodos, leaderId)}${pending.length === 0 ? "" : `<section class="tray-pending"><h3 class="attention-section-title">等你拍板 <span>${pending.length}</span></h3><div class="tray-list">${pending.map(sideDecision).join("")}</div></section>`}${heldGroup(held, "tray")}</div>`);
     $("attention-empty").hidden = permissions + (readOnlyId === null ? pending.length + held.length + groupTodos.length : 0) > 0;
     replace($("side-task-body"), goals?.sideMarkup(leaderId) || "");
-    $("side-task-title").textContent = goalId == null ? "任务清单" : "当前任务";
+    $("side-task-title").textContent = goals?.currentGoal()?.title || "任务资料";
     $("side-attention-count").textContent = String(attentionCount);
     syncSidecar();
     if (readOnlyId === null && leaderTrust !== null) {
@@ -778,7 +789,7 @@
     settingsReturn?.focus?.({preventScroll:true}); settingsReturn = null;
   }
   function openSettings(category = "ai") {
-    closeAttention();
+    closeTaskTools(); closeAttention();
     settingsReturn = document.activeElement; settingsOpen = true;
     if (mountedChat !== null) { CrewChat.unmount(); mountedChat = null; }
     if (mountedChannel) { CrewChannel.unmount(); mountedChannel = false; }
@@ -806,7 +817,7 @@
     });
   }
   function openWorkspaceSettings() {
-    closeAttention();
+    closeTaskTools(); closeAttention();
     if (window.navigator?.userAgent.includes("Electron/")) { location.assign(`/?workspace-settings=${encodeURIComponent(project)}`); return; }
     workspaceOpen = true;
     if (mountedChat !== null) { CrewChat.unmount(); mountedChat = null; }
@@ -955,11 +966,10 @@
   function navigate(next, id = null, readonly = null, nextGoal = undefined) {
     if (nextGoal === undefined) nextGoal = next === "chat" && id === leaderId ? goalId : null;
     const sameScope = next === "chat" && view === "chat" && leaderId === id && String(goalId) === String(nextGoal);
-    if (!sameScope || readOnlyId !== readonly) closeAttention();
+    if (!sameScope || readOnlyId !== readonly) { closeTaskTools(); closeAttention(); }
     if (view === "chat" && (!sameScope || readOnlyId !== readonly)) { CrewChat.unmount(); mountedChat = null; }
     if (!sameScope) goals?.closeDrawer();
     view = next; leaderId = id; readOnlyId = readonly; goalId = next === "chat" ? nextGoal : null;
-    if (next !== "chat") { $("right-panel").classList.remove("show"); $("rp-scrim").classList.remove("show"); }
     render(); syncRoute();
     if (view === "usage" && usage === null && !usageLoading) loadUsage();
   }
@@ -986,9 +996,9 @@
     renderRight(); renderCard(); document.title = `(${state.decisions.filter(item => !item.held).length}) ${projectDisplay(state.project)} · Crew`;
   }
   function watchingChat(id) {
-    return !settingsOpen && !workspaceOpen && !goals?.showingList() && view === "chat" && readOnlyId === null && leaderId === id && document.visibilityState === "visible" && document.hasFocus() &&
+    return !settingsOpen && !workspaceOpen && !reportReaderOpen && !taskVisible && !goals?.materialsOpen() && !goals?.showingList() && view === "chat" && readOnlyId === null && leaderId === id && document.visibilityState === "visible" && document.hasFocus() &&
       cardId === null && !$("backdrop").classList.contains("show") && !$("menu").classList.contains("show") &&
-      !(attentionOpen() && window.matchMedia("(max-width:1023px)").matches);
+      !(attentionOpen() && $("main").dataset.sideOverlap === "true");
   }
   function notifySounds(previous, fresh, requestedGeneration) {
     const decisions = state.decisions.filter(item => !item.held && !previous.decisions.some(old => old.id === item.id));
@@ -1058,10 +1068,10 @@
         if (compositionRenderPending) { compositionRenderPending = false; render(); }
       }, 0);
     });
-    $("overlay-root").innerHTML = '<button class="rp-scrim" id="rp-scrim" data-act="right-close" aria-label="关闭架构图"></button><div class="card-back" id="card-back"></div><section class="card" id="card" role="dialog" aria-modal="true" aria-label="下属卡片" tabindex="-1"></section><div class="menu" id="menu" role="menu"></div><div class="backdrop" id="backdrop"></div><div id="settings-parking" hidden><section class="settings-popover" id="settings" aria-label="外观设置"></section></div>';
-    document.addEventListener("click", event => { if (event.target.closest('#chat-attention [data-file-path],#chat-attention [data-document-id],#chat-attention [data-goal-act=drawer],#chat-attention [data-goal-act=delivery],#chat-attention [data-goal-act=create]')) closeAttention(); }, true);
-    $("chat-attention").addEventListener("beforetoggle", event => { if (event.newState === "open") positionAttention(); });
-    $("chat-attention").addEventListener("toggle", syncSidecar);
+    $("overlay-root").innerHTML = '<div class="card-back" id="card-back"></div><section class="card" id="card" role="dialog" aria-modal="true" aria-label="下属卡片" tabindex="-1"></section><div class="menu" id="menu" role="menu"></div><div class="backdrop" id="backdrop"></div><div id="settings-parking" hidden><section class="settings-popover" id="settings" aria-label="外观设置"></section></div>';
+    const sideResize = new ResizeObserver(() => { if (attentionOpen()) positionAttention(); });
+    sideResize.observe($("side-attention-section"));
+    sideResize.observe($("goal-head") || $("main"));
     window.addEventListener("resize", () => { if (attentionOpen()) positionAttention(); });
     maintenance = window.CrewMaintenance.create({api,
       async onCleaned() { await loadState(true); if (view !== "all") navigate("all"); toast("已归档旧工作，可以重新开始"); }});
@@ -1100,7 +1110,7 @@
       refreshCatalog:refreshRuntimes, prepare:body => api("/api/session/runtime/prepare",body),
       switchRuntime:body => api("/api/session/runtime/switch",body), onChanged:() => { goals?.invalidate(); return loadState(true); }, toast});
     if (window.CrewGoals && project !== null) goals = window.CrewGoals.create({project, api, toast, state:() => state,
-      refreshState:() => loadState(true), onChange:() => { if (state && view === "chat") renderChat(); }, onDrawer:closeAttention, onOverlay:closeAttention, onReturn:returnToTaskPanel,
+      refreshState:() => loadState(true), onChange:() => { if (state && view === "chat") renderChat(); }, onDrawer:closeTaskTools, onOverlay:closeTaskTools, onReturn:returnToTaskPanel, onReader:active => { reportReaderOpen = active; $("chat-attention").inert = active || $("chat-attention").hidden; $("side-task-section").inert = active || !taskVisible; },
       renderDocuments:(items,id) => documents?.taskCards(items,id),
       onGeneral:id => navigate("chat", id, readOnlyId, null),
       onNavigate:id => { const item = (state.goals || []).find(item => String(item.id) === String(id)); if (item) { if (cardId !== null) closeCard(); navigate("chat", item.leader_session_id, null, item.id); } else toast("目标已不在当前工作区中，请刷新。"); }});
@@ -1109,7 +1119,7 @@
     document.addEventListener("contextmenu", event => {
       const surface = sessionSurface(event.target);
       if (surface === null || state === null) return;
-      event.preventDefault(); openSessionMenu(surface, surface.dataset.sessionMenu === undefined ? surface.dataset.id : surface.dataset.sessionMenu, {x:event.clientX, y:event.clientY}); closeAttention();
+      event.preventDefault(); openSessionMenu(surface, surface.dataset.sessionMenu === undefined ? surface.dataset.id : surface.dataset.sessionMenu, {x:event.clientX, y:event.clientY});
     });
     document.addEventListener("pointerover", event => {
       const button = event.target.closest('#menu [data-act="submenu"]');
@@ -1128,13 +1138,13 @@
       if (act === "confirm-stop-person") { const resolve = stopConfirmation; stopConfirmation = null; closeBackdrop(); resolve?.(true); return; }
       if (act === "submenu") { openSubmenu(button); return; }
       if (button.closest("#menu")) hideMenu(["member-create", "member-defaults", "session-rename"].includes(act));
-      if (act === "session-menu") { openSessionMenu(button, id); closeAttention(); }
-      else if (act === "member-add-menu") { showMenu(button,`<button role="menuitem" data-act="member-create" data-id="${esc(id)}">${ic("plus","sm")}新建组员</button><button role="menuitem" data-act="member-adopt" data-id="${esc(id)}">${ic("inbox","sm")}收编已有会话</button>`); closeAttention(); }
+      if (act === "session-menu") { openSessionMenu(button, id); }
+      else if (act === "member-add-menu") { showMenu(button,`<button role="menuitem" data-act="member-create" data-id="${esc(id)}">${ic("plus","sm")}新建组员</button><button role="menuitem" data-act="member-adopt" data-id="${esc(id)}">${ic("inbox","sm")}收编已有会话</button>`); }
       else if (act === "member-create") { hideMenu(); memberUI.openCreate(id); }
       else if (act === "member-defaults") { hideMenu(); memberUI.openDefaults(id); }
       else if (act === "member-adopt") { hideMenu();adoptLeaderId=id;navigate("adopt"); }
       else if (act === "session-rename") openRename(id);
-      else if (act === "group-tree") { if (cardId !== null) closeCard(); navigate("chat", id); rightOpen = true; renderRight(); if (!attentionOpen()) toggleSidecar("tree"); }
+      else if (act === "group-tree") { if (cardId !== null) closeCard(); navigate("chat", id); rightOpen = true; renderRight(); syncSidecar(); }
       else if (act === "set-priority") action("leader-order", () => setPriority(id, Number(button.dataset.rank)));
       else if (act === "leader-up" || act === "leader-down") action("leader-order", async () => {
         const item = leader(id), order = sortableLeaders(item).map(item => item.session_id), before = order.slice(), index = order.indexOf(id), other = index + (act === "leader-up" ? -1 : 1);
@@ -1197,7 +1207,7 @@
       else if (act === "task-panel") toggleSidecar("tasks");
       else if (act === "right-open") toggleSidecar("tree");
       else if (act === "right-close") { rightOpen = false; syncSidecar(); $("main").querySelector('[data-act="right-open"]')?.focus(); }
-      else if (act === "side-section-close") { if (button.dataset.section === "tasks") taskVisible = false; else attentionVisible = false; syncSidecar(); }
+      else if (act === "side-section-close") { if (button.dataset.section === "tasks") { closeTaskTools(); $("chat-head").querySelector('[data-act="task-panel"]')?.focus(); } else { attentionVisible = false; syncSidecar(); $("chat-head").querySelector('[data-act="attention"]')?.focus(); } }
       else if (act === "modal-leader") openModalLeader();
       else if (act === "leader-runtime" || act === "leader-model" || act === "leader-effort") {
         const form = $("leader-form"), field = {"leader-runtime":"runtime", "leader-model":"model", "leader-effort":"effort"}[act];
@@ -1279,18 +1289,16 @@
     });
     document.addEventListener("toggle", event => {
       const details = event.target;
-      if (details.dataset.sideAgents !== undefined) { const id = details.dataset.sideAgents; if (details.open) sideAgentsOpen.add(id); else sideAgentsOpen.delete(id); return; }
       if (details.dataset.sideDecision !== undefined) { const id = Number(details.dataset.sideDecision); if (details.open) sideDecisionsOpen.add(id); else sideDecisionsOpen.delete(id); return; }
       if (details.dataset.decisionContext === undefined) return;
       const id = Number(details.dataset.decisionContext);
       if (details.open) decisionsOpen.add(id); else decisionsOpen.delete(id);
     }, true);
     document.addEventListener("keydown", event => {
-      if (workspaceOpen) return;
-      if (event.key === "Escape" && attentionOpen() && !event.isComposing) { event.preventDefault(); closeAttention(true); return; }
+      if (workspaceOpen || event.key === "Escape" && event.isComposing) return;
       if (event.key === "ContextMenu" || event.shiftKey && event.key === "F10") {
         const surface = sessionSurface(event.target);
-        if (surface !== null) { event.preventDefault(); openSessionMenu(surface, surface.dataset.sessionMenu === undefined ? surface.dataset.id : surface.dataset.sessionMenu); closeAttention(); return; }
+        if (surface !== null) { event.preventDefault(); openSessionMenu(surface, surface.dataset.sessionMenu === undefined ? surface.dataset.id : surface.dataset.sessionMenu); return; }
       }
       if ($("menu").classList.contains("show") && ["ArrowDown", "ArrowUp", "ArrowRight", "ArrowLeft", "Escape", "Home", "End", "Tab"].includes(event.key)) {
         event.preventDefault();
@@ -1306,7 +1314,7 @@
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k" && state !== null && project !== null) { event.preventDefault(); if (stopConfirmation === null) openPalette(); return; }
       if (event.key === "Escape" && settingsOpen) { closeSettings(); return; }
       if (settingsOpen) return;
-      if (event.key === "Escape") { if ($("menu").classList.contains("show")) { hideMenu(); return; } if ($("backdrop").classList.contains("show")) closeBackdrop(); else if (cardId !== null) closeCard(); else if (goals?.escape()) { event.preventDefault(); return; } }
+      if (event.key === "Escape") { if ($("menu").classList.contains("show")) { hideMenu(); return; } if ($("backdrop").classList.contains("show")) closeBackdrop(); else if (cardId !== null) closeCard(); else if (goals?.escape()) { event.preventDefault(); return; } else if (taskVisible) { event.preventDefault(); closeTaskTools(); $("chat-head").querySelector('[data-act="task-panel"]')?.focus(); } else if (attentionOpen() && !event.isComposing) { event.preventDefault(); if (attentionVisible) { attentionVisible = false; sidecarFocus = "attention"; syncSidecar(); $("chat-head").querySelector('[data-act="attention"]')?.focus(); } else closeAttention(true); } }
       if (event.key === "Tab") {
         const surface = $("backdrop").classList.contains("show") ? $("backdrop") : cardId !== null ? $("card") : null;
         if (surface === null) return;

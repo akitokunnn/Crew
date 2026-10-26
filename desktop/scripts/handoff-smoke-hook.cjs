@@ -97,7 +97,7 @@ app.once('browser-window-created', (_event, win) => {
       await click(view,'[data-chat-fold="tool:handoff-tool"]');
       await capture(view,'02-confirmed-handoff');
       evidence.checks.push('Codex identity handoff renders as transferred, retains its task link and does not become an invented tool failure');
-      if (await js(view,'!document.querySelector("#chat-attention").matches(":popover-open") || document.querySelector("#right-panel").hidden')) await click(view,'[data-act=right-open]');
+      if (await js(view,'document.querySelector("#right-panel").hidden')) await click(view,'[data-act=right-open]');
       await wait(view,'!!document.querySelector("[data-act=member-chat][data-id=failed-member]")');
       await click(view,'[data-act=member-chat][data-id=failed-member]');
       await wait(view,'document.querySelector(".chat-inner")?.textContent.includes("子命令退出 23")');
@@ -106,7 +106,7 @@ app.once('browser-window-created', (_event, win) => {
       await click(view,'[data-chat-fold="tool:failed-tool"]');
       await capture(view,'03-real-failure');
       evidence.checks.push('a Claude member true failure retains both its terminal label and exact failure text');
-      if (await js(view,'!document.querySelector("#chat-attention").matches(":popover-open") || document.querySelector("#right-panel").hidden')) await click(view,'[data-act=right-open]');
+      if (await js(view,'document.querySelector("#right-panel").hidden')) await click(view,'[data-act=right-open]');
       await click(view,'[data-act=member-chat][data-id=pending-member]');
       await wait(view,`!!document.querySelector('[data-chat-fold="tool:next-tool"]')`);
       assert(await js(view,'document.querySelector(\'[data-chat-fold="tool:prior-tool"]\').textContent.includes("本轮已结束")'));
@@ -244,7 +244,7 @@ app.once('browser-window-created', (_event, win) => {
       await wait(view,'document.querySelector("#chat-head .chat-name")?.textContent === "真实失败"');
       assert.equal(await js(view,'document.querySelector("#chat-head .chat-member-stats").textContent'),'2 个下属 · 本组 1 人在干活');
       assert(await js(view,'document.querySelector("#chat-head .chat-member-stats").classList.contains("is-working")'));
-      if(await js(view,'!document.querySelector("#chat-attention").matches(":popover-open") || document.querySelector("#right-panel").hidden')) await click(view,'[data-act=right-open]');
+      if(await js(view,'document.querySelector("#right-panel").hidden')) await click(view,'[data-act=right-open]');
       assert(await js(view,'document.querySelector("#right-panel .group-work-avatar").title.includes("1 位组员在干活")'));
       assert.equal(await js(view,'document.querySelector(".composer textarea").value'),memberDraft);
       evidence.checks.push('idle, waiting and offline people are excluded even beside a working member; opening that member preserves its own multiline draft and counts only the one working person in its group');

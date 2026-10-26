@@ -56,7 +56,7 @@
     const changed = () => options.onChange?.();
     function restoreFocus(selector) {
       const target = document.querySelector?.(selector);
-      if (target?.closest?.('#chat-attention')) options.onReturn?.();
+      if (target?.closest?.('#side-task-section')) options.onReturn?.();
       (document.querySelector?.(selector) || document.querySelector?.('[data-act="task-panel"]'))?.focus();
     }
     function executionFor(id) {
@@ -64,8 +64,8 @@
       return (current()?.executions || []).filter(item => item.session_id === id && item.round === active?.current_round && item.requirement_version === active?.requirement_version).sort((a,b) => b.generation - a.generation)[0] || null;
     }
     function rememberPosition() { if (drawerHost?.dataset.viewKey) drawerPositions.set(drawerHost.dataset.viewKey, drawerHost.querySelector(".goal-drawer-scroll")?.scrollTop || 0); }
-    function closeReader() { reader?.remove(); reader = null; reading = null; for (const node of covered) node.inert = false; covered.clear(); }
-    // The reader covers the task area: nothing behind it may take focus or input. The sidebar and group tree stay usable.
+    function closeReader() { options.onReader?.(false); reader?.remove(); reader = null; reading = null; for (const node of covered) node.inert = false; covered.clear(); }
+    // The reader covers the task area: nothing behind it may take focus or input. The sidebar stays usable; onReader makes the floating auxiliary panels inert.
     function cover() { for (const node of document.getElementById("main").children) if (node !== reader && !node.inert) { node.inert = true; covered.add(node); } }
     function closeDrawer() {
       rememberPosition(); drawer = null; reportId = null; reportHTML = null; reportError = ""; reportLoading = false; reportGeneration++; deliveryNotice = null; closeReader(); renderDrawer();
@@ -192,7 +192,7 @@
       if (focused && !reader.contains(document.activeElement)) head.querySelector('[data-goal-act="close-report"]').focus();
     }
     function openReader(next) {
-      options.onOverlay?.();
+      options.onOverlay?.(); options.onReader?.(true);
       reading = next; reader = document.createElement("section"); reader.className = "goal-report-reader"; reader.setAttribute("aria-label", "目标交付报告");
       reader.innerHTML = '<div class="head goal-reader-head"></div><div class="goal-reader-body" hidden></div><div class="goal-reader-frame" hidden></div>';
       document.getElementById("main").append(reader); cover(); renderReader(); reader.querySelector('[data-goal-act="close-report"]').focus();
@@ -333,7 +333,7 @@
       if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
       else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
     });
-    return {sync, closeDrawer, escape, groupMarkup, sideMarkup, materialsOpen:() => drawer !== null || reading !== null, cards:() => cards(goals(), state()?.leaders), refresh:load, currentGoal:goal, executionFor, showingList:() => expandedGroups.has(ownerId), closeList:() => expandedGroups.delete(ownerId), renderMaterials, replaceMain,
+    return {sync, closeDrawer, escape, showList() { expandedGroups.add(ownerId); closeDrawer(); changed(); }, groupMarkup, sideMarkup, materialsOpen:() => drawer !== null || reading !== null, cards:() => cards(goals(), state()?.leaders), refresh:load, currentGoal:goal, executionFor, showingList:() => expandedGroups.has(ownerId), closeList:() => expandedGroups.delete(ownerId), renderMaterials, replaceMain,
       invalidate() { requestedVersion.clear(); details.clear(); }};
   }
   window.CrewGoals = {create, cards, status, reportPath, reportDocument};
