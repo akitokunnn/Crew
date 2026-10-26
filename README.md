@@ -24,6 +24,7 @@
 - **信任模式**：每个 leader 单独开关和填写目标，所属成员继承；保存不主动唤醒，下次对话再传达。保留取舍、待办、报告、验证和 Git 提交。
 - **横排总览与评论**：“全部”页每组一列，可横向滚动；“在干活”统计与列表包含 leader 和下属，按会话计数，点击进入对应人员对话。组头的“本组”人数也包含 leader。组和成员可加评论。leader 可标第 1～3 优先，并调整普通组的顺序。
 - **Git 管理员**：Git 页右上角“Git 设置”可绑定已有 leader、更换负责人、调整主干 / 稳定分支和合并规则；也可新建独立 worktree 的专用管理员。保存不启动 AI，变更随下一次正常输入传达；停用仅解除绑定，保留组、会话与请求。设置独立于提交图读取，仓库读取失败仍可进入并重试。支持 Codex 或 Claude，已有负责人的大脑沿用本人会话设置。 Git 页在当前工作区标签内保留已读快照、分页、筛选与滚动，切回不重新扫描，也不定时扫描。顶部显示读取时间；“更新视图”重新读取，“拉取远端”才执行 fetch。修改 Git 设置或工作目录后旧快照失效，关闭标签或重载网页后首次进入重新读取。
+- **通知按需唤醒**：合并中、等拍板只记台账；普通合并成功留作待阅。确实要等合入后继续时，AI 用 `crew git request "合入后跑集成验收并交付" --blocking`（Codex 的 `request` 使用 `data.blocking=true`）；只有这种成功和拒绝阻塞会唤醒提出者。比如“只改一行文档，已经收尾”不标记；“合入后还要验证集成并写最终结论”才标记。AI 撤回自己的待办不再启动自身对话；用户的完成、取消、撤销仍按原流程送回。
 - **守卫**：检查黑名单、设备借用、文件归属和 Git 管理规则。Claude 使用插件 hooks，Codex 接入原生 shell / apply_patch 执行前 hook，覆盖边界见 [Codex 接入说明](docs/CODEX_INTEGRATION.md)。
 - **远程与用量**：QQ 私聊可按项目和 leader 继续对话、答复拍板、查看待办；用量页按组、会话、日期和模型汇总 Claude / Codex token，并按价格表折算参考金额。
 
@@ -105,7 +106,7 @@ Claude 协作会话建议统一权限模式；`/crew:trust` 用于 Claude 的工
 | 检查 Claude Code / Codex 更新 | 桌面首页或应用菜单打开“工具与更新”；忙时可排队，工具空闲并通过安装来源检查后才更新；自动更新默认关闭 |
 | 调整 leader 优先级 | 右键 leader，可标第 1～3 优先；优先组置顶，普通组可调整顺序 |
 | 看 Git 分支和提交关系 | 网页左栏"Git"；首次选择 base / stable 后启用，可查看提交树、分支检查、worktree、负责会话与 GitHub PR / CI，手动"刷新（fetch）"更新远端引用 |
-| 把提交交给 Git 管理员 | 开工前 `crew git policy` 看规则，做完提交自己的分支后 `crew git request "<做了什么、测过什么、有没有要用户亲手验收的>"`；Git 页面看请求状态，点“和 git 管理员聊”进对话 |
+| 把提交交给 Git 管理员 | 开工前 `crew git policy` 看规则，做完提交自己的分支后 `crew git request "<做了什么、测过什么、有没有要用户亲手验收的>" [--blocking]`；Git 页面看请求状态，点“和 git 管理员聊”进对话 |
 | 看用量 | 网页"用量"，或 `crew usage summary`、`crew usage sessions`、`crew usage codex` |
 | 看上下文、手动压缩 | 上下文占用达到 50% 显示橙圈，80% 变红；悬停看已用与上限。后台空闲会话点圈旁“压缩”并确认，leader 模型菜单任何占比都能压缩；VS Code 会话去那边输入 `/compact` |
 | 压缩整个部门 | 右键 leader →“压缩整个部门…”：预览 leader 和仍在组里成员的总对话与各目标上下文（含已结束目标），勾选后用原生命令压缩（Claude `/compact`、Codex 线程压缩）。不改目标状态、报告和验收，不复工；正在工作、外部运行或无法确认独占的项列出原因、不强停。结果逐项保存，关闭再打开可看，服务重启时未完成项标为中断；失败项重新预览后再选 |
@@ -166,8 +167,8 @@ QQ 命令不分大小写、忽略首尾空白：`/help`（`/h`）帮助，`/proj
 | `crew web --open` | 按当前目录打开工作区，已有服务时复用 |
 | `crew git enable [--base 分支] [--stable 分支] [--runtime codex\|claude]` / `crew git disable` / `crew git status` | 启用并自动开 Git 管理员 / 收掉管理员的组并停用 / 查看配置；base 自动依次选 develop、dev、main、master，stable 选与 base 不同的 master 或 main |
 | `crew git policy` / `crew git policy --set "<正文>"` | 看分支规则全文 / Git 管理员设置规则 |
-| `crew git request [--branch 分支] "<说明>"` / `crew git requests [--all]` | 本项目任何会话（含没收编的）提交合并请求（默认当前分支） / 看活动队列或全部请求 |
-| `crew git resolve <编号> <merged\|rejected\|waiting_user\|merging> --note "<说明>" [--pr <号>]` | Git 管理员更新请求状态并给提出者排消息 |
+| `crew git request [--branch 分支] [--blocking] "<说明>"` / `crew git requests [--all]` | 本项目任何会话（含没收编的）提交合并请求（默认当前分支；确需合入后继续时显式加 `--blocking`） / 看活动队列或全部请求 |
+| `crew git resolve <编号> <merged\|rejected\|waiting_user\|merging> --note "<说明>" [--pr <号>]` | Git 管理员更新台账；中间状态静默，成功按等待标记保存待阅或接续，拒绝仍通知 |
 | `crew autostart install\|status\|uninstall` | 当前用户登录后隐藏运行，不弹浏览器 |
 | `crew usage scan\|summary\|sessions\|daily\|codex\|agents\|models\|export` | 用量 |
 | `crew events` / `crew doctor` | 事件流水 / 自检 |

@@ -106,6 +106,7 @@ def parser():
     a = c.add_parser("request")
     a.add_argument("description")
     a.add_argument("--branch")
+    a.add_argument('--blocking', action='store_true', help='确实在等合并后继续工作；成功后唤醒提出者，否则成功仅记入待阅记录')
     c.add_parser("requests").add_argument("--all", action="store_true")
     a = c.add_parser("resolve")
     a.add_argument("id", type=int)
@@ -435,11 +436,11 @@ def _emit(value, as_json=False, command=None, channel_card=None):
             print(value["policy"] if value["policy"] is not None else "git 管理员还没写分支规则，开工前先问它")
         elif "request" in value:
             item = value["request"]
-            print("合并请求 #%s · %s · %s\n%s" % (item["id"], item["status"], item["branch"], item["note"] or item["description"]))
+            print("合并请求 #%s · %s · %s%s\n%s" % (item["id"], item["status"], item["branch"], " · 合并后继续" if item.get("blocking") else "", item["note"] or item["description"]))
         elif "requests" in value:
             print("\n".join("#%s · %s · %s · %s · PR %s\n%s" %
                             (item["id"], item["status"], item["branch"], item["requester_name"],
-                             item["pr_number"] if item["pr_number"] is not None else "-", item["description"])
+                             item["pr_number"] if item["pr_number"] is not None else "-", ("[合并后继续] " if item.get("blocking") else "") + item["description"])
                             for item in value["requests"]) if value["requests"] else "暂无合并请求")
         elif value["enabled"]:
             print("Git 管理已启用 · base: %s · stable: %s" % (value["base"], value["stable"] or "未设置"))
@@ -803,7 +804,7 @@ def execute(conn, args, cwd, agents_provider):
             branch = git_details(cwd)[1] if args.branch is None else args.branch
             sid = _session_id(args)
             return {"request": board.request_git_merge(conn, p, sid, branch, args.description,
-                                                       title=vscode_sessions.session_title(CLAUDE_PROJECTS, sid))}
+                                                       title=vscode_sessions.session_title(CLAUDE_PROJECTS, sid), blocking=args.blocking)}
         elif args.action == "requests":
             return {"requests": board.titled_requests(board.git_requests(conn, p, args.all),
                                                       lambda sid: vscode_sessions.session_title(CLAUDE_PROJECTS, sid))}

@@ -68,6 +68,15 @@ class CodexGitToolsTests(unittest.TestCase):
         self.assertTrue(any('已更新为 merged' in handoff['body'] for handoff in board.handoffs(self.conn, 'member')))
         for name, count in counts.items():self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM ' + name).fetchone()[0], count)
 
+    def test_codex_request_explicitly_marks_a_real_merge_dependency(self):
+        self.enable()
+        item = self.call('member', 'request', {'description': 'After merge, continue verification', 'blocking': True})['request']
+        self.assertEqual(item['blocking'], 1)
+        self.call('admin', 'resolve', {'id': item['id'], 'status': 'merged', 'note': 'Ready to continue'})
+        self.assertEqual(self.conn.execute('SELECT request_id FROM git_result_handoffs').fetchone()[0], item['id'])
+        error = self.call('member', 'request', {'description': 'Invalid intent', 'blocking': 'true'}, success=False)
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM git_merge_requests').fetchone()[0], 1)
+
     def test_other_groups_leaders_and_members_cannot_change_policy_or_resolve(self):
         self.enable()
         self.call('admin', 'policy', {'text': 'Original policy'})

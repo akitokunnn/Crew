@@ -418,7 +418,8 @@ class Service:
     def deliver_git_results(self, conn):
         pending = conn.execute(
             "SELECT q.*,h.body FROM git_result_handoffs q JOIN handoffs h ON h.id=q.handoff_id "
-            "WHERE NOT EXISTS(SELECT 1 FROM handoff_deliveries d "
+            "JOIN git_merge_requests r ON r.id=q.request_id AND r.project=h.project AND r.session_id=q.session_id "
+            "WHERE (r.status='rejected' OR (r.status='merged' AND r.blocking=1)) AND NOT EXISTS(SELECT 1 FROM handoff_deliveries d "
             "WHERE d.handoff_id=q.handoff_id AND d.session_id=q.session_id) ORDER BY q.handoff_id").fetchall()
         for result in pending:
             sid = result['session_id']

@@ -61,6 +61,10 @@ def deliver(controller, conn):
             continue
         if link['kind'] == 'todo' and item['status'] == 'open' and version == 1:
             continue
+        if link['kind'] == 'todo' and item['status'] == 'withdrawn' and item['resolved_by'] == item['session_id']:
+            # An AI withdrawal is its own decision, never a new human answer.
+            _mark_delivered(conn, link, version)
+            continue
         goal = goals.get(conn, link['goal_id'])
         if goal['current_round'] != link['round'] or goal['requirement_version'] != link['requirement_version'] or goal['status'] in goals.TERMINAL:
             with goals.transaction(conn):
@@ -94,10 +98,11 @@ def deliver(controller, conn):
             detail = (prior.get('error') or 'NativeReceiptUnknown')+': '+(prior.get('detail') or '原生接收未确认，请先核对会话')
             _notice(controller,execution['id'],identity,'人工答复接收状态未确认，已保留，等待核对。'+detail[:500])
             continue
+        source = 'crew' if link['kind'] == 'todo' and item['resolved_by'] != board.HUMAN else 'human'
         if goal['status'] == 'waiting_user':
-            goals.resume(conn, goal['id'], actor=board.HUMAN)
+            goals.resume(conn, goal['id'], actor=item['resolved_by'] if source == 'crew' else board.HUMAN)
         try:
-            result = controller.send(goal['id'], execution['session_id'], text, identity=identity, source='human')
+            result = controller.send(goal['id'], execution['session_id'], text, identity=identity, source=source)
             if result.get('accepted') is not True:
                 raise board.Conflict('NativeReceiptUnknown: 原生接收未确认，请先核对会话')
         except (board.BoardError,codex_client.CodexError,OSError) as error:

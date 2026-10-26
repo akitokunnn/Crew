@@ -232,6 +232,7 @@ CREATE TABLE IF NOT EXISTS git_merge_requests (
     status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'merging', 'waiting_user', 'merged', 'rejected')),
     pr_number INTEGER,
     note TEXT,
+    blocking INTEGER NOT NULL DEFAULT 0 CHECK (blocking IN (0, 1)),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -481,7 +482,8 @@ CREATE TABLE IF NOT EXISTS handoff_deliveries (
 CREATE TABLE IF NOT EXISTS git_result_handoffs (
     handoff_id INTEGER PRIMARY KEY REFERENCES handoffs(id),
     session_id TEXT NOT NULL REFERENCES sessions(session_id),
-    admin_session_id TEXT NOT NULL REFERENCES sessions(session_id)
+    admin_session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    request_id INTEGER REFERENCES git_merge_requests(id)
 );
 
 CREATE TABLE IF NOT EXISTS reports (

@@ -96,6 +96,14 @@ class GitCommandTests(CoreCase):
         self.assertEqual(config["base"], "topic")
         self.assertEqual(len(self.plans), 1)
 
+    def test_cli_request_can_explicitly_wait_for_merge_before_follow_up_work(self):
+        admin = self.enable()
+        self.assert_cli(['git', 'request', 'After merge, verify the integration', '--blocking'])
+        item = board.git_requests(self.conn, 'demo')[0]
+        self.assertEqual(item['blocking'], 1)
+        self.assert_cli(['git', 'resolve', str(item['id']), 'merged', '--note', 'Ready for verification'], sid=admin)
+        self.assertEqual(self.conn.execute('SELECT request_id FROM git_result_handoffs').fetchone()[0], item['id'])
+
     def test_codex_only_git_administrator_reads_both_rules_without_claude_flags(self):
         settings.save(self.conn, {'default': {'runtime': 'codex', 'model': None, 'effort': None}})
         with mock.patch.object(spawn.codex_client, 'command', return_value=['codex.exe', 'app-server']):
@@ -266,7 +274,7 @@ class GitCommandTests(CoreCase):
         self.assert_cli(["git", "resolve", "1", "waiting_user", "--note", "等待设备验收"], sid=administrator)
         request = board.git_requests(self.conn, "demo")[0]
         self.assertEqual((request["status"], request["pr_number"], request["note"]), ("waiting_user", 42, "等待设备验收"))
-        self.assertEqual(len(board.handoffs(self.conn, "s1")), 2)
+        self.assertEqual(len(board.handoffs(self.conn, "s1")), 0)
         delivered = board.deliver(self.conn, "s1", now=NOW)["handoffs"]
         self.assertTrue(all("合并请求 #1" in item["body"] for item in delivered))
         self.assertEqual(board.handoffs(self.conn, "s1"), [])
@@ -280,8 +288,9 @@ class GitCommandTests(CoreCase):
         board.join(self.conn, "lead", "demo", "feature-lead", self.root, self.root, "topic", role="leader", now=NOW)
         self.assert_cli(["git", "request", "leader提交"], sid="lead")
         self.assert_cli(["git", "resolve", "1", "rejected", "--note", "范围不符"], sid=administrator)
-        notice = board.pending_notices(self.conn, "lead")[0]
-        self.assertIn("rejected", notice["text"])
+        self.assertEqual(board.pending_notices(self.conn, "lead"), [])
+        self.assertIn("rejected", board.handoffs(self.conn, "lead")[0]["body"])
+        self.assertEqual(self.conn.execute("SELECT session_id FROM git_result_handoffs").fetchone()[0], "lead")
         self.assert_cli(["git", "request", "新的请求"])
         self.assertEqual([item["id"] for item in board.git_requests(self.conn, "demo", all=True)], [2, 1])
         self.assertNotIn("leader提交", self.assert_cli(["git", "requests"])[1])
@@ -585,9 +594,25 @@ class GitHttpTests(ShellFixture, unittest.TestCase):
         board.update_cc_name(self.conn, "s3", "cc-lead", now=NOW)
         self.conn.execute("INSERT INTO git_management(project,enabled_at,base,admin_session_id) VALUES(?,?,?,?)",
                           ("demo", NOW, "develop", "s3"))
-        request = board.request_git_merge(self.conn, "demo", "s1", "topic", "tests passed", title=None, now=NOW)
+        request = board.request_git_merge(self.conn, "demo", "s1", "topic", "tests passed", title=None, blocking=True, now=NOW)
         board.resolve_git_request(self.conn, "demo", "s3", request["id"], "merged", "CI passed", now=NOW)
         return board.handoffs(self.conn, "s1")[0]
+
+    def test_actionable_results_share_delivery_for_leaders_members_and_both_carriers(self):
+        service = self.server.service
+        self.conn.execute("INSERT INTO git_management(project,enabled_at,base,admin_session_id) VALUES(?,?,?,?)", ('demo', NOW, 'develop', 's3'))
+        board.join(self.conn, 'result-lead', 'demo', 'Result chief', self.project, self.project, 'topic', role='leader', now=NOW)
+        for sid in ('s1', 'result-lead'):
+            for runtime in ('claude', 'codex'):
+                with self.subTest(sid=sid, runtime=runtime), service.write_lock:
+                    runtimes.set(self.conn, sid, runtime)
+                    request = board.request_git_merge(self.conn, 'demo', sid, 'topic', 'Continue after merge', title=None, blocking=True, now=NOW)
+                    board.resolve_git_request(self.conn, 'demo', 's3', request['id'], 'merged', 'Continue verification', now=NOW)
+                    with mock.patch.object(service.chat, 'running', return_value=True), mock.patch.object(service.chat, 'busy', return_value=False), \
+                            mock.patch.object(service.chat, 'send') as send, mock.patch.object(service.chat, 'wake') as wake:
+                        service.deliver_git_results(self.conn); service.deliver_git_results(self.conn)
+                        send.assert_called_once(); wake.assert_not_called()
+                        self.assertEqual(send.call_args.args[0]['session_id'], sid)
 
     def test_idle_background_result_is_sent_once(self):
         service = self.server.service

@@ -49,6 +49,24 @@ class GoalLinkTests(RuntimeFixture):
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM leader_notices').fetchone()[0],0)
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM handoffs').fetchone()[0],0)
 
+    def test_own_todo_withdrawal_is_not_replayed_as_a_human_answer(self):
+        target, execution = self.target()
+        item = self.action(execution)
+        todo.withdraw(self.conn, execution['session_id'], item['id'], 'Solved by the current AI')
+        self.deliver(); self.deliver()
+        self.controller.send.assert_not_called()
+        self.assertEqual(goal_links.get(self.conn, 'todo', item['id'])['delivered_version'], 2)
+        self.assert_no_global_mail()
+
+    def test_leader_withdrawal_of_a_members_todo_keeps_its_real_ai_origin(self):
+        target, execution = self.target()
+        item = self.action(execution)
+        todo.withdraw(self.conn, 'chief-id', item['id'], 'Use the agreed alternative')
+        self.deliver()
+        self.controller.send.assert_called_once()
+        self.assertEqual(self.controller.send.call_args.kwargs['source'], 'crew')
+        self.assert_no_global_mail()
+
     def test_answer_routes_only_to_original_goal_and_person_once(self):
         original,execution = self.target()
         self.target('同一个人的另一个目标')
