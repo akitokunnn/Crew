@@ -100,8 +100,8 @@ test("collected offline people can start a conversation while known external ses
 
 test("goal status controls composer access without promising discussion around a manual pause", () => {
   const {ui}=harness(),person={web_chat:false,running:true,where:"vscode"};
-  for(const status of ["paused","pausing","completed","failed","cancelled","awaiting_acceptance"]){const access=ui.chatAccess(person,{status});assert.equal(access.readonly,true);assert.match(access.readonlyReason,["paused","pausing"].includes(status)?/明确恢复/:status==="awaiting_acceptance"?/验收/:/总会话.*再开一轮/);}
-  for(const status of ["queued","running","waiting_user"])assert.deepEqual(plain(ui.chatAccess(person,{status})),{readonly:false});
+  for(const status of ["paused","pausing","cancelled"]){const access=ui.chatAccess(person,{status});assert.equal(access.readonly,true);assert.match(access.readonlyReason,status==="cancelled"?/再开一轮/:/明确恢复/);}
+  for(const status of ["queued","running","waiting_user","completed","failed","awaiting_acceptance"])assert.deepEqual(plain(ui.chatAccess(person,{status})),{readonly:false});
 });
 
 test("only a queued goal without native execution claims it has not started", () => {

@@ -441,7 +441,7 @@
   }
   function chatAccess(item, goal) {
     if (goal != null) {
-      const reasons = {paused:"该目标已暂停，仅供查阅。请明确恢复后继续工作。",pausing:"目标正在暂停，仅供查阅。等待停止后，明确恢复才能继续。",awaiting_acceptance:"该目标待验收，仅供查阅。请查看交付报告，选择验收通过或需要修改。",completed:"本轮已结束，仅供查阅。可回总会话讨论，或再开一轮。",failed:"本轮未通过，仅供查阅。可回总会话讨论，或再开一轮。",cancelled:"本轮已取消，仅供查阅。可回总会话讨论，或再开一轮。"};
+      const reasons = {paused:"该目标已暂停，仅供查阅。请明确恢复后继续工作。",pausing:"目标正在暂停，仅供查阅。等待停止后，明确恢复才能继续。",cancelled:"本轮已取消，仅供查阅。可回总会话讨论，或再开一轮。"};
       return reasons[goal.status] ? {readonly:true,readonlyReason:reasons[goal.status]} : {readonly:false};
     }
     const bound = item.active_goal_id == null ? null : (state?.goals || []).find(goal => String(goal.id) === String(item.active_goal_id));

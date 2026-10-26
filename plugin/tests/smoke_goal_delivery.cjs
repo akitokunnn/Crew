@@ -54,6 +54,25 @@ async function route(request,response){
     return response.end(`<!doctype html><h1>${goal.title}</h1><p>报告 ${report.id} · 第 ${report.round} 轮 · 需求 v${report.requirement_version}</p><h2>example</h2><table><tr><th>输入</th><td>A 停顿后 B 接短句</td></tr><tr><th>实际</th><td>识别为 B</td></tr></table>${Array.from({length:60},(_,index)=>`<p>复测记录第 ${index+1} 段：同一录音逐条对照。</p>`).join('')}`);
   }
   if(name==='/api/comments')return json(response,{comments:[]});
+  if(name==='/api/goals/action'&&body?.action==='reject'){
+    const detail=details.get(body.goal_id);
+    assert.equal(detail.goal.status,'awaiting_acceptance');assert(body.note.trim());
+    detail.goal.status='failed';detail.goal.version++;
+    detail.acceptance_review={round:detail.goal.current_round,accepted:false,note:body.note,report_id:detail.reports[0].id};
+    return json(response,{goal:detail.goal,acceptance_review:detail.acceptance_review});
+  }
+  if(name==='/api/chat/send'&&gid){
+    const detail=details.get(gid),goal=detail.goal;
+    assert(['completed','failed','awaiting_acceptance'].includes(goal.status));
+    goal.current_round++;goal.requirement_version++;goal.version++;goal.status='running';
+    goal.request+='\n'+body.text;
+    detail.previous_acceptance_review=detail.acceptance_review;detail.acceptance_review=null;
+    for(const report of detail.reports)report.current=false;
+    detail.executions.push(...executions('followup-'+gid,sid,goal.current_round,goal.requirement_version,'running'));
+    const {value}=journal(sid,gid);value.busy=true;
+    value.events.push({seq:1,type:'message',id:body.message_id,text:body.text,source:'human',at:new Date().toISOString()});
+    return json(response,{ok:true,accepted:true,message_id:body.message_id,goal_id:gid,execution_id:value.execution_id});
+  }
   return json(response,{error:'未实现 fixture API: '+name},404);
 }
 const run=async code=>{const result=await win.webContents.executeJavaScript(`(async()=>{try{return{value:await (${code})};}catch(error){return{error:error.stack};}})()`);if(result.error)throw Error(result.error);return result.value;};
@@ -149,7 +168,7 @@ const listCards=`[...document.querySelectorAll('#goal-head .goal-card')].map(car
   await click('[data-goal-act=close-report]');await wait('!document.querySelector(".goal-report-reader") && !!document.querySelector("[data-goal-detail=goal-d] .goal-delivery")');
   const closedHead=await text('#chat-head'),closedHint=await text('#goal-chat-hint');
   assert(!closedHead.includes('本目标尚未启动'),closedHead);assert(!closedHint.includes('在此发送'),closedHint);assert(!closedHint.includes('开始本任务'),closedHint);
-  assert((await text('.readonly-note')).includes('本轮已结束'));await shot('07-已结束目标无矛盾提示-宽.png');
+  assert(await run('!!document.querySelector("#chat-host textarea") && !document.querySelector("#chat-host textarea").disabled'));assert((await text('.goal-followup-hint')).includes('继续聊'));await shot('07-已结束目标可继续聊-宽.png');
   steps.push('从「全部 → 目标」跨组查看交付；已结束且无执行元数据的目标不再显示「本目标尚未启动」「在此发送会开始任务」');
 
   await click(`[data-act=leader][data-id="${voice.session_id}"]`);await click('[data-goal-act=general]');await wait('!!document.querySelector("#chat-host textarea")');
@@ -293,6 +312,37 @@ const listCards=`[...document.querySelectorAll('#goal-head .goal-card')].map(car
 
   const forbidden=calls.filter(call=>['/api/chat/send','/api/goals/action','/api/goals/agent','/api/goals/create','/api/spawn','/api/chat/interrupt','/api/session/stop'].includes(call.name)||/wake|spawn|start/.test(call.name));
   assert.deepEqual(forbidden,[]);const posts=[...new Set(calls.filter(call=>call.method==='POST').map(call=>call.name))];assert(posts.every(name=>name==='/api/chat/read'),posts.join(','));
+  // A deliberate rejection leaves the task's composer available. Only sending
+  // the user's follow-up starts the next round, and old delivery stays readable.
+  for(const initialStatus of ['awaiting_acceptance','completed']){
+    const id='followup-'+initialStatus;
+    addGoal({id,leader_session_id:voice.session_id,title:'报告收尾修改',request:'完成交付并保留证据',status:initialStatus,minutes:0},
+      {executions:executions('old-'+id,voice.session_id,1,1,'completed'),reports:[goal=>reportEntry(goal,'old-report-'+id,1,1,true,initialStatus,'原始报告结论',{passed:2,failed:0,unverified:0,simulated:0},[],0)]});
+    const before=calls.filter(call=>call.name==='/api/chat/send').length;
+    await open(1440,900,`leader=${voice.session_id}&goal=${id}`);
+    await wait('!!document.querySelector("#chat-host textarea") && !!document.querySelector("[data-goal-detail]")');
+    assert.equal(calls.filter(call=>call.name==='/api/chat/send').length,before,'opening does not send');
+    if(initialStatus==='awaiting_acceptance'){
+      await click('[data-action=reject]');await wait('!!document.querySelector("[data-goal-confirm=reject]")');
+      await fill('[data-goal-confirm] textarea','报告收尾说明不完整，请补齐实际复测证据');
+      await click('[data-goal-confirm] button[type=submit]');
+      await wait('!document.querySelector("[data-goal-confirm]") && !!document.querySelector("#chat-host textarea")');
+      assert.equal(details.get(id).goal.status,'failed');
+      assert((await text('.goal-review')).includes('报告收尾说明不完整'));
+      await shot('20-退回修改后仍可继续聊.png');
+    }
+    await fill('#chat-host textarea','请继续修改报告结尾，说明收尾验证的实际结果。');
+    await wait('!!document.querySelector("#chat-host .send:not([disabled])")');
+    await click('#chat-host .send');
+    await wait(`document.querySelector("[data-goal-detail='${id}'] .goal-version").textContent.includes("2")`);
+    assert.equal(details.get(id).goal.current_round,2);
+    assert.equal(calls.filter(call=>call.name==='/api/chat/send').length,before+1);
+    assert(await run('!!document.querySelector("#chat-host textarea")'));
+    if(initialStatus==='awaiting_acceptance')assert((await text('.goal-review')).includes('第 1 轮 · 你退回修改'));
+    assert((await text('.goal-delivery-gap')).includes('历史报告'));
+    await shot('21-继续原任务-'+initialStatus+'.png');
+  }
+  steps.push('待验收任务退回后可直接继续输入；已完成任务也可直接聊收尾修改；明确发送后同一任务进入新一轮，旧报告和退回理由仍可查阅');
   assert(calls.filter(call=>call.name==='/api/goals/report').every(call=>details.get(call.query.goal_id)?.reports.some(item=>item.id===call.query.report_id)));
   assert.equal(errors.length,0,errors.join('\n'));
   const evidence={ok:true,scope:'real Electron renderer with in-memory loopback fixtures; no model, production HOME, Crew service or user data',viewports,steps,shots,compact,narrow,keyboard,backgroundHeads,compactHeaders,selected,forbiddenCalls:forbidden,postEndpoints:posts,

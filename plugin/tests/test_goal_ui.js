@@ -63,6 +63,22 @@ test("cancel needs explicit confirmation and reject requires a preserved human n
   await h.submit(form);assert(!h.calls.some(call=>call.data));assert(error.textContent.includes("修改"));form.elements.note.value="缺少录音对照证据";await h.submit(form);assert.deepEqual(JSON.parse(JSON.stringify(h.calls.find(call=>call.data).data)),{goal_id:"a",action:"reject",version:1,note:"缺少录音对照证据"});
 });
 
+test("delivered tasks invite direct follow-up and a new round keeps the earlier human review visible",async()=>{
+  const h=harness(async()=>({goal:{...h.state.goals[0],status:"running",current_round:2},
+    context:{items:[],manifest:{}},reports:[],acceptance_review:null,
+    previous_acceptance_review:{round:1,accepted:false,note:"报告结尾缺少复测证据"}}));
+  h.client.sync("leader","a");await tick();
+  assert(h.client.groupMarkup("leader").includes("第 1 轮 · 你退回修改"));
+  assert(h.client.groupMarkup("leader").includes("报告结尾缺少复测证据"));
+  for(const status of ["completed","failed","awaiting_acceptance"]){
+    h.state.goals[0].status=status;h.state.goals[0].version++;
+    h.client.invalidate();const markup=h.client.groupMarkup("leader");
+    assert(markup.includes("直接在下方继续聊"),status);
+    assert(markup.includes("已有报告与验收记录保留"));
+  }
+  assert(h.calls.every(call=>call.data===undefined));
+});
+
 test("human acceptance is displayed separately from the unchanged AI report status",async()=>{
   const h=harness(async()=>({goal:{...h.state.goals[0],status:"failed"},acceptance_review:{accepted:false,note:"缺少同一录音的对照",actor:"human"},reports:[{id:"r",title:"原始报告",round:1,requirement_version:1,version:1,current:true,status:"awaiting_acceptance",summary:"AI 原始结论",acceptance_counts:{passed:1,failed:0,unverified:0,simulated:0},unresolved:[]}],context:{items:[],manifest:{}}}));h.client.sync("leader","a");await tick();const markup=h.client.groupMarkup("leader");assert(markup.includes("你退回修改"));assert(markup.includes("缺少同一录音的对照"));assert(markup.includes('data-action="reopen"'));await h.click("drawer",{kind:"reports"});assert(h.drawer.innerHTML.includes("原始报告保持生成时的内容和状态"));assert(h.drawer.innerHTML.includes("AI 报告结果：等待用户验收"));
 });
