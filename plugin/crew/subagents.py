@@ -35,4 +35,5 @@ def snapshot(tasks, active_root, active_runtime='codex'):
 
 
 def title(text):
-    return next((line.strip()[:100] for line in (text or '').splitlines() if line.strip()), '')
+    name = ' '.join((text or '').split())
+    return name if len(name) <= 48 else name[:47] + '…'

@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
-const { app, ipcMain, dialog, Menu, webContents, nativeTheme, BrowserWindow } = require('electron');
+const { app, ipcMain, dialog, Menu, webContents, nativeTheme } = require('electron');
 const desktop = path.resolve(__dirname, '..');
 const core = require(path.join(desktop, 'src/core.cjs'));
 const { ToolUpdates } = require(path.join(desktop, 'src/tool-updates.cjs'));
@@ -198,25 +198,8 @@ app.once('browser-window-created', (_event, win) => {
       evidence.checks.push('each project keeps the same renderer and timeOrigin, proving switching does not reload');
       evidence.checks.push('project renderers have neither Node nor the privileged home filesystem bridge');
       await capture('07-first-project-chat', first);
-      const documentSeed=`import sys\nfrom pathlib import Path\nfrom contextlib import closing\nsys.path.insert(0,sys.argv[1])\nfrom crew import documents,store\nhome=Path(sys.argv[2]);root=Path(sys.argv[3]);file=root/'integration-guide.md';file.write_text('Integrated workspace document',encoding='utf-8')\nwith closing(store.connect(home)) as conn:documents.register(conn,'tab-qa-leader-0',str(file),title='整合资料',summary='真实隔离项目资料',kind='guide',source='manual')\n`;
-      const documentResult=spawnSync('python',['-',path.join(desktop,'../plugin'),homeDirectory,projects[0].root],{input:documentSeed,encoding:'utf8',windowsHide:true});
-      assert.equal(documentResult.status,0,documentResult.stderr);
-      await select(firstTab.id);
-      await first.executeJavaScript('document.querySelector("[data-view=documents]").click()');
-      await until(()=>first.executeJavaScript('document.querySelector(".project-document-grid .doc-title")?.textContent==="整合资料"'),'project documents from real API');
-      // Hidden native views can return their previous compositor frame. Use an
-      // independent offscreen renderer for a fresh visual of the same real page.
-      const documentPreview=new BrowserWindow({show:false,width:1320,height:900,webPreferences:{offscreen:true,contextIsolation:true,sandbox:true,nodeIntegration:false,backgroundThrottling:false}});
-      try {
-        await documentPreview.loadURL(state.service.url+'/?project='+encodeURIComponent(projects[0].name)+'#documents');
-        await until(()=>documentPreview.webContents.executeJavaScript('document.querySelector(".project-document-grid .doc-title")?.textContent==="整合资料"'),'offscreen project documents');
-        await capture('07-project-documents',documentPreview.webContents);
-      } finally {documentPreview.destroy();}
-      await first.executeJavaScript('document.querySelector(".project-document-grid [data-doc-act=pin]").click()');
-      await until(()=>first.executeJavaScript('document.querySelector(".project-document-grid [data-doc-act=pin]").getAttribute("aria-pressed")==="true"'),'document pin receipt');
-      await first.executeJavaScript('document.querySelector(".project-document-grid [data-doc-act=source]").click()');
-      await until(()=>first.executeJavaScript('document.querySelector(".composer textarea")?.value==="仅属项目 0"'),'source chat retains its draft');
-      evidence.checks.push('project documents load and pin through real API, then return to the source chat with its draft preserved');
+      assert(await first.executeJavaScript('!document.querySelector("[data-view=documents]")'), 'project document overview stays removed');
+      evidence.checks.push('workspace navigation keeps the removed project document overview absent');
       const count = (await tabs()).length;
       await home(); await js(`window.crewDesktop.openProject(${JSON.stringify(projects[0].name)})`);
       assert.equal((await tabs()).length, count); assert.equal(projectContents(projects[0].name).id, first.id);
