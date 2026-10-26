@@ -104,6 +104,44 @@ class UsageFixture:
 
 
 class TestUsage(UsageFixture, unittest.TestCase):
+    def test_ephemeral_dispatch_keeps_usage_without_matching_another_native_session(self):
+        self.board_session()
+        self.rollout('unrelated', seconds=1)
+        record = {**self.run_record(), 'ephemeral': True,
+                  'usage': {'input_tokens': 1200, 'cached_input_tokens': 1000,
+                            'output_tokens': 100, 'reasoning_output_tokens': 40}}
+        self.write(self.runs, [record])
+        self.scan(); self.scan()
+        task = next(row for row in usage.codex_tasks(self.conn, None, None) if row['run_id'])
+        self.assertIsNone(task['rollout_id'])
+        self.assertEqual((task['total_tokens'], task['reasoning_tokens']), (1300, 40))
+        report = usage.summary(self.conn, None, None, PRICES)['codex']
+        self.assertEqual((report['total_tokens'], report['rollouts'], report['runs']), (4800, 1, 2))
+        self.assertEqual(usage.by_session(self.conn, None, None, PRICES)[0]['codex_tokens'], 1300)
+        self.assertEqual(sum(row['total_tokens'] for row in usage.by_model(self.conn, None, None, PRICES)
+                             if row['source'] == 'codex'), 4800)
+
+    def test_ephemeral_dispatch_without_usage_is_unknown_and_keeps_original_failure(self):
+        self.board_session()
+        self.write(self.runs, [{**self.run_record(), 'ephemeral': True, 'exit_code': 7, 'usage': None}])
+        self.scan()
+        task = usage.codex_tasks(self.conn, None, None)[0]
+        self.assertIsNone(task['total_tokens'])
+        self.assertEqual((task['status'], task['exit_code']), ('failed', 7))
+        self.assertEqual(usage.summary(self.conn, None, None, PRICES)['codex']['rollouts'], 0)
+        self.assertEqual(usage.by_session(self.conn, None, None, PRICES)[0]['codex_runs'], 1)
+
+    def test_legacy_dispatch_schema_upgrades_in_place_and_reconnect_is_idempotent(self):
+        self.write(self.runs, [self.run_record()]); self.scan()
+        self.conn.execute('ALTER TABLE codex_runs DROP COLUMN ephemeral')
+        self.conn.execute('ALTER TABLE codex_runs DROP COLUMN usage_json')
+        for _ in range(2):
+            with contextlib.closing(store.connect(self.home)) as conn:
+                row = conn.execute('SELECT * FROM codex_runs').fetchone()
+                self.assertEqual(row['run_id'], 'run-one')
+                self.assertEqual(row['ephemeral'], 0)
+                self.assertIsNone(row['usage_json'])
+
     def test_scan_reserves_writer_before_reading_migration_version(self):
         outcomes = []
         original = usage._backfill_peer_prompts

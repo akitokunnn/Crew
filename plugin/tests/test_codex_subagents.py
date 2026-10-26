@@ -131,7 +131,7 @@ class NativeChildHttpTests(unittest.TestCase):
             self.assertEqual(len(board.sessions(conn, 'demo')), before)
         replayed = chat.Journal(running.journal.path)
         self.assertEqual({task['status'] for task in replayed.subagents.values()}, set(tasks))
-        self.assertEqual([name for name, _ in client.calls], ['thread/start', 'turn/start'])
+        self.assertEqual([name for name, _ in client.calls], ['thread/start', 'thread/name/set', 'turn/start'])
 
     def test_member_children_stay_under_member_and_disconnect_does_not_claim_completion(self):
         self.leader('receiver')

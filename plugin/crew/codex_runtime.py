@@ -12,7 +12,7 @@ import sys
 import tempfile
 import threading
 
-from . import board, codex_client, codex_events, codex_guard, codex_subagents, codex_tools, goals, guard, install, messaging, native_approvals, rules, settings, store, trust_mode, workspace_execution
+from . import board, codex_client, codex_events, codex_guard, codex_subagents, codex_tools, codex_visibility, goals, guard, install, messaging, native_approvals, rules, settings, store, trust_mode, workspace_execution
 
 
 def process_identity(pid):
@@ -230,6 +230,8 @@ class CodexRunning:
         self._send_message, self._tool_lock = send_message, threading.RLock()
         self._tool_results, self._closing, self._compacting = {}, False, False
         self.stop_reason = None
+        self._native_archived = False
+        self._native_title = None
         self._lease = None
         self._events, self.client, self.process = None, None, None
         self._early_events = []
@@ -320,12 +322,15 @@ class CodexRunning:
             self.process = self.client.process
             self._approval_process = self.process
             if native_id:
+                if execution:
+                    codex_visibility.restore_internal(self.client, native_id)
                 result = self.client.resume_thread(native_id, **params)
             else:
-                result = self.client.start_thread(dynamicTools=codex_tools.tool_specs(), **params)
+                result = self.client.start_thread(ephemeral=False, dynamicTools=codex_tools.tool_specs(), **params)
             self.thread_id = result["thread"]["id"]
             if native_id and self.thread_id != native_id:
                 raise board.BoardError("Codex 返回了不同的恢复会话，已停止")
+            self.sync_title()
             with self.input_lock:
                 self._events = codex_events.Events(self.thread_id)
                 for task in list(self.journal.subagents.values()):
@@ -356,6 +361,20 @@ class CodexRunning:
                 self.client.close()
             self._lease.release()
             raise
+
+    def sync_title(self):
+        with closing(store.connect(self.home)) as conn:
+            session = board.session(conn, self.session_id)
+        wanted = codex_visibility.title(session)
+        if wanted == self._native_title:
+            return None
+        try:
+            codex_visibility.set_title(self.client, self.thread_id, session)
+            self._native_title = wanted
+        except (codex_client.CodexError, OSError, ValueError) as exc:
+            warning = 'Codex 会话标题同步失败：' + str(exc)
+            self.journal.emit('error', text=warning)
+            return warning
 
     def _status(self, status):
         self.journal.set_status(status)
@@ -534,6 +553,7 @@ class CodexRunning:
             return result
 
     def send(self, text, identity, display_text=None, source="human", images=None, sender=None, image_files=None):
+        self.sync_title()
         with self.input_lock:
             if self._closing or self.process.poll() is not None:
                 raise board.BoardError("Codex 会话已经离线")
@@ -690,4 +710,11 @@ class CodexRunning:
                     self._settings.notify_all()
         finally:
             if self.client is not None:
-                self.client.close()
+                try:
+                    if self.execution and not self._native_archived and not self.client.closed:
+                        self.client.request('thread/archive', {'threadId': self.thread_id}, timeout=5)
+                        self._native_archived = True
+                except (codex_client.CodexError, OSError, ValueError) as exc:
+                    self.journal.emit('error', text='Codex 内部执行归档失败：' + str(exc))
+                finally:
+                    self.client.close()

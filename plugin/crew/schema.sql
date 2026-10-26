@@ -608,7 +608,9 @@ CREATE TABLE IF NOT EXISTS codex_runs (
     started_at         TEXT NOT NULL,
     ended_at           TEXT,
     exit_code          INTEGER,
-    rollout_id         TEXT                -- matched codex_sessions row
+    rollout_id         TEXT,               -- matched codex_sessions row
+    ephemeral          INTEGER NOT NULL DEFAULT 0,
+    usage_json         TEXT                -- ephemeral exec's native turn.completed usage
 );
 
 -- One row per token_count event carrying rate_limits. Several rollouts can report in the same millisecond.
