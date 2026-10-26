@@ -20,7 +20,7 @@ TRANSITIONS = {
     'queued': {'running', 'paused', 'cancelled', 'failed'},
     'running': {'pausing', 'waiting_user', 'awaiting_acceptance', 'completed', 'failed', 'cancelled'},
     'pausing': {'paused', 'cancelled', 'failed'},
-    'paused': {'queued', 'running', 'cancelled'},
+    'paused': {'queued', 'running', 'cancelled', 'awaiting_acceptance'},
     'waiting_user': {'queued', 'running', 'paused', 'cancelled', 'failed', 'awaiting_acceptance'},
     'awaiting_acceptance': {'completed', 'failed', 'cancelled', 'paused'},
     'completed': set(), 'failed': set(), 'cancelled': set(),
@@ -300,6 +300,9 @@ def transition(conn, goal_id, status, *, actor=board.HUMAN, reason=None, expecte
         raise board.Conflict('不允许的目标状态变化：%s → %s' % (goal['status'], status))
     if status in ('queued', 'running') and goal['manual_pause']:
         raise board.Conflict('请由用户明确恢复手动暂停的目标')
+    if status == 'awaiting_acceptance' and goal['status'] == 'paused':
+        if goal['manual_pause'] or _finished_review(conn, goal) is None:
+            raise board.Conflict('仅能通过明确恢复回到当前已收尾报告的待验收状态')
     if status == 'paused' and conn.execute("SELECT 1 FROM goal_executions WHERE goal_id=? AND round=? AND status IN ('running','pausing')",
                                          (goal_id, goal['current_round'])).fetchone():
         raise board.Conflict('尚有执行未确认停止，应显示暂停中')
@@ -350,6 +353,35 @@ def request_pause(conn, goal_id, *, manual=True, actor=board.HUMAN, reason='暂�
 def confirm_paused(conn, goal_id, *, actor=None, now=None):
     # Stop confirmation is runtime bookkeeping, not a new user intent.
     return transition(conn, goal_id, 'paused', actor=actor or _row(conn, goal_id)['leader_session_id'], now=now)
+
+
+def _finished_review(conn, goal):
+    finish = get_finish(conn, goal['id'])
+    if (not finish or finish['status'] != 'finalized' or finish['outcome'] != 'awaiting_acceptance'
+            or finish['requirement_version'] != goal['requirement_version']):
+        return None
+    latest = conn.execute('SELECT id FROM goal_reports WHERE goal_id=? AND round=? AND requirement_version=? '
+                          'ORDER BY version DESC LIMIT 1',
+                          (goal['id'], goal['current_round'], goal['requirement_version'])).fetchone()
+    if latest is None or latest['id'] != finish['report_id']:
+        return None
+    report = get_report(conn, finish['report_id'])
+    validate_report(conn, goal['id'], report['data'])
+    return report
+
+
+@atomic
+def resume_review(conn, goal_id, *, actor=board.HUMAN, now=None):
+    """Explicitly restore a paused delivered round without dispatching model work."""
+    goal = _row(conn, goal_id)
+    _actor(conn, goal, actor)
+    if goal['status'] not in ('paused', 'waiting_user') or _finished_review(conn, goal) is None:
+        return None
+    if goal['manual_pause'] and actor != board.HUMAN:
+        raise board.Conflict('自动恢复不能覆盖用户暂停')
+    conn.execute('DELETE FROM goal_cancellations WHERE goal_id=?', (goal_id,))
+    conn.execute('UPDATE goals SET manual_pause=0 WHERE id=?', (goal_id,))
+    return transition(conn, goal_id, 'awaiting_acceptance', actor=actor, now=now)
 
 
 @atomic

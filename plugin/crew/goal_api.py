@@ -131,6 +131,9 @@ def post(service, conn, project, path, data):
                 raise board.Conflict('只有待开始的目标可以开始')
             control.send(identity, value['leader_session_id'], value['requirements']['request'])
         elif action == 'resume':
+            review = goals.resume_review(conn, identity)
+            if review is not None:
+                return {'goal': card(conn, review), 'resumed': 'acceptance'}
             goals.resume(conn, identity)
             finish = goals.get_finish(conn, identity)
             if finish and finish['status'] == 'pending':
