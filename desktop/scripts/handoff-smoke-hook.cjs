@@ -40,7 +40,7 @@ app.once('browser-window-created', (_event, win) => {
       throw Error('Handoff smoke wait timed out: '+label);
     }
     const wait = (contents, source) => until(() => js(contents, source), source);
-    const click = (contents, selector) => js(contents, `document.querySelector(${JSON.stringify(selector)}).click()`);
+    const click = (contents, selector) => js(contents, `(()=>{const target=document.querySelector(${JSON.stringify(selector)}),process=target.closest('.turn-process-body');if(process && !process.checkVisibility())process.previousElementSibling.click();target.click();})()`);
     async function capture(contents, name) {
       await js(contents, 'Promise.race([document.fonts.ready,new Promise(resolve=>setTimeout(resolve,1500))])');
       // Hidden child views can retain the previous compositor surface. A fully
@@ -369,6 +369,36 @@ app.once('browser-window-created', (_event, win) => {
       assert(await js(view,'document.querySelectorAll(".chat-inner .tool").length >= 18'));
       await assert.rejects(fs.access(path.join(evidence.home,'fixture-model-start-attempts.txt')),{code:'ENOENT'});
       evidence.checks.push('18 tool calls plus their outputs produce exactly one unread prose reply; opening and reading it clears the badge while preserving every tool record and never launching AI');
+      const liveTurnFile=path.join(evidence.home,'fixture-live-turn.json');
+      const liveTurn=async sid=>{await fs.writeFile(liveTurnFile+'.tmp',JSON.stringify({session_id:sid}),'utf8');await fs.rename(liveTurnFile+'.tmp',liveTurnFile);};
+      for(const [sid,label] of [['offline-claude','CC'],['handoff-codex','Codex']]) {
+        const file=path.join(evidence.home,'chat',sid+'.jsonl');
+        const original=(await fs.readFile(file,'utf8')).trim().split('\n').map(line=>JSON.parse(line));
+        let cursor=original.at(-1).seq;
+        const started=Date.now()-65000,stamp=offset=>new Date(started+offset*1000).toISOString();
+        const appendEvents=events=>fs.appendFile(file,events.map(event=>JSON.stringify({...event,seq:++cursor})).join('\n')+'\n','utf8');
+        await liveTurn(sid);await click(view,`#sidebar [data-act=leader][data-id=${sid}]`);
+        await wait(view,'!!document.querySelector("#chat-host textarea")');
+        await appendEvents([{type:'message',id:`fold-input-${sid}`,source:'human',text:'检查交付，把最终结论给我。',at:stamp(0)},
+          {type:'status',status:'working',at:stamp(1)},
+          {type:'assistant',id:`fold-process-${sid}`,at:stamp(2),content:[{type:'text',text:'我先核对改动和验收结果。'},{type:'tool_use',id:`fold-tool-${sid}`,name:'Bash',input:{command:'python verify_delivery.py'}}]}]);
+        await wait(view,`document.querySelector('[data-chat-fold="tool:fold-tool-${sid}"]')?.checkVisibility()`);
+        assert(await js(view,'document.querySelector(".chat-inner").innerText.includes("我先核对改动")'));
+        await capture(view,`15-${label}-live-process`);
+        await appendEvents([{type:'tool_result',tool_use_id:`fold-tool-${sid}`,content:'All fixture checks passed',is_error:false,at:stamp(50)},
+          {type:'assistant',id:`fold-reply-${sid}`,at:stamp(60),content:[{type:'text',text:'**交付完成。**\n\n界面已更新，相关验证通过。你可以直接验收这一版。'}]},
+          {type:'turn_result',status:'completed',success:true,at:stamp(65)},{type:'status',status:'idle',at:stamp(65)}]);
+        await liveTurn(null);
+        await wait(view,`(()=>{const button=document.querySelector('[data-chat-fold="tool:fold-tool-${sid}"]');return button && !button.checkVisibility() && button.closest('.turn-process').textContent.includes('用时 1 分 5 秒');})()`);
+        assert(await js(view,'document.querySelector(".chat-inner").innerText.includes("交付完成") && !document.querySelector(".chat-inner").innerText.includes("我先核对改动")'));
+        await click(view,'.jump');
+        await capture(view,`16-${label}-completed-reply`);
+        await click(view,`[data-chat-fold="tool:fold-tool-${sid}"]`);
+        assert(await js(view,`document.querySelector('[data-chat-fold="tool:fold-tool-${sid}"]').nextElementSibling.checkVisibility()`));
+        await capture(view,`17-${label}-expanded-process`);
+      }
+      await assert.rejects(fs.access(path.join(evidence.home,'fixture-model-start-attempts.txt')),{code:'ENOENT'});
+      evidence.checks.push('CC and Codex show live process, then fold completed steps into a measured duration above the final Markdown reply; reopening exposes the actual tool output and no native/model was launched');
       assert.deepEqual(evidence.errors,[]); evidence.ok=true;
       await fs.writeFile(path.join(output,'evidence.json'),JSON.stringify(evidence,null,2));
       app.quit();

@@ -102,7 +102,7 @@ async function click(selector){
   const side=await run(`!!document.querySelector(${JSON.stringify(selector)})?.closest("#chat-attention")`);
   if(side && !await run('document.querySelector("#chat-attention").matches(":popover-open") && !document.querySelector("#side-task-section").hidden')) await run('document.querySelector("[data-act=task-panel]").click()');
   await run('document.querySelector('+JSON.stringify(selector)+')?.scrollIntoView({block:"nearest"})');
-  await run(`(()=>{const node=document.querySelector(${JSON.stringify(selector)});if(!node)throw Error("找不到 "+${JSON.stringify(selector)});node.click();})()`);}
+  await run(`(()=>{const node=document.querySelector(${JSON.stringify(selector)});if(!node)throw Error("找不到 "+${JSON.stringify(selector)});const process=node.closest('.turn-process-body');if(process && !process.checkVisibility()){process.previousElementSibling.click();node.scrollIntoView({block:"nearest"});}node.click();})()`);}
 async function fill(selector,value){await run(`(()=>{const node=document.querySelector(${JSON.stringify(selector)});node.value=${JSON.stringify(value)};node.dispatchEvent(new Event('input',{bubbles:true}));})()`);}
 const text=selector=>run(`document.querySelector(${JSON.stringify(selector)})?.textContent ?? null`);
 async function shot(name){await sleep(160);const shot=await win.webContents.debugger.sendCommand('Page.captureScreenshot',{format:'png'});await fs.writeFile(path.join(output,name),Buffer.from(shot.data,'base64'));shots.push(name);}

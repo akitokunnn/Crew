@@ -99,6 +99,11 @@ def _fixture_state(self,*args,**kwargs):
  if (self.home/'fixture-context.json').is_file():
   for person in result['leaders']+result['members']:
    person['context']={'used':42000,'max':100000,'source':'fixture'}
+ live_turn=self.home/'fixture-live-turn.json'
+ if live_turn.is_file():
+  active=json.loads(live_turn.read_text(encoding='utf-8'))['session_id']
+  for person in result['leaders']+result['members']:
+   if person['session_id']==active:person.update(status='working',busy=True,running=True,where='bg')
  return result
 web.Service.state=_fixture_state
 _original_compact=chat.Manager.compact
