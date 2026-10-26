@@ -40,6 +40,11 @@ async function route(request,response){
   const sid=body?.session_id||url.searchParams.get('session_id'),gid=body?.goal_id||url.searchParams.get('goal_id');
   if(name==='/api/state')return json(response,{...clone(state),project:url.searchParams.has('project')?clone(state.project):null});
   if(name==='/api/runtimes')return json(response,{runtimes:catalog});
+  if(name==='/api/usage')return json(response,{tree:[{leader_session_id:voice.session_id,name:voice.name,tokens:14400,cost:0.051,share:100,codex_runs:3,codex_tokens:8500,
+    self:{tokens:3600,cost:0.01275,codex_runs:1,codex_tokens:500},members:[
+      {session_id:'cc-member',name:'Claude组员',tokens:10800,cost:0.03825,share:75,codex_runs:0,codex_tokens:0},
+      {session_id:'cx-member',name:'Codex组员',tokens:0,cost:0,share:0,codex_runs:2,codex_tokens:8000}]}],
+    daily:[{date:'2026-10-27',display_name:'Claude组员',total_tokens:10800,cost_usd:0.03825}],models:[]});
   if(name==='/api/goal'){const id=url.searchParams.get('id');if(failDetailOnce.delete(id))return json(response,{error:'隔离详情读取失败，可重试'},503);return json(response,details.get(id));}
   if(name==='/api/documents'){assert(gid,'document reads must name their task');return json(response,{documents:details.get(gid)?.documents||[]});}
   if(name==='/api/chat/history'){
@@ -409,6 +414,22 @@ const listCards=`[...document.querySelectorAll('#goal-head .goal-card')].map(car
   await shot('22-多任务推进时总对话可协调.png');
   steps.push('同一 leader 的总对话列出两个独立任务；总对话/任务草稿分开保留，暂停 A 不影响 B，总对话仍可输入且发送不会被路由到任一任务');
   assert(calls.filter(call=>call.name==='/api/goals/report').every(call=>details.get(call.query.goal_id)?.reports.some(item=>item.id===call.query.report_id)));
+  const usageMark=calls.length;
+  await open(1440,900,'usage');
+  await wait(`document.querySelector('.utable')?.textContent.includes('Claude组员')`);
+  const usageText=await text('.utable');
+  for(const part of ['Claude组员','Codex组员','Codex 8.5K','Codex 500','Codex 8K','Claude 折合','Claude 占比'])assert(usageText.includes(part),part);
+  await shot('24-组员用量按稳定身份统计.png');
+  await click('[data-act=usage-fold]');
+  assert(!(await text('.utable')).includes('Claude组员'));assert((await text('.utable')).includes('Codex 8.5K'));
+  await click('[data-act=usage-fold]');
+  await click('[data-act=usage-tab][data-tab=daily]');assert((await text('.utable')).includes('Claude组员'));
+  await click('[data-act=usage-tab][data-tab=tree]');
+  await run(`document.documentElement.dataset.theme='dark'`);
+  win.setContentSize(940,900);await sleep(200);
+  assert((await text('.utable')).includes('Codex组员'));await shot('25-组员用量窄窗深色.png');
+  assert(calls.slice(usageMark).every(call=>call.method==='GET'),'usage reads must not wake model work');
+  steps.push('用量按结构显示 Claude/Codex 组员与 leader 本身，折叠仍保留整组 Codex 合计；按天、窄窗、深色可读，读取不派发任务');
   assert.equal(errors.length,0,errors.join('\n'));
   const evidence={ok:true,scope:'real Electron renderer with in-memory loopback fixtures; no model, production HOME, Crew service or user data',viewports,steps,shots,compact,narrow,keyboard,backgroundHeads,compactHeaders,selected,forbiddenCalls:forbidden,postEndpoints:posts,
     endpoints:Object.entries(calls.reduce((count,call)=>({...count,[call.name]:(count[call.name]||0)+1}),{})),reportReads:reportCalls(calls),calls,errors,isolatedUserData:temporary};
