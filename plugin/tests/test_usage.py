@@ -435,7 +435,7 @@ class TestUsage(UsageFixture, unittest.TestCase):
         self.write(self.runs, [started])
         self.scan()
         tasks = {row["run_id"] or row["rollout_id"]: row for row in usage.codex_tasks(self.conn, None, None)}
-        self.assertEqual((tasks["run-one"]["status"], tasks["run-one"]["total_tokens"]), ("running", 3500))
+        self.assertEqual((tasks["run-one"]["status"], tasks["run-one"]["total_tokens"]), ("unknown", 3500))
         self.assertIsNone(tasks["run-one"]["ended_at"])
         self.assertIsNone(tasks["run-one"]["duration_seconds"])
         self.assertEqual((tasks["orphan"]["status"], tasks["orphan"]["last_event_at"]), ("unknown", stamp(40)))

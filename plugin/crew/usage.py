@@ -301,10 +301,12 @@ def _codex_line(conn, record, path, counts, is_header):
     _save(conn, "codex_sessions", "rollout_id", values, counts)
 
 
-def _run_line(conn, record, counts):
-    values = {key: record[key] for key in (
-        "run_id", "claude_session_id", "task_file", "workdir", "sandbox", "model", "effort", "exit_code",
-    )}
+def _run_line(conn, record, counts, runtime='codex'):
+    values = {key: record[key] for key in ('run_id', 'task_file', 'workdir', 'model', 'effort', 'exit_code')}
+    values.update(runtime=runtime, sandbox=record.get('sandbox'),
+                  claude_session_id=record.get('claude_session_id') if runtime == 'codex' else record.get('codex_thread_id'),
+                  native_id=record.get('native_id') if runtime == 'codex' else record['claude_session_id'])
+    values.update({key: record.get(key) for key in ('crew_session_id', 'crew_execution_id', 'pid', 'pid_created')})
     values["started_at"] = _timestamp(record["started_at"])
     values["ended_at"] = _timestamp(record["ended_at"]) if record["ended_at"] is not None else None
     values['ephemeral'] = int(bool(record.get('ephemeral')))
@@ -313,7 +315,7 @@ def _run_line(conn, record, counts):
 
 
 def _match_runs(conn, counts):
-    for run in conn.execute("SELECT * FROM codex_runs").fetchall():
+    for run in conn.execute("SELECT * FROM codex_runs WHERE runtime='codex'").fetchall():
         earliest = None
         if run['ephemeral']:
             # Ephemeral jobs have no rollout. Never assign a nearby user's session.
@@ -360,22 +362,28 @@ def _backfill_peer_prompts(conn, files, claude_root, counts):
     conn.execute("PRAGMA user_version = 2")
 
 
-def scan(conn, claude_root, codex_root, runs_file):
+def scan(conn, claude_root, codex_root, runs_file, *, receipts_only=False):
     """Return inserted/updated domain rows, skipped lines and their locations.
 
     Metadata updates count as updates; bookkeeping and the scan event do not.
     Malformed complete lines are consumed. Incomplete tails are left unread.
     """
     claude_root, codex_root, runs_file = Path(claude_root).absolute(), Path(codex_root).absolute(), Path(runs_file).absolute()
-    files = [(p, "claude") for p in sorted(claude_root.glob("*/*.jsonl"))]
-    files += [(p, "claude_subagent") for p in sorted(claude_root.glob("*/*/subagents/**/agent-*.jsonl"))]
-    files += [(p, "codex") for p in sorted(codex_root.rglob("rollout-*.jsonl"))]
+    files = []
+    if not receipts_only:
+        files = [(p, "claude") for p in sorted(claude_root.glob("*/*.jsonl"))]
+        files += [(p, "claude_subagent") for p in sorted(claude_root.glob("*/*/subagents/**/agent-*.jsonl"))]
+        files += [(p, "codex") for p in sorted(codex_root.rglob("rollout-*.jsonl"))]
     if runs_file.exists():
         files.append((runs_file, "codex_runs"))
+    claude_runs = runs_file.with_name('claude_runs.jsonl')
+    if claude_runs.exists():
+        files.append((claude_runs, 'codex_runs'))  # Existing receipt-source kind; runtime is stored on each run.
     counts = {"inserted": 0, "updated": 0, "skipped": 0, "bad_lines": []}
     with _transaction(conn, "usage_scan", immediate=True):
         # Replay only peer prompts, never the shrink/reset path that deletes whole session families.
-        _backfill_peer_prompts(conn, files, claude_root, counts)
+        if not receipts_only:
+            _backfill_peer_prompts(conn, files, claude_root, counts)
         reset_sessions = set()
         for path, kind in files:
             old = conn.execute("SELECT * FROM usage_files WHERE path = ?", (str(path),)).fetchone()
@@ -388,7 +396,7 @@ def scan(conn, claude_root, codex_root, runs_file):
                 conn.execute("DELETE FROM codex_sessions WHERE path = ?", (str(path),))
                 conn.execute("DELETE FROM usage_files WHERE path = ?", (str(path),))
             else:
-                conn.execute("DELETE FROM codex_runs")
+                conn.execute("DELETE FROM codex_runs WHERE runtime=?", ('claude' if path == claude_runs else 'codex',))
                 conn.execute("DELETE FROM usage_files WHERE path = ?", (str(path),))
         for session_id in reset_sessions:
             for table in ("claude_requests", "claude_prompts", "claude_tool_calls", "claude_compactions", "claude_sessions"):
@@ -422,7 +430,7 @@ def scan(conn, claude_root, codex_root, runs_file):
                         elif kind == "codex":
                             _codex_line(conn, record, path, counts, is_header=begin == 0)
                         else:
-                            _run_line(conn, record, counts)
+                            _run_line(conn, record, counts, 'claude' if path == claude_runs else 'codex')
                 except (json.JSONDecodeError, KeyError, TypeError) as error:
                     counts["inserted"], counts["updated"] = before
                     counts["skipped"] += 1
@@ -432,7 +440,8 @@ def scan(conn, claude_root, codex_root, runs_file):
                 "path": str(path), "kind": kind, "size": stat.st_size, "mtime": stat.st_mtime,
                 "offset": offset, "scanned_at": store.now_iso(),
             })
-        _match_runs(conn, counts)
+        if scanned_files or not receipts_only:
+            _match_runs(conn, counts)
         if scanned_files:
             conn.execute("INSERT INTO events (ts, kind, detail) VALUES (?, 'usage:scan', ?)",
                          (store.now_iso(), json.dumps(counts, ensure_ascii=False)))
@@ -612,7 +621,7 @@ def _session_names(conn, project=None):
         "SELECT ids.session_id, c.ai_title, c.project_dir, COALESCE(c.cwd, s.cwd) AS cwd, c.first_ts, c.last_ts, "
         "s.crew_name, s.project, s.group_name FROM "
         "(SELECT session_id FROM claude_sessions UNION SELECT claude_session_id FROM codex_runs "
-        "WHERE claude_session_id IS NOT NULL) ids "
+        "WHERE claude_session_id IS NOT NULL UNION SELECT session_id FROM sessions) ids "
         "LEFT JOIN claude_sessions c ON c.session_id = ids.session_id "
         "LEFT JOIN sessions s ON s.session_id = ids.session_id"
     )
@@ -650,14 +659,43 @@ def _work_seconds(conn, start, end):
     return result
 
 
-def codex_tasks(conn, start, end, project=None):
+def _dispatch_owners(conn):
+    people = {row['session_id']: row['project'] for row in conn.execute('SELECT session_id,project FROM sessions')}
+    executions = {row['id']: dict(row) for row in conn.execute('SELECT id,session_id,goal_id FROM goal_executions')}
+    native = {(row['runtime'], row['native_id']): (row['session_id'], None, None)
+              for row in conn.execute('SELECT runtime,native_id,session_id FROM session_runtime_bindings WHERE native_id IS NOT NULL')}
+    for row in conn.execute('SELECT runtime,native_id,execution_id FROM goal_execution_bindings'):
+        execution = executions[row['execution_id']]
+        native[(row['runtime'], row['native_id'])] = (execution['session_id'], execution['id'], execution['goal_id'])
+    return people, executions, native
+
+
+def _dispatch_owner(row, owners):
+    people, executions, native = owners
+    sid, key = row['crew_session_id'], row['crew_execution_id']
+    if key:
+        execution = executions.get(key)
+        if execution is None or sid is not None and sid != execution['session_id']:
+            return None, None, None
+        return execution['session_id'], key, execution['goal_id']
+    if sid:
+        return (sid if sid in people else None), None, None
+    parent = row['claude_session_id']
+    if parent in people:
+        return parent, None, None
+    return native.get(('claude' if row['runtime'] == 'codex' else 'codex', parent), (parent, None, None))
+
+
+def dispatch_tasks(conn, start, end, project=None):
     names = _session_names(conn)
     roots = _project_roots(conn)
+    owners = _dispatch_owners(conn)
     result = []
     query = (
         "SELECT r.run_id, r.claude_session_id, r.task_file, r.workdir, r.started_at AS run_start, "
         "r.ended_at AS run_end, r.exit_code, r.model AS requested_model, r.effort AS requested_effort, "
-        "r.sandbox AS requested_sandbox, r.ephemeral, r.usage_json, c.* FROM codex_runs r "
+        "r.sandbox AS requested_sandbox, r.ephemeral, r.usage_json, r.runtime, r.crew_session_id, "
+        "r.crew_execution_id, r.pid, r.pid_created, r.native_id, c.* FROM codex_runs r "
         "LEFT JOIN codex_sessions c ON c.rollout_id = r.rollout_id"
     )
     for row in conn.execute(query):
@@ -665,18 +703,22 @@ def codex_tasks(conn, start, end, project=None):
             continue
         cwd = row["cwd"] if row["rollout_id"] else row["workdir"]
         task_project = _project_for_cwd(cwd, roots)
+        session_id, execution_id, goal_id = _dispatch_owner(row, owners)
+        if session_id in owners[0] and (row['crew_session_id'] or execution_id or session_id != row['claude_session_id']):
+            task_project = owners[0][session_id]
         if project is not None and task_project != project:
             continue
         status = "unknown"
         if row["run_end"] is None and row["exit_code"] is None:
-            status = "running"
+            status = 'running' if row['pid'] is not None and row['pid_created'] is not None else 'unknown'
         elif row["run_end"] is not None and row["exit_code"] is not None:
             status = "succeeded" if row["exit_code"] == 0 else "failed"
         item = {field: row[field] if row["rollout_id"] else 0 for field in CODEX_TOKENS}
         if row['ephemeral']:
             item = _dispatch_tokens(row['usage_json'])
-        session_id = row["claude_session_id"]
         item.update(run_id=row["run_id"], rollout_id=row["rollout_id"], session_id=session_id, ephemeral=bool(row['ephemeral']),
+                    execution_id=execution_id, goal_id=goal_id, runtime=row['runtime'], source='skill_dispatch',
+                    pid=row['pid'], task_file=row['task_file'], native_id=row['native_id'],
                     display_name=names[session_id]["display_name"] if session_id is not None else None,
                     task_name=ntpath.basename(row["task_file"]), started_at=row["run_start"],
                     ended_at=row["run_end"], exit_code=row["exit_code"], status=status,
@@ -684,6 +726,17 @@ def codex_tasks(conn, start, end, project=None):
                     model=row["model"] if row["rollout_id"] else row["requested_model"],
                     effort=row["effort"] if row["rollout_id"] else row["requested_effort"],
                     sandbox=row["sandbox"] if row["rollout_id"] else row["requested_sandbox"])
+        if status == 'running' and row['pid'] is not None and row['pid_created'] is not None:
+            from .codex_runtime import process_identity
+            try:
+                identity = process_identity(row['pid'])
+            except OSError as error:
+                item.update(status='unknown', detail='执行进程状态无法确认：' + str(error))
+            else:
+                if identity != row['pid_created']:
+                    item.update(status='unknown', detail='执行进程已退出或身份改变；派工脚本未报告终态')
+        elif status == 'unknown':
+            item['detail'] = '派工记录缺少可核实的进程身份或完成回执'
         result.append(item)
     condition, args = _window("c.started_at", start, end)
     for row in conn.execute(
@@ -694,7 +747,7 @@ def codex_tasks(conn, start, end, project=None):
         if project is not None and task_project != project:
             continue
         item = {field: row[field] for field in CODEX_TOKENS}
-        item.update(run_id=None, rollout_id=row["rollout_id"], session_id=None, display_name=None, ephemeral=False,
+        item.update(run_id=None, rollout_id=row["rollout_id"], session_id=None, display_name=None, ephemeral=False, runtime='codex',
                     task_name=row["first_user_text"], started_at=row["started_at"], ended_at=None,
                     exit_code=None, status="unknown", project=task_project, cwd=row["cwd"],
                     last_event_at=row["ended_at"], model=row["model"], effort=row["effort"], sandbox=row["sandbox"])
@@ -702,6 +755,10 @@ def codex_tasks(conn, start, end, project=None):
     for item in result:
         item["duration_seconds"] = (store.parse_iso(item["ended_at"]) - store.parse_iso(item["started_at"])).total_seconds() if item["ended_at"] else None
     return sorted(result, key=lambda item: (item["started_at"], item["run_id"] or item["rollout_id"]))
+
+
+def codex_tasks(conn, start, end, project=None):
+    return [item for item in dispatch_tasks(conn, start, end, project) if item['runtime'] == 'codex']
 
 
 def summary(conn, start, end, prices, project=None):

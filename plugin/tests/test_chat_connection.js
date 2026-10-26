@@ -114,7 +114,7 @@ test("terminal turns without a tool result remain explicitly unknown, and do not
 test("starting a queued goal rebinds the app to the execution journal, closes the empty stream and preserves its draft and reading position",async()=>{
   const h=harness(),nodes=new Map(),calls=[];
   let execution=null;
-  const person={session_id:"leader",name:"测试负责人",runtime:"codex",model:null,effort:null,busy:false,last_seq:0,activity:null,where:"bg",priority:null};
+  const person={session_id:"leader",name:"测试负责人",runtime:"codex",model:null,effort:null,busy:false,last_seq:0,activity:null,where:"bg",priority:null,status:"idle",codex:[]};
   const goal={id:"goal",leader_session_id:"leader",title:"真实目标",request:"推进并交付",acceptance:[],status:"queued",current_round:1,requirement_version:1,version:1};
   const state={project:{name:"fixture"},leaders:[person],members:[],decisions:[],todos:[],goals:[goal],runtimes:[{id:"codex",name:"Codex",available:true,models:[],efforts:[]}]};
   const main=host();nodes.set("main",main);nodes.set("goal-drawer",host());

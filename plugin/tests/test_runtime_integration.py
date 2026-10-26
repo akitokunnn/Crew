@@ -340,7 +340,8 @@ class RuntimeFeatureHttpTests(ShellFixture, unittest.TestCase):
         service.scanned_at=None
         snapshot=threading.Event();attempted=threading.Event();written=threading.Event()
         writer_errors=[]
-        def scan(conn,*args):
+        def scan(conn,*args,receipts_only=False):
+            self.assertFalse(receipts_only)
             # Reproduce SQLite's deferred read -> write hazard. The competing
             # service writer must wait until this complete scan releases its lock.
             conn.execute('SAVEPOINT timing_scan')
