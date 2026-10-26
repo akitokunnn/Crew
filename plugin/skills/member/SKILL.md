@@ -15,7 +15,7 @@ description: Crew 成员在明确目标内实施和验证，接受直接用户�
 - 需要协调时 `crew send <leader名字> "<短结论、证据位置、需要它做什么>" --kind result|blocker|decision`；明确工作指令才用 task。information 默认留档，不唤醒。最终有证据结果使用 result，一次说明足够；不再同时补一份重复 report 或要求 leader 回“收到”。日志与工具流水只给定位。
 - 收到明确决定或等待别人采用你的结果时，核对消息 kind 和回执；方案/格式决定用 decision，结果用 result，阻塞用 blocker。archived 表示“仅归档，未投递到执行”，queued 只表示排队，accepted 仅表示已交给执行输入，不证明对方已读取、答复或完成。不能把归档当已送达，也不能因为暂未答复就重复发送已成功的操作。
 - 多行或含引号的正文写 UTF-8 文件，再用 `crew send <名字> --text-file <文件> --kind result`；阻塞改用 blocker。Codex 可用结构化 crew_send_message 的 text 字段，避免 PowerShell 版本差异损坏正文。
-- `crew context inspect` 看本目标实际采用的材料；有意义的新证据或阶段变化才 put，有错误则 correct/expire 并给来源。原始要求、确认决定高于摘要，猜测不当事实，不携带别的目标历史；保护材料超限必须明确交接，不能截掉用户约束。
+- `crew context inspect` 看本目标实际采用的材料；接续历史可用 `crew context retrieve --data '{"query":"关键词","limit_chars":3000}'` 按需取旧消息和产出，传 known_versions 跳过已读未变材料。有意义的新证据或阶段变化才 put，有错误则 correct/expire 并给来源。原始要求、确认决定高于摘要，猜测不当事实，不携带别的目标历史；保护材料超限必须明确交接，不能截掉用户约束。
 - 忙时用户插话先实际回应，再调整或继续；原生接受、界面 ACK 与 AI 答复分开。不自行恢复用户暂停。需要压缩或轮换时保留可追溯交接，不固定按百分比询问别人是否压缩。
 - 信任只继承本 leader 的最新显式开关和目标，不能借用其他组授权。设置只保存、下次正常对话传达，不因此唤醒。仍遵守用户“等着”“不要 PR”等具体限制。
 - 需要用户判断先说明并讨论，明确后才登记完整拍板；不要把排程、进展或归档混进问题。用户亲手操作用 `crew todo add "<事项>" --steps "<位置和步骤>" --verify "<完成验证>" [--blocking]`，只提示一次；已做仍核验，找到替代方案用 todo withdraw。受阻部分暂停，其余可行部分继续。

@@ -20,7 +20,7 @@ const notification={away:false,manual_away:false,error:null,channel:{state:'conn
 const channels=['qq','lark'].map(id=>({id,name:id==='qq'?'QQ':'Lark / 飞书',app_id:'',secret_configured:false,enabled:false,domain:'feishu',state:'unconfigured',detail:null,bound:false,binding_code:null,error:null}));
 let notificationTarget='both',notificationPreferenceFailure=false;
 const connectionSnapshot=()=>({preferences:{target:notificationTarget},channels:JSON.parse(JSON.stringify(channels)),notification:{...notification}});
-const windowOptions=()=>({width:1320,height:1120,show:false,webPreferences:{preload:path.join(source,'preload.cjs'),contextIsolation:true,sandbox:true,nodeIntegration:false,backgroundThrottling:false,offscreen:true,additionalArguments:['--crew-desktop-config='+encodeURIComponent(JSON.stringify({home,error}))]}});
+const windowOptions=()=>({width:1320,height:1120,show:false,webPreferences:{preload:path.join(source,'preload.cjs'),contextIsolation:true,sandbox:true,nodeIntegration:false,backgroundThrottling:false,offscreen:true,additionalArguments:['--crew-desktop-config='+encodeURIComponent(JSON.stringify({home,error,instanceName:'Crew · 隔离测试'}))]}});
 function handle(name,callback){ipcMain.handle('desktop:'+name,(event,...args)=>{assert.equal(event.senderFrame.url,home);calls.push(name);return callback(...args);});}
 handle('home-ready',()=>({ok:true}));handle('bootstrap',()=>({projects:[],service:{url:'http://127.0.0.1:9999',owned:false}}));handle('ready',()=>({ok:true}));
 handle('chrome-ready',async()=>{await win.webContents.insertCSS(await fs.readFile(path.join(source,'chrome.css'),'utf8'));return {maximized:false,focused:true,canGoBack:false,tabs:{activeId:'home',tabs:[{id:'home',name:'工作区',project:null}]}};});

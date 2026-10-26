@@ -22,6 +22,7 @@
       <div><h1>工作区</h1><p>在标签页中打开项目，继续工作。</p></div>
       <div class="actions">
         <button id="existing" class="button secondary" type="button"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v2M3 7h15a2 2 0 0 1 1.9 2.6l-2.3 7A2 2 0 0 1 15.7 18H4a2 2 0 0 1-2-2V9a2 2 0 0 1 1-2Z"/></svg>打开文件夹</button>
+        <button id="import-workspace" class="button secondary" type="button">导入工作区包</button>
         <button id="new" class="button primary" type="button"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>新建工作区</button>
       </div>
     </header>
@@ -35,6 +36,7 @@
         </form>
       </section>
       <p id="error" class="error" role="alert" hidden></p>
+      <p id="storage-progress" role="status" hidden></p>
       <section class="recent" aria-labelledby="projects-title">
         <div class="section-heading"><h2 id="projects-title">所有工作区 <span id="project-count" class="project-count"></span></h2><button id="refresh" class="refresh-button" type="button" aria-label="刷新工作区"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M6 7a7 7 0 0 1 11-2l3 3M4 16l3 3a7 7 0 0 0 11-2"/></svg>刷新</button></div>
         <div id="projects" class="projects" aria-busy="true"><p class="empty">正在读取工作区…</p></div>

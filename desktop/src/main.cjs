@@ -1,9 +1,10 @@
 'use strict';
-const { app, BrowserWindow, WebContentsView, ipcMain, dialog, Menu, Tray, nativeImage, shell } = require('electron');
+const { app, BrowserWindow, WebContentsView, ipcMain, dialog, Menu, Tray, nativeImage, shell, clipboard } = require('electron');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const core = require('./core.cjs');
+const storage = require('./storage.cjs');
 const chrome = require('./chrome.cjs');
 const { WorkspaceTabs } = require('./tabs.cjs');
 const { ActivityPreview } = require('./activity-preview.cjs');
@@ -16,7 +17,7 @@ const { LaunchSettings, relaunchArgs } = require('./launch-settings.cjs');
 const config = core.options(process.argv.slice(1),{launchSettingsPath:path.join(app.getPath('appData'),'Crew','launch-settings.json')});
 const administrator = new Administrator(config.home);
 const operations = new OperationsClient(config);
-app.setName('Crew');
+app.setName(config.instanceName);
 if (process.platform === 'win32') app.setAppUserModelId('local.crew.desktop');
 config.bundledBackendDir = app.isPackaged ? path.join(process.resourcesPath, 'backend') : path.resolve(__dirname, '../../plugin');
 config.backendDir = config.backendDir || config.bundledBackendDir;
@@ -56,6 +57,7 @@ async function cleanupResources() {
       finish('Crew update', () => crewUpdates?.close()),
       finish('tool updates', () => tools?.close())
     ]);
+    await Promise.all([...workspaceDataJobs].map(job=>finish('workspace data',()=>job)));
     await finish('backend', () => backend?.stop());
   })();
   return cleanupPromise;
@@ -69,6 +71,13 @@ async function injectAssets(directory, files) {
     catch (error) { if (!liveWindow(target)) return {ok:false}; throw error; }
   }
   return {ok:liveWindow(target)};
+}
+const preparedWorkspaces=new Set(), workspaceDataJobs=new Set();
+function workspaceDataRequest(base, route, body, timeoutMs=120000) {
+  if(quitting)return Promise.reject(new Error('Crew 正在退出，未开始新的工作区数据操作'));
+  const pending=core.request(base,route,body,timeoutMs);
+  workspaceDataJobs.add(pending);
+  return pending.finally(()=>workspaceDataJobs.delete(pending));
 }
 
 function trusted(event) {
@@ -89,9 +98,9 @@ function publishTabs(state=tabs?.state()) {
   lastPublishedTab=state?.activeId;activityPreview?.refresh();
   window.webContents.send('desktop:window-state',currentWindowState());
   const active=state?.tabs.find(tab=>tab.id===state.activeId);
-  window.setTitle(active?.project ? active.name+' — Crew' : 'Crew');
+  window.setTitle(active?.project ? active.name+' — '+config.instanceName : config.instanceName);
   for (const menu of [windowMenu, Menu.getApplicationMenu()]) {
-    const item = menu?.getMenuItemById('workspace-settings'); if (item) item.enabled = Boolean(active?.project);
+    const item = menu?.getMenuItemById('workspace-settings'); if (item) item.enabled = Boolean(active?.project&&!active.readOnly);
   }
 }
 ipcMain.handle('desktop:chrome-ready', async event => {
@@ -158,13 +167,95 @@ async function openProject(name) {
   if (!liveWindow()) return false;
   const target = window;
   if(new URL(backend.url).port==='0')throw new Error(backend.startupError||'后台尚未连接，请查看系统管理员');
-  const project=(await core.projects(backend.url)).find(item=>item.name===name);
+  let project=(await core.projects(backend.url)).find(item=>item.name===name);
+  if (!liveWindow(target)) return false;
+  if(!project&&name.startsWith('storage:')){
+    const history=await workspaceDataRequest(backend.url,'/api/workspace-data/history?workspace_id='+encodeURIComponent(name.slice(8)));
+    project={name,display_name:history.workspace.name,root:'已保存的工作区历史',read_only:true,workspace_id:history.workspace.id};
+  }
   if (!liveWindow(target)) return false;
   if(!project)throw new Error('工作区不存在，请刷新列表');
-  const [location]=await core.projectLocations([project]);
-  if (!liveWindow(target)) return false;
-  if(location.directory_state.status!=='ready'){await showHome('workspace-settings',name);return false;}
+  if (!project.read_only) {
+    const [location]=await core.projectLocations([project]);
+    if (!liveWindow(target)) return false;
+    if(location.directory_state.status!=='ready'){await showHome('workspace-settings',name);return false;}
+  }
+  const alreadyOpen=tabs.state().tabs.some(tab=>tab.project===project.name);
+  const alreadyPrepared=preparedWorkspaces.delete(project.name);
+  if(!alreadyOpen&&!alreadyPrepared)project=await storage.prepare(project,backend.url,chooseHistory,storageProgress,workspaceDataRequest);
+  if(!project||!liveWindow(target))return false;
   await tabs.open(project);return true;
+}
+function storageProgress(message){if(liveWindow())window.webContents.send('desktop:storage-progress',message);}
+async function chooseHistory({kind,discovery}) {
+  if(!liveWindow())return null;
+  const target=window;
+  if(kind==='relocate'){
+    const answer=await dialog.showMessageBox(window,{type:'question',title:'接续工作区',message:'发现已有工作区身份',detail:'可以将此目录设为本机工作位置，历史身份保持不变。Crew 会先停止该工作区在旧位置的执行；外部工具中的执行请自行退出。复制项目作为独立工作区时，请使用导出包的“复制为新工作区”。',buttons:['迁移目录并接续','取消'],defaultId:0,cancelId:1,noLink:true});
+    return liveWindow(target)&&answer.response===0?'relocate':null;
+  }
+  const candidates=discovery.candidates||[];
+  let selected=0;
+  if(candidates.length>1){
+    const answer=await dialog.showMessageBox(window,{type:'question',title:'选择工作区历史',message:'发现多份历史，请选择要接续的数据',detail:candidates.map((c,i)=>`${i+1}. ${c.project}\n${c.source_home}\n成员 ${c.counts.sessions||0} · 任务 ${c.counts.goals||0} · 报告 ${c.counts.reports||0}`).join('\n\n'),buttons:[...candidates.map((c,i)=>`${i+1}. ${c.project}`),'取消'],defaultId:0,cancelId:candidates.length,noLink:true});
+    if(!liveWindow(target))return null;
+    selected=answer.response;if(selected>=candidates.length)return null;
+  }
+  const candidate=candidates[selected];if(!candidate)return null;
+  const answer=await dialog.showMessageBox(window,{type:'question',title:'升级工作区数据',message:'发现可以接续的旧版历史',detail:`${candidate.project}\n成员 ${candidate.counts.sessions||0} · 任务 ${candidate.counts.goals||0} · 报告 ${candidate.counts.reports||0} · 资料 ${candidate.counts.documents||0}\n\n升级会建立完整历史库，保留旧数据并校验关联和产出文件。查看、升级均不会启动 AI。`,buttons:['升级并接续','仅查看历史','取消'],defaultId:0,cancelId:2,noLink:true});
+  return !liveWindow(target)||answer.response===2?null:{action:answer.response===0?'upgrade':'view',candidate_id:candidate.id};
+}
+async function exportWorkspace(name){
+  const answer=await dialog.showSaveDialog(window,{title:'导出完整工作区',defaultPath:(name.replace(/[<>:"/\\|?*]/g,'_')||'workspace')+'.crewpack',filters:[{name:'Crew 工作区',extensions:['crewpack']}]});
+  if(answer.canceled||!liveWindow())return null;
+  const result=await workspaceDataRequest(backend.url,'/api/workspace-data/export',{project:name,destination:answer.filePath},120000);
+  if(!liveWindow())return result;
+  await dialog.showMessageBox(window,{type:'info',title:'工作区已导出',message:'完整工作区包已保存',detail:answer.filePath+'\n包含历史记录及已保存的产出文件。'+(result.cached_files?.length?`\n${result.cached_files.length} 项资料原件暂不可用，已携带校验通过的保存版本。`:''),buttons:['好'],noLink:true});
+  return result;
+}
+async function importWorkspace(){
+  const answer=await dialog.showOpenDialog(window,{title:'导入工作区',filters:[{name:'Crew 工作区',extensions:['crewpack']}],properties:['openFile']});
+  if(answer.canceled||!liveWindow())return null;
+  const path=answer.filePaths[0],preview=await workspaceDataRequest(backend.url,'/api/workspace-data/preview',{path},120000);
+  if(!liveWindow())return null;
+  const manifest=preview.manifest||preview;
+  const choice=await dialog.showMessageBox(window,{type:'question',title:'导入工作区',message:'工作区包已通过校验',detail:`${preview.workspace?.name||manifest.workspace?.name||manifest.workspace_name||'工作区历史'}\n\n恢复历史保留原工作区身份；复制会建立独立的新工作区。导入不会接管原电脑的执行权限，也不会启动 AI。`,buttons:['恢复历史（保留身份）','复制为新工作区','取消'],defaultId:0,cancelId:2,noLink:true});
+  if(choice.response===2||!liveWindow())return null;
+  const result=await workspaceDataRequest(backend.url,'/api/workspace-data/import',{path,mode:choice.response===0?'restore_readonly':'fork'},120000);
+  if(!liveWindow())return result;
+  if(choice.response===1){
+    const next=await dialog.showMessageBox(window,{type:'question',title:'工作区副本已导入',message:'要在这台电脑上接续工作吗？',detail:'选择已有代码目录后，Crew 会恢复本机工作区界面，保留历史与任务。所有执行保持停止；只有你明确继续或发送消息时，才会建立新的原生会话。',buttons:['选择目录并接续','先查看历史'],defaultId:0,cancelId:1,noLink:true});
+    if(!liveWindow())return result;
+    if(next.response===0){const active=await activateWorkspace(result.workspace_id);if(active)return active;}
+  }
+  if(liveWindow())await tabs.open(result.project);return result;
+}
+async function activateWorkspace(workspaceId){
+  const directory=await dialog.showOpenDialog(window,{title:'选择新工作区副本的本机代码目录',buttonLabel:'绑定副本并接续',properties:['openDirectory']});
+  if(directory.canceled||!liveWindow())return null;
+  storageProgress('正在恢复本机工作区界面，执行保持停止…');
+  try{
+    const result=await workspaceDataRequest(backend.url,'/api/workspace-data/activate',{workspace_id:workspaceId,root:directory.filePaths[0],replace_source_marker:true},120000);
+    if(liveWindow())await tabs.open(result.project);return result;
+  }finally{storageProgress('');}
+}
+async function viewHistory(name){
+  const project=(await core.projects(backend.url)).find(p=>p.name===name);
+  const workspaceId=project?.workspace_id||(name.startsWith('storage:')?name.slice(8):null);
+  if(!workspaceId)throw Error('请先打开工作区并完成历史升级');
+  return openProject('storage:'+workspaceId);
+}
+async function exportHandoff(name){
+  const answer=await dialog.showOpenDialog(window,{title:'保存 Codex / VS Code 交接材料',buttonLabel:'保存到此文件夹',properties:['openDirectory']});
+  if(answer.canceled||!liveWindow())return null;
+  const destination=path.join(answer.filePaths[0],'Crew-handoff-'+new Date().toISOString().replace(/[:.]/g,'-'));
+  const result=await workspaceDataRequest(backend.url,'/api/workspace-data/handoff',{project:name,destination},120000);
+  if(!liveWindow())return result;
+  const choice=await dialog.showMessageBox(window,{type:'info',title:'交接材料已生成',message:'可以在 Codex 或 VS Code 中接续工作',detail:result.markdown+'\n\n材料包含原始要求、当前进度、必要上下文和报告来源。它会建立可读的接续上下文；原生会话能否直接恢复取决于目标工具。开始修改前，请先暂停 Crew 中对应的执行。',buttons:['复制接续提示','查看文件夹','好'],defaultId:0,cancelId:2,noLink:true});
+  if(!liveWindow())return result;
+  if(choice.response===0)clipboard.writeText('请先阅读 '+result.markdown+'，并按其中引用读取 handoff.json 的完整要求与约束。核对当前项目文件和已有产出后继续；这份交接不授予运行权限，也不代表原生会话已经恢复。');
+  if(choice.response===1)shell.showItemInFolder(result.markdown);
+  return result;
 }
 function keyboard(event,input){
   if(input.type!=='keyDown')return;
@@ -195,6 +286,10 @@ function workspaceMenu() {
     { id:'workspace-new-tab', label:'打开工作区标签', accelerator:'CmdOrCtrl+T', click:menuAction(()=>showHome()) },
     { id:'workspace-new', label:'新建工作区…', accelerator:'CmdOrCtrl+N', click:menuAction(()=>showHome('new')) },
     { id:'workspace-open', label:'打开已有项目…', accelerator:'CmdOrCtrl+O', click:menuAction(()=>showHome('open')) },
+    { id:'workspace-import', label:'导入工作区包…', click:menuAction(importWorkspace) },
+    { id:'workspace-export', label:'导出当前工作区…', click:menuAction(()=>{const active=tabs?.state().tabs.find(t=>t.id===tabs.state().activeId);if(active?.project)return exportWorkspace(active.project);return dialog.showMessageBox(window,{message:'请先打开要导出的工作区',buttons:['好']});}) },
+    { id:'workspace-handoff', label:'生成 Codex / VS Code 交接材料…', click:menuAction(()=>{const active=tabs?.state().tabs.find(t=>t.id===tabs.state().activeId);if(active?.project)return exportHandoff(active.project);return dialog.showMessageBox(window,{message:'请先打开要交接的工作区',buttons:['好']});}) },
+    { id:'workspace-history', label:'查看已保存的完整历史', click:menuAction(()=>{const active=tabs?.state().tabs.find(t=>t.id===tabs.state().activeId);if(active?.project)return viewHistory(active.project);}) },
     { id:'workspace-settings', label:'当前工作区设置…', enabled:Boolean(tabs?.state().tabs.find(tab=>tab.id===tabs.state().activeId)?.project), click:menuAction(()=>{
       const active=tabs.state().tabs.find(tab=>tab.id===tabs.state().activeId);
       if(active?.project)return showHome('workspace-settings',active.project);
@@ -339,9 +434,14 @@ handle('desktop:admin-config-save',body=>operationsMutation('config-save',body))
 handle('desktop:existing', async () => {
   const result = await dialog.showOpenDialog(window, { title: '选择工作区文件夹', buttonLabel: '打开工作区', properties: ['openDirectory'] });
   if (result.canceled) return null;
-  return core.existingWorkspace(result.filePaths[0], backend.url);
+  const project=await storage.openDirectory(result.filePaths[0], backend.url, chooseHistory,storageProgress,workspaceDataRequest);
+  if(project?.name)preparedWorkspaces.add(project.name);
+  return project;
 });
 handle('desktop:existing-new',directory=>core.existingWorkspace(directory,backend.url,{newProject:true}));
+handle('desktop:storage-import',importWorkspace);
+handle('desktop:storage-export',name=>exportWorkspace(name));
+handle('desktop:storage-activate',workspaceId=>activateWorkspace(workspaceId));
 handle('desktop:parent', async () => {
   const result = await dialog.showOpenDialog(window, { title: '选择新工作区的保存位置', buttonLabel: '选择此位置', properties: ['openDirectory'] });
   if (result.canceled) return null;
@@ -521,9 +621,9 @@ else {
       if (quitting) return;
       if(!config.smoke&&!config.isolated&&!backend.startupError)tools.start();
       window = new BrowserWindow({ width: 1220, height: 850, minWidth: 820, minHeight: 600,
-        show: false, title: 'Crew', icon: path.join(__dirname, '../assets/crew.png'), ...chrome.windowOptions(),
+        show: false, title: config.instanceName, icon: path.join(__dirname, '../assets/crew.png'), ...chrome.windowOptions(),
         webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true,
-          additionalArguments: ['--crew-desktop-config=' + encodeURIComponent(JSON.stringify({ home: homePage, origin: backend.url, error:errorPage }))] } });
+          additionalArguments: ['--crew-desktop-config=' + encodeURIComponent(JSON.stringify({ home: homePage, origin: backend.url, error:errorPage, instanceName:config.instanceName }))] } });
       tabs=new WorkspaceTabs(window,{origin:backend.url,
         createView:()=>new WebContentsView({webPreferences:{contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true,...(config.smoke?{backgroundThrottling:false}:{})}}),
         onChange:state=>publishTabs(state),onHome:()=>{},external,openProject,workspaceSettings:name=>{void showHome('workspace-settings',name).catch(actionError);},
@@ -577,7 +677,7 @@ else {
       if (!config.smoke) {
         const icon = nativeImage.createFromPath(path.join(__dirname, '../assets/crew-tray.png'));
         tray = new Tray(icon);
-        tray.setToolTip('Crew · 关闭窗口后继续运行');
+        tray.setToolTip(config.instanceName+' · 关闭窗口后继续运行');
         tray.setContextMenu(Menu.buildFromTemplate([{ label: '打开 Crew', click: showWindow },
           { label: '工作区首页', click:menuAction(()=>showHome()) },{ label:'新建工作区…',click:menuAction(()=>showHome('new')) },{ label:'打开已有项目…',click:menuAction(()=>showHome('open')) }, { type: 'separator' }, { label:'关于 Crew',click:menuAction(aboutCrew) },{ label: '退出 Crew', click: () => app.quit() }]));
         tray.on('double-click', showWindow);

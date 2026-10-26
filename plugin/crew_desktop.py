@@ -28,7 +28,9 @@ def main(argv=None):
 def serve(args, home):
     plugin_root = Path(__file__).resolve().parent
     install.install(home, plugin_root)
-    options = {"cwd": home}
+    # Discovery belongs to opening a workspace. Startup must neither choose an
+    # old data source silently nor prevent all workspaces opening on a conflict.
+    options = {"cwd": home, "isolated_sources": args.isolated_sources}
     if args.isolated_sources:
         # Smoke tests must not inspect the user's Claude/Codex/VS Code sessions.
         options.update(agents_provider=lambda: [], claude_root=home / "isolated" / "claude",

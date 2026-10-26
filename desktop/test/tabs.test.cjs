@@ -36,6 +36,15 @@ function fixture(options = {}) {
 }
 function event() { return { prevented: false, preventDefault() { this.prevented = true; } }; }
 
+test('saved history tabs remain readable without polling the execution activity endpoint',async()=>{
+  const calls=[];const f=fixture({setTimer:()=>1,clearTimer:()=>{},readActivity:async names=>{calls.push(names);return {projects:names.map(project=>({project,counts:{},items:[]}))};}});
+  await f.manager.open({name:'storage:archive',read_only:true});await f.manager.refreshActivity();
+  assert.equal(calls.length,0);assert.equal(f.manager.state().tabs[1].readOnly,true);
+  assert.equal(f.manager.state().tabs[1].activity.label,'已保存的只读历史');
+  await f.manager.open({name:'live'});await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(calls.at(-1),['live']);f.manager.dispose();
+});
+
 test('one batched activity poll keeps hidden projects current without reloading or acknowledging them',async()=>{
   let tick,cleared=0;const calls=[];
   const f=fixture({setTimer:fn=>(tick=fn,1),clearTimer:()=>cleared++,readActivity:async names=>{

@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:crew:workspace-package:1",
+  "title": "Crew workspace package manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "format_version", "schema_version", "min_reader_version", "min_writer_version", "export_id", "workspace_id", "created_at", "consistency", "source", "database", "blobs", "capabilities", "omissions"],
+  "properties": {
+    "format": {"const": "crew-workspace"},
+    "format_version": {"const": 1},
+    "schema_version": {"const": 2},
+    "min_reader_version": {"type": "integer", "minimum": 1},
+    "min_writer_version": {"type": "integer", "minimum": 1},
+    "export_id": {"type": "string", "format": "uuid"},
+    "workspace_id": {"type": "string", "format": "uuid"},
+    "created_at": {"type": "string", "format": "date-time"},
+    "consistency": {"enum": ["complete", "metadata_only"]},
+    "source": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "cloud_epoch", "deletion_epoch", "cloud_commit_seq", "has_pending_changes"],
+      "properties": {
+        "kind": {"enum": ["local", "cloud"]},
+        "cloud_epoch": {"type": ["integer", "null"], "minimum": 0},
+        "deletion_epoch": {"type": ["integer", "null"], "minimum": 0},
+        "cloud_commit_seq": {"type": ["integer", "null"], "minimum": 0},
+        "has_pending_changes": {"type": "boolean"}
+      }
+    },
+    "database": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "sha256", "bytes", "tables"],
+      "properties": {
+        "path": {"const": "data.sqlite"},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "bytes": {"type": "integer", "minimum": 1},
+        "tables": {"type": "object", "minProperties": 1, "additionalProperties": {"type": "integer", "minimum": 0}}
+      }
+    },
+    "blobs": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["blob_id", "path", "sha256", "bytes"],
+        "properties": {
+          "blob_id": {"type": "string", "format": "uuid"},
+          "path": {"type": "string", "pattern": "^blobs/sha256/[0-9a-f]{64}$"},
+          "sha256": {"$ref": "#/$defs/sha256"},
+          "bytes": {"type": "integer", "minimum": 0}
+        }
+      }
+    },
+    "capabilities": {
+      "type": "object", "additionalProperties": false,
+      "required": ["native_archives", "code_snapshots", "data_snapshots"],
+      "properties": {
+        "native_archives": {"type": "boolean"},
+        "code_snapshots": {"type": "boolean"},
+        "data_snapshots": {"type": "boolean"}
+      }
+    },
+    "omissions": {"type": "array", "items": {"type": "object", "required": ["id", "reason"], "properties": {"id": {"type": "string"}, "reason": {"type": "string", "minLength": 1}}, "additionalProperties": false}}
+  },
+  "allOf": [
+    {"if": {"properties": {"consistency": {"const": "complete"}}}, "then": {"properties": {"omissions": {"maxItems": 0}}}},
+    {"if": {"properties": {"source": {"properties": {"kind": {"const": "cloud"}}}}}, "then": {"properties": {"source": {"properties": {"cloud_epoch": {"type": "integer"}, "deletion_epoch": {"type": "integer"}, "cloud_commit_seq": {"type": "integer"}, "has_pending_changes": {"const": false}}}}}}
+  ],
+  "$defs": {"sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}
+}

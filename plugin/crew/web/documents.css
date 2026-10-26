@@ -13,3 +13,6 @@
 .doc-actions{display:flex;align-items:center;flex-wrap:wrap;gap:3px;margin-top:14px;padding-top:9px;border-top:1px solid var(--line)}
 .doc-actions .btn{padding:4px 7px;font-size:calc(11px * var(--fs))}.doc-reset{margin-left:auto}
 .doc-missing{display:block;color:var(--danger);font-size:calc(12px * var(--fs))}
+.project-documents-intro{margin:0 0 20px;color:var(--text-2);font-size:calc(13px * var(--fs));line-height:1.7}
+.project-document-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));align-items:start;gap:16px}
+.project-documents-error{margin-bottom:20px}.project-documents-error .error-line{overflow-wrap:anywhere}

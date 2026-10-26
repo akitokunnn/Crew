@@ -25,6 +25,10 @@ Git 的中间状态只更新台账，普通成功留待阅，不额外开启 AI 
 
 “从 Crew 移除”先停止该工作区执行，再从列表移除登记，保留磁盘文件和全部记录。以后重新打开同一目录会恢复原工作区。
 
+打开工作区时可选择升级旧历史或只读查看，启动应用不会自动扫描并导入所有旧目录。首页和工作区菜单可导出完整 `.crewpack`；导入时选择恢复原身份的只读历史或复制为独立工作区，再明确绑定本机目录。导入不恢复旧电脑的执行权限，也不自动启动 AI。历史页可查看消息、附件、报告与保存的文件，项目侧栏的“项目资料”汇集登记文档；任务自己的交付与文档继续保留。详见[本地历史与接续](../docs/storage-v2/implementation.md)。
+
+窗口和托盘会标明“独立数据”或“隔离测试”，便于区分使用的 HOME。历史库接口与“存储与清理”独立；后者继续提供占用、清理预览、回收与恢复。完整历史页隔离验收：`node desktop/scripts/smoke-history.cjs`。
+
 “设置 → 消息渠道”可同时配置 QQ 与 Lark / 飞书。按页面步骤创建机器人、保存凭证、建立连接，再用自己的账号私聊机器人发送绑定码；无需编辑 JSON 或重启 Crew。页面提供重连、断开、重新绑定与测试通知，已保存的 Secret 不回显。Lark 当前支持私聊文字和引用拍板答复，完整权限与事件订阅说明见[消息渠道连接流程](../docs/REMOTE_CHANNELS.md)。
 
 关闭窗口会隐藏到托盘，AI 和服务继续运行；托盘或菜单中的「退出 Crew」才退出应用。窗口保留原生最小化、最大化、关闭与可拖动标题栏；应用菜单收在标题栏的省略号中。Crew 图标用于窗口、任务栏、托盘、安装器和快捷方式。
@@ -92,6 +96,7 @@ node scripts/smoke.cjs --reuse
 node scripts/smoke.cjs --visual
 node scripts/smoke-workspaces.cjs
 node scripts/smoke-handoff.cjs
+node scripts/verify-bundle.cjs
 node scripts/verify-icons.cjs dist/win-unpacked/Crew.exe "dist/Crew-$crewVersion-portable.exe" "dist/Crew-$crewVersion-setup.exe"
 ```
 
