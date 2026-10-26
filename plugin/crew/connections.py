@@ -54,6 +54,11 @@ class Manager:
             inbox.start()
 
     def close(self):
+        # Both receivers must hear shutdown before waiting for either one's
+        # in-flight network operation; stopping channels is independent.
+        for inbox in self.inboxes.values():
+            inbox.stop.set()
+            inbox.wake.set()
         for inbox in self.inboxes.values():
             inbox.close()
 

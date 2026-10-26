@@ -36,6 +36,23 @@ test('native model discovery can wait beyond the normal API deadline', async t =
   const result = await core.request(`http://127.0.0.1:${server.address().port}`, '/api/runtimes?refresh=1', undefined, 45000);
   assert.equal(result.runtimes[0].id, 'detected-native');
 });
+test('a caller can abort a read-only request without waiting for its HTTP deadline', async t => {
+  const server=http.createServer((request,response)=>{response.setHeader('Content-Type','application/json');response.write('{');});
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  t.after(()=>{server.closeAllConnections();return new Promise(resolve=>server.close(resolve));});
+  const controller=new AbortController(),at=performance.now();
+  const pending=core.request(`http://127.0.0.1:${server.address().port}`,'/api/admin/health',undefined,5000,controller.signal);
+  setTimeout(()=>controller.abort(),25);
+  await assert.rejects(pending,error=>error.name==='AbortError');
+  assert(performance.now()-at<1000,'An explicit cancellation must not consume the five-second HTTP deadline');
+});
+test('the original HTTP deadline still applies when an un-aborted caller signal is supplied', async t => {
+  const server=http.createServer((_request,response)=>{response.setHeader('Content-Type','application/json');response.write('{');});
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  t.after(()=>{server.closeAllConnections();return new Promise(resolve=>server.close(resolve));});
+  const base=`http://127.0.0.1:${server.address().port}`;
+  for(const signal of [undefined,new AbortController().signal])await assert.rejects(core.request(base,'/api/admin/health',undefined,30,signal),error=>error.name==='TimeoutError');
+});
 test('smoke requires explicit isolated home and cannot bind the production port', () => {
   assert.throws(() => core.options(['--smoke-test']));
   assert.throws(() => core.options(['--smoke-test', '--home', 'test', '--smoke-output', 'test.json', '--port', '47811']));

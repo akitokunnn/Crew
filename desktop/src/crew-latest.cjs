@@ -35,9 +35,14 @@ function date(value, label) {
   return value;
 }
 
-async function checkLatest({ fetchImpl = globalThis.fetch, timeoutMs = 10000, now = () => new Date().toISOString() } = {}) {
+async function checkLatest({ fetchImpl = globalThis.fetch, timeoutMs = 10000, now = () => new Date().toISOString(), signal } = {}) {
   if (typeof fetchImpl !== 'function' || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 10000) throw new TypeError('版本查询需要 fetch 和 1–10000 毫秒期限');
+  signal?.throwIfAborted();
   const controller = new AbortController();
+  let rejectCancelled;
+  const cancelled = new Promise((_resolve,reject) => { rejectCancelled=reject; });
+  const onAbort = () => { controller.abort(signal.reason); rejectCancelled(signal.reason); };
+  signal?.addEventListener('abort',onAbort,{ once:true });
   let timer;
   const deadline = new Promise((_resolve, reject) => {
     timer = setTimeout(() => {
@@ -46,12 +51,17 @@ async function checkLatest({ fetchImpl = globalThis.fetch, timeoutMs = 10000, no
     }, timeoutMs);
   });
   async function get(route, allowMissing = false) {
+    controller.signal.throwIfAborted();
     const url = API + route;
     let response;
     try {
       response = await fetchImpl(url, { redirect: 'error', credentials: 'omit', signal: controller.signal,
         headers: { Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' } });
-    } catch (error) { throw new Error('GitHub 版本查询连接失败：' + error.message, { cause: error }); }
+    } catch (error) {
+      controller.signal.throwIfAborted();
+      throw new Error('GitHub 版本查询连接失败：' + error.message, { cause: error });
+    }
+    controller.signal.throwIfAborted();
     if (response.redirected || response.url && response.url !== url) throw new Error('GitHub 版本查询发生了未允许的跳转');
     if (allowMissing && response.status === 404) return null;
     if (!response.ok) {
@@ -59,6 +69,7 @@ async function checkLatest({ fetchImpl = globalThis.fetch, timeoutMs = 10000, no
       throw new Error('GitHub 版本查询失败（HTTP ' + response.status + '）');
     }
     const text = await response.text();
+    controller.signal.throwIfAborted();
     if (text.length > 1024 * 1024) throw new Error('GitHub 版本查询返回内容过大');
     try { return JSON.parse(text); }
     catch (error) { throw new Error('GitHub 版本查询没有返回有效 JSON', { cause: error }); }
@@ -88,8 +99,8 @@ async function checkLatest({ fetchImpl = globalThis.fetch, timeoutMs = 10000, no
     return { release, main: { version: packageJson.version, sha: commit.sha,
       url: WEB + '/blob/' + commit.sha + '/desktop/package.json', committed_at }, checked_at: now() };
   })();
-  try { return await Promise.race([work, deadline]); }
-  finally { clearTimeout(timer); }
+  try { return await Promise.race([work, deadline, cancelled]); }
+  finally { clearTimeout(timer); signal?.removeEventListener('abort',onAbort); }
 }
 
 module.exports = { checkLatest, compareVersions };

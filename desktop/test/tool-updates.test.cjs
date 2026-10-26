@@ -82,10 +82,13 @@ test('application shutdown waits for an installer already running and persists i
   const updating=f.manager.update('claude');await running;
   assert.equal(f.calls[0].options.timeout,0,'an active installer must not lose its helper or OS lock to a timeout');
   let closed=false;const closing=f.manager.close().then(()=>{closed=true;});
-  await new Promise(resolve=>setImmediate(resolve));assert.equal(closed,false);
+  const before=f.states.length,time=performance.now();
+  await new Promise(resolve=>setTimeout(resolve,70));assert.equal(closed,false);
   release();await Promise.all([updating,closing]);assert.equal(closed,true);
   assert.equal(f.manager.snapshot().tools[0].phase,'done');
   assert.deepEqual(JSON.parse(await fs.readFile(f.manager.file,'utf8')).queue,[]);
+  assert.equal(f.states.length,before);
+  console.log('active tool installer preserved for '+(performance.now()-time).toFixed(1)+'ms and saved its result');
 });
 
 test('a fresh check cannot retain a stale successful-update badge for a different installation',async t=>{

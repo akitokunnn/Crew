@@ -2,6 +2,7 @@
 const path = require('node:path');
 const { spawn, execFile } = require('node:child_process');
 const { promisify } = require('node:util');
+const { ReadOnlyCommands } = require('./readonly-command.cjs');
 const core = require('./core.cjs');
 const {checkLatest:queryLatest,compareVersions}=require('./crew-latest.cjs');
 const execute = promisify(execFile);
@@ -10,9 +11,10 @@ const samePath = (left, right) => typeof left === 'string' && typeof right === '
 
 class CrewUpdates {
   constructor(config, backend, { onChange = () => {}, onRestart = () => {}, run = execute, spawnProcess = spawn,
-    request = core.request, acquireLock = null, checkLatest = queryLatest } = {}) {
+    request = core.request, acquireLock = null, checkLatest = queryLatest, stopReadOnly } = {}) {
     this.config = config; this.backend = backend; this.onChange = onChange; this.onRestart = onRestart;
     this.run = run; this.spawn = spawnProcess; this.request = request; this.acquireLock = acquireLock; this.checkLatest = checkLatest;
+    this.reads = new ReadOnlyCommands({ run, stopReadOnly });
     this.state = { desktop_version: config.desktopVersion, target: null, backend: null, cli: null, plugin: null,
       phase: 'idle', message: '检查并统一到当前桌面自带版本。', error: null, blocked_reason: null,
       can_update: false, update_available: false, backup: null, checked_at: null,
@@ -20,13 +22,14 @@ class CrewUpdates {
     this.pending = null; this.checking = null; this.queued = false; this.closed = false; this.timer = null;
   }
   snapshot() { return JSON.parse(JSON.stringify({ ...this.state, queued: this.queued })); }
-  _emit() { this.onChange(this.snapshot()); }
+  _emit() { if (!this.closed) this.onChange(this.snapshot()); }
   _phase(phase, message) { Object.assign(this.state, { phase, message, error: null }); this._emit(); }
   _helperArgs(operation, extra = []) { return [path.join(this.config.helperBackendDir || this.config.backendDir, 'crew_update.py'), '--home', this.config.home, operation, ...extra]; }
-  async _helper(operation, extra = [], python = this.config.python) {
+  async _helper(operation, extra = [], python = this.config.python, readOnly = false) {
     let result;
     try {
-      result = await this.run(python, this._helperArgs(operation, extra), {
+      const run = readOnly ? this.reads.run.bind(this.reads) : this.run;
+      result = await run(python, this._helperArgs(operation, extra), {
         cwd: this.config.helperBackendDir || this.config.backendDir, windowsHide: true, timeout: operation === 'plugin-update' ? 150000 : 45000,
         maxBuffer: 1024 * 1024, env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUNBUFFERED: '1' }
       });
@@ -42,18 +45,22 @@ class CrewUpdates {
     if (!value || value.operation !== operation || value.ok !== true) throw new Error(value?.error || 'Crew 更新工具返回无效结果');
     return value;
   }
-  async _health() {
-    const value = await this.request(this.backend.url, '/api/admin/health');
+  async _health(signal) {
+    signal?.throwIfAborted();
+    const value = await this.request(this.backend.url, '/api/admin/health', undefined, 5000, signal);
+    signal?.throwIfAborted();
     if (value?.service !== 'crew' || value.ok !== true || !samePath(value.home, this.config.home) ||
         !Number.isSafeInteger(value.pid) || !value.instance_id || !value.version || !value.plugin_root) {
       throw new Error('当前后台不支持安全更新；请先退出原 Crew，再打开当前桌面版本。');
     }
     return value;
   }
-  async _inspect() {
-    const value = await this._helper('inspect', ['--target', this.config.backendDir]);
+  async _inspect(signal) {
+    const value = await this._helper('inspect', ['--target', this.config.backendDir], this.config.python, Boolean(signal));
+    signal?.throwIfAborted();
+    const health = await this._health(signal);
     this.state.target = value.target; this.state.cli = value.cli; this.state.plugin = value.plugin;
-    this.state.backend = await this._health();
+    this.state.backend = health;
     const blocked = !this.backend.owned ? '当前连接的是其他窗口启动的后台。请先退出原 Crew，再打开当前版本更新。' :
       !['current', 'update', 'not_installed'].includes(value.plugin.state) ? value.plugin.reason || '无法确认 Claude 插件安装来源。' : null;
     this.state.blocked_reason = blocked; this.state.can_update = !blocked;
@@ -63,21 +70,28 @@ class CrewUpdates {
     this.state.checked_at = new Date().toISOString();
     return value;
   }
-  async _online() {
+  async _online(signal) {
+    const previous=this.state.online;
     this.state.online_checking=true;this.state.online_error=null;this.state.online=null;this._emit();
     try {
-      const result=await this.checkLatest();
+      const result=await this.checkLatest({ signal });
+      signal?.throwIfAborted();
       this.state.online={...result,main_comparison:compareVersions(result.main.version,this.config.desktopVersion),
         release_comparison:result.release?compareVersions(result.release.version,this.config.desktopVersion):null};
-    } catch(error) { this.state.online_error=error.message; }
+    } catch(error) {
+      if (this.closed && error.name === 'AbortError') this.state.online=previous;
+      else this.state.online_error=error.message;
+    }
     finally { this.state.online_checking=false;this._emit(); }
   }
   check() {
     if (this.pending || this.checking || this.closed) return this.checking || this.pending || Promise.resolve(this.snapshot());
     this.checking = (async () => {
       this._phase('checking', '正在检查线上版本和本机安装…');
-      const [local]=await Promise.allSettled([this._inspect(),this._online()]);
-      if(local.status==='fulfilled') {
+      const [local]=await Promise.allSettled([this._inspect(this.reads.signal),this._online(this.reads.signal)]);
+      if (this.closed) {
+        this.state.phase='idle';
+      } else if(local.status==='fulfilled') {
         this._phase(this.queued ? 'queued' : 'idle', this.state.blocked_reason ||
           (this.state.update_available ? '可以把后台与插件统一到本机版本。' : '后台、命令入口和插件已统一。'));
       } else {
@@ -127,8 +141,11 @@ class CrewUpdates {
     let lock, prepared, health, stopped = false;
     try {
       if (this.checking) await this.checking;
+      if (!this.queued || this.closed) return this.snapshot();
       this._phase('checking', '正在核对更新来源…');
-      lock = await this._lock(); await this._inspect(); lock.assert();
+      lock = await this._lock();
+      if (!this.queued || this.closed) return this.snapshot();
+      await this._inspect(); lock.assert();
       if (!this.queued || this.closed) { this._phase('idle', '已取消等待更新。'); return this.snapshot(); }
       if (this.state.blocked_reason) throw new Error(this.state.blocked_reason);
       health = this.state.backend;
@@ -192,6 +209,11 @@ class CrewUpdates {
     if (this.state.phase === 'queued') this._phase('idle', '已取消等待更新。');
     return this.snapshot();
   }
-  async close() { this.closed = true; this.cancel(); if (this.pending) await this.pending; if (this.checking) await this.checking; }
+  async close() {
+    this.closed = true; this.cancel();
+    const [reads, pending] = await Promise.allSettled([this.reads.close(), this.pending, this.checking]);
+    if (pending.status === 'rejected') throw pending.reason;
+    if (reads.status === 'rejected') throw reads.reason;
+  }
 }
 module.exports = { CrewUpdates, samePath };

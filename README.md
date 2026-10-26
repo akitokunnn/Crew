@@ -59,7 +59,9 @@ npm start
 
 关闭窗口会隐藏到托盘；“退出 Crew”才退出应用。桌面版优先复用当前 home 中已登记的健康服务，复用时继续使用该服务的版本；自行启动的后端在退出应用时关闭，借用的服务保持运行。
 
-`npm run build` 按 `desktop/package.json` 的版本生成 `desktop/dist/Crew-<version>-portable.exe` 和 `Crew-<version>-setup.exe`，直接运行仍需本机 Python 和所选模型 CLI。构建、独立数据目录和隔离验收见 [桌面版说明](desktop/README.md)。
+真正退出会停止接收新界面操作，取消只读版本查询和独立的要点卡整理，释放各托管会话；已开始的安装、更新或目录迁移仍会完成收尾。
+
+`npm run build` 按 `desktop/package.json` 的版本生成 `desktop/dist/Crew-<version>-win-x64.zip`、`Crew-<version>-portable.exe` 和 `Crew-<version>-setup.exe`。日常使用可将 ZIP 解压一次后运行其中的 `Crew.exe`，或使用安装版；单文件 portable 每次启动都需临时解包。运行仍需本机 Python 和所选模型 CLI。构建、独立数据目录和隔离验收见 [桌面版说明](desktop/README.md)。
 
 ### Claude 插件与 VS Code
 

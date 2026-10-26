@@ -20,6 +20,7 @@ function fixture(t, options = {}) {
   const manager = new CrewUpdates(config, backend, {
     onChange: state => phases.push(state.phase),
     checkLatest:async()=>{if(options.onlineError)throw new Error(options.onlineError);return {release:null,main:{version:'0.2.5',sha:'a'.repeat(40),url:'https://github.com/akitokunnn/Crew/tree/'+ 'a'.repeat(40)},checked_at:'2026-10-25T09:00:00Z'};},
+    stopReadOnly:options.stopReadOnly,
     onRestart: async value => { calls.push('reconnect'); assert.equal(value.instance_id, 'new-instance'); },
     acquireLock: async () => {
       calls.push('lock');
@@ -45,6 +46,7 @@ function fixture(t, options = {}) {
       assert.equal(args[0], path.join(config.backendDir, 'crew_update.py'));
       assert.equal(args[1], '--home'); assert.equal(args[2], config.home);
       const operation = args[3]; calls.push(operation);
+      if (options.onOperation) await options.onOperation(operation);
       if (options.fail === operation) return { stdout: JSON.stringify({ ok: false, operation, error: options.failure || 'fixture ' + operation + ' failed' }) };
       let value = {};
       if (operation === 'inspect') {
@@ -169,4 +171,20 @@ test('online failure stays visible without replacing latest with a local version
   const state=await f.manager.check();
   assert.equal(state.online,null);assert.match(state.online_error,/rate limited/);
   assert.equal(state.can_update,true);assert.equal(state.phase,'idle');assert.equal(state.online_checking,false);
+});
+
+test('quit waits for an active plugin installer and its complete update transaction without publishing to a closed shell',async t=>{
+  let started,release;
+  const running=new Promise(resolve=>{started=resolve;}),gate=new Promise(resolve=>{release=resolve;});
+  let stops=0;
+  const f=fixture(t,{pluginUpdate:true,stopReadOnly:async()=>{stops++;},onOperation:async operation=>{if(operation==='plugin-update'){started();await gate;}}});
+  const updating=f.manager.update();await running;
+  const before=f.phases.length,time=performance.now();let closed=false;
+  const closing=f.manager.close().then(()=>{closed=true;});
+  await new Promise(resolve=>setTimeout(resolve,70));assert.equal(closed,false);
+  release();await Promise.all([updating,closing]);
+  assert.equal(f.manager.snapshot().phase,'done');assert.equal(f.releases,1);
+  assert.deepEqual(f.calls.slice(-4),['health','reconnect','inspect','unlock']);
+  assert.equal(f.phases.length,before);assert.equal(stops,0);
+  console.log('active Crew installer preserved for '+(performance.now()-time).toFixed(1)+'ms through completion');
 });

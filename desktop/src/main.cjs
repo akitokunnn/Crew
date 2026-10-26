@@ -27,20 +27,63 @@ const homePage = pathToFileURL(path.join(__dirname, 'home.html')).href;
 const errorPage = pathToFileURL(path.join(__dirname, 'error.html')).href;
 let lastPublishedTab=null;
 let window, tray, backend, tabs, activityPreview, tools, crewUpdates, launchSettings, windowMenu, quitting = false, finishedQuit = false, parentDirectory = null, smokeStarted = false, pendingAction = null, pendingWorkspace = null, homeBootstrapped = false;
+let startupWork = null, cleanupPromise = null;
+
+function liveWindow(target = window) {
+  return !quitting && target === window && !!target && !target.isDestroyed() && !target.webContents.isDestroyed();
+}
+function showWindow() {
+  if (!liveWindow()) return;
+  window.show(); window.focus();
+}
+async function startupStep(work) {
+  startupWork = Promise.resolve(work);
+  try { return await startupWork; }
+  finally { startupWork = null; }
+}
+async function cleanupResources() {
+  if (cleanupPromise) return cleanupPromise;
+  cleanupPromise = (async () => {
+    const finish = async (name, action) => {
+      try { await action(); }
+      catch (error) { console.error('Crew shutdown failed (' + name + '):', error); }
+    };
+    // Let resources already being constructed finish before closing them. The
+    // continuation checks quitting before it can construct the next resource.
+    if (startupWork) await finish('startup', () => startupWork);
+    await Promise.all([
+      finish('connection change', () => launchSettings?.pending),
+      finish('Crew update', () => crewUpdates?.close()),
+      finish('tool updates', () => tools?.close())
+    ]);
+    await finish('backend', () => backend?.stop());
+  })();
+  return cleanupPromise;
+}
+async function injectAssets(directory, files) {
+  const target = window;
+  const assets = await Promise.all(files.map(async ([method, name]) => [method, await fs.readFile(path.join(directory, name), 'utf8')]));
+  for (const [method, source] of assets) {
+    if (!liveWindow(target)) return {ok:false};
+    try { await target.webContents[method](source); }
+    catch (error) { if (!liveWindow(target)) return {ok:false}; throw error; }
+  }
+  return {ok:liveWindow(target)};
+}
 
 function trusted(event) {
-  if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame || event.senderFrame.url !== homePage) {
+  if (!liveWindow() || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame || event.senderFrame.url !== homePage) {
     throw new Error('桌面操作只允许来自 Crew 工作区首页');
   }
 }
 function handle(channel, callback) { ipcMain.handle(channel, async (event, ...args) => { trusted(event); return callback(...args); }); }
 function trustedChrome(event) {
-  if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame ||
+  if (!liveWindow() || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame ||
       ![homePage,errorPage].includes(event.senderFrame.url)) throw new Error('窗口操作只允许来自 Crew 窗口');
 }
 function currentWindowState() { return { maximized:window.isMaximized(), focused:window.isFocused(), canGoBack:(tabs?.activeView?.webContents||window.webContents).navigationHistory.canGoBack() }; }
 function publishTabs(state=tabs?.state()) {
-  if (!window || window.webContents.isDestroyed()) return;
+  if (!liveWindow()) return;
   if (state) window.webContents.send('desktop:tabs-state',state);
   if(state?.activeId!==lastPublishedTab)activityPreview?.hide();
   lastPublishedTab=state?.activeId;activityPreview?.refresh();
@@ -53,7 +96,11 @@ function publishTabs(state=tabs?.state()) {
 }
 ipcMain.handle('desktop:chrome-ready', async event => {
   trustedChrome(event);
-  await window.webContents.insertCSS(await fs.readFile(path.join(__dirname, 'chrome.css'), 'utf8'), { cssOrigin: 'author' });
+  const target = window, css = await fs.readFile(path.join(__dirname, 'chrome.css'), 'utf8');
+  if (!liveWindow(target)) return null;
+  try { await target.webContents.insertCSS(css, { cssOrigin: 'author' }); }
+  catch (error) { if (!liveWindow(target)) return null; throw error; }
+  if (!liveWindow(target)) return null;
   return { ...currentWindowState(),tabs:tabs?.state() };
 });
 ipcMain.on('desktop:activity-preview-ready',event=>activityPreview?.markReady(event));
@@ -86,26 +133,36 @@ function external(url) {
   catch (_) { /* Invalid external link: keep the application on its current page. */ }
 }
 async function showHome(action = null, workspace = null) {
-  if (!window) return;
+  if (!liveWindow()) return;
+  const target = window;
   pendingWorkspace = action === 'workspace-settings' ? workspace : null;
   if(action==='new')parentDirectory=null;
-  if(window.webContents.getURL()!==homePage){homeBootstrapped=false;pendingAction=action;await window.loadURL(homePage);}
+  if(target.webContents.getURL()!==homePage){
+    homeBootstrapped=false;pendingAction=action;
+    try { await target.loadURL(homePage); }
+    catch (error) { if (!liveWindow(target)) return; throw error; }
+  }
+  if (!liveWindow(target)) return;
   tabs?.select('home');
   if(action && homeBootstrapped){window.webContents.send('desktop:home-action',{action,...(workspace ? {project:workspace} : {})});pendingWorkspace=null;}
   else if(action)pendingAction=action;
-  if (!config.smoke) { window.show(); window.focus(); }
+  if (!config.smoke) showWindow();
 }
 function actionError(error) {
   console.error('Crew action failed:',error);
-  if(!config.smoke)void dialog.showMessageBox(window,{type:'error',title:'Crew',message:'这个操作暂时没有完成',detail:error.message,buttons:['好'],noLink:true})
+  if(!config.smoke && liveWindow())void dialog.showMessageBox(window,{type:'error',title:'Crew',message:'这个操作暂时没有完成',detail:error.message,buttons:['好'],noLink:true})
     .catch(failure=>console.error('Crew error dialog failed:',failure));
 }
-function menuAction(action) { return ()=>{ Promise.resolve().then(action).catch(actionError); }; }
+function menuAction(action) { return ()=>{ if (!liveWindow()) return; Promise.resolve().then(()=>{if(liveWindow())return action();}).catch(actionError); }; }
 async function openProject(name) {
+  if (!liveWindow()) return false;
+  const target = window;
   if(new URL(backend.url).port==='0')throw new Error(backend.startupError||'后台尚未连接，请查看系统管理员');
   const project=(await core.projects(backend.url)).find(item=>item.name===name);
+  if (!liveWindow(target)) return false;
   if(!project)throw new Error('工作区不存在，请刷新列表');
   const [location]=await core.projectLocations([project]);
+  if (!liveWindow(target)) return false;
   if(location.directory_state.status!=='ready'){await showHome('workspace-settings',name);return false;}
   await tabs.open(project);return true;
 }
@@ -126,9 +183,11 @@ function aboutCrew() {
     icon:nativeImage.createFromPath(path.join(__dirname,'../assets/crew.png')), buttons:['好'], noLink:true });
 }
 async function showLogs() {
+  const target = window;
+  if (!liveWindow(target)) return;
   const directory = path.join(config.home,'desktop','logs');
-  try { await fs.access(directory); await shell.openPath(directory); }
-  catch (_) { await dialog.showMessageBox(window,{ type:'info',title:'Crew 日志',message:'还没有可查看的日志',detail:'出现启动问题时，会在这里保留最近的记录。',buttons:['好'],noLink:true }); }
+  try { await fs.access(directory); if (liveWindow(target)) await shell.openPath(directory); }
+  catch (_) { if (liveWindow(target)) await dialog.showMessageBox(target,{ type:'info',title:'Crew 日志',message:'还没有可查看的日志',detail:'出现启动问题时，会在这里保留最近的记录。',buttons:['好'],noLink:true }); }
 }
 function workspaceMenu() {
   return [
@@ -150,7 +209,7 @@ function workspaceMenu() {
     { id:'tab-previous',label:'上一个标签',accelerator:'Ctrl+Shift+Tab',click:menuAction(()=>tabs.cycle(-1)) },
     { type:'separator' },
     { id:'tab-close', label:'关闭当前标签', accelerator:'CmdOrCtrl+W', click:menuAction(()=>tabs.close(tabs.state().activeId)) },
-    { id:'window-close',label:'收起到托盘',click:()=>window.close() },
+    { id:'window-close',label:'收起到托盘',click:()=>{if(liveWindow())window.close();} },
     { id:'app-quit', label:'退出 Crew', accelerator:'CmdOrCtrl+Q', click:()=>app.quit() }
   ];
 }
@@ -234,14 +293,17 @@ async function visualEvidence(target, evidence) {
 }
 
 handle('desktop:bootstrap', async () => {
+  const target = window;
   if(new URL(backend.url).port==='0')throw new Error(backend.startupError||'后台尚未连接，请查看系统管理员');
   const projects = await core.projectLocations(await core.projects(backend.url)), action = pendingAction, workspace = pendingWorkspace; pendingAction = null; pendingWorkspace = null;
+  if (!liveWindow(target)) return null;
   for(const project of projects)tabs.updateProject(project);
   homeBootstrapped=true;
   return { projects, service: { url:backend.url, owned:backend.owned }, pendingAction:action, ...(workspace ? {pendingWorkspace:workspace} : {}) };
 });
 handle('desktop:admin-status',async()=>{
   const status=await administrator.snapshot();
+  if (!liveWindow()) return status;
   if(backend?.startupError&&['healthy','degraded'].includes(status.state)&&status.url){
     const recovered=core.loopback(status.url);
     if(tabs&&tabs.state().tabs.every(tab=>tab.project===null)){
@@ -251,7 +313,7 @@ handle('desktop:admin-status',async()=>{
         // An old or not-yet-ready URL must never replace the offline origin.
         return {...status,incidents:[...status.incidents,{at:new Date().toISOString(),level:'warning',message:'后台尚不能读取工作区：'+error.message}]};
       }
-      if(backend.startupError&&tabs.state().tabs.every(tab=>tab.project===null)){
+      if(liveWindow()&&backend.startupError&&tabs.state().tabs.every(tab=>tab.project===null)){
         tabs.reconnect(recovered);backend.url=recovered;backend.startupError=null;
       }
     }
@@ -343,23 +405,19 @@ handle('desktop:storage-policy',body=>settingsRequest('/api/storage/policy',body
 handle('desktop:settings-ui',async()=>{
   // Only trusted home can load these fixed, packaged application assets.
   const directory = path.join(config.helperBackendDir, 'crew', 'web');
-  await window.webContents.executeJavaScript(await fs.readFile(path.join(directory, 'launch-settings-ui.js'),'utf8'));
-  await window.webContents.insertCSS(await fs.readFile(path.join(directory, 'operations-ui.css'),'utf8'));
-  await window.webContents.executeJavaScript(await fs.readFile(path.join(directory, 'operations-ui.js'),'utf8'));
-  await window.webContents.insertCSS(await fs.readFile(path.join(directory, 'settings-ui.css'),'utf8'));
-  await window.webContents.executeJavaScript(await fs.readFile(path.join(directory, 'settings-ui.js'),'utf8'));
-  await window.webContents.executeJavaScript(await fs.readFile(path.join(directory, 'connections-ui.js'),'utf8'));
-  await window.webContents.insertCSS(await fs.readFile(path.join(directory, 'storage-ui.css'),'utf8'));
-  await window.webContents.executeJavaScript(await fs.readFile(path.join(directory, 'storage-ui.js'),'utf8'));
-  return {ok:true};
+  return injectAssets(directory, [
+    ['executeJavaScript','launch-settings-ui.js'], ['insertCSS','operations-ui.css'],
+    ['executeJavaScript','operations-ui.js'], ['insertCSS','settings-ui.css'],
+    ['executeJavaScript','settings-ui.js'], ['executeJavaScript','connections-ui.js'],
+    ['insertCSS','storage-ui.css'], ['executeJavaScript','storage-ui.js']
+  ]);
 });
 handle('desktop:workspace-ui',async()=>{
   const directory=path.join(config.helperBackendDir,'crew','web');
-  await window.webContents.insertCSS(await fs.readFile(path.join(directory,'workspace-settings-ui.css'),'utf8'));
-  await window.webContents.executeJavaScript(await fs.readFile(path.join(directory,'workspace-settings-ui.js'),'utf8'));
-  await window.webContents.insertCSS(await fs.readFile(path.join(directory,'maintenance-ui.css'),'utf8'));
-  await window.webContents.executeJavaScript(await fs.readFile(path.join(directory,'maintenance-ui.js'),'utf8'));
-  return {ok:true};
+  return injectAssets(directory, [
+    ['insertCSS','workspace-settings-ui.css'], ['executeJavaScript','workspace-settings-ui.js'],
+    ['insertCSS','maintenance-ui.css'], ['executeJavaScript','maintenance-ui.js']
+  ]);
 });
 // Workspace cleanup from the settings dialog: only these maintenance routes are reachable.
 handle('desktop:workspace-maintenance',async request=>{
@@ -374,11 +432,11 @@ handle('desktop:workspace-get',name=>{
 });
 handle('desktop:workspace-update',async body=>{
   const result=await settingsRequest('/api/project/update',body,180000);
-  tabs.updateProject(result.project); return result;
+  if(liveWindow())tabs.updateProject(result.project); return result;
 });
 handle('desktop:workspace-remove',async body=>{
   const result=await settingsRequest('/api/project/remove',body,180000);
-  if(result.removed)tabs.closeProject(result.project); return result;
+  if(result.removed&&liveWindow())tabs.closeProject(result.project); return result;
 });
 handle('desktop:workspace-directory',async current=>{
   if(typeof current!=='string')throw Error('工作目录必须是路径文本。');
@@ -387,6 +445,7 @@ handle('desktop:workspace-directory',async current=>{
 });
 handle('desktop:ready', async info => {
   if (!config.smoke || smokeStarted) return;
+  const rendererReadyAt = Date.now();
   smokeStarted = true;
   try {
     const target = path.resolve(config.smokeOutput);
@@ -400,6 +459,8 @@ handle('desktop:ready', async info => {
     }
     const preferences = window.webContents.getLastWebPreferences();
     const evidence = { window: !window.isDestroyed(), url: window.webContents.getURL(), service: { url: backend.url, owned: backend.owned },
+      timing:{process_created_at:process.getCreationTime?.() ?? null,renderer_ready_at:rendererReadyAt},
+      desktopVersion:app.getVersion(),
       contextIsolation: preferences.contextIsolation, nodeIntegration: preferences.nodeIntegration, sandbox: preferences.sandbox,
       renderer: info, chrome: await chromeEvidence(), menuBarVisible: window.isMenuBarVisible(), windowOptions: chrome.windowOptions(),
       screenshot: screenshotError ? null : screenshot, screenshotError, electron: process.versions.electron, home: config.home };
@@ -414,16 +475,19 @@ handle('desktop:ready', async info => {
 
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
-  app.on('second-instance', () => { if (window) { window.show(); window.focus(); } });
+  app.on('second-instance', showWindow);
   app.whenReady().then(async () => {
+    if (quitting) return;
     try {
       if (app.isPackaged) {
-        config.helperBackendDir=await core.materializeBackend(config.bundledBackendDir,config.home);
+        config.helperBackendDir=await startupStep(core.materializeBackend(config.bundledBackendDir,config.home));
+        if (quitting) return;
         if(config.backendSource==='bundled')config.backendDir=config.helperBackendDir;
       }
       backend = new core.Backend(config);
-      try { await backend.start(); }
+      try { await startupStep(backend.start()); }
       catch (error) {
+        if (quitting) return;
         if(config.smoke)throw error;
         // The administrator must remain reachable even when no workspace can
         // connect. Keep the shell and its file-backed health page available.
@@ -434,23 +498,27 @@ else {
         try{backend.url=core.loopback(candidate);}catch(_){backend.url='http://127.0.0.1:0';}
         pendingAction='admin';
       }
-      tools=new ToolUpdates(config,{onChange:state=>{if(window&&!window.webContents.isDestroyed())window.webContents.send('desktop:tools-state',state);}});
+      if (quitting) return;
+      tools=new ToolUpdates(config,{onChange:state=>{if(liveWindow())window.webContents.send('desktop:tools-state',state);}});
       config.desktopVersion=app.getVersion();
-      crewUpdates=new CrewUpdates(config,backend,{onChange:state=>{if(window&&!window.webContents.isDestroyed())window.webContents.send('desktop:crew-update-state',state);},onRestart:async health=>{
+      crewUpdates=new CrewUpdates(config,backend,{onChange:state=>{if(liveWindow())window.webContents.send('desktop:crew-update-state',state);},onRestart:async health=>{
         backend.startupError=null;
         if(tabs&&tabs.origin!==backend.url)throw new Error('更新后服务地址变化；工作区标签已保留，请重新打开 Crew。');
         publishTabs();
       }});
       launchSettings=new LaunchSettings(config,{backend,updates:crewUpdates,operations,bundledBackend:config.bundledBackendDir,onApplied:async()=>{
+        if (quitting) return;
         const portable=process.env.PORTABLE_EXECUTABLE_FILE;
         try{
           if(portable && !(await fs.stat(portable)).isFile())throw Error('便携程序文件不可用。');
+          if (quitting) return;
           app.relaunch({args:relaunchArgs(process.argv.slice(1),config.launchSettingsPath),...(portable?{execPath:portable}:{})});
         }
         catch(error){throw Error('启动设置已保存，但重新启动失败：'+error.message+'；请手动重新打开 Crew。');}
         setTimeout(()=>app.quit(),250);
       }});
-      await tools.initialize();
+      await startupStep(tools.initialize());
+      if (quitting) return;
       if(!config.smoke&&!config.isolated&&!backend.startupError)tools.start();
       window = new BrowserWindow({ width: 1220, height: 850, minWidth: 820, minHeight: 600,
         show: false, title: 'Crew', icon: path.join(__dirname, '../assets/crew.png'), ...chrome.windowOptions(),
@@ -459,7 +527,7 @@ else {
       tabs=new WorkspaceTabs(window,{origin:backend.url,
         createView:()=>new WebContentsView({webPreferences:{contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true,...(config.smoke?{backgroundThrottling:false}:{})}}),
         onChange:state=>publishTabs(state),onHome:()=>{},external,openProject,workspaceSettings:name=>{void showHome('workspace-settings',name).catch(actionError);},
-        onTitleChange:name=>{void core.projects(backend.url).then(items=>{const item=items.find(project=>project.name===name);if(item)tabs.updateProject(item);}).catch(error=>console.error('Crew workspace metadata refresh failed:',error));},
+        onTitleChange:name=>{void core.projects(backend.url).then(items=>{if(!liveWindow())return;const item=items.find(project=>project.name===name);if(item)tabs.updateProject(item);}).catch(error=>console.error('Crew workspace metadata refresh failed:',error));},
         readActivity:names=>core.request(backend.url,'/api/workspaces/activity?'+new URLSearchParams(names.map(name=>['project',name])).toString(),undefined,4000),
         onKeyboard:keyboard,onNavigationError:actionError});
       activityPreview=new ActivityPreview(window,{
@@ -467,9 +535,9 @@ else {
         getTab:id=>tabs.state().tabs.find(tab=>tab.id===id&&tab.project),onSelect:id=>tabs.select(id)});
       window.on('blur',()=>activityPreview.hide());window.on('resize',()=>activityPreview.hide());
       tabs.setBounds({x:7,y:75,width:1206,height:768});
-      window.once('ready-to-show', () => { if (!config.smoke) window.show(); });
+      window.once('ready-to-show', () => { if (!config.smoke && liveWindow()) window.show(); });
       for (const event of ['maximize', 'unmaximize', 'focus', 'blur']) window.on(event, () => {
-        if (!window.webContents.isDestroyed()) window.webContents.send('desktop:window-state', currentWindowState());
+        if (liveWindow()) window.webContents.send('desktop:window-state', currentWindowState());
       });
       installPermissions(window.webContents.session, {homeContents:window.webContents, homePage,
         workspaceContents:contents=>[...tabs.entries.values()].some(tab=>tab.view.webContents===contents),
@@ -489,7 +557,7 @@ else {
       window.webContents.on('before-input-event',keyboard);
       window.webContents.on('did-start-loading',()=>{homeBootstrapped=false;});
       window.webContents.on('did-fail-load', (_event, code, _description, url, mainFrame) => {
-        if (!mainFrame || code === -3 || url!==homePage) return;
+        if (!liveWindow() || !mainFrame || code === -3 || url!==homePage) return;
         void window.loadURL(errorPage).catch(error => console.error('Crew recovery page failed:',error));
       });
       window.webContents.setWindowOpenHandler(({ url }) => { external(url); return { action: 'deny' }; });
@@ -498,6 +566,7 @@ else {
         publishTabs();
       });
       window.on('close', event => { if (!quitting) { event.preventDefault(); window.hide(); } });
+      window.on('closed', () => { window = null; });
       Menu.setApplicationMenu(Menu.buildFromTemplate([
         { label:'工作区', submenu:workspaceMenu() },
         { label:'编辑', submenu:[{ role:'undo',label:'撤销' },{ role:'redo',label:'重做' },{ type:'separator' },{ role:'cut',label:'剪切' },{ role:'copy',label:'复制' },{ role:'paste',label:'粘贴' },{ role:'selectAll',label:'全选' }] },
@@ -509,14 +578,16 @@ else {
         const icon = nativeImage.createFromPath(path.join(__dirname, '../assets/crew-tray.png'));
         tray = new Tray(icon);
         tray.setToolTip('Crew · 关闭窗口后继续运行');
-        tray.setContextMenu(Menu.buildFromTemplate([{ label: '打开 Crew', click: () => { window.show(); window.focus(); } },
+        tray.setContextMenu(Menu.buildFromTemplate([{ label: '打开 Crew', click: showWindow },
           { label: '工作区首页', click:menuAction(()=>showHome()) },{ label:'新建工作区…',click:menuAction(()=>showHome('new')) },{ label:'打开已有项目…',click:menuAction(()=>showHome('open')) }, { type: 'separator' }, { label:'关于 Crew',click:menuAction(aboutCrew) },{ label: '退出 Crew', click: () => app.quit() }]));
-        tray.on('double-click', () => { window.show(); window.focus(); });
+        tray.on('double-click', showWindow);
       }
       await window.loadURL(homePage);
     } catch (error) {
+      if (quitting) return;
       console.error(error);
-      if (backend) await backend.stop();
+      quitting = true;
+      await cleanupResources();
       if (!config.smoke) {
         const directory=path.join(config.home,'desktop','logs');
         try { await fs.mkdir(directory,{recursive:true}); await fs.writeFile(path.join(directory,'app.log'),new Date().toISOString()+'\n'+(error.stack||String(error))); } catch (_) { /* A log failure must not hide the recovery action. */ }
@@ -533,8 +604,15 @@ else {
     event.preventDefault();
     if (quitting) return;
     quitting = true;
-    activityPreview?.dispose();
-    tabs?.dispose();
-    Promise.resolve(crewUpdates?.close()).then(()=>tools?.close()).then(()=>backend?.stop()).finally(() => { finishedQuit = true; tray?.destroy(); app.quit(); });
+    for (const [name, resource] of [['preview',activityPreview],['tabs',tabs]]) {
+      try { resource?.dispose(); }
+      catch (error) { console.error('Crew shutdown failed (' + name + '):', error); }
+    }
+    void cleanupResources().then(() => {
+      finishedQuit = true;
+      if (tray && !tray.isDestroyed()) tray.destroy();
+      tray = null;
+      app.quit();
+    }).catch(error => { console.error('Crew shutdown failed:', error); app.exit(1); });
   });
 }

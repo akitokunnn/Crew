@@ -29,6 +29,8 @@ Git 的中间状态只更新台账，普通成功留待阅，不额外开启 AI 
 
 关闭窗口会隐藏到托盘，AI 和服务继续运行；托盘或菜单中的「退出 Crew」才退出应用。窗口保留原生最小化、最大化、关闭与可拖动标题栏；应用菜单收在标题栏的省略号中。Crew 图标用于窗口、任务栏、托盘、安装器和快捷方式。
 
+真正退出后，托盘、菜单和已排队的异步界面操作不再访问窗口。只读版本检查及独立的要点卡整理会取消并回收自有进程；各普通会话和目标执行按原有归档与进程期限并行收尾。已开始的安装、更新、目录迁移仍等待完成，借用后台继续由原窗口管理。
+
 首页侧栏和应用菜单中的「工具与更新」显示 Claude Code / Codex 的当前版本、最新版本和更新结果。自动更新默认关闭；正常启动后会检查版本，手动点击可再次检查。正在使用某个工具的会话会让更新排队，空闲后再试，也可以取消排队。自动更新需用户主动开启；无法确定安装来源或运行状态时会保留说明，不强行替换。更新失败可查看本地日志；退出应用会等待已开始的更新完成。
 
 0.1.2 另有 Crew 卡片：手动检查并统一到**当前桌面自带版本**，确认空闲后备份、同步已安装插件、重启自有后台并在原端口重连，标签与草稿保留。它不下载互联网新版，也不受 CLI 自动更新开关控制；借用或不支持更新准备的旧后台会说明需先退出原 Crew。已有 Claude 会话需重载插件或重开。流程与限制见 [Crew 更新说明](../docs/DESKTOP_UPDATES.md)。
@@ -54,7 +56,7 @@ npm test
 npm run build
 ```
 
-构建版本读取本目录 `package.json`，产物为 `dist/Crew-<version>-portable.exe`、`dist/Crew-<version>-setup.exe`；前者可直接运行，后者是当前用户安装器，提供开始菜单、桌面快捷方式和卸载入口。`dist/win-unpacked/Crew.exe` 是未压缩版本。安装器与应用未做代码签名；EXE 原生图标资源仍正常嵌入。后端源码随应用放在 `resources/backend`，打包版会将后端按内容哈希保留到所选 home 的 `desktop/backend`，保证 portable 解包目录清理后 CLI 和守卫路径仍有效；Python 与 Git 使用本机安装。
+构建版本读取本目录 `package.json`，产物包括 `dist/Crew-<version>-win-x64.zip`、`dist/Crew-<version>-portable.exe`、`dist/Crew-<version>-setup.exe`。ZIP 解压一次后直接运行目录中的 `Crew.exe`，日常启动无需重复解包；portable 是每次启动时临时解包的单文件程序；setup 是当前用户安装器，提供开始菜单、桌面快捷方式和卸载入口。`dist/win-unpacked/Crew.exe` 是同版未压缩目录，日常使用建议 ZIP 目录版或安装版。安装器与应用未做代码签名；EXE 原生图标资源仍正常嵌入。后端源码随应用放在 `resources/backend`，打包版会将后端按内容哈希保留到所选 home 的 `desktop/backend`，保证 portable 解包目录清理后 CLI 和守卫路径仍有效；Python 与 Git 使用本机安装。
 
 验收新版本且保留正在运行的正式实例时，使用独立数据目录。此入口不会复制正式会话、QQ 凭据或自动恢复旧任务：
 
@@ -96,6 +98,10 @@ node scripts/verify-icons.cjs dist/win-unpacked/Crew.exe "dist/Crew-$crewVersion
 结果保存在 `smoke-output/source.json` / `packaged.json` / `portable.json` 及同名 PNG。单元测试另外覆盖已有服务复用、Git 根目录解析、新建仓库、已有文件保护与后端端口 0 / 优雅退出。
 
 `smoke-handoff.cjs` 在私有 HOME 用历史记录和假载体守卫验收交接、离线未知结果、真实失败、后续工具状态、折叠与多行草稿保留，以及窄窗深色外观；还核对“在干活”的 leader/下属总数、列表入口、组头人数和空态。证据和截图在 `smoke-output/handoff`。不会向模型发送输入。
+
+启动与退出基准在仓库根目录执行 `node desktop/scripts/benchmark-lifecycle.cjs --label=after`。它使用空 HOME、复用 HOME、已有会话与三个工作区的测试 HOME，另验证借用后台、收起恢复，以及窗口销毁后的排队回调；每次都确认假载体守卫生效且模型启动次数为零。`--desktop=<基线源码中的desktop目录>` 可测另一份冻结源码，`--output=<JSON路径>` 保存结果。“空 HOME”不表示清空操作系统文件缓存，启动就绪与真正进程退出分别计时。
+
+构建后执行 `node desktop/scripts/benchmark-packaged-lifecycle.cjs`，用实际应用版本比对目录程序、单文件 portable，以及 ZIP 解压出的同版程序；外层启动、Electron 创建和 renderer 就绪分段计时，ZIP 的一次解压单独记录。单文件解包发生在 Electron 创建前，不能计作 Crew 界面或后台初始化耗时。结果默认在 `desktop/.cache/packaged-lifecycle-<version>.json`。
 
 `--reuse` 会先创建一个完全隔离的测试服务，再检查真实应用退出后该服务仍存活；随后由测试服务的原始拥有者清理。不会复用生产 home 或正式服务。
 

@@ -23,6 +23,15 @@ HEADINGS = ("## 已定结论", "## 未定的事 · 在等谁", "## 各组跨组�
 DIGEST_TIMEOUT = 300
 
 
+class DigestCancelled(board.BoardError):
+    pass
+
+
+def _check_cancelled(cancelled):
+    if cancelled is not None and cancelled.is_set():
+        raise DigestCancelled('Crew 正在退出，本次要点卡整理已中断')
+
+
 def prompt(previous, messages):
     # Distinguish the first card from a missing input.
     return PROMPT + "\n上一张要点卡：\n" + (previous or "（无，这是第一张要点卡）") + "\n\n新发言全文（JSON）：\n" + json.dumps(
@@ -73,7 +82,7 @@ def _claude(home, text, process_factory, selected):
     return result["result"], result["total_cost_usd"], model
 
 
-def _codex(text, process_factory, selected):
+def _codex(text, process_factory, selected, cancelled=None):
     deadline = time.monotonic() + DIGEST_TIMEOUT
     env = {key: value for key, value in os.environ.items()
            if not key.startswith('CREW_') and key not in ('CLAUDE_CODE_SESSION_ID', 'CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT')}
@@ -81,6 +90,7 @@ def _codex(text, process_factory, selected):
     client = None
 
     def remaining():
+        _check_cancelled(cancelled)
         seconds = deadline - time.monotonic()
         if seconds <= 0:
             raise codex_client.RequestTimeout('Codex digest time budget exhausted')
@@ -145,8 +155,10 @@ def _codex(text, process_factory, selected):
                 turn = client.start_turn(text)
                 try:
                     finished = client.wait_turn(turn['turn']['id'], timeout=remaining())
-                    if not complete.wait(remaining()):
-                        raise codex_client.RequestTimeout('Codex digest completion notifications did not finish')
+                    while not complete.wait(min(.1, remaining())):
+                        # A terminal turn can precede its callback. Explicit
+                        # shutdown must also cancel this last notification wait.
+                        _check_cancelled(cancelled)
                 except codex_client.CodexError:
                     if actions:
                         raise RuntimeError(actions[0])
@@ -170,16 +182,19 @@ def _codex(text, process_factory, selected):
         raise
 
 
-def generate(home, text, process_factory):
+def generate(home, text, process_factory, cancelled=None):
+    _check_cancelled(cancelled)
     selected = settings.resolve(home, 'digest')
+    _check_cancelled(cancelled)
     runtime = selected['runtime']
     if runtime == 'claude':
         body, cost, model = _claude(home, text, process_factory, selected)
     else:
-        body, cost, model = _codex(text, process_factory, selected)
+        body, cost, model = _codex(text, process_factory, selected, cancelled)
         missing = [heading for heading in HEADINGS if heading not in body]
         if missing:
             raise ValueError('输出缺少固定小标题 %s；result: %s' % ('、'.join(missing), body[:180]))
+    _check_cancelled(cancelled)
     return body, cost, model, runtime
 
 
@@ -188,10 +203,35 @@ class Manager:
         self.home, self.write_lock, self.process_factory = Path(home), write_lock, process_factory
         self.lock = threading.Lock()
         self.running, self.errors, self.failed_upto, self.workers = set(), {}, {}, {}
+        self.stopping = threading.Event()
+        self.jobs = {}
+
+    def stop(self):
+        """Cancel only native processes created by this digest manager."""
+        with self.lock:
+            self.stopping.set()
+            processes = []
+            for job in self.jobs.values():
+                job['cancelled'].set()
+                processes.extend(job['processes'])
+        errors = []
+        for process in processes:
+            try:
+                if process.poll() is None:
+                    process.terminate()
+            except OSError as exc:
+                errors.append(exc)
+        if errors:
+            raise errors[0]
 
     def close(self):
-        for worker in self.workers.values():
-            worker.join()
+        try:
+            self.stop()
+        finally:
+            # communicate()/the Codex client still own stream draining and
+            # reaping. Joining preserves their real interruption failures.
+            for worker in list(self.workers.values()):
+                worker.join()
 
     def state(self, project):
         with self.lock:
@@ -200,6 +240,10 @@ class Manager:
     def start(self, conn, project, trigger="manual"):
         board.project(conn, project)
         with self.lock:
+            if self.stopping.is_set():
+                if trigger == 'auto':
+                    return False
+                raise DigestCancelled('Crew 正在退出，不能启动要点卡整理')
             if project in self.running:
                 if trigger == "auto":
                     return False
@@ -219,30 +263,48 @@ class Manager:
                 raise board.BoardError("没有新发言需要整理")
             messages = [channel._message(conn, row) for row in rows]
             self.running.add(project)
-            worker = threading.Thread(target=self._run, args=(project, previous, messages, trigger, boundary["cleanups"]),
+            # Register ownership before starting the worker. Native creation
+            # and stop use the same lock, so no child can escape a close race.
+            job = {'cancelled': threading.Event(), 'processes': []}
+            self.jobs[project] = job
+            worker = threading.Thread(target=self._run, args=(project, previous, messages, trigger, boundary["cleanups"], job),
                                       name="crew-channel-digest", daemon=True)
             self.workers[project] = worker
             worker.start()
             return True
 
-    def _run(self, project, previous, messages, trigger, cleanups):
+    def _run(self, project, previous, messages, trigger, cleanups, job):
+        def owned_process(command, **options):
+            with self.lock:
+                _check_cancelled(job['cancelled'])
+                process = self.process_factory(command, **options)
+                job['processes'].append(process)
+                return process
+
         try:
             body, cost, model, runtime = generate(self.home, prompt(previous["body"] if previous is not None else "", messages),
-                                                  self.process_factory)
+                                                  owned_process, job['cancelled'])
             with self.write_lock, closing(store.connect(self.home)) as conn:
-                if board.cleanup_boundary(conn, project)["cleanups"] != cleanups:
-                    raise board.Conflict("工作区已在整理期间清理，本次要点卡基于清理前的交流，结果已作废")
-                conn.execute("INSERT INTO channel_digests(project,upto_message_id,body,message_count,trigger,model,"
-                             "cost_usd,created_at,runtime) VALUES(?,?,?,?,?,?,?,?,?)",
-                             (project, messages[-1]["id"], body, len(messages), trigger, model, cost, store.now_iso(), runtime))
+                with self.lock:
+                    _check_cancelled(job['cancelled'])
+                    if board.cleanup_boundary(conn, project)["cleanups"] != cleanups:
+                        raise board.Conflict("工作区已在整理期间清理，本次要点卡基于清理前的交流，结果已作废")
+                    conn.execute("INSERT INTO channel_digests(project,upto_message_id,body,message_count,trigger,model,"
+                                 "cost_usd,created_at,runtime) VALUES(?,?,?,?,?,?,?,?,?)",
+                                 (project, messages[-1]["id"], body, len(messages), trigger, model, cost, store.now_iso(), runtime))
         except Exception as exc:
             # Worker boundary: expose failures to the web UI, including their real type.
             with self.lock:
-                self.errors[project] = (type(exc).__name__ + ": " + str(exc))[:500]
+                reason = type(exc).__name__ + ": " + str(exc)
+                if job['cancelled'].is_set() and not isinstance(exc, DigestCancelled):
+                    reason = 'Crew 正在退出，本次要点卡整理已中断；' + reason
+                self.errors[project] = reason[:500]
                 self.failed_upto[project] = messages[-1]["id"]
                 self.running.remove(project)
+                del self.jobs[project]
         else:
             with self.lock:
                 self.errors.pop(project, None)
                 self.failed_upto.pop(project, None)
                 self.running.remove(project)
+                del self.jobs[project]
