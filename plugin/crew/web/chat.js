@@ -370,7 +370,7 @@
       offline:["会话已离线", "会话已离线，未收到此工具的结果，结果未确认。"],
       ended:["本轮已结束", "本轮已结束，未收到此工具的结果。"]})[stopped];
     const goalId = stopped === "handoff" && block.name === "crew_goal" && typeof block.input.goal_id === "string" ? block.input.goal_id : null;
-    const foldKey = `tool:${block.id}`;
+    const foldKey = `${context.historyPrefix || ""}tool:${block.id}`;
     const open = context.cache.expanded.has(foldKey);
     const output = result && (typeof result.content === "string" ? result.content : JSON.stringify(result.content, null, 2));
     return `<button type="button" class="tool indent${result || ended ? "" : " live"}${open ? " open" : ""}" data-chat-fold="${escape(foldKey)}" aria-expanded="${open}">${result ? `<span class="${result.is_error ? "chat-error" : "ok"}">${icon("check")}</span>` : ended ? icon(stopped === "handoff" ? "handoff" : "close") : '<span class="spin" aria-label="执行中"></span>'}<span class="label">${escape(toolLabel(context, block))}</span>${!result && ended ? `<span class="tool-state">${ended[0]}</span>` : ""}${icon("right")}</button><div class="tool-steps"><div>输入 · ${escape(block.name)}</div><pre>${escape(JSON.stringify(block.input, null, 2))}</pre>${result ? `<div>${result.is_error ? "执行失败" : "结果"}</div><pre>${escape(output.slice(0, 2000))}</pre>${output.length > 2000 ? '<div>仅显示前 2000 字</div>' : ""}` : ended ? `<div>${ended[1]}</div>${goalId && context.onRouted ? `<button type="button" class="text-link" data-chat-goal="${escape(goalId)}">查看任务 →</button>` : ""}` : "<div>正在执行…</div>"}</div>`;
@@ -397,18 +397,24 @@
       // The sender may have been ended or archived since; its relative paths then resolve against the project root.
       const peer = item.source === "peer" ? context.state.leaders.concat(context.state.members).find(person => person.cc_name === item.sender) : undefined;
       const pathSession = item.source !== "peer" ? context.session.session_id : peer === undefined ? "" : peer.session_id;
-      const foldKey = `peer:${item.id}`;
+      const foldKey = `${context.historyPrefix || ""}peer:${item.id}`;
       const open = context.cache.expanded.has(foldKey);
       return `<button type="button" class="mline indent${open ? " open" : ""}" data-chat-fold="${escape(foldKey)}" aria-expanded="${open}"><span class="who">${escape(sender)} → ${escape(context.session.name)}：</span><span class="txt">${renderInline(item.text.replace(/\s+/g, " "), pathSession)}</span>${item.at ? `<span>${timeOf(item.at)}</span>` : ""}${icon("right")}</button><div class="mfull">${renderMarkdown(item.text, pathSession)}</div>`;
     }
     const images = item.images ? `<div class="message-images">${item.images.map((name, index) => {
       const params = query(context);
       params.set("name", name);
+      if (context.goalId != null && context.executionId) params.set("execution_id", context.executionId);
       const url = `/api/chat/file?${params}`;
       return `<a href="${escape(url)}" target="_blank" rel="noopener noreferrer"><img src="${escape(url)}" alt="图片 ${index + 1}" loading="lazy"></a>`;
     }).join("")}</div>` : "";
     const remoteSource = {qq:"QQ", lark:"Lark / 飞书"}[item.source];
     return `<div class="m-user"><div class="bubble"><span class="message-text">${escape(item.text).replace(/\n/g, "<br>")}</span>${images}</div><div class="m-meta${remoteSource ? " qq-meta" : ""}">${remoteSource ? `来自 ${remoteSource}` : ""}${item.at ? `${remoteSource ? " · " : ""}${timeOf(item.at)}` : ""}</div></div>`;
+  }
+  function* timeline(context) {
+    for (const scope of [...(context.previous || []), context]) for (const item of scope.items) {
+      yield {scope, item, key:`${scope.historyPrefix || ""}${item.id}`};
+    }
   }
   function render(context) {
     context.frame = null;
@@ -416,13 +422,13 @@
     const follow = atBottom(context);
     const desired = [];
     let lastDay = null;
-    for (const item of context.items) {
+    for (const {scope, item, key} of timeline(context)) {
       if (item.at) {
         const day = dayOf(item.at);
-        if (day.key !== lastDay) { desired.push({ key: `date:${item.id}`, className: "div date-div", html: escape(day.label) }); lastDay = day.key; }
+        if (day.key !== lastDay) { desired.push({ key: `date:${key}`, className: "div date-div", html: escape(day.label) }); lastDay = day.key; }
       }
-      if (item.id === context.cache.unreadAnchor) desired.push({ key: "unread", className: "div unread unread-div", html: "以下是你离开后的消息" });
-      desired.push({ key: item.id, className: "chat-event", html: itemHTML(context, item) });
+      if (scope === context && item.id === context.cache.unreadAnchor) desired.push({ key: "unread", className: "div unread unread-div", html: "以下是你离开后的消息" });
+      desired.push({ key, className: "chat-event", html: itemHTML(scope, item) });
     }
     if (!context.readonly && context.busy) {
       const phase = context.confirmingStop ? "等待停止确认" : context.interrupting ? "正在停止…" : context.cache.sending ? "正在发送…" : "等模型回应";
@@ -572,7 +578,22 @@
     try {
       const history = await context.api(`/api/chat/history?${query(context)}`);
       if (!current(context) || generation !== context.loadGeneration) return;
+      if ((history.execution_id ?? null) !== context.executionId) {
+        // Keep the visible transcript until the replacement history arrives;
+        // a failed read must not leave an accepted continuation looking empty.
+        context.items = []; context.previous = []; context.byId.clear(); context.results.clear();
+        context.toolOwners.clear(); context.toolStops.clear(); context.cursor = 0; context.busySeq = 0;
+        context.cache.pendingSendSeq = null;
+      }
       context.executionId = history.execution_id ?? null;
+      context.historyPrefix = context.goalId != null && context.executionId ? `history:${context.executionId}:` : "";
+      context.previous = (history.previous_executions || []).map(value => {
+        const scope = {...context, executionId:value.execution_id, historyPrefix:`history:${value.execution_id}:`,
+          items:[], byId:new Map(), results:new Map(), toolOwners:new Map(), toolStops:new Map(), cursor:0, busySeq:0,
+          cache:{...context.cache, pendingSendSeq:null}};
+        for (const event of value.events) apply(scope, event, false);
+        return scope;
+      });
       for (const event of history.events) apply(context, event, false);
       setBusy(context, history.busy, context.cursor);
       context.readSeq = history.read_seq; context.loading = false; context.historyFailed = false;
@@ -630,8 +651,7 @@
         // First send and context rotation create a different journal. A history read never creates one.
         view.stream?.abort(); view.connectionGeneration++; clearTimeout(view.reconnectTimer); clearTimeout(view.readTimer);
         if (view.frame !== null) { cancelAnimationFrame(view.frame); view.frame = null; }
-        view.items = []; view.byId.clear(); view.nodes.clear(); view.results.clear(); view.toolOwners.clear(); view.inner.innerHTML = "";
-        view.cursor = 0; view.readSeq = 0; view.busySeq = 0; view.cache.pendingSendSeq = null; view.cache.unreadAnchor = null; view.cache.scrollTop = null;
+        view.cache.pendingSendSeq = null; view.cache.unreadAnchor = null; view.cache.scrollTop = null;
         view.readTimer = null; view.reconnectTimer = null; void load(view);
       }
     } catch (error) {
@@ -677,14 +697,16 @@
       }
       const button = event.target.closest("[data-chat-fold]");
       if (!button) return;
-      const item = context.items.find(item => context.nodes.get(item.id).contains(button));
-      const node = context.nodes.get(item.id);
-      const unchanged = node.dataset.html === itemHTML(context, item);
+      const entry = [...timeline(context)].find(({key}) => context.nodes.get(key)?.contains(button));
+      if (!entry) return;
+      const {scope, item, key:nodeKey} = entry;
+      const node = context.nodes.get(nodeKey);
+      const unchanged = node.dataset.html === itemHTML(scope, item);
       const key = button.dataset.chatFold;
       const open = !context.cache.expanded.has(key);
       if (open) context.cache.expanded.add(key); else context.cache.expanded.delete(key);
       button.classList.toggle("open", open); button.setAttribute("aria-expanded", String(open));
-      if (unchanged) node.dataset.html = itemHTML(context, item);
+      if (unchanged) node.dataset.html = itemHTML(scope, item);
     };
     context.visibility = () => scheduleRead(context);
     document.addEventListener("visibilitychange", context.visibility);

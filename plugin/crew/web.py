@@ -1418,11 +1418,11 @@ class Service:
             raise board.BoardError("当前项目中没有这个网页会话")
         return session
 
-    def chat_history(self, session_id, project_name=None, goal_id=None):
+    def chat_history(self, session_id, project_name=None, goal_id=None, *, include_previous=True):
         with closing(store.connect(self.home)) as conn:
             if goal_id:
                 goals.get(conn, goal_id, self.selected_project(conn, project_name))
-                return self.chat.goal_controller.history(conn, goal_id, session_id)
+                return self.chat.goal_controller.history(conn, goal_id, session_id, include_previous=include_previous)
             self.chat_session(conn, self.selected_project(conn, project_name), session_id)
             return {**self.chat.history(session_id), 'read_seq': board.read_seq(conn, session_id)}
 
@@ -1511,11 +1511,16 @@ class Service:
         return {**info, "content": content.decode("utf-8-sig", errors="replace"),
                 "truncated": size > limit, "portion": "\u672b\u5c3e" if tail else "\u5f00\u5934"}, "application/json; charset=utf-8"
 
-    def chat_file(self, session_id, name, project_name=None, goal_id=None):
+    def chat_file(self, session_id, name, project_name=None, goal_id=None, execution_id=None):
         with closing(store.connect(self.home)) as conn:
             if goal_id:
                 goals.get(conn, goal_id, self.selected_project(conn, project_name))
                 execution = self.chat.goal_controller.current(conn, goal_id, session_id)
+                if execution_id:
+                    previous = goals.get_execution(conn, execution_id)
+                    if previous['goal_id'] != goal_id or previous['session_id'] != session_id:
+                        raise board.BoardError('附件执行不属于此任务会话')
+                    execution = previous
                 if execution is None:
                     raise board.BoardError('此目标还没有会话附件')
                 session_id = execution['id']
@@ -1873,11 +1878,13 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, service.git_commit(query.get("project", [None])[0], query.get("sha", [""])[0]))
         elif url.path == '/api/chat/file':
             content, media_type = service.chat_file(query.get('session_id', [''])[0], query.get('name', [''])[0],
-                                                    query.get('project', [None])[0], query.get('goal_id', [None])[0])
+                                                    query.get('project', [None])[0], query.get('goal_id', [None])[0],
+                                                    query.get('execution_id', [None])[0])
             self._send(200, content, media_type)
         elif url.path in ("/api/chat/history", "/api/chat/events"):
             session_id = query.get("session_id", [""])[0]
-            history = service.chat_history(session_id, query.get("project", [None])[0], query.get('goal_id', [None])[0])
+            history = service.chat_history(session_id, query.get("project", [None])[0], query.get('goal_id', [None])[0],
+                                           include_previous=url.path.endswith('/history'))
             if url.path.endswith("/history"):
                 self._send(200, history)
             else:

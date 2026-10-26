@@ -316,3 +316,60 @@ test("a busy turn has one progress row and swaps send for the icon stop until a 
   assert.equal(progress().length,1);assert.equal(target.querySelector(".hint").textContent,"");assert.equal(target.querySelector(".chat-delivery-status").hidden,true);assert.equal(target.querySelector(".chat-interrupt-status").hidden,true);
   h.update("worker",{busy:false});h.flushFrames();assert.equal(progress().length,0);assert.equal(stop.hidden,true);assert.equal(send.hidden,false);h.chat.unmount();
 });
+
+
+test("task history keeps earlier executions separate from live IDs, cursors and attachments",async()=>{
+  const h=harness(),calls=[];
+  const target=h.mount("leader",async(url,data)=>{
+    calls.push({url,data});
+    if(url==="/api/chat/read")return {read_seq:data.seq};
+    return {...history(),execution_id:"new-execution",read_seq:3,
+      previous_executions:[{execution_id:"old-execution",round:1,generation:1,events:[
+        {seq:1,type:"message",id:"same-message",source:"human",text:"Original discussion",images:["old.png"]},
+        {seq:2,type:"assistant",id:"same-answer",content:[{type:"text",text:"Original answer"},{type:"tool_use",id:"same-tool",name:"Bash",input:{command:"old command"}}]},
+        {seq:3,type:"tool_result",tool_use_id:"same-tool",content:"Original tool result"},
+        {seq:4,type:"status",status:"offline"}]}],
+      events:[{seq:1,type:"message",id:"same-message",source:"human",text:"Continue discussion"},
+        {seq:2,type:"assistant",id:"same-answer",content:[{type:"text",text:"Current answer"},{type:"tool_use",id:"same-tool",name:"Bash",input:{command:"new command"}}]},
+        {seq:3,type:"status",status:"working"}]};
+  },{},{goalId:"goal"});await tick();h.flushFrames();
+  const html=()=>target.querySelector(".chat-inner").children.map(item=>item.innerHTML).join("");
+  assert(html().includes("Original discussion"));assert(html().includes("Original answer"));assert(html().includes("Continue discussion"));assert(html().includes("Current answer"));
+  assert(html().includes("execution_id=old-execution"));assert(html().includes("Original tool result"));
+  assert.equal((html().match(/aria-label="执行中"/g)||[]).length,1,"only the current tool is still running");
+  assert(h.streams[0].endsWith("after=3"),"old journal sequence must not hide new SSE events");
+  h.connections[0].emit({seq:4,type:"tool_result",tool_use_id:"same-tool",content:"Current tool result"});await tick();h.flushFrames();
+  assert(html().includes("Original tool result"));assert(html().includes("Current tool result"));
+  const oldNode=target.querySelector(".chat-inner").children.find(item=>item.innerHTML.includes("Original tool result"));
+  const button={...node(),dataset:{chatFold:"history:old-execution:tool:same-tool"}};
+  oldNode.contains=value=>value===button;
+  await target.querySelector(".chat-inner").onclick({target:{closest:selector=>selector==="[data-chat-fold]"?button:null}});
+  assert.equal(button.getAttribute("aria-expanded"),"true");
+  h.connections[0].emit({seq:5,type:"text",id:"live-tail",text:"Next live text"});await tick();h.flushFrames();
+  assert(oldNode.dataset.html.includes('aria-expanded="true"'),"historical tool stays expanded on live updates");
+  assert.equal((html().match(/Original answer/g)||[]).length,1);
+  assert(calls.every(call=>call.url!=="/api/chat/send"));h.chat.unmount();
+});
+
+
+test("execution continuation keeps visible history through a failed reload and recovers without resending",async()=>{
+  const h=harness();let reads=0,sends=0;
+  const oldEvents=[{seq:1,type:"message",id:"old",source:"human",text:"Keep visible discussion"}];
+  const target=h.mount("leader",async(url,data)=>{
+    if(url==="/api/chat/send"){sends++;return {accepted:true,execution_id:"new"};}
+    if(url==="/api/chat/read")return {read_seq:data.seq};
+    if(++reads===2)throw Error("history temporarily unavailable");
+    return {...history(),execution_id:reads===1?"old":"new",read_seq:1,
+      previous_executions:reads===1?[]:[{execution_id:"old",events:oldEvents}],
+      events:reads===1?oldEvents:[{seq:1,type:"message",id:"new",source:"human",text:"Continue this task"}]};
+  },{},{goalId:"goal"});await tick();
+  const html=()=>target.querySelector(".chat-inner").children.map(item=>item.innerHTML).join("");
+  target.querySelector("textarea").value="Continue this task";target.querySelector("textarea").oninput();
+  target.querySelector("form").onsubmit({preventDefault(){}});await tick();h.flushFrames();
+  assert(html().includes("Keep visible discussion"));assert.equal(sends,1);
+  assert.equal(target.querySelector(".chat-connection-error").hidden,false);
+  const retry=[...h.timers.values()].find(timer=>timer.ms===3000);assert(retry);retry.fn();await tick();h.flushFrames();
+  assert(html().includes("Keep visible discussion"));assert(html().includes("Continue this task"));
+  assert.equal((html().match(/Keep visible discussion/g)||[]).length,1);assert.equal(sends,1);
+  assert.equal(target.querySelector(".chat-connection-error").hidden,true);h.chat.unmount();
+});

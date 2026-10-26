@@ -594,6 +594,92 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.assertIn(goal['request'], native_input)
         self.assertEqual(len(self.processes), 2)
 
+    def task_history(self, goal):
+        code, value, _ = self.request('/api/chat/history?' + urlencode({
+            'project': 'demo', 'session_id': 's3', 'goal_id': goal['id']}))
+        self.assertEqual(code, 200, value)
+        return value
+
+    def test_task_history_survives_execution_rotation_and_reload(self):
+        goal = self.goal()
+        _, first, _ = self.send_goal(goal, 'Original task discussion.', message_id='original-discussion',
+                                     images=[chat_helpers.ChatHttpTests.image(data=b'old task image')])
+        manager = self.server.service.chat
+        manager.journal(first['execution_id']).emit('text', id='answer', text='Original answer.')
+        self.finish_turn(first['execution_id'], self.processes[-1])
+        with mock.patch.object(manager, 'context', return_value={'used': 65001, 'max': 1000000}):
+            code, second, _ = self.send_goal(goal, 'Continue after interruption.', message_id='continued-discussion')
+        self.assertEqual(code, 200, second)
+        self.assertNotEqual(first['execution_id'], second['execution_id'])
+        for _ in range(2):
+            history = self.task_history(goal)
+            self.assertEqual(history['execution_id'], second['execution_id'])
+            self.assertEqual([value['execution_id'] for value in history['previous_executions']], [first['execution_id']])
+            events = history['previous_executions'][0]['events']
+            self.assertTrue(any(event.get('text') == 'Original task discussion.' for event in events))
+            self.assertTrue(any(event.get('text') == 'Original answer.' for event in events))
+            self.assertTrue(any(event.get('text') == 'Continue after interruption.' for event in history['events']))
+        name = next(event['images'][0] for event in history['previous_executions'][0]['events'] if event.get('images'))
+        file_query = {'project': 'demo', 'session_id': 's3', 'goal_id': goal['id'],
+                      'execution_id': first['execution_id'], 'name': name}
+        code, content, _ = self.request('/api/chat/file?' + urlencode(file_query), raw=True)
+        self.assertEqual((code, content), (200, b'old task image'))
+        other = self.goal()
+        file_query['goal_id'] = other['id']
+        self.assertEqual(self.request('/api/chat/file?' + urlencode(file_query))[0], 400)
+        self.assertEqual(self.task_history(other)['previous_executions'], [])
+        file_query.update(goal_id=goal['id'], session_id='s1')
+        goals.assign(self.conn, goal['id'], 's1', 'Independent member discussion')
+        self.assertEqual(self.request('/api/chat/file?' + urlencode(file_query))[0], 400)
+        member = manager.goal_controller.ensure(self.conn, goal['id'], 's1')
+        manager.journal(member['id']).message('member-only', 'Private member history.')
+        manager.journal('s3').message('general-only', 'Separate general discussion.')
+        own_history = self.task_history(goal)
+        self.assertNotIn('Private member history.', json.dumps(own_history))
+        self.assertNotIn('Separate general discussion.', json.dumps(own_history))
+        goals.amend(self.conn, goal['id'], 'Update requirements without starting work.')
+        pending = self.task_history(goal)
+        self.assertIsNone(pending['execution_id'])
+        self.assertEqual([item['execution_id'] for item in pending['previous_executions']],
+                         [first['execution_id'], second['execution_id']])
+        self.assertEqual(goals.get(self.conn, goal['id'])['current_round'], 1)
+
+    def pause_resume_history(self, runtime):
+        if runtime == 'codex':
+            patcher = mock.patch('crew.codex_runtime._ObservedClient', codex_helpers.FakeClient)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+            runtimes.set(self.conn, 's3', 'codex', 'pause-native')
+        goal = self.goal()
+        _, first, _ = self.send_goal(goal, 'Keep this paused discussion.', message_id='before-pause')
+        manager = self.server.service.chat
+        manager.goal_controller.pause(goal['id'])
+        if runtime == 'codex':
+            manager.processes[first['execution_id']].client.finish()
+        else:
+            self.finish_turn(first['execution_id'], self.processes[-1])
+        manager.goal_controller.sync(self.conn, goal['id'])
+        paused = goals.get(self.conn, goal['id'])
+        self.assertEqual(paused['status'], 'paused')
+        code, result, _ = self.request('/api/goals/action?project=demo', {
+            'goal_id': goal['id'], 'action': 'resume', 'version': paused['version']})
+        self.assertEqual(code, 200, result)
+        code, second, _ = self.send_goal(goal, 'Adjust the final report.', message_id='after-pause')
+        self.assertEqual(code, 200, second)
+        current = goals.get(self.conn, goal['id'])
+        self.assertEqual(current['current_round'], paused['current_round'])
+        self.assertEqual(current['requirement_version'], paused['requirement_version'])
+        self.assertEqual(second['execution_id'], first['execution_id'])
+        history = self.task_history(goal)
+        self.assertTrue(any(event.get('text') == 'Keep this paused discussion.' for event in history['events']))
+        self.assertTrue(any(event.get('text') == 'Adjust the final report.' for event in history['events']))
+
+    def test_claude_paused_resume_and_message_keep_round_execution_and_history(self):
+        self.pause_resume_history('claude')
+
+    def test_codex_paused_resume_and_message_keep_round_execution_and_history(self):
+        self.pause_resume_history('codex')
+
     def test_inspection_reports_native_application_instead_of_prepared_manifest_snapshot(self):
         goal = self.goal()
         _, receipt, _ = self.send_goal(goal, message_id='native-ack')
@@ -851,6 +937,12 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual((current['current_round'], current['status']), (2, 'running'))
         self.assertNotEqual(reply['execution_id'], old_execution)
         self.assertIn(note, current['requirements']['request'])
+        history = self.task_history(goal)
+        self.assertEqual(history['execution_id'], reply['execution_id'])
+        self.assertEqual([value['execution_id'] for value in history['previous_executions']], [old_execution])
+        self.assertTrue(any(event.get('text') == 'Keep original recordings and do not upload them.'
+                            for event in history['previous_executions'][0]['events']))
+        self.assertTrue(any(event.get('text') == note for event in history['events']))
         self.assertEqual(goals.get_report(self.conn, report['id'])['html'], original['html'])
         self.assertFalse(goals.get_report(self.conn, report['id'])['current'])
         execution = goals.get_execution(self.conn, reply['execution_id'])
