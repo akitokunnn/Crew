@@ -7,11 +7,20 @@ import sys
 
 for key in ('CREW_SESSION_ID', 'CLAUDE_CODE_SESSION_ID'):
     os.environ.pop(key, None)
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+plugin_root = Path(os.environ.get('CREW_TEST_PLUGIN_ROOT', Path(__file__).resolve().parents[1])).resolve()
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # Test helpers are not shipped.
+sys.path.insert(0, str(plugin_root))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import tests
 from test_goal_http import GoalHttpTests
-from crew import board, goals, runtimes
+from crew import board, goals, runtimes, todo, web
+import test_goal_http
+import test_shell
+
+assert Path(web.__file__).resolve().is_relative_to(plugin_root), web.__file__
+
+# The same fixture can validate the built backend without reading source assets.
+test_goal_http.PLUGIN = test_shell.PLUGIN = plugin_root
 
 
 def main():
@@ -23,6 +32,8 @@ def main():
         _, source_execution, _ = case.send_goal(source, message_id='native-ui-source')
         board.join(case.conn, 'coordinator', 'demo', '协作负责人', case.project, case.project, 'main', role='leader')
         runtimes.set(case.conn, 'coordinator', 'claude')
+        board.roster(case.conn, 'demo', 'move', '协作负责人', ['one'])
+        todo.add(case.conn, 's1', '确认录音测试环境', '打开测试页面', '结果可核对')
         work = []
         for index, title in enumerate(('声音评测', '客户端联调')):
             goal = goals.create(case.conn, 'demo', 'coordinator', title, '独立推进，保留原始证据', ['交付可核对证据'])
@@ -33,7 +44,8 @@ def main():
             work.append((goal['id'], receipt['execution_id']))
         manager = case.server.service.chat
         print(json.dumps({'url': case.url, 'home': str(case.home), 'leader': 'coordinator',
-                          'goals': [goal for goal, _ in work]}, ensure_ascii=False), flush=True)
+                          'goals': [goal for goal, _ in work], 'plugin_root': str(plugin_root),
+                          'web_module': web.__file__}, ensure_ascii=False), flush=True)
         original = None
         for line in sys.stdin:
             command = line.strip()

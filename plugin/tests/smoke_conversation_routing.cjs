@@ -37,6 +37,16 @@ if(!process.versions.electron){
       async function capture(name){await js('document.fonts.ready.then(()=>true)');await pause(120);wc.debugger.attach('1.3');try{const result=await wc.debugger.sendCommand('Page.captureScreenshot',{format:'png',fromSurface:true});const file=path.join(out,name+'.png');await fs.writeFile(file,Buffer.from(result.data,'base64'));evidence.screenshots.push(file);}finally{wc.debugger.detach();}}
       await window.loadURL(bootstrap.url+'/?project=demo#leader='+bootstrap.leader);
       await wait('document.querySelector("#goal-chat-hint")?.textContent.includes("2 个任务")');
+      await check('real HTTP serves every stylesheet and script declared by the entry page',`(async()=>{const paths=[...document.querySelectorAll('link[rel=stylesheet],script[src]')].map(el=>el.href||el.src);return (await Promise.all(paths.map(url=>fetch(url).then(r=>r.status)))).every(status=>status===200)})()`);
+      await click('[data-act="right-open"]');await pause(450);
+      await check('real backend positions the original architecture in the visible right column','(()=>{const root=document.querySelector("#chat-attention"),p=root.getBoundingClientRect(),r=document.querySelector("#right-panel").getBoundingClientRect();return getComputedStyle(root).position==="fixed"&&r.width>200&&r.height>300&&r.right<=innerWidth&&Math.abs(p.top-r.top)<1&&!!document.querySelector("#right-panel .node")})()');
+      await js('window.architectureTop=document.querySelector("#right-panel").getBoundingClientRect().top');
+      await click('[data-act="attention"]');await pause(450);
+      await check('real backend opens pending actions beneath the button and pushes architecture down','(()=>{const a=document.querySelector("#side-attention-section").getBoundingClientRect(),r=document.querySelector("#right-panel").getBoundingClientRect();return a.width>200&&a.height>100&&a.top>0&&a.right<=innerWidth&&a.bottom<innerHeight&&r.top>architectureTop&&r.top>=a.bottom&&!!document.querySelector("#side-attention-section .todo-card")})()');
+      await capture('00-real-http-pending-and-architecture');
+      await click('[data-act="attention"]');await pause(450);
+      await check('closing pending restores architecture without leaving the conversation','Math.abs(document.querySelector("#right-panel").getBoundingClientRect().top-architectureTop)<1&&!document.querySelector("#chat-host textarea").disabled');
+      await click('[data-act="right-open"]');await pause(450);
       await check('two active tasks do not make the idle general conversation wait for a model','!document.querySelector("#chat-host .chat-activity")&&!document.querySelector("#chat-host textarea").disabled');
       await type('主对话草稿');await click('[data-goal-act="list"]');
       await wait(`!!document.querySelector('[data-goal-act="open"][data-goal-id="${bootstrap.goals[0]}"]')`);

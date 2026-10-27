@@ -7,6 +7,7 @@ import subprocess
 import threading
 import unittest
 import uuid
+from html.parser import HTMLParser
 from pathlib import Path
 from unittest import mock
 from urllib.error import HTTPError
@@ -697,6 +698,30 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertTrue(self.service.chat.processes[sid].reader_done.wait(3))
         self.assertEqual(self.request("/api/chat/interrupt", {"session_id": sid})[0], 400)
         self.assertEqual(len(process.stdin.getvalue().splitlines()), before + 1)
+
+    def test_every_entry_page_asset_is_served_by_the_real_http_handler(self):
+        assets = {}
+
+        class EntryAssets(HTMLParser):
+            def handle_starttag(self, tag, attrs):
+                attrs = dict(attrs)
+                if tag == 'script' and attrs.get('src'):
+                    assets[attrs['src']] = 'text/javascript'
+                elif tag == 'link' and attrs.get('rel') == 'stylesheet':
+                    assets[attrs['href']] = 'text/css'
+
+        code, html, _ = self.request('/', raw=True)
+        self.assertEqual(code, 200)
+        EntryAssets().feed(html.decode('utf-8'))
+        self.assertTrue(assets)
+        for path, media in assets.items():
+            with self.subTest(path=path):
+                code, content, headers = self.request(path, raw=True)
+                self.assertEqual(code, 200, f'Entry page asset is not served: {path}')
+                self.assertTrue(content)
+                self.assertEqual(headers['Content-Type'].split(';')[0], media)
+                self.assertEqual(headers['Cache-Control'], 'no-store')
+        self.assertEqual(self.request('/unregistered.css', raw=True)[0], 404)
 
     def test_static_assets_have_exact_mime_and_cache_policy_and_old_routes_are_gone(self):
         for path, media in (("/logo.svg", "image/svg+xml"),
