@@ -164,6 +164,16 @@ class MemberLaunchDedupTests(ShellFixture, unittest.TestCase):
                     'to': 'host-worker', 'task': 'Run again', 'start': True}, other.goal_controller)
         self.assertEqual(len(self.clients), 1)
 
+    def test_failed_first_turn_keeps_live_member_online_and_rejects_duplicate_spawn(self):
+        with mock.patch.object(FakeClient, 'start_turn', side_effect=RuntimeError('fixture start refused')):
+            with self.assertRaisesRegex(RuntimeError, 'fixture start refused'):
+                self.manager.start(self.conn, 'demo', 'retry-worker', 'Run once',
+                                   runtime='codex', caller_session_id='s3')
+            with self.assertRaises(board.Conflict):
+                self.manager.start(self.conn, 'demo', 'retry-worker', 'Run once',
+                                   runtime='codex', caller_session_id='s3')
+        self.assertEqual(len(self.clients), 1)
+
 
 class MemberLaunchHttpTests(ShellFixture, unittest.TestCase):
     request = http_helpers.ChatHttpTests.request

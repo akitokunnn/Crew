@@ -866,7 +866,9 @@ class Manager:
                                 " with the Read tool and follow it. It is your task brief from Crew.")
                         self._send(session_id, text, spec["task"], source="crew")
                 except Exception:
-                    board.set_status(conn, session_id, "offline", now=now)
+                    live = [key for key in self._identity_keys(conn, session_id) if self.running(key)]
+                    status = ('working' if any(self.busy(key) for key in live) else 'idle') if live else 'offline'
+                    board.set_status(conn, session_id, status, now=now)
                     raise
 
             result = spawn._execute(conn, plan, launch, members, member_session_ids)

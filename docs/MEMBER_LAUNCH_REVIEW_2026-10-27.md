@@ -18,6 +18,7 @@
 | 普通 spawn 后再次目标派工 | 自动派工遇到成员总对话仍忙时明确返回冲突；在创建新执行前检查，assign --start 的预检查也在保存分配前执行 | 同一文件的 Claude / Codex spawn-then-assign 测试 |
 | 目标工作时反向唤醒 | 自动输入不能从正在工作的目标再另开总对话施工 | 同一文件的 reverse-wake 测试 |
 | 并发与重试 | 同一宿主的唤醒与首次目标派工并发时只能一方开工；原消息回执重试不重复输入或启动线程 | 同一文件的 concurrent 与 HTTP retry 测试；`test_wake_concurrency.py` |
+| 首轮输入失败后的创建重试 | 首轮输入失败时保留已存活执行的在线 / 工作状态，原始错误照常返回；同名 spawn 重试不得再创建一个成员进程 | `test_member_launch_dedup.py` 的 failed-first-turn 回归，先复现两个原生线程再修复 |
 | 错误返回 | 新防重冲突通过真实 HTTP 返回 409，CLI 返回冲突退出码 3 和原始中文原因；原执行继续保留 | 同一文件的 CC→Codex HTTP / CLI 测试 |
 | 原生 ID 绑定 | 在写事务内跨 session_runtimes、session_runtime_bindings、goal_execution_bindings 统一检查；旧 Claude 隐式映射也保留归属 | `test_native_identity_ownership.py` 的双向、同人、并发、切载体保存绑定和命名空间测试 |
 | 停止、重启与恢复 | 继续使用既有的进程存活核对、Codex PID / 创建时间租约、用户停止标记、恢复回执及未知输入状态处理 | `test_wake_runtime.py`、`test_goal_recovery.py`、`test_codex_runtime.py`、`test_chat.py` |
