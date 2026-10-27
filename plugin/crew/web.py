@@ -1638,6 +1638,7 @@ STATIC = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js",
           "/git.css": ("git.css", "text/css; charset=utf-8"),
           "/git-settings.js": ("git-settings.js", "text/javascript; charset=utf-8"),
           "/git-settings.css": ("git-settings.css", "text/css; charset=utf-8"),
+          "/right-panels.css": ("right-panels.css", "text/css; charset=utf-8"),
           "/style.css": ("style.css", "text/css; charset=utf-8"), "/chat.js": ("chat.js", "text/javascript; charset=utf-8"),
           "/vendor/markdown-it.min.js": ("vendor/markdown-it.min.js", "text/javascript; charset=utf-8")}
 STATIC.update({'/logo.svg': ('logo.svg', 'image/svg+xml'),

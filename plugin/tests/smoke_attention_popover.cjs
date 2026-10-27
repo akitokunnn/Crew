@@ -9,6 +9,8 @@ if(typeof electron==='string'){
 }else{
   const {app,BrowserWindow,nativeTheme}=electron,fs=require('node:fs/promises'),path=require('node:path'),os=require('node:os'),http=require('node:http'),assert=require('node:assert/strict');
   const root=path.resolve(__dirname,'../..'),web=path.join(root,'plugin/crew/web'),output=path.join(root,'desktop/smoke-output/attention-popover');
+  // Use the production allowlist: a file existing on disk must not mask an HTTP 404.
+  const staticAssets=JSON.parse(require('node:child_process').execFileSync('python',['-c','import json; from crew.web import STATIC; print(json.dumps(STATIC))'],{cwd:path.join(root,'plugin'),encoding:'utf8',windowsHide:true}));
   const temporary=require('node:fs').mkdtempSync(path.join(os.tmpdir(),'crew-attention-'));app.setPath('userData',temporary);app.setPath('sessionData',temporary);app.commandLine.appendSwitch('force-device-scale-factor','1');
   const evidence={temporary,checks:[],screenshots:[],errors:[],modelTurnsStarted:0},calls=[],streams=[];
   let server,win,origin,polls=0,failResolve=true;
@@ -36,8 +38,9 @@ if(typeof electron==='string'){
       throw Error('Unexpected mutation '+name);
     }
     if(name.startsWith('/api/'))throw Error('Unexpected read '+name);
-    const file=path.resolve(web,'.'+(name==='/'?'/index.html':name));assert(file.startsWith(web+path.sep));
-    try{const bytes=await fs.readFile(file);res.writeHead(200,{'Content-Type':({'.html':'text/html','.js':'text/javascript','.css':'text/css','.svg':'image/svg+xml','.woff2':'font/woff2'})[path.extname(file)]||'application/octet-stream'});res.end(bytes);}catch(error){if(error.code!=='ENOENT')throw error;res.writeHead(404);res.end();}
+    const asset=staticAssets[name];if(!asset){res.writeHead(404);res.end();return;}
+    const file=path.resolve(web,asset[0]);assert(file.startsWith(web+path.sep));
+    try{const bytes=await fs.readFile(file);res.writeHead(200,{'Content-Type':asset[1]});res.end(bytes);}catch(error){if(error.code!=='ENOENT')throw error;res.writeHead(404);res.end();}
   }
   const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms)),js=code=>win.webContents.executeJavaScript(code,true);
   async function until(check,label){const deadline=Date.now()+12000;while(Date.now()<deadline){if(await check())return;await pause(30);}throw Error('Timed out: '+label);}
