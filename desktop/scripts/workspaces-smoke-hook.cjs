@@ -66,7 +66,10 @@ app.once('browser-window-created', (_event, win) => {
       const file = path.join(output, name + '.png');
       let bytes, method = 'capturePage', debug = false;
       if (contents === main) await main.executeJavaScript('Promise.race([new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))),new Promise(resolve=>setTimeout(resolve,1000))])');
-      try { bytes = (await bounded(contents.capturePage(undefined, { stayHidden:true }), 'capturePage')).toPNG(); }
+      // A capturer must make a project page visible to Chromium so a runner
+      // without an interactive desktop produces a compositor frame. The
+      // native smoke window itself remains hidden.
+      try { bytes = (await bounded(contents.capturePage(undefined, { stayHidden:contents === main }), 'capturePage')).toPNG(); }
       catch (error) { if (contents === main) throw error; debug = true; }
       if (debug) {
         if (contents.debugger.isAttached()) throw new Error('Cannot capture while a separate debugger is attached');
@@ -76,6 +79,7 @@ app.once('browser-window-created', (_event, win) => {
           bytes = Buffer.from(result.data, 'base64'); method = 'Page.captureScreenshot (actual hidden ' + (contents === main ? 'shell' : 'project') + ' renderer)';
         } finally { contents.debugger.detach(); }
       }
+      assert(bytes.length > 100, 'actual renderer screenshot must contain PNG pixels');
       await fs.writeFile(file, bytes); evidence.screenshots.push(file); evidence.screenshotMethods.push({ file, method });
     }
     function projectContents(name) {

@@ -161,7 +161,8 @@ test('existing workspace validates missing paths and files before any registrati
 
 test('a damaged Git marker preserves its real Git error instead of registering as an ordinary folder',async t=>{
   const root=await directory(t),service=await fixture(t);await fs.writeFile(path.join(root,'.git'),'gitdir: missing-metadata\n');
-  await assert.rejects(core.existingWorkspace(root,service.url),error=>Boolean(error.stderr&&error.stderr.includes('not a git repository')));assert(!service.calls.includes('/api/project/init'));
+  const original = await run('git',['-C',root,'rev-parse','--show-toplevel']).then(()=>assert.fail('damaged marker must fail'),error=>error);
+  await assert.rejects(core.existingWorkspace(root,service.url),error=>Boolean(error.stderr&&error.stderr===original.stderr&&error.code===original.code));assert(!service.calls.includes('/api/project/init'));
 });
 
 test('Git file markers still canonicalize a nested folder to the existing worktree root',async t=>{
