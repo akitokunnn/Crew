@@ -44,7 +44,7 @@ function harness(state = fixture(), fetcher = () => { throw new Error("Unexpecte
   // Expose lexical UI functions while leaving setup and its state-poll timer off.
   const end = "  setup();\n})();";
   assert(source.endsWith(end + "\n") || source.endsWith(end));
-  vm.runInContext(source.replace(end, `  window.ui = {watchingChat, visibility(value) {view="chat";leaderId="session-codex";readOnlyId=value.member?"member":null;uiVisibility={blocked:()=>!!(value.reader||value.tools||value.list||value.materials||value.comments||value.creation||(value.pending||value.tree)&&value.overlap)};}, runtimeCatalog:()=>runtimeCatalog,runtimeModels:()=>runtimeModels,editorHandoffReason, sessionMenu, chatAccess, goalChatNotes,
+  vm.runInContext(source.replace(end, `  window.ui = {runtimeCatalog:()=>runtimeCatalog,runtimeModels:()=>runtimeModels,chatAccess, goalChatNotes,
     contextRing, contextControls, sidebarLeader, memberNode, workingRow,
     renderTodos, domRenderer:()=>domRenderer, trustReportUrl, readTrustReport, attention:()=>attentionFeature,
     route() {readRoute(); return {view,leaderId,readOnlyId};},
@@ -52,7 +52,8 @@ function harness(state = fixture(), fetcher = () => { throw new Error("Unexpecte
     setState(value) {state=value;if(!domRenderer)domRenderer=window.CrewDOMRenderer.create({document});if(!runtimeCatalog)runtimeCatalog=window.CrewRuntimeCatalog.create({snapshot:()=>({catalog:state?.runtimes,legacyModels:state?.models,legacyEfforts:state?.efforts,choices:state?.ai}),discover:()=>api("/api/runtimes")});if(!runtimeModels)runtimeModels=window.CrewRuntimeModels.create({catalog:runtimeCatalog,icon:ic,runtimeBadge,findSession:sessionItem,menu:{show(){},hide(){},anchor:()=>null,isCurrent:()=>false},save(){},refresh(){},notify(){}});if(!commentsFeature)commentsFeature=createComments(()=>({leaders:state?.leaders||[],members:state?.members||[]}),document);if(!attentionFeature)attentionFeature=window.CrewAttention.create({state:()=>state,document,api:(...args)=>api(...args),refresh:()=>loadState(true),notify:(...args)=>toast(...args),changed:()=>{},navigate:()=>{},rich:{inline:CrewChat.renderInline,markdown:CrewChat.renderMarkdown},ui:{icon:ic,avatar:av,priority:priorityBadge,date,ago,empty}});}};\n})();`), sandbox);
   sandbox.window.ui.setState(state);
   const catalog=sandbox.window.ui.runtimeCatalog(),models=sandbox.window.ui.runtimeModels();
-  return {ui:{...sandbox.window.ui,...sandbox.window.ui.attention(),replace:sandbox.window.ui.domRenderer().replace,runtimeList:catalog.list,runtimeInfo:catalog.info,defaultRuntime:catalog.defaultRuntime,modelEfforts:catalog.efforts,optionChange:catalog.optionChange,optionsLabel:catalog.optionsLabel,refreshRuntimes:catalog.refresh,modelMenu:models.markup}, nodes, location:sandbox.location};
+  const people=require("./people_fixture.cjs").fixture(()=>({leaders:state.leaders||[],members:state.members||[]}),{modelMenu:models.markup,runtimeId:catalog.id}).module;
+  return {ui:{...sandbox.window.ui,...sandbox.window.ui.attention(),replace:sandbox.window.ui.domRenderer().replace,runtimeList:catalog.list,runtimeInfo:catalog.info,defaultRuntime:catalog.defaultRuntime,modelEfforts:catalog.efforts,optionChange:catalog.optionChange,optionsLabel:catalog.optionsLabel,refreshRuntimes:catalog.refresh,modelMenu:models.markup,sessionMenu:people.sessionMenu,editorHandoffReason:people.editorHandoffReason}, nodes, location:sandbox.location};
 }
 const plain = value => JSON.parse(JSON.stringify(value));
 
@@ -396,10 +397,18 @@ test("every context ring is a named native button at low and high usage across b
   }
 });
 
-test("covered chat never counts as actively read, while nonoverlapping auxiliary cards preserve watching",()=>{
-  for(const runtime of ["claude","codex"]){
-    const state=fixture();state.leaders=[session({runtime})];const {ui}=harness(state);
-    for(const [settings,expected] of [[{},true],[{tree:true},true],[{pending:true},true],[{tree:true,overlap:true},false],[{pending:true,overlap:true},false],[{tools:true},false],[{materials:true},false],[{reader:true},false],[{comments:true},false],[{creation:true},false],[{list:true},false],[{member:true},false]]){ui.visibility(settings);assert.equal(ui.watchingChat("session-codex"),expected,JSON.stringify({runtime,settings}));}
-    assert.equal(ui.watchingChat("different-leader"),false);
+test("covered chat emits a reply cue while nonoverlapping auxiliary cards preserve active reading across carriers",()=>{
+  const {create:notifications}=require("../crew/web/waiting-notifications.js"),{create:visibility}=require("../crew/web/ui-visibility.js");
+  for(const runtime of ["claude","codex"])for(const [settings,watching] of [[{},true],[{tree:true},true],[{pending:true},true],[{tree:true,overlap:true},false],[{pending:true,overlap:true},false],[{tools:true},false],[{materials:true},false],[{reader:true},false],[{comments:true},false],[{creation:true},false],[{list:true},false],[{member:true},false]]){
+    const played=[],visible=visibility();
+    for(const owner of ["tools","materials","reader","comments","creation","list"])visible.register(owner,()=>!!settings[owner]);
+    visible.register("auxiliary",()=>!!((settings.pending||settings.tree)&&settings.overlap));
+    const cues=notifications({sound:{play:kind=>played.push(kind)},visibility:visible,document:{visibilityState:"visible",hasFocus:()=>true}});
+    const baseline={leaders:[session({runtime,last_reply_id:null})],members:[],decisions:[],attention:[],notification:{channels:[{state:"connected"}],error:null}};
+    const reading={view:"chat",leaderId:"session-codex",readOnlyId:settings.member?"member":null};
+    cues.sync(baseline);cues.sync({...baseline,leaders:[session({runtime,last_reply_id:"new-reply"})]},{reading});
+    assert.deepEqual(played,watching?[]:["reply"],JSON.stringify({runtime,settings}));
+    played.length=0;cues.sync({...baseline,leaders:[session({runtime,last_reply_id:"different-leader-reply"})]},{reading:{...reading,leaderId:"another-leader"}});
+    assert.deepEqual(played,["reply"]);cues.destroy();visible.destroy();
   }
 });

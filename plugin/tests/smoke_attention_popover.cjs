@@ -13,9 +13,9 @@ if(typeof electron==='string'){
   const staticAssets=JSON.parse(require('node:child_process').execFileSync('python',['-c','import json; from pathlib import Path; from crew.web_assets import AssetCatalog; print(json.dumps(AssetCatalog(Path("crew/web")).routes))'],{cwd:plugin,encoding:'utf8',windowsHide:true}));
   const temporary=require('node:fs').mkdtempSync(path.join(os.tmpdir(),'crew-attention-'));app.setPath('userData',temporary);app.setPath('sessionData',temporary);app.commandLine.appendSwitch('force-device-scale-factor','1');
   const evidence={temporary,plugin_root:plugin,checks:[],screenshots:[],errors:[],modelTurnsStarted:0},calls=[],streams=[];
-  let server,win,origin,polls=0,failResolve=true,runtimeDelay=0,commentsDelay=0,failComment=true;
+  let server,win,origin,polls=0,failResolve=true,runtimeDelay=0,commentsDelay=0,failComment=true,failRename=true;
   const comments=new Map([['leader',[{id:1,text:'保留录音背景',author:'用户',created_at:new Date().toISOString()}]],['member',[]]]);
-  const person=(id,name,runtime='claude')=>({session_id:id,name,runtime,model:null,effort:null,status:'idle',where:'offline',busy:false,running:false,web_chat:false,last_seq:1,read_seq:1,last_reply_id:'reply',unread:0,pending:0,priority:null,goal:'独立推进，保留对话空间',context:null,activity:null,codex:[],codex_older:0,member_ids:[],applied:null,trust:{enabled:false},runtime_switch:{allowed:true}});
+  const person=(id,name,runtime='claude')=>({session_id:id,name,runtime,model:null,effort:null,status:'idle',where:'offline',busy:false,running:false,web_chat:false,last_seq:1,read_seq:1,last_reply_id:'reply',unread:0,pending:0,priority:null,goal:'独立推进，保留对话空间',context:null,activity:null,codex:[],codex_older:0,member_ids:[],applied:null,trust:{enabled:false},runtime_switch:{allowed:true},scope:null,task:null,done_when:null,progress:[],leases:[],claims:[],branch:null});
   const theme={id:'green',name:'竹青',light:{},dark:{}},stamp=new Date().toISOString();
   const state={project:{name:'浮卡验收',root:'C:/fixture',theme:'green'},projects:[],themes:[theme],leaders:[person('leader','声音负责人'),person('other','另一负责人','codex')],members:[{...person('member','测量员','codex'),leader_session_id:'leader',group:'声音负责人'}],goals:[],
     todos:[1,2].map(id=>({id,title:id===1?'确认录音测试环境':'查看 .127 镜头前的实物验收',goal_id:id===2?'goal':null,steps:['打开已有测试页面','保留实际结果'],verification:'结果可核对',status:'open',version:1,session_id:'member',leader_session_id:'leader',proposer_name:'测量员',group:'声音负责人',created_at:stamp})),
@@ -29,6 +29,7 @@ if(typeof electron==='string'){
     if(name==='/api/state'){polls++;return json(res,state);}
     if(name==='/api/runtimes'){if(runtimeDelay)await pause(runtimeDelay);return json(res,{runtimes:state.runtimes});}
     if(name==='/api/comments'&&req.method==='GET'){if(commentsDelay)await pause(commentsDelay);return json(res,{comments:comments.get(url.searchParams.get('session_id'))||[]});}
+    if(name==='/api/usage')return json(res,{tree:[{leader_session_id:'leader',name:'声音负责人',tokens:1000,cost:0.1,share:100,codex_runs:1,codex_tokens:400,self:{tokens:1000,cost:0.1,codex_runs:1,codex_tokens:400},members:[]}],daily:[{date:'2026-10-27',display_name:'声音负责人',total_tokens:1000,cost_usd:0.1}],models:[]});
     if(name==='/api/goal')return json(res,{goal:state.goals[0],executions:[{id:'execution',session_id:'leader',runtime:'claude',model:null,effort:null,round:1,requirement_version:1,generation:1,status:'idle'}],reports:[],documents:[],context:{items:[],manifest:{}}});
     if(name==='/api/chat/history')return json(res,{...(url.searchParams.has('goal_id')?{execution_id:'execution'}:{}),events:[{seq:1,type:'text',id:'reply',text:'声音评测继续推进。旁边的待办不会占用这段对话。'}],busy:false,running:false,read_seq:1});
     if(name==='/api/chat/events'){res.fixtureSession=url.searchParams.get('session_id');res.writeHead(200,{'Content-Type':'text/event-stream'});res.write(': fixture\n\n');streams.push(res);return;}
@@ -44,6 +45,14 @@ if(typeof electron==='string'){
       if(name==='/api/leader'){
         state.leaders.push({...person('created-leader',body.name,body.runtime),model:body.model,effort:body.effort});return json(res,{session_id:'created-leader'});
       }
+      if(name==='/api/session/rename'){
+        if(failRename){failRename=false;return json(res,{error:'隔离改名失败'},409);}
+        state.leaders.concat(state.members).find(item=>item.session_id===body.session_id).name=body.name;return json(res,{native_warnings:[]});
+      }
+      if(name==='/api/open')return json(res,{needs_window_ready:true,needs_confirmation:true,cwd:'C:/fixture'});
+      if(name==='/api/open/continue')return json(res,{ok:true});
+      if(name==='/api/leaders/priority'){state.leaders.forEach(item=>item.priority=body.ranks.includes(item.session_id)?body.ranks.indexOf(item.session_id)+1:null);return json(res,{ok:true});}
+      if(name==='/api/leaders/order'){state.leaders.sort((a,b)=>body.order.indexOf(a.session_id)-body.order.indexOf(b.session_id));return json(res,{ok:true});}
       if(name==='/api/todo/resolve'){if(failResolve){failResolve=false;return json(res,{error:'隔离保存失败，请重试'},409);}state.todos=state.todos.filter(item=>item.id!==body.id);return json(res,{ok:true,before:{},version:2});}
       if(name==='/api/answer'){state.decisions=state.decisions.filter(item=>item.id!==body.id);return json(res,{ok:true});}
       if(name==='/api/native-approval'){state.native_approvals=[];return json(res,{ok:true});}
@@ -118,6 +127,43 @@ if(typeof electron==='string'){
     await check('accepted leader creation closes its own portal and navigates exactly once to the returned identity','!document.querySelector(".leader-create-overlay").classList.contains("show")&&location.hash.includes("created-leader")');
     await click('[data-act="leader"][data-id="leader"]');await wait('document.querySelector("#chat-head .chat-name")?.textContent==="声音负责人"');
   }
+  async function personnelJourneys(){
+    state.members[0].runtime='claude';const before=polls;await until(()=>polls>before,'member carrier refresh');
+    await click('[data-act="right-open"]');await pause(350);await mouse('#right-panel [data-act="card"][data-id="member"]');
+    await wait('document.querySelector("#card").classList.contains("show")');
+    await check('person inspector retains the full member details and stable action identity','document.querySelector("#card .card-head").textContent.includes("测量员")&&document.querySelector("#card [data-act=open-vscode]").dataset.id==="member"&&document.querySelector("#card .card-body").textContent.includes("设备和文件")');
+    await js('document.querySelector("#card [data-act=rename]").focus();true');
+    win.webContents.sendInputEvent({type:'keyDown',keyCode:'K',modifiers:['control']});win.webContents.sendInputEvent({type:'keyUp',keyCode:'K',modifiers:['control']});
+    await wait('document.querySelector(".command-palette-overlay").classList.contains("show")');
+    win.webContents.sendInputEvent({type:'keyDown',keyCode:'Escape'});win.webContents.sendInputEvent({type:'keyUp',keyCode:'Escape'});
+    await wait('!document.querySelector(".command-palette-overlay").classList.contains("show")');
+    await check('quick find over a person card closes by Escape and returns focus to a visibly open card control','(()=>{const b=document.activeElement;return document.querySelector("#card").classList.contains("show")&&b.matches("#card [data-act=rename]")&&b.getClientRects().length>0&&getComputedStyle(b).visibility==="visible"})()');
+    await click('#card [data-act="rename"]');await wait('!!document.querySelector("#session-rename-form")');
+    await js('(()=>{const input=document.querySelector("#session-new-name");input.value="测量员新名字";input.dispatchEvent(new Event("input",{bubbles:true}));return true})()');
+    await click('#session-rename-form [type="submit"]');await wait('document.querySelector("#rename-error")?.textContent==="隔离改名失败"');
+    await check('person rename failure preserves its editable draft without closing the card','document.querySelector("#session-new-name").value==="测量员新名字"&&!document.querySelector("#session-rename-form [type=submit]").disabled&&document.querySelector("#card").classList.contains("show")');
+    await click('#session-rename-form [type="submit"]');await wait('!document.querySelector("#backdrop").classList.contains("show")&&document.querySelector("#card .card-head").textContent.includes("测量员新名字")');
+    assert.deepEqual(calls.filter(call=>call.name==='/api/session/rename').map(call=>call.body),[{session_id:'member',name:'测量员新名字'},{session_id:'member',name:'测量员新名字'}]);
+    await click('#card [data-act="open-vscode"]');await wait('!!document.querySelector("#card .step [data-act=handoff-go]")');
+    await click('#card [data-act="handoff-go"]');await wait('!document.querySelector("#card .step")');
+    assert.deepEqual(calls.find(call=>call.name==='/api/open/continue').body,{session_id:'member',confirm:true});
+    evidence.checks.push('native handoff uses its captured member identity and confirmation exactly once');
+    await capture('08-person-card');await click('#card [data-act="card-close"]');await click('[data-act="right-close"]');
+
+    await click('#chat-head [data-act="session-menu"]');await js('[...document.querySelectorAll("#menu [data-act=submenu]")].find(b=>b.textContent.includes("设为优先")).click();true');
+    await click('#menu [data-act="set-priority"][data-rank="1"]');await wait('!!document.querySelector("#sidebar .priority-zone [data-id=leader]")');
+    await check('priority menu transactions update the same sidebar ordering owner','document.querySelector("#sidebar .priority-zone [data-id=leader]").textContent.includes("优先 1")');
+    await click('#chat-head [data-act="session-menu"]');await js('[...document.querySelectorAll("#menu [data-act=submenu]")].find(b=>b.textContent.includes("设为优先")).click();true');
+    await click('#menu [data-act="set-priority"][data-rank="0"]');await wait('!document.querySelector("#sidebar .priority-zone [data-id=leader]")');
+
+    await click('#sidebar [data-view="usage"]');await wait('!!document.querySelector(".usage-page .utable")');await click('[data-act="usage-tab"][data-tab="daily"]');
+    await wait('document.querySelector(".usage-page .utable").textContent.includes("2026-10-27")');await click('#sidebar [data-act="leader"][data-id="leader"]');
+    await click('#sidebar [data-view="usage"]');await wait('document.querySelector("[data-act=usage-tab][data-tab=daily]").classList.contains("on")');
+    await check('usage remount retains the selected view and cached table while the shell owns navigation','document.querySelector(".usage-page .utable").textContent.includes("2026-10-27")&&!document.querySelector(".usage-page .usage-error")');
+    await click('#sidebar [data-act="leader"][data-id="leader"]');
+    await click('#sidebar [data-act="theme"]');await check('appearance actions persist their own local preference','localStorage.getItem("crew.theme")==="light"');await click('#sidebar [data-act="theme"]');await click('#sidebar [data-act="theme"]');
+    state.members[0].name='测量员';state.members[0].runtime='codex';const restored=polls;await until(()=>polls>restored,'original member restored');
+  }
   (async()=>{
     try{
       await app.whenReady();await fs.mkdir(output,{recursive:true});server=http.createServer((req,res)=>route(req,res).catch(error=>{evidence.errors.push(error.stack);json(res,{error:error.message},500);}));await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));origin='http://127.0.0.1:'+server.address().port;
@@ -154,6 +200,7 @@ if(typeof electron==='string'){
       win.setSize(1680,960);await js('document.documentElement.style.setProperty("--fs","1")');state.leaders[0].name='声音负责人';state.leaders[0].runtime='claude';state.leaders[0].model=null;state.leaders[0].effort=null;state.runtimes=[];
       await wait('document.querySelector("#chat-head .chat-name")?.textContent==="声音负责人"');
       await featureJourneys();
+      await personnelJourneys();
       await pause(280);await js('window.chatTop=document.querySelector("#chat-host").getBoundingClientRect().top;const input=document.querySelector("#chat-host textarea");input.value="对话草稿保留";input.dispatchEvent(new Event("input",{bubbles:true}));');
       await check('pending todos, decisions and member permissions are combined without a top tray','document.querySelector(".attention-count").textContent==="4"&&document.querySelector("#attention-scope").textContent.includes("全部任务与总对话")&&!'+opened+'&&!document.querySelector("#main #decision-tray")&&!document.querySelector("#main #native-approval-tray")');
       await check('the trigger is a keyboard-focusable native button','(()=>{const b=document.querySelector("[data-act=attention]");return b.tagName==="BUTTON"&&b.type==="button"&&b.tabIndex===0})()');await click('[data-act="right-open"]');await pause(420);
