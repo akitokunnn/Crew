@@ -24,7 +24,7 @@ def _check_ignore(root):
         raise board.BoardError('Git 工作区忽略规则检查无法执行：'+str(exc)) from exc
 
 def command(session_id, name, role, resume=False, model=None, effort=None, agent=None, runtime="claude", instructions=None,
-            permission_mode='default'):
+            permission_mode='default', plugin_root=None):
     models.validate_options(model, effort, runtime=runtime)
     if runtime == "codex":
         # Model, effort, start/resume and native thread id are RPC parameters;
@@ -34,6 +34,11 @@ def command(session_id, name, role, resume=False, model=None, effort=None, agent
             "--include-partial-messages", "--replay-user-messages",
             "--disallowedTools", "Monitor",
             "--name", name]
+    if plugin_root is not None:
+        # Crew owns this process, so load the matching bundled integration for
+        # this session. A user-level plugin is only needed by Claude sessions
+        # started independently in a terminal or editor.
+        args += ["--plugin-dir", str(Path(plugin_root).resolve())]
     if permission_mode != 'default':
         args += ['--permission-mode', permission_mode]
     if instructions is not None:
@@ -145,7 +150,7 @@ def prepare(conn, home, plugin_root, project_name, name, task, group=None, role=
             "md": str(md_path), "runtime": runtime, "model": model, "effort": effort,
             "created_at": store.now_iso() if now is None else now}
     return {"id": spawn_id, "session_id": session_id, "command": command(session_id, name, role, model=model, effort=effort, agent=agent, runtime=runtime,
-            permission_mode=settings.get_execution(conn)['claude']), "spec": spec,
+            permission_mode=settings.get_execution(conn)['claude'], plugin_root=plugin_root), "spec": spec,
             "files": {str(json_path): json.dumps(spec, ensure_ascii=False, indent=2) + "\n", str(md_path): brief},
             "worktree_command": worktree_command}
 

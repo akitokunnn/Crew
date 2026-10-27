@@ -122,6 +122,7 @@ class SpawnTests(ShellFixture, unittest.TestCase):
         command = result["command"]
         self.assertEqual(self.commands, [command])
         self.assertEqual(command[command.index("--name") + 1], "new")
+        self.assertEqual(command[command.index("--plugin-dir") + 1], str(PLUGIN.resolve()))
         self.assertEqual(command[-2:], ["--session-id", result["session_id"]])
         self.assertNotIn("--agent", command)
         self.assertEqual(self.processes[0].options["cwd"], str(self.project.resolve()))
@@ -814,6 +815,7 @@ class WebTests(ShellFixture, unittest.TestCase):
         self.assertEqual(len(self.processes), 1)
         self.provider.return_value = []
         self.assertEqual(self.get("/api/chat/send", {"session_id": session_id, "text": "resume"})[0], 200)
+        self.assertEqual(self.processes[1].command[self.processes[1].command.index("--plugin-dir") + 1], str(PLUGIN.resolve()))
         self.assertEqual(self.processes[1].command[-2:], ["--resume", session_id])
         self.assertNotIn("--session-id", self.processes[1].command)
 
