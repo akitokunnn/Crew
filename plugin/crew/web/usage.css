@@ -1,0 +1,43 @@
+/* Usage content and account summary; placement remains with the shell. */
+.usage-page{display:flex;flex-direction:column;flex:1;min-width:0;min-height:0}
+.usage-summary{display:flex;flex-direction:column;gap:3px;width:100%;padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:transparent;font-size:calc(11px * var(--fs));line-height:1.4;text-align:left;color:inherit;cursor:pointer}
+.usage-summary:hover{background:var(--hover)}
+.usage-summary .quota-summary-row{display:flex;align-items:baseline;justify-content:space-between;gap:8px;color:var(--text-3);font-variant-numeric:tabular-nums}
+.usage-summary .quota-summary-row>span:first-child{color:var(--text-2)}
+.usage-page>.head{height:auto;min-height:76px;padding-top:12px;padding-bottom:12px;flex-wrap:wrap}
+.usage-page .usage-toolbar{gap:10px;flex-wrap:wrap}
+.usage-page .qcards{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin:18px 0 26px}
+.usage-page .qcard{min-width:0;background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:14px 16px}
+.usage-page .qcard .lbl{font-size:calc(12.5px * var(--fs));color:var(--text-2);display:flex;justify-content:space-between}
+.usage-page .qcard .big{font-size:var(--fs-num);font-weight:500;margin:6px 0 8px;font-variant-numeric:tabular-nums;letter-spacing:-.01em}
+.usage-page .qcard .big.unknown{font-size:calc(22px * var(--fs))}
+.usage-page .qcard .big small{font-size:calc(13px * var(--fs));color:var(--text-3);font-weight:400;margin-left:4px}
+.usage-page .qcard .bar{height:6px;border-radius:3px;background:var(--line-strong);overflow:hidden}
+.usage-page .qcard .bar i{display:block;height:100%;background:var(--accent);border-radius:3px}
+.usage-page .qcard .quota-crew{margin-top:8px;font-size:calc(11.5px * var(--fs));color:var(--text-2);line-height:1.5}
+.usage-page .qcard .rs{font-size:calc(11.5px * var(--fs));color:var(--text-3);margin-top:8px}
+.usage-page .utable{table-layout:fixed;width:100%;border-collapse:separate;border-spacing:0;background:var(--surface);border:1px solid var(--line);border-radius:14px;overflow:hidden;font-size:calc(13px * var(--fs))}
+.usage-page .utable th{font-weight:400;color:var(--text-3);font-size:calc(12px * var(--fs));text-align:left;padding:10px 14px;border-bottom:1px solid var(--line);background:var(--hover-2)}
+.usage-page .utable td{padding:9px 14px;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}
+.usage-page .utable td,.usage-page .utable th{overflow-wrap:anywhere}
+.usage-page .utable tr:last-child td{border-bottom:0}
+.usage-page .utable td.num,.usage-page .utable th.num{text-align:right}
+.usage-page .utable tr.grp td{font-weight:500;background:var(--hover-2);cursor:pointer}
+.usage-page .utable tr.sub td:first-child{padding-left:44px}
+.usage-page .utable .cell-name{min-width:0}
+.usage-page .usage-codex-count{font-size:calc(12px * var(--fs));color:var(--text-3);font-weight:400;margin-top:3px}
+.usage-page .share{display:flex;align-items:center;gap:8px;justify-content:flex-end}
+.usage-page .share .b{width:min(90px,7vw);height:5px;border-radius:3px;background:var(--line);overflow:hidden;flex-shrink:0}
+.usage-page .share .b i{display:block;height:100%;background:color-mix(in srgb,var(--accent) 70%,transparent)}
+.usage-page .usage-tabs{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap}
+.usage-page .usage-total{font-size:calc(12.5px * var(--fs));color:var(--text-3)}
+.usage-page .usage-error{display:flex;align-items:center;gap:12px;margin-top:12px}
+.usage-page .usage-error .error-line{margin:0;overflow-wrap:anywhere}
+@media(max-height:760px){.sb .usage-summary{padding-top:5px;padding-bottom:5px}}
+@media(max-height:620px){.sb .usage-summary{display:none}}
+@media(max-width:760px){
+  .usage-page .qcards{grid-template-columns:1fr;gap:10px}
+  .usage-page .utable td,.usage-page .utable th{padding-left:8px;padding-right:8px}
+  .usage-page .utable tr.sub td:first-child{padding-left:24px}
+  .usage-page .share .b{display:none}
+}

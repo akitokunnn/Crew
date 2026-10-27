@@ -171,8 +171,9 @@ class _Agents:
 
 
 class Manager:
-    def __init__(self, service):
-        self.service, self.chat, self.home = service, service.chat, service.home
+    def __init__(self, home, sessions, write_lock, clear_digest_failures):
+        self.home, self.chat = home, sessions
+        self.write_lock, self.clear_digest_failures = write_lock, clear_digest_failures
         self.lock = threading.Lock()
         self.previews, self.workers = {}, []
         self.stopping = threading.Event()
@@ -485,8 +486,8 @@ class Manager:
         marker = {'job': job_id, 'position': item['position'], 'owned': False}
         with chat.work(background=True) as admitted:
             if not admitted:
-                from . import chat as chat_module
-                raise ItemFailure('update_paused', chat_module.PAUSED_FOR_UPDATE)
+                from .execution_admission import PAUSED_FOR_UPDATE
+                raise ItemFailure('update_paused', PAUSED_FOR_UPDATE)
             with chat.lock:
                 if chat.closed or self.stopping.is_set():
                     raise ItemFailure('interrupted', '服务正在关闭，没有开始压缩')
@@ -726,12 +727,12 @@ class Manager:
         chat, positions = self.chat, {item['target']: position for position, item in enumerate(preview['items'])}
         with chat.work(background=True) as admitted:
             if not admitted:
-                from . import chat as chat_module
-                self._finish(job_id, 'update_paused', chat_module.PAUSED_FOR_UPDATE)
+                from .execution_admission import PAUSED_FOR_UPDATE
+                self._finish(job_id, 'update_paused', PAUSED_FOR_UPDATE)
                 return
             # The service write lock and the process lock keep every other model
             # start, delivery and digest out until the boundary is committed.
-            with self.service.write_lock, chat.lock, closing(store.connect(self.home)) as conn:
+            with self.write_lock, chat.lock, closing(store.connect(self.home)) as conn:
                 info = board.project(conn, project)
                 snapshot = self._snapshot(conn, project)
                 if self._fingerprint(store.norm_path(info['root']), snapshot) != preview['fingerprint']:
@@ -775,9 +776,7 @@ class Manager:
                 self._item(job_id, position, 'running')
                 with board.transaction(conn):
                     self._archive(conn, project, job_id)
-                with self.service.channel_digest.lock:
-                    self.service.channel_digest.errors.pop(project, None)
-                    self.service.channel_digest.failed_upto.pop(project, None)
+                self.clear_digest_failures(project)
 
     def _archive(self, conn, project, job_id):
         """One transaction: archive identities, withdraw open work and move the boundaries."""

@@ -91,7 +91,7 @@ class ExitLifecycleTests(unittest.TestCase):
                 _lease=SimpleNamespace(release=mock.Mock()), _status=journal.set_status)
             current.close = MethodType(codex_runtime.CodexRunning.close, current)
             current.reader = threading.Thread(target=codex_runtime.CodexRunning._watch, args=(current,), daemon=True)
-        self.manager.processes[identity] = current
+        self.manager.executions.register(identity, current)
         self.runtimes.append(current)
         current.reader.start()
         return current
@@ -221,7 +221,7 @@ class DigestExitLifecycleTests(unittest.TestCase):
             processes.append(process)
             return process
         discovery = mock.patch('crew.runtimes.shutil.which', return_value='fixture-native.exe')
-        claude = mock.patch('crew.channel_digest.chat.claude_executable', return_value='fixture-claude.exe')
+        claude = mock.patch('crew.channel_digest.native_process.claude_executable', return_value='fixture-claude.exe')
         discovery.start(); claude.start()
         self.addCleanup(discovery.stop); self.addCleanup(claude.stop)
         manager = channel_digest.Manager(self.home, threading.Lock(), factory)
@@ -321,7 +321,7 @@ class DigestExitLifecycleTests(unittest.TestCase):
             except Exception as exc:
                 errors.append(exc)
         with mock.patch('crew.channel_digest.settings.resolve', return_value={'runtime': 'claude', 'model': None, 'effort': None}), \
-             mock.patch('crew.channel_digest.chat.claude_executable', return_value='fixture-claude.exe'):
+             mock.patch('crew.channel_digest.native_process.claude_executable', return_value='fixture-claude.exe'):
             manager.start(self.conn, 'demo')
             self.assertTrue(entered.wait(3))
             worker = threading.Thread(target=close)

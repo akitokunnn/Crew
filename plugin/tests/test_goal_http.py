@@ -729,7 +729,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         goal = self.goal()
         _, first, _ = self.send_goal(goal, 'Do not push a PR. Keep every original recording.', message_id='first-rule')
         self.finish_turn(first['execution_id'], self.processes[-1])
-        with mock.patch.object(self.server.service.chat, 'context', return_value={'used': 65001, 'max': 1000000}):
+        with mock.patch.object(self.server.service.chat.executions, 'context', return_value={'used': 65001, 'max': 1000000}):
             code, second, _ = self.send_goal(goal, 'Continue the measurement.', message_id='after-rotation')
         self.assertEqual(code, 200, second)
         self.assertNotEqual(first['execution_id'], second['execution_id'])
@@ -751,7 +751,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         manager = self.server.service.chat
         manager.journal(first['execution_id']).emit('text', id='answer', text='Original answer.')
         self.finish_turn(first['execution_id'], self.processes[-1])
-        with mock.patch.object(manager, 'context', return_value={'used': 65001, 'max': 1000000}):
+        with mock.patch.object(manager.executions, 'context', return_value={'used': 65001, 'max': 1000000}):
             code, second, _ = self.send_goal(goal, 'Continue after interruption.', message_id='continued-discussion')
         self.assertEqual(code, 200, second)
         self.assertNotEqual(first['execution_id'], second['execution_id'])

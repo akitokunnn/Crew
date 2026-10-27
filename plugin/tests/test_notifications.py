@@ -9,6 +9,9 @@ import threading
 import unittest
 from unittest import mock
 
+from crew.execution_host import ExecutionStore, NativeLauncher
+from crew.execution_admission import WorkAdmission
+from crew import claude_events
 from crew import board, chat, goal_runtime, notifications, qq, session_ops, store, web
 from test_chat import FakeProcess
 from test_shell import NOW, PLUGIN, ShellFixture
@@ -110,7 +113,7 @@ class NotificationTests(ShellFixture, unittest.TestCase):
 
     def restart(self):
         self.inbox.close()
-        self.inbox = notifications.Inbox(self.service, self.client, lock_status=lambda: self.locked)
+        self.inbox = notifications.Inbox(self.service.home, self.service.write_lock, self.service.remote_workspaces(), self.service.remote_conversations(), self.client, lock_status=lambda: self.locked)
         self.addCleanup(self.inbox.close)
 
     def text(self, identity, text, quoted_ref=None, openid='owner', attachments=()):
@@ -141,16 +144,22 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         board.join(self.conn, sid, project, name or sid, self.project, None, None, role='leader', now=now)
 
     def web_manager(self, sid='s3'):
-        journal = chat.Journal(self.home / 'chat' / (sid + '.jsonl'))
+        executions = ExecutionStore(self.home)
+        journal = executions.journal(sid)
         journal.set_status('idle')
         folder = self.home / 'spawn'
         folder.mkdir(exist_ok=True)
         (folder / (sid + '.json')).write_text('{}', encoding='utf-8')
         self.conn.execute('UPDATE sessions SET spawn_id=? WHERE session_id=?', (sid, sid))
         manager = mock.Mock()
-        manager.lock, manager.processes = threading.RLock(), {}
+        manager.executions = executions
+        manager.lock, manager.processes = executions.lock, executions.processes
+        executions.register(sid, chat.Running(FakeProcess([]), journal))
         manager.home, manager.plugin_root = self.home, PLUGIN
-        manager.goal_controller = goal_runtime.Controller(manager)
+        manager.goal_controller = goal_runtime.Controller(executions, WorkAdmission(), mock.Mock(spec=NativeLauncher),
+                                                          send_input=manager.send, stop=manager.stop_managed,
+                                                          interrupt=manager.interrupt, observe_claude=lambda: [],
+                                                          scope_busy=mock.Mock(return_value=False))
         manager.journal.return_value, manager.path.return_value = journal, journal.path
         manager.subagent_tasks.return_value = []
         manager.busy.side_effect = lambda sid: journal.status == 'working'
@@ -164,12 +173,15 @@ class NotificationTests(ShellFixture, unittest.TestCase):
 
         manager.send.side_effect = send
         self.service.chat = manager
+        self.inbox.conversations = self.service.remote_conversations()
         return manager, journal
 
     def test_mock_legacy_transport_uses_real_goal_identity_catalog(self):
         manager, _ = self.web_manager()
         self.assertIsInstance(manager.goal_controller, goal_runtime.Controller)
         self.assertEqual(manager.goal_controller.native_ids(self.conn), set())
+        # This case observes only an external legacy session, with no owned native.
+        manager.executions.remove('s3').process.finish()
         agents = self.service.managed_agents(self.conn, [{'sessionId':'s1','name':'one'}])
         self.assertEqual([item['sessionId'] for item in agents], ['s1'])
 
@@ -192,7 +204,7 @@ class NotificationTests(ShellFixture, unittest.TestCase):
 
     def test_missing_configuration_does_not_create_threads_or_client(self):
         (self.home / 'qq.json').unlink()
-        inbox = notifications.Inbox(self.service, lock_status=lambda: False)
+        inbox = notifications.Inbox(self.service.home, self.service.write_lock, self.service.remote_workspaces(), self.service.remote_conversations(), lock_status=lambda: False)
         self.addCleanup(inbox.close)
         with mock.patch('crew.notifications.threading.Thread') as thread, mock.patch('crew.notifications.qq.Client') as client:
             inbox.start()
@@ -991,12 +1003,14 @@ class NotificationTests(ShellFixture, unittest.TestCase):
     def test_queued_compact_request_uses_separator_boundary_and_unblocks_next_reply(self):
         self.select()
         journal = self.manager.journal('s3')
+        journal_native_events = claude_events.ClaudeEvents(journal)
         journal.set_status('idle')
         process = FakeProcess([])
         current = chat.Running(process, journal)
         current.reader = mock.Mock()
-        self.manager.processes['s3'] = current
+        self.manager.executions.register('s3', current)
         self.service.chat = self.manager
+        self.inbox.conversations = self.service.remote_conversations()
         folder = self.home / 'spawn'
         folder.mkdir(exist_ok=True)
         (folder / 's3.json').write_text('{}', encoding='utf-8')
@@ -1010,8 +1024,8 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         self.assertEqual([row['status'] for row in self.replies()], ['running', 'queued'])
         self.assertEqual(json.loads(process.stdin.getvalue().splitlines()[-1])['message']['content'], '/compact')
         self.assertNotIn('/compact', journal.path.read_text(encoding='utf-8'))
-        journal.consume(dict(type='system', subtype='compact_boundary', compact_metadata=dict(pre_tokens=46123, post_tokens=9925)))
-        journal.consume(dict(type='result', local_command='compact'))
+        journal_native_events.consume(dict(type='system', subtype='compact_boundary', compact_metadata=dict(pre_tokens=46123, post_tokens=9925)))
+        journal_native_events.consume(dict(type='result', local_command='compact'))
         self.inbox.process_replies()
         self.assertEqual([row['status'] for row in self.replies()], ['answered', 'running'])
         self.assertEqual(json.loads(process.stdin.getvalue().splitlines()[-1])['message']['content'], '压缩后继续')
@@ -1103,6 +1117,7 @@ class NotificationTests(ShellFixture, unittest.TestCase):
                 if reason == 'error':
                     journal.emit('error', text='model quota exhausted')
                 manager.running.return_value = False
+                manager.executions.remove('s3').process.finish()
                 journal.set_status('offline')
                 self.inbox.process_replies()
                 if reason == 'error':
@@ -1119,8 +1134,9 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         process = FakeProcess([])
         current = chat.Running(process, journal)
         current.reader = mock.Mock()
-        self.manager.processes['s3'] = current
+        self.manager.executions.register('s3', current)
         self.service.chat = self.manager
+        self.inbox.conversations = self.service.remote_conversations()
         folder = self.home / 'spawn'
         folder.mkdir(exist_ok=True)
         (folder / 's3.json').write_text('{}', encoding='utf-8')
@@ -1222,7 +1238,7 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         self.assertIsNotNone(self.conn.execute("SELECT 1 FROM notification_inbound WHERE event_id='transport-help'").fetchone())
 
     def test_configured_client_receives_only_explicit_credentials_and_transport_states(self):
-        inbox = notifications.Inbox(self.service, lock_status=lambda: self.locked)
+        inbox = notifications.Inbox(self.service.home, self.service.write_lock, self.service.remote_workspaces(), self.service.remote_conversations(), lock_status=lambda: self.locked)
         self.addCleanup(inbox.close)
         with mock.patch('crew.notifications.qq.Client', return_value=self.client) as factory:
             inbox.start()

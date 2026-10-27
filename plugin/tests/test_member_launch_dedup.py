@@ -152,6 +152,32 @@ class MemberLaunchDedupTests(ShellFixture, unittest.TestCase):
             other.wake(self.conn, board.session(self.conn, created['session_id']), 'Run again', caller_session_id='s3')
         self.assertEqual(len(self.clients), 1)
 
+    def test_another_host_observes_busy_claude_in_both_dispatch_directions(self):
+        for goal_bound in (False, True):
+            with self.subTest(goal_bound=goal_bound):
+                goal = self.goal()
+                name = 'foreign-claude-' + str(goal_bound)
+                created = self.manager.start(self.conn, 'demo', name, 'Run once',
+                    runtime='claude', caller_session_id='s3', goal_id=goal['id'] if goal_bound else None)
+                if goal_bound:
+                    execution = goals.get_execution(self.conn, created['execution_id'])
+                    native = next(binding['native_id'] for binding in execution['bindings'] if binding['runtime'] == 'claude')
+                else:
+                    native = runtimes.get(self.conn, created['session_id'])['native_id']
+                observe = mock.Mock(return_value=[{'sessionId': native, 'status': 'busy'}])
+                other = chat.Manager(self.home, PLUGIN, observe, self.process_factory)
+                self.addCleanup(other.close)
+                process_count = len(self.processes)
+                with self.assertRaisesRegex(board.Conflict, '目标执行' if goal_bound else '总对话'):
+                    if goal_bound:
+                        other.wake(self.conn, board.session(self.conn, created['session_id']), 'Run again', caller_session_id='s3')
+                    else:
+                        goal_actions.dispatch(self.home, 's3', None, 'assign', {'goal_id': goal['id'],
+                            'to': name, 'task': 'Run again', 'start': True}, other.goal_controller)
+                observe.assert_called()
+                self.assertEqual(len(self.processes), process_count)
+                self.assertEqual(dict(other.processes), {})
+
     def test_unknown_foreign_lease_returns_conflict_without_starting_another_thread(self):
         goal = self.goal()
         self.manager.start(self.conn, 'demo', 'host-worker', 'Run once',

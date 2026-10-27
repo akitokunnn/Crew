@@ -17,6 +17,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 from crew import session_ops, board, codex_runtime, decision_flow, store, themes, usage, web
 from test_shell import NOW, PLUGIN, ShellFixture
 from test_usage import assistant
+from crew.claude_events import ClaudeEvents
 
 
 class WebContractTests(ShellFixture, unittest.TestCase):
@@ -34,7 +35,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         poll = mock.patch.object(web.Service, "_poll_notices", return_value=None)
         poll.start()
         self.addCleanup(poll.stop)
-        executable = mock.patch("crew.chat.shutil.which", return_value="C:/fixture/claude.exe")
+        executable = mock.patch("crew.native_process.shutil.which", return_value="C:/fixture/claude.exe")
         executable.start()
         self.addCleanup(executable.stop)
         self.server = web.create_server(self.home, PLUGIN, port=0, cwd=self.project,
@@ -373,13 +374,14 @@ class WebContractTests(ShellFixture, unittest.TestCase):
 
     def test_unread_and_reply_sound_ignore_eighteen_tool_calls(self):
         journal = self.service.chat.journal("s3")
+        events = ClaudeEvents(journal)
         for index in range(18):
-            journal.consume({"type": "assistant", "message": {"id": "tool-" + str(index), "content": [
+            events.consume({"type": "assistant", "message": {"id": "tool-" + str(index), "content": [
                 {"type": "tool_use", "id": "call-" + str(index), "name": "Bash", "input": {"command": "git status"}}]}})
             journal.emit("tool_result", tool_use_id="call-" + str(index), content="clean", is_error=False)
         leader = self.state()["leaders"][0]
         self.assertEqual((leader["unread"], leader["last_reply_id"]), (0, None))
-        journal.consume({"type": "assistant", "message": {"id": "answer", "content": [
+        events.consume({"type": "assistant", "message": {"id": "answer", "content": [
             {"type": "text", "text": "Git 检查完成，工作区干净。"}]}})
         leader = self.state()["leaders"][0]
         self.assertEqual((leader["unread"], leader["last_reply_id"]), (1, "answer"))
@@ -836,15 +838,16 @@ class FrontendThemeContractTests(unittest.TestCase):
         assets = PLUGIN / "crew" / "web"
         index = (assets / "index.html").read_text(encoding="utf-8")
         app = (assets / "app.js").read_text(encoding="utf-8")
+        appearance = (assets / "appearance-ui.js").read_text(encoding="utf-8")
         css = (assets / "style.css").read_text(encoding="utf-8")
         self.assertIn('id="project-favicon"', index)
-        self.assertLess(index.index('src="/themes.js"'), index.index('src="/app.js"'))
+        self.assertLess(index.index('src="/themes.js"'), index.index('src="/appearance-ui.js"'))
+        self.assertLess(index.index('src="/appearance-ui.js"'), index.index('src="/app.js"'))
+        self.assertIn('window.CrewAppearanceUI.create(', app)
         for contract in ('data-act="project-theme"', 'class="theme-swatches"',
-                         'aria-pressed="${state.project.theme === item.id}"',
-                         'api("/api/project/theme", {project:state.project.name, theme:button.dataset.themeId})',
-                         'CrewTheme.projectStyle(state.themes, item.theme)',
-                         'addEventListener("change", applyTheme)'):
-            self.assertIn(contract, app)
+                         'aria-pressed="${project.theme === item.id}"'):
+            self.assertIn(contract, appearance)
+        self.assertIn('CrewTheme.projectStyle(state.themes, item.theme)', app)
         self.assertIn('.dot.working{background:var(--working)', css)
         self.assertIn('.st.working{color:var(--working-text)}', css)
         self.assertIn('.m-lead .body a{color:var(--accent-text)', css)

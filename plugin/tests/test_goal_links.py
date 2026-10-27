@@ -4,6 +4,8 @@ from types import SimpleNamespace
 import unittest
 from unittest import mock
 
+from crew.execution_host import ExecutionStore, NativeLauncher
+from crew.execution_admission import WorkAdmission
 from crew import board, chat, codex_client, goal_links, goals, todo
 from crew.goal_runtime import Controller
 from tests.test_runtimes import RuntimeFixture
@@ -12,15 +14,17 @@ from tests.test_runtimes import RuntimeFixture
 class GoalLinkTests(RuntimeFixture):
     def setUp(self):
         super().setUp()
-        self.journals = {}
-        manager = SimpleNamespace(home=self.home,busy=mock.Mock(return_value=False),journal=self.journal)
-        self.controller = Controller(manager)
+        self.executions = ExecutionStore(self.home)
+        self.journals = self.executions.journals
+        self.executions.busy = mock.Mock(return_value=False)
+        self.controller = Controller(self.executions, WorkAdmission(), mock.Mock(spec=NativeLauncher),
+                                      send_input=mock.Mock(return_value={'accepted': True}), stop=mock.Mock(),
+                                      interrupt=mock.Mock(), observe_claude=lambda: [],
+                                      scope_busy=mock.Mock(return_value=False))
         self.controller.send = mock.Mock(return_value={'accepted':True,'delivery':'started'})
 
     def journal(self, execution_id):
-        if execution_id not in self.journals:
-            self.journals[execution_id] = chat.Journal(self.home/'test-goal-chat'/(execution_id+'.jsonl'))
-        return self.journals[execution_id]
+        return self.executions.journal(execution_id)
 
     def target(self, title='原目标', person='member-id'):
         goal = goals.create(self.conn,'demo','chief-id',title,'原始需求',['可复核的 example'])
@@ -203,10 +207,10 @@ class GoalLinkTests(RuntimeFixture):
         target,old = self.target();number = self.decision(old)
         goals.set_execution_status(self.conn,old['id'],'idle')
         current = goals.create_execution(self.conn,target['id'],'member-id',runtime='claude')
-        self.controller.manager.busy.side_effect = lambda key:key==current['id']
+        self.controller.executions.busy.side_effect = lambda key:key==current['id']
         self.deliver();self.controller.send.assert_not_called()
         self.assertEqual(goal_links.get(self.conn,'decision',number)['delivered_version'],0)
-        self.controller.manager.busy.return_value=False;self.controller.manager.busy.side_effect=None
+        self.controller.executions.busy.return_value=False;self.controller.executions.busy.side_effect=None
         self.deliver();self.controller.send.assert_called_once()
 
     def test_unknown_acceptance_does_not_resume_waiting_goal(self):

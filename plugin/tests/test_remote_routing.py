@@ -217,7 +217,7 @@ class RemoteRoutingTests(ShellFixture, unittest.TestCase):
         self.assertIn('已切换到 Other·lead', self.client.sent[-1]['text'])
         self.receive('/where')
         self.assertIn('Other·lead', self.client.sent[-1]['text'])
-        restarted = notifications.Inbox(self.service, self.client, lock_status=lambda: False)
+        restarted = notifications.Inbox(self.service.home, self.service.write_lock, self.service.remote_workspaces(), self.service.remote_conversations(), self.client, lock_status=lambda: False)
         self.addCleanup(restarted.close)
         self.assertEqual(restarted.config['current_project'], 'Other')
         self.assertEqual(restarted.config['current_leader_session_id'], 'other-lead')

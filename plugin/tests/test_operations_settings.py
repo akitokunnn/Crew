@@ -43,7 +43,7 @@ class OperationsSettingsTests(unittest.TestCase):
     def test_claude_selected_brain_uses_only_workspace_edit_tools_and_chosen_options(self):
         settings.save(self.home, {'default': choice('codex'),
                                   'operations': choice('claude', 'future-native-alias', 'future-effort')})
-        with mock.patch.object(operations_worker.chat, 'claude_executable', return_value='/fixture/claude'):
+        with mock.patch.object(operations_worker.native_process, 'claude_executable', return_value='/fixture/claude'):
             runner = operations_worker.default_runner(self.home, self.installed)
         self.assertEqual(runner[runner.index('--model') + 1], 'future-native-alias')
         self.assertEqual(runner[runner.index('--effort') + 1], 'future-effort')
@@ -56,7 +56,7 @@ class OperationsSettingsTests(unittest.TestCase):
             with self.subTest(runtime=runtime):
                 settings.save(self.home, {'default': choice(runtime)})
                 with (mock.patch.object(operations_worker.codex_client, 'command', return_value=['/fixture/codex']),
-                      mock.patch.object(operations_worker.chat, 'claude_executable', return_value='/fixture/claude')):
+                      mock.patch.object(operations_worker.native_process, 'claude_executable', return_value='/fixture/claude')):
                     runner = operations_worker.default_runner(self.home, self.installed)
                 self.assertNotIn('--model', runner)
                 self.assertNotIn('--effort', runner)

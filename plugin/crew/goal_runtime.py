@@ -4,10 +4,12 @@ import json
 import os
 from pathlib import Path
 import subprocess
-import threading
 import uuid
 
-from . import board, goal_context, goals, install, messaging, models, runtimes, spawn, store, trust_mode
+from .execution_admission import MAINTENANCE_HELD
+from . import native_process
+
+from . import board, goal_context, goals, messaging, models, runtimes, spawn, store, trust_mode
 
 
 BASE_INSTRUCTIONS = """你在 Crew 内执行一个有明确终点的目标；身份、目标与授权由宿主绑定。
@@ -29,17 +31,24 @@ leader 本轮最终交付围绕用户目的自主设计精美、直观、易懂�
 
 
 class Controller:
-    def __init__(self, manager):
-        self.manager = manager
-        self.home = manager.home
+    def __init__(self, executions, admission, transport, *, send_input, stop, interrupt, observe_claude, scope_busy):
+        self.executions, self.admission, self.transport = executions, admission, transport
+        self.home = executions.home
+        self.send_input, self.stop_native, self.interrupt_native = send_input, stop, interrupt
+        self.observe_claude = observe_claude
+        self.scope_busy = scope_busy
         self.recovery = None
         self.epoch = uuid.uuid4().hex
         self.live_native = None
         self.recovery_errors = {}
 
+    def locked(self):
+        """Hold the shared execution-state lock, without starting a DB transaction."""
+        return self.executions.locked()
+
     def agent_action(self, action, data, actor_session_id, execution_id=None):
         from . import goal_actions
-        with self.manager.lock:
+        with self.locked():
             return goal_actions.dispatch(self.home, actor_session_id, execution_id, action, data, controller=self)
 
     def current(self, conn, goal_id, session_id):
@@ -61,7 +70,7 @@ class Controller:
             "ORDER BY CASE WHEN g.status='running' THEN 0 ELSE 1 END,g.updated_at DESC,e.created_at DESC",
             (session_id,)).fetchall()
         values = [goals.get_execution(conn, row['id']) for row in rows]
-        return sorted(values, key=lambda item: (not self.manager.busy(item['id']), not self.manager.running(item['id'])))
+        return sorted(values, key=lambda item: (not self.executions.busy(item['id']), not self.executions.running(item['id'])))
 
     def display_execution(self, conn, session_id):
         """Representative activity only; general inputs always keep their own scope."""
@@ -89,10 +98,10 @@ class Controller:
         if execution is not None and execution['status'] not in goals.TERMINAL:
             mapping, options = runtimes.get(conn, session_id), models.get(conn, session_id)
             if execution['runtime'] != mapping['runtime']:
-                if self.manager.busy(execution['id']):
+                if self.executions.busy(execution['id']):
                     raise board.Conflict('更换载体前请先暂停当前目标')
-                if self.manager.running(execution['id']):
-                    self.manager.stop_managed(execution['id'])
+                if self.executions.running(execution['id']):
+                    self.stop_native(execution['id'])
                 goals.configure_execution(conn, execution['id'], runtime=mapping['runtime'], **options)
                 execution = goals.get_execution(conn, execution['id'])
             if execution['status'] in ('offline', 'paused'):
@@ -116,7 +125,7 @@ class Controller:
         material, seen = [], set()
         for row in conn.execute('SELECT id FROM goal_executions WHERE goal_id=? AND round<=? AND session_id=? ORDER BY round,generation',
                                 (execution['goal_id'], execution['round'], execution['session_id'])):
-            for event in self.manager.journal(row['id']).events:
+            for event in self.executions.journal(row['id']).events:
                 if event['type'] != 'message' or event.get('source') not in ('human', 'qq', 'lark') or event['id'] == identity:
                     continue
                 if event['id'] in seen:
@@ -150,12 +159,12 @@ class Controller:
 
     def stop_delivered(self, conn, goal_id):
         """Drain delivered runtimes before a human review or follow-up round."""
-        manager, idle, agents = self.manager, [], None
+        idle, agents = [], None
         for row in conn.execute('SELECT id FROM goal_executions WHERE goal_id=?', (goal_id,)):
             key = row['id']
-            current = manager.processes.get(key)
-            if manager.running(key):
-                if manager.busy(key):
+            current = self.executions.current(key)
+            if self.executions.running(key):
+                if self.executions.busy(key):
                     raise board.Conflict('原生执行仍在工作，尚不能验收或继续修改')
                 idle.append(key)
             elif current is not None:
@@ -167,19 +176,19 @@ class Controller:
                     identities = {b['native_id'] for b in execution['bindings'] if b['runtime'] == 'claude'}
                     if identities:
                         if agents is None:
-                            agents = manager._external_agents()
+                            agents = self.observe_claude()
                         if any(agent['sessionId'] in identities for agent in agents):
                             raise board.Conflict('原生执行仍在外部运行，尚不能验收或继续修改')
                 else:
                     from .codex_runtime import RuntimeLease
-                    lease = RuntimeLease(manager.home, key).acquire()
+                    lease = RuntimeLease(self.home, key).acquire()
                     lease.release()
         for key in idle:
-            manager.stop_managed(key)
+            self.stop_native(key)
         self.sync(conn, goal_id)
 
     def launch(self, session, spec):
-        """Called under Manager.lock; never mutates the person's default native binding."""
+        """Called under the shared execution-state lock; never mutates the person's default native binding."""
         return self._launch(session, spec, None)
 
     def check_member_start(self, conn, goal_id, session_id, source):
@@ -195,7 +204,7 @@ class Controller:
         prior = conn.execute('SELECT 1 FROM goal_executions e JOIN goal_execution_bindings b ON b.execution_id=e.id '
                              'WHERE e.goal_id=? AND e.session_id=? LIMIT 1',
                              (goal_id, session_id)).fetchone()
-        if prior is None and self.manager.scope_busy(session_id, **runtimes.get(conn, session_id)):
+        if prior is None and self.scope_busy(session_id, **runtimes.get(conn, session_id)):
             raise board.Conflict('成员「%s」的总对话正在执行任务，不能再新开目标线程重复派工；'
                 '请等待该轮结束或明确停止后再分配。新成员直接用 crew spawn --goal %s 绑定目标启动。'
                 % (person['crew_name'], goal_id))
@@ -212,10 +221,9 @@ class Controller:
         return self._launch(session, spec, marker)
 
     def _launch(self, session, spec, maintenance):
-        from . import chat
         execution = session['_execution']
         key, logical_id = execution['id'], execution['session_id']
-        previous = self.manager.processes.get(key)
+        previous = self.executions.current(key)
         if previous is not None and not previous.reader_done.wait(10):
             raise board.BoardError('上一轮目标执行的输出尚未排空，请稍后重试；未启动新进程')
         with closing(store.connect(self.home)) as conn:
@@ -232,62 +240,42 @@ class Controller:
                 raise board.Conflict('Claude 进程状态尚未确认，不能重复恢复目标执行')
             if binding['native_id'] in self.live_native:
                 raise board.Conflict('目标原生会话仍在外部运行，等待它退出后续接')
-        journal = self.manager.journal(key)
         if execution['runtime'] == 'codex':
-            from .codex_runtime import CodexRunning
-            current = CodexRunning(self.home, self.manager.plugin_root, session, spec, options, journal,
-                                   self.manager.send_message, process_factory=self.manager.process_factory,
-                                   resume=binding is not None, execution=execution, goal_handler=self.agent_action,
-                                   maintenance=maintenance)
-            self.manager.processes[key] = current
+            self.transport.codex(session, spec, options, resume=binding is not None, execution=execution,
+                                  goal_handler=self.agent_action, maintenance=maintenance)
             return spawn.command(key, session['crew_name'], session['role'], runtime='codex', **options)
         native_id = binding['native_id'] if binding else str(uuid.uuid4())
         if binding is None:
             with closing(store.connect(self.home)) as conn:
                 goals.bind_native(conn, key, 'claude', native_id, **options)
-        install.ensure(self.home, self.manager.plugin_root)
         command = spawn.command(native_id, session['crew_name'], session['role'], binding is not None,
                                 instructions=('你是 Crew「%s」的当前目标执行。目标规则和用户原始要求由宿主随输入装载；仅当前明确授权有效。' % session['crew_name']
                                               + ('\n' + spec['_workspace_notice'] if spec.get('_workspace_notice') else '')),
-                                permission_mode=permission_mode, plugin_root=self.manager.plugin_root,
+                                permission_mode=permission_mode, plugin_root=self.transport.plugin_root,
                                 **options)
-        command[0] = chat.claude_executable()
-        environment = chat.child_environment({**spec, 'name': session['crew_name'], 'role': session['role'],
+        command[0] = native_process.claude_executable()
+        environment = native_process.child_environment({**spec, 'name': session['crew_name'], 'role': session['role'],
                                                'group': session['group_name']})
         environment.update(CREW_HOME=str(self.home.resolve()), CREW_SESSION_ID=logical_id,
                            CREW_EXECUTION_ID=key, CREW_GOAL_ID=execution['goal_id'])
         environment['PATH'] = str(self.home.resolve() / 'bin') + os.pathsep + environment.get('PATH', '')
-        process = self.manager.process_factory(command, cwd=session['cwd'], env=environment,
-                                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                               text=True, encoding='utf-8', bufsize=1,
-                                               creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
-        current = chat.Running(process, journal)
-        current.execution, current.identity_session_id, current.native_id = execution, logical_id, native_id
-        current.maintenance = maintenance
-        current.goal_manifests = dict(session.get('_goal_manifests', {}))
-        self.manager.processes[key] = current
-        journal.reset_runtime()
-        self.manager._control(current, 'get_settings')
-        self.manager._control(current, 'get_context_usage')
-        current.stderr_reader = threading.Thread(target=self.manager._stderr, args=(current,), daemon=True, name='crew-goal-stderr')
-        current.stderr_reader.start()
-        current.reader = threading.Thread(target=self.manager._read, args=(key, current), daemon=True, name='crew-goal-claude')
-        current.reader.start()
+        self.transport.claude(command, key=key, cwd=session['cwd'], environment=environment,
+                               execution=execution, native_id=native_id, maintenance=maintenance,
+                               goal_manifests=session.get('_goal_manifests', {}), name='crew-goal-claude')
         return command
 
     def send(self, goal_id, session_id, text, *, identity=None, images=None, source='human', display_text=None, sender=None):
-        with self.manager.work():
+        with self.admission.work():
             return self._send(goal_id, session_id, text, identity=identity, images=images, source=source, display_text=display_text, sender=sender)
 
     def _send(self, goal_id, session_id, text, *, identity=None, images=None, source='human', display_text=None, sender=None):
         identity = str(uuid.uuid4()) if identity is None else identity
-        with self.manager.lock, closing(store.connect(self.home)) as conn:
+        with self.locked(), closing(store.connect(self.home)) as conn:
             goal = goals.get(conn, goal_id)
             goals._member(conn, goal, session_id)
-            if self.manager.maintenance_held(session_id):
+            if self.executions.maintenance_held(session_id):
                 # Refuse before any goal or execution state changes.
-                from . import chat
-                raise board.Conflict(chat.MAINTENANCE_HELD)
+                raise board.Conflict(MAINTENANCE_HELD)
             human = source in ('human', 'qq', 'lark')
             if human:
                 # Retry the original receipt even if a later report closed its
@@ -295,9 +283,9 @@ class Controller:
                 for row in conn.execute('SELECT id FROM goal_executions WHERE goal_id=? AND session_id=? ORDER BY round DESC,generation DESC',
                                         (goal_id, session_id)):
                     prior_execution = goals.get_execution(conn, row['id'])
-                    previous = self.manager.journal(row['id']).inputs.get(identity)
+                    previous = self.executions.journal(row['id']).inputs.get(identity)
                     if previous is not None and previous['status'] != 'rejected':
-                        result = self.manager.send(self.target(conn, prior_execution), text, identity=identity,
+                        result = self.send_input(self.target(conn, prior_execution), text, identity=identity,
                             images=images, source=source, display_text=display_text, sender=sender)
                         return {**result, 'goal_id': goal_id, 'execution_id': row['id']}
                 if goal['status'] in ('completed', 'failed', 'awaiting_acceptance'):
@@ -319,29 +307,29 @@ class Controller:
                 goals.transition(conn, goal_id, 'running')
             execution = self.ensure(conn, goal_id, session_id)
             key = execution['id']
-            journal = self.manager.journal(key)
+            journal = self.executions.journal(key)
             if not journal.path.exists():
                 journal.set_status('idle')
             target = self.target(conn, execution)
             prior = journal.inputs.get(identity)
             if prior is not None and prior['status'] != 'rejected':
-                result = self.manager.send(target, text, identity=identity, images=images, source=source,
+                result = self.send_input(target, text, identity=identity, images=images, source=source,
                                            display_text=display_text, sender=sender)
                 return {**result, 'goal_id': goal_id, 'execution_id': key}
-            observed = self.manager.context(key)
+            observed = self.executions.context(key)
             history = {'known': observed is not None, 'tokens': observed['used'] if observed else None,
                        'source': 'native_context_usage', 'note': '原生历史未知时不当作零'}
             prepared = goal_context.build(conn, key, base=BASE_INSTRUCTIONS + '\n' + (trust_mode.context(conn, session_id) or ''),
                                           latest_input='' if text == goal['requirements']['request'] else text,
                                           native_history=history, retrieval=self.human_handoff(conn, execution, identity) + self.followup_context(conn, execution),
                                           limits={'native_history_tokens': 64000})
-            if prepared['manifest']['rotation_required'] and not self.manager.busy(key):
-                if self.manager.running(key):
-                    self.manager.stop_managed(key)
+            if prepared['manifest']['rotation_required'] and not self.executions.busy(key):
+                if self.executions.running(key):
+                    self.stop_native(key)
                 goals.set_execution_status(conn, key, 'completed')
                 execution = self.ensure(conn, goal_id, session_id)
                 key, target = execution['id'], self.target(conn, execution)
-                journal = self.manager.journal(key)
+                journal = self.executions.journal(key)
                 if not journal.path.exists():
                     journal.set_status('idle')
                 prepared = goal_context.build(conn, key, base=BASE_INSTRUCTIONS + '\n' + (trust_mode.context(conn, session_id) or ''),
@@ -349,13 +337,13 @@ class Controller:
                                               native_history={'known': True, 'tokens': 0,
                                               'source': 'fresh_native_generation'}, limits={'native_history_tokens': 64000},
                                               retrieval=self.human_handoff(conn, execution, identity) + self.followup_context(conn, execution))
-            current = self.manager.processes.get(key)
+            current = self.executions.current(key)
             if current is not None:
                 current.pause_interrupt = False
                 current.goal_manifests[identity] = prepared['manifest']['id']
             target['_goal_manifests'] = {identity: prepared['manifest']['id']}
             goals.set_execution_status(conn, key, 'running')
-            result = self.manager.send(target, prepared['text'], display_text=text if display_text is None else display_text,
+            result = self.send_input(target, prepared['text'], display_text=text if display_text is None else display_text,
                                        identity=identity, images=images, source=source, sender=sender)
             if execution['runtime'] == 'codex' and not result.get('duplicate'):
                 goal_context.mark_applied(conn, prepared['manifest']['id'], execution_id=key)
@@ -364,7 +352,7 @@ class Controller:
     def history(self, conn, goal_id, session_id, *, include_previous=True):
         execution = self.current(conn, goal_id, session_id)
         value = ({'events': [], 'busy': False, 'running': False} if execution is None
-                 else self.manager.history(execution['id']))
+                 else self.executions.history(execution['id']))
         value.update(session_id=session_id, goal_id=goal_id,
                      execution_id=execution['id'] if execution else None,
                      read_seq=execution.get('read_seq', 0) if execution else 0)
@@ -377,11 +365,11 @@ class Controller:
                 if row['id'] != value['execution_id']:
                     value['previous_executions'].append({'execution_id': row['id'], 'round': row['round'],
                         'generation': row['generation'], 'requirement_version': row['requirement_version'],
-                        'events': self.manager.history(row['id'])['events']})
+                        'events': self.executions.history(row['id'])['events']})
         return value
 
     def pause(self, goal_id, *, manual=True, actor=board.HUMAN):
-        with self.manager.lock, closing(store.connect(self.home)) as conn:
+        with self.locked(), closing(store.connect(self.home)) as conn:
             goals.request_pause(conn, goal_id, manual=manual, actor=actor)
             self.sync(conn, goal_id)
             return goals.get(conn, goal_id)
@@ -395,11 +383,11 @@ class Controller:
         pausing = set()
         for row in rows:
             key = row['id']
-            current = self.manager.processes.get(key)
+            current = self.executions.current(key)
             stale = row['round'] != row['current_round'] or row['requirement_version'] != row['current_version']
             if row['status'] in goals.TERMINAL:
                 if (getattr(current, 'runtime', None) == 'codex' and getattr(current, 'maintenance', None) is None
-                        and self.manager.running(key) and not self.manager.busy(key)):
+                        and self.executions.running(key) and not self.executions.busy(key)):
                     # Completed executions no longer own an interactive native
                     # sidebar entry; close() archives without deleting history.
                     current.close()
@@ -420,21 +408,21 @@ class Controller:
                         except board.Conflict:
                             continue
                         lease.release()
-                if self.manager.busy(key):
+                if self.executions.busy(key):
                     if not getattr(current, 'pause_interrupt', False):
-                        self.manager.interrupt(key)
+                        self.interrupt_native(key)
                         current.pause_interrupt = True
                 elif row['status'] not in goals.TERMINAL:
                     goals.set_execution_status(conn, key, 'cancelled' if stale else 'paused' if row['goal_status'] in ('pausing','paused') else row['goal_status'])
                 if row['goal_status'] == 'pausing':
                     pausing.add(row['goal_id'])
             elif current is not None and row['status'] not in goals.TERMINAL:
-                state = 'running' if self.manager.busy(key) else 'idle' if self.manager.running(key) else 'offline'
+                state = 'running' if self.executions.busy(key) else 'idle' if self.executions.running(key) else 'offline'
                 if state != row['status']:
                     goals.set_execution_status(conn, key, state)
         for identity in pausing:
             executions = conn.execute('SELECT id FROM goal_executions WHERE goal_id=?', (identity,)).fetchall()
-            if not any(self.manager.busy(row['id']) for row in executions):
+            if not any(self.executions.busy(row['id']) for row in executions):
                 goals.confirm_paused(conn, identity)
         pending = conn.execute("SELECT goal_id FROM goal_round_finishes WHERE status='pending'" +
                                (' AND goal_id=?' if goal_id else ''), (goal_id,) if goal_id else ()).fetchall()
@@ -452,7 +440,7 @@ class Controller:
                 "WHERE l.goal_id=? AND l.round=g.current_round AND l.requirement_version=g.requirement_version "
                 "AND ((d.status='open' AND d.blocking=1) OR (t.status='open' AND t.blocking=1)) LIMIT 1", (value['id'],)).fetchone()
             executions = conn.execute('SELECT id FROM goal_executions WHERE goal_id=?', (value['id'],)).fetchall()
-            if blocked and not any(self.manager.busy(e['id']) for e in executions):
+            if blocked and not any(self.executions.busy(e['id']) for e in executions):
                 goals.transition(conn, value['id'], 'waiting_user', actor=value['leader_session_id'])
 
     def recover(self, conn, agents, runtime=None):
@@ -468,7 +456,7 @@ class Controller:
             if runtime is not None and execution['runtime'] != runtime:
                 continue
             gate = goals.dispatch_check(conn, execution['goal_id'], execution_id=key)
-            if not gate['allowed'] or self.manager.running(key):
+            if not gate['allowed'] or self.executions.running(key):
                 self.recovery.remove(key)
                 continue
             if any(b['runtime'] == 'claude' and b['native_id'] in live for b in execution['bindings']):
@@ -480,7 +468,7 @@ class Controller:
             except (board.BoardError, OSError, subprocess.SubprocessError) as error:
                 detail = type(error).__name__ + ': ' + str(error)
                 if self.recovery_errors.get(key) != detail:
-                    self.manager.journal(key).emit('error', text='目标续接未执行：' + detail)
+                    self.executions.journal(key).emit('error', text='目标续接未执行：' + detail)
                     self.recovery_errors[key] = detail
                 if isinstance(error, board.Conflict):
                     continue
@@ -503,13 +491,13 @@ class Controller:
                 keys = [current['id']] if current else []
             for key in keys:
                 if conn.execute('SELECT 1 FROM goal_resumption_deliveries WHERE goal_id=? AND incident_id=? AND execution_id=?',
-                                (goal['id'], row['incident_id'], key)).fetchone() or self.manager.busy(key):
+                                (goal['id'], row['incident_id'], key)).fetchone() or self.executions.busy(key):
                     continue
                 execution = goals.get_execution(conn, key)
                 if not goals.dispatch_check(conn, goal['id'], execution_id=key)['allowed']:
                     continue
                 identity = 'ops-resume:' + token['id'] + ':' + key
-                prior = self.manager.journal(key).inputs.get(identity)
+                prior = self.executions.journal(key).inputs.get(identity)
                 if prior and prior['status'] in ('submitted', 'unknown'):
                     continue
                 self.send(goal['id'], execution['session_id'], 'Crew 运维事故已恢复；仅续接暂停前的当前目标工作，先核对已有结果，不重复施工。',

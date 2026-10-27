@@ -4,6 +4,7 @@ import os
 import secrets
 import threading
 from contextlib import closing
+from pathlib import Path
 
 from . import board, notifications, qq, store
 
@@ -30,13 +31,15 @@ def _write(path, value):
 
 
 class Manager:
-    def __init__(self, service, client=None, lock_status=notifications.desktop_locked, batch_seconds=30):
-        self.service = service
+    def __init__(self, home, write_lock, workspaces, conversations, client=None,
+                 lock_status=notifications.desktop_locked, batch_seconds=30):
+        self.home, self.write_lock = Path(home), write_lock
+        self.workspaces, self.conversations = workspaces, conversations
         self.lock_status, self.batch_seconds = lock_status, batch_seconds
         self.clients = {'qq': client}
         self.lock = threading.RLock()
         self.presence_lock = threading.RLock()
-        self.routing_path = service.home / 'notification-routing.json'
+        self.routing_path = self.home / 'notification-routing.json'
         self.notification_target = json.loads(self.routing_path.read_text(encoding='utf-8'))['target'] if self.routing_path.exists() else 'both'
         if self.notification_target not in NOTIFICATION_TARGETS:
             raise ValueError('主动通知渠道必须是 both、qq、lark 或 none')
@@ -46,8 +49,14 @@ class Manager:
         self.inboxes['lark'].config['manual_away'] = self.manual_away
 
     def _inbox(self, channel):
-        return notifications.Inbox(self.service, self.clients.get(channel), self.lock_status,
-                                   self.batch_seconds, channel_id=channel)
+        return notifications.Inbox(self.home, self.write_lock, self.workspaces, self.conversations,
+                                   self.clients.get(channel), self.lock_status, self.batch_seconds,
+                                   channel_id=channel, set_away=self.set_inbox_away, allows_push=self.allows_push)
+
+    def set_inbox_away(self, inbox, away):
+        if self.inboxes.get(inbox.channel_id) is inbox:
+            return self.set_away(away)
+        return inbox._set_away(away)
 
     def start(self):
         for inbox in self.inboxes.values():
@@ -131,15 +140,13 @@ class Manager:
             inbox = self._inbox(channel)
             inbox.config['manual_away'] = self.manual_away
             self.inboxes[channel] = inbox
-            if channel == 'qq':
-                self.service.inbox = inbox
         inbox.start()
 
     def _reset_binding(self, inbox):
         # Retire the previous owner's references and pending replies before a new
         # owner can bind. History remains inspectable, but cannot be delivered.
-        with self.service.write_lock, self.presence_lock:
-            with closing(store.connect(self.service.home)) as conn, board.transaction(conn):
+        with self.write_lock, self.presence_lock:
+            with closing(store.connect(self.home)) as conn, board.transaction(conn):
                 inbox.execute(conn, "UPDATE notification_messages SET status='retired'")
                 inbox.execute(conn, "UPDATE notification_replies SET status='cancelled' WHERE status IN ('queued','running','sending')")
             with inbox.lock:
@@ -176,7 +183,7 @@ class Manager:
             self._stop(old)
             if changed or old.config['owner_openid'] is None:
                 self._reset_binding(old)
-            _write(self.service.home / (channel + '.json'), value)
+            _write(self.home / (channel + '.json'), value)
             self._replace(channel)
         return self.snapshot()
 
@@ -206,6 +213,6 @@ class Manager:
                     value['domain'] = inbox.domain
                 if action == 'reset-binding':
                     self._reset_binding(inbox)
-                _write(self.service.home / (channel + '.json'), value)
+                _write(self.home / (channel + '.json'), value)
                 self._replace(channel)
         return self.snapshot()

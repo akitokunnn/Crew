@@ -22,7 +22,7 @@ class LeaderWakeTests(ShellFixture, unittest.TestCase):
                    role='leader', cc_name='cc-git', now=NOW)
 
     def wake(self, target='s1', caller='s3'):
-        with mock.patch('crew.chat.shutil.which', return_value='claude.exe'):
+        with mock.patch('crew.native_process.shutil.which', return_value='claude.exe'):
             return self.manager.wake(self.conn, board.session(self.conn, target), '核对分支',
                                      caller_session_id=caller, now=NOW)
 
@@ -224,7 +224,7 @@ class ChannelHttpTests(ShellFixture, unittest.TestCase):
     def digest_process(self, process):
         manager = self.server.service.channel_digest
         manager.process_factory = mock.Mock(return_value=process)
-        executable = mock.patch('crew.chat.shutil.which', return_value='claude.exe')
+        executable = mock.patch('crew.native_process.shutil.which', return_value='claude.exe')
         executable.start()
         self.addCleanup(executable.stop)
         self.addCleanup(manager.close)
@@ -332,7 +332,7 @@ class ChannelHttpTests(ShellFixture, unittest.TestCase):
 
     def test_notice_send_has_no_write_transaction_and_allows_other_writers(self):
         service = self.server.service
-        with mock.patch('crew.chat.shutil.which', return_value='claude.exe'):
+        with mock.patch('crew.native_process.shutil.which', return_value='claude.exe'):
             result = service.chat.start(self.conn, 'demo', 'receiver', '协调', role='leader', now=NOW)
         sid = result['session_id']
         service.chat.journal(sid).set_status('idle')

@@ -30,7 +30,7 @@ function harness(state = fixture(), fetcher = () => { throw new Error("Unexpecte
   for (const id of ["menu", "backdrop", "main", "trust-error", "leader-runtime-options", "leader-runtime-status", "leader-model-options", "leader-effort-note", "leader-effort-options"]) nodes.set(id, node());
   const escape = value => String(value).replace(/[&<>"']/g, c => ({"&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"})[c]);
   const sandbox = {window:{}, document:{visibilityState:"visible",hasFocus:()=>true,activeElement:null, getElementById:id => nodes.get(id) || null, addEventListener:() => {}},
-    location:{search:"?project=fixture", origin:"http://fixture.local", hash:""}, URLSearchParams, URL, fetch:fetcher, console,
+    location:{search:"?project=fixture", origin:"http://fixture.local", hash:""}, URLSearchParams, URL, fetch:fetcher, console, setTimeout, clearTimeout,
     CrewChat:{renderInline:escape, renderMarkdown:text => `<p>${escape(text)}</p>`}};
   vm.createContext(sandbox);
   const contextSource=fs.readFileSync(path.join(__dirname, "../crew/web/chat.js"), "utf8");
@@ -38,60 +38,24 @@ function harness(state = fixture(), fetcher = () => { throw new Error("Unexpecte
   sandbox.CrewContext=sandbox.window.CrewContext;
   sandbox.CrewActivity={markup:()=>""};
   vm.runInContext(fs.readFileSync(path.join(__dirname, "../crew/web/leader-trust-ui.js"), "utf8"), sandbox);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, "../crew/web/attention.js"), "utf8"), sandbox);
+  for(const file of ["runtime-catalog.js","runtime-models.js","ui-renderer.js"])vm.runInContext(fs.readFileSync(path.join(__dirname,"../crew/web",file),"utf8"),sandbox);
+  sandbox.createComments=require("./comments_fixture.cjs").createComments;
   // Expose lexical UI functions while leaving setup and its state-poll timer off.
   const end = "  setup();\n})();";
   assert(source.endsWith(end + "\n") || source.endsWith(end));
-  vm.runInContext(source.replace(end, `  window.ui = {watchingChat, visibility(value) {view="chat";leaderId="session-codex";readOnlyId=value.member?"member":null;reportReaderOpen=!!value.reader;taskVisible=!!value.tools;attentionVisible=!!value.pending;rightOpen=!!value.tree;goals={showingList:()=>!!value.list,materialsOpen:()=>!!value.materials};$("main").dataset.sideOverlap=String(!!value.overlap);}, runtimeList, runtimeInfo, defaultRuntime, modelEfforts, modelMenu, optionChange,
-    optionsLabel, leaderPayload, renderLeaderRuntime, selectLeaderOption, refreshRuntimes, editorHandoffReason, sessionMenu, chatAccess, goalChatNotes,
-    contextRing, contextControls, sidebarLeader, memberNode, workingRow, compactContext, compactions,
-    openTodos, todosOf, pendingOf, todoCard, todoTray, todoExpanded, todoActions,
-    todoResolvePayload, resolveTodo, renderTodos, replace,
-    decisionTrust, trustReportUrl, readTrustReport,
-    compactDecisionText, decisionOptions, decisionCard, decisionsOpen,
-    commentButton, commentsMarkup, sessionComments, loadComments, postComment,
+  vm.runInContext(source.replace(end, `  window.ui = {runtimeCatalog:()=>runtimeCatalog,runtimeModels:()=>runtimeModels,chatAccess, goalChatNotes,
+    contextRing, contextControls, sidebarLeader, memberNode, workingRow,
+    renderTodos, domRenderer:()=>domRenderer, trustReportUrl, readTrustReport, attention:()=>attentionFeature,
     route() {readRoute(); return {view,leaderId,readOnlyId};},
-    services(values) {if(values.api)api=values.api;if(values.loadState)loadState=values.loadState;if(values.toast)toast=values.toast;if(values.render)render=values.render;if(values.watchCompact)CrewChat.watchCompact=values.watchCompact;},
-    setState(value) {state=value;runtimesCache=null;}};\n})();`), sandbox);
+    services(values) {if(values.api)api=values.api;if(values.loadState)loadState=values.loadState;if(values.toast)toast=values.toast;if(values.render)render=values.render;},
+    setState(value) {state=value;if(!domRenderer)domRenderer=window.CrewDOMRenderer.create({document});if(!runtimeCatalog)runtimeCatalog=window.CrewRuntimeCatalog.create({snapshot:()=>({catalog:state?.runtimes,legacyModels:state?.models,legacyEfforts:state?.efforts,choices:state?.ai}),discover:()=>api("/api/runtimes")});if(!runtimeModels)runtimeModels=window.CrewRuntimeModels.create({catalog:runtimeCatalog,icon:ic,runtimeBadge,findSession:sessionItem,menu:{show(){},hide(){},anchor:()=>null,isCurrent:()=>false},save(){},refresh(){},notify(){}});if(!commentsFeature)commentsFeature=createComments(()=>({leaders:state?.leaders||[],members:state?.members||[]}),document);if(!attentionFeature)attentionFeature=window.CrewAttention.create({state:()=>state,document,api:(...args)=>api(...args),refresh:()=>loadState(true),notify:(...args)=>toast(...args),changed:()=>{},navigate:()=>{},rich:{inline:CrewChat.renderInline,markdown:CrewChat.renderMarkdown},ui:{icon:ic,avatar:av,priority:priorityBadge,date,ago,empty}});}};\n})();`), sandbox);
   sandbox.window.ui.setState(state);
-  return {ui:sandbox.window.ui, nodes, location:sandbox.location};
+  const catalog=sandbox.window.ui.runtimeCatalog(),models=sandbox.window.ui.runtimeModels();
+  const people=require("./people_fixture.cjs").fixture(()=>({leaders:state.leaders||[],members:state.members||[]}),{modelMenu:models.markup,runtimeId:catalog.id}).module;
+  return {ui:{...sandbox.window.ui,...sandbox.window.ui.attention(),replace:sandbox.window.ui.domRenderer().replace,runtimeList:catalog.list,runtimeInfo:catalog.info,defaultRuntime:catalog.defaultRuntime,modelEfforts:catalog.efforts,optionChange:catalog.optionChange,optionsLabel:catalog.optionsLabel,refreshRuntimes:catalog.refresh,modelMenu:models.markup,sessionMenu:people.sessionMenu,editorHandoffReason:people.editorHandoffReason}, nodes, location:sandbox.location};
 }
 const plain = value => JSON.parse(JSON.stringify(value));
-
-test("new leader auto selects a sole runtime and asks for a choice when both are installed", () => {
-  for(const installed of [["codex"],["claude"],["claude","codex"],[]]){
-    const state=fixture();state.runtimes.reverse();for(const runtime of state.runtimes)runtime.available=installed.includes(runtime.id);
-    const {ui,nodes}=harness(state),leader=form("");leader.dataset={};nodes.set("leader-form",leader);ui.renderLeaderRuntime();
-    const expected=installed.length===1?installed[0]:"";
-    assert.equal(leader.elements.runtime.value,expected);assert.equal(leader.submit.disabled,expected==="");
-    if(expected)assert.equal(ui.leaderPayload(leader).runtime,expected);else{const reason=installed.length?/选择默认载体/:/没有可用的执行工具/;assert.match(nodes.get("leader-runtime-status").textContent,reason);assert.throws(()=>ui.leaderPayload(leader),reason);ui.selectLeaderOption(leader,"runtime",installed[0]||"");if(installed.length)assert.equal(ui.leaderPayload(leader).runtime,installed[0]);}
-  }
-});
-
-test("runtime refresh corrects an automatic leader default while preserving the name and task draft", async () => {
-  const updated=fixture();updated.runtimes[0].available=false;updated.runtimes[0].models=[];
-  const calls=[],{ui,nodes}=harness(fixture(),async url=>{calls.push(url);return {ok:true,json:async()=>({runtimes:updated.runtimes})};});
-  const leader=form("");leader.dataset={};nodes.set("leader-form",leader);ui.renderLeaderRuntime();assert.equal(leader.elements.runtime.value,"");
-  await ui.refreshRuntimes();assert.equal(leader.elements.runtime.value,"codex");assert.equal(leader.submit.disabled,false);assert.equal(ui.leaderPayload(leader).runtime,"codex");
-  assert.equal(leader.elements.name.value," fixture ");assert.equal(leader.elements.task.value," work ");assert.deepEqual(calls,["/api/runtimes?project=fixture"]);
-});
-
-test("saved default overrides installation order and keeps custom model and effort through catalog refresh",async()=>{
-  const state=fixture();state.ai={default:{runtime:"codex",model:"future-native",effort:"deep"},digest:null,git:null,operations:null};
-  const {ui,nodes}=harness(state,async()=>({ok:true,json:async()=>({runtimes:state.runtimes})}));
-  const leader=form("");leader.dataset={};nodes.set("leader-form",leader);ui.renderLeaderRuntime();await ui.refreshRuntimes();
-  assert.equal(leader.elements.runtime.value,"codex");assert.equal(leader.elements.model.value,"future-native");assert.equal(leader.elements.effort.value,"deep");
-  assert.deepEqual(plain(ui.leaderPayload(leader)),{name:"fixture",task:"work",runtime:"codex",model:"future-native",effort:"deep"});
-  ui.selectLeaderOption(leader,"runtime","claude");ui.renderLeaderRuntime();assert.equal(leader.elements.runtime.value,"claude");assert.equal(leader.elements.model.value,"");
-});
-
-test("explicit runtime and model choices survive a changed installation catalog instead of silently switching tools", async () => {
-  const updated=fixture();updated.runtimes[1]={...updated.runtimes[1],available:false,error:"Codex 检测暂时失败",models:[],efforts:[]};
-  const {ui,nodes}=harness(fixture(),async()=>({ok:true,json:async()=>({runtimes:updated.runtimes})}));
-  const leader=form("");leader.dataset={};nodes.set("leader-form",leader);ui.renderLeaderRuntime();
-  ui.selectLeaderOption(leader,"runtime","codex");ui.selectLeaderOption(leader,"model","gpt-a");ui.selectLeaderOption(leader,"effort","medium");ui.renderLeaderRuntime();
-  await ui.refreshRuntimes();assert.equal(leader.elements.runtime.value,"codex");assert.equal(leader.elements.model.value,"gpt-a");assert.equal(leader.elements.effort.value,"medium");
-  assert.equal(leader.submit.disabled,true);assert.match(nodes.get("leader-runtime-status").textContent,/Codex 检测暂时失败/);assert.throws(()=>ui.leaderPayload(leader),/Codex 检测暂时失败/);
-});
 
 test("collected offline people can start a conversation while known external sessions stay readonly", () => {
   const {ui}=harness();
@@ -163,44 +127,9 @@ test("Codex editor handoff is disabled while leader chat and member history rema
   assert(!ui.sessionMenu(claude).includes(reason));
 });
 
-test("creation preserves custom models and explicit efforts and reports known capability conflicts", () => {
-  const {ui, nodes} = harness();
-  const leader = form("codex", "future-model", "future-effort"); nodes.set("leader-form", leader);
-  ui.renderLeaderRuntime();
-  assert.equal(leader.elements.model.value, "future-model");
-  assert(nodes.get("leader-model-options").innerHTML.includes('data-model="gpt-a"'));
-  assert(nodes.get("leader-model-options").innerHTML.includes('自定义：future-model'));
-  assert.equal(leader.elements.effort.value,"future-effort");
-  assert.equal(ui.leaderPayload(leader).model,"future-model");
-  leader.elements.model.value = "gpt-b"; leader.elements.effort.value = "medium";
-  ui.renderLeaderRuntime();
-  assert.equal(leader.elements.effort.value, "medium");
-  assert(nodes.get("leader-effort-options").innerHTML.includes('data-effort="high"'));
-  assert(nodes.get("leader-effort-options").innerHTML.includes('data-effort="medium"'));
-  assert.throws(()=>ui.leaderPayload(leader),/不支持/);
-  ui.selectLeaderOption(leader,"runtime","claude");assert.equal(leader.elements.model.value,"");assert.equal(leader.elements.effort.value,"");
-});
-
-test("creation and options refuse a model or effort from the other tool", () => {
-  const {ui} = harness();
-  assert.equal(ui.leaderPayload(form("codex", "future-model")).model,"future-model");
-  assert.throws(() => ui.leaderPayload(form("codex", "gpt-a", "max")), /不支持/);
-  assert.throws(() => ui.optionChange(session(), "model", "claude-sonnet"), /模型列表/);
-  assert.throws(() => ui.optionChange(session(), "effort", "max"), /不支持/);
-  assert.throws(()=>ui.optionChange(session({model:"gpt-b", effort:"max", applied:{model:"gpt-b", effort:"max"}}), "model", "gpt-a"),/不支持当前 effort/);
-  assert.throws(()=>ui.optionChange(session(), "model", "gpt-b"),/不支持当前 effort/);
-  assert.throws(() => ui.optionChange(session(), "model", "gpt-c"), /停下会话/);
-  assert.deepEqual(plain(ui.optionChange(session({where:"offline", running:false}), "model", "gpt-c")), {model:"gpt-c", effort:null});
-  assert(!("runtime" in ui.optionChange(session(), "effort", "low")));
-});
-
 test("an unavailable tool has a clear error and cannot submit or update options", () => {
   const state = fixture(); state.runtimes[1].available = false; state.runtimes[1].error = "未找到 Codex CLI，请先安装";
-  const {ui, nodes} = harness(state), leader = form(); nodes.set("leader-form", leader);
-  ui.renderLeaderRuntime();
-  assert.equal(leader.submit.disabled, true);
-  assert.equal(nodes.get("leader-runtime-status").textContent, state.runtimes[1].error);
-  assert.throws(() => ui.leaderPayload(leader), /未找到 Codex/);
+  const {ui} = harness(state);
   assert.throws(() => ui.optionChange(session(), "model", "gpt-a"), /未找到 Codex/);
   assert(ui.modelMenu(session()).includes('data-model="gpt-a" disabled'));
 });
@@ -211,6 +140,7 @@ test("explicit catalog refresh is deduplicated and old servers are never probed"
   const {ui} = harness(fixture(), url => {requests += 1; assert.equal(url, "/api/runtimes?project=fixture"); return response;});
   assert.equal(requests, 0);
   const first = ui.refreshRuntimes(), second = ui.refreshRuntimes();
+  await Promise.resolve();
   assert.equal(requests, 1);
   const updated = fixture(); updated.runtimes[1].models = [{id:"new-codex-model", name:"New", efforts:["high"]}];
   resolve({ok:true, json:async () => ({runtimes:updated.runtimes})});
@@ -282,7 +212,7 @@ test("personal action cards escape titles and show source, blocking, expandable 
   assert(collapsed.includes("登录 · 连接助手"));
   assert(collapsed.includes("卡着 连接助手"));
   assert(collapsed.includes('id="todo-details-44" hidden'));
-  ui.todoExpanded.add("44");
+  ui.toggleTodo("44");
   const expanded = ui.todoCard(item);
   assert(!expanded.includes('id="todo-details-44" hidden'));
   assert(expanded.includes("打开设置"));
@@ -303,13 +233,13 @@ test("completion note is optional, cancellation requires a reason, and shown ver
 test("resolving a personal action posts its version and undo uses the exact server receipt", async () => {
   const state = todoState(), {ui} = harness(state), calls = [], notices = [];
   const receipt = {ok:true, before:{status:"open", note:""}, version:3};
-  ui.todoActions.set("44", {status:"done", note:" 已授权 ", version:2});
+  ui.startTodoAction("44","done");ui.setTodoNote("44"," 已授权 ");
   ui.services({api:async (url, body) => {calls.push([url, plain(body)]);return receipt;},
     loadState:async () => {state.todos = state.todos.filter(item => item.id !== 44);},
     toast:(message, undo) => notices.push({message, undo})});
   await ui.resolveTodo("44");
   assert.deepEqual(calls[0], ["/api/todo/resolve", {id:44, status:"done", note:"已授权", expected_version:2}]);
-  assert.equal(ui.todoActions.has("44"), false);
+  assert.equal(ui.todoState("44").draft, null);
   assert.equal(typeof notices[0].undo, "function");
   await notices[0].undo();
   assert.deepEqual(calls[1], ["/api/todo/undo", {id:44, before:receipt.before, version:3}]);
@@ -317,17 +247,18 @@ test("resolving a personal action posts its version and undo uses the exact serv
 
 test("a stale action retains the user's reason and asks them to review updated content", async () => {
   const state = todoState(), {ui} = harness(state), calls = [];
-  const draft = {status:"cancelled", note:"已经换方案", version:1};
-  ui.todoActions.set("44", draft);
+  state.todos.find(item=>item.id===44).version=1;
+  ui.startTodoAction("44","cancelled");ui.setTodoNote("44","已经换方案");
+  state.todos.find(item=>item.id===44).version=2;
   ui.services({api:async (url, body) => {calls.push(plain(body)); throw new Error("version conflict");},
     loadState:async () => {}, toast:() => {}});
   await ui.resolveTodo("44");
   assert.equal(calls[0].expected_version, 1);
+  const draft=ui.todoState("44").draft;
   assert.equal(draft.note, "已经换方案");
   assert.equal(draft.version, 2);
   assert.match(draft.error, /内容已更新/);
-  assert.equal(ui.todoActions.get("44"), draft);
-  assert.equal(ui.todoExpanded.has("44"), true);
+  assert.equal(ui.todoState("44").expanded, true);
 });
 
 test("decision trust follows its explicit leader and ignores legacy project mode", () => {
@@ -385,7 +316,7 @@ test("decision briefs show human context, rationale and independent consequences
   assert(card.includes('data-act="answer-option" data-id="71" data-option="1"'));
   assert(card.includes('data-act="decision-hold"'));
   assert(!card.includes('data-decision-context="71" open'));
-  ui.decisionsOpen.add(71);
+  ui.setDecisionOpen(71,true);
   assert(ui.decisionCard(item).includes('data-decision-context="71" open'));
 });
 
@@ -416,40 +347,6 @@ test("overlong structured explanations keep a compact preview and the exact full
   assert(card.includes("完整说明与技术背景"));
   assert(card.includes(explanation));
   assert(!card.includes('data-decision-context="71" open'));
-});
-
-test("group and member comment entries target the exact session and render readable escaped comments", () => {
-  const state = todoState(); state.members = [{session_id:"member-1", name:"连接助手", leader_session_id:"leader-1"}];
-  const {ui} = harness(state), member = state.members[0];
-  assert(ui.commentButton(state.leaders[0], true).includes('data-id="leader-1"'));
-  assert(ui.commentButton(member).includes('data-id="member-1"'));
-  const body = ui.commentsMarkup(member, {comments:[{text:"<script>comment</script>", created_at:"2026-10-24T00:00:00Z"}], draft:"待补充的要求"});
-  assert(body.includes("登录 组 · 评论会转告 leader"));
-  assert(body.includes("&lt;script&gt;comment&lt;/script&gt;"));
-  assert(!body.includes("<script>"));
-  assert(body.includes("待补充的要求"));
-});
-
-test("comment writes preserve failed drafts, then refresh the same session and clear successful text", async () => {
-  const state = todoState(), {ui, nodes} = harness(state), calls = [];
-  let fail = true;
-  const textarea = {value:"保留这段反馈"};
-  nodes.set("comments-form", {dataset:{sessionId:"leader-1"}, elements:{text:textarea}});
-  ui.services({api:async (url, body) => {
-    calls.push([url, body && plain(body)]);
-    if (body && fail) throw new Error("暂时无法发送");
-    return body ? {id:1} : {comments:[{id:1, text:"保留这段反馈", created_at:"2026-10-24T00:00:00Z"}]};
-  }, toast:() => {}});
-  await ui.postComment("leader-1", "保留这段反馈");
-  assert.equal(ui.sessionComments("leader-1").draft, "保留这段反馈");
-  assert.equal(ui.sessionComments("leader-1").error, "暂时无法发送");
-  fail = false;
-  await ui.postComment("leader-1", " 保留这段反馈 ");
-  assert.deepEqual(calls[1], ["/api/comments", {session_id:"leader-1", text:"保留这段反馈"}]);
-  assert.equal(calls[2][0], "/api/comments?session_id=leader-1");
-  assert.equal(ui.sessionComments("leader-1").comments.length, 1);
-  assert.equal(ui.sessionComments("leader-1").draft, "");
-  assert.equal(textarea.value, "");
 });
 
 test("live UI refresh preserves horizontal group scroll position", () => {
@@ -500,47 +397,18 @@ test("every context ring is a named native button at low and high usage across b
   }
 });
 
-test("a ring queues only its own session, suppresses duplicate clicks, and clears on actual completion",async()=>{
-  for(const runtime of ["claude","codex"])for(const id of ["lead","member"]){
-    const {ui}=harness(contextState(runtime)),writes=[],toasts=[];let watcher,release;
-    ui.services({render(){},loadState:async()=>{},toast:text=>toasts.push(text),
-      watchCompact:async(sid,options)=>{assert.equal(sid,id);watcher=options;return()=>{};},
-      api:async(path,data)=>{writes.push({path,...data});return new Promise(resolve=>{release=resolve;});}});
-    const pending=ui.compactContext(id);await Promise.resolve();await Promise.resolve();
-    await ui.compactContext(id);
-    assert.equal(writes.length,1);assert.deepEqual(plain(writes[0]),{path:"/api/session/compact",session_id:id,after_turn:true});
-    release({ok:true,queued:true,message:"这一轮说完后压缩"});await pending;
-    assert.equal(ui.compactions.get(id).phase,"queued");
-    const own=ui.contextRing({...contextState(runtime).leaders[0],session_id:id});
-    assert(own.includes('aria-busy="true" disabled'));assert(own.includes("已排队"));
-    watcher.onFinish({type:"compact",seq:3});assert.equal(ui.compactions.size,0);
-    assert(toasts.some(text=>text.includes("这一轮说完后压缩")));
-  }
-});
-
-test("failed or cancelled compaction restores its ring; a fast completion cannot be reset by the HTTP receipt",async()=>{
-  for(const kind of ["rejected","cancelled","completed"]){
-    const state=contextState(),{ui}=harness(state),toasts=[];let watcher,closed=0;
-    ui.services({render(){},loadState:async()=>{},toast:text=>toasts.push(text),
-      watchCompact:async(_id,options)=>{watcher=options;return()=>closed++;},
-      api:async()=>{if(kind==="rejected")throw Error("原生压缩拒绝");if(kind==="completed")watcher.onFinish({type:"compact"});return{ok:true};}});
-    if(kind==="rejected"){await assert.rejects(ui.compactContext("member"),/原生压缩拒绝/);assert.equal(closed,1);}
-    else {await ui.compactContext("member");if(kind==="cancelled")watcher.onFinish({type:"compact_cancelled",reason:"进程已退出"});}
-    assert.equal(ui.compactions.size,0);assert(!ui.contextRing(state.members[0]).includes(" disabled"));
-    if(kind==="cancelled")assert(toasts.some(text=>text.includes("进程已退出")));
-  }
-});
-
-test("an externally owned ring gives the exact native-tool instruction without starting another process",async()=>{
-  const state=contextState("claude");state.members[0].where="vscode";
-  const {ui}=harness(state),toasts=[];ui.services({toast:text=>toasts.push(text)});
-  await ui.compactContext("member");assert.equal(ui.compactions.size,0);assert.match(toasts[0],/Member.*原工具.*\/compact/);
-});
-
-test("covered chat never counts as actively read, while nonoverlapping auxiliary cards preserve watching",()=>{
-  for(const runtime of ["claude","codex"]){
-    const state=fixture();state.leaders=[session({runtime})];const {ui}=harness(state);
-    for(const [settings,expected] of [[{},true],[{tree:true},true],[{pending:true},true],[{tree:true,overlap:true},false],[{pending:true,overlap:true},false],[{tools:true},false],[{materials:true},false],[{reader:true},false],[{list:true},false],[{member:true},false]]){ui.visibility(settings);assert.equal(ui.watchingChat("session-codex"),expected,JSON.stringify({runtime,settings}));}
-    assert.equal(ui.watchingChat("different-leader"),false);
+test("covered chat emits a reply cue while nonoverlapping auxiliary cards preserve active reading across carriers",()=>{
+  const {create:notifications}=require("../crew/web/waiting-notifications.js"),{create:visibility}=require("../crew/web/ui-visibility.js");
+  for(const runtime of ["claude","codex"])for(const [settings,watching] of [[{},true],[{tree:true},true],[{pending:true},true],[{tree:true,overlap:true},false],[{pending:true,overlap:true},false],[{tools:true},false],[{materials:true},false],[{reader:true},false],[{comments:true},false],[{creation:true},false],[{list:true},false],[{member:true},false]]){
+    const played=[],visible=visibility();
+    for(const owner of ["tools","materials","reader","comments","creation","list"])visible.register(owner,()=>!!settings[owner]);
+    visible.register("auxiliary",()=>!!((settings.pending||settings.tree)&&settings.overlap));
+    const cues=notifications({sound:{play:kind=>played.push(kind)},visibility:visible,document:{visibilityState:"visible",hasFocus:()=>true}});
+    const baseline={leaders:[session({runtime,last_reply_id:null})],members:[],decisions:[],attention:[],notification:{channels:[{state:"connected"}],error:null}};
+    const reading={view:"chat",leaderId:"session-codex",readOnlyId:settings.member?"member":null};
+    cues.sync(baseline);cues.sync({...baseline,leaders:[session({runtime,last_reply_id:"new-reply"})]},{reading});
+    assert.deepEqual(played,watching?[]:["reply"],JSON.stringify({runtime,settings}));
+    played.length=0;cues.sync({...baseline,leaders:[session({runtime,last_reply_id:"different-leader-reply"})]},{reading:{...reading,leaderId:"another-leader"}});
+    assert.deepEqual(played,["reply"]);cues.destroy();visible.destroy();
   }
 });

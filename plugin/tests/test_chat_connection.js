@@ -24,6 +24,19 @@ function harness(){
 }
 const history=()=>({events:[],busy:false,read_seq:0});
 
+test("reading obstructions gate both admission and an already scheduled read receipt",async()=>{
+  const h=harness(),calls=[];let permitted=true;
+  const target=h.mount("leader",async(url,data)=>{
+    calls.push({url,data});return url==="/api/chat/read"?{read_seq:data.seq}:{...history(),events:[{seq:1,type:"text",id:"reply",text:"Unread reply"}]};
+  },{},{canRead:()=>permitted});await tick();h.flushFrames();
+  const queued=[...h.timers].find(([,timer])=>timer.ms<=1000);assert(queued);
+  permitted=false;h.timers.delete(queued[0]);await queued[1].fn();await tick();
+  assert.equal(calls.filter(call=>call.url==="/api/chat/read").length,0,"a portal opened after scheduling blocks the receipt");
+  target.querySelector(".chat-scroll").onscroll();assert.equal(h.timers.size,0,"obstructed reading cannot schedule another receipt");
+  permitted=true;target.querySelector(".chat-scroll").onscroll();const resumed=[...h.timers][0];assert(resumed);h.timers.delete(resumed[0]);await resumed[1].fn();await tick();
+  assert.deepEqual(calls.filter(call=>call.url==="/api/chat/read").map(call=>call.data.seq),[1]);h.chat.unmount();
+});
+
 const rendered=target=>target.querySelector(".chat-inner").children.map(item=>item.innerHTML);
 const at=seconds=>new Date(Date.UTC(2026,9,27,0,0,seconds)).toISOString();
 const workTurn=(start=1)=>[
@@ -306,7 +319,8 @@ test("starting a queued goal rebinds the app to the execution journal, closes th
     throw Error("Unexpected request: "+url);
   };
   const appSource=fs.readFileSync(path.join(__dirname,"../crew/web/app.js"),"utf8").replace(/\r\n/g,"\n");
-  vm.runInContext(appSource.replace("  setup();\n})();",'window.appFixture={renderChat,configure(value,client,request){state=value;goals=client;api=request;view="chat";leaderId="leader";goalId="goal";}};\n})();'),h.sandbox);
+  h.sandbox.createAttention=require("./attention_fixture.cjs").createAttention;h.sandbox.createCatalog=require("../crew/web/runtime-catalog.js").create;h.sandbox.createRenderer=require("../crew/web/ui-renderer.js").create;
+  vm.runInContext(appSource.replace("  setup();\n})();",'window.appFixture={renderChat,configure(value,client,request){state=value;domRenderer=createRenderer({document});runtimeCatalog=createCatalog({snapshot:()=>({catalog:state.runtimes}),discover:async()=>({runtimes:[]})});attentionFeature=createAttention(()=>state,document);goals=client;api=request;view="chat";leaderId="leader";goalId="goal";}};\n})();'),h.sandbox);
   vm.runInContext(fs.readFileSync(path.join(__dirname,"../crew/web/goal-ui.js"),"utf8"),h.sandbox);
   const goalUI=h.sandbox.CrewGoals.create({project:"fixture",state:()=>state,api,toast(){},onChange:()=>h.sandbox.appFixture.renderChat(),refreshState:async()=>h.sandbox.appFixture.renderChat()});
   h.sandbox.appFixture.configure(state,goalUI,api);h.sandbox.appFixture.renderChat();await tick();

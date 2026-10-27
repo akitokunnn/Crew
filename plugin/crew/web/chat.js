@@ -612,10 +612,10 @@
     if (incremental) { composerState(context); schedule(context); }
   }
   function scheduleRead(context) {
-    if (context.readonly || context.loading || context.reading || context.readTimer !== null || document.visibilityState !== "visible" || !atBottom(context) || context.cursor <= context.readSeq) return;
+    if (context.readonly || context.loading || context.reading || context.readTimer !== null || context.canRead?.() === false || document.visibilityState !== "visible" || !atBottom(context) || context.cursor <= context.readSeq) return;
     context.readTimer = setTimeout(async () => {
       context.readTimer = null;
-      if (!current(context) || document.visibilityState !== "visible" || !atBottom(context)) return;
+      if (!current(context) || context.canRead?.() === false || document.visibilityState !== "visible" || !atBottom(context)) return;
       const seq = context.cursor;
       context.cache.lastReadAt = Date.now(); context.reading = true;
       try {

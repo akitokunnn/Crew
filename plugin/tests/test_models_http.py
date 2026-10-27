@@ -8,6 +8,7 @@ from unittest import mock
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from crew import claude_events
 from crew import board, models, session_ops, spawn, store, web
 import test_shell as shell
 
@@ -193,11 +194,12 @@ class ModelWakeTests(shell.ShellFixture, unittest.TestCase):
                       "response": {"applied": {"model": OPUS, "effort": "xhigh"}}}})
         self.wait_for(lambda: manager.applied(sid) == {"model": OPUS, "effort": "xhigh"})
         journal = manager.journal(sid)
-        journal.consume({"type": "stream_event", "api_message_id": "call", "event": {
+        journal_native_events = claude_events.ClaudeEvents(journal)
+        journal_native_events.consume({"type": "stream_event", "api_message_id": "call", "event": {
             "type": "message_start", "message": {"id": "call", "model": HAIKU}}})
-        journal.consume({"type": "stream_event", "api_message_id": "call", "event": {
+        journal_native_events.consume({"type": "stream_event", "api_message_id": "call", "event": {
             "type": "content_block_start", "index": 0, "content_block": {"type": "thinking"}}})
-        journal.consume({"type": "system", "subtype": "thinking_tokens", "estimated_tokens": 30})
+        journal_native_events.consume({"type": "system", "subtype": "thinking_tokens", "estimated_tokens": 30})
         _, state = self.request("/api/state?project=demo")
         self.assertEqual(state["models"], models.MODELS)
         self.assertEqual(state["efforts"], models.EFFORTS)

@@ -1,6 +1,6 @@
 "use strict";
 const {test}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
-const sandbox={window:{}};vm.createContext(sandbox);vm.runInContext(fs.readFileSync(path.join(__dirname,'../crew/web/member-ui.js'),'utf8'),sandbox);
+const sandbox={window:{}};vm.createContext(sandbox);vm.runInContext(fs.readFileSync(path.join(__dirname,'../crew/web/runtime-catalog.js'),'utf8'),sandbox);vm.runInContext(fs.readFileSync(path.join(__dirname,'../crew/web/member-ui.js'),'utf8'),sandbox);
 const ui=sandbox.window.CrewMembers,plain=value=>JSON.parse(JSON.stringify(value));
 test('member defaults follow leader override, global member choice, then parent brain without mutating inputs',()=>{
   const leader={runtime:'claude',model:'parent',effort:'high'},global={runtime:'codex',model:'global',effort:'low'},own={runtime:'codex',model:'own',effort:'high'};

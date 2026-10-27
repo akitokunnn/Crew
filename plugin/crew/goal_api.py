@@ -63,8 +63,7 @@ def _previous_review(conn, goal_id, current_round):
     return {**dict(row), 'accepted': bool(row['accepted'])} if row else None
 
 
-def post(service, conn, project, path, data):
-    control = service.chat.goal_controller
+def post(control, conn, project, path, data):
     if path == '/api/goals/agent':
         if data.get('actor_session_id') == board.HUMAN:
             if data.get('execution_id'):
@@ -94,7 +93,7 @@ def post(service, conn, project, path, data):
                 raise board.BoardError('验收入口由用户本人操作，不能指定 AI 执行身份')
             options = {'note': data.get('note', ''), 'expected_version': data.get('version'),
                        'report_id': data.get('report_id')}
-            with control.manager.lock:
+            with control.locked():
                 goals.acceptance_target(conn, identity, action == 'accept', **options)
                 control.stop_delivered(conn, identity)
                 goals.review_acceptance(conn, identity, action == 'accept', **options)

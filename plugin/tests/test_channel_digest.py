@@ -40,12 +40,22 @@ class DigestTests(unittest.TestCase):
     post = test_channel.ChannelTests.post
     run_cli = test_channel.ChannelTests.run_cli
 
+    def test_clearing_one_workspace_failure_does_not_erase_other_state_or_stop_work(self):
+        manager = self.manager(FakeProcess())
+        manager.errors.update(demo='old error', other='keep this error')
+        manager.failed_upto.update(demo=4, other=8)
+        manager.running.add('demo')
+        manager.clear_failures('demo')
+        self.assertEqual(manager.state('demo'), {'digesting': True, 'digest_error': None})
+        self.assertEqual(manager.state('other')['digest_error'], 'keep this error')
+        self.assertEqual(manager.failed_upto, {'other': 8})
+
     def manager(self, process):
         ai = settings.get(self.conn)
         ai['digest'] = {'runtime': 'claude', 'model': models.HAIKU, 'effort': None}
         settings.save(self.conn, ai)
         self.factory = mock.Mock(return_value=process)
-        executable = mock.patch("crew.chat.shutil.which", return_value="C:/fake/claude.cmd")
+        executable = mock.patch("crew.native_process.shutil.which", return_value="C:/fake/claude.cmd")
         executable.start()
         self.addCleanup(executable.stop)
         manager = channel_digest.Manager(self.home, threading.Lock(), self.factory)

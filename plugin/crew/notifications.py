@@ -106,12 +106,15 @@ def desktop_locked():
 
 
 class Inbox:
-    def __init__(self, service, client=None, lock_status=desktop_locked, batch_seconds=30, channel_id='qq'):
+    def __init__(self, home, write_lock, workspaces, conversations, client=None, lock_status=desktop_locked,
+                 batch_seconds=30, channel_id='qq', *, set_away=None, allows_push=None):
         if channel_id not in ('qq', 'lark'):
             raise ValueError('未知远程通道')
         self.channel_id = channel_id
         self.channel_name = {'qq': 'QQ', 'lark': 'Lark / 飞书'}[channel_id]
-        self.service, self.home = service, service.home
+        self.home, self.write_lock = Path(home), write_lock
+        self.workspaces, self.conversations = workspaces, conversations
+        self.shared_set_away, self.allows_push = set_away, allows_push
         credentials_path = self.home / (channel_id + '.json')
         self.credentials = None
         self.enabled, self.domain = False, 'feishu'
@@ -165,9 +168,8 @@ class Inbox:
                         error=self.error or self.presence_error)
 
     def set_away(self, away):
-        manager = getattr(self.service, 'connections', None)
-        if manager is not None and manager.inboxes.get(self.channel_id) is self:
-            return manager.set_away(away)
+        if self.shared_set_away is not None:
+            return self.shared_set_away(self, away)
         return self._set_away(away)
 
     def _set_away(self, away):
@@ -292,14 +294,13 @@ class Inbox:
             return
         self.refresh_presence()
         self.process_replies()
-        manager = getattr(self.service, 'connections', None)
-        if not self.status()['away'] or (manager is not None and not manager.allows_push(self.channel_id)):
+        if not self.status()['away'] or (self.allows_push is not None and not self.allows_push(self.channel_id)):
             self.relay_after = None
             self.pending.clear()
             self.pending_at = None
             return
         self.relay_turns()
-        now = self.service.now()
+        now = self.workspaces.clock()
         with closing(store.connect(self.home)) as conn:
             prefix = self.item_key('')
             sent = {row[0][len(prefix):] for row in self.execute(conn, 'SELECT item_id FROM notification_messages')
@@ -307,8 +308,7 @@ class Inbox:
             projects = board.projects(conn)
         active = set()
         for project in projects:
-            state = self.service.state(project['name'])
-            for item in state['attention']:
+            for item in self.workspaces.attention(project['name']):
                 if item['kind'] != 'decision' and (item['created_at'] or '') < self.config['since']:
                     continue
                 if item['id'] not in sent and item['session_id']:
@@ -355,15 +355,15 @@ class Inbox:
 
     def relay_turns(self):
         """While the user is away, relay each leader's closing words on this channel."""
-        with self.service.write_lock, closing(store.connect(self.home)) as conn:
-            leaders = [s for s in self.leader_catalog(conn) if self.service.chat.path(s['session_id']).exists()]
+        with self.write_lock, closing(store.connect(self.home)) as conn:
+            leaders = [s for s in self.leader_catalog(conn) if self.conversations.executions.path(s['session_id']).exists()]
             if self.relay_after is None:
                 # Turns that ended before the user left were already seen on the web.
-                self.relay_after = {s['session_id']: len(self.service.chat.journal(s['session_id']).events) for s in leaders}
+                self.relay_after = {s['session_id']: len(self.conversations.executions.journal(s['session_id']).events) for s in leaders}
                 return
             for leader in leaders:
                 sid = leader['session_id']
-                events = self.service.chat.journal(sid).after(self.relay_after.setdefault(sid, 0))
+                events = self.conversations.executions.journal(sid).after(self.relay_after.setdefault(sid, 0))
                 start = 0
                 for index, event in enumerate(events):
                     if event['type'] != 'status' or event['status'] != 'idle':
@@ -382,12 +382,12 @@ class Inbox:
                     entry = dict(workspace=leader['project'], leader_session_id=sid, decision=None)
                     for number, part in enumerate(leader_parts(leader['project_label'], leader['crew_name'], text)):
                         key = '%s:%s' % (identity, number)
-                        self.record_message(conn, key, entry, 'turn', self.service.now().isoformat())
+                        self.record_message(conn, key, entry, 'turn', self.workspaces.clock().isoformat())
                         self.deliver(conn, [key], self.client.send_markdown, part)
 
     def flush(self):
         notes = []
-        now = self.service.now().isoformat()
+        now = self.workspaces.clock().isoformat()
         with closing(store.connect(self.home)) as conn:
             for item in self.pending.values():
                 if item['kind']=='goal_report' and not finalized_goal_reports(conn,item['project'],self.config['since'],item['report_id']):
@@ -481,7 +481,7 @@ class Inbox:
                     return
                 # Leader startup and outbound sends can hold write_lock for seconds.
                 self.client.ack_interaction(event['interaction_id'])
-            with self.service.write_lock, closing(store.connect(self.home)) as conn:
+            with self.write_lock, closing(store.connect(self.home)) as conn:
                 owner = self.config['owner_openid']
                 if owner is None and kind == 'message':
                     command = event['text'].strip()
@@ -491,7 +491,7 @@ class Inbox:
                         return
                     with self.lock:
                         self.config['owner_openid'] = event['openid']
-                        self.config['since'] = self.service.now().isoformat()
+                        self.config['since'] = self.workspaces.clock().isoformat()
                         self.config.pop('binding_code', None)
                         self.save_config()
                         self.channel = dict(state='connected' if self.connection_state == 'connected' else self.connection_state,
@@ -513,7 +513,7 @@ class Inbox:
                     event['interaction_id' if kind == 'interaction' else 'message_id'] = identity
                 if self.execute(conn, 'SELECT 1 FROM notification_inbound WHERE event_id=?', (identity,)).fetchone():
                     return
-                self.execute(conn, 'INSERT INTO notification_inbound VALUES(?,?)', (identity, self.service.now().isoformat()))
+                self.execute(conn, 'INSERT INTO notification_inbound VALUES(?,?)', (identity, self.workspaces.clock().isoformat()))
                 if bound:
                     self.send_text('已绑定为主人。发 /h 看命令；先用 /leader 和 /1 选择 leader。')
                 elif kind == 'interaction':
@@ -733,10 +733,10 @@ class Inbox:
                 priorities.update(board.leader_priorities(conn, project, [s for s in leaders if s['project'] == project]))
             leaders.sort(key=lambda leader: priorities.get(leader['session_id'], 4))
             states = {}
-            with self.service.agents_lock:
-                agents, error = self.service.agents, self.service.agents_error
+            observed = self.workspaces.observe_agents()
+            agents, error = observed.agents, observed.error
             for project in {s['project'] for s in leaders}:
-                identities = [{'sessionId': s['session_id']} for s in board.sessions(conn, project)] if error else self.service.managed_agents(conn, agents)
+                identities = [{'sessionId': s['session_id']} for s in board.sessions(conn, project)] if error else self.workspaces.managed_agents(conn, agents)
                 state = board.status(conn, project, identities)
                 states.update((s['session_id'], s['status']) for s in [*state['ungrouped'], *(s for g in state['groups'] for s in g['members'])])
             pending = {}
@@ -750,9 +750,9 @@ class Inbox:
             lines = []
             for leader in leaders:
                 sid = leader['session_id']
-                journal = self.service.chat.journal(sid)
+                journal = self.conversations.executions.journal(sid)
                 status = states[sid]
-                if self.service.chat.running(sid) and (status != 'waiting' or journal.status == 'working'):
+                if self.conversations.executions.running(sid) and (status != 'waiting' or journal.status == 'working'):
                     status = journal.status
                 unread = len(presentation.chat_replies(journal.after(0), after=board.read_seq(conn, sid)))
                 current = '（当前）' if sid == self.config['current_leader_session_id'] else ''
@@ -800,7 +800,7 @@ class Inbox:
                                     leader_session_id=leader['session_id'] if leader is not None else asker['session_id']))
         for entry in entries[:10]:
             key = 'query:%s:%s' % (identity, entry['decision']['id'])
-            self.record_message(conn, key, entry, 'query', self.service.now().isoformat())
+            self.record_message(conn, key, entry, 'query', self.workspaces.clock().isoformat())
             self.deliver(conn, [key], self.client.send_markdown, *self.question_message(entry))
         if not entries:
             self.send_text('当前没有未挂起的待拍板。')
@@ -812,7 +812,7 @@ class Inbox:
     def save_answer(self, conn, decision, answer, identity, expected_snapshot=None):
         error = None
         linked_goal,leader = None,None
-        now = self.service.now().isoformat()
+        now = self.workspaces.clock().isoformat()
         # The CLI can revise a question without the service's Python lock. Keep
         # the final snapshot check, answer and leader notice in one DB write
         # transaction, so a concurrent revision cannot change what was chosen.
@@ -864,24 +864,24 @@ class Inbox:
         self.execute(conn, 'INSERT INTO notification_replies VALUES(?,?,?,?,?,?)',
                      (reply['message_id'], session_id,
                       json.dumps(dict(text=reply['answer'], images=reply['images']), ensure_ascii=False),
-                      'queued', None, self.service.now().isoformat()))
+                      'queued', None, self.workspaces.clock().isoformat()))
         label = '%s·%s' % (self.project_label(conn, leader['project']), leader['crew_name'])
         queued = self.execute(conn, "SELECT 1 FROM notification_replies WHERE session_id=? AND status IN ('queued','running') AND message_id!=?",
                               (session_id, reply['message_id'])).fetchone()
-        self.send_text(label + ' 正忙，排在后面' if self.service.chat.busy(session_id) or queued else '已转给 ' + label)
+        self.send_text(label + ' 正忙，排在后面' if self.conversations.executions.busy(session_id) or queued else '已转给 ' + label)
 
     def process_replies(self):
         # While an update gate holds, remote replies stay queued for the updated service.
-        with self.service.chat.work(background=True) as admitted:
+        with self.conversations.admit(background=True) as admitted:
             if admitted:
                 self._process_replies()
 
     def _process_replies(self):
-        with self.service.write_lock, closing(store.connect(self.home)) as conn:
+        with self.write_lock, closing(store.connect(self.home)) as conn:
             for row in self.execute(conn, "SELECT * FROM notification_replies WHERE status IN ('queued','running') ORDER BY created_at,rowid").fetchall():
                 session = board.session(conn, row['session_id'])
                 sid = session['session_id']
-                journal = self.service.chat.journal(sid)
+                journal = self.conversations.executions.journal(sid)
                 if row['status'] == 'queued':
                     if session['role'] != 'leader':
                         self._reply(conn, row, '这个会话已不是 leader，消息未发送。', 'error')
@@ -889,21 +889,21 @@ class Inbox:
                     if session['status'] == 'closed' or board.is_archived(conn, sid):
                         self._reply(conn, row, '这条会话已归档，消息未发送。', 'error')
                         continue
-                    if self.service.chat.busy(sid):
+                    if self.conversations.executions.busy(sid):
                         continue
                     if self.execute(conn, "SELECT 1 FROM notification_replies WHERE session_id=? AND status='running'", (sid,)).fetchone():
                         continue
                     # A saved web journal/spec can resume; external processes cannot receive our input.
                     spec = self.home / 'spawn' / ((session['spawn_id'] or '') + '.json')
-                    with self.service.agents_lock:
-                        external = any(a['sessionId'] == sid for a in self.service.agents) and not self.service.chat.is_owned(sid)
-                    if external or not self.service.chat.path(sid).exists() or not spec.exists():
+                    observed = self.workspaces.observe_agents()
+                    external = any(a['sessionId'] == sid for a in observed.agents) and not self.conversations.is_owned(sid)
+                    if external or not self.conversations.executions.path(sid).exists() or not spec.exists():
                         self._reply(conn, row, '这个 leader 不在网页后台运行，收不到 %s 消息' % self.channel_name, 'error')
                         continue
                     payload = json.loads(row['text'])
                     identity = self.channel_id + '-' + uuid.uuid5(uuid.NAMESPACE_URL, row['message_id']).hex
                     try:
-                        self.service.chat.send(session, payload['text'], images=payload['images'],
+                        self.conversations.send(session, payload['text'], images=payload['images'],
                                                source=self.channel_id, identity=identity)
                     except (OSError, board.BoardError) as exc:
                         self._reply(conn, row, '消息未发送：%s: %s' % (type(exc).__name__, exc), 'error')
@@ -915,7 +915,7 @@ class Inbox:
                 else:
                     events = journal.after(row['after_seq'])
                     end = next((i for i, e in enumerate(events) if e['type'] == 'status' and e['status'] in ('idle', 'offline')), None)
-                    if end is None and self.service.chat.running(sid):
+                    if end is None and self.conversations.executions.running(sid):
                         continue
                     events = events[:end + 1] if end is not None else events
                     error = next((e['text'] for e in reversed(events) if e['type'] == 'error'), None)
@@ -925,7 +925,7 @@ class Inbox:
                         self._reply(conn, row, text or '会话出错：' + error, 'answered')
                     elif end is not None and events[-1]['status'] == 'idle':
                         self._reply(conn, row, '（这一轮没有文字回复）', 'answered')
-                    elif not self.service.chat.running(sid):
+                    elif not self.conversations.executions.running(sid):
                         self._reply(conn, row, '会话已停止，还没有收到这条消息的回复。请在 Crew 查看会话。', 'error')
 
     def _reply(self, conn, row, text, status):
@@ -936,6 +936,6 @@ class Inbox:
         for index, part in enumerate(leader_parts(self.project_label(conn,session['project']), session['crew_name'], text)):
             key = identity + ':' + str(index)
             entry = dict(workspace=session['project'], leader_session_id=session['session_id'], decision=None)
-            self.record_message(conn, key, entry, 'reply', self.service.now().isoformat())
+            self.record_message(conn, key, entry, 'reply', self.workspaces.clock().isoformat())
             self.deliver(conn, [key], self.client.send_markdown, part)
         self.execute(conn, 'UPDATE notification_replies SET status=? WHERE message_id=?', (status, row['message_id']))
