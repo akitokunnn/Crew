@@ -19,7 +19,8 @@ class GoalLinkTests(RuntimeFixture):
         self.executions.busy = mock.Mock(return_value=False)
         self.controller = Controller(self.executions, WorkAdmission(), mock.Mock(spec=NativeLauncher),
                                       send_input=mock.Mock(return_value={'accepted': True}), stop=mock.Mock(),
-                                      interrupt=mock.Mock(), observe_claude=lambda: [])
+                                      interrupt=mock.Mock(), observe_claude=lambda: [],
+                                      scope_busy=mock.Mock(return_value=False))
         self.controller.send = mock.Mock(return_value={'accepted':True,'delivery':'started'})
 
     def journal(self, execution_id):

@@ -11,11 +11,13 @@ from unittest import mock
 from crew import board, git_admin, hooks, models, runtimes, settings, spawn, store, web
 from test_core import CoreCase, NOW
 from test_shell import PLUGIN, ShellFixture
+from tests.fixture_carriers import install_lookup
 
 
 class GitCommandTests(CoreCase):
     def setUp(self):
         super().setUp()
+        install_lookup(self, self.base)
         carrier = mock.patch.object(runtimes, 'default_runtime', return_value='claude')
         carrier.start()
         self.addCleanup(carrier.stop)

@@ -158,7 +158,8 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         manager.home, manager.plugin_root = self.home, PLUGIN
         manager.goal_controller = goal_runtime.Controller(executions, WorkAdmission(), mock.Mock(spec=NativeLauncher),
                                                           send_input=manager.send, stop=manager.stop_managed,
-                                                          interrupt=manager.interrupt, observe_claude=lambda: [])
+                                                          interrupt=manager.interrupt, observe_claude=lambda: [],
+                                                          scope_busy=mock.Mock(return_value=False))
         manager.journal.return_value, manager.path.return_value = journal, journal.path
         manager.subagent_tasks.return_value = []
         manager.busy.side_effect = lambda sid: journal.status == 'working'

@@ -31,11 +31,12 @@ leader 本轮最终交付围绕用户目的自主设计精美、直观、易懂�
 
 
 class Controller:
-    def __init__(self, executions, admission, transport, *, send_input, stop, interrupt, observe_claude):
+    def __init__(self, executions, admission, transport, *, send_input, stop, interrupt, observe_claude, scope_busy):
         self.executions, self.admission, self.transport = executions, admission, transport
         self.home = executions.home
         self.send_input, self.stop_native, self.interrupt_native = send_input, stop, interrupt
         self.observe_claude = observe_claude
+        self.scope_busy = scope_busy
         self.recovery = None
         self.epoch = uuid.uuid4().hex
         self.live_native = None
@@ -190,6 +191,24 @@ class Controller:
         """Called under the shared execution-state lock; never mutates the person's default native binding."""
         return self._launch(session, spec, None)
 
+    def check_member_start(self, conn, goal_id, session_id, source):
+        """A second dispatch must not turn an already working member into two workers.
+
+        Independent goals and explicit human conversations retain their own histories.
+        Existing goal histories may recover; this guards the first dispatch from a
+        general conversation into a newly assigned goal.
+        """
+        person = board.session(conn, session_id)
+        if source in ('human', 'qq', 'lark') or person['role'] != 'member':
+            return
+        prior = conn.execute('SELECT 1 FROM goal_executions e JOIN goal_execution_bindings b ON b.execution_id=e.id '
+                             'WHERE e.goal_id=? AND e.session_id=? LIMIT 1',
+                             (goal_id, session_id)).fetchone()
+        if prior is None and self.scope_busy(session_id, **runtimes.get(conn, session_id)):
+            raise board.Conflict('成员「%s」的总对话正在执行任务，不能再新开目标线程重复派工；'
+                '请等待该轮结束或明确停止后再分配。新成员直接用 crew spawn --goal %s 绑定目标启动。'
+                % (person['crew_name'], goal_id))
+
     def launch_maintenance(self, session, spec, marker):
         """Resume an existing goal history only so maintenance can send the native compact command.
 
@@ -232,10 +251,9 @@ class Controller:
         command = spawn.command(native_id, session['crew_name'], session['role'], binding is not None,
                                 instructions=('你是 Crew「%s」的当前目标执行。目标规则和用户原始要求由宿主随输入装载；仅当前明确授权有效。' % session['crew_name']
                                               + ('\n' + spec['_workspace_notice'] if spec.get('_workspace_notice') else '')),
-                                permission_mode=permission_mode,
+                                permission_mode=permission_mode, plugin_root=self.transport.plugin_root,
                                 **options)
         command[0] = native_process.claude_executable()
-        command.extend(['--plugin-dir', str(self.transport.plugin_root.resolve())])
         environment = native_process.child_environment({**spec, 'name': session['crew_name'], 'role': session['role'],
                                                'group': session['group_name']})
         environment.update(CREW_HOME=str(self.home.resolve()), CREW_SESSION_ID=logical_id,
@@ -273,6 +291,7 @@ class Controller:
                 if goal['status'] in ('completed', 'failed', 'awaiting_acceptance'):
                     self.stop_delivered(conn, goal_id)
                     goal = goals.reopen(conn, goal_id, text, actor=board.HUMAN)
+            self.check_member_start(conn, goal_id, session_id, source)
             if messaging.stopped(conn, session_id):
                 if not human:
                     raise board.Conflict('用户已停止此会话；排队消息不能自动恢复它')

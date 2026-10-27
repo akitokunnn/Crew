@@ -326,9 +326,14 @@ class ExecutionHostTests(unittest.TestCase):
                     close_runtimes([self.executions.current(key)])
 
                 controller = Controller(self.executions, self.admission, self.launcher, send_input=send_input,
-                                        stop=stop, interrupt=mock.Mock(), observe_claude=lambda: [])
+                                        stop=stop, interrupt=mock.Mock(), observe_claude=lambda: [],
+                                        scope_busy=mock.Mock(side_effect=AssertionError('Leader scope is independent')))
                 with mock.patch('crew.native_process.claude_executable', return_value='fake-claude'):
                     receipt = controller.send(goal['id'], session['session_id'], 'Do this task.', identity='task-' + runtime)
+                if runtime == 'claude':
+                    command = self.spawned[-1].command
+                    self.assertEqual(command.count('--plugin-dir'), 1)
+                    self.assertEqual(command[command.index('--plugin-dir') + 1], str(self.launcher.plugin_root.resolve()))
                 key = receipt['execution_id']
                 self.assertFalse(hasattr(controller, 'manager'))
                 self.assertEqual(targets, [(session['session_id'], key, 'task-' + runtime)])

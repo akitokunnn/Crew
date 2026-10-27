@@ -26,7 +26,8 @@ class GoalNotificationTests(GoalFixture):
             'current_leader_session_id':'chief-id','leader_numbers':{}}),encoding='utf-8')
         self.controller=goal_runtime.Controller(self.executions, WorkAdmission(), mock.Mock(spec=NativeLauncher),
                                                send_input=mock.Mock(return_value={'accepted': True}), stop=mock.Mock(),
-                                               interrupt=mock.Mock(), observe_claude=lambda: [])
+                                               interrupt=mock.Mock(), observe_claude=lambda: [],
+                                               scope_busy=mock.Mock(return_value=False))
         self.controller.send=mock.Mock(return_value={'accepted':True,'delivery':'started'})
         self.write_lock=threading.RLock()
         self.workspaces=notification_ports.WorkspaceQueries(lambda:self.clock, lambda project:[],

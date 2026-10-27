@@ -17,6 +17,7 @@ from urllib.request import Request, urlopen
 from crew import session_ops, board, chat, cli, spawn, store, usage_cli, vscode_sessions, web
 from test_usage import UsageFixture, assistant, prompt
 from test_chat import FakeProcess
+from tests.fixture_carriers import install_lookup
 
 PLUGIN = Path(__file__).resolve().parents[1]
 NOW = "2026-10-21T08:00:00.000Z"
@@ -37,6 +38,9 @@ class ShellFixture(UsageFixture):
         super().setUp()
         from crew import settings
         settings.save(self.conn, {'default': {'runtime': 'claude', 'model': None, 'effort': None}})
+        # Process creation is injected below; resolving its name must also be
+        # independent of AI tools installed on the development/CI machine.
+        install_lookup(self, self.root)
         self.vscode_state_db = make_vscode_state_db(self.root / "state.vscdb")
         roots = mock.patch("crew.vscode_sessions.project_roots", side_effect=lambda root: [Path(root)])
         roots.start()
@@ -122,6 +126,8 @@ class SpawnTests(ShellFixture, unittest.TestCase):
         command = result["command"]
         self.assertEqual(self.commands, [command])
         self.assertEqual(command[command.index("--name") + 1], "new")
+        self.assertEqual(command.count("--plugin-dir"), 1)
+        self.assertEqual(command[command.index("--plugin-dir") + 1], str(PLUGIN.resolve()))
         self.assertEqual(command[-2:], ["--session-id", result["session_id"]])
         self.assertNotIn("--agent", command)
         self.assertEqual(self.processes[0].options["cwd"], str(self.project.resolve()))
@@ -816,6 +822,8 @@ class WebTests(ShellFixture, unittest.TestCase):
         self.assertEqual(len(self.processes), 1)
         self.provider.return_value = []
         self.assertEqual(self.get("/api/chat/send", {"session_id": session_id, "text": "resume"})[0], 200)
+        self.assertEqual(self.processes[1].command.count("--plugin-dir"), 1)
+        self.assertEqual(self.processes[1].command[self.processes[1].command.index("--plugin-dir") + 1], str(PLUGIN.resolve()))
         self.assertEqual(self.processes[1].command[-2:], ["--resume", session_id])
         self.assertNotIn("--session-id", self.processes[1].command)
 

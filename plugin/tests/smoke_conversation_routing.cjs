@@ -31,7 +31,7 @@ if(!process.versions.electron){
       window=new BrowserWindow({width:1280,height:900,show:false,webPreferences:{sandbox:true,contextIsolation:true,nodeIntegration:false,backgroundThrottling:false,offscreen:true}});
       const wc=window.webContents,js=source=>wc.executeJavaScript(source,true),wait=(source,label=source)=>until(()=>js(source),label);
       wc.on('console-message',event=>{if(event.level==='error')evidence.errors.push(event.message);});
-      async function check(label,source){assert(await js(source),label);evidence.checks.push(label);}
+      async function check(label,source){await wait(source,label);assert(await js(source),label);evidence.checks.push(label);}
       const click=selector=>js(`document.querySelector(${JSON.stringify(selector)}).click();true;`);
       async function type(text){await js(`document.querySelector('#chat-host textarea').value=${JSON.stringify(text)};document.querySelector('#chat-host textarea').dispatchEvent(new Event('input',{bubbles:true}));true;`);}
       async function capture(name){await js('document.fonts.ready.then(()=>true)');await pause(120);wc.debugger.attach('1.3');try{const result=await wc.debugger.sendCommand('Page.captureScreenshot',{format:'png',fromSurface:true});const file=path.join(out,name+'.png');await fs.writeFile(file,Buffer.from(result.data,'base64'));evidence.screenshots.push(file);}finally{wc.debugger.detach();}}

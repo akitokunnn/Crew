@@ -70,14 +70,14 @@ npm start
 
 ### Claude 插件与 VS Code
 
-需要从 Claude 会话收编成员、使用插件 hooks 或在 VS Code 接续 Claude 会话时，再安装插件：
+从 Crew 网页或命令行启动的 Claude 会话会自动按当前后台版本加载随包插件，角色守则和 hooks 无需用户另行安装。只有要从终端或 VS Code 直接启动 Claude，再将该外部会话收编进 Crew 时，才安装用户级插件：
 
 ```powershell
 claude plugin marketplace add C:\Tools\Crew
 claude plugin install crew@crew --scope user
 ```
 
-新开 Claude 会话后，会在 `~/.crew/` 下生成命令行启动器、默认黑名单和价格表；已有会话执行 `/reload-plugins` 或重开。VS Code 接续还需要 Claude Code 扩展，并信任项目目录。Codex 会话在 Crew 中继续，暂不支持转交到 Claude 编辑器。
+新开外部 Claude 会话后，会在 `~/.crew/` 下生成命令行启动器、默认黑名单和价格表；已有外部会话执行 `/reload-plugins` 或重开。VS Code 接续还需要 Claude Code 扩展，并信任项目目录。Codex 会话在 Crew 中继续，暂不支持转交到 Claude 编辑器。
 
 ### 命令行、浏览器与右键入口
 
@@ -149,6 +149,10 @@ QQ 命令不分大小写、忽略首尾空白：`/help`（`/h`）帮助，`/proj
 会话里的守则在 `plugin/skills/`：Claude 成员是 `/crew:member`，leader 是 `/crew:leader`，Git 管理员是 `/crew:git`；Codex 由宿主加载同一角色守则，绑定 Crew 身份和动态白板工具。启动时 Crew 会说明身份、所属组和命令入口；还没收编的会话不会被要求自己登记。启用 Git 管理的项目还会附管理员提示和分支规则前 6 行，全文用 `crew git policy` 看。守则更新后，在下一条消息或 resume / compact 时提醒已收编会话重读。
 
 ## 命令速查
+
+新建成员承接已有目标时，使用 `crew spawn --goal <目标ID> --name <名字> --task "<任务>"`，直接在目标中启动一个执行。普通 `spawn` 会立即在总对话开工；总对话仍忙时再次 `goal assign --start` 会明确报冲突，避免重复施工。目标执行内创建成员会自动继承目标；`--dry-run --goal` 只返回目标计划，原生启动命令由宿主分配。
+
+PR 与 main 推送由 GitHub Actions 自动运行 Python、网页及桌面测试，以及隔离工作区和对话路由交互验收。新增回归覆盖 CC 给 Codex 派工的真实顺序、反向唤醒、重试、暂停和跨总对话/目标的原生身份唯一性。
 
 | 命令 | 作用 |
 |---|---|
@@ -240,7 +244,7 @@ Windows 的派工集成源码在 `integrations/codex-dispatch/` 与 `integration
 
 ## 更新和开发
 
-- 从本地目录装的插件，**运行时直接用仓库里 `plugin/` 这份代码**（不另拷一份）。改 Python 代码对之后的每次钩子调用立刻生效；改了钩子注册、技能、角色定义，要在会话里 `/reload-plugins` 或重开会话。
+- Crew 托管的 Claude 会话按当前后台路径加载 `plugin/`；外部 Claude 会话从本地目录安装插件时也直接使用这份代码（不另拷一份）。改 Python 代码对之后的每次钩子调用立刻生效；改了钩子注册、技能、角色定义，外部会话要执行 `/reload-plugins` 或重开。插件元数据版本必须与 `desktop/package.json` 的桌面主版本一致，桌面测试会检查两者。
 - 所以**不要在主检出里直接改代码**：在 `Temp/wt/<名字>` 开 worktree 改，测试通过再合进 main。主检出里的代码一旦出错，所有会话的钩子都会跟着出错。
 - 本仓库的远程 `main` 要求通过 PR 合并，禁止强推和删除。用户已于 2026-10-26 取消额外人工批准要求；相关测试、必要构建与交互验收通过后，AI 自查并正常合并，具体遵循 [开发指南](AGENTS.md)。
 - 这是单人本机工具，优先保持代码直白、少配置；测试用临时白板，不随意关闭用户正在使用的会话或窗口。提交信息用中文说明改了什么、为什么，不加署名行。
