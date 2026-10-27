@@ -56,10 +56,11 @@ class GoalMessageReceiptTests(GoalFixture):
         goals.assign(self.conn, self.active_goal['id'], 'member-id', 'Build the approved format')
         self.leader = goals.create_execution(self.conn, self.active_goal['id'], 'chief-id', runtime='codex')
         self.member = goals.create_execution(self.conn, self.active_goal['id'], 'member-id', runtime='claude')
-        self.controller = mock.Mock()
+        self.controller = mock.Mock(spec=['current', 'executions', 'send'])
         self.controller.current.return_value = self.member
-        self.controller.manager.busy.return_value = False
-        self.controller.manager.maintenance_held.return_value = False
+        self.controller.executions = mock.Mock(spec=['busy', 'maintenance_held'])
+        self.controller.executions.busy.return_value = False
+        self.controller.executions.maintenance_held.return_value = False
         self.controller.send.return_value = {'ok': True, 'accepted': True, 'execution_id': self.member['id']}
 
     def send(self, kind='information', *, sender='chief-id', key='stable-key', text='The approved format is Markdown'):
