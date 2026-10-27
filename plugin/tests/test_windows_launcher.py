@@ -178,7 +178,8 @@ class WindowsLauncherTests(unittest.TestCase):
                     stream.close()
         for shell in self.shells:
             with self.subTest(shell=shell, mode='native-stdin-pipeline'):
-                result = self.run_script(shell, "[Console]::OutputEncoding=New-Object System.Text.UTF8Encoding; 'pipeline-value' | crew; exit $LASTEXITCODE")
+                result = self.run_script(shell, "$OutputEncoding=[Text.UTF8Encoding]::new($false); "
+                    "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); 'pipeline-value' | crew; exit $LASTEXITCODE")
                 self.assertEqual(result.returncode, 19, result.stderr.decode('utf-8', errors='replace'))
                 self.assertIn(b'prompt> received:pipeline-value', result.stdout)
                 self.assertIn(b'live warning', result.stderr)

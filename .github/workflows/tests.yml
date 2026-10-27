@@ -21,10 +21,6 @@ jobs:
         shell: pwsh
     env:
       PYTHONIOENCODING: utf-8
-      CREW_SESSION_ID: ''
-      CLAUDE_CODE_SESSION_ID: ''
-      CREW_EXECUTION_ID: ''
-      CREW_GOAL_ID: ''
     steps:
       - uses: actions/checkout@v7
         with:
@@ -48,14 +44,23 @@ jobs:
           '@ | python -
       - name: Backend tests with isolated homes and fake carriers
         working-directory: plugin
-        run: python -m unittest discover -s tests -v
+        run: |
+          foreach ($name in 'CREW_SESSION_ID','CLAUDE_CODE_SESSION_ID','CREW_EXECUTION_ID','CREW_GOAL_ID') {
+            Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
+          }
+          python -m unittest discover -s tests -v
       - name: Browser unit tests
+        if: ${{ !cancelled() }}
         run: node --test plugin/tests/test_*.js
       - name: Install desktop dependencies
+        if: ${{ !cancelled() }}
         run: npm --prefix desktop ci
       - name: Desktop unit tests
+        if: ${{ !cancelled() }}
         run: npm --prefix desktop test
       - name: Isolated workspace interaction
+        if: ${{ !cancelled() }}
         run: node desktop/scripts/smoke-workspaces.cjs
       - name: Isolated conversation and task routing
+        if: ${{ !cancelled() }}
         run: node plugin/tests/smoke_conversation_routing.cjs
