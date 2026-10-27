@@ -838,15 +838,16 @@ class FrontendThemeContractTests(unittest.TestCase):
         assets = PLUGIN / "crew" / "web"
         index = (assets / "index.html").read_text(encoding="utf-8")
         app = (assets / "app.js").read_text(encoding="utf-8")
+        appearance = (assets / "appearance-ui.js").read_text(encoding="utf-8")
         css = (assets / "style.css").read_text(encoding="utf-8")
         self.assertIn('id="project-favicon"', index)
-        self.assertLess(index.index('src="/themes.js"'), index.index('src="/app.js"'))
+        self.assertLess(index.index('src="/themes.js"'), index.index('src="/appearance-ui.js"'))
+        self.assertLess(index.index('src="/appearance-ui.js"'), index.index('src="/app.js"'))
+        self.assertIn('window.CrewAppearanceUI.create(', app)
         for contract in ('data-act="project-theme"', 'class="theme-swatches"',
-                         'aria-pressed="${state.project.theme === item.id}"',
-                         'api("/api/project/theme", {project:state.project.name, theme:button.dataset.themeId})',
-                         'CrewTheme.projectStyle(state.themes, item.theme)',
-                         'addEventListener("change", applyTheme)'):
-            self.assertIn(contract, app)
+                         'aria-pressed="${project.theme === item.id}"'):
+            self.assertIn(contract, appearance)
+        self.assertIn('CrewTheme.projectStyle(state.themes, item.theme)', app)
         self.assertIn('.dot.working{background:var(--working)', css)
         self.assertIn('.st.working{color:var(--working-text)}', css)
         self.assertIn('.m-lead .body a{color:var(--accent-text)', css)
