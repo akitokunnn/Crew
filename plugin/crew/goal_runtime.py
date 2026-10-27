@@ -195,7 +195,7 @@ class Controller:
         prior = conn.execute('SELECT 1 FROM goal_executions e JOIN goal_execution_bindings b ON b.execution_id=e.id '
                              'WHERE e.goal_id=? AND e.session_id=? LIMIT 1',
                              (goal_id, session_id)).fetchone()
-        if prior is None and self.manager.busy(session_id):
+        if prior is None and self.manager.scope_busy(session_id, **runtimes.get(conn, session_id)):
             raise board.Conflict('成员「%s」的总对话正在执行任务，不能再新开目标线程重复派工；'
                 '请等待该轮结束或明确停止后再分配。新成员直接用 crew spawn --goal %s 绑定目标启动。'
                 % (person['crew_name'], goal_id))

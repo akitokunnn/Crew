@@ -8,7 +8,7 @@ import threading
 import unittest
 from unittest import mock
 
-from crew import board, goal_actions, goals, runtimes, store, web
+from crew import board, chat, goal_actions, goals, runtimes, store, web
 import test_chat_http as http_helpers
 from test_codex_runtime import FakeClient
 from test_shell import NOW, PLUGIN, ShellFixture
@@ -130,6 +130,39 @@ class MemberLaunchDedupTests(ShellFixture, unittest.TestCase):
         self.assertCountEqual(outcomes, ['started', 'conflict'])
         self.assertEqual(len(self.clients), 1)
         self.assertEqual(len(self.manager.processes), 1)
+
+    def test_another_host_cannot_dispatch_goal_while_general_member_is_working(self):
+        goal = self.goal()
+        self.manager.start(self.conn, 'demo', 'host-worker', 'Run once',
+                           runtime='codex', caller_session_id='s3')
+        other = chat.Manager(self.home, PLUGIN, lambda: [], self.process_factory)
+        self.addCleanup(other.close)
+        with self.assertRaisesRegex(board.Conflict, '总对话'):
+            goal_actions.dispatch(self.home, 's3', None, 'assign', {'goal_id': goal['id'],
+                'to': 'host-worker', 'task': 'Run again', 'start': True}, other.goal_controller)
+        self.assertEqual(len(self.clients), 1)
+
+    def test_another_host_cannot_wake_general_while_goal_member_is_working(self):
+        goal = self.goal()
+        created = self.manager.start(self.conn, 'demo', 'host-worker', 'Run once',
+            runtime='codex', caller_session_id='s3', goal_id=goal['id'])
+        other = chat.Manager(self.home, PLUGIN, lambda: [], self.process_factory)
+        self.addCleanup(other.close)
+        with self.assertRaisesRegex(board.Conflict, '目标执行'):
+            other.wake(self.conn, board.session(self.conn, created['session_id']), 'Run again', caller_session_id='s3')
+        self.assertEqual(len(self.clients), 1)
+
+    def test_unknown_foreign_lease_returns_conflict_without_starting_another_thread(self):
+        goal = self.goal()
+        self.manager.start(self.conn, 'demo', 'host-worker', 'Run once',
+                           runtime='codex', caller_session_id='s3')
+        other = chat.Manager(self.home, PLUGIN, lambda: [], self.process_factory)
+        self.addCleanup(other.close)
+        with mock.patch('crew.codex_runtime.RuntimeLease.acquire', side_effect=PermissionError('lease unreadable')):
+            with self.assertRaisesRegex(board.Conflict, 'lease unreadable'):
+                goal_actions.dispatch(self.home, 's3', None, 'assign', {'goal_id': goal['id'],
+                    'to': 'host-worker', 'task': 'Run again', 'start': True}, other.goal_controller)
+        self.assertEqual(len(self.clients), 1)
 
 
 class MemberLaunchHttpTests(ShellFixture, unittest.TestCase):

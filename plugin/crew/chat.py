@@ -503,6 +503,28 @@ class Manager:
         return self.running(session_id) and (self.journal(session_id).status == "working"
                                              or getattr(self.processes.get(session_id), "maintenance", None) is not None)
 
+    def scope_busy(self, key, runtime, native_id):
+        """Check another host's ownership too, without starting a native process."""
+        if self.running(key):
+            return self.busy(key)
+        if runtime == 'claude':
+            return native_id is not None and any(agent['sessionId'] == native_id and agent.get('status') != 'idle'
+                                                for agent in self._external_agents())
+        journal = self.journal(key)
+        with journal.condition:
+            journal.refresh()
+            if journal.status != 'working':
+                return False
+        from .codex_runtime import RuntimeLease
+        try:
+            lease = RuntimeLease(self.home, key).acquire()
+            lease.release()
+        except board.Conflict:
+            return True
+        except (OSError, ValueError) as exc:
+            raise board.Conflict('无法确认另一个宿主的原生执行已退出，未启动新执行：' + str(exc)) from exc
+        return False
+
     def maintenance_held(self, identity):
         """Hold business input across a person's contexts, including borrowed idle natives."""
         # Input readers can check this while another person's maintenance exits.
@@ -1018,8 +1040,9 @@ class Manager:
             if '_execution' not in session and session['role'] == 'member' and source not in ('human', 'qq', 'lark'):
                 with closing(store.connect(self.home)) as check_conn:
                     active = next((row['id'] for row in check_conn.execute(
-                        'SELECT id FROM goal_executions WHERE session_id=?', (session_id,))
-                        if self.busy(row['id'])), None)
+                        'SELECT e.id,e.runtime,b.native_id FROM goal_executions e LEFT JOIN goal_execution_bindings b '
+                        'ON b.execution_id=e.id AND b.runtime=e.runtime WHERE e.session_id=?', (session_id,))
+                        if self.scope_busy(row['id'], row['runtime'], row['native_id'])), None)
                 if active is not None:
                     raise board.Conflict('成员的目标执行正在工作，不能向总对话重复派工；'
                                          '请明确目标继续原执行或等待当前任务结束：' + active)

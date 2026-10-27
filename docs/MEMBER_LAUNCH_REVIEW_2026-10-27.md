@@ -21,6 +21,7 @@
 | 错误返回 | 新防重冲突通过真实 HTTP 返回 409，CLI 返回冲突退出码 3 和原始中文原因；原执行继续保留 | 同一文件的 CC→Codex HTTP / CLI 测试 |
 | 原生 ID 绑定 | 在写事务内跨 session_runtimes、session_runtime_bindings、goal_execution_bindings 统一检查；旧 Claude 隐式映射也保留归属 | `test_native_identity_ownership.py` 的双向、同人、并发、切载体保存绑定和命名空间测试 |
 | 停止、重启与恢复 | 继续使用既有的进程存活核对、Codex PID / 创建时间租约、用户停止标记、恢复回执及未知输入状态处理 | `test_wake_runtime.py`、`test_goal_recovery.py`、`test_codex_runtime.py`、`test_chat.py` |
+| 跨宿主仍在工作的执行 | 新宿主结合持久日志与既有 Codex 进程租约核对；旧进程仍活着时，跨总对话 / 目标的派工与反向唤醒都拒绝；Claude 使用原生进程发现 | `test_member_launch_dedup.py` 的两个 another-host 回归；补查时两项均先失败再修复 |
 | 切换载体 | 配置事务调用同一原生绑定检查；已有历史不能被另一个执行认领 | `test_runtime_switch.py`、`test_runtimes.py` 及新增身份归属回归 |
 | 原有并行能力 | leader 协调、独立目标和用户明确发起的对话继续保持独立历史，不靠任务文本相似度猜路由 | `test_goal_http.py`、`test_goal_recovery.py`、对话路由 Electron 隔离交互 |
 
