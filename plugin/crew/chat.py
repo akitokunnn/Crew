@@ -747,7 +747,7 @@ class Manager:
             raise board.BoardError('Claude 原生身份与 Crew 身份不一致，不能恢复错误会话')
         install.ensure(self.home, self.plugin_root)
         command = spawn.command(session_id, session["crew_name"], session["role"], native_resume, **options, agent=spec["agent"],
-                                permission_mode=permission_mode)
+                                permission_mode=permission_mode, plugin_root=self.plugin_root)
         if spec.get('_workspace_notice'):
             command += ['--append-system-prompt', spec['_workspace_notice']]
         command[0] = exe

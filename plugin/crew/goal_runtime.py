@@ -231,10 +231,9 @@ class Controller:
         command = spawn.command(native_id, session['crew_name'], session['role'], binding is not None,
                                 instructions=('你是 Crew「%s」的当前目标执行。目标规则和用户原始要求由宿主随输入装载；仅当前明确授权有效。' % session['crew_name']
                                               + ('\n' + spec['_workspace_notice'] if spec.get('_workspace_notice') else '')),
-                                permission_mode=permission_mode,
+                                permission_mode=permission_mode, plugin_root=self.manager.plugin_root,
                                 **options)
         command[0] = chat.claude_executable()
-        command.extend(['--plugin-dir', str(self.manager.plugin_root.resolve())])
         environment = chat.child_environment({**spec, 'name': session['crew_name'], 'role': session['role'],
                                                'group': session['group_name']})
         environment.update(CREW_HOME=str(self.home.resolve()), CREW_SESSION_ID=logical_id,

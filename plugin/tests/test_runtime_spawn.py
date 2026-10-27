@@ -46,6 +46,7 @@ class RuntimeSpawnTests(RuntimeFixture):
         self.assertEqual(plan["spec"]["model"], "claude-opus-5-5")
         self.assertEqual(plan["spec"]["effort"], "max")
         self.assertEqual(plan["command"][-2:], ["--session-id", plan["session_id"]])
+        self.assertEqual(plan["command"][plan["command"].index("--plugin-dir") + 1], str(PLUGIN.resolve()))
         self.assertIn("/crew:member", plan["files"][plan["spec"]["md"]])
         self.resolve_codex.assert_not_called()
 

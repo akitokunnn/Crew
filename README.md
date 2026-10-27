@@ -68,14 +68,14 @@ npm start
 
 ### Claude 插件与 VS Code
 
-需要从 Claude 会话收编成员、使用插件 hooks 或在 VS Code 接续 Claude 会话时，再安装插件：
+从 Crew 网页或命令行启动的 Claude 会话会自动按当前后台版本加载随包插件，角色守则和 hooks 无需用户另行安装。只有要从终端或 VS Code 直接启动 Claude，再将该外部会话收编进 Crew 时，才安装用户级插件：
 
 ```powershell
 claude plugin marketplace add C:\Tools\Crew
 claude plugin install crew@crew --scope user
 ```
 
-新开 Claude 会话后，会在 `~/.crew/` 下生成命令行启动器、默认黑名单和价格表；已有会话执行 `/reload-plugins` 或重开。VS Code 接续还需要 Claude Code 扩展，并信任项目目录。Codex 会话在 Crew 中继续，暂不支持转交到 Claude 编辑器。
+新开外部 Claude 会话后，会在 `~/.crew/` 下生成命令行启动器、默认黑名单和价格表；已有外部会话执行 `/reload-plugins` 或重开。VS Code 接续还需要 Claude Code 扩展，并信任项目目录。Codex 会话在 Crew 中继续，暂不支持转交到 Claude 编辑器。
 
 ### 命令行、浏览器与右键入口
 
@@ -238,7 +238,7 @@ Windows 的派工集成源码在 `integrations/codex-dispatch/` 与 `integration
 
 ## 更新和开发
 
-- 从本地目录装的插件，**运行时直接用仓库里 `plugin/` 这份代码**（不另拷一份）。改 Python 代码对之后的每次钩子调用立刻生效；改了钩子注册、技能、角色定义，要在会话里 `/reload-plugins` 或重开会话。
+- Crew 托管的 Claude 会话按当前后台路径加载 `plugin/`；外部 Claude 会话从本地目录安装插件时也直接使用这份代码（不另拷一份）。改 Python 代码对之后的每次钩子调用立刻生效；改了钩子注册、技能、角色定义，外部会话要执行 `/reload-plugins` 或重开。插件元数据版本必须与 `desktop/package.json` 的桌面主版本一致，桌面测试会检查两者。
 - 所以**不要在主检出里直接改代码**：在 `Temp/wt/<名字>` 开 worktree 改，测试通过再合进 main。主检出里的代码一旦出错，所有会话的钩子都会跟着出错。
 - 本仓库的远程 `main` 要求通过 PR 合并，禁止强推和删除。用户已于 2026-10-26 取消额外人工批准要求；相关测试、必要构建与交互验收通过后，AI 自查并正常合并，具体遵循 [开发指南](AGENTS.md)。
 - 这是单人本机工具，优先保持代码直白、少配置；测试用临时白板，不随意关闭用户正在使用的会话或窗口。提交信息用中文说明改了什么、为什么，不加署名行。
