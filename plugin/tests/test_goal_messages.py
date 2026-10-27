@@ -17,8 +17,8 @@ class GoalMessageTests(GoalFixture):
         self.target = goals.create_execution(self.conn, self.active_goal['id'], 'chief-id', runtime='codex')
         self.controller = mock.Mock()
         self.controller.current.return_value = self.target
-        self.controller.manager.busy.return_value = False
-        self.controller.manager.maintenance_held.return_value = False
+        self.controller.executions.busy.return_value = False
+        self.controller.executions.maintenance_held.return_value = False
         self.controller.send.return_value = {'ok': True, 'accepted': True, 'execution_id': self.target['id']}
 
     def execution(self, goal):
@@ -178,7 +178,7 @@ class GoalMessageTests(GoalFixture):
 
     def test_busy_target_waits_without_spending_delivery_budget(self):
         receipt = self.queue(message_id='busy-target')
-        self.controller.manager.busy.return_value = True
+        self.controller.executions.busy.return_value = True
         for _ in range(10):
             goal_messages.deliver(self.controller, self.conn)
         self.controller.send.assert_not_called()
@@ -190,10 +190,10 @@ class GoalMessageTests(GoalFixture):
         receipt = goal_messages.queue(self.conn, 'chief-id', 'foreign-chief', 'Please review this interface.',
                                       self.target['id'], kind='decision', message_id='cross-leader')
         self.assertEqual(self.row(receipt)['target_scope'], 'general')
-        self.controller.manager.send.return_value = {'ok': True, 'accepted': True}
+        self.controller.send_input.return_value = {'ok': True, 'accepted': True}
         goal_messages.deliver(self.controller, self.conn)
         self.controller.send.assert_not_called()
-        call = self.controller.manager.send.call_args
+        call = self.controller.send_input.call_args
         self.assertEqual(call.args[0]['session_id'], 'foreign-chief')
         self.assertNotIn('_execution', call.args[0])
         self.assertIn(self.active_goal['id'], call.args[1])
@@ -228,7 +228,7 @@ class GoalMessageTests(GoalFixture):
 
     def test_explicit_general_reply_returns_to_original_task_not_another_active_scope(self):
         original = self.external_request()
-        self.controller.manager.send.return_value = {'accepted':True}
+        self.controller.send_input.return_value = {'accepted':True}
         goal_messages.deliver(self.controller, self.conn)
         reply = goal_messages.queue(self.conn, 'foreign-chief', 'chief-id', 'Measured interface result',
                                     kind='result', reply_to=original['message_id'], message_id='interface-reply')
@@ -242,7 +242,7 @@ class GoalMessageTests(GoalFixture):
 
     def test_reply_from_another_task_validates_its_own_source_and_keeps_original_destination(self):
         original = self.external_request()
-        self.controller.manager.send.return_value = {'accepted':True}
+        self.controller.send_input.return_value = {'accepted':True}
         goal_messages.deliver(self.controller, self.conn)
         other = goals.create(self.conn, 'demo', 'foreign-chief', 'Another task', 'Keep work separate', ['Evidence'])
         goals.transition(self.conn, other['id'], 'running')

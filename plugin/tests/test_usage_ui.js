@@ -5,7 +5,7 @@ function harness(report){
   const main={innerHTML:""},sandbox={window:{},document:{addEventListener(){},getElementById:()=>main},location:{search:"?project=fixture",href:"http://fixture/",origin:"http://fixture"},URL,URLSearchParams};
   vm.createContext(sandbox);
   const source=fs.readFileSync(path.join(__dirname,"../crew/web/app.js"),"utf8").replace(/\r\n/g,"\n");
-  vm.runInContext(source.replace("  setup();\n})();",`window.ui={render(report){state={project:{name:"fixture"}};usage=report;quotas=()=>[];replace=(node,html)=>{node.innerHTML=html;};renderUsage();},collapse(id){usageCollapsed.add(id);renderUsage();},tab(value){usageTab=value;renderUsage();}};\n})();`),sandbox);
+  vm.runInContext(source.replace("  setup();\n})();",`window.ui={render(report){state={project:{name:"fixture"}};usage=report;quotas=()=>[];domRenderer={replace:(node,html)=>{node.innerHTML=html;}};renderUsage();},collapse(id){usageCollapsed.add(id);renderUsage();},tab(value){usageTab=value;renderUsage();}};\n})();`),sandbox);
   sandbox.window.ui.render(report);return {ui:sandbox.window.ui,main};
 }
 const report=()=>({tree:[{leader_session_id:"leader",name:"协调",tokens:14400,cost:0.051,share:100,codex_runs:3,codex_tokens:8500,

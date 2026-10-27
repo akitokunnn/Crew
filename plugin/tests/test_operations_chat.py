@@ -333,7 +333,7 @@ class OperationsChatTests(unittest.TestCase):
             def __exit__(self, *args): return False
             def poll(self): return self.returncode
             def wait(self, **kwargs): return self.returncode
-        with (mock.patch.object(operations_chat.chat, 'claude_executable', return_value='fixture-claude'),
+        with (mock.patch.object(operations_chat.native_process, 'claude_executable', return_value='fixture-claude'),
               mock.patch.object(operations_chat.subprocess, 'Popen', FakeProcess)):
             with self.assertRaisesRegex(operations_chat.OperationsChatError, 'fixture auth expired'):
                 operations_chat._claude({**self.selected, 'runtime': 'claude'}, 'fixture prompt',
@@ -364,7 +364,7 @@ class OperationsChatTests(unittest.TestCase):
             def __exit__(self, *args): return False
             def poll(self): return self.returncode
             def wait(self, **kwargs): return self.returncode
-        with (mock.patch.object(operations_chat.chat, 'claude_executable', return_value='fixture-claude'),
+        with (mock.patch.object(operations_chat.native_process, 'claude_executable', return_value='fixture-claude'),
               mock.patch.object(operations_chat.subprocess, 'Popen', FakeProcess)):
             result = operations_chat._claude({'runtime': 'claude', 'model': None, 'effort': None},
                                             'fixture', self.backend, emitted.append, registered.append)

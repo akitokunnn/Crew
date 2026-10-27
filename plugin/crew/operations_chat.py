@@ -16,7 +16,8 @@ import sys
 import threading
 import time
 
-from . import board, chat, codex_client, operations_settings, runtime_catalog, settings, store
+from . import board, native_process, codex_client, operations_settings, runtime_catalog, settings, store
+from .session_journal import Journal
 from .codex_runtime import process_identity
 from .service_lock import HomeServiceLock
 from .supervisor import _atomic_json, _directory, _now, _read_json
@@ -71,7 +72,7 @@ def _live(state):
 
 def snapshot(home):
     state = _state(home)
-    journal = chat.Journal(directory(home) / 'messages.jsonl')
+    journal = Journal(directory(home) / 'messages.jsonl')
     messages = [{key: event[key] for key in ('id', 'role', 'text', 'at')}
                 for event in journal.events if event['type'] == 'message']
     busy = _live(state)
@@ -113,7 +114,7 @@ def send(home, backend_root, value, *, process_factory=subprocess.Popen):
         raise OperationsChatError('消息缺少有效 message_id')
     with _locked(home), configuration_write(home):
         state = _state(home)
-        journal = chat.Journal(directory(home) / 'messages.jsonl')
+        journal = Journal(directory(home) / 'messages.jsonl')
         if any(event.get('id') == identity for event in journal.events):
             return snapshot(home)
         if _live(state):
@@ -226,7 +227,7 @@ def _codex(selected, prompt, cwd, emit, register):
 
 
 def _claude(selected, prompt, cwd, emit, register, *, read_roots=()):
-    command = [chat.claude_executable(), '-p', '--output-format', 'stream-json', '--verbose',
+    command = [native_process.claude_executable(), '-p', '--output-format', 'stream-json', '--verbose',
                '--include-partial-messages', '--no-session-persistence', '--permission-mode', 'dontAsk',
                '--tools', 'Read,Grep,Glob', '--strict-mcp-config', '--settings', '{"disableAllHooks":true}']
     if read_roots:
@@ -317,7 +318,7 @@ def worker(home, backend_root, identity, *, runners=None):
         if not cancelled.is_set() and not text.strip():
             raise OperationsChatError('运维 AI 没有返回正文，请重试')
         if not cancelled.is_set():
-            chat.Journal(directory(home) / 'messages.jsonl').emit('message', id=identity + '-reply',
+            Journal(directory(home) / 'messages.jsonl').emit('message', id=identity + '-reply',
                                                                 role='assistant', text=text)
             state['partial'] = ''
         else:
@@ -331,7 +332,7 @@ def worker(home, backend_root, identity, *, runners=None):
         monitor.join(timeout=8)
         with mutation:
             if state['partial']:
-                chat.Journal(directory(home) / 'messages.jsonl').emit('message', id=identity + '-reply',
+                Journal(directory(home) / 'messages.jsonl').emit('message', id=identity + '-reply',
                                                                     role='assistant', text=state['partial'])
                 state['partial'] = ''
             state['busy'] = False

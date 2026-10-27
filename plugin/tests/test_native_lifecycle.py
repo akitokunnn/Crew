@@ -4,6 +4,7 @@ import unittest
 from unittest import mock
 
 import tests
+from crew import claude_events
 from crew import chat
 from test_chat import FakeProcess
 from test_usage import UsageFixture
@@ -20,7 +21,7 @@ class NativeLifecycleTests(UsageFixture, unittest.TestCase):
         current.journal.set_status('working')
         current.stderr_reader = threading.Thread(target=manager._stderr, args=(current,))
         current.reader = threading.Thread(target=manager._read, args=('s1', current))
-        manager.processes['s1'] = current
+        manager.executions.register('s1', current)
         current.stderr_reader.start()
         current.reader.start()
         def finish():
@@ -69,17 +70,18 @@ class NativeLifecycleTests(UsageFixture, unittest.TestCase):
 
     def test_top_level_result_ends_only_its_turn_without_fabricating_a_tool_result(self):
         journal = chat.Journal(self.home / 'chat' / 'terminal.jsonl')
+        journal_native_events = claude_events.ClaudeEvents(journal)
         for failed in (False, True):
             journal.set_status('working')
             before = len(journal.events)
-            journal.consume({'type': 'result', 'is_error': failed, 'errors': ['real reason']})
+            journal_native_events.consume({'type': 'result', 'is_error': failed, 'errors': ['real reason']})
             terminal = [e for e in journal.events[before:] if e['type'] == 'turn_result']
             self.assertEqual([(e['status'], e['success']) for e in terminal],
                              [('failed' if failed else 'completed', not failed)])
             self.assertFalse([e for e in journal.events[before:] if e['type'] == 'tool_result'])
         journal.set_status('working')
         before = len(journal.events)
-        journal.consume({'type': 'result', 'parent_tool_use_id': 'child', 'is_error': False})
+        journal_native_events.consume({'type': 'result', 'parent_tool_use_id': 'child', 'is_error': False})
         self.assertEqual(journal.status, 'working')
         self.assertFalse([e for e in journal.events[before:] if e['type'] == 'turn_result'])
 

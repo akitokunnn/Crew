@@ -4,15 +4,15 @@ const {test}=require("node:test");
 
 function harness(snapshot){
   const main={innerHTML:"",dataset:{}};
-  const sandbox={window:{},document:{getElementById:()=>main,addEventListener(){}},location:{search:"?project=fixture"},URLSearchParams,
+  const sandbox={createCatalog:require("../crew/web/runtime-catalog.js").create,createComments:require("./comments_fixture.cjs").createComments,createAttention:require("./attention_fixture.cjs").createAttention,window:{},document:{getElementById:()=>main,addEventListener(){}},location:{search:"?project=fixture"},URLSearchParams,
     CrewChat:{renderInline:text=>String(text).replaceAll("<","&lt;").replaceAll(">","&gt;")},
     CrewContext:{ring:()=>""},CrewActivity:{markup:()=>""}};
   vm.createContext(sandbox);
   const source=fs.readFileSync(path.join(__dirname,"../crew/web/app.js"),"utf8").replace(/\r\n/g,"\n");
-  vm.runInContext(source.replace("  setup();\n})();",`replace=(node,html)=>{node.innerHTML=html;};
-    window.ui={render(snapshot,tab){state=snapshot;allTab=tab;renderAll();return document.getElementById("main").innerHTML;},
-      sidebar(snapshot){state=snapshot;view="chat";leaderId=snapshot.leaders[0].session_id;return sidebarLeader(snapshot.leaders[0]);},
-      node(snapshot){state=snapshot;return leaderNode(snapshot.leaders[0],true);}};
+  vm.runInContext(source.replace("  setup();\n})();",`domRenderer={replace:(node,html)=>{node.innerHTML=html;}};
+    window.ui={render(snapshot,tab){state=snapshot;if(!runtimeCatalog)runtimeCatalog=createCatalog({snapshot:()=>({catalog:state.runtimes}),discover:async()=>({runtimes:[]})});if(!commentsFeature)commentsFeature=createComments(()=>({leaders:state.leaders,members:state.members}),document);if(!attentionFeature)attentionFeature=createAttention(()=>state,document);allTab=tab;renderAll();return document.getElementById("main").innerHTML;},
+      sidebar(snapshot){state=snapshot;if(!runtimeCatalog)runtimeCatalog=createCatalog({snapshot:()=>({catalog:state.runtimes}),discover:async()=>({runtimes:[]})});if(!commentsFeature)commentsFeature=createComments(()=>({leaders:state.leaders,members:state.members}),document);view="chat";leaderId=snapshot.leaders[0].session_id;return sidebarLeader(snapshot.leaders[0]);},
+      node(snapshot){state=snapshot;if(!runtimeCatalog)runtimeCatalog=createCatalog({snapshot:()=>({catalog:state.runtimes}),discover:async()=>({runtimes:[]})});if(!commentsFeature)commentsFeature=createComments(()=>({leaders:state.leaders,members:state.members}),document);return leaderNode(snapshot.leaders[0],true);}};
     })();`),sandbox);
   return {render:(tab="tree",next=snapshot)=>sandbox.window.ui.render(next,tab),
     sidebar:(next=snapshot)=>sandbox.window.ui.sidebar(next),node:(next=snapshot)=>sandbox.window.ui.node(next)};

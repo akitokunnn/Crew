@@ -416,7 +416,7 @@ class VSCodeServiceTests(unittest.TestCase):
                                   reader_done=threading.Event(), stderr_reader=mock.Mock())
         managed.stderr_reader.is_alive.return_value = False
         managed.reader_done.set()
-        self.service.chat.processes[a] = managed
+        self.service.chat.executions.register(a, managed)
         state_before = self.state_db.read_bytes()
         records_before = {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in paths}
         original_archive = session_ops.archive

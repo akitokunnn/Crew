@@ -17,6 +17,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 from crew import session_ops, board, codex_runtime, decision_flow, store, themes, usage, web
 from test_shell import NOW, PLUGIN, ShellFixture
 from test_usage import assistant
+from crew.claude_events import ClaudeEvents
 
 
 class WebContractTests(ShellFixture, unittest.TestCase):
@@ -34,7 +35,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         poll = mock.patch.object(web.Service, "_poll_notices", return_value=None)
         poll.start()
         self.addCleanup(poll.stop)
-        executable = mock.patch("crew.chat.shutil.which", return_value="C:/fixture/claude.exe")
+        executable = mock.patch("crew.native_process.shutil.which", return_value="C:/fixture/claude.exe")
         executable.start()
         self.addCleanup(executable.stop)
         self.server = web.create_server(self.home, PLUGIN, port=0, cwd=self.project,
@@ -373,13 +374,14 @@ class WebContractTests(ShellFixture, unittest.TestCase):
 
     def test_unread_and_reply_sound_ignore_eighteen_tool_calls(self):
         journal = self.service.chat.journal("s3")
+        events = ClaudeEvents(journal)
         for index in range(18):
-            journal.consume({"type": "assistant", "message": {"id": "tool-" + str(index), "content": [
+            events.consume({"type": "assistant", "message": {"id": "tool-" + str(index), "content": [
                 {"type": "tool_use", "id": "call-" + str(index), "name": "Bash", "input": {"command": "git status"}}]}})
             journal.emit("tool_result", tool_use_id="call-" + str(index), content="clean", is_error=False)
         leader = self.state()["leaders"][0]
         self.assertEqual((leader["unread"], leader["last_reply_id"]), (0, None))
-        journal.consume({"type": "assistant", "message": {"id": "answer", "content": [
+        events.consume({"type": "assistant", "message": {"id": "answer", "content": [
             {"type": "text", "text": "Git 检查完成，工作区干净。"}]}})
         leader = self.state()["leaders"][0]
         self.assertEqual((leader["unread"], leader["last_reply_id"]), (1, "answer"))

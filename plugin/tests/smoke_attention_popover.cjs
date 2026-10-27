@@ -10,10 +10,11 @@ if(typeof electron==='string'){
   const {app,BrowserWindow,nativeTheme}=electron,fs=require('node:fs/promises'),path=require('node:path'),os=require('node:os'),http=require('node:http'),assert=require('node:assert/strict');
   const root=path.resolve(__dirname,'../..'),plugin=path.resolve(process.env.CREW_TEST_PLUGIN_ROOT||path.join(root,'plugin')),web=path.join(plugin,'crew/web'),output=path.join(root,'desktop/smoke-output/attention-popover');
   // Use the production allowlist: a file existing on disk must not mask an HTTP 404.
-  const staticAssets=JSON.parse(require('node:child_process').execFileSync('python',['-c','import json; from crew.web import STATIC; print(json.dumps(STATIC))'],{cwd:plugin,encoding:'utf8',windowsHide:true}));
+  const staticAssets=JSON.parse(require('node:child_process').execFileSync('python',['-c','import json; from pathlib import Path; from crew.web_assets import AssetCatalog; print(json.dumps(AssetCatalog(Path("crew/web")).routes))'],{cwd:plugin,encoding:'utf8',windowsHide:true}));
   const temporary=require('node:fs').mkdtempSync(path.join(os.tmpdir(),'crew-attention-'));app.setPath('userData',temporary);app.setPath('sessionData',temporary);app.commandLine.appendSwitch('force-device-scale-factor','1');
   const evidence={temporary,plugin_root:plugin,checks:[],screenshots:[],errors:[],modelTurnsStarted:0},calls=[],streams=[];
-  let server,win,origin,polls=0,failResolve=true;
+  let server,win,origin,polls=0,failResolve=true,runtimeDelay=0,commentsDelay=0,failComment=true;
+  const comments=new Map([['leader',[{id:1,text:'保留录音背景',author:'用户',created_at:new Date().toISOString()}]],['member',[]]]);
   const person=(id,name,runtime='claude')=>({session_id:id,name,runtime,model:null,effort:null,status:'idle',where:'offline',busy:false,running:false,web_chat:false,last_seq:1,read_seq:1,last_reply_id:'reply',unread:0,pending:0,priority:null,goal:'独立推进，保留对话空间',context:null,activity:null,codex:[],codex_older:0,member_ids:[],applied:null,trust:{enabled:false},runtime_switch:{allowed:true}});
   const theme={id:'green',name:'竹青',light:{},dark:{}},stamp=new Date().toISOString();
   const state={project:{name:'浮卡验收',root:'C:/fixture',theme:'green'},projects:[],themes:[theme],leaders:[person('leader','声音负责人'),person('other','另一负责人','codex')],members:[{...person('member','测量员','codex'),leader_session_id:'leader',group:'声音负责人'}],goals:[],
@@ -26,7 +27,8 @@ if(typeof electron==='string'){
   async function route(req,res){
     const url=new URL(req.url,origin),name=url.pathname;
     if(name==='/api/state'){polls++;return json(res,state);}
-    if(name==='/api/runtimes')return json(res,{runtimes:state.runtimes});
+    if(name==='/api/runtimes'){if(runtimeDelay)await pause(runtimeDelay);return json(res,{runtimes:state.runtimes});}
+    if(name==='/api/comments'&&req.method==='GET'){if(commentsDelay)await pause(commentsDelay);return json(res,{comments:comments.get(url.searchParams.get('session_id'))||[]});}
     if(name==='/api/goal')return json(res,{goal:state.goals[0],executions:[{id:'execution',session_id:'leader',runtime:'claude',model:null,effort:null,round:1,requirement_version:1,generation:1,status:'idle'}],reports:[],documents:[],context:{items:[],manifest:{}}});
     if(name==='/api/chat/history')return json(res,{...(url.searchParams.has('goal_id')?{execution_id:'execution'}:{}),events:[{seq:1,type:'text',id:'reply',text:'声音评测继续推进。旁边的待办不会占用这段对话。'}],busy:false,running:false,read_seq:1});
     if(name==='/api/chat/events'){res.fixtureSession=url.searchParams.get('session_id');res.writeHead(200,{'Content-Type':'text/event-stream'});res.write(': fixture\n\n');streams.push(res);return;}
@@ -34,6 +36,14 @@ if(typeof electron==='string'){
       let raw='';for await(const chunk of req)raw+=chunk;const body=JSON.parse(raw);calls.push({name,body});
       if(name==='/api/chat/read')return json(res,{read_seq:body.seq});
       if(name==='/api/session/compact')return json(res,{queued:false,message:'正在压缩上下文'});
+      if(name==='/api/comments'){
+        if(failComment){failComment=false;return json(res,{error:'隔离评论保存失败'},409);}
+        const list=comments.get(body.session_id)||[],entry={id:list.length+1,text:body.text,author:'用户',created_at:new Date().toISOString()};
+        comments.set(body.session_id,[...list,entry]);return json(res,{id:entry.id});
+      }
+      if(name==='/api/leader'){
+        state.leaders.push({...person('created-leader',body.name,body.runtime),model:body.model,effort:body.effort});return json(res,{session_id:'created-leader'});
+      }
       if(name==='/api/todo/resolve'){if(failResolve){failResolve=false;return json(res,{error:'隔离保存失败，请重试'},409);}state.todos=state.todos.filter(item=>item.id!==body.id);return json(res,{ok:true,before:{},version:2});}
       if(name==='/api/answer'){state.decisions=state.decisions.filter(item=>item.id!==body.id);return json(res,{ok:true});}
       if(name==='/api/native-approval'){state.native_approvals=[];return json(res,{ok:true});}
@@ -51,6 +61,63 @@ if(typeof electron==='string'){
   async function capture(name){await js('document.fonts.ready.then(()=>true)');await pause(80);const shot=await win.webContents.debugger.sendCommand('Page.captureScreenshot',{format:'png'});const p=path.join(output,name+'.png');await fs.writeFile(p,Buffer.from(shot.data,'base64'));evidence.screenshots.push(p);}
   async function open(){await click('[data-act="attention"]');await wait(opened);await pause(420);}
   async function mouse(selector){const point=await js(`(()=>{const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return{x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)}})()`);for(const type of ['mouseMoved','mousePressed','mouseReleased'])await win.webContents.debugger.sendCommand('Input.dispatchMouseEvent',{type,...point,...(type==='mouseMoved'?{}:{button:'left',clickCount:1})});}
+  async function featureJourneys(){
+    const catalog=[{id:'claude',name:'Claude Code',available:true,models:[{id:'opus-fixture',name:'Opus fixture',efforts:['high']}],efforts:['high']},
+      {id:'codex',name:'Codex',available:true,models:[{id:'gpt-fixture',name:'GPT fixture',efforts:['medium','high']}],efforts:['medium','high']}];
+    state.runtimes=catalog;runtimeDelay=240;
+    await click('#chat-head [data-act="model-menu"]');await wait('document.querySelector("#menu").classList.contains("show")');
+    await mouse('#chat-host textarea');await pause(350);
+    await check('a late native catalog response cannot reopen a model menu dismissed by the user','!document.querySelector("#menu").classList.contains("show")');
+    await click('#chat-head [data-act="model-menu"]');await wait('!!document.querySelector("#menu [data-model=opus-fixture]")');
+    await check('model discovery repaints the exact open menu with native carrier choices','!!document.querySelector("#menu [data-model=opus-fixture]")&&!document.querySelector("#menu [data-model=gpt-fixture]")');
+    await mouse('#chat-host textarea');runtimeDelay=0;
+
+    const compactBefore=calls.filter(call=>call.name==='/api/session/compact').length;
+    await click('#chat-head [data-act="session-menu"]');await click('#menu [data-act="compact"]');
+    await wait('!!document.querySelector("#backdrop.show [data-act=compact-confirm]")');await click('[data-act="compact-confirm"]');
+    await until(()=>calls.filter(call=>call.name==='/api/session/compact').length===compactBefore+1,'confirmed compaction');
+    await check('menu confirmation and ring share one pending compaction and one busy state','document.querySelector("#chat-head [data-act=context-compact]").disabled&&!!document.querySelector("#sidebar .is-compacting")');
+    await click('#chat-head [data-act="context-compact"]');await pause(60);
+    assert.equal(calls.filter(call=>call.name==='/api/session/compact').length,compactBefore+1);
+    const compactions=calls.filter(call=>call.name==='/api/session/compact');assert.equal(compactions[0].body.after_turn,true);assert(!Object.hasOwn(compactions.at(-1).body,'after_turn'));
+    for(const stream of streams.filter(stream=>stream.fixtureSession==='leader'))stream.write('data: '+JSON.stringify({seq:4,type:'compact',pre_tokens:18000,post_tokens:17000})+'\n\n');
+    await wait('!document.querySelector(".is-compacting")');evidence.checks.push('ring requests after-turn compaction while explicit menu confirmation requests immediate compaction');
+
+    await js('document.querySelector("#chat-head [data-act=session-menu]").focus();true');await click('#chat-head [data-act="session-menu"]');await click('#menu [data-act="comments"]');
+    await wait('document.querySelector(".comments-overlay.show .comment-entry")?.textContent.includes("保留录音背景")');
+    await js('window.commentNode=document.querySelector("#comment-text");commentNode.focus();window.commentEnds=0;commentNode.addEventListener("compositionend",()=>commentEnds++);true');
+    await win.webContents.debugger.sendCommand('Input.imeSetComposition',{text:'bu chong',selectionStart:8,selectionEnd:8});
+    commentsDelay=180;comments.set('leader',[...comments.get('leader'),{id:2,text:'异步新增评论'}]);await click('[data-act="comments-refresh"]');await pause(280);
+    await check('comments keep the connected native Chinese composition while their own asynchronous list refreshes','commentNode===document.querySelector("#comment-text")&&document.activeElement===commentNode&&commentEnds===0');
+    await win.webContents.debugger.sendCommand('Input.insertText',{text:'补充录音说明'});await wait('document.querySelector("#comment-text").value==="补充录音说明"&&document.querySelector(".comments-list").textContent.includes("异步新增评论")');
+    commentsDelay=0;await click('#comments-form [type="submit"]');await wait('document.querySelector(".comments-overlay .error-line")?.textContent.includes("隔离评论保存失败")');
+    await check('a failed comment retains its exact Chinese draft with an explicit retry','document.querySelector("#comment-text").value==="补充录音说明"&&!document.querySelector("#comments-form [type=submit]").disabled');
+    await click('#comments-form [type="submit"]');await wait('document.querySelector("#comment-text").value===""&&document.querySelector(".comments-list").textContent.includes("补充录音说明")');
+    await capture('06-comments-portal');
+    assert.deepEqual(calls.filter(call=>call.name==='/api/comments').map(call=>call.body),[{session_id:'leader',text:'补充录音说明'},{session_id:'leader',text:'补充录音说明'}]);
+    await js('const text=document.querySelector("#comment-text");text.value="未发送的评论草稿";text.dispatchEvent(new Event("input",{bubbles:true}));true');
+    for(const stream of streams.filter(stream=>stream.fixtureSession==='leader'))stream.write('data: '+JSON.stringify({seq:5,type:'text',id:'portal-unread',text:'评论遮挡时的新回复'})+'\n\n');
+    await wait('document.querySelector("#chat-host .chat-inner").textContent.includes("评论遮挡时的新回复")');await pause(1100);
+    assert(!calls.some(call=>call.name==='/api/chat/read'&&call.body.seq===5));evidence.checks.push('the independent comments portal blocks actual delayed chat read receipts');
+    win.webContents.sendInputEvent({type:'keyDown',keyCode:'Escape'});win.webContents.sendInputEvent({type:'keyUp',keyCode:'Escape'});await wait('!document.querySelector(".comments-overlay").classList.contains("show")');
+    await check('Escape closes comments and returns focus to the surviving conversation menu control','document.activeElement.matches("#chat-head [data-act=session-menu]")');
+    await click('#chat-head [data-act="session-menu"]');await click('#menu [data-act="comments"]');await wait('document.querySelector("#comment-text")?.value==="未发送的评论草稿"');
+    await js('document.querySelector(".comments-overlay").dispatchEvent(new MouseEvent("click",{bubbles:true}));true');
+    await check('mask close preserves the unsent comment draft for a later open','!document.querySelector(".comments-overlay").classList.contains("show")');
+    await mouse('#chat-host textarea');await js('document.querySelector("#chat-host .chat-scroll").dispatchEvent(new Event("scroll"));true');
+    await until(()=>calls.some(call=>call.name==='/api/chat/read'&&call.body.seq===5),'read receipt after comments close');
+
+    await click('#sidebar [data-act="modal-leader"]');await wait('!!document.querySelector(".leader-create-overlay.show #leader-name")');
+    await js('window.leaderNameNode=document.querySelector("#leader-name");window.leaderTaskNode=document.querySelector("#leader-task");for(const [node,value]of [[leaderNameNode,"界面测试 leader"],[leaderTaskNode,"只创建隔离夹具身份"]]){node.value=value;node.dispatchEvent(new Event("input",{bubbles:true}));}true');
+    await click('[data-act="leader-runtime"][data-runtime="codex"]');await click('[data-act="leader-model"][data-model="gpt-fixture"]');await click('[data-act="leader-effort"][data-effort="high"]');
+    runtimeDelay=180;await click('[data-act="leader-refresh"]');await pause(260);
+    await check('native discovery updates only leader brain controls and preserves both actual text field nodes','leaderNameNode===document.querySelector("#leader-name")&&leaderTaskNode===document.querySelector("#leader-task")&&leaderNameNode.value==="界面测试 leader"&&leaderTaskNode.value==="只创建隔离夹具身份"&&document.querySelector("#leader-form").elements.runtime.value==="codex"&&document.querySelector("#leader-form").elements.model.value==="gpt-fixture"&&document.querySelector("#leader-form").elements.effort.value==="high"');
+    await capture('07-leader-create');
+    runtimeDelay=0;await click('#leader-form [type="submit"]');await wait('document.querySelector("#chat-head .chat-name")?.textContent==="界面测试 leader"');
+    assert.deepEqual(calls.filter(call=>call.name==='/api/leader').map(call=>call.body),[{name:'界面测试 leader',task:'只创建隔离夹具身份',runtime:'codex',model:'gpt-fixture',effort:'high'}]);
+    await check('accepted leader creation closes its own portal and navigates exactly once to the returned identity','!document.querySelector(".leader-create-overlay").classList.contains("show")&&location.hash.includes("created-leader")');
+    await click('[data-act="leader"][data-id="leader"]');await wait('document.querySelector("#chat-head .chat-name")?.textContent==="声音负责人"');
+  }
   (async()=>{
     try{
       await app.whenReady();await fs.mkdir(output,{recursive:true});server=http.createServer((req,res)=>route(req,res).catch(error=>{evidence.errors.push(error.stack);json(res,{error:error.message},500);}));await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));origin='http://127.0.0.1:'+server.address().port;
@@ -86,6 +153,7 @@ if(typeof electron==='string'){
       win.setSize(1000,960);await js('document.documentElement.style.setProperty("--fs","1.4")');await pause(160);await check('large text keeps the toolbar inside its available conversation column',toolbarFits);await capture('00-toolbar-large-text');
       win.setSize(1680,960);await js('document.documentElement.style.setProperty("--fs","1")');state.leaders[0].name='声音负责人';state.leaders[0].runtime='claude';state.leaders[0].model=null;state.leaders[0].effort=null;state.runtimes=[];
       await wait('document.querySelector("#chat-head .chat-name")?.textContent==="声音负责人"');
+      await featureJourneys();
       await pause(280);await js('window.chatTop=document.querySelector("#chat-host").getBoundingClientRect().top;const input=document.querySelector("#chat-host textarea");input.value="对话草稿保留";input.dispatchEvent(new Event("input",{bubbles:true}));');
       await check('pending todos, decisions and member permissions are combined without a top tray','document.querySelector(".attention-count").textContent==="4"&&document.querySelector("#attention-scope").textContent.includes("全部任务与总对话")&&!'+opened+'&&!document.querySelector("#main #decision-tray")&&!document.querySelector("#main #native-approval-tray")');
       await check('the trigger is a keyboard-focusable native button','(()=>{const b=document.querySelector("[data-act=attention]");return b.tagName==="BUTTON"&&b.type==="button"&&b.tabIndex===0})()');await click('[data-act="right-open"]');await pause(420);

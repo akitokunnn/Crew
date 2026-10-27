@@ -10,7 +10,8 @@ import unittest
 import uuid
 from pathlib import Path
 from unittest import mock
-from crew import board, chat, claude_limits, codex_client
+from crew import claude_events
+from crew import board, chat, claude_events, claude_limits, codex_client
 from test_usage import UsageFixture
 
 
@@ -68,28 +69,29 @@ class ChatTests(UsageFixture, unittest.TestCase):
     def setUp(self):
         super().setUp()
         self.journal = chat.Journal(self.home / "chat" / "s1.jsonl")
+        self.native_events = claude_events.ClaudeEvents(self.journal)
 
     def test_protocol_merges_blocks_deduplicates_replay_and_omits_thinking(self):
         self.journal.message("human-1", "hello")
-        self.journal.consume({"type": "user", "uuid": "human-1", "isReplay": True,
+        self.native_events.consume({"type": "user", "uuid": "human-1", "isReplay": True,
                               "message": {"content": "hello"}})
-        self.journal.consume({"type": "stream_event", "api_message_id": "answer", "event": {
+        self.native_events.consume({"type": "stream_event", "api_message_id": "answer", "event": {
             "type": "content_block_delta", "delta": {"type": "text_delta", "text": "Hello"}}})
         text = {"type": "text", "text": "Hello"}
         tool = {"type": "tool_use", "id": "tool-1", "name": "SendMessage", "input": {"to": "member"}}
         for block in (text, tool, text):
-            self.journal.consume({"type": "assistant", "message": {"id": "answer", "content": [block]}})
-        self.journal.consume({"type": "assistant", "message": {"id": "answer", "content": [
+            self.native_events.consume({"type": "assistant", "message": {"id": "answer", "content": [block]}})
+        self.native_events.consume({"type": "assistant", "message": {"id": "answer", "content": [
             {"type": "thinking", "thinking": "private"}]}})
         result = {"type": "user", "message": {"content": [
             {"type": "tool_result", "tool_use_id": "tool-1", "content": "sent", "is_error": False}]}}
-        self.journal.consume(result)
-        self.journal.consume(result)
+        self.native_events.consume(result)
+        self.native_events.consume(result)
         peer = {"type": "user", "uuid": "peer-1", "isReplay": True, "isSynthetic": True,
                 "origin": {"kind": "peer", "name": "member", "body": "finished"}, "message": {"content": "wrapper"}}
-        self.journal.consume(peer)
-        self.journal.consume(peer)
-        self.journal.consume({"type": "result", "is_error": True, "errors": ["quota reached"]})
+        self.native_events.consume(peer)
+        self.native_events.consume(peer)
+        self.native_events.consume({"type": "result", "is_error": True, "errors": ["quota reached"]})
         events = self.journal.events
         self.assertEqual([e["text"] for e in events if e["type"] == "message"], ["hello", "finished"])
         self.assertEqual([e for e in events if e["type"] == "assistant"][-1]["content"], [text, tool])
@@ -101,7 +103,7 @@ class ChatTests(UsageFixture, unittest.TestCase):
     def test_reload_keeps_unicode_line_separators_inside_text(self):
         # Misdecoded tool output (10-23) carried U+2028; str.splitlines cut that record in half.
         text = "a b c\x1cd\x85e"
-        self.journal.consume({"type": "user", "uuid": "u1", "message": {"role": "user", "content": [
+        self.native_events.consume({"type": "user", "uuid": "u1", "message": {"role": "user", "content": [
             {"type": "tool_result", "tool_use_id": "t1", "content": text}]}})
         self.assertEqual([e["content"] for e in chat.Journal(self.journal.path).events if e["type"] == "tool_result"], [text])
 
@@ -166,7 +168,7 @@ class ChatTests(UsageFixture, unittest.TestCase):
         journal = manager.journal("s1")
         journal.set_status(status)
         process = FakeProcess([])
-        manager.processes["s1"] = chat.Running(process, journal)
+        manager.executions.register("s1", chat.Running(process, journal))
         session = board.session(self.conn, "s1")
         return manager, process, session
 
@@ -217,8 +219,9 @@ class ChatTests(UsageFixture, unittest.TestCase):
             manager._send("s1", "hello from " + source, source=source, identity=source + "-1")
             message = json.loads(process.stdin.getvalue().splitlines()[-1])
             journal = manager.journal("s1")
-            journal.consume(message)
-            journal.consume(dict(message, isReplay=True))
+            journal_native_events = claude_events.ClaudeEvents(journal)
+            journal_native_events.consume(message)
+            journal_native_events.consume(dict(message, isReplay=True))
         messages = [event for event in manager.history("s1")["events"] if event["type"] == "message"]
         self.assertEqual([(event["id"], event["source"]) for event in messages], [("crew-1", "crew"), ("qq-1", "qq")])
 
@@ -232,35 +235,33 @@ class ChatTests(UsageFixture, unittest.TestCase):
         self.assertEqual(first.status, "working")
         self.assertEqual([event["status"] for event in first.events], ["working", "idle", "working"])
         second.set_status("idle")
-        first.consume({"type": "stream_event", "event": {"type": "message_start"}})
+        self.native_events.consume({"type": "stream_event", "event": {"type": "message_start"}})
         self.assertEqual(first.status, "working")
         self.assertEqual(chat.Journal(first.path).status, "working")
         self.assertEqual([event["status"] for event in first.events], ["working", "idle", "working", "idle", "working"])
 
     def test_assistant_merge_refreshes_external_content_before_using_cached_blocks(self):
         def answer(text):
-            return {"type": "assistant", "message": {"id": "answer", "content": [{"type": "text", "text": text}]}}
+            return [{"type": "text", "text": text}]
 
         first = self.journal
-        first.consume(answer("a"))
+        first.assistant_message("answer", answer("a"))
         second = chat.Journal(first.path)
-        second.consume(answer("b"))
-        first.consume(answer("c"))
+        second.assistant_message("answer", answer("b"))
+        first.assistant_message("answer", answer("c"))
         expected = [{"type": "text", "text": text} for text in ("a", "b", "c")]
         self.assertEqual(first.events[-1]["content"], expected)
         self.assertEqual(first.assistant["answer"], expected)
-        second.consume(answer("c"))
+        second.assistant_message("answer", answer("c"))
         persisted = chat.Journal(first.path)
         self.assertEqual(len(persisted.events), 3)
         self.assertEqual(persisted.assistant["answer"], expected)
 
     def test_tool_result_deduplication_refreshes_external_ids_before_replay(self):
-        result = {"type": "user", "message": {"content": [
-            {"type": "tool_result", "tool_use_id": "tool-1", "content": "done"}]}}
         first = self.journal
         second = chat.Journal(first.path)
-        second.consume(result)
-        first.consume(result)
+        second.tool_result("tool-1", "done")
+        first.tool_result("tool-1", "done")
         self.assertEqual(len(first.events), 1)
         self.assertEqual(first.results, {"tool-1"})
         self.assertEqual(len(chat.Journal(first.path).events), 1)
@@ -275,6 +276,7 @@ class ChatTests(UsageFixture, unittest.TestCase):
             {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": encoded}},
             {"type": "text", "text": "look"}])
         journal = manager.journal("s1")
+        journal_native_events = claude_events.ClaudeEvents(journal)
         event = next(event for event in journal.events if event["type"] == "message")
         expected_name = result["message_id"] + "-1.png"
         self.assertEqual(event["images"], [expected_name])
@@ -283,7 +285,7 @@ class ChatTests(UsageFixture, unittest.TestCase):
         path, media_type = manager.file("s1", expected_name)
         self.assertEqual(path, self.home / "chat" / "files" / "s1" / expected_name)
         self.assertEqual((path.read_bytes(), media_type), (raw, "image/png"))
-        journal.consume(message)
+        journal_native_events.consume(message)
         self.assertEqual(len([event for event in journal.events if event["type"] == "message"]), 1)
 
     def test_image_only_messages_and_supported_media_types(self):
@@ -330,7 +332,7 @@ class ChatTests(UsageFixture, unittest.TestCase):
         self.assertEqual(request["type"], "control_request")
         self.assertEqual(request["request"], {"subtype": "interrupt"})
         self.assertEqual(uuid.UUID(request["request_id"]).version, 4)
-        manager.journal("s1").consume({"type": "control_response", "response": {
+        manager.processes["s1"].events.consume({"type": "control_response", "response": {
             "subtype": "success", "request_id": request["request_id"]}})
         self.assertEqual(manager.history("s1")["events"], before)
         self.assertTrue(manager.busy("s1"))
@@ -381,7 +383,7 @@ class ChatTests(UsageFixture, unittest.TestCase):
         for record in records:
             if record["type"] == "result":
                 self.assertEqual(self.journal.progress["output_tokens"], 174)
-            self.journal.consume(record)
+            self.native_events.consume(record)
             if self.journal.progress is not None:
                 current = (self.journal.progress["phase"], self.journal.progress["label"])
                 if not phases or phases[-1] != current:
@@ -397,13 +399,13 @@ class ChatTests(UsageFixture, unittest.TestCase):
 
     def test_estimates_use_cumulative_thinking_and_utf8_then_replace_with_real_usage(self):
         def stream(event):
-            self.journal.consume({"type": "stream_event", "api_message_id": "call", "event": event})
+            self.native_events.consume({"type": "stream_event", "api_message_id": "call", "event": event})
 
         stream({"type": "message_start", "message": {"id": "call", "model": "haiku"}})
         started = self.journal.progress["turn_started_at"]
         stream({"type": "content_block_start", "index": 0, "content_block": {"type": "thinking"}})
         for total in (10, 13):
-            self.journal.consume({"type": "system", "subtype": "thinking_tokens", "estimated_tokens": total})
+            self.native_events.consume({"type": "system", "subtype": "thinking_tokens", "estimated_tokens": total})
         stream({"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "", "estimated_tokens": 15}})
         stream({"type": "content_block_start", "index": 1, "content_block": {"type": "thinking"}})
         stream({"type": "content_block_delta", "index": 1, "delta": {"type": "thinking_delta", "thinking": "", "estimated_tokens": 4}})
@@ -430,7 +432,7 @@ class ChatTests(UsageFixture, unittest.TestCase):
             self.journal.set_status(status)
             before = dict(self.journal.progress) if self.journal.progress is not None else None
             for record in records:
-                self.journal.consume(dict(record, parent_tool_use_id="parent"))
+                self.native_events.consume(dict(record, parent_tool_use_id="parent"))
                 self.assertEqual(self.journal.progress, before)
                 self.assertEqual(self.journal.status, status)
 
@@ -446,23 +448,23 @@ class ChatTests(UsageFixture, unittest.TestCase):
             ("SendMessage", {"to": "leader"}, "发消息给 leader"), ("Skill", {"skill": "crew:member"}, "crew:member"),
             ("OtherTool", {}, "OtherTool")]:
             with self.subTest(name=name):
-                self.assertEqual(chat.tool_label(name, arguments), label)
+                self.assertEqual(claude_events.tool_label(name, arguments), label)
 
     def test_control_responses_ignore_success_and_record_failure_reason(self):
-        self.journal.consume({"type": "control_response", "response": {"subtype": "success", "request_id": "good"}})
+        self.native_events.consume({"type": "control_response", "response": {"subtype": "success", "request_id": "good"}})
         self.assertEqual(self.journal.events, [])
-        self.journal.consume({"type": "control_response", "response": {"subtype": "error", "request_id": "bad", "error": "invalid model"}})
+        self.native_events.consume({"type": "control_response", "response": {"subtype": "error", "request_id": "bad", "error": "invalid model"}})
         self.assertEqual([(event["type"], event["text"]) for event in self.journal.events], [("error", "invalid model")])
 
     def test_tool_phase_remains_until_corresponding_result_even_when_text_arrives(self):
-        self.journal.consume({"type": "stream_event", "event": {"type": "message_start", "message": {"id": "call"}}})
-        self.journal.consume({"type": "assistant", "message": {"id": "call", "content": [
+        self.native_events.consume({"type": "stream_event", "event": {"type": "message_start", "message": {"id": "call"}}})
+        self.native_events.consume({"type": "assistant", "message": {"id": "call", "content": [
             {"type": "tool_use", "id": "running-tool", "name": "Bash", "input": {"description": "run command"}}]}})
-        self.journal.consume({"type": "stream_event", "api_message_id": "call", "event": {
+        self.native_events.consume({"type": "stream_event", "api_message_id": "call", "event": {
             "type": "content_block_delta", "delta": {"type": "text_delta", "text": "still running"}}})
         self.assertEqual((self.journal.progress["phase"], self.journal.progress["label"]), ("tool", "run command"))
         for tool_id, phase in (("other-tool", "tool"), ("running-tool", "requesting")):
-            self.journal.consume({"type": "user", "message": {"content": [
+            self.native_events.consume({"type": "user", "message": {"content": [
                 {"type": "tool_result", "tool_use_id": tool_id, "content": "done"}]}})
             self.assertEqual(self.journal.progress["phase"], phase)
 
@@ -483,7 +485,7 @@ class StopManagedTests(UsageFixture, unittest.TestCase):
         import subprocess
         manager = chat.Manager(self.home, self.root, lambda: [], process_factory=mock.Mock())
         current = chat.Running(mock.Mock(), manager.journal('s1'))
-        manager.processes['s1'] = current
+        manager.executions.register('s1', current)
         current.process.poll.return_value = None
         current.process.wait.side_effect = subprocess.TimeoutExpired('fake', 10)
         with self.assertRaisesRegex(board.BoardError, '仍未退出'):

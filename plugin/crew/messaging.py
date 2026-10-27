@@ -138,7 +138,7 @@ def take_for_hook(conn, session_id, now=None):
     if stopped(conn, session_id):
         return []
     messages = pending(conn, session_id)
-    from .chat import Journal
+    from .session_journal import Journal
     database = next((row['file'] for row in conn.execute('PRAGMA database_list') if row['name'] == 'main'), '')
     inputs = Journal(Path(database).parent / 'chat' / (session_id + '.jsonl')).inputs if database else {}
     lines = []

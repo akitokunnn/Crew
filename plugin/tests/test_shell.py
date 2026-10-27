@@ -100,12 +100,12 @@ class SpawnTests(ShellFixture, unittest.TestCase):
     def test_spawn_resolves_native_cli_for_process_ownership(self):
         shim = self.root / "npm" / "claude.cmd"
         native = shim.parent / "node_modules" / "@anthropic-ai" / "claude-code" / "bin" / "claude.exe"
-        with mock.patch("crew.chat.shutil.which", return_value=str(shim)):
+        with mock.patch("crew.native_process.shutil.which", return_value=str(shim)):
             result = self.make_spawn("from-shim")
         self.assertEqual(result["command"][0], str(native))
         self.assertTrue(self.manager.owns_pid(result["session_id"], self.processes[0].pid))
         self.assertFalse(self.manager.owns_pid(result["session_id"], self.processes[0].pid + 1))
-        with mock.patch("crew.chat.shutil.which", return_value=str(native)):
+        with mock.patch("crew.native_process.shutil.which", return_value=str(native)):
             direct = self.make_spawn("from-exe")
         self.assertEqual(direct["command"][0], str(native))
 
@@ -546,7 +546,7 @@ class WebTests(ShellFixture, unittest.TestCase):
         self.assertEqual(self.get("/api/state?project=missing")[0], 400)
 
     def test_all_posts_require_crew_header(self):
-        for path in web.POST_PATHS:
+        for path in (route.path for route in self.server.service.api.routes('POST')):
             with self.subTest(path=path):
                 self.assertEqual(self.get(path, {}, crew=False)[0], 403)
 
@@ -649,6 +649,7 @@ class WebTests(ShellFixture, unittest.TestCase):
         self.assertEqual(shown["where"], "bg")
         manager.close()
         self.server.service.chat = chat.Manager(self.home, PLUGIN, self.provider, self.process_factory)
+        self.server.service.api = web.build_api(self.server.service)
         code, accepted, _ = self.get("/api/chat/send", {"session_id": session_id, "text": "resume", "message_id":"member-resume"})
         self.assertEqual((code,accepted),(200,{'ok':True,'message_id':'member-resume','accepted':True,'delivery':'started'}))
         self.assertEqual(len(self.processes), 2)
@@ -808,6 +809,7 @@ class WebTests(ShellFixture, unittest.TestCase):
         session_id = self.chat_start()
         self.server.service.chat.close()
         self.server.service.chat = chat.Manager(self.home, PLUGIN, self.provider, self.process_factory)
+        self.server.service.api = web.build_api(self.server.service)
         self.assertFalse(self.get("/api/chat/history?session_id=" + session_id)[1]["running"])
         self.provider.return_value = [{"sessionId": session_id, "name": "web-boss"}]
         self.assertEqual(self.get("/api/chat/send", {"session_id": session_id, "text": "resume"})[0], 409)

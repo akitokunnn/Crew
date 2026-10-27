@@ -6,6 +6,7 @@ from unittest import mock
 
 import test_vscode_service as fixtures
 from test_vscode_service import identity, NOW
+from crew import claude_events
 from crew import board, codex_events, goals, runtimes, session_ops, store, workspace_activity
 
 
@@ -15,7 +16,7 @@ class WorkspaceActivityTests(unittest.TestCase):
     register = fixtures.VSCodeServiceTests.register
 
     def snapshot(self):
-        return workspace_activity.snapshot(self.service, self.conn, 'alpha')
+        return self.service.activity().snapshot(self.conn, 'alpha')
 
     def test_reading_status_does_not_scan_launch_or_mark_messages_read(self):
         self.register(identity(1), 'leader', role='leader')
@@ -33,7 +34,7 @@ class WorkspaceActivityTests(unittest.TestCase):
         board.set_status(self.conn, identity(1), 'working', now=NOW)
         self.assertEqual(self.snapshot()['counts']['working'], 0)
         self.service.chat.journal(identity(1)).set_status('working')
-        with mock.patch.object(self.service.chat, 'running', side_effect=lambda key: key == identity(1)):
+        with mock.patch.object(self.service.chat.executions, 'running', side_effect=lambda key: key == identity(1)):
             value = self.snapshot()
         self.assertEqual(value['counts']['working'], 1)
         self.assertEqual(next(item for item in value['items'] if item['kind'] == 'working')['name'], 'leader')
@@ -99,11 +100,11 @@ class WorkspaceActivityTests(unittest.TestCase):
 
     def owned(self, sid, runtime, execution=None, status='working'):
         key = execution['id'] if execution else sid
-        self.service.chat.processes[key] = SimpleNamespace(
+        self.service.chat.executions.register(key, SimpleNamespace(
             execution=execution, runtime=runtime, maintenance=None,
             process=SimpleNamespace(poll=lambda: None, pid=1000 + len(self.service.chat.processes)),
             native_id='native-' + sid, thread_id='native-' + sid,
-            input_lock=threading.RLock(), applied=None, context=None, pending_approvals=lambda: [])
+            input_lock=threading.RLock(), applied=None, context=None, pending_approvals=lambda: []))
         self.service.chat.journal(key).set_status(status)
         return key
 
@@ -191,10 +192,11 @@ class WorkspaceActivityTests(unittest.TestCase):
                     goal = goals.create(self.conn, 'alpha', sid, 'Git check', 'Check the worktree', ['Clean'])
                     execution = goals.create_execution(self.conn, goal['id'], sid, runtime=runtime)
                 journal = self.service.chat.journal(execution['id'] if execution else sid)
+                journal_native_events = claude_events.ClaudeEvents(journal)
                 parser = codex_events.Events('thread')
                 for number in range(18):
                     if runtime == 'claude':
-                        journal.consume({'type': 'assistant', 'message': {'id': 'tool-' + str(number), 'content': [
+                        journal_native_events.consume({'type': 'assistant', 'message': {'id': 'tool-' + str(number), 'content': [
                             {'type': 'tool_use', 'id': 'call-' + str(number), 'name': 'Bash', 'input': {'command': 'git status'}}]}})
                     else:
                         for event in parser.consume('item/completed', {'threadId': 'thread', 'item': {

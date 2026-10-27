@@ -234,7 +234,7 @@ for line in sys.stdin:
         thread = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': .02})
         thread.start()
         self.assertTrue(server.service.agents_ready.wait(5))
-        server.service.chat.processes['worker'] = running
+        server.service.chat.executions.register('worker', running)
         def close():
             server.shutdown()
             server.server_close()
@@ -298,8 +298,8 @@ for line in sys.stdin:
         client = self.clients[-1]
         running.send('One bounded task', 'initial')
         server, request = self.start_http(running)
-        server.service.chat.processes.clear()
-        server.service.chat.processes[execution['id']] = running
+        server.service.chat.executions.remove('worker')
+        server.service.chat.executions.register(execution['id'], running)
         result, done = self.pending(running, client)
         identity = running.pending_approvals()[0]['id']
         with closing(store.connect(self.home)) as conn:

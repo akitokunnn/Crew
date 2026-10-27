@@ -8,7 +8,7 @@ import sys
 import time
 
 from crew_desktop import HomeServiceLock
-from . import chat, codex_client, settings
+from . import native_process, codex_client, settings
 from .operations import OperationsError, _digest
 from .supervisor import _atomic_json, _read_json
 
@@ -109,7 +109,7 @@ def default_runner(home, which=None):
         if selected['effort'] is not None:
             command += ['-c', 'model_reasoning_effort=' + json.dumps(selected['effort'])]
         return command + ['-']
-    command = [chat.claude_executable(), '-p', '--no-session-persistence', '--permission-mode', 'acceptEdits',
+    command = [native_process.claude_executable(), '-p', '--no-session-persistence', '--permission-mode', 'acceptEdits',
                '--strict-mcp-config', '--settings', '{"disableAllHooks":true}', '--tools', 'Read,Edit,Write,Glob,Grep']
     if selected['model'] is not None:
         command += ['--model', selected['model']]

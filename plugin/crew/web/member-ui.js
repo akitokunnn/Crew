@@ -5,15 +5,7 @@
   function effective(leader, globalChoice) {
     return clone(leader.member_defaults ?? globalChoice ?? {runtime:leader.runtime,model:leader.model ?? null,effort:leader.effort ?? null});
   }
-  function validate(choice, catalog) {
-    const selected = clone(choice), available = catalog.filter(item => item.available);
-    if (!selected.runtime && available.length === 1) selected.runtime = available[0].id;
-    const runtime = catalog.find(item => item.id === selected.runtime);
-    if (!runtime?.available) throw Error(runtime?.error || "请选择已就绪的执行载体；可重新检测后再试。");
-    const model = runtime.models?.find(item => item.id === selected.model);
-    if (selected.effort && model?.efforts && !model.efforts.includes(selected.effort)) throw Error("这个模型不支持所选思考强度，请重新选择。");
-    return selected;
-  }
+  const validate=window.CrewRuntimeCatalog.validateSelection;
   function create(options) {
     const overlay = document.createElement("div"); overlay.className = "session-config-backdrop"; overlay.hidden = true; document.body.append(overlay);
     let owner = null, mode = "create", draft = null, name = "", task = "", inherit = true, busy = false, error = "", returnTo = null;

@@ -50,7 +50,7 @@ class MixedMessagingTests(ShellFixture, unittest.TestCase):
             current = chat.Running(FakeProcess([]), journal)
             current.reader = mock.Mock()
         journal.set_status("idle")
-        self.manager.processes[session_id] = current
+        self.manager.executions.register(session_id, current)
         return current
 
     def tool_send(self, current, target, text, call_id="stable-call", **extra):

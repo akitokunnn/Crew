@@ -570,11 +570,12 @@ class CodexRunning:
                                      source=source, sender=sender, images=image_files)
                 self.client.steer(input=inputs, turn_id=self._events.turn_id)
                 return identity
-            self.journal.message(identity, text if display_text is None else display_text,
-                                 source=source, sender=sender, images=image_files)
             if text.strip() == "/compact":
+                self.journal.compact_request(identity)
                 self.compact()
                 return identity
+            self.journal.message(identity, text if display_text is None else display_text,
+                                 source=source, sender=sender, images=image_files)
             inputs = [{"type": "image", "url": "data:" + item["media_type"] + ";base64," + item["data"]}
                       for item in images or []]
             with closing(store.connect(self.home)) as trust_conn:

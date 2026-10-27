@@ -20,6 +20,8 @@ git log -3 --oneline
 
 ## 工作方式
 
+- **先找模块所有者。** 按本次改动查[模块指南](docs/architecture/README.md)，术语不明再查[领域词汇](CONTEXT.md)，不必全量加载文档。功能拥有状态、规则与清理；入口只组合，依赖自上而下。
+- **新增能力走明确接口。** UI 动作与 HTTP 路径由功能登记，迁移后删除旧分支、状态与重复 CSS；不用整对象注入、mixin 或空壳转发伪装解耦。模块直接测接口，关键旅程走真实后台与假载体；完整规范只在模块指南维护。
 - 这是现有产品的迭代：leader/成员关系、QQ、置顶、多工作区、拍板、人工待办、目标及文档等能力已有实现，先找现有链路再改，避免另起一套。
 - 文档与交付资料按任务查看，使用任务内的“交付与文档”入口；不新增或恢复侧栏的项目资料、交付资料、文档中心等总览入口。整合历史改动时也须保留这条用户要求。
 - 普通文件夹可作为工作区，不强制 Git，也不自动 `git init`。Git 相关能力才需要仓库。
@@ -58,8 +60,8 @@ git log -3 --oneline
 | --- | --- |
 | 桌面窗口、IPC、标签、启动/复用后台 | `desktop/src/main.cjs`、`core.cjs`、`tabs.cjs` |
 | 工作区首页、全局设置、网页 UI | `desktop/src/home*`、`plugin/crew/web/` |
-| HTTP / CLI | `plugin/crew/web.py`、`cli.py` |
-| 消息、通知与人工答复路由 | `plugin/crew/messaging.py`、`board.py`、`todo.py`、`goal_links.py`；自动投递在 `web.py` |
+| HTTP 传输 / 功能请求 / CLI | `plugin/crew/web.py`、`web_api/`、`cli.py` |
+| 消息、通知与人工答复路由 | `plugin/crew/messaging.py`、`decision_actions.py`、`todo.py`、`goal_links.py`；自动投递在 `notice_delivery.py` |
 | Git 设置、读取与进程 | `plugin/crew/git_admin.py`、`git_view.py`、`git_process.py`；界面 `plugin/crew/web/git*` |
 | 会话启动、停止、载体切换 | `chat.py`、`spawn.py`、`codex_runtime.py`、`runtime_switch.py`（均在 `plugin/crew/`） |
 | 目标、轮次、动态上下文 | `plugin/crew/goals.py`、`goal_runtime.py`、`goal_context.py` |
