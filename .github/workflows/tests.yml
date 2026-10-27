@@ -35,6 +35,17 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
+      - name: Use a canonical isolated temporary directory
+        run: |
+          @'
+          import os
+          from pathlib import Path
+          directory = Path(os.environ['RUNNER_TEMP']).resolve() / 'crew-tests'
+          directory.mkdir(parents=True, exist_ok=True)
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as output:
+              for name in ('TEMP', 'TMP'):
+                  print(f'{name}={directory}', file=output)
+          '@ | python -
       - name: Backend tests with isolated homes and fake carriers
         working-directory: plugin
         run: python -m unittest discover -s tests -v

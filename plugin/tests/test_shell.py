@@ -5,6 +5,7 @@ import csv
 import datetime as dt
 import io
 import json
+import shutil
 import sqlite3
 import subprocess
 import threading
@@ -37,6 +38,22 @@ class ShellFixture(UsageFixture):
         super().setUp()
         from crew import settings
         settings.save(self.conn, {'default': {'runtime': 'claude', 'model': None, 'effort': None}})
+        # Process creation is injected below; resolving its name must also be
+        # independent of AI tools installed on the development/CI machine.
+        fake_bin = self.root / 'fake-carriers'
+        fake_bin.mkdir()
+        for carrier in ('claude', 'codex'):
+            (fake_bin / (carrier + '.exe')).touch()
+        native_which = shutil.which
+
+        def which(command, *args, **kwargs):
+            if command in ('claude', 'codex'):
+                return str(fake_bin / (command + '.exe'))
+            return native_which(command, *args, **kwargs)
+
+        lookup = mock.patch('crew.chat.shutil.which', side_effect=which)
+        lookup.start()
+        self.addCleanup(lookup.stop)
         self.vscode_state_db = make_vscode_state_db(self.root / "state.vscdb")
         roots = mock.patch("crew.vscode_sessions.project_roots", side_effect=lambda root: [Path(root)])
         roots.start()
