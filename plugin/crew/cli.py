@@ -258,6 +258,7 @@ def parser():
     location.add_argument("--new-worktree")
     a.add_argument("--dry-run", action="store_true")
     a = command("spawn", True)
+    a.add_argument('--goal', dest='spawn_goal_id', help='直接在指定目标内创建并启动成员，不另开总对话执行')
     a.add_argument("--name", required=True)
     a.add_argument("--model", default=argparse.SUPPRESS)
     a.add_argument("--effort", default=argparse.SUPPRESS)

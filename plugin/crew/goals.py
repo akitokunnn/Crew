@@ -8,7 +8,7 @@ import math
 import sqlite3
 import uuid
 
-from . import board, report_documents, store
+from . import board, report_documents, runtimes, store
 
 STATES = frozenset(('queued', 'running', 'pausing', 'paused', 'waiting_user',
                     'awaiting_acceptance', 'completed', 'failed', 'cancelled'))
@@ -492,6 +492,7 @@ def bind_native(conn, execution_id, runtime, native_id, *, model=None, effort=No
     old = conn.execute('SELECT native_id FROM goal_execution_bindings WHERE execution_id=? AND runtime=?', (execution_id, runtime)).fetchone()
     if old and old['native_id'] != native_id:
         raise board.Conflict('同一执行代次的原生绑定不能被另一段历史覆盖')
+    runtimes.check_native_owner(conn, runtime, native_id, execution_id=execution_id)
     try:
         conn.execute('INSERT INTO goal_execution_bindings VALUES(?,?,?,?,?,?) ON CONFLICT(execution_id,runtime) '
                      'DO UPDATE SET model=excluded.model,effort=excluded.effort,updated_at=excluded.updated_at',

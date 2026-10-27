@@ -774,7 +774,7 @@ class Manager:
     @_admitted
     def start(self, conn, project_name, name, task=None, group=None, role="member", members=(), cwd=None,
               new_worktree=None, base=None, now=None, member_session_ids=(), model=models.INHERIT, effort=models.INHERIT, agent=None,
-              runtime=models.INHERIT, caller_session_id=None, caller_execution_id=None):
+              runtime=models.INHERIT, caller_session_id=None, caller_execution_id=None, goal_id=None):
         with self.lock:
             bound_goal = None
             if caller_execution_id is not None and caller_session_id is None:
@@ -797,6 +797,22 @@ class Manager:
                     if not gate['allowed'] or not self.running(caller_execution_id):
                         raise board.Conflict(gate['reason'] or '调用目标执行没有在当前宿主运行')
                     bound_goal = goal['id']
+            if goal_id is not None:
+                goal = goals.get(conn, goal_id, project_name)
+                if role != 'member':
+                    raise board.BoardError('只有成员可以通过 spawn --goal 绑定目标')
+                if caller_session_id is not None:
+                    goals._actor(conn, goal, caller_session_id)
+                if bound_goal is not None and bound_goal != goal_id:
+                    raise board.BoardError('创建成员的目标与调用执行不一致')
+                gate = goals.dispatch_check(conn, goal_id)
+                if not gate['allowed']:
+                    raise board.Conflict(gate['reason'])
+                bound_goal = goal_id
+                leader = board.session(conn, goal['leader_session_id'])
+                if group not in (None, leader['group_name']):
+                    raise board.BoardError('成员分组必须属于目标的主责 leader')
+                group = leader['group_name']
             if role == "leader":
                 plan = spawn.leader_plan(conn, self.home, self.plugin_root, project_name, name, members, task,
                                          cwd=cwd, new_worktree=new_worktree, base=base, now=now,
@@ -999,6 +1015,14 @@ class Manager:
                     raise board.Conflict("上次输入的原生接收状态未确认，请先核对会话，避免重复执行")
             elif identity in journal.messages:
                 raise board.Conflict("这条历史输入没有可确认的接收回执，请先核对会话")
+            if '_execution' not in session and session['role'] == 'member' and source not in ('human', 'qq', 'lark'):
+                with closing(store.connect(self.home)) as check_conn:
+                    active = next((row['id'] for row in check_conn.execute(
+                        'SELECT id FROM goal_executions WHERE session_id=?', (session_id,))
+                        if self.busy(row['id'])), None)
+                if active is not None:
+                    raise board.Conflict('成员的目标执行正在工作，不能向总对话重复派工；'
+                                         '请明确目标继续原执行或等待当前任务结束：' + active)
             steering = self.running(session_id) and self.journal(session_id).status == "working"
             if steering and source not in ("human", "qq", "lark"):
                 raise board.Conflict("会话正在回复，自动消息等待当前轮次结束")

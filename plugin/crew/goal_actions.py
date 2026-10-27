@@ -137,6 +137,8 @@ def dispatch(home, actor_session_id, execution_id, action, data, controller=None
                 _host(controller)
                 if goal['status'] != 'running':
                     raise board.Conflict('先启动目标；分配成员本身不隐式开工')
+                controller.check_member_start(conn, goal_id, person['session_id'],
+                                              'human' if actor_session_id == board.HUMAN else 'crew')
             assigned = goals.assign(conn, goal_id, person['session_id'], data.get('task'), actor=actor_session_id)
             if data.get('start') is True:
                 receipt = controller.send(goal_id, person['session_id'], data['task'],
@@ -145,13 +147,15 @@ def dispatch(home, actor_session_id, execution_id, action, data, controller=None
             return assigned
         if action == 'start':
             _host(controller)
+            person = _person(conn, project, data.get('session_id') or data.get('to') or goal['leader_session_id'])
+            goals._member(conn, goal, person['session_id'])
+            controller.check_member_start(conn, goal_id, person['session_id'],
+                                          'human' if actor_session_id == board.HUMAN else 'crew')
             if goal['status'] == 'queued':
                 goal = goals.transition(conn, goal_id, 'running', actor=actor_session_id)
             gate = goals.dispatch_check(conn, goal_id)
             if not gate['allowed']:
                 raise board.Conflict(gate['reason'])
-            person = _person(conn, project, data.get('session_id') or data.get('to') or goal['leader_session_id'])
-            goals._member(conn, goal, person['session_id'])
             return controller.send(goal_id, person['session_id'], data.get('text') or goal['requirements']['request'],
                                    source='human' if actor_session_id == board.HUMAN else 'crew')
         if action == 'pause':

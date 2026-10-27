@@ -1,0 +1,46 @@
+name: Crew tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      PYTHONIOENCODING: utf-8
+      CREW_SESSION_ID: ''
+      CLAUDE_CODE_SESSION_ID: ''
+      CREW_EXECUTION_ID: ''
+      CREW_GOAL_ID: ''
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - name: Backend tests with isolated homes and fake carriers
+        working-directory: plugin
+        run: python -m unittest discover -s tests -v
+      - name: Browser unit tests
+        run: node --test plugin/tests/test_*.js
+      - name: Install desktop dependencies
+        run: npm --prefix desktop ci
+      - name: Desktop unit tests
+        run: npm --prefix desktop test
+      - name: Isolated workspace interaction
+        run: node desktop/scripts/smoke-workspaces.cjs
+      - name: Isolated conversation and task routing
+        run: node plugin/tests/smoke_conversation_routing.cjs

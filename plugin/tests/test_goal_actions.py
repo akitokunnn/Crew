@@ -19,6 +19,9 @@ class Host:
         self.calls.append(('send', goal_id, session_id, text, options))
         return {'ok': True, 'accepted': True}
 
+    def check_member_start(self, conn, goal_id, session_id, source):
+        pass
+
     def pause(self, goal_id, *, manual=True, actor=board.HUMAN):
         self.calls.append(('pause', goal_id))
         with closing(store.connect(self.home)) as conn:
