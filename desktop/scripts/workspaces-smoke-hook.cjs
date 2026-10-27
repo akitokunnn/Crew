@@ -74,12 +74,19 @@ app.once('browser-window-created', (_event, win) => {
       // without an interactive desktop produces a compositor frame. The
       // native smoke window itself remains hidden.
       try { bytes = (await bounded(contents.capturePage(undefined, { stayHidden:contents === main }), 'capturePage')).toPNG(); }
-      catch (error) { if (contents === main) throw error; debug = true; }
+      catch (error) {
+        const attempt = { name, error:String(error), windowVisible:win.isVisible(), bounds:win.getContentBounds() };
+        attempt.page = await bounded(contents.executeJavaScript('({visibility:document.visibilityState,width:innerWidth,height:innerHeight})'), 'capture diagnostics');
+        (evidence.captureAttempts ||= []).push(attempt);
+        console.error('Workspace capture attempt: ' + JSON.stringify(attempt));
+        if (contents === main) throw error;
+        debug = true;
+      }
       if (debug) {
         if (contents.debugger.isAttached()) throw new Error('Cannot capture while a separate debugger is attached');
         contents.debugger.attach('1.3');
         try {
-          const result = await bounded(contents.debugger.sendCommand('Page.captureScreenshot', { format:'png', fromSurface:true, captureBeyondViewport:false }), 'hidden project screenshot');
+          const result = await bounded(contents.debugger.sendCommand('Page.captureScreenshot', { format:'png', fromSurface:false, captureBeyondViewport:false }), 'project viewport screenshot');
           bytes = Buffer.from(result.data, 'base64'); method = 'Page.captureScreenshot (actual hidden ' + (contents === main ? 'shell' : 'project') + ' renderer)';
         } finally { contents.debugger.detach(); }
       }
