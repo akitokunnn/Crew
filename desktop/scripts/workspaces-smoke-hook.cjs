@@ -51,6 +51,10 @@ app.once('browser-window-created', (_event, win) => {
   observe(main);
   app.on('web-contents-created', (_event, contents) => observe(contents));
   main.once('did-finish-load', async () => {
+    // CI explicitly activates this private window to exercise native child-view
+    // compositing on a Windows runner without a pre-existing window surface.
+    if (process.env.CREW_TEST_SHOW_WINDOW === '1') win.showInactive();
+    evidence.nativeWindowVisible = win.isVisible();
     const js = source => main.executeJavaScript(source, true);
     async function until(callback, label) {
       const deadline = Date.now() + 15000;
