@@ -1333,6 +1333,7 @@ class Service:
                                        base=_optional_text(data, "base"), now=now,
                                        caller_session_id=_optional_text(data, 'caller_session_id'),
                                        caller_execution_id=_optional_text(data, 'caller_execution_id'),
+                                       goal_id=_optional_text(data, 'goal_id'),
                                        model=data["model"] if "model" in data else models.INHERIT,
                                        effort=data["effort"] if "effort" in data else models.INHERIT,
                                        runtime=data["runtime"] if "runtime" in data else models.INHERIT)

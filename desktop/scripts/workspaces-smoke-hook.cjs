@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
-const { app, ipcMain, dialog, Menu, webContents, nativeTheme } = require('electron');
+const { app, ipcMain, dialog, Menu, webContents, nativeTheme, nativeImage } = require('electron');
 const desktop = path.resolve(__dirname, '..');
 const core = require(path.join(desktop, 'src/core.cjs'));
 const { ToolUpdates } = require(path.join(desktop, 'src/tool-updates.cjs'));
@@ -51,6 +51,10 @@ app.once('browser-window-created', (_event, win) => {
   observe(main);
   app.on('web-contents-created', (_event, contents) => observe(contents));
   main.once('did-finish-load', async () => {
+    // CI explicitly activates this private window to exercise native child-view
+    // compositing on a Windows runner without a pre-existing window surface.
+    if (process.env.CREW_TEST_SHOW_WINDOW === '1') win.showInactive();
+    evidence.nativeWindowVisible = win.isVisible();
     const js = source => main.executeJavaScript(source, true);
     async function until(callback, label) {
       const deadline = Date.now() + 15000;
@@ -66,16 +70,31 @@ app.once('browser-window-created', (_event, win) => {
       const file = path.join(output, name + '.png');
       let bytes, method = 'capturePage', debug = false;
       if (contents === main) await main.executeJavaScript('Promise.race([new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))),new Promise(resolve=>setTimeout(resolve,1000))])');
-      try { bytes = (await bounded(contents.capturePage(undefined, { stayHidden:true }), 'capturePage')).toPNG(); }
-      catch (error) { if (contents === main) throw error; debug = true; }
+      // A capturer must make a project page visible to Chromium so a runner
+      // without an interactive desktop produces a compositor frame. The
+      // native smoke window itself remains hidden.
+      try { bytes = (await bounded(contents.capturePage(undefined, { stayHidden:contents === main }), 'capturePage')).toPNG(); }
+      catch (error) {
+        const attempt = { name, error:String(error), windowVisible:win.isVisible(), bounds:win.getContentBounds() };
+        attempt.page = await bounded(contents.executeJavaScript('({visibility:document.visibilityState,width:innerWidth,height:innerHeight})'), 'capture diagnostics');
+        (evidence.captureAttempts ||= []).push(attempt);
+        console.error('Workspace capture attempt: ' + JSON.stringify(attempt));
+        if (contents === main) throw error;
+        debug = true;
+      }
       if (debug) {
         if (contents.debugger.isAttached()) throw new Error('Cannot capture while a separate debugger is attached');
         contents.debugger.attach('1.3');
         try {
-          const result = await bounded(contents.debugger.sendCommand('Page.captureScreenshot', { format:'png', fromSurface:true, captureBeyondViewport:false }), 'hidden project screenshot');
+          const result = await bounded(contents.debugger.sendCommand('Page.captureScreenshot', { format:'png', fromSurface:true, captureBeyondViewport:false }), 'project surface screenshot');
           bytes = Buffer.from(result.data, 'base64'); method = 'Page.captureScreenshot (actual hidden ' + (contents === main ? 'shell' : 'project') + ' renderer)';
         } finally { contents.debugger.detach(); }
       }
+      assert(bytes.length > 100, 'actual renderer screenshot must contain PNG pixels');
+      const pixels = nativeImage.createFromBuffer(bytes).toBitmap(), colors = new Set();
+      const stride = 4 * Math.max(1, Math.floor(pixels.length / 4 / 10000));
+      for (let index = 0; index + 3 < pixels.length; index += stride) colors.add(pixels.readUInt32LE(index));
+      assert(colors.size > 8, 'actual renderer screenshot must contain interface pixels, not a blank frame');
       await fs.writeFile(file, bytes); evidence.screenshots.push(file); evidence.screenshotMethods.push({ file, method });
     }
     function projectContents(name) {
@@ -233,6 +252,7 @@ app.once('browser-window-created', (_event, win) => {
       assert(!win.isDestroyed()); assert(!win.isVisible()); assert((await tabs()).some(tab => tab.id === 'home'));
       assert((await core.projects(state.service.url)).length === 4);
       evidence.checks.push('CtrlW on home follows close-to-tray while preserving the window, picker and backend service');
+      if (process.env.CREW_TEST_SHOW_WINDOW === '1') win.showInactive();
       for (let index = 0; index < 2; index++) assert.equal((await fs.stat(path.join(homeDirectory, 'chat', 'tab-qa-leader-' + index + '.jsonl'))).size, 0);
       evidence.checks.push('fixture chat journals remain empty: no chat was sent and no model turn was started');
 

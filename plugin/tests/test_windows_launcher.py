@@ -178,9 +178,17 @@ class WindowsLauncherTests(unittest.TestCase):
                     stream.close()
         for shell in self.shells:
             with self.subTest(shell=shell, mode='native-stdin-pipeline'):
-                result = self.run_script(shell, "[Console]::OutputEncoding=New-Object System.Text.UTF8Encoding; 'pipeline-value' | crew; exit $LASTEXITCODE")
+                encoding = "$OutputEncoding=[Text.UTF8Encoding]::new($false); [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); "
+                quote = lambda value: "'" + str(value).replace("'", "''") + "'"
+                # WinPS may add a UTF-8 preamble even with an explicit encoding.
+                # The launcher must preserve exactly what this shell supplies to
+                # a direct native interpreter, including that host's preamble.
+                direct = self.run_script(shell, encoding + "'pipeline-value' | & " + quote(sys.executable) +
+                    ' ' + quote(self.home / 'crew.py') + '; exit $LASTEXITCODE')
+                self.assertEqual(direct.returncode, 19, direct.stderr.decode('utf-8', errors='replace'))
+                result = self.run_script(shell, encoding + "'pipeline-value' | crew; exit $LASTEXITCODE")
                 self.assertEqual(result.returncode, 19, result.stderr.decode('utf-8', errors='replace'))
-                self.assertIn(b'prompt> received:pipeline-value', result.stdout)
+                self.assertEqual(result.stdout, direct.stdout)
                 self.assertIn(b'live warning', result.stderr)
 
     def test_vendored_stub_hash_and_native_entry_are_reproducible_without_pip(self):

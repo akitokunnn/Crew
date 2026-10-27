@@ -17,6 +17,7 @@ from urllib.request import Request, urlopen
 from crew import session_ops, board, chat, cli, spawn, store, usage_cli, vscode_sessions, web
 from test_usage import UsageFixture, assistant, prompt
 from test_chat import FakeProcess
+from tests.fixture_carriers import install_lookup
 
 PLUGIN = Path(__file__).resolve().parents[1]
 NOW = "2026-10-21T08:00:00.000Z"
@@ -37,6 +38,9 @@ class ShellFixture(UsageFixture):
         super().setUp()
         from crew import settings
         settings.save(self.conn, {'default': {'runtime': 'claude', 'model': None, 'effort': None}})
+        # Process creation is injected below; resolving its name must also be
+        # independent of AI tools installed on the development/CI machine.
+        install_lookup(self, self.root)
         self.vscode_state_db = make_vscode_state_db(self.root / "state.vscdb")
         roots = mock.patch("crew.vscode_sessions.project_roots", side_effect=lambda root: [Path(root)])
         roots.start()

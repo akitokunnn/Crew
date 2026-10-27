@@ -11,7 +11,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from . import board, codex_client, git_process, git_view, member_defaults, models, runtimes, settings, store
+from . import board, codex_client, git_process, git_view, goals, member_defaults, models, runtimes, settings, store
 
 
 def _check_ignore(root):
@@ -262,6 +262,8 @@ def cli_dispatch(args, cwd, plugin_root):
                 body['caller_session_id'] = caller
             if os.environ.get('CREW_EXECUTION_ID'):
                 body['caller_execution_id'] = os.environ['CREW_EXECUTION_ID']
+            if getattr(args, 'spawn_goal_id', None) is not None:
+                body['goal_id'] = args.spawn_goal_id
             if hasattr(args, "model"):
                 body["model"] = args.model
             if hasattr(args, "effort"):
@@ -269,7 +271,23 @@ def cli_dispatch(args, cwd, plugin_root):
             if hasattr(args, "runtime"):
                 body["runtime"] = args.runtime
             return request_start(args.home, project["name"], "/api/spawn", body)
-        plan = prepare(conn, args.home, plugin_root, project["name"], args.name, args.task, args.group,
+        goal, group = None, args.group
+        if getattr(args, 'spawn_goal_id', None) is not None:
+            goal = goals.get(conn, args.spawn_goal_id, project['name'])
+            if args.role != 'member':
+                raise board.BoardError('只有成员可以通过 spawn --goal 绑定目标')
+            gate = goals.dispatch_check(conn, goal['id'])
+            if not gate['allowed']:
+                raise board.Conflict(gate['reason'])
+            leader = board.session(conn, goal['leader_session_id'])
+            if group not in (None, leader['group_name']):
+                raise board.BoardError('成员分组必须属于目标的主责 leader')
+            group = leader['group_name']
+        plan = prepare(conn, args.home, plugin_root, project["name"], args.name, args.task, group,
                        args.role, args.cwd, args.new_worktree, args.base, model=getattr(args, "model", models.INHERIT),
                        effort=getattr(args, "effort", models.INHERIT), runtime=getattr(args, "runtime", models.INHERIT))
+        if goal is not None:
+            # Native goal IDs are allocated by the host, never the general-chat
+            # session ID in this preparation-only plan.
+            plan.update(goal_id=goal['id'], command=None)
         return plan

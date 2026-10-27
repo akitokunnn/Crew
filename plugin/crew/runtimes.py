@@ -30,6 +30,27 @@ def get(conn, session_id):
     return {"runtime": "claude", "native_id": session_id}
 
 
+def check_native_owner(conn, runtime, native_id, *, session_id=None, execution_id=None):
+    """Call inside the binding write transaction, across all native identity stores."""
+    for table in ('session_runtimes', 'session_runtime_bindings'):
+        duplicate = conn.execute('SELECT session_id FROM ' + table +
+            ' WHERE runtime=? AND native_id=? AND session_id<>?',
+            (runtime, native_id, session_id or '')).fetchone()
+        if duplicate is not None:
+            raise board.Conflict('原生会话已经绑定到另一个 Crew 总对话：' + duplicate['session_id'])
+    # Legacy Claude mappings are implicit until their first explicit update.
+    if runtime == 'claude':
+        duplicate = conn.execute('SELECT s.session_id FROM sessions s LEFT JOIN session_runtimes r '
+            'ON r.session_id=s.session_id WHERE s.session_id=? AND s.session_id<>? AND r.session_id IS NULL',
+            (native_id, session_id or '')).fetchone()
+        if duplicate is not None:
+            raise board.Conflict('原生会话已经绑定到另一个 Crew 总对话：' + duplicate['session_id'])
+    duplicate = conn.execute('SELECT execution_id FROM goal_execution_bindings '
+        'WHERE runtime=? AND native_id=? AND execution_id<>?', (runtime, native_id, execution_id or '')).fetchone()
+    if duplicate is not None:
+        raise board.Conflict('原生会话已经绑定到其他目标执行：' + duplicate['execution_id'])
+
+
 @board.atomic
 def set(conn, session_id, runtime, native_id=None, now=None):
     validate(runtime)
@@ -37,18 +58,7 @@ def set(conn, session_id, runtime, native_id=None, now=None):
     if native_id is not None and (not isinstance(native_id, str) or not native_id.strip() or len(native_id) > 1024):
         raise ValueError("native_id 必须是非空字符串或 null")
     if native_id is not None:
-        duplicate = conn.execute("SELECT session_id FROM session_runtimes WHERE runtime=? AND native_id=? "
-                                 "AND session_id<>?", (runtime, native_id, session_id)).fetchone()
-        if duplicate is None:
-            duplicate=conn.execute('SELECT session_id FROM session_runtime_bindings WHERE runtime=? AND native_id=? AND session_id<>?',(runtime,native_id,session_id)).fetchone()
-        # Implicit legacy Claude mappings participate in the same uniqueness
-        # rule as explicit rows, so another Crew identity cannot adopt them.
-        if runtime == "claude" and duplicate is None:
-            duplicate = conn.execute("SELECT s.session_id FROM sessions s LEFT JOIN session_runtimes r "
-                                     "ON r.session_id=s.session_id WHERE s.session_id=? AND s.session_id<>? "
-                                     "AND r.session_id IS NULL", (native_id, session_id)).fetchone()
-        if duplicate is not None:
-            raise board.Conflict("原生会话已经绑定到另一个 Crew 会话")
+        check_native_owner(conn, runtime, native_id, session_id=session_id)
     try:
         conn.execute("INSERT INTO session_runtimes(session_id,runtime,native_id,updated_at) VALUES(?,?,?,?) "
                      "ON CONFLICT(session_id) DO UPDATE SET runtime=excluded.runtime,native_id=excluded.native_id,"

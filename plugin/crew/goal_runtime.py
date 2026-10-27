@@ -182,6 +182,24 @@ class Controller:
         """Called under Manager.lock; never mutates the person's default native binding."""
         return self._launch(session, spec, None)
 
+    def check_member_start(self, conn, goal_id, session_id, source):
+        """A second dispatch must not turn an already working member into two workers.
+
+        Independent goals and explicit human conversations retain their own histories.
+        Existing goal histories may recover; this guards the first dispatch from a
+        general conversation into a newly assigned goal.
+        """
+        person = board.session(conn, session_id)
+        if source in ('human', 'qq', 'lark') or person['role'] != 'member':
+            return
+        prior = conn.execute('SELECT 1 FROM goal_executions e JOIN goal_execution_bindings b ON b.execution_id=e.id '
+                             'WHERE e.goal_id=? AND e.session_id=? LIMIT 1',
+                             (goal_id, session_id)).fetchone()
+        if prior is None and self.manager.scope_busy(session_id, **runtimes.get(conn, session_id)):
+            raise board.Conflict('成员「%s」的总对话正在执行任务，不能再新开目标线程重复派工；'
+                '请等待该轮结束或明确停止后再分配。新成员直接用 crew spawn --goal %s 绑定目标启动。'
+                % (person['crew_name'], goal_id))
+
     def launch_maintenance(self, session, spec, marker):
         """Resume an existing goal history only so maintenance can send the native compact command.
 
@@ -285,6 +303,7 @@ class Controller:
                 if goal['status'] in ('completed', 'failed', 'awaiting_acceptance'):
                     self.stop_delivered(conn, goal_id)
                     goal = goals.reopen(conn, goal_id, text, actor=board.HUMAN)
+            self.check_member_start(conn, goal_id, session_id, source)
             if messaging.stopped(conn, session_id):
                 if not human:
                     raise board.Conflict('用户已停止此会话；排队消息不能自动恢复它')
