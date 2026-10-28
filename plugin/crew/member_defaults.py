@@ -1,7 +1,7 @@
 """Member brain defaults, scoped to a stable leader identity and future spawns."""
 import json
 
-from . import board, settings
+from . import board, models, runtimes, settings
 
 
 def get(conn, leader_id):
@@ -14,19 +14,17 @@ def for_project(conn, project):
             for row in conn.execute('SELECT m.* FROM leader_member_settings m JOIN sessions s ON s.session_id=m.leader_session_id WHERE s.project=?', (project,))}
 
 
-def selection(conn, leader=None, *, project=None):
-    """Explicit per-leader override, then member configuration scopes."""
+def selection(conn, leader=None):
+    """Leader override > member-wide default > the parent leader's brain."""
     chosen = get(conn, leader['session_id']) if leader else None
     if chosen is None:
-        chosen = settings.effective(conn, purpose='member', project=leader['project'] if leader else project)['ai']
-    return dict(chosen)
-
-
-def resolve(conn, leader=None, *, project=None, which=None):
-    chosen = get(conn, leader['session_id']) if leader else None
+        ai = settings.get(conn)
+        chosen = ai['member']
     if chosen is not None:
-        return settings.resolve_choice(chosen, which)
-    return settings.resolve(conn, purpose='member', project=leader['project'] if leader else project, which=which)
+        return dict(chosen)
+    if leader is not None:
+        return {'runtime': runtimes.get(conn, leader['session_id'])['runtime'], **models.get(conn, leader['session_id'])}
+    return dict(ai['default'])
 
 
 @board.atomic

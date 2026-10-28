@@ -141,7 +141,7 @@ class WorkspaceViewsTests(UsageFixture, unittest.TestCase):
                               self.dispatch("failed-beta", "beta-main", self.beta, 11),
                               dict(self.dispatch("running-alpha", "alpha-peer", self.alpha / "running"), ended_at=None, exit_code=None,
                                    pid=os.getpid(),pid_created=codex_runtime.process_identity(os.getpid()))])
-        with mock.patch.object(self.server.service.chat.executions, 'running', side_effect=lambda sid: sid == 'alpha-peer'):
+        with mock.patch.object(self.server.service.chat, 'running', side_effect=lambda sid: sid == 'alpha-peer'):
             state = self.state("alpha")
         self.assertEqual(directory(state)['alpha-peer']['status'], 'waiting', 'A stale idle journal cannot erase a real waiting hook')
         items = state["attention"]

@@ -8,7 +8,6 @@ const {performance}=require('node:perf_hooks');
 const current=path.resolve(__dirname,'..');
 const options=Object.fromEntries(process.argv.slice(2).map(value=>{const index=value.indexOf('=');return[value.slice(2,index),value.slice(index+1)];}));
 const desktop=path.resolve(options.desktop||current),core=require(path.join(desktop,'src/core.cjs'));
-const {Administrator}=require(path.join(desktop,'src/admin.cjs'));
 const output=path.resolve(options.output||path.join(current,'.cache','lifecycle-performance-'+(options.label||'current')+'.json'));
 const cleanEnvironment=()=>{const env={...process.env,PYTHONIOENCODING:'utf-8'};for(const name of ['CREW_SESSION_ID','CLAUDE_CODE_SESSION_ID','ELECTRON_RUN_AS_NODE'])delete env[name];return env;};
 const round=value=>Math.round(value*10)/10;
@@ -22,22 +21,7 @@ async function tracedMaterialize(source,home){
   try{const retained=await core.materializeBackend(source,home);return{ms:round(performance.now()-at),retained,io:Object.fromEntries(Object.entries(io).map(([key,value])=>[key,round(value)]))};}
   finally{Object.assign(fs,original);}
 }
-async function waitForExit(child,timeout=60000){return new Promise((resolve,reject)=>{const timer=setTimeout(()=>{child.kill();reject(Error('Isolated lifecycle benchmark timed out; child PID '+child.pid));},timeout);child.once('error',error=>{clearTimeout(timer);reject(error);});child.once('exit',(code,signal)=>{clearTimeout(timer);resolve({code,signal});});});}
-async function stopPrivateService(home){
-  const administrator=new Administrator(home),state=await administrator.snapshot();
-  if(['stopped','unmanaged'].includes(state.state))return;
-  await administrator.request('shutdown');
-  const deadline=Date.now()+20000;
-  while(Date.now()<deadline){
-    const value=await administrator.snapshot();
-    if(value.state==='stopped'){
-      let alive=true;try{process.kill(value.service_pid,0);}catch(error){if(error.code==='ESRCH')alive=false;else throw error;}
-      if(!alive)return;
-    }
-    await new Promise(resolve=>setTimeout(resolve,30));
-  }
-  throw Error('Private lifecycle backend failed to stop: '+home);
-}
+async function waitForExit(child,timeout=60000){return new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('Isolated lifecycle benchmark timed out; child PID '+child.pid)),timeout);child.once('error',error=>{clearTimeout(timer);reject(error);});child.once('exit',(code,signal)=>{clearTimeout(timer);resolve({code,signal});});});}
 async function main(){
   await fs.mkdir(path.dirname(output),{recursive:true});
   const temporary=await fs.mkdtemp(path.join(os.tmpdir(),'crew-lifecycle-perf-'));
@@ -61,9 +45,7 @@ chat.Manager.__init__=guarded
 `,'utf8');
   const environment=()=>({...cleanEnvironment(),PYTHONPATH:guard+path.delimiter+plugin,CREW_PERF_DESKTOP:desktop});
   const home=path.join(temporary,'ui-home');
-  const kinds=['cold-home','warm-home','borrowed-service','normal-quit','used-home-tray-stress'];
-  if(options.only)assert(kinds.includes(options.only),'Unknown lifecycle scenario: '+options.only);
-  for(const kind of kinds.filter(value=>!options.only||value===options.only)){
+  for(const kind of ['cold-home','warm-home','borrowed-service','used-home-tray-stress']){
     const selectedHome=kind==='used-home-tray-stress'?path.join(temporary,'used-home'):home;
     const file=path.join(temporary,kind+'.json'),env={...environment(),CREW_PERF_OUTPUT:file,...(kind==='used-home-tray-stress'?{CREW_PERF_STRESS:'1'}:{})};
     const guardedBefore=await fs.readFile(path.join(selectedHome,'model-factories-guarded.txt'),'utf8').catch(error=>{if(error.code==='ENOENT')return '';throw error;});
@@ -109,26 +91,16 @@ with closing(store.connect(home)) as conn:
       await owner.start();
     }
     try{
-      const detached=['normal-quit','used-home-tray-stress'].includes(kind);
-      const args=['--require',path.join(__dirname,'benchmark-lifecycle-hook.cjs'),desktop,...(detached?[]:['--smoke-test']),'--home',selectedHome,'--port','0','--smoke-output',path.join(temporary,'unused.json'),'--isolated-sources'];
+      const args=['--require',path.join(__dirname,'benchmark-lifecycle-hook.cjs'),desktop,...(kind==='used-home-tray-stress'?[]:['--smoke-test']),'--home',selectedHome,'--port','0','--smoke-output',path.join(temporary,'unused.json'),'--isolated-sources'];
       if(owner)args.push('--service-url',owner.url);
       const at=performance.now(),launchEpoch=Date.now(),child=spawn(require('electron'),args,{cwd:desktop,env,windowsHide:true,stdio:['ignore','pipe','pipe']});
       let errors='';child.stderr.on('data',chunk=>{errors=(errors+chunk).slice(-20000);});child.stdout.resume();
       const ended=await waitForExit(child),exitEpoch=Date.now(),wall=performance.now()-at;
       const value=JSON.parse(await fs.readFile(file,'utf8'));
       assert.equal(ended.code,0,errors);assert.equal(value.health.home,selectedHome);assert(value.health.ok);assert(value.renderer&&!value.renderer.nodeAvailable);
-      assert.equal(value.owned_service_exited,!detached);assert.deepEqual(value.errors,[]);
+      assert(value.owned_service_exited);assert.deepEqual(value.errors,[]);
       let serviceAlive=true;try{process.kill(value.health.pid,0);}catch(error){if(error.code==='ESRCH')serviceAlive=false;else throw error;}
-      assert.equal(serviceAlive,Boolean(owner)||detached,'Actual backend PID liveness must match the requested quit behavior');
-      if(detached){
-        assert.equal(value.stop_calls.length,0);assert.equal(value.disconnect_calls.length,1);
-        const reconnected=new core.Backend({home:selectedHome,backendDir:plugin,python:'python',port:0,isolated:true},
-          {spawn(){throw Error('Reopening must reuse the detached backend');}});
-        assert.deepEqual(await reconnected.start(),{url:value.service.url,owned:false});
-        const health=await core.request(reconnected.url,'/api/admin/health');
-        assert.equal(health.pid,value.health.pid);assert.equal(health.instance_id,value.health.instance_id);
-        value.reconnected_same_service=true;
-      }
+      assert.equal(serviceAlive,Boolean(owner),'Actual backend PID liveness must match ownership after Electron exits');
       await assert.rejects(fs.access(path.join(selectedHome,'model-start-attempts.txt')),{code:'ENOENT'});
       const guardedAfter=await fs.readFile(path.join(selectedHome,'model-factories-guarded.txt'),'utf8');
       assert(guardedAfter.length>guardedBefore.length,'The selected backend must actually install its forbidden model factory');
@@ -138,10 +110,9 @@ with closing(store.connect(home)) as conn:
         model_factories_guarded:(guardedAfter.slice(guardedBefore.length).match(/Manager/g)||[]).length,
         ...(value.stress?{stress_errors:value.stress.errors.length,late_callback_pulses:value.stress.after_destroyed,workspaces_ready_ms:value.events.find(item=>item.name==='workspaces-ready').epoch_ms-launchEpoch}:{}),details:value};
       record.runs.push(summary);
-      if(owner)assert(Array.isArray(await core.projects(owner.url)));
-      else if(!detached)await assert.rejects(fs.access(path.join(selectedHome,'web.json')),{code:'ENOENT'});
+      if(owner)assert(Array.isArray(await core.projects(owner.url)));else await assert.rejects(fs.access(path.join(selectedHome,'web.json')),{code:'ENOENT'});
       console.log(JSON.stringify({kind,...Object.fromEntries(Object.entries(summary).filter(([key])=>key!=='details'))}));
-    }finally{if(owner)await owner.stop();else if(['normal-quit','used-home-tray-stress'].includes(kind))await stopPrivateService(selectedHome);}
+    }finally{if(owner)await owner.stop();}
   }
   record.model_turns_started=0;await fs.writeFile(output,JSON.stringify(record,null,2));
   console.log(JSON.stringify({output,version:record.version,materialize:record.materialize.map(item=>({kind:item.kind,ms:item.ms,io:item.io})),runs:record.runs.map(({details,...item})=>item)}));

@@ -64,16 +64,7 @@ def _atomic_json(path, value):
     temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
     try:
         temporary.write_text(json.dumps(value, ensure_ascii=False) + "\n", encoding="utf-8")
-        # Windows readers may briefly hold the old file without delete sharing.
-        # The final stopped status has no later monitor tick to publish it again.
-        for attempt in range(4):
-            try:
-                os.replace(temporary, path)
-                break
-            except OSError as exc:
-                if os.name != 'nt' or getattr(exc, 'winerror', None) not in (5, 32, 33) or attempt == 3:
-                    raise
-                time.sleep((.01, .03, .06)[attempt])
+        os.replace(temporary, path)
     finally:
         with contextlib.suppress(FileNotFoundError):
             temporary.unlink()

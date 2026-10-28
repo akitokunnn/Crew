@@ -63,7 +63,6 @@ class GoalTests(GoalFixture):
         self.assertEqual(changed['requirement_version'], 2)
         self.assertIn(goal['original_request'], changed['requirements']['request'])
         self.assertIn('Do not delete', changed['requirements']['request'])
-        self.assertEqual(changed['requirements']['request'], goal['original_request'] + '\n\n[补充 v2]\nDo not delete the original recordings.')
         self.assertEqual(goals.requirements(self.conn, goal['id'], 1)['request'], goal['original_request'])
         self.assertFalse(goals.dispatch_check(self.conn, goal['id'], requirement_version=1)['allowed'])
         self.assertFalse(goals.dispatch_check(self.conn, goal['id'], execution_id=execution['id'])['allowed'])

@@ -6,7 +6,7 @@ import threading
 from types import SimpleNamespace
 from unittest import mock
 
-from crew import board, notice_delivery, store
+from crew import board, store, web
 from test_core import CoreCase, NOW
 
 
@@ -37,7 +37,7 @@ class GitNoticeMigrationTests(CoreCase):
                 self.assertEqual(conn.execute('SELECT blocking FROM git_merge_requests WHERE id=16').fetchone()[0], 0)
                 self.assertIsNone(conn.execute('SELECT request_id FROM git_result_handoffs WHERE handoff_id=?', (hid,)).fetchone()[0])
                 service = SimpleNamespace(chat=SimpleNamespace(send=mock.Mock(), wake=mock.Mock()))
-                notice_delivery.Delivery(None, service.chat.send, service.chat.wake, lambda: None, lambda: None).git_results(conn)
+                web.Service.deliver_git_results(service, conn)
                 service.chat.send.assert_not_called(); service.chat.wake.assert_not_called()
                 self.assertEqual(board.handoffs(conn, 's1')[0]['body'], 'Old result')
                 self.assertEqual(conn.execute('SELECT COUNT(*) FROM git_merge_requests').fetchone()[0], 1)

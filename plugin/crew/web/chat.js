@@ -151,8 +151,7 @@
       if (base !== null) params.set("base", base);
     }
     if (raw) params.set("raw", "1");
-    const pathURL = "/api/files/content?" + params;
-    return raw ? window.CrewClient?.current?.resourceURL(pathURL) || pathURL : pathURL;
+    return "/api/files/content?" + params;
   }
   function initFiles(api, toast) {
     let request = 0;
@@ -186,13 +185,9 @@
         if (info.type === "external" && info.open_with === "default") { await api("/api/files/open", resolved); return; }
         let content;
         if (info.type === "preview" && info.kind !== "image") {
-          const url = fileContentUrl(info.path, data.session_id || "", null, false, documentLink ? data.document_id : null);
-          if (window.CrewClient?.current) content = JSON.parse(await window.CrewClient.current.text(url));
-          else {
-            const response = await fetch(url);
-            content = await response.json();
-            if (!response.ok) throw Error(content.error);
-          }
+          const response = await fetch(fileContentUrl(info.path, data.session_id || "", null, false, documentLink ? data.document_id : null));
+          content = await response.json();
+          if (!response.ok) throw Error(content.error);
         }
         if (sequence !== request) return;
         const openLabel = info.open_with === "vscode" ? "在 VS Code 打开" : "用默认程序打开";
@@ -255,9 +250,7 @@
   }
   function persistDraft(context) {
     try {
-      localStorage.setItem(keyFor(context), JSON.stringify({ text: context.cache.text, images: context.cache.images,
-        pendingMessage:context.cache.pendingMessage, pendingQueue:context.cache.pendingQueue, intent:context.cache.intent,
-        affectsTask:context.cache.affectsTask }));
+      localStorage.setItem(keyFor(context), JSON.stringify({ text: context.cache.text, images: context.cache.images }));
     } catch (error) { context.toast(error.message); }
   }
   function saveDraft(context) {
@@ -272,19 +265,10 @@
     if (context.readonly) return;
     const hasContent = context.input.value.trim().length > 0 || context.cache.images.length > 0;
     context.send.disabled = context.loading || context.cache.sending || !hasContent;
-    if (context.queue) context.queue.disabled = context.loading || context.cache.sending || !context.input.value.trim();
     const external = context.goalId == null && context.session.where === "vscode";
     context.hint.textContent = context.busy || context.cache.sending ? "" : external ? "会话仍在原工具中；退出并交给 Crew 后才能接话" : "Enter 发送 · Shift+Enter 换行";
-    context.hint.classList.toggle("chat-keyboard-hint", !external);
-    const continuing = context.intent?.value === "work";
-    if (context.intentNote) context.intentNote.textContent = continuing
-      ? "按这条要求继续工作。尚未开始的任务仍需先点“开始执行”。"
-      : "现在发给当前 AI 回应；正在推进的工作照常进行。";
-    if (context.sendKind) context.sendKind.textContent = continuing
-      ? context.affectsTask?.checked ? "继续工作 · 同步负责人" : "继续工作"
-      : context.affectsTask?.checked ? "同步负责人" : "发送选项";
     context.send.hidden = context.busy && !hasContent;
-    context.send.title = continuing ? "发送并继续工作" : context.busy ? "立即插话" : "发送";
+    context.send.title = context.busy ? "工作中插话" : "发送";
     const stopReason = context.goalId != null ? "" : external ? "回复在 VS Code 或终端中运行，请在原工具中断。" : context.session.where !== "bg" && !context.session.running ? "正在等待 Crew 托管会话，稍后可停止。" : "";
     context.stop.hidden = !context.busy;
     context.stop.disabled = !context.busy || context.interrupting || context.confirmingStop || Boolean(stopReason);
@@ -295,10 +279,8 @@
     context.stopStatus.textContent = context.interruptError || (context.busy && stopReason ? stopReason : "");
     context.stopStatus.hidden = !context.stopStatus.textContent;
     context.stopStatus.classList.toggle("failed", Boolean(context.interruptError));
-    context.deliveryStatus.textContent = context.cache.deliveryError || context.cache.deliveryReceipt || "";
-    context.deliveryStatus.hidden = !context.deliveryStatus.textContent;
-    context.deliveryStatus.style.setProperty("color",context.cache.deliveryError ? "var(--danger)" : "var(--text-3)");
-    context.deliveryStatus.setAttribute("role",context.cache.deliveryError ? "alert" : "status");
+    context.deliveryStatus.textContent = context.cache.deliveryError || "";
+    context.deliveryStatus.hidden = !context.cache.deliveryError;
   }
   async function interrupt(context) {
     if (!current(context) || context.stop.disabled) return;
@@ -622,12 +604,6 @@
       if (event.status !== "working") context.settledSeq = event.seq;
       setBusy(context, event.status === "working", event.seq); if (incremental && context.goalId != null) context.onExecutionChange?.();
     }
-    else if (event.type === "input_delivery") {
-      const labels = {submitted:"输入已提交，等待原生接收。",accepted:"原生已接收输入。",rejected:"原生拒绝了输入。",unknown:"输入是否送达尚未确认，请核对原记录；不要用新编号重发。"};
-      context.cache.deliveryReceipt = labels[event.status] || `输入回执：${event.status}`;
-      if (["unknown","rejected"].includes(event.status)) context.cache.deliveryError = `${labels[event.status]}${event.detail || event.error || ""}`;
-      else if (event.status === "accepted") context.cache.deliveryError = "";
-    }
     else if (event.type === "compact_request" || event.type === "compact") {
       context.items.push({...event, id:`${event.type}:${event.seq}`, kind:event.type, lastSeq:event.seq});
       if (incremental && event.type === "compact") notifyCompact(context.session.session_id, event, context.toast);
@@ -636,10 +612,10 @@
     if (incremental) { composerState(context); schedule(context); }
   }
   function scheduleRead(context) {
-    if (context.readonly || context.loading || context.reading || context.readTimer !== null || context.canRead?.() === false || document.visibilityState !== "visible" || !atBottom(context) || context.cursor <= context.readSeq) return;
+    if (context.readonly || context.loading || context.reading || context.readTimer !== null || document.visibilityState !== "visible" || !atBottom(context) || context.cursor <= context.readSeq) return;
     context.readTimer = setTimeout(async () => {
       context.readTimer = null;
-      if (!current(context) || context.canRead?.() === false || document.visibilityState !== "visible" || !atBottom(context)) return;
+      if (!current(context) || document.visibilityState !== "visible" || !atBottom(context)) return;
       const seq = context.cursor;
       context.cache.lastReadAt = Date.now(); context.reading = true;
       try {
@@ -658,32 +634,6 @@
     const generation = context.connectionGeneration;
     context.stream = new AbortController();
     const params = query(context); params.set("after", context.cursor);
-    const client = context.client || window.CrewClient?.current;
-    if (client?.eventSource) {
-      try {
-        const source = client.eventSource(`/api/chat/events?${params}`);
-        context.eventSource = source;
-        context.stream.signal.addEventListener("abort", () => source.close(), {once:true});
-        source.onopen = () => { if (current(context) && generation === context.connectionGeneration) connectionError(context, null); };
-        source.onmessage = message => {
-          if (!current(context) || generation !== context.connectionGeneration) return;
-          try { apply(context, JSON.parse(message.data), true); connectionError(context, null); }
-          catch (error) { connectionError(context, `对话事件无法读取：${error.message}`); }
-        };
-        source.onerror = () => {
-          source.close();
-          if (!current(context) || generation !== context.connectionGeneration) return;
-          connectionError(context, "对话连接暂时中断，正在重连；未重发输入。");
-          context.reconnectTimer = setTimeout(() => connect(context), 3000);
-        };
-      } catch (error) {
-        if (current(context)) {
-          connectionError(context, error.message);
-          context.reconnectTimer = setTimeout(() => connect(context), 3000);
-        }
-      }
-      return;
-    }
     try {
       const headers = { Accept: "text/event-stream" };
       if (context.cursor > 0) headers["Last-Event-ID"] = String(context.cursor);
@@ -759,24 +709,18 @@
   async function send(context) {
     const text = context.input.value.trim();
     if (context.send.disabled) return;
-    if (context.sendOptions) context.sendOptions.open = false;
     context.interruptConfirmed = false; context.interruptError = "";
     saveDraft(context);
     const draftVersion = context.cache.version;
     const previousBusy = context.busy;
     const sendSeq = context.cursor;
     // Keep this ID with the exact draft until acceptance, including an uncertain network failure.
-    const intent = context.intent?.value || "dialogue";
-    const affectsTask = Boolean(context.affectsTask?.checked);
-    const fingerprint = JSON.stringify([text, context.cache.images, intent, affectsTask]);
+    const fingerprint = JSON.stringify([text, context.cache.images]);
     if (context.cache.pendingMessage?.fingerprint !== fingerprint) {
       const id = globalThis.crypto?.randomUUID?.() || `web-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
       context.cache.pendingMessage = {fingerprint, id};
     }
-    persistDraft(context);
     const payload = { session_id: context.session.session_id, text, message_id:context.cache.pendingMessage.id, ...goalPayload(context) };
-    if (context.goalId != null) payload.intent = intent;
-    if (context.memberConversation) payload.affects_task = affectsTask;
     if (context.cache.images.length > 0) payload.images = context.cache.images.slice();
     context.cache.sending = true;
     context.cache.pendingSendSeq = sendSeq;
@@ -785,9 +729,8 @@
     composerState(context); schedule(context);
     try {
       const result = await context.api("/api/chat/send", payload);
-      if (result.accepted === false || result.accepted === "unknown" || result.delivery === "unknown" || result.status === "unknown" || result.status === "rejected") throw Error(result.error || "无法确认当前执行是否已接收，请先核对消息记录，保留同一消息编号。");
+      if (result.accepted === false || result.accepted === "unknown" || result.delivery === "unknown") throw Error(result.error || "无法确认当前执行是否已接收，请先核对消息记录，保留同一消息编号。");
       context.cache.pendingMessage = null;
-      context.cache.deliveryReceipt = result.status === "submitted" ? "输入已提交，等待原生接收回执。" : "";
       if (context.cache.version === draftVersion) {
         context.cache.text = ""; context.cache.images = [];
         const view = visibleDraft(context);
@@ -813,34 +756,9 @@
       context.toast(error.message);
     } finally {
       context.cache.sending = false;
-      persistDraft(context);
       const view = visibleDraft(context);
       if (view) { composerState(view); schedule(view); }
     }
-  }
-  async function queueMessage(context) {
-    if (!current(context) || !context.onQueue || context.queue.disabled) return;
-    if (context.sendOptions) context.sendOptions.open = false;
-    saveDraft(context);
-    if (context.cache.images.length) { context.toast("排队下一步暂不接收图片，请先立即发送图片；文字草稿已保留。"); return; }
-    const text = context.input.value.trim(), draftVersion = context.cache.version;
-    const fingerprint = JSON.stringify([text, context.session.session_id]);
-    if (context.cache.pendingQueue?.fingerprint !== fingerprint) context.cache.pendingQueue = {
-      fingerprint, id:globalThis.crypto?.randomUUID?.() || `queue-${Date.now()}-${Math.random().toString(36).slice(2)}`
-    };
-    persistDraft(context);
-    context.cache.sending = true; context.cache.deliveryError = ""; composerState(context);
-    try {
-      await context.onQueue({text, sessionId:context.session.session_id, requestId:context.cache.pendingQueue.id});
-      context.cache.pendingQueue = null;
-      if (context.cache.version === draftVersion) {
-        context.cache.text = ""; context.cache.images = [];
-        const view = visibleDraft(context); if (view) { view.input.value = ""; resizeInput(view); }
-        persistDraft(context);
-      }
-      if (current(context)) context.toast("具体要求已加入本任务队列；原生完成当前工作后再推进。");
-    } catch (error) { context.cache.deliveryError = `${error.message}（排队草稿已保留）`; if (current(context)) context.toast(error.message); }
-    finally { context.cache.sending = false; const view = visibleDraft(context); if (view) composerState(view); }
   }
   function mount(options) {
     unmount();
@@ -851,9 +769,7 @@
       sessions.set(cacheKey, cache);
       try {
         const saved = localStorage.getItem(keyFor(options));
-        if (saved !== null) { const draft = JSON.parse(saved); cache.text = draft.text; cache.images = draft.images;
-          cache.pendingMessage = draft.pendingMessage; cache.pendingQueue = draft.pendingQueue; cache.intent = draft.intent;
-          cache.affectsTask = draft.affectsTask; }
+        if (saved !== null) { const draft = JSON.parse(saved); cache.text = draft.text; cache.images = draft.images; }
       } catch (error) { options.toast(error.message); }
     }
     const context = { ...options, session:options.goalId == null ? options.session : {...options.session,activity:null}, cache, items: [], byId: new Map(), nodes: new Map(), results: new Map(), toolOwners: new Map(), toolStops: new Map(), cursor: 0, readSeq: 0, busySeq: options.readonly || options.goalId != null ? 0 : options.session.last_seq, settledSeq:null, executionId:null, connectionGeneration:0, loadGeneration:0, readTimer: null, reconnectTimer: null, historyRetryTimer: null, historyFailed: false, interrupting: false, interruptError: "", interruptConfirmed: false, frame: null, loading: true, busy: cache.pendingSendSeq === null ? options.goalId == null && options.session.busy : true, reading: false, initialPosition: null, stream: null };
@@ -890,50 +806,6 @@
       context.input = options.host.querySelector("textarea"); context.send = options.host.querySelector(".send");
       context.stop = options.host.querySelector(".chat-stop"); context.stopStatus = options.host.querySelector(".chat-interrupt-status");
       context.deliveryStatus = options.host.querySelector(".chat-delivery-status");
-      if (options.goalId != null) {
-        const tools = options.host.querySelector(".c-row");
-        const choices = document.createElement("details");
-        choices.className = "chat-send-options";
-        choices.innerHTML = `<summary class="chat-options-toggle"><span class="chat-send-kind">发送选项</span>${icon("down")}</summary>
-          <div class="chat-options-panel"><label class="chat-intent-field">这条消息<select class="chat-intent" aria-label="消息意图"><option value="dialogue">讨论</option><option value="work">继续工作</option></select></label>
-          <p class="chat-intent-note"></p>
-          ${options.memberConversation ? '<label class="chat-affects-task"><input type="checkbox"><span>影响整体任务，同步负责人</span></label><p class="chat-sync-note">这条原话会同时交给负责人。</p>' : ""}
-          ${options.onQueue ? '<button type="button" class="chat-queue">排队发送<span>等当前工作结束后，处理这条文字要求</span></button>' : ""}</div>`;
-        tools.insertBefore(choices, context.stop);
-        context.sendOptions = choices;
-        context.sendKind = options.host.querySelector(".chat-send-kind");
-        context.intentNote = options.host.querySelector(".chat-intent-note");
-        context.intent = options.host.querySelector(".chat-intent");
-        context.intent.value = cache.intent || "dialogue";
-        context.intent.onchange = () => {
-          cache.intent = context.intent.value;
-          cache.version += 1;
-          persistDraft(context); composerState(context);
-        };
-        if (options.memberConversation) {
-          context.affectsTask = options.host.querySelector(".chat-affects-task input");
-          context.affectsTask.checked = Boolean(cache.affectsTask);
-          context.affectsTask.onchange = () => {
-            cache.affectsTask = context.affectsTask.checked;
-            cache.version += 1;
-            persistDraft(context); composerState(context);
-          };
-        }
-        if (options.onQueue) {
-          context.queue = options.host.querySelector(".chat-queue");
-          context.queue.onclick = () => { void queueMessage(context); };
-        }
-        choices.onkeydown = event => {
-          if (event.key === "Escape" && choices.open) {
-            event.preventDefault(); event.stopPropagation(); choices.open = false;
-            options.host.querySelector(".chat-options-toggle")?.focus();
-          }
-        };
-        context.closeSendOptions = event => {
-          if (choices.open && !choices.contains(event.target)) choices.open = false;
-        };
-        document.addEventListener("pointerdown", context.closeSendOptions);
-      }
       context.stop.onclick = () => { void interrupt(context); };
       context.hint = options.host.querySelector(".hint"); context.attach = options.host.querySelector(".attach");
       context.input.value = cache.text;
@@ -979,7 +851,6 @@
     context.stream?.abort(); clearTimeout(context.readTimer); clearTimeout(context.reconnectTimer); clearTimeout(context.historyRetryTimer);
     if (context.frame !== null) cancelAnimationFrame(context.frame);
     document.removeEventListener("visibilitychange", context.visibility);
-    if (context.closeSendOptions) document.removeEventListener("pointerdown", context.closeSendOptions);
     active = null;
   }
   function notifyCompact(id, event, toast) {
@@ -990,7 +861,7 @@
   async function watchCompact(id, options) {
     const history = await options.api(`/api/chat/history?session_id=${encodeURIComponent(id)}`);
     const params = new URLSearchParams({session_id:id, project:options.state.project.name, after:history.events.length === 0 ? 0 : history.events[history.events.length - 1].seq});
-    const stream = window.CrewClient?.current?.eventSource(`/api/chat/events?${params}`) || new EventSource(`/api/chat/events?${params}`);
+    const stream = new EventSource(`/api/chat/events?${params}`);
     const close = () => stream.close();
     const finish = event => { close(); options.onFinish?.(event); };
     stream.onmessage = message => {

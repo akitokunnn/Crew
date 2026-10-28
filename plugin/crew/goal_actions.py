@@ -3,11 +3,10 @@ from contextlib import closing
 import json
 
 from . import board, goal_context, goals, store
-from . import task_artifact_actions
 
-READ_ACTIONS = frozenset(('status', 'report-template', 'context.inspect', 'context.retrieve', 'task.detail')) | task_artifact_actions.READ_ACTIONS
+READ_ACTIONS = frozenset(('status', 'report-template', 'context.inspect', 'context.retrieve'))
 GOAL_ACTIONS = frozenset(('status', 'create', 'start', 'pause', 'resume', 'cancel', 'reopen',
-                          'amend', 'assign', 'schedule', 'user.forward', 'task.detail', 'task.refine', 'report-template', 'finish')) | task_artifact_actions.ACTIONS
+                          'amend', 'assign', 'report-template', 'finish'))
 CONTEXT_ACTIONS = frozenset(('context.inspect', 'context.retrieve', 'context.put', 'context.correct', 'context.expire'))
 
 
@@ -56,13 +55,6 @@ def _status_goal(value):
 
 def dispatch(home, actor_session_id, execution_id, action, data, controller=None):
     """Data is open JSON; it can never override the trusted actor/execution."""
-    if isinstance(action, str) and action.startswith('personal.'):
-        from . import personal_actions
-        host = _host(controller)
-        if execution_id is not None:
-            raise board.BoardError('任务执行不能冒用全局个人助手')
-        return personal_actions.dispatch(home, actor_session_id, action.removeprefix('personal.'), data,
-            read_events=lambda identity: host.executions.journal(identity).after(0), pause=host.pause)
     if action not in GOAL_ACTIONS | CONTEXT_ACTIONS or not isinstance(data, dict):
         raise board.BoardError('目标 action 或 data 无效')
     data = json.loads(goals._json(data))
@@ -120,23 +112,6 @@ def dispatch(home, actor_session_id, execution_id, action, data, controller=None
                 'current_goal_status':goal['status'] if goal else None},actor_session_id=actor_session_id if actor else None)
         if goal is None:
             raise board.BoardError('此操作必须指定目标')
-        if action == 'user.forward':
-            from . import task_communication
-            host = _host(controller)
-            return task_communication.forward_user_input(conn, goal_id,
-                actor_session_id if actor else data.get('session_id'), data.get('message_id'),
-                read_events=lambda identity: host.executions.journal(identity).after(0))
-        if action == 'task.detail':
-            from . import tasks
-            return {'task': tasks.get(conn, goal_id)}
-        if action == 'task.refine':
-            from . import tasks
-            return tasks.mutate(conn, 'native:task.refine', {**data, 'actor': actor_session_id, 'goal_id': goal_id},
-                lambda: {'task': tasks.update(conn, goal_id, data.get('version'), actor=actor_session_id,
-                    **{key: data[key] for key in ('title', 'request', 'acceptance', 'constraints') if key in data})})
-        if action in task_artifact_actions.ACTIONS:
-            return task_artifact_actions.dispatch(conn, home, goal_id, action, data,
-                actor=actor_session_id, execution_id=execution_id)
         if action == 'report-template':
             return report_template(conn, goal_id)
         if action == 'context.inspect':
@@ -152,14 +127,6 @@ def dispatch(home, actor_session_id, execution_id, action, data, controller=None
                 return goal_context.correct(conn, item['id'], data.get('text'), source=data.get('source'),
                                             depends=data.get('depends'), reason=data.get('reason', '纠正依据'), actor=actor_session_id)
             return goal_context.invalidate(conn, item['id'], data.get('reason'), actor=actor_session_id)
-        if action == 'schedule':
-            target = data.get('session_id') or data.get('to') or (actor_session_id if actor else goal['leader_session_id'])
-            person = _person(conn, project, target)
-            if actor and actor_session_id != goal['leader_session_id'] and person['session_id'] != actor_session_id:
-                raise board.BoardError('成员只能登记自己负责的下一步工作')
-            goals._member(conn, goal, person['session_id'])
-            return _host(controller).schedule(goal_id, person['session_id'], data.get('text'),
-                identity=data.get('identity'), evidence=data.get('evidence'))
         goals._actor(conn, goal, actor_session_id)
         if action == 'amend':
             return goals.amend(conn, goal_id, data.get('text'), acceptance=data.get('acceptance'),
@@ -175,7 +142,7 @@ def dispatch(home, actor_session_id, execution_id, action, data, controller=None
             assigned = goals.assign(conn, goal_id, person['session_id'], data.get('task'), actor=actor_session_id)
             if data.get('start') is True:
                 receipt = controller.send(goal_id, person['session_id'], data['task'],
-                                          source='human' if actor_session_id == board.HUMAN else 'crew', intent='work')
+                                          source='human' if actor_session_id == board.HUMAN else 'crew')
                 return {'goal': assigned, 'receipt': receipt}
             return assigned
         if action == 'start':
@@ -190,7 +157,7 @@ def dispatch(home, actor_session_id, execution_id, action, data, controller=None
             if not gate['allowed']:
                 raise board.Conflict(gate['reason'])
             return controller.send(goal_id, person['session_id'], data.get('text') or goal['requirements']['request'],
-                                   source='human' if actor_session_id == board.HUMAN else 'crew', intent='work')
+                                   source='human' if actor_session_id == board.HUMAN else 'crew')
         if action == 'pause':
             return _host(controller).pause(goal_id, manual=actor_session_id == board.HUMAN, actor=actor_session_id)
         if action == 'resume':
@@ -210,7 +177,7 @@ def dispatch(home, actor_session_id, execution_id, action, data, controller=None
                     return {'ok': True, 'goal': goals.get(conn, goal_id), 'resumed': 'finalization'}
             return controller.send(goal_id, goal['leader_session_id'],
                                    data.get('text') or '明确恢复本目标；按原始要求与已有证据续接，先核对进度，不重复已经完成的工作。',
-                                   source='human' if actor_session_id == board.HUMAN else 'crew', intent='work')
+                                   source='human' if actor_session_id == board.HUMAN else 'crew')
         if action == 'reopen':
             return goals.reopen(conn, goal_id, data.get('text'), actor=actor_session_id)
         if action == 'cancel':

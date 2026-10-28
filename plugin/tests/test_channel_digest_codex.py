@@ -79,7 +79,7 @@ class CodexDigestTests(unittest.TestCase):
         self.factory = mock.Mock(side_effect=factory)
         discovery = mock.patch('crew.runtimes.shutil.which',
                                side_effect=lambda name, **options: 'fixture-codex.exe' if name == 'codex' else None)
-        no_claude = mock.patch('crew.channel_digest.native_process.claude_executable',
+        no_claude = mock.patch('crew.channel_digest.chat.claude_executable',
                                side_effect=AssertionError('No Claude is installed'))
         discovery.start(); no_claude.start()
         self.addCleanup(discovery.stop); self.addCleanup(no_claude.stop)

@@ -83,19 +83,6 @@ _GIT_DATA = {
                 'required': ['id', 'status', 'note']},
 }
 _SPECS = [
-    _spec('crew_personal', 'Fixed personal assistant only. Read actions (no user proof needed): summary, task.detail, '
-          'report.get, documents.list, attachments.list, versions.list, versions.file. Read data.task_id selects an existing '
-          'task across projects. Lists take offset/limit (max 100), report/file reads offset/length (max 65536); '
-          'versions.list also accepts version_id and file_offset/file_limit (max 100). '
-          'versions.file requires version_id/path from a retained version, never an arbitrary filesystem path. '
-          'Mutation actions require message_id pointing to an actual user input in this assistant conversation, '
-          'a stable request_id, and data. Actions: capture, task.create, task.message, task.stop, task.archive, '
-          'task.trash, task.restore, settings.update, todo.complete, item.update, item.link, item.chat, todo.update. The host verifies original user words; '
-          'model claims cannot authorize changes. Permanent deletion is unavailable.',
-          {'action': _text('Personal action name.', max_length=100),
-           'message_id': _text('Original user message id.', max_length=300),
-           'request_id': _text('Stable operation id.', max_length=100),
-           'data': {'type': 'object', 'additionalProperties': True}}, ('action',)),
     _spec('crew_git', 'Use the host-bound project Git ledger, without shell commands. Actions: status; policy '
           '(data.text writes, omitted reads); requests (data.all); request (data.branch/data.blocking optional, data.description required); '
           'resolve (data.id, data.status, data.note, optional data.pr_number). Only the configured Git administrator '
@@ -103,7 +90,7 @@ _SPECS = [
           'Rejection remains actionable. This records requests/results; it does not run Git or merge code.',
           {'action': {'type': 'string', 'enum': list(_GIT_DATA)},
            'data': {'type': 'object', 'additionalProperties': True}}, ('action',)),
-    _spec('crew_goal', 'Explicit goal actions: status, create, start, pause, resume, cancel, reopen, amend, assign, schedule, report-template, finish. schedule requires data.text and data.evidence for the next concrete authorized work; actual turn completion releases it. For final delivery, design task-specific offline HTML in data.report.document_html alongside acceptance evidence; report-template explains the format. Ordinary Q&A creates no goal.',
+    _spec('crew_goal', 'Explicit goal actions: status, create, start, pause, resume, cancel, reopen, amend, assign, report-template, finish. For final delivery, design task-specific offline HTML in data.report.document_html alongside acceptance evidence; report-template explains the format. Ordinary Q&A creates no goal.',
           {'action': _text('Action name.', max_length=100), 'goal_id': _text('Goal id; omitted uses the bound execution.', max_length=100),
            'data': {'type': 'object', 'additionalProperties': True}}, ('action',)),
     _spec('crew_context', 'Inspect, retrieve or correct sourced context bound to your Crew identity and goal. Actions: inspect, retrieve, put, correct, expire. retrieve searches portable history with data.query, known_versions and limit_chars (max 6000). Preparing context does not mean the model read it.',
@@ -143,13 +130,9 @@ _SPECS = [
            "options": {"type": "array", "items": _text("One full action.", max_length=2000), "maxItems": 12},
            "recommendation": _text("One complete action label from the options."), "brief": _BRIEF_SCHEMA}, ("id",)),
     _spec("crew_todo_add", "Register something the user must physically or manually do. "
-          "Provide concrete steps and how completion will be confirmed; agents cannot mark it done. "
-          "Use the same explicit operation_key for the same real user action across tasks; similar titles never merge. "
-          "The host links only your bound task, and preserves an existing TODO id and user-edited tags.",
+          "Provide concrete steps and how completion will be confirmed; agents cannot mark it done.",
           {"title": _text("The manual action.", max_length=500), "steps": _text("The user's exact steps."),
-           "verification": _text("How the user can confirm success."), "blocking": {"type": "boolean"},
-           "operation_key": _text("Explicit identity of the same real user operation.", max_length=300),
-           "tags": {"type": "array", "items": _text("Tag.", max_length=100), "maxItems": 50}},
+           "verification": _text("How the user can confirm success."), "blocking": {"type": "boolean"}},
           ("title", "steps", "verification")),
     _spec("crew_todo_list", "Read manual user actions from this project; all=true includes closed items.",
           {"all": {"type": "boolean"}}),
@@ -362,9 +345,6 @@ class CodexTools:
 
     @staticmethod
     def _read_only(name, args):
-        if name == 'crew_personal':
-            from .personal_actions import READ_ACTIONS
-            return args['action'] in READ_ACTIONS
         if name == 'crew_git':
             return args['action'] in ('status', 'requests') or args['action'] == 'policy' and 'text' not in args.get('data', {})
         if name in ('crew_goal', 'crew_context'):
@@ -374,13 +354,6 @@ class CodexTools:
 
     def _dispatch(self, conn, actor, name, args):
         sid, project = self._session_id, self._project
-        if name == 'crew_personal':
-            if self._goal_handler is None:
-                raise ToolError('assistant_host_unavailable', 'Personal actions require the bound execution host')
-            return self._goal_handler('personal.' + args['action'],
-                {'message_id': args.get('message_id'), 'request_id': args.get('request_id'), 'data': args.get('data', {}),
-                 **({'project': args['data']['project']} if args.get('data', {}).get('project') is not None else {})},
-                sid, execution_id=self._execution_id)
         if name in ('crew_stop', 'crew_spawn'):
             from . import spawn
             if name == 'crew_stop':
@@ -452,9 +425,8 @@ class CodexTools:
             if self._execution_id is not None:
                 from . import goal_links
                 with goals.transaction(conn):
-                    number = board.ask.__wrapped__(conn, sid, args['question'], args.get('options', ()),
-                        args.get('recommendation'), args.get('blocking', False), brief=args.get('brief'),
-                        goal_execution_id=self._execution_id)
+                    number = board.ask.__wrapped__(conn, sid, args['question'], args.get('options', ()), args.get('recommendation'), args.get('blocking', False), brief=args.get('brief'))
+                    goal_links.bind(conn, 'decision', number, self._execution_id)
                 return self._decision(conn, number)
             number = board.ask(conn, sid, args["question"], args.get("options", ()),
                                args.get("recommendation"), args.get("blocking", False), brief=args.get("brief"))
@@ -465,13 +437,15 @@ class CodexTools:
             self._decision(conn, args["id"])
             return decision_briefs.revise(conn, sid, args["id"], **{key: value for key, value in args.items() if key != "id"})
         if name == "crew_todo_add":
-            from . import personal
-            return personal.add_native_todo(conn, sid, args['title'], args['steps'], args['verification'],
-                execution_id=self._execution_id, operation_key=args.get('operation_key'),
-                tags=args.get('tags', []), blocking=args.get('blocking', False))
+            if self._execution_id is not None:
+                from . import goal_links
+                with goals.transaction(conn):
+                    result = todo.add.__wrapped__(conn, sid, args['title'], args['steps'], args['verification'], args.get('blocking', False))
+                    goal_links.bind(conn, 'todo', result['id'], self._execution_id)
+                    return result
+            return todo.add(conn, sid, args["title"], args["steps"], args["verification"], args.get("blocking", False))
         if name == "crew_todo_list":
-            from . import personal
-            return personal.list_todos(conn, project, include_done=args.get('all', False))
+            return todo.list(conn, project, all=args.get("all", False))
         if name == "crew_todo_withdraw":
             return todo.withdraw(conn, sid, args["id"], args["reason"])
         if name == "crew_doc_add":

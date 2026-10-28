@@ -1,16 +1,15 @@
 import tests  # Install the production-service connection guard.
-import contextlib
 import io
 import json
 from pathlib import Path
 import tempfile
 import threading
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 from urllib.error import HTTPError
 
-from crew import board, lark, notifications, notification_ports, qq, session_presence, store
-from crew.execution_host import ExecutionStore
+from crew import board, lark, notifications, qq, store
 from tests.fixture_cleanup import cleanup_directory
 from tests.test_qq import WebSocketServer, frame as wire_frame
 
@@ -390,12 +389,7 @@ class LarkDecisionFlowTests(unittest.TestCase):
         (self.home / 'lark.json').write_text(json.dumps({'app_id': 'app', 'app_secret': 'secret'}), encoding='utf-8')
         (self.home / 'lark-notify.json').write_text(json.dumps(dict(owner_openid='ou-owner', since=self.now,
             manual_away=False, current_leader_session_id=None, leader_numbers={}, generation='lark-generation')), encoding='utf-8')
-        self.write_lock = threading.RLock()
-        self.workspaces = notification_ports.WorkspaceQueries(lambda: store.parse_iso(self.now), lambda project: [],
-            lambda: session_presence.Observation((), None, True), lambda conn, agents: list(agents))
-        self.conversations = notification_ports.Conversations(ExecutionStore(self.home),
-            lambda **kwargs: contextlib.nullcontext(True),
-            mock.Mock(side_effect=AssertionError('decision replies must not start general conversations')), lambda sid: False)
+        self.service = SimpleNamespace(home=self.home, write_lock=threading.RLock(), now=lambda: store.parse_iso(self.now))
         self.sent = []
         self.restart_inbox()
 
@@ -408,8 +402,7 @@ class LarkDecisionFlowTests(unittest.TestCase):
             self.sent.append(json.loads(body['content'])['text'])
             return {'code': 0, 'data': {'message_id': 'om-out-%s' % len(self.sent)}}
         self.client._request = mock.Mock(side_effect=request)
-        self.inbox = notifications.Inbox(self.home, self.write_lock, self.workspaces, self.conversations,
-                                         self.client, lock_status=lambda: False, channel_id='lark')
+        self.inbox = notifications.Inbox(self.service, self.client, lock_status=lambda: False, channel_id='lark')
         self.inbox.on_state('connected', None)
         self.addCleanup(self.inbox.close)
 

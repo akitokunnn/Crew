@@ -21,7 +21,7 @@ class CodexVisibilityTests(unittest.TestCase):
     def test_ring_compact_queues_on_the_current_codex_thread_without_starting_another_turn(self):
         running, client = self.make_running()
         manager = chat.Manager(self.home, self.plugin, agents_provider=lambda: [])
-        manager.executions.register('worker', running)
+        manager.processes['worker'] = running
         self.session['spawn_id'] = 'existing'
         (self.home / 'spawn').mkdir()
         (self.home / 'spawn' / 'existing.json').write_text('{}', encoding='utf-8')
@@ -121,7 +121,7 @@ class CodexVisibilityTests(unittest.TestCase):
         journal = manager.journal(execution['id'])
         running = codex_runtime.CodexRunning(self.home, self.plugin, self.session, {}, {}, journal, None, execution=execution)
         self.addCleanup(running.close)
-        manager.executions.register(execution['id'], running)
+        manager.processes[execution['id']] = running
         journal.set_status('working')
         with closing(store.connect(self.home)) as conn:
             goals.set_execution_status(conn, execution['id'], 'completed')
@@ -147,7 +147,7 @@ class CodexVisibilityTests(unittest.TestCase):
         running, _ = self.make_running()
         running.close(); self.assertTrue(running.reader_done.wait(2))
         manager = chat.Manager(self.home, self.plugin, agents_provider=lambda: [])
-        manager.executions.register('worker', running)
+        manager.processes['worker'] = running
         with closing(store.connect(self.home)) as conn, mock.patch('crew.chat.codex_client.Client') as factory:
             session_ops.rename(conn, 'worker', '资料施工')
             metadata = factory.return_value.__enter__.return_value

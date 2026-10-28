@@ -1,18 +1,9 @@
 """Shared display state from the current process snapshot and owned journals."""
-from dataclasses import dataclass
-
 from . import board
 
 
-@dataclass(frozen=True)
-class Observation:
-    agents: tuple
-    error: str | None
-    ready: bool
-
-
-def project_status(managed_agents, conn, project, agents, agents_error):
-    agents = managed_agents(conn, agents)
+def project_status(service, conn, project, agents, agents_error):
+    agents = service.managed_agents(conn, agents)
     # Preserve stored display state while discovery is unavailable. Callers
     # must still report unknown rather than count that cache as observed work.
     identities = ([{'sessionId': person['session_id']} for person in board.sessions(conn, project)]

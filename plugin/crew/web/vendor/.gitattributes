@@ -1,2 +1,0 @@
-# Keep the upstream distribution byte-stable, including whitespace in literals.
-mermaid.min.js text eol=lf -whitespace linguist-vendored

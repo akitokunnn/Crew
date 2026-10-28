@@ -132,7 +132,7 @@ def deliver(controller, conn):
             continue
         try:
             messaging._active(conn, message['target_session_id'])
-            if messaging.stopped(conn, message['target_session_id']) or controller.executions.maintenance_held(message['target_session_id']):
+            if messaging.stopped(conn, message['target_session_id']) or controller.manager.maintenance_held(message['target_session_id']):
                 continue
             target = (controller.current(conn, message['goal_id'], message['target_session_id'])
                       if message['target_scope'] == 'goal' else None)
@@ -140,7 +140,7 @@ def deliver(controller, conn):
             _failed(conn, message, type(exc).__name__ + ': ' + str(exc))
             continue
         key = target['id'] if target else message['target_session_id'] if message['target_scope'] == 'general' else None
-        if key and controller.executions.busy(key):
+        if key and controller.manager.busy(key):
             continue
         correlation = message['correlation_id'] if message['correlation_id'].startswith('peer-batch:') else None
         groups.setdefault((message['goal_id'], message['target_session_id'], message['target_scope'], message['round'],
@@ -176,19 +176,19 @@ def deliver(controller, conn):
                               board.session(conn, item['sender_session_id'])['crew_name'] + '：' + item['body'] for item in selected)
         try:
             if scope == 'general':
-                if not controller.executions.path(target_id).exists():
-                    controller.executions.journal(target_id).set_status('idle')
-                result = controller.send_input(board.session(conn, target_id), '\n\n'.join(lines), identity=identity,
+                if not controller.manager.path(target_id).exists():
+                    controller.manager.journal(target_id).set_status('idle')
+                result = controller.manager.send(board.session(conn, target_id), '\n\n'.join(lines), identity=identity,
                                                  source='peer', sender=sender_label, display_text=display)
             else:
                 result = controller.send(goal_id, target_id, '\n\n'.join(lines), identity=identity, source='peer',
-                                         sender=sender_label, display_text=display, intent='work')
+                                         sender=sender_label, display_text=display)
             if result.get('accepted') is not True:
                 raise board.Conflict('NativeReceiptUnknown: input has no confirmed native acceptance')
         except (board.BoardError, codex_client.CodexError, OSError) as exc:
             error = type(exc).__name__ + ': ' + str(exc)
             if scope == 'general' and isinstance(exc, board.Conflict):
-                prior = controller.executions.journal(target_id).inputs.get(identity)
+                prior = controller.manager.journal(target_id).inputs.get(identity)
                 if prior is None:
                     for item in selected:
                         conn.execute('UPDATE goal_message_meta SET attempts=attempts-1,error=? WHERE message_id=?',

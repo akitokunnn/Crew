@@ -47,17 +47,7 @@ test("switch previews reject models and efforts outside the chosen runtime catal
   assert.throws(()=>switching.targetPayload(member(),target({effort:"high"}),catalog,null),/具体模型/);
   assert.throws(()=>switching.targetPayload(member(),target({model:"gpt",effort:"high"}),catalog,null),/不支持/);
   assert.throws(()=>switching.targetPayload(member(),target({model:"image",effort:"low"}),catalog,null),/不支持/);
-  assert.deepEqual(plain(switching.targetPayload(member({runtime:"codex"}),target({runtime:"claude",model:"claude-haiku-4-5-20251001",effort:"low"}),catalog,null)),{session_id:"member",runtime:"claude",model:"claude-haiku-4-5-20251001",effort:"low"});
-});
-test("runtime switch uses per-model effort discovery for any model name",()=>{
-  const rows=JSON.parse(JSON.stringify(catalog)),id="claude-haiku-4-5-20251001";
-  rows[0].models.find(item=>item.id===id).efforts=["high"];
-  const source=member({runtime:"codex"}),choice=target({runtime:"claude",model:id,effort:"high"});
-  assert.equal(switching.targetPayload(source,choice,rows,null).effort,"high");
-  assert.throws(()=>switching.targetPayload(source,{...choice,effort:"low"},rows,null),/不支持/);
-  rows[0].models.find(item=>item.id===id).efforts=[];
-  assert.throws(()=>switching.targetPayload(source,choice,rows,null),/不支持/);
-  assert.equal(switching.targetPayload(source,{...choice,effort:null},rows,null).effort,null);
+  assert.throws(()=>switching.targetPayload(member({runtime:"codex"}),target({runtime:"claude",model:"claude-haiku-4-5-20251001",effort:"low"}),catalog,null),/不支持/);
 });
 
 test("the edited handoff is included exactly for a fresh bound preview",()=>{

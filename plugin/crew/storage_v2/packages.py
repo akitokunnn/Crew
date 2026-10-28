@@ -344,9 +344,6 @@ def _verified_package(path, limits, *, extract_blobs=False):
                             blob_paths[blob['blob_id']] = target_path
                         else:
                             _stream(source, expected_size=blob['bytes'], expected_sha256=blob['sha256'])
-                from . import task_extensions
-                task_extensions.manifests(clean, manifest['workspace_id'],
-                    lambda row: archive.read('blobs/sha256/' + row['sha256']))
                 yield clean, clean_path, manifest, blob_paths
     except PackageError:
         raise
@@ -419,12 +416,6 @@ def export_workspace(conn, object_root, workspace_id, destination, *, source=Non
                     raise PackageError('Blob inventory exceeds quota')
                 if any(row['state'] != 'verified' for row in blobs):
                     raise PackageError('Cannot export an unverified blob')
-                from . import task_extensions
-                def task_content(row):
-                    with store.open(workspace_id, row['sha256'], expected_size=row['size_bytes']) as stream:
-                        return stream.read()
-                task_documents = task_extensions.manifests(clean, workspace_id, task_content)
-                code_snapshots = any(task.get('versions') for _, document in task_documents for task in document['tasks'])
                 if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='local_blob_pins'").fetchone():
                     conn.execute('BEGIN IMMEDIATE')
                     try:
@@ -444,7 +435,7 @@ def export_workspace(conn, object_root, workspace_id, destination, *, source=Non
                         'consistency': 'complete', 'source': source,
                         'database': {'path': 'data.sqlite', 'sha256': database_digest, 'bytes': database_size, 'tables': counts},
                         'blobs': [{'blob_id': b['id'], 'path': 'blobs/sha256/' + b['sha256'], 'sha256': b['sha256'], 'bytes': b['size_bytes']} for b in blobs],
-                        'capabilities': {'native_archives': bool(counts.get('native_archives')), 'code_snapshots': code_snapshots, 'data_snapshots': False},
+                        'capabilities': {'native_archives': bool(counts.get('native_archives')), 'code_snapshots': False, 'data_snapshots': False},
                         'omissions': []}
             _manifest(manifest, limits)
             encoded = _json(manifest).encode('utf-8')

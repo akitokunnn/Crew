@@ -1,8 +1,0 @@
-/* Leader ordering feedback, shared by pointer and explicit reorder actions. */
-#sidebar .leader-item[draggable] { position: relative; }
-#sidebar .leader-item.dragging { opacity: .45; }
-#sidebar .leader-item.drop-before::after,
-#sidebar .leader-item.drop-after::after { content: ""; position: absolute; left: 8px; right: 8px; height: 3px; background: var(--accent); border-radius: 2px; pointer-events: none; }
-#sidebar .leader-item.drop-before::after { top: -2px; }
-#sidebar .leader-item.drop-after::after { bottom: -2px; }
-.priority-zone{padding-top:3px;flex:none}.priority-zone.empty-priority{display:none}.leader-drag-active .priority-zone{display:block}.leader-drag-active .empty-priority{min-height:30px}.priority-drop-hint{display:none;color:var(--text-3);font-size:12px;padding:7px 10px}.leader-drag-active .empty-priority .sec-label{display:none}.leader-drag-active .empty-priority .priority-drop-hint{display:block}.drop-zone{outline:1px dashed var(--accent);outline-offset:2px;border-radius:12px}.leader-list{min-height:76px;flex:none}

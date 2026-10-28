@@ -109,13 +109,13 @@ def prepare(conn, home, plugin_root, project_name, name, task, group=None, role=
     if group in groups and groups[group]["closed_at"] is None and groups[group]["leader_session_id"] is not None:
         leader = board.session(conn, groups[group]["leader_session_id"])
     defaults = None
-    member_choice = member_defaults.selection(conn, leader, project=project_name) if role == 'member' else None
+    member_choice = member_defaults.selection(conn, leader) if role == 'member' else None
     if runtime is models.INHERIT or runtime is None:
         if member_choice is not None:
-            defaults = member_defaults.resolve(conn, leader, project=project_name)
+            defaults = settings.resolve_choice(member_choice) if member_choice['runtime'] is None else member_choice
             runtime = defaults['runtime']
         else:
-            defaults = settings.resolve(conn, 'leader' if role == 'leader' else 'member', project=project_name)
+            defaults = settings.resolve(conn, 'leader' if role == 'leader' else 'default')
             runtime = defaults['runtime']
     runtimes.validate(runtime)
     inherited = (member_choice
@@ -124,7 +124,7 @@ def prepare(conn, home, plugin_root, project_name, name, task, group=None, role=
     if model is models.INHERIT:
         model = inherited["model"]
     if effort is models.INHERIT:
-        effort = inherited["effort"]
+        effort = None if model == models.HAIKU else inherited["effort"]
     models.validate_options(model, effort, runtime=runtime)
     if role == "leader":
         leader_name = "\u5c31\u662f\u4f60\u81ea\u5df1"
@@ -149,8 +149,6 @@ def prepare(conn, home, plugin_root, project_name, name, task, group=None, role=
             "cwd": str(directory), "project": project_name, "agent": ("crew:leader" if agent is None else agent) if role == "leader" else None,
             "md": str(md_path), "runtime": runtime, "model": model, "effort": effort,
             "created_at": store.now_iso() if now is None else now}
-    if defaults is not None and defaults.get('resolution') is not None:
-        spec['selection_resolution'] = defaults['resolution']
     return {"id": spawn_id, "session_id": session_id, "command": command(session_id, name, role, model=model, effort=effort, agent=agent, runtime=runtime,
             permission_mode=settings.get_execution(conn)['claude'], plugin_root=plugin_root), "spec": spec,
             "files": {str(json_path): json.dumps(spec, ensure_ascii=False, indent=2) + "\n", str(md_path): brief},
@@ -175,8 +173,7 @@ def _execute(conn, plan, launcher, members=(), member_session_ids=()):
         target.write_text(content, encoding="utf-8", newline="")
     launcher(plan["command"])
     board.record_event(conn, "spawn", spec["project"], board.HUMAN, {"id": plan["id"], "spec": spec, "command": plan["command"]}, spec["created_at"])
-    return {"id": plan["id"], "command": plan["command"],
-            **({'selection_resolution': spec['selection_resolution']} if 'selection_resolution' in spec else {})}
+    return {"id": plan["id"], "command": plan["command"]}
 
 
 def leader_plan(conn, home, plugin_root, project_name, name, members=(), task=None, cwd=None,

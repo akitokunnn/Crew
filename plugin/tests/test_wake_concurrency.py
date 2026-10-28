@@ -28,7 +28,7 @@ class WakeConcurrencyTests(ShellFixture, unittest.TestCase):
                     return False
                 return True
 
-        with mock.patch("crew.native_process.shutil.which", return_value="claude.exe"), ThreadPoolExecutor(2) as workers:
+        with mock.patch("crew.chat.shutil.which", return_value="claude.exe"), ThreadPoolExecutor(2) as workers:
             results = list(workers.map(lambda _: wake(), range(2)))
         self.assertEqual(sorted(results), [False, True])
         self.assertEqual(len(self.processes), 1)
@@ -57,7 +57,7 @@ class WakeConcurrencyTests(ShellFixture, unittest.TestCase):
                 ready.wait(timeout=5)
                 self.manager.auto_resume(conn, [], now=NOW)
 
-        with mock.patch("crew.native_process.shutil.which", return_value="claude.exe"), ThreadPoolExecutor(2) as workers:
+        with mock.patch("crew.chat.shutil.which", return_value="claude.exe"), ThreadPoolExecutor(2) as workers:
             futures = [workers.submit(wake), workers.submit(resume)]
             for future in futures:
                 future.result(timeout=10)

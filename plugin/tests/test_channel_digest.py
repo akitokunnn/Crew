@@ -13,13 +13,10 @@ import test_channel
 CARD = "## 已定结论\nalpha 定了接口。\n## 未定的事 · 在等谁\n等 beta 确认。\n## 各组跨组相关进展\n暂无"
 
 
-DIGEST_MODEL = 'claude-fixture-digest'
-
-
 class FakeProcess:
     def __init__(self, output=None, errors="", code=0, timeout=False, gate=None):
         self.output = json.dumps({"is_error": False, "result": CARD, "total_cost_usd": .012,
-                                  'modelUsage': {DIGEST_MODEL: {}}}) if output is None else output
+                                  'modelUsage': {models.HAIKU: {}}}) if output is None else output
         self.errors, self.returncode, self.timeout, self.gate = errors, code, timeout, gate
         self.input, self.killed = None, False
         self.entered = threading.Event()
@@ -43,22 +40,12 @@ class DigestTests(unittest.TestCase):
     post = test_channel.ChannelTests.post
     run_cli = test_channel.ChannelTests.run_cli
 
-    def test_clearing_one_workspace_failure_does_not_erase_other_state_or_stop_work(self):
-        manager = self.manager(FakeProcess())
-        manager.errors.update(demo='old error', other='keep this error')
-        manager.failed_upto.update(demo=4, other=8)
-        manager.running.add('demo')
-        manager.clear_failures('demo')
-        self.assertEqual(manager.state('demo'), {'digesting': True, 'digest_error': None})
-        self.assertEqual(manager.state('other')['digest_error'], 'keep this error')
-        self.assertEqual(manager.failed_upto, {'other': 8})
-
     def manager(self, process):
         ai = settings.get(self.conn)
-        ai['digest'] = {'runtime': 'claude', 'model': DIGEST_MODEL, 'effort': None}
+        ai['digest'] = {'runtime': 'claude', 'model': models.HAIKU, 'effort': None}
         settings.save(self.conn, ai)
         self.factory = mock.Mock(return_value=process)
-        executable = mock.patch("crew.native_process.shutil.which", return_value="C:/fake/claude.cmd")
+        executable = mock.patch("crew.chat.shutil.which", return_value="C:/fake/claude.cmd")
         executable.start()
         self.addCleanup(executable.stop)
         manager = channel_digest.Manager(self.home, threading.Lock(), self.factory)
@@ -111,7 +98,7 @@ class DigestTests(unittest.TestCase):
         card = channel.digest(self.conn, "demo")
         self.assertEqual((card['body'], card['upto_message_id'], card['message_count'], card['trigger'],
                           card['model'], card['cost_usd'], card['total_message_count']),
-                         (CARD, first['id'], 1, 'manual', DIGEST_MODEL, .012, 1))
+                         (CARD, first['id'], 1, 'manual', models.HAIKU, .012, 1))
         data = json.loads(process.input.split("新发言全文（JSON）：\n")[1])
         self.assertEqual(data, [{key: first[key] for key in ('speaker_name', 'created_at', 'mentions', 'body')}])
         self.assertIn("上一张要点卡：\n（无，这是第一张要点卡）\n", process.input)
@@ -120,7 +107,7 @@ class DigestTests(unittest.TestCase):
         self.assertTrue(command[0].replace('\\', '/').endswith('/node_modules/@anthropic-ai/claude-code/bin/claude.exe'))
         self.assertEqual(command[1:], ['-p', '--output-format', 'json',
             '--no-session-persistence', '--settings', '{"disableAllHooks":true}', '--strict-mcp-config',
-            '--tools', '', '--disable-slash-commands', '--model', DIGEST_MODEL])
+            '--tools', '', '--disable-slash-commands', '--model', models.HAIKU])
         options = self.factory.call_args.kwargs
         self.assertEqual(options['cwd'], str(self.home))
         self.assertNotIn('CLAUDE_CODE_SESSION_ID', options['env'])
@@ -331,7 +318,7 @@ class DigestTests(unittest.TestCase):
             result = real_read(conn, *args, **kwargs)
             conn.execute("INSERT INTO channel_digests(project,upto_message_id,body,message_count,trigger,model,"
                          "cost_usd,created_at) VALUES(?,?,?,?,?,?,?,?)",
-                         ('demo', last['id'], '刚发布的新卡', 1, 'auto', DIGEST_MODEL, .01, test_channel.NOW))
+                         ('demo', last['id'], '刚发布的新卡', 1, 'auto', models.HAIKU, .01, test_channel.NOW))
             return result
 
         with mock.patch('crew.cli.channel.read', side_effect=read_and_publish):

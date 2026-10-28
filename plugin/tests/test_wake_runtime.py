@@ -17,7 +17,7 @@ class AutoResumeTests(ShellFixture, unittest.TestCase):
         self.write(self.manager.path(session_id), [{"seq": 1, "type": "status", "status": status, "at": NOW}])
 
     def recover(self, agents=(), now=NOW):
-        with mock.patch("crew.native_process.shutil.which", return_value="claude"):
+        with mock.patch("crew.chat.shutil.which", return_value="claude"):
             self.manager.auto_resume(self.conn, list(agents), now=now)
 
     def resume_events(self):
@@ -37,12 +37,9 @@ class AutoResumeTests(ShellFixture, unittest.TestCase):
             self.assertEqual(process.command[process.command.index("--name") + 1], session["crew_name"])
             self.assertEqual(process.command[process.command.index("--permission-mode") + 1], "bypassPermissions")
             sent = json.loads(process.stdin.getvalue().splitlines()[-1])
-            original = "[Crew] Crew 服务刚重启，你上一轮做到一半被打断了。先看看做到哪了再接着做；如果其实已经做完，就照常收尾、按守则汇报。"
-            self.assertTrue(sent['message']['content'].startswith('[Crew common]\n'))
-            self.assertTrue(sent['message']['content'].endswith('\n\n' + original))
+            self.assertEqual(sent["message"]["content"], "[Crew] Crew 服务刚重启，你上一轮做到一半被打断了。先看看做到哪了再接着做；如果其实已经做完，就照常收尾、按守则汇报。")
             message = next(event for event in self.manager.journal(session_id).events if event["type"] == "message")
             self.assertEqual(message["source"], "crew")
-            self.assertEqual(message['text'], original)
         self.assertEqual(self.commands[0][self.commands[0].index("--model") + 1], "claude-sonnet-5-5")
         self.assertEqual(self.commands[0][self.commands[0].index("--effort") + 1], "high")
         self.assertNotIn("--model", self.commands[1])
@@ -56,7 +53,7 @@ class AutoResumeTests(ShellFixture, unittest.TestCase):
         self.interrupted("s1")
         finished = mock.Mock()
         finished.process.poll.return_value = 0
-        self.manager.executions.register("s1", finished)
+        self.manager.processes["s1"] = finished
         self.recover()
         self.assertEqual(self.processes, [])
         self.assertEqual(self.resume_events(), [])
@@ -120,7 +117,7 @@ class AutoResumeTests(ShellFixture, unittest.TestCase):
     def test_manual_wake_while_waiting_cancels_automatic_resume_without_second_launch(self):
         self.interrupted()
         self.recover([{"sessionId": "s1", "name": "old-address"}])
-        with mock.patch("crew.native_process.shutil.which", return_value="claude"):
+        with mock.patch("crew.chat.shutil.which", return_value="claude"):
             self.manager.wake(self.conn, board.session(self.conn, "s1"), "continue", caller_session_id="s3", now=NOW)
         self.recover()
         self.assertEqual(len(self.processes), 1)
@@ -130,7 +127,7 @@ class AutoResumeTests(ShellFixture, unittest.TestCase):
         self.assertEqual(len(self.resume_events()), 1)
 
     def test_normal_close_with_drained_reader_persists_offline_and_does_not_resume(self):
-        with mock.patch("crew.native_process.shutil.which", return_value="claude"):
+        with mock.patch("crew.chat.shutil.which", return_value="claude"):
             self.manager.wake(self.conn, board.session(self.conn, "s1"), "continue", caller_session_id="s3", now=NOW)
         self.assertEqual(self.manager.journal("s1").status, "working")
         self.manager.close()
@@ -151,7 +148,7 @@ class AutoResumeTests(ShellFixture, unittest.TestCase):
         self.assertIn("missing.json", detail["reason"])
 
     def test_close_with_slow_process_keeps_working_then_restart_waits_until_exit(self):
-        with mock.patch("crew.native_process.shutil.which", return_value="claude"):
+        with mock.patch("crew.chat.shutil.which", return_value="claude"):
             self.manager.wake(self.conn, board.session(self.conn, "s1"), "continue", caller_session_id="s3", now=NOW)
         current = self.manager.processes["s1"]
         process = current.process
@@ -166,7 +163,7 @@ class AutoResumeTests(ShellFixture, unittest.TestCase):
         process.finish()
         self.assertTrue(current.reader_done.wait(2))
         provider.return_value = []
-        with mock.patch("crew.native_process.shutil.which", return_value="claude"):
+        with mock.patch("crew.chat.shutil.which", return_value="claude"):
             restarted.auto_resume(self.conn, [], now="2026-10-21T08:01:00.000Z")
         self.assertEqual(len(self.processes), 2)
 

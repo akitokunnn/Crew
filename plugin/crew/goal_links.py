@@ -24,7 +24,7 @@ def get(conn, kind, item_id):
 
 
 def _notice(controller, execution_id, identity, text):
-    journal = controller.executions.journal(execution_id)
+    journal = controller.manager.journal(execution_id)
     # A pending native receipt may stay unknown across many service ticks.
     if any(event.get('human_answer_id') == identity and event.get('text') == text for event in journal.events):
         return
@@ -35,7 +35,7 @@ def _receipt(controller, conn, link, identity):
     receipts = []
     for row in conn.execute('SELECT id FROM goal_executions WHERE goal_id=? AND session_id=? ORDER BY round DESC,generation DESC',
                             (link['goal_id'],goals.get_execution(conn,link['execution_id'])['session_id'])):
-        prior = controller.executions.journal(row['id']).inputs.get(identity)
+        prior = controller.manager.journal(row['id']).inputs.get(identity)
         if prior is not None:
             receipts.append(prior)
     accepted = next((item for item in receipts if item['status'] == 'accepted'),None)
@@ -87,7 +87,7 @@ def deliver(controller, conn):
         except board.BoardError as error:
             _notice(controller,original['id'],identity,'人工答复无法投递：'+type(error).__name__+': '+str(error)[:500])
             continue
-        if controller.executions.busy(execution['id']):
+        if controller.manager.busy(execution['id']):
             continue
         if link['kind'] == 'decision':
             text = '用户答复拍板 #%s：%s\n答复：%s' % (item['id'], item['question'], item['answer'])
@@ -102,7 +102,7 @@ def deliver(controller, conn):
         if goal['status'] == 'waiting_user':
             goals.resume(conn, goal['id'], actor=item['resolved_by'] if source == 'crew' else board.HUMAN)
         try:
-            result = controller.send(goal['id'], execution['session_id'], text, identity=identity, source=source, intent='work')
+            result = controller.send(goal['id'], execution['session_id'], text, identity=identity, source=source)
             if result.get('accepted') is not True:
                 raise board.Conflict('NativeReceiptUnknown: 原生接收未确认，请先核对会话')
         except (board.BoardError,codex_client.CodexError,OSError) as error:

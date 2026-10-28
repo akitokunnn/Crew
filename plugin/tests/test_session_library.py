@@ -19,7 +19,7 @@ class SessionLibraryTests(unittest.TestCase):
     refresh = fixtures.VSCodeServiceTests.refresh
 
     def rows(self, scope='project'):
-        return self.service.library().listing(self.conn, 'alpha', scope)['items']
+        return session_library.listing(self.service, self.conn, 'alpha', scope)['items']
 
     def codex(self, number=20, cwd=None, source='cli', text='old Codex task', effort='high'):
         sid = identity(number)
@@ -61,7 +61,7 @@ class SessionLibraryTests(unittest.TestCase):
         self.assertFalse(self.rows())
         self.assertEqual([(r['native_id'], r['project']) for r in self.rows('all')], [(native, 'beta')])
         with self.assertRaisesRegex(board.BoardError, '会话库'):
-            self.service.library().get(self.conn, 'alpha', 'codex:' + native)
+            session_library.get(self.service, self.conn, 'alpha', 'codex:' + native)
         with self.assertRaises(board.BoardError):
             self.rows('every-path-on-disk')
 
@@ -93,11 +93,11 @@ class SessionLibraryTests(unittest.TestCase):
         self.assertEqual(models.get(self.conn, sid), {'model': 'gpt-native', 'effort': 'high'})
         self.assertEqual(board.session(self.conn, sid)['group_name'], 'lead')
         self.assertEqual(self.service.chat.path(sid).read_text(), '')
-        preview = self.service.library().preview(self.conn, 'alpha', 'crew:' + sid)
+        preview = session_library.preview(self.service, self.conn, 'alpha', 'crew:' + sid)
         self.assertEqual(preview['messages'][0]['text'], 'old Codex task')
         self.assertEqual(len(board.pending_notices(self.conn, identity(1))), 1)
         with self.assertRaises(board.BoardError):
-            self.service.library().adopt(self.conn, 'alpha', 'codex:' + native, 'native-member', 'lead', NOW)
+            session_library.adopt(self.service, self.conn, 'alpha', 'codex:' + native, 'native-member', 'lead', NOW)
         self.assertEqual(len(board.pending_notices(self.conn, identity(1))), 1)
         self.service.chat.process_factory.assert_not_called()
 
@@ -105,17 +105,17 @@ class SessionLibraryTests(unittest.TestCase):
         native = identity(1); self.record(native)
         self.register(identity(2), 'lead', role='leader')
         self.refresh()
-        self.service.library().adopt(self.conn, 'alpha', 'claude:' + native, 'old-work', 'lead', NOW)
+        session_library.adopt(self.service, self.conn, 'alpha', 'claude:' + native, 'old-work', 'lead', NOW)
         self.assertEqual(board.session(self.conn, native)['group_name'], 'lead')
         self.assertEqual(len(board.pending_notices(self.conn, identity(2))), 1)
 
     def test_archives_and_background_runs_are_readable_but_not_joinable(self):
         native, path = self.codex(source='{"subagent":{"parent_thread_id":"root"}}')
         self.assertEqual(self.rows()[0]['category'], 'background')
-        preview = self.service.library().preview(self.conn, 'alpha', 'codex:' + native)
+        preview = session_library.preview(self.service, self.conn, 'alpha', 'codex:' + native)
         self.assertEqual(preview['messages'][0]['text'], 'old Codex task')
         with self.assertRaises(board.Conflict):
-            self.service.library().adopt(self.conn, 'alpha', 'codex:' + native, 'member', 'lead', NOW)
+            session_library.adopt(self.service, self.conn, 'alpha', 'codex:' + native, 'member', 'lead', NOW)
 
     def test_preview_contains_only_visible_text_not_reasoning_or_tool_results(self):
         native, path = self.codex()
@@ -126,28 +126,21 @@ class SessionLibraryTests(unittest.TestCase):
                 {'type':'message','role':'user','content':[{'type':'input_text','text':'# AGENTS.md instructions for repo'}]},
                 {'type':'message','role':'assistant','content':[{'type':'output_text','text':'<script>text only</script>'}]}]:
                 stream.write(json.dumps({'type':'response_item','payload':payload}) + '\n')
-        result = self.service.library().preview(self.conn, 'alpha', 'codex:' + native)
+        result = session_library.preview(self.service, self.conn, 'alpha', 'codex:' + native)
         self.assertEqual([m['text'] for m in result['messages']], ['old Codex task', '<script>text only</script>'])
 
     def test_preview_never_uses_an_index_path_outside_native_storage(self):
         native, _ = self.codex(); outside = self.root / 'private.txt'; outside.write_text('secret')
         self.conn.execute('UPDATE codex_sessions SET path=? WHERE rollout_id=?', (str(outside), native)); self.conn.commit()
-        self.assertEqual(self.service.library().preview(self.conn, 'alpha', 'codex:' + native)['messages'], [])
+        self.assertEqual(session_library.preview(self.service, self.conn, 'alpha', 'codex:' + native)['messages'], [])
 
     def test_invalid_join_rolls_back_identity_and_does_not_launch(self):
-        native, _ = self.codex(effort='-invalid')
+        native, _ = self.codex(effort='bogus')
         self.register(identity(1), 'lead', role='leader')
         with self.assertRaises(ValueError):
-            self.service.library().adopt(self.conn, 'alpha', 'codex:' + native, 'member', 'lead', NOW)
+            session_library.adopt(self.service, self.conn, 'alpha', 'codex:' + native, 'member', 'lead', NOW)
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM sessions').fetchone()[0], 1)
         self.assertFalse(board.pending_notices(self.conn, identity(1)))
-
-    def test_native_future_effort_is_preserved_when_adopting_without_launch(self):
-        native, _ = self.codex(effort='native-future-effort')
-        self.register(identity(1), 'lead', role='leader')
-        joined = self.service.library().adopt(self.conn, 'alpha', 'codex:' + native, 'member', 'lead', NOW)
-        self.assertEqual(models.get(self.conn, joined['session_id'])['effort'], 'native-future-effort')
-        self.service.chat.process_factory.assert_not_called()
 
     def test_old_binding_is_not_presented_as_an_unadopted_person(self):
         native, _ = self.codex()
@@ -161,6 +154,6 @@ class SessionLibraryTests(unittest.TestCase):
         self.register(identity(1), 'lead', role='leader')
         with mock.patch.object(Path, 'touch', side_effect=OSError('isolated log write failure')):
             with self.assertRaisesRegex(OSError, 'isolated log write failure'):
-                self.service.library().adopt(self.conn, 'alpha', 'codex:' + native, 'member', 'lead', NOW)
+                session_library.adopt(self.service, self.conn, 'alpha', 'codex:' + native, 'member', 'lead', NOW)
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM sessions').fetchone()[0], 1)
         self.assertFalse(board.pending_notices(self.conn, identity(1)))

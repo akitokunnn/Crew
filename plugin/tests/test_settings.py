@@ -41,36 +41,6 @@ class SettingsTests(unittest.TestCase):
             settings.resolve(self.home, which=self.installed())
         self.assertFalse(self.home.exists())
 
-    def test_unconfigured_roles_choose_available_preferences_and_keep_models_native_without_creating_home(self):
-        for purpose, preferred in (('leader', 'claude'), ('member', 'codex')):
-            with self.subTest(purpose=purpose):
-                configured = settings.effective(self.home, purpose=purpose)
-                self.assertEqual(configured['ai'], choice())
-                self.assertEqual(configured['role_preference']['runtime'], preferred)
-                self.assertEqual(configured['role_preference']['availability'], 'not_inspected')
-                selected = settings.resolve(self.home, purpose, self.installed('claude', 'codex'))
-                self.assertEqual({key: selected[key] for key in settings.FIELDS}, choice(preferred))
-                self.assertFalse(selected['resolution']['fallback'])
-                self.assertEqual(selected['resolution']['source'], 'builtin-role-preference')
-                self.assertEqual(selected['resolution']['loaded'], 'not_confirmed')
-                self.assertEqual(selected['resolution']['applies'], 'next_launch')
-        self.assertFalse(self.home.exists())
-
-    def test_role_preference_fallback_explains_missing_carrier_and_explicit_user_choice_never_switches(self):
-        for purpose, available in (('leader', 'codex'), ('member', 'claude')):
-            with self.subTest(purpose=purpose):
-                result = settings.resolve(self.home, purpose, self.installed(available))
-                self.assertEqual(result['runtime'], available)
-                self.assertTrue(result['resolution']['fallback'])
-                self.assertEqual(result['resolution']['available'], [available])
-                self.assertIn('未找到角色首选', result['resolution']['reason'])
-                with self.assertRaisesRegex(settings.SettingsError, '安装并登录'):
-                    settings.resolve(self.home, purpose, self.installed())
-        settings.save(self.home, {'default': choice('codex', 'explicit-native', 'future-effort')})
-        self.assertEqual(settings.resolve(self.home, 'leader', self.installed('claude', 'codex')), choice('codex', 'explicit-native', 'future-effort'))
-        with self.assertRaisesRegex(settings.SettingsError, '已选择 codex.*未找到'):
-            settings.resolve(self.home, 'leader', self.installed('claude'))
-
     def test_saved_home_options_survive_connections_and_task_null_follows_default(self):
         ai = {'default': choice('codex', 'future-provider/custom-model', 'future-effort'),
               'leader': None, 'member': None, 'digest': None, 'git': choice('claude'), 'operations': choice('codex', None, 'low-latency')}

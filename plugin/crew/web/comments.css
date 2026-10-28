@@ -1,4 +1,0 @@
-/* Session and group comments. Shared modal chrome remains in style.css. */
-.comments-modal{width:640px}.comments-list{max-height:38vh;min-height:70px;overflow:auto;margin:0 -4px 12px;padding:0 4px}.comment-entry{border-bottom:1px solid var(--line);padding:10px 0 12px}.comment-entry:first-child{padding-top:0}.comment-entry:last-child{border-bottom:0}.comment-meta{display:flex;gap:10px;color:var(--text-3);font-size:calc(11.5px * var(--fs));margin-bottom:5px}.comment-entry .markdown{font-size:calc(13.5px * var(--fs));line-height:1.7;overflow-wrap:anywhere}.comment-entry .markdown>:first-child{margin-top:0}.comment-entry .markdown>:last-child{margin-bottom:0}#comments-form textarea{width:100%;min-height:78px;resize:vertical;max-height:180px;border:1px solid var(--line-strong);border-radius:10px;padding:9px 11px;background:var(--surface);font-size:calc(13.5px * var(--fs));line-height:1.65}
-
-@media(max-width:620px){.comments-list{max-height:33vh}}

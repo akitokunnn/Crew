@@ -18,10 +18,10 @@ function deferred() {
 // Execute the application entry point, but replace all native/process/file IO.
 // The destroyed-object checks mirror Electron's native lifetime boundary.
 function harness(options = {}) {
-  const ready = deferred(), windows = [], trays = [], handlers = new Map(), logs = [], shutdownErrors = [],tabManagers=[];
-  const calls = { backendStart:0, backendStop:0, backendDisconnect:0, toolsClose:0, updatesClose:0, tabsDispose:0, previewDispose:0, tabsOpen:0,projectIntents:[],storagePrepared:0,workbenchOpen:0,viewOptions:[],uiCalls:0, windowShow:0, nativeQuit:0, relaunch:0, dialogs:0, stat:0 };
+  const ready = deferred(), windows = [], trays = [], handlers = new Map(), logs = [], shutdownErrors = [];
+  const calls = { backendStart:0, backendStop:0, toolsClose:0, updatesClose:0, tabsDispose:0, previewDispose:0, tabsOpen:0, uiCalls:0, windowShow:0, nativeQuit:0, relaunch:0, dialogs:0, stat:0 };
   let readGate = null, projectGate = null, appMenu = null;
-  const config = { home:'C:\\fixture\\crew-home', userData:'C:\\fixture\\crew-desktop', isolated:true, smoke:options.smoke === true, backendSource:'bundled' };
+  const config = { home:'C:\\fixture\\crew-home', userData:'C:\\fixture\\crew-desktop', isolated:true, smoke:false, backendSource:'bundled' };
   class App extends EventEmitter {
     setName() {} setAppUserModelId() {} setPath() {}
     getPath() { return 'C:\\fixture\\app-data'; }
@@ -66,16 +66,15 @@ function harness(options = {}) {
     destroy() { this.destroyed = true; this.removeAllListeners(); }
   }
   const menu = template => ({ template, getMenuItemById(id) { return template.flatMap(item => item.submenu || [item]).find(item => item.id === id); }, popup({ callback }) { callback?.(); } });
-  const electron = { app, BrowserWindow:Window, WebContentsView:class {constructor(options){calls.viewOptions.push(options);}}, Tray:FakeTray,
+  const electron = { app, BrowserWindow:Window, WebContentsView:class {}, Tray:FakeTray,
     ipcMain:{ handle:(name,fn) => handlers.set(name,fn), on() {} },
     Menu:{ buildFromTemplate:menu, setApplicationMenu:value => { appMenu = value; }, getApplicationMenu:() => appMenu },
     nativeImage:{ createFromPath:() => ({}) }, shell:{ openExternal:async () => {}, openPath:async () => {} },
     dialog:{ showMessageBox:async (...args) => { calls.dialogs++; if (args[0] instanceof Window) args[0].alive(); return { response:1 }; }, showOpenDialog:async () => ({ canceled:true }) } };
   class Backend {
     constructor() { this.url = 'http://127.0.0.1:12345'; }
-    async start() { calls.backendStart++; await options.backendStart?.promise;if(options.backendError)throw options.backendError; }
+    async start() { calls.backendStart++; await options.backendStart?.promise; }
     async stop() { calls.backendStop++; await options.backendStop?.promise; }
-    async disconnect() { calls.backendDisconnect++; await options.backendDisconnect?.promise; }
   }
   class Tools {
     async initialize() { await options.toolsInitialize?.promise; }
@@ -86,12 +85,11 @@ function harness(options = {}) {
     async close() { calls.updatesClose++; options.updateCheck?.resolve(); if (options.updatesError) throw options.updatesError; await options.updatesClose?.promise; }
   }
   class Tabs {
-    constructor(window,settings) { this.window = window;this.settings=settings; this.origin = 'http://127.0.0.1:12345'; this.entries = new Map(); this.disposed = false;this.active='home';tabManagers.push(this); }
-    state() { return { tabs:[...(this.workbench?[{id:'workbench',project:null,name:'工作台'}]:[]),{ id:'home', project:null,name:'工作区管理' }], activeId:this.active }; }
-    setBounds() {} select(id) { this.window.alive();this.active=id; }
-    async openWorkbench(url) {calls.workbenchOpen++;await options.workbenchLoad?.promise;if(this.disposed)throw new TypeError('Object has been destroyed');if(!this.workbench)this.settings.createView(null);this.workbench=true;this.workbenchURL=url||this.origin+'/';this.active='workbench';}
+    constructor(window) { this.window = window; this.origin = 'http://127.0.0.1:12345'; this.entries = new Map(); this.disposed = false; }
+    state() { return { tabs:[{ id:'home', project:null }], activeId:'home' }; }
+    setBounds() {} select() { this.window.alive(); }
     dispose() { calls.tabsDispose++; this.disposed = true; }
-    async open(project,intent) { if (this.disposed) throw new TypeError('Object has been destroyed'); calls.tabsOpen++;calls.projectIntents.push({project,intent}); }
+    async open() { if (this.disposed) throw new TypeError('Object has been destroyed'); calls.tabsOpen++; }
     updateProject() { this.window.alive(); } closeProject() { this.window.alive(); }
   }
   class Preview {
@@ -121,11 +119,11 @@ function harness(options = {}) {
     'node:fs':{ mkdirSync() {} },
     'node:fs/promises':{ readFile:async () => readGate ? readGate.promise : '/* fixture asset */', mkdir:async () => {}, writeFile:async () => {}, access:async () => options.accessGate?.promise,
       stat:async () => { calls.stat++; return options.statGate ? options.statGate.promise : {isFile:() => true}; } },
-    './core.cjs':{ options:() => config, Backend, loopback:value => {new URL(value);return value;},
+    './core.cjs':{ options:() => config, Backend, loopback:value => value,
       projects:async () => projectGate ? projectGate.promise : [{ name:'demo' }],
-      projectLocations:async items => items.map(item => ({ ...item, directory_state:{ status:options.directoryMissing?'missing':'ready' } })),
+      projectLocations:async items => items.map(item => ({ ...item, directory_state:{ status:'ready' } })),
       request:async (_base,route) => options.storageWrite&&route.startsWith('/api/workspace-data/')?options.storageWrite.promise:{} },
-    './storage.cjs':{ prepare:async (project,base,_choose,_progress,request) => {calls.storagePrepared++;if(options.storageWrite)await request(base,'/api/workspace-data/open',{});return 'preparedProject' in options?options.preparedProject:project;} },
+    './storage.cjs':{ prepare:async (project,base,_choose,_progress,request) => {if(options.storageWrite)await request(base,'/api/workspace-data/open',{});return project;} },
     './chrome.cjs':{ windowOptions:() => ({}) }, './tabs.cjs':{ WorkspaceTabs:Tabs },
     './activity-preview.cjs':{ ActivityPreview:Preview }, './permissions.cjs':{ installPermissions() {} },
     './tool-updates.cjs':{ ToolUpdates:Tools }, './crew-updates.cjs':{ CrewUpdates:Updates },
@@ -138,10 +136,10 @@ function harness(options = {}) {
     console:{ error:(...args) => logs.push(args), log() {} } };
   vm.runInNewContext(source,sandbox,{ filename:'main.cjs' });
   const invoke = (channel,...args) => { const contents = windows[0].webContents; return handlers.get(channel)({ sender:contents, senderFrame:contents.mainFrame },...args); };
-  return { app, ready, windows, trays, calls, logs, shutdownErrors, handlers, invoke,tabManagers,
+  return { app, ready, windows, trays, calls, logs, shutdownErrors, handlers, invoke,
     menuItem:id => appMenu.getMenuItemById(id),
     holdRead:gate => { readGate = gate; }, holdProjects:gate => { projectGate = gate; },
-    boot:async () => { ready.resolve(); await tick(); assert.equal(windows.length,1); assert.equal(trays.length,options.smoke ? 0 : 1); } };
+    boot:async () => { ready.resolve(); await tick(); assert.equal(windows.length,1); assert.equal(trays.length,1); } };
 }
 
 test('normal close keeps the shell alive and explicit quit cleans it up exactly once', async () => {
@@ -150,60 +148,17 @@ test('normal close keeps the shell alive and explicit quit cleans it up exactly 
   h.trays[0].emit('double-click'); assert.equal(h.calls.windowShow,1);
   await h.invoke('desktop:chrome-ready'); assert.equal(h.calls.uiCalls,1);
   h.app.quit(); h.app.quit(); await tick();
-  assert.equal(h.calls.backendDisconnect,1);assert.equal(h.calls.backendStop,0); assert.equal(h.calls.toolsClose,1); assert.equal(h.calls.updatesClose,1);
+  assert.equal(h.calls.backendStop,1); assert.equal(h.calls.toolsClose,1); assert.equal(h.calls.updatesClose,1);
   assert.equal(h.calls.nativeQuit,1); assert.equal(h.trays[0].isDestroyed(),true);
   assert.deepEqual(h.logs,[]); assert.deepEqual(h.shutdownErrors,[]);
 });
 
-test('successful startup selects an unprivileged service workbench and keeps local management trusted',async()=>{
-  const h=harness();await h.boot();assert.equal(h.calls.workbenchOpen,1);
-  assert.match(h.windows[0].webContents.url,/home\.html$/);
-  const state=await h.invoke('desktop:chrome-ready');assert.equal(state.tabs.activeId,'workbench');
-  assert.equal(h.calls.viewOptions[0].webPreferences.preload,undefined);
-  assert.equal(h.calls.viewOptions[0].webPreferences.nodeIntegration,false);
-  assert.equal(h.calls.viewOptions[0].webPreferences.sandbox,true);
-  h.menuItem('workspace-home').click();await tick();assert.equal((await h.invoke('desktop:chrome-ready')).tabs.activeId,'home');
-  await h.invoke('desktop:chrome-action','home');assert.equal((await h.invoke('desktop:chrome-ready')).tabs.activeId,'workbench');
-  const contents=h.windows[0].webContents;
-  await assert.rejects(h.handlers.get('desktop:bootstrap')({sender:contents,senderFrame:{...contents.mainFrame,url:'http://127.0.0.1:12345/'}}),/只允许/);
-});
-
-test('a backend startup error retains the local administrator instead of opening a false workbench',async()=>{
-  const h=harness({backendError:new Error('fixture backend unavailable')});await h.boot();
-  assert.equal(h.calls.workbenchOpen,0);assert.match(h.windows[0].webContents.url,/home\.html$/);
-  await h.invoke('desktop:chrome-action','home');assert.equal(h.calls.workbenchOpen,0);
-});
-
-test('legacy workbench navigation keeps directory and history preparation before preserving its destination',async()=>{
-  const h=harness({preparedProject:{name:'storage:verified',read_only:true}});await h.boot();
-  await h.tabManagers[0].settings.openProject('demo',{url:'http://127.0.0.1:12345/?legacy=1&project=demo&settings=git#git'});
-  assert.equal(h.calls.storagePrepared,1);assert.equal(h.calls.tabsOpen,1);
-  const target=new URL(h.calls.projectIntents[0].intent.url);
-  assert.equal(target.searchParams.get('project'),'storage:verified');assert.equal(target.searchParams.get('legacy'),'1');
-  assert.equal(target.searchParams.get('settings'),'git');assert.equal(target.hash,'#git');
-  const cancelled=harness({preparedProject:null});await cancelled.boot();
-  await cancelled.tabManagers[0].settings.openProject('demo',{url:'http://127.0.0.1:12345/?legacy=1&project=demo#all'});
-  assert.equal(cancelled.calls.tabsOpen,0);assert.equal(cancelled.tabManagers[0].active,'workbench');
-  const missing=harness({directoryMissing:true});await missing.boot();
-  await missing.tabManagers[0].settings.openProject('demo',{url:'http://127.0.0.1:12345/?legacy=1&project=demo#all'});
-  assert.equal(missing.calls.storagePrepared,0);assert.equal(missing.calls.tabsOpen,0);assert.equal(missing.tabManagers[0].active,'home');
-});
-
-test('isolated smoke quit stops its self-owned backend instead of detaching it', async () => {
-  const h = harness({ smoke:true }); await h.boot();
-  h.app.quit(); h.app.quit(); await tick();
-  assert.equal(h.calls.backendStop,1);
-  assert.equal(h.calls.backendDisconnect,0);
-  assert.equal(h.calls.nativeQuit,1);
-  assert.deepEqual(h.logs,[]); assert.deepEqual(h.shutdownErrors,[]);
-});
-
-test('quit waits for a workspace data operation before disconnecting its backend and never reopens disposed tabs',async()=>{
+test('quit waits for a workspace data operation before stopping its backend and never reopens disposed tabs',async()=>{
   const storageWrite=deferred(),h=harness({storageWrite});await h.boot();
   const opening=h.invoke('desktop:open','demo');await tick();
-  h.app.quit();await tick();assert.equal(h.calls.backendDisconnect,0);assert.equal(h.calls.nativeQuit,0);
+  h.app.quit();await tick();assert.equal(h.calls.backendStop,0);assert.equal(h.calls.nativeQuit,0);
   storageWrite.resolve({});await opening;await tick();
-  assert.equal(h.calls.backendDisconnect,1);assert.equal(h.calls.backendStop,0);assert.equal(h.calls.nativeQuit,1);assert.equal(h.calls.tabsOpen,0);
+  assert.equal(h.calls.backendStop,1);assert.equal(h.calls.nativeQuit,1);assert.equal(h.calls.tabsOpen,0);
   assert.deepEqual(h.logs,[]);assert.deepEqual(h.shutdownErrors,[]);
 });
 
@@ -240,16 +195,16 @@ for (const boundary of ['backendStart','toolsInitialize']) {
     h.ready.resolve(); await tick();
     h.app.quit(); await tick(); gate.resolve(); await tick();
     assert.equal(h.windows.length,0); assert.equal(h.trays.length,0);
-    assert.equal(h.calls.backendDisconnect,1);assert.equal(h.calls.backendStop,0);
+    assert.equal(h.calls.backendStop,1);
     assert.equal(h.calls.nativeQuit,1);
   });
 }
 
-test('repeated quit shares one cleanup and still disconnects the backend when an updater close fails', async () => {
+test('repeated quit shares one cleanup and still stops the backend when an updater close fails', async () => {
   const h = harness({ updatesError:new Error('fixture updater close failed') }); await h.boot();
   h.app.quit(); h.app.quit(); await tick();
   assert.equal(h.calls.tabsDispose,1); assert.equal(h.calls.previewDispose,1);
-  assert.equal(h.calls.updatesClose,1); assert.equal(h.calls.toolsClose,1); assert.equal(h.calls.backendDisconnect,1);assert.equal(h.calls.backendStop,0);
+  assert.equal(h.calls.updatesClose,1); assert.equal(h.calls.toolsClose,1); assert.equal(h.calls.backendStop,1);
   assert.equal(h.calls.nativeQuit,1);
   assert.deepEqual(h.shutdownErrors,[]);
   assert(h.logs.flat().some(value => String(value).includes('fixture updater close failed')));
@@ -259,7 +214,7 @@ test('home navigation suspended at loadURL cannot show a window after quit', asy
   const h = harness(); await h.boot();
   h.windows[0].webContents.url = pathToFileURL(path.join(__dirname,'../src/error.html')).href;
   const gate = deferred(); h.windows[0].nextLoad = gate;
-  const pending = h.invoke('desktop:chrome-action','settings'); await tick();
+  const pending = h.invoke('desktop:chrome-action','home'); await tick();
   h.app.quit(); await tick(); gate.resolve();
   await pending.catch(error => assert.doesNotMatch(error.message,/Object has been destroyed/));
 });
@@ -284,27 +239,27 @@ test('opening a workspace cannot mutate disposed tabs when discovery finishes af
   assert.equal(h.calls.tabsOpen,0);
 });
 
-test('shutdown cancels metadata that a pending connection change awaits, then protects its commit before disconnecting the backend',async () => {
+test('shutdown cancels metadata that a pending connection change awaits, then protects its commit before stopping the backend',async () => {
   const check=deferred(),commit=deferred(),h=harness({updateCheck:check,launchCommit:commit});await h.boot();
   const applying=h.invoke('desktop:launch-settings-apply',{});await tick();
   h.app.quit();await tick();
   try {
     assert.equal(h.calls.updatesClose,1,'metadata cancellation must not wait behind a connection change awaiting that metadata');
     assert.equal(h.calls.toolsClose,1);
-    assert.equal(h.calls.backendDisconnect,0,'connection commit must finish before the final backend disconnect');
+    assert.equal(h.calls.backendStop,0,'connection commit must finish before the final backend stop');
   } finally { check.resolve();commit.resolve();await applying;await tick(); }
-  assert.equal(h.calls.backendDisconnect,1);assert.equal(h.calls.backendStop,0);assert.equal(h.calls.nativeQuit,1);assert.equal(h.calls.relaunch,0);
+  assert.equal(h.calls.backendStop,1);assert.equal(h.calls.nativeQuit,1);assert.equal(h.calls.relaunch,0);
 });
 
 test('a portable executable check finishing after quit cannot schedule relaunch',async () => {
   const stat=deferred(),h=harness({statGate:stat,env:{PORTABLE_EXECUTABLE_FILE:'C:\\fixture\\Crew.exe'}});await h.boot();
   const applying=h.invoke('desktop:launch-settings-apply',{});await tick();assert.equal(h.calls.stat,1);
   h.app.quit();await tick();stat.resolve({isFile:() => true});await applying;await tick();
-  assert.equal(h.calls.relaunch,0);assert.equal(h.calls.backendDisconnect,1);assert.equal(h.calls.backendStop,0);assert.equal(h.calls.nativeQuit,1);
+  assert.equal(h.calls.relaunch,0);assert.equal(h.calls.backendStop,1);assert.equal(h.calls.nativeQuit,1);
 });
 
 test('a logs lookup finishing during shutdown cannot open a new dialog',async () => {
-  const access=deferred(),stop=deferred(),h=harness({accessGate:access,backendDisconnect:stop});await h.boot();
+  const access=deferred(),stop=deferred(),h=harness({accessGate:access,backendStop:stop});await h.boot();
   h.menuItem('app-logs').click();await tick();h.app.quit();await tick();
   access.reject(Object.assign(new Error('fixture logs do not exist'),{code:'ENOENT'}));await tick();
   try { assert.equal(h.calls.dialogs,0);assert.deepEqual(h.logs,[]); }
