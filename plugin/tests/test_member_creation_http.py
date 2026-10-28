@@ -54,3 +54,34 @@ class MemberCreationHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(code,400,value)
         self.assertEqual(self.processes,[])
         self.assertIsNone(member_defaults.get(self.conn,'s3'))
+
+    def test_member_cannot_spawn_or_create_leader_and_adopt_existing_members(self):
+        before = self.conn.execute('SELECT COUNT(*) FROM sessions').fetchone()[0]
+        for path, extra in (('/api/spawn', {'leader_session_id': 's3'}),
+                            ('/api/leader', {'members': ['two']})):
+            with self.subTest(path=path):
+                code, value, _ = self.request(path + '?project=demo', {
+                    'caller_session_id': 's1', 'name': 'nested', 'task': 'Finite task', **extra})
+                self.assertEqual(code, 400, value)
+                self.assertIn('只有本项目当前 leader', value['error'])
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM sessions').fetchone()[0], before)
+        self.assertIsNone(board.session(self.conn, 's2')['group_name'])
+        self.assertEqual(self.processes, [])
+
+    def test_owner_can_create_a_leader_without_inventing_an_ai_identity(self):
+        code, value, _ = self.request('/api/leader?project=demo', {
+            'name': 'owner leader', 'task': 'Finite task', 'members': []})
+        self.assertEqual(code, 200, value)
+        self.assertEqual(board.session(self.conn, value['session_id'])['role'], 'leader')
+        self.assertEqual(len(self.processes), 1)
+
+    def test_leader_can_create_member_but_cannot_create_another_leader(self):
+        code, value, _ = self.request('/api/spawn?project=demo', {
+            'caller_session_id': 's3', 'name': 'direct member', 'task': 'Finite task'})
+        self.assertEqual(code, 200, value)
+        self.assertEqual(board.session(self.conn, value['session_id'])['group_name'], 'lead')
+        code, value, _ = self.request('/api/leader?project=demo', {
+            'caller_session_id': 's3', 'name': 'nested leader', 'task': 'Finite task', 'members': []})
+        self.assertEqual(code, 400, value)
+        self.assertIn('只能在自己的当前组创建成员', value['error'])
+        self.assertEqual(len(self.processes), 1)

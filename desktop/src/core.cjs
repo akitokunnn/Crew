@@ -30,7 +30,8 @@ function options(args, {launchSettingsPath} = {}) {
     if (!value || value.startsWith('--')) throw new Error('参数缺少值：' + key);
     explicit[fields[key]] = key === '--port' ? Number(value) : value;
   }
-  const defaults={home:path.join(os.homedir(),'.crew'),python:'python',port:0};
+  const product=require('./product.cjs');
+  const defaults={home:path.join(os.homedir(),product.homeDirectory),python:'python',port:0};
   const file=explicit.launchSettingsPath || (explicit.isolated || explicit.smoke ? path.join(path.resolve(explicit.home || defaults.home),'desktop','launch-settings.json') : launchSettingsPath);
   const saved=require('./launch-settings.cjs').readSync(file);
   const stored=saved ? {home:saved.home,python:saved.python,port:saved.port,backendSource:saved.source,
@@ -42,10 +43,11 @@ function options(args, {launchSettingsPath} = {}) {
   if (result.smoke && (!args.some(value=>value==='--home'||value.startsWith('--home=')) || !result.smokeOutput)) throw new Error('smoke 必须显式指定 --home 和 --smoke-output');
   if (result.smokeVisual && !result.smoke) throw new Error('视觉验收只允许使用隔离 smoke 模式');
   result.home = path.resolve(result.home);
-  const normalHome = path.resolve(os.homedir(), '.crew');
+  const normalHome = path.resolve(os.homedir(), product.homeDirectory);
   const sameHome = process.platform === 'win32' ? result.home.toLowerCase() === normalHome.toLowerCase() : result.home === normalHome;
-  result.instanceName = result.isolated || result.smoke ? 'Crew · 隔离测试' : sameHome ? 'Crew' : 'Crew · 独立数据';
-  if (result.smoke && (result.home === path.resolve(os.homedir(), '.crew') || result.port === 47811)) throw new Error('smoke 必须使用隔离 home 和测试端口');
+  result.instanceName = result.isolated || result.smoke ? product.name+' · 隔离测试' : sameHome ? product.name : product.name+' · 独立数据';
+  const protectedHomes=['.crew',product.homeDirectory].map(name=>path.resolve(os.homedir(),name).toLowerCase());
+  if (result.smoke && (protectedHomes.includes(result.home.toLowerCase()) || result.port === 47811)) throw new Error('smoke 必须使用隔离 home 和测试端口');
   if (result.serviceUrl) {
     result.serviceUrl = loopback(result.serviceUrl);
     if (result.smoke && new URL(result.serviceUrl).port === '47811') throw new Error('smoke 不得连接正式端口');
@@ -144,12 +146,23 @@ async function materializeBackend(source, home) {
 
 class Backend {
   constructor(config, dependencies = {}) { this.config = config; this.spawn = dependencies.spawn || spawn; this.child = null; this.url = null; this.owned = false; this.errors = ''; }
+  async validateService(url) {
+    if (this.config.productGeneration === undefined || this.config.productGeneration === null) return;
+    const health = await request(url, '/api/admin/health');
+    if (health?.ok !== true || health.service !== 'crew' || typeof health.plugin_root !== 'string') {
+      throw Object.assign(new Error('已有服务未返回可核验的 Crew 后台来源，不能确认它属于 Crew V'+this.config.productGeneration), {code:'CREW_PRODUCT_GENERATION'});
+    }
+    await require('./backend-product.cjs').requireGeneration(health.plugin_root, this.config.productGeneration);
+    await require('./backend-product.cjs').requireHomeGeneration(health.home, this.config.productGeneration);
+  }
   async start() {
+    await require('./backend-product.cjs').requireHomeGeneration(this.config.home, this.config.productGeneration);
+    await require('./backend-product.cjs').requireGeneration(this.config.backendDir, this.config.productGeneration);
     if (this.config.serviceUrl) {
       const candidate = loopback(this.config.serviceUrl);
       if (this.config.smoke && new URL(candidate).port === '47811') throw new Error('smoke 不得连接正式端口');
-      try { await projects(candidate); }
-      catch (error) { throw new Error('指定的 Crew 服务不可用：' + error.message); }
+      try { await this.validateService(candidate); await projects(candidate); }
+      catch (error) { throw Object.assign(new Error('指定的 Crew 服务不可用：' + error.message, {cause:error}), {code:error.code}); }
       this.url = candidate;
       return { url: candidate, owned: false };
     }
@@ -161,8 +174,9 @@ class Backend {
       try { candidate = loopback(record.url); }
       catch (error) { throw new Error('Crew 服务登记无效：' + error.message); }
       if (this.config.smoke && new URL(candidate).port === '47811') throw new Error('smoke 不得连接正式端口');
-      try { await projects(candidate); this.url = candidate; return { url:candidate, owned:false }; }
+      try { await this.validateService(candidate); await projects(candidate); this.url = candidate; return { url:candidate, owned:false }; }
       catch (error) {
+        if (error.code === 'CREW_PRODUCT_GENERATION') throw error;
         // A timeout alone is ambiguous. The administrator's separate probe
         // also checks the recorded PID, port occupancy and the HOME OS lock.
         if (!connectionRefused(error) && !await confirmedStopped(this.config,candidate)) throw new Error('现有 Crew 服务暂时不可用，请稍后重试：' + error.message);
@@ -219,6 +233,7 @@ class Backend {
       });
       child.stdout.resume();
       await beginLog('service.log');
+      await this.validateService(this.url);
       await projects(this.url);
       return { url: this.url, owned: true };
     } catch (error) {
@@ -233,8 +248,8 @@ class Backend {
             const record=JSON.parse(await fs.readFile(path.join(this.config.home,'web.json'),'utf8'));
             const candidate=loopback(record.url);
             if(this.config.smoke&&new URL(candidate).port==='47811')throw new Error('smoke 不得连接正式端口');
-            await projects(candidate);this.url=candidate;return{url:candidate,owned:false};
-          }catch(waitError){lastError=waitError;}
+            await this.validateService(candidate);await projects(candidate);this.url=candidate;return{url:candidate,owned:false};
+          }catch(waitError){if(waitError.code==='CREW_PRODUCT_GENERATION')throw waitError;lastError=waitError;}
           await new Promise(resolve=>setTimeout(resolve,100));
         }
         throw new Error('另一个 Crew 正在启动，但尚未能连接，请稍后重试：'+lastError.message);

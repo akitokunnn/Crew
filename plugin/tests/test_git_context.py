@@ -63,7 +63,7 @@ class GitContextTests(CoreCase):
         runtimes.set(self.conn, 's1', 'codex')
         manager = chat.Manager(self.home, PLUGIN, lambda: [])
         send = mock.Mock(side_effect=[ValueError('fixture rejected input'), 'accepted', 'again'])
-        current = SimpleNamespace(runtime='codex', execution=None, send=send)
+        current = SimpleNamespace(runtime='codex', execution=None, send=send, thread_id='fixture-native-thread')
         manager.processes['s1'] = current
         try:
             with self.assertRaisesRegex(ValueError, 'fixture rejected input'):

@@ -1,4 +1,10 @@
-# Crew 桌面版
+# Crew V2 桌面版
+
+V2 的独立默认 HOME 是 `~/.crew-v2`，应用和快捷方式名称为“Crew V2”。不会在 V1 HOME 中启动或更新，源码更新只检查 `rebuild/v2`。顶部全局助手跨工作区保持同一会话；工作区主页展示任务、讨论、拍板、人工 TODO 与成果。快速想法可先本地保存，再显式开始聊。设置中的“行为配置”提供作用域、版本和实际发送记录。
+
+Codex 桌面接续使用同一原生 thread 的交接与返回按钮，只允许轮流输入；原生桌面实际往返尚需单独验收，协议假载体测试不代表真实桌面验证。V2 与 V1 并存，无需先导入旧数据。
+
+以下版本段落保留为基线演进记录，不代表本次新版本的验证结果。
 
 原生 Electron 窗口、工作区首页和系统托盘。需要本机已有 Python 3，以及实际要使用的 Claude Code / Codex；普通工作文件夹无需 Git，后端继续使用 Python 标准库。
 
@@ -43,7 +49,7 @@ Git 的中间状态只更新台账，普通成功留待阅，不额外开启 AI 
 
 “从 Crew 移除”先停止该工作区执行，再从列表移除登记，保留磁盘文件和全部记录。以后重新打开同一目录会恢复原工作区。
 
-打开工作区时可选择升级旧历史或只读查看，启动应用不会自动扫描并导入所有旧目录。首页和工作区菜单可导出完整 `.crewpack`；导入时选择恢复原身份的只读历史或复制为独立工作区，再明确绑定本机目录。导入不恢复旧电脑的执行权限，也不自动启动 AI。历史页可查看消息、附件、报告与保存的文件，项目侧栏的“项目资料”汇集登记文档；任务自己的交付与文档继续保留。详见[本地历史与接续](../docs/storage-v2/implementation.md)。
+打开工作区时可选择升级旧历史或只读查看，启动应用不会自动扫描并导入所有旧目录。首页和工作区菜单可导出完整 `.crewpack`；导入时选择恢复原身份的只读历史或复制为独立工作区，再明确绑定本机目录。导入不恢复旧电脑的执行权限，也不自动启动 AI。历史页可查看消息、附件、报告与保存的文件；项目资料统一从任务内的“交付与文档”进入，不设置侧栏文档总览。详见[本地历史与接续](../docs/storage-v2/implementation.md)。
 
 窗口和托盘会标明“独立数据”或“隔离测试”，便于区分使用的 HOME。历史库接口与“存储与清理”独立；后者继续提供占用、清理预览、回收与恢复。完整历史页隔离验收：`node desktop/scripts/smoke-history.cjs`。
 
@@ -63,7 +69,7 @@ Git 的中间状态只更新台账，普通成功留待阅，不额外开启 AI 
 
 ```powershell
 $crewVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
-& ".\dist\Crew-$crewVersion-portable.exe" --home C:\Temp\crew-private --service-url=http://127.0.0.1:7122 --profile ui-private
+& ".\dist\Crew-V2-$crewVersion-portable.exe" --home C:\Temp\crew-private --service-url=http://127.0.0.1:7122 --profile ui-private
 ```
 
 显式地址必须是健康的本机 Crew 服务，失败直接退出，不另起后台。界面默认数据位于 `home/desktop/ui`，`--profile` 使用 `home/desktop/profiles/<安全名称>`，不会争抢旧版界面的实例锁。后台源码仍位于稳定的 `home/desktop/backend`。菜单「查看日志文件夹」可打开本地 `home/desktop/logs`，其中保留后台最近的 stderr 和启动错误。
@@ -78,13 +84,13 @@ npm test
 npm run build
 ```
 
-构建版本读取本目录 `package.json`，产物包括 `dist/Crew-<version>-win-x64.zip`、`dist/Crew-<version>-portable.exe`、`dist/Crew-<version>-setup.exe`。ZIP 解压一次后直接运行目录中的 `Crew.exe`，日常启动无需重复解包；portable 是每次启动时临时解包的单文件程序；setup 是当前用户安装器，提供开始菜单、桌面快捷方式和卸载入口。`dist/win-unpacked/Crew.exe` 是同版未压缩目录，日常使用建议 ZIP 目录版或安装版。安装器与应用未做代码签名；EXE 原生图标资源仍正常嵌入。后端源码随应用放在 `resources/backend`，打包版会将后端按内容哈希保留到所选 home 的 `desktop/backend`，保证 portable 解包目录清理后 CLI 和守卫路径仍有效；Python 与 Git 使用本机安装。
+构建版本读取本目录 `package.json`，产物包括 `dist/Crew-V2-<version>-win-x64.zip`、`dist/Crew-V2-<version>-portable.exe`、`dist/Crew-V2-<version>-setup.exe`。ZIP 解压一次后直接运行目录中的 `Crew V2.exe`，日常启动无需重复解包；portable 是每次启动时临时解包的单文件程序；setup 是当前用户安装器，提供开始菜单、桌面快捷方式和卸载入口。`dist/win-unpacked/Crew V2.exe` 是同版未压缩目录，日常使用建议 ZIP 目录版或安装版。安装器与应用未做代码签名；EXE 原生图标资源仍正常嵌入。后端源码随应用放在 `resources/backend`，打包版会将后端按内容哈希保留到所选 home 的 `desktop/backend`，保证 portable 解包目录清理后 CLI 和守卫路径仍有效；Python 与 Git 使用本机安装。
 
 验收新版本且保留正在运行的正式实例时，使用独立数据目录。此入口不会复制正式会话、QQ 凭据或自动恢复旧任务：
 
 ```powershell
 $crewVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
-& ".\dist\Crew-$crewVersion-portable.exe" --home C:\Temp\crew-acceptance --port 0 --isolated-sources
+& ".\dist\Crew-V2-$crewVersion-portable.exe" --home C:\Temp\crew-acceptance --port 0 --isolated-sources
 ```
 
 “设置 → 后台与运维”可以直接和运维 AI 聊天、查看状态、保存自动修复配置；“运维 AI 大脑”跳到载体、模型与思考强度选择。桌面对话和 AI 设置直接访问本机 HOME，网页后台断线时仍可使用。打开页面不调用模型；发送才启动一次诊断回复，可停止，所有工作区共用历史，每轮仅带近期对话和诊断快照。聊天用于诊断，实际代码修复由独立策略执行。
@@ -107,15 +113,15 @@ npm run build
 
 ```powershell
 node scripts/smoke.cjs
-node scripts/smoke.cjs dist/win-unpacked/Crew.exe
+node scripts/smoke.cjs "dist/win-unpacked/Crew V2.exe"
 $crewVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
-node scripts/smoke.cjs "dist/Crew-$crewVersion-portable.exe"
+node scripts/smoke.cjs "dist/Crew-V2-$crewVersion-portable.exe"
 node scripts/smoke.cjs --reuse
 node scripts/smoke.cjs --visual
 node scripts/smoke-workspaces.cjs
 node scripts/smoke-handoff.cjs
 node scripts/verify-bundle.cjs
-node scripts/verify-icons.cjs dist/win-unpacked/Crew.exe "dist/Crew-$crewVersion-portable.exe" "dist/Crew-$crewVersion-setup.exe"
+node scripts/verify-icons.cjs "dist/win-unpacked/Crew V2.exe" "dist/Crew-V2-$crewVersion-portable.exe" "dist/Crew-V2-$crewVersion-setup.exe"
 ```
 
 结果保存在 `smoke-output/source.json` / `packaged.json` / `portable.json` 及同名 PNG。单元测试另外覆盖已有服务复用、Git 根目录解析、新建仓库、已有文件保护与后端端口 0 / 优雅退出。

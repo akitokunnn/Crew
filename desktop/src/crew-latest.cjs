@@ -2,6 +2,8 @@
 // Read-only version discovery. The repository and all request paths are fixed.
 const API = 'https://api.github.com/repos/akitokunnn/Crew';
 const WEB = 'https://github.com/akitokunnn/Crew';
+const BRANCH = 'rebuild/v2';
+const APP_ID = require('./product.cjs').appId;
 const VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 
 function parseVersion(value) {
@@ -50,7 +52,7 @@ async function checkLatest({ fetchImpl = globalThis.fetch, timeoutMs = 10000, no
       reject(error); controller.abort(error);
     }, timeoutMs);
   });
-  async function get(route, allowMissing = false) {
+  async function get(route) {
     controller.signal.throwIfAborted();
     const url = API + route;
     let response;
@@ -63,7 +65,6 @@ async function checkLatest({ fetchImpl = globalThis.fetch, timeoutMs = 10000, no
     }
     controller.signal.throwIfAborted();
     if (response.redirected || response.url && response.url !== url) throw new Error('GitHub 版本查询发生了未允许的跳转');
-    if (allowMissing && response.status === 404) return null;
     if (!response.ok) {
       if ([403, 429].includes(response.status)) throw new Error('GitHub 版本查询受限（HTTP ' + response.status + '），请稍后重试');
       throw new Error('GitHub 版本查询失败（HTTP ' + response.status + '）');
@@ -75,28 +76,22 @@ async function checkLatest({ fetchImpl = globalThis.fetch, timeoutMs = 10000, no
     catch (error) { throw new Error('GitHub 版本查询没有返回有效 JSON', { cause: error }); }
   }
   const work = (async () => {
-    const published = await get('/releases/latest', true);
-    let release = null;
-    if (published !== null) {
-      if (!published || typeof published.tag_name !== 'string' || published.draft !== false || published.prerelease !== false) throw new Error('GitHub 正式发布信息无效');
-      const parsed = parseVersion(published.tag_name);
-      if (parsed.prerelease.length) throw new Error('GitHub 正式发布标记包含预览版本');
-      release = { version: published.tag_name.replace(/^v/, ''), tag: published.tag_name,
-        url: WEB + '/releases/tag/' + encodeURIComponent(published.tag_name), published_at: date(published.published_at, '发布时间') };
-    }
-    const commit = await get('/commits/main');
-    if (!commit || typeof commit.sha !== 'string' || !/^[0-9a-f]{40}$/.test(commit.sha)) throw new Error('GitHub 主干提交信息无效');
+    // The repository's latest release and main belong to V1. V2 only follows
+    // its explicit development branch until it has a separate release feed.
+    const commit = await get('/commits/' + encodeURIComponent(BRANCH));
+    if (!commit || typeof commit.sha !== 'string' || !/^[0-9a-f]{40}$/.test(commit.sha)) throw new Error('GitHub V2 分支提交信息无效');
     const committed_at = date(commit.commit?.committer?.date, '提交时间');
     const contents = await get('/contents/desktop/package.json?ref=' + commit.sha);
-    if (!contents || contents.path !== 'desktop/package.json' || contents.encoding !== 'base64' || typeof contents.content !== 'string') throw new Error('GitHub 主干版本文件无效');
+    if (!contents || contents.path !== 'desktop/package.json' || contents.encoding !== 'base64' || typeof contents.content !== 'string') throw new Error('GitHub V2 分支版本文件无效');
     const encoded = contents.content.replace(/\s/g, '');
-    if (!encoded || encoded.length > 131072 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) throw new Error('GitHub 主干版本文件编码无效');
+    if (!encoded || encoded.length > 131072 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) throw new Error('GitHub V2 分支版本文件编码无效');
     let packageJson;
     try { packageJson = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.from(encoded, 'base64'))); }
-    catch (error) { throw new Error('GitHub 主干版本文件不是有效 JSON', { cause: error }); }
-    if (!packageJson || packageJson.name !== 'crew-desktop' || typeof packageJson.version !== 'string') throw new Error('GitHub 主干版本文件缺少 Crew 版本');
+    catch (error) { throw new Error('GitHub V2 分支版本文件不是有效 JSON', { cause: error }); }
+    if (!packageJson || packageJson.name !== 'crew-desktop' || typeof packageJson.version !== 'string') throw new Error('GitHub V2 分支版本文件缺少 Crew 版本');
+    if (packageJson.build?.appId !== APP_ID) throw new Error('GitHub rebuild/v2 尚未发布匹配的 Crew V2 源码；不会使用 V1 更新');
     parseVersion(packageJson.version);
-    return { release, main: { version: packageJson.version, sha: commit.sha,
+    return { release: null, branch: BRANCH, main: { version: packageJson.version, sha: commit.sha, branch: BRANCH,
       url: WEB + '/blob/' + commit.sha + '/desktop/package.json', committed_at }, checked_at: now() };
   })();
   try { return await Promise.race([work, deadline, cancelled]); }

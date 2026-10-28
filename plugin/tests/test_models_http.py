@@ -261,7 +261,7 @@ class ModelWakeTests(shell.ShellFixture, unittest.TestCase):
         self.assertEqual(self.request("/api/session/options", {"session_id": sid, "model": OPUS, "effort": "low"})[0], 200)
         self.assertEqual(self.request("/api/chat/send", {"session_id": sid, "text": "continue"})[0], 200)
         command = self.processes[-1].command
-        self.assertEqual(command[-2:], ["--resume", sid])
+        self.assertEqual(command[command.index('--resume') + 1], sid)
         self.assertEqual(command[command.index("--model") + 1], OPUS)
         self.assertEqual(command[command.index("--effort") + 1], "low")
         self.assertIsNone(manager.applied(sid))
@@ -279,7 +279,7 @@ class ModelWakeTests(shell.ShellFixture, unittest.TestCase):
         spec = self.spec({"id": target["spawn_id"]})
         self.assertEqual((spec["task"], spec["md"]), ("白板当前任务", None))
         process = self.processes[-1]
-        self.assertEqual(process.command[-2:], ["--resume", "s1"])
+        self.assertEqual(process.command[process.command.index('--resume') + 1], 's1')
         self.assertEqual(process.command[process.command.index("--name") + 1], "one")
         self.assertEqual(process.command[process.command.index("--model") + 1], OPUS)
         self.assertEqual(process.command[process.command.index("--effort") + 1], "high")

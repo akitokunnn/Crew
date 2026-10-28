@@ -228,9 +228,11 @@
   };
   const current = context => active === context;
   const atBottom = context => context.scroll.scrollHeight - context.scroll.scrollTop - context.scroll.clientHeight < 64;
-  const keyFor = context => `crew.draft:${context.state.project.name}:${context.session.session_id}${context.goalId == null ? "" : `:goal:${context.goalId}`}`;
+  const scopeKey = context => context.state.project?.name ?? "personal";
+  const projectQuery = context => context.state.project ? {project:context.state.project.name} : {};
+  const keyFor = context => `crew.draft:${scopeKey(context)}:${context.session.session_id}${context.goalId == null ? "" : `:goal:${context.goalId}`}`;
   const goalPayload = context => context.goalId == null ? {} : {goal_id:context.goalId};
-  const query = context => new URLSearchParams({ project: context.state.project.name, session_id: context.session.session_id, ...goalPayload(context) });
+  const query = context => new URLSearchParams({ ...projectQuery(context), session_id: context.session.session_id, ...goalPayload(context) });
 
   function nameOf(context, ccName) {
     const person = context.state.leaders.concat(context.state.members).find(item => item.cc_name === ccName && item.name !== null);
@@ -398,6 +400,7 @@
     return {turn, process, final:final ? {...final.item, content:indexes.map(index => final.blocks[index]), text:""} : null};
   }
   function turnDuration(turn) {
+    if (turn.nativeImported) return null;
     const milliseconds = Date.parse(turn.endedAt) - Date.parse(turn.startedAt);
     if (!Number.isFinite(milliseconds) || milliseconds < 0) return null;
     const seconds = Math.round(milliseconds / 1000);
@@ -530,7 +533,7 @@
   function assistant(context, event) {
     let item = context.byId.get(event.id);
     if (!item) {
-      context.turn ||= {seq:context.turnStart?.seq ?? event.seq, startedAt:context.turnStart?.at ?? event.at, finished:false, items:[]};
+      context.turn ||= {seq:context.turnStart?.seq ?? event.seq, startedAt:context.turnStart?.at ?? event.at, finished:false, items:[], nativeImported:!!event.native_imported};
       item = { id: event.id, kind: "assistant", seq: event.seq, lastSeq: event.seq, at: event.at, text: "", content: null, replyText:"", replySeq:0, turn:context.turn };
       context.turn.items.push(item);
       context.items.push(item); context.byId.set(item.id, item);
@@ -762,7 +765,7 @@
   }
   function mount(options) {
     unmount();
-    const cacheKey = `${options.state.project.name}:${options.session.session_id}:${options.goalId ?? ""}`;
+    const cacheKey = `${scopeKey(options)}:${options.session.session_id}:${options.goalId ?? ""}`;
     let cache = sessions.get(cacheKey);
     if (!cache) {
       cache = { expanded: new Set(), scrollTop: null, first: true, unreadAnchor: null, text: "", images: [], version: 0, sending: false, pendingSendSeq: null, lastReadAt: 0 };
@@ -860,7 +863,7 @@
   }
   async function watchCompact(id, options) {
     const history = await options.api(`/api/chat/history?session_id=${encodeURIComponent(id)}`);
-    const params = new URLSearchParams({session_id:id, project:options.state.project.name, after:history.events.length === 0 ? 0 : history.events[history.events.length - 1].seq});
+    const params = new URLSearchParams({session_id:id, ...projectQuery(options), after:history.events.length === 0 ? 0 : history.events[history.events.length - 1].seq});
     const stream = new EventSource(`/api/chat/events?${params}`);
     const close = () => stream.close();
     const finish = event => { close(); options.onFinish?.(event); };

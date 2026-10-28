@@ -5,6 +5,7 @@ group's). Only the human resolves or undoes them. Every state change, its audit
 snapshot and its leader/handoff notification are committed together.
 """
 import json
+import uuid
 
 from . import board, store
 
@@ -59,6 +60,7 @@ def _leader(conn, proposer):
 
 
 def _enrich(conn, item):
+    from . import goal_links
     proposer = board.session(conn, item["session_id"])
     leader = _leader(conn, proposer)
     rank = None
@@ -66,7 +68,11 @@ def _enrich(conn, item):
         priority = conn.execute("SELECT position FROM leader_priority WHERE project=? AND session_id=?",
                                 (item["project"], leader["session_id"])).fetchone()
         rank = priority[0] + 1 if priority is not None else None
+    links = goal_links.list_links(conn, 'todo', item['id'])
+    key = conn.execute('SELECT operation_key FROM todo_operation_keys WHERE todo_id=? ORDER BY operation_key LIMIT 1', (item['id'],)).fetchone()
     return {**item, "blocking": bool(item["blocking"]),
+            'operation_key': key['operation_key'] if key else None,
+            'goal_ids': sorted({link['goal_id'] for link in links}), 'goal_links': links,
             "proposer_name": proposer["crew_name"] or proposer["cc_name"] or proposer["session_id"][:8],
             "group": proposer["group_name"], "group_name": proposer["group_name"],
             "leader_session_id": leader["session_id"] if leader is not None else None,
@@ -94,19 +100,50 @@ def list(conn, project_name=None, all=False):
 
 
 @board.atomic
-def add(conn, session_id, title, steps, verification, blocking=False, now=None):
+def add(conn, session_id, title, steps, verification, blocking=False, now=None, *, operation_key=None):
     actor = _actor(conn, session_id)
     _text(title, "标题", 500)
     _text(steps, "操作步骤")
     _text(verification, "确认方法")
     if type(blocking) is not bool:
         raise board.BoardError("blocking 必须是布尔值")
+    if operation_key is not None:
+        _text(operation_key, '同一实际操作标识', 300)
+        prior = conn.execute('SELECT todo_id FROM todo_operation_keys WHERE project=? AND operation_key=?',
+                             (actor['project'], operation_key)).fetchone()
+        if prior is not None:
+            return {**get(conn, actor['project'], prior['todo_id']), 'duplicate': True}
+    else:
+        # An exact same-source payload is a retry while the action is open.
+        # Other wording or a different proposer never implies equivalence.
+        prior = conn.execute("SELECT id FROM todos WHERE project=? AND session_id=? AND title=? AND steps=? "
+                             "AND verification=? AND blocking=? AND status='open' ORDER BY id LIMIT 1",
+                             (actor['project'], session_id, title, steps, verification, int(blocking))).fetchone()
+        if prior is not None:
+            return {**get(conn, actor['project'], prior['id']), 'duplicate': True}
     timestamp = store.now_iso() if now is None else now
     todo_id = conn.execute("INSERT INTO todos(project,session_id,title,steps,verification,blocking,created_at,updated_at) "
                            "VALUES(?,?,?,?,?,?,?,?)", (actor["project"], session_id, title, steps, verification,
                                                       int(blocking), timestamp, timestamp)).lastrowid
+    conn.execute('INSERT INTO todo_operation_keys VALUES(?,?,?)',
+                 (actor['project'], operation_key or 'crew-todo:' + uuid.uuid4().hex, todo_id))
     board._event(conn, "todo:add", actor["project"], session_id, {"id": todo_id}, now)
-    return get(conn, actor["project"], todo_id)
+    return get(conn, actor['project'], todo_id)
+
+
+def add_native(conn, session_id, title, steps, verification, *, execution_id=None, operation_key=None, blocking=False, now=None):
+    """One atomic entry for CC/Codex: bind only the host's actual execution."""
+    from . import goal_links, goals
+    with goals.transaction(conn):
+        if execution_id is not None:
+            execution = goals.get_execution(conn, execution_id)
+            if execution['session_id'] != session_id:
+                raise board.BoardError('人工待办执行与调用会话不匹配')
+        value = add.__wrapped__(conn, session_id, title, steps, verification, blocking, now, operation_key=operation_key)
+        if execution_id is not None:
+            goal_links.bind(conn, 'todo', value['id'], execution_id, associate=operation_key is not None)
+        result = get(conn, value['project'], value['id'])
+        return {**result, 'duplicate': True} if value.get('duplicate') else result
 
 
 def _route(conn, item):

@@ -33,7 +33,13 @@ def stop_project(manager, conn, project):
 def execution_session(conn, session):
     """Stored session paths, never historical spawn JSON, authorize a launch."""
     current = board.session(conn, session['session_id'])
-    board.project(conn, current['project'])  # Removed workspaces cannot launch.
+    from . import personal
+    if personal.is_assistant(conn, current['session_id']):
+        personal._active_assistant(conn, current['session_id'])
+        if current['project'] is not None:
+            raise board.Conflict('全局助手仍绑定旧工作区，需要先迁移原会话')
+    else:
+        board.project(conn, current['project'])  # Removed workspaces cannot launch.
     directory = Path(current['cwd']).expanduser().resolve(strict=True)
     if not directory.is_dir():
         raise NotADirectoryError(str(directory))
@@ -45,6 +51,8 @@ def execution_session(conn, session):
 
 def migration_notice(conn, session):
     from . import workspace_settings
+    if session['project'] is None:
+        return None
     for change in reversed(workspace_settings.directory_changes(conn, session['project'])):
         moved = next((item for item in change['sessions'] if item['session_id'] == session['session_id']), None)
         if moved and store.norm_path(moved['old_cwd']) != store.norm_path(moved['new_cwd']):

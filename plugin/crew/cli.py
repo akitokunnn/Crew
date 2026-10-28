@@ -129,6 +129,7 @@ def parser():
     c.add_argument("--scope")
     c.add_argument("--done-when")
     command("whoami", True)
+    command('rename', True).add_argument('name')
     command("task").add_argument("text")
     c = command("card", True)
     c.add_argument("--scope")
@@ -214,6 +215,7 @@ def parser():
     a.add_argument("--steps", required=True)
     a.add_argument("--verify", dest="verification", required=True)
     a.add_argument("--blocking", action="store_true")
+    a.add_argument('--operation-key', help='同一实际人工操作的稳定标识；多个任务复用时保留原事项')
     a.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
     a = todos.add_parser("withdraw")
     a.add_argument("id", type=int)
@@ -285,7 +287,15 @@ def parser():
                    help='默认 information 仅归档、不唤醒；决定用 decision，任务用 task，结果用 result，阻塞用 blocker。')
     a.add_argument('--message-id', help='调用方稳定重试编号；同一编号只用于完全相同的接收者、正文和类型。')
     a.add_argument('--reply-to', help='回复原协作消息编号，按其已记录的会话/任务归属回送。')
-    for namespace, actions in (('goal', ('create','status','start','pause','resume','cancel','reopen','amend','assign','report-template','finish')),
+    a = command('personal', True)
+    a.set_defaults(json=True)
+    a.add_argument('action')
+    a.add_argument('--message-id')
+    a.add_argument('--request-id')
+    payload = a.add_mutually_exclusive_group()
+    payload.add_argument('--data', help='JSON action payload')
+    payload.add_argument('--file', type=Path, help='UTF-8 JSON action payload')
+    for namespace, actions in (('goal', ('create','status','start','pause','resume','cancel','reopen','amend','assign','report-template','report.get','report.publish','mode.set','finish','work.list','work.add','work.update','versions.list','versions.preview','versions.file','version.capture','version.restore')),
                                ('context', ('inspect','retrieve','put','correct','expire'))):
         goal_parser = command(namespace, True)
         goal_parser.set_defaults(json=True)
@@ -300,8 +310,9 @@ def parser():
             payload = entry.add_mutually_exclusive_group()
             payload.add_argument('--data', help='JSON object containing action data')
             payload.add_argument('--file', type=Path, help='UTF-8 JSON action data/report file')
-            if namespace == 'goal' and action == 'finish':
+            if namespace == 'goal' and action in ('finish', 'report.publish'):
                 entry.add_argument('--html-file', type=Path, help='读取自包含 HTML 正文，与验收 JSON 一起保存')
+                entry.add_argument('--request-id', default=argparse.SUPPRESS)
             for name in ('title','request','leader','to','task','text','reason','item','kind','source'):
                 entry.add_argument('--' + name, default=argparse.SUPPRESS)
             entry.add_argument('--acceptance', '--accept', action='append', default=argparse.SUPPRESS)
@@ -521,7 +532,7 @@ def _goal_command(args, cwd):
     if not isinstance(payload, dict):
         raise board.BoardError('目标 data/JSON 文件必须为对象')
     action = args.action if args.command == 'goal' else 'context.' + args.action
-    if action == 'finish' and 'report' not in payload:
+    if action in ('finish', 'report.publish') and 'report' not in payload:
         payload = {'report': payload}
     html_file = getattr(args, 'html_file', None)
     if html_file is not None:
@@ -537,11 +548,11 @@ def _goal_command(args, cwd):
         if not document.strip():
             raise board.BoardError('HTML 正文文件不能为空')
         report['document_html'] = document
-    if action == 'finish' and isinstance(payload.get('report'), dict) and payload['report'].get('goal_id'):
+    if action in ('finish', 'report.publish') and isinstance(payload.get('report'), dict) and payload['report'].get('goal_id'):
         payload.setdefault('goal_id', payload['report']['goal_id'])
     for flag, field in (('title','title'),('request','request'),('leader','leader'),('to','to'),('task','task'),
                         ('text','text'),('reason','reason'),('item','item_id'),('kind','kind'),('acceptance','acceptance'),
-                        ('constraint','constraints'),('dependency','dependencies'),('priority','priority'),('confirmed','confirmed'),('start','start')):
+                        ('constraint','constraints'),('dependency','dependencies'),('priority','priority'),('confirmed','confirmed'),('start','start'),('request_id','request_id')):
         if hasattr(args, flag):
             payload[field] = getattr(args, flag)
     if hasattr(args, 'source'):
@@ -561,6 +572,27 @@ def _goal_command(args, cwd):
     # fallback can accidentally launch or duplicate an execution.
     return spawn.request_start(args.home, project, '/api/goals/agent',
                                {'action': action, 'data': payload, 'actor_session_id': _actor(args), 'execution_id': execution_id})
+
+
+def _personal_command(args):
+    from . import personal_actions, spawn
+    bound = os.environ.get('CREW_SESSION_ID') or os.environ.get('CLAUDE_CODE_SESSION_ID')
+    if bound and args.session_id is not None and args.session_id != bound:
+        raise board.BoardError('不能用 --session 改写宿主绑定的助手身份')
+    sid = bound or _session_id(args)
+    if args.file is not None:
+        if args.file.stat().st_size > 1024 * 1024:
+            raise board.BoardError('助手 JSON 文件超过 1 MiB')
+        payload = json.loads(args.file.read_text(encoding='utf-8-sig'))
+    else:
+        payload = json.loads(args.data) if args.data is not None else {}
+    if not isinstance(payload, dict):
+        raise board.BoardError('助手 data/JSON 文件必须为对象')
+    envelope = {'data': payload, 'message_id': args.message_id, 'request_id': args.request_id}
+    if args.action in personal_actions.READ_ACTIONS:
+        return personal_actions.dispatch(args.home, sid, args.action, envelope)
+    return spawn.request_start(args.home, '', '/api/assistant/native-action',
+                               {'action': args.action, 'data': envelope, 'actor_session_id': sid})
 
 
 def _goal_item_execution(conn, args, *, live=True):
@@ -662,6 +694,13 @@ def execute(conn, args, cwd, agents_provider):
         if p is None:
             raise board.BoardError("当前目录不属于已启用项目，请先 crew init")
         sid = _session_id(args)
+        host = os.environ.get('CREW_SESSION_ID') or os.environ.get('CLAUDE_CODE_SESSION_ID')
+        if host:
+            if sid != host:
+                raise board.BoardError('不能用 --session 改写宿主绑定的身份')
+            current = conn.execute('SELECT crew_name,role FROM sessions WHERE session_id=?', (host,)).fetchone()
+            if current is not None and current['crew_name'] and current['role'] != args.role:
+                raise board.BoardError('已有 Crew 会话不能通过 join 改变角色；成员需要拆分任务时请交回 leader')
         worktree, branch = git_details(cwd)
         agents = _agents(agents_provider, allow_failure=True)
         value = board.join(conn, sid, p["name"], args.name, cwd, worktree, branch, args.task, args.role, args.group, _cc_name(agents, sid))
@@ -678,6 +717,13 @@ def execute(conn, args, cwd, agents_provider):
         return value
     if cmd == "whoami":
         return _with_card(conn, board.whoami(conn, _session_id(args)))
+    if cmd == 'rename':
+        from . import session_ops
+        sid = _session_id(args)
+        host = os.environ.get('CREW_SESSION_ID') or os.environ.get('CLAUDE_CODE_SESSION_ID')
+        if host and sid != host:
+            raise board.BoardError('不能用 --session 改写宿主绑定的身份')
+        return session_ops.rename_self(conn, sid, args.name)
     if cmd == "task":
         return board.set_task(conn, _session_id(args), args.text)
     if cmd == "card":
@@ -714,8 +760,7 @@ def execute(conn, args, cwd, agents_provider):
         if execution_id:
             from . import goal_links, goals
             with goals.transaction(conn):
-                number = board.ask.__wrapped__(conn, _session_id(args), args.question, args.option, args.recommend, args.blocking, brief=brief)
-                goal_links.bind(conn, 'decision', number, execution_id)
+                number = board.ask.__wrapped__(conn, _session_id(args), args.question, args.option, args.recommend, args.blocking, brief=brief, execution_id=execution_id)
                 return number
         return board.ask(conn, _session_id(args), args.question, args.option, args.recommend, args.blocking, brief=brief)
     if cmd == "decision":
@@ -773,13 +818,8 @@ def execute(conn, args, cwd, agents_provider):
         action = getattr(args, "action", None) or "list"
         if action == "add":
             execution_id = _goal_item_execution(conn, args)
-            if execution_id:
-                from . import goal_links, goals
-                with goals.transaction(conn):
-                    result = todo.add.__wrapped__(conn, _session_id(args), args.title, args.steps, args.verification, args.blocking)
-                    goal_links.bind(conn, 'todo', result['id'], execution_id)
-                    return result
-            return todo.add(conn, _session_id(args), args.title, args.steps, args.verification, args.blocking)
+            return todo.add_native(conn, _session_id(args), args.title, args.steps, args.verification,
+                                   blocking=args.blocking, operation_key=args.operation_key, execution_id=execution_id)
         if action == "withdraw":
             return todo.withdraw(conn, _session_id(args), args.id, args.reason)
         return todo.list(conn, project, all=args.all)
@@ -975,6 +1015,10 @@ def main(argv=None, agents_provider=claude_agents, cwd=None, plugin_root=None):
                 **({'reply_to': args.reply_to} if args.reply_to is not None else {}),
                 **({'message_id': args.message_id} if args.message_id else {})})
             _emit(value, args.json, args.command)
+            return 0
+        if args.command == 'personal':
+            value = _personal_command(args)
+            _emit(value, True, args.command)
             return 0
         if args.command in ('goal', 'context'):
             value = _goal_command(args, cwd)

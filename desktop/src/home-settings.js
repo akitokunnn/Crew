@@ -36,7 +36,7 @@
   }
   async function ensure(){
     if(ui)return ui;if(creating)return creating;
-    creating=(async()=>{await bridge.settingsUI();ui=window.CrewSettings.create({host:root,read:()=>bridge.settingsGet(),save:body=>bridge.settingsSave(body),operations:{snapshot:()=>bridge.adminChatSnapshot(),send:body=>bridge.adminChatSend(body),interrupt:()=>bridge.adminChatInterrupt(),configGet:()=>bridge.adminConfigGet(),configSave:body=>bridge.adminConfigSave(body),launch:{get:()=>bridge.launchSettingsGet(),validate:body=>bridge.launchSettingsValidate(body),apply:body=>bridge.launchSettingsApply(body),pick:body=>bridge.launchSettingsPick(body)}},panels:{appearance,connections,storage,tools:host=>window.CrewHomeTools?.mount(host),backend}});return ui;})();
+    creating=(async()=>{await bridge.settingsUI();ui=window.CrewSettings.create({host:root,read:()=>bridge.settingsGet(),save:body=>bridge.settingsSave(body),operations:{snapshot:()=>bridge.adminChatSnapshot(),send:body=>bridge.adminChatSend(body),interrupt:()=>bridge.adminChatInterrupt(),configGet:()=>bridge.adminConfigGet(),configSave:body=>bridge.adminConfigSave(body),launch:{get:()=>bridge.launchSettingsGet(),validate:body=>bridge.launchSettingsValidate(body),apply:body=>bridge.launchSettingsApply(body),pick:body=>bridge.launchSettingsPick(body)}},panels:{prompts:host=>window.CrewBehaviorPrompts.mount(host,{read:query=>bridge.promptsGet(query),save:body=>bridge.promptsSave(body)}),appearance,connections,storage,tools:host=>window.CrewHomeTools?.mount(host),backend}});return ui;})();
     try{return await creating;}finally{creating=null;}
   }
   async function show(category='ai'){

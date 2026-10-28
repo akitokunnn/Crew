@@ -76,7 +76,14 @@ def target_info(root):
                      ".claude-plugin/plugin.json", "defaults/blacklist.txt", "defaults/prices.json"):
         if not (root / required).is_file():
             raise UpdateError("桌面自带的 Crew 缺少必需文件：" + str(root / required))
-    return {"root": str(root), "version": manifest_version(root), "digest": digest(root)}
+    marker = root / 'crew-product.json'
+    generation = 1
+    if marker.exists():
+        product = json.loads(marker.read_text(encoding='utf-8'))
+        generation = product.get('generation') if isinstance(product, dict) else None
+        if type(generation) is not int or generation != 2:
+            raise UpdateError('Crew 产品代际标记无效：' + str(marker))
+    return {"root": str(root), "version": manifest_version(root), "digest": digest(root), 'generation': generation}
 
 
 def cli_entry(home):
@@ -145,22 +152,9 @@ def plugin_state(target, command):
 
 
 def update_plugin(target, command):
-    before = plugin_state(target, command)
-    if before["state"] != "update":
-        raise UpdateError("Claude 插件状态已变化（%s），请重新检查：%s" % (before["state"], before.get("reason", "")))
-    result = _run(command, ["plugin", "update", PLUGIN_ID, "--scope", "user", "--json"])
-    lines = [line for line in result.stdout.splitlines() if line.strip().startswith("{")]
-    reply = json.loads(lines[0]) if lines else None
-    if result.returncode != 0 or not isinstance(reply, dict) or reply.get("outcome") != "ok":
-        detail = (reply.get("message") or reply.get("failureCode")) if isinstance(reply, dict) else None
-        raise UpdateError("claude plugin update 失败（退出码 %s）：%s" % (
-            result.returncode, detail or (result.stderr or result.stdout).strip()[:500] or "没有输出"))
-    after = plugin_state(target, command)
-    if after["state"] != "current":
-        raise UpdateError("插件更新后仍与桌面自带版本不一致：登记 %s，实际读取 %s（版本 %s）。请手动执行 "
-                          "claude plugin update crew@crew --scope user 并核对。" % (
-                              after.get("registered_version"), after.get("source"), after.get("source_version")))
-    return {"before": before, "after": after, "reply": reply}
+    # Keep the old helper operation as an explicit refusal for an older shell.
+    # Managed V2 sessions load --plugin-dir from their own backend source.
+    raise UpdateError('Crew V2 使用会话专用插件；不会更新共享的 V1 Claude 插件')
 
 
 def backup(home):
@@ -182,8 +176,23 @@ def backup(home):
     return {"path": str(path), "bytes": path.stat().st_size, "integrity": "ok"}
 
 
+def validate_home(home):
+    home = Path(home).resolve()
+    if home == (Path.home() / '.crew').resolve():
+        raise UpdateError('Crew V2 不会更新 V1 的 .crew 数据目录')
+    previous = cli_entry(home)
+    if previous['state'] != 'missing':
+        previous_root = previous.get('plugin_root')
+        if not previous_root or target_info(previous_root)['generation'] != 2:
+            raise UpdateError('此 HOME 的命令入口属于 V1 或来源未确认；请使用独立的 V2 HOME')
+    return home
+
+
 def switch(home, root):
     target = target_info(root)
+    if target['generation'] != 2:
+        raise UpdateError('更新来源不是 Crew V2；不会把 V2 切换到 V1')
+    home = validate_home(home)
     from .home_migration import reset_deployment
     deployment = reset_deployment({'home': str(Path(home).resolve())})
     runtime = install.install(home, target["root"])
@@ -243,16 +252,11 @@ def hold(home, stream):
 
 
 def inspect(home, root):
+    validate_home(home)
     target = target_info(root)
-    try:
-        command = claude_command()
-    except FileNotFoundError as exc:
-        plugin = {"state": "unavailable", "reason": "未找到 claude 命令，无法确认 Claude 插件状态：" + str(exc)}
-    else:
-        try:
-            plugin = plugin_state(target, command)
-        except (UpdateError, OSError, ValueError, KeyError, TypeError) as exc:
-            plugin = {"state": "blocked", "reason": "无法读取 Claude 插件登记：%s: %s" % (type(exc).__name__, exc)}
+    plugin = {'state': 'session-scoped', 'source': target['root'], 'source_version': target['version'],
+              'registered_version': target['version'], 'scope': 'managed-session'} if target['generation'] == 2 else {
+              'state': 'blocked', 'reason': '更新来源不是 Crew V2；不会修改共享的 V1 插件'}
     return {"target": target, "cli": cli_entry(home), "plugin": plugin}
 
 
@@ -275,7 +279,7 @@ def main(argv=None):
         if args.operation == "inspect":
             value = inspect(args.home, args.target)
         elif args.operation == "plugin-update":
-            value = update_plugin(target_info(args.target), claude_command())
+            value = update_plugin(target_info(args.target), None)
         elif args.operation == "switch":
             value = switch(args.home, args.target)
         elif args.operation == "backup":

@@ -12,7 +12,7 @@ from unittest import mock
 from urllib.error import HTTPError
 from urllib.request import ProxyHandler, Request, build_opener
 
-from crew import board, chat, hooks, messaging, runtimes, store, todo, web
+from crew import behavior_prompts, board, chat, hooks, messaging, runtimes, store, todo, web
 from test_shell import NOW, PLUGIN, ShellFixture
 
 
@@ -21,6 +21,11 @@ class FakeCodex:
 
     def __init__(self, home, plugin_root, session, spec, options, journal, router, **kwargs):
         self.execution, self.goal_handler = kwargs.get('execution'), kwargs.get('goal_handler')
+        self.thread_id = 'fixture-native-' + session['session_id']
+        # Real CodexRunning supplies the effective startup prompt before send.
+        with closing(store.connect(home)) as conn:
+            self.behavior_prompt_hash = behavior_prompts.manifest_hash(
+                behavior_prompts.for_session(conn, session['session_id'], plugin_root=plugin_root))
         self.process = mock.Mock(pid=8123)
         self.process.poll.return_value = None
         self.journal, self.applied = journal, dict(options)
@@ -94,7 +99,7 @@ class ManagedRuntimeTests(ShellFixture, unittest.TestCase):
         self.assertFalse(self.manager.running(sid))
 
     def test_peer_delivery_is_queued_while_busy_then_delivered_once(self):
-        current = FakeCodex(self.home, PLUGIN, {}, {}, {}, self.manager.journal('s1'), None)
+        current = FakeCodex(self.home, PLUGIN, board.session(self.conn, 's1'), {}, {}, self.manager.journal('s1'), None)
         self.manager.processes['s1'] = current
         current.journal.set_status('working')
         receipt = self.manager.send_message('s3', 's1', '继续已批准的任务', message_id='stable-call', kind='task')
@@ -207,12 +212,12 @@ class RuntimeFeatureHttpTests(ShellFixture, unittest.TestCase):
         request = Request(self.server.url + '/api/settings', json.dumps(payload).encode(), {'X-Crew': '1'})
         with self.opener.open(request, timeout=5) as response:
             result = json.load(response)
-        self.assertEqual(result['ai'], payload['ai'])
+        self.assertEqual(result['ai'], {**payload['ai'], 'assistant': None})
         self.assertEqual(result['home'], str(self.home.resolve()))
         self.assertEqual(runtimes.get(self.conn, 's3'), original)
         self.assertEqual(self.processes, [])
         with self.opener.open(self.server.url + '/api/settings', timeout=5) as response:
-            self.assertEqual(json.load(response)['ai'], payload['ai'])
+            self.assertEqual(json.load(response)['ai'], {**payload['ai'], 'assistant': None})
         self.assertEqual(self.request('/api/settings', {'ai': {'default': {'runtime': 'codex'}}})[0], 400)
         self.assertEqual(self.request('/api/settings', {'ai': payload['ai'], 'unknown': True})[0], 400)
 

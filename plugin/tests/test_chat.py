@@ -167,6 +167,10 @@ class ChatTests(UsageFixture, unittest.TestCase):
         journal.set_status(status)
         process = FakeProcess([])
         manager.processes["s1"] = chat.Running(process, journal)
+        # This fixture bypasses _launch_native; model its already supplied
+        # startup prompt so unrelated message tests do not simulate an update.
+        manager.processes['s1'].behavior_prompt_hash = chat.behavior_prompts.manifest_hash(
+            chat.behavior_prompts.for_session(self.conn, 's1', plugin_root=self.root))
         session = board.session(self.conn, "s1")
         return manager, process, session
 

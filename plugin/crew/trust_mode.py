@@ -166,8 +166,11 @@ def _decision(conn, decision_id):
 def auto_answer(conn, decision_id, reason=None, now=None):
     decision = _decision(conn, decision_id)
     leader_id = _decision_leader(conn, decision)
+    from . import goal_mode
+    policy = goal_mode.decision_policy(conn, decision_id)
+    enabled = policy['enabled'] if policy is not None else (leader_id is not None and get(conn, decision['project'], leader_id)['enabled'])
     if (leader_id is None or not _leader_active(conn, board.session(conn, leader_id))
-            or not get(conn, decision["project"], leader_id)["enabled"]):
+            or not enabled):
         return None
     existing = conn.execute("SELECT reason,recorded_at FROM trust_decisions WHERE decision_id=?", (decision_id,)).fetchone()
     if decision["status"] != "open":
@@ -184,7 +187,8 @@ def auto_answer(conn, decision_id, reason=None, now=None):
     board.answer.__wrapped__(conn, decision_id, recommendation, actor="trust:" + decision["session_id"], now=now)
     conn.execute("INSERT INTO trust_decisions(decision_id,reason,recorded_at) VALUES(?,?,?)", (decision_id, reason, timestamp))
     board._event(conn, "trust:decision", decision["project"], "trust:" + decision["session_id"],
-                 {"id": decision_id, "recommendation": recommendation, "reason": reason}, now)
+                 {"id": decision_id, "recommendation": recommendation, "reason": reason,
+                  "goal_policy": policy}, now)
     return {**_decision(conn, decision_id), "automated": True, "reason": reason, "reason_recorded_at": timestamp}
 
 

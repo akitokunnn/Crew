@@ -127,7 +127,7 @@ class SpawnTests(ShellFixture, unittest.TestCase):
         self.assertEqual(self.commands, [command])
         self.assertEqual(command[command.index("--name") + 1], "new")
         self.assertEqual(command[command.index("--plugin-dir") + 1], str(PLUGIN.resolve()))
-        self.assertEqual(command[-2:], ["--session-id", result["session_id"]])
+        self.assertEqual(command[command.index('--session-id') + 1], result["session_id"])
         self.assertNotIn("--agent", command)
         self.assertEqual(self.processes[0].options["cwd"], str(self.project.resolve()))
         self.assertEqual(self.processes[0].options["env"]["CREW_ROLE"], "member")
@@ -658,7 +658,7 @@ class WebTests(ShellFixture, unittest.TestCase):
         self.assertEqual((code,accepted),(200,{'ok':True,'message_id':'member-resume','accepted':True,'delivery':'started'}))
         self.assertEqual(len(self.processes), 2)
         process = self.processes[1]
-        self.assertEqual(process.command[-2:], ["--resume", session_id])
+        self.assertEqual(process.command[process.command.index('--resume') + 1], session_id)
         self.assertNotIn("--agent", process.command)
         self.assertEqual((process.options["env"]["CREW_ROLE"], process.options["env"]["CREW_GROUP"]), ("member", "lead"))
         messages=[event for event in self.get('/api/chat/history?session_id='+session_id)[1]['events'] if event['type']=='message']
@@ -820,7 +820,7 @@ class WebTests(ShellFixture, unittest.TestCase):
         self.provider.return_value = []
         self.assertEqual(self.get("/api/chat/send", {"session_id": session_id, "text": "resume"})[0], 200)
         self.assertEqual(self.processes[1].command[self.processes[1].command.index("--plugin-dir") + 1], str(PLUGIN.resolve()))
-        self.assertEqual(self.processes[1].command[-2:], ["--resume", session_id])
+        self.assertEqual(self.processes[1].command[self.processes[1].command.index('--resume') + 1], session_id)
         self.assertNotIn("--session-id", self.processes[1].command)
 
     def test_chat_sse_replays_after_last_event_id_without_restarting_process(self):
@@ -897,7 +897,7 @@ class WebTests(ShellFixture, unittest.TestCase):
         resumed=self.server.service.chat.processes[session_id]
         self.assertIsNot(resumed,previous)
         self.assertEqual(len(self.processes),2)
-        self.assertEqual(resumed.process.command[-2:],['--resume',session_id])
+        self.assertEqual(resumed.process.command[resumed.process.command.index('--resume') + 1], session_id)
         code, accepted, _=self.get('/api/chat/send',{'session_id':session_id,'text':'继续前先检查这个补充','message_id':'resumed-steer'})
         self.assertEqual((code,accepted),(200,{'ok':True,'message_id':'resumed-steer','accepted':True,'delivery':'steered'}))
         self.assertIs(self.server.service.chat.processes[session_id],resumed)

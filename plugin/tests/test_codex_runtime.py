@@ -12,7 +12,7 @@ import sys
 import unittest
 from unittest import mock
 
-from crew import board, chat, codex_runtime, runtimes, settings, store, trust_mode, workspace_settings
+from crew import board, chat, codex_runtime, goals, runtimes, settings, store, trust_mode, workspace_settings
 
 
 class FakeProcess:
@@ -129,16 +129,53 @@ class CodexRuntimeTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def make_running(self, *, options=None, resume=False, spec=None, router=None):
+    def make_running(self, *, options=None, resume=False, spec=None, router=None, execution=None):
         journal = chat.Journal(self.home / "chat" / "worker.jsonl")
         running = codex_runtime.CodexRunning(self.home, self.plugin, self.session,
                                              spec or {"agent": None}, options or {"model": None, "effort": None},
-                                             journal, router, resume=resume)
+                                             journal, router, resume=resume, execution=execution)
         def close():
             running.close()
             self.assertTrue(running.reader_done.wait(2))
         self.addCleanup(close)
         return running, self.clients[-1]
+
+    def test_member_native_agents_are_disabled_on_start_and_resume(self):
+        first, client = self.make_running()
+        first.close()
+        self.assertTrue(first.reader_done.wait(2))
+        _, resumed = self.make_running(resume=True)
+        for native in (client, resumed):
+            method, params = next(call for call in native.calls if call[0] in ('thread/start', 'thread/resume'))
+            with self.subTest(method=method):
+                self.assertIs(params['config']['agents']['enabled'], False)
+                self.assertIs(params['config']['features']['multi_agent'], False)
+                self.assertIs(params['config']['features']['multi_agent_v2'], False)
+                self.assertIn('不能创建 Crew 会话或原生子代理', params['developerInstructions'])
+
+    def test_leader_preserves_user_native_agent_settings(self):
+        with closing(store.connect(self.home)) as conn:
+            conn.execute("UPDATE sessions SET role='leader' WHERE session_id='worker'")
+            self.session = board.session(conn, 'worker')
+        _, client = self.make_running()
+        config = client.calls[0][1]['config']
+        self.assertNotIn('agents', config)
+        self.assertNotIn('multi_agent', config['features'])
+        self.assertNotIn('multi_agent_v2', config['features'])
+
+    def test_member_goal_execution_keeps_the_same_native_agent_boundary(self):
+        with closing(store.connect(self.home)) as conn:
+            board.join(conn, 'leader', 'demo', 'leader', self.root, None, 'main', role='leader')
+            board.roster(conn, 'demo', 'move', 'leader', session_ids=['worker'])
+            goal = goals.create(conn, 'demo', 'leader', 'Finite task', 'Build result', ['Done'])
+            goals.assign(conn, goal['id'], 'worker', 'Build result')
+            execution = goals.create_execution(conn, goal['id'], 'worker', runtime='codex')
+            self.session = board.session(conn, 'worker')
+        _, client = self.make_running(execution=execution)
+        params = client.calls[0][1]
+        self.assertIs(params['config']['agents']['enabled'], False)
+        self.assertIs(params['config']['features']['multi_agent_v2'], False)
+        self.assertIn('不能创建 Crew 会话或原生子代理', params['developerInstructions'])
 
     def test_explicit_execution_permission_is_used_only_when_a_carrier_starts(self):
         with closing(store.connect(self.home)) as conn:
@@ -255,7 +292,7 @@ class CodexRuntimeTests(unittest.TestCase):
         running, client = self.make_running(resume=True, spec={"agent": "crew:git"})
         self.assertEqual(client.calls[0][0], "thread/resume")
         self.assertEqual(client.calls[0][1]["threadId"], "existing-thread")
-        self.assertNotIn("dynamicTools", client.calls[0][1])
+        self.assertIn('crew_send_message', {tool['name'] for tool in client.calls[0][1]['dynamicTools']})
         self.assertIn("# git role rules", client.calls[0][1]["developerInstructions"])
         self.assertIn("PreToolUse", client.calls[0][1]["config"]["hooks"])
 

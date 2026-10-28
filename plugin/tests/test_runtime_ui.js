@@ -37,6 +37,8 @@ function harness(state = fixture(), fetcher = () => { throw new Error("Unexpecte
   vm.runInContext(contextSource.slice(0, contextSource.indexOf("})();")+5), sandbox);
   sandbox.CrewContext=sandbox.window.CrewContext;
   sandbox.CrewActivity={markup:()=>""};
+  vm.runInContext(fs.readFileSync(path.join(__dirname,"../crew/web/workspace-home.js"),"utf8"),sandbox);
+  sandbox.CrewWorkspaceHome=sandbox.window.CrewWorkspaceHome;
   vm.runInContext(fs.readFileSync(path.join(__dirname, "../crew/web/leader-trust-ui.js"), "utf8"), sandbox);
   // Expose lexical UI functions while leaving setup and its state-poll timer off.
   const end = "  setup();\n})();";
@@ -225,25 +227,25 @@ test("explicit catalog refresh is deduplicated and old servers are never probed"
 const todo = extra => ({id:17, title:"在手机上确认登录", steps:"打开设置\n允许登录", verification:"告诉它已经授权",
   blocking:true, status:"open", note:"", session_id:"member-1", proposer_name:"连接助手", group:"登录",
   leader_session_id:"leader-1", leader_name:"登录", priority:1, created_at:"2026-10-24T00:00:00Z", updated_at:"2026-10-24T00:00:00Z", version:2, ...extra});
-const todoState = () => ({...fixture(), leaders:[{session_id:"leader-1", name:"登录"}], members:[],
+const todoState = () => ({...fixture(), project:{name:"fixture"}, leaders:[{session_id:"leader-1", name:"登录"}], members:[],
   decisions:[{id:90, leader_session_id:"leader-1", held:false}], todos:[todo({id:44}), todo({id:17}), todo({id:52, leader_session_id:"leader-2"})]});
 
-test("first open prioritizes personal actions while explicit routes and old default remain stable", () => {
+test("first open shows the workspace overview while explicit conversation and TODO routes remain stable", () => {
   const state = todoState(), {ui, location} = harness(state);
-  assert.equal(ui.route().view, "todos");
+  assert.equal(ui.route().view, "all");
   location.hash = "#leader=leader-1";
   assert.equal(ui.route().view, "chat");
   location.hash = "#all";
   assert.equal(ui.route().view, "all");
   state.todos = [];
   location.hash = "";
-  assert.equal(ui.route().leaderId, "leader-1");
-  assert.equal(ui.route().view, "chat");
+  assert.equal(ui.route().leaderId, null);
+  assert.equal(ui.route().view, "all");
   location.hash = "#todos";
   assert.equal(ui.route().view, "todos");
   delete state.todos;
   location.hash = "";
-  assert.equal(ui.route().view, "chat");
+  assert.equal(ui.route().view, "all");
 });
 
 test("personal action order comes from server and group trays and decisions have separate counts", () => {

@@ -36,6 +36,38 @@ function fixture(options = {}) {
 }
 function event() { return { prevented: false, preventDefault() { this.prevented = true; } }; }
 
+test('cross-workspace task links retain their hash and select the existing document without reloading its draft',async()=>{
+  const destinations=[];const f=fixture({openProject:(name,hash)=>destinations.push({name,hash})});
+  await f.manager.openAssistant();const assistant=f.views[0].webContents;
+  assistant.emit('will-navigate',event(),'http://127.0.0.1:1234/?project=fitness#leader=coach&goal=checkins');
+  assert.deepEqual(destinations,[{name:'fitness',hash:'#leader=coach&goal=checkins'}]);
+  await f.manager.open({name:'fitness'},destinations[0].hash);const workspace=f.views[1].webContents;
+  assert.equal(new URL(workspace.loads[0]).hash,'#leader=coach&goal=checkins');
+  workspace.document.draft='不要丢失的输入';const calls=[];workspace.executeJavaScript=async text=>calls.push(text);
+  await f.manager.open({name:'fitness'},'#leader=coach&goal=review');
+  assert.equal(workspace.loads.length,1);assert.equal(workspace.document.draft,'不要丢失的输入');
+  assert.deepEqual(calls,['location.hash="#leader=coach&goal=review"']);
+});
+
+test('the assistant is one global conversation across workspace tabs with no project activity polling',async()=>{
+  const calls=[];const f=fixture({setTimer:()=>1,clearTimer:()=>{},readActivity:async names=>{calls.push(names);return {projects:names.map(project=>({project,counts:{},items:[]}))};}});
+  const first=await f.manager.openAssistant();
+  assert.equal(first.project,null);assert.equal(first.kind,'assistant');
+  assert.equal(f.views[0].webContents.loads[0],'http://127.0.0.1:1234/assistant.html');
+  await f.manager.refreshActivity();assert.equal(calls.length,0);
+  f.views[0].webContents.document.draft='跨工作区保留的草稿';
+  await f.manager.open({name:'fitness'});await f.manager.open({name:'mib'});
+  const second=await f.manager.openAssistant();assert.equal(first.id,second.id);
+  assert.equal(f.views.length,3);assert.equal(f.views[0].webContents.loads.length,1);
+  assert.equal(f.views[0].webContents.document.draft,'跨工作区保留的草稿');
+  assert(calls.every(names=>names.every(name=>name==='fitness'||name==='mib')));
+  assert.equal(f.manager.closeProject('fitness'),true);
+  assert.equal(f.manager.state().activeId,'assistant');
+  const navigate=event();f.views[0].webContents.emit('will-navigate',navigate,'http://127.0.0.1:1234/?project=mib');
+  assert.equal(navigate.prevented,true);assert.deepEqual(f.projects,['mib']);
+  assert.equal(f.manager.close('assistant'),true);assert.equal(f.views[0].webContents.closed,1);
+});
+
 test('saved history tabs remain readable without polling the execution activity endpoint',async()=>{
   const calls=[];const f=fixture({setTimer:()=>1,clearTimer:()=>{},readActivity:async names=>{calls.push(names);return {projects:names.map(project=>({project,counts:{},items:[]}))};}});
   await f.manager.open({name:'storage:archive',read_only:true});await f.manager.refreshActivity();

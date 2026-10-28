@@ -3,6 +3,7 @@ const test = require('node:test'); const assert = require('node:assert/strict');
 const fs = require('node:fs/promises'); const path = require('node:path'); const os = require('node:os');
 const http = require('node:http'); const { execFile } = require('node:child_process'); const { promisify } = require('node:util');
 const core = require('../src/core.cjs'); const run = promisify(execFile);
+const {listen}=require('./fixtures/loopback.cjs');
 async function directory(t) { const root = await fs.mkdtemp(path.join(os.tmpdir(), 'crew-desktop-test-')); t.after(() => fs.rm(root, { recursive: true, force: true })); return root; }
 async function fixture(t, known = [], initFailure = null) {
   const calls = []; const server = http.createServer(async (request, response) => {
@@ -17,7 +18,7 @@ async function fixture(t, known = [], initFailure = null) {
     }
     response.writeHead(404); response.end(JSON.stringify({ error: 'missing' }));
   });
-  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  await listen(server);
   t.after(() => new Promise(resolve => server.close(resolve)));
   return { url: `http://127.0.0.1:${server.address().port}`, known, calls };
 }
@@ -31,14 +32,14 @@ test('native model discovery can wait beyond the normal API deadline', async t =
   const server = http.createServer((request, response) => {
     setTimeout(() => { response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify({runtimes:[{id:'detected-native'}]})); }, 5200);
   });
-  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  await listen(server);
   t.after(() => new Promise(resolve => server.close(resolve)));
   const result = await core.request(`http://127.0.0.1:${server.address().port}`, '/api/runtimes?refresh=1', undefined, 45000);
   assert.equal(result.runtimes[0].id, 'detected-native');
 });
 test('a caller can abort a read-only request without waiting for its HTTP deadline', async t => {
   const server=http.createServer((request,response)=>{response.setHeader('Content-Type','application/json');response.write('{');});
-  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  await listen(server);
   t.after(()=>{server.closeAllConnections();return new Promise(resolve=>server.close(resolve));});
   const controller=new AbortController(),at=performance.now();
   const pending=core.request(`http://127.0.0.1:${server.address().port}`,'/api/admin/health',undefined,5000,controller.signal);
@@ -48,7 +49,7 @@ test('a caller can abort a read-only request without waiting for its HTTP deadli
 });
 test('the original HTTP deadline still applies when an un-aborted caller signal is supplied', async t => {
   const server=http.createServer((_request,response)=>{response.setHeader('Content-Type','application/json');response.write('{');});
-  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  await listen(server);
   t.after(()=>{server.closeAllConnections();return new Promise(resolve=>server.close(resolve));});
   const base=`http://127.0.0.1:${server.address().port}`;
   for(const signal of [undefined,new AbortController().signal])await assert.rejects(core.request(base,'/api/admin/health',undefined,30,signal),error=>error.name==='TimeoutError');
@@ -76,10 +77,10 @@ test('an explicit backend or local port clears a saved existing service unless a
 });
 
 test('production, custom data and isolated windows have distinct visible identities', () => {
-  assert.equal(core.options([]).instanceName, 'Crew');
-  assert.equal(core.options(['--home', path.join(os.tmpdir(), 'crew-independent')]).instanceName, 'Crew · 独立数据');
-  assert.equal(core.options(['--home', path.join(os.tmpdir(), 'crew-test'), '--isolated-sources']).instanceName, 'Crew · 隔离测试');
-  assert.equal(core.options(['--home', path.join(os.tmpdir(), 'crew-smoke'), '--smoke-test', '--smoke-output', 'evidence.json']).instanceName, 'Crew · 隔离测试');
+  assert.equal(core.options([]).instanceName, 'Crew V2');
+  assert.equal(core.options(['--home', path.join(os.tmpdir(), 'crew-independent')]).instanceName, 'Crew V2 · 独立数据');
+  assert.equal(core.options(['--home', path.join(os.tmpdir(), 'crew-test'), '--isolated-sources']).instanceName, 'Crew V2 · 隔离测试');
+  assert.equal(core.options(['--home', path.join(os.tmpdir(), 'crew-smoke'), '--smoke-test', '--smoke-output', 'evidence.json']).instanceName, 'Crew V2 · 隔离测试');
 });
 test('new workspace name is a filename rather than an arbitrary path', () => {
   for (const name of ['../escape', 'one/two', 'one\\two', '.', '..', 'CON', 'LPT1.txt', 'name.', '', ' x ']) assert.throws(() => core.workspaceName(name));
@@ -195,7 +196,7 @@ test('explicit service is borrowed without changing another service registry', a
 
 test('failed explicit service refuses registry fallback and never launches another backend', async t => {
   const root = await directory(t), other = await fixture(t), invalid = http.createServer((_request,response)=>{response.writeHead(503);response.end('{"error":"offline"}');});
-  await new Promise(resolve=>invalid.listen(0,'127.0.0.1',resolve)); t.after(()=>new Promise(resolve=>invalid.close(resolve)));
+  await listen(invalid); t.after(()=>new Promise(resolve=>invalid.close(resolve)));
   const registry = JSON.stringify({ url:other.url }); await fs.writeFile(path.join(root,'web.json'),registry);
   const backend = new core.Backend({ home:root, serviceUrl:`http://127.0.0.1:${invalid.address().port}` }, { spawn:()=>{ throw new Error('must not spawn'); } });
   await assert.rejects(backend.start(), /指定的 Crew 服务不可用/);
@@ -217,7 +218,7 @@ test('UI profiles have separate local lock paths and cannot escape their home', 
 
 test('connected incompatible registry service never starts a second backend', async t => {
   const root=await directory(t), server=http.createServer((_request,response)=>{response.setHeader('Content-Type','application/json');response.end('{"something":"else"}');});
-  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve)); t.after(()=>new Promise(resolve=>server.close(resolve)));
+  await listen(server); t.after(()=>new Promise(resolve=>server.close(resolve)));
   await fs.writeFile(path.join(root,'web.json'),JSON.stringify({url:`http://127.0.0.1:${server.address().port}`}));
   const backend=new core.Backend({home:root},{spawn:()=>{throw new Error('must not spawn');}});
   await assert.rejects(backend.start(),/现有 Crew 服务暂时不可用/); assert.equal(backend.child,null);
@@ -290,7 +291,7 @@ test('legacy service project roots are hydrated from matching per-project state'
     else if(request.url==='/api/state?project=old%20project')response.end(JSON.stringify({project:{name:'old project',root,theme:'gray'}}));
     else{response.writeHead(404);response.end('{}');}
   });
-  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve)); t.after(()=>new Promise(resolve=>server.close(resolve)));
+  await listen(server); t.after(()=>new Promise(resolve=>server.close(resolve)));
   const url=`http://127.0.0.1:${server.address().port}`; await fs.writeFile(path.join(root,'web.json'),JSON.stringify({url}));
   const backend=new core.Backend({home:root},{spawn:()=>{throw new Error('must not spawn');}});
   assert.deepEqual(await backend.start(),{url,owned:false});

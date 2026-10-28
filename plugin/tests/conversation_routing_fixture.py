@@ -13,7 +13,7 @@ sys.path.insert(0, str(plugin_root))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import tests
 from test_goal_http import GoalHttpTests
-from crew import board, goals, runtimes, todo, web
+from crew import board, goal_actions, goal_work, goals, runtimes, todo, web
 import test_goal_http
 import test_shell
 
@@ -42,6 +42,17 @@ def main():
                 'message_id': 'native-ui-task-' + str(index)})
             assert code == 200, receipt
             work.append((goal['id'], receipt['execution_id']))
+            item = goal_work.add(case.conn, goal['id'], 'verify', '验证流式分段边界' if index == 0 else '完成界面联调',
+                '整段流结束后400ms内返回 A、B 及重叠片段' if index == 0 else '核对实际交互结果', actor='coordinator')
+            goal_work.update(case.conn, goal['id'], item['key'], item['version'], status='blocked',
+                             note='隔离演练：等待测试数据，尚未证明效果达标', actor='coordinator')
+            if index == 0:
+                report = case.report()
+                report.update(outcome='progress', summary='阶段方案待真实实验验证', document_html='<h1>旧版阶段正文</h1>')
+                report['acceptance'][0]['criterion_id'] = goal['requirements']['acceptance'][0]['id']
+                report['acceptance'][0]['status'] = 'unverified'
+                goal_actions.dispatch(case.home, 'coordinator', None, 'report.publish',
+                    {'goal_id': goal['id'], 'request_id': 'routing-stage', 'report': report})
         manager = case.server.service.chat
         print(json.dumps({'url': case.url, 'home': str(case.home), 'leader': 'coordinator',
                           'goals': [goal for goal, _ in work], 'plugin_root': str(plugin_root),

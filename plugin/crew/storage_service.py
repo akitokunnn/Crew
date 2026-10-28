@@ -65,8 +65,12 @@ class StorageService:
         if not self.isolated and store.norm_path(self.home) == store.norm_path(store.default_home()):
             if self.legacy_homes is not None:
                 homes.extend(map(Path, self.legacy_homes))
-            elif os.environ.get('LOCALAPPDATA'):
-                homes.extend(sorted(Path(os.environ['LOCALAPPDATA']).glob('Crew-*')))
+            else:
+                # V2 has independent storage, while V1 remains an explicit
+                # read-only discovery source until the user chooses migration.
+                homes.append(Path.home() / '.crew')
+                if os.environ.get('LOCALAPPDATA'):
+                    homes.extend(sorted(Path(os.environ['LOCALAPPDATA']).glob('Crew-*')))
         return list(dict.fromkeys(p.resolve() for p in homes))
 
     def _candidates(self, root):

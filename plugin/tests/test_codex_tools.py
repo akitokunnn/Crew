@@ -63,6 +63,12 @@ class CodexToolsTests(unittest.TestCase):
             'name': 'new-member', 'task': 'Finite member task', 'role': 'member',
             'caller_session_id': 'leader-crew', 'caller_execution_id': execution['id']}))
 
+    def test_member_spawn_is_denied_locally_before_the_host_request(self):
+        with mock.patch('crew.spawn.request_start') as request:
+            result = self.call('crew_spawn', {'name': 'nested', 'task': 'Finite task'}, success=False)
+        self.assertIn('只有本项目当前 leader', result['error']['message'])
+        request.assert_not_called()
+
     def test_specs_use_the_app_server_wire_shape_and_are_independent_copies(self):
         specs = codex_tools.tool_specs()
         self.assertGreaterEqual(len(specs), 9)

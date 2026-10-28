@@ -87,7 +87,7 @@ class ExitLifecycleTests(unittest.TestCase):
                 stop_reason=None, _closing=False, _approvals=mock.Mock(), _turn_ready=threading.Condition(lock),
                 _settings=threading.Condition(lock), pending_compact=False, client=client,
                 execution={'id': identity, 'session_id': role} if scoped else None,
-                _native_archived=False, thread_id='native-' + identity, reader_done=threading.Event(),
+                _native_archived=False, _archive_on_close=True, thread_id='native-' + identity, reader_done=threading.Event(),
                 _lease=SimpleNamespace(release=mock.Mock()), _status=journal.set_status)
             current.close = MethodType(codex_runtime.CodexRunning.close, current)
             current.reader = threading.Thread(target=codex_runtime.CodexRunning._watch, args=(current,), daemon=True)
@@ -187,6 +187,15 @@ class ExitLifecycleTests(unittest.TestCase):
             inbox.worker.start()
         connections.Manager.close(SimpleNamespace(inboxes=inboxes))
         self.assertEqual(results, [True, True], 'A second channel did not receive stop until the first channel finished')
+
+    def test_desktop_handoff_is_not_archived_by_a_later_manager_shutdown(self):
+        current = self.native('codex', 'leader', True)
+        current.close(archive=False)
+        self.assertTrue(current.reader_done.wait(2))
+        self.manager.close()
+        self.assertFalse(current._archive_on_close)
+        self.assertFalse(any(method == 'thread/archive' for method, _, _ in current.client.calls))
+        self.assertEqual(current._lease.release.call_count, 1)
 
 
 class DigestExitLifecycleTests(unittest.TestCase):

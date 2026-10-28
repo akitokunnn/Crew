@@ -3,15 +3,16 @@ from contextlib import closing
 import json
 import os
 from pathlib import Path
+from . import behavior_prompts
 import subprocess
 import threading
 import uuid
 
-from . import board, goal_context, goals, install, messaging, models, runtimes, spawn, store, trust_mode
+from . import board, goal_context, goals, install, messaging, models, native_handoff, runtimes, spawn, store, trust_mode
 
 
 BASE_INSTRUCTIONS = """你在 Crew 内执行一个有明确终点的目标；身份、目标与授权由宿主绑定。
-用户的原始要求、验收标准和已确认决定优先。你可以自己干活，确实必要才复用/增加成员。
+用户的原始要求、验收标准和已确认决定优先。你可以自己干活；只有 leader 能复用/增加成员，成员不能通过 Crew、原生子代理或派工技能继续下发。
 只处理当前目标。普通解释和进度咨询直接回答，不另建目标、不额外写文档。
 工作中收到用户补充先回应，再调整或继续；用户指令优先于旧安排。
 总对话与各任务并行。跨组协作送到对方总对话协调；回复具体协作消息用 crew send --reply-to <原消息编号>（Codex crew_send_message 的 reply_to），由宿主回到原会话或任务，不猜对方当前任务，不把 AI 回复当成人工授权。
@@ -19,9 +20,13 @@ BASE_INSTRUCTIONS = """你在 Crew 内执行一个有明确终点的目标；身
 后台工作等待完成或失败回执，不订阅过程日志来反复唤醒自己，不用轮询或 sleep 保持一轮；纯等待时结束本轮，不额外发送“等”。
 宿主已给出当前目标和要求，信息足够就直接工作；有具体缺口才用 crew goal status / crew context 按需查证，不先重复读取。
 有实际新证据或阶段变化才保存简短工作记录，完整日志只给位置，不能用模型频繁总结流水。
+已有可体验的阶段成果时用 crew goal report.publish --request-id <稳定标识> --file <报告.json>（outcome=progress），Codex 用 crew_goal 的 report.publish；保留同一标识重试，不重复发布。发布不结束任务，继续未完成工作；最终仍走 finish 和原验收条件。
+需要保留可恢复的成果文件时用 version.capture，data 提供 request_id、label、明确的相对 files 清单；只捕获本任务真实成果，不扫描整个工作区。恢复必须由用户预览并操作，不能自动覆盖其他任务或用户后续修改。
 保持代码与证据可复核；不把测试数量或模拟覆盖量当成产品正确率。
 需要用户亲手操作用 crew todo；需要用户决定先解释讨论，聊清楚后才完整拍板。
 leader 负责最终交付；成员提供有证据的有限结果。工程选择由你判断，目标外事项只记建议。
+执行前将AI要做的步骤写入工作清单：crew goal work.add --data '{"key":"稳定编号","title":"工作内容","acceptance":"可核验完成条件","dependencies":[]}'；Codex用crew_goal同名action和data。普通用户TODO不能代替AI工作清单。
+按实际进度用work.update（key、当前version、status=planned|doing|blocked|done|cancelled、note）更新；完成写验收证据，阻塞写原因。同一key重试不重复建项。成员只更新自己的工作，leader安排并验收；work.list读取清单。需求修改后复核旧项再交付。
 leader 本轮最终交付围绕用户目的自主设计精美、直观、易懂的自包含 HTML 报告，结构、篇幅、图表和交互随任务选择，不套固定目录；浏览器核对阅读和交互效果。
 保存 HTML 正文后取 crew goal report-template，填实际验收、证据、example 和投入，再用 crew goal finish --file <报告.json> --html-file <报告.html> 一起提交；Codex crew_goal 的 finish 用 data.report.document_html 传同样正文。CSS/JS 内联、图片用 data URI，不依赖外网资源。
 用户默认读 leader 设计的正文，验收记录另行展开。未达标如实结束并交失败证据；普通问答不出报告。
@@ -87,6 +92,7 @@ class Controller:
             raise board.Conflict(gate['reason'])
         execution = self.current(conn, goal_id, session_id)
         if execution is not None and execution['status'] not in goals.TERMINAL:
+            native_handoff.assert_control(conn, session_id, execution['id'])
             mapping, options = runtimes.get(conn, session_id), models.get(conn, session_id)
             if execution['runtime'] != mapping['runtime']:
                 if self.manager.busy(execution['id']):
@@ -145,6 +151,7 @@ class Controller:
         if review is not None:
             text += '\n用户对该轮的验收：%s。原话：%s' % ('通过' if review['accepted'] else '需要修改', review['note'])
         text += '\n沿用已有结果处理用户的新输入，不重复施工；完整报告可用 crew goal status 查阅。'
+        text += '\n使用 work.list 检查当前轮次工作清单与 needs_review；需求变化后先复核旧项，不把上一轮清单当作本轮已完成。'
         return [{'source': {'type': 'goal-report', 'id': report['id']}, 'text': text,
                  'reason': '继续本任务时保留上轮交付与用户修改意见', 'protected': True}]
 
@@ -219,7 +226,8 @@ class Controller:
         if previous is not None and not previous.reader_done.wait(10):
             raise board.BoardError('上一轮目标执行的输出尚未排空，请稍后重试；未启动新进程')
         with closing(store.connect(self.home)) as conn:
-            if maintenance is None:
+            native_handoff.assert_control(conn, logical_id, key, spec.get('_native_control_token'))
+            if maintenance is None and not spec.get('_native_control_token'):
                 gate = goals.dispatch_check(conn, execution['goal_id'], execution_id=key)
                 if not gate['allowed']:
                     raise board.Conflict(gate['reason'])
@@ -251,6 +259,9 @@ class Controller:
                                               + ('\n' + spec['_workspace_notice'] if spec.get('_workspace_notice') else '')),
                                 permission_mode=permission_mode, plugin_root=self.manager.plugin_root,
                                 **options)
+        with closing(store.connect(self.home)) as prompt_conn:
+            prompt_manifest = behavior_prompts.for_session(prompt_conn, logical_id, plugin_root=self.manager.plugin_root)
+        command = behavior_prompts.append_to_command(command, behavior_prompts.render(prompt_manifest))
         command[0] = chat.claude_executable()
         environment = chat.child_environment({**spec, 'name': session['crew_name'], 'role': session['role'],
                                                'group': session['group_name']})
@@ -262,6 +273,10 @@ class Controller:
                                                text=True, encoding='utf-8', bufsize=1,
                                                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
         current = chat.Running(process, journal)
+        current.behavior_prompt_hash = behavior_prompts.manifest_hash(prompt_manifest)
+        with closing(store.connect(self.home)) as prompt_conn:
+            behavior_prompts.record_applied(prompt_conn, key, prompt_manifest, status='sent',
+                evidence='Claude 目标进程创建成功；启动参数已携带 Crew 配置，原生读取尚未回报')
         current.execution, current.identity_session_id, current.native_id = execution, logical_id, native_id
         current.maintenance = maintenance
         current.goal_manifests = dict(session.get('_goal_manifests', {}))
@@ -284,6 +299,8 @@ class Controller:
         with self.manager.lock, closing(store.connect(self.home)) as conn:
             goal = goals.get(conn, goal_id)
             goals._member(conn, goal, session_id)
+            for row in conn.execute('SELECT id FROM goal_executions WHERE goal_id=? AND session_id=?', (goal_id, session_id)):
+                native_handoff.assert_control(conn, session_id, row['id'])
             if self.manager.maintenance_held(session_id):
                 # Refuse before any goal or execution state changes.
                 from . import chat
@@ -331,7 +348,7 @@ class Controller:
             observed = self.manager.context(key)
             history = {'known': observed is not None, 'tokens': observed['used'] if observed else None,
                        'source': 'native_context_usage', 'note': '原生历史未知时不当作零'}
-            prepared = goal_context.build(conn, key, base=BASE_INSTRUCTIONS + '\n' + (trust_mode.context(conn, session_id) or ''),
+            prepared = goal_context.build(conn, key, base=BASE_INSTRUCTIONS,
                                           latest_input='' if text == goal['requirements']['request'] else text,
                                           native_history=history, retrieval=self.human_handoff(conn, execution, identity) + self.followup_context(conn, execution),
                                           limits={'native_history_tokens': 64000})
@@ -344,7 +361,7 @@ class Controller:
                 journal = self.manager.journal(key)
                 if not journal.path.exists():
                     journal.set_status('idle')
-                prepared = goal_context.build(conn, key, base=BASE_INSTRUCTIONS + '\n' + (trust_mode.context(conn, session_id) or ''),
+                prepared = goal_context.build(conn, key, base=BASE_INSTRUCTIONS,
                                               latest_input='' if text == goal['requirements']['request'] else text,
                                               native_history={'known': True, 'tokens': 0,
                                               'source': 'fresh_native_generation'}, limits={'native_history_tokens': 64000},
@@ -465,6 +482,8 @@ class Controller:
         live = {agent['sessionId'] for agent in agents}
         for key in list(self.recovery):
             execution = goals.get_execution(conn, key)
+            if native_handoff.blocked(conn, execution['session_id'], key):
+                continue
             if runtime is not None and execution['runtime'] != runtime:
                 continue
             gate = goals.dispatch_check(conn, execution['goal_id'], execution_id=key)

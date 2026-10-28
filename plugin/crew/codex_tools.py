@@ -30,7 +30,7 @@ import json
 from pathlib import Path
 import sqlite3
 
-from . import board, decision_briefs, documents, goal_actions, goals, guard, message_receipts, runtimes, store, todo
+from . import board, decision_briefs, documents, goal_actions, goals, guard, message_receipts, personal, personal_actions, runtimes, session_ops, store, todo
 
 
 class ToolError(ValueError):
@@ -83,6 +83,18 @@ _GIT_DATA = {
                 'required': ['id', 'status', 'note']},
 }
 _SPECS = [
+    _spec('crew_personal', 'Only the global Crew personal assistant may use this tool. Read summary, session.detail, '
+          'goal.detail, documents.list, notes.list, prompt.get, prompt.history or prompt.applied across workspaces. '
+          'Writes leader.create, session.message, session.stop, settings.save, prompt.save, prompt.reset, '
+          'todo.resolve, note.capture and note.update require the original human '
+          'message_id supplied by Crew and a stable request_id. Preserve the same ID when retrying; never repeat '
+          'successful actions or retry unknown outcomes under another ID. A selected workspace is not authorization.',
+          {'action': _text('Action name.', max_length=100),
+           'data': {'type': 'object', 'additionalProperties': True},
+           'message_id': _text('Original user message ID supplied by the host.', max_length=300),
+           'request_id': _text('Stable identity for this exact operation.', max_length=300)}, ('action',)),
+    _spec('crew_rename', 'Rename only your own Crew conversation with a concise useful title. Identity and history remain unchanged.',
+          {'name': _text('New name for this conversation.', max_length=512)}, ('name',)),
     _spec('crew_git', 'Use the host-bound project Git ledger, without shell commands. Actions: status; policy '
           '(data.text writes, omitted reads); requests (data.all); request (data.branch/data.blocking optional, data.description required); '
           'resolve (data.id, data.status, data.note, optional data.pr_number). Only the configured Git administrator '
@@ -90,7 +102,7 @@ _SPECS = [
           'Rejection remains actionable. This records requests/results; it does not run Git or merge code.',
           {'action': {'type': 'string', 'enum': list(_GIT_DATA)},
            'data': {'type': 'object', 'additionalProperties': True}}, ('action',)),
-    _spec('crew_goal', 'Explicit goal actions: status, create, start, pause, resume, cancel, reopen, amend, assign, report-template, finish. For final delivery, design task-specific offline HTML in data.report.document_html alongside acceptance evidence; report-template explains the format. Ordinary Q&A creates no goal.',
+    _spec('crew_goal', 'Explicit goal actions: status, create, start, pause, resume, cancel, reopen, amend, assign, work.list/add/update, report-template, report.get, report.publish, finish, versions.list/preview/file, version.capture. AI work uses work.add with stable key, title, acceptance, optional owner_session_id/dependencies; work.update uses key, version, status and evidence/reason note. Never put AI work in human TODO. Publish a real milestone with report.publish data.report outcome=progress and stable request_id; this keeps the task running. Capture explicit relative files with version.capture data.files,label,request_id. Restore and decision-mode changes require the user. Final delivery uses task-specific offline HTML in data.report.document_html alongside acceptance evidence; report-template explains the format. Ordinary Q&A creates no goal.',
           {'action': _text('Action name.', max_length=100), 'goal_id': _text('Goal id; omitted uses the bound execution.', max_length=100),
            'data': {'type': 'object', 'additionalProperties': True}}, ('action',)),
     _spec('crew_context', 'Inspect, retrieve or correct sourced context bound to your Crew identity and goal. Actions: inspect, retrieve, put, correct, expire. retrieve searches portable history with data.query, known_versions and limit_chars (max 6000). Preparing context does not mean the model read it.',
@@ -130,9 +142,11 @@ _SPECS = [
            "options": {"type": "array", "items": _text("One full action.", max_length=2000), "maxItems": 12},
            "recommendation": _text("One complete action label from the options."), "brief": _BRIEF_SCHEMA}, ("id",)),
     _spec("crew_todo_add", "Register something the user must physically or manually do. "
-          "Provide concrete steps and how completion will be confirmed; agents cannot mark it done.",
+          "Provide concrete steps and how completion will be confirmed; agents cannot mark it done. "
+          "Reuse operation_key only for the same real-world action across tasks; the original instructions remain intact.",
           {"title": _text("The manual action.", max_length=500), "steps": _text("The user's exact steps."),
-           "verification": _text("How the user can confirm success."), "blocking": {"type": "boolean"}},
+           "verification": _text("How the user can confirm success."), "blocking": {"type": "boolean"},
+           'operation_key': _text('Stable identity of the same actual user action within this workspace.', max_length=300)},
           ("title", "steps", "verification")),
     _spec("crew_todo_list", "Read manual user actions from this project; all=true includes closed items.",
           {"all": {"type": "boolean"}}),
@@ -172,7 +186,7 @@ _SPECS = [
           ("to", "text")),
     _spec('crew_stop', 'Explicitly stop yourself or one of your own members now; this closes managed native execution and prevents queued mail from restarting it. Text messages are not stop commands.',
           {'target': _TARGET}, ('target',)),
-    _spec('crew_spawn', 'Create a member in your own group. The host binds a goal leader caller to its actual running goal execution; no model-supplied identity is accepted.',
+    _spec('crew_spawn', 'Leader only: create a member in your own group. Members must ask their leader to split work. The host binds the caller to its actual identity and goal execution.',
           {'name': _text('New Crew member name.', max_length=512), 'task': _text('Finite task for the member.'),
            'runtime': {'type': 'string', 'enum': ['claude', 'codex']},
            'new_worktree': _text('Optional new branch/worktree name.', max_length=512),
@@ -181,9 +195,10 @@ _SPECS = [
 _SCHEMAS = {spec["name"]: spec["inputSchema"] for spec in _SPECS}
 
 
-def tool_specs():
+def tool_specs(*, assistant=False):
     """Return fresh Codex v0.163 dynamic-tool specs, without shared mutable state."""
-    return copy.deepcopy(_SPECS)
+    return copy.deepcopy([spec for spec in _SPECS if (spec['name'] in ('crew_personal', 'crew_whoami')
+                          if assistant else spec['name'] != 'crew_personal')])
 
 
 def _validate(value, schema, path="arguments"):
@@ -236,7 +251,7 @@ class CodexTools:
     prevents an accidental database reassignment from extending this handler's
     authority. Role and archive state are checked afresh for every invocation.
     """
-    def __init__(self, home, session_id, *, send_message=None, execution_id=None, goal_handler=None):
+    def __init__(self, home, session_id, *, send_message=None, execution_id=None, goal_handler=None, personal_handler=None):
         if not isinstance(session_id, str) or not session_id.strip():
             raise ValueError("A registered Crew session_id is required")
         if send_message is not None and not callable(send_message):
@@ -249,9 +264,11 @@ class CodexTools:
         self._session_id = session_id
         self._send_message = send_message
         self._execution_id, self._goal_handler = execution_id, goal_handler
+        self._personal_handler = personal_handler
         with contextlib.closing(guard.readonly(self._home)) as conn:
             actor = board.session(conn, self._session_id)
-            if not actor["project"]:
+            self._assistant = personal.is_assistant(conn, session_id)
+            if not actor["project"] and not self._assistant:
                 raise ValueError("Crew tools require registered project membership")
             self._project = actor["project"]
             self._actor(conn)
@@ -260,6 +277,8 @@ class CodexTools:
         actor = board.session(conn, self._session_id)
         if actor["project"] != self._project:
             raise ToolError("forbidden", "Crew project membership changed; rebind tools in the host")
+        if personal.is_assistant(conn, self._session_id) != self._assistant:
+            raise ToolError('forbidden', 'The personal assistant identity changed; rebind tools in the host')
         if self._execution_id is not None:
             execution = goals.get_execution(conn, self._execution_id)
             goal = goals.get(conn, execution['goal_id'])
@@ -273,7 +292,8 @@ class CodexTools:
             raise ToolError("forbidden", "A named Crew member or leader is required")
         if actor["status"] == "closed" or board.is_archived(conn, self._session_id):
             raise ToolError("forbidden", "Archived Crew sessions cannot use tools")
-        board.project(conn, self._project)
+        if not self._assistant:
+            board.project(conn, self._project)
         return actor
 
     def _target(self, conn, target):
@@ -345,6 +365,8 @@ class CodexTools:
 
     @staticmethod
     def _read_only(name, args):
+        if name == 'crew_personal':
+            return args['action'] in personal_actions.READ_ACTIONS
         if name == 'crew_git':
             return args['action'] in ('status', 'requests') or args['action'] == 'policy' and 'text' not in args.get('data', {})
         if name in ('crew_goal', 'crew_context'):
@@ -354,12 +376,27 @@ class CodexTools:
 
     def _dispatch(self, conn, actor, name, args):
         sid, project = self._session_id, self._project
+        if name == 'crew_personal':
+            if not self._assistant:
+                raise ToolError('forbidden', 'Only the global Crew assistant can use personal actions')
+            if self._personal_handler is not None:
+                return self._personal_handler(args['action'], {key: value for key, value in args.items() if key != 'action'}, sid)
+            if args['action'] in personal_actions.READ_ACTIONS:
+                return personal_actions.read(conn, args['action'], args.get('data', {}))
+            raise ToolError('personal_host_unavailable', 'The host has no personal assistant action router')
+        if self._assistant:
+            if name == 'crew_whoami':
+                return {**actor, **personal.assistant_context(conn, sid)}
+            raise ToolError('forbidden', 'Global assistant actions use crew_personal with original user intent')
+        if name == 'crew_rename':
+            return session_ops.rename_self(conn, sid, args['name'])
         if name in ('crew_stop', 'crew_spawn'):
             from . import spawn
             if name == 'crew_stop':
                 target = self._target(conn, args['target'])
                 return spawn.request_start(self._home, project, '/api/session/stop', {
                     'session_id': target['session_id'], 'caller_session_id': sid})
+            spawn.authorize(conn, project, sid)
             body = {'name': args['name'], 'task': args['task'], 'role': 'member', 'caller_session_id': sid}
             if self._execution_id is not None:
                 body['caller_execution_id'] = self._execution_id
@@ -425,8 +462,7 @@ class CodexTools:
             if self._execution_id is not None:
                 from . import goal_links
                 with goals.transaction(conn):
-                    number = board.ask.__wrapped__(conn, sid, args['question'], args.get('options', ()), args.get('recommendation'), args.get('blocking', False), brief=args.get('brief'))
-                    goal_links.bind(conn, 'decision', number, self._execution_id)
+                    number = board.ask.__wrapped__(conn, sid, args['question'], args.get('options', ()), args.get('recommendation'), args.get('blocking', False), brief=args.get('brief'), execution_id=self._execution_id)
                 return self._decision(conn, number)
             number = board.ask(conn, sid, args["question"], args.get("options", ()),
                                args.get("recommendation"), args.get("blocking", False), brief=args.get("brief"))
@@ -437,13 +473,9 @@ class CodexTools:
             self._decision(conn, args["id"])
             return decision_briefs.revise(conn, sid, args["id"], **{key: value for key, value in args.items() if key != "id"})
         if name == "crew_todo_add":
-            if self._execution_id is not None:
-                from . import goal_links
-                with goals.transaction(conn):
-                    result = todo.add.__wrapped__(conn, sid, args['title'], args['steps'], args['verification'], args.get('blocking', False))
-                    goal_links.bind(conn, 'todo', result['id'], self._execution_id)
-                    return result
-            return todo.add(conn, sid, args["title"], args["steps"], args["verification"], args.get("blocking", False))
+            return todo.add_native(conn, sid, args['title'], args['steps'], args['verification'],
+                                   blocking=args.get('blocking', False), operation_key=args.get('operation_key'),
+                                   execution_id=self._execution_id)
         if name == "crew_todo_list":
             return todo.list(conn, project, all=args.get("all", False))
         if name == "crew_todo_withdraw":

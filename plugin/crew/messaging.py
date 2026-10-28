@@ -42,7 +42,8 @@ def fingerprint(execution_id, sender_id, target_id, kind, text, reply_to=None):
     return hashlib.sha256((source + ':' + target_id + ':' + kind + ':' + text.strip()).encode()).hexdigest()
 
 
-def queue_record(conn, sender_id, target_id, text, message_id=None, now=None, *, kind=None, reply_to=None):
+def queue_record(conn, sender_id, target_id, text, message_id=None, now=None, *, kind=None, reply_to=None,
+                 deduplicate_reply=True):
     """Write inside the caller's transaction when composing goal metadata."""
     sender, target = _active(conn, sender_id), _active(conn, target_id)
     if sender["project"] != target["project"]:
@@ -53,6 +54,8 @@ def queue_record(conn, sender_id, target_id, text, message_id=None, now=None, *,
         raise board.BoardError("消息正文不能为空或超过 50000 字")
     if kind is not None and kind not in message_receipts.KINDS:
         raise board.BoardError('未知协作消息类型')
+    if kind == 'task' and sender['role'] != 'leader':
+        raise board.BoardError('成员不能继续派工；请用 result 或 blocker 把工作和原因交回 leader')
     if reply_to is not None:
         reply_target(conn, sender_id, target_id, reply_to)
     identity = (hashlib.sha256((sender_id + ":" + str(message_id)).encode()).hexdigest()
@@ -64,6 +67,14 @@ def queue_record(conn, sender_id, target_id, text, message_id=None, now=None, *,
                 or not compatible_kind or old['reply_to'] != reply_to):
             raise board.Conflict("消息编号已用于另一条消息")
         return receipt(conn, identity)
+    if deduplicate_reply and reply_to is not None and kind in ('result', 'blocker', 'decision'):
+        # A reply is scoped to one concrete request. Retrying its same evidence
+        # with a fresh transport ID must not wake the coordinator again.
+        prior = conn.execute('SELECT id FROM peer_messages WHERE sender_session_id=? AND target_session_id=? '
+                             'AND kind=? AND body=? AND reply_to=? ORDER BY created_at,id LIMIT 1',
+                             (sender_id, target_id, kind, text, reply_to)).fetchone()
+        if prior is not None:
+            return {**receipt(conn, prior['id']), 'duplicate': True, 'duplicate_of': prior['id']}
     conn.execute("INSERT INTO peer_messages(id,project,sender_session_id,target_session_id,body,created_at,kind,reply_to) "
                  "VALUES(?,?,?,?,?,?,?,?)", (identity, sender["project"], sender_id, target_id, text, board._time(now), kind, reply_to))
     return receipt(conn, identity)

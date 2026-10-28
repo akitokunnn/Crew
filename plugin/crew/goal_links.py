@@ -1,26 +1,40 @@
-"""Deliver human answers only to the goal execution that asked for them."""
-from . import board, codex_client, goals
+"""Deliver human answers once to each explicitly associated task execution."""
+from . import board, codex_client, goals, messaging
 
 
 @goals.atomic
-def bind(conn, kind, item_id, execution_id):
+def bind(conn, kind, item_id, execution_id, *, associate=False):
     if kind not in ('decision', 'todo'):
         raise board.BoardError('未知目标事项类型')
     execution = goals.get_execution(conn, execution_id)
     table = 'decisions' if kind == 'decision' else 'todos'
-    item = conn.execute('SELECT session_id FROM ' + table + ' WHERE id=?', (item_id,)).fetchone()
-    if item is None or item['session_id'] != execution['session_id']:
+    item = conn.execute('SELECT session_id,project FROM ' + table + ' WHERE id=?', (item_id,)).fetchone()
+    if item is None or (item['session_id'] != execution['session_id'] and not (kind == 'todo' and associate)):
         raise board.BoardError('事项与目标执行提出者不匹配')
+    if item['project'] != goals.get(conn, execution['goal_id'])['project']:
+        raise board.BoardError('事项与目标不属于同一工作区')
     gate = goals.dispatch_check(conn, execution['goal_id'], execution_id=execution_id)
     if not gate['allowed']:
         raise board.Conflict(gate['reason'])
-    conn.execute('INSERT INTO goal_links(kind,item_id,goal_id,round,requirement_version,execution_id) VALUES(?,?,?,?,?,?)',
+    if kind == 'todo' and conn.execute('SELECT 1 FROM goal_links WHERE kind=? AND item_id=? AND goal_id=? AND round=? '
+                                      'AND requirement_version=?', (kind, item_id, execution['goal_id'], execution['round'],
+                                                                    execution['requirement_version'])).fetchone():
+        return
+    prior = get(conn, kind, item_id)
+    if kind == 'decision' and prior and prior['execution_id'] != execution_id:
+        raise board.Conflict('拍板事项已经关联其他执行')
+    conn.execute('INSERT OR IGNORE INTO goal_links(kind,item_id,goal_id,round,requirement_version,execution_id) VALUES(?,?,?,?,?,?)',
                  (kind, item_id, execution['goal_id'], execution['round'], execution['requirement_version'], execution_id))
 
 
 def get(conn, kind, item_id):
-    row = conn.execute('SELECT * FROM goal_links WHERE kind=? AND item_id=?', (kind, item_id)).fetchone()
+    row = conn.execute('SELECT * FROM goal_links WHERE kind=? AND item_id=? ORDER BY goal_id,execution_id', (kind, item_id)).fetchone()
     return dict(row) if row else None
+
+
+def list_links(conn, kind, item_id):
+    return [dict(row) for row in conn.execute('SELECT l.*,g.title AS goal_title FROM goal_links l JOIN goals g ON g.id=l.goal_id '
+                                             'WHERE kind=? AND item_id=? ORDER BY goal_id,execution_id', (kind, item_id))]
 
 
 def _notice(controller, execution_id, identity, text):
@@ -44,7 +58,8 @@ def _receipt(controller, conn, link, identity):
 
 @goals.atomic
 def _mark_delivered(conn, link, version):
-    conn.execute('UPDATE goal_links SET delivered_version=? WHERE kind=? AND item_id=?',(version,link['kind'],link['item_id']))
+    conn.execute('UPDATE goal_links SET delivered_version=? WHERE kind=? AND item_id=? AND execution_id=?',
+                 (version,link['kind'],link['item_id'],link['execution_id']))
     if link['kind'] == 'decision':
         conn.execute('UPDATE decisions SET delivered_at=? WHERE id=?',(board._time(None),link['item_id']))
 
@@ -68,8 +83,8 @@ def deliver(controller, conn):
         goal = goals.get(conn, link['goal_id'])
         if goal['current_round'] != link['round'] or goal['requirement_version'] != link['requirement_version'] or goal['status'] in goals.TERMINAL:
             with goals.transaction(conn):
-                conn.execute('UPDATE goal_links SET delivered_version=? WHERE kind=? AND item_id=?',
-                             (version, link['kind'], link['item_id']))
+                conn.execute('UPDATE goal_links SET delivered_version=? WHERE kind=? AND item_id=? AND execution_id=?',
+                             (version, link['kind'], link['item_id'], link['execution_id']))
                 board._event(conn,'goal:human-answer-archived',goal['project'],board.HUMAN,
                              {'kind':link['kind'],'id':link['item_id'],'version':version,'goal_id':goal['id'],
                               'reason':'原轮次/需求版本已经失效或目标已经结束'},None)
@@ -77,6 +92,9 @@ def deliver(controller, conn):
         if goal['status'] in ('paused', 'pausing') or goal['manual_pause']:
             continue
         original = goals.get_execution(conn, link['execution_id'])
+        # Completion is evidence, not permission to clear a user's stop gate.
+        if messaging.stopped(conn, original['session_id']) or messaging.stopped(conn, goal['leader_session_id']):
+            continue
         identity = 'human-answer:%s:%s:%s' % (link['kind'], item['id'], version)
         prior = _receipt(controller,conn,link,identity)
         if prior and prior['status'] == 'accepted':
@@ -100,6 +118,12 @@ def deliver(controller, conn):
             continue
         source = 'crew' if link['kind'] == 'todo' and item['resolved_by'] != board.HUMAN else 'human'
         if goal['status'] == 'waiting_user':
+            if conn.execute("SELECT 1 FROM goal_links l LEFT JOIN todos t ON l.kind='todo' AND t.id=l.item_id "
+                            "LEFT JOIN decisions d ON l.kind='decision' AND d.id=l.item_id "
+                            "WHERE l.goal_id=? AND l.round=? AND l.requirement_version=? "
+                            "AND ((t.status='open' AND t.blocking=1) OR (d.status='open' AND d.blocking=1)) LIMIT 1",
+                            (goal['id'], goal['current_round'], goal['requirement_version'])).fetchone():
+                continue
             goals.resume(conn, goal['id'], actor=item['resolved_by'] if source == 'crew' else board.HUMAN)
         try:
             result = controller.send(goal['id'], execution['session_id'], text, identity=identity, source=source)

@@ -4,10 +4,13 @@ from pathlib import Path
 
 from . import board, store
 
-SKILLS = {"crew:leader": "leader", "crew:member": "member", "crew:git": "git"}
+SKILLS = {"crew:leader": "leader", "crew:member": "member", "crew:git": "git", "crew:assistant": "assistant"}
 
 
 def skill_role(conn, session):
+    from . import personal
+    if personal.is_assistant(conn, session['session_id']):
+        return 'assistant'
     config = board.git_config(conn, session["project"])
     if config is not None and config["admin_session_id"] == session["session_id"]:
         return "git"
@@ -31,6 +34,12 @@ def reminder(conn, session_id, plugin_root):
             or session["status"] == "closed" or board.is_archived(conn, session_id)):
         return None
     role = skill_role(conn, session)
+    from . import behavior_prompts
+    configured = behavior_prompts.resolve(conn, session_id=session_id, keys=(role,), plugin_root=plugin_root)
+    if configured['prompts'][0]['source']['scope'] != 'default':
+        # The editable role replaces this built-in skill. Manager delivers its
+        # current version on the next input; rereading the old file contradicts it.
+        return None
     current = digest(plugin_root, role)
     read = conn.execute("SELECT role,digest FROM rule_reads WHERE session_id=?", (session_id,)).fetchone()
     if read is not None and (read["role"], read["digest"]) == (role, current):

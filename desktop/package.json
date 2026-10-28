@@ -1,6 +1,6 @@
 {
   "name": "crew-desktop",
-  "version": "0.2.40",
+  "version": "0.3.0",
   "description": "Native Crew workspace launcher",
   "author": "Crew contributors",
   "license": "UNLICENSED",
@@ -20,8 +20,8 @@
     "electron-builder": "26.15.3"
   },
   "build": {
-    "appId": "local.crew.desktop",
-    "productName": "Crew",
+    "appId": "local.crew.desktop.v2",
+    "productName": "Crew V2",
     "asar": true,
     "directories": {
       "output": "dist",
@@ -46,7 +46,7 @@
       }
     ],
     "win": {
-      "artifactName": "Crew-${version}-win-${arch}.${ext}",
+      "artifactName": "Crew-V2-${version}-win-${arch}.${ext}",
       "target": [
         "zip",
         "portable",
@@ -56,18 +56,18 @@
       "signExecutable": false
     },
     "portable": {
-      "artifactName": "Crew-${version}-portable.exe"
+      "artifactName": "Crew-V2-${version}-portable.exe"
     },
     "nsis": {
-      "artifactName": "Crew-${version}-setup.exe",
+      "artifactName": "Crew-V2-${version}-setup.exe",
       "oneClick": false,
       "perMachine": false,
       "allowElevation": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Crew",
-      "uninstallDisplayName": "Crew",
+      "shortcutName": "Crew V2",
+      "uninstallDisplayName": "Crew V2",
       "deleteAppDataOnUninstall": false,
       "installerIcon": "assets/crew.ico",
       "uninstallerIcon": "assets/crew.ico",

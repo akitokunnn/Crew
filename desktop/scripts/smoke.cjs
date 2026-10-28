@@ -8,7 +8,7 @@ const { Backend, projects, newWorkspace } = require('../src/core.cjs');
   await fs.mkdir(path.join(root, '.cache'), { recursive:true });
   const home = await fs.mkdtemp(path.join(root, '.cache', 'smoke-'));
   const output = path.join(root, 'smoke-output', kind + '.json');
-  const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
+  const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE; delete env.CREW_SESSION_ID; delete env.CLAUDE_CODE_SESSION_ID;
   const extractTemp = path.join(root, '.cache', 'portable-temp'); await fs.mkdir(extractTemp, { recursive: true });
   env.TEMP = extractTemp; env.TMP = extractTemp;
   const args = [...(!binary ? [root] : []), '--smoke-test', '--home', home, '--smoke-output', output, '--isolated-sources'];

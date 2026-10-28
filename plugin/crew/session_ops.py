@@ -68,6 +68,20 @@ def rename(conn, session_id, name, now=None):
     return {'ok':True,'session':board.session(conn, session_id),'before':before}
 
 
+def rename_self(conn, session_id, name, now=None):
+    """A host-bound leader may describe its own work without changing identity."""
+    with board.transaction(conn):
+        person = board.session(conn, session_id)
+        group = conn.execute('SELECT 1 FROM groups WHERE project=? AND leader_session_id=? AND closed_at IS NULL',
+                             (person['project'], session_id)).fetchone()
+        if (person['role'] != 'leader' or not person['crew_name'] or person['status'] == 'closed'
+                or board.is_archived(conn, session_id) or group is None):
+            raise board.BoardError('只有当前 leader 可以自主改名；不会更改身份或创建新会话')
+        if isinstance(name, str) and name.strip() == person['crew_name']:
+            return {'ok': True, 'session': person, 'unchanged': True}
+        return rename.__wrapped__(conn, session_id, name, now=now)
+
+
 def _archive(conn, session, removed, now):
     session_id = session["session_id"]
     previous = control(conn, session_id)

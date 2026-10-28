@@ -9,7 +9,7 @@ BUSY_TIMEOUT_MS = 5000
 
 
 def default_home():
-    return Path.home() / ".crew"
+    return Path.home() / ".crew-v2"
 
 
 def db_path(home):
@@ -32,7 +32,51 @@ def connect(home):
     _migrate_goal_message_scope(conn)
     _migrate_git_result_intent(conn)
     _migrate_dispatch_receipts(conn)
+    _migrate_shared_todo_links(conn)
+    _migrate_notification_delivery(conn)
     return conn
+
+
+def _migrate_notification_delivery(conn):
+    columns = {'attempts': 'INTEGER NOT NULL DEFAULT 0', 'next_attempt': 'REAL', 'delivery_json': 'TEXT'}
+    tables = ('notification_messages', 'lark_notification_messages')
+    def missing(table):
+        present = {row['name'] for row in conn.execute('PRAGMA table_info(' + table + ')')}
+        return columns.keys() - present
+    if not any(missing(table) for table in tables):
+        return
+    conn.execute('BEGIN IMMEDIATE')
+    try:
+        for table in tables:
+            for name in sorted(missing(table)):
+                conn.execute('ALTER TABLE ' + table + ' ADD COLUMN ' + name + ' ' + columns[name])
+        conn.commit()
+    except sqlite3.Error:
+        conn.rollback()
+        raise
+
+
+def _migrate_shared_todo_links(conn):
+    def old_key():
+        return next(row['pk'] for row in conn.execute('PRAGMA table_info(goal_links)') if row['name'] == 'execution_id') == 0
+    if not old_key():
+        return
+    conn.execute('BEGIN IMMEDIATE')
+    try:
+        if old_key():
+            conn.execute('''CREATE TABLE goal_links_updated (
+                kind TEXT NOT NULL, item_id INTEGER NOT NULL,
+                goal_id TEXT NOT NULL REFERENCES goals(id), round INTEGER NOT NULL,
+                requirement_version INTEGER NOT NULL, execution_id TEXT NOT NULL REFERENCES goal_executions(id),
+                delivered_version INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(kind,item_id,execution_id))''')
+            conn.execute('INSERT INTO goal_links_updated SELECT * FROM goal_links')
+            conn.execute('DROP TABLE goal_links')
+            conn.execute('ALTER TABLE goal_links_updated RENAME TO goal_links')
+            conn.execute("CREATE UNIQUE INDEX goal_decision_single_link ON goal_links(kind,item_id) WHERE kind='decision'")
+        conn.commit()
+    except sqlite3.Error:
+        conn.rollback()
+        raise
 
 
 def _migrate_goal_message_scope(conn):

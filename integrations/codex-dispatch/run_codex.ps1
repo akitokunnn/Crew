@@ -16,7 +16,11 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$crewRunHome = if ($env:CREW_HOME) { [IO.Path]::GetFullPath($env:CREW_HOME) } else { Join-Path $env:USERPROFILE '.crew' }
+if ($env:CREW_ROLE -eq 'member') {
+    Write-Output 'BLOCKED: Crew members cannot dispatch another AI. Ask your leader to split the work.'
+    exit 2
+}
+$crewRunHome = if ($env:CREW_HOME) { [IO.Path]::GetFullPath($env:CREW_HOME) } else { Join-Path $env:USERPROFILE '.crew-v2' }
 
 function ConvertTo-QuotedArg([string]$s) {
     return '"' + $s.TrimEnd('\').Replace('"', '\"') + '"'

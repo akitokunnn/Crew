@@ -125,6 +125,10 @@ CREATE TABLE IF NOT EXISTS todos (
     version INTEGER NOT NULL DEFAULT 1
 );
 CREATE INDEX IF NOT EXISTS todos_project ON todos(project, status, created_at);
+CREATE TABLE IF NOT EXISTS todo_operation_keys (
+ project TEXT NOT NULL REFERENCES projects(name), operation_key TEXT NOT NULL,
+ todo_id INTEGER NOT NULL REFERENCES todos(id), PRIMARY KEY(project,operation_key)
+);
 CREATE TABLE IF NOT EXISTS todo_backfills (
     leader_session_id TEXT PRIMARY KEY REFERENCES sessions(session_id),
     notice_id INTEGER REFERENCES leader_notices(id),
@@ -292,7 +296,10 @@ CREATE TABLE IF NOT EXISTS notification_messages (
     created_at TEXT NOT NULL,
     content TEXT NOT NULL,
     status TEXT NOT NULL,
-    error TEXT
+    error TEXT,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    next_attempt REAL,
+    delivery_json TEXT
 );
 
 CREATE TABLE IF NOT EXISTS notification_inbound (
@@ -321,7 +328,10 @@ CREATE TABLE IF NOT EXISTS lark_notification_messages (
     created_at TEXT NOT NULL,
     content TEXT NOT NULL,
     status TEXT NOT NULL,
-    error TEXT
+    error TEXT,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    next_attempt REAL,
+    delivery_json TEXT
 );
 
 CREATE TABLE IF NOT EXISTS lark_notification_inbound (
@@ -825,8 +835,9 @@ CREATE TABLE IF NOT EXISTS goal_links (
  kind TEXT NOT NULL, item_id INTEGER NOT NULL,
  goal_id TEXT NOT NULL REFERENCES goals(id), round INTEGER NOT NULL,
  requirement_version INTEGER NOT NULL, execution_id TEXT NOT NULL REFERENCES goal_executions(id),
- delivered_version INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(kind,item_id)
+ delivered_version INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(kind,item_id,execution_id)
 );
+CREATE UNIQUE INDEX IF NOT EXISTS goal_decision_single_link ON goal_links(kind,item_id) WHERE kind='decision';
 CREATE TABLE IF NOT EXISTS goal_cancellations (
  goal_id TEXT PRIMARY KEY REFERENCES goals(id), round INTEGER NOT NULL,
  requested_at TEXT NOT NULL, actor TEXT NOT NULL
@@ -906,4 +917,43 @@ CREATE TABLE IF NOT EXISTS workspace_cleanup_boundaries (
  cleanups INTEGER NOT NULL CHECK(cleanups>=0),
  job_id TEXT NOT NULL REFERENCES maintenance_jobs(id),
  updated_at TEXT NOT NULL
+);
+
+-- Native desktop handoffs retain exact identity and storage, including across
+-- a Crew restart. Transitional states also block automatic model work.
+CREATE TABLE IF NOT EXISTS native_session_controls (
+ scope_id TEXT PRIMARY KEY,
+ session_id TEXT NOT NULL REFERENCES sessions(session_id),
+ execution_id TEXT REFERENCES goal_executions(id),
+ native_id TEXT NOT NULL,
+ native_home TEXT NOT NULL,
+ state TEXT NOT NULL CHECK(state IN ('crew','releasing','external','returning')),
+ token TEXT,
+ last_error TEXT,
+ updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS goal_work_items (
+    id TEXT PRIMARY KEY,
+    goal_id TEXT NOT NULL REFERENCES goals(id) ON DELETE CASCADE,
+    round INTEGER NOT NULL,
+    requirement_version INTEGER NOT NULL,
+    key TEXT NOT NULL,
+    title TEXT NOT NULL,
+    acceptance TEXT NOT NULL,
+    owner_session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    dependencies_json TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('planned','doing','blocked','done','cancelled')),
+    note TEXT NOT NULL DEFAULT '',
+    version INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(goal_id,round,key)
+);
+CREATE TABLE IF NOT EXISTS goal_work_history (
+    item_id TEXT NOT NULL REFERENCES goal_work_items(id) ON DELETE CASCADE,
+    version INTEGER NOT NULL,
+    actor TEXT NOT NULL,
+    data_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(item_id,version)
 );

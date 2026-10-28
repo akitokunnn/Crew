@@ -641,7 +641,8 @@ class GitHttpTests(ShellFixture, unittest.TestCase):
                 wake.assert_called_once()
                 self.assertEqual(wake.call_args.kwargs["caller_session_id"], "s3")
             self.assertEqual(len(self.processes), 1)
-            self.assertEqual(self.processes[0].command[-2:], ["--resume", "s1"])
+            command = self.processes[0].command
+            self.assertEqual(command[command.index('--resume') + 1], 's1')
             self.assertIn("CI passed", self.processes[0].stdin.getvalue())
             service.deliver_git_results(self.conn)
             self.assertEqual(len(self.processes), 1)

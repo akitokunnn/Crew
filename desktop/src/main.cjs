@@ -14,11 +14,22 @@ const { CrewUpdates } = require('./crew-updates.cjs');
 const { Administrator } = require('./admin.cjs');
 const { OperationsClient } = require('./operations.cjs');
 const { LaunchSettings, relaunchArgs } = require('./launch-settings.cjs');
-const config = core.options(process.argv.slice(1),{launchSettingsPath:path.join(app.getPath('appData'),'Crew','launch-settings.json')});
+const product = require('./product.cjs');
+const config = core.options(process.argv.slice(1),{launchSettingsPath:path.join(app.getPath('appData'),product.settingsDirectory,'launch-settings.json')});
+config.productGeneration = 2;
+try { require('./backend-product.cjs').requireHomeGenerationSync(config.home,config.productGeneration); }
+catch(error) {
+  // Reject a V1 HOME before Electron profiles, administrator files or bundled
+  // backend materialization can create anything inside the selected directory.
+  console.error(error);
+  if(!config.smoke)dialog.showErrorBox('Crew V2 数据目录不兼容',error.message+'\n请通过 --home <独立的新目录> 启动 Crew V2，或在 Crew V2 启动设置中选择独立目录。');
+  app.exit(1);
+  return;
+}
 const administrator = new Administrator(config.home);
 const operations = new OperationsClient(config);
 app.setName(config.instanceName);
-if (process.platform === 'win32') app.setAppUserModelId('local.crew.desktop');
+if (process.platform === 'win32') app.setAppUserModelId(product.appId);
 config.bundledBackendDir = app.isPackaged ? path.join(process.resourcesPath, 'backend') : path.resolve(__dirname, '../../plugin');
 config.backendDir = config.backendDir || config.bundledBackendDir;
 config.helperBackendDir = config.bundledBackendDir;
@@ -126,6 +137,7 @@ ipcMain.on('desktop:tabs-layout',(event,bounds)=>{
 ipcMain.handle('desktop:chrome-action', async (event, command, value) => {
   trustedChrome(event);
   if (command === 'home') return showHome();
+  if (command === 'assistant') return tabs.openAssistant();
   if (command === 'admin') return showHome('admin');
   if (command === 'settings') return showHome('settings');
   if (command === 'back') return tabs.back();
@@ -138,7 +150,7 @@ ipcMain.handle('desktop:chrome-action', async (event, command, value) => {
   throw new Error('不支持的窗口操作');
 });
 function external(url) {
-  try { const parsed = new URL(url); if (['http:', 'https:'].includes(parsed.protocol) && !parsed.username && !parsed.password) void shell.openExternal(parsed.href); }
+  try { const parsed = new URL(url); if ((['http:', 'https:'].includes(parsed.protocol) || /^codex:\/\/threads\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(url)) && !parsed.username && !parsed.password) void shell.openExternal(parsed.href).catch(error=>actionError(new Error('无法打开外部应用：'+error.message))); }
   catch (_) { /* Invalid external link: keep the application on its current page. */ }
 }
 async function showHome(action = null, workspace = null) {
@@ -163,7 +175,7 @@ function actionError(error) {
     .catch(failure=>console.error('Crew error dialog failed:',failure));
 }
 function menuAction(action) { return ()=>{ if (!liveWindow()) return; Promise.resolve().then(()=>{if(liveWindow())return action();}).catch(actionError); }; }
-async function openProject(name) {
+async function openProject(name, hash = '') {
   if (!liveWindow()) return false;
   const target = window;
   if(new URL(backend.url).port==='0')throw new Error(backend.startupError||'后台尚未连接，请查看系统管理员');
@@ -184,7 +196,7 @@ async function openProject(name) {
   const alreadyPrepared=preparedWorkspaces.delete(project.name);
   if(!alreadyOpen&&!alreadyPrepared)project=await storage.prepare(project,backend.url,chooseHistory,storageProgress,workspaceDataRequest);
   if(!project||!liveWindow(target))return false;
-  await tabs.open(project);return true;
+  await tabs.open(project, hash);return true;
 }
 function storageProgress(message){if(liveWindow())window.webContents.send('desktop:storage-progress',message);}
 async function chooseHistory({kind,discovery}) {
@@ -402,7 +414,7 @@ handle('desktop:admin-status',async()=>{
   if(backend?.startupError&&['healthy','degraded'].includes(status.state)&&status.url){
     const recovered=core.loopback(status.url);
     if(tabs&&tabs.state().tabs.every(tab=>tab.project===null)){
-      try { await core.projects(recovered); }
+      try { await backend.validateService(recovered); await core.projects(recovered); }
       catch(error) {
         // Keep the file-backed health page usable while HTTP is still down.
         // An old or not-yet-ready URL must never replace the offline origin.
@@ -467,7 +479,8 @@ handle('desktop:crew-update-cancel',()=>crewUpdates.cancel());
 handle('desktop:crew-update-open',async kind=>{
   if(!['release','main'].includes(kind))throw new Error('不支持的版本链接');
   const online=crewUpdates.snapshot().online;
-  const target=kind==='release'?(online?.release?.url||'https://github.com/akitokunnn/Crew/releases'):(online?.main?.url||'https://github.com/akitokunnn/Crew');
+  if(kind==='release'&&!online?.release?.url)throw new Error('V2 尚未登记独立发布包，请查看 rebuild/v2 分支。');
+  const target=kind==='release'?online.release.url:(online?.main?.url||'https://github.com/akitokunnn/Crew/tree/rebuild/v2');
   const url=new URL(target);
   if(url.protocol!=='https:'||url.hostname!=='github.com'||url.username||url.password||!(url.pathname==='/akitokunnn/Crew'||url.pathname.startsWith('/akitokunnn/Crew/')))throw new Error('版本链接不属于 Crew 官方仓库');
   await shell.openExternal(url.href);return {ok:true};
@@ -476,6 +489,8 @@ function settingsRequest(route, body, timeoutMs) {
   if (!backend?.url || new URL(backend.url).port === '0') throw Error(backend?.startupError || '后台尚未连接，请查看后台信息。');
   return core.request(backend.url, route, body, timeoutMs);
 }
+handle('desktop:prompts-get',query=>settingsRequest('/api/behavior-prompts?'+new URLSearchParams(query || {})));
+handle('desktop:prompts-save',body=>settingsRequest('/api/behavior-prompts',body));
 handle('desktop:settings-get',()=>operations.request('settings-get'));
 handle('desktop:settings-save',body=>operationsMutation('settings-save',body));
 handle('desktop:launch-settings-get',()=>launchSettings.get());
@@ -508,6 +523,7 @@ handle('desktop:settings-ui',async()=>{
   return injectAssets(directory, [
     ['executeJavaScript','launch-settings-ui.js'], ['insertCSS','operations-ui.css'],
     ['executeJavaScript','operations-ui.js'], ['insertCSS','settings-ui.css'],
+    ['insertCSS','behavior-prompts-ui.css'], ['executeJavaScript','behavior-prompts-ui.js'],
     ['executeJavaScript','settings-ui.js'], ['executeJavaScript','connections-ui.js'],
     ['insertCSS','storage-ui.css'], ['executeJavaScript','storage-ui.js']
   ]);
@@ -595,7 +611,7 @@ else {
         backend.startupError=error.message;
         let candidate=config.serviceUrl;
         if(!candidate)try{candidate=JSON.parse(await fs.readFile(path.join(config.home,'web.json'),'utf8')).url;}catch(_){}
-        try{backend.url=core.loopback(candidate);}catch(_){backend.url='http://127.0.0.1:0';}
+        try{backend.url=error.code==='CREW_PRODUCT_GENERATION'?'http://127.0.0.1:0':core.loopback(candidate);}catch(_){backend.url='http://127.0.0.1:0';}
         pendingAction='admin';
       }
       if (quitting) return;

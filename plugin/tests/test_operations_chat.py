@@ -235,7 +235,7 @@ class OperationsChatTests(unittest.TestCase):
             saved = operations_chat.save_settings(self.home, self.backend, {'ai': ai, 'execution': execution})
             reread = operations_chat.settings_snapshot(self.home, self.backend)
         self.assertEqual(saved, reread)
-        self.assertEqual(saved['ai'], ai)
+        self.assertEqual(saved['ai'], {**ai, 'assistant': None})
         self.assertEqual(saved['execution'], execution)
         self.assertEqual(saved['runtimes'], catalog)
         self.assertEqual(saved['backend'], str(self.backend.resolve()))

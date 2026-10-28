@@ -1,5 +1,6 @@
 'use strict';
 const path = require('node:path');
+const os = require('node:os');
 const { spawn, execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const { ReadOnlyCommands } = require('./readonly-command.cjs');
@@ -24,14 +25,19 @@ class CrewUpdates {
   snapshot() { return JSON.parse(JSON.stringify({ ...this.state, queued: this.queued })); }
   _emit() { if (!this.closed) this.onChange(this.snapshot()); }
   _phase(phase, message) { Object.assign(this.state, { phase, message, error: null }); this._emit(); }
+  _assertOwnHome() {
+    if (samePath(this.config.home, path.join(os.homedir(), '.crew'))) {
+      throw new Error('Crew V2 不会更新 V1 的 .crew 数据目录；请选择独立的 V2 HOME。');
+    }
+  }
   _helperArgs(operation, extra = []) { return [path.join(this.config.helperBackendDir || this.config.backendDir, 'crew_update.py'), '--home', this.config.home, operation, ...extra]; }
   async _helper(operation, extra = [], python = this.config.python, readOnly = false) {
     let result;
     try {
       const run = readOnly ? this.reads.run.bind(this.reads) : this.run;
       result = await run(python, this._helperArgs(operation, extra), {
-        cwd: this.config.helperBackendDir || this.config.backendDir, windowsHide: true, timeout: operation === 'plugin-update' ? 150000 : 45000,
-        maxBuffer: 1024 * 1024, env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUNBUFFERED: '1' }
+        cwd: this.config.helperBackendDir || this.config.backendDir, windowsHide: true, timeout: 45000,
+        maxBuffer: 1024 * 1024, env: { ...process.env, CREW_HOME: this.config.home, PYTHONIOENCODING: 'utf-8', PYTHONUNBUFFERED: '1' }
       });
     } catch (error) {
       if (error.stdout) {
@@ -56,15 +62,17 @@ class CrewUpdates {
     return value;
   }
   async _inspect(signal) {
+    this._assertOwnHome();
     const value = await this._helper('inspect', ['--target', this.config.backendDir], this.config.python, Boolean(signal));
     signal?.throwIfAborted();
     const health = await this._health(signal);
     this.state.target = value.target; this.state.cli = value.cli; this.state.plugin = value.plugin;
     this.state.backend = health;
     const blocked = !this.backend.owned ? '当前连接的是其他窗口启动的后台。请先退出原 Crew，再打开当前版本更新。' :
-      !['current', 'update', 'not_installed'].includes(value.plugin.state) ? value.plugin.reason || '无法确认 Claude 插件安装来源。' : null;
+      value.target.generation !== 2 ? '更新来源不是 Crew V2，不能替换当前 V2 后台。' :
+      value.plugin.state !== 'session-scoped' ? 'V2 托管会话必须使用自带插件；不会修改共享的 V1 插件。' : null;
     this.state.blocked_reason = blocked; this.state.can_update = !blocked;
-    this.state.update_available = value.plugin.state === 'update' || value.cli.version !== value.target.version ||
+    this.state.update_available = value.cli.version !== value.target.version ||
       !samePath(value.cli.plugin_root, value.target.root) || this.state.backend.version !== value.target.version ||
       !samePath(this.state.backend.plugin_root, value.target.root);
     this.state.checked_at = new Date().toISOString();
@@ -93,7 +101,7 @@ class CrewUpdates {
         this.state.phase='idle';
       } else if(local.status==='fulfilled') {
         this._phase(this.queued ? 'queued' : 'idle', this.state.blocked_reason ||
-          (this.state.update_available ? '可以把后台与插件统一到本机版本。' : '后台、命令入口和插件已统一。'));
+          (this.state.update_available ? '可以把 V2 后台与命令入口统一到本机版本。' : 'V2 后台与命令入口已统一；托管会话使用自带插件。'));
       } else {
         Object.assign(this.state,{phase:'error',error:local.reason.message,can_update:false});this._emit();
       }
@@ -105,7 +113,7 @@ class CrewUpdates {
   async _lock(python = this.config.python) {
     if (this.acquireLock) return this.acquireLock();
     const child = this.spawn(python, this._helperArgs('lock'), { windowsHide: true,
-      cwd: this.config.helperBackendDir || this.config.backendDir, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUNBUFFERED: '1' } });
+      cwd: this.config.helperBackendDir || this.config.backendDir, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, CREW_HOME: this.config.home, PYTHONIOENCODING: 'utf-8', PYTHONUNBUFFERED: '1' } });
     let exited = false, stderr = '';
     const exit = new Promise(resolve => child.once('exit', () => { exited = true; resolve(); }));
     child.stderr.on('data', value => { stderr = (stderr + value).slice(-3000); });
@@ -142,6 +150,7 @@ class CrewUpdates {
     try {
       if (this.checking) await this.checking;
       if (!this.queued || this.closed) return this.snapshot();
+      this._assertOwnHome();
       this._phase('checking', '正在核对更新来源…');
       lock = await this._lock();
       if (!this.queued || this.closed) return this.snapshot();
@@ -166,11 +175,7 @@ class CrewUpdates {
       // Recheck the source before the first installation change.
       const fresh = await this._helper('inspect', ['--target', this.config.backendDir]); lock.assert();
       if (fresh.target.digest !== target.digest) throw new Error('桌面自带源码在更新期间发生变化，请重新检查。');
-      if (!['current', 'update', 'not_installed'].includes(fresh.plugin.state)) throw new Error(fresh.plugin.reason || '插件来源发生变化。');
-      if (fresh.plugin.state === 'update') {
-        this._phase('plugin', '正在同步 Claude 中的 Crew 插件…');
-        await this._helper('plugin-update', ['--target', this.config.backendDir]); lock.assert();
-      }
+      if (fresh.target.generation !== 2 || fresh.plugin.state !== 'session-scoped') throw new Error('V2 自带插件来源发生变化，更新停止。');
       const current = await this._health();
       if (current.instance_id !== health.instance_id || current.pid !== health.pid) throw new Error('后台实例已变化，更新停止。');
       this._phase('stopping', '正在等待原后台退出…');
@@ -189,9 +194,9 @@ class CrewUpdates {
       await this.onRestart(after); this.state.backend = after;
       const applied = await this._helper('inspect', ['--target', this.config.backendDir]);
       if (applied.target.digest !== target.digest || !samePath(applied.cli.plugin_root, target.root) ||
-          !['current', 'not_installed'].includes(applied.plugin.state)) throw new Error('更新后命令入口或插件来源验证未通过。');
+          applied.target.generation !== 2 || applied.plugin.state !== 'session-scoped') throw new Error('更新后 V2 命令入口或自带插件来源验证未通过。');
       this.state.cli = applied.cli; this.state.plugin = applied.plugin; this.state.update_available = false;
-      this._phase('done', '已统一到桌面自带版本。已有 Claude 会话请重载插件或重开。');
+      this._phase('done', 'V2 后台与命令入口已统一到桌面自带版本；共享的 V1 插件未改动。');
     } catch (error) {
       this.queued = false; clearInterval(this.timer); this.timer = null;
       Object.assign(this.state, { phase: 'error', error: error.message, message: stopped ? '后台切换未完成，请查看系统管理员；备份已保留。' : '更新未完成，备份（若已创建）已保留。' }); this._emit();

@@ -137,6 +137,10 @@ def check(home, data, now=None):
             if p is None:
                 return reason
             sid = data["session_id"]
+            if reason is None and tool in ('Agent', 'Task', 'TeamCreate'):
+                member = conn.execute('SELECT role,crew_name FROM sessions WHERE session_id=?', (sid,)).fetchone()
+                if member is not None and member['crew_name'] and member['role'] == 'member':
+                    reason = 'Crew 成员不能继续派工或创建原生子代理；需要拆分任务时请交回 leader。' + TAIL
             if reason is None and tool in SHELLS and git_operation(command):
                 config = board.git_config(conn, p["name"])
                 member = conn.execute("SELECT crew_name,status FROM sessions WHERE session_id=? AND project=?",

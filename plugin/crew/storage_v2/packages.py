@@ -112,6 +112,8 @@ def _schema():
 
 def _shape(conn, *, incoming=False):
     schema, trusted_objects = _schema()
+    if conn.execute('PRAGMA user_version').fetchone()[0] == 2:
+        schema = {key: value for key, value in schema.items() if key != 'workspace_feature_records'}
     actual = {name: (kind, sql) for kind, name, sql in conn.execute(
         "SELECT type,name,sql FROM sqlite_master WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%'")}
     if incoming and set(actual) != set(schema):
@@ -230,7 +232,7 @@ def _manifest(value, limits):
                 'export_id', 'workspace_id', 'created_at', 'consistency', 'source', 'database', 'blobs', 'capabilities', 'omissions'}
     if not isinstance(value, dict) or set(value) != required:
         raise PackageError('Unsupported package manifest')
-    if value['format'] != 'crew-workspace' or _integer(value['format_version'], 'format_version', minimum=1) != 1 or _integer(value['schema_version'], 'schema_version', minimum=1) != SCHEMA_VERSION:
+    if value['format'] != 'crew-workspace' or _integer(value['format_version'], 'format_version', minimum=1) != 1 or _integer(value['schema_version'], 'schema_version', minimum=1) not in (2, SCHEMA_VERSION):
         raise PackageError('Unsupported package format/schema version')
     if _integer(value['min_reader_version'], 'min_reader_version', minimum=1) > SCHEMA_VERSION:
         raise PackageError('Package requires a newer reader')
@@ -255,6 +257,8 @@ def _manifest(value, limits):
     if _integer(database['bytes'], 'database bytes', minimum=1) > limits.max_file_bytes:
         raise PackageError('Database exceeds package quota')
     schema, _ = _schema()
+    if value['schema_version'] == 2:
+        schema = {key: info for key, info in schema.items() if key != 'workspace_feature_records'}
     if not isinstance(database['tables'], dict) or set(database['tables']) != set(schema):
         raise PackageError('Incomplete domain table inventory')
     if sum(_integer(n, 'table count') for n in database['tables'].values()) > limits.max_rows:
@@ -526,7 +530,7 @@ def _report_references(value, clean, schema, key=None):
     aliases = {'goal_id': 'goals', 'round_id': 'goal_rounds', 'requirement_id': 'goal_requirements',
                'goal_round_id': 'goal_rounds', 'agent_id': 'agents', 'leader_session_id': 'agents',
                'execution_id': 'executions', 'message_id': 'messages', 'report_id': 'reports',
-               'artifact_id': 'artifacts', 'artifact_version_id': 'artifact_versions', 'workspace_id': 'workspaces'}
+               'artifact_id': 'artifacts', 'artifact_version_id': 'artifact_versions', 'workspace_id': 'workspaces', 'actor': 'agents'}
     if isinstance(value, dict):
         return {k: _report_references(v, clean, schema, k) for k, v in value.items()}
     if isinstance(value, list):

@@ -128,12 +128,14 @@ def requirements(conn, goal_id, version=None):
 
 
 def get(conn, goal_id, project=None):
+    from . import goal_mode
     value = _row(conn, goal_id, project)
     value['dependencies'] = json.loads(value.pop('dependencies_json'))
     value['manual_pause'] = bool(value['manual_pause'])
     value['requirements'] = requirements(conn, goal_id)
     value['assignments'] = board._rows(conn, 'SELECT * FROM goal_assignments WHERE goal_id=? ORDER BY created_at,session_id', (goal_id,))
     value['rounds'] = board._rows(conn, 'SELECT * FROM goal_rounds WHERE goal_id=? ORDER BY number', (goal_id,))
+    value['decision_mode'] = goal_mode.get(conn, goal_id)
     return value
 
 
@@ -168,7 +170,7 @@ def _revision(conn, goal_id):
 
 @atomic
 def create(conn, project, leader_session_id, title, request, acceptance, *, constraints=(), priority=0,
-           dependencies=(), actor=board.HUMAN, source=None, now=None):
+           dependencies=(), actor=board.HUMAN, source=None, decision_mode=None, now=None):
     board.project(conn, project)
     title, request = _text(title, '目标标题', limit=300), _text(request, '原始需求')
     criteria, constraints = _criteria(acceptance), _strings(constraints, '约束')
@@ -189,6 +191,8 @@ def create(conn, project, leader_session_id, title, request, acceptance, *, cons
                  (identity, 1, request, _json(criteria), _json(constraints), request, actor, _json(source or {'type': 'user', 'id': identity}), at))
     conn.execute('INSERT INTO goal_rounds VALUES(?,?,?,?,?,?,?,?)', (identity, 1, 1, 'queued', None, None, at, None))
     conn.execute('INSERT INTO goal_assignments VALUES(?,?,?,?,?,?)', (identity, leader_session_id, request, 'assigned', at, at))
+    from . import goal_mode
+    goal_mode.initialize(conn, identity, decision_mode, actor=actor, now=now)
     _control(conn, identity, actor)
     return get(conn, identity)
 
@@ -535,8 +539,8 @@ def validate_report(conn, goal_id, data):
         if key in result and result[key] != expected:
             raise board.Conflict('报告基于旧目标、轮次或需求版本，需重新核对交付结论')
     outcome = result.get('outcome')
-    if outcome not in ('completed', 'failed', 'awaiting_acceptance', 'cancelled'):
-        raise board.BoardError('outcome=%r 无效；允许 completed|failed|awaiting_acceptance|cancelled' % str(outcome)[:100])
+    if outcome not in ('completed', 'failed', 'awaiting_acceptance', 'cancelled', 'progress'):
+        raise board.BoardError('outcome=%r 无效；允许 completed|failed|awaiting_acceptance|cancelled|progress' % str(outcome)[:100])
     _text(result.get('summary'), '报告结论')
     if 'document_html' in result:
         document = _text(result['document_html'], 'document_html 自包含 HTML 正文', required=False,
@@ -610,7 +614,7 @@ def render_report(conn, goal_id, data):
     def listing(values):
         return '<ul>' + ''.join('<li>' + esc(value) + '</li>' for value in values) + '</ul>' if values else '<p>无。</p>'
     sections = ['<h1>%s</h1><p>第 %s 轮 · 需求 v%s</p><h2>%s</h2><p>%s</p>' %
-                (esc(goal['title']), data['round'], data['requirement_version'], esc({'completed': '已达标', 'failed': '未达标', 'awaiting_acceptance': '等待用户验收', 'cancelled': '已取消'}[data['outcome']]), esc(data['summary'])),
+                (esc(goal['title']), data['round'], data['requirement_version'], esc({'completed': '已达标', 'failed': '未达标', 'awaiting_acceptance': '等待用户验收', 'cancelled': '已取消', 'progress': '阶段成果 · 任务继续'}[data['outcome']]), esc(data['summary'])),
                 '<h2>验收概览</h2><svg viewBox="0 0 600 24" role="img" aria-label="%s">%s</svg><p>%s</p>' %
                 (esc('，'.join(labels[key] + ' ' + str(count) for key, count in counts.items())), ''.join(bars), esc(' · '.join(labels[key] + ' ' + str(count) for key, count in counts.items())))]
     for item in data['acceptance']:
@@ -705,6 +709,8 @@ def get_finish(conn, goal_id):
 @atomic
 def request_finish(conn, goal_id, report_id, *, actor=board.HUMAN, execution_id=None, now=None):
     goal, report = _row(conn, goal_id), get_report(conn, report_id)
+    if report['outcome'] == 'progress':
+        raise board.BoardError('阶段报告不会结束任务，请完成验收后另行提交最终报告')
     _actor(conn, goal, actor)
     if report['goal_id'] != goal_id or report['round'] != goal['current_round'] or report['requirement_version'] != goal['requirement_version']:
         raise board.Conflict('交付报告不属于目标当前轮次与需求版本')
@@ -718,6 +724,9 @@ def request_finish(conn, goal_id, report_id, *, actor=board.HUMAN, execution_id=
         if execution['goal_id'] != goal_id or execution['round'] != goal['current_round'] or execution['requirement_version'] != goal['requirement_version'] or actor not in (board.HUMAN, execution['session_id']):
             raise board.Conflict('收尾请求的执行身份或需求版本不匹配')
     validate_report(conn, goal_id, report['data'])
+    if report['outcome'] in ('completed', 'awaiting_acceptance'):
+        from . import goal_work
+        goal_work.require_complete(conn, goal_id)
     at = board._time(now)
     conn.execute('INSERT INTO goal_round_finishes VALUES(?,?,?,?,?,?,?,?,?,NULL) ON CONFLICT(goal_id,round) DO UPDATE SET '
                  'requirement_version=excluded.requirement_version,report_id=excluded.report_id,outcome=excluded.outcome,status=excluded.status,'

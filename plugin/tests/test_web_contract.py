@@ -96,7 +96,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         leader = state["leaders"][0]
         self.assertEqual(set(leader), {"session_id", "name", "goal", "status", "busy", "running", "web_chat",
             "cc_name", "last_seq", "last_reply_id", "read_seq", "unread", "pending", "notices_pending", "member_ids",
-            "model", "effort", "applied", "activity", "context", "where", "codex", "codex_older", "is_git_admin", "priority", "runtime", "trust", "runtime_switch", "active_goal_id", "active_goal_ids", "active_execution_id", "member_defaults"})
+            "model", "effort", "applied", "activity", "context", "where", "codex", "codex_older", "is_git_admin", "priority", "runtime", "native_handoff", "trust", "runtime_switch", "active_goal_id", "active_goal_ids", "active_execution_id", "member_defaults"})
         self.assertIsNone(leader['member_defaults'])
         self.assertIsNone(leader['active_goal_id']); self.assertIsNone(leader['active_execution_id'])
         self.assertEqual(set(leader['runtime_switch']), {'allowed', 'reason', 'pending_handoff', 'last_switch_at'})
@@ -125,12 +125,16 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         goal = response['goal']
         self.assertEqual(set(goal),{'id','project','leader_session_id','title','original_request','status',
             'requirement_version','current_round','priority','manual_pause','reason','version','created_at','updated_at',
-            'dependencies','requirements','assignments','rounds','request','acceptance','constraints','report_available'})
+            'dependencies','requirements','assignments','rounds','request','acceptance','constraints','report_available','native_handoffs','work_summary','decision_mode'})
+        self.assertEqual((goal['decision_mode']['mode'], goal['decision_mode']['source'], goal['decision_mode']['version']),
+                         ('human','leader-default',1))
         self.assertEqual((goal['project'],goal['leader_session_id'],goal['title'],goal['status']),('demo','s3','验证交付','queued'))
         self.assertEqual((goal['request'],goal['original_request']),('完成原始输入要求','完成原始输入要求'))
         self.assertEqual((goal['current_round'],goal['requirement_version'],goal['version']),(1,1,1))
         self.assertEqual(goal['acceptance'],[{'id':'a1','title':'具体 example 达标'}])
         self.assertFalse(goal['report_available']);self.assertFalse(goal['manual_pause'])
+        self.assertEqual(goal['native_handoffs'], [])
+        self.assertEqual(goal['work_summary'], {'total':0,'done':0,'doing':0,'blocked':0,'revision':0})
         self.assertEqual((goal['dependencies'],goal['constraints']),([],[]))
         self.assertEqual(set(goal['requirements']),{'goal_id','version','request','change_text','actor','created_at','acceptance','constraints','source'})
         self.assertEqual(goal['requirements']['acceptance'],goal['acceptance'])
@@ -141,7 +145,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual(self.state()['goals'],[goal])
         self.assertEqual(self.request('/api/goals',project='demo')[:2],(200,{'goals':[goal]}))
         code, detail, _ = self.request('/api/goal',project='demo',id=goal['id'])
-        self.assertEqual(code,200,detail);self.assertEqual(set(detail),{'goal','executions','context','reports','documents','acceptance_review','previous_acceptance_review'})
+        self.assertEqual(code,200,detail);self.assertEqual(set(detail),{'goal','executions','context','reports','documents','acceptance_review','previous_acceptance_review','work_items'})
         self.assertEqual(detail['goal'],goal);self.assertEqual(detail['executions'],[]);self.assertEqual(detail['reports'],[])
         self.assertEqual(detail['documents'],[]); self.assertIsNone(detail['acceptance_review'])
         self.assertEqual(len(self.processes),before)
@@ -195,7 +199,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual(set(member), {"session_id", "name", "title", "leader_session_id", "group", "status",
             "status_note", "where", "task", "scope", "done_when", "branch", "worktree", "cwd", "cc_name",
             "web_chat", "progress", "codex", "codex_older", "leases", "claims", "model", "effort", "applied", "activity",
-            "context", "busy", "running", "runtime", "runtime_switch", "active_goal_id", "active_goal_ids", "active_execution_id"})
+            "context", "busy", "running", "runtime", "native_handoff", "runtime_switch", "active_goal_id", "active_goal_ids", "active_execution_id"})
         self.assertEqual((member["name"], member["leader_session_id"], member["group"], member["scope"], member["done_when"]),
                          ("one", "s3", "lead", "Backend", "Tests pass"))
         self.assertEqual([row["text"] for row in member["progress"]], ["progress-" + str(i) for i in (6, 5, 4, 3, 2)])
@@ -534,13 +538,14 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         messages = process.stdin.getvalue().splitlines()
         self.assertEqual(len(messages), len(before) + 1)
         combined = json.loads(messages[-1])["message"]["content"]
-        self.assertEqual(combined, "[Crew]\n1. First notice\n2. Second notice")
+        notice_text = "[Crew]\n1. First notice\n2. Second notice"
+        self.assertTrue(combined.endswith(notice_text))
         self.assertEqual(board.pending_notices(self.conn, sid), [])
         sent = list(self.conn.execute("SELECT sent_at FROM leader_notices WHERE session_id=?", (sid,)))
         self.assertEqual(len(sent), 2)
         self.assertTrue(all(store.parse_iso(row[0]) == self.clock for row in sent))
         event = [row for row in self.service.chat.history(sid)["events"] if row["type"] == "message"][-1]
-        self.assertEqual((event["source"], event["text"]), ("crew", combined))
+        self.assertEqual((event["source"], event["text"]), ("crew", notice_text))
         self.service.deliver_notices()
         self.assertEqual(process.stdin.getvalue().splitlines(), messages)
 
@@ -590,7 +595,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertTrue(sender.call_args.kwargs['identity'].startswith('leader-notices:'))
         self.assertEqual(len(self.processes), 2)
         resumed = self.processes[-1]
-        self.assertEqual(resumed.command[-2:], ["--resume", sid])
+        self.assertEqual(resumed.command[resumed.command.index('--resume') + 1], sid)
         self.assertEqual(json.loads(resumed.stdin.getvalue().splitlines()[-1])["session_id"], sid)
         self.assertEqual(json.loads(resumed.stdin.getvalue().splitlines()[-1])['uuid'], sender.call_args.kwargs['identity'])
         self.assertEqual(board.pending_notices(self.conn, sid), [])

@@ -1,12 +1,13 @@
 """Shared CLI/tool/HTTP business routes; actor and execution come from the host."""
 from contextlib import closing
+import hashlib
 import json
 
-from . import board, goal_context, goals, store
+from . import board, goal_artifacts, goal_context, goal_mode, goal_reports, goal_work, goals, store
 
-READ_ACTIONS = frozenset(('status', 'report-template', 'context.inspect', 'context.retrieve'))
+READ_ACTIONS = frozenset(('status', 'report-template', 'report.get', 'context.inspect', 'context.retrieve', 'work.list')) | goal_artifacts.READ_ACTIONS
 GOAL_ACTIONS = frozenset(('status', 'create', 'start', 'pause', 'resume', 'cancel', 'reopen',
-                          'amend', 'assign', 'report-template', 'finish'))
+                          'amend', 'assign', 'report-template', 'report.get', 'report.publish', 'mode.set', 'finish', 'work.list', 'work.add', 'work.update')) | goal_artifacts.ACTIONS
 CONTEXT_ACTIONS = frozenset(('context.inspect', 'context.retrieve', 'context.put', 'context.correct', 'context.expire'))
 
 
@@ -27,7 +28,7 @@ def report_template(conn, goal_id):
                       'examples_kind': 'actual|illustrative；示意不能冒充实测',
                       'text_arrays': 'delivered/unresolved/artifacts/tradeoffs 都是文本数组',
                       'investment': '未知 elapsed_seconds/usage 保留 null，不估作零；角色格式 {role,contribution}；缓存用量单列',
-                      'submit': '填完空字段后 crew goal finish --file <报告.json>；所有 passed 必须有实际证据'}}
+                      'submit': '最终交付用 crew goal finish --file <报告.json>；阶段成果把 outcome 改 progress，用 crew goal report.publish --request-id <稳定标识> --file <报告.json>，继续工作；所有 passed 必须有实际证据'}}
 
 
 def _person(conn, project, value):
@@ -48,9 +49,16 @@ def _status_goal(value):
     # The immutable source and every round remain inspectable; a status read
     # must not repeat the same original request inside four nested objects.
     return {**{key: value[key] for key in ('id', 'title', 'leader_session_id', 'status',
-        'current_round', 'requirement_version', 'version', 'manual_pause', 'reason')},
+        'current_round', 'requirement_version', 'version', 'manual_pause', 'reason', 'decision_mode')},
         'request': value['requirements']['request'], 'acceptance': value['requirements']['acceptance'],
         'constraints': value['requirements']['constraints']}
+
+
+def _start_identity(goal, session_id, task=None):
+    # A successful start is a finite action, including when a model retries it
+    # with a new tool call ID. Later requirements/rounds get a new input identity.
+    scope = '%s:%s:%s:%s' % (goal['id'], goal['current_round'], goal['requirement_version'], session_id)
+    return 'goal-start:' + scope if task is None else 'goal-assign:' + scope + ':' + hashlib.sha256(task.encode('utf-8')).hexdigest()
 
 
 def dispatch(home, actor_session_id, execution_id, action, data, controller=None):
@@ -92,7 +100,7 @@ def dispatch(home, actor_session_id, execution_id, action, data, controller=None
                         'WHERE goal_id=? AND round=? AND requirement_version=? AND generation=(SELECT MAX(x.generation) '
                         'FROM goal_executions x WHERE x.goal_id=e.goal_id AND x.round=e.round AND x.session_id=e.session_id) '
                         'ORDER BY e.session_id', (goal_id, goal['current_round'], goal['requirement_version'])),
-                        'finish': goals.get_finish(conn, goal_id)}
+                        'finish': goals.get_finish(conn, goal_id), 'work_items': goal_work.items(conn, goal_id)}
             rows = goals.list(conn, project, actor_session_id if actor and actor['role'] == 'leader' else None)
             if actor and actor['role'] != 'leader':
                 rows = [item for item in rows if any(entry['session_id'] == actor_session_id for entry in item['assignments'])]
@@ -104,7 +112,8 @@ def dispatch(home, actor_session_id, execution_id, action, data, controller=None
             leader = _person(conn, project, leader_id)
             return goals.create(conn, project, leader['session_id'], data.get('title'), data.get('request'),
                                 data.get('acceptance'), constraints=data.get('constraints', ()), priority=data.get('priority', 0),
-                                dependencies=data.get('dependencies', ()), actor=actor_session_id, source=data.get('source'))
+                                dependencies=data.get('dependencies', ()), actor=actor_session_id, source=data.get('source'),
+                                decision_mode=data.get('decision_mode'))
         if action == 'context.retrieve':
             from .storage_service import StorageService
             return StorageService(home).retrieve(project, {**data, 'goal_id':goal_id,
@@ -112,8 +121,35 @@ def dispatch(home, actor_session_id, execution_id, action, data, controller=None
                 'current_goal_status':goal['status'] if goal else None},actor_session_id=actor_session_id if actor else None)
         if goal is None:
             raise board.BoardError('此操作必须指定目标')
+        if action in goal_artifacts.ACTIONS:
+            return goal_artifacts.dispatch(conn, home, goal_id, action, data, actor=actor_session_id, execution_id=execution_id)
+        if action == 'work.list':
+            return {'items': goal_work.items(conn, goal_id, data.get('round')), 'summary': goal_work.summary(conn, goal_id)}
+        if action == 'work.add':
+            return goal_work.add(conn, goal_id, data.get('key'), data.get('title'), data.get('acceptance'),
+                                 owner=data.get('owner_session_id'), dependencies=data.get('dependencies', ()), actor=actor_session_id)
+        if action == 'work.update':
+            return goal_work.update(conn, goal_id, data.get('key'), data.get('version'), actor=actor_session_id,
+                                    **{key: data[key] for key in ('status', 'note', 'title', 'acceptance', 'dependencies') if key in data},
+                                    owner=data.get('owner_session_id'))
         if action == 'report-template':
             return report_template(conn, goal_id)
+        if action == 'report.get':
+            identity = data.get('report_id')
+            if identity is None:
+                row = conn.execute('SELECT id FROM goal_reports WHERE goal_id=? ORDER BY round DESC,version DESC LIMIT 1', (goal_id,)).fetchone()
+                identity = row['id'] if row else None
+            report = goals.get_report(conn, identity)
+            if report['goal_id'] != goal_id:
+                raise board.BoardError('报告不属于当前任务')
+            return {'report': report}
+        if action == 'mode.set':
+            return {'decision_mode': goal_mode.set_mode(conn, goal_id, data.get('mode'),
+                    expected_version=data.get('expected_version'), actor=actor_session_id)}
+        if action == 'report.publish':
+            return goal_reports.publish(conn, goal_id, data.get('report'), request_id=data.get('request_id'),
+                        actor=actor_session_id, execution_id=execution_id, source=data.get('source'),
+                        expected_version=data.get('expected_version'))
         if action == 'context.inspect':
             return goal_context.inspect(conn, goal_id, execution_id)
         if action == 'context.put':
@@ -142,6 +178,7 @@ def dispatch(home, actor_session_id, execution_id, action, data, controller=None
             assigned = goals.assign(conn, goal_id, person['session_id'], data.get('task'), actor=actor_session_id)
             if data.get('start') is True:
                 receipt = controller.send(goal_id, person['session_id'], data['task'],
+                                          identity=_start_identity(goal, person['session_id'], data['task']),
                                           source='human' if actor_session_id == board.HUMAN else 'crew')
                 return {'goal': assigned, 'receipt': receipt}
             return assigned
@@ -157,6 +194,7 @@ def dispatch(home, actor_session_id, execution_id, action, data, controller=None
             if not gate['allowed']:
                 raise board.Conflict(gate['reason'])
             return controller.send(goal_id, person['session_id'], data.get('text') or goal['requirements']['request'],
+                                   identity=_start_identity(goal, person['session_id']),
                                    source='human' if actor_session_id == board.HUMAN else 'crew')
         if action == 'pause':
             return _host(controller).pause(goal_id, manual=actor_session_id == board.HUMAN, actor=actor_session_id)

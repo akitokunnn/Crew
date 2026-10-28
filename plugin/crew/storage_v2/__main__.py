@@ -7,11 +7,12 @@ from pathlib import Path
 
 from . import Repository
 from . import legacy, packages
+from .. import store
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description='Crew workspace history, import/export and portable handoff (no AI calls)')
-    parser.add_argument('--home', type=Path, default=Path(os.environ.get('CREW_HOME', Path.home()/'.crew')))
+    parser.add_argument('--home', type=Path, default=Path(os.environ['CREW_HOME']) if os.environ.get('CREW_HOME') else store.default_home())
     commands=parser.add_subparsers(dest='command',required=True)
     commands.add_parser('list')
     migrate=commands.add_parser('migrate');migrate.add_argument('--source',type=Path,required=True);migrate.add_argument('--project',required=True)

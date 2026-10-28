@@ -76,7 +76,8 @@ class Manager:
                           app_id=inbox.credentials[0] if inbox.credentials else '',
                           secret_configured=inbox.credentials is not None,
                           enabled=status['enabled'], state=status['channel']['state'],
-                          detail=status['channel']['detail'], bound=bound, error=status['error'])
+                          detail=status['channel']['detail'], bound=bound, error=status['error'],
+                          delivery=inbox.delivery_snapshot())
             if channel == 'lark':
                 result['domain'] = inbox.domain
             if not bound and inbox.enabled:

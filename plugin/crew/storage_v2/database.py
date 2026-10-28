@@ -14,7 +14,7 @@ import uuid
 from .objects import ObjectInfo, ObjectStore, canonical_uuid
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 APPLICATION_ID = 0x43525732  # CRW2
 BUSY_TIMEOUT_MS = 5000
 
@@ -36,7 +36,8 @@ def now_iso():
 
 
 def domain_sql():
-    return files(__package__).joinpath('domain.sql').read_text(encoding='utf-8')
+    return (files(__package__).joinpath('domain.sql').read_text(encoding='utf-8') + '\n' +
+            files(__package__).joinpath('features.sql').read_text(encoding='utf-8') + '\nPRAGMA user_version=3;\n')
 
 
 def local_sql():
@@ -110,10 +111,39 @@ class Repository:
         with _initialization_lock(self.directory):
             if not self.path.exists():
                 self._initialize()
+            self._upgrade_features()
             with closing(sqlite3.connect(self.path.as_uri() + '?mode=ro', uri=True)) as conn:
                 conn.row_factory = sqlite3.Row
                 self.device_id = self._validate_schema(conn)
         self.objects = ObjectStore(self.directory / 'objects')
+
+    def _upgrade_features(self):
+        """Only the exact trusted v2 schema can take the additive v3 upgrade."""
+        with closing(sqlite3.connect(self.path.as_uri() + '?mode=rw', uri=True, isolation_level=None)) as conn:
+            if conn.execute('PRAGMA user_version').fetchone()[0] != 2:
+                return
+            old = files(__package__).joinpath('domain.sql').read_text(encoding='utf-8')
+            digest = hashlib.sha256((old + '\n-- device schema --\n' + local_sql()).encode()).hexdigest()
+            applied = conn.execute('SELECT migration_sha256 FROM local_schema_migrations WHERE to_version=2 '
+                                   'ORDER BY applied_at DESC LIMIT 1').fetchone()
+            meta = conn.execute('SELECT schema_version,min_reader_version,min_writer_version FROM local_schema_metadata').fetchone()
+            if (conn.execute('PRAGMA application_id').fetchone()[0] != APPLICATION_ID or
+                    applied is None or applied[0] != digest or meta is None or tuple(meta) != (2,2,2)):
+                raise SchemaVersionError('Storage V2 metadata does not match the trusted migration source')
+            backup = self.directory / 'backups' / ('before-schema-3-' + uuid.uuid4().hex + '.sqlite3')
+            backup.parent.mkdir(exist_ok=True)
+            with closing(sqlite3.connect(backup)) as output:
+                conn.backup(output)
+            try:
+                conn.executescript('BEGIN IMMEDIATE;\n' + files(__package__).joinpath('features.sql').read_text(encoding='utf-8'))
+                conn.execute('UPDATE local_schema_metadata SET schema_version=3,min_reader_version=3,min_writer_version=3')
+                conn.execute('INSERT INTO local_schema_migrations VALUES(?,?,?,?,?)',
+                             (str(uuid.uuid4()),2,3,schema_digest(),now_iso()))
+                conn.execute('PRAGMA user_version=3')
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
 
     def _initialize(self):
         temporary = self.directory / ('.initialize-' + uuid.uuid4().hex + '.sqlite3')

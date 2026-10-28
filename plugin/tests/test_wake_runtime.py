@@ -32,7 +32,7 @@ class AutoResumeTests(ShellFixture, unittest.TestCase):
         self.assertEqual(len(self.processes), 2)
         for session_id in ("s1", "s3"):
             process = self.manager.processes[session_id].process
-            self.assertEqual(process.command[-2:], ["--resume", session_id])
+            self.assertEqual(process.command[process.command.index('--resume') + 1], session_id)
             session = board.session(self.conn, session_id)
             self.assertEqual(process.command[process.command.index("--name") + 1], session["crew_name"])
             self.assertEqual(process.command[process.command.index("--permission-mode") + 1], "bypassPermissions")

@@ -35,7 +35,8 @@ def queue(conn, sender_id, target_id, text, execution_id=None, *, message_id=Non
         goals._member(conn, goal, target_id)
     if kind == 'task' and source_goal and sender_id != source_goal['leader_session_id']:
         raise board.BoardError('任务分配由本目标 leader 负责')
-    receipt = messaging.queue_record(conn, sender_id, target_id, text, message_id, kind=kind, reply_to=reply_to)
+    receipt = messaging.queue_record(conn, sender_id, target_id, text, message_id, kind=kind, reply_to=reply_to,
+                                     deduplicate_reply=False)
     identity = receipt['message_id']
     old = conn.execute('SELECT * FROM goal_message_meta WHERE message_id=?', (identity,)).fetchone()
     if old:

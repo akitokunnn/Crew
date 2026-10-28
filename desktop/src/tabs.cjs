@@ -22,11 +22,12 @@ class WorkspaceTabs {
     this.activityTimer?.unref?.();
   }
 
-  _public(tab) { return { id: tab.id, name: tab.project.display_name || tab.project.name, project: tab.project.name, loading: tab.loading, error: tab.error,
+  _public(tab) { if (tab.kind === 'assistant') return {id:tab.id,kind:'assistant',name:'助手',project:null,loading:tab.loading,error:tab.error};
+    return { id: tab.id, name: tab.project.display_name || tab.project.name, project: tab.project.name, loading: tab.loading, error: tab.error,
     readOnly:Boolean(tab.project.read_only), activity:tab.project.read_only ? {tone:'idle',label:'已保存的只读历史',badge:0,unread:0,items:[],stale:false,error:''} : tab.activity||null }; }
   async refreshActivity() {
     if(this.disposed||this.activityBusy||!this.readActivity||!this.entries.size)return;
-    const tabs=[...this.entries.values()].filter(tab=>!tab.project.read_only);
+    const tabs=[...this.entries.values()].filter(tab=>tab.kind !== 'assistant' && !tab.project.read_only);
     if(!tabs.length)return;
     this.activityBusy=true;let changed=false;
     try{
@@ -59,9 +60,9 @@ class WorkspaceTabs {
       tab.error = true; tab.loading = false; tab.view.setVisible(false); this._notify();
     }
   }
-  _openProject(tab, name) {
+  _openProject(tab, name, hash = '') {
     try {
-      const pending = this.openProject(name);
+      const pending = this.openProject(name, hash);
       if (pending && typeof pending.catch === 'function') pending.catch(error => this.onNavigationError(error));
     } catch (error) { this.onNavigationError(error); }
   }
@@ -70,13 +71,17 @@ class WorkspaceTabs {
     let url;
     try { url = new URL(value); } catch (_) { return { kind: 'blocked' }; }
     if (url.username || url.password) return { kind: 'blocked' };
+    if (/^codex:\/\/threads\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) return {kind:'external'};
+    if (url.origin === this.origin && url.pathname === '/assistant.html' && !url.search) {
+      return {kind:tab.kind === 'assistant' ? 'same' : 'assistant'};
+    }
     if (url.origin === this.origin && url.pathname === '/') {
       const settings = url.searchParams.getAll('workspace-settings');
-      if (settings.length === 1 && settings[0] === tab.project.name && url.searchParams.size === 1) return { kind:'workspace-settings' };
+      if (settings.length === 1 && settings[0] === tab.project?.name && url.searchParams.size === 1) return { kind:'workspace-settings' };
       const names = url.searchParams.getAll('project');
       if (names.length === 0 && url.searchParams.size === 0) return { kind: 'home' };
       if (names.length !== 1 || !names[0] || url.searchParams.size !== 1) return { kind: 'blocked' };
-      return { kind: names[0] === tab.project.name ? 'same' : 'project', name: names[0] };
+      return { kind: names[0] === tab.project?.name ? 'same' : 'project', name: names[0], hash:url.hash };
     }
     return { kind: ['http:', 'https:'].includes(url.protocol) ? 'external' : 'blocked' };
   }
@@ -89,8 +94,9 @@ class WorkspaceTabs {
     // A subframe cannot use navigation to select workspaces or open a browser.
     if (!isMainFrame) return;
     if (target.kind === 'home') { this.select('home'); return; }
+    if (target.kind === 'assistant') { void this.openAssistant().catch(this.onNavigationError); return; }
     if (target.kind === 'workspace-settings') { this.workspaceSettings(tab.project.name); return; }
-    if (target.kind === 'project') { this._openProject(tab, target.name); return; }
+    if (target.kind === 'project') { this._openProject(tab, target.name, target.hash); return; }
     if (target.kind === 'external' && !redirect) this.external(url);
     else this._error(tab);
   }
@@ -104,8 +110,9 @@ class WorkspaceTabs {
         const target = this._destination(tab, url);
         if (target.kind === 'same') this.select(tab.id);
         else if (target.kind === 'home') this.select('home');
+        else if (target.kind === 'assistant') void this.openAssistant().catch(this.onNavigationError);
         else if (target.kind === 'workspace-settings') this.workspaceSettings(tab.project.name);
-        else if (target.kind === 'project') this._openProject(tab, target.name);
+        else if (target.kind === 'project') this._openProject(tab, target.name, target.hash);
         else if (target.kind === 'external') this.external(url);
       }
       return { action: 'deny' };
@@ -113,7 +120,7 @@ class WorkspaceTabs {
     wc.on('before-input-event', (event, input) => { if (this._alive(tab)) this.onKeyboard(event, input); });
     wc.on('page-title-updated', event => {
       event.preventDefault();
-      if (this._alive(tab) && this._destination(tab, wc.getURL()).kind === 'same') this.onTitleChange(tab.project.name);
+      if (this._alive(tab) && tab.kind !== 'assistant' && this._destination(tab, wc.getURL()).kind === 'same') this.onTitleChange(tab.project.name);
     });
     wc.on('did-start-loading', () => {
       if (this._alive(tab)) {
@@ -135,11 +142,15 @@ class WorkspaceTabs {
     wc.on('destroyed', () => { if (this._alive(tab)) this.close(tab.id); });
   }
 
-  async open(project) {
+  async open(project, hash = '') {
     if (this.disposed) throw new Error('Workspace tabs are closed');
     if (!project || typeof project.name !== 'string' || !project.name.trim()) throw new TypeError('A registered project name is required');
-    const existing = [...this.entries.values()].find(tab => tab.project.name === project.name);
-    if (existing) { this.updateProject(project); this.select(existing.id); return this._public(existing); }
+    const existing = [...this.entries.values()].find(tab => tab.project?.name === project.name);
+    if (existing) {
+      this.updateProject(project); this.select(existing.id);
+      if (hash) await existing.view.webContents.executeJavaScript('location.hash=' + JSON.stringify(hash));
+      return this._public(existing);
+    }
     const view = this.createView(project);
     if (!view?.webContents) throw new TypeError('View factory must return a WebContentsView');
     const tab = { id: 'workspace-' + ++this.counter, project: { ...project }, view, loading: true, error: false };
@@ -150,12 +161,29 @@ class WorkspaceTabs {
     if (typeof view.setBorderRadius === 'function') view.setBorderRadius(8);
     this.select(tab.id);
     try {
-      await view.webContents.loadURL(this.origin + '/?project=' + encodeURIComponent(project.name));
+      await view.webContents.loadURL(this.origin + '/?project=' + encodeURIComponent(project.name) + (hash.startsWith('#') ? hash : ''));
       if (this._alive(tab)) { tab.loading = false; this._notify(); }
     } catch (error) {
       if (this._alive(tab)) { this._error(tab); throw error; }
     }
     void this.refreshActivity();
+    return this._public(tab);
+  }
+
+  async openAssistant() {
+    if (this.disposed) throw new Error('Workspace tabs are closed');
+    const existing = this.entries.get('assistant');
+    if (existing) { this.select(existing.id); return this._public(existing); }
+    const view = this.createView({kind:'assistant'});
+    const tab = {id:'assistant',kind:'assistant',project:null,view,loading:true,error:false};
+    this.entries.set(tab.id,tab); this._wire(tab);
+    this.window.contentView.addChildView(view); view.setBounds(this.bounds);
+    if (typeof view.setBorderRadius === 'function') view.setBorderRadius(8);
+    this.select(tab.id);
+    try {
+      await view.webContents.loadURL(this.origin + '/assistant.html');
+      if (this._alive(tab)) { tab.loading=false;this._notify(); }
+    } catch(error) { if (this._alive(tab)) { this._error(tab);throw error; } }
     return this._public(tab);
   }
 
@@ -174,13 +202,13 @@ class WorkspaceTabs {
   }
 
   updateProject(project) {
-    const tab = [...this.entries.values()].find(item => item.project.name === project.name);
+    const tab = [...this.entries.values()].find(item => item.project?.name === project.name);
     if (!tab) return false;
     const changed = tab.project.root !== project.root || tab.project.display_name !== project.display_name;
     tab.project = {...tab.project, ...project}; if (changed) this._notify(); return true;
   }
   closeProject(name) {
-    const tab = [...this.entries.values()].find(item => item.project.name === name);
+    const tab = [...this.entries.values()].find(item => item.project?.name === name);
     return tab ? this.close(tab.id) : false;
   }
 

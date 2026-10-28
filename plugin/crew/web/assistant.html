@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light dark"><title>助手 · Crew V2</title>
+  <link rel="icon" href="/logo.svg"><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/assistant.css">
+  <link rel="stylesheet" href="/settings-ui.css"><link rel="stylesheet" href="/behavior-prompts-ui.css"><script src="/behavior-prompts-ui.js" defer></script>
+  <link rel="stylesheet" href="/personal-notes-ui.css"><script src="/personal-notes-ui.js" defer></script>
+  <script src="/vendor/markdown-it.min.js" defer></script><script src="/chat.js" defer></script><script src="/native-handoff-ui.js" defer></script><script src="/assistant.js" defer></script>
+</head>
+<body class="assistant-page">
+  <main class="assistant-main">
+    <header class="head"><div><h1 class="title">助手</h1><p class="sub">在所有工作区之间，陪你把事情理清。</p></div><div class="right"><span id="assistant-native"></span><button class="btn ghost" id="assistant-prompts">行为配置</button><a class="btn ghost" href="/">工作区</a></div></header>
+    <div id="assistant-error" class="assistant-error" role="alert" hidden></div>
+    <div id="assistant-chat" class="assistant-chat"><p class="assistant-loading" role="status">正在打开你的助手…</p></div>
+  </main>
+  <aside class="assistant-context" aria-label="跨工作区概览">
+    <header><h2>手边的事</h2><p>所有工作区的待办与近况</p></header>
+    <button class="btn" id="assistant-notes">快速想法</button>
+    <div id="assistant-overview"><p class="assistant-loading">正在读取…</p></div>
+  </aside>
+  <div id="assistant-toast" class="toast" role="status" hidden></div>
+</body>
+</html>

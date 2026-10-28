@@ -31,3 +31,19 @@
 .goal-compact{padding:7px 20px;background:transparent}.goal-compact .goal-detail-title{flex-wrap:nowrap;min-height:29px;gap:7px}.goal-compact .goal-detail-title>h1{flex:1 1 100px}.goal-compact .goal-detail-title>.btn{flex:none;font-size:calc(11.5px * var(--fs));padding:4px 6px}.goal-path-separator{color:var(--text-3)}.goal-compact .goal-list-back{white-space:nowrap}.goal-error-indicator{font-size:calc(11px * var(--fs));white-space:nowrap;color:var(--danger)}
 .goal-drawer{top:12px;right:12px;bottom:12px;width:390px;max-width:calc(100vw - 24px);border-radius:16px}
 @media(max-width:620px){.goal-compact{padding:6px 12px}.goal-compact .goal-status{max-width:70px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.goal-compact .goal-detail-title h1{font-size:calc(12px * var(--fs))}.goal-error-indicator{max-width:52px;overflow:hidden;text-overflow:ellipsis}}
+.goal-work{margin:16px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:14px 0}
+.goal-work header{display:flex;align-items:center;justify-content:space-between;gap:12px;color:var(--text-2);font-size:12px}
+.goal-work h3{font-size:13px;margin:0;font-weight:500;color:var(--text)}
+.goal-work ol{list-style:none;padding:0;margin:10px 0 0}
+.goal-work li{padding:8px 0}
+.goal-work summary{display:flex;gap:10px;align-items:baseline;cursor:pointer;font-size:13px}
+.goal-work summary strong{font-weight:400;min-width:0;overflow-wrap:anywhere}
+.goal-work-state{font-size:11px;white-space:nowrap;color:var(--text-3)}
+[data-work-status=done] .goal-work-state{color:var(--accent-text)}
+[data-work-status=blocked] .goal-work-state{color:var(--warn)}
+.goal-work-evidence{padding:6px 0 0 48px;color:var(--text-2);font-size:12px;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere}
+.goal-work-evidence p{margin:5px 0}
+.goal-work-progress{font-size:12px;color:var(--text-2);display:grid;gap:6px;margin:10px 0}
+.goal-work-progress progress{width:100%;height:4px;accent-color:var(--accent)}
+
+.goal-mode-control{display:flex;border:1px solid var(--line);border-radius:7px;overflow:hidden;flex:none}.goal-mode-control button{font:inherit;font-size:11px;color:var(--muted);background:none;border:0;padding:7px 9px;cursor:pointer}.goal-mode-control button[aria-pressed=true]{color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,transparent)}.todo-linked-tasks{display:flex;gap:4px;flex-wrap:wrap;padding:0 12px 8px}.todo-linked-tasks .btn{font-size:11px;padding:3px 6px}

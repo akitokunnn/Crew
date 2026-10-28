@@ -87,19 +87,22 @@ class GoalNotificationTests(GoalFixture):
         self.assertEqual(self.client.sent,[])
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM notification_messages').fetchone()[0],0)
 
-    def test_only_the_finalized_report_is_announced_not_drafts_member_progress_or_todos(self):
+    def test_todos_and_finalized_reports_are_announced_but_drafts_and_member_progress_are_not(self):
         target=self.goal(now=self.stamp());goals.transition(self.conn,target['id'],'running',now=self.stamp())
         draft_data=self.report();draft_data['summary']='中间尝试，没有最终结论'
         draft=goals.save_report(self.conn,target['id'],draft_data,now=self.stamp())
         board.report(self.conn,'member-id','成员内部流水，不应推送',now=self.stamp())
         todo.add(self.conn,'member-id','接入设备','在设置里连接','状态已连接',now=self.stamp())
-        self.push();self.assertEqual(self.client.sent,[])
+        self.push();self.assertEqual(len(self.client.sent),1)
+        self.assertIn('需要你操作',self.client.sent[0]['text'])
+        self.assertNotIn('中间尝试',self.client.sent[0]['text'])
+        self.assertNotIn('成员内部流水',self.client.sent[0]['text'])
         self.clock+=dt.timedelta(seconds=1)
         report=goals.save_report(self.conn,target['id'],self.report(),now=self.stamp())
         goals.request_finish(self.conn,target['id'],report['id'],now=self.stamp())
         goals.finalize_finish(self.conn,target['id'],now=self.stamp())
-        self.push();self.assertEqual(len(self.client.sent),1)
-        self.assertNotIn('中间尝试',self.client.sent[0]['text']);self.assertNotIn('成员内部流水',self.client.sent[0]['text'])
+        self.push();self.assertEqual(len(self.client.sent),2)
+        self.assertNotIn('中间尝试',self.client.sent[-1]['text']);self.assertNotIn('成员内部流水',self.client.sent[-1]['text'])
         self.assertIsNone(self.conn.execute('SELECT 1 FROM notification_messages WHERE item_id=?',('goal-report:'+draft['id'],)).fetchone())
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM notification_messages WHERE kind='goal_report'").fetchone()[0],1)
 

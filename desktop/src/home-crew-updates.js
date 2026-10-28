@@ -16,15 +16,16 @@
     $('crew-target-version').textContent = state.target?.version || '未检查';
     $('crew-plugin-version').textContent = state.plugin?.state === 'not_installed' ? '未安装' : state.plugin?.registered_version || '未读取';
     const online=state.online;
-    $('crew-release-version').textContent=state.online_checking?'检查中…':online?(online.release?.version||'尚无正式发布包'):state.online_error?'检查失败':'尚未检查';
+    $('crew-release-version').textContent=state.online_checking?'检查中…':online?(online.release?.version||'尚无独立 V2 发布包'):state.online_error?'检查失败':'尚未检查';
+    $('crew-release-open').disabled=!online?.release?.url;
     $('crew-main-version').textContent=state.online_checking?'检查中…':online?.main?.version|| (state.online_error?'检查失败':'尚未检查');
     $('crew-online-error').textContent=state.online_error?'线上检查失败：'+state.online_error:'';
     $('crew-online-error').hidden=!state.online_error;
-    let onlineMessage=state.online_checking?'正在查询 GitHub 正式发布和主干版本…':'点击检查 Crew 查询线上版本。';
+    let onlineMessage=state.online_checking?'正在查询 GitHub V2 分支版本…':'点击检查 Crew 查询线上版本。';
     if(online){
       const comparison=online.release_comparison;
-      onlineMessage=comparison>0?'有新的正式发布，可打开发布页查看。':online.main_comparison<0?'当前桌面含未发布更改，版本高于线上主干。':online.main_comparison>0?'主干有更新的源码，尚未正式发布。':'当前桌面与线上主干版本一致。';
-      if(!online.release)onlineMessage+=' 当前尚无正式发布包。';
+      onlineMessage=comparison>0?'有新的正式发布，可打开发布页查看。':online.main_comparison<0?'当前桌面含未发布更改，版本高于线上 V2 分支。':online.main_comparison>0?'V2 分支有更新的源码，尚未正式发布。':'当前桌面与线上 V2 分支版本一致。';
+      if(!online.release)onlineMessage+=' 当前尚无独立 V2 发布包。';
       onlineMessage+=' 检查时间：'+new Date(online.checked_at).toLocaleString('zh-CN');
     }
     if(state.online_error)onlineMessage='本机检查结果仍可使用，请稍后重试线上查询。';
@@ -42,7 +43,7 @@
     const active = !['idle','queued','done','error'].includes(state.phase);
     $('crew-update-check').disabled = request || active;
     $('crew-update-apply').disabled = request || active || state.queued || !state.can_update;
-    $('crew-update-apply').textContent = state.queued ? '已排队' : '统一后台与插件';
+    $('crew-update-apply').textContent = state.queued ? '已排队' : '统一 V2 后台与入口';
     $('crew-update-cancel').hidden = !state.queued; $('crew-update-cancel').disabled = request;
   }
   async function operation(action) {

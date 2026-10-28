@@ -12,10 +12,12 @@ from pathlib import Path
 from urllib.error import URLError
 from urllib.request import ProxyHandler, Request, build_opener
 
-from . import board, chat, decision_briefs, goal_links, presentation, qq, runtimes, store, todo, trust_mode
+from . import board, chat, decision_briefs, goal_links, goals, presentation, qq, runtimes, store, todo, trust_mode
 
 TEXT_LIMIT = 2000  # 10-23 实测 5000 字也能发；2000 一段是为了手机上好读。
 LOG = logging.getLogger(__name__)
+MAX_RETRIES = 2
+PUSH_KINDS = frozenset(('decision', 'todo', 'report', 'goal_report', 'goal_progress', 'session_error', 'codex_failed'))
 
 HELP = ('/help（/h）帮助\n/leader（/l）所有 leader（带编号）\n'
         '/leader 2（/l 2、/2）切换到编号 2 的 leader，/1 以此类推\n'
@@ -94,6 +96,27 @@ def finalized_goal_reports(conn, project, since, report_id=None):
     return board._rows(conn,sql+' ORDER BY f.finalized_at,r.id',args)
 
 
+def published_progress_reports(conn, project, since, report_id=None):
+    if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='goal_report_publications'").fetchone():
+        return []
+    sql = ('SELECT r.id report_id,r.goal_id,r.round,r.data_json,p.created_at,g.title,g.leader_session_id '
+           'FROM goal_report_publications p JOIN goal_reports r ON r.id=p.report_id AND r.goal_id=p.goal_id '
+           'JOIN goals g ON g.id=r.goal_id JOIN sessions s ON s.session_id=g.leader_session_id '
+           'LEFT JOIN session_controls c ON c.session_id=s.session_id '
+           "WHERE g.project=? AND r.outcome='progress' AND s.status!='closed' AND COALESCE(c.removed,0)=0 "
+           'AND c.archived_status IS NULL AND julianday(p.created_at)>=julianday(?)')
+    args = [project, since]
+    if report_id is not None:
+        sql += ' AND r.id=?'; args.append(report_id)
+    return board._rows(conn, sql + ' ORDER BY p.created_at,r.id', args)
+
+
+def remote_brief(text, limit=500):
+    text = re.sub(r'https?://(?:localhost|127(?:\.\d{1,3}){3}|\[::1\]|0\.0\.0\.0)(?=[:/?#\s]|$)[^\s<>]*',
+                  '（本机地址请回 Crew 查看）', text, flags=re.IGNORECASE)
+    return text[:limit] + ('…' if len(text) > limit else '')
+
+
 def desktop_locked():
     token = (Path.home() / 'RemoteDev' / 'desk_token').read_text(encoding='ascii').strip()
     request = Request('http://127.0.0.1:47800/api/status', data=b'{}', method='POST',
@@ -135,15 +158,13 @@ class Inbox:
             self.config['binding_code'] = secrets.token_hex(4).upper()
             self.save_config()
         with closing(store.connect(self.home)) as conn:
-            failed = self.execute(conn, "SELECT error FROM notification_messages WHERE status IN ('error','sending') ORDER BY created_at DESC LIMIT 1").fetchone()
+            failed = self.execute(conn, "SELECT error FROM notification_messages WHERE status IN ('error','sending','retry') ORDER BY created_at DESC LIMIT 1").fetchone()
             uncertain_reply = self.execute(conn, "SELECT 1 FROM notification_replies WHERE status='sending' LIMIT 1").fetchone()
         if failed or uncertain_reply:
             self.error = '上次 %s 投递未完成，请检查服务日志。' % self.channel_name + ((failed['error'] or '') if failed else '')
         self.pending, self.pending_at = {}, None
         # Switching "我已离开" on by hand means the user has gone; only lock-screen absence waits out the batch window.
         self.push_now = False
-        # Journal position per leader when the user left; None while present.
-        self.relay_after = None
         self.stop, self.wake = threading.Event(), threading.Event()
         self.worker, self.receiver = None, None
 
@@ -294,21 +315,23 @@ class Inbox:
         self.process_replies()
         manager = getattr(self.service, 'connections', None)
         if not self.status()['away'] or (manager is not None and not manager.allows_push(self.channel_id)):
-            self.relay_after = None
             self.pending.clear()
             self.pending_at = None
             return
-        self.relay_turns()
+        self.retry_messages()
         now = self.service.now()
         with closing(store.connect(self.home)) as conn:
             prefix = self.item_key('')
-            sent = {row[0][len(prefix):] for row in self.execute(conn, 'SELECT item_id FROM notification_messages')
-                    if row[0].startswith(prefix)}
+            sent = {row['item_id'][len(prefix):] if row['item_id'].startswith(prefix) else row['item_id']
+                    for row in self.execute(conn, 'SELECT item_id,status FROM notification_messages')
+                    if row['item_id'].startswith(prefix) or row['status'] == 'archived'}
             projects = board.projects(conn)
         active = set()
         for project in projects:
             state = self.service.state(project['name'])
             for item in state['attention']:
+                if item['kind'] not in ('decision', 'session_error', 'codex_failed'):
+                    continue
                 if item['kind'] != 'decision' and (item['created_at'] or '') < self.config['since']:
                     continue
                 if item['id'] not in sent and item['session_id']:
@@ -317,6 +340,27 @@ class Inbox:
             with closing(store.connect(self.home)) as conn:
                 reports = board.reports(conn, project['name'], since=self.config['since'])
                 deliveries = finalized_goal_reports(conn,project['name'],self.config['since'])
+                progress = published_progress_reports(conn, project['name'], self.config['since'])
+                manual = todo.list(conn, project['name'])
+            for action in manual:
+                identity = 'todo:%s:created' % action['id']
+                if action['created_at'] < self.config['since'] or identity in sent:
+                    continue
+                active.add(identity)
+                self.pending[identity] = dict(id=identity, kind='todo', todo_id=action['id'], project=project['name'],
+                    session_id=action['session_id'], title='需要你操作 · ' + remote_brief(action['title'], 200),
+                    detail='步骤：%s\n确认：%s\n请在 Crew 的我的 TODO 中完成或取消。' %
+                        (remote_brief(action['steps'], 1000), remote_brief(action['verification'], 400)),
+                    created_at=action['created_at'])
+            for report in progress:
+                identity = 'goal-progress:' + report['report_id']
+                if identity in sent:
+                    continue
+                active.add(identity)
+                self.pending[identity] = dict(id=identity, kind='goal_progress', project=project['name'],
+                    session_id=report['leader_session_id'], goal_id=report['goal_id'], report_id=report['report_id'],
+                    title='阶段报告 · ' + report['title'], detail=remote_brief(json.loads(report['data_json'])['summary']) +
+                        '\n完整报告请在 Crew 的这个任务内查看。', created_at=report['created_at'])
             for report in reports:
                 identity = 'report:' + str(report['id'])
                 if report['created_at'] < self.config['since'] or identity in sent:
@@ -332,10 +376,7 @@ class Inbox:
                 if identity in sent:
                     continue
                 active.add(identity)
-                summary = json.loads(report['data_json'])['summary']
-                summary = re.sub(r'https?://(?:localhost|127(?:\.\d{1,3}){3}|\[::1\]|0\.0\.0\.0)(?=[:/?#\s]|$)[^\s<>]*',
-                                 '（本机地址请回 Crew 查看）',summary,flags=re.IGNORECASE)
-                summary = summary[:500]+('…' if len(summary)>500 else '')
+                summary = remote_brief(json.loads(report['data_json'])['summary'])
                 outcome = {'completed':'已达标','failed':'未达标','awaiting_acceptance':'待用户验收','cancelled':'已取消'}[report['outcome']]
                 self.pending[identity] = dict(id=identity,kind='goal_report',project=project['name'],
                     session_id=report['leader_session_id'],goal_id=report['goal_id'],report_id=report['report_id'],
@@ -353,44 +394,16 @@ class Inbox:
                 self.pending.clear()
                 self.pending_at = None
 
-    def relay_turns(self):
-        """While the user is away, relay each leader's closing words on this channel."""
-        with self.service.write_lock, closing(store.connect(self.home)) as conn:
-            leaders = [s for s in self.leader_catalog(conn) if self.service.chat.path(s['session_id']).exists()]
-            if self.relay_after is None:
-                # Turns that ended before the user left were already seen on the web.
-                self.relay_after = {s['session_id']: len(self.service.chat.journal(s['session_id']).events) for s in leaders}
-                return
-            for leader in leaders:
-                sid = leader['session_id']
-                events = self.service.chat.journal(sid).after(self.relay_after.setdefault(sid, 0))
-                start = 0
-                for index, event in enumerate(events):
-                    if event['type'] != 'status' or event['status'] != 'idle':
-                        continue
-                    turn, start = events[start:index], index + 1
-                    self.relay_after[sid] = event['seq']
-                    opener = next((e for e in turn if e['type'] == 'message'), None)
-                    closing_words = next((e for e in reversed(turn) if e['type'] == 'assistant'), None)
-                    # Remote conversations are answered on their originating inbox.
-                    if closing_words is None or opener is not None and opener['source'] in ('qq', 'lark'):
-                        continue
-                    text = '\n'.join(b['text'] for b in closing_words['content'] if b['type'] == 'text')
-                    identity = 'turn:%s:%s' % (sid, event['seq'])
-                    if not text or self.execute(conn, 'SELECT 1 FROM notification_messages WHERE item_id=?', (self.item_key(identity + ':0'),)).fetchone():
-                        continue
-                    entry = dict(workspace=leader['project'], leader_session_id=sid, decision=None)
-                    for number, part in enumerate(leader_parts(leader['project_label'], leader['crew_name'], text)):
-                        key = '%s:%s' % (identity, number)
-                        self.record_message(conn, key, entry, 'turn', self.service.now().isoformat())
-                        self.deliver(conn, [key], self.client.send_markdown, part)
-
     def flush(self):
         notes = []
         now = self.service.now().isoformat()
         with closing(store.connect(self.home)) as conn:
             for item in self.pending.values():
                 if item['kind']=='goal_report' and not finalized_goal_reports(conn,item['project'],self.config['since'],item['report_id']):
+                    continue
+                if item['kind'] == 'goal_progress' and not published_progress_reports(conn, item['project'], self.config['since'], item['report_id']):
+                    continue
+                if item['kind'] == 'todo' and todo.get(conn, item['project'], item['todo_id'])['status'] != 'open':
                     continue
                 decision = next((d for d in board.decisions(conn, item['project'], all=True)
                                  if d['id'] == item.get('decision_id') and d['status'] == 'open' and not d['held']), None)
@@ -403,7 +416,7 @@ class Inbox:
                 if decision:
                     self.record_message(conn, item['id'], entry, item['kind'], now)
                     self.deliver(conn, [item['id']], self.client.send_markdown, *self.question_message(entry))
-                elif item['kind']=='goal_report':
+                elif item['kind'] in ('goal_report', 'todo', 'goal_progress'):
                     self.record_message(conn,item['id'],entry,item['kind'],now)
                     text='%s·%s\n%s\n%s' % (entry['workspace_label'],entry['leader'],item['title'],item['detail'])
                     self.deliver(conn,[item['id']],self.client.send_text,text)
@@ -426,16 +439,94 @@ class Inbox:
                       json.dumps(entry, ensure_ascii=False), 'sending'))
 
     def deliver(self, conn, identities, method, *args):
+        keys = [self.item_key(identity) for identity in identities]
+        payload = {'identities': identities, 'method': 'text' if method == self.client.send_text else 'markdown',
+                   'args': args, 'recipient': self._recipient()}
+        now = self.service.now().timestamp()
+        with goals.transaction(conn):
+            rows = [self.execute(conn, 'SELECT * FROM notification_messages WHERE item_id=?', (key,)).fetchone() for key in keys]
+            if any(row is None or row['status'] not in ('sending', 'retry') for row in rows):
+                return
+            # Retry rows must still be due when another worker finishes waiting
+            # for this write lock. A sending row with an attempt is ambiguous.
+            if any(row['attempts'] >= 1 + MAX_RETRIES or row['status'] == 'sending' and row['attempts'] > 0 or
+                   row['next_attempt'] is not None and row['next_attempt'] > now for row in rows):
+                return
+            attempts = max(row['attempts'] for row in rows) + 1
+            for key in keys:
+                self.execute(conn, "UPDATE notification_messages SET status='sending',attempts=?,next_attempt=NULL,delivery_json=? WHERE item_id=?",
+                             (attempts, json.dumps(payload, ensure_ascii=False), key))
         try:
             result = self.send(method, *args)
-        except qq.QQError as exc:
-            for identity in identities:
-                self.execute(conn, "UPDATE notification_messages SET status='error',error=? WHERE item_id=?",
-                             ('%s(%s): %s' % (type(exc).__name__, exc.kind, exc), self.item_key(identity)))
+            if not isinstance(result, dict) or not isinstance(result.get('id'), str) or not result['id']:
+                raise qq.QQError('渠道未返回有效消息 ID；接收状态未知，未自动重发', kind='network')
+        except (qq.QQError, OSError) as exc:
+            known_rejection = isinstance(exc, qq.QQError) and exc.kind != 'network' and (
+                exc.kind == 'rate_limited' or exc.status is not None and exc.status >= 400 or exc.code is not None)
+            retry = known_rejection and attempts <= MAX_RETRIES and all(row['kind'] in PUSH_KINDS for row in rows)
+            detail = '%s(%s): %s' % (type(exc).__name__, getattr(exc, 'kind', 'network'), exc)
+            with goals.transaction(conn):
+                for key in keys:
+                    self.execute(conn, "UPDATE notification_messages SET status=?,error=?,next_attempt=? WHERE item_id=?",
+                                 ('retry' if retry else 'error', detail[:2000], now + 5 * 2 ** (attempts - 1) if retry else None, key))
+            self.error = detail
             raise
-        for identity in identities:
-            self.execute(conn, "UPDATE notification_messages SET message_id=?,ref_idx=?,status='sent' WHERE item_id=?",
-                         (result['id'], result['ref_idx'], self.item_key(identity)))
+        with goals.transaction(conn):
+            for key in keys:
+                self.execute(conn, "UPDATE notification_messages SET message_id=?,ref_idx=?,status='sent',next_attempt=NULL WHERE item_id=?",
+                             (result['id'], result.get('ref_idx'), key))
+
+    def _recipient(self):
+        return hashlib.sha256(json.dumps([self.channel_id, self.config['owner_openid'], self.config.get('generation')]).encode()).hexdigest()
+
+    def _retry_current(self, conn, row):
+        entry = json.loads(row['content'])
+        item = entry.get('item') or {}
+        if row['kind'] == 'todo':
+            return todo.get(conn, row['project'], item['todo_id'])['status'] == 'open'
+        if row['kind'] == 'decision':
+            current = next((d for d in board.decisions(conn, row['project']) if d['id'] == row['decision_id'] and not d['held']), None)
+            return current is not None and self.snapshot_matches(conn, current, row)
+        if row['kind'] == 'goal_report':
+            return bool(finalized_goal_reports(conn, row['project'], self.config['since'], item['report_id']))
+        if row['kind'] == 'goal_progress':
+            return bool(published_progress_reports(conn, row['project'], self.config['since'], item['report_id']))
+        leader = board.session(conn, row['leader_session_id'])
+        return leader['status'] != 'closed' and not board.is_archived(conn, leader['session_id'])
+
+    def retry_messages(self):
+        """Only retry a definite rejection, using the same saved channel payload."""
+        with closing(store.connect(self.home)) as conn:
+            due = self.execute(conn, "SELECT * FROM notification_messages WHERE status='retry' AND next_attempt<=? ORDER BY created_at,item_id LIMIT 20",
+                               (self.service.now().timestamp(),)).fetchall()
+            for row in due:
+                if self.execute(conn, 'SELECT status FROM notification_messages WHERE item_id=?', (row['item_id'],)).fetchone()[0] != 'retry':
+                    continue
+                payload = json.loads(row['delivery_json'])
+                if payload['recipient'] != self._recipient():
+                    # Rebinding also changes item_key's generation. Retire the
+                    # original batch, not keys derived from the new recipient.
+                    self.execute(conn, "UPDATE notification_messages SET status='retired',next_attempt=NULL WHERE delivery_json=? AND status='retry'",
+                                 (row['delivery_json'],))
+                    continue
+                keys = [self.item_key(identity) for identity in payload['identities']]
+                current = [self.execute(conn, 'SELECT * FROM notification_messages WHERE item_id=?', (key,)).fetchone() for key in keys]
+                if any(value is None or not self._retry_current(conn, value) for value in current):
+                    for key in keys:
+                        self.execute(conn, "UPDATE notification_messages SET status='retired',next_attempt=NULL WHERE item_id=? AND status='retry'", (key,))
+                    continue
+                try:
+                    self.deliver(conn, payload['identities'], self.client.send_text if payload['method'] == 'text' else self.client.send_markdown, *payload['args'])
+                except (qq.QQError, OSError):
+                    # The persisted receipt owns the retry limit. Other items
+                    # and the other channel continue independently.
+                    continue
+
+    def delivery_snapshot(self):
+        with closing(store.connect(self.home)) as conn:
+            rows = self.execute(conn, 'SELECT item_id,kind,status,attempts,next_attempt,message_id,error FROM notification_messages '
+                                'ORDER BY created_at DESC,item_id DESC LIMIT 20').fetchall()
+        return {'max_retries': MAX_RETRIES, 'receipts': [dict(row) for row in rows]}
 
     def question_message(self, entry):
         decision = entry['decision']
@@ -828,7 +919,8 @@ class Inbox:
                 if asker['status'] == 'closed' or board.is_archived(conn, asker['session_id']):
                     error = '这条会话已归档或移出 Crew，答复尚未保存。请先在 Crew 恢复会话。'
                 else:
-                    board.answer.__wrapped__(conn, decision['id'], answer, actor=self.channel_id, now=now)
+                    board.answer.__wrapped__(conn, decision['id'], answer, actor=self.channel_id, now=now,
+                                             _human_origin=board._OWNER_CHANNEL_ANSWER)
                     linked_goal = goal_links.get(conn,'decision',decision['id'])
                     leader = self._decision_leader(conn, decision) if linked_goal is None else None
                     if leader is not None:

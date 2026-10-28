@@ -43,7 +43,7 @@ TABLES = ('agents', 'groups', 'group_memberships', 'conversations', 'messages', 
           'message_positions', 'tool_calls', 'tool_results', 'goals', 'goal_dependencies', 'goal_requirements', 'goal_rounds',
           'goal_assignments', 'executions', 'reports', 'goal_acceptances', 'artifacts',
           'artifact_versions', 'artifact_links', 'blob_objects', 'context_items', 'context_versions',
-          'decisions', 'decision_versions', 'decision_options', 'decision_answers', 'todos')
+          'decisions', 'decision_versions', 'decision_options', 'decision_answers', 'todos', 'workspace_feature_records')
 TERMINAL = ('completed', 'failed', 'cancelled')
 VOLATILE_TABLES = {'events','document_scans','read_cursors','channel_reads','goal_execution_reads','rule_reads','trust_leader_migrations',
     'usage_files','claude_sessions','claude_requests','claude_prompts','claude_tool_calls','claude_compactions',
@@ -496,7 +496,8 @@ class _Materializer:
                 else:
                     rendered='<!doctype html><meta charset="utf-8"><pre>'+html.escape(report['body_markdown'] or report['summary'])+'</pre>'
                 row=self.insert('goal_reports',dict(id=report['id'],goal_id=rnd['goal_id'],round=rnd['number'],
-                    requirement_version=rnd['requirement_version'],version=counters[key],outcome=report['outcome'],
+                    requirement_version=rnd['requirement_version'],version=counters[key],
+                    outcome='progress' if json.loads(report['data_json']).get('outcome') == 'progress' else report['outcome'],
                     data_json=report['data_json'],html=rendered,created_at=report['created_at']),'reports',report['id'])
                 self.report_rows[report['id']]=row
                 self.conn.execute('INSERT INTO notification_messages(item_id,project,leader_session_id,kind,created_at,content,status) VALUES(?,?,?,?,?,?,?)',
@@ -650,7 +651,7 @@ class _Materializer:
                 'todos',todo['id'])
             for table in ('notification_messages','lark_notification_messages'):
                 self.conn.execute('INSERT INTO '+table+'(item_id,project,leader_session_id,kind,created_at,content,status) VALUES(?,?,?,?,?,?,?)',
-                    ('todo:'+str(row['id']),self.project,todo['requester_agent_id'],'todo',self.stamp,'','archived'))
+                    ('todo:'+str(row['id'])+':created',self.project,todo['requester_agent_id'],'todo',self.stamp,'','archived'))
         latest={}
         for acceptance in sorted(self.data['goal_acceptances'],key=lambda a:(a['created_at'],a['id'])):
             rnd=self.rounds[acceptance['goal_round_id']]
@@ -728,6 +729,8 @@ def activate_workspace(repo, workspace_id, legacy_home, root, *, replace_source_
                          (project,workspace['name']))
             materializer=_Materializer(repo,conn,workspace,project,root,legacy_home,data,created)
             materializer.people();materializer.tasks();materializer.reports_and_files();materializer.context();materializer.journals();materializer.decisions_and_todos()
+            from . import features
+            features.activate(materializer)
             importer=str(uuid.uuid5(uuid.UUID(repo.device_id),'local-user'))
             membership=conn.execute('SELECT id FROM portable.workspace_memberships WHERE workspace_id=? AND user_id=? AND deleted_at IS NULL',
                 (workspace_id,importer)).fetchone()

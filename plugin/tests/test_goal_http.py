@@ -113,6 +113,63 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
     def test_codex_member_general_and_two_tasks_progress_independently(self):
         self.parallel_scopes('codex', 's1')
 
+    def finite_agent_starts(self, runtime):
+        if runtime == 'codex':
+            class Client(codex_helpers.FakeClient):
+                counter = 0
+                def __init__(self, **options):
+                    super().__init__(**options)
+                    type(self).counter += 1
+                    self.thread_id = 'finite-start-' + str(type(self).counter)
+            patcher = mock.patch('crew.codex_runtime._ObservedClient', Client)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        runtimes.set(self.conn, 's3', runtime)
+        runtimes.set(self.conn, 's1', runtime)
+        manager = self.server.service.chat
+        cases = [('Fitness check-in', '我最近打算健身，简单给我一个打卡的健身 app 吧', ['打卡后重启仍能查看记录']),
+                 ('MIB streaming speakers', '区分 A、B 和重叠说话区段，在整段流式结束后 400ms 内得到最终结果',
+                  ['保留 A、B、重叠的区段标签', '最终结果从流式结束计时不超过 400ms'])]
+        started = []
+        for title, request, acceptance in cases:
+            code, created, _ = self.request('/api/goals/agent?project=demo', {'actor_session_id': 's3',
+                'action': 'create', 'data': {'title': title, 'request': request, 'acceptance': acceptance}})
+            self.assertEqual(code, 200, created)
+            goal_id = created['id']
+            self.assertEqual(goals.get(self.conn, goal_id)['status'], 'queued')
+            payload = {'actor_session_id': 's3', 'action': 'start', 'data': {'goal_id': goal_id}}
+            code, receipt, _ = self.request('/api/goals/agent?project=demo', payload)
+            self.assertEqual(code, 200, receipt)
+            execution_id = receipt['execution_id']
+            before = len(manager.journal(execution_id).inputs)
+            code, retried, _ = self.request('/api/goals/agent?project=demo', payload)
+            self.assertEqual(code, 200, retried)
+            self.assertTrue(retried['duplicate'])
+            self.assertEqual(retried['execution_id'], execution_id)
+            self.assertEqual(len(manager.journal(execution_id).inputs), before)
+            started.append((goal_id, execution_id))
+            assignment = {'actor_session_id': 's3', 'action': 'assign',
+                          'data': {'goal_id': goal_id, 'session_id': 's1', 'task': acceptance[0], 'start': True}}
+            code, assigned, _ = self.request('/api/goals/agent?project=demo', assignment)
+            self.assertEqual(code, 200, assigned)
+            member_execution = assigned['receipt']['execution_id']
+            before = len(manager.journal(member_execution).inputs)
+            code, retried, _ = self.request('/api/goals/agent?project=demo', assignment)
+            self.assertEqual(code, 200, retried)
+            self.assertTrue(retried['receipt']['duplicate'])
+            self.assertEqual(len(manager.journal(member_execution).inputs), before)
+            self.assertTrue(manager.busy(member_execution))
+        self.assertEqual(len({item[1] for item in started}), 2)
+        for goal_id, execution_id in started:
+            self.assertEqual(goals.get(self.conn, goal_id)['status'], 'running')
+            self.assertTrue(manager.busy(execution_id))
+
+    def test_claude_ai_task_starts_are_independent_and_retry_does_not_repeat_input(self):
+        self.finite_agent_starts('claude')
+
+    def test_codex_ai_task_starts_are_independent_and_retry_does_not_repeat_input(self):
+        self.finite_agent_starts('codex')
+
     def coordinate_member_tasks(self, runtime):
         if runtime == 'codex':
             counter = iter(range(20))

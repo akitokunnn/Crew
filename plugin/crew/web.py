@@ -26,6 +26,9 @@ from .service_lock import HomeServiceLock
 from . import codex_client, member_defaults, operations_chat, operations_settings
 from . import connections, session_presence, storage_cleanup, workspace_activity
 from .storage_service import StorageService, HISTORY_PREFIX
+from . import personal, native_home, native_handoff
+from .web_api import personal as personal_api
+from .web_api import behavior_prompts as behavior_prompts_api
 
 
 def _text(data, key):
@@ -44,6 +47,7 @@ def _optional_text(data, key):
 MODEL_WORK = {"/api/spawn", "/api/leader", "/api/wake", "/api/chat/send", "/api/session/compact",
               "/api/open", "/api/open/continue", "/api/git/enable", "/api/channel/digest",
               "/api/maintenance/department/compact"}
+MODEL_WORK.update({'/api/session/native-handoff', '/api/session/native-return', '/api/assistant/native-action'})
 
 
 class Service:
@@ -65,7 +69,7 @@ class Service:
         self.chat = chat.Manager(home, plugin_root, agents_provider, process_factory)
         self.runtime_catalog = runtime_catalog.Catalog()
         self.claude_root = Path.home() / ".claude" / "projects" if claude_root is None else Path(claude_root)
-        self.codex_root = Path.home() / ".codex" / "sessions" if codex_root is None else Path(codex_root)
+        self.codex_root = native_home.codex_sessions() if codex_root is None else Path(codex_root)
         self.runs_file = self.home / "codex_runs.jsonl" if runs_file is None else Path(runs_file)
         self.agents_lock, self.scan_lock, self.write_lock = threading.Lock(), threading.Lock(), threading.Lock()
         self.channel_digest = channel_digest.Manager(home, self.write_lock, process_factory)
@@ -602,8 +606,6 @@ class Service:
                 result['todos'] = todo.list(conn, name)
                 links = {(row['kind'], row['item_id']): row['goal_id'] for row in conn.execute(
                     'SELECT l.kind,l.item_id,l.goal_id FROM goal_links l JOIN goals g ON g.id=l.goal_id WHERE g.project=?', (name,))}
-                for item in result['todos']:
-                    item['goal_id'] = links.get(('todo', item['id']))
                 result['todo_count'] = len(result['todos'])
                 open_groups = {group['name'] for group in status['groups'] if group['closed_at'] is None}
                 removed = {r[0] for r in conn.execute('SELECT session_id FROM session_controls WHERE removed=1')}
@@ -675,6 +677,7 @@ class Service:
                             active_goal_id=active_goals[sid], active_goal_ids=active_goal_ids[sid],
                             active_execution_id=active_scopes[sid][0]['id'] if active_scopes[sid] else None,
                             runtime=runtimes.get(conn, sid)['runtime'],
+                            native_handoff=native_handoff.describe(conn, sid),
                             runtime_switch=runtime_switch.state(conn,session,self.chat,agents,error),
                             trust=trust_mode.get(conn,name,sid),
                             is_git_admin=git_config is not None and git_config['admin_session_id'] == sid,
@@ -699,6 +702,7 @@ class Service:
                             active_goal_id=active_goals[sid], active_goal_ids=active_goal_ids[sid],
                             active_execution_id=active_scopes[sid][0]['id'] if active_scopes[sid] else None,
                             runtime=runtimes.get(conn, sid)['runtime'],
+                            native_handoff=native_handoff.describe(conn, sid),
                             runtime_switch=runtime_switch.state(conn,session,self.chat,agents,error),
                             **models.get(conn, sid), applied=self.chat.applied(key), activity=self.chat.activity(key),
                             context=context, busy=self.chat.busy(sid) or (sid in general_present and general_present[sid].get('status') == 'busy'),
@@ -950,6 +954,20 @@ class Service:
         return self._post(path, data, project_name)
 
     def _post(self, path, data, project_name):
+        if path == '/api/behavior-prompts':
+            return behavior_prompts_api.post(self.home, data)
+        if path == '/api/personal/notes':
+            return personal_api.save_note(self.home, data)
+        if path == '/api/personal/notes/recovery':
+            return personal_api.recover_note(self.home, data)
+        if path == '/api/personal/notes/start':
+            return self.chat.start_personal_note(_text(data, 'note_id'), _text(data, 'project'),
+                                                 request_id=_text(data, 'request_id'))
+        if path == '/api/assistant/open':
+            return personal_api.open_assistant(self.home, data.get('context_project'))
+        if path == '/api/assistant/native-action':
+            return self.chat.personal_action(_text(data, 'action'), data.get('data', {}),
+                                             _text(data, 'actor_session_id'))
         if path.startswith('/api/workspace-data/'):
             relocated=False
             if path=='/api/workspace-data/open' and data.get('action')=='relocate':
@@ -1103,7 +1121,12 @@ class Service:
                 if 'before' in result:
                     self.stop_archived(result['before'])
                 return {'ok': True}
-            project = self.selected_project(conn, project_name)
+            personal_paths = {'/api/chat/send', '/api/chat/read', '/api/chat/interrupt',
+                              '/api/session/stop', '/api/session/compact',
+                              '/api/session/native-handoff', '/api/session/native-return'}
+            project = (self.chat_project(conn, project_name, data.get('session_id'))
+                       if path in personal_paths and not data.get('goal_id')
+                       else self.selected_project(conn, project_name))
             if path == '/api/native-approval':
                 return self.resolve_native_approval(conn, project, _text(data, 'id'), data.get('allow'))
             if path.startswith('/api/goals/'):
@@ -1228,6 +1251,16 @@ class Service:
                 target = board.session(conn, _text(data, 'session_id'))
                 if target['project'] != project:
                     raise board.BoardError('会话不属于当前工作区')
+                if path in ('/api/session/native-handoff', '/api/session/native-return'):
+                    execution_id = None
+                    if data.get('goal_id'):
+                        goals.get(conn, data['goal_id'], project)
+                        execution = self.chat.goal_controller.current(conn, data['goal_id'], target['session_id'])
+                        if execution is None:
+                            raise board.BoardError('这个任务还没有可接续的原生会话')
+                        execution_id = execution['id']
+                    operation = self.chat.native_handoff if path.endswith('native-handoff') else self.chat.native_return
+                    return operation(target['session_id'], execution_id)
                 if path == '/api/session/rename':
                     result = session_ops.rename(conn, target['session_id'], _text(data, 'name'), now=now)
                     result['native_warnings'] = self.chat.sync_native_titles(conn, target['session_id'])
@@ -1338,13 +1371,17 @@ class Service:
                                        effort=data["effort"] if "effort" in data else models.INHERIT,
                                        runtime=data["runtime"] if "runtime" in data else models.INHERIT)
             if path == "/api/leader":
+                caller = _optional_text(data, 'caller_session_id')
+                spawn.authorize(conn, project, caller, role='leader')
                 members = data.get("members", [])
                 if not isinstance(members, list) or any(not isinstance(m, str) or not m.strip() for m in members):
                     raise ValueError("members \u5fc5\u987b\u662f\u540d\u5b57\u6570\u7ec4")
                 member_session_ids = data.get("member_session_ids", [])
                 if not isinstance(member_session_ids, list) or any(not isinstance(sid, str) or not sid.strip() for sid in member_session_ids):
                     raise ValueError("member_session_ids 必须是会话 ID 数组")
-                name, task = _text(data, "name"), _optional_text(data, "task")
+                from . import discussion
+                name = _optional_text(data, 'name') or discussion.initial_name(conn, project)
+                task = _optional_text(data, "task")
                 selected = settings.resolve(conn, 'leader') if data.get('runtime') is None else {'runtime': runtimes.validate(data['runtime']), 'model': None, 'effort': None}
                 runtime = selected['runtime']
                 model = models.validate(data['model'] if 'model' in data else selected['model'], runtime=runtime)
@@ -1364,6 +1401,7 @@ class Service:
                 for candidate, member_name in candidate_members:
                     self.adopt(conn, project, candidate, member_name, None, now)
                 return self.chat.start(conn, project, name, task, role="leader",
+                                       caller_session_id=caller,
                                        members=members, member_session_ids=member_session_ids + [candidate["session_id"] for candidate, _ in candidate_members],
                                        cwd=_optional_text(data, "cwd"),
                                        new_worktree=_optional_text(data, "new_worktree"), now=now, model=model, effort=effort, runtime=runtime)
@@ -1374,6 +1412,8 @@ class Service:
                 text, images = data.get('text', ''), data.get('images', [])
                 if not isinstance(text, str) or (not text.strip() and not images):
                     raise ValueError('请提供文字或图片')
+                if project is None and personal.is_assistant(conn, session['session_id']):
+                    session = personal_api.prepare_send(self.home, session['session_id'])
                 if data.get('goal_id'):
                     goals.get(conn, data['goal_id'], project)
                     return self.chat.goal_controller.send(data['goal_id'], session['session_id'], text,
@@ -1441,6 +1481,11 @@ class Service:
             if with_members or entry['session_id'] == before['group']['leader_session_id']:
                 self.chat.stop_managed(entry['session_id'])
 
+    def chat_project(self, conn, project_name, session_id):
+        if project_name is None and personal.is_assistant(conn, session_id):
+            return None
+        return self.selected_project(conn, project_name)
+
     def chat_session(self, conn, project, session_id):
         session = board.session(conn, session_id)
         if session["project"] != project or not session['crew_name'] or session['status'] == 'closed' or board.is_archived(conn, session_id):
@@ -1452,7 +1497,7 @@ class Service:
             if goal_id:
                 goals.get(conn, goal_id, self.selected_project(conn, project_name))
                 return self.chat.goal_controller.history(conn, goal_id, session_id, include_previous=include_previous)
-            self.chat_session(conn, self.selected_project(conn, project_name), session_id)
+            self.chat_session(conn, self.chat_project(conn, project_name, session_id), session_id)
             return {**self.chat.history(session_id), 'read_seq': board.read_seq(conn, session_id)}
 
     def channel_messages(self, project_name=None, limit=20, before=None):
@@ -1554,7 +1599,7 @@ class Service:
                     raise board.BoardError('此目标还没有会话附件')
                 session_id = execution['id']
             else:
-                self.chat_session(conn, self.selected_project(conn, project_name), session_id)
+                self.chat_session(conn, self.chat_project(conn, project_name, session_id), session_id)
             path, media_type = self.chat.file(session_id, name)
             return path.read_bytes(), media_type
 
@@ -1605,6 +1650,10 @@ class Service:
 
 POST_PATHS = {"/api/project/init", "/api/project/theme", "/api/open", "/api/open/continue", "/api/answer", "/api/spawn", "/api/leader", "/api/wake", "/api/roster/move", "/api/roster/remove", "/api/group/close", "/api/group/undo", "/api/roster/adopt", "/api/chat/send", '/api/chat/read'}
 POST_PATHS.update({'/api/messages', '/api/todo/resolve', '/api/todo/undo'})
+POST_PATHS.update({'/api/assistant/open', '/api/assistant/native-action'})
+POST_PATHS.update({'/api/personal/notes', '/api/personal/notes/start', '/api/behavior-prompts'})
+POST_PATHS.add('/api/personal/notes/recovery')
+POST_PATHS.update({'/api/session/native-handoff', '/api/session/native-return'})
 POST_PATHS.update({'/api/goals/create', '/api/goals/action', '/api/goals/context', '/api/goals/agent', '/api/chat/interrupt', '/api/decision/discuss', '/api/decision/ready'})
 POST_PATHS.update({'/api/trust', '/api/comments', '/api/decision/clarify'})
 POST_PATHS.update({'/api/project/update', '/api/project/remove'})
@@ -1654,6 +1703,9 @@ STATIC.update({'/logo.svg': ('logo.svg', 'image/svg+xml'),
 STATIC_CACHED = {'/logo.svg', '/fonts/HarmonyOS_Sans_SC_Regular.woff2', '/fonts/HarmonyOS_Sans_SC_Medium.woff2'}
 STATIC.update({'/goal-ui.js': ('goal-ui.js', 'text/javascript; charset=utf-8'),
                '/goal-ui.css': ('goal-ui.css', 'text/css; charset=utf-8')})
+STATIC.update({f'/{name}.{ext}': (f'{name}.{ext}', 'text/javascript; charset=utf-8' if ext == 'js' else 'text/css; charset=utf-8') for name in ('personal-notes-ui', 'behavior-prompts-ui') for ext in ('js', 'css')})
+STATIC['/goal-versions-ui.js'] = ('goal-versions-ui.js', 'text/javascript; charset=utf-8')
+STATIC['/stage-report-ui.js'] = ('stage-report-ui.js', 'text/javascript; charset=utf-8')
 STATIC.update({'/settings-ui.js': ('settings-ui.js', 'text/javascript; charset=utf-8'),
                '/storage-ui.js': ('storage-ui.js', 'text/javascript; charset=utf-8'),
                '/storage-ui.css': ('storage-ui.css', 'text/css; charset=utf-8'),
@@ -1673,6 +1725,13 @@ STATIC.update({'/maintenance-ui.js': ('maintenance-ui.js', 'text/javascript; cha
                '/maintenance-ui.css': ('maintenance-ui.css', 'text/css; charset=utf-8')})
 STATIC.update({'/storage-history.js': ('storage-history.js', 'text/javascript; charset=utf-8'),
                '/storage-history.css': ('storage-history.css', 'text/css; charset=utf-8')})
+STATIC.update({'/workspace-home.js': ('workspace-home.js', 'text/javascript; charset=utf-8'),
+               '/workspace-home.css': ('workspace-home.css', 'text/css; charset=utf-8')})
+STATIC.update({'/assistant.html': ('assistant.html', 'text/html; charset=utf-8'),
+               '/assistant.js': ('assistant.js', 'text/javascript; charset=utf-8'),
+               '/assistant.css': ('assistant.css', 'text/css; charset=utf-8')})
+STATIC['/native-handoff-ui.js'] = ('native-handoff-ui.js', 'text/javascript; charset=utf-8')
+STATIC['/goal-work-ui.js'] = ('goal-work-ui.js', 'text/javascript; charset=utf-8')
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1828,6 +1887,16 @@ class Handler(BaseHTTPRequestHandler):
                     except board.BoardError as exc:
                         results.append({'project': name, 'error': str(exc)})
                 self._send(200, {'projects': results})
+        elif url.path == '/api/behavior-prompts':
+            self._send(200, behavior_prompts_api.get(service.home, query))
+        elif url.path == '/api/personal/notes/recovery':
+            self._send(200, personal_api.note_recovery(service.home, query.get('note_id', [''])[0]))
+        elif url.path == '/api/personal/notes':
+            self._send(200, personal_api.notes(service.home, project=query.get('project', [None])[0],
+                include_archived=query.get('include_archived') == ['1']))
+        elif url.path == '/api/assistant/state':
+            self._send(200, personal_api.state(service.home, history=service.chat.history,
+                activity=service.chat.activity, applied=service.chat.applied, context=service.chat.context))
         elif url.path == "/api/state":
             self._send(200, service.state(query.get("project", [None])[0]))
         elif url.path in ('/api/session-library', '/api/session-library/preview'):
@@ -1850,7 +1919,10 @@ class Handler(BaseHTTPRequestHandler):
                     report = goals.get_report(conn, query.get('report_id', [''])[0])
                     if report['goal_id'] != goal_id:
                         raise board.BoardError('报告不属于此目标')
-                    self.send_file_content(report['html'].encode('utf-8'), 'text/html; charset=utf-8', interactive_report=True)
+                    if query.get('format') == ['json']:
+                        self._send(200, {key: value for key, value in report.items() if key != 'html'})
+                    else:
+                        self.send_file_content(report['html'].encode('utf-8'), 'text/html; charset=utf-8', interactive_report=True)
         elif url.path == '/api/runtimes':
             catalog = service.runtime_catalog.refresh(force=True) if query.get('refresh') == ['1'] else service.runtime_catalog.refresh()
             self._send(200, {'runtimes': catalog})
@@ -1970,15 +2042,49 @@ class Handler(BaseHTTPRequestHandler):
         self._handle("POST")
 
 
+# Browser Fetch rejects these ports before opening a socket, even when Python
+# health checks succeed. Keep OS-assigned port=0 endpoints browser-reachable.
+# https://fetch.spec.whatwg.org/#port-blocking
+FETCH_BLOCKED_PORTS = frozenset((
+    0, 1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79, 87, 95,
+    101, 102, 103, 104, 109, 110, 111, 113, 115, 117, 119, 123, 135, 137, 139, 143, 161, 179,
+    389, 427, 465, 512, 513, 514, 515, 526, 530, 531, 532, 540, 548, 554, 556, 563, 587, 601,
+    636, 989, 990, 993, 995, 1719, 1720, 1723, 2049, 3659, 4045, 4190, 5060, 5061, 6000,
+    6566, 6665, 6666, 6667, 6668, 6669, 6679, 6697, 10080))
+MAX_BROWSER_PORT_ATTEMPTS = 16
+
+
 class Server(ThreadingHTTPServer):
     daemon_threads = True
 
     def __init__(self, service, port=47811):
-        super().__init__(("127.0.0.1", port), Handler)
         self.service = service
+        if port and port in FETCH_BLOCKED_PORTS:
+            raise board.BoardError('端口 %s 被浏览器 Fetch 禁用，请选择其他端口或使用 0 自动分配' % port)
+        for _ in range(MAX_BROWSER_PORT_ATTEMPTS if port == 0 else 1):
+            super().__init__(("127.0.0.1", port), Handler, bind_and_activate=False)
+            try:
+                self.server_bind()
+                if self.server_port in FETCH_BLOCKED_PORTS:
+                    super().server_close()
+                    continue
+                self.server_activate()
+                break
+            except BaseException:
+                super().server_close()
+                raise
+        else:
+            raise board.BoardError('系统连续分配浏览器禁用端口，未启动 Crew 后端；请显式选择可用端口')
         self.url = "http://127.0.0.1:%d" % self.server_port
-        (service.home / "web.json").write_text(json.dumps({"url": self.url}), encoding="utf-8")
-        service.start()
+        try:
+            (service.home / "web.json").write_text(json.dumps({"url": self.url}), encoding="utf-8")
+            service.start()
+        except BaseException:
+            super().server_close()
+            address = service.home / 'web.json'
+            if address.exists() and json.loads(address.read_text(encoding='utf-8'))['url'] == self.url:
+                address.unlink()
+            raise
 
     def server_close(self):
         self.service.close()
@@ -1989,7 +2095,12 @@ class Server(ThreadingHTTPServer):
 
 
 def create_server(home, plugin_root, port=47811, **options):
-    return Server(Service(home, plugin_root, **options), port)
+    service = Service(home, plugin_root, **options)
+    try:
+        return Server(service, port)
+    except BaseException:
+        service.close()
+        raise
 
 
 def project_url(port, project_name=None):

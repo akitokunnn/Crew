@@ -359,20 +359,45 @@ class HelperTests(ShellFixture, unittest.TestCase):
         command, _ = self.fake_claude([cached])
         self.assertIn("无法在更新前确认", updater.plugin_state(target, command)["reason"])
 
-    def test_official_plugin_update_reports_real_failure_and_verifies_result(self):
+    def test_shared_plugin_update_is_refused_without_invoking_claude(self):
         target = updater.target_info(copy_plugin(self.root / "target"))
-        same = copy_plugin(self.root / "same")
-        command, state = self.fake_claude([self.entry(same, "0.1.1")], new_version=target["version"])
-        value = updater.update_plugin(target, command)
-        self.assertEqual(value["after"]["state"], "current")
-        self.assertEqual(json.loads(state.read_text(encoding="utf-8"))["calls"],
-                         [["plugin", "update", "crew@crew", "--scope", "user", "--json"]])
-        command, _ = self.fake_claude([self.entry(same, "0.1.1")], fail="marketplace offline")
-        with self.assertRaisesRegex(updater.UpdateError, "退出码 1.*marketplace offline"):
-            updater.update_plugin(target, command)
-        command, _ = self.fake_claude([self.entry(same, "0.1.1")], new_version="0.1.1")
-        with self.assertRaisesRegex(updater.UpdateError, "仍与桌面自带版本不一致"):
-            updater.update_plugin(target, command)
+        with mock.patch.object(updater, '_run', side_effect=AssertionError('must not invoke shared Claude')):
+            with self.assertRaisesRegex(updater.UpdateError, '不会更新共享的 V1'):
+                updater.update_plugin(target, ['forbidden-claude'])
+        code, value = self.helper('plugin-update', '--target', target['root'])
+        self.assertEqual(code, 1)
+        self.assertIn('不会更新共享的 V1', value['error'])
+
+    def test_inspect_uses_session_plugin_without_discovering_or_changing_shared_claude(self):
+        with mock.patch.object(updater, 'claude_command', side_effect=AssertionError('must not discover shared Claude')):
+            value = updater.inspect(self.home, PLUGIN)
+        self.assertEqual(value['target']['generation'], 2)
+        self.assertEqual(value['plugin']['state'], 'session-scoped')
+        self.assertEqual(value['plugin']['source'], str(PLUGIN.resolve()))
+
+    def test_v1_target_is_rejected_without_switching_home(self):
+        legacy = copy_plugin(self.root / 'legacy')
+        (legacy / 'crew-product.json').unlink()
+        self.assertEqual(updater.target_info(legacy)['generation'], 1)
+        before = {path: path.read_bytes() for path in self.home.rglob('*') if path.is_file()}
+        with self.assertRaisesRegex(updater.UpdateError, '来源不是 Crew V2'):
+            updater.switch(self.home, legacy)
+        self.assertEqual(before, {path: path.read_bytes() for path in self.home.rglob('*') if path.is_file()})
+
+    def test_existing_v1_home_is_rejected_at_inspection_before_any_update_action(self):
+        legacy = copy_plugin(self.root / 'legacy')
+        (legacy / 'crew-product.json').unlink()
+        install.install(self.home, legacy)
+        previous = (self.home / 'runtime.json').read_bytes()
+        for action in (updater.inspect, updater.switch):
+            with self.assertRaisesRegex(updater.UpdateError, '命令入口属于 V1'):
+                action(self.home, PLUGIN)
+            self.assertEqual((self.home / 'runtime.json').read_bytes(), previous)
+        with mock.patch.object(Path, 'home', return_value=self.root):
+            for action in (updater.inspect, updater.switch):
+                with self.assertRaisesRegex(updater.UpdateError, 'V1 的 .crew'):
+                    action(self.root / '.crew', PLUGIN)
+        self.assertFalse((self.root / '.crew').exists())
 
     def test_update_lock_admits_one_updater(self):
         first = LockHolder(self.home)

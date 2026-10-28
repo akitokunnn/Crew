@@ -128,13 +128,17 @@ function harness(options = {}) {
     './activity-preview.cjs':{ ActivityPreview:Preview }, './permissions.cjs':{ installPermissions() {} },
     './tool-updates.cjs':{ ToolUpdates:Tools }, './crew-updates.cjs':{ CrewUpdates:Updates },
     './admin.cjs':{ Administrator:class {} }, './operations.cjs':{ OperationsClient:class { close() {} } },
+    './product.cjs':require('../src/product.cjs'),
+    './backend-product.cjs':{requireHomeGenerationSync() {}},
     './launch-settings.cjs':{ LaunchSettings, relaunchArgs:() => [] }
   };
   const sandbox = { require:name => Object.hasOwn(modules,name) ? modules[name] : require(name), __dirname:path.join(__dirname,'../src'),
     process:{ argv:['fixture','main.cjs'], platform:'win32', env:{...options.env}, versions:{} }, URL, URLSearchParams, Buffer,
     Promise:ObservedPromise, setTimeout, clearTimeout,
     console:{ error:(...args) => logs.push(args), log() {} } };
-  vm.runInNewContext(source,sandbox,{ filename:'main.cjs' });
+  // Electron loads main.cjs through the CommonJS function wrapper, which also
+  // permits the early return used after rejecting an incompatible V1 HOME.
+  vm.runInNewContext('(function(){\n'+source+'\n})()',sandbox,{ filename:'main.cjs' });
   const invoke = (channel,...args) => { const contents = windows[0].webContents; return handlers.get(channel)({ sender:contents, senderFrame:contents.mainFrame },...args); };
   return { app, ready, windows, trays, calls, logs, shutdownErrors, handlers, invoke,
     menuItem:id => appMenu.getMenuItemById(id),

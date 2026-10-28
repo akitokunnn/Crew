@@ -43,7 +43,7 @@ class SettingsTests(unittest.TestCase):
 
     def test_saved_home_options_survive_connections_and_task_null_follows_default(self):
         ai = {'default': choice('codex', 'future-provider/custom-model', 'future-effort'),
-              'leader': None, 'member': None, 'digest': None, 'git': choice('claude'), 'operations': choice('codex', None, 'low-latency')}
+              'leader': None, 'member': None, 'assistant': None, 'digest': None, 'git': choice('claude'), 'operations': choice('codex', None, 'low-latency')}
         self.assertEqual(settings.save(self.home, ai), ai)
         with closing(store.connect(self.home)) as conn:
             self.assertEqual(settings.load(conn), ai)
@@ -89,6 +89,27 @@ class SettingsTests(unittest.TestCase):
         with self.assertRaisesRegex(settings.SettingsError, '未知 AI 设置用途'):
             settings.resolve(self.home, 'invented-purpose', self.installed('codex'))
 
+    def test_global_assistant_choice_is_independent_and_preserves_legacy_json(self):
+        settings.save(self.home, {'default': choice('codex', 'default-model'),
+                                  'leader': choice('claude', 'leader-model', 'high')})
+        self.assertIsNone(settings.get(self.home)['assistant'])
+        self.assertEqual(settings.resolve(self.home, 'assistant', self.installed('codex', 'claude')),
+                         choice('codex', 'default-model'))
+        with closing(store.connect(self.home)) as conn:
+            saved = settings.save(conn, {**settings.get(conn), 'assistant': choice('claude')})
+            self.assertEqual(settings.resolve(conn, 'assistant', self.installed('codex', 'claude')), choice('claude'))
+            legacy = json.loads(conn.execute('SELECT ai_json FROM ai_settings').fetchone()[0])
+            self.assertEqual(set(legacy), {'default', 'digest', 'git', 'operations'})
+            self.assertEqual(json.loads(conn.execute("SELECT selection_json FROM ai_task_settings WHERE purpose='assistant'").fetchone()[0]),
+                             choice('claude'))
+        self.assertEqual(settings.get(self.home), saved)
+        self.assertEqual(settings.get(self.home)['leader'], choice('claude', 'leader-model', 'high'))
+        settings.save(self.home, {**saved, 'assistant': None})
+        self.assertEqual(settings.resolve(self.home, 'assistant', self.installed('codex', 'claude')),
+                         choice('codex', 'default-model'))
+        with closing(store.connect(self.home)) as conn:
+            self.assertIsNone(conn.execute("SELECT 1 FROM ai_task_settings WHERE purpose='assistant'").fetchone())
+
     def test_failure_saving_new_leader_choice_rolls_back_default_and_all_task_choices(self):
         original = settings.save(self.home, {'default': choice('claude'), 'leader': choice('codex')})
         with closing(store.connect(self.home)) as conn:
@@ -99,7 +120,7 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.get(self.home), original)
 
     def test_save_and_resolve_use_callers_transaction_without_extra_connection_or_commit(self):
-        original = {'default': choice('claude'), 'leader': None, 'member': None, 'digest': None, 'git': None, 'operations': None}
+        original = {'default': choice('claude'), 'leader': None, 'member': None, 'assistant': None, 'digest': None, 'git': None, 'operations': None}
         settings.save(self.home, original)
         with closing(store.connect(self.home)) as conn:
             conn.execute('BEGIN IMMEDIATE')

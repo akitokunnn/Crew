@@ -15,7 +15,9 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from . import board, claude_limits, claude_subagents, codex_client, codex_visibility, git_admin, goals, hooks, install, messaging, models, runtime_switch, runtimes, settings, spawn, store, subagents, workspace_execution
+from . import behavior_prompts, guard, native_handoff
+
+from . import board, claude_limits, claude_subagents, codex_client, codex_visibility, git_admin, goals, hooks, install, messaging, models, personal, runtime_switch, runtimes, settings, spawn, store, subagents, workspace_execution
 
 
 PAUSED_FOR_UPDATE = "Crew 正在准备更新，暂不接受新任务；更新完成后再试"
@@ -396,6 +398,7 @@ class Manager:
         self._admitted = threading.local()
         from .goal_runtime import Controller
         self.goal_controller = Controller(self)
+        self.native_recovery = native_handoff.recover_interrupted(self.home)
 
     @contextlib.contextmanager
     def work(self, background=False):
@@ -563,10 +566,15 @@ class Manager:
 
     def history(self, session_id):
         journal = self.journal(session_id)
+        control = None
+        if store.db_path(self.home).exists():
+            with closing(guard.readonly(self.home)) as control_conn:
+                control = native_handoff.for_scope(control_conn, session_id)
         with journal.condition:
             running = self.running(session_id)
             return {"session_id": session_id, "events": list(journal.events), "running": running,
-                    "busy": running and journal.status == "working"}
+                    "busy": running and journal.status == "working", 'native_handoff': control,
+                    'read_only': bool(control and control['external'])}
 
     def subagent_tasks(self, session_id):
         if not self.path(session_id).exists():
@@ -586,6 +594,12 @@ class Manager:
             for line in current.process.stdout:
                 try:
                     record = json.loads(line)
+                    if (record.get('type') == 'user' and isinstance(record.get('uuid'), str)
+                            and record.get('session_id') == (current.native_id if current.execution else session_id)
+                            and record.get('message', {}).get('role') == 'user' and not record.get('parent_tool_use_id')):
+                        with closing(store.connect(self.home)) as prompt_conn:
+                            behavior_prompts.delivered(prompt_conn, behavior_prompts.input_id(session_id, record['uuid']),
+                                confirmed=True, evidence='Claude 原生 user 回执确认同一输入 ID：' + record['uuid'])
                     if (self.processes.get(session_id) is current and record.get('session_id') == (current.native_id if current.execution else session_id)
                             and not record.get('parent_tool_use_id')):
                         known_native = (record.get('type')=='assistant' or
@@ -699,6 +713,8 @@ class Manager:
     def _launch(self, session, spec, resume=False):
         try:
             with closing(store.connect(self.home)) as conn:
+                native_handoff.assert_control(conn, session['session_id'],
+                                              session.get('_execution', {}).get('id'), spec.get('_native_control_token'))
                 session = workspace_execution.execution_session(conn, session)
                 spec = {**spec, 'cwd': session['cwd'], 'project': session['project'],
                         '_workspace_notice': workspace_execution.migration_notice(conn, session)}
@@ -737,6 +753,9 @@ class Manager:
                 self.goal_controller.sync(conn, execution['goal_id'])
 
     def _launch_native(self, session, spec, resume=False, maintenance=None):
+        with closing(store.connect(self.home)) as control_conn:
+            native_handoff.assert_control(control_conn, session['session_id'],
+                                          session.get('_execution', {}).get('id'), spec.get('_native_control_token'))
         if '_execution' in session:
             if maintenance is not None:
                 return self.goal_controller.launch_maintenance(session, spec, maintenance)
@@ -750,6 +769,7 @@ class Manager:
             native_id=runtimes.get(conn,session_id)['native_id']
             pending=runtime_switch.pending(conn,session_id)
             permission_mode = settings.get_execution(conn)['claude']
+            assistant = personal.is_assistant(conn, session_id)
         native_events = {'message', 'assistant', 'text', 'tool_result', 'input_delivery', 'turn_result',
                          'identity_handoff', 'subagent', 'compact', 'compact_request'}
         fresh_native = not any(event['type'] in native_events for event in self.journal(session_id).events)
@@ -761,7 +781,8 @@ class Manager:
             current = CodexRunning(self.home, self.plugin_root, session, spec, options,
                                    self.journal(session_id), self.send_message,
                                    process_factory=self.process_factory, resume=native_resume,
-                                   goal_handler=self.goal_controller.agent_action, maintenance=maintenance)
+                                   goal_handler=self.goal_controller.agent_action, maintenance=maintenance,
+                                   personal_handler=self.personal_action)
             self.processes[session_id] = current
             return spawn.command(session_id, session["crew_name"], session["role"], runtime="codex", **options)
         exe = claude_executable()
@@ -772,6 +793,9 @@ class Manager:
                                 permission_mode=permission_mode, plugin_root=self.plugin_root)
         if spec.get('_workspace_notice'):
             command += ['--append-system-prompt', spec['_workspace_notice']]
+        with closing(store.connect(self.home)) as prompt_conn:
+            prompt_manifest = behavior_prompts.for_session(prompt_conn, session_id, plugin_root=self.plugin_root)
+        command = behavior_prompts.append_to_command(command, behavior_prompts.render(prompt_manifest))
         command[0] = exe
         journal = self.journal(session_id)
         journal.reset_runtime()
@@ -783,6 +807,10 @@ class Manager:
                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", bufsize=1,
                                        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
         current = Running(process, journal)
+        current.behavior_prompt_hash = behavior_prompts.manifest_hash(prompt_manifest)
+        with closing(store.connect(self.home)) as prompt_conn:
+            behavior_prompts.record_applied(prompt_conn, session_id, prompt_manifest, status='sent',
+                evidence='Claude 进程创建成功；启动参数已携带 Crew 配置，原生读取尚未回报')
         current.maintenance = maintenance
         self.processes[session_id] = current
         self._control(current, "get_settings")
@@ -796,20 +824,13 @@ class Manager:
     @_admitted
     def start(self, conn, project_name, name, task=None, group=None, role="member", members=(), cwd=None,
               new_worktree=None, base=None, now=None, member_session_ids=(), model=models.INHERIT, effort=models.INHERIT, agent=None,
-              runtime=models.INHERIT, caller_session_id=None, caller_execution_id=None, goal_id=None):
+              runtime=models.INHERIT, caller_session_id=None, caller_execution_id=None, goal_id=None, _registered=None):
         with self.lock:
             bound_goal = None
             if caller_execution_id is not None and caller_session_id is None:
                 raise board.BoardError('目标派生人员必须明确调用身份')
-            if caller_session_id is not None:
-                caller = board.session(conn, caller_session_id)
-                if caller['project'] != project_name or caller['role'] != 'leader' or caller['status'] == 'closed' or board.is_archived(conn, caller_session_id):
-                    raise board.BoardError('只有本项目当前 leader 可以创建组员')
-                own_group = conn.execute('SELECT name FROM groups WHERE project=? AND leader_session_id=? AND closed_at IS NULL',
-                                         (project_name, caller_session_id)).fetchone()
-                if own_group is None or role != 'member' or group not in (None, own_group['name']):
-                    raise board.BoardError('leader 只能在自己的当前组创建成员')
-                group = own_group['name']
+            group = spawn.authorize(conn, project_name, caller_session_id, role, group)
+            if caller_session_id not in (None, board.HUMAN):
                 if caller_execution_id is not None:
                     execution = goals.get_execution(conn, caller_execution_id)
                     goal = goals.get(conn, execution['goal_id'], project_name)
@@ -855,6 +876,8 @@ class Manager:
                 chosen_runtime = spec.get("runtime", "claude")
                 runtimes.set(conn, session_id, chosen_runtime, session_id if chosen_runtime == "claude" else None, now=now)
                 models.set(conn, session_id, spec["model"], spec["effort"], now=now)
+                if _registered is not None:
+                    _registered(session_id)
                 try:
                     with self.lock:
                         if bound_goal is not None:
@@ -877,20 +900,36 @@ class Manager:
     def _send(self, session_id, text, display_text=None, source='human', identity=None, images=None, sender=None):
         current = self.processes[session_id]
         logical = current.execution['session_id'] if current.execution is not None else session_id
+        with closing(store.connect(self.home)) as control_conn:
+            native_handoff.assert_control(control_conn, logical, current.execution['id'] if current.execution else None)
         if self.maintenance_held(logical):
             raise board.Conflict(MAINTENANCE_HELD)
         identity = identity or str(uuid.uuid4())
         original_text=text if display_text is None else display_text
+        prompt_application = None
+        if text.strip() != '/compact':
+            with closing(store.connect(self.home)) as prompt_conn:
+                current_manifest = behavior_prompts.for_session(prompt_conn, logical, plugin_root=self.plugin_root)
+                if behavior_prompts.manifest_hash(current_manifest) != getattr(current, 'behavior_prompt_hash', None):
+                    prompt_application = behavior_prompts.prepare_input(prompt_conn, logical, session_id, identity,
+                                                                        plugin_root=self.plugin_root)
+            if prompt_application is not None:
+                text = behavior_prompts.render(prompt_application['manifest']) + '\n\n' + text
         handoff_id=None
         git_revision = getattr(current, 'git_context_revision', None)
         if text.strip() != '/compact':
             with closing(store.connect(self.home)) as handoff_conn:
-                git_revision, git_context = git_admin.input_context(handoff_conn, logical, git_revision, self.plugin_root)
+                assistant = personal.is_assistant(handoff_conn, logical)
+                git_revision, git_context = ((None, None) if assistant else
+                    git_admin.input_context(handoff_conn, logical, git_revision, self.plugin_root))
                 if current.execution is None:
                     text,handoff_id=runtime_switch.input_text(handoff_conn,session_id,text,identity)
                     summary = self.goal_controller.general_context(handoff_conn, session_id)
                     if summary:
                         text = summary + '\n\n' + text
+                    if assistant and source in ('human', 'qq', 'lark'):
+                        text = ('【Crew 本轮原始用户消息标识：%s。写入动作必须绑定此 message_id；'
+                                '不改变用户原话的授权范围。】\n\n' % identity) + text
             if git_context:
                 text = git_context + '\n\n' + text
         files = []
@@ -909,6 +948,11 @@ class Manager:
             try:
                 result=current.send(text, identity, display_text=original_text, source=source,
                                     images=images, sender=sender, image_files=files)
+                if prompt_application is not None:
+                    with closing(store.connect(self.home)) as prompt_conn:
+                        behavior_prompts.delivered(prompt_conn, prompt_application['id'], confirmed=True,
+                            evidence='Codex 原生 turn/start 或 turn/steer 已接收输入；thread=' + str(current.thread_id))
+                    current.behavior_prompt_hash = behavior_prompts.manifest_hash(prompt_application['manifest'])
                 current.git_context_revision = git_revision
                 if handoff_id is not None:
                     with closing(store.connect(self.home)) as handoff_conn:
@@ -927,6 +971,11 @@ class Manager:
                 current.journal.set_status("working")
                 current.process.stdin.write(json.dumps(message, ensure_ascii=False) + "\n")
                 current.process.stdin.flush()
+                if prompt_application is not None:
+                    with closing(store.connect(self.home)) as prompt_conn:
+                        behavior_prompts.delivered(prompt_conn, prompt_application['id'],
+                            evidence='Claude 输入已写入并flush；未将传输成功冒充模型读取')
+                    current.behavior_prompt_hash = behavior_prompts.manifest_hash(prompt_application['manifest'])
                 current.git_context_revision = git_revision
         except Exception as exc:
             with closing(store.connect(self.home)) as handoff_conn:runtime_switch.failed(handoff_conn,session_id,exc)
@@ -968,6 +1017,8 @@ class Manager:
                     conn.execute("UPDATE peer_messages SET error=? WHERE id=?", ("目标已归档或移除", message["id"]))
                     continue
                 if messaging.stopped(conn, sid):
+                    continue
+                if native_handoff.blocked(conn, sid):
                     continue
                 if self.busy(sid):
                     continue
@@ -1015,6 +1066,7 @@ class Manager:
             if self.maintenance_held(session['session_id']):
                 raise board.Conflict(MAINTENANCE_HELD)
             with closing(store.connect(self.home)) as routing_conn:
+                native_handoff.assert_control(routing_conn, session['session_id'], session.get('_execution', {}).get('id'))
                 session = workspace_execution.execution_session(routing_conn, session)
                 if '_execution' not in session:
                     if messaging.stopped(routing_conn, session['session_id']):
@@ -1075,6 +1127,8 @@ class Manager:
     @_admitted
     def compact(self, session, caller_session_id=None, after_turn=False):
         session_id = session["session_id"]
+        with closing(store.connect(self.home)) as control_conn:
+            native_handoff.assert_control(control_conn, session_id, session.get('_execution', {}).get('id'))
         self_compact = caller_session_id not in (None, board.HUMAN) and caller_session_id == session_id
         deferred = self_compact or after_turn and caller_session_id in (None, board.HUMAN)
         with self.lock:
@@ -1193,6 +1247,80 @@ class Manager:
         supplied_session['spawn_id'] = spawn_id
         return spec, True
 
+    def _personal_leader(self, project, message, *, name, request_id, instruction, selection=None):
+        with closing(store.connect(self.home)) as conn:
+            chosen = settings.resolve(conn, 'leader') if selection is None else selection
+            task = ('原始用户要求：\n' + instruction['instruction'] + '\n\n讨论材料：\n' + message +
+                    '\n\n先按用户原话讨论并识别任务，已有执行同意则推进；你可以自行修改对话名称。')
+            note = instruction.get('context', {}).get('note') if instruction.get('context', {}).get('action') == 'note.start' else None
+            def registered(sid):
+                self.journal(sid).emit('personal_note_origin', note_id=note['id'], request_id=request_id, project=project)
+                personal.record_note_registration(conn, note['id'], request_id, sid)
+            return self.start(conn, project, name or ('leader-' + uuid.uuid4().hex[:8]), task,
+                              role='leader', caller_session_id=board.HUMAN, _registered=registered if note is not None else None, **chosen)
+
+    def _recover_personal_note(self, conn, note_id):
+        note = personal.get_note(conn, note_id)
+        link = conn.execute('SELECT * FROM personal_note_leaders WHERE note_id=?', (note_id,)).fetchone()
+        if link is None or link['status'] == 'completed':
+            return None
+        matches = []
+        for leader in personal.note_recovery(conn, note_id)['leaders']:
+            sid = leader['session_id']
+            origins = [event for event in self.journal(sid).events if event.get('type') == 'personal_note_origin'
+                       and event.get('note_id') == note_id and event.get('request_id') == link['request_id']
+                       and event.get('project') == link['project']]
+            if origins:
+                matches.append((sid, origins[0]))
+        if len(matches) != 1:
+            return None
+        sid, origin = matches[0]
+        return personal.bind_note_leader(conn, note_id, sid, request_id='note-recovery:' + hashlib.sha256(
+            (note_id + ':' + link['request_id']).encode('utf-8')).hexdigest(),
+            reason='宿主创建前登记及会话来源日志确认对话已存在；没有重放原输入', actor='crew-recovery',
+            evidence={'type': 'personal_note_origin', 'session_id': sid, 'seq': origin['seq'], 'request_id': link['request_id']})
+
+    @_admitted
+    def start_personal_note(self, note_id, project, *, request_id):
+        """Only the explicit UI Start discussing action enters model work."""
+        with self.lock, closing(store.connect(self.home)) as conn:
+            note = personal.get_note(conn, note_id)
+            if note['leader'] is not None and note['leader']['project'] != project:
+                raise board.Conflict('这条想法已有其他工作区的对话关联')
+            recovered = self._recover_personal_note(conn, note_id)
+            if recovered is not None:
+                return recovered
+            # Configuration failures occur before reserving an external action.
+            # An already-linked note remains navigable without any installed CLI.
+            selection = settings.resolve(conn, 'leader') if note['leader'] is None else None
+            try:
+                return personal.start_note(conn, note_id, project, request_id=request_id,
+                    create_leader=lambda *args, **kwargs: self._personal_leader(*args, selection=selection, **kwargs))
+            except Exception as error:
+                recovered = self._recover_personal_note(conn, note_id)
+                if recovered is not None:
+                    self.journal(recovered['session_id']).emit('error', text='对话已创建，但首轮启动或返回失败：' + str(error) +
+                        '。已找回原对话，没有重放输入。原始想法：' + note['original_text'], note_recovery_id=note_id)
+                    return {**recovered, 'warning': str(error), 'model_calls': None}
+                raise
+
+    def personal_action(self, action, data, actor_session_id):
+        """A global assistant has narrow user-authorized ports, no leader role."""
+        from . import personal_actions
+
+        def send_message(session_id, text, *, identity, instruction):
+            with closing(store.connect(self.home)) as conn:
+                target = personal._target(conn, session_id)
+            body = '用户通过 Crew 助手转达：\n' + text + '\n\n原始指令：\n' + instruction['instruction']
+            return self.send(target, body, identity='personal:' + hashlib.sha256(identity.encode('utf-8')).hexdigest(), source='human')
+
+        def stop_session(session_id, *, request_id, instruction):
+            return self.stop_identity(session_id)
+
+        return personal_actions.dispatch(self.home, actor_session_id, action, data,
+            read_events=lambda sid: self.history(sid)['events'], create_leader=self._personal_leader,
+            send_message=send_message, stop_session=stop_session)
+
     def _resume(self, conn, session, text, sender=None, now=None, identity=None, source="crew", display_text=None):
         previous_spawn = session['spawn_id']
         journal = self.journal(session["session_id"])
@@ -1305,6 +1433,8 @@ class Manager:
             projects = {project["name"] for project in board.projects(conn)}
             live = {agent["sessionId"] for agent in agents}
             for session_id, started in list(self.auto_candidates.items()):
+                if native_handoff.blocked(conn, session_id):
+                    continue
                 if runtime is not None and runtimes.get(conn, session_id)['runtime'] != runtime:
                     continue
                 row = conn.execute("SELECT * FROM sessions WHERE session_id=?", (session_id,)).fetchone()
@@ -1535,6 +1665,14 @@ class Manager:
             board.record_event(conn, 'session:stopped', target['project'], session_id, {'actor': actor, 'executions': keys[1:]})
             return {'ok': True, 'session_id': session_id, 'stopped': True, 'running': False,
                     'execution_ids': keys[1:]}
+
+    @_admitted
+    def native_handoff(self, session_id, execution_id=None):
+        return native_handoff.release(self, session_id, execution_id)
+
+    @_admitted
+    def native_return(self, session_id, execution_id=None):
+        return native_handoff.reclaim(self, session_id, execution_id)
 
     def detach(self, session_id):
         """Release an idle session to VS Code by letting its own process finish."""

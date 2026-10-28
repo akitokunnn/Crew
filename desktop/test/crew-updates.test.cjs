@@ -2,13 +2,14 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
+const os = require('node:os');
 const { CrewUpdates } = require('../src/crew-updates.cjs');
 
 function fixture(t, options = {}) {
-  const config = { home: path.resolve('fixture-home'), backendDir: path.resolve('fixture-backend'), python: 'fixture-python', desktopVersion: options.desktopVersion || '0.1.2' };
+  const config = { home: options.home || path.resolve('fixture-home'), backendDir: path.resolve('fixture-backend'), python: 'fixture-python', desktopVersion: options.desktopVersion || '0.1.2' };
   const calls = [], phases = [];
-  let restarted = false, switched = false, pluginUpdated = false, releases = 0;
-  const target = { root: config.backendDir, version: '0.1.2', digest: 'production-digest' };
+  let restarted = false, switched = false, releases = 0;
+  const target = { root: config.backendDir, version: '0.1.2', digest: 'production-digest', generation: options.generation ?? 2 };
   const health = () => ({ ok: true, service: 'crew', home: config.home, pid: restarted ? 202 : 101,
     instance_id: restarted ? 'new-instance' : 'old-instance', version: restarted && options.wrongRestart ? '0.1.1' : '0.1.2',
     plugin_root: config.backendDir, port: 51234 });
@@ -45,6 +46,7 @@ function fixture(t, options = {}) {
       assert.equal(exe, 'fixture-python'); assert.equal(runOptions.windowsHide, true);
       assert.equal(args[0], path.join(config.backendDir, 'crew_update.py'));
       assert.equal(args[1], '--home'); assert.equal(args[2], config.home);
+      assert.equal(runOptions.env.CREW_HOME,config.home);
       const operation = args[3]; calls.push(operation);
       if (options.onOperation) await options.onOperation(operation);
       if (options.fail === operation) return { stdout: JSON.stringify({ ok: false, operation, error: options.failure || 'fixture ' + operation + ' failed' }) };
@@ -52,9 +54,9 @@ function fixture(t, options = {}) {
       if (operation === 'inspect') {
         value = { target, cli: { plugin_root: switched ? config.backendDir : path.resolve('old-backend'), version: switched ? '0.1.2' : '0.1.1' },
           plugin: options.pluginBlocked ? { state: 'blocked', reason: '插件实际来源与桌面不同' } :
-            { state: options.pluginUpdate && !pluginUpdated ? 'update' : 'current', registered_version: pluginUpdated ? '0.1.2' : '0.1.1' } };
+            { state: 'session-scoped', registered_version: '0.1.2' } };
       } else if (operation === 'backup') value = { path: path.join(config.home, 'backups', 'update', 'crew.db'), integrity: 'ok', bytes: 8192 };
-      else if (operation === 'plugin-update') pluginUpdated = true;
+      else if (operation === 'plugin-update') throw new Error('V2 must never update the shared V1 plugin');
       else if (operation === 'stopped') {
         assert.deepEqual(args.slice(4), ['--port', '51234', '--pid', '101', '--pid', '100', '--pid', '103', '--timeout', '20']);
       } else if (operation === 'switch') switched = true;
@@ -67,12 +69,12 @@ function fixture(t, options = {}) {
 }
 
 test('owned update backs up before changing installation, keeps the port, verifies and reconnects', async t => {
-  const f = fixture(t, { pluginUpdate: true });
+  const f = fixture(t);
   const result = await f.manager.update();
   assert.equal(result.phase, 'done'); assert.equal(result.error, null); assert.equal(result.queued, false);
   assert.equal(result.backend.instance_id, 'new-instance'); assert.equal(result.backend.port, 51234);
   assert.equal(f.backend.config.port, 51234); assert.equal(result.backup.integrity, 'ok');
-  assert.deepEqual(f.calls, ['lock', 'inspect', 'health', 'prepare', 'backup', 'inspect', 'plugin-update', 'health', 'stop', 'stopped', 'switch', 'start', 'health', 'reconnect', 'inspect', 'unlock']);
+  assert.deepEqual(f.calls, ['lock', 'inspect', 'health', 'prepare', 'backup', 'inspect', 'health', 'stop', 'stopped', 'switch', 'start', 'health', 'reconnect', 'inspect', 'unlock']);
   assert.equal(f.releases, 1); assert.equal(f.calls.includes('cancel-gate'), false);
 });
 
@@ -111,16 +113,22 @@ test('stop timeout keeps the backup and never switches or starts a replacement b
 test('a mismatched actual plugin source blocks update before closing the gate', async t => {
   const f = fixture(t, { pluginBlocked: true });
   const result = await f.manager.update();
-  assert.equal(result.phase, 'error'); assert.match(result.error, /实际来源/);
+  assert.equal(result.phase, 'error'); assert.match(result.error, /共享的 V1 插件/);
   assert.equal(f.calls.includes('prepare'), false); assert.equal(f.calls.includes('backup'), false); assert.equal(f.releases, 1);
 });
 
-test('official plugin update failure leaves the old backend running and keeps its backup', async t => {
-  const f = fixture(t, { pluginUpdate: true, fail: 'plugin-update' });
+test('V1 source is rejected before preparing, backing up or stopping the current backend', async t => {
+  const f = fixture(t, { generation:1 });
   const result = await f.manager.update();
-  assert.equal(result.phase, 'error'); assert.match(result.error, /plugin-update failed/); assert.equal(result.backup.integrity, 'ok');
-  assert.equal(f.calls.includes('stop'), false); assert.equal(f.calls.includes('switch'), false);
-  assert.deepEqual(f.calls.slice(-2), ['cancel-gate', 'unlock']);
+  assert.equal(result.phase, 'error'); assert.match(result.error, /不是 Crew V2/);
+  assert.deepEqual(f.calls,['lock','inspect','health','unlock']);
+});
+
+test('the canonical V1 HOME is rejected before starting a helper or taking a lock', async t => {
+  const f = fixture(t,{home:path.join(os.homedir(),'.crew')});
+  const result = await f.manager.update();
+  assert.equal(result.phase,'error'); assert.match(result.error,/V1.*数据目录/);
+  assert.deepEqual(f.calls,[]);
 });
 
 test('restart verification failure is never reported as a successful update or reconnected', async t => {
@@ -173,11 +181,11 @@ test('online failure stays visible without replacing latest with a local version
   assert.equal(state.can_update,true);assert.equal(state.phase,'idle');assert.equal(state.online_checking,false);
 });
 
-test('quit waits for an active plugin installer and its complete update transaction without publishing to a closed shell',async t=>{
+test('quit waits for an active HOME switch and its complete update transaction without publishing to a closed shell',async t=>{
   let started,release;
   const running=new Promise(resolve=>{started=resolve;}),gate=new Promise(resolve=>{release=resolve;});
   let stops=0;
-  const f=fixture(t,{pluginUpdate:true,stopReadOnly:async()=>{stops++;},onOperation:async operation=>{if(operation==='plugin-update'){started();await gate;}}});
+  const f=fixture(t,{stopReadOnly:async()=>{stops++;},onOperation:async operation=>{if(operation==='switch'){started();await gate;}}});
   const updating=f.manager.update();await running;
   const before=f.phases.length,time=performance.now();let closed=false;
   const closing=f.manager.close().then(()=>{closed=true;});

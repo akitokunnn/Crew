@@ -37,7 +37,7 @@ class StorageV2DatabaseTests(unittest.TestCase):
         self.assertEqual(hashlib.sha256(self.legacy.read_bytes()).hexdigest(), before)
         with closing(repo.connect()) as c:
             self.assertEqual(c.execute('PRAGMA foreign_keys').fetchone()[0], 1)
-            self.assertEqual(c.execute('PRAGMA user_version').fetchone()[0], 2)
+            self.assertEqual(c.execute('PRAGMA user_version').fetchone()[0], database.SCHEMA_VERSION)
             self.assertEqual(c.execute('PRAGMA application_id').fetchone()[0], database.APPLICATION_ID)
             for table in ('users', 'accounts', 'workspaces', 'agents', 'executions', 'messages',
                           'peer_messages', 'local_outbox', 'local_runtime_sessions'):
@@ -164,7 +164,7 @@ class StorageV2DatabaseTests(unittest.TestCase):
 
     def test_newer_or_older_schema_is_refused_without_mutating_database(self):
         repo = Repository(self.home)
-        for version in (1, 3):
+        for version in (1, database.SCHEMA_VERSION + 1):
             with self.subTest(version=version):
                 with closing(sqlite3.connect(repo.path)) as c:
                     c.execute('PRAGMA user_version=%d' % version)
@@ -176,12 +176,12 @@ class StorageV2DatabaseTests(unittest.TestCase):
     def test_minimum_writer_or_changed_schema_digest_is_refused(self):
         repo = Repository(self.home)
         with closing(sqlite3.connect(repo.path)) as c:
-            c.execute('UPDATE local_schema_metadata SET min_writer_version=3')
+            c.execute('UPDATE local_schema_metadata SET min_writer_version=?', (database.SCHEMA_VERSION + 1,))
             c.commit()
         with self.assertRaises(SchemaVersionError):
             Repository(self.home)
         with closing(sqlite3.connect(repo.path)) as c:
-            c.execute('UPDATE local_schema_metadata SET min_writer_version=2')
+            c.execute('UPDATE local_schema_metadata SET min_writer_version=?', (database.SCHEMA_VERSION,))
             c.execute('UPDATE local_schema_migrations SET migration_sha256=?', ('0' * 64,))
             c.commit()
         with self.assertRaises(SchemaVersionError):
@@ -191,7 +191,7 @@ class StorageV2DatabaseTests(unittest.TestCase):
         with closing(sqlite3.connect(':memory:', isolation_level=None)) as c:
             create_domain(c)
             tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-            self.assertEqual(len(tables), 55)
+            self.assertEqual(len(tables), 56)
             self.assertFalse(any(name.startswith('local_') for name in tables))
             c.execute('BEGIN')
             with self.assertRaises(StorageError):

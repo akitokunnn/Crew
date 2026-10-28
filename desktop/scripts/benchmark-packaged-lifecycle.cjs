@@ -36,9 +36,9 @@ def guarded_import(*args,**kwargs):
 builtins.__import__=guarded_import
 `,'utf8');
   const record={version,temporary,scope:'Private HOME, real packaged binaries, forbidden model factories. Cold HOME does not imply an OS disk-cache flush. pre_electron_ms includes SFX extraction and native process creation. ZIP extraction is measured once, separately from both daily launches.',runs:[]};
-  const unpacked=path.resolve(options.unpacked||path.join(desktop,'dist','win-unpacked','Crew.exe'));
-  const variants=[['unpacked',unpacked],['portable',options.portable||path.join(desktop,'dist','Crew-'+version+'-portable.exe')]];
-  const archive=path.resolve(options.zip||path.join(desktop,'dist','Crew-'+version+'-win-x64.zip'));
+  const unpacked=path.resolve(options.unpacked||path.join(desktop,'dist','win-unpacked','Crew V2.exe'));
+  const variants=[['unpacked',unpacked],['portable',options.portable||path.join(desktop,'dist','Crew-V2-'+version+'-portable.exe')]];
+  const archive=path.resolve(options.zip||path.join(desktop,'dist','Crew-V2-'+version+'-win-x64.zip'));
   const zipExists=await fs.access(archive).then(()=>true,error=>{if(error.code==='ENOENT'&&!options.zip)return false;throw error;});
   if(zipExists){
     const destination=path.join(temporary,'zip-application'),at=performance.now();
@@ -75,7 +75,7 @@ with ZipFile(archive) as package:
       validated.push({path:relative,bytes:extracted.length,sha256:hash(extracted)});
     }
     record.zip={archive,destination,compressed_bytes:(await fs.stat(archive)).size,extraction_ms:extractionMs,...JSON.parse(extraction.stdout),validated_resources:validated};
-    variants.push(['zip-extracted',path.join(destination,'Crew.exe')]);
+    variants.push(['zip-extracted',path.join(destination,'Crew V2.exe')]);
     console.log(JSON.stringify({kind:'zip-one-time-extraction',...record.zip}));
   }
   for(const [kind,executable] of variants){

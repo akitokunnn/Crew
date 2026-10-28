@@ -2,7 +2,7 @@
 import json
 from urllib.parse import urlencode
 
-from . import board, documents, goal_context, goals
+from . import board, documents, goal_context, goal_work, goals, native_handoff
 
 ACCEPTANCE_STATUSES = ('passed', 'failed', 'unverified', 'simulated')
 
@@ -14,6 +14,7 @@ def report_entry(project, value, row):
     return {'id': row['id'], 'round': row['round'], 'requirement_version': row['requirement_version'], 'version': row['version'],
             'outcome': row['outcome'], 'status': row['outcome'], 'created_at': row['created_at'], 'title': value['title'],
             'summary': data['summary'], 'acceptance_counts': {key: statuses.count(key) for key in ACCEPTANCE_STATUSES},
+            'publication': data.get('publication'),
             'unresolved': data['unresolved'],
             'current': row['round'] == value['current_round'] and row['requirement_version'] == value['requirement_version'],
             'url': '/api/goals/report?' + urlencode({'project': project, 'goal_id': value['id'], 'report_id': row['id']})}
@@ -22,8 +23,10 @@ def report_entry(project, value, row):
 def card(conn, value):
     req = value['requirements']
     available = conn.execute('SELECT 1 FROM goal_reports WHERE goal_id=?', (value['id'],)).fetchone()
-    return {**value, 'request': req['request'], 'acceptance': req['acceptance'],
-            'constraints': req['constraints'], 'report_available': bool(available)}
+    handoffs = [native_handoff.describe(conn, row['session_id'], row['id']) for row in conn.execute(
+        'SELECT id,session_id FROM goal_executions WHERE goal_id=? AND round=?', (value['id'], value['current_round']))]
+    return {**value, 'request': req['request'], 'acceptance': req['acceptance'], 'native_handoffs': handoffs,
+            'constraints': req['constraints'], 'report_available': bool(available), 'work_summary': goal_work.summary(conn, value['id'])}
 
 
 def context(conn, identity, execution_id=None):
@@ -43,6 +46,8 @@ def detail(conn, project, identity):
     value = goals.get(conn, identity, project)
     executions = [goals.get_execution(conn, row['id']) for row in conn.execute(
         'SELECT id FROM goal_executions WHERE goal_id=? ORDER BY round,generation', (identity,))]
+    for execution in executions:
+        execution['native_handoff'] = native_handoff.describe(conn, execution['session_id'], execution['id'])
     current = [e for e in executions if e['round'] == value['current_round'] and
                e['requirement_version'] == value['requirement_version'] and e['session_id'] == value['leader_session_id']]
     # Newest first by the stored report version within each round, the same order acceptance_target uses;
@@ -50,7 +55,7 @@ def detail(conn, project, identity):
     reports = [report_entry(project, value, row) for row in conn.execute(
         'SELECT id,round,requirement_version,version,outcome,data_json,created_at FROM goal_reports WHERE goal_id=? '
         'ORDER BY round DESC,version DESC', (identity,))]
-    return {'goal': card(conn, value), 'executions': executions,
+    return {'goal': card(conn, value), 'executions': executions, 'work_items': goal_work.items(conn, identity),
             'context': context(conn, identity, current[-1]['id'] if current else None), 'reports': reports,
             'documents': documents.list(conn, project, goal_id=identity),
             'acceptance_review': goals.acceptance_review(conn, identity),
@@ -82,7 +87,8 @@ def post(service, conn, project, path, data):
         return control.agent_action(data.get('action'), data.get('data', {}), actor['session_id'], data.get('execution_id'))
     if path == '/api/goals/create':
         value = goals.create(conn, project, data.get('leader_session_id'), data.get('title'),
-                             data.get('request'), data.get('acceptance'), constraints=data.get('constraints', []))
+                             data.get('request'), data.get('acceptance'), constraints=data.get('constraints', []),
+                             decision_mode=data.get('decision_mode'))
         return {'goal': card(conn, value)}
     identity = data.get('goal_id')
     value = goals.get(conn, identity, project)

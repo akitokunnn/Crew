@@ -26,7 +26,24 @@ class RecoveryError(board.BoardError):
 GLOBAL_TABLES = frozenset((
     'ai_settings', 'ai_task_settings', 'execution_settings', 'trust_schema_migrations', 'usage_files',
     'notification_inbound', 'lark_notification_inbound',
+    'personal_assistant', 'personal_note_requests', 'personal_action_receipts', 'task_artifact_requests',
 ))
+FEATURE_TABLES = frozenset(('goal_decision_modes', 'goal_report_publications', 'personal_notes', 'personal_note_leaders',
+    'personal_assistant', 'personal_note_requests', 'personal_action_receipts', 'behavior_prompts',
+    'behavior_prompt_history', 'behavior_prompt_applications', 'imported_feature_audits',
+    'task_artifact_versions', 'task_artifact_files', 'task_restore_operations', 'task_restore_files', 'task_artifact_requests'))
+
+
+def _ensure_features(conn):
+    from . import behavior_prompts, goal_artifacts, goal_mode, goal_reports, personal
+    behavior_prompts.ensure_schema(conn)
+    goal_artifacts.ensure_schema(conn)
+    goal_mode.ensure(conn)
+    goal_reports.ensure(conn)
+    personal.ensure_schema(conn)
+    conn.execute('CREATE TABLE IF NOT EXISTS imported_feature_audits ('
+                 'id TEXT PRIMARY KEY,project TEXT NOT NULL REFERENCES projects(name),kind TEXT NOT NULL,'
+                 'data_json TEXT NOT NULL,created_at TEXT NOT NULL)')
 # Logical relationships in the older schema that did not declare a SQLite FK.
 RELATIONS = {
     ('handoff_deliveries', 'handoff_id'): ('handoffs', 'id'),
@@ -68,7 +85,9 @@ def _snapshot(source_home, temporary):
     with contextlib.closing(_readonly(store.db_path(source_home))) as original:
         with contextlib.closing(sqlite3.connect(store.db_path(temporary))) as copy:
             original.backup(copy)
-    return store.connect(temporary)
+    conn = store.connect(temporary)
+    _ensure_features(conn)
+    return conn
 
 
 @contextlib.contextmanager
@@ -109,11 +128,16 @@ def _schema(conn):
 def _owned_rows(schema, project):
     """Follow ownership children, including the explicit pre-FK relationships."""
     selected = {name: set() for name in schema}
+    project_notes = {row['id'] for row in schema.get('personal_notes', {}).get('rows', []) if row['project'] == project}
     for name, table in schema.items():
         if name in GLOBAL_TABLES:
             continue
         for index, row in enumerate(table['rows']):
+            if name == 'personal_note_leaders' and row['note_id'] not in project_notes:
+                continue
             if row.get('project') == project or name == 'projects' and row['name'] == project:
+                selected[name].add(index)
+            if name in ('behavior_prompts', 'behavior_prompt_history') and row['scope'] == 'project' and row['identity'] == project:
                 selected[name].add(index)
     sessions = {schema['sessions']['rows'][i]['session_id'] for i in selected['sessions']}
     native_ids = set(sessions)
@@ -139,9 +163,12 @@ def _owned_rows(schema, project):
                 foreign_groups.setdefault(foreign['id'], []).append(foreign)
             relations = [(column, target) for (owner, column), target in RELATIONS.items() if owner == name]
             for index, row in enumerate(table['rows']):
+                if name == 'personal_note_leaders' and row['note_id'] not in project_notes:
+                    continue
                 if index in selected[name] or row.get('project') is not None:
                     continue
                 owned = row.get('session_id') in native_ids or row.get('leader_session_id') in sessions
+                owned = owned or (name in ('behavior_prompts', 'behavior_prompt_history') and row['scope'] == 'session' and row['identity'] in sessions)
                 owned = owned or name == 'codex_sessions' and row['rollout_id'] in native_ids
                 owned = owned or name == 'codex_runs' and row.get('claude_session_id') in native_ids
                 owned = owned or name == 'attention_resolutions' and any(
@@ -163,6 +190,7 @@ def _owned_rows(schema, project):
                     changed = True
     # Unknown nonempty tables must never be silently left behind during an upgrade.
     known = set(re.findall(r'CREATE TABLE IF NOT EXISTS\s+(\w+)', store.SCHEMA_FILE.read_text(encoding='utf-8')))
+    known.update(FEATURE_TABLES)
     for name, table in schema.items():
         if table['rows'] and name not in known:
             raise RecoveryError('旧数据包含尚不支持恢复的表: ' + name)
@@ -275,6 +303,10 @@ def _transform_row(name, original, schema, maps, project, source_home, target_ho
         row.update(status='paused', manual_pause=1, reason='从旧版本恢复；等待用户明确继续')
     if name in ('goal_executions', 'goal_rounds') and row['status'] in ACTIVE:
         row['status'] = 'paused'
+    if name in ('behavior_prompts', 'behavior_prompt_history') and row['scope'] == 'project':
+        row['identity'] = project
+    if name == 'task_restore_operations' and row['status'] != 'completed':
+        row.update(status='blocked', error='历史恢复操作，仅保留记录；未自动写入项目文件')
     if name in ('maintenance_jobs', 'maintenance_items') and row['status'] in ('pending', 'running'):
         row.update(status='interrupted', error_type='workspace-recovery', error='从旧版本恢复；未重发维护操作')
     if name == 'workspace_cleanup_boundaries':
@@ -344,6 +376,25 @@ def _file_plan(source_home, target_home, owned, maps, project):
                         spec['md'] = str(target_home / 'spawn' / (spawn + '.md'))
                     content = (json.dumps(spec, ensure_ascii=False, indent=2) + '\n').encode('utf-8')
                 files[source.relative_to(source_home)] = content
+    from . import goal_artifacts
+    object_rows = [(row['goal_id'], row.get(side + '_sha256'), row.get(side + '_size'))
+                   for row in owned.get('task_artifact_files', ()) for side in ('baseline', 'delivered')]
+    goals_by_operation = {row['id']: row['goal_id'] for row in owned.get('task_restore_operations', ())}
+    object_rows += [(goals_by_operation[row['operation_id']], row.get(side + '_sha256'), row.get(side + '_size'))
+                    for row in owned.get('task_restore_files', ()) for side in ('original', 'target')]
+    for goal_id, digest, size in object_rows:
+        if digest is None:
+            continue
+        if not isinstance(digest, str) or re.fullmatch('[0-9a-f]{64}', digest) is None:
+            raise RecoveryError('成果对象哈希无效')
+        relative = Path('task-artifacts') / 'objects' / goal_artifacts.object_namespace(goal_id) / digest
+        source = source_home / relative
+        if not store.is_under(source.resolve(), source_home) or source.is_symlink():
+            raise RecoveryError('成果对象不在源 HOME 内')
+        content = source.read_bytes()
+        if len(content) != size or hashlib.sha256(content).hexdigest() != digest:
+            raise RecoveryError('成果对象内容与记录不一致：' + digest)
+        files[relative] = content
     return files
 
 
@@ -378,6 +429,8 @@ def _quiesce(conn, owned, maps, project, stamp):
     leaders = {row['id']: row['leader_session_id'] for row in owned.get('goals', ())}
     for row in owned.get('goal_reports', ()):
         alerts.append(('goal-report:' + row['id'], leaders[row['goal_id']], None, 'goal_report'))
+    for row in owned.get('goal_report_publications', ()):
+        alerts.append(('goal-progress:' + row['report_id'], leaders[row['goal_id']], None, 'goal_progress'))
     for row in owned.get('decisions', ()):
         identity = _mapped(maps, 'decisions', row['id'])
         alerts.append(('decision:' + str(identity), row['session_id'], identity, 'decision'))
@@ -417,6 +470,7 @@ def _import_workspace(source_home, target_home, project):
                 target.execute('BEGIN IMMEDIATE')
                 target.execute('PRAGMA defer_foreign_keys=ON')
                 try:
+                    _ensure_features(target)
                     if _already_imported(target, receipt):
                         target.rollback()
                         return {'project': project, 'status': 'already_recovered'}

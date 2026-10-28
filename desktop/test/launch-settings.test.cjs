@@ -45,6 +45,38 @@ test('launch preview checks source and Python and counts sessions without stoppi
   assert.ok(!f.calls.includes('lock'));assert.ok(!f.calls.includes('stop'));await assert.rejects(fs.access(f.config.launchSettingsPath),{code:'ENOENT'});
 });
 
+test('V2 launch preview rejects an unmarked backend before Python or execution changes',async t=>{
+  const f=await fixture(t);f.config.productGeneration=2;
+  await assert.rejects(f.manager.validate({settings:f.settings,home_action:'existing'}),error=>error.code==='CREW_PRODUCT_GENERATION');
+  assert(!f.calls.includes('python-version'));assert(!f.calls.includes('stop'));assert(!f.calls.includes('lock'));
+  await assert.rejects(fs.access(f.config.launchSettingsPath),{code:'ENOENT'});
+  await fs.writeFile(path.join(f.source,'crew-product.json'),JSON.stringify({generation:2,name:'Crew V2'}));
+  assert.equal((await f.manager.validate({settings:f.settings,home_action:'existing'})).source_version,'0.0.0-test');
+});
+
+test('V2 existing-service validation checks the actual running source, not only the bundled source',async t=>{
+  const f=await fixture(t,{borrowed:true});f.config.productGeneration=2;
+  const bundled=path.join(f.root,'v2-bundled');await fs.mkdir(path.join(bundled,'crew'),{recursive:true});
+  await fs.writeFile(path.join(bundled,'crew_supervisor.py'),'# fixture');await fs.writeFile(path.join(bundled,'crew','web.py'),'# fixture');
+  await fs.mkdir(path.join(bundled,'.claude-plugin'));await fs.writeFile(path.join(bundled,'.claude-plugin','plugin.json'),JSON.stringify({name:'crew',version:'0.0.0-test'}));
+  await fs.writeFile(path.join(bundled,'crew-product.json'),JSON.stringify({generation:2,name:'Crew V2'}));
+  f.manager.bundledBackend=bundled;
+  await assert.rejects(f.manager.validate({settings:{...f.settings,mode:'existing',service_url:'http://127.0.0.1:52346'},home_action:'existing'}),
+    error=>error.code==='CREW_PRODUCT_GENERATION');
+  assert(!f.calls.includes('stop'));assert(!f.calls.includes('prepare-home'));
+});
+
+test('V2 HOME source validation happens before Python, stop, or migration helpers',async t=>{
+  const f=await fixture(t);f.config.productGeneration=2;
+  await fs.writeFile(path.join(f.source,'crew-product.json'),JSON.stringify({generation:2,name:'Crew V2'}));
+  const legacy=path.join(f.root,'legacy-source');await fs.mkdir(legacy);
+  const runtime=JSON.stringify({plugin_root:legacy});await fs.writeFile(path.join(f.target,'runtime.json'),runtime);
+  await assert.rejects(f.manager.validate({settings:{...f.settings,home:f.target},home_action:'existing'}),
+    error=>error.code==='CREW_PRODUCT_GENERATION'&&error.message.includes('不会覆盖'));
+  assert.equal(f.calls.length,0);
+  assert.equal(await fs.readFile(path.join(f.target,'runtime.json'),'utf8'),runtime);
+});
+
 test('existing connection reads its actual HOME and never prepares or stops the borrowed source',async t=>{
   const f=await fixture(t,{borrowed:true});
   const result=await f.manager.apply({settings:{...f.settings,mode:'existing',home:'ignored old HOME',service_url:'http://127.0.0.1:52346/'},home_action:'existing'});

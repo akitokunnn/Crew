@@ -191,6 +191,7 @@ def _material(key, version, text, source, reason, section='work', protected=Fals
 
 @goals.atomic
 def build(conn, execution_id, *, base='', latest_input='', retrieval=(), limits=None, delta=True, native_history=None, now=None):
+    from . import goal_mode
     execution = goals.get_execution(conn, execution_id)
     goal = goals._row(conn, execution['goal_id'])
     if execution['round'] != goal['current_round']:
@@ -211,6 +212,10 @@ def build(conn, execution_id, *, base='', latest_input='', retrieval=(), limits=
         req['version'], req['request'], '\n'.join(item['id'] + ': ' + item['title'] for item in req['acceptance']), '\n'.join(req['constraints']) or '未额外指定')
     materials = [_material('base', hashlib.sha256(base.encode()).hexdigest(), base, {'type': 'base', 'id': execution_id}, '最小执行指令', 'base', True),
                  _material('requirement:' + goal['id'], req['version'], required, {'type': 'requirement', 'id': goal['id'], 'version': req['version']}, '当前目标原始要求、验收与授权', protected=True)]
+    policy = goal_mode.get(conn, goal['id'])
+    materials.append(_material('decision-mode:' + goal['id'], policy['version'], goal_mode.context(conn, goal['id']),
+                               {'type': 'goal-decision-mode', 'id': goal['id'], 'version': policy['version']},
+                               '仅本任务的决策授权', protected=True))
     if latest_input:
         digest = hashlib.sha256(latest_input.encode()).hexdigest()
         materials.append(_material('input:' + digest, digest, latest_input, {'type': 'input', 'id': digest}, '当前输入', protected=True))

@@ -886,7 +886,7 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         self.inbox.process_replies()
         self.assertEqual(len(self.client.sent), 2)
 
-    def test_away_relays_each_finished_leader_turn_once_but_not_turns_started_from_qq(self):
+    def test_ordinary_leader_turns_are_not_proactively_relayed_while_away(self):
         manager, journal = self.web_manager()
         manager.history.side_effect = lambda sid: dict(session_id=sid, events=journal.events, running=True, busy=False)
 
@@ -914,20 +914,19 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         journal.emit('assistant', id='running-end', content=[dict(type='text', text='还没说完')])
         self.inbox.tick()
         self.inbox.tick()
-        self.assertEqual([(m['kind'], m['text']) for m in self.client.sent],
-                         [('markdown', '### lead · demo\n***\n#17 已经转给雷达'), ('markdown', '### lead · demo\n***\n#17 做完了')])
+        self.assertEqual(self.client.sent, [])
         journal.set_status('idle')
         self.inbox.tick()
-        self.assertEqual(self.client.sent[-1]['text'], '### lead · demo\n***\n还没说完')
+        self.assertEqual(self.client.sent, [])
         self.restart()
         self.inbox.tick()
         self.inbox.tick()
-        self.assertEqual(len(self.client.sent), 3)
+        self.assertEqual(len(self.client.sent), 0)
         self.locked = False
         self.inbox.tick()
         turn('crew', 'back', '回来以后说的')
         self.inbox.tick()
-        self.assertEqual(len(self.client.sent), 3)
+        self.assertEqual(len(self.client.sent), 0)
 
     def test_long_replies_split_at_paragraphs_and_long_paragraphs_obey_limit(self):
         _, journal = self.web_manager()
@@ -1014,7 +1013,8 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         journal.consume(dict(type='result', local_command='compact'))
         self.inbox.process_replies()
         self.assertEqual([row['status'] for row in self.replies()], ['answered', 'running'])
-        self.assertEqual(json.loads(process.stdin.getvalue().splitlines()[-1])['message']['content'], '压缩后继续')
+        self.assertTrue(json.loads(process.stdin.getvalue().splitlines()[-1])['message']['content'].endswith('压缩后继续'))
+        self.assertTrue(any(event.get('type') == 'message' and event.get('text') == '压缩后继续' for event in journal.events))
         self.assertIn('（这一轮没有文字回复）', self.client.sent[-1]['text'])
 
     def test_busy_leader_keeps_messages_queued_and_runs_in_order(self):
