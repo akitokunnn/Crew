@@ -16,6 +16,7 @@ test("synchronous failure and invalid results retain the actual error and permit
 test("legacy snapshots are adapted without probing an unsupported discovery endpoint",async()=>{
   const module=create({snapshot:()=>({legacyModels:[{id:"old",name:"Native old"}],legacyEfforts:["high"]}),discover:()=>{throw Error("must not probe");}});
   await module.refresh();assert.equal(module.info({}).id,"claude");assert.equal(module.info("codex").available,false);assert.equal(module.modelName("old"),"Native old");assert.equal(module.status().canRefresh,false);
+  assert.deepEqual(module.efforts("claude","old"),["high"]);
 });
 test("defaults follow explicit purpose and global settings without silently choosing the first installed carrier",()=>{
   const value={catalog:catalog(),choices:{}},module=create({snapshot:()=>value});assert.equal(module.defaultRuntime(),"");value.choices.default={runtime:"codex"};assert.equal(module.taskRuntime("leader"),"codex");value.choices.leader={runtime:"claude"};assert.equal(module.taskRuntime("leader"),"claude");
@@ -47,6 +48,8 @@ test("selection receipt names the backend choice and reason without claiming dis
 test("shared member/leader choice validation preserves custom native choices and rejects actual capability conflicts",()=>{
   const choices=catalog(),custom={runtime:"codex",model:"future-native",effort:"deep"};assert.deepEqual(validateSelection(custom,choices),custom);assert.deepEqual(custom,{runtime:"codex",model:"future-native",effort:"deep"});
   assert.throws(()=>validateSelection({runtime:"codex",model:"gpt",effort:"low"},choices),/不支持/);choices[1].available=false;choices[1].error="native sign-in required";assert.throws(()=>validateSelection(custom,choices),/native sign-in required/);
+  const module=create({snapshot:()=>({catalog:choices})});
+  assert.throws(()=>module.optionChange({runtime:"codex"},"model","gpt"),/native sign-in required/);
 });
 test("a destroyed catalog does not publish a late native discovery result",async()=>{
   let release,changed=0;const initial=catalog(),module=create({snapshot:()=>({catalog:initial}),discover:()=>new Promise(resolve=>release=resolve)});module.subscribe(()=>changed++);const pending=module.refresh();await Promise.resolve();module.destroy();release({runtimes:[]});await pending;assert.equal(changed,1);assert.equal(module.list(),initial);

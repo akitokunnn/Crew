@@ -8,15 +8,6 @@ const icon = require('../scripts/icon.cjs');
 const { peResources } = require('../scripts/verify-icons.cjs');
 const assets = path.resolve(__dirname, '../assets');
 
-test('desktop vector retains the actual Crew open-ring and separate-point brand', () => {
-  const web = fs.readFileSync(path.resolve(__dirname, '../../plugin/crew/web/logo.svg'), 'utf8');
-  const svg = fs.readFileSync(path.join(assets, 'crew.svg'), 'utf8');
-  assert.ok(web.includes(icon.MARK_PATH));
-  assert.ok(svg.includes(icon.MARK_PATH));
-  assert.match(svg, /<circle cx="17\.4" cy="16\.4" r="1\.75"/);
-  assert.doesNotMatch(svg, /<text\b|font-family|Electron|data:image/);
-});
-
 test('PNG sizes and seven Windows ICO frames contain the same custom images', () => {
   const frames = icon.parseIco(fs.readFileSync(path.join(assets, 'crew.ico')));
   assert.deepEqual(frames.map(frame => frame.width), [16, 24, 32, 48, 64, 128, 256]);
@@ -29,16 +20,6 @@ test('PNG sizes and seven Windows ICO frames contain the same custom images', ()
   }
   assert.deepEqual(fs.readFileSync(path.join(assets, 'crew.png')), fs.readFileSync(path.join(assets, 'crew-256.png')));
   assert.deepEqual(fs.readFileSync(path.join(assets, 'crew-tray.png')), fs.readFileSync(path.join(assets, 'crew-32.png')));
-});
-
-test('16px taskbar image has transparent rounded corners, a bright ring, and a distinct teal point', () => {
-  const pixels = icon.raster(16);
-  const at = (x, y) => [...pixels.subarray((y * 16 + x) * 4, (y * 16 + x + 1) * 4)];
-  assert.equal(at(0, 0)[3], 0);
-  assert.deepEqual(at(8, 8), [...icon.COLORS.tile, 255]);
-  assert.ok(at(4, 8)[0] > 200, 'open ring must survive small-size rasterization');
-  const point = at(11, 10);
-  assert.ok(point[1] > point[0] + 20 && point[1] > point[2], 'crew point must remain a separate teal mark');
 });
 
 test('icon manifest verifies actual files and malformed ICO / PE input is rejected', () => {

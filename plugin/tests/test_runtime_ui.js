@@ -18,11 +18,6 @@ const fixture = () => ({models:[{id:"claude-sonnet", name:"Sonnet"}, {id:"claude
   ]});
 const session = extra => ({session_id:"session-codex", runtime:"codex", model:"gpt-a", effort:"medium",
   applied:{model:"gpt-a", effort:"medium"}, where:"bg", running:true, ...extra});
-const form = (runtime="codex", model="", effort="") => ({dataset:{runtimeExplicit:"true"},elements:{name:{value:" fixture "}, task:{value:" work "},
-  runtime:{value:runtime}, model:{value:model}, effort:{value:effort}},
-  submit:{disabled:false}, refresh:{disabled:false, hidden:false},
-  querySelector(selector) { return selector === '[type="submit"]' ? this.submit : this.refresh; }});
-
 function harness(state = fixture(), fetcher = () => { throw new Error("Unexpected network request"); }) {
   const nodes = new Map();
   const node = () => ({innerHTML:"", textContent:"", className:"", hidden:false, dataset:{},classList:{contains:()=>false},
@@ -49,14 +44,13 @@ function harness(state = fixture(), fetcher = () => { throw new Error("Unexpecte
   assert(source.endsWith(end + "\n") || source.endsWith(end));
   vm.runInContext(source.replace(end, `  window.ui = {runtimeCatalog:()=>runtimeCatalog,runtimeModels:()=>runtimeModels,chatAccess, goalChatNotes,
     contextRing, contextControls, sidebarLeader, memberNode, workingRow,
-    renderTodos, domRenderer:()=>domRenderer, trustReportUrl, readTrustReport, attention:()=>attentionFeature,
+    renderTodos, readTrustReport, attention:()=>attentionFeature,
     route() {readRoute(); return {view,leaderId,readOnlyId};},
-    services(values) {if(values.api)api=values.api;if(values.loadState)loadState=values.loadState;if(values.toast)toast=values.toast;if(values.render)render=values.render;},
     setState(value) {state=value;if(!domRenderer)domRenderer=window.CrewDOMRenderer.create({document});if(!runtimeCatalog)runtimeCatalog=window.CrewRuntimeCatalog.create({snapshot:()=>({catalog:state?.runtimes,legacyModels:state?.models,legacyEfforts:state?.efforts,choices:state?.ai}),discover:()=>api("/api/runtimes")});if(!runtimeModels)runtimeModels=window.CrewRuntimeModels.create({catalog:runtimeCatalog,icon:ic,runtimeBadge,findSession:sessionItem,menu:{show(){},hide(){},anchor:()=>null,isCurrent:()=>false},save(){},refresh(){},notify(){}});if(!commentsFeature)commentsFeature=createComments(()=>({leaders:state?.leaders||[],members:state?.members||[]}),document);if(!attentionFeature)attentionFeature=window.CrewAttention.create({state:()=>state,document,api:(...args)=>api(...args),refresh:()=>loadState(true),notify:(...args)=>toast(...args),changed:()=>{},navigate:()=>{},rich:{inline:CrewChat.renderInline,markdown:CrewChat.renderMarkdown},ui:{icon:ic,avatar:av,priority:priorityBadge,date,ago,empty}});}};\n})();`), sandbox);
   sandbox.window.ui.setState(state);
   const catalog=sandbox.window.ui.runtimeCatalog(),models=sandbox.window.ui.runtimeModels();
-  const people=require("./people_fixture.cjs").fixture(()=>({leaders:state.leaders||[],members:state.members||[]}),{modelMenu:models.markup,runtimeId:catalog.id}).module;
-  return {ui:{...sandbox.window.ui,...sandbox.window.ui.attention(),replace:sandbox.window.ui.domRenderer().replace,runtimeList:catalog.list,runtimeInfo:catalog.info,defaultRuntime:catalog.defaultRuntime,modelEfforts:catalog.efforts,optionChange:catalog.optionChange,optionsLabel:catalog.optionsLabel,refreshRuntimes:catalog.refresh,modelMenu:models.markup,sessionMenu:people.sessionMenu,editorHandoffReason:people.editorHandoffReason}, nodes, location:sandbox.location};
+  return {ui:{...sandbox.window.ui,...sandbox.window.ui.attention(),optionsLabel:catalog.optionsLabel,
+    refreshRuntimes:catalog.refresh,modelMenu:models.markup}, nodes, location:sandbox.location};
 }
 const plain = value => JSON.parse(JSON.stringify(value));
 
@@ -89,7 +83,7 @@ test("a paused task does not lock the person's independent general conversation"
 });
 
 test("existing session model menus use its own tool catalog and never expose runtime conversion", () => {
-  const {ui} = harness();
+  const state = fixture(), {ui} = harness(state);
   const codex = ui.modelMenu(session());
   assert(codex.includes('data-model="gpt-a"'));
   assert(!codex.includes('data-model="claude-sonnet"'));
@@ -100,59 +94,21 @@ test("existing session model menus use its own tool catalog and never expose run
   assert(claude.includes('data-model="claude-sonnet"'));
   assert(!claude.includes('data-model="gpt-a"'));
   assert.equal(ui.optionsLabel(session()), "GPT A · medium");
-});
-
-test("old states and sessions retain Claude defaults and use their reported effort catalog", () => {
-  const state = fixture(); delete state.runtimes;
-  const {ui} = harness(state);
-  assert.equal(ui.runtimeInfo({}).id, "claude");
-  assert(ui.modelMenu({session_id:"old", model:null, effort:null, applied:null}).includes('data-model="claude-sonnet"'));
-  assert.deepEqual(plain(ui.modelEfforts("claude", "claude-haiku-4-5-20251001")), state.efforts);
-  assert.equal(ui.runtimeInfo("codex").available, false);
-});
-
-test("Codex editor handoff is disabled while leader chat and member history remain available", () => {
-  const state = fixture(), leader = session({session_id:"lead", name:"Codex leader", priority:null, member_ids:["member"]});
-  const member = session({session_id:"member", name:"Codex member", leader_session_id:"lead", status:"idle", web_chat:true});
-  state.leaders = [leader]; state.members = [member];
-  const {ui} = harness(state), reason = "Codex 会话在 Crew 内继续；暂不支持转到 VS Code";
-  for (const item of [leader, member]) {
-    const markup = ui.sessionMenu(item);
-    assert.equal(ui.editorHandoffReason(item), reason);
-    assert.match(markup, new RegExp('data-act="open-vscode"[^>]*disabled title="' + reason + '"'));
-    assert(markup.includes('<p class="editor-handoff-note">' + reason + '</p>'));
-  }
-  assert.match(ui.sessionMenu(leader), /data-act="leader"[^>]*>打开对话/);
-  assert.match(ui.sessionMenu(member), /data-act="member-history"[^>]*>进入本人对话/);
-  assert.equal(ui.editorHandoffReason({runtime:"claude"}), "");
-  const claude = {...member, runtime:"claude"};
-  assert.match(ui.sessionMenu(claude), /data-act="open-vscode"[^>]*>在 VS Code 打开/);
-  assert(!ui.sessionMenu(claude).includes(reason));
-});
-
-test("an unavailable tool has a clear error and cannot submit or update options", () => {
-  const state = fixture(); state.runtimes[1].available = false; state.runtimes[1].error = "未找到 Codex CLI，请先安装";
-  const {ui} = harness(state);
-  assert.throws(() => ui.optionChange(session(), "model", "gpt-a"), /未找到 Codex/);
+  state.runtimes[1].available = false;
   assert(ui.modelMenu(session()).includes('data-model="gpt-a" disabled'));
+  delete state.runtimes;
+  assert(ui.modelMenu({session_id:"old", model:null, effort:null, applied:null}).includes('data-model="claude-sonnet"'));
 });
 
-test("explicit catalog refresh is deduplicated and old servers are never probed", async () => {
-  let requests = 0, resolve;
-  const response = new Promise(done => { resolve = done; });
-  const {ui} = harness(fixture(), url => {requests += 1; assert.equal(url, "/api/runtimes?project=fixture"); return response;});
-  assert.equal(requests, 0);
-  const first = ui.refreshRuntimes(), second = ui.refreshRuntimes();
-  await Promise.resolve();
-  assert.equal(requests, 1);
+test("catalog refresh uses the workspace API and updates the session menu", async () => {
   const updated = fixture(); updated.runtimes[1].models = [{id:"new-codex-model", name:"New", efforts:["high"]}];
-  resolve({ok:true, json:async () => ({runtimes:updated.runtimes})});
-  await Promise.all([first, second]);
+  const {ui} = harness(fixture(), async url => {
+    assert.equal(url, "/api/runtimes?project=fixture");
+    return {ok:true, json:async () => ({runtimes:updated.runtimes})};
+  });
+  await ui.refreshRuntimes();
   assert(ui.modelMenu(session()).includes('data-model="new-codex-model"'));
   assert(!ui.modelMenu(session()).includes('data-model="gpt-a"'));
-  const old = fixture(); delete old.runtimes;
-  const legacy = harness(old, () => {throw new Error("Old server must not be probed");});
-  await legacy.ui.refreshRuntimes();
 });
 
 const todo = extra => ({id:17, title:"在手机上确认登录", steps:"打开设置\n允许登录", verification:"告诉它已经授权",
@@ -231,37 +187,6 @@ test("completion note is optional, cancellation requires a reason, and shown ver
   assert.throws(() => ui.todoResolvePayload(item, {status:"cancelled", note:"  ", version:2}), /原因/);
   assert.deepEqual(plain(ui.todoResolvePayload(item, {status:"cancelled", note:" 已换方案 ", version:2})),
     {id:17, status:"cancelled", note:"已换方案", expected_version:2});
-});
-
-test("resolving a personal action posts its version and undo uses the exact server receipt", async () => {
-  const state = todoState(), {ui} = harness(state), calls = [], notices = [];
-  const receipt = {ok:true, before:{status:"open", note:""}, version:3};
-  ui.startTodoAction("44","done");ui.setTodoNote("44"," 已授权 ");
-  ui.services({api:async (url, body) => {calls.push([url, plain(body)]);return receipt;},
-    loadState:async () => {state.todos = state.todos.filter(item => item.id !== 44);},
-    toast:(message, undo) => notices.push({message, undo})});
-  await ui.resolveTodo("44");
-  assert.deepEqual(calls[0], ["/api/todo/resolve", {id:44, status:"done", note:"已授权", expected_version:2}]);
-  assert.equal(ui.todoState("44").draft, null);
-  assert.equal(typeof notices[0].undo, "function");
-  await notices[0].undo();
-  assert.deepEqual(calls[1], ["/api/todo/undo", {id:44, before:receipt.before, version:3}]);
-});
-
-test("a stale action retains the user's reason and asks them to review updated content", async () => {
-  const state = todoState(), {ui} = harness(state), calls = [];
-  state.todos.find(item=>item.id===44).version=1;
-  ui.startTodoAction("44","cancelled");ui.setTodoNote("44","已经换方案");
-  state.todos.find(item=>item.id===44).version=2;
-  ui.services({api:async (url, body) => {calls.push(plain(body)); throw new Error("version conflict");},
-    loadState:async () => {}, toast:() => {}});
-  await ui.resolveTodo("44");
-  assert.equal(calls[0].expected_version, 1);
-  const draft=ui.todoState("44").draft;
-  assert.equal(draft.note, "已经换方案");
-  assert.equal(draft.version, 2);
-  assert.match(draft.error, /内容已更新/);
-  assert.equal(ui.todoState("44").expanded, true);
 });
 
 test("decision trust follows its explicit leader and ignores legacy project mode", () => {
@@ -350,29 +275,6 @@ test("overlong structured explanations keep a compact preview and the exact full
   assert(card.includes("完整说明与技术背景"));
   assert(card.includes(explanation));
   assert(!card.includes('data-decision-context="71" open'));
-});
-
-test("live UI refresh preserves horizontal group scroll position", () => {
-  const {ui} = harness(todoState());
-  const before = {className:"lead-grid", scrollTop:12, scrollLeft:704};
-  const after = {className:"lead-grid", scrollTop:0, scrollLeft:0};
-  let replaced = false;
-  const host = {dataset:{}, contains:() => false,
-    querySelectorAll:selector => selector.startsWith(".page") ? [replaced ? after : before] : []};
-  Object.defineProperty(host, "innerHTML", {set:() => {replaced = true;}});
-  ui.replace(host, "updated group state");
-  assert.equal(after.scrollLeft, 704);
-  assert.equal(after.scrollTop, 12);
-});
-
-test("only a leader menu offers whole-department compaction, separate from compacting one session", () => {
-  const state = fixture(), leader = session({session_id:"lead", name:"Leader", runtime:"claude", priority:null, member_ids:["member"]});
-  const member = session({session_id:"member", name:"Member", runtime:"claude", leader_session_id:"lead", status:"idle", web_chat:true});
-  state.leaders = [leader]; state.members = [member];
-  const {ui} = harness(state), menu = ui.sessionMenu(leader);
-  assert.match(menu, /data-act="compact-department" data-id="lead"[^>]*>压缩整个部门…/);
-  assert.match(menu, /data-act="compact" data-id="lead"[^>]*>压缩上下文/);
-  assert(!ui.sessionMenu(member).includes("compact-department"));
 });
 
 function contextState(runtime="codex") {

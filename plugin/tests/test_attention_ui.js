@@ -51,9 +51,14 @@ test("duplicate submits issue one mutation and retain the exact note and error u
 });
 
 test("a refreshed todo version preserves the user's cancellation reason and requires another deliberate submit",async()=>{
-  const f=fixture({api:async()=>{throw Error("version conflict");}});
+  const calls=[];
+  const f=fixture({api:async(path,data)=>{
+    calls.push({path,data});
+    throw Error("version conflict");
+  }});
   f.feature.startTodoAction(1,"cancelled");f.feature.setTodoNote(1,"已经换方案");f.state.todos[0].version=3;
   await f.feature.resolveTodo(1);const view=f.feature.todoState(1);
+  assert.deepEqual(calls,[{path:"/api/todo/resolve",data:{id:1,status:"cancelled",note:"已经换方案",expected_version:2}}]);
   assert.equal(view.draft.note,"已经换方案");assert.equal(view.draft.version,3);assert.match(view.draft.error,/请确认后再提交/);
   assert.equal(view.expanded,true);
 });
@@ -62,7 +67,7 @@ test("resolution form uses the current input and undo uses the exact successful 
   const f=fixture();f.feature.startTodoAction(1,"done");let prevented=false;
   f.emit("submit",{target:{dataset:{todoForm:"1"},elements:{note:{value:"完成后可以继续"}}},preventDefault(){prevented=true;}});
   await settle();assert.equal(prevented,true);assert.equal(f.feature.todoState(1).draft,null);
-  assert.equal(f.calls[0].data.note,"完成后可以继续");
+  assert.deepEqual(f.calls[0],{path:"/api/todo/resolve",data:{id:1,status:"done",note:"完成后可以继续",expected_version:2}});
   const undo=f.notices[0][1];assert.equal(typeof undo,"function");await undo();
   assert.deepEqual(f.calls[1],{path:"/api/todo/undo",data:{id:1,before:{status:"open"},version:3}});
 });
