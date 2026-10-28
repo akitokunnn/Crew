@@ -16,7 +16,7 @@
     if (target.model !== null && !(runtime.models || []).some(item => item.id === target.model)) throw Error("目标模型不在这个工具的列表中，请重新选择。");
     if (target.runtime === "codex" && target.effort !== null && target.model === null) throw Error("为 Codex 指定 effort 前，请先选择具体模型。");
     const model = (runtime.models || []).find(item => item.id === target.model);
-    const efforts = target.runtime === "claude" && target.model === "claude-haiku-4-5-20251001" ? [] : Array.isArray(model?.efforts) ? model.efforts : runtime.efforts || [];
+    const efforts = Array.isArray(model?.efforts) ? model.efforts : runtime.efforts || [];
     if (target.effort !== null && !efforts.includes(target.effort)) throw Error("目标模型不支持这个 effort，请重新选择。");
     return {session_id:member.session_id, runtime:target.runtime, model:target.model, effort:target.effort, ...(handoff === null ? {} : {handoff})};
   }

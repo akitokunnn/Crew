@@ -4,27 +4,29 @@ const sandbox={window:{}};vm.createContext(sandbox);vm.runInContext(fs.readFileS
 const ui=sandbox.window.CrewSettings, plain=value=>JSON.parse(JSON.stringify(value));
 const catalog=[{id:"claude",name:"Claude Code",available:true,models:[{id:"native-a",name:"Native A",efforts:["low","high"]}],efforts:["low","high"]},{id:"codex",name:"Codex",available:true,models:[{id:"native-b",efforts:["deep"]}],efforts:["deep"]}];
 const config=()=>({default:{runtime:null,model:null,effort:null},leader:null,member:null,digest:null,git:null,operations:null});
-test("settings never chooses between two installed tools and follows a sole available tool",()=>{
+test("settings leaves runtime resolution to the backend regardless of how many carriers are available",()=>{
   assert.equal(ui.defaultRuntime(config(),catalog),"");
-  assert.equal(ui.defaultRuntime(config(),[catalog[1]]),"codex");
+  assert.equal(ui.defaultRuntime(config(),[catalog[1]]),"");
   assert.equal(ui.defaultRuntime(config(),[]),"");
   assert.equal(ui.defaultRuntime({default:{runtime:"claude"}},[{...catalog[0],available:false},catalog[1]]),"claude");
 });
 test("initial configuration keeps native nulls and independent task overrides without mutating the snapshot",()=>{
   const ai=config();ai.digest={runtime:"claude",model:"future-model",effort:"future-effort"};
-  const result=ui.initialAI({ai,runtimes:[catalog[1]]});assert.equal(result.default.runtime,"codex");assert.equal(result.default.model,null);assert.equal(result.default.effort,null);
+  const result=ui.initialAI({ai,runtimes:[catalog[1]]});assert.equal(result.default.runtime,null);assert.equal(result.default.model,null);assert.equal(result.default.effort,null);
   assert.deepEqual(plain(result.digest),ai.digest);assert.equal(result.git,null);assert.equal(result.operations,null);assert.equal(ai.default.runtime,null);
 });
 test("settings validates the actual known model capabilities while retaining future explicit identifiers",()=>{
-  const ai=config();assert.throws(()=>ui.validate(ai,catalog),/选择默认载体/);assert.throws(()=>ui.validate(ai,[]),/没有可用/);
+  const ai=config();assert.deepEqual(plain(ui.validate(ai,catalog)),ai);assert.deepEqual(plain(ui.validate(ai,[])),ai);
   ai.default={runtime:"codex",model:"future-native",effort:"future-deep"};assert.deepEqual(plain(ui.validate(ai,catalog)),ai);
   ai.git={runtime:"claude",model:"native-a",effort:"deep"};assert.throws(()=>ui.validate(ai,catalog),/不支持/);
   ai.git.effort="high";assert.equal(ui.validate(ai,catalog).git.effort,"high");
+  ai.default.runtime="claude";
+  assert.equal(ui.validate(ai,[{...catalog[0],available:false,error:"原生 Claude 暂不可用"},catalog[1]]).default.runtime,"claude");
 });
-test("each explicit task names its missing runtime when two installed carriers make automatic selection ambiguous",()=>{
+test("empty role choices remain unset for backend resolution instead of requiring a frontend carrier choice",()=>{
   for(const [purpose,label] of [["digest","频道摘要"],["git","Git 管理员"],["operations","运维 AI"]]){
     const ai=config();ai.default.runtime="codex";ai[purpose]={runtime:null,model:null,effort:null};
-    assert.throws(()=>ui.validate(ai,catalog),error=>error.message.includes(label)&&error.message.includes("请选择执行载体"));
+    assert.deepEqual(plain(ui.validate(ai,catalog)),ai,label);
     ai[purpose]=null;assert.doesNotThrow(()=>ui.validate(ai,catalog));
   }
 });
@@ -34,7 +36,7 @@ test("operations can choose its own carrier without requiring a global default",
   assert.deepEqual(plain(ui.validate(ai,catalog)),ai);
   assert.equal(ai.default.runtime,null);
   ai.default.model="unassigned-model";
-  assert.throws(()=>ui.validate(ai,catalog),/默认大脑.*请选择执行载体/);
+  assert.equal(ui.validate(ai,catalog).default.model,"unassigned-model");
 });
 
 test("new leaders can choose a brain independently of the default and internal tasks",()=>{
@@ -42,18 +44,18 @@ test("new leaders can choose a brain independently of the default and internal t
   assert.deepEqual(plain(ui.validate(ai,catalog)),ai);
   const restored=ui.initialAI({ai,runtimes:catalog});assert.deepEqual(plain(restored.leader),ai.leader);assert.equal(restored.digest,null);
 });
-test("an automatic sole task runtime supplies its actual model list and model-specific effort choices",()=>{
+test("an unselected runtime does not borrow the sole available carrier's model or effort catalog",()=>{
   const sole=[{...catalog[0],available:false},{...catalog[1],models:[...catalog[1].models,{id:"native-c",efforts:["light"]}]}],selection={runtime:null,model:"native-b",effort:"deep"};
-  const html=ui.selectionMarkup("digest",selection,sole);assert(html.includes('value="native-c"'));assert(html.includes('>native-b</option>'));assert(html.includes('>deep</option>'));assert(!html.includes('value="native-a"'));assert(!html.includes('value="high"'));
+  const html=ui.selectionMarkup("digest",selection,sole);assert(!html.includes('value="native-c"'));assert(html.includes('自定义 · native-b</option>'));assert(html.includes('自定义 · deep</option>'));assert(!html.includes('value="native-a"'));assert(!html.includes('value="high"'));assert(html.includes('按后台角色与原生设置解析'));assert(!html.includes('自动使用唯一可用载体'));
   const ai=config();ai.default.runtime="codex";ai.digest=selection;assert.deepEqual(plain(ui.validate(ai,sole).digest),selection);
 });
-test("changing a model under automatic sole runtime refreshes effort options and saves the user's explicit compatible choice",async()=>{
+test("changing a model under an explicit runtime refreshes effort options and saves the user's compatible choice",async()=>{
   const handlers={},nodes=new Map(),picker={tagName:"SELECT",innerHTML:""},element=()=>({classList:{add(){},toggle(){}},setAttribute(){},focus(){},textContent:"",innerHTML:"",disabled:false});
   const content={...element(),querySelector:()=>picker},root={...element(),contains:()=>true,querySelectorAll:()=>[],querySelector(selector){if(selector===".cs-content")return content;if(!nodes.has(selector))nodes.set(selector,element());return nodes.get(selector);},addEventListener:(type,handler)=>handlers[type]=handler};
-  const ai=config();ai.default.runtime="codex";ai.digest={runtime:null,model:"native-b",effort:"deep"};const snapshot={ai,runtimes:[{...catalog[0],available:false},{...catalog[1],models:[...catalog[1].models,{id:"native-c",efforts:["light"]}]}]};let saved;
+  const ai=config();ai.default.runtime="codex";ai.digest={runtime:"codex",model:"native-b",effort:"deep"};const snapshot={ai,runtimes:[{...catalog[0],available:false},{...catalog[1],models:[...catalog[1].models,{id:"native-c",efforts:["light"]}]}]};let saved;
   const settings=ui.create({host:root,read:async()=>snapshot,save:async body=>{saved=plain(body);return {...snapshot,ai:body.ai,execution:body.execution};}});settings.open();for(let i=0;i<12;i++)await Promise.resolve();
   handlers.change({target:{dataset:{aiKey:"digest",aiField:"model"},value:"native-c"}});assert(picker.innerHTML.includes('value="light"'));assert.equal(settings.getDraft().digest.effort,"deep");assert.equal(saved,undefined);
-  handlers.change({target:{dataset:{aiKey:"digest",aiField:"effort"},value:"light"}});await settings.save();assert.equal(saved.ai.digest.runtime,null);assert.equal(saved.ai.digest.model,"native-c");assert.equal(saved.ai.digest.effort,"light");
+  handlers.change({target:{dataset:{aiKey:"digest",aiField:"effort"},value:"light"}});await settings.save();assert.equal(saved.ai.digest.runtime,"codex");assert.equal(saved.ai.digest.model,"native-c");assert.equal(saved.ai.digest.effort,"light");
 });
 test("model and effort suggestions come from catalogs and custom values are escaped instead of replaced",()=>{
   const selection={runtime:"codex",model:'future<model>"',effort:"future&effort"};const html=ui.selectionMarkup("default",selection,catalog);
@@ -74,11 +76,19 @@ test("execution permissions start safely and retain an explicitly saved full-acc
 });
 
 function panelHarness(){
-  const nodes=new Map(),element=()=>({classList:{add(){},toggle(){}},setAttribute(){},focus(){},textContent:"",innerHTML:"",disabled:false});
+  const nodes=new Map(),handlers={},element=()=>({classList:{add(){},toggle(){}},setAttribute(){},focus(){},textContent:"",innerHTML:"",disabled:false});
   const content={...element(),replaceChildren(){this.innerHTML="";},secretDraft:""};
-  const root={...element(),hidden:false,contains:()=>true,querySelectorAll:()=>[],querySelector(selector){if(selector===".cs-content")return content;if(!nodes.has(selector))nodes.set(selector,element());return nodes.get(selector);},addEventListener(){}};
-  return{root,content};
+  const root={...element(),hidden:false,contains:()=>true,querySelectorAll:()=>[],querySelector(selector){if(selector===".cs-content")return content;if(!nodes.has(selector))nodes.set(selector,element());return nodes.get(selector);},addEventListener:(type,handler)=>handlers[type]=handler};
+  return{root,content,handlers};
 }
+
+test("clearing an explicit default saves native nulls without choosing the sole available carrier",async()=>{
+  const {root,handlers}=panelHarness(),ai=config();ai.default.runtime="codex";const snapshot={ai,runtimes:[catalog[1]]};let saved;
+  sandbox.document={activeElement:null};
+  const settings=ui.create({host:root,read:async()=>snapshot,save:async body=>{saved=plain(body);return {...snapshot,ai:body.ai,execution:body.execution};}});settings.open();for(let i=0;i<12;i++)await Promise.resolve();
+  handlers.change({target:{dataset:{aiKey:"default",aiField:"runtime"},value:""}});await settings.save();
+  assert.deepEqual(saved.ai.default,{runtime:null,model:null,effort:null});assert.equal(saved.ai.member,null);assert.equal(settings.getDraft().default.runtime,null);
+});
 
 test("opening message channels does not wait for or start AI model discovery",()=>{
   const {root,content}=panelHarness();let reads=0,mounts=0,cleanups=0;
