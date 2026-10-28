@@ -2,8 +2,18 @@ name: Crew tests
 
 on:
   pull_request:
+    paths-ignore:
+      - 'README.md'
+      - 'desktop/README.md'
+      - 'docs/**/*.md'
+      - 'docs/prototypes/**'
   push:
     branches: [main]
+    paths-ignore:
+      - 'README.md'
+      - 'desktop/README.md'
+      - 'docs/**/*.md'
+      - 'docs/prototypes/**'
 
 permissions:
   contents: read
@@ -48,7 +58,7 @@ jobs:
           foreach ($name in 'CREW_SESSION_ID','CLAUDE_CODE_SESSION_ID','CREW_EXECUTION_ID','CREW_GOAL_ID') {
             Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
           }
-          python -m unittest discover -s tests -v
+          python ../.github/scripts/test_backend.py --workers 4
 
   desktop:
     runs-on: windows-latest
@@ -68,6 +78,8 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
       - name: Use a canonical isolated temporary directory
         run: |
           @'
