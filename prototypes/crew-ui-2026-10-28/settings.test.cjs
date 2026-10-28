@@ -191,7 +191,7 @@ test("leaving settings preserves unsaved prompt and selection without saving the
   const app = runtime();
   let view = prompts(app.open());
   singleAI(view, "worker-a");
-  view.click("prompt-role", "report");
+  view.change("ps-prompt-role", "report");
   const original = view.text();
   view.edit("未保存 <保留> & 样例");
   view.click("close");
@@ -202,10 +202,7 @@ test("leaving settings preserves unsaved prompt and selection without saving the
   assert.equal(view.selection("ps-scope"), "ai");
   assert.equal(view.selection("ps-ai-target"), "worker-a");
   assert.equal(view.text(), "未保存 <保留> & 样例");
-  assert.match(
-    view.html(),
-    /data-ps="prompt-role" data-value="report" class="is-active"/,
-  );
+  assert.equal(view.selection("ps-prompt-role"), "report");
   view.click("loaded");
   view.click("apply-prompt");
   assert.ok(

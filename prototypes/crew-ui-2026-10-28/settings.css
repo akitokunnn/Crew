@@ -51,13 +51,13 @@
 }
 .ps-layout {
   display: grid;
-  grid-template-columns: 190px minmax(0, 1fr);
+  grid-template-columns: 168px minmax(0, 1fr);
   flex: 1;
   min-height: 0;
   overflow: hidden;
 }
 .ps-nav {
-  padding: 34px 15px 30px 22px;
+  padding: 38px 12px 30px 16px;
   border-right: 1px solid var(--line);
   display: flex;
   flex-direction: column;
@@ -96,32 +96,21 @@
   font-weight: 600;
 }
 .ps-nav > p {
-  font-size: 11px;
-  line-height: 1.9;
-  color: var(--muted);
-  margin: 30px 12px 0;
-  opacity: 0.8;
+  display: none;
 }
 .ps-content {
-  padding: 41px clamp(24px, 4vw, 58px) 64px;
+  padding: 48px clamp(28px, 4vw, 64px) 64px;
   overflow: auto;
   min-width: 0;
   scrollbar-gutter: stable;
 }
 .ps-content > * {
-  max-width: 850px;
+  max-width: 920px;
   margin-left: auto;
   margin-right: auto;
 }
 .ps-content-header {
-  margin-bottom: 27px;
-}
-.ps-eyebrow {
-  display: block;
-  letter-spacing: 0.13em;
-  font-size: 10px;
-  color: var(--muted);
-  margin-bottom: 12px;
+  margin-bottom: 32px;
 }
 .ps-content-header h2 {
   font-size: 25px;
@@ -150,7 +139,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 24px;
-  padding: 22px 24px;
+  padding: 25px 26px;
   border-bottom: 1px solid var(--line);
 }
 .ps-setting-row:last-child {
@@ -165,7 +154,7 @@
   margin: 0 0 5px;
 }
 .ps-setting-row p {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--muted);
   line-height: 1.8;
   margin: 0;
@@ -176,7 +165,7 @@
 }
 .prototype-settings select {
   font: inherit;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text);
   background: var(--bg);
   border: 1px solid var(--line);
@@ -187,7 +176,7 @@
   cursor: pointer;
 }
 .ps-source-label {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--muted);
 }
 .ps-scope-line {
@@ -281,7 +270,7 @@
   padding: 9px 14px;
   cursor: pointer;
   font: inherit;
-  font-size: 11px;
+  font-size: 12px;
   white-space: nowrap;
   transition:
     background 0.15s,
@@ -303,7 +292,7 @@
 }
 .ps-text-button {
   font: inherit;
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.5;
   color: var(--accent);
   border: 0;
@@ -319,7 +308,7 @@
 .ps-scope-select {
   display: flex;
   align-items: center;
-  gap: 13px;
+  gap: 10px;
   margin-bottom: 23px;
   flex-wrap: wrap;
 }
@@ -328,50 +317,30 @@
   color: var(--muted);
 }
 .ps-scope-select select {
-  min-width: 215px;
+  min-width: 185px;
+  max-width: 280px;
 }
-.ps-prompt-grid {
-  display: grid;
-  grid-template-columns: 148px minmax(0, 1fr);
-  gap: 18px;
-  align-items: start;
-}
-.ps-prompt-list {
+.ps-prompt-toolbar {
   display: flex;
-  flex-direction: column;
-  gap: 3px;
+  align-items: center;
+  gap: 16px 28px;
+  flex-wrap: wrap;
+  margin-bottom: 24px;
 }
-.ps-prompt-list > button {
-  border: 0;
-  background: none;
-  font: inherit;
-  padding: 11px 12px;
-  border-radius: 8px;
-  text-align: left;
-  cursor: pointer;
-  color: var(--text);
+.ps-prompt-toolbar .ps-scope-select {
+  margin-bottom: 0;
 }
-.ps-prompt-list > button > strong {
-  display: block;
+.ps-prompt-select {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.ps-prompt-select > label {
   font-size: 11px;
-  font-weight: 500;
-  margin-bottom: 4px;
-}
-.ps-prompt-list > button > span {
-  display: block;
-  font-size: 9px;
-  line-height: 1.6;
   color: var(--muted);
 }
-.ps-prompt-list > button:hover {
-  background: var(--soft);
-}
-.ps-prompt-list > button.is-active {
-  background: var(--soft);
-  box-shadow: inset 2px 0 0 var(--accent);
-}
-.ps-prompt-list > button.is-active > strong {
-  color: var(--accent);
+.ps-prompt-select > select {
+  min-width: 175px;
 }
 .ps-editor-card {
   border: 1px solid var(--line);
@@ -384,8 +353,8 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
-  padding: 18px 18px 0;
+  gap: 16px;
+  padding: 23px 28px;
 }
 .ps-editor-heading h3 {
   margin: 0;
@@ -393,9 +362,9 @@
   font-weight: 550;
 }
 .ps-inheritance {
-  margin: 8px 18px 16px;
+  margin: 8px 0 0;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
 }
 .ps-inheritance > strong {
   font-weight: 400;
@@ -404,23 +373,23 @@
 #prototype-prompt-editor {
   display: block;
   width: 100%;
-  height: 300px;
+  height: min(390px, 42vh);
   resize: vertical;
-  min-height: 180px;
+  min-height: 280px;
   border: 0;
   border-top: 1px solid var(--line);
   border-bottom: 1px solid var(--line);
   border-radius: 0;
   background: var(--surface);
-  padding: 21px 18px;
+  padding: 27px 28px;
   font: inherit;
-  font-size: 12px;
+  font-size: 14px;
   color: var(--text);
-  line-height: 2;
+  line-height: 1.95;
   outline-offset: -2px;
 }
 .ps-editor-meta {
-  padding: 13px 18px;
+  padding: 16px 28px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -429,7 +398,7 @@
 }
 .ps-editor-meta > span {
   color: var(--muted);
-  font-size: 9px;
+  font-size: 11px;
   line-height: 1.8;
 }
 .ps-editor-meta > .ps-text-button {
@@ -437,12 +406,48 @@
 }
 .ps-prompt-actions {
   display: flex;
-  gap: 9px;
-  margin-top: 18px;
+  gap: 23px;
+  align-items: center;
+  margin-top: 22px;
   flex-wrap: wrap;
 }
 .ps-action-spacer {
   flex: 1;
+}
+.ps-guidance {
+  font-size: 12px;
+  line-height: 1.9;
+  color: var(--muted);
+  margin-top: 22px;
+}
+.ps-guidance summary {
+  cursor: pointer;
+  width: fit-content;
+}
+.ps-guidance p {
+  max-width: 620px;
+  margin: 12px 0;
+}
+.ps-editor-meta .ps-guidance {
+  margin: 0;
+  flex: 1;
+}
+.ps-sample-note {
+  font-size: 11px;
+  line-height: 1.9;
+  color: var(--muted);
+}
+.ps-snapshot-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 20px 0;
+}
+.ps-snapshot-actions > span {
+  font-size: 11px;
+  line-height: 1.8;
+  color: var(--muted);
 }
 .ps-extra {
   border-top: 1px solid var(--line);
@@ -663,13 +668,6 @@ html[data-motion="reduced"] *::after {
     padding: 19px 18px;
     gap: 16px;
   }
-  .ps-prompt-grid {
-    grid-template-columns: 125px minmax(0, 1fr);
-    gap: 12px;
-  }
-  .ps-prompt-list > button {
-    padding: 10px;
-  }
   .prototype-settings select {
     min-width: 130px;
   }
@@ -729,10 +727,7 @@ html[data-motion="reduced"] *::after {
     font-size: 23px;
   }
   .ps-content-header > p {
-    font-size: 11px;
-  }
-  .ps-eyebrow {
-    font-size: 9px;
+    font-size: 12px;
   }
   .ps-scope-line {
     font-size: 10px;
@@ -754,10 +749,10 @@ html[data-motion="reduced"] *::after {
     gap: 14px;
   }
   .ps-setting-row h3 {
-    font-size: 12px;
+    font-size: 13px;
   }
   .ps-setting-row p {
-    font-size: 10px;
+    font-size: 11px;
     line-height: 1.8;
   }
   .ps-control {
@@ -766,16 +761,17 @@ html[data-motion="reduced"] *::after {
   .prototype-settings select {
     min-width: 0;
     width: 100%;
-    font-size: 10px;
+    font-size: 12px;
     padding: 8px 21px 8px 8px;
   }
   .ps-source-label {
     font-size: 9px;
   }
   .ps-scope-select select {
+    flex: 1;
     width: auto;
-    max-width: calc(100% - 62px);
-    min-width: 200px;
+    max-width: calc(100% - 42px);
+    min-width: 170px;
   }
   .ps-callout {
     padding: 17px 16px;
@@ -796,64 +792,54 @@ html[data-motion="reduced"] *::after {
   .ps-footer > .ps-button {
     flex-shrink: 0;
   }
-  .ps-prompt-grid {
+  .ps-prompt-toolbar {
     display: flex;
     flex-direction: column;
-    gap: 15px;
+    align-items: stretch;
+    gap: 13px;
+    margin-bottom: 20px;
   }
-  .ps-prompt-list {
-    flex-direction: row;
-    overflow: auto;
-    max-width: 100%;
-    width: 100%;
-    gap: 5px;
-    padding-bottom: 3px;
-  }
-  .ps-prompt-list > button {
+  .ps-prompt-select > label,
+  .ps-prompt-toolbar .ps-scope-select > label:not(.ps-sr) {
+    width: 48px;
     flex-shrink: 0;
-    padding: 8px 11px;
-    border: 1px solid var(--line);
-    border-radius: 6px;
   }
-  .ps-prompt-list > button > strong {
-    margin: 0;
-    font-size: 10px;
-    white-space: nowrap;
+  .ps-prompt-select > select {
+    flex: 1;
+    min-width: 170px;
   }
-  .ps-prompt-list > button > span {
-    display: none;
-  }
-  .ps-prompt-list > button.is-active {
-    box-shadow: none;
-    border-color: var(--accent);
+  .ps-prompt-toolbar .ps-scope-select select {
+    max-width: calc(100% - 58px);
   }
   .ps-editor-card {
     width: 100%;
   }
   #prototype-prompt-editor {
-    height: 270px;
-    font-size: 12px;
-    padding: 17px 15px;
+    height: 330px;
+    font-size: 13px;
+    padding: 23px 20px;
   }
   .ps-editor-heading {
-    padding: 15px 15px 0;
+    padding: 21px 20px;
   }
   .ps-inheritance {
-    margin-left: 15px;
-    margin-right: 15px;
+    margin: 8px 0 0;
   }
   .ps-editor-meta {
-    padding: 12px 15px;
+    padding: 15px 20px;
   }
   .ps-prompt-actions {
-    gap: 8px;
+    gap: 18px;
   }
   .ps-prompt-actions .ps-button {
-    font-size: 10px;
-    padding: 9px 11px;
+    font-size: 12px;
+    padding: 9px 14px;
   }
   .ps-prompt-actions .ps-action-spacer {
     display: none;
+  }
+  .ps-snapshot-actions {
+    align-items: flex-start;
   }
   .ps-prompt-actions .ps-primary {
     margin-left: auto;

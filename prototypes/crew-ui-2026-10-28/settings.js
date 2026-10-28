@@ -257,9 +257,9 @@
     const toggle = (name, value, label) =>
       `<button class="ps-switch ${value ? "is-on" : ""}" type="button" role="switch" aria-checked="${value}" aria-label="${label}" data-ps="toggle-${name}"><span></span></button>`;
     const scopePicker = () =>
-      `<div class="ps-scope-select"><label for="ps-scope">编辑范围</label>${select("ps-scope", "设置作用范围", Object.entries(scopeNames()), state.scope)}${state.scope === "ai" ? select("ps-ai-target", "选择单个 AI", aiTargets, state.aiTarget) : ""}</div>`;
+      `<div class="ps-scope-select"><label for="ps-scope">范围</label>${select("ps-scope", "设置作用范围", Object.entries(scopeNames()), state.scope)}${state.scope === "ai" ? select("ps-ai-target", "选择单个 AI", aiTargets, state.aiTarget) : ""}</div>`;
     function pageHeader(title, description) {
-      return `<header class="ps-content-header"><span class="ps-eyebrow">偏好与工作方式</span><h2>${title}</h2><p>${description}</p></header>`;
+      return `<header class="ps-content-header"><h2>${title}</h2><p>${description}</p></header>`;
     }
     function aiPanel() {
       const ai = {
@@ -312,7 +312,7 @@
             ),
           )}
         </section>
-        <div class="ps-callout"><strong>设置与当前执行分开</strong><p>未保存的选择作为草稿保留。保存后供新会话使用。现有会话保留当前配置，主动应用时才模拟通知对应 AI；保存不会启动任务。</p></div>
+        <details class="ps-guidance"><summary>保存后何时生效？</summary><p>未保存的选择作为草稿保留。保存后供新会话使用；运行中的 AI 保留已加载配置，主动应用才更新，保存不会启动任务。</p></details>
         <div class="ps-footer"><button class="ps-text-button" type="button" data-ps="reset-ai">${state.scope === "global" ? "恢复原生默认" : "取消覆盖，恢复继承"}</button><button class="ps-button ps-primary" type="button" data-ps="save-ai">保存样例偏好</button></div>`;
     }
     function promptsPanel() {
@@ -320,15 +320,18 @@
       const own = Object.hasOwn(saved.overrides, editorKey());
       const text = state.drafts[editorKey()] ?? current.text;
       const role = roles.find((item) => item[0] === state.role);
-      return `${pageHeader("提示词", "Crew 注入的工作方式都在这里。能读、能改，也能看清实际来源。")}
-        ${scopePicker()}
-        <div class="ps-prompt-grid"><div class="ps-prompt-list" aria-label="提示词类型">${roles.map(([key, label, note]) => `<button type="button" data-ps="prompt-role" data-value="${key}" class="${state.role === key ? "is-active" : ""}" aria-pressed="${state.role === key}"><strong>${label}</strong><span>${note}</span></button>`).join("")}</div>
-        <section class="ps-editor-card"><div class="ps-editor-heading"><h3>${role[1]}</h3>${pill(Object.hasOwn(state.drafts, editorKey()) ? "未保存草稿" : own ? "此范围已覆盖" : "继承中")}</div><p class="ps-inheritance">当前来源：<strong>${esc(current.source)}</strong> · 草稿离开后保留，保存后才更改配置</p>
+      return `${pageHeader("提示词", "选择一项工作规则，再按需要修改。")}
+        <div class="ps-prompt-toolbar"><div class="ps-prompt-select"><label for="ps-prompt-role">工作规则</label>${select(
+          "ps-prompt-role",
+          "提示词类型",
+          roles.map(([key, label]) => [key, label]),
+          state.role,
+        )}</div>${scopePicker()}</div>
+        <section class="ps-editor-card"><div class="ps-editor-heading"><div><h3>${role[1]}</h3><p class="ps-inheritance">来源：<strong>${esc(current.source)}</strong></p></div>${pill(Object.hasOwn(state.drafts, editorKey()) ? "未保存草稿" : own ? "已覆盖" : "继承中")}</div>
           <label class="ps-sr" for="prototype-prompt-editor">${role[1]}提示词内容</label><textarea id="prototype-prompt-editor" spellcheck="false">${esc(text)}</textarea>
-          <div class="ps-editor-meta"><span>生效范围：${esc(scopeNames()[state.scope])}${state.scope === "global" ? "及未覆盖的下级" : ""}</span><button class="ps-text-button" type="button" data-ps="reset-prompt">${state.scope === "global" ? "恢复内置默认" : "取消覆盖，恢复继承"}</button></div>
-        </section></div>
-        <div class="ps-prompt-actions"><button class="ps-button" type="button" data-ps="loaded">查看实际加载内容</button><button class="ps-button" type="button" data-ps="history">修改历史${saved.history.length ? ` · ${saved.history.length}` : ""}</button><span class="ps-action-spacer"></span><button class="ps-button ps-primary" type="button" data-ps="save-prompt">保存提示词</button></div>
-        <div class="ps-callout"><strong>新会话使用新设置</strong><p>正在运行的 AI 保留启动时配置。${esc(taskTitle)}的 ${esc(targetName())} 可单独应用，任务进度连续保留。</p><button type="button" class="ps-text-button" data-ps="apply-prompt">主动应用到 ${esc(targetName())} →</button></div>
+          <div class="ps-editor-meta"><details class="ps-guidance"><summary>范围与继承</summary><p>生效范围：${esc(scopeNames()[state.scope])}${state.scope === "global" ? "及未覆盖的下级" : ""}。保存后新会话使用新设置；运行中的 AI 保留加载快照。</p><button class="ps-text-button" type="button" data-ps="reset-prompt">${state.scope === "global" ? "恢复内置默认" : "取消覆盖，恢复继承"}</button></details><span>草稿自动保留</span></div>
+        </section>
+        <div class="ps-prompt-actions"><button class="ps-text-button" type="button" data-ps="loaded">加载快照</button><button class="ps-text-button" type="button" data-ps="history">修改历史${saved.history.length ? ` · ${saved.history.length}` : ""}</button><span class="ps-action-spacer"></span><button class="ps-button ps-primary" type="button" data-ps="save-prompt">保存提示词</button></div>
         ${extraPanel()}`;
     }
     function extraPanel() {
@@ -347,7 +350,7 @@
         }</section>`;
       if (state.extra === "loaded") {
         const snapshot = saved.loaded[aiScope()];
-        return `<section class="ps-extra"><div class="ps-extra-heading"><h3>${esc(targetName())} 的加载快照 <small>样例 · ${esc(taskTitle)}</small></h3><button type="button" class="ps-text-button" data-ps="hide-extra">收起</button></div><p class="ps-muted">${esc(snapshot.reason)} · 登记于 ${esc(snapshot.registeredAt)}。这是单独保存的样例会话内容，未读取原生会话。保存配置不会改变此快照；主动应用才更新所选 AI，其他 AI 保持原快照。</p>${Object.entries(
+        return `<section class="ps-extra"><div class="ps-extra-heading"><h3>${esc(targetName())} 的加载快照 <small>样例 · ${esc(taskTitle)}</small></h3><button type="button" class="ps-text-button" data-ps="hide-extra">收起</button></div><p class="ps-muted">${esc(snapshot.reason)} · ${esc(snapshot.registeredAt)}。保存配置不会改变当前快照。</p><div class="ps-snapshot-actions"><span>仅更新 ${esc(targetName())}，其他 AI 保持原快照。</span><button type="button" class="ps-button" data-ps="apply-prompt">应用已保存配置</button></div>${Object.entries(
           snapshot.prompts,
         )
           .map(
@@ -365,7 +368,7 @@
       };
       return `${pageHeader("执行权限", "控制原生载体可以访问什么。每个任务的决策模式在任务顶部切换。")}
         ${scopePicker()}<p class="ps-muted">当前来源：${esc(permissions.source)} · 生效范围：${esc(scopeNames()[state.scope])}</p>
-        <div class="ps-callout"><strong>此处全部为样例</strong><p>不会修改 Claude Code、Codex 或操作系统的实际权限。</p></div>
+        <p class="ps-sample-note">样例设置，不会修改原生载体的实际权限。</p>
         <section class="ps-card">${[
           ["cc", "Claude Code"],
           ["codex", "Codex"],
@@ -387,7 +390,7 @@
             ),
           )
           .join("")}</section>
-        <p class="ps-fineprint">任务的「AI 全自动决定」只决定本次工作中的关键取舍。切换任务模式不会更改这里的访问权限。</p>
+        <details class="ps-guidance"><summary>与任务模式有什么区别？</summary><p>任务的「AI 全自动决定」只决定本次工作中的关键取舍，不更改这里的访问权限。</p></details>
         <div class="ps-footer"><button class="ps-text-button" type="button" data-ps="reset-permissions">${state.scope === "global" ? "恢复默认权限" : "取消覆盖，恢复继承"}</button><button class="ps-button ps-primary" data-ps="save-permissions" type="button">保存样例权限</button></div>`;
     }
     function appearancePanel() {
@@ -437,12 +440,12 @@
     function channelsPanel() {
       return `${pageHeader("连接与通知", "需要你行动时提醒，普通进度留在任务里。")}
         <section class="ps-card">${row("QQ", "样例渠道 · 新 TODO、待处理问题与任务故障提醒。", toggle("qq", saved.channels.qq, "QQ样例通知"))}${row("Lark / 飞书", "样例渠道 · 通知与页面引用同一条 TODO。", toggle("lark", saved.channels.lark, "Lark样例通知"))}</section>
-        <div class="ps-callout"><strong>页面与渠道只引用一件事</strong><p>同一人工操作被多个任务需要时，合并为一条 TODO，保留任务关联。完成后通知相关任务；手动停止的任务保持停止。</p></div>
+        <details class="ps-guidance"><summary>通知与 TODO 的关系</summary><p>相同人工操作合并为一条 TODO，保留任务关联。完成后通知相关任务；手动停止的任务保持停止。</p></details>
         <div class="ps-footer"><span>没有连接真实账号，也不会发送消息。</span><button class="ps-button" type="button" data-ps="test-notice">模拟一条通知</button></div>${state.status ? `<div class="ps-notice-preview" role="status"><span>通知预览 · 样例</span><strong>需要你：确认测试设备可用</strong><p>${esc(state.status)}</p><small>点击正式通知会回到原任务。</small></div>` : ""}`;
     }
     function nativePanel() {
       return `${pageHeader("原生能力", "继续使用 Claude Code 和 Codex 原生的 Skill、MCP 与项目说明。")}
-        <div class="ps-callout"><strong>按实际载体装载</strong><p>正式产品展示来源与实际加载结果。本页为能力清单的阅读样例，没有扫描你的电脑。</p></div>
+        <p class="ps-sample-note">能力清单样例，未扫描本机配置。</p>
         <section class="ps-card">${row("项目说明", "AGENTS.md / CLAUDE.md · 来源：工作区（样例）", pill("随载体加载"))}${row("Skills", "保留原生能力及其配置来源（样例）", pill("2 项样例"))}${row("MCP", "读取原生配置，不在 Crew 重建完整编辑器。", pill("按原生配置"))}</section>
         <button class="ps-button" type="button" data-ps="native-detail">${state.nativeOpen ? "收起加载来源" : "查看加载来源"}</button>
         ${state.nativeOpen ? '<section class="ps-extra"><h3>加载来源 · 样例</h3><dl class="ps-definition"><dt>项目说明</dt><dd>工作区 / AGENTS.md</dd><dt>Claude Code</dt><dd>原生用户配置 → 项目配置</dd><dt>Codex</dt><dd>原生用户配置 → 项目配置</dd><dt>读取时机</dt><dd>会话启动与原生重载时</dd></dl><p class="ps-muted">PC 正式版提供打开原配置入口；手机可阅读来源。</p></section>' : ""}`;
@@ -478,10 +481,6 @@
       if (action === "section") {
         state.section = button.dataset.value;
         state.status = "";
-        state.extra = null;
-      }
-      if (action === "prompt-role") {
-        state.role = button.dataset.value;
         state.extra = null;
       }
       if (action === "ai-role") state.aiRole = button.dataset.value;
@@ -583,6 +582,12 @@
     }
     function onChange(event) {
       const input = event.target;
+      if (input.id === "ps-prompt-role") {
+        rememberEditor();
+        state.role = input.value;
+        state.extra = null;
+        paint();
+      }
       if (input.id === "ps-scope") {
         rememberEditor();
         state.scope = input.value;
