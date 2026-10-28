@@ -58,7 +58,24 @@ jobs:
           foreach ($name in 'CREW_SESSION_ID','CLAUDE_CODE_SESSION_ID','CREW_EXECUTION_ID','CREW_GOAL_ID') {
             Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
           }
-          python ../.github/scripts/test_backend.py --workers 4
+          @'
+          import importlib.util, subprocess
+          spec = importlib.util.spec_from_file_location('ci', '../.github/scripts/test_backend.py')
+          ci = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(ci)
+          ci.discover = lambda directory: ['test_web_contract', 'test_notifications', 'test_shell', 'test_goal_http']
+          original_run = subprocess.run
+          trace = "import faulthandler,runpy;faulthandler.dump_traceback_later(10,repeat=True);runpy.run_module('unittest',run_name='__main__')"
+          def sample(command, **kwargs):
+              command = [command[0], '-c', trace, *command[3:]]
+              try:
+                  return original_run(command, timeout=45, **kwargs)
+              except subprocess.TimeoutExpired as error:
+                  output = error.stdout or b''
+                  return subprocess.CompletedProcess(command, 1, stdout=output.decode('utf-8', errors='replace'))
+          ci.subprocess.run = sample
+          raise SystemExit(ci.main(['--workers', '4']))
+          '@ | python -
 
   desktop:
     runs-on: windows-latest
