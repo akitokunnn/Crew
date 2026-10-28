@@ -2,9 +2,9 @@
 
 任务来源：[完整任务书](CREW_FULL_IMPLEMENTATION_TASK_2026-10-28.md)。本记录持续更新，未完成项不代表已交付。
 
-## 工作区全量更新后的接续
+## 工作区全量更新后的接续（历史基线）
 
-2026-10-28，用户要求先全量更新工作区，并确认其他 AI 已暂停写入。`C:\Tools\Crew` 已在原分支 `codex/crew-update` 快进到 `c304edf922ed34704c902bb8c57a1e854d805d3a`，与当时最新 `origin/main` 一致；桌面源码版本 `0.2.41`，已包含模块化重构。以下其他章节保留更新前的记录，当前基线和接续以本节为准。
+2026-10-28，用户要求先全量更新工作区，并确认其他 AI 已暂停写入。`C:\Tools\Crew` 当时在原分支 `codex/crew-update` 快进到 `c304edf922ed34704c902bb8c57a1e854d805d3a`，与当时最新 `origin/main` 一致；桌面源码版本 `0.2.41`，已包含模块化重构。本节保留全量更新当时的基线与恢复记录；当前施工、验证和待办以下一节为准。
 
 - 更新前 139 个本地文件已保存至 `C:\Tools\Crew-update-backups\2026-10-28-665077f0\final\files\`；上级 `manifest.json` 保存文件归属、SHA-256、旧 HEAD、目标及 stash 信息，另有 tracked/staged patch。
 - Git stash 对象为 `3e4f27e5f330a34959aecba3cae779531b86231c`，保留引用为 `refs/crew-backups/workspace-update-20261028-4d86d0a1`。备份根目录 `RECOVERY.md` 有恢复说明；不要直接把整个 stash 应用到新主工作区。
@@ -15,13 +15,13 @@
 
 更新后定向验证：模块依赖方向 4 项、真实 HTTP 功能登记与假载体运行模块 19 项、前端动作/渲染/对话工作区/人员/模型目录及桌面版本一致性 32 项通过。Python 首次按包名载入时两个测试模块缺少测试目录搜索路径；补齐测试目录后载入并通过，未修改产品源码或测试断言。桌面依赖检测通过，Electron `45.0.0`、electron-builder `26.15.3` 与当前 package 声明一致。未跑全量回归、桌面交互或重新打包。
 
-直接接续：核对本节基线 → 阅读模块指南 → 从备份提取有效增量 → 更新共享接口与实现状态 → 继续原任务。避免重新封存工作区或重复执行基线迁移。
+当时接续顺序：核对本节基线 → 阅读模块指南 → 从备份提取有效增量 → 更新共享接口与实现状态 → 继续原任务。这些接续工作已完成，避免重新封存工作区或重复执行基线迁移。
 
 ## 新基线持续施工状态
 
-本节对应模块化基线上的新增实现，覆盖下方更新前记录；未与旧基线测试混用。当前 HEAD `4294977`，桌面/插件源码已同步升为 `0.2.42`；后端阶段产物已构建、隔离验收，准备提交及合入最新 CI 基线。本轮尚未合并，正式 Crew 和用户 HOME 未更新。
+本节对应模块化基线上的新增实现，覆盖下方更新前记录；未与旧基线测试混用。当前 HEAD `4aecc9b`，桌面/插件源码 `0.2.42`。后端冻结成果已提交为 `1e5a520`，并通过正常 merge 在本分支合入主干 CI 夹具优化 `f97e3e6`（PR #61），形成 `4aecc9b`；合并后受影响 159 项测试通过。后端阶段产物已构建、隔离验收；包含前端的最终集成、验收及 PR 合并仍待完成，正式 Crew 和用户 HOME 未更新。
 
-收拢时再次 fetch，主干仅增加原型间距与置顶导航 PR #59/#60，已无冲突快进到 `4294977`；本轮后端增量保留，未编辑原型或 `plugin/crew/web/`。前端尚未交付真实业务接入，不将原型更新当作联调完成。
+此前收拢时 fetch，已无冲突快进到原型间距与置顶导航 PR #59/#60 的 `4294977`；该提交是后端冻结提交的父基线，已不是当前 HEAD。本轮后端增量保留，未编辑原型或 `plugin/crew/web/`。前端正式业务接入仍在独立工作树施工，不将原型更新当作联调完成。
 
 - 按新版架构迁入 `tasks/task_schema/task_actions`、持久 `task_scheduler`、`behavior_prompts`、分层 settings、`personal/personal_actions`、`task_artifacts`、`task_notifications` 和存储扩展。HTTP 全部在 `web_api/{tasks,behavior,personal,access,service_control}` 明确登记，未复制旧版 task_api 或 web 业务分支。
 - `store` 只加载同库扩展 DDL，不反向导入领域；任务历史映射在任务领域按需补齐。board 公共事务支持嵌套 SAVEPOINT，外层失败不会遗留新 leader/半个任务。
@@ -33,17 +33,17 @@
 - 新记录及报告/附件/文件版本、个人事项/TODO 关系已接 crewpack 导出导入；跨工作区仅携必要引用/明确共享操作切片。导入不恢复执行或 native binding。
 - 程序故障最多两次自动恢复；通知按 event×channel 记录，成功不因另一渠道失败重发，unknown 不盲重放。已接真实服务 notice tick，并在 task detail 返回每渠道结果。
 - 远程 HTTPS origin 允许列表、登录 cookie、撤销、敏感设置重新核验与代理 Host 边界已接。隔离代理可对话/控制/读附件/SSE；未配置真实域名、账号或上线。
-- 桌面默认退出改为 disconnect；显式停止后台才 shutdown；保留 smoke 清理及借用服务保护。独立后台的同 PID/instance/URL 与重连复用已有真实进程证据，尚未操作 Electron 退出界面。
+- 桌面默认退出改为 disconnect；显式停止后台才 shutdown；保留 smoke 清理及借用服务保护。源码、后端阶段目录程序及 portable 的真实 Electron 正常退出、后台同 PID/instance/URL 存活与重连复用均已验证，详细证据见下方产物记录。
 - 原遗留隔离测试 Python PID 73740 经命令行精确确认后已停止，只释放它自己占用的临时库；`plugin/tests/tmp9aqcda18/` 尚未清理。未停止正式或其他 AI 进程。
 
 ### 当前验证证据
 
-所有新基线命令先清理测试进程继承的 CREW_SESSION_ID/CLAUDE_CODE_SESSION_ID，使用临时 HOME、原生数据源和假载体。
+所有新基线命令先清理测试进程继承的 CREW_SESSION_ID/CLAUDE_CODE_SESSION_ID，使用临时 HOME、原生数据源和假载体。表内保留分阶段实际结果；后续汇合与主干 CI 合并复验按下方日志分别记录。
 
 | 验证 | 实际结果 |
 | --- | --- |
 | `python -m unittest tests.test_tasks -v` | 10 项通过：普通目录、稳定关联、并发编辑、迁移、两任务不同决策模式及停止后的模式切换 |
-| `python -m unittest discover -s tests -p test_task_http.py -v` | 最近完整 16 项通过：真实 HTTP、原生报告/next step、固定助手、认证代理/SSE/附件、等待期撤销、运行垃圾箱/恢复、TODO 图片及成员原文转达。另新增 90 MiB 头部即拒绝测试单项通过，待汇合复验 |
+| `python -m unittest discover -s tests -p test_task_http.py -v` | 早期完整 16 项通过：真实 HTTP、原生报告/next step、固定助手、认证代理/SSE/附件、等待期撤销、运行垃圾箱/恢复、TODO 图片及成员原文转达。随后新增 90 MiB 头部即拒绝测试单项通过；后续汇合及 CI 合并复验见下段 |
 | `python -m unittest tests.test_remote_access -v` | 7 项通过，合成 origin，未连接真实隧道 |
 | 独立执行/原生定向 | A37 scheduler 30 项，执行 278 项 / 53.752 秒及最终受影响 87 项 / 14.221 秒通过。包含有上限的缺计划核对，成功步骤不重放。早先一次正式端口守卫 7122 报错尚无确定原因，诊断组未复现；最终回归仍保持守卫 |
 | 独立存储/通知定向 | 报告快照与既有存储 74 项通过（Windows 无 symlink 权限 1 项跳过）；新增真实存储往返 7 项、通知 7 项含实际服务 tick 通过 |
@@ -53,15 +53,18 @@
 | 完整 Python 回归 | 最终汇合 169 模块/2346 项/195.14 秒；4 个旧规则/夹具差异修正后，受影响 143 项复验通过，9 平台或 opt-in 跳过。随后仅新增能力做定向，详见下段 |
 | `npm --prefix desktop test` | 172/172 通过（8.288 秒）；随后桥接 core/main 53 项、新 custom 来源桥接 1 项通过；元数据版本同步 1 项通过 |
 | `node desktop/scripts/smoke-workspaces.cjs` | 41 项真实隐藏 Electron 检查通过，截图/证据在 `desktop/smoke-output/workspaces`；均为既有 UI 回归，不代表新 UI 联调 |
+| 主干 CI 夹具合并后复验 | `4aecc9b` 上 159 项 / 19.038 秒，`OK`；日志 `Temp/full-implementation/main-ci-fixture-recheck.log` |
 
 最终后端收拢回归：复用已只读检查的并行 CI 运行器（来源 PR #61 `819a1be`，未接管该 PR），在当前目录以 4 个隔离 Python 进程执行全部 169 模块、2346 项，195.14 秒结束，9 项平台/显式 opt-in 跳过。4 个失败模块分别为提示词缺少原有“不自动建目标”明确表述、两个 Controller intent 旧夹具不适配，以及旧收编测试按固定 effort 名字判断非法。已补提示词原约束、严格 work 意图断言、非法格式夹具和保留原生未来 effort 的正例；只重跑受影响 4 模块 143 项，27.058 秒全部通过。没有把首次全套记作单次全绿；其他 165 模块无需重复执行。日志为 `Temp/full-implementation/python-regression-final.log`、`python-regression-contract-recheck.log`。本轮未出现先前的 7122 守卫异常，不能据此宣称其原因为随机端口。
 
-最终桌面单元回归 `desktop-regression-confirmed.log`：172/172 通过，8.288 秒。真实 Electron 正常退出另行验证；不能用单元测试替代 A30。网页旧 JS 299 项仍是此前同前端代码的有效验证，未因后端收拢重复全跑。
+最终桌面单元回归 `desktop-regression-confirmed.log`：172/172 通过，8.288 秒。下文另有真实 Electron 及后端阶段包正常退出的验证证据，不能只用单元测试替代 A30。网页旧 JS 299 项仍是此前同前端代码的有效验证，未因后端收拢重复全跑。
+
+后端提交 `1e5a520` 已落盘；正常合入主干 CI 提交 `f97e3e6` 后，合并提交 `4aecc9b` 的受影响复验为 159 项 / 19.038 秒，结果 `OK`，原始日志为 `Temp/full-implementation/main-ci-fixture-recheck.log`。这是合并影响范围复验，没有重新宣称全量回归为单次全绿，也不替代前端交付后的联合验收。
 
 ### 当前明确待办与接续
 
-1. 提交已验证的后端冻结版本，再正常合入 `origin/main` 的 `f97e3e6` CI 测试夹具优化（PR #61 已由负责会话验收合并）；保留双方 RPC 修复并复验受影响夹具。临时四进程运行器不是最终 CI 方案，不再把它当仓库入口。
-2. 前端正式施工/联调中，见下方工作树及服务归属。等其可追溯提交后整合桌面服务根 URL 入口、A33/A34/旧入口联合验收、最终构建和正常 PR 合并。
+1. 前端正式施工/联调中，见下方工作树及服务归属。等其可追溯提交后保留双方成果合流，整合桌面服务根 URL 入口，完成 A33/A34、报告/版本恢复及既有入口的联合验收和受影响回归。后端提交、主干 CI 合入及 159 项复验已经完成，不再重复作为待办；临时四进程运行器不作为仓库入口。
+2. UI 合流后重新构建最终产物，更新文件/哈希并复验隔离启动、A30 退出/重连和 A36 来源一致性，再按仓库规则正常提交 PR 并合并；现有后端阶段包不等于最终 UI 交付或正式升级。
 3. 公网仅余用户账号/域名和最终真实 HTTPS 入口验收，当前未上线。部署代码、配置检查和隔离代理已有，不以假链接交付。
 
 角色默认收拢已过：配置只读不探测 CLI，未配置 leader/member 偏好 CC/Codex，显式/per-leader/作用域优先，已有执行不重配。51 项基础验证通过；265 项扩展首轮仅并行施工时回执缺字段，接点补齐后相关 14 项通过；执行审计另 123 项通过。来源/首选缺失原因已进入实际 send receipt、journal 和 board audit，`loaded=not_confirmed`；原生模型/effort 不硬编码。
@@ -80,7 +83,7 @@
 | `Crew-0.2.42-portable.exe` | `050563563e9ea39638b276a9c08d84d560b46784e43d402e2a3439bd650c8809` |
 | `Crew-0.2.42-setup.exe` | `96b778ca1d8fa425c82625b162a27cac70689742b4256f89230d94efe65d50f5` |
 
-包内全部 291 源码/资源文件匹配当前检出，source digest `898bb8f89e89624268970e855374fd64e4d318313049cd5a8d95181af0609806`，见 `desktop/smoke-output/bundle-source.json`。目录程序、portable、setup 原生图标均校验通过；没有把安装器安装到用户系统。
+构建时已核对包内全部 291 源码/资源文件匹配后端阶段源码，source digest `898bb8f89e89624268970e855374fd64e4d318313049cd5a8d95181af0609806`，见 `desktop/smoke-output/bundle-source.json`。目录程序、portable、setup 原生图标均校验通过；没有把安装器安装到用户系统。最终 UI 包须另行重建核对，沿用本表不能证明其内容一致。
 
 目录程序与 portable 标准隐藏 smoke 均通过，实际 renderer 截图在 `desktop/smoke-output/{packaged,portable}.png`。另外用 computer-use 在两个实际打包程序的唯一隔离窗口按 Ctrl+Q，前端 OS 进程退出后真实后台继续，相同 PID/instance/URL 重连，随后由 runner 明确停止自有后台：`background-packaged.json`、`background-portable.json`。总观察 50.821 秒/22.311 秒包含人工式窗口核对时间，不能当退出耗时；零模型轮次。打包应用按 Electron 规则不注入 require/NODE_OPTIONS；早先使用外部 hook 的测试方式已纠正。二进制交互需 `windowsHide:false` 才显示其隔离窗口，绝不选择正式窗口。源码最后一次退出 stderr 有 Chromium GPU shutdown 日志，原文保留于证据；进程退出、同服务重连和守卫断言通过。
 
@@ -111,10 +114,10 @@
 | A26 | task_git_restore 的临时真实 Git 提交、index/reflog/独立修改保护 | 前端预览与冲突处理 |
 | A27 | task_http、task_followup、personal；运行先停、异步垃圾箱、恢复不启动，隐藏通知已复验 | 垃圾箱 UI |
 | A28–A29 | task_storage、storage_personal_extensions、storage_export_receipts、旧 storage 套件；268+1 项受影响通过，2 平台跳过；通知跨 generation 抑制及 pin 携带通过 | 前端导出/历史入口 |
-| A30 | detached-lifecycle 假载体 1→2 输入；源码真实 Electron quit/后台存活/同实例重连均通过 | 包中同路径验证 |
+| A30 | detached-lifecycle 假载体 1→2 输入；源码、后端阶段目录程序及 portable 的真实 Electron quit/后台存活/同实例重连均通过，见上方 background 证据 | UI 合流后的最终包同项复验 |
 | A31–A32 | remote_access、task_http 认证代理/SSE 撤销、消息/控制/恢复回执 | 前端登录/直达/重连，真实公网账号与域名 |
 | A33–A34 | 服务 API 已提供，不代替界面验收 | 前端 PC/手机导航、键盘、草稿和阅读位置 |
-| A35 | 网页旧 JS 299 项与工作区 Electron 41 项已过，完整回归待汇合 | 新布局保留所有旧入口与最终回归 |
+| A35 | 网页旧 JS 299 项、工作区 Electron 41 项；Python 2346 项汇合及失败项 143 项复验、CI 合并后 159 项复验已有记录 | 新布局保留所有旧入口与合流后的受影响回归 |
 | A36 | 后端阶段 0.2.42 全包构建、291 文件、3 EXE 图标、目录/portable 标准与正常退出隔离验证通过 | UI 合流后的最终重建及同样验收 |
 | A37 | scheduler 30 项，可控时钟/事件；278 项执行组约 53.8 秒，后台两步实际约 4.9 秒 | 记录最终组合实际时长，不称整夜压力测试 |
 
@@ -126,13 +129,15 @@
 
 ## 更新前现场与归属档案
 
+以下各节为全量更新前的历史盘点、计划和当时验证状态，保留作来源依据；不作为当前施工或待办，当前结果以上方“新基线持续施工状态”为准。
+
 - 工作目录 `C:\Tools\Crew`，分支 `codex/crew-update`，基线 `b159fc5fc98f1d5b3d72a52ed26843f35ebb891d`，桌面源码 `0.2.7`。正式服务与产物未核实、未修改。
 - 初始状态与 tracked binary diff 保存在忽略目录 `Temp/full-implementation/start-status.txt`、`preexisting.patch`。大量既有未提交改动包含 storage-v2、QQ/Lark、设置、通知、desktop 和网页；不得整包提交或覆盖。
-- 当前只此 root checkout 含本次全部未提交前置成果，暂原地增量施工；其他 worktree 未改动。
+- 当时只此 root checkout 含本次全部未提交前置成果，暂原地增量施工；其他 worktree 未改动。
 - 前端 AI 拥有 `plugin/crew/web/`，后端不改这些页面、样式和客户端。desktop main/core/preload 有既有存储成果，需逐段核对后再衔接；首页展示归前端。
 - 本轮根负责人：任务域与共享接口、HTTP、迁移、最终集成。内部独立分工：执行调度及原生链路；设置及提示词；报告附件和真实成果快照。均禁止真实 AI 唤醒、正式服务/库修改及自行提交。
 
-## 现状映射与实施决定
+## 更新前能力映射与实施决定（历史）
 
 | 能力 | 可复用真实入口 | 已确认缺口 / 施工方向 | 验证 |
 | --- | --- | --- | --- |
@@ -146,15 +151,15 @@
 
 关键决定：`crew.db` 仍是运行单一事实；storage-v2 复用既有迁移投影和内容对象。task.id = goal.id。旧 goals 不直接加列（现 create 使用位置 INSERT）；用扩展表。旧 leader 信任值只保留来源，不能自动扩散为每任务授权。storage-v2 schema v2 有摘要校验，修改 schema 必须真实升级，不能直接改设计 SQL。
 
-## 接口与进度
+## 接口与进度（历史）
 
 共享契约：[CREW_API_CONTRACT.md](CREW_API_CONTRACT.md)，可公开合成数据：[fixtures/crew-api.json](fixtures/crew-api.json)。第一批 task/control/settings 接口正在实施，existing 原生聊天与 history/SSE 可复用。状态与 ID 语义已写入契约。
 
-## 验证及交付状态
+## 验证及交付状态（历史）
 
 已完成只读源码盘点与现场确认；尚未重跑功能测试，不宣称任何验收通过。尚无本轮新 commit/PR/构建产物，未合并，未更新正式服务。认可 UI 尚未由本负责人核实具体交付路径；前端可以按共享契约独立施工，不阻塞后端。
 
-## 直接接续
+## 直接接续（历史计划，已由上方完成情况覆盖）
 
 1. 完成同库 task_controls/task_workspaces 和 tasks 服务，提供真实 HTTP + 合成历史验证。
 2. 收拢独立模块 schema/init，接入设置提示词、持久调度、报告附件与快照。
