@@ -28,7 +28,6 @@
   }) {
     const key = `${task.primary_project}:${task.id}`,
       cache = saved.get(key) || {
-        open: false,
         values: {},
         todos: {},
         expanded: new Set(),
@@ -68,6 +67,21 @@
       for (const item of snapshot().todos)
         cache.todos[item.id] = feature?.todoState(item.id);
     }
+    function decision(item) {
+      const title = item.brief?.title || feature.compactDecisionText(item.question, 180);
+      const scope = `data-task-decision="${esc(item.id)}"`;
+      if (item.presentation_stage === "ready") {
+        return `<section class="tw-decision-ready" ${scope}>${feature.decisionCard(item)}
+          <div class="tw-decision-actions"><button class="text-link" data-act="decision-discuss" data-id="${esc(item.id)}">回原对话讨论</button></div></section>`;
+      }
+      const original = String(item.question || "").trim();
+      const expanded = cache.expanded.has(String(item.id));
+      return `<article class="tw-decision-question" ${scope}><div class="tw-decision-heading"><h3>${window.CrewChat.renderInline(title, item.session_id)}</h3><span>${item.held ? "已挂起" : esc(item.asker || "负责人")}</span></div>
+        ${original && original !== title ? `<details class="tw-decision-original" data-task-decision-original="${esc(item.id)}" ${expanded ? "open" : ""}><summary>完整问题</summary><div class="markdown">${window.CrewChat.renderMarkdown(original, item.session_id)}</div></details>` : ""}
+        <div class="tw-decision-actions"><button class="btn ghost" data-act="decision-discuss" data-id="${esc(item.id)}">回原对话讨论</button>
+        ${item.presentation_stage === "discussion" ? `<button class="btn" data-act="decision-ready" data-id="${esc(item.id)}">聊清楚了，给我选项</button>` : ""}
+        ${item.held ? `<button class="text-link" data-act="decision-unhold" data-id="${esc(item.id)}">取消挂起</button>` : ""}</div></article>`;
+    }
     function render() {
       if (disposed || !feature || !approvals) return;
       preserve();
@@ -88,7 +102,12 @@
       }
       renderer.replace(
         host,
-        `<details class="tw-attention-disclosure" ${cache.open ? "open" : ""}><summary><span>待你处理 <b>${count}</b></span><span>在本任务里沟通与确认</span></summary><div class="tw-attention-content">${nativeCount ? `<section aria-label="原生执行权限">${approvals.chatMarkup(task.leader_session_id, task.id, true)}</section>` : ""}${attention.markup}</div></details>`,
+        `<section class="tw-task-attention" aria-label="本任务待处理事项"><div class="tw-attention-content">
+          ${nativeCount ? `<section class="tw-attention-permissions" aria-label="原生执行权限">${approvals.chatMarkup(task.leader_session_id, task.id, true)}</section>` : ""}
+          ${attention.pending.map(decision).join("")}
+          ${attention.todos.length ? `<section class="tw-attention-todos"><h3 class="attention-section-title">需要你动手 <span>${attention.todos.length}</span></h3>${attention.todos.map(feature.todoCard).join("")}</section>` : ""}
+          ${attention.held.length ? `<details class="tw-attention-held"><summary>已挂起 · ${attention.held.length}</summary>${attention.held.map(decision).join("")}</details>` : ""}
+        </div></section>`,
       );
       for (const input of host.querySelectorAll("[data-preserve]"))
         if (
@@ -96,8 +115,6 @@
           "value" in input
         )
           input.value = cache.values[input.dataset.preserve];
-      for (const detail of host.querySelectorAll("[data-side-decision]"))
-        if (cache.expanded.has(detail.dataset.sideDecision)) detail.open = true;
     }
     feature = window.CrewAttention.create({
       actions,
@@ -138,9 +155,7 @@
       preserve();
     }
     function toggle(event) {
-      if (event.target.classList.contains("tw-attention-disclosure"))
-        cache.open = event.target.open;
-      const id = event.target.dataset.sideDecision;
+      const id = event.target.dataset.taskDecisionOriginal;
       if (id)
         event.target.open ? cache.expanded.add(id) : cache.expanded.delete(id);
     }
@@ -156,14 +171,14 @@
     }
     render();
     function reveal(decisionId) {
-      cache.open = true;
-      if (decisionId != null) cache.expanded.add(String(decisionId));
       render();
       requestAnimationFrame(() => {
-        const target = [...host.querySelectorAll("[data-side-decision]")].find(
-          (n) => n.dataset.sideDecision === String(decisionId),
+        const target = [...host.querySelectorAll("[data-task-decision]")].find(
+          (n) => n.dataset.taskDecision === String(decisionId),
         );
-        (target || host.querySelector("summary"))?.scrollIntoView({
+        const held = target?.closest(".tw-attention-held");
+        if (held) held.open = true;
+        (target || host.querySelector(".tw-task-attention"))?.scrollIntoView({
           block: "nearest",
         });
       });

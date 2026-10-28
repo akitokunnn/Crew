@@ -8,6 +8,9 @@ const path = require("node:path");
 const { create } = require("../crew-client.js");
 const mock = require("../crew-mock.js");
 const { createServer } = require("../dev-server.cjs");
+const {
+  create: createWaitingNotifications,
+} = require("../waiting-notifications.js");
 
 function memory() {
   const map = new Map();
@@ -17,6 +20,23 @@ function memory() {
     keys: () => [...map.keys()],
   };
 }
+
+test("legacy mock snapshots support repeated notification projection without phantom errors", async (t) => {
+  const { client, transport } = fixture();
+  t.after(() => transport.close());
+  const sounds = [],
+    notifications = createWaitingNotifications({
+      sound: { play: (value) => sounds.push(value) },
+      visibility: { blocked: () => false },
+      document: { visibilityState: "visible", hasFocus: () => true },
+    });
+  t.after(() => notifications.destroy());
+  for (let index = 0; index < 3; index++) {
+    const value = await client.request("/api/state?project=voice-demo");
+    notifications.sync(value);
+  }
+  assert.deepEqual(sounds, []);
+});
 function fixture(scenario = "", storage = memory()) {
   const environment = {
     Headers,

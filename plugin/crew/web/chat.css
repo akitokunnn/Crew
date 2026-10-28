@@ -1,0 +1,31 @@
+/* Composer options belong to the conversation, independent of its task shell. */
+.chat-host .composer .c-row { min-width: 0; }
+.chat-host .chat-send-options { position: relative; flex: none; margin-right: auto; min-width: 0; }
+.chat-host .chat-options-toggle { display: inline-flex; align-items: center; gap: 5px; min-height: 34px; padding: 5px 8px; border-radius: 8px; color: var(--text-3); font-size: var(--fs-sm); cursor: pointer; list-style: none; user-select: none; }
+.chat-host .chat-options-toggle::-webkit-details-marker { display: none; }
+.chat-host .chat-options-toggle .i { width: 12px; height: 12px; transition: transform .18s var(--ease); }
+.chat-host .chat-options-toggle:hover,.chat-host .chat-send-options[open]>.chat-options-toggle { color: var(--text); background: var(--hover); }
+.chat-host .chat-send-options[open]>.chat-options-toggle .i { transform: rotate(180deg); }
+.chat-host .chat-options-panel { position: absolute; left: 0; bottom: calc(100% + 12px); z-index: 12; width: 300px; max-width: min(300px,calc(100vw - 64px)); padding: 16px; border: 1px solid var(--line-strong); border-radius: 14px; background: var(--surface); color: var(--text); box-shadow: var(--shadow-lg); }
+.chat-host .chat-intent-field { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: var(--fs-sm); }
+.chat-host .chat-options-panel .chat-intent { max-width: 150px; min-height: 38px; padding: 6px 9px; font: inherit; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface); color: var(--text); }
+.chat-host .chat-intent-note,.chat-host .chat-sync-note { margin: 9px 0 0; font-size: var(--fs-xs); line-height: 1.65; color: var(--text-3); }
+.chat-host .chat-options-panel .chat-affects-task { display: flex; align-items: flex-start; gap: 8px; width: auto; margin: 16px 0 0; padding: 0; font-size: var(--fs-sm); line-height: 1.6; color: var(--text-2); }
+.chat-host .chat-options-panel .chat-affects-task input { flex: none; margin: 3px 0 0; width: 16px; height: 16px; accent-color: var(--accent); }
+.chat-host .chat-sync-note { margin-left: 24px; }
+.chat-host .chat-options-panel .chat-queue { display: block; width: 100%; margin-top: 15px; padding: 12px 0 0; border: 0; border-top: 1px solid var(--line); border-radius: 0; background: transparent; color: var(--text-2); font-size: var(--fs-sm); text-align: left; cursor: pointer; white-space: normal; }
+.chat-host .chat-options-panel .chat-queue>span { display: block; margin-top: 4px; color: var(--text-3); font-size: var(--fs-xs); line-height: 1.6; }
+.chat-host .chat-options-panel .chat-queue:hover:not(:disabled) { color: var(--accent-text); }
+.chat-host .chat-options-panel .chat-queue:disabled { opacity: .45; cursor: default; }
+.chat-host .chat-options-toggle:focus-visible,.chat-host .chat-options-panel :is(select,button,input):focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+@media(max-width:620px) {
+  .chat-host .composer .c-row { flex-wrap: nowrap; gap: 5px; }
+  .chat-host .composer .chat-keyboard-hint { display: none; }
+  .chat-host .chat-image-button,.chat-host .chat-stop,.chat-host .send { min-width: 40px; min-height: 40px; }
+  .chat-host .chat-options-toggle { min-height: 40px; padding-inline: 7px; }
+  .chat-host .chat-options-panel { max-width: min(300px,calc(100vw - 72px)); }
+  .chat-host .chat-options-panel .chat-intent,.chat-host .chat-options-panel .chat-queue { min-height: 44px; }
+}
+@media(prefers-reduced-motion:reduce) {
+  .chat-host .chat-options-toggle .i { transition: none; }
+}

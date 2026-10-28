@@ -256,7 +256,8 @@
   function persistDraft(context) {
     try {
       localStorage.setItem(keyFor(context), JSON.stringify({ text: context.cache.text, images: context.cache.images,
-        pendingMessage:context.cache.pendingMessage, pendingQueue:context.cache.pendingQueue, intent:context.cache.intent }));
+        pendingMessage:context.cache.pendingMessage, pendingQueue:context.cache.pendingQueue, intent:context.cache.intent,
+        affectsTask:context.cache.affectsTask }));
     } catch (error) { context.toast(error.message); }
   }
   function saveDraft(context) {
@@ -274,8 +275,16 @@
     if (context.queue) context.queue.disabled = context.loading || context.cache.sending || !context.input.value.trim();
     const external = context.goalId == null && context.session.where === "vscode";
     context.hint.textContent = context.busy || context.cache.sending ? "" : external ? "会话仍在原工具中；退出并交给 Crew 后才能接话" : "Enter 发送 · Shift+Enter 换行";
+    context.hint.classList.toggle("chat-keyboard-hint", !external);
+    const continuing = context.intent?.value === "work";
+    if (context.intentNote) context.intentNote.textContent = continuing
+      ? "按这条要求继续工作。尚未开始的任务仍需先点“开始执行”。"
+      : "现在发给当前 AI 回应；正在推进的工作照常进行。";
+    if (context.sendKind) context.sendKind.textContent = continuing
+      ? context.affectsTask?.checked ? "继续工作 · 同步负责人" : "继续工作"
+      : context.affectsTask?.checked ? "同步负责人" : "发送选项";
     context.send.hidden = context.busy && !hasContent;
-    context.send.title = context.busy ? "工作中插话" : "发送";
+    context.send.title = continuing ? "发送并继续工作" : context.busy ? "立即插话" : "发送";
     const stopReason = context.goalId != null ? "" : external ? "回复在 VS Code 或终端中运行，请在原工具中断。" : context.session.where !== "bg" && !context.session.running ? "正在等待 Crew 托管会话，稍后可停止。" : "";
     context.stop.hidden = !context.busy;
     context.stop.disabled = !context.busy || context.interrupting || context.confirmingStop || Boolean(stopReason);
@@ -750,6 +759,7 @@
   async function send(context) {
     const text = context.input.value.trim();
     if (context.send.disabled) return;
+    if (context.sendOptions) context.sendOptions.open = false;
     context.interruptConfirmed = false; context.interruptError = "";
     saveDraft(context);
     const draftVersion = context.cache.version;
@@ -810,6 +820,7 @@
   }
   async function queueMessage(context) {
     if (!current(context) || !context.onQueue || context.queue.disabled) return;
+    if (context.sendOptions) context.sendOptions.open = false;
     saveDraft(context);
     if (context.cache.images.length) { context.toast("排队下一步暂不接收图片，请先立即发送图片；文字草稿已保留。"); return; }
     const text = context.input.value.trim(), draftVersion = context.cache.version;
@@ -841,7 +852,8 @@
       try {
         const saved = localStorage.getItem(keyFor(options));
         if (saved !== null) { const draft = JSON.parse(saved); cache.text = draft.text; cache.images = draft.images;
-          cache.pendingMessage = draft.pendingMessage; cache.pendingQueue = draft.pendingQueue; cache.intent = draft.intent; }
+          cache.pendingMessage = draft.pendingMessage; cache.pendingQueue = draft.pendingQueue; cache.intent = draft.intent;
+          cache.affectsTask = draft.affectsTask; }
       } catch (error) { options.toast(error.message); }
     }
     const context = { ...options, session:options.goalId == null ? options.session : {...options.session,activity:null}, cache, items: [], byId: new Map(), nodes: new Map(), results: new Map(), toolOwners: new Map(), toolStops: new Map(), cursor: 0, readSeq: 0, busySeq: options.readonly || options.goalId != null ? 0 : options.session.last_seq, settledSeq:null, executionId:null, connectionGeneration:0, loadGeneration:0, readTimer: null, reconnectTimer: null, historyRetryTimer: null, historyFailed: false, interrupting: false, interruptError: "", interruptConfirmed: false, frame: null, loading: true, busy: cache.pendingSendSeq === null ? options.goalId == null && options.session.busy : true, reading: false, initialPosition: null, stream: null };
@@ -880,23 +892,47 @@
       context.deliveryStatus = options.host.querySelector(".chat-delivery-status");
       if (options.goalId != null) {
         const tools = options.host.querySelector(".c-row");
-        const intent = document.createElement("select"); intent.className = "chat-intent";
-        intent.setAttribute("aria-label", "消息意图");
-        intent.innerHTML = '<option value="dialogue">讨论</option><option value="work">继续工作</option>';
-        tools.insertBefore(intent, context.stop);
-        context.intent = intent;
-        if (context.intent) { context.intent.value = cache.intent || "dialogue"; context.intent.onchange = () => { cache.intent = context.intent.value; }; }
+        const choices = document.createElement("details");
+        choices.className = "chat-send-options";
+        choices.innerHTML = `<summary class="chat-options-toggle"><span class="chat-send-kind">发送选项</span>${icon("down")}</summary>
+          <div class="chat-options-panel"><label class="chat-intent-field">这条消息<select class="chat-intent" aria-label="消息意图"><option value="dialogue">讨论</option><option value="work">继续工作</option></select></label>
+          <p class="chat-intent-note"></p>
+          ${options.memberConversation ? '<label class="chat-affects-task"><input type="checkbox"><span>影响整体任务，同步负责人</span></label><p class="chat-sync-note">这条原话会同时交给负责人。</p>' : ""}
+          ${options.onQueue ? '<button type="button" class="chat-queue">排队发送<span>等当前工作结束后，处理这条文字要求</span></button>' : ""}</div>`;
+        tools.insertBefore(choices, context.stop);
+        context.sendOptions = choices;
+        context.sendKind = options.host.querySelector(".chat-send-kind");
+        context.intentNote = options.host.querySelector(".chat-intent-note");
+        context.intent = options.host.querySelector(".chat-intent");
+        context.intent.value = cache.intent || "dialogue";
+        context.intent.onchange = () => {
+          cache.intent = context.intent.value;
+          cache.version += 1;
+          persistDraft(context); composerState(context);
+        };
         if (options.memberConversation) {
-          const sync = document.createElement("label"); sync.className = "chat-affects-task";
-          const checkbox = document.createElement("input"); checkbox.type = "checkbox";
-          sync.insertBefore(checkbox, null); const label = document.createElement("span"); label.textContent = "影响整体任务，同步 leader"; sync.insertBefore(label, null);
-          tools.insertBefore(sync, context.stop); context.affectsTask = checkbox;
+          context.affectsTask = options.host.querySelector(".chat-affects-task input");
+          context.affectsTask.checked = Boolean(cache.affectsTask);
+          context.affectsTask.onchange = () => {
+            cache.affectsTask = context.affectsTask.checked;
+            cache.version += 1;
+            persistDraft(context); composerState(context);
+          };
         }
         if (options.onQueue) {
-          const queue = document.createElement("button"); queue.type = "button"; queue.className = "chat-queue"; queue.textContent = "排队发送";
-          queue.title = "将明确的下一步交给本任务队列"; tools.insertBefore(queue, context.send);
-          context.queue = queue; queue.onclick = () => { void queueMessage(context); };
+          context.queue = options.host.querySelector(".chat-queue");
+          context.queue.onclick = () => { void queueMessage(context); };
         }
+        choices.onkeydown = event => {
+          if (event.key === "Escape" && choices.open) {
+            event.preventDefault(); event.stopPropagation(); choices.open = false;
+            options.host.querySelector(".chat-options-toggle")?.focus();
+          }
+        };
+        context.closeSendOptions = event => {
+          if (choices.open && !choices.contains(event.target)) choices.open = false;
+        };
+        document.addEventListener("pointerdown", context.closeSendOptions);
       }
       context.stop.onclick = () => { void interrupt(context); };
       context.hint = options.host.querySelector(".hint"); context.attach = options.host.querySelector(".attach");
@@ -943,6 +979,7 @@
     context.stream?.abort(); clearTimeout(context.readTimer); clearTimeout(context.reconnectTimer); clearTimeout(context.historyRetryTimer);
     if (context.frame !== null) cancelAnimationFrame(context.frame);
     document.removeEventListener("visibilitychange", context.visibility);
+    if (context.closeSendOptions) document.removeEventListener("pointerdown", context.closeSendOptions);
     active = null;
   }
   function notifyCompact(id, event, toast) {

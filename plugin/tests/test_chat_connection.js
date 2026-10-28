@@ -564,8 +564,8 @@ test("execution continuation keeps visible history through a failed reload and r
 test("task inputs keep dialogue and work explicit, and member-wide requirements retain their original scope",async()=>{
   const h=harness(),calls=[];
   const target=h.mount("member",async(url,data)=>{calls.push({url,data});return url==="/api/chat/send"?{accepted:true}:history();},{},{goalId:"goal",memberConversation:true});await tick();
-  const tools=target.querySelector(".c-row").children,intent=tools.find(n=>n.className==="chat-intent"),sync=tools.find(n=>n.className==="chat-affects-task");
-  assert.equal(intent.value,"dialogue");intent.value="work";intent.onchange();sync.children[0].checked=true;
+  const intent=target.querySelector(".chat-intent"),sync=target.querySelector(".chat-affects-task input");
+  assert.equal(intent.value,"dialogue");intent.value="work";intent.onchange();sync.checked=true;
   target.querySelector("textarea").value="先修复识别边界，再继续验证";target.querySelector("textarea").oninput();target.querySelector("form").onsubmit({preventDefault(){}});await tick();
   const sent=calls.find(c=>c.url==="/api/chat/send").data;
   assert.equal(sent.goal_id,"goal");assert.equal(sent.session_id,"member");assert.equal(sent.intent,"work");assert.equal(sent.affects_task,true);assert.equal(sent.text,"先修复识别边界，再继续验证");h.chat.unmount();
@@ -574,7 +574,7 @@ test("task inputs keep dialogue and work explicit, and member-wide requirements 
 test("explicit task queue keeps a failed draft and stable request identity until its real receipt",async()=>{
   const h=harness(),queued=[];let failing=true;
   const target=h.mount("leader",async()=>history(),{},{goalId:"goal",onQueue:async value=>{queued.push(value);if(failing)throw Error("排队依据暂不可保存");return{receipt:{status:"queued"}};}});await tick();
-  const input=target.querySelector("textarea"),button=target.querySelector(".c-row").children.find(n=>n.className==="chat-queue");
+  const input=target.querySelector("textarea"),button=target.querySelector(".chat-queue");
   input.value="当前轮完成后，验证三个短句样本";input.oninput();button.onclick();await tick();
   assert.equal(input.value,"当前轮完成后，验证三个短句样本");assert.match(target.querySelector(".chat-delivery-status").textContent,/排队依据/);
   failing=false;button.onclick();await tick();assert.equal(queued.length,2);assert.equal(queued[0].requestId,queued[1].requestId);assert.equal(queued[1].sessionId,"leader");assert.equal(input.value,"");h.chat.unmount();

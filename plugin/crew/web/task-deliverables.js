@@ -89,7 +89,43 @@
     }
     function attachment(item) {
       const link = url("/api/tasks/attachment", { attachment_id: item.id });
-      return `<div class="td-attachment"><a href="${esc(link)}" target="_blank" rel="noopener" download="${esc(item.filename)}">${esc(item.filename)}</a><small>${esc(item.mime_type)} · ${bytes(item.size_bytes)}</small>${item.mime_type?.startsWith("image/") ? `<a href="${esc(link)}" target="_blank" rel="noopener"><img loading="lazy" src="${esc(link)}" alt="${esc(item.filename)}"></a>` : ""}</div>`;
+      const webpage =
+        item.mime_type === "text/html" || /\.html?$/i.test(item.filename);
+      return `<div class="td-attachment">
+        <div class="td-file-heading"><strong>${esc(item.filename)}</strong><a href="${esc(link)}" target="_blank" rel="noopener">${webpage ? "预览网页" : "打开文件"} ↗</a></div>
+        <small>${esc(item.mime_type)} · ${bytes(item.size_bytes)}</small>
+        ${item.mime_type?.startsWith("image/") ? `<a href="${esc(link)}" target="_blank" rel="noopener"><img loading="lazy" src="${esc(link)}" alt="${esc(item.filename)}"></a>` : ""}
+        <a class="td-download" href="${esc(link)}" download="${esc(item.filename)}">下载文件</a>
+      </div>`;
+    }
+    function latestMarkup() {
+      const version = cache.versions[0];
+      if (!version)
+        return loading
+          ? '<p class="td-empty" role="status">正在读取阶段成果…</p>'
+          : '<p class="td-empty">阶段成果生成后，会出现在这里。</p>';
+      const files = version.files.filter((file) => file.delivered_sha256);
+      const entry =
+        files.find((file) => /(^|\/)index\.html?$/i.test(file.path)) ||
+        files.find((file) => /\.html?$/i.test(file.path)) ||
+        files[0];
+      const webpage = entry && /\.html?$/i.test(entry.path);
+      return `<section class="td-latest">
+        <span class="td-eyebrow">最新阶段成果</span>
+        <h3>${esc(version.label || `成果版本 ${version.version}`)}</h3>
+        <p>阶段版本 ${esc(version.version)} · ${version.files.length} 个文件${entry ? ` · ${esc(entry.path)}` : " · 此版本记录了文件删除"}</p>
+        <div class="td-latest-actions">
+          ${entry ? `<a class="td-primary-link" href="${esc(url("/api/tasks/version-file", { version_id: version.id, path: entry.path, side: "delivered" }))}" target="_blank" rel="noopener">${webpage ? "预览网页" : "查看成果文件"} ↗</a>` : ""}
+          <button data-deliverable-action="show-versions">版本与恢复</button>
+        </div>
+      </section>`;
+    }
+    function folderMarkup() {
+      return root ? `<div class="td-folder">
+        <div class="td-folder-actions"><span>工作区文件夹</span><div>${localFolderAvailable ? '<button data-deliverable-action="open-folder">打开文件夹 ↗</button>' : ""}<button data-deliverable-action="copy-folder">复制路径</button></div></div>
+        <details data-td-fold="folder"><summary>查看路径</summary><code>${esc(root)}</code></details>
+        ${folderAccessError ? `<p role="status">${esc(folderAccessError)}</p>` : ""}
+      </div>` : "";
     }
     function reportMarkup() {
       const report = cache.report;
@@ -107,10 +143,10 @@
         ? cache.versions
             .map(
               (version) =>
-                `<details data-td-fold="version:${esc(version.id)}"><summary><span>${esc(version.label || `成果版本 ${version.version}`)}</span><small>v${version.version} · ${version.files.length} 个文件</small></summary><p class="td-context">${esc(version.commit || "内容快照，不要求 Git")}</p>${version.files.map((file) => `<div class="td-version-file"><span>${esc(file.path)}</span>${file.delivered_sha256 ? `<a href="${esc(url("/api/tasks/version-file", { version_id: version.id, path: file.path, side: "delivered" }))}" target="_blank" rel="noopener">查看此版文件 ↗</a>` : "<small>此版本记录为删除</small>"}</div>`).join("")}<button class="btn" data-deliverable-action="preview" data-version-id="${esc(version.id)}">预览恢复影响</button></details>`,
+                `<details data-td-fold="version:${esc(version.id)}"><summary><span>${esc(version.label || `成果版本 ${version.version}`)}</span><small>阶段版本 ${esc(version.version)} · ${version.files.length} 个文件</small></summary>${version.commit ? `<p class="td-context">${esc(version.commit)}</p>` : ""}${version.files.map((file) => `<div class="td-version-file"><span>${esc(file.path)}</span>${file.delivered_sha256 ? `<a href="${esc(url("/api/tasks/version-file", { version_id: version.id, path: file.path, side: "delivered" }))}" target="_blank" rel="noopener">${/\.html?$/i.test(file.path) ? "打开此版网页" : "查看此版文件"} ↗</a>` : "<small>此版本记录为删除</small>"}</div>`).join("")}<button class="btn" data-deliverable-action="preview" data-version-id="${esc(version.id)}">预览恢复影响</button></details>`,
             )
             .join("")
-        : '<p class="td-empty">尚未记录成果版本，不从应用包版本推测。</p>';
+        : '<p class="td-empty">尚未记录阶段版本。</p>';
     }
     function render() {
       if (disposed) return;
@@ -118,13 +154,15 @@
       savePosition();
       renderer.replace(
         host,
-        `<section class="td-root"><div class="td-toolbar"><p>${esc(taskTitle || taskId)}</p><div><button data-deliverable-action="expand">${expanded ? "回到对话旁" : "展开阅读"}</button><button data-deliverable-action="refresh" ${loading ? "disabled" : ""}>${loading ? "读取中…" : "刷新资料"}</button></div></div>
+        `<section class="td-root"><div class="td-toolbar"><button data-deliverable-action="expand">${expanded ? "回到对话旁" : "展开阅读"}</button><button data-deliverable-action="refresh" ${loading ? "disabled" : ""}>${loading ? "读取中…" : "刷新"}</button></div>
         ${errors.map((error) => `<p class="td-error" role="alert">${esc(error)}</p>`).join("")}
-        ${reportMarkup()}
-        <details class="td-collection" data-td-fold="files"><summary>附件与文件 <small>${cache.attachments.length}</small></summary><label class="td-upload">上传到此任务<input class="td-file" type="file" multiple ${saving ? "disabled" : ""}></label><div class="td-attachment-list">${cache.attachments.map(attachment).join("") || '<p class="td-empty">尚无任务附件。</p>'}</div>
+        ${latestMarkup()}
+        ${folderMarkup()}
+        <section class="td-report-section">${reportMarkup()}</section>
+        <details class="td-collection" data-td-fold="versions"><summary>全部阶段版本 <small>${cache.versions.length}</small></summary>${versionsMarkup()}</details>
+        <details class="td-collection" data-td-fold="files"><summary>附件与补充文件 <small>${cache.attachments.length + documents.length}</small></summary><label class="td-upload">上传到此任务<input class="td-file" type="file" multiple ${saving ? "disabled" : ""}></label><div class="td-attachment-list">${cache.attachments.map(attachment).join("") || '<p class="td-empty">尚无任务附件。</p>'}</div>
         ${documents.map((doc) => `<div class="td-document"><a href="#" data-file-path="${esc(doc.path)}" data-file-session="${esc(doc.session_id || sessionId)}" data-document-id="${esc(doc.id)}">${esc(doc.title || doc.path)}</a>${doc.summary ? `<p>${esc(doc.summary)}</p>` : ""}</div>`).join("")}
-        ${root ? `<div class="td-folder"><code>${esc(root)}</code>${localFolderAvailable ? '<button data-deliverable-action="open-folder">在此电脑打开文件夹</button>' : ""}<button data-deliverable-action="copy-folder">复制文件夹路径</button><p>${localFolderAvailable ? "在执行电脑打开，或复制项目路径。" : "请在执行电脑使用此路径打开文件夹。"}</p>${folderAccessError ? `<p role="status">打开能力未确认：${esc(folderAccessError)}</p>` : ""}</div>` : ""}</details>
-        <details class="td-collection" data-td-fold="versions"><summary>阶段版本与恢复 <small>${cache.versions.length}</small></summary>${versionsMarkup()}</details>
+        </details>
         ${reports.length ? `<details class="td-collection" data-td-fold="history"><summary>历史交付报告 <small>${reports.length}</small></summary>${reports.map((r) => `<div class="td-document"><strong>${esc(r.title)} · 第 ${r.round} 轮 · v${r.version}</strong><p>${esc(r.summary)}</p><button data-deliverable-action="historical-report" data-report-id="${esc(r.id)}">阅读原始交付</button></div>`).join("")}</details>` : ""}
         <div class="td-dialog-host"></div></section>`,
       );
@@ -182,7 +220,16 @@
       try {
         if (action === "refresh") return refresh();
         if (action === "expand") return onExpand(!expanded);
-        if (action === "edit-report") {
+        if (action === "show-versions") {
+          cache.expanded.add("versions");
+          if (cache.versions[0])
+            cache.expanded.add(`version:${cache.versions[0].id}`);
+          render();
+          host.querySelector('[data-td-fold="versions"]')?.scrollIntoView({
+            block: "start",
+            behavior: "auto",
+          });
+        } else if (action === "edit-report") {
           cache.draft ||= {
             version: cache.report?.version || 0,
             markdown: cache.report?.markdown || "",
@@ -268,12 +315,11 @@
             output.textContent = `${error.message}。本次恢复结果尚未确认；再次核对使用同一请求编号。`;
             button.textContent = "核对同一恢复请求";
           }
-        } else
-          toast(
-            action === "copy-folder"
-              ? `复制失败：${error.message}。请手动选择上方路径。`
-              : error.message,
-          );
+        } else if (action === "copy-folder") {
+          cache.expanded.add("folder");
+          render();
+          toast(`复制失败：${error.message}。可以手动复制展开的路径。`);
+        } else toast(error.message);
       }
     }
     function input(event) {

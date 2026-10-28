@@ -8,21 +8,10 @@
 }
 .td-root .td-toolbar {
   display: flex;
-  gap: 15px;
-  align-items: flex-start;
+  gap: 16px;
+  align-items: center;
   justify-content: space-between;
-  margin-bottom: 26px;
-}
-.td-root .td-toolbar p {
-  margin: 0;
-  color: var(--text-3);
-  font-size: 11px;
-  max-width: 70%;
-}
-.td-root .td-toolbar > div {
-  display: flex;
-  gap: 15px;
-  flex: none;
+  margin-bottom: 22px;
 }
 .td-root .td-toolbar button,
 .td-root .td-report-title button,
@@ -34,6 +23,56 @@
   padding: 0;
   font-size: 11px;
   white-space: nowrap;
+}
+.td-root .td-latest {
+  background: var(--accent-softer);
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  padding: 20px;
+  margin-bottom: 18px;
+}
+.td-root .td-eyebrow {
+  font-size: 11px;
+  color: var(--accent-text);
+}
+.td-root .td-latest h3 {
+  font-size: 17px;
+  font-weight: 500;
+  line-height: 1.65;
+  margin: 6px 0 7px;
+  overflow-wrap: anywhere;
+}
+.td-root .td-latest p {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-3);
+  overflow-wrap: anywhere;
+}
+.td-root .td-latest-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px 17px;
+  margin-top: 18px;
+}
+.td-root .td-primary-link {
+  display: inline-flex;
+  padding: 7px 12px;
+  border-radius: 7px;
+  background: var(--accent);
+  color: var(--accent-on, #fff);
+  font-size: 12px;
+  text-decoration: none;
+}
+.td-root .td-latest-actions button {
+  border: 0;
+  padding: 7px 0;
+  color: var(--text-2);
+  background: none;
+  font-size: 11px;
+}
+.td-root .td-report-section {
+  margin-top: 26px;
 }
 .td-root .td-report-title {
   display: flex;
@@ -174,6 +213,26 @@
 .td-root .td-attachment > a {
   color: var(--accent-text);
 }
+.td-root .td-file-heading {
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  align-items: baseline;
+}
+.td-root .td-file-heading strong {
+  font-size: 12px;
+  font-weight: 500;
+}
+.td-root .td-file-heading a {
+  color: var(--accent-text);
+  white-space: nowrap;
+  font-size: 11px;
+}
+.td-root .td-download {
+  display: inline-block;
+  font-size: 11px;
+  margin-top: 7px;
+}
 .td-root .td-attachment small {
   display: block;
   font-size: 10px;
@@ -219,8 +278,30 @@
   padding: 0;
 }
 .td-root .td-folder {
-  padding: 21px 0;
+  padding: 8px 0 15px;
   font-size: 11px;
+  border-bottom: 1px solid var(--line);
+}
+.td-root .td-folder-actions,
+.td-root .td-folder-actions > div {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+}
+.td-root .td-folder-actions {
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px 15px;
+}
+.td-root .td-folder-actions > span {
+  color: var(--text-2);
+}
+.td-root .td-folder summary {
+  color: var(--text-3);
+  font-size: 10px;
+  display: inline-flex;
+  margin-top: 7px;
+  padding: 0;
 }
 .td-root .td-folder code {
   display: block;
@@ -229,7 +310,7 @@
   padding: 13px;
   background: var(--bg);
   border-radius: 7px;
-  margin-bottom: 12px;
+  margin: 10px 0 0;
   user-select: all;
 }
 .td-root .td-folder p {

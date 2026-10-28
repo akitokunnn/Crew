@@ -134,13 +134,12 @@ if (!process.versions.electron) {
       await js(`document.querySelector('.tw-chat form.composer').requestSubmit();true`);
       await check('a second UI input receives its reply in the same task stream', `document.querySelector('.tw-chat')?.textContent.split('没有调用真实 AI').length>=3`);
       assert(evidence.sse.some(item => item.status === 200 && JSON.stringify(item.contentType).includes('text/event-stream')));
-      await click('.tw-controls summary'); await click('[data-act="tw-mode"]');
+      await click('[data-act="tw-mode"]');
       await wait(`document.querySelector('[data-act="tw-mode"]')?.getAttribute('aria-checked')==='true'`);
       detail = await api('/api/task?task_id=' + taskId);
       assert.equal(detail.task.mode, 'automatic'); assert.equal(detail.task.authorized, false);
       assert.equal(detail.task.id, taskId); assert.equal(detail.task.leader_session_id, evidence.leaderSessionId);
       evidence.checks.push('mode changes through the UI while the same discussion stays unauthorized');
-      await click('.tw-controls summary');
       const draft = '尚未发送的任务草稿：返回后仍应保留。';
       await input('.tw-chat textarea', draft);
       await click('[data-act="wb-navigate"][data-route="#home"]');
@@ -149,7 +148,8 @@ if (!process.versions.electron) {
       await check('leaving and returning through task navigation preserves the unsent conversation draft', `document.querySelector('.tw-chat textarea')?.value===${JSON.stringify(draft)}`);
       const related = path.join(runRoot, 'associated-project'); await fs.mkdir(related);
       await api('/api/project/init', {name: 'api-associated', root: related});
-      await click('[data-act="tw-panel"][data-panel="toggle"]');
+      await click('[data-act="tw-panel"][data-panel="details"]');
+      await click('[data-act="tw-edit-details"]');
       await wait(`!!document.querySelector('.tw-details-form')`);
       const requirementsBefore = (await api('/api/task?task_id=' + taskId)).task;
       await input('.tw-details-form textarea[name="projects"]', 'api-associated');
@@ -180,7 +180,6 @@ if (!process.versions.electron) {
       await click('.tw-controls summary');
       await check('390px task control menu and mode action remain within the viewport', `${noOverflow}&&${fits('.tw-control-menu')}&&${fits('[data-act="tw-mode"]')}`);
       await screenshot('03-mobile-controls'); await click('.tw-controls summary');
-      await click('[data-act="tw-panel"][data-panel="toggle"]');
       await click('[data-act="tw-panel"][data-panel="deliverables"]');
       await check('390px materials and report remain usable without horizontal page overflow', `${noOverflow}&&${fits('.tw-drawer')}&&!!document.querySelector('.td-report')`);
       await screenshot('04-mobile-materials');

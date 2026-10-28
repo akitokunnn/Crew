@@ -82,3 +82,48 @@
   .opt .rec{padding:2px 5px;font-size:calc(10px * var(--fs))}
 .tray-in{padding-left:14px;padding-right:14px}
 }
+
+/* Task attention is a single layer: the question, then its next useful action. */
+.tw-task-attention { border-bottom: 1px solid var(--line); background: var(--surface); min-width: 0; }
+.tw-task-attention .tw-attention-content { min-width: 0; max-height: min(42dvh,340px); overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; padding: 0 32px; }
+.tw-task-attention .tw-attention-content>* { min-width: 0; max-width: 100%; }
+.tw-task-attention .tw-decision-question,.tw-task-attention .tw-decision-ready { padding: 18px 0; }
+.tw-task-attention .tw-attention-content>:not(:last-child) { border-bottom: 1px solid var(--line); }
+.tw-task-attention .tw-decision-heading { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
+.tw-task-attention .tw-decision-heading h3 { flex: 1; min-width: 0; margin: 0; font-size: var(--fs-base); font-weight: 500; line-height: 1.65; overflow-wrap: anywhere; }
+.tw-task-attention .tw-decision-heading>span { flex: none; max-width: 30%; color: var(--text-3); font-size: var(--fs-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tw-task-attention .tw-decision-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 15px; margin-top: 11px; }
+.tw-task-attention .tw-decision-actions .btn { font-size: var(--fs-sm); padding: 5px 10px; }
+.tw-task-attention .tw-decision-original { margin-top: 8px; font-size: var(--fs-sm); }
+.tw-task-attention .tw-decision-original>summary,.tw-task-attention .tw-attention-held>summary { color: var(--text-3); font-size: var(--fs-xs); cursor: pointer; }
+.tw-task-attention .tw-decision-original .markdown { margin-top: 8px; font-size: var(--fs-sm); overflow-wrap: anywhere; }
+.tw-task-attention .tw-attention-held { padding-block: 14px; }
+.tw-task-attention .tw-attention-held .tw-decision-question:last-child,.tw-task-attention .tw-attention-held .tw-decision-ready:last-child { padding-bottom: 0; }
+.tw-task-attention .decision-card { border: 0; border-radius: 0; background: transparent; }
+.tw-task-attention .decision-card .dc-top { padding: 0; }
+.tw-task-attention .decision-card .dc-top :is(.tw-avatar,.av,.from) { display: none; }
+.tw-task-attention .decision-card .dc-top .q { font-size: var(--fs-base); }
+.tw-task-attention .decision-card .dc-hold { margin: 0 0 0 10px; }
+.tw-task-attention .decision-card .decision-summary { padding: 10px 0; }
+.tw-task-attention .decision-card .dc-body { display: block; padding: 0; min-width: 0; }
+.tw-task-attention .decision-card :is(.opts,.opt,.free) { min-width: 0; max-width: 100%; }
+.tw-task-attention .decision-card .free input { min-width: 0; width: 0; }
+.tw-task-attention .decision-card .opt { white-space: normal; overflow-wrap: anywhere; }
+.tw-task-attention .tw-attention-todos { padding-block: 10px; }
+.tw-task-attention .tw-attention-todos>.attention-section-title { display: none; }
+.tw-task-attention .tw-attention-todos .todo-card { border: 0; border-radius: 0; }
+.tw-task-attention .tw-attention-todos .todo-card:not(.open):not(:has(.todo-resolution)) .todo-card-actions { display: none; }
+.tw-task-attention .tw-attention-todos .todo-top { padding: 4px 0; gap: 8px; }
+.tw-task-attention .tw-attention-todos .todo-title { font-size: var(--fs-sm); line-height: 1.6; }
+.tw-task-attention .tw-attention-todos .todo-meta { margin: 0 0 4px 28px; font-size: var(--fs-xs); }
+.tw-task-attention .tw-attention-todos .todo-details { padding-left: 30px; }
+.tw-task-attention .tw-attention-todos .todo-card-actions { padding-inline: 0; }
+.tw-task-attention :is(.markdown pre,.markdown table) { max-width: 100%; overflow-x: auto; }
+.tw-task-attention .tw-attention-permissions { padding-block: 14px; }
+@media(max-width:620px) {
+  .tw-task-attention .tw-attention-content { padding-inline: 20px; max-height: 40dvh; }
+  .tw-task-attention .tw-decision-question,.tw-task-attention .tw-decision-ready { padding-block: 14px; }
+  .tw-task-attention .tw-decision-actions :is(.btn,.text-link),.tw-task-attention .decision-card :is(.opt,.dc-hold),.tw-task-attention .tw-attention-held>summary { min-height: 40px; }
+  .tw-task-attention .decision-card .free input { font-size: 16px; }
+  .tw-task-attention .tw-attention-todos .todo-top { min-height: 40px; }
+}

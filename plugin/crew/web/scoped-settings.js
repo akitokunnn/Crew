@@ -16,8 +16,8 @@
     );
   const clone = (value) => JSON.parse(JSON.stringify(value));
   const PURPOSES = [
-    ["default", "默认"],
-    ["leader", "Leader"],
+    ["default", "通用默认"],
+    ["leader", "任务负责人"],
     ["member", "成员"],
     ["assistant", "个人助手"],
     ["digest", "摘要"],
@@ -26,7 +26,7 @@
   ];
   const PROMPT_NAMES = {
     common: "通用工作原则",
-    leader: "Leader",
+    leader: "任务负责人",
     member: "成员",
     assistant: "个人助手",
     report: "报告",
@@ -88,7 +88,7 @@
         "builtin-role-preference": "内置角色偏好",
         global: "全局默认",
         project: "工作区",
-        session: "单 AI",
+        session: "这个 AI 的专属设置",
       }[source.scope] || source.scope;
     return `${scope}${source.scope === "project" ? ` · ${source.identity}` : ""}${source.purpose && source.purpose !== "default" ? ` · ${PURPOSES.find(([id]) => id === source.purpose)?.[1] || source.purpose}` : ""}`;
   };
@@ -216,10 +216,12 @@
       );
     const scopeLabel = () =>
       state.scope === "global"
-        ? "全局默认"
+        ? "所有工作区"
         : state.scope === "project"
-          ? `工作区 · ${context.project}`
-          : `单 AI · ${context.sessionId}`;
+          ? `工作区「${context.projectName || context.project}」`
+          : context.sessionName || "当前 AI";
+    const sourceLabel = source => labelSource(source?.scope === "project" && source.identity === context.project ? {...source,identity:context.projectName || context.project} : source);
+    const saveLabel = () => state.scope === "global" ? "保存为全局默认" : state.scope === "project" ? "保存到此工作区" : "保存到这个 AI";
 
     function ensureDraft() {
       const key = draftKey();
@@ -270,7 +272,7 @@
       const save = host.querySelector?.('[data-act="scoped-settings-save"]');
       if (save) {
         save.disabled = !canSave();
-        save.textContent = busy() ? "正在保存…" : "保存修改";
+        save.textContent = busy() ? "正在保存…" : saveLabel();
       }
       const note = host.querySelector?.("[data-ss-draft-note]");
       if (note)
@@ -278,16 +280,18 @@
     }
     function scopeToolbar(withPurpose = false) {
       const scopes = [
-        ["global", "全局默认"],
+        ["global", "所有工作区 · 全局默认"],
         ...(context.project
-          ? [["project", `工作区 · ${context.project}`]]
+          ? [["project", `仅 ${context.projectName || context.project}`]]
           : []),
-        ...(context.sessionId ? [["session", "当前 AI"]] : []),
+        ...(context.sessionId ? [["session", `仅 ${context.sessionName || "当前 AI"}`]] : []),
       ];
-      return `<div class="ss-toolbar"><label>作用范围<select data-ss-change="scope" aria-label="设置作用范围">${options(scopes, state.scope)}</select></label>${withPurpose ? `<label>用途<select data-ss-change="purpose" aria-label="AI用途">${options(PURPOSES, state.purpose)}</select></label>` : ""}</div>`;
+      const mainPurposes = PURPOSES.filter(([key]) => ["default","leader","member","assistant"].includes(key));
+      const otherPurposes = PURPOSES.filter(([key]) => !mainPurposes.some(([main]) => main === key));
+      return `<div class="ss-toolbar"><label>这些设置改谁<select data-ss-change="scope" aria-label="设置作用范围">${options(scopes, state.scope)}</select></label>${withPurpose ? `<label>哪一类 AI<select data-ss-change="purpose" aria-label="AI用途"><optgroup label="常用角色">${options(mainPurposes,state.purpose)}</optgroup><optgroup label="按需工作">${options(otherPurposes,state.purpose)}</optgroup></select></label>` : ""}</div>`;
     }
     function inheritance() {
-      return `<details class="ss-guidance"><summary>范围与生效方式</summary><p>当前范围：${esc(scopeLabel())}。全局默认 → 工作区覆盖 → 单 AI 覆盖；取消本项覆盖会恢复上级设置。</p><p>${state.tab === "prompts" ? "保存的 Crew 提示词用于下一轮宿主注入；已发送和实际加载状态以执行证据为准。原生私有提示词、Skill 与 MCP 不由本编辑器替代。" : "保存后在下一次启动载体时生效（next_launch）。当前执行保持原配置，不会因保存而重启或唤醒。"}</p></details>`;
+      return `<details class="ss-guidance"><summary>继承与生效时间</summary><p>正在修改：${esc(scopeLabel())}。没有单独设置时，AI 使用工作区设置；工作区没有设置时，再使用全局默认。</p><p>${state.tab === "prompts" ? "保存后，Crew 会在下一轮对话注入新规则。当前执行收到了哪些内容，可在实际加载证据中查看。载体自己的私有提示词、Skill 和 MCP 沿用原生配置。" : "下一次启动 AI 时使用新设置，当前对话继续保持正在使用的配置。"}</p></details>`;
     }
     function conflictMarkup() {
       if (!conflict()) return "";
@@ -300,7 +304,7 @@
       return `<section class="ss-conflict" role="alert"><strong>服务器版本已变化，草稿仍保留</strong><p>草稿基于 v${esc(draft.version)}，当前读取到 v${esc(version)}。先读取最新内容，再明确选择。</p><button type="button" data-act="scoped-settings-reload">读取最新版本</button>${version !== draft.version ? `<details><summary>查看服务器当前内容</summary><pre>${esc(latest)}</pre></details><div class="ss-conflict-actions"><button type="button" data-act="scoped-settings-rebase">保留草稿，基于 v${esc(version)} 继续</button><button type="button" data-act="scoped-settings-use-server">使用服务器内容</button></div>` : ""}</section>`;
     }
     function footer() {
-      return `<div class="ss-form-footer"><div><span data-ss-draft-note>${currentDraft()?.dirty ? "草稿已保留，尚未保存" : ""}</span><button class="ss-link" type="button" data-act="scoped-settings-reset" ${state.loading || busy() || currentVersion() === undefined ? "disabled" : ""}>${state.scope === "global" ? "恢复本项默认" : "取消本项覆盖"}</button></div><button class="ss-primary" type="button" data-act="scoped-settings-save" ${canSave() ? "" : "disabled"}>${busy() ? "正在保存…" : "保存修改"}</button></div>`;
+      return `<div class="ss-form-footer"><div><span data-ss-draft-note>${currentDraft()?.dirty ? "有未保存修改，草稿已保留" : ""}</span><button class="ss-link" type="button" data-act="scoped-settings-reset" ${state.loading || busy() || currentVersion() === undefined ? "disabled" : ""}>${state.scope === "global" ? "恢复默认" : "改为跟随上级"}</button></div><button class="ss-primary" type="button" data-act="scoped-settings-save" ${canSave() ? "" : "disabled"}>${busy() ? "正在保存…" : saveLabel()}</button></div>`;
     }
     function aiMarkup() {
       const draft = ensureDraft(),
@@ -328,25 +332,28 @@
         ? model.efforts
         : runtime?.efforts || [];
       const preference = state.effective.role_preference;
-      return `${scopeToolbar(true)}<p class="ss-effective-note">下一次启动生效 · 当前执行不变</p>${preference ? `<p class="ss-effective-note">内置角色偏好：${esc({ claude: "Claude Code", codex: "Codex" }[preference.runtime] || preference.runtime)}。启动时按实际可用工具解析；此偏好不代表已安装或本次已加载。</p>` : ""}
-        <div class="ss-ai-fields"><label>载体<select data-ss-field="runtime" ${busy() ? "disabled" : ""}>${options(runtimeChoices, selection.runtime || "")}</select><small>来源：${esc(labelSource(state.effective.sources?.ai?.runtime))}</small></label>
-        <label>模型<input data-ss-field="model" list="ss-model-options" value="${esc(selection.model)}" placeholder="原生默认，或输入明确模型名" autocomplete="off" ${busy() ? "disabled" : ""}><datalist id="ss-model-options">${(runtime?.models || []).map((item) => `<option value="${esc(item.id)}">${esc(item.name || item.id)} · ${esc({ configured: "配置项", discovered: "原生发现", observed: "原生回报" }[item.status] || item.status || "来源待确认")}</option>`).join("")}</datalist><small>来源：${esc(labelSource(state.effective.sources?.ai?.model))}</small></label>
-        <label>推理强度 · effort<input data-ss-field="effort" list="ss-effort-options" value="${esc(selection.effort)}" placeholder="原生默认，或输入明确值" autocomplete="off" ${busy() ? "disabled" : ""}><datalist id="ss-effort-options">${efforts.map((value) => `<option value="${esc(value)}"></option>`).join("")}</datalist><small>来源：${esc(labelSource(state.effective.sources?.ai?.effort))}</small></label></div>
+      const sources = ["runtime","model","effort"].map(field => sourceLabel(state.effective.sources?.ai?.[field]));
+      const sharedSource = sources.every(value => value === sources[0]) ? sources[0] : "各项来自不同设置";
+      return `${scopeToolbar(true)}<div class="ss-editing-summary"><p>正在修改 <strong>${esc(scopeLabel())}</strong> 的${state.purpose === "default" ? "通用默认" : esc(PURPOSES.find(([key]) => key === state.purpose)?.[1] || state.purpose)}。</p><span>下一次启动生效</span></div>
+        <div class="ss-ai-fields"><label>使用的工具<select data-ss-field="runtime" ${busy() ? "disabled" : ""}>${options(runtimeChoices, selection.runtime || "")}</select></label>
+        <label>模型<input data-ss-field="model" list="ss-model-options" value="${esc(selection.model)}" placeholder="原生默认，也可填写模型名" autocomplete="off" ${busy() ? "disabled" : ""}><datalist id="ss-model-options">${(runtime?.models || []).map((item) => `<option value="${esc(item.id)}">${esc(item.name || item.id)} · ${esc({ configured: "配置项", discovered: "原生发现", observed: "原生回报" }[item.status] || item.status || "来源待确认")}</option>`).join("")}</datalist></label>
+        <label>思考强度<input data-ss-field="effort" list="ss-effort-options" value="${esc(selection.effort)}" placeholder="原生默认" autocomplete="off" ${busy() ? "disabled" : ""}><datalist id="ss-effort-options">${efforts.map((value) => `<option value="${esc(value)}"></option>`).join("")}</datalist></label></div>
+        <details class="ss-guidance ss-source-details"><summary>当前来源：${esc(sharedSource)}</summary><dl>${["工具","模型","思考强度"].map((label,index) => `<div><dt>${label}</dt><dd>${esc(sources[index])}</dd></div>`).join("")}</dl>${preference ? `<p>角色默认偏好 ${esc({claude:"Claude Code",codex:"Codex"}[preference.runtime] || preference.runtime)}，启动时按可用工具选择。</p>` : ""}</details>
         ${catalogError ? `<div class="ss-error" role="alert">模型目录读取失败：${esc(catalogError)}。已保存值仍保留；可显式重试。<button type="button" data-act="scoped-settings-catalog">重新读取目录</button></div>` : ""}
-        <details class="ss-guidance"><summary>模型目录与原生能力</summary><p>选项来自原生发现、配置项或执行回报；它们不代表当前 AI 已加载。目录未知时允许明确输入，Crew 不按模型名字推断能力。</p>${runtime ? `<p>${esc(runtime.discovery?.error || runtime.error || `目录状态：${runtime.discovery?.status || "未确认"}`)}</p>${(runtime.configuration_errors || []).map((error) => `<p>${esc(error)}</p>`).join("")}` : ""}</details>${inheritance()}${conflictMarkup()}${footer()}`;
+        <details class="ss-guidance"><summary>模型列表与原生配置</summary><p>列表来自工具发现、已有配置或运行回报。没有列出的模型和思考强度，也可以明确填写。</p>${runtime ? `<p>${esc(runtime.discovery?.error || runtime.error || `目录状态：${runtime.discovery?.status || "未确认"}`)}</p>${(runtime.configuration_errors || []).map((error) => `<p>${esc(error)}</p>`).join("")}` : ""}</details>${inheritance()}${conflictMarkup()}${footer()}`;
     }
     function executionMarkup() {
       const draft = ensureDraft(),
         value = draft?.value || state.effective.execution;
-      return `${scopeToolbar()}<p class="ss-effective-note">下一次启动生效 · 与任务全自动模式分开</p><div class="ss-permissions">${[
+      return `${scopeToolbar()}<div class="ss-editing-summary"><p>设置 <strong>${esc(scopeLabel())}</strong> 中工具的访问权限。</p><span>下一次启动生效</span></div><div class="ss-permissions">${[
         ["claude", "Claude Code"],
         ["codex", "Codex"],
       ]
         .map(
           ([runtime, name]) =>
-            `<label><span><strong>${name}</strong><small>来源：${esc(labelSource(state.effective.sources?.execution?.[runtime]))}</small></span><select data-ss-field="${runtime}" aria-label="${name}执行权限" ${busy() ? "disabled" : ""}>${options(PERMISSIONS[runtime], value[runtime])}</select></label>`,
+            `<label><span><strong>${name}</strong><small>来自${esc(sourceLabel(state.effective.sources?.execution?.[runtime]))}</small></span><select data-ss-field="${runtime}" aria-label="${name}执行权限" ${busy() ? "disabled" : ""}>${options(PERMISSIONS[runtime], value[runtime])}</select></label>`,
         )
-        .join("")}</div>${inheritance()}${conflictMarkup()}${footer()}`;
+        .join("")}</div><p class="ss-effective-note">任务里的“全自动决定”仍由各任务单独切换。</p>${inheritance()}${conflictMarkup()}${footer()}`;
     }
     function promptMarkup() {
       const record = state.promptRecord,
@@ -355,8 +362,8 @@
         state.promptKeys.map((key) => [key, PROMPT_NAMES[key] || key]),
         state.key,
       )}</select></label>${scopeToolbar()}</div>
-        <section class="ss-editor"><div class="ss-editor-heading"><div><h2>${esc(PROMPT_NAMES[record.key] || record.key)}</h2><p>来源：${esc(labelSource(record.effective.source))} · 内容版本 ${esc(record.effective.version)}</p></div><span>${record.overridden ? "此范围已覆盖" : "继承中"}</span></div><label class="ss-sr" for="crew-scoped-prompt">提示词内容</label><textarea id="crew-scoped-prompt" data-ss-field="prompt" spellcheck="false" ${busy() ? "readonly" : ""}>${esc(draft?.value ?? record.effective.content)}</textarea></section>
-        <div class="ss-prompt-secondary"><button class="ss-link" type="button" data-act="scoped-settings-applied">实际加载证据</button><button class="ss-link" type="button" data-act="scoped-settings-history">修改历史</button><span>下一轮注入 · 不重启执行</span></div>${inheritance()}${conflictMarkup()}${footer()}${extraMarkup()}`;
+        <section class="ss-editor"><div class="ss-editor-heading"><div><h2>${esc(PROMPT_NAMES[record.key] || record.key)}</h2><p>来自${esc(sourceLabel(record.effective.source))}${typeof record.effective.version === "number" ? ` · v${esc(record.effective.version)}` : ""}</p></div><span>${record.overridden ? "单独设置" : "跟随上级"}</span></div><label class="ss-sr" for="crew-scoped-prompt">提示词内容</label><textarea id="crew-scoped-prompt" data-ss-field="prompt" spellcheck="false" ${busy() ? "readonly" : ""}>${esc(draft?.value ?? record.effective.content)}</textarea></section>
+        <div class="ss-prompt-secondary"><button class="ss-link" type="button" data-act="scoped-settings-applied">查看实际加载</button><button class="ss-link" type="button" data-act="scoped-settings-history">修改历史</button><span>下一轮对话使用新规则</span></div>${inheritance()}${conflictMarkup()}${footer()}${extraMarkup()}`;
     }
     function extraMarkup() {
       if (!state.extra) return "";
@@ -390,7 +397,7 @@
       return `<section class="ss-extra"><header><h2>${title}</h2><button class="ss-link" type="button" data-act="scoped-settings-extra-close">收起</button></header>${body}</section>`;
     }
     function legacyMarkup() {
-      return `<p class="ss-section-intro">继续使用已有的完整设置，保留原有工具、连接与数据操作。</p><div class="ss-legacy-list">${LEGACY.map(([id, label]) => `<button type="button" data-act="scoped-settings-legacy" data-category="${id}" ${onLegacySettings ? "" : "disabled"}><span>${label}</span><span aria-hidden="true">↗</span></button>`).join("")}</div>${onLegacySettings ? "" : '<p class="ss-error">当前入口未提供完整设置跳转。</p>'}`;
+      return `<p class="ss-section-intro">外观、通知、工具与数据。</p><div class="ss-legacy-list">${LEGACY.map(([id, label]) => `<button type="button" data-act="scoped-settings-legacy" data-category="${id}" ${onLegacySettings ? "" : "disabled"}><span>${label}</span><span aria-hidden="true">↗</span></button>`).join("")}</div>${onLegacySettings ? "" : '<p class="ss-error">当前入口未提供完整设置跳转。</p>'}`;
     }
     function paint() {
       if (destroyed) return;
@@ -419,7 +426,7 @@
               ? aiMarkup()
               : executionMarkup();
       else content = '<p class="ss-empty">尚未取得设置。请显式重试。</p>';
-      host.innerHTML = `<div class="ss-shell"><header class="ss-header"><h1>AI 与工作方式</h1><nav aria-label="设置分类">${[
+      host.innerHTML = `<div class="ss-shell"><header class="ss-header"><h1>设置</h1><nav aria-label="设置分类">${[
         ["ai", "AI 配置"],
         ["execution", "执行权限"],
         ["prompts", "提示词"],
@@ -736,18 +743,27 @@
     return {
       async open(next = {}) {
         if (destroyed) throw Error("Scoped settings was destroyed");
+        const priorTarget = JSON.stringify([context.project,context.sessionId]);
         context = {
           project:
             typeof next.project === "object"
               ? next.project?.name || null
               : next.project || null,
+          projectName: next.projectName || next.project?.display_name || (typeof next.project === "string" ? next.project : next.project?.name) || null,
           sessionId: next.sessionId || null,
+          sessionName: next.sessionName || null,
+          sessionRole: next.sessionRole || null,
           executionId: next.executionId || null,
           taskId: next.taskId || null,
         };
         const previous = retainedViews.get(contextKey());
         if (previous) Object.assign(state, previous);
-        else state.extra = null;
+        if (!previous || priorTarget !== JSON.stringify([context.project,context.sessionId])) {
+          const targetScope = context.sessionId ? "session" : context.project ? "project" : "global";
+          if (!previous || state.scope !== targetScope) state.extra = null;
+          state.scope = targetScope;
+          if (context.sessionId && ["leader","member","assistant"].includes(context.sessionRole)) state.purpose = context.sessionRole;
+        }
         if (
           (state.scope === "session" && !context.sessionId) ||
           (state.scope === "project" && !context.project)

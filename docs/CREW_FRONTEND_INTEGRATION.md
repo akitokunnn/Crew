@@ -2,6 +2,10 @@
 
 本轮由前端 AI 负责 `plugin/crew/web/`，后端 AI 负责领域、HTTP、桌面桥接及最终集成。前端分支为 `codex/crew-formal-frontend`，起点 `4294977`；本记录不代表正式服务已经升级。共享字段以 `CREW_API_CONTRACT.md` 为准。
 
+## 2026-10-28 使用体验更新
+
+前端体验迭代基于 main `82dbb3e`，方案与实际记录见 [使用体验优化](CREW_UX_REFINEMENT_2026-10-28.md)。接口契约和后端职责不变；此次没有新增接口要求、修改桌面桥接或更新正式服务。
+
 ## 启动与体验
 
 在包含本轮前端的仓库根目录执行，无需安装前端依赖或构建：
@@ -24,11 +28,11 @@ node plugin/crew/web/dev-server.cjs --port 4321 --backend http://127.0.0.1:后�
 
 路径与操作：
 
-- 首页 → 任务 → 资料 → 成员 → 点击成员 → 顶部任务／leader 返回 → 资料中的成果与文档。
+- 首页 → 任务 → 成员 → 点击成员 → 顶部任务／负责人返回对话 → 成果。任务详情默认阅读，需要时点“编辑详情”。
 - `#home?project=名称` 为工作区首页；已有 `?project=名称` 链接也进入该工作区。
 - `#task?taskId=ID&project=主工作区&sessionId=成员ID` 为任务／成员直达。
-- 首页“开始聊”先建立稳定 discussion，再以固定 message_id 发送原话；这不授权施工。“授权开始任务”是另一项明确操作。
-- 置顶常驻导航；Git 带工作区身份。关系总览、总会话、公共频道、用量额度、待收编、完整工具／渠道／数据设置继续通过原功能页访问，有返回工作台入口。
+- 首页“开始聊”先建立稳定 discussion，再以固定 message_id 发送原话；这不授权施工。顶部“开始执行”是另一项明确操作。任务模式与执行／停止并列；排队发送从输入框“发送选项”打开。
+- 置顶常驻导航，同一任务不重复列出；工作区可以收起，关联任务从工作区页查看。Git 带工作区身份。团队总览、总会话、公共频道、用量额度、待收编、完整工具／渠道／数据设置继续通过原功能页访问，有返回工作台入口。
 - 手机使用相同 URL。`mobile-preview.html` 只供开发服务检查 390px 内嵌视口，不是生产入口。
 
 ## 功能所有者
@@ -42,13 +46,13 @@ node plugin/crew/web/dev-server.cjs --port 4321 --backend http://127.0.0.1:后�
 | `task-attention.js` | 组合现有拍板、TODO、原生审批；细节留在原任务 |
 | `task-deliverables.js` / `.css` | 持续报告、附件、阶段版本、恢复预览与冲突 |
 | `rich-documents.js` | 通过本地 Mermaid 严格模式增强图示／图表，失败保留原文 |
-| `personal-workspace.js` | 一张个人清单、标签／归属、任务关联、完成证据与归档恢复 |
+| `personal-workspace.js` / `.css` | 一张个人清单、标签／归属、任务关联、完成证据与归档恢复 |
 | `scoped-settings.js` / `.css` | 三级配置、来源、Crew 提示词、历史及明确执行的加载证据 |
 | `remote-settings.js` / `.css` | 真实远程配置、登录会话与退出；不声称已部署公网 |
 | `crew-client.js` | JSON、流、字节、资源 URL、桌面能力的统一调用层 |
 | `crew-mock.js` / `dev-server.cjs` | 开发合成数据和显式本机代理，均不创建平行生产后端 |
 
-继续复用现有 `CrewChat`、UI actions/renderer、attention/native approval、Git、存储、用量等模块。`app.js` 保留原功能页的组合职责，通过 `legacy=1` 显式挂载；不是删除既有能力。窗口原生 confirm 已从新任务控制中移除，使用可取消的 DOM 弹窗，避免阻塞整个桌面宿主。
+继续复用现有 `CrewChat`、UI actions/renderer、attention/native approval、Git、存储、用量等模块。`app.js` 保留原功能页的组合职责，通过 `legacy=1` 显式挂载；不是删除既有能力。任务停止直接执行，停止当前回复仍只作用于当前对话。归档、移入垃圾箱及成果恢复使用现有可取消的 DOM 确认，避免阻塞整个桌面宿主。
 
 ## 接口接线
 
