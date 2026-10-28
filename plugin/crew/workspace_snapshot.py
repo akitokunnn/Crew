@@ -30,11 +30,13 @@ class Snapshot:
     def read(self, project_name, observation, *, vscode_error=None):
         agents, error = observation.agents, observation.error
         general_present = board.live_sessions(agents)
+        native_catalog = self.runtime_snapshot()
+        claude_catalog = next((item for item in native_catalog if item['id'] == 'claude'), {})
         with closing(store.connect(self.home)) as conn:
             result = {'project': None, 'projects': [{key: p[key] for key in ('name', 'display_name', 'theme')} for p in board.projects(conn)],
                       'themes': themes.THEMES,
-                      'models': models.MODELS, 'efforts': models.EFFORTS,
-                      'runtimes': self.runtime_snapshot(),
+                      'models': claude_catalog.get('models', []), 'efforts': claude_catalog.get('efforts', []),
+                      'runtimes': native_catalog,
                       'ai': settings.load(conn),
                       'now': self.clock().isoformat(), 'agents_error': error, 'notification': self.notification_status(),
                       'leaders': [], 'members': [], 'decisions': [], 'attention': [],
@@ -173,5 +175,11 @@ class Snapshot:
                 result['decisions'] = decision_flow.enrich(conn, decision_briefs.enrich(conn, result['decisions']))
                 result['attention'] = presentation.attention(conn, sessions, decisions, tasks,
                     {sid: history['events'] for sid, history in histories.items()})
+                for item in result['attention']:
+                    if item['kind'] == 'codex_failed' and item.get('task_id') is not None:
+                        item['codex_task_id'] = item['task_id']
+                    identity = links.get(('decision', item.get('decision_id'))) if item['kind'] == 'decision' else None
+                    item['goal_id'] = identity
+                    item['task_id'] = identity if item['kind'] == 'decision' else item.get('task_id')
             return result
 

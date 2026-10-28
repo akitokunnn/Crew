@@ -1,5 +1,5 @@
 """Conversations HTTP interface; dependencies are supplied explicitly at composition."""
-from .. import board, goals
+from .. import board, goals, task_communication
 from .database import text as _text
 from .registry import Content, Events
 
@@ -19,10 +19,22 @@ def register(routes, db, chat, chat_file, chat_history, chat_session, resolve_na
         text, images = data.get('text', ''), data.get('images', [])
         if not isinstance(text, str) or (not text.strip() and not images):
             raise ValueError('请提供文字或图片')
+        if type(data.get('affects_task', False)) is not bool:
+            raise ValueError('affects_task 必须为布尔值')
+        intent = data.get('intent', 'dialogue')
+        if intent not in ('dialogue', 'work'):
+            raise ValueError('intent 必须为 dialogue 或 work')
+        if data.get('affects_task') and (not data.get('goal_id') or session['role'] != 'member'):
+            raise board.BoardError('整体要求转达只用于明确任务中的成员对话')
         if data.get('goal_id'):
             goals.get(conn, data['goal_id'], project)
-            return chat.goal_controller.send(data['goal_id'], session['session_id'], text,
-                                                  images=images, identity=data.get('message_id'))
+            receipt = chat.goal_controller.send(data['goal_id'], session['session_id'], text,
+                                               images=images, identity=data.get('message_id'), intent=intent)
+            if data.get('affects_task'):
+                forwarded = task_communication.forward_user_input(conn, data['goal_id'], session['session_id'],
+                    receipt['message_id'], read_events=lambda key: chat.journal(key).after(0))
+                return {**receipt, 'leader_forward': forwarded}
+            return receipt
         if not chat.path(session['session_id']).exists():
             chat.journal(session['session_id']).set_status('idle')
         return chat.send(session, text, images=images, identity=data.get('message_id'))

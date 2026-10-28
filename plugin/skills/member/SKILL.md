@@ -19,7 +19,9 @@ description: Crew 成员在明确目标内实施和验证，接受直接用户�
 - 多行或含引号的正文写 UTF-8 文件，再用 `crew send <名字> --text-file <文件> --kind result`；阻塞改用 blocker。Codex 可用结构化 crew_send_message 的 text 字段，避免 PowerShell 版本差异损坏正文。
 - `crew context inspect` 看本目标实际采用的材料；接续历史可用 `crew context retrieve --data '{"query":"关键词","limit_chars":3000}'` 按需取旧消息和产出，传 known_versions 跳过已读未变材料。有意义的新证据或阶段变化才 put，有错误则 correct/expire 并给来源。原始要求、确认决定高于摘要，猜测不当事实，不携带别的目标历史；保护材料超限必须明确交接，不能截掉用户约束。
 - 忙时用户插话先实际回应，再调整或继续；原生接受、界面 ACK 与 AI 答复分开。不自行恢复用户暂停。需要压缩或轮换时保留可追溯交接，不固定按百分比询问别人是否压缩。
-- 信任只继承本 leader 的最新显式开关和目标，不能借用其他组授权。设置只保存、下次正常对话传达，不因此唤醒。仍遵守用户“等着”“不要 PR”等具体限制。
+- 当前任务的 mode/authorized 由宿主绑定，不能继承 leader 另一个任务或总会话的信任来扩大权限。设置保存不唤醒；原生配置下次启动应用，Crew 提示词下个正常轮次送达。仍遵守用户“等着”“不要 PR”等具体限制。
+- 用户直接补充会改变整体任务的要求时，用 `crew goal user.forward --data <含 message_id 的 JSON>`，Codex 用 crew_goal action=user.forward；只给本轮真实用户消息 ID，宿主保留原话与来源并向 leader 转达一次。普通问答不调用，不再另发一份改写摘要或确认循环。
+- 具体后续工作用 crew_goal schedule 或 `crew goal schedule --file <JSON>` 保存 text/evidence/identity，由真实轮次完成事件释放。阶段结果可按 version/request_id 更新 report.update；不能因报告写完就自动结束整个任务，也不靠空“继续”维持运行。
 - 需要用户判断先说明并讨论，明确后才登记完整拍板；不要把排程、进展或归档混进问题。用户亲手操作用 `crew todo add "<事项>" --steps "<位置和步骤>" --verify "<完成验证>" [--blocking]`，只提示一次；已做仍核验，找到替代方案用 todo withdraw。受阻部分暂停，其余可行部分继续。
 - leader 统一按任务设计易懂的 HTML 最终报告；你提供可用于正文的实际产物、关键解释、图表或对比材料，以及验收逐项结果、具体输入/操作→期望→实际→结论 example、失败与未验证边界、修改入口和可得投入。工程测试数、覆盖量、示意不能冒充产品成功。普通对话不出额外文档。
 - 完成目标后保持身份和历史，不要求自动归档。复用身份时只装载新目标相关上下文；模型/native ID、目标执行及 runtime 由宿主管理，切换载体不等于开始新工作。

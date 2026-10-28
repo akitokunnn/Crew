@@ -113,6 +113,28 @@ class ExecutionStore:
             with current.input_lock:
                 return dict(current.context) if current.context is not None else None
 
+    def runtime_observations(self):
+        """Only actual live native responses, without exposing commands or secrets."""
+        with self._lock:
+            running = list(self._processes.items())
+        result = []
+        for key, current in running:
+            if current.process.poll() is not None:
+                continue
+            with current.input_lock:
+                applied = dict(current.applied) if current.applied is not None else None
+                if applied is None:
+                    continue
+                capabilities = next((dict(event) for event in reversed(current.journal.events)
+                                     if event['type'] == 'native_capabilities'), None)
+                result.append({'runtime': current.runtime, 'session_id': current.execution['session_id'] if current.execution else key,
+                    'execution_id': key, **applied,
+                    'source': {'kind': 'native_execution', 'protocol': 'claude:get_settings' if current.runtime == 'claude' else 'codex:thread/start_or_resume'},
+                    'capabilities': capabilities, 'capabilities_loaded': 'not_confirmed' if capabilities is None else 'reported',
+                    **({'discussion_policy': dict(current.discussion_policy)}
+                       if current.runtime == 'codex' and current.discussion_only else {})})
+        return result
+
     def history(self, key):
         journal = self.journal(key)
         with journal.condition:
@@ -140,23 +162,25 @@ class NativeLauncher:
         self._send_message = send_message
         self._control, self._read, self._stderr = control, read, stderr
 
-    def codex(self, session, spec, options, *, resume=False, execution=None, maintenance=None, goal_handler=None):
+    def codex(self, session, spec, options, *, resume=False, execution=None, maintenance=None, goal_handler=None, discussion_only=False):
         from .codex_runtime import CodexRunning
         key = execution['id'] if execution is not None else session['session_id']
         current = CodexRunning(self.home, self.plugin_root, session, spec, options,
                                self.executions.journal(key), self._send_message,
                                process_factory=self.process_factory, resume=resume, execution=execution,
-                               goal_handler=goal_handler, maintenance=maintenance)
+                               goal_handler=goal_handler, maintenance=maintenance, discussion_only=discussion_only)
         self.executions.register(key, current)
         return current
 
     def claude(self, command, *, key, cwd, environment, execution=None, native_id=None,
-               maintenance=None, goal_manifests=None, name='crew-chat'):
+               maintenance=None, goal_manifests=None, name='crew-chat', discussion_only=False, behavior_role=None):
         from . import install, native_process
         install.ensure(self.home, self.plugin_root)
         current = native_process.launch_claude(command, cwd=cwd, environment=environment,
                                               journal=self.executions.journal(key), process_factory=self.process_factory)
         current.maintenance = maintenance
+        current.discussion_only = discussion_only
+        current.behavior_role = behavior_role
         if execution is not None:
             current.execution, current.identity_session_id, current.native_id = execution, execution['session_id'], native_id
             current.goal_manifests = dict(goal_manifests or {})

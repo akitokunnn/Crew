@@ -102,7 +102,7 @@ def deliver(controller, conn):
         if goal['status'] == 'waiting_user':
             goals.resume(conn, goal['id'], actor=item['resolved_by'] if source == 'crew' else board.HUMAN)
         try:
-            result = controller.send(goal['id'], execution['session_id'], text, identity=identity, source=source)
+            result = controller.send(goal['id'], execution['session_id'], text, identity=identity, source=source, intent='work')
             if result.get('accepted') is not True:
                 raise board.Conflict('NativeReceiptUnknown: 原生接收未确认，请先核对会话')
         except (board.BoardError,codex_client.CodexError,OSError) as error:

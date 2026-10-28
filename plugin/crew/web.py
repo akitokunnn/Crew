@@ -20,13 +20,17 @@ from urllib.error import HTTPError, URLError
 
 from . import board, channel, channel_digest, chat, claude_limits, codex_runtime, documents, git_admin, git_ci, git_view, goals, hooks, maintenance, messaging, notifications, runtime_catalog, runtime_switch, runtimes, session_library, session_ops, settings, store, trust_mode, updater, usage, vscode_sessions, workspace_execution, workspace_settings
 from .service_lock import HomeServiceLock
-from . import operations_chat
+from . import operations_chat, tasks
+from . import remote_access
 from . import connections, session_presence, storage_cleanup
 from .storage_service import StorageService, HISTORY_PREFIX
 from . import approval_actions, notification_ports, notice_delivery, workspace_activity, workspace_snapshot
 from .web_api.database import text as _text
 from .web_assets import AssetCatalog
-from .web_api import build as build_api, Request as ApiRequest, Content as ApiContent, Download as ApiDownload, Events as ApiEvents, NotFound as ApiNotFound
+from .task_notifications import TaskNotifications
+from .web_api import build as build_api, Request as ApiRequest, Content as ApiContent, Download as ApiDownload, Events as ApiEvents, NotFound as ApiNotFound, Response as ApiResponse
+
+MAX_REQUEST_BYTES = 90 * 1024 * 1024
 
 
 class Service:
@@ -38,6 +42,7 @@ class Service:
             from .cli import claude_agents
             agents_provider = claude_agents
         self.home, self.plugin_root = Path(home), Path(plugin_root)
+        self.remote_access = remote_access.Access(self.home)
         self.storage = StorageService(self.home, isolated=isolated_sources)
         self.storage.repair_pending()
         self.agents_provider, self.clock = agents_provider, now
@@ -46,9 +51,10 @@ class Service:
         self.version = updater.manifest_version(self.plugin_root)
         self.update_drain_seconds = 10
         self.chat = chat.Manager(home, plugin_root, agents_provider, process_factory)
-        self.runtime_catalog = runtime_catalog.Catalog()
         self.claude_root = Path.home() / ".claude" / "projects" if claude_root is None else Path(claude_root)
         self.codex_root = Path.home() / ".codex" / "sessions" if codex_root is None else Path(codex_root)
+        self.runtime_catalog = runtime_catalog.Catalog(home=self.home, claude_config_root=self.claude_root.parent,
+            codex_config_root=self.codex_root.parent, loaded_provider=self.chat.executions.runtime_observations)
         self.runs_file = self.home / "codex_runs.jsonl" if runs_file is None else Path(runs_file)
         self.agents_lock, self.scan_lock, self.write_lock = threading.Lock(), threading.Lock(), threading.Lock()
         self.channel_digest = channel_digest.Manager(home, self.write_lock, process_factory)
@@ -71,6 +77,8 @@ class Service:
         self.ci_worker = None
         self.connections = connections.Manager(self.home, self.write_lock, self.remote_workspaces(), self.remote_conversations(),
                                                notification_client, lock_status, notification_batch_seconds)
+        origins = self.remote_access.public()['origins']
+        self.task_notifications = TaskNotifications(self.home, self.connections, base_url=origins[0] if origins else None)
         # Marks maintenance left unfinished by a previous service as interrupted; nothing is re-sent.
         self.maintenance = maintenance.Manager(self.home, self.chat, self.write_lock, self.channel_digest.clear_failures)
         self.storage_cleanup = storage_cleanup.Manager(self.home, self.plugin_root, clock=self.now,
@@ -246,12 +254,17 @@ class Service:
     def _poll_notices(self):
         while not self.stop.wait(2):
             self.release_abandoned_update()
+            try:
+                self.task_notifications.tick()
+            except (board.BoardError, sqlite3.Error, OSError):
+                traceback.print_exc()
             with self.chat.work(background=True) as admitted:
                 if not admitted:
                     continue
                 try:
                     with self.chat.lock, closing(store.connect(self.home)) as conn:
                         self.chat.goal_controller.sync(conn)
+                        tasks.finalize_lifecycle_intents(conn)
                         self.chat.goal_controller.resume_operations(conn)
                     self.chat.deliver_messages()
                     self.deliver_notices()
@@ -673,9 +686,9 @@ class Service:
         return approval_actions.Approvals(self.chat.executions).listing(project)
 
 
-    def post(self, path, data, project_name=None):
+    def post(self, path, data, project_name=None, *, access=None):
         query = {} if project_name is None else {'project': [project_name]}
-        return self.api.dispatch('POST', ApiRequest(path, query, data))
+        return self.api.dispatch('POST', ApiRequest(path, query, data, access=access))
 
 
     def archive_session(self, conn, session_id, removed=False, now=None):
@@ -838,7 +851,17 @@ class Handler(BaseHTTPRequestHandler):
         self.close_connection = True
         try:
             while not self.server.service.stop.is_set():
+                try:
+                    self.server.service.remote_access.authorize(self.headers, self.server.server_port,
+                        path='/api/chat/events', method='GET')
+                except remote_access.AccessError:
+                    break
                 events = journal.after(sequence, wait=True)
+                try:
+                    self.server.service.remote_access.authorize(self.headers, self.server.server_port,
+                        path='/api/chat/events', method='GET')
+                except remote_access.AccessError:
+                    break
                 for event in events:
                     self.wfile.write(("id: %s\ndata: %s\n\n" %
                                       (event["seq"], json.dumps(event, ensure_ascii=False))).encode("utf-8"))
@@ -849,13 +872,15 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass
 
-    def _send(self, code, content, content_type="application/json; charset=utf-8", attachment=None, cache_control='no-store'):
+    def _send(self, code, content, content_type="application/json; charset=utf-8", attachment=None, cache_control='no-store', headers=()):
         if isinstance(content, (dict, list)):
             content = json.dumps(content, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(content)))
         self.send_header("Cache-Control", cache_control)
+        for name, value in headers:
+            self.send_header(name, value)
         if attachment is not None:
             self.send_header("Content-Disposition", 'attachment; filename="%s"' % attachment)
         self.end_headers()
@@ -897,7 +922,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(chunk)
 
     def _respond(self, result):
-        if isinstance(result, ApiContent):
+        if isinstance(result, ApiResponse):
+            self._send(result.status, result.body, headers=result.headers)
+        elif isinstance(result, ApiContent):
             if result.sandbox or result.interactive_report:
                 self.send_file_content(result.body, result.media_type, interactive_report=result.interactive_report)
             else:
@@ -918,9 +945,14 @@ class Handler(BaseHTTPRequestHandler):
         local_only = service.api.local_only(url.path)
         if method == 'POST':
             length = int(self.headers.get('Content-Length', '0'))
+            if length > MAX_REQUEST_BYTES:
+                self.close_connection = True
+                self._send(413, {'error': '请求正文超过 90 MiB 上限'})
+                return
             # Drain before an early error; otherwise Windows can reset the socket.
             payload = self.rfile.read(length) if length > 0 else b''
-            if local_only and not self._connection_access():
+            access = service.remote_access.authorize(self.headers, self.server.server_port, path=url.path, method=method)
+            if local_only and not (access['authenticated'] and not access['local'] or self._connection_access()):
                 self._send(403, {'error': '此设置只允许本机 Crew 页面访问'})
                 return
             if self.headers.get('X-Crew') != '1':
@@ -931,19 +963,21 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if length <= 0:
                 raise ValueError('请提供 JSON 请求体')
-            self._respond(service.post(url.path, json.loads(payload.decode('utf-8')), query.get('project', [None])[0]))
+            self._respond(service.post(url.path, json.loads(payload.decode('utf-8')),
+                query.get('project', [None])[0], access=access))
             return
-        if local_only and not self._connection_access():
+        access = service.remote_access.authorize(self.headers, self.server.server_port, path=url.path, method=method)
+        if local_only and not (access['authenticated'] and not access['local'] or self._connection_access()):
             self._send(403, {'error': '此设置只允许本机 Crew 页面访问'})
             return
         if route is not None:
             if route.host_only:
                 hosts = {'127.0.0.1:%d' % self.server.server_port, 'localhost:%d' % self.server.server_port}
-                if self.headers.get_all('Host') not in ([host] for host in hosts):
+                if access['local'] and self.headers.get_all('Host') not in ([host] for host in hosts):
                     self._send(403, {'error': '文件读取只允许本机 Host'})
                     return
             request = ApiRequest(url.path, query, last_event_id=self.headers.get('Last-Event-ID', 0),
-                                 port=self.server.server_port)
+                                 port=self.server.server_port, access=access)
             self._respond(service.api.dispatch('GET', request))
             return
         asset = service.assets.resolve(url.path, history=query.get('project', [''])[0].startswith(HISTORY_PREFIX))
@@ -957,6 +991,8 @@ class Handler(BaseHTTPRequestHandler):
             self._dispatch(method)
         except ApiNotFound as exc:
             self._send(404, {'error': str(exc)})
+        except remote_access.AccessError as exc:
+            self._send(exc.status, {'error': str(exc), 'code': 'unauthorized' if exc.status == 401 else 'forbidden'})
         except board.Conflict as exc:
             self._send(409, {"error": str(exc)})
         except (board.BoardError, ValueError) as exc:

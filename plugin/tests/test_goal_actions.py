@@ -75,7 +75,7 @@ class GoalActionTests(GoalFixture):
         self.assertEqual(goals.get(self.conn, goal['id'])['status'], 'queued')
         self.assertTrue(self.dispatch('start', {'goal_id': goal['id']})['ok'])
         self.assertEqual(self.host.calls[0][0], 'send')
-        self.assertEqual(self.host.calls[0][-1], {'source': 'crew'})
+        self.assertEqual(self.host.calls[0][-1], {'source': 'crew', 'intent': 'work'})
 
     def test_assignment_is_configuration_until_explicitly_started(self):
         goal = self.goal()

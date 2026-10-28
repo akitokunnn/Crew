@@ -58,7 +58,7 @@ async function cleanupResources() {
       finish('tool updates', () => tools?.close())
     ]);
     await Promise.all([...workspaceDataJobs].map(job=>finish('workspace data',()=>job)));
-    await finish('backend', () => backend?.stop());
+    await finish('backend', () => config.smoke ? backend?.stop() : backend?.disconnect());
   })();
   return cleanupPromise;
 }
@@ -305,7 +305,8 @@ function workspaceMenu() {
     { type:'separator' },
     { id:'tab-close', label:'关闭当前标签', accelerator:'CmdOrCtrl+W', click:menuAction(()=>tabs.close(tabs.state().activeId)) },
     { id:'window-close',label:'收起到托盘',click:()=>{if(liveWindow())window.close();} },
-    { id:'app-quit', label:'退出 Crew', accelerator:'CmdOrCtrl+Q', click:()=>app.quit() }
+    { id:'app-quit', label:'退出 Crew 界面', accelerator:'CmdOrCtrl+Q', click:()=>app.quit() },
+    { id:'app-stop-service', label:'停止后台与全部执行并退出', click:menuAction(async()=>{await backend.stopService();app.quit();}) }
   ];
 }
 async function settled() {
@@ -679,7 +680,8 @@ else {
         tray = new Tray(icon);
         tray.setToolTip(config.instanceName+' · 关闭窗口后继续运行');
         tray.setContextMenu(Menu.buildFromTemplate([{ label: '打开 Crew', click: showWindow },
-          { label: '工作区首页', click:menuAction(()=>showHome()) },{ label:'新建工作区…',click:menuAction(()=>showHome('new')) },{ label:'打开已有项目…',click:menuAction(()=>showHome('open')) }, { type: 'separator' }, { label:'关于 Crew',click:menuAction(aboutCrew) },{ label: '退出 Crew', click: () => app.quit() }]));
+          { label: '工作区首页', click:menuAction(()=>showHome()) },{ label:'新建工作区…',click:menuAction(()=>showHome('new')) },{ label:'打开已有项目…',click:menuAction(()=>showHome('open')) }, { type: 'separator' }, { label:'关于 Crew',click:menuAction(aboutCrew) },{ label: '退出 Crew 界面', click: () => app.quit() },
+          {label:'停止后台与全部执行并退出',click:menuAction(async()=>{await backend.stopService();app.quit();})}]));
         tray.on('double-click', showWindow);
       }
       await window.loadURL(homePage);

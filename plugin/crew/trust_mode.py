@@ -166,8 +166,19 @@ def _decision(conn, decision_id):
 def auto_answer(conn, decision_id, reason=None, now=None):
     decision = _decision(conn, decision_id)
     leader_id = _decision_leader(conn, decision)
-    if (leader_id is None or not _leader_active(conn, board.session(conn, leader_id))
-            or not get(conn, decision["project"], leader_id)["enabled"]):
+    link = conn.execute("SELECT * FROM goal_links WHERE kind='decision' AND item_id=?", (decision_id,)).fetchone()
+    if link is not None:
+        from . import goals
+        goal = goals.get(conn, link['goal_id'])
+        control = (conn.execute('SELECT mode,lifecycle,authorized FROM task_controls WHERE goal_id=?', (goal['id'],)).fetchone()
+                   if _table(conn, 'task_controls') else None)
+        enabled = bool(control and control['mode'] == 'automatic' and control['authorized'] and
+                       control['lifecycle'] == 'active' and not goal['manual_pause'] and
+                       goal['status'] in ('queued', 'running', 'waiting_user') and
+                       link['round'] == goal['current_round'] and link['requirement_version'] == goal['requirement_version'])
+    else:
+        enabled = leader_id is not None and get(conn, decision['project'], leader_id)['enabled']
+    if leader_id is None or not _leader_active(conn, board.session(conn, leader_id)) or not enabled:
         return None
     existing = conn.execute("SELECT reason,recorded_at FROM trust_decisions WHERE decision_id=?", (decision_id,)).fetchone()
     if decision["status"] != "open":
@@ -184,7 +195,9 @@ def auto_answer(conn, decision_id, reason=None, now=None):
     board.answer.__wrapped__(conn, decision_id, recommendation, actor="trust:" + decision["session_id"], now=now)
     conn.execute("INSERT INTO trust_decisions(decision_id,reason,recorded_at) VALUES(?,?,?)", (decision_id, reason, timestamp))
     board._event(conn, "trust:decision", decision["project"], "trust:" + decision["session_id"],
-                 {"id": decision_id, "recommendation": recommendation, "reason": reason}, now)
+                 {"id": decision_id, "recommendation": recommendation, "reason": reason,
+                  'goal_id': link['goal_id'] if link is not None else None,
+                  'requirement_version': link['requirement_version'] if link is not None else None}, now)
     return {**_decision(conn, decision_id), "automated": True, "reason": reason, "reason_recorded_at": timestamp}
 
 

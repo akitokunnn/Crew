@@ -4,15 +4,12 @@ import re
 from . import runtimes, store
 
 
-MODELS = [
-    {"id": "claude-opus-5-5", "name": "Opus 5.5", "context_window": 1000000},
-    {"id": "claude-sonnet-5-5", "name": "Sonnet 5.5", "context_window": 1000000},
-    {"id": "claude-fable-5-1", "name": "Fable 5.1", "context_window": 1000000},
-    {"id": "claude-haiku-4-5-20251001", "name": "Haiku 4.5", "context_window": 200000},
-]
+# Model directories come from runtime_catalog; this legacy export remains empty.
+MODELS = []
+# Legacy callers may display these examples; discovery and native configuration
+# determine supported values, rather than this list validating local capability.
 EFFORTS = ["low", "medium", "high", "xhigh", "max"]
 CODEX_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
-HAIKU = "claude-haiku-4-5-20251001"
 INHERIT = object()
 
 
@@ -39,8 +36,7 @@ def validate(model, runtime="claude", catalog=None):
     if runtime == "codex":
         if model is None:
             return None
-        if (not isinstance(model, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}", model) is None
-                or model.lower().startswith("claude") or model.lower() in ("opus", "sonnet", "haiku")):
+        if not isinstance(model, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}", model) is None:
             raise ValueError("不支持的 Codex 模型: " + str(model))
         if catalog is not None and _choice(model, catalog) is None:
             raise ValueError("Codex 模型不在当前运行时清单中: " + model)
@@ -52,8 +48,12 @@ def validate(model, runtime="claude", catalog=None):
 
 def validate_effort(effort, runtime="claude", catalog=None, model=None):
     runtimes.validate(runtime)
-    allowed = EFFORTS if runtime == "claude" else CODEX_EFFORTS
-    choice = _choice(model, catalog) if runtime == "codex" else None
+    if effort is not None and (not isinstance(effort, str) or not effort.strip() or effort != effort.strip()
+                               or len(effort) > 100 or effort.startswith('-')
+                               or any(ord(char) < 32 or ord(char) == 127 for char in effort)):
+        raise ValueError('effort 必须是原生标识格式的非空文本或 null')
+    allowed = None
+    choice = _choice(model, catalog)
     if choice is not None and ("supportedReasoningEfforts" in choice or "efforts" in choice):
         supported = choice.get("efforts") if "efforts" in choice else choice["supportedReasoningEfforts"]
         if not isinstance(supported, list):
@@ -61,7 +61,7 @@ def validate_effort(effort, runtime="claude", catalog=None, model=None):
         allowed = [item.get("reasoningEffort") if isinstance(item, dict) else item for item in supported]
         if any(not isinstance(value, str) or not value.strip() for value in allowed):
             raise ValueError("Codex effort 清单格式不正确")
-    if effort is not None and effort not in allowed:
+    if effort is not None and allowed is not None and effort not in allowed:
         raise ValueError("不支持的 effort: " + str(effort))
     return effort
 
@@ -69,8 +69,6 @@ def validate_effort(effort, runtime="claude", catalog=None, model=None):
 def validate_options(model, effort, runtime="claude", catalog=None):
     validate(model, runtime=runtime, catalog=catalog)
     validate_effort(effort, runtime=runtime, catalog=catalog, model=model)
-    if runtime == "claude" and model == HAIKU and effort is not None:
-        raise ValueError("Haiku 4.5 不支持 effort，请将 effort 设为 null")
 
 
 def get(conn, session_id):

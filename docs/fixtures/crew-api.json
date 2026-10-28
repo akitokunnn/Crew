@@ -1,0 +1,31 @@
+{
+  "contract_version": 1,
+  "synthetic": true,
+  "task": {
+    "id": "bde33c12-fd33-4eac-a8f4-8544359b2f89",
+    "title": "验证短语音识别效果",
+    "primary_project": "voice-demo",
+    "pinned": false,
+    "pinned_at": null,
+    "projects": ["voice-demo", "evaluation-demo"],
+    "workspace_references": [],
+    "leader_session_id": "84aff42c-e1f7-4239-b0e9-a7aee5c45965",
+    "request": "先讨论延迟和准确度的衡量方法。",
+    "acceptance": [{"id": "a1", "title": "明确延迟和准确度的验收方法"}],
+    "constraints": ["不上传私人录音"],
+    "mode": "manual",
+    "authorized": false,
+    "state": "discussion",
+    "lifecycle_pending": null,
+    "waiting_reason": null,
+    "execution_status": "queued",
+    "review_status": "none",
+    "version": 1,
+    "requirement_version": 1,
+    "created_at": "2026-10-28T00:00:00.000Z",
+    "updated_at": "2026-10-28T00:00:00.000Z"
+  },
+  "conflict": {"error": "任务已变化，请保留草稿并重新检查"},
+  "native_receipt": {"message_id": "synthetic-user-message", "accepted": false, "status": "unknown"},
+  "states": ["discussion", "queued", "running", "waiting_user", "stopped", "blocked", "completed", "archived", "trashed"]
+}

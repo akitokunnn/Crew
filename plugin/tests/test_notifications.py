@@ -1028,7 +1028,10 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         journal_native_events.consume(dict(type='result', local_command='compact'))
         self.inbox.process_replies()
         self.assertEqual([row['status'] for row in self.replies()], ['answered', 'running'])
-        self.assertEqual(json.loads(process.stdin.getvalue().splitlines()[-1])['message']['content'], '压缩后继续')
+        sent = json.loads(process.stdin.getvalue().splitlines()[-1])['message']['content']
+        self.assertTrue(sent.startswith('[Crew common]\n'))
+        self.assertTrue(sent.endswith('\n\n压缩后继续'))
+        self.assertEqual(next(event['text'] for event in reversed(journal.events) if event['type'] == 'message'), '压缩后继续')
         self.assertIn('（这一轮没有文字回复）', self.client.sent[-1]['text'])
 
     def test_busy_leader_keeps_messages_queued_and_runs_in_order(self):

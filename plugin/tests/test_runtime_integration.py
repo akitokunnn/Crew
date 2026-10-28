@@ -85,7 +85,9 @@ class ManagedRuntimeTests(ShellFixture, unittest.TestCase):
         sid = result['session_id']
         current = self.manager.processes[sid]
         self.assertEqual(runtimes.get(self.conn, sid)['runtime'], 'codex')
-        self.assertEqual(current.calls[0], ('send', '验证独立目标'))
+        self.assertEqual(current.calls[0][0], 'send')
+        self.assertTrue(current.calls[0][1].startswith('[Crew common]\n'))
+        self.assertTrue(current.calls[0][1].endswith('\n\n验证独立目标'))
         self.manager.set_options(self.conn, sid, {'model': 'codex-available-model', 'effort': 'high'})
         self.assertEqual(current.calls[-1][0], 'options')
         self.manager.interrupt(sid)

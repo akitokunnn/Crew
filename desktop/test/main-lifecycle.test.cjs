@@ -19,9 +19,9 @@ function deferred() {
 // The destroyed-object checks mirror Electron's native lifetime boundary.
 function harness(options = {}) {
   const ready = deferred(), windows = [], trays = [], handlers = new Map(), logs = [], shutdownErrors = [];
-  const calls = { backendStart:0, backendStop:0, toolsClose:0, updatesClose:0, tabsDispose:0, previewDispose:0, tabsOpen:0, uiCalls:0, windowShow:0, nativeQuit:0, relaunch:0, dialogs:0, stat:0 };
+  const calls = { backendStart:0, backendStop:0, backendDisconnect:0, toolsClose:0, updatesClose:0, tabsDispose:0, previewDispose:0, tabsOpen:0, uiCalls:0, windowShow:0, nativeQuit:0, relaunch:0, dialogs:0, stat:0 };
   let readGate = null, projectGate = null, appMenu = null;
-  const config = { home:'C:\\fixture\\crew-home', userData:'C:\\fixture\\crew-desktop', isolated:true, smoke:false, backendSource:'bundled' };
+  const config = { home:'C:\\fixture\\crew-home', userData:'C:\\fixture\\crew-desktop', isolated:true, smoke:options.smoke === true, backendSource:'bundled' };
   class App extends EventEmitter {
     setName() {} setAppUserModelId() {} setPath() {}
     getPath() { return 'C:\\fixture\\app-data'; }
@@ -75,6 +75,7 @@ function harness(options = {}) {
     constructor() { this.url = 'http://127.0.0.1:12345'; }
     async start() { calls.backendStart++; await options.backendStart?.promise; }
     async stop() { calls.backendStop++; await options.backendStop?.promise; }
+    async disconnect() { calls.backendDisconnect++; await options.backendDisconnect?.promise; }
   }
   class Tools {
     async initialize() { await options.toolsInitialize?.promise; }
@@ -139,7 +140,7 @@ function harness(options = {}) {
   return { app, ready, windows, trays, calls, logs, shutdownErrors, handlers, invoke,
     menuItem:id => appMenu.getMenuItemById(id),
     holdRead:gate => { readGate = gate; }, holdProjects:gate => { projectGate = gate; },
-    boot:async () => { ready.resolve(); await tick(); assert.equal(windows.length,1); assert.equal(trays.length,1); } };
+    boot:async () => { ready.resolve(); await tick(); assert.equal(windows.length,1); assert.equal(trays.length,options.smoke ? 0 : 1); } };
 }
 
 test('normal close keeps the shell alive and explicit quit cleans it up exactly once', async () => {
@@ -148,17 +149,26 @@ test('normal close keeps the shell alive and explicit quit cleans it up exactly 
   h.trays[0].emit('double-click'); assert.equal(h.calls.windowShow,1);
   await h.invoke('desktop:chrome-ready'); assert.equal(h.calls.uiCalls,1);
   h.app.quit(); h.app.quit(); await tick();
-  assert.equal(h.calls.backendStop,1); assert.equal(h.calls.toolsClose,1); assert.equal(h.calls.updatesClose,1);
+  assert.equal(h.calls.backendDisconnect,1);assert.equal(h.calls.backendStop,0); assert.equal(h.calls.toolsClose,1); assert.equal(h.calls.updatesClose,1);
   assert.equal(h.calls.nativeQuit,1); assert.equal(h.trays[0].isDestroyed(),true);
   assert.deepEqual(h.logs,[]); assert.deepEqual(h.shutdownErrors,[]);
 });
 
-test('quit waits for a workspace data operation before stopping its backend and never reopens disposed tabs',async()=>{
+test('isolated smoke quit stops its self-owned backend instead of detaching it', async () => {
+  const h = harness({ smoke:true }); await h.boot();
+  h.app.quit(); h.app.quit(); await tick();
+  assert.equal(h.calls.backendStop,1);
+  assert.equal(h.calls.backendDisconnect,0);
+  assert.equal(h.calls.nativeQuit,1);
+  assert.deepEqual(h.logs,[]); assert.deepEqual(h.shutdownErrors,[]);
+});
+
+test('quit waits for a workspace data operation before disconnecting its backend and never reopens disposed tabs',async()=>{
   const storageWrite=deferred(),h=harness({storageWrite});await h.boot();
   const opening=h.invoke('desktop:open','demo');await tick();
-  h.app.quit();await tick();assert.equal(h.calls.backendStop,0);assert.equal(h.calls.nativeQuit,0);
+  h.app.quit();await tick();assert.equal(h.calls.backendDisconnect,0);assert.equal(h.calls.nativeQuit,0);
   storageWrite.resolve({});await opening;await tick();
-  assert.equal(h.calls.backendStop,1);assert.equal(h.calls.nativeQuit,1);assert.equal(h.calls.tabsOpen,0);
+  assert.equal(h.calls.backendDisconnect,1);assert.equal(h.calls.backendStop,0);assert.equal(h.calls.nativeQuit,1);assert.equal(h.calls.tabsOpen,0);
   assert.deepEqual(h.logs,[]);assert.deepEqual(h.shutdownErrors,[]);
 });
 
@@ -195,16 +205,16 @@ for (const boundary of ['backendStart','toolsInitialize']) {
     h.ready.resolve(); await tick();
     h.app.quit(); await tick(); gate.resolve(); await tick();
     assert.equal(h.windows.length,0); assert.equal(h.trays.length,0);
-    assert.equal(h.calls.backendStop,1);
+    assert.equal(h.calls.backendDisconnect,1);assert.equal(h.calls.backendStop,0);
     assert.equal(h.calls.nativeQuit,1);
   });
 }
 
-test('repeated quit shares one cleanup and still stops the backend when an updater close fails', async () => {
+test('repeated quit shares one cleanup and still disconnects the backend when an updater close fails', async () => {
   const h = harness({ updatesError:new Error('fixture updater close failed') }); await h.boot();
   h.app.quit(); h.app.quit(); await tick();
   assert.equal(h.calls.tabsDispose,1); assert.equal(h.calls.previewDispose,1);
-  assert.equal(h.calls.updatesClose,1); assert.equal(h.calls.toolsClose,1); assert.equal(h.calls.backendStop,1);
+  assert.equal(h.calls.updatesClose,1); assert.equal(h.calls.toolsClose,1); assert.equal(h.calls.backendDisconnect,1);assert.equal(h.calls.backendStop,0);
   assert.equal(h.calls.nativeQuit,1);
   assert.deepEqual(h.shutdownErrors,[]);
   assert(h.logs.flat().some(value => String(value).includes('fixture updater close failed')));
@@ -239,27 +249,27 @@ test('opening a workspace cannot mutate disposed tabs when discovery finishes af
   assert.equal(h.calls.tabsOpen,0);
 });
 
-test('shutdown cancels metadata that a pending connection change awaits, then protects its commit before stopping the backend',async () => {
+test('shutdown cancels metadata that a pending connection change awaits, then protects its commit before disconnecting the backend',async () => {
   const check=deferred(),commit=deferred(),h=harness({updateCheck:check,launchCommit:commit});await h.boot();
   const applying=h.invoke('desktop:launch-settings-apply',{});await tick();
   h.app.quit();await tick();
   try {
     assert.equal(h.calls.updatesClose,1,'metadata cancellation must not wait behind a connection change awaiting that metadata');
     assert.equal(h.calls.toolsClose,1);
-    assert.equal(h.calls.backendStop,0,'connection commit must finish before the final backend stop');
+    assert.equal(h.calls.backendDisconnect,0,'connection commit must finish before the final backend disconnect');
   } finally { check.resolve();commit.resolve();await applying;await tick(); }
-  assert.equal(h.calls.backendStop,1);assert.equal(h.calls.nativeQuit,1);assert.equal(h.calls.relaunch,0);
+  assert.equal(h.calls.backendDisconnect,1);assert.equal(h.calls.backendStop,0);assert.equal(h.calls.nativeQuit,1);assert.equal(h.calls.relaunch,0);
 });
 
 test('a portable executable check finishing after quit cannot schedule relaunch',async () => {
   const stat=deferred(),h=harness({statGate:stat,env:{PORTABLE_EXECUTABLE_FILE:'C:\\fixture\\Crew.exe'}});await h.boot();
   const applying=h.invoke('desktop:launch-settings-apply',{});await tick();assert.equal(h.calls.stat,1);
   h.app.quit();await tick();stat.resolve({isFile:() => true});await applying;await tick();
-  assert.equal(h.calls.relaunch,0);assert.equal(h.calls.backendStop,1);assert.equal(h.calls.nativeQuit,1);
+  assert.equal(h.calls.relaunch,0);assert.equal(h.calls.backendDisconnect,1);assert.equal(h.calls.backendStop,0);assert.equal(h.calls.nativeQuit,1);
 });
 
 test('a logs lookup finishing during shutdown cannot open a new dialog',async () => {
-  const access=deferred(),stop=deferred(),h=harness({accessGate:access,backendStop:stop});await h.boot();
+  const access=deferred(),stop=deferred(),h=harness({accessGate:access,backendDisconnect:stop});await h.boot();
   h.menuItem('app-logs').click();await tick();h.app.quit();await tick();
   access.reject(Object.assign(new Error('fixture logs do not exist'),{code:'ENOENT'}));await tick();
   try { assert.equal(h.calls.dialogs,0);assert.deepEqual(h.logs,[]); }

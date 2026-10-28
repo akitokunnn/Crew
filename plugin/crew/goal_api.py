@@ -104,7 +104,7 @@ def post(control, conn, project, path, data):
         elif action == 'start':
             if value['status'] != 'queued':
                 raise board.Conflict('只有待开始的目标可以开始')
-            control.send(identity, value['leader_session_id'], value['requirements']['request'])
+            control.send(identity, value['leader_session_id'], value['requirements']['request'], intent='work')
         elif action == 'resume':
             review = goals.resume_review(conn, identity)
             if review is not None:
@@ -115,7 +115,7 @@ def post(control, conn, project, path, data):
                 goals.transition(conn, identity, 'running')
                 control.sync(conn, identity)
             else:
-                control.send(identity, value['leader_session_id'], '用户恢复当前目标，请按原始要求与已有证据继续。')
+                control.send(identity, value['leader_session_id'], '用户恢复当前目标，请按原始要求与已有证据继续。', intent='work')
         elif action == 'cancel':
             goals.request_cancel(conn, identity)
             control.sync(conn, identity)

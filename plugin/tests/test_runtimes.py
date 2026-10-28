@@ -88,17 +88,19 @@ class RuntimeModelTests(RuntimeFixture):
         with self.assertRaises(ValueError):
             models.validate_options("bad model", "high")
         models.validate_options('claude-future-custom', 'high')
-        with self.assertRaises(ValueError):
-            models.validate_options(models.HAIKU, "low")
+        # A model identifier does not establish its supported effort values.
+        models.validate_options('claude-haiku-4-5-20251001', 'low')
 
     def test_codex_model_ids_are_not_a_stale_static_claude_allowlist(self):
         runtimes.set(self.conn, "member-id", "codex")
         models.set(self.conn, "member-id", "gpt-future-codex", "xhigh")
         self.assertEqual(models.get(self.conn, "member-id"), {"model": "gpt-future-codex", "effort": "xhigh"})
-        for model, effort in (("claude-opus-5-5", "high"), ("sonnet", "high"), ("gpt-new", "arbitrary"),
-                              ("bad model", "high"), ([], "high")):
+        models.validate_options('gpt-new', 'user-selected-future-effort', runtime='codex')
+        for model, effort in (("gpt-new", "-invalid"), ("gpt-new", "high\nother"), ("gpt-new", []), ("bad model", "high"), ([], "high")):
             with self.subTest(model=model, effort=effort), self.assertRaises(ValueError):
                 models.validate_options(model, effort, runtime="codex")
+        models.validate_options('claude-custom-provider', 'high', runtime='codex')
+        models.validate_options('sonnet', 'high', runtime='codex')
         models.set(self.conn, "member-id", None, None)
         self.assertEqual(models.get(self.conn, "member-id"), {"model": None, "effort": None})
 

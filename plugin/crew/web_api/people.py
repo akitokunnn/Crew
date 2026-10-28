@@ -39,7 +39,7 @@ def register(routes, db, adopt, find_candidate, chat, library_adopt, library_lis
         if not isinstance(member_session_ids, list) or any(not isinstance(sid, str) or not sid.strip() for sid in member_session_ids):
             raise ValueError("member_session_ids 必须是会话 ID 数组")
         name, task = _text(data, "name"), _optional_text(data, "task")
-        selected = settings.resolve(conn, 'leader') if data.get('runtime') is None else {'runtime': runtimes.validate(data['runtime']), 'model': None, 'effort': None}
+        selected = settings.resolve(conn, 'leader', project=project) if data.get('runtime') is None else {'runtime': runtimes.validate(data['runtime']), 'model': None, 'effort': None}
         runtime = selected['runtime']
         model = models.validate(data['model'] if 'model' in data else selected['model'], runtime=runtime)
         effort = models.validate_effort(data['effort'] if 'effort' in data else selected['effort'], runtime=runtime)
@@ -57,10 +57,16 @@ def register(routes, db, adopt, find_candidate, chat, library_adopt, library_lis
                           member_session_ids=member_session_ids, model=model, effort=effort, runtime=runtime)
         for candidate, member_name in candidate_members:
             adopt(conn, project, candidate, member_name, None, now)
-        return chat.start(conn, project, name, task, role="leader",
+        result = chat.start(conn, project, name, task, role="leader",
                                members=members, member_session_ids=member_session_ids + [candidate["session_id"] for candidate, _ in candidate_members],
                                cwd=_optional_text(data, "cwd"),
                                new_worktree=_optional_text(data, "new_worktree"), now=now, model=model, effort=effort, runtime=runtime)
+        if selected.get('resolution'):
+            result['selection_resolution'] = selected['resolution']
+            board._event(conn, 'runtime:selected', project, board.HUMAN,
+                {'session_id': result.get('id') or result.get('session_id'), 'role': 'leader',
+                 'resolution': selected['resolution']}, now)
+        return result
 
     routes.add('POST', '/api/leader', db.command(post_leader), model_work=True)
 

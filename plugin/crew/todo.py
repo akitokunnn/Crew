@@ -116,6 +116,9 @@ def _route(conn, item):
 
 
 def _notify(conn, item, text, now, source="web", route=None, sender=board.HUMAN):
+    from . import personal
+    if personal.has_todo_tasks(conn, item['id']):
+        return personal.todo_changed(conn, item, text, now, sender=sender)
     from . import goal_links
     link = goal_links.get(conn, 'todo', item['id'])
     if link:
@@ -215,7 +218,10 @@ def _operation(conn, item, version):
 
 
 def _remove_pending_notification(conn, project_name, notification):
-    if notification["kind"] == "leader_notice":
+    if notification['kind'] == 'personal':
+        from . import personal
+        personal.cancel_todo_notification(conn, notification)
+    elif notification["kind"] == "leader_notice":
         conn.execute("DELETE FROM leader_notices WHERE id=? AND project=? AND session_id=? AND sent_at IS NULL",
                      (notification["id"], project_name, notification["session_id"]))
     elif notification["kind"] == "handoff":

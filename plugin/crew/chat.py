@@ -359,6 +359,18 @@ class Manager:
                 return self.goal_controller.launch_maintenance(session, spec, maintenance)
             return self.goal_controller.launch(session, spec)
         session_id = session["session_id"]
+        with closing(store.connect(self.home)) as conn:
+            from . import personal
+            if personal.is_assistant(conn, session_id) and conn.execute(
+                    'SELECT 1 FROM session_runtimes WHERE session_id=?', (session_id,)).fetchone() is None:
+                selected = settings.resolve(conn, purpose='assistant', project=session['project'], session_id=session_id)
+                runtimes.set(conn, session_id, selected['runtime'])
+                models.set(conn, session_id, selected['model'], selected['effort'], runtime=selected['runtime'])
+                if selected.get('resolution') is not None:
+                    detail = {'role': 'assistant', 'selection': {key: selected[key] for key in ('runtime', 'model', 'effort')},
+                              'resolution': selected['resolution']}
+                    board._event(conn, 'runtime:selected', session['project'], session_id, detail, None)
+                    self.journal(session_id).emit('runtime_selection', **detail)
         if resume:
             self._check_offline(session)
         with closing(store.connect(self.home)) as conn:
@@ -366,7 +378,10 @@ class Manager:
             runtime = runtimes.get(conn, session_id)["runtime"]
             native_id=runtimes.get(conn,session_id)['native_id']
             pending=runtime_switch.pending(conn,session_id)
-            permission_mode = settings.get_execution(conn)['claude']
+            from . import personal
+            prompt_role = 'assistant' if personal.is_assistant(conn, session_id) else session['role']
+            permission_mode = settings.effective(conn, project=session['project'], session_id=session_id,
+                purpose=prompt_role if prompt_role in ('leader', 'member', 'assistant') else 'default')['execution']['claude']
         native_events = {'message', 'assistant', 'text', 'tool_result', 'input_delivery', 'turn_result',
                          'identity_handoff', 'subagent', 'compact', 'compact_request'}
         fresh_native = not any(event['type'] in native_events for event in self.journal(session_id).events)
@@ -391,7 +406,7 @@ class Manager:
         environment.update(CREW_SESSION_ID=session_id, CREW_HOME=str(self.home.resolve()))
         environment['PATH'] = str(self.home.resolve() / 'bin') + os.pathsep + environment.get('PATH', '')
         self.native_launcher.claude(command, key=session_id, cwd=session["cwd"],
-                                    environment=environment, maintenance=maintenance)
+                                    environment=environment, maintenance=maintenance, behavior_role=prompt_role)
         return command
 
     @_admitted
@@ -460,7 +475,7 @@ class Manager:
                     with self.lock:
                         if bound_goal is not None:
                             goals.assign(conn, bound_goal, session_id, task, actor=caller_session_id)
-                            goal_receipt.update(self.goal_controller.send(bound_goal, session_id, task, source='crew'))
+                            goal_receipt.update(self.goal_controller.send(bound_goal, session_id, task, source='crew', intent='work'))
                             return
                         plan["command"] = self._launch(session, spec)
                         text = (spec["task"] if chosen_runtime == "codex" else "Read the file " + spec["md"] +
@@ -483,11 +498,28 @@ class Manager:
         identity = identity or str(uuid.uuid4())
         original_text=text if display_text is None else display_text
         handoff_id=None
+        prompt_manifest = None
+        prompt_digest = None
         git_revision = getattr(current, 'git_context_revision', None)
         if text.strip() != '/compact':
             with closing(store.connect(self.home)) as handoff_conn:
                 git_revision, git_context = git_admin.input_context(handoff_conn, logical, git_revision, self.plugin_root)
                 if current.execution is None:
+                    from . import behavior_prompts, personal
+                    person = board.session(handoff_conn, session_id)
+                    role = 'assistant' if personal.is_assistant(handoff_conn, session_id) else getattr(current, 'behavior_role', None) or person['role']
+                    role = role if role in ('leader', 'member', 'assistant') else 'member'
+                    prompt_keys = ('common', 'assistant', 'context') if role == 'assistant' else ('common', role, 'report', 'context')
+                    resolved_prompts = behavior_prompts.resolve(handoff_conn, project=person['project'], session_id=session_id,
+                                                               keys=prompt_keys)
+                    prompt_digest = hashlib.sha256(json.dumps(resolved_prompts, ensure_ascii=False, sort_keys=True).encode('utf-8')).hexdigest()
+                    if getattr(current, 'behavior_prompt_digest', None) != prompt_digest:
+                        prompt_manifest = resolved_prompts
+                        text = behavior_prompts.render(prompt_manifest) + '\n\n' + text
+                    if role == 'assistant':
+                        text = (personal.assistant_context(handoff_conn, session_id)['instructions'] + '\n'
+                                '本次输入消息标识：' + identity + '；真实来源：' + source + '。'
+                                '个人工具引用该message_id，宿主会核对实际用户原话；AI消息不授予用户权限。\n\n' + text)
                     text,handoff_id=runtime_switch.input_text(handoff_conn,session_id,text,identity)
                     summary = self.goal_controller.general_context(handoff_conn, session_id)
                     if summary:
@@ -499,8 +531,11 @@ class Manager:
         if images:
             directory = self.home / "chat" / "files" / session_id
             directory.mkdir(parents=True, exist_ok=True)
+            file_stem = hashlib.sha256(identity.encode('utf-8')).hexdigest()
             for index, image in enumerate(images, 1):
-                name = identity + "-" + str(index) + IMAGE_TYPES[image["media_type"]]
+                # Transport identities stay unchanged in receipts and journals;
+                # a caller-controlled ID must never become a filesystem path.
+                name = file_stem + "-" + str(index) + IMAGE_TYPES[image["media_type"]]
                 (directory / name).write_bytes(base64.b64decode(image["data"], validate=True))
                 files.append(name)
             content = [{"type": "image", "source": {"type": "base64", "media_type": image["media_type"],
@@ -514,6 +549,10 @@ class Manager:
                 if handoff_id is not None:
                     with closing(store.connect(self.home)) as handoff_conn:
                         runtime_switch.accepted(handoff_conn,session_id,identity,handoff_id)
+                if prompt_manifest:
+                    with closing(store.connect(self.home)) as prompt_conn:
+                        behavior_prompts.record_applied(prompt_conn, session_id, prompt_manifest, status='sent', identity='prompt:' + session_id + ':' + identity)
+                    current.behavior_prompt_digest = prompt_digest
                 return result
             except Exception as exc:
                 with closing(store.connect(self.home)) as handoff_conn:runtime_switch.failed(handoff_conn,session_id,exc)
@@ -532,6 +571,10 @@ class Manager:
                 current.process.stdin.write(json.dumps(message, ensure_ascii=False) + "\n")
                 current.process.stdin.flush()
                 current.git_context_revision = git_revision
+                if prompt_manifest:
+                    with closing(store.connect(self.home)) as prompt_conn:
+                        behavior_prompts.record_applied(prompt_conn, session_id, prompt_manifest, status='sent', identity='prompt:' + session_id + ':' + identity)
+                    current.behavior_prompt_digest = prompt_digest
         except Exception as exc:
             with closing(store.connect(self.home)) as handoff_conn:runtime_switch.failed(handoff_conn,session_id,exc)
             raise
@@ -620,11 +663,6 @@ class Manager:
                 raise board.Conflict(MAINTENANCE_HELD)
             with closing(store.connect(self.home)) as routing_conn:
                 session = workspace_execution.execution_session(routing_conn, session)
-                if '_execution' not in session:
-                    if messaging.stopped(routing_conn, session['session_id']):
-                        if source not in ('human', 'qq', 'lark'):
-                            raise board.Conflict('用户已停止此会话；排队消息不能自动恢复它')
-                        messaging.clear_stop(routing_conn, session['session_id'])
             if self.closed:
                 raise board.BoardError("网页服务正在关闭")
             if session["status"] == "closed":
@@ -638,11 +676,18 @@ class Manager:
                     raise board.Conflict("同一消息标识不能发送不同内容")
                 if prior['status'] == 'accepted':
                     return {'ok': True, 'message_id': identity, 'accepted': True,
-                            'delivery': prior['delivery'], 'duplicate': True}
+                            'delivery': prior['delivery'], 'duplicate': True,
+                            **({'selection_resolution': prior['selection_resolution']} if 'selection_resolution' in prior else {})}
                 if prior['status'] != 'rejected':
                     raise board.Conflict("上次输入的原生接收状态未确认，请先核对会话，避免重复执行")
             elif identity in journal.messages:
                 raise board.Conflict("这条历史输入没有可确认的接收回执，请先核对会话")
+            if '_execution' not in session:
+                with closing(store.connect(self.home)) as routing_conn:
+                    if messaging.stopped(routing_conn, session['session_id']):
+                        if source not in ('human', 'qq', 'lark'):
+                            raise board.Conflict('用户已停止此会话；排队消息不能自动恢复它')
+                        messaging.clear_stop(routing_conn, session['session_id'])
             if '_execution' not in session and session['role'] == 'member' and source not in ('human', 'qq', 'lark'):
                 with closing(store.connect(self.home)) as check_conn:
                     active = next((row['id'] for row in check_conn.execute(
@@ -660,6 +705,8 @@ class Manager:
                     spec, _ = self._resume_spec(spec_conn, session)
                 self._launch(session, spec, resume=True)
             delivery = 'steered' if steering else 'started'
+            selection = next(({'selection_resolution': event['resolution']} for event in reversed(journal.events)
+                if event['type'] == 'runtime_selection' and event['selection']['runtime'] == self.processes[session_id].runtime), {})
             journal.emit('input_delivery', message_id=identity, digest=digest, status='submitted', delivery=delivery)
             try:
                 identity = self._send(session_id, text, display_text=display_text,
@@ -672,9 +719,9 @@ class Manager:
                 journal.emit('input_delivery', message_id=identity, digest=digest, status='unknown',
                              delivery=delivery, error=type(exc).__name__, detail=str(exc))
                 raise
-            journal.emit('input_delivery', message_id=identity, digest=digest, status='accepted', delivery=delivery)
+            journal.emit('input_delivery', message_id=identity, digest=digest, status='accepted', delivery=delivery, **selection)
         return {"ok": True, 'message_id': identity, 'accepted': True,
-                'delivery': delivery}
+                'delivery': delivery, **selection}
 
     @_admitted
     def compact(self, session, caller_session_id=None, after_turn=False):
@@ -958,6 +1005,7 @@ class Manager:
             if subtype == "get_settings" and response["subtype"] == "success":
                 applied = response["response"]["applied"]
                 current.applied = {"model": applied["model"], "effort": applied["effort"]}
+                current.journal.emit('native_settings', runtime='claude', source='claude:get_settings', **current.applied)
             elif subtype == "get_context_usage" and response["subtype"] == "success":
                 usage = response["response"]
                 current.context = {"used": usage["totalTokens"], "max": usage["maxTokens"], "source": "live"}
@@ -1000,12 +1048,6 @@ class Manager:
             if "effort" in changes and changes["effort"] is None and self.running(session_id):
                 raise ValueError("运行中的会话不能将 effort 恢复默认；请选择具体档位，或停止后设为 null 以在下次启动跟随账号设置")
             options = {**models.get(conn, session_id), **changes}
-            if changes.get("model") == models.HAIKU and "effort" not in changes:
-                options["effort"] = None
-            if "model" not in changes and options["model"] is None and self.running(session_id):
-                applied = self.applied(session_id)
-                if applied is not None and applied["model"] == models.HAIKU:
-                    models.validate_options(applied["model"], options["effort"])
             models.validate_options(**options)
             models.set(conn, session_id, **options, now=now)
             if not self.running(session_id):
@@ -1026,6 +1068,8 @@ class Manager:
                 raise board.BoardError("会话没有在运行")
             if not self.busy(session_id):
                 raise board.Conflict("会话当前空闲，没有正在进行的轮次")
+            if current.execution is not None:
+                self.goal_controller.interrupt_turn(current.execution['id'])
             if getattr(current, "runtime", "claude") == "codex":
                 current.interrupt()
                 return {"ok": True}
