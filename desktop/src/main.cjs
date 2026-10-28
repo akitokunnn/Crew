@@ -125,7 +125,7 @@ ipcMain.on('desktop:tabs-layout',(event,bounds)=>{
 });
 ipcMain.handle('desktop:chrome-action', async (event, command, value) => {
   trustedChrome(event);
-  if (command === 'home') return showHome();
+  if (command === 'home') return showWorkbench();
   if (command === 'admin') return showHome('admin');
   if (command === 'settings') return showHome('settings');
   if (command === 'back') return tabs.back();
@@ -157,13 +157,20 @@ async function showHome(action = null, workspace = null) {
   else if(action)pendingAction=action;
   if (!config.smoke) showWindow();
 }
+async function showWorkbench(url = null) {
+  if (!liveWindow()) return;
+  if (backend.startupError || new URL(backend.url).port === '0') return showHome('admin');
+  const target=window;
+  await tabs.openWorkbench(url);
+  if (liveWindow(target) && !config.smoke) showWindow();
+}
 function actionError(error) {
   console.error('Crew action failed:',error);
   if(!config.smoke && liveWindow())void dialog.showMessageBox(window,{type:'error',title:'Crew',message:'这个操作暂时没有完成',detail:error.message,buttons:['好'],noLink:true})
     .catch(failure=>console.error('Crew error dialog failed:',failure));
 }
 function menuAction(action) { return ()=>{ if (!liveWindow()) return; Promise.resolve().then(()=>{if(liveWindow())return action();}).catch(actionError); }; }
-async function openProject(name) {
+async function openProject(name, navigationIntent = null) {
   if (!liveWindow()) return false;
   const target = window;
   if(new URL(backend.url).port==='0')throw new Error(backend.startupError||'后台尚未连接，请查看系统管理员');
@@ -184,7 +191,14 @@ async function openProject(name) {
   const alreadyPrepared=preparedWorkspaces.delete(project.name);
   if(!alreadyOpen&&!alreadyPrepared)project=await storage.prepare(project,backend.url,chooseHistory,storageProgress,workspaceDataRequest);
   if(!project||!liveWindow(target))return false;
-  await tabs.open(project);return true;
+  let intent;
+  if(navigationIntent?.url){
+    const destination=new URL(navigationIntent.url);
+    destination.searchParams.set('project',project.name);
+    if(project.read_only)destination.searchParams.set('legacy','1');
+    intent={url:destination.href};
+  }
+  await tabs.open(project,intent);return true;
 }
 function storageProgress(message){if(liveWindow())window.webContents.send('desktop:storage-progress',message);}
 async function chooseHistory({kind,discovery}) {
@@ -262,7 +276,7 @@ function keyboard(event,input){
   const key=input.key.toLowerCase(),ctrl=input.control||input.meta;
   let action;
   if(ctrl&&!input.alt&&key==='tab')action=()=>tabs.cycle(input.shift?-1:1);
-  else if(ctrl&&!input.alt&&!input.shift&&key==='t')action=()=>showHome();
+  else if(ctrl&&!input.alt&&!input.shift&&key==='t')action=()=>showWorkbench();
   else if(ctrl&&!input.alt&&!input.shift&&key==='w')action=()=>tabs.close(tabs.state().activeId);
   else if((ctrl&&!input.alt&&key==='r')||key==='f5')action=()=>tabs.reload();
   else if(input.alt&&!ctrl&&key==='arrowleft')action=()=>tabs.back();
@@ -282,8 +296,8 @@ async function showLogs() {
 }
 function workspaceMenu() {
   return [
-    { id:'workspace-home', label:'工作区首页', accelerator:'CmdOrCtrl+Shift+O', click:menuAction(()=>showHome()) },
-    { id:'workspace-new-tab', label:'打开工作区标签', accelerator:'CmdOrCtrl+T', click:menuAction(()=>showHome()) },
+    { id:'workspace-new-tab', label:'工作台', accelerator:'CmdOrCtrl+T', click:menuAction(()=>showWorkbench()) },
+    { id:'workspace-home', label:'工作区管理', accelerator:'CmdOrCtrl+Shift+O', click:menuAction(()=>showHome()) },
     { id:'workspace-new', label:'新建工作区…', accelerator:'CmdOrCtrl+N', click:menuAction(()=>showHome('new')) },
     { id:'workspace-open', label:'打开已有项目…', accelerator:'CmdOrCtrl+O', click:menuAction(()=>showHome('open')) },
     { id:'workspace-import', label:'导入工作区包…', click:menuAction(importWorkspace) },
@@ -335,8 +349,30 @@ async function waitForChrome(page) {
   }
   throw new Error('窗口外壳没有完成加载');
 }
+async function smokeWorkbench() {
+  const deadline=Date.now()+15000;
+  while(Date.now()<deadline){
+    const tab=tabs?.entries.get('workbench'),contents=tab?.view.webContents;
+    if(contents&&!contents.isDestroyed()&&!contents.isLoading()){
+      const url=new URL(contents.getURL());
+      if(url.origin===backend.url&&url.pathname==='/'&&!url.searchParams.size){
+        const document=await contents.executeJavaScript('({ready:document.body.classList.contains("workbench")&&Boolean(document.querySelector("#main h1")),mode:window.CrewClient?.current?.mode,nodeAvailable:typeof require!=="undefined",bridgeAvailable:typeof window.crewDesktop!=="undefined"})');
+        if(document.ready){
+          const preferences=contents.getLastWebPreferences();
+          const evidence={...document,url:url.href,selected:tabs.state().activeId==='workbench',preload:preferences.preload||null,
+            contextIsolation:preferences.contextIsolation,nodeIntegration:preferences.nodeIntegration,sandbox:preferences.sandbox,webSecurity:preferences.webSecurity,ready_at:Date.now()};
+          if(document.mode!=='real'||document.nodeAvailable||document.bridgeAvailable||evidence.preload||!evidence.selected||!preferences.contextIsolation||preferences.nodeIntegration||!preferences.sandbox||!preferences.webSecurity)throw Error('默认工作台没有保持真实数据与隔离权限');
+          return{contents,evidence};
+        }
+      }
+    }
+    await new Promise(resolve=>setTimeout(resolve,25));
+  }
+  throw Error('默认真实服务工作台没有完成加载');
+}
 async function visualEvidence(target, evidence) {
   evidence.visual = {};
+  await showHome();
   await window.webContents.executeJavaScript('document.getElementById("new").click(); document.getElementById("name").value="新的工作区"');
   await settled();
   const form = target.replace(/\.json$/i, '') + '-new.png';
@@ -369,9 +405,9 @@ async function visualEvidence(target, evidence) {
   const shellShot=target.replace(/\.json$/i,'')+'-tabs.png';
   await fs.writeFile(shellShot,(await window.webContents.capturePage()).toPNG());evidence.visual.tabsShell=shellShot;
   await window.webContents.executeJavaScript('document.querySelector(".crew-chrome-brand").click()');
-  for(let attempt=0;attempt<100&&tabs.state().activeId!=='home';attempt++)await new Promise(resolve=>setTimeout(resolve,25));
-  if(window.webContents.getURL()!==homePage||tabs.state().activeId!=='home')throw new Error('标题栏不能返回工作区首页');
-  evidence.visual.homeNavigation = true;
+  for(let attempt=0;attempt<100&&tabs.state().activeId!=='workbench';attempt++)await new Promise(resolve=>setTimeout(resolve,25));
+  if(window.webContents.getURL()!==homePage||tabs.state().activeId!=='workbench')throw new Error('标题栏不能返回工作台');
+  evidence.visual.workbenchNavigation = true;
   if (backend.owned) {
     await backend.stop();
     await tabs.open(project);tabs.reload();
@@ -382,9 +418,9 @@ async function visualEvidence(target, evidence) {
     await fs.writeFile(recovery,(await window.webContents.capturePage()).toPNG());
     evidence.visual.recovery=recovery; evidence.visual.recoveryChrome=await chromeEvidence();
     await window.webContents.executeJavaScript('document.querySelector("#crew-tab-recovery button:last-child").click()');
-    for(let attempt=0;attempt<100&&tabs.state().activeId!=='home';attempt++)await new Promise(resolve=>setTimeout(resolve,25));
-    if(tabs.state().activeId!=='home')throw new Error('工作区恢复页不能回首页');
-    evidence.visual.recoveryHomeNavigation=true;
+    for(let attempt=0;attempt<100&&tabs.state().activeId!=='workbench';attempt++)await new Promise(resolve=>setTimeout(resolve,25));
+    if(tabs.state().activeId!=='workbench')throw new Error('工作区恢复页不能回工作台');
+    evidence.visual.recoveryWorkbenchNavigation=true;
   }
 }
 
@@ -410,7 +446,8 @@ handle('desktop:admin-status',async()=>{
         return {...status,incidents:[...status.incidents,{at:new Date().toISOString(),level:'warning',message:'后台尚不能读取工作区：'+error.message}]};
       }
       if(liveWindow()&&backend.startupError&&tabs.state().tabs.every(tab=>tab.project===null)){
-        tabs.reconnect(recovered);backend.url=recovered;backend.startupError=null;
+        await tabs.reconnect(recovered);
+        if(liveWindow()&&backend.startupError){backend.url=recovered;backend.startupError=null;}
       }
     }
   }
@@ -552,19 +589,32 @@ handle('desktop:ready', async info => {
     const target = path.resolve(config.smokeOutput);
     await fs.mkdir(path.dirname(target), { recursive: true });
     const screenshot = target.replace(/\.json$/i, '') + '.png';
+    const workbench=await smokeWorkbench();
     let screenshotError = null;
+    let screenshotMethod = 'capturePage', initialCaptureError = null;
     for (let attempt = 0; attempt < 3; attempt++) {
       await new Promise(resolve => setTimeout(resolve, 150 * (attempt + 1)));
-      try { const capture = await window.webContents.capturePage(); await fs.writeFile(screenshot, capture.toPNG()); screenshotError = null; break; }
+      try { const capture = await workbench.contents.capturePage(undefined,{stayHidden:true}); await fs.writeFile(screenshot, capture.toPNG()); screenshotError = null; break; }
       catch (error) { screenshotError = error.message || String(error); }
+    }
+    if(screenshotError){
+      initialCaptureError=screenshotError;
+      const debuggerClient=workbench.contents.debugger;
+      if(debuggerClient.isAttached())throw Error('隔离工作台截图已被其他调试器占用');
+      debuggerClient.attach('1.3');
+      try{
+        const capture=await debuggerClient.sendCommand('Page.captureScreenshot',{format:'png',fromSurface:true,captureBeyondViewport:false});
+        await fs.writeFile(screenshot,Buffer.from(capture.data,'base64'));
+        screenshotMethod='Page.captureScreenshot (actual hidden workbench renderer)';screenshotError=null;
+      }finally{debuggerClient.detach();}
     }
     const preferences = window.webContents.getLastWebPreferences();
     const evidence = { window: !window.isDestroyed(), url: window.webContents.getURL(), service: { url: backend.url, owned: backend.owned },
-      timing:{process_created_at:process.getCreationTime?.() ?? null,renderer_ready_at:rendererReadyAt},
+      timing:{process_created_at:process.getCreationTime?.() ?? null,renderer_ready_at:rendererReadyAt,workbench_ready_at:workbench.evidence.ready_at},
       desktopVersion:app.getVersion(),
       contextIsolation: preferences.contextIsolation, nodeIntegration: preferences.nodeIntegration, sandbox: preferences.sandbox,
-      renderer: info, chrome: await chromeEvidence(), menuBarVisible: window.isMenuBarVisible(), windowOptions: chrome.windowOptions(),
-      screenshot: screenshotError ? null : screenshot, screenshotError, electron: process.versions.electron, home: config.home };
+      renderer: info,workbench:workbench.evidence, chrome: await chromeEvidence(), menuBarVisible: window.isMenuBarVisible(), windowOptions: chrome.windowOptions(),
+      screenshot: screenshotError ? null : screenshot,screenshotScope:'real-service-workbench',screenshotMethod,initialCaptureError,screenshotError, electron: process.versions.electron, home: config.home };
     if (config.smokeVisual) await visualEvidence(target, evidence);
     await backend.stop();
     evidence.ownedServiceExited = !backend.owned || backend.child.exitCode !== null;
@@ -636,7 +686,8 @@ else {
         getTab:id=>tabs.state().tabs.find(tab=>tab.id===id&&tab.project),onSelect:id=>tabs.select(id)});
       window.on('blur',()=>activityPreview.hide());window.on('resize',()=>activityPreview.hide());
       tabs.setBounds({x:7,y:75,width:1206,height:768});
-      window.once('ready-to-show', () => { if (!config.smoke && liveWindow()) window.show(); });
+      let shellPainted=false,workbenchReady=Boolean(backend.startupError);
+      window.once('ready-to-show', () => { shellPainted=true;if (workbenchReady&&!config.smoke&&liveWindow()) window.show(); });
       for (const event of ['maximize', 'unmaximize', 'focus', 'blur']) window.on(event, () => {
         if (liveWindow()) window.webContents.send('desktop:window-state', currentWindowState());
       });
@@ -680,11 +731,15 @@ else {
         tray = new Tray(icon);
         tray.setToolTip(config.instanceName+' · 关闭窗口后继续运行');
         tray.setContextMenu(Menu.buildFromTemplate([{ label: '打开 Crew', click: showWindow },
-          { label: '工作区首页', click:menuAction(()=>showHome()) },{ label:'新建工作区…',click:menuAction(()=>showHome('new')) },{ label:'打开已有项目…',click:menuAction(()=>showHome('open')) }, { type: 'separator' }, { label:'关于 Crew',click:menuAction(aboutCrew) },{ label: '退出 Crew 界面', click: () => app.quit() },
+          { label: '工作台', click:menuAction(()=>showWorkbench()) },{ label:'工作区管理',click:menuAction(()=>showHome()) },{ label:'新建工作区…',click:menuAction(()=>showHome('new')) },{ label:'打开已有项目…',click:menuAction(()=>showHome('open')) }, { type: 'separator' }, { label:'关于 Crew',click:menuAction(aboutCrew) },{ label: '退出 Crew 界面', click: () => app.quit() },
           {label:'停止后台与全部执行并退出',click:menuAction(async()=>{await backend.stopService();app.quit();})}]));
         tray.on('double-click', showWindow);
       }
       await window.loadURL(homePage);
+      if(liveWindow()&&!backend.startupError){
+        await tabs.openWorkbench();workbenchReady=true;
+        if(shellPainted&&!config.smoke&&liveWindow())window.show();
+      }
     } catch (error) {
       if (quitting) return;
       console.error(error);

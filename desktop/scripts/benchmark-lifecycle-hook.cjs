@@ -60,6 +60,19 @@ app.on('browser-window-created',(_event,window)=>{
       record.health={home:health.home,pid:health.pid,instance_id:health.instance_id,plugin_root:health.plugin_root,version:health.version,ok:health.ok};
       record.desktop_version=app.getVersion();record.packaged=app.isPackaged;
       record.service={url:backend.url,owned:backend.owned};
+      let workbench;
+      const readyDeadline=Date.now()+10000;
+      while(Date.now()<readyDeadline){
+        workbench=webContents.getAllWebContents().find(contents=>{try{const url=new URL(contents.getURL());return url.origin===backend.url&&url.pathname==='/'&&!url.searchParams.size;}catch(_){return false;}});
+        if(workbench&&!workbench.isLoading()&&await workbench.executeJavaScript('document.body.classList.contains("workbench")&&window.CrewClient.current.mode==="real"&&Boolean(document.querySelector("#main h1"))'))break;
+        workbench=null;await new Promise(resolve=>setTimeout(resolve,20));
+      }
+      if(!workbench)throw Error('Default real service workbench did not become ready');
+      const preferences=workbench.getLastWebPreferences();
+      if(preferences.preload||preferences.nodeIntegration||!preferences.sandbox||!preferences.contextIsolation)throw Error('Workbench must remain an unprivileged service document');
+      record.workbench={url:workbench.getURL(),nodeAvailable:await workbench.executeJavaScript('typeof require!=="undefined"'),bridgeAvailable:await workbench.executeJavaScript('typeof window.crewDesktop!=="undefined"')};
+      if(record.workbench.nodeAvailable||record.workbench.bridgeAvailable)throw Error('Service workbench received privileged desktop access');
+      mark('workbench-ready');
       if(record.stress){
         const workspaces=await core.projects(backend.url);
         for(const project of workspaces){
@@ -82,7 +95,7 @@ app.on('browser-window-created',(_event,window)=>{
             for(const contents of webContents.getAllWebContents()){
               if(contents.isDestroyed()||!contents.getURL().startsWith(backend.url))continue;
               const url=new URL(contents.getURL());if(url.searchParams.get('project')!==project.name)continue;
-              found=await contents.executeJavaScript('!!document.querySelector("#sidebar [data-act=leader]")');if(found)break;
+              found=await contents.executeJavaScript('document.body.classList.contains("workbench")&&document.querySelector("#main h1")?.textContent.includes('+JSON.stringify(project.display_name||project.name)+')');if(found)break;
             }
             if(!found)await new Promise(resolve=>setTimeout(resolve,20));
           }

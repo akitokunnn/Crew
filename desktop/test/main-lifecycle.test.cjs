@@ -18,8 +18,8 @@ function deferred() {
 // Execute the application entry point, but replace all native/process/file IO.
 // The destroyed-object checks mirror Electron's native lifetime boundary.
 function harness(options = {}) {
-  const ready = deferred(), windows = [], trays = [], handlers = new Map(), logs = [], shutdownErrors = [];
-  const calls = { backendStart:0, backendStop:0, backendDisconnect:0, toolsClose:0, updatesClose:0, tabsDispose:0, previewDispose:0, tabsOpen:0, uiCalls:0, windowShow:0, nativeQuit:0, relaunch:0, dialogs:0, stat:0 };
+  const ready = deferred(), windows = [], trays = [], handlers = new Map(), logs = [], shutdownErrors = [],tabManagers=[];
+  const calls = { backendStart:0, backendStop:0, backendDisconnect:0, toolsClose:0, updatesClose:0, tabsDispose:0, previewDispose:0, tabsOpen:0,projectIntents:[],storagePrepared:0,workbenchOpen:0,viewOptions:[],uiCalls:0, windowShow:0, nativeQuit:0, relaunch:0, dialogs:0, stat:0 };
   let readGate = null, projectGate = null, appMenu = null;
   const config = { home:'C:\\fixture\\crew-home', userData:'C:\\fixture\\crew-desktop', isolated:true, smoke:options.smoke === true, backendSource:'bundled' };
   class App extends EventEmitter {
@@ -66,14 +66,14 @@ function harness(options = {}) {
     destroy() { this.destroyed = true; this.removeAllListeners(); }
   }
   const menu = template => ({ template, getMenuItemById(id) { return template.flatMap(item => item.submenu || [item]).find(item => item.id === id); }, popup({ callback }) { callback?.(); } });
-  const electron = { app, BrowserWindow:Window, WebContentsView:class {}, Tray:FakeTray,
+  const electron = { app, BrowserWindow:Window, WebContentsView:class {constructor(options){calls.viewOptions.push(options);}}, Tray:FakeTray,
     ipcMain:{ handle:(name,fn) => handlers.set(name,fn), on() {} },
     Menu:{ buildFromTemplate:menu, setApplicationMenu:value => { appMenu = value; }, getApplicationMenu:() => appMenu },
     nativeImage:{ createFromPath:() => ({}) }, shell:{ openExternal:async () => {}, openPath:async () => {} },
     dialog:{ showMessageBox:async (...args) => { calls.dialogs++; if (args[0] instanceof Window) args[0].alive(); return { response:1 }; }, showOpenDialog:async () => ({ canceled:true }) } };
   class Backend {
     constructor() { this.url = 'http://127.0.0.1:12345'; }
-    async start() { calls.backendStart++; await options.backendStart?.promise; }
+    async start() { calls.backendStart++; await options.backendStart?.promise;if(options.backendError)throw options.backendError; }
     async stop() { calls.backendStop++; await options.backendStop?.promise; }
     async disconnect() { calls.backendDisconnect++; await options.backendDisconnect?.promise; }
   }
@@ -86,11 +86,12 @@ function harness(options = {}) {
     async close() { calls.updatesClose++; options.updateCheck?.resolve(); if (options.updatesError) throw options.updatesError; await options.updatesClose?.promise; }
   }
   class Tabs {
-    constructor(window) { this.window = window; this.origin = 'http://127.0.0.1:12345'; this.entries = new Map(); this.disposed = false; }
-    state() { return { tabs:[{ id:'home', project:null }], activeId:'home' }; }
-    setBounds() {} select() { this.window.alive(); }
+    constructor(window,settings) { this.window = window;this.settings=settings; this.origin = 'http://127.0.0.1:12345'; this.entries = new Map(); this.disposed = false;this.active='home';tabManagers.push(this); }
+    state() { return { tabs:[...(this.workbench?[{id:'workbench',project:null,name:'工作台'}]:[]),{ id:'home', project:null,name:'工作区管理' }], activeId:this.active }; }
+    setBounds() {} select(id) { this.window.alive();this.active=id; }
+    async openWorkbench(url) {calls.workbenchOpen++;await options.workbenchLoad?.promise;if(this.disposed)throw new TypeError('Object has been destroyed');if(!this.workbench)this.settings.createView(null);this.workbench=true;this.workbenchURL=url||this.origin+'/';this.active='workbench';}
     dispose() { calls.tabsDispose++; this.disposed = true; }
-    async open() { if (this.disposed) throw new TypeError('Object has been destroyed'); calls.tabsOpen++; }
+    async open(project,intent) { if (this.disposed) throw new TypeError('Object has been destroyed'); calls.tabsOpen++;calls.projectIntents.push({project,intent}); }
     updateProject() { this.window.alive(); } closeProject() { this.window.alive(); }
   }
   class Preview {
@@ -120,11 +121,11 @@ function harness(options = {}) {
     'node:fs':{ mkdirSync() {} },
     'node:fs/promises':{ readFile:async () => readGate ? readGate.promise : '/* fixture asset */', mkdir:async () => {}, writeFile:async () => {}, access:async () => options.accessGate?.promise,
       stat:async () => { calls.stat++; return options.statGate ? options.statGate.promise : {isFile:() => true}; } },
-    './core.cjs':{ options:() => config, Backend, loopback:value => value,
+    './core.cjs':{ options:() => config, Backend, loopback:value => {new URL(value);return value;},
       projects:async () => projectGate ? projectGate.promise : [{ name:'demo' }],
-      projectLocations:async items => items.map(item => ({ ...item, directory_state:{ status:'ready' } })),
+      projectLocations:async items => items.map(item => ({ ...item, directory_state:{ status:options.directoryMissing?'missing':'ready' } })),
       request:async (_base,route) => options.storageWrite&&route.startsWith('/api/workspace-data/')?options.storageWrite.promise:{} },
-    './storage.cjs':{ prepare:async (project,base,_choose,_progress,request) => {if(options.storageWrite)await request(base,'/api/workspace-data/open',{});return project;} },
+    './storage.cjs':{ prepare:async (project,base,_choose,_progress,request) => {calls.storagePrepared++;if(options.storageWrite)await request(base,'/api/workspace-data/open',{});return 'preparedProject' in options?options.preparedProject:project;} },
     './chrome.cjs':{ windowOptions:() => ({}) }, './tabs.cjs':{ WorkspaceTabs:Tabs },
     './activity-preview.cjs':{ ActivityPreview:Preview }, './permissions.cjs':{ installPermissions() {} },
     './tool-updates.cjs':{ ToolUpdates:Tools }, './crew-updates.cjs':{ CrewUpdates:Updates },
@@ -137,7 +138,7 @@ function harness(options = {}) {
     console:{ error:(...args) => logs.push(args), log() {} } };
   vm.runInNewContext(source,sandbox,{ filename:'main.cjs' });
   const invoke = (channel,...args) => { const contents = windows[0].webContents; return handlers.get(channel)({ sender:contents, senderFrame:contents.mainFrame },...args); };
-  return { app, ready, windows, trays, calls, logs, shutdownErrors, handlers, invoke,
+  return { app, ready, windows, trays, calls, logs, shutdownErrors, handlers, invoke,tabManagers,
     menuItem:id => appMenu.getMenuItemById(id),
     holdRead:gate => { readGate = gate; }, holdProjects:gate => { projectGate = gate; },
     boot:async () => { ready.resolve(); await tick(); assert.equal(windows.length,1); assert.equal(trays.length,options.smoke ? 0 : 1); } };
@@ -152,6 +153,40 @@ test('normal close keeps the shell alive and explicit quit cleans it up exactly 
   assert.equal(h.calls.backendDisconnect,1);assert.equal(h.calls.backendStop,0); assert.equal(h.calls.toolsClose,1); assert.equal(h.calls.updatesClose,1);
   assert.equal(h.calls.nativeQuit,1); assert.equal(h.trays[0].isDestroyed(),true);
   assert.deepEqual(h.logs,[]); assert.deepEqual(h.shutdownErrors,[]);
+});
+
+test('successful startup selects an unprivileged service workbench and keeps local management trusted',async()=>{
+  const h=harness();await h.boot();assert.equal(h.calls.workbenchOpen,1);
+  assert.match(h.windows[0].webContents.url,/home\.html$/);
+  const state=await h.invoke('desktop:chrome-ready');assert.equal(state.tabs.activeId,'workbench');
+  assert.equal(h.calls.viewOptions[0].webPreferences.preload,undefined);
+  assert.equal(h.calls.viewOptions[0].webPreferences.nodeIntegration,false);
+  assert.equal(h.calls.viewOptions[0].webPreferences.sandbox,true);
+  h.menuItem('workspace-home').click();await tick();assert.equal((await h.invoke('desktop:chrome-ready')).tabs.activeId,'home');
+  await h.invoke('desktop:chrome-action','home');assert.equal((await h.invoke('desktop:chrome-ready')).tabs.activeId,'workbench');
+  const contents=h.windows[0].webContents;
+  await assert.rejects(h.handlers.get('desktop:bootstrap')({sender:contents,senderFrame:{...contents.mainFrame,url:'http://127.0.0.1:12345/'}}),/只允许/);
+});
+
+test('a backend startup error retains the local administrator instead of opening a false workbench',async()=>{
+  const h=harness({backendError:new Error('fixture backend unavailable')});await h.boot();
+  assert.equal(h.calls.workbenchOpen,0);assert.match(h.windows[0].webContents.url,/home\.html$/);
+  await h.invoke('desktop:chrome-action','home');assert.equal(h.calls.workbenchOpen,0);
+});
+
+test('legacy workbench navigation keeps directory and history preparation before preserving its destination',async()=>{
+  const h=harness({preparedProject:{name:'storage:verified',read_only:true}});await h.boot();
+  await h.tabManagers[0].settings.openProject('demo',{url:'http://127.0.0.1:12345/?legacy=1&project=demo&settings=git#git'});
+  assert.equal(h.calls.storagePrepared,1);assert.equal(h.calls.tabsOpen,1);
+  const target=new URL(h.calls.projectIntents[0].intent.url);
+  assert.equal(target.searchParams.get('project'),'storage:verified');assert.equal(target.searchParams.get('legacy'),'1');
+  assert.equal(target.searchParams.get('settings'),'git');assert.equal(target.hash,'#git');
+  const cancelled=harness({preparedProject:null});await cancelled.boot();
+  await cancelled.tabManagers[0].settings.openProject('demo',{url:'http://127.0.0.1:12345/?legacy=1&project=demo#all'});
+  assert.equal(cancelled.calls.tabsOpen,0);assert.equal(cancelled.tabManagers[0].active,'workbench');
+  const missing=harness({directoryMissing:true});await missing.boot();
+  await missing.tabManagers[0].settings.openProject('demo',{url:'http://127.0.0.1:12345/?legacy=1&project=demo#all'});
+  assert.equal(missing.calls.storagePrepared,0);assert.equal(missing.calls.tabsOpen,0);assert.equal(missing.tabManagers[0].active,'home');
 });
 
 test('isolated smoke quit stops its self-owned backend instead of detaching it', async () => {
@@ -224,7 +259,7 @@ test('home navigation suspended at loadURL cannot show a window after quit', asy
   const h = harness(); await h.boot();
   h.windows[0].webContents.url = pathToFileURL(path.join(__dirname,'../src/error.html')).href;
   const gate = deferred(); h.windows[0].nextLoad = gate;
-  const pending = h.invoke('desktop:chrome-action','home'); await tick();
+  const pending = h.invoke('desktop:chrome-action','settings'); await tick();
   h.app.quit(); await tick(); gate.resolve();
   await pending.catch(error => assert.doesNotMatch(error.message,/Object has been destroyed/));
 });
