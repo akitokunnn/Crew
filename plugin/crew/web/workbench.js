@@ -90,8 +90,8 @@
   }
   function navigate(value) {
     const hash = routeURL(value);
-    if (location.hash === hash) void showRoute();
-    else location.hash = hash;
+    if (location.hash !== hash) history.pushState(null, "", hash);
+    return showRoute();
   }
   function navButton(label, value, icon) {
     return `<button class="wb-nav ${route.view === value.view && !value.project ? "active" : ""}" data-act="wb-navigate" data-route="${e(routeURL(value))}">${ui.icon(icon)}<span>${e(label)}</span></button>`;
@@ -637,7 +637,9 @@
   }
   actions.register("workbench", {
     "wb-navigate": ({ element }) => {
-      location.hash = element.dataset.route;
+      if (location.hash !== element.dataset.route)
+        history.pushState(null, "", element.dataset.route);
+      return showRoute();
     },
     "wb-task": ({ element }) => {
       const task = tasks.find((t) => String(t.id) === element.dataset.id);

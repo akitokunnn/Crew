@@ -236,7 +236,7 @@
           preview = { ...value, requestId: id() };
           dialog(
             "恢复前，核对实际文件",
-            `<p>目标版本 ${esc(cache.versions.find((v) => v.id === value.version_id)?.label || value.version_id)}。只恢复下列文件，任务停止状态不变。</p><div class="td-restore-files">${value.files.map((file) => `<div><strong>${esc(file.path)}</strong><span>${esc({ write: "将写入此版内容", delete: "将删除", unchanged: "内容相同", conflict: "存在后续修改，不能覆盖" }[file.action] || file.action)}</span>${file.reason ? `<p>${esc(file.reason)}</p>` : ""}</div>`).join("")}</div><button class="btn danger" data-deliverable-action="restore" ${value.can_restore ? "" : "disabled"}>确认恢复这些文件</button><p class="td-restore-status" role="status"></p>`,
+            `<p>目标版本 ${esc(cache.versions.find((v) => v.id === value.version_id)?.label || value.version_id)}。只恢复下列文件，不会启动任务。</p><div class="td-restore-files">${value.files.map((file) => `<div><strong>${esc(file.path)}</strong><span>${esc({ write: "将写入此版内容", delete: "将删除", unchanged: "内容相同", conflict: "存在后续修改，不能覆盖" }[file.action] || file.action)}</span>${file.reason ? `<p>${esc(file.reason)}</p>` : ""}</div>`).join("")}</div><button class="btn danger" data-deliverable-action="restore" ${value.can_restore ? "" : "disabled"}>确认恢复这些文件</button><p class="td-restore-status" role="status"></p>`,
           );
           button.disabled = false;
         } else if (action === "restore" && preview) {
