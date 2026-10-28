@@ -425,6 +425,7 @@
       save:(id,changes) => api("/api/session/options",{session_id:id,...changes}), refresh:() => loadState(true), notify:toast, icon:ic, runtimeBadge
     });
     leaderCreate = window.CrewLeaderCreate.create({actions:uiActions,visibility:uiVisibility,catalog:runtimeCatalog,
+      notify:toast,
       selection:() => state?.ai?.leader ?? state?.ai?.default,
       createLeader:payload => api("/api/leader",payload),refresh:() => loadState(true),navigate:id => navigate("chat",id),
       beforeOpen:() => { menus.hide(); hideSettings(); commentsFeature?.close(); people?.closeDialog(); },

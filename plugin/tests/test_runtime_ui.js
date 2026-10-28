@@ -102,12 +102,12 @@ test("existing session model menus use its own tool catalog and never expose run
   assert.equal(ui.optionsLabel(session()), "GPT A · medium");
 });
 
-test("old states and sessions retain Claude defaults and Haiku effort behavior", () => {
+test("old states and sessions retain Claude defaults and use their reported effort catalog", () => {
   const state = fixture(); delete state.runtimes;
   const {ui} = harness(state);
   assert.equal(ui.runtimeInfo({}).id, "claude");
   assert(ui.modelMenu({session_id:"old", model:null, effort:null, applied:null}).includes('data-model="claude-sonnet"'));
-  assert.equal(ui.modelEfforts("claude", "claude-haiku-4-5-20251001").length, 0);
+  assert.deepEqual(plain(ui.modelEfforts("claude", "claude-haiku-4-5-20251001")), state.efforts);
   assert.equal(ui.runtimeInfo("codex").available, false);
 });
 

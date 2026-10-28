@@ -85,6 +85,7 @@
     const scope =
       {
         default: "Crew 内置默认",
+        "builtin-role-preference": "内置角色偏好",
         global: "全局默认",
         project: "工作区",
         session: "单 AI",
@@ -242,13 +243,28 @@
     function updateDraft(field, value) {
       const draft = ensureDraft();
       if (!draft || busy()) return;
+      let runtimeChanged = false;
       if (state.tab === "prompts") draft.value = value;
-      else draft.value[field] = value.trim() || null;
+      else {
+        const next = value.trim() || null;
+        if (
+          state.tab === "ai" &&
+          field === "runtime" &&
+          draft.value.runtime !== next
+        ) {
+          // Model and effort belong to the previous carrier. Clear them in the
+          // same scoped draft when the carrier changes, before another edit or
+          // save; later explicit choices must remain untouched.
+          draft.value = { runtime: next, model: null, effort: null };
+          runtimeChanged = true;
+        } else draft.value[field] = next;
+      }
       draft.dirty =
         JSON.stringify(draft.value) !== JSON.stringify(currentValue());
       draft.attempt = null;
       state.note = "";
       controls();
+      return runtimeChanged;
     }
     function controls() {
       const save = host.querySelector?.('[data-act="scoped-settings-save"]');
@@ -693,7 +709,7 @@
     });
     function onInput(event) {
       const field = event.target.dataset?.ssField;
-      if (field) updateDraft(field, event.target.value);
+      if (field && updateDraft(field, event.target.value)) paint();
     }
     function onChange(event) {
       const element = event.target,

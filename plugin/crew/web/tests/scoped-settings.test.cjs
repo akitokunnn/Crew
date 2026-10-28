@@ -235,6 +235,7 @@ function fixture(custom) {
       await flush();
     },
     change: (name, value) => emit("change", { ssChange: name }, value),
+    fieldChange: (field, value) => emit("change", { ssField: field }, value),
     input: (field, value) => emit("input", { ssField: field }, value),
     text: () =>
       decode(
@@ -436,5 +437,87 @@ test("an unavailable history endpoint reports its real failure without synthetic
   await f.dispatch("scoped-settings-history");
   assert.match(f.host.innerHTML, /后端暂未提供历史接口：该后端尚未提供历史/);
   assert.doesNotMatch(f.host.innerHTML, /这个范围还没有修改记录/);
+  f.module.destroy();
+});
+
+test("carrier switches clear only the current scope's old model/effort, before saving", async (t) => {
+  const cases = [
+    ["global", "claude", "codex"],
+    ["global", "codex", "claude"],
+    ["project", "claude", "codex"],
+    ["session", "codex", "claude"],
+    ["project", "claude", null],
+    ["session", "codex", null],
+  ];
+  for (const [scope, from, to] of cases) {
+    for (const explicit of [false, true]) {
+      await t.test(`${scope}: ${from} → ${to || "原生默认"}${explicit ? "，保留后续明确选择" : "，保存原生默认"}`, async () => {
+        const initial = { runtime: from, model: `${from}-old-model`, effort: `${from}-old-effort` };
+        const source = { scope, identity: scope === "global" ? "global" : scope === "project" ? "项目甲" : "member-1" };
+        const f = fixture(({ url }) => {
+          if (url.pathname === "/api/settings/effective") return {
+            ai: { ...initial }, execution: { ...permission },
+            sources: { ai: Object.fromEntries(Object.keys(initial).map(field => [field, source])), execution: {} },
+            applies: "next_launch", current_execution_changed: false,
+          };
+        });
+        await f.open({ project: "项目甲", sessionId: "member-1" });
+        await f.change("purpose", "member");
+        if (scope !== "global") await f.change("scope", scope);
+        await f.input("runtime", to || "");
+        assert.match(f.host.innerHTML, /data-ss-field="model"[^>]*value=""/);
+        assert.match(f.host.innerHTML, /data-ss-field="effort"[^>]*value=""/);
+        assert.match(f.host.innerHTML, /下一次启动生效/);
+        const expected = { runtime: to, model: null, effort: null };
+        if (explicit) {
+          expected.model = `${to || "native"}-explicit-model`;
+          expected.effort = `${to || "native"}-explicit-effort`;
+          await f.input("model", expected.model);
+          await f.input("effort", expected.effort);
+        }
+        // A select emits both input/change. Repeating the same carrier must not
+        // erase explicit picks after the actual carrier transition.
+        await f.fieldChange("runtime", to || "");
+        await f.dispatch("scoped-settings-save");
+        const body = f.requests.filter(item => item.path === "/api/settings/scope" && item.body).at(-1)?.body;
+        assert.ok(body, "The explicit save should reach the scoped settings endpoint");
+        assert.equal(body.scope, scope);
+        assert.equal(body.identity, source.identity);
+        assert.deepEqual(body.ai, { member: expected });
+        assert.equal(body.version, 1);
+        assert.equal(f.faults.length, 0);
+        f.module.destroy();
+      });
+    }
+  }
+});
+
+test("switching a carrier preserves independent project/session drafts and their CAS conflict", async () => {
+  const f = fixture();
+  await f.open({ project: "项目甲", sessionId: "member-1" });
+  await f.change("purpose", "member");
+  await f.change("scope", "project");
+  await f.input("model", "工作区尚未保存的模型");
+  await f.input("effort", "工作区明确强度");
+  await f.change("scope", "session");
+  await f.fieldChange("runtime", "claude");
+  await f.input("model", "单AI切换后的模型");
+  await f.input("effort", "单AI明确强度");
+  await f.change("scope", "project");
+  assert.match(f.host.innerHTML, /value="工作区尚未保存的模型"/);
+  assert.match(f.host.innerHTML, /value="工作区明确强度"/);
+  await f.change("scope", "session");
+  assert.match(f.host.innerHTML, /value="单AI切换后的模型"/);
+  assert.match(f.host.innerHTML, /value="单AI明确强度"/);
+  f.scope("session", "member-1").version = 2;
+  await f.dispatch("scoped-settings-reload");
+  assert.match(f.host.innerHTML, /服务器版本已变化，草稿仍保留/);
+  await f.dispatch("scoped-settings-save");
+  assert.equal(f.requests.some(item => item.path === "/api/settings/scope" && item.body), false);
+  await f.dispatch("scoped-settings-rebase");
+  await f.dispatch("scoped-settings-save");
+  const body = f.requests.filter(item => item.path === "/api/settings/scope" && item.body).at(-1).body;
+  assert.equal(body.version, 2);
+  assert.deepEqual(body.ai, { member: { runtime: "claude", model: "单AI切换后的模型", effort: "单AI明确强度" } });
   f.module.destroy();
 });
