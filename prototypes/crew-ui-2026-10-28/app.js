@@ -176,15 +176,15 @@
     if (overlay) $("#inspector").setAttribute("aria-modal", "true");
     else $("#inspector").removeAttribute("aria-modal");
   }
-  function topbar(crumbs, actions = "") {
-    return `<header class="topbar"><div class="row grow"><button class="icon-button mobile-menu" data-action="nav" aria-label="打开导航">${icon("menu")}</button><div class="breadcrumb">${crumbs}</div></div><div class="top-actions"><span class="sample-label">交互原型 · 样例</span>${actions || `<button class="icon-button" data-action="guide" aria-label="体验指引" title="体验指引">${icon("info")}</button>`}</div></header>`;
+  function topbar(crumbs, actions = "", extraClass = "") {
+    return `<header class="topbar ${extraClass}"><div class="row grow"><button class="icon-button mobile-menu" data-action="nav" aria-label="打开导航">${icon("menu")}</button><div class="breadcrumb">${crumbs}</div></div><div class="top-actions"><span class="sample-label">交互原型 · 样例</span>${actions || `<button class="icon-button" data-action="guide" aria-label="体验指引" title="体验指引">${icon("info")}</button>`}</div></header>`;
   }
   function navItem(target, label, name, count = "") {
     return `<button class="nav-item ${route === target ? "active" : ""}" data-go="${target}" ${route === target ? 'aria-current="page"' : ""}>${icon(name)}<span>${label}</span>${count ? `<span class="count">${count}</span>` : ""}</button>`;
   }
   function renderSidebar() {
     $("#sidebar").innerHTML =
-      `<div class="brand"><img src="crew.svg" alt="Crew 标志"><div><strong>Crew</strong><div class="eyebrow">A little further.</div></div><button class="icon-button" data-action="focus" title="收起导航，专注对话" aria-label="收起导航">${icon("panel")}</button></div>
+      `<div class="brand"><img src="crew.svg" alt="Crew 标志"><div><strong>Crew</strong></div><button class="icon-button" data-action="focus" title="收起导航，专注对话" aria-label="收起导航">${icon("panel")}</button></div>
       <nav aria-label="日常">${navItem("home", "首页", "home")}${navItem("assistant", "个人助手", "spark")}${navItem("todos", "TODO 与灵感", "todo", s.todos.filter((x) => !x.done).length)}</nav>
       <div class="workspace-nav"><div class="nav-section-title"><span>工作区</span><button class="icon-button" data-action="workspace-add" aria-label="添加工作区">${icon("plus")}</button></div>
       ${CrewSample.workspaces
@@ -194,7 +194,7 @@
               .filter((t) => t.workspace === w.id)
               .map(
                 (t) =>
-                  `<button class="task-nav ${parts[1] === t.id && ["task", "report"].includes(parts[0]) ? "active" : ""}" data-go="task/${t.id}/leader"><span class="task-nav-title"><span class="dot"></span><span class="truncate">${esc(t.title)}</span>${t.pinned ? icon("pin") : ""}</span><span class="task-nav-meta"><span>${statusNames[t.state]}</span>${t.fresh ? `<span class="badge">新成果 ${esc(t.version)}</span>` : ""}</span></button>`,
+                  `<button title="${esc(t.update)} · ${statusNames[t.state]}" class="task-nav ${parts[1] === t.id && ["task", "report"].includes(parts[0]) ? "active" : ""}" data-go="task/${t.id}/leader"><span class="task-nav-title"><span class="dot ${esc(t.state)}"></span><span class="truncate">${esc(t.title)}</span><span class="task-state">${t.state === "working" ? "推进中" : statusNames[t.state]}</span></span>${t.fresh ? `<span class="task-nav-meta"><span class="badge">新成果 ${esc(t.version)}</span></span>` : ""}</button>`,
               )
               .join("")}${s.tasks
               .filter((t) => t.related.includes(w.id))
@@ -223,57 +223,68 @@
     const featured = workspace ? tasks[0] : model.task("voice");
     const needsDecision =
       featured?.id === "voice" && !s.choices.voice?.submitted;
+    const pendingTodos = s.todos.filter(
+      (t) => !t.done && (!workspace || t.workspace === workspace),
+    );
+    const workspaces = w ? [w] : CrewSample.workspaces;
+    const attention = featured
+      ? `
+      <section class="home-attention" aria-label="需要你处理的摘要">
+        <div class="section-heading"><h2>需要你</h2><button class="text-link" data-go="todos">${pendingTodos.length} 件 TODO 与灵感 ↗</button></div>
+        ${needsDecision ? `<button class="attention-row" data-action="decision-jump"><span class="attention-mark">${icon("chat")}</span><span class="grow">声纹的两个取舍<span class="attention-context">回任务一起聊清楚</span></span><span class="muted">2 项待拍板</span>${icon("arrow")}</button>` : ""}
+        ${featured.version ? `<button class="attention-row" data-action="open-result" data-task="${featured.id}"><span class="attention-mark result">${icon("spark")}</span><span class="grow">${featured.id === "voice" ? "声纹识别，可以试试了" : esc(featured.title)}<span class="attention-context">阶段成果</span></span><span class="version-label">${esc(featured.version)}${featured.fresh ? " · 新" : ""}</span>${icon("arrow")}</button>` : ""}
+        ${pendingTodos[0] ? `<button class="attention-row" data-action="todo-open" data-id="${pendingTodos[0].id}"><span class="attention-mark">${icon("todo")}</span><span class="grow">${esc(pendingTodos[0].text)}<span class="attention-context">${esc(ws(pendingTodos[0].workspace).name)}</span></span><span class="muted">亲自动手</span>${icon("arrow")}</button>` : ""}
+        ${!needsDecision && !featured.version ? '<p class="muted">正在推进，暂时没有需要你处理的事。</p>' : ""}
+      </section>`
+      : "";
+    const progress = w
+      ? `<section class="workspace-task-list" aria-label="工作区任务">${tasks.map(taskRow).join("")}</section>`
+      : workspaces
+          .map((v) => {
+            const own = tasks.filter((t) => t.workspace === v.id);
+            const latest = own[0];
+            return `<button class="workspace-summary" data-go="workspace/${v.id}"><span class="workspace-symbol ${v.color}">${esc(v.initials)}</span><span class="grow"><strong>${esc(v.name)}</strong><span class="workspace-progress">${latest ? esc(latest.update) : "从一段对话开始"}</span></span><span class="workspace-count">${own.length} 个任务</span>${icon("chevron")}</button>`;
+          })
+          .join("");
     $("#main").innerHTML =
       topbar(
-        `<span>${w ? "工作区 / " + w.name : "你的工作台"}</span>`,
-        `<button class="button small subtle desktop-label" data-action="new" data-workspace="${workspace || "crew"}">${icon("plus")}开始一段对话</button><button class="icon-button" data-action="theme" aria-label="切换深浅主题">${icon("sun")}</button>`,
+        `<span>${w ? esc(w.name) : "工作台"}</span>`,
+        `<button class="icon-button" data-action="theme" aria-label="切换深浅主题">${icon("sun")}</button>`,
       ) +
-      `<div class="page-scroll" data-scroll><div class="page"><div class="home-intro"><div class="eyebrow">WEDNESDAY, OCTOBER 28</div><h1>${w ? `${esc(w.name)}，继续向前。` : "让想法，继续向前。"}</h1><p>${w ? "从这里继续已有的任务，或和负责人聊一件新事。" : `${CrewSample.workspaces.length} 个工作区各自推进。你可以随时回来，接着聊。`}</p></div>
-      ${featured ? `<div class="attention"><button class="attention-card" ${needsDecision ? 'data-action="decision-jump"' : `data-go="task/${featured.id}/leader"`}><div class="card-kicker">${icon("chat")}${needsDecision ? "需要你拍板" : "继续对话"} <span class="mono">${needsDecision ? "02" : "↗"}</span></div><h3>${needsDecision ? "声纹的两个取舍" : esc(featured.title)}</h3><p>${needsDecision ? "回到原任务，一起聊清楚。" : "已有约定和讨论，留在原任务。"}</p>${icon("arrow").replace('class="icon"', 'class="icon arrow"')}</button><button class="attention-card new-result" data-action="open-result" data-task="${featured.id}"><div class="card-kicker">${icon("spark")}${featured.fresh ? "有新成果" : "阶段成果"} <span class="badge">${esc(featured.version || "待形成")}</span></div><h3>${featured.id === "voice" ? "声纹识别，可以试试了" : "看看这个任务的新进展"}</h3><p>查看报告、体验页面与文件。</p>${icon("arrow").replace('class="icon"', 'class="icon arrow"')}</button></div>` : ""}
-      <div class="home-grid"><div><div class="section-heading"><h2>${w ? "这个工作区的任务" : "工作在继续"} <span class="muted small">${tasks.length}</span></h2><span class="section-note">任务独立推进</span></div><div class="workspace-cards">${(w
-        ? [w]
-        : CrewSample.workspaces
-      )
-        .map(
-          (v) =>
-            `<section class="workspace-card"><div class="workspace-card-head"><span class="workspace-symbol ${v.color}">${esc(v.initials)}</span><div><h3>${esc(v.name)}</h3><span class="mono">${esc(v.path)}</span></div><span class="count">${tasks.filter((t) => t.workspace === v.id).length} 个任务</span><button class="icon-button" data-action="folder" data-workspace="${v.id}" aria-label="打开${esc(v.name)}文件夹">${icon("folder")}</button></div>${tasks
-              .filter(
-                (t) => t.workspace === v.id || (w && t.related.includes(v.id)),
-              )
-              .map(taskRow)
-              .join("")}</section>`,
-        )
-        .join(
-          "",
-        )}</div>${w ? `<button class="button subtle" data-go="workspace-chat/${w.id}">${icon("chat")}工作区对话 · 安排与协调</button>` : ""}<div class="section-heading"><h2>留住一个想法</h2><span class="section-note">记下，或者从这里开始</span></div>${captureForm(workspace)}<div class="footer-note">${icon("leaf")}样例数据 · 页面操作只保存在此浏览器，不连接正式 Crew</div></div>
-      <aside class="home-aside"><section><div class="section-heading"><h2>留给你的小事</h2><button data-go="todos" class="small muted" aria-label="查看全部 TODO">全部 ↗</button></div>${s.todos
-        .filter((x) => !x.done && (!workspace || x.workspace === workspace))
-        .slice(0, 3)
-        .map(
-          (t) =>
-            `<div class="mini-todo"><button class="todo-check" data-action="todo-check" data-id="${t.id}" aria-label="完成：${esc(t.text)}"></button><div><button data-action="todo-open" data-id="${t.id}">${esc(t.text)}</button><p>${ws(t.workspace).name} · ${t.tags[0]}</p></div></div>`,
-        )
-        .join(
-          "",
-        )}</section><section class="assistant-card"><div class="assistant-orbit">${icon("spark")}</div><h3>今天想先聊什么？</h3><p>进展、安排，或还没想清楚的事。个人助手在这里。</p><button class="button" data-go="assistant">和助手聊聊 ${icon("arrow")}</button></section></aside></div></div></div>`;
+      `<div class="page-scroll" data-scroll><div class="home-overview">
+        <header class="home-intro"><p class="home-date">10 月 28 日，星期三</p><h1>${w ? esc(w.name) : "工作在继续。"}</h1><p>${w ? "任务与对话，都留在这里。" : `${CrewSample.workspaces.length} 个工作区，随时可以接着聊。`}</p></header>
+        ${attention}
+        <section class="home-progress"><div class="section-heading"><h2>${w ? "任务" : "工作区近况"}</h2>${w ? `<button class="text-link" data-action="folder" data-workspace="${w.id}">${icon("folder")}文件夹</button>` : ""}</div>${progress}</section>
+        ${w ? `<button class="text-link workspace-conversation" data-go="workspace-chat/${w.id}">工作区对话 · 安排与协调 ${icon("arrow")}</button>` : ""}
+        <section class="home-capture" aria-label="快速记录或开始对话">${captureForm(workspace)}</section>
+      </div></div>`;
   }
   function seedChat(c) {
     if (c.id === "assistant")
-      return `<div class="message ai"><div class="message-meta"><span class="avatar">${icon("spark")}</span><strong>个人助手</strong><span class="time">全局 · 样例对话</span></div><p>声纹实验室有一个新版本可以体验，也有两个取舍等你决定。Crew 的对话优化和个人网站还在各自推进。</p><p>我们可以先聊安排，也可以把一个新想法记下来。</p><button class="member-inline" data-go="task/voice/leader"><span class="avatar">声</span><span><strong>让声纹识别真正可用</strong><p>2 个待拍板 · 新成果 v0.3.0</p></span>${icon("arrow")}</button><p class="muted small">操作设置、传达要求或停止任务，需要你明确说出意图。</p></div>`;
+      return `<div class="message ai"><div class="message-meta"><span class="avatar">${icon("spark")}</span><strong>个人助手</strong></div><p>声纹实验室有一个新版本可以体验，也有两个取舍等你决定。Crew 的对话优化和个人网站还在各自推进。</p><p>我们可以先聊安排，也可以把一个新想法记下来。</p><button class="member-inline" data-go="task/voice/leader"><span class="avatar">声</span><span><strong>让声纹识别真正可用</strong><p>2 个待拍板 · 新成果 v0.3.0</p></span>${icon("arrow")}</button><p class="muted small">操作设置、传达要求或停止任务，需要你明确说出意图。</p></div>`;
     if (c.global)
-      return `<div class="message ai"><div class="message-meta"><span class="avatar">C</span><strong>工作区负责人</strong><span class="time">工作区总对话 · 样例</span></div><p>这里用来讨论整个工作区、安排和协调任务。各任务对话独立保留，输入不会猜送到某个任务。</p><p>具体任务的进展和成果，仍然回到对应任务查看。</p></div>`;
+      return `<div class="message ai"><div class="message-meta"><span class="avatar">C</span><strong>工作区负责人</strong></div><p>这里用来讨论整个工作区、安排和协调任务。各任务对话独立保留，输入不会猜送到某个任务。</p><p>具体任务的进展和成果，仍然回到对应任务查看。</p></div>`;
     if (c.member)
-      return `<div class="member-origin">${icon("link")}来自「${esc(c.title)}」 · ${esc(c.leader)} 按需邀请<span class="badge">${c.auto ? "继承：全自动" : "继承：用户把关"}</span></div><div class="message user"><div class="user-body">把这个环节单独验证清楚，结论和边界同步给 leader。</div></div><div class="message ai"><div class="message-meta"><span class="avatar member">${esc(c.name.slice(0, 1))}</span><strong>${esc(c.name)}</strong><span class="time">${esc(c.member.runtime)} · 样例</span></div><p>${esc(c.member.update)}。目前已经完成基础路径，正在整理容易影响实际体验的边界。</p><p>你可以直接在这里补充要求。影响任务整体的内容会保留原话，并同步给 ${esc(c.leader)}。</p><div class="activity-line">${icon("check")}已将阶段结论同步给 leader · 样例事件</div></div>`;
+      return `<div class="message user"><div class="user-body">把这个环节单独验证清楚，结论和边界同步给 leader。</div></div><div class="message ai"><div class="message-meta"><span class="avatar member">${esc(c.name.slice(0, 1))}</span><strong>${esc(c.name)}</strong></div><p>${esc(c.member.update)}。目前已经完成基础路径，正在整理容易影响实际体验的边界。</p><p>你可以直接在这里补充要求。影响任务整体的内容会保留原话，并同步给 ${esc(c.leader)}。</p><div class="activity-line">${icon("check")}已将阶段结论同步给 leader · 样例事件</div></div>`;
     if (c.id === "voice")
-      return `<div class="chat-time">今天 · 10 月 28 日 · 以下均为样例对话</div><div class="message user"><div class="user-body">想把声纹识别真正用起来。本地运行优先，别只是一个跑通的 demo，速度和准确度都要实际试。</div></div><div class="message ai"><div class="message-meta"><span class="avatar">林</span><strong>林序</strong><span class="badge">leader</span><span class="time">09:12 · Claude Code / 模型为样例</span></div><p>我会先把本地流程做到可体验，再验证真实麦克风和短音频的边界。任务核心已整理好，你随时可以修改。</p><div class="activity-line">${icon("check")}任务详情已随对话更新 · 继续按用户把关模式推进</div><button class="member-inline" data-go="task/voice/engine"><span class="avatar member">知</span><span><strong>知衡 <span class="muted small">· 识别引擎</span></strong><p>验证短音频与噪声边界 · Codex</p></span>${status("working")}${icon("chevron")}</button><div class="result-inline"><span class="eyebrow">A new milestone</span><h3>v0.3.0，已经可以体验了。</h3><p>完成本地识别流程与结果反馈。报告会随实验继续更新。</p><div class="row"><button class="button primary small" data-action="panel" data-panel="results">${icon("spark")}查看成果</button><button class="button subtle small" data-action="report" data-task="voice">阅读阶段报告 ${icon("arrow")}</button></div></div><p>有两处会影响使用感受，想和你一起定下来。其他验证会继续，不会等在这里。</p>${decisionBox(c)}</div>`;
+      return `<div class="message user"><div class="user-body">想把声纹识别真正用起来。本地运行优先，速度和准确度都要实际试。</div></div>
+        <div class="message ai"><div class="message-meta"><span class="avatar">林</span><strong>林序</strong></div>
+          <p>本地识别的 v0.3.0 已经可以体验。短音频和噪声边界的验证还在继续。</p>
+          <div class="conversation-events">
+            <button data-go="task/voice/engine">${icon("team")}知衡正在验证识别边界 ${icon("chevron")}</button>
+            <button data-action="panel" data-panel="results">${icon("spark")}v0.3.0 已可体验 <span class="version-label">查看成果 ↗</span></button>
+          </div>
+          <p>有两处使用体验上的取舍，想和你一起定下来。</p>
+          <details class="decision-discussion" id="decision-section" data-disclosure="decision"><summary>讨论两个取舍 <span>${s.choices.voice?.submitted ? "已拍板" : "需要你"}</span>${icon("down")}</summary>${decisionBox(c)}</details>
+        </div>`;
     if (c.id.startsWith("sample-")) return "";
-    return `<div class="chat-time">今天 · 以下均为样例对话</div><div class="message user"><div class="user-body">${esc(c.goal)}</div></div><div class="message ai"><div class="message-meta"><span class="avatar">${esc(c.leader.slice(0, 1))}</span><strong>${esc(c.leader)}</strong><span class="badge">leader</span><span class="time">样例</span></div><p>${esc(c.update)}。我会保留已确定的方向，先完成可以继续推进的部分。</p><p>你可以随时补充要求，也可以查看任务详情、成员和已有成果。</p>${c.members.map((m) => `<button class="member-inline" data-go="task/${c.id}/${m.id}"><span class="avatar member">${m.name.slice(0, 1)}</span><span><strong>${m.name}</strong><p>${m.update} · ${m.runtime}</p></span>${icon("chevron")}</button>`).join("")}</div>`;
+    return `<div class="chat-time">今天 · 以下均为样例对话</div><div class="message user"><div class="user-body">${esc(c.goal)}</div></div><div class="message ai"><div class="message-meta"><span class="avatar">${esc(c.leader.slice(0, 1))}</span><strong>${esc(c.leader)}</strong><span class="badge">leader</span></div><p>${esc(c.update)}。我会保留已确定的方向，先完成可以继续推进的部分。</p><p>你可以随时补充要求，也可以查看任务详情、成员和已有成果。</p>${c.members.map((m) => `<button class="member-inline" data-go="task/${c.id}/${m.id}"><span class="avatar member">${m.name.slice(0, 1)}</span><span><strong>${m.name}</strong><p>${m.update} · ${m.runtime}</p></span>${icon("chevron")}</button>`).join("")}</div>`;
   }
   function decisionBox(c) {
     const choices = s.choices[c.id] || {};
     if (choices.submitted)
       return `<div class="inbox-note">${icon("check")}已模拟提交统一拍板：${esc(choices.speed)}；${esc(choices.network)}。原始选择保留在本任务对话。</div>`;
-    return `<section class="decision-box" id="decision-section"><div class="eyebrow">一起定下来 · 2 个问题</div><h3>先保留选择，聊清楚后一起提交。</h3>${[
+    return `<section class="decision-box"><div class="eyebrow">一起定下来 · 2 个问题</div><h3>先保留选择，聊清楚后一起提交。</h3>${[
       {
         key: "speed",
         label: "1. 第一次反馈，优先什么？",
@@ -297,7 +308,7 @@
     const key = model.keyFor(c.id, c.person),
       queue = s.queues[key] || [],
       stopped = s.stopped[key];
-    return `<div class="composer-wrap">${queue.length ? `<div class="queue-strip">${icon("clock")}<span>排队 ${queue.length} 条 · ${esc(queue[0].text)}</span><button data-action="queue-send">发送下一条</button><button data-action="queue-cancel" aria-label="取消第一条排队消息">取消</button></div>` : ""}<form id="chat-form" class="composer">${(s.attachments?.[key] || []).map((f, i) => `<div class="attachment-chip">${icon("file")}${esc(f)}<span class="muted">仅本地样例</span><button type="button" data-action="attachment-remove" data-index="${i}" aria-label="移除附件">×</button></div>`).join("")}<textarea id="message-input" rows="2" aria-label="给${esc(c.name)}发消息" placeholder="${stopped ? "继续聊，会保留之前的成果…" : `随时和${esc(c.name)}说，补充要求或聊聊结果…`}">${esc(model.draft(c.id, c.person))}</textarea><div class="composer-tools"><button type="button" class="icon-button" data-action="attach" aria-label="添加图片或文件" title="添加图片或文件">${icon("attach")}</button><input id="attachment-input" type="file" multiple hidden><span class="composer-hint">${c.member ? "整体要求会同步给 leader" : stopped ? "当前 AI 已停止" : "执行中也可以插话"}</span>${stopped ? "" : `<button type="button" class="stop-ai" data-action="stop-ai" title="只停止${esc(c.name)}，其他 AI 继续">${icon("stop")}停止当前 AI</button>`}<span class="divider"></span><button type="button" class="queue-button" data-action="queue" title="明确排队，稍后再发送">排队发送</button><button class="send-button" type="submit" aria-label="立即发送">${icon("up")}</button></div></form><div class="composer-caption"><span>${c.global ? "样例回复 · 不调用真实 AI" : "仅此对话 · 草稿自动保留 · 样例回复"}</span><span class="shortcut">Enter 发送 · Shift + Enter 换行</span></div></div>`;
+    return `<div class="composer-wrap">${queue.length ? `<div class="queue-strip">${icon("clock")}<span>排队 ${queue.length} 条 · ${esc(queue[0].text)}</span><button data-action="queue-send">发送下一条</button><button data-action="queue-cancel" aria-label="取消第一条排队消息">取消</button></div>` : ""}<form id="chat-form" class="composer">${(s.attachments?.[key] || []).map((f, i) => `<div class="attachment-chip">${icon("file")}${esc(f)}<span class="muted">仅本地样例</span><button type="button" data-action="attachment-remove" data-index="${i}" aria-label="移除附件">×</button></div>`).join("")}<textarea id="message-input" rows="2" aria-label="给${esc(c.name)}发消息" placeholder="${stopped ? "继续聊，会保留之前的成果…" : `随时和${esc(c.name)}说，补充要求或聊聊结果…`}">${esc(model.draft(c.id, c.person))}</textarea><div class="composer-tools"><button type="button" class="icon-button" data-action="attach" aria-label="添加图片或文件" title="添加图片或文件">${icon("attach")}</button><input id="attachment-input" type="file" multiple hidden><span class="composer-hint">${stopped ? "当前 AI 已停止" : `发给 ${esc(c.name)}`}</span>${stopped ? "" : `<button type="button" class="stop-ai" data-action="stop-ai" aria-label="停止当前 AI" title="只停止${esc(c.name)}，其他 AI 继续">${icon("stop")}停止</button>`}<button type="button" class="queue-button" data-action="queue" title="明确排队，稍后再发送">排队发送</button><button class="send-button" type="submit" aria-label="立即发送">${icon("up")}</button></div></form></div>`;
   }
   function renderChat() {
     const c = context();
@@ -307,15 +318,22 @@
     }
     const key = model.keyFor(c.id, c.person),
       panel = s.panels[key];
-    const crumbs = c.global
-      ? `<span>${c.id === "assistant" ? "全局 / 个人助手" : ws(c.workspace).name + " / 工作区对话"}</span>`
-      : `<button data-go="task/${c.id}/leader">${esc(c.title)}</button><span>›</span><button data-go="task/${c.id}/leader">${esc(c.leader)} <span class="muted">leader</span></button>${c.member ? `<span>›</span><span class="accent">${esc(c.name)}</span>` : ""}`;
+    const crumbs = c.member
+      ? `<button data-go="task/${c.id}/leader">${esc(c.title)}</button><span>›</span><button data-go="task/${c.id}/leader">${esc(c.leader)} <span class="muted">leader</span></button><span>›</span><strong>${esc(c.name)}</strong>`
+      : `<div class="conversation-title"><span>${c.global ? "Crew · 样例对话" : esc(ws(c.workspace).name) + " · 样例对话"}</span><h1>${esc(c.title)}</h1></div>`;
+    const controls = !c.global
+      ? `<details class="task-options" data-disclosure="controls"><summary aria-label="任务控制">${icon("more")}<span>${c.auto ? "全自动" : "用户把关"}</span></summary><div class="task-option-menu"><span class="field-label">本任务的决定方式</span><button class="mode-control" role="switch" aria-checked="${c.auto}" data-action="mode" aria-label="本任务全自动决定"><span class="switch-track"></span>全自动决定</button><button class="task-stop" data-action="task-stop">${icon("stop")}${c.state === "stopped" ? "继续任务" : "停止整个任务"}</button><button data-action="pin">${icon("pin")}${c.pinned ? "取消置顶" : "置顶任务"}</button><button data-action="focus">${icon("panel")}专注布局</button></div></details>`
+      : "";
     $("#main").innerHTML =
       topbar(
         crumbs,
-        `${!c.global ? `<button class="icon-button" data-action="pin" title="置顶任务" aria-label="${c.pinned ? "取消置顶" : "置顶任务"}">${icon("pin")}</button>` : ""}<button class="icon-button" data-action="focus" aria-label="切换专注布局" title="切换专注布局">${icon("panel")}</button>`,
+        !c.global
+          ? `<button class="resource-button" data-action="panel" data-panel="resources" aria-expanded="${Boolean(panel)}">${icon("panel")}资料${c.fresh ? '<span class="resource-dot" aria-label="有新成果"></span>' : ""}</button>`
+          : `<button class="icon-button" data-action="focus" aria-label="切换专注布局">${icon("panel")}</button>`,
+        "chat-topbar",
       ) +
-      `<div class="task-header"><div class="task-title-line"><h1>${c.member ? `${esc(c.name)} <span class="muted small">/ ${esc(c.member.role)}</span>` : esc(c.title)}</h1>${!c.global ? `<button class="task-stop" data-action="task-stop">${c.state === "stopped" ? "继续任务" : "停止整个任务"}</button>` : ""}</div><div class="task-subline">${status(s.stopped[key] ? "stopped" : c.member ? c.member.state : c.state)}<span class="divider"></span><span>${c.member ? esc(c.member.runtime) : c.global ? "全局助手" : esc(c.leader) + " 负责"}</span>${!c.global ? `<span class="divider"></span><button class="mode-control" role="switch" aria-checked="${c.auto}" data-action="mode" aria-label="本任务全自动决定"><span class="switch-track"></span>全自动决定</button><span class="pill">${ws(c.workspace).name}${c.related.length ? " + " + c.related.length + " 关联工作区" : ""}</span>` : ""}</div>${!c.global ? `<nav class="task-tabs" aria-label="任务内容"><button data-action="panel" data-panel="none" class="${!panel ? "active" : ""}">${icon("chat")}对话</button><button data-action="panel" data-panel="details" class="${panel === "details" ? "active" : ""}">${icon("file")}详情</button><button data-action="panel" data-panel="team" class="${panel === "team" ? "active" : ""}">${icon("team")}成员 <span class="count">${c.members.length}</span></button><button data-action="panel" data-panel="results" class="${panel === "results" ? "active" : ""}">${icon("spark")}成果${c.fresh ? '<span class="badge">新</span>' : ""}</button></nav>` : "<hr>"}</div><div class="chat-scroll" data-scroll tabindex="0" aria-label="对话记录"><div class="chat-column">${seedChat(c)}${(s.messages[key] || []).map((m, i) => `<div class="message ${m.role}">${m.role === "user" ? `<div class="user-body">${esc(m.text)}</div>` : `<div class="message-meta"><span class="avatar">${esc(c.name.slice(0, 1))}</span><strong>${esc(c.name)}</strong><span class="time">模拟回复</span></div><p>${esc(m.text)}</p>`}</div>`).join("")}${s.stopped[key] ? `<div class="chat-stopped">${icon("stop")}已模拟停止 ${esc(c.name)}。${c.state === "stopped" ? "本任务的所有成员也已停止。" : "其他对话 AI 继续，已有成果保留。"}</div>` : ""}</div></div>${composer(c)}`;
+      `<div class="conversation-strip"><div class="row"><span>${esc(c.name)}${c.member ? " · " + esc(c.member.role) : c.global ? "" : " · leader"}</span>${status(s.stopped[key] ? "stopped" : c.member ? c.member.state : c.state)}${c.member ? '<span class="member-sample">样例对话</span>' : ""}</div>${controls}</div>
+        <div class="chat-scroll" data-scroll tabindex="0" aria-label="对话记录"><div class="chat-column">${seedChat(c)}${(s.messages[key] || []).map((m) => `<div class="message ${m.role}">${m.role === "user" ? `<div class="user-body">${esc(m.text)}</div>` : `<div class="message-meta"><span class="avatar">${esc(c.name.slice(0, 1))}</span><strong>${esc(c.name)}</strong></div><p>${esc(m.text)}</p>`}</div>`).join("")}${s.stopped[key] ? `<div class="chat-stopped">已模拟停止 ${esc(c.name)}。${c.state === "stopped" ? "本任务的所有成员也已停止。" : "其他 AI 继续，已有成果保留。"}</div>` : ""}</div></div>${composer(c)}`;
     if (panel) renderInspector(c, panel);
     $("#message-input").addEventListener("input", (e) => {
       model.draft(c.id, c.person, e.target.value);
@@ -357,10 +375,10 @@
           "",
         )}<hr><p class="muted small">AI 随交流维护，你也可以直接修改。任务级模式与约定随 leader 或载体切换保留。</p><br><button class="button primary" type="submit">保存样例详情 ${icon("check")}</button></form>`;
     if (panel === "team")
-      body = `<div class="inspector-label">负责人 · 优先自己推进，按需邀请成员</div><button class="member-inline" data-go="task/${c.id}/leader"><span class="avatar">${esc(c.leader.slice(0, 1))}</span><span><strong>${esc(c.leader)} <span class="badge">leader</span></strong><p>Claude Code · 模型遵循原生配置（样例）</p></span>${icon("chevron")}</button><div class="inspector-label">成员 · 每个人都有自己的对话</div>${c.members.length ? c.members.map((m) => `<button class="member-inline" data-go="task/${c.id}/${m.id}"><span class="avatar member">${m.name.slice(0, 1)}</span><span class="grow"><strong>${m.name} <span class="muted small">· ${m.role}</span></strong><p>${m.update}</p><span class="small muted">${m.runtime} · ${statusNames[m.state]}</span></span>${icon("chevron")}</button>`).join("") : '<p class="muted small">暂未启动成员，leader 正在自己推进。</p>'}<div class="inspector-label">团队关系 · 节点可以进入对话</div><div class="member-graph"><button class="graph-leader" data-go="task/${c.id}/leader">${c.leader} · leader</button>${c.members.length ? `<div class="graph-line"></div><div class="graph-children">${c.members.map((m) => `<button data-go="task/${c.id}/${m.id}">${m.name}</button>`).join("")}</div>` : ""}</div><div class="inspector-label">内部协调</div><button class="button" data-action="coordination">${icon("chat")}查看协作记录</button>`;
+      body = `<div class="inspector-label">负责人 · 优先自己推进，按需邀请成员</div><button class="member-inline" data-go="task/${c.id}/leader"><span class="avatar">${esc(c.leader.slice(0, 1))}</span><span><strong>${esc(c.leader)} <span class="badge">leader</span></strong><p>Claude Code · 模型遵循原生配置（样例）</p></span>${icon("chevron")}</button><div class="inspector-label">成员 · 每个人都有自己的对话</div>${c.members.length ? c.members.map((m) => `<button class="member-inline" data-go="task/${c.id}/${m.id}"><span class="avatar member">${m.name.slice(0, 1)}</span><span class="grow"><strong>${m.name} <span class="muted small">· ${m.role}</span></strong><p>${m.update}</p><span class="small muted">${m.runtime} · ${statusNames[m.state]}</span></span>${icon("chevron")}</button>`).join("") : '<p class="muted small">暂未启动成员，leader 正在自己推进。</p>'}<details class="team-map"><summary>团队关系与内部协调</summary><div class="member-graph"><button class="graph-leader" data-go="task/${c.id}/leader">${c.leader} · leader</button>${c.members.length ? `<div class="graph-line"></div><div class="graph-children">${c.members.map((m) => `<button data-go="task/${c.id}/${m.id}">${m.name}</button>`).join("")}</div>` : ""}</div><div class="inspector-label">内部协调</div><button class="button" data-action="coordination">${icon("chat")}查看协作记录</button></details>`;
     if (panel === "results")
       body = c.version
-        ? `<div class="inspector-label">当前阶段 · ${c.state === "stopped" ? "执行已停止，成果仍保留" : "等待体验不妨碍其他工作推进"}</div><section class="artifact-card"><div class="row between"><span class="badge">${esc(c.version)} · ${c.fresh ? "新成果" : "阶段成果"}</span><span class="small muted">第 2 轮 · 需求 r3</span></div><h3>${esc(c.title)} · 阶段报告</h3><p>结论、取舍、验证与下一步，随实质进展持续更新。</p><button class="button primary" data-action="report" data-task="${c.id}">${icon("file")}打开格式化报告 ${icon("arrow")}</button><div class="artifact-links"><a href="preview.html?task=${c.id}" target="_blank" rel="noopener">${icon("external")}体验网页</a><button data-action="file">${icon("file")}文件</button><button data-action="folder" data-workspace="${c.workspace}">${icon("folder")}文件夹</button></div></section><div class="inspector-label">已保留的版本 · 均为样例</div>${[
+        ? `<div class="inspector-label">当前阶段 · ${c.state === "stopped" ? "执行已停止，成果仍保留" : "等待体验不妨碍其他工作推进"}</div><section class="artifact-card"><div class="row between"><span class="badge">${esc(c.version)} · ${c.fresh ? "新成果" : "阶段成果"}</span><span class="small muted">第 2 轮 · 需求 r3</span></div><h3>${esc(c.title)} · 阶段报告</h3><p>结论、取舍、验证与下一步，随实质进展持续更新。</p><button class="button primary" data-action="report" data-task="${c.id}">${icon("file")}打开格式化报告 ${icon("arrow")}</button><div class="artifact-links"><a href="preview.html?task=${c.id}" target="_blank" rel="noopener">${icon("external")}体验网页</a><button data-action="file">${icon("file")}文件</button><button data-action="folder" data-workspace="${c.workspace}">${icon("folder")}文件夹</button></div></section><details class="artifact-history"><summary>历史版本与恢复</summary>${[
             c.version,
             "v0.2.0",
             "v0.1.0",
@@ -372,11 +390,22 @@
             )
             .join(
               "",
-            )}<div class="inspector-label">相关说明</div><button class="member-inline" data-action="report" data-task="${c.id}"><span class="avatar">${icon("file")}</span><span><strong>使用说明与边界</strong><p>任务内阅读 · 来源对话可回溯</p></span>${icon("chevron")}</button>`
+            )}</details><div class="inspector-label">相关说明</div><button class="member-inline" data-action="report" data-task="${c.id}"><span class="avatar">${icon("file")}</span><span><strong>使用说明与边界</strong><p>任务内阅读 · 来源对话可回溯</p></span>${icon("chevron")}</button>`
         : '<div class="empty-state">任务刚刚开始。<br>有可体验的阶段成果时，会在这里出现。</div>';
     const host = $("#inspector");
     host.hidden = false;
-    host.innerHTML = `<div class="inspector-header"><div><h2>${titles[panel]}</h2><p>${esc(c.title)} · ${esc(c.leader)} 负责</p></div><button class="icon-button" data-action="panel-close" aria-label="关闭资料，返回对话">${icon("close")}</button></div><div class="inspector-body">${body}</div><div class="inspector-footer">${panel === "details" ? "内容归属本任务 · 由 AI 维护，用户可修改" : panel === "team" ? "点击任意成员，进入本人对话" : "成果版本为样例，不代表 Crew 真实版本"}</div>`;
+    host.innerHTML = `<div class="inspector-header"><div class="inspector-heading"><div><h2>${titles[panel]}</h2><p>${esc(c.title)} · ${esc(c.leader)} 负责</p></div><button class="icon-button" data-action="panel-close" aria-label="关闭资料，返回对话">${icon("close")}</button></div><nav class="inspector-tabs" aria-label="资料类型">${[
+      ["details", "详情"],
+      ["team", "成员"],
+      ["results", "成果"],
+    ]
+      .map(
+        ([id, label]) =>
+          `<button data-action="resource-tab" data-panel="${id}" aria-pressed="${panel === id}">${label}</button>`,
+      )
+      .join(
+        "",
+      )}</nav></div><div class="inspector-body">${body}</div><div class="inspector-footer">${panel === "details" ? "内容归属本任务 · 由 AI 维护，用户可修改" : panel === "team" ? "点击任意成员，进入本人对话" : "成果版本为样例，不代表 Crew 真实版本"}</div>`;
     const panelKey = model.keyFor(c.id, c.person) + ":" + panel;
     host.querySelector(".inspector-body").scrollTop =
       s.positions[panelKey] || 0;
@@ -539,9 +568,10 @@
     persist();
     document.querySelectorAll("#main details").forEach((detail, index) => {
       s.expanded ||= {};
-      detail.open = Boolean(s.expanded[route + ":" + index]);
+      const disclosureKey = route + ":" + (detail.dataset.disclosure || index);
+      detail.open = Boolean(s.expanded[disclosureKey]);
       detail.addEventListener("toggle", () => {
-        s.expanded[route + ":" + index] = detail.open;
+        s.expanded[disclosureKey] = detail.open;
         persist();
       });
     });
@@ -559,9 +589,17 @@
     if (!c || c.global) return;
     saveView();
     const key = model.keyFor(c.id, c.person);
+    if (name === "resources")
+      name = s.panels[key]
+        ? "none"
+        : s.lastResource?.[c.id] || (c.version ? "results" : "details");
     s.panels[key] = name === "none" || s.panels[key] === name ? null : name;
+    if (s.panels[key]) {
+      s.lastResource ||= {};
+      s.lastResource[c.id] = name;
+    }
     render();
-    if (name !== "none" && s.panels[key])
+    if (s.panels[key])
       requestAnimationFrame(() =>
         $("#inspector button")?.focus({ preventScroll: true }),
       );
@@ -636,7 +674,7 @@
     guide() {
       showDialog(
         "在 Crew 里，走一小段。",
-        `<p>这是交互设计原型 v1，所有数据和反馈均为样例。你可以自由修改，刷新后仍会保留。</p>${[
+        `<p>这是交互设计原型 v2，所有数据和反馈均为样例。你可以自由修改，刷新后仍会保留。</p>${[
           ["首页 → 任务", "点「声纹的两个取舍」，回到原任务讨论。"],
           [
             "任务 → 成员 → 返回",
@@ -685,6 +723,8 @@
     },
     "decision-jump"() {
       s.panels[model.keyFor("voice", "leader")] = null;
+      s.expanded ||= {};
+      s.expanded["task/voice/leader:decision"] = true;
       go("task/voice/leader");
       requestAnimationFrame(() =>
         requestAnimationFrame(() =>
@@ -698,6 +738,11 @@
     },
     panel(el) {
       panel(el.dataset.panel);
+    },
+    "resource-tab"(el) {
+      const c = context();
+      if (s.panels[model.keyFor(c.id, c.person)] !== el.dataset.panel)
+        panel(el.dataset.panel);
     },
     "panel-close"() {
       panel("none");
@@ -1038,6 +1083,10 @@
       toast("已发送到本地样例频道。");
     }
   });
+  document.addEventListener("click", (e) => {
+    const menu = $(".task-options[open]");
+    if (menu && !e.target.closest(".task-options")) menu.open = false;
+  });
   document.addEventListener("input", (e) => {
     if (e.target.id === "capture-input") {
       s.captureDraft = e.target.value;
@@ -1046,6 +1095,12 @@
   });
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && !$("#dialog").open) {
+      const menu = $(".task-options[open]");
+      if (menu) {
+        menu.open = false;
+        menu.querySelector("summary").focus();
+        return;
+      }
       const c = context();
       if (c && s.panels[model.keyFor(c.id, c.person)]) panel("none");
       else closeNavigation();
@@ -1063,9 +1118,24 @@
     if (!scope) return;
     const items = Array.from(
         scope.querySelectorAll(
-          "button:not(:disabled),a[href],input,textarea,select",
+          "button:not(:disabled),a[href],input,textarea,select,summary",
         ),
-      ).filter((x) => !x.hidden),
+      ).filter((x) => {
+        if (x.hidden || x.getClientRects().length === 0) return false;
+        for (
+          let ancestor = x.parentElement;
+          ancestor && ancestor !== scope;
+          ancestor = ancestor.parentElement
+        ) {
+          if (
+            ancestor.tagName === "DETAILS" &&
+            !ancestor.open &&
+            ancestor.querySelector("summary") !== x
+          )
+            return false;
+        }
+        return true;
+      }),
       first = items[0],
       last = items.at(-1);
     if (e.shiftKey && document.activeElement === first) {

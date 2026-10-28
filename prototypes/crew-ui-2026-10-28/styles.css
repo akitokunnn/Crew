@@ -16,7 +16,7 @@
   --amber: #9a783c;
   --shadow: 0 14px 50px #28392712;
   --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
-  --nav: 254px;
+  --nav: 276px;
   --rail: 368px;
   color-scheme: light;
 }
@@ -305,7 +305,7 @@ svg.icon {
   min-height: 0;
   overflow: hidden;
   padding: 24px 16px 14px;
-  width: 254px;
+  width: 276px;
   z-index: 30;
   transition: transform 0.25s var(--ease);
 }
@@ -595,98 +595,6 @@ svg.icon {
   font-size: 10px;
   color: var(--muted);
 }
-.attention {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 13px;
-}
-.attention-card {
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--surface);
-  padding: 18px 20px;
-  text-align: left;
-  position: relative;
-  overflow: hidden;
-  transition:
-    transform 0.2s,
-    box-shadow 0.2s;
-}
-.attention-card:hover {
-  transform: translateY(-2px);
-  box-shadow: var(--shadow);
-  color: var(--text);
-}
-.attention-card .card-kicker {
-  font-size: 10px;
-  color: var(--amber);
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  margin-bottom: 10px;
-}
-.attention-card h3 {
-  font-size: 13px;
-  margin-bottom: 4px;
-  font-weight: 500;
-}
-.attention-card p {
-  font-size: 10px;
-  color: var(--muted);
-}
-.attention-card .arrow {
-  position: absolute;
-  bottom: 21px;
-  right: 20px;
-  color: var(--muted);
-}
-.attention-card.new-result .card-kicker {
-  color: var(--accent);
-}
-.attention-card.new-result:after {
-  content: "";
-  position: absolute;
-  height: 2px;
-  top: 0;
-  left: 10%;
-  right: 10%;
-  background: linear-gradient(90deg, transparent, var(--accent), transparent);
-  opacity: 0.45;
-}
-.workspace-cards {
-  display: grid;
-  gap: 12px;
-}
-.workspace-card {
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--surface);
-  overflow: hidden;
-}
-.workspace-card-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 16px 20px 11px;
-}
-.workspace-card-head .workspace-symbol {
-  width: 28px;
-  height: 28px;
-  border-radius: 8px;
-}
-.workspace-card-head h3 {
-  font-size: 12px;
-  font-weight: 550;
-}
-.workspace-card-head .mono {
-  color: var(--muted);
-  font-size: 9px;
-}
-.workspace-card-head .count {
-  margin-left: auto;
-  font-size: 10px;
-  color: var(--muted);
-}
 .task-row {
   display: flex;
   align-items: center;
@@ -762,25 +670,6 @@ svg.icon {
   width: 12px;
   height: 12px;
 }
-.home-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 230px;
-  gap: 30px;
-}
-.home-aside {
-  border-left: 1px solid var(--line);
-  padding-left: 27px;
-}
-.home-aside .section-heading {
-  margin-top: 28px;
-}
-.mini-todo {
-  display: flex;
-  gap: 9px;
-  font-size: 11px;
-  align-items: flex-start;
-  margin: 17px 0;
-}
 .todo-check {
   width: 17px;
   height: 17px;
@@ -801,16 +690,6 @@ svg.icon {
   width: 11px;
   height: 11px;
 }
-.mini-todo p {
-  font-size: 9px;
-  color: var(--muted);
-  margin-top: 5px;
-}
-.assistant-card {
-  margin-top: 32px;
-  border-top: 1px solid var(--line);
-  padding-top: 22px;
-}
 .assistant-orbit {
   width: 32px;
   height: 32px;
@@ -820,46 +699,6 @@ svg.icon {
   background: var(--soft);
   border-radius: 50%;
   margin-bottom: 12px;
-}
-.assistant-card h3 {
-  font-size: 12px;
-}
-.assistant-card p {
-  font-size: 10px;
-  color: var(--muted);
-  margin: 7px 0 10px;
-}
-.assistant-card .button {
-  font-size: 10px;
-}
-.task-header {
-  padding: 22px 32px 0;
-  flex: none;
-}
-.task-title-line {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-.task-title-line h1 {
-  font-size: 20px;
-  font-weight: 550;
-  letter-spacing: -0.4px;
-  flex: 1;
-  min-width: 0;
-}
-.task-title-line .task-stop {
-  font-size: 10px;
-  color: var(--danger);
-  white-space: nowrap;
-}
-.task-subline {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 10px;
-  color: var(--muted);
-  margin-top: 9px;
 }
 .mode-control {
   display: inline-flex;
@@ -892,55 +731,16 @@ svg.icon {
 .mode-control[aria-checked="true"] .switch-track:after {
   transform: translateX(11px);
 }
-.task-tabs {
-  display: flex;
-  gap: 18px;
-  border-bottom: 1px solid var(--line);
-  margin-top: 23px;
-  min-height: 39px;
-}
-.task-tabs button {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 11px;
-  padding: 0 1px 12px;
-  color: var(--muted);
-  border-radius: 0;
-  position: relative;
-}
-.task-tabs button.active {
-  color: var(--text);
-}
-.task-tabs button.active:after {
-  content: "";
-  position: absolute;
-  bottom: -1px;
-  height: 2px;
-  left: 0;
-  right: 0;
-  background: var(--accent);
-}
-.task-tabs .icon {
-  width: 14px;
-  height: 14px;
-}
-.task-tabs .count {
-  font-size: 9px;
-  background: var(--panel);
-  padding: 0 5px;
-  border-radius: 4px;
-}
 .chat-scroll {
   overflow: auto;
   flex: 1;
   min-height: 0;
-  padding: 28px 36px 20px;
+  padding: 44px 44px 24px;
   scrollbar-width: thin;
   scroll-behavior: auto;
 }
 .chat-column {
-  max-width: 734px;
+  max-width: 720px;
   margin: 0 auto;
   animation: arrive 0.18s var(--ease);
 }
@@ -951,7 +751,7 @@ svg.icon {
   margin: 0 0 24px;
 }
 .message {
-  margin: 0 0 29px;
+  margin: 0 0 42px;
   line-height: 1.85;
   font-size: 12px;
 }
@@ -1041,40 +841,6 @@ svg.icon {
   color: var(--muted);
   margin-left: auto;
 }
-.result-inline {
-  border: 1px solid color-mix(in srgb, var(--accent) 25%, var(--line));
-  background: var(--surface);
-  border-radius: 11px;
-  padding: 17px 18px;
-  margin: 20px 0;
-  position: relative;
-  overflow: hidden;
-}
-.result-inline:before {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: -80%;
-  width: 45%;
-  height: 2px;
-  background: var(--accent);
-  animation: result-glide 1.8s var(--ease) 1;
-}
-.result-inline .eyebrow {
-  font-size: 9px;
-  letter-spacing: 1px;
-}
-.result-inline h3 {
-  font-size: 13px;
-  margin: 8px 0 5px;
-}
-.result-inline p {
-  font-size: 10px;
-  color: var(--muted);
-}
-.result-inline .row {
-  margin-top: 13px;
-}
 .decision-box {
   border-left: 2px solid var(--amber);
   padding: 4px 0 4px 17px;
@@ -1127,28 +893,13 @@ svg.icon {
   font-size: 9px;
   color: var(--muted);
 }
-.member-origin {
-  padding: 10px 15px;
-  margin-bottom: 25px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  color: var(--muted);
-  font-size: 10px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.member-origin .icon {
-  width: 13px;
-  height: 13px;
-}
 .composer-wrap {
-  padding: 13px 36px 20px;
+  padding: 18px 44px 26px;
   flex: none;
   background: linear-gradient(transparent, var(--bg) 15%);
 }
 .composer {
-  max-width: 734px;
+  max-width: 720px;
   margin: 0 auto;
   border: 1px solid color-mix(in srgb, var(--line) 85%, var(--muted));
   border-radius: 13px;
@@ -1159,7 +910,7 @@ svg.icon {
 .composer textarea {
   display: block;
   width: 100%;
-  min-height: 40px;
+  min-height: 54px;
   max-height: 140px;
   padding: 0;
   background: transparent;
@@ -1225,17 +976,8 @@ svg.icon {
   fill: currentColor;
   stroke: 0;
 }
-.composer-caption {
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
-  max-width: 734px;
-  margin: 6px auto 0;
-  font-size: 9px;
-  color: var(--muted);
-}
 .queue-strip {
-  max-width: 734px;
+  max-width: 720px;
   margin: 0 auto 8px;
   background: var(--soft);
   padding: 7px 12px;
@@ -1842,26 +1584,8 @@ dialog .button {
   .home-intro {
     margin-bottom: 40px;
   }
-  .workspace-cards {
-    gap: 16px;
-  }
 }
 @media (max-width: 1250px) {
-  .home-grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .home-aside {
-    border: 0;
-    padding: 0;
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 30px;
-  }
-  .assistant-card {
-    margin-top: 27px;
-    padding-top: 0;
-    border: 0;
-  }
   .page {
     padding: 35px;
   }
@@ -1882,10 +1606,6 @@ dialog .button {
     inset: 67px 0 0;
     background: #20282012;
     pointer-events: none;
-  }
-  .task-header {
-    padding-left: 25px;
-    padding-right: 25px;
   }
   .chat-scroll,
   .composer-wrap {
@@ -1908,32 +1628,11 @@ dialog .button {
   .page {
     padding: 30px 26px;
   }
-  .attention {
-    gap: 10px;
-  }
-  .attention-card {
-    padding: 17px 15px;
-  }
-  .attention-card h3 {
-    font-size: 12px;
-  }
-  .attention-card .arrow {
-    right: 14px;
-  }
   .home-intro h1 {
     font-size: 29px;
   }
   .sample-label {
     font-size: 8px;
-  }
-  .task-title-line h1 {
-    font-size: 18px;
-  }
-  .task-subline {
-    gap: 7px;
-  }
-  .task-subline .pill {
-    display: none;
   }
 }
 @media (max-width: 700px) {
@@ -1993,55 +1692,11 @@ dialog .button {
   .home-intro p {
     font-size: 11px;
   }
-  .home-grid {
-    gap: 0;
-  }
-  .home-aside {
-    grid-template-columns: 1fr;
-    gap: 0;
-  }
-  .home-aside .section-heading {
-    margin-top: 27px;
-  }
-  .assistant-card {
-    margin: 25px 0 0;
-    border-top: 1px solid var(--line);
-    padding: 23px 0;
-  }
-  .attention {
-    grid-template-columns: 1fr 1fr;
-    gap: 9px;
-  }
-  .attention-card {
-    padding: 15px 13px;
-  }
-  .attention-card .card-kicker {
-    font-size: 9px;
-    margin-bottom: 9px;
-  }
-  .attention-card h3 {
-    font-size: 11px;
-  }
-  .attention-card p {
-    font-size: 9px;
-    max-width: 90%;
-  }
-  .attention-card .arrow {
-    width: 12px;
-    bottom: 16px;
-    right: 11px;
-  }
   .section-heading {
     margin-top: 24px;
   }
   .section-heading .section-note {
     font-size: 9px;
-  }
-  .workspace-card-head {
-    padding: 14px 15px 8px;
-  }
-  .workspace-card-head .mono {
-    display: none;
   }
   .task-row {
     padding: 11px 15px 15px;
@@ -2067,38 +1722,6 @@ dialog .button {
   }
   .quick-capture .button {
     padding: 6px 8px;
-  }
-  .task-header {
-    padding: 18px 18px 0;
-  }
-  .task-title-line {
-    gap: 7px;
-  }
-  .task-title-line h1 {
-    font-size: 18px;
-    line-height: 1.5;
-  }
-  .task-title-line .task-stop {
-    font-size: 9px;
-  }
-  .task-subline {
-    font-size: 9px;
-    flex-wrap: wrap;
-    gap: 5px 10px;
-    margin-top: 8px;
-  }
-  .task-tabs {
-    margin-top: 18px;
-    gap: 19px;
-    min-height: 38px;
-  }
-  .task-tabs button {
-    font-size: 10px;
-    gap: 5px;
-  }
-  .task-tabs .icon {
-    width: 13px;
-    height: 13px;
   }
   .chat-scroll {
     padding: 23px 20px 10px;
@@ -2130,13 +1753,6 @@ dialog .button {
   }
   .composer-hint {
     font-size: 8px;
-  }
-  .composer-caption {
-    font-size: 8px;
-    margin: 5px 4px 0;
-  }
-  .composer-caption .shortcut {
-    display: none;
   }
   .queue-button {
     font-size: 9px;
@@ -2226,12 +1842,6 @@ dialog .button {
   .report-update button {
     font-size: 9px;
   }
-  .home-aside .mini-todo {
-    margin: 14px 0;
-  }
-  .task-tabs .count {
-    font-size: 8px;
-  }
 }
 /* Reading sizes follow the existing Crew UI rather than dashboard-sized microcopy. */
 .nav-item {
@@ -2258,24 +1868,8 @@ dialog .button {
 .section-heading h2 {
   font-size: 13px;
 }
-.attention-card h3 {
-  font-size: 14px;
-}
-.attention-card p,
-.attention-card .card-kicker {
-  font-size: 11px;
-}
-.workspace-card-head h3 {
-  font-size: 13px;
-}
 .home-intro p {
   font-size: 13px;
-}
-.mini-todo {
-  font-size: 12px;
-}
-.mini-todo p {
-  font-size: 10px;
 }
 .quick-capture textarea {
   font-size: 13px;
@@ -2286,18 +1880,13 @@ dialog .button {
 .message .message-meta {
   font-size: 11px;
 }
-.task-subline,
 .mode-control {
   font-size: 11px;
-}
-.task-tabs button {
-  font-size: 12px;
 }
 .composer textarea {
   font-size: 13px;
 }
-.composer-hint,
-.composer-caption {
+.composer-hint {
   font-size: 10px;
 }
 .decision-question p {
@@ -2313,12 +1902,6 @@ dialog .button {
   font-size: 12px;
 }
 .member-inline p {
-  font-size: 11px;
-}
-.result-inline h3 {
-  font-size: 14px;
-}
-.result-inline p {
   font-size: 11px;
 }
 .report-page p {
@@ -2370,20 +1953,6 @@ dialog .button {
   font-size: 9px;
 }
 @media (min-width: 1051px) and (max-width: 1250px) {
-  .home-grid {
-    grid-template-columns: minmax(0, 1fr) 195px;
-    gap: 25px;
-  }
-  .home-aside {
-    display: block;
-    border-left: 1px solid var(--line);
-    padding-left: 22px;
-  }
-  .assistant-card {
-    margin-top: 30px;
-    border-top: 1px solid var(--line);
-    padding-top: 23px;
-  }
   .page {
     padding: 36px;
   }
@@ -2398,13 +1967,6 @@ dialog .button {
   .task-nav-title {
     font-size: 12px;
   }
-  .attention-card h3 {
-    font-size: 12px;
-  }
-  .attention-card p,
-  .attention-card .card-kicker {
-    font-size: 10px;
-  }
   .task-row-title {
     font-size: 12px;
   }
@@ -2417,15 +1979,10 @@ dialog .button {
   .message {
     font-size: 13px;
   }
-  .task-subline,
   .mode-control {
     font-size: 10px;
   }
-  .task-tabs button {
-    font-size: 11px;
-  }
-  .composer-hint,
-  .composer-caption {
+  .composer-hint {
     font-size: 9px;
   }
   .composer textarea {
@@ -2469,11 +2026,6 @@ dialog .button {
 .breadcrumb > span {
   flex: none;
 }
-.mini-todo > div > button {
-  padding: 0;
-  text-align: left;
-  line-height: 1.7;
-}
 @media (max-width: 700px) {
   .breadcrumb button {
     max-width: 74px;
@@ -2488,11 +2040,6 @@ dialog .button {
   .topbar .breadcrumb > span.accent {
     font-size: 10px;
   }
-  .member-origin {
-    flex-wrap: wrap;
-    gap: 6px;
-  }
-  .task-tabs button,
   .mode-control {
     min-height: 28px;
   }
@@ -2504,6 +2051,605 @@ dialog .button {
   }
   .composer-tools {
     gap: 5px;
+  }
+}
+.home-overview {
+  width: min(840px, 100%);
+  padding: 48px 48px 64px;
+  margin: 0 auto;
+  animation: arrive 0.18s var(--ease);
+}
+.home-overview .home-intro {
+  margin-bottom: 40px;
+}
+.home-overview .home-date {
+  font-size: 12px;
+  margin: 0 0 14px;
+}
+.home-overview h1 {
+  font-size: 30px;
+  font-weight: 500;
+}
+.home-overview .home-intro > p:last-child {
+  font-size: 14px;
+  margin-top: 12px;
+}
+.home-overview .section-heading {
+  margin: 0 0 12px;
+}
+.home-overview .section-heading h2 {
+  font-size: 13px;
+  color: var(--muted);
+  font-weight: 400;
+}
+.text-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.text-link .icon {
+  width: 14px;
+  height: 14px;
+}
+.home-attention {
+  margin-bottom: 44px;
+}
+.attention-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  width: 100%;
+  min-height: 76px;
+  padding: 18px 0;
+  text-align: left;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  font-size: 15px;
+}
+.attention-row > .icon {
+  width: 15px;
+  height: 15px;
+  color: var(--muted);
+}
+.attention-row > .muted,
+.version-label {
+  font-size: 11px;
+  white-space: nowrap;
+}
+.attention-mark {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  color: var(--amber);
+  flex: none;
+}
+.attention-mark.result,
+.version-label {
+  color: var(--accent);
+}
+.attention-context {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 6px;
+}
+.home-progress {
+  margin-top: 8px;
+}
+.workspace-summary {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-height: 90px;
+  padding: 20px 0;
+  text-align: left;
+  border-radius: 0;
+  border-bottom: 1px solid var(--line);
+}
+.workspace-summary strong {
+  font-size: 15px;
+  font-weight: 500;
+}
+.workspace-summary .workspace-symbol {
+  width: 30px;
+  height: 30px;
+  font-size: 12px;
+  border: 0;
+  background: var(--panel);
+}
+.workspace-progress {
+  display: block;
+  font-size: 12px;
+  line-height: 1.8;
+  color: var(--muted);
+  margin-top: 7px;
+}
+.workspace-count {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.workspace-summary > .icon {
+  width: 14px;
+  height: 14px;
+  color: var(--muted);
+}
+.home-capture {
+  margin-top: 44px;
+}
+.home-capture .quick-capture {
+  padding: 19px 20px 14px;
+  box-shadow: none;
+  border-color: var(--line);
+}
+.home-capture textarea {
+  font-size: 14px;
+  min-height: 54px;
+}
+.home-capture .button {
+  font-size: 12px;
+  padding: 7px 12px;
+}
+.home-capture select {
+  font-size: 12px;
+}
+.workspace-conversation {
+  margin-top: 24px;
+}
+.workspace-task-list .task-row {
+  padding: 24px 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+}
+.workspace-task-list .task-row-title {
+  font-size: 15px;
+}
+.workspace-task-list .task-row p {
+  margin-top: 8px;
+  font-size: 12px;
+}
+.sidebar .brand {
+  padding-bottom: 30px;
+}
+.sidebar .nav-item {
+  min-height: 44px;
+  font-size: 14px;
+}
+.sidebar .workspace-heading {
+  padding-top: 24px;
+  padding-bottom: 12px;
+}
+.sidebar .task-nav {
+  padding-top: 13px;
+  padding-bottom: 13px;
+}
+.sidebar .task-nav-title {
+  font-size: 13px;
+}
+.task-nav-title .task-state {
+  color: var(--muted);
+  font-size: 9px;
+  flex: none;
+}
+.task-nav-title .dot.review {
+  background: var(--amber);
+}
+.task-nav-title .dot.stopped {
+  background: var(--muted);
+}
+.sidebar .task-nav-meta {
+  margin-top: 9px;
+  padding-left: 12px;
+}
+.sidebar .task-nav-meta .badge {
+  background: none;
+  padding: 0;
+  font-size: 10px;
+}
+.chat-topbar {
+  height: 88px;
+  padding: 0 40px;
+  border-bottom: 0;
+}
+.chat-topbar .sample-label {
+  display: none;
+}
+.conversation-title {
+  min-width: 0;
+}
+.conversation-title > span {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+.conversation-title h1 {
+  font-size: 21px;
+  letter-spacing: -0.4px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text);
+}
+.chat-topbar .breadcrumb {
+  font-size: 13px;
+}
+.chat-topbar .breadcrumb strong {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--text);
+}
+.resource-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.resource-button .icon {
+  width: 16px;
+  height: 16px;
+}
+.resource-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.conversation-strip {
+  min-height: 42px;
+  padding: 0 44px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: none;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+  gap: 12px;
+}
+.conversation-strip > .row {
+  gap: 16px;
+}
+.member-sample {
+  font-size: 10px;
+}
+.task-options {
+  position: relative;
+}
+.task-options > summary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  cursor: pointer;
+  list-style: none;
+  border-radius: 5px;
+}
+.task-options > summary::-webkit-details-marker {
+  display: none;
+}
+.task-options > summary .icon {
+  width: 16px;
+  height: 16px;
+}
+.task-option-menu {
+  position: absolute;
+  top: calc(100% + 13px);
+  right: 0;
+  width: 245px;
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  z-index: 24;
+  box-shadow: var(--shadow);
+}
+.task-option-menu > button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 11px 0;
+  font-size: 13px;
+  text-align: left;
+}
+.task-option-menu > .mode-control {
+  margin: 0 0 16px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 20px;
+  border-radius: 0;
+}
+.task-option-menu .task-stop {
+  color: var(--danger);
+}
+.task-option-menu .icon {
+  width: 15px;
+  height: 15px;
+}
+.conversation-events {
+  margin: 28px 0;
+  display: grid;
+  gap: 14px;
+}
+.conversation-events > button {
+  display: flex;
+  align-items: center;
+  width: fit-content;
+  max-width: 100%;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--muted);
+  padding: 4px 0;
+  text-align: left;
+}
+.conversation-events .icon {
+  width: 15px;
+  height: 15px;
+}
+.conversation-events .icon:last-child {
+  width: 12px;
+}
+.decision-discussion {
+  margin-top: 22px;
+}
+.decision-discussion > summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: fit-content;
+  list-style: none;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 8px 0;
+  color: var(--text);
+}
+.decision-discussion > summary::-webkit-details-marker {
+  display: none;
+}
+.decision-discussion > summary > span {
+  font-size: 11px;
+  color: var(--amber);
+}
+.decision-discussion > summary .icon {
+  width: 14px;
+  height: 14px;
+  color: var(--muted);
+  transition: transform 0.2s;
+}
+.decision-discussion[open] > summary .icon {
+  transform: rotate(180deg);
+}
+.decision-discussion .decision-box {
+  margin-top: 24px;
+}
+.chat-column .message {
+  font-size: 15px;
+  line-height: 1.95;
+}
+.composer-hint {
+  font-size: 11px;
+}
+.composer .queue-button {
+  font-size: 11px;
+  padding: 6px 9px;
+  border-color: transparent;
+  color: var(--muted);
+}
+.composer .stop-ai {
+  font-size: 11px;
+  margin-right: 10px;
+}
+.composer textarea {
+  font-size: 14px;
+  line-height: 1.9;
+}
+.inspector-header {
+  display: block;
+  padding-bottom: 0;
+}
+.inspector-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.inspector-tabs {
+  display: flex;
+  gap: 22px;
+  margin-top: 20px;
+}
+.inspector-tabs > button {
+  padding: 0 0 12px;
+  border-radius: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.inspector-tabs > button[aria-pressed="true"] {
+  color: var(--accent);
+  border-bottom: 2px solid var(--accent);
+}
+.team-map,
+.artifact-history {
+  margin: 28px 0;
+}
+.team-map > summary,
+.artifact-history > summary {
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 8px 0;
+}
+@media (hover: hover) and (min-width: 701px) {
+  .workspace-heading > .icon-button {
+    opacity: 0;
+  }
+  .workspace-heading:hover > .icon-button,
+  .workspace-heading:focus-within > .icon-button {
+    opacity: 1;
+  }
+}
+@media (max-width: 900px) {
+  .chat-topbar {
+    padding: 0 28px;
+  }
+  .conversation-strip {
+    padding-left: 28px;
+    padding-right: 28px;
+  }
+  .home-overview {
+    padding-left: 32px;
+    padding-right: 32px;
+  }
+}
+@media (max-width: 700px) {
+  .home-overview {
+    padding: 32px 24px 44px;
+  }
+  .home-overview .home-intro {
+    margin-bottom: 30px;
+  }
+  .home-overview h1 {
+    font-size: 27px;
+  }
+  .home-overview .home-intro > p:last-child {
+    font-size: 13px;
+  }
+  .home-attention {
+    margin-bottom: 36px;
+  }
+  .attention-row {
+    min-height: 84px;
+    gap: 10px;
+    font-size: 14px;
+  }
+  .attention-row > .muted {
+    font-size: 10px;
+  }
+  .attention-context {
+    font-size: 11px;
+  }
+  .attention-mark {
+    width: 22px;
+  }
+  .attention-row > .icon {
+    display: none;
+  }
+  .workspace-summary {
+    gap: 12px;
+    min-height: 96px;
+  }
+  .workspace-summary strong {
+    font-size: 14px;
+  }
+  .workspace-progress {
+    font-size: 12px;
+  }
+  .workspace-count {
+    display: none;
+  }
+  .home-capture {
+    margin-top: 36px;
+  }
+  .home-capture .quick-capture {
+    padding: 18px 15px 13px;
+  }
+  .home-capture .button {
+    padding: 7px 10px;
+  }
+  .chat-topbar {
+    height: 82px;
+    padding: 0 20px;
+    gap: 8px;
+  }
+  .chat-topbar .top-actions {
+    flex: none;
+  }
+  .conversation-title h1 {
+    font-size: 18px;
+  }
+  .conversation-title > span {
+    font-size: 10px;
+  }
+  .chat-topbar .breadcrumb {
+    font-size: 11px;
+  }
+  .chat-topbar .breadcrumb button {
+    max-width: 72px;
+  }
+  .chat-topbar .breadcrumb strong {
+    font-size: 12px;
+  }
+  .resource-button {
+    font-size: 12px;
+    gap: 5px;
+    padding: 7px 4px;
+  }
+  .resource-button .icon {
+    display: none;
+  }
+  .conversation-strip {
+    padding: 0 24px 12px;
+    font-size: 11px;
+    min-height: 42px;
+  }
+  .conversation-strip > .row {
+    gap: 10px;
+  }
+  .task-options > summary {
+    font-size: 10px;
+  }
+  .task-option-menu {
+    width: 235px;
+  }
+  .member-sample {
+    display: none;
+  }
+  .chat-scroll {
+    padding: 30px 25px 18px;
+  }
+  .chat-column .message {
+    font-size: 15px;
+    margin-bottom: 34px;
+  }
+  .conversation-events > button {
+    font-size: 12px;
+    flex-wrap: wrap;
+    gap: 7px;
+  }
+  .composer-wrap {
+    padding: 14px 16px calc(18px + env(safe-area-inset-bottom));
+  }
+  .composer {
+    padding: 15px 15px 10px;
+  }
+  .composer textarea {
+    min-height: 48px;
+    font-size: 14px;
+  }
+  .composer-hint {
+    font-size: 10px;
+  }
+  .composer .stop-ai {
+    margin-right: 2px;
+    font-size: 10px;
+  }
+  .composer .queue-button {
+    font-size: 10px;
+    padding: 7px 5px;
+  }
+  .composer-tools {
+    gap: 6px;
+  }
+  .inspector-tabs {
+    margin-top: 18px;
   }
 }
 @media (prefers-reduced-motion: reduce) {
