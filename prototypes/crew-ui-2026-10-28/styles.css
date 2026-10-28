@@ -2232,9 +2232,12 @@ dialog .button {
   font-size: 13px;
 }
 .task-nav-title .task-state {
-  color: var(--muted);
-  font-size: 9px;
-  flex: none;
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 .task-nav-title .dot.review {
   background: var(--amber);
