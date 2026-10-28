@@ -329,7 +329,7 @@ class _Materializer:
         self.maps = []
         self.names, self.group_names, self.member_group = {}, {}, {}
         self.requirements, self.rounds, self.goal_rows, self.executions = {}, {}, {}, {}
-        self.documents, self.report_rows = {}, {}
+        self.documents, self.report_rows, self.todo_rows = {}, {}, {}
         self.artifact_files = {}
 
     def map(self, source, key, target, identity, digest=None, *, synthetic=False):
@@ -648,6 +648,7 @@ class _Materializer:
                 note=todo['resolution_note'],resolved_by='user' if todo['resolved_at'] else None,
                 created_at=todo['created_at'],updated_at=todo['updated_at'],resolved_at=todo['resolved_at'],version=todo['revision']),
                 'todos',todo['id'])
+            self.todo_rows[todo['id']] = row['id']
             for table in ('notification_messages','lark_notification_messages'):
                 self.conn.execute('INSERT INTO '+table+'(item_id,project,leader_session_id,kind,created_at,content,status) VALUES(?,?,?,?,?,?,?)',
                     ('todo:'+str(row['id']),self.project,todo['requester_agent_id'],'todo',self.stamp,'','archived'))
@@ -659,6 +660,134 @@ class _Materializer:
             self.insert('goal_acceptances',dict(goal_id=goal,round=round_number,report_id=acceptance['report_id'],
                 accepted=acceptance['accepted'],note=acceptance['note_markdown'],actor='user',created_at=acceptance['created_at']),
                 'goal_acceptances',acceptance['id'])
+
+    def task_extensions(self):
+        from .. import task_artifacts, tasks
+        from . import personal_extensions, task_extensions
+
+        def read_blob(row):
+            with self.repo.objects.open(self.workspace['id'], row['sha256'], expected_size=row['size_bytes']) as source:
+                return source.read()
+
+        documents = task_extensions.manifests(self.conn, self.workspace['id'], read_blob, prefix='portable.')
+        if not documents:
+            return
+        tasks.ensure_schema(self.conn)
+        task_artifacts.ensure_schema(self.conn)
+        def resolved(table, value):
+            return task_extensions.resolve_id(self.conn, self.workspace['id'], table, value, prefix='portable.')
+        selected = {}
+        for document, payload in documents:
+            for task in payload['tasks']:
+                goal_id = task_extensions.resolve_id(self.conn, self.workspace['id'], 'goals', task['goal_id'], prefix='portable.')
+                if goal_id not in self.goal_rows:
+                    raise StorageConflict('Task extension refers to deleted or unavailable task')
+                selected[goal_id] = task
+            version = next(v for v in self.data['artifact_versions'] if v['id'] == document['id'])
+            self.map('file', 'task-extension', 'artifacts', version['artifact_id'], document['sha256'], synthetic=True)
+            self.map('file', 'task-extension', 'artifact_versions', version['id'], document['sha256'], synthetic=True)
+
+        def identity(goal_id, kind, value):
+            return str(uuid.uuid5(uuid.UUID(goal_id), 'task-extension:' + kind + ':' + str(value)))
+
+        def author(value):
+            if value['kind'] == 'user':
+                return board.HUMAN
+            return task_extensions.resolve_id(self.conn, self.workspace['id'], 'agents', value['agent_id'], prefix='portable.')
+
+        def content(goal_id, ref):
+            if ref is None:
+                return None, None
+            version_id = task_extensions.resolve_id(self.conn, self.workspace['id'], 'artifact_versions',
+                                                     ref['artifact_version_id'], prefix='portable.')
+            version = next(v for v in self.data['artifact_versions'] if v['id'] == version_id)
+            cache = task_artifacts.objects(self.home)
+            destination = cache.path_for(task_artifacts.object_namespace(goal_id), ref['sha256'])
+            existed = destination.exists()
+            with self.repo.objects.open(self.workspace['id'], ref['sha256'], expected_size=ref['size_bytes']) as source:
+                info = cache.put_stream(task_artifacts.object_namespace(goal_id), source,
+                                        expected_sha256=ref['sha256'], expected_size=ref['size_bytes'])
+            if not existed:
+                self.created.append(info.path)
+            key = 'task-content:' + goal_id + ':' + ref['sha256']
+            self.map('file', key, 'artifacts', version['artifact_id'], ref['sha256'], synthetic=True)
+            self.map('file', key, 'artifact_versions', version_id, ref['sha256'], synthetic=True)
+            return info.sha256, info.size_bytes
+
+        self.task_extension_warnings = []
+        for goal_id, task in selected.items():
+            control = task['control']
+            mode_source = _json({'type': 'portable-task-extension', 'source': control.get('source', {}),
+                                 'previously_authorized': control['authorized'],
+                                 'execution': 'Imported stopped; explicit local authorization required'})
+            self.conn.execute('UPDATE task_controls SET mode=?,lifecycle=?,authorized=0,mode_source_json=?,updated_at=? WHERE goal_id=?',
+                              (control['mode'], control['lifecycle'], mode_source, self.stamp, goal_id))
+            if task.get('pinned_at') is not None:
+                self.conn.execute('INSERT OR IGNORE INTO task_pins(goal_id,created_at) VALUES(?,?)',
+                                  (goal_id, task['pinned_at']))
+            self.conn.execute('INSERT OR IGNORE INTO task_workspaces VALUES(?,?,?)', (goal_id, self.project, self.stamp))
+            for reference in task.get('workspaces', []):
+                if reference.get('primary'):
+                    continue
+                public = {key: reference[key] for key in ('label', 'workspace_id') if key in reference}
+                if not public:
+                    continue
+                self.conn.execute('INSERT OR IGNORE INTO task_workspace_references VALUES(?,?,?)',
+                                  (goal_id, _json(public), self.stamp))
+                self.task_extension_warnings.append({'goal_id': goal_id, 'workspace_reference': public,
+                    'reason': '关联工作区未自动绑定；请明确选择本机对应工作区'})
+            report_rows = {}
+            for report in task.get('reports', []):
+                digest, size = content(goal_id, report['content'])
+                value = dict(goal_id=goal_id, version=report['version'], sha256=digest, size_bytes=size,
+                             actor=author(report['actor']), source_json=_json(report.get('source', {})), created_at=report['created_at'])
+                self.insert('task_report_revisions', value)
+                report_rows[report['version']] = value
+            head = task.get('report_head_version', 0)
+            if head:
+                if head not in report_rows:
+                    raise StorageConflict('Task extension report head has no retained content')
+                report = report_rows[head]
+                self.insert('task_reports', dict(goal_id=goal_id, version=head, sha256=report['sha256'],
+                    size_bytes=report['size_bytes'], actor=report['actor'], updated_at=report['created_at']))
+            for pending in task.get('pending', []):
+                digest, size = content(goal_id, pending['content'])
+                self.insert('task_report_pending', dict(id=identity(goal_id, 'pending', pending['id']), goal_id=goal_id,
+                    expected_version=pending['expected_version'], current_version=pending['current_version'], sha256=digest,
+                    size_bytes=size, sections_json=_json(pending['sections']) if pending.get('sections') is not None else None,
+                    actor=author(pending['actor']), source_json=_json(pending.get('source', {})), created_at=pending['created_at']))
+            for attachment in task.get('attachments', []):
+                digest, size = content(goal_id, attachment['content'])
+                self.insert('task_attachments', dict(id=identity(goal_id, 'attachment', attachment['id']), goal_id=goal_id,
+                    filename=attachment['filename'], mime_type=attachment['mime_type'], sha256=digest, size_bytes=size,
+                    actor=author(attachment['actor']), source_json=_json(attachment.get('source', {})), created_at=attachment['created_at']))
+            for version in task.get('versions', []):
+                version_id = identity(goal_id, 'version', version['id'])
+                absent = []
+                for entry in version['files']:
+                    relative = task_extensions.path(entry['path'])
+                    target = task_artifacts._target(self.conn, self.home, self.goal_rows[goal_id], relative)
+                    if not target.exists():
+                        absent.append(relative)
+                version_source = {**version.get('source', {}), 'import_absent_paths': absent}
+                self.insert('task_artifact_versions', dict(id=version_id, goal_id=goal_id, version=version['version'],
+                    label=version['label'], commit_evidence=version.get('commit_evidence'), actor=author(version['actor']),
+                    source_json=_json(version_source), created_at=version['created_at']))
+                for entry in version['files']:
+                    baseline_hash, baseline_size = content(goal_id, entry.get('baseline'))
+                    delivered_hash, delivered_size = content(goal_id, entry.get('delivered'))
+                    self.insert('task_artifact_files', dict(version_id=version_id, goal_id=goal_id, path=entry['path'],
+                        baseline_known=int(entry['baseline_known']), baseline_sha256=baseline_hash, baseline_size=baseline_size,
+                        delivered_sha256=delivered_hash, delivered_size=delivered_size, file_mode=entry.get('file_mode')))
+
+        # Personal completion evidence references these actual task attachment
+        # rows; restore their verified bytes before adding the associations.
+        for _, payload in documents:
+            if 'personal' in payload:
+                personal_extensions.activate(self.conn, payload['personal'], project=self.project,
+                    workspace_id=self.workspace['id'], resolve_goal=lambda value: resolved('goals', value),
+                    resolve_agent=lambda value: resolved('agents', value),
+                    resolve_todo=lambda value: self.todo_rows[resolved('todos', value)])
 
     def write_maps(self):
         self.maps_before=[];written=[]
@@ -728,6 +857,7 @@ def activate_workspace(repo, workspace_id, legacy_home, root, *, replace_source_
                          (project,workspace['name']))
             materializer=_Materializer(repo,conn,workspace,project,root,legacy_home,data,created)
             materializer.people();materializer.tasks();materializer.reports_and_files();materializer.context();materializer.journals();materializer.decisions_and_todos()
+            materializer.task_extensions()
             importer=str(uuid.uuid5(uuid.UUID(repo.device_id),'local-user'))
             membership=conn.execute('SELECT id FROM portable.workspace_memberships WHERE workspace_id=? AND user_id=? AND deleted_at IS NULL',
                 (workspace_id,importer)).fetchone()
@@ -787,7 +917,8 @@ def activate_workspace(repo, workspace_id, legacy_home, root, *, replace_source_
             return {'workspace_id':workspace_id,'project':board.project(conn,project),'status':'activated','backup':str(backup),
                     'agents':len(data['agents']),'goals':len(data['goals']),'reports':len(data['reports']),
                     'documents':len(materializer.documents),'native_resume_supported':False,
-                    'source_marker_replaced':source_marker is not None,'repairs':repairs}
+                    'source_marker_replaced':source_marker is not None,'repairs':repairs,
+                    'warnings':getattr(materializer,'task_extension_warnings',[])}
         except BaseException:
             conn.rollback()
             if committed or intent_path is not None:

@@ -103,9 +103,15 @@ app.once('browser-window-created', (_event, win) => {
         catch (_) { return false; }
       });
     }
-    async function opened(name) {
+    function workbenchContents(){return webContents.getAllWebContents().find(contents=>{
+      try{const url=new URL(contents.getURL());return url.origin===evidence.service.url&&url.pathname==='/'&&!url.searchParams.has('project')&&!url.searchParams.has('legacy');}catch(_){return false;}
+    });}
+    async function opened(name,{legacy=false}={}) {
       await until(() => Boolean(projectContents(name)), 'workspace view ' + name);
       const contents = projectContents(name);
+      if(legacy&&new URL(contents.getURL()).searchParams.get('legacy')!=='1'){
+        const target=new URL(contents.getURL());target.searchParams.set('legacy','1');target.hash='';await contents.loadURL(target.href);
+      }
       await until(() => contents.executeJavaScript('Boolean(document.querySelector("#sidebar"))'), 'workspace renderer ' + name);
       return contents;
     }
@@ -141,6 +147,14 @@ app.once('browser-window-created', (_event, win) => {
       await wait('document.querySelector("#service").textContent==="已连接" && document.querySelector("#crew-desktop-tabs [role=tab]")', 'home bootstrap and tab strip');
       const state = await js('window.crewDesktop.bootstrap()'); evidence.service = state.service;
       assert.notEqual(new URL(state.service.url).port, '47811');
+      await until(async()=>Boolean(workbenchContents())&&(await tabs()).some(tab=>tab.id==='workbench'&&tab.selected),'default real service workbench');
+      const globalWorkbench=workbenchContents();
+      await until(()=>globalWorkbench.executeJavaScript('document.body.classList.contains("workbench")&&window.CrewClient.current.mode==="real"&&Boolean(document.querySelector("#main h1"))'),'real workbench UI');
+      assert.equal(new URL(globalWorkbench.getURL()).search,'');
+      assert(await globalWorkbench.executeJavaScript('typeof require==="undefined"&&typeof window.crewDesktop==="undefined"'));
+      assert(!globalWorkbench.getLastWebPreferences().preload);
+      evidence.checks.push('normal startup selects the real service root workbench without Node, a privileged preload or synthetic data');
+      await capture('00-workbench-default',globalWorkbench);await home();
       const homeDirectory = process.argv[process.argv.indexOf('--home') + 1]; evidence.home = homeDirectory;
       const parent = path.join(homeDirectory, 'qa-workspaces'); await fs.mkdir(parent, { recursive:true });
       for (const name of ['Crew 视觉验收', '长路径与中文名称的工作区', '工具接入']) await core.newWorkspace(parent, name, state.service.url);
@@ -153,7 +167,35 @@ app.once('browser-window-created', (_event, win) => {
       dialog.showOpenDialog = async () => ({ canceled:false, filePaths:[projects[0].root] });
       await click('#existing'); const first = await opened(projects[0].name);
       assert.equal(main.getURL(), initialUrl);
+      await until(()=>first.executeJavaScript('document.body.classList.contains("workbench")&&document.querySelector("#main h1")?.textContent.includes('+JSON.stringify(projects[0].name)+')'),'new project homepage');
       evidence.checks.push('open existing folder uses directory IPC and opens a real project view while home remains mounted');
+      const scopedURL=first.getURL(),scopedOrigin=await first.executeJavaScript('window.__nativeScopeToken="project-A";performance.timeOrigin');
+      await first.executeJavaScript('(()=>{const home=document.querySelector(\'[data-act="wb-navigate"][data-route="#home"]\');if(!home)throw Error("Global workbench navigation is missing");home.click();})()');
+      await until(async()=>(await tabs()).some(tab=>tab.id==='workbench'&&tab.selected),'project global-home hash switches to workbench');
+      await until(()=>Promise.resolve(first.getURL()===scopedURL),'healthy original project route restored');
+      assert.equal(await first.executeJavaScript('performance.timeOrigin'),scopedOrigin);
+      assert.equal(await first.executeJavaScript('window.__nativeScopeToken'),'project-A');
+      assert.equal(new URL(globalWorkbench.getURL()).search,'');assert.equal(new URL(globalWorkbench.getURL()).hash,'#home');
+      evidence.checks.push('a project global-home hash selects the fixed workbench and preserves the original project document and scoped URL');
+      await select('workbench');globalWorkbench.reload();
+      await until(()=>globalWorkbench.executeJavaScript('Boolean(document.querySelector(".wb-nav-group"))'),'registered workspaces in global workbench');
+      await globalWorkbench.executeJavaScript('location.hash='+JSON.stringify('#home?project='+encodeURIComponent(projects[0].name)));
+      await until(()=>globalWorkbench.executeJavaScript('Boolean(document.querySelector(".wb-workspace-footer a[href*=legacy]"))'),'project legacy entry in workbench');
+      const currentGlobalOrigin=await globalWorkbench.executeJavaScript('performance.timeOrigin');
+      await globalWorkbench.executeJavaScript('window.__nativeLifecycle={before:0,hidden:0};window.addEventListener("beforeunload",()=>window.__nativeLifecycle.before++);window.addEventListener("pagehide",()=>window.__nativeLifecycle.hidden++);document.querySelector(".wb-workspace-footer a[href*=legacy]").click()');
+      await until(()=>first.executeJavaScript('new URLSearchParams(location.search).get("legacy")==="1"&&Boolean(document.querySelector(".wb-legacy-return"))'),'verified legacy project entry');
+      await first.executeJavaScript('window.__nativeLifecycle={before:0,hidden:0};window.addEventListener("beforeunload",()=>window.__nativeLifecycle.before++);window.addEventListener("pagehide",()=>window.__nativeLifecycle.hidden++);document.querySelector(".wb-legacy-return").click()');
+      await until(async()=>(await tabs()).some(tab=>tab.id==='workbench'&&tab.selected),'legacy return to fixed workbench');
+      assert.equal(await globalWorkbench.executeJavaScript('performance.timeOrigin'),currentGlobalOrigin);
+      assert.equal(new URL(globalWorkbench.getURL()).hash,'#home?project='+encodeURIComponent(projects[0].name));
+      evidence.checks.push('global workbench legacy links use the verified native project path and return to the same workbench document with its full project hash');
+      evidence.cancelledNavigation={workbench:await globalWorkbench.executeJavaScript('window.__nativeLifecycle'),legacy:await first.executeJavaScript('window.__nativeLifecycle')};
+      assert(evidence.cancelledNavigation.workbench.before>0);assert.equal(evidence.cancelledNavigation.workbench.hidden,0);
+      assert(evidence.cancelledNavigation.legacy.before>0);assert.equal(evidence.cancelledNavigation.legacy.hidden,0);
+      await globalWorkbench.executeJavaScript('document.querySelector(\'[data-act="wb-navigate"][data-route="#personal"]\').click()');
+      await until(()=>globalWorkbench.executeJavaScript('location.hash==="#personal"&&Boolean(document.querySelector("#personal-capture"))'),'workbench actions remain active after cancelled navigation');
+      await until(()=>first.executeJavaScript('Boolean(document.querySelector(".sb-leaders"))'),'legacy renderer remains active after cancelled navigation');
+      evidence.checks.push('cancelled beforeunload navigation preserves both workbench actions and the original legacy renderer');
       await home(); await click('#new');
       await check('new form focuses name and requires a nonempty name', 'document.activeElement.id==="name" && !document.querySelector("#create-form").checkValidity()');
       dialog.showOpenDialog = async () => ({ canceled:false, filePaths:[parent] });
@@ -192,7 +234,7 @@ app.once('browser-window-created', (_event, win) => {
       const second = await opened(projects[1].name);
       const live = [first, second], identities = [];
       for (let index = 0; index < live.length; index++) {
-        const contents = live[index], sid = 'tab-qa-leader-' + index;
+        const contents = await opened(projects[index].name,{legacy:true}), sid = 'tab-qa-leader-' + index;
         await select((await tabFor(projects[index].name)).id);
         await until(() => contents.executeJavaScript(`Boolean(document.querySelector('[data-act="leader"][data-id="${sid}"]'))`), 'fixture leader in project');
         await contents.executeJavaScript(`document.querySelector('[data-act="leader"][data-id="${sid}"]').click()`);
@@ -226,15 +268,15 @@ app.once('browser-window-created', (_event, win) => {
       const order = await tabs(), next = order[(order.findIndex(tab => tab.id === firstTab.id) + 1) % order.length];
       await key(first, 'Tab', ['control']);
       await until(async () => (await tabs()).some(tab => tab.id === next.id && tab.selected), 'CtrlTab next project');
-      const nextContents = next.id === 'home' ? main : projectContents(next.project);
+      const nextContents = next.id === 'home' ? main : next.id==='workbench'?workbenchContents():projectContents(next.project);
       assert(nextContents, 'Next tab has its own renderer');
       await key(nextContents, 'Tab', ['control', 'shift']);
       await until(async () => (await tabs()).some(tab => tab.id === firstTab.id && tab.selected), 'CtrlShiftTab previous project');
       evidence.checks.push('CtrlTab and CtrlShiftTab switch the real active project view');
       await key(first, 'T', ['control']);
-      await until(async () => (await tabs()).some(tab => tab.id === 'home' && tab.selected), 'CtrlT opens home picker');
+      await until(async () => (await tabs()).some(tab => tab.id === 'workbench' && tab.selected), 'CtrlT opens workbench');
       assert.equal(main.getURL(), initialUrl);
-      evidence.checks.push('CtrlT selects the persistent home workspace picker');
+      evidence.checks.push('CtrlT selects the persistent real service workbench while local workspace management remains mounted');
       await select(secondTab.id); await key(second, 'W', ['control']);
       await until(() => second.isDestroyed(), 'CtrlW closes only current renderer');
       assert(!first.isDestroyed()); assert((await core.projects(state.service.url)).length === 4);
@@ -245,8 +287,8 @@ app.once('browser-window-created', (_event, win) => {
       await home(); await key(main, 'W', ['control']);
       assert.equal(closeEvents, 0); assert((await tabs()).some(tab => tab.id === 'home'));
       evidence.checks.push('CtrlW on the fixed home picker does nothing while project tabs remain open');
-      for (const tab of (await tabs()).filter(tab => tab.id !== 'home')) await click(`[data-close-tab-id="${tab.id}"]`);
-      await until(async () => (await tabs()).length === 1, 'close remaining tabs');
+      for (const tab of (await tabs()).filter(tab => tab.project)) await click(`[data-close-tab-id="${tab.id}"]`);
+      await until(async () => (await tabs()).length === 2, 'close remaining project tabs');
       await key(main, 'W', ['control']);
       await until(() => closeEvents === 1, 'home CtrlW follows close-to-tray path'); win.removeListener('close', onClose);
       assert(!win.isDestroyed()); assert(!win.isVisible()); assert((await tabs()).some(tab => tab.id === 'home'));
@@ -313,7 +355,7 @@ app.once('browser-window-created', (_event, win) => {
       const memberSource=`import sys\nfrom contextlib import closing\nsys.path.insert(0,sys.argv[1])\nfrom crew import board,store\nwith closing(store.connect(sys.argv[2])) as conn:\n board.join(conn,'workspace-settings-member',sys.argv[3],'迁移成员',sys.argv[4],sys.argv[5],'main',role='member',group_name='标签验收 1')\n`;
       const memberSeed=spawnSync('python',['-',path.join(desktop,'../plugin'),homeDirectory,managed.name,path.join(managed.root,'src'),managed.root],{input:memberSource,encoding:'utf8',windowsHide:true});
       assert.equal(memberSeed.status,0,memberSeed.stderr);
-      await js(`window.crewDesktop.openProject(${JSON.stringify(managed.name)})`);const managedView=await opened(managed.name),managedTab=await tabFor(managed.name);
+      await js(`window.crewDesktop.openProject(${JSON.stringify(managed.name)})`);const managedView=await opened(managed.name,{legacy:true}),managedTab=await tabFor(managed.name);
       await until(()=>managedView.executeJavaScript('Boolean(document.querySelector(\'[data-act="leader"][data-id="tab-qa-leader-0"]\'))'),'managed leader ready');
       await managedView.executeJavaScript('document.querySelector(\'[data-act="leader"][data-id="tab-qa-leader-0"]\').click()');
       await until(()=>managedView.executeJavaScript('Boolean(document.querySelector(".composer textarea"))'),'managed composer');

@@ -1,10 +1,9 @@
 "use strict";
 (() => {
-  const HAIKU="claude-haiku-4-5-20251001";
   const runtimeId=item=>typeof item==="string"?item:item?.runtime||"claude";
   function validateSelection(choice,catalog) {
-    const selected=JSON.parse(JSON.stringify(choice)),available=catalog.filter(item=>item.available);
-    if(!selected.runtime&&available.length===1)selected.runtime=available[0].id;
+    const selected=JSON.parse(JSON.stringify(choice));
+    if(!selected.runtime){for(const key of ["runtime","model","effort"])if(selected[key]==null||selected[key]==="")delete selected[key];return selected;}
     const runtime=catalog.find(item=>item.id===selected.runtime);
     if(!runtime?.available)throw Error(runtime?.error||"请选择已就绪的执行载体；可重新检测后再试。");
     const model=runtime.models?.find(item=>item.id===selected.model);
@@ -25,13 +24,11 @@
     const available = catalog.filter(item => item.available);
     return available.length === 1 ? available[0].id : "";
   }
-  function taskRuntime(purpose) { const configured = snapshot()?.choices?.[purpose]; return configured === null || configured === undefined ? defaultRuntime() : configured.runtime || defaultRuntimeForUnconfigured(); }
+  function taskRuntime(purpose) { const choices=snapshot()?.choices,configured=choices?.[purpose];if(configured!==null&&configured!==undefined)return configured.runtime||"";if(choices?.default?.runtime)return choices.default.runtime;return ["leader","member"].includes(purpose)?"":defaultRuntimeForUnconfigured(); }
   function defaultRuntimeForUnconfigured() { const available = list().filter(item => item.available); return available.length === 1 ? available[0].id : ""; }
-  const runtimePrompt = () => list().some(item => item.available) ? "请在设置中选择默认载体，或在这里选择本次使用的工具。" : noRuntime;
-  const noRuntime = "没有可用的执行工具，请安装并登录 Codex 或 Claude Code，再重新检测。";
+  const runtimePrompt = () => "未指定载体时，由后台按角色偏好与已保存设置解析；启动回执说明实际选择，工具可用不代表模型已加载。";
   function modelName(id, item = "claude") { const model = (runtimeInfo(item).models || []).find(model => model.id === id); return model === undefined ? id : model.name; }
   function modelEfforts(item, modelId) {
-    if (runtimeId(item) === "claude" && modelId === HAIKU) return [];
     const runtime = runtimeInfo(item), model = (runtime.models || []).find(model => model.id === modelId);
     return model && Array.isArray(model.efforts) ? model.efforts : runtime.efforts || [];
   }
@@ -48,7 +45,7 @@
         if (item.where === "bg" || item.running) throw new Error("这个模型不支持当前 effort，请先选择兼容的 effort，或停下会话后切换。");
         changes.effort = null;
       }
-    } else if (!modelEfforts(item, item.model ?? options.model).includes(value)) throw new Error("这个模型不支持所选 effort，请重新选择。");
+    } else if (value !== null && !modelEfforts(item, item.model ?? options.model).includes(value)) throw new Error("这个模型不支持所选 effort，请重新选择。");
     return changes;
   }
 
@@ -67,5 +64,10 @@
       subscribe(listener){listeners.add(listener);return()=>listeners.delete(listener);},
       invalidate(){cache=null;changed();},destroy(){destroyed=true;listeners.clear();}};
   }
-  const exported={create,runtimeId,validateSelection};if(typeof module!=="undefined"&&module.exports)module.exports=exported;else window.CrewRuntimeCatalog=exported;
+  function selectionResolutionLabel(resolution) {
+    if(!resolution)return "";
+    const name=({claude:"Claude Code",codex:"Codex"})[resolution.selected_runtime]||resolution.selected_runtime||"未确认";
+    return `启动选择：${name}。${resolution.reason||"按后台已保存规则解析"}。这是选择回执，尚未确认本次模型加载。`;
+  }
+  const exported={create,runtimeId,validateSelection,selectionResolutionLabel};if(typeof module!=="undefined"&&module.exports)module.exports=exported;else window.CrewRuntimeCatalog=exported;
 })();

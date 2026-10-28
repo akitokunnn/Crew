@@ -12,12 +12,20 @@ class NotFound(ValueError):
 
 
 @dataclass(frozen=True)
+class Response:
+    body: object
+    status: int = 200
+    headers: tuple = ()
+
+
+@dataclass(frozen=True)
 class Request:
     path: str
     query: dict = field(default_factory=dict)
     data: dict = field(default_factory=dict)
     last_event_id: int = 0
     port: int = 0
+    access: dict | None = None
 
     def one(self, name, default=None):
         return self.query.get(name, [default])[0]

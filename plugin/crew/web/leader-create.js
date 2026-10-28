@@ -9,26 +9,26 @@
     return {snapshot:()=>({...draft}),reconcile,
       input(field,value){if(!["name","task"].includes(field))throw Error("Unknown leader input");draft[field]=value;},
       select(field,value){if(!["runtime","model","effort"].includes(field))throw Error("Unknown leader option");draft.explicit=true;draft[field]=value||null;if(field==="runtime"){draft.model=null;draft.effort=null;}},
-      payload(){reconcile();if(!draft.runtime)throw Error(catalog.prompt());const selected=selectionRules.validateSelection({runtime:draft.runtime,model:draft.model,effort:draft.effort},catalog.list());return{name:draft.name.trim(),task:draft.task.trim(),...selected};}};
+      payload(){reconcile();const selected=selectionRules.validateSelection({runtime:draft.runtime,model:draft.model,effort:draft.effort},catalog.list());return{name:draft.name.trim(),task:draft.task.trim(),...selected};}};
   }
   function create(options) {
     const doc=options.document||document,overlay=options.portal||doc.createElement("div"),catalog=options.catalog;
     overlay.className="backdrop leader-create-overlay";if(!options.portal)doc.body.append(overlay);
     let draft=null,returnTo=null,error="",busy=false,destroyed=false,generation=0;
     function controls() {
-      if(!draft||destroyed)return;draft.reconcile();const value=draft.snapshot(),runtime=catalog.info(value.runtime),status=catalog.status();
-      overlay.querySelector("#leader-runtime-options").innerHTML=catalog.list().map(item=>`<button type="button" class="model-option runtime-option ${item.id===runtime.id?"on":""}" data-act="leader-runtime" data-runtime="${esc(item.id)}" aria-pressed="${item.id===runtime.id}">${esc(item.name)}${item.available?"":'<small>未就绪</small>'}</button>`).join("");
-      const note=overlay.querySelector("#leader-runtime-status");note.className=!runtime.available||status.error?"runtime-error":"runtime-note";
-      note.textContent=status.error||(!runtime.id?catalog.prompt():!runtime.available?runtime.error||`${runtime.name} 暂不可用，请检查安装和登录。`:status.loading?"正在检测执行工具和模型…":"");
+      if(!draft||destroyed)return;draft.reconcile();const value=draft.snapshot(),inherited=!value.runtime,runtime=inherited?{id:"",available:false,models:[],efforts:[]}:catalog.info(value.runtime),status=catalog.status();
+      overlay.querySelector("#leader-runtime-options").innerHTML=`<button type="button" class="model-option runtime-option ${inherited?"on":""}" data-act="leader-runtime" data-runtime="" aria-pressed="${inherited}">按后台角色设置</button>`+catalog.list().map(item=>`<button type="button" class="model-option runtime-option ${item.id===runtime.id?"on":""}" data-act="leader-runtime" data-runtime="${esc(item.id)}" aria-pressed="${item.id===runtime.id}">${esc(item.name)}${item.available?"":'<small>未就绪</small>'}</button>`).join("");
+      const note=overlay.querySelector("#leader-runtime-status");note.className=(!inherited&&!runtime.available)||status.error?"runtime-error":"runtime-note";
+      note.textContent=status.error||(inherited?catalog.prompt():!runtime.available?runtime.error||`${runtime.name} 暂不可用，请检查安装和登录。`:status.loading?"正在检测执行工具和模型…":"");
       const refresh=overlay.querySelector('[data-act="leader-refresh"]');refresh.hidden=!status.canRefresh;refresh.disabled=status.loading;
       const models=[...(runtime.models||[])];if(value.model&&!models.some(item=>item.id===value.model))models.push({id:value.model,name:`自定义：${value.model}`});
       overlay.querySelector("#leader-model-options").innerHTML=[{id:null,name:"原生默认"},...models].map(model=>`<button type="button" class="model-option ${value.model===model.id?"on":""}" data-act="leader-model" data-model="${esc(model.id||"")}" aria-pressed="${value.model===model.id}" ${runtime.available?"":"disabled"}>${esc(model.name)}</button>`).join("");
-      const efforts=catalog.efforts(runtime.id,value.model),unsupported=efforts.length===0;
+      const efforts=inherited?[]:catalog.efforts(runtime.id,value.model),unsupported=!inherited&&efforts.length===0;
       overlay.querySelector("#leader-effort-note").hidden=!unsupported;overlay.querySelector("#leader-effort-options").setAttribute("aria-disabled",String(unsupported||!runtime.available));
       const shown=[null,...efforts];if(value.effort&&!shown.includes(value.effort))shown.push(value.effort);
       overlay.querySelector("#leader-effort-options").innerHTML=shown.map(effort=>`<button type="button" class="model-option ${value.effort===effort?"on":""}" data-act="leader-effort" data-effort="${esc(effort||"")}" aria-pressed="${value.effort===effort}" ${runtime.available?"":"disabled"}>${esc(effort||"原生默认")}</button>`).join("");
       const form=overlay.querySelector("#leader-form");for(const field of ["runtime","model","effort"])form.elements[field].value=value[field]||"";
-      form.querySelector('[type="submit"]').disabled=!runtime.available||busy;overlay.querySelector("#leader-error").textContent=error;
+      form.querySelector('[type="submit"]').disabled=!inherited&&!runtime.available||busy;overlay.querySelector("#leader-error").textContent=error;
     }
     function open() {
       if(destroyed)return;returnTo=options.focus.capture();options.beforeOpen?.();generation++;error="";
@@ -45,7 +45,7 @@
       busy=true;controls();
       try{
         const result=await options.createLeader(payload);if(destroyed)return;
-        const current=draft===selected&&generation===opened;if(current)close();const closedGeneration=generation;await options.refresh();
+        const current=draft===selected&&generation===opened;if(current&&result.selection_resolution)options.notify?.(selectionRules.selectionResolutionLabel(result.selection_resolution));if(current)close();const closedGeneration=generation;await options.refresh();
         if(!destroyed&&current&&draft===null&&generation===closedGeneration)options.navigate(result.session_id);
       }catch(failure){if(!destroyed&&draft===selected&&generation===opened){error=failure.message;controls();}}
       finally{busy=false;controls();}

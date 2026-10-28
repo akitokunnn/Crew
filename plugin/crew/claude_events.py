@@ -151,7 +151,21 @@ class ClaudeEvents:
                 self.journal.emit(event['type'], **{key: value for key, value in event.items() if key != 'type'})
             self._consume_progress(record)
         kind = record["type"]
-        if kind == "stream_event":
+        if kind == 'system' and record.get('subtype') == 'init' and not record.get('parent_tool_use_id'):
+            capabilities = []
+            for field, category in (('tools', 'tool'), ('mcp_servers', 'mcp'), ('skills', 'skill'), ('plugins', 'plugin')):
+                values = record.get(field, [])
+                if not isinstance(values, list):
+                    continue
+                for value in values:
+                    if isinstance(value, str):
+                        capabilities.append({'kind': category, 'name': value, 'status': 'reported'})
+                    elif isinstance(value, dict) and isinstance(value.get('name'), str):
+                        capabilities.append({'kind': category, 'name': value['name'],
+                                             'status': value.get('status', 'reported')})
+            self.journal.emit('native_capabilities', runtime='claude', source='claude:system/init',
+                              native_id=record.get('session_id'), capabilities=capabilities)
+        elif kind == "stream_event":
             event = record["event"]
             if event["type"] == "content_block_delta" and event["delta"]["type"] == "text_delta":
                 self.journal.emit("text", id=record["api_message_id"], text=event["delta"]["text"])

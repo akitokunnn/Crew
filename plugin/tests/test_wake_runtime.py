@@ -37,9 +37,12 @@ class AutoResumeTests(ShellFixture, unittest.TestCase):
             self.assertEqual(process.command[process.command.index("--name") + 1], session["crew_name"])
             self.assertEqual(process.command[process.command.index("--permission-mode") + 1], "bypassPermissions")
             sent = json.loads(process.stdin.getvalue().splitlines()[-1])
-            self.assertEqual(sent["message"]["content"], "[Crew] Crew 服务刚重启，你上一轮做到一半被打断了。先看看做到哪了再接着做；如果其实已经做完，就照常收尾、按守则汇报。")
+            original = "[Crew] Crew 服务刚重启，你上一轮做到一半被打断了。先看看做到哪了再接着做；如果其实已经做完，就照常收尾、按守则汇报。"
+            self.assertTrue(sent['message']['content'].startswith('[Crew common]\n'))
+            self.assertTrue(sent['message']['content'].endswith('\n\n' + original))
             message = next(event for event in self.manager.journal(session_id).events if event["type"] == "message")
             self.assertEqual(message["source"], "crew")
+            self.assertEqual(message['text'], original)
         self.assertEqual(self.commands[0][self.commands[0].index("--model") + 1], "claude-sonnet-5-5")
         self.assertEqual(self.commands[0][self.commands[0].index("--effort") + 1], "high")
         self.assertNotIn("--model", self.commands[1])

@@ -306,7 +306,7 @@ test("starting a queued goal rebinds the app to the execution journal, closes th
   for(const id of ["chat-attention","attention-slot","attention-scope","attention-empty","native-approval-tray","decision-tray","side-task-section","side-attention-section","side-task-body","side-task-title","side-attention-count","right-panel"])nodes.set(id,host());
   Object.defineProperty(main,"innerHTML",{set(value){this.markup=value;for(const [,id]of value.matchAll(/id="([^"]+)"/g))nodes.set(id,host());},get(){return this.markup||"";}});
   h.sandbox.document.getElementById=id=>nodes.get(id)||null;
-  h.sandbox.location={search:"?project=fixture",origin:"http://fixture.local"};
+  h.sandbox.location={search:"?project=fixture&legacy=1",origin:"http://fixture.local"};
   h.sandbox.CrewActivity={markup:()=>""};h.sandbox.CrewContext={};
   const api=async(url,data)=>{
     calls.push({url,data});
@@ -559,4 +559,44 @@ test("execution continuation keeps visible history through a failed reload and r
   assert(html().includes("Keep visible discussion"));assert(html().includes("Continue this task"));
   assert.equal((html().match(/Keep visible discussion/g)||[]).length,1);assert.equal(sends,1);
   assert.equal(target.querySelector(".chat-connection-error").hidden,true);h.chat.unmount();
+});
+
+test("task inputs keep dialogue and work explicit, and member-wide requirements retain their original scope",async()=>{
+  const h=harness(),calls=[];
+  const target=h.mount("member",async(url,data)=>{calls.push({url,data});return url==="/api/chat/send"?{accepted:true}:history();},{},{goalId:"goal",memberConversation:true});await tick();
+  const tools=target.querySelector(".c-row").children,intent=tools.find(n=>n.className==="chat-intent"),sync=tools.find(n=>n.className==="chat-affects-task");
+  assert.equal(intent.value,"dialogue");intent.value="work";intent.onchange();sync.children[0].checked=true;
+  target.querySelector("textarea").value="先修复识别边界，再继续验证";target.querySelector("textarea").oninput();target.querySelector("form").onsubmit({preventDefault(){}});await tick();
+  const sent=calls.find(c=>c.url==="/api/chat/send").data;
+  assert.equal(sent.goal_id,"goal");assert.equal(sent.session_id,"member");assert.equal(sent.intent,"work");assert.equal(sent.affects_task,true);assert.equal(sent.text,"先修复识别边界，再继续验证");h.chat.unmount();
+});
+
+test("explicit task queue keeps a failed draft and stable request identity until its real receipt",async()=>{
+  const h=harness(),queued=[];let failing=true;
+  const target=h.mount("leader",async()=>history(),{},{goalId:"goal",onQueue:async value=>{queued.push(value);if(failing)throw Error("排队依据暂不可保存");return{receipt:{status:"queued"}};}});await tick();
+  const input=target.querySelector("textarea"),button=target.querySelector(".c-row").children.find(n=>n.className==="chat-queue");
+  input.value="当前轮完成后，验证三个短句样本";input.oninput();button.onclick();await tick();
+  assert.equal(input.value,"当前轮完成后，验证三个短句样本");assert.match(target.querySelector(".chat-delivery-status").textContent,/排队依据/);
+  failing=false;button.onclick();await tick();assert.equal(queued.length,2);assert.equal(queued[0].requestId,queued[1].requestId);assert.equal(queued[1].sessionId,"leader");assert.equal(input.value,"");h.chat.unmount();
+});
+
+test("unknown input receipts survive a browser reload with the same message ID and no automatic resend",async()=>{
+  const first=harness();let original;
+  const view=first.mount("leader",async(url,data)=>{if(url==="/api/chat/send"){original=data.message_id;return{accepted:"unknown",status:"unknown"};}return history();},{},{goalId:"goal"});await tick();
+  view.querySelector("textarea").value="核对当前实验结论";view.querySelector("textarea").oninput();view.querySelector("form").onsubmit({preventDefault(){}});await tick();
+  assert.match(view.querySelector(".chat-delivery-status").textContent,/无法确认/);first.chat.unmount();
+  const second=harness(),sent=[];for(const [key,value]of first.saved)second.saved.set(key,value);
+  const restored=second.mount("leader",async(url,data)=>{if(url==="/api/chat/send"){sent.push(data);return{accepted:true};}return history();},{},{goalId:"goal"});await tick();
+  assert.equal(sent.length,0);assert.equal(restored.querySelector("textarea").value,"核对当前实验结论");restored.querySelector("form").onsubmit({preventDefault(){}});await tick();assert.equal(sent[0].message_id,original);second.chat.unmount();
+});
+
+test("selected client owns task event streams and teardown closes it without using the legacy fetch",async()=>{
+  const h=harness(),sources=[];
+  h.sandbox.CrewClient={current:{eventSource(url){const source={url,closed:false,close(){this.closed=true;}};sources.push(source);return source;}}};
+  const target=h.mount("member",async()=>({...history(),execution_id:"execution-a"}),{},{goalId:"goal"});await tick();
+  assert.equal(h.streams.length,0);assert.equal(sources.length,1);assert.match(sources[0].url,/goal_id=goal/);
+  sources[0].onmessage({data:JSON.stringify({seq:1,type:"input_delivery",status:"unknown",message_id:"message-a",detail:"native timeout"})});await tick();
+  assert.match(target.querySelector(".chat-delivery-status").textContent,/native timeout/);
+  sources[0].onmessage({data:JSON.stringify({seq:2,type:"input_delivery",status:"accepted",message_id:"message-a"})});await tick();
+  assert.match(target.querySelector(".chat-delivery-status").textContent,/已接收/);h.chat.unmount();assert.equal(sources[0].closed,true);
 });

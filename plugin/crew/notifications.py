@@ -303,8 +303,11 @@ class Inbox:
         now = self.workspaces.clock()
         with closing(store.connect(self.home)) as conn:
             prefix = self.item_key('')
-            sent = {row[0][len(prefix):] for row in self.execute(conn, 'SELECT item_id FROM notification_messages')
-                    if row[0].startswith(prefix)}
+            receipts = list(self.execute(conn, 'SELECT item_id,status FROM notification_messages'))
+            sent = {row[0][len(prefix):] for row in receipts if row[0].startswith(prefix)}
+            # Imported history predates any local channel generation and must
+            # remain quiet after the user binds or replaces a recipient.
+            sent.update(row[0] for row in receipts if row[1] == 'archived')
             projects = board.projects(conn)
         active = set()
         for project in projects:
@@ -390,6 +393,10 @@ class Inbox:
         now = self.workspaces.clock().isoformat()
         with closing(store.connect(self.home)) as conn:
             for item in self.pending.values():
+                if self.execute(conn, 'SELECT 1 FROM notification_messages WHERE item_id=? '
+                                "OR (item_id=? AND status='archived')",
+                                (self.item_key(item['id']), item['id'])).fetchone():
+                    continue
                 if item['kind']=='goal_report' and not finalized_goal_reports(conn,item['project'],self.config['since'],item['report_id']):
                     continue
                 decision = next((d for d in board.decisions(conn, item['project'], all=True)

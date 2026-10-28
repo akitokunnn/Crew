@@ -2,6 +2,8 @@
 
 原生 Electron 窗口、工作区首页和系统托盘。需要本机已有 Python 3，以及实际要使用的 Claude Code / Codex；普通工作文件夹无需 Git，后端继续使用 Python 标准库。
 
+0.2.42 接入持续任务工作台、个人清单、分层 AI 设置与提示词、报告附件及阶段恢复。桌面启动后进入真实后台提供的工作台；工作区管理、工具、数据存储和系统管理员继续使用本机管理入口，网页不获得这些管理 IPC 权限。既有关系总览、Git、用量、渠道和历史仍可从任务或更多入口访问。退出界面后独立后台继续运行；显式停止后台才结束执行。
+
 0.2.41 按能力整理前端、HTTP 与执行模块，保留已有交互和成员启动防重。新增功能的职责、接入与测试规则集中在[模块指南](../docs/architecture/README.md)，任务调度规则另行讨论。
 
 0.2.40 修复普通 spawn 开工后又被目标分配重复启动成员的问题：自动派工遇到仍忙的成员总对话会明确返回冲突；`crew spawn --goal <ID>` 可直接创建并启动一个目标执行，反向重复唤醒也会拒绝。原生线程绑定跨总对话和目标统一检查唯一归属，并补齐并发回归及 GitHub Actions 自动测试。已有独立目标与用户明确发起的总对话继续保留各自历史。
@@ -45,21 +47,21 @@ Git 的中间状态只更新台账，普通成功留待阅，不额外开启 AI 
 
 “从 Crew 移除”先停止该工作区执行，再从列表移除登记，保留磁盘文件和全部记录。以后重新打开同一目录会恢复原工作区。
 
-打开工作区时可选择升级旧历史或只读查看，启动应用不会自动扫描并导入所有旧目录。首页和工作区菜单可导出完整 `.crewpack`；导入时选择恢复原身份的只读历史或复制为独立工作区，再明确绑定本机目录。导入不恢复旧电脑的执行权限，也不自动启动 AI。历史页可查看消息、附件、报告与保存的文件，项目侧栏的“项目资料”汇集登记文档；任务自己的交付与文档继续保留。详见[本地历史与接续](../docs/storage-v2/implementation.md)。
+打开工作区时可选择升级旧历史或只读查看，启动应用不会自动扫描并导入所有旧目录。首页和工作区菜单可导出完整 `.crewpack`；导入时选择恢复原身份的只读历史或复制为独立工作区，再明确绑定本机目录。导入不恢复旧电脑的执行权限，也不自动启动 AI。历史页保留可移植历史，当前文档和交付按任务内的“交付与文档”查看，不增加项目侧栏文档中心。详见[本地历史与接续](../docs/storage-v2/implementation.md)。
 
 窗口和托盘会标明“独立数据”或“隔离测试”，便于区分使用的 HOME。历史库接口与“存储与清理”独立；后者继续提供占用、清理预览、回收与恢复。完整历史页隔离验收：`node desktop/scripts/smoke-history.cjs`。
 
 “设置 → 消息渠道”可同时配置 QQ 与 Lark / 飞书。按页面步骤创建机器人、保存凭证、建立连接，再用自己的账号私聊机器人发送绑定码；无需编辑 JSON 或重启 Crew。页面提供重连、断开、重新绑定与测试通知，已保存的 Secret 不回显。Lark 当前支持私聊文字和引用拍板答复，完整权限与事件订阅说明见[消息渠道连接流程](../docs/REMOTE_CHANNELS.md)。
 
-关闭窗口会隐藏到托盘，AI 和服务继续运行；托盘或菜单中的「退出 Crew」才退出应用。窗口保留原生最小化、最大化、关闭与可拖动标题栏；应用菜单收在标题栏的省略号中。Crew 图标用于窗口、任务栏、托盘、安装器和快捷方式。
+关闭窗口会隐藏到托盘；托盘或菜单中的「退出 Crew 界面」退出桌面连接，独立后台、AI 和任务继续运行。需要停止整个后台时明确选择「停止后台与全部执行并退出」。窗口保留原生最小化、最大化、关闭与可拖动标题栏；应用菜单收在标题栏的省略号中。Crew 图标用于窗口、任务栏、托盘、安装器和快捷方式。
 
-真正退出后，托盘、菜单和已排队的异步界面操作不再访问窗口。只读版本检查及独立的要点卡整理会取消并回收自有进程；各普通会话和目标执行按原有归档与进程期限并行收尾。已开始的安装、更新、目录迁移仍等待完成，借用后台继续由原窗口管理。
+退出界面后，托盘、菜单和已排队的异步界面操作不再访问窗口。界面自己的只读版本检查会取消；普通会话和任务执行由独立后台继续管理。已开始的安装、更新、目录迁移仍等待必要收尾。
 
 首页侧栏和应用菜单中的「工具与更新」显示 Claude Code / Codex 的当前版本、最新版本和更新结果。自动更新默认关闭；正常启动后会检查版本，手动点击可再次检查。正在使用某个工具的会话会让更新排队，空闲后再试，也可以取消排队。自动更新需用户主动开启；无法确定安装来源或运行状态时会保留说明，不强行替换。更新失败可查看本地日志；退出应用会等待已开始的更新完成。
 
 0.1.2 另有 Crew 卡片：手动检查并统一到**当前桌面自带版本**，确认空闲后备份、同步已安装插件、重启自有后台并在原端口重连，标签与草稿保留。它不下载互联网新版，也不受 CLI 自动更新开关控制；借用或不支持更新准备的旧后台会说明需先退出原 Crew。已有 Claude 会话需重载插件或重开。流程与限制见 [Crew 更新说明](../docs/DESKTOP_UPDATES.md)。
 
-启动时探测指定 home 的 `web.json`，健康的 Crew 服务直接复用。退出应用不关闭复用的服务。只有登记不存在或连接被明确拒绝时，桌面版才启动自己的 `plugin/crew_desktop.py`，使用系统分配的端口，并通过专用 stdin 通道优雅关闭自己创建的后端。无法判断的超时、HTTP 错误或不兼容服务会明确报错。同一 home 的后台持有 OS 文件锁；多个界面同时首启时只有一个创建服务，另一个等待后复用。不会为了应用启动而重启当前服务。原有服务的版本由原服务决定。
+启动时探测指定 home 的 `web.json`，健康的 Crew 服务直接复用。登记不存在或连接被明确拒绝时，通过 `plugin/crew_supervisor.py` 启动独立管理员，由它持有实际后台及端口。Electron 通过本版自带的短命管道桥启动所选管理员，避免窗口退出过程等待长驻子进程；桥不持有 HOME 锁或业务状态，且不改变自定义管理员的参数。桌面退出仅关闭自己的管道，桥结束；管理员收到 EOF 后继续运行，明确 shutdown 才停止其自有服务并让桥确认退出。无法判断的超时、HTTP 错误或不兼容服务会明确报错。同一 home 持有 OS 文件锁，多个界面同时首启时只有一个创建服务，另一个等待后复用。老的自定义后台若没有 Supervisor，则不能承诺桌面退出后常驻，应更换为支持独立管理的来源。原有服务的实际版本由该服务决定。
 
 已有桌面版正在托管任务时，可以用独立界面配置显式连接它：
 
@@ -114,6 +116,9 @@ $crewVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
 node scripts/smoke.cjs "dist/Crew-$crewVersion-portable.exe"
 node scripts/smoke.cjs --reuse
 node scripts/smoke.cjs --visual
+node scripts/smoke-background.cjs
+node scripts/smoke-background.cjs dist/win-unpacked/Crew.exe
+node scripts/smoke-background.cjs "dist/Crew-$crewVersion-portable.exe"
 node scripts/smoke-workspaces.cjs
 node scripts/smoke-handoff.cjs
 node scripts/verify-bundle.cjs
@@ -129,6 +134,8 @@ node scripts/verify-icons.cjs dist/win-unpacked/Crew.exe "dist/Crew-$crewVersion
 构建后执行 `node desktop/scripts/benchmark-packaged-lifecycle.cjs`，用实际应用版本比对目录程序、单文件 portable，以及 ZIP 解压出的同版程序；外层启动、Electron 创建和 renderer 就绪分段计时，ZIP 的一次解压单独记录。单文件解包发生在 Electron 创建前，不能计作 Crew 界面或后台初始化耗时。结果默认在 `desktop/.cache/packaged-lifecycle-<version>.json`。
 
 `--reuse` 会先创建一个完全隔离的测试服务，再检查真实应用退出后该服务仍存活；随后由测试服务的原始拥有者清理。不会复用生产 home 或正式服务。
+
+`smoke-background.cjs` 走普通退出而非 smoke 的停服分支，验证真正 Electron 进程退出后后台仍存活、重新连接同一 PID/instance/URL；然后测试明确停止其自有后台。源码模式自动操作隐藏测试窗口；目录程序和 portable 显示独立的「Crew · 隔离测试」窗口，终端输出 ready 后在该窗口按 Ctrl+Q 正常退出，60 秒内完成。打包程序不注入 `--require` 或 `NODE_OPTIONS`。均使用独立 HOME、隔离 CLI 发现及禁止模型启动的守卫，证据写入 `smoke-output/background-*.json`，不把管道桥退出当作后台已停止。
 
 Renderer 使用 `contextIsolation: true`、`nodeIntegration: false` 和 sandbox；IPC 仅接受自有工作区首页的主 frame，各 IPC 暴露独立函数。项目使用独立 WebContentsView，没有 preload 或文件系统桥接。项目导航严格限制在对应本机项目，外站点击在系统浏览器打开，外站重定向被拒绝。实现依据 Electron 官方的 [安全指南](https://www.electronjs.org/docs/latest/tutorial/security/)、[WebContentsView](https://www.electronjs.org/docs/latest/api/web-contents-view)、[原生标题栏](https://www.electronjs.org/docs/latest/tutorial/custom-title-bar) 和 [Tray](https://www.electronjs.org/docs/latest/api/tray) 文档。
 

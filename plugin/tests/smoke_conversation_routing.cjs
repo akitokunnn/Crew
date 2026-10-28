@@ -35,7 +35,7 @@ if(!process.versions.electron){
       const click=selector=>js(`document.querySelector(${JSON.stringify(selector)}).click();true;`);
       async function type(text){await js(`document.querySelector('#chat-host textarea').value=${JSON.stringify(text)};document.querySelector('#chat-host textarea').dispatchEvent(new Event('input',{bubbles:true}));true;`);}
       async function capture(name){await js('document.fonts.ready.then(()=>true)');await pause(120);wc.debugger.attach('1.3');try{const result=await wc.debugger.sendCommand('Page.captureScreenshot',{format:'png',fromSurface:true});const file=path.join(out,name+'.png');await fs.writeFile(file,Buffer.from(result.data,'base64'));evidence.screenshots.push(file);}finally{wc.debugger.detach();}}
-      await window.loadURL(bootstrap.url+'/?project=demo#leader='+bootstrap.leader);
+      await window.loadURL(bootstrap.url+'/?legacy=1&project=demo#leader='+bootstrap.leader);
       await wait('document.querySelector("#goal-chat-hint")?.textContent.includes("2 个任务")');
       await check('real HTTP serves every stylesheet and script declared by the entry page',`(async()=>{const paths=[...document.querySelectorAll('link[rel=stylesheet],script[src]')].map(el=>el.href||el.src);return (await Promise.all(paths.map(url=>fetch(url).then(r=>r.status)))).every(status=>status===200)})()`);
       await click('[data-act="right-open"]');await pause(450);

@@ -74,9 +74,7 @@ def register(routes, db, default_project, set_default_project, storage, change_w
 
     def get_download(request):
         query = request.query
-        file = storage.downloads.get(query.get('id', [''])[0])
-        if file is None:
-            raise ValueError('导出文件已失效，请重新导出')
+        file = storage.download_path(query.get('id', [''])[0])
         return Download(file, 'application/zip', attachment='workspace.crewpack')
 
     routes.add('GET', ['/api/workspace-data/download'], get_download)

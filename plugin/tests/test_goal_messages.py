@@ -164,7 +164,10 @@ class GoalMessageTests(GoalFixture):
                                process_factory=mock.Mock(side_effect=AssertionError('No model process')))
         target = {**board.session(self.conn, 'chief-id'), '_storage_id': self.target['id']}
         manager.journal(self.target['id']).set_status('idle')
-        self.controller.send.side_effect = lambda goal, person, text, **options: manager.send(target, text, **options)
+        def send_work(goal, person, text, *, intent, **options):
+            self.assertEqual(intent, 'work')
+            return manager.send(target, text, **options)
+        self.controller.send.side_effect = send_work
         with (mock.patch.object(manager, 'running', return_value=True),
               mock.patch.object(manager, '_send', side_effect=codex_client.TransportError('lost native reply')) as native):
             for _ in range(10):

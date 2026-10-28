@@ -19,7 +19,30 @@ test("legacy snapshots are adapted without probing an unsupported discovery endp
 });
 test("defaults follow explicit purpose and global settings without silently choosing the first installed carrier",()=>{
   const value={catalog:catalog(),choices:{}},module=create({snapshot:()=>value});assert.equal(module.defaultRuntime(),"");value.choices.default={runtime:"codex"};assert.equal(module.taskRuntime("leader"),"codex");value.choices.leader={runtime:"claude"};assert.equal(module.taskRuntime("leader"),"claude");
-  value.choices.leader={runtime:null};assert.equal(module.taskRuntime("leader"),"");value.catalog[0].available=false;assert.equal(module.taskRuntime("leader"),"codex");
+  value.choices.leader={runtime:null};assert.equal(module.taskRuntime("leader"),"");value.catalog[0].available=false;assert.equal(module.taskRuntime("leader"),"");
+});
+test("unconfigured leader and member defer selection even with one discovered carrier, preserving explicit values",()=>{
+  for(const installed of [[],["claude"],["codex"],["claude","codex"]]){
+    const rows=catalog();for(const row of rows)row.available=installed.includes(row.id);
+    const choices={},view=create({snapshot:()=>({catalog:rows,choices})});
+    for(const role of ["leader","member"])assert.equal(view.taskRuntime(role),"");
+    assert.deepEqual(validateSelection({runtime:null,model:null,effort:null},rows),{});
+    choices.default={runtime:"claude"};assert.equal(view.taskRuntime("leader"),"claude");
+    choices.member={runtime:"codex"};assert.equal(view.taskRuntime("member"),"codex");
+  }
+});
+test("effort support follows native model data, independent of model name, and native default remains selectable",()=>{
+  const rows=catalog(),name="claude-haiku-4-5-20251001";
+  rows[0].models=[{id:name,efforts:["high"]},{id:"unrelated-name",efforts:[]}];
+  const view=create({snapshot:()=>({catalog:rows})}),person={runtime:"claude",model:name,effort:null};
+  assert.deepEqual(view.efforts(person,name),["high"]);
+  assert.deepEqual(view.optionChange(person,"effort","high"),{effort:"high"});
+  assert.deepEqual(view.optionChange(person,"effort",null),{effort:null});
+  assert.throws(()=>view.optionChange({...person,model:"unrelated-name"},"effort","high"),/不支持/);
+});
+test("selection receipt names the backend choice and reason without claiming discovery has loaded a model",()=>{
+  const label=require("../crew/web/runtime-catalog.js").selectionResolutionLabel({selected_runtime:"codex",available:["codex"],reason:"未找到首选工具",loaded:"not_confirmed"});
+  assert.match(label,/Codex/);assert.match(label,/未找到首选工具/);assert.match(label,/未确认.*加载/);
 });
 test("shared member/leader choice validation preserves custom native choices and rejects actual capability conflicts",()=>{
   const choices=catalog(),custom={runtime:"codex",model:"future-native",effort:"deep"};assert.deepEqual(validateSelection(custom,choices),custom);assert.deepEqual(custom,{runtime:"codex",model:"future-native",effort:"deep"});

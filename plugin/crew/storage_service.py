@@ -18,6 +18,7 @@ from . import store
 
 HISTORY_PREFIX = 'storage:'
 MARKER = Path('.crew') / 'workspace.json'
+EXPORT_ACTION = 'workspace-data:export'
 
 
 def _marker(root):
@@ -267,7 +268,110 @@ class StorageService:
                 project = candidate['project']
             return self.refresh(project, write_marker=True)
 
+    @staticmethod
+    def _export_digest(data):
+        from . import board
+        try:
+            encoded = json.dumps({'action': EXPORT_ACTION, 'data': data}, ensure_ascii=False,
+                                 sort_keys=True, allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            raise board.BoardError('导出请求必须是可序列化的 JSON 数据') from exc
+        return hashlib.sha256(encoded.encode('utf-8')).hexdigest()
+
+    @staticmethod
+    def _file_digest(path):
+        digest, size = hashlib.sha256(), 0
+        with path.open('rb') as source:
+            while chunk := source.read(1024 * 1024):
+                digest.update(chunk)
+                size += len(chunk)
+        return digest.hexdigest(), size
+
+    def _verified_export(self, result):
+        from . import board
+        path = Path(result['path'])
+        if not path.is_file():
+            raise board.Conflict('原导出产物已不存在，未自动重生成；请核对原路径或发起新的导出请求：' + str(path))
+        try:
+            actual = self._file_digest(path)
+        except OSError as exc:
+            raise board.Conflict('原导出产物当前无法校验，未自动重生成：' + type(exc).__name__ + ': ' + str(exc)) from exc
+        if actual != (result.get('artifact_sha256'), result.get('artifact_size_bytes')):
+            raise board.Conflict('原导出产物的真实内容与成功回执不符，未自动重生成：' + str(path))
+        if result.get('download_id'):
+            self.downloads[result['download_id']] = path
+        return result
+
     def export(self, data):
+        """Optional request IDs use the shared local operation-receipt table.
+
+        ``task_requests`` is a HOME-wide command receipt, not a goal/execution
+        record. It is private local state and never enters workspace packages.
+        Calls without an ID retain the existing create-a-new-export behavior.
+        """
+        from . import board
+        request_id = data.get('request_id')
+        if request_id is None:
+            return self._export(data)
+        if not isinstance(request_id, str) or not request_id.strip() or len(request_id) > 160:
+            raise board.BoardError('导出 request_id 必须是 1–160 字符的非空文本')
+        digest = self._export_digest(data)
+        with self.lock, closing(store.connect(self.home)) as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            try:
+                prior = conn.execute('SELECT * FROM task_requests WHERE request_id=?', (request_id,)).fetchone()
+                if prior is not None:
+                    if prior['action'] != EXPORT_ACTION or prior['digest'] != digest:
+                        raise board.Conflict('同一 request_id 不能用于不同导出正文或其他操作')
+                    if prior['status'] == 'completed':
+                        result = json.loads(prior['response_json'])
+                        conn.commit()
+                        return self._verified_export(result)
+                    detail = prior['error'] or '导出请求在完成回执保存前中断，原结果待核对'
+                    if prior['status'] == 'submitted':
+                        conn.execute("UPDATE task_requests SET status='unknown',error=?,updated_at=? WHERE request_id=?",
+                                     (detail, store.now_iso(), request_id))
+                    conn.commit()
+                    raise board.Conflict('原导出请求结果未确认，未自动重做：' + detail)
+                stamp = store.now_iso()
+                conn.execute('INSERT INTO task_requests VALUES(?,?,?,?,?,?,?,?)',
+                             (request_id, EXPORT_ACTION, digest, 'submitted', None, None, stamp, stamp))
+                conn.commit()
+            finally:
+                if conn.in_transaction:
+                    conn.rollback()
+            try:
+                result = self._export(data)
+                artifact_hash, artifact_size = self._file_digest(Path(result['path']))
+                result = {**result, 'artifact_sha256': artifact_hash, 'artifact_size_bytes': artifact_size}
+                conn.execute("UPDATE task_requests SET status='completed',response_json=?,error=NULL,updated_at=? WHERE request_id=?",
+                             (json.dumps(result, ensure_ascii=False, sort_keys=True, allow_nan=False), store.now_iso(), request_id))
+                return result
+            except Exception as exc:
+                # Publication can precede a read/transport/storage error. Keep
+                # uncertainty instead of blindly creating another backup.
+                detail = type(exc).__name__ + ': ' + str(exc)
+                conn.execute("UPDATE task_requests SET status='unknown',error=?,updated_at=? WHERE request_id=?",
+                             (detail, store.now_iso(), request_id))
+                raise board.Conflict('导出请求结果未确认，未自动重做：' + detail) from exc
+
+    def download_path(self, download_id):
+        """Resolve persistent export receipts after a service restart."""
+        from . import board
+        if not isinstance(download_id, str) or not download_id:
+            raise board.BoardError('请提供导出下载标识')
+        with self.lock:
+            path = self.downloads.get(download_id)
+            with closing(store.connect(self.home)) as conn:
+                row = conn.execute("SELECT response_json FROM task_requests WHERE action=? AND status='completed' "
+                                   "AND json_extract(response_json,'$.download_id')=?", (EXPORT_ACTION, download_id)).fetchone()
+            if row is not None:
+                return Path(self._verified_export(json.loads(row['response_json']))['path'])
+            if path is None or not path.is_file():
+                raise board.BoardError('导出文件已失效，请核对原导出请求')
+            return path
+
+    def _export(self, data):
         from .storage_v2 import packages
         project = data.get('project')
         cached_files=[]

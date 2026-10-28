@@ -135,12 +135,19 @@ class SessionLibraryTests(unittest.TestCase):
         self.assertEqual(self.service.library().preview(self.conn, 'alpha', 'codex:' + native)['messages'], [])
 
     def test_invalid_join_rolls_back_identity_and_does_not_launch(self):
-        native, _ = self.codex(effort='bogus')
+        native, _ = self.codex(effort='-invalid')
         self.register(identity(1), 'lead', role='leader')
         with self.assertRaises(ValueError):
             self.service.library().adopt(self.conn, 'alpha', 'codex:' + native, 'member', 'lead', NOW)
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM sessions').fetchone()[0], 1)
         self.assertFalse(board.pending_notices(self.conn, identity(1)))
+
+    def test_native_future_effort_is_preserved_when_adopting_without_launch(self):
+        native, _ = self.codex(effort='native-future-effort')
+        self.register(identity(1), 'lead', role='leader')
+        joined = self.service.library().adopt(self.conn, 'alpha', 'codex:' + native, 'member', 'lead', NOW)
+        self.assertEqual(models.get(self.conn, joined['session_id'])['effort'], 'native-future-effort')
+        self.service.chat.process_factory.assert_not_called()
 
     def test_old_binding_is_not_presented_as_an_unadopted_person(self):
         native, _ = self.codex()

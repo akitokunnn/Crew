@@ -195,19 +195,31 @@ def create(conn, project, leader_session_id, title, request, acceptance, *, cons
 
 @atomic
 def amend(conn, goal_id, text, *, acceptance=None, constraints=None, actor=board.HUMAN,
-          source=None, expected_version=None, now=None):
+          source=None, expected_version=None, replace=False, now=None):
+    """Append an instruction, or explicitly replace the current requirement snapshot.
+
+    Replacement keeps omitted fields and is a no-op when the normalized snapshot
+    is unchanged. Original words and earlier requirements are never rewritten.
+    """
     goal = _row(conn, goal_id)
     _actor(conn, goal, actor, member=True)
     _expected(goal, expected_version)
+    if type(replace) is not bool:
+        raise board.BoardError('需求替换方式必须为布尔值')
+    if goal['status'] in TERMINAL and not replace:
+        raise board.Conflict('已结束目标需要先明确重开一轮')
+    previous = requirements(conn, goal_id)
+    text = previous['request'] if replace and text is None else _text(text, '当前需求' if replace else '需求补充')
+    criteria = previous['acceptance'] if acceptance is None else _criteria(acceptance)
+    conditions = previous['constraints'] if constraints is None else _strings(constraints, '约束')
+    if replace and text == previous['request'] and criteria == previous['acceptance'] and conditions == previous['constraints']:
+        return get(conn, goal_id)
     if goal['status'] in TERMINAL:
         raise board.Conflict('已结束目标需要先明确重开一轮')
-    text = _text(text, '需求补充')
-    previous = requirements(conn, goal_id)
     version, at = goal['requirement_version'] + 1, board._time(now)
-    request = previous['request'] + '\n\n[补充 v%s]\n' % version + text
+    request = text if replace else previous['request'] + '\n\n[补充 v%s]\n' % version + text
     conn.execute('INSERT INTO goal_requirements VALUES(?,?,?,?,?,?,?,?,?)',
-                 (goal_id, version, request, _json(previous['acceptance'] if acceptance is None else _criteria(acceptance)),
-                  _json(previous['constraints'] if constraints is None else _strings(constraints, '约束')), text,
+                 (goal_id, version, request, _json(criteria), _json(conditions), text,
                   actor, _json(source or {'type': 'user', 'id': goal_id, 'version': version}), at))
     conn.execute('UPDATE goals SET requirement_version=? WHERE id=?', (version, goal_id))
     conn.execute('UPDATE goal_rounds SET requirement_version=? WHERE goal_id=? AND number=?',
@@ -236,18 +248,41 @@ def assign(conn, goal_id, session_id, task, *, actor=board.HUMAN, now=None):
     return get(conn, goal_id)
 
 
-def dispatch_check(conn, goal_id, *, round=None, requirement_version=None, execution_id=None, automatic=True):
+def task_profile(conn, goal_id):
+    """New task discussions have explicit work intent; migrated goals keep their contract."""
+    if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_controls'").fetchone():
+        return False
+    if conn.execute('SELECT 1 FROM task_controls WHERE goal_id=?', (goal_id,)).fetchone() is None:
+        return False
+    return not (conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_migrations'").fetchone()
+                and conn.execute('SELECT 1 FROM task_migrations WHERE goal_id=?', (goal_id,)).fetchone())
+
+
+def dispatch_check(conn, goal_id, *, round=None, requirement_version=None, execution_id=None, automatic=True, followup=False):
     goal = _row(conn, goal_id)
     reason = None
-    if round is not None and round != goal['current_round']:
+    control = (conn.execute('SELECT * FROM task_controls WHERE goal_id=?', (goal_id,)).fetchone()
+               if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_controls'").fetchone() else None)
+    from . import task_scheduler
+    blocked_reason = task_scheduler.blocked(conn, goal_id)
+    if execution_id is not None and not automatic:
+        followup = get_execution(conn, execution_id).get('discussion', False)
+    followup = followup and not automatic and task_profile(conn, goal_id) and goal['status'] in ('completed', 'failed', 'awaiting_acceptance')
+    if control is not None and control['lifecycle'] != 'active':
+        reason = '任务已归档或进入垃圾箱，禁止派发'
+    elif control is not None and not control['authorized'] and automatic:
+        reason = '任务仍在讨论，尚未授权施工'
+    elif blocked_reason:
+        reason = '任务故障受阻：' + blocked_reason
+    elif round is not None and round != goal['current_round']:
         reason = '旧轮次仅供查阅，不能派发'
     elif requirement_version is not None and requirement_version != goal['requirement_version']:
         reason = '旧需求版本的排程已失效'
-    elif goal['status'] not in ('queued', 'running'):
+    elif goal['status'] not in ('queued', 'running') and not followup:
         reason = '目标当前状态禁止派发：' + goal['status']
     elif goal['manual_pause']:
         reason = '用户暂停仍然有效'
-    elif conn.execute("SELECT 1 FROM goal_round_finishes WHERE goal_id=? AND round=? AND requirement_version=? AND status='pending'",
+    elif not followup and conn.execute("SELECT 1 FROM goal_round_finishes WHERE goal_id=? AND round=? AND requirement_version=? AND status='pending'",
                       (goal_id, goal['current_round'], goal['requirement_version'])).fetchone():
         reason = '本轮已请求最终交付，停止新增派发并等待实际执行结束'
     else:
@@ -421,6 +456,8 @@ def get_execution(conn, execution_id):
     if row is None:
         raise board.BoardError('目标执行不存在')
     result = dict(row)
+    result['discussion'] = bool(conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_discussions'").fetchone()
+                                and conn.execute('SELECT 1 FROM task_discussions WHERE execution_id=?', (execution_id,)).fetchone())
     read = conn.execute('SELECT read_seq FROM goal_execution_reads WHERE execution_id=?', (execution_id,)).fetchone()
     result['read_seq'] = read['read_seq'] if read else 0
     result['bindings'] = board._rows(conn, 'SELECT * FROM goal_execution_bindings WHERE execution_id=? ORDER BY runtime', (execution_id,))
@@ -460,9 +497,9 @@ def configure_execution(conn, execution_id, runtime, *, model=None, effort=None,
 
 
 @atomic
-def create_execution(conn, goal_id, session_id, *, runtime, model=None, effort=None, now=None):
+def create_execution(conn, goal_id, session_id, *, runtime, model=None, effort=None, now=None, allow_discussion=False, followup=False):
     goal = _row(conn, goal_id)
-    _allow(conn, goal_id)
+    _allow(conn, goal_id, automatic=not allow_discussion, followup=followup)
     _member(conn, goal, session_id)
     if runtime not in ('claude', 'codex'):
         raise board.BoardError('执行工具无效')
@@ -480,6 +517,8 @@ def create_execution(conn, goal_id, session_id, *, runtime, model=None, effort=N
     conn.execute('INSERT INTO goal_executions VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                  (identity, goal_id, goal['current_round'], session_id, generation, runtime, model, effort,
                   'queued', goal['requirement_version'], at, at, None, None))
+    if followup:
+        conn.execute('INSERT INTO task_discussions(execution_id,created_at) VALUES(?,?)', (identity, at))
     return get_execution(conn, identity)
 
 
@@ -508,14 +547,15 @@ def resolve_native(conn, runtime, native_id):
 
 
 @atomic
-def set_execution_status(conn, execution_id, status, *, requirement_version=None, error=None, now=None):
+def set_execution_status(conn, execution_id, status, *, requirement_version=None, error=None, now=None, allow_discussion=False):
     execution = get_execution(conn, execution_id)
     if status not in EXECUTION_STATES:
         raise board.BoardError('执行状态无效')
     if execution['status'] in TERMINAL and status != execution['status']:
         raise board.Conflict('已结束执行不能再次启动')
     if status in ('queued', 'running'):
-        _allow(conn, execution['goal_id'], round=execution['round'], requirement_version=requirement_version or execution['requirement_version'])
+        _allow(conn, execution['goal_id'], round=execution['round'], requirement_version=requirement_version or execution['requirement_version'],
+               automatic=not allow_discussion, followup=execution.get('discussion', False))
     version = execution['requirement_version'] if requirement_version is None else requirement_version
     if version != _row(conn, execution['goal_id'])['requirement_version'] and status == 'running':
         raise board.Conflict('不能启动旧需求版本')

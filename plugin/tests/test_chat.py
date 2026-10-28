@@ -1,6 +1,7 @@
 """Stream protocol and persistent-process tests without starting Claude."""
 import tests  # Install the production-service connection guard.
 import base64
+import hashlib
 import io
 import json
 import os
@@ -272,13 +273,15 @@ class ChatTests(UsageFixture, unittest.TestCase):
         encoded = base64.b64encode(raw).decode("ascii")
         result = manager.send(session, "look", images=[{"media_type": "image/png", "data": encoded}])
         message = json.loads(process.stdin.getvalue())
-        self.assertEqual(message["message"]["content"], [
-            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": encoded}},
-            {"type": "text", "text": "look"}])
+        self.assertEqual(message["message"]["content"][:-1], [
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": encoded}}])
+        self.assertEqual(message["message"]["content"][-1]['type'], 'text')
+        self.assertTrue(message["message"]["content"][-1]['text'].startswith('[Crew common]\n'))
+        self.assertTrue(message["message"]["content"][-1]['text'].endswith('\n\nlook'))
         journal = manager.journal("s1")
         journal_native_events = claude_events.ClaudeEvents(journal)
         event = next(event for event in journal.events if event["type"] == "message")
-        expected_name = result["message_id"] + "-1.png"
+        expected_name = hashlib.sha256(result['message_id'].encode('utf-8')).hexdigest() + '-1.png'
         self.assertEqual(event["images"], [expected_name])
         self.assertEqual(event["text"], "look")
         self.assertNotIn(encoded, journal.path.read_text(encoding="utf-8"))
@@ -288,14 +291,34 @@ class ChatTests(UsageFixture, unittest.TestCase):
         journal_native_events.consume(message)
         self.assertEqual(len([event for event in journal.events if event["type"] == "message"]), 1)
 
+    def test_image_storage_uses_safe_names_while_preserving_opaque_message_identity(self):
+        manager, process, session = self.manager_with_process()
+        for identity in ('../escaped', '..\\escaped', 'C:\\outside\\image:源'):
+            with self.subTest(identity=identity):
+                result = manager.send(session, 'Inspect once', identity=identity,
+                    images=[{'media_type': 'image/png', 'data': 'AA=='}])
+                self.assertEqual(result['message_id'], identity)
+                event = next(event for event in manager.journal('s1').events
+                             if event['type'] == 'message' and event['id'] == identity)
+                self.assertRegex(event['images'][0], r'^[0-9a-f]{64}-1\.png$')
+                path, media_type = manager.file('s1', event['images'][0])
+                self.assertEqual(path.parent, self.home / 'chat' / 'files' / 's1')
+                self.assertEqual((path.read_bytes(), media_type), (b'\0', 'image/png'))
+                duplicate = manager.send(session, 'Inspect once', identity=identity,
+                    images=[{'media_type': 'image/png', 'data': 'AA=='}])
+                self.assertTrue(duplicate['duplicate'])
+        self.assertEqual(len(list((self.home / 'chat' / 'files' / 's1').iterdir())), 3)
+
     def test_image_only_messages_and_supported_media_types(self):
         for media_type, suffix in chat.IMAGE_TYPES.items():
             with self.subTest(media_type=media_type):
                 manager, process, session = self.manager_with_process()
                 manager.send(session, "", images=[{"media_type": media_type, "data": "AA=="}])
                 message = json.loads(process.stdin.getvalue())
-                self.assertEqual(message["message"]["content"][-1], {"type": "text", "text": ""})
+                self.assertEqual(message["message"]["content"][-1]['type'], 'text')
+                self.assertTrue(message["message"]["content"][-1]['text'].startswith('[Crew common]\n'))
                 event = [event for event in manager.journal("s1").events if event["type"] == "message"][-1]
+                self.assertEqual(event['text'], '')
                 self.assertTrue(event["images"][0].endswith(suffix))
 
     def test_invalid_images_are_rejected_before_any_chat_write(self):
@@ -353,7 +376,8 @@ class ChatTests(UsageFixture, unittest.TestCase):
         result = manager.send(session, '先回答我的补充，再继续', identity='steer-once')
         messages = [json.loads(line) for line in process.stdin.getvalue().splitlines()]
         self.assertEqual(len(messages), 1)
-        self.assertEqual(messages[0]['message']['content'], '先回答我的补充，再继续')
+        self.assertTrue(messages[0]['message']['content'].startswith('[Crew common]\n'))
+        self.assertTrue(messages[0]['message']['content'].endswith('\n\n先回答我的补充，再继续'))
         self.assertEqual(result['delivery'], 'steered')
         self.assertTrue(manager.busy('s1'))
 

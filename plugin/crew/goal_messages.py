@@ -182,7 +182,7 @@ def deliver(controller, conn):
                                                  source='peer', sender=sender_label, display_text=display)
             else:
                 result = controller.send(goal_id, target_id, '\n\n'.join(lines), identity=identity, source='peer',
-                                         sender=sender_label, display_text=display)
+                                         sender=sender_label, display_text=display, intent='work')
             if result.get('accepted') is not True:
                 raise board.Conflict('NativeReceiptUnknown: input has no confirmed native acceptance')
         except (board.BoardError, codex_client.CodexError, OSError) as exc:

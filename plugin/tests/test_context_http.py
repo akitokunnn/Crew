@@ -47,11 +47,12 @@ class ContextHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(code, 200, result)
         return {row["session_id"]: row for row in result["leaders"] + result["members"]}
 
-    def transcript(self, sid, used, model="claude-opus-5-5"):
+    def transcript(self, sid, used, model="claude-opus-5-5", maximum=1000000):
         self.main_file([{"type": "assistant", "timestamp": NOW,
                          "message": {"id": "usage-" + sid, "model": model, "content": [],
                                      "usage": {"input_tokens": used, "cache_read_input_tokens": 0,
-                                               "cache_creation_input_tokens": 0}}}], session=sid)
+                                               "cache_creation_input_tokens": 0}}},
+                        {'type': 'result', 'modelUsage': {model: {'contextWindow': maximum}}}], session=sid)
 
     def start_session(self, role="leader"):
         route = "/api/leader" if role == "leader" else "/api/spawn"
@@ -75,8 +76,8 @@ class ContextHttpTests(ShellFixture, unittest.TestCase):
     def test_state_leader_and_member_transcript_sources_and_null_unknown(self):
         board.roster(self.conn, "demo", "move", "lead", ["two"], now=NOW)
         self.transcript("s3", 521000)
-        self.transcript("s1", 160000, "claude-haiku-4-5-20251001")
-        self.transcript("s2", 12000, "unknown-model")
+        self.transcript("s1", 160000, "claude-haiku-4-5-20251001", maximum=200000)
+        self.transcript("s2", 12000, "unknown-model", maximum=None)
         state = self.state()
         self.assertEqual(state["s3"]["context"], {"used": 521000, "max": 1000000, "source": "transcript"})
         self.assertEqual(state["s1"]["context"], {"used": 160000, "max": 200000, "source": "transcript"})

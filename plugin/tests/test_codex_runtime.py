@@ -39,7 +39,7 @@ class FakeClient:
     def start_thread(self, **params):
         self.calls.append(("thread/start", params))
         return {"thread": {"id": self.thread_id}, "model": "actual-model", "reasoningEffort": "medium",
-                "sandbox": {"type": "workspaceWrite", "networkAccess": False,
+                "sandbox": {"type": "readOnly" if params.get('sandbox') == 'read-only' else "workspaceWrite", "networkAccess": False,
                             "excludeTmpdirEnvVar": True, "excludeSlashTmp": True,
                             "writableRoots": params.get('config', {}).get('sandbox_workspace_write', {}).get('writable_roots', [])}}
 
@@ -47,7 +47,7 @@ class FakeClient:
         self.thread_id = identity
         self.calls.append(("thread/resume", {"threadId": identity, **params}))
         return {"thread": {"id": identity}, "model": "actual-model", "reasoningEffort": "medium",
-                "sandbox": {"type": "workspaceWrite", "networkAccess": False,
+                "sandbox": {"type": "readOnly" if params.get('sandbox') == 'read-only' else "workspaceWrite", "networkAccess": False,
                             "excludeTmpdirEnvVar": True, "excludeSlashTmp": True,
                             "writableRoots": params.get('config', {}).get('sandbox_workspace_write', {}).get('writable_roots', [])}}
 
@@ -82,6 +82,10 @@ class FakeClient:
         self.calls.append((method, params))
         if method == "thread/list":
             return {"data": [], "nextCursor": None}
+        if method == 'config/read':
+            return {'config': {}, 'origins': {}, 'layers': []}
+        if method == 'mcpServerStatus/list':
+            return {'data': [], 'nextCursor': None}
         if method == "thread/settings/update":
             self.emit("thread/settings/updated", threadSettings={"model": params.get("model", "actual-model"),
                                                                  "effort": params.get("effort", "medium")})
@@ -541,6 +545,7 @@ for line in sys.stdin:
             self.assertTrue(journal.condition.wait_for(lambda: any(event["type"] == "turn_result" for event in journal.events), 3))
         terminal = next(event for event in journal.events if event["type"] == "turn_result")
         self.assertTrue(terminal["success"])
+        self.assertFalse(any(event['type'] == 'error' and '标题同步失败' in event.get('text', '') for event in journal.events))
         running.close()
         self.assertTrue(running.reader_done.wait(3))
         self.assertIsNotNone(running.process.poll())

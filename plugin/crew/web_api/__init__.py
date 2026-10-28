@@ -3,9 +3,9 @@
 Add a feature's register() call here. Paths, validation, response kinds and work
 admission remain with that feature; the HTTP transport needs no new branch.
 """
-from . import collaboration, conversations, documents, files, git, goals, maintenance, people, sessions, settings, storage, usage, workspace_data, workspaces
+from . import access, behavior, collaboration, conversations, documents, files, git, goals, maintenance, people, personal, service_control, sessions, settings, storage, tasks, usage, workspace_data, workspaces
 from .database import Database
-from .registry import Content, Download, Events, NotFound, Registry, Request
+from .registry import Content, Download, Events, NotFound, Registry, Request, Response
 from .. import approval_actions, conversation_queries, decision_actions
 
 
@@ -13,6 +13,10 @@ def build(service):
     db = Database(service.home, service.write_lock, service.now,
                   lambda conn, name: service.selected_project(conn, name))
     routes = Registry(service.chat.work)
+    access.register(routes, snapshot=service.remote_access.public, configure=service.remote_access.configure,
+        login=service.remote_access.login, logout=service.remote_access.logout)
+    behavior.register(routes, db)
+    service_control.register(routes, db)
     select_default = lambda name: setattr(service, 'default_project', name)
     workspace_data.register(routes, db,
         default_project=lambda: service.default_project, set_default_project=select_default,
@@ -47,6 +51,14 @@ def build(service):
         library_preview=library.preview,
         plugin_root=service.plugin_root, stop_archived=service.stop_archived)
     goals.register(routes, db, control=service.chat.goal_controller)
+    from .. import task_scheduler
+    task_control = service.chat.goal_controller
+    personal.register(routes, db, pause=task_control.pause, agent_action=task_control.agent_action,
+        send=service.chat.send, journal=service.chat.journal)
+    tasks.register(routes, db, pause=task_control.pause, send=task_control.send,
+                   stop_discussions=task_control.stop_discussions,
+        schedule=task_control.schedule, scheduler_snapshot=task_scheduler.snapshot,
+        notification_snapshot=service.task_notifications.snapshot)
     collaboration.register(routes, db,
         channel_digest=service.channel_digest, channel_messages=service.channel_messages,
         send_message=service.chat.send_message,

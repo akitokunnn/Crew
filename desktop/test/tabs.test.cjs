@@ -2,6 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
+const vm = require('node:vm');
 const { WorkspaceTabs } = require('../src/tabs.cjs');
 
 function fixture(options = {}) {
@@ -18,6 +19,10 @@ function fixture(options = {}) {
     wc.navigationHistory = { canGoBack: () => false, goBack: () => { wc.wentBack = true; } };
     wc.loadURL = async url => { wc.loads.push(url); wc.url = url; wc.emit('did-navigate', {}, url); };
     wc.setWindowOpenHandler = handler => { wc.popup = handler; };
+    wc.executeJavaScript = async source => vm.runInNewContext(source, {
+      history:{state:null,replaceState(_state,_title,url){wc.url=url;}},
+      window:{dispatchEvent(){}},HashChangeEvent:class { constructor(name){this.type=name;} }
+    });
     return wc;
   }
   const children = [];
@@ -35,6 +40,78 @@ function fixture(options = {}) {
     get homes() { return homes; }, get windowClosed() { return windowClosed; } };
 }
 function event() { return { prevented: false, preventDefault() { this.prevented = true; } }; }
+
+test('the persistent workbench loads the real root without becoming a project or activity poll',async()=>{
+  const polled=[];const f=fixture({readActivity:async names=>{polled.push(names);return{projects:[]};},setTimer:()=>1,clearTimer(){}});
+  const tab=await f.manager.openWorkbench();
+  assert.equal(tab.id,'workbench');assert.equal(tab.project,null);assert.equal(f.manager.activeId,'workbench');
+  assert.deepEqual(f.views[0].webContents.loads,['http://127.0.0.1:1234/']);
+  await f.manager.openWorkbench();assert.equal(f.views.length,1);assert.equal(f.views[0].webContents.loads.length,1);
+  await f.manager.refreshActivity();assert.deepEqual(polled,[]);assert.equal(f.manager.close('workbench'),false);
+  f.manager.select('home');assert.equal(f.views[0].visible,false);f.manager.dispose();
+});
+
+test('global workbench SPA stays local while legacy project entry is verified and return retains its full hash',async()=>{
+  const opened=[];const f=fixture({openProject:(name,intent)=>opened.push({name,intent})});
+  await f.manager.openWorkbench();const global=f.views[0].webContents;
+  const spa=event();global.emit('will-navigate',spa,'http://127.0.0.1:1234/#home?project=B');assert.equal(spa.prevented,false);
+  const legacy=event(),target='http://127.0.0.1:1234/?legacy=1&project=A&settings=git#git';
+  global.emit('will-navigate',legacy,target);assert.equal(legacy.prevented,true);
+  assert.deepEqual(opened,[{name:'A',intent:{url:target}}]);assert.deepEqual(f.external,[]);
+  await f.manager.open({name:'A'},{url:target});const project=f.views[1].webContents;
+  assert.equal(project.loads[0],target);
+  const back=event();project.emit('will-navigate',back,'http://127.0.0.1:1234/#home?project=A');
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(back.prevented,true);assert.equal(f.manager.activeId,'workbench');
+  assert.equal(global.loads.at(-1),'http://127.0.0.1:1234/#home?project=A');assert.deepEqual(f.external,[]);
+});
+
+test('cross-project hash navigation restores the healthy source document before verified routing',async()=>{
+  const opened=[];const f=fixture({openProject:(name,intent)=>opened.push({name,intent})});
+  await f.manager.open({name:'A'});const source=f.views[0].webContents;
+  source.document.draft='Keep the original workspace draft';
+  source.url='http://127.0.0.1:1234/?project=A#task?project=B&taskId=real-task';
+  source.emit('did-navigate-in-page',{},source.url,true);await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(source.url,'http://127.0.0.1:1234/?project=A');
+  assert.equal(source.document.draft,'Keep the original workspace draft');
+  assert.equal(f.manager.state().tabs.find(tab=>tab.project==='A').error,false);
+  assert.equal(opened[0].name,'B');assert.equal(new URL(opened[0].intent.url).searchParams.get('project'),'B');
+});
+
+test('real service tabs reject synthetic data and duplicate routing parameters',async()=>{
+  const f=fixture();await f.manager.openWorkbench();const wc=f.views[0].webContents;
+  for(const url of ['/?data=mock','/?legacy=1&project=A&data=mock','/?legacy=1&legacy=1&project=A','/?project=A&project=B','/#home?project=A&project=B']){
+    const attempt=event();wc.emit('will-navigate',attempt,'http://127.0.0.1:1234'+url);assert.equal(attempt.prevented,true,url);
+  }
+  assert.deepEqual(f.projects,[]);assert.deepEqual(f.external,[]);
+});
+
+test('a rejected cross-project hash keeps the original route and draft usable',async()=>{
+  const failures=[];const f=fixture({openProject:()=>Promise.reject(Error('Unknown registered workspace')),onNavigationError:error=>failures.push(error.message)});
+  await f.manager.open({name:'A'});const wc=f.views[0].webContents;wc.document.draft='Unsent original draft';
+  wc.url='http://127.0.0.1:1234/?project=A#home?project=unknown';wc.emit('did-navigate-in-page',{},wc.url,true);
+  await new Promise(resolve=>setImmediate(resolve));assert.equal(wc.url,'http://127.0.0.1:1234/?project=A');
+  assert.equal(wc.document.draft,'Unsent original draft');assert.equal(f.manager.state().tabs[1].error,false);
+  assert.deepEqual(failures,['Unknown registered workspace']);
+});
+
+test('new UI hash routes without a scoped project return to the global workbench',async()=>{
+  for(const hash of ['#home','#settings','#home?project=']){
+    const f=fixture();await f.manager.open({name:'A'});const wc=f.views[0].webContents;wc.document.draft='Keep A';
+    wc.url='http://127.0.0.1:1234/?project=A'+hash;wc.emit('did-navigate-in-page',{},wc.url,true);
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(f.manager.activeId,'workbench',hash);assert.equal(wc.url,'http://127.0.0.1:1234/?project=A');
+    assert.equal(f.views[1].webContents.getURL(),'http://127.0.0.1:1234/'+hash);
+    assert.equal(wc.document.draft,'Keep A');assert.deepEqual(f.projects,[]);
+  }
+});
+
+test('late workbench loading cannot revive a disposed native view',async()=>{
+  const f=fixture(),create=f.manager.createView;let release;
+  f.manager.createView=project=>{const view=create(project);view.webContents.loadURL=()=>new Promise(resolve=>{release=resolve;});return view;};
+  const opening=f.manager.openWorkbench();f.manager.dispose();release();await opening;
+  assert.equal(f.children.length,0);assert.equal(f.manager.entries.size,0);assert.equal(f.views[0].webContents.closed,1);
+});
 
 test('saved history tabs remain readable without polling the execution activity endpoint',async()=>{
   const calls=[];const f=fixture({setTimer:()=>1,clearTimer:()=>{},readActivity:async names=>{calls.push(names);return {projects:names.map(project=>({project,counts:{},items:[]}))};}});
@@ -160,12 +237,12 @@ test('cycling, bounds, back, reload and keyboard callbacks target the active pag
 
 test('navigation remains scoped to the original project and cross-project opens a verified tab', async () => {
   const f = fixture(); await f.manager.open({ name: 'A' }); const wc = f.views[0].webContents;
-  const same = event(); wc.emit('will-navigate', same, 'http://127.0.0.1:1234/?project=A#leader=one');
+  const same = event(); wc.emit('will-navigate', same, 'http://127.0.0.1:1234/?project=A&legacy=1#leader=one');
   assert.equal(same.prevented, false);
   const other = event(); wc.emit('will-navigate', other, 'http://127.0.0.1:1234/?project=B');
   assert.equal(other.prevented, true); assert.deepEqual(f.projects, ['B']);
   const home = event(); wc.emit('will-navigate', home, 'http://127.0.0.1:1234/');
-  assert.equal(home.prevented, true); assert.equal(f.manager.activeId, 'home');
+  assert.equal(home.prevented, true); assert.equal(f.manager.activeId, 'workbench');
   for (const url of ['file:///C:/Crew/home.html', 'javascript:alert(1)', 'http://user@127.0.0.1:1234/?project=A',
     'http://127.0.0.1:1234/?project=A&project=B']) {
     const attempt = event(); wc.emit('will-navigate', attempt, url); assert.equal(attempt.prevented, true);
@@ -187,8 +264,8 @@ test('external clicks open a browser, but external redirects and subframes never
   assert.equal(f.external.length, 2);
   assert.deepEqual(wc.popup({ url: 'http://127.0.0.1:1234/?project=B' }), { action: 'deny' });
   assert.deepEqual(f.projects, ['B']); assert.equal(f.external.length, 2);
-  wc.popup({ url: 'http://127.0.0.1:1234/' }); assert.equal(f.manager.activeId, 'home');
-  wc.popup({ url: 'http://127.0.0.1:1234/?project=A#leader=one' });
+  wc.popup({ url: 'http://127.0.0.1:1234/' }); assert.equal(f.manager.activeId, 'workbench');
+  wc.popup({ url: 'http://127.0.0.1:1234/?project=A&legacy=1#leader=one' });
   assert.equal(f.manager.activeId, 'workspace-1'); assert.equal(f.external.length, 2);
 });
 

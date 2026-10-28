@@ -18,10 +18,12 @@ import sqlite3
 import tempfile
 import uuid
 
-TRANSFORM_VERSION = 'crew-v1-to-v2/1'
+TRANSFORM_VERSION = 'crew-v1-to-v2/2'
 NAMESPACE = uuid.UUID('11182da6-0b1e-5817-a488-4715fd5d599e')
 PRIVATE_TABLES = {'ai_settings', 'ai_task_settings', 'execution_settings', 'usage_files', 'trust_schema_migrations',
-                  'notification_inbound', 'lark_notification_inbound'}
+                  'notification_inbound', 'lark_notification_inbound', 'task_requests',
+                  'personal_receipts', 'personal_assistant_actions', 'task_lifecycle_intents',
+                  'personal_assistant', 'task_notification_events', 'task_notification_receipts'}
 RELATIONS = {'handoff_deliveries': [('handoff_id', 'handoffs', 'id')],
              'channel_reads': [('message_id', 'channel_messages', 'id')],
              'codex_rate_limits': [('rollout_id', 'codex_sessions', 'rollout_id')]}
@@ -47,6 +49,12 @@ PORTABLE_FIELDS = {
     'handoffs': {'body', 'created_at'}, 'handoff_deliveries': {'delivered_at'},
     'channel_messages': {'speaker_name', 'body', 'created_at'},
     'channel_digests': {'body', 'message_count', 'trigger', 'model', 'cost_usd', 'created_at'},
+    'task_user_forwards': {'source_json', 'source_sha256', 'status', 'error', 'created_at', 'updated_at'},
+    'task_work': {'text', 'kind', 'status', 'attempts', 'recoveries', 'error', 'created_at', 'updated_at'},
+    'task_turns': {'text', 'intent', 'status', 'error', 'stopped_at', 'created_at', 'updated_at'},
+    'task_protocol_state': {'checks', 'updated_at'},
+    'task_discussions': {'created_at', 'stop_requested_at', 'stopped_at'},
+    'task_scheduler_events': {'kind', 'created_at'},
 }
 
 
@@ -180,10 +188,18 @@ def _select(schema, project):
     if not any(r['name'] == project for r in schema.get('projects', {}).get('rows', [])):
         raise MigrationError('Legacy project not found: ' + project)
     selected = {name: set() for name in schema}
+    assistants = {row['session_id'] for row in schema.get('personal_assistant', {}).get('rows', [])}
+    assistants.update(row['session_id'] for row in schema.get('sessions', {}).get('rows', [])
+                      if row.get('entrypoint') == 'crew-assistant')
+    assistant_targets = assistants | {row.get('crew_name') for row in schema.get('sessions', {}).get('rows', [])
+                                     if row['session_id'] in assistants and row.get('crew_name')}
+    def personal_only(row):
+        return (row.get('to_target') in assistant_targets or any(row.get(key) in assistants for key in
+                   ('session_id', 'leader_session_id', 'from_session', 'to_session')))
     for name, table in schema.items():
-        if name not in PRIVATE_TABLES:
+        if name not in PRIVATE_TABLES and name != 'task_workspaces':
             selected[name].update(i for i, r in enumerate(table['rows'])
-                if r.get('project') == project or name == 'projects' and r.get('name') == project)
+                if not personal_only(r) and (r.get('project') == project or name == 'projects' and r.get('name') == project))
     sessions = {schema['sessions']['rows'][i]['session_id'] for i in selected.get('sessions', ())}
     native = set(sessions)
     changed = True
@@ -206,7 +222,14 @@ def _select(schema, project):
             for fk in table['foreign']:
                 grouped.setdefault(fk['id'], []).append(fk)
             for i, row in enumerate(table['rows']):
-                if i in selected[name] or row.get('project') is not None:
+                if personal_only(row):
+                    continue
+                if i in selected[name] or (row.get('project') is not None and name != 'task_workspaces'):
+                    continue
+                if name == 'task_workspaces':
+                    if row.get('goal_id') in values.get(('goals', 'id'), ()):
+                        selected[name].add(i)
+                        changed = True
                     continue
                 owned = row.get('session_id') is not None and row.get('session_id') in native
                 owned |= row.get('leader_session_id') is not None and row.get('leader_session_id') in sessions
@@ -224,6 +247,18 @@ def _select(schema, project):
                 if owned:
                     selected[name].add(i)
                     changed = True
+    # A deliberately shared human operation may have been first requested in
+    # another project. Carry that operation's public record and explicit links,
+    # without adding its project, requester session or general conversation.
+    owned_goals = {schema['goals']['rows'][i]['id'] for i in selected.get('goals', ())}
+    shared_todos = {schema['personal_todo_tasks']['rows'][i]['todo_id']
+                   for i in selected.get('personal_todo_tasks', ())
+                   if schema['personal_todo_tasks']['rows'][i]['goal_id'] in owned_goals}
+    for name in ('todos', 'personal_todo_keys', 'personal_todo_events'):
+        for index, row in enumerate(schema.get(name, {}).get('rows', [])):
+            identity = row['id'] if name == 'todos' else row['todo_id']
+            if identity in shared_todos and (name != 'personal_todo_events' or row['goal_id'] in owned_goals):
+                selected[name].add(index)
     return {name: [schema[name]['rows'][i] for i in sorted(indexes)] for name, indexes in selected.items()}
 
 
@@ -266,7 +301,7 @@ def _files(home, rows, project):
                     basename in ('auth.json','credentials.json','id_rsa','id_ed25519')):
                 missing.append(str(path)+': registered content omitted because it is a known credential file')
                 return
-            source = _safe_file(path, [home] if role in ('journal', 'attachment', 'spawn') else [root])
+            source = _safe_file(path, [home] if role in ('journal', 'attachment', 'spawn', 'task_content') else [root])
             if not source.is_file():
                 missing.append(str(path)); return
             key = relative or source.relative_to(home).as_posix()
@@ -294,7 +329,22 @@ def _files(home, rows, project):
         path = Path(row['path'])
         if not path.is_absolute(): path = root / path
         take(path, 'document', row['id'], 'documents/' + str(row['id']) + '/' + path.name)
+    for goal_id, digest in _task_content_references(rows):
+        namespace = str(uuid.UUID(goal_id))
+        take(home / 'task-artifacts' / 'objects' / namespace / digest,
+             'task_content', goal_id, 'task-artifacts/' + goal_id + '/' + digest)
     return files, missing
+
+
+def _task_content_references(rows):
+    references = set()
+    for table in ('task_reports', 'task_report_revisions', 'task_report_pending', 'task_attachments'):
+        for row in rows.get(table, []):
+            references.add((row['goal_id'], row['sha256']))
+    for row in rows.get('task_artifact_files', []):
+        for key in ('baseline_sha256', 'delivered_sha256'):
+            if row.get(key): references.add((row['goal_id'], row[key]))
+    return sorted(references)
 
 
 def _cached_documents(repo,workspace,home,project,schema,rows,files,missing):
@@ -391,6 +441,7 @@ class _Projector:
         self.repo, self.conn, self.origin, self.ws, self.user, self.stamp = repo, conn, origin, workspace, user, stamp
         self.schema, self.rows = schema, rows
         self.identity_project = identity_project
+        self.source_home, self.source_project = source_home, project
         self.mappings = {}
         self.columns = {r[0]: {c['name'] for c in conn.execute('PRAGMA table_info(' + _quote(r[0]) + ')')}
                         for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
@@ -428,7 +479,7 @@ class _Projector:
         return str(uuid.uuid5(NAMESPACE, _json([self.origin, self.ws, target, source, key, version])))
 
     def sourcekey(self, source, row):
-        if self.identity_project is not None and 'project' in row:
+        if self.identity_project is not None and row.get('project') == self.source_project:
             row = {**row, 'project': self.identity_project}
         return _key(self.schema[source], row)
 
@@ -497,6 +548,130 @@ class _Projector:
                 display_filename=name, mime_type=mime, previous_version_id=old)
         self.put('artifacts', aid, current_version_id=vid)
         return aid, vid, blob
+
+    def task_extensions(self, files):
+        from . import personal_extensions, task_extensions
+        portable_task_tables = {'task_controls', 'task_pins', 'task_workspaces', 'task_workspace_references', 'task_reports',
+                               'task_report_revisions', 'task_report_pending', 'task_attachments',
+                               'task_artifact_versions', 'task_artifact_files'}
+        extension_tables = [name for name in portable_task_tables if self.rows.get(name)]
+        personal_rows = any(self.rows.get(name) for name in ('personal_items', 'personal_todo_tasks', 'personal_todo_metadata'))
+        if not extension_tables and not personal_rows:
+            return
+        controls = {r['goal_id']: r for r in self.rows.get('task_controls', [])}
+        pins = {r['goal_id']: r['created_at'] for r in self.rows.get('task_pins', [])}
+        references = {}
+        def agent_id(identity):
+            own = self.agent(identity)
+            if own is not None:
+                return own
+            if identity in references:
+                return references[identity]
+            original = next((row for row in self.schema.get('sessions', {}).get('rows', [])
+                             if row['session_id'] == identity), None)
+            if original is None:
+                raise MigrationError('Shared operation author cannot be resolved')
+            reference = self.id('agents', 'task-shared-author', identity)
+            self.put('agents', reference, name=(original.get('crew_name') or '历史提出者') + '（关联事项署名）',
+                purpose='仅保留共享人工事项的署名；原会话、项目历史和执行未随本工作区导出。', status='archived')
+            references[identity] = reference
+            return reference
+        for row in self.rows.get('todos', []):
+            if self.agent(row['session_id']) is not None:
+                continue
+            self.entity('todos', 'todos', row, requester_agent_id=agent_id(row['session_id']),
+                title=row['title'], steps_markdown=row['steps'], verification_markdown=row['verification'],
+                blocking=row['blocking'], status=row['status'], resolution_note=row.get('note'), resolved_at=row.get('resolved_at'))
+        def source(encoded):
+            try: value = json.loads(encoded or '{}')
+            except (TypeError, ValueError): value = {}
+            if not isinstance(value, dict): return {}
+            # Provenance is not a vehicle for native IDs, arbitrary tool input,
+            # request receipts, credentials or device paths.
+            return {key: value[key] for key in ('type', 'label', 'version', 'requirement_version')
+                    if key in value and isinstance(value[key], (str, int, bool))}
+        def author(actor):
+            agent = self.agent(actor)
+            return {'kind': 'agent', 'agent_id': agent} if agent else {'kind': 'user'}
+        def content(goal_id, digest):
+            if digest is None: return None
+            entry = files.get('task-artifacts/' + goal_id + '/' + digest)
+            if entry is None:
+                raise MigrationError('Task content object is unavailable: ' + digest)
+            _, version, _ = self.artifact_file('task-content:' + self.goals[goal_id] + ':' + digest,
+                entry['source_path'], digest + '.bin', 'other', entry['sha256'], entry['size_bytes'])
+            return {'artifact_version_id': version, 'sha256': digest, 'size_bytes': entry['size_bytes']}
+        result = []
+        for original, mapped in self.goals.items():
+            control = controls.get(original, {})
+            task = {'goal_id': mapped,
+                'pinned_at': pins.get(original),
+                'control': {'mode': control.get('mode', 'manual'), 'lifecycle': control.get('lifecycle', 'active'),
+                            'authorized': bool(control.get('authorized', True)),
+                            'source': source(control.get('mode_source_json'))},
+                'workspaces': [], 'reports': [], 'pending': [], 'attachments': [], 'versions': []}
+            for row in self.rows.get('task_workspaces', []):
+                if row['goal_id'] != original: continue
+                if row['project'] == self.source_project:
+                    task['workspaces'].append({'workspace_id': self.ws, 'primary': True})
+                else:
+                    # A reference carries neither the other project's rows nor
+                    # its local directory. Never create a foreign-workspace FK.
+                    reference = {'label': row['project'], 'primary': False}
+                    binding = self.conn.execute('SELECT workspace_id FROM local_legacy_projects '
+                        'WHERE source_home=? AND legacy_project=?',
+                        (str(Path(self.source_home).resolve()), row['project'])).fetchone()
+                    if binding: reference['workspace_id'] = binding[0]
+                    task['workspaces'].append(reference)
+            for row in self.rows.get('task_workspace_references', []):
+                if row['goal_id'] != original: continue
+                value = json.loads(row['reference_json'])
+                if isinstance(value, dict):
+                    task['workspaces'].append({key: value[key] for key in ('label', 'workspace_id', 'primary') if key in value})
+            for row in self.rows.get('task_report_revisions', []):
+                if row['goal_id'] == original:
+                    task['reports'].append({'version': row['version'], 'content': content(original, row['sha256']),
+                        'actor': author(row['actor']), 'source': source(row['source_json']), 'created_at': row['created_at']})
+            head = next((r for r in self.rows.get('task_reports', []) if r['goal_id'] == original), None)
+            task['report_head_version'] = head['version'] if head else 0
+            for row in self.rows.get('task_report_pending', []):
+                if row['goal_id'] == original:
+                    task['pending'].append({'id': row['id'], 'expected_version': row['expected_version'],
+                        'current_version': row['current_version'], 'content': content(original, row['sha256']),
+                        'sections': json.loads(row['sections_json']) if row['sections_json'] else None,
+                        'actor': author(row['actor']), 'source': source(row['source_json']), 'created_at': row['created_at']})
+            for row in self.rows.get('task_attachments', []):
+                if row['goal_id'] == original:
+                    task['attachments'].append({'id': row['id'], 'filename': row['filename'], 'mime_type': row['mime_type'],
+                        'content': content(original, row['sha256']), 'actor': author(row['actor']),
+                        'source': source(row['source_json']), 'created_at': row['created_at']})
+            for row in self.rows.get('task_artifact_versions', []):
+                if row['goal_id'] != original: continue
+                version = {key: row[key] for key in ('id', 'version', 'label', 'commit_evidence', 'created_at')}
+                version.update(actor=author(row['actor']), source=source(row['source_json']), files=[])
+                for entry in self.rows.get('task_artifact_files', []):
+                    if entry['version_id'] != row['id']: continue
+                    version['files'].append({'path': task_extensions.path(entry['path']),
+                        'baseline_known': bool(entry['baseline_known']), 'file_mode': entry['file_mode'],
+                        'baseline': content(original, entry['baseline_sha256']),
+                        'delivered': content(original, entry['delivered_sha256'])})
+                task['versions'].append(version)
+            result.append(task)
+        payload = {'format': 'crew-task-extension', 'version': 1, 'workspace_id': self.ws, 'tasks': result}
+        def todo_id(identity):
+            row = next((item for item in self.rows.get('todos', []) if item['id'] == identity), None)
+            if row is None:
+                return None
+            return self.id('todos', 'todos', self.sourcekey('todos', row))
+        payload['personal'] = personal_extensions.project(self.rows, project=self.source_project,
+            goal_id=self.goals.get, todo_id=todo_id, agent_id=agent_id)
+        encoded = _json(payload).encode('utf-8')
+        if len(encoded) > task_extensions.MAX_BYTES:
+            raise MigrationError('Task extension metadata exceeds its size limit')
+        _, version, _ = self.artifact('task-extension', encoded, task_extensions.FILENAME,
+                                      'legacy_archive', task_extensions.MIME)
+        for table in extension_tables:
+            for row in self.rows[table]: self.mark(table, row, 'artifact_versions', version)
 
     def message(self, key, conversation, text, agent=None, kind='assistant', name=None, raw=None,
                 created_at=None, supersedes=None):
@@ -992,7 +1167,7 @@ def migrate_workspace(repo, source_home, project, *, origin_id=None, workspace_i
                     if item['role'] == 'journal':
                         p.journal(item['owner'], raw_path, name)
                         continue
-                    if item['role'] == 'spawn': continue
+                    if item['role'] in ('spawn', 'task_content'): continue
                     # Registration/attachment ownership authorizes the actual
                     # bytes. JSON/Office/code are valid explicit deliverables;
                     # file extension alone is not evidence of a secret.
@@ -1008,6 +1183,7 @@ def migrate_workspace(repo, source_home, project, *, origin_id=None, workspace_i
                         row = next(r for r in rows['documents'] if r['id'] == item['owner'])
                         p.mark('documents', row, 'artifacts', aid)
                         document_versions[row['id']]=vid
+                p.task_extensions(files)
                 for link in rows.get('goal_documents',[]):
                     version=document_versions.get(link['document_id']);goal=p.goals.get(link['goal_id'])
                     if version and goal:

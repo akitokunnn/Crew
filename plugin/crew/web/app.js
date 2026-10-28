@@ -1,5 +1,6 @@
 "use strict";
 (() => {
+  if (new URLSearchParams(location.search).get("legacy") !== "1") return;
   const $ = id => document.getElementById(id);
   const esc = value => String(value).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
   const projectDisplay = item => item.display_name || item.name;
@@ -71,9 +72,7 @@
   function queryPath(path) { const url = new URL(path, location.origin); if (project !== null && url.pathname !== "/api/settings") url.searchParams.set("project", project); return url.pathname + url.search; }
   async function api(path, data) {
     const sentAfter = path === "/api/chat/send" ? (leader(data.session_id) || member(data.session_id))?.last_seq || 0 : null;
-    const response = await fetch(queryPath(path), data === undefined ? {} : {method:"POST", headers:{"Content-Type":"application/json", "X-Crew":"1"}, body:JSON.stringify(data)});
-    const result = await response.json();
-    if (!response.ok) { const error = new Error(result.error || "请求失败，请重试。"); error.status = response.status; error.details = result; throw error; }
+    const result = await CrewClient.current.request(queryPath(path), data);
     if (path === "/api/chat/send" && data.goal_id == null) waitingNotifications?.acceptedSend({sessionId:data.session_id,afterSeq:sentAfter});
     else if (["/api/session/stop", "/api/session/archive", "/api/session/remove"].includes(path)) waitingNotifications?.acceptedStop(data.session_id);
     return result;
@@ -89,7 +88,7 @@
   }
   async function readTrustReport(id) {
     if (!leader(id)) throw new Error("请先选择当前项目的 leader。");
-    const response = await fetch(trustReportUrl(id), {headers:{"X-Crew":"1"}});
+    const response = await CrewClient.current.fetch(trustReportUrl(id), {headers:{"X-Crew":"1"}});
     const text = await response.text();
     if (!response.ok) { let error; try { error = JSON.parse(text).error; } catch (_) {} throw new Error(error || "报告读取失败，请稍后重试。"); }
     return text;
@@ -395,6 +394,13 @@
     finally { pollBusy = false; complete(); }
   }
   function setup() {
+    document.body.classList.add("legacy-workspace");
+    const back = document.createElement("a");
+    back.className = "wb-legacy-return";
+    const source = new URLSearchParams(location.search).get("data");
+    back.href = `/${source ? `?data=${encodeURIComponent(source)}` : ""}#home${project ? `?project=${encodeURIComponent(project)}` : ""}`;
+    back.textContent = "← 返回 Crew 工作台";
+    document.body.prepend(back);
     domRenderer = window.CrewDOMRenderer.create({document});
     $("overlay-root").innerHTML = '<div class="menu" id="menu" role="menu"></div><div id="settings-parking" hidden><section class="settings-popover" id="settings" aria-label="外观设置"></section></div>';
     uiActions = window.CrewUIActions.create({onError:error => toast(error.message)});
@@ -419,6 +425,7 @@
       save:(id,changes) => api("/api/session/options",{session_id:id,...changes}), refresh:() => loadState(true), notify:toast, icon:ic, runtimeBadge
     });
     leaderCreate = window.CrewLeaderCreate.create({actions:uiActions,visibility:uiVisibility,catalog:runtimeCatalog,
+      notify:toast,
       selection:() => state?.ai?.leader ?? state?.ai?.default,
       createLeader:payload => api("/api/leader",payload),refresh:() => loadState(true),navigate:id => navigate("chat",id),
       beforeOpen:() => { menus.hide(); hideSettings(); commentsFeature?.close(); people?.closeDialog(); },
@@ -445,9 +452,11 @@
       beforeOpen:() => { menus.hide(); hideSettings(); leaderCreate?.close(); people?.closeDialog(); },
       focus:{capture:() => focusDescriptor(menus.contains(document.activeElement) ? menus.anchor() : document.activeElement), restore:returnFocus}, ui:{icon:ic,date,ago}
     });
-    window.addEventListener("beforeunload", () => {
+    window.addEventListener("pagehide", event => {
+      // Desktop navigation can be cancelled; BFCache also keeps this document alive.
+      if (event.persisted) return;
       people.destroy(); leaderOrdering.destroy(); usageUI.destroy(); appearance.destroy(); palette.destroy(); waitingNotifications.destroy(); menus.destroy(); leaderCreate.destroy(); runtimeModels.destroy(); runtimeCatalog.destroy(); commentsFeature.destroy(); attentionFeature.destroy(); contextCompaction.destroy(); conversationWorkspace.destroy(); uiActions.destroy(); uiVisibility.destroy(); domRenderer.destroy();
-    }, {once:true});
+    });
     maintenance = window.CrewMaintenance.create({api,
       async onCleaned() { await loadState(true); if (view !== "all") navigate("all"); toast("已归档旧工作，可以重新开始"); }});
     gitSettings = CrewGitSettings.create({read:name => api(`/api/git/settings?project=${encodeURIComponent(name)}`), save:body => api("/api/git/settings", body),
@@ -529,7 +538,8 @@
       if(event.key==="Escape"){if(goals?.escape()){event.preventDefault();return;}if(!event.isComposing&&conversationWorkspace.escape())event.preventDefault();}
     });
     window.addEventListener("hashchange", () => { if (state === null || project === null) return; people.close();commentsFeature.close();leaderCreate.close();palette.close();CrewChat.unmount(); mountedChat = null; readRoute(); render(); });
-    loadState(); setInterval(loadState, 3000);
+    void loadState().then(() => { const category = new URLSearchParams(location.search).get("settings"); if (category) openSettings(category); });
+    setInterval(loadState, 3000);
   }
   setup();
 })();

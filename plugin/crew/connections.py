@@ -147,7 +147,7 @@ class Manager:
         # owner can bind. History remains inspectable, but cannot be delivered.
         with self.write_lock, self.presence_lock:
             with closing(store.connect(self.home)) as conn, board.transaction(conn):
-                inbox.execute(conn, "UPDATE notification_messages SET status='retired'")
+                inbox.execute(conn, "UPDATE notification_messages SET status='retired' WHERE status<>'archived'")
                 inbox.execute(conn, "UPDATE notification_replies SET status='cancelled' WHERE status IN ('queued','running','sending')")
             with inbox.lock:
                 inbox.config.update(owner_openid=None, since=None, current_project=None,

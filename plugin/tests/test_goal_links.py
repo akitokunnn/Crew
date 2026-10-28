@@ -81,7 +81,7 @@ class GoalLinkTests(RuntimeFixture):
         args,kwargs = self.controller.send.call_args
         self.assertEqual(args[:2],(original['id'],'member-id'))
         self.assertIn('等待验收，保留目前改动',args[2])
-        self.assertEqual(kwargs,{'identity':'human-answer:decision:%s:1'%number,'source':'human'})
+        self.assertEqual(kwargs,{'identity':'human-answer:decision:%s:1'%number,'source':'human','intent':'work'})
         self.assertEqual(goal_links.get(self.conn,'decision',number)['delivered_version'],1)
         self.assertIsNotNone(self.conn.execute('SELECT delivered_at FROM decisions WHERE id=?',(number,)).fetchone()[0])
         self.assert_no_global_mail()
@@ -176,7 +176,8 @@ class GoalLinkTests(RuntimeFixture):
     def test_native_timeout_keeps_answer_pending_without_blocking_other_goal_or_repeating_input(self):
         first,one = self.target();first_id = self.decision(one)
         second,two = self.target('正常目标','other-id');second_id = self.decision(two)
-        def send(goal_id,person,text,*,identity,source):
+        def send(goal_id,person,text,*,identity,source,intent):
+            self.assertEqual(intent, 'work')
             if goal_id==first['id']:
                 self.journal(one['id']).emit('input_delivery',message_id=identity,status='unknown',error='RequestTimeout',detail='turn/start timed out')
                 raise codex_client.RequestTimeout('turn/start timed out')

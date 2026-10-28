@@ -30,8 +30,11 @@ function harness(state = fixture(), fetcher = () => { throw new Error("Unexpecte
   for (const id of ["menu", "backdrop", "main", "trust-error", "leader-runtime-options", "leader-runtime-status", "leader-model-options", "leader-effort-note", "leader-effort-options"]) nodes.set(id, node());
   const escape = value => String(value).replace(/[&<>"']/g, c => ({"&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"})[c]);
   const sandbox = {window:{}, document:{visibilityState:"visible",hasFocus:()=>true,activeElement:null, getElementById:id => nodes.get(id) || null, addEventListener:() => {}},
-    location:{search:"?project=fixture", origin:"http://fixture.local", hash:""}, URLSearchParams, URL, fetch:fetcher, console, setTimeout, clearTimeout,
+    location:{search:"?project=fixture&legacy=1", origin:"http://fixture.local", hash:""}, URLSearchParams, URL, fetch:fetcher, console, setTimeout, clearTimeout,
     CrewChat:{renderInline:escape, renderMarkdown:text => `<p>${escape(text)}</p>`}};
+  // Select the fixture transport explicitly for the retained legacy entry.
+  const transport = require("../crew/web/crew-client.js").create({environment:{Headers,location:sandbox.location,fetch:fetcher}});
+  sandbox.CrewClient = {current:{request:transport.request,fetch:fetcher}};
   vm.createContext(sandbox);
   const contextSource=fs.readFileSync(path.join(__dirname, "../crew/web/chat.js"), "utf8");
   vm.runInContext(contextSource.slice(0, contextSource.indexOf("})();")+5), sandbox);
@@ -99,12 +102,12 @@ test("existing session model menus use its own tool catalog and never expose run
   assert.equal(ui.optionsLabel(session()), "GPT A · medium");
 });
 
-test("old states and sessions retain Claude defaults and Haiku effort behavior", () => {
+test("old states and sessions retain Claude defaults and use their reported effort catalog", () => {
   const state = fixture(); delete state.runtimes;
   const {ui} = harness(state);
   assert.equal(ui.runtimeInfo({}).id, "claude");
   assert(ui.modelMenu({session_id:"old", model:null, effort:null, applied:null}).includes('data-model="claude-sonnet"'));
-  assert.equal(ui.modelEfforts("claude", "claude-haiku-4-5-20251001").length, 0);
+  assert.deepEqual(plain(ui.modelEfforts("claude", "claude-haiku-4-5-20251001")), state.efforts);
   assert.equal(ui.runtimeInfo("codex").available, false);
 });
 
