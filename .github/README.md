@@ -4,6 +4,8 @@
 
 后端在一台 runner 内使用四个独立 Python 进程并发执行测试模块，不新增第三方测试依赖或额外 runner。模块按文件大小优先调度，新增 `test*.py` 和可导入子包会自动纳入；每个模块内部仍由标准 unittest 执行。
 
+通用功能夹具从真实初始化生成一次空库模板，每个用例复制到独立的临时 home，再调用真实存储入口。这样减少托管 Windows 上重复建表的磁盘写入；不共享用例数据，不关闭同步落盘，已有迁移与存储测试仍走真实路径。
+
 ```powershell
 python .github/scripts/test_backend.py --workers 4
 ```
