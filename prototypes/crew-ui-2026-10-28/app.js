@@ -182,11 +182,28 @@
   function navItem(target, label, name, count = "") {
     return `<button class="nav-item ${route === target ? "active" : ""}" data-go="${target}" ${route === target ? 'aria-current="page"' : ""}>${icon(name)}<span>${label}</span>${count ? `<span class="count">${count}</span>` : ""}</button>`;
   }
+  function pinnedNavigation() {
+    const pinned = s.tasks.filter((t) => t.pinned);
+    if (!pinned.length) return "";
+    return `<section class="pinned-navigation" aria-label="置顶任务">
+      <div class="nav-section-title"><span>${icon("pin")}置顶</span></div>
+      ${pinned
+        .map(
+          (
+            t,
+          ) => `<div class="pinned-row ${parts[1] === t.id && ["task", "report"].includes(parts[0]) ? "active" : ""}">
+        <button class="pinned-task" data-go="task/${t.id}/leader" title="${esc(ws(t.workspace).name)} · ${esc(t.update)}"><span class="truncate">${esc(t.title)}</span>${t.fresh ? '<span class="resource-dot" aria-label="有新成果"></span>' : ""}</button>
+        <button class="unpin-task" data-action="pin" data-task="${t.id}" aria-label="取消置顶：${esc(t.title)}" title="取消置顶">${icon("pin")}</button>
+      </div>`,
+        )
+        .join("")}
+    </section>`;
+  }
   function renderSidebar() {
     $("#sidebar").innerHTML =
       `<div class="brand"><img src="crew.svg" alt="Crew 标志"><div><strong>Crew</strong></div><button class="icon-button" data-action="focus" title="收起导航，专注对话" aria-label="收起导航">${icon("panel")}</button></div>
       <nav aria-label="日常">${navItem("home", "首页", "home")}${navItem("assistant", "个人助手", "spark")}${navItem("todos", "TODO 与灵感", "todo", s.todos.filter((x) => !x.done).length)}</nav>
-      <div class="workspace-nav"><div class="nav-section-title"><span>工作区</span><button class="icon-button" data-action="workspace-add" aria-label="添加工作区">${icon("plus")}</button></div>
+      <div class="workspace-nav">${pinnedNavigation()}<div class="nav-section-title"><span>工作区</span><button class="icon-button" data-action="workspace-add" aria-label="添加工作区">${icon("plus")}</button></div>
       ${CrewSample.workspaces
         .map(
           (w) =>
@@ -254,7 +271,7 @@
       `<div class="page-scroll" data-scroll><div class="home-overview">
         <header class="home-intro"><p class="home-date">10 月 28 日，星期三</p><h1>${w ? esc(w.name) : "工作在继续。"}</h1><p>${w ? "任务与对话，都留在这里。" : `${CrewSample.workspaces.length} 个工作区，随时可以接着聊。`}</p></header>
         ${attention}
-        <section class="home-progress"><div class="section-heading"><h2>${w ? "任务" : "工作区近况"}</h2>${w ? `<button class="text-link" data-action="folder" data-workspace="${w.id}">${icon("folder")}文件夹</button>` : ""}</div>${progress}</section>
+        <section class="home-progress"><div class="section-heading"><h2>${w ? "任务" : "工作区近况"}</h2>${w ? `<div class="workspace-actions"><button class="text-link" data-go="utility/git/${w.id}">${icon("git")}Git</button><button class="text-link" data-action="folder" data-workspace="${w.id}">${icon("folder")}文件夹</button></div>` : ""}</div>${progress}</section>
         ${w ? `<button class="text-link workspace-conversation" data-go="workspace-chat/${w.id}">工作区对话 · 安排与协调 ${icon("arrow")}</button>` : ""}
         <section class="home-capture" aria-label="快速记录或开始对话">${captureForm(workspace)}</section>
       </div></div>`;
@@ -446,7 +463,6 @@
     const cards = [
       ["channel", "公共频道", "可选的跨团队交流，摘要按需生成。", "chat"],
       ["git", "Git", "按工作区查看改动、分支与提交。", "git"],
-      ["pinned", "置顶", "常用任务与重要消息，随时回来。", "pin"],
       ["usage", "用量与额度", "查看两个载体的用量和可用额度。", "sun"],
       ["sessions", "会话库", "待接入、团队中、历史归档与后台执行。", "team"],
       ["history", "历史", "保留完成的任务、过去的轮次与交付。", "clock"],
@@ -467,7 +483,7 @@
       {
         channel: "公共频道",
         git: "Git",
-        pinned: "置顶",
+        pinned: "置顶任务",
         usage: "用量与额度",
         sessions: "会话库",
         history: "历史",
@@ -481,11 +497,26 @@
           .filter((t) => t.pinned)
           .map(taskRow)
           .join("") ||
-        '<div class="empty-state">在任务顶部点击图钉，置顶任务。</div>';
+        '<div class="empty-state">在任务控制里选择“置顶任务”，它会直接出现在左侧顶部。</div>';
     if (parts[1] === "channel")
       body = `<p class="muted small">可选交流入口 · 样例消息，未连接任何真实频道</p><div class="channel-message"><div class="message-meta"><span class="avatar">夏</span><strong>夏木</strong><span class="muted">Crew · leader</span></div><p>我在调整任务切换，不会碰声纹实验的文件。</p></div><div class="channel-message"><div class="message-meta"><span class="avatar">林</span><strong>林序</strong><span class="muted">声纹实验室 · leader</span></div><p>收到。跨工作区的体验入口已关联到同一任务。</p></div><br><button class="button" data-action="channel-summary">${icon("spark")}按需生成摘要</button><br><br><form id="channel-form" class="quick-capture"><textarea aria-label="公共频道消息" placeholder="在公共频道说点什么…" rows="2"></textarea><button class="button" type="submit">发送样例消息</button></form>`;
-    if (parts[1] === "git")
-      body = `<label class="field-label">工作区<select class="editable" aria-label="Git 工作区">${workspaceOptions("crew")}</select></label><div class="inbox-note">样例仓库 · codex/interaction · 只读展示，不执行 Git 操作。</div><table class="utility-table"><tbody><tr><td class="mono">M</td><td>src/navigation.js</td><td class="accent">+24 −8</td></tr><tr><td class="mono">M</td><td>src/theme.css</td><td class="accent">+12 −3</td></tr></tbody></table><hr><p class="muted small">普通文件夹也可以作为工作区，只有使用 Git 功能时才需要仓库。</p>`;
+    const gitWorkspaceId = parts[2] || s.gitWorkspace || "";
+    const gitWorkspace = CrewSample.workspaces.find(
+      (w) => w.id === gitWorkspaceId,
+    );
+    if (parts[1] === "git") {
+      const sampleFiles = {
+        voice: ["recognition/local.py", "ui/feedback.js"],
+        crew: ["src/navigation.js", "src/theme.css"],
+        site: ["src/index.html", "src/styles.css"],
+      }[gitWorkspaceId];
+      const options = `<option value="">选择工作区</option>${CrewSample.workspaces.map((w) => `<option value="${w.id}" ${gitWorkspaceId === w.id ? "selected" : ""}>${esc(w.name)}</option>`).join("")}`;
+      body =
+        `<label class="field-label" for="git-workspace">工作区</label><select class="editable" id="git-workspace" aria-label="Git 工作区">${options}</select>` +
+        (gitWorkspace
+          ? `<div class="inbox-note">${esc(gitWorkspace.name)} · Git 样例视图，不读取实际仓库。</div>${sampleFiles ? `<table class="utility-table"><tbody>${sampleFiles.map((file, i) => `<tr><td class="mono">M</td><td>${file}</td><td class="accent">${i ? "+12 −3" : "+24 −8"}</td></tr>`).join("")}</tbody></table>` : '<div class="empty-state">未连接仓库，没有读取任何 Git 状态。</div>'}<hr><p class="muted small">普通文件夹也可以作为工作区。这里不执行 Git 操作，也不会自动初始化仓库。</p>`
+          : `<div class="empty-state">${parts[2] ? `找不到工作区：${esc(parts[2])}。请明确选择要查看的工作区。` : "先选择一个工作区，再查看它的 Git 信息。"}</div>`);
+    }
     if (parts[1] === "usage")
       body = `<div class="library-grid">${["Claude Code", "Codex"].map((n) => `<section class="library-card"><h3>${n}</h3><p>原生提供的用量与额度</p><strong>样例环境未连接</strong><p>不推测额度，不把空值当作剩余为零。</p><button class="button small" data-action="usage-refresh">读取原生状态（模拟）</button></section>`).join("")}</div>`;
     if (parts[1] === "sessions")
@@ -498,9 +529,22 @@
       body = `<div class="library-card"><h3>独立样例环境</h3><p>未检查正式后台、home 或任何运行中服务。</p><div class="row"><span class="badge">正式服务状态未确认</span><button class="button small" data-go="settings">连接与本机设置</button></div></div><hr><p class="muted small">程序负责保活与基础恢复。需要分析故障时，再按需进入运维对话。</p><br><button class="button" data-action="operation-chat">查看运维样例</button>`;
     $("#main").innerHTML =
       topbar(
-        `<button data-go="more" aria-label="返回更多能力">${icon("back")}</button><button data-go="more">更多</button><span>›</span><span>${name}</span>`,
+        parts[1] === "pinned"
+          ? `<button data-go="home">工作台</button><span>›</span><span>置顶任务</span>`
+          : parts[1] === "git" && gitWorkspace
+            ? `<button data-go="workspace/${gitWorkspace.id}">${esc(gitWorkspace.name)}</button><span>›</span><span>Git</span>`
+            : `<button data-go="more" aria-label="返回更多能力">${icon("back")}</button><button data-go="more">更多</button><span>›</span><span>${name}</span>`,
       ) +
-      `<div class="page-scroll" data-scroll><div class="page"><div class="page-heading"><div><div class="eyebrow">EXISTING CAPABILITIES</div><h1>${name}</h1><p>已有能力的入口安排 · 以下均为样例</p></div></div>${body}</div></div>`;
+      `<div class="page-scroll" data-scroll><div class="page"><div class="page-heading"><div><div class="eyebrow">EXISTING CAPABILITIES</div><h1>${name}</h1><p>${parts[1] === "pinned" ? "置顶任务常驻左侧导航，可直接打开。" : "已有能力的入口安排 · 以下均为样例"}</p></div></div>${body}</div></div>`;
+    if (parts[1] === "git")
+      $("#git-workspace").addEventListener("change", (event) => {
+        s.gitWorkspace = event.target.value;
+        go(
+          event.target.value
+            ? `utility/git/${event.target.value}`
+            : "utility/git",
+        );
+      });
   }
   function renderNew() {
     const workspace = parts[1] || "crew";
@@ -750,13 +794,35 @@
         $("#message-input")?.focus({ preventScroll: true }),
       );
     },
-    pin() {
+    pin(el) {
       const c = context();
-      if (!c || c.global) return;
-      model.task(c.id).pinned = !c.pinned;
+      const id = el.dataset.task || (!c?.global && c?.id);
+      if (!id) return;
+      const keepNavigationOpen = $("#app").classList.contains("nav-open");
+      s.expanded ||= {};
+      s.expanded[route + ":controls"] = false;
       saveView();
+      const t = model.task(id);
+      t.pinned = !t.pinned;
       render();
-      toast(c.pinned ? "已取消样例置顶" : "已置顶，可以从更多 → 置顶找到。");
+      if (keepNavigationOpen) {
+        $("#app").classList.add("nav-open");
+        $("#nav-backdrop").hidden = false;
+        syncAccessibility();
+      }
+      if (el.dataset.task)
+        requestAnimationFrame(() =>
+          $("#sidebar .task-nav[data-go='task/" + id + "/leader']")?.focus({
+            preventScroll: true,
+          }),
+        );
+      toast(
+        t.pinned
+          ? matchMedia("(max-width:700px)").matches
+            ? "已置顶到导航，打开左上导航即可直达。"
+            : "已置顶到左侧，可直接打开。"
+          : "已取消置顶，任务仍在原工作区。",
+      );
     },
     mode() {
       const c = context();
