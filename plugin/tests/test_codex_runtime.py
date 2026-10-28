@@ -2,6 +2,7 @@
 import tests
 import base64
 from contextlib import closing
+from functools import partial
 import json
 import os
 from pathlib import Path
@@ -529,12 +530,14 @@ for line in sys.stdin:
 '''
         def process_factory(command, **kwargs):
             return subprocess.Popen([sys.executable, "-u", "-c", server], **kwargs)
-        with mock.patch("crew.codex_runtime._ObservedClient", self.real_client):
+        with mock.patch("crew.codex_runtime._ObservedClient", partial(self.real_client, timeout=3)):
             journal = chat.Journal(self.home / "chat" / "worker.jsonl")
             running = codex_runtime.CodexRunning(self.home, self.plugin, self.session, {"agent": None},
                                                  {"model": None, "effort": None}, journal, None,
                                                  process_factory=process_factory)
+        self.addCleanup(running.reader_done.wait, 3)
         self.addCleanup(running.close)
+        self.assertFalse(any('标题同步失败' in event.get('text', '') for event in journal.events))
         self.assertTrue(running._lease.path.exists())
         self.assertEqual(running.applied["model"], "fixture-model")
         running.send("work", "message-1")
