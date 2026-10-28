@@ -762,8 +762,10 @@
     }, 15000);
   }
   window.addEventListener(
-    "beforeunload",
-    () => {
+    "pagehide",
+    (event) => {
+      // A cancelled desktop navigation or BFCache entry still needs a live UI.
+      if (event.persisted) return;
       disposed = true;
       clearInterval(refreshTimer);
       feature?.destroy();
@@ -771,7 +773,6 @@
       renderer.destroy();
       document.removeEventListener("click", click);
     },
-    { once: true },
   );
   void start();
 })();

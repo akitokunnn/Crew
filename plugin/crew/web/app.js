@@ -452,9 +452,11 @@
       beforeOpen:() => { menus.hide(); hideSettings(); leaderCreate?.close(); people?.closeDialog(); },
       focus:{capture:() => focusDescriptor(menus.contains(document.activeElement) ? menus.anchor() : document.activeElement), restore:returnFocus}, ui:{icon:ic,date,ago}
     });
-    window.addEventListener("beforeunload", () => {
+    window.addEventListener("pagehide", event => {
+      // Desktop navigation can be cancelled; BFCache also keeps this document alive.
+      if (event.persisted) return;
       people.destroy(); leaderOrdering.destroy(); usageUI.destroy(); appearance.destroy(); palette.destroy(); waitingNotifications.destroy(); menus.destroy(); leaderCreate.destroy(); runtimeModels.destroy(); runtimeCatalog.destroy(); commentsFeature.destroy(); attentionFeature.destroy(); contextCompaction.destroy(); conversationWorkspace.destroy(); uiActions.destroy(); uiVisibility.destroy(); domRenderer.destroy();
-    }, {once:true});
+    });
     maintenance = window.CrewMaintenance.create({api,
       async onCleaned() { await loadState(true); if (view !== "all") navigate("all"); toast("已归档旧工作，可以重新开始"); }});
     gitSettings = CrewGitSettings.create({read:name => api(`/api/git/settings?project=${encodeURIComponent(name)}`), save:body => api("/api/git/settings", body),
