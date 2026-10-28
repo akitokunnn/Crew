@@ -19,9 +19,9 @@
 
 ## 新基线持续施工状态
 
-本节对应模块化基线上的新增实现，覆盖下方更新前记录；未与旧基线测试混用。当前 HEAD `4aecc9b`，桌面/插件源码 `0.2.42`。后端冻结成果已提交为 `1e5a520`，并通过正常 merge 在本分支合入主干 CI 夹具优化 `f97e3e6`（PR #61），形成 `4aecc9b`；合并后受影响 159 项测试通过。后端阶段产物已构建、隔离验收；包含前端的最终集成、验收及 PR 合并仍待完成，正式 Crew 和用户 HOME 未更新。
+本节对应模块化基线上的新增实现，覆盖下方历史记录。最终产品提交 `7902b03`、桌面/插件源码 `0.2.42` 已经 [PR #62](https://github.com/akitokunnn/Crew/pull/62) 正常合并，主干合并提交 `4eda2d3af90e536d7e3e08bdfc875057e39b1749`；已 fetch 验证主干包含后端 `1e5a520` 及前端 `17c005f`、`2f55a7c`、`b391eb6`、`eb1c871`，且合并后的完整树与通过验收的产品提交一致。最终包、校验值及 CI 见下节和[交付记录](CREW_FULL_IMPLEMENTATION_DELIVERY_2026-10-28.md)。正式 Crew 和用户 HOME 未升级。
 
-此前收拢时 fetch，已无冲突快进到原型间距与置顶导航 PR #59/#60 的 `4294977`；该提交是后端冻结提交的父基线，已不是当前 HEAD。本轮后端增量保留，未编辑原型或 `plugin/crew/web/`。前端正式业务接入仍在独立工作树施工，不将原型更新当作联调完成。
+此前收拢时 fetch，已无冲突快进到原型间距与置顶导航 PR #59/#60 的 `4294977`；该提交是后端冻结提交的父基线，已不是当前 HEAD。前端正式业务接入现已合流，原始提交与独立工作树均保留；原型更新、正式前端提交和实际联调证据分别记录。
 
 - 按新版架构迁入 `tasks/task_schema/task_actions`、持久 `task_scheduler`、`behavior_prompts`、分层 settings、`personal/personal_actions`、`task_artifacts`、`task_notifications` 和存储扩展。HTTP 全部在 `web_api/{tasks,behavior,personal,access,service_control}` 明确登记，未复制旧版 task_api 或 web 业务分支。
 - `store` 只加载同库扩展 DDL，不反向导入领域；任务历史映射在任务领域按需补齐。board 公共事务支持嵌套 SAVEPOINT，外层失败不会遗留新 leader/半个任务。
@@ -48,22 +48,22 @@
 | 独立执行/原生定向 | A37 scheduler 30 项，执行 278 项 / 53.752 秒及最终受影响 87 项 / 14.221 秒通过。包含有上限的缺计划核对，成功步骤不重放。早先一次正式端口守卫 7122 报错尚无确定原因，诊断组未复现；最终回归仍保持守卫 |
 | 独立存储/通知定向 | 报告快照与既有存储 74 项通过（Windows 无 symlink 权限 1 项跳过）；新增真实存储往返 7 项、通知 7 项含实际服务 tick 通过 |
 | 独立设置/个人领域 | 关联、标签、个人原生工具与真实资料读取已补，173 项受影响回归通过；attention 新接口与旧 state 兼容 85 项通过。角色默认偏好在最后收拢复验 |
-| `node --test @(rg --files plugin/tests -g 'test_*.js')` | 网页 299 项通过；未改前端文件，不能据此称新 UI 联调通过 |
+| `node --test @(rg --files plugin/tests -g 'test_*.js')` | 最终生命周期修复合流后 382/382 通过，1.462 秒；`Temp/full-implementation/frontend-lifecycle-final.log`；最终 CI 同样通过。早期旧 JS 299 项为历史验证 |
 | 新 desktop detached lifecycle | 4 项通过：Node 宿主自然退出后实际 Supervisor/Crew/假载体后续 work 继续，同服务重连，显式停止/借用保护。最长场景约 4.9 秒，不声称整夜测试 |
 | 完整 Python 回归 | 最终汇合 169 模块/2346 项/195.14 秒；4 个旧规则/夹具差异修正后，受影响 143 项复验通过，9 平台或 opt-in 跳过。随后仅新增能力做定向，详见下段 |
-| `npm --prefix desktop test` | 172/172 通过（8.288 秒）；随后桥接 core/main 53 项、新 custom 来源桥接 1 项通过；元数据版本同步 1 项通过 |
-| `node desktop/scripts/smoke-workspaces.cjs` | 41 项真实隐藏 Electron 检查通过，截图/证据在 `desktop/smoke-output/workspaces`；均为既有 UI 回归，不代表新 UI 联调 |
+| `npm --prefix desktop test` | 最终集成 183/183 通过，9.711 秒；`Temp/full-implementation/desktop-final-integrated.log`。随后仅补 smoke 截图的实际 CDP fallback，并以真实源码 smoke 复验，不接受截图为 null |
+| `node desktop/scripts/smoke-workspaces.cjs` | 最终 45 项真实 Electron 检查通过，含 global→verified legacy→return、global hash 归属、原文档可交互、旧会话独立草稿及工具/管理/迁移；`Temp/full-implementation/workspaces-final-green.log`、`desktop/smoke-output/workspaces/evidence.json` |
 | 主干 CI 夹具合并后复验 | `4aecc9b` 上 159 项 / 19.038 秒，`OK`；日志 `Temp/full-implementation/main-ci-fixture-recheck.log` |
 
 最终后端收拢回归：复用已只读检查的并行 CI 运行器（来源 PR #61 `819a1be`，未接管该 PR），在当前目录以 4 个隔离 Python 进程执行全部 169 模块、2346 项，195.14 秒结束，9 项平台/显式 opt-in 跳过。4 个失败模块分别为提示词缺少原有“不自动建目标”明确表述、两个 Controller intent 旧夹具不适配，以及旧收编测试按固定 effort 名字判断非法。已补提示词原约束、严格 work 意图断言、非法格式夹具和保留原生未来 effort 的正例；只重跑受影响 4 模块 143 项，27.058 秒全部通过。没有把首次全套记作单次全绿；其他 165 模块无需重复执行。日志为 `Temp/full-implementation/python-regression-final.log`、`python-regression-contract-recheck.log`。本轮未出现先前的 7122 守卫异常，不能据此宣称其原因为随机端口。
 
-最终桌面单元回归 `desktop-regression-confirmed.log`：172/172 通过，8.288 秒。下文另有真实 Electron 及后端阶段包正常退出的验证证据，不能只用单元测试替代 A30。网页旧 JS 299 项仍是此前同前端代码的有效验证，未因后端收拢重复全跑。
+早期后端阶段桌面单元回归 `desktop-regression-confirmed.log` 为 172/172、8.288 秒；现由上表 183 项集成回归补充。网页同样由旧 JS 299 项推进到合流后的 382 项，不以单元测试替代下方实际 Electron 和新 UI 验收。
 
 后端提交 `1e5a520` 已落盘；正常合入主干 CI 提交 `f97e3e6` 后，合并提交 `4aecc9b` 的受影响复验为 159 项 / 19.038 秒，结果 `OK`，原始日志为 `Temp/full-implementation/main-ci-fixture-recheck.log`。这是合并影响范围复验，没有重新宣称全量回归为单次全绿，也不替代前端交付后的联合验收。
 
-### 当前明确待办与接续
+### 最终接续与交付边界
 
-最终合流已开始：后端集成草稿 PR [#62](https://github.com/akitokunnn/Crew/pull/62)，前端草稿 PR [#63](https://github.com/akitokunnn/Crew/pull/63)。已在 `40024ff` 正常合入前端 `17c005f`、`2f55a7c`，保留原始提交和独立工作树，未提前合并主干。合流后网页 Node 358/358 通过；真实任务 HTTP 与 AssetCatalog 28 项通过（1 项 Windows symlink 权限跳过），架构 4 项通过。首次联跑写错架构模块名导致一个载入错误，按正确 `test_module_architecture` 单独复跑通过，没有修改测试断言。
+最终整合走 PR [#62](https://github.com/akitokunnn/Crew/pull/62)，前端 PR [#63](https://github.com/akitokunnn/Crew/pull/63) 保留交付来源。前端 `17c005f`、`2f55a7c`、载体默认修复 `b391eb6` 和页面生命周期修复 `eb1c871` 已正常合流，保留原始提交和独立工作树，未提前合并主干。初次合流的网页 Node 358 项、任务 HTTP/AssetCatalog 28 项（1 项 Windows symlink 权限跳过）和架构 4 项是阶段证据，现另有上表 382 项与桌面 183 项结果。首次架构模块名载入错误已按正确 `test_module_architecture` 复跑通过，没有修改测试断言。
 
 独立实机联调由新临时 HOME `crew-final-ui-44fb4d9e98ad4fb7a670fc6f8385bfe8`、真实服务 `127.0.0.1:3347`、假 Claude 承担，版本 `0.2.42`，没有操作前端所有的 `2957` 服务。实际首页创建讨论、流式回复、mode 切换保持 `authorized=false`、明确开始、受阻后明确停止、切页草稿和真实 pin 已观察。停止期间版本变化返回真实冲突并保留草稿，按最新状态重新明确停止后为 stopped。此实例加载修复前的后端，不能用于证明后来快照编辑修复。
 
@@ -71,11 +71,15 @@
 
 合流首次 CI 桌面任务的两个旧入口 smoke 失败，原断言保留；总会话脚本显式 `legacy=1` 后 8 项真实 Electron 检查通过，工作区脚本随桌面工作台导航接入调整。该次 CI 不记为通过。
 
-该次 Windows CI 后端实际执行 2366 项/558.574 秒，1 项平台跳过，仅 `test_spawn_git_probe` 的成功夹具在没有 Claude 的 runner 报设置错误；已在该夹具中提供合成 Claude 发现，保留真实 Git 探测，4 项本地复验通过。没有放宽生产显式载体检查；最终 CI 仍待下一提交确认。
+桌面正式接入后，源码标准 smoke 已核实真实服务根工作台、权限边界及实际 PNG；隐藏窗口首次 capture 失败时使用实际 CDP 截图 fallback，禁止将 null 截图记作成功。证据 `Temp/full-implementation/standard-source-capture-confirmed.log`、`desktop/smoke-output/source.json`。源码正常退出验收总耗时 1.834 秒，零模型、后台同 PID/instance 重连且自有后台清理确认，见 `desktop/smoke-output/background-source.json`。
 
-1. 前端正式施工/联调中，见下方工作树及服务归属。等其可追溯提交后保留双方成果合流，整合桌面服务根 URL 入口，完成 A33/A34、报告/版本恢复及既有入口的联合验收和受影响回归。后端提交、主干 CI 合入及 159 项复验已经完成，不再重复作为待办；临时四进程运行器不作为仓库入口。
-2. UI 合流后重新构建最终产物，更新文件/哈希并复验隔离启动、A30 退出/重连和 A36 来源一致性，再按仓库规则正常提交 PR 并合并；现有后端阶段包不等于最终 UI 交付或正式升级。
-3. 公网仅余用户账号/域名和最终真实 HTTPS 入口验收，当前未上线。部署代码、配置检查和隔离代理已有，不以假链接交付。
+45 项工作区实测还发现了真实取消导航问题：workbench 和 legacy 两个 view 的 `beforeunload=1/pagehide=0`，导航已被取消但原清理使按钮失效。前端 `eb1c871` 改为页面实际离开的 `pagehide` 才清理，并保留 `persisted` 返回缓存；原红测现全绿，两个原文档仍可交互。该修复与现有目录验证、历史准备、草稿/工具/管理员/迁移覆盖一并保留，不把已取消的导航当成页面卸载。
+
+该次 Windows CI 后端实际执行 2366 项/558.574 秒，1 项平台跳过，仅 `test_spawn_git_probe` 的成功夹具在没有 Claude 的 runner 报设置错误；已在该夹具中提供合成 Claude 发现，保留真实 Git 探测，4 项本地复验通过。没有放宽生产显式载体检查；后续最终 CI 的 2372 项已通过，见最终产物专节。
+
+1. 后端、正式前端、桌面接入、最终构建、隔离包验收和正常主干合并已完成；前端工作树与原始提交保留。本节以下保留施工历程，不能把已关闭的历史问题重新当作当前待办。
+2. 本轮验收基于隔离 HOME、假载体/原生协议夹具、真实 HTTP 与 Electron，以及组件测试。未使用真实 AI/渠道账号、手机硬件和整夜观察；未逐项执行的专项界面旅程在下表明确保留边界，不能说全部 37 项均以真实账号运行通过。
+3. 唯一剩余外部操作：用户绑定自己的账号/域名及 Tunnel，进行实际外网 HTTPS 验收。代码、配置入口与检查、部署步骤和隔离代理已完成，当前未上线。
 
 角色默认收拢已过：配置只读不探测 CLI，未配置 leader/member 偏好 CC/Codex，显式/per-leader/作用域优先，已有执行不重配。51 项基础验证通过；265 项扩展首轮仅并行施工时回执缺字段，接点补齐后相关 14 项通过；执行审计另 123 项通过。来源/首选缺失原因已进入实际 send receipt、journal 和 board audit，`loaded=not_confirmed`；原生模型/effort 不硬编码。
 
@@ -83,9 +87,9 @@
 
 真实 Electron 退出已修：普通退出的 quit→OS 进程退出实测约 89 毫秒，三工作区/五次隐藏恢复/销毁后 12 次回调场景约 118 毫秒；后台保持相同 PID/instance/URL，重连复用后由测试自己的管理员明确停止。根因未归于应用名或某个 Socket；这些假说被反证。修复是在 Electron 与所选 Supervisor 间使用本版短命管道桥，EOF 只结束桥，明确 shutdown 才等真正管理员退出。新桥 5 项和 supervisor 33 项通过。新 `node desktop/scripts/smoke-background.cjs` 对 0.2.42 源码实际验证零模型、正常退出、同服务重连、仅回收自有后台，证据 `desktop/smoke-output/background-source.json`。
 
-### 后端阶段 0.2.42 产物
+### 后端阶段 0.2.42 产物（历史构建）
 
-`npm --prefix desktop run build` 成功，目录程序、ZIP、portable、setup 均生成。新 UI 尚未整合，这些是后端阶段包，最终前端合流后必须重新构建并更新校验值；不作为已发布版本。
+当时 `npm --prefix desktop run build` 成功，目录程序、ZIP、portable、setup 均生成。这些包构建时尚未整合新 UI，以下哈希仅属于历史后端阶段；最终包必须重新构建并更新校验值，不作为已发布版本。
 
 | 产物（`C:\Tools\Crew\desktop\dist`） | SHA-256 |
 | --- | --- |
@@ -101,39 +105,55 @@
 
 清理限制：自有测试目录 `C:\Users\admin\AppData\Local\Temp\crew-detached-Pq4QYH` 的删除被自动审批以 “blocked by policy” 拒绝；未绕过删除，目录保留。相关自有夹具 PID 24856/27668 已核实退出，不影响施工或正式服务。
 
+### 最终 UI 集成产物与 CI
+
+`npm --prefix desktop run build` 完成包含最终 UI 的重建；产物对应产品提交 `7902b03`。以下为实际核验结果，覆盖上一节历史包：
+
+| 项目 | 当前记录 |
+| --- | --- |
+| 最终源码提交 / 构建日志 | `7902b03`；`Temp/full-implementation/build-final-after-lifecycle.log`，退出码 0 |
+| ZIP 文件名 / SHA-256 | `desktop/dist/Crew-0.2.42-win-x64.zip`；`70ba2b4450a7ef3b850b8af788d2b40a46374b360943b3fc03500709c5bcd3a3` |
+| portable 文件名 / SHA-256 | `desktop/dist/Crew-0.2.42-portable.exe`；`f710167403bc5ee83ee174830dfd72831a25e46100b7756eb7dfccf0969cd2bb` |
+| setup 文件名 / SHA-256 | `desktop/dist/Crew-0.2.42-setup.exe`；`6aba670bb0e6d6aa86c674dd92e95810ba6ac6208ef6ec7548bddd4cb268fca9` |
+| 包内源码/资源数量、source digest | 321 文件逐一匹配；`aaf994ed01461a106f8d7c0f0faa2d8c3c57b6df40106d1ba3c61836ab32711a`；`desktop/smoke-output/bundle-source.json` |
+| 图标及实际包启动 | 目录、portable、setup 图标通过；目录和 portable 标准 smoke 验证默认真实 root、隔离权限及实际 PNG。隐藏页面无显示 surface 时使用实际 renderer 的 CDP 截图并保留原原因，不接受空截图。未在用户系统安装 setup |
+| 实际包正常退出与重连 | `background-packaged.json`、`background-portable.json`：真实窗口 Ctrl+Q 后后台存活、同 PID/instance/URL 重连、零模型轮次、仅清理自有后台均通过。32.022 秒/22.898 秒包括窗口核对，不是退出耗时 |
+| PR #62 最终 CI / 主干包含 | [CI 40658508929](https://github.com/akitokunnn/Crew/actions/runs/40658508929) 对 `7902b03` 两任务通过；Python 2372 项/417.622 秒/1 项平台跳过；网页 382、桌面 183、工作区 45、旧会话路由 8、新 UI 15。正常合并 `4eda2d3`，主干完整树与该产品提交一致 |
+| 正式实例升级 | 未执行，最终包构建与合并本身不代表正式实例已升级 |
+
 ### A01–A37 接入核对表
 
-下表记录后端已有证据和仍需联合验收的部分；“已有证据”不表示整项 UI/产物验收已经通过。最终回归、构建和前端联调仍按上方待办进行。
+下表记录程序、接口、组件及联合证据，第三列保留未逐项实测的旅程或硬件边界，不能把组件测试写成真实 AI 联机。构建与主干交付已经完成；最终 2372 项后端、382 项网页与 183 项桌面 CI 覆盖相应程序行为。前端组件测试通过 `test_frontend_workbench.js` 汇入标准入口，详细范围见前端交接记录。
 
-| 编号 | 后端证据入口 | 仍需完成 |
+| 编号 | 后端及联合证据入口 | 验证边界 |
 | --- | --- | --- |
-| A01–A02 | tasks、task_http、task_api_fixture；普通目录与同 ID 多工作区 | 前端双入口与真实成果展示 |
-| A03 | task_followup、codex_discussion、task_http；草稿与已交付问答均受原生只读限制 | 讨论/明确继续的 UI 文案与动作 |
+| A01–A02 | tasks、task_http、task_api_fixture；新 UI 15 项；负责人从 api-linked 的关联入口回同一 task UUID/主工作区/leader/草稿，最终包核验通过 | 双入口使用同一 API 与任务；未用正式私人目录 |
+| A03 | task_followup、codex_discussion、task_http；新 UI 真实创建讨论和两次合成 SSE 回复，模式切换仍不授权；负责人观察明确开始/停止 | 最终包来源与新工作台已验证，不声称真实账号施工 |
 | A04 | goal_http、runtime_integration、task_scheduler 的独立执行身份 | 两任务页面同时推进与置顶显示 |
-| A05–A07 | tasks、trust_mode、goal_links、runtime_switch；任务 mode 与原生权限分开 | 集中拍板、模式/载体切换 UI |
-| A08 | task_communication、mixed_messaging、goal_messages；重要原文只转达一次 | 成员/leader 导航、私聊入口 |
-| A09 | codex_runtime、goal_http、chat；原生 steer 与队列回执 | 立即/排队 UI 状态 |
-| A10–A13 | task_scheduler、goal_recovery、task_followup；停止墓碑、reader 排空及历史代次 | 两种停止按钮、重连 UI |
+| A05–A07 | tasks、trust_mode、goal_links、runtime_switch；任务 mode 与原生权限分开，新 UI 模式切换已验；b391eb6 修复载体草稿与角色默认，Node 382 项通过 | 集中拍板及载体切换的专项交互验收 |
+| A08 | task_communication、mixed_messaging、goal_messages；重要原文只转达一次；前端样例实操任务→成员→leader及独立草稿 | 未使用真实双载体账号直聊 |
+| A09 | codex_runtime、goal_http、chat；原生 steer 与队列回执；test_chat_connection、crew-client 组件验证排队草稿、顺序与稳定身份 | 原生收件由协议夹具验证，非真实账号 |
+| A10–A13 | task_scheduler、goal_recovery、task_followup；停止墓碑、reader 排空、历史代次；客户端两种停止契约与真实 UI 停止均有证据 | 多成员隔离由程序测试覆盖，未逐人实操 UI |
 | A14–A15 | task_notifications 实际服务 tick，有限恢复/按渠道回执 | UI 展示失败原因与任务入口 |
 | A16 | CC stream-json 与 Codex app-server 协议夹具、codex_discussion | 只测试假载体，不声称真实账号运行 |
-| A17–A18 | settings_scopes、behavior_prompts、runtime_catalog_sources、task_followup | 设置完整接入、实际来源和生效时机展示 |
+| A17–A18 | settings_scopes、behavior_prompts、runtime_catalog_sources、task_followup；scoped-settings 组件覆盖继承/CAS/history/applied；真实 UI 保存全局提示词与来源，390px 设置布局通过 | 没有把配置保存或可用 CLI 声称为本次真实模型已加载 |
 | A19 | goal_context、maintenance、context_http、storage_context_bridge | UI 上下文/来源可查看 |
-| A20–A22 | personal、personal_native、storage_personal_extensions；关联、标签、固定助手证明及跨项目资料 | 开始聊导航、个人清单与助手页面 |
-| A23–A24 | task_artifacts、task_http；持续报告 CAS、真实附件、认证归属 | 文档呈现、阅读位置与上传体验 |
-| A25 | task_artifacts、task_http 的真实普通目录恢复 | 前端预览与冲突处理 |
+| A20–A22 | personal、personal_native、storage_personal_extensions；固定助手证明/跨项目资料及导出边界；personal-workspace/conversation-entry 组件；前端真实共享 TODO 附件完成、停止任务不复活 | 助手 AI 工具操作由原生假载体工具测试覆盖，未实际唤醒 AI |
+| A23–A24 | task_artifacts、task_http；持续报告 CAS、认证归属；真实 UI 报告/图表及附件字节，390px 资料；crew-client 冲突与 ui_renderer 阅读位置组件测试 | 长报告阅读位置未单独实操；没有将组件测试当作实际浏览器旅程 |
+| A25 | task_artifacts、task_http；前端真实普通目录预览阻止后续修改冲突，登记后恢复 v0.1 并核实磁盘字节，无 Git | 仅使用自有临时目录 |
 | A26 | task_git_restore 的临时真实 Git 提交、index/reflog/独立修改保护 | 前端预览与冲突处理 |
-| A27 | task_http、task_followup、personal；运行先停、异步垃圾箱、恢复不启动，隐藏通知已复验 | 垃圾箱 UI |
+| A27 | task_http、task_followup、personal；负责人真实 UI 移入垃圾箱后历史只读，再恢复为 stopped，任务 UUID/草稿保留且未自动启动 | 仅操作自有合成任务，没有永久清空 |
 | A28–A29 | task_storage、storage_personal_extensions、storage_export_receipts、旧 storage 套件；268+1 项受影响通过，2 平台跳过；通知跨 generation 抑制及 pin 携带通过 | 前端导出/历史入口 |
-| A30 | detached-lifecycle 假载体 1→2 输入；源码、后端阶段目录程序及 portable 的真实 Electron quit/后台存活/同实例重连均通过，见上方 background 证据 | UI 合流后的最终包同项复验 |
+| A30 | detached-lifecycle 假载体 1→2 输入；最终源码、目录及 portable 正常退出/同实例重连/仅自有清理均通过 | 实际包零模型；多轮推进由假载体协议及脱离前端测试覆盖 |
 | A31–A32 | remote_access、task_http 认证代理/SSE 撤销、消息/控制/恢复回执 | 前端登录/直达/重连，真实公网账号与域名 |
-| A33–A34 | 服务 API 已提供，不代替界面验收 | 前端 PC/手机导航、键盘、草稿和阅读位置 |
-| A35 | 网页旧 JS 299 项、工作区 Electron 41 项；Python 2346 项汇合及失败项 143 项复验、CI 合并后 159 项复验已有记录 | 新布局保留所有旧入口与合流后的受影响回归 |
-| A36 | 后端阶段 0.2.42 全包构建、291 文件、3 EXE 图标、目录/portable 标准与正常退出隔离验证通过 | UI 合流后的最终重建及同样验收 |
+| A33–A34 | 新 UI 15 项覆盖实际 390×844 任务/控制/资料/设置无横向溢出与切页草稿；桌面 45 项验证 global/legacy/return、归属和原文档可交互，取消导航原红测已绿；最终包通过 | 手机硬件/软键盘、未逐项实际操作的阅读位置等旅程没有声称通过 |
+| A35 | 最终 CI 全绿；旧会话独立草稿、工具、管理、目录历史准备与迁移覆盖保留；最终包逐文件相符 | 没有把未执行的既有专项脚本算作通过 |
+| A36 | 最终 UI 全包构建、321 文件、3 EXE 图标、目录/portable 新工作台标准与正常退出隔离验证通过 | setup 未安装到用户 OS，正式服务未升级 |
 | A37 | scheduler 30 项，可控时钟/事件；278 项执行组约 53.8 秒，后台两步实际约 4.9 秒 | 记录最终组合实际时长，不称整夜压力测试 |
 
-前端正式实施位置已确认：`C:\Users\admin\.codex\worktrees\crew-ui-prototype\Crew`，分支 `codex/crew-formal-frontend`，基线 `4294977`。用户在该会话明确授权双方沟通，已直接同步 API 启动方式、task pin 和 attention 导航字段；其修改只在前端目录，最终集成由本任务负责。
+前端原实施位置保留为交付来源：`C:\Users\admin\.codex\worktrees\crew-ui-prototype\Crew`，分支 `codex/crew-formal-frontend`，起始基线 `4294977`。用户明确授权双方沟通；正式前端四笔提交现已正常合流，PR #63 与独立工作树保留，最终集成和 PR #62 由本任务负责。
 
-前端自行持有的联调服务：临时 HOME `C:\Users\admin\AppData\Local\Temp\crew-frontend-api-5df03d168fd14f69a45647c5d1adaf32`，假载体 API `127.0.0.1:2957`，dev proxy `127.0.0.1:4321`。这是前端的测试数据和进程，root 不停止/清理它；不与正式服务混用。前端已报告 mock 导航/草稿及真实创建讨论接入，最终联调仍需核实实际提交和验收。
+前端此前自行持有的联调服务登记：临时 HOME `C:\Users\admin\AppData\Local\Temp\crew-frontend-api-5df03d168fd14f69a45647c5d1adaf32`，假载体 API `127.0.0.1:2957`，dev proxy `127.0.0.1:4321`。这是前端的测试数据和进程，root 不停止/清理它；此处保留归属，不声称当前进程存活。最终联合验证使用上方各自新建的独立夹具，不与正式服务混用。
 
 前端版本 capture 发现开发夹具项目原放 HOME 下，与正确的保护规则冲突；已只改夹具为 HOME 外 `crew-api-project-<UUID>`，metadata 增 `project_root`，退出保留项目。3 项真实 API 回归通过，含 capture/preview/restore 真字节和幂等，HOME 越界仍拒绝。2957 服务未停止，前端已自行用另一个 HOME 外普通目录继续验收。
 
