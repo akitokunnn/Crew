@@ -7,6 +7,13 @@ test("person menus preserve role, carrier and group capabilities without sharing
   assert(leader.includes('data-act="close-group"'));assert(leader.includes('data-act="compact-department"'));assert(!member.includes('data-act="compact-department"'));
   assert.match(member,/data-act="move-to" data-id="member"[^>]*data-group="other"/);assert(!member.includes('data-group="leader"'));
   assert.match(f.module.editorHandoffReason(value.members[1]),/暂不支持/);assert.equal(f.module.editorHandoffReason(value.members[0]),"");
+  assert(leader.includes('data-act="compact"'));assert(member.includes('data-act="compact"'));
+  for(const runtime of ["claude","codex"])for(const role of ["leader","member"]){
+    const item=role==="leader"?value.leaders[0]:value.members[0];item.runtime=runtime;
+    const menu=f.module.sessionMenu(item),editor=menu.match(/<button[^>]*data-act="open-vscode"[^>]*>/)?.[0];
+    assert(editor);assert.equal(editor.includes("disabled"),runtime==="codex");
+    assert(menu.includes(`data-act="${role==="leader"?"leader":"member-history"}"`));
+  }
 });
 test("renaming owns the exact draft, real error and submission guard and retries only when asked",async()=>{
   const value=state(),f=fixture(()=>value);let release,fail=true;
