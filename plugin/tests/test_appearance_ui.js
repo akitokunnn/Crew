@@ -30,7 +30,7 @@ test("invalid stored modes/scales use defaults and read/write failures preserve 
     assert.equal(f.appearance.mode(),"system"); assert.equal(f.doc.documentElement.style["--fs"],"1"); f.appearance.destroy();
   }
   const f = setup({storage:{getItem(){throw Error("read denied");},setItem(){throw Error("write denied");}}});
-  assert.deepEqual(f.messages,["read denied","read denied"]); f.dispatch("theme-select",{themeMode:"light"});
+  assert.deepEqual(f.messages,["read denied","read denied","read denied"]); f.dispatch("theme-select",{themeMode:"light"});
   assert.equal(f.appearance.mode(),"light"); assert.equal(f.messages.at(-1),"write denied"); assert.equal(f.modeChanges(),1);
   f.dispatch("theme-select",{themeMode:"invalid"}); assert.equal(f.appearance.mode(),"light");
 });
@@ -44,6 +44,16 @@ test("range changes validate bounds, persist preferences and preserve the active
   for (const value of [-1,1.01,NaN]) { sound.value=String(value);f.host.emit("input",{target:sound});assert.equal(f.sound().volume,1); }
   assert.equal(f.renders(),initialRenders); assert.equal(f.host.querySelector('[data-setting="font"]'),font);
   f.dispatch("font-reset");assert.equal(f.doc.documentElement.style["--fs"],"1");assert.equal(f.host.querySelector('[data-act="font-reset"]').disabled,true);
+});
+test("reduced motion is an explicit persisted preference and releases its action on destroy", () => {
+  const f=setup();
+  assert.equal(f.doc.documentElement.dataset.reducedMotion,"false");
+  f.dispatch("motion-reduce");
+  assert.equal(f.doc.documentElement.dataset.reducedMotion,"true");
+  assert.equal(f.stored.get("crew.reducedMotion"),"true");
+  f.dispatch("motion-reduce");
+  assert.equal(f.doc.documentElement.dataset.reducedMotion,"false");
+  f.appearance.destroy();assert.equal(f.commands.dispatch("motion-reduce"),false);
 });
 test("mode cycling and sound settings remain independent of playback notification policy", () => {
   const f = setup(); for (const mode of ["light","dark","system"]) {f.dispatch("theme");assert.equal(f.appearance.mode(),mode);assert.equal(f.stored.get("crew.theme"),mode);}

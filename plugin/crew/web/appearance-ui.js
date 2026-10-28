@@ -5,15 +5,17 @@
   const pct = value => `${Math.round(value * 100)}%`;
   function create(options) {
     const doc = options.document || document, win = options.window || window, host = options.host;
-    let mode = "system", fontScale = 1, themes = null, project = null, destroyed = false, saving = false;
+    let mode = "system", fontScale = 1, reducedMotion = false, themes = null, project = null, destroyed = false, saving = false;
     const storage = () => options.storage ?? win.localStorage;
     function report(error) { options.notify(error.message); }
     function persist(key, value) { try { storage().setItem(key, String(value)); } catch (error) { report(error); } }
     try { const stored = storage().getItem("crew.theme"); if (MODES.includes(stored)) mode = stored; } catch (error) { report(error); }
     try { const stored = Number(storage().getItem("crew.fontScale")); if (Number.isFinite(stored) && stored >= FONT_MIN && stored <= FONT_MAX) fontScale = stored; } catch (error) { report(error); }
+    try { reducedMotion = storage().getItem("crew.reducedMotion") === "true"; } catch (error) { report(error); }
     function apply() {
       if (destroyed) return;
       options.theme.setMode(mode);
+      doc.documentElement.dataset.reducedMotion = String(reducedMotion);
       if (themes !== null) options.theme.apply(themes, project === null ? null : project.theme, mode);
     }
     function applyFont() { doc.documentElement.style.setProperty("--fs", String(fontScale)); }
@@ -28,7 +30,7 @@
         <p class="settings-hint">左浅右深 · 为这个项目保存</p></section>` : "";
       options.renderer.replace(host, `<section class="settings-section"><h4>显示模式</h4><div class="cs-theme-options">
         ${[["system", "跟随系统"], ["light", "浅色"], ["dark", "深色"]].map(([id, label]) => `<button type="button" data-act="theme-select" data-theme-mode="${id}" aria-pressed="${mode === id}">${label}</button>`).join("")}</div></section>
-        ${projectThemes}<section class="settings-section"><div class="settings-row"><h4>字号</h4><span class="settings-value" id="font-scale-value">${pct(fontScale)}</span>
+        ${projectThemes}<section class="settings-section"><div class="settings-row"><h4>减少动画</h4><button class="switch ${reducedMotion ? "on" : ""}" data-act="motion-reduce" role="switch" aria-checked="${reducedMotion}" aria-label="始终减少动画"><span class="track"></span></button></div><p class="settings-hint">开启后使用简短状态反馈；系统要求减少动画时也会遵循。</p></section><section class="settings-section"><div class="settings-row"><h4>字号</h4><span class="settings-value" id="font-scale-value">${pct(fontScale)}</span>
           <button type="button" class="settings-link" data-act="font-reset" ${fontScale === 1 ? "disabled" : ""}>恢复标准</button></div>
           <input class="settings-range" type="range" min="${FONT_MIN}" max="${FONT_MAX}" step="0.01" value="${fontScale}" data-setting="font" aria-label="字号"></section>
         <section class="settings-section"><div class="settings-row"><h4>提示音</h4><span class="gap"></span>
@@ -75,6 +77,7 @@
       "theme-select":({element}) => selectMode(element.dataset.themeMode),
       "project-theme":({element}) => projectTheme(element.dataset.themeId),
       "font-reset":() => { setFont(1); render(); },
+      "motion-reduce":() => { reducedMotion = !reducedMotion; persist("crew.reducedMotion",reducedMotion); apply(); render(); },
       "sound-mute":() => { options.sound.setMuted(!options.sound.getSettings().muted); render(); },
       "sound-test":() => options.sound.preview("decision")
     });

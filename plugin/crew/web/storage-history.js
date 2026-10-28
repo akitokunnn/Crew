@@ -5,9 +5,9 @@
   let snapshot, selected = null, oldest = null, requestGeneration = 0;
   const node = (tag, text, className) => { const n=document.createElement(tag);if(text!=null)n.textContent=text;if(className)n.className=className;return n; };
   async function read(query={}) {
-    const r=await fetch('/api/workspace-data/history?'+new URLSearchParams({workspace_id:workspace,...query}));const value=await r.json();if(!r.ok)throw Error(value.error);return value;
+    return CrewClient.current.request('/api/workspace-data/history?'+new URLSearchParams({workspace_id:workspace,...query}));
   }
-  const artifactURL = id => '/api/workspace-data/artifact?'+new URLSearchParams({workspace_id:workspace,version_id:id});
+  const artifactURL = id => CrewClient.current.resourceURL('/api/workspace-data/artifact?'+new URLSearchParams({workspace_id:workspace,version_id:id}));
   const stateLabel = value => ({informational:'信息记录',completed:'已完成',failed:'失败',awaiting_acceptance:'等待验收',cancelled:'已取消',paused:'已暂停',running:'执行中',draft:'草稿',active:'有效',archived:'已归档',open:'待处理'}[value]||value);
   function link(parent,id,label) { const a=node('a',label);a.href=artifactURL(id);a.target='_blank';a.rel='noopener';parent.append(a); }
   function card(title,body,meta) { const n=node('article',null,'card');if(title)n.append(node('strong',title));if(meta)n.append(node('p',meta,'meta'));if(body)n.append(node('div',body,'body'));return n; }
@@ -72,7 +72,7 @@
   }
   $('export').onclick=async()=>{
     $('export').disabled=true;$('status').textContent='正在校验并打包…';
-    try{const response=await fetch('/api/workspace-data/export',{method:'POST',headers:{'Content-Type':'application/json','X-Crew':'1'},body:JSON.stringify({workspace_id:workspace})});const result=await response.json();if(!response.ok)throw Error(result.error);const a=node('a','下载工作区包');a.href='/api/workspace-data/download?id='+result.download_id;$('status').replaceChildren(a);a.click();}
+    try{const result=await CrewClient.current.request('/api/workspace-data/export',{workspace_id:workspace});const a=node('a','下载工作区包');a.href=CrewClient.current.resourceURL('/api/workspace-data/download?id='+result.download_id);$('status').replaceChildren(a);a.click();}
     catch(error){fail(error);}finally{$('export').disabled=false;}
   };
   read().then(value=>{
