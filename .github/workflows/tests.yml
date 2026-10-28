@@ -108,3 +108,6 @@ jobs:
       - name: Isolated conversation and task routing
         if: ${{ !cancelled() }}
         run: node plugin/tests/smoke_conversation_routing.cjs
+      - name: Real task workbench on desktop and mobile viewports
+        if: ${{ !cancelled() }}
+        run: node plugin/tests/smoke_task_workbench.cjs

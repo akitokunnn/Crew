@@ -1,5 +1,6 @@
 """The member-creation read probe must not hang on inherited Git pipes."""
 import tests
+import shutil
 import subprocess
 import sys
 import time
@@ -15,6 +16,13 @@ PLUGIN=__import__('pathlib').Path(__file__).resolve().parents[1]
 class SpawnGitProbeTests(RuntimeFixture):
     def setUp(self):
         super().setUp()
+        # This suite tests Git probes, not the host's installed AI tools. Keep
+        # the configured Claude choice synthetic on CI as well as locally.
+        native_which = shutil.which
+        lookup = mock.patch('crew.settings.shutil.which',
+                            side_effect=lambda name: '/fixture/claude' if name == 'claude' else native_which(name))
+        lookup.start()
+        self.addCleanup(lookup.stop)
         # Native commands are stubbed below; retain the repository precondition.
         (self.root/'.git').mkdir()
 

@@ -28,7 +28,7 @@
 | verified | GET `/api/tasks/attention?project=名称&offset=0&limit=50` | 全局或工作区的程序待处理事项，返回 `{items,total,offset,limit,next_offset}`；无 AI 唤醒，详见下节 |
 | verified | GET `/api/task?task_id=UUID&project=名称` | `{task:Task,executions:[],members:[],reports:[],documents:[],scheduler:{...},notifications:{receipts:[]}}` |
 | verified | POST `/api/tasks/create` | `{project,text,title?,leader_session_id?,acceptance?:[],constraints?:[],projects?:[],request_id}` → `{task}`；只建稳定讨论，不启动 AI |
-| implemented | POST `/api/tasks/update` | `{task_id,version,title?,request?,acceptance?,constraints?,projects?,request_id}` → `{task}`；保留需求版本和原话；旧 version 的 HTTP 冲突已验证 |
+| verified | POST `/api/tasks/update` | `{task_id,version,title?,request?,acceptance?,constraints?,projects?,request_id}` → `{task}`；request/acceptance/constraints 为完整当前快照，省略保留，未变化不新增需求版本；实际替换保留 original_request 与旧需求历史。仅 title/projects 改动只更新任务 version，完全相同不改版；CAS 409 保留草稿。原生 task.refine 使用相同 request 快照语义；原 goal amend 仍追加补充 |
 | verified | POST `/api/tasks/mode` | `{task_id,version,mode,request_id}` → `{task}`；不改全局权限 |
 | verified | POST `/api/tasks/pin` | `{task_id,pinned:boolean,request_id}` → `{task}`；card 增加 pinned/pinned_at，服务重连后保留，仅影响导航，不改任务 version、授权或执行优先级 |
 | verified | POST `/api/tasks/start` | `{task_id,version,request_id}` → `{task,receipt}`；执行明确授权，与普通讨论分开 |

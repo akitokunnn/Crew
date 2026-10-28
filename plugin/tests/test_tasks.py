@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 import tests
-from crew import board, goals, store, tasks, trust_mode
+from crew import board, goal_context, goals, store, tasks, trust_mode
 
 
 class TaskTests(unittest.TestCase):
@@ -51,9 +51,72 @@ class TaskTests(unittest.TestCase):
         changed = tasks.update(self.conn, task['id'], task['version'], request='用户补充：保留这个精确条件')
         with self.assertRaises(board.Conflict):
             tasks.update(self.conn, task['id'], task['version'], request='过时AI覆盖')
-        self.assertIn('用户补充：保留这个精确条件', changed['request'])
+        self.assertEqual(changed['request'], '用户补充：保留这个精确条件')
         self.assertNotIn('过时AI覆盖', tasks.get(self.conn, task['id'])['request'])
         self.assertEqual(goals._row(self.conn, task['id'])['original_request'], '讨论可测的目标')
+
+    def test_full_snapshot_with_only_workspace_or_title_changes_keeps_requirements_and_context(self):
+        task = self.make_task()
+        summary = goal_context.put(self.conn, task['id'], 'summary', 'Still valid original summary',
+            {'type': 'user', 'id': 'summary-source'}, depends=[{'type': 'requirement', 'id': task['id'], 'version': 1}])
+        changed = tasks.update(self.conn, task['id'], task['version'], request=task['request'],
+            acceptance=task['acceptance'], constraints=task['constraints'], projects=['demo', 'other'], title=task['title'])
+        self.assertEqual(changed['request'], task['request'])
+        self.assertEqual(changed['requirement_version'], 1)
+        self.assertEqual(changed['version'], task['version'] + 1)
+        self.assertEqual(changed['projects'], ['demo', 'other'])
+        self.assertEqual(goal_context.get(self.conn, summary['id'])['state'], 'active')
+        identical = tasks.update(self.conn, task['id'], changed['version'], request=changed['request'],
+            acceptance=changed['acceptance'], constraints=changed['constraints'], projects=['other', 'demo'], title=changed['title'])
+        self.assertEqual(identical['version'], changed['version'])
+        renamed = tasks.update(self.conn, task['id'], changed['version'], title='Only the task title changed')
+        self.assertEqual(renamed['version'], changed['version'] + 1)
+        self.assertEqual(renamed['requirement_version'], 1)
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM goal_requirements WHERE goal_id=?', (task['id'],)).fetchone()[0], 1)
+
+    def test_current_requirement_snapshot_replaces_exact_text_and_invalidates_old_context_without_rewriting_history(self):
+        task = self.make_task()
+        execution = self.execution(task)
+        before = tasks.get(self.conn, task['id'])
+        summary = goal_context.put(self.conn, task['id'], 'summary', 'Obsolete old requirement summary',
+            {'type': 'user', 'id': 'old-summary'}, depends=[{'type': 'requirement', 'id': task['id'], 'version': 1}])
+        text = '  用户编辑后的完整当前目标\n保留这份内容与空白。  '
+        changed = tasks.update(self.conn, task['id'], before['version'], request=text,
+            acceptance=before['acceptance'], constraints=before['constraints'])
+        self.assertEqual(changed['request'], text)
+        self.assertEqual(changed['requirement_version'], 2)
+        self.assertEqual(goals.get(self.conn, task['id'])['original_request'], task['request'])
+        self.assertEqual(goals.requirements(self.conn, task['id'], 1)['request'], task['request'])
+        self.assertEqual(goals.requirements(self.conn, task['id'], 2)['request'], text)
+        self.assertEqual(goal_context.get(self.conn, summary['id'])['state'], 'obsolete')
+        self.assertFalse(goals.dispatch_check(self.conn, task['id'], execution_id=execution['id'])['allowed'])
+        with self.assertRaises(board.Conflict):
+            tasks.update(self.conn, task['id'], before['version'], request='Rejected stale draft', projects=['other'])
+        self.assertEqual(tasks.get(self.conn, task['id'])['request'], text)
+        self.assertEqual(tasks.get(self.conn, task['id'])['projects'], ['demo'])
+
+    def test_editing_only_acceptance_or_constraints_does_not_insert_generic_text_in_request(self):
+        task = self.make_task()
+        changed = tasks.update(self.conn, task['id'], task['version'], constraints=['User supplied one condition'])
+        self.assertEqual(changed['request'], task['request'])
+        self.assertEqual(changed['requirement_version'], 2)
+        changed = tasks.update(self.conn, task['id'], changed['version'], acceptance=changed['acceptance'], constraints=changed['constraints'])
+        self.assertEqual(changed['requirement_version'], 2)
+
+    def test_completed_task_can_edit_metadata_with_same_snapshot_but_requires_reopen_for_new_requirement(self):
+        from tests.test_goals import GoalFixture
+        task = self.make_task(acceptance=[{'id': 'short', 'title': 'Verify completed fixture'}])
+        goals.transition(self.conn, task['id'], 'running')
+        goals.save_report(self.conn, task['id'], GoalFixture.report(self))
+        goals.transition(self.conn, task['id'], 'completed')
+        before = tasks.get(self.conn, task['id'])
+        changed = tasks.update(self.conn, task['id'], before['version'], request=before['request'],
+            acceptance=before['acceptance'], constraints=before['constraints'], projects=['other'])
+        self.assertEqual(changed['state'], 'completed')
+        self.assertEqual(changed['projects'], ['demo', 'other'])
+        self.assertEqual(changed['requirement_version'], before['requirement_version'])
+        with self.assertRaisesRegex(board.Conflict, '重开一轮'):
+            tasks.update(self.conn, task['id'], changed['version'], request='New work needs reopening')
 
     def test_mode_is_task_scoped_and_does_not_authorize_discussion(self):
         first, other = self.make_task(), self.make_task()

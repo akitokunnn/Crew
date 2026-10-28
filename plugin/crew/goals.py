@@ -195,19 +195,31 @@ def create(conn, project, leader_session_id, title, request, acceptance, *, cons
 
 @atomic
 def amend(conn, goal_id, text, *, acceptance=None, constraints=None, actor=board.HUMAN,
-          source=None, expected_version=None, now=None):
+          source=None, expected_version=None, replace=False, now=None):
+    """Append an instruction, or explicitly replace the current requirement snapshot.
+
+    Replacement keeps omitted fields and is a no-op when the normalized snapshot
+    is unchanged. Original words and earlier requirements are never rewritten.
+    """
     goal = _row(conn, goal_id)
     _actor(conn, goal, actor, member=True)
     _expected(goal, expected_version)
+    if type(replace) is not bool:
+        raise board.BoardError('需求替换方式必须为布尔值')
+    if goal['status'] in TERMINAL and not replace:
+        raise board.Conflict('已结束目标需要先明确重开一轮')
+    previous = requirements(conn, goal_id)
+    text = previous['request'] if replace and text is None else _text(text, '当前需求' if replace else '需求补充')
+    criteria = previous['acceptance'] if acceptance is None else _criteria(acceptance)
+    conditions = previous['constraints'] if constraints is None else _strings(constraints, '约束')
+    if replace and text == previous['request'] and criteria == previous['acceptance'] and conditions == previous['constraints']:
+        return get(conn, goal_id)
     if goal['status'] in TERMINAL:
         raise board.Conflict('已结束目标需要先明确重开一轮')
-    text = _text(text, '需求补充')
-    previous = requirements(conn, goal_id)
     version, at = goal['requirement_version'] + 1, board._time(now)
-    request = previous['request'] + '\n\n[补充 v%s]\n' % version + text
+    request = text if replace else previous['request'] + '\n\n[补充 v%s]\n' % version + text
     conn.execute('INSERT INTO goal_requirements VALUES(?,?,?,?,?,?,?,?,?)',
-                 (goal_id, version, request, _json(previous['acceptance'] if acceptance is None else _criteria(acceptance)),
-                  _json(previous['constraints'] if constraints is None else _strings(constraints, '约束')), text,
+                 (goal_id, version, request, _json(criteria), _json(conditions), text,
                   actor, _json(source or {'type': 'user', 'id': goal_id, 'version': version}), at))
     conn.execute('UPDATE goals SET requirement_version=? WHERE id=?', (version, goal_id))
     conn.execute('UPDATE goal_rounds SET requirement_version=? WHERE goal_id=? AND number=?',

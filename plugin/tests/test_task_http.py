@@ -10,7 +10,7 @@ import json
 from unittest import mock
 
 import tests
-from crew import goals, store, tasks, web
+from crew import board, goal_context, goals, store, tasks, web
 import test_chat_http as helpers
 from test_shell import NOW, PLUGIN, ShellFixture
 
@@ -91,6 +91,71 @@ class TaskHttpTests(ShellFixture, unittest.TestCase):
             'title': '过时覆盖', 'request_id': 'stale-title'})
         self.assertEqual(code, 409, conflict)
         self.assertEqual(conflict['error'], '任务已变化，请保留草稿并重新检查')
+
+    def test_full_detail_snapshot_changes_workspace_without_appending_and_replaces_current_goal_exactly(self):
+        folder = self.root / 'linked-snapshot-workspace'
+        folder.mkdir()
+        board.init_project(self.conn, 'linked', folder)
+        task = self.task()
+        summary = goal_context.put(self.conn, task['id'], 'summary', 'Summary from first requirement',
+            {'type': 'user', 'id': 'http-summary'}, depends=[{'type': 'requirement', 'id': task['id'], 'version': 1}])
+        body = {'task_id': task['id'], 'version': task['version'], 'request': task['request'],
+            'acceptance': task['acceptance'], 'constraints': task['constraints'], 'title': task['title'],
+            'projects': ['demo', 'linked'], 'request_id': 'details-workspace-only'}
+        code, edited, _ = self.request('/api/tasks/update', body)
+        self.assertEqual(code, 200, edited)
+        current = edited['task']
+        self.assertEqual(current['request'], task['request'])
+        self.assertEqual(current['requirement_version'], 1)
+        self.assertEqual(current['version'], task['version'] + 1)
+        self.assertEqual(current['projects'], ['demo', 'linked'])
+        self.assertEqual(goal_context.get(self.conn, summary['id'])['state'], 'active')
+        self.assertEqual(self.request('/api/tasks/update', body)[1], edited)
+        code, unchanged, _ = self.request('/api/tasks/update', {**body, 'version': current['version'], 'request_id': 'details-identical'})
+        self.assertEqual(code, 200, unchanged)
+        self.assertEqual(unchanged['task']['version'], current['version'])
+        exact = '  完整替换后的当前目标\n这份正文不应再次追加原文。  '
+        code, replaced, _ = self.request('/api/tasks/update', {**body, 'version': current['version'], 'request': exact,
+            'request_id': 'details-replace'})
+        self.assertEqual(code, 200, replaced)
+        self.assertEqual(replaced['task']['request'], exact)
+        self.assertEqual(replaced['task']['requirement_version'], 2)
+        self.assertEqual(goals.get(self.conn, task['id'])['original_request'], task['request'])
+        self.assertEqual(goals.requirements(self.conn, task['id'], 1)['request'], task['request'])
+        self.assertEqual(goal_context.get(self.conn, summary['id'])['state'], 'obsolete')
+        stale = {**body, 'version': current['version'], 'request': 'A stale complete draft', 'request_id': 'details-stale'}
+        retained = json.loads(json.dumps(stale))
+        code, failed, _ = self.request('/api/tasks/update', stale)
+        self.assertEqual(code, 409, failed)
+        self.assertIn('保留草稿', failed['error'])
+        self.assertEqual(stale, retained)
+        self.assertEqual(tasks.get(self.conn, task['id'])['request'], exact)
+        self.assertEqual(self.processes, [])
+
+    def test_native_task_refine_uses_same_full_snapshot_semantics_as_http_details(self):
+        task = self.task()
+        code, started, _ = self.request('/api/tasks/start', {'task_id': task['id'], 'version': task['version'], 'request_id': 'refine-start'})
+        self.assertEqual(code, 200, started)
+        before = started['task']
+        execution = started['receipt']['execution_id']
+        data = {'goal_id': task['id'], 'version': before['version'], 'request': before['request'],
+            'acceptance': before['acceptance'], 'constraints': before['constraints'], 'title': 'Only the title changed',
+            'request_id': 'native-refine-metadata'}
+        command = {'actor_session_id': 's3', 'execution_id': execution, 'action': 'task.refine', 'data': data}
+        code, renamed, _ = self.request('/api/goals/agent?project=demo', command)
+        self.assertEqual(code, 200, renamed)
+        self.assertEqual(renamed['task']['request'], before['request'])
+        self.assertEqual(renamed['task']['requirement_version'], before['requirement_version'])
+        self.assertEqual(renamed['task']['version'], before['version'] + 1)
+        exact = 'Native user-authorized complete current requirement'
+        code, refined, _ = self.request('/api/goals/agent?project=demo', {**command,
+            'data': {**data, 'version': renamed['task']['version'], 'request': exact, 'request_id': 'native-refine-replace'}})
+        self.assertEqual(code, 200, refined)
+        self.assertEqual(refined['task']['request'], exact)
+        self.assertEqual(refined['task']['requirement_version'], before['requirement_version'] + 1)
+        self.assertEqual(goals.requirements(self.conn, task['id'], 1)['request'], before['request'])
+        self.assertEqual(len(self.processes), 1)
+        self.finish_turn(execution, self.processes[0])
 
     def test_task_pin_is_persistent_and_idempotent_without_changing_work_or_priority(self):
         first = self.task()

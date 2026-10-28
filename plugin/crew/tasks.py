@@ -177,18 +177,23 @@ def create(conn, project, text, *, title=None, leader_session_id=None, acceptanc
 @goals.atomic
 def update(conn, identity, version, *, title=None, request=None, acceptance=None, constraints=None,
            projects=None, actor=board.HUMAN, now=None):
+    """Edit a complete current requirement snapshot, preserving omitted fields."""
     value = _expected(conn, identity, version)
     goals._actor(conn, goals.get(conn, identity), actor)
-    changed_requirement = request is not None or acceptance is not None or constraints is not None
-    if changed_requirement:
-        goals.amend(conn, identity, request if request is not None else '更新完成标准或约束',
-                    acceptance=acceptance, constraints=constraints, expected_version=version, actor=actor, now=now)
-    if title is not None:
-        conn.execute('UPDATE goals SET title=? WHERE id=?', (goals._text(title, '任务标题', limit=300), identity))
-    if projects is not None:
-        _links(conn, identity, value['primary_project'], projects, board._time(now))
-    if not changed_requirement:
+    next_title = value['title'] if title is None else goals._text(title, '任务标题', limit=300)
+    next_projects = value['projects'] if projects is None else _projects(conn, value['primary_project'], projects)
+    changed_metadata = next_title != value['title'] or set(next_projects) != set(value['projects'])
+    requirement = goals.amend(conn, identity, request, acceptance=acceptance, constraints=constraints,
+                              replace=True, expected_version=version, actor=actor, now=now)
+    changed_requirement = requirement['requirement_version'] != value['requirement_version']
+    if next_title != value['title']:
+        conn.execute('UPDATE goals SET title=? WHERE id=?', (next_title, identity))
+    if set(next_projects) != set(value['projects']):
+        _links(conn, identity, value['primary_project'], next_projects, board._time(now))
+    if changed_metadata and not changed_requirement:
         goals._touch(conn, identity, now)
+    if not changed_requirement and not changed_metadata:
+        return get(conn, identity)
     board._event(conn, 'task:updated', value['primary_project'], actor,
                  {'task_id': identity, 'previous_version': version}, now)
     return get(conn, identity)
