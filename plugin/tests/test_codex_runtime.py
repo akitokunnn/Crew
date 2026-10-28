@@ -2,6 +2,7 @@
 import tests
 import base64
 from contextlib import closing
+from functools import partial
 import json
 import os
 from pathlib import Path
@@ -513,20 +514,26 @@ for line in sys.stdin:
         send({'id':message['id'],'result':{'userAgent':'fixture'}})
     elif method == 'thread/start':
         send({'id':message['id'],'result':{'thread':{'id':'fixture-thread','turns':[]},'model':'fixture-model','reasoningEffort':'medium'}})
+    elif method == 'thread/name/set':
+        send({'id':message['id'],'result':{}})
     elif method == 'turn/start':
         send({'id':message['id'],'result':{'turn':{'id':'fixture-turn','status':'inProgress','items':[]}}})
         send({'method':'turn/started','params':{'threadId':'fixture-thread','turn':{'id':'fixture-turn','status':'inProgress'}}})
         send({'method':'item/agentMessage/delta','params':{'threadId':'fixture-thread','turnId':'fixture-turn','itemId':'answer','delta':'hello'}})
         send({'method':'turn/completed','params':{'threadId':'fixture-thread','turn':{'id':'fixture-turn','status':'completed','items':[{'id':'answer','type':'agentMessage','text':'hello'}]}}})
+    elif 'id' in message:
+        send({'id':message['id'],'error':{'code':-32601,'message':'Unsupported fixture method: '+str(method)}})
 '''
         def process_factory(command, **kwargs):
             return subprocess.Popen([sys.executable, "-u", "-c", server], **kwargs)
-        with mock.patch("crew.codex_runtime._ObservedClient", self.real_client):
+        with mock.patch("crew.codex_runtime._ObservedClient", partial(self.real_client, timeout=3)):
             journal = chat.Journal(self.home / "chat" / "worker.jsonl")
             running = codex_runtime.CodexRunning(self.home, self.plugin, self.session, {"agent": None},
                                                  {"model": None, "effort": None}, journal, None,
                                                  process_factory=process_factory)
+        self.addCleanup(running.reader_done.wait, 3)
         self.addCleanup(running.close)
+        self.assertFalse(any('标题同步失败' in event.get('text', '') for event in journal.events))
         self.assertTrue(running._lease.path.exists())
         self.assertEqual(running.applied["model"], "fixture-model")
         running.send("work", "message-1")

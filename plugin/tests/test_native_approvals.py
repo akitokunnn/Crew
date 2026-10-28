@@ -1,6 +1,7 @@
 """Owned approval lifecycle, real SQLite/HTTP, and real no-model JSONL transport."""
 import tests
 from contextlib import closing
+from functools import partial
 import json
 from pathlib import Path
 import subprocess
@@ -120,6 +121,8 @@ for line in sys.stdin:
     elif method == 'thread/start':
         cwd = params['cwd']
         send({'id':message['id'],'result':{'thread':{'id':'thread-fixture'},'model':'protocol-fixture','reasoningEffort':None}})
+    elif method == 'thread/name/set':
+        send({'id':message['id'],'result':{}})
     elif method == 'turn/start':
         turn += 1
         target = 'turn-' + str(turn)
@@ -129,14 +132,18 @@ for line in sys.stdin:
         waiting[request] = target
         send({'id':request,'method':'item/commandExecution/requestApproval','params':{'threadId':'thread-fixture',
             'turnId':target,'itemId':request,'cwd':cwd,'command':'git status','reason':'fixture review'}})
+    elif 'id' in message:
+        send({'id':message['id'],'error':{'code':-32601,'message':'Unsupported fixture method: '+str(method)}})
 '''
         def process_factory(command, **kwargs):
             return subprocess.Popen([sys.executable, '-u', '-c', server], **kwargs)
         journal = chat.Journal(self.home / 'chat' / 'worker.jsonl')
-        with mock.patch('crew.codex_runtime._ObservedClient', self.real_client):
+        with mock.patch('crew.codex_runtime._ObservedClient', partial(self.real_client, timeout=3)):
             running = codex_runtime.CodexRunning(self.home, self.plugin, self.session, {'agent': None},
                 {'model': None, 'effort': None}, journal, None, process_factory=process_factory)
+        self.addCleanup(running.reader_done.wait, 3)
         self.addCleanup(running.close)
+        self.assertFalse(any('标题同步失败' in event.get('text', '') for event in journal.events))
         for number, allow in ((1, False), (2, True)):
             running.send('Protocol fixture turn', 'message-' + str(number))
             with journal.condition:

@@ -13,6 +13,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 from tests.fixture_cleanup import cleanup_directory
+from tests.fixture_database import seed_empty_home
 
 from crew import board, cli, guard, hooks, install, rules, session_ops, settings, store
 
@@ -42,6 +43,7 @@ class CoreCase(unittest.TestCase):
             skill = self.fake_plugin / "skills" / role / "SKILL.md"
             skill.parent.mkdir(parents=True)
             skill.write_text("# " + role + " rules\n", encoding="utf-8")
+        seed_empty_home(self.home)
         install.install(self.home, self.fake_plugin, now=NOW)
         self.conn = store.connect(self.home)
         self.addCleanup(self.conn.close)

@@ -10,6 +10,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 from tests.fixture_cleanup import cleanup_directory
+from tests.fixture_database import seed_empty_home
 
 from crew import store, usage
 
@@ -62,6 +63,7 @@ class UsageFixture:
         self.codex.mkdir()
         self.runs = self.root / "runs.jsonl"
         self.runs.touch()
+        seed_empty_home(self.home)
         self.conn = store.connect(self.home)
         self.addCleanup(self.conn.close)
 
