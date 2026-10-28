@@ -91,6 +91,11 @@
     ];
     const activeTasks = () =>
       taskList.filter((task) => !["archived", "trashed"].includes(task.state));
+    const projectName = name => projects().find(project => project.name === name)?.display_name || name || "未分配";
+    function metadata(row) {
+      const belonging = row.projects?.length ? row.projects : [row.project];
+      return `<div class="pw-metadata"><span>${e([...new Set(belonging.filter(Boolean))].map(projectName).join(" · ") || "未分配")}</span>${(row.tags || []).map(tag => `<span class="pw-tag">${e(tag)}</span>`).join("")}</div>`;
+    }
     function links(row) {
       return taskIDs(row)
         .map((id) => {
@@ -114,18 +119,23 @@
         id = String(row.id),
         archived = row.state === "archived";
       if (String(editing) === id)
-        return `<section class="wb-personal-row editing" data-item="${e(id)}"><label>内容<textarea data-edit-field="text">${e(draft.text)}</textarea></label><div class="wb-form-pair"><label>归属<select data-edit-field="project">${projectOptions(draft.project)}</select></label><label>AI 标签（可修改）<input data-edit-field="tags" value="${e(draft.tags)}" placeholder="逗号分隔"></label></div>${conflictMarkup(row, draft, "item")}<p class="wb-inline-error" role="alert">${e(errors.get("edit:" + id) || "")}</p><div class="wb-row-actions"><button class="wb-button primary" data-act="personal-save" data-id="${e(id)}" ${pending.has("edit:" + id) || draft.version !== row.version || draft.conflict ? "disabled" : ""}>保存</button><button class="wb-button" data-act="personal-cancel">收起</button></div><div class="wb-form-pair"><label>关联已有任务<select data-link-target><option value="">选择任务</option>${activeTasks()
+        return `<section class="wb-personal-row editing pw-item-editor" data-item="${e(id)}">
+          <label>想法与记录<textarea data-edit-field="text">${e(draft.text)}</textarea></label>
+          <details class="pw-form-options"><summary>工作区、标签与关联任务</summary><div class="wb-form-pair"><label>工作区<select data-edit-field="project">${projectOptions(draft.project)}</select></label><label>标签<input data-edit-field="tags" value="${e(draft.tags)}" placeholder="用逗号分开"></label></div>
+          <div class="pw-task-linker"><label>关联已有任务<select data-link-target><option value="">选择任务</option>${activeTasks()
           .filter((task) => !taskIDs(row).includes(task.id))
           .map(
             (task) =>
-              `<option value="${e(task.id)}">${e(task.title)} · ${e(task.primary_project)}</option>`,
+              `<option value="${e(task.id)}">${e(task.title)} · ${e(projectName(task.primary_project))}</option>`,
           )
           .join(
             "",
-          )}</select></label><button class="wb-button" data-act="personal-link" data-id="${e(id)}">关联任务</button></div>${taskError ? `<p class="wb-inline-error">任务列表读取失败：${e(taskError)}</p>` : ""}${links(row)}</section>`;
-      return `<article class="wb-personal-row"><div class="wb-personal-content">${archived ? '<span class="wb-eyebrow">已归档</span>' : ""}<p>${e(row.text)}</p><div class="wb-meta">${e(row.project || "未分配")} ${(row.tags || []).map((tag) => `<span class="wb-tag">${e(tag)}</span>`).join("")}</div>${links(row)}${
+          )}</select></label><button class="wb-button" data-act="personal-link" data-id="${e(id)}">关联</button></div>${taskError ? `<p class="wb-inline-error">任务列表读取失败：${e(taskError)}</p>` : ""}<div class="pw-linked-tasks">${links(row)}</div></details>
+          ${conflictMarkup(row, draft, "item")}<p class="wb-inline-error" role="alert">${e(errors.get("edit:" + id) || "")}</p>
+          <div class="wb-row-actions"><button class="wb-button primary" data-act="personal-save" data-id="${e(id)}" ${pending.has("edit:" + id) || draft.version !== row.version || draft.conflict ? "disabled" : ""}>保存修改</button><button class="wb-link" data-act="personal-cancel">收起</button></div></section>`;
+      return `<article class="wb-personal-row pw-record-row"><span class="pw-record-mark" aria-label="${archived ? "已归档" : "灵感与记录"}">${archived ? "✓" : "◇"}</span><div class="wb-personal-content">${archived ? '<span class="pw-kind">已归档</span>' : ""}<p class="pw-record-text">${e(row.text)}</p>${metadata(row)}<div class="pw-linked-tasks">${links(row)}</div>${
         chatSelection === id
-          ? `<label class="wb-field">这条记录关联多个任务，选择要继续的对话<select data-chat-target="${e(id)}"><option value="">选择关联任务</option>${taskIDs(
+          ? `<div class="pw-chat-choice"><label class="wb-field">选择要继续的对话<select data-chat-target="${e(id)}"><option value="">选择关联任务</option>${taskIDs(
               row,
             )
               .map(
@@ -134,16 +144,22 @@
               )
               .join(
                 "",
-              )}</select></label><button class="wb-button primary" data-act="personal-chat-chosen" data-id="${e(id)}">进入所选任务</button>`
+              )}</select></label><button class="wb-button primary" data-act="personal-chat-chosen" data-id="${e(id)}">进入对话</button></div>`
           : ""
-      }<p class="wb-inline-error" role="alert">${e(errors.get("item:" + id) || "")}</p></div><div class="wb-row-actions"><button class="wb-link" data-act="personal-edit" data-id="${e(id)}">编辑</button>${archived ? `<button class="wb-link" data-act="personal-restore" data-id="${e(id)}">恢复到清单</button>` : `<button class="wb-link" data-act="personal-item-chat" data-id="${e(id)}">开始聊</button><button class="wb-link" data-act="personal-archive" data-id="${e(id)}">归档</button>`}</div></article>`;
+      }<p class="wb-inline-error" role="alert">${e(errors.get("item:" + id) || "")}</p></div><div class="wb-row-actions pw-record-actions">${archived ? `<button class="wb-link" data-act="personal-restore" data-id="${e(id)}">恢复到清单</button>` : `<button class="wb-link" data-act="personal-item-chat" data-id="${e(id)}">开始聊</button>`}<details class="pw-row-menu"><summary aria-label="记录的更多操作">···</summary><div><button class="wb-link" data-act="personal-edit" data-id="${e(id)}">编辑记录</button>${archived ? "" : `<button class="wb-link" data-act="personal-archive" data-id="${e(id)}">归档</button>`}</div></details></div></article>`;
     }
     function todoMarkup(row) {
       const done = row.status && !["open", "pending"].includes(row.status),
         id = String(row.id),
         draft = todoDraft(row),
         uploads = read("uploads", id, []);
-      return `<article class="wb-personal-row"><div class="wb-personal-content"><span class="wb-eyebrow">${done ? "已处理" : "需要你动手"}</span><h3>${e(row.title)}</h3><p class="wb-muted">${e(Array.isArray(row.steps) ? row.steps.join("\n") : row.steps || row.description || "")}</p>${row.verification ? `<p class="wb-meta">完成依据：${e(Array.isArray(row.verification) ? row.verification.join(" · ") : row.verification)}</p>` : ""}<div class="wb-meta">${e((row.projects || [row.project]).filter(Boolean).join(" · "))} ${(row.tags || []).map((tag) => `<span class="wb-tag">${e(tag)}</span>`).join("")}</div>${links(row)}${done ? completionMarkup(row) : ""}${editing === `todo:${id}` ? `<div class="wb-todo-form" data-todo="${e(id)}"><label>AI 标签（可修改）<input data-todo-tags value="${e(draft.tags)}" placeholder="逗号分隔"></label>${conflictMarkup(row, draft, "todo")}<button class="wb-link" data-act="personal-todo-tags" data-id="${e(id)}" ${draft.metadata_version !== (row.metadata_version || 0) || draft.conflict ? "disabled" : ""}>保存标签</button>${done ? "" : `<label>补充说明<textarea data-todo-note placeholder="说说处理结果…">${e(draft.note)}</textarea></label><label>附上图片或文件<input type="file" data-todo-files multiple></label>${uploads.length ? `<p class="wb-meta">${uploads.map((file) => `${e(file.filename)} · ${file.attachment ? "已上传，完成重试将复用" : "上传结果待核对"}`).join("<br>")}</p>` : ""}<button class="wb-button primary" data-act="personal-complete" data-id="${e(id)}">完成并反馈</button><button class="wb-button" data-act="personal-unable" data-id="${e(id)}">做不了／取消</button>`}<p class="wb-inline-error" role="alert">${e(errors.get("todo:" + id) || "")}</p></div>` : ""}</div><button class="wb-button" data-act="personal-todo" data-id="${e(id)}">${done ? "编辑标签" : "处理"}</button></article>`;
+      const steps = Array.isArray(row.steps) ? row.steps.join("\n") : row.steps || row.description || "";
+      const editingTodo = editing === `todo:${id}`;
+      return `<article class="wb-personal-row pw-todo-row ${done ? "pw-is-done" : ""}"><button class="pw-check" data-act="personal-todo" data-id="${e(id)}" aria-label="${done ? "查看处理记录" : "处理待办"}：${e(row.title)}">${done ? "✓" : ""}</button><div class="wb-personal-content"><h3>${e(row.title)}${done ? '<span class="pw-kind">已处理</span>' : ""}</h3>${metadata(row)}<div class="pw-linked-tasks">${links(row)}</div>
+        ${steps || row.verification ? `<details class="pw-row-context" ${editingTodo ? "open" : ""}><summary>处理要求</summary>${steps ? `<p>${e(steps)}</p>` : ""}${row.verification ? `<p class="wb-meta">完成依据：${e(Array.isArray(row.verification) ? row.verification.join(" · ") : row.verification)}</p>` : ""}</details>` : ""}${done ? completionMarkup(row) : ""}
+        ${editingTodo ? `<div class="wb-todo-form" data-todo="${e(id)}">${done ? "" : `<label>处理结果<textarea data-todo-note placeholder="完成了什么？也可以附上图片或文件。">${e(draft.note)}</textarea></label><label class="pw-attachment">附图片或文件<input type="file" data-todo-files multiple></label>${uploads.length ? `<p class="wb-meta">${uploads.map(file => `${e(file.filename)} · ${file.attachment ? "已上传" : "等待核对"}`).join("<br>")}</p>` : ""}`}
+        <details class="pw-form-options" ${done || draft.conflict ? "open" : ""}><summary>标签</summary><label>标签<input data-todo-tags value="${e(draft.tags)}" placeholder="用逗号分开"></label><button class="wb-link" data-act="personal-todo-tags" data-id="${e(id)}" ${draft.metadata_version !== (row.metadata_version || 0) || draft.conflict ? "disabled" : ""}>保存标签</button></details>${conflictMarkup(row, draft, "todo")}<p class="wb-inline-error" role="alert">${e(errors.get("todo:" + id) || "")}</p>
+        <div class="wb-row-actions">${done ? "" : `<button class="wb-button primary" data-act="personal-complete" data-id="${e(id)}">完成并反馈</button><button class="wb-link" data-act="personal-unable" data-id="${e(id)}">做不了，交回负责人</button>`}<button class="wb-link" data-act="personal-cancel">收起</button></div></div>` : ""}</div>${editingTodo ? "" : `<button class="wb-link pw-process" data-act="personal-todo" data-id="${e(id)}">${done ? "查看" : "处理"}</button>`}</article>`;
     }
     function completionMarkup(row) {
       return `${row.note ? `<p class="wb-meta wb-completion-note">处理记录：${e(row.note)}</p>` : ""}<div class="wb-evidence">${(row.evidence || []).map((file) => `<a class="wb-link" target="_blank" rel="noopener" href="${e(client.resourceURL(file.url))}">${e(file.filename)} · ${Math.max(1, Math.ceil(file.size_bytes / 1024))} KB</a>`).join("")}</div>`;
@@ -168,12 +184,12 @@
                 ["open", "pending", undefined].includes(row.status),
             );
       const content =
-        shownTodos.map(todoMarkup).join("") +
-        shownRows.map(itemMarkup).join("");
-      host.innerHTML = `<div class="wb-page"><div class="wb-page-inner"><header class="wb-page-heading"><p class="wb-eyebrow">随时记，慢慢理</p><h1>TODO 与灵感</h1><p class="wb-muted">一张清单，留下原话和它所属的工作区。</p></header><form class="wb-capture" id="personal-capture"><label class="sr-only" for="personal-text">记录想法或开始讨论</label><textarea id="personal-text" placeholder="有个想法，先放在这里…" rows="2">${e(recall("personal.capture", ""))}</textarea><div class="wb-capture-footer"><label>归属 <select name="project" aria-label="新事项工作区">${projectOptions(recall("personal.project", filter === "__unassigned" ? "" : filter))}</select></label><div><button type="button" class="wb-button" data-act="personal-capture">记下来</button><button type="button" class="wb-button primary" data-act="personal-discuss">开始聊 ↗</button></div></div><p class="wb-inline-error" role="alert">${e(errors.get("capture") || "")}</p></form><div class="wb-section-heading"><h2>全部事项</h2><label class="wb-muted">范围 <select data-personal-visibility aria-label="事项归档范围">${[
-        ["open", "进行中"],
+        (shownTodos.length ? `<div class="pw-group-label">需要行动 <span>${shownTodos.length}</span></div>${shownTodos.map(todoMarkup).join("")}` : "") +
+        (shownRows.length ? `<div class="pw-group-label">${visibility === "archived" ? "已归档的记录" : "灵感与记录"} <span>${shownRows.length}</span></div>${shownRows.map(itemMarkup).join("")}` : "");
+      host.innerHTML = `<div class="wb-page crew-personal-workspace"><div class="wb-page-inner"><header class="wb-page-heading"><h1>TODO 与灵感</h1><p class="wb-muted">需要行动的事，和想继续聊的点子。</p></header><form class="wb-capture" id="personal-capture"><label class="sr-only" for="personal-text">记录想法或开始讨论</label><textarea id="personal-text" placeholder="想记点什么？或者选个工作区，开始聊聊。" rows="2">${e(recall("personal.capture", ""))}</textarea><div class="wb-capture-footer"><label>记到 <select name="project" aria-label="新事项工作区">${projectOptions(recall("personal.project", filter === "__unassigned" ? "" : filter))}</select></label><div><button type="button" class="wb-button" data-act="personal-capture">记下来</button><button type="button" class="wb-button primary" data-act="personal-discuss">开始聊 ↗</button></div></div><p class="wb-inline-error" role="alert">${e(errors.get("capture") || "")}</p></form><div class="pw-list-toolbar"><h2>清单</h2><div><label class="wb-muted">查看 <select data-personal-visibility aria-label="事项归档范围">${[
+        ["open", "当前清单"],
         ["archived", "已归档"],
-        ["all", "全部（含已完成）"],
+        ["all", "全部记录"],
       ]
         .map(
           ([value, label]) =>
@@ -181,14 +197,14 @@
         )
         .join(
           "",
-        )}</select></label><label class="wb-muted">筛选 <select data-personal-filter aria-label="筛选工作区"><option value="">全部工作区</option><option value="__unassigned" ${filter === "__unassigned" ? "selected" : ""}>未分配</option>${projects()
+        )}</select></label><label class="wb-muted">工作区 <select data-personal-filter aria-label="筛选工作区"><option value="">全部工作区</option><option value="__unassigned" ${filter === "__unassigned" ? "selected" : ""}>未分配</option>${projects()
         .map(
           (project) =>
             `<option value="${e(project.name)}" ${filter === project.name ? "selected" : ""}>${e(project.display_name || project.name)}</option>`,
         )
         .join(
           "",
-        )}</select></label></div><div id="personal-list" aria-busy="${loading}">${errors.get("load") ? `<p class="wb-error" role="alert">${e(errors.get("load"))}</p><button class="wb-button" data-act="personal-retry">重新读取</button>` : loading && !rows.length && !todos.length ? '<p class="wb-empty">正在读取清单…</p>' : content || '<p class="wb-empty">这里还没有事项。</p>'}</div><p class="wb-footnote">新增 TODO 由 Crew 按已启用的 QQ／Lark 渠道通知，结果以任务回执为准。</p></div></div>`;
+        )}</select></label></div></div><div id="personal-list" aria-busy="${loading}">${errors.get("load") ? `<p class="wb-error" role="alert">${e(errors.get("load"))}</p><button class="wb-button" data-act="personal-retry">重新读取</button>` : loading && !rows.length && !todos.length ? '<p class="wb-empty">正在读取清单…</p>' : content || '<p class="wb-empty">这里还没有事项，先记下一条。</p>'}</div><details class="pw-notification-note"><summary>TODO 通知</summary><p>新增 TODO 通过已启用的 QQ／Lark 渠道提醒。</p></details></div></div>`;
       const page = host.querySelector(".wb-page");
       if (page) {
         page.scrollTop = oldScroll;

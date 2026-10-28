@@ -97,6 +97,43 @@
   line-height: 1.9;
   margin: 0 0 28px;
 }
+.crew-scoped-settings .ss-editing-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px 24px;
+  margin: 0 0 27px;
+  line-height: 1.9;
+  color: var(--text-2);
+  font-size: 12px;
+}
+.crew-scoped-settings .ss-editing-summary p {
+  margin: 0;
+}
+.crew-scoped-settings .ss-editing-summary strong {
+  font-weight: 500;
+  color: var(--text);
+}
+.crew-scoped-settings .ss-editing-summary > span {
+  color: var(--text-3);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.crew-scoped-settings .ss-source-details dl {
+  margin: 14px 0 0;
+}
+.crew-scoped-settings .ss-source-details dl > div {
+  display: grid;
+  grid-template-columns: 80px minmax(0, 1fr);
+  gap: 16px;
+  margin: 9px 0;
+}
+.crew-scoped-settings .ss-source-details dt {
+  color: var(--text-3);
+}
+.crew-scoped-settings .ss-source-details dd {
+  margin: 0;
+}
 .crew-scoped-settings .ss-ai-fields {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -398,6 +435,14 @@
 @media (max-width: 640px) {
   .crew-scoped-settings .ss-shell {
     padding: 26px 20px 44px;
+  }
+  .crew-scoped-settings .ss-editing-summary {
+    display: block;
+    margin-bottom: 25px;
+  }
+  .crew-scoped-settings .ss-editing-summary > span {
+    display: block;
+    margin-top: 5px;
   }
   .crew-scoped-settings h1 {
     font-size: 22px;

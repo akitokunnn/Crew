@@ -67,6 +67,23 @@
       active_goal_id: null,
       active_goal_ids: [],
       member_defaults: null,
+      active_execution_id: null,
+      runtime_switch: null,
+      is_git_admin: false,
+      web_chat: true,
+      read_seq: 0,
+      notices_pending: 0,
+      member_ids: [],
+      title: null,
+      status_note: null,
+      scope: null,
+      done_when: null,
+      branch: null,
+      worktree: null,
+      cwd: `C:\\Samples\\${project}`,
+      progress: [],
+      leases: [],
+      claims: [],
       trust: { enabled: false, goal: "", updated_at: null },
       synthetic: true,
     };
@@ -375,7 +392,9 @@
       if (!state.journals[identity]) {
         const events = [],
           execution = "synthetic-execution-" + uuid();
-        if (goal && state.tasks.some((item) => item.id === goal)) {
+        // Only the fixed fixtures have a pre-existing transcript. Creating a
+        // discussion task does not deliver input; chat/send owns its first turn.
+        if ([TASK, OTHER].includes(goal) && state.tasks.some((item) => item.id === goal)) {
           events.push({
             type: "message",
             id: "seed-user-" + identity,
@@ -648,6 +667,19 @@
         synthetic: true,
       };
     }
+    // Complete the same read projection for fresh and already-persisted sample
+    // records. These fields are supplied by workspace_snapshot in the real API.
+    function projectPerson(value) {
+      return {
+        ...person(
+          value.session_id,
+          value.name,
+          value.project,
+          value.leader_session_id,
+        ),
+        ...value,
+      };
+    }
     function getState(project) {
       const active = state.projects.find((item) => item.name === project) ||
         state.projects[0] || {
@@ -659,12 +691,31 @@
       const tasks = state.tasks.filter(
         (item) => !project || item.projects.includes(project),
       );
-      const leaders = state.leaders.filter(
-        (item) => !project || item.project === project,
+      const leaders = state.leaders
+        .filter((item) => !project || item.project === project)
+        .map(projectPerson);
+      const members = state.members
+        .filter((item) => !project || item.project === project)
+        .map(projectPerson);
+      for (const leader of leaders)
+        leader.member_ids = members
+          .filter((member) => member.leader_session_id === leader.session_id)
+          .map((member) => member.session_id);
+      const people = new Set(
+        [...leaders, ...members].map((item) => item.session_id),
       );
-      const members = state.members.filter(
-        (item) => !project || item.project === project,
+      const todos = state.todos.filter(
+        (item) =>
+          item.status === "open" &&
+          (!project || item.projects.includes(project)),
       );
+      const decisions = state.decisions.filter(
+        (item) =>
+          !project ||
+          people.has(item.leader_session_id) ||
+          people.has(item.session_id),
+      );
+      const runtimes = runtimeSnapshot();
       const goals = tasks.map((item) => ({
         ...item,
         status: item.execution_status,
@@ -693,20 +744,31 @@
         members,
         goals,
         tasks,
-        todos: state.todos.filter((item) => item.status === "open"),
-        decisions: state.decisions,
-        runtimes: runtimeSnapshot(),
+        todos,
+        todo_count: todos.length,
+        decisions,
+        attention: [],
+        native_approvals: [],
+        now: stamp(),
+        agents_error: null,
+        vscode_error: null,
+        runtimes,
         ai: clone(state.settings.ai),
-        models: [],
-        efforts: [],
-        candidates: { running: [], stopped: [] },
+        models: runtimes[0].models,
+        efforts: runtimes[0].efforts,
+        candidates: { running: [], others: [] },
         limits: { claude: { seven_day: null, five_hour: null }, codex: null },
         notification: {
           ...state.notifications,
           channels,
           channel: channels[0],
         },
-        channel: { ...state.channel },
+        channel: {
+          digesting: false,
+          digest_error: null,
+          digest_id: null,
+          ...state.channel,
+        },
         themes: [
           {
             id: "jade",
@@ -728,9 +790,9 @@
       };
     }
     function taskDetail(item) {
-      const members = state.members.filter(
-        (person) => person.leader_session_id === item.leader_session_id,
-      );
+      const members = state.members
+        .filter((person) => person.leader_session_id === item.leader_session_id)
+        .map(projectPerson);
       const executions = [
         found(state.leaders, item.leader_session_id, "负责人"),
         ...members,

@@ -32,9 +32,9 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 22px;
-  padding: 30px 40px 20px;
-  min-height: 94px;
+  gap: 24px;
+  padding: 26px 36px 18px;
+  min-height: 90px;
 }
 .crew-task-workspace .tw-title {
   min-width: 0;
@@ -57,27 +57,82 @@
 .crew-task-workspace .tw-material-toggle {
   background: transparent;
   border: 0;
-  padding: 8px 5px;
+  padding: 8px 10px;
+  border-radius: 7px;
   color: var(--text-2);
   font-size: 13px;
   cursor: pointer;
 }
 .crew-task-workspace .tw-material-toggle[aria-expanded="true"] {
   color: var(--accent-text);
+  background: var(--accent-softer);
+}
+.crew-task-workspace .tw-material-toggle:hover,
+.crew-task-workspace .tw-mode:hover,
+.crew-task-workspace .tw-controls > summary:hover {
+  background: var(--accent-softer);
+}
+.crew-task-workspace .tw-primary-actions,
+.crew-task-workspace .tw-material-nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+.crew-task-workspace .tw-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  padding: 10px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.crew-task-workspace .tw-mode span {
+  color: var(--text-3);
+}
+.crew-task-workspace .tw-mode[aria-checked="true"] {
+  color: var(--accent-text);
+}
+.crew-task-workspace .tw-main-action {
+  min-height: 37px;
+  padding: 8px 17px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--accent-on, #fff);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background .16s var(--ease), border-color .16s var(--ease);
+}
+.crew-task-workspace .tw-main-action.tw-stop-action {
+  background: var(--surface);
+  border-color: var(--line-strong);
+  color: var(--text-2);
+}
+.crew-task-workspace .tw-stop-action:hover {
+  color: var(--danger);
+  border-color: var(--danger);
 }
 .crew-task-workspace .tw-statusbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 18px;
-  padding: 0 40px 17px;
+  gap: 12px;
+  padding: 0 36px 13px;
   border-bottom: 1px solid var(--line);
   font-size: 12px;
   color: var(--text-2);
 }
-.crew-task-workspace .tw-statusbar > div {
+.crew-task-workspace .tw-scope-line {
   display: flex;
-  gap: 15px;
+  gap: 14px;
   align-items: center;
   flex-wrap: wrap;
 }
@@ -104,6 +159,11 @@
   color: var(--warn);
   font-size: 11px;
 }
+.crew-task-workspace .tw-review {
+  margin-left: 6px;
+  display: inline-block;
+  font-size: 10px;
+}
 .crew-task-workspace .tw-state.blocked {
   color: var(--danger);
 }
@@ -115,10 +175,11 @@
   list-style: none;
   cursor: pointer;
   color: var(--text-2);
-  border-radius: 6px;
-  padding: 5px 0 5px 8px;
+  border-radius: 7px;
+  padding: 8px 10px;
   white-space: nowrap;
-  font-size: 12px;
+  font-size: 19px;
+  line-height: 1;
 }
 .crew-task-workspace .tw-controls > summary::-webkit-details-marker {
   display: none;
@@ -138,11 +199,6 @@
   z-index: 10;
   animation: tw-arrive 0.18s var(--ease);
 }
-.crew-task-workspace .tw-control-menu p {
-  margin: 0 0 13px;
-  font-size: 11px;
-  color: var(--text-3);
-}
 .crew-task-workspace .tw-control-menu button {
   display: flex;
   justify-content: space-between;
@@ -157,20 +213,12 @@
 .crew-task-workspace .tw-control-menu [data-operation="stop"] {
   color: var(--danger);
 }
-.crew-task-workspace .tw-control-menu button[role="switch"] {
-  border-bottom: 1px solid var(--line);
-  margin-bottom: 8px;
-}
-.crew-task-workspace .tw-control-menu button[role="switch"] span {
-  color: var(--accent-text);
-  font-size: 11px;
-}
 .crew-task-workspace .tw-crumbs {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 7px;
   min-width: 0;
-  font-size: 12px;
+  font-size: 11px;
   color: var(--text-3);
 }
 .crew-task-workspace .tw-crumbs button {
@@ -181,14 +229,8 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 240px;
+  max-width: 180px;
   color: var(--text-2);
-}
-.crew-task-workspace .tw-crumbs strong {
-  font-weight: 500;
-  font-size: 15px;
-  white-space: nowrap;
-  color: var(--text);
 }
 .crew-task-workspace .tw-notice {
   padding: 9px 40px;
@@ -207,56 +249,6 @@
   flex: none;
   min-width: 0;
 }
-.crew-task-workspace .tw-attention-disclosure {
-  border-bottom: 1px solid var(--line);
-  background: var(--accent-softer);
-}
-.crew-task-workspace .tw-attention-disclosure > summary {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 20px;
-  list-style: none;
-  padding: 13px 40px;
-  font-size: 12px;
-  color: var(--text-2);
-  cursor: pointer;
-}
-.crew-task-workspace .tw-attention-disclosure > summary > span:last-child {
-  font-size: 11px;
-  color: var(--text-3);
-}
-.crew-task-workspace .tw-attention-disclosure > summary b {
-  font-weight: 500;
-  margin-left: 8px;
-  color: var(--warn);
-}
-.crew-task-workspace .tw-attention-content {
-  overflow: auto;
-  max-height: 48dvh;
-  padding: 8px 30px 22px;
-  overscroll-behavior: contain;
-}
-.crew-task-workspace .tw-attention-content .tray-in {
-  padding: 0;
-}
-.crew-task-workspace .tw-attention-content .decision-card .dc-body {
-  display: block;
-}
-.crew-task-workspace .tw-attention-content .side-decision {
-  margin: 12px 0;
-}
-.crew-task-workspace .tw-attention-content .tray-pending,
-.crew-task-workspace .tw-attention-content .todo-tray {
-  border: 0;
-  margin: 0;
-  padding: 0;
-}
-.crew-task-workspace .tw-attention-content .attention-section-title {
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--text-3);
-}
 .crew-task-workspace .tw-chat .chat-inner {
   padding-top: 30px;
   padding-bottom: 30px;
@@ -264,36 +256,6 @@
 }
 .crew-task-workspace .tw-chat .composer-wrap {
   padding-top: 12px;
-}
-.crew-task-workspace .tw-chat .chat-queue {
-  background: none;
-  border: 0;
-  color: var(--text-2);
-  font-size: 11px;
-  padding: 8px;
-  cursor: pointer;
-  white-space: nowrap;
-}
-.crew-task-workspace .tw-chat .chat-intent {
-  border: 0;
-  background: var(--surface);
-  font: inherit;
-  font-size: 11px;
-  color: var(--text-2);
-  padding: 5px;
-  max-width: 110px;
-}
-.crew-task-workspace .tw-chat .chat-affects-task {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 10px;
-  color: var(--text-3);
-  margin-left: 5px;
-}
-.crew-task-workspace .tw-chat .chat-affects-task input {
-  accent-color: var(--accent);
-  margin: 0;
 }
 .crew-task-workspace .tw-drawer {
   display: flex;
@@ -388,6 +350,61 @@
   color: var(--text-2);
   font-size: 12px;
 }
+.crew-task-workspace .tw-detail-toolbar,
+.crew-task-workspace .tw-detail-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+.crew-task-workspace .tw-detail-toolbar {
+  margin-bottom: 25px;
+}
+.crew-task-workspace .tw-detail-toolbar .tw-context {
+  margin: 0;
+}
+.crew-task-workspace .tw-text-button {
+  border: 0;
+  background: none;
+  color: var(--accent-text);
+  padding: 7px 0;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.crew-task-workspace .tw-details-summary section + section {
+  margin-top: 28px;
+}
+.crew-task-workspace .tw-details-summary h3 {
+  margin: 0 0 10px;
+  color: var(--text-3);
+  font-size: 11px;
+  font-weight: 500;
+}
+.crew-task-workspace .tw-details-summary p,
+.crew-task-workspace .tw-details-summary li {
+  margin: 7px 0;
+  font-size: 13px;
+  color: var(--text-2);
+  line-height: 1.85;
+  overflow-wrap: anywhere;
+}
+.crew-task-workspace .tw-details-summary ul {
+  margin: 0;
+  padding-left: 19px;
+}
+.crew-task-workspace .tw-summary-copy {
+  white-space: pre-wrap;
+}
+.crew-task-workspace .tw-details-summary .tw-summary-empty,
+.crew-task-workspace .tw-details-summary .tw-draft-note {
+  font-size: 11px;
+  color: var(--text-3);
+}
+.crew-task-workspace .tw-details-summary .tw-draft-note {
+  color: var(--warn);
+  margin-bottom: 24px;
+}
 .crew-task-workspace .tw-details-form input,
 .crew-task-workspace .tw-details-form textarea {
   width: 100%;
@@ -452,6 +469,20 @@
   display: block;
   font-size: 13px;
   font-weight: 500;
+}
+.crew-task-workspace .tw-person-role {
+  margin-left: 9px;
+  font-size: 10px;
+  color: var(--text-3);
+  font-weight: 400;
+}
+.crew-task-workspace .tw-person > span:last-child {
+  color: var(--text-3);
+  font-size: 11px;
+}
+.crew-task-workspace .tw-person[aria-current="true"] .tw-avatar {
+  background: var(--accent);
+  color: var(--accent-on, #fff);
 }
 .crew-task-workspace .tw-person small {
   display: block;
@@ -545,41 +576,76 @@
 }
 @media (max-width: 760px) {
   .crew-task-workspace .tw-top {
-    padding: 18px 20px;
-    min-height: 78px;
-    gap: 12px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    padding: 12px 20px 7px;
+    min-height: 0;
+    gap: 6px 10px;
+  }
+  .crew-task-workspace .tw-title {
+    grid-column: 1;
+    grid-row: 1;
+  }
+  .crew-task-workspace .tw-primary-actions {
+    display: contents;
+  }
+  .crew-task-workspace .tw-mode {
+    grid-column: 1;
+    grid-row: 2;
+    justify-self: start;
+    padding: 6px 0;
+  }
+  .crew-task-workspace .tw-main-action {
+    grid-column: 2;
+    grid-row: 2;
+    min-height: 34px;
+    padding: 6px 15px;
+  }
+  .crew-task-workspace .tw-controls {
+    grid-column: 2;
+    grid-row: 1;
+    justify-self: end;
   }
   .crew-task-workspace .tw-heading h1 {
     font-size: 18px;
+    margin-top: 3px;
   }
   .crew-task-workspace .tw-heading > span {
     font-size: 11px;
   }
   .crew-task-workspace .tw-statusbar {
-    padding: 0 20px 13px;
+    padding: 0 20px 6px;
+    flex-direction: column;
+    align-items: stretch;
     font-size: 11px;
+    gap: 3px;
+  }
+  .crew-task-workspace .tw-scope-line {
+    gap: 12px;
+  }
+  .crew-task-workspace .tw-material-nav {
+    justify-content: space-between;
     gap: 8px;
   }
-  .crew-task-workspace .tw-statusbar > div {
-    gap: 8px;
+  .crew-task-workspace .tw-material-nav button {
+    flex: 1;
   }
   .crew-task-workspace .tw-state,
   .crew-task-workspace .tw-review {
     font-size: 10px;
   }
   .crew-task-workspace .tw-crumbs {
-    gap: 6px;
+    flex-wrap: wrap;
+    gap: 2px 6px;
     font-size: 10px;
   }
   .crew-task-workspace .tw-crumbs button {
-    max-width: 110px;
-  }
-  .crew-task-workspace .tw-crumbs strong {
-    font-size: 13px;
+    max-width: 135px;
   }
   .crew-task-workspace .tw-material-toggle {
     font-size: 12px;
-    min-height: 36px;
+    min-height: 32px;
+    padding: 6px 8px;
   }
   .crew-task-workspace .tw-drawer {
     position: absolute;
@@ -604,15 +670,6 @@
     flex-wrap: wrap;
     gap: 5px;
   }
-  .crew-task-workspace .tw-chat .chat-affects-task {
-    order: 9;
-    width: 100%;
-    font-size: 11px;
-    padding: 6px 0 0;
-  }
-  .crew-task-workspace .tw-chat .chat-queue {
-    min-height: 36px;
-  }
   .crew-task-workspace .tw-chat .hint {
     font-size: 10px;
     flex: 1;
@@ -622,7 +679,9 @@
     font-size: 11px;
   }
   .crew-task-workspace .tw-controls > summary {
-    min-height: 30px;
+    min-height: 36px;
+    display: flex;
+    align-items: center;
   }
   .crew-task-workspace .tw-control-menu {
     width: 240px;

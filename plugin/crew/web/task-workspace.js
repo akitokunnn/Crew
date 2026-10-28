@@ -78,7 +78,8 @@
       timer = null,
       wideMaterial = false,
       wideChatScroll = null,
-      chatReadOnly = false;
+      chatReadOnly = false,
+      editingDetails = false;
     const operationIDs = new Map();
     let stopConfirmation = null;
     function confirmTaskOperation(operation) {
@@ -88,12 +89,10 @@
       const title =
         operation === "trash"
           ? "移入垃圾箱"
-          : operation === "archive"
-            ? "归档任务"
-            : "停止整个任务";
+          : "归档任务";
       dialog.className = "wb-dialog tw-stop-confirm";
       dialog.setAttribute("aria-labelledby", "task-stop-title");
-      dialog.innerHTML = `<h2 id="task-stop-title">${title}？</h2><p class="wb-muted">本任务的负责人、成员和待派发工作都会停止。已有文件与成果保留。${operation === "stop" ? "" : "之后可以从更多入口恢复任务记录，恢复不会自动启动。"}</p><div class="wb-row-actions"><button type="button" class="wb-button" data-stop-cancel>取消</button><button type="button" class="wb-button primary" data-stop-confirm>${title}</button></div>`;
+      dialog.innerHTML = `<h2 id="task-stop-title">${title}？</h2><p class="wb-muted">本任务的负责人、成员和待派发工作都会停止，已有文件与成果保留。之后可以从工具与历史恢复任务记录。</p><div class="wb-row-actions"><button type="button" class="wb-button" data-stop-cancel>取消</button><button type="button" class="wb-button primary" data-stop-confirm>${title}</button></div>`;
       const promise = new Promise((resolve) => {
         dialog.onclose = () => {
           const confirmed = dialog.returnValue === "stop";
@@ -115,6 +114,12 @@
     }
     const projectName = (value) =>
       typeof value === "string" ? value : value?.name;
+    const projectLabel = (name) => {
+      const project = snapshot?.project?.name === name
+        ? snapshot.project
+        : snapshot?.projects?.find((item) => item.name === name);
+      return project?.display_name || name;
+    };
     const path = (
       url,
       project = detail?.task.primary_project || scope?.project,
@@ -147,7 +152,7 @@
         }
         drafts.set(
           key,
-          saved || {
+          saved?.dirty ? saved : {
             version: detail.task.version,
             title: detail.task.title,
             request: detail.task.request,
@@ -189,6 +194,7 @@
         views.set(viewKey(), {
           panel,
           lastPanel,
+          editingDetails,
           positions: {
             ...previous.positions,
             ...(panel
@@ -219,24 +225,69 @@
         (p) => p.session_id === t.leader_session_id,
       );
       const crumbs = member
-        ? `<nav class="tw-crumbs" aria-label="对话来历"><button data-act="tw-leader">${esc(t.title)}</button><span>›</span><button data-act="tw-leader">${esc(nameOf(leader))} · leader</button><span>›</span><strong>${esc(nameOf(person))}</strong></nav>`
-        : `<div class="tw-heading"><span>${esc(t.primary_project)}</span><h1>${esc(t.title)}</h1></div>`;
+        ? `<div class="tw-heading"><nav class="tw-crumbs" aria-label="对话来历"><button data-act="tw-leader" title="返回任务：${esc(t.title)}">${esc(t.title)}</button><span>›</span><button data-act="tw-leader">负责人 · ${esc(nameOf(leader))}</button><span>›</span><span>成员</span></nav><h1>${esc(nameOf(person))}的对话</h1></div>`
+        : `<div class="tw-heading"><span>${esc(projectLabel(t.primary_project))}</span><h1>${esc(t.title)}</h1></div>`;
       const stopped = ["stopped", "blocked", "waiting_user"].includes(t.state);
       const operation = !t.authorized ? "start" : stopped ? "resume" : "stop";
       const control =
         operation === "start"
-          ? "授权开始任务"
+          ? "开始执行"
           : operation === "resume"
-            ? "继续任务"
-            : "停止整个任务";
+            ? "继续执行"
+            : "停止任务";
       const controlling =
         pending ||
         Boolean(t.lifecycle_pending) ||
         t.execution_status === "pausing";
       const inactive = ["archived", "trashed"].includes(t.state);
-      return `<div class="tw-top"><div class="tw-title">${crumbs}</div><button class="tw-material-toggle" data-act="tw-panel" data-panel="toggle" aria-expanded="${Boolean(panel)}">资料</button></div>
-        <div class="tw-statusbar"><div><span>${esc(nameOf(person))}${member ? "" : " · leader"}</span><span class="tw-state ${esc(t.state)}">${esc(states[t.state] || t.state)}</span>${t.review_status === "pending" ? '<span class="tw-review">有成果待体验</span>' : ""}</div>
-        <details class="tw-controls"><summary aria-label="任务模式与控制">${t.mode === "automatic" ? "全自动" : "用户把关"} ···</summary><div class="tw-control-menu"><p>只作用于本任务及成员</p><button data-act="tw-mode" role="switch" aria-checked="${t.mode === "automatic"}" ${pending || inactive ? "disabled" : ""}>全自动决定 <span>${t.mode === "automatic" ? "已开启" : "已关闭"}</span></button><button data-act="tw-control" data-operation="${operation}" ${controlling || inactive || t.state === "completed" ? "disabled" : ""}>${control}</button>${operation !== "stop" && !["stopped", "archived", "trashed", "completed"].includes(t.state) ? `<button data-act="tw-control" data-operation="stop" ${controlling ? "disabled" : ""}>停止整个任务</button>` : ""}<button data-act="tw-pin" ${pending ? "disabled" : ""}>${t.pinned ? "取消置顶" : "置顶任务"}</button><button data-act="tw-settings">此 AI 的设置与提示词</button>${inactive ? `<button data-act="tw-control" data-operation="restore" ${controlling ? "disabled" : ""}>恢复任务记录</button>` : `<button data-act="tw-control" data-operation="archive" ${controlling ? "disabled" : ""}>归档任务</button><button data-act="tw-control" data-operation="trash" ${controlling ? "disabled" : ""}>移入垃圾箱</button>`}</div></details></div>
+      const nextAction = inactive ? "restore" : operation;
+      const currentStatus = selectedExecution()?.status || person.status;
+      const controlTitle = {
+        start: "授权负责人和成员开始本任务",
+        stop: "停止整个任务、成员与待派发工作",
+        restore: "恢复任务记录，不自动执行",
+        resume: "授权负责人和成员继续本任务",
+      }[nextAction];
+      const controlLabel = controlling
+        ? "正在处理…"
+        : inactive
+          ? "恢复任务记录"
+          : t.state === "completed"
+            ? "任务已完成"
+            : control;
+      const materialLinks = [
+        ["members", "成员"],
+        ["deliverables", "成果"],
+        ["details", "详情"],
+      ]
+        .map(([id, label]) => `<button class="tw-material-toggle" data-act="tw-panel"
+          data-panel="${id}" data-toggle="true" aria-expanded="${panel === id}">
+          ${label}${id === "deliverables" && t.review_status === "pending" ? '<span class="tw-review">待体验</span>' : ""}</button>`)
+        .join("");
+      return `<div class="tw-top">
+          <div class="tw-title">${crumbs}</div>
+          <div class="tw-primary-actions">
+            <button class="tw-mode" data-act="tw-mode" role="switch" aria-label="本任务全自动取舍"
+              aria-checked="${t.mode === "automatic"}"
+              title="${t.mode === "automatic" ? "本任务的关键取舍交给 AI" : "本任务的关键取舍由你拍板"}；执行权限在设置中配置"
+              ${pending || inactive ? "disabled" : ""}>${t.mode === "automatic" ? "全自动" : "你来拍板"}<span aria-hidden="true">⇄</span></button>
+            <button class="tw-main-action ${nextAction === "stop" ? "tw-stop-action" : ""}"
+              data-act="tw-control" data-operation="${nextAction}" title="${controlTitle}"
+              ${controlling || t.state === "completed" ? "disabled" : ""}>${controlLabel}</button>
+            <details class="tw-controls"><summary aria-label="更多任务操作">···</summary>
+              <div class="tw-control-menu">
+                <button data-act="tw-pin" ${pending ? "disabled" : ""}>${t.pinned ? "取消置顶" : "置顶任务"}</button>
+                <button data-act="tw-settings">当前 AI 的设置与提示词</button>
+                ${operation !== "stop" && !["stopped", "archived", "trashed", "completed"].includes(t.state) ? `<button data-act="tw-control" data-operation="stop" ${controlling ? "disabled" : ""}>停止整个任务及成员</button>` : ""}
+                ${!inactive ? `<button data-act="tw-control" data-operation="archive" ${controlling ? "disabled" : ""}>归档任务</button><button data-act="tw-control" data-operation="trash" ${controlling ? "disabled" : ""}>移入垃圾箱</button>` : ""}
+              </div>
+            </details>
+          </div>
+        </div>
+        <div class="tw-statusbar">
+          <div class="tw-scope-line"><span class="tw-state ${esc(t.state)}">任务 · ${esc(states[t.state] || t.state)}</span><span>${member ? `当前成员 · ${esc(executionLabel(currentStatus))}` : `负责人 · ${esc(nameOf(person))}`}</span></div>
+          <nav class="tw-material-nav" aria-label="当前任务内容">${materialLinks}</nav>
+        </div>
         ${t.lifecycle_pending || t.execution_status === "pausing" ? '<div class="tw-notice" role="status">已请求停止，正在等待实际执行退出；现有成果保留。</div>' : ""}
         ${t.waiting_reason ? `<div class="tw-notice">${esc(t.waiting_reason)}</div>` : ""}`;
     }
@@ -353,9 +404,22 @@
     function detailsMarkup() {
       const d = draft(),
         t = detail.task;
-      return `<form class="tw-details-form"><p class="tw-context">${esc(t.primary_project)} · AI 随对话维护，你也可以修改。</p>
+      if (!editingDetails) {
+        const list = (items) => items.length
+          ? `<ul>${items.map((item) => `<li>${esc(typeof item === "string" ? item : item.title)}</li>`).join("")}</ul>`
+          : '<p class="tw-summary-empty">随对话补充</p>';
+        return `<section class="tw-details-summary">
+          <div class="tw-detail-toolbar"><p class="tw-context">随对话更新 · 版本 ${t.version}</p><button class="tw-text-button" data-act="tw-edit-details">${d.dirty ? "继续编辑草稿" : "编辑详情"}</button></div>
+          ${d.dirty ? '<p class="tw-draft-note">有尚未保存的详情草稿</p>' : ""}
+          <section><h3>当前目标</h3><p class="tw-summary-copy">${esc(t.request || "继续和负责人聊聊要完成什么。")}</p></section>
+          <section><h3>完成标准</h3>${list(t.acceptance)}</section>
+          ${t.constraints.length ? `<section><h3>已定条件</h3>${list(t.constraints)}</section>` : ""}
+          <section><h3>工作区</h3><p>${esc(projectLabel(t.primary_project))} <span class="tw-summary-empty">主归属</span></p>${t.projects.filter((p) => p !== t.primary_project).map((p) => `<p>${esc(projectLabel(p))} <span class="tw-summary-empty">关联</span></p>`).join("")}</section>
+        </section>`;
+      }
+      return `<form class="tw-details-form"><p class="tw-context">${esc(projectLabel(t.primary_project))} · AI 随对话维护，你也可以修改。</p>
       ${d.version !== t.version && d.dirty ? `<div class="tw-conflict" role="alert">任务已更新到版本 ${t.version}，你的版本 ${d.version} 草稿仍保留。<button type="button" data-act="tw-rebase">核对后，以当前版本提交这份草稿</button></div>` : ""}
-      <label>任务标题<input name="title" value="${esc(d.title)}" required></label><label>当前目标<textarea name="request" rows="4" required>${esc(d.request)}</textarea></label><label>完成标准 · 每行一项<textarea name="acceptance" rows="4">${esc(d.acceptance)}</textarea></label><label>已定条件 · 每行一项<textarea name="constraints" rows="3">${esc(d.constraints)}</textarea></label><label>关联工作区 · 每行一个已登记名称<textarea name="projects" rows="2">${esc(d.projects)}</textarea></label><p class="tw-context">主归属：${esc(t.primary_project)}。关联入口指向同一个任务，负责人不变。</p><button class="btn primary" type="submit" ${pending ? "disabled" : ""}>保存详情</button><div class="tw-form-feedback" role="status"></div></form>`;
+      <label>任务标题<input name="title" value="${esc(d.title)}" required></label><label>当前目标<textarea name="request" rows="4" required>${esc(d.request)}</textarea></label><label>完成标准 · 每行一项<textarea name="acceptance" rows="4">${esc(d.acceptance)}</textarea></label><label>已定条件 · 每行一项<textarea name="constraints" rows="3">${esc(d.constraints)}</textarea></label><label>关联工作区 · 每行一个已登记名称<textarea name="projects" rows="2">${esc(d.projects)}</textarea></label><p class="tw-context">主归属：${esc(t.primary_project)}。关联入口指向同一个任务，负责人不变。</p><div class="tw-detail-actions"><button class="btn primary" type="submit" ${pending ? "disabled" : ""}>保存详情</button><button class="tw-text-button" type="button" data-act="tw-read-details">返回阅读</button></div><div class="tw-form-feedback" role="status"></div></form>`;
     }
     function membersMarkup() {
       const t = detail.task,
@@ -369,7 +433,7 @@
           const e = detail.executions
             .filter((e) => e.session_id === p.session_id)
             .at(-1);
-          return `<button class="tw-person" data-act="tw-person" data-session-id="${esc(p.session_id)}"><span class="tw-avatar">${esc(nameOf(p).slice(0, 1))}</span><span><strong>${esc(nameOf(p))}${p.session_id === t.leader_session_id ? " · leader" : ""}</strong><small>${esc(p.task || (p.role === "leader" ? "负责人" : "任务成员"))}</small><small>${esc(runtimeLabel(e?.runtime || p.runtime))} · ${esc(executionLabel(e?.status || p.status))}</small></span><span>›</span></button>`;
+          return `<button class="tw-person" data-act="tw-person" data-session-id="${esc(p.session_id)}" ${p.session_id === person.session_id ? 'aria-current="true"' : ""}><span class="tw-avatar">${esc(nameOf(p).slice(0, 1))}</span><span><strong>${esc(nameOf(p))}<span class="tw-person-role">${p.session_id === t.leader_session_id ? "负责人" : "成员"}</span></strong>${p.task ? `<small>${esc(p.task)}</small>` : ""}<small>${esc(runtimeLabel(e?.runtime || p.runtime))} · ${esc(executionLabel(e?.status || p.status))}</small></span><span>${p.session_id === person.session_id ? "当前" : "›"}</span></button>`;
         })
         .join(
           "",
@@ -391,7 +455,7 @@
         syncOverlay();
         return;
       }
-      drawer.innerHTML = `<header><div><h2>任务资料</h2><p>${esc(detail.task.title)}</p></div><button data-act="tw-panel" data-panel="close" aria-label="关闭资料，返回对话">×</button></header><nav aria-label="资料类型">${[
+      drawer.innerHTML = `<header><div><h2>${{details:"任务详情",members:"成员对话",deliverables:"成果与文档"}[panel]}</h2><p>${esc(detail.task.title)}</p></div><button data-act="tw-panel" data-panel="close" aria-label="返回对话">×</button></header><nav aria-label="任务内容">${[
         ["details", "详情"],
         ["members", "成员"],
         ["deliverables", "成果与文档"],
@@ -516,8 +580,9 @@
           host.innerHTML =
             '<section class="tw-layout"><div class="tw-conversation"><div class="tw-header"></div><div class="tw-attention"></div><div class="tw-chat"></div></div><aside class="tw-drawer" hidden></aside></section>';
           const remembered = views.get(viewKey());
-          panel = remembered?.panel || null;
-          lastPanel = remembered?.lastPanel || "details";
+          panel = scope.initialPanel || remembered?.panel || null;
+          lastPanel = panel || remembered?.lastPanel || "details";
+          editingDetails = remembered?.editingDetails || false;
           renderHeader();
           mountChat();
           renderPanel();
@@ -542,6 +607,8 @@
             members: snapshot.members || [],
           });
           attention?.render();
+          if (panel === "members" || (panel === "details" && !editingDetails))
+            renderPanel();
           artifacts?.updateContext({
             documents: detail.documents,
             reports: detail.reports,
@@ -602,6 +669,17 @@
     }
     function openPerson(sessionId) {
       saveView();
+      const targetKey = `${scopeKey()}:${sessionId}`;
+      views.set(targetKey, {
+        ...views.get(targetKey),
+        panel: null,
+      });
+      if (sessionId === person.session_id) {
+        panel = null;
+        renderHeader();
+        renderPanel();
+        return;
+      }
       navigate({
         view: "task",
         taskId: detail.task.id,
@@ -617,7 +695,9 @@
         saveView();
         const requested = element.dataset.panel;
         panel =
-          requested === "close" || (requested === "toggle" && panel)
+          requested === "close" ||
+          (requested === "toggle" && panel) ||
+          (element.dataset.toggle && requested === panel)
             ? null
             : requested === "toggle"
               ? lastPanel
@@ -628,8 +708,18 @@
         requestAnimationFrame(() =>
           panel
             ? host.querySelector(".tw-drawer button")?.focus()
-            : host.querySelector(".tw-material-toggle")?.focus(),
+            : host.querySelector(`.tw-header [data-panel="${lastPanel}"]`)?.focus(),
         );
+      },
+      "tw-edit-details": () => {
+        editingDetails = true;
+        renderPanel();
+        host.querySelector('.tw-details-form [name="title"]')?.focus();
+      },
+      "tw-read-details": () => {
+        keepDetails();
+        editingDetails = false;
+        renderPanel();
       },
       "tw-mode": () =>
         mutate("mode", {
@@ -639,7 +729,7 @@
       "tw-control": async ({ element }) => {
         const operation = element.dataset.operation;
         if (
-          ["stop", "archive", "trash"].includes(operation) &&
+          ["archive", "trash"].includes(operation) &&
           !(await confirmTaskOperation(operation))
         )
           return;
@@ -665,6 +755,7 @@
     const unregister = actions.register("task-workspace", handlers);
     function input(event) {
       if (!event.target.closest(".tw-details-form")) return;
+      editingDetails = true;
       draft().dirty = true;
       draft().revision = (draft().revision || 0) + 1;
       keepDetails();
@@ -706,6 +797,7 @@
         const result = await api("/api/tasks/update", body);
         if ((drafts.get(savedScope)?.revision || 0) === editRevision) {
           drafts.delete(savedScope);
+          if (alive(token)) editingDetails = false;
           try {
             localStorage.removeItem(savedStorage);
           } catch (error) {
@@ -742,7 +834,7 @@
         panel = null;
         renderHeader();
         renderPanel();
-        host.querySelector(".tw-material-toggle")?.focus();
+        host.querySelector(`.tw-header [data-panel="${lastPanel}"]`)?.focus();
       }
       if (
         event.key !== "Tab" ||
@@ -768,12 +860,18 @@
     host.addEventListener("keydown", keydown);
     const media = matchMedia("(max-width:760px)");
     media.addEventListener("change", syncOverlay);
-    function open({ taskId, project, sessionId, decisionId }) {
+    function open({ taskId, project, sessionId, decisionId, panel: initialPanel }) {
       const next = {
         taskId,
         project: projectName(project),
         sessionId: sessionId || null,
         decisionId: decisionId || null,
+        initialPanel:
+          initialPanel === "artifacts"
+            ? "deliverables"
+            : ["details", "members", "deliverables"].includes(initialPanel)
+              ? initialPanel
+              : null,
       };
       if (scope && JSON.stringify(scope) === JSON.stringify(next) && chat)
         return refresh();
@@ -784,6 +882,7 @@
       snapshot = null;
       person = null;
       panel = null;
+      editingDetails = false;
       pending = false;
       host.classList.add("crew-task-workspace");
       host.innerHTML =

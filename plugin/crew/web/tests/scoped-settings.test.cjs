@@ -284,6 +284,7 @@ test("409 keeps the draft and requires explicit latest-version review before ret
   const f = fixture();
   await f.open({ project: "项目甲", sessionId: "leader-1" });
   await f.dispatch("scoped-settings-tab", { tab: "prompts" });
+  await f.change("scope", "global");
   await f.input("prompt", "用户原文 <保留> & 修改");
   const record = f.prompt();
   record.version = 2;
@@ -463,7 +464,7 @@ test("carrier switches clear only the current scope's old model/effort, before s
         });
         await f.open({ project: "项目甲", sessionId: "member-1" });
         await f.change("purpose", "member");
-        if (scope !== "global") await f.change("scope", scope);
+        await f.change("scope", scope);
         await f.input("runtime", to || "");
         assert.match(f.host.innerHTML, /data-ss-field="model"[^>]*value=""/);
         assert.match(f.host.innerHTML, /data-ss-field="effort"[^>]*value=""/);
@@ -519,5 +520,26 @@ test("switching a carrier preserves independent project/session drafts and their
   const body = f.requests.filter(item => item.path === "/api/settings/scope" && item.body).at(-1).body;
   assert.equal(body.version, 2);
   assert.deepEqual(body.ai, { member: { runtime: "claude", model: "单AI切换后的模型", effort: "单AI明确强度" } });
+  f.module.destroy();
+});
+
+test("opening a different workspace or AI targets that object rather than the last global editor", async () => {
+  const f = fixture();
+  const selectedScope = () => {
+    const read = f.requests.filter(item => item.path.startsWith("/api/settings/scope?") && !item.body).at(-1);
+    const params = new URL(read.path,"http://fixture").searchParams;
+    return [params.get("scope"),params.get("identity")];
+  };
+  await f.open({project:"项目甲"});
+  assert.deepEqual(selectedScope(),["project","项目甲"]);
+  await f.change("scope","global");
+  await f.input("model","保留的全局草稿");
+  await f.open({project:"项目乙"});
+  assert.deepEqual(selectedScope(),["project","项目乙"]);
+  await f.open({project:"项目甲",sessionId:"member-1",sessionRole:"member"});
+  assert.deepEqual(selectedScope(),["session","member-1"]);
+  await f.change("scope","global");
+  await f.open({project:"项目甲"});
+  assert.deepEqual(selectedScope(),["project","项目甲"]);
   f.module.destroy();
 });

@@ -180,9 +180,11 @@ app.once('browser-window-created', (_event, win) => {
       await select('workbench');globalWorkbench.reload();
       await until(()=>globalWorkbench.executeJavaScript('Boolean(document.querySelector(".wb-nav-group"))'),'registered workspaces in global workbench');
       await globalWorkbench.executeJavaScript('location.hash='+JSON.stringify('#home?project='+encodeURIComponent(projects[0].name)));
-      await until(()=>globalWorkbench.executeJavaScript('Boolean(document.querySelector(".wb-workspace-footer a[href*=legacy]"))'),'project legacy entry in workbench');
+      await until(()=>globalWorkbench.executeJavaScript('Boolean(document.querySelector(".wb-workspace-footer [data-act=wb-tools]"))'),'project tools entry in workbench');
+      await globalWorkbench.executeJavaScript('document.querySelector(".wb-workspace-footer [data-act=wb-tools]").click()');
+      await until(()=>globalWorkbench.executeJavaScript('Boolean(document.querySelector(".wb-more-grid a[href*=legacy]"))'),'project legacy entry in workbench tools');
       const currentGlobalOrigin=await globalWorkbench.executeJavaScript('performance.timeOrigin');
-      await globalWorkbench.executeJavaScript('window.__nativeLifecycle={before:0,hidden:0};window.addEventListener("beforeunload",()=>window.__nativeLifecycle.before++);window.addEventListener("pagehide",()=>window.__nativeLifecycle.hidden++);document.querySelector(".wb-workspace-footer a[href*=legacy]").click()');
+      await globalWorkbench.executeJavaScript('window.__nativeLifecycle={before:0,hidden:0};window.addEventListener("beforeunload",()=>window.__nativeLifecycle.before++);window.addEventListener("pagehide",()=>window.__nativeLifecycle.hidden++);document.querySelector(".wb-more-grid a[href*=legacy]").click()');
       await until(()=>first.executeJavaScript('new URLSearchParams(location.search).get("legacy")==="1"&&Boolean(document.querySelector(".wb-legacy-return"))'),'verified legacy project entry');
       await first.executeJavaScript('window.__nativeLifecycle={before:0,hidden:0};window.addEventListener("beforeunload",()=>window.__nativeLifecycle.before++);window.addEventListener("pagehide",()=>window.__nativeLifecycle.hidden++);document.querySelector(".wb-legacy-return").click()');
       await until(async()=>(await tabs()).some(tab=>tab.id==='workbench'&&tab.selected),'legacy return to fixed workbench');
