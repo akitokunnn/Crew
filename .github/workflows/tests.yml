@@ -72,7 +72,9 @@ jobs:
                   return original_run(command, timeout=45, **kwargs)
               except subprocess.TimeoutExpired as error:
                   output = error.stdout or b''
-                  return subprocess.CompletedProcess(command, 1, stdout=output.decode('utf-8', errors='replace'))
+                  if isinstance(output, bytes):
+                      output = output.decode('utf-8', errors='replace')
+                  return subprocess.CompletedProcess(command, 1, stdout=output)
           ci.subprocess.run = sample
           raise SystemExit(ci.main(['--workers', '4']))
           '@ | python -
