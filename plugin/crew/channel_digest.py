@@ -9,7 +9,7 @@ import time
 from contextlib import closing
 from pathlib import Path
 
-from . import board, channel, native_process, codex_client, settings, store
+from . import board, channel, chat, codex_client, settings, store
 
 PROMPT = """请把上一张要点卡与之后的新发言整理为一张更新后的累积要点卡，只输出中文 Markdown。
 固定使用三个二级小标题，依次是“## 已定结论”“## 未定的事 · 在等谁”“## 各组跨组相关进展”；某块没有内容写“暂无”。
@@ -40,7 +40,7 @@ def prompt(previous, messages):
 
 
 def _claude(home, text, process_factory, selected):
-    command = [native_process.claude_executable(), "-p", "--output-format", "json", "--no-session-persistence",
+    command = [chat.claude_executable(), "-p", "--output-format", "json", "--no-session-persistence",
                "--settings", '{"disableAllHooks":true}', "--strict-mcp-config", "--tools", "",
                "--disable-slash-commands"]
     for field in ('model', 'effort'):
@@ -236,12 +236,6 @@ class Manager:
     def state(self, project):
         with self.lock:
             return {"digesting": project in self.running, "digest_error": self.errors.get(project)}
-
-    def clear_failures(self, project):
-        """Forget only this workspace's old failure boundary after cleanup."""
-        with self.lock:
-            self.errors.pop(project, None)
-            self.failed_upto.pop(project, None)
 
     def start(self, conn, project, trigger="manual"):
         board.project(conn, project)

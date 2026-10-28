@@ -168,7 +168,7 @@
     async function openReport(id) {
       reportId = id; reportHTML = null; reportError = ""; reportLoading = true; const generation = ++reportGeneration, selectedGoal = goalId; renderDrawer();
       try {
-        const response = await CrewClient.current.fetch(reportPath(options.project, selectedGoal, id), {headers:{Accept:"text/html"}});
+        const response = await fetch(reportPath(options.project, selectedGoal, id), {headers:{Accept:"text/html"}});
         if (!response.ok) throw Error("报告暂时无法读取，请重试。");
         const html = await response.text(); if (generation !== reportGeneration) return; reportHTML = html;
       } catch (error) { if (generation === reportGeneration) reportError = error.message; }
@@ -214,7 +214,7 @@
     async function readDirect(generation) {
       const target = reading;
       try {
-        const response = await CrewClient.current.fetch(reportPath(options.project, target.goalId, target.report.id), {headers:{Accept:"text/html"}});
+        const response = await fetch(reportPath(options.project, target.goalId, target.report.id), {headers:{Accept:"text/html"}});
         if (!response.ok) throw Error("报告暂时无法读取，请重试。");
         const html = await response.text(); if (generation !== reportGeneration) return; target.html = html;
       } catch (error) { if (generation === reportGeneration) target.error = error.message; }

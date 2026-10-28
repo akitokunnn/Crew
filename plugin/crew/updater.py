@@ -90,7 +90,7 @@ def cli_entry(home):
 
 
 def claude_command():
-    from .native_process import claude_executable
+    from .chat import claude_executable
     return [claude_executable()]
 
 

@@ -319,7 +319,7 @@ class GitHttpTests(ShellFixture, unittest.TestCase):
         self.git("branch", "-M", "develop")
         for branch in ("master", "topic"):
             self.git("branch", branch)
-        executable = mock.patch("crew.native_process.shutil.which", return_value="C:/fixture/claude.exe")
+        executable = mock.patch("crew.chat.shutil.which", return_value="C:/fixture/claude.exe")
         executable.start()
         self.addCleanup(executable.stop)
         self.choices = {"branches": ["develop", "master", "topic"], "base": "develop", "stable": "master"}
@@ -610,7 +610,7 @@ class GitHttpTests(ShellFixture, unittest.TestCase):
                     runtimes.set(self.conn, sid, runtime)
                     request = board.request_git_merge(self.conn, 'demo', sid, 'topic', 'Continue after merge', title=None, blocking=True, now=NOW)
                     board.resolve_git_request(self.conn, 'demo', 's3', request['id'], 'merged', 'Continue verification', now=NOW)
-                    with mock.patch.object(service.chat.executions, 'running', return_value=True), mock.patch.object(service.chat.executions, 'busy', return_value=False), \
+                    with mock.patch.object(service.chat, 'running', return_value=True), mock.patch.object(service.chat, 'busy', return_value=False), \
                             mock.patch.object(service.chat, 'send') as send, mock.patch.object(service.chat, 'wake') as wake:
                         service.deliver_git_results(self.conn); service.deliver_git_results(self.conn)
                         send.assert_called_once(); wake.assert_not_called()
@@ -620,8 +620,8 @@ class GitHttpTests(ShellFixture, unittest.TestCase):
         service = self.server.service
         with service.write_lock:
             self.result_handoff()
-            with mock.patch.object(service.chat.executions, "running", return_value=True), \
-                    mock.patch.object(service.chat.executions, "busy", return_value=False), \
+            with mock.patch.object(service.chat, "running", return_value=True), \
+                    mock.patch.object(service.chat, "busy", return_value=False), \
                     mock.patch.object(service.chat, "send") as send, mock.patch.object(service.chat, "wake") as wake:
                 service.deliver_git_results(self.conn)
                 service.deliver_git_results(self.conn)
@@ -634,9 +634,9 @@ class GitHttpTests(ShellFixture, unittest.TestCase):
         service = self.server.service
         with service.write_lock:
             self.result_handoff()
-            with mock.patch.object(service.chat.executions, "running", return_value=False), \
+            with mock.patch.object(service.chat, "running", return_value=False), \
                     mock.patch.object(service.chat, "wake", wraps=service.chat.wake) as wake, \
-                    mock.patch("crew.native_process.shutil.which", return_value="C:/fixture/claude.exe"):
+                    mock.patch("crew.chat.shutil.which", return_value="C:/fixture/claude.exe"):
                 service.deliver_git_results(self.conn)
                 wake.assert_called_once()
                 self.assertEqual(wake.call_args.kwargs["caller_session_id"], "s3")
@@ -665,8 +665,8 @@ class GitHttpTests(ShellFixture, unittest.TestCase):
         service = self.server.service
         with service.write_lock:
             self.result_handoff()
-            with mock.patch.object(service.chat.executions, "running", return_value=True), \
-                    mock.patch.object(service.chat.executions, "busy", return_value=True), \
+            with mock.patch.object(service.chat, "running", return_value=True), \
+                    mock.patch.object(service.chat, "busy", return_value=True), \
                     mock.patch.object(service.chat, "send") as send, mock.patch.object(service.chat, "wake") as wake:
                 service.deliver_git_results(self.conn)
                 service.agents_error = "fixture process scan error"
@@ -679,13 +679,13 @@ class GitHttpTests(ShellFixture, unittest.TestCase):
         service = self.server.service
         with service.write_lock:
             self.result_handoff()
-            with mock.patch.object(service.chat.executions, "running", return_value=False), \
+            with mock.patch.object(service.chat, "running", return_value=False), \
                     mock.patch.object(service.chat, "wake", side_effect=OSError("fixture launch error")):
                 service.deliver_git_results(self.conn)
             self.assertEqual(len(board.handoffs(self.conn, "s1")), 1)
             event = self.conn.execute("SELECT detail FROM events WHERE kind='git:result_error'").fetchone()
             self.assertIn("fixture launch error", event["detail"])
-            with mock.patch.object(service.chat.executions, "running", return_value=False), \
+            with mock.patch.object(service.chat, "running", return_value=False), \
                     mock.patch.object(service.chat, "wake") as wake:
                 service.deliver_git_results(self.conn)
                 wake.assert_called_once()

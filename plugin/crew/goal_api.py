@@ -63,7 +63,8 @@ def _previous_review(conn, goal_id, current_round):
     return {**dict(row), 'accepted': bool(row['accepted'])} if row else None
 
 
-def post(control, conn, project, path, data):
+def post(service, conn, project, path, data):
+    control = service.chat.goal_controller
     if path == '/api/goals/agent':
         if data.get('actor_session_id') == board.HUMAN:
             if data.get('execution_id'):
@@ -93,7 +94,7 @@ def post(control, conn, project, path, data):
                 raise board.BoardError('验收入口由用户本人操作，不能指定 AI 执行身份')
             options = {'note': data.get('note', ''), 'expected_version': data.get('version'),
                        'report_id': data.get('report_id')}
-            with control.locked():
+            with control.manager.lock:
                 goals.acceptance_target(conn, identity, action == 'accept', **options)
                 control.stop_delivered(conn, identity)
                 goals.review_acceptance(conn, identity, action == 'accept', **options)
@@ -104,7 +105,7 @@ def post(control, conn, project, path, data):
         elif action == 'start':
             if value['status'] != 'queued':
                 raise board.Conflict('只有待开始的目标可以开始')
-            control.send(identity, value['leader_session_id'], value['requirements']['request'], intent='work')
+            control.send(identity, value['leader_session_id'], value['requirements']['request'])
         elif action == 'resume':
             review = goals.resume_review(conn, identity)
             if review is not None:
@@ -115,7 +116,7 @@ def post(control, conn, project, path, data):
                 goals.transition(conn, identity, 'running')
                 control.sync(conn, identity)
             else:
-                control.send(identity, value['leader_session_id'], '用户恢复当前目标，请按原始要求与已有证据继续。', intent='work')
+                control.send(identity, value['leader_session_id'], '用户恢复当前目标，请按原始要求与已有证据继续。')
         elif action == 'cancel':
             goals.request_cancel(conn, identity)
             control.sync(conn, identity)

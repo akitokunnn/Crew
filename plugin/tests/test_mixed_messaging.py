@@ -17,7 +17,6 @@ class FakeCodex(codex_runtime.CodexRunning):
 
     def __init__(self, home, session_id, journal, router):
         self.execution = None
-        self.discussion_only = False
         self.goal_handler = None
         self.home, self.session_id = home, session_id
         self.thread_id = "native-codex-" + session_id
@@ -51,7 +50,7 @@ class MixedMessagingTests(ShellFixture, unittest.TestCase):
             current = chat.Running(FakeProcess([]), journal)
             current.reader = mock.Mock()
         journal.set_status("idle")
-        self.manager.executions.register(session_id, current)
+        self.manager.processes[session_id] = current
         return current
 
     def tool_send(self, current, target, text, call_id="stable-call", **extra):

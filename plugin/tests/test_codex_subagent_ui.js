@@ -1,12 +1,10 @@
 "use strict";
 const {test}=require("node:test"),assert=require("node:assert/strict"),fs=require("node:fs"),path=require("node:path"),vm=require("node:vm");
 const escape=value=>String(value).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
-const sandbox={window:{},document:{addEventListener(){}},location:{search:"?legacy=1"},URLSearchParams,CrewChat:{renderInline:escape},CrewContext:{ring:()=>""},CrewActivity:{markup:()=>""}};
-sandbox.createRuntimeCatalog=require("../crew/web/runtime-catalog.js").create;
-sandbox.createComments=require("./comments_fixture.cjs").createComments;
+const sandbox={window:{},document:{addEventListener(){}},location:{search:""},URLSearchParams,CrewChat:{renderInline:escape},CrewContext:{ring:()=>""},CrewActivity:{markup:()=>""}};
 vm.createContext(sandbox);
 const source=fs.readFileSync(path.join(__dirname,"../crew/web/app.js"),"utf8").replace(/\r\n/g,"\n");
-vm.runInContext(source.replace("  setup();\n})();","  window.ui={codexMarkup,leaderNode,memberNode,setState(value){state=value;runtimeCatalog=createRuntimeCatalog({snapshot:()=>({catalog:state.runtimes,choices:state.ai})});commentsFeature=createComments(()=>state,document);}};\n})();"),sandbox);
+vm.runInContext(source.replace("  setup();\n})();","  window.ui={codexMarkup,leaderNode,memberNode,setState(value){state=value;}};\n})();"),sandbox);
 const ui=sandbox.window.ui;
 const task=extra=>({id:"child",task_name:"检查界面 <safe>",source:"native_subagent",status:"running",started_at:new Date().toISOString(),ended_at:null,...extra});
 test("native task status renders spinner, check only on success, and separate failure/pause/closed/unknown labels",()=>{

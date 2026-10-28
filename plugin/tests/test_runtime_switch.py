@@ -200,7 +200,7 @@ class RuntimeSwitchTests(RuntimeFixture):
     def test_idle_owned_shutdown_failure_keeps_old_configuration_and_unconfigured_receipt(self):
         current=chat.Running(FakeProcess([]),self.manager.journal('member-id'))
         current.reader=mock.Mock()
-        current.journal.set_status('idle');self.manager.executions.register('member-id', current)
+        current.journal.set_status('idle');self.manager.processes['member-id']=current
         preview=self.prepare()
         with mock.patch.object(self.manager,'detach',side_effect=board.BoardError('drain timed out')):
             with self.assertRaisesRegex(board.BoardError,'drain timed out'):self.switch(preview)
@@ -212,7 +212,7 @@ class RuntimeSwitchTests(RuntimeFixture):
     def test_metadata_changed_while_draining_cannot_be_overwritten_and_inactive_native_stays_reserved(self):
         current=chat.Running(FakeProcess([]),self.manager.journal('member-id'))
         current.reader=mock.Mock()
-        current.journal.set_status('idle');self.manager.executions.register('member-id', current)
+        current.journal.set_status('idle');self.manager.processes['member-id']=current
         preview=self.prepare()
         def detach(_):
             current.process.finish();current.reader_done.set()
@@ -229,7 +229,7 @@ class RuntimeSwitchTests(RuntimeFixture):
         runtimes.set(self.conn,'member-id','codex','still-running-native')
         current=chat.Running(FakeProcess([]),self.manager.journal('member-id'))
         current.runtime='codex';current.reader=mock.Mock();current.close=mock.Mock()
-        current.journal.set_status('idle');self.manager.executions.register('member-id', current)
+        current.journal.set_status('idle');self.manager.processes['member-id']=current
         preview=self.prepare('claude')
         with mock.patch.object(self.manager,'detach',return_value=None):
             with self.assertRaisesRegex(board.Conflict,'尚未真正退出'):self.switch(preview)
@@ -239,7 +239,7 @@ class RuntimeSwitchTests(RuntimeFixture):
 
     def test_owned_idle_overrides_stale_working_attendance_but_busy_or_unowned_is_rejected(self):
         current=chat.Running(FakeProcess([]),self.manager.journal('member-id'))
-        current.reader=mock.Mock();current.journal.set_status('idle');self.manager.executions.register('member-id', current)
+        current.reader=mock.Mock();current.journal.set_status('idle');self.manager.processes['member-id']=current
         board.set_status(self.conn,'member-id','working')
         self.assertTrue(runtime_switch.state(self.conn,board.session(self.conn,'member-id'),self.manager)['allowed'])
         preview=self.prepare()
@@ -258,14 +258,14 @@ class RuntimeSwitchTests(RuntimeFixture):
 
     def test_owned_pid_lookup_survives_process_retiring_during_the_poll(self):
         process=FakeProcess([]);current=chat.Running(process,self.manager.journal('member-id'))
-        self.manager.executions.register('member-id', current)
+        self.manager.processes['member-id']=current
         polling=threading.Event();retired=threading.Event()
         def poll():
             polling.set()
             if not retired.wait(3):raise AssertionError('retirement did not run')
             return None
         def retire():
-            if polling.wait(3):self.manager.executions.remove('member-id')
+            if polling.wait(3):self.manager.processes.pop('member-id',None)
             retired.set()
         worker=threading.Thread(target=retire);worker.start()
         try:
@@ -284,7 +284,7 @@ class RuntimeSwitchTests(RuntimeFixture):
         current=chat.Running(FakeProcess([]),self.manager.journal(execution['id']))
         current.execution=execution;current.reader=mock.Mock();current.stderr_reader=mock.Mock()
         current.journal.set_status('working' if busy else 'idle')
-        self.manager.executions.register(execution['id'], current)
+        self.manager.processes[execution['id']]=current
         self.addCleanup(current.reader_done.set);self.addCleanup(current.process.finish)
         return current
 

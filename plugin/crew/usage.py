@@ -99,21 +99,16 @@ def _line_number(path, offset):
     return number
 
 
-def session_titles(root, session_ids, cache, *, model_windows=None):
+def session_titles(root, session_ids, cache):
     """Read titles and context usage from main transcripts incrementally like scan()."""
     titles = {}
-    # A model name never proves a context window. Callers may pass capacities
-    # actually reported by their native adapter/catalog; otherwise it is unknown.
+    windows = {model["id"]: model["context_window"] for model in models.MODELS}
     for session_id in session_ids:
         previous = cache.get(session_id)
         path = previous["path"] if previous else next(Path(root).glob("*/" + session_id + ".jsonl"), None)
         if path is None:
             continue
         stat = path.stat()
-        retained = previous is not None and stat.st_size >= previous['size']
-        windows = dict(previous.get('model_windows', {})) if retained else {}
-        windows.update({} if model_windows is None else model_windows)
-        sample = previous.get('context_sample') if retained else None
         offset, title, context = ((previous["offset"], previous["title"], previous["context"])
                                   if previous and stat.st_size >= previous["size"] else (0, None, None))
         if previous is None or (stat.st_size, stat.st_mtime) != (previous["size"], previous["mtime"]):
@@ -128,30 +123,19 @@ def session_titles(root, session_ids, cache, *, model_windows=None):
                             if "usage" in message and message["model"] != "<synthetic>":
                                 maximum = windows.get(message["model"])
                                 tokens = message["usage"]
-                                sample = {'model': message['model'], 'used': tokens['input_tokens'] + tokens['cache_read_input_tokens'] + tokens['cache_creation_input_tokens']}
                                 context = None if maximum is None else {
                                     "used": tokens["input_tokens"] + tokens["cache_read_input_tokens"]
                                             + tokens["cache_creation_input_tokens"],
                                     "max": maximum, "source": "transcript",
                                 }
-                        elif record['type'] == 'result':
-                            for identity, details in record.get('modelUsage', {}).items():
-                                maximum = details.get('contextWindow') if isinstance(details, dict) else None
-                                if type(maximum) is int and maximum > 0:
-                                    windows[identity] = maximum
-                            if sample is not None and sample['model'] in windows:
-                                context = {'used': sample['used'], 'max': windows[sample['model']], 'source': 'transcript'}
-                        elif record["type"] == "system" and record.get("subtype") == "compact_boundary":
-                            if sample is not None:
-                                sample = dict(sample, used=record['compactMetadata']['postTokens'])
-                            if context is not None:
-                                context = dict(context, used=record["compactMetadata"]["postTokens"])
+                        elif record["type"] == "system" and record.get("subtype") == "compact_boundary" and context is not None:
+                            context = dict(context, used=record["compactMetadata"]["postTokens"])
                 except (json.JSONDecodeError, KeyError, TypeError):
                     # Usage scanning also consumes malformed complete lines and keeps going.
                     pass
                 offset = end
         cache[session_id] = {"path": path, "offset": offset, "size": stat.st_size, "mtime": stat.st_mtime,
-                             "title": title, "context": context, 'model_windows': windows, 'context_sample': sample}
+                             "title": title, "context": context}
         titles[session_id] = title
     return titles
 

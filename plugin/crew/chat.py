@@ -1,24 +1,29 @@
-"""Conversation coordination over carrier adapters and persistent session journals."""
+"""Persistent Claude stream-json sessions and their replayable web journals."""
 import base64
+import collections
 import contextlib
 from contextlib import closing
 import functools
 import hashlib
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
 import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from .session_journal import Journal
-from .claude_events import compact_command
-from .native_process import Running, child_environment, claude_executable, close_runtimes
-from .execution_admission import WorkAdmission, UpdatePaused, PAUSED_FOR_UPDATE, MAINTENANCE_HELD
-from .execution_host import ExecutionStore, NativeLauncher
+from . import board, claude_limits, claude_subagents, codex_client, codex_visibility, git_admin, goals, hooks, install, messaging, models, runtime_switch, runtimes, settings, spawn, store, subagents, workspace_execution
 
-from . import board, claude_limits, codex_client, codex_visibility, git_admin, goals, hooks, messaging, models, runtime_switch, runtimes, settings, spawn, store, workspace_execution
+
+PAUSED_FOR_UPDATE = "Crew 正在准备更新，暂不接受新任务；更新完成后再试"
+MAINTENANCE_HELD = "正在压缩该人员的记忆，完成后再发送"
+
+
+class UpdatePaused(board.Conflict):
+    """New model work is refused while a desktop update holds the gate."""
 
 
 def _admitted(method):
@@ -32,6 +37,30 @@ def _admitted(method):
 
 IMAGE_TYPES = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif"}
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
+
+
+def compact_command(text):
+    return isinstance(text, str) and (text.strip() == "/compact" or
+        text.lstrip().startswith("<command-name>/compact</command-name>"))
+
+
+def tool_label(name, arguments):
+    if name == "Bash":
+        label = arguments.get("description") or arguments.get("command") or name
+    elif name in ("Read", "Edit", "Write"):
+        path = arguments.get("file_path") or arguments.get("path")
+        label = path.replace("\\", "/").rsplit("/", 1)[-1] if path else name
+    elif name in ("Grep", "Glob"):
+        label = arguments.get("pattern") or name
+    elif name in ("Agent", "Task"):
+        label = arguments.get("description") or name
+    elif name == "SendMessage":
+        label = "发消息给 " + arguments["to"]
+    elif name == "Skill":
+        label = arguments.get("skill") or name
+    else:
+        label = name
+    return label[:60]
 
 
 def validate_images(images):
@@ -56,56 +85,363 @@ def validate_images(images):
     return images
 
 
+def child_environment(spec, environ=None, persistent_names=None):
+    env = dict(os.environ if environ is None else environ)
+    if persistent_names is None:
+        persistent_names = set()
+        if os.name == "nt":
+            import winreg
+            for hive, path in ((winreg.HKEY_CURRENT_USER, "Environment"),
+                               (winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment")):
+                with winreg.OpenKey(hive, path) as key:
+                    for index in range(winreg.QueryInfoKey(key)[1]):
+                        persistent_names.add(winreg.EnumValue(key, index)[0].upper())
+    env = {name: value for name, value in env.items()
+           if not name.upper().startswith("CREW_")
+           and (not name.upper().startswith("CLAUDE") or name.upper() in persistent_names)}
+    # VS Code hides sdk-cli transcripts; identify this human-facing host explicitly.
+    env.update(CLAUDE_CODE_ENTRYPOINT="crew-web", CREW_NAME=spec["name"], CREW_ROLE=spec["role"], CREW_SPAWN_ID=spec["id"],
+               MSYS_NO_PATHCONV="1")
+    if spec["group"] is not None:
+        env["CREW_GROUP"] = spec["group"]
+    return env
+
+
+class Journal:
+    def __init__(self, path):
+        self.path = path
+        self.condition = threading.Condition(threading.RLock())
+        self.events = []
+        self.signature = None
+        self.reset_runtime()
+        self._index()
+        self.refresh()
+
+    def _index(self):
+        self.subagents = {}
+        for event in self.events:
+            if event['type'] == 'subagent':
+                subagents.apply_task(self.subagents, event)
+        self.messages = {event["id"] for event in self.events if event["type"] in ("message", "compact_request")}
+        self.inputs = {event.get('message_id', event.get('id')): event for event in self.events if event["type"] == "input_delivery"}
+        self.results = {event["tool_use_id"] for event in self.events if event["type"] == "tool_result"}
+        self.assistant = {event["id"]: event["content"] for event in self.events if event["type"] == "assistant"}
+        self.status = next((event["status"] for event in reversed(self.events) if event["type"] == "status"), "offline")
+
+    def refresh(self):
+        with self.condition:
+            try:
+                stat = self.path.stat()
+            except FileNotFoundError:
+                signature = None
+            else:
+                signature = (stat.st_size, stat.st_mtime_ns)
+            if signature != self.signature:
+                # Split on newlines only: str.splitlines also breaks at U+2028 and friends, which JSON keeps raw inside strings.
+                self.events = ([json.loads(line) for line in self.path.read_text(encoding="utf-8").split("\n") if line]
+                               if signature is not None else [])
+                self.signature = signature
+                self._index()
+
+    def emit(self, kind, **fields):
+        with self.condition:
+            self.refresh()
+            event = {"seq": len(self.events) + 1, "type": kind, "at": store.now_iso(), **fields}
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with self.path.open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps(event, ensure_ascii=False) + "\n")
+            self.events.append(event)
+            if kind == 'subagent':
+                subagents.apply_task(self.subagents, event)
+            if kind == "input_delivery":
+                self.inputs[fields['message_id']] = event
+            stat = self.path.stat()
+            self.signature = (stat.st_size, stat.st_mtime_ns)
+            self.condition.notify_all()
+            return event
+
+    def set_status(self, status):
+        with self.condition:
+            self.refresh()
+            if status == "working" and (self.status != "working" or self.progress is None):
+                self.progress = {"phase": "requesting", "label": None, "turn_started_at": store.now_iso(), "output_tokens": 0}
+                self._calls, self._tools = {}, {}
+                self._call_id, self._thinking_index = None, None
+            elif status in ("idle", "offline"):
+                self.progress = None
+                self._calls, self._tools = {}, {}
+                self._call_id, self._thinking_index = None, None
+            if self.status != status:
+                self.status = status
+                self.emit("status", status=status)
+
+    def reset_runtime(self):
+        with self.condition:
+            self._claude_subagents = None
+            self.progress = None
+            self._calls, self._tools = {}, {}
+            self._call_id, self._thinking_index = None, None
+
+    def bind_claude_subagents(self, native_id):
+        with self.condition:
+            self._claude_subagents = claude_subagents.Events(native_id, self.subagents.values())
+
+    def _phase(self, phase, label=None):
+        if self.progress is not None:
+            if self._tools and phase not in ("tool", "compacting"):
+                return
+            self.progress.update(phase=phase, label=label)
+
+    def _tokens(self):
+        if self.progress is not None:
+            self.progress["output_tokens"] = int(sum(call["real"] if call["real"] is not None else
+                sum(call["thinking"].values()) + call["bytes"] / 3 for call in self._calls.values()))
+
+    def _consume_progress(self, record):
+        if record.get("parent_tool_use_id"):
+            return
+        kind = record["type"]
+        if kind == "system" and record.get("subtype") == "status" and record["status"] == "requesting":
+            self.set_status("working")
+            self._phase("requesting")
+        elif kind == "system" and record.get("subtype") == "status" and record["status"] == "compacting":
+            self.set_status("working")
+            self._phase("compacting")
+        elif kind == "stream_event":
+            event = record["event"]
+            event_type = event["type"]
+            if event_type == "message_start":
+                self.set_status("working")
+                self._phase("requesting")
+                message = event.get("message", {})
+                self._call_id = message.get("id", record.get("api_message_id"))
+                self._calls[self._call_id] = {"real": None, "thinking": {}, "bytes": 0}
+                self._thinking_index = None
+            elif event_type == "content_block_start":
+                block = event["content_block"]
+                if block["type"] == "thinking":
+                    self._thinking_index = event["index"]
+                    self._phase("thinking")
+                elif block["type"] == "text":
+                    self._phase("writing")
+                elif block["type"] == "tool_use":
+                    self._tools[block["id"]] = block["name"][:60]
+                    self._phase("tool", block["name"][:60])
+            elif event_type == "content_block_delta":
+                delta = event["delta"]
+                call = self._calls.get(self._call_id)
+                if delta["type"] == "thinking_delta":
+                    self._phase("thinking")
+                    if call is not None and delta.get("estimated_tokens") is not None:
+                        call["thinking"][event["index"]] = delta["estimated_tokens"]
+                elif delta["type"] in ("text_delta", "input_json_delta"):
+                    if delta["type"] == "text_delta":
+                        self._phase("writing")
+                    if call is not None:
+                        key = "text" if delta["type"] == "text_delta" else "partial_json"
+                        call["bytes"] += len(delta[key].encode("utf-8"))
+            elif event_type == "message_delta" and self._call_id in self._calls:
+                self._calls[self._call_id]["real"] = event["usage"]["output_tokens"]
+        elif kind == "system" and record.get("subtype") == "thinking_tokens":
+            call = self._calls.get(self._call_id)
+            if call is not None and record.get("estimated_tokens") is not None:
+                call["thinking"][self._thinking_index] = record["estimated_tokens"]
+        elif kind == "assistant":
+            for block in record["message"]["content"]:
+                if block["type"] == "tool_use":
+                    self._tools[block["id"]] = tool_label(block["name"], block["input"])
+                    self._phase("tool", self._tools[block["id"]])
+        elif kind == "user" and isinstance(record["message"]["content"], list):
+            for block in record["message"]["content"]:
+                if block["type"] == "tool_result" and block["tool_use_id"] in self._tools:
+                    del self._tools[block["tool_use_id"]]
+                    if self._tools:
+                        self._phase("tool", next(reversed(self._tools.values())))
+                    else:
+                        self._phase("requesting")
+        self._tokens()
+
+    def message(self, identity, text, source="human", sender=None, images=None):
+        with self.condition:
+            self.refresh()
+            if identity not in self.messages:
+                self.messages.add(identity)
+                if compact_command(text):
+                    self.emit("compact_request", id=identity)
+                    return
+                fields = {"id": identity, "role": "user", "text": text, "source": source}
+                if sender is not None:
+                    fields["sender"] = sender
+                if images:
+                    fields["images"] = images
+                self.emit("message", **fields)
+
+    def consume(self, record):
+        with self.condition:
+            self.refresh()
+            if self._claude_subagents is None:
+                self._claude_subagents = claude_subagents.Events(record.get('session_id') or self.path.stem,
+                                                                self.subagents.values())
+            for event in self._claude_subagents.consume(record):
+                self.emit(event['type'], **{key: value for key, value in event.items() if key != 'type'})
+            self._consume_progress(record)
+        kind = record["type"]
+        if kind == "stream_event":
+            event = record["event"]
+            if event["type"] == "content_block_delta" and event["delta"]["type"] == "text_delta":
+                self.emit("text", id=record["api_message_id"], text=event["delta"]["text"])
+        elif kind == "assistant":
+            message = record["message"]
+            content = [block for block in message["content"] if block["type"] in ("text", "tool_use")]
+            with self.condition:
+                self.refresh()
+                previous = self.assistant.get(message["id"], [])
+                merged = list(previous)
+                for block in content:
+                    if block not in merged:
+                        merged.append(block)
+                if merged != previous:
+                    self.assistant[message["id"]] = merged
+                    self.emit("assistant", id=message["id"], content=merged)
+            if record.get("error"):
+                self.emit("error", text=str(record["error"]))
+        elif kind == "user":
+            origin = record.get("origin", {})
+            if origin.get("kind") == "peer":
+                self.message(origin.get("msg_id", record["uuid"]), origin["body"], "peer", origin.get("name"))
+                if not record.get("parent_tool_use_id"):
+                    self.set_status("working")
+            elif compact_command(record["message"]["content"]):
+                # The CLI echoes /compact once more under a new uuid; _send already logged the request.
+                pass
+            elif isinstance(record["message"]["content"], list):
+                with self.condition:
+                    self.refresh()
+                    for block in record["message"]["content"]:
+                        if block["type"] == "tool_result" and block["tool_use_id"] not in self.results:
+                            self.results.add(block["tool_use_id"])
+                            self.emit("tool_result", tool_use_id=block["tool_use_id"], content=block.get("content", ""),
+                                      is_error=block.get("is_error", False))
+            elif not record.get("isReplay") and not record.get("isSynthetic"):
+                self.message(record["uuid"], record["message"]["content"])
+        elif kind == "system" and record.get("subtype") == "compact_boundary" and not record.get("parent_tool_use_id"):
+            metadata = record["compact_metadata"]
+            self.emit("compact", pre_tokens=metadata["pre_tokens"], post_tokens=metadata["post_tokens"])
+        elif kind == "result":
+            if record.get("is_error"):
+                self.emit("error", text="\n".join(record.get("errors", [])) or record.get("result") or record.get("subtype", "Claude 本轮执行失败"))
+            if not record.get("parent_tool_use_id"):
+                self.emit("turn_result", status="failed" if record.get("is_error") else "completed",
+                          success=not bool(record.get("is_error")))
+                self.set_status("idle")
+        elif kind == "command_lifecycle" and record["state"] == "started" and not record.get("parent_tool_use_id"):
+            self.set_status("working")
+        elif kind == "control_response" and record["response"]["subtype"] != "success":
+            response = record["response"]
+            self.emit("error", text=str(response.get("error") or response.get("message") or response["subtype"]))
+
+    def after(self, sequence, wait=False):
+        with self.condition:
+            self.refresh()
+            if wait and len(self.events) <= sequence:
+                self.condition.wait(10)
+            return list(self.events[sequence:])
+
+
+class Running:
+    def __init__(self, process, journal):
+        self.runtime = "claude"
+        self.execution = None
+        self.goal_manifests = {}
+        self.process, self.journal = process, journal
+        # A finished turn can start its queued compact through _send under this same lock.
+        self.input_lock = threading.RLock()
+        self.control_requests = {}
+        self.applied = None
+        self.context = None
+        self.pending_compact = False
+        self.stop_reason = None
+        self.stderr = collections.deque(maxlen=20)
+        self.reader_done = threading.Event()
+        self.pending_native_accept = None
+        self.native_binding_confirmed = False
+        # Set while department maintenance compacts this native; owned=True means
+        # maintenance started it and only the fixed compact command may enter.
+        self.maintenance = None
+
+
+def claude_executable():
+    exe = shutil.which("claude")
+    if exe is None:
+        raise FileNotFoundError("claude not found in PATH")
+    if Path(exe).suffix.lower() == ".cmd":
+        # The local npm shim starts a wrapper cmd.exe; agents reports the native child's PID.
+        exe = str(Path(exe).parent / "node_modules" / "@anthropic-ai" / "claude-code" / "bin" / "claude.exe")
+    return exe
+
+
 class Manager:
     def __init__(self, home, plugin_root, agents_provider, process_factory=subprocess.Popen):
         self.home, self.plugin_root = Path(home), Path(plugin_root)
-        self.agents_provider = agents_provider
-        self.executions = ExecutionStore(home)
-        self.native_launcher = NativeLauncher(self.executions, plugin_root, process_factory=process_factory,
-                                              send_message=self.send_message, control=self._control,
-                                              read=self._read, stderr=self._stderr)
+        self.agents_provider, self.process_factory = agents_provider, process_factory
+        self.journals, self.processes = {}, {}
+        self.lock = threading.RLock()
         self._close_lock = threading.Lock()
         self.closed = False
         self.auto_candidates = None
         self.message_wait_errors = {}
-        self._work_admission = WorkAdmission()
+        # Update admission: the gate closes new work; in_flight drains accepted work.
+        self.admission = threading.Condition()
+        self.update_gate, self.in_flight = None, 0
+        self._admitted = threading.local()
         from .goal_runtime import Controller
-        self.goal_controller = Controller(self.executions, self._work_admission, self.native_launcher,
-                                          send_input=self.send, stop=self.stop_managed,
-                                          interrupt=self.interrupt, observe_claude=self._external_agents,
-                                          scope_busy=self.scope_busy)
+        self.goal_controller = Controller(self)
 
-    @property
-    def processes(self):
-        return self.executions.processes
-
-    @property
-    def journals(self):
-        return self.executions.journals
-
-    @property
-    def lock(self):
-        return self.executions.lock
-
-    @property
-    def process_factory(self):
-        return self.native_launcher.process_factory
-
-    @process_factory.setter
-    def process_factory(self, value):
-        self.native_launcher.process_factory = value
-
+    @contextlib.contextmanager
     def work(self, background=False):
-        return self._work_admission.work(background=background)
+        """Admit new model work. Background workers get False and leave queues untouched."""
+        depth = getattr(self._admitted, "depth", 0)
+        if depth == 0:
+            with self.admission:
+                paused = self.update_gate is not None
+                if not paused:
+                    self.in_flight += 1
+            if paused:
+                if not background:
+                    raise UpdatePaused(PAUSED_FOR_UPDATE)
+                yield False
+                return
+        self._admitted.depth = depth + 1
+        try:
+            yield True
+        finally:
+            self._admitted.depth = depth
+            if depth == 0:
+                with self.admission:
+                    self.in_flight -= 1
+                    self.admission.notify_all()
 
     def paused(self):
-        return self._work_admission.paused()
+        with self.admission:
+            return self.update_gate
 
     def close_admission(self, gate, timeout):
-        return self._work_admission.close(gate, timeout)
+        """Close the gate and wait for already admitted work to finish starting."""
+        with self.admission:
+            if self.update_gate is not None:
+                raise board.Conflict("已有 Crew 更新正在准备")
+            self.update_gate = gate
+            if self.admission.wait_for(lambda: self.in_flight == 0, timeout):
+                return True
+            self.update_gate = None
+            return False
 
     def open_admission(self, gate):
-        return self._work_admission.open(gate)
+        with self.admission:
+            if self.update_gate != gate:
+                return False
+            self.update_gate = None
+            return True
 
     def busy_reasons(self, conn):
         """Real managed process state; pending compaction is queued work, too."""
@@ -129,10 +465,15 @@ class Manager:
             return [current.process.pid for current in self.processes.values() if current.process.poll() is None]
 
     def path(self, session_id):
-        return self.executions.path(session_id)
+        return self.home / "chat" / (session_id + ".jsonl")
 
     def journal(self, session_id):
-        return self.executions.journal(session_id)
+        with self.lock:
+            if session_id not in self.journals:
+                self.journals[session_id] = Journal(self.path(session_id))
+            else:
+                self.journals[session_id].refresh()
+            return self.journals[session_id]
 
     def file(self, session_id, name):
         if not isinstance(name, str) or not name or Path(name).name != name or "/" in name or "\\" in name:
@@ -145,16 +486,22 @@ class Manager:
         return self.home / "chat" / "files" / session_id / name, media_type
 
     def running(self, session_id):
-        return self.executions.running(session_id)
+        current = self.processes.get(session_id)
+        return current is not None and current.process.poll() is None
 
     def is_owned(self, session_id):
         return self.running(session_id)
 
     def owns_pid(self, session_id, pid):
-        return self.executions.owns_pid(session_id, pid)
+        with self.lock:
+            current=self.processes.get(session_id)
+            return (current is not None and current.process.poll() is None
+                    and self.processes.get(session_id) is current and current.process.pid==pid)
 
     def busy(self, session_id):
-        return self.executions.busy(session_id)
+        # A maintenance-held native counts as working for every other caller.
+        return self.running(session_id) and (self.journal(session_id).status == "working"
+                                             or getattr(self.processes.get(session_id), "maintenance", None) is not None)
 
     def scope_busy(self, key, runtime, native_id):
         """Check another host's ownership too, without starting a native process."""
@@ -179,27 +526,63 @@ class Manager:
         return False
 
     def maintenance_held(self, identity):
-        return self.executions.maintenance_held(identity)
+        """Hold business input across a person's contexts, including borrowed idle natives."""
+        # Input readers can check this while another person's maintenance exits.
+        for key, current in list(self.processes.items()):
+            if getattr(current, 'maintenance', None) is None:
+                continue
+            logical = current.execution['session_id'] if current.execution is not None else key
+            if identity in (key, logical) and current.process.poll() is None:
+                return True
+        return False
 
     def activity(self, session_id):
-        return self.executions.activity(session_id)
+        with self.lock:
+            if not self.busy(session_id):
+                return None
+            journal = self.journal(session_id)
+            with journal.condition:
+                return dict(journal.progress) if journal.progress is not None else None
 
     def applied(self, session_id):
-        return self.executions.applied(session_id)
+        with self.lock:
+            # A finished process keeps its last reading; options changed while offline must not show stale values.
+            current = self.processes.get(session_id)
+            if current is None or not self.running(session_id):
+                return None
+            with current.input_lock:
+                return dict(current.applied) if current.applied is not None else None
 
     def context(self, session_id):
-        return self.executions.context(session_id)
+        with self.lock:
+            current = self.processes.get(session_id)
+            if current is None or not self.running(session_id):
+                return None
+            with current.input_lock:
+                return dict(current.context) if current.context is not None else None
 
     def history(self, session_id):
-        return self.executions.history(session_id)
+        journal = self.journal(session_id)
+        with journal.condition:
+            running = self.running(session_id)
+            return {"session_id": session_id, "events": list(journal.events), "running": running,
+                    "busy": running and journal.status == "working"}
 
     def subagent_tasks(self, session_id):
-        return self.executions.subagent_tasks(session_id)
+        if not self.path(session_id).exists():
+            return []
+        journal = self.journal(session_id)
+        with journal.condition:
+            current = self.processes.get(session_id)
+            runtime = getattr(current, 'runtime', None)
+            active_root = ((getattr(current, 'thread_id', None) if runtime == 'codex' else
+                            getattr(current, 'native_id', session_id)) if self.running(session_id) else None)
+            return subagents.snapshot(journal.subagents, active_root, runtime)
 
     def _read(self, session_id, current):
         code = None
         try:
-            current.events.bind(getattr(current, 'native_id', session_id))
+            current.journal.bind_claude_subagents(getattr(current, 'native_id', session_id))
             for line in current.process.stdout:
                 try:
                     record = json.loads(line)
@@ -245,12 +628,12 @@ class Manager:
                         self._control(current, "get_context_usage")
                     if record["type"] == "result" and not record.get("parent_tool_use_id"):
                         with current.input_lock:
-                            current.events.consume(record)
+                            current.journal.consume(record)
                             if current.pending_compact and current.process.poll() is None:
                                 current.pending_compact = False
                                 self._send(session_id, "/compact")
                     else:
-                        current.events.consume(record)
+                        current.journal.consume(record)
                 except (ValueError, KeyError, TypeError) as exc:
                     current.journal.emit("error", text="Claude 协议错误：" + str(exc))
             code = current.process.wait()
@@ -359,18 +742,6 @@ class Manager:
                 return self.goal_controller.launch_maintenance(session, spec, maintenance)
             return self.goal_controller.launch(session, spec)
         session_id = session["session_id"]
-        with closing(store.connect(self.home)) as conn:
-            from . import personal
-            if personal.is_assistant(conn, session_id) and conn.execute(
-                    'SELECT 1 FROM session_runtimes WHERE session_id=?', (session_id,)).fetchone() is None:
-                selected = settings.resolve(conn, purpose='assistant', project=session['project'], session_id=session_id)
-                runtimes.set(conn, session_id, selected['runtime'])
-                models.set(conn, session_id, selected['model'], selected['effort'], runtime=selected['runtime'])
-                if selected.get('resolution') is not None:
-                    detail = {'role': 'assistant', 'selection': {key: selected[key] for key in ('runtime', 'model', 'effort')},
-                              'resolution': selected['resolution']}
-                    board._event(conn, 'runtime:selected', session['project'], session_id, detail, None)
-                    self.journal(session_id).emit('runtime_selection', **detail)
         if resume:
             self._check_offline(session)
         with closing(store.connect(self.home)) as conn:
@@ -378,10 +749,7 @@ class Manager:
             runtime = runtimes.get(conn, session_id)["runtime"]
             native_id=runtimes.get(conn,session_id)['native_id']
             pending=runtime_switch.pending(conn,session_id)
-            from . import personal
-            prompt_role = 'assistant' if personal.is_assistant(conn, session_id) else session['role']
-            permission_mode = settings.effective(conn, project=session['project'], session_id=session_id,
-                purpose=prompt_role if prompt_role in ('leader', 'member', 'assistant') else 'default')['execution']['claude']
+            permission_mode = settings.get_execution(conn)['claude']
         native_events = {'message', 'assistant', 'text', 'tool_result', 'input_delivery', 'turn_result',
                          'identity_handoff', 'subagent', 'compact', 'compact_request'}
         fresh_native = not any(event['type'] in native_events for event in self.journal(session_id).events)
@@ -389,24 +757,40 @@ class Manager:
             raise board.BoardError('原生会话 ID 丢失，不能猜测恢复或偷偷新建')
         native_resume=resume and native_id is not None
         if runtime == "codex":
-            self.native_launcher.codex(session, spec, options, resume=native_resume,
-                                        goal_handler=self.goal_controller.agent_action, maintenance=maintenance)
+            from .codex_runtime import CodexRunning
+            current = CodexRunning(self.home, self.plugin_root, session, spec, options,
+                                   self.journal(session_id), self.send_message,
+                                   process_factory=self.process_factory, resume=native_resume,
+                                   goal_handler=self.goal_controller.agent_action, maintenance=maintenance)
+            self.processes[session_id] = current
             return spawn.command(session_id, session["crew_name"], session["role"], runtime="codex", **options)
         exe = claude_executable()
         if native_id not in (None,session_id):
             raise board.BoardError('Claude 原生身份与 Crew 身份不一致，不能恢复错误会话')
+        install.ensure(self.home, self.plugin_root)
         command = spawn.command(session_id, session["crew_name"], session["role"], native_resume, **options, agent=spec["agent"],
                                 permission_mode=permission_mode, plugin_root=self.plugin_root)
         if spec.get('_workspace_notice'):
             command += ['--append-system-prompt', spec['_workspace_notice']]
         command[0] = exe
         journal = self.journal(session_id)
+        journal.reset_runtime()
         identity = {**spec, "name": session["crew_name"], "role": session["role"], "group": session["group_name"]}
         environment = child_environment(identity)
         environment.update(CREW_SESSION_ID=session_id, CREW_HOME=str(self.home.resolve()))
         environment['PATH'] = str(self.home.resolve() / 'bin') + os.pathsep + environment.get('PATH', '')
-        self.native_launcher.claude(command, key=session_id, cwd=session["cwd"],
-                                    environment=environment, maintenance=maintenance, behavior_role=prompt_role)
+        process = self.process_factory(command, cwd=session["cwd"], env=environment, stdin=subprocess.PIPE,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", bufsize=1,
+                                       creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+        current = Running(process, journal)
+        current.maintenance = maintenance
+        self.processes[session_id] = current
+        self._control(current, "get_settings")
+        self._control(current, "get_context_usage")
+        current.stderr_reader = threading.Thread(target=self._stderr, args=(current,), name="crew-chat-stderr", daemon=True)
+        current.stderr_reader.start()
+        current.reader = threading.Thread(target=self._read, args=(session_id, current), name="crew-chat", daemon=True)
+        current.reader.start()
         return command
 
     @_admitted
@@ -475,7 +859,7 @@ class Manager:
                     with self.lock:
                         if bound_goal is not None:
                             goals.assign(conn, bound_goal, session_id, task, actor=caller_session_id)
-                            goal_receipt.update(self.goal_controller.send(bound_goal, session_id, task, source='crew', intent='work'))
+                            goal_receipt.update(self.goal_controller.send(bound_goal, session_id, task, source='crew'))
                             return
                         plan["command"] = self._launch(session, spec)
                         text = (spec["task"] if chosen_runtime == "codex" else "Read the file " + spec["md"] +
@@ -498,28 +882,11 @@ class Manager:
         identity = identity or str(uuid.uuid4())
         original_text=text if display_text is None else display_text
         handoff_id=None
-        prompt_manifest = None
-        prompt_digest = None
         git_revision = getattr(current, 'git_context_revision', None)
         if text.strip() != '/compact':
             with closing(store.connect(self.home)) as handoff_conn:
                 git_revision, git_context = git_admin.input_context(handoff_conn, logical, git_revision, self.plugin_root)
                 if current.execution is None:
-                    from . import behavior_prompts, personal
-                    person = board.session(handoff_conn, session_id)
-                    role = 'assistant' if personal.is_assistant(handoff_conn, session_id) else getattr(current, 'behavior_role', None) or person['role']
-                    role = role if role in ('leader', 'member', 'assistant') else 'member'
-                    prompt_keys = ('common', 'assistant', 'context') if role == 'assistant' else ('common', role, 'report', 'context')
-                    resolved_prompts = behavior_prompts.resolve(handoff_conn, project=person['project'], session_id=session_id,
-                                                               keys=prompt_keys)
-                    prompt_digest = hashlib.sha256(json.dumps(resolved_prompts, ensure_ascii=False, sort_keys=True).encode('utf-8')).hexdigest()
-                    if getattr(current, 'behavior_prompt_digest', None) != prompt_digest:
-                        prompt_manifest = resolved_prompts
-                        text = behavior_prompts.render(prompt_manifest) + '\n\n' + text
-                    if role == 'assistant':
-                        text = (personal.assistant_context(handoff_conn, session_id)['instructions'] + '\n'
-                                '本次输入消息标识：' + identity + '；真实来源：' + source + '。'
-                                '个人工具引用该message_id，宿主会核对实际用户原话；AI消息不授予用户权限。\n\n' + text)
                     text,handoff_id=runtime_switch.input_text(handoff_conn,session_id,text,identity)
                     summary = self.goal_controller.general_context(handoff_conn, session_id)
                     if summary:
@@ -531,11 +898,8 @@ class Manager:
         if images:
             directory = self.home / "chat" / "files" / session_id
             directory.mkdir(parents=True, exist_ok=True)
-            file_stem = hashlib.sha256(identity.encode('utf-8')).hexdigest()
             for index, image in enumerate(images, 1):
-                # Transport identities stay unchanged in receipts and journals;
-                # a caller-controlled ID must never become a filesystem path.
-                name = file_stem + "-" + str(index) + IMAGE_TYPES[image["media_type"]]
+                name = identity + "-" + str(index) + IMAGE_TYPES[image["media_type"]]
                 (directory / name).write_bytes(base64.b64decode(image["data"], validate=True))
                 files.append(name)
             content = [{"type": "image", "source": {"type": "base64", "media_type": image["media_type"],
@@ -549,10 +913,6 @@ class Manager:
                 if handoff_id is not None:
                     with closing(store.connect(self.home)) as handoff_conn:
                         runtime_switch.accepted(handoff_conn,session_id,identity,handoff_id)
-                if prompt_manifest:
-                    with closing(store.connect(self.home)) as prompt_conn:
-                        behavior_prompts.record_applied(prompt_conn, session_id, prompt_manifest, status='sent', identity='prompt:' + session_id + ':' + identity)
-                    current.behavior_prompt_digest = prompt_digest
                 return result
             except Exception as exc:
                 with closing(store.connect(self.home)) as handoff_conn:runtime_switch.failed(handoff_conn,session_id,exc)
@@ -562,19 +922,12 @@ class Manager:
                    "message": {"role": "user", "content": content}}
         try:
             with current.input_lock:
-                if compact_command(original_text):
-                    current.journal.compact_request(identity)
-                else:
-                    current.journal.message(identity, original_text, source=source, images=files, sender=sender)
+                current.journal.message(identity, original_text, source=source, images=files, sender=sender)
                 current.pending_native_accept=(identity,handoff_id) if handoff_id is not None else None
                 current.journal.set_status("working")
                 current.process.stdin.write(json.dumps(message, ensure_ascii=False) + "\n")
                 current.process.stdin.flush()
                 current.git_context_revision = git_revision
-                if prompt_manifest:
-                    with closing(store.connect(self.home)) as prompt_conn:
-                        behavior_prompts.record_applied(prompt_conn, session_id, prompt_manifest, status='sent', identity='prompt:' + session_id + ':' + identity)
-                    current.behavior_prompt_digest = prompt_digest
         except Exception as exc:
             with closing(store.connect(self.home)) as handoff_conn:runtime_switch.failed(handoff_conn,session_id,exc)
             raise
@@ -663,6 +1016,11 @@ class Manager:
                 raise board.Conflict(MAINTENANCE_HELD)
             with closing(store.connect(self.home)) as routing_conn:
                 session = workspace_execution.execution_session(routing_conn, session)
+                if '_execution' not in session:
+                    if messaging.stopped(routing_conn, session['session_id']):
+                        if source not in ('human', 'qq', 'lark'):
+                            raise board.Conflict('用户已停止此会话；排队消息不能自动恢复它')
+                        messaging.clear_stop(routing_conn, session['session_id'])
             if self.closed:
                 raise board.BoardError("网页服务正在关闭")
             if session["status"] == "closed":
@@ -676,18 +1034,11 @@ class Manager:
                     raise board.Conflict("同一消息标识不能发送不同内容")
                 if prior['status'] == 'accepted':
                     return {'ok': True, 'message_id': identity, 'accepted': True,
-                            'delivery': prior['delivery'], 'duplicate': True,
-                            **({'selection_resolution': prior['selection_resolution']} if 'selection_resolution' in prior else {})}
+                            'delivery': prior['delivery'], 'duplicate': True}
                 if prior['status'] != 'rejected':
                     raise board.Conflict("上次输入的原生接收状态未确认，请先核对会话，避免重复执行")
             elif identity in journal.messages:
                 raise board.Conflict("这条历史输入没有可确认的接收回执，请先核对会话")
-            if '_execution' not in session:
-                with closing(store.connect(self.home)) as routing_conn:
-                    if messaging.stopped(routing_conn, session['session_id']):
-                        if source not in ('human', 'qq', 'lark'):
-                            raise board.Conflict('用户已停止此会话；排队消息不能自动恢复它')
-                        messaging.clear_stop(routing_conn, session['session_id'])
             if '_execution' not in session and session['role'] == 'member' and source not in ('human', 'qq', 'lark'):
                 with closing(store.connect(self.home)) as check_conn:
                     active = next((row['id'] for row in check_conn.execute(
@@ -705,8 +1056,6 @@ class Manager:
                     spec, _ = self._resume_spec(spec_conn, session)
                 self._launch(session, spec, resume=True)
             delivery = 'steered' if steering else 'started'
-            selection = next(({'selection_resolution': event['resolution']} for event in reversed(journal.events)
-                if event['type'] == 'runtime_selection' and event['selection']['runtime'] == self.processes[session_id].runtime), {})
             journal.emit('input_delivery', message_id=identity, digest=digest, status='submitted', delivery=delivery)
             try:
                 identity = self._send(session_id, text, display_text=display_text,
@@ -719,9 +1068,9 @@ class Manager:
                 journal.emit('input_delivery', message_id=identity, digest=digest, status='unknown',
                              delivery=delivery, error=type(exc).__name__, detail=str(exc))
                 raise
-            journal.emit('input_delivery', message_id=identity, digest=digest, status='accepted', delivery=delivery, **selection)
+            journal.emit('input_delivery', message_id=identity, digest=digest, status='accepted', delivery=delivery)
         return {"ok": True, 'message_id': identity, 'accepted': True,
-                'delivery': delivery, **selection}
+                'delivery': delivery}
 
     @_admitted
     def compact(self, session, caller_session_id=None, after_turn=False):
@@ -803,7 +1152,7 @@ class Manager:
                 with journal.condition:
                     journal.refresh()
                     start = journal.events[-1]['seq'] if journal.events else 0
-                journal.compact_request(identity)
+                journal.message(identity, '/compact', source='crew')
                 if getattr(current, 'runtime', 'claude') == 'codex':
                     current.compact()
                     return start
@@ -820,7 +1169,7 @@ class Manager:
             if current.maintenance['owned'] and self.processes.get(key) is current:
                 # The marker stays if stopping fails, so nothing else can feed it.
                 self.stop_managed(key)
-                self.executions.remove(key, current)
+                del self.processes[key]
             current.maintenance = None
 
     def _resume_spec(self, conn, session, now=None):
@@ -1005,7 +1354,6 @@ class Manager:
             if subtype == "get_settings" and response["subtype"] == "success":
                 applied = response["response"]["applied"]
                 current.applied = {"model": applied["model"], "effort": applied["effort"]}
-                current.journal.emit('native_settings', runtime='claude', source='claude:get_settings', **current.applied)
             elif subtype == "get_context_usage" and response["subtype"] == "success":
                 usage = response["response"]
                 current.context = {"used": usage["totalTokens"], "max": usage["maxTokens"], "source": "live"}
@@ -1048,6 +1396,12 @@ class Manager:
             if "effort" in changes and changes["effort"] is None and self.running(session_id):
                 raise ValueError("运行中的会话不能将 effort 恢复默认；请选择具体档位，或停止后设为 null 以在下次启动跟随账号设置")
             options = {**models.get(conn, session_id), **changes}
+            if changes.get("model") == models.HAIKU and "effort" not in changes:
+                options["effort"] = None
+            if "model" not in changes and options["model"] is None and self.running(session_id):
+                applied = self.applied(session_id)
+                if applied is not None and applied["model"] == models.HAIKU:
+                    models.validate_options(applied["model"], options["effort"])
             models.validate_options(**options)
             models.set(conn, session_id, **options, now=now)
             if not self.running(session_id):
@@ -1068,8 +1422,6 @@ class Manager:
                 raise board.BoardError("会话没有在运行")
             if not self.busy(session_id):
                 raise board.Conflict("会话当前空闲，没有正在进行的轮次")
-            if current.execution is not None:
-                self.goal_controller.interrupt_turn(current.execution['id'])
             if getattr(current, "runtime", "claude") == "codex":
                 current.interrupt()
                 return {"ok": True}
@@ -1225,4 +1577,31 @@ class Manager:
                     with journal.condition:
                         journal.condition.notify_all()
 
-            close_runtimes(closing_processes)
+            def close_current(current):
+                if current.process.poll() is None:
+                    if getattr(current, "runtime", "claude") == "codex":
+                        with current.input_lock:
+                            current.stop_reason = 'service_close'
+                        current.close()
+                    else:
+                        with current.input_lock:
+                            current.stop_reason = 'service_close'
+                            try:
+                                current.process.stdin.close()
+                            except OSError:
+                                current.stop_reason = None
+                                raise
+                current.reader.join(timeout=1)
+
+            errors = []
+            if closing_processes:
+                with ThreadPoolExecutor(max_workers=min(8, len(closing_processes)), thread_name_prefix='crew-native-close') as pool:
+                    pending = [(current, pool.submit(close_current, current)) for current in closing_processes]
+                    for current, result in pending:
+                        try:
+                            result.result()
+                        except Exception as exc:
+                            current.journal.emit('error', text='关闭原生执行失败：' + type(exc).__name__ + ': ' + str(exc))
+                            errors.append(exc)
+            if errors:
+                raise errors[0]

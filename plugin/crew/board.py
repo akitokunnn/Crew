@@ -7,7 +7,6 @@ import functools
 import json
 import os
 import re
-import uuid
 
 from . import store, themes
 
@@ -24,17 +23,6 @@ class Conflict(BoardError):
 
 @contextlib.contextmanager
 def transaction(conn):
-    if conn.in_transaction:
-        name = 'board_' + uuid.uuid4().hex
-        conn.execute('SAVEPOINT ' + name)
-        try:
-            yield
-            conn.execute('RELEASE ' + name)
-        except BaseException:
-            conn.execute('ROLLBACK TO ' + name)
-            conn.execute('RELEASE ' + name)
-            raise
-        return
     conn.execute("BEGIN IMMEDIATE")
     try:
         yield
@@ -776,8 +764,7 @@ def unclaim(conn, session_id, pattern=None, now=None):
 
 
 @atomic
-def ask(conn, session_id, question, options=(), recommendation=None, blocking=False, now=None, *, brief=None,
-        goal_execution_id=None):
+def ask(conn, session_id, question, options=(), recommendation=None, blocking=False, now=None, *, brief=None):
     s = session(conn, session_id)
     from . import decision_briefs, trust_mode
     if brief is not None:
@@ -790,9 +777,6 @@ def ask(conn, session_id, question, options=(), recommendation=None, blocking=Fa
     _event(conn, "decision:ask", s["project"], session_id, {"id": decision_id, "question": question}, now)
     if brief is not None:
         decision_briefs._save(conn, decision_id, brief, now)
-    if goal_execution_id is not None:
-        from . import goal_links
-        goal_links.bind(conn, 'decision', decision_id, goal_execution_id)
     trust_mode.auto_answer(conn, decision_id, reason=brief["recommendation_reason"] if brief is not None else None, now=now)
     return decision_id
 

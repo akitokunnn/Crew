@@ -85,9 +85,7 @@ class ManagedRuntimeTests(ShellFixture, unittest.TestCase):
         sid = result['session_id']
         current = self.manager.processes[sid]
         self.assertEqual(runtimes.get(self.conn, sid)['runtime'], 'codex')
-        self.assertEqual(current.calls[0][0], 'send')
-        self.assertTrue(current.calls[0][1].startswith('[Crew common]\n'))
-        self.assertTrue(current.calls[0][1].endswith('\n\n验证独立目标'))
+        self.assertEqual(current.calls[0], ('send', '验证独立目标'))
         self.manager.set_options(self.conn, sid, {'model': 'codex-available-model', 'effort': 'high'})
         self.assertEqual(current.calls[-1][0], 'options')
         self.manager.interrupt(sid)
@@ -97,7 +95,7 @@ class ManagedRuntimeTests(ShellFixture, unittest.TestCase):
 
     def test_peer_delivery_is_queued_while_busy_then_delivered_once(self):
         current = FakeCodex(self.home, PLUGIN, {}, {}, {}, self.manager.journal('s1'), None)
-        self.manager.executions.register('s1', current)
+        self.manager.processes['s1'] = current
         current.journal.set_status('working')
         receipt = self.manager.send_message('s3', 's1', '继续已批准的任务', message_id='stable-call', kind='task')
         again = self.manager.send_message('s3', 's1', '继续已批准的任务', message_id='stable-call', kind='task')
@@ -134,7 +132,6 @@ class RuntimeFeatureHttpTests(ShellFixture, unittest.TestCase):
             'supportedReasoningEfforts':[{'reasoningEffort':'future-effort'}]}], 'nextCursor':None}
         factory = mock.Mock(return_value=native)
         self.server.service.runtime_catalog = Catalog(client_factory=factory, which=lambda name:name)
-        self.server.service.api = web.build_api(self.server.service)
         self.assertEqual(self.request('/api/settings')[1]['runtimes'][1]['models'], [])
         code, result = self.request('/api/runtimes?refresh=1')
         self.assertEqual(code, 200, result)
@@ -296,7 +293,6 @@ class RuntimeFeatureHttpTests(ShellFixture, unittest.TestCase):
     def test_runtime_prepare_confirm_and_idempotent_retry_are_scoped_and_never_start_a_process(self):
         catalog=[{'id':'claude','available':True},{'id':'codex','available':True,'models':[]}]
         self.server.service.runtime_catalog=mock.Mock(snapshot=lambda:catalog,refresh=lambda **kw:catalog)
-        self.server.service.api = web.build_api(self.server.service)
         code,preview=self.request('/api/session/runtime/prepare',{'session_id':'s1','runtime':'codex'})
         self.assertEqual(code,200,preview);self.assertFalse(preview['starts_turn'])
         self.assertEqual(runtimes.get(self.conn,'s1')['runtime'],'claude')
@@ -313,7 +309,6 @@ class RuntimeFeatureHttpTests(ShellFixture, unittest.TestCase):
     def test_runtime_stale_confirmation_is_409_and_state_disables_external_sessions(self):
         catalog=[{'id':'claude','available':True},{'id':'codex','available':True,'models':[]}]
         self.server.service.runtime_catalog=mock.Mock(snapshot=lambda:catalog,refresh=lambda **kw:catalog)
-        self.server.service.api = web.build_api(self.server.service)
         code,preview=self.request('/api/session/runtime/prepare',{'session_id':'s1','runtime':'codex'})
         self.assertEqual(code,200,preview)
         self.server.service.chat.journal('s1').message('new-message','changed after preview')

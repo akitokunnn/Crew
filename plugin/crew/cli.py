@@ -214,8 +214,6 @@ def parser():
     a.add_argument("--steps", required=True)
     a.add_argument("--verify", dest="verification", required=True)
     a.add_argument("--blocking", action="store_true")
-    a.add_argument("--operation-key", help="同一实际人工操作的明确标识；跨任务相同标识复用原 TODO")
-    a.add_argument("--tag", dest="tags", action="append", default=[])
     a.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
     a = todos.add_parser("withdraw")
     a.add_argument("id", type=int)
@@ -287,9 +285,7 @@ def parser():
                    help='默认 information 仅归档、不唤醒；决定用 decision，任务用 task，结果用 result，阻塞用 blocker。')
     a.add_argument('--message-id', help='调用方稳定重试编号；同一编号只用于完全相同的接收者、正文和类型。')
     a.add_argument('--reply-to', help='回复原协作消息编号，按其已记录的会话/任务归属回送。')
-    for namespace, actions in (('goal', ('create','status','start','pause','resume','cancel','reopen','amend','assign','schedule','user.forward',
-                                       'task.detail','task.refine','report.get','report.update','attachments.list','attachment.add',
-                                       'versions.list','versions.preview','versions.file','version.capture','version.restore','report-template','finish')),
+    for namespace, actions in (('goal', ('create','status','start','pause','resume','cancel','reopen','amend','assign','report-template','finish')),
                                ('context', ('inspect','retrieve','put','correct','expire'))):
         goal_parser = command(namespace, True)
         goal_parser.set_defaults(json=True)
@@ -314,11 +310,6 @@ def parser():
             entry.add_argument('--priority', type=int, default=argparse.SUPPRESS)
             entry.add_argument('--confirmed', action='store_true', default=argparse.SUPPRESS)
             entry.add_argument('--start', action='store_true', default=argparse.SUPPRESS)
-    a = command('personal', True)
-    a.add_argument('personal_action')
-    a.add_argument('--data', default='{}', help='助手操作参数 JSON；真实用户指令由宿主按 message-id 读取')
-    a.add_argument('--message-id')
-    a.add_argument('--request-id')
     a = command("web")
     a.add_argument("--port", type=int, default=47811)
     a.add_argument("--open", action="store_true")
@@ -723,8 +714,8 @@ def execute(conn, args, cwd, agents_provider):
         if execution_id:
             from . import goal_links, goals
             with goals.transaction(conn):
-                number = board.ask.__wrapped__(conn, _session_id(args), args.question, args.option, args.recommend,
-                    args.blocking, brief=brief, goal_execution_id=execution_id)
+                number = board.ask.__wrapped__(conn, _session_id(args), args.question, args.option, args.recommend, args.blocking, brief=brief)
+                goal_links.bind(conn, 'decision', number, execution_id)
                 return number
         return board.ask(conn, _session_id(args), args.question, args.option, args.recommend, args.blocking, brief=brief)
     if cmd == "decision":
@@ -777,16 +768,21 @@ def execute(conn, args, cwd, agents_provider):
     if cmd == "report":
         return board.report(conn, _session_id(args), args.text)
     if cmd in ("todo", "todos"):
-        from . import personal, todo
+        from . import todo
         project = _project(conn, args, cwd)
         action = getattr(args, "action", None) or "list"
         if action == "add":
             execution_id = _goal_item_execution(conn, args)
-            return personal.add_native_todo(conn, _session_id(args), args.title, args.steps, args.verification,
-                execution_id=execution_id, operation_key=args.operation_key, tags=args.tags, blocking=args.blocking)
+            if execution_id:
+                from . import goal_links, goals
+                with goals.transaction(conn):
+                    result = todo.add.__wrapped__(conn, _session_id(args), args.title, args.steps, args.verification, args.blocking)
+                    goal_links.bind(conn, 'todo', result['id'], execution_id)
+                    return result
+            return todo.add(conn, _session_id(args), args.title, args.steps, args.verification, args.blocking)
         if action == "withdraw":
             return todo.withdraw(conn, _session_id(args), args.id, args.reason)
-        return personal.list_todos(conn, project, include_done=args.all)
+        return todo.list(conn, project, all=args.all)
     if cmd == "doc":
         from . import documents
         project = _project(conn, args, cwd)
@@ -979,19 +975,6 @@ def main(argv=None, agents_provider=claude_agents, cwd=None, plugin_root=None):
                 **({'reply_to': args.reply_to} if args.reply_to is not None else {}),
                 **({'message_id': args.message_id} if args.message_id else {})})
             _emit(value, args.json, args.command)
-            return 0
-        if args.command == 'personal':
-            from . import spawn
-            data = json.loads(args.data)
-            if not isinstance(data, dict):
-                raise board.BoardError('助手操作 data 必须为对象')
-            with contextlib.closing(store.connect(args.home)) as conn:
-                project = _project(conn, args, cwd)
-            value = spawn.request_start(args.home, project, '/api/assistant/native-action', {
-                'actor_session_id': _session_id(args), 'action': args.personal_action, 'data': data,
-                'message_id': args.message_id, 'request_id': args.request_id,
-                'execution_id': os.environ.get('CREW_EXECUTION_ID')})
-            _emit(value, True, args.command)
             return 0
         if args.command in ('goal', 'context'):
             value = _goal_command(args, cwd)

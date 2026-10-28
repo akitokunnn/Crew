@@ -206,7 +206,7 @@ class CodexRunning:
     maintenance = None
 
     def __init__(self, home, plugin_root, session, spec, options, journal, send_message,
-                 process_factory=subprocess.Popen, *, resume=False, execution=None, goal_handler=None, maintenance=None, discussion_only=False):
+                 process_factory=subprocess.Popen, *, resume=False, execution=None, goal_handler=None, maintenance=None):
         # Import lazily so this independent driver does not own schema migration.
         from . import runtimes
         self.home, self.plugin_root = Path(home).resolve(), Path(plugin_root).resolve()
@@ -217,8 +217,6 @@ class CodexRunning:
         self.session, self.spec, self.journal = dict(session), dict(spec), journal
         self.session_id, self.input_lock = session["session_id"], threading.RLock()
         self.execution = execution
-        self.discussion_only = discussion_only
-        self.discussion_policy = None
         # Known before the first status write: maintenance never changes goal execution state.
         self.maintenance = maintenance
         self.goal_handler = goal_handler
@@ -262,11 +260,7 @@ class CodexRunning:
             if not resume and spec.get('agent') == 'crew:git':
                 role = 'git'
             mode_context = trust_mode.context(conn, self.session_id)
-            from . import personal
-            purpose = 'assistant' if personal.is_assistant(conn, self.session_id) else session['role']
-            self.effective_settings = settings.effective(conn, project=session['project'], session_id=self.session_id,
-                purpose=purpose if purpose in ('leader', 'member', 'assistant') else 'default')
-            sandbox_mode = 'read-only' if self.discussion_only else self.effective_settings['execution']['codex']
+            sandbox_mode = settings.get_execution(conn)['codex']
         if resume and not native_id:
             raise board.BoardError("Codex 原生会话 ID 丢失，不能恢复原会话")
         skill = self.plugin_root / "skills" / role / "SKILL.md"
@@ -301,7 +295,7 @@ class CodexRunning:
         # into incompatible writable policies in the Windows sandbox.
         cwd = str(Path(session["cwd"]).resolve()) if os.name == 'nt' else session["cwd"]
         params = {"cwd": cwd, "developerInstructions": instructions, "config": config,
-                  "sandbox": sandbox_mode, "approvalPolicy": "never" if sandbox_mode == 'danger-full-access' or self.discussion_only else 'on-request'}
+                  "sandbox": sandbox_mode, "approvalPolicy": "never" if sandbox_mode == 'danger-full-access' else 'on-request'}
         if options.get("model") is not None:
             params["model"] = options["model"]
         self._lease = RuntimeLease(self.home, execution['id'] if execution else self.session_id).acquire()
@@ -327,22 +321,15 @@ class CodexRunning:
                                           process_factory=own_process)
             self.process = self.client.process
             self._approval_process = self.process
-            if self.discussion_only:
-                from . import codex_discussion
-                params['config'], self.discussion_policy = codex_discussion.prepare(self.client, cwd, config)
             if native_id:
                 if execution:
                     codex_visibility.restore_internal(self.client, native_id)
                 result = self.client.resume_thread(native_id, **params)
             else:
-                result = self.client.start_thread(ephemeral=False, dynamicTools=[] if self.discussion_only else codex_tools.tool_specs(), **params)
+                result = self.client.start_thread(ephemeral=False, dynamicTools=codex_tools.tool_specs(), **params)
             self.thread_id = result["thread"]["id"]
             if native_id and self.thread_id != native_id:
                 raise board.BoardError("Codex 返回了不同的恢复会话，已停止")
-            if self.discussion_only:
-                self.discussion_policy = {**self.discussion_policy,
-                    **codex_discussion.verify(self.client, self.thread_id, result)}
-                self.journal.emit('discussion_policy', **self.discussion_policy)
             self.sync_title()
             with self.input_lock:
                 self._events = codex_events.Events(self.thread_id)
@@ -353,7 +340,6 @@ class CodexRunning:
                             'status': 'unknown', 'detail': '会话重新连接，子代理状态未确认'})
                 self._subagents = codex_subagents.Events(self.thread_id, self.journal.subagents.values())
                 self.applied = {"model": result["model"], "effort": result.get("reasoningEffort")}
-                self.journal.emit('native_settings', runtime='codex', source='codex:thread/resume' if native_id else 'codex:thread/start', **self.applied)
             with closing(store.connect(self.home)) as conn:
                 if execution:
                     goals.bind_native(conn, execution['id'], 'codex', self.thread_id,
@@ -398,10 +384,9 @@ class CodexRunning:
             if self.execution:
                 active = goals.get_execution(conn, self.execution['id'])
                 if active['status'] not in goals.TERMINAL:
-                    gate = goals.dispatch_check(conn, active['goal_id'], execution_id=active['id'], automatic=not self.discussion_only)
+                    gate = goals.dispatch_check(conn, active['goal_id'], execution_id=active['id'])
                     if status != 'working' or gate['allowed']:
-                        goals.set_execution_status(conn, active['id'], 'running' if status == 'working' else status,
-                                                   allow_discussion=self.discussion_only)
+                        goals.set_execution_status(conn, active['id'], 'running' if status == 'working' else status)
                 return
             session = board.session(conn, self.session_id)
             if (session["status"] not in ("closed", status) and not board.is_archived(conn, self.session_id)):
@@ -542,8 +527,6 @@ class CodexRunning:
                     raise board.Conflict(reason)
 
     def _tool(self, params):
-        if self.discussion_only:
-            return {"success": False, "contentItems": [{"type": "inputText", "text": "本任务尚未授权施工，讨论执行不能调用 Crew 操作工具"}]}
         call_id = params.get("callId")
         if not isinstance(call_id, str) or not call_id or params.get("threadId") != self.thread_id:
             return {"success": False, "contentItems": [{"type": "inputText", "text": "Invalid Crew tool request identity"}]}
@@ -574,9 +557,6 @@ class CodexRunning:
         with self.input_lock:
             if self._closing or self.process.poll() is not None:
                 raise board.BoardError("Codex 会话已经离线")
-            if self.discussion_only:
-                from . import codex_discussion
-                self.discussion_policy = codex_discussion.verify(self.client, self.thread_id)
             if self.journal.status == "working":
                 if source not in ("human", "qq", "lark"):
                     raise board.Conflict("Codex 正在回复，自动消息等待当前轮次结束")
@@ -590,12 +570,11 @@ class CodexRunning:
                                      source=source, sender=sender, images=image_files)
                 self.client.steer(input=inputs, turn_id=self._events.turn_id)
                 return identity
-            if text.strip() == "/compact":
-                self.journal.compact_request(identity)
-                self.compact()
-                return identity
             self.journal.message(identity, text if display_text is None else display_text,
                                  source=source, sender=sender, images=image_files)
+            if text.strip() == "/compact":
+                self.compact()
+                return identity
             inputs = [{"type": "image", "url": "data:" + item["media_type"] + ";base64," + item["data"]}
                       for item in images or []]
             with closing(store.connect(self.home)) as trust_conn:
@@ -609,8 +588,7 @@ class CodexRunning:
                 conn.execute("UPDATE sessions SET last_prompt=? WHERE session_id=?", ((text if display_text is None else display_text)[:200], self.session_id))
             self._status("working")
             try:
-                policy = {'sandboxPolicy': dict(codex_discussion.SANDBOX_POLICY), 'approvalPolicy': 'never'} if self.discussion_only else {}
-                result = self.client.start_turn(input=inputs, **policy)
+                result = self.client.start_turn(input=inputs)
                 # Pin the accepted turn while holding input_lock. A delayed
                 # completion from the previous turn must not capture the new
                 # event adapter before its turn/started callback is drained.

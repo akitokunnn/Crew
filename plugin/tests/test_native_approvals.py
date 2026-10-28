@@ -1,7 +1,6 @@
 """Owned approval lifecycle, real SQLite/HTTP, and real no-model JSONL transport."""
 import tests
 from contextlib import closing
-from functools import partial
 import json
 from pathlib import Path
 import subprocess
@@ -121,8 +120,6 @@ for line in sys.stdin:
     elif method == 'thread/start':
         cwd = params['cwd']
         send({'id':message['id'],'result':{'thread':{'id':'thread-fixture'},'model':'protocol-fixture','reasoningEffort':None}})
-    elif method == 'thread/name/set':
-        send({'id':message['id'],'result':{}})
     elif method == 'turn/start':
         turn += 1
         target = 'turn-' + str(turn)
@@ -132,18 +129,14 @@ for line in sys.stdin:
         waiting[request] = target
         send({'id':request,'method':'item/commandExecution/requestApproval','params':{'threadId':'thread-fixture',
             'turnId':target,'itemId':request,'cwd':cwd,'command':'git status','reason':'fixture review'}})
-    elif 'id' in message:
-        send({'id':message['id'],'error':{'code':-32601,'message':'Unsupported fixture method: '+str(method)}})
 '''
         def process_factory(command, **kwargs):
             return subprocess.Popen([sys.executable, '-u', '-c', server], **kwargs)
         journal = chat.Journal(self.home / 'chat' / 'worker.jsonl')
-        with mock.patch('crew.codex_runtime._ObservedClient', partial(self.real_client, timeout=3)):
+        with mock.patch('crew.codex_runtime._ObservedClient', self.real_client):
             running = codex_runtime.CodexRunning(self.home, self.plugin, self.session, {'agent': None},
                 {'model': None, 'effort': None}, journal, None, process_factory=process_factory)
-        self.addCleanup(running.reader_done.wait, 3)
         self.addCleanup(running.close)
-        self.assertFalse(any('标题同步失败' in event.get('text', '') for event in journal.events))
         for number, allow in ((1, False), (2, True)):
             running.send('Protocol fixture turn', 'message-' + str(number))
             with journal.condition:
@@ -241,7 +234,7 @@ for line in sys.stdin:
         thread = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': .02})
         thread.start()
         self.assertTrue(server.service.agents_ready.wait(5))
-        server.service.chat.executions.register('worker', running)
+        server.service.chat.processes['worker'] = running
         def close():
             server.shutdown()
             server.server_close()
@@ -305,8 +298,8 @@ for line in sys.stdin:
         client = self.clients[-1]
         running.send('One bounded task', 'initial')
         server, request = self.start_http(running)
-        server.service.chat.executions.remove('worker')
-        server.service.chat.executions.register(execution['id'], running)
+        server.service.chat.processes.clear()
+        server.service.chat.processes[execution['id']] = running
         result, done = self.pending(running, client)
         identity = running.pending_approvals()[0]['id']
         with closing(store.connect(self.home)) as conn:

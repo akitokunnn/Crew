@@ -17,7 +17,6 @@ from urllib.request import ProxyHandler, Request, build_opener
 from crew import session_ops, board, codex_runtime, decision_flow, store, themes, usage, web
 from test_shell import NOW, PLUGIN, ShellFixture
 from test_usage import assistant
-from crew.claude_events import ClaudeEvents
 
 
 class WebContractTests(ShellFixture, unittest.TestCase):
@@ -35,7 +34,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         poll = mock.patch.object(web.Service, "_poll_notices", return_value=None)
         poll.start()
         self.addCleanup(poll.stop)
-        executable = mock.patch("crew.native_process.shutil.which", return_value="C:/fixture/claude.exe")
+        executable = mock.patch("crew.chat.shutil.which", return_value="C:/fixture/claude.exe")
         executable.start()
         self.addCleanup(executable.stop)
         self.server = web.create_server(self.home, PLUGIN, port=0, cwd=self.project,
@@ -374,14 +373,13 @@ class WebContractTests(ShellFixture, unittest.TestCase):
 
     def test_unread_and_reply_sound_ignore_eighteen_tool_calls(self):
         journal = self.service.chat.journal("s3")
-        events = ClaudeEvents(journal)
         for index in range(18):
-            events.consume({"type": "assistant", "message": {"id": "tool-" + str(index), "content": [
+            journal.consume({"type": "assistant", "message": {"id": "tool-" + str(index), "content": [
                 {"type": "tool_use", "id": "call-" + str(index), "name": "Bash", "input": {"command": "git status"}}]}})
             journal.emit("tool_result", tool_use_id="call-" + str(index), content="clean", is_error=False)
         leader = self.state()["leaders"][0]
         self.assertEqual((leader["unread"], leader["last_reply_id"]), (0, None))
-        events.consume({"type": "assistant", "message": {"id": "answer", "content": [
+        journal.consume({"type": "assistant", "message": {"id": "answer", "content": [
             {"type": "text", "text": "Git 检查完成，工作区干净。"}]}})
         leader = self.state()["leaders"][0]
         self.assertEqual((leader["unread"], leader["last_reply_id"]), (1, "answer"))
@@ -735,13 +733,57 @@ class WebContractTests(ShellFixture, unittest.TestCase):
                 self.assertTrue(content)
                 self.assertEqual(headers["Content-Type"], media)
                 self.assertEqual(headers["Cache-Control"], "public, max-age=604800")
-        for path in ("/", "/api/state"):
+        for path in ("/", "/app.js", "/chat.js", "/channel.js", "/themes.js", "/style.css", "/vendor/markdown-it.min.js", "/api/state"):
             with self.subTest(path=path):
                 code, _, headers = self.request(path, raw=True)
                 self.assertEqual(code, 200)
                 self.assertEqual(headers["Cache-Control"], "no-store")
         self.assertEqual(self.request("/api/session/timeline", project="demo", session_id="s1")[0], 404)
         self.assertEqual(self.request("/api/lease/give", {"resource": "phone", "reason": "old control"})[0], 404)
+
+    def test_git_frontend_assets_are_loaded_with_no_store_and_native_page_contract(self):
+        code, html, _ = self.request("/", raw=True)
+        self.assertEqual(code, 200)
+        html = html.decode("utf-8")
+        self.assertIn('href="/git.css"', html)
+        self.assertLess(html.index('src="/git.js"'), html.index('src="/app.js"'))
+        assets = {}
+        for path, media in (("/git.js", "text/javascript"), ("/git.css", "text/css")):
+            with self.subTest(path=path):
+                code, content, headers = self.request(path, raw=True)
+                self.assertEqual(code, 200)
+                self.assertEqual(headers["Content-Type"].split(";")[0], media)
+                self.assertEqual(headers["Cache-Control"], "no-store")
+                assets[path] = content.decode("utf-8")
+        script = assets["/git.js"]
+        for contract in ('data-git-branch=', 'data-git-tab="graph"', 'data-git-tab="branches"',
+                         'class="git-conflicts"', 'data-git-act="load-more"', 'data-git-act="active"',
+                         'data-git-act="settings"', 'data-git-act="refresh"', 'data-git-act="fetch"',
+                         'git-github-unavailable',
+                         'data-git-request=', 'git-requests-title', '和 git 管理员聊',
+                         'aria-pressed=', 'aria-selected=', 'data-git-from=', 'data-git-to='):
+            self.assertIn(contract, script)
+        self.assertIn('更新视图', script)
+        self.assertIn('重新读取视图，不拉取远端', script)
+        self.assertIn('git-read-meta', script)
+        self.assertIn('按需更新', script)
+        self.assertNotIn('setInterval', script)
+        self.assertIn('prefers-reduced-motion:reduce', assets["/git.css"])
+        self.assertIn('var(--fs)', assets["/git.css"])
+        for contract in ('ROW = 34', 'tabindex="0"', 'aria-haspopup="dialog"',
+                         'git-merge-node', 'git-merge-label', 'git-stable-marker',
+                         'git-recent-merge', '/api/git/commit?project=', 'copy-sha',
+                         'expand-body', 'close-detail', 'pointerover', 'pointerout'):
+            self.assertIn(contract, script)
+        self.assertIn('-webkit-line-clamp:8', assets["/git.css"])
+        self.assertNotIn('git-commit-top', script)
+        self.assertNotIn('git-commit-bottom', script)
+        self.assertNotIn('66px', assets["/git.css"])
+        _, app, _ = self.request("/app.js", raw=True)
+        self.assertIn('data-view="git"', app.decode("utf-8"))
+        self.assertIn('CrewGit.mount', app.decode("utf-8"))
+        self.assertIn('item.is_git_admin', app.decode("utf-8"))
+        self.assertIn('git-admin-tag', app.decode("utf-8"))
 
 
 class GitCiScheduleTests(unittest.TestCase):
@@ -756,7 +798,58 @@ class GitCiScheduleTests(unittest.TestCase):
         self.assertEqual(service.stop.wait.call_args_list, [mock.call(300)] * 2)
 
 
+class FrontendGitContractTests(unittest.TestCase):
+    def test_merge_requests_active_first_escaped_details_and_admin_chat(self):
+        script = r'''
+const assert = require("node:assert/strict"), fs = require("node:fs"), vm = require("node:vm");
+const callbacks = new Map(), page = {scrollTop:0};
+const host = {innerHTML:"", querySelector:selector => selector === ".git-page" ? page : null,
+  querySelectorAll:() => [], addEventListener:(name, fn) => callbacks.set(name, fn), removeEventListener:() => {}};
+const latest = {sha:"abcdef123", subject:"Fixture", author:"Crew", time:"2026-10-24T00:00:00Z"};
+const request = (id, status) => ({id, status, branch:"feature/<review>", session_id:"member", requester_name:"<member>",
+  description:"Done <script>alert(1)</script>", note:"Tested & reviewed", pr_number:42, created_at:latest.time});
+const data = {enabled:true, repository:"Fixture", config:{base:"develop", stable:null, admin_session_id:"git-admin"},
+  base:{name:"develop", latest}, stable:null, requests:[request(7,"merged"),request(1,"open"),request(8,"rejected"),request(2,"waiting_user"),request(3,"merging")],
+  branches:[], remote_only:[], commits:[], ref_unique_commits:{}, next_offset:null, last_fetch_at:null,
+  github:{runs:[], pull_requests:[{number:42, title:"Feature PR", state:"OPEN", head:"feature/<review>", ci:"success", url:"https://example.test/pull/42", draft:false}]}};
+const sandbox = {setInterval:() => 1, clearInterval:() => {}};
+vm.createContext(sandbox);
+vm.runInContext(fs.readFileSync(process.argv[1], "utf8") + "\nglobalThis.component = CrewGit;", sandbox);
+sandbox.component.mount(host, {project:"demo", api:async () => data, toast:() => {}, onChanged:async () => {}});
+setImmediate(() => {
+  const html = host.innerHTML;
+  assert.ok(html.includes('data-act="leader" data-id="git-admin">和 git 管理员聊'));
+  assert.deepEqual(Array.from(html.matchAll(/data-git-request="(\d+)"/g), match => Number(match[1])), [3,2,1,8,7]);
+  for (const label of ["合并中", "等用户拍板", "待处理", "已拒绝", "已合并", "3 件待处理"]) assert.ok(html.includes(label), label);
+  for (const value of ["feature/&lt;review&gt;", "&lt;member&gt;", "&lt;script&gt;", "Tested &amp; reviewed", 'href="https://example.test/pull/42"']) assert.ok(html.includes(value), value);
+  assert.ok(!html.includes("<script>alert(1)</script>"));
+  sandbox.component.unmount();
+});
+'''
+        result = subprocess.run(["node", "-e", script, str(PLUGIN / "crew" / "web" / "git.js")],
+                                capture_output=True, text=True, encoding="utf-8", timeout=10)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
 class FrontendThemeContractTests(unittest.TestCase):
+    def test_theme_assets_settings_and_project_list_contract(self):
+        assets = PLUGIN / "crew" / "web"
+        index = (assets / "index.html").read_text(encoding="utf-8")
+        app = (assets / "app.js").read_text(encoding="utf-8")
+        css = (assets / "style.css").read_text(encoding="utf-8")
+        self.assertIn('id="project-favicon"', index)
+        self.assertLess(index.index('src="/themes.js"'), index.index('src="/app.js"'))
+        for contract in ('data-act="project-theme"', 'class="theme-swatches"',
+                         'aria-pressed="${state.project.theme === item.id}"',
+                         'api("/api/project/theme", {project:state.project.name, theme:button.dataset.themeId})',
+                         'CrewTheme.projectStyle(state.themes, item.theme)',
+                         'addEventListener("change", applyTheme)'):
+            self.assertIn(contract, app)
+        self.assertIn('.dot.working{background:var(--working)', css)
+        self.assertIn('.st.working{color:var(--working-text)}', css)
+        self.assertIn('.m-lead .body a{color:var(--accent-text)', css)
+        self.assertIn('.theme-option[aria-pressed="true"]', css)
+
     def test_each_project_theme_applies_all_tokens_and_favicon_in_both_modes(self):
         script = r'''
 const assert = require("node:assert/strict"), fs = require("node:fs"), vm = require("node:vm");
@@ -875,17 +968,9 @@ const stats = {sha:sha(10),file_count:12,additions:139,deletions:27,files:Array.
                                 capture_output=True, text=True, encoding="utf-8", timeout=10)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-    def test_git_requests_and_origin_relations_render_through_the_public_view(self):
+    def test_git_origin_relations_in_both_cards_and_local_branch_rows(self):
         self.run_component(r'''
-const request = (id,status) => ({id,status,branch:'feature/<review>',requester_name:'<member>',
-  description:'Done <script>alert(1)</script>',note:'Tested & reviewed',pr_number:17,created_at:fixture.base.latest.time});
-fixture.requests = [request(7,'merged'),request(1,'open'),request(8,'rejected'),request(2,'waiting_user'),request(3,'merging')];
 mount('demo'); await flush();
-assert(host.innerHTML.includes('data-act="leader" data-id="git-admin"'));
-assert.deepEqual(Array.from(host.innerHTML.matchAll(/data-git-request="(\d+)"/g),match=>Number(match[1])),[3,2,1,8,7]);
-for(const label of ['合并中','等用户拍板','待处理','已拒绝','已合并','3 件待处理'])assert(host.innerHTML.includes(label),label);
-for(const value of ['feature/&lt;review&gt;','&lt;member&gt;','&lt;script&gt;','Tested &amp; reviewed',`href="${pr.url}"`])assert(host.innerHTML.includes(value),value);
-assert(!host.innerHTML.includes('<script>alert(1)</script>'));
 const selectTab = name => { const target = {dataset:{gitTab:name},closest:selector => selector === '[data-git-tab]' ? target : null}; click(target); };
 for (const relation of ['落后 origin 15 个提交','领先 origin 2 个提交','与 origin 分叉（领先 3、落后 1 个提交）','：没有 origin']) {
   fixture.base.origin_relation = '本地 develop ' + relation;
@@ -1062,7 +1147,15 @@ function fixture() {
                                 capture_output=True, text=True, encoding="utf-8", timeout=10)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-    def test_channel_markdown_escapes_untrusted_content_and_unmounts(self):
+    def test_channel_assets_navigation_and_shared_markdown_renderer(self):
+        assets = PLUGIN / "crew" / "web"
+        index = (assets / "index.html").read_text(encoding="utf-8")
+        app = (assets / "app.js").read_text(encoding="utf-8")
+        self.assertLess(index.index('src="/chat.js"'), index.index('src="/channel.js"'))
+        self.assertLess(index.index('src="/channel.js"'), index.index('src="/app.js"'))
+        self.assertLess(app.index('data-view="all"'), app.index('data-view="channel"'))
+        self.assertIn('state.channel.unread', app)
+        self.assertIn('"channel", "adopt"', app)
         self.run_component(r'''
 const f = fixture();
 f.messages[24].body = '**标题：**正文\n\n<script>alert(1)</script>\n\n[链接](https://example.com)';

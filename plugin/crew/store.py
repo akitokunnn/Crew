@@ -5,7 +5,6 @@ import sqlite3
 from pathlib import Path
 
 SCHEMA_FILE = Path(__file__).with_name("schema.sql")
-TASK_SCHEMA_FILE = Path(__file__).with_name('task_schema.sql')
 BUSY_TIMEOUT_MS = 5000
 
 
@@ -27,7 +26,6 @@ def connect(home):
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA_FILE.read_text(encoding="utf-8"))
-    conn.executescript(TASK_SCHEMA_FILE.read_text(encoding='utf-8'))
     _migrate_channel_digests(conn)
     _migrate_remote_notice_source(conn)
     _migrate_peer_message_receipts(conn)

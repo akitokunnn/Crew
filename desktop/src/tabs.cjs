@@ -22,12 +22,11 @@ class WorkspaceTabs {
     this.activityTimer?.unref?.();
   }
 
-  _public(tab) { if(tab.kind==='workbench')return{id:tab.id,name:'工作台',project:null,kind:'workbench',loading:tab.loading,error:tab.error};
-    return { id: tab.id, name: tab.project.display_name || tab.project.name, project: tab.project.name, loading: tab.loading, error: tab.error,
+  _public(tab) { return { id: tab.id, name: tab.project.display_name || tab.project.name, project: tab.project.name, loading: tab.loading, error: tab.error,
     readOnly:Boolean(tab.project.read_only), activity:tab.project.read_only ? {tone:'idle',label:'已保存的只读历史',badge:0,unread:0,items:[],stale:false,error:''} : tab.activity||null }; }
   async refreshActivity() {
     if(this.disposed||this.activityBusy||!this.readActivity||!this.entries.size)return;
-    const tabs=[...this.entries.values()].filter(tab=>tab.kind!=='workbench'&&!tab.project.read_only);
+    const tabs=[...this.entries.values()].filter(tab=>!tab.project.read_only);
     if(!tabs.length)return;
     this.activityBusy=true;let changed=false;
     try{
@@ -44,17 +43,14 @@ class WorkspaceTabs {
     finally{this.activityBusy=false;if(changed&&!this.disposed)this._notify();}
   }
   state() {
-    const workbench=this.entries.get('workbench');
-    return { tabs: [...(workbench?[this._public(workbench)]:[]),{ id: 'home', name: '工作区管理', project: null, loading: false, error: false },
-      ...[...this.entries.values()].filter(tab=>tab.kind!=='workbench').map(tab => this._public(tab))], activeId: this.activeId };
+    return { tabs: [{ id: 'home', name: '工作区', project: null, loading: false, error: false },
+      ...[...this.entries.values()].map(tab => this._public(tab))], activeId: this.activeId };
   }
   get activeView() { return this.entries.get(this.activeId)?.view || null; }
   reconnect(origin) {
-    if ([...this.entries.values()].some(tab=>tab.kind!=='workbench')) throw new Error('已有工作区标签时不能更换服务地址');
+    if (this.entries.size !== 0) throw new Error('已有工作区标签时不能更换服务地址');
     this.origin = loopback(origin);
     this._notify();
-    const workbench=this.entries.get('workbench');
-    if(workbench)return this._load(workbench,this.origin+'/');
   }
   _notify() { if (!this.disposed) this.onChange(this.state()); }
   _alive(tab) { return !this.disposed && this.entries.get(tab.id) === tab; }
@@ -63,9 +59,9 @@ class WorkspaceTabs {
       tab.error = true; tab.loading = false; tab.view.setVisible(false); this._notify();
     }
   }
-  _openProject(tab, name, url) {
+  _openProject(tab, name) {
     try {
-      const pending = url ? this.openProject(name,{url}) : this.openProject(name);
+      const pending = this.openProject(name);
       if (pending && typeof pending.catch === 'function') pending.catch(error => this.onNavigationError(error));
     } catch (error) { this.onNavigationError(error); }
   }
@@ -75,23 +71,12 @@ class WorkspaceTabs {
     try { url = new URL(value); } catch (_) { return { kind: 'blocked' }; }
     if (url.username || url.password) return { kind: 'blocked' };
     if (url.origin === this.origin && url.pathname === '/') {
-      const hashQuery=url.hash.includes('?')?url.hash.slice(url.hash.indexOf('?')+1):'';
-      const hash=new URLSearchParams(hashQuery);
-      if(hash.getAll('project').length>1||hash.get('data')==='mock')return{kind:'blocked'};
       const settings = url.searchParams.getAll('workspace-settings');
-      if (settings.length === 1 && tab.kind!=='workbench' && settings[0] === tab.project.name && url.searchParams.size === 1) return { kind:'workspace-settings' };
-      if([...url.searchParams.keys()].some(key=>!['project','legacy','settings'].includes(key))||
-         [...url.searchParams.keys()].some(key=>url.searchParams.getAll(key).length!==1))return{kind:'blocked'};
+      if (settings.length === 1 && settings[0] === tab.project.name && url.searchParams.size === 1) return { kind:'workspace-settings' };
       const names = url.searchParams.getAll('project');
-      const legacy=url.searchParams.get('legacy');
-      if(legacy!==null&&legacy!=='1'||names.length&& !names[0]||url.searchParams.has('settings')&&legacy!=='1')return{kind:'blocked'};
-      if(tab.kind==='workbench')return legacy==='1'&&names.length?{kind:'project',name:names[0],url:url.href}:{kind:'same',url:url.href};
-      if(!names.length)return{kind:'workbench',url:url.href};
-      if(legacy!=='1'&&url.hash&&!hash.get('project')){url.searchParams.delete('project');return{kind:'workbench',url:url.href};}
-      const project=legacy==='1'?names[0]:(hash.get('project')||names[0]);
-      if(project===tab.project.name)return{kind:'same',url:url.href};
-      url.searchParams.set('project',project);
-      return{kind:'project',name:project,url:url.href};
+      if (names.length === 0 && url.searchParams.size === 0) return { kind: 'home' };
+      if (names.length !== 1 || !names[0] || url.searchParams.size !== 1) return { kind: 'blocked' };
+      return { kind: names[0] === tab.project.name ? 'same' : 'project', name: names[0] };
     }
     return { kind: ['http:', 'https:'].includes(url.protocol) ? 'external' : 'blocked' };
   }
@@ -103,9 +88,9 @@ class WorkspaceTabs {
     event.preventDefault();
     // A subframe cannot use navigation to select workspaces or open a browser.
     if (!isMainFrame) return;
-    if (target.kind === 'workbench') { void this.openWorkbench(target.url).catch(error=>this.onNavigationError(error)); return; }
+    if (target.kind === 'home') { this.select('home'); return; }
     if (target.kind === 'workspace-settings') { this.workspaceSettings(tab.project.name); return; }
-    if (target.kind === 'project') { this._openProject(tab, target.name, target.url); return; }
+    if (target.kind === 'project') { this._openProject(tab, target.name); return; }
     if (target.kind === 'external' && !redirect) this.external(url);
     else this._error(tab);
   }
@@ -118,9 +103,9 @@ class WorkspaceTabs {
       if (this._alive(tab)) {
         const target = this._destination(tab, url);
         if (target.kind === 'same') this.select(tab.id);
-        else if (target.kind === 'workbench') void this.openWorkbench(target.url).catch(error=>this.onNavigationError(error));
+        else if (target.kind === 'home') this.select('home');
         else if (target.kind === 'workspace-settings') this.workspaceSettings(tab.project.name);
-        else if (target.kind === 'project') this._openProject(tab, target.name, target.url);
+        else if (target.kind === 'project') this._openProject(tab, target.name);
         else if (target.kind === 'external') this.external(url);
       }
       return { action: 'deny' };
@@ -128,7 +113,7 @@ class WorkspaceTabs {
     wc.on('before-input-event', (event, input) => { if (this._alive(tab)) this.onKeyboard(event, input); });
     wc.on('page-title-updated', event => {
       event.preventDefault();
-      if (this._alive(tab) && tab.kind!=='workbench' && this._destination(tab, wc.getURL()).kind === 'same') this.onTitleChange(tab.project.name);
+      if (this._alive(tab) && this._destination(tab, wc.getURL()).kind === 'same') this.onTitleChange(tab.project.name);
     });
     wc.on('did-start-loading', () => {
       if (this._alive(tab)) {
@@ -136,22 +121,13 @@ class WorkspaceTabs {
       }
     });
     wc.on('did-stop-loading', () => { if (this._alive(tab)) { tab.loading = false; this._notify(); } });
-    const navigated = (_event, url, isMainFrame = true, inPage=false) => {
+    const navigated = (_event, url, isMainFrame = true) => {
       if (!this._alive(tab) || isMainFrame === false) return;
-      const target=this._destination(tab,url);
-      if(inPage&&target.kind!=='same'&&tab.safeURL){
-        // pushState/hash routing has already changed the address. Restore only
-        // our last accepted route in the same document before verified routing.
-        void wc.executeJavaScript('history.replaceState(history.state,"",'+JSON.stringify(tab.safeURL)+');window.dispatchEvent(new HashChangeEvent("hashchange"));')
-          .then(()=>{if(this._alive(tab))this._guard(tab,{preventDefault(){}},url);}).catch(error=>{if(this._alive(tab))this.onNavigationError(error);});
-        return;
-      }
-      if (target.kind !== 'same') { this._error(tab); return; }
-      tab.safeURL=url;
+      if (this._destination(tab, url).kind !== 'same') { this._error(tab); return; }
       tab.error = false; tab.view.setVisible(this.activeId === tab.id); this._notify();
     };
     wc.on('did-navigate', navigated);
-    wc.on('did-navigate-in-page', (event,url,isMainFrame)=>navigated(event,url,isMainFrame,true));
+    wc.on('did-navigate-in-page', navigated);
     wc.on('did-fail-load', (_event, code, _description, _url, isMainFrame) => {
       if (code !== -3 && isMainFrame !== false) this._error(tab);
     });
@@ -159,34 +135,11 @@ class WorkspaceTabs {
     wc.on('destroyed', () => { if (this._alive(tab)) this.close(tab.id); });
   }
 
-  async _load(tab,url){
-    tab.loading=true;tab.error=false;this.select(tab.id);
-    try{await tab.view.webContents.loadURL(url);if(this._alive(tab)){tab.loading=false;this._notify();}}
-    catch(error){if(this._alive(tab)){this._error(tab);throw error;}}
-    return this._public(tab);
-  }
-
-  async openWorkbench(url=null){
-    if(this.disposed)throw new Error('Workspace tabs are closed');
-    let tab=this.entries.get('workbench');
-    const destination=url||this.origin+'/';
-    if(this._destination({kind:'workbench'},destination).kind!=='same')throw new Error('工作台只允许真实服务根页面与同源路由');
-    if(tab){this.select(tab.id);return url&&tab.view.webContents.getURL()!==destination?this._load(tab,destination):this._public(tab);}
-    const view=this.createView(null);
-    tab={id:'workbench',kind:'workbench',view,loading:true,error:false};
-    this.entries.set(tab.id,tab);this._wire(tab);this.window.contentView.addChildView(view);view.setBounds(this.bounds);
-    if(typeof view.setBorderRadius==='function')view.setBorderRadius(8);
-    return this._load(tab,destination);
-  }
-
-  async open(project, intent={}) {
+  async open(project) {
     if (this.disposed) throw new Error('Workspace tabs are closed');
     if (!project || typeof project.name !== 'string' || !project.name.trim()) throw new TypeError('A registered project name is required');
-    const canonical=this.origin+'/?project='+encodeURIComponent(project.name)+(project.read_only?'&legacy=1':'');
-    const target=intent.url||canonical;
-    if(this._destination({project},target).kind!=='same')throw new Error('工作区地址不属于已核实的项目');
-    const existing = [...this.entries.values()].find(tab => tab.kind!=='workbench'&&tab.project.name === project.name);
-    if (existing) { this.updateProject(project); this.select(existing.id);return intent.url&&existing.view.webContents.getURL()!==target?this._load(existing,target):this._public(existing); }
+    const existing = [...this.entries.values()].find(tab => tab.project.name === project.name);
+    if (existing) { this.updateProject(project); this.select(existing.id); return this._public(existing); }
     const view = this.createView(project);
     if (!view?.webContents) throw new TypeError('View factory must return a WebContentsView');
     const tab = { id: 'workspace-' + ++this.counter, project: { ...project }, view, loading: true, error: false };
@@ -197,7 +150,7 @@ class WorkspaceTabs {
     if (typeof view.setBorderRadius === 'function') view.setBorderRadius(8);
     this.select(tab.id);
     try {
-      await view.webContents.loadURL(target);
+      await view.webContents.loadURL(this.origin + '/?project=' + encodeURIComponent(project.name));
       if (this._alive(tab)) { tab.loading = false; this._notify(); }
     } catch (error) {
       if (this._alive(tab)) { this._error(tab); throw error; }
@@ -221,21 +174,20 @@ class WorkspaceTabs {
   }
 
   updateProject(project) {
-    const tab = [...this.entries.values()].find(item => item.kind!=='workbench'&&item.project.name === project.name);
+    const tab = [...this.entries.values()].find(item => item.project.name === project.name);
     if (!tab) return false;
     const changed = tab.project.root !== project.root || tab.project.display_name !== project.display_name;
     tab.project = {...tab.project, ...project}; if (changed) this._notify(); return true;
   }
   closeProject(name) {
-    const tab = [...this.entries.values()].find(item => item.kind!=='workbench'&&item.project.name === name);
+    const tab = [...this.entries.values()].find(item => item.project.name === name);
     return tab ? this.close(tab.id) : false;
   }
 
   close(id) {
     if (this.disposed) return false;
-    if(id==='workbench')return false;
     if (id === 'home') {
-      if ([...this.entries.values()].some(tab=>tab.kind!=='workbench')) return false;
+      if (this.entries.size) return false;
       this.window.close(); return true;
     }
     const tab = this.entries.get(id);

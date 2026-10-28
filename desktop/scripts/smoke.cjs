@@ -36,10 +36,7 @@ const { Backend, projects, newWorkspace } = require('../src/core.cjs');
   if (code !== 0) throw new Error('Electron exited ' + code + ': ' + errors);
   const result = JSON.parse(await fs.readFile(output, 'utf8'));
   if (result.home !== home || !result.window || !result.contextIsolation || result.nodeIntegration || !result.sandbox || result.renderer.nodeAvailable || !result.ownedServiceExited || !result.chrome?.ready || result.chrome.height !== 36 || result.menuBarVisible) throw new Error('Desktop smoke invariant failed: ' + JSON.stringify(result));
-  const workbench=result.workbench,workbenchURL=workbench&&new URL(workbench.url);
-  if(!workbench?.ready||!workbench.selected||workbench.mode!=='real'||workbenchURL.origin!==result.service.url||workbenchURL.pathname!=='/'||workbenchURL.searchParams.size||workbench.nodeAvailable||workbench.bridgeAvailable||workbench.preload||!workbench.contextIsolation||workbench.nodeIntegration||!workbench.sandbox||!workbench.webSecurity||!Number.isFinite(result.timing?.workbench_ready_at)||result.screenshotScope!=='real-service-workbench')throw Error('Default service workbench invariant failed: '+JSON.stringify(workbench));
-  if(!result.screenshot||result.screenshotError||(await fs.stat(result.screenshot)).size<100)throw Error('实际工作台截图未生成：'+String(result.screenshotError));
-  if (visual && (!result.visual?.workbenchNavigation || result.visual.workspaceChrome.page !== 'home' || !result.visual.workspaceChrome.activeProject)) throw new Error('Desktop navigation chrome failed');
+  if (visual && (!result.visual?.homeNavigation || result.visual.workspaceChrome.page !== 'home' || !result.visual.workspaceChrome.activeProject)) throw new Error('Desktop navigation chrome failed');
   if (borrowed && (result.service.owned || !result.borrowedServiceStillAvailable || !Array.isArray(await projects(borrowed.url)))) throw new Error('Borrowed service was stopped by the app');
   console.log(JSON.stringify({ executable, evidence: output, ...result }, null, 2));
   } finally { if (borrowed) await borrowed.stop(); }

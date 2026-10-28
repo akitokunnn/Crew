@@ -4,8 +4,6 @@ from types import SimpleNamespace
 import unittest
 from unittest import mock
 
-from crew.execution_host import ExecutionStore, NativeLauncher
-from crew.execution_admission import WorkAdmission
 from crew import board, chat, codex_client, goal_links, goals, todo
 from crew.goal_runtime import Controller
 from tests.test_runtimes import RuntimeFixture
@@ -14,17 +12,15 @@ from tests.test_runtimes import RuntimeFixture
 class GoalLinkTests(RuntimeFixture):
     def setUp(self):
         super().setUp()
-        self.executions = ExecutionStore(self.home)
-        self.journals = self.executions.journals
-        self.executions.busy = mock.Mock(return_value=False)
-        self.controller = Controller(self.executions, WorkAdmission(), mock.Mock(spec=NativeLauncher),
-                                      send_input=mock.Mock(return_value={'accepted': True}), stop=mock.Mock(),
-                                      interrupt=mock.Mock(), observe_claude=lambda: [],
-                                      scope_busy=mock.Mock(return_value=False))
+        self.journals = {}
+        manager = SimpleNamespace(home=self.home,busy=mock.Mock(return_value=False),journal=self.journal)
+        self.controller = Controller(manager)
         self.controller.send = mock.Mock(return_value={'accepted':True,'delivery':'started'})
 
     def journal(self, execution_id):
-        return self.executions.journal(execution_id)
+        if execution_id not in self.journals:
+            self.journals[execution_id] = chat.Journal(self.home/'test-goal-chat'/(execution_id+'.jsonl'))
+        return self.journals[execution_id]
 
     def target(self, title='原目标', person='member-id'):
         goal = goals.create(self.conn,'demo','chief-id',title,'原始需求',['可复核的 example'])
@@ -81,7 +77,7 @@ class GoalLinkTests(RuntimeFixture):
         args,kwargs = self.controller.send.call_args
         self.assertEqual(args[:2],(original['id'],'member-id'))
         self.assertIn('等待验收，保留目前改动',args[2])
-        self.assertEqual(kwargs,{'identity':'human-answer:decision:%s:1'%number,'source':'human','intent':'work'})
+        self.assertEqual(kwargs,{'identity':'human-answer:decision:%s:1'%number,'source':'human'})
         self.assertEqual(goal_links.get(self.conn,'decision',number)['delivered_version'],1)
         self.assertIsNotNone(self.conn.execute('SELECT delivered_at FROM decisions WHERE id=?',(number,)).fetchone()[0])
         self.assert_no_global_mail()
@@ -176,8 +172,7 @@ class GoalLinkTests(RuntimeFixture):
     def test_native_timeout_keeps_answer_pending_without_blocking_other_goal_or_repeating_input(self):
         first,one = self.target();first_id = self.decision(one)
         second,two = self.target('正常目标','other-id');second_id = self.decision(two)
-        def send(goal_id,person,text,*,identity,source,intent):
-            self.assertEqual(intent, 'work')
+        def send(goal_id,person,text,*,identity,source):
             if goal_id==first['id']:
                 self.journal(one['id']).emit('input_delivery',message_id=identity,status='unknown',error='RequestTimeout',detail='turn/start timed out')
                 raise codex_client.RequestTimeout('turn/start timed out')
@@ -208,10 +203,10 @@ class GoalLinkTests(RuntimeFixture):
         target,old = self.target();number = self.decision(old)
         goals.set_execution_status(self.conn,old['id'],'idle')
         current = goals.create_execution(self.conn,target['id'],'member-id',runtime='claude')
-        self.controller.executions.busy.side_effect = lambda key:key==current['id']
+        self.controller.manager.busy.side_effect = lambda key:key==current['id']
         self.deliver();self.controller.send.assert_not_called()
         self.assertEqual(goal_links.get(self.conn,'decision',number)['delivered_version'],0)
-        self.controller.executions.busy.return_value=False;self.controller.executions.busy.side_effect=None
+        self.controller.manager.busy.return_value=False;self.controller.manager.busy.side_effect=None
         self.deliver();self.controller.send.assert_called_once()
 
     def test_unknown_acceptance_does_not_resume_waiting_goal(self):

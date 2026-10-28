@@ -22,9 +22,6 @@ class RuntimeSpawnTests(RuntimeFixture):
         resolver = mock.patch.object(spawn.codex_client, "command", return_value=CODEX_COMMAND)
         self.resolve_codex = resolver.start()
         self.addCleanup(resolver.stop)
-        lookup = mock.patch('shutil.which', side_effect=lambda name: '/fixture/' + name if name in ('claude', 'codex') else None)
-        lookup.start()
-        self.addCleanup(lookup.stop)
 
     def plan(self, name="new", **options):
         return spawn.prepare(self.conn, self.home, PLUGIN, "demo", name, "original task\r\nline two",
@@ -42,9 +39,8 @@ class RuntimeSpawnTests(RuntimeFixture):
                             agents_provider=lambda: [])
         return code, output.getvalue(), errors.getvalue()
 
-    def test_explicit_claude_member_choice_and_flags_keep_working(self):
+    def test_legacy_spawn_and_claude_flags_keep_working(self):
         models.set(self.conn, "chief-id", "claude-opus-5-5", "max")
-        settings.save(self.conn, {**settings.get(self.conn), 'member': {'runtime': 'claude', 'model': 'claude-opus-5-5', 'effort': 'max'}})
         plan = self.plan()
         self.assertEqual(plan["spec"]["runtime"], "claude")
         self.assertEqual(plan["spec"]["model"], "claude-opus-5-5")
@@ -64,15 +60,14 @@ class RuntimeSpawnTests(RuntimeFixture):
         self.assertFalse((self.home / "spawn").exists())
         self.assertFalse(any(s["session_id"] == plan["session_id"] for s in board.sessions(self.conn, "demo")))
 
-    def test_unspecified_runtime_follows_explicit_global_choice_instead_of_parent(self):
+    def test_unspecified_runtime_and_none_inherit_a_codex_group_leader(self):
         runtimes.set(self.conn, "chief-id", "codex", "native-chief")
         models.set(self.conn, "chief-id", "gpt-test-codex", "high")
-        settings.save(self.conn, {'default': {'runtime': 'codex', 'model': 'user-global-model', 'effort': 'low'}})
         for name, options in (("inherit", {}), ("inherit-none", {"runtime": None})):
             with self.subTest(name=name):
                 plan = self.plan(name, **options)
                 self.assertEqual(plan["spec"]["runtime"], "codex")
-                self.assertEqual((plan["spec"]["model"], plan["spec"]["effort"]), ("user-global-model", "low"))
+                self.assertEqual((plan["spec"]["model"], plan["spec"]["effort"]), ("gpt-test-codex", "high"))
                 self.assertEqual(plan["command"], CODEX_COMMAND)
         switched = self.plan("back-to-claude", runtime="claude")
         self.assertEqual((switched["spec"]["model"], switched["spec"]["effort"]), (None, None))

@@ -6,7 +6,6 @@ const crypto = require('node:crypto');
 const { spawn, execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const run = promisify(execFile);
-const { Administrator } = require('./admin.cjs');
 
 function loopback(value) {
   const url = new URL(value);
@@ -144,7 +143,7 @@ async function materializeBackend(source, home) {
 }
 
 class Backend {
-  constructor(config, dependencies = {}) { this.config = config; this.spawn = dependencies.spawn || spawn; this.frontendPipe = dependencies.frontendPipe ?? Boolean(process.versions.electron); this.child = null; this.url = null; this.owned = false; this.errors = ''; }
+  constructor(config, dependencies = {}) { this.config = config; this.spawn = dependencies.spawn || spawn; this.child = null; this.url = null; this.owned = false; this.errors = ''; }
   async start() {
     if (this.config.serviceUrl) {
       const candidate = loopback(this.config.serviceUrl);
@@ -187,13 +186,7 @@ class Backend {
     };
     const args = [script, '--home', this.config.home, '--port', String(this.config.port)];
     if (this.config.isolated || this.config.smoke) args.push('--isolated-sources');
-    if (this.supervised && this.frontendPipe) {
-      const helperRoot = this.config.helperBackendDir || this.config.bundledBackendDir || path.resolve(__dirname, '../../plugin');
-      const bridge = path.join(helperRoot, 'crew_frontend_pipe.py');
-      await fs.access(bridge);
-      args.unshift(bridge);
-    }
-    this.child = this.spawn(this.config.python, args, { cwd: this.config.backendDir, windowsHide: true, detached: this.supervised,
+    this.child = this.spawn(this.config.python, args, { cwd: this.config.backendDir, windowsHide: true,
       stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' } });
     this.owned = true;
     const child = this.child;
@@ -256,32 +249,8 @@ class Backend {
     }
   }
   async stop() {
-    if (!this.owned || !this.child) { await this.logWrites; return; }
+    if (!this.owned || !this.child || this.child.exitCode !== null) { await this.logWrites; return; }
     const child = this.child;
-    if (this.detached) {
-      const administrator = new Administrator(this.config.home);
-      if ((await administrator.snapshot()).state === 'stopped') { await this.logWrites; return; }
-      await administrator.request('shutdown');
-      if (this.frontendPipe) {
-        // The bridge may already have exited. Only the real administrator's
-        // stopped record confirms that its owned service has actually exited.
-        while (true) {
-          const status = await administrator.snapshot();
-          if (status.state === 'stopped') break;
-          if (['unknown', 'unmanaged'].includes(status.state)) throw new Error('管理员已不可用，尚未确认后台停止：' + status.restart.reason);
-          await new Promise(resolve => setTimeout(resolve, 30));
-        }
-        await this.logWrites;
-        return;
-      }
-      await new Promise(resolve => {
-        if (child.exitCode !== null) resolve();
-        else child.once('exit', resolve);
-      });
-      await this.logWrites;
-      return;
-    }
-    if (child.exitCode !== null) { await this.logWrites; return; }
     if (this.supervised) {
       // Never kill the administrator and strand its backend during shutdown.
       await new Promise(resolve => {
@@ -303,25 +272,6 @@ class Backend {
       if (child.stdin.writable) child.stdin.end('shutdown\n'); else child.kill();
     });
     await this.logWrites;
-  }
-  async disconnect() {
-    if (!this.owned || !this.child || this.child.exitCode !== null || this.detached) {
-      await this.logWrites;
-      return;
-    }
-    if (!this.supervised) throw new Error('所选旧后台不支持独立运行，请使用包含 crew_supervisor.py 的后台来源');
-    const child = this.child;
-    if (child.stdin.writable) await new Promise(resolve => child.stdin.end(resolve));
-    child.stdout.destroy();
-    child.stderr.destroy();
-    child.unref();
-    this.detached = true;
-    await this.logWrites;
-  }
-  async stopService() {
-    if (this.owned) return this.stop();
-    if (!this.url) throw new Error('尚未连接 Crew 后台');
-    return request(this.url, '/api/admin/service/stop', {});
   }
 }
 

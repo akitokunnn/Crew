@@ -4,7 +4,6 @@ from contextlib import closing
 import json
 import threading
 import unittest
-from unittest import mock
 from urllib.request import urlopen
 
 from crew import board, chat, codex_runtime, codex_subagents, goals, store, subagents, web
@@ -124,7 +123,7 @@ class NativeChildHttpTests(unittest.TestCase):
         thread = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': .02})
         thread.start()
         self.assertTrue(server.service.agents_ready.wait(5))
-        server.service.chat.executions.register(key, running)
+        server.service.chat.processes[key] = running
         def close():
             server.shutdown()
             server.server_close()
@@ -179,10 +178,7 @@ class NativeChildHttpTests(unittest.TestCase):
         task = state()['members'][0]['codex'][0]
         self.assertEqual((task['status'], task['ended_at']), ('unknown', None))
         self.assertIn('连接已断开', task['detail'])
-        server.service.chat.close()
-        server.service.chat = chat.Manager(self.home, self.plugin, lambda: [],
-                                           process_factory=mock.Mock(side_effect=AssertionError('Read-only replay must not launch a native')))
-        server.service.api = web.build_api(server.service)
+        server.service.chat.journals.clear()
         self.assertEqual(state()['members'][0]['codex'][0]['status'], 'unknown')
 
     def test_goal_execution_children_show_under_stable_leader_and_resume_reuses_record(self):

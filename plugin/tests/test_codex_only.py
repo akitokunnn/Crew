@@ -42,11 +42,10 @@ class CodexOnlySpawnTests(runtime_fixtures.RuntimeFixture):
             self.assertEqual(code, 0, errors)
             self.assertEqual(json.loads(output)['spec']['runtime'], 'codex')
 
-    def test_explicit_carrier_is_retained_and_unconfigured_member_prefers_codex(self):
-        with mock.patch.object(runtimes, 'default_runtime', side_effect=AssertionError('Keep the chosen carrier')), \
-                mock.patch('shutil.which', side_effect=lambda name: '/fixture/' + name if name in ('claude', 'codex') else None):
+    def test_explicit_and_inherited_carriers_are_not_silently_switched(self):
+        with mock.patch.object(runtimes, 'default_runtime', side_effect=AssertionError('Keep the chosen carrier')):
             self.assertEqual(self.plan(runtime='claude')['spec']['runtime'], 'claude')
-            self.assertEqual(self.plan()['spec']['runtime'], 'codex')
+            self.assertEqual(self.plan()['spec']['runtime'], 'claude')
 
     def test_status_reads_codex_host_without_invoking_claude_discovery(self):
         for person in board.sessions(self.conn, 'demo'):

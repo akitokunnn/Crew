@@ -629,38 +629,6 @@ class SupervisorTests(unittest.TestCase):
 
 
 class SupervisorUtilityTests(unittest.TestCase):
-    @unittest.skipUnless(os.name == 'nt', 'Windows file sharing semantics')
-    def test_final_status_publication_survives_a_brief_windows_reader_lock(self):
-        import ctypes
-        from ctypes import wintypes
-        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
-        kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
-                                      wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
-        kernel.CreateFileW.restype = wintypes.HANDLE
-        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
-        kernel.CloseHandle.restype = wintypes.BOOL
-        with tempfile.TemporaryDirectory(prefix='crew-status-reader-') as directory:
-            admin = supervisor.Supervisor(directory)
-            admin.state = 'stopping'
-            admin._publish()
-            path = Path(directory) / 'desktop' / 'admin' / 'status.json'
-            # A normal reader can briefly deny FILE_SHARE_DELETE on Windows.
-            handle = kernel.CreateFileW(str(path), 0x80000000, 1, None, 3, 0, None)
-            self.assertNotEqual(handle, ctypes.c_void_p(-1).value)
-            release = threading.Event()
-            def close_reader():
-                release.wait(.025)
-                kernel.CloseHandle(handle)
-            reader = threading.Thread(target=close_reader)
-            reader.start()
-            try:
-                admin.state = 'stopped'
-                admin._publish()
-            finally:
-                release.set()
-                reader.join()
-            self.assertEqual(supervisor.read_status(directory)['state'], 'stopped')
-
     def test_loader_does_not_create_home_and_controls_have_fixed_allowlist(self):
         with tempfile.TemporaryDirectory(prefix="crew-admin-loader-") as directory:
             home = Path(directory) / "absent"

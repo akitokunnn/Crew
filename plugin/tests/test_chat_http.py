@@ -78,10 +78,9 @@ class ChatHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(code, 200, result)
         self.assertTrue(result["ok"])
         sent = json.loads(process.stdin.getvalue().splitlines()[-1])
-        self.assertEqual(sent["message"]["content"][:-1],
-                         [{"type": "image", "source": {"type": "base64", **image}} for image in images])
-        self.assertEqual(sent['message']['content'][-1]['type'], 'text')
-        self.assertEqual(sent['message']['content'][-1]['text'], 'inspect these images')
+        self.assertEqual(sent["message"]["content"], [
+            *[{"type": "image", "source": {"type": "base64", **image}} for image in images],
+            {"type": "text", "text": "inspect these images"}])
         history = self.history(session_id)
         message = next(event for event in history["events"] if event.get("id") == result["message_id"])
         self.assertEqual(message["source"], "human")
@@ -105,9 +104,8 @@ class ChatHttpTests(ShellFixture, unittest.TestCase):
         code, result, _ = self.request("/api/chat/send", {"session_id": session_id, "images": [image]})
         self.assertEqual(code, 200, result)
         content = json.loads(process.stdin.getvalue().splitlines()[-1])["message"]["content"]
-        self.assertEqual(content[:-1], [{"type": "image", "source": {"type": "base64", **image}}])
-        self.assertEqual(content[-1]['type'], 'text')
-        self.assertEqual(content[-1]['text'], '')
+        self.assertEqual(content, [
+            {"type": "image", "source": {"type": "base64", **image}}, {"type": "text", "text": ""}])
         message = next(event for event in self.history(session_id)["events"] if event.get("id") == result["message_id"])
         self.assertEqual(message["text"], "")
         self.assertEqual(len(message["images"]), 1)

@@ -2,7 +2,6 @@
 import tests
 import base64
 from contextlib import closing
-from functools import partial
 import json
 import os
 from pathlib import Path
@@ -39,7 +38,7 @@ class FakeClient:
     def start_thread(self, **params):
         self.calls.append(("thread/start", params))
         return {"thread": {"id": self.thread_id}, "model": "actual-model", "reasoningEffort": "medium",
-                "sandbox": {"type": "readOnly" if params.get('sandbox') == 'read-only' else "workspaceWrite", "networkAccess": False,
+                "sandbox": {"type": "workspaceWrite", "networkAccess": False,
                             "excludeTmpdirEnvVar": True, "excludeSlashTmp": True,
                             "writableRoots": params.get('config', {}).get('sandbox_workspace_write', {}).get('writable_roots', [])}}
 
@@ -47,7 +46,7 @@ class FakeClient:
         self.thread_id = identity
         self.calls.append(("thread/resume", {"threadId": identity, **params}))
         return {"thread": {"id": identity}, "model": "actual-model", "reasoningEffort": "medium",
-                "sandbox": {"type": "readOnly" if params.get('sandbox') == 'read-only' else "workspaceWrite", "networkAccess": False,
+                "sandbox": {"type": "workspaceWrite", "networkAccess": False,
                             "excludeTmpdirEnvVar": True, "excludeSlashTmp": True,
                             "writableRoots": params.get('config', {}).get('sandbox_workspace_write', {}).get('writable_roots', [])}}
 
@@ -82,10 +81,6 @@ class FakeClient:
         self.calls.append((method, params))
         if method == "thread/list":
             return {"data": [], "nextCursor": None}
-        if method == 'config/read':
-            return {'config': {}, 'origins': {}, 'layers': []}
-        if method == 'mcpServerStatus/list':
-            return {'data': [], 'nextCursor': None}
         if method == "thread/settings/update":
             self.emit("thread/settings/updated", threadSettings={"model": params.get("model", "actual-model"),
                                                                  "effort": params.get("effort", "medium")})
@@ -518,26 +513,20 @@ for line in sys.stdin:
         send({'id':message['id'],'result':{'userAgent':'fixture'}})
     elif method == 'thread/start':
         send({'id':message['id'],'result':{'thread':{'id':'fixture-thread','turns':[]},'model':'fixture-model','reasoningEffort':'medium'}})
-    elif method == 'thread/name/set':
-        send({'id':message['id'],'result':{}})
     elif method == 'turn/start':
         send({'id':message['id'],'result':{'turn':{'id':'fixture-turn','status':'inProgress','items':[]}}})
         send({'method':'turn/started','params':{'threadId':'fixture-thread','turn':{'id':'fixture-turn','status':'inProgress'}}})
         send({'method':'item/agentMessage/delta','params':{'threadId':'fixture-thread','turnId':'fixture-turn','itemId':'answer','delta':'hello'}})
         send({'method':'turn/completed','params':{'threadId':'fixture-thread','turn':{'id':'fixture-turn','status':'completed','items':[{'id':'answer','type':'agentMessage','text':'hello'}]}}})
-    elif 'id' in message:
-        send({'id':message['id'],'error':{'code':-32601,'message':'Unsupported fixture method: '+str(method)}})
 '''
         def process_factory(command, **kwargs):
             return subprocess.Popen([sys.executable, "-u", "-c", server], **kwargs)
-        with mock.patch("crew.codex_runtime._ObservedClient", partial(self.real_client, timeout=3)):
+        with mock.patch("crew.codex_runtime._ObservedClient", self.real_client):
             journal = chat.Journal(self.home / "chat" / "worker.jsonl")
             running = codex_runtime.CodexRunning(self.home, self.plugin, self.session, {"agent": None},
                                                  {"model": None, "effort": None}, journal, None,
                                                  process_factory=process_factory)
-        self.addCleanup(running.reader_done.wait, 3)
         self.addCleanup(running.close)
-        self.assertFalse(any('标题同步失败' in event.get('text', '') for event in journal.events))
         self.assertTrue(running._lease.path.exists())
         self.assertEqual(running.applied["model"], "fixture-model")
         running.send("work", "message-1")
@@ -545,7 +534,6 @@ for line in sys.stdin:
             self.assertTrue(journal.condition.wait_for(lambda: any(event["type"] == "turn_result" for event in journal.events), 3))
         terminal = next(event for event in journal.events if event["type"] == "turn_result")
         self.assertTrue(terminal["success"])
-        self.assertFalse(any(event['type'] == 'error' and '标题同步失败' in event.get('text', '') for event in journal.events))
         running.close()
         self.assertTrue(running.reader_done.wait(3))
         self.assertIsNotNone(running.process.poll())

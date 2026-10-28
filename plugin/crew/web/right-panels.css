@@ -6,14 +6,14 @@
 .attention-panel{pointer-events:auto;background:var(--surface);color:var(--text);border:1px solid var(--line-strong);border-radius:16px;box-shadow:var(--shadow-lg);overflow:hidden;margin-bottom:12px}
 .attention-panel .attention-head{padding:12px 14px 10px;border-bottom:0;gap:8px}.attention-panel .attention-head h2{font-size:calc(13px * var(--fs))}.attention-panel .attention-head h2>span{margin-left:5px;font-size:calc(11px * var(--fs));color:var(--text-3)}
 .attention-panel .attention-scroll{padding:0 13px 12px;max-height:var(--attention-max-height);overflow:auto;overscroll-behavior:contain}
-.chat-sidepanels>.rp{display:flex;flex-direction:column;pointer-events:auto;position:static;inset:auto;flex:1;min-height:0;min-width:0;width:100%;max-width:none;overflow:hidden;visibility:visible;opacity:1;transform:none;border:1px solid var(--line-strong);border-radius:16px;box-shadow:var(--shadow-lg);background:var(--surface);transition:opacity .2s ease,transform .3s var(--ease),display .3s allow-discrete}
+.chat-sidepanels>.rp{pointer-events:auto;position:static;inset:auto;flex:1;min-height:0;min-width:0;width:100%;max-width:none;overflow:hidden;visibility:visible;opacity:1;transform:none;border:1px solid var(--line-strong);border-radius:16px;box-shadow:var(--shadow-lg);background:var(--surface);transition:opacity .2s ease,transform .3s var(--ease),display .3s allow-discrete}
 .chat-sidepanels>.rp[hidden]{display:none!important;opacity:0;transform:translateY(-8px)}
 .chat-sidepanels .rp>.head{height:auto;min-height:58px;padding:12px 14px;align-items:flex-start;gap:5px}.chat-sidepanels .rp>.head>div:first-child{flex:1;min-width:0}.chat-sidepanels .rp>.head .right{gap:2px}.chat-sidepanels .tree{padding:16px 13px 20px;flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable}.chat-sidepanels .tree>.leader-unit{margin-bottom:4px}
 .rp-toggle,.rp-close{display:grid}
 .task-tools-panel{position:fixed;top:12px;right:12px;bottom:12px;z-index:22;width:390px;max-width:calc(100vw - 24px);display:flex;flex-direction:column;background:var(--surface);border:1px solid var(--line-strong);border-radius:16px;box-shadow:var(--shadow-lg);opacity:1;transform:translateX(0);transition:transform .3s var(--ease),opacity .2s ease,display .3s allow-discrete}
 .task-tools-panel[hidden]{display:none!important;opacity:0;transform:translateX(24px)}
 .task-tools-panel .attention-head{padding:15px 17px}.task-tools-panel .attention-head h2{font-size:calc(14px * var(--fs));overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.task-tools-scroll{flex:1;min-height:0;padding:16px;overflow:auto;overscroll-behavior:contain}
-.goal-drawer{position:fixed;top:12px;right:12px;bottom:12px;width:390px;max-width:calc(100vw - 24px);border-radius:16px;z-index:24;opacity:1;transform:translateX(0);transition:transform .3s var(--ease),opacity .2s ease,display .3s allow-discrete}.goal-drawer[hidden]{opacity:0;transform:translateX(24px)}
+.goal-drawer{z-index:24;opacity:1;transform:translateX(0);transition:transform .3s var(--ease),opacity .2s ease,display .3s allow-discrete}.goal-drawer[hidden]{opacity:0;transform:translateX(24px)}
 .goal-report-reader{z-index:25;animation:crew-sheet-enter .25s var(--ease)}
 #chat-host,#goal-chat-hint{margin-right:var(--chat-side-space,0px);transition:margin-right .3s var(--ease)}
 #chat-host,.group-goal-list{animation:crew-content-enter .22s var(--ease)}
@@ -25,15 +25,3 @@
 @keyframes crew-content-enter{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:translateY(0)}}
 @media(max-width:620px){.chat-sidepanels{right:12px}.chat-sidepanels .rp>.head{padding:10px}.chat-sidepanels .tree{padding:12px 10px}.attention-panel .attention-head{padding:10px 12px}.task-tools-scroll{padding:13px}}
 @media(prefers-reduced-motion:reduce){.chat-sidepanels,.attention-slot,.chat-sidepanels>.rp,.task-tools-panel,.goal-drawer,#chat-host,#goal-chat-hint{transition:none!important}.goal-report-reader,.group-goal-list,.attention-panel .side-decision[open]>.dc,.attention-panel .todo-card.open>.todo-details{animation:none!important}}
-
-/* Original rich architecture cards share tree primitives, but own their column rules. */
-.rp-note{font-size:calc(12px * var(--fs));color:var(--text-3);padding:4px 4px 0;line-height:1.6}
-@media(min-width:1024px) and (max-width:1179px){
-  .rp .members{margin-left:17px;padding-left:16px}
-  .rp .members>.node::before,.rp .members>.node::after{left:-17px}
-  .rp .node{padding-left:10px;padding-right:10px}
-  .rp .node-top{gap:7px}
-  .rp .node-top .st{gap:4px;font-size:calc(11.5px * var(--fs))}
-  .rp .node-top .nm{font-size:calc(13px * var(--fs))}
-  .rp .now,.rp .cx-list{margin-left:0}
-}

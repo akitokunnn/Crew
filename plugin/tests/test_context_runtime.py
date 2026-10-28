@@ -5,8 +5,7 @@ import threading
 import unittest
 from unittest import mock
 
-from crew import claude_events
-from crew import board, chat, native_process
+from crew import board, chat
 from test_chat import FakeProcess
 from test_usage import UsageFixture
 
@@ -28,7 +27,7 @@ class ContextRuntimeTests(UsageFixture, unittest.TestCase):
         journal.set_status(status)
         process = FakeProcess([])
         current = chat.Running(process, journal)
-        manager.executions.register("s1", current)
+        manager.processes["s1"] = current
         session = board.session(self.conn, 's1')
         self.write(self.home / "spawn" / "spawn-1.json", [{}])
         return manager, current, session
@@ -57,7 +56,7 @@ class ContextRuntimeTests(UsageFixture, unittest.TestCase):
         spec = {"id": "spawn-1", "name": "member", "role": "member", "group": None, "agent": None}
         (self.home / "spawn" / "spawn-1.json").parent.mkdir(parents=True, exist_ok=True)
         (self.home / "spawn" / "spawn-1.json").write_text(json.dumps(spec), encoding="utf-8")
-        with mock.patch.object(native_process.shutil, "which", return_value="claude.exe"):
+        with mock.patch.object(chat.shutil, "which", return_value="claude.exe"):
             manager._launch(session, spec)
         self.addCleanup(manager.close)
         return manager.processes["s1"]
@@ -116,10 +115,10 @@ class ContextRuntimeTests(UsageFixture, unittest.TestCase):
         self.assertEqual(result, {"ok": True, "message_id": sent["uuid"], 'accepted': True, 'delivery': 'started'})
         echo = dict(sent, isReplay=True, message={"content": "<command-name>/compact</command-name>\n"
                     "<command-message>compact</command-message>\n<command-args></command-args>"})
-        current.events.consume(echo)
-        current.events.consume(echo)
+        current.journal.consume(echo)
+        current.journal.consume(echo)
         # The real CLI also echoes the expanded command under a fresh uuid, not marked as a replay (10-23 sample).
-        current.events.consume(dict(echo, uuid="53ab9ef0-458b-41fc-b3b8-740ba98987f2", isReplay=False))
+        current.journal.consume(dict(echo, uuid="53ab9ef0-458b-41fc-b3b8-740ba98987f2", isReplay=False))
         self.assertEqual([event["id"] for event in current.journal.events if event["type"] == "compact_request"],
                          [sent["uuid"]])
         self.assertFalse(any(event["type"] == "message" for event in current.journal.events))
@@ -204,7 +203,7 @@ class ContextRuntimeTests(UsageFixture, unittest.TestCase):
         manager, current, session = self.running_leader()
         entered, release, returned = threading.Event(), threading.Event(), threading.Event()
         self.addCleanup(release.set)
-        original = current.events.consume
+        original = current.journal.consume
         response = []
 
         def consume(record):
@@ -217,7 +216,7 @@ class ContextRuntimeTests(UsageFixture, unittest.TestCase):
             response.append(manager.compact(session, caller_session_id="s1"))
             returned.set()
 
-        with mock.patch.object(current.events, "consume", side_effect=consume):
+        with mock.patch.object(current.journal, "consume", side_effect=consume):
             current.process.emit({"type": "result"})
             self.assertTrue(entered.wait(3))
             requester = threading.Thread(target=request)
@@ -287,7 +286,7 @@ class ContextRuntimeTests(UsageFixture, unittest.TestCase):
         current = self.launch(manager, session)
         current.process.finish()
         self.assertTrue(current.reader_done.wait(5))
-        with mock.patch.object(native_process.shutil, "which", return_value="claude.exe"):
+        with mock.patch.object(chat.shutil, "which", return_value="claude.exe"):
             manager.compact(session)
         resumed = manager.processes["s1"]
         self.assertIsNot(resumed, current)
@@ -310,10 +309,9 @@ class ContextRuntimeTests(UsageFixture, unittest.TestCase):
             {"type": "command_lifecycle", "state": "completed"},
         ]
         journal = chat.Journal(self.home / "chat" / "s1.jsonl")
-        journal_native_events = claude_events.ClaudeEvents(journal)
         phases = []
         for record in records:
-            journal_native_events.consume(record)
+            journal.consume(record)
             if journal.progress is not None:
                 phases.append(journal.progress["phase"])
         self.assertIn("compacting", phases)

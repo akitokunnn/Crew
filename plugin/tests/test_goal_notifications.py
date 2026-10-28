@@ -4,12 +4,11 @@ import datetime as dt
 import contextlib
 import json
 import threading
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
-from crew.execution_host import ExecutionStore, NativeLauncher
-from crew.execution_admission import WorkAdmission
-from crew import board, chat, goal_links, goal_runtime, goals, notifications, notification_ports, qq, session_ops, session_presence, store, todo
+from crew import board, chat, goal_links, goal_runtime, goals, notifications, qq, session_ops, store, todo
 from tests.test_goals import GoalFixture
 from tests.test_notifications import FakeQQ
 
@@ -19,29 +18,24 @@ NOW='2026-10-25T01:00:00.000Z'
 class GoalNotificationTests(GoalFixture):
     def setUp(self):
         super().setUp()
-        self.clock=store.parse_iso(NOW);self.locked=False;self.client=FakeQQ()
-        self.executions=ExecutionStore(self.home);self.journals=self.executions.journals
+        self.clock=store.parse_iso(NOW);self.locked=False;self.client=FakeQQ();self.journals={}
         (self.home/'qq.json').write_text(json.dumps({'app_id':'fake-app','app_secret':'fake-secret'}),encoding='utf-8')
         (self.home/'notify.json').write_text(json.dumps({'owner_openid':'owner','since':NOW,'manual_away':False,
             'current_leader_session_id':'chief-id','leader_numbers':{}}),encoding='utf-8')
-        self.controller=goal_runtime.Controller(self.executions, WorkAdmission(), mock.Mock(spec=NativeLauncher),
-                                               send_input=mock.Mock(return_value={'accepted': True}), stop=mock.Mock(),
-                                               interrupt=mock.Mock(), observe_claude=lambda: [],
-                                               scope_busy=mock.Mock(return_value=False))
+        manager=SimpleNamespace(home=self.home,path=lambda sid:self.home/'chat'/(sid+'.jsonl'),journal=self.journal,
+                                busy=mock.Mock(return_value=False), work=lambda **kwargs: contextlib.nullcontext(True))
+        self.controller=goal_runtime.Controller(manager)
         self.controller.send=mock.Mock(return_value={'accepted':True,'delivery':'started'})
-        self.write_lock=threading.RLock()
-        self.workspaces=notification_ports.WorkspaceQueries(lambda:self.clock, lambda project:[],
-            lambda:session_presence.Observation((),None,True), lambda conn,agents:list(agents))
-        self.conversations=notification_ports.Conversations(self.executions,
-            lambda **kwargs:contextlib.nullcontext(True),
-            mock.Mock(side_effect=AssertionError('report notifications must not start general conversations')), lambda sid:False)
+        self.service=SimpleNamespace(home=self.home,now=lambda:self.clock,chat=manager,write_lock=threading.RLock(),
+                                     state=lambda project:{'attention':[]})
         self.inbox=self.new_inbox()
 
     def journal(self, sid):
-        return self.executions.journal(sid)
+        if sid not in self.journals:self.journals[sid]=chat.Journal(self.home/'chat'/(sid+'.jsonl'))
+        return self.journals[sid]
 
     def new_inbox(self):
-        result=notifications.Inbox(self.home,self.write_lock,self.workspaces,self.conversations,self.client,lock_status=lambda:self.locked)
+        result=notifications.Inbox(self.service,self.client,lock_status=lambda:self.locked)
         self.addCleanup(result.close)
         return result
 

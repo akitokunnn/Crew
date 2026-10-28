@@ -43,7 +43,7 @@ class GitContextTests(CoreCase):
         process = FakeProcess([])
         journal = manager.journal('s1')
         current = chat.Running(process, journal)
-        manager.executions.register('s1', current)
+        manager.processes['s1'] = current
         try:
             manager._send('s1', '继续完成工作')
             first = json.loads(process.stdin.getvalue().splitlines()[-1])['message']['content']
@@ -57,14 +57,14 @@ class GitContextTests(CoreCase):
             manager._send('s1', '按新的规则')
             self.assertIn('当前 Git 管理', json.loads(process.stdin.getvalue().splitlines()[-1])['message']['content'])
         finally:
-            manager.executions.remove('s1'); process.finish(); manager.close()
+            manager.processes.clear(); process.finish(); manager.close()
 
     def test_owned_codex_input_retries_unaccepted_context_and_does_not_change_the_display_text(self):
         runtimes.set(self.conn, 's1', 'codex')
         manager = chat.Manager(self.home, PLUGIN, lambda: [])
         send = mock.Mock(side_effect=[ValueError('fixture rejected input'), 'accepted', 'again'])
         current = SimpleNamespace(runtime='codex', execution=None, send=send)
-        manager.executions.register('s1', current)
+        manager.processes['s1'] = current
         try:
             with self.assertRaisesRegex(ValueError, 'fixture rejected input'):
                 manager._send('s1', '继续工作')
@@ -75,4 +75,4 @@ class GitContextTests(CoreCase):
             manager._send('s1', '接着做')
             self.assertEqual(send.call_args.args[0], '接着做')
         finally:
-            manager.executions.remove('s1'); manager.close()
+            manager.processes.clear(); manager.close()

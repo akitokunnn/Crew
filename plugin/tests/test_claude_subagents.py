@@ -3,7 +3,6 @@ import tests
 import threading
 import unittest
 
-from crew import claude_events
 from crew import board, chat, goals, store, web
 from tests import test_chat_http as http_helpers
 from test_shell import ShellFixture, PLUGIN
@@ -30,7 +29,6 @@ class ClaudeChildEventTests(UsageFixture, unittest.TestCase):
     def setUp(self):
         super().setUp()
         self.journal = chat.Journal(self.home / 'chat' / 'journal.jsonl')
-        self.native_events = claude_events.ClaudeEvents(self.journal)
 
     def row(self):
         self.assertEqual(len(self.journal.subagents), 1)
@@ -40,25 +38,24 @@ class ClaudeChildEventTests(UsageFixture, unittest.TestCase):
         for name in ('Agent', 'Task'):
             with self.subTest(name=name):
                 journal = chat.Journal(self.home / 'chat' / (name + '.jsonl'))
-                journal_native_events = claude_events.ClaudeEvents(journal)
-                journal_native_events.consume(call(name=name))
-                journal_native_events.consume(call(name=name))
+                journal.consume(call(name=name))
+                journal.consume(call(name=name))
                 self.assertEqual(len(journal.subagents), 1)
                 self.assertEqual(next(iter(journal.subagents.values()))['status'], 'running')
-                journal_native_events.consume(result())
-                journal_native_events.consume(result())
+                journal.consume(result())
+                journal.consume(result())
                 self.assertEqual(next(iter(journal.subagents.values()))['status'], 'succeeded')
                 self.assertEqual(chat.Journal(journal.path).subagents, journal.subagents)
 
     def test_background_launch_receipt_and_parent_finish_do_not_finish_child(self):
-        self.native_events.consume(call(background=True))
-        self.native_events.consume(task(description='后台检查', is_backgrounded=True))
-        self.native_events.consume(result(status='async_launched'))
-        self.native_events.consume({'type': 'result', 'session_id': 'native-cc', 'is_error': False})
+        self.journal.consume(call(background=True))
+        self.journal.consume(task(description='后台检查', is_backgrounded=True))
+        self.journal.consume(result(status='async_launched'))
+        self.journal.consume({'type': 'result', 'session_id': 'native-cc', 'is_error': False})
         self.assertEqual((self.row()['status'], self.journal.status), ('running', 'idle'))
-        self.native_events.consume(task('task_notification', status='failed', summary='真实后台失败'))
+        self.journal.consume(task('task_notification', status='failed', summary='真实后台失败'))
         self.assertEqual((self.row()['status'], self.row()['detail']), ('failed', '真实后台失败'))
-        self.native_events.consume(task('task_progress', description='迟到进展'))
+        self.journal.consume(task('task_progress', description='迟到进展'))
         self.assertEqual(self.row()['status'], 'failed')
 
     def test_prompt_without_description_stays_in_details_and_names_are_compact_plain_text(self):
@@ -66,50 +63,50 @@ class ClaudeChildEventTests(UsageFixture, unittest.TestCase):
         args = record['message']['content'][0]['input']
         args.pop('description')
         args['prompt'] = '你在 Crew 内工作。\n用户的原始要求：检查界面'
-        self.native_events.consume(record)
+        self.journal.consume(record)
         self.assertEqual(self.row()['task_name'], 'Claude 子代理 call-1')
         self.assertEqual(self.row()['task_description'], args['prompt'])
-        self.native_events.consume(task(description='检查界面\n  保留布局'))
+        self.journal.consume(task(description='检查界面\n  保留布局'))
         self.assertEqual(self.row()['task_name'], '检查界面 保留布局')
-        self.native_events.consume(task('task_progress', description='界面' * 100))
+        self.journal.consume(task('task_progress', description='界面' * 100))
         self.assertLessEqual(len(self.row()['task_name']), 48)
         self.assertTrue(self.row()['task_name'].endswith('…'))
         self.assertEqual(chat.Journal(self.journal.path).subagents, self.journal.subagents)
 
     def test_foreground_moved_to_background_requires_notification_even_without_structured_output(self):
-        self.native_events.consume(call())
-        self.native_events.consume(task(is_backgrounded=True))
+        self.journal.consume(call())
+        self.journal.consume(task(is_backgrounded=True))
         receipt = result()
         receipt.pop('tool_use_result')
-        self.native_events.consume(receipt)
+        self.journal.consume(receipt)
         self.assertEqual(self.row()['status'], 'running')
-        self.native_events.consume(task('task_notification', status='completed', summary='完成'))
+        self.journal.consume(task('task_notification', status='completed', summary='完成'))
         self.assertEqual(self.row()['status'], 'succeeded')
 
     def test_failure_stop_pause_and_new_run_ignore_old_notifications(self):
-        self.native_events.consume(call())
-        self.native_events.consume(task(run_id='run-01', is_backgrounded=True))
-        self.native_events.consume(task('task_updated', run_id='run-01', patch={'status': 'paused'}))
+        self.journal.consume(call())
+        self.journal.consume(task(run_id='run-01', is_backgrounded=True))
+        self.journal.consume(task('task_updated', run_id='run-01', patch={'status': 'paused'}))
         self.assertEqual(self.row()['status'], 'interrupted')
-        self.native_events.consume(task(run_id='run-02', is_backgrounded=True))
-        self.native_events.consume(task('task_notification', run_id='run-01', status='completed', summary='旧轮次完成'))
+        self.journal.consume(task(run_id='run-02', is_backgrounded=True))
+        self.journal.consume(task('task_notification', run_id='run-01', status='completed', summary='旧轮次完成'))
         self.assertEqual(self.row()['status'], 'running')
-        self.native_events.consume(task('task_notification', run_id='run-02', status='stopped', summary='用户停止'))
+        self.journal.consume(task('task_notification', run_id='run-02', status='stopped', summary='用户停止'))
         self.assertEqual(self.row()['status'], 'interrupted')
-        self.native_events.consume(task(run_id='run-02', is_backgrounded=True))
+        self.journal.consume(task(run_id='run-02', is_backgrounded=True))
         self.assertEqual(self.row()['status'], 'interrupted')
 
     def test_native_id_without_tool_id_is_joined_to_agent_call_without_duplicate_row(self):
         started = task(task_type='local_agent', description='先到达的后台任务')
         started.pop('tool_use_id')
-        self.native_events.consume(started)
-        self.native_events.consume(call(background=True))
-        self.native_events.consume(result(status='async_launched'))
+        self.journal.consume(started)
+        self.journal.consume(call(background=True))
+        self.journal.consume(result(status='async_launched'))
         self.assertEqual(self.row()['native_task_id'], 'agent-1')
         self.assertEqual(chat.Journal(self.journal.path).subagents, self.journal.subagents)
         done = task('task_notification', status='completed', summary='完成')
         done.pop('tool_use_id')
-        self.native_events.consume(done)
+        self.journal.consume(done)
         self.assertEqual(self.row()['status'], 'succeeded')
 
     def test_bash_housekeeping_and_foreign_sessions_are_not_subagents(self):
@@ -117,36 +114,35 @@ class ClaudeChildEventTests(UsageFixture, unittest.TestCase):
                        task(task_type='local_bash'), task(task_type='local_agent', ambient=True),
                        {**call(), 'session_id': 'foreign'}):
             # Bind before observing an unrelated native frame.
-            self.native_events.bind('native-cc')
-            self.native_events.consume(record)
+            self.journal.bind_claude_subagents('native-cc')
+            self.journal.consume(record)
         self.assertEqual(self.journal.subagents, {})
 
     def test_reconnect_restores_aliases_and_waits_for_current_native_evidence(self):
-        self.native_events.consume(call(background=True))
-        self.native_events.consume(task(is_backgrounded=True))
+        self.journal.consume(call(background=True))
+        self.journal.consume(task(is_backgrounded=True))
         restored = chat.Journal(self.journal.path)
-        restored_native_events = claude_events.ClaudeEvents(restored)
-        restored_native_events.bind('native-cc')
-        restored_native_events.consume({'type': 'system', 'subtype': 'init', 'session_id': 'native-cc'})
+        restored.bind_claude_subagents('native-cc')
+        restored.consume({'type': 'system', 'subtype': 'init', 'session_id': 'native-cc'})
         self.assertEqual(next(iter(restored.subagents.values()))['status'], 'unknown')
-        restored_native_events.consume(task('task_progress', description='已接续'))
+        restored.consume(task('task_progress', description='已接续'))
         self.assertEqual(next(iter(restored.subagents.values()))['status'], 'running')
-        restored_native_events.consume(task('task_notification', status='completed', summary='已完成'))
+        restored.consume(task('task_notification', status='completed', summary='已完成'))
         self.assertEqual(next(iter(restored.subagents.values()))['status'], 'succeeded')
 
     def test_unsettled_foreground_child_becomes_unknown_when_parent_ends_and_old_sdk_resume_can_restart(self):
-        self.native_events.consume(call())
-        self.native_events.consume({'type': 'result', 'is_error': False})
+        self.journal.consume(call())
+        self.journal.consume({'type': 'result', 'is_error': False})
         self.assertEqual(self.row()['status'], 'unknown')
-        self.native_events.consume(task(is_backgrounded=True))
-        self.native_events.consume(task('task_notification', status='stopped', summary='停止'))
-        self.native_events.consume(task(tool_use_id='resumed-call', is_backgrounded=True))
+        self.journal.consume(task(is_backgrounded=True))
+        self.journal.consume(task('task_notification', status='stopped', summary='停止'))
+        self.journal.consume(task(tool_use_id='resumed-call', is_backgrounded=True))
         self.assertEqual(self.row()['status'], 'running')
 
     def test_explicit_failure_is_not_overwritten_by_late_generic_success(self):
-        self.native_events.consume(call())
-        self.native_events.consume(task('task_notification', status='failed', summary='原始错误'))
-        self.native_events.consume(result())
+        self.journal.consume(call())
+        self.journal.consume(task('task_notification', status='failed', summary='原始错误'))
+        self.journal.consume(result())
         self.assertEqual((self.row()['status'], self.row()['detail']), ('failed', '原始错误'))
 
 

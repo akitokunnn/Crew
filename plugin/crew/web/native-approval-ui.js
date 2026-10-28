@@ -2,7 +2,7 @@
 (() => {
   const esc = value => String(value ?? "").replace(/[&<>"']/g,c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
   function create(options) {
-    let state = null, disposed = false;
+    let state = null;
     const saving = new Set(), acknowledged = new Set(), expanded = new Set(), commandExpanded = new Set(), errors = new Map();
     const pending = () => (state?.native_approvals || []).filter(item => item.status === "pending" && !acknowledged.has(String(item.id)));
     function sync(value) {
@@ -23,18 +23,15 @@
       }).join("");
     }
     async function decide(id, allow) {
-      id = String(id); if (disposed || saving.has(id) || !pending().some(item => String(item.id) === id)) return;
+      id = String(id); if (saving.has(id) || !pending().some(item => String(item.id) === id)) return;
       saving.add(id); expanded.add(id); errors.delete(id); options.onChange();
-      try { await options.api("/api/native-approval", {id,allow}); acknowledged.add(id); if (!disposed) await options.refreshState(); }
-      catch (error) { if (!disposed) { errors.set(id,error.message); options.toast(error.message); } }
-      finally { saving.delete(id); if (!disposed) options.onChange(); }
+      try { await options.api("/api/native-approval", {id,allow}); acknowledged.add(id); await options.refreshState(); }
+      catch (error) { errors.set(id,error.message); options.toast(error.message); }
+      finally { saving.delete(id); options.onChange(); }
     }
-    function click(event) { const button = event.target.closest("[data-native-approval-act]"); if (!button || button.disabled) return; void decide(button.dataset.id,button.dataset.nativeApprovalAct === "allow"); }
-    function toggle(event) { const commandId = event.target.dataset?.nativeCommandDetails; if (commandId !== undefined) { if (event.target.open) commandExpanded.add(commandId); else commandExpanded.delete(commandId); return; } const id = event.target.dataset?.nativeApprovalId; if (id === undefined) return; if (event.target.open) expanded.add(id); else expanded.delete(id); }
-    document.addEventListener("click", click);
-    document.addEventListener("toggle", toggle,true);
-    return {sync, markup, count:() => pending().length, countForLeader:id => forPerson(id,null,true).length, countForChat:(id,goalId,includeMembers) => forPerson(id,goalId,includeMembers).length, chatMarkup:(id,goalId,includeMembers) => markup(forPerson(id,goalId,includeMembers)),
-      destroy(){disposed=true;document.removeEventListener("click",click);document.removeEventListener("toggle",toggle,true);}};
+    document.addEventListener("click", event => { const button = event.target.closest("[data-native-approval-act]"); if (!button || button.disabled) return; void decide(button.dataset.id,button.dataset.nativeApprovalAct === "allow"); });
+    document.addEventListener("toggle", event => { const commandId = event.target.dataset?.nativeCommandDetails; if (commandId !== undefined) { if (event.target.open) commandExpanded.add(commandId); else commandExpanded.delete(commandId); return; } const id = event.target.dataset?.nativeApprovalId; if (id === undefined) return; if (event.target.open) expanded.add(id); else expanded.delete(id); },true);
+    return {sync, markup, count:() => pending().length, countForLeader:id => forPerson(id,null,true).length, countForChat:(id,goalId,includeMembers) => forPerson(id,goalId,includeMembers).length, chatMarkup:(id,goalId,includeMembers) => markup(forPerson(id,goalId,includeMembers))};
   }
   window.CrewNativeApprovals = {create};
 })();

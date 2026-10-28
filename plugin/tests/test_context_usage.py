@@ -35,35 +35,21 @@ class TestTranscriptContext(unittest.TestCase):
                 stream.write((json.dumps(record, ensure_ascii=False) + "\n").encode("utf-8"))
 
     def read(self):
-        return usage.session_titles(self.root, ["session"], self.cache,
-            model_windows={'claude-opus-5-5': 1000000, 'claude-sonnet-5-5': 1000000})
+        return usage.session_titles(self.root, ["session"], self.cache)
 
     def context(self):
         return self.cache["session"]["context"]
 
-    def test_only_native_reported_windows_are_used_for_arbitrary_model_identifiers(self):
-        expected = {'provider-model-a': 400000, 'provider-model-b': 250000}
-        self.assertEqual(models.MODELS, [])
+    def test_supported_model_windows_include_haiku_200000(self):
+        expected = {"claude-opus-5-5": 1000000, "claude-sonnet-5-5": 1000000,
+                    "claude-fable-5-1": 1000000, "claude-haiku-4-5-20251001": 200000}
+        self.assertEqual({model["id"]: model["context_window"] for model in models.MODELS}, expected)
         for model, maximum in expected.items():
             with self.subTest(model=model):
                 self.write([assistant(model=model)])
                 self.cache.clear()
-                usage.session_titles(self.root, ['session'], self.cache, model_windows=expected)
+                self.read()
                 self.assertEqual(self.context(), {"used": 3500, "max": maximum, "source": "transcript"})
-
-    def test_familiar_model_name_does_not_create_an_unreported_window(self):
-        self.write([assistant()])
-        usage.session_titles(self.root, ['session'], self.cache)
-        self.assertIsNone(self.context())
-
-    def test_native_result_context_window_is_used_and_cached_without_a_model_directory(self):
-        self.write([assistant(model='future-provider-model'), {'type': 'result',
-            'modelUsage': {'future-provider-model': {'contextWindow': 333000}}}])
-        usage.session_titles(self.root, ['session'], self.cache)
-        self.assertEqual(self.context(), {'used': 3500, 'max': 333000, 'source': 'transcript'})
-        self.write([assistant(model='future-provider-model', tokens=(1, 2, 3))], append=True)
-        usage.session_titles(self.root, ['session'], self.cache)
-        self.assertEqual(self.context(), {'used': 6, 'max': 333000, 'source': 'transcript'})
 
     def test_last_main_assistant_sums_input_and_both_cache_fields(self):
         self.write([assistant(), assistant(tokens=(100, 520000, 900)),

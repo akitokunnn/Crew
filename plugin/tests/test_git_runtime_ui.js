@@ -1,7 +1,6 @@
 "use strict";
 const assert=require("node:assert/strict"),fs=require("node:fs"),path=require("node:path"),vm=require("node:vm");
 const {test}=require("node:test");
-const {create:createRuntimeCatalog}=require("../crew/web/runtime-catalog.js");
 const web=path.join(__dirname,"../crew/web");
 const tick=async()=>{for(let i=0;i<24;i++)await Promise.resolve();};
 const catalog=(claude,codex)=>[{id:"claude",name:"Claude Code",available:claude},{id:"codex",name:"Codex",available:codex}];
@@ -14,16 +13,18 @@ function harness(initial){
   const sandbox={document:{addEventListener(){},removeEventListener(){},getElementById:()=>null},location:{search:"?project=fixture"},URLSearchParams,
     setInterval:()=>{throw Error("Git 页面不应定时扫描");},clearInterval(){},clearTimeout(){},window:{addEventListener(){},removeEventListener(){}}};
   vm.createContext(sandbox);
-  const runtimes=createRuntimeCatalog({snapshot:()=>({catalog:current})});
+  const app=fs.readFileSync(path.join(web,"app.js"),"utf8").replace(/\r\n/g,"\n");
+  vm.runInContext(app.replace('  setup();\n})();','window.runtimeFixture={defaultRuntime,set(value){state={runtimes:value};}};\n})();'),sandbox);
+  sandbox.window.runtimeFixture.set(current);
   vm.runInContext(fs.readFileSync(path.join(web,"git.js"),"utf8")+'\nglobalThis.component=CrewGit;',sandbox);
   const data={enabled:false,repository:"fixture",choices:{branches:["develop","main"],base:"develop",stable:"main"}};
-  const options={project:"fixture",catalog:runtimes.list,defaultRuntime:()=>runtimes.taskRuntime("git"),
+  const options={project:"fixture",catalog:()=>current,defaultRuntime:()=>sandbox.window.runtimeFixture.defaultRuntime(),
     api:async(route,body)=>{calls.push({route,body});return route.startsWith("/api/git?")?data:{ok:true};},toast(){},onChanged:async()=>{changed++;}};
   sandbox.component.mount(host,options);
   return {host,button,status,calls,get form(){return form;},get changed(){return changed;},ui:sandbox.component,
     choose(id){form.elements.runtime.value=id;handlers.get("change")({target:form.elements.runtime});},
     submit(){handlers.get("submit")({target:form,preventDefault(){}});},
-    async refresh(next=current){current=next;handlers.get("click")({target:{closest:selector=>selector==="[data-git-act]"?{dataset:{gitAct:"refresh"}}:null}});await tick();}};
+    async refresh(next=current){current=next;sandbox.window.runtimeFixture.set(next);handlers.get("click")({target:{closest:selector=>selector==="[data-git-act]"?{dataset:{gitAct:"refresh"}}:null}});await tick();}};
 }
 
 test("Codex-only Git setup selects Codex and submits it exactly once with the existing branch choices",async()=>{

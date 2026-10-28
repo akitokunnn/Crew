@@ -27,18 +27,23 @@
     return `<div class="cs-task-list">${[["codex","Codex","只读用于查看与分析；项目沙箱允许在当前项目内修改。"],["claude","Claude Code","原生默认沿用工具的权限流程；允许编辑可执行文件编辑。"]].map(([id,title,description]) => `<section class="cs-card"><div class="cs-card-heading"><div><h2>${title}</h2><p>${description}</p></div></div><div class="cs-fields cs-permission-options"><label>权限范围<select data-execution-runtime="${id}">${permissions[id].map(([mode,label]) => `<option value="${mode}" ${value[id] === mode ? "selected" : ""}>${label}</option>`).join("")}</select></label></div></section>`).join("")}</div><p class="cs-warning">完全访问可操作项目外文件和网络。请按任务需要明确选择。</p><p class="cs-footnote">控制交互会话；摘要与后台修复保持各自的隔离范围。下一次启动载体时生效，不主动重启或唤醒，不修改工具全局配置。</p>`;
   }
   function defaultRuntime(ai, catalog) {
-    return ai?.default?.runtime || "";
+    if (ai?.default?.runtime) return ai.default.runtime;
+    const available = catalog.filter(item => item.available);
+    return available.length === 1 ? available[0].id : "";
   }
   function initialAI(snapshot) {
     const ai = {default:empty(), leader:null, member:null, digest:null, git:null, operations:null, ...clone(snapshot.ai || {})};
+    if (!ai.default.runtime) ai.default.runtime = defaultRuntime(ai, snapshot.runtimes || []) || null;
     return ai;
   }
   function validate(ai, catalog) {
+    if (!defaultRuntime(ai, catalog) && !tasks.some(([key]) => ai[key]?.runtime)) throw Error(catalog.some(item => item.available) ? "请先选择默认载体。" : "没有可用的执行工具，请先安装并登录，再重新检测。");
     for (const key of ["default", ...tasks.map(item => item[0])]) {
       if (ai[key] === null) continue;
       for (const field of ["model", "effort"]) if (ai[key][field] !== null && !ai[key][field].trim()) throw Error("模型和 effort 为空时请选择原生默认。");
-      const selectedRuntime = ai[key].runtime;
-      if (!selectedRuntime) continue;
+      const selectedRuntime = ai[key].runtime || defaultRuntime(null,catalog);
+      if (key === "default" && !selectedRuntime && ai[key].model === null && ai[key].effort === null) continue;
+      if (!selectedRuntime) throw Error(`${key === "default" ? "默认大脑" : tasks.find(item => item[0] === key)[1]}：请选择执行载体，或使用“跟随默认”。`);
       const runtime = catalog.find(item => item.id === selectedRuntime), model = runtime?.models?.find(item => item.id === ai[key].model);
       if (ai[key].effort !== null && model && Array.isArray(model.efforts) && !model.efforts.includes(ai[key].effort)) throw Error(`${model.name || model.id} 不支持所填的 effort，请按实际支持情况修改。`);
     }
@@ -53,10 +58,10 @@
     return `<div class="cs-choice">${input}<button type="button" data-ai-custom="${key}:${field}">${custom ? "返回列表" : "自定义输入"}</button></div>`;
   }
   function selectionMarkup(key, selection, catalog, customFields = new Set()) {
-    const runtime = catalog.find(item => item.id === selection.runtime), model = runtime?.models?.find(item => item.id === selection.model);
+    const runtime = catalog.find(item => item.id === (selection.runtime || defaultRuntime(null,catalog))), model = runtime?.models?.find(item => item.id === selection.model);
     const efforts = model && Array.isArray(model.efforts) ? model.efforts : runtime?.efforts || [];
     const saved = selection.runtime && !runtime ? `<option value="${esc(selection.runtime)}" selected>${esc(selection.runtime)} · 未检测到</option>` : "";
-    return `<div class="cs-fields"><label>执行载体<select data-ai-key="${key}" data-ai-field="runtime"><option value="">按后台角色与原生设置解析</option>${catalog.map(item => `<option value="${esc(item.id)}" ${item.id === selection.runtime ? "selected" : ""} ${item.available ? "" : "disabled"}>${esc(item.name || item.id)}${item.available ? "" : " · 未就绪"}</option>`).join("")}${saved}</select></label><label>模型${choiceMarkup(key, "model", selection.model, runtime?.models || [], customFields.has(key+":model"))}</label><label>思考强度 · effort${choiceMarkup(key, "effort", selection.effort, efforts.map(id => ({id})), customFields.has(key+":effort"))}</label></div>${runtime && !runtime.available ? `<p class="cs-warning">${esc(runtime.error || "该载体暂不可用，请检查安装与登录。已保存的选择会保留。")}</p>` : ""}`;
+    return `<div class="cs-fields"><label>执行载体<select data-ai-key="${key}" data-ai-field="runtime"><option value="">${catalog.filter(item => item.available).length === 1 ? "自动使用唯一可用载体" : "请选择载体"}</option>${catalog.map(item => `<option value="${esc(item.id)}" ${item.id === selection.runtime ? "selected" : ""} ${item.available ? "" : "disabled"}>${esc(item.name || item.id)}${item.available ? "" : " · 未就绪"}</option>`).join("")}${saved}</select></label><label>模型${choiceMarkup(key, "model", selection.model, runtime?.models || [], customFields.has(key+":model"))}</label><label>思考强度 · effort${choiceMarkup(key, "effort", selection.effort, efforts.map(id => ({id})), customFields.has(key+":effort"))}</label></div>${runtime && !runtime.available ? `<p class="cs-warning">${esc(runtime.error || "该载体暂不可用，请检查安装与登录。已保存的选择会保留。")}</p>` : ""}`;
   }
   function create(options) {
     const root = options.host;
@@ -79,7 +84,7 @@
     }
     function renderAI() {
       const catalog = snapshot.runtimes || [];
-      content.innerHTML = `<section class="cs-card cs-default"><div class="cs-card-heading"><div><h2>默认大脑</h2><p>选择“跟随默认”的用途使用这里的选择；下面可分别指定大脑。</p></div><span class="cs-badge">默认</span></div>${selectionMarkup("default", draft.default, catalog, customFields)}<p class="cs-hint">下拉选择本机检测到的模型与强度；也可自定义输入。选择“原生默认”沿用工具配置；目录可用不代表本轮模型已加载。</p></section><div class="cs-section-heading"><h2>任务分配</h2><p>按用途选择大脑，也可以全部跟随默认。</p></div><div class="cs-task-list">${tasks.map(([key, title, description]) => `<section class="cs-card" data-ai-task="${key}" tabindex="-1"><div class="cs-card-heading"><div><h3>${title}</h3><p>${description}</p></div><label class="cs-inherit"><input type="checkbox" data-ai-inherit="${key}" ${draft[key] === null ? "checked" : ""}>${key === "member" ? "按成员角色解析" : "跟随默认"}</label></div>${draft[key] === null ? `<p class="cs-follow">${key === 'member' ? '由后台按成员角色、全局规则和原生设置解析；组内明确配置可覆盖。' : '使用默认大脑的载体、模型与思考强度。'}</p>` : selectionMarkup(key, draft[key], catalog, customFields)}</section>`).join("")}</div><p class="cs-footnote">保存设置不会运行 AI。新建会话时仍可单独选择；组内明确配置优先；创建回执说明实际载体来源。</p>`;
+      content.innerHTML = `<section class="cs-card cs-default"><div class="cs-card-heading"><div><h2>默认大脑</h2><p>选择“跟随默认”的用途使用这里的选择；下面可分别指定大脑。</p></div><span class="cs-badge">默认</span></div>${selectionMarkup("default", draft.default, catalog, customFields)}<p class="cs-hint">下拉选择本机检测到的模型与强度；也可自定义输入。选择“原生默认”沿用工具配置。</p></section><div class="cs-section-heading"><h2>任务分配</h2><p>按用途选择大脑，也可以全部跟随默认。</p></div><div class="cs-task-list">${tasks.map(([key, title, description]) => `<section class="cs-card" data-ai-task="${key}" tabindex="-1"><div class="cs-card-heading"><div><h3>${title}</h3><p>${description}</p></div><label class="cs-inherit"><input type="checkbox" data-ai-inherit="${key}" ${draft[key] === null ? "checked" : ""}>${key === "member" ? "跟随各自 leader" : "跟随默认"}</label></div>${draft[key] === null ? `<p class="cs-follow">${key === 'member' ? '使用所属 leader 的载体、模型与思考强度；在组内设置时可覆盖。' : '使用默认大脑的载体、模型与思考强度。'}</p>` : selectionMarkup(key, draft[key], catalog, customFields)}</section>`).join("")}</div><p class="cs-footnote">保存设置不会运行 AI。新建会话时仍可单独选择；组员沿用 leader 的明确分配。</p>`;
     }
     function renderTools() {
       content.innerHTML = `<section class="cs-card"><div class="cs-card-heading"><div><h2>执行工具</h2><p>以下信息来自本机实际检测。</p></div><button type="button" class="cs-button" data-settings-action="reload">重新检测</button></div>${(snapshot.runtimes || []).map(item => `<div class="cs-tool-row"><div><strong>${esc(item.name || item.id)}</strong><p>${esc(item.error || (item.available ? "已就绪" : "未就绪"))}</p></div><span class="cs-badge ${item.available ? "cs-ready" : ""}">${item.available ? "可用" : "需配置"}</span></div>`).join("")}</section><p class="cs-footnote">安装、登录与工具更新可在 Crew 桌面首页的设置中管理。</p>`;
@@ -144,7 +149,7 @@
           if (focused) content.querySelector(`[data-ai-key="${key}"][data-ai-field="${field}"]`).focus();
         }
         if (field === "model") {
-          const runtime = snapshot.runtimes.find(item => item.id === draft[key].runtime), model = runtime?.models?.find(item => item.id === draft[key].model);
+          const runtime = snapshot.runtimes.find(item => item.id === (draft[key].runtime || defaultRuntime(null,snapshot.runtimes))), model = runtime?.models?.find(item => item.id === draft[key].model);
           const efforts = model && Array.isArray(model.efforts) ? model.efforts : runtime?.efforts || [];
           const picker = content.querySelector(`[data-ai-key="${key}"][data-ai-field="effort"]`);
           if (picker.tagName === "SELECT") picker.innerHTML = choiceOptions(draft[key].effort, efforts.map(id => ({id})));

@@ -52,7 +52,7 @@ class Administrator {
     return {state:'unmanaged',checked_at:null,supervisor_pid:null,service_pid:null,url:null,recoveries:0,incidents:[],restart:{allowed:false,reason},operations};
   }
   async request(action) {
-    if (!['check','recover','shutdown'].includes(action)) throw new Error('不支持的管理员操作');
+    if (!['check','recover'].includes(action)) throw new Error('不支持的管理员操作');
     const current = await this.snapshot();
     if (!current.instance_id || !alive(current.supervisor_pid) || ['paused','unknown','stopped','unmanaged'].includes(current.state)) throw new Error(current.restart.reason || '管理员暂时不可用');
     if (action === 'recover' && !current.restart.allowed) throw new Error(current.restart.reason || '后台仍在运行，不能安全恢复');
