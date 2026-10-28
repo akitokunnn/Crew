@@ -25,3 +25,11 @@ test("a pending approval cannot be submitted twice and ended native requests dis
   release({approval:{status:"denied"}});await tick();h.click("allow");assert.equal(h.calls.length,1);
   h.ui.sync({...h.state,native_approvals:[]});assert.equal(h.ui.markup(),"");h.click("allow");assert.equal(h.calls.length,1);
 });
+
+test("native approval teardown removes listeners and ignores the late receipt of an already submitted choice",async()=>{
+  const handlers=new Map(),events=[],sandbox={window:{},document:{addEventListener:(name,fn)=>handlers.set(name,fn),removeEventListener:(name,fn)=>{if(handlers.get(name)===fn)handlers.delete(name);}}};
+  vm.createContext(sandbox);vm.runInContext(fs.readFileSync(path.join(__dirname,"../crew/web/native-approval-ui.js"),"utf8"),sandbox);
+  let release;const ui=sandbox.window.CrewNativeApprovals.create({api:()=>new Promise(done=>{release=done;}),onChange:()=>events.push("change"),toast:()=>events.push("toast"),refreshState:()=>events.push("refresh")});
+  ui.sync({leaders:[],members:[],native_approvals:[approval()]});handlers.get("click")({target:{closest:()=>({dataset:{nativeApprovalAct:"allow",id:"approval-a"},disabled:false})}});
+  assert.deepEqual(events,["change"]);ui.destroy();assert.equal(handlers.size,0);release({ok:true});await tick();assert.deepEqual(events,["change"]);
+});

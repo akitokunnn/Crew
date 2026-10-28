@@ -3,7 +3,7 @@ const assert=require("node:assert/strict"),fs=require("node:fs"),path=require("n
 const {test}=require("node:test");
 function harness(api){
   const retry={disabled:false},main={innerHTML:"",dataset:{},querySelector:()=>retry},notices=[];
-  const sandbox={window:{},document:{addEventListener(){},getElementById:id=>id==="main"?main:null},location:{search:"?project=fixture"},URLSearchParams,CrewActivity:{sync(){}}};
+  const sandbox={window:{},document:{addEventListener(){},getElementById:id=>id==="main"?main:null},location:{search:"?project=fixture&legacy=1"},URLSearchParams,CrewActivity:{sync(){}}};
   vm.createContext(sandbox);
   const source=fs.readFileSync(path.join(__dirname,"../crew/web/app.js"),"utf8").replace(/\r\n/g,"\n");
   vm.runInContext(source.replace("  setup();\n})();",`window.ui={loadState,setScope(id,parent){view="chat";readOnlyId=id;leaderId=parent;},scope:()=>({leaderId,readOnlyId}),services(values){api=values.api;toast=values.toast;waitingNotifications={generation:()=>0,sync(){}};appearance={sync(){}};usageUI={update(){}};readRoute=()=>{view="all";};render=()=>{document.getElementById("main").innerHTML="已恢复的工作区";};syncRoute=()=>{};}};\n})();`),sandbox);

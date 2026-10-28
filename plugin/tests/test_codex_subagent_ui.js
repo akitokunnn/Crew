@@ -1,7 +1,7 @@
 "use strict";
 const {test}=require("node:test"),assert=require("node:assert/strict"),fs=require("node:fs"),path=require("node:path"),vm=require("node:vm");
 const escape=value=>String(value).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
-const sandbox={window:{},document:{addEventListener(){}},location:{search:""},URLSearchParams,CrewChat:{renderInline:escape},CrewContext:{ring:()=>""},CrewActivity:{markup:()=>""}};
+const sandbox={window:{},document:{addEventListener(){}},location:{search:"?legacy=1"},URLSearchParams,CrewChat:{renderInline:escape},CrewContext:{ring:()=>""},CrewActivity:{markup:()=>""}};
 sandbox.createRuntimeCatalog=require("../crew/web/runtime-catalog.js").create;
 sandbox.createComments=require("./comments_fixture.cjs").createComments;
 vm.createContext(sandbox);

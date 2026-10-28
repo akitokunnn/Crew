@@ -151,7 +151,8 @@
       if (base !== null) params.set("base", base);
     }
     if (raw) params.set("raw", "1");
-    return "/api/files/content?" + params;
+    const pathURL = "/api/files/content?" + params;
+    return raw ? window.CrewClient?.current?.resourceURL(pathURL) || pathURL : pathURL;
   }
   function initFiles(api, toast) {
     let request = 0;
@@ -185,9 +186,13 @@
         if (info.type === "external" && info.open_with === "default") { await api("/api/files/open", resolved); return; }
         let content;
         if (info.type === "preview" && info.kind !== "image") {
-          const response = await fetch(fileContentUrl(info.path, data.session_id || "", null, false, documentLink ? data.document_id : null));
-          content = await response.json();
-          if (!response.ok) throw Error(content.error);
+          const url = fileContentUrl(info.path, data.session_id || "", null, false, documentLink ? data.document_id : null);
+          if (window.CrewClient?.current) content = JSON.parse(await window.CrewClient.current.text(url));
+          else {
+            const response = await fetch(url);
+            content = await response.json();
+            if (!response.ok) throw Error(content.error);
+          }
         }
         if (sequence !== request) return;
         const openLabel = info.open_with === "vscode" ? "在 VS Code 打开" : "用默认程序打开";
@@ -250,7 +255,8 @@
   }
   function persistDraft(context) {
     try {
-      localStorage.setItem(keyFor(context), JSON.stringify({ text: context.cache.text, images: context.cache.images }));
+      localStorage.setItem(keyFor(context), JSON.stringify({ text: context.cache.text, images: context.cache.images,
+        pendingMessage:context.cache.pendingMessage, pendingQueue:context.cache.pendingQueue, intent:context.cache.intent }));
     } catch (error) { context.toast(error.message); }
   }
   function saveDraft(context) {
@@ -265,6 +271,7 @@
     if (context.readonly) return;
     const hasContent = context.input.value.trim().length > 0 || context.cache.images.length > 0;
     context.send.disabled = context.loading || context.cache.sending || !hasContent;
+    if (context.queue) context.queue.disabled = context.loading || context.cache.sending || !context.input.value.trim();
     const external = context.goalId == null && context.session.where === "vscode";
     context.hint.textContent = context.busy || context.cache.sending ? "" : external ? "会话仍在原工具中；退出并交给 Crew 后才能接话" : "Enter 发送 · Shift+Enter 换行";
     context.send.hidden = context.busy && !hasContent;
@@ -279,8 +286,10 @@
     context.stopStatus.textContent = context.interruptError || (context.busy && stopReason ? stopReason : "");
     context.stopStatus.hidden = !context.stopStatus.textContent;
     context.stopStatus.classList.toggle("failed", Boolean(context.interruptError));
-    context.deliveryStatus.textContent = context.cache.deliveryError || "";
-    context.deliveryStatus.hidden = !context.cache.deliveryError;
+    context.deliveryStatus.textContent = context.cache.deliveryError || context.cache.deliveryReceipt || "";
+    context.deliveryStatus.hidden = !context.deliveryStatus.textContent;
+    context.deliveryStatus.style.setProperty("color",context.cache.deliveryError ? "var(--danger)" : "var(--text-3)");
+    context.deliveryStatus.setAttribute("role",context.cache.deliveryError ? "alert" : "status");
   }
   async function interrupt(context) {
     if (!current(context) || context.stop.disabled) return;
@@ -604,6 +613,12 @@
       if (event.status !== "working") context.settledSeq = event.seq;
       setBusy(context, event.status === "working", event.seq); if (incremental && context.goalId != null) context.onExecutionChange?.();
     }
+    else if (event.type === "input_delivery") {
+      const labels = {submitted:"输入已提交，等待原生接收。",accepted:"原生已接收输入。",rejected:"原生拒绝了输入。",unknown:"输入是否送达尚未确认，请核对原记录；不要用新编号重发。"};
+      context.cache.deliveryReceipt = labels[event.status] || `输入回执：${event.status}`;
+      if (["unknown","rejected"].includes(event.status)) context.cache.deliveryError = `${labels[event.status]}${event.detail || event.error || ""}`;
+      else if (event.status === "accepted") context.cache.deliveryError = "";
+    }
     else if (event.type === "compact_request" || event.type === "compact") {
       context.items.push({...event, id:`${event.type}:${event.seq}`, kind:event.type, lastSeq:event.seq});
       if (incremental && event.type === "compact") notifyCompact(context.session.session_id, event, context.toast);
@@ -634,6 +649,32 @@
     const generation = context.connectionGeneration;
     context.stream = new AbortController();
     const params = query(context); params.set("after", context.cursor);
+    const client = context.client || window.CrewClient?.current;
+    if (client?.eventSource) {
+      try {
+        const source = client.eventSource(`/api/chat/events?${params}`);
+        context.eventSource = source;
+        context.stream.signal.addEventListener("abort", () => source.close(), {once:true});
+        source.onopen = () => { if (current(context) && generation === context.connectionGeneration) connectionError(context, null); };
+        source.onmessage = message => {
+          if (!current(context) || generation !== context.connectionGeneration) return;
+          try { apply(context, JSON.parse(message.data), true); connectionError(context, null); }
+          catch (error) { connectionError(context, `对话事件无法读取：${error.message}`); }
+        };
+        source.onerror = () => {
+          source.close();
+          if (!current(context) || generation !== context.connectionGeneration) return;
+          connectionError(context, "对话连接暂时中断，正在重连；未重发输入。");
+          context.reconnectTimer = setTimeout(() => connect(context), 3000);
+        };
+      } catch (error) {
+        if (current(context)) {
+          connectionError(context, error.message);
+          context.reconnectTimer = setTimeout(() => connect(context), 3000);
+        }
+      }
+      return;
+    }
     try {
       const headers = { Accept: "text/event-stream" };
       if (context.cursor > 0) headers["Last-Event-ID"] = String(context.cursor);
@@ -715,12 +756,17 @@
     const previousBusy = context.busy;
     const sendSeq = context.cursor;
     // Keep this ID with the exact draft until acceptance, including an uncertain network failure.
-    const fingerprint = JSON.stringify([text, context.cache.images]);
+    const intent = context.intent?.value || "dialogue";
+    const affectsTask = Boolean(context.affectsTask?.checked);
+    const fingerprint = JSON.stringify([text, context.cache.images, intent, affectsTask]);
     if (context.cache.pendingMessage?.fingerprint !== fingerprint) {
       const id = globalThis.crypto?.randomUUID?.() || `web-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
       context.cache.pendingMessage = {fingerprint, id};
     }
+    persistDraft(context);
     const payload = { session_id: context.session.session_id, text, message_id:context.cache.pendingMessage.id, ...goalPayload(context) };
+    if (context.goalId != null) payload.intent = intent;
+    if (context.memberConversation) payload.affects_task = affectsTask;
     if (context.cache.images.length > 0) payload.images = context.cache.images.slice();
     context.cache.sending = true;
     context.cache.pendingSendSeq = sendSeq;
@@ -729,8 +775,9 @@
     composerState(context); schedule(context);
     try {
       const result = await context.api("/api/chat/send", payload);
-      if (result.accepted === false || result.accepted === "unknown" || result.delivery === "unknown") throw Error(result.error || "无法确认当前执行是否已接收，请先核对消息记录，保留同一消息编号。");
+      if (result.accepted === false || result.accepted === "unknown" || result.delivery === "unknown" || result.status === "unknown" || result.status === "rejected") throw Error(result.error || "无法确认当前执行是否已接收，请先核对消息记录，保留同一消息编号。");
       context.cache.pendingMessage = null;
+      context.cache.deliveryReceipt = result.status === "submitted" ? "输入已提交，等待原生接收回执。" : "";
       if (context.cache.version === draftVersion) {
         context.cache.text = ""; context.cache.images = [];
         const view = visibleDraft(context);
@@ -756,9 +803,33 @@
       context.toast(error.message);
     } finally {
       context.cache.sending = false;
+      persistDraft(context);
       const view = visibleDraft(context);
       if (view) { composerState(view); schedule(view); }
     }
+  }
+  async function queueMessage(context) {
+    if (!current(context) || !context.onQueue || context.queue.disabled) return;
+    saveDraft(context);
+    if (context.cache.images.length) { context.toast("排队下一步暂不接收图片，请先立即发送图片；文字草稿已保留。"); return; }
+    const text = context.input.value.trim(), draftVersion = context.cache.version;
+    const fingerprint = JSON.stringify([text, context.session.session_id]);
+    if (context.cache.pendingQueue?.fingerprint !== fingerprint) context.cache.pendingQueue = {
+      fingerprint, id:globalThis.crypto?.randomUUID?.() || `queue-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    };
+    persistDraft(context);
+    context.cache.sending = true; context.cache.deliveryError = ""; composerState(context);
+    try {
+      await context.onQueue({text, sessionId:context.session.session_id, requestId:context.cache.pendingQueue.id});
+      context.cache.pendingQueue = null;
+      if (context.cache.version === draftVersion) {
+        context.cache.text = ""; context.cache.images = [];
+        const view = visibleDraft(context); if (view) { view.input.value = ""; resizeInput(view); }
+        persistDraft(context);
+      }
+      if (current(context)) context.toast("具体要求已加入本任务队列；原生完成当前工作后再推进。");
+    } catch (error) { context.cache.deliveryError = `${error.message}（排队草稿已保留）`; if (current(context)) context.toast(error.message); }
+    finally { context.cache.sending = false; const view = visibleDraft(context); if (view) composerState(view); }
   }
   function mount(options) {
     unmount();
@@ -769,7 +840,8 @@
       sessions.set(cacheKey, cache);
       try {
         const saved = localStorage.getItem(keyFor(options));
-        if (saved !== null) { const draft = JSON.parse(saved); cache.text = draft.text; cache.images = draft.images; }
+        if (saved !== null) { const draft = JSON.parse(saved); cache.text = draft.text; cache.images = draft.images;
+          cache.pendingMessage = draft.pendingMessage; cache.pendingQueue = draft.pendingQueue; cache.intent = draft.intent; }
       } catch (error) { options.toast(error.message); }
     }
     const context = { ...options, session:options.goalId == null ? options.session : {...options.session,activity:null}, cache, items: [], byId: new Map(), nodes: new Map(), results: new Map(), toolOwners: new Map(), toolStops: new Map(), cursor: 0, readSeq: 0, busySeq: options.readonly || options.goalId != null ? 0 : options.session.last_seq, settledSeq:null, executionId:null, connectionGeneration:0, loadGeneration:0, readTimer: null, reconnectTimer: null, historyRetryTimer: null, historyFailed: false, interrupting: false, interruptError: "", interruptConfirmed: false, frame: null, loading: true, busy: cache.pendingSendSeq === null ? options.goalId == null && options.session.busy : true, reading: false, initialPosition: null, stream: null };
@@ -806,6 +878,26 @@
       context.input = options.host.querySelector("textarea"); context.send = options.host.querySelector(".send");
       context.stop = options.host.querySelector(".chat-stop"); context.stopStatus = options.host.querySelector(".chat-interrupt-status");
       context.deliveryStatus = options.host.querySelector(".chat-delivery-status");
+      if (options.goalId != null) {
+        const tools = options.host.querySelector(".c-row");
+        const intent = document.createElement("select"); intent.className = "chat-intent";
+        intent.setAttribute("aria-label", "消息意图");
+        intent.innerHTML = '<option value="dialogue">讨论</option><option value="work">继续工作</option>';
+        tools.insertBefore(intent, context.stop);
+        context.intent = intent;
+        if (context.intent) { context.intent.value = cache.intent || "dialogue"; context.intent.onchange = () => { cache.intent = context.intent.value; }; }
+        if (options.memberConversation) {
+          const sync = document.createElement("label"); sync.className = "chat-affects-task";
+          const checkbox = document.createElement("input"); checkbox.type = "checkbox";
+          sync.insertBefore(checkbox, null); const label = document.createElement("span"); label.textContent = "影响整体任务，同步 leader"; sync.insertBefore(label, null);
+          tools.insertBefore(sync, context.stop); context.affectsTask = checkbox;
+        }
+        if (options.onQueue) {
+          const queue = document.createElement("button"); queue.type = "button"; queue.className = "chat-queue"; queue.textContent = "排队发送";
+          queue.title = "将明确的下一步交给本任务队列"; tools.insertBefore(queue, context.send);
+          context.queue = queue; queue.onclick = () => { void queueMessage(context); };
+        }
+      }
       context.stop.onclick = () => { void interrupt(context); };
       context.hint = options.host.querySelector(".hint"); context.attach = options.host.querySelector(".attach");
       context.input.value = cache.text;
@@ -861,7 +953,7 @@
   async function watchCompact(id, options) {
     const history = await options.api(`/api/chat/history?session_id=${encodeURIComponent(id)}`);
     const params = new URLSearchParams({session_id:id, project:options.state.project.name, after:history.events.length === 0 ? 0 : history.events[history.events.length - 1].seq});
-    const stream = new EventSource(`/api/chat/events?${params}`);
+    const stream = window.CrewClient?.current?.eventSource(`/api/chat/events?${params}`) || new EventSource(`/api/chat/events?${params}`);
     const close = () => stream.close();
     const finish = event => { close(); options.onFinish?.(event); };
     stream.onmessage = message => {

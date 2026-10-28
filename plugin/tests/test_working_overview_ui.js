@@ -4,7 +4,7 @@ const {test}=require("node:test");
 
 function harness(snapshot){
   const main={innerHTML:"",dataset:{}};
-  const sandbox={createCatalog:require("../crew/web/runtime-catalog.js").create,createComments:require("./comments_fixture.cjs").createComments,createAttention:require("./attention_fixture.cjs").createAttention,window:{},document:{getElementById:()=>main,addEventListener(){}},location:{search:"?project=fixture"},URLSearchParams,
+  const sandbox={createCatalog:require("../crew/web/runtime-catalog.js").create,createComments:require("./comments_fixture.cjs").createComments,createAttention:require("./attention_fixture.cjs").createAttention,window:{},document:{getElementById:()=>main,addEventListener(){}},location:{search:"?project=fixture&legacy=1"},URLSearchParams,
     CrewChat:{renderInline:text=>String(text).replaceAll("<","&lt;").replaceAll(">","&gt;")},
     CrewContext:{ring:()=>""},CrewActivity:{markup:()=>""}};
   vm.createContext(sandbox);
