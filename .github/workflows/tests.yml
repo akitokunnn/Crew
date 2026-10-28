@@ -58,7 +58,7 @@ jobs:
           foreach ($name in 'CREW_SESSION_ID','CLAUDE_CODE_SESSION_ID','CREW_EXECUTION_ID','CREW_GOAL_ID') {
             Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
           }
-          python ../.github/scripts/test_backend.py --workers 4
+          python -m unittest discover -s tests --durations 10
 
   desktop:
     runs-on: windows-latest
