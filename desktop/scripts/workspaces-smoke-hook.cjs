@@ -133,6 +133,7 @@ app.once('browser-window-created', (_event, win) => {
       originalMessageBox=dialog.showMessageBox;
       dialog.showMessageBox=async(...args)=>{
         const options=args.at(-1);
+        if(options.title==='打开为 V2 工作区')return {response:0};
         if(options.title==='升级工作区数据')return {response:0};
         return originalMessageBox.apply(dialog,args);
       };
@@ -400,6 +401,23 @@ app.once('browser-window-created', (_event, win) => {
       const assistantState=await core.request(state.service.url,'/api/assistant/state');assert.equal(assistantState.project,null);assert.equal(assistantState.assistant.running,false);
       assert.equal((await core.projects(state.service.url)).length,4);
       evidence.checks.push('one global assistant opens with no AI launch or fake workspace, and retains its live conversation draft across workspace navigation');
+      await home();
+      const mibRoot=path.join(parent,'MIB-project');await fs.mkdir(path.join(mibRoot,'.crew'),{recursive:true});
+      const oldMarker=JSON.stringify({format:'crew-workspace',schema_version:2,workspace_id:'fa5c8ac4-f939-4b7a-8625-51fbc796562d'});
+      await fs.writeFile(path.join(mibRoot,'.crew/workspace.json'),oldMarker);
+      await fs.writeFile(path.join(mibRoot,'retained.txt'),'MIB source stays unchanged');
+      dialog.showOpenDialog=async()=>({canceled:false,filePaths:[mibRoot]});
+      await click('#existing');const mib=await opened('MIB-project');
+      await until(()=>mib.executeJavaScript('Boolean(document.querySelector(".wh-head"))'),'fresh MIB workspace overview');
+      assert.equal(await fs.readFile(path.join(mibRoot,'.crew/workspace.json'),'utf8'),oldMarker);
+      assert.equal(await fs.readFile(path.join(mibRoot,'retained.txt'),'utf8'),'MIB source stays unchanged');
+      const mibIdentity=JSON.parse(await fs.readFile(path.join(mibRoot,'.crew/workspace-v2.json'),'utf8'));
+      assert.notEqual(mibIdentity.workspace_id,JSON.parse(oldMarker).workspace_id);
+      const mibDiscovery=await core.request(state.service.url,'/api/workspace-data/discover',{root:mibRoot});
+      assert.equal(mibDiscovery.status,'ready');assert.equal(mibDiscovery.project.workspace_id,mibIdentity.workspace_id);
+      await home();await click('#existing');assert.equal((await tabs()).filter(tab=>tab.project==='MIB-project').length,1);
+      await capture('18-v2-fresh-mib',mib);
+      evidence.checks.push('a folder with a V1 identity opens with explicitly chosen fresh V2 records; original marker and source bytes remain intact and reopening keeps one V2 identity and tab');
       assert.equal(evidence.errors.length, 0, JSON.stringify(evidence.errors)); evidence.ok = true;
       await fs.writeFile(path.join(output, 'evidence.json'), JSON.stringify(evidence, null, 2));
       app.quit();

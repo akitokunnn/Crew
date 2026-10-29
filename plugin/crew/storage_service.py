@@ -18,10 +18,13 @@ from . import store
 
 HISTORY_PREFIX = 'storage:'
 MARKER = Path('.crew') / 'workspace.json'
+V2_MARKER = Path('.crew') / 'workspace-v2.json'
 
 
-def _marker(root):
-    marker=Path(root)/MARKER
+def _marker(root, *, separate=False):
+    marker=Path(root)/V2_MARKER
+    if not separate and not marker.exists() and not marker.is_symlink():
+        marker=Path(root)/MARKER
     for path in (marker.parent,marker):
         if path.is_symlink() or path.exists() and getattr(path.lstat(),'st_file_attributes',0)&0x400:
             raise ValueError('工作区标识不能通过链接指向其他位置')
@@ -133,6 +136,37 @@ class StorageService:
             ids = [r[0] for r in conn.execute('SELECT id FROM workspaces WHERE deleted_at IS NULL ORDER BY created_at')]
         return [p for p in (self._project(w) for w in ids) if p.get('read_only')]
 
+    def _fresh_intent_path(self, root):
+        key = hashlib.sha256(store.norm_path(root).encode('utf-8')).hexdigest()
+        return self.home / 'storage-v2-fresh-intents' / (key + '.json')
+
+    def _fresh_intent(self, root):
+        path = self._fresh_intent_path(root)
+        if not path.is_file():
+            return None
+        value = json.loads(path.read_text(encoding='utf-8'))
+        if (value.get('format') != 'crew-fresh-workspace' or
+                value.get('root') != store.norm_path(root) or not value.get('project')):
+            raise ValueError('新工作区创建记录无效，已保留现有数据：' + str(path))
+        value['workspace_id'] = str(uuid.UUID(value['workspace_id']))
+        return value
+
+    def _save_fresh_intent(self, root, project):
+        value = {'format': 'crew-fresh-workspace', 'root': store.norm_path(root),
+                 'project': project, 'workspace_id': str(uuid.uuid4())}
+        path = self._fresh_intent_path(root)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(path.name + '.' + uuid.uuid4().hex + '.tmp')
+        try:
+            with temporary.open('x', encoding='utf-8') as stream:
+                json.dump(value, stream, ensure_ascii=False)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return value
+
     def discover(self, root):
         root = Path(root).expanduser().resolve()
         marker = _marker(root)
@@ -161,6 +195,9 @@ class StorageService:
                         return {'status':'ready','project':self._project(mapping['workspace_id']),'candidates':[]}
         candidates = self._candidates(root)
         current = next((c for c in candidates if c['current']), None)
+        pending = self._fresh_intent(root)
+        can_resume_fresh = pending is not None and (
+            not (root / V2_MARKER).exists() or pending['workspace_id'] == identity)
         if current:
             mapping = self._mapping(current['project'])
             if mapping:
@@ -177,14 +214,16 @@ class StorageService:
                 return {'status': 'ready' if bound and bound['id']==identity else 'relocate_required', 'workspace_id': identity,
                         'project': self._project(identity), 'candidates': candidates}
             return {'status': 'history_missing', 'workspace_id': identity, 'candidates': candidates,
+                    'can_start_fresh': can_resume_fresh or not (root / V2_MARKER).exists() and not current,
                     'message': '此目录已有工作区身份，但本机没有对应历史。请先导入工作区包。'}
-        return {'status': 'upgrade_required' if candidates else 'new', 'candidates': candidates}
+        return {'status': 'upgrade_required' if candidates else 'new', 'candidates': candidates,
+                'can_start_fresh': can_resume_fresh or not current and not (root / V2_MARKER).exists()}
 
-    def _write_marker(self, root, workspace_id):
+    def _write_marker(self, root, workspace_id, *, separate=False):
         root = Path(root)
         if not root.is_dir():
             return '工作目录暂不可用，历史已经保存；重新绑定目录后可继续工作。'
-        marker = _marker(root)
+        marker = _marker(root, separate=separate)
         if marker.exists():
             existing = json.loads(marker.read_text(encoding='utf-8'))
             if existing.get('workspace_id') != workspace_id:
@@ -198,7 +237,7 @@ class StorageService:
                 json.dump(value, stream, ensure_ascii=False, indent=2)
                 stream.write('\n')
         except FileExistsError:
-            return self._write_marker(root, workspace_id)
+            return self._write_marker(root, workspace_id, separate=separate)
         except PermissionError:
             return '目录不可写，本机历史身份已保存；允许写入后可补建目录标识。'
         return None
@@ -228,6 +267,37 @@ class StorageService:
         with self.lock:
             discovery = self.discover(root)
             action = data.get('action')
+            if action == 'fresh':
+                if discovery['status'] == 'ready':
+                    pending = self._fresh_intent(root)
+                    if pending and pending['workspace_id'] == discovery['project']['workspace_id']:
+                        self._fresh_intent_path(root).unlink(missing_ok=True)
+                    return {'project': discovery['project'], 'model_calls': 0}
+                if not discovery.get('can_start_fresh'):
+                    raise ValueError('此目录已有本机 V2 历史，请接续或导入原记录，不能覆盖为新工作区')
+                if not root.is_dir():
+                    raise ValueError('项目目录不存在：' + str(root))
+                from . import board
+                pending = self._fresh_intent(root)
+                if pending is None:
+                    with closing(store.connect(self.home)) as conn:
+                        name = root.name
+                        suffix = 2
+                        while conn.execute('SELECT 1 FROM projects WHERE name=?', (name,)).fetchone():
+                            name = root.name + ' (' + str(suffix) + ')'
+                            suffix += 1
+                    pending = self._save_fresh_intent(root, name)
+                # The intent fixes the identity before touching either record
+                # store. Failed marker writes create no project; a later failure
+                # resumes the same identity instead of leaving an orphan gate.
+                warning = self._write_marker(root, pending['workspace_id'], separate=True)
+                if warning:
+                    raise ValueError('无法建立独立的 V2 工作区标识：' + warning)
+                with closing(store.connect(self.home)) as conn:
+                    project = board.init_project(conn, pending['project'], root)
+                result = self.refresh(project['name'], workspace_id=pending['workspace_id'])
+                self._fresh_intent_path(root).unlink(missing_ok=True)
+                return {**result, 'model_calls': 0}
             if action == 'relocate' and discovery['status'] in ('ready','relocate_required'):
                 project=discovery['project']
                 if not project.get('read_only') and store.norm_path(project['root'])!=store.norm_path(root) and not legacy_relocated:

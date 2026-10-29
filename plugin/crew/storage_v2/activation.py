@@ -239,7 +239,8 @@ def _rows(conn, table, workspace_id):
 
 
 def _marker(root, workspace_id, *, allowed_source=None):
-    path = root / '.crew' / 'workspace.json'
+    from ..storage_service import _marker as marker_path
+    path = marker_path(root)
     if not path.resolve().is_relative_to(root):
         raise StorageConflict('Workspace marker points outside the selected directory')
     if path.exists():
@@ -685,7 +686,8 @@ def activate_workspace(repo, workspace_id, legacy_home, root, *, replace_source_
     legacy_home=Path(legacy_home).expanduser().resolve()
     repairs=repair_activations(repo,legacy_home,workspace_id)
     if type(replace_source_marker) is not bool:raise StorageError('replace_source_marker must be an explicit boolean')
-    marker=root/'.crew'/'workspace.json';source_marker=None
+    from ..storage_service import _marker as marker_path
+    marker=marker_path(root);source_marker=None
     if not marker.resolve().is_relative_to(root) or marker.exists() and marker.stat().st_size>4096:
         raise StorageConflict('目录标识路径或大小无效，未覆盖。')
     bound=repo.workspace_for_path(root,exact=True)

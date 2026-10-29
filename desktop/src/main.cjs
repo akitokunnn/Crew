@@ -202,6 +202,10 @@ function storageProgress(message){if(liveWindow())window.webContents.send('deskt
 async function chooseHistory({kind,discovery}) {
   if(!liveWindow())return null;
   const target=window;
+  if(kind==='history_missing'){
+    const answer=await dialog.showMessageBox(window,{type:'question',title:'打开为 V2 工作区',message:'这个文件夹有旧 Crew 的工作区身份',detail:'可以使用现有源码，从全新的 V2 记录开始。旧版任务、聊天和文件夹身份会保留；新建记录不会启动 AI。需要接续原历史时，请取消并导入工作区包。',buttons:['从全新 V2 记录开始','取消'],defaultId:0,cancelId:1,noLink:true});
+    return liveWindow(target)&&answer.response===0?{action:'fresh'}:null;
+  }
   if(kind==='relocate'){
     const answer=await dialog.showMessageBox(window,{type:'question',title:'接续工作区',message:'发现已有工作区身份',detail:'可以将此目录设为本机工作位置，历史身份保持不变。Crew 会先停止该工作区在旧位置的执行；外部工具中的执行请自行退出。复制项目作为独立工作区时，请使用导出包的“复制为新工作区”。',buttons:['迁移目录并接续','取消'],defaultId:0,cancelId:1,noLink:true});
     return liveWindow(target)&&answer.response===0?'relocate':null;
@@ -214,8 +218,9 @@ async function chooseHistory({kind,discovery}) {
     selected=answer.response;if(selected>=candidates.length)return null;
   }
   const candidate=candidates[selected];if(!candidate)return null;
-  const answer=await dialog.showMessageBox(window,{type:'question',title:'升级工作区数据',message:'发现可以接续的旧版历史',detail:`${candidate.project}\n成员 ${candidate.counts.sessions||0} · 任务 ${candidate.counts.goals||0} · 报告 ${candidate.counts.reports||0} · 资料 ${candidate.counts.documents||0}\n\n升级会建立完整历史库，保留旧数据并校验关联和产出文件。查看、升级均不会启动 AI。`,buttons:['升级并接续','仅查看历史','取消'],defaultId:0,cancelId:2,noLink:true});
-  return !liveWindow(target)||answer.response===2?null:{action:answer.response===0?'upgrade':'view',candidate_id:candidate.id};
+  const buttons=['升级并接续','仅查看历史',...(discovery.can_start_fresh?['从全新 V2 记录开始']:[]),'取消'];
+  const answer=await dialog.showMessageBox(window,{type:'question',title:'升级工作区数据',message:'发现可以接续的旧版历史',detail:`${candidate.project}\n成员 ${candidate.counts.sessions||0} · 任务 ${candidate.counts.goals||0} · 报告 ${candidate.counts.reports||0} · 资料 ${candidate.counts.documents||0}\n\n升级会建立完整历史库，保留旧数据并校验关联和产出文件。查看、升级均不会启动 AI。`,buttons,defaultId:0,cancelId:buttons.length-1,noLink:true});
+  return !liveWindow(target)||answer.response===buttons.length-1?null:answer.response===2?{action:'fresh'}:{action:answer.response===0?'upgrade':'view',candidate_id:candidate.id};
 }
 async function exportWorkspace(name){
   const answer=await dialog.showSaveDialog(window,{title:'导出完整工作区',defaultPath:(name.replace(/[<>:"/\\|?*]/g,'_')||'workspace')+'.crewpack',filters:[{name:'Crew 工作区',extensions:['crewpack']}]});

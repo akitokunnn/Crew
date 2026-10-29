@@ -55,6 +55,113 @@ class StorageServiceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'更新'):
             self.storage.discover(self.project)
 
+    def test_fresh_v2_opens_a_v1_folder_without_importing_or_replacing_history(self):
+        # Same folder, separate HOME: the exact pattern used by V1 and V2.
+        old = self.storage.open({'root': str(self.project), 'action': 'upgrade',
+            'candidate_id': self.storage.discover(self.project)['candidates'][0]['id']})
+        marker = self.project / '.crew/workspace.json'
+        original_marker = marker.read_bytes()
+        original_db = (self.home / 'crew.db').read_bytes()
+        fresh_home = self.root / 'v2-home'
+        with closing(store.connect(fresh_home)):
+            pass
+        fresh = StorageService(fresh_home, isolated=True)
+        found = fresh.discover(self.project)
+        self.assertEqual(found['status'], 'history_missing')
+        self.assertTrue(found['can_start_fresh'])
+        with mock.patch('subprocess.Popen', side_effect=AssertionError('Opening starts no AI')):
+            result = fresh.open({'root': str(self.project), 'action': 'fresh'})
+            again = fresh.open({'root': str(self.project)})
+            duplicate = fresh.open({'root': str(self.project), 'action': 'fresh'})
+        self.assertEqual(result['model_calls'], 0)
+        self.assertNotEqual(result['workspace_id'], old['workspace_id'])
+        self.assertEqual(result['workspace_id'], again['workspace_id'])
+        self.assertEqual(duplicate['project']['workspace_id'], result['workspace_id'])
+        self.assertEqual(marker.read_bytes(), original_marker)
+        self.assertEqual((self.home / 'crew.db').read_bytes(), original_db)
+        self.assertEqual(fresh.history(result['workspace_id'])['agents'], [])
+        with closing(store.connect(fresh_home)) as conn:
+            self.assertEqual(conn.execute('SELECT COUNT(*) FROM sessions').fetchone()[0], 0)
+        separate = self.project / '.crew/workspace-v2.json'
+        self.assertEqual(json.loads(separate.read_text('utf-8'))['workspace_id'], result['workspace_id'])
+        # A package restored onto a copy of this folder must use the V2 marker.
+        from crew.storage_v2 import activation
+        self.assertEqual(activation._marker(self.project, result['workspace_id']), separate)
+        # Exercise package fork + actual activation with both marker files.
+        import shutil
+        package = self.root / 'fresh.crewpack'
+        fresh.export({'project': result['project']['name'], 'destination': str(package)})
+        clone = self.root / 'copied-project'
+        shutil.copytree(self.project, clone)
+        target_home = self.root / 'restored-home'
+        target = StorageService(target_home, isolated=True)
+        imported = target.import_package({'path': str(package), 'mode': 'fork'})
+        with mock.patch('subprocess.Popen', side_effect=AssertionError('Restoring starts no AI')):
+            activated = activation.activate_workspace(target.repository, imported['workspace_id'],
+                target_home, clone, replace_source_marker=True)
+            reopened = target.open({'root': str(clone)})
+        self.assertEqual(reopened['workspace_id'], imported['workspace_id'])
+        self.assertEqual(activated['workspace_id'], imported['workspace_id'])
+        self.assertEqual((clone / '.crew/workspace.json').read_bytes(), original_marker)
+        self.assertEqual(json.loads(separate.read_text('utf-8'))['workspace_id'], result['workspace_id'])
+
+    def test_fresh_marker_permission_failure_creates_no_project_and_retries_same_identity(self):
+        marker = self.project / '.crew/workspace.json'
+        marker.parent.mkdir()
+        marker.write_text(json.dumps({'format': 'crew-workspace', 'schema_version': 2,
+            'workspace_id': 'fa5c8ac4-f939-4b7a-8625-51fbc796562d'}))
+        original = marker.read_bytes()
+        fresh_home = self.root / 'fresh-permission'
+        with closing(store.connect(fresh_home)):
+            pass
+        fresh = StorageService(fresh_home, isolated=True)
+        native_open = Path.open
+        def fail_new_marker(path, mode='r', *args, **kwargs):
+            if path.name == 'workspace-v2.json' and mode == 'x':
+                raise PermissionError('Injected marker permission failure')
+            return native_open(path, mode, *args, **kwargs)
+        with mock.patch.object(Path, 'open', fail_new_marker):
+            with self.assertRaisesRegex(ValueError, '无法建立独立'):
+                fresh.open({'root': str(self.project), 'action': 'fresh'})
+        pending = fresh._fresh_intent(self.project)
+        with closing(store.connect(fresh_home)) as conn:
+            self.assertEqual(conn.execute('SELECT COUNT(*) FROM projects').fetchone()[0], 0)
+        self.assertEqual(marker.read_bytes(), original)
+        recovered = StorageService(fresh_home, isolated=True).open({'root': str(self.project), 'action': 'fresh'})
+        self.assertEqual(recovered['workspace_id'], pending['workspace_id'])
+        self.assertEqual(fresh.discover(self.project)['status'], 'ready')
+        self.assertFalse(fresh._fresh_intent_path(self.project).exists())
+
+    def test_fresh_interrupted_after_marker_is_explicitly_resumable_without_new_identity(self):
+        marker = self.project / '.crew/workspace.json'
+        marker.parent.mkdir()
+        marker.write_text(json.dumps({'format': 'crew-workspace', 'schema_version': 2,
+            'workspace_id': 'fa5c8ac4-f939-4b7a-8625-51fbc796562d'}))
+        fresh_home = self.root / 'interrupted-fresh'
+        with closing(store.connect(fresh_home)):
+            pass
+        fresh = StorageService(fresh_home, isolated=True)
+        with mock.patch.object(fresh, 'refresh', side_effect=OSError('Interrupted after registration')):
+            with self.assertRaisesRegex(OSError, 'Interrupted after registration'):
+                fresh.open({'root': str(self.project), 'action': 'fresh'})
+        expected = fresh._fresh_intent(self.project)['workspace_id']
+        restarted = StorageService(fresh_home, isolated=True)
+        self.assertTrue(restarted.discover(self.project)['can_start_fresh'])
+        recovered = restarted.open({'root': str(self.project), 'action': 'fresh'})
+        self.assertEqual(recovered['workspace_id'], expected)
+        with closing(store.connect(fresh_home)) as conn:
+            self.assertEqual(conn.execute('SELECT COUNT(*) FROM projects').fetchone()[0], 1)
+        self.assertEqual(restarted.discover(self.project)['status'], 'ready')
+
+    def test_fresh_cannot_replace_missing_v2_history_or_current_local_history(self):
+        separate = self.project / '.crew/workspace-v2.json'
+        separate.parent.mkdir()
+        separate.write_text(json.dumps({'schema_version': 2,
+            'workspace_id': 'fa5c8ac4-f939-4b7a-8625-51fbc796562d'}))
+        with self.assertRaisesRegex(ValueError, '不能覆盖'):
+            self.storage.open({'root': str(self.project), 'action': 'fresh'})
+        self.assertEqual(self.storage.discover(self.project)['status'], 'history_missing')
+
     def test_isolated_home_never_discovers_formal_sources(self):
         extra=self.root/'other';extra.mkdir()
         with mock.patch.object(store,'default_home',return_value=self.home):
