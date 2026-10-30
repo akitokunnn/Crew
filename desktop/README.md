@@ -2,11 +2,13 @@
 
 V2 的独立默认 HOME 是 `~/.crew-v2`，应用和快捷方式名称为“Crew V2”。不会在 V1 HOME 中启动或更新，源码更新只检查 `rebuild/v2`。顶部全局助手跨工作区保持同一会话；工作区主页展示任务、讨论、拍板、人工 TODO 与成果。快速想法可先本地保存，再显式开始聊。设置中的“行为配置”提供作用域、版本和实际发送记录。
 
-Codex 桌面接续使用同一原生 thread 的交接与返回按钮，只允许轮流输入；原生桌面实际往返尚需单独验收，协议假载体测试不代表真实桌面验证。V2 与 V1 并存，无需先导入旧数据。
+Windows Codex 桌面接续通过交接与返回按钮轮流使用同一原生对话。Crew 打开专用的官方桌面窗口；点“回到 Crew”时窗口可以保持打开，结束后也能再次交出。已有普通窗口的旧交接需先释放其连接并接回，才能进入新路径。真实两次往返、工具验证和官方标签历史缓存的显示边界见 [0.3.3 接续说明](../docs/v2/NATIVE_DESKTOP_0.3.3_2026-10-30.md)。V2 与 V1 并存，无需先导入旧数据。
 
 以下版本段落保留为基线演进记录，不代表本次新版本的验证结果。
 
 原生 Electron 窗口、工作区首页和系统托盘。需要本机已有 Python 3，以及实际要使用的 Claude Code / Codex；普通工作文件夹无需 Git，后端继续使用 Python 标准库。
+
+Windows 构建还需 .NET Framework 4 自带的 C# 编译器。`npm run build` 与 `npm run build:dir` 会先编译 `native/CrewCodexBridge.cs`，找不到 `csc.exe` 或编译失败会中止构建。生成的 `assets/CrewCodexBridge.exe` 不提交 Git，打包时放在 `app.asar.unpacked/assets/`，通过后台环境传给原生桌面接续功能。开发模式可先运行 `npm --prefix desktop run build:codex-bridge`。
 
 0.2.40 修复普通 spawn 开工后又被目标分配重复启动成员的问题：自动派工遇到仍忙的成员总对话会明确返回冲突；`crew spawn --goal <ID>` 可直接创建并启动一个目标执行，反向重复唤醒也会拒绝。原生线程绑定跨总对话和目标统一检查唯一归属，并补齐并发回归及 GitHub Actions 自动测试。已有独立目标与用户明确发起的总对话继续保留各自历史。
 

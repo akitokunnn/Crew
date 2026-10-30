@@ -33,6 +33,9 @@ if (process.platform === 'win32') app.setAppUserModelId(product.appId);
 config.bundledBackendDir = app.isPackaged ? path.join(process.resourcesPath, 'backend') : path.resolve(__dirname, '../../plugin');
 config.backendDir = config.backendDir || config.bundledBackendDir;
 config.helperBackendDir = config.bundledBackendDir;
+config.codexDesktopProxy = app.isPackaged
+  ? path.join(process.resourcesPath, 'app.asar.unpacked', 'assets', 'CrewCodexBridge.exe')
+  : path.resolve(__dirname, '../assets/CrewCodexBridge.exe');
 require('node:fs').mkdirSync(config.userData,{recursive:true});
 app.setPath('userData', config.userData);
 const homePage = pathToFileURL(path.join(__dirname, 'home.html')).href;

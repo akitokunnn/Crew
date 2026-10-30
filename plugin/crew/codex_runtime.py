@@ -250,11 +250,8 @@ class CodexRunning:
              'execution_id': execution['id'] if execution else None},
             self._validate_approval, self.journal.emit, self.input_lock)
         config = hook_config(self.home, self.plugin_root, self.session_id, execution['id'] if execution else None)
-        if session['role'] == 'member':
-            # Native agents have their own registry, outside crew_spawn. Disable
-            # both supported backends on start and resume; V2 overrides agents.enabled.
-            config['agents'] = {'enabled': False}
-            config['features'].update(multi_agent=False, multi_agent_v2=False)
+        for section, values in codex_guard.native_role_config(session['role']).items():
+            config.setdefault(section, {}).update(values)
         if options.get("effort") is not None:
             config["model_reasoning_effort"] = options["effort"]
         with closing(store.connect(self.home)) as conn:

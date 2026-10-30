@@ -102,5 +102,5 @@ npm --prefix desktop test
 | 规则 | 由什么拦住 |
 | --- | --- |
 | 修改可见交互后，用真实浏览器走流程；控制台错误算失败，逐步保存截图，不以静态字符串检查替代 | `node plugin/tests/smoke_assistant_reply.cjs`、`node plugin/tests/smoke_v2_ui_revision.cjs`；截图在 `Temp/assistant-reply/`、`Temp/v2-ui-review/`，脚本支持装回旧错做反证 |
-| 触及原生接回或压缩时，不把假载体或未知参数当作原生支持；真实 AI 仅在用户授权时使用隔离 HOME 和用户指定模型 | `test_codex_events` 真实事件回放、`test_native_handoff`；授权后的真实原生验证另存记录，示例见 `docs/v2/NATIVE_FEEDBACK_SELF_CHECK_2026-10-30.md` |
+| 触及原生接回时，验证同 ID、保持桌面打开、再次交出可直接发送及工具不重复；不把假载体、未知参数或仅一次恢复当成真实桌面闭环。真实 AI 仅在用户授权时使用隔离 HOME 和指定模型 | `test_native_handoff`、`test_codex_desktop`、`test_codex_desktop_bridge`（真实进程，覆盖关闭通知屏蔽和原拥有者恢复）；真实 AI 证据见 `docs/v2/NATIVE_DESKTOP_0.3.3_2026-10-30.md`。压缩另由 `test_codex_events` 真实事件回放覆盖 |
 | 助手使用完整的共享聊天状态契约，普通任务反馈保持原任务身份并保留已交付证据 | `test_assistant_http`、`test_goal_http`、`test_goal_acceptance` 与上述助手浏览器检查；工作区迁移使用真实恢复和包往返测试 |

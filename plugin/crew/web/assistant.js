@@ -48,7 +48,7 @@
   window.addEventListener("pagehide",()=>{clearTimeout(timer);CrewChat.unmount();});
   $("assistant-native").addEventListener("click",async event=>{
     const button=event.target.closest("[data-act]");if(!button||button.disabled)return;button.disabled=true;
-    try{await CrewNativeHandoff.act(button.dataset.act.slice(7),button.dataset.id,null,{api,refresh,open:url=>{location.href=url;},notice:toast});}
+    try{await CrewNativeHandoff.act(button.dataset.act.slice(7),button.dataset.id,null,{api,refresh,notice:toast});}
     catch(failure){error(failure.message);button.disabled=false;}
   });
   $("assistant-prompts").onclick=()=>{const dialog=document.createElement("dialog");dialog.className="personal-notes-dialog assistant-prompts-dialog";dialog.innerHTML='<header><h2>助手行为配置</h2><button class="btn ghost" data-close aria-label="关闭行为配置">×</button></header><div data-prompts></div>';document.body.append(dialog);dialog.showModal();const cleanup=CrewBehaviorPrompts.mount(dialog.querySelector('[data-prompts]'),{read:query=>api("/api/behavior-prompts?"+new URLSearchParams(query)),save:body=>api("/api/behavior-prompts",body),session:assistantSession});const close=()=>{cleanup();dialog.close();dialog.remove();};dialog.querySelector('[data-close]').onclick=close;dialog.oncancel=event=>{event.preventDefault();close();};};

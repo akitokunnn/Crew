@@ -200,8 +200,10 @@ class Backend {
     };
     const args = [script, '--home', this.config.home, '--port', String(this.config.port)];
     if (this.config.isolated || this.config.smoke) args.push('--isolated-sources');
+    const env = { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' };
+    if (this.config.codexDesktopProxy) env.CREW_CODEX_DESKTOP_PROXY = this.config.codexDesktopProxy;
     this.child = this.spawn(this.config.python, args, { cwd: this.config.backendDir, windowsHide: true,
-      stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' } });
+      stdio: ['pipe', 'pipe', 'pipe'], env });
     this.owned = true;
     const child = this.child;
     child.on('error', error => { this.errors = (this.errors + '\n' + error.message).slice(-6000); saveLog(); });

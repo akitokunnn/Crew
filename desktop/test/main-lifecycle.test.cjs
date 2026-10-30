@@ -37,6 +37,7 @@ function harness(options = {}) {
     relaunch() { calls.relaunch++; }
   }
   const app = new App();
+  app.isPackaged = !!options.packaged;
   class Contents extends EventEmitter {
     constructor(owner) { super(); this.owner = owner; this.url = ''; this.mainFrame = { url:'' }; this.session = {}; this.navigationHistory = { canGoBack:() => false }; }
     alive() { if (this.isDestroyed()) throw new TypeError('Object has been destroyed'); }
@@ -133,18 +134,23 @@ function harness(options = {}) {
     './launch-settings.cjs':{ LaunchSettings, relaunchArgs:() => [] }
   };
   const sandbox = { require:name => Object.hasOwn(modules,name) ? modules[name] : require(name), __dirname:path.join(__dirname,'../src'),
-    process:{ argv:['fixture','main.cjs'], platform:'win32', env:{...options.env}, versions:{} }, URL, URLSearchParams, Buffer,
+    process:{ argv:['fixture','main.cjs'], platform:'win32', env:{...options.env}, versions:{}, resourcesPath:path.resolve('fixture resources') }, URL, URLSearchParams, Buffer,
     Promise:ObservedPromise, setTimeout, clearTimeout,
     console:{ error:(...args) => logs.push(args), log() {} } };
   // Electron loads main.cjs through the CommonJS function wrapper, which also
   // permits the early return used after rejecting an incompatible V1 HOME.
   vm.runInNewContext('(function(){\n'+source+'\n})()',sandbox,{ filename:'main.cjs' });
   const invoke = (channel,...args) => { const contents = windows[0].webContents; return handlers.get(channel)({ sender:contents, senderFrame:contents.mainFrame },...args); };
-  return { app, ready, windows, trays, calls, logs, shutdownErrors, handlers, invoke,
+  return { app, config, ready, windows, trays, calls, logs, shutdownErrors, handlers, invoke,
     menuItem:id => appMenu.getMenuItemById(id),
     holdRead:gate => { readGate = gate; }, holdProjects:gate => { projectGate = gate; },
     boot:async () => { ready.resolve(); await tick(); assert.equal(windows.length,1); assert.equal(trays.length,1); } };
 }
+
+test('desktop bridge configuration points outside ASAR in packaged mode and at local assets in development', () => {
+  assert.equal(harness().config.codexDesktopProxy, path.resolve(__dirname, '../assets/CrewCodexBridge.exe'));
+  assert.equal(harness({ packaged:true }).config.codexDesktopProxy, path.resolve('fixture resources', 'app.asar.unpacked', 'assets', 'CrewCodexBridge.exe'));
+});
 
 test('normal close keeps the shell alive and explicit quit cleans it up exactly once', async () => {
   const h = harness(); await h.boot();

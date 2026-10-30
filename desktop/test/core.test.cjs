@@ -308,6 +308,25 @@ test('owned Python diagnostics survive exit in a bounded local log', async t => 
   const text=await fs.readFile(backend.logPath,'utf8'); assert(text.includes('diagnostic marker')); assert(text.length<6200);
   assert.equal(backend.child.exitCode,0);
 });
+test('owned backends receive the configured Codex bridge and preserve an inherited test bridge without config', async t => {
+  const original = process.env.CREW_CODEX_DESKTOP_PROXY;
+  process.env.CREW_CODEX_DESKTOP_PROXY = 'inherited test bridge';
+  t.after(() => { if (original === undefined) delete process.env.CREW_CODEX_DESKTOP_PROXY; else process.env.CREW_CODEX_DESKTOP_PROXY = original; });
+  for (const supervised of [false, true]) for (const configured of [false, true]) {
+    const root = await directory(t), service = await fixture(t), backendDir = path.join(root, 'backend');
+    const receipt = path.join(root, 'environment.json'), proxy = path.join(root, 'assets with spaces', '桥接.exe');
+    await fs.mkdir(backendDir);
+    await fs.writeFile(path.join(backendDir, supervised ? 'crew_supervisor.py' : 'crew_desktop.py'),
+      'import os, sys, json\nfrom pathlib import Path\nPath(' + JSON.stringify(receipt) + ').write_text(json.dumps(os.environ.get("CREW_CODEX_DESKTOP_PROXY")), encoding="utf-8")\nprint(' + JSON.stringify(service.url) + ', flush=True)\nsys.stdin.readline()\n');
+    const backend = new core.Backend({ home:path.join(root, 'home'), backendDir, python:'python', port:0, isolated:true,
+      ...(configured ? { codexDesktopProxy:proxy } : {}) });
+    t.after(() => backend.stop());
+    await backend.start();
+    assert.equal(JSON.parse(await fs.readFile(receipt, 'utf8')), configured ? proxy : 'inherited test bridge');
+    await backend.stop();
+    assert.equal(backend.child.exitCode, 0);
+  }
+});
 test('portable backend is retained by content identity after extraction disappears', async t => {
   const root = await directory(t), source = path.join(root, 'extracted'), home = path.join(root, 'home');
   await fs.mkdir(source); await fs.writeFile(path.join(source, 'crew_desktop.py'), '# backend v1');

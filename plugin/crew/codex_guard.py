@@ -20,6 +20,14 @@ class InvalidHook(ValueError):
     pass
 
 
+def native_role_config(role):
+    """The same member delegation boundary in Crew and native continuation."""
+    if role != 'member':
+        return {}
+    return {'agents': {'enabled': False},
+            'features': {'multi_agent': False, 'multi_agent_v2': False}}
+
+
 def _text(value, field):
     if not isinstance(value, str) or not value.strip() or "\0" in value:
         raise InvalidHook("invalid " + field)

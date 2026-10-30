@@ -1,7 +1,7 @@
 """Exclusive, explicit handoff of a saved Codex conversation to the desktop.
 
-The native desktop owns its own process. Crew never claims to observe that
-process or to acknowledge an OS deep link on the desktop's behalf.
+The controlled bridge confirms its own readiness and release. Only this state
+machine authorizes Crew to resume writing; an OS deep link is not confirmation.
 """
 from contextlib import closing
 from pathlib import Path
@@ -9,7 +9,7 @@ from urllib.parse import quote
 import threading
 import uuid
 
-from . import board, codex_client, goals, native_home, runtimes, store
+from . import board, codex_client, codex_desktop, goals, native_home, runtimes, store
 
 
 # Production backend initialization is already serialized by HomeServiceLock.
@@ -114,12 +114,12 @@ def remember(conn, session_id, native_id, home, execution_id=None):
                  (key, session_id, execution_id, native_id, str(home), store.now_iso()))
 
 
-def _begin(conn, session_id, execution_id, state):
+def _begin(conn, session_id, execution_id, state, *, reopen=False):
     with _TRANSITION_LOCK:
-        return _begin_locked(conn, session_id, execution_id, state)
+        return _begin_locked(conn, session_id, execution_id, state, reopen=reopen)
 
 
-def _begin_locked(conn, session_id, execution_id, state):
+def _begin_locked(conn, session_id, execution_id, state, *, reopen=False):
     value = describe(conn, session_id, execution_id)
     previous = conn.execute('SELECT token FROM native_session_controls WHERE scope_id=?', (value['scope_id'],)).fetchone()
     if previous is not None and previous['token'] in _ACTIVE_TOKENS:
@@ -130,7 +130,7 @@ def _begin_locked(conn, session_id, execution_id, state):
     if value['native_id'] != binding['native_id']:
         raise board.Conflict('Codex 原生绑定已变化，未打开另一个会话')
     remember(conn, session_id, binding['native_id'], value['native_home'], execution_id)
-    if state == 'releasing' and value['state'] != 'crew':
+    if state == 'releasing' and value['state'] != 'crew' and not (reopen and value['state'] == 'external'):
         raise board.Conflict('此对话已交给 Codex 桌面或正在切换')
     if state == 'returning' and value['state'] == 'crew':
         raise board.Conflict('此对话已经由 Crew 控制')
@@ -171,39 +171,56 @@ def _target(manager, conn, session_id, execution_id):
 
 
 def release(manager, session_id, execution_id=None):
-    """Release idle ownership and return a deep link; never starts a model turn."""
+    """Release idle ownership to the controlled desktop; never starts a turn."""
+    key = scope(session_id, execution_id)
     with manager.lock:
-        key = scope(session_id, execution_id)
         if manager.busy(key) or manager.maintenance_held(session_id):
             raise board.Conflict('会话正在执行，请等这一轮结束后再到 Codex 桌面继续')
         with closing(store.connect(manager.home)) as conn:
             value = describe(conn, session_id, execution_id)
-            if value['state'] == 'external':
-                previous = manager.processes.get(key)
-                if previous is not None and not previous.reader_done.is_set():
-                    raise board.Conflict('原生进程输出尚未排空，尚不能在桌面继续')
-                return {**value, 'ok': True, 'duplicate': True}
-            token = _begin(conn, session_id, execution_id, 'releasing')
-        current = None
-        released = False
-        try:
-            current = manager.processes.get(key) if manager.running(key) else None
-            if current is None:
-                with closing(store.connect(manager.home)) as conn:
-                    target, spec = _target(manager, conn, session_id, execution_id)
-                manager._launch_native(target, {**spec, '_native_control_token': token}, resume=True)
-                current = manager.processes[key]
-            if getattr(current, 'runtime', None) != 'codex':
-                raise board.BoardError('当前受控进程不是 Codex')
-            current.prepare_desktop_handoff()
-            current.close(archive=False)
-            released = True
-            if not current.reader_done.wait(10):
-                raise board.BoardError('Codex 进程输出尚未排空，尚不能在桌面继续')
-            with closing(store.connect(manager.home)) as conn:
-                result = _finish(conn, session_id, execution_id, token, 'external')
-            return {**result, 'ok': True, 'desktop_opened': False}
-        except Exception as exc:
+            role = board.session(conn, session_id)['role']
+    # Preflight before changing native instructions/processes. Desktop discovery
+    # and readiness can take seconds; they must not block other conversations.
+    desktop = codex_desktop.prepare(manager.home, {**value, 'role': role})
+    with manager.lock:
+        if manager.busy(key) or manager.maintenance_held(session_id):
+            raise board.Conflict('会话正在执行，请等这一轮结束后再到 Codex 桌面继续')
+        with closing(store.connect(manager.home)) as conn:
+            latest = describe(conn, session_id, execution_id)
+            if (any(latest[field] != value[field] for field in ('native_id', 'native_home', 'state'))
+                    or board.session(conn, session_id)['role'] != role):
+                raise board.Conflict('原生会话或控制状态在桌面预检期间变化，请刷新后重试')
+        duplicate = latest['state'] == 'external'
+        if duplicate:
+            previous = manager.processes.get(key)
+            if previous is not None and not previous.reader_done.is_set():
+                raise board.Conflict('原生进程输出尚未排空，尚不能在桌面继续')
+        with closing(store.connect(manager.home)) as conn:
+            token = _begin(conn, session_id, execution_id, 'releasing', reopen=duplicate)
+    current = None
+    released = duplicate
+    try:
+        if not duplicate:
+            with manager.lock:
+                current = manager.processes.get(key) if manager.running(key) else None
+                if current is None:
+                    with closing(store.connect(manager.home)) as conn:
+                        target, spec = _target(manager, conn, session_id, execution_id)
+                    manager._launch_native(target, {**spec, '_native_control_token': token}, resume=True)
+                    current = manager.processes[key]
+                if getattr(current, 'runtime', None) != 'codex':
+                    raise board.BoardError('当前受控进程不是 Codex')
+                current.prepare_desktop_handoff()
+                current.close(archive=False)
+                released = True
+                if not current.reader_done.wait(10):
+                    raise board.BoardError('Codex 进程输出尚未排空，尚不能在桌面继续')
+        desktop.open()
+        with manager.lock, closing(store.connect(manager.home)) as conn:
+            result = _finish(conn, session_id, execution_id, token, 'external')
+        return {**result, 'ok': True, 'desktop_opened': True, **({'duplicate': True} if duplicate else {})}
+    except Exception as exc:
+        with manager.lock:
             if not released and current is not None and manager.running(key):
                 try:
                     current.restore_crew_instructions()
@@ -213,9 +230,9 @@ def release(manager, session_id, execution_id=None):
                     exc = board.BoardError(str(exc) + '；恢复 Crew 指令失败：' + str(restore_error))
             with closing(store.connect(manager.home)) as conn:
                 _finish(conn, session_id, execution_id, token, 'external' if released else 'crew', exc)
-            raise
-        finally:
-            _end_transition(token)
+        raise
+    finally:
+        _end_transition(token)
 
 
 def reclaim(manager, session_id, execution_id=None):
@@ -229,27 +246,39 @@ def reclaim(manager, session_id, execution_id=None):
             if manager.running(key):
                 raise board.Conflict('Crew 原生进程尚未退出，不能重复接管')
             token = _begin(conn, session_id, execution_id, 'returning')
-        try:
+    try:
+        # None denotes a legacy external desktop. Errors resolving a saved
+        # controlled identity are intentionally not treated as legacy.
+        desktop = codex_desktop.existing(manager.home, value)
+        if desktop is not None:
+            desktop.cede()
+        with manager.lock:
             with closing(store.connect(manager.home)) as conn:
+                assert_control(conn, session_id, execution_id, token)
                 target, spec = _target(manager, conn, session_id, execution_id)
             manager._launch_native(target, {**spec, '_native_control_token': token, '_native_history_sync': True}, resume=True)
-            with closing(store.connect(manager.home)) as conn:
-                result = _finish(conn, session_id, execution_id, token, 'crew')
-            return {**result, 'ok': True}
-        except Exception as exc:
-            failure = exc
-            if (isinstance(exc, codex_client.RpcError) and exc.method == 'thread/resume'
-                    and 'already has an active writer' in str(exc)):
-                failure = board.Conflict('Codex 原生客户端仍持有此对话的写入连接。请先结束那边的执行并关闭持有此对话的原生客户端，'
-                    '再点击“回到 Crew”。仅离开页面可能不会释放连接；原对话、历史和排队消息均已保留。原生原因：' + str(exc))
+        if desktop is not None:
+            desktop.reclaimed()
+        with manager.lock, closing(store.connect(manager.home)) as conn:
+            result = _finish(conn, session_id, execution_id, token, 'crew')
+        return {**result, 'ok': True}
+    except Exception as exc:
+        failure = exc
+        if (isinstance(exc, codex_client.RpcError) and exc.method == 'thread/resume'
+                and 'already has an active writer' in str(exc)):
+            failure = board.Conflict('Codex 原生客户端仍持有此对话的写入连接。请先结束那边的执行并关闭持有此对话的原生客户端，'
+                '再点击“回到 Crew”。仅离开页面可能不会释放连接；原对话、历史和排队消息均已保留。原生原因：' + str(exc))
+        elif isinstance(exc, codex_client.RpcError):
+            failure = board.Conflict('无法接回 Codex 会话。原生原因：' + str(exc))
+        with manager.lock:
             current = manager.processes.get(key)
             if current is not None and manager.running(key):
                 current.close(archive=False)
                 current.reader_done.wait(10)
             with closing(store.connect(manager.home)) as conn:
                 _finish(conn, session_id, execution_id, token, 'external', failure)
-            if failure is not exc:
-                raise failure from exc
-            raise
-        finally:
-            _end_transition(token)
+        if failure is not exc:
+            raise failure from exc
+        raise
+    finally:
+        _end_transition(token)

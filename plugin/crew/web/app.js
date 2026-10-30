@@ -1114,7 +1114,7 @@
       else if (act === "active-goal") { const target = (state.goals || []).find(goal => String(goal.id) === button.dataset.goalId); if (target) { goals?.closeList(); navigate("chat",target.leader_session_id,id === target.leader_session_id ? null : id,target.id); } }
       else if (act === "member-chat") { const item = member(id); if (item) { if (cardId !== null) closeCard(); goals?.closeList(); navigate("chat", item.leader_session_id, item.session_id); } }
       else if (act === "view") { if (cardId !== null) closeCard(); if (button.dataset.view === "all") allTab = "overview"; navigate(button.dataset.view); }
-      else if (act === "native-handoff" || act === "native-return") { action("native:" + id, () => CrewNativeHandoff.act(act.slice(7), id, goalId, {api,refresh:async() => { if(goalId) await goals?.refresh(goalId); await loadState(true); },open:url => { location.href=url; },notice:toast})); }
+      else if (act === "native-handoff" || act === "native-return") { action("native:" + id, () => CrewNativeHandoff.act(act.slice(7), id, goalId, {api,refresh:async() => { if(goalId) await goals?.refresh(goalId); await loadState(true); },notice:toast})); }
       else if (act === "todo-toggle") { if (todoExpanded.has(id)) todoExpanded.delete(id); else todoExpanded.add(id); renderTodoSurface(); }
       else if (act === "todo-action") {
         const item = todoById(id);
