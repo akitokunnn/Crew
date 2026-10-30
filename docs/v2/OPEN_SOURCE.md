@@ -15,7 +15,9 @@
 
 [官方桌面命令](https://learn.chatgpt.com/docs/app/commands)提供 `codex://threads/<thread-id>` 深链；[原生命令说明](https://learn.chatgpt.com/docs/developer-commands)提供 `/app`，描述的是继续已有 saved chat。[App Server 文档](https://learn.chatgpt.com/docs/app-server)是 thread/start、resume、历史读取与 dynamicTools 行为的依据。
 
-Crew 自己启动 app-server，不假装连接到桌面进程。交给桌面前必须空闲、释放 Crew 的原生进程和宿主工具绑定、持久记录外部控制；接回必须使用同一 ID，恢复 Crew 工具，并按原生 turn/item 身份导入新增历史。目标执行有自己的 native ID，不能以 leader 总对话替代。
+Crew 自己启动 app-server，不假装连接到桌面进程。交给桌面前必须空闲、释放 Crew 的原生进程并持久记录外部控制；接回必须使用同一 ID，恢复 Crew 指令与实际工具处理连接，并按原生 turn/item 身份导入新增历史。目标执行有自己的 native ID，不能以 leader 总对话替代。
+
+2026-10-30 的隔离原生验证确认：Codex CLI 0.165.0 的 `thread/resume` 没有 `dynamicTools` 替换参数，原线程工具定义仍持久保留；不能据此声称原生桌面有 Crew 的工具处理器。另一个原生客户端仍持有 writer 时，接回必须如实保留冲突，关闭实际持有者后再恢复同 ID。`thread/unsubscribe` 本身不足以释放该版本的 writer。协议实测与尚未验证的桌面 UI 边界见 [原生反馈自检](NATIVE_FEEDBACK_SELF_CHECK_2026-10-30.md)。
 
 深链不带 HOME 参数，Crew 绑定的原生 HOME 必须可由桌面读取。操作系统接受打开请求，不证明桌面已经接管；假载体同 ID 往返，也不证明真实桌面完成续聊。验收记录必须分别写清。
 

@@ -54,9 +54,29 @@ def main():
                 goal_actions.dispatch(case.home, 'coordinator', None, 'report.publish',
                     {'goal_id': goal['id'], 'request_id': 'routing-stage', 'report': report})
         manager = case.server.service.chat
+        delivered = None
+        if os.environ.get('CREW_UI_REVIEW_FIXTURE') == '1':
+            from crew.codex_runtime import process_identity
+            for index in range(8):
+                stamp = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=8-index)
+                active = index >= 5
+                case.conn.execute('INSERT INTO codex_runs(run_id,crew_session_id,task_file,workdir,started_at,runtime,pid,pid_created) VALUES(?,?,?,?,?,?,?,?)',
+                    ('ui-dispatch-'+str(index), 'coordinator', '审查协作记录 ' + '长标题与原始说明。' * 12,
+                     str(case.project), stamp.isoformat(), 'claude' if index % 2 else 'codex',
+                     os.getpid() if active else None, process_identity(os.getpid()) if active else None))
+            code, reply, _ = case.request('/api/chat/send?project=demo', {'session_id': 'coordinator',
+                'text': '准备总会话，独立任务继续推进。', 'message_id': 'ui-general-ready'})
+            assert code == 200, reply
+            case.finish_turn('coordinator', manager.processes['coordinator'].process)
+            delivered_goal, delivered_report, _, _ = case.awaiting_acceptance()
+            code, accepted, _ = case.request('/api/goals/action?project=demo', {
+                'goal_id': delivered_goal['id'], 'action': 'accept',
+                'version': delivered_goal['version'], 'report_id': delivered_report['id']})
+            assert code == 200, accepted
+            delivered = {'goal_id': delivered_goal['id'], 'leader': 's3', 'report_id': delivered_report['id']}
         print(json.dumps({'url': case.url, 'home': str(case.home), 'leader': 'coordinator',
                           'goals': [goal for goal, _ in work], 'plugin_root': str(plugin_root),
-                          'web_module': web.__file__}, ensure_ascii=False), flush=True)
+                          'web_module': web.__file__, 'delivered': delivered}, ensure_ascii=False), flush=True)
         original = None
         for line in sys.stdin:
             command = line.strip()
@@ -80,6 +100,23 @@ def main():
                                   'source_task_busy': True, 'source_general_started': False}), flush=True)
             elif command == 'shutdown':
                 break
+            elif command.startswith('finish-task:'):
+                target = command.split(':', 1)[1]
+                task = goals.get(case.conn, target)
+                execution = manager.goal_controller.current(case.conn, target, task['leader_session_id'])
+                case.finish_turn(execution['id'], manager.processes[execution['id']].process)
+                manager.goal_controller.sync(case.conn, target)
+                print(json.dumps({'task_finished': target}), flush=True)
+            elif command.startswith('compact-finish:'):
+                target = command.split(':', 1)[1]
+                key = 'coordinator' if target == 'general' else next(execution for goal, execution in work if goal == target)
+                current = manager.processes[key]
+                if current.pending_compact:
+                    case.finish_turn(key, current.process)
+                current.process.emit({'type': 'system', 'subtype': 'compact_boundary',
+                                      'compact_metadata': {'pre_tokens': 50000, 'post_tokens': 12000 if target == 'general' else None}})
+                current.process.emit({'type': 'result', 'local_command': 'compact'})
+                print(json.dumps({'compact_finished': target}), flush=True)
     finally:
         case.doCleanups()
         print(json.dumps({'closed': True}), flush=True)

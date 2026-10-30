@@ -7,13 +7,24 @@ import sqlite3
 import sys
 from pathlib import Path
 
-from . import board, store
+from . import board, goals, store
 
 TAIL = "Do not retry or work around it; tell the user."
 SHELLS = ("Bash", "PowerShell")
 WRITES = ("Edit", "Write", "NotebookEdit")
 REPAIR_BLACKLIST = object()
 SHELL_WORDS = re.compile(r'''(?:"(?:`.|\\.|[^"\\])*"|'(?:''|[^'])*'|[^\s;&|()"'])+|&&|\|\||[;&|()\n]''')
+
+
+def discussion_write_reason(conn, execution_id, tool):
+    """Known native editors need an explicit amendment of a delivered goal.
+
+    Crew business actions enforce this independently. Shell commands retain
+    their existing guard; this is not a general shell side-effect sandbox.
+    """
+    if tool in WRITES + ('apply_patch',) and goals.discussion(conn, execution_id):
+        return 'BLOCKED by Crew: 当前是交付后的讨论；如需修改，请先用 crew goal amend 更新当前任务，再继续实施。'
+    return None
 
 
 def git_operation(command):

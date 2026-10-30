@@ -7,7 +7,7 @@ import unittest
 from unittest import mock
 
 import test_codex_runtime as fixtures
-from crew import board, chat, codex_history, codex_runtime, goals, messaging, native_handoff, native_home, runtimes, store
+from crew import board, chat, codex_client, codex_history, codex_runtime, goals, messaging, native_handoff, native_home, runtimes, store
 
 
 class NativeHandoffTests(unittest.TestCase):
@@ -39,7 +39,7 @@ class NativeHandoffTests(unittest.TestCase):
             {'id': identity + ':u', 'type': 'userMessage', 'content': [{'type': 'text', 'text': question}]},
             {'id': identity + ':a', 'type': 'agentMessage', 'text': answer}]}
 
-    def test_round_trip_same_id_restores_tools_and_imports_only_new_history_once(self):
+    def test_round_trip_same_id_restores_instructions_and_imports_only_new_history_once(self):
         history = [self.turn('crew-before')]
         manager = self.manager()
         with self.history_factory(history):
@@ -50,7 +50,9 @@ class NativeHandoffTests(unittest.TestCase):
             self.assertEqual(handed['url'], 'codex://threads/native-1')
             self.assertFalse(handed['desktop_opened'])
             self.assertFalse(manager.running('worker'))
-            self.assertEqual(next(params for method, params in first.calls if method == 'thread/resume')['dynamicTools'], [])
+            handoff = next(params for method, params in first.calls if method == 'thread/resume')
+            self.assertNotIn('dynamicTools', handoff)
+            self.assertIn('Crew 专用工具在此入口不可用', handoff['developerInstructions'])
             self.assertNotIn('turn/start', [method for method, _ in first.calls])
             with closing(store.connect(self.home)) as conn:
                 with self.assertRaises(board.Conflict):
@@ -61,7 +63,8 @@ class NativeHandoffTests(unittest.TestCase):
             second = self.clients[-1]
             self.assertEqual(second.calls[0][0], 'thread/resume')
             self.assertEqual(second.calls[0][1]['threadId'], 'native-1')
-            self.assertTrue(second.calls[0][1]['dynamicTools'])
+            self.assertNotIn('dynamicTools', second.calls[0][1])
+            self.assertIn('# member role rules', second.calls[0][1]['developerInstructions'])
             events = manager.journal('worker').events
             messages = [e for e in events if e['type'] == 'message']
             self.assertEqual([e['text'] for e in messages], ['桌面的补充'])
@@ -218,6 +221,56 @@ class NativeHandoffTests(unittest.TestCase):
             resumed = next(params for method, params in self.clients[-1].calls if method == 'thread/resume')
             self.assertEqual(resumed['threadId'], 'native-1')
             self.assertNotIn('turn/start', [method for method, _ in self.clients[-1].calls])
+
+    def test_native_writer_conflict_is_actionable_and_same_binding_can_return_after_release(self):
+        manager = self.manager()
+        with self.history_factory([]):
+            running, _ = self.make_running()
+            manager.processes['worker'] = running
+            manager.native_handoff('worker')
+        error = codex_client.RpcError('thread/resume', {'code': -32600,
+            'message': 'thread native-1 already has an active writer'})
+        with mock.patch.object(manager, '_launch_native', side_effect=error):
+            with self.assertRaisesRegex(board.Conflict, '关闭持有此对话的原生客户端'):
+                manager.native_return('worker')
+        with closing(store.connect(self.home)) as conn:
+            saved = native_handoff.describe(conn, 'worker')
+            self.assertEqual((saved['state'], saved['native_id']), ('external', 'native-1'))
+            self.assertIn('already has an active writer', saved['last_error'])
+            self.assertIn('仅离开页面可能不会释放', saved['last_error'])
+        with self.history_factory([]):
+            returned = manager.native_return('worker')
+        self.assertEqual((returned['state'], returned['native_id']), ('crew', 'native-1'))
+
+    def test_compact_goal_uses_its_native_and_journal_while_general_conversation_is_working(self):
+        manager = self.manager()
+        with closing(store.connect(self.home)) as conn:
+            board.register_session(conn, 'worker', 'demo', self.root, None, 'main', name='worker', role='leader')
+            self.session = board.session(conn, 'worker')
+            manager._resume_spec(conn, self.session)
+            goal = goals.create(conn, 'demo', 'worker', 'Target task', 'Keep scopes separate', ['Evidence'])
+            execution = goals.create_execution(conn, goal['id'], 'worker', runtime='codex')
+        general, general_client = self.make_running()
+        manager.processes['worker'] = general
+        general.send('Continue general discussion', 'general-input')
+        goal_journal = manager.journal(execution['id'])
+        def goal_factory(**kwargs):
+            client = fixtures.FakeClient(**kwargs)
+            client.thread_id = 'goal-native'
+            self.clients.append(client)
+            return client
+        with mock.patch('crew.codex_runtime._ObservedClient', side_effect=goal_factory):
+            running = codex_runtime.CodexRunning(self.home, self.plugin, self.session, {}, {}, goal_journal, None, execution=execution)
+        manager.processes[execution['id']] = running
+        goal_client = self.clients[-1]
+        with closing(store.connect(self.home)) as conn:
+            target = manager.goal_controller.target(conn, goals.get_execution(conn, execution['id']))
+        manager.compact(target)
+        self.assertTrue(any(method == 'thread/compact/start' for method, _ in goal_client.calls))
+        self.assertFalse(any(method == 'thread/compact/start' for method, _ in general_client.calls))
+        self.assertEqual(len([e for e in goal_journal.events if e['type'] == 'compact_request']), 1)
+        self.assertFalse(any(e['type'] == 'compact_request' for e in general.journal.events))
+        self.assertEqual(general.journal.status, 'working')
 
     def test_native_home_is_pinned_to_original_binding_after_environment_changes(self):
         first_home, later_home = self.base / 'native-first', self.base / 'native-later'

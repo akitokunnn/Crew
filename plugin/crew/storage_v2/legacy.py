@@ -595,6 +595,15 @@ class _Projector:
                     verification_markdown=row['verification'], blocking=row['blocking'], status=row['status'],
                     resolution_note=row.get('note'), resolved_at=row.get('resolved_at'))
         self.reports()
+        for row in self.rows.get('goal_acceptances', []):
+            report = next((item for item in self.rows.get('goal_reports', []) if item['id'] == row['report_id']), None)
+            mapped = None if report is None else next((item['id'] for item in self.mappings.get(
+                ('goal_reports', self.sourcekey('goal_reports', report)), ()) if item['table'] == 'reports'), None)
+            if mapped is None:
+                raise MigrationError('Acceptance references a report that was not projected')
+            self.entity('goal_acceptances', 'goal_acceptances', row, immutable=True,
+                goal_round_id=self.rounds[(row['goal_id'], row['round'])], report_id=mapped,
+                accepted=row['accepted'], note_markdown=row['note'], author_user_id=self.user, created_at=row['created_at'])
         self.channel()
         self.contexts()
         from . import features

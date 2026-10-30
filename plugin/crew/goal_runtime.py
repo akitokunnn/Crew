@@ -27,7 +27,7 @@ BASE_INSTRUCTIONS = """你在 Crew 内执行一个有明确终点的目标；身
 leader 负责最终交付；成员提供有证据的有限结果。工程选择由你判断，目标外事项只记建议。
 执行前将AI要做的步骤写入工作清单：crew goal work.add --data '{"key":"稳定编号","title":"工作内容","acceptance":"可核验完成条件","dependencies":[]}'；Codex用crew_goal同名action和data。普通用户TODO不能代替AI工作清单。
 按实际进度用work.update（key、当前version、status=planned|doing|blocked|done|cancelled、note）更新；完成写验收证据，阻塞写原因。同一key重试不重复建项。成员只更新自己的工作，leader安排并验收；work.list读取清单。需求修改后复核旧项再交付。
-leader 本轮最终交付围绕用户目的自主设计精美、直观、易懂的自包含 HTML 报告，结构、篇幅、图表和交互随任务选择，不套固定目录；浏览器核对阅读和交互效果。
+leader 最终交付围绕用户目的自主设计精美、直观、易懂的自包含 HTML 报告，结构、篇幅、图表和交互随任务选择，不套固定目录；浏览器可用时核对阅读和交互效果，host 不可用时如实标记视觉/交互未验证并提交真实已取得的证据，不将工具不可用扩大成整个目标失败。
 保存 HTML 正文后取 crew goal report-template，填实际验收、证据、example 和投入，再用 crew goal finish --file <报告.json> --html-file <报告.html> 一起提交；Codex crew_goal 的 finish 用 data.report.document_html 传同样正文。CSS/JS 内联、图片用 data URI，不依赖外网资源。
 用户默认读 leader 设计的正文，验收记录另行展开。未达标如实结束并交失败证据；普通问答不出报告。
 遵循项目 PR/合并规则及用户明确限制。暂停/旧版本/结束后的工作由宿主禁止，不用旧消息复工。"""
@@ -111,6 +111,19 @@ class Controller:
         return goals.create_execution(conn, goal_id, session_id, runtime=mapping['runtime'],
                                       model=options['model'], effort=options['effort'])
 
+    def ensure_discussion(self, conn, goal_id, session_id, identity):
+        current = self.current(conn, goal_id, session_id)
+        if current is not None and goals.discussion(conn, current['id']) and current['status'] in ('queued', 'running', 'idle', 'offline'):
+            gate = goals.dispatch_check(conn, goal_id, execution_id=current['id'], allow_discussion=True)
+            if not gate['allowed']:
+                raise board.Conflict(gate['reason'])
+            conn.execute('UPDATE goal_discussion_executions SET message_id=? WHERE execution_id=?', (identity, current['id']))
+            return current
+        self.stop_delivered(conn, goal_id)
+        mapping, options = runtimes.get(conn, session_id), models.get(conn, session_id)
+        return goals.create_execution(conn, goal_id, session_id, runtime=mapping['runtime'],
+                                      model=options['model'], effort=options['effort'], discussion_message_id=identity)
+
     def target(self, conn, execution):
         return {**board.session(conn, execution['session_id']), '_storage_id': execution['id'],
                 '_execution': execution}
@@ -136,24 +149,25 @@ class Controller:
         return material
 
     def followup_context(self, conn, execution):
-        """A new round continues the last delivery and the human's review."""
-        row = conn.execute('SELECT id FROM goal_reports WHERE goal_id=? AND round<? ORDER BY round DESC,version DESC LIMIT 1',
-                           (execution['goal_id'], execution['round'])).fetchone()
+        """Continue the latest delivery, within this task or an explicit new round."""
+        row = conn.execute('SELECT id FROM goal_reports WHERE goal_id=? AND (round<? OR (round=? AND requirement_version<?)) '
+                           'ORDER BY round DESC,version DESC LIMIT 1',
+                           (execution['goal_id'], execution['round'], execution['round'], execution['requirement_version'] +
+                            (1 if goals.discussion(conn, execution['id']) else 0))).fetchone()
         if row is None:
             return []
         report = goals.get_report(conn, row['id'])
         data = report['data']
-        review = conn.execute('SELECT accepted,note FROM goal_acceptances WHERE goal_id=? AND round=?',
-                              (execution['goal_id'], report['round'])).fetchone()
-        text = '上一轮交付（历史证据，不代表本轮已完成）：报告 %s，第 %s 轮。\n%s' % (
+        review = goals.report_review(conn, execution['goal_id'], report['id'])
+        text = '此前交付（历史证据，不代表当前修改已完成）：报告 %s，记录轮次 %s。\n%s' % (
             report['id'], report['round'], json.dumps({key: data[key] for key in
                 ('summary', 'delivered', 'unresolved', 'artifacts', 'follow_up')}, ensure_ascii=False))
         if review is not None:
-            text += '\n用户对该轮的验收：%s。原话：%s' % ('通过' if review['accepted'] else '需要修改', review['note'])
+            text += '\n用户对此前交付的验收：%s。原话：%s' % ('通过' if review['accepted'] else '需要修改', review['note'])
         text += '\n沿用已有结果处理用户的新输入，不重复施工；完整报告可用 crew goal status 查阅。'
-        text += '\n使用 work.list 检查当前轮次工作清单与 needs_review；需求变化后先复核旧项，不把上一轮清单当作本轮已完成。'
+        text += '\n普通讨论无需新增工作清单或提交报告。确有修改时先 amend 登记，再用 work.list 继承已有工作；只重开实际受影响的旧项或补充新项，按需复核，不把此前交付当作新改动已完成。'
         return [{'source': {'type': 'goal-report', 'id': report['id']}, 'text': text,
-                 'reason': '继续本任务时保留上轮交付与用户修改意见', 'protected': True}]
+                 'reason': '继续本任务时保留此前交付与用户修改意见', 'protected': True}]
 
     def stop_delivered(self, conn, goal_id):
         """Drain delivered runtimes before a human review or follow-up round."""
@@ -228,7 +242,7 @@ class Controller:
         with closing(store.connect(self.home)) as conn:
             native_handoff.assert_control(conn, logical_id, key, spec.get('_native_control_token'))
             if maintenance is None and not spec.get('_native_control_token'):
-                gate = goals.dispatch_check(conn, execution['goal_id'], execution_id=key)
+                gate = goals.dispatch_check(conn, execution['goal_id'], execution_id=key, allow_discussion=True)
                 if not gate['allowed']:
                     raise board.Conflict(gate['reason'])
             from . import settings
@@ -306,6 +320,7 @@ class Controller:
                 from . import chat
                 raise board.Conflict(chat.MAINTENANCE_HELD)
             human = source in ('human', 'qq', 'lark')
+            response_only = human and goal['status'] in ('completed', 'failed', 'awaiting_acceptance')
             if human:
                 # Retry the original receipt even if a later report closed its
                 # round. A transport retry is never a new continuation request.
@@ -317,9 +332,6 @@ class Controller:
                         result = self.manager.send(self.target(conn, prior_execution), text, identity=identity,
                             images=images, source=source, display_text=display_text, sender=sender)
                         return {**result, 'goal_id': goal_id, 'execution_id': row['id']}
-                if goal['status'] in ('completed', 'failed', 'awaiting_acceptance'):
-                    self.stop_delivered(conn, goal_id)
-                    goal = goals.reopen(conn, goal_id, text, actor=board.HUMAN)
             self.check_member_start(conn, goal_id, session_id, source)
             if messaging.stopped(conn, session_id):
                 if not human:
@@ -334,7 +346,8 @@ class Controller:
                     goal = goals.amend(conn, goal_id, text, actor=board.HUMAN)
             if goal['status'] == 'queued':
                 goals.transition(conn, goal_id, 'running')
-            execution = self.ensure(conn, goal_id, session_id)
+            execution = (self.ensure_discussion(conn, goal_id, session_id, identity) if response_only
+                         else self.ensure(conn, goal_id, session_id))
             key = execution['id']
             journal = self.manager.journal(key)
             if not journal.path.exists():
@@ -356,7 +369,8 @@ class Controller:
                 if self.manager.running(key):
                     self.manager.stop_managed(key)
                 goals.set_execution_status(conn, key, 'completed')
-                execution = self.ensure(conn, goal_id, session_id)
+                execution = (self.ensure_discussion(conn, goal_id, session_id, identity) if response_only
+                             else self.ensure(conn, goal_id, session_id))
                 key, target = execution['id'], self.target(conn, execution)
                 journal = self.manager.journal(key)
                 if not journal.path.exists():
@@ -384,6 +398,7 @@ class Controller:
                  else self.manager.history(execution['id']))
         value.update(session_id=session_id, goal_id=goal_id,
                      execution_id=execution['id'] if execution else None,
+                     response_mode='discussion' if execution and goals.discussion(conn, execution['id']) else 'work',
                      read_seq=execution.get('read_seq', 0) if execution else 0)
         if include_previous:
             # Keep each journal's IDs and sequence local. Only the current
@@ -423,6 +438,12 @@ class Controller:
                 continue
             if getattr(current, 'maintenance', None) is not None:
                 # Maintenance compaction is neither goal work to interrupt nor a state to reconcile.
+                continue
+            if (not stale and goals.discussion(conn, key) and
+                    goals.dispatch_check(conn, row['goal_id'], execution_id=key, allow_discussion=True)['allowed']):
+                state = 'running' if self.manager.busy(key) else 'idle' if self.manager.running(key) else 'offline'
+                if state != row['status']:
+                    goals.set_execution_status(conn, key, state)
                 continue
             if row['goal_status'] in ('pausing', 'paused') or row['goal_status'] in goals.TERMINAL or stale:
                 if current is None and row['status'] in ('running', 'pausing'):

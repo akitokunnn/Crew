@@ -63,9 +63,15 @@ def detail(conn, project, identity):
 
 
 def _previous_review(conn, goal_id, current_round):
-    row = conn.execute('SELECT * FROM goal_acceptances WHERE goal_id=? AND round<? ORDER BY round DESC LIMIT 1',
-                       (goal_id, current_round)).fetchone()
-    return {**dict(row), 'accepted': bool(row['accepted'])} if row else None
+    current = goals.get(conn, goal_id)
+    reports = conn.execute('SELECT id FROM goal_reports WHERE goal_id=? AND (round<? OR (round=? AND requirement_version<?)) '
+                           'ORDER BY round DESC,version DESC',
+                           (goal_id, current_round, current_round, current['requirement_version']))
+    for report in reports:
+        review = goals.report_review(conn, goal_id, report['id'])
+        if review is not None:
+            return review
+    return None
 
 
 def post(service, conn, project, path, data):

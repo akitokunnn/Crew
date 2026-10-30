@@ -90,7 +90,10 @@ def dispatch(home, actor_session_id, execution_id, action, data, controller=None
         if execution and action not in READ_ACTIONS:
             if goal_id and goal_id != execution['goal_id']:
                 raise board.BoardError('当前执行不能向另一目标派发修改')
-            gate = goals.dispatch_check(conn, execution['goal_id'], execution_id=execution_id)
+            response = goals.discussion(conn, execution_id)
+            if response and action != 'amend':
+                raise board.Conflict('当前仅在回复已交付任务。用户确实要求修改时，先用 amend 登记修改内容；普通解释不重新执行任务。')
+            gate = goals.dispatch_check(conn, execution['goal_id'], execution_id=execution_id, allow_discussion=bool(response))
             if not gate['allowed']:
                 raise board.Conflict(gate['reason'])
         if action == 'status':
@@ -165,6 +168,15 @@ def dispatch(home, actor_session_id, execution_id, action, data, controller=None
             return goal_context.invalidate(conn, item['id'], data.get('reason'), actor=actor_session_id)
         goals._actor(conn, goal, actor_session_id)
         if action == 'amend':
+            response = goals.discussion(conn, execution_id, include_promoted=True) if execution else None
+            if response and response['promotion_json']:
+                receipt = json.loads(response['promotion_json'])
+                if all(receipt[key] == data.get(key) for key in ('text', 'acceptance', 'constraints', 'expected_version')):
+                    return goals.get(conn, goal_id)
+            if execution and goals.discussion(conn, execution_id):
+                return goals.continue_task(conn, goal_id, data.get('text'), actor=actor_session_id,
+                    discussion_execution_id=execution_id, acceptance=data.get('acceptance'), constraints=data.get('constraints'),
+                    expected_version=data.get('expected_version'))
             return goals.amend(conn, goal_id, data.get('text'), acceptance=data.get('acceptance'),
                                constraints=data.get('constraints'), actor=actor_session_id, expected_version=data.get('expected_version'))
         if action == 'assign':

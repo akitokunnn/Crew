@@ -306,24 +306,26 @@ class TrustModeTests(unittest.TestCase):
             self.assertFalse(trust_mode.get(again,'alpha','new-leader')['enabled'])
         finally:again.close()
 
-    def test_next_claude_prompt_gets_own_leader_latest_on_and_off_without_wake(self):
-        self.set_mode(True,'A组的最新目标')
+    def test_claude_prompt_does_not_import_retired_leader_authority_or_wake(self):
+        self.set_mode(True,'A组保留的历史目标')
         self.set_mode(True,'B组不应传入的目标',leader='lead-b')
         data={'session_id':'member','cwd':str(self.root),'prompt':'继续'}
         plugin=Path(__file__).resolve().parents[1]
-        code,value=hooks.handle('user-prompt-submit',data,self.base/'home',plugin,{},now=NOW)
-        self.assertEqual(code,0)
-        context=value['hookSpecificOutput']['additionalContext']
-        self.assertIn('A组的最新目标',context)
-        self.assertNotIn('B组不应传入的目标',context)
-        self.assertIn('开启',context)
-        self.set_mode(False)
-        code,value=hooks.handle('user-prompt-submit',data,self.base/'home',plugin,{},now=NOW)
-        self.assertEqual(code,0)
-        context=value['hookSpecificOutput']['additionalContext']
-        self.assertIn('关闭',context)
-        self.assertIn('不得继续沿用此前开启',context)
+        # Historical trust remains readable, but only a concrete task's mode
+        # supplies current authorization. Ordinary prompts cannot import it.
+        for enabled in (True, False):
+            with self.subTest(enabled=enabled):
+                self.set_mode(enabled,'A组保留的历史目标')
+                code,value=hooks.handle('user-prompt-submit',data,self.base/'home',plugin,{},now=NOW)
+                self.assertEqual(code,0)
+                context=(value or {}).get('hookSpecificOutput',{}).get('additionalContext','')
+                self.assertNotIn('A组保留的历史目标',context)
+                self.assertNotIn('B组不应传入的目标',context)
+                self.assertNotIn('本轮最新信任设置',context)
+                self.assertEqual(self.get_mode()['enabled'],enabled)
+                self.assertEqual(self.get_mode()['goal'],'A组保留的历史目标')
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM leader_notices').fetchone()[0],0)
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM goal_executions').fetchone()[0],0)
 
     def test_upgrade_binds_old_decisions_once_and_deletes_only_exact_pending_notice_ids(self):
         number=self.ask()

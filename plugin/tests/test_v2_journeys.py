@@ -96,11 +96,27 @@ class V2JourneyTests(ShellFixture, unittest.TestCase):
         self.assertEqual(current['status'], 'awaiting_acceptance')
         self.post('/api/goals/action', {'goal_id': gid, 'action': 'accept', 'version': current['version'], 'note': '隔离流程已核对'})
         self.assertEqual(goals.get(self.conn, gid)['status'], 'completed')
-        self.post('/api/chat/send', {'session_id': sid, 'goal_id': gid, 'text': '再增加连续打卡天数', 'message_id': 'fitness-feedback'})
-        self.assertEqual(goals.get(self.conn, gid)['current_round'], 2)
+        accepted = goals.get(self.conn, gid)
+        review = goals.acceptance_review(self.conn, gid)
+        followup = self.post('/api/chat/send', {'session_id': sid, 'goal_id': gid, 'text': '再增加连续打卡天数', 'message_id': 'fitness-feedback'})
+        self.assertEqual(goals.get(self.conn, gid), accepted, 'A message alone must not revoke delivery or acceptance')
+        self.assertEqual(goals.acceptance_review(self.conn, gid), review)
+        action = {'actor_session_id': sid, 'execution_id': followup['execution_id']}
+        revised = self.post('/api/goals/agent', {**action, 'action': 'amend', 'data': {
+            'goal_id': gid, 'text': '再增加连续打卡天数', 'expected_version': accepted['version']}})
+        self.assertEqual((revised['current_round'], revised['status']), (1, 'running'))
+        work = self.post('/api/goals/agent', {**action, 'action': 'work.add', 'data': {
+            'goal_id': gid, 'key': 'streak', 'title': '增加连续打卡天数', 'acceptance': '连续日期显示正确天数'}})
+        self.post('/api/goals/agent', {**action, 'action': 'work.update', 'data': {
+            'goal_id': gid, 'key': 'streak', 'version': work['version'], 'status': 'done', 'note': '隔离假载体模拟核验'}})
+        self.post('/api/goals/agent', {**action, 'action': 'finish', 'data': {'goal_id': gid, 'report': self.report('awaiting_acceptance')}})
+        self.complete_turn(followup['execution_id'], runtime)
+        self.server.service.chat.goal_controller.sync(self.conn)
+        self.assertEqual(goals.get(self.conn, gid)['status'], 'awaiting_acceptance')
+        self.assertEqual(goals.report_review(self.conn, gid, review['report_id']), review)
         code, detail, _ = self.request('/api/goal?project=demo&id=' + gid)
         self.assertEqual(code, 200, detail)
-        self.assertEqual(len(detail['reports']), 2)
+        self.assertEqual(len(detail['reports']), 3)
         self.assertTrue(all(report['round'] == 1 for report in detail['reports']))
         self.assertEqual(goals.get(self.conn, gid)['original_request'], idea)
 

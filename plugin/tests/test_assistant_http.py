@@ -39,6 +39,7 @@ class AssistantHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(code, 200, snapshot)
         self.assertIsNone(snapshot['project'])
         self.assertEqual(snapshot['assistant']['session_id'], sid)
+        self.assertEqual(snapshot['assistant']['name'], '助手')
         self.assertEqual(snapshot['leaders'], [])
         self.assertEqual(self.processes, [])
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM projects').fetchone()[0], before)

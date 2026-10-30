@@ -425,7 +425,7 @@
   }
   function itemHTML(context, item) {
     if (item.kind === "process") return processHTML(context, item.view);
-    if (item.kind === "compact_request" || item.kind === "compact") return `<div class="context-divider">${item.kind === "compact_request" ? "压缩上下文" : `上下文已压缩：${CrewContext.compactSize(item.pre_tokens)} → ${CrewContext.tokens(item.post_tokens)}`}</div>`;
+    if (item.kind === "compact_request" || item.kind === "compact") return `<div class="context-divider">${item.kind === "compact_request" ? "压缩上下文" : `上下文已压缩：${CrewContext.compactSize(item.pre_tokens)} → ${CrewContext.compactSize(item.post_tokens)}`}</div>`;
     if (item.kind === "error") return `<div class="chat-error" role="alert">${escape(item.text)}</div>`;
     if (item.kind === "assistant") {
       let html = "";
@@ -490,7 +490,7 @@
       desired.push({ key, className: "chat-event", html: itemHTML(scope, item) });
     }
     if (!context.readonly && context.busy) {
-      const phase = context.confirmingStop ? "等待停止确认" : context.interrupting ? "正在停止…" : context.cache.sending ? "正在发送…" : "等模型回应";
+      const phase = context.confirmingStop ? "等待停止确认" : context.interrupting ? "正在停止…" : context.cache.sending ? "正在发送…" : context.responseMode === "discussion" ? "回复中" : "等模型回应";
       const html = !context.confirmingStop && !context.interrupting && context.session.activity !== null ? CrewActivity.markup(context.session) : `<span class="activity" role="status"><span class="spin" aria-hidden="true"></span><span class="activity-phase">${phase}</span></span>`;
       desired.push({key:"activity", className:"chat-activity", html});
     }
@@ -609,7 +609,7 @@
     }
     else if (event.type === "compact_request" || event.type === "compact") {
       context.items.push({...event, id:`${event.type}:${event.seq}`, kind:event.type, lastSeq:event.seq});
-      if (incremental && event.type === "compact") notifyCompact(context.session.session_id, event, context.toast);
+      if (incremental && event.type === "compact") notifyCompact(context.session.session_id, event, context.toast, context.goalId);
     }
     else if (event.type === "error") context.items.push({ ...event, id: `error:${event.seq}`, kind: "error", lastSeq: event.seq });
     if (incremental) { composerState(context); schedule(context); }
@@ -681,6 +681,7 @@
         context.cache.pendingSendSeq = null;
       }
       context.executionId = history.execution_id ?? null;
+      context.responseMode = history.response_mode || "work";
       context.historyPrefix = context.goalId != null && context.executionId ? `history:${context.executionId}:` : "";
       context.previous = (history.previous_executions || []).map(value => {
         const scope = {...context, executionId:value.execution_id, historyPrefix:`history:${value.execution_id}:`,
@@ -835,9 +836,10 @@
     load(context);
     return { update, unmount };
   }
-  function update(state) {
+  function update(state, execution = null) {
     if (!active) return;
     active.state = state;
+    if (active.goalId != null && execution?.id === active.executionId && execution.response_mode) active.responseMode = execution.response_mode;
     const session = state.leaders.concat(state.members).find(item => item.session_id === active.session.session_id);
     if (session) {
       active.session = active.goalId == null ? session : {...session,activity:null};
@@ -856,20 +858,22 @@
     document.removeEventListener("visibilitychange", context.visibility);
     active = null;
   }
-  function notifyCompact(id, event, toast) {
-    if (event.seq <= (compactNotified.has(id) ? compactNotified.get(id) : 0)) return;
-    compactNotified.set(id, event.seq);
-    toast(`压缩完成：${CrewContext.compactSize(event.pre_tokens)} → ${CrewContext.tokens(event.post_tokens)}`);
+  function notifyCompact(id, event, toast, goalId = null) {
+    const key = goalId == null ? id : `${id}:${goalId}`;
+    if (event.seq <= (compactNotified.has(key) ? compactNotified.get(key) : 0)) return;
+    compactNotified.set(key, event.seq);
+    toast(`压缩完成：${CrewContext.compactSize(event.pre_tokens)} → ${CrewContext.compactSize(event.post_tokens)}`);
   }
   async function watchCompact(id, options) {
-    const history = await options.api(`/api/chat/history?session_id=${encodeURIComponent(id)}`);
-    const params = new URLSearchParams({session_id:id, ...projectQuery(options), after:history.events.length === 0 ? 0 : history.events[history.events.length - 1].seq});
+    const scope = options.goalId == null ? {} : {goal_id:options.goalId};
+    const history = await options.api('/api/chat/history?' + new URLSearchParams({session_id:id,...scope}));
+    const params = new URLSearchParams({session_id:id, ...scope, ...projectQuery(options), after:history.events.length === 0 ? 0 : history.events[history.events.length - 1].seq});
     const stream = new EventSource(`/api/chat/events?${params}`);
     const close = () => stream.close();
     const finish = event => { close(); options.onFinish?.(event); };
     stream.onmessage = message => {
       const event = JSON.parse(message.data);
-      if (event.type === "compact") { notifyCompact(id, event, options.toast); finish(event); }
+      if (event.type === "compact") { notifyCompact(id, event, options.toast, options.goalId); finish(event); }
       else if (event.type === "error" || event.type === "compact_cancelled" || event.type === "status" && event.status === "offline") finish(event);
     };
     stream.onerror = () => { if (stream.readyState === EventSource.CLOSED) finish({type:"error", text:"压缩结果连接已关闭，请检查会话状态"}); };

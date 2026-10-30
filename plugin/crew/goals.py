@@ -168,6 +168,18 @@ def _revision(conn, goal_id):
     return row['revision'] if row else 0
 
 
+def _requirement_source(actor, source, identity, version, *, constraints_source=None):
+    """Source claims from a model are citations, never human authorization."""
+    if source is not None and not isinstance(source, dict):
+        raise board.BoardError('需求来源必须为对象')
+    origin = {'type': 'user' if actor == board.HUMAN else 'agent', 'actor': actor}
+    result = {**origin, 'id': identity, 'version': version,
+              'constraints_source': constraints_source or origin}
+    if source:
+        result['declared_source'] = source
+    return result
+
+
 @atomic
 def create(conn, project, leader_session_id, title, request, acceptance, *, constraints=(), priority=0,
            dependencies=(), actor=board.HUMAN, source=None, decision_mode=None, now=None):
@@ -188,7 +200,8 @@ def create(conn, project, leader_session_id, title, request, acceptance, *, cons
                  (identity, project, leader_session_id, title, request, 'queued', 1, 1, priority,
                   _json(builtins.list(dict.fromkeys(dependencies))), 0, None, 1, at, at))
     conn.execute('INSERT INTO goal_requirements VALUES(?,?,?,?,?,?,?,?,?)',
-                 (identity, 1, request, _json(criteria), _json(constraints), request, actor, _json(source or {'type': 'user', 'id': identity}), at))
+                 (identity, 1, request, _json(criteria), _json(constraints), request, actor,
+                  _json(_requirement_source(actor, source, identity, 1)), at))
     conn.execute('INSERT INTO goal_rounds VALUES(?,?,?,?,?,?,?,?)', (identity, 1, 1, 'queued', None, None, at, None))
     conn.execute('INSERT INTO goal_assignments VALUES(?,?,?,?,?,?)', (identity, leader_session_id, request, 'assigned', at, at))
     from . import goal_mode
@@ -212,7 +225,10 @@ def amend(conn, goal_id, text, *, acceptance=None, constraints=None, actor=board
     conn.execute('INSERT INTO goal_requirements VALUES(?,?,?,?,?,?,?,?,?)',
                  (goal_id, version, request, _json(previous['acceptance'] if acceptance is None else _criteria(acceptance)),
                   _json(previous['constraints'] if constraints is None else _strings(constraints, '约束')), text,
-                  actor, _json(source or {'type': 'user', 'id': goal_id, 'version': version}), at))
+                  actor, _json(_requirement_source(actor, source, goal_id, version,
+                      constraints_source=(previous['source'].get('constraints_source') or
+                          {'type': 'user' if previous['actor'] == board.HUMAN else 'agent', 'actor': previous['actor']})
+                      if constraints is None else None)), at))
     conn.execute('UPDATE goals SET requirement_version=? WHERE id=?', (version, goal_id))
     conn.execute('UPDATE goal_rounds SET requirement_version=? WHERE goal_id=? AND number=?',
                  (version, goal_id, goal['current_round']))
@@ -240,14 +256,22 @@ def assign(conn, goal_id, session_id, task, *, actor=board.HUMAN, now=None):
     return get(conn, goal_id)
 
 
-def dispatch_check(conn, goal_id, *, round=None, requirement_version=None, execution_id=None, automatic=True):
+def discussion(conn, execution_id, *, include_promoted=False):
+    row = conn.execute('SELECT * FROM goal_discussion_executions WHERE execution_id=?' +
+                       ('' if include_promoted else ' AND promoted_at IS NULL'),
+                       (execution_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def dispatch_check(conn, goal_id, *, round=None, requirement_version=None, execution_id=None, automatic=True, allow_discussion=False):
     goal = _row(conn, goal_id)
+    responding = allow_discussion and execution_id is not None and discussion(conn, execution_id) is not None
     reason = None
     if round is not None and round != goal['current_round']:
         reason = '旧轮次仅供查阅，不能派发'
     elif requirement_version is not None and requirement_version != goal['requirement_version']:
         reason = '旧需求版本的排程已失效'
-    elif goal['status'] not in ('queued', 'running'):
+    elif goal['status'] not in ('queued', 'running') and not (responding and goal['status'] in ('completed', 'failed', 'awaiting_acceptance')):
         reason = '目标当前状态禁止派发：' + goal['status']
     elif goal['manual_pause']:
         reason = '用户暂停仍然有效'
@@ -259,7 +283,7 @@ def dispatch_check(conn, goal_id, *, round=None, requirement_version=None, execu
             _member(conn, goal, goal['leader_session_id'])
         except board.BoardError as exc:
             reason = str(exc)
-    if reason is None:
+    if reason is None and not responding:
         for dependency in json.loads(goal['dependencies_json']):
             if _row(conn, dependency, goal['project'])['status'] != 'completed':
                 reason = '依赖目标尚未完成：' + dependency
@@ -327,8 +351,8 @@ def transition(conn, goal_id, status, *, actor=board.HUMAN, reason=None, expecte
     conn.execute('UPDATE goal_rounds SET status=?,outcome=?,reason=?,ended_at=? WHERE goal_id=? AND number=?',
                  (status, status if status in TERMINAL else None, reason, at if status in TERMINAL else None, goal_id, goal['current_round']))
     if status in TERMINAL:
-        conn.execute('UPDATE goal_executions SET status=?,ended_at=?,updated_at=? WHERE goal_id=? AND round=?',
-                     (status, at, at, goal_id, goal['current_round']))
+        conn.execute('UPDATE goal_executions SET status=?,ended_at=?,updated_at=? WHERE goal_id=? AND round=? AND requirement_version=?',
+                     (status, at, at, goal_id, goal['current_round'], goal['requirement_version']))
     _touch(conn, goal_id, now)
     _control(conn, goal_id, actor)
     return get(conn, goal_id)
@@ -405,6 +429,56 @@ def resume(conn, goal_id, *, actor=board.HUMAN, automatic=False, now=None):
 
 
 @atomic
+def continue_task(conn, goal_id, text, *, actor=board.HUMAN, discussion_execution_id=None,
+                  acceptance=None, constraints=None, expected_version=None, now=None):
+    """Continue this task after delivery without inventing another round."""
+    goal = _row(conn, goal_id)
+    response = discussion(conn, discussion_execution_id) if discussion_execution_id else None
+    responding = get_execution(conn, discussion_execution_id) if response else None
+    if responding and (responding['goal_id'] != goal_id or responding['session_id'] != actor
+                       or responding['round'] != goal['current_round'] or responding['requirement_version'] != goal['requirement_version']):
+        raise board.Conflict('讨论执行与当前任务不匹配')
+    _expected(goal, expected_version)
+    if actor != board.HUMAN and response is None:
+        raise board.BoardError('只有用户明确输入可以继续已交付的任务')
+    if goal['manual_pause']:
+        raise board.Conflict('用户暂停仍然有效；请明确恢复后继续')
+    if goal['status'] not in ('completed', 'failed', 'awaiting_acceptance'):
+        raise board.Conflict('仅已交付或待验收任务可以继续修改；暂停和取消仍需明确恢复')
+    if conn.execute("SELECT 1 FROM goal_executions WHERE goal_id=? AND status IN ('running','pausing') AND id<>?",
+                    (goal_id, discussion_execution_id or '')).fetchone():
+        raise board.Conflict('执行尚未确认停止，不能开始继续修改')
+    text, at = _text(text, '继续修改内容'), board._time(now)
+    report = conn.execute('SELECT id FROM goal_reports WHERE goal_id=? AND round=? AND requirement_version=? ORDER BY version DESC LIMIT 1',
+                          (goal_id, goal['current_round'], goal['requirement_version'])).fetchone()
+    review = acceptance_review(conn, goal_id)
+    finish = get_finish(conn, goal_id)
+    previous_round = dict(conn.execute('SELECT * FROM goal_rounds WHERE goal_id=? AND number=?',
+                                      (goal_id, goal['current_round'])).fetchone())
+    conn.execute('INSERT INTO goal_continuations VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
+                 (uuid.uuid4().hex, goal_id, goal['current_round'], goal['requirement_version'], report['id'] if report else None,
+                  goal['status'], text, actor, _json(review) if review else None, _json(finish) if finish else None,
+                  _json(previous_round), at))
+    conn.execute("UPDATE goal_round_finishes SET status='superseded' WHERE goal_id=? AND round=?", (goal_id, goal['current_round']))
+    conn.execute("UPDATE goals SET status='queued',manual_pause=0,reason=? WHERE id=?", (text, goal_id))
+    conn.execute("UPDATE goal_rounds SET status='queued',outcome=NULL,reason=?,ended_at=NULL WHERE goal_id=? AND number=?",
+                 (text, goal_id, goal['current_round']))
+    value = amend(conn, goal_id, text, actor=actor, acceptance=acceptance, constraints=constraints,
+                  source={'type': 'task-continuation', 'message_id': response['message_id'] if response else None}, now=now)
+    from . import goal_work
+    goal_work.carry_forward(conn, goal_id, goal['requirement_version'], actor=actor)
+    if response:
+        receipt = {'text': text, 'acceptance': acceptance, 'constraints': constraints,
+                   'expected_version': expected_version, 'requirement_version': value['requirement_version']}
+        conn.execute('UPDATE goal_discussion_executions SET promoted_at=?,promotion_json=? WHERE execution_id=?',
+                     (at, _json(receipt), discussion_execution_id))
+        conn.execute('UPDATE goal_executions SET requirement_version=?,updated_at=? WHERE id=?',
+                     (value['requirement_version'], at, discussion_execution_id))
+        value = transition(conn, goal_id, 'running', actor=actor, now=now)
+    return value
+
+
+@atomic
 def reopen(conn, goal_id, text, *, actor=board.HUMAN, now=None):
     goal = _row(conn, goal_id)
     if actor != board.HUMAN:
@@ -427,6 +501,7 @@ def get_execution(conn, execution_id):
     result = dict(row)
     read = conn.execute('SELECT read_seq FROM goal_execution_reads WHERE execution_id=?', (execution_id,)).fetchone()
     result['read_seq'] = read['read_seq'] if read else 0
+    result['response_mode'] = 'discussion' if discussion(conn, execution_id) else 'work'
     result['bindings'] = board._rows(conn, 'SELECT * FROM goal_execution_bindings WHERE execution_id=? ORDER BY runtime', (execution_id,))
     return result
 
@@ -464,9 +539,14 @@ def configure_execution(conn, execution_id, runtime, *, model=None, effort=None,
 
 
 @atomic
-def create_execution(conn, goal_id, session_id, *, runtime, model=None, effort=None, now=None):
+def create_execution(conn, goal_id, session_id, *, runtime, model=None, effort=None, discussion_message_id=None, now=None):
     goal = _row(conn, goal_id)
-    _allow(conn, goal_id)
+    if discussion_message_id is not None:
+        _text(discussion_message_id, '用户消息编号', limit=160)
+        if goal['status'] not in ('completed', 'failed', 'awaiting_acceptance') or goal['manual_pause']:
+            raise board.Conflict('此任务不能开始交付后的讨论；手动暂停必须明确恢复')
+    else:
+        _allow(conn, goal_id)
     _member(conn, goal, session_id)
     if runtime not in ('claude', 'codex'):
         raise board.BoardError('执行工具无效')
@@ -484,6 +564,8 @@ def create_execution(conn, goal_id, session_id, *, runtime, model=None, effort=N
     conn.execute('INSERT INTO goal_executions VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                  (identity, goal_id, goal['current_round'], session_id, generation, runtime, model, effort,
                   'queued', goal['requirement_version'], at, at, None, None))
+    if discussion_message_id is not None:
+        conn.execute('INSERT INTO goal_discussion_executions VALUES(?,?,?,NULL,NULL)', (identity, discussion_message_id, at))
     return get_execution(conn, identity)
 
 
@@ -519,7 +601,8 @@ def set_execution_status(conn, execution_id, status, *, requirement_version=None
     if execution['status'] in TERMINAL and status != execution['status']:
         raise board.Conflict('已结束执行不能再次启动')
     if status in ('queued', 'running'):
-        _allow(conn, execution['goal_id'], round=execution['round'], requirement_version=requirement_version or execution['requirement_version'])
+        _allow(conn, execution['goal_id'], round=execution['round'], requirement_version=requirement_version or execution['requirement_version'],
+               **({'execution_id': execution_id, 'allow_discussion': True} if discussion(conn, execution_id) else {}))
     version = execution['requirement_version'] if requirement_version is None else requirement_version
     if version != _row(conn, execution['goal_id'])['requirement_version'] and status == 'running':
         raise board.Conflict('不能启动旧需求版本')
@@ -632,7 +715,7 @@ def render_report(conn, goal_id, data):
                      listing([item['role'] + '：' + str(item.get('contribution', '未记录')) for item in investment.get('roles', [])]),
                      esc(investment.get('note', '')), esc(data['follow_up'])))
     if data.get('document_html', '').strip():
-        return report_documents.render(goal['title'], data['document_html'], ''.join(sections))
+        return report_documents.render(goal['title'], data['document_html'], report_documents.verification(data))
     return '<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; base-uri \'none\'; form-action \'none\'"><title>%s</title><style>body{font:16px/1.7 system-ui,sans-serif;max-width:960px;margin:40px auto;padding:0 24px;color:#292929;background:#fafafa}h2{margin-top:32px}svg{width:100%%;max-width:600px}table{border-collapse:collapse;width:100%%}th,td{border:1px solid #ddd;text-align:left;vertical-align:top;padding:10px;white-space:pre-wrap;overflow-wrap:anywhere}th{width:140px}p,li{white-space:pre-wrap;overflow-wrap:anywhere}</style><body>%s</body></html>' % (esc(goal['title']), ''.join(sections))
 
 
@@ -660,9 +743,19 @@ def get_report(conn, report_id):
 
 def acceptance_review(conn, goal_id):
     goal = _row(conn, goal_id)
-    row = conn.execute('SELECT * FROM goal_acceptances WHERE goal_id=? AND round=?',
-                       (goal_id, goal['current_round'])).fetchone()
+    row = conn.execute('SELECT a.* FROM goal_acceptances a JOIN goal_reports r ON r.id=a.report_id '
+                       'WHERE a.goal_id=? AND a.round=? AND r.requirement_version=?',
+                       (goal_id, goal['current_round'], goal['requirement_version'])).fetchone()
     return {**dict(row), 'accepted': bool(row['accepted'])} if row else None
+
+
+def report_review(conn, goal_id, report_id):
+    row = conn.execute('SELECT * FROM goal_acceptances WHERE goal_id=? AND report_id=?', (goal_id, report_id)).fetchone()
+    if row is not None:
+        return {**dict(row), 'accepted': bool(row['accepted'])}
+    row = conn.execute('SELECT review_json FROM goal_continuations WHERE goal_id=? AND report_id=? AND review_json IS NOT NULL '
+                       'ORDER BY requirement_version DESC LIMIT 1', (goal_id, report_id)).fetchone()
+    return json.loads(row['review_json']) if row else None
 
 
 def acceptance_target(conn, goal_id, accepted, *, note='', actor=board.HUMAN, expected_version=None, report_id=None):
@@ -694,7 +787,9 @@ def review_acceptance(conn, goal_id, accepted, *, note='', actor=board.HUMAN, ex
     report = acceptance_target(conn, goal_id, accepted, note=note, actor=actor,
                                expected_version=expected_version, report_id=report_id)
     goal = _row(conn, goal_id)
-    conn.execute('INSERT INTO goal_acceptances(goal_id,round,report_id,accepted,note,actor,created_at) VALUES(?,?,?,?,?,?,?)',
+    conn.execute('INSERT INTO goal_acceptances(goal_id,round,report_id,accepted,note,actor,created_at) VALUES(?,?,?,?,?,?,?) '
+                 'ON CONFLICT(goal_id,round) DO UPDATE SET report_id=excluded.report_id,accepted=excluded.accepted,'
+                 'note=excluded.note,actor=excluded.actor,created_at=excluded.created_at',
                  (goal_id, goal['current_round'], report['id'], int(accepted), note, actor, board._time(now)))
     reason = ('用户验收通过' + ('：' + note if note else '')) if accepted else '用户要求修改：' + note
     return transition(conn, goal_id, 'completed' if accepted else 'failed', actor=actor, reason=reason, now=now)

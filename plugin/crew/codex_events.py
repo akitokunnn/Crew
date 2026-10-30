@@ -17,6 +17,8 @@ class Events:
         self._terminal = False
         self._compacting = False
         self._pre_compact = None
+        self._post_compact = None
+        self._compaction_open = False
         self._modern_compaction = False
 
     def consume(self, method, params):
@@ -32,6 +34,8 @@ class Events:
             self._terminal = False
             self._compacting = False
             self._pre_compact = None
+            self._post_compact = None
+            self._compaction_open = False
             return [{"type": "status", "status": "working"},
                     {"type": "activity", "phase": "requesting", "label": None}]
         turn_id = params.get("turnId", params.get("turn", {}).get("id"))
@@ -46,12 +50,11 @@ class Events:
             self.context = {"used": last["totalTokens"], "max": usage.get("modelContextWindow"), "source": "live"}
             events = [{"type": "context", **self.context},
                       {"type": "activity", "output_tokens": last["outputTokens"]}]
+            if self._compaction_open:
+                self._post_compact = self.context['used']
             # A freshly resumed thread has no measurement yet; its size before compaction stays unknown (None).
             if self._compacting:
-                events.append({"type": "compact", "pre_tokens": self._pre_compact,
-                               "post_tokens": self.context["used"]})
-                self._compacting = False
-                self._pre_compact = None
+                events.append(self._compact_result(self.context['used']))
             return events
         if method == "thread/compacted":
             # This notification carries no token counts. Wait for measured usage.
@@ -84,6 +87,12 @@ class Events:
             if status != "completed":
                 self._compacting = False
                 self._pre_compact = None
+                self._compaction_open = False
+                self._post_compact = None
+            elif self._compacting:
+                # Completion is known even if this server sends no measurement.
+                # A missing size must not leave the user's compact action busy.
+                events.append(self._compact_result(self._post_compact))
             if status not in ("completed", "failed", "interrupted"):
                 events.append({"type": "error", "text": "未知的 Codex 结束状态: " + str(status)})
             elif status == "failed":
@@ -96,6 +105,12 @@ class Events:
             return events
         return []
 
+    def _compact_result(self, post_tokens):
+        event = {'type': 'compact', 'pre_tokens': self._pre_compact, 'post_tokens': post_tokens}
+        self._compacting = self._compaction_open = False
+        self._pre_compact = self._post_compact = None
+        return event
+
     def _item(self, item, completed):
         identity, kind = item["id"], item["type"]
         if identity in self._finished:
@@ -105,9 +120,15 @@ class Events:
             if identity not in self._started:
                 self._started.add(identity)
                 self._pre_compact = self.context["used"] if self.context is not None else None
+                self._post_compact = None
+                self._compaction_open = True
             if completed:
                 self._finished.add(identity)
                 self._compacting = True
+                # Codex 0.165 recomputes the retained context's token estimate
+                # before item/completed (core/src/session/mod.rs), not billing.
+                if self._post_compact is not None:
+                    return [self._compact_result(self._post_compact)]
             return [{"type": "activity", "phase": "compacting", "label": None}]
         if kind == "reasoning":
             if completed:

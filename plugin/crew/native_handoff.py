@@ -9,7 +9,7 @@ from urllib.parse import quote
 import threading
 import uuid
 
-from . import board, goals, native_home, runtimes, store
+from . import board, codex_client, goals, native_home, runtimes, store
 
 
 # Production backend initialization is already serialized by HomeServiceLock.
@@ -206,11 +206,11 @@ def release(manager, session_id, execution_id=None):
         except Exception as exc:
             if not released and current is not None and manager.running(key):
                 try:
-                    current.restore_crew_tools()
+                    current.restore_crew_instructions()
                 except Exception as restore_error:
                     current.close(archive=False)
                     released = True
-                    exc = board.BoardError(str(exc) + '；恢复 Crew 工具失败：' + str(restore_error))
+                    exc = board.BoardError(str(exc) + '；恢复 Crew 指令失败：' + str(restore_error))
             with closing(store.connect(manager.home)) as conn:
                 _finish(conn, session_id, execution_id, token, 'external' if released else 'crew', exc)
             raise
@@ -237,12 +237,19 @@ def reclaim(manager, session_id, execution_id=None):
                 result = _finish(conn, session_id, execution_id, token, 'crew')
             return {**result, 'ok': True}
         except Exception as exc:
+            failure = exc
+            if (isinstance(exc, codex_client.RpcError) and exc.method == 'thread/resume'
+                    and 'already has an active writer' in str(exc)):
+                failure = board.Conflict('Codex 原生客户端仍持有此对话的写入连接。请先结束那边的执行并关闭持有此对话的原生客户端，'
+                    '再点击“回到 Crew”。仅离开页面可能不会释放连接；原对话、历史和排队消息均已保留。原生原因：' + str(exc))
             current = manager.processes.get(key)
             if current is not None and manager.running(key):
                 current.close(archive=False)
                 current.reader_done.wait(10)
             with closing(store.connect(manager.home)) as conn:
-                _finish(conn, session_id, execution_id, token, 'external', exc)
+                _finish(conn, session_id, execution_id, token, 'external', failure)
+            if failure is not exc:
+                raise failure from exc
             raise
         finally:
             _end_transition(token)

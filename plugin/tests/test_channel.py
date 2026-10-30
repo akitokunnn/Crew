@@ -174,11 +174,8 @@ class ChannelTests(unittest.TestCase):
         self.assertEqual(channel.mark_read(self.conn, "demo", "b", message["id"])["read_id"], message["id"])
         code, result = self.hook()
         self.assertEqual(code, 0)
-        text = result["hookSpecificOutput"]["additionalContext"]
-        self.assertIn("本轮最新信任设置", text)
-        self.assertIn("关闭", text)
-        self.assertNotIn("[Crew 交流区]", text)
-        self.assertNotIn("first line", text)
+        # Nothing new means no duplicate mode boilerplate is injected.
+        self.assertIsNone(result)
 
     def test_summary_excludes_own_posts_and_delivered_mentions(self):
         self.post("own", actor="b", to=["beta"])
@@ -218,19 +215,13 @@ class ChannelTests(unittest.TestCase):
         self.post()
         code, result = self.hook("m")
         self.assertEqual(code, 0)
-        text = result["hookSpecificOutput"]["additionalContext"]
-        self.assertIn("本轮最新信任设置：关闭", text)
-        self.assertIn("当前会话没有所属 leader", text)
-        self.assertNotIn("[Crew 交流区]", text)
+        self.assertIsNone(result)
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM channel_reads WHERE reader='m'").fetchone()[0], 0)
 
     def test_no_new_posts_adds_no_channel_context(self):
         code, result = self.hook()
         self.assertEqual(code, 0)
-        text = result["hookSpecificOutput"]["additionalContext"]
-        self.assertIn("本轮最新信任设置", text)
-        self.assertIn("关闭", text)
-        self.assertNotIn("[Crew 交流区]", text)
+        self.assertIsNone(result)
 
     def test_cli_say_and_member_rejection(self):
         result, output, error = self.run_cli(["say", "cli full text", "--to", "beta", "--json"])

@@ -862,6 +862,19 @@ CREATE TABLE IF NOT EXISTS goal_acceptances (
  PRIMARY KEY(goal_id,round)
 );
 
+-- Continuing an existing delivery preserves its previous finish and review.
+-- A new execution/requirement version does not imply a new user-visible round.
+CREATE TABLE IF NOT EXISTS goal_continuations (
+ id TEXT PRIMARY KEY, goal_id TEXT NOT NULL REFERENCES goals(id), round INTEGER NOT NULL,
+ requirement_version INTEGER NOT NULL, report_id TEXT REFERENCES goal_reports(id),
+ previous_status TEXT NOT NULL, reason TEXT NOT NULL, actor TEXT NOT NULL,
+ review_json TEXT, finish_json TEXT, round_json TEXT NOT NULL, created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS goal_discussion_executions (
+ execution_id TEXT PRIMARY KEY REFERENCES goal_executions(id),
+ message_id TEXT NOT NULL, created_at TEXT NOT NULL, promoted_at TEXT, promotion_json TEXT
+);
+
 -- Workspace labels and visibility never change the stable projects.name key.
 CREATE TABLE IF NOT EXISTS project_settings (
  project TEXT PRIMARY KEY REFERENCES projects(name),

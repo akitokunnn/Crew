@@ -19,6 +19,7 @@ def state(home, *, history, activity, applied, context):
     chat = history(sid)
     events = chat['events']
     assistant.update(
+        name=assistant['crew_name'],
         runtime=assistant['runtime']['runtime'], native_id=assistant['runtime']['native_id'],
         **{key: assistant['configuration'][key] for key in ('model', 'effort')},
         running=chat['running'], busy=chat['busy'], activity=activity(sid), applied=applied(sid),

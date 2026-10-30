@@ -113,6 +113,6 @@ test("an observed skill dispatch keeps the group visible without claiming its id
     const working=h.render("working");assert.equal(count(working),1);assert(working.includes('data-dispatch-id="job"'));
     assert(working.includes("临时派工 · 由 leader 派出"));assert.deepEqual(rows(working),[{action:"leader",id:"leader"}]);
     const next=structuredClone(snapshot);next.leaders[0].codex[0].status="unknown";
-    assert(!h.sidebar(next).includes('class="group-work-avatar"'));assert(h.node(next).includes("状态未确认"));
+    assert(!h.sidebar(next).includes('class="group-work-avatar"'));assert(!h.node(next).includes("状态未确认"),"historical uncertainty stays in session details, not the live relationship card");
   }
 });

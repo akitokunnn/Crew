@@ -127,7 +127,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
             'requirement_version','current_round','priority','manual_pause','reason','version','created_at','updated_at',
             'dependencies','requirements','assignments','rounds','request','acceptance','constraints','report_available','native_handoffs','work_summary','decision_mode'})
         self.assertEqual((goal['decision_mode']['mode'], goal['decision_mode']['source'], goal['decision_mode']['version']),
-                         ('human','leader-default',1))
+                         ('human','task-default',1))
         self.assertEqual((goal['project'],goal['leader_session_id'],goal['title'],goal['status']),('demo','s3','验证交付','queued'))
         self.assertEqual((goal['request'],goal['original_request']),('完成原始输入要求','完成原始输入要求'))
         self.assertEqual((goal['current_round'],goal['requirement_version'],goal['version']),(1,1,1))

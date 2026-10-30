@@ -332,7 +332,11 @@ class CodexTools:
                 actor = self._actor(conn)
                 if self._execution_id is not None and not self._read_only(name, args):
                     execution = goals.get_execution(conn, self._execution_id)
-                    gate = goals.dispatch_check(conn, execution['goal_id'], execution_id=self._execution_id)
+                    amendment = (name == 'crew_goal' and args['action'] == 'amend'
+                                 and args.get('goal_id', execution['goal_id']) == execution['goal_id']
+                                 and args.get('data', {}).get('goal_id', execution['goal_id']) == execution['goal_id'])
+                    gate = goals.dispatch_check(conn, execution['goal_id'], execution_id=self._execution_id,
+                                                allow_discussion=amendment)
                     if not gate['allowed']:
                         raise ToolError('goal_dispatch_blocked', gate['reason'])
                 data = self._dispatch(conn, actor, name, args)

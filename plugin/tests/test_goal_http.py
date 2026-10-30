@@ -1109,7 +1109,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(reopened['goal']['current_round'], 2)
         self.assertEqual(len(self.processes), 1)
 
-    def follow_up_delivered_goal(self, runtime, decision=None):
+    def follow_up_delivered_goal(self, runtime, decision=None, note='Please fix the report conclusion and explain the final verification.', promote=True):
         goal, report, old_execution, process = self.awaiting_acceptance(runtime)
         original = goals.get_report(self.conn, report['id'])
         if decision:
@@ -1128,14 +1128,45 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
             self.addCleanup(patcher.stop)
         manager.journal(old_execution).message('earlier-rule', 'Keep original recordings and do not upload them.', source='human')
         count = len(self.processes)
+        before = goals.get(self.conn, goal['id'])
         # Reading the completed/rejected task is still passive.
         self.assertEqual(self.request('/api/goal?' + urlencode({'project': 'demo', 'id': goal['id']}))[0], 200)
         self.assertEqual(len(self.processes), count)
-        note = 'Please fix the report conclusion and explain the final verification.'
         code, reply, _ = self.send_goal(goal, note, message_id='human-report-followup')
         self.assertEqual(code, 200, reply)
         current = goals.get(self.conn, goal['id'])
-        self.assertEqual((current['current_round'], current['status']), (2, 'running'))
+        self.assertEqual((current['status'], current['requirement_version'], current['current_round'], current['version']),
+                         (before['status'], before['requirement_version'], before['current_round'], before['version']))
+        self.assertEqual(current['requirements'], before['requirements'])
+        self.assertTrue(goals.get_report(self.conn, report['id'])['current'])
+        self.assertEqual(self.task_history(goal)['response_mode'], 'discussion')
+        action = {'actor_session_id': goal['leader_session_id'], 'execution_id': reply['execution_id']}
+        code, denied, _ = self.request('/api/goals/agent?project=demo', {**action, 'action': 'work.add',
+            'data': {'goal_id': goal['id'], 'key': 'not-authorized', 'title': 'Unexpected work', 'acceptance': 'Must not start'}})
+        self.assertEqual(code, 409, denied)
+        code, read, _ = self.request('/api/goals/agent?project=demo', {**action, 'action': 'status', 'data': {'goal_id': goal['id']}})
+        self.assertEqual(code, 200, read)
+        if not promote:
+            if runtime == 'codex':
+                manager.processes[reply['execution_id']].client.finish()
+            else:
+                self.finish_turn(reply['execution_id'], self.processes[-1])
+            manager.goal_controller.sync(self.conn, goal['id'])
+            self.assertEqual(goals.get(self.conn, goal['id']), before)
+            self.assertEqual(goals.get_report(self.conn, report['id']), original)
+            code, retry, _ = self.send_goal(goal, note, message_id='human-report-followup')
+            self.assertEqual(code, 200, retry)
+            self.assertTrue(retry['duplicate'])
+            self.assertEqual(retry['execution_id'], reply['execution_id'])
+            return
+        change = {**action, 'action': 'amend', 'data': {'goal_id': goal['id'], 'text': note, 'expected_version': before['version']}}
+        code, changed, _ = self.request('/api/goals/agent?project=demo', change)
+        self.assertEqual(code, 200, changed)
+        code, repeated, _ = self.request('/api/goals/agent?project=demo', change)
+        self.assertEqual(code, 200, repeated)
+        self.assertEqual(repeated['version'], changed['version'])
+        current = goals.get(self.conn, goal['id'])
+        self.assertEqual((current['current_round'], current['status']), (1, 'running'))
         self.assertNotEqual(reply['execution_id'], old_execution)
         self.assertIn(note, current['requirements']['request'])
         history = self.task_history(goal)
@@ -1162,7 +1193,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(code, 200, retry)
         self.assertTrue(retry['duplicate'])
         self.assertEqual(retry['execution_id'], reply['execution_id'])
-        self.assertEqual(goals.get(self.conn, goal['id'])['current_round'], 2)
+        self.assertEqual(goals.get(self.conn, goal['id'])['current_round'], 1)
         self.assertEqual(len(self.processes), count)
         if runtime == 'codex':
             manager.processes[reply['execution_id']].client.finish()
@@ -1174,7 +1205,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         code, retry, _ = self.send_goal(goal, note, message_id='human-report-followup')
         self.assertEqual(code, 200, retry)
         self.assertTrue(retry['duplicate'])
-        self.assertEqual(goals.get(self.conn, goal['id'])['current_round'], 2)
+        self.assertEqual(goals.get(self.conn, goal['id'])['current_round'], 1)
 
     def test_internal_message_cannot_reopen_rejected_delivery(self):
         goal, report, _, _ = self.awaiting_acceptance()
@@ -1198,6 +1229,13 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
 
     def test_completed_goal_can_continue_with_human_message(self):
         self.follow_up_delivered_goal('claude', 'accept')
+
+    def test_asking_about_second_round_is_not_an_instruction_to_create_one(self):
+        self.follow_up_delivered_goal('codex', 'accept',
+            note='为什么之前显示第二轮？只解释，不修改文件，也不要新建目标或开始新一轮。', promote=False)
+
+    def test_claude_explanation_keeps_delivery_requirements_and_acceptance(self):
+        self.follow_up_delivered_goal('claude', 'accept', note='Explain the browser error without doing more work.', promote=False)
 
     def test_acceptance_rejects_ai_stale_ui_and_a_native_still_actually_busy(self):
         goal, report, execution_id, process = self.awaiting_acceptance()

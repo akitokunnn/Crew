@@ -776,6 +776,11 @@ class Manager:
         if resume and native_id is None and not fresh_native and (pending is None or pending['to_runtime']!=runtime):
             raise board.BoardError('原生会话 ID 丢失，不能猜测恢复或偷偷新建')
         native_resume=resume and native_id is not None
+        if assistant and runtime == 'claude' and native_id == session_id and fresh_native:
+            # V2 0.3.1 prefilled a Claude identity before the assistant ever
+            # started. Only that untouched assistant can take the first-start
+            # path; any actual input/output history still requires resume.
+            native_resume = False
         if runtime == "codex":
             from .codex_runtime import CodexRunning
             current = CodexRunning(self.home, self.plugin_root, session, spec, options,
@@ -1126,10 +1131,12 @@ class Manager:
 
     @_admitted
     def compact(self, session, caller_session_id=None, after_turn=False):
-        session_id = session["session_id"]
+        logical_id = session['session_id']
+        execution = session.get('_execution')
+        session_id = session.get('_storage_id', logical_id)
         with closing(store.connect(self.home)) as control_conn:
-            native_handoff.assert_control(control_conn, session_id, session.get('_execution', {}).get('id'))
-        self_compact = caller_session_id not in (None, board.HUMAN) and caller_session_id == session_id
+            native_handoff.assert_control(control_conn, logical_id, execution['id'] if execution else None)
+        self_compact = caller_session_id not in (None, board.HUMAN) and caller_session_id == logical_id
         deferred = self_compact or after_turn and caller_session_id in (None, board.HUMAN)
         with self.lock:
             if caller_session_id not in (None, board.HUMAN):
@@ -1147,9 +1154,17 @@ class Manager:
             if running:
                 if self.busy(session_id) and not deferred:
                     raise board.Conflict("正在干活，等这一轮结束再压缩")
-            elif self._runs_in_claude(session_id) and any(agent["sessionId"] == session_id for agent in self._external_agents()):
+            elif (execution is None and self._runs_in_claude(logical_id)
+                    and any(agent["sessionId"] == logical_id for agent in self._external_agents())):
                 raise board.Conflict("它在 VS Code 里运行，去那边输入 /compact")
-            if (not self.path(session_id).exists() or session["spawn_id"] is None or
+            if execution is not None:
+                binding = next((b for b in execution['bindings'] if b['runtime'] == execution['runtime']), None)
+                if (binding and execution['runtime'] == 'claude' and not running
+                        and any(agent['sessionId'] == binding['native_id'] for agent in self._external_agents())):
+                    raise board.Conflict('此目标在原工具中运行，请在那边输入 /compact')
+                if not binding or not binding['native_id'] or not self.path(session_id).exists():
+                    raise board.BoardError('此目标尚无原生执行历史，不能创建新会话来压缩')
+            elif (not self.path(session_id).exists() or session["spawn_id"] is None or
                     not (self.home / "spawn" / (session["spawn_id"] + ".json")).exists()):
                 raise board.BoardError("会话没有网页聊天记录或启动记录，请先叫醒它，或在 VS Code 打开后输入 /compact")
             if deferred and (self_compact or running):
@@ -1159,7 +1174,7 @@ class Manager:
                         raise board.Conflict("它在 VS Code 里运行，去那边输入 /compact")
                     if self.closed:
                         raise board.BoardError("网页服务正在关闭")
-                    if self.maintenance_held(session_id):
+                    if self.maintenance_held(logical_id):
                         raise board.Conflict(MAINTENANCE_HELD)
                     if (current.journal.progress or {}).get('phase') == 'compacting':
                         return {"ok": True, "message": "正在压缩上下文"}

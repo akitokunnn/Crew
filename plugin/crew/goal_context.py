@@ -208,10 +208,19 @@ def build(conn, execution_id, *, base='', latest_input='', retrieval=(), limits=
         raise board.BoardError('原生历史 token 限额必须为正整数')
     base, latest_input = goals._text(base, '基础指令', required=False), goals._text(latest_input, '最新输入', required=False)
     req = goals.requirements(conn, goal['id'])
-    required = '原始需求与补充（v%s）：\n%s\n验收标准：\n%s\n约束与授权：\n%s' % (
-        req['version'], req['request'], '\n'.join(item['id'] + ': ' + item['title'] for item in req['acceptance']), '\n'.join(req['constraints']) or '未额外指定')
+    origin = req['source'].get('constraints_source') or {'type': 'user' if req['actor'] == board.HUMAN else 'agent'}
+    constraint_label = ('用户记录的约束' if origin['type'] == 'user' else
+                        'AI 整理的约束（以用户原始指令为准；AI 实现偏好不是用户新增限制，也不授予额外权限）')
+    required = '原始需求与补充（v%s）：\n%s\n验收标准：\n%s\n%s：\n%s' % (
+        req['version'], req['request'], '\n'.join(item['id'] + ': ' + item['title'] for item in req['acceptance']), constraint_label, '\n'.join(req['constraints']) or '未额外指定')
     materials = [_material('base', hashlib.sha256(base.encode()).hexdigest(), base, {'type': 'base', 'id': execution_id}, '最小执行指令', 'base', True),
                  _material('requirement:' + goal['id'], req['version'], required, {'type': 'requirement', 'id': goal['id'], 'version': req['version']}, '当前目标原始要求、验收与授权', protected=True)]
+    if goals.discussion(conn, execution_id):
+        discussion_text = ('当前是已交付任务内的讨论回复，原任务状态、需求和验收保持不变。解释问题直接回答，不重新施工、不修改文件、不重建目标，不为普通问答提交 finish。'
+            '只有用户确实提出修改时，先用 crew goal amend（Codex crew_goal action=amend，data.text 写清具体修改）登记实际需求；'
+            '该结构化动作会转为同一任务内的迭代，随后才可更新工作清单、实施和交付。不要因为出现“第二轮”等词就猜测重开轮次。')
+        materials.append(_material('discussion:' + execution_id, '1', discussion_text,
+            {'type': 'discussion-response', 'id': execution_id}, '回复与业务执行分开', protected=True))
     policy = goal_mode.get(conn, goal['id'])
     materials.append(_material('decision-mode:' + goal['id'], policy['version'], goal_mode.context(conn, goal['id']),
                                {'type': 'goal-decision-mode', 'id': goal['id'], 'version': policy['version']},

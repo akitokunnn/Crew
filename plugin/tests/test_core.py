@@ -418,7 +418,7 @@ class DeliveryTests(CoreCase):
         self.assertEqual(self.conn.execute("SELECT delivered_at FROM decisions WHERE id=?", (d,)).fetchone()[0], NOW)
         code, output = self.hook("user-prompt-submit", prompt="again")
         self.assertEqual(code, 0)
-        self.assertNotIn('待拍板 #', output['hookSpecificOutput']['additionalContext'])
+        self.assertIsNone(output)  # No duplicate answer or retired mode boilerplate.
 
     def test_handoffs_name_group_star_each_session_once(self):
         board.join(self.conn, "s1", "demo", "lead", self.root, str(self.root), "main", role="leader", now=NOW)
@@ -433,7 +433,7 @@ class DeliveryTests(CoreCase):
             self.assertEqual(board.handoffs(self.conn, sid), [])
             code, output = self.hook("user-prompt-submit", sid, prompt="again")
             self.assertEqual(code, 0)
-            self.assertNotIn('交接 #', output['hookSpecificOutput']['additionalContext'])
+            self.assertIsNone(output)  # The same handoff is delivered only once.
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM handoff_deliveries").fetchone()[0], 6)
 
     def test_session_start_delivers_handoff_but_not_answer(self):

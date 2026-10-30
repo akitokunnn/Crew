@@ -151,3 +151,15 @@ def require_complete(conn, goal_id):
                   (item['status'] != 'done' or item['needs_review'])]
     if unfinished:
         raise board.Conflict('工作清单尚未全部完成或复核：' + '、'.join(item['title'] for item in unfinished[:5]))
+
+
+def carry_forward(conn, goal_id, previous_version, *, actor):
+    """A same-task amendment retains prior work; explicitly reopen affected items."""
+    goal = goals.get(conn, goal_id)
+    for item in items(conn, goal_id):
+        if item['requirement_version'] != previous_version:
+            continue
+        conn.execute('UPDATE goal_work_items SET requirement_version=?,version=version+1,updated_at=? WHERE id=?',
+                     (goal['requirement_version'], store.now_iso(), item['id']))
+        row = conn.execute('SELECT * FROM goal_work_items WHERE id=?', (item['id'],)).fetchone()
+        _record(conn, _item(row, goal), actor)

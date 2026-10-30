@@ -117,7 +117,9 @@ def ensure_assistant(conn, home, *, context_project=None, selection=None):
         binding = conn.execute('SELECT runtime,native_id FROM session_runtimes WHERE session_id=?', (identity,)).fetchone()
         if binding is None and choice['runtime'] is not None:
             now = store.now_iso()
-            native_id = identity if choice['runtime'] == 'claude' else None
+            # Opening the assistant records a configuration, not an existing
+            # native conversation. The carrier binds its identity on startup.
+            native_id = None
             conn.execute('INSERT INTO session_runtimes(session_id,runtime,native_id,updated_at) VALUES(?,?,?,?)',
                          (identity, choice['runtime'], native_id, now))
             models.set(conn, identity, choice['model'], choice['effort'], runtime=choice['runtime'])

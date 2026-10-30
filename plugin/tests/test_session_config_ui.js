@@ -3,8 +3,8 @@ const {test} = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs"), path = require("node:path"), vm = require("node:vm");
 const sandbox = {window:{}}; vm.createContext(sandbox);
-for (const file of ["leader-trust-ui.js", "runtime-switch-ui.js"]) vm.runInContext(fs.readFileSync(path.join(__dirname,"../crew/web",file),"utf8"),sandbox);
-const trust = sandbox.window.CrewLeaderTrust, switching = sandbox.window.CrewRuntimeSwitch;
+vm.runInContext(fs.readFileSync(path.join(__dirname,"../crew/web/runtime-switch-ui.js"),"utf8"),sandbox);
+const switching = sandbox.window.CrewRuntimeSwitch;
 const plain = value => JSON.parse(JSON.stringify(value));
 const member = extra => ({session_id:"member",runtime:"claude",where:"offline",status:"offline",model:"opus",effort:"max",runtime_switch:{allowed:true},...extra});
 const catalog = [
@@ -12,21 +12,6 @@ const catalog = [
   {id:"codex",name:"Codex",available:true,models:[{id:"gpt",efforts:["low","medium"]},{id:"image",efforts:[]}],efforts:["low","medium","high"]}
 ];
 const target = extra => ({runtime:"codex",model:null,effort:null,...extra});
-
-test("leader trust requires a specific leader and a goal only when enabled",()=>{
-  assert.throws(()=>trust.payload(null,true,"goal"),/leader/);
-  assert.throws(()=>trust.payload("leader-a",true,"  "),/目标和授权范围/);
-  assert.deepEqual(plain(trust.payload("leader-a",true,"  组A目标  ")),{leader_session_id:"leader-a",enabled:true,goal:"组A目标"});
-  assert.deepEqual(plain(trust.payload("leader-b",false,"")),{leader_session_id:"leader-b",enabled:false,goal:""});
-});
-
-test("trust display and scope are leader specific and escaped",()=>{
-  const a={session_id:'a"',name:"A",trust:{enabled:true,goal:"<script>bad</script>"}},b={session_id:"b",name:"B"};
-  assert.equal(trust.trustFor(b).enabled,false);
-  assert.match(trust.indicator(a),/data-id="a&quot;"/);
-  assert.match(trust.indicator(a),/&lt;script&gt;bad&lt;\/script&gt;/);assert(!trust.indicator(a).includes("<script>"));
-  assert.match(trust.indicator(b),/信任 · 关/);
-});
 
 test("switching blocks active and external writers before consulting stale allowed state",()=>{
   assert.match(switching.reason(member({where:"vscode"})),/VS Code/);

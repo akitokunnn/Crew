@@ -39,7 +39,6 @@ function harness(state = fixture(), fetcher = () => { throw new Error("Unexpecte
   sandbox.CrewActivity={markup:()=>""};
   vm.runInContext(fs.readFileSync(path.join(__dirname,"../crew/web/workspace-home.js"),"utf8"),sandbox);
   sandbox.CrewWorkspaceHome=sandbox.window.CrewWorkspaceHome;
-  vm.runInContext(fs.readFileSync(path.join(__dirname, "../crew/web/leader-trust-ui.js"), "utf8"), sandbox);
   // Expose lexical UI functions while leaving setup and its state-poll timer off.
   const end = "  setup();\n})();";
   assert(source.endsWith(end + "\n") || source.endsWith(end));
@@ -48,9 +47,7 @@ function harness(state = fixture(), fetcher = () => { throw new Error("Unexpecte
     contextRing, contextControls, sidebarLeader, memberNode, workingRow, compactContext, compactions,
     openTodos, todosOf, pendingOf, todoCard, todoTray, todoExpanded, todoActions,
     todoResolvePayload, resolveTodo, renderTodos, replace,
-    decisionTrust, trustReportUrl, readTrustReport,
     compactDecisionText, decisionOptions, decisionCard, decisionsOpen,
-    commentButton, commentsMarkup, sessionComments, loadComments, postComment,
     route() {readRoute(); return {view,leaderId,readOnlyId};},
     services(values) {if(values.api)api=values.api;if(values.loadState)loadState=values.loadState;if(values.toast)toast=values.toast;if(values.render)render=values.render;if(values.watchCompact)CrewChat.watchCompact=values.watchCompact;},
     setState(value) {state=value;runtimesCache=null;}};\n})();`), sandbox);
@@ -107,7 +104,7 @@ test("collected offline people can start a conversation while known external ses
 
 test("goal status controls composer access without promising discussion around a manual pause", () => {
   const {ui}=harness(),person={web_chat:false,running:true,where:"vscode"};
-  for(const status of ["paused","pausing","cancelled"]){const access=ui.chatAccess(person,{status});assert.equal(access.readonly,true);assert.match(access.readonlyReason,status==="cancelled"?/再开一轮/:/明确恢复/);}
+  for(const status of ["paused","pausing","cancelled"]){const access=ui.chatAccess(person,{status});assert.equal(access.readonly,true);assert.match(access.readonlyReason,status==="cancelled"?/返回总会话讨论后续安排/:/明确恢复/);}
   for(const status of ["queued","running","waiting_user","completed","failed","awaiting_acceptance"])assert.deepEqual(plain(ui.chatAccess(person,{status})),{readonly:false});
 });
 
@@ -332,28 +329,6 @@ test("a stale action retains the user's reason and asks them to review updated c
   assert.equal(ui.todoExpanded.has("44"), true);
 });
 
-test("decision trust follows its explicit leader and ignores legacy project mode", () => {
-  const state = todoState(); state.trust = {enabled:true, goal:"obsolete project goal"};
-  state.leaders[0].trust = {enabled:false, goal:"leader one"};
-  state.leaders.push({session_id:"leader-other", name:"Other", trust:{enabled:true, goal:"leader two"}});
-  const {ui} = harness(state);
-  assert.equal(ui.decisionTrust({leader_session_id:"leader-1"}).enabled, false);
-  assert.equal(ui.decisionTrust({leader_session_id:"leader-other"}).goal, "leader two");
-  assert.equal(ui.decisionTrust({session_id:"absent"}).enabled, false);
-});
-
-test("reports require an explicit current leader and scope the Markdown URL", async () => {
-  const {ui} = harness(todoState(), async (url, options) => {
-    assert.equal(url, "/api/trust/report?leader_session_id=leader-1&project=fixture");
-    assert.equal(options.headers["X-Crew"], "1");
-    return {ok:true, text:async () => "# 本组报告"};
-  });
-  assert.equal(await ui.readTrustReport("leader-1"), "# 本组报告");
-  await assert.rejects(ui.readTrustReport(), /当前项目的 leader/);
-  const error = harness(todoState(), async () => ({ok:false, text:async () => JSON.stringify({error:"leader不存在"})}));
-  await assert.rejects(error.ui.readTrustReport("leader-1"), /leader不存在/);
-});
-
 const decision = extra => ({id:71, asker:"连接助手", session_id:"member-1", leader_session_id:"leader-1", presentation_stage:"ready",
   question:"是否继续连接？", options:["A. 继续连接", "B. 暂缓连接"], recommendation:"A", held:false,
   brief:{title:"是否允许连接测试设备", context:"technical-only-context", why_user:"设备需要使用你的个人账户。",
@@ -418,40 +393,6 @@ test("overlong structured explanations keep a compact preview and the exact full
   assert(card.includes("完整说明与技术背景"));
   assert(card.includes(explanation));
   assert(!card.includes('data-decision-context="71" open'));
-});
-
-test("group and member comment entries target the exact session and render readable escaped comments", () => {
-  const state = todoState(); state.members = [{session_id:"member-1", name:"连接助手", leader_session_id:"leader-1"}];
-  const {ui} = harness(state), member = state.members[0];
-  assert(ui.commentButton(state.leaders[0], true).includes('data-id="leader-1"'));
-  assert(ui.commentButton(member).includes('data-id="member-1"'));
-  const body = ui.commentsMarkup(member, {comments:[{text:"<script>comment</script>", created_at:"2026-10-24T00:00:00Z"}], draft:"待补充的要求"});
-  assert(body.includes("登录 组 · 评论会转告 leader"));
-  assert(body.includes("&lt;script&gt;comment&lt;/script&gt;"));
-  assert(!body.includes("<script>"));
-  assert(body.includes("待补充的要求"));
-});
-
-test("comment writes preserve failed drafts, then refresh the same session and clear successful text", async () => {
-  const state = todoState(), {ui, nodes} = harness(state), calls = [];
-  let fail = true;
-  const textarea = {value:"保留这段反馈"};
-  nodes.set("comments-form", {dataset:{sessionId:"leader-1"}, elements:{text:textarea}});
-  ui.services({api:async (url, body) => {
-    calls.push([url, body && plain(body)]);
-    if (body && fail) throw new Error("暂时无法发送");
-    return body ? {id:1} : {comments:[{id:1, text:"保留这段反馈", created_at:"2026-10-24T00:00:00Z"}]};
-  }, toast:() => {}});
-  await ui.postComment("leader-1", "保留这段反馈");
-  assert.equal(ui.sessionComments("leader-1").draft, "保留这段反馈");
-  assert.equal(ui.sessionComments("leader-1").error, "暂时无法发送");
-  fail = false;
-  await ui.postComment("leader-1", " 保留这段反馈 ");
-  assert.deepEqual(calls[1], ["/api/comments", {session_id:"leader-1", text:"保留这段反馈"}]);
-  assert.equal(calls[2][0], "/api/comments?session_id=leader-1");
-  assert.equal(ui.sessionComments("leader-1").comments.length, 1);
-  assert.equal(ui.sessionComments("leader-1").draft, "");
-  assert.equal(textarea.value, "");
 });
 
 test("live UI refresh preserves horizontal group scroll position", () => {

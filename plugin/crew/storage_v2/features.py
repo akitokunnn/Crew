@@ -19,6 +19,8 @@ FIELDS = {
     'todo_operation_keys': ('operation_key',),
     'goal_decision_modes': ('mode', 'source', 'version', 'updated_at'),
     'goal_report_publications': ('fingerprint', 'created_at'),
+    'goal_continuations': ('round', 'requirement_version', 'previous_status', 'reason', 'actor', 'review_json', 'finish_json', 'round_json', 'created_at'),
+    'goal_discussion_executions': ('created_at', 'promoted_at'),
     'personal_notes': ('original_text', 'text', 'tags_json', 'state', 'version', 'created_at', 'updated_at', 'source_json'),
     'personal_note_leaders': ('source_json', 'status', 'error', 'created_at', 'updated_at'),
     'native_session_controls': ('state', 'updated_at'),
@@ -78,7 +80,7 @@ def project(p):
                 refs['todo_id' if target == 'todos' else 'decision_id'] = mapped(target, row['item_id'], target)
             elif kind == 'todo_operation_keys':
                 refs['todo_id'] = mapped('todos', row['todo_id'], 'todos')
-            elif kind == 'goal_report_publications':
+            elif kind in ('goal_report_publications', 'goal_continuations'):
                 refs['report_id'] = mapped('goal_reports', row['report_id'], 'reports')
             elif kind == 'personal_note_leaders':
                 refs['parent_record_id'] = parents.get(('personal_notes', row['note_id']))
@@ -162,6 +164,22 @@ def activate(m):
                 # Publication receipts are historical idempotency, never actions.
                 goal_reports.ensure(m.conn)
                 m.insert(kind, dict(data, request_id='imported:' + row['id'], goal_id=row['goal_id'], report_id=row['report_id']),
+                         'workspace_feature_records', row['id'])
+            elif kind == 'goal_continuations':
+                # These are inert delivery/review snapshots, not live grants.
+                for field in ('review_json', 'finish_json', 'round_json'):
+                    if data[field] is not None:
+                        snapshot = json.loads(data[field])
+                        snapshot['goal_id'] = row['goal_id']
+                        if 'report_id' in snapshot:
+                            snapshot['report_id'] = row['report_id']
+                        # Old execution IDs remain historical evidence only.
+                        data[field] = _json(snapshot)
+                m.insert(kind, dict(data, id=row['id'], goal_id=row['goal_id'], report_id=row['report_id']),
+                         'workspace_feature_records', row['id'])
+            elif kind == 'goal_discussion_executions':
+                # Preserve response mode, not old local input/promotion receipts.
+                m.insert(kind, dict(data, execution_id=row['execution_id'], message_id='imported:' + row['id'], promotion_json=None),
                          'workspace_feature_records', row['id'])
             elif kind == 'personal_notes':
                 m.insert(kind, dict(data, id=row['id'], project=m.project), 'workspace_feature_records', row['id'])

@@ -157,7 +157,8 @@ def prepare(conn, home, plugin_root, project_name, name, task, group=None, role=
     rules = "\u5f00\u5de5\u5148\u8c03\u7528 /crew:%s \u8bfb\u5b88\u5219\u3002" % skill
     if runtime == "codex":
         skill_path = Path(plugin_root).resolve() / "skills" / skill / "SKILL.md"
-        rules = ("先用本地文件读取工具阅读 Crew 守则文本：%s\n"
+        rules = ("Crew 宿主已把当前角色守则随原生配置提供；无需重复整包读取。"
+                 "仅在宿主明确提示缺失时，读取本地守则文本：%s\n"
                  "这是本地文本文件，不使用 Claude 的斜杠技能调用。\n"
                  "使用 Crew 宿主提供的动态工具 crew_whoami、crew_status、crew_task、crew_card、"
                  "crew_ask、crew_report、crew_handoff 和 crew_send_message 协作。\n"

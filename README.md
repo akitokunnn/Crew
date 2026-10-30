@@ -2,7 +2,7 @@
 
 这是 `rebuild/v2` 上的 Crew V2 初版，桌面包版本以 `desktop/package.json` 为准。工作区内以任务和 TODO 为主页；全 Crew 共用一个跨工作区助手。V2 使用独立默认数据目录 `~/.crew-v2`、桌面身份和安装入口，与 `main` 上的 V1 分开。需求与验收边界见 [V2 初版约定](docs/v2/PRODUCT.md)，开源参考见 [选型记录](docs/v2/OPEN_SOURCE.md)。
 
-已有旧 Crew 身份的文件夹可以明确选择“从全新 V2 记录开始”，使用原源码目录和独立的 V2 历史，不要求先导入工作区包。旧身份保留，新身份写入 `.crew/workspace-v2.json`。见 [0.3.1 修复说明](docs/v2/FIX_0.3.1_MIB_OPEN.md) 与 [实际体验测试流程](docs/v2/USER_TEST_FLOW_0.3.1.md)。
+已有旧 Crew 身份的文件夹可以明确选择“从全新 V2 记录开始”，使用原源码目录和独立的 V2 历史，不要求先导入工作区包。旧身份保留，新身份写入 `.crew/workspace-v2.json`。见 [0.3.1 修复说明](docs/v2/FIX_0.3.1_MIB_OPEN.md)。当前交互与实际体验测试以 [0.3.2 反馈复测](docs/v2/RETEST_0.3.2.md) 为准。
 
 让一个人同时指挥多个 Claude Code / Codex 会话。用 Windows 桌面应用或浏览器打开工作文件夹，让 leader 直接推进目标、必要时协调成员，共用一块白板。
 

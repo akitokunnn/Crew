@@ -1279,6 +1279,12 @@ class Service:
                     after_turn = data.get('after_turn', False)
                     if type(after_turn) is not bool:
                         raise ValueError('after_turn 必须是布尔值')
+                    if data.get('goal_id'):
+                        goals.get(conn, data['goal_id'], project)
+                        execution = self.chat.goal_controller.current(conn, data['goal_id'], target['session_id'])
+                        if execution is None:
+                            raise board.BoardError('这个任务还没有可压缩的执行会话')
+                        target = self.chat.goal_controller.target(conn, execution)
                     return self.chat.compact(target, caller_session_id=_optional_text(data, 'caller_session_id'), after_turn=after_turn)
                 if path == '/api/session/options':
                     options = self.chat.set_options(conn, target['session_id'],
@@ -1694,8 +1700,6 @@ STATIC = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js",
 STATIC.update({'/logo.svg': ('logo.svg', 'image/svg+xml'),
                '/runtime-switch-ui.js':('runtime-switch-ui.js','text/javascript; charset=utf-8'),
                '/runtime-switch-ui.css':('runtime-switch-ui.css','text/css; charset=utf-8'),
-               '/leader-trust-ui.js':('leader-trust-ui.js','text/javascript; charset=utf-8'),
-               '/leader-trust-ui.css':('leader-trust-ui.css','text/css; charset=utf-8'),
                '/documents.js': ('documents.js','text/javascript; charset=utf-8'),
                '/documents.css': ('documents.css','text/css; charset=utf-8'),
                '/fonts/HarmonyOS_Sans_SC_Regular.woff2': ('fonts/HarmonyOS_Sans_SC_Regular.woff2', 'font/woff2'),

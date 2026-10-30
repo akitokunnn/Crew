@@ -9,7 +9,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import board, channel, git_process, goals, guard, install, messaging, rules, runtimes, store, trust_mode
+from . import board, channel, git_process, goals, guard, install, messaging, rules, runtimes, store
 
 EVENTS = ("session-start", "user-prompt-submit", "stop", "notification", "pre-ask", "post-ask", "session-end", "guard")
 
@@ -77,8 +77,9 @@ def _goal_hook(event, data, home, plugin_root, environ, now):
             raise board.BoardError('目标执行与 Claude 原生会话不匹配')
         logical = {**data, 'session_id': execution['session_id']}
         if event == 'guard':
-            gate = goals.dispatch_check(conn, execution['goal_id'], execution_id=execution_id)
+            gate = goals.dispatch_check(conn, execution['goal_id'], execution_id=execution_id, allow_discussion=True)
             reason = None if gate['allowed'] else 'BLOCKED by Crew: ' + gate['reason']
+            reason = reason or guard.discussion_write_reason(conn, execution_id, logical.get('tool_name'))
             reason = reason or guard.check(home, logical, now=now)
             if reason:
                 print(reason, file=sys.stderr)
@@ -153,9 +154,6 @@ def handle(event, data, home, plugin_root, environ, git_provider=git_details, no
             session = board.session(conn, data["session_id"])
             if session["crew_name"] and session["status"] != "closed" and not board.is_archived(conn, data["session_id"]):
                 lines.extend(messaging.take_for_hook(conn, data["session_id"], now=now))
-                autonomy = trust_mode.context(conn, data["session_id"])
-                if autonomy:
-                    lines.append(autonomy)
         if event == "session-start":
             if board.is_archived(conn, data["session_id"]):
                 control = board.session_control(conn, data["session_id"])

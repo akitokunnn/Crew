@@ -7,7 +7,7 @@ import unittest
 from unittest import mock
 
 import tests
-from crew import board, cli, codex_tools, goal_actions, goal_context, goal_links, goals, store
+from crew import board, cli, codex_tools, goal_actions, goal_context, goal_links, goal_work, goals, store
 from tests.test_goals import GoalFixture
 
 
@@ -52,6 +52,41 @@ class GoalActionTests(GoalFixture):
         self.assertEqual(result['goals'], [])
         self.assertEqual(self.host.calls, [])
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM goal_reports').fetchone()[0], 0)
+
+    def test_discussion_tool_allows_only_current_task_amend_then_same_task_work(self):
+        goal = self.goal()
+        goal_work.add(self.conn, goal['id'], 'original', 'Delivered behavior', 'Works')
+        goal_work.update(self.conn, goal['id'], 'original', 1, status='done', note='Original evidence retained')
+        goals.transition(self.conn, goal['id'], 'running')
+        old_report = goals.save_report(self.conn, goal['id'], self.report('awaiting_acceptance'))
+        ready = goals.transition(self.conn, goal['id'], 'awaiting_acceptance')
+        accepted = goals.review_acceptance(self.conn, goal['id'], True, note='Original accepted.', expected_version=ready['version'])
+        execution = goals.create_execution(self.conn, goal['id'], 'chief-id', runtime='codex', discussion_message_id='human-small-change')
+        goals.set_execution_status(self.conn, execution['id'], 'running')
+        def handler(action, data, actor, execution_id=None):
+            return self.dispatch(action, data, actor=actor, execution=execution_id)
+        tool = self.tool(execution, handler=handler)
+        self.call(tool, 'crew_goal', {'action': 'status'})
+        self.call(tool, 'crew_goal', {'action': 'work.add', 'data': {'key': 'unexpected', 'title': 'Unrequested', 'acceptance': 'No'}}, success=False)
+        another = self.goal()
+        self.call(tool, 'crew_goal', {'action': 'amend', 'goal_id': another['id'], 'data': {'text': 'Wrong scope'}}, success=False)
+        self.assertEqual(goals.get(self.conn, goal['id']), accepted)
+        change = {'action': 'amend', 'data': {'text': 'Correct only a displayed label.', 'expected_version': accepted['version']}}
+        revised = self.call(tool, 'crew_goal', change)
+        self.assertEqual((revised['current_round'], revised['status']), (1, 'running'))
+        self.assertEqual(revised['requirements']['source']['actor'], 'chief-id')
+        self.assertEqual(self.call(tool, 'crew_goal', change)['version'], revised['version'])
+        self.assertEqual(goals.get_execution(self.conn, execution['id'])['response_mode'], 'work')
+        old_work = goal_work.items(self.conn, goal['id'])[0]
+        self.assertFalse(old_work['needs_review'])
+        self.assertEqual((old_work['status'], old_work['note']), ('done', 'Original evidence retained'))
+        added = self.call(tool, 'crew_goal', {'action': 'work.add', 'data': {'key': 'label', 'title': 'Correct label', 'acceptance': 'New label visible'}})
+        self.call(tool, 'crew_goal', {'action': 'work.update', 'data': {'key': 'label', 'version': added['version'], 'status': 'done', 'note': 'Changed label checked'}})
+        self.call(tool, 'crew_goal', {'action': 'finish', 'data': {'report': self.report()}})
+        goals.set_execution_status(self.conn, execution['id'], 'idle')
+        self.assertTrue(goals.finalize_finish(self.conn, goal['id'])['finalized'])
+        self.assertEqual(goals.get(self.conn, goal['id'])['current_round'], 1)
+        self.assertEqual(goals.report_review(self.conn, goal['id'], old_report['id'])['note'], 'Original accepted.')
 
     def test_status_returns_original_requirement_once_without_historical_roster(self):
         goal = self.goal()
@@ -259,7 +294,9 @@ class GoalActionTests(GoalFixture):
                         'action':'finish', 'data':{'report':{**self.report(), 'document_html':document}}})
                 saved = goals.get_report(self.conn, result['report_id'])
                 self.assertEqual(saved['data']['document_html'], document)
-                self.assertIn('验收证据与交付记录', saved['html'])
+                self.assertIn('<details class="crew-evidence">', saved['html'])
+                self.assertIn('data-status="passed"', saved['html'])
+                self.assertIn('measurements/sample-1.json', saved['html'])
                 self.assertFalse(any(call[0] == 'send' for call in self.host.calls))
 
     def test_cli_does_not_overwrite_an_existing_document_or_submit_an_empty_file(self):

@@ -410,7 +410,7 @@ class _Materializer:
                 leader_session_id=goal['owner_agent_id'],title=goal['title'],original_request=req['request_markdown'],
                 status=goal['status'] if goal['status'] in TERMINAL else 'paused',requirement_version=req['version_no'],
                 current_round=rnd['round_no'],priority=goal['priority'],dependencies_json=_json([d['requires_goal_id'] for d in self.data['goal_dependencies'] if d['goal_id']==goal['id']]),
-                manual_pause=1,reason='已接入可移植历史，等待用户明确继续。',version=goal['revision'],
+                manual_pause=0 if goal['status'] in TERMINAL else 1,reason='已接入可移植历史，等待用户明确继续。',version=goal['revision'],
                 created_at=goal['created_at'],updated_at=self.stamp),'goals',goal['id'])
         for req in self.data['goal_requirements']:
             acceptance=[]

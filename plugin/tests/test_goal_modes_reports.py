@@ -25,14 +25,14 @@ class GoalModeReportTests(GoalFixture):
         self.assertEqual(code, 0, errors.getvalue())
         return json.loads(output.getvalue())
 
-    def test_new_goals_snapshot_user_default_and_mode_changes_are_only_configuration(self):
+    def test_new_goals_ignore_retired_leader_trust_and_mode_changes_are_only_configuration(self):
         first = self.goal()
         trust_mode.set(self.conn, 'demo', True, 'Independent choices', leader_session_id='chief-id')
         second = self.goal()
         self.assertEqual(first['decision_mode']['mode'], 'human')
-        self.assertEqual(second['decision_mode']['mode'], 'autonomous')
+        self.assertEqual(second['decision_mode']['mode'], 'human')
         trust_mode.set(self.conn, 'demo', False, leader_session_id='chief-id')
-        self.assertEqual(goals.get(self.conn, second['id'])['decision_mode']['mode'], 'autonomous')
+        self.assertEqual(goals.get(self.conn, second['id'])['decision_mode']['mode'], 'human')
         goals.request_pause(self.conn, first['id'])
         changed = goal_actions.dispatch(self.home, board.HUMAN, None, 'mode.set',
                                        {'goal_id': first['id'], 'mode': 'autonomous', 'expected_version': 1})

@@ -16,6 +16,40 @@ from tests.test_runtimes import RuntimeFixture
 
 
 class PortableFeatureTests(RuntimeFixture):
+    def test_active_discussion_package_restores_delivered_task_without_write_authority(self):
+        from tests.test_goals import GoalFixture
+        goal = GoalFixture.goal(self)
+        goals.transition(self.conn, goal['id'], 'running')
+        report = goals.save_report(self.conn, goal['id'], GoalFixture.report(self, 'awaiting_acceptance'))
+        ready = goals.transition(self.conn, goal['id'], 'awaiting_acceptance')
+        goals.review_acceptance(self.conn, goal['id'], True, note='Accepted before explanation.', expected_version=ready['version'])
+        execution = goals.create_execution(self.conn, goal['id'], 'chief-id', runtime='codex', discussion_message_id='local-user-input')
+        goals.set_execution_status(self.conn, execution['id'], 'running')
+        repo = Repository(self.root / 'discussion-package')
+        repo.ensure_local_identity()
+        original = legacy.migrate_workspace(repo, self.home, 'demo')['workspace_id']
+        package = self.root / 'discussion.crewpack'
+        with closing(repo.connect()) as conn:
+            packages.export_workspace(conn, repo.objects, original, package)
+        destination = Repository(self.root / 'discussion-destination')
+        account, user = destination.ensure_local_identity()
+        with closing(destination.connect()) as conn:
+            imported = packages.import_package(conn, destination.objects, package, target_account_id=account, actor_user_id=user)
+        local = self.root / 'discussion-home'; root = self.root / 'discussion-root'; root.mkdir()
+        with mock.patch('subprocess.Popen', side_effect=AssertionError('Import must not wake a model')):
+            activation.activate_workspace(destination, imported['workspace_id'], local, root)
+        with closing(store.connect(local)) as conn:
+            restored = conn.execute('SELECT id FROM goals').fetchone()[0]
+            marker = conn.execute('SELECT * FROM goal_discussion_executions').fetchone()
+            self.assertEqual(goals.get(conn, restored)['status'], 'completed')
+            self.assertFalse(goals.get(conn, restored)['manual_pause'])
+            self.assertEqual(goals.acceptance_review(conn, restored)['note'], 'Accepted before explanation.')
+            self.assertEqual(goals.get_execution(conn, marker['execution_id'])['response_mode'], 'discussion')
+            self.assertFalse(goals.dispatch_check(conn, restored, execution_id=marker['execution_id'])['allowed'])
+            self.assertNotEqual(marker['message_id'], 'local-user-input')
+            self.assertIsNone(marker['promotion_json'])
+            self.assertEqual(conn.execute('PRAGMA foreign_key_check').fetchall(), [])
+
     def test_package_fork_and_activation_keep_features_but_never_native_control(self):
         targets = []
         for title in ('First task', 'Second task'):
@@ -35,6 +69,13 @@ class PortableFeatureTests(RuntimeFixture):
         report = GoalFixture.report(self, 'progress')
         report['acceptance'][0]['criterion_id'] = goals.get(self.conn, goal['id'])['requirements']['acceptance'][0]['id']
         goal_reports.publish(self.conn, goal['id'], report, request_id='stage-one', expected_version=0)
+        delivered = dict(report, outcome='awaiting_acceptance')
+        delivery = goals.save_report(self.conn, goal['id'], delivered)
+        ready = goals.transition(self.conn, goal['id'], 'awaiting_acceptance')
+        goals.review_acceptance(self.conn, goal['id'], True, note='Kept review before a small correction.', expected_version=ready['version'])
+        discussion = goals.create_execution(self.conn, goal['id'], 'chief-id', runtime='codex', discussion_message_id='PRIVATE_INPUT_RECEIPT')
+        goals.continue_task(self.conn, goal['id'], 'Correct a typo, keep the same task.',
+                            actor='chief-id', discussion_execution_id=discussion['id'])
         prompts.save(self.conn, 'common', 'Workspace custom', scope='project', identity='demo', expected_version=0)
         prompts.save(self.conn, 'common', 'Workspace revised', scope='project', identity='demo', expected_version=1)
         prompts.save(self.conn, 'leader', 'Leader custom', scope='session', identity='chief-id', expected_version=0)
@@ -54,7 +95,7 @@ class PortableFeatureTests(RuntimeFixture):
             packages.export_workspace(conn, repo.objects, original, package)
             feature_count = conn.execute('SELECT count(*) FROM workspace_feature_records').fetchone()[0]
             payload = '\n'.join(r[0] for r in conn.execute('SELECT data_json FROM workspace_feature_records'))
-            for secret in ('NATIVE_PRIVATE_THREAD', 'PRIVATE_NATIVE_HOME', 'PRIVATE_TOKEN', 'GLOBAL_PRIVATE_RULE', 'GLOBAL_PRIVATE_NOTE'):
+            for secret in ('NATIVE_PRIVATE_THREAD', 'PRIVATE_NATIVE_HOME', 'PRIVATE_TOKEN', 'GLOBAL_PRIVATE_RULE', 'GLOBAL_PRIVATE_NOTE', 'PRIVATE_INPUT_RECEIPT'):
                 self.assertNotIn(secret, payload)
         destination = Repository(self.root / 'destination')
         account, user = destination.ensure_local_identity()
@@ -69,7 +110,7 @@ class PortableFeatureTests(RuntimeFixture):
             self.assertEqual(len(prompts.history(conn, 'common', scope='project', identity=project)['history']), 2)
             self.assertIsNone(prompts.get(conn, 'common')['content'])
             self.assertEqual(conn.execute('SELECT status FROM goal_work_items').fetchone()[0], 'done')
-            self.assertEqual(conn.execute('SELECT count(*) FROM goal_work_history').fetchone()[0], 2)
+            self.assertEqual(conn.execute('SELECT count(*) FROM goal_work_history').fetchone()[0], 3)
             self.assertEqual(conn.execute('SELECT count(*) FROM todos').fetchone()[0], 1)
             links = conn.execute('SELECT * FROM goal_links').fetchall()
             self.assertEqual(len(links), 2)
@@ -84,8 +125,20 @@ class PortableFeatureTests(RuntimeFixture):
             self.assertEqual(conn.execute('SELECT count(*) FROM imported_feature_audits').fetchone()[0], feature_count)
             self.assertEqual(conn.execute('SELECT status FROM behavior_prompt_applications').fetchone()[0], 'prepared')
             self.assertEqual(conn.execute("SELECT count(*) FROM goal_decision_modes WHERE mode='autonomous'").fetchone()[0], 2)
-            self.assertEqual(conn.execute('SELECT outcome FROM goal_reports').fetchone()[0], 'progress')
+            self.assertCountEqual([row['outcome'] for row in conn.execute('SELECT outcome FROM goal_reports')],
+                                  ['progress', 'awaiting_acceptance'])
             self.assertEqual(conn.execute('SELECT count(*) FROM goal_report_publications').fetchone()[0], 1)
+            continued = conn.execute('SELECT * FROM goal_continuations').fetchone()
+            self.assertIsNotNone(continued)
+            self.assertEqual(continued['round'], 1)
+            review = goals.report_review(conn, continued['goal_id'], continued['report_id'])
+            self.assertEqual(review['note'], 'Kept review before a small correction.')
+            self.assertEqual(review['report_id'], continued['report_id'])
+            self.assertEqual(goals.get(conn, continued['goal_id'])['current_round'], 1)
+            discussion = conn.execute('SELECT * FROM goal_discussion_executions').fetchone()
+            self.assertIsNotNone(discussion['promoted_at'])
+            self.assertIsNone(discussion['promotion_json'])
+            self.assertEqual(goals.get_execution(conn, discussion['execution_id'])['response_mode'], 'work')
             artifact = conn.execute('SELECT * FROM task_artifact_files').fetchone()
             namespace = goal_artifacts.object_namespace(artifact['goal_id'])
             with goal_artifacts.objects(local).open(namespace, artifact['delivered_sha256']) as content:

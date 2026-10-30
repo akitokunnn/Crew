@@ -1,5 +1,5 @@
 """A task's decision policy, separate from native execution permissions."""
-from . import board, goals, trust_mode
+from . import board, goals
 
 MODES = frozenset(('human', 'autonomous'))
 
@@ -27,10 +27,12 @@ def initialize(conn, goal_id, mode=None, *, actor=board.HUMAN, now=None):
         raise board.BoardError('任务决策模式必须是 human 或 autonomous')
     if mode is not None and actor != board.HUMAN:
         raise board.BoardError('只有用户能明确设置任务的决策授权；AI 新任务沿用用户默认')
-    chosen = mode or ('autonomous' if trust_mode.get(conn, goal['project'], goal['leader_session_id'])['enabled'] else 'human')
+    # A task has one decision control. Historical leader trust settings are
+    # retained as records, not an invisible default for new tasks.
+    chosen = mode or 'human'
     ensure(conn)
     conn.execute('INSERT INTO goal_decision_modes VALUES(?,?,?,?,?)',
-                 (goal_id, chosen, 'user' if mode is not None else 'leader-default', 1, board._time(now)))
+                 (goal_id, chosen, 'user' if mode is not None else 'task-default', 1, board._time(now)))
     return get(conn, goal_id)
 
 
@@ -57,12 +59,13 @@ def set_mode(conn, goal_id, mode, *, expected_version, actor=board.HUMAN, now=No
 
 def context(conn, goal_id):
     policy = get(conn, goal_id)
-    prefix = '本任务最新决策模式（goal %s，v%s）：%s。本条覆盖此前的任务模式和 leader 信任模式，仅作用于本任务。\n' % (
+    prefix = '本任务最新决策模式（goal %s，v%s）：%s。仅作用于本任务，以本条任务配置为准。\n' % (
         goal_id, policy['version'], 'AI 自主决策' if policy['mode'] == 'autonomous' else '用户拍板')
     common = ('本设置不改变原生工具执行权限，不是启动或恢复任务的指令；人工停止仍须尊重。'
               '用户亲手做的事登记人工 TODO，最终验收要求仍按本任务原要求执行。')
     if policy['mode'] == 'autonomous':
-        return prefix + ('自行判断工程取舍，登记决定时明确 recommendation 和理由；程序仅在本任务仍有效时采纳建议。'
+        return prefix + ('在已授权任务范围内自行选择方案、修改必要文件、调用实际可用的工具与服务；本模式不新增只读或禁止外部服务的限制。'
+                         '登记决定时明确 recommendation 和理由；程序仅在本任务仍有效时采纳建议。'
                          '不能把其他任务或总对话的授权带入本任务。') + common
     return prefix + '真正需要用户决定的取舍走拍板流程，不得继承其他任务或 leader 的自主授权。' + common
 

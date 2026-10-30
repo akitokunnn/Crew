@@ -231,7 +231,7 @@ class CodexRuntimeTests(unittest.TestCase):
         self.assertEqual(start["approvalPolicy"], "on-request")
         self.assertIn("# member role rules", start["developerInstructions"])
         self.assertIn("crew_send_message", start["developerInstructions"])
-        self.assertIn('初始化授权只是快照',start['developerInstructions'])
+        self.assertNotIn('初始化授权只是快照',start['developerInstructions'])
         self.assertTrue(start["dynamicTools"])
         self.assertTrue(start["config"]["features"]["hooks"])
         self.assertTrue(start["config"]["bypass_hook_trust"])
@@ -292,7 +292,7 @@ class CodexRuntimeTests(unittest.TestCase):
         running, client = self.make_running(resume=True, spec={"agent": "crew:git"})
         self.assertEqual(client.calls[0][0], "thread/resume")
         self.assertEqual(client.calls[0][1]["threadId"], "existing-thread")
-        self.assertIn('crew_send_message', {tool['name'] for tool in client.calls[0][1]['dynamicTools']})
+        self.assertNotIn('dynamicTools', client.calls[0][1])
         self.assertIn("# git role rules", client.calls[0][1]["developerInstructions"])
         self.assertIn("PreToolUse", client.calls[0][1]["config"]["hooks"])
 
@@ -323,14 +323,16 @@ class CodexRuntimeTests(unittest.TestCase):
             board.join(conn,'leader-b','demo','chief-b',self.root,self.root,'main',role='leader')
             board.roster(conn,'demo','add','chief-a',session_ids=['worker'])
 
-    def test_leader_trust_goal_is_injected_into_native_developer_instructions(self):
+    def test_legacy_leader_trust_does_not_become_native_task_instructions(self):
         self.trust_leaders()
         with closing(store.connect(self.home)) as conn:
             trust_mode.set(conn, "demo", True, "完成目标并保留可修改的提交",leader_session_id='leader-a')
         running, client = self.make_running()
         instructions = client.calls[0][1]["developerInstructions"]
-        self.assertIn("完成目标并保留可修改的提交", instructions)
-        self.assertIn("不再把工程技术取舍交回用户拍板", instructions)
+        self.assertNotIn("完成目标并保留可修改的提交", instructions)
+        self.assertNotIn("不再把工程技术取舍交回用户拍板", instructions)
+        with closing(store.connect(self.home)) as conn:
+            self.assertIn('完成目标并保留可修改的提交', trust_mode.context(conn, 'worker'))
 
     def test_windows_hook_command_preserves_trusted_path_characters(self):
         config = codex_runtime.hook_config(self.home, self.plugin, "worker' & x")
@@ -348,8 +350,7 @@ class CodexRuntimeTests(unittest.TestCase):
         self.assertEqual(result, "message-1")
         self.assertEqual(client.calls[-1][0], 'turn/start')
         self.assertEqual(client.calls[-1][1]['input'][0],{"type": "image", "url": "data:image/png;base64,aGVsbG8="})
-        self.assertTrue(client.calls[-1][1]['input'][1]['text'].endswith('\n\nactual brief'))
-        self.assertIn('关闭',client.calls[-1][1]['input'][1]['text'])
+        self.assertEqual(client.calls[-1][1]['input'][1]['text'], 'actual brief')
         message = next(event for event in running.journal.events if event["type"] == "message")
         self.assertEqual((message["text"], message["sender"], message["images"]), ("task", "leader", ["saved.png"]))
         with closing(store.connect(self.home)) as conn:
@@ -358,11 +359,11 @@ class CodexRuntimeTests(unittest.TestCase):
         client.finish()
         self.assertEqual(running.journal.status, "idle")
 
-    def test_living_native_thread_reads_own_leader_trust_on_and_off_each_turn(self):
+    def test_legacy_trust_changes_do_not_repeat_configuration_in_native_user_messages(self):
         self.trust_leaders()
         running,client=self.make_running()
         running.send('first','m1');client.finish()
-        self.assertIn('关闭',client.calls[-1][1]['input'][0]['text'])
+        self.assertEqual(client.calls[-1][1]['input'][0]['text'], 'first')
         with closing(store.connect(self.home)) as conn:
             trust_mode.set(conn,'demo',True,'OTHER GROUP SECRET GOAL',leader_session_id='leader-b')
             trust_mode.set(conn,'demo',True,'THIS GROUP GOAL',leader_session_id='leader-a')
@@ -370,7 +371,7 @@ class CodexRuntimeTests(unittest.TestCase):
         self.assertEqual(sum(name=='turn/start' for name,_ in client.calls),1)
         running.send('second','m2');client.finish()
         native=client.calls[-1][1]['input'][0]['text']
-        self.assertIn('THIS GROUP GOAL',native);self.assertNotIn('OTHER GROUP SECRET GOAL',native)
+        self.assertEqual(native, 'second')
         with closing(store.connect(self.home)) as conn:
             trust_mode.set(conn,'demo',False,leader_session_id='leader-a')
             disabled_context=trust_mode.context(conn,'worker')
@@ -378,15 +379,14 @@ class CodexRuntimeTests(unittest.TestCase):
         running.compact();client.finish()
         running.send('third','m3');client.finish()
         native=client.calls[-1][1]['input'][0]['text']
-        self.assertIn(disabled_context,native)
-        self.assertIn('不得继续',native)
+        self.assertEqual(native, 'third')
         self.assertEqual([e['text'] for e in running.journal.events if e['type']=='message'],['first','second','third'])
         self.assertEqual([name for name,_ in client.calls].count('thread/start'),1)
         running.close();self.assertTrue(running.reader_done.wait(2))
         resumed,resume_client=self.make_running(resume=True)
         resumed.send('after resume','m4')
         self.assertEqual(resume_client.calls[0][0],'thread/resume')
-        self.assertIn('关闭',resume_client.calls[-1][1]['input'][0]['text'])
+        self.assertEqual(resume_client.calls[-1][1]['input'][0]['text'], 'after resume')
 
     def test_live_context_and_activity_are_not_persisted(self):
         running, client = self.make_running()

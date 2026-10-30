@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from crew import board, chat, cli, codex_runtime, codex_tools, personal, settings, store, workspace_execution
+from crew import board, chat, cli, codex_runtime, codex_tools, personal, runtimes, settings, store, workspace_execution
 from crew.web_api import personal as personal_api
 from test_chat import FakeProcess
 from test_codex_runtime import FakeClient
@@ -109,6 +109,59 @@ class PersonalNativeTests(unittest.TestCase):
         handler = codex_tools.CodexTools(self.home, 'member', personal_handler=mock.Mock())
         result = handler({'tool': 'crew_personal', 'arguments': {'action': 'summary'}})
         self.assertFalse(result['success'])
+
+    def test_claude_assistant_first_reply_confirms_identity_then_next_launch_resumes_it(self):
+        assistant = self.assistant('claude')
+        sid = assistant['session_id']
+        manager = self.manager()
+        manager.journal(sid).set_status('idle')
+        with closing(store.connect(self.home)) as conn:
+            self.assertIsNone(runtimes.get(conn, sid)['native_id'])
+        with mock.patch('crew.chat.claude_executable', return_value='fake-claude'):
+            manager.send(assistant, 'First message', identity='first-cc')
+        first = manager.processes[sid].process
+        self.assertNotIn('--resume', first.command)
+        self.assertEqual(first.command[first.command.index('--session-id') + 1], sid)
+        first.emit({'type':'system','subtype':'init','session_id':sid})
+        first.emit({'type':'assistant','session_id':sid,
+                    'message':{'id':'confirmed-reply','content':[{'type':'text','text':'First answer'}]}})
+        first.emit({'type':'result','session_id':sid,'is_error':False})
+        journal=manager.journal(sid)
+        with journal.condition:
+            self.assertTrue(journal.condition.wait_for(lambda: journal.status=='idle' and 'confirmed-reply' in journal.assistant, timeout=3))
+        with closing(store.connect(self.home)) as conn:
+            self.assertEqual(runtimes.get(conn,sid)['native_id'],sid)
+        manager.stop_managed(sid)
+        self.assertTrue(manager.processes[sid].reader_done.wait(3))
+        with mock.patch('crew.chat.claude_executable', return_value='fake-claude'):
+            manager.send(assistant, 'Second message', identity='second-cc')
+        resumed=manager.processes[sid].process
+        self.assertEqual(resumed.command[resumed.command.index('--resume')+1],sid)
+        self.assertNotIn('--session-id',resumed.command)
+
+    def test_untouched_031_claude_assistant_prefilled_identity_can_start_once(self):
+        assistant=self.assistant('claude')
+        sid=assistant['session_id']
+        with closing(store.connect(self.home)) as conn:
+            runtimes.set(conn,sid,'claude',sid)
+        manager=self.manager()
+        manager.journal(sid).set_status('idle')
+        with mock.patch('crew.chat.claude_executable', return_value='fake-claude'):
+            manager.send(assistant,'First message',identity='legacy-first')
+        self.assertNotIn('--resume',manager.processes[sid].process.command)
+
+    def test_claude_assistant_with_existing_reply_must_resume_saved_history(self):
+        assistant=self.assistant('claude')
+        sid=assistant['session_id']
+        with closing(store.connect(self.home)) as conn:
+            runtimes.set(conn,sid,'claude',sid)
+        manager=self.manager()
+        manager.journal(sid).emit('assistant',id='earlier-reply',content=[{'type':'text','text':'Earlier answer'}])
+        with mock.patch('crew.chat.claude_executable', return_value='fake-claude'):
+            manager.send(assistant,'Continue',identity='legacy-continue')
+        command=manager.processes[sid].process.command
+        self.assertEqual(command[command.index('--resume')+1],sid)
+        self.assertNotIn('--session-id',command)
         self.assertNotIn('crew_personal', {item['name'] for item in codex_tools.tool_specs()})
         self.assertIn('crew_whoami', {item['name'] for item in codex_tools.tool_specs()})
 

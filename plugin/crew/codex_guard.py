@@ -87,7 +87,7 @@ def patch_paths(command):
     return list(dict.fromkeys(paths))
 
 
-def _identity(home, session_id, execution_id=None, native_id=None):
+def _identity(home, session_id, execution_id=None, native_id=None, tool=None):
     _text(session_id, "Crew session")
     # Never create or migrate a database in order to authorize a tool call.
     with closing(guard.readonly(home)) as conn:
@@ -101,9 +101,12 @@ def _identity(home, session_id, execution_id=None, native_id=None):
             binding = next((b for b in execution['bindings'] if b['runtime'] == 'codex'), None)
             if binding is None or binding['native_id'] != native_id:
                 raise InvalidHook('goal native thread mismatch')
-            gate = goals.dispatch_check(conn, execution['goal_id'], execution_id=execution_id)
+            gate = goals.dispatch_check(conn, execution['goal_id'], execution_id=execution_id, allow_discussion=True)
             if not gate['allowed']:
                 raise InvalidHook(gate['reason'])
+            reason = guard.discussion_write_reason(conn, execution_id, tool)
+            if reason:
+                raise InvalidHook(reason)
         elif runtimes.get(conn, session_id)['runtime'] != 'codex':
             raise InvalidHook('Crew active runtime is not codex; this Codex carrier is inactive')
         board.project(conn, session["project"])
@@ -127,7 +130,7 @@ def check(home, session_id, payload, execution_id=None):
         if not isinstance(payload, dict) or payload.get("hook_event_name") != "PreToolUse":
             raise InvalidHook("expected PreToolUse object")
         _text(payload.get("session_id"), "Codex thread")
-        _identity(home, session_id, execution_id, payload['session_id'])
+        _identity(home, session_id, execution_id, payload['session_id'], payload.get('tool_name'))
         cwd = _text(payload.get("cwd"), "cwd")
         if not os.path.isabs(cwd):
             raise InvalidHook("cwd must be absolute")
