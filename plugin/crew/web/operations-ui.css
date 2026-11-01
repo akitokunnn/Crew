@@ -34,6 +34,7 @@
 .co-compose-footer .cs-button{min-height:31px;padding:5px 12px}
 .co-status-row{display:flex;align-items:baseline;gap:12px;min-height:43px;padding:10px 22px 14px}
 .co-chat-status{flex:1;margin:0;color:var(--cs-muted);font-size:calc(11px * var(--cs-scale));overflow-wrap:anywhere}
+.co-chat-elapsed{flex:none;color:var(--cs-muted);font-size:calc(11px * var(--cs-scale));font-variant-numeric:tabular-nums;white-space:nowrap}
 .co-error{color:var(--danger,#bd4f4f)!important}
 .co-config{display:grid;gap:18px}
 .co-toggle{display:inline-flex;align-items:center;gap:8px;color:var(--cs-muted);font-size:calc(12px * var(--cs-scale))}

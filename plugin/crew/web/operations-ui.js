@@ -36,9 +36,26 @@
     let chat = null, chatLoaded = false, chatError = "", chatReadError = "", chatRead = 0, chatNote = "", chatDraft = "", pending = null, messageId = null;
     let config = null, configDraft = null, configError = "", configNote = "", configLoading = false, configSaving = false, advanced = false;
     let chatScroll = 0, chatPinned = true, messageSignature = "", launch = null;
+    let clockTimer = null, waitingSince = null, sendStartedAt = null;
     function clearTimer() { clearTimeout(timer); timer = null; }
+    function clearClock() { clearTimeout(clockTimer); clockTimer = null; }
     function unmountHealth() { if (healthCleanup) { healthCleanup(); healthCleanup = null; } }
     function shown() { return active && !document.hidden; }
+    function chatClock() {
+      clearClock();
+      const waiting = Boolean(chat?.busy) || pending === "send", clock = panel.querySelector(".co-chat-elapsed");
+      if (!waiting) waitingSince = null;
+      else {
+        const reported = chat?.busy ? Date.parse(chat.working_since) : NaN;
+        waitingSince = Number.isFinite(reported) ? reported : sendStartedAt ?? waitingSince ?? Date.now();
+      }
+      if (!clock) return;
+      clock.hidden = !waiting;
+      if (!waiting) { clock.textContent = ""; return; }
+      const seconds = Math.max(0, Math.floor((Date.now() - waitingSince) / 1000));
+      clock.textContent = `已等待 ${seconds < 60 ? `${seconds}秒` : `${Math.floor(seconds / 60)}分${seconds % 60}秒`}`;
+      if (shown() && tab === "chat") clockTimer = setTimeout(chatClock, 1000);
+    }
     function schedule() {
       clearTimer();
       if (shown() && tab === "chat") timer = setTimeout(() => { timer = null; void readChat(); }, chatReadError ? 15000 : chat?.busy ? 1200 : 4000);
@@ -55,10 +72,11 @@
       const brain = panel.querySelector(".co-last-brain");
       brain.hidden = !chat?.brain;
       if (chat?.brain) brain.textContent = "上次：" + [({claude:"Claude Code",codex:"Codex"})[chat.brain.runtime] || chat.brain.runtime, chat.brain.model || "原生默认"].filter(Boolean).join(" · ");
-      status.textContent = chatError || chatReadError || chat?.error || setupIssue || chatNote || (busy ? "运维 AI 正在回复…" : "发消息才调用 AI；打开此页不会唤醒模型。");
+      status.textContent = chatError || chatReadError || chat?.error || setupIssue || chatNote || (pending === "send" ? "正在发送…" : busy ? "运维 AI 正在回复…" : "发消息才调用 AI；打开此页不会唤醒模型。");
       status.classList.toggle("co-error", Boolean(chatError || chatReadError || chat?.error));
       panel.querySelector('[data-operations-action="setup-brain"]').hidden = !setupIssue;
       panel.querySelector('[data-operations-action="retry-chat"]').hidden = !chatReadError;
+      chatClock();
     }
     function messages() {
       const list = panel.querySelector(".co-messages");
@@ -84,7 +102,7 @@
     async function send() {
       if (pending || chat?.busy || !chatLoaded || !chatDraft.trim()) return;
       if (brainIssue(snapshot)) { chatControls(); return; }
-      pending = "send"; ++chatRead; chatError = ""; chatNote = "";
+      pending = "send"; sendStartedAt = Date.now(); ++chatRead; chatError = ""; chatNote = "";
       const text = chatDraft, id = messageId || crypto.randomUUID(); messageId = id; chatControls();
       try {
         chat = await api.send({text, message_id:id}); chatLoaded = true;
@@ -92,7 +110,7 @@
         if (chatDraft === text) { chatDraft = ""; const input = panel.querySelector(".co-composer textarea"); if (input) input.value = ""; }
         messageId = null; chatPinned = true;
       } catch (error) { chatError = error.message || String(error); }
-      finally { pending = null; if (active && tab === "chat") { messages(); schedule(); } }
+      finally { pending = null; sendStartedAt = null; if (active && tab === "chat") { messages(); schedule(); } }
     }
     async function interrupt() {
       if (pending || !chat?.busy) return;
@@ -134,7 +152,7 @@
       finally { configSaving = false; if (active && tab === "config") renderConfig(); }
     }
     function renderChat() {
-      panel.innerHTML = `<section class="co-chat" aria-label="运维 AI 对话"><div class="co-chat-heading"><div><h2>运维 AI</h2><p>所有工作区共用。对话用于诊断；自动修复遵循已保存策略。</p><p class="co-last-brain" hidden></p></div><span class="cs-badge">按需响应</span></div><div class="co-messages" tabindex="0" aria-label="聊天记录"></div><form class="co-composer"><label class="co-sr-only" for="co-chat-input">发给运维 AI</label><textarea id="co-chat-input" rows="3" maxlength="8000" placeholder="例如：为什么这个工作区连不上？">${esc(chatDraft)}</textarea><div class="co-compose-footer"><span>Enter 发送 · Shift + Enter 换行</span><div><button type="button" class="cs-button" data-operations-action="interrupt" hidden>停止</button><button type="submit" class="cs-button cs-primary" data-operations-action="send">发送</button></div></div></form><div class="co-status-row"><p class="co-chat-status" role="status"></p><button type="button" class="co-retry" data-operations-action="setup-brain" hidden>选择运维 AI</button><button type="button" class="co-retry" data-operations-action="retry-chat" hidden>重新连接</button></div></section>`;
+      panel.innerHTML = `<section class="co-chat" aria-label="运维 AI 对话"><div class="co-chat-heading"><div><h2>运维 AI</h2><p>所有工作区共用。对话用于诊断；自动修复遵循已保存策略。</p><p class="co-last-brain" hidden></p></div><span class="cs-badge">按需响应</span></div><div class="co-messages" tabindex="0" aria-label="聊天记录"></div><form class="co-composer"><label class="co-sr-only" for="co-chat-input">发给运维 AI</label><textarea id="co-chat-input" rows="3" maxlength="8000" placeholder="例如：为什么这个工作区连不上？">${esc(chatDraft)}</textarea><div class="co-compose-footer"><span>Enter 发送 · Shift + Enter 换行</span><div><button type="button" class="cs-button" data-operations-action="interrupt" hidden>停止</button><button type="submit" class="cs-button cs-primary" data-operations-action="send">发送</button></div></div></form><div class="co-status-row"><p class="co-chat-status" role="status"></p><span class="co-chat-elapsed" aria-live="off" hidden></span><button type="button" class="co-retry" data-operations-action="setup-brain" hidden>选择运维 AI</button><button type="button" class="co-retry" data-operations-action="retry-chat" hidden>重新连接</button></div></section>`;
       const list = panel.querySelector(".co-messages"); messageSignature = "";
       messages(); list.scrollTop = chatPinned ? list.scrollHeight : chatScroll;
       list.addEventListener("scroll", () => { chatScroll = list.scrollTop; chatPinned = list.scrollHeight - list.clientHeight - list.scrollTop < 60; });
@@ -158,7 +176,7 @@
       if (options.mountHealth) healthCleanup = options.mountHealth(panel.querySelector(".co-native-health"), snapshot) || null;
     }
     function render() {
-      clearTimer(); unmountHealth();
+      clearTimer(); clearClock(); unmountHealth();
       launch?.hide();
       for (const button of root.querySelectorAll("[data-operations-tab]")) { const selected = button.dataset.operationsTab === tab; button.setAttribute("aria-selected", String(selected)); button.tabIndex = selected ? 0 : -1; if (selected) panel.setAttribute("aria-label", button.textContent); }
       if (tab === "chat") { renderChat(); if (active) void readChat(); }
@@ -194,9 +212,9 @@
       }
       if (event.target.matches(".co-composer textarea") && event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); void send(); }
     });
-    const visibility = () => { if (!shown()) clearTimer(); else if (tab === "chat") void readChat(); };
+    const visibility = () => { if (!shown()) { clearTimer(); clearClock(); } else if (tab === "chat") { chatClock(); void readChat(); } };
     document.addEventListener("visibilitychange", visibility);
-    function hide() { active = false; clearTimer(); unmountHealth(); launch?.hide(); }
+    function hide() { active = false; clearTimer(); clearClock(); unmountHealth(); launch?.hide(); }
     return {mount(host, value) { snapshot = value; active = true; host.append(root); render(); return hide; }, hide,
       getState:() => ({tab, chatDraft, configDraft:configDraft && clone(configDraft), chatLoaded, chatError:chatError || chatReadError})};
   }

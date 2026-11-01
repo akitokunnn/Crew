@@ -9,7 +9,8 @@ function node(){const classes=new Set(),children=[],attributes=new Map();return 
 function host(){const nodes=new Map();return {...node(),querySelector(selector){if(!nodes.has(selector))nodes.set(selector,node());return nodes.get(selector);}};}
 function harness(){
   const timers=new Map(),saved=new Map(),streams=[],connections=[],frames=new Map(),handlers=new Map();let next=1;
-  const sandbox={matchMedia:()=>({matches:true}),atob,btoa,URLSearchParams,AbortController,TextDecoder,
+  const motion={matches:true};
+  const sandbox={matchMedia:()=>motion,atob,btoa,URLSearchParams,AbortController,TextDecoder,
     localStorage:{getItem:key=>saved.get(key)??null,setItem:(key,value)=>saved.set(key,value)},
     document:{visibilityState:"visible",activeElement:null,querySelectorAll:()=>[],addEventListener(type,fn){if(!handlers.has(type))handlers.set(type,new Set());handlers.get(type).add(fn);},removeEventListener(type,fn){handlers.get(type)?.delete(fn);},createElement:node},
     setTimeout:(fn,ms)=>{const id=next++;timers.set(id,{fn,ms});return id;},clearTimeout:id=>timers.delete(id),requestAnimationFrame:fn=>{const id=next++;frames.set(id,fn);return id;},cancelAnimationFrame:id=>frames.delete(id),
@@ -20,9 +21,71 @@ function harness(){
   for(const file of ["vendor/markdown-it.min.js","chat.js"])vm.runInContext(fs.readFileSync(path.join(__dirname,"../crew/web",file),"utf8"),sandbox);
   function mount(id,api,extra={},options={}){const target=host(),session={session_id:id,name:id,busy:false,last_seq:0,activity:null,where:"bg",...extra};sandbox.CrewChat.mount({host:target,session,state:{project:{name:"fixture"},leaders:[session],members:[]},api,toast(){},...options});return target;}
   function update(id,extra={}){const session={session_id:id,name:id,busy:false,last_seq:1,activity:null,where:"bg",...extra};sandbox.CrewChat.update({project:{name:"fixture"},leaders:[session],members:[]});}
-  return {chat:sandbox.CrewChat,mount,update,timers,saved,streams,connections,handlers,sandbox,flushFrames(){for(const [id,fn] of frames){frames.delete(id);fn();}}};
+  return {chat:sandbox.CrewChat,mount,update,timers,saved,streams,connections,handlers,sandbox,motion,flushFrames(){for(const [id,fn] of frames){frames.delete(id);fn();}}};
 }
 const history=()=>({events:[],busy:false,read_seq:0});
+
+test("rendering an idle neighbor keeps a newly inserted activity clock moving",()=>{
+  const h=harness(),now=Date.now(),startedAt=new Date(now).toISOString();
+  const html=h.sandbox.CrewActivity.render("visible",{phase:"requesting",turn_started_at:startedAt});
+  assert.match(html,/data-activity-elapsed>0秒/);
+  h.sandbox.CrewActivity.markup({session_id:"idle-neighbor",activity:null});
+  const clock={textContent:"0秒"};
+  h.sandbox.document.querySelectorAll=()=>[{dataset:{activity:"visible"},querySelector:selector=>selector==='[data-activity-elapsed]'?clock:null}];
+  h.sandbox.CrewActivity.timestamp(new Date(now+2000).toISOString());
+  for(const [id,timer]of [...h.timers]){h.timers.delete(id);timer.fn();}
+  assert.equal(clock.textContent,"2秒");h.sandbox.CrewActivity.release("visible");
+});
+
+test("Claude and Codex chats render live tokens without a page-level activity sync",async()=>{
+  for(const runtime of ["claude","codex"]){
+    const h=harness(),startedAt=new Date(Date.now()-65000).toISOString();
+    const activity={phase:"thinking",label:null,turn_started_at:startedAt,output_tokens:128};
+    const target=h.mount("assistant",async()=>({...history(),busy:true,events:[{seq:1,type:"status",status:"working",at:startedAt}]}),{runtime,busy:true,last_seq:1,activity});
+    await tick();h.flushFrames();
+    const html=()=>target.querySelector(".chat-inner").children.map(item=>item.innerHTML).join("");
+    assert.match(html(),/思考中/);assert.match(html(),/↓ 128 tokens/);assert.match(html(),/1分\d+秒/);
+    h.update("assistant",{runtime,busy:true,last_seq:1,activity:{...activity,output_tokens:256}});h.flushFrames();
+    assert.match(html(),/↓ 256 tokens/);
+    h.connections[0].emit({seq:2,type:"message",id:"steer",text:"A follow-up while busy",at:new Date().toISOString()});await tick();h.flushFrames();
+    assert.match(html(),/1分\d+秒/,"steering the current reply does not restart its clock");
+    h.connections[0].emit({seq:3,type:"turn_result",status:"completed",at:new Date().toISOString()});await tick();h.flushFrames();
+    assert(!html().includes('data-activity='));h.chat.unmount();
+  }
+});
+
+test("goal and readonly waiting clocks recover their own journal start and survive snapshot updates",async()=>{
+  for(const readonly of [false,true]){
+    const h=harness(),now=Date.now(),startedAt=new Date(now-65000).toISOString();
+    const target=h.mount("leader",async()=>({...history(),execution_id:"current",busy:true,
+      previous_executions:[{execution_id:"previous",events:[{seq:1,type:"status",status:"working",at:new Date(now-3600000).toISOString()}]}],
+      events:[{seq:1,type:"message",id:"prompt",text:"Current task",at:startedAt},{seq:2,type:"status",status:"working",at:startedAt}]}),
+      {busy:true,activity:{phase:"tool",label:"Unrelated goal",turn_started_at:new Date(now-7200000).toISOString(),output_tokens:9999}},{goalId:"goal",readonly});
+    await tick();h.flushFrames();
+    const markup=target.querySelector(".chat-inner").children.find(item=>item.innerHTML.includes('data-activity='))?.innerHTML;
+    assert(markup);assert.match(markup,/1分\d+秒/);assert(!markup.includes("Unrelated goal"));assert(!markup.includes("tokens"));
+    const key=markup.match(/data-activity="([^"]+)"/)[1],clock={textContent:""};let removed=false;
+    h.sandbox.document.querySelectorAll=()=>[{dataset:{activity:key},querySelector:selector=>selector==='[data-activity-elapsed]'?clock:null,remove(){removed=true;}}];
+    h.sandbox.CrewActivity.sync({now:new Date(now+2000).toISOString(),leaders:[],members:[]});
+    const timer=[...h.timers.entries()].find(([,value])=>value.ms===250);assert(timer);h.timers.delete(timer[0]);timer[1].fn();
+    assert.equal(removed,false);assert.match(clock.textContent,/1分\d+秒/);
+    h.chat.unmount();
+  }
+});
+
+test("a pending send uses the server clock and a later token report starts with a real number",async()=>{
+  const h=harness(),clientNow=Date.now(),serverNow=new Date(clientNow+600000).toISOString();let finish;
+  const target=h.mount("assistant",async(url)=>url==="/api/chat/send"?new Promise(resolve=>{finish=resolve;}):history(),{},
+    {state:{now:serverNow,leaders:[],members:[]}});await tick();h.flushFrames();
+  target.querySelector("textarea").value="Wait for this reply";target.querySelector("textarea").oninput();
+  target.querySelector("form").onsubmit({preventDefault(){}});h.flushFrames();
+  const html=()=>target.querySelector(".chat-inner").children.map(item=>item.innerHTML).join("");
+  assert.match(html(),/正在发送…/);assert.match(html(),/data-activity-elapsed>0秒/);assert(!html().includes("tokens"));
+  finish({accepted:true});await tick();
+  h.motion.matches=false;
+  h.update("assistant",{busy:true,last_seq:1,activity:{phase:"writing",turn_started_at:serverNow,output_tokens:100}});h.flushFrames();
+  assert.match(html(),/↓ 100 tokens/);assert(!html().includes("NaN"));h.chat.unmount();
+});
 
 const rendered=target=>target.querySelector(".chat-inner").children.map(item=>item.innerHTML);
 const at=seconds=>new Date(Date.UTC(2026,9,27,0,0,seconds)).toISOString();
@@ -294,7 +357,7 @@ test("starting a queued goal rebinds the app to the execution journal, closes th
   Object.defineProperty(main,"innerHTML",{set(value){this.markup=value;for(const [,id]of value.matchAll(/id="([^"]+)"/g))nodes.set(id,host());},get(){return this.markup||"";}});
   h.sandbox.document.getElementById=id=>nodes.get(id)||null;
   h.sandbox.location={search:"?project=fixture",origin:"http://fixture.local"};
-  h.sandbox.CrewActivity={markup:()=>""};h.sandbox.CrewContext={};
+  h.sandbox.CrewContext={};
   const api=async(url,data)=>{
     calls.push({url,data});
     if(url==="/api/goals/action"){
