@@ -1,5 +1,6 @@
 """Codex board tool authorization uses temporary boards, never native runtimes."""
 import tests  # Install the production-service connection guard.
+import base64
 import json
 import tempfile
 import unittest
@@ -51,6 +52,45 @@ class CodexToolsTests(unittest.TestCase):
         self.assertEqual(request.call_args.args[2:], ('/api/session/stop', {
             'session_id': 'codex-crew', 'caller_session_id': 'codex-crew'}))
         self.call('crew_stop', {'target': 'builder', 'caller_session_id': 'peer-leader'}, success=False)
+
+    def test_report_preview_returns_the_host_png_as_a_native_image_for_leader_and_member(self):
+        image = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=')
+        image_path = self.home / 'report-previews' / 'synthetic.png'
+        image_path.parent.mkdir()
+        image_path.write_bytes(image)
+        receipt = {'ok':True, 'preview':{'id':'synthetic', 'path':str(image_path),
+            'width':1, 'height':1, 'console_errors':[], 'visual_verification':'not_performed'}}
+        for sid in ('leader-crew', 'codex-crew'):
+            calls = []
+            def host(action, data, actor, execution_id=None):
+                calls.append((action, data, actor, execution_id))
+                return receipt
+            tool = codex_tools.CodexTools(self.home, sid, goal_handler=host)
+            result = tool({'tool':'crew_goal', 'arguments':{'action':'report.preview', 'goal_id':'synthetic-goal',
+                'data':{'document_html':'<!doctype html><h1>Synthetic preview</h1>', 'viewport':'mobile'}}})
+            self.assertTrue(result['success'], result)
+            self.assertEqual(json.loads(result['contentItems'][0]['text']), receipt)
+            native_image = result['contentItems'][1]
+            self.assertEqual(set(native_image), {'type','imageUrl'})
+            self.assertEqual(native_image['type'], 'inputImage')
+            self.assertEqual(base64.b64decode(native_image['imageUrl'].removeprefix('data:image/png;base64,')), image)
+            self.assertEqual(calls, [('report.preview', {'goal_id':'synthetic-goal',
+                'document_html':'<!doctype html><h1>Synthetic preview</h1>', 'viewport':'mobile'}, sid, None)])
+
+    def test_report_preview_requires_its_host_and_keeps_render_or_attachment_failures(self):
+        missing = self.call('crew_goal', {'action':'report.preview', 'data':{'document_html':'<h1>Draft</h1>'}}, success=False)
+        self.assertEqual(missing['error']['code'], 'goal_host_unavailable')
+        host_failure = {'ok':False, 'error':'Crew desktop closed during rendering', 'status':'unavailable'}
+        tool = codex_tools.CodexTools(self.home, 'codex-crew', goal_handler=lambda *args, **kwargs:host_failure)
+        failed = self.call('crew_goal', {'action':'report.preview', 'data':{'report_id':'saved'}}, tools=tool, success=False)
+        self.assertEqual(failed, host_failure)
+        path = self.home / 'report-previews' / 'missing.png'
+        receipt = {'ok':True, 'preview':{'id':'captured', 'path':str(path)}}
+        tool = codex_tools.CodexTools(self.home, 'codex-crew', goal_handler=lambda *args, **kwargs:receipt)
+        result = self.call('crew_goal', {'action':'report.preview', 'data':{'report_id':'saved'}}, tools=tool)
+        self.assertEqual(result['preview'], receipt['preview'])
+        self.assertIn('missing.png', result['input_image_error'])
+        self.assertIn('view_image', result['image_instruction'])
 
     def test_spawn_tool_supplies_only_host_bound_goal_execution_identity(self):
         goal = goals.create(self.conn, 'first', 'leader-crew', 'Tool spawning', 'Finite request', ['Done'])

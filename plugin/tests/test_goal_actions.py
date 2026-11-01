@@ -267,6 +267,69 @@ class GoalActionTests(GoalFixture):
         item = board.decisions(self.conn, 'demo')[0]
         self.assertEqual(goal_links.get(self.conn, 'decision', item['id'])['execution_id'], execution['id'])
 
+    def test_cli_report_preview_reads_draft_and_requires_the_live_owner(self):
+        from crew import spawn
+        goal = self.goal()
+        execution = goals.create_execution(self.conn, goal['id'], 'chief-id', runtime='claude')
+        environment = {'CREW_SESSION_ID':'chief-id','CREW_EXECUTION_ID':execution['id'],'CREW_GOAL_ID':goal['id']}
+        html_path = self.root / '报告草稿.html'
+        document = '<!doctype html><meta charset="utf-8"><h1>合成预览示例</h1>'
+        html_path.write_text(document, encoding='utf-8-sig')
+        receipt = {'ok':True, 'preview':{'id':'preview-one', 'path':str(self.home / 'report-previews' / 'one.png')}}
+        with mock.patch.object(spawn, 'request_start', return_value=receipt) as request:
+            code, output, errors = self.invoke_cli([
+                'goal','report.preview','--html-file',str(html_path),'--data','{"viewport":"mobile"}'], environment)
+            self.assertEqual(code, 0, errors)
+            self.assertEqual(json.loads(output), receipt)
+            self.assertEqual(request.call_args.args[2], '/api/goals/agent')
+            body = request.call_args.args[3]
+            self.assertEqual(body, {'action':'report.preview', 'actor_session_id':'chief-id',
+                'execution_id':execution['id'], 'data':{'goal_id':goal['id'], 'project':'demo',
+                                                       'document_html':document, 'viewport':'mobile'}})
+        with mock.patch.object(spawn, 'request_start', side_effect=board.BoardError('Crew 桌面预览未连接')):
+            code, _, errors = self.invoke_cli(['goal','report.preview','--html-file',str(html_path)], environment)
+            self.assertNotEqual(code, 0)
+            self.assertIn('Crew 桌面预览未连接', errors)
+        with mock.patch.object(spawn, 'request_start', return_value={'ok':False,'error':'桌面在截图期间退出'}):
+            code, _, errors = self.invoke_cli(['goal','report.preview','--html-file',str(html_path)], environment)
+            self.assertNotEqual(code, 0)
+            self.assertIn('桌面在截图期间退出', errors)
+
+    def test_cli_report_preview_keeps_saved_report_id_and_rejects_overwriting_a_draft(self):
+        from crew import spawn
+        goal = self.goal()
+        with mock.patch.object(spawn, 'request_start', return_value={'ok':True}) as request:
+            code, _, errors = self.invoke_cli(['goal','report.preview',goal['id'],
+                '--data','{"report_id":"saved-report","viewport":"desktop"}'])
+            self.assertEqual(code, 0, errors)
+            self.assertEqual(request.call_args.args[3]['data']['report_id'], 'saved-report')
+        html_path = self.root / 'draft.html'
+        html_path.write_text('<h1>新稿</h1>', encoding='utf-8')
+        with mock.patch.object(spawn, 'request_start') as request:
+            code, _, errors = self.invoke_cli(['goal','report.preview',goal['id'],'--html-file',str(html_path),
+                '--data','{"document_html":"<h1>原稿</h1>"}'])
+            self.assertNotEqual(code, 0)
+            self.assertIn('不能覆盖已有正文', errors)
+            request.assert_not_called()
+
+    def test_codex_report_preview_of_a_paused_bound_task_uses_the_host_without_resuming(self):
+        goal = self.goal()
+        goals.transition(self.conn, goal['id'], 'running')
+        execution = goals.create_execution(self.conn, goal['id'], 'chief-id', runtime='codex')
+        goals.request_pause(self.conn, goal['id'])
+        before = goals.get(self.conn, goal['id'])
+        calls = []
+        def host(action, data, actor, execution_id=None):
+            calls.append((action, data, actor, execution_id))
+            return {'ok':True, 'preview':{'id':'captured'}}
+        result = self.call(self.tool(execution, host), 'crew_goal', {
+            'action':'report.preview', 'data':{'report_id':'saved-report', 'viewport':'desktop'}})
+        self.assertEqual(result['preview']['id'], 'captured')
+        self.assertEqual(calls, [('report.preview', {'report_id':'saved-report','viewport':'desktop'},
+                                  'chief-id', execution['id'])])
+        self.assertEqual(goals.get(self.conn, goal['id']), before)
+        self.assertEqual(self.host.calls, [])
+
     def test_claude_cli_attaches_html_and_codex_tool_saves_the_same_document(self):
         from crew import spawn
         document = '<!doctype html><h1>选型结论</h1><button onclick="this.textContent=\'筛选完毕\'">筛选</button>'

@@ -48,4 +48,6 @@ Codex 直接使用宿主的 `crew_whoami`、`crew_status` 和 `crew_git`，不�
 
 ## 提交给用户的文档
 
+Git 任务的 HTML 交付报告也沿用 leader 的 Crew 预览入口：CC 用 `crew goal report.preview --html-file <报告.html>` 后 Read 返回的 PNG，Codex 用 `crew_goal` 的 `report.preview` 并查看原生图片。总对话指定当前任务 `goal_id`；不要为预览报告另外创建目标。截图只用于阅读排版，Git 提交、差异和合并仍取实际命令与服务证据；交互效果需另行实测，不能把截图生成成功写成全部验收通过。
+
 交付报告、重要汇总、操作指南或验收文档时，先保存原文件，再登记为当前任务的交付物：`crew doc add "<路径>" --title "<好读的名称>" --summary "<这份文档解决什么、用户先看哪里>" --kind summary --important`。普通报告用 `--kind report`，指南用 `--kind guide`；只有确实重要的最终汇总或关键说明才加 `--important`，不要把每份日志和草稿都标重要。同一路径更新后重新登记会更新原条目，保留用户自己的标星选择。聊天里只提一句并给链接，不能只把文档埋在聊天中。`crew doc list` 查看本项目交付，`crew doc refresh` 整理已有历史链接。Codex 可用原生 `crew_doc_add` / `crew_doc_list` / `crew_doc_refresh` 工具，身份由 Crew 绑定。

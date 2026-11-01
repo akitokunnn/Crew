@@ -5,9 +5,9 @@ import json
 
 from . import board, goal_artifacts, goal_context, goal_mode, goal_reports, goal_work, goals, store
 
-READ_ACTIONS = frozenset(('status', 'report-template', 'report.get', 'context.inspect', 'context.retrieve', 'work.list')) | goal_artifacts.READ_ACTIONS
+READ_ACTIONS = frozenset(('status', 'report-template', 'report.get', 'report.preview', 'context.inspect', 'context.retrieve', 'work.list')) | goal_artifacts.READ_ACTIONS
 GOAL_ACTIONS = frozenset(('status', 'create', 'start', 'pause', 'resume', 'cancel', 'reopen',
-                          'amend', 'assign', 'report-template', 'report.get', 'report.publish', 'mode.set', 'finish', 'work.list', 'work.add', 'work.update')) | goal_artifacts.ACTIONS
+                          'amend', 'assign', 'report-template', 'report.get', 'report.preview', 'report.publish', 'mode.set', 'finish', 'work.list', 'work.add', 'work.update')) | goal_artifacts.ACTIONS
 CONTEXT_ACTIONS = frozenset(('context.inspect', 'context.retrieve', 'context.put', 'context.correct', 'context.expire'))
 
 
@@ -124,6 +124,28 @@ def dispatch(home, actor_session_id, execution_id, action, data, controller=None
                 'current_goal_status':goal['status'] if goal else None},actor_session_id=actor_session_id if actor else None)
         if goal is None:
             raise board.BoardError('此操作必须指定目标')
+        if action == 'report.preview':
+            if set(data) - {'goal_id', 'project', 'document_html', 'report_id', 'viewport'}:
+                raise board.BoardError('报告预览仅接受目标、报告正文或报告 ID 与视口，不接受路径、URL 或执行命令')
+            if execution and execution['goal_id'] != goal_id:
+                raise board.BoardError('报告预览必须属于当前执行目标')
+            if ('document_html' in data) == ('report_id' in data):
+                raise board.BoardError('报告预览必须且只能提供 document_html 或 report_id 其中一项')
+            document = data.get('document_html')
+            report_id = data.get('report_id')
+            if report_id is not None:
+                if not isinstance(report_id, str) or not report_id:
+                    raise board.BoardError('报告预览 report_id 必须为非空报告 ID')
+                report = goals.get_report(conn, report_id)
+                if report['goal_id'] != goal_id:
+                    raise board.BoardError('报告不属于当前任务')
+                document = report['data'].get('document_html')
+            host = _host(controller)
+            previews = getattr(getattr(host, 'manager', None), 'report_previews', None)
+            if previews is None:
+                raise board.BoardError('当前 Crew 宿主不支持报告预览；尚未截图')
+            return previews.capture(document, viewport=data.get('viewport', 'desktop'), title=goal['title'],
+                                    goal_id=goal_id, report_id=report_id)
         if action in goal_artifacts.ACTIONS:
             return goal_artifacts.dispatch(conn, home, goal_id, action, data, actor=actor_session_id, execution_id=execution_id)
         if action == 'work.list':

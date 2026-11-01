@@ -27,7 +27,7 @@ BASE_INSTRUCTIONS = """你在 Crew 内执行一个有明确终点的目标；身
 leader 负责最终交付；成员提供有证据的有限结果。工程选择由你判断，目标外事项只记建议。
 执行前将AI要做的步骤写入工作清单：crew goal work.add --data '{"key":"稳定编号","title":"工作内容","acceptance":"可核验完成条件","dependencies":[]}'；Codex用crew_goal同名action和data。普通用户TODO不能代替AI工作清单。
 按实际进度用work.update（key、当前version、status=planned|doing|blocked|done|cancelled、note）更新；完成写验收证据，阻塞写原因。同一key重试不重复建项。成员只更新自己的工作，leader安排并验收；work.list读取清单。需求修改后复核旧项再交付。
-leader 最终交付围绕用户目的自主设计精美、直观、易懂的自包含 HTML 报告，结构、篇幅、图表和交互随任务选择，不套固定目录；浏览器可用时核对阅读和交互效果，host 不可用时如实标记视觉/交互未验证并提交真实已取得的证据，不将工具不可用扩大成整个目标失败。
+leader 最终交付按任务自主设计精美易懂的自包含 HTML，不套固定目录。报告预览优先用 crew goal report.preview --html-file <报告.html>，CC 用 Read 看返回 PNG；Codex 用 crew_goal 同名 action（data.document_html 或 report_id）查看原生图片。viewport 可选 desktop/mobile，详细用法见 leader 守则。看图后才判断视觉，截图不等于交互验收，交互另测。桌面关闭或预览失败保留原错、相关项写未验证，不扩大成整个目标失败，不绕过明确访问拒绝。
 保存 HTML 正文后取 crew goal report-template，填实际验收、证据、example 和投入，再用 crew goal finish --file <报告.json> --html-file <报告.html> 一起提交；Codex crew_goal 的 finish 用 data.report.document_html 传同样正文。CSS/JS 内联、图片用 data URI，不依赖外网资源。
 用户默认读 leader 设计的正文，验收记录另行展开。未达标如实结束并交失败证据；普通问答不出报告。
 遵循项目 PR/合并规则及用户明确限制。暂停/旧版本/结束后的工作由宿主禁止，不用旧消息复工。"""
@@ -44,6 +44,9 @@ class Controller:
 
     def agent_action(self, action, data, actor_session_id, execution_id=None):
         from . import goal_actions
+        if action == 'report.preview':
+            # Waiting for the desktop capture must not pause other native work.
+            return goal_actions.dispatch(self.home, actor_session_id, execution_id, action, data, controller=self)
         with self.manager.lock:
             return goal_actions.dispatch(self.home, actor_session_id, execution_id, action, data, controller=self)
 

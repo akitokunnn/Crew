@@ -8,6 +8,7 @@ const storage = require('./storage.cjs');
 const chrome = require('./chrome.cjs');
 const { WorkspaceTabs } = require('./tabs.cjs');
 const { ActivityPreview } = require('./activity-preview.cjs');
+const { ReportPreviewRenderer, ReportPreviewClient } = require('./report-preview.cjs');
 const { installPermissions } = require('./permissions.cjs');
 const { ToolUpdates } = require('./tool-updates.cjs');
 const { CrewUpdates } = require('./crew-updates.cjs');
@@ -41,7 +42,7 @@ app.setPath('userData', config.userData);
 const homePage = pathToFileURL(path.join(__dirname, 'home.html')).href;
 const errorPage = pathToFileURL(path.join(__dirname, 'error.html')).href;
 let lastPublishedTab=null;
-let window, tray, backend, tabs, activityPreview, tools, crewUpdates, launchSettings, windowMenu, quitting = false, finishedQuit = false, parentDirectory = null, smokeStarted = false, pendingAction = null, pendingWorkspace = null, homeBootstrapped = false;
+let window, tray, backend, tabs, activityPreview, reportPreviews, tools, crewUpdates, launchSettings, windowMenu, quitting = false, finishedQuit = false, parentDirectory = null, smokeStarted = false, pendingAction = null, pendingWorkspace = null, homeBootstrapped = false;
 let startupWork = null, cleanupPromise = null;
 
 function liveWindow(target = window) {
@@ -72,6 +73,7 @@ async function cleanupResources() {
       finish('tool updates', () => tools?.close())
     ]);
     await Promise.all([...workspaceDataJobs].map(job=>finish('workspace data',()=>job)));
+    await finish('report previews', () => reportPreviews?.close());
     await finish('backend', () => backend?.stop());
   })();
   return cleanupPromise;
@@ -624,6 +626,13 @@ else {
         if(!candidate)try{candidate=JSON.parse(await fs.readFile(path.join(config.home,'web.json'),'utf8')).url;}catch(_){}
         try{backend.url=error.code==='CREW_PRODUCT_GENERATION'?'http://127.0.0.1:0':core.loopback(candidate);}catch(_){backend.url='http://127.0.0.1:0';}
         pendingAction='admin';
+      }
+      if (quitting) return;
+      if (!backend.startupError) {
+        reportPreviews = new ReportPreviewClient({base:backend.url, request:core.request,
+          renderer:new ReportPreviewRenderer({BrowserWindow})});
+        try { await startupStep(reportPreviews.start()); }
+        catch (error) { console.error('Crew 报告预览不可用：', error.message); }
       }
       if (quitting) return;
       tools=new ToolUpdates(config,{onChange:state=>{if(liveWindow())window.webContents.send('desktop:tools-state',state);}});

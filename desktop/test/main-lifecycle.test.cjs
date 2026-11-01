@@ -21,7 +21,7 @@ function deferred() {
 // The destroyed-object checks mirror Electron's native lifetime boundary.
 function harness(options = {}) {
   const ready = deferred(), windows = [], trays = [], handlers = new Map(), logs = [], shutdownErrors = [];
-  const calls = { backendStart:0, backendStop:0, toolsClose:0, updatesClose:0, tabsDispose:0, previewDispose:0, tabsOpen:0, uiCalls:0, windowShow:0, nativeQuit:0, relaunch:0, dialogs:0, stat:0 };
+  const calls = { backendStart:0, backendStop:0, toolsClose:0, updatesClose:0, tabsDispose:0, previewDispose:0, reportClose:0, tabsOpen:0, uiCalls:0, windowShow:0, nativeQuit:0, relaunch:0, dialogs:0, stat:0 };
   let readGate = null, projectGate = null, appMenu = null;
   const config = { home:'C:\\fixture\\crew-home', userData:'C:\\fixture\\crew-desktop', isolated:true, smoke:false, backendSource:'bundled' };
   class App extends EventEmitter {
@@ -98,6 +98,10 @@ function harness(options = {}) {
   class Preview {
     hide() {} refresh() {} dispose() { calls.previewDispose++; }
   }
+  class ReportPreviewClient {
+    async start() { await options.reportStart?.promise; }
+    async close() { calls.reportClose++; await options.reportClose?.promise; }
+  }
   class LaunchSettings {
     constructor(_config,dependencies) { this.dependencies=dependencies; this.pending=null; }
     apply() {
@@ -129,6 +133,7 @@ function harness(options = {}) {
     './storage.cjs':{ prepare:async (project,base,_choose,_progress,request) => {if(options.storageWrite)await request(base,'/api/workspace-data/open',{});return project;} },
     './chrome.cjs':{ windowOptions:() => ({}) }, './tabs.cjs':{ WorkspaceTabs:Tabs },
     './activity-preview.cjs':{ ActivityPreview:Preview }, './permissions.cjs':{ installPermissions() {} },
+    './report-preview.cjs':{ReportPreviewClient, ReportPreviewRenderer:class {}},
     './tool-updates.cjs':{ ToolUpdates:Tools }, './crew-updates.cjs':{ CrewUpdates:Updates },
     './admin.cjs':{ Administrator:class {} }, './operations.cjs':{ OperationsClient:class { close() {} } },
     './product.cjs':require('../src/product.cjs'),
@@ -315,4 +320,16 @@ test('a logs lookup finishing during shutdown cannot open a new dialog',async ()
   access.reject(Object.assign(new Error('fixture logs do not exist'),{code:'ENOENT'}));await tick();
   try { assert.equal(h.calls.dialogs,0);assert.deepEqual(h.logs,[]); }
   finally { stop.resolve();await tick(); }
+});
+
+test('quitting while report preview registration is pending closes it before the backend',async () => {
+  const start=deferred(),close=deferred(),h=harness({reportStart:start,reportClose:close});
+  h.ready.resolve();await tick();h.app.quit();await tick();
+  assert.equal(h.calls.backendStop,0);
+  start.resolve();await tick();
+  assert.equal(h.windows.length,0,'late report registration must not create the desktop UI after quit');
+  assert.equal(h.calls.reportClose,1);assert.equal(h.calls.backendStop,0);
+  close.resolve();await tick();
+  assert.equal(h.calls.backendStop,1);assert.equal(h.calls.nativeQuit,1);
+  assert.deepEqual(h.logs,[]);
 });
