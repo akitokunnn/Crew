@@ -6,6 +6,7 @@ script command. Capturing a viewport is evidence to inspect, not a visual verdic
 import base64
 import binascii
 from collections import deque
+import hashlib
 from pathlib import Path
 import secrets
 import struct
@@ -22,6 +23,22 @@ MAX_PNG = 8 * 1024 * 1024
 MAX_BODY = (MAX_PNG + 2) // 3 * 4 + 1024 * 1024
 WORKER_PREFIX = '/api/report-preview/worker/'
 WORKER_PATHS = frozenset(WORKER_PREFIX + action for action in ('register', 'next', 'result', 'close'))
+
+
+def image_directory(home, actor_session_id, create=False):
+    """One narrow native image-read root per trusted stable Crew identity."""
+    if not isinstance(actor_session_id, str) or not actor_session_id.strip():
+        raise board.BoardError('报告截图目录必须绑定有效 Crew 身份')
+    root = Path(home).resolve()
+    base = root / 'report-previews'
+    directory = base / hashlib.sha256(actor_session_id.encode('utf-8')).hexdigest()[:32]
+    if create:
+        for target in (base, directory):
+            resolved = target.resolve()
+            if target.is_symlink() or resolved != target or not resolved.is_relative_to(root):
+                raise board.BoardError('报告截图目录不能使用符号链接或跳出 HOME')
+        directory.mkdir(parents=True, exist_ok=True)
+    return directory
 
 
 def _document(value):
@@ -156,15 +173,12 @@ class Manager:
                         or any(not isinstance(item, str) or len(item) > 8000 for item in errors)):
                     raise board.BoardError('console_errors 必须为不超过 100 项的错误文本数组，每项最多 8000 字')
                 png = _png(data.get('png_base64'), job['width'], job['height'])
-                directory = self.home / 'report-previews'
-                if directory.is_symlink() or not directory.resolve().is_relative_to(self.home):
-                    raise board.BoardError('报告截图目录不能链接到 HOME 外部')
-                path = directory / (job['id'] + '.png')
                 try:
-                    directory.mkdir(parents=True, exist_ok=True)
+                    directory = image_directory(self.home, job['actor_session_id'], create=True)
+                    path = directory / (job['id'] + '.png')
                     with path.open('xb') as output:
                         output.write(png)
-                except OSError as exc:
+                except (OSError, board.BoardError) as exc:
                     job.update(state='failed', error='报告截图保存失败：' + str(exc))
                 else:
                     job.update(state='captured', preview={'id': job['id'], 'path': str(path),
@@ -188,8 +202,9 @@ class Manager:
             raise board.BoardError('报告预览 worker 请求无效')
         return handlers[action](data)
 
-    def capture(self, document_html, *, viewport='desktop', title, goal_id, report_id=None):
+    def capture(self, document_html, *, viewport='desktop', title, goal_id, report_id=None, actor_session_id='user'):
         document_html = _document(document_html)
+        image_directory(self.home, actor_session_id)
         if not isinstance(viewport, str) or viewport not in VIEWPORTS:
             raise board.BoardError('报告预览 viewport 必须为 desktop 或 mobile')
         width, height = VIEWPORTS[viewport]
@@ -204,6 +219,7 @@ class Manager:
             identity = uuid.uuid4().hex
             job = {'id': identity, 'html': report_documents.render(title, document_html, ''),
                    'width': width, 'height': height, 'goal_id': goal_id, 'report_id': report_id,
+                   'actor_session_id': actor_session_id,
                    'state': 'queued'}
             self.jobs[identity] = job
             self.queue.append(identity)

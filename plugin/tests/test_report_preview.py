@@ -1,7 +1,9 @@
 """Report preview queue, bytes and lifecycle with temporary HOME only."""
 import base64
+import os
 from pathlib import Path
 import struct
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -62,14 +64,57 @@ class ReportPreviewTests(unittest.TestCase):
         thread.join(2)
         self.assertFalse(thread.is_alive())
         preview = result[0]['preview']
-        self.assertEqual(Path(preview['path']).parent, self.home / 'report-previews')
+        self.assertEqual(Path(preview['path']).parent, report_preview.image_directory(self.home, 'user'))
         self.assertEqual(Path(preview['path']).read_bytes(), png(390, 844))
         self.assertEqual(preview['console_errors'], ['Synthetic console failure retained'])
         self.assertEqual(preview['status'], 'captured')
         self.assertEqual(preview['visual_verification'], 'not_performed')
         with self.assertRaises(board.Conflict):
             self.complete(worker, job)
-        self.assertEqual(len(list((self.home / 'report-previews').iterdir())), 1)
+        self.assertEqual(len(list(report_preview.image_directory(self.home, 'user').iterdir())), 1)
+
+    def test_each_actor_receives_an_independent_narrow_image_directory(self):
+        first = report_preview.image_directory(self.home, 'first-actor')
+        second = report_preview.image_directory(self.home, 'second-actor')
+        self.assertNotEqual(first, second)
+        self.assertEqual(first.parent, self.home / 'report-previews')
+        self.assertFalse(first.exists())
+        worker = self.credentials()
+        paths = []
+        for actor in ('first-actor', 'second-actor'):
+            thread, result = self.begin(actor_session_id=actor)
+            job = self.manager.next(worker)['job']
+            self.complete(worker, job)
+            thread.join(2)
+            paths.append(Path(result[0]['preview']['path']))
+        self.assertEqual([path.parent for path in paths], [first, second])
+        self.assertEqual(list(first.iterdir()), paths[:1])
+        self.assertEqual(list(second.iterdir()), paths[1:])
+
+    def test_image_read_root_rejects_linked_base_and_actor_directories(self):
+        with tempfile.TemporaryDirectory() as outside:
+            for actor_directory in (False, True):
+                with self.subTest(actor_directory=actor_directory):
+                    base = self.home / 'report-previews'
+                    if actor_directory:
+                        base.mkdir()
+                    link = report_preview.image_directory(self.home, 'actor') if actor_directory else base
+                    if os.name == 'nt':
+                        # Junctions exercise the Windows resolved-directory
+                        # boundary without requiring symlink administrator rights.
+                        result = subprocess.run(['cmd', '/c', 'mklink', '/J', str(link), outside], capture_output=True)
+                        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    else:
+                        link.symlink_to(outside, target_is_directory=True)
+                    try:
+                        with self.assertRaises(board.BoardError):
+                            report_preview.image_directory(self.home, 'actor', create=True)
+                        self.assertEqual(list(Path(outside).iterdir()), [])
+                    finally:
+                        if os.name == 'nt':
+                            link.rmdir()
+                        else:
+                            link.unlink()
 
     def test_worker_authentication_and_viewport_png_validation_do_not_settle_the_job(self):
         worker = self.credentials()

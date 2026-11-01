@@ -66,6 +66,7 @@ class ReportPreviewHttpTests(ShellFixture, unittest.TestCase):
         self.assertFalse(thread.is_alive())
         self.assertEqual(result[0][0], 200, result)
         preview = result[0][1]['preview']
+        self.assertEqual(Path(preview['path']).parent, report_preview.image_directory(self.home, 's3'))
         self.assertEqual(Path(preview['path']).read_bytes(), png(390, 844))
         self.assertEqual(preview['console_errors'], ['Synthetic warning retained'])
         self.assertEqual(self.processes, [])

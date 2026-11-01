@@ -17,7 +17,7 @@ from pathlib import Path
 
 from . import behavior_prompts, guard, native_handoff
 
-from . import board, claude_limits, claude_subagents, codex_client, codex_visibility, git_admin, goals, hooks, install, messaging, models, personal, runtime_switch, runtimes, settings, spawn, store, subagents, workspace_execution
+from . import board, claude_limits, claude_subagents, codex_client, codex_visibility, git_admin, goals, hooks, install, messaging, models, personal, report_preview, runtime_switch, runtimes, settings, spawn, store, subagents, workspace_execution
 
 
 PAUSED_FOR_UPDATE = "Crew 正在准备更新，暂不接受新任务；更新完成后再试"
@@ -795,7 +795,8 @@ class Manager:
             raise board.BoardError('Claude 原生身份与 Crew 身份不一致，不能恢复错误会话')
         install.ensure(self.home, self.plugin_root)
         command = spawn.command(session_id, session["crew_name"], session["role"], native_resume, **options, agent=spec["agent"],
-                                permission_mode=permission_mode, plugin_root=self.plugin_root)
+                                permission_mode=permission_mode, plugin_root=self.plugin_root,
+                                preview_directory=report_preview.image_directory(self.home, session_id, create=True))
         if spec.get('_workspace_notice'):
             command += ['--append-system-prompt', spec['_workspace_notice']]
         with closing(store.connect(self.home)) as prompt_conn:

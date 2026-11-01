@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from crew import board, codex_tools, decision_briefs, documents, goals, runtimes, store, todo
+from crew import board, codex_tools, decision_briefs, documents, goals, report_preview, runtimes, store, todo
 
 
 class CodexToolsTests(unittest.TestCase):
@@ -55,12 +55,11 @@ class CodexToolsTests(unittest.TestCase):
 
     def test_report_preview_returns_the_host_png_as_a_native_image_for_leader_and_member(self):
         image = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=')
-        image_path = self.home / 'report-previews' / 'synthetic.png'
-        image_path.parent.mkdir()
-        image_path.write_bytes(image)
-        receipt = {'ok':True, 'preview':{'id':'synthetic', 'path':str(image_path),
-            'width':1, 'height':1, 'console_errors':[], 'visual_verification':'not_performed'}}
         for sid in ('leader-crew', 'codex-crew'):
+            image_path = report_preview.image_directory(self.home, sid, create=True) / 'synthetic.png'
+            image_path.write_bytes(image)
+            receipt = {'ok':True, 'preview':{'id':'synthetic', 'path':str(image_path),
+                'width':1, 'height':1, 'console_errors':[], 'visual_verification':'not_performed'}}
             calls = []
             def host(action, data, actor, execution_id=None):
                 calls.append((action, data, actor, execution_id))
@@ -84,13 +83,26 @@ class CodexToolsTests(unittest.TestCase):
         tool = codex_tools.CodexTools(self.home, 'codex-crew', goal_handler=lambda *args, **kwargs:host_failure)
         failed = self.call('crew_goal', {'action':'report.preview', 'data':{'report_id':'saved'}}, tools=tool, success=False)
         self.assertEqual(failed, host_failure)
-        path = self.home / 'report-previews' / 'missing.png'
+        path = report_preview.image_directory(self.home, 'codex-crew') / 'missing.png'
         receipt = {'ok':True, 'preview':{'id':'captured', 'path':str(path)}}
         tool = codex_tools.CodexTools(self.home, 'codex-crew', goal_handler=lambda *args, **kwargs:receipt)
         result = self.call('crew_goal', {'action':'report.preview', 'data':{'report_id':'saved'}}, tools=tool)
         self.assertEqual(result['preview'], receipt['preview'])
         self.assertIn('missing.png', result['input_image_error'])
         self.assertIn('view_image', result['image_instruction'])
+
+    def test_report_preview_image_cannot_escape_its_bound_identity_directory(self):
+        for path in (self.home / 'report-previews' / 'root.png',
+                     report_preview.image_directory(self.home, 'leader-crew') / 'other-person.png',
+                     self.root / 'outside.png'):
+            with self.subTest(path=path):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b'Another artifact must not be returned to this actor')
+                tool = codex_tools.CodexTools(self.home, 'codex-crew', goal_handler=lambda *args, **kwargs:
+                    {'ok':True, 'preview':{'id':'not-owned', 'path':str(path)}})
+                result = self.call('crew_goal', {'action':'report.preview', 'data':{'report_id':'saved'}},
+                                   tools=tool, success=False)
+                self.assertEqual(result['error']['code'], 'preview_image_forbidden')
 
     def test_spawn_tool_supplies_only_host_bound_goal_execution_identity(self):
         goal = goals.create(self.conn, 'first', 'leader-crew', 'Tool spawning', 'Finite request', ['Done'])

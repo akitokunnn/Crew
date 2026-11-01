@@ -125,6 +125,8 @@ if (!process.versions.electron) {
     check('bound Codex member receives the shared preview result', codex.success===true);
     const text=codex.contentItems.find(item=>item.type==='inputText');assert(text);
     const native=JSON.parse(text.text);
+    check('leader and member previews use separate session image directories',
+      path.dirname(cli.value.preview.path)!==path.dirname(native.preview.path));
     await image(native.preview,'02-codex-mobile',390,844,'#dbeafe');
     const nativePicture=codex.contentItems.find(item=>item.type==='inputImage');
     check('Codex receives the actual PNG as an image tool result', nativePicture && /^data:image\/png;base64,/.test(nativePicture.imageUrl));

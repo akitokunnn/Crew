@@ -7,7 +7,7 @@ from urllib.parse import urlencode
 
 import tests
 from unittest import mock
-from crew import board, chat, codex_runtime, goals, hooks, messaging, runtimes, store, web
+from crew import board, chat, codex_runtime, goals, hooks, messaging, report_preview, runtimes, store, web
 import test_chat_http as chat_helpers
 import test_codex_runtime as codex_helpers
 from test_shell import ShellFixture, PLUGIN, NOW
@@ -73,6 +73,15 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.assertNotIn('goal_id', general)
         self.assertTrue(manager.busy(sid))
         self.assertTrue(all(manager.busy(key) for key in keys))
+        if runtime == 'claude':
+            directory = report_preview.image_directory(self.home, sid)
+            self.assertTrue(directory.is_dir())
+            self.assertNotEqual(directory, self.home.resolve())
+            self.assertNotEqual(directory, self.home.resolve() / 'report-previews')
+            for key in [sid, *keys]:
+                command = manager.processes[key].process.command
+                self.assertEqual(command[command.index('--add-dir') + 1], str(directory))
+                self.assertEqual(command.count('--add-dir'), 1)
         self.assertTrue(any(event.get('id') == 'parallel-general' for event in manager.journal(sid).events))
         for key in keys:
             self.assertFalse(any(event.get('id') == 'parallel-general' for event in manager.journal(key).events))

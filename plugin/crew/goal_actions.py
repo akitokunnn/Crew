@@ -145,7 +145,7 @@ def dispatch(home, actor_session_id, execution_id, action, data, controller=None
             if previews is None:
                 raise board.BoardError('当前 Crew 宿主不支持报告预览；尚未截图')
             return previews.capture(document, viewport=data.get('viewport', 'desktop'), title=goal['title'],
-                                    goal_id=goal_id, report_id=report_id)
+                                    goal_id=goal_id, report_id=report_id, actor_session_id=actor_session_id)
         if action in goal_artifacts.ACTIONS:
             return goal_artifacts.dispatch(conn, home, goal_id, action, data, actor=actor_session_id, execution_id=execution_id)
         if action == 'work.list':

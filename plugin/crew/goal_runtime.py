@@ -8,7 +8,7 @@ import subprocess
 import threading
 import uuid
 
-from . import board, goal_context, goals, install, messaging, models, native_handoff, runtimes, spawn, store, trust_mode
+from . import board, goal_context, goals, install, messaging, models, native_handoff, report_preview, runtimes, spawn, store, trust_mode
 
 
 BASE_INSTRUCTIONS = """你在 Crew 内执行一个有明确终点的目标；身份、目标与授权由宿主绑定。
@@ -275,6 +275,7 @@ class Controller:
                                 instructions=('你是 Crew「%s」的当前目标执行。目标规则和用户原始要求由宿主随输入装载；仅当前明确授权有效。' % session['crew_name']
                                               + ('\n' + spec['_workspace_notice'] if spec.get('_workspace_notice') else '')),
                                 permission_mode=permission_mode, plugin_root=self.manager.plugin_root,
+                                preview_directory=report_preview.image_directory(self.home, logical_id, create=True),
                                 **options)
         with closing(store.connect(self.home)) as prompt_conn:
             prompt_manifest = behavior_prompts.for_session(prompt_conn, logical_id, plugin_root=self.manager.plugin_root)

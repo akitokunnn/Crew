@@ -31,7 +31,7 @@ import json
 from pathlib import Path
 import sqlite3
 
-from . import board, decision_briefs, documents, goal_actions, goals, guard, message_receipts, personal, personal_actions, runtimes, session_ops, store, todo
+from . import board, decision_briefs, documents, goal_actions, goals, guard, message_receipts, personal, personal_actions, report_preview, runtimes, session_ops, store, todo
 
 
 class ToolError(ValueError):
@@ -244,15 +244,19 @@ def _result(data, success):
             "success": success}
 
 
-def _report_preview_result(data):
+def _report_preview_result(data, home, session_id):
     """Attach the host-produced PNG using the app-server's native image wire type."""
     if isinstance(data, dict) and data.get('ok') is False:
         return _result(data, False)
     preview = data.get('preview') if isinstance(data, dict) else None
     if not isinstance(preview, dict) or not preview.get('path'):
         return _result(data, True)
+    path = Path(preview['path'])
+    directory = report_preview.image_directory(home, session_id)
+    if not path.is_absolute() or path.resolve().parent != directory:
+        raise ToolError('preview_image_forbidden', '报告图片不属于当前 Crew 身份的预览目录')
     try:
-        image = Path(preview['path']).read_bytes()
+        image = path.read_bytes()
     except OSError as exc:
         # Capturing already succeeded. Keep its receipt and real attachment
         # failure so the caller can read the saved file without capturing again.
@@ -362,7 +366,7 @@ class CodexTools:
                         raise ToolError('goal_dispatch_blocked', gate['reason'])
                 data = self._dispatch(conn, actor, name, args)
             if name == 'crew_goal' and args['action'] == 'report.preview':
-                return _report_preview_result(data)
+                return _report_preview_result(data, self._home, self._session_id)
             return _result(data, True)
         except ToolError as exc:
             return _result({"error": {"code": exc.code, "message": str(exc)}}, False)
