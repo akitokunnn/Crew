@@ -16,18 +16,27 @@
   window.CrewContext = {tokens, ring, compactSize};
 })();
 (() => {
-  const turns = new Map();
+  const turns = new Map(), snapshotKeys = new Set();
   const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
   const escape = value => String(value).replace(/[&<>"']/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]);
-  let clockOffset = 0, frame = null;
+  let clockOffset = 0, serverNow = null, frame = null;
+  function updateClock(value) {
+    if (value === serverNow || !Number.isFinite(Date.parse(value))) return;
+    serverNow = value; clockOffset = Date.parse(value) - Date.now();
+  }
+  function timestamp(now) {
+    updateClock(now);
+    return new Date(Date.now() + clockOffset).toISOString();
+  }
   function tokenCount(turn, now) {
+    if (turn.to == null) return null;
     if (reducedMotion.matches) return turn.to;
     const fraction = Math.min(1, (now - turn.changedAt) / 2800);
     return turn.from + (turn.to - turn.from) * fraction;
   }
   function elapsed(at, now) {
     const seconds = Math.max(0, Math.floor((now + clockOffset - Date.parse(at)) / 1000));
-    return seconds < 60 ? `${seconds}秒` : `${Math.floor(seconds / 60)}分${seconds % 60}秒`;
+    return seconds < 60 ? `${seconds}秒` : seconds < 3600 ? `${Math.floor(seconds / 60)}分${seconds % 60}秒` : `${Math.floor(seconds / 3600)}小时${Math.floor(seconds % 3600 / 60)}分${seconds % 60}秒`;
   }
   function tokens(value) {
     return value < 1000 ? String(Math.floor(value)) : `${(value / 1000).toFixed(1)}k`;
@@ -40,7 +49,7 @@
   // Busy turns last hours: draw every frame only while a token count is rolling, otherwise a cheap tick keeps the clock moving.
   function schedule() {
     cancel();
-    if (turns.size === 0) return;
+    if (!document.querySelectorAll("[data-activity]").length) return;
     const now = Date.now();
     frame = [...turns.values()].some(turn => !reducedMotion.matches && turn.from !== turn.to && now - turn.changedAt < 2800)
       ? {animation:true, id:requestAnimationFrame(paint)} : {animation:false, id:setTimeout(paint, 250)};
@@ -53,34 +62,54 @@
       if (turn === undefined) { node.remove(); continue; }
       const clock = node.querySelector("[data-activity-elapsed]"), count = node.querySelector("[data-activity-tokens]");
       const clockText = elapsed(turn.startedAt, now), tokenText = `↓ ${tokens(tokenCount(turn, now))} tokens`;
-      if (clock.textContent !== clockText) clock.textContent = clockText;
+      if (clock !== null && clock.textContent !== clockText) clock.textContent = clockText;
       if (count !== null && count.textContent !== tokenText) count.textContent = tokenText;
     }
     schedule();
   }
-  function sync(state) {
-    const now = Date.now(), present = new Set();
-    clockOffset = Date.parse(state.now) - now;
-    for (const session of state.leaders.concat(state.members)) {
-      const activity = session.activity;
-      if (activity === null) continue;
-      present.add(session.session_id);
-      const previous = turns.get(session.session_id);
-      if (previous !== undefined && previous.startedAt === activity.turn_started_at && previous.to === activity.output_tokens) continue;
-      const from = previous === undefined || previous.startedAt !== activity.turn_started_at ? activity.output_tokens : tokenCount(previous, now);
-      turns.set(session.session_id, {startedAt:activity.turn_started_at, from, to:activity.output_tokens, changedAt:now});
-    }
-    for (const id of turns.keys()) if (!present.has(id)) turns.delete(id);
+  function track(key, activity) {
+    const now = Date.now(), previous = turns.get(key);
+    const startedAt = Number.isFinite(Date.parse(activity.turn_started_at)) ? activity.turn_started_at : previous?.startedAt || new Date(now + clockOffset).toISOString();
+    const count = activity.output_tokens ?? null;
+    if (previous !== undefined && previous.startedAt === startedAt && previous.to === count) return previous;
+    const from = previous === undefined || previous.startedAt !== startedAt || previous.to == null ? count : tokenCount(previous, now);
+    const turn = {startedAt, from, to:count, changedAt:now};
+    turns.set(key, turn);
+    return turn;
+  }
+  function release(key) {
+    turns.delete(key);
     schedule();
   }
-  function markup(session, compact = false) {
-    const activity = session.activity;
-    if (activity === null) return "";
-    const phase = activity.phase === "tool" ? `在跑：${activity.label}` : {requesting:"等模型回应", thinking:"思考中", writing:"在写回复", compacting:"压缩中"}[activity.phase];
-    const turn = turns.get(session.session_id), now = Date.now();
-    return `<span class="activity${compact ? " compact" : ""}" data-activity="${escape(session.session_id)}" role="status"><span class="spin" aria-hidden="true"></span><span class="activity-phase" title="${escape(phase)}">${escape(phase)}</span><span class="activity-elapsed" data-activity-elapsed>${elapsed(turn.startedAt, now)}</span>${activity.phase === "compacting" ? "" : `<span class="activity-tokens" data-activity-tokens>↓ ${tokens(tokenCount(turn, now))} tokens</span>`}</span>`;
+  function sync(state) {
+    const present = new Set();
+    updateClock(state.now);
+    for (const session of (state.leaders || []).concat(state.members || [])) {
+      const activity = session.activity;
+      if (!activity) continue;
+      present.add(session.session_id);
+      track(session.session_id, activity);
+    }
+    for (const id of snapshotKeys) if (!present.has(id)) turns.delete(id);
+    snapshotKeys.clear();
+    for (const id of present) snapshotKeys.add(id);
+    schedule();
   }
-  window.CrewActivity = {sync, markup};
+  // Rendering owns registration: every chat consumer gets the same live status,
+  // including pages that do not poll the workspace snapshot.
+  function render(key, activity, {compact = false, now} = {}) {
+    if (!activity) { release(key); return ""; }
+    updateClock(now);
+    const phase = activity.phase === "tool" ? `在跑：${activity.label}` : {requesting:"等模型回应", thinking:"思考中", writing:"在写回复", compacting:"压缩中", sending:"正在发送…", stopping:"正在停止…", confirming:"等待停止确认", discussion:"回复中"}[activity.phase] || "等模型回应";
+    const turn = track(key, activity), timestamp = Date.now();
+    // Queue the first tick after the caller inserts this markup into the DOM.
+    if (frame === null) frame = {animation:false, id:setTimeout(paint, 250)};
+    return `<span class="activity${compact ? " compact" : ""}" data-activity="${escape(key)}" role="status"><span class="spin" aria-hidden="true"></span><span class="activity-phase" title="${escape(phase)}">${escape(phase)}</span><span class="activity-elapsed" data-activity-elapsed>${elapsed(turn.startedAt, timestamp)}</span>${activity.phase === "compacting" || activity.output_tokens == null ? "" : `<span class="activity-tokens" data-activity-tokens>↓ ${tokens(tokenCount(turn, timestamp))} tokens</span>`}</span>`;
+  }
+  function markup(session, compact = false) {
+    return render(session.session_id, session.activity, {compact});
+  }
+  window.CrewActivity = {sync, markup, render, release, timestamp};
 })();
 (() => {
   const markdown = window.markdownit({ html: false, breaks: true, linkify: true });
@@ -493,10 +522,16 @@
       if (scope === context && (item.id === context.cache.unreadAnchor || item.unreadIds?.includes(context.cache.unreadAnchor))) desired.push({ key: "unread", className: "div unread unread-div", html: "以下是你离开后的消息" });
       desired.push({ key, className: "chat-event", html: itemHTML(scope, item) });
     }
-    if (!context.readonly && context.busy) {
-      const phase = context.confirmingStop ? "等待停止确认" : context.interrupting ? "正在停止…" : context.cache.sending ? "正在发送…" : context.responseMode === "discussion" ? "回复中" : "等模型回应";
-      const html = !context.confirmingStop && !context.interrupting && context.session.activity !== null ? CrewActivity.markup(context.session) : `<span class="activity" role="status"><span class="spin" aria-hidden="true"></span><span class="activity-phase">${phase}</span></span>`;
+    if (context.busy) {
+      const startedAt = context.turn?.startedAt || context.turnStart?.at || context.cache.waitingSince || CrewActivity.timestamp(context.state.now);
+      context.cache.waitingSince = startedAt;
+      const phase = context.confirmingStop ? "confirming" : context.interrupting ? "stopping" : context.cache.sending ? "sending" : context.session.activity?.phase || (context.responseMode === "discussion" ? "discussion" : "requesting");
+      const activity = {...context.session.activity, phase, turn_started_at:startedAt};
+      const html = CrewActivity.render(context.activityKey, activity, {now:context.state.now});
       desired.push({key:"activity", className:"chat-activity", html});
+    } else {
+      CrewActivity.release(context.activityKey);
+      context.cache.waitingSince = null;
     }
     let anchor = null;
     if (!follow && context.initialPosition === null) {
@@ -554,6 +589,7 @@
     if (busy && context.settledSeq !== null && seq <= context.settledSeq) return;
     context.busy = busy;
     if (!busy) {
+      context.cache.waitingSince = null;
       if (context.interrupting) context.interruptConfirmed = true;
       context.interrupting = false; context.interruptError = "";
     }
@@ -731,6 +767,7 @@
     const payload = { session_id: context.session.session_id, text, message_id:context.cache.pendingMessage.id, ...goalPayload(context) };
     if (context.cache.images.length > 0) payload.images = context.cache.images.slice();
     context.cache.sending = true;
+    if (!previousBusy) context.cache.waitingSince = CrewActivity.timestamp(context.state.now);
     context.cache.pendingSendSeq = sendSeq;
     context.busy = true;
     context.cache.deliveryError = "";
@@ -770,6 +807,7 @@
   }
   function mount(options) {
     unmount();
+    CrewActivity.timestamp(options.state.now);
     const cacheKey = `${scopeKey(options)}:${options.session.session_id}:${options.goalId ?? ""}`;
     let cache = sessions.get(cacheKey);
     if (!cache) {
@@ -780,7 +818,7 @@
         if (saved !== null) { const draft = JSON.parse(saved); cache.text = draft.text; cache.images = draft.images; }
       } catch (error) { options.toast(error.message); }
     }
-    const context = { ...options, session:options.goalId == null ? options.session : {...options.session,activity:null}, cache, items: [], byId: new Map(), nodes: new Map(), results: new Map(), toolOwners: new Map(), toolStops: new Map(), cursor: 0, readSeq: 0, busySeq: options.readonly || options.goalId != null ? 0 : options.session.last_seq, settledSeq:null, executionId:null, connectionGeneration:0, loadGeneration:0, readTimer: null, reconnectTimer: null, historyRetryTimer: null, historyFailed: false, interrupting: false, interruptError: "", interruptConfirmed: false, frame: null, loading: true, busy: cache.pendingSendSeq === null ? options.goalId == null && options.session.busy : true, reading: false, initialPosition: null, stream: null };
+    const context = { ...options, activityKey:`chat:${cacheKey}`, session:options.goalId == null ? options.session : {...options.session,activity:null}, cache, items: [], byId: new Map(), nodes: new Map(), results: new Map(), toolOwners: new Map(), toolStops: new Map(), cursor: 0, readSeq: 0, busySeq: options.readonly || options.goalId != null ? 0 : options.session.last_seq, settledSeq:null, executionId:null, connectionGeneration:0, loadGeneration:0, readTimer: null, reconnectTimer: null, historyRetryTimer: null, historyFailed: false, interrupting: false, interruptError: "", interruptConfirmed: false, frame: null, loading: true, busy: cache.pendingSendSeq === null ? options.goalId == null && options.session.busy : true, reading: false, initialPosition: null, stream: null };
     active = context;
     options.host.classList.add("chat-host");
     options.host.innerHTML = `<div class="chat-error chat-connection-error" role="alert" hidden></div><div class="scroll chat-scroll" tabindex="0" aria-label="${escape(options.session.name)}的对话记录"><div class="col chat-inner"></div></div><button type="button" class="jump" aria-label="回到最新消息">${icon("down")}回到最新</button>${options.readonly ? `<div class="readonly-note">${escape(options.readonlyReason || "此会话尚未由 Crew 托管。请先在原工具退出，再从会话操作中接管；历史记录保留。")}</div>` : `<div class="composer-wrap"><form class="composer"><div class="attach" hidden></div><textarea rows="1" aria-label="给 ${escape(options.session.name)} 发消息" placeholder="跟 ${escape(options.session.name)} 说…（可以直接粘贴截图）"></textarea><div class="c-row"><button type="button" class="icon-btn chat-image-button" title="附截图（也可以直接 Ctrl+V）" aria-label="添加图片">${icon("image")}</button><input class="chat-image-file" type="file" accept="image/*" multiple hidden><span class="hint"></span><button type="button" class="chat-stop" aria-label="停止当前回复" hidden><svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/></svg></button><button type="submit" class="send" aria-label="发送" disabled>${icon("up")}</button></div><div class="chat-interrupt-status" role="status" aria-live="polite" hidden></div><div class="chat-delivery-status" role="alert" hidden></div></form></div>`}`;
@@ -843,6 +881,7 @@
   function update(state, execution = null) {
     if (!active) return;
     active.state = state;
+    CrewActivity.timestamp(state.now);
     if (active.goalId != null && execution?.id === active.executionId && execution.response_mode) active.responseMode = execution.response_mode;
     const session = state.leaders.concat(state.members).find(item => item.session_id === active.session.session_id);
     if (session) {
@@ -859,6 +898,7 @@
     saveDraft(context); context.cache.scrollTop = context.scroll.scrollTop;
     context.stream?.abort(); clearTimeout(context.readTimer); clearTimeout(context.reconnectTimer); clearTimeout(context.historyRetryTimer);
     if (context.frame !== null) cancelAnimationFrame(context.frame);
+    CrewActivity.release(context.activityKey);
     document.removeEventListener("visibilitychange", context.visibility);
     active = null;
   }
