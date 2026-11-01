@@ -34,7 +34,7 @@
     );
   }
   async function refresh() {
-    if(loading)return;loading=true;clearTimeout(timer);
+    if(loading || window.CrewAccess?.expired)return;loading=true;clearTimeout(timer);
     try {
       if(!opened){await api("/api/assistant/open",{});opened=true;}
       const state=await api("/api/assistant/state");assistantSession=state.assistant.session_id;overview(state);error("");
@@ -53,5 +53,5 @@
   });
   $("assistant-prompts").onclick=()=>{const dialog=document.createElement("dialog");dialog.className="personal-notes-dialog assistant-prompts-dialog";dialog.innerHTML='<header><h2>助手行为配置</h2><button class="btn ghost" data-close aria-label="关闭行为配置">×</button></header><div data-prompts></div>';document.body.append(dialog);dialog.showModal();const cleanup=CrewBehaviorPrompts.mount(dialog.querySelector('[data-prompts]'),{read:query=>api("/api/behavior-prompts?"+new URLSearchParams(query)),save:body=>api("/api/behavior-prompts",body),session:assistantSession});const close=()=>{cleanup();dialog.close();dialog.remove();};dialog.querySelector('[data-close]').onclick=close;dialog.oncancel=event=>{event.preventDefault();close();};};
   $("assistant-notes").onclick=()=>CrewPersonalNotes.create({api,projects:currentProjects,onOpen:(project,sid)=>{location.href=`/?project=${encodeURIComponent(project)}#leader=${encodeURIComponent(sid)}`;}}).open();
-  void refresh();
+  (async()=>{if(window.CrewAccess && !await CrewAccess.ready)return;$("assistant-prompts").hidden=Boolean(window.CrewAccess&&!CrewAccess.local_controls);CrewChat.initFiles(api,toast);void refresh();})();
 })();

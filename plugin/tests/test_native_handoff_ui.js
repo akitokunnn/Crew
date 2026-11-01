@@ -3,6 +3,13 @@ const {test}=require("node:test"), assert=require("node:assert/strict"),vm=requi
 const window={};vm.runInNewContext(fs.readFileSync(path.join(__dirname,"../crew/web/native-handoff-ui.js"),"utf8"),{window});
 const ui=window.CrewNativeHandoff;
 const id="11111111-1111-4111-8111-111111111111";
+test("remote and unconfirmed browsers cannot offer a host desktop handoff",()=>{
+  const remoteWindow={CrewAccess:{local_desktop:false}};
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname,"../crew/web/native-handoff-ui.js"),"utf8"),{window:remoteWindow});
+  assert.equal(remoteWindow.CrewNativeHandoff.markup({session_id:"L",runtime:"codex",native_handoff:{native_id:id,state:"crew"}}),"");
+  remoteWindow.CrewAccess.local_desktop=true;
+  assert.match(remoteWindow.CrewNativeHandoff.markup({session_id:"L",runtime:"codex",native_handoff:{native_id:id,state:"crew"}}),/在 Codex 桌面继续/);
+});
 test("handoff always refers to the visible conversation and never offers unsupported Claude desktop continuity",()=>{
   const leader={session_id:"L",runtime:"codex",native_handoff:{native_id:id,state:"crew"}};
   assert.match(ui.markup(leader),/在 Codex 桌面继续/);

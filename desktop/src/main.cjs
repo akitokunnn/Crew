@@ -515,6 +515,8 @@ handle('desktop:settings-connection',()=>settingsRequest('/api/connections'));
 handle('desktop:settings-connection-save',body=>settingsRequest('/api/connections/configure',body));
 handle('desktop:settings-connection-action',body=>settingsRequest('/api/connections/action',body));
 handle('desktop:settings-connection-preferences',body=>settingsRequest('/api/connections/preferences',body));
+handle('desktop:remote-access-read',()=>settingsRequest('/api/remote-access'));
+handle('desktop:remote-access-action',body=>settingsRequest('/api/remote-access',body));
 handle('desktop:settings-away',away=>{
   if (typeof away !== 'boolean') throw Error('离开状态必须是 true 或 false');
   return settingsRequest('/api/notifications/away', {away});
@@ -533,7 +535,8 @@ handle('desktop:settings-ui',async()=>{
     ['executeJavaScript','operations-ui.js'], ['insertCSS','settings-ui.css'],
     ['insertCSS','behavior-prompts-ui.css'], ['executeJavaScript','behavior-prompts-ui.js'],
     ['executeJavaScript','settings-ui.js'], ['executeJavaScript','connections-ui.js'],
-    ['insertCSS','storage-ui.css'], ['executeJavaScript','storage-ui.js']
+    ['insertCSS','storage-ui.css'], ['executeJavaScript','storage-ui.js'],
+    ['insertCSS','remote-access-ui.css'], ['executeJavaScript','remote-access-ui.js']
   ]);
 });
 handle('desktop:workspace-ui',async()=>{

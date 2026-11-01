@@ -2,6 +2,7 @@
 (() => {
   const escape=value=>String(value??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
   function markup(person,execution=null) {
+    if (window.CrewAccess && !window.CrewAccess.local_desktop) return "";
     const source=execution||person,control=source.native_handoff;
     if(source.runtime!=="codex"||!control?.native_id)return "";
     const external=control.state!=="crew",changing=["releasing","returning"].includes(control.state);

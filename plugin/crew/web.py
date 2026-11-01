@@ -1,4 +1,4 @@
-"""Loopback-only board HTTP service with injectable external sources."""
+"""Local board API, with an independently authenticated LAN transport."""
 import csv
 import datetime as dt
 import hashlib
@@ -27,6 +27,7 @@ from . import codex_client, member_defaults, operations_chat, operations_setting
 from . import connections, session_presence, storage_cleanup, workspace_activity
 from .storage_service import StorageService, HISTORY_PREFIX
 from . import personal, native_home, native_handoff
+from . import remote_access, remote_http
 from .web_api import personal as personal_api
 from .web_api import behavior_prompts as behavior_prompts_api
 
@@ -100,6 +101,22 @@ class Service:
             projects = board.projects(conn)
             project = board.project_for_path(conn, Path.cwd() if cwd is None else cwd)
             self.default_project = project["name"] if project is not None else None
+        self.remote_access = remote_access.Controller(self.home, self._remote_listener)
+        self.remote_access.set_static_paths(STATIC)
+
+    def _remote_listener(self, controller, bind, port):
+        # Transport wiring shares the established API implementation. Remote
+        # authentication and lifecycle know no chat/goal/storage service state.
+        if port and port in FETCH_BLOCKED_PORTS:
+            raise board.BoardError('端口 %s 被浏览器 Fetch 禁用，请选择其他端口或使用 0 自动分配' % port)
+        for _ in range(MAX_BROWSER_PORT_ATTEMPTS if port == 0 else 1):
+            listener = remote_http.Listener(bind, port, Handler, controller)
+            if listener.port in FETCH_BLOCKED_PORTS:
+                listener.close()
+                continue
+            listener.server.service = self
+            return listener
+        raise board.BoardError('系统连续分配浏览器禁用端口，未启动远程访问；请显式选择可用端口')
 
     def now(self):
         if self.clock is None:
@@ -216,11 +233,12 @@ class Service:
         self.ci_worker.start()
         self.connections.start()
         self.storage_cleanup.start()
+        self.remote_access.start_saved()
 
     def close(self):
         self.stop.set()
         # Cancel independent digest natives before joining other pollers.
-        actions = [self.channel_digest.stop, self.storage_cleanup.close, self.connections.close]
+        actions = [self.channel_digest.stop, self.remote_access.shutdown, self.storage_cleanup.close, self.connections.close]
         if self.notice_worker is not None:
             actions.append(self.notice_worker.join)
         if self.ci_worker is not None:
@@ -954,6 +972,8 @@ class Service:
         return self._post(path, data, project_name)
 
     def _post(self, path, data, project_name):
+        if path == '/api/remote-access':
+            return self.remote_access.action(data)
         if path == '/api/behavior-prompts':
             return behavior_prompts_api.post(self.home, data)
         if path == '/api/personal/notes':
@@ -1736,15 +1756,25 @@ STATIC.update({'/assistant.html': ('assistant.html', 'text/html; charset=utf-8')
                '/assistant.css': ('assistant.css', 'text/css; charset=utf-8')})
 STATIC['/native-handoff-ui.js'] = ('native-handoff-ui.js', 'text/javascript; charset=utf-8')
 STATIC['/goal-work-ui.js'] = ('goal-work-ui.js', 'text/javascript; charset=utf-8')
+POST_PATHS.add('/api/remote-access')
+STATIC.update({'/access-context.js': ('access-context.js', 'text/javascript; charset=utf-8'),
+               '/remote-access-ui.js': ('remote-access-ui.js', 'text/javascript; charset=utf-8'),
+               '/remote-access-ui.css': ('remote-access-ui.css', 'text/css; charset=utf-8')})
 
 
 class Handler(BaseHTTPRequestHandler):
     def _connection_access(self):
+        if getattr(self.server, 'remote_controller', None) is not None:
+            return False
         port = self.server.server_port
         hosts = {'127.0.0.1:%d' % port, 'localhost:%d' % port, '[::1]:%d' % port}
         origins = self.headers.get_all('Origin')
         return (self.headers.get_all('Host') in ([host] for host in hosts)
                 and (origins is None or len(origins) == 1 and origins[0] in {'http://' + host for host in hosts}))
+
+    def _request_active(self):
+        controller = getattr(self.server, 'remote_controller', None)
+        return controller is None or controller.request_active(getattr(self, 'remote_identity', None))
 
     def _chat_events(self, journal, sequence):
         self.send_response(200)
@@ -1754,16 +1784,23 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.close_connection = True
         try:
-            while not self.server.service.stop.is_set():
-                events = journal.after(sequence, wait=True)
+            remote_stop = getattr(self.server, 'remote_stop_event', None)
+            heartbeat = time.monotonic()
+            while not self.server.service.stop.is_set() and self._request_active():
+                events = journal.after(sequence, wait=remote_stop is None)
+                if not self._request_active():
+                    break
                 for event in events:
                     self.wfile.write(("id: %s\ndata: %s\n\n" %
                                       (event["seq"], json.dumps(event, ensure_ascii=False))).encode("utf-8"))
                     sequence = event["seq"]
-                if not events:
+                if not events and (remote_stop is None or time.monotonic() - heartbeat >= 10):
                     self.wfile.write(b": heartbeat\n\n")
+                    heartbeat = time.monotonic()
                 self.wfile.flush()
-        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                if remote_stop is not None and not events and remote_stop.wait(.25):
+                    break
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
             pass
 
     def _send(self, code, content, content_type="application/json; charset=utf-8", attachment=None, cache_control='no-store'):
@@ -1820,9 +1857,11 @@ class Handler(BaseHTTPRequestHandler):
         local_settings_path = (url.path in ('/api/connections', '/api/connections/configure', '/api/connections/action', '/api/connections/preferences')
                                or url.path == '/api/storage' or url.path.startswith('/api/storage/'))
         local_settings_path = local_settings_path or url.path.startswith('/api/workspace-data/')
+        local_settings_path = local_settings_path or url.path == '/api/remote-access'
         if method == "POST":
             length = int(self.headers.get('Content-Length', '0'))
-            payload = self.rfile.read(length) if length > 0 else b''
+            payload = (self.remote_body if hasattr(self, 'remote_body')
+                       else self.rfile.read(length) if length > 0 else b'')
             if local_settings_path and not self._connection_access():
                 self._send(403, {'error': '此设置只允许本机 Crew 页面访问'})
                 return
@@ -1840,6 +1879,11 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, service.post(url.path, data, query.get("project", [None])[0]))
         elif local_settings_path and not self._connection_access():
             self._send(403, {'error': '此设置只允许本机 Crew 页面访问'})
+        elif url.path == '/api/access/context':
+            self._send(200, {'remote': False, 'authenticated': True,
+                             'local_controls': True, 'local_desktop': True})
+        elif url.path == '/api/remote-access':
+            self._send(200, service.remote_access.snapshot())
         elif url.path == '/api/workspace-data/history':
             self._send(200, service.storage.history(query['workspace_id'][0],
                 conversation_id=query.get('conversation_id',[None])[0],
@@ -1859,7 +1903,9 @@ class Handler(BaseHTTPRequestHandler):
             self._stream_storage_file(file, 'application/zip', attachment='workspace.crewpack')
         elif url.path == "/api/files/content":
             hosts = {"127.0.0.1:%d" % self.server.server_port, "localhost:%d" % self.server.server_port}
-            if self.headers.get_all("Host") not in ([host] for host in hosts):
+            remote = getattr(self.server, 'remote_controller', None)
+            remote_files = remote is not None and self._request_active()
+            if not remote_files and self.headers.get_all("Host") not in ([host] for host in hosts):
                 self._send(403, {"error": "\u6587\u4ef6\u8bfb\u53d6\u53ea\u5141\u8bb8\u672c\u673a Host"})
                 return
             document_id=int(query['document_id'][0]) if 'document_id' in query else None
@@ -2025,7 +2071,17 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle(self, method):
         try:
+            controller = getattr(self.server, 'remote_controller', None)
+            if controller is not None and controller.handle_request(self, method):
+                return
+            if controller is None and not self._connection_access():
+                self._send(403, {'error': '本机入口只接受本机 Crew 页面或客户端'})
+                self.close_connection = True
+                return
             self._dispatch(method)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            # A closed browser connection cannot receive an error response.
+            self.close_connection = True
         except board.Conflict as exc:
             self._send(409, {"error": str(exc)})
         except (board.BoardError, ValueError) as exc:

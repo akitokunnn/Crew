@@ -2,6 +2,8 @@
 
 V2 的独立默认 HOME 是 `~/.crew-v2`，应用和快捷方式名称为“Crew V2”。不会在 V1 HOME 中启动或更新，源码更新只检查 `rebuild/v2`。顶部全局助手跨工作区保持同一会话；工作区主页展示任务、讨论、拍板、人工 TODO 与成果。快速想法可先本地保存，再显式开始聊。设置中的“行为配置”提供作用域、版本和实际发送记录。
 
+设置中的“局域网访问”可开启独立网页入口、生成一次性配对码和移除设备。手机与其他电脑使用同一后台中的已有工作区和助手；本机文件管理、后台设置及原生桌面交接仍需在运行 Crew 的电脑上操作。访问默认关闭；电脑休眠或退出 Crew 后无法访问。详见 [0.3.4 使用与验证](../docs/v2/LAN_ACCESS_0.3.4_2026-11-01.md)。
+
 Windows Codex 桌面接续通过交接与返回按钮轮流使用同一原生对话。Crew 打开专用的官方桌面窗口；点“回到 Crew”时窗口可以保持打开，结束后也能再次交出。已有普通窗口的旧交接需先释放其连接并接回，才能进入新路径。真实两次往返、工具验证和官方标签历史缓存的显示边界见 [0.3.3 接续说明](../docs/v2/NATIVE_DESKTOP_0.3.3_2026-10-30.md)。V2 与 V1 并存，无需先导入旧数据。
 
 以下版本段落保留为基线演进记录，不代表本次新版本的验证结果。
@@ -122,6 +124,7 @@ node scripts/smoke.cjs --reuse
 node scripts/smoke.cjs --visual
 node scripts/smoke-workspaces.cjs
 node scripts/smoke-handoff.cjs
+node scripts/smoke-remote-access.cjs
 node scripts/verify-bundle.cjs
 node scripts/verify-icons.cjs "dist/win-unpacked/Crew V2.exe" "dist/Crew-V2-$crewVersion-portable.exe" "dist/Crew-V2-$crewVersion-setup.exe"
 ```
@@ -129,6 +132,8 @@ node scripts/verify-icons.cjs "dist/win-unpacked/Crew V2.exe" "dist/Crew-V2-$cre
 结果保存在 `smoke-output/source.json` / `packaged.json` / `portable.json` 及同名 PNG。单元测试另外覆盖已有服务复用、Git 根目录解析、新建仓库、已有文件保护与后端端口 0 / 优雅退出。
 
 `smoke-handoff.cjs` 在私有 HOME 用历史记录和假载体守卫验收交接、离线未知结果、真实失败、后续工具状态、折叠与多行草稿保留，以及窄窗深色外观；还核对“在干活”的 leader/下属总数、列表入口、组头人数和空态。证据和截图在 `smoke-output/handoff`。不会向模型发送输入。
+
+`smoke-remote-access.cjs` 使用真实源码桌面窗口、隔离后台与 SQLite，点通设置中的开启、配对、移除设备和关闭；验证原本机服务继续可用，模型启动数为零。结果与截图在 `../Temp/remote-desktop/current/`，`--old-bridge` 可恢复缺失 IPC 的旧错作反证。此脚本不支持包内注入钩子；打包版本用基础启动退出与 `verify-bundle.cjs` 的源码一致性检查。手机及浏览器旅程在根目录运行 `node plugin/tests/smoke_remote_access.cjs`，指定 `--lan-address <本机局域网IPv4>` 可使用真实网卡地址。
 
 启动与退出基准在仓库根目录执行 `node desktop/scripts/benchmark-lifecycle.cjs --label=after`。它使用空 HOME、复用 HOME、已有会话与三个工作区的测试 HOME，另验证借用后台、收起恢复，以及窗口销毁后的排队回调；每次都确认假载体守卫生效且模型启动次数为零。`--desktop=<基线源码中的desktop目录>` 可测另一份冻结源码，`--output=<JSON路径>` 保存结果。“空 HOME”不表示清空操作系统文件缓存，启动就绪与真正进程退出分别计时。
 

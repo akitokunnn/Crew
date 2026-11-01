@@ -302,6 +302,7 @@ class DigestExitLifecycleTests(unittest.TestCase):
         actions = []
         service = SimpleNamespace(stop=threading.Event(),
             channel_digest=SimpleNamespace(stop=lambda: actions.append('digest-stop'), close=lambda: actions.append('digest-join')),
+            remote_access=SimpleNamespace(shutdown=lambda: actions.append('remote')),
             storage_cleanup=SimpleNamespace(close=lambda: actions.append('storage')),
             connections=SimpleNamespace(close=lambda: actions.append('connections')),
             notice_worker=SimpleNamespace(join=lambda: self.assertEqual(actions[0], 'digest-stop')),
@@ -309,7 +310,7 @@ class DigestExitLifecycleTests(unittest.TestCase):
             maintenance=SimpleNamespace(close=lambda: actions.append('maintenance')), worker=None)
         web.Service.close(service)
         self.assertTrue(service.stop.is_set())
-        self.assertEqual(actions, ['digest-stop', 'storage', 'connections', 'chat', 'maintenance', 'digest-join'])
+        self.assertEqual(actions, ['digest-stop', 'remote', 'storage', 'connections', 'chat', 'maintenance', 'digest-join'])
 
     def test_native_creation_in_progress_is_registered_before_close_can_snapshot_ownership(self):
         entered, release = threading.Event(), threading.Event()
@@ -351,6 +352,7 @@ class DigestExitLifecycleTests(unittest.TestCase):
             raise failure
         service = SimpleNamespace(stop=threading.Event(),
             channel_digest=SimpleNamespace(stop=stop_digest, close=lambda: actions.append('digest-join')),
+            remote_access=SimpleNamespace(shutdown=lambda: actions.append('remote')),
             storage_cleanup=SimpleNamespace(close=lambda: actions.append('storage')),
             connections=SimpleNamespace(close=lambda: actions.append('connections')),
             notice_worker=None, ci_worker=None, chat=SimpleNamespace(close=lambda: actions.append('chat')),
@@ -359,7 +361,7 @@ class DigestExitLifecycleTests(unittest.TestCase):
             with self.assertRaises(OSError) as raised:
                 web.Service.close(service)
         self.assertIs(raised.exception, failure)
-        self.assertEqual(actions, ['digest-stop', 'storage', 'connections', 'chat', 'maintenance', 'digest-join'])
+        self.assertEqual(actions, ['digest-stop', 'remote', 'storage', 'connections', 'chat', 'maintenance', 'digest-join'])
         logged.assert_called_once()
 
 

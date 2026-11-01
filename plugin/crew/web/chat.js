@@ -182,7 +182,11 @@
         if (info.error !== null) throw Error(info.error);
         const renderingSession = documentLink ? (typeof info.session_id === "string" ? info.session_id : "") : data.session_id;
         const resolved = documentLink ? {document_id:data.document_id} : {path:info.path, session_id:data.session_id};
-        if (info.type === "external" && info.open_with === "default") { await api("/api/files/open", resolved); return; }
+        const localDesktop = !window.CrewAccess || window.CrewAccess.local_desktop;
+        if (info.type === "external" && info.open_with === "default") {
+          if (!localDesktop) throw Error("此格式暂不能在浏览器预览，请在运行 Crew 的电脑上查看。任务报告可从“交付与文档”打开。");
+          await api("/api/files/open", resolved); return;
+        }
         let content;
         if (info.type === "preview" && info.kind !== "image") {
           const response = await fetch(fileContentUrl(info.path, data.session_id || "", null, false, documentLink ? data.document_id : null));
@@ -191,17 +195,17 @@
         }
         if (sequence !== request) return;
         const openLabel = info.open_with === "vscode" ? "在 VS Code 打开" : "用默认程序打开";
-        const openButton = info.open_with === "blocked" ? "" : `<button class="btn file-open">${openLabel}</button>`;
-        panel.innerHTML = `<div class="card-head"><div class="file-title">${escape(info.path)}</div><button class="icon-btn file-close" aria-label="\u5173\u95ed">&times;</button></div><div class="card-actions">${openButton}<button class="btn file-reveal">\u5728\u6587\u4ef6\u5939\u4e2d\u663e\u793a</button></div><div class="card-body file-body"></div>`;
+        const openButton = !localDesktop || info.open_with === "blocked" ? "" : `<button class="btn file-open">${openLabel}</button>`;
+        panel.innerHTML = `<div class="card-head"><div class="file-title">${escape(info.path)}</div><button class="icon-btn file-close" aria-label="\u5173\u95ed">&times;</button></div>${localDesktop ? `<div class="card-actions">${openButton}<button class="btn file-reveal">\u5728\u6587\u4ef6\u5939\u4e2d\u663e\u793a</button></div>` : ""}<div class="card-body file-body"></div>`;
         const body = panel.querySelector(".file-body");
-        if (info.open_with === "blocked") body.textContent = "这类文件不直接打开，请用‘在文件夹中显示’";
+        if (info.open_with === "blocked") body.textContent = localDesktop ? "这类文件不直接打开，请用‘在文件夹中显示’" : "此格式暂不能在浏览器预览，请在运行 Crew 的电脑上查看。";
         else if (info.kind === "image") body.innerHTML = `<img class="file-image" alt="${escape(info.path)}" src="${escape(fileContentUrl(info.path, data.session_id || "", null, true, documentLink ? data.document_id : null))}">`;
         else {
           if (content.truncated) body.innerHTML = `<p class="note">\u6587\u4ef6\u8f83\u5927\uff0c\u4ec5\u663e\u793a${escape(content.portion)} 256 KiB</p>`;
           body.innerHTML += info.kind === "markdown" ? `<div class="markdown">${renderMarkdown(content.content, renderingSession, info.path)}</div>` : `<pre class="file-text">${escape(content.content)}</pre>`;
         }
         panel.querySelector(".file-close").onclick = () => { request++; panel.classList.remove("show"); };
-        for (const action of (info.open_with === "blocked" ? ["reveal"] : ["open", "reveal"])) panel.querySelector(".file-" + action).onclick = async () => {
+        for (const action of (!localDesktop ? [] : info.open_with === "blocked" ? ["reveal"] : ["open", "reveal"])) panel.querySelector(".file-" + action).onclick = async () => {
           try { await api("/api/files/" + action, resolved); } catch (error) { toast(error.message); }
         };
         panel.classList.add("show");

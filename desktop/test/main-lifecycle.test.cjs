@@ -6,6 +6,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const { pathToFileURL } = require('node:url');
+const http = require('node:http');
+const { listen } = require('./fixtures/loopback.cjs');
 
 const source = fs.readFileSync(process.env.CREW_MAIN_LIFECYCLE_SOURCE || path.join(__dirname, '../src/main.cjs'), 'utf8');
 const tick = async () => { for (let index = 0; index < 80; index++) await Promise.resolve(); };
@@ -73,7 +75,7 @@ function harness(options = {}) {
     nativeImage:{ createFromPath:() => ({}) }, shell:{ openExternal:async () => {}, openPath:async () => {} },
     dialog:{ showMessageBox:async (...args) => { calls.dialogs++; if (args[0] instanceof Window) args[0].alive(); return { response:1 }; }, showOpenDialog:async () => ({ canceled:true }) } };
   class Backend {
-    constructor() { this.url = 'http://127.0.0.1:12345'; }
+    constructor() { this.url = options.backendUrl || 'http://127.0.0.1:12345'; }
     async start() { calls.backendStart++; await options.backendStart?.promise; }
     async stop() { calls.backendStop++; await options.backendStop?.promise; }
   }
@@ -123,7 +125,7 @@ function harness(options = {}) {
     './core.cjs':{ options:() => config, Backend, loopback:value => value,
       projects:async () => projectGate ? projectGate.promise : [{ name:'demo' }],
       projectLocations:async items => items.map(item => ({ ...item, directory_state:{ status:'ready' } })),
-      request:async (_base,route) => options.storageWrite&&route.startsWith('/api/workspace-data/')?options.storageWrite.promise:{} },
+      request:async (base,route,body,timeoutMs) => options.request ? options.request(base,route,body,timeoutMs) : options.storageWrite&&route.startsWith('/api/workspace-data/')?options.storageWrite.promise:{} },
     './storage.cjs':{ prepare:async (project,base,_choose,_progress,request) => {if(options.storageWrite)await request(base,'/api/workspace-data/open',{});return project;} },
     './chrome.cjs':{ windowOptions:() => ({}) }, './tabs.cjs':{ WorkspaceTabs:Tabs },
     './activity-preview.cjs':{ ActivityPreview:Preview }, './permissions.cjs':{ installPermissions() {} },
@@ -150,6 +152,45 @@ function harness(options = {}) {
 test('desktop bridge configuration points outside ASAR in packaged mode and at local assets in development', () => {
   assert.equal(harness().config.codexDesktopProxy, path.resolve(__dirname, '../assets/CrewCodexBridge.exe'));
   assert.equal(harness({ packaged:true }).config.codexDesktopProxy, path.resolve('fixture resources', 'app.asar.unpacked', 'assets', 'CrewCodexBridge.exe'));
+});
+
+test('remote access IPC reads and changes the connected backend only from the trusted home', async t => {
+  const requests=[];
+  const server=http.createServer(async(req,res)=>{
+    let text='';for await(const chunk of req)text+=chunk;
+    const body=text?JSON.parse(text):null;requests.push({url:req.url,method:req.method,body,crew:req.headers['x-crew']});
+    res.setHeader('Content-Type','application/json');
+    if(body?.action==='revoke'){res.writeHead(409);res.end(JSON.stringify({error:'设备已被移除，请刷新列表'}));return;}
+    res.end(JSON.stringify(body?.action==='pair'?{code:'123456',expires_at:'2026-11-01T12:05:00Z'}:{enabled:false,port:null,urls:[],devices:[],pair_pending:false}));
+  });
+  await listen(server);t.after(()=>new Promise(resolve=>server.close(resolve)));
+  const h=harness({backendUrl:'http://127.0.0.1:'+server.address().port,request:require('../src/core.cjs').request});await h.boot();
+  assert.deepEqual(await h.invoke('desktop:remote-access-read'),{enabled:false,port:null,urls:[],devices:[],pair_pending:false});
+  assert.deepEqual(await h.invoke('desktop:remote-access-action',{action:'pair'}),{code:'123456',expires_at:'2026-11-01T12:05:00Z'});
+  await assert.rejects(h.invoke('desktop:remote-access-action',{action:'revoke',device_id:'missing'}),/设备已被移除，请刷新列表/);
+  assert.deepEqual(requests,[
+    {url:'/api/remote-access',method:'GET',body:null,crew:'1'},
+    {url:'/api/remote-access',method:'POST',body:{action:'pair'},crew:'1'},
+    {url:'/api/remote-access',method:'POST',body:{action:'revoke',device_id:'missing'},crew:'1'}
+  ]);
+  const contents=h.windows[0].webContents;
+  for(const channel of ['desktop:remote-access-read','desktop:remote-access-action']){
+    for(const event of [{sender:{},senderFrame:contents.mainFrame},{sender:contents,senderFrame:{url:contents.mainFrame.url}},{sender:contents,senderFrame:{url:'https://example.test/'}}])
+      await assert.rejects(h.handlers.get(channel)(event,{action:'start'}),/只允许来自 Crew 工作区首页/);
+  }
+  assert.equal(requests.length,3,'untrusted frames must not reach the backend');
+  h.app.quit();await tick();
+});
+
+test('remote access completion after window shutdown does not access the closed window or repeat an action', async t => {
+  const received=deferred();let respond,requests=0;
+  const server=http.createServer((req,res)=>{requests++;req.resume();respond=()=>{res.setHeader('Content-Type','application/json');res.end(JSON.stringify({ok:true}));};received.resolve();});
+  await listen(server);t.after(()=>new Promise(resolve=>server.close(resolve)));
+  const h=harness({backendUrl:'http://127.0.0.1:'+server.address().port,request:require('../src/core.cjs').request});await h.boot();
+  const pending=h.invoke('desktop:remote-access-action',{action:'stop'});await received.promise;
+  h.app.quit();await tick();assert.equal(h.windows[0].isDestroyed(),true);const uiCalls=h.calls.uiCalls;
+  respond();assert.deepEqual(await pending,{ok:true});assert.equal(h.calls.uiCalls,uiCalls);assert.equal(requests,1);
+  await assert.rejects(h.invoke('desktop:remote-access-read'),/只允许来自 Crew 工作区首页/);
 });
 
 test('normal close keeps the shell alive and explicit quit cleans it up exactly once', async () => {
