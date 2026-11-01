@@ -25,6 +25,18 @@ function harness(){
 }
 const history=()=>({events:[],busy:false,read_seq:0});
 
+test("rendering an idle neighbor keeps a newly inserted activity clock moving",()=>{
+  const h=harness(),now=Date.now(),startedAt=new Date(now).toISOString();
+  const html=h.sandbox.CrewActivity.render("visible",{phase:"requesting",turn_started_at:startedAt});
+  assert.match(html,/data-activity-elapsed>0秒/);
+  h.sandbox.CrewActivity.markup({session_id:"idle-neighbor",activity:null});
+  const clock={textContent:"0秒"};
+  h.sandbox.document.querySelectorAll=()=>[{dataset:{activity:"visible"},querySelector:selector=>selector==='[data-activity-elapsed]'?clock:null}];
+  h.sandbox.CrewActivity.timestamp(new Date(now+2000).toISOString());
+  for(const [id,timer]of [...h.timers]){h.timers.delete(id);timer.fn();}
+  assert.equal(clock.textContent,"2秒");h.sandbox.CrewActivity.release("visible");
+});
+
 test("Claude and Codex chats render live tokens without a page-level activity sync",async()=>{
   for(const runtime of ["claude","codex"]){
     const h=harness(),startedAt=new Date(Date.now()-65000).toISOString();

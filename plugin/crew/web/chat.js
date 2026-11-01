@@ -78,8 +78,10 @@
     return turn;
   }
   function release(key) {
-    turns.delete(key);
-    schedule();
+    if (!turns.delete(key)) return;
+    // A sibling may still be preparing its markup before insertion into the DOM.
+    // Preserve that first tick; it also clears any released nodes still present.
+    if (frame === null) schedule();
   }
   function sync(state) {
     const present = new Set();
