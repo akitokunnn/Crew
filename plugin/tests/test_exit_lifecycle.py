@@ -11,7 +11,7 @@ from types import MethodType, SimpleNamespace
 import unittest
 from unittest import mock
 
-from crew import channel, channel_digest, chat, codex_runtime, connections, notifications, settings, web
+from crew import channel, channel_digest, chat, codex_runtime, connections, notifications, report_preview, settings, web
 from test_chat import FakeProcess
 import test_channel
 from test_channel_digest import CARD
@@ -300,7 +300,10 @@ class DigestExitLifecycleTests(unittest.TestCase):
 
     def test_service_broadcasts_digest_cancellation_before_waiting_for_other_workers(self):
         actions = []
+        previews = report_preview.Manager(self.home)
+        self.addCleanup(previews.close)
         service = SimpleNamespace(stop=threading.Event(),
+            report_previews=previews,
             channel_digest=SimpleNamespace(stop=lambda: actions.append('digest-stop'), close=lambda: actions.append('digest-join')),
             remote_access=SimpleNamespace(shutdown=lambda: actions.append('remote')),
             storage_cleanup=SimpleNamespace(close=lambda: actions.append('storage')),
@@ -311,6 +314,9 @@ class DigestExitLifecycleTests(unittest.TestCase):
         web.Service.close(service)
         self.assertTrue(service.stop.is_set())
         self.assertEqual(actions, ['digest-stop', 'remote', 'storage', 'connections', 'chat', 'maintenance', 'digest-join'])
+        preview = previews.capture('<p>Isolated shutdown fixture</p>', title='Shutdown', goal_id='fixture')
+        self.assertFalse(preview['ok'])
+        self.assertIn('宿主已关闭', preview['error'])
 
     def test_native_creation_in_progress_is_registered_before_close_can_snapshot_ownership(self):
         entered, release = threading.Event(), threading.Event()
@@ -346,11 +352,14 @@ class DigestExitLifecycleTests(unittest.TestCase):
 
     def test_service_close_failure_preserves_exception_after_closing_other_owned_resources(self):
         actions = []
+        previews = report_preview.Manager(self.home)
+        self.addCleanup(previews.close)
         failure = OSError('fixture digest termination denied')
         def stop_digest():
             actions.append('digest-stop')
             raise failure
         service = SimpleNamespace(stop=threading.Event(),
+            report_previews=previews,
             channel_digest=SimpleNamespace(stop=stop_digest, close=lambda: actions.append('digest-join')),
             remote_access=SimpleNamespace(shutdown=lambda: actions.append('remote')),
             storage_cleanup=SimpleNamespace(close=lambda: actions.append('storage')),
@@ -363,6 +372,9 @@ class DigestExitLifecycleTests(unittest.TestCase):
         self.assertIs(raised.exception, failure)
         self.assertEqual(actions, ['digest-stop', 'remote', 'storage', 'connections', 'chat', 'maintenance', 'digest-join'])
         logged.assert_called_once()
+        preview = previews.capture('<p>Isolated shutdown fixture</p>', title='Shutdown', goal_id='fixture')
+        self.assertFalse(preview['ok'])
+        self.assertIn('宿主已关闭', preview['error'])
 
 
 if __name__ == '__main__':
