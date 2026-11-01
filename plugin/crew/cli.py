@@ -295,7 +295,7 @@ def parser():
     payload = a.add_mutually_exclusive_group()
     payload.add_argument('--data', help='JSON action payload')
     payload.add_argument('--file', type=Path, help='UTF-8 JSON action payload')
-    for namespace, actions in (('goal', ('create','status','start','pause','resume','cancel','reopen','amend','assign','report-template','report.get','report.publish','mode.set','finish','work.list','work.add','work.update','versions.list','versions.preview','versions.file','version.capture','version.restore')),
+    for namespace, actions in (('goal', ('create','status','start','pause','resume','cancel','reopen','amend','assign','report-template','report.get','report.preview','report.publish','mode.set','finish','work.list','work.add','work.update','versions.list','versions.preview','versions.file','version.capture','version.restore')),
                                ('context', ('inspect','retrieve','put','correct','expire'))):
         goal_parser = command(namespace, True)
         goal_parser.set_defaults(json=True)
@@ -310,8 +310,9 @@ def parser():
             payload = entry.add_mutually_exclusive_group()
             payload.add_argument('--data', help='JSON object containing action data')
             payload.add_argument('--file', type=Path, help='UTF-8 JSON action data/report file')
+            if namespace == 'goal' and action in ('finish', 'report.publish', 'report.preview'):
+                entry.add_argument('--html-file', type=Path, help='读取自包含 HTML 正文，供报告保存或桌面预览')
             if namespace == 'goal' and action in ('finish', 'report.publish'):
-                entry.add_argument('--html-file', type=Path, help='读取自包含 HTML 正文，与验收 JSON 一起保存')
                 entry.add_argument('--request-id', default=argparse.SUPPRESS)
             for name in ('title','request','leader','to','task','text','reason','item','kind','source'):
                 entry.add_argument('--' + name, default=argparse.SUPPRESS)
@@ -537,7 +538,7 @@ def _goal_command(args, cwd):
     html_file = getattr(args, 'html_file', None)
     if html_file is not None:
         from . import report_documents
-        report = payload.get('report')
+        report = payload if action == 'report.preview' else payload.get('report')
         if not isinstance(report, dict):
             raise board.BoardError('finish.report 必须为对象')
         if report.get('document_html'):
@@ -566,12 +567,15 @@ def _goal_command(args, cwd):
     with contextlib.closing(store.connect(args.home)) as conn:
         project = _project(conn, args, cwd)
     payload.setdefault('project', project)
-    if action in goal_actions.READ_ACTIONS:
+    if action in goal_actions.READ_ACTIONS and action != 'report.preview':
         return goal_actions.dispatch(args.home, _actor(args), execution_id, action, payload)
-    # All CLI mutations go through the existing owner process; no offline
-    # fallback can accidentally launch or duplicate an execution.
-    return spawn.request_start(args.home, project, '/api/goals/agent',
-                               {'action': action, 'data': payload, 'actor_session_id': _actor(args), 'execution_id': execution_id})
+    # Mutations and desktop report previews need the existing owner process;
+    # no offline fallback can launch or duplicate an execution.
+    result = spawn.request_start(args.home, project, '/api/goals/agent',
+                                 {'action': action, 'data': payload, 'actor_session_id': _actor(args), 'execution_id': execution_id})
+    if action == 'report.preview' and isinstance(result, dict) and result.get('ok') is False:
+        raise board.BoardError(str(result.get('error') or '报告预览未完成'))
+    return result
 
 
 def _personal_command(args):

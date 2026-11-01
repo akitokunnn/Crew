@@ -24,7 +24,7 @@ def _check_ignore(root):
         raise board.BoardError('Git 工作区忽略规则检查无法执行：'+str(exc)) from exc
 
 def command(session_id, name, role, resume=False, model=None, effort=None, agent=None, runtime="claude", instructions=None,
-            permission_mode='default', plugin_root=None):
+            permission_mode='default', plugin_root=None, preview_directory=None):
     models.validate_options(model, effort, runtime=runtime)
     if runtime == "codex":
         # Model, effort, start/resume and native thread id are RPC parameters;
@@ -39,6 +39,8 @@ def command(session_id, name, role, resume=False, model=None, effort=None, agent
         # this session. A user-level plugin is only needed by Claude sessions
         # started independently in a terminal or editor.
         args += ["--plugin-dir", str(Path(plugin_root).resolve())]
+    if preview_directory is not None:
+        args += ['--add-dir', str(Path(preview_directory).resolve())]
     if permission_mode != 'default':
         args += ['--permission-mode', permission_mode]
     if instructions is not None:

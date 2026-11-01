@@ -72,6 +72,15 @@ class ModelWakeTests(shell.ShellFixture, unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Haiku.*不支持 effort"):
             spawn.command("sid", "name", "member", model=HAIKU, effort="low")
 
+    def test_preview_directory_only_extends_claude_file_access(self):
+        directory = self.root / 'preview images'
+        for role in ('leader', 'member'):
+            command = spawn.command('sid', 'name', role, preview_directory=directory)
+            self.assertEqual(command[command.index('--add-dir') + 1], str(directory.resolve()))
+            self.assertEqual(command.count('--add-dir'), 1)
+        command = spawn.command('sid', 'name', 'leader', runtime='codex', preview_directory=directory)
+        self.assertNotIn('--add-dir', command)
+
     def test_leader_options_saved_and_invalid_choices_fail_before_launch(self):
         code, result = self.request("/api/leader", {"name": "option-boss", "model": OPUS, "effort": "xhigh"})
         self.assertEqual(code, 200, result)

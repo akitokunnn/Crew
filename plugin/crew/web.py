@@ -28,6 +28,7 @@ from . import connections, session_presence, storage_cleanup, workspace_activity
 from .storage_service import StorageService, HISTORY_PREFIX
 from . import personal, native_home, native_handoff
 from . import remote_access, remote_http
+from . import report_preview
 from .web_api import personal as personal_api
 from .web_api import behavior_prompts as behavior_prompts_api
 
@@ -68,6 +69,8 @@ class Service:
         self.version = updater.manifest_version(self.plugin_root)
         self.update_drain_seconds = 10
         self.chat = chat.Manager(home, plugin_root, agents_provider, process_factory)
+        self.report_previews = report_preview.Manager(home)
+        self.chat.report_previews = self.report_previews
         self.runtime_catalog = runtime_catalog.Catalog()
         self.claude_root = Path.home() / ".claude" / "projects" if claude_root is None else Path(claude_root)
         self.codex_root = native_home.codex_sessions() if codex_root is None else Path(codex_root)
@@ -238,7 +241,7 @@ class Service:
     def close(self):
         self.stop.set()
         # Cancel independent digest natives before joining other pollers.
-        actions = [self.channel_digest.stop, self.remote_access.shutdown, self.storage_cleanup.close, self.connections.close]
+        actions = [self.report_previews.close, self.channel_digest.stop, self.remote_access.shutdown, self.storage_cleanup.close, self.connections.close]
         if self.notice_worker is not None:
             actions.append(self.notice_worker.join)
         if self.ci_worker is not None:
@@ -966,12 +969,23 @@ class Service:
             return self.cancel_update(data)
         if path == '/api/admin/connection/prepare':
             return self.prepare_connection(data)
+        if path == '/api/goals/agent' and data.get('action') == 'report.preview':
+            # Capturing an existing report starts no model work.
+            return self._post(path, data, project_name)
         if path in MODEL_WORK or path.startswith("/api/goals/") or path in ("/api/native-approval", "/api/decision/discuss", "/api/decision/clarify", "/api/project/update", "/api/project/remove", "/api/maintenance/cleanup"):
             with self.chat.work():
                 return self._post(path, data, project_name)
         return self._post(path, data, project_name)
 
     def _post(self, path, data, project_name):
+        if path in report_preview.WORKER_PATHS:
+            return self.report_previews.action(path.rsplit('/', 1)[-1], data)
+        if path == '/api/goals/agent' and data.get('action') == 'report.preview':
+            # This read-like operation waits on a desktop worker. Keep the
+            # shared write lock free for that worker and unrelated projects.
+            with closing(store.connect(self.home)) as conn:
+                project = self.selected_project(conn, project_name)
+                return goal_api.post(self, conn, project, path, data)
         if path == '/api/remote-access':
             return self.remote_access.action(data)
         if path == '/api/behavior-prompts':
@@ -1757,6 +1771,7 @@ STATIC.update({'/assistant.html': ('assistant.html', 'text/html; charset=utf-8')
 STATIC['/native-handoff-ui.js'] = ('native-handoff-ui.js', 'text/javascript; charset=utf-8')
 STATIC['/goal-work-ui.js'] = ('goal-work-ui.js', 'text/javascript; charset=utf-8')
 POST_PATHS.add('/api/remote-access')
+POST_PATHS.update(report_preview.WORKER_PATHS)
 STATIC.update({'/access-context.js': ('access-context.js', 'text/javascript; charset=utf-8'),
                '/browser-utils.js': ('browser-utils.js', 'text/javascript; charset=utf-8'),
                '/remote-access-ui.js': ('remote-access-ui.js', 'text/javascript; charset=utf-8'),
@@ -1859,8 +1874,13 @@ class Handler(BaseHTTPRequestHandler):
                                or url.path == '/api/storage' or url.path.startswith('/api/storage/'))
         local_settings_path = local_settings_path or url.path.startswith('/api/workspace-data/')
         local_settings_path = local_settings_path or url.path == '/api/remote-access'
+        local_settings_path = local_settings_path or url.path in report_preview.WORKER_PATHS
         if method == "POST":
             length = int(self.headers.get('Content-Length', '0'))
+            if url.path in report_preview.WORKER_PATHS and length > report_preview.MAX_BODY:
+                self.close_connection = True
+                self._send(413, {'error': '报告预览 worker 请求超过大小限制'})
+                return
             payload = (self.remote_body if hasattr(self, 'remote_body')
                        else self.rfile.read(length) if length > 0 else b'')
             if local_settings_path and not self._connection_access():

@@ -26,11 +26,12 @@ in the router or a per-request wrapper, rather than treating text as a unique id
 """
 import contextlib
 import copy
+import base64
 import json
 from pathlib import Path
 import sqlite3
 
-from . import board, decision_briefs, documents, goal_actions, goals, guard, message_receipts, personal, personal_actions, runtimes, session_ops, store, todo
+from . import board, decision_briefs, documents, goal_actions, goals, guard, message_receipts, personal, personal_actions, report_preview, runtimes, session_ops, store, todo
 
 
 class ToolError(ValueError):
@@ -102,7 +103,7 @@ _SPECS = [
           'Rejection remains actionable. This records requests/results; it does not run Git or merge code.',
           {'action': {'type': 'string', 'enum': list(_GIT_DATA)},
            'data': {'type': 'object', 'additionalProperties': True}}, ('action',)),
-    _spec('crew_goal', 'Explicit goal actions: status, create, start, pause, resume, cancel, reopen, amend, assign, work.list/add/update, report-template, report.get, report.publish, finish, versions.list/preview/file, version.capture. AI work uses work.add with stable key, title, acceptance, optional owner_session_id/dependencies; work.update uses key, version, status and evidence/reason note. Never put AI work in human TODO. Publish a real milestone with report.publish data.report outcome=progress and stable request_id; this keeps the task running. Capture explicit relative files with version.capture data.files,label,request_id. Restore and decision-mode changes require the user. Final delivery uses task-specific offline HTML in data.report.document_html alongside acceptance evidence; report-template explains the format. Ordinary Q&A creates no goal.',
+    _spec('crew_goal', 'Explicit goal actions: status, create, start, pause, resume, cancel, reopen, amend, assign, work.list/add/update, report-template, report.get, report.preview, report.publish, finish, versions.list/preview/file, version.capture. Preview report HTML with report.preview data.document_html (draft) or data.report_id (saved), plus viewport=desktop|mobile; the Crew desktop captures it and returns metadata plus a native image. Inspect the image before judging layout; a screenshot does not verify interactions. AI work uses work.add with stable key, title, acceptance, optional owner_session_id/dependencies; work.update uses key, version, status and evidence/reason note. Never put AI work in human TODO. Publish a real milestone with report.publish data.report outcome=progress and stable request_id; this keeps the task running. Capture explicit relative files with version.capture data.files,label,request_id. Restore and decision-mode changes require the user. Final delivery uses task-specific offline HTML in data.report.document_html alongside acceptance evidence; report-template explains the format. Ordinary Q&A creates no goal.',
           {'action': _text('Action name.', max_length=100), 'goal_id': _text('Goal id; omitted uses the bound execution.', max_length=100),
            'data': {'type': 'object', 'additionalProperties': True}}, ('action',)),
     _spec('crew_context', 'Inspect, retrieve or correct sourced context bound to your Crew identity and goal. Actions: inspect, retrieve, put, correct, expire. retrieve searches portable history with data.query, known_versions and limit_chars (max 6000). Preparing context does not mean the model read it.',
@@ -243,6 +244,30 @@ def _result(data, success):
             "success": success}
 
 
+def _report_preview_result(data, home, session_id):
+    """Attach the host-produced PNG using the app-server's native image wire type."""
+    if isinstance(data, dict) and data.get('ok') is False:
+        return _result(data, False)
+    preview = data.get('preview') if isinstance(data, dict) else None
+    if not isinstance(preview, dict) or not preview.get('path'):
+        return _result(data, True)
+    path = Path(preview['path'])
+    directory = report_preview.image_directory(home, session_id)
+    if not path.is_absolute() or path.resolve().parent != directory:
+        raise ToolError('preview_image_forbidden', '报告图片不属于当前 Crew 身份的预览目录')
+    try:
+        image = path.read_bytes()
+    except OSError as exc:
+        # Capturing already succeeded. Keep its receipt and real attachment
+        # failure so the caller can read the saved file without capturing again.
+        return _result({**data, 'input_image_error': str(exc),
+                        'image_instruction': 'Open preview.path with native view_image before judging the report.'}, True)
+    result = _result(data, True)
+    result['contentItems'].append({'type': 'inputImage',
+                                  'imageUrl': 'data:image/png;base64,' + base64.b64encode(image).decode('ascii')})
+    return result
+
+
 class CodexTools:
     """Callable for ``codex_client.Client(tool_handler=...)``.
 
@@ -340,6 +365,8 @@ class CodexTools:
                     if not gate['allowed']:
                         raise ToolError('goal_dispatch_blocked', gate['reason'])
                 data = self._dispatch(conn, actor, name, args)
+            if name == 'crew_goal' and args['action'] == 'report.preview':
+                return _report_preview_result(data, self._home, self._session_id)
             return _result(data, True)
         except ToolError as exc:
             return _result({"error": {"code": exc.code, "message": str(exc)}}, False)
@@ -375,7 +402,7 @@ class CodexTools:
             return args['action'] in ('status', 'requests') or args['action'] == 'policy' and 'text' not in args.get('data', {})
         if name in ('crew_goal', 'crew_context'):
             action = args['action'] if name == 'crew_goal' else 'context.' + args['action']
-            return action in goal_actions.READ_ACTIONS
+            return action == 'report.preview' or action in goal_actions.READ_ACTIONS
         return name in ('crew_whoami','crew_status','crew_who','crew_decisions','crew_todo_list','crew_doc_list','crew_handoffs','crew_reports') or name == 'crew_card' and not args
 
     def _dispatch(self, conn, actor, name, args):
@@ -434,11 +461,13 @@ class CodexTools:
                 data['goal_id'] = args['goal_id']
             if self._goal_handler is not None:
                 result = self._goal_handler(action, data, sid, execution_id=self._execution_id)
-            elif action in goal_actions.READ_ACTIONS:
+            elif action in goal_actions.READ_ACTIONS and action != 'report.preview':
                 result = goal_actions.dispatch(self._home, sid, self._execution_id, action, data)
             else:
                 raise ToolError('goal_host_unavailable', 'The host has no goal router; no model was started')
             if isinstance(result, dict) and result.get('ok') is False:
+                if action == 'report.preview':
+                    return result
                 raise ToolError('goal_action_failed', str(result.get('error') or result.get('reason') or 'Goal action rejected'))
             return result
         if name == "crew_whoami":
