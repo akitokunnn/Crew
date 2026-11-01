@@ -531,6 +531,7 @@ handle('desktop:settings-ui',async()=>{
   // Only trusted home can load these fixed, packaged application assets.
   const directory = path.join(config.helperBackendDir, 'crew', 'web');
   return injectAssets(directory, [
+    ['executeJavaScript','browser-utils.js'],
     ['executeJavaScript','launch-settings-ui.js'], ['insertCSS','operations-ui.css'],
     ['executeJavaScript','operations-ui.js'], ['insertCSS','settings-ui.css'],
     ['insertCSS','behavior-prompts-ui.css'], ['executeJavaScript','behavior-prompts-ui.js'],

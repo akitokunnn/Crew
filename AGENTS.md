@@ -68,6 +68,7 @@ git log -3 --oneline
 | 工作区首页、全局设置、网页 UI | `desktop/src/home*`、`plugin/crew/web/` |
 | HTTP / CLI | `plugin/crew/web.py`、`cli.py` |
 | 局域网访问、设备认证与远程能力边界 | `plugin/crew/remote_access.py`、`remote_http.py`、`remote_routes.py`；`web.py` 只组合监听与既有业务接口 |
+| 网络接口识别、旧版连接配置导入与一次性提醒测试 | `network_addresses.py`、`connection_import.py`、`connection_probe.py`；不复制业务数据库或旧投递状态 |
 | 消息、通知与人工答复路由 | `plugin/crew/messaging.py`、`board.py`、`todo.py`、`goal_links.py`；自动投递在 `web.py` |
 | Git 设置、读取与进程 | `plugin/crew/git_admin.py`、`git_view.py`、`git_process.py`；界面 `plugin/crew/web/git*` |
 | 会话启动、停止、载体切换 | `chat.py`、`spawn.py`、`codex_runtime.py`、`runtime_switch.py`（均在 `plugin/crew/`） |
@@ -106,3 +107,5 @@ npm --prefix desktop test
 | 触及原生接回时，验证同 ID、保持桌面打开、再次交出可直接发送及工具不重复；不把假载体、未知参数或仅一次恢复当成真实桌面闭环。真实 AI 仅在用户授权时使用隔离 HOME 和指定模型 | `test_native_handoff`、`test_codex_desktop`、`test_codex_desktop_bridge`（真实进程，覆盖关闭通知屏蔽和原拥有者恢复）；真实 AI 证据见 `docs/v2/NATIVE_DESKTOP_0.3.3_2026-10-30.md`。压缩另由 `test_codex_events` 真实事件回放覆盖 |
 | 助手使用完整的共享聊天状态契约，普通任务反馈保持原任务身份并保留已交付证据 | `test_assistant_http`、`test_goal_http`、`test_goal_acceptance` 与上述助手浏览器检查；工作区迁移使用真实恢复和包往返测试 |
 | 远程认证覆盖页面、API、事件流和附件；关闭访问与本机业务生命周期独立，断线不重发成功输入 | `test_remote_access`、`test_remote_http`、`test_remote_routes`、`test_remote_integration`；`node plugin/tests/smoke_remote_access.cjs` 走真实浏览器，支持 `--lan-address` 与 `--old-mobile` 反证 |
+| ZeroTier 按实际网卡识别，绑定失败不降级为全部网络；普通 HTTP 下请求 ID 和复制能力仍可用 | `test_network_addresses`、`test_remote_network`、`test_browser_utils.js`、`smoke_remote_access.cjs --old-http`；`smoke_remote_peer.py` 使用独立 WSL 网络客户端 |
+| 旧连接迁移不覆盖新配置，不带旧路由和投递进度；测试通知每渠道只发一次，不把平台接收当手机已读 | `test_connection_import`、`test_connection_probe`，固定回执在发送前占用，重复运行不重发 |

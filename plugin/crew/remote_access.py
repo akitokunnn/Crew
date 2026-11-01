@@ -15,22 +15,13 @@ from http.cookies import CookieError, SimpleCookie
 from urllib.parse import urlsplit
 import uuid
 
-from . import remote_routes
+from . import network_addresses, remote_routes
 
 COOKIE = 'crew_remote_session'
 SESSION_SECONDS = 7 * 24 * 60 * 60
 PAIR_SECONDS = 5 * 60
 MAX_BODY = 40 * 1024 * 1024
-PRIVATE_NETWORKS = tuple(ipaddress.ip_network(value) for value in
-                         ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '127.0.0.0/8'))
-
-
-def private_address(value):
-    try:
-        address = ipaddress.ip_address(value)
-        return address.version == 4 and any(address in network for network in PRIVATE_NETWORKS)
-    except ValueError:
-        return False
+private_address = network_addresses.private_address
 
 
 def _iso(value):
@@ -42,11 +33,12 @@ def _hash(value):
 
 
 class Controller:
-    def __init__(self, home, listener_factory, *, clock=time.time):
+    def __init__(self, home, listener_factory, *, clock=time.time, network=None):
         self.home = Path(home)
         self.path = self.home / 'remote-access.json'
         self.cookie_name = COOKIE + '_' + hashlib.sha256(os.path.normcase(str(self.home.resolve())).encode('utf-8')).hexdigest()[:16]
         self.listener_factory = listener_factory
+        self.network = network or network_addresses.Discovery()
         self.clock = clock
         self.lock = threading.RLock()
         self.lifecycle_lock = threading.RLock()
@@ -117,22 +109,34 @@ class Controller:
     def set_static_paths(self, paths):
         self.static_paths = frozenset(path for path in paths if isinstance(path, str) and path.startswith('/') and not path.startswith(('/api/', '/remote/')))
 
+    @staticmethod
+    def _binding_error(bind, network):
+        if bind == '0.0.0.0':
+            return None
+        matches = [item for item in network['addresses'] if item['address'] == bind]
+        if any(item['available'] for item in matches):
+            return None
+        if matches:
+            return matches[0]['reason']
+        return '此地址当前不属于本机可用网络接口，请重新选择' + ('；' + network['error'] if network['error'] else '')
+
     def snapshot(self):
+        network = self.network.snapshot()
         with self.lock:
             now = self.clock()
             port = self.listener.port if self.listener is not None else self.data['port']
-            urls = []
-            if self.listener is not None:
-                addresses = {self.data['bind']} if self.data['bind'] != '0.0.0.0' else set()
-                if self.data['bind'] == '0.0.0.0':
-                    try:
-                        addresses.update(info[4][0] for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET))
-                    except OSError:
-                        pass
-                urls = ['http://%s:%s' % (address, port) for address in sorted(addresses)
-                        if private_address(address) and not ipaddress.ip_address(address).is_loopback]
+            addresses = []
+            for item in network['addresses']:
+                bound = self.listener is not None and item['available'] and self.data['bind'] in ('0.0.0.0', item['address'])
+                url = 'http://%s:%s' % (item['address'], port) if bound else None
+                addresses.append({**item, 'bound': bound, 'url': url})
+            urls = list(dict.fromkeys(item['url'] for item in addresses if item['url'] and item['kind'] != 'loopback'))
+            binding_error = self._binding_error(self.data['bind'], network)
             return {'enabled': self.listener is not None, 'configured_enabled': self.data['enabled'],
                     'bind': self.data['bind'], 'port': port, 'urls': urls,
+                    'addresses': addresses,
+                    'discovery': {key: network[key] for key in ('source', 'complete', 'error')},
+                    'binding_available': binding_error is None, 'binding_error': binding_error,
                     'last_error': self.last_error, 'configuration_invalid': self.configuration_invalid,
                     'devices': [{key: _iso(item[key]) if key.endswith('_at') else item[key]
                                  for key in ('id', 'name', 'created_at', 'last_seen_at', 'expires_at')}
@@ -159,6 +163,9 @@ class Controller:
                         raise ValueError('请先关闭当前远程访问，再更换地址或端口')
                 listener = None
                 try:
+                    problem = self._binding_error(bind, self.network.snapshot(force=True))
+                    if problem:
+                        raise ValueError(problem)
                     listener = self.listener_factory(self, bind, port)
                     listener.start()
                     with self.lock:

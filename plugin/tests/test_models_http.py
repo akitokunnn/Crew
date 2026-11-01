@@ -356,13 +356,20 @@ class ModelWakeTests(shell.ShellFixture, unittest.TestCase):
 
     def test_agent_poll_syncs_vscode_archives_before_auto_resume(self):
         service = self.server.service
+        # The ready signal precedes the worker's first auto-resume. Finish that
+        # cycle before instrumenting one explicit poll, or both race through
+        # the same mocks and falsely look like a duplicate resume.
+        service.stop.set()
+        service.worker.join(5)
+        self.assertFalse(service.worker.is_alive())
         resumed = []
 
         def inspect(conn, agents, now, runtime=None):
             self.assertTrue(board.is_archived(conn, "s1"))
             resumed.append("checked")
 
-        with mock.patch.object(service, "_refresh_vscode", side_effect=lambda: session_ops.archive(self.conn, "s1", now=shell.NOW)), \
+        with mock.patch.object(service, "stop", threading.Event()), \
+                mock.patch.object(service, "_refresh_vscode", side_effect=lambda: session_ops.archive(self.conn, "s1", now=shell.NOW)), \
                 mock.patch.object(service.chat, "auto_resume", side_effect=inspect), \
                 mock.patch.object(service.stop, "wait", return_value=True):
             service._poll_agents()

@@ -18,7 +18,7 @@ function harness(){
       signal.addEventListener("abort",()=>{pending?.reject(Object.assign(Error("aborted"),{name:"AbortError"}));pending=null;},{once:true});
       return {ok:true,body:{getReader:()=>({read:()=>queue.length?Promise.resolve(queue.shift()):new Promise((resolve,reject)=>{pending={resolve,reject};})})}};}};
   sandbox.window=sandbox;vm.createContext(sandbox);
-  for(const file of ["vendor/markdown-it.min.js","chat.js"])vm.runInContext(fs.readFileSync(path.join(__dirname,"../crew/web",file),"utf8"),sandbox);
+  for(const file of ["vendor/markdown-it.min.js","browser-utils.js","chat.js"])vm.runInContext(fs.readFileSync(path.join(__dirname,"../crew/web",file),"utf8"),sandbox);
   function mount(id,api,extra={},options={}){const target=host(),session={session_id:id,name:id,busy:false,last_seq:0,activity:null,where:"bg",...extra};sandbox.CrewChat.mount({host:target,session,state:{project:{name:"fixture"},leaders:[session],members:[]},api,toast(){},...options});return target;}
   function update(id,extra={}){const session={session_id:id,name:id,busy:false,last_seq:1,activity:null,where:"bg",...extra};sandbox.CrewChat.update({project:{name:"fixture"},leaders:[session],members:[]});}
   return {chat:sandbox.CrewChat,mount,update,timers,saved,streams,connections,handlers,sandbox,motion,flushFrames(){for(const [id,fn] of frames){frames.delete(id);fn();}}};

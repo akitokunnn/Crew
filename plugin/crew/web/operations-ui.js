@@ -103,7 +103,7 @@
       if (pending || chat?.busy || !chatLoaded || !chatDraft.trim()) return;
       if (brainIssue(snapshot)) { chatControls(); return; }
       pending = "send"; sendStartedAt = Date.now(); ++chatRead; chatError = ""; chatNote = "";
-      const text = chatDraft, id = messageId || crypto.randomUUID(); messageId = id; chatControls();
+      const text = chatDraft, id = messageId || window.CrewBrowser.requestId(); messageId = id; chatControls();
       try {
         chat = await api.send({text, message_id:id}); chatLoaded = true;
         // Editing the composer while an IPC request is pending must preserve the new text.

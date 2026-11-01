@@ -1758,6 +1758,7 @@ STATIC['/native-handoff-ui.js'] = ('native-handoff-ui.js', 'text/javascript; cha
 STATIC['/goal-work-ui.js'] = ('goal-work-ui.js', 'text/javascript; charset=utf-8')
 POST_PATHS.add('/api/remote-access')
 STATIC.update({'/access-context.js': ('access-context.js', 'text/javascript; charset=utf-8'),
+               '/browser-utils.js': ('browser-utils.js', 'text/javascript; charset=utf-8'),
                '/remote-access-ui.js': ('remote-access-ui.js', 'text/javascript; charset=utf-8'),
                '/remote-access-ui.css': ('remote-access-ui.css', 'text/css; charset=utf-8')})
 

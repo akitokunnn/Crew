@@ -5,7 +5,7 @@
   function create({api,project=null,projects=[],onOpen}) {
     let dialog=null,items=[],editing=null,request=null,starting=new Map(),archived=false,busy=false;
     const scope=project||"global",draftKey=`crew.notes.draft:${scope}`;
-    const fresh=()=>({text:"",tags:"",request_id:crypto.randomUUID()});
+    const fresh=()=>({text:"",tags:"",request_id:window.CrewBrowser.requestId()});
     function draft(){if(!drafts.has(scope)){let value;try{value=JSON.parse(localStorage.getItem(draftKey));}catch{}drafts.set(scope,value&&typeof value.text==="string"?value:fresh());}return drafts.get(scope);}
     function remember(){const value={text:dialog.querySelector('[name="text"]').value,tags:dialog.querySelector('[name="tags"]').value,request_id:draft().request_id,fingerprint:draft().fingerprint};drafts.set(scope,value);try{localStorage.setItem(draftKey,JSON.stringify(value));}catch{}}
     function notice(message){dialog.querySelector('[role="status"]').textContent=message;}
@@ -19,7 +19,7 @@
       event.preventDefault();if(busy)return;
       const text=dialog.querySelector('[name="text"]').value.trim(),tags=dialog.querySelector('[name="tags"]').value.split(/[,，]/).map(v=>v.trim()).filter(Boolean);if(!text)return;
       const data={action:editing?"update":"capture",text,tags,project:editing?editing.project:project,...(editing?{note_id:editing.id,expected_version:editing.version,state:editing.state}:{})};
-      const fingerprint=JSON.stringify(data);if(!request||request.fingerprint!==fingerprint){request={fingerprint,id:editing||request||(draft().fingerprint&&draft().fingerprint!==fingerprint)?crypto.randomUUID():draft().request_id};if(!editing){drafts.set(scope,{...draft(),request_id:request.id,fingerprint});remember();}}
+      const fingerprint=JSON.stringify(data);if(!request||request.fingerprint!==fingerprint){request={fingerprint,id:editing||request||(draft().fingerprint&&draft().fingerprint!==fingerprint)?window.CrewBrowser.requestId():draft().request_id};if(!editing){drafts.set(scope,{...draft(),request_id:request.id,fingerprint});remember();}}
       lock(true);notice("正在保存…");
       try{await api('/api/personal/notes',{...data,request_id:request.id});if(!editing){drafts.set(scope,fresh());try{localStorage.removeItem(draftKey);}catch{}}fill(null);await load();notice("已记下。不会因此启动 AI。");}
       catch(error){notice(error.message);}
@@ -37,8 +37,8 @@
         else if(button.dataset.noteAction==="recover-bind"){
           const session_id=row.querySelector('[data-recovery-session]').value;await api('/api/personal/notes/recovery',{note_id:item.id,session_id,request_id:`note-recovery:${item.id}:${session_id}`,reason:"用户在快速想法中核实并选择了原讨论"});await load();notice("已关联原讨论，没有重新发送内容。");
         }
-        else if(button.dataset.noteAction==="archive"){await api('/api/personal/notes',{action:"update",note_id:item.id,expected_version:item.version,project:item.project,text:item.text,tags:item.tags,state:item.state==="archived"?"open":"archived",request_id:crypto.randomUUID()});await load();notice("已更新。");}
-        else{const target=project||row.querySelector('[data-note-project]').value;if(!target)throw Error("先选择讨论这个想法的工作区。");if(!starting.has(item.id))starting.set(item.id,crypto.randomUUID());notice("正在准备对话…");const result=await api('/api/personal/notes/start',{note_id:item.id,project:target,request_id:starting.get(item.id)});openLeader(result);}
+        else if(button.dataset.noteAction==="archive"){await api('/api/personal/notes',{action:"update",note_id:item.id,expected_version:item.version,project:item.project,text:item.text,tags:item.tags,state:item.state==="archived"?"open":"archived",request_id:window.CrewBrowser.requestId()});await load();notice("已更新。");}
+        else{const target=project||row.querySelector('[data-note-project]').value;if(!target)throw Error("先选择讨论这个想法的工作区。");if(!starting.has(item.id))starting.set(item.id,window.CrewBrowser.requestId());notice("正在准备对话…");const result=await api('/api/personal/notes/start',{note_id:item.id,project:target,request_id:starting.get(item.id)});openLeader(result);}
       }catch(error){notice(error.message);}
       finally{if(dialog)lock(false);}
     }

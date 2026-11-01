@@ -763,7 +763,7 @@
     // Keep this ID with the exact draft until acceptance, including an uncertain network failure.
     const fingerprint = JSON.stringify([text, context.cache.images]);
     if (context.cache.pendingMessage?.fingerprint !== fingerprint) {
-      const id = globalThis.crypto?.randomUUID?.() || `web-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+      const id = window.CrewBrowser.requestId();
       context.cache.pendingMessage = {fingerprint, id};
     }
     const payload = { session_id: context.session.session_id, text, message_id:context.cache.pendingMessage.id, ...goalPayload(context) };

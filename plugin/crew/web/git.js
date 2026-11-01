@@ -128,7 +128,7 @@ const CrewGit = (() => {
     const act = button.dataset.gitAct;
     if (act === "close-detail") closeCommitDetail(true);
     else if (act === "expand-body") { detail.pinned = true; detail.expanded = !detail.expanded; renderCommitDetail(); }
-    else if (act === "copy-sha") navigator.clipboard.writeText(detail.commit.sha).then(() => options.toast("已复制完整 SHA"), error => options.toast(`复制失败：${error.message}`));
+    else if (act === "copy-sha") window.CrewBrowser.copyText(detail.commit.sha).then(() => options.toast("已复制完整 SHA"), error => options.toast(`复制失败：${error.message}，可长按完整 SHA 手动复制。`));
     else return false;
     return true;
   }

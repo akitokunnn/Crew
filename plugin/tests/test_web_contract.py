@@ -931,7 +931,7 @@ class FrontendGitContractTests(unittest.TestCase):
     def run_component(self, scenario):
         bootstrap = r'''
 const assert = require("node:assert/strict");
-const fs = require("node:fs"), vm = require("node:vm");
+const fs = require("node:fs"), vm = require("node:vm"), path = require("node:path");
 const documentListeners = new Map(), windowListeners = new Map();
 const document = {addEventListener:(name, fn) => documentListeners.set(name, fn), removeEventListener:name => documentListeners.delete(name)};
 const sandbox = {document, navigator:{clipboard:{writeText:async text => { copied.push(text); }}}, setTimeout, clearTimeout,
@@ -939,6 +939,7 @@ const sandbox = {document, navigator:{clipboard:{writeText:async text => { copie
   addEventListener:(name, fn) => windowListeners.set(name, fn), removeEventListener:name => windowListeners.delete(name), innerWidth:1000, innerHeight:800};
 sandbox.window = sandbox;
 vm.createContext(sandbox);
+vm.runInContext(fs.readFileSync(path.join(path.dirname(process.argv[1]), "browser-utils.js"), "utf8"), sandbox);
 vm.runInContext(fs.readFileSync(process.argv[1], "utf8"), sandbox);
 sandbox.CrewGit = vm.runInContext("CrewGit", sandbox);
 const flush = async () => { for (let index = 0; index < 20; index++) await Promise.resolve(); };
