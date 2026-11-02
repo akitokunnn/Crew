@@ -537,6 +537,7 @@ handle('desktop:settings-ui',async()=>{
     ['executeJavaScript','launch-settings-ui.js'], ['insertCSS','operations-ui.css'],
     ['executeJavaScript','operations-ui.js'], ['insertCSS','settings-ui.css'],
     ['insertCSS','behavior-prompts-ui.css'], ['executeJavaScript','behavior-prompts-ui.js'],
+    ['executeJavaScript','sounds.js'], ['executeJavaScript','sound-settings-ui.js'],
     ['executeJavaScript','settings-ui.js'], ['executeJavaScript','connections-ui.js'],
     ['insertCSS','storage-ui.css'], ['executeJavaScript','storage-ui.js'],
     ['insertCSS','remote-access-ui.css'], ['executeJavaScript','remote-access-ui.js']

@@ -161,5 +161,20 @@
 }
 @media(prefers-reduced-motion:reduce){.crew-settings *{transition:none!important}}
 
+.cs-sound-master{margin-bottom:14px}
+.cs-sound-volume{display:grid;grid-template-columns:1fr auto;gap:12px;margin-top:22px;color:var(--cs-muted);font-size:13px}
+.cs-sound-volume input{grid-column:1/-1;width:100%;accent-color:var(--cs-accent);margin:0;min-height:28px}
+.cs-sound-volume output{font-variant-numeric:tabular-nums}
+.cs-sound-row{display:flex;align-items:center;justify-content:space-between;gap:20px}
+.cs-sound-row>div:first-child{min-width:0}
+.cs-sound-row h3{margin:0 0 6px;font-size:15px;font-weight:500}
+.cs-sound-row p{margin:0;color:var(--cs-muted);font-size:13px;line-height:1.6}
+.cs-sound-choice{display:flex;align-items:flex-end;gap:10px;flex:none}
+.cs-sound-choice label{display:grid;gap:7px;color:var(--cs-muted);font-size:12px}
+.cs-sound-choice select{min-width:140px;min-height:40px;padding:8px 12px;border:1px solid var(--cs-line);border-radius:8px;background:var(--cs-bg);color:var(--cs-text);font:inherit}
+.cs-sound-choice select:focus-visible{outline:2px solid var(--cs-accent);outline-offset:2px}
+.cs-sound-actions{display:flex;align-items:center;gap:10px;margin-top:24px;flex-wrap:wrap}
+.cs-sound-actions p{flex:1;min-width:180px;margin:0;color:var(--cs-muted);font-size:13px}
+@media(max-width:760px){.cs-sound-row{align-items:stretch;flex-direction:column;gap:16px}.cs-sound-choice label{flex:1;min-width:0}.cs-sound-choice select{width:100%;min-width:0;min-height:44px}.cs-sound-choice .cs-button,.cs-sound-actions .cs-button{min-height:44px}.cs-sound-master .cs-card-heading{flex-wrap:wrap}.cs-sound-volume input{min-height:44px}.cs-sound-actions{justify-content:flex-end}.cs-sound-actions p{flex-basis:100%}}
 .cs-notification-routing{align-items:flex-end}.cs-notification-routing label{display:grid;gap:8px;flex:1;min-width:200px;color:var(--cs-muted);font-size:calc(12px * var(--cs-scale))}
 .cs-notification-routing select{min-height:40px;width:100%;padding:9px 12px;border:1px solid var(--cs-line);border-radius:8px;background:var(--cs-bg);color:var(--cs-text);font:inherit;outline:none}.cs-notification-routing select:focus-visible{border-color:var(--cs-accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--cs-accent) 20%,transparent)}

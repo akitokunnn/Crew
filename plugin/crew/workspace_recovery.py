@@ -24,7 +24,7 @@ class RecoveryError(board.BoardError):
 
 
 GLOBAL_TABLES = frozenset((
-    'ai_settings', 'ai_task_settings', 'execution_settings', 'trust_schema_migrations', 'usage_files',
+    'ai_settings', 'ai_task_settings', 'execution_settings', 'sound_settings', 'trust_schema_migrations', 'usage_files',
     'notification_inbound', 'lark_notification_inbound',
     'personal_assistant', 'personal_note_requests', 'personal_action_receipts', 'task_artifact_requests',
 ))

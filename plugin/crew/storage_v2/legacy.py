@@ -20,7 +20,7 @@ import uuid
 
 TRANSFORM_VERSION = 'crew-v1-to-v2/1'
 NAMESPACE = uuid.UUID('11182da6-0b1e-5817-a488-4715fd5d599e')
-PRIVATE_TABLES = {'ai_settings', 'ai_task_settings', 'execution_settings', 'usage_files', 'trust_schema_migrations',
+PRIVATE_TABLES = {'ai_settings', 'ai_task_settings', 'execution_settings', 'sound_settings', 'usage_files', 'trust_schema_migrations',
                   'notification_inbound', 'lark_notification_inbound'}
 RELATIONS = {'handoff_deliveries': [('handoff_id', 'handoffs', 'id')],
              'channel_reads': [('message_id', 'channel_messages', 'id')],
