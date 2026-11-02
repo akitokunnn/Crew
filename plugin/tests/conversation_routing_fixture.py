@@ -74,9 +74,23 @@ def main():
                 'version': delivered_goal['version'], 'report_id': delivered_report['id']})
             assert code == 200, accepted
             delivered = {'goal_id': delivered_goal['id'], 'leader': 's3', 'report_id': delivered_report['id']}
+        navigation = []
+        if os.environ.get('CREW_NAVIGATION_REVIEW_FIXTURE') == '1':
+            other = case.root / 'navigation-project'
+            other.mkdir()
+            board.init_project(case.conn, 'navigation', other)
+            board.join(case.conn, 'nav-codex', 'navigation', '界面负责人', other, other, None, role='leader')
+            board.join(case.conn, 'nav-member', 'navigation', '界面核查', other, other, None, group_name='界面负责人')
+            runtimes.set(case.conn, 'nav-codex', 'codex')
+            runtimes.set(case.conn, 'nav-member', 'codex')
+            task = goals.create(case.conn, 'navigation', 'nav-codex',
+                '核对多个工作区之间的任务导航、独立草稿和全局助手入口在窄窗口下的完整显示',
+                '只查看已有任务，不开始执行', ['导航保持固定位置'])
+            navigation = [{'project': 'demo', 'leader': 'coordinator', 'member': 's1', 'goal': work[0][0], 'runtime': 'claude'},
+                          {'project': 'navigation', 'leader': 'nav-codex', 'member': 'nav-member', 'goal': task['id'], 'runtime': 'codex'}]
         print(json.dumps({'url': case.url, 'home': str(case.home), 'leader': 'coordinator',
                           'goals': [goal for goal, _ in work], 'plugin_root': str(plugin_root),
-                          'web_module': web.__file__, 'delivered': delivered}, ensure_ascii=False), flush=True)
+                          'web_module': web.__file__, 'delivered': delivered, 'navigation': navigation}, ensure_ascii=False), flush=True)
         original = None
         for line in sys.stdin:
             command = line.strip()

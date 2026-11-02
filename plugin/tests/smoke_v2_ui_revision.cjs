@@ -35,7 +35,7 @@ async function main(){
   await page.locator('#chat-head [data-act="attention"]').click();await page.locator('#chat-head [data-act="right-open"]').click();
   await page.locator('#chat-host textarea').fill('总会话草稿');await page.locator('#goal-head [data-goal-act="list"]').click();await capture('04-task-list');
   await page.locator(`#goal-head [data-goal-act="open"][data-goal-id="${info.goals[0]}"]`).click();await page.locator('#chat-host textarea').waitFor();await page.locator('#chat-host textarea').fill('任务草稿');await capture('05-task');
-  await check('Task has an explicit visible return to the task list',async()=>/返回任务清单/.test(await page.locator('#goal-head [data-goal-act="list"]').innerText()));
+  await check('Task keeps its list navigation alongside general conversation',async()=>await page.locator('#goal-head .goal-view-tabs [role="tab"]').count()===2&&await page.locator('#goal-head [data-goal-act="list"]').getAttribute('aria-label')==='返回任务清单');
   await page.locator('#chat-head [data-act="task-panel"]').click();await page.locator('[data-goal-tools]').waitFor();await capture('06-task-materials');
   await check('Task materials retain real evidence and a complete report path',async()=>await page.locator('[data-goal-tools]').getByText('尚未证明效果达标',{exact:false}).count()>0&&await page.locator('[data-goal-tools] [data-goal-act="delivery"]').count()>0);
   await page.locator('[data-goal-tools] [data-goal-act="delivery"]').click();await page.locator('.goal-reader-frame iframe').waitFor();await capture('07-report');
