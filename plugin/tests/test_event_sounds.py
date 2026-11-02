@@ -124,17 +124,34 @@ class EventSoundsTests(unittest.TestCase):
             {'seq': 2, 'type': 'turn_result', 'status': 'completed', 'success': True}]))
         self.assertIsNone(event_sounds.reply_completion([{'seq': 1, 'type': 'compact'}, {'seq': 2, 'type': 'turn_result', 'status': 'completed'}]))
 
-    def test_assistant_completion_is_shared_with_project_state_and_does_not_create_a_fake_project(self):
+    def assistant_completion(self, runtime):
+        if runtime == 'codex':
+            patcher = mock.patch('crew.codex_runtime._ObservedClient', FakeClient)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+            ai = settings.get(self.case.conn)
+            ai['assistant'] = {'runtime': 'codex', 'model': None, 'effort': None}
+            settings.save(self.case.conn, ai)
         assistant = personal.ensure_assistant(self.case.conn, self.case.home)
         sid = assistant['session_id']
         code, receipt, _ = self.case.request('/api/chat/send', {'session_id': sid, 'text': '请回答', 'message_id': 'assistant-sound'})
         self.assertEqual(code, 200, receipt)
-        process = self.case.server.service.chat.processes[sid].process
-        process.emit({'type': 'assistant', 'message': {'id': 'assistant-sound-answer', 'content': [{'type': 'text', 'text': '已经回答。'}]}})
-        self.case.finish_turn(sid, process)
+        current = self.case.server.service.chat.processes[sid]
+        if runtime == 'codex':
+            current.client.emit('item/agentMessage/delta', turnId=current.client.turn_id, itemId='assistant-sound-answer', delta='已经回答。')
+            current.client.finish()
+        else:
+            current.process.emit({'type': 'assistant', 'message': {'id': 'assistant-sound-answer', 'content': [{'type': 'text', 'text': '已经回答。'}]}})
+            self.case.finish_turn(sid, current.process)
         events = self.state()['events']
         self.assertEqual([item['kind'] for item in events], ['assistant'])
         code, value, _ = self.case.request('/api/assistant/state')
         self.assertEqual(code, 200, value)
         self.assertEqual(value['sounds']['events'], events)
         self.assertIsNone(value['project'])
+
+    def test_claude_assistant_completion_is_shared_with_project_state(self):
+        self.assistant_completion('claude')
+
+    def test_codex_assistant_completion_is_shared_with_project_state(self):
+        self.assistant_completion('codex')

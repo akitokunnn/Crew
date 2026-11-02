@@ -75,6 +75,13 @@ async function main() {
     await page.goto(url); return page;
   }
   const page = await newPage(info.url + '/?project=demo#leader=' + info.leader);
+  const legacyContext = await browser.newContext({viewport:{width:1440, height:1000}});
+  await legacyContext.addInitScript(() => {
+    localStorage.setItem('crew.sound.muted', 'true'); localStorage.setItem('crew.sound.volume', '0.62');
+  });
+  const legacy = await legacyContext.newPage();
+  await legacy.goto(info.url + '/?project=demo#leader=' + info.leader);
+  await legacy.waitForFunction(() => window.CrewSound?.getSettings().leader === 'soft');
   await page.locator('#goal-head [data-goal-act="general"]').waitFor();
   await page.locator('#sidebar [data-act="settings"]').click();
   await page.locator('[data-settings-category="sounds"]').click();
@@ -83,6 +90,9 @@ async function main() {
   function check(label, pass) {evidence.checks.push(label); assert(pass, label);}
   async function shot(name) {await page.screenshot({path:path.join(out, name + '.png'), fullPage:true, animations:'disabled'}); evidence.screenshots.push(name + '.png');}
   const picker = kind => page.locator(`[data-sound-kind="${kind}"]`);
+  check('An existing browser retains its old mute and volume before the first save', await legacy.evaluate(() => CrewSound.getSettings().muted && CrewSound.getSettings().volume === .62));
+  const unconfigured = await (await page.request.get(info.url + '/api/settings')).json();
+  check('Reading legacy sound preferences does not silently save or migrate settings', unconfigured.sounds === null);
   await picker('leader').selectOption('knock');
   await picker('assistant').selectOption('bell');
   await picker('delivery').selectOption('rise');
@@ -104,6 +114,9 @@ async function main() {
   await page.locator('[data-sound-status]').filter({hasText:'音效已保存'}).waitFor();
   const saved = await (await page.request.get(info.url + '/api/settings')).json();
   check('Save persists independent choices and volume to the real backend', saved.sounds.leader === 'knock' && saved.sounds.assistant === 'bell' && saved.sounds.delivery === 'rise' && saved.sounds.volume === .37);
+  await legacy.waitForFunction(() => !CrewSound.getSettings().muted && CrewSound.getSettings().volume === .37);
+  check('An explicit save synchronizes the previously muted browser with shared preferences', true);
+  await legacyContext.close();
   const stale = await (await page.request.get(info.url + '/api/state?project=demo')).json();
   let releaseState, stateStarted;
   const started = new Promise(resolve => {stateStarted = resolve;});
