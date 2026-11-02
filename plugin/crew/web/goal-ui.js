@@ -117,11 +117,38 @@
     function groupMarkup(id) {
       const list = goals().filter(item => item.leader_session_id === id), open = expandedGroups.has(id), active = goal();
       const tasksSelected = open || goalId != null;
-      const bar = `<div class="group-goal-bar"><div class="goal-view-tabs" role="tablist" aria-label="本组工作视图"><button class="btn ghost ${!tasksSelected ? "active" : ""}" role="tab" aria-selected="${!tasksSelected}" tabindex="${!tasksSelected ? 0 : -1}" data-goal-act="general">总会话</button><button class="btn ghost ${tasksSelected ? "active" : ""}" role="tab" aria-selected="${tasksSelected}" tabindex="${tasksSelected ? 0 : -1}" data-goal-act="list">任务清单 <span>${list.length}</span></button></div><span class="gap"></span><button class="btn ghost" data-goal-act="create" data-leader-id="${esc(id)}">＋ 建立目标</button></div>`;
+      // Use the same navigation in general, list and task views so returning never moves across the header.
+      const bar = `<div class="group-goal-bar">
+        <div class="goal-view-tabs" role="tablist" aria-label="本组工作视图">
+          <button class="btn ghost ${!tasksSelected ? "active" : ""}" role="tab"
+            aria-selected="${!tasksSelected}" tabindex="${!tasksSelected ? 0 : -1}"
+            data-goal-act="general">总会话</button>
+          <button class="btn ghost ${tasksSelected ? "active" : ""}" role="tab"
+            aria-selected="${tasksSelected}" tabindex="${tasksSelected ? 0 : -1}"
+            data-goal-act="list" ${goalId != null && !open ? 'title="返回任务清单" aria-label="返回任务清单"' : ""}>
+            任务清单 <span>${list.length}</span>
+          </button>
+        </div>
+        <span class="gap"></span>
+        <button class="btn ghost" data-goal-act="create" data-leader-id="${esc(id)}">＋ 建立目标</button>
+      </div>`;
       if (open) return bar + `<section class="group-goal-list" role="tabpanel" aria-label="本组任务清单">${cards(list, state().leaders, goalId)}</section>`;
       if (goalId == null) return bar;
       if (!active) return bar + `<section class="goal-detail"><p class="${errors.has(String(goalId)) ? "error-line" : "note"}">${esc(errors.get(String(goalId)) || "正在读取目标…")}</p><button class="btn ghost" data-goal-act="refresh">重新读取</button></section>`;
-      return `<section class="goal-detail goal-compact" data-goal-detail="${esc(active.id)}"><div class="goal-detail-title"><button class="btn ghost" type="button" data-goal-act="general">总会话</button><span class="goal-path-separator">/</span><span class="goal-status" data-status="${esc(active.status)}">${esc(status(active.status))}</span><h1 title="${esc(active.title)}">${esc(active.title)}</h1><div class="goal-mode-control" role="group" aria-label="本任务决策方式">${[["human","由我拍板"],["autonomous","自主推进"]].map(([mode,label]) => `<button type="button" data-goal-act="mode" data-mode="${mode}" aria-pressed="${(active.decision_mode?.mode || "human") === mode}" title="仅改变此任务的决策方式，不启动执行" ${actionBusy ? "disabled" : ""}>${label}</button>`).join("")}</div><button class="goal-list-back" type="button" data-goal-act="list" aria-label="返回任务清单">← 返回任务清单</button>${actionError || errors.has(String(goalId)) ? '<button class="text-link goal-error-indicator" data-act="task-panel">查看任务提示</button>' : ""}</div></section>`;
+      return bar + `<section class="goal-detail goal-compact" data-goal-detail="${esc(active.id)}">
+        <div class="goal-detail-title">
+          <span class="goal-status" data-status="${esc(active.status)}">${esc(status(active.status))}</span>
+          <h1 title="${esc(active.title)}">${esc(active.title)}</h1>
+          <div class="goal-mode-control" role="group" aria-label="本任务决策方式">
+            ${[["human","由我拍板"],["autonomous","自主推进"]].map(([mode,label]) => `
+              <button type="button" data-goal-act="mode" data-mode="${mode}"
+                aria-pressed="${(active.decision_mode?.mode || "human") === mode}"
+                title="仅改变此任务的决策方式，不启动执行" ${actionBusy ? "disabled" : ""}>${label}</button>
+            `).join("")}
+          </div>
+          ${actionError || errors.has(String(goalId)) ? '<button class="text-link goal-error-indicator" data-act="task-panel">查看任务提示</button>' : ""}
+        </div>
+      </section>`;
     }
     function sideMarkup(id = ownerId) {
       if (goalId == null || expandedGroups.has(id)) {

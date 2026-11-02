@@ -158,6 +158,7 @@ svg.i.xs{width:12px;height:12px}
 .add-leader .plus{width:30px;height:30px;border-radius:9px;border:1.5px dashed var(--line-strong);display:grid;place-items:center}
 .sb-mid{display:flex;flex-direction:column;gap:2px;margin-top:4px}
 .sb-foot{padding:8px 6px 2px;display:flex;flex-direction:column;gap:8px;border-top:1px solid var(--line)}
+.sb-foot .assistant-entry{font-size:calc(12px * var(--fs));text-decoration:none}.assistant-entry>span{flex:1}.assistant-entry>.i:last-child{color:var(--text-3)}
 .quota{display:flex;flex-direction:column;gap:9px;padding:12px;border-radius:12px;background:var(--hover-2);border:1px solid var(--line)}
 .quota-summary{gap:3px;padding:7px 9px;border-radius:8px;background:transparent;font-size:calc(11px * var(--fs));line-height:1.4}
 .quota-summary:hover{background:var(--hover)}

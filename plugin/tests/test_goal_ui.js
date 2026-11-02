@@ -6,6 +6,13 @@ const settle=()=>new Promise(resolve=>setImmediate(resolve));
 // The reader keeps its header, status and report frame in separate parts; only the header follows later goal state.
 const readerText=reader=>[".goal-reader-head",".goal-reader-body",".goal-reader-frame"].map(part=>reader.querySelector(part).innerHTML).join("");
 const frameOf=reader=>reader.querySelector(".goal-reader-frame").querySelector("iframe");
+function assertTab(markup, action, selected) {
+  const button = markup.match(new RegExp(`<button\\b[^>]*\\bdata-goal-act="${action}"[^>]*>`))?.[0];
+  assert(button, `missing ${action} tab`);
+  assert.match(button, /\brole="tab"/);
+  assert.match(button, new RegExp(`\\baria-selected="${selected}"`));
+  assert.match(button, new RegExp(`\\btabindex="${selected ? 0 : -1}"`));
+}
 function node(){const children=new Map();return {innerHTML:"",hidden:true,dataset:{},scrollTop:0,children:[],get childNodes(){return this.children;},setAttribute(){},focus(){},append(value){value.parent=this;this.children.push(value);this.appended=value;(this.appends??=[]).push(value);},remove(){this.removed=true;if(this.parent)this.parent.children.splice(this.parent.children.indexOf(this),1);this.parent=null;},insertAdjacentHTML(position,html){assert.equal(position,"beforebegin");const item=node();item.innerHTML=html;item.parent=this.parent;this.parent.children.splice(this.parent.children.indexOf(this),0,item);},querySelectorAll(){return [];},querySelector(selector){if(selector==="iframe"&&!this.innerHTML.includes("<iframe"))return null;if(!children.has(selector))children.set(selector,node());return children.get(selector);}};}
 function harness(api,{fetch:fetcher}={}){
   const handlers={},drawer=node(),main=node(),calls=[],network=[],navigations=[];
@@ -113,7 +120,7 @@ test("adding a fact uses a typed human source without amending the goal requirem
 test("selecting a goal collapses its group list while keeping the selected details available",async()=>{
   const h=harness();h.client.sync("leader","a");await tick();await h.click("list");assert(surfaces(h).includes('class="group-goal-list"'));
   assert.equal(h.client.showingList(),true);assert(!surfaces(h).includes('data-goal-detail="a"'));
-  assert(surfaces(h).includes('aria-selected="true" tabindex="0" data-goal-act="list"'));
+  assertTab(surfaces(h), "list", true);
   await h.click("open",{goalId:"a"});const markup=surfaces(h);assert(!markup.includes('class="group-goal-list"'));assert(markup.includes('data-goal-detail="a"'));assert(markup.includes("需求与验收"));
   await h.click("list");assert(surfaces(h).includes('class="group-goal-list"'));h.client.sync("leader","b");await tick();assert(!surfaces(h).includes('class="group-goal-list"'));
 });
@@ -131,9 +138,9 @@ test("goal details show structured acceptance titles, newest report and explicit
 
 test("task list selection is explicit and general clears it instead of leaving two selected tabs",async()=>{
   const h=harness();h.client.sync("leader",null);await h.click("list");let markup=surfaces(h);
-  assert(h.client.showingList());assert(markup.includes('aria-selected="false" tabindex="-1" data-goal-act="general"'));assert(markup.includes('role="tabpanel"'));
+  assert(h.client.showingList());assertTab(markup, "general", false);assert(markup.includes('role="tabpanel"'));
   await h.click("list");assert(h.client.showingList(),"clicking the selected list stays on the list");
-  await h.click("general");assert(!h.client.showingList());markup=surfaces(h);assert(markup.includes('aria-selected="true" tabindex="0" data-goal-act="general"'));
+  await h.click("general");assert(!h.client.showingList());markup=surfaces(h);assertTab(markup, "general", true);
 });
 
 test("task actions show pending and retained failure feedback and allow a deliberate retry",async()=>{
