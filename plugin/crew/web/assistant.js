@@ -37,7 +37,7 @@
     if(loading || window.CrewAccess?.expired)return;loading=true;clearTimeout(timer);
     try {
       if(!opened){await api("/api/assistant/open",{});opened=true;}
-      const state=await api("/api/assistant/state");assistantSession=state.assistant.session_id;overview(state);error("");
+      const state=await api("/api/assistant/state");assistantSession=state.assistant.session_id;CrewSound.observe(state.sounds,state.now);overview(state);error("");
       $("assistant-native").innerHTML=CrewNativeHandoff.markup(state.assistant);
       const readonly=Boolean(state.assistant.native_handoff?.external),identity=`${state.assistant.session_id}:${readonly}`;
       if(mounted!==identity){CrewChat.unmount();CrewChat.mount({host:$("assistant-chat"),session:state.assistant,state,api,toast,readonly,readonlyReason:"会话已交给 Codex 桌面。结束桌面输入后，点“回到 Crew”同步并继续。",onRouted:()=>{}});mounted=identity;}

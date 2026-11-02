@@ -1,7 +1,7 @@
 """Global assistant page state; transport and native process ownership stay out."""
 from contextlib import closing
 
-from .. import board, guard, models, personal, settings, store
+from .. import board, event_sounds, guard, models, personal, settings, store
 
 
 def open_assistant(home, context_project=None):
@@ -15,6 +15,7 @@ def state(home, *, history, activity, applied, context):
         assistant = personal.ensure_assistant(conn, home)
         snapshot = personal.overview(conn)
         ai = settings.get(conn)
+        sounds = event_sounds.snapshot(conn, None, history)
     sid = assistant['session_id']
     chat = history(sid)
     events = chat['events']
@@ -31,7 +32,7 @@ def state(home, *, history, activity, applied, context):
     return {'scope': 'personal', 'project': None, 'now': store.now_iso(), 'assistant': assistant,
             'leaders': [], 'members': [assistant], 'projects': snapshot['projects'],
             'todos': snapshot['todos'], 'todo_count': snapshot['counts']['todos'], 'goals': snapshot['goals'],
-            'ai': ai, 'models': models.MODELS, 'efforts': models.EFFORTS,
+            'ai': ai, 'sounds': sounds, 'models': models.MODELS, 'efforts': models.EFFORTS,
             'decisions': [], 'attention': [], 'native_approvals': [], 'agents_error': None,
             'overview': snapshot}
 

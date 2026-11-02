@@ -42,7 +42,7 @@ function harness(state = fixture(), fetcher = () => { throw new Error("Unexpecte
   // Expose lexical UI functions while leaving setup and its state-poll timer off.
   const end = "  setup();\n})();";
   assert(source.endsWith(end + "\n") || source.endsWith(end));
-  vm.runInContext(source.replace(end, `  window.ui = {watchingChat, visibility(value) {view="chat";leaderId="session-codex";readOnlyId=value.member?"member":null;reportReaderOpen=!!value.reader;taskVisible=!!value.tools;attentionVisible=!!value.pending;rightOpen=!!value.tree;goals={showingList:()=>!!value.list,materialsOpen:()=>!!value.materials};$("main").dataset.sideOverlap=String(!!value.overlap);}, runtimeList, runtimeInfo, defaultRuntime, modelEfforts, modelMenu, optionChange,
+  vm.runInContext(source.replace(end, `  window.ui = {runtimeList, runtimeInfo, defaultRuntime, modelEfforts, modelMenu, optionChange,
     optionsLabel, leaderPayload, renderLeaderRuntime, selectLeaderOption, refreshRuntimes, editorHandoffReason, sessionMenu, chatAccess, goalChatNotes,
     contextRing, contextControls, sidebarLeader, memberNode, workingRow, compactContext, compactions,
     openTodos, todosOf, pendingOf, todoCard, todoTray, todoExpanded, todoActions,
@@ -478,12 +478,4 @@ test("an externally owned ring gives the exact native-tool instruction without s
   const state=contextState("claude");state.members[0].where="vscode";
   const {ui}=harness(state),toasts=[];ui.services({toast:text=>toasts.push(text)});
   await ui.compactContext("member");assert.equal(ui.compactions.size,0);assert.match(toasts[0],/Member.*原工具.*\/compact/);
-});
-
-test("covered chat never counts as actively read, while nonoverlapping auxiliary cards preserve watching",()=>{
-  for(const runtime of ["claude","codex"]){
-    const state=fixture();state.leaders=[session({runtime})];const {ui}=harness(state);
-    for(const [settings,expected] of [[{},true],[{tree:true},true],[{pending:true},true],[{tree:true,overlap:true},false],[{pending:true,overlap:true},false],[{tools:true},false],[{materials:true},false],[{reader:true},false],[{list:true},false],[{member:true},false]]){ui.visibility(settings);assert.equal(ui.watchingChat("session-codex"),expected,JSON.stringify({runtime,settings}));}
-    assert.equal(ui.watchingChat("different-leader"),false);
-  }
 });

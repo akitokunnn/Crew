@@ -28,7 +28,7 @@ from . import connections, session_presence, storage_cleanup, workspace_activity
 from .storage_service import StorageService, HISTORY_PREFIX
 from . import personal, native_home, native_handoff
 from . import remote_access, remote_http
-from . import report_preview
+from . import report_preview, event_sounds
 from .web_api import personal as personal_api
 from .web_api import behavior_prompts as behavior_prompts_api
 
@@ -615,6 +615,7 @@ class Service:
                       'channel': {'unread': 0, 'latest_id': 0, 'digesting': False, 'digest_error': None, 'digest_id': None},
                       'limits': self.limits(conn)}
             result['vscode_error'] = self.vscode_error
+            histories = {}
             if project_name is not None:
                 name = self.selected_project(conn, project_name)
                 result['goals'] = [goal_api.card(conn, goal) for goal in goals.list_goals(conn, name)]
@@ -747,6 +748,11 @@ class Service:
                 result['decisions'] = decision_flow.enrich(conn, decision_briefs.enrich(conn, result['decisions']))
                 result['attention'] = presentation.attention(conn, sessions, decisions, tasks,
                     {sid: history['events'] for sid, history in histories.items()})
+            def sound_history(identity):
+                if identity in histories:
+                    return histories[identity]
+                return self.chat.history(identity) if self.chat.path(identity).is_file() else None
+            result['sounds'] = event_sounds.snapshot(conn, result['project']['name'] if result['project'] else None, sound_history)
             return result
 
     def managed_agents(self, conn, agents):
@@ -847,6 +853,7 @@ class Service:
 
     def settings_state(self):
         return {'ai': settings.get(self.home), 'execution': settings.get_execution(self.home), 'runtimes': self.runtime_catalog.snapshot(),
+                **event_sounds.settings_snapshot(self.home),
                 'home': str(Path(self.home).resolve()), 'backend': str(Path(self.plugin_root).resolve())}
 
     def workspace_state(self, project_name):
@@ -1065,13 +1072,15 @@ class Service:
                     raise board.BoardError('leader 不属于当前工作区')
                 return member_defaults.save(conn, sid, data['selection'], now=self.now().isoformat(timespec='milliseconds').replace('+00:00', 'Z'))
         if path == '/api/settings':
-            if not data or not set(data) <= {'ai', 'execution'}:
-                raise ValueError('设置请求只能包含 ai 和 execution 配置')
+            if not data or not set(data) <= {'ai', 'execution', 'sounds'}:
+                raise ValueError('设置请求只能包含 ai、execution 和 sounds 配置')
             with self.write_lock, closing(store.connect(self.home)) as conn, goals.transaction(conn):
                 if 'ai' in data:
                     settings.save(conn, data['ai'])
                 if 'execution' in data:
                     settings.save_execution(conn, data['execution'])
+                if 'sounds' in data:
+                    event_sounds.save(conn, data['sounds'])
             return self.settings_state()
         if path in ('/api/session/runtime/prepare','/api/session/runtime/switch'):
             with closing(store.connect(self.home)) as conn:
@@ -1723,6 +1732,7 @@ POST_PATHS.update(('/api/maintenance/department/preview', '/api/maintenance/depa
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"),
           "/themes.js": ("themes.js", "text/javascript; charset=utf-8"),
           "/sounds.js": ("sounds.js", "text/javascript; charset=utf-8"),
+          "/sound-settings-ui.js": ("sound-settings-ui.js", "text/javascript; charset=utf-8"),
           "/channel.js": ("channel.js", "text/javascript; charset=utf-8"),
           "/git.js": ("git.js", "text/javascript; charset=utf-8"),
           "/git.css": ("git.css", "text/css; charset=utf-8"),

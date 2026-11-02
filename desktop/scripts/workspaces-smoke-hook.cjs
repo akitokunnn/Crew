@@ -145,6 +145,19 @@ app.once('browser-window-created', (_event, win) => {
       const state = await js('window.crewDesktop.bootstrap()'); evidence.service = state.service;
       assert.notEqual(new URL(state.service.url).port, '47811');
       const homeDirectory = process.argv[process.argv.indexOf('--home') + 1]; evidence.home = homeDirectory;
+      await click('#nav-settings');
+      await wait('!!document.querySelector("[data-settings-category=sounds]")', 'native sound category');
+      await click('[data-settings-category=sounds]');
+      await wait('!!document.querySelector("[data-sound-kind=leader]")', 'native sound controls');
+      await js(`for(const [kind,value] of [['leader','knock'],['assistant','off'],['delivery','bell']]){
+        const picker=document.querySelector('[data-sound-kind='+kind+']');picker.value=value;picker.dispatchEvent(new Event('input',{bubbles:true}));}`);
+      await click('[data-sound-save]');
+      await wait('document.querySelector("[data-sound-status]").textContent.includes("音效已保存")', 'native sound preferences saved');
+      const soundSettings = await core.request(state.service.url, '/api/settings');
+      assert.equal(soundSettings.sounds.leader, 'knock');assert.equal(soundSettings.sounds.assistant, 'off');assert.equal(soundSettings.sounds.delivery, 'bell');
+      await capture('01-native-sound-settings');
+      evidence.checks.push('native settings inject the sound owner and persist independent choices through real IPC to the shared backend without AI work');
+      await click('#nav-workspaces');
       const parent = path.join(homeDirectory, 'qa-workspaces'); await fs.mkdir(parent, { recursive:true });
       for (const name of ['Crew 视觉验收', '长路径与中文名称的工作区', '工具接入']) await core.newWorkspace(parent, name, state.service.url);
       const projects = await core.projects(state.service.url); seedLeaders(homeDirectory, projects.slice(0, 2));

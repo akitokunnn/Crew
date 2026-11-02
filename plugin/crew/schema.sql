@@ -32,6 +32,13 @@ CREATE TABLE IF NOT EXISTS execution_settings (
     updated_at  TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS sound_settings (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    preferences_json TEXT NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS projects (
     name        TEXT PRIMARY KEY,
     root        TEXT NOT NULL UNIQUE,      -- absolute path, as given (compare with crew.store.norm_path)
