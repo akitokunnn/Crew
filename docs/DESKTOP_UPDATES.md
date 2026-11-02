@@ -16,7 +16,7 @@
 1. 从最新 `rebuild/v2` 建立发布分支，更新 `desktop/package.json`、`desktop/package-lock.json` 的项目版本及 `plugin/.claude-plugin/plugin.json`，同步使用说明。
 2. 在 `desktop` 执行 `npm ci`、`npm test`、`npm run build`，生成安装版、便携版与 ZIP。使用本目录的 Electron / electron-builder 缓存，不改依赖版本。
 3. 执行 `node desktop/scripts/verify-bundle.cjs` 和 `verify-icons.cjs`；对目录程序、便携包及 ZIP 解压后的程序运行 `smoke.cjs`，使用隔离 HOME 和假载体核对真实启动、截图及所属后台退出。生成三个下载包的 SHA-256 清单。
-4. 检查差异，提交版本变更并通过 PR 合入 `rebuild/v2`，等待仓库 CI 通过。核对最终源码与包内文件一致后，以合并提交创建 `v<版本>` 标签及 GitHub Release，上传三个包与校验清单。本开发线的 Release 显式使用 `--latest=false`，通过具体版本链接下载，避免占用旧版主干的 Latest 入口。
+4. 检查差异，提交版本变更并通过 PR 合入 `rebuild/v2`，等待仓库 CI 通过。核对最终源码与包内文件一致后，以合并提交创建 `v<版本>` 标签及 GitHub Release，上传三个包与校验清单。发布后核对 GitHub 实际状态，通过具体版本链接下载；分支及 HOME 隔离仍由程序配置负责。
 5. 回读 Release 的标签、提交、附件名称与大小，并核对上传资产的 SHA-256。发布不等于已更新用户安装，不自动停止正式 Crew 或改写其运行来源。
 
 ## 历史更新机制说明
