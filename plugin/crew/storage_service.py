@@ -274,7 +274,7 @@ class StorageService:
                         self._fresh_intent_path(root).unlink(missing_ok=True)
                     return {'project': discovery['project'], 'model_calls': 0}
                 if not discovery.get('can_start_fresh'):
-                    raise ValueError('此目录已有本机 V2 历史，请接续或导入原记录，不能覆盖为新工作区')
+                    raise ValueError('此目录已有本机历史，请接续或导入原记录，不能覆盖为新工作区')
                 if not root.is_dir():
                     raise ValueError('项目目录不存在：' + str(root))
                 from . import board
@@ -292,7 +292,7 @@ class StorageService:
                 # resumes the same identity instead of leaving an orphan gate.
                 warning = self._write_marker(root, pending['workspace_id'], separate=True)
                 if warning:
-                    raise ValueError('无法建立独立的 V2 工作区标识：' + warning)
+                    raise ValueError('无法建立独立的工作区标识：' + warning)
                 with closing(store.connect(self.home)) as conn:
                     project = board.init_project(conn, pending['project'], root)
                 result = self.refresh(project['name'], workspace_id=pending['workspace_id'])

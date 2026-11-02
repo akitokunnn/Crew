@@ -29,7 +29,7 @@ function requireHomeGenerationSync(home, expected) {
   };
   const canonical = value => process.platform === 'win32' ? value.toLowerCase() : value;
   if (expected === 2 && canonical(real(home)) === canonical(real(path.join(os.homedir(),'.crew')))) {
-    throw fail('Crew V2 不能使用 V1 的 ~/.crew 数据目录。请选择 ~/.crew-v2 或另一个独立数据目录；旧历史通过发现与导入读取。');
+    throw fail('Crew 不能使用 V1 的 ~/.crew 数据目录。请选择 ~/.crew-v2 或另一个独立数据目录；旧历史通过发现与导入读取。');
   }
   let runtime;
   try { runtime = JSON.parse(fs.readFileSync(path.join(home,'runtime.json'),'utf8')); }
@@ -37,7 +37,7 @@ function requireHomeGenerationSync(home, expected) {
     if (error.code === 'ENOENT') {
       const defaultV2=canonical(real(path.join(os.homedir(),'.crew-v2')));
       if(expected===2 && canonical(real(home))!==defaultV2 && fs.existsSync(path.join(home,'crew.db'))) {
-        throw fail('此自定义数据目录已有 crew.db，但没有可核验的 runtime.json 来源记录。Crew V2 不会改写来源未知的旧数据库；请选择独立的新目录，再通过历史发现导入。');
+        throw fail('此自定义数据目录已有 crew.db，但没有可核验的 runtime.json 来源记录。Crew 不会改写来源未知的旧数据库；请选择独立的新目录，再通过历史发现导入。');
       }
       return;
     }

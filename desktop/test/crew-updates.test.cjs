@@ -120,7 +120,7 @@ test('a mismatched actual plugin source blocks update before closing the gate', 
 test('V1 source is rejected before preparing, backing up or stopping the current backend', async t => {
   const f = fixture(t, { generation:1 });
   const result = await f.manager.update();
-  assert.equal(result.phase, 'error'); assert.match(result.error, /不是 Crew V2/);
+  assert.equal(result.phase, 'error'); assert.match(result.error, /不是 Crew/);
   assert.deepEqual(f.calls,['lock','inspect','health','unlock']);
 });
 

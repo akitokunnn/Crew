@@ -54,7 +54,7 @@ class ProductIdentityTests(unittest.TestCase):
     def test_product_marker_does_not_extend_claude_manifest_schema(self):
         plugin = Path(__file__).resolve().parents[1]
         self.assertEqual(json.loads((plugin / 'crew-product.json').read_text(encoding='utf-8')),
-                         {'generation': 2, 'name': 'Crew V2'})
+                         {'generation': 2, 'name': 'Crew'})
         manifest = json.loads((plugin / '.claude-plugin' / 'plugin.json').read_text(encoding='utf-8'))
         self.assertNotIn('generation', manifest)
         self.assertNotIn('productGeneration', manifest)

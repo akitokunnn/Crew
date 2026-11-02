@@ -154,7 +154,7 @@ def plugin_state(target, command):
 def update_plugin(target, command):
     # Keep the old helper operation as an explicit refusal for an older shell.
     # Managed V2 sessions load --plugin-dir from their own backend source.
-    raise UpdateError('Crew V2 使用会话专用插件；不会更新共享的 V1 Claude 插件')
+    raise UpdateError('Crew 使用会话专用插件；不会更新共享的 V1 Claude 插件')
 
 
 def backup(home):
@@ -179,19 +179,19 @@ def backup(home):
 def validate_home(home):
     home = Path(home).resolve()
     if home == (Path.home() / '.crew').resolve():
-        raise UpdateError('Crew V2 不会更新 V1 的 .crew 数据目录')
+        raise UpdateError('Crew 不会更新 V1 的 .crew 数据目录')
     previous = cli_entry(home)
     if previous['state'] != 'missing':
         previous_root = previous.get('plugin_root')
         if not previous_root or target_info(previous_root)['generation'] != 2:
-            raise UpdateError('此 HOME 的命令入口属于 V1 或来源未确认；请使用独立的 V2 HOME')
+            raise UpdateError('此 HOME 的命令入口属于 V1 或来源未确认；请使用独立的数据目录')
     return home
 
 
 def switch(home, root):
     target = target_info(root)
     if target['generation'] != 2:
-        raise UpdateError('更新来源不是 Crew V2；不会把 V2 切换到 V1')
+        raise UpdateError('更新来源不是 Crew；不能切换到旧版后台')
     home = validate_home(home)
     from .home_migration import reset_deployment
     deployment = reset_deployment({'home': str(Path(home).resolve())})
@@ -256,7 +256,7 @@ def inspect(home, root):
     target = target_info(root)
     plugin = {'state': 'session-scoped', 'source': target['root'], 'source_version': target['version'],
               'registered_version': target['version'], 'scope': 'managed-session'} if target['generation'] == 2 else {
-              'state': 'blocked', 'reason': '更新来源不是 Crew V2；不会修改共享的 V1 插件'}
+              'state': 'blocked', 'reason': '更新来源不是 Crew；不会修改共享的 V1 插件'}
     return {"target": target, "cli": cli_entry(home), "plugin": plugin}
 
 

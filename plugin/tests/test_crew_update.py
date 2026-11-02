@@ -380,7 +380,7 @@ class HelperTests(ShellFixture, unittest.TestCase):
         (legacy / 'crew-product.json').unlink()
         self.assertEqual(updater.target_info(legacy)['generation'], 1)
         before = {path: path.read_bytes() for path in self.home.rglob('*') if path.is_file()}
-        with self.assertRaisesRegex(updater.UpdateError, '来源不是 Crew V2'):
+        with self.assertRaisesRegex(updater.UpdateError, '来源不是 Crew'):
             updater.switch(self.home, legacy)
         self.assertEqual(before, {path: path.read_bytes() for path in self.home.rglob('*') if path.is_file()})
 

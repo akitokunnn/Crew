@@ -23,7 +23,7 @@ catch(error) {
   // Reject a V1 HOME before Electron profiles, administrator files or bundled
   // backend materialization can create anything inside the selected directory.
   console.error(error);
-  if(!config.smoke)dialog.showErrorBox('Crew V2 数据目录不兼容',error.message+'\n请通过 --home <独立的新目录> 启动 Crew V2，或在 Crew V2 启动设置中选择独立目录。');
+  if(!config.smoke)dialog.showErrorBox('Crew 数据目录不兼容',error.message+'\n请通过 --home <独立的新目录> 启动 Crew，或在 Crew 启动设置中选择独立目录。');
   app.exit(1);
   return;
 }
@@ -208,7 +208,7 @@ async function chooseHistory({kind,discovery}) {
   if(!liveWindow())return null;
   const target=window;
   if(kind==='history_missing'){
-    const answer=await dialog.showMessageBox(window,{type:'question',title:'打开为 V2 工作区',message:'这个文件夹有旧 Crew 的工作区身份',detail:'可以使用现有源码，从全新的 V2 记录开始。旧版任务、聊天和文件夹身份会保留；新建记录不会启动 AI。需要接续原历史时，请取消并导入工作区包。',buttons:['从全新 V2 记录开始','取消'],defaultId:0,cancelId:1,noLink:true});
+    const answer=await dialog.showMessageBox(window,{type:'question',title:'打开为 Crew 工作区',message:'这个文件夹有旧 Crew 的工作区身份',detail:'可以使用现有源码，从全新的记录开始。旧版任务、聊天和文件夹身份会保留；新建记录不会启动 AI。需要接续原历史时，请取消并导入工作区包。',buttons:['从全新记录开始','取消'],defaultId:0,cancelId:1,noLink:true});
     return liveWindow(target)&&answer.response===0?{action:'fresh'}:null;
   }
   if(kind==='relocate'){
@@ -223,7 +223,7 @@ async function chooseHistory({kind,discovery}) {
     selected=answer.response;if(selected>=candidates.length)return null;
   }
   const candidate=candidates[selected];if(!candidate)return null;
-  const buttons=['升级并接续','仅查看历史',...(discovery.can_start_fresh?['从全新 V2 记录开始']:[]),'取消'];
+  const buttons=['升级并接续','仅查看历史',...(discovery.can_start_fresh?['从全新记录开始']:[]),'取消'];
   const answer=await dialog.showMessageBox(window,{type:'question',title:'升级工作区数据',message:'发现可以接续的旧版历史',detail:`${candidate.project}\n成员 ${candidate.counts.sessions||0} · 任务 ${candidate.counts.goals||0} · 报告 ${candidate.counts.reports||0} · 资料 ${candidate.counts.documents||0}\n\n升级会建立完整历史库，保留旧数据并校验关联和产出文件。查看、升级均不会启动 AI。`,buttons,defaultId:0,cancelId:buttons.length-1,noLink:true});
   return !liveWindow(target)||answer.response===buttons.length-1?null:answer.response===2?{action:'fresh'}:{action:answer.response===0?'upgrade':'view',candidate_id:candidate.id};
 }
@@ -489,7 +489,7 @@ handle('desktop:crew-update-cancel',()=>crewUpdates.cancel());
 handle('desktop:crew-update-open',async kind=>{
   if(!['release','main'].includes(kind))throw new Error('不支持的版本链接');
   const online=crewUpdates.snapshot().online;
-  if(kind==='release'&&!online?.release?.url)throw new Error('V2 尚未登记独立发布包，请查看 rebuild/v2 分支。');
+  if(kind==='release'&&!online?.release?.url)throw new Error('当前版本尚未登记正式发布包，请查看 rebuild/v2 分支。');
   const target=kind==='release'?online.release.url:(online?.main?.url||'https://github.com/akitokunnn/Crew/tree/rebuild/v2');
   const url=new URL(target);
   if(url.protocol!=='https:'||url.hostname!=='github.com'||url.username||url.password||!(url.pathname==='/akitokunnn/Crew'||url.pathname.startsWith('/akitokunnn/Crew/')))throw new Error('版本链接不属于 Crew 官方仓库');

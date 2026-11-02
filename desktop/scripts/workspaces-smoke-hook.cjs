@@ -130,10 +130,12 @@ app.once('browser-window-created', (_event, win) => {
     }
     let originalDialog, originalMessageBox;
     try {
+      assert.equal(app.getName(), 'Crew · 隔离测试');
+      evidence.checks.push('The real native app is named Crew and retains its isolated test identity');
       originalMessageBox=dialog.showMessageBox;
       dialog.showMessageBox=async(...args)=>{
         const options=args.at(-1);
-        if(options.title==='打开为 V2 工作区')return {response:0};
+        if(options.title==='打开为 Crew 工作区')return {response:0};
         if(options.title==='升级工作区数据')return {response:0};
         return originalMessageBox.apply(dialog,args);
       };

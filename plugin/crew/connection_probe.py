@@ -13,7 +13,7 @@ import sys
 from . import connection_import, connections, lark, qq
 
 
-TEXT = 'Crew V2 提醒测试：旧版连接配置已导入。这是一条测试提醒，无需回复。'
+TEXT = 'Crew 提醒测试：旧版连接配置已导入。这是一条测试提醒，无需回复。'
 
 
 def _configured(home, channels):

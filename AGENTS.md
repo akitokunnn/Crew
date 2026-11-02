@@ -2,6 +2,8 @@
 
 ## 分支约定（2026-10-29）
 
+- 产品名称统一为 **Crew**，以版本号区分交付，不把 V2 加到应用、窗口、快捷方式或产物名称。`rebuild/v2` 分支、已有安装身份及数据目录仅保留为内部兼容标识，避免升级丢失历史与设置。
+
 - `main` 保留 V1，产品源码以 `v1-0.2.40`（`c72f425`）为基线。V1 是产品代际名称，桌面包版本仍为 `0.2.40`。
 - `rebuild/test` 保存此前 0.2.41、0.2.42 的开发成果及需求文档，归档起点为 `af9f281`，不自动合回 main。
 - `rebuild/v2` 是后续新版讨论与开发分支，从恢复后的 V1 主干起步。新版工作默认提交到该分支；需要 PR 时以该分支为目标，不自动合入 main。下文“验证通过后主动合并”的主干默认规则对新版工作由本条替代。
@@ -103,6 +105,7 @@ npm --prefix desktop test
 
 | 规则 | 由什么拦住 |
 | --- | --- |
+| 产品名为 Crew，代际标识只用于内部兼容；窗口、安装器、快捷方式和产物名称保持一致 | `desktop/test/version-sync.test.cjs`、`core.test.cjs` 与真实 Electron 工作区烟测；还原旧名称会触发失败 |
 | 修改可见交互后，用真实浏览器走流程；控制台错误算失败，逐步保存截图，不以静态字符串检查替代 | `node plugin/tests/smoke_assistant_reply.cjs`、`node plugin/tests/smoke_v2_ui_revision.cjs`；截图在 `Temp/assistant-reply/`、`Temp/v2-ui-review/`，脚本支持装回旧错做反证 |
 | 触及原生接回时，验证同 ID、保持桌面打开、再次交出可直接发送及工具不重复；不把假载体、未知参数或仅一次恢复当成真实桌面闭环。真实 AI 仅在用户授权时使用隔离 HOME 和指定模型 | `test_native_handoff`、`test_codex_desktop`、`test_codex_desktop_bridge`（真实进程，覆盖关闭通知屏蔽和原拥有者恢复）；真实 AI 证据见 `docs/v2/NATIVE_DESKTOP_0.3.3_2026-10-30.md`。压缩另由 `test_codex_events` 真实事件回放覆盖 |
 | 助手使用完整的共享聊天状态契约，普通任务反馈保持原任务身份并保留已交付证据 | `test_assistant_http`、`test_goal_http`、`test_goal_acceptance` 与上述助手浏览器检查；工作区迁移使用真实恢复和包往返测试 |

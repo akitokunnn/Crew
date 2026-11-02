@@ -1,8 +1,10 @@
 # Crew
 
-这是 `rebuild/v2` 上的 Crew V2 初版，桌面包版本以 `desktop/package.json` 为准。工作区内以任务和 TODO 为主页；全 Crew 共用一个跨工作区助手。V2 使用独立默认数据目录 `~/.crew-v2`、桌面身份和安装入口，与 `main` 上的 V1 分开。需求与验收边界见 [V2 初版约定](docs/v2/PRODUCT.md)，开源参考见 [选型记录](docs/v2/OPEN_SOURCE.md)。
+0.3.6 统一使用 **Crew** 名称，窗口、安装器、快捷方式和文件名均不再附加 V2；历史数据和设置沿用。见 [名称调整](docs/CREW_NAMING_0.3.6.md)。
 
-已有旧 Crew 身份的文件夹可以明确选择“从全新 V2 记录开始”，使用原源码目录和独立的 V2 历史，不要求先导入工作区包。旧身份保留，新身份写入 `.crew/workspace-v2.json`。见 [0.3.1 修复说明](docs/v2/FIX_0.3.1_MIB_OPEN.md)。交互反馈见 [0.3.2 反馈复测](docs/v2/RETEST_0.3.2.md)，官方 Codex 桌面往返及显示边界见 [0.3.3 接续说明](docs/v2/NATIVE_DESKTOP_0.3.3_2026-10-30.md)。
+Crew 用版本号区分更新，桌面包版本以 `desktop/package.json` 为准。工作区以任务和 TODO 为主页；全 Crew 共用一个跨工作区助手。现有数据目录 `~/.crew-v2` 沿用以保留历史，开发分支仍为 `rebuild/v2`；这些兼容标识不作为产品名称。需求与验收边界见 [产品约定](docs/v2/PRODUCT.md)，开源参考见 [选型记录](docs/v2/OPEN_SOURCE.md)。
+
+已有旧 Crew 身份的文件夹可以明确选择“从全新记录开始”，使用原源码目录和独立的历史，不要求先导入工作区包。旧身份保留，新身份写入 `.crew/workspace-v2.json`。见 [0.3.1 修复说明](docs/v2/FIX_0.3.1_MIB_OPEN.md)。交互反馈见 [0.3.2 反馈复测](docs/v2/RETEST_0.3.2.md)，官方 Codex 桌面往返及显示边界见 [0.3.3 接续说明](docs/v2/NATIVE_DESKTOP_0.3.3_2026-10-30.md)。
 
 同一网络中的手机和电脑可从“设置 → 局域网访问”开启访问，在浏览器输入地址和一次性配对码。支持现有工作区、全局助手、任务、拍板、待办及报告；设备可以单独撤销，关闭访问不停止本机任务。电脑上的 Crew 必须保持运行。使用步骤与验证范围见 [0.3.4 局域网访问](docs/v2/LAN_ACCESS_0.3.4_2026-11-01.md)。公网接入留待配置域名后实施，见 [接入选型](docs/decisions-remote-access.md)。
 
@@ -29,7 +31,7 @@
 - **报告验收统计**：验收总数和通过、失败、未验证、模拟验证只统计逐项验收记录；报告另列的遗留问题或限制单独显示为可展开的“报告补充说明”，按条保留原文，不算额外验收项。
 - **按任务设计的交付报告**：CC 与 Codex 的 leader 自主组织精美、易懂的自包含 HTML 正文，按任务选择推荐对比、全貌清单、图表或交互，默认先读正文；“验收证据与交付记录”另行展开。内联图表可筛选、排序，正文在无同源权限的隔离框架内运行，不加载外网资源。旧报告保留原格式。
 - **报告截图预览**：CC 与 Codex 可用同一 `report.preview` 入口，交给已连接的 Crew 桌面生成桌面或手机视口的 PNG。CC 读取返回文件，Codex 接收原生图片；AI 看过图片后才判断排版。桌面不可用或渲染失败会保留真实原因，截图本身不代表视觉或交互验收通过。见[报告预览设计与用法](docs/decisions-report-preview.md)。
-- **工具与更新**：检查 V2 发布版本和 `rebuild/v2` 分支，并可手动将 V2 后台和命令入口统一到当前桌面包；不会更新 V1 数据或共享的 Claude 插件；更新前备份，忙时等待。另支持 Claude Code / Codex CLI 更新，CLI 自动更新默认关闭。见 [Crew 更新说明](docs/DESKTOP_UPDATES.md)。
+- **工具与更新**：检查 V2 发布版本和 `rebuild/v2` 分支，并可手动将 后台和命令入口统一到当前桌面包；不会更新 V1 数据或共享的 Claude 插件；更新前备份，忙时等待。另支持 Claude Code / Codex CLI 更新，CLI 自动更新默认关闭。见 [Crew 更新说明](docs/DESKTOP_UPDATES.md)。
 - **统一设置**：默认 AI、新建 leader、leader 召唤组员、交流区摘要、Git 管理员和运维可分别配置载体、模型与 effort；组员默认跟随所属 leader，每组也可单独覆盖。留空模型和 effort 使用原生默认。保存设置不启动任务，不改变已有会话。
 - **存储与清理**：桌面和网页设置可查看当前数据目录的分类占用，先预览再清理。过期启动日志直接释放；旧备份、孤儿图片及过期导出包先进入 7 天回收站，可恢复。自动维护仅处理过期启动日志与到期回收站。工作历史、项目文件和有引用附件保留。见 [存储管理](docs/STORAGE_MANAGEMENT.md)。
 - **手动添加组员**：本组关系树右上角“添加”可新建组员或收编已有会话；新建时填写名字、任务并确认大脑，点击“创建并开始”后执行。组名下的“组员大脑”修改本组之后的召唤默认值，优先于全局组员设置。
@@ -76,7 +78,7 @@ npm start
 
 真正退出会停止接收新界面操作，取消只读版本查询和独立的要点卡整理，释放各托管会话；已开始的安装、更新或目录迁移仍会完成收尾。
 
-`npm run build` 按 `desktop/package.json` 的版本生成 `desktop/dist/Crew-V2-<version>-win-x64.zip`、`Crew-V2-<version>-portable.exe` 和 `Crew-V2-<version>-setup.exe`。日常使用可将 ZIP 解压一次后运行其中的 `Crew V2.exe`，或使用安装版；单文件 portable 每次启动都需临时解包。运行仍需本机 Python 和所选模型 CLI。构建、独立数据目录和隔离验收见 [桌面版说明](desktop/README.md)。
+`npm run build` 按 `desktop/package.json` 的版本生成 `desktop/dist/Crew-<version>-win-x64.zip`、`Crew-<version>-portable.exe` 和 `Crew-<version>-setup.exe`。日常使用可将 ZIP 解压一次后运行其中的 `Crew.exe`，或使用安装版；单文件 portable 每次启动都需临时解包。运行仍需本机 Python 和所选模型 CLI。构建、独立数据目录和隔离验收见 [桌面版说明](desktop/README.md)。
 
 ### Claude 插件与 VS Code
 
