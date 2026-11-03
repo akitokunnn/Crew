@@ -309,7 +309,7 @@ class DigestExitLifecycleTests(unittest.TestCase):
             storage_cleanup=SimpleNamespace(close=lambda: actions.append('storage')),
             connections=SimpleNamespace(close=lambda: actions.append('connections')),
             notice_worker=SimpleNamespace(join=lambda: self.assertEqual(actions[0], 'digest-stop')),
-            ci_worker=None, chat=SimpleNamespace(close=lambda: actions.append('chat')),
+            ci_worker=None, chat=SimpleNamespace(lock=threading.RLock(), close=lambda: actions.append('chat')),
             maintenance=SimpleNamespace(close=lambda: actions.append('maintenance')), worker=None)
         web.Service.close(service)
         self.assertTrue(service.stop.is_set())
@@ -356,6 +356,7 @@ class DigestExitLifecycleTests(unittest.TestCase):
         self.addCleanup(previews.close)
         failure = OSError('fixture digest termination denied')
         def stop_digest():
+            self.assertTrue(service.chat.closed, 'Application exit must block new native work before cleanup')
             actions.append('digest-stop')
             raise failure
         service = SimpleNamespace(stop=threading.Event(),
@@ -364,7 +365,7 @@ class DigestExitLifecycleTests(unittest.TestCase):
             remote_access=SimpleNamespace(shutdown=lambda: actions.append('remote')),
             storage_cleanup=SimpleNamespace(close=lambda: actions.append('storage')),
             connections=SimpleNamespace(close=lambda: actions.append('connections')),
-            notice_worker=None, ci_worker=None, chat=SimpleNamespace(close=lambda: actions.append('chat')),
+            notice_worker=None, ci_worker=None, chat=SimpleNamespace(lock=threading.RLock(), close=lambda: actions.append('chat')),
             maintenance=SimpleNamespace(close=lambda: actions.append('maintenance')), worker=None)
         with mock.patch('crew.web.traceback.print_exc') as logged:
             with self.assertRaises(OSError) as raised:
