@@ -11,6 +11,8 @@ function harness(){
   const timers=new Map(),saved=new Map(),streams=[],connections=[],frames=new Map(),handlers=new Map();let next=1;
   const motion={matches:true};
   const sandbox={matchMedia:()=>motion,atob,btoa,URLSearchParams,AbortController,TextDecoder,
+    EventSource:class{static CLOSED=2;constructor(url){connections.push({url});}close(){}},
+    addEventListener(type,fn){if(!handlers.has(type))handlers.set(type,new Set());handlers.get(type).add(fn);},removeEventListener(type,fn){handlers.get(type)?.delete(fn);},
     localStorage:{getItem:key=>saved.get(key)??null,setItem:(key,value)=>saved.set(key,value)},
     document:{visibilityState:"visible",activeElement:null,querySelectorAll:()=>[],addEventListener(type,fn){if(!handlers.has(type))handlers.set(type,new Set());handlers.get(type).add(fn);},removeEventListener(type,fn){handlers.get(type)?.delete(fn);},createElement:node},
     setTimeout:(fn,ms)=>{const id=next++;timers.set(id,{fn,ms});return id;},clearTimeout:id=>timers.delete(id),requestAnimationFrame:fn=>{const id=next++;frames.set(id,fn);return id;},cancelAnimationFrame:id=>frames.delete(id),
@@ -21,9 +23,39 @@ function harness(){
   for(const file of ["vendor/markdown-it.min.js","browser-utils.js","chat.js"])vm.runInContext(fs.readFileSync(path.join(__dirname,"../crew/web",file),"utf8"),sandbox);
   function mount(id,api,extra={},options={}){const target=host(),session={session_id:id,name:id,busy:false,last_seq:0,activity:null,where:"bg",...extra};sandbox.CrewChat.mount({host:target,session,state:{project:{name:"fixture"},leaders:[session],members:[]},api,toast(){},...options});return target;}
   function update(id,extra={}){const session={session_id:id,name:id,busy:false,last_seq:1,activity:null,where:"bg",...extra};sandbox.CrewChat.update({project:{name:"fixture"},leaders:[session],members:[]});}
-  return {chat:sandbox.CrewChat,mount,update,timers,saved,streams,connections,handlers,sandbox,motion,flushFrames(){for(const [id,fn] of frames){frames.delete(id);fn();}}};
+  function visibility(visible,desktop=false){const type=desktop?"crew-tab-visibility":"visibilitychange";if(desktop)sandbox.crewTabVisible=visible;else sandbox.document.visibilityState=visible?"visible":"hidden";for(const fn of handlers.get(type)||[])fn({type,detail:{visible}});}
+  return {chat:sandbox.CrewChat,mount,update,visibility,timers,saved,streams,connections,handlers,sandbox,motion,flushFrames(){for(const [id,fn] of frames){frames.delete(id);fn();}}};
 }
 const history=()=>({events:[],busy:false,read_seq:0});
+
+test("hidden browser and desktop conversations release their stream and resume after the last event",async()=>{
+  for(const runtime of ["claude","codex"])for(const goalId of [null,"goal"])for(const readonly of [false,true])for(const desktop of [false,true]){
+    const h=harness(),target=h.mount("leader",async()=>({...history(),events:[{seq:1,type:"message",id:"first",text:"已有上下文"}]}),{runtime},{goalId,readonly});
+    await tick();h.flushFrames();
+    if(!readonly){target.querySelector("textarea").value="未发送草稿";target.querySelector("textarea").oninput();}
+    h.connections[0].emit({seq:2,type:"text",id:"reply",text:"已接收回复"});await tick();h.flushFrames();
+    h.visibility(false,desktop);await tick();
+    assert.equal(h.connections[0].signal.aborted,true,"hidden chats must release the HTTP connection");
+    assert(rendered(target).join("").includes("已有上下文"));assert(rendered(target).join("").includes("已接收回复"));
+    h.visibility(true,desktop);await tick();
+    assert.equal(h.connections.length,2);assert(h.connections[1].url.includes("after=2"));
+    h.visibility(true,desktop);await tick();assert.equal(h.connections.length,2,"duplicate visibility notices cannot open duplicate streams");
+    h.connections[1].emit({seq:3,type:"text",id:"reply",text:"及离开后的内容"});await tick();h.flushFrames();
+    assert(rendered(target).join("").includes("已接收回复及离开后的内容"));
+    if(!readonly)assert.equal(target.querySelector("textarea").value,"未发送草稿");
+    h.chat.unmount();assert.equal(h.handlers.get("crew-tab-visibility")?.size||0,0);
+  }
+});
+
+test("a hidden initial history read never opens a stream until both visibility and history are ready",async()=>{
+  for(const desktop of [false,true]){
+    const h=harness();h.visibility(false,desktop);let release;
+    h.mount("assistant",()=>new Promise(resolve=>{release=resolve;}));
+    h.visibility(true,desktop);await tick();assert.equal(h.connections.length,0);
+    h.visibility(false,desktop);release(history());await tick();assert.equal(h.connections.length,0);
+    h.visibility(true,desktop);await tick();assert.equal(h.connections.length,1);h.chat.unmount();
+  }
+});
 
 test("rendering an idle neighbor keeps a newly inserted activity clock moving",()=>{
   const h=harness(),now=Date.now(),startedAt=new Date(now).toISOString();
@@ -182,22 +214,92 @@ test("folding a turn above a visible steering message preserves that message's v
   assert.equal(message.getBoundingClientRect().top,80);assert.equal(scroll.scrollTop,240);h.chat.unmount();
 });
 
-test("compact watcher waits for native completion and reports cancellation or closed transport",async()=>{
+test("compact watchers use finite history reads and finish once on a new native receipt",async()=>{
   for(const terminal of [{type:"compact",seq:2,pre_tokens:50000,post_tokens:10000},
     {type:"compact_cancelled",reason:"上一轮未成功结束"},{type:"status",status:"offline"},{type:"error",text:"native failed"}]){
-    const h=harness(),streams=[],finished=[],toasts=[];
-    h.sandbox.EventSource=class{static CLOSED=2;constructor(url){this.url=url;streams.push(this);}close(){this.closed=true;}};
-    await h.chat.watchCompact("member",{state:{project:{name:"fixture"}},api:async()=>({events:[{seq:1}]}),toast:text=>toasts.push(text),onFinish:event=>finished.push(event)});
-    assert(streams[0].url.includes("session_id=member"));assert(streams[0].url.includes("after=1"));
-    streams[0].onmessage({data:JSON.stringify({type:"turn_result",success:true})});assert.equal(finished.length,0);
-    streams[0].onmessage({data:JSON.stringify(terminal)});assert.equal(finished.length,1);assert(streams[0].closed);
+    const h=harness(),finished=[],toasts=[],calls=[];let events=[{type:"compact",seq:1,pre_tokens:5,post_tokens:1}];
+    const close=await h.chat.watchCompact("member",{state:{project:{name:"fixture"}},goalId:"goal",api:async url=>{calls.push(url);return {events};},toast:text=>toasts.push(text),onFinish:event=>finished.push(event)});
+    const poll=async()=>{const entry=[...h.timers.entries()].find(([,timer])=>timer.ms===3000);assert(entry,"a finite read should be scheduled");h.timers.delete(entry[0]);await entry[1].fn();await tick();};
+    assert.equal(finished.length,0,"an earlier compression is not this request's receipt");
+    events=[...events,{seq:2,type:"turn_result",success:true}];await poll();assert.equal(finished.length,0);
+    events=[...events,{...terminal,seq:3}];await poll();assert.equal(finished.length,1);close();
+    assert.equal(h.timers.size,0);assert.equal(h.connections.length,0);
+    assert(calls.every(url=>url.startsWith("/api/chat/history?")&&url.includes("session_id=member")&&url.includes("goal_id=goal")));
     assert.equal(toasts.length,terminal.type==="compact"?1:0);
   }
-  const h=harness(),finished=[];let stream;
-  h.sandbox.EventSource=class{static CLOSED=2;constructor(){stream=this;this.readyState=0;}close(){this.closed=true;}};
-  await h.chat.watchCompact("member",{state:{project:{name:"fixture"}},api:async()=>history(),toast(){},onFinish:event=>finished.push(event)});
-  stream.onerror();assert.equal(finished.length,0,"a reconnect is not a completed or failed compaction");
-  stream.readyState=2;stream.onerror();assert.equal(finished.length,1);assert(stream.closed);
+});
+
+test("hidden compact watchers pause reads, catch up on return and ignore disposed late responses",async()=>{
+  for(const desktop of [false,true]){
+    const h=harness(),finished=[];let reads=0,resolve;
+    h.visibility(false,desktop);
+    const close=await h.chat.watchCompact("member",{state:{project:{name:"fixture"}},api:async()=>{reads++;return reads===1?history():new Promise(done=>{resolve=done;});},toast(){},onFinish:event=>finished.push(event)});
+    assert.equal(reads,1);assert.equal(h.timers.size,0);
+    h.visibility(true,desktop);await tick();assert.equal(reads,2);
+    h.visibility(false,desktop);h.visibility(true,desktop);await tick();assert.equal(reads,2,"visibility changes cannot overlap a pending read");
+    close();resolve({events:[{seq:1,type:"compact",pre_tokens:10,post_tokens:1}]});await tick();
+    assert.equal(finished.length,0);assert.equal(h.timers.size,0);assert.equal(h.handlers.get("visibilitychange")?.size||0,0);assert.equal(h.handlers.get("crew-tab-visibility")?.size||0,0);
+  }
+});
+
+test("goal compaction keeps watching its original execution after that execution becomes historical", async () => {
+  for (const type of ["compact_cancelled", "compact"]) {
+    const h = harness(), finished = [], toasts = [];
+    let snapshot = {execution_id:"original", events:[{seq:50, type:"status", status:"working"}]};
+    const close = await h.chat.watchCompact("member", {
+      state:{project:{name:"fixture"}}, goalId:"goal", api:async () => snapshot,
+      toast:message => toasts.push(message), onFinish:event => finished.push(event)
+    });
+    snapshot = {
+      execution_id:"replacement", events:[{seq:1, type:"status", status:"working"}],
+      previous_executions:[{execution_id:"original", events:[{seq:51, type, reason:"原执行已结束", pre_tokens:50, post_tokens:10}]}]
+    };
+    const entry = [...h.timers.entries()].find(([, timer]) => timer.ms === 3000);
+    assert(entry);
+    h.timers.delete(entry[0]);
+    await entry[1].fn();
+    await tick();
+    assert.equal(finished.length, 1);
+    assert.equal(finished[0].type, type);
+    assert.equal(toasts.length, type === "compact" ? 1 : 0);
+    h.visibility(false, true);
+    h.visibility(true, true);
+    await tick();
+    assert.equal(finished.length, 1);
+    assert.equal(h.timers.size, 0);
+    close();
+  }
+});
+
+test("a replacement execution's compression or error cannot finish the original compaction", async () => {
+  for (const type of ["compact", "error"]) {
+    const h = harness(), finished = [];
+    let snapshot = {execution_id:"original", events:[{seq:50, type:"status", status:"working"}]};
+    const close = await h.chat.watchCompact("member", {
+      state:{project:{name:"fixture"}}, goalId:"goal", api:async () => snapshot,
+      toast() {}, onFinish:event => finished.push(event)
+    });
+    snapshot = {
+      execution_id:"replacement", events:[{seq:60, type, text:"另一执行的错误", pre_tokens:50, post_tokens:10}],
+      previous_executions:[{execution_id:"original", events:[{seq:50, type:"status", status:"working"}]}]
+    };
+    const entry = [...h.timers.entries()].find(([, timer]) => timer.ms === 3000);
+    assert(entry);
+    h.timers.delete(entry[0]);
+    await entry[1].fn();
+    await tick();
+    assert.equal(finished.length, 0);
+    close();
+    assert.equal(h.timers.size, 0);
+  }
+});
+
+test("compact history transport failures report the real cause and retry reads without finishing or resending",async()=>{
+  const h=harness(),toasts=[],finished=[],calls=[];let fail=false;
+  const close=await h.chat.watchCompact("member",{state:{project:{name:"fixture"}},api:async url=>{calls.push(url);if(fail)throw Error("temporary connection failure");return history();},toast:text=>toasts.push(text),onFinish:event=>finished.push(event)});
+  const poll=async()=>{const entry=[...h.timers.entries()].find(([,timer])=>timer.ms===3000);assert(entry);h.timers.delete(entry[0]);await entry[1].fn();await tick();};
+  fail=true;await poll();await poll();assert.equal(toasts.length,1);assert.match(toasts[0],/temporary connection failure/);assert.match(toasts[0],/自动重试/);assert.equal(finished.length,0);
+  fail=false;await poll();fail=true;await poll();assert.equal(toasts.length,2);assert(calls.every(url=>url.startsWith("/api/chat/history?")));close();assert.equal(h.timers.size,0);
 });
 
 test("general and goal unread dividers follow reply text, excluding tools and unchanged snapshots",async()=>{

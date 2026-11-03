@@ -3,7 +3,7 @@ const { loopback } = require('./core.cjs');
 const { presentation } = require('./workspace-activity.cjs');
 
 // Each workspace owns one persistent document. Selecting a tab changes only
-// native visibility/focus; closing it never owns or stops a Crew backend.
+// page visibility/focus; closing it never owns or stops a Crew backend.
 class WorkspaceTabs {
   constructor(window, { origin, createView, onChange = () => {}, onHome = () => {},
     external = () => {}, openProject = () => {}, workspaceSettings = () => {}, onTitleChange = () => {}, onKeyboard = () => {},
@@ -55,9 +55,20 @@ class WorkspaceTabs {
   }
   _notify() { if (!this.disposed) this.onChange(this.state()); }
   _alive(tab) { return !this.disposed && this.entries.get(tab.id) === tab; }
+  _syncPageVisibility(tab) {
+    const wc = tab.view.webContents;
+    if (!this._alive(tab) || wc.isDestroyed() || this._destination(tab, wc.getURL()).kind !== 'same') return;
+    const visible = this.activeId === tab.id && !tab.error;
+    if (tab.pageVisible === visible) return;
+    tab.pageVisible = visible;
+    // WebContentsView.setVisible does not reliably update document.visibilityState.
+    // Hidden pages must release their event stream without unloading drafts.
+    void wc.executeJavaScript(`window.crewTabVisible = ${visible}; window.dispatchEvent(new CustomEvent('crew-tab-visibility', {detail:{visible:window.crewTabVisible}}));`)
+      .catch(error => { if (this._alive(tab) && !wc.isDestroyed()) this.onNavigationError(error); });
+  }
   _error(tab) {
     if (this._alive(tab)) {
-      tab.error = true; tab.loading = false; tab.view.setVisible(false); this._notify();
+      tab.error = true; tab.loading = false; tab.view.setVisible(false); this._syncPageVisibility(tab); this._notify();
     }
   }
   _openProject(tab, name, hash = '') {
@@ -128,6 +139,10 @@ class WorkspaceTabs {
       }
     });
     wc.on('did-stop-loading', () => { if (this._alive(tab)) { tab.loading = false; this._notify(); } });
+    wc.on('did-finish-load', () => {
+      tab.pageVisible = null;
+      this._syncPageVisibility(tab);
+    });
     const navigated = (_event, url, isMainFrame = true) => {
       if (!this._alive(tab) || isMainFrame === false) return;
       if (this._destination(tab, url).kind !== 'same') { this._error(tab); return; }
@@ -162,7 +177,7 @@ class WorkspaceTabs {
     this.select(tab.id);
     try {
       await view.webContents.loadURL(this.origin + '/?project=' + encodeURIComponent(project.name) + (hash.startsWith('#') ? hash : ''));
-      if (this._alive(tab)) { tab.loading = false; this._notify(); }
+      if (this._alive(tab)) { tab.loading = false; this._syncPageVisibility(tab); this._notify(); }
     } catch (error) {
       if (this._alive(tab)) { this._error(tab); throw error; }
     }
@@ -182,7 +197,7 @@ class WorkspaceTabs {
     this.select(tab.id);
     try {
       await view.webContents.loadURL(this.origin + '/assistant.html');
-      if (this._alive(tab)) { tab.loading=false;this._notify(); }
+      if (this._alive(tab)) { tab.loading=false;this._syncPageVisibility(tab);this._notify(); }
     } catch(error) { if (this._alive(tab)) { this._error(tab);throw error; } }
     return this._public(tab);
   }
@@ -190,7 +205,10 @@ class WorkspaceTabs {
   select(id) {
     if (this.disposed || id !== 'home' && !this.entries.has(id)) return false;
     this.activeId = id;
-    for (const tab of this.entries.values()) tab.view.setVisible(tab.id === id && !tab.error);
+    for (const tab of this.entries.values()) {
+      tab.view.setVisible(tab.id === id && !tab.error);
+      this._syncPageVisibility(tab);
+    }
     if (id === 'home') { this.window.webContents.focus(); this.onHome(); }
     else {
       const tab = this.entries.get(id), wc = tab.view.webContents;
