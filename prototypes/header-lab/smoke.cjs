@@ -10,11 +10,12 @@ const project = path.resolve(__dirname, "../..");
 const entry = path.join(__dirname, "demo.html");
 const viewFilter = process.argv.find(value => value.startsWith("--view="))?.slice(7);
 const widthFilter = process.argv.find(value => value.startsWith("--width="))?.slice(8);
+const multiWindowOnly = process.argv.includes("--multi-window-only");
 const variants = viewFilter ? [viewFilter] : ["switcher", "sidebar", "document", "tabs"];
 const widths = widthFilter ? [Number(widthFilter)] : [1440, 768, 390];
 assert(variants.every(value => ["switcher", "sidebar", "document", "tabs"].includes(value)), "Unknown --view");
 assert(widths.every(value => [1440, 768, 390].includes(value)), "Unknown --width");
-const output = path.join(project, "Temp/header-lab-review", viewFilter || widthFilter ? `target-${viewFilter || "all"}-${widthFilter || "all"}` : "");
+const output = path.join(project, "Temp/header-lab-review", multiWindowOnly ? "target-multi-window" : viewFilter || widthFilter ? `target-${viewFilter || "all"}-${widthFilter || "all"}` : "");
 const evidence = {checks: [], failures: [], screenshots: [], consoleErrors: [], unexpectedRequests: [], headers: []};
 let browser;
 
@@ -29,12 +30,7 @@ function check(label, condition) {
   assert(pass, label);
 }
 
-async function scenario(variant, width) {
-  const context = await browser.newContext({viewport: {width, height: 900}, reducedMotion: "reduce", colorScheme: "light"});
-  const page = await context.newPage();
-  const prefix = `${variant}-${width}`;
-  let sequence = 0;
-  page.setDefaultTimeout(12000);
+function monitorPage(page, variant, width) {
   page.on("pageerror", error => evidence.consoleErrors.push({variant, width, message: error.stack || String(error)}));
   page.on("console", message => {if (message.type() === "error") evidence.consoleErrors.push({variant, width, message: message.text()});});
   page.on("request", request => {
@@ -44,6 +40,15 @@ async function scenario(variant, width) {
       evidence.unexpectedRequests.push({variant, width, type, method: request.method(), url: request.url()});
     }
   });
+}
+
+async function scenario(variant, width) {
+  const context = await browser.newContext({viewport: {width, height: 900}, reducedMotion: "reduce", colorScheme: "light"});
+  const page = await context.newPage();
+  const prefix = `${variant}-${width}`;
+  let sequence = 0;
+  page.setDefaultTimeout(12000);
+  monitorPage(page, variant, width);
   async function shot(label) {
     const name = `${prefix}-${String(++sequence).padStart(2, "0")}-${label}.png`;
     await page.screenshot({path: path.join(output, name), fullPage: true, animations: "disabled"});
@@ -209,6 +214,18 @@ async function scenario(variant, width) {
     await start.click();
     check(`${prefix}: explicit start advances this task`, await page.locator("#lab-status").inputValue() === "running");
     await shot("explicit-start");
+    if (variant === "sidebar") {
+      await scope("general");
+      if (width <= 760) {
+        const menu = await firstVisible(page.locator('#demo-root [data-action="mobile-nav"]'));
+        assert(menu, `${prefix}: mobile sidebar navigation must be reachable`);
+        await menu.click();
+      }
+      const taskRow = page.locator('#demo-root .sidebar-task[data-scope="mips"]');
+      check(`${prefix}: unselected task keeps its running status in the sidebar`, await taskRow.isVisible() && (await taskRow.locator(".sidebar-task-copy small").innerText()).includes("推进中"));
+      await shot("running-task-in-general");
+      await scope("mips");
+    }
     await page.locator("#lab-status").selectOption("queued");
     const sent = `${prefix}：请开始核对 NPU 部署与验收样本。`;
     await page.locator("#message-input").fill(sent);
@@ -284,11 +301,63 @@ async function scenario(variant, width) {
   }
 }
 
+async function multiWindowPersistence() {
+  const context = await browser.newContext({viewport: {width: 1440, height: 900}, reducedMotion: "reduce", colorScheme: "light"});
+  const windows = [];
+  async function shot(page, name) {
+    await page.screenshot({path: path.join(output, name), fullPage: true, animations: "disabled"});
+    evidence.screenshots.push(name);
+  }
+  try {
+    // Open every variant before editing so later saves encounter older in-memory snapshots.
+    for (const variant of ["switcher", "sidebar", "document", "tabs"]) {
+      const page = await context.newPage();
+      page.setDefaultTimeout(12000);
+      monitorPage(page, `${variant}-multi-window`, 1440);
+      const url = pathToFileURL(entry);
+      url.searchParams.set("view", variant);
+      await page.goto(url.href);
+      await page.locator("#message-input").waitFor({state: "visible"});
+      windows.push({variant, page, draft: `${variant}：四窗口比较时保留的独立草稿`, note: `${variant}：四窗口比较时保留的独立试用笔记`});
+    }
+    for (const {variant, page, draft, note} of windows) {
+      await page.locator("#message-input").fill(draft);
+      await page.locator('.prototype-footer [data-action="note"]').click();
+      await page.locator("#lab-notes").fill(note);
+      await page.keyboard.press("Escape");
+      await shot(page, `${variant}-multi-window-saved.png`);
+    }
+    const exportPage = windows.at(-1).page;
+    await exportPage.locator('.prototype-footer [data-action="note"]').click();
+    const downloadPromise = exportPage.waitForEvent("download");
+    await exportPage.locator('[data-action="export-notes"]').click();
+    const download = await downloadPromise;
+    const downloaded = path.join(output, "four-window-exported-notes.txt");
+    await download.saveAs(downloaded);
+    const exported = await fs.readFile(downloaded, "utf8");
+    for (const {variant, note} of windows) {
+      check(`${variant}: four-window export preserves this variant's note`, exported.includes(note));
+    }
+    await shot(exportPage, "four-window-export.png");
+    for (const {variant, page, draft} of windows) {
+      await page.reload();
+      await page.locator("#message-input").waitFor({state: "visible"});
+      check(`${variant}: reload preserves its draft after other windows save`, await page.locator("#message-input").inputValue() === draft);
+      await shot(page, `${variant}-multi-window-reloaded.png`);
+    }
+  } catch (error) {
+    evidence.failures.push({variant: "multi-window", width: 1440, error: error.stack || String(error)});
+  } finally {
+    await context.close();
+  }
+}
+
 (async () => {
   await fs.access(entry); // Missing files are a setup error; never poll for a half-written page.
   await fs.mkdir(output, {recursive: true});
   browser = await chromium.launch({headless: true, channel: "chrome"});
-  for (const variant of variants) for (const width of widths) await scenario(variant, width);
+  if (!multiWindowOnly) for (const variant of variants) for (const width of widths) await scenario(variant, width);
+  if (!viewFilter && !widthFilter) await multiWindowPersistence();
   assert.deepEqual(evidence.consoleErrors, [], "Browser console errors fail the review");
   assert.deepEqual(evidence.unexpectedRequests, [], "Offline demos cannot fetch data or call a network/API");
   assert.deepEqual(evidence.failures, [], "All four prototype journeys must pass");

@@ -42,7 +42,11 @@
   const status = () => profile.scope === "general" ? "idle" : profile.statuses[profile.scope];
   const save = () => {
     profiles[variant] = profile;
-    try { localStorage.setItem(key, JSON.stringify({profiles,theme:document.documentElement.dataset.theme || "light"})); }
+    try {
+      const latest = JSON.parse(localStorage.getItem(key) || "{}");
+      Object.assign(profiles, latest?.profiles, {[variant]:profile});
+      localStorage.setItem(key, JSON.stringify({profiles,theme:document.documentElement.dataset.theme || "light"}));
+    }
     catch { toast("浏览器未允许保存，本次试用仍可继续。"); }
   };
   const toast = message => {
@@ -70,7 +74,8 @@
     const previous = root.querySelector(".conversation-scroll");
     if (options.rememberScroll !== false && previous) profile.scroll[profile.scope] = previous.scrollTop;
     const state = {scope:profile.scope,status:status(),mode:profile.modes[profile.scope] || "human",longTitle:profile.longTitle,mobileNav,details:overlay === "details"};
-    const context = {state,data,esc,icon,conversation:conversation(),task:task(),currentTitle:title(),statusLabel,statusHtml:profile.scope === "general" ? "" : `<span class="scope-status" data-status="${esc(status())}">${esc(statusLabel(status()))}</span>`};
+    const currentData = {...data,tasks:data.tasks.map(item=>({...item,status:profile.statuses[item.id]}))};
+    const context = {state,data:currentData,esc,icon,conversation:conversation(),task:task(),currentTitle:title(),statusLabel,statusHtml:profile.scope === "general" ? "" : `<span class="scope-status" data-status="${esc(status())}">${esc(statusLabel(status()))}</span>`};
     root.innerHTML = variant === "legacy" ? legacy(context) : window.HeaderLabVariants[variant].render(context);
     const scroll = root.querySelector(".conversation-scroll");
     if (scroll) scroll.scrollTop = options.bottom ? scroll.scrollHeight : profile.scroll[profile.scope] || 0;
