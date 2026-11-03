@@ -535,6 +535,8 @@ class RuntimeRecoveryTests(ShellFixture, unittest.TestCase):
                     self.manager.interrupt(key)
                 self.assertEqual(self.manager.journal(key).status, 'working')
                 self.crash(key)
+                terminal = [event for event in self.manager.journal(key).events if event['type'] == 'turn_result'][-1]
+                self.assertEqual(terminal['status'], 'interrupted')
                 messages_before = list(self.manager.journal(key).messages)
                 self.restart_manager()
                 for instant in (0, 100, 1000):

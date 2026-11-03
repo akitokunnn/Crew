@@ -711,7 +711,7 @@ class CodexRunning:
                 runtime_recovery.record_exit(self, self.execution['id'] if self.execution else self.session_id)
                 if active:
                     self.journal.emit("turn_result", turn_id=self.client.turn_id,
-                                      status="interrupted" if self.stop_reason else "failed", success=False,
+                                      status="interrupted" if self.stop_reason or self.interrupt_requested else "failed", success=False,
                                       reason=self.stop_reason or (
                                           'user_interrupt' if self.interrupt_requested else 'process_exit'))
                 if self.stop_reason is None:

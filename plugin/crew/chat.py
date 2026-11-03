@@ -667,7 +667,8 @@ class Manager:
                 with current.input_lock:
                     runtime_recovery.record_exit(current, session_id)
                     if current.journal.status == "working":
-                        current.journal.emit("turn_result", status="interrupted" if current.stop_reason else "failed",
+                        current.journal.emit("turn_result", status="interrupted" if (
+                            current.stop_reason or current.interrupt_requested) else "failed",
                                              success=False, reason=current.stop_reason or (
                                                  'user_interrupt' if current.interrupt_requested else 'process_exit'), exit_code=code)
                     if current.pending_compact:
