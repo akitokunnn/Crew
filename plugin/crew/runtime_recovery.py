@@ -2,7 +2,7 @@
 import datetime as dt
 import subprocess
 
-from . import board, codex_client, goals, messaging, native_handoff, runtimes, store
+from . import board, codex_client, goal_mode, goals, messaging, native_handoff, runtimes, store, trust_mode
 
 
 BACKOFF_SECONDS = (5, 15, 45)
@@ -19,10 +19,11 @@ def _scope(current, key):
 
 def record_exit(current, key):
     """Persist the interrupted scope before the reader reports its output drained."""
-    current.unexpected_exit = (current.journal.status == 'working' and current.stop_reason is None
-                               and not current.interrupt_requested and current.maintenance is None)
-    if current.unexpected_exit:
+    interrupted = (current.journal.status == 'working' and current.stop_reason is None
+                   and not current.interrupt_requested and current.maintenance is None)
+    if interrupted:
         current.journal.emit('runtime_recovery', status='interrupted', scope=_scope(current, key))
+    current.unexpected_exit = interrupted
 
 
 def record_interrupt(current, key):
@@ -134,7 +135,7 @@ class Controller:
                     continue
                 self._queue(key, event, None, now)
         for key, current in list(self.manager.processes.items()):
-            if (key in self.pending or not getattr(current, 'unexpected_exit', False) or current.process.poll() is None
+            if (key in self.pending or getattr(current, 'unexpected_exit', False) is not True or current.process.poll() is None
                     or not current.reader_done.is_set()):
                 continue
             current.unexpected_exit = False
@@ -173,8 +174,13 @@ class Controller:
             try:
                 # Keep the exact execution and native binding. Normal goal dispatch
                 # may rotate context and create a generation, which is inappropriate here.
-                result = self.manager.send(session, CONTINUATION, source='crew', identity=pending['identity'],
-                                           resume_existing=True)
+                authorization = (goal_mode.context(conn, session['_execution']['goal_id']) if scope['execution_id']
+                                 else trust_mode.context(conn, scope['session_id']))
+                text = CONTINUATION
+                if authorization:
+                    text = authorization + '\n\n' + text
+                result = self.manager.send(session, text, source='crew', identity=pending['identity'],
+                                           display_text=CONTINUATION, resume_existing=True)
                 if result.get('accepted') is not True:
                     raise board.Conflict('原生载体未确认接收续回输入')
             except (board.BoardError, codex_client.CodexError, OSError, subprocess.SubprocessError) as exc:

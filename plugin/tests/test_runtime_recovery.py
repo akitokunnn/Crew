@@ -7,7 +7,7 @@ import uuid
 from unittest import mock
 
 import tests
-from crew import board, chat, codex_client, codex_runtime, goals, native_handoff, runtimes, store
+from crew import board, chat, codex_client, codex_runtime, goal_mode, goals, native_handoff, runtimes, store, trust_mode
 from test_codex_runtime import FakeClient
 from test_shell import PLUGIN, ShellFixture
 
@@ -84,6 +84,14 @@ class RuntimeRecoveryTests(ShellFixture, unittest.TestCase):
         self.manager = chat.Manager(self.home, PLUGIN, lambda: [], self.process_factory)
         self.manager.goal_controller.live_native = frozenset()
         self.addCleanup(self.manager.close)
+
+    def native_input_texts(self, key):
+        current = self.manager.processes[key]
+        if current.runtime == 'codex':
+            return [item['text'] for method, params in current.client.calls if method == 'turn/start'
+                    for item in params['input'] if item['type'] == 'text']
+        records = [json.loads(line) for line in current.process.stdin.getvalue().splitlines()]
+        return [record['message']['content'] for record in records if record.get('type') == 'user']
 
     def test_claude_and_codex_leaders_and_members_recover_general_and_goal_scopes(self):
         for runtime in ('claude', 'codex'):
@@ -543,6 +551,94 @@ class RuntimeRecoveryTests(ShellFixture, unittest.TestCase):
                     self.poll(instant)
                     self.assertFalse(self.manager.running(key))
                 self.assertEqual(list(self.manager.journal(key).messages), messages_before)
+
+    def test_goal_recovery_refreshes_decision_mode_after_queue_or_native_rejection(self):
+        for runtime, timing in (('claude', 'queued'), ('codex', 'queued'), ('codex', 'rejected')):
+            with self.subTest(runtime=runtime, timing=timing):
+                key, sid, goal_id = self.start_scope(runtime, task=True)
+                native_id = self.native_id(key, sid, goal_id)
+                self.finish_turn(key)
+                mode = goal_mode.get(self.conn, goal_id)
+                goal_mode.set_mode(self.conn, goal_id, 'autonomous', expected_version=mode['version'])
+                self.manager.goal_controller.send(goal_id, sid, 'Continue existing work.',
+                    identity='autonomous-' + uuid.uuid4().hex)
+                self.assertIn('AI 自主决策', self.native_input_texts(key)[-1])
+                self.crash(key)
+                self.poll(0)
+                original_start = FakeClient.start_turn
+                refused = []
+
+                def rejected_once(client, **params):
+                    if timing == 'rejected' and not refused:
+                        refused.append(True)
+                        client.calls.append(('turn/start', params))
+                        raise codex_client.RpcError('turn/start',
+                            {'code': -32000, 'message': 'temporary native refusal'})
+                    return original_start(client, **params)
+
+                with mock.patch.object(FakeClient, 'start_turn', new=rejected_once):
+                    if timing == 'rejected':
+                        self.poll(10)
+                        recovery = [receipt for identity, receipt in self.manager.journal(key).inputs.items()
+                                    if identity.startswith('crash:')]
+                        self.assertEqual(len(recovery), 1)
+                        self.assertEqual(recovery[0]['status'], 'rejected')
+                    mode = goal_mode.get(self.conn, goal_id)
+                    goal_mode.set_mode(self.conn, goal_id, 'human', expected_version=mode['version'])
+                    self.poll(40 if timing == 'rejected' else 10)
+                self.assertTrue(self.manager.busy(key))
+                self.assertEqual(self.native_id(key, sid, goal_id), native_id)
+                self.assertEqual(self.manager.goal_controller.current(self.conn, goal_id, sid)['id'], key)
+                wire_text = self.native_input_texts(key)[-1]
+                self.assertIn(goal_mode.context(self.conn, goal_id), wire_text)
+                self.assertIn('用户拍板', wire_text)
+                self.manager.stop_managed(key, reason='test_cleanup')
+
+    def test_member_recovery_revokes_previous_group_trust_after_queue_or_native_rejection(self):
+        for runtime, timing in (('claude', 'queued'), ('codex', 'queued'), ('codex', 'rejected')):
+            with self.subTest(runtime=runtime, timing=timing):
+                key, sid, _ = self.start_scope(runtime, role='member')
+                native_id = self.native_id(key, sid, None)
+                name = board.session(self.conn, sid)['crew_name']
+                self.finish_turn(key)
+                board.roster(self.conn, 'demo', 'move', 'lead', [name])
+                trust_mode.set(self.conn, 'demo', True, 'Authorized group work.', leader_session_id='s3')
+                self.manager.send(board.session(self.conn, sid), 'Continue existing work.',
+                                  identity='trusted-group-' + uuid.uuid4().hex)
+                self.assertIn('本组已启用信任模式', self.native_input_texts(key)[-1])
+                self.crash(key)
+                self.poll(0)
+                original_start = FakeClient.start_turn
+                refused = []
+
+                def rejected_once(client, **params):
+                    if timing == 'rejected' and not refused:
+                        refused.append(True)
+                        client.calls.append(('turn/start', params))
+                        raise codex_client.RpcError('turn/start',
+                            {'code': -32000, 'message': 'temporary native refusal'})
+                    return original_start(client, **params)
+
+                with mock.patch.object(FakeClient, 'start_turn', new=rejected_once):
+                    if timing == 'rejected':
+                        self.poll(10)
+                        recovery = [receipt for identity, receipt in self.manager.journal(key).inputs.items()
+                                    if identity.startswith('crash:')]
+                        self.assertEqual(len(recovery), 1)
+                        self.assertEqual(recovery[0]['status'], 'rejected')
+                    leader_id = 'new-leader-' + uuid.uuid4().hex
+                    leader_name = 'new-lead-' + uuid.uuid4().hex[:8]
+                    board.join(self.conn, leader_id, 'demo', leader_name, self.project, self.project,
+                               'main', role='leader')
+                    board.roster(self.conn, 'demo', 'move', leader_name, [name])
+                    self.assertFalse(trust_mode.get(self.conn, 'demo', leader_id)['enabled'])
+                    self.poll(40 if timing == 'rejected' else 10)
+                self.assertTrue(self.manager.busy(key))
+                self.assertEqual(self.native_id(key, sid, None), native_id)
+                wire_text = self.native_input_texts(key)[-1]
+                self.assertIn(trust_mode.context(self.conn, sid), wire_text)
+                self.assertIn('不得继续沿用此前开启信任模式', wire_text)
+                self.manager.stop_managed(key, reason='test_cleanup')
 
 
 if __name__ == '__main__':
