@@ -1,5 +1,5 @@
 """A task's decision policy, separate from native execution permissions."""
-from . import board, goals
+from . import board, goals, trust_mode
 
 MODES = frozenset(('human', 'autonomous'))
 
@@ -25,24 +25,29 @@ def initialize(conn, goal_id, mode=None, *, actor=board.HUMAN, now=None):
     goal = goals._row(conn, goal_id)
     if mode is not None and mode not in MODES:
         raise board.BoardError('任务决策模式必须是 human 或 autonomous')
-    if mode is not None and actor != board.HUMAN:
-        raise board.BoardError('只有用户能明确设置任务的决策授权；AI 新任务沿用用户默认')
-    # A task has one decision control. Historical leader trust settings are
-    # retained as records, not an invisible default for new tasks.
-    chosen = mode or 'human'
+    delegated = actor != board.HUMAN and trust_mode.can_manage_tasks(
+        conn, goal['project'], goal['leader_session_id'], actor)
+    if mode is not None and actor != board.HUMAN and not delegated:
+        raise board.BoardError('只有用户或获自主推进授权的主责 leader 能设置任务的决策授权')
+    chosen = mode or ('autonomous' if delegated else 'human')
+    source = 'user' if mode is not None else 'task-default'
+    if delegated:
+        source = 'leader:' + actor
     ensure(conn)
     conn.execute('INSERT INTO goal_decision_modes VALUES(?,?,?,?,?)',
-                 (goal_id, chosen, 'user' if mode is not None else 'task-default', 1, board._time(now)))
+                 (goal_id, chosen, source, 1, board._time(now)))
     return get(conn, goal_id)
 
 
 @goals.atomic
 def set_mode(conn, goal_id, mode, *, expected_version, actor=board.HUMAN, now=None):
-    if actor != board.HUMAN:
-        raise board.BoardError('任务决策模式只能由用户明确设置，AI 不能自行扩大授权')
+    goal = goals._row(conn, goal_id)
+    if actor != board.HUMAN and not trust_mode.can_manage_tasks(
+            conn, goal['project'], goal['leader_session_id'], actor):
+        raise board.BoardError('任务决策模式只能由用户或获自主推进授权的主责 leader 设置')
     if mode not in MODES:
         raise board.BoardError('任务决策模式必须是 human 或 autonomous')
-    goal, old = goals._row(conn, goal_id), get(conn, goal_id)
+    old = get(conn, goal_id)
     if type(expected_version) is not int or expected_version != old['version']:
         raise board.Conflict('任务决策设置已变化，请刷新后重试')
     if old['mode'] == mode:
@@ -50,7 +55,8 @@ def set_mode(conn, goal_id, mode, *, expected_version, actor=board.HUMAN, now=No
     ensure(conn)
     conn.execute('INSERT INTO goal_decision_modes VALUES(?,?,?,?,?) ON CONFLICT(goal_id) DO UPDATE SET '
                  'mode=excluded.mode,source=excluded.source,version=excluded.version,updated_at=excluded.updated_at',
-                 (goal_id, mode, 'user', old['version'] + 1, board._time(now)))
+                 (goal_id, mode, 'user' if actor == board.HUMAN else 'leader:' + actor,
+                  old['version'] + 1, board._time(now)))
     goals._touch(conn, goal_id, now)
     board._event(conn, 'goal:decision-mode', goal['project'], actor,
                  {'goal_id': goal_id, 'mode': mode, 'previous': old}, now)

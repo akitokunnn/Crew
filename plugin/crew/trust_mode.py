@@ -64,6 +64,14 @@ def _leader_active(conn, leader):
                          (leader['project'], leader['session_id'])).fetchone() is not None)
 
 
+def can_manage_tasks(conn, project, leader_session_id, actor):
+    """Only the authorized owner can choose decision policies for its tasks."""
+    if actor != leader_session_id:
+        return False
+    leader = _leader(conn, project, leader_session_id)
+    return _leader_active(conn, leader) and get(conn, project, leader_session_id)['enabled']
+
+
 def _text(value, label, *, required=False):
     if value is None and not required:
         return None
@@ -86,7 +94,9 @@ def _instructions(goal):
 
 
 @_atomic
-def set(conn, project, enabled, goal=None, now=None, *, leader_session_id):
+def set(conn, project, enabled, goal=None, now=None, *, leader_session_id, actor=board.HUMAN):
+    if actor != board.HUMAN:
+        raise board.BoardError('leader 自主推进授权只能由用户设置')
     if type(enabled) is not bool:
         raise board.BoardError("enabled 必须是布尔值")
     leader = _leader(conn, project, leader_session_id)
@@ -122,10 +132,26 @@ def context(conn, session_id):
     prefix = ('本轮最新信任设置（仅属于 leader ' + (leader['crew_name'] or leader_id) + '，Crew ID ' + leader_id +
               '）：' + ('开启' if settings['enabled'] else '关闭') + '。本条覆盖此前的信任模式说明，不授权其他组。\n')
     if settings['enabled']:
-        return prefix + _instructions(settings['goal'])
+        delegation = ('\n你可以为自己负责的任务选择自主推进。新建任务默认自主推进，'
+                      '也可显式传 decision_mode=human|autonomous；已有任务用 crew goal mode.set '
+                      '（Codex crew_goal action=mode.set），传 goal_id、mode、expected_version。'
+                      '已有任务按各自模式执行，成员不能修改授权。') if session_id == leader_id else ''
+        return prefix + _instructions(settings['goal']) + delegation
     return (prefix + '当前按普通模式协作；不得继续沿用此前开启信任模式的自主授权。真正需要用户决定的取舍按拍板流程，'
             '用户亲手操作仍登记人工待办。保留目标记录：\n' + (settings['goal'] or '未设置') +
             '\n保存设置不会启动任务；等待正常对话中的具体安排。')
+
+
+def input_context(conn, session_id, previous=None):
+    """Send explicit settings once per change, including a former group's revocation."""
+    session = board.session(conn, session_id)
+    if session['project'] is None:
+        return None, None
+    leader_id = resolve_leader(conn, session_id)
+    if previous is None and (leader_id is None or get(conn, session['project'], leader_id)['updated_at'] is None):
+        return None, None
+    current = context(conn, session_id)
+    return current, current if current != previous else None
 
 
 def record_decision_scope(conn, decision_id, session_id):

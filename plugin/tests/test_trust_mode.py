@@ -102,6 +102,19 @@ class TrustModeTests(unittest.TestCase):
         self.assertIn('覆盖此前', context)
         self.assertIn('目标二', context)
 
+    def test_input_context_sends_only_explicit_changes_and_revokes_a_departed_group(self):
+        self.assertEqual(trust_mode.input_context(self.conn, 'member'), (None, None))
+        self.set_mode(True, '本组授权范围')
+        previous, text = trust_mode.input_context(self.conn, 'member')
+        self.assertIn('本组授权范围', text)
+        self.assertEqual(trust_mode.input_context(self.conn, 'member', previous), (previous, None))
+        self.set_mode(False)
+        disabled, text = trust_mode.input_context(self.conn, 'member', previous)
+        self.assertIn('：关闭', text)
+        self.conn.execute('UPDATE sessions SET group_name=NULL WHERE session_id=?', ('member',))
+        _, text = trust_mode.input_context(self.conn, 'member', disabled)
+        self.assertIn('没有所属 leader', text)
+
     def test_setting_and_audit_are_atomic_and_never_queue_notices(self):
         self.conn.executescript("CREATE TRIGGER fail_trust_event BEFORE INSERT ON events WHEN NEW.kind='trust:set' BEGIN SELECT RAISE(ABORT,'audit failure'); END;")
         with mock.patch('crew.board._queue_leader_notice') as queue:
@@ -306,22 +319,21 @@ class TrustModeTests(unittest.TestCase):
             self.assertFalse(trust_mode.get(again,'alpha','new-leader')['enabled'])
         finally:again.close()
 
-    def test_claude_prompt_does_not_import_retired_leader_authority_or_wake(self):
+    def test_claude_general_prompt_receives_current_group_authority_without_waking(self):
         self.set_mode(True,'A组保留的历史目标')
         self.set_mode(True,'B组不应传入的目标',leader='lead-b')
         data={'session_id':'member','cwd':str(self.root),'prompt':'继续'}
         plugin=Path(__file__).resolve().parents[1]
-        # Historical trust remains readable, but only a concrete task's mode
-        # supplies current authorization. Ordinary prompts cannot import it.
         for enabled in (True, False):
             with self.subTest(enabled=enabled):
                 self.set_mode(enabled,'A组保留的历史目标')
                 code,value=hooks.handle('user-prompt-submit',data,self.base/'home',plugin,{},now=NOW)
                 self.assertEqual(code,0)
                 context=(value or {}).get('hookSpecificOutput',{}).get('additionalContext','')
-                self.assertNotIn('A组保留的历史目标',context)
+                self.assertIn('A组保留的历史目标',context)
                 self.assertNotIn('B组不应传入的目标',context)
-                self.assertNotIn('本轮最新信任设置',context)
+                self.assertIn('本轮最新信任设置',context)
+                self.assertIn('：开启' if enabled else '：关闭',context)
                 self.assertEqual(self.get_mode()['enabled'],enabled)
                 self.assertEqual(self.get_mode()['goal'],'A组保留的历史目标')
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM leader_notices').fetchone()[0],0)

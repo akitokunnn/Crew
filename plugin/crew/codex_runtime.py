@@ -448,6 +448,8 @@ class CodexRunning:
                 for event in self._events.consume(method, params):
                     event = dict(event)
                     kind = event.pop("type")
+                    if kind == 'compact':
+                        self.trust_context = None
                     if kind == "context":
                         self.context = event
                     elif kind == "activity":

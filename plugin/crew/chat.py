@@ -15,7 +15,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from . import behavior_prompts, guard, native_handoff
+from . import behavior_prompts, guard, native_handoff, trust_mode
 
 from . import board, claude_limits, claude_subagents, codex_client, codex_visibility, git_admin, goals, hooks, install, messaging, models, personal, report_preview, runtime_switch, runtimes, settings, spawn, store, subagents, workspace_execution
 
@@ -632,6 +632,8 @@ class Manager:
                                                       execution_id=current.execution['id'])
                     if record["type"] == "control_response":
                         self._control_response(current, record["response"])
+                    if record["type"] == 'system' and record.get('subtype') == 'compact_boundary' and not record.get('parent_tool_use_id'):
+                        current.trust_context = None
                     if record["type"] == "rate_limit_event":
                         try:
                             claude_limits.capture(self.home, record)
@@ -923,6 +925,7 @@ class Manager:
                 text = behavior_prompts.render(prompt_application['manifest']) + '\n\n' + text
         handoff_id=None
         git_revision = getattr(current, 'git_context_revision', None)
+        trust_context = getattr(current, 'trust_context', None)
         if text.strip() != '/compact':
             with closing(store.connect(self.home)) as handoff_conn:
                 assistant = personal.is_assistant(handoff_conn, logical)
@@ -930,6 +933,9 @@ class Manager:
                     git_admin.input_context(handoff_conn, logical, git_revision, self.plugin_root))
                 if current.execution is None:
                     text,handoff_id=runtime_switch.input_text(handoff_conn,session_id,text,identity)
+                    trust_context, authorization = trust_mode.input_context(handoff_conn, session_id, trust_context)
+                    if authorization:
+                        text = authorization + '\n\n' + text
                     summary = self.goal_controller.general_context(handoff_conn, session_id)
                     if summary:
                         text = summary + '\n\n' + text
@@ -960,6 +966,7 @@ class Manager:
                             evidence='Codex 原生 turn/start 或 turn/steer 已接收输入；thread=' + str(current.thread_id))
                     current.behavior_prompt_hash = behavior_prompts.manifest_hash(prompt_application['manifest'])
                 current.git_context_revision = git_revision
+                current.trust_context = trust_context
                 if handoff_id is not None:
                     with closing(store.connect(self.home)) as handoff_conn:
                         runtime_switch.accepted(handoff_conn,session_id,identity,handoff_id)
@@ -983,6 +990,7 @@ class Manager:
                             evidence='Claude 输入已写入并flush；未将传输成功冒充模型读取')
                     current.behavior_prompt_hash = behavior_prompts.manifest_hash(prompt_application['manifest'])
                 current.git_context_revision = git_revision
+                current.trust_context = trust_context
         except Exception as exc:
             with closing(store.connect(self.home)) as handoff_conn:runtime_switch.failed(handoff_conn,session_id,exc)
             raise

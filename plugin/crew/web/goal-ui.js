@@ -133,7 +133,23 @@
         <button class="btn ghost" data-goal-act="create" data-leader-id="${esc(id)}">＋ 建立目标</button>
       </div>`;
       if (open) return bar + `<section class="group-goal-list" role="tabpanel" aria-label="本组任务清单">${cards(list, state().leaders, goalId)}</section>`;
-      if (goalId == null) return bar;
+      if (goalId == null) {
+        const leader = state()?.leaders.find(item => item.session_id === id);
+        if (!leader) return bar;
+        return bar + `<section class="goal-detail leader-decision-control" aria-label="leader 自主推进授权">
+          <div class="goal-detail-title"><span>leader 授权</span>
+            <div class="goal-mode-control" role="group" aria-label="leader 决策方式">
+              ${[["human","由我拍板"],["autonomous","自主推进"]].map(([mode,label]) => `
+                <button type="button" data-goal-act="leader-mode" data-leader-id="${esc(id)}" data-mode="${mode}"
+                  aria-pressed="${Boolean(leader.trust?.enabled) === (mode === "autonomous")}"
+                  ${actionBusy ? "disabled" : ""}>${label}</button>`).join("")}
+            </div>
+          </div>
+          <p class="note">${leader.trust?.enabled
+            ? "leader 可在交办范围内自主取舍，并开启自己负责的自主任务。已有任务按各自设置执行。"
+            : "重要取舍由你拍板。授权自主推进后，leader 可开启自己负责的自主任务。"}</p>
+        </section>`;
+      }
       if (!active) return bar + `<section class="goal-detail"><p class="${errors.has(String(goalId)) ? "error-line" : "note"}">${esc(errors.get(String(goalId)) || "正在读取目标…")}</p><button class="btn ghost" data-goal-act="refresh">重新读取</button></section>`;
       return bar + `<section class="goal-detail goal-compact" data-goal-detail="${esc(active.id)}">
         <div class="goal-detail-title">
@@ -323,6 +339,20 @@
       const button = event.target.closest("[data-goal-act]"); if (!button || button.disabled) return;
       const act = button.dataset.goalAct;
       if (act === "open") { expandedGroups.delete(byId(button.dataset.goalId)?.leader_session_id); options.onNavigate(button.dataset.goalId); }
+      else if (act === "leader-mode" && !actionBusy) {
+        const leader = state()?.leaders.find(item => item.session_id === button.dataset.leaderId);
+        const enabled = button.dataset.mode === "autonomous";
+        if (!leader || Boolean(leader.trust?.enabled) === enabled) return;
+        actionBusy = true;
+        changed();
+        try {
+          await options.api("/api/trust", {leader_session_id:leader.session_id, enabled,
+            goal:leader.trust?.goal || leader.goal || "推进用户在本 leader 总会话交办的工作，遵守各任务原始要求与约束。"});
+          await options.refreshState();
+          options.toast("已保存 leader 授权，下次正常输入时传达。");
+        } catch (error) { options.toast(error.message); }
+        finally { actionBusy = false; changed(); }
+      }
       else if (act === "mode" && !actionBusy) {
         const active=goal();if(!active || active.decision_mode?.mode===button.dataset.mode)return;
         actionBusy=true;changed();

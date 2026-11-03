@@ -170,9 +170,10 @@ def overview(conn, *, project=None, limit=100):
         'FROM sessions s LEFT JOIN session_controls c ON c.session_id=s.session_id '
         "WHERE s.role='leader' AND s.status<>'closed' AND c.archived_status IS NULL AND COALESCE(c.removed,0)=0 "
         'ORDER BY s.started_at,s.session_id') if row['project'] in names]
+    visible_leaders = {leader['session_id'] for leader in leaders}
     goals = [dict(row) for row in conn.execute(
         'SELECT id,project,leader_session_id,title,status,reason,priority,updated_at FROM goals '
-        'ORDER BY priority DESC,created_at,id') if row['project'] in names]
+        'ORDER BY priority DESC,created_at,id') if row['project'] in names and row['leader_session_id'] in visible_leaders]
     todos = [item for item in todo.list(conn) if item['project'] in names]
     notes = list_notes(conn, project=project)
     return {'scope': 'personal', 'projects': workspaces, 'leaders': leaders[:limit], 'goals': goals[:limit],

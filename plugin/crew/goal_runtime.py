@@ -424,13 +424,23 @@ class Controller:
 
     def sync(self, conn, goal_id=None):
         """Runs from existing service work/state calls, never another polling thread."""
-        rows = conn.execute('SELECT e.id,e.goal_id,g.status goal_status,e.status,e.round,e.requirement_version, '
+        unavailable = {row['session_id'] for row in conn.execute(
+            'SELECT s.session_id FROM sessions s LEFT JOIN session_controls c ON c.session_id=s.session_id '
+            "WHERE s.status='closed' OR c.archived_status IS NOT NULL OR c.removed=1")}
+        for goal in conn.execute("SELECT id,leader_session_id FROM goals WHERE manual_pause=0 "
+                                 "AND status NOT IN ('completed','failed','cancelled')" +
+                                 (' AND id=?' if goal_id else ''), (goal_id,) if goal_id else ()).fetchall():
+            if goal['leader_session_id'] in unavailable:
+                goals.request_pause(conn, goal['id'], actor=goals._OPERATIONS, reason='主责 leader 已归档或移除')
+        rows = conn.execute('SELECT e.id,e.session_id,e.goal_id,g.leader_session_id,g.status goal_status,e.status,e.round,e.requirement_version, '
                             'g.current_round,g.requirement_version current_version FROM goal_executions e '
                             'JOIN goals g ON g.id=e.goal_id' + (' WHERE e.goal_id=?' if goal_id else ''),
                             (goal_id,) if goal_id else ()).fetchall()
         pausing = set()
         for row in rows:
             key = row['id']
+            if row['session_id'] in unavailable or row['leader_session_id'] in unavailable:
+                self.manager.stop_managed(key, reason='session_archive')
             current = self.manager.processes.get(key)
             stale = row['round'] != row['current_round'] or row['requirement_version'] != row['current_version']
             if row['status'] in goals.TERMINAL:

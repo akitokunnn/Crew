@@ -633,6 +633,8 @@ class Service:
                 removed = {r[0] for r in conn.execute('SELECT session_id FROM session_controls WHERE removed=1')}
                 sessions = [s for s in [*status['ungrouped'], *(s for group in status['groups'] for s in group['members'])]
                             if s['session_id'] not in removed and s['status'] != 'closed']
+                visible_leaders = {s['session_id'] for s in sessions if s['role'] == 'leader'}
+                result['goals'] = [goal for goal in result['goals'] if goal['leader_session_id'] in visible_leaders]
                 member_choices = member_defaults.for_project(conn, name)
                 with self.scan_lock:
                     titles = usage.session_titles(self.claude_root, [s['session_id'] for s in sessions], self.title_cache)
@@ -1521,14 +1523,18 @@ class Service:
             return {"ok": True}
 
     def archive_session(self, conn, session_id, removed=False, now=None):
-        result = session_ops.archive(conn, session_id, removed=removed, now=now)
-        self.chat.stop_managed(session_id)
-        return result
+        with self.chat.lock:
+            result = session_ops.archive(conn, session_id, removed=removed, now=now)
+            self.chat.goal_controller.sync(conn)
+            self.chat.stop_managed(session_id)
+            return result
 
     def stop_archived(self, before, with_members=True):
-        for entry in before['sessions']:
-            if with_members or entry['session_id'] == before['group']['leader_session_id']:
-                self.chat.stop_managed(entry['session_id'])
+        with self.chat.lock, closing(store.connect(self.home)) as conn:
+            self.chat.goal_controller.sync(conn)
+            for entry in before['sessions']:
+                if with_members or entry['session_id'] == before['group']['leader_session_id']:
+                    self.chat.stop_managed(entry['session_id'])
 
     def chat_project(self, conn, project_name, session_id):
         if project_name is None and personal.is_assistant(conn, session_id):

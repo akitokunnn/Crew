@@ -154,6 +154,11 @@ def handle(event, data, home, plugin_root, environ, git_provider=git_details, no
             session = board.session(conn, data["session_id"])
             if session["crew_name"] and session["status"] != "closed" and not board.is_archived(conn, data["session_id"]):
                 lines.extend(messaging.take_for_hook(conn, data["session_id"], now=now))
+                if not environ.get('CREW_SESSION_ID'):
+                    from . import trust_mode
+                    _, authorization = trust_mode.input_context(conn, data['session_id'])
+                    if authorization:
+                        lines.append(authorization)
         if event == "session-start":
             if board.is_archived(conn, data["session_id"]):
                 control = board.session_control(conn, data["session_id"])

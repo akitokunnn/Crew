@@ -802,7 +802,8 @@ def execute(conn, args, cwd, agents_provider):
         if _actor(args) != board.HUMAN and trust_mode.resolve_leader(conn, _session_id(args), project) != leader_id:
             raise board.BoardError('会话只能访问自己所属 leader 的信任设置')
         if args.action == "set":
-            return trust_mode.set(conn, project, args.enabled == "on", args.goal, leader_session_id=leader_id)
+            return trust_mode.set(conn, project, args.enabled == "on", args.goal, leader_session_id=leader_id,
+                                  actor=os.environ.get('CREW_SESSION_ID') or os.environ.get('CLAUDE_CODE_SESSION_ID') or _actor(args))
         if args.action == "report":
             return trust_mode.report(conn, project, leader_id)
         return trust_mode.get(conn, project, leader_id)
