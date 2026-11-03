@@ -513,9 +513,14 @@ class Controller:
             self.recovery = {row['id'] for row in conn.execute(
                 "SELECT e.id FROM goal_executions e JOIN goals g ON e.goal_id=g.id "
                 "WHERE g.status='running' AND g.manual_pause=0 AND e.status='running' "
-                "AND e.round=g.current_round AND e.requirement_version=g.requirement_version")}
+                "AND e.round=g.current_round AND e.requirement_version=g.requirement_version")
+                if row['id'] not in self.manager.processes
+                and row['id'] not in self.manager.runtime_recovery.startup_exclusions}
         live = {agent['sessionId'] for agent in agents}
         for key in list(self.recovery):
+            if key in self.manager.runtime_recovery.startup_exclusions:
+                self.recovery.remove(key)
+                continue
             execution = goals.get_execution(conn, key)
             if native_handoff.blocked(conn, execution['session_id'], key):
                 continue

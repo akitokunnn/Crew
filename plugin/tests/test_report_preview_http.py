@@ -42,6 +42,12 @@ class ReportPreviewHttpTests(ShellFixture, unittest.TestCase):
         thread = threading.Thread(target=lambda: result.append(self.post_action(data, actor=actor, execution=execution)))
         thread.start()
         self.addCleanup(lambda: thread.join(3))
+        previews = self.server.service.report_previews
+        # Worker polling can expire before HTTP validation queues the capture.
+        # Synchronize on the real queued job before testing its worker lifecycle.
+        with previews.condition:
+            self.assertTrue(previews.condition.wait_for(lambda: bool(previews.queue), timeout=2),
+                            'Synthetic capture did not reach the preview queue: %r' % result)
         return thread, result
 
     def test_real_http_draft_capture_does_not_lock_other_work_or_create_ai_turns(self):

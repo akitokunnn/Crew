@@ -55,7 +55,9 @@ class ComposerInterruptHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(len(controls), 1)
         self.assertEqual(controls[0]["request"], {"subtype": "interrupt"})
         self.assertTrue(manager.busy(sid), "Request acknowledgement must not pretend the turn already ended")
-        self.assertEqual(manager.history(sid)["events"], before)
+        after = manager.history(sid)["events"]
+        self.assertEqual(after[:len(before)], before)
+        self.assertEqual([event for event in after if event['type'] in ('message', 'turn_result', 'status')], before)
         self.assertIsNone(process.poll())
 
         process.emit({"type": "result", "is_error": False})

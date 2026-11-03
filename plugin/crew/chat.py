@@ -15,7 +15,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from . import behavior_prompts, guard, native_handoff, trust_mode
+from . import behavior_prompts, guard, native_handoff, runtime_recovery, trust_mode
 
 from . import board, claude_limits, claude_subagents, codex_client, codex_visibility, git_admin, goals, hooks, install, messaging, models, personal, report_preview, runtime_switch, runtimes, settings, spawn, store, subagents, workspace_execution
 
@@ -363,6 +363,8 @@ class Running:
         self.context = None
         self.pending_compact = False
         self.stop_reason = None
+        self.interrupt_requested = False
+        self.unexpected_exit = False
         self.stderr = collections.deque(maxlen=20)
         self.reader_done = threading.Event()
         self.pending_native_accept = None
@@ -398,6 +400,7 @@ class Manager:
         self._admitted = threading.local()
         from .goal_runtime import Controller
         self.goal_controller = Controller(self)
+        self.runtime_recovery = runtime_recovery.Controller(self)
         self.native_recovery = native_handoff.recover_interrupted(self.home)
 
     @contextlib.contextmanager
@@ -664,9 +667,12 @@ class Manager:
         finally:
             try:
                 with current.input_lock:
+                    runtime_recovery.record_exit(current, session_id)
                     if current.journal.status == "working":
-                        current.journal.emit("turn_result", status="interrupted" if current.stop_reason else "failed",
-                                             success=False, reason=current.stop_reason or "process_exit", exit_code=code)
+                        current.journal.emit("turn_result", status="interrupted" if (
+                            current.stop_reason or current.interrupt_requested) else "failed",
+                                             success=False, reason=current.stop_reason or (
+                                                 'user_interrupt' if current.interrupt_requested else 'process_exit'), exit_code=code)
                     if current.pending_compact:
                         current.pending_compact = False
                         current.journal.emit("compact_cancelled", reason="会话进程已退出，取消这一轮结束后的压缩")
@@ -958,6 +964,7 @@ class Manager:
             content.append({"type": "text", "text": text})
         if getattr(current, "runtime", "claude") == "codex":
             try:
+                current.interrupt_requested = False
                 result=current.send(text, identity, display_text=original_text, source=source,
                                     images=images, sender=sender, image_files=files)
                 if prompt_application is not None:
@@ -979,6 +986,7 @@ class Manager:
                    "message": {"role": "user", "content": content}}
         try:
             with current.input_lock:
+                current.interrupt_requested = False
                 current.journal.message(identity, original_text, source=source, images=files, sender=sender)
                 current.pending_native_accept=(identity,handoff_id) if handoff_id is not None else None
                 current.journal.set_status("working")
@@ -1067,7 +1075,8 @@ class Manager:
                                                {"id": message["id"], "reason": reason})
 
     @_admitted
-    def send(self, session, text, source='human', identity=None, images=None, display_text=None, sender=None):
+    def send(self, session, text, source='human', identity=None, images=None, display_text=None, sender=None,
+             *, resume_existing=False):
         images = validate_images(images)
         session_id = session.get('_storage_id', session["session_id"])
         identity = str(uuid.uuid4()) if identity is None else identity
@@ -1105,7 +1114,8 @@ class Manager:
                     raise board.Conflict("上次输入的原生接收状态未确认，请先核对会话，避免重复执行")
             elif identity in journal.messages:
                 raise board.Conflict("这条历史输入没有可确认的接收回执，请先核对会话")
-            if '_execution' not in session and session['role'] == 'member' and source not in ('human', 'qq', 'lark'):
+            if (not resume_existing and '_execution' not in session and session['role'] == 'member'
+                    and source not in ('human', 'qq', 'lark')):
                 with closing(store.connect(self.home)) as check_conn:
                     active = next((row['id'] for row in check_conn.execute(
                         'SELECT e.id,e.runtime,b.native_id FROM goal_executions e LEFT JOIN goal_execution_bindings b '
@@ -1453,6 +1463,7 @@ class Manager:
                 self.auto_candidates = {path.stem: now for path in sorted((self.home / "chat").glob("*.jsonl"))
                                         if path.stem not in self.processes and self.journal(path.stem).status == "working"
                                         and conn.execute('SELECT 1 FROM sessions WHERE session_id=?', (path.stem,)).fetchone()}
+            self.runtime_recovery.recover(conn, agents, now, runtime=runtime)
             self.goal_controller.recover(conn, agents, runtime=runtime)
             projects = {project["name"] for project in board.projects(conn)}
             live = {agent["sessionId"] for agent in agents}
@@ -1576,6 +1587,7 @@ class Manager:
                 raise board.BoardError("会话没有在运行")
             if not self.busy(session_id):
                 raise board.Conflict("会话当前空闲，没有正在进行的轮次")
+            runtime_recovery.record_interrupt(current, session_id)
             if getattr(current, "runtime", "claude") == "codex":
                 current.interrupt()
                 return {"ok": True}
