@@ -44,7 +44,7 @@
       { id: "e-zhi", goal_id: "org", session_id: "zhi", round: 2, requirement_version: 2, generation: 2, runtime: "codex", status: "running" },
       { id: "e-yuan", goal_id: "org", session_id: "yuan", round: 2, requirement_version: 2, generation: 1, runtime: "claude", status: "running" },
       { id: "e-ting", goal_id: "org", session_id: "ting", round: 2, requirement_version: 2, generation: 1, runtime: "codex", status: "idle" },
-      { id: "e-shi-old", goal_id: "org", session_id: "shi", round: 1, requirement_version: 1, generation: 1, runtime: "claude", status: "completed" },
+      { id: "e-shi-old", goal_id: "org", session_id: "shi", round: 1, requirement_version: 1, generation: 1, runtime: "codex", status: "completed" },
       { id: "e-chat-zhi", goal_id: "chat", session_id: "zhi", round: 1, requirement_version: 1, generation: 1, runtime: "codex", status: "queued" },
       { id: "e-chat-shi", goal_id: "chat", session_id: "shi", round: 1, requirement_version: 1, generation: 1, runtime: "claude", status: "waiting_user" },
       { id: "e-move", goal_id: "move", session_id: "ting", round: 1, requirement_version: 1, generation: 1, runtime: "codex", status: "paused" },

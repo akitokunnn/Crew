@@ -59,7 +59,7 @@
         const names = data.links.filter(link => link.taskId === task.id && (state.history || !link.history)).map(link => data.people.find(person => person.id === link.personId)?.name).join(" ");
         return !query || `${task.title} ${task.code} ${names}`.toLocaleLowerCase().includes(query);
       });
-      return { ...data, tasks, links: data.links.filter(link => state.history || !link.history), ...state, idPrefix, esc, avatar, statusBadge };
+      return { ...data, tasks, links: data.links.filter(link => state.history || !link.history), ...state, idPrefix, esc, avatar, statusBadge, runtimeName };
     }
 
     element.classList.add("org-demo");

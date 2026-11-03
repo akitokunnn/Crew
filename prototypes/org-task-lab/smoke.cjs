@@ -42,6 +42,12 @@ async function run() {
         const history = page.locator('[data-control="history"]');
         await history.check();
         assert.match(await page.locator(".org-content").innerText(), /导航文案整理/);
+        const previousCarrier = page.locator('.org-content [data-action="member"][data-person="shi"][data-task="org"]').first();
+        assert.match(await previousCarrier.innerText(), /Codex/);
+        await previousCarrier.click();
+        await dialog.locator('[data-action="conversation"][data-task="org"]').click();
+        assert.match(await dialog.locator(".org-message > span:first-child").innerText(), /时雨 · Codex/);
+        await dialog.locator('[data-action="close"]').click();
         await history.uncheck();
         assert.doesNotMatch(await page.locator(".org-content").innerText(), /导航文案整理/);
 

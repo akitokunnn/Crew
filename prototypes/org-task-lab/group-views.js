@@ -7,8 +7,8 @@
     return new Set(ctx.links.filter(link => link.personId === personId && !link.history).map(link => link.taskId)).size;
   }
 
-  function personName(ctx, person) {
-    return `${ctx.avatar(person)}<span class="grp-person-name">${ctx.esc(person.name)}</span><span class="org-runtime">${ctx.esc(person.runtime)}</span>`;
+  function personName(ctx, person, runtime = person.runtime) {
+    return `${ctx.avatar(person)}<span class="grp-person-name">${ctx.esc(person.name)}</span><span class="org-runtime">${ctx.esc(runtime)}</span>`;
   }
 
   function linkRow(ctx, link) {
@@ -17,7 +17,7 @@
     const shared = currentTaskCount(ctx, person.id);
     const selected = ctx.selectedMember === person.id;
     return `<button type="button" class="grp-member${selected ? " is-selected" : ""}${link.history ? " is-history" : ""}" data-action="member" data-person="${ctx.esc(person.id)}" data-task="${ctx.esc(link.taskId)}" aria-pressed="${selected}">
-      <span class="grp-person-line">${personName(ctx, person)}${person.role === "leader" ? '<span class="grp-role">leader</span>' : ""}${shared > 1 ? `<span class="grp-shared">关联 ${shared} 项任务</span>` : ""}</span>
+      <span class="grp-person-line">${personName(ctx, person, ctx.runtimeName(link.runtime))}${person.role === "leader" ? '<span class="grp-role">leader</span>' : ""}${shared > 1 ? `<span class="grp-shared">关联 ${shared} 项任务</span>` : ""}</span>
       <span class="grp-work-line"><span class="grp-work">${ctx.esc(link.work || "工作内容待补充")}</span><span class="grp-link-state">${link.history ? '<span class="grp-history-label">历史</span>' : ""}${ctx.statusBadge(link.state)}</span></span>
     </button>`;
   }
@@ -59,12 +59,12 @@
     const links = ctx.links.filter(link => link.personId === person.id && link.taskId === task.id);
     const highlighted = ctx.selectedMember === person.id || ctx.selectedTask === task.id;
     if (!links.length) return `<td class="mtx-cell mtx-unassigned${highlighted ? " is-highlighted" : ""}"><span aria-label="无任务参与记录">—</span></td>`;
-    return `<td class="mtx-cell${highlighted ? " is-highlighted" : ""}">${links.map(link => `<button type="button" class="mtx-assignment${link.history ? " is-history" : ""}" data-action="member" data-person="${ctx.esc(person.id)}" data-task="${ctx.esc(task.id)}" aria-label="查看${ctx.esc(person.name)}在${ctx.esc(task.title)}中的工作">${link.history ? '<span class="mtx-history-label">历史参与</span>' : ""}${ctx.statusBadge(link.state)}<span class="mtx-work">${ctx.esc(link.work || "工作内容待补充")}</span></button>`).join("")}</td>`;
+    return `<td class="mtx-cell${highlighted ? " is-highlighted" : ""}">${links.map(link => `<button type="button" class="mtx-assignment${link.history ? " is-history" : ""}" data-action="member" data-person="${ctx.esc(person.id)}" data-task="${ctx.esc(task.id)}" aria-label="查看${ctx.esc(person.name)}在${ctx.esc(task.title)}中的工作">${link.history ? '<span class="mtx-history-label">历史参与</span>' : ""}${ctx.statusBadge(link.state)} <span class="org-runtime">${ctx.esc(ctx.runtimeName(link.runtime))}</span><span class="mtx-work">${ctx.esc(link.work || "工作内容待补充")}</span></button>`).join("")}</td>`;
   }
 
   views.matrix = function (ctx) {
     return `<div class="mtx-view" aria-label="成员与任务的参与矩阵">
-      <div class="mtx-intro"><span>每一行是一个人，每一列是一个任务。</span><span>— 无参与记录</span></div>
+      <div class="mtx-intro"><span>每行一个人，行头显示当前载体；每列一个任务，格内显示该执行的载体。</span><span>— 无参与记录</span></div>
       <div class="mtx-scroll" tabindex="0" role="region" aria-label="可左右滚动的成员任务矩阵">
         <table class="mtx-table">
           <caption class="mtx-caption">${ctx.esc(ctx.leader.name)}组的成员与任务关系，任务状态与成员执行状态分别显示。</caption>

@@ -23,6 +23,8 @@ test("旧要求版本的执行不能冒充当前分工状态", () => {
 test("交接与已完成任务进入历史，待命人员与其他组保持独立", () => {
   const group = project(sample, "lin");
   assert.ok(group.links.find(link => link.personId === "shi" && link.taskId === "org").history);
+  assert.equal(group.links.find(link => link.personId === "shi" && link.taskId === "org").runtime, "codex");
+  assert.equal(group.people.find(person => person.id === "shi").runtime, "claude");
   assert.ok(group.links.find(link => link.personId === "yan").history);
   assert.ok(group.people.some(person => person.id === "qing"));
   assert.equal(group.links.some(link => link.personId === "qing"), false);

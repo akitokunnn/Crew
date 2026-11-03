@@ -23,7 +23,7 @@
         ${avatar(person)}
         <span class="grf-person-content">
           <span class="grf-person-heading"><span class="grf-name">${esc(person.name)}</span>
-            <span class="org-runtime">${esc(person.runtime)}</span></span>
+            <span class="org-runtime">${esc(ctx.runtimeName(link.runtime))}</span></span>
           <span class="grf-work">${esc(link.work || "工作内容待补充")}</span>
           <span class="grf-person-meta">${statusBadge(link.state)}
             ${sameId(person.id, leader.id) ? '<span class="grf-caption">leader 本人</span>' : ""}
