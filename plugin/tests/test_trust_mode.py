@@ -102,6 +102,19 @@ class TrustModeTests(unittest.TestCase):
         self.assertIn('覆盖此前', context)
         self.assertIn('目标二', context)
 
+    def test_input_context_sends_only_explicit_changes_and_revokes_a_departed_group(self):
+        self.assertEqual(trust_mode.input_context(self.conn, 'member'), (None, None))
+        self.set_mode(True, '本组授权范围')
+        previous, text = trust_mode.input_context(self.conn, 'member')
+        self.assertIn('本组授权范围', text)
+        self.assertEqual(trust_mode.input_context(self.conn, 'member', previous), (previous, None))
+        self.set_mode(False)
+        disabled, text = trust_mode.input_context(self.conn, 'member', previous)
+        self.assertIn('：关闭', text)
+        self.conn.execute('UPDATE sessions SET group_name=NULL WHERE session_id=?', ('member',))
+        _, text = trust_mode.input_context(self.conn, 'member', disabled)
+        self.assertIn('没有所属 leader', text)
+
     def test_setting_and_audit_are_atomic_and_never_queue_notices(self):
         self.conn.executescript("CREATE TRIGGER fail_trust_event BEFORE INSERT ON events WHEN NEW.kind='trust:set' BEGIN SELECT RAISE(ABORT,'audit failure'); END;")
         with mock.patch('crew.board._queue_leader_notice') as queue:

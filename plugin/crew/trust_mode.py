@@ -142,6 +142,18 @@ def context(conn, session_id):
             '\n保存设置不会启动任务；等待正常对话中的具体安排。')
 
 
+def input_context(conn, session_id, previous=None):
+    """Send explicit settings once per change, including a former group's revocation."""
+    session = board.session(conn, session_id)
+    if session['project'] is None:
+        return None, None
+    leader_id = resolve_leader(conn, session_id)
+    if previous is None and (leader_id is None or get(conn, session['project'], leader_id)['updated_at'] is None):
+        return None, None
+    current = context(conn, session_id)
+    return current, current if current != previous else None
+
+
 def record_decision_scope(conn, decision_id, session_id):
     conn.execute('INSERT INTO decision_leader_scopes(decision_id,leader_session_id) VALUES(?,?)',
                  (decision_id, resolve_leader(conn, session_id)))

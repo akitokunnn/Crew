@@ -156,7 +156,7 @@ def handle(event, data, home, plugin_root, environ, git_provider=git_details, no
                 lines.extend(messaging.take_for_hook(conn, data["session_id"], now=now))
                 if not environ.get('CREW_SESSION_ID'):
                     from . import trust_mode
-                    authorization = trust_mode.context(conn, data['session_id'])
+                    _, authorization = trust_mode.input_context(conn, data['session_id'])
                     if authorization:
                         lines.append(authorization)
         if event == "session-start":

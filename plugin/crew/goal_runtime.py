@@ -77,13 +77,12 @@ class Controller:
         return values[0] if values else None
 
     def general_context(self, conn, session_id):
-        authorization = trust_mode.context(conn, session_id)
         rows = conn.execute('SELECT DISTINCT g.id FROM goals g LEFT JOIN goal_assignments a ON a.goal_id=g.id '
             'WHERE g.leader_session_id=? OR a.session_id=? ORDER BY g.updated_at DESC LIMIT 3',
             (session_id, session_id)).fetchall()
-        lines = [authorization] if authorization else []
-        if rows:
-            lines.append('[Crew 目标索引；原生历史分别保存。需要详情用 crew goal status 查阅，不另起业务方案；暂停/结束不代表获准复工。]')
+        if not rows:
+            return ''
+        lines = ['[Crew 目标索引；原生历史分别保存。需要详情用 crew goal status 查阅，不另起业务方案；暂停/结束不代表获准复工。]']
         for row in rows:
             value = goals.get(conn, row['id'])
             lines.append('%s | %s | %s' % (value['id'], value['title'][:60], value['status']))
