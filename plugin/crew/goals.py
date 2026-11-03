@@ -380,7 +380,7 @@ def request_pause(conn, goal_id, *, manual=True, actor=board.HUMAN, reason='жЪВе
 
 def confirm_paused(conn, goal_id, *, actor=None, now=None):
     # Stop confirmation is runtime bookkeeping, not a new user intent.
-    return transition(conn, goal_id, 'paused', actor=actor or _row(conn, goal_id)['leader_session_id'], now=now)
+    return transition(conn, goal_id, 'paused', actor=actor or _OPERATIONS, now=now)
 
 
 def _finished_review(conn, goal):

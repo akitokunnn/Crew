@@ -7,7 +7,7 @@ from urllib.parse import urlencode
 
 import tests
 from unittest import mock
-from crew import board, chat, codex_runtime, goals, hooks, messaging, report_preview, runtimes, store, web
+from crew import board, chat, codex_runtime, goals, hooks, messaging, personal, report_preview, runtimes, session_ops, store, web
 import test_chat_http as chat_helpers
 import test_codex_runtime as codex_helpers
 from test_shell import ShellFixture, PLUGIN, NOW
@@ -39,6 +39,65 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
 
     def send_goal(self, goal, text='Begin', **data):
         return self.request('/api/chat/send?project=demo', {'session_id': 's3', 'goal_id': goal['id'], 'text': text, **data})
+
+    def test_archiving_leader_hides_ongoing_task_and_restore_preserves_paused_history(self):
+        class IndependentClient(codex_helpers.FakeClient):
+            counter = 0
+            def __init__(self, **options):
+                super().__init__(**options)
+                type(self).counter += 1
+                self.thread_id = 'archive-native-' + str(type(self).counter)
+        with mock.patch('crew.codex_runtime._ObservedClient', IndependentClient):
+            for runtime in ('claude', 'codex'):
+                for action in ('archive', 'remove', 'close'):
+                    with self.subTest(runtime=runtime, action=action):
+                        owner, member = runtime + '-' + action, runtime + '-' + action + '-member'
+                        board.join(self.conn, owner, 'demo', owner, self.project, self.project, 'main', role='leader')
+                        board.join(self.conn, member, 'demo', member, self.project, self.project, 'main', group_name=owner)
+                        runtimes.set(self.conn, owner, runtime)
+                        runtimes.set(self.conn, member, runtime)
+                        goal = goals.create(self.conn, 'demo', owner, 'Archive work', 'Keep the original request', ['Evidence'])
+                        goals.assign(self.conn, goal['id'], member, 'Independent verification')
+                        executions = []
+                        for identity in (owner, member):
+                            code, receipt, _ = self.request('/api/chat/send?project=demo', {
+                                'session_id': identity, 'goal_id': goal['id'], 'text': 'Begin',
+                                'message_id': 'archive-task-' + identity})
+                            self.assertEqual(code, 200, receipt)
+                            executions.append(receipt['execution_id'])
+                        path = '/api/group/close' if action == 'close' else '/api/session/' + action
+                        data = {'group': owner, 'with_members': True} if action == 'close' else {'session_id': owner}
+                        code, archived, _ = self.request(path + '?project=demo', data)
+                        self.assertEqual(code, 200, archived)
+                        _, state, _ = self.request('/api/state?project=demo')
+                        self.assertNotIn(goal['id'], [item['id'] for item in state['goals']])
+                        self.assertNotIn(goal['id'], [item['id'] for item in personal.overview(self.conn)['goals']])
+                        self.assertTrue(all(not self.server.service.chat.running(key) for key in executions))
+                        saved = goals.get(self.conn, goal['id'])
+                        self.assertTrue(saved['manual_pause'])
+                        self.assertEqual(saved['status'], 'paused')
+                        restore_path = '/api/group/undo' if action == 'close' else '/api/session/restore'
+                        restore_data = {'group': owner, 'before': archived['before']} if action == 'close' else {'session_id': owner}
+                        self.assertEqual(self.request(restore_path + '?project=demo', restore_data)[0], 200)
+                        _, restored, _ = self.request('/api/state?project=demo')
+                        self.assertEqual(next(item for item in restored['goals'] if item['id'] == goal['id'])['status'], 'paused')
+                        self.assertEqual(goals.get(self.conn, goal['id'])['original_request'], goal['original_request'])
+                        self.assertTrue(all(not self.server.service.chat.running(key) for key in executions))
+
+    def test_existing_archived_owner_tasks_are_hidden_and_reconciled_without_restarting(self):
+        goal = self.goal()
+        goals.transition(self.conn, goal['id'], 'running')
+        session_ops.archive(self.conn, 's3')
+        _, state, _ = self.request('/api/state?project=demo')
+        self.assertNotIn(goal['id'], [item['id'] for item in state['goals']])
+        control = self.server.service.chat.goal_controller
+        control.sync(self.conn)
+        saved = goals.get(self.conn, goal['id'])
+        self.assertEqual(saved['status'], 'paused')
+        self.assertTrue(saved['manual_pause'])
+        control.sync(self.conn)
+        self.assertEqual(goals.get(self.conn, goal['id'])['version'], saved['version'])
+        self.assertEqual(len(self.processes), 0)
 
     def parallel_scopes(self, runtime, sid='s3'):
         if runtime == 'codex':

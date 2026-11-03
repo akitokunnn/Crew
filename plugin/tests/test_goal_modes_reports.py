@@ -85,6 +85,33 @@ class GoalModeReportTests(GoalFixture):
         self.assertFalse(goals.dispatch_check(self.conn, first['id'])['allowed'])
         self.assertEqual(goal_context.build(self.conn, b['id'])['manifest']['goal_id'], second['id'])
 
+    def test_authorized_owner_can_create_and_configure_tasks_until_grant_is_revoked(self):
+        existing = self.goal()
+        with self.assertRaisesRegex(board.BoardError, '只有用户'):
+            self.goal(actor='chief-id', decision_mode='autonomous')
+        trust_mode.set(self.conn, 'demo', True, 'Deliver within the user request', leader_session_id='chief-id')
+        created = self.goal(actor='chief-id')
+        self.assertEqual(created['decision_mode']['mode'], 'autonomous')
+        self.assertEqual(created['decision_mode']['source'], 'leader:chief-id')
+        self.assertEqual(self.goal(actor='chief-id', decision_mode='human')['decision_mode']['mode'], 'human')
+        self.assertEqual(goals.get(self.conn, existing['id'])['decision_mode']['mode'], 'human')
+        goals.request_pause(self.conn, existing['id'])
+        changed = goal_actions.dispatch(self.home, 'chief-id', None, 'mode.set',
+            {'goal_id': existing['id'], 'mode': 'autonomous', 'expected_version': 1})
+        self.assertEqual(changed['decision_mode']['source'], 'leader:chief-id')
+        self.assertTrue(goals.get(self.conn, existing['id'])['manual_pause'])
+        for actor in ('member-id', 'outsider-id'):
+            with self.subTest(actor=actor), self.assertRaises(board.BoardError):
+                goal_mode.set_mode(self.conn, existing['id'], 'human', expected_version=2, actor=actor)
+        with self.assertRaises(board.Conflict):
+            goal_mode.set_mode(self.conn, existing['id'], 'human', expected_version=1, actor='chief-id')
+        trust_mode.set(self.conn, 'demo', False, leader_session_id='chief-id')
+        with self.assertRaisesRegex(board.BoardError, '只能由用户'):
+            goal_mode.set_mode(self.conn, existing['id'], 'human', expected_version=2, actor='chief-id')
+        self.assertEqual(self.goal(actor='chief-id')['decision_mode']['mode'], 'human')
+        self.assertEqual(goal_mode.get(self.conn, created['id'])['mode'], 'autonomous')
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM goal_executions').fetchone()[0], 0)
+
     def test_publish_retry_user_edits_and_final_delivery_remain_distinct(self):
         goal = self.goal()
         goals.transition(self.conn, goal['id'], 'running')
@@ -153,6 +180,60 @@ class GoalModeCarrierTests(ShellFixture, unittest.TestCase):
         self.thread = threading.Thread(target=self.server.serve_forever, kwargs={'poll_interval': .02})
         self.thread.start(); self.addCleanup(self.close_server)
         self.assertTrue(self.server.service.agents_ready.wait(5)); self.url = self.server.url
+
+    def agent(self, runtime, action, data, session_id):
+        if runtime == 'codex':
+            tool = codex_tools.CodexTools(self.home, session_id,
+                goal_handler=self.server.service.chat.goal_controller.agent_action)
+            result = tool({'tool': 'crew_goal', 'arguments': {'action': action, 'data': data}})
+            self.assertTrue(result['success'], result)
+            return json.loads(result['contentItems'][0]['text'])
+        output, errors = io.StringIO(), io.StringIO()
+        with mock.patch.dict(os.environ, {'CREW_SESSION_ID': session_id}), redirect_stdout(output), redirect_stderr(errors):
+            code = cli.main(['--home', str(self.home), 'goal', action, '--data', json.dumps(data), '--json'], cwd=self.project)
+        self.assertEqual(code, 0, errors.getvalue())
+        return json.loads(output.getvalue())
+
+    def test_leader_grant_reaches_both_general_carriers_and_allows_autonomous_task_start(self):
+        for runtime in ('claude', 'codex'):
+            with self.subTest(runtime=runtime):
+                session_id = 'autonomy-' + runtime
+                board.join(self.conn, session_id, 'demo', session_id, self.project, self.project, 'main', role='leader')
+                runtimes.set(self.conn, session_id, runtime)
+                before = len(self.processes)
+                code, saved, _ = self.request('/api/trust?project=demo', {
+                    'leader_session_id': session_id, 'enabled': True, 'goal': 'User-authorized scope'})
+                self.assertEqual(code, 200, saved)
+                self.assertEqual(len(self.processes), before)
+                with mock.patch('crew.codex_runtime._ObservedClient', FakeClient):
+                    code, sent, _ = self.request('/api/chat/send?project=demo', {
+                        'session_id': session_id, 'text': 'Coordinate the work', 'message_id': runtime + '-general'})
+                self.assertEqual(code, 200, sent)
+                current = self.server.service.chat.processes[session_id]
+                if runtime == 'codex':
+                    text = [params for method, params in current.client.calls if method == 'turn/start'][-1]['input'][-1]['text']
+                    current.client.finish()
+                else:
+                    text = json.loads(current.process.stdin.getvalue().splitlines()[-1])['message']['content']
+                    chat_helpers.ChatHttpTests.finish_turn(self, session_id, current.process)
+                self.assertIn('User-authorized scope', text)
+                self.assertIn('mode.set', text)
+                created = self.agent(runtime, 'create', {'title': 'Autonomous ' + runtime,
+                    'request': 'Deliver the user request', 'acceptance': ['Evidence']}, session_id)
+                self.assertEqual(created['decision_mode']['mode'], 'autonomous')
+                changed = self.agent(runtime, 'mode.set', {'goal_id': created['id'], 'mode': 'human', 'expected_version': 1}, session_id)
+                self.assertEqual(changed['decision_mode']['mode'], 'human')
+                self.agent(runtime, 'mode.set', {'goal_id': created['id'], 'mode': 'autonomous', 'expected_version': 2}, session_id)
+                class TaskClient(FakeClient):
+                    def __init__(self, **options):
+                        super().__init__(**options)
+                        self.thread_id = 'autonomy-task-native'
+                with mock.patch('crew.codex_runtime._ObservedClient', TaskClient):
+                    started = self.agent(runtime, 'start', {'goal_id': created['id']}, session_id)
+                self.assertIn('execution_id', started)
+                self.assertEqual(goals.get(self.conn, created['id'])['status'], 'running')
+                self.assertFalse(self.server.service.chat.busy(session_id))
+                self.request('/api/trust?project=demo', {'leader_session_id': session_id, 'enabled': False})
 
     def test_http_modes_reach_claude_and_codex_goal_inputs_without_changing_general_default(self):
         trust_mode.set(self.conn, 'demo', True, 'Leader-wide default must not override task', leader_session_id='s3')

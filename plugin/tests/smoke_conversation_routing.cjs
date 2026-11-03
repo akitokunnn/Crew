@@ -48,6 +48,16 @@ if(!process.versions.electron){
       await check('closing pending restores architecture without leaving the conversation','Math.abs(document.querySelector("#right-panel").getBoundingClientRect().top-architectureTop)<1&&!document.querySelector("#chat-host textarea").disabled');
       await click('[data-act="right-open"]');await pause(450);
       await check('two active tasks do not make the idle general conversation wait for a model','!document.querySelector("#chat-host .chat-activity")&&!document.querySelector("#chat-host textarea").disabled');
+      await click('[data-goal-act="leader-mode"][data-mode="autonomous"]');
+      await check('leader authorization saves through real HTTP without starting its general conversation',
+        'document.querySelector("[data-goal-act=leader-mode][data-mode=autonomous]")?.getAttribute("aria-pressed")==="true"&&!document.querySelector("#chat-host .chat-activity")');
+      await check('leader authorization leaves the existing task modes intact',
+        `(async()=>{const state=await fetch('/api/state?project=demo').then(r=>r.json());return state.leaders.find(item=>item.session_id===${JSON.stringify(bootstrap.leader)}).trust.enabled&&state.goals.filter(item=>item.leader_session_id===${JSON.stringify(bootstrap.leader)}).every(item=>item.decision_mode.mode==='human')})()`);
+      await capture('00-leader-autonomy');
+      window.setSize(390,844);await capture('00-leader-autonomy-mobile');window.setSize(1280,900);
+      await click('[data-goal-act="leader-mode"][data-mode="human"]');
+      await check('leader authorization can be revoked without starting or pausing its independent tasks',
+        'document.querySelector("[data-goal-act=leader-mode][data-mode=human]")?.getAttribute("aria-pressed")==="true"&&document.querySelector("#goal-chat-hint").textContent.includes("2 个任务")&&!document.querySelector("#chat-host .chat-activity")');
       await type('主对话草稿');await click('[data-goal-act="list"]');
       await wait(`!!document.querySelector('[data-goal-act="open"][data-goal-id="${bootstrap.goals[0]}"]')`);
       await click(`[data-goal-act="open"][data-goal-id="${bootstrap.goals[0]}"]`);
@@ -87,6 +97,13 @@ if(!process.versions.electron){
       await check('a completed coordination reply clears only general progress while tasks stay active','document.querySelector("#goal-chat-hint").textContent.includes("2 个任务")&&document.querySelector("#chat-host textarea").value==="主对话草稿"');
       await capture('03-general-idle-tasks-active');
       evidence.reply=messages.find(value=>value.replied);assert.equal(evidence.reply.parallel_tasks,2);assert.equal(evidence.reply.source_general_started,false);assert.equal(evidence.errors.length,0,JSON.stringify(evidence.errors));
+      await click('#chat-head [data-act="session-menu"]');
+      await click('[data-act="close-group"][data-with-members="false"]');
+      await wait(`!document.querySelector('#sidebar [data-act="leader"][data-id="${bootstrap.leader}"]')`);
+      await click('[data-act="view"][data-view="all"]');
+      await check('archiving a leader removes its ongoing tasks from the real workbench',
+        `!!document.querySelector('.wh-page')&&!document.querySelector('.wh-page [data-goal-id="${bootstrap.goals[0]}"]')&&!document.querySelector('.wh-page [data-goal-id="${bootstrap.goals[1]}"]')`);
+      await capture('04-archived-leader-workbench');
       fixture.stdin.end('shutdown\n');await until(()=>closed,'fixture shutdown');evidence.ok=true;
       await fs.writeFile(path.join(out,'evidence.json'),JSON.stringify(evidence,null,2));app.quit();
     }catch(error){evidence.errors.push(error.stack||String(error));fixture?.stdin.end('shutdown\n');await fs.mkdir(out,{recursive:true});await fs.writeFile(path.join(out,'evidence.json'),JSON.stringify(evidence,null,2));console.error(error);process.exitCode=1;app.quit();}
