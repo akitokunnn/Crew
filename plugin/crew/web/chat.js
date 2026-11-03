@@ -247,6 +247,7 @@
   const sessions = new Map();
   const compactNotified = new Map();
   let active = null;
+  const visible = () => document.visibilityState === "visible" && window.crewTabVisible !== false;
   const escape = value => String(value).replace(/[&<>"']/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]);
   const icon = kind => {
     const paths = {
@@ -657,10 +658,10 @@
     if (incremental) { composerState(context); schedule(context); }
   }
   function scheduleRead(context) {
-    if (context.readonly || context.loading || context.reading || context.readTimer !== null || document.visibilityState !== "visible" || !atBottom(context) || context.cursor <= context.readSeq) return;
+    if (context.readonly || context.loading || context.reading || context.readTimer !== null || !visible() || !atBottom(context) || context.cursor <= context.readSeq) return;
     context.readTimer = setTimeout(async () => {
       context.readTimer = null;
-      if (!current(context) || document.visibilityState !== "visible" || !atBottom(context)) return;
+      if (!current(context) || !visible() || !atBottom(context)) return;
       const seq = context.cursor;
       context.cache.lastReadAt = Date.now(); context.reading = true;
       try {
@@ -674,15 +675,21 @@
     context.error.hidden = message === null;
     context.error.textContent = message;
   }
+  function disconnect(context) {
+    context.connectionGeneration++;
+    context.stream?.abort(); context.stream = null;
+    clearTimeout(context.reconnectTimer); context.reconnectTimer = null;
+  }
   async function connect(context) {
-    if (!current(context)) return;
+    if (!current(context) || !visible() || context.loading || context.stream !== null) return;
+    clearTimeout(context.reconnectTimer); context.reconnectTimer = null;
     const generation = context.connectionGeneration;
-    context.stream = new AbortController();
+    const stream = new AbortController(); context.stream = stream;
     const params = query(context); params.set("after", context.cursor);
     try {
       const headers = { Accept: "text/event-stream" };
       if (context.cursor > 0) headers["Last-Event-ID"] = String(context.cursor);
-      const response = await fetch(`/api/chat/events?${params}`, { headers, signal: context.stream.signal });
+      const response = await fetch(`/api/chat/events?${params}`, { headers, signal: stream.signal });
       if (!response.ok) { const failure = await response.json(); throw new Error(failure.error); }
       if (!current(context) || generation !== context.connectionGeneration) return;
       connectionError(context, null);
@@ -703,8 +710,10 @@
     } catch (error) {
       if (!current(context) || generation !== context.connectionGeneration || error.name === "AbortError") return;
       connectionError(context, error.message);
+    } finally {
+      if (context.stream === stream) context.stream = null;
     }
-    if (current(context) && generation === context.connectionGeneration) context.reconnectTimer = setTimeout(() => connect(context), 3000);
+    if (current(context) && visible() && generation === context.connectionGeneration) context.reconnectTimer = setTimeout(() => connect(context), 3000);
   }
   async function load(context) {
     if (!current(context)) return;
@@ -788,10 +797,10 @@
       if (view && current(context) && context.goalId == null && result.goal_id != null) context.onRouted?.(result.goal_id);
       if (view && context.goalId != null && result.execution_id != null && result.execution_id !== view.executionId) {
         // First send and context rotation create a different journal. A history read never creates one.
-        view.stream?.abort(); view.connectionGeneration++; clearTimeout(view.reconnectTimer); clearTimeout(view.readTimer);
+        disconnect(view); clearTimeout(view.readTimer);
         if (view.frame !== null) { cancelAnimationFrame(view.frame); view.frame = null; }
         view.cache.pendingSendSeq = null; view.cache.unreadAnchor = null; view.cache.scrollTop = null;
-        view.readTimer = null; view.reconnectTimer = null; void load(view);
+        view.readTimer = null; void load(view);
       }
     } catch (error) {
       if (context.cache.pendingSendSeq === sendSeq) {
@@ -848,8 +857,14 @@
       button.classList.toggle("open", open); button.setAttribute("aria-expanded", String(open));
       if (unchanged) node.dataset.html = itemHTML(scope, item);
     };
-    context.visibility = () => scheduleRead(context);
+    context.visibility = event => {
+      if (event.type === "crew-tab-visibility") window.crewTabVisible = event.detail.visible;
+      if (!visible()) {
+        disconnect(context); clearTimeout(context.readTimer); context.readTimer = null;
+      } else { void connect(context); scheduleRead(context); }
+    };
     document.addEventListener("visibilitychange", context.visibility);
+    window.addEventListener("crew-tab-visibility", context.visibility);
     if (!context.readonly) {
       context.input = options.host.querySelector("textarea"); context.send = options.host.querySelector(".send");
       context.stop = options.host.querySelector(".chat-stop"); context.stopStatus = options.host.querySelector(".chat-interrupt-status");
@@ -898,10 +913,11 @@
     if (!active) return;
     const context = active;
     saveDraft(context); context.cache.scrollTop = context.scroll.scrollTop;
-    context.stream?.abort(); clearTimeout(context.readTimer); clearTimeout(context.reconnectTimer); clearTimeout(context.historyRetryTimer);
+    disconnect(context); clearTimeout(context.readTimer); clearTimeout(context.historyRetryTimer);
     if (context.frame !== null) cancelAnimationFrame(context.frame);
     CrewActivity.release(context.activityKey);
     document.removeEventListener("visibilitychange", context.visibility);
+    window.removeEventListener("crew-tab-visibility", context.visibility);
     active = null;
   }
   function notifyCompact(id, event, toast, goalId = null) {
@@ -912,17 +928,51 @@
   }
   async function watchCompact(id, options) {
     const scope = options.goalId == null ? {} : {goal_id:options.goalId};
-    const history = await options.api('/api/chat/history?' + new URLSearchParams({session_id:id,...scope}));
-    const params = new URLSearchParams({session_id:id, ...scope, ...projectQuery(options), after:history.events.length === 0 ? 0 : history.events[history.events.length - 1].seq});
-    const stream = new EventSource(`/api/chat/events?${params}`);
-    const close = () => stream.close();
-    const finish = event => { close(); options.onFinish?.(event); };
-    stream.onmessage = message => {
-      const event = JSON.parse(message.data);
-      if (event.type === "compact") { notifyCompact(id, event, options.toast, options.goalId); finish(event); }
-      else if (event.type === "error" || event.type === "compact_cancelled" || event.type === "status" && event.status === "offline") finish(event);
+    const path = '/api/chat/history?' + new URLSearchParams({session_id:id,...scope,...projectQuery(options)});
+    // Capture the baseline before the caller submits compaction. Each later read
+    // releases its HTTP connection instead of reserving another long-lived stream.
+    const history = await options.api(path);
+    const executionId = history.execution_id ?? null;
+    let cursor = history.events.at(-1)?.seq || 0, timer = null, closed = false, reading = false, failed = false;
+    const close = () => {
+      closed = true; clearTimeout(timer); timer = null;
+      document.removeEventListener("visibilitychange", visibility);
+      window.removeEventListener("crew-tab-visibility", visibility);
     };
-    stream.onerror = () => { if (stream.readyState === EventSource.CLOSED) finish({type:"error", text:"压缩结果连接已关闭，请检查会话状态"}); };
+    async function poll() {
+      clearTimeout(timer); timer = null;
+      if (closed || reading || !visible()) return;
+      reading = true;
+      try {
+        const latest = await options.api(path);
+        if (closed) return;
+        failed = false;
+        const execution = executionId === null || latest.execution_id === executionId
+          ? latest : (latest.previous_executions || []).find(value => value.execution_id === executionId);
+        for (const event of execution?.events || []) {
+          if (event.seq <= cursor) continue;
+          cursor = event.seq;
+          if (event.type === "compact" || event.type === "error" || event.type === "compact_cancelled" || event.type === "status" && event.status === "offline") {
+            close();
+            if (event.type === "compact") notifyCompact(id, event, options.toast, options.goalId);
+            options.onFinish?.(event); return;
+          }
+        }
+      } catch (error) {
+        if (!closed && !failed) options.toast(`压缩结果暂时无法读取，会自动重试。${error.message || "请检查连接。"}`);
+        failed = true;
+      } finally {
+        reading = false;
+        if (!closed && visible()) timer = setTimeout(poll, 3000);
+      }
+    }
+    function visibility(event) {
+      if (event.type === "crew-tab-visibility") window.crewTabVisible = event.detail.visible;
+      if (visible()) void poll(); else { clearTimeout(timer); timer = null; }
+    }
+    document.addEventListener("visibilitychange", visibility);
+    window.addEventListener("crew-tab-visibility", visibility);
+    if (visible()) timer = setTimeout(poll, 3000);
     return close;
   }
   window.CrewChat = {mount, update, unmount, watchCompact, renderMarkdown, renderInline, initFiles};

@@ -96,3 +96,6 @@ jobs:
       - name: Isolated conversation and task routing
         if: ${{ !cancelled() }}
         run: node plugin/tests/smoke_conversation_routing.cjs
+      - name: Isolated multi-workspace chat connections
+        if: ${{ !cancelled() }}
+        run: node plugin/tests/smoke_chat_connections.cjs

@@ -2,6 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
+const vm = require('node:vm');
 const { WorkspaceTabs } = require('../src/tabs.cjs');
 
 function fixture(options = {}) {
@@ -18,6 +19,12 @@ function fixture(options = {}) {
     wc.navigationHistory = { canGoBack: () => false, goBack: () => { wc.wentBack = true; } };
     wc.loadURL = async url => { wc.loads.push(url); wc.url = url; wc.emit('did-navigate', {}, url); };
     wc.setWindowOpenHandler = handler => { wc.popup = handler; };
+    wc.pageEvents = [];
+    wc.page = { dispatchEvent: event => wc.pageEvents.push(event), CustomEvent: class {
+      constructor(type, options) { this.type = type; this.detail = options.detail; }
+    } };
+    wc.page.window = wc.page;
+    wc.executeJavaScript = async source => vm.runInNewContext(source, wc.page);
     return wc;
   }
   const children = [];
@@ -35,6 +42,32 @@ function fixture(options = {}) {
     get homes() { return homes; }, get windowClosed() { return windowClosed; } };
 }
 function event() { return { prevented: false, preventDefault() { this.prevented = true; } }; }
+
+test('workspace and assistant pages receive active-tab visibility while their documents stay mounted', async () => {
+  const f = fixture();
+  const first = await f.manager.open({name:'A'});
+  const a = f.views[0].webContents;
+  assert.equal(a.page.crewTabVisible, true);
+  await f.manager.openAssistant();
+  const assistant = f.views[1].webContents;
+  assert.equal(a.page.crewTabVisible, false);
+  assert.equal(assistant.page.crewTabVisible, true);
+  f.manager.select(first.id);
+  assert.equal(a.page.crewTabVisible, true);
+  assert.equal(assistant.page.crewTabVisible, false);
+  f.manager.select('home');
+  assert.equal(a.page.crewTabVisible, false);
+  assert.equal(assistant.page.crewTabVisible, false);
+  assert.equal(a.loads.length, 1);
+  assert.equal(assistant.loads.length, 1);
+  assert.equal(a.pageEvents.at(-1).type, 'crew-tab-visibility');
+  assert.equal(a.pageEvents.at(-1).detail.visible, false);
+  // Reloading a background page replaces its JS global. It must remain inactive.
+  delete a.page.crewTabVisible;
+  a.emit('did-finish-load');
+  assert.equal(a.page.crewTabVisible, false);
+  f.manager.dispose();
+});
 
 test('cross-workspace task links retain their hash and select the existing document without reloading its draft',async()=>{
   const destinations=[];const f=fixture({openProject:(name,hash)=>destinations.push({name,hash})});
