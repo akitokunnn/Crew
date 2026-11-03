@@ -43,6 +43,7 @@ if (!process.versions.electron) {
   app.whenReady().then(async () => {
     const views = [];
     const requests = [];
+    const requestsById = new Map();
     const pendingStreams = new Set();
     let fixtureExited = false;
     try {
@@ -95,13 +96,21 @@ if (!process.versions.electron) {
       browserSession.webRequest.onBeforeRequest((request, callback) => {
         if (request.url.startsWith(info.url)) {
           const url = new URL(request.url);
-          requests.push({id:request.id, path:url.pathname, query:url.search, at:Date.now()});
+          const record = {id:request.id, path:url.pathname, query:url.search, at:Date.now()};
+          requests.push(record);
+          requestsById.set(request.id, record);
           if (url.pathname === '/api/chat/events') pendingStreams.add(request.id);
         }
         callback({});
       });
-      browserSession.webRequest.onCompleted(request => pendingStreams.delete(request.id));
-      browserSession.webRequest.onErrorOccurred(request => pendingStreams.delete(request.id));
+      browserSession.webRequest.onCompleted(request => {
+        pendingStreams.delete(request.id);
+        Object.assign(requestsById.get(request.id) || {}, {status:request.statusCode});
+      });
+      browserSession.webRequest.onErrorOccurred(request => {
+        pendingStreams.delete(request.id);
+        Object.assign(requestsById.get(request.id) || {}, {error:request.error});
+      });
       window = new BrowserWindow({show:false, x:-10000, y:-10000, skipTaskbar:true, width:1280, height:900,
         webPreferences:{nodeIntegration:false, contextIsolation:true, sandbox:true,
           backgroundThrottling:false}});
@@ -112,7 +121,7 @@ if (!process.versions.electron) {
           const view = new WebContentsView({webPreferences:{nodeIntegration:false, contextIsolation:true,
             sandbox:true, backgroundThrottling:false}});
           view.webContents.on('console-message', event => {
-            if (event.level === 'error') evidence.errors.push(event.message);
+            if (event.level === 'error') evidence.errors.push(`${event.message} (${event.sourceId}:${event.lineNumber})`);
           });
           view.webContents.on('render-process-gone', (_event, detail) => evidence.errors.push('Renderer exited ' + detail.reason));
           views.push(view);
@@ -146,7 +155,14 @@ if (!process.versions.electron) {
       for (const project of info.projects) {
         const tab = await tabs.open(project, '#all');
         workspaceTabs.push(tab);
-        await until(() => evaluate(tabs.activeView, 'Boolean(document.querySelector(".leader-item"))'), 'workspace sidebar');
+        try {
+          await until(() => evaluate(tabs.activeView, 'Boolean(document.querySelector(".leader-item"))'), 'workspace sidebar');
+        } catch (error) {
+          evidence.initializationFailure = await evaluate(tabs.activeView, `({url:location.href,
+            modules:{CrewGitSettings:typeof CrewGitSettings,...Object.fromEntries(['CrewMaintenance','CrewWorkspaceSettings','CrewSettings','CrewMembers','CrewGoals'].map(name=>[name,typeof window[name]]))},
+            text:document.body.innerText})`);
+          throw error;
+        }
       }
       evidence.checks.push('Eight independent workspace pages load through the actual WorkspaceTabs owner');
       console.log('Eight workspace pages ready');
@@ -262,6 +278,7 @@ if (!process.versions.electron) {
       }
       console.log(JSON.stringify({ok:evidence.ok || false, checks:evidence.checks.length,
         evidence:path.join(output, 'evidence.json'), failure:evidence.failure || null}));
+      window?.destroy();
       app.exit(evidence.ok ? 0 : 1);
     }
   });
