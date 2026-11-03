@@ -240,6 +240,8 @@ class Service:
 
     def close(self):
         self.stop.set()
+        with self.chat.lock:
+            self.chat.closed = True
         # Cancel independent digest natives before joining other pollers.
         actions = [self.report_previews.close, self.channel_digest.stop, self.remote_access.shutdown, self.storage_cleanup.close, self.connections.close]
         if self.notice_worker is not None:

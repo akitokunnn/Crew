@@ -235,6 +235,8 @@ class CodexRunning:
         self._send_message, self._tool_lock = send_message, threading.RLock()
         self._tool_results, self._closing, self._compacting = {}, False, False
         self.stop_reason = None
+        self.interrupt_requested = False
+        self.unexpected_exit = False
         self._native_archived = False
         self._archive_on_close = True
         self._native_title = None
@@ -688,6 +690,8 @@ class CodexRunning:
                     raise board.Conflict('Codex 仍在准备本轮，请稍后再停止')
                 if self.journal.status != 'working' or self._closing:
                     raise board.Conflict('Codex 本轮已结束')
+            from . import runtime_recovery
+            runtime_recovery.record_interrupt(self, self.execution['id'] if self.execution else self.session_id)
             self.pending_compact = False
             self._approval_cancelled_turn = (self._events.turn_id if self._compacting else self.client.turn_id) or self._events.turn_id
             try:
@@ -703,10 +707,13 @@ class CodexRunning:
             self.client.notifications_done.wait()
             with self.input_lock:
                 active = self.journal.status == "working"
+                from . import runtime_recovery
+                runtime_recovery.record_exit(self, self.execution['id'] if self.execution else self.session_id)
                 if active:
                     self.journal.emit("turn_result", turn_id=self.client.turn_id,
                                       status="interrupted" if self.stop_reason else "failed", success=False,
-                                      reason=self.stop_reason or "process_exit")
+                                      reason=self.stop_reason or (
+                                          'user_interrupt' if self.interrupt_requested else 'process_exit'))
                 if self.stop_reason is None:
                     self.journal.emit("error", text="Codex 会话连接已结束" + ("，本轮未完成" if active else ""))
                 if self.pending_compact:
