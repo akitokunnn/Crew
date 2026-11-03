@@ -1,0 +1,552 @@
+.org-demo .grp-view,
+.org-demo .mtx-view {
+  min-width: 0;
+}
+
+.org-demo .grp-columns {
+  display: grid;
+  grid-template-columns: minmax(210px, 28%) minmax(0, 1fr);
+  gap: 24px;
+  padding: 0 20px 12px;
+  color: var(--org-muted);
+  font-size: 12px;
+}
+
+.org-demo .grp-task {
+  display: grid;
+  grid-template-columns: minmax(210px, 28%) minmax(0, 1fr);
+  column-gap: 24px;
+  border-top: 1px solid var(--org-line);
+  padding: 20px;
+  background: var(--org-panel);
+}
+
+.org-demo .grp-task:last-of-type {
+  border-bottom: 1px solid var(--org-line);
+}
+
+.org-demo .grp-task.is-selected {
+  background: var(--org-tint);
+}
+
+.org-demo .grp-task-meta,
+.org-demo .grp-task-body,
+.org-demo .grp-person-name,
+.org-demo .grp-work {
+  min-width: 0;
+}
+
+.org-demo .grp-task-topline,
+.org-demo .grp-task-foot,
+.org-demo .grp-person-line,
+.org-demo .grp-work-line,
+.org-demo .grp-link-state,
+.org-demo .grp-standby-heading,
+.org-demo .grp-idle-person {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.org-demo .grp-task-topline {
+  margin-bottom: 10px;
+}
+
+.org-demo .grp-code,
+.org-demo .grp-task-foot,
+.org-demo .grp-shared,
+.org-demo .grp-role,
+.org-demo .grp-history-label,
+.org-demo .grp-idle-label,
+.org-demo .grp-folded {
+  color: var(--org-muted);
+  font-size: 12px;
+}
+
+.org-demo .grp-code,
+.org-demo .mtx-task-code {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: .04em;
+}
+
+.org-demo .grp-collapse {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid var(--org-line);
+  border-radius: 6px;
+  color: var(--org-muted);
+  font-size: 18px;
+}
+
+.org-demo .grp-task-title {
+  display: flex;
+  width: 100%;
+  align-items: start;
+  gap: 12px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--org-ink);
+  font: inherit;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.5;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.org-demo .grp-task-title > span {
+  color: var(--org-muted);
+  margin-left: auto;
+  font-size: 14px;
+  font-weight: 400;
+  flex: 0 0 auto;
+}
+
+.org-demo .grp-summary {
+  color: var(--org-muted);
+  font-size: 13px;
+  line-height: 1.65;
+  margin: 8px 0 16px;
+  overflow-wrap: anywhere;
+}
+
+.org-demo .grp-task-foot {
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 6px 12px;
+}
+
+.org-demo .grp-task-body {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-content: start;
+  gap: 6px;
+}
+
+.org-demo .grp-task-body[hidden] {
+  display: none;
+}
+
+.org-demo .grp-member {
+  display: block;
+  min-width: 0;
+  width: 100%;
+  padding: 10px 12px;
+  text-align: left;
+  color: var(--org-ink);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  font: inherit;
+}
+
+.org-demo .grp-member:hover,
+.org-demo .grp-idle-person:hover,
+.org-demo .mtx-assignment:hover,
+.org-demo .mtx-person-button:hover {
+  background: var(--org-soft);
+}
+
+.org-demo .grp-member.is-selected,
+.org-demo .grp-idle-person.is-selected {
+  border-color: var(--org-accent);
+  background: var(--org-tint);
+}
+
+.org-demo .grp-person-line {
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.org-demo .grp-person-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.org-demo .grp-shared {
+  margin-left: auto;
+  color: var(--org-accent);
+}
+
+.org-demo .grp-work-line {
+  justify-content: space-between;
+  align-items: start;
+  margin: 7px 0 0 35px;
+  gap: 12px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.org-demo .grp-work {
+  overflow-wrap: anywhere;
+}
+
+.org-demo .grp-link-state {
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: end;
+  gap: 4px 7px;
+}
+
+.org-demo .grp-member.is-history,
+.org-demo .mtx-assignment.is-history {
+  background-image: repeating-linear-gradient(135deg, transparent, transparent 5px, var(--org-soft) 5px, var(--org-soft) 6px);
+}
+
+.org-demo .grp-task-empty,
+.org-demo .grp-empty {
+  padding: 22px 12px;
+  color: var(--org-muted);
+  font-size: 14px;
+}
+
+.org-demo .grp-task-empty span {
+  display: block;
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+.org-demo .grp-folded {
+  padding: 12px;
+  align-self: center;
+}
+
+.org-demo .grp-standby {
+  margin-top: 22px;
+  padding: 0 20px 16px;
+}
+
+.org-demo .grp-standby-heading {
+  margin-bottom: 12px;
+  color: var(--org-muted);
+  font-size: 12px;
+}
+
+.org-demo .grp-standby-heading h2 {
+  margin: 0;
+  font-size: 14px;
+  color: var(--org-ink);
+  font-weight: 500;
+}
+
+.org-demo .grp-idle-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.org-demo .grp-idle-person {
+  padding: 8px 10px;
+  min-width: 0;
+  max-width: 100%;
+  flex-wrap: wrap;
+  border: 1px solid var(--org-line);
+  border-radius: 8px;
+  color: var(--org-ink);
+  background: var(--org-panel);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+}
+
+.org-demo .mtx-intro {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+  color: var(--org-muted);
+  font-size: 12px;
+}
+
+.org-demo .mtx-scroll {
+  max-width: 100%;
+  overflow: auto;
+  border: 1px solid var(--org-line);
+  border-radius: 10px;
+  background: var(--org-panel);
+  overscroll-behavior-x: contain;
+}
+
+.org-demo .mtx-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  color: var(--org-ink);
+  font-size: 13px;
+}
+
+.org-demo .mtx-table th,
+.org-demo .mtx-table td {
+  text-align: left;
+  border-right: 1px solid var(--org-line);
+  border-bottom: 1px solid var(--org-line);
+  vertical-align: top;
+}
+
+.org-demo .mtx-table tr:last-child > th,
+.org-demo .mtx-table tr:last-child > td {
+  border-bottom: 0;
+}
+
+.org-demo .mtx-table tr > :last-child {
+  border-right: 0;
+}
+
+.org-demo .mtx-table thead tr > th {
+  border-bottom: 1px solid var(--org-line);
+}
+
+.org-demo .mtx-person-heading,
+.org-demo .mtx-person-cell {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  min-width: 190px;
+  width: 190px;
+  background: var(--org-panel);
+}
+
+.org-demo .mtx-person-heading {
+  padding: 18px 16px;
+  font-weight: 500;
+  color: var(--org-muted);
+}
+
+.org-demo .mtx-person-heading > span {
+  display: block;
+  margin-top: 8px;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.org-demo .mtx-task-heading {
+  min-width: 180px;
+  width: 210px;
+  padding: 15px 16px;
+  font-weight: 400;
+}
+
+.org-demo .mtx-task-heading.is-selected,
+.org-demo .mtx-cell.is-highlighted,
+.org-demo .mtx-person-row.is-selected .mtx-person-cell {
+  background: var(--org-tint);
+}
+
+.org-demo .mtx-task-code {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 11px;
+  color: var(--org-muted);
+}
+
+.org-demo .mtx-task-name {
+  display: block;
+  width: 100%;
+  margin: 0 0 10px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--org-ink);
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.org-demo .mtx-person-cell {
+  padding: 0;
+  font-weight: 400;
+}
+
+.org-demo .mtx-person-button {
+  display: flex;
+  align-items: start;
+  gap: 9px;
+  width: 100%;
+  min-height: 92px;
+  padding: 18px 14px;
+  border: 0;
+  color: var(--org-ink);
+  background: transparent;
+  font: inherit;
+  text-align: left;
+}
+
+.org-demo .mtx-person-info {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+}
+
+.org-demo .mtx-person-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.org-demo .mtx-leader-label {
+  margin-left: 6px;
+  color: var(--org-muted);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.org-demo .mtx-person-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  color: var(--org-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.org-demo .mtx-cell {
+  padding: 7px;
+}
+
+.org-demo .mtx-unassigned {
+  padding: 28px 20px;
+  color: var(--org-muted);
+}
+
+.org-demo .mtx-assignment {
+  display: block;
+  width: 100%;
+  min-height: 76px;
+  padding: 10px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  color: var(--org-ink);
+  background: transparent;
+  font: inherit;
+  text-align: left;
+}
+
+.org-demo .mtx-assignment + .mtx-assignment {
+  margin-top: 4px;
+  border-top: 1px solid var(--org-line);
+}
+
+.org-demo .mtx-work {
+  display: block;
+  margin-top: 7px;
+  color: var(--org-muted);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.org-demo .mtx-history-label {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--org-muted);
+  font-size: 11px;
+}
+
+.org-demo .mtx-no-tasks {
+  padding: 20px;
+  min-width: 230px;
+  color: var(--org-muted);
+  font-weight: 400;
+}
+
+.org-demo .mtx-caption {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (max-width: 1100px) {
+  .org-demo .grp-task-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 760px) {
+  .org-demo .grp-collapse {
+    width: 44px;
+    height: 44px;
+  }
+
+  .org-demo .grp-columns {
+    display: none;
+  }
+
+  .org-demo .grp-task {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 14px;
+    padding: 18px 12px;
+  }
+
+  .org-demo .grp-task-meta {
+    padding: 0 8px;
+  }
+
+  .org-demo .grp-summary {
+    margin-bottom: 10px;
+  }
+
+  .org-demo .grp-member {
+    padding: 10px 8px;
+  }
+
+  .org-demo .grp-shared {
+    margin-left: 0;
+  }
+
+  .org-demo .grp-work-line {
+    flex-wrap: wrap;
+    gap: 7px;
+  }
+
+  .org-demo .grp-link-state {
+    justify-content: start;
+  }
+
+  .org-demo .grp-standby {
+    padding: 0 12px 12px;
+  }
+
+  .org-demo .mtx-person-heading,
+  .org-demo .mtx-person-cell {
+    min-width: 140px;
+    width: 140px;
+  }
+
+  .org-demo .mtx-person-button {
+    padding: 16px 10px;
+    gap: 7px;
+  }
+
+  .org-demo .mtx-person-meta {
+    flex-direction: column;
+    align-items: start;
+    gap: 4px;
+  }
+
+  .org-demo .mtx-task-heading {
+    min-width: 166px;
+    padding: 14px 12px;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .org-demo .grp-member,
+  .org-demo .grp-idle-person,
+  .org-demo .mtx-assignment,
+  .org-demo .mtx-person-button {
+    transition: background-color 140ms ease, border-color 140ms ease;
+  }
+}
