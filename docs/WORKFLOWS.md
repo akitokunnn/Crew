@@ -64,6 +64,12 @@ crew todo withdraw 12 --reason "已找到替代验证方法，不再需要用户
 
 首次上线只给每个现有 leader 发一次盘点通知，让它登记以前仍未完成的人工事项；Crew 不猜测旧聊天中哪件事已做过。QQ `/todo`（`/t`）可查看列表，离开电脑时不主动推人工待办。
 
+## 任务对话的原生上下文与压缩
+
+`GET /api/chat/history?project=工作区&session_id=人员&goal_id=任务` 返回当前任务执行的 `execution_id`、`context` 和 `compaction`。`context` 沿用总会话的 `used`、`max`、`source`，未知或执行已离线时返回 `null`。`compaction` 为 `queued`、`compacting` 或 `null`。`GET /api/goal?project=工作区&id=任务` 的各条 `executions` 同样提供这两个字段，按执行编号读取，供后续界面轮询使用。读取保持当前执行状态。
+
+压缩沿用 `POST /api/session/compact`，传 `session_id`、`goal_id`、`after_turn: true`，并可传读取到的 `execution_id`。任务已换轮或换代时，旧执行编号返回冲突。回执带原人员、任务和执行编号；排队与提交成功之后，完成或失败仍以该执行的原生事件为准。CC/Codex、leader/已分配成员共用此链路，同一人员的总会话和其他任务各自保留上下文与压缩状态。
+
 ## leader 自主推进授权
 
 在 leader 的“总会话”中，通过“leader 授权”的“由我拍板／自主推进”选择决策方式。授权沿用已有信任设置及目标，首次开启时使用 leader 当前负责范围；没有填写负责范围时，以用户在本总会话交办的工作为范围。成员总会话继承所属组的决策方式。用户在普通终端操作时可明确指定 leader 和目标，AI 会话不能通过 CLI 给自己授权：

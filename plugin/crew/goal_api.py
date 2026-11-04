@@ -42,12 +42,14 @@ def context(conn, identity, execution_id=None):
     return result
 
 
-def detail(conn, project, identity):
+def detail(conn, project, identity, *, context_state=None):
     value = goals.get(conn, identity, project)
     executions = [goals.get_execution(conn, row['id']) for row in conn.execute(
         'SELECT id FROM goal_executions WHERE goal_id=? ORDER BY round,generation', (identity,))]
     for execution in executions:
         execution['native_handoff'] = native_handoff.describe(conn, execution['session_id'], execution['id'])
+        if context_state is not None:
+            execution.update(context_state(execution['id']))
     current = [e for e in executions if e['round'] == value['current_round'] and
                e['requirement_version'] == value['requirement_version'] and e['session_id'] == value['leader_session_id']]
     # Newest first by the stored report version within each round, the same order acceptance_target uses;
@@ -154,5 +156,5 @@ def post(service, conn, project, path, data):
                 goal_context.invalidate(conn, item_id, data.get('reason', '用户标记失效'))
             else:
                 raise board.BoardError('未知上下文操作')
-        return detail(conn, project, identity)
+        return detail(conn, project, identity, context_state=control.manager.context_state)
     raise board.BoardError('未知目标接口')

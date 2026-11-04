@@ -37,6 +37,116 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(code, 200, value)
         return value['goal']
 
+    def test_task_context_and_compaction_are_isolated_for_both_carriers_and_roles(self):
+        class Client(codex_helpers.FakeClient):
+            counter = 0
+
+            def __init__(self, **options):
+                super().__init__(**options)
+                type(self).counter += 1
+                self.thread_id = 'context-native-' + str(type(self).counter)
+
+        manager = self.server.service.chat
+        with mock.patch('crew.codex_runtime._ObservedClient', Client):
+            for runtime in ('claude', 'codex'):
+                for role in ('leader', 'member'):
+                    with self.subTest(runtime=runtime, role=role):
+                        owner, person = runtime + '-' + role + '-owner', runtime + '-' + role
+                        board.join(self.conn, owner, 'demo', owner, self.project, self.project, 'main', role='leader')
+                        board.join(self.conn, person, 'demo', person, self.project, self.project, 'main',
+                                   role=role, group_name=owner if role == 'member' else None)
+                        if role == 'leader':
+                            owner = person
+                        runtimes.set(self.conn, person, runtime)
+                        tasks = [goals.create(self.conn, 'demo', owner, 'Task ' + str(i), 'Verify context', ['Evidence'])
+                                 for i in range(2)]
+                        if role == 'member':
+                            for task in tasks:
+                                goals.assign(self.conn, task['id'], person, 'Verify context')
+                        keys = [person]
+                        for task in [None, *tasks]:
+                            payload = {'session_id': person, 'text': 'Begin'}
+                            if task is not None:
+                                payload['goal_id'] = task['id']
+                            code, receipt, _ = self.request('/api/chat/send?project=demo', payload)
+                            self.assertEqual(code, 200, receipt)
+                            if task is not None:
+                                keys.append(receipt['execution_id'])
+                        for index, key in enumerate(keys):
+                            current = manager.processes[key]
+                            used = 1000 * (index + 1)
+                            if runtime == 'codex':
+                                current.client.emit('thread/tokenUsage/updated', tokenUsage={
+                                    'last': {'totalTokens': used, 'outputTokens': 10}, 'modelContextWindow': 100000})
+                            else:
+                                request = next(rid for rid, kind in current.control_requests.items() if kind == 'get_context_usage')
+                                manager._control_response(current, {'subtype': 'success', 'request_id': request,
+                                    'response': {'totalTokens': used, 'maxTokens': 100000}})
+                        history_path = '/api/chat/history?' + urlencode({
+                            'project': 'demo', 'session_id': person, 'goal_id': tasks[0]['id']})
+                        _, history, _ = self.request(history_path)
+                        self.assertEqual(history['context']['used'], 2000)
+                        _, detail, _ = self.request('/api/goal?project=demo&id=' + tasks[0]['id'])
+                        self.assertEqual(next(e for e in detail['executions'] if e['id'] == keys[1])['context'], history['context'])
+                        payload = {'session_id': person, 'goal_id': tasks[0]['id'],
+                                   'execution_id': keys[1], 'after_turn': True}
+                        for _ in range(2):
+                            code, receipt, _ = self.request('/api/session/compact?project=demo', payload)
+                            self.assertEqual(code, 200, receipt)
+                            self.assertEqual(receipt['execution_id'], keys[1])
+                            self.assertTrue(receipt['queued'])
+                        self.assertEqual(self.request(history_path)[1]['compaction'], 'queued')
+                        self.assertFalse(manager.processes[person].pending_compact)
+                        self.assertFalse(manager.processes[keys[2]].pending_compact)
+                        current = manager.processes[keys[1]]
+                        if runtime == 'codex':
+                            current.client.finish()
+                        else:
+                            current.process.emit({'type': 'result', 'is_error': False})
+                            with current.journal.condition:
+                                self.assertTrue(current.journal.condition.wait_for(
+                                    lambda: any(e['type'] == 'compact_request' for e in current.journal.events), timeout=3))
+                            current.process.emit({'type': 'system', 'subtype': 'status', 'status': 'compacting'})
+                            with current.journal.condition:
+                                self.assertTrue(current.journal.condition.wait_for(
+                                    lambda: current.journal.progress['phase'] == 'compacting', timeout=3))
+                        self.assertEqual(self.request(history_path)[1]['compaction'], 'compacting')
+                        if runtime == 'codex':
+                            self.assertEqual(sum(name == 'thread/compact/start' for name, _ in current.client.calls), 1)
+                            current.client.emit('thread/tokenUsage/updated', tokenUsage={
+                                'last': {'totalTokens': 500, 'outputTokens': 0}, 'modelContextWindow': 100000})
+                            current.client.emit('item/completed', turnId=current.client.turn_id,
+                                                item={'id': 'compact', 'type': 'contextCompaction'})
+                            current.client.finish()
+                        else:
+                            sent = [json.loads(line) for line in current.process.stdin.getvalue().splitlines()]
+                            self.assertEqual(sum(e.get('message', {}).get('content') == '/compact' for e in sent), 1)
+                            current.process.emit({'type': 'system', 'subtype': 'compact_boundary',
+                                                  'compact_metadata': {'pre_tokens': 2000, 'post_tokens': 500}})
+                            self.finish_turn(keys[1], current.process)
+                        _, history, _ = self.request(history_path)
+                        self.assertIsNone(history['compaction'])
+                        self.assertTrue(any(e['type'] == 'compact' for e in history['events']))
+                        self.assertTrue(manager.busy(person))
+                        self.assertTrue(manager.busy(keys[2]))
+
+    def test_task_context_unknown_and_stale_compact_never_touch_general_or_other_tasks(self):
+        goal = self.goal()
+        self.assertIsNone(self.task_history(goal)['context'])
+        self.assertEqual(self.processes, [])
+        _, receipt, _ = self.send_goal(goal)
+        key = receipt['execution_id']
+        self.assertIsNone(self.task_history(goal)['context'])
+        self.assertEqual(self.request('/api/chat/history?project=demo&session_id=s3&goal_id=')[0], 400)
+        other = self.goal()
+        self.assertEqual(self.request('/api/session/compact?project=demo', {
+            'session_id': 's3', 'goal_id': other['id'], 'execution_id': key, 'after_turn': True})[0], 400)
+        for extra, status in [({'goal_id': goal['id'], 'execution_id': 'old-execution'}, 409),
+                              ({'goal_id': ''}, 400), ({'execution_id': key}, 400)]:
+            code, _, _ = self.request('/api/session/compact?project=demo', {'session_id': 's3', **extra})
+            self.assertEqual(code, status)
+        self.assertFalse(self.server.service.chat.processes[key].pending_compact)
+
     def send_goal(self, goal, text='Begin', **data):
         return self.request('/api/chat/send?project=demo', {'session_id': 's3', 'goal_id': goal['id'], 'text': text, **data})
 
