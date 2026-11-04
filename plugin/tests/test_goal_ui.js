@@ -6,22 +6,15 @@ const settle=()=>new Promise(resolve=>setImmediate(resolve));
 // The reader keeps its header, status and report frame in separate parts; only the header follows later goal state.
 const readerText=reader=>[".goal-reader-head",".goal-reader-body",".goal-reader-frame"].map(part=>reader.querySelector(part).innerHTML).join("");
 const frameOf=reader=>reader.querySelector(".goal-reader-frame").querySelector("iframe");
-function assertTab(markup, action, selected) {
-  const button = markup.match(new RegExp(`<button\\b[^>]*\\bdata-goal-act="${action}"[^>]*>`))?.[0];
-  assert(button, `missing ${action} tab`);
-  assert.match(button, /\brole="tab"/);
-  assert.match(button, new RegExp(`\\baria-selected="${selected}"`));
-  assert.match(button, new RegExp(`\\btabindex="${selected ? 0 : -1}"`));
-}
 function node(){const children=new Map();return {innerHTML:"",hidden:true,dataset:{},scrollTop:0,children:[],get childNodes(){return this.children;},setAttribute(){},focus(){},append(value){value.parent=this;this.children.push(value);this.appended=value;(this.appends??=[]).push(value);},remove(){this.removed=true;if(this.parent)this.parent.children.splice(this.parent.children.indexOf(this),1);this.parent=null;},insertAdjacentHTML(position,html){assert.equal(position,"beforebegin");const item=node();item.innerHTML=html;item.parent=this.parent;this.parent.children.splice(this.parent.children.indexOf(this),0,item);},querySelectorAll(){return [];},querySelector(selector){if(selector==="iframe"&&!this.innerHTML.includes("<iframe"))return null;if(!children.has(selector))children.set(selector,node());return children.get(selector);}};}
 function harness(api,{fetch:fetcher}={}){
   const handlers={},drawer=node(),main=node(),calls=[],network=[],navigations=[];
-  const state={leaders:[{session_id:"leader",name:"验证组"}],goals:[
+  const state={members:[],leaders:[{session_id:"leader",name:"验证组"}],goals:[
     {id:"a",leader_session_id:"leader",title:"短句验证",request:"保留原始要求",status:"running",current_round:1,requirement_version:1,version:1},
     {id:"b",leader_session_id:"leader",title:"性能目标",request:"另一份要求",status:"queued",current_round:1,version:1}]};
   const sandbox={window:{},URLSearchParams,document:{activeElement:null,addEventListener(type,handler){(handlers[type]??=[]).push(handler);},getElementById:id=>id==="goal-drawer"?drawer:id==="main"?main:null,createElement:node,body:{append(){}}},
     fetch:async url=>{network.push(url);return fetcher?fetcher(url):{ok:true,text:async()=>"<h1>真实报告</h1>"};}};
-  vm.createContext(sandbox);vm.runInContext(fs.readFileSync(path.join(__dirname,"../crew/web/goal-ui.js"),"utf8"),sandbox);
+  vm.createContext(sandbox);vm.runInContext(fs.readFileSync(path.join(__dirname,"../crew/web/goal-work-ui.js"),"utf8"),sandbox);vm.runInContext(fs.readFileSync(path.join(__dirname,"../crew/web/goal-ui.js"),"utf8"),sandbox);
   const client=sandbox.window.CrewGoals.create({project:"fixture",state:()=>state,api:async(url,data)=>{calls.push({url,data});const result=api?await api(url,data):{goal:state.goals.find(item=>url.includes(`id=${item.id}`)),context:{items:[],manifest:{}},reports:[]};return url.startsWith("/api/documents?")?{documents:result.documents||[]}:result;},renderDocuments:items=>items.map(item=>`<span>${item.title}</span>`).join(""),toast(){},onChange(){},onNavigate(id){navigations.push(id);client.sync("leader",id);},onGeneral(){},refreshState:async()=>{}});
   async function click(act,extra={}){const button={disabled:false,dataset:{goalAct:act,...extra}};for(const handler of handlers.click||[])await handler({target:{closest:()=>button}});await tick();}
   async function submit(form){for(const handler of handlers.submit||[])await handler({target:form,preventDefault(){}});await tick();}
@@ -39,8 +32,8 @@ test("ordinary conversation performs no goal reads and cards preserve status, gr
 
 test("opening a goal keeps materials collapsed and same-goal person changes retain the drawer",async()=>{
   const h=harness();h.client.sync("leader","a");await tick();assert.equal(h.calls.length,1);assert.equal(h.drawer.hidden,true);
-  const main=surfaces(h);assert(main.includes("需求与验收"));assert(!main.includes("原始需求与验收标准"));assert(main.includes("暂停目标"));assert(!main.includes("goal-context-item"));
-  await h.click("drawer",{kind:"requirements"});assert(h.drawer.innerHTML.includes("原始需求与验收标准"));assert(!surfaces(h).includes("原始需求与验收标准"));await h.click("drawer",{kind:"requirements"});
+  const main=surfaces(h);assert(main.includes("需求与验收"));assert(main.includes("原始需求与验收标准"));assert(main.includes("暂停目标"));assert(!main.includes("goal-context-item"));
+  await h.click("drawer",{kind:"requirements"});assert(h.drawer.innerHTML.includes("原始需求与验收标准"));assert(surfaces(h).includes("原始需求与验收标准"));await h.click("drawer",{kind:"requirements"});
   await h.click("drawer",{kind:"context"});assert.equal(h.drawer.hidden,false);assert(h.drawer.innerHTML.includes("验证组 / 短句验证"));
   h.client.sync("leader","a");assert.equal(h.drawer.hidden,false);assert.equal(h.calls.length,1);
   assert.equal(h.client.escape(),true);assert.equal(h.drawer.hidden,true);assert.equal(h.client.escape(),false);
@@ -82,8 +75,8 @@ test("delivered tasks invite direct follow-up and a new round keeps the earlier 
   for(const status of ["completed","failed","awaiting_acceptance"]){
     h.state.goals[0].status=status;h.state.goals[0].version++;
     h.client.invalidate();const markup=surfaces(h);
-    assert(markup.includes("在当前任务继续聊"),status);
-    assert(markup.includes("已有交付记录会保留"));
+    assert(markup.includes("点亮任务小框"),status);
+    assert(markup.includes("总会话输入框"));
   }
   assert(h.calls.every(call=>call.data===undefined));
 });
@@ -118,11 +111,11 @@ test("adding a fact uses a typed human source without amending the goal requirem
 });
 
 test("selecting a goal collapses its group list while keeping the selected details available",async()=>{
-  const h=harness();h.client.sync("leader","a");await tick();await h.click("list");assert(surfaces(h).includes('class="group-goal-list"'));
-  assert.equal(h.client.showingList(),true);assert(!surfaces(h).includes('data-goal-detail="a"'));
-  assertTab(surfaces(h), "list", true);
-  await h.click("open",{goalId:"a"});const markup=surfaces(h);assert(!markup.includes('class="group-goal-list"'));assert(markup.includes('data-goal-detail="a"'));assert(markup.includes("需求与验收"));
-  await h.click("list");assert(surfaces(h).includes('class="group-goal-list"'));h.client.sync("leader","b");await tick();assert(!surfaces(h).includes('class="group-goal-list"'));
+  const h=harness();h.client.sync("leader","a");await tick();await h.click("list");assert(surfaces(h).includes('class="goal-quick-list"'));
+  assert.equal(h.client.showingList(),true);assert(!surfaces(h).includes('data-goal-tools="a"'));
+  assert(h.client.groupMarkup("leader").includes('aria-expanded="true"'));
+  await h.click("open",{goalId:"a"});const markup=surfaces(h);assert(!markup.includes('class="goal-quick-list"'));assert(markup.includes('data-goal-tools="a"'));assert(markup.includes("需求与验收"));
+  await h.click("list");assert(surfaces(h).includes('class="goal-quick-list"'));h.client.sync("leader","b");await tick();assert(!surfaces(h).includes('class="goal-quick-list"'));
 });
 
 test("goal details show structured acceptance titles, newest report and explicit reopen or resume actions",async()=>{
@@ -136,13 +129,12 @@ test("goal details show structured acceptance titles, newest report and explicit
   }
 });
 
-test("task list selection is explicit and general clears it instead of leaving two selected tabs",async()=>{
-  const h=harness();h.client.sync("leader",null);await h.click("list");let markup=surfaces(h);
-  assert(h.client.showingList());assertTab(markup, "general", false);assert(markup.includes('role="tabpanel"'));
-  await h.click("list");assert(h.client.showingList(),"clicking the selected list stays on the list");
-  await h.click("general");assert(!h.client.showingList());markup=surfaces(h);assertTab(markup, "general", true);
+test("task list opens in the side panel and the location row has no conversation tabs",async()=>{
+  const h=harness();h.client.sync("leader",null);await tick();
+  assert(h.client.groupMarkup("leader").includes('data-goal-act="list"'));assert(!h.client.groupMarkup("leader").includes('role="tab"'));
+  await h.click("list");assert.equal(h.client.showingList(),true);assert(h.client.sideMarkup("leader").includes('data-goal-id="a"'));
+  h.client.sync("leader","a");await tick();assert.equal(h.client.showingList(),false);assert(h.client.sideMarkup("leader").includes('data-goal-tools="a"'));
 });
-
 test("task actions show pending and retained failure feedback and allow a deliberate retry",async()=>{
   let reject;const h=harness(async(url,data)=>data?new Promise((_resolve,fail)=>{reject=fail;}):{goal:{...h.state.goals[0]},executions:[],reports:[],context:{items:[],manifest:{}}});
   h.client.sync("leader","a");await tick();const request=h.click("action",{action:"pause"});await tick();
@@ -160,16 +152,10 @@ test("materials show only documents supplied by the selected goal detail and nev
 const report=(id,round,extra={})=>({id,title:"短句验证",round,requirement_version:round,version:1,current:false,status:"completed",summary:`第 ${round} 轮结论`,acceptance_counts:{passed:1,failed:0,unverified:0,simulated:0},unresolved:[],created_at:"2026-10-25T10:00:00.000Z",...extra});
 const deliveryDetail=(h,id,goal,reports)=>({goal:{...h.state.goals.find(item=>item.id===id),...goal},executions:[],context:{items:[],manifest:{}},reports,documents:[]});
 
-test("task cards keep entering a task and reading its delivery as separate sibling buttons",()=>{
-  const h=harness(),list=[{...h.state.goals[0],title:"<b>短句</b>",status:"awaiting_acceptance",report_available:true},{...h.state.goals[1],report_available:false},{...h.state.goals[1],id:"c",status:"cancelled",report_available:false}];
-  const markup=h.module.cards(list,h.state.leaders,"a");
-  let depth=0;for(const [tag] of markup.matchAll(/<\/?button\b/g)){depth+=tag==="<button"?1:-1;assert(depth<=1,"a button never contains another button");}assert.equal(depth,0);
-  assert.equal(markup.match(/data-goal-act="open"/g).length,3);
-  assert.equal([...markup.matchAll(/data-goal-act="delivery" data-goal-id="([^"]+)"/g)].map(match=>match[1]).join(","),"a","only a goal with a report offers the delivery button");
-  assert(markup.includes("&lt;b&gt;短句"));assert(!markup.includes("<b>短句"));assert(markup.includes('aria-pressed="true"'));
-  for(const text of ["待验收","待规划","已取消","验证组","进入任务 →","查看交付报告","交付报告待齐全","保留原始要求"])assert(markup.includes(text),text);
+test("compact task rows show state, title, progress and owner and open their task",()=>{
+  const h=harness(),markup=h.module.cards([{...h.state.goals[0],title:"<b>短句</b>",work_summary:{total:3,done:1}}],h.state.leaders,"a");
+  assert(markup.includes('class="goal-row"'));assert(markup.includes('data-goal-act="open"'));assert(markup.includes('aria-pressed="true"'));assert(markup.includes('max="3" value="1"'));assert(markup.includes("&lt;b&gt;短句"));assert(markup.includes("验证组"));assert(markup.includes("推进中"));assert(!markup.includes('goal-card'));
 });
-
 test("opening a task shows this round's AI conclusion compactly and reads no report HTML",async()=>{
   const long="第一行结论：短句换人已在同一录音上复测。\n<script>alert(1)</script>"+"补充说明".repeat(40);
   const h=harness(async()=>deliveryDetail(h,"a",{status:"awaiting_acceptance",current_round:2,requirement_version:2},[report("r2",2,{current:true,status:"awaiting_acceptance",summary:long,acceptance_counts:{passed:1,failed:1,unverified:2,simulated:0},unresolved:["混说 <i>仍误判</i>"]}),report("r1",1,{summary:"旧轮次结论"})]));
@@ -233,7 +219,7 @@ test("one delivery click from the list opens the selected goal's current report 
   assert(!readerText(reader).includes("暂无新交付"));assert(frameOf(reader).srcdoc.includes("default-src 'none'"));assert(frameOf(reader).srcdoc.includes("真实报告"));
   assert(h.calls.every(call=>call.data===undefined),"reading never sends, starts or wakes");assert.equal(h.drawer.hidden,true);
   await h.click("close-report");assert.equal(reader.removed,true);assert.equal(h.drawer.hidden,true);assert.equal(h.client.escape(),false);
-  assert(surfaces(h).includes('data-goal-detail="a"'),"returns to the task, not the list");assert.equal(h.network.length,1);assert.equal(h.calls.length,1);
+  assert(surfaces(h).includes('data-goal-tools="a"'),"returns to the task, not the list");assert.equal(h.network.length,1);assert.equal(h.calls.length,1);
 });
 
 test("delivery for a reopened goal opens the newest historical report labelled by round, never as this round's completion",async()=>{
@@ -313,7 +299,7 @@ test("an open report follows the latest goal state without rewriting its frame, 
   assert(head().includes("历史报告"));assert(head().includes("已有更新版本"));unchanged("a new round report arrived");
   assert(h.calls.every(call=>call.data===undefined&&call.url==="/api/goal?id=a"),"only read-only detail refreshes");
 
-  await h.click("close-report");assert.equal(reader.removed,true);assert.equal(rebuilt.inert,false,"closing restores the task area");assert(surfaces(h).includes('data-goal-detail="a"'));
+  await h.click("close-report");assert.equal(reader.removed,true);assert.equal(rebuilt.inert,false,"closing restores the task area");assert(surfaces(h).includes('data-goal-tools="a"'));
 });
 
 test("a manually opened earlier draft of this round is labelled as superseded, while viewing delivery reads the newest draft",async()=>{
@@ -336,7 +322,7 @@ test("direct and manual readers return the same way after a background update, a
     await source.update({requirement_version:2},[report("r1",1,{requirement_version:1})]);h.client.replaceMain('<div id="chat-head"></div>');const rebuilt=h.main.children[0];
     assert(readerText(reader).includes("需求已更新到 v2，尚无新交付"),mode);assert.equal(frameOf(reader),frame,mode);assert.equal(rebuilt.inert,true,mode);
     assert(h.client.escape(),mode);assert.equal(reader.removed,true,mode);assert.equal(rebuilt.inert,false,mode);
-    if(mode==="direct"){assert.equal(h.drawer.hidden,true);assert(surfaces(h).includes('data-goal-detail="a"'));}
+    if(mode==="direct"){assert.equal(h.drawer.hidden,true);assert(surfaces(h).includes('data-goal-tools="a"'));}
     else{assert.equal(h.drawer.hidden,false);assert(h.drawer.querySelector("iframe").srcdoc.includes("真实报告"),"the materials preview is still there");}
     if(mode==="drawer")await h.click("expand-report");else await h.click("delivery",{goalId:"a"});await settle();
     const again=h.main.appended;assert.notEqual(again,reader);assert.equal(rebuilt.inert,true,mode);
@@ -345,10 +331,10 @@ test("direct and manual readers return the same way after a background update, a
   }
 });
 
-test("task conversation keeps a single compact heading while controls and delivery remain in the side inspector",async()=>{
+test("the location row keeps its task controls and the side panel contains requirements, progress and delivery",async()=>{
   const h=harness();h.client.sync("leader","a");await tick();
   const heading=h.client.groupMarkup("leader"),side=h.client.sideMarkup("leader");
-  assert(heading.includes("短句验证"));assert(heading.includes("推进中"));assert(heading.includes('data-goal-act="general"'));assert(heading.includes('data-goal-act="list"'));
+  assert(!heading.includes("短句验证"));assert(!heading.includes('data-goal-act="general"'));assert(heading.includes('data-goal-act="list"'));assert(heading.includes('data-goal-act="mode"'));
   for(const text of ["暂停目标","需求与验收","交付与文档","goal-materials","goal-actions"]){assert(!heading.includes(text),text);assert(side.includes(text),text);}
-  h.client.sync("leader",null);const list=h.client.sideMarkup("leader");assert(list.includes('data-goal-id="a"'));assert(list.includes('data-goal-id="b"'));assert(list.includes("查看完整清单"));
+  assert(side.indexOf('task-requirements')<side.indexOf('task-progress'));assert(side.indexOf('task-progress')<side.indexOf('task-delivery'));assert(!side.includes('<textarea'));
 });

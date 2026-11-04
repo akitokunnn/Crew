@@ -11,7 +11,7 @@ function harness(snapshot){
   const source=fs.readFileSync(path.join(__dirname,"../crew/web/app.js"),"utf8").replace(/\r\n/g,"\n");
   vm.runInContext(source.replace("  setup();\n})();",`replace=(node,html)=>{node.innerHTML=html;};
     window.ui={render(snapshot,tab){state=snapshot;allTab=tab;renderAll();return document.getElementById("main").innerHTML;},
-      sidebar(snapshot){state=snapshot;view="chat";leaderId=snapshot.leaders[0].session_id;return sidebarLeader(snapshot.leaders[0]);},
+      sidebar(snapshot){state=snapshot;view="chat";leaderId=snapshot.leaders[0].session_id;return sidebarLeader(snapshot.leaders[0],0);},
       node(snapshot){state=snapshot;return leaderNode(snapshot.leaders[0],true);}};
     })();`),sandbox);
   return {render:(tab="tree",next=snapshot)=>sandbox.window.ui.render(next,tab),
@@ -82,7 +82,7 @@ test("a silent or waiting leader shows its working members in the sidebar and ar
       assert(!html.includes("本组 2 人在干活"));assert(!html.includes("本人在干活"));
       assert(html.includes('class="b-pending"'));
     }
-    assert(sidebar.includes('aria-current="page"'));assert(sidebar.includes("leader-priority"));assert(sidebar.includes('class="b-unread"'));
+    assert(sidebar.includes('aria-current="page"'));assert(sidebar.includes('class="leader-row'));assert(!sidebar.includes('class="b-unread"'));
     const withoutPending=structuredClone(snapshot);withoutPending.leaders[0].pending=0;
     assert(h.node(withoutPending).includes(`class="st ${status}"`));
     assert.equal(JSON.stringify(snapshot),original);

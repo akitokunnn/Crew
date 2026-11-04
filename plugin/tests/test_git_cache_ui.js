@@ -24,6 +24,11 @@ test("returning to the same workspace shows its snapshot immediately without ano
   h.ui.unmount();h.host.innerHTML="聊天";h.read(()=>new Promise(()=>{}));h.mount();
   assert(h.host.innerHTML.includes("仓库快照"));assert.equal(h.calls.length,1);assert.equal(h.timers.size,0);h.ui.unmount();
 });
+test("Git attention uses only an already read snapshot and counts open pull requests",async()=>{
+  const h=harness(),value=enabled();value.github={pull_requests:[{state:"OPEN"},{state:"MERGED"},{state:"OPEN"}],runs:[]};
+  assert.equal(h.ui.pendingPullRequests,null);assert.equal(h.calls.length,0);h.read(async()=>value);h.mount();await tick();
+  assert.equal(h.ui.pendingPullRequests,2);assert.equal(h.calls.length,1);h.ui.unmount();assert.equal(h.ui.pendingPullRequests,2);assert.equal(h.calls.length,1);
+});
 test("a scan started before leaving remains shared and fills the cache without overwriting chat",async()=>{
   const h=harness();let resolve;h.read(()=>new Promise(done=>{resolve=done;}));h.mount();await tick();h.ui.unmount();h.host.innerHTML="聊天和草稿";
   resolve(snapshot("后台完成的读取"));await tick();assert.equal(h.host.innerHTML,"聊天和草稿");h.mount();
@@ -39,13 +44,11 @@ test("manual refresh keeps the last snapshot visible on failure and remains read
   reject(Error("fixture scan failed"));await tick();assert(h.host.innerHTML.includes("第一次读取"));assert(h.host.innerHTML.includes("fixture scan failed"));assert(h.host.innerHTML.includes("读取于"));
   h.read(async()=>enabled([commit("b","更新后的结果",[],["main"])]));h.click("refresh");await tick();assert(h.host.innerHTML.includes("更新后的结果"));assert(!h.host.innerHTML.includes("fixture scan failed"));assert(h.calls.every(call=>call.body===undefined));h.ui.unmount();
 });
-test("paging, selected view, branch and scroll survive leaving while more history is loading",async()=>{
-  const h=harness();h.read(async()=>enabled([commit("a","第一页",["b"],["main"])],80));h.mount();await tick();let resolve;
-  h.read(()=>new Promise(done=>{resolve=done;}));h.click("load-more");await tick();h.click("branch","main");h.click("tab","branches");h.scroll.scrollTop=260;h.ui.unmount();h.host.innerHTML="聊天";h.scroll.scrollTop=0;
-  resolve(enabled([commit("b","第二页")],null));await tick();h.mount();assert.equal(h.calls.length,2);assert(h.host.innerHTML.includes('id="git-branches-tab" aria-controls="git-panel" aria-selected="true"'));assert.equal(h.scroll.scrollTop,260);
-  h.click("tab","graph");assert(h.host.innerHTML.includes("第二页"));assert(h.host.innerHTML.includes('data-git-branch="main" aria-pressed="true"'));h.ui.unmount();
-});
-test("configuration saved while Git is unmounted invalidates without starting a scan",async()=>{
+test("the branch list preserves its scroll when leaving during a refresh and the removed graph has no entry",async()=>{
+  const h=harness();h.read(async()=>enabled());h.mount();await tick();let resolve;
+  h.read(()=>new Promise(done=>{resolve=done;}));h.click("refresh");await tick();h.scroll.scrollTop=260;h.ui.unmount();h.host.innerHTML="聊天";h.scroll.scrollTop=0;
+  resolve(enabled());await tick();h.mount();assert.equal(h.calls.length,2);assert.equal(h.scroll.scrollTop,260);assert(h.host.innerHTML.includes('aria-label="分支"'));assert(!h.host.innerHTML.includes('git-graph'));assert(!h.host.innerHTML.includes('data-git-tab'));h.ui.unmount();
+});test("configuration saved while Git is unmounted invalidates without starting a scan",async()=>{
   const h=harness();h.mount();await tick();h.ui.unmount();h.host.innerHTML="聊天";h.ui.reload("demo");assert.equal(h.calls.length,1);assert.equal(h.host.innerHTML,"聊天");
   h.read(async()=>snapshot("新配置"));h.mount();await tick();assert.equal(h.calls.length,2);assert(h.host.innerHTML.includes("新配置"));h.ui.unmount();
 });

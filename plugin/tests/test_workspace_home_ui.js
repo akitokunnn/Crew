@@ -6,7 +6,7 @@ const window = {};
 vm.runInNewContext(fs.readFileSync(path.join(__dirname,"../crew/web/workspace-home.js"),"utf8"), {window});
 const ui = window.CrewWorkspaceHome;
 const data = patch => ({name:"健身打卡",leaders:[],members:[],goals:[],todos:[],decisions:[],...patch});
-const render = snapshot => ui.render(snapshot, {taskCards: items => items.map(item=>`task:${item.id}`).join(";"),todoCards:items=>items.map(item=>`todo:${item.id}`).join(";")});
+const render = snapshot => ui.render(snapshot, {decisionCards:items=>items.map(item=>`decision:${item.id}`).join(";"),taskCards: items => items.map(item=>`task:${item.id}`).join(";"),todoCards:items=>items.map(item=>`todo:${item.id}`).join(";")});
 
 test("overview keeps task states and human TODO separate, without inferring work from processes", () => {
   const input = data({leaders:[{session_id:"L",status:"idle",running:true},{session_id:"discussion",status:"working"}],
@@ -27,11 +27,11 @@ test("empty workspace invites a discussion, without automatically launching or c
   assert.doesNotMatch(html,/data-goal-act="start"|undefined|NaN/);
 });
 
-test("decisions lead to their original conversation and untrusted text is escaped", () => {
+test("merged decisions retain their type and escape the workspace name and question", () => {
   const html=render(data({name:'<img src=x onerror=alert(1)>',leaders:[{session_id:'leader"',name:"L",status:"idle"}],
-    decisions:[{title:"<script>bad</script>",leader_session_id:'leader"'}]}));
-  assert.match(html,/data-act="leader" data-id="leader&quot;"/);
-  assert.match(html,/&lt;script&gt;bad&lt;\/script&gt;/);assert.doesNotMatch(html,/<script>|<img/);
+    decisions:[{id:1,question:"<script>bad</script>",leader_session_id:'leader"'}]}));
+  assert.match(html,/data-kind="decision"/);
+  assert.match(html,/&lt;img/);assert.match(html,/&lt;script&gt;bad&lt;\/script&gt;/);assert.doesNotMatch(html,/<img|<script>/);
   assert.doesNotMatch(html,/data-act="answer"/);
 });
 
@@ -41,7 +41,7 @@ test("awaiting acceptance leads the home with report gist and hands-on steps", (
     {id:"fit",title:"打卡 App",leader_session_id:"L",status:"awaiting_acceptance",report_available:true,
      acceptance_brief:{report_id:7,summary:"可以打卡了",user_test:steps}},
     {id:"old",title:"旧任务",leader_session_id:"L",status:"completed",report_available:true}]}));
-  assert.ok(html.indexOf('class="wh-reviews"')<html.indexOf('class="wh-columns"'));
+  assert.ok(html.indexOf('class="wh-reviews"')<html.indexOf('class="wh-attention"'));assert.ok(html.indexOf('class="wh-reviews"')>html.indexOf('class="wh-primary"'));
   assert.match(html,/待你验收/);assert.match(html,/可以打卡了/);assert.match(html,/打卡落地/);
   assert.match(html,/&lt;b&gt;步骤1&lt;\/b&gt;/);assert.doesNotMatch(html,/<b>步骤/);
   assert.match(html,/预期：看到4/);assert.doesNotMatch(html,/看到5/);assert.match(html,/还有 1 步/);

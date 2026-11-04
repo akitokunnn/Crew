@@ -1,134 +1,78 @@
-/* Real Chromium + real HTTP/SQLite, with only AI carriers replaced by the isolated fixture. */
+/* Real Chrome and disposable HTTP/SQLite fixture; all AI carriers are fake. */
 const {chromium}=require('playwright');
-const {spawn,execFileSync}=require('node:child_process');
+const {spawn}=require('node:child_process');
 const fs=require('node:fs/promises'),path=require('node:path'),assert=require('node:assert/strict');
-const root=path.resolve(__dirname,'../..'),old=process.argv.includes('--old-ui'),missingDialog=process.argv.includes('--missing-dialog-css');
-const out=path.join(root,'Temp/v2-ui-review',old?'old-ui':missingDialog?'missing-dialog-css':'current');
-const evidence={oldUI:old,checks:[],failures:[],consoleErrors:[],screenshots:[]};
-let fixture,browser;
+const root=path.resolve(__dirname,'../..'),out=path.join(root,'Temp/ui-align');
+const evidence={checks:[],errors:[],screenshots:[]};let fixture,browser,page;
+async function shot(name){await page.locator('#toast-root .toast').waitFor({state:'detached',timeout:7000});await page.waitForTimeout(400);await page.screenshot({path:path.join(out,name+'.png'),fullPage:true});evidence.screenshots.push(name+'.png');}
 async function main(){
   await fs.mkdir(out,{recursive:true});
-  const env={...process.env,PYTHONIOENCODING:'utf-8',CREW_UI_REVIEW_FIXTURE:'1'};for(const k of ['CREW_SESSION_ID','CLAUDE_CODE_SESSION_ID','CREW_EXECUTION_ID','CREW_GOAL_ID'])delete env[k];
+  const env={...process.env,PYTHONIOENCODING:'utf-8',CREW_UI_REVIEW_FIXTURE:'1'};
+  for(const key of ['CREW_SESSION_ID','CLAUDE_CODE_SESSION_ID','CREW_EXECUTION_ID','CREW_GOAL_ID'])delete env[key];
   fixture=spawn('python',['-u',path.join(__dirname,'conversation_routing_fixture.py')],{cwd:path.join(root,'plugin'),env,windowsHide:true,stdio:['pipe','pipe','pipe']});
-  let buffer='',info;fixture.stderr.on('data',d=>process.stderr.write(d));
-  fixture.stdout.on('data',d=>{buffer+=d;let n;while((n=buffer.indexOf('\n'))>=0){try{const v=JSON.parse(buffer.slice(0,n));if(v.url)info=v;}catch{}buffer=buffer.slice(n+1);}});
-  const deadline=Date.now()+20000;while(!info&&Date.now()<deadline)await new Promise(r=>setTimeout(r,50));assert(info,'fixture bootstrap');evidence.fixture=info;
-  browser=await chromium.launch({headless:true,channel:'chrome'});const page=await browser.newPage({viewport:{width:1440,height:1000},colorScheme:'light'});
-  page.on('pageerror',error=>evidence.consoleErrors.push(error.stack||String(error)));page.on('console',msg=>{if(msg.type()==='error')evidence.consoleErrors.push(msg.text());});
-  if(old){for(const name of ['app.js','chat.js','style.css','goal-ui.js','goal-ui.css','right-panels.css','index.html','leader-trust-ui.js','leader-trust-ui.css']){
-    const body=execFileSync('git',['show',`a31ca95:plugin/crew/web/${name}`],{cwd:root,encoding:'utf8'});
-    await page.route(name==='index.html'?'**/?project=demo*':`**/${name}`,route=>route.fulfill({status:200,contentType:name.endsWith('.css')?'text/css':name.endsWith('.js')?'text/javascript':'text/html',body}));
-  }}
-  if(missingDialog){const css=await fs.readFile(path.join(root,'plugin/crew/web/style.css'),'utf8');await page.route('**/style.css',route=>route.fulfill({status:200,contentType:'text/css',body:css.split('\n').filter(line=>!line.startsWith('.session-config-')&&!line.startsWith('@media(max-width:760px){.session-config-backdrop')).join('\n')}));}
-  async function capture(name){await page.screenshot({path:path.join(out,name+'.png'),fullPage:true,animations:'disabled'});evidence.screenshots.push(name+'.png');}
-  async function check(label,test){const pass=await test();evidence.checks.push({label,pass});if(!pass)evidence.failures.push(label);}
-  async function dialogFits(selector){return page.locator(selector).evaluate(form=>{const box=form.getBoundingClientRect();return getComputedStyle(form.parentElement).position==='fixed'&&box.top>=0&&box.bottom<=innerHeight&&box.left>=0&&box.right<=innerWidth;});}
-  await page.goto(info.url+'/?project=demo#leader='+info.leader);await page.locator('#goal-chat-hint').filter({hasText:'2 个任务'}).waitFor();await capture('01-general');
-  await check('General conversation has no task-materials or trust shortcut',async()=>await page.locator('#chat-head [data-act="task-panel"],#chat-head [data-act="leader-trust"]').count()===0);
-  await page.locator('#chat-head [data-act="right-open"]').click();await page.locator('#right-panel .node').first().waitFor();await capture('02-architecture');
-  await check('Architecture has no comment affordance',async()=>await page.locator('#right-panel [data-act="comments"]').count()===0);
-  await check('Relationship cards bound active dispatches and do not accumulate historical uncertainty',async()=>await page.locator('#right-panel .cx.codex-status-running').count()===2&&await page.locator('#right-panel .codex-status-unknown').count()===0&&await page.locator('#right-panel .cx-summary').count()===1);
-  await check('Long dispatch descriptions remain one-line readable titles',()=>page.locator('#right-panel .cx .n').evaluateAll(nodes=>nodes.every(node=>node.textContent.length<=48&&node.getBoundingClientRect().height<30)));
-  await page.locator('#chat-head [data-act="attention"]').click();await page.locator('#side-attention-section').waitFor();await page.waitForTimeout(450);await capture('03-pending-and-architecture');
-  await check('Pending card does not clip a large shadow into a rectangle',()=>page.evaluate(()=>{const p=document.querySelector('#side-attention-section'),slot=document.querySelector('#attention-slot');return getComputedStyle(p).boxShadow==='none'||getComputedStyle(slot).overflow==='visible';}));
-  await check('Pending and architecture fit without overlap',()=>page.evaluate(()=>{const a=document.querySelector('#side-attention-section').getBoundingClientRect(),b=document.querySelector('#right-panel').getBoundingClientRect();return a.top>=0&&a.right<=innerWidth&&b.top>=a.bottom&&b.bottom<=innerHeight;}));
-  await page.locator('#chat-head [data-act="attention"]').click();await page.locator('#chat-head [data-act="right-open"]').click();
-  await page.locator('#chat-host textarea').fill('总会话草稿');await page.locator('#goal-head [data-goal-act="list"]').click();await capture('04-task-list');
-  await page.locator(`#goal-head [data-goal-act="open"][data-goal-id="${info.goals[0]}"]`).click();await page.locator('#chat-host textarea').waitFor();await page.locator('#chat-host textarea').fill('任务草稿');await capture('05-task');
-  await check('Task keeps its list navigation alongside general conversation',async()=>await page.locator('#goal-head .goal-view-tabs [role="tab"]').count()===2&&await page.locator('#goal-head [data-goal-act="list"]').getAttribute('aria-label')==='返回任务清单');
-  await page.locator('#chat-head [data-act="task-panel"]').click();await page.locator('[data-goal-tools]').waitFor();await capture('06-task-materials');
-  await check('Task materials retain real evidence and a complete report path',async()=>await page.locator('[data-goal-tools]').getByText('尚未证明效果达标',{exact:false}).count()>0&&await page.locator('[data-goal-tools] [data-goal-act="delivery"]').count()>0);
-  await page.locator('[data-goal-tools] [data-goal-act="delivery"]').click();await page.locator('.goal-reader-frame iframe').waitFor();await capture('07-report');
-  const report=page.frameLocator('.goal-reader-frame iframe');
-  await check('Evidence appendix is collapsed and the authored report stays primary',async()=>await report.locator('.crew-evidence').getAttribute('open')===null);
-  await report.locator('.crew-evidence>summary').click();await capture('07a-verification');
-  await check('Verification retains unverified evidence without repeating the delivery narrative',async()=>await report.locator('.crew-evidence-body').getByText('未验证',{exact:true}).count()>0&&await report.locator('.crew-evidence-body h1').count()===0);
-  await report.locator('.verification-item>summary').first().click();await check('Expanding a criterion exposes its original evidence reference',async()=>await report.locator('.crew-evidence-body').getByText('Measurement：sample.json',{exact:true}).isVisible());await capture('07b-evidence-reference');
-  await page.locator('[data-goal-act="close-report"]').click();await page.locator('#side-task-section [data-act="side-section-close"]').click();
-  await page.locator('#goal-head [data-goal-act="list"]').click();await page.locator(`#goal-head [data-goal-act="open"][data-goal-id="${info.goals[0]}"]`).click();
-  await check('Returning through the list preserves the task draft',async()=>await page.locator('#chat-host textarea').inputValue()==='任务草稿');
-  await page.locator('#goal-head [data-goal-act="general"]').click();await check('General draft remains independent',async()=>await page.locator('#chat-host textarea').inputValue()==='总会话草稿');await capture('08-general-return');
-  await page.locator('#chat-head [data-act="session-menu"]').click();await capture('09-session-menu');
-  await check('Session menu has no removed comments or group trust entry',async()=>await page.locator('#menu [data-act="comments"],#menu [data-act^="leader-trust"]').count()===0);
-  if(await page.locator('#menu [data-act="dispatch-history"]').count()){
-    await page.locator('#menu [data-act="dispatch-history"]').click();
-    await check('Unknown dispatch outcomes remain available in history',async()=>await page.locator('.dispatch-history .codex-status-unknown').count()>0);
-    await capture('09a-dispatch-history');await page.keyboard.press('Escape');
-  }
-  await page.keyboard.press('Escape');await page.setViewportSize({width:900,height:800});await page.locator('#chat-head [data-act="attention"]').click();await page.waitForTimeout(450);await capture('10-narrow-pending');
-  await check('Narrow pending remains in viewport and composer stays reachable',()=>page.evaluate(()=>{const r=document.querySelector('#side-attention-section').getBoundingClientRect();return r.right<=innerWidth&&r.bottom<=innerHeight&&!document.querySelector('#chat-host textarea').disabled;}));
-  await page.locator('#chat-head [data-act="attention"]').click();await page.setViewportSize({width:1440,height:1000});
-  await page.locator('#chat-head [data-act="session-menu"]').click();
-  await check('Independent active tasks do not disable general compaction',async()=>await page.locator('#menu [data-act="compact"]').isEnabled());
-  if(await page.locator('#menu [data-act="compact"]').isEnabled()){
-    await page.locator('#menu [data-act="compact"]').click();await capture('11-general-compact-confirm');
-    const sent=page.waitForResponse(r=>r.url().includes('/api/session/compact')&&r.request().method()==='POST');
-    await page.locator('[data-act="compact-confirm"]').click();const response=await sent;
-    evidence.generalCompact={request:response.request().postDataJSON(),status:response.status(),response:await response.json()};
-    await check('General compaction reaches only the selected general conversation',async()=>response.ok()&&evidence.generalCompact.request.session_id===info.leader&&!evidence.generalCompact.request.goal_id);
-    fixture.stdin.write('compact-finish:general\n');await page.locator('.context-divider').filter({hasText:'上下文已压缩'}).waitFor();await capture('12-general-compact-complete');
-    await page.locator('#goal-head [data-goal-act="list"]').click();await page.locator(`#goal-head [data-goal-act="open"][data-goal-id="${info.goals[0]}"]`).click();
-    await page.locator('#chat-head [data-act="session-menu"]').click();await page.locator('#menu [data-act="compact"]').click();await capture('13-task-compact-confirm');
-    const scoped=page.waitForResponse(r=>r.url().includes('/api/session/compact')&&r.request().method()==='POST');await page.locator('[data-act="compact-confirm"]').click();const taskResponse=await scoped;
-    evidence.taskCompact={request:taskResponse.request().postDataJSON(),status:taskResponse.status(),response:await taskResponse.json()};
-    await check('Task compaction sends a goal scope and queues behind its active reply',async()=>taskResponse.ok()&&evidence.taskCompact.request.goal_id===info.goals[0]&&evidence.taskCompact.response.queued===true);
-    fixture.stdin.write('compact-finish:'+info.goals[0]+'\n');await page.locator('.context-divider').filter({hasText:'上下文已压缩'}).waitFor();
-    await page.waitForFunction(()=>!document.querySelector('#chat-head .task-context .context-ring:is(.is-queued,.is-compacting)'));await capture('14-task-compact-complete');
-    await check('Task compaction finishes without losing the draft',async()=>await page.locator('#chat-host textarea').inputValue()==='任务草稿');
-    await check('Missing post-compaction token counts remain unknown rather than becoming zero',async()=>await page.locator('.context-divider').filter({hasText:'上下文已压缩'}).innerText()==='上下文已压缩：5.0 万 → 未知');
-  }
-  await page.goto(info.url+'/?project=demo#leader='+info.delivered.leader+'&goal='+info.delivered.goal_id);
-  await page.locator('#goal-head .goal-status[data-status="completed"]').waitFor();
-  const before=await (await page.request.get(info.url+'/api/goal?project=demo&id='+info.delivered.goal_id)).json();
-  await capture('15-delivered-task');await page.locator('#chat-host textarea').fill('请解释一下测量结果，不用修改。');
-  const discussionHistory=page.waitForResponse(async response=>{
-    const url=new URL(response.url());
-    if(url.pathname!=='/api/chat/history'||url.searchParams.get('goal_id')!==info.delivered.goal_id||!response.ok())return false;
-    const history=await response.json();return history.response_mode==='discussion'&&history.busy;
-  });
-  const followup=page.waitForResponse(r=>r.url().includes('/api/chat/send')&&r.request().method()==='POST');
-  await page.locator('#chat-host .send').click();const followed=await followup;assert(followed.ok());const reply=await followed.json();
-  const responding=await (await discussionHistory).json();
-  evidence.replyHistory={execution_id:responding.execution_id,response_mode:responding.response_mode,busy:responding.busy};
-  assert.equal(responding.execution_id,reply.execution_id);
-  // Sending has ended before the replacement history and animation frame settle.
-  // Wait for the actual new-execution UI; the original assertion still fails on the old UI.
-  try{await page.waitForFunction(()=>document.querySelector('#chat-host .chat-activity')?.textContent==='回复中',null,{timeout:5000});}
-  catch(error){if(error.name!=='TimeoutError')throw error;}
-  evidence.replyActivity=await page.locator('#chat-host .chat-activity').innerText();
-  await check('A delivered-task explanation shows replying activity',async()=>await page.locator('#chat-host .chat-activity').innerText()==='回复中');
-  const after=await (await page.request.get(info.url+'/api/goal?project=demo&id='+info.delivered.goal_id)).json();
-  await check('An explanation preserves the completed task and its acceptance',async()=>await page.locator('#goal-head .goal-status[data-status="completed"]').count()===1&&before.goal.status===after.goal.status&&before.goal.version===after.goal.version&&JSON.stringify(before.acceptance_review)===JSON.stringify(after.acceptance_review));
-  await capture('16-delivered-task-replying');
-  const changeText='把结论改成更易懂的中文。';await page.locator('#chat-host textarea').fill(changeText);
-  const changeSent=page.waitForResponse(r=>r.url().includes('/api/chat/send')&&r.request().method()==='POST');await page.locator('#chat-host .send').click();assert((await changeSent).ok());
-  const amendment=await page.request.post(info.url+'/api/goals/agent?project=demo',{headers:{'X-Crew':'1'},data:{actor_session_id:info.delivered.leader,execution_id:reply.execution_id,action:'amend',data:{goal_id:info.delivered.goal_id,text:changeText,expected_version:after.goal.version}}});assert(amendment.ok(),await amendment.text());
-  await page.locator('#goal-head .goal-status[data-status="running"]').waitFor();
-  await page.waitForFunction(()=>document.querySelector('#chat-host .chat-activity')?.textContent==='等模型回应');
-  const changed=await amendment.json(),history=await (await page.request.get(info.url+'/api/chat/history?project=demo&session_id='+info.delivered.leader+'&goal_id='+info.delivered.goal_id)).json();
-  await check('Explicit amendment updates the same task execution from discussion to work',async()=>history.execution_id===reply.execution_id&&history.response_mode==='work'&&changed.current_round===before.goal.current_round);
-  await capture('17-task-amendment');
-  await page.locator('#chat-head [data-act="task-panel"]').click();await page.locator('[data-goal-tools] [data-action="cancel"]').click();await capture('18-cancel-confirm');
-  const cancelLayout=await page.locator('[data-goal-confirm="cancel"]').evaluate(form=>{const box=form.getBoundingClientRect();return {position:getComputedStyle(form.parentElement).position,left:box.left,top:box.top,right:box.right,bottom:box.bottom,width:innerWidth,height:innerHeight};});evidence.cancelLayout=cancelLayout;
-  const cancellation=page.waitForResponse(r=>r.url().includes('/api/goals/action')&&r.request().method()==='POST');
-  await page.locator('[data-goal-confirm="cancel"] [type="submit"]').click();assert((await cancellation).ok());
-  fixture.stdin.write('finish-task:'+info.delivered.goal_id+'\n');await page.locator('#goal-head .goal-status[data-status="cancelled"]').waitFor();
-  await page.locator('[data-goal-confirm="cancel"]').waitFor({state:'detached'});
-  const cancelledHint=await page.locator('#chat-host .readonly-note').innerText();evidence.cancelledHint=cancelledHint;
-  if(await page.locator('#side-task-section [data-act="side-section-close"]').isVisible())await page.locator('#side-task-section [data-act="side-section-close"]').click();
-  await capture('19-cancelled-task');await page.locator('#goal-head [data-goal-act="general"]').click();await page.locator('#chat-host textarea').waitFor();
-  await check('Cancellation dialog fits the viewport and returns to general conversation',async()=>cancelLayout.position==='fixed'&&cancelLayout.top>=0&&cancelLayout.bottom<=cancelLayout.height&&cancelLayout.left>=0&&cancelLayout.right<=cancelLayout.width&&cancelledHint==='此任务已取消，仅供查阅。可返回总会话讨论后续安排。'&&await page.locator('#chat-host textarea').isEnabled());
-  await capture('20-cancelled-return-general');
-  await page.locator('#goal-head [data-goal-act="create"]').click();await page.locator('[data-goal-create]').waitFor();await capture('21-goal-create-dialog');
-  const goalFormFits=await dialogFits('[data-goal-create]');await page.locator('[data-goal-create] [data-goal-act="close-create"]').first().click();
-  await check('Goal creation dialog fits the viewport and closing restores the composer',async()=>goalFormFits&&await page.locator('#chat-host textarea').isEnabled());
-  await page.goto(info.url+'/?project=demo#leader='+info.leader);await page.locator('#chat-head [data-act="right-open"]').click();
-  await page.locator('#right-panel [data-act="member-add-menu"]').click();await page.locator('#menu [data-act="member-create"]').click();await page.locator('.member-dialog').waitFor();await capture('22-member-create-dialog');
-  const memberFormFits=await dialogFits('.member-dialog');await page.locator('.member-dialog [data-member-action="close"]').first().click();
-  await check('Member creation dialog fits the viewport and closing restores the composer',async()=>memberFormFits&&await page.locator('#chat-host textarea').isEnabled());
-  await page.locator('#right-panel [data-act="card"]').first().click();await page.locator('#card .card-head').click({button:'right'});await page.locator('#menu [data-act="runtime-switch"]').click();await page.locator('.runtime-switch-dialog').waitFor();await capture('23-runtime-switch-dialog');
-  const runtimeFormFits=await dialogFits('.runtime-switch-dialog');await page.locator('.runtime-switch-dialog [data-rs-act="close"]').first().click();await page.locator('#card [data-act="card-close"]').click();
-  await check('Runtime switch dialog fits the viewport and closing restores the composer',async()=>runtimeFormFits&&await page.locator('#chat-host textarea').isEnabled());
-  assert.equal(evidence.consoleErrors.length,0,JSON.stringify(evidence.consoleErrors));assert.equal(evidence.failures.length,0,evidence.failures.join('\n'));
+  let buffer='',info;
+  fixture.stdout.on('data',value=>{buffer+=value;let cut;while((cut=buffer.indexOf('\n'))>=0){const item=JSON.parse(buffer.slice(0,cut));if(item.url)info=item;buffer=buffer.slice(cut+1);}});
+  fixture.stderr.on('data',value=>process.stderr.write(value));
+  const deadline=Date.now()+20000;while(!info&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,50));assert(info,'fixture starts');
+  evidence.fixture=info;
+  browser=await chromium.launch({headless:true,channel:'chrome'});page=await browser.newPage({viewport:{width:1440,height:1000},colorScheme:'light'});
+  page.on('pageerror',error=>evidence.errors.push(error.stack));page.on('console',message=>{if(message.type()==='error')evidence.errors.push(message.text());});
+  await page.goto(info.url+'/?project=demo');await page.locator('.wh-head').waitFor();await shot('01-home');
+  assert.equal(await page.locator('.wh-attention-list [data-kind=decision] .wh-kind').innerText(),'拍板');assert.equal(await page.locator('.wh-attention-list [data-kind=todo] .wh-kind').innerText(),'TODO');assert(await page.locator('.wh-attention-list [data-act=todo-action][data-status=done]').isVisible());
+  assert.equal(await page.locator('.wh-reviews [data-act=goal-review]').count(),1);assert.equal(await page.locator('.wh-work [data-id=ui-git-admin]').count(),0);assert.equal(await page.locator('.wh-work .goal-card').count(),0);evidence.checks.push('home keeps acceptance first, combines decision and TODO actions and uses compact task rows');
+  await page.locator('#leader-entry').click();await page.locator('#leader-flyout[data-open=true]').waitFor();await shot('02-leaders');
+  assert.equal(await page.locator('#leader-flyout [data-id=ui-git-admin]').count(),0);assert.equal(await page.locator('#leader-flyout [data-id=s3] .b-pending').innerText(),'1');assert.equal(await page.locator('#leader-entry .rail-badge').innerText(),'2');evidence.checks.push('leader attention includes acceptance and excludes the Git administrator');
+  await page.locator(`#leader-flyout [data-act=leader][data-id="${info.leader}"] .session-open`).click();
+  await page.locator('#chat-host textarea').waitFor();await shot('03-general');
+  assert.equal(await page.locator('#leader-flyout').getAttribute('data-open'),'false');evidence.checks.push('selecting a leader closes its flyout');
+  const order=await page.locator('#chat-head .right>[data-act]').evaluateAll(nodes=>nodes.map(node=>node.dataset.act));assert.deepEqual(order,['model-menu','card','attention','right-open','session-menu']);evidence.checks.push('identity row buttons follow the required order');
+  await page.locator('#chat-head [data-act=card]').click();await page.locator('#card.show .card-body').waitFor();assert(await page.locator('#card').getByText('负责范围',{exact:true}).isVisible());await page.locator('#card [data-act=card-close]').click();evidence.checks.push('leader materials open the existing session profile and return to the conversation');
+  await page.locator('#chat-head [data-act=right-open]').click();await page.locator('#right-panel .node').first().waitFor();await page.locator('#chat-head [data-act=attention]').click();await shot('03a-pending-architecture');
+  assert(await page.locator('#side-attention-section').isVisible());assert(await page.locator('#right-panel').isVisible());assert.equal(await page.locator('#right-panel [data-act=comments]').count(),0);evidence.checks.push('general conversation retains its pending and architecture panels');
+  await page.locator('#chat-host textarea').fill('保留总会话草稿');
+  await page.locator('#goal-head [data-goal-act=list]').click();await page.locator(`#side-task-body [data-goal-act=open][data-goal-id="${info.goals[0]}"]`).click();
+  await page.locator('#side-task-body [data-goal-tools]').waitFor();await shot('04-task');
+  assert.equal(await page.locator('#chat-attention').isVisible(),false);await page.locator('#chat-head [data-act=attention]').click();await page.locator('#side-attention-section').waitFor();assert(await page.locator('#side-task-section').isVisible());await page.locator('#chat-head [data-act=attention]').click();evidence.checks.push('task panel collapses auxiliary panels into independent header popovers');
+  assert.equal(await page.locator('#chat-host textarea').inputValue(),'保留总会话草稿');assert.equal(await page.locator('#side-task-body textarea').count(),0);evidence.checks.push('opening a task retains the leader composer and has no task input');
+  const chip=page.locator('.chat-task-binding');assert.equal(await chip.innerText(),'📌 声音评测');assert.equal(await chip.getAttribute('aria-pressed'),'false');await chip.click();await shot('05-task-bound');
+  assert.equal(await page.locator('#chat-host textarea').getAttribute('placeholder'),'补充给任务「声音评测」的要求');
+  await page.locator('#side-task-body [data-goal-act=delivery]').click();await page.locator('.goal-reader-frame iframe').waitFor();await shot('05a-report');
+  const report=page.frameLocator('.goal-reader-frame iframe');assert.equal(await report.locator('.crew-evidence').getAttribute('open'),null);await report.locator('.crew-evidence>summary').click();assert(await report.locator('.crew-evidence-body').getByText('未验证',{exact:true}).count());await page.locator('[data-goal-act=close-report]').click();evidence.checks.push('task delivery opens the real isolated report and retains unverified evidence');
+  await page.locator('#goal-head [data-goal-act=list]').click();await page.locator(`#side-task-body [data-goal-act=open][data-goal-id="${info.goals[1]}"]`).click();
+  assert.equal(await chip.innerText(),'📌 客户端联调');assert.equal(await chip.getAttribute('aria-pressed'),'false');evidence.checks.push('task chip changes name and resets binding when switching tasks');
+  await chip.click();await page.locator('#chat-host textarea').fill('补充客户端联调要求');
+  const sent=page.waitForResponse(response=>response.url().includes('/api/chat/send')&&response.request().method()==='POST');await page.locator('#chat-host .send').click();const receipt=await sent;assert(receipt.ok(),await receipt.text());assert.equal(receipt.request().postDataJSON().session_id,info.leader);assert.equal(receipt.request().postDataJSON().goal_id,info.goals[1]);
+  await page.locator('.chat-task-label').filter({hasText:'→ 客户端联调'}).waitFor();evidence.checks.push('bound input uses the leader session, goal ID and visible task label');
+  await page.locator('.chat-image-file').setInputFiles({name:'supplement.png',mimeType:'image/png',buffer:Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jPq0AAAAASUVORK5CYII=','base64')});await page.locator('#chat-host textarea').fill('补充截图');const imageSent=page.waitForResponse(response=>response.url().includes('/api/chat/send')&&response.request().method()==='POST');await page.locator('#chat-host .send').click();const imageReceipt=await imageSent;assert(imageReceipt.ok());assert.equal(imageReceipt.request().postDataJSON().goal_id,info.goals[1]);const imageMessage=page.locator('#chat-host .m-user').filter({hasText:'补充截图'});await imageMessage.locator('.message-images img').waitFor();assert.equal(await imageMessage.locator('.chat-task-label').innerText(),'→ 客户端联调');await shot('05d-task-image-receipt');evidence.checks.push('a task supplement preserves its accepted screenshot and task label in the leader conversation');
+  await chip.click();await page.locator('#chat-host textarea').fill('普通总会话输入');
+  const ordinary=page.waitForResponse(response=>response.url().includes('/api/chat/send')&&response.request().method()==='POST');await page.locator('#chat-host .send').click();const normal=await ordinary;assert(normal.ok());assert(!Object.hasOwn(normal.request().postDataJSON(),'goal_id'));evidence.checks.push('gray task chip sends an ordinary leader message');
+  await page.locator('#leader-entry').click();await page.keyboard.press('Escape');assert.equal(await page.locator('#leader-flyout').getAttribute('data-open'),'false');assert.equal(await page.locator('#leader-entry').evaluate(node=>document.activeElement===node),true);
+  await page.locator('#leader-entry').click();await page.locator('#chat-head').click();assert.equal(await page.locator('#leader-flyout').getAttribute('data-open'),'false');evidence.checks.push('Escape returns focus and an outside click closes the leader flyout');
+  await page.locator('#side-task-section [data-section=tasks]').click();assert(await page.locator('#side-attention-section').isVisible());assert(await page.locator('#right-panel').isVisible());assert.equal(await chip.isVisible(),false);evidence.checks.push('closing the task restores auxiliary panels and removes the task chip');
+  await page.locator('#sidebar [data-view=all]').click();await page.locator(`.wh-reviews [data-act=goal-review][data-id="${info.delivered.review_goal_id}"]`).click();
+  await page.locator('#side-task-body .task-delivery [data-action=accept]').waitFor();assert(await page.locator('#side-task-body .task-delivery [data-action=reject]').isVisible());assert.equal(await page.locator('#side-task-body textarea').count(),0);await shot('05b-awaiting-acceptance');
+  await page.locator('#side-task-body [data-action=reject]').click();await page.locator('[data-goal-confirm=reject] textarea').fill('缺少窄屏步骤');await shot('05c-review-rejection');await page.keyboard.press('Escape');
+  const accept=page.waitForResponse(response=>response.url().includes('/api/goals/action')&&response.request().method()==='POST');await page.locator('#side-task-body [data-action=accept]').click();assert((await accept).ok());await page.locator('#side-task-body .goal-status[data-status=completed]').waitFor();assert(await page.locator('#chat-host textarea').isEnabled());evidence.checks.push('goal-review opens acceptance in delivery; reject keeps a required note and acceptance remains usable');
+  await page.locator('#presence-entry').click();await page.locator('#presence-popover').waitFor();await shot('06-presence');await page.locator('#presence-popover [data-act=connection-settings]').click();
+  await page.locator('[data-settings-category=library]').click();await page.locator('#settings-surface .session-library').waitFor();await shot('07-session-library');
+  await page.locator('[data-settings-action=close]').first().click();await page.setViewportSize({width:390,height:844});await shot('08-mobile-task');assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));assert(await page.locator('#chat-head [data-act=model-menu]').isVisible());assert(await page.locator('#chat-host textarea').isEnabled());
+  await page.locator('#side-task-section [data-section=tasks]').click();await page.locator('#sidebar [data-view=all]').click();await shot('08a-mobile-home');
+  await page.locator('#leader-entry').click();await shot('08b-mobile-leaders');await page.keyboard.press('Escape');
+  await page.emulateMedia({reducedMotion:'reduce'});await page.locator('#leader-entry').click();assert.equal(await page.locator('#leader-flyout').evaluate(node=>getComputedStyle(node).transform),'none');await page.keyboard.press('Escape');evidence.checks.push('390px rail, model control and task composer fit; reduced motion removes flyout displacement');
+  await page.setViewportSize({width:1440,height:1000});
+  await page.goto(`${info.url}/?project=demo#history=s1&leader=${info.leader}&goal=${info.goals[1]}`);await page.locator('#side-task-body [data-goal-tools]').waitFor();
+  assert.equal(await page.locator('#chat-head .chat-name').innerText(),'协作负责人');assert.equal(await chip.innerText(),'📌 客户端联调');evidence.checks.push('a member task deep link opens the leader conversation and selected task');
+  const pauseTask=page.waitForResponse(response=>response.url().includes('/api/goals/action')&&response.request().method()==='POST');await page.locator('#side-task-body [data-action=pause]').click();assert((await pauseTask).ok());fixture.stdin.write('finish-task:'+info.goals[1]+'\n');await page.locator('#side-task-body .goal-status[data-status=paused]').waitFor();assert(await page.locator('#chat-host textarea').isEnabled());await shot('09-paused-task');
+  const resumeTask=page.waitForResponse(response=>response.url().includes('/api/goals/action')&&response.request().method()==='POST');await page.locator('#side-task-body [data-action=resume]').click();assert((await resumeTask).ok());await page.locator('#side-task-body .goal-status[data-status=running]').waitFor();
+  await page.locator('#side-task-body [data-action=cancel]').click();await page.locator('[data-goal-confirm=cancel]').waitFor();const cancelTask=page.waitForResponse(response=>response.url().includes('/api/goals/action')&&response.request().method()==='POST');await page.locator('[data-goal-confirm=cancel] [type=submit]').click();assert((await cancelTask).ok());fixture.stdin.write('finish-task:'+info.goals[1]+'\n');await page.locator('#side-task-body .goal-status[data-status=cancelled]').waitFor();assert(await page.locator('#chat-host textarea').isEnabled());await shot('10-cancelled-task');evidence.checks.push('pause, resume and cancellation retain their real actions while the leader composer stays available');
+  await page.locator('#chat-host textarea').fill('压缩后保留的总会话草稿');let stops=0;page.on('request',request=>{if(request.method()==='POST'&&new URL(request.url()).pathname==='/api/session/stop')stops++;});
+  await page.locator('#chat-host .chat-stop').click();await page.locator('#stop-person-title').waitFor();await page.locator('#backdrop [data-act=modal-close]').click();assert.equal(stops,0);assert.equal(await page.locator('#chat-host textarea').inputValue(),'压缩后保留的总会话草稿');
+  await page.locator('#chat-head [data-act=session-menu]').click();assert(await page.locator('#menu [data-act=compact]').isEnabled());await page.locator('#menu [data-act=compact]').click();
+  const compact=page.waitForResponse(response=>response.url().includes('/api/session/compact')&&response.request().method()==='POST');await page.locator('[data-act=compact-confirm]').click();const compressed=await compact;assert(compressed.ok());evidence.generalCompaction=await compressed.json();assert.equal(evidence.generalCompaction.queued,true);assert(!Object.hasOwn(compressed.request().postDataJSON(),'goal_id'));await page.locator('#toast-root .toast').filter({hasText:'这一轮说完后压缩'}).waitFor();fixture.stdin.write('compact-finish:general\n');await page.locator('#chat-host .context-divider').filter({hasText:'上下文已压缩'}).waitFor();assert.equal(await page.locator('#chat-host textarea').inputValue(),'压缩后保留的总会话草稿');evidence.checks.push('stop confirmation cancels without a request and general compaction stays independent of the selected task');
+  await page.locator('#goal-head [data-goal-act=create]').click();await page.locator('[data-goal-create]').waitFor();assert(await page.locator('[data-goal-create]').evaluate(node=>{const r=node.getBoundingClientRect();return r.top>=0&&r.left>=0&&r.right<=innerWidth&&r.bottom<=innerHeight;}));await page.locator('[data-goal-create] [data-goal-act=close-create]').first().click();assert(await page.locator('#chat-host textarea').isEnabled());evidence.checks.push('goal creation dialog remains usable above the task panel');
+  await page.locator('#presence-entry').click();const away=page.locator('#presence-popover [data-act=away]');await away.click();await page.waitForFunction(()=>document.querySelector('#presence-popover [data-act=away]')?.getAttribute('aria-checked')==='true');assert.equal(await page.locator('#presence-popover .qq-status').count(),2);await away.click();await page.waitForFunction(()=>document.querySelector('#presence-popover [data-act=away]')?.getAttribute('aria-checked')==='false');await page.locator('#presence-entry').click();evidence.checks.push('chair toggles actual away state and shows both QQ and Lark');
+  await page.locator('#sidebar [data-view=git]').click();await page.locator('#git-panel').waitFor();assert.equal(await page.locator('.git-graph,[data-git-tab=graph],#git-detail').count(),0);assert(await page.locator('.git-branch-table').isVisible());await shot('11-git-branches');evidence.checks.push('Git rail opens the existing branch page with no retired tree or commit popover');
+  await page.locator('#sidebar [data-view=all]').click();const day=await page.evaluate(()=>getComputedStyle(document.body).backgroundColor);await page.locator('#sidebar [data-act=theme]').click();await page.locator('#sidebar [data-act=theme]').click();assert.equal(await page.evaluate(()=>document.documentElement.dataset.theme),'dark');assert.notEqual(await page.evaluate(()=>getComputedStyle(document.body).backgroundColor),day);await shot('12-night-home');evidence.checks.push('rail theme control switches the actual workspace to night mode');
+  assert.equal(evidence.errors.length,0,evidence.errors.join('\n'));
 }
-main().catch(error=>{evidence.error=error.stack||String(error);process.exitCode=1;}).finally(async()=>{await browser?.close();if(fixture){fixture.stdin.end('shutdown\n');await new Promise(resolve=>{fixture.once('exit',resolve);setTimeout(()=>{fixture.kill();resolve();},5000).unref();});}await fs.writeFile(path.join(out,'evidence.json'),JSON.stringify(evidence,null,2));console.log(JSON.stringify({out,checks:evidence.checks.length,failures:evidence.failures,consoleErrors:evidence.consoleErrors,error:evidence.error}));});
+main().catch(async error=>{evidence.failure=error.stack;process.exitCode=1;if(page)await shot('failure');}).finally(async()=>{await browser?.close();fixture?.stdin.end('shutdown\n');if(fixture)await new Promise(resolve=>{fixture.once('exit',resolve);setTimeout(()=>{fixture.kill();resolve();},5000).unref();});await fs.writeFile(path.join(out,'evidence.json'),JSON.stringify(evidence,null,2));console.log(JSON.stringify(evidence));});

@@ -82,7 +82,7 @@ async function main() {
   const legacy = await legacyContext.newPage();
   await legacy.goto(info.url + '/?project=demo#leader=' + info.leader);
   await legacy.waitForFunction(() => window.CrewSound?.getSettings().leader === 'soft');
-  await page.locator('#goal-head [data-goal-act="general"]').waitFor();
+  await page.locator('#goal-head [data-goal-act="list"]').waitFor();
   await page.locator('#sidebar [data-act="settings"]').click();
   await page.locator('[data-settings-category="sounds"]').click();
   await page.locator('[data-sound-kind="leader"]').waitFor();
@@ -202,7 +202,7 @@ async function main() {
   await page.locator('[data-sound-volume]').evaluate(node => {node.value = '41'; node.dispatchEvent(new Event('input', {bubbles:true}));});
   await page.locator('[data-sound-save]').click();
   await page.locator('[data-sound-status]').filter({hasText:'音效已保存'}).waitFor();
-  await page.reload(); await page.locator('#goal-head [data-goal-act="general"]').waitFor();
+  await page.reload(); await page.locator('#goal-head [data-goal-act="list"]').waitFor();
   await page.locator('#sidebar [data-act="settings"]').click(); await page.locator('[data-settings-category="sounds"]').click();
   await picker('leader').waitFor();
   check('Reload retains saved choices and does not replay old completions', await picker('leader').inputValue() === 'off' && await page.evaluate(() => __audioNotes.length) === 0);

@@ -156,7 +156,7 @@ if (!process.versions.electron) {
         const tab = await tabs.open(project, '#all');
         workspaceTabs.push(tab);
         try {
-          await until(() => evaluate(tabs.activeView, 'Boolean(document.querySelector(".leader-item"))'), 'workspace sidebar');
+          await until(() => evaluate(tabs.activeView, 'Boolean(document.querySelector(".leader-row"))'), 'workspace sidebar');
         } catch (error) {
           evidence.initializationFailure = await evaluate(tabs.activeView, `({url:location.href,
             modules:{CrewGitSettings:typeof CrewGitSettings,...Object.fromEntries(['CrewMaintenance','CrewWorkspaceSettings','CrewSettings','CrewMembers','CrewGoals'].map(name=>[name,typeof window[name]]))},
@@ -175,7 +175,7 @@ if (!process.versions.electron) {
         try { await until(() => contains(view, project.marker), 'history in workspace ' + index, 3500); }
         catch (error) {
           evidence.blocked = {workspace:index, streams:pendingStreams.size,
-            sidebar:await evaluate(view, 'Boolean(document.querySelector(".leader-item"))'),
+            sidebar:await evaluate(view, 'Boolean(document.querySelector(".leader-row"))'),
             chat:await evaluate(view, 'document.querySelector(".chat-inner")?.textContent || ""')};
           await capture(view, 'blocked-history-' + index);
           throw error;

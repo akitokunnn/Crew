@@ -1,25 +1,13 @@
 'use strict';
 const fs=require('node:fs/promises'),path=require('node:path'),assert=require('node:assert/strict'),{spawn}=require('node:child_process');
-const root=path.resolve(__dirname,'../..'),desktop=path.join(root,'desktop'),out=path.join(desktop,'smoke-output/conversation-routing');
-if(!process.versions.electron){
-  (async()=>{
-    await fs.mkdir(path.join(desktop,'.cache'),{recursive:true});
-    const home=await fs.mkdtemp(path.join(desktop,'.cache/conversation-routing-')),env={...process.env};
-    for(const key of ['ELECTRON_RUN_AS_NODE','CREW_SESSION_ID','CLAUDE_CODE_SESSION_ID'])delete env[key];
-    const child=spawn(require(require.resolve('electron',{paths:[desktop]})),['--require',__filename,desktop,'--crew-routing-home='+home],{cwd:desktop,env,windowsHide:true,stdio:['ignore','pipe','pipe']});
-    child.stdout.pipe(process.stdout);child.stderr.pipe(process.stderr);
-    const timer=setTimeout(()=>{child.kill();process.exitCode=1;},120000);
-    child.once('exit',async code=>{clearTimeout(timer);child.stdout.destroy();child.stderr.destroy();try{const result=JSON.parse(await fs.readFile(path.join(out,'evidence.json'),'utf8'));assert.equal(code,0);assert.equal(result.home,home);assert.equal(result.ok,true);console.log(JSON.stringify({ok:true,checks:result.checks.length,evidence:path.join(out,'evidence.json')}));}catch(error){console.error(error);process.exitCode=1;}});
-  })().catch(error=>{console.error(error);process.exitCode=1;});
-}else{
-  require.cache[require.resolve(path.join(desktop,'src/main.cjs'))]={id:path.join(desktop,'src/main.cjs'),filename:path.join(desktop,'src/main.cjs'),loaded:true,exports:{}};
-  const {app,BrowserWindow,nativeTheme}=require('electron'),home=process.argv.find(value=>value.startsWith('--crew-routing-home=')).slice('--crew-routing-home='.length);
-  require('node:fs').mkdirSync(path.join(home,'electron'),{recursive:true});app.setPath('userData',path.join(home,'electron'));
+const root=path.resolve(__dirname,'../..'),desktop=path.join(root,'desktop'),out=path.join(root,'Temp/ui-align/conversation-routing');
+const {chromium}=require('playwright');
+(async()=>{
+  const home=await fs.mkdtemp(path.join(root,'Temp/ui-align/routing-home-'));
   const evidence={home,checks:[],screenshots:[],errors:[],modelTurnsStarted:0,carrier:'FakeProcess only'},messages=[];
-  let fixture,window,closed=false;
-  app.whenReady().then(async()=>{
-    try{
-      await fs.mkdir(out,{recursive:true});
+  let fixture,browser,page,closed=false;
+  try{
+    await fs.mkdir(out,{recursive:true});
       const env={...process.env,PYTHONIOENCODING:'utf-8'};
       for(const key of ['CREW_SESSION_ID','CLAUDE_CODE_SESSION_ID'])delete env[key];
       fixture=spawn('python',['-u',path.join(root,'plugin/tests/conversation_routing_fixture.py')],{cwd:path.join(root,'plugin'),env,windowsHide:true,stdio:['pipe','pipe','pipe']});
@@ -28,15 +16,21 @@ if(!process.versions.electron){
       const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
       async function until(check,label){const deadline=Date.now()+15000;while(Date.now()<deadline){if(await check())return;await pause(40);}throw Error('Timed out: '+label);}
       await until(()=>bootstrap,'isolated fixture');assert.notEqual(new URL(bootstrap.url).port,'47811');evidence.fixture=bootstrap;
-      window=new BrowserWindow({width:1280,height:900,show:false,webPreferences:{sandbox:true,contextIsolation:true,nodeIntegration:false,backgroundThrottling:false,offscreen:true}});
-      const wc=window.webContents,js=source=>wc.executeJavaScript(source,true),wait=(source,label=source)=>until(()=>js(source),label);
-      wc.on('console-message',event=>{if(event.level==='error')evidence.errors.push(event.message);});
+      browser=await chromium.launch({channel:'chrome',headless:true});page=await browser.newPage({viewport:{width:1280,height:900},colorScheme:'light'});
+      const js=source=>page.evaluate(source),wait=(source,label=source)=>until(()=>js(source),label);
+      page.on('pageerror',error=>evidence.errors.push(error.stack));page.on('console',message=>{if(message.type()==='error')evidence.errors.push(message.text());});
       async function check(label,source){await wait(source,label);assert(await js(source),label);evidence.checks.push(label);}
       const click=selector=>js(`document.querySelector(${JSON.stringify(selector)}).click();true;`);
+      async function trust(mode) {
+        await click('#chat-head [data-act="session-menu"]');
+        await js(`Array.from(document.querySelectorAll('#menu [data-act="submenu"]')).find(node=>node.textContent.includes('leader 决策方式')).click();true;`);
+        await click(`[data-goal-act="leader-mode"][data-mode="${mode}"]`);
+        await wait(`(async()=>{const state=await fetch('/api/state?project=demo').then(r=>r.json());return state.leaders.find(item=>item.session_id===${JSON.stringify(bootstrap.leader)}).trust.enabled===${mode==='autonomous'}})()`);
+      }
       async function type(text){await js(`document.querySelector('#chat-host textarea').value=${JSON.stringify(text)};document.querySelector('#chat-host textarea').dispatchEvent(new Event('input',{bubbles:true}));true;`);}
-      async function capture(name){await js('document.fonts.ready.then(()=>true)');await pause(120);wc.debugger.attach('1.3');try{const result=await wc.debugger.sendCommand('Page.captureScreenshot',{format:'png',fromSurface:true});const file=path.join(out,name+'.png');await fs.writeFile(file,Buffer.from(result.data,'base64'));evidence.screenshots.push(file);}finally{wc.debugger.detach();}}
-      await window.loadURL(bootstrap.url+'/?project=demo#leader='+bootstrap.leader);
-      await wait('document.querySelector("#goal-chat-hint")?.textContent.includes("2 个任务")');
+      async function capture(name){await page.evaluate(()=>document.fonts.ready);await pause(160);const file=path.join(out,name+'.png');await page.screenshot({path:file});evidence.screenshots.push(file);}
+      await page.goto(bootstrap.url+'/?project=demo#leader='+bootstrap.leader);
+      await wait('Boolean(document.querySelector("#goal-head [data-goal-act=list]"))');
       await check('real HTTP serves every stylesheet and script declared by the entry page',`(async()=>{const paths=[...document.querySelectorAll('link[rel=stylesheet],script[src]')].map(el=>el.href||el.src);return (await Promise.all(paths.map(url=>fetch(url).then(r=>r.status)))).every(status=>status===200)})()`);
       await click('[data-act="right-open"]');await pause(450);
       await check('real backend positions the original architecture in the visible right column','(()=>{const root=document.querySelector("#chat-attention"),p=root.getBoundingClientRect(),r=document.querySelector("#right-panel").getBoundingClientRect();return getComputedStyle(root).position==="fixed"&&r.width>200&&r.height>300&&r.right<=innerWidth&&Math.abs(p.top-r.top)<1&&!!document.querySelector("#right-panel .node")})()');
@@ -48,23 +42,22 @@ if(!process.versions.electron){
       await check('closing pending restores architecture without leaving the conversation','Math.abs(document.querySelector("#right-panel").getBoundingClientRect().top-architectureTop)<1&&!document.querySelector("#chat-host textarea").disabled');
       await click('[data-act="right-open"]');await pause(450);
       await check('two active tasks do not make the idle general conversation wait for a model','!document.querySelector("#chat-host .chat-activity")&&!document.querySelector("#chat-host textarea").disabled');
-      await click('[data-goal-act="leader-mode"][data-mode="autonomous"]');
+      await trust("autonomous");
       await check('leader authorization saves through real HTTP without starting its general conversation',
-        'document.querySelector("[data-goal-act=leader-mode][data-mode=autonomous]")?.getAttribute("aria-pressed")==="true"&&!document.querySelector("#chat-host .chat-activity")');
+        '!document.querySelector("#chat-host .chat-activity")');
       await check('leader authorization leaves the existing task modes intact',
         `(async()=>{const state=await fetch('/api/state?project=demo').then(r=>r.json());return state.leaders.find(item=>item.session_id===${JSON.stringify(bootstrap.leader)}).trust.enabled&&state.goals.filter(item=>item.leader_session_id===${JSON.stringify(bootstrap.leader)}).every(item=>item.decision_mode.mode==='human')})()`);
       await capture('00-leader-autonomy');
-      window.setSize(390,844);await capture('00-leader-autonomy-mobile');window.setSize(1280,900);
-      await click('[data-goal-act="leader-mode"][data-mode="human"]');
+      await page.setViewportSize({width:390,height:844});await capture('00-leader-autonomy-mobile');await page.setViewportSize({width:1280,height:900});
+      await trust("human");
       await check('leader authorization can be revoked without starting or pausing its independent tasks',
-        'document.querySelector("[data-goal-act=leader-mode][data-mode=human]")?.getAttribute("aria-pressed")==="true"&&document.querySelector("#goal-chat-hint").textContent.includes("2 个任务")&&!document.querySelector("#chat-host .chat-activity")');
+        'document.querySelector("#goal-head [data-goal-act=list]").textContent.includes("2")&&!document.querySelector("#chat-host .chat-activity")');
       await type('主对话草稿');await click('[data-goal-act="list"]');
       await wait(`!!document.querySelector('[data-goal-act="open"][data-goal-id="${bootstrap.goals[0]}"]')`);
       await click(`[data-goal-act="open"][data-goal-id="${bootstrap.goals[0]}"]`);
-      await wait('!!document.querySelector("#chat-host .chat-activity")');await type('任务草稿');
-      await click('[data-goal-act="mode"][data-mode="autonomous"]');
+      await wait('!!document.querySelector("#side-task-body [data-goal-tools]")');await check("opening a task keeps the idle general conversation and its draft",'document.querySelector("#chat-host textarea").value==="主对话草稿"&&!document.querySelector("#chat-host .chat-activity")');
+      await wait('!document.querySelector("[data-goal-act=mode][data-mode=autonomous]").disabled');await click('[data-goal-act="mode"][data-mode="autonomous"]');
       await check('task decision mode updates only the selected goal without starting another turn','document.querySelector("[data-goal-act=mode][data-mode=autonomous]").getAttribute("aria-pressed")==="true"');
-      await click('[data-act="task-panel"]');
       await check('AI work appears separately with its real blocker and exact acceptance constraint','document.querySelector(".goal-work").textContent.includes("400ms")&&document.querySelector(".goal-work").textContent.includes("尚未证明效果达标")&&document.querySelector(".goal-work").textContent.includes("0 / 1")');
       await capture('00-v2-task-worklist');
       await click('[data-goal-act="versions"]');
@@ -81,20 +74,19 @@ if(!process.versions.electron){
       await check('editing a stage report creates a new current document and retains the original report as history','document.querySelector(".goal-reader-heading")?.textContent.includes("第 2 稿")&&document.querySelector(".goal-reader-frame iframe")?.srcdoc.includes("用户补充：重叠发言")&&!document.querySelector(".goal-reader-frame iframe").srcdoc.includes("旧版阶段正文")');
       await capture('00-v2-stage-report-edited');
       await click('[data-goal-act="close-report"]');
-      await click('#side-task-section [data-act="side-section-close"]');
-      await click('[data-goal-act="general"]');await wait('document.querySelector("#chat-host textarea")?.value==="主对话草稿"');
+      await click('#side-task-section [data-act="side-section-close"]');await wait('document.querySelector("#chat-host textarea")?.value==="主对话草稿"');
       fixture.stdin.write('request\n');await until(()=>messages.some(value=>value.request),'cross-leader request');
       await wait('document.querySelector("#chat-host")?.textContent.includes("请确认接口格式")');
       await check('a cross-leader request enters general chat while its independent draft survives','document.querySelectorAll("#chat-host .chat-activity").length===1&&document.querySelector("#chat-host textarea").value==="主对话草稿"');
       await capture('01-general-coordination');
       await click('[data-goal-act="list"]');await wait(`!!document.querySelector('[data-goal-act="open"][data-goal-id="${bootstrap.goals[0]}"]')`);await click(`[data-goal-act="open"][data-goal-id="${bootstrap.goals[0]}"]`);
-      await wait('document.querySelector("#chat-host textarea")?.value==="任务草稿"&&!document.querySelector("#chat-host textarea").disabled&&!!document.querySelector("#chat-host .chat-activity")');
-      await check('task history and drafts remain independent from incoming general collaboration','!!document.querySelector("#chat-host .chat-activity")&&!document.querySelector("#chat-host").textContent.includes("请确认接口格式")');
-      nativeTheme.themeSource='dark';window.setSize(850,820);await capture('02-task-keeps-working');
-      await click('[data-goal-act="general"]');await wait('document.querySelector("#chat-host textarea")?.value==="主对话草稿"');
+      await wait('document.querySelector("#chat-host textarea")?.value==="主对话草稿"&&!document.querySelector("#chat-host textarea").disabled&&!!document.querySelector("#chat-host .chat-activity")');
+      await check('task changes preserve the general collaboration message and the same leader draft','!!document.querySelector("#chat-host .chat-activity")&&document.querySelector("#chat-host").textContent.includes("请确认接口格式")&&document.querySelector("#chat-host textarea").value==="主对话草稿"');
+      await page.emulateMedia({colorScheme:'dark'});await page.setViewportSize({width:850,height:820});await capture('02-task-keeps-working');
+      await click('#side-task-section [data-section="tasks"]');await wait('document.querySelector("#chat-host textarea")?.value==="主对话草稿"');
       fixture.stdin.write('reply\n');await until(()=>messages.some(value=>value.replied),'reply routed to original task');
       await wait('!document.querySelector("#chat-host .chat-activity")');
-      await check('a completed coordination reply clears only general progress while tasks stay active','document.querySelector("#goal-chat-hint").textContent.includes("2 个任务")&&document.querySelector("#chat-host textarea").value==="主对话草稿"');
+      await check('a completed coordination reply clears only general progress while tasks stay active','document.querySelector("#goal-head [data-goal-act=list]").textContent.includes("2")&&document.querySelector("#chat-host textarea").value==="主对话草稿"');
       await capture('03-general-idle-tasks-active');
       evidence.reply=messages.find(value=>value.replied);assert.equal(evidence.reply.parallel_tasks,2);assert.equal(evidence.reply.source_general_started,false);assert.equal(evidence.errors.length,0,JSON.stringify(evidence.errors));
       await click('#chat-head [data-act="session-menu"]');
@@ -105,7 +97,7 @@ if(!process.versions.electron){
         `!!document.querySelector('.wh-page')&&!document.querySelector('.wh-page [data-goal-id="${bootstrap.goals[0]}"]')&&!document.querySelector('.wh-page [data-goal-id="${bootstrap.goals[1]}"]')`);
       await capture('04-archived-leader-workbench');
       fixture.stdin.end('shutdown\n');await until(()=>closed,'fixture shutdown');evidence.ok=true;
-      await fs.writeFile(path.join(out,'evidence.json'),JSON.stringify(evidence,null,2));app.quit();
-    }catch(error){evidence.errors.push(error.stack||String(error));fixture?.stdin.end('shutdown\n');await fs.mkdir(out,{recursive:true});await fs.writeFile(path.join(out,'evidence.json'),JSON.stringify(evidence,null,2));console.error(error);process.exitCode=1;app.quit();}
-  });
-}
+      await fs.writeFile(path.join(out,'evidence.json'),JSON.stringify(evidence,null,2));console.log(JSON.stringify({ok:true,checks:evidence.checks.length,evidence:path.join(out,'evidence.json')}));
+    }catch(error){if(page){evidence.body=await page.locator('body').innerText();evidence.lastState=await page.evaluate(()=>fetch('/api/state?project=demo').then(r=>r.json()));await page.screenshot({path:path.join(out,'failure.png')});}evidence.errors.push(error.stack||String(error));fixture?.stdin.end('shutdown\n');await fs.mkdir(out,{recursive:true});await fs.writeFile(path.join(out,'evidence.json'),JSON.stringify(evidence,null,2));console.error(error);process.exitCode=1;}
+    finally{await browser?.close();if(fixture&&!closed){fixture.stdin.end('shutdown\n');await new Promise(resolve=>{fixture.once('exit',resolve);setTimeout(()=>{fixture.kill();resolve();},5000).unref();});}}
+})().catch(error=>{console.error(error);process.exitCode=1;});

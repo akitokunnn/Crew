@@ -1,7 +1,7 @@
 "use strict";
 (() => {
   const esc = value => String(value ?? "").replace(/[&<>"']/g, char => ({"&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"})[char]);
-  const labels = {queued:"待规划", running:"推进中", pausing:"暂停中", paused:"已暂停", waiting_user:"等待用户", awaiting_acceptance:"待验收", completed:"已完成", failed:"未达标", cancelled:"已取消"};
+  const labels = {idle:"空闲", queued:"待规划", running:"推进中", pausing:"暂停中", paused:"已暂停", waiting_user:"等待用户", awaiting_acceptance:"待验收", completed:"已完成", failed:"未达标", cancelled:"已取消"};
   // Report outcomes and acceptance states are what the AI wrote in its report, not a human or independent verdict.
   const outcomes = {progress:"阶段成果",completed:"已达标", failed:"未达标", awaiting_acceptance:"等待用户验收", cancelled:"已取消"};
   const acceptanceLabels = [["passed","通过"],["failed","失败"],["unverified","未验证"],["simulated","模拟验证"]];
@@ -16,10 +16,10 @@
     return '<!doctype html><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; script-src \'unsafe-inline\'; style-src \'unsafe-inline\'; img-src data: blob:; font-src data:; media-src data:; base-uri \'none\'; form-action \'none\'; frame-src about:;"><meta name="referrer" content="no-referrer">' + html;
   }
   function cards(goals, leaders = [], selected = null) {
-    return goals.length ? `<div class="goal-cards">${goals.map(goal => {
-      const owner = leaders.find(item => item.session_id === goal.leader_session_id);
-      return `<article class="goal-card"><button class="goal-card-open" data-goal-act="open" data-goal-id="${esc(goal.id)}" aria-pressed="${String(selected) === String(goal.id)}"><span class="goal-card-top"><span class="goal-status" data-status="${esc(goal.status)}">${esc(status(goal.status))}</span></span><strong>${esc(goal.title)}</strong><span class="goal-card-request">${esc(goal.request)}</span>${goal.work_summary?.total ? `<span class="goal-work-progress">已完成 ${goal.work_summary.done} / ${goal.work_summary.total}<progress max="${goal.work_summary.total}" value="${goal.work_summary.done}" aria-label="AI 工作清单进度"></progress></span>` : ""}<span class="goal-card-foot">${esc(owner?.name || "负责人")} · ${esc(when(goal.updated_at))}<span>${ended(goal.status) && !goal.report_available ? "交付报告待齐全" : "进入任务 →"}</span></span></button>${goal.report_available ? `<button class="goal-card-delivery" data-goal-act="delivery" data-goal-id="${esc(goal.id)}" aria-label="查看「${esc(goal.title)}」的交付报告">查看交付报告<span aria-hidden="true">→</span></button>` : ""}</article>`;
-    }).join("")}</div>` : '<div class="goals-empty">还没有执行目标。普通问答和讨论直接在对话里进行；明确需要交付时再建立目标。</div>';
+    return goals.length ? `<div class="goal-rows">${goals.map(goal => {
+      const owner = leaders.find(item => item.session_id === goal.leader_session_id), work = goal.work_summary;
+      return `<button class="goal-row" data-goal-act="open" data-goal-id="${esc(goal.id)}" aria-pressed="${String(selected) === String(goal.id)}"><span class="goal-status" data-status="${esc(goal.status)}">${esc(status(goal.status))}</span><strong title="${esc(goal.title)}">${esc(goal.title)}</strong>${work?.total ? `<progress max="${work.total}" value="${work.done}" aria-label="${esc(goal.title)} 工作清单进度"></progress>` : '<span class="goal-row-progress-empty" title="尚无工作清单"></span>'}<span class="goal-row-owner">${esc(owner?.name || "负责人")}</span></button>`;
+    }).join("")}</div>` : '<div class="goals-empty">还没有执行目标。需求明确后再建立目标。</div>';
   }
   // A report's relation is recomputed from the newest goal state, so an open report follows later round,
   // requirement or report changes. Reports arrive newest first by round and saved report version.
@@ -57,7 +57,7 @@
     function restoreFocus(selector) {
       const target = document.querySelector?.(selector);
       if (target?.closest?.('#side-task-section')) options.onReturn?.();
-      (document.querySelector?.(selector) || document.querySelector?.('[data-act="task-panel"]'))?.focus();
+      (document.querySelector?.(selector) || document.querySelector?.('[data-goal-act="list"]'))?.focus();
     }
     function executionFor(id) {
       const active = goal();
@@ -115,56 +115,8 @@
       return `<section class="goal-delivery" aria-label="当前交付结论"><div class="goal-delivery-head"><strong>本次结果</strong><span>${esc(outcomes[report.status])}</span></div><p class="goal-delivery-summary ${open ? "open" : ""}">${esc(report.summary)}</p><div class="goal-delivery-foot"><div class="goal-delivery-meta"><span>AI 验证</span>${recorded.length ? `<span class="goal-acceptance-total">共 ${esc(total)} 项</span>${recorded.map(([name,label]) => `<span class="goal-acceptance-count" data-kind="${name}">${label} ${esc(counts[name])}</span>`).join("")}` : "<span>没有逐项验收记录</span>"}</div><div class="goal-delivery-actions">${folds ? `<button class="text-link" data-goal-act="conclusion-toggle" data-report-id="${esc(report.id)}" aria-expanded="${open}">${open ? "收起" : "展开全文"}</button>` : ""}<button class="btn ghost" data-goal-act="delivery" data-goal-id="${esc(key)}">查看完整报告</button></div></div>${notes}</section>${notice}`;
     }
     function groupMarkup(id) {
-      const list = goals().filter(item => item.leader_session_id === id), open = expandedGroups.has(id), active = goal();
-      const tasksSelected = open || goalId != null;
-      // Use the same navigation in general, list and task views so returning never moves across the header.
-      const bar = `<div class="group-goal-bar">
-        <div class="goal-view-tabs" role="tablist" aria-label="本组工作视图">
-          <button class="btn ghost ${!tasksSelected ? "active" : ""}" role="tab"
-            aria-selected="${!tasksSelected}" tabindex="${!tasksSelected ? 0 : -1}"
-            data-goal-act="general">总会话</button>
-          <button class="btn ghost ${tasksSelected ? "active" : ""}" role="tab"
-            aria-selected="${tasksSelected}" tabindex="${tasksSelected ? 0 : -1}"
-            data-goal-act="list" ${goalId != null && !open ? 'title="返回任务清单" aria-label="返回任务清单"' : ""}>
-            任务清单 <span>${list.length}</span>
-          </button>
-        </div>
-        <span class="gap"></span>
-        <button class="btn ghost" data-goal-act="create" data-leader-id="${esc(id)}">＋ 建立目标</button>
-      </div>`;
-      if (open) return bar + `<section class="group-goal-list" role="tabpanel" aria-label="本组任务清单">${cards(list, state().leaders, goalId)}</section>`;
-      if (goalId == null) {
-        const leader = state()?.leaders.find(item => item.session_id === id);
-        if (!leader) return bar;
-        return bar + `<section class="goal-detail leader-decision-control" aria-label="leader 自主推进授权">
-          <div class="goal-detail-title"><span>leader 授权</span>
-            <div class="goal-mode-control" role="group" aria-label="leader 决策方式">
-              ${[["human","由我拍板"],["autonomous","自主推进"]].map(([mode,label]) => `
-                <button type="button" data-goal-act="leader-mode" data-leader-id="${esc(id)}" data-mode="${mode}"
-                  aria-pressed="${Boolean(leader.trust?.enabled) === (mode === "autonomous")}"
-                  ${actionBusy ? "disabled" : ""}>${label}</button>`).join("")}
-            </div>
-          </div>
-          <p class="note">${leader.trust?.enabled
-            ? "leader 可在交办范围内自主取舍，并开启自己负责的自主任务。已有任务按各自设置执行。"
-            : "重要取舍由你拍板。授权自主推进后，leader 可开启自己负责的自主任务。"}</p>
-        </section>`;
-      }
-      if (!active) return bar + `<section class="goal-detail"><p class="${errors.has(String(goalId)) ? "error-line" : "note"}">${esc(errors.get(String(goalId)) || "正在读取目标…")}</p><button class="btn ghost" data-goal-act="refresh">重新读取</button></section>`;
-      return bar + `<section class="goal-detail goal-compact" data-goal-detail="${esc(active.id)}">
-        <div class="goal-detail-title">
-          <span class="goal-status" data-status="${esc(active.status)}">${esc(status(active.status))}</span>
-          <h1 title="${esc(active.title)}">${esc(active.title)}</h1>
-          <div class="goal-mode-control" role="group" aria-label="本任务决策方式">
-            ${[["human","由我拍板"],["autonomous","自主推进"]].map(([mode,label]) => `
-              <button type="button" data-goal-act="mode" data-mode="${mode}"
-                aria-pressed="${(active.decision_mode?.mode || "human") === mode}"
-                title="仅改变此任务的决策方式，不启动执行" ${actionBusy ? "disabled" : ""}>${label}</button>
-            `).join("")}
-          </div>
-          ${actionError || errors.has(String(goalId)) ? '<button class="text-link goal-error-indicator" data-act="task-panel">查看任务提示</button>' : ""}
-        </div>
-      </section>`;
+      const list = goals().filter(item => item.leader_session_id === id), active = goal();
+      return `<div class="group-goal-bar"><button class="btn ghost" data-goal-act="list" aria-expanded="${expandedGroups.has(id)}" aria-controls="side-task-section">任务清单 <span>${list.length}</span></button><span class="gap"></span>${active ? `<div class="goal-mode-control" role="group" aria-label="本任务决策方式">${[["human","由我拍板"],["autonomous","自主推进"]].map(([mode,label]) => `<button type="button" data-goal-act="mode" data-mode="${mode}" aria-pressed="${active.decision_mode?.mode === mode}" ${actionBusy ? "disabled" : ""}>${label}</button>`).join("")}</div>` : ""}<button class="btn ghost" data-goal-act="create" data-leader-id="${esc(id)}">＋ 建立目标</button></div>`;
     }
     function sideMarkup(id = ownerId) {
       if (goalId == null || expandedGroups.has(id)) {
@@ -174,11 +126,13 @@
       const active = goal();
       if (!active) return `<p class="note">${esc(errors.get(String(goalId)) || "正在读取任务…")}</p><button class="btn ghost" data-goal-act="refresh">重新读取</button>`;
       const result = current(), reports = result?.reports || [], review = result?.acceptance_review || result?.previous_acceptance_review;
-      const followup = ["awaiting_acceptance","completed","failed"].includes(active.status) ? '<p class="goal-followup-hint">可以在当前任务继续聊、补充要求或修改报告，已有交付记录会保留。</p>' : "";
-      const actions = active.status === "awaiting_acceptance" ? [["accept","验收通过"],["reject","需要修改"]] : active.status === "queued" ? [["start", "开始推进"]] : ["paused","waiting_user"].includes(active.status) ? [["resume", "继续推进"]] : !ended(active.status) && active.status !== "pausing" ? [["pause", "暂停目标"]] : [];
+      const followup = '<p class="goal-followup-hint">在总会话输入框旁点亮任务小框，可补充本任务的要求。</p>';
+      const actions = active.status === "awaiting_acceptance" ? [["accept","通过"],["reject","打回并说明"]] : active.status === "queued" ? [["start", "开始推进"]] : ["paused","waiting_user"].includes(active.status) ? [["resume", "继续推进"]] : !ended(active.status) && active.status !== "pausing" ? [["pause", "暂停目标"]] : [];
       if (!ended(active.status) && active.status !== "awaiting_acceptance") actions.push(["cancel", "取消目标"]);
-      return `<section class="goal-tools" data-goal-tools="${esc(active.id)}"><div class="goal-detail-title"><span class="goal-status" data-status="${esc(active.status)}">${esc(status(active.status))}</span><h1 title="${esc(active.title)}">${esc(active.title)}</h1></div><div class="goal-actions">${actions.map(([action,label]) => `<button class="btn ${["start","resume","accept"].includes(action) ? "goal-primary-action" : "ghost"}" data-goal-act="action" data-action="${action}" ${actionBusy ? "disabled" : ""}>${pendingAction === action ? "正在处理…" : label}</button>`).join("")}</div>${window.CrewGoalWork?.markup(current()?.work_items || [], [...(state()?.leaders || []), ...(state()?.members || [])]) || ""}<div class="goal-materials"><button class="btn ghost" data-goal-act="drawer" data-kind="requirements" aria-controls="goal-drawer" aria-expanded="${drawer === "requirements"}">需求与验收</button><button class="btn ghost" data-goal-act="drawer" data-kind="reports" aria-controls="goal-drawer" aria-expanded="${drawer === "reports"}">交付与文档${reports.length ? ` · ${reports.length}` : ""}</button><button class="btn ghost" data-goal-act="drawer" data-kind="context" aria-controls="goal-drawer" aria-expanded="${drawer === "context"}">上下文</button><button class="text-link" data-goal-act="versions">成果版本</button><span class="goal-updated">需求 v${esc(active.requirement_version || 1)}</span></div>${followup}${deliveryMarkup(active, reports)}${review ? `<details class="goal-review"><summary>${review.round < active.current_round ? "之前记录 · " : ""}${review.accepted ? "你已验收通过" : "你退回修改"}${review.note ? `：${esc(review.note.slice(0,80))}${review.note.length > 80 ? "…" : ""}` : ""}</summary><p>${esc(review.note || "你确认交付符合验收要求。")}<br><span>原始交付报告保持生成时的内容和状态。</span></p></details>` : ""}${actionError || errors.has(String(goalId)) && deliveryNotice?.goalId !== String(goalId) ? `<p class="goal-action-error error-line" role="alert">${esc(actionError || errors.get(String(goalId)))}</p>` : ""}</section>`;
+      const actionButtons = `<div class="goal-actions">${actions.map(([action,label]) => `<button class="btn ${["start","resume","accept"].includes(action) ? "goal-primary-action" : "ghost"}" data-goal-act="action" data-action="${action}" ${actionBusy ? "disabled" : ""}>${pendingAction === action ? "正在处理…" : label}</button>`).join("")}</div>`;
+      return `<section class="goal-tools" data-goal-tools="${esc(active.id)}"><div class="goal-detail-title"><span class="goal-status" data-status="${esc(active.status)}">${esc(status(active.status))}</span><h1 title="${esc(active.title)}">${esc(active.title)}</h1></div>${active.status === "awaiting_acceptance" ? "" : actionButtons}<section class="task-requirements"><h2>需求</h2>${requirementsMarkup(active)}</section><section class="task-progress"><h2>进度</h2>${window.CrewGoalWork.markup(current()?.work_items || [], [...state().leaders, ...state().members])}<ul class="task-owners">${(current()?.executions || []).filter(item => item.round === active.current_round && item.requirement_version === active.requirement_version).map(item => `<li>${esc([...state().leaders, ...state().members].find(person => person.session_id === item.session_id)?.name)} · ${esc(status(item.status))}</li>`).join("")}</ul></section><section class="task-delivery" aria-label="交付"><h2>交付</h2>${deliveryMarkup(active, reports)}${active.status === "awaiting_acceptance" ? actionButtons : ""}<div class="goal-materials"><button class="btn ghost" data-goal-act="drawer" data-kind="requirements" aria-controls="goal-drawer" aria-expanded="${drawer === "requirements"}">需求与验收</button><button class="btn ghost" data-goal-act="drawer" data-kind="reports" aria-controls="goal-drawer" aria-expanded="${drawer === "reports"}">交付与文档${reports.length ? ` · ${reports.length}` : ""}</button><button class="btn ghost" data-goal-act="drawer" data-kind="context" aria-controls="goal-drawer" aria-expanded="${drawer === "context"}">上下文</button><button class="text-link" data-goal-act="versions">成果版本</button><span class="goal-updated">需求 v${esc(active.requirement_version || 1)}</span></div>${options.renderDocuments?.(result?.documents || [], goalId) || ""}${review ? `<details class="goal-review"><summary>${review.round < active.current_round ? "之前记录 · " : ""}${review.accepted ? "你已验收通过" : "你退回修改"}${review.note ? `：${esc(review.note.slice(0,80))}${review.note.length > 80 ? "…" : ""}` : ""}</summary><p>${esc(review.note || "你确认交付符合验收要求。")}<br><span>原始交付报告保持生成时的内容和状态。</span></p></details>` : ""}${actionError || errors.has(String(goalId)) && deliveryNotice?.goalId !== String(goalId) ? `<p class="goal-action-error error-line" role="alert">${esc(actionError || errors.get(String(goalId)))}</p>` : ""}</section>${followup}</section>`;
     }
+
     function requirementsMarkup(active) {
       return `<section class="goal-requirements"><h3>${esc(active.title)}</h3><strong>原始需求与验收标准</strong><p>${esc(active.request)}</p>${active.acceptance?.length ? `<ol>${active.acceptance.map(item => `<li>${esc(typeof item === "string" ? item : item.title)}</li>`).join("")}</ol>` : '<p class="note">尚未写明验收标准</p>'}${active.constraints?.length ? `<strong>约束</strong><ul>${active.constraints.map(item => `<li>${esc(item)}</li>`).join("")}</ul>` : ""}</section>`;
     }
@@ -382,7 +336,6 @@
       else if (act === "delivery") void openDelivery(button.dataset.goalId);
       else if (act === "retry-report") retryDirect();
       else if (act === "conclusion-toggle" || act === "report-notes-toggle") { const key = `${goalId}:${button.dataset.reportId}`, expanded = act === "report-notes-toggle" ? reportNotesOpen : conclusionsOpen; if (expanded.has(key)) expanded.delete(key); else expanded.add(key); changed(); }
-      else if (act === "general") { expandedGroups.delete(ownerId); options.onGeneral(ownerId); document.querySelector?.('[data-goal-act="general"]')?.focus(); }
       else if (act === "list") { expandedGroups.add(ownerId); closeDrawer(); changed(); document.querySelector?.('[data-goal-act="list"]')?.focus(); }
       else if (act === "create") showCreate(button.dataset.leaderId);
       else if (act === "close-create" && !actionBusy) { const action = formOverlay?.querySelector("[data-goal-confirm]")?.dataset.goalConfirm; formOverlay?.remove(); formOverlay = null; restoreFocus(action ? `[data-action="${action}"]` : '[data-goal-act="create"]'); }
@@ -408,8 +361,6 @@
       return true;
     }
     document.addEventListener("keydown", event => {
-      const tab = event.target.closest?.('.goal-view-tabs [role="tab"]');
-      if (tab && ["ArrowLeft","ArrowRight","Home","End"].includes(event.key)) { event.preventDefault(); const act = event.key === "Home" || event.key === "ArrowLeft" ? "general" : "list"; tab.parentElement.querySelector(`[data-goal-act="${act}"]`).click(); document.querySelector(`.goal-view-tabs [data-goal-act="${act}"]`)?.focus(); return; }
       if (event.key !== "Tab" || !formOverlay) return;
       const items = [...formOverlay.querySelectorAll('button:not([disabled]),input,textarea')], first = items[0], last = items[items.length - 1];
       if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }

@@ -74,6 +74,24 @@ def main():
                 'version': delivered_goal['version'], 'report_id': delivered_report['id']})
             assert code == 200, accepted
             delivered = {'goal_id': delivered_goal['id'], 'leader': 's3', 'report_id': delivered_report['id']}
+            # UI alignment exercises real stored acceptance/decision state without a live carrier.
+            review_goal, review_report, _, _ = case.awaiting_acceptance()
+            delivered['review_goal_id'] = review_goal['id']
+            delivered['review_report_id'] = review_report['id']
+            board.set_task(case.conn, 'coordinator', '协调声音评测与客户端联调，分别核对原始证据。')
+            board.set_task(case.conn, 's3', '维护录音样本，交付可复测的说话人识别结论。')
+            board.ask(case.conn, 'coordinator', '选择本轮验收方式', brief={
+                'title': '选择本轮验收方式', 'context': '隔离浏览器验收，使用假载体。',
+                'why_user': '需要你确定验收顺序。', 'recommendation_reason': '先验证主要流程。',
+                'impact': '只影响本轮顺序。', 'options': [
+                    {'label': '先验证主要流程', 'consequence': '先走主要流程，再看边界。'},
+                    {'label': '先验证窄屏', 'consequence': '先走窄屏，再看主要流程。'}]})
+            board.join(case.conn, 'ui-git-admin', 'demo', 'Git 管理员', case.project, case.project, 'main', role='leader')
+            case.git_repo()
+            case.git('branch', '-M', 'main')
+            from crew import git_admin
+            git_admin.configure(case.conn, 'demo', {'revision': git_admin.revision(board.git_config(case.conn, 'demo')),
+                'admin_session_id': 'ui-git-admin', 'base': 'main', 'stable': '', 'branch_rules': ''})
         navigation = []
         if os.environ.get('CREW_NAVIGATION_REVIEW_FIXTURE') == '1':
             other = case.root / 'navigation-project'

@@ -29,7 +29,7 @@ async function main(){
   await page.evaluate(()=>{window.keptInput=document.querySelector('.composer textarea');window.keptHost=document.querySelector('#chat-host');keptInput.setSelectionRange(2,5);});
   await page.screenshot({path:path.join(out,'01-before-detail.png')});
   releaseDetail();
-  await page.locator('#chat-head span.model-tag').waitFor();
+  await page.locator('#side-task-body [data-goal-tools]').waitFor();
   await page.waitForTimeout(300);
   const chat=await page.evaluate(()=>{const input=document.querySelector('.composer textarea');return {sameInput:keptInput===input,sameHost:keptHost===document.querySelector('#chat-host'),draft:input.value,focused:document.activeElement===input,selection:[input.selectionStart,input.selectionEnd]};});
   assert.equal(chat.sameInput,!before,'late execution metadata must retain the composer');
@@ -37,7 +37,7 @@ async function main(){
   assert.equal(chat.draft,'等待资料时保留的草稿');
   if(!before){assert.equal(chat.focused,true);assert.deepEqual(chat.selection,[2,5]);}
   await page.screenshot({path:path.join(out,'02-after-detail.png')});
-  await page.locator('#chat-head [data-act="task-panel"]').click();
+  await page.locator('#side-task-body [data-goal-tools]').waitFor();
   await page.locator('#side-task-body [data-goal-act="drawer"][data-kind="reports"]').click();
   await page.locator('#goal-drawer .goal-report-card').first().click();
   await page.locator('#goal-drawer iframe').waitFor();

@@ -24,6 +24,7 @@ const form = (runtime="codex", model="", effort="") => ({dataset:{runtimeExplici
   querySelector(selector) { return selector === '[type="submit"]' ? this.submit : this.refresh; }});
 
 function harness(state = fixture(), fetcher = () => { throw new Error("Unexpected network request"); }) {
+  state.goals ??= [];
   const nodes = new Map();
   const node = () => ({innerHTML:"", textContent:"", className:"", hidden:false, dataset:{},classList:{contains:()=>false},
     contains:() => false, querySelectorAll:() => [], setAttribute(name, value) { this[name] = value; }});
@@ -43,11 +44,11 @@ function harness(state = fixture(), fetcher = () => { throw new Error("Unexpecte
   const end = "  setup();\n})();";
   assert(source.endsWith(end + "\n") || source.endsWith(end));
   vm.runInContext(source.replace(end, `  window.ui = {runtimeList, runtimeInfo, defaultRuntime, modelEfforts, modelMenu, optionChange,
-    optionsLabel, leaderPayload, renderLeaderRuntime, selectLeaderOption, refreshRuntimes, editorHandoffReason, sessionMenu, chatAccess, goalChatNotes,
-    contextRing, contextControls, sidebarLeader, memberNode, workingRow, compactContext, compactions,
-    taskContextControls, compactFailures, releaseTaskCompactions, setGoal(client, id) {goals=client;goalId=id;},
+    optionsLabel, leaderPayload, renderLeaderRuntime, selectLeaderOption, refreshRuntimes, editorHandoffReason, sessionMenu, chatAccess,
+    saveNormalOrder, sortableLeaders, contextRing, contextControls, sidebarLeader, memberNode, workingRow, compactContext, compactions,
+    compactFailures, setGoal(client, id) {goals=client;goalId=id;},
     openTodos, todosOf, pendingOf, todoCard, todoTray, todoExpanded, todoActions,
-    todoResolvePayload, resolveTodo, renderTodos, replace,
+    todoResolvePayload, resolveTodo, renderTodos, replace, action, changeSession,
     compactDecisionText, decisionOptions, decisionCard, decisionsOpen,
     route() {readRoute(); return {view,leaderId,readOnlyId};},
     services(values) {if(values.api)api=values.api;if(values.loadState)loadState=values.loadState;if(values.toast)toast=values.toast;if(values.render)render=values.render;if(values.watchCompact)CrewChat.watchCompact=values.watchCompact;},
@@ -56,6 +57,23 @@ function harness(state = fixture(), fetcher = () => { throw new Error("Unexpecte
   return {ui:sandbox.window.ui, nodes, location:sandbox.location};
 }
 const plain = value => JSON.parse(JSON.stringify(value));
+
+test("archive and remove conflicts toast the exact backend Chinese reason",async()=>{
+  for(const route of ["/api/session/archive","/api/session/remove"]){
+    const reason="会话仍有待验收任务，请先完成验收",toasts=[];
+    const {ui}=harness(fixture(),async()=>({ok:false,status:409,json:async()=>({error:reason})}));
+    ui.services({toast:text=>toasts.push(text)});
+    await ui.action(route,()=>ui.changeSession("member",route,"已处理",true));assert.deepEqual(toasts,[reason]);
+  }
+});
+
+test("reordering visible leaders preserves the hidden Git administrator exactly once",async()=>{
+  const state=fixture(),posts=[];state.project={name:"fixture"};state.leaders=[
+    {session_id:"a",name:"A",priority:null},{session_id:"git",name:"Git",priority:null,is_git_admin:true},{session_id:"b",name:"B",priority:null}];
+  const {ui}=harness(state);ui.services({api:async(path,data)=>posts.push({path,data}),loadState:async()=>{}});
+  assert.deepEqual(plain(ui.sortableLeaders(state.leaders[0]).map(item=>item.session_id)),["a","b"]);
+  await ui.saveNormalOrder(["b","a"]);assert.deepEqual(plain(posts[0]),{path:"/api/leaders/order",data:{project:"fixture",order:["b","git","a"]}});
+});
 
 test("new leader auto selects a sole runtime and asks for a choice when both are installed", () => {
   for(const installed of [["codex"],["claude"],["claude","codex"],[]]){
@@ -103,22 +121,10 @@ test("collected offline people can start a conversation while known external ses
   }
 });
 
-test("goal status controls composer access without promising discussion around a manual pause", () => {
-  const {ui}=harness(),person={web_chat:false,running:true,where:"vscode"};
-  for(const status of ["paused","pausing","cancelled"]){const access=ui.chatAccess(person,{status});assert.equal(access.readonly,true);assert.match(access.readonlyReason,status==="cancelled"?/返回总会话讨论后续安排/:/明确恢复/);}
-  for(const status of ["queued","running","waiting_user","completed","failed","awaiting_acceptance"])assert.deepEqual(plain(ui.chatAccess(person,{status})),{readonly:false});
-});
 
-test("only a queued goal without native execution claims it has not started", () => {
-  const {ui}=harness();
-  for(const status of ["running","pausing","paused","waiting_user","awaiting_acceptance","completed","failed","cancelled"])assert.deepEqual(plain(ui.goalChatNotes({status},false,true)),{badge:"",hint:""},status);
-  const queued=ui.goalChatNotes({status:"queued"},false,false);assert.equal(queued.badge,"本目标尚未启动");assert.match(queued.hint,/会开始本任务/);
-  assert.deepEqual(plain(ui.goalChatNotes({status:"completed"},true,true)),{badge:"还没有该成员的执行记录",hint:"该成员在这个目标中还没有执行记录。"});
-  assert.match(ui.goalChatNotes({status:"running"},true,false).hint,/会启动该成员/);
-});
 
 test("a paused task does not lock the person's independent general conversation",()=>{
-  const state=fixture();state.goals=[{id:"goal",status:"paused"}];const {ui}=harness(state),person={active_goal_id:"goal",web_chat:true,running:false,where:"offline"};assert.equal(ui.chatAccess(person,null).readonly,false);assert.equal(ui.chatAccess(person,state.goals[0]).readonly,true);state.goals[0].status="completed";assert.equal(ui.chatAccess(person,null).readonly,false);
+  const state=fixture();state.goals=[{id:"goal",status:"paused"}];const {ui}=harness(state),person={active_goal_id:"goal",web_chat:true,running:false,where:"offline"};assert.equal(ui.chatAccess(person,null).readonly,false);assert.equal(ui.chatAccess(person).readonly,false);state.goals[0].status="completed";assert.equal(ui.chatAccess(person,null).readonly,false);
 });
 
 test("existing session model menus use its own tool catalog and never expose runtime conversion", () => {
@@ -226,7 +232,7 @@ const todo = extra => ({id:17, title:"在手机上确认登录", steps:"打开�
   blocking:true, status:"open", note:"", session_id:"member-1", proposer_name:"连接助手", group:"登录",
   leader_session_id:"leader-1", leader_name:"登录", priority:1, created_at:"2026-10-24T00:00:00Z", updated_at:"2026-10-24T00:00:00Z", version:2, ...extra});
 const todoState = () => ({...fixture(), project:{name:"fixture"}, leaders:[{session_id:"leader-1", name:"登录"}], members:[],
-  decisions:[{id:90, leader_session_id:"leader-1", held:false}], todos:[todo({id:44}), todo({id:17}), todo({id:52, leader_session_id:"leader-2"})]});
+  decisions:[{id:90, leader_session_id:"leader-1", session_id:"leader-1", asker:"登录", held:false, presentation_stage:"notice"}], todos:[todo({id:44}), todo({id:17}), todo({id:52, leader_session_id:"leader-2"})]});
 
 test("first open shows the workspace overview while explicit conversation and TODO routes remain stable", () => {
   const state = todoState(), {ui, location} = harness(state);
@@ -438,7 +444,7 @@ test("every context ring is a named native button at low and high usage across b
       assert(!html.includes(' disabled'));assert(!html.includes('Leader <&"'));
       assert.equal((ui.contextControls(item).match(/<button /g)||[]).length,1,"the ring replaces the duplicate text control");
     }
-    assert(ui.sidebarLeader(state.leaders[0]).startsWith('<div draggable="true"'));
+    assert(ui.sidebarLeader(state.leaders[0],0).startsWith('<div draggable="true"'));
     assert(ui.memberNode(state.members[0]).includes('<div class="node session-surface'));
     assert(ui.workingRow(state.leaders[0]).includes('class="session-open"'));
   }
@@ -490,67 +496,3 @@ function taskHarness(runtime="codex") {
   ui.setGoal(client,"goal-1");
   return {state,ui,executions,refreshes};
 }
-const taskRing=(ui,state,id,execution)=>ui.taskContextControls([...state.leaders,...state.members].find(item=>item.session_id===id),execution);
-
-test("task rings show each person's own task execution, honestly unknown, and every compaction phase",()=>{
-  for(const runtime of ["claude","codex"])for(const id of ["lead","member"]){
-    const {state,ui,executions}=taskHarness(runtime),execution=executions[id];
-    let html=taskRing(ui,state,id,execution);
-    assert(html.includes(`data-id="${id}" data-goal-id="goal-1" data-execution-id="exec-${id}"`));
-    assert.match(html,/class="context-ring calm"/);assert(html.includes(">12%<"));
-    assert(html.includes("任务「长任务 &lt;名称&gt;」 第 2 轮"),"label names person, task and round");
-    assert(!html.includes("长任务 <名称>"),"long names stay escaped");
-    execution.context={used:90000,max:100000};assert.match(taskRing(ui,state,id,execution),/context-ring danger/);
-    execution.context=null;html=taskRing(ui,state,id,execution);
-    assert.match(html,/context-ring unknown/);assert(html.includes(">—<"));assert(html.includes("上下文用量未知"));assert(!html.includes("context-arc"));
-    for(const max of [null,0]){execution.context={used:12000,max};html=taskRing(ui,state,id,execution);
-      assert(html.includes("上限未知"));assert(!html.includes("%"),"no percent without a valid limit");assert(!html.includes("context-arc"));}
-    execution.context={used:12000,max:100000};execution.compaction="queued";html=taskRing(ui,state,id,execution);
-    assert(html.includes("is-queued"));assert(html.includes('aria-disabled="true"'));assert(html.includes("已排队"));
-    execution.compaction="compacting";html=taskRing(ui,state,id,execution);assert(html.includes("is-compacting"));assert(html.includes("正在压缩"));
-    assert.equal(taskRing(ui,state,id,null),"","no execution, nothing to compact");
-    // The general ring of the same identity does not inherit the task's state.
-    assert(!ui.contextRing(state.leaders.concat(state.members).find(item=>item.session_id===id)).includes("is-compacting"));
-  }
-});
-
-test("task compaction names its execution, suppresses repeats, and keeps general and other tasks independent",async()=>{
-  for(const id of ["lead","member"]){
-    const {state,ui,executions}=taskHarness(),writes=[];let watcher,release;
-    ui.services({render(){},loadState:async()=>{},toast(){},
-      watchCompact:async(sid,options)=>{assert.equal(sid,id);assert.equal(options.executionId,`exec-${id}`);watcher=options;return()=>{};},
-      api:async(path,data)=>{writes.push({path,...data});return new Promise(resolve=>{release=resolve;});}});
-    const pending=ui.compactContext(id,"goal-1",`exec-${id}`);await Promise.resolve();await Promise.resolve();
-    await ui.compactContext(id,"goal-1",`exec-${id}`);
-    assert.equal(writes.length,1);
-    assert.deepEqual(plain(writes[0]),{path:"/api/session/compact",session_id:id,goal_id:"goal-1",execution_id:`exec-${id}`,after_turn:true});
-    assert(taskRing(ui,state,id,executions[id]).includes("正在请求压缩"));
-    assert(!ui.contextRing(state.leaders.concat(state.members).find(item=>item.session_id===id)).includes("aria-busy"),"general chat stays free");
-    release({ok:true,queued:true,session_id:id,goal_id:"goal-1",execution_id:`exec-${id}`});await pending;
-    assert(taskRing(ui,state,id,executions[id]).includes("is-queued"));
-    watcher.onState({context:{used:12000,max:100000},compaction:"compacting"});assert(taskRing(ui,state,id,executions[id]).includes("is-compacting"));
-    watcher.onFinish({type:"compact",seq:4});assert.equal(ui.compactions.size,0);
-  }
-});
-
-test("a stale execution conflict re-reads the task and does not mark failure; a real failure stays visible until retried",async()=>{
-  const {state,ui,executions,refreshes}=taskHarness();let closed=0,mode="conflict";
-  ui.services({render(){},loadState:async()=>{},toast(){},watchCompact:async(_id,options)=>{return()=>closed++;},
-    api:async()=>{if(mode==="conflict"){const error=Error("任务执行已变化，请刷新后再压缩");error.status=409;throw error;}throw Error("原生压缩拒绝");}});
-  await assert.rejects(ui.compactContext("member","goal-1","exec-member"),/换轮或换代.*重新读取/);
-  assert.deepEqual(refreshes,["goal-1"]);assert.equal(closed,1);assert.equal(ui.compactFailures.size,0);
-  mode="fail";await assert.rejects(ui.compactContext("member","goal-1","exec-member"),/原生压缩拒绝/);
-  const html=taskRing(ui,state,"member",executions.member);assert(html.includes("has-failed"));assert(html.includes("原生压缩拒绝"));assert(html.includes("点击重试"));
-});
-
-test("leaving the task execution discards its pending request so a late receipt cannot touch the new view",async()=>{
-  const {state,ui,executions}=taskHarness();let closed=0,release,posted;
-  const inFlight=new Promise(resolve=>{posted=resolve;});
-  ui.services({render(){},loadState:async()=>{},toast(){},watchCompact:async()=>()=>closed++,api:async()=>new Promise(resolve=>{release=resolve;posted();})});
-  const pending=ui.compactContext("lead","goal-1","exec-lead");await inFlight;
-  assert.equal(ui.compactions.size,1);
-  executions.lead={...executions.lead,id:"exec-lead-2",round:3};
-  ui.releaseTaskCompactions("lead:goal-1:exec-lead-2");assert.equal(ui.compactions.size,0);assert.equal(closed,1);
-  release({ok:true,queued:true});await pending;
-  assert.equal(ui.compactions.size,0);assert(!taskRing(ui,state,"lead",executions.lead).includes("is-queued"));
-});
