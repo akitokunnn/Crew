@@ -3,17 +3,36 @@
   const CONTEXT_WARN = 0.5, CONTEXT_DANGER = 0.8;
   const tokens = value => value >= 10000 ? `${(value / 10000).toFixed(1)} 万` : String(Math.round(value));
   const escape = value => String(value).replace(/[&<>"']/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]);
+  const known = value => typeof value === "number" && Number.isFinite(value) && value >= 0;
+  // Percent only exists when both numbers are real and the limit is positive.
+  function usage(context) {
+    const used = known(context?.used) ? context.used : null, max = known(context?.max) && context.max > 0 ? context.max : null;
+    const ratio = used !== null && max !== null ? used / max : null;
+    return {used, max, ratio, percent:ratio === null ? null : Math.round(ratio * 100)};
+  }
+  function usageText(context) {
+    const value = usage(context);
+    if (value.ratio !== null) return `上下文已用 ${tokens(value.used)} / ${value.max >= 10000 ? `${Number((value.max / 10000).toFixed(1))} 万` : tokens(value.max)}（${value.percent}%）`;
+    return value.used === null ? "上下文用量未知" : `上下文已用 ${tokens(value.used)}，上限未知`;
+  }
+  // target: id, name, phase (submitting|queued|compacting), failed (reason), busy, external.
+  // Task rings also pass goalId, executionId and scope, and show the unknown state instead of hiding.
   function ring(context, target) {
-    if (context === null) return "";
-    const ratio = context.used / context.max, percent = Math.round(ratio * 100);
-    const maximum = context.max >= 10000 ? `${Number((context.max / 10000).toFixed(1))} 万` : tokens(context.max);
-    const hint = target.phase === "queued" ? "已排队，本轮结束后压缩" : target.phase === "submitting" ? "正在请求压缩…" : target.phase ? "正在压缩上下文…" : target.external ? "点击查看原工具压缩方式" : target.busy ? "点击在本轮结束后压缩" : "点击压缩上下文";
-    const label = `${target.name} · 上下文已用 ${tokens(context.used)} / ${maximum}（${percent}%） · ${hint}`;
-    return `<button type="button" class="context-ring ${ratio >= CONTEXT_DANGER ? "danger" : ratio >= CONTEXT_WARN ? "warn" : "calm"}${target.phase ? " is-compacting" : ""}" data-act="context-compact" data-id="${escape(target.id)}" title="${escape(label)}" aria-label="${escape(label)}" ${target.phase ? 'aria-busy="true" disabled' : ""}><svg viewBox="0 0 20 20" aria-hidden="true"><circle class="context-track" cx="10" cy="10" r="7.5"/><circle class="context-arc" cx="10" cy="10" r="7.5" pathLength="100" stroke-dasharray="${Math.min(100, ratio * 100)} 100"/></svg><span class="context-pct" aria-hidden="true">${percent}%</span></button>`;
+    if (context === null && !target.showUnknown) return "";
+    const value = usage(context), phase = target.phase || null;
+    const hint = phase === "queued" ? "已排队，本轮结束后压缩" : phase === "submitting" ? "正在请求压缩…" : phase ? "正在压缩上下文…"
+      : target.external ? "点击查看原工具压缩方式" : target.failed ? `上次压缩未完成：${target.failed} · 点击重试` : target.busy ? "点击在本轮结束后压缩" : "点击压缩上下文";
+    const label = [target.name, target.scope, usageText(context), hint].filter(Boolean).join(" · ");
+    const level = value.ratio === null ? "unknown" : value.ratio >= CONTEXT_DANGER ? "danger" : value.ratio >= CONTEXT_WARN ? "warn" : "calm";
+    const text = value.percent !== null ? `${value.percent}%` : value.used !== null ? tokens(value.used) : "—";
+    const state = phase === "queued" ? " is-queued" : phase ? " is-compacting" : target.failed ? " has-failed" : "";
+    // Data attributes stay identical across states so a re-render keeps keyboard focus on the ring.
+    const scope = target.goalId == null ? "" : ` data-goal-id="${escape(target.goalId)}" data-execution-id="${escape(target.executionId ?? "")}"`;
+    return `<button type="button" class="context-ring ${level}${state}" data-act="context-compact" data-id="${escape(target.id)}"${scope} title="${escape(label)}" aria-label="${escape(label)}" ${phase ? 'aria-busy="true" aria-disabled="true"' : ""}><svg viewBox="0 0 20 20" aria-hidden="true"><circle class="context-track" cx="10" cy="10" r="7.5"/>${value.ratio === null ? "" : `<circle class="context-arc" cx="10" cy="10" r="7.5" pathLength="100" stroke-dasharray="${Math.min(100, value.ratio * 100)} 100"/>`}</svg><span class="context-pct" aria-hidden="true">${escape(text)}</span></button>`;
   }
   // A freshly resumed Codex thread reports no size before compaction.
   const compactSize = value => value === null ? "未知" : tokens(value);
-  window.CrewContext = {tokens, ring, compactSize};
+  window.CrewContext = {tokens, ring, usage, usageText, compactSize};
 })();
 (() => {
   const turns = new Map(), snapshotKeys = new Set();
@@ -653,6 +672,8 @@
     else if (event.type === "compact_request" || event.type === "compact") {
       context.items.push({...event, id:`${event.type}:${event.seq}`, kind:event.type, lastSeq:event.seq});
       if (incremental && event.type === "compact") notifyCompact(context.session.session_id, event, context.toast, context.goalId);
+      // Task rings read usage and compaction from the goal detail; refresh it when this execution's native state moves.
+      if (incremental && context.goalId != null) context.onExecutionChange?.();
     }
     else if (event.type === "error") context.items.push({ ...event, id: `error:${event.seq}`, kind: "error", lastSeq: event.seq });
     if (incremental) { composerState(context); schedule(context); }
@@ -933,6 +954,9 @@
     // releases its HTTP connection instead of reserving another long-lived stream.
     const history = await options.api(path);
     const executionId = history.execution_id ?? null;
+    if (options.executionId != null && executionId !== options.executionId) {
+      const error = new Error("任务执行已变化，请刷新后再压缩"); error.status = 409; throw error;
+    }
     let cursor = history.events.at(-1)?.seq || 0, timer = null, closed = false, reading = false, failed = false;
     const close = () => {
       closed = true; clearTimeout(timer); timer = null;
@@ -947,6 +971,7 @@
         const latest = await options.api(path);
         if (closed) return;
         failed = false;
+        if (executionId === null || latest.execution_id === executionId) options.onState?.({context:latest.context ?? null, compaction:latest.compaction ?? null});
         const execution = executionId === null || latest.execution_id === executionId
           ? latest : (latest.previous_executions || []).find(value => value.execution_id === executionId);
         for (const event of execution?.events || []) {

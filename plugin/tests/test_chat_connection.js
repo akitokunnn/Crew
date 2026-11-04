@@ -459,7 +459,7 @@ test("starting a queued goal rebinds the app to the execution journal, closes th
   Object.defineProperty(main,"innerHTML",{set(value){this.markup=value;for(const [,id]of value.matchAll(/id="([^"]+)"/g))nodes.set(id,host());},get(){return this.markup||"";}});
   h.sandbox.document.getElementById=id=>nodes.get(id)||null;
   h.sandbox.location={search:"?project=fixture",origin:"http://fixture.local"};
-  h.sandbox.CrewContext={};
+  h.sandbox.CrewContext=h.sandbox.window.CrewContext;
   const api=async(url,data)=>{
     calls.push({url,data});
     if(url==="/api/goals/action"){

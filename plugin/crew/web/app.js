@@ -20,7 +20,7 @@
   let soundGeneration = 0;
   let runtimesCache = null, runtimesPromise = null, runtimesLoading = false, runtimesError = null;
   let auxiliaryDialog = 0;
-  const compactions = new Map();
+  const compactions = new Map(), compactFailures = new Map();
   const waitingSounds = new Map();
   let fontScale = 1;
   const FONT_MIN = .9, FONT_MAX = 1.4;
@@ -123,12 +123,24 @@
   }
   const memberModel = item => item.where === "bg" ? `<span class="member-model">${esc(optionsLabel(item))}</span>` : "";
   const memberActivity = item => item.where === "bg" ? CrewActivity.markup(item, true) : "";
-  const contextRing = item => CrewContext.ring(item.context, {id:item.session_id, name:item.name, busy:item.busy,
+  // One key per native conversation: the identity's general chat, or one task execution (round/generation).
+  const compactKey = (id, selectedGoal = null, executionId = null) => selectedGoal == null ? id : `${id}:${selectedGoal}:${executionId ?? ""}`;
+  // Lists hide an unknown ring to stay quiet; the open conversation's header shows it honestly.
+  const contextRing = (item, showUnknown = false) => CrewContext.ring(item.context, {id:item.session_id, name:item.name, busy:item.busy, failed:compactFailures.get(item.session_id) || null, showUnknown,
     external:item.where === "vscode", phase:compactions.get(item.session_id)?.phase || (item.activity?.phase === "compacting" ? "compacting" : null)});
   const compactBusy = item => item.busy || item.status === "working";
-  function contextControls(item) {
-    const ring = contextRing(item);
+  function contextControls(item, showUnknown = false) {
+    const ring = contextRing(item, showUnknown);
     return ring === "" ? "" : `<span class="context-controls">${ring}</span>`;
+  }
+  function taskContextControls(item, execution) {
+    if (!execution) return "";
+    const key = compactKey(item.session_id, goalId, execution.id), pending = compactions.get(key);
+    const live = pending?.live, title = goals?.currentGoal()?.title;
+    const ring = CrewContext.ring(live ? live.context : execution.context ?? null, {id:item.session_id, goalId, executionId:execution.id, name:item.name, showUnknown:true,
+      scope:[title ? `任务「${title}」` : "当前任务", execution.round == null ? "" : `第 ${execution.round} 轮`].filter(Boolean).join(" "),
+      phase:pending?.phase || (live ? live.compaction : execution.compaction) || null, failed:compactFailures.get(key) || null});
+    return `<span class="context-controls task-context">${ring}</span>`;
   }
   const sessionOpen = (id, act, label, selected = false) => `<button type="button" class="session-open" data-act="session-open" data-open-act="${act}" data-id="${esc(id)}" aria-label="${esc(label)}" ${selected ? 'aria-current="page"' : ""}></button>`;
   const membersOf = id => state.members.filter(item => item.leader_session_id === id);
@@ -473,8 +485,11 @@
     const chatRuntime = goalId == null ? runtimeBadge(item) : execution ? runtimeBadge(execution) : unstarted.badge ? `<span class="runtime-tag">${unstarted.badge}</span>` : "";
     const chatModel = goalId == null ? `<button class="model-tag" data-act="model-menu" data-id="${esc(item.session_id)}" aria-haspopup="menu" title="切换模型和 effort"><span class="model-label">${esc(optionsLabel(item))}</span>${ic("down", "xs")}</button>` : execution ? `<span class="model-tag" title="${esc(optionsLabel({...execution, applied:null}))} · 本任务执行配置；总对话的模型设置不会改动已有任务"><span class="model-label">${esc(optionsLabel({...execution, applied:null}))}</span></span>` : "";
     const identity = `${item.session_id}:${goalId ?? ""}:${access.readonly}:${execution?.id ?? ""}:${listing}:${access.readonlyReason ?? ""}`;
+    releaseTaskCompactions(goalId == null || !execution ? null : compactKey(item.session_id, goalId, execution.id));
     if (mountedChat !== identity) {
       CrewChat.unmount();
+      // Usage moves every turn without bumping the goal version; read it fresh whenever a task chat is (re)opened.
+      if (goalId != null && !listing) void goals?.refresh(goalId);
       // A report being read in this goal survives a background identity change (read-only, execution, reopened round).
       const scaffold = '<div id="chat-head"></div><div id="goal-head"></div><div id="goal-chat-hint"></div><div id="chat-host" class="chat-host"></div>';
       if (goals) goals.replaceMain(scaffold); else $("main").innerHTML = scaffold;
@@ -494,7 +509,7 @@
     attentionScope = scope;
     replace($("native-approval-tray"), nativeApprovals?.chatMarkup(item.session_id, goalId, readOnlyId === null) || "");
     $("attention-scope").textContent = `${readOnlyId === null ? group?.name || item.name : item.name} · ${goalId == null ? "全部任务与总对话" : goals?.currentGoal()?.title || "当前任务"}`;
-    replace($("chat-head"), `<div class="head">${readOnlyId === null ? groupAvatar(item, work) : av(item.name, 30)}<div class="heading-meta"><div class="title"><span class="chat-name" title="${esc(item.name)}">${esc(item.name)}</span>${readOnlyId === null ? priorityBadge(item.priority) : ""}${chatRuntime}</div><div class="sub"><span class="chat-scope" title="${esc(readOnlyId === null ? (item.goal ?? "") : `归 ${item.group} · 成员本人对话`)}">${esc(readOnlyId === null ? (item.goal ?? "") : `归 ${item.group} · 成员本人对话`)}</span>${group === undefined ? "" : `<span class="sep"></span><span class="chat-member-stats ${work.active ? "is-working" : ""}">${members.length} 个下属 · ${work.summary}</span>`}</div></div><div class="right">${window.CrewNativeHandoff?.markup(item, execution) || ""}${chatModel}${goalId == null ? contextControls(item) : compactions.has(`${item.session_id}:${goalId}`) ? `<span class="context-compact-state" role="status">${compactions.get(`${item.session_id}:${goalId}`).phase === "queued" ? "回复结束后压缩" : "正在压缩…"}</span>` : ""}${!listing ? `<button type="button" class="attention-trigger ${attentionCount ? "has-items" : ""}" data-act="attention" aria-controls="side-attention-section" aria-expanded="${attentionOpen() && attentionVisible}" aria-label="待处理，${attentionCount} 件${readOnlyId === null && held.length ? `，另有 ${held.length} 件挂起` : ""}">${ic("inbox", "sm")}<span>待处理</span>${attentionCount ? `<span class="attention-count">${attentionCount}</span>` : ""}</button>` : ""}${readOnlyId === null ? "" : `<button class="btn ghost" data-act="leader" data-id="${esc(leaderId)}">回到 leader</button><button class="btn ghost" data-act="card" data-id="${esc(item.session_id)}">资料</button>`}${group === undefined || listing || goalId == null ? "" : `<button type="button" class="attention-trigger" data-act="task-panel" aria-label="${goalId == null ? "任务资料" : "本任务资料"}" aria-haspopup="dialog" aria-controls="side-task-section" title="${goalId == null ? "任务资料" : "本任务资料"}" aria-expanded="${taskVisible || goals?.materialsOpen()}">${ic("file", "sm")}<span>${goalId == null ? "任务" : "资料"}</span></button>`}${group === undefined || listing ? "" : `<button class="icon-btn rp-toggle" data-act="right-open" title="本组架构图" aria-label="本组架构图">${ic("grid")}</button>`}<button class="icon-btn" data-act="session-menu" data-id="${esc(item.session_id)}" aria-haspopup="menu" title="会话操作" aria-label="会话操作">⋯</button></div></div>`);
+    replace($("chat-head"), `<div class="head">${readOnlyId === null ? groupAvatar(item, work) : av(item.name, 30)}<div class="heading-meta"><div class="title"><span class="chat-name" title="${esc(item.name)}">${esc(item.name)}</span>${readOnlyId === null ? priorityBadge(item.priority) : ""}${chatRuntime}</div><div class="sub"><span class="chat-scope" title="${esc(readOnlyId === null ? (item.goal ?? "") : `归 ${item.group} · 成员本人对话`)}">${esc(readOnlyId === null ? (item.goal ?? "") : `归 ${item.group} · 成员本人对话`)}</span>${group === undefined ? "" : `<span class="sep"></span><span class="chat-member-stats ${work.active ? "is-working" : ""}">${members.length} 个下属 · ${work.summary}</span>`}</div></div><div class="right">${window.CrewNativeHandoff?.markup(item, execution) || ""}${chatModel}${goalId == null ? contextControls(item, true) : taskContextControls(item, execution)}${!listing ? `<button type="button" class="attention-trigger ${attentionCount ? "has-items" : ""}" data-act="attention" aria-controls="side-attention-section" aria-expanded="${attentionOpen() && attentionVisible}" aria-label="待处理，${attentionCount} 件${readOnlyId === null && held.length ? `，另有 ${held.length} 件挂起` : ""}">${ic("inbox", "sm")}<span>待处理</span>${attentionCount ? `<span class="attention-count">${attentionCount}</span>` : ""}</button>` : ""}${readOnlyId === null ? "" : `<button class="btn ghost" data-act="leader" data-id="${esc(leaderId)}">回到 leader</button><button class="btn ghost" data-act="card" data-id="${esc(item.session_id)}">资料</button>`}${group === undefined || listing || goalId == null ? "" : `<button type="button" class="attention-trigger" data-act="task-panel" aria-label="${goalId == null ? "任务资料" : "本任务资料"}" aria-haspopup="dialog" aria-controls="side-task-section" title="${goalId == null ? "任务资料" : "本任务资料"}" aria-expanded="${taskVisible || goals?.materialsOpen()}">${ic("file", "sm")}<span>${goalId == null ? "任务" : "资料"}</span></button>`}${group === undefined || listing ? "" : `<button class="icon-btn rp-toggle" data-act="right-open" title="本组架构图" aria-label="本组架构图">${ic("grid")}</button>`}<button class="icon-btn" data-act="session-menu" data-id="${esc(item.session_id)}" aria-haspopup="menu" title="会话操作" aria-label="会话操作">⋯</button></div></div>`);
     replace($("goal-head"), group ? goals?.groupMarkup(leaderId) || "" : "");
     replace($("decision-tray"), readOnlyId !== null ? "" : `<div class="tray-in">${todoTray(groupTodos, leaderId)}${pending.length === 0 ? "" : `<section class="tray-pending"><h3 class="attention-section-title">等你拍板 <span>${pending.length}</span></h3><div class="tray-list">${pending.map(sideDecision).join("")}</div></section>`}${heldGroup(held, "tray")}</div>`);
     $("attention-empty").hidden = permissions + (readOnlyId === null ? pending.length + held.length + groupTodos.length : 0) > 0;
@@ -680,7 +695,7 @@
   }
   function modelControls(item) {
     const id = item.session_id;
-    return modelMenu(item) + `<div class="menu-context">${item.where === "vscode" ? '<span class="context-hint">去 VS Code 里输入 /compact</span>' : `<button role="menuitem" data-act="compact" data-id="${esc(id)}">压缩上下文（${item.context === null ? "当前用量未知" : `当前 ${Math.round(item.context.used / item.context.max * 100)}%`}）</button>`}</div>`;
+    return modelMenu(item) + `<div class="menu-context">${item.where === "vscode" ? '<span class="context-hint">去 VS Code 里输入 /compact</span>' : `<button role="menuitem" data-act="compact" data-id="${esc(id)}">压缩上下文（${CrewContext.usage(item.context).percent === null ? CrewContext.usageText(item.context).replace("上下文", "当前") : `当前 ${CrewContext.usage(item.context).percent}%`}）</button>`}</div>`;
   }
   function menuButton(item, act, label, reason = "", danger = false, extra = "") {
     if ((!localDesktop() && ["open-vscode", "session-handoff"].includes(act)) || (!localControls() && ["settings", "git-settings", "runtime-switch", "compact-department"].includes(act))) return "";
@@ -824,35 +839,58 @@
     CrewGit.unmount(); goals?.closeDrawer(); if (cardId !== null) closeCard(); hideMenu();
     void workspaceSettings.open(project);
   }
+  // The visible task execution, when the compaction targets the task chat on screen.
+  const visibleExecution = (id, selectedGoal) => selectedGoal != null && String(goalId) === String(selectedGoal) ? goals?.executionFor(id) || null : null;
   function openCompact(id, selectedGoal = null) {
-    const item = state.leaders.concat(state.members).find(item => item.session_id === id);
+    const item = state.leaders.concat(state.members).find(item => item.session_id === id), execution = visibleExecution(id, selectedGoal);
     hideMenu(); dialogReturn = focusDescriptor(document.activeElement);
-    $("backdrop").innerHTML = `<div class="modal compact-modal" role="dialog" aria-modal="true" aria-labelledby="compact-title"><h3 id="compact-title">压缩「${esc(item.name)}」的上下文？</h3><p class="d">${selectedGoal == null ? "压缩这段总对话" : "仅压缩当前任务对话"}，保留工作记录。正在回复时会在本次回复结束后压缩。</p><div class="acts"><button class="btn ghost" type="button" data-act="modal-close">取消</button><button class="btn primary" type="button" data-act="compact-confirm" data-id="${esc(id)}" ${selectedGoal == null ? "" : `data-goal-id="${esc(selectedGoal)}"`}>压缩</button></div></div>`;
+    const scope = selectedGoal == null ? "压缩这段总对话" : `仅压缩当前任务对话${execution?.round == null ? "" : `（第 ${esc(execution.round)} 轮）`}`;
+    $("backdrop").innerHTML = `<div class="modal compact-modal" role="dialog" aria-modal="true" aria-labelledby="compact-title"><h3 id="compact-title">压缩「${esc(item.name)}」的上下文？</h3><p class="d">${scope}，保留工作记录。正在回复时会在本次回复结束后压缩。</p><div class="acts"><button class="btn ghost" type="button" data-act="modal-close">取消</button><button class="btn primary" type="button" data-act="compact-confirm" data-id="${esc(id)}" ${selectedGoal == null ? "" : `data-goal-id="${esc(selectedGoal)}" data-execution-id="${esc(execution?.id ?? "")}"`}>压缩</button></div></div>`;
     $("backdrop").classList.add("show"); $("backdrop").querySelector('[data-act="modal-close"]').focus();
   }
-  async function compactContext(id, selectedGoal = null) {
-    const item = sessionItem(id), compactKey = selectedGoal == null ? id : `${id}:${selectedGoal}`;
-    if (!item || compactions.has(compactKey)) return;
+  // Task compactions belong to one execution on screen. Leaving it (another task, round or generation)
+  // discards the client-side request state; the server's own compaction field stays authoritative.
+  function releaseTaskCompactions(keep) {
+    for (const [key, pending] of compactions) if (pending.task && key !== keep) { compactions.delete(key); pending.close?.(); }
+  }
+  async function compactContext(id, selectedGoal = null, executionId = null) {
+    const item = sessionItem(id);
+    if (selectedGoal != null && !executionId) executionId = visibleExecution(id, selectedGoal)?.id ?? null;
+    const key = compactKey(id, selectedGoal, executionId);
+    if (!item || compactions.has(key)) return;
     if (item.where === "vscode" && selectedGoal == null) { toast(`「${item.name}」正在原工具中运行，请在那边输入 /compact。`); return; }
-    const pending = {phase:"submitting"};
-    compactions.set(compactKey, pending); render();
-    let closeStream;
+    const pending = {phase:"submitting", live:null, close:null, task:selectedGoal != null};
+    compactFailures.delete(key); compactions.set(key, pending); render();
+    const refreshTask = () => { if (selectedGoal != null) void goals?.refresh(selectedGoal); };
     const finish = event => {
-      if (compactions.get(compactKey) !== pending) return;
-      compactions.delete(compactKey); render();
-      if (event.type !== "compact") toast(`「${item.name}」：${event.text || event.reason || "会话已离线，压缩未完成"}`);
+      if (compactions.get(key) !== pending) return;
+      compactions.delete(key);
+      if (event.type !== "compact") {
+        const reason = event.text || event.reason || "会话已离线，压缩未完成";
+        compactFailures.set(key, reason); toast(`「${item.name}」：${reason}`);
+      }
+      render(); refreshTask();
     };
     try {
-      closeStream = await CrewChat.watchCompact(id, {state, api, goalId:selectedGoal, toast:message => toast(`「${item.name}」：${message}`), onFinish:finish});
-      const result = await api("/api/session/compact", {session_id:id, ...(selectedGoal == null ? {} : {goal_id:selectedGoal}), after_turn:true});
-      if (compactions.get(compactKey) === pending) {
-        pending.phase = result.queued ? "queued" : "compacting";
-        toast(`「${item.name}」：${result.message || "正在压缩上下文…"}`);
+      pending.close = await CrewChat.watchCompact(id, {state, api, goalId:selectedGoal, executionId, toast:message => toast(`「${item.name}」：${message}`), onFinish:finish,
+        onState(value) { if (compactions.get(key) !== pending) return; pending.live = value; if (pending.phase !== "submitting" && value.compaction) pending.phase = value.compaction; render(); }});
+      if (compactions.get(key) !== pending) { pending.close(); return; }
+      const result = await api("/api/session/compact", {session_id:id, ...(selectedGoal == null ? {} : {goal_id:selectedGoal, ...(executionId ? {execution_id:executionId} : {})}), after_turn:true});
+      if (compactions.get(key) === pending) {
+        pending.phase = result.queued ? "queued" : "compacting"; render();
+        toast(`「${item.name}」：${result.message || (result.queued ? "已排队，本轮回复结束后压缩" : "已请求压缩")}`);
       }
     } catch (error) {
-      closeStream?.();
-      if (compactions.get(compactKey) === pending) { compactions.delete(compactKey); render(); }
-      throw error;
+      pending.close?.();
+      const current = compactions.get(key) === pending;
+      if (current) compactions.delete(key);
+      if (error.status === 409 && selectedGoal != null) {
+        render(); refreshTask();
+        if (current) throw new Error(`「${item.name}」的任务已换轮或换代，已重新读取。请确认当前执行后再压缩。`);
+        return;
+      }
+      if (current) { compactFailures.set(key, error.message); render(); throw error; }
+      return;
     }
     await loadState(true);
   }
@@ -947,7 +985,7 @@
   function render() {
     if (view !== "chat" || settingsOpen || workspaceOpen) closeAttention();
     if (settingsOpen || workspaceOpen) return;
-    if (view !== "chat") goals?.sync(null, null);
+    if (view !== "chat") { goals?.sync(null, null); releaseTaskCompactions(null); }
     $("app").classList.toggle("wide", view !== "chat" || leaderId === null); renderSidebar();
     if (view !== "channel" && mountedChannel) { CrewChannel.unmount(); mountedChannel = false; }
     if (view !== "git") CrewGit.unmount();
@@ -1209,14 +1247,18 @@
         showMenu(button, modelControls(sessionItem(id)));
         refreshing.then(() => { if (menuAnchor === button && $("menu").classList.contains("show")) showMenu(button, modelControls(sessionItem(id))); });
       }
-      else if (act === "context-compact") action(`compact:${id}`, () => compactContext(id));
+      else if (act === "context-compact") {
+        // Busy rings stay focusable (aria-disabled) so keyboard focus survives the state change; ignore repeats.
+        if (button.getAttribute("aria-disabled") === "true") return;
+        const selectedGoal = button.dataset.goalId || null, executionId = button.dataset.executionId || null;
+        action(`compact:${compactKey(id, selectedGoal, executionId)}`, () => compactContext(id, selectedGoal, executionId));
+      }
       else if (act === "compact") openCompact(id, button.dataset.goalId || null);
       else if (act === "compact-department") { const item = leader(id); if (item) void maintenance.openDepartment(project, item); }
-      else if (act === "compact-confirm") action(`compact:${id}:${button.dataset.goalId || ""}`, async () => {
-        const selectedGoal = button.dataset.goalId || null;
-        closeBackdrop();
-        await compactContext(id, selectedGoal);
-      });
+      else if (act === "compact-confirm") {
+        const selectedGoal = button.dataset.goalId || null, executionId = button.dataset.executionId || null;
+        action(`compact:${compactKey(id, selectedGoal, executionId)}`, async () => { closeBackdrop(); await compactContext(id, selectedGoal, executionId); });
+      }
       else if (act === "set-model" || act === "set-effort") action(`options:${id}`, async () => {
         const field = act === "set-model" ? "model" : "effort", value = button.dataset[field] === "" ? null : button.dataset[field];
         const item = sessionItem(id), changes = optionChange(item, field, value);
