@@ -287,6 +287,10 @@
   const projectQuery = context => context.state.project ? {project:context.state.project.name} : {};
   const keyFor = context => `crew.draft:${scopeKey(context)}:${context.session.session_id}${context.goalId == null ? "" : `:goal:${context.goalId}`}`;
   const goalPayload = context => context.goalId == null ? {} : {goal_id:context.goalId};
+  const goalScope = (state, id) => {
+    const goal = (state.goals || []).find(item => String(item.id) === String(id));
+    return goal ? `${goal.current_round}:${goal.requirement_version}` : null;
+  };
   const query = context => new URLSearchParams({ ...projectQuery(context), session_id: context.session.session_id, ...goalPayload(context) });
 
   function nameOf(context, ccName) {
@@ -853,6 +857,7 @@
     const context = { ...options, activityKey:`chat:${cacheKey}`, session:options.goalId == null ? options.session : {...options.session,activity:null}, cache, items: [], byId: new Map(), nodes: new Map(), results: new Map(), toolOwners: new Map(), toolStops: new Map(), cursor: 0, readSeq: 0, busySeq: options.readonly || options.goalId != null ? 0 : options.session.last_seq, settledSeq:null, executionId:null, connectionGeneration:0, loadGeneration:0, readTimer: null, reconnectTimer: null, historyRetryTimer: null, historyFailed: false, interrupting: false, interruptError: "", interruptConfirmed: false, frame: null, loading: true, busy: cache.pendingSendSeq === null ? options.goalId == null && options.session.busy : true, reading: false, initialPosition: null, stream: null };
     active = context;
     options.host.classList.add("chat-host");
+    context.goalScope = goalScope(options.state, options.goalId);
     options.host.innerHTML = `<div class="chat-error chat-connection-error" role="alert" hidden></div><div class="scroll chat-scroll" tabindex="0" aria-label="${escape(options.session.name)}的对话记录"><div class="col chat-inner"></div></div><button type="button" class="jump" aria-label="回到最新消息">${icon("down")}回到最新</button>${options.readonly ? `<div class="readonly-note">${escape(options.readonlyReason || "此会话尚未由 Crew 托管。请先在原工具退出，再从会话操作中接管；历史记录保留。")}</div>` : `<div class="composer-wrap"><form class="composer"><div class="attach" hidden></div><textarea rows="1" aria-label="给 ${escape(options.session.name)} 发消息" placeholder="跟 ${escape(options.session.name)} 说…（可以直接粘贴截图）"></textarea><div class="c-row"><button type="button" class="icon-btn chat-image-button" title="附截图（也可以直接 Ctrl+V）" aria-label="添加图片">${icon("image")}</button><input class="chat-image-file" type="file" accept="image/*" multiple hidden><span class="hint"></span><button type="button" class="chat-stop" aria-label="停止当前回复" hidden><svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/></svg></button><button type="submit" class="send" aria-label="发送" disabled>${icon("up")}</button></div><div class="chat-interrupt-status" role="status" aria-live="polite" hidden></div><div class="chat-delivery-status" role="alert" hidden></div></form></div>`}`;
     context.scroll = options.host.querySelector(".chat-scroll"); context.inner = options.host.querySelector(".chat-inner");
     context.jump = options.host.querySelector(".jump"); context.error = options.host.querySelector(".chat-connection-error");
@@ -920,6 +925,14 @@
     if (!active) return;
     active.state = state;
     CrewActivity.timestamp(state.now);
+    const scope = goalScope(state, active.goalId);
+    if (active.goalId != null && !active.loading && (scope !== active.goalScope || execution != null && execution.id !== active.executionId)) {
+      // Metadata can arrive after the transcript, or announce a new execution.
+      // Switch journals in place so the composer, selection and visible history stay connected.
+      active.cache.scrollTop = active.scroll.scrollTop;
+      active.goalScope = scope;
+      disconnect(active); clearTimeout(active.readTimer); active.readTimer = null; void load(active);
+    }
     if (active.goalId != null && execution?.id === active.executionId && execution.response_mode) active.responseMode = execution.response_mode;
     const session = state.leaders.concat(state.members).find(item => item.session_id === active.session.session_id);
     if (session) {

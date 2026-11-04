@@ -1,0 +1,63 @@
+/* Targeted real-browser check: late task metadata and a refresh beside an open report. */
+const {chromium}=require('playwright');
+const {spawn}=require('node:child_process');
+const fs=require('node:fs/promises'),path=require('node:path'),assert=require('node:assert/strict');
+const root=path.resolve(__dirname,'../..'),before=process.argv.includes('--before');
+const out=path.join(root,'Temp/panel-refresh',before?'before':'fixed');
+let fixture,browser;
+async function main(){
+  await fs.mkdir(out,{recursive:true});
+  const env={...process.env,PYTHONIOENCODING:'utf-8'};
+  for(const key of ['CREW_SESSION_ID','CLAUDE_CODE_SESSION_ID','CREW_EXECUTION_ID','CREW_GOAL_ID'])delete env[key];
+  fixture=spawn('python',['-u',path.join(__dirname,'conversation_routing_fixture.py')],{cwd:path.join(root,'plugin'),env,windowsHide:true,stdio:['pipe','pipe','pipe']});
+  fixture.stderr.pipe(process.stderr);
+  let buffer='',info;
+  fixture.stdout.on('data',chunk=>{buffer+=chunk;let end;while((end=buffer.indexOf('\n'))>=0){const row=JSON.parse(buffer.slice(0,end));buffer=buffer.slice(end+1);if(row.url)info=row;}});
+  const deadline=Date.now()+15000;
+  while(!info&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,40));
+  assert(info,'isolated fixture ready');assert(![47811,7122].includes(Number(new URL(info.url).port)));
+  browser=await chromium.launch({headless:true,channel:'chrome'});
+  const page=await browser.newPage({viewport:{width:1440,height:1000}}),errors=[];
+  page.on('pageerror',error=>errors.push(String(error)));
+  page.on('console',message=>{if(message.type()==='error')errors.push(message.text());});
+  let releaseDetail,delayed=false;
+  const detailGate=new Promise(resolve=>{releaseDetail=resolve;});
+  await page.route('**/api/goal?*',async route=>{if(!delayed){delayed=true;await detailGate;}await route.continue();});
+  await page.goto(info.url+'/?project=demo#leader='+info.leader+'&goal='+info.goals[0]);
+  const input=page.locator('.composer textarea');await input.waitFor();
+  await input.fill('等待资料时保留的草稿');
+  await page.evaluate(()=>{window.keptInput=document.querySelector('.composer textarea');window.keptHost=document.querySelector('#chat-host');keptInput.setSelectionRange(2,5);});
+  await page.screenshot({path:path.join(out,'01-before-detail.png')});
+  releaseDetail();
+  await page.locator('#chat-head span.model-tag').waitFor();
+  await page.waitForTimeout(300);
+  const chat=await page.evaluate(()=>{const input=document.querySelector('.composer textarea');return {sameInput:keptInput===input,sameHost:keptHost===document.querySelector('#chat-host'),draft:input.value,focused:document.activeElement===input,selection:[input.selectionStart,input.selectionEnd]};});
+  assert.equal(chat.sameInput,!before,'late execution metadata must retain the composer');
+  assert.equal(chat.sameHost,!before,'late execution metadata must retain the conversation');
+  assert.equal(chat.draft,'等待资料时保留的草稿');
+  if(!before){assert.equal(chat.focused,true);assert.deepEqual(chat.selection,[2,5]);}
+  await page.screenshot({path:path.join(out,'02-after-detail.png')});
+  await page.locator('#chat-head [data-act="task-panel"]').click();
+  await page.locator('#side-task-body [data-goal-act="drawer"][data-kind="reports"]').click();
+  await page.locator('#goal-drawer .goal-report-card').first().click();
+  await page.locator('#goal-drawer iframe').waitFor();
+  await page.locator('#goal-drawer iframe').contentFrame().locator('body').waitFor({state:'attached'});
+  await page.locator('#goal-drawer iframe').contentFrame().locator('details summary').first().click();
+  await page.evaluate(()=>{window.keptFrame=document.querySelector('#goal-drawer iframe');window.reportLoads=0;keptFrame.addEventListener('load',()=>reportLoads++);});
+  await page.screenshot({path:path.join(out,'03-report-open.png')});
+  await page.route('**/api/documents?*',async route=>{await new Promise(resolve=>setTimeout(resolve,350));await route.continue();});
+  const refreshed=page.waitForResponse(response=>response.url().includes('/api/documents?'));
+  await page.locator('#goal-drawer [data-goal-act="refresh"]').click();
+  await refreshed;
+  await page.locator('#goal-drawer [data-goal-act="refresh"]:not([disabled])').waitFor();
+  await page.waitForTimeout(100);
+  const report=await page.evaluate(()=>({sameFrame:keptFrame===document.querySelector('#goal-drawer iframe'),loads:reportLoads}));
+  report.detailsOpen=await page.locator('#goal-drawer iframe').contentFrame().locator('details').first().evaluate(node=>node.open);
+  assert.equal(report.sameFrame,!before,'refreshing materials must retain the open report frame');
+  if(!before){assert.equal(report.loads,0,'the report must not reload');assert.equal(report.detailsOpen,true,'expanded report content must stay open');}
+  await page.screenshot({path:path.join(out,'04-after-refresh.png')});
+  assert.deepEqual(errors,[]);
+  await fs.writeFile(path.join(out,'evidence.json'),JSON.stringify({chat,report,errors},null,2));
+  console.log(JSON.stringify({before,chat,report,errors,out}));
+}
+main().catch(error=>{console.error(error);process.exitCode=1;}).finally(async()=>{await browser?.close();fixture?.stdin.end('shutdown\n');});
