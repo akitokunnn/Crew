@@ -117,44 +117,32 @@
     function groupMarkup(id) {
       const list = goals().filter(item => item.leader_session_id === id), open = expandedGroups.has(id), active = goal();
       const tasksSelected = open || goalId != null;
-      // Use the same navigation in general, list and task views so returning never moves across the header.
-      const bar = `<div class="group-goal-bar">
-        <div class="goal-view-tabs" role="tablist" aria-label="本组工作视图">
-          <button class="btn ghost ${!tasksSelected ? "active" : ""}" role="tab"
-            aria-selected="${!tasksSelected}" tabindex="${!tasksSelected ? 0 : -1}"
-            data-goal-act="general">总会话</button>
-          <button class="btn ghost ${tasksSelected ? "active" : ""}" role="tab"
-            aria-selected="${tasksSelected}" tabindex="${tasksSelected ? 0 : -1}"
-            data-goal-act="list" ${goalId != null && !open ? 'title="返回任务清单" aria-label="返回任务清单"' : ""}>
-            任务清单 <span>${list.length}</span>
-          </button>
-        </div>
-        <span class="gap"></span>
-        <button class="btn ghost" data-goal-act="create" data-leader-id="${esc(id)}">＋ 建立目标</button>
-      </div>`;
-      if (open) return bar + `<section class="group-goal-list" role="tabpanel" aria-label="本组任务清单">${cards(list, state().leaders, goalId)}</section>`;
+      void tasksSelected;
+      // 总会话、任务和完整清单的切换都在左侧对话列表里；这里只留一条细行放本页的设置。
+      if (open) return `<div class="goal-slim-bar"><span class="goal-slim-label">全部任务 <span>${list.length}</span></span><span class="gap"></span>
+        <button class="btn ghost" data-goal-act="create" data-leader-id="${esc(id)}">＋ 建立目标</button></div>
+        <section class="group-goal-list" aria-label="本组任务清单">${cards(list, state().leaders, goalId)}</section>`;
       if (goalId == null) {
         const leader = state()?.leaders.find(item => item.session_id === id);
-        if (!leader) return bar;
-        return bar + `<section class="goal-detail leader-decision-control" aria-label="leader 自主推进授权">
-          <div class="goal-detail-title"><span>leader 授权</span>
-            <div class="goal-mode-control" role="group" aria-label="leader 决策方式">
-              ${[["human","由我拍板"],["autonomous","自主推进"]].map(([mode,label]) => `
-                <button type="button" data-goal-act="leader-mode" data-leader-id="${esc(id)}" data-mode="${mode}"
-                  aria-pressed="${Boolean(leader.trust?.enabled) === (mode === "autonomous")}"
-                  ${actionBusy ? "disabled" : ""}>${label}</button>`).join("")}
-            </div>
+        if (!leader) return "";
+        const note = leader.trust?.enabled
+          ? "leader 可在交办范围内自主取舍，并开启自己负责的自主任务。已有任务按各自设置执行。"
+          : "重要取舍由你拍板。授权自主推进后，leader 可开启自己负责的自主任务。";
+        return `<section class="goal-slim-bar leader-decision-control" aria-label="leader 自主推进授权">
+          <span class="goal-slim-label" title="${esc(note)}">leader 授权</span>
+          <div class="goal-mode-control" role="group" aria-label="leader 决策方式">
+            ${[["human","由我拍板"],["autonomous","自主推进"]].map(([mode,label]) => `
+              <button type="button" data-goal-act="leader-mode" data-leader-id="${esc(id)}" data-mode="${mode}"
+                aria-pressed="${Boolean(leader.trust?.enabled) === (mode === "autonomous")}"
+                ${actionBusy ? "disabled" : ""}>${label}</button>`).join("")}
           </div>
-          <p class="note">${leader.trust?.enabled
-            ? "leader 可在交办范围内自主取舍，并开启自己负责的自主任务。已有任务按各自设置执行。"
-            : "重要取舍由你拍板。授权自主推进后，leader 可开启自己负责的自主任务。"}</p>
+          <span class="goal-slim-note">${esc(note)}</span>
         </section>`;
       }
-      if (!active) return bar + `<section class="goal-detail"><p class="${errors.has(String(goalId)) ? "error-line" : "note"}">${esc(errors.get(String(goalId)) || "正在读取目标…")}</p><button class="btn ghost" data-goal-act="refresh">重新读取</button></section>`;
-      return bar + `<section class="goal-detail goal-compact" data-goal-detail="${esc(active.id)}">
+      if (!active) return `<section class="goal-slim-bar"><p class="${errors.has(String(goalId)) ? "error-line" : "note"}">${esc(errors.get(String(goalId)) || "正在读取目标…")}</p><button class="btn ghost" data-goal-act="refresh">重新读取</button></section>`;
+      return `<section class="goal-slim-bar goal-compact" data-goal-detail="${esc(active.id)}">
         <div class="goal-detail-title">
-          <span class="goal-status" data-status="${esc(active.status)}">${esc(status(active.status))}</span>
-          <h1 title="${esc(active.title)}">${esc(active.title)}</h1>
+          <span class="goal-slim-label">本任务决策</span>
           <div class="goal-mode-control" role="group" aria-label="本任务决策方式">
             ${[["human","由我拍板"],["autonomous","自主推进"]].map(([mode,label]) => `
               <button type="button" data-goal-act="mode" data-mode="${mode}"
