@@ -48,7 +48,9 @@
       const data = model.project(sample, state.leaderId);
       const tasks = data.tasks.filter(task => !task.history);
       const taskIds = new Set(tasks.map(task => task.id));
-      const links = data.links.filter(link => !link.history && taskIds.has(link.taskId));
+      // 后端建任务时会给 leader 自动写入一条分工（承载原始需求和 leader 的执行）。
+      // 界面上 leader 是任务的主人：任务行就是 leader 的任务对话，组员 = 分工 − leader。
+      const links = data.links.filter(link => !link.history && taskIds.has(link.taskId) && link.personId !== data.leader.id);
       const person = personId => data.people.find(item => item.id === personId);
       const task = taskId => tasks.find(item => item.id === taskId);
       const linksOf = personId => links.filter(link => link.personId === personId);
@@ -92,7 +94,7 @@
         <header class="cl-map-head">
           <h2 id="${id}-map-title">完整关系图谱</h2>
           <span class="cl-map-legend">
-            <span><i class="lg lg-solid"></i>有执行记录</span><span><i class="lg lg-dash"></i>统筹 / 未启动</span><span><i class="lg lg-on"></i>当前对话</span>
+            <span><i class="lg lg-solid"></i>有执行记录</span><span><i class="lg lg-dash"></i>已分配未启动</span><span><i class="lg lg-on"></i>当前对话</span>
           </span>
           <button type="button" class="cl-icon-btn" data-act="close-map" aria-label="关闭图谱，回到对话" title="回到对话（Esc）">${icon("close")}</button>
         </header>
@@ -116,7 +118,7 @@
     function renderNav() {
       const data = group();
       const leader = data.leader;
-      const visited = [...state.visited].map(item => JSON.parse(item)).filter(([personId, taskId]) => personId !== leader.id && data.person(personId) && (taskId === null || data.task(taskId)));
+      const visited = [...state.visited].map(item => JSON.parse(item)).filter(([personId, taskId]) => personId !== leader.id && data.person(personId) && data.task(taskId));
       const isCurrent = (personId, taskId) => state.personId === personId && state.taskId === taskId;
       const navItem = (personId, taskId, content, extra = "") => `
         <button type="button" class="nv-item${extra}${isCurrent(personId, taskId) ? " is-current" : ""}" data-act="go" data-person="${esc(personId)}" data-task="${esc(taskId ?? "")}"${isCurrent(personId, taskId) ? ' aria-current="page"' : ""}>
@@ -124,7 +126,7 @@
         </button>`;
       const subItems = taskId => visited.filter(([, t]) => t === taskId).map(([personId]) => {
         const person = data.person(personId);
-        const link = taskId ? data.link(personId, taskId) : null;
+        const link = data.link(personId, taskId);
         return navItem(personId, taskId, `${avatar(person, 16)}<span class="nv-label">${esc(person.name)}</span>${link ? stateIcon(link.state) : ""}`, " nv-sub");
       }).join("");
       nav.innerHTML = `
@@ -136,7 +138,6 @@
           <span class="nv-caret">${icon("chevron")}</span>
         </label>
         ${navItem(leader.id, null, `<span class="nv-ic">${icon("person")}</span><span class="nv-label">总会话</span>`)}
-        ${subItems(null)}
         <h2 class="nv-heading">任务<span>${data.tasks.length}</span></h2>
         ${data.tasks.map(task => `
           <div class="nv-group${state.taskId === task.id ? " has-current" : ""}">
@@ -182,15 +183,11 @@
             return `${link.personId === person.id ? "我" : data.person(link.personId).name}另在 ${other}`;
           }).join("；")}，各自的对话和记录分开保存。`));
         }
-      } else if (person.id === data.leader.id) {
-        out.push(you("这组的几个任务都在推进，我想看看成员分别负责什么。"));
-        out.push(them(data.tasks.length ? `本组 ${data.tasks.length} 项任务。分工可以在右侧架构里展开，进入成员的本任务对话可以直接沟通：` : "本组还没有任务。",
-          data.tasks.length ? roll(data, data.tasks.map(task => ({ person: { name: task.code, tint: "stone" }, text: task.title, state: task.status }))) : ""));
       } else {
-        const mine = data.linksOf(person.id);
-        out.push(you("你最近手上有哪些事？"));
-        out.push(them(mine.length ? `我参与 ${mine.length} 项任务，各自的记录在对应的任务对话里：` : "目前没有分配任务，在组内待命。",
-          mine.length ? roll(data, mine.map(link => ({ person: { name: data.task(link.taskId).code, tint: "stone" }, text: link.work, state: link.state }))) : ""));
+        // 只有 leader 有总会话；组员的对话都属于某个任务。
+        out.push(you("这组的几个任务都在推进，我想看看成员分别负责什么。"));
+        out.push(them(data.tasks.length ? `本组 ${data.tasks.length} 项任务。分工可以在右侧展开，进入组员的本任务对话可以直接沟通：` : "本组还没有任务。",
+          data.tasks.length ? roll(data, data.tasks.map(task => ({ person: { name: task.code, tint: "stone" }, text: task.title, state: task.status }))) : ""));
       }
       (state.messages.get(key(person.id, task?.id)) || []).forEach(text => out.push(you(text)));
       return out.join("");
@@ -240,14 +237,11 @@
       const hlTasks = new Set();
       const hlRows = new Set();
       if (focusId) {
-        if (focusId === data.leader.id) data.tasks.forEach(task => hlTasks.add(task.id));
         data.linksOf(focusId).forEach(link => { hlTasks.add(link.taskId); hlRows.add(key(link.personId, link.taskId)); });
       } else if (state.taskId) {
-        // leader 的任务对话只落在任务行；成员的本任务对话才落到成员行。
+        // leader 的任务对话落在任务行；组员的本任务对话落到组员行。
         hlTasks.add(state.taskId);
-        if (state.personId !== data.leader.id && data.link(state.personId, state.taskId)) hlRows.add(key(state.personId, state.taskId));
-      } else if (state.personId !== data.leader.id) {
-        data.linksOf(state.personId).forEach(link => { hlTasks.add(link.taskId); hlRows.add(key(link.personId, link.taskId)); });
+        if (data.link(state.personId, state.taskId)) hlRows.add(key(state.personId, state.taskId));
       }
       return { focusId, hlTasks, hlRows };
     }
@@ -269,17 +263,16 @@
           <span class="dt-end">${current ? "正在聊" : icon("chat")}</span>
         </button>`;
       };
-      const intro = isLeader
-        ? `统筹 ${data.tasks.length} 项任务${mine.length ? `，亲自执行 ${mine.length} 项` : ""}`
-        : mine.length ? `参与 ${mine.length} 项任务` : "当前未分配任务";
-      return `<div class="dt" role="group" aria-label="${esc(person.name)}的对话入口">
-        <p class="dt-intro">${esc(intro)}</p>
-        ${mine.map(link => {
-          const task = data.task(link.taskId);
-          return destination(task.id, `${task.code} ${task.title}`, `${link.work} · ${runtimeName(link.runtime)}`, link.state);
-        }).join("")}
-        ${destination(null, `${person.name}的总会话`, isLeader ? "跨任务安排与汇总" : "不属于任何任务", null)}
-      </div>`;
+      const wrap = (intro, items) => `<div class="dt" role="group" aria-label="${esc(person.name)}的对话入口"><p class="dt-intro">${esc(intro)}</p>${items}</div>`;
+      if (isLeader) {
+        return wrap(`负责 ${data.tasks.length} 项任务`, destination(null, "总会话", "跨任务安排与汇总", null)
+          + data.tasks.map(task => destination(task.id, `${task.code} ${task.title}`, "任务主线", task.status)).join(""));
+      }
+      if (!mine.length) return wrap("还没有分配任务。leader 派活后，这里会出现任务对话。", "");
+      return wrap(`参与 ${mine.length} 项任务`, mine.map(link => {
+        const task = data.task(link.taskId);
+        return destination(task.id, `${task.code} ${task.title}`, `${link.work} · ${runtimeName(link.runtime)}`, link.state);
+      }).join(""));
     }
 
     function renderPanel() {
@@ -288,20 +281,22 @@
       const { focusId, hlTasks, hlRows } = focusModel(data);
       const leader = data.leader;
       const dim = Boolean(focusId);
+      const leaderCurrent = state.personId === leader.id && state.taskId === null;
+      // leader 不再作为树根：整栏就是 leader 的组，标题旁放总会话入口。
       $(".cl-panel-head").innerHTML = `
-        <h2>本组架构</h2>
+        <h2>${esc(leader.name)}组</h2>
         <span class="ph-meta">${data.people.length - 1} 人 · ${data.tasks.length} 任务</span>
+        <button type="button" class="ph-general${leaderCurrent ? " is-on" : ""}" data-act="go" data-person="${esc(leader.id)}" data-task=""
+          aria-label="${leaderCurrent ? "正在聊：" : "进入"}${esc(leader.name)}的总会话"${leaderCurrent ? ' aria-current="true"' : ""}>${icon("person")}总会话${hasDraft(leader.id, null) ? icon("pencil", "ph-draft") : ""}</button>
         <button type="button" class="cl-icon-btn" data-act="open-map" aria-label="展开完整关系图谱" title="完整图谱">${icon("graph")}</button>
         <button type="button" class="cl-icon-btn" data-act="close-panel" aria-label="收起本组架构" title="收起">${icon("close")}</button>`;
 
-      const leaderCurrent = state.personId === leader.id && state.taskId === null;
-      const taskClasses = pathClasses(data.tasks, task => hlTasks.has(task.id));
       const rowOpen = (personId, taskId) => state.openRow === key(personId, taskId);
 
       const memberRow = (link, cls) => {
         const person = data.person(link.personId);
         const count = data.linksOf(person.id).length;
-        const current = person.id !== leader.id && state.personId === person.id && state.taskId === link.taskId;
+        const current = state.personId === person.id && state.taskId === link.taskId;
         const open = rowOpen(person.id, link.taskId);
         const others = data.linksOf(person.id).filter(item => item.taskId !== link.taskId).map(item => data.task(item.taskId).title).join("、");
         return `<li class="tr-member${cls}${current ? " is-current" : ""}${dim && focusId !== person.id ? " is-dim" : ""}" data-person="${esc(person.id)}">
@@ -311,14 +306,13 @@
               <span class="tr-copy">
                 <span class="tr-line">
                   <span class="tr-name">${esc(person.name)}</span>
-                  ${person.id === leader.id ? '<span class="tr-role">leader</span>' : ""}
                   ${count > 1 ? `<span class="tr-multi" title="也参与：${esc(others)}">${icon("layers")}${count}</span>` : ""}
                   <span class="tr-state">${stateTag(link.state)}</span>
                 </span>
                 <span class="tr-sub">${esc(link.work)}</span>
               </span>
             </button>
-            ${person.id !== leader.id && hasDraft(person.id, link.taskId) ? `<span class="tr-draft" title="有未发送草稿">${icon("pencil")}</span>` : ""}
+            ${hasDraft(person.id, link.taskId) ? `<span class="tr-draft" title="有未发送草稿">${icon("pencil")}</span>` : ""}
             <button type="button" class="tr-act${current ? " is-on" : ""}" data-act="go" data-person="${esc(person.id)}" data-task="${esc(link.taskId)}"
               aria-label="${current ? "正在聊：" : "进入"}${esc(person.name)}的本任务对话" title="${current ? "正在聊" : "本任务对话"}">${icon("chat")}</button>
           </div>
@@ -326,7 +320,7 @@
         </li>`;
       };
 
-      const taskBranch = (task, cls) => {
+      const taskBranch = task => {
         const members = data.linksIn(task.id);
         const expanded = state.expanded.has(task.id);
         const current = state.taskId === task.id;
@@ -339,7 +333,7 @@
         const sub = expanded
           ? `${TEXT[task.status]} · ${members.length ? `${members.length} 人` : "尚未分配成员"}`
           : `${TEXT[task.status]} · ${names || "尚未分配成员"}`;
-        return `<li class="tr-task${cls}${current ? " is-current" : ""}${expanded ? " is-open" : ""}${memberClasses.some(item => item.includes("hl")) && expanded ? " hl-down" : ""}">
+        return `<li class="tr-task${hlTasks.has(task.id) ? " hl" : ""}${current ? " is-current" : ""}${expanded ? " is-open" : ""}${memberClasses.some(item => item.includes("hl")) && expanded ? " hl-down" : ""}">
           <div class="tr-row tr-task-row">
             <button type="button" class="tr-main" data-act="toggle-task" data-task="${esc(task.id)}" aria-expanded="${expanded}" aria-label="${esc(task.title)}，${esc(TEXT[task.status])}，${expanded ? "收起" : "展开"}成员">
               ${stateIcon(task.status)}
@@ -351,37 +345,19 @@
             </button>
             ${hasDraft(leader.id, task.id) ? `<span class="tr-draft" title="有未发送草稿">${icon("pencil")}</span>` : ""}
             <button type="button" class="tr-act${leaderHere ? " is-on" : ""}" data-act="go" data-person="${esc(leader.id)}" data-task="${esc(task.id)}"
-              aria-label="${leaderHere ? "正在聊：" : "进入"}${esc(leader.name)}的${esc(task.title)}任务对话" title="${leaderHere ? "正在聊" : "leader 任务对话"}">${icon("chat")}</button>
+              aria-label="${leaderHere ? "正在聊：" : "进入"}${esc(leader.name)}的${esc(task.title)}任务对话" title="${leaderHere ? "正在聊" : `${esc(leader.name)}的任务对话`}">${icon("chat")}</button>
           </div>
           ${expanded ? (members.length ? `<ul class="tr-members">${members.map((link, index) => memberRow(link, memberClasses[index])).join("")}</ul>` : "") : ""}
         </li>`;
       };
 
+      // 待命组员没有任务，也就没有对话入口；leader 派活后才出现在任务下面。
       tree.innerHTML = `<div class="tr${dim ? " has-focus" : ""}">
-        <div class="tr-root${hlTasks.size ? " hl-down" : ""}${leaderCurrent ? " is-current" : ""}">
-          <div class="tr-row">
-            <button type="button" class="tr-main" data-act="select" data-person="${esc(leader.id)}" data-task="" aria-expanded="${rowOpen(leader.id, null)}">
-              ${avatar(leader, 22)}
-              <span class="tr-copy"><span class="tr-line"><span class="tr-name">${esc(leader.name)}</span><span class="tr-role">leader</span></span>
-              <span class="tr-sub">${esc(leader.summary)}</span></span>
-            </button>
-            ${hasDraft(leader.id, null) ? `<span class="tr-draft" title="有未发送草稿">${icon("pencil")}</span>` : ""}
-            <button type="button" class="tr-act${leaderCurrent ? " is-on" : ""}" data-act="go" data-person="${esc(leader.id)}" data-task=""
-              aria-label="${leaderCurrent ? "正在聊：" : "进入"}${esc(leader.name)}的总会话" title="${leaderCurrent ? "正在聊" : "总会话"}">${icon("person")}</button>
-          </div>
-          ${rowOpen(leader.id, null) ? detail(data, leader, null) : ""}
-        </div>
-        ${data.tasks.length ? `<ul class="tr-tasks">${data.tasks.map((task, index) => taskBranch(task, taskClasses[index])).join("")}</ul>` : '<p class="tr-empty">还没有任务</p>'}
+        ${data.tasks.length ? `<ul class="tr-tasks">${data.tasks.map(taskBranch).join("")}</ul>` : '<p class="tr-empty">还没有任务</p>'}
         ${data.standby.length ? `<section class="tr-standby" aria-label="组内待命">
-          <h3>待命</h3>
-          ${data.standby.map(person => `<div class="tr-standby-item${dim && focusId !== person.id ? " is-dim" : ""}">
-            <div class="tr-row">
-              <button type="button" class="tr-main" data-act="select" data-person="${esc(person.id)}" data-task="" aria-expanded="${rowOpen(person.id, null)}">
-                ${avatar(person, 20)}<span class="tr-copy"><span class="tr-line"><span class="tr-name">${esc(person.name)}</span></span><span class="tr-sub">${esc(person.summary)}</span></span>
-              </button>
-              <button type="button" class="tr-act${state.personId === person.id && !state.taskId ? " is-on" : ""}" data-act="go" data-person="${esc(person.id)}" data-task="" aria-label="进入${esc(person.name)}的总会话" title="总会话">${icon("person")}</button>
-            </div>
-            ${rowOpen(person.id, null) ? detail(data, person, null) : ""}
+          <h3>待命<span>派活后可在任务里对话</span></h3>
+          ${data.standby.map(person => `<div class="tr-standby-item${dim ? " is-dim" : ""}">
+            ${avatar(person, 20)}<span class="tr-copy"><span class="tr-line"><span class="tr-name">${esc(person.name)}</span></span><span class="tr-sub">${esc(person.summary)}</span></span>
           </div>`).join("")}
         </section>` : ""}
       </div>`;
@@ -406,9 +382,9 @@
 
       const edges = [];
       data.tasks.forEach((task, index) => {
-        const executes = Boolean(data.link(leader.id, task.id));
+        // leader 到任务是主责关系，统一细线；虚实只用来区分组员是否已有执行记录。
         const current = state.personId === leader.id && state.taskId === task.id;
-        edges.push(`<path class="mp-edge${executes ? "" : " e-dash"}${current ? " e-current" : ""}" data-task="${esc(task.id)}" data-person="${esc(leader.id)}" d="${curve(X.l + G.lw, H / 2, X.t, ty(index) + G.th / 2)}"/>`);
+        edges.push(`<path class="mp-edge e-own${current ? " e-current" : ""}" data-task="${esc(task.id)}" data-person="${esc(leader.id)}" d="${curve(X.l + G.lw, H / 2, X.t, ty(index) + G.th / 2)}"/>`);
       });
       data.links.filter(link => link.personId !== leader.id).forEach(link => {
         const ti = data.tasks.findIndex(task => task.id === link.taskId);

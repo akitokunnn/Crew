@@ -127,7 +127,12 @@ body { margin: 0; background: light-dark(#f2f3ef, #171917); }
 .cl .cl-panel[hidden] { display: none; }
 .cl .cl-panel-head { height: 52px; flex: none; display: flex; align-items: center; gap: 4px; padding: 0 8px 0 16px; }
 .cl .cl-panel-head h2 { font-size: 13px; font-weight: 600; }
-.cl .ph-meta { margin: 0 auto 0 8px; font-size: 12px; color: var(--faint); }
+.cl .ph-meta { margin: 0 auto 0 8px; font-size: 12px; color: var(--faint); white-space: nowrap; }
+.cl .ph-general { height: 28px; display: inline-flex; align-items: center; gap: 4px; padding: 0 8px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); font-size: 12.5px; white-space: nowrap; }
+.cl .ph-general .ic { width: 15px; height: 15px; }
+.cl .ph-general .ph-draft { width: 12px; height: 12px; }
+.cl .ph-general:hover { background: var(--hover); color: var(--ink); }
+.cl .ph-general.is-on { background: var(--accent-soft); color: var(--accent); }
 .cl .cl-tree-scroll { flex: 1; min-height: 0; overflow: auto; }
 
 /* 树：节点即状态图标，连线只在当前路径或选中成员时着色。 */
@@ -160,7 +165,7 @@ body { margin: 0; background: light-dark(#f2f3ef, #171917); }
 .cl .tr-draft .ic { width: 13px; height: 13px; }
 @media (hover: none) { .cl .tr-act { opacity: .75; } }
 
-.cl .is-current > .tr-row, .cl .tr-root.is-current > .tr-row { background: var(--accent-soft); }
+.cl .is-current > .tr-row { background: var(--accent-soft); }
 .cl .tr-member.is-current .tr-name { color: var(--accent); }
 .cl .tr-task.is-current > .tr-task-row .tr-title { font-weight: 600; }
 .cl .has-focus .is-dim > .tr-row { opacity: .45; }
@@ -168,18 +173,13 @@ body { margin: 0; background: light-dark(#f2f3ef, #171917); }
 .cl .tr-nm.is-mate { color: var(--ink); text-decoration: underline; text-underline-offset: 3px; }
 .cl .tr-nm.is-focus { color: var(--accent); font-weight: 600; }
 
-.cl .tr-root { position: relative; }
-.cl .tr-root.hl-down::after, .cl .tr-root::after { content: ""; position: absolute; left: 17px; top: 31px; bottom: 0; border-left: 1px solid var(--tl); }
-.cl .tr-root.hl-down::after { border-color: var(--accent); }
-.cl .tr-tasks > li { position: relative; padding-left: 30px; }
+/* 任务是第一层（leader 的任务主线），不画连线；连线只连任务和组员。 */
+.cl .tr-tasks > li { position: relative; }
+.cl .tr-tasks > li + li { margin-top: 2px; }
 .cl .tr-members > li { position: relative; padding-left: 26px; }
-.cl .tr-tasks > li::before, .cl .tr-tasks > li::after { --sp: 17px; }
-.cl .tr-members > li::before, .cl .tr-members > li::after { --sp: 14px; }
-.cl .tr-tasks > li::before, .cl .tr-members > li::before { content: ""; position: absolute; left: var(--sp); top: 0; bottom: 0; border-left: 1px solid var(--tl); }
-.cl .tr-tasks > li:last-child::before, .cl .tr-members > li:last-child::before { display: none; }
-.cl .tr-tasks > li::after, .cl .tr-members > li::after { content: ""; position: absolute; left: var(--sp); top: 0; height: 16.5px; border-left: 1px solid var(--tl); border-bottom: 1px solid var(--tl); border-bottom-left-radius: 7px; }
-.cl .tr-tasks > li::after { width: 17px; }
-.cl .tr-members > li::after { width: 16px; }
+.cl .tr-members > li::before { content: ""; position: absolute; left: 14px; top: 0; bottom: 0; border-left: 1px solid var(--tl); }
+.cl .tr-members > li:last-child::before { display: none; }
+.cl .tr-members > li::after { content: ""; position: absolute; left: 14px; top: 0; width: 16px; height: 16.5px; border-left: 1px solid var(--tl); border-bottom: 1px solid var(--tl); border-bottom-left-radius: 7px; }
 .cl .tr li.pass::before { border-color: var(--accent); }
 .cl .tr li.pass::after { border-left-color: var(--accent); }
 .cl .tr li.hl::after { border-color: var(--accent); }
@@ -188,11 +188,14 @@ body { margin: 0; background: light-dark(#f2f3ef, #171917); }
 .cl .tr-task.is-open:not(:has(.tr-members)) > .tr-task-row::after { display: none; }
 .cl .tr-empty { padding: 8px 36px; color: var(--faint); font-size: 12px; }
 .cl .tr-standby { margin-top: 16px; padding-top: 8px; border-top: 1px solid var(--line-soft); }
-.cl .tr-standby h3 { margin: 4px 6px; font-size: 11.5px; font-weight: 500; color: var(--muted); }
+.cl .tr-standby h3 { display: flex; align-items: baseline; gap: 8px; margin: 4px 6px 2px; font-size: 11.5px; font-weight: 500; color: var(--muted); }
+.cl .tr-standby h3 span { font-weight: 400; color: var(--faint); }
+.cl .tr-standby-item { display: flex; align-items: flex-start; gap: 8px; padding: 6px; color: var(--muted); }
+.cl .tr-standby-item .tr-name { font-weight: 400; }
+.cl .has-focus .tr-standby-item.is-dim { opacity: .45; }
 
 /* 展开的成员入口：一张轻底，不加框线。 */
 .cl .dt { margin: 2px 2px 8px 26px; padding: 4px; border-radius: 10px; background: var(--surface); }
-.cl .tr-root .dt, .cl .tr-standby .dt { margin-left: 28px; }
 .cl .dt-intro { padding: 4px 8px 2px; font-size: 11.5px; color: var(--muted); }
 .cl .dt-go { width: 100%; display: flex; align-items: flex-start; gap: 8px; padding: 6px 8px; border: 0; border-radius: 7px; background: transparent; text-align: left; }
 .cl .dt-go:hover { background: var(--hover); }

@@ -63,7 +63,10 @@ const { chromium } = require("playwright");
       await openPanel();
       await page.locator('.tr-member[data-person="zhi"] .tr-main').click();
       const detail = page.locator(".tr-member .dt");
-      assert.equal(await detail.locator(".dt-go").count(), 3, "两项任务加总会话");
+      assert.equal(await detail.locator(".dt-go").count(), 2, "组员只有两项任务对话，没有总会话");
+      assert.equal(await detail.locator('.dt-go[data-task=""]').count(), 0);
+      assert.equal(await page.locator('.tr-member[data-person="lin"]').count(), 0, "leader 不作为组员出现在任务下");
+      assert.equal(await page.locator(".tr-standby-item button").count(), 0, "待命组员没有对话入口");
       assert.equal(await page.locator('.tr-nm.is-focus[data-person="zhi"]').count(), 1, "收起的 T-025 中标出知衡");
       assert.ok(await page.locator(".tr-task.hl").count() >= 2, "知衡所在的两项任务连线着色");
       await shot("member-detail");
@@ -71,9 +74,8 @@ const { chromium } = require("playwright");
       assert.match(await head(), /知衡\s*\/\s*对话与任务上下文/);
       assert.match(await page.locator(".cl-head").innerText(), /排队中/);
       await openPanel();
-      await page.locator('.tr-member[data-person="zhi"][data-person] .tr-main').first().click();
-      await page.locator('.dt .dt-go[data-person="zhi"][data-task=""]').click();
-      assert.match(await head(), /知衡\s*\/\s*总会话/);
+      await page.locator(".ph-general").click();
+      assert.match(await head(), /林序\s*\/\s*总会话/);
       passed.push(`${width} 跨任务分工与入口`);
 
       // 暂停任务只读。
