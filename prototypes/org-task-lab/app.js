@@ -73,7 +73,7 @@
                 ${variant.name}
               </button>`).join("")}
           </nav>
-          <span class="org-lab-note">交互演示 · 2026.11.04</span>
+          <span class="org-lab-note"><a href="chat.html">对话右侧架构 ↗</a></span>
         </div>`}
       <div class="org-window">
         <header class="org-topbar">
@@ -361,7 +361,7 @@
     return { render, state };
   }
 
-  root.CrewOrgLab = { mount };
+  root.CrewOrgLab = { mount, presentation: { esc, avatar, statusBadge, runtimeName } };
   const standalone = document.getElementById("crew-org-lab");
   if (standalone) mount(standalone);
 })(globalThis);
