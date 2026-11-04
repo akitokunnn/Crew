@@ -290,8 +290,8 @@ class CodexRunning:
                             (session['crew_name'], self.session_id))
             instructions += '\n\n' + role_text
         if session['role'] == 'member' and not assistant:
-            instructions += ('\n\n你是成员，不能创建 Crew 会话或原生子代理，也不能通过派工技能、'
-                             '另起 AI 进程或改身份继续下发。需要拆分工作时请交回本任务 leader。')
+            instructions += ('\n\n你是成员，可以使用派工 skill 启动本人的临时执行进程，不冒充正式成员。'
+                             '不能创建 Crew 成员/leader、调用原生子代理或团队工具，也不能改身份继续下发。')
         if directory_notice:
             instructions += '\n\n' + directory_notice
         env = dict(os.environ)

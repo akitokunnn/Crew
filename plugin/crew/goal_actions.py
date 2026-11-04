@@ -14,14 +14,17 @@ CONTEXT_ACTIONS = frozenset(('context.inspect', 'context.retrieve', 'context.put
 def report_template(conn, goal_id):
     goal = goals.get(conn, goal_id)
     return {'goal_id': goal_id, 'round': goal['current_round'], 'requirement_version': goal['requirement_version'],
-            'outcome': 'failed', 'summary': '', 'delivered': [], 'unresolved': [],
+            'outcome': 'awaiting_acceptance', 'summary': '', 'delivered': [], 'unresolved': [],
+            'user_test': [{'step': '', 'expected': ''}], 'user_todos': [],
             'acceptance': [{'criterion_id': item['id'], 'status': 'unverified',
                             'evidence': [{'label': '', 'reference': ''}]}
                            for item in goal['requirements']['acceptance']],
             'examples': [{'kind': 'actual', 'input': '', 'expected': '', 'actual': '', 'conclusion': ''}],
             'document_html': '', 'artifacts': [], 'tradeoffs': [], 'follow_up': '',
             'investment': {'elapsed_seconds': None, 'usage': None, 'roles': [{'role': 'leader', 'contribution': ''}]},
-            '_help': {'outcome': 'completed|failed|awaiting_acceptance|cancelled',
+            '_help': {'outcome': '最终交付用 awaiting_acceptance；用户本人看报告并实测验收后通过；failed|cancelled 如实结束，progress 发布阶段成果',
+                      'user_test': '对象数组 [{step,expected}]；awaiting_acceptance 时至少一项，步骤与预期均为非空文本',
+                      'user_todos': '可选对象数组 [{title,detail}]；系统收尾成功时自动创建归属 leader 的人工待办，不挂在目标页',
                       'document_html': 'leader 按任务设计的自包含 HTML 正文（最多 512 KiB）；结构、图表和交互按需选择，CSS/JS 内联，图片用 data URI，不加载外网资源。验收记录另行展开。CLI 可用 finish --html-file <报告.html> 读取正文；Codex 在 report.document_html 传同样内容',
                       'acceptance_status': 'passed|failed|unverified|simulated',
                       'evidence': '对象数组，例如 [{"label":"命令实测输出","reference":"artifacts/result.txt"}]；未验证可用 []，不能填字符串数组',
@@ -264,7 +267,7 @@ def dispatch(home, actor_session_id, execution_id, action, data, controller=None
                 report = goals.save_report(conn, goal_id, data.get('report'))
                 finish = goals.request_finish(conn, goal_id, report['id'], actor=actor_session_id, execution_id=execution_id)
             # Never interrupt this tool's own native caller or pretend it is idle.
-            message = '报告已收录；本次原生响应实际结束后，程序自动按报告结论收尾，无需重复提交。'
+            message = '报告已收录；本次原生响应实际结束后，程序自动按报告结论收尾，无需重复提交。最终交付需要用户本人看报告并实测验收，outcome 用 awaiting_acceptance。'
             if report['outcome'] == 'awaiting_acceptance':
                 message += '收尾后进入等待用户验收；验收决定仍需用户本人提交，不能声称用户无需验收。'
             return {'ok': True, 'pending_finish': True, 'report_id': report['id'], 'finish': finish,

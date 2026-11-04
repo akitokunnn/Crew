@@ -1226,6 +1226,7 @@
       else if (act === "font-reset") { setFontScale(1); renderSettings(); }
       else if (act === "attention") toggleSidecar("attention");
       else if (act === "task-panel") toggleSidecar("tasks");
+      else if (act === "goal-review") { const item = (state.goals || []).find(goal => String(goal.id) === id); if (item) { navigate("chat", item.leader_session_id, null, item.id); returnToTaskPanel(); } else toast("目标已不在当前工作区中，请刷新。"); }
       else if (act === "right-open") toggleSidecar("tree");
       else if (act === "right-close") { rightOpen = false; syncSidecar(); $("main").querySelector('[data-act="right-open"]')?.focus(); }
       else if (act === "side-section-close") { if (button.dataset.section === "tasks") { closeTaskTools(); $("chat-head").querySelector('[data-act="task-panel"]')?.focus(); } else { attentionVisible = false; syncSidecar(); $("chat-head").querySelector('[data-act="attention"]')?.focus(); } }

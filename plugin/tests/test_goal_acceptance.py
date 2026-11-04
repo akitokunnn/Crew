@@ -8,8 +8,7 @@ from tests.test_goals import GoalFixture
 class GoalAcceptanceTests(GoalFixture):
     def test_small_followups_preserve_all_reviews_and_do_not_create_rounds(self):
         goal, first = self.awaiting()
-        goals.review_acceptance(self.conn, goal['id'], False, note='Make the button larger.', expected_version=goal['version'])
-        continued = goals.continue_task(self.conn, goal['id'], 'Only enlarge this button.')
+        continued = goals.review_acceptance(self.conn, goal['id'], False, note='Make the button larger.', expected_version=goal['version'])
         self.assertEqual(continued['current_round'], 1)
         self.assertIsNone(goals.acceptance_review(self.conn, goal['id']))
         self.assertEqual(goals.report_review(self.conn, goal['id'], first['id'])['note'], 'Make the button larger.')
@@ -88,16 +87,15 @@ class GoalAcceptanceTests(GoalFixture):
         self.assertEqual(preserved['html'], report['html'])
         self.assertEqual(preserved['data'], report['data'])
 
-    def test_rejection_requires_a_note_and_reopen_preserves_the_old_decision(self):
+    def test_rejection_requires_a_note_and_continues_in_the_same_round(self):
         goal, report = self.awaiting()
         with self.assertRaises(board.BoardError):
             goals.review_acceptance(self.conn, goal['id'], False, note=' ', expected_version=goal['version'])
         result = goals.review_acceptance(self.conn, goal['id'], False, note='The short reply is still misclassified.',
                                          expected_version=goal['version'], report_id=report['id'])
-        self.assertEqual(result['status'], 'failed')
-        self.assertFalse(goals.acceptance_review(self.conn, goal['id'])['accepted'])
-        changed = goals.reopen(self.conn, goal['id'], 'Fix the observed short reply failure.')
-        self.assertEqual(changed['current_round'], 2)
+        self.assertEqual(result['status'], 'queued')
+        self.assertFalse(goals.report_review(self.conn, goal['id'], report['id'])['accepted'])
+        self.assertEqual(result['current_round'], 1)
         self.assertIsNone(goals.acceptance_review(self.conn, goal['id']))
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM goal_acceptances').fetchone()[0], 1)
 

@@ -52,7 +52,7 @@ exit $LASTEXITCODE
                     env = {key: value for key, value in os.environ.items() if not key.startswith('CREW_')}
                     env.update(USERPROFILE=str(root), CREW_HOME=str(run_home), CREW_SESSION_ID='owner',
                                CREW_EXECUTION_ID='execution', CREW_GOAL_ID='goal', CODEX_THREAD_ID='codex-parent',
-                               FAKE_EXIT=str(code), FAKE_MALFORMED='yes' if malformed else 'no')
+                               CREW_ROLE='member', FAKE_EXIT=str(code), FAKE_MALFORMED='yes' if malformed else 'no')
                     result = subprocess.run([POWERSHELL, '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(harness)],
                                             capture_output=True, text=True, env=env, timeout=20)
                     expected = 1 if malformed else code

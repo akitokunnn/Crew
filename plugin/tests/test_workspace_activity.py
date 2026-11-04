@@ -167,7 +167,26 @@ class WorkspaceActivityTests(unittest.TestCase):
                           'VALUES(?,?,?,?,?,?,?,?,?)', ('r', goal['id'], 1, 1, 1, 'awaiting_acceptance', '{"summary":"Saved evidence"}', '', NOW)); self.conn.commit()
         value = self.snapshot()
         self.assertEqual(value['counts']['acceptance'], 1)
-        self.assertEqual(next(item['detail'] for item in value['items'] if item['kind'] == 'delivery'), 'Saved evidence')
+        self.assertEqual(next(item['detail'] for item in value['items'] if item['kind'] == 'acceptance'), 'Saved evidence')
+        self.assertFalse(any(item['kind'] == 'delivery' for item in value['items']))
+
+    def test_acceptance_has_its_own_priority_and_is_not_limited_to_two_deliveries(self):
+        self.register(identity(1), 'leader', role='leader')
+        for index in range(3):
+            goal = goals.create(self.conn, 'alpha', identity(1), 'Task ' + str(index), 'Request', ['Works'])
+            self.conn.execute("UPDATE goals SET status='awaiting_acceptance' WHERE id=?", (goal['id'],))
+            self.conn.execute('INSERT INTO goal_reports VALUES(?,?,?,?,?,?,?,?,?)',
+                              ('report-' + str(index), goal['id'], 1, 1, 1, 'awaiting_acceptance', '{"summary":"Please replay"}', '', NOW))
+            self.conn.commit()
+        from crew import todo
+        todo.add(self.conn, identity(1), 'Connect device', 'Cable', 'Ready')
+        value = self.snapshot()
+        self.assertEqual([item['kind'] for item in value['items']], ['acceptance'] * 3 + ['todo'])
+        board.ask(self.conn, identity(1), 'Choose', ['a', 'b'], now=NOW)
+        with mock.patch.object(self.service, 'native_approvals', return_value=[{'title': 'Allow execution'}]):
+            value = self.snapshot()
+        self.assertEqual([item['kind'] for item in value['items']], ['approval', 'decision'] + ['acceptance'] * 3)
+        self.assertEqual(value['counts']['acceptance'], 3)
 
     def test_partial_process_discovery_does_not_claim_the_project_is_idle(self):
         self.assertTrue(self.snapshot()['unknown'])

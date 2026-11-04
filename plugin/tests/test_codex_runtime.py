@@ -151,7 +151,8 @@ class CodexRuntimeTests(unittest.TestCase):
                 self.assertIs(params['config']['agents']['enabled'], False)
                 self.assertIs(params['config']['features']['multi_agent'], False)
                 self.assertIs(params['config']['features']['multi_agent_v2'], False)
-                self.assertIn('不能创建 Crew 会话或原生子代理', params['developerInstructions'])
+                self.assertIn('不能创建 Crew 成员/leader、调用原生子代理或团队工具', params['developerInstructions'])
+                self.assertIn('可以使用派工 skill 启动本人的临时执行进程', params['developerInstructions'])
 
     def test_leader_preserves_user_native_agent_settings(self):
         with closing(store.connect(self.home)) as conn:
@@ -175,7 +176,8 @@ class CodexRuntimeTests(unittest.TestCase):
         params = client.calls[0][1]
         self.assertIs(params['config']['agents']['enabled'], False)
         self.assertIs(params['config']['features']['multi_agent_v2'], False)
-        self.assertIn('不能创建 Crew 会话或原生子代理', params['developerInstructions'])
+        self.assertIn('不能创建 Crew 成员/leader、调用原生子代理或团队工具', params['developerInstructions'])
+        self.assertIn('可以使用派工 skill 启动本人的临时执行进程', params['developerInstructions'])
 
     def test_explicit_execution_permission_is_used_only_when_a_carrier_starts(self):
         with closing(store.connect(self.home)) as conn:

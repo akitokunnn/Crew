@@ -90,7 +90,7 @@ exit $LASTEXITCODE
                 env.update(USERPROFILE=str(root), CLAUDE_CODE_SESSION_ID="fake-claude",
                            CREW_SESSION_ID='logical-chief', CREW_EXECUTION_ID='goal-execution', CREW_GOAL_ID='goal',
                            FAKE_CREW_RUN_HOME=str(run_home),
-                           FAKE_EXIT=str(code), FAKE_LOG_FAILURE="yes" if log_failure else "no",
+                           CREW_ROLE='member', FAKE_EXIT=str(code), FAKE_LOG_FAILURE="yes" if log_failure else "no",
                            FAKE_MALFORMED="yes" if malformed else "no")
                 if private_home:
                     env['CREW_HOME'] = str(run_home)

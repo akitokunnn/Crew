@@ -96,6 +96,8 @@ _SPECS = [
            'request_id': _text('Stable identity for this exact operation.', max_length=300)}, ('action',)),
     _spec('crew_rename', 'Rename only your own Crew conversation with a concise useful title. Identity and history remain unchanged.',
           {'name': _text('New name for this conversation.', max_length=512)}, ('name',)),
+    _spec('crew_archive', 'Archive a member of your own current group after its work ends. Only the current leader can do this.',
+          {'target': _TARGET}, ('target',)),
     _spec('crew_git', 'Use the host-bound project Git ledger, without shell commands. Actions: status; policy '
           '(data.text writes, omitted reads); requests (data.all); request (data.branch/data.blocking optional, data.description required); '
           'resolve (data.id, data.status, data.note, optional data.pr_number). Only the configured Git administrator '
@@ -421,6 +423,12 @@ class CodexTools:
             raise ToolError('forbidden', 'Global assistant actions use crew_personal with original user intent')
         if name == 'crew_rename':
             return session_ops.rename_self(conn, sid, args['name'])
+        if name == 'crew_archive':
+            from . import spawn
+            target = self._target(conn, args['target'])
+            session_ops.authorize_archive(conn, target['session_id'], sid)
+            return spawn.request_start(self._home, project, '/api/session/archive', {
+                'session_id': target['session_id'], 'caller_session_id': sid})
         if name in ('crew_stop', 'crew_spawn'):
             from . import spawn
             if name == 'crew_stop':

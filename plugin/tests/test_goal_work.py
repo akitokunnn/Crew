@@ -86,5 +86,5 @@ class GoalWorkTests(GoalFixture):
         self.add()
         goals.transition(self.conn, self.gid, 'running')
         with self.assertRaisesRegex(board.Conflict, '工作清单'):
-            goal_actions.dispatch(self.home, 'chief-id', None, 'finish', {'goal_id': self.gid, 'report': self.report()}, controller=SimpleNamespace())
+            goal_actions.dispatch(self.home, 'chief-id', None, 'finish', {'goal_id': self.gid, 'report': self.report('awaiting_acceptance')}, controller=SimpleNamespace())
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM goal_reports').fetchone()[0], 0)
