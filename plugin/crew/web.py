@@ -1566,7 +1566,8 @@ class Service:
                 goals.get(conn, goal_id, self.selected_project(conn, project_name))
                 return self.chat.goal_controller.history(conn, goal_id, session_id, include_previous=include_previous)
             self.chat_session(conn, self.chat_project(conn, project_name, session_id), session_id)
-            return {**self.chat.history(session_id), 'read_seq': board.read_seq(conn, session_id)}
+            return {**self.chat.history(session_id), **self.chat.context_state(session_id),
+                    'read_seq': board.read_seq(conn, session_id)}
 
     def channel_messages(self, project_name=None, limit=20, before=None):
         with closing(store.connect(self.home)) as conn:

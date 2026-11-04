@@ -586,12 +586,11 @@ class Manager:
         if store.db_path(self.home).exists():
             with closing(guard.readonly(self.home)) as control_conn:
                 control = native_handoff.for_scope(control_conn, session_id)
-        context = self.context_state(session_id)
         with journal.condition:
             running = self.running(session_id)
             return {"session_id": session_id, "events": list(journal.events), "running": running,
                     "busy": running and journal.status == "working", 'native_handoff': control,
-                    'read_only': bool(control and control['external']), **context}
+                    'read_only': bool(control and control['external'])}
 
     def subagent_tasks(self, session_id):
         if not self.path(session_id).exists():
