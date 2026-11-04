@@ -39,6 +39,7 @@ body { margin: 0; }
 }
 .org-demo .org-lab-bar > span:first-child { font-weight: 500; }
 .org-demo .org-lab-note { color: var(--org-muted); font-size: 12px; }
+.org-demo .org-lab-note a { color: inherit; text-underline-offset: 4px; }
 .org-demo .org-variants { display: flex; gap: 4px; background: var(--org-soft); border-radius: 8px; padding: 4px; }
 .org-demo .org-variants button { padding: 7px 16px; border: 0; border-radius: 5px; background: transparent; white-space: nowrap; }
 .org-demo .org-variants button[aria-pressed="true"] { background: var(--org-ink); color: var(--org-panel); }
@@ -129,7 +130,7 @@ body { margin: 0; }
 .org-demo .org-scope-identity code { color: var(--org-ink); overflow-wrap: anywhere; }
 @media (max-width: 800px) {
   .org-demo .org-lab-bar { justify-content: center; flex-wrap: wrap; gap: 8px; padding: 12px 16px; }
-  .org-demo .org-lab-bar > span { display: none; }
+  .org-demo .org-lab-bar > span:first-child { display: none; }
   .org-demo .org-main { padding: 12px 16px 24px; }
   .org-demo .org-topbar { padding: 0 16px; height: 56px; gap: 16px; }
   .org-demo .org-workspace { padding-left: 16px; }

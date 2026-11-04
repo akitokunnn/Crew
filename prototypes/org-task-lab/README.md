@@ -78,3 +78,23 @@ node prototypes/org-task-lab/build-preview.cjs C:/path/to/crew-organization.html
 ```
 
 预览使用宿主提供的版本轮播。每个版本有独立状态和固定高度的滚动区域，切换方案时保持操作状态。预览文件通过数据 URI 内嵌 Crew 标志与全部样式、脚本。
+
+## 对话右侧的架构图
+
+用户选中关系图谱后，补充聊天中的窄面板版本，源码基于 `dee88f8`。打开 [chat.html](chat.html)，或从原演示页右上的“对话右侧架构”进入。该页面共用原样例、任务关系投影、头像、状态与完整关系图谱。
+
+右侧列默认宽 332px。当前任务展开，其余任务收起时保留参与者姓名。成员显示该任务的工作、执行状态和载体，同时标明关联的其他任务。顶部可切换“本任务”与“全组任务”，也可展开完整图谱。选择成员先显示分工，点击“本任务对话”或“本人总会话”再切换聊天。“正在聊”按人员与任务共同定位。
+
+对话、草稿、样例消息和阅读位置按 `(personId, taskId)` 分开保留。浏览架构、选择成员、展开与返回完整图谱均保留原对话。暂停任务为查阅状态，未启动的成员显示尚无执行记录。消息只在演示中本地保存，页面刷新后清空。
+
+740px 以下通过原生模态侧滑面板查看关系，关闭后回到对话。浅色、深色及减少动态效果沿用共用样式。对话内预览可调整右列宽度，范围为 300–400px。
+
+```powershell
+$env:NODE_PATH = Join-Path (Get-Location) 'Temp/org-qa/node_modules'
+Remove-Item Env:CREW_SESSION_ID -ErrorAction SilentlyContinue
+Remove-Item Env:CLAUDE_CODE_SESSION_ID -ErrorAction SilentlyContinue
+node prototypes/org-task-lab/chat-smoke.cjs
+node prototypes/org-task-lab/build-chat-preview.cjs C:/path/to/crew-chat-organization.html
+```
+
+新增浏览器验证在 1440、1024、390px 的 3 条旅程通过，控制台错误 0，逐步截图位于 `Temp/org-qa/chat-browser/`。覆盖窄树分工、跨任务高亮、任务与总会话切换、草稿与实际滚动位置恢复、图谱折叠往返、暂停、面板开关，桌面另验证空组、未启动成员与消息转义。深色与减少动态效果也已截图。样例演示的真实服务接入继续按前述边界验收。

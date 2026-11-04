@@ -1,0 +1,355 @@
+.cd-demo .ctp-view {
+  min-width: 0;
+  padding: 12px 12px 20px;
+  color: var(--org-ink);
+}
+
+.cd-demo .ctp-leader {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  gap: 10px;
+  padding: 10px;
+  text-align: left;
+  border: 1px solid var(--org-line);
+  border-radius: 8px;
+  background: var(--org-panel);
+}
+
+.cd-demo .ctp-leader-copy,
+.cd-demo .ctp-person-copy {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  gap: 5px;
+}
+
+.cd-demo .ctp-leader-heading,
+.cd-demo .ctp-person-heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  min-width: 0;
+  gap: 5px 7px;
+}
+
+.cd-demo .ctp-leader-heading strong,
+.cd-demo .ctp-person-name {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.cd-demo .ctp-leader-heading > span:not(.org-runtime),
+.cd-demo .ctp-leader-summary,
+.cd-demo .ctp-leader-action,
+.cd-demo .ctp-person-role,
+.cd-demo .ctp-chat-marker {
+  color: var(--org-muted);
+  font-size: 12px;
+}
+
+.cd-demo .ctp-leader-summary {
+  overflow-wrap: anywhere;
+}
+
+.cd-demo .ctp-leader-action {
+  margin-left: auto;
+  font-size: 18px;
+}
+
+.cd-demo .ctp-branches {
+  position: relative;
+  margin-left: 22px;
+  padding: 18px 0 0 17px;
+}
+
+.cd-demo .ctp-branches::before {
+  position: absolute;
+  top: 0;
+  bottom: 32px;
+  left: 0;
+  width: 1px;
+  background: var(--org-line);
+  content: "";
+}
+
+.cd-demo .ctp-branch {
+  position: relative;
+  min-width: 0;
+  margin: 0 0 14px;
+}
+
+.cd-demo .ctp-branch::before {
+  position: absolute;
+  top: 24px;
+  left: -17px;
+  width: 17px;
+  height: 1px;
+  background: var(--org-line);
+  content: "";
+}
+
+.cd-demo .ctp-task-node {
+  min-width: 0;
+  border: 1px solid var(--org-line);
+  border-radius: 7px;
+  background: var(--org-panel);
+}
+
+.cd-demo .ctp-branch-current > .ctp-task-node {
+  border-color: var(--org-accent);
+}
+
+.cd-demo .ctp-task-actions {
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+}
+
+.cd-demo .ctp-task-toggle {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: 0;
+  gap: 6px;
+  padding: 11px 10px;
+  border: 0;
+  border-radius: 7px 0 0 7px;
+  background: transparent;
+  text-align: left;
+}
+
+.cd-demo .ctp-task-caption {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  color: var(--org-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.cd-demo .ctp-current-label {
+  color: var(--org-accent);
+}
+
+.cd-demo .ctp-task-title {
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.cd-demo .ctp-task-state {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  gap: 8px;
+}
+
+.cd-demo .ctp-disclosure {
+  color: var(--org-muted);
+  font-size: 14px;
+}
+
+.cd-demo .ctp-task-chat {
+  display: flex;
+  flex: 0 0 42px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: 8px 5px;
+  border: 0;
+  border-left: 1px solid var(--org-line);
+  border-radius: 0 7px 7px 0;
+  background: transparent;
+  font-size: 12px;
+  color: var(--org-muted);
+}
+
+.cd-demo .ctp-task-chat > span {
+  font-size: 14px;
+}
+
+.cd-demo .ctp-task-people {
+  position: relative;
+  display: grid;
+  gap: 3px;
+  margin-left: 12px;
+  padding: 8px 0 0 12px;
+}
+
+.cd-demo .ctp-task-people::before {
+  position: absolute;
+  top: 0;
+  bottom: 24px;
+  left: 0;
+  width: 1px;
+  background: var(--org-line);
+  content: "";
+}
+
+.cd-demo .ctp-person {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  width: 100%;
+  min-width: 0;
+  gap: 8px;
+  padding: 9px 7px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  text-align: left;
+}
+
+.cd-demo .ctp-person::before {
+  position: absolute;
+  top: 23px;
+  left: -13px;
+  width: 12px;
+  height: 1px;
+  background: var(--org-line);
+  content: "";
+}
+
+.cd-demo .ctp-person .org-avatar {
+  width: 24px;
+  height: 24px;
+  flex-basis: 24px;
+  font-size: 11px;
+}
+
+.cd-demo .ctp-work {
+  color: var(--org-muted);
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.cd-demo .ctp-person-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 9px;
+  font-size: 12px;
+}
+
+.cd-demo .ctp-other-tasks {
+  color: var(--org-accent);
+  white-space: nowrap;
+}
+
+.cd-demo .ctp-person-current .ctp-chat-marker {
+  color: var(--org-accent);
+}
+
+.cd-demo .ctp-person-selected,
+.cd-demo .ctp-leader-selected,
+.cd-demo .ctp-mini-person.ctp-mini-selected,
+.cd-demo .ctp-standby-person.ctp-person-selected {
+  border-color: var(--org-accent);
+  background: var(--org-tint);
+}
+
+.cd-demo .ctp-branch-connected > .ctp-task-node {
+  background: var(--org-tint);
+}
+
+.cd-demo .ctp-collapsed-people {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 5px;
+  padding: 0 9px 10px;
+}
+
+.cd-demo .ctp-mini-person {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  gap: 4px;
+  padding: 3px 4px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  font-size: 12px;
+}
+
+.cd-demo .ctp-mini-person .org-avatar {
+  width: 20px;
+  height: 20px;
+  flex-basis: 20px;
+  font-size: 11px;
+}
+
+.cd-demo .ctp-empty-members,
+.cd-demo .ctp-no-tasks {
+  margin: 0;
+  padding: 9px 2px;
+  color: var(--org-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.cd-demo .ctp-standby {
+  margin-top: 18px;
+  padding-top: 15px;
+  border-top: 1px solid var(--org-line);
+}
+
+.cd-demo .ctp-standby h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 9px;
+  color: var(--org-muted);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.cd-demo .ctp-standby-people {
+  display: grid;
+  gap: 5px;
+}
+
+.cd-demo .ctp-standby-person {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 8px;
+  padding: 7px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  text-align: left;
+  font-size: 13px;
+}
+
+.cd-demo .ctp-standby-person .org-runtime {
+  margin-left: auto;
+}
+
+.cd-demo .ctp-view button:hover {
+  background: var(--org-soft);
+}
+
+.cd-demo .ctp-view .ctp-person-selected:hover,
+.cd-demo .ctp-view .ctp-leader-selected:hover,
+.cd-demo .ctp-view .ctp-mini-selected:hover {
+  background: var(--org-tint);
+}
+
+.cd-demo .ctp-view button:focus-visible {
+  outline: 2px solid var(--org-accent);
+  outline-offset: 2px;
+}
+
+@media (pointer: coarse) {
+  .cd-demo .ctp-view button {
+    min-height: 44px;
+  }
+}
