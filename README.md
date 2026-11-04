@@ -50,7 +50,7 @@ Crew 用版本号区分更新，桌面包版本以 `desktop/package.json` 为准
 - **守卫**：检查黑名单、设备借用、文件归属和 Git 管理规则。Claude 使用插件 hooks，Codex 接入原生 shell / apply_patch 执行前 hook，覆盖边界见 [Codex 接入说明](docs/CODEX_INTEGRATION.md)。
 - **远程与用量**：QQ 私聊可按项目和 leader 继续对话、答复拍板、查看待办；用量页按组、会话、日期和模型汇总 Claude / Codex token，并按价格表折算参考金额。组员和 leader 的总对话、各任务及历史执行通过原生绑定归回稳定人员身份；结构表分别显示 Claude 与 Codex 用量，Crew 每周估算也包含组员。
 
-详细用法见 [工作流程](docs/WORKFLOWS.md) 和 [页面说明](docs/WEB_UX.md)，实现设计见 [docs/DESIGN.md](docs/DESIGN.md)，0.1.1 的历史变更与验证见 [交付记录](docs/DESKTOP_0.1.1.md)。
+详细用法见 [工作流程](docs/WORKFLOWS.md) 和 [页面说明](docs/WEB_UX.md)，开任务、开组员、补充要求等常用说法见 [Crew 常用说法](PROMPTS.md)，实现设计见 [docs/DESIGN.md](docs/DESIGN.md)，0.1.1 的历史变更与验证见 [交付记录](docs/DESKTOP_0.1.1.md)。
 
 持续产品方向、使用旅程研究与迭代取舍见 [产品演进](docs/PRODUCT_EVOLUTION.md)。
 
