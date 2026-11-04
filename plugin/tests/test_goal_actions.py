@@ -32,6 +32,9 @@ class Host:
 
 
 class GoalActionTests(GoalFixture):
+    def report(self, outcome='awaiting_acceptance'):
+        return {**super().report(), 'outcome': outcome}
+
     def setUp(self):
         super().setUp()
         self.host = Host(self.home)
@@ -52,6 +55,23 @@ class GoalActionTests(GoalFixture):
         self.assertEqual(result['goals'], [])
         self.assertEqual(self.host.calls, [])
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM goal_reports').fetchone()[0], 0)
+
+    def test_cli_archive_and_close_carry_host_actor_and_reject_session_spoofing(self):
+        for key in ('CREW_SESSION_ID', 'CLAUDE_CODE_SESSION_ID'):
+            with self.subTest(carrier=key), mock.patch('crew.spawn.request_start', return_value={'ok': True}) as request:
+                code, _, errors = self.invoke_cli(['archive', 'builder'], {key: 'chief-id'})
+                self.assertEqual(code, 0, errors)
+                self.assertEqual(request.call_args.args[2:], ('/api/session/archive', {
+                    'session_id': 'member-id', 'caller_session_id': 'chief-id'}))
+                code, _, errors = self.invoke_cli(['leader', 'close', 'chief'], {key: 'chief-id'})
+                self.assertEqual(code, 0, errors)
+                self.assertEqual(request.call_args.args[-1]['caller_session_id'], 'chief-id')
+                request.reset_mock()
+                for command in (['archive', 'builder'], ['leader', 'close', 'chief']):
+                    code, _, errors = self.invoke_cli(['--session', 'chief-id', *command], {key: 'member-id'})
+                    self.assertNotEqual(code, 0)
+                    self.assertIn('不能用 --session', errors)
+                request.assert_not_called()
 
     def test_discussion_tool_allows_only_current_task_amend_then_same_task_work(self):
         goal = self.goal()
@@ -139,7 +159,8 @@ class GoalActionTests(GoalFixture):
         goal = self.goal()
         template = self.dispatch('report-template', {'goal_id': goal['id']}, host=False)
         self.assertEqual(set(template['acceptance'][0]['evidence'][0]), {'label','reference'})
-        self.assertIn('completed|failed', template['_help']['outcome'])
+        self.assertEqual(template['outcome'], 'awaiting_acceptance')
+        self.assertIn('awaiting_acceptance', template['_help']['outcome'])
         self.assertIn('role', template['investment']['roles'][0])
         goals.transition(self.conn, goal['id'], 'running')
         execution = goals.create_execution(self.conn, goal['id'], 'chief-id', runtime='codex')
@@ -258,7 +279,7 @@ class GoalActionTests(GoalFixture):
         with mock.patch.object(spawn, 'request_start', return_value={'ok':True}) as request:
             code, _, errors = self.invoke_cli(['goal','finish','--file',str(path)], environment)
             self.assertEqual(code, 0, errors)
-            self.assertEqual(request.call_args.args[-1]['data']['report']['outcome'], 'completed')
+            self.assertEqual(request.call_args.args[-1]['data']['report']['outcome'], 'awaiting_acceptance')
             code, _, errors = self.invoke_cli(['send','builder','Actual result','--kind','result'], environment)
             self.assertEqual(code, 0, errors)
             self.assertEqual(request.call_args.args[-1]['kind'], 'result')

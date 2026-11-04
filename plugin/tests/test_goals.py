@@ -16,6 +16,7 @@ class GoalFixture(RuntimeFixture):
 
     def report(self, outcome='completed'):
         return {'outcome': outcome, 'summary': 'Measured the speaker handover.',
+                'user_test': [{'step': 'Replay the saved sample.', 'expected': 'Identify the short speaker.'}],
                 'delivered': ['A repeatable speaker handover measurement'], 'unresolved': [],
                 'acceptance': [{'criterion_id': 'short', 'status': 'passed' if outcome == 'completed' else 'failed',
                                 'evidence': [{'label': 'Recorded measurement', 'reference': 'measurements/sample-1.json'}]}],
@@ -288,7 +289,7 @@ class GoalTests(GoalFixture):
         goals.transition(self.conn, goal['id'], 'running')
         caller = goals.create_execution(self.conn, goal['id'], 'chief-id', runtime='codex')
         goals.set_execution_status(self.conn, caller['id'], 'running')
-        report = goals.save_report(self.conn, goal['id'], self.report())
+        report = goals.save_report(self.conn, goal['id'], self.report('awaiting_acceptance'))
         request = goals.request_finish(self.conn, goal['id'], report['id'], actor='chief-id', execution_id=caller['id'])
         self.assertEqual(goals.request_finish(self.conn, goal['id'], report['id'])['report_id'], request['report_id'])
         self.assertFalse(goals.dispatch_check(self.conn, goal['id'])['allowed'])
@@ -296,7 +297,7 @@ class GoalTests(GoalFixture):
         self.assertFalse(goals.finalize_finish(self.conn, goal['id'])['finalized'])
         goals.set_execution_status(self.conn, caller['id'], 'idle')
         self.assertTrue(goals.finalize_finish(self.conn, goal['id'])['finalized'])
-        self.assertEqual(goals.get(self.conn, goal['id'])['status'], 'completed')
+        self.assertEqual(goals.get(self.conn, goal['id'])['status'], 'awaiting_acceptance')
         self.assertTrue(goals.finalize_finish(self.conn, goal['id'])['already'])
 
     def test_user_amend_or_pause_prevents_pending_finish_from_overriding_intent(self):

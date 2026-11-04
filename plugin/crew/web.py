@@ -1315,9 +1315,11 @@ class Service:
                     result['native_warnings'] = self.chat.sync_native_titles(conn, target['session_id'])
                     return result
                 if path == '/api/session/archive':
-                    return self.archive_session(conn, target['session_id'], now=now)
+                    return self.archive_session(conn, target['session_id'], now=now,
+                                                caller_session_id=_optional_text(data, 'caller_session_id'))
                 if path == '/api/session/remove':
-                    return self.archive_session(conn, target['session_id'], removed=True, now=now)
+                    return self.archive_session(conn, target['session_id'], removed=True, now=now,
+                                                caller_session_id=_optional_text(data, 'caller_session_id'))
                 if path == '/api/session/restore':
                     return session_ops.restore(conn, target['session_id'], now=now)
                 if path == '/api/session/undo':
@@ -1524,7 +1526,8 @@ class Service:
                 if before:
                     return {'ok': True, 'before': before, 'session': board.session(conn, data['session_id'])}
             elif path == "/api/group/close":
-                result = session_ops.close_group(conn, project, _text(data, "group"), with_members=data.get("with_members") is True, now=now)
+                result = session_ops.close_group(conn, project, _text(data, "group"), with_members=data.get("with_members") is True,
+                                                 actor=_optional_text(data, 'caller_session_id') or board.HUMAN, now=now)
                 self.stop_archived(result['before'], with_members=data.get('with_members') is True)
                 return result
             elif path == "/api/group/undo":
@@ -1537,9 +1540,16 @@ class Service:
                                              _text(data, 'name'), _optional_text(data, 'group'), now)
             return {"ok": True}
 
-    def archive_session(self, conn, session_id, removed=False, now=None):
+    def archive_session(self, conn, session_id, removed=False, now=None, *, caller_session_id=None):
         with self.chat.lock:
-            result = session_ops.archive(conn, session_id, removed=removed, now=now)
+            session_ops.authorize_archive(conn, session_id, caller_session_id)
+            if caller_session_id not in (None, board.HUMAN):
+                busy = any(self.chat.busy(key) for key in self.chat._identity_keys(conn, session_id))
+                bindings = conn.execute('SELECT b.* FROM goal_execution_bindings b JOIN goal_executions e ON e.id=b.execution_id '
+                                        'WHERE e.session_id=?', (session_id,))
+                if busy or any(self.chat.scope_busy(row['execution_id'], row['runtime'], row['native_id']) for row in bindings):
+                    raise board.Conflict('成员正在执行，请先等执行结束再归档')
+            result = session_ops.archive(conn, session_id, removed=removed, now=now, caller_session_id=caller_session_id)
             self.chat.goal_controller.sync(conn)
             self.chat.stop_managed(session_id)
             return result

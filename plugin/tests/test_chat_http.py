@@ -32,6 +32,10 @@ class ChatHttpTests(ShellFixture, unittest.TestCase):
         self.server.server_close()
         self.thread.join(5)
         self.assertFalse(self.thread.is_alive())
+        # Service.close bounds its poller join; finish that test-owned read/write
+        # before TemporaryDirectory cleanup can remove and recreate its HOME.
+        self.server.service.worker.join(5)
+        self.assertFalse(self.server.service.worker.is_alive())
 
     def request(self, path, data=None, raw=False):
         payload = None if data is None else json.dumps(data).encode("utf-8")

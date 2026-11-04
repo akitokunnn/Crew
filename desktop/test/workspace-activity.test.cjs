@@ -6,7 +6,7 @@ const snapshot=extra=>({counts:{working:3,decisions:0,todos:0,approvals:0,waitin
 test('tab indicators separate work, human action, delivery and unread without claiming old reports are new work',()=>{
  assert.equal(presentation(snapshot()).tone,'working');assert.equal(presentation(snapshot()).badge,0);
  assert.equal(presentation(snapshot({decisions:2})).badge,2);assert.equal(presentation(snapshot({decisions:2})).tone,'attention');
- assert.equal(presentation(snapshot({acceptance:1})).tone,'delivery');
+ assert.equal(presentation(snapshot({acceptance:1})).tone,'attention');assert.equal(presentation(snapshot({acceptance:1})).badge,1);
  assert.equal(presentation(snapshot({errors:1})).tone,'error');
  assert.equal(presentation(snapshot(),true,'Disconnected').tone,'stale');
  assert.equal(presentation(null,true,'Disconnected').label,'暂时无法读取项目动态');

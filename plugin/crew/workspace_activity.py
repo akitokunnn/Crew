@@ -76,10 +76,10 @@ def snapshot(service, conn, project):
         report = conn.execute('SELECT data_json,created_at FROM goal_reports WHERE goal_id=? AND round=? AND requirement_version=? '
                               'ORDER BY version DESC LIMIT 1', (value['id'], value['current_round'], value['requirement_version'])).fetchone()
         if report and (value['status'] == 'awaiting_acceptance' or store.parse_iso(report['created_at']) >= service.now() - dt.timedelta(hours=24)):
-            items.append({'kind': 'delivery', 'title': value['title'][:160], 'name': visible[value['leader_session_id']]['crew_name'],
+            items.append({'kind': 'acceptance' if value['status'] == 'awaiting_acceptance' else 'delivery', 'title': value['title'][:160], 'name': visible[value['leader_session_id']]['crew_name'],
                           'detail': json.loads(report['data_json']).get('summary', '')[:160], 'at': report['created_at']})
     counts['unread'] += channel.state(conn, project)['unread']
-    priority = {'approval': 0, 'decision': 1, 'todo': 2, 'waiting': 3, 'error': 4, 'delivery': 5, 'working': 6, 'reply': 7}
+    priority = {'approval': 0, 'decision': 1, 'acceptance': 2, 'todo': 3, 'waiting': 4, 'error': 5, 'delivery': 6, 'working': 7, 'reply': 8}
     items.sort(key=lambda item: item.get('at', ''), reverse=True)
     items.sort(key=lambda item: priority[item['kind']])
     deliveries = 0

@@ -14,7 +14,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import ProxyHandler, Request, build_opener
 
-from crew import session_ops, board, codex_runtime, decision_flow, store, themes, usage, web
+from crew import session_ops, board, codex_runtime, decision_flow, goals, store, themes, usage, web
 from test_shell import NOW, PLUGIN, ShellFixture
 from test_usage import assistant
 
@@ -85,6 +85,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
                     "runtimes", "todos", "todo_count", "goals", "ai", "native_approvals", "sounds"}
         state = self.state()
         self.assertEqual(set(state), expected)
+
         self.assertEqual(set(state["project"]), {"name", "display_name", "root", "theme"})
         self.assertEqual(state["projects"], [{"name": "demo", "display_name": None, "theme": "celadon"}])
         self.assertEqual(state["project"]["theme"], "celadon")
@@ -116,6 +117,71 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         for key in ("leaders", "members", "decisions", "attention", "goals"):
             self.assertEqual(landing[key], [])
 
+    def test_archive_http_authorizes_caller_before_changing_or_stopping_identity(self):
+        board.roster(self.conn, 'demo', 'add', 'lead', session_ids=['s1'])
+        board.join(self.conn, 'foreign-lead', 'demo', 'foreign', self.project, self.project, 'main', role='leader')
+        for path in ('/api/session/archive', '/api/session/remove'):
+            for caller in ('s1', 'foreign-lead'):
+                with self.subTest(path=path, caller=caller):
+                    code, result, _ = self.request(path, {'session_id': 's1', 'caller_session_id': caller}, project='demo')
+                    self.assertEqual(code, 400, result)
+                    self.assertFalse(board.is_archived(self.conn, 's1'))
+            goal = goals.create(self.conn, 'demo', 's3', 'Work', 'Request', ['Works'])
+            goals.assign(self.conn, goal['id'], 's1', 'Work')
+            execution = goals.create_execution(self.conn, goal['id'], 's1', runtime='claude')
+            goals.set_execution_status(self.conn, execution['id'], 'running')
+            code, result, _ = self.request(path, {'session_id': 's1', 'caller_session_id': 's3'}, project='demo')
+            self.assertEqual(code, 409, result)
+            self.assertIn('先等执行结束', result['error'])
+            goals.set_execution_status(self.conn, execution['id'], 'idle')
+            with mock.patch.object(self.service.chat, 'busy', return_value=True):
+                code, result, _ = self.request(path, {'session_id': 's1', 'caller_session_id': 's3'}, project='demo')
+                self.assertEqual(code, 409, result)
+            code, result, _ = self.request(path, {'session_id': 's1', 'caller_session_id': 's3'}, project='demo')
+            self.assertEqual(code, 200, result)
+            self.assertTrue(board.is_archived(self.conn, 's1'))
+            session_ops.restore(self.conn, 's1')
+        # Owner UI retains its existing authority over an ungrouped member.
+        code, result, _ = self.request('/api/session/archive', {'session_id': 's2'}, project='demo')
+        self.assertEqual(code, 200, result)
+
+    def test_close_group_http_binds_current_leader_and_records_actor(self):
+        board.roster(self.conn, 'demo', 'add', 'lead', session_ids=['s1'])
+        board.join(self.conn, 'foreign-lead', 'demo', 'foreign', self.project, self.project, 'main', role='leader')
+        for caller in ('s1', 'foreign-lead'):
+            code, result, _ = self.request('/api/group/close', {'group': 'lead', 'caller_session_id': caller}, project='demo')
+            self.assertEqual(code, 400, result)
+            self.assertIsNone(self.conn.execute("SELECT closed_at FROM groups WHERE name='lead'").fetchone()[0])
+        code, result, _ = self.request('/api/group/close', {'group': 'lead', 'caller_session_id': 's3'}, project='demo')
+        self.assertEqual(code, 200, result)
+        self.assertEqual(self.conn.execute("SELECT session_id FROM events WHERE kind='leader:close'").fetchone()[0], 's3')
+
+    def test_leader_archive_checks_external_native_goal_ownership_for_both_carriers(self):
+        board.roster(self.conn, 'demo', 'add', 'lead', session_ids=['s1'])
+        goal = goals.create(self.conn, 'demo', 's3', 'Work', 'Request', ['Works'])
+        goals.assign(self.conn, goal['id'], 's1', 'Work')
+        for runtime in ('claude', 'codex'):
+            with self.subTest(runtime=runtime):
+                execution = goals.create_execution(self.conn, goal['id'], 's1', runtime=runtime)
+                goals.bind_native(self.conn, execution['id'], runtime, 'external-' + runtime)
+                goals.set_execution_status(self.conn, execution['id'], 'idle')
+                if runtime == 'claude':
+                    with mock.patch.object(self.service.chat, '_external_agents', return_value=[{'sessionId': 'external-claude', 'status': 'busy'}]):
+                        code, result, _ = self.request('/api/session/archive', {'session_id': 's1', 'caller_session_id': 's3'}, project='demo')
+                        self.assertEqual(code, 409, result)
+                else:
+                    from crew.codex_runtime import RuntimeLease
+                    journal = self.service.chat.journal(execution['id'])
+                    journal.set_status('working')
+                    lease = RuntimeLease(self.home, execution['id']).acquire()
+                    try:
+                        code, result, _ = self.request('/api/session/archive', {'session_id': 's1', 'caller_session_id': 's3'}, project='demo')
+                        self.assertEqual(code, 409, result)
+                    finally:
+                        lease.release()
+                    journal.set_status('idle')
+                self.assertFalse(board.is_archived(self.conn, 's1'))
+
     def test_goal_card_exact_shape_matches_create_list_state_and_detail_without_starting_work(self):
         before = len(self.processes)
         code, response, _ = self.request('/api/goals/create', {'leader_session_id':'s3', 'title':'验证交付',
@@ -125,7 +191,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         goal = response['goal']
         self.assertEqual(set(goal),{'id','project','leader_session_id','title','original_request','status',
             'requirement_version','current_round','priority','manual_pause','reason','version','created_at','updated_at',
-            'dependencies','requirements','assignments','rounds','request','acceptance','constraints','report_available','native_handoffs','work_summary','decision_mode'})
+            'dependencies','requirements','assignments','rounds','request','acceptance','constraints','report_available','acceptance_brief','native_handoffs','work_summary','decision_mode'})
         self.assertEqual((goal['decision_mode']['mode'], goal['decision_mode']['source'], goal['decision_mode']['version']),
                          ('human','task-default',1))
         self.assertEqual((goal['project'],goal['leader_session_id'],goal['title'],goal['status']),('demo','s3','验证交付','queued'))
@@ -134,6 +200,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual(goal['acceptance'],[{'id':'a1','title':'具体 example 达标'}])
         self.assertFalse(goal['report_available']);self.assertFalse(goal['manual_pause'])
         self.assertEqual(goal['native_handoffs'], [])
+        self.assertIsNone(goal['acceptance_brief'])
         self.assertEqual(goal['work_summary'], {'total':0,'done':0,'doing':0,'blocked':0,'revision':0})
         self.assertEqual((goal['dependencies'],goal['constraints']),([],[]))
         self.assertEqual(set(goal['requirements']),{'goal_id','version','request','change_text','actor','created_at','acceptance','constraints','source'})

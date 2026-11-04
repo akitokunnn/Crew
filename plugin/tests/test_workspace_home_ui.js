@@ -35,6 +35,21 @@ test("decisions lead to their original conversation and untrusted text is escape
   assert.doesNotMatch(html,/data-act="answer"/);
 });
 
+test("awaiting acceptance leads the home with report gist and hands-on steps", () => {
+  const steps=[1,2,3,4,5].map(n=>({step:`<b>步骤${n}</b>`,expected:`看到${n}`}));
+  const html=render(data({leaders:[{session_id:"L",name:"打卡落地",status:"idle"}],goals:[
+    {id:"fit",title:"打卡 App",leader_session_id:"L",status:"awaiting_acceptance",report_available:true,
+     acceptance_brief:{report_id:7,summary:"可以打卡了",user_test:steps}},
+    {id:"old",title:"旧任务",leader_session_id:"L",status:"completed",report_available:true}]}));
+  assert.ok(html.indexOf('class="wh-reviews"')<html.indexOf('class="wh-columns"'));
+  assert.match(html,/待你验收/);assert.match(html,/可以打卡了/);assert.match(html,/打卡落地/);
+  assert.match(html,/&lt;b&gt;步骤1&lt;\/b&gt;/);assert.doesNotMatch(html,/<b>步骤/);
+  assert.match(html,/预期：看到4/);assert.doesNotMatch(html,/看到5/);assert.match(html,/还有 1 步/);
+  assert.match(html,/data-goal-act="delivery" data-goal-id="fit"/);assert.match(html,/data-act="goal-review" data-id="fit"/);
+  assert.match(html,/<strong>1<\/strong>待你处理/);
+  assert.deepEqual(ui.project(data({goals:[{id:"fit",status:"awaiting_acceptance",report_available:true,acceptance_brief:{summary:"",user_test:[]}}]})).deliveries,[]);
+});
+
 test("task delivery stays within its task and completed work is folded", () => {
   const html=render(data({goals:[{id:"fitness",title:"打卡 App",status:"completed",report_available:true,current_round:2}]}));
   assert.match(html,/<details class="wh-history">/);
