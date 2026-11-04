@@ -11,10 +11,9 @@ def _text(value, label, limit=4000):
     return goals._text(value, label, limit=limit)
 
 
-def _item(row, goal):
+def _item(row):
     value = dict(row)
     value['dependencies'] = json.loads(value.pop('dependencies_json'))
-    value['needs_review'] = value['requirement_version'] != goal['requirement_version']
     return value
 
 
@@ -23,16 +22,16 @@ def items(conn, goal_id, round_number=None):
     number = goal['current_round'] if round_number is None else round_number
     if type(number) is not int or not 1 <= number <= goal['current_round']:
         raise board.BoardError('工作清单轮次无效')
-    return [_item(row, goal) for row in conn.execute(
+    return [_item(row) for row in conn.execute(
         'SELECT * FROM goal_work_items WHERE goal_id=? AND round=? ORDER BY created_at,id', (goal_id, number))]
 
 
 def summary(conn, goal_id):
     rows = items(conn, goal_id)
     active = [item for item in rows if item['status'] != 'cancelled']
-    return {'total': len(active), 'done': sum(item['status'] == 'done' and not item['needs_review'] for item in active),
+    return {'total': len(active), 'done': sum(item['status'] == 'done' for item in active),
             'doing': sum(item['status'] == 'doing' for item in active),
-            'blocked': sum(item['status'] == 'blocked' or item['needs_review'] for item in active),
+            'blocked': sum(item['status'] == 'blocked' for item in active),
             'revision': sum(item['version'] for item in rows)}
 
 
@@ -84,7 +83,7 @@ def add(conn, goal_id, key, title, acceptance, *, owner=None, dependencies=(), a
         prior = conn.execute('SELECT * FROM goal_work_items WHERE goal_id=? AND round=? AND key=?',
                              (goal_id, goal['current_round'], key)).fetchone()
         if prior:
-            value = _item(prior, goal)
+            value = _item(prior)
             if (value['title'], value['acceptance'], value['owner_session_id'], value['dependencies']) != (title, acceptance, owner, dependencies):
                 raise board.Conflict('这个 key 已存在；修改工作项请携带当前 version 调用 work.update')
             return value
@@ -93,7 +92,7 @@ def add(conn, goal_id, key, title, acceptance, *, owner=None, dependencies=(), a
                      "dependencies_json,status,note,version,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,'planned','',1,?,?)",
                      (identity, goal_id, goal['current_round'], goal['requirement_version'], key, title, acceptance, owner,
                       goals._json(dependencies), now, now))
-        value = _item(conn.execute('SELECT * FROM goal_work_items WHERE id=?', (identity,)).fetchone(), goal)
+        value = _item(conn.execute('SELECT * FROM goal_work_items WHERE id=?', (identity,)).fetchone())
         _record(conn, value, actor)
         return value
 
@@ -107,7 +106,7 @@ def update(conn, goal_id, key, version, *, status=None, note=None, title=None, a
                            (goal_id, goal['current_round'], key)).fetchone()
         if row is None:
             raise board.BoardError('本轮没有这个工作项')
-        value = _item(row, goal)
+        value = _item(row)
         leading = actor in (board.HUMAN, goal['leader_session_id'])
         if not leading and (value['owner_session_id'] != actor or any(item is not None for item in (title, acceptance, owner, dependencies)) or status == 'cancelled'):
             raise board.BoardError('成员只能更新分给自己的进度，不能重新安排工作')
@@ -135,22 +134,21 @@ def update(conn, goal_id, key, version, *, status=None, note=None, title=None, a
             raise board.BoardError('完成必须留下验收证据，阻塞或取消必须写明原因')
         if following['status'] in ('doing', 'done'):
             known = {item['key']: item for item in items(conn, goal_id)}
-            if any(known[key]['status'] != 'done' or known[key]['needs_review'] for key in following['dependencies']):
-                raise board.Conflict('依赖工作尚未完成或需求变化后尚未复核')
+            if any(known[key]['status'] != 'done' for key in following['dependencies']):
+                raise board.Conflict('依赖工作尚未完成')
         conn.execute('UPDATE goal_work_items SET title=?,acceptance=?,owner_session_id=?,dependencies_json=?,status=?,note=?,'
                      'requirement_version=?,version=version+1,updated_at=? WHERE id=?',
                      (following['title'], following['acceptance'], following['owner_session_id'], goals._json(following['dependencies']),
                       following['status'], following['note'], goal['requirement_version'], store.now_iso(), value['id']))
-        result = _item(conn.execute('SELECT * FROM goal_work_items WHERE id=?', (value['id'],)).fetchone(), goal)
+        result = _item(conn.execute('SELECT * FROM goal_work_items WHERE id=?', (value['id'],)).fetchone())
         _record(conn, result, actor)
         return result
 
 
 def require_complete(conn, goal_id):
-    unfinished = [item for item in items(conn, goal_id) if item['status'] != 'cancelled' and
-                  (item['status'] != 'done' or item['needs_review'])]
+    unfinished = [item for item in items(conn, goal_id) if item['status'] not in ('cancelled', 'done')]
     if unfinished:
-        raise board.Conflict('工作清单尚未全部完成或复核：' + '、'.join(item['title'] for item in unfinished[:5]))
+        raise board.Conflict('工作清单尚未全部完成：' + '、'.join(item['title'] for item in unfinished[:5]))
 
 
 def carry_forward(conn, goal_id, previous_version, *, actor):
@@ -162,4 +160,4 @@ def carry_forward(conn, goal_id, previous_version, *, actor):
         conn.execute('UPDATE goal_work_items SET requirement_version=?,version=version+1,updated_at=? WHERE id=?',
                      (goal['requirement_version'], store.now_iso(), item['id']))
         row = conn.execute('SELECT * FROM goal_work_items WHERE id=?', (item['id'],)).fetchone()
-        _record(conn, _item(row, goal), actor)
+        _record(conn, _item(row), actor)

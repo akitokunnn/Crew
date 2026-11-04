@@ -52,16 +52,15 @@ class GoalWorkTests(GoalFixture):
         with self.assertRaises(board.BoardError):
             goal_work.update(self.conn, self.gid, 'leader-only', 1, status='doing', actor='member-id')
 
-    def test_requirement_change_requires_review_and_history_is_preserved(self):
+    def test_requirement_change_keeps_completed_work_and_history(self):
         self.add()
         item = goal_work.update(self.conn, self.gid, 'design', 1, status='done', note='原验收结果', actor='chief-id')
         goals.amend(self.conn, self.gid, '整段流结束后400ms内返回')
-        self.assertTrue(goal_work.items(self.conn, self.gid)[0]['needs_review'])
-        self.assertEqual(goal_work.summary(self.conn, self.gid)['done'], 0)
-        with self.assertRaises(board.Conflict):
-            goal_work.require_complete(self.conn, self.gid)
+        self.assertEqual(goal_work.items(self.conn, self.gid)[0], item)
+        self.assertEqual(goal_work.summary(self.conn, self.gid)['done'], 1)
+        goal_work.require_complete(self.conn, self.gid)
         checked = goal_work.update(self.conn, self.gid, 'design', item['version'], status='done', note='新测量截止延迟380ms，证据见 measurement.json', actor='chief-id')
-        self.assertFalse(checked['needs_review'])
+        self.assertEqual(checked['requirement_version'], 2)
         goal_work.require_complete(self.conn, self.gid)
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM goal_work_history').fetchone()[0], 3)
 

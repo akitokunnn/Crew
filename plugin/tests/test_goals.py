@@ -57,7 +57,7 @@ class GoalTests(GoalFixture):
             goals.get(self.conn, goal['id'], project='other-project')
         self.assertEqual(board.session(self.conn, 'member-id')['crew_name'], 'builder')
 
-    def test_amendment_preserves_user_words_versions_and_blocks_stale_work(self):
+    def test_amendment_preserves_user_words_versions_and_continues_same_round_work(self):
         goal = self.goal()
         execution = goals.create_execution(self.conn, goal['id'], 'chief-id', runtime='claude')
         changed = goals.amend(self.conn, goal['id'], 'Do not delete the original recordings.', expected_version=goal['version'])
@@ -65,8 +65,9 @@ class GoalTests(GoalFixture):
         self.assertIn(goal['original_request'], changed['requirements']['request'])
         self.assertIn('Do not delete', changed['requirements']['request'])
         self.assertEqual(goals.requirements(self.conn, goal['id'], 1)['request'], goal['original_request'])
-        self.assertFalse(goals.dispatch_check(self.conn, goal['id'], requirement_version=1)['allowed'])
-        self.assertFalse(goals.dispatch_check(self.conn, goal['id'], execution_id=execution['id'])['allowed'])
+        self.assertTrue(goals.dispatch_check(self.conn, goal['id'], requirement_version=1)['allowed'])
+        self.assertTrue(goals.dispatch_check(self.conn, goal['id'], execution_id=execution['id'])['allowed'])
+        self.assertEqual(goals.get_execution(self.conn, execution['id'])['requirement_version'], 2)
         with self.assertRaises(board.Conflict):
             goals.amend(self.conn, goal['id'], 'Lost update', expected_version=goal['version'])
 
@@ -181,13 +182,13 @@ class GoalTests(GoalFixture):
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM goal_executions').fetchone()[0], 0)
         json.dumps(again, ensure_ascii=False)
 
-    def test_stale_report_and_running_native_cannot_be_marked_complete(self):
+    def test_older_report_is_preserved_but_running_native_cannot_be_marked_complete(self):
         goal = self.goal()
         stale = self.report()
         stale['requirement_version'] = 1
         goals.amend(self.conn, goal['id'], 'Additional instruction')
-        with self.assertRaises(board.Conflict):
-            goals.save_report(self.conn, goal['id'], stale)
+        saved = goals.save_report(self.conn, goal['id'], stale)
+        self.assertEqual(saved['requirement_version'], 1)
         execution = goals.create_execution(self.conn, goal['id'], 'chief-id', runtime='codex')
         goals.transition(self.conn, goal['id'], 'running')
         goals.set_execution_status(self.conn, execution['id'], 'running')
@@ -300,7 +301,7 @@ class GoalTests(GoalFixture):
         self.assertEqual(goals.get(self.conn, goal['id'])['status'], 'awaiting_acceptance')
         self.assertTrue(goals.finalize_finish(self.conn, goal['id'])['already'])
 
-    def test_user_amend_or_pause_prevents_pending_finish_from_overriding_intent(self):
+    def test_pause_blocks_pending_finish_but_amend_preserves_it(self):
         goal = self.goal()
         goals.transition(self.conn, goal['id'], 'running')
         report = goals.save_report(self.conn, goal['id'], self.report())
@@ -308,9 +309,11 @@ class GoalTests(GoalFixture):
         goals.request_pause(self.conn, goal['id'])
         self.assertFalse(goals.finalize_finish(self.conn, goal['id'])['finalized'])
         goals.resume(self.conn, goal['id'])
+        goals.transition(self.conn, goal['id'], 'running')
         goals.amend(self.conn, goal['id'], 'New failing sample')
-        self.assertEqual(goals.get_finish(self.conn, goal['id'])['status'], 'superseded')
-        self.assertFalse(goals.finalize_finish(self.conn, goal['id'])['finalized'])
+        self.assertEqual(goals.get_finish(self.conn, goal['id'])['status'], 'pending')
+        self.assertFalse(goals.dispatch_check(self.conn, goal['id'])['allowed'])
+        self.assertTrue(goals.finalize_finish(self.conn, goal['id'])['finalized'])
 
     def test_cancel_intent_waits_for_actual_stop_and_overrides_pending_finish(self):
         goal = self.goal()

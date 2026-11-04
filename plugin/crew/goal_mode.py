@@ -83,6 +83,6 @@ def decision_policy(conn, decision_id):
     goal = goals._row(conn, link['goal_id'])
     policy = get(conn, goal['id'])
     valid = (not goal['manual_pause'] and goal['status'] in ('queued', 'running', 'waiting_user') and
-             goal['current_round'] == link['round'] and goal['requirement_version'] == link['requirement_version'])
+             goal['current_round'] == link['round'])
     return {**policy, 'enabled': valid and policy['mode'] == 'autonomous',
             'round': link['round'], 'requirement_version': link['requirement_version']}

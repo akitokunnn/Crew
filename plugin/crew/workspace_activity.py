@@ -73,8 +73,8 @@ def snapshot(service, conn, project):
             continue
         if value['status'] == 'awaiting_acceptance':
             counts['acceptance'] += 1
-        report = conn.execute('SELECT data_json,created_at FROM goal_reports WHERE goal_id=? AND round=? AND requirement_version=? '
-                              'ORDER BY version DESC LIMIT 1', (value['id'], value['current_round'], value['requirement_version'])).fetchone()
+        report = conn.execute('SELECT data_json,created_at FROM goal_reports WHERE goal_id=? AND round=? '
+                              'ORDER BY version DESC LIMIT 1', (value['id'], value['current_round'])).fetchone()
         if report and (value['status'] == 'awaiting_acceptance' or store.parse_iso(report['created_at']) >= service.now() - dt.timedelta(hours=24)):
             items.append({'kind': 'acceptance' if value['status'] == 'awaiting_acceptance' else 'delivery', 'title': value['title'][:160], 'name': visible[value['leader_session_id']]['crew_name'],
                           'detail': json.loads(report['data_json']).get('summary', '')[:160], 'at': report['created_at']})
