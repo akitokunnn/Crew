@@ -81,7 +81,7 @@ class GoalContextTests(GoalFixture):
                 context.put(self.conn, target['id'], 'summary', 'Invalid source', {'type': 'handoff', 'id': 'stale'},
                             depends=[{'type': 'item', 'id': fact['id'], 'version': version}])
 
-    def test_requirement_change_preserves_constraints_and_invalidates_old_summary(self):
+    def test_requirement_change_preserves_constraints_and_existing_summary(self):
         goal = self.goal(constraints=['Do not PR; wait for the user'])
         summary = context.put(self.conn, goal['id'], 'summary', 'Prior requirement summary', {'type': 'handoff', 'id': 'h'},
                               depends=[{'type': 'requirement', 'id': goal['id'], 'version': 1}])
@@ -92,8 +92,10 @@ class GoalContextTests(GoalFixture):
         self.assertIn('Do not PR; wait', loaded['text'])
         self.assertIn('Do not delete recordings', loaded['text'])
         self.assertNotIn('Prior requirement summary', loaded['text'])
-        self.assertEqual(context.get(self.conn, summary['id'])['state'], 'obsolete')
-        self.assertFalse(goals.dispatch_check(self.conn, goal['id'], execution_id=execution['id'])['allowed'])
+        self.assertEqual(context.get(self.conn, summary['id'])['state'], 'active')
+        self.assertNotIn('以下旧依据已失效', loaded['text'])
+        self.assertIn('Prior requirement summary', context.build(self.conn, execution['id'], delta=False)['text'])
+        self.assertTrue(goals.dispatch_check(self.conn, goal['id'], execution_id=execution['id'])['allowed'])
         context.mark_applied(self.conn, loaded['manifest']['id'])
         self.assertTrue(goals.dispatch_check(self.conn, goal['id'], execution_id=execution['id'])['allowed'])
 

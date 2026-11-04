@@ -22,8 +22,8 @@
     }).join("")}</div>` : '<div class="goals-empty">还没有执行目标。普通问答和讨论直接在对话里进行；明确需要交付时再建立目标。</div>';
   }
   // A report's relation is recomputed from the newest goal state, so an open report follows later round,
-  // requirement or report changes. Reports arrive newest first by round and saved report version.
-  const isCurrent = (report, goal) => report.round === goal.current_round && report.requirement_version === goal.requirement_version;
+  // report changes. Reports arrive newest first by round and saved report version.
+  const isCurrent = (report, goal) => report.round === goal.current_round;
   const currentReport = (reports, goal) => reports.find(item => isCurrent(item, goal)) || null;
   function reportScope(report, goal, reports) {
     if (isCurrent(report, goal)) {
@@ -31,7 +31,7 @@
       return newer ? {label:"较早版本", current:false, note:`已有更新版本（第 ${newer.version} 稿）`} : {label:"当前版本", current:true, note:""};
     }
     if (currentReport(reports, goal)) return {label:"历史报告", current:false, note:"已有更新版本"};
-    return {label:"历史报告", current:false, note:report.round < goal.current_round ? "当前修改尚无新交付" : `需求已更新到 v${goal.requirement_version}，尚无新交付`};
+    return {label:"历史报告", current:false, note:"当前修改尚无新交付"};
   }
   function create(options) {
     const details = new Map(), loading = new Map(), requestedVersion = new Map(), errors = new Map();
@@ -61,7 +61,7 @@
     }
     function executionFor(id) {
       const active = goal();
-      return (current()?.executions || []).filter(item => item.session_id === id && item.round === active?.current_round && item.requirement_version === active?.requirement_version).sort((a,b) => b.generation - a.generation)[0] || null;
+      return (current()?.executions || []).filter(item => item.session_id === id && item.round === active?.current_round).sort((a,b) => b.generation - a.generation)[0] || null;
     }
     function rememberPosition() { if (drawerHost?.dataset.viewKey) drawerPositions.set(drawerHost.dataset.viewKey, drawerHost.querySelector(".goal-drawer-scroll")?.scrollTop || 0); }
     function closeReader() { options.onReader?.(false); reader?.remove(); reader = null; reading = null; for (const node of covered) node.inert = false; covered.clear(); }

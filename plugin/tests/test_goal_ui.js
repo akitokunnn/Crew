@@ -100,12 +100,12 @@ test("context corrections carry the exact item version and keep drafts after a f
   assert(h.drawer.innerHTML.includes('data-goal-context-form="fact"'));
 });
 
-test("execution selection never substitutes another goal, requirement version or older generation",async()=>{
+test("execution selection keeps the same round and newest generation across amendments",async()=>{
   const h=harness(async()=>({goal:{...h.state.goals[0],current_round:2,requirement_version:4},context:{items:[],manifest:{}},reports:[],executions:[
     {id:"old-round",session_id:"member",round:1,requirement_version:4,generation:99,runtime:"claude"},
-    {id:"old-requirement",session_id:"member",round:2,requirement_version:3,generation:99,runtime:"claude"},
+    {id:"old-requirement",session_id:"member",round:2,requirement_version:3,generation:1,runtime:"claude"},
     {id:"previous-generation",session_id:"member",round:2,requirement_version:4,generation:1,runtime:"claude"},
-    {id:"selected",session_id:"member",round:2,requirement_version:4,generation:2,runtime:"codex"}]}));
+    {id:"selected",session_id:"member",round:2,requirement_version:3,generation:2,runtime:"codex"}]}));
   h.client.sync("leader","a");await tick();assert.equal(h.client.executionFor("member").id,"selected");assert.equal(h.client.executionFor("leader"),null);
   h.client.sync("leader","b");await tick();assert.equal(h.client.executionFor("member"),null);
 });
@@ -301,7 +301,7 @@ test("an open report follows the latest goal state without rewriting its frame, 
   assert(head().includes("较早版本"));assert(head().includes("已有更新版本（第 2 稿）"));assert(!head().includes("当前版本"));unchanged("newer draft in the same round");
 
   await source.update({status:"running",requirement_version:2},[report("r1b",1,{version:2,requirement_version:1}),report("r1",1,{requirement_version:1})]);
-  assert(head().includes("历史报告"));assert(head().includes("需求已更新到 v2，尚无新交付"));unchanged("requirement updated in the same round");
+  assert(head().includes("较早版本"));assert(head().includes("已有更新版本（第 2 稿）"));assert(!head().includes("尚无新交付"));unchanged("requirement updated in the same round");
 
   await source.update({status:"queued",current_round:2,requirement_version:3},[report("r1b",1,{version:2,requirement_version:1}),report("r1",1,{requirement_version:1})]);
   // Reopening changes the chat identity, so app.js rebuilds the task area around the open reader.
@@ -334,7 +334,7 @@ test("direct and manual readers return the same way after a background update, a
     if(mode==="direct")await h.click("delivery",{goalId:"a"});else{await h.click("drawer",{kind:"reports"});await h.click("report",{reportId:"r1"});await settle();await h.click("expand-report");}
     await settle();const reader=h.main.appended,frame=frameOf(reader);assert(frame.srcdoc.includes("真实报告"),mode);
     await source.update({requirement_version:2},[report("r1",1,{requirement_version:1})]);h.client.replaceMain('<div id="chat-head"></div>');const rebuilt=h.main.children[0];
-    assert(readerText(reader).includes("需求已更新到 v2，尚无新交付"),mode);assert.equal(frameOf(reader),frame,mode);assert.equal(rebuilt.inert,true,mode);
+    assert(readerText(reader).includes("当前版本"),mode);assert(!readerText(reader).includes("尚无新交付"),mode);assert.equal(frameOf(reader),frame,mode);assert.equal(rebuilt.inert,true,mode);
     assert(h.client.escape(),mode);assert.equal(reader.removed,true,mode);assert.equal(rebuilt.inert,false,mode);
     if(mode==="direct"){assert.equal(h.drawer.hidden,true);assert(surfaces(h).includes('data-goal-detail="a"'));}
     else{assert.equal(h.drawer.hidden,false);assert(h.drawer.querySelector("iframe").srcdoc.includes("真实报告"),"the materials preview is still there");}

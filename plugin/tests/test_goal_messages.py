@@ -89,7 +89,7 @@ class GoalMessageTests(GoalFixture):
         self.assertIn('Goal two evidence', calls[other['id']])
         self.assertNotIn('Goal one evidence', calls[other['id']])
 
-    def test_user_pause_defers_without_spending_attempts_and_version_change_archives(self):
+    def test_user_pause_defers_without_spending_attempts_even_after_amend(self):
         receipt = self.queue(message_id='pending-before-pause')
         goals.request_pause(self.conn, self.active_goal['id'], manual=True)
         for _ in range(5):
@@ -99,7 +99,8 @@ class GoalMessageTests(GoalFixture):
         self.assertEqual(self.row(receipt)['attempts'], 0)
         goals.amend(self.conn, self.active_goal['id'], 'User changed the acceptance requirement')
         goal_messages.deliver(self.controller, self.conn)
-        self.assertEqual(self.row(receipt)['status'], 'archived')
+        self.assertEqual(self.row(receipt)['status'], 'queued')
+        self.assertEqual(self.row(receipt)['attempts'], 0)
         self.controller.send.assert_not_called()
 
     def test_old_round_is_archived_and_only_new_round_evidence_wakes(self):

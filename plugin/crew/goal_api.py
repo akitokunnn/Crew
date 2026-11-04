@@ -16,7 +16,7 @@ def report_entry(project, value, row):
             'summary': data['summary'], 'acceptance_counts': {key: statuses.count(key) for key in ACCEPTANCE_STATUSES},
             'publication': data.get('publication'),
             'unresolved': data['unresolved'],
-            'current': row['round'] == value['current_round'] and row['requirement_version'] == value['requirement_version'],
+            'current': row['round'] == value['current_round'] and row['version'] == value['latest_report_version'],
             'url': '/api/goals/report?' + urlencode({'project': project, 'goal_id': value['id'], 'report_id': row['id']})}
 
 
@@ -26,15 +26,20 @@ def card(conn, value):
     handoffs = [native_handoff.describe(conn, row['session_id'], row['id']) for row in conn.execute(
         'SELECT id,session_id FROM goal_executions WHERE goal_id=? AND round=?', (value['id'], value['current_round']))]
     brief = None
+    report = conn.execute('SELECT id,data_json,created_at FROM goal_reports WHERE goal_id=? AND round=? '
+                          'ORDER BY version DESC LIMIT 1', (value['id'], value['current_round'])).fetchone()
+    supplements = [] if report is None else [dict(row) for row in conn.execute(
+        'SELECT version,change_text AS text,actor,created_at AS at FROM goal_requirements '
+        'WHERE goal_id=? AND version>? AND created_at>? ORDER BY version',
+        (value['id'], json.loads(report['data_json'])['requirement_version'], report['created_at']))]
     if value['status'] == 'awaiting_acceptance':
-        report = conn.execute('SELECT id,data_json,created_at FROM goal_reports WHERE goal_id=? AND round=? AND requirement_version=? '
-                              'ORDER BY version DESC LIMIT 1', (value['id'], value['current_round'], value['requirement_version'])).fetchone()
         if report is not None:
             data = json.loads(report['data_json'])
-            brief = {'report_id': report['id'], 'summary': data['summary'], 'user_test': data.get('user_test'), 'created_at': report['created_at']}
+            brief = {'report_id': report['id'], 'summary': data['summary'], 'user_test': data.get('user_test'),
+                     'created_at': report['created_at'], 'supplements_after_report': supplements}
     return {**value, 'request': req['request'], 'acceptance': req['acceptance'], 'native_handoffs': handoffs,
             'constraints': req['constraints'], 'report_available': bool(available), 'acceptance_brief': brief,
-            'work_summary': goal_work.summary(conn, value['id'])}
+            'work_summary': goal_work.summary(conn, value['id']), 'supplements_after_report': supplements}
 
 
 def context(conn, identity, execution_id=None):
@@ -58,11 +63,12 @@ def detail(conn, project, identity, *, context_state=None):
         execution['native_handoff'] = native_handoff.describe(conn, execution['session_id'], execution['id'])
         if context_state is not None:
             execution.update(context_state(execution['id']))
-    current = [e for e in executions if e['round'] == value['current_round'] and
-               e['requirement_version'] == value['requirement_version'] and e['session_id'] == value['leader_session_id']]
+    current = [e for e in executions if e['round'] == value['current_round'] and e['session_id'] == value['leader_session_id']]
     # Newest first by the stored report version within each round, the same order acceptance_target uses;
     # created_at is display-only because a saved clock can repeat or move backwards.
-    reports = [report_entry(project, value, row) for row in conn.execute(
+    latest = conn.execute('SELECT MAX(version) FROM goal_reports WHERE goal_id=? AND round=?',
+                          (identity, value['current_round'])).fetchone()[0]
+    reports = [report_entry(project, {**value, 'latest_report_version': latest}, row) for row in conn.execute(
         'SELECT id,round,requirement_version,version,outcome,data_json,created_at FROM goal_reports WHERE goal_id=? '
         'ORDER BY round DESC,version DESC', (identity,))]
     return {'goal': card(conn, value), 'executions': executions, 'work_items': goal_work.items(conn, identity),
