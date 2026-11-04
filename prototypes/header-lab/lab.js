@@ -27,10 +27,16 @@
   const params = new URLSearchParams(location.search);
   let variant = params.get("view") || "switcher";
   if (!["switcher","sidebar","document","tabs","legacy"].includes(variant)) variant = "switcher";
-  const defaults = () => ({scope:"mips", statuses:Object.fromEntries(data.tasks.map(t=>[t.id,t.status])), modes:{}, drafts:{}, messages:{}, scroll:{}, longTitle:false, note:""});
+  const manyTasks = variant === "sidebar" && params.get("tasks") === "many";
+  if (manyTasks) data.tasks.push(...window.HeaderLabScenarios.manyTasks);
+  const profileKey = manyTasks ? "sidebar-many" : variant;
+  const defaults = () => ({scope:manyTasks ? "latency" : "mips", statuses:Object.fromEntries(data.tasks.map(t=>[t.id,t.status])), modes:{}, drafts:{}, messages:{}, scroll:{}, sidebar:{query:"",filter:"all",collapsed:{delivered:true},scroll:0}, longTitle:false, note:""});
   const profiles = saved.profiles && typeof saved.profiles === "object" ? saved.profiles : {};
-  let profile = Object.assign(defaults(), profiles[variant]);
+  const existingProfile = Boolean(profiles[profileKey]);
+  let profile = Object.assign(defaults(), profiles[profileKey]);
   for (const name of ["statuses","modes","drafts","messages","scroll"]) if (!profile[name] || typeof profile[name] !== "object") profile[name] = defaults()[name];
+  profile.sidebar = {...defaults().sidebar,...profile.sidebar};
+  profile.statuses = {...defaults().statuses,...profile.statuses};
   if (!["general",...data.tasks.map(t=>t.id)].includes(profile.scope)) profile.scope = "mips";
   let mobileNav = false, overlay = null, opener = null, toastTimer, resizeObserver;
   const root = document.getElementById("demo-root");
@@ -41,10 +47,10 @@
   const task = () => data.tasks.find(t=>t.id===profile.scope);
   const status = () => profile.scope === "general" ? "idle" : profile.statuses[profile.scope];
   const save = () => {
-    profiles[variant] = profile;
+    profiles[profileKey] = profile;
     try {
       const latest = JSON.parse(localStorage.getItem(key) || "{}");
-      Object.assign(profiles, latest?.profiles, {[variant]:profile});
+      Object.assign(profiles, latest?.profiles, {[profileKey]:profile});
       localStorage.setItem(key, JSON.stringify({profiles,theme:document.documentElement.dataset.theme || "light"}));
     }
     catch { toast("浏览器未允许保存，本次试用仍可继续。"); }
@@ -73,7 +79,9 @@
   function render(options = {}) {
     const previous = root.querySelector(".conversation-scroll");
     if (options.rememberScroll !== false && previous) profile.scroll[profile.scope] = previous.scrollTop;
-    const state = {scope:profile.scope,status:status(),mode:profile.modes[profile.scope] || "human",longTitle:profile.longTitle,mobileNav,details:overlay === "details"};
+    const previousTasks = root.querySelector("[data-sidebar-scroll]");
+    if (previousTasks && visible(previousTasks)) profile.sidebar.scroll = previousTasks.scrollTop;
+    const state = {scope:profile.scope,status:status(),mode:profile.modes[profile.scope] || "human",longTitle:profile.longTitle,mobileNav,details:overlay === "details",sidebar:profile.sidebar};
     const currentData = {...data,tasks:data.tasks.map(item=>({...item,status:profile.statuses[item.id]}))};
     const context = {state,data:currentData,esc,icon,conversation:conversation(),task:task(),currentTitle:title(),statusLabel,statusHtml:profile.scope === "general" ? "" : `<span class="scope-status" data-status="${esc(status())}">${esc(statusLabel(status()))}</span>`};
     root.innerHTML = variant === "legacy" ? legacy(context) : window.HeaderLabVariants[variant].render(context);
@@ -81,7 +89,23 @@
     if (scroll) scroll.scrollTop = options.bottom ? scroll.scrollHeight : profile.scroll[profile.scope] || 0;
     const rail = root.querySelector(".tabs-track"), selected = rail?.querySelector('[aria-selected="true"]');
     if (selected) rail.scrollLeft = Math.max(0, selected.offsetLeft - rail.offsetLeft - 8);
+    const taskList = root.querySelector("[data-sidebar-scroll]");
+    if (taskList) {
+      taskList.scrollTop = profile.sidebar.scroll;
+      if (options.locateSidebar) {
+        const row = taskList.querySelector('[aria-current="page"]');
+        if (row) {
+          const rowBox = row.getBoundingClientRect(), listBox = taskList.getBoundingClientRect();
+          const groupHeight = row.closest("[data-sidebar-group]")?.querySelector(".sidebar-group-toggle")?.getBoundingClientRect().height || 0;
+          if (rowBox.bottom > listBox.bottom - 8) taskList.scrollTop += rowBox.bottom - listBox.bottom + 8;
+          else if (rowBox.top < listBox.top + groupHeight + 8) taskList.scrollTop += rowBox.top - listBox.top - groupHeight - 8;
+        }
+      }
+      profile.sidebar.scroll = taskList.scrollTop;
+    }
     document.getElementById("lab-variant").value = variant;
+    document.getElementById("lab-task-count-control").hidden = variant !== "sidebar";
+    document.getElementById("lab-task-count").value = manyTasks ? "many" : "few";
     document.getElementById("lab-status").disabled = profile.scope === "general";
     document.getElementById("lab-status").value = profile.scope === "general" ? "queued" : status();
     document.getElementById("lab-long-title").checked = Boolean(profile.longTitle);
@@ -92,7 +116,11 @@
     resizeObserver = new ResizeObserver(()=>{document.getElementById("lab-height").textContent = `内容顶部 ${Math.round(header.getBoundingClientRect().height)}px`;});
     resizeObserver.observe(header);
     setInert();
-    if (mobileNav) {
+    if (options.focus) {
+      const control = root.querySelector(options.focus.selector);
+      control?.focus({preventScroll:true});
+      if (control && Number.isInteger(options.focus.start)) control.setSelectionRange(options.focus.start,options.focus.end);
+    } else if (mobileNav) {
       const navigation = nav();
       navigation?.setAttribute("tabindex","-1");
       navigation?.focus({preventScroll:true});
@@ -175,7 +203,7 @@
     else if (action === "close-overlay") closeOverlay();
     else if (action === "mobile-nav") {
       const closing = mobileNav; if (!closing) rememberOpener(element);
-      mobileNav = !mobileNav; render(); if (closing) restoreFocus();
+      mobileNav = !mobileNav; render({locateSidebar:!closing && variant === "sidebar" && profile.sidebar.scroll === 0}); if (closing) restoreFocus();
     }
     else if (action === "start") {
       if (profile.scope === "general") return;
@@ -184,20 +212,40 @@
     else if (action === "set-mode") { profile.modes[profile.scope]=element.dataset.value; closeOverlay(false); render(); restoreFocus(); toast("决策方式已保存；任务不会因此启动。"); }
     else if (action === "resolve-decision") { addMessage(`已拍板：${element.dataset.value}`); profile.statuses[profile.scope]="running"; closeOverlay(false); render({bottom:true}); }
     else if (action === "suggest") { const input=root.querySelector("#message-input"); input.value=element.dataset.value; profile.drafts[profile.scope]=input.value; save(); input.focus(); }
+    else if (action === "sidebar-toggle-group") {
+      const group = element.dataset.status;
+      profile.sidebar.collapsed[group] = !profile.sidebar.collapsed[group];
+      render({focus:{selector:`[data-action="sidebar-toggle-group"][data-status="${group}"]`}});
+    }
+    else if (action === "sidebar-clear") {
+      profile.sidebar.query = ""; profile.sidebar.filter = "all";
+      render({focus:{selector:"#sidebar-task-search"}});
+    }
+    else if (action === "sidebar-locate") {
+      profile.sidebar.query = ""; profile.sidebar.filter = "all";
+      if (task()) profile.sidebar.collapsed[status()] = false;
+      render({locateSidebar:true,focus:{selector:`.sidebar-task[data-scope="${profile.scope}"]`}});
+    }
     else if (action === "toggle-tools") { toolbar.hidden=!toolbar.hidden; }
     else if (action === "theme") { toggleTheme(); closeOverlay(); }
     else if (action === "reset") { const note=profile.note; profile=defaults(); profile.note=note; mobileNav=false; closeOverlay(false); render({rememberScroll:false}); toast("这一版已恢复初始示例。"); }
     else if (action === "export-notes") {
-      save(); const text=["Crew 顶部原型试用笔记",...Object.entries(profiles).map(([id,value])=>`\n${id} · ${window.HeaderLabVariants[id]?.name || "原版对照"}\n${value.note || "未记录"}`)].join("\n");
+      save(); const text=["Crew 顶部原型试用笔记",...Object.entries(profiles).map(([id,value])=>`\n${id} · ${id === "sidebar-many" ? "侧栏即导航 · 36项任务" : window.HeaderLabVariants[id]?.name || "原版对照"}\n${value.note || "未记录"}`)].join("\n");
       const url=URL.createObjectURL(new Blob([text],{type:"text/plain;charset=utf-8"})); const link=document.createElement("a"); link.href=url; link.download="Crew-顶部原型试用笔记.txt"; link.click(); setTimeout(()=>URL.revokeObjectURL(url),1000);
     }
   });
   document.addEventListener("submit",event=>{if(event.target.id === "message-form"){event.preventDefault();send();}});
   document.addEventListener("input",event=>{
     if (event.target.id === "message-input") {profile.drafts[profile.scope]=event.target.value;save();}
+    else if (event.target.id === "sidebar-task-search" && !event.isComposing && event.target.isConnected) updateSidebarSearch(event.target);
     else if (event.target.id === "scope-search") overlays.querySelector(".scope-list").innerHTML=pickerRows(event.target.value);
     else if (event.target.id === "lab-notes") {profile.note=event.target.value;save();}
   });
+  function updateSidebarSearch(input) {
+    profile.sidebar.query = input.value;
+    render({focus:{selector:"#sidebar-task-search",start:input.selectionStart,end:input.selectionEnd}});
+  }
+  document.addEventListener("compositionend",event=>{if(event.target.id === "sidebar-task-search") updateSidebarSearch(event.target);});
   document.addEventListener("keydown",event=>{
     if (event.isComposing) return;
     if (event.key === "Escape") {if(overlay){event.preventDefault();closeOverlay();}else if(mobileNav){event.preventDefault();mobileNav=false;render();restoreFocus();}}
@@ -218,8 +266,15 @@
   function toggleTheme(){document.documentElement.dataset.theme=document.documentElement.dataset.theme === "dark" ? "light" : "dark";render();}
   document.getElementById("lab-theme").addEventListener("click",toggleTheme);
   document.getElementById("lab-variant").addEventListener("change",event=>{save();const next=new URL(location.href);next.searchParams.set("view",event.target.value);location.href=next.href;});
+  document.getElementById("lab-task-count").addEventListener("change",event=>{save();const next=new URL(location.href);next.searchParams.set("tasks",event.target.value);location.href=next.href;});
+  document.addEventListener("change",event=>{
+    if (event.target.id === "sidebar-status-filter") {
+      profile.sidebar.filter = event.target.value;
+      render({focus:{selector:"#sidebar-status-filter"}});
+    }
+  });
   document.getElementById("lab-status").addEventListener("change",event=>{profile.statuses[profile.scope]=event.target.value;render();});
   document.getElementById("lab-long-title").addEventListener("change",event=>{profile.longTitle=event.target.checked;render();});
   window.addEventListener("resize",()=>{if(innerWidth>(variant === "switcher" ? 620 : 760) && mobileNav){mobileNav=false;render();}});
-  render({rememberScroll:false});
+  render({rememberScroll:false,locateSidebar:manyTasks && !existingProfile});
 })();
