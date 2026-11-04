@@ -38,7 +38,7 @@
       <header class="cd-topbar">
         <span class="org-brand"><img class="org-mark" src="${options.logo || "crew.svg"}" alt="">Crew</span>
         <span class="cd-workspace">工作区 / Crew</span>
-        <span class="cd-sample">对话右侧架构 · 样例演示</span>
+        <span class="cd-sample">对话右侧架构 · 样例演示 · <a href="chat-light.html">轻量版</a></span>
       </header>
       <div class="cd-workspace-body">
         <nav class="cd-nav" aria-label="小组任务">

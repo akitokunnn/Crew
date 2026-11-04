@@ -73,7 +73,7 @@
                 ${variant.name}
               </button>`).join("")}
           </nav>
-          <span class="org-lab-note"><a href="chat.html">对话右侧架构 ↗</a></span>
+          <span class="org-lab-note"><a href="chat.html">对话右侧架构 ↗</a> · <a href="chat-light.html">轻量版 ↗</a></span>
         </div>`}
       <div class="org-window">
         <header class="org-topbar">
