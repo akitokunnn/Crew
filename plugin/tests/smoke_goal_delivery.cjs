@@ -257,7 +257,7 @@ const listCards=`[...document.querySelectorAll('#goal-head .goal-card')].map(car
   let readingHead=await readerHead();backgroundHeads.push(readingHead);for(const part of ['本轮较早报告','已有更新版本（第 2 稿）','第 1 轮 · 需求 v1 · 第 1 稿'])assert(readingHead.includes(part),part);await preserved('a newer draft in the same round',view);await shot('11-阅读中出现新稿-宽.png');
   await background({status:'running',requirement_version:2});
   readingHead=await readerHead();backgroundHeads.push(readingHead);for(const part of ['历史报告','需求已更新到 v2，本轮暂无新交付'])assert(readingHead.includes(part),part);
-  assert.equal(await run('document.querySelector("#chat-head").dataset.smokeOld'),undefined,'the chat scaffold was rebuilt behind the reader');await preserved('requirement updated, task area rebuilt',view);
+  assert.equal(await run('document.querySelector("#chat-head").dataset.smokeOld'),'1','the chat scaffold stays mounted behind the reader');await preserved('requirement updated, task area retained',view);
   await background({status:'queued',current_round:2,requirement_version:3});
   readingHead=await readerHead();backgroundHeads.push(readingHead);assert(readingHead.includes('当前第 2 轮暂无新交付'),readingHead);await preserved('reopened into a new round',view);await shot('12-重开后仍在阅读历史报告-宽.png');
   await background({status:'awaiting_acceptance'},[goal=>({...reportEntry(goal,'report-a2',2,3,true,'awaiting_acceptance','第二轮报告：混说场景已在真机复测。',{passed:2,failed:0,unverified:0,simulated:0},[],0),version:1})]);
