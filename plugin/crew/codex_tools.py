@@ -87,7 +87,7 @@ _SPECS = [
     _spec('crew_personal', 'Only the global Crew personal assistant may use this tool. Read summary, session.detail, '
           'goal.detail, documents.list, notes.list, prompt.get, prompt.history or prompt.applied across workspaces. '
           'Writes leader.create, session.message, session.stop, settings.save, prompt.save, prompt.reset, '
-          'todo.resolve, note.capture and note.update require the original human '
+          'decision.answer (data: decision_id, answer), todo.resolve, note.capture and note.update require the original human '
           'message_id supplied by Crew and a stable request_id. Preserve the same ID when retrying; never repeat '
           'successful actions or retry unknown outcomes under another ID. A selected workspace is not authorization.',
           {'action': _text('Action name.', max_length=100),

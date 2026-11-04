@@ -69,9 +69,8 @@ class ConnectionImportTests(unittest.TestCase):
             self.assertEqual(binding['owner_openid'], channel + '-private-recipient')
             self.assertGreater(binding['since'], '2026-01-01')
             self.assertNotEqual(binding['generation'], 'old-delivery-generation')
-            self.assertIsNone(binding['current_project'])
-            self.assertIsNone(binding['current_leader_session_id'])
-            self.assertEqual(binding['leader_numbers'], {})
+            for removed in ('current_project', 'current_leader_session_id', 'leader_numbers'):
+                self.assertNotIn(removed, binding)
             self.assertNotIn('binding_code', binding)
 
     def test_repeat_keeps_binding_generation_cursor_and_all_bytes(self):

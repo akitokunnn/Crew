@@ -144,8 +144,7 @@ class Manager:
                 inbox.execute(conn, "UPDATE notification_messages SET status='retired'")
                 inbox.execute(conn, "UPDATE notification_replies SET status='cancelled' WHERE status IN ('queued','running','sending')")
             with inbox.lock:
-                inbox.config.update(owner_openid=None, since=None, current_project=None,
-                                    current_leader_session_id=None, leader_numbers={},
+                inbox.config.update(owner_openid=None, since=None,
                                     binding_code=secrets.token_hex(4).upper(), generation=secrets.token_hex(12))
                 inbox.save_config()
 

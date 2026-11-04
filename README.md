@@ -48,7 +48,7 @@ Crew 用版本号区分更新，桌面包版本以 `desktop/package.json` 为准
 - **Git 管理员**：Git 页右上角“Git 设置”可绑定已有 leader、更换负责人、调整主干 / 稳定分支和合并规则；也可新建独立 worktree 的专用管理员。保存不启动 AI，变更随下一次正常输入传达；停用仅解除绑定，保留组、会话与请求。设置独立于提交图读取，仓库读取失败仍可进入并重试。支持 Codex 或 Claude，已有负责人的大脑沿用本人会话设置。 Git 页在当前工作区标签内保留已读快照、分页、筛选与滚动，切回不重新扫描，也不定时扫描。顶部显示读取时间；“更新视图”重新读取，“拉取远端”才执行 fetch。修改 Git 设置或工作目录后旧快照失效，关闭标签或重载网页后首次进入重新读取。
 - **通知按需唤醒**：合并中、等拍板只记台账；普通合并成功留作待阅。确实要等合入后继续时，AI 用 `crew git request "合入后跑集成验收并交付" --blocking`（Codex 的 `request` 使用 `data.blocking=true`）；只有这种成功和拒绝阻塞会唤醒提出者。比如“只改一行文档，已经收尾”不标记；“合入后还要验证集成并写最终结论”才标记。AI 撤回自己的待办不再启动自身对话；用户的完成、取消、撤销仍按原流程送回。
 - **守卫**：检查黑名单、设备借用、文件归属和 Git 管理规则。Claude 使用插件 hooks，Codex 接入原生 shell / apply_patch 执行前 hook，覆盖边界见 [Codex 接入说明](docs/CODEX_INTEGRATION.md)。
-- **远程与用量**：QQ 私聊可按项目和 leader 继续对话、答复拍板、查看待办；用量页按组、会话、日期和模型汇总 Claude / Codex token，并按价格表折算参考金额。组员和 leader 的总对话、各任务及历史执行通过原生绑定归回稳定人员身份；结构表分别显示 Claude 与 Codex 用量，Crew 每周估算也包含组员。
+- **远程与用量**：QQ / Lark 普通私聊由全局助手处理，可答复提醒、登记拍板、查看及整理待办；用量页按组、会话、日期和模型汇总 Claude / Codex token，并按价格表折算参考金额。组员和 leader 的总对话、各任务及历史执行通过原生绑定归回稳定人员身份；结构表分别显示 Claude 与 Codex 用量，Crew 每周估算也包含组员。
 
 详细用法见 [工作流程](docs/WORKFLOWS.md) 和 [页面说明](docs/WEB_UX.md)，实现设计见 [docs/DESIGN.md](docs/DESIGN.md)，0.1.1 的历史变更与验证见 [交付记录](docs/DESKTOP_0.1.1.md)。
 
@@ -157,7 +157,7 @@ Codex 桌面的人员标题使用 Crew 名字与职位，例如“声纹施工 �
 
 有新的未挂起拍板或 leader 新回复时，网页会响一声短提示音，标签标题显示未挂起的待拍板数；挂起、取消挂起本身不响。锁屏或打开"我已离开"时，未挂起的待拍板推到 QQ；`/decisions` 只列未挂起题，末尾说明挂起数。挂起时 leader 会收到通知，转告提问者：不卡流程的按推荐继续，卡流程的先做别的、先别再问这道题。左下角显示 QQ 连接、绑定和拒收状态。QQ 的命令和配置见 [docs/QQ.md](docs/QQ.md)；leader 巡查目前只按需（你问它才去查），候选场景见 [docs/PATROL.md](docs/PATROL.md)。
 
-QQ 命令不分大小写、忽略首尾空白：`/help`（`/h`）帮助，`/projects`（`/p`）列项目，`/project 项目名` 选项目，`/leader 名字` 选该项目的 leader，`/where`（`/w`）确认收件人；原有 `/leader 2`（`/l 2`、`/2`）编号保持可用。`/decisions`（`/d`）查看拍板，`/todo`（`/t`）查看人工待办，`/back`（`/b`）我回来了。引用旧消息会回到原 leader，不改变普通聊天的当前选择。离开时新增人工待办、拍板、真实错误和明确发布的阶段/最终报告按所选渠道发送；普通对话结束句不主动外推。同一共享待办只提醒一次，QQ 与 Lark 独立保存回执，明确平台拒绝最多自动重试两次。远程路由与 Lark 状态见 [docs/REMOTE_CHANNELS.md](docs/REMOTE_CHANNELS.md)。
+先在 Crew 打开全局助手，再通过 QQ / Lark 私聊文字或图片（按渠道能力）交给同一个助手；引用提醒会附上全部事项来源，助手明确后记录拍板、整理 TODO 或转告负责人。`/where`（`/w`）确认助手是否启用，`/decisions`（`/d`）查看拍板（QQ 可点按钮），`/todo`（`/t`）查看人工待办，`/back`（`/b`）我回来了，`/h` 查看帮助。离开时只推最终交付、卡住、人工 TODO 和待拍板，每项一行、同批一条消息；阶段进展与阶段报告不推。QQ 与 Lark 独立保存回执，明确平台拒绝最多自动重试两次。远程处理与 Lark 状态见 [docs/REMOTE_CHANNELS.md](docs/REMOTE_CHANNELS.md)。
 
 交流区新发言不响提示音、不推 QQ；左栏显示未读数，打开或滚到底记为已读。不点名的发言在 leader 下一轮附摘要，网页可手动“整理”，新增满 20 条也会自动生成置顶要点卡；原文默认折叠。`crew channel` 先看卡再看卡后的新发言，`crew channel --raw` 查看原文。
 
@@ -248,8 +248,8 @@ Windows 的派工集成源码在 `integrations/codex-dispatch/` 与 `integration
 | `~/.crew/chat/<会话ID>.jsonl` | 网页聊天记录，刷新和重启后重放；不保存思考内容 |
 | `~/.crew/chat/files/<会话ID>/` | 发给 leader 的截图 |
 | `~/.crew/qq.json`、`~/.crew/lark.json` | QQ / Lark 机器人凭证与启用状态，可在“设置 → 消息渠道”保存并连接 |
-| `~/.crew/notify.json` | 主人 openid、通知起点、离开状态、当前 leader 与 leader 编号，Crew 维护 |
-| `~/.crew/lark-notify.json` | Lark / 飞书独立的主人绑定、当前项目和 leader，Crew 维护 |
+| `~/.crew/notify.json` | 主人 openid、通知起点、离开状态与绑定代次，Crew 维护 |
+| `~/.crew/lark-notify.json` | Lark / 飞书独立的主人绑定、通知起点、离开状态与绑定代次，Crew 维护 |
 | `~/.crew/web.json` | 正在运行的网页服务地址，供 `spawn`、`leader start` 和 `wake` 连接，支持自定义端口 |
 | `~/.crew/runtime.json` | 命令行启动器当前使用的 Python 和后端路径 |
 | `~/.crew/desktop/backend/` | 打包桌面版保留的后端源码，供 CLI 和 Codex 守卫继续使用 |

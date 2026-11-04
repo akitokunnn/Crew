@@ -155,8 +155,7 @@ def apply(source, target, expected):
             value = desired[name]
             if name.endswith('notify.json'):
                 value = {**value, 'since': dt.datetime.now(dt.timezone.utc).isoformat(),
-                         'generation': secrets.token_hex(12), 'current_project': None,
-                         'current_leader_session_id': None, 'leader_numbers': {}}
+                         'generation': secrets.token_hex(12)}
             temporary = target / ('.connection-import-' + secrets.token_hex(12))
             try:
                 connections._write(temporary, value)
