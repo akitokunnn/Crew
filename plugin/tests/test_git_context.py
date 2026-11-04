@@ -28,7 +28,11 @@ class GitContextTests(CoreCase):
             self.assertEqual(git_admin.input_context(self.conn, 's1', version, PLUGIN), (version, None))
         _, worker_context = git_admin.input_context(self.conn, 's2', None, PLUGIN)
         self.assertIn('chief', worker_context)
-        self.assertIn('你不是 Git 管理员', worker_context)
+        self.assertIn('本项目 Git 助手为「chief」', worker_context)
+        self.assertIn('推送、开 PR、合并交给 Git 助手', worker_context)
+        self.assertIn('crew git request "<改动、验证、后续>" [--blocking]', worker_context)
+        self.assertIn('crew send "chief" "<内容>"', worker_context)
+        self.assertIn('crew_send_message', worker_context)
 
     def test_disabling_revokes_the_previous_assignment_once(self):
         previous, _ = git_admin.input_context(self.conn, 's1', None, PLUGIN)

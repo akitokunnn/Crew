@@ -68,14 +68,14 @@ class GitCommandTests(CoreCase):
 
     def test_enable_starts_git_administrator_in_separate_worktree(self):
         text = self.assert_cli(["git", "enable"], sid=None)[1]
-        self.assertIn("Git 管理已启用", text)
+        self.assertIn("Git 助手已启用", text)
         self.assertIn("base: develop", text)
         self.assertIn("stable: master", text)
         config = board.git_config(self.conn, "demo")
         self.assertEqual((config["base"], config["stable"]), ("develop", "master"))
         administrator = board.session(self.conn, config["admin_session_id"])
         self.assertEqual((administrator["crew_name"], administrator["role"], administrator["group_name"]),
-                         ("git管理员", "leader", "git"))
+                         ("Git 助手", "leader", "git"))
         plan = self.plans[0]
         self.assertEqual(administrator["session_id"], plan["session_id"])
         self.assertNotEqual(administrator["worktree"], store.norm_path(self.root))
@@ -96,6 +96,31 @@ class GitCommandTests(CoreCase):
         config = board.git_config(self.conn, "demo")
         self.assertEqual(config["admin_session_id"], administrator)
         self.assertEqual(config["base"], "topic")
+        self.assertEqual(len(self.plans), 1)
+
+    def test_cli_names_the_assistant_without_changing_json_contract(self):
+        sid = self.enable()
+        text = self.assert_cli(['whoami'], sid=sid)[1]
+        self.assertIn('身份：本项目内置 Git 助手', text)
+        status = self.assert_cli(['git', 'status'])[1]
+        self.assertIn('Git 助手：Git 助手（%s）' % sid, status)
+        value = json.loads(self.assert_cli(['whoami', '--json'], sid=sid)[1])
+        self.assertEqual(value['role'], 'leader')
+        self.assertNotIn('builtin', value)
+
+    def test_global_assistant_whoami_has_no_project_git_identity(self):
+        from crew import personal
+        self.enable()
+        assistant = personal.ensure_assistant(self.conn, self.home)
+        text = self.assert_cli(['whoami'], sid=assistant['session_id'])[1]
+        self.assertIn(assistant['session_id'], text)
+        self.assertNotIn('身份：本项目内置 Git 助手', text)
+
+    def test_reenable_preserves_existing_assistant_name(self):
+        sid = self.enable()
+        self.conn.execute("UPDATE sessions SET crew_name='git管理员' WHERE session_id=?", (sid,))
+        self.assert_cli(['git', 'enable'])
+        self.assertEqual(board.session(self.conn, sid)['crew_name'], 'git管理员')
         self.assertEqual(len(self.plans), 1)
 
     def test_cli_request_can_explicitly_wait_for_merge_before_follow_up_work(self):
@@ -365,15 +390,17 @@ class GitHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual((config["base"], config["stable"]), ("develop", "master"))
         sid = config["admin_session_id"]
         admin = board.session(self.conn, sid)
-        self.assertEqual((admin["crew_name"], admin["role"], admin["group_name"]), ("git管理员", "leader", "git"))
+        self.assertEqual((admin["crew_name"], admin["role"], admin["group_name"]), ("Git 助手", "leader", "git"))
         self.assertNotEqual(admin["cwd"], str(self.project))
         self.assertTrue(self.server.service.chat.path(sid).exists())
         command = self.commands[-1]
         self.assertEqual(command[command.index("--agent") + 1], "crew:git")
         self.assertNotIn('--model', command)
         state = self.request("/api/state?project=demo")[1]
-        admin_state = next(leader for leader in state["leaders"] if leader["session_id"] == sid)
-        self.assertTrue(admin_state["is_git_admin"])
+        admin_state = state['git_assistant']
+        self.assertEqual(admin_state['session_id'], sid)
+        self.assertTrue(admin_state['builtin'])
+        self.assertNotIn(sid, {leader['session_id'] for leader in state['leaders']})
         self.assertEqual((admin_state["model"], admin_state["effort"]), (None, None))
         self.assertEqual(self.request("/api/session/options?project=demo", {"session_id": sid, "model": "claude-opus-5-5"})[0], 200)
         self.assertEqual(self.request("/api/git/disable?project=demo", {}), (200, {"ok": True}))
@@ -441,64 +468,136 @@ class GitHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(requests[opened["id"]]["status"], "open")
 
     def git_settings_fixture(self):
-        board.join(self.conn, 'chief', 'demo', 'git manager', self.project, self.project,
-                   'develop', role='leader', group_name='git manager', now=NOW)
+        board.join(self.conn, 'chief', 'demo', 'Git 助手', self.project, self.project,
+                   'develop', role='leader', group_name='git', now=NOW)
+        board.enable_git(self.conn, 'demo', 'develop', '', admin_session_id='chief', now=NOW)
         code, snapshot = self.request('/api/git/settings?project=demo')
         self.assertEqual(code, 200, snapshot)
-        return {'project': 'demo', 'revision': snapshot['revision'], 'admin_session_id': 'chief',
+        return {'project': 'demo', 'revision': snapshot['revision'],
                 'base': 'develop', 'stable': '', 'branch_rules': 'Use PRs, tests and project rules.'}
 
-    def test_settings_binds_existing_leader_and_preserves_its_brain_without_starting_ai(self):
+    def test_settings_rejects_any_admin_session_id_without_changing_binding(self):
         body = self.git_settings_fixture()
-        from crew import rules
-        for runtime in ('codex', 'claude'):
+        before = board.git_config(self.conn, 'demo')
+        for sid in ('chief', 's3', 's1', 'outsider', '', None):
+            for enabled in (True, False):
+                with self.subTest(sid=sid, enabled=enabled):
+                    code, error = self.request('/api/git/settings?project=demo',
+                                               {**body, 'admin_session_id': sid, 'enabled': enabled})
+                    self.assertEqual(code, 400, error)
+                    self.assertEqual(error['error'], 'Git 助手由 Crew 内置，不能指定其他 leader')
+                    self.assertEqual(board.git_config(self.conn, 'demo'), before)
+        self.assertEqual(len(self.processes), 0)
+
+    def test_settings_requires_enable_to_create_the_assistant(self):
+        body = {'project': 'demo', 'revision': git_admin.revision(None), 'base': 'develop', 'stable': '', 'branch_rules': ''}
+        code, error = self.request('/api/git/settings?project=demo', body)
+        self.assertEqual(code, 400, error)
+        self.assertEqual(error['error'], '请先启用 Git 助手')
+        self.assertIsNone(board.git_config(self.conn, 'demo'))
+
+    def test_builtin_assistant_state_has_leader_fields_and_scoped_attention_counts(self):
+        self.git_settings_fixture()
+        journal = self.server.service.chat.journal('chief')
+        journal.emit('assistant', id='read-reply', text='Read reply')
+        board.mark_read(self.conn, 'chief', journal.events[-1]['seq'])
+        journal.emit('assistant', id='unread-one', text='First unread reply')
+        journal.emit('assistant', id='unread-two', text='Second unread reply')
+        board.ask(self.conn, 'chief', 'Choose a branch', ['A', 'B'], now=NOW)
+        held = board.ask(self.conn, 'chief', 'Held choice', ['A', 'B'], now=NOW)
+        board.hold(self.conn, held, now=NOW)
+        answered = board.ask(self.conn, 'chief', 'Answered choice', ['A', 'B'], now=NOW)
+        board.answer(self.conn, answered, 'A', now=NOW)
+        board.ask(self.conn, 's3', 'Another leader choice', ['A', 'B'], now=NOW)
+        board.ask(self.conn, 's1', 'Member choice', ['A', 'B'], now=NOW)
+        board.join(self.conn, 'git-member', 'demo', 'Git reviewer', self.project, self.project, 'topic', group_name='git', now=NOW)
+        board.ask(self.conn, 'git-member', 'Git member choice', ['A', 'B'], now=NOW)
+        for status in ('open', 'waiting_user', 'waiting_user', 'merging', 'merged', 'rejected'):
+            request = board.request_git_merge(self.conn, 'demo', 's1', 'topic', status, title=None, now=NOW)
+            if status != 'open':
+                board.resolve_git_request(self.conn, 'demo', 'chief', request['id'], status, status, now=NOW)
+        other = self.root / 'other-project'; other.mkdir()
+        board.init_project(self.conn, 'other', other, now=NOW)
+        board.join(self.conn, 'other-admin', 'other', 'Git 助手', other, other, 'main', role='leader', group_name='git', now=NOW)
+        self.conn.execute("INSERT INTO git_management(project,enabled_at,base,admin_session_id) VALUES('other',?,'main','other-admin')", (NOW,))
+        request = board.request_git_merge(self.conn, 'other', 'other-admin', 'topic', 'Other request', title=None, now=NOW)
+        board.resolve_git_request(self.conn, 'other', 'other-admin', request['id'], 'waiting_user', 'Other wait', now=NOW)
+        board.ask(self.conn, 'other-admin', 'Other choice', ['A', 'B'], now=NOW)
+        self.server.service.chat.journal('other-admin').emit('assistant', id='other-unread', text='Other reply')
+        for runtime in ('claude', 'codex'):
             with self.subTest(runtime=runtime):
                 runtimes.set(self.conn, 'chief', runtime)
-                models.set(self.conn, 'chief', 'native-fixture-model', 'high', now=NOW)
-                code, saved = self.request('/api/git/settings?project=demo', body)
-                self.assertEqual(code, 200, saved)
-                self.assertEqual(saved['config']['admin_session_id'], 'chief')
-                self.assertEqual(saved['config']['branch_rules'], body['branch_rules'])
-                self.assertEqual(rules.skill_role(self.conn, board.session(self.conn, 'chief')), 'git')
-                self.assertEqual(runtimes.get(self.conn, 'chief')['runtime'], runtime)
-                self.assertEqual(models.get(self.conn, 'chief')['model'], 'native-fixture-model')
-                body['revision'] = saved['revision']
-        self.assertTrue(next(row for row in self.request('/api/state?project=demo')[1]['leaders'] if row['session_id'] == 'chief')['is_git_admin'])
-        self.assertEqual(len(self.processes), 0)
-        self.assertEqual(len([s for s in board.sessions(self.conn, 'demo') if s['role'] == 'leader']), 2)
+                state = self.request('/api/state?project=demo')[1]
+                assistant = state['git_assistant']
+                self.assertTrue(assistant['builtin'])
+                self.assertEqual(assistant['runtime'], runtime)
+                self.assertEqual((assistant['session_id'], assistant['name']), ('chief', 'Git 助手'))
+                self.assertEqual((assistant['base'], assistant['stable']), ('develop', None))
+                self.assertEqual(set(assistant) - {'builtin', 'base', 'stable', 'requests', 'attention'}, set(state['leaders'][0]))
+                self.assertNotIn('chief', {leader['session_id'] for leader in state['leaders']})
+                self.assertTrue(all('is_git_admin' not in leader for leader in state['leaders']))
+                self.assertEqual(assistant['requests'], {'active': 4, 'waiting_user': 2, 'merging': 1, 'queued': 1})
+                self.assertEqual(assistant['unread'], 2)
+                self.assertEqual(assistant['pending'], 2)  # Shared leader field also includes its member's choice.
+                self.assertEqual(assistant['attention'], 5)  # 2 waiting requests + 2 replies + 1 own open choice.
+                with mock.patch('crew.git_view.view', return_value={}):
+                    code, git = self.request('/api/git?project=demo')
+                self.assertEqual(code, 200, git)
+                self.assertEqual(git['assistant'], assistant)
+        other_state = self.request('/api/state?project=other')[1]
+        self.assertEqual(other_state['leaders'], [])
+        self.assertEqual(other_state['git_assistant']['attention'], 3)
+        self.assertEqual(self.request('/api/leaders/order?project=demo', {'project': 'demo', 'order': ['s3']})[0], 200)
+        self.assertEqual(self.request('/api/leaders/priority?project=demo', {'project': 'demo', 'ranks': ['s3']})[0], 200)
+        self.assertEqual(self.request('/api/leaders/priority?project=demo', {'project': 'demo', 'ranks': ['chief']})[0], 400)
 
-    def test_settings_changes_branches_rules_and_admin_without_restarting_sessions(self):
+    def test_disabled_assistant_is_null_and_legacy_ordinary_leader_stays_visible(self):
+        self.assertIsNone(self.request('/api/state?project=demo')[1]['git_assistant'])
+        with mock.patch('crew.git_view.view', return_value={}):
+            self.assertIsNone(self.request('/api/git?project=demo')[1]['assistant'])
+        board.enable_git(self.conn, 'demo', 'develop', '', admin_session_id='s3', now=NOW)
+        board.join(self.conn, 'unbound-git', 'demo', 'git管理员', self.project, self.project,
+                   'topic', role='leader', group_name='git', now=NOW)
+        before = board.session(self.conn, 's3')
+        config = board.git_config(self.conn, 'demo')
+        state = self.request('/api/state?project=demo')[1]
+        self.assertFalse(state['git_assistant']['builtin'])
+        self.assertIn('unbound-git', {item['session_id'] for item in state['leaders']})
+        self.assertEqual(state['git_assistant']['session_id'], 's3')
+        leader = next(item for item in state['leaders'] if item['session_id'] == 's3')
+        self.assertEqual({key: value for key, value in state['git_assistant'].items()
+                          if key not in {'builtin', 'base', 'stable', 'requests', 'attention'}}, leader)
+        with mock.patch('crew.git_view.view', return_value={}):
+            self.assertFalse(self.request('/api/git?project=demo')[1]['assistant']['builtin'])
+        self.assertEqual(board.session(self.conn, 's3'), before)
+        self.assertEqual(board.git_config(self.conn, 'demo'), config)
+
+    def test_settings_changes_branches_rules_without_restarting_sessions(self):
         body = self.git_settings_fixture()
         first = self.request('/api/git/settings?project=demo', body)[1]
-        board.join(self.conn, 'next-chief', 'demo', 'new manager', self.project, self.project,
-                   'topic', role='leader', group_name='new manager', now=NOW)
         code, updated = self.request('/api/git/settings?project=demo',
                                     {**body, 'revision': first['revision'], 'base': 'topic', 'stable': 'master',
-                                     'admin_session_id': 'next-chief', 'branch_rules': 'New policy'})
+                                     'branch_rules': 'New policy'})
         self.assertEqual(code, 200, updated)
         self.assertEqual((updated['config']['base'], updated['config']['stable']), ('topic', 'master'))
         self.assertEqual(updated['config']['enabled_at'], first['config']['enabled_at'])
-        self.assertEqual(updated['config']['admin_session_id'], 'next-chief')
+        self.assertEqual(updated['config']['admin_session_id'], 'chief')
+        self.assertEqual(updated['config']['branch_rules'], 'New policy')
         self.assertNotEqual(board.session(self.conn, 'chief')['status'], 'closed')
         self.assertEqual(len(self.processes), 0)
 
-    def test_settings_rejects_invalid_identity_branch_and_cross_project_writes(self):
+    def test_settings_rejects_invalid_branch_rules_and_cross_project_writes(self):
         body = self.git_settings_fixture()
         other = self.root / 'other-project'; other.mkdir()
         board.init_project(self.conn, 'other', other, now=NOW)
-        board.join(self.conn, 'outsider', 'other', 'other chief', other, other,
-                   'main', role='leader', group_name='other chief', now=NOW)
-        for changes in ({'admin_session_id': 's1'}, {'admin_session_id': 'outsider'},
-                        {'admin_session_id': ''}, {'base': 'missing'}, {'stable': 'develop'},
+        before = board.git_config(self.conn, 'demo')
+        for changes in ({'base': 'missing'}, {'stable': 'develop'},
                         {'branch_rules': 42}, {'project': 'other'}):
             with self.subTest(changes=changes):
                 code, result = self.request('/api/git/settings?project=demo', {**body, **changes})
                 self.assertEqual(code, 400, result)
-                self.assertIsNone(board.git_config(self.conn, 'demo'))
+                self.assertEqual(board.git_config(self.conn, 'demo'), before)
         self.assertEqual(self.request('/api/git/settings?project=demo', body, header=False)[0], 403)
-        from crew import session_ops
-        session_ops.archive(self.conn, 'chief', now=NOW)
-        self.assertEqual(self.request('/api/git/settings?project=demo', body)[0], 400)
         self.assertEqual(len(self.processes), 0)
 
     def test_settings_concurrent_ai_policy_edit_is_not_overwritten(self):
@@ -521,7 +620,7 @@ class GitHttpTests(ShellFixture, unittest.TestCase):
         self.assertIsNone(board.git_config(self.conn, 'demo'))
         self.assertEqual(board.session(self.conn, 'chief'), before)
         self.assertEqual(board.git_requests(self.conn, 'demo')[0]['id'], request['id'])
-        self.assertIsNone(next(g for g in board.groups(self.conn, 'demo') if g['name'] == 'git manager')['closed_at'])
+        self.assertIsNone(next(g for g in board.groups(self.conn, 'demo') if g['name'] == 'git')['closed_at'])
         self.assertEqual(len(self.processes), 0)
 
     def test_settings_is_independent_of_graph_github_and_keeps_config_on_repository_error(self):
@@ -535,7 +634,7 @@ class GitHttpTests(ShellFixture, unittest.TestCase):
         self.assertFalse(result['available'])
         self.assertIn('timed out', result['reason'])
         self.assertEqual(result['config']['admin_session_id'], 'chief')
-        self.assertEqual({row['session_id'] for row in result['leaders']}, {'chief', 's3'})
+        self.assertEqual({row['session_id'] for row in result['leaders']}, {'s3'})
         self.assertEqual(len(self.processes), 0)
 
     def test_fetch_calls_only_explicit_post_and_returns_raw_error(self):

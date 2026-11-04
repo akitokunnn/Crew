@@ -426,13 +426,15 @@ def _status_text(v, now=None):
     return "\n".join(lines)
 
 
-def _whoami_text(s):
+def _whoami_text(s, git_assistant=None):
     leader = s.get("leader")
     lines = [_session_line(s).strip(),
              "项目 %s  分组 %s  leader %s（地址 %s）" % (s["project"], s["group_name"] or "-",
                                                     leader["crew_name"] if leader else "-", leader["cc_name"] if leader else "-"),
              "worktree %s  分支 %s  会话 %s" % (s["worktree"] or "-", s["branch"] or "-", s["session_id"])]
     lines.append("运行端 %s  leader 运行端 %s" % (s.get("runtime", "claude"), leader.get("runtime", "claude") if leader else "-"))
+    if git_assistant is not None and git_assistant['session_id'] == s['session_id']:
+        lines.append('身份：本项目%sGit 助手' % ('内置 ' if git_assistant['group_name'] == 'git' else '历史绑定的 '))
     lines.append("负责范围：%s  完成标准：%s" % (s["scope"] if s["scope"] is not None else "-",
                                                s["done_when"] if s["done_when"] is not None else "-"))
     if s["last_message"]:
@@ -440,7 +442,7 @@ def _whoami_text(s):
     return "\n".join(lines)
 
 
-def _emit(value, as_json=False, command=None, channel_card=None):
+def _emit(value, as_json=False, command=None, channel_card=None, git_assistant=None):
     if command == 'send' and isinstance(value, dict):
         value = message_receipts.normalize(value)
     if as_json:
@@ -451,7 +453,7 @@ def _emit(value, as_json=False, command=None, channel_card=None):
         print(_status_text(value))
     elif command == "git":
         if "policy" in value:
-            print(value["policy"] if value["policy"] is not None else "git 管理员还没写分支规则，开工前先问它")
+            print(value["policy"] if value["policy"] is not None else "Git 助手还没写分支规则，开工前先问它")
         elif "request" in value:
             item = value["request"]
             print("合并请求 #%s · %s · %s%s\n%s" % (item["id"], item["status"], item["branch"], " · 合并后继续" if item.get("blocking") else "", item["note"] or item["description"]))
@@ -461,9 +463,11 @@ def _emit(value, as_json=False, command=None, channel_card=None):
                              item["pr_number"] if item["pr_number"] is not None else "-", ("[合并后继续] " if item.get("blocking") else "") + item["description"])
                             for item in value["requests"]) if value["requests"] else "暂无合并请求")
         elif value["enabled"]:
-            print("Git 管理已启用 · base: %s · stable: %s" % (value["base"], value["stable"] or "未设置"))
+            print("Git 助手已启用 · base: %s · stable: %s" % (value["base"], value["stable"] or "未设置"))
+            if git_assistant is not None:
+                print('Git 助手：%s（%s）' % (git_assistant['crew_name'], git_assistant['session_id']))
         else:
-            print("Git 管理未启用")
+            print("Git 助手未启用")
     elif command == "open":
         print("已取消，会话继续保持原样" if value.get("cancelled") else "已在 VS Code 打开会话：" + value["session_id"])
     elif command == "wake":
@@ -482,7 +486,7 @@ def _emit(value, as_json=False, command=None, channel_card=None):
         if value.get('message_id'):
             print('消息编号：' + value['message_id'])
     elif command == "whoami":
-        print(_whoami_text(value))
+        print(_whoami_text(value, git_assistant))
     elif command == "who":
         print(_whoami_text(value) + "\n" + _context_text(value))
     elif command == "channel":
@@ -667,6 +671,9 @@ def _with_context(home, project_name, sessions):
             session.update(context=None, context_reason=str(exc))
         return
     people = {session["session_id"]: session for session in [*state["leaders"], *state["members"]]}
+    if state['git_assistant'] is not None:
+        assistant = state['git_assistant']
+        people[assistant['session_id']] = assistant
     for session in sessions:
         sid = session["session_id"]
         current = people.get(sid)
@@ -1068,6 +1075,7 @@ def main(argv=None, agents_provider=claude_agents, cwd=None, plugin_root=None):
                                      after=card['upto_message_id'] if card is not None else 0)
             _emit(value, args.json, args.command, channel_card=card)
             return 0
+        git_assistant = None
         if args.command == "install":
             value = install.install(args.home, plugin_root)
             with contextlib.closing(store.connect(args.home)) as conn:
@@ -1075,7 +1083,13 @@ def main(argv=None, agents_provider=claude_agents, cwd=None, plugin_root=None):
         else:
             with contextlib.closing(store.connect(args.home)) as conn:
                 value = doctor(conn, args.home, cwd) if args.command == "doctor" else execute(conn, args, cwd, agents_provider)
-        _emit(value, getattr(args, "json", False), args.command)
+                if (args.command == 'whoami' or args.command == 'git' and args.action in (None, 'status', 'enable')) and not getattr(args, 'json', False):
+                    project = value['project'] if args.command == 'whoami' else _project(conn, args, cwd)
+                    if project is not None:
+                        config = board.git_config(conn, project)
+                        if config is not None and config['admin_session_id'] is not None:
+                            git_assistant = board.session(conn, config['admin_session_id'])
+        _emit(value, getattr(args, "json", False), args.command, git_assistant=git_assistant)
         return 0
     except board.Conflict as exc:
         print("冲突: %s" % exc, file=sys.stderr)
