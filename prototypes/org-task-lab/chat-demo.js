@@ -53,7 +53,6 @@
         </nav>
         <main class="cd-conversation" aria-label="当前对话">
           <header class="cd-chat-header"></header>
-          <div class="cd-chat-scope"></div>
           <div class="cd-messages" role="log" aria-label="样例对话记录" tabindex="0"></div>
           <form class="cd-composer">
             <label class="cd-composer-label" for="${id}-draft"></label>
@@ -161,20 +160,16 @@
         <div class="cd-chat-person">
           ${avatar(person)}
           <div>
-            <h1>${esc(person.name)}<span>${person.role === "leader" ? "leader" : "组员"}</span></h1>
-            <p>${esc(runtimeName(link?.runtime || person.runtime))} · ${esc(person.summary)}</p>
+            <h1 aria-label="${esc(person.name)}，${esc(name)}">
+              <span class="cd-person-name">${esc(person.name)}</span><span class="cd-context-divider" aria-hidden="true">/</span><span class="cd-context-name">${esc(name)}</span>
+            </h1>
+            <p class="cd-chat-meta">
+              <span>${person.role === "leader" ? "leader" : "组员"} · ${esc(runtimeName(link?.runtime || person.runtime))}</span>
+              ${task ? statusBadge(task.status) : ""}
+            </p>
           </div>
         </div>
         <button type="button" class="cd-open-panel" data-chat-action="toggle-panel" aria-expanded="${state.panelOpen}" aria-controls="${id}-panel-body">本组架构${state.panelOpen ? " −" : " +"}</button>`;
-      element.querySelector(".cd-chat-scope").innerHTML = `
-        <label for="${id}-scope">当前对话</label>
-        <select id="${id}-scope" data-chat-control="task">
-          <option value="">总会话</option>
-          ${data.tasks.filter(item => !item.history).map(item => `
-            <option value="${esc(item.id)}"${item.id === state.taskId ? " selected" : ""}>${esc(item.title)}</option>
-          `).join("")}
-        </select>
-        ${task ? statusBadge(task.status) : '<span class="org-state">独立总会话</span>'}`;
       panel.id = `${id}-panel-body`;
       const stored = state.messages.get(scopeKey()) || [];
       const initialMessages = task
@@ -364,7 +359,6 @@
       }
     });
     element.addEventListener("change", event => {
-      if (event.target.dataset.chatControl === "task") switchConversation(state.personId, event.target.value || null);
       if (event.target.dataset.chatControl === "leader") {
         rememberConversation();
         state.leaderId = event.target.value;
