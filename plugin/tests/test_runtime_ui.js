@@ -45,6 +45,7 @@ function harness(state = fixture(), fetcher = () => { throw new Error("Unexpecte
   vm.runInContext(source.replace(end, `  window.ui = {runtimeList, runtimeInfo, defaultRuntime, modelEfforts, modelMenu, optionChange,
     optionsLabel, leaderPayload, renderLeaderRuntime, selectLeaderOption, refreshRuntimes, editorHandoffReason, sessionMenu, chatAccess, goalChatNotes,
     contextRing, contextControls, sidebarLeader, memberNode, workingRow, compactContext, compactions,
+    taskContextControls, compactFailures, releaseTaskCompactions, setGoal(client, id) {goals=client;goalId=id;},
     openTodos, todosOf, pendingOf, todoCard, todoTray, todoExpanded, todoActions,
     todoResolvePayload, resolveTodo, renderTodos, replace,
     compactDecisionText, decisionOptions, decisionCard, decisionsOpen,
@@ -455,7 +456,7 @@ test("a ring queues only its own session, suppresses duplicate clicks, and clear
     release({ok:true,queued:true,message:"这一轮说完后压缩"});await pending;
     assert.equal(ui.compactions.get(id).phase,"queued");
     const own=ui.contextRing({...contextState(runtime).leaders[0],session_id:id});
-    assert(own.includes('aria-busy="true" disabled'));assert(own.includes("已排队"));
+    assert(own.includes('aria-busy="true" aria-disabled="true"'));assert(!own.includes(" disabled"),"stays focusable for keyboard users");assert(own.includes("已排队"));assert(own.includes("is-queued"));
     watcher.onFinish({type:"compact",seq:3});assert.equal(ui.compactions.size,0);
     assert(toasts.some(text=>text.includes("这一轮说完后压缩")));
   }
@@ -478,4 +479,78 @@ test("an externally owned ring gives the exact native-tool instruction without s
   const state=contextState("claude");state.members[0].where="vscode";
   const {ui}=harness(state),toasts=[];ui.services({toast:text=>toasts.push(text)});
   await ui.compactContext("member");assert.equal(ui.compactions.size,0);assert.match(toasts[0],/Member.*原工具.*\/compact/);
+});
+
+// Task chats: one ring per person × task × execution, fed by the goal detail's execution context/compaction.
+function taskHarness(runtime="codex") {
+  const state=contextState(runtime),{ui}=harness(state),refreshes=[];
+  const executions={lead:{id:"exec-lead",session_id:"lead",round:2,generation:1,context:{used:12000,max:100000},compaction:null},
+    member:{id:"exec-member",session_id:"member",round:2,generation:1,context:{used:12000,max:100000},compaction:null}};
+  const client={executionFor:id=>executions[id]||null,currentGoal:()=>({id:"goal-1",title:"长任务 <名称>"}),refresh:id=>{refreshes.push(id);return Promise.resolve();}};
+  ui.setGoal(client,"goal-1");
+  return {state,ui,executions,refreshes};
+}
+const taskRing=(ui,state,id,execution)=>ui.taskContextControls([...state.leaders,...state.members].find(item=>item.session_id===id),execution);
+
+test("task rings show each person's own task execution, honestly unknown, and every compaction phase",()=>{
+  for(const runtime of ["claude","codex"])for(const id of ["lead","member"]){
+    const {state,ui,executions}=taskHarness(runtime),execution=executions[id];
+    let html=taskRing(ui,state,id,execution);
+    assert(html.includes(`data-id="${id}" data-goal-id="goal-1" data-execution-id="exec-${id}"`));
+    assert.match(html,/class="context-ring calm"/);assert(html.includes(">12%<"));
+    assert(html.includes("任务「长任务 &lt;名称&gt;」 第 2 轮"),"label names person, task and round");
+    assert(!html.includes("长任务 <名称>"),"long names stay escaped");
+    execution.context={used:90000,max:100000};assert.match(taskRing(ui,state,id,execution),/context-ring danger/);
+    execution.context=null;html=taskRing(ui,state,id,execution);
+    assert.match(html,/context-ring unknown/);assert(html.includes(">—<"));assert(html.includes("上下文用量未知"));assert(!html.includes("context-arc"));
+    for(const max of [null,0]){execution.context={used:12000,max};html=taskRing(ui,state,id,execution);
+      assert(html.includes("上限未知"));assert(!html.includes("%"),"no percent without a valid limit");assert(!html.includes("context-arc"));}
+    execution.context={used:12000,max:100000};execution.compaction="queued";html=taskRing(ui,state,id,execution);
+    assert(html.includes("is-queued"));assert(html.includes('aria-disabled="true"'));assert(html.includes("已排队"));
+    execution.compaction="compacting";html=taskRing(ui,state,id,execution);assert(html.includes("is-compacting"));assert(html.includes("正在压缩"));
+    assert.equal(taskRing(ui,state,id,null),"","no execution, nothing to compact");
+    // The general ring of the same identity does not inherit the task's state.
+    assert(!ui.contextRing(state.leaders.concat(state.members).find(item=>item.session_id===id)).includes("is-compacting"));
+  }
+});
+
+test("task compaction names its execution, suppresses repeats, and keeps general and other tasks independent",async()=>{
+  for(const id of ["lead","member"]){
+    const {state,ui,executions}=taskHarness(),writes=[];let watcher,release;
+    ui.services({render(){},loadState:async()=>{},toast(){},
+      watchCompact:async(sid,options)=>{assert.equal(sid,id);assert.equal(options.executionId,`exec-${id}`);watcher=options;return()=>{};},
+      api:async(path,data)=>{writes.push({path,...data});return new Promise(resolve=>{release=resolve;});}});
+    const pending=ui.compactContext(id,"goal-1",`exec-${id}`);await Promise.resolve();await Promise.resolve();
+    await ui.compactContext(id,"goal-1",`exec-${id}`);
+    assert.equal(writes.length,1);
+    assert.deepEqual(plain(writes[0]),{path:"/api/session/compact",session_id:id,goal_id:"goal-1",execution_id:`exec-${id}`,after_turn:true});
+    assert(taskRing(ui,state,id,executions[id]).includes("正在请求压缩"));
+    assert(!ui.contextRing(state.leaders.concat(state.members).find(item=>item.session_id===id)).includes("aria-busy"),"general chat stays free");
+    release({ok:true,queued:true,session_id:id,goal_id:"goal-1",execution_id:`exec-${id}`});await pending;
+    assert(taskRing(ui,state,id,executions[id]).includes("is-queued"));
+    watcher.onState({context:{used:12000,max:100000},compaction:"compacting"});assert(taskRing(ui,state,id,executions[id]).includes("is-compacting"));
+    watcher.onFinish({type:"compact",seq:4});assert.equal(ui.compactions.size,0);
+  }
+});
+
+test("a stale execution conflict re-reads the task and does not mark failure; a real failure stays visible until retried",async()=>{
+  const {state,ui,executions,refreshes}=taskHarness();let closed=0,mode="conflict";
+  ui.services({render(){},loadState:async()=>{},toast(){},watchCompact:async(_id,options)=>{return()=>closed++;},
+    api:async()=>{if(mode==="conflict"){const error=Error("任务执行已变化，请刷新后再压缩");error.status=409;throw error;}throw Error("原生压缩拒绝");}});
+  await assert.rejects(ui.compactContext("member","goal-1","exec-member"),/换轮或换代.*重新读取/);
+  assert.deepEqual(refreshes,["goal-1"]);assert.equal(closed,1);assert.equal(ui.compactFailures.size,0);
+  mode="fail";await assert.rejects(ui.compactContext("member","goal-1","exec-member"),/原生压缩拒绝/);
+  const html=taskRing(ui,state,"member",executions.member);assert(html.includes("has-failed"));assert(html.includes("原生压缩拒绝"));assert(html.includes("点击重试"));
+});
+
+test("leaving the task execution discards its pending request so a late receipt cannot touch the new view",async()=>{
+  const {state,ui,executions}=taskHarness();let closed=0,release,posted;
+  const inFlight=new Promise(resolve=>{posted=resolve;});
+  ui.services({render(){},loadState:async()=>{},toast(){},watchCompact:async()=>()=>closed++,api:async()=>new Promise(resolve=>{release=resolve;posted();})});
+  const pending=ui.compactContext("lead","goal-1","exec-lead");await inFlight;
+  assert.equal(ui.compactions.size,1);
+  executions.lead={...executions.lead,id:"exec-lead-2",round:3};
+  ui.releaseTaskCompactions("lead:goal-1:exec-lead-2");assert.equal(ui.compactions.size,0);assert.equal(closed,1);
+  release({ok:true,queued:true});await pending;
+  assert.equal(ui.compactions.size,0);assert(!taskRing(ui,state,"lead",executions.lead).includes("is-queued"));
 });

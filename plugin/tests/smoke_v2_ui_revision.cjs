@@ -73,7 +73,7 @@ async function main(){
     evidence.taskCompact={request:taskResponse.request().postDataJSON(),status:taskResponse.status(),response:await taskResponse.json()};
     await check('Task compaction sends a goal scope and queues behind its active reply',async()=>taskResponse.ok()&&evidence.taskCompact.request.goal_id===info.goals[0]&&evidence.taskCompact.response.queued===true);
     fixture.stdin.write('compact-finish:'+info.goals[0]+'\n');await page.locator('.context-divider').filter({hasText:'上下文已压缩'}).waitFor();
-    await page.waitForFunction(()=>!document.querySelector('.context-compact-state'));await capture('14-task-compact-complete');
+    await page.waitForFunction(()=>!document.querySelector('#chat-head .task-context .context-ring:is(.is-queued,.is-compacting)'));await capture('14-task-compact-complete');
     await check('Task compaction finishes without losing the draft',async()=>await page.locator('#chat-host textarea').inputValue()==='任务草稿');
     await check('Missing post-compaction token counts remain unknown rather than becoming zero',async()=>await page.locator('.context-divider').filter({hasText:'上下文已压缩'}).innerText()==='上下文已压缩：5.0 万 → 未知');
   }
