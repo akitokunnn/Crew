@@ -264,7 +264,7 @@ const listCards=`[...document.querySelectorAll('#goal-head .goal-card')].map(car
   readingHead=await readerHead();backgroundHeads.push(readingHead);for(const part of ['历史报告','本轮已有新报告'])assert(readingHead.includes(part),part);await preserved('a new round report arrived',view);
   await key('Escape');await wait('!document.querySelector(".goal-report-reader") && (document.querySelector("[data-goal-tools=goal-a] .goal-delivery")?.textContent||"").includes("第二轮报告")');
   assert.equal(await run('document.querySelectorAll("#main [inert]").length'),0);assert.equal(await run('document.activeElement.dataset.goalAct'),'delivery');assert.equal(await run('document.querySelector("#goal-drawer").hidden'),true);
-  steps.push('直接阅读中同一目标在后台出现新稿、需求更新（主区重建）、重开换轮、新轮报告：阅读头部依次改为「本轮较早报告/历史报告」并说明原因，同一个 iframe 节点不再触发 load、srcdoc 与渲染画面不变（文档未重载），主区始终不可操作；返回任务后显示新一轮结论');
+  steps.push('直接阅读中同一目标在后台出现新稿、需求更新（保留对话区）、重开换轮、新轮报告：阅读头部依次改为「本轮较早报告/历史报告」并说明原因，同一个 iframe 节点不再触发 load、srcdoc 与渲染画面不变（文档未重载），主区始终不可操作；返回任务后显示新一轮结论');
 
   await click('[data-goal-act=drawer][data-kind=reports]');await wait('!!document.querySelector(".goal-report-card[data-report-id=report-a2]")');
   await click('.goal-report-card[data-report-id=report-a2]');await wait('!!document.querySelector("#goal-drawer iframe") && !document.querySelector("[data-goal-act=expand-report]").disabled');
