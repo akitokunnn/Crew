@@ -9,7 +9,7 @@ import threading
 import unittest
 from unittest import mock
 
-from crew import board, chat, goal_runtime, notifications, qq, session_ops, store, web
+from crew import board, chat, goal_runtime, notifications, personal, qq, session_ops, store, web
 from test_chat import FakeProcess
 from test_shell import NOW, PLUGIN, ShellFixture
 
@@ -91,8 +91,7 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         self.clock, self.locked, self.client = store.parse_iso(NOW), False, FakeQQ()
         self.credentials = {'app_id': 'fake-app', 'app_secret': 'fake-secret'}
         (self.home / 'qq.json').write_text(json.dumps(self.credentials), encoding='utf-8')
-        self.write_config(dict(owner_openid='owner', since=NOW, manual_away=False,
-                               current_leader_session_id=None, leader_numbers={}))
+        self.write_config(dict(owner_openid='owner', since=NOW, manual_away=False))
         self.service = web.Service(self.home, PLUGIN, cwd=self.project, agents_provider=lambda: [
             {'sessionId': sid, 'name': sid} for sid in ('s1', 's2', 's3')],
             claude_root=self.claude, codex_root=self.codex, runs_file=self.runs,
@@ -129,18 +128,17 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         self.inbox.receive('interaction', event)
         return event
 
-    def select(self, sid='s3'):
-        self.receive('/leader')
-        self.receive('/%s' % self.config()['leader_numbers'][sid])
-        self.client.sent.clear()
-        self.client.operations.clear()
+    def assistant(self):
+        return personal.ensure_assistant(self.conn, self.home, selection={
+            'runtime': 'claude', 'model': None, 'effort': None})['session_id']
 
     def add_leader(self, sid, project='demo', name=None, now=NOW):
         if not any(p['name'] == project for p in board.projects(self.conn)):
             board.init_project(self.conn, project, self.root / project, now=now)
         board.join(self.conn, sid, project, name or sid, self.project, None, None, role='leader', now=now)
 
-    def web_manager(self, sid='s3'):
+    def web_manager(self, sid=None):
+        sid = self.assistant() if sid is None else sid
         journal = chat.Journal(self.home / 'chat' / (sid + '.jsonl'))
         journal.set_status('idle')
         folder = self.home / 'spawn'
@@ -202,8 +200,7 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         self.assertNotIn('card_ready', inbox.status())
 
     def test_binding_code_binds_owner_and_credentials_remain_read_only(self):
-        self.write_config(dict(owner_openid=None, since=None, manual_away=False,
-                               current_leader_session_id=None, leader_numbers={}))
+        self.write_config(dict(owner_openid=None, since=None, manual_away=False))
         self.restart()
         self.assertEqual(self.inbox.status()['channel']['state'], 'connecting')
         self.receive('你好', openid='first-user')
@@ -232,44 +229,32 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         self.assertEqual(self.client.operations, [])
         self.assertEqual(self.replies(), [])
 
-    def test_help_lists_commands_and_button_or_quote_answers_without_number_syntax(self):
+    def test_help_lists_retained_commands_and_assistant_routing(self):
         self.receive('/h')
         text = self.client.sent[-1]['text']
-        for command in ('/h', '/leader', '/1', '/decisions', '/back'):
+        for command in ('/h', '/where', '/decisions', '/todo', '/back'):
             self.assertIn(command, text)
-        for part in ('leader', '编号', '按钮', '引用'):
-            self.assertIn(part, text)
-        self.assertNotIn('#42', text)
-        self.assertNotIn('#题号', text)
+        for removed in ('/leader', '/1', '/project'):
+            self.assertNotIn(removed, text)
+        self.assertIn('全局助手', text)
+        self.assertIn('按钮', text)
         self.assertEqual(self.replies(), [])
 
     def test_unknown_and_nonexact_commands_only_suggest_help(self):
-        self.select()
+        self.assistant()
         for command in ('/unknown', '/h extra', '/leader extra', '/decisions extra', '/back extra', '/1 extra', '/01', '/0'):
             with self.subTest(command=command):
                 self.receive(command)
                 self.assertIn('/h', self.client.sent[-1]['text'])
         self.assertEqual(self.replies(), [])
-        self.assertEqual(self.config()['current_leader_session_id'], 's3')
+        self.assertEqual({r['session_id'] for r in self.replies()}, set())
 
-    def test_help_and_list_full_short_mixed_case_and_whitespace(self):
+    def test_help_full_short_mixed_case_and_whitespace(self):
         for command in ('/help', '/h', '  /Help \n', '\t/H  '):
             with self.subTest(command=command):
                 self.receive(command)
                 self.assertEqual(self.client.sent[-1]['text'], notifications.HELP)
-        for command in ('/leader', '/l', ' /Leader ', '\t/L\n'):
-            with self.subTest(command=command):
-                self.receive(command)
-                self.assertIn('1 demo·lead', self.client.sent[-1]['text'])
 
-    def test_switch_full_short_numeric_mixed_case_and_space(self):
-        self.add_leader('second', name='second')
-        for command in ('/leader 2', '/l 2', '/2', ' /Leader 2 ', '\t/L 2\n'):
-            with self.subTest(command=command):
-                self.receive('/1')
-                self.receive(command)
-                self.assertEqual(self.config()['current_leader_session_id'], 'second')
-                self.assertEqual(self.client.sent[-1]['text'], '已切换到 demo·second。')
 
     def test_decisions_full_short_mixed_case_and_whitespace(self):
         board.ask(self.conn, 's1', '现在拍板', ['继续'], now=NOW)
@@ -292,49 +277,7 @@ class NotificationTests(ShellFixture, unittest.TestCase):
                 self.assertFalse(self.config()['manual_away'])
                 self.assertIn('已取消手动离开', self.client.sent[-1]['text'])
 
-    def test_list_saved_order_preserves_numbers_project_order_and_restart(self):
-        self.add_leader('second', name='second')
-        self.add_leader('other', project='other')
-        self.receive('/leader')
-        numbers = self.config()['leader_numbers'].copy()
-        board.set_leader_order(self.conn, 'demo', ['second', 's3'])
-        self.restart()
-        self.receive('/l')
-        lines = self.client.sent[-1]['text'].splitlines()
-        self.assertTrue(lines[0].startswith('2 demo·second'))
-        self.assertTrue(lines[1].startswith('1 demo·lead'))
-        self.assertTrue(lines[2].startswith('3 other·other'))
-        self.assertEqual(self.config()['leader_numbers'], numbers)
-        self.add_leader('new', name='aaa')
-        self.receive('/leader')
-        lines = self.client.sent[-1]['text'].splitlines()
-        self.assertTrue(lines[2].startswith('4 demo·aaa'))
-        self.assertTrue(lines[3].startswith('3 other·other'))
 
-    def test_priority_list_sorts_globally_marks_ranks_and_keeps_numbers(self):
-        self.add_leader('second', name='second')
-        self.add_leader('third', name='third')
-        self.add_leader('other', project='other')
-        self.receive('/leader')
-        numbers = self.config()['leader_numbers'].copy()
-        board.set_leader_priority(self.conn, 'demo', ['third', 'second', 's3'])
-        board.set_leader_priority(self.conn, 'other', ['other'])
-        self.restart()
-        self.receive('/leader')
-        lines = self.client.sent[-1]['text'].splitlines()
-        self.assertEqual([line.split(' 未读')[0].split('·')[1].split('（')[0].rsplit(' ', 1)[0]
-                          for line in lines], ['★1 third', '★1 other', '★2 second', '★3 lead'])
-        self.assertEqual([int(line.split()[0]) for line in lines],
-                         [numbers[sid] for sid in ('third', 'other', 'second', 's3')])
-        self.assertEqual(self.config()['leader_numbers'], numbers)
-        result = session_ops.archive(self.conn, 'third', now=NOW)
-        self.receive('/l')
-        self.assertIn('demo·★1 second', self.client.sent[-1]['text'])
-        self.assertIn('demo·★2 lead', self.client.sent[-1]['text'])
-        session_ops.undo(self.conn, 'third', result['before'], now=NOW)
-        self.receive('/leader')
-        self.assertIn('demo·★1 third', self.client.sent[-1]['text'])
-        self.assertEqual(self.config()['leader_numbers'], numbers)
 
     def test_deleted_commands_and_unknown_commands_suggest_help(self):
         for command in ('/ls', '/q', '/LS', '/Q', '/unknown', '/leader 0', '/l 02'):
@@ -342,104 +285,21 @@ class NotificationTests(ShellFixture, unittest.TestCase):
                 self.receive(command)
                 self.assertEqual(self.client.sent[-1]['text'], '未知命令，请用 /h 查看帮助。')
 
-    def test_list_shows_current_status_unread_and_pending_decisions(self):
-        _, journal = self.web_manager()
-        for identity, text in (('one', '第一条'), ('one', '第一条的更新'), ('two', '第二条')):
-            journal.emit('assistant', id=identity, content=[dict(type='text', text=text)])
-        for index in range(18):
-            journal.emit('assistant', id='shell-' + str(index), content=[
-                dict(type='tool_use', id='call-' + str(index), name='Shell', input={'command': 'git status'})])
-        board.ask(self.conn, 's1', '要发布吗', ['发布'], now=NOW)
-        self.select()
-        self.receive('/leader')
-        text = self.client.sent[-1]['text']
-        for part in ('demo·lead', '当前', 'idle'):
-            self.assertIn(part, text)
-        self.assertRegex(text, r'未读\s*2')
-        self.assertRegex(text, r'待拍板\s*1')
-        self.assertEqual(board.read_seq(self.conn, 's3'), 0)
 
-    def test_list_does_not_repeat_seen_text_when_only_tools_or_stream_snapshot_change(self):
-        _, journal = self.web_manager()
-        seen = journal.emit('text', id='answer', text='检查完成。')
-        board.mark_read(self.conn, 's3', seen['seq'], now=NOW)
-        journal.emit('assistant', id='answer', content=[dict(type='text', text='检查完成。'),
-            dict(type='tool_use', id='call', name='Shell', input={'command': 'git status'})])
-        self.receive('/leader')
-        self.assertRegex(self.client.sent[-1]['text'], r'未读\s*0')
 
-    def test_list_pending_decisions_excludes_held_questions(self):
-        board.ask(self.conn, 's1', '现在要拍板', ['A'], now=NOW)
-        held = board.ask(self.conn, 's1', '可以稍后拍板', ['B'], now=NOW)
-        board.hold(self.conn, held, now=NOW)
-        self.receive('/leader')
-        self.assertRegex(self.client.sent[-1]['text'], r'待拍板\s*1')
 
-    def test_numbering_initial_order_uses_project_time_name_session_time_and_id(self):
-        self.conn.execute("UPDATE projects SET created_at='2026-10-21T09:00:00.000Z' WHERE name='demo'")
-        for project in ('beta', 'alpha'):
-            board.init_project(self.conn, project, self.root / project, now=NOW)
-        self.add_leader('b', project='beta')
-        self.add_leader('a-late', project='alpha', now='2026-10-21T08:01:00.000Z')
-        self.add_leader('a-early-z', project='alpha')
-        self.add_leader('a-early-a', project='alpha')
-        self.receive('/leader')
-        self.assertEqual(self.config()['leader_numbers'], {'a-early-a': 1, 'a-early-z': 2, 'a-late': 3, 'b': 4, 's3': 5})
 
-    def test_numbering_appends_new_leaders_keeps_archived_numbers_and_survives_restart(self):
-        self.select()
-        session_ops.archive(self.conn, 's3', now=NOW)
-        self.add_leader('later', project='aaa', now='2026-10-20T00:00:00.000Z')
-        self.receive('/leader')
-        self.assertEqual(self.config()['leader_numbers'], {'s3': 1, 'later': 2})
-        self.receive('/1')
-        self.assertIn('请先 /leader', self.client.sent[-1]['text'])
-        self.receive('/2')
-        self.inbox.set_away(True)
-        self.restart()
-        self.receive('/leader')
-        self.assertEqual(self.config()['leader_numbers'], {'s3': 1, 'later': 2})
-        self.assertEqual(self.config()['current_leader_session_id'], 'later')
-        self.assertTrue(self.inbox.status()['manual_away'])
-        self.receive('重启后继续')
-        self.assertEqual((self.replies()[0]['session_id'], json.loads(self.replies()[0]['text'])['text']), ('later', '重启后继续'))
 
-    def test_list_excludes_closed_removed_and_archived_leaders_and_members(self):
-        self.add_leader('closed')
-        board.set_status(self.conn, 'closed', 'closed', now=NOW)
-        for sid, column, value in (('removed', 'removed', 1), ('archived', 'archived_status', 'idle')):
-            self.add_leader(sid)
-            self.conn.execute('INSERT INTO session_controls(session_id,%s) VALUES(?,?)' % column, (sid, value))
-        self.receive('/leader')
-        text = self.client.sent[-1]['text']
-        self.assertIn('demo·lead', text)
-        for label in ('demo·closed', 'demo·removed', 'demo·archived', 'demo·one', 'demo·two'):
-            self.assertNotIn(label, text)
-        self.assertEqual(self.config()['leader_numbers'], {'s3': 1})
 
-    def test_switch_invalid_number_and_same_named_leaders_in_multiple_projects(self):
-        self.add_leader('other-lead', project='other', name='lead')
-        self.receive('/leader')
-        self.assertIn('demo·lead', self.client.sent[-1]['text'])
-        self.assertIn('other·lead', self.client.sent[-1]['text'])
-        self.receive('/999')
-        self.assertIn('请先 /leader', self.client.sent[-1]['text'])
-        self.receive('/2')
-        self.receive('第二个项目')
-        self.receive('/1')
-        self.receive('第一个项目')
-        self.assertEqual([(r['session_id'], json.loads(r['text'])['text']) for r in self.replies()],
-                         [('other-lead', '第二个项目'), ('s3', '第一个项目')])
 
-    def test_no_current_leader_does_not_guess_even_with_one_leader(self):
-        for text in ('报告进展', '/leader', '仍然没有选中'):
-            self.receive(text)
-        self.assertIn('先用 /leader 和 /1 选一个 leader', self.client.sent[-1]['text'])
+    def test_missing_assistant_never_uses_an_existing_leader(self):
+        self.receive('报告进展')
+        self.assertEqual(self.client.sent[-1]['text'], notifications.ASSISTANT_UNAVAILABLE)
         self.assertEqual(self.replies(), [])
 
     def test_at_name_and_old_numbered_syntax_are_plain_text(self):
         identity = board.ask(self.conn, 's1', '是否继续', ['继续'], now=NOW)
-        self.select()
+        self.assistant()
         for text in ('@other/lead 请检查手机布局', '#%s 继续' % identity):
             self.receive(text)
         self.assertEqual([json.loads(r['text'])['text'] for r in self.replies()],
@@ -528,7 +388,7 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         held = board.ask(self.conn, 's1', '暂时不拍', ['B'], now=NOW)
         board.hold(self.conn, held, now=NOW)
         self.push()
-        self.assertEqual([m['kind'] for m in self.client.sent], ['markdown'])
+        self.assertEqual([m['kind'] for m in self.client.sent], ['text'])
         self.assertIn('现在要拍板', self.client.sent[0]['text'])
         self.assertEqual([r[0] for r in self.conn.execute(
             'SELECT decision_id FROM notification_messages')], [active])
@@ -543,7 +403,7 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         self.assertEqual(self.client.sent, [])
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM notification_messages').fetchone()[0], 0)
 
-    def test_presence_batches_notes_but_sends_each_question_once_with_single_choice_buttons(self):
+    def test_presence_batches_questions_once_and_ignores_stage_reports(self):
         first = board.ask(self.conn, 's1', '先做哪一个', ['A', 'B'], 'B', True, now=NOW)
         second = board.ask(self.conn, 's3', '是否发布', ['是', '否'], '否', True, now=NOW)
         for number in range(4):
@@ -557,36 +417,27 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         self.assertEqual(self.client.sent, [])
         self.clock += dt.timedelta(seconds=1)
         self.inbox.tick()
-        questions = [m for m in self.client.sent if m['kind'] == 'markdown']
-        notes = [m for m in self.client.sent if m['kind'] == 'text']
-        self.assertEqual(len(questions), 2)
-        self.assertEqual(len(notes), 1)
-        self.assertEqual(notes[0]['text'].count('阶段进展 '), 4)
-        for identity, recommendation in ((first, 'B'), (second, '否')):
-            message = next(m for m in questions if buttons(m)[0]['action']['group_id'] == str(identity))
-            self.assertIn('待拍板', message['text'])
-            choices = buttons(message)
-            self.assertIn(recommendation, choices[0]['render_data']['label'])
-            self.assertTrue(choices[0]['action']['data'].startswith('%s:1:' % identity))
-            self.assertEqual(len({b['action']['group_id'] for b in choices}), 1)
-            for button in choices:
-                self.assertEqual(button['action']['type'], 1)
-                self.assertEqual(button['action']['click_limit'], 1)
-                self.assertTrue(button['render_data']['visited_label'].startswith('已选：'))
-                self.assertRegex(button['action']['data'], r'^\d+:\d+:[0-9a-f]{24}$')
-            row = self.conn.execute('SELECT * FROM notification_messages WHERE decision_id=?', (identity,)).fetchone()
-            self.assertEqual((row['message_id'], row['ref_idx']), (message['result']['id'], message['result']['ref_idx']))
+        self.assertEqual(len(self.client.sent), 1)
+        message = self.client.sent[0]
+        self.assertEqual(message['kind'], 'text')
+        self.assertIsNone(message['keyboard'])
+        self.assertEqual(message['text'].splitlines(), [
+            '【待拍板】demo·lead：先做哪一个', '【待拍板】demo·lead：是否发布', notifications.REMINDER_FOOTER])
+        rows = self.conn.execute('SELECT * FROM notification_messages').fetchall()
+        self.assertEqual({r['decision_id'] for r in rows}, {first, second})
+        self.assertEqual({r['message_id'] for r in rows}, {message['result']['id']})
+        self.assertEqual({r['ref_idx'] for r in rows}, {message['result']['ref_idx']})
         self.clock += dt.timedelta(minutes=1)
         self.inbox.tick()
-        self.assertEqual(len(self.client.sent), 3)
+        self.assertEqual(len(self.client.sent), 1)
 
     def test_manual_away_pushes_at_once_but_later_items_still_batch(self):
         first = board.ask(self.conn, 's1', '先做哪一个', ['A', 'B'], 'B', True, now=NOW)
         self.inbox.set_away(True)
         self.inbox.tick()
-        self.assertEqual([m['kind'] for m in self.client.sent], ['markdown'])
+        self.assertEqual([m['kind'] for m in self.client.sent], ['text'])
         self.assertIn('先做哪一个', self.client.sent[0]['text'])
-        self.assertEqual(buttons(self.client.sent[0])[0]['action']['group_id'], str(first))
+        self.assertIsNone(self.client.sent[0]['keyboard'])
         second = board.ask(self.conn, 's3', '是否发布', ['是', '否'], '否', True, now=NOW)
         self.inbox.tick()
         self.clock += dt.timedelta(seconds=29)
@@ -595,15 +446,14 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         self.clock += dt.timedelta(seconds=1)
         self.inbox.tick()
         self.assertIn('是否发布', self.client.sent[1]['text'])
-        self.assertEqual(buttons(self.client.sent[1])[0]['action']['group_id'], str(second))
+        self.assertIsNone(self.client.sent[1]['keyboard'])
 
-    def test_question_push_title_omits_decision_number(self):
-        identity = board.ask(self.conn, 's1', '声纹门槛怎么定', ['先按半秒'], now=NOW)
+    def test_question_push_title_omits_decision_number_and_buttons(self):
+        board.ask(self.conn, 's1', '声纹门槛怎么定', ['先按半秒'], now=NOW)
         self.push()
         message = self.client.sent[0]
-        self.assertEqual(message['text'].splitlines()[0], 'demo·lead 待拍板')
-        self.assertNotIn('#', message['text'])
-        self.assertTrue(buttons(message)[0]['action']['data'].startswith('%s:0:' % identity))
+        self.assertEqual(message['text'], '【待拍板】demo·lead：声纹门槛怎么定\n' + notifications.REMINDER_FOOTER)
+        self.assertIsNone(message['keyboard'])
 
     def test_answer_receipt_shows_first_twenty_question_characters_without_number(self):
         question = '声纹门槛是否先按半秒执行并等实测结果再调整方案'
@@ -621,7 +471,7 @@ class NotificationTests(ShellFixture, unittest.TestCase):
             with self.subTest(question=question):
                 identity = board.ask(self.conn, 's1', question, ['继续'], now=NOW)
                 message = self.query(identity)
-                self.receive('继续', message['result']['ref_idx'])
+                self.click(identity)
                 receipt = self.client.sent[-1]['text']
                 self.assertEqual(receipt, '已保存：%s，已转告 leader。' % question)
                 self.assertNotIn('…', receipt)
@@ -656,26 +506,24 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         self.restart()
         self.assertTrue(self.inbox.status()['manual_away'])
 
-    def test_failed_question_send_does_not_record_unattempted_notes_or_lose_them(self):
-        board.report(self.conn, 's3', '必须保留的进展', now=NOW)
+    def test_failed_batch_retains_error_receipt_without_stage_report_or_replay(self):
+        board.report(self.conn, 's3', '内部阶段进展', now=NOW)
         identity = board.ask(self.conn, 's1', '随后发送的问题', ['A'], now=NOW)
         self.locked = True
         self.inbox.tick()
-        self.inbox.pending = dict(sorted(self.inbox.pending.items(), key=lambda pair: pair[1]['kind'] == 'decision'))
-        self.client.send_errors.append(qq.QQError('markdown unavailable', kind='network'))
+        self.client.send_errors.append(qq.QQError('text unavailable', kind='network'))
         self.clock += dt.timedelta(seconds=30)
-        with self.assertRaisesRegex(qq.QQError, 'markdown unavailable'):
+        with self.assertRaisesRegex(qq.QQError, 'text unavailable'):
             self.inbox.tick()
         self.assertIsNone(self.conn.execute("SELECT 1 FROM notification_messages WHERE kind='report'").fetchone())
         row = self.conn.execute('SELECT status,error FROM notification_messages WHERE decision_id=?', (identity,)).fetchone()
         self.assertEqual(row['status'], 'error')
-        self.assertIn('QQError(network): markdown unavailable', row['error'])
+        self.assertIn('QQError(network): text unavailable', row['error'])
         self.inbox.tick()
-        self.assertEqual(len(self.client.sent), 1)
-        self.assertIn('必须保留的进展', self.client.sent[0]['text'])
         self.clock += dt.timedelta(seconds=30)
         self.inbox.tick()
-        self.assertEqual(len(self.client.sent), 1)
+        self.assertEqual(self.client.sent, [])
+        self.assertEqual(len(self.client.operations), 1)
 
     def test_button_ack_precedes_save_and_receipt_and_duplicate_is_not_applied_twice(self):
         identity = board.ask(self.conn, 's1', '是否继续', ['继续', '停止'], '停止', True, now=NOW)
@@ -764,33 +612,35 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         self.assertEqual(self.decision(identity)['status'], 'open')
         self.assertIn('归档', self.client.sent[-1]['text'])
 
-    def test_quote_answers_exact_question_and_duplicate_message_only_saves_once(self):
+    def test_quote_queues_once_for_assistant_without_answering_decision(self):
+        sid = self.assistant()
         identity = board.ask(self.conn, 's1', '第一道问题', ['A'], now=NOW)
         message = self.query(identity)
-        other = board.ask(self.conn, 's3', '第二道问题', ['B'], now=NOW)
         event = self.receive('自定义完整答复', message['result']['ref_idx'])
         self.inbox.receive('message', event)
-        self.assertEqual((self.decision(identity)['answer'], self.decision(identity)['answered_by']), ('自定义完整答复', 'qq'))
-        self.assertEqual(self.decision(other)['status'], 'open')
-        self.assertEqual(self.replies(), [])
-        notices = board.pending_notices(self.conn, 's3')
-        self.assertEqual(len(notices), 1)
-        self.assertEqual(notices[0]['source'], 'qq')
-        for part in ('#%s' % identity, 'one', 'cc-one', '第一道问题', '自定义完整答复', '请马上用 SendMessage 转告并叫它继续'):
-            self.assertIn(part, notices[0]['text'])
+        self.assertEqual(self.decision(identity)['status'], 'open')
+        self.assertEqual(len(self.replies()), 1)
+        self.assertEqual(self.replies()[0]['session_id'], sid)
+        payload = json.loads(self.replies()[0]['text'])['text']
+        self.assertIn('decision_id=' + str(identity), payload)
+        self.assertIn('自定义完整答复', payload)
+        self.assertEqual(board.pending_notices(self.conn, 's3'), [])
 
-    def test_query_quote_still_answers_after_inbox_restart(self):
+    def test_query_quote_keeps_assistant_and_decision_source_after_restart(self):
+        sid = self.assistant()
         identity = board.ask(self.conn, 's1', '重启后仍可回答', ['A'], now=NOW)
         message = self.query(identity)
         self.restart()
         self.receive('A', message['result']['ref_idx'])
-        self.assertEqual(self.decision(identity)['answer'], 'A')
+        self.assertEqual(self.decision(identity)['status'], 'open')
+        self.assertEqual(self.replies()[0]['session_id'], sid)
+        self.assertIn('decision_id=' + str(identity), json.loads(self.replies()[0]['text'])['text'])
 
     def test_answer_without_leader_saves_without_queueing_notice(self):
         identity = board.ask(self.conn, 's2', '没有分组的问题', ['A'], now=NOW)
         message = self.query(identity)
         self.assertIn('demo·无leader', message['text'])
-        self.receive('A', message['result']['ref_idx'])
+        self.click(identity)
         self.assertEqual(self.decision(identity)['answer'], 'A')
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM leader_notices').fetchone()[0], 0)
         self.assertEqual(self.client.sent[-1]['text'], '已保存：没有分组的问题。')
@@ -804,7 +654,7 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         self.assertNotIn('demo·新组',message['text'])
         row=self.conn.execute('SELECT leader_session_id FROM notification_messages WHERE decision_id=?',(identity,)).fetchone()
         self.assertEqual(row[0],'s3')
-        self.receive('采用原方案',message['result']['ref_idx'])
+        self.click(identity)
         self.assertEqual(len(board.pending_notices(self.conn,'s3')),1)
         self.assertEqual(board.pending_notices(self.conn,'next-leader'),[])
 
@@ -813,7 +663,7 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         board.roster(self.conn,'demo','move','lead',session_ids=['s2'])
         message=self.query(identity)
         self.assertIn('demo·无leader',message['text'])
-        self.receive('选项',message['result']['ref_idx'])
+        self.click(identity)
         self.assertEqual(self.decision(identity)['answer'],'选项')
         self.assertEqual(board.pending_notices(self.conn,'s3'),[])
 
@@ -821,46 +671,44 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         board.update_cc_name(self.conn, 's3', 'cc-lead', now=NOW)
         identity = board.ask(self.conn, 's3', 'leader 自己的问题', ['A'], now=NOW)
         message = self.query(identity)
-        self.receive('A', message['result']['ref_idx'])
+        self.click(identity)
         notices = board.pending_notices(self.conn, 's3')
         self.assertEqual(len(notices), 1)
         self.assertIn('cc-lead', notices[0]['text'])
 
-    def test_quotes_of_notes_and_unknown_refs_are_plain_text_to_current_leader(self):
-        board.report(self.conn, 's3', '阶段进展', now=NOW)
-        self.push()
-        ref = next(m for m in self.client.sent if m['kind'] == 'text')['result']['ref_idx']
-        self.select()
-        for quoted_ref in (ref, 'REFIDX_unknown', None):
+    def test_unknown_or_absent_quote_is_plain_text_to_assistant(self):
+        sid = self.assistant()
+        for quoted_ref in ('REFIDX_unknown', None):
             self.receive('继续检查进展', quoted_ref)
-        self.assertEqual(len(self.replies()), 3)
-        self.assertEqual({r['session_id'] for r in self.replies()}, {'s3'})
+        self.assertEqual(len(self.replies()), 2)
+        self.assertEqual({r['session_id'] for r in self.replies()}, {sid})
+        self.assertEqual({json.loads(r['text'])['text'] for r in self.replies()}, {'继续检查进展'})
 
     def test_slash_command_is_command_even_when_quoting_question(self):
         identity = board.ask(self.conn, 's1', '问题', ['A'], now=NOW)
         message = self.query(identity)
         self.receive('/h', message['result']['ref_idx'])
-        self.assertIn('/leader', self.client.sent[-1]['text'])
+        self.assertIn('全局助手', self.client.sent[-1]['text'])
         self.assertEqual(self.decision(identity)['status'], 'open')
         self.assertEqual(self.replies(), [])
 
     def test_plain_text_immediately_receipts_idle_busy_and_queued_leader(self):
         _, journal = self.web_manager()
-        self.select()
+        self.assistant()
         self.receive('第一条')
-        self.assertIn('已转给 demo·lead', self.client.sent[-1]['text'])
+        self.assertIn('已转给全局助手', self.client.sent[-1]['text'])
         self.receive('已有排队')
-        self.assertIn('demo·lead 正忙，排在后面', self.client.sent[-1]['text'])
+        self.assertIn('全局助手正忙，排在后面', self.client.sent[-1]['text'])
         journal.set_status('working')
         self.receive('运行正忙')
-        self.assertIn('demo·lead 正忙，排在后面', self.client.sent[-1]['text'])
+        self.assertIn('全局助手正忙，排在后面', self.client.sent[-1]['text'])
         self.assertEqual(len(self.replies()), 3)
 
     def test_web_conversation_preserves_qq_source_and_only_relays_final_message_in_its_turn(self):
         manager, journal = self.web_manager()
         journal.emit('assistant', id='old', content=[dict(type='text', text='旧回复')])
         journal.set_status('idle')
-        self.select()
+        self.assistant()
         event = self.receive('帮我看看进展')
         self.inbox.receive('message', event)
         self.inbox.process_replies()
@@ -879,7 +727,7 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         self.assertEqual(len(self.client.sent), 2)
         text = self.client.sent[-1]['text']
         self.assertEqual(self.client.sent[-1]['kind'], 'markdown')
-        self.assertTrue(text.startswith('### lead · demo\n***\n'))
+        self.assertEqual(text, '这一轮的进展')
         self.assertIn('这一轮的进展', text)
         for excluded in ('旧回复', '中途回复', '网页下一轮的回复'):
             self.assertNotIn(excluded, text)
@@ -930,7 +778,7 @@ class NotificationTests(ShellFixture, unittest.TestCase):
 
     def test_long_replies_split_at_paragraphs_and_long_paragraphs_obey_limit(self):
         _, journal = self.web_manager()
-        self.select()
+        self.assistant()
         self.receive('长回复')
         self.inbox.process_replies()
         self.client.sent.clear()
@@ -940,9 +788,7 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         self.inbox.process_replies()
         messages = [m['text'] for m in self.client.sent]
         self.assertGreaterEqual(len(messages), 4)
-        heads = ['### lead · demo\n***\n'] + ['### lead · demo（续）\n***\n'] * (len(messages) - 1)
-        self.assertTrue(all(text.startswith(head) for text, head in zip(messages, heads)))
-        parts = [text.removeprefix(head) for text, head in zip(messages, heads)]
+        parts = messages
         self.assertTrue(all(len(part) <= notifications.TEXT_LIMIT for part in parts))
         body = '\n\n'.join(parts)
         for letter, length in (('甲', 1100), ('乙', 1100), ('丙', notifications.TEXT_LIMIT + 30)):
@@ -952,7 +798,7 @@ class NotificationTests(ShellFixture, unittest.TestCase):
 
     def test_reply_boundary_starts_after_its_message_when_resume_drains_previous_turn(self):
         manager, journal = self.web_manager()
-        self.select()
+        self.assistant()
 
         def send(session, text, source, identity, images):
             journal.emit('assistant', id='old-drained', content=[dict(type='text', text='旧进程尾声')])
@@ -972,7 +818,7 @@ class NotificationTests(ShellFixture, unittest.TestCase):
 
     def test_idle_turn_without_text_unblocks_next_queued_message(self):
         manager, journal = self.web_manager()
-        self.select()
+        self.assistant()
         self.receive('第一条没有文字回复')
         self.clock += dt.timedelta(seconds=1)
         self.receive('第二条继续处理')
@@ -988,18 +834,18 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         self.assertIn('（这一轮没有文字回复）', self.client.sent[-1]['text'])
 
     def test_queued_compact_request_uses_separator_boundary_and_unblocks_next_reply(self):
-        self.select()
-        journal = self.manager.journal('s3')
+        self.assistant()
+        journal = self.manager.journal(self.assistant())
         journal.set_status('idle')
         process = FakeProcess([])
         current = chat.Running(process, journal)
         current.reader = mock.Mock()
-        self.manager.processes['s3'] = current
+        self.manager.processes[self.assistant()] = current
         self.service.chat = self.manager
         folder = self.home / 'spawn'
         folder.mkdir(exist_ok=True)
-        (folder / 's3.json').write_text('{}', encoding='utf-8')
-        self.conn.execute("UPDATE sessions SET spawn_id='s3' WHERE session_id='s3'")
+        (folder / 'assistant.json').write_text('{}', encoding='utf-8')
+        self.conn.execute("UPDATE sessions SET spawn_id='assistant' WHERE session_id=?", (self.assistant(),))
         self.inbox.queue_text(self.conn, dict(answer='/compact', images=[], message_id='queued-compact'))
         self.clock += dt.timedelta(seconds=1)
         self.receive('压缩后继续')
@@ -1019,7 +865,7 @@ class NotificationTests(ShellFixture, unittest.TestCase):
 
     def test_busy_leader_keeps_messages_queued_and_runs_in_order(self):
         manager, journal = self.web_manager()
-        self.select()
+        self.assistant()
         journal.set_status('working')
         self.receive('先来的消息')
         self.clock += dt.timedelta(seconds=1)
@@ -1036,58 +882,24 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         self.assertEqual(manager.send.call_count, 2)
         self.assertEqual(manager.send.call_args.args[1], '后来的消息')
 
-    def test_queued_message_rejected_if_leader_becomes_member_or_archived(self):
-        for change, expected in (('member', '已不是 leader'), ('archive', '已归档')):
-            with self.subTest(change=change):
-                sid = 'changed-' + change
-                self.add_leader(sid)
-                manager, _ = self.web_manager(sid)
-                self.select(sid)
-                self.receive('检查状态')
-                if change == 'member':
-                    board.join(self.conn, sid, 'demo', sid, self.project, None, None, role='member', now=NOW)
-                else:
-                    session_ops.archive(self.conn, sid, now=NOW)
-                self.inbox.process_replies()
-                manager.send.assert_not_called()
-                self.assertEqual(self.replies()[-1]['status'], 'error')
-                self.assertIn(expected, self.client.sent[-1]['text'])
+    def test_queued_message_rejected_if_assistant_is_closed_or_archived(self):
+        manager, _ = self.web_manager()
+        sid = self.assistant()
+        self.receive('检查状态')
+        self.conn.execute("INSERT INTO session_controls(session_id,archived_status) VALUES(?,'idle')", (sid,))
+        self.inbox.process_replies()
+        manager.send.assert_not_called()
+        self.assertEqual(self.replies()[-1]['status'], 'error')
+        self.assertEqual(self.client.sent[-1]['text'], notifications.ASSISTANT_UNAVAILABLE)
 
-    def test_native_leader_rejected_without_handoff_or_second_process(self):
-        self.select()
-        (self.home / 'spawn').mkdir()
-        (self.home / 'spawn' / 'moved.json').write_text('{}', encoding='utf-8')
-        self.conn.execute("UPDATE sessions SET spawn_id='moved' WHERE session_id='s3'")
-        with mock.patch.object(self.service.chat, 'send') as send, mock.patch.object(self.service.chat, 'start') as start:
-            self.receive('帮我看看进展')
-            self.inbox.process_replies()
-            send.assert_not_called()
-            start.assert_not_called()
-        self.assertEqual(self.replies()[0]['status'], 'error')
-        self.assertEqual(board.handoffs(self.conn, 's3'), [])
-        self.assertIn('收不到 QQ 消息', self.client.sent[-1]['text'])
-        self.assertNotIn('qq:message', [e['kind'] for e in board.events(self.conn, 'demo')])
 
-    def test_saved_spec_without_web_history_rejected_without_launch(self):
-        self.add_leader('never-web', name='从未托管')
-        self.select('never-web')
-        (self.home / 'spawn').mkdir()
-        (self.home / 'spawn' / 'never-web.json').write_text('{}', encoding='utf-8')
-        self.conn.execute("UPDATE sessions SET spawn_id='never-web' WHERE session_id='never-web'")
-        with mock.patch.object(self.service.chat, 'send') as send:
-            self.receive('不能通过 spec 猜成网页会话')
-            self.inbox.process_replies()
-            send.assert_not_called()
-        self.assertEqual(self.replies()[0]['status'], 'error')
-        self.assertEqual(board.handoffs(self.conn, 'never-web'), [])
-        self.assertIn('收不到 QQ 消息', self.client.sent[-1]['text'])
 
     def test_chat_send_failures_return_error_receipts_with_real_reason(self):
         for error in (OSError('broken pipe'), board.BoardError('cannot resume')):
             with self.subTest(error=type(error).__name__):
                 manager, _ = self.web_manager()
                 manager.send.side_effect = error
-                self.select()
+                self.assistant()
                 self.receive('检查进展')
                 self.inbox.process_replies()
                 self.assertEqual(self.replies()[-1]['status'], 'error')
@@ -1097,7 +909,7 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         for reason in ('error', 'stopped'):
             with self.subTest(reason=reason):
                 manager, journal = self.web_manager()
-                self.select()
+                self.assistant()
                 self.receive('检查进展')
                 self.inbox.process_replies()
                 if reason == 'error':
@@ -1113,18 +925,18 @@ class NotificationTests(ShellFixture, unittest.TestCase):
                     self.assertEqual(self.replies()[-1]['status'], 'error')
 
     def test_five_images_download_validate_forward_and_save_through_web_manager(self):
-        self.select()
-        journal = self.manager.journal('s3')
+        self.assistant()
+        journal = self.manager.journal(self.assistant())
         journal.set_status('idle')
         process = FakeProcess([])
         current = chat.Running(process, journal)
         current.reader = mock.Mock()
-        self.manager.processes['s3'] = current
+        self.manager.processes[self.assistant()] = current
         self.service.chat = self.manager
         folder = self.home / 'spawn'
         folder.mkdir(exist_ok=True)
-        (folder / 's3.json').write_text('{}', encoding='utf-8')
-        self.conn.execute("UPDATE sessions SET spawn_id='s3' WHERE session_id='s3'")
+        (folder / 'assistant.json').write_text('{}', encoding='utf-8')
+        self.conn.execute("UPDATE sessions SET spawn_id='assistant' WHERE session_id=?", (self.assistant(),))
         attachments = []
         for n in range(5):
             url = 'https://fake.invalid/image-%s' % n
@@ -1143,12 +955,12 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         self.assertTrue(sent['id'].startswith('qq-'))
         for n, name in enumerate(sent['images']):
             self.assertNotIn(':', name)
-            path, media_type = self.manager.file('s3', name)
+            path, media_type = self.manager.file(self.assistant(), name)
             self.assertEqual(path.read_bytes(), self.client.files[attachments[n]['url']])
             self.assertEqual(media_type, 'image/png')
 
     def test_image_count_size_type_and_download_errors_reply_without_queueing(self):
-        self.select()
+        self.assistant()
         image = dict(kind='image', url='https://fake.invalid/image', content_type='image/png', filename=None, size=None, voice_text=None)
         scenarios = [([image] * 6, b'x', '5'),
                      ([dict(image, size=chat.MAX_IMAGE_BYTES + 1)], b'x', '5'),
@@ -1164,7 +976,7 @@ class NotificationTests(ShellFixture, unittest.TestCase):
                 self.assertEqual(self.replies(), [])
 
     def test_exact_five_megabyte_image_is_accepted(self):
-        self.select()
+        self.assistant()
         url = 'https://fake.invalid/boundary'
         self.client.files[url] = b'x' * chat.MAX_IMAGE_BYTES
         self.receive('', attachments=[dict(kind='image', url=url, content_type='image/png', filename=None,
@@ -1172,7 +984,7 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         self.assertEqual(len(base64.b64decode(json.loads(self.replies()[0]['text'])['images'][0]['data'])), chat.MAX_IMAGE_BYTES)
 
     def test_voice_recognition_and_missing_recognition(self):
-        self.select()
+        self.assistant()
         voice = dict(kind='voice', url='https://fake.invalid/voice', content_type='audio/silk', filename=None, size=None, voice_text='查看进展')
         self.receive('', attachments=[voice])
         self.assertEqual(json.loads(self.replies()[0]['text'])['text'], '查看进展')
@@ -1182,7 +994,7 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         self.assertEqual(self.client.downloads, [])
 
     def test_video_and_file_are_unsupported(self):
-        self.select()
+        self.assistant()
         for kind in ('video', 'file'):
             self.receive('附件', attachments=[dict(kind=kind, url='https://fake.invalid/file', content_type='application/octet-stream',
                                                 filename='file', size=1, voice_text=None)])
@@ -1256,7 +1068,7 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         self.inbox.set_away(True)
         self.inbox.tick()
         self.assertTrue(self.inbox.status()['away'])
-        self.select()
+        self.assistant()
         self.receive('报告进展')
         self.assertEqual(len(self.replies()), 1)
 

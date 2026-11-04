@@ -28,7 +28,7 @@ class NotificationDeliveryTests(GoalFixture):
             self.clients[channel] = FakeQQ()
             (self.home/(channel+'.json')).write_text(json.dumps({'app_id':'fake-app','app_secret':'fake-secret'}), encoding='utf-8')
             (self.home/('notify.json' if channel == 'qq' else 'lark-notify.json')).write_text(json.dumps({
-                'owner_openid':channel+'-owner','since':NOW,'manual_away':True,'current_leader_session_id':'chief-id','leader_numbers':{}}), encoding='utf-8')
+                'owner_openid':channel+'-owner','since':NOW,'manual_away':True}), encoding='utf-8')
             self.restart(channel)
 
     def journal(self, sid):
@@ -61,7 +61,8 @@ class NotificationDeliveryTests(GoalFixture):
             self.assertEqual(len(self.clients[channel].sent), 1)
             self.assertEqual(self.row(channel, key)['attempts'], 1)
             self.assertEqual(self.row(channel, key)['status'], 'sent')
-            self.assertIn('连接唯一设备123', self.clients[channel].sent[0]['text'])
+            self.assertIn('连接录音设备', self.clients[channel].sent[0]['text'])
+            self.assertNotIn('连接唯一设备123', self.clients[channel].sent[0]['text'])
 
     def test_one_channel_success_is_never_replayed_when_the_other_retries_after_restart(self):
         item = self.item(); key = 'todo:%s:created' % item['id']
@@ -119,38 +120,36 @@ class NotificationDeliveryTests(GoalFixture):
             self.assertEqual(self.row(channel, key)['status'], 'retired')
             self.assertEqual(len(self.clients[channel].operations), 1)
 
-    def test_published_progress_and_final_failure_are_distinct_stable_notices(self):
+    def test_published_progress_stays_quiet_and_final_failure_is_announced_once(self):
         goal = self.goal(now=NOW); goals.transition(self.conn, goal['id'], 'running')
         report = self.report('progress'); report['summary'] = '阶段测量已完成，继续缩短延迟。'
         published = goal_reports.publish(self.conn, goal['id'], report, request_id='milestone-1', now=NOW)
         goal_reports.publish(self.conn, goal['id'], report, request_id='milestone-1', now=NOW)
         for inbox in self.inboxes.values(): inbox.tick(); inbox.tick()
-        for client in self.clients.values(): self.assertEqual(len(client.sent), 1)
+        for client in self.clients.values(): self.assertEqual(len(client.sent), 0)
         final = goals.save_report(self.conn, goal['id'], self.report('failed'), now=NOW)
         goals.request_finish(self.conn, goal['id'], final['id'], now=NOW)
         goals.finalize_finish(self.conn, goal['id'], now=NOW)
         for channel, inbox in self.inboxes.items():
             inbox.tick(); self.restart(channel); self.inboxes[channel].tick()
-            self.assertEqual(len(self.clients[channel].sent), 2)
+            self.assertEqual(len(self.clients[channel].sent), 1)
             self.assertIn('未达标', self.clients[channel].sent[-1]['text'])
-            self.assertEqual(self.row(channel, 'goal-progress:'+published['report_id'])['status'], 'sent')
+            self.assertIsNone(inbox.execute(self.conn, 'SELECT 1 FROM notification_messages WHERE item_id=?',
+                                           ('goal-progress:'+published['report_id'],)).fetchone())
             self.assertEqual(self.row(channel, 'goal-report:'+final['id'])['status'], 'sent')
 
-    def test_verified_channel_answer_keeps_provenance_and_repeated_inbound_wakes_once(self):
+    def test_verified_button_answer_keeps_provenance_and_repeated_inbound_wakes_once(self):
         goal = self.goal(now=NOW); goals.transition(self.conn, goal['id'], 'running')
         execution = goals.create_execution(self.conn, goal['id'], 'chief-id', runtime='claude')
         number = board.ask(self.conn, 'chief-id', '是否继续测量', ['继续', '停止'], now=NOW)
         goal_links.bind(self.conn, 'decision', number, execution['id'])
-        # A model cannot obtain human authorization merely by choosing the text 'qq'.
         with self.assertRaisesRegex(board.BoardError, 'AI 不能代替用户'):
             board.answer(self.conn, number, '继续', actor='qq')
-        for channel, inbox in self.inboxes.items():
-            inbox.show_questions(self.conn, 'query-'+channel)
-        for channel, inbox in self.inboxes.items():
-            message = self.clients[channel].sent[0]
-            event = {'message_id':'answer-same-event','openid':channel+'-owner','text':'继续',
-                     'quoted_ref':message['result']['ref_idx'],'attachments':[]}
-            inbox.receive('message', event); inbox.receive('message', event)
+        inbox = self.inboxes['qq']
+        inbox.show_questions(self.conn, 'query-qq')
+        event = {'interaction_id':'answer-same-event','openid':'qq-owner',
+                 'data':'%s:0' % number}
+        inbox.receive('interaction', event); inbox.receive('interaction', event)
         goal_links.deliver(self.controller, self.conn); goal_links.deliver(self.controller, self.conn)
         self.controller.send.assert_called_once()
         decision = self.conn.execute('SELECT * FROM decisions WHERE id=?', (number,)).fetchone()

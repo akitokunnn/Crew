@@ -637,6 +637,21 @@ def validate_report(conn, goal_id, data):
             if key == 'user_todos':
                 _text('来自任务「%s」：%s' % (goal['title'], item['detail']), '待办正文', limit=20000)
         result[key] = entries
+    entries = result.get('user_decisions', [])
+    if not isinstance(entries, builtins.list):
+        raise board.BoardError('user_decisions 必须为对象数组')
+    for item in entries:
+        if not isinstance(item, dict):
+            raise board.BoardError('user_decisions 每项必须为对象')
+        _text(item.get('question'), 'user_decisions.question', limit=500)
+        _text(item.get('why'), 'user_decisions.why', limit=2000)
+        item['options'] = _strings(item.get('options', []), 'user_decisions.options')
+        recommendation = item.get('recommendation')
+        item['recommendation'] = (_text(recommendation, 'user_decisions.recommendation', required=False)
+                                  if recommendation is not None else None)
+        if item['recommendation'] and item['recommendation'] not in item['options']:
+            raise board.BoardError('user_decisions.recommendation 必须是 options 之一')
+    result['user_decisions'] = entries
     if 'document_html' in result:
         document = _text(result['document_html'], 'document_html 自包含 HTML 正文', required=False,
                          limit=report_documents.MAX_HTML)
@@ -891,6 +906,10 @@ def finalize_finish(conn, goal_id, *, now=None):
     for index, item in enumerate(report['data'].get('user_todos', []), 1):
         todo.add_native(conn, leader_session_id, item['title'], '来自任务「%s」：%s' % (goal['title'], item['detail']),
                         '完成上述操作后，在人工待办中标记完成。', operation_key='report:%s:%s' % (report['id'], index), now=now)
+    for item in report['data'].get('user_decisions', []):
+        board.ask.__wrapped__(conn, goal['leader_session_id'], '来自任务「%s」：%s\n原因：%s' %
+                  (goal['title'], item['question'], item['why']), item.get('options', []),
+                  item.get('recommendation'), blocking=False, now=now)
     conn.execute("UPDATE goal_round_finishes SET status='finalized',finalized_at=? WHERE goal_id=? AND round=?", (board._time(now), goal_id, goal['current_round']))
     return {'finalized': True, 'already': False, 'goal': result, 'finish': get_finish(conn, goal_id)}
 

@@ -14,7 +14,7 @@ from . import behavior_prompts, board, models, runtimes, settings, store, todo
 
 ENTRYPOINT = 'crew-assistant'
 WRITE_ACTIONS = frozenset(('leader.create', 'session.message', 'session.stop',
-                           'settings.save', 'prompt.save', 'prompt.reset', 'todo.resolve', 'note.capture', 'note.update'))
+                           'settings.save', 'prompt.save', 'prompt.reset', 'decision.answer', 'todo.resolve', 'note.capture', 'note.update'))
 EXTERNAL_ACTIONS = frozenset(('leader.create', 'session.message', 'session.stop'))
 
 
@@ -143,6 +143,7 @@ def assistant_context(conn, session_id):
                 '用户同意执行后，由 leader 安排成员并验收；成员不能继续委派。'
                 '转达、停止、修改设置和整理待办只依据原始用户消息，以 message_id 绑定指令。'
                 '一次操作使用一个固定 request_id；结果未知时先核实，不能换标识自动重试。'
+                '来自 QQ/Lark 的消息是用户在远程回复提醒。用户明确给出拍板答案时用 decision.answer 记录，完成了待办用 todo.resolve，要转告负责人用 session.message；含糊时先回问一句，不替用户拍板。'
                 '按需运维助手处理 Crew 服务诊断与修复，与你的个人助手职责分开。'),
             'write_actions': sorted(WRITE_ACTIONS), 'permanent_clear': False}
 
@@ -435,6 +436,14 @@ def _prepare(conn, action, data, *, create_leader, send_message, stop_session):
             raise board.BoardError('修改提示词必须明确当前 expected_version')
         if action == 'prompt.save':
             _text(data.get('content'), '提示词内容', 100000)
+    elif action == 'decision.answer':
+        identity = data.get('decision_id')
+        if type(identity) is not int or identity <= 0:
+            raise board.BoardError('decision_id 必须为正整数')
+        decision = conn.execute('SELECT status FROM decisions WHERE id=?', (identity,)).fetchone()
+        if decision is None or decision['status'] != 'open':
+            raise board.BoardError('待拍板不存在或已处理: ' + str(identity))
+        _text(data.get('answer'), '拍板答复')
     elif action == 'todo.resolve':
         item = todo.get(conn, data.get('project'), data.get('todo_id'))
         board.project(conn, item['project'])
@@ -457,6 +466,31 @@ def _prepare(conn, action, data, *, create_leader, send_message, stop_session):
                 raise board.Conflict('个人笔记已变化，请刷新后重试')
 
 
+def _route_answer(conn, decision_id, answer, source):
+    """Same follow-up as web and channel answers: goal-linked questions return
+    to their goal; others wake the owning leader to relay the answer."""
+    from . import goal_links, trust_mode
+    link = goal_links.get(conn, 'decision', decision_id)
+    if link:
+        return {'goal_id': link['goal_id']}
+    decision = conn.execute('SELECT * FROM decisions WHERE id=?', (decision_id,)).fetchone()
+    leader_id = trust_mode.decision_leader(conn, decision_id)
+    leader = board.session(conn, leader_id) if leader_id is not None else None
+    if leader is None or (leader['project'] != decision['project'] or leader['role'] != 'leader'
+                          or leader['status'] == 'closed' or board.is_archived(conn, leader_id)):
+        return None
+    asker = board.session(conn, decision['session_id'])
+    if any(runtimes.get(conn, s['session_id'])['runtime'] == 'codex' for s in (asker, leader)):
+        action = ('请按用户答复继续。' if asker['session_id'] == leader['session_id'] else
+                  '请用 crew send %s "<答复与后续安排>" 转告；离线时用 crew wake 接续原会话。' % asker['crew_name'])
+        notice = '拍板 #%s：%s\n问题：%s\n答复：%s\n%s' % (decision_id, asker['crew_name'], decision['question'], answer, action)
+    else:
+        notice = ('拍板 #%s：%s（SendMessage 地址：%s）\n问题：%s\n答复：%s\n请马上用 SendMessage 转告并叫它继续' %
+                  (decision_id, asker['crew_name'], asker['cc_name'], decision['question'], answer))
+    board._queue_leader_notice(conn, leader['session_id'], notice, source if source in ('qq', 'lark') else 'web')
+    return {'leader_session_id': leader['session_id']}
+
+
 def _apply(conn, action, data, *, request_id, proof, create_leader, send_message, stop_session):
     if action == 'leader.create':
         return create_leader(data['project'], data['message'], name=data.get('name'),
@@ -473,6 +507,15 @@ def _apply(conn, action, data, *, request_id, proof, create_leader, send_message
         value = (behavior_prompts.save(conn, data['key'], data['content'], **options) if action == 'prompt.save'
                  else behavior_prompts.reset(conn, data['key'], **options))
         return {'prompt': value, 'started_by_operation': False}
+    if action == 'decision.answer':
+        source = proof['context']['source']
+        if source in ('qq', 'lark'):
+            board.answer(conn, data['decision_id'], data['answer'], actor=source,
+                         _human_origin=board._OWNER_CHANNEL_ANSWER)
+        else:
+            board.answer(conn, data['decision_id'], data['answer'], actor=board.HUMAN)
+        return {'decision_id': data['decision_id'], 'answer': data['answer'],
+                'routed_to': _route_answer(conn, data['decision_id'], data['answer'], source)}
     if action == 'todo.resolve':
         return todo.resolve(conn, data.get('project'), data['todo_id'], data['status'], note=data.get('note'),
                             expected_version=data.get('expected_version'))

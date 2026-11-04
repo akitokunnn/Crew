@@ -9,7 +9,7 @@ from unittest import mock
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from crew import board, connections, notifications, qq, store, web, workspace_settings
+from crew import board, connections, notifications, personal, qq, store, web, workspace_settings
 from test_notifications import FakeQQ
 from test_shell import NOW, PLUGIN, ShellFixture
 
@@ -53,24 +53,18 @@ class ConnectionFixture(ShellFixture):
 
 
 class ConnectionTests(ConnectionFixture, unittest.TestCase):
-    def test_renamed_workspace_is_shown_and_selectable_on_remote_channels_with_stable_routing(self):
+    def test_renamed_workspace_is_shown_in_reminders_and_removed_workspace_stays_quiet(self):
         self.configure('lark')
         self.bind('lark')
         workspace_settings.apply_update(self.conn, 'demo', '新的工作区名称', None, 0, now=NOW)
-        self.receive('lark', '/projects', 'renamed-list')
-        self.assertIn('新的工作区名称', self.clients['lark'].sent[-1]['text'])
-        self.receive('lark', '/project 新的工作区名称', 'renamed-select')
-        self.assertEqual(self.manager.inboxes['lark'].config['current_project'], 'demo')
-        self.assertIn('新的工作区名称', self.clients['lark'].sent[-1]['text'])
-        self.receive('lark', '/leader', 'renamed-leaders')
-        self.assertIn('新的工作区名称', self.clients['lark'].sent[-1]['text'])
         self.service.set_away(True)
         board.ask(self.conn, 's1', '改名后的问题', ['继续', '停止'], now=NOW)
         self.manager.inboxes['lark'].tick()
-        self.assertIn('新的工作区名称', self.clients['lark'].sent[-1]['text'])
+        self.assertIn('【待拍板】新的工作区名称·lead：改名后的问题', self.clients['lark'].sent[-1]['text'])
         workspace_settings.remove(self.conn, 'demo', 1, now=NOW)
-        self.receive('lark', '/leader', 'removed-leaders')
-        self.assertIn('目前没有有效的 leader', self.clients['lark'].sent[-1]['text'])
+        before = len(self.clients['lark'].sent)
+        self.manager.inboxes['lark'].tick()
+        self.assertEqual(len(self.clients['lark'].sent), before)
         self.assertEqual(self.manager.inboxes['lark'].project_label(self.conn, 'demo'), '新的工作区名称')
 
     def test_push_preference_selects_channels_persists_and_keeps_private_commands_available(self):
@@ -136,28 +130,29 @@ class ConnectionTests(ConnectionFixture, unittest.TestCase):
         self.assertIn('连接测试成功', self.clients['qq'].sent[-1]['text'])
         self.assertIs(self.service.inbox, self.manager.inboxes['qq'])
 
-    def test_platforms_have_independent_binding_selection_and_same_event_dedup(self):
+    def test_platforms_have_independent_binding_and_same_event_dedup(self):
         self.configure('qq')
         self.configure('lark', domain='lark')
         self.bind('qq', 'qq-owner')
         self.bind('lark', 'lark-owner')
+        sid = personal.ensure_assistant(self.conn, self.home)['session_id']
         for channel, owner in (('qq', 'qq-owner'), ('lark', 'lark-owner')):
-            self.receive(channel, '/leader', 'list', owner)
-            self.receive(channel, '/1', 'select', owner)
             self.receive(channel, 'hello', 'chat', owner)
             self.receive(channel, 'hello again', 'chat', owner)
         self.assertEqual(self.manager.inboxes['qq'].config['owner_openid'], 'qq-owner')
         self.assertEqual(self.manager.inboxes['lark'].config['owner_openid'], 'lark-owner')
         for table in ('notification', 'lark_notification'):
-            self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM '+table+'_inbound').fetchone()[0], 4)
-            self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM '+table+'_replies').fetchone()[0], 1)
+            self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM '+table+'_inbound').fetchone()[0], 2)
+            rows = self.conn.execute('SELECT session_id FROM '+table+'_replies').fetchall()
+            self.assertEqual([r[0] for r in rows], [sid])
         self.action('lark', 'reset-binding')
         self.assertTrue(self.state('qq')['bound'])
         self.assertFalse(self.state('lark')['bound'])
 
-    def test_lark_decision_delivery_and_answer_use_lark_notice_and_receipt(self):
+    def test_lark_decision_quote_queues_assistant_and_preserves_origin(self):
         self.configure('lark')
         self.bind('lark')
+        sid = personal.ensure_assistant(self.conn, self.home)['session_id']
         identity = board.ask(self.conn, 's1', '继续吗', ['继续', '停止'], now=NOW)
         self.receive('lark', '/decisions', 'questions')
         message = self.clients['lark'].sent[-1]
@@ -166,9 +161,11 @@ class ConnectionTests(ConnectionFixture, unittest.TestCase):
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM notification_messages').fetchone()[0], 0)
         self.manager.inboxes['lark'].receive('message', dict(message_id='answer', openid='owner',
             text='继续', quoted_ref=message['result']['ref_idx'], attachments=[]))
-        row = self.conn.execute('SELECT status,answer FROM decisions WHERE id=?', (identity,)).fetchone()
-        self.assertEqual(tuple(row), ('answered', '继续'))
-        self.assertEqual(self.conn.execute('SELECT source FROM leader_notices ORDER BY id DESC LIMIT 1').fetchone()[0], 'lark')
+        self.assertEqual(self.conn.execute('SELECT status FROM decisions WHERE id=?', (identity,)).fetchone()[0], 'open')
+        row = self.conn.execute('SELECT session_id,text FROM lark_notification_replies').fetchone()
+        self.assertEqual(row['session_id'], sid)
+        self.assertIn('decision_id=' + str(identity), json.loads(row['text'])['text'])
+        self.assertEqual(board.pending_notices(self.conn, 's3'), [])
 
     def test_disconnect_reconnect_reset_binding_and_away_survive_reload(self):
         self.configure()
@@ -237,12 +234,12 @@ class ConnectionTests(ConnectionFixture, unittest.TestCase):
         identity = board.ask(self.conn, 's1', '旧题', ['继续', '停止'], now=NOW)
         self.receive('lark', '/decisions', 'questions')
         old_message = self.clients['lark'].sent[-1]['result']['ref_idx']
-        self.receive('lark', '/leader', 'list')
-        self.receive('lark', '/1', 'select')
+        personal.ensure_assistant(self.conn, self.home)
+        self.receive('lark', '/where', 'list')
         self.receive('lark', 'old owner request', 'chat')
         self.action('lark', 'reset-binding')
         self.bind('lark', 'new-owner')
-        self.receive('lark', '/leader', 'list', 'new-owner')
+        self.receive('lark', '/where', 'list', 'new-owner')
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM lark_notification_inbound WHERE event_id LIKE '%:list'").fetchone()[0], 2)
         self.assertEqual(self.conn.execute('SELECT status FROM lark_notification_replies').fetchone()[0], 'cancelled')
         self.assertTrue(all(row[0] == 'retired' for row in self.conn.execute('SELECT status FROM lark_notification_messages')))

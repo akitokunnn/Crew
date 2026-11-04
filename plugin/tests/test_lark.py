@@ -9,7 +9,7 @@ import unittest
 from unittest import mock
 from urllib.error import HTTPError
 
-from crew import board, lark, notifications, qq, store
+from crew import board, lark, notifications, personal, qq, store
 from tests.fixture_cleanup import cleanup_directory
 from tests.test_qq import WebSocketServer, frame as wire_frame
 
@@ -388,8 +388,10 @@ class LarkDecisionFlowTests(unittest.TestCase):
         board.roster(self.conn, 'demo', 'move', 'lead', ['worker'], now=self.now)
         (self.home / 'lark.json').write_text(json.dumps({'app_id': 'app', 'app_secret': 'secret'}), encoding='utf-8')
         (self.home / 'lark-notify.json').write_text(json.dumps(dict(owner_openid='ou-owner', since=self.now,
-            manual_away=False, current_leader_session_id=None, leader_numbers={}, generation='lark-generation')), encoding='utf-8')
+            manual_away=False, generation='lark-generation')), encoding='utf-8')
         self.service = SimpleNamespace(home=self.home, write_lock=threading.RLock(), now=lambda: store.parse_iso(self.now))
+        self.service.chat = SimpleNamespace(busy=lambda sid: False)
+        self.assistant = personal.ensure_assistant(self.conn, self.home)['session_id']
         self.sent = []
         self.restart_inbox()
 
@@ -412,7 +414,7 @@ class LarkDecisionFlowTests(unittest.TestCase):
         self.client._handle(sink, packet(envelope, identity='wire-' + identity), self.inbox.receive)
         self.assertEqual({'code': 200}, json.loads(sink.sent[-1]['payload']))
 
-    def test_quoted_native_message_answers_original_decision_and_restart_deduplicates(self):
+    def test_quoted_native_message_queues_assistant_context_and_restart_deduplicates(self):
         identity = board.ask(self.conn, 'member', '要先验证还是继续执行？', ['先验证', '继续执行'], now=self.now)
         self.receive('/decisions', 'query')
         row = self.conn.execute('SELECT * FROM lark_notification_messages WHERE decision_id=?', (identity,)).fetchone()
@@ -425,7 +427,10 @@ class LarkDecisionFlowTests(unittest.TestCase):
         other = board.ask(self.conn, 'leader', '另一道问题', ['稍后'], now=self.now)
         self.receive('先验证', 'answer', parent_id=row['message_id'])
         answer = self.conn.execute('SELECT answer,answered_by FROM decisions WHERE id=?', (identity,)).fetchone()
-        self.assertEqual(('先验证', 'lark'), tuple(answer))
+        self.assertEqual((None, None), tuple(answer))
+        reply = self.conn.execute('SELECT session_id,text FROM lark_notification_replies').fetchone()
+        self.assertEqual(reply['session_id'], self.assistant)
+        self.assertIn('decision_id=' + str(identity), json.loads(reply['text'])['text'])
         self.assertEqual('open', self.conn.execute('SELECT status FROM decisions WHERE id=?', (other,)).fetchone()[0])
         sent_count = len(self.sent)
         self.restart_inbox()  # Both the transport's in-memory cache and the inbox instance are new.
@@ -433,18 +438,20 @@ class LarkDecisionFlowTests(unittest.TestCase):
         self.assertEqual(sent_count, len(self.sent))
         self.assertEqual(1, self.conn.execute("SELECT COUNT(*) FROM lark_notification_inbound WHERE event_id='lark-generation:om-user-answer'").fetchone()[0])
         notices = board.pending_notices(self.conn, 'leader')
-        self.assertEqual(1, len(notices))
-        self.assertEqual('lark', notices[0]['source'])
+        self.assertEqual([], notices)
+        self.assertEqual(1, self.conn.execute('SELECT COUNT(*) FROM lark_notification_replies').fetchone()[0])
         self.assertEqual(0, self.conn.execute('SELECT COUNT(*) FROM notification_inbound').fetchone()[0])
 
-    def test_quoted_stale_decision_payload_is_refused(self):
+    def test_quoted_stale_decision_is_context_without_direct_answer(self):
         identity = board.ask(self.conn, 'member', '旧的问题', ['旧选项'], now=self.now)
         self.receive('/decisions', 'query')
         parent_id = self.conn.execute('SELECT message_id FROM lark_notification_messages WHERE decision_id=?', (identity,)).fetchone()[0]
         self.conn.execute('UPDATE decisions SET question=? WHERE id=?', ('新的问题', identity))
         self.receive('旧选项', 'answer', parent_id=parent_id)
         self.assertEqual('open', self.conn.execute('SELECT status FROM decisions WHERE id=?', (identity,)).fetchone()[0])
-        self.assertIn('已更新', self.sent[-1])
+        self.assertEqual('已转给全局助手', self.sent[-1])
+        self.assertIn('decision_id=' + str(identity), json.loads(
+            self.conn.execute('SELECT text FROM lark_notification_replies').fetchone()[0])['text'])
         self.assertEqual([], board.pending_notices(self.conn, 'leader'))
 
 
