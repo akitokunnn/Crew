@@ -2,6 +2,14 @@
 from . import board
 
 
+def external_agents(chat, agents):
+    """Owned processes use the manager's live state, never the discovery cache."""
+    with chat.lock:
+        owned = {(getattr(current, 'native_id', None) or key, current.process.pid)
+                 for key, current in chat.processes.items()}
+    return [agent for agent in agents if (agent['sessionId'], agent.get('pid')) not in owned]
+
+
 def project_status(service, conn, project, agents, agents_error):
     agents = service.managed_agents(conn, agents)
     # Preserve stored display state while discovery is unavailable. Callers
