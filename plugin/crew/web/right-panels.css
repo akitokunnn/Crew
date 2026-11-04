@@ -25,3 +25,27 @@
 @keyframes crew-content-enter{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:translateY(0)}}
 @media(max-width:620px){.chat-sidepanels{right:12px}.chat-sidepanels .rp>.head{padding:10px}.chat-sidepanels .tree{padding:12px 10px}.attention-panel .attention-head{padding:10px 12px}.task-tools-scroll{padding:13px}}
 @media(prefers-reduced-motion:reduce){.chat-sidepanels,.attention-slot,.chat-sidepanels>.rp,.task-tools-panel,.goal-drawer,#chat-host,#goal-chat-hint{transition:none!important}.goal-report-reader,.group-goal-list,.attention-panel .side-decision[open]>.dc,.attention-panel .todo-card.open>.todo-details{animation:none!important}}
+/* 资料与架构图同在待处理下面那一格：同宽、同位置、同样的出现方式。 */
+.chat-sidepanels>.task-tools-panel{pointer-events:auto;position:static;inset:auto;z-index:auto;flex:1;min-height:0;width:100%;max-width:none;transform:none;box-shadow:var(--shadow-lg);transition:opacity .2s ease,transform .3s var(--ease),display .3s allow-discrete}
+.chat-sidepanels>.task-tools-panel[hidden]{display:none!important;opacity:0;transform:translateY(-8px)}
+@starting-style{.chat-sidepanels>.task-tools-panel:not([hidden]){opacity:0;transform:translateY(8px)}}
+.chat-sidepanels>.task-tools-panel .attention-head{padding:12px 14px 8px}
+.chat-sidepanels .task-tools-scroll{padding:4px 16px 18px}
+.goal-tools .goal-detail-title{display:flex;align-items:center;gap:8px;margin-bottom:4px}
+.goal-tools .goal-detail-title h1{margin:0;font-size:calc(15px * var(--fs));font-weight:600;line-height:1.45;overflow-wrap:anywhere}
+.goal-brief{padding:14px 0 4px;border-top:1px solid var(--line);margin-top:12px}
+.goal-brief h3{margin:0 0 8px;font-size:calc(12.5px * var(--fs));font-weight:600;color:var(--text-2)}
+.goal-brief-text{margin:0;font-size:calc(13.5px * var(--fs));line-height:1.7;color:var(--text);white-space:pre-wrap;overflow-wrap:anywhere}
+.goal-brief-label{margin:12px 0 4px;font-size:calc(12px * var(--fs));color:var(--text-3)}
+.goal-brief-list{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:4px;font-size:calc(13px * var(--fs));line-height:1.6}
+.goal-brief-empty{margin:0;font-size:calc(13px * var(--fs));line-height:1.65;color:var(--text-3)}
+.goal-brief-docs{display:flex;flex-direction:column;gap:8px;margin-top:10px}
+.goal-brief-review{margin:10px 0 0;font-size:calc(12.5px * var(--fs));color:var(--text-2);line-height:1.6}
+.goal-brief .goal-delivery{margin:0}
+.goal-tools>.goal-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px;padding-top:14px;border-top:1px solid var(--line)}
+/* 资料里的交付文件只要一行标题、一句说明和打开按钮。 */
+.goal-brief-docs .document-card{padding:10px 12px;border-radius:10px;box-shadow:none}
+.goal-brief-docs .document-card h3,.goal-brief-docs .document-card strong{font-size:calc(13px * var(--fs));line-height:1.5;margin:2px 0}
+.goal-brief-docs .document-card p{font-size:calc(12.5px * var(--fs));margin:2px 0}
+.goal-brief-docs .doc-path,.goal-brief-docs .doc-metadata{display:none}
+.goal-brief-docs .doc-actions{margin-top:6px}

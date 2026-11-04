@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import tests  # noqa: F401  (test helpers, not shipped)
 from test_goal_http import GoalHttpTests
-from crew import board, goals, runtimes, todo
+from crew import board, documents, goals, runtimes, todo
 
 # 状态码：R 推进中、W 等你拍板、A 待验收、P 已暂停、Q 未开始、C 已完成。成员用组内序号表示。
 GROUPS = [
@@ -92,6 +92,21 @@ def seed(case):
                 if ask:
                     board.ask(conn, sid, ask, ['A. 按建议执行', 'B. 换一种做法'], recommendation='A', execution_id=lead['id'])
             stamp = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=(gi * 53 + ti * 37) % 600 + 2)).isoformat()
+            if status in ('awaiting_acceptance', 'completed'):
+                # 交过活的任务带一份交付报告和一个文件，资料里的「交付内容」才有东西看。
+                criterion = goals.get(conn, goal['id'])['requirements']['acceptance'][0]['id']
+                path = Path(project) / 'deliveries' / ('%s-%s.md' % (gi, ti))
+                path.parent.mkdir(exist_ok=True)
+                path.write_text('# %s\n\n交付说明与核对记录。\n' % title, encoding='utf-8')
+                documents.register(conn, sid, str(path), '%s · 交付说明' % title, '改动点、核对步骤和截图位置', kind='report', goal_id=goal['id'])
+                goals.save_report(conn, goal['id'], {
+                    'outcome': status, 'summary': '%s：已按需求改完，核对步骤和截图都附在交付说明里。' % title,
+                    'user_test': [{'step': '打开对应页面，按交付说明里的步骤操作一遍。', 'expected': '界面和说明里的截图一致。'}],
+                    'delivered': ['界面改动与说明文档'], 'unresolved': [],
+                    'acceptance': [{'criterion_id': criterion, 'status': 'passed', 'evidence': [{'label': '交付说明', 'reference': path.name}]}],
+                    'examples': [{'input': '按步骤操作', 'expected': '与截图一致', 'actual': '一致', 'conclusion': '通过', 'kind': 'actual'}],
+                    'artifacts': [path.name], 'tradeoffs': [], 'follow_up': '有问题直接在任务里继续说。',
+                    'investment': {'elapsed_seconds': 1800, 'usage': None, 'roles': [{'role': 'leader', 'contribution': '实现与核对'}]}})
             conn.execute('UPDATE goals SET status=?, manual_pause=?, updated_at=? WHERE id=?',
                          (status, 1 if status == 'paused' else 0, stamp, goal['id']))
         leaders.append(sid)

@@ -488,7 +488,7 @@
   const orgTreeOpen = new Set();
   const goalRank = goal => ({waiting_user:0, awaiting_acceptance:0, running:1, pausing:1, paused:2, queued:3}[goal.status] ?? 4);
   // 从右栏架构树里切换对话时保持右栏打开，方便连续在任务和成员之间跳转。
-  function keepTree(fromTree) { if (!fromTree || view !== "chat") return; rightOpen = true; renderRight(); syncSidecar(); }
+  function keepTree(fromTree) { if (!fromTree || view !== "chat") return; rightOpen = true; taskVisible = false; renderRight(); syncSidecar(); }
   function orgTree(item, {limit = 8, here = false} = {}) {
     const inGroup = here && view === "chat" && leaderId === item.session_id;
     const currentGoal = inGroup && goalId != null && !goals?.showingList() ? String(goalId) : null;
@@ -550,9 +550,10 @@
   function syncSidecar() {
     const panel = $("chat-attention"), slot = $("attention-slot");
     const active = view === "chat" && (leaderId !== null || readOnlyId !== null) && !goals?.showingList() && !settingsOpen && !workspaceOpen;
-    panel.hidden = !active || !attentionVisible && !rightOpen;
+    panel.hidden = !active || !attentionVisible && !rightOpen && !taskVisible;
     panel.inert = panel.hidden || reportReaderOpen;
-    $("side-task-section").inert = !taskVisible || reportReaderOpen;
+    $("side-task-section").hidden = !active || !taskVisible;
+    $("side-task-section").inert = !active || !taskVisible || reportReaderOpen;
     $("right-panel").hidden = !active || !rightOpen;
     $("right-panel").inert = !active || !rightOpen;
     slot.dataset.open = String(active && attentionVisible);
@@ -568,19 +569,21 @@
     if (section === "tasks") {
       if (goalId == null) { goals?.showList(); return; }
       if (goals?.materialsOpen()) goals.closeDrawer();
+      // 资料和架构图共用待处理下面的同一格，打开一个就收起另一个。
       taskVisible = !taskVisible;
+      if (taskVisible) rightOpen = false;
       $("side-task-section").hidden = !taskVisible;
       syncSidecar();
       if (taskVisible) $("side-task-section").querySelector("button")?.focus({preventScroll:true});
       return;
     }
     sidecarFocus = section;
-    if (section === "tree") rightOpen = !rightOpen;
+    if (section === "tree") { rightOpen = !rightOpen; if (rightOpen) { taskVisible = false; $("side-task-section").hidden = true; } }
     else attentionVisible = !attentionVisible;
     syncSidecar();
   }
   function returnToTaskPanel() {
-    taskVisible = true; $("side-task-section").hidden = false; syncSidecar();
+    taskVisible = true; rightOpen = false; $("side-task-section").hidden = false; syncSidecar();
   }
   function positionAttention() {
     const host = $("goal-head") || $("chat-head"); if (!host) return;
@@ -588,7 +591,7 @@
     const width = Math.min(332, window.innerWidth - 24), top = Math.max(12, Math.min(rect.bottom + 10, window.innerHeight - 230));
     const height = Math.max(180, window.innerHeight - top - 14);
     panel.style.width = `${width}px`; panel.style.top = `${top}px`; panel.style.height = `${height}px`;
-    panel.style.setProperty("--attention-max-height", `${rightOpen ? Math.max(90, Math.min(320, height * .46)) : Math.max(90, height - 66)}px`);
+    panel.style.setProperty("--attention-max-height", `${rightOpen || taskVisible ? Math.max(90, Math.min(320, height * .46)) : Math.max(90, height - 66)}px`);
     const slot = $("attention-slot");
     slot.style.height = attentionVisible ? `${$("side-attention-section").getBoundingClientRect().height + 12}px` : "0px";
     const reserve = main.clientWidth - width - 36 >= 430;
@@ -651,7 +654,7 @@
     replace($("decision-tray"), readOnlyId !== null ? "" : `<div class="tray-in">${todoTray(groupTodos, leaderId)}${pending.length === 0 ? "" : `<section class="tray-pending"><h3 class="attention-section-title">等你拍板 <span>${pending.length}</span></h3><div class="tray-list">${pending.map(sideDecision).join("")}</div></section>`}${heldGroup(held, "tray")}</div>`);
     $("attention-empty").hidden = permissions + (readOnlyId === null ? pending.length + held.length + groupTodos.length : 0) > 0;
     replace($("side-task-body"), goals?.sideMarkup(leaderId) || "");
-    $("side-task-title").textContent = goals?.currentGoal()?.title || "任务资料";
+    $("side-task-title").textContent = "资料";
     $("side-attention-count").textContent = String(attentionCount);
     syncSidecar();
     if (!listing) CrewChat.update(state, execution);
