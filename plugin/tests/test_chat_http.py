@@ -62,6 +62,40 @@ class ChatHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(code, 200, result)
         return result
 
+    def test_stopped_owned_process_does_not_become_external_until_discovery_refreshes(self):
+        leader_id, _ = self.start_leader('stop-presence')
+        service = self.server.service
+        for session_id, collection in ((leader_id, 'leaders'), ('s1', 'members')):
+            with self.subTest(role=collection):
+                code, result, _ = self.request('/api/chat/send?project=demo', {
+                    'session_id': session_id, 'text': 'wait for stop'})
+                self.assertEqual(code, 200, result)
+                process = service.chat.processes[session_id].process
+                sample = {'sessionId': session_id, 'name': 'owned', 'pid': process.pid, 'status': 'busy'}
+                self.provider.side_effect = lambda: [sample] if process.poll() is None else []
+                service.refresh_agents()
+
+                code, stopped, _ = self.request('/api/session/stop?project=demo', {'session_id': session_id})
+                self.assertEqual(code, 200, stopped)
+                self.assertIsNotNone(process.poll())
+                # The ten-second discovery cache still contains the terminated PID.
+                self.assertIn(sample, service.agents)
+                code, state, _ = self.request('/api/state?project=demo')
+                self.assertEqual(code, 200, state)
+                person = next(item for item in state[collection] if item['session_id'] == session_id)
+                self.assertEqual((person['where'], person['running'], person['busy'], person['status']),
+                                 ('offline', False, False, 'offline'))
+
+                # A different external process for the same session must remain visible.
+                self.provider.side_effect = None
+                self.provider.return_value = [{**sample, 'pid': process.pid + 1}]
+                service.refresh_agents()
+                _, state, _ = self.request('/api/state?project=demo')
+                person = next(item for item in state[collection] if item['session_id'] == session_id)
+                self.assertEqual((person['where'], person['running'], person['busy']), ('vscode', True, True))
+                self.provider.return_value = []
+                service.refresh_agents()
+
     def file_url(self, session_id, name, project="demo"):
         return "/api/chat/file?" + urlencode({"project": project, "session_id": session_id, "name": name})
 
