@@ -1074,3 +1074,58 @@ a.btn{color:inherit;text-decoration:none}
 /* 矮窗口：会话库和用量收进工作区菜单，把高度留给 leader。 */
 .rail-menu>.rail-menu-low{display:none}
 @media (max-height:820px){.rail [data-rail-low]{display:none}.rail-menu>.rail-menu-low{display:flex}.sb>.rail{padding-top:8px;gap:2px}.rail-project{margin-bottom:2px}}
+/* 架构树：扁平行 + 圆角折线，当前路径用强调色，取代逐人方块卡片。 */
+.rp-meta{margin-left:8px;font-weight:400;font-size:calc(12px * var(--fs));color:var(--text-3)}
+.chat-sidepanels .tree:has(.org-tree){padding:6px 8px 18px}
+.org-tree{--ot-line:var(--line-strong);font-size:calc(13px * var(--fs));color:var(--text)}
+.org-tree ul{list-style:none;margin:0;padding:0}
+.org-tree .ot-row{flex:1;min-width:0;width:100%;display:flex;align-items:flex-start;gap:8px;padding:6px;border:0;border-radius:8px;background:transparent;color:inherit;text-align:left;cursor:pointer;font:inherit}
+.org-tree .ot-row:hover{background:var(--hover)}
+.org-tree .ot-row:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.org-tree .ot-row>.av{margin-top:0;flex:none}
+.org-tree .ot-copy{flex:1;min-width:0;display:flex;flex-direction:column}
+.org-tree .ot-line{min-height:20px;display:flex;align-items:center;gap:6px;min-width:0}
+.org-tree .ot-name{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.org-tree .ot-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
+.org-tree .ot-role{flex:none;font-size:calc(11px * var(--fs));color:var(--text-3)}
+.org-tree .ot-sub{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:calc(12px * var(--fs));color:var(--text-3);line-height:18px}
+.org-tree .ot-sub.warn{color:var(--waiting,#b7791f)}
+.org-tree .ot-state{margin-left:auto;padding-left:4px;flex:none}
+.org-tree .ot-state .st{font-size:calc(11.5px * var(--fs))}
+.org-tree .ot-multi{display:inline-flex;align-items:center;gap:2px;flex:none;padding:0 4px;border-radius:4px;background:var(--hover);color:var(--text-3);font-size:calc(11px * var(--fs));line-height:16px;font-variant-numeric:tabular-nums}
+.org-tree .ot-draft{display:inline-flex;color:var(--text-3)}
+.org-tree .ot-glyph{flex:none;height:20px;display:flex;align-items:center;color:var(--text-3)}
+.org-tree .ot-task-row{position:relative;display:flex;align-items:flex-start}
+.org-tree .ot-chev{flex:none;width:26px;height:26px;margin:3px 2px 0 0;display:grid;place-items:center;padding:0;border:0;border-radius:6px;background:transparent;color:var(--text-3);cursor:pointer}
+.org-tree .ot-chev:hover{background:var(--hover);color:var(--text)}
+.org-tree .ot-chev .i{transition:transform .15s ease}
+.org-tree .is-open>.ot-task-row .ot-chev .i{transform:rotate(90deg)}
+.org-tree .is-current>.ot-row,.org-tree .ot-standby .ot-row.is-current,.org-tree .is-current>.ot-task-row{background:var(--accent-soft);border-radius:8px}
+.org-tree .is-current>.ot-task-row>.ot-row:hover{background:transparent}
+.org-tree .is-here>.ot-task-row .ot-title{font-weight:600}
+.org-tree .ot-member.is-current .ot-name{color:var(--accent-text,var(--accent))}
+/* 连线：树干竖线 + 每项一段圆角折线；最后一项不再往下延伸。 */
+.org-tree .ot-root{position:relative}
+.org-tree .ot-root::after{content:"";position:absolute;left:17px;top:32px;bottom:-2px;border-left:1px solid var(--ot-line)}
+.org-tree .ot-root:not(:has(+ .ot-tasks))::after{display:none}
+.org-tree .ot-root.lit-down::after{border-color:var(--accent)}
+.org-tree .ot-tasks>li{position:relative;padding-left:30px}
+.org-tree .ot-members>li{position:relative;padding-left:26px}
+.org-tree .ot-tasks>li{--sp:17px;--arm:13px}
+.org-tree .ot-members>li{--sp:14px;--arm:12px}
+.org-tree .ot-tasks>li::before,.org-tree .ot-members>li::before{content:"";position:absolute;left:var(--sp);top:0;bottom:0;border-left:1px solid var(--ot-line)}
+.org-tree .ot-tasks>li:last-child::before,.org-tree .ot-members>li:last-child::before{display:none}
+.org-tree .ot-tasks>li::after,.org-tree .ot-members>li::after{content:"";position:absolute;left:var(--sp);top:0;width:var(--arm);height:16.5px;border-left:1px solid var(--ot-line);border-bottom:1px solid var(--ot-line);border-bottom-left-radius:7px}
+.org-tree li.pass::before{border-color:var(--accent)}
+.org-tree li.pass::after{border-left-color:var(--accent)}
+.org-tree li.lit::after{border-color:var(--accent)}
+.org-tree .ot-task.is-open>.ot-task-row::after{content:"";position:absolute;left:14px;top:28px;bottom:0;border-left:1px solid var(--ot-line)}
+.org-tree .ot-task.is-open.lit-down>.ot-task-row::after{border-color:var(--accent)}
+.org-tree .ot-empty{margin:4px 0 0 36px;color:var(--text-3);font-size:calc(12px * var(--fs))}
+.org-tree .ot-more{display:inline-flex;align-items:center;gap:4px;margin:4px 0 0 30px;padding:4px 8px;border:0;border-radius:6px;background:transparent;color:var(--text-3);font-size:calc(12px * var(--fs));cursor:pointer}
+.org-tree .ot-more:hover{background:var(--hover);color:var(--text)}
+.org-tree .ot-standby{margin-top:14px;padding-top:8px;border-top:1px solid var(--line)}
+.org-tree .ot-standby h3{margin:2px 6px 2px;font-size:calc(11.5px * var(--fs));font-weight:500;color:var(--text-3)}
+.org-tree .ot-standby h3 span{margin-left:4px;font-variant-numeric:tabular-nums}
+/* 工作台「架构图」：每个 leader 一列，同一棵树放在浅底卡片里。 */
+.groups-page .org-grid .org-col{flex:0 0 330px;padding:8px 6px 10px;border:1px solid var(--line);border-radius:14px;background:var(--surface)}
