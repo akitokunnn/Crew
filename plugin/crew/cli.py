@@ -95,6 +95,8 @@ def parser():
     c.add_argument("--cwd", type=Path)
     c.add_argument("--name")
     command("projects")
+    c = command('archive')
+    c.add_argument('name')
     c = command("git").add_subparsers(dest="action", required=True)
     a = c.add_parser("enable")
     a.add_argument("--base")
@@ -926,9 +928,19 @@ def execute(conn, args, cwd, agents_provider):
         return board.groups(conn, p)
     if cmd == "roster":
         return board.roster(conn, p, args.action, args.to if args.action == "move" else args.group, [args.name] if args.action == "move" else args.names, actor)
+    if cmd in ('leader', 'archive'):
+        host = os.environ.get('CREW_SESSION_ID') or os.environ.get('CLAUDE_CODE_SESSION_ID')
+        if host and actor != host:
+            raise board.BoardError('不能用 --session 改写宿主绑定的身份')
     if cmd == "leader":
         from . import spawn
-        return spawn.request_start(args.home, p, "/api/group/close", {"group": args.group, "with_members": args.with_members})
+        return spawn.request_start(args.home, p, "/api/group/close", {"group": args.group, "with_members": args.with_members,
+                                                                  "caller_session_id": actor})
+    if cmd == 'archive':
+        from . import spawn
+        target = board.named_session(conn, p, args.name)
+        return spawn.request_start(args.home, p, '/api/session/archive',
+                                   {'session_id': target['session_id'], 'caller_session_id': actor})
     if cmd == "events":
         if args.limit < 1:
             raise board.BoardError("--limit 必须大于 0")

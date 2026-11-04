@@ -1,4 +1,4 @@
-"""Human session actions. They change Crew records, never the underlying process."""
+"""Authorized session actions. They change Crew records, never the underlying process."""
 from . import board
 
 
@@ -94,8 +94,22 @@ def _archive(conn, session, removed, now):
     board._event(conn, 'session:remove' if removed else 'session:archive', session['project'], session_id, {}, now)
 
 
+def authorize_archive(conn, session_id, caller_session_id):
+    from . import spawn
+    session = board.session(conn, session_id)
+    if caller_session_id in (None, board.HUMAN):
+        return
+    spawn.authorize(conn, session['project'], caller_session_id, group=session['group_name'])
+    if session['role'] != 'member' or session['group_name'] is None:
+        raise board.BoardError('leader 只能归档自己当前组的成员')
+    if conn.execute("SELECT 1 FROM goal_executions WHERE session_id=? AND status IN ('running','pausing')",
+                    (session_id,)).fetchone():
+        raise board.Conflict('成员目标执行正在运行，请先等执行结束再归档')
+
+
 @board.atomic
-def archive(conn, session_id, removed=False, now=None):
+def archive(conn, session_id, removed=False, now=None, *, caller_session_id=None):
+    authorize_archive(conn, session_id, caller_session_id)
     session, before = board.session(conn, session_id), snapshot(conn, session_id)
     config = board.git_config(conn, session['project'])
     if config is not None and config['admin_session_id'] == session_id:
@@ -172,6 +186,8 @@ def _group_target(conn, project_name, group_name):
 
 
 def _close_group(conn, project_name, group_name, with_members, actor, now):
+    from . import spawn
+    spawn.authorize(conn, project_name, actor, group=group_name)
     group, leader = _group_target(conn, project_name, group_name)
     if group['closed_at'] is not None:
         raise board.Conflict('协作组已经关闭')

@@ -25,8 +25,16 @@ def card(conn, value):
     available = conn.execute('SELECT 1 FROM goal_reports WHERE goal_id=?', (value['id'],)).fetchone()
     handoffs = [native_handoff.describe(conn, row['session_id'], row['id']) for row in conn.execute(
         'SELECT id,session_id FROM goal_executions WHERE goal_id=? AND round=?', (value['id'], value['current_round']))]
+    brief = None
+    if value['status'] == 'awaiting_acceptance':
+        report = conn.execute('SELECT id,data_json,created_at FROM goal_reports WHERE goal_id=? AND round=? AND requirement_version=? '
+                              'ORDER BY version DESC LIMIT 1', (value['id'], value['current_round'], value['requirement_version'])).fetchone()
+        if report is not None:
+            data = json.loads(report['data_json'])
+            brief = {'report_id': report['id'], 'summary': data['summary'], 'user_test': data.get('user_test'), 'created_at': report['created_at']}
     return {**value, 'request': req['request'], 'acceptance': req['acceptance'], 'native_handoffs': handoffs,
-            'constraints': req['constraints'], 'report_available': bool(available), 'work_summary': goal_work.summary(conn, value['id'])}
+            'constraints': req['constraints'], 'report_available': bool(available), 'acceptance_brief': brief,
+            'work_summary': goal_work.summary(conn, value['id'])}
 
 
 def context(conn, identity, execution_id=None):
@@ -109,11 +117,11 @@ def post(service, conn, project, path, data):
             options = {'note': data.get('note', ''), 'expected_version': data.get('version'),
                        'report_id': data.get('report_id')}
             with control.manager.lock:
-                goals.acceptance_target(conn, identity, action == 'accept', **options)
+                report = goals.acceptance_target(conn, identity, action == 'accept', **options)
                 control.stop_delivered(conn, identity)
                 goals.review_acceptance(conn, identity, action == 'accept', **options)
             return {'goal': card(conn, goals.get(conn, identity)),
-                    'acceptance_review': goals.acceptance_review(conn, identity)}
+                    'acceptance_review': goals.report_review(conn, identity, report['id'])}
         if action == 'pause':
             control.pause(identity)
         elif action == 'start':

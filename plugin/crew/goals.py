@@ -337,10 +337,10 @@ def transition(conn, goal_id, status, *, actor=board.HUMAN, reason=None, expecte
     if status in ('completed', 'failed'):
         report = conn.execute('SELECT id,outcome FROM goal_reports WHERE goal_id=? AND round=? AND requirement_version=? ORDER BY version DESC LIMIT 1',
                               (goal_id, goal['current_round'], goal['requirement_version'])).fetchone()
-        reviewed = (report is not None and report['outcome'] == 'awaiting_acceptance'
+        reviewed = (status == 'completed' and report is not None and report['outcome'] == 'awaiting_acceptance'
                     and goal['status'] == 'awaiting_acceptance' and actor == board.HUMAN
-                    and conn.execute('SELECT 1 FROM goal_acceptances WHERE goal_id=? AND round=? AND report_id=? AND accepted=? AND actor=?',
-                        (goal_id, goal['current_round'], report['id'], int(status == 'completed'), board.HUMAN)).fetchone() is not None)
+                    and conn.execute('SELECT 1 FROM goal_acceptances WHERE goal_id=? AND round=? AND report_id=? AND accepted=1 AND actor=?',
+                        (goal_id, goal['current_round'], report['id'], board.HUMAN)).fetchone() is not None)
         if (report is None or report['outcome'] != status) and not reviewed:
             raise board.Conflict('当前轮次尚无匹配结论的完整 HTML 交付报告')
     if status in TERMINAL and conn.execute("SELECT 1 FROM goal_executions WHERE goal_id=? AND round=? AND status IN ('running','pausing')",
@@ -625,6 +625,18 @@ def validate_report(conn, goal_id, data):
     if outcome not in ('completed', 'failed', 'awaiting_acceptance', 'cancelled', 'progress'):
         raise board.BoardError('outcome=%r 无效；允许 completed|failed|awaiting_acceptance|cancelled|progress' % str(outcome)[:100])
     _text(result.get('summary'), '报告结论')
+    for key, fields in (('user_test', ('step', 'expected')), ('user_todos', ('title', 'detail'))):
+        entries = result.get(key, [])
+        if not isinstance(entries, builtins.list) or key == 'user_test' and outcome == 'awaiting_acceptance' and not entries:
+            raise board.BoardError(key + ' 必须为对象数组；待用户验收必须提供非空 user_test')
+        for item in entries:
+            if not isinstance(item, dict):
+                raise board.BoardError(key + ' 每项必须为对象')
+            for field in fields:
+                _text(item.get(field), key + '.' + field, limit=500 if field == 'title' else 20000)
+            if key == 'user_todos':
+                _text('来自任务「%s」：%s' % (goal['title'], item['detail']), '待办正文', limit=20000)
+        result[key] = entries
     if 'document_html' in result:
         document = _text(result['document_html'], 'document_html 自包含 HTML 正文', required=False,
                          limit=report_documents.MAX_HTML)
@@ -702,6 +714,7 @@ def render_report(conn, goal_id, data):
                 (esc('，'.join(labels[key] + ' ' + str(count) for key, count in counts.items())), ''.join(bars), esc(' · '.join(labels[key] + ' ' + str(count) for key, count in counts.items())))]
     for item in data['acceptance']:
         sections.append('<h3>%s · %s</h3>%s' % (esc(item['criterion']), esc(labels[item['status']]), listing([source['label'] + '：' + source['reference'] for source in item.get('evidence', [])])))
+    sections.append(report_documents.user_test(data))
     sections.append('<h2>具体 example</h2>')
     for example in data['examples']:
         sections.append('<h3>%s</h3><table>%s</table>' % ('实测' if example['kind'] == 'actual' else '示意（非实测证据）',
@@ -792,7 +805,26 @@ def review_acceptance(conn, goal_id, accepted, *, note='', actor=board.HUMAN, ex
                  'note=excluded.note,actor=excluded.actor,created_at=excluded.created_at',
                  (goal_id, goal['current_round'], report['id'], int(accepted), note, actor, board._time(now)))
     reason = ('用户验收通过' + ('：' + note if note else '')) if accepted else '用户要求修改：' + note
-    return transition(conn, goal_id, 'completed' if accepted else 'failed', actor=actor, reason=reason, now=now)
+    if accepted:
+        result = transition(conn, goal_id, 'completed', actor=actor, reason=reason, now=now)
+        candidates = conn.execute(
+            "SELECT s.* FROM goal_assignments a JOIN sessions s ON s.session_id=a.session_id "
+            "JOIN groups g ON g.project=s.project AND g.name=s.group_name "
+            "WHERE a.goal_id=? AND s.role='member' AND s.status!='closed' AND s.crew_name IS NOT NULL "
+            "AND g.leader_session_id=? AND g.closed_at IS NULL "
+            "AND NOT EXISTS (SELECT 1 FROM goal_assignments other JOIN goals task ON task.id=other.goal_id "
+            "WHERE other.session_id=s.session_id AND other.goal_id<>a.goal_id AND other.status='assigned' "
+            "AND task.status NOT IN ('completed','failed','cancelled')) ORDER BY s.crew_name,s.session_id",
+            (goal_id, goal['leader_session_id']))
+        config = board.git_config(conn, goal['project'])
+        names = [s['crew_name'] for s in candidates if not board.is_archived(conn, s['session_id'])
+                 and (config is None or config['admin_session_id'] != s['session_id'])]
+        text = '任务「%s」用户验收通过。\n可归档的成员：%s。\n请完成收尾；可用 crew archive <名字>（Codex：crew_archive）归档这些成员。' % (goal['title'], '、'.join(names) if names else '无')
+    else:
+        result = continue_task(conn, goal_id, note, actor=actor, expected_version=expected_version, now=now)
+        text = '任务「%s」用户要求修改：%s\n已保留任务 ID %s 与第 %s 轮，请在同一任务内继续修改并重新提交用户验收。' % (goal['title'], note, goal_id, goal['current_round'])
+    board._queue_leader_notice(conn, goal['leader_session_id'], text, 'web', now)
+    return result
 
 
 def get_finish(conn, goal_id):
@@ -804,6 +836,8 @@ def get_finish(conn, goal_id):
 @atomic
 def request_finish(conn, goal_id, report_id, *, actor=board.HUMAN, execution_id=None, now=None):
     goal, report = _row(conn, goal_id), get_report(conn, report_id)
+    if actor != board.HUMAN and report['outcome'] == 'completed':
+        raise board.BoardError('最终交付需要用户本人看报告并实测验收，outcome 用 awaiting_acceptance')
     if report['outcome'] == 'progress':
         raise board.BoardError('阶段报告不会结束任务，请完成验收后另行提交最终报告')
     _actor(conn, goal, actor)
@@ -852,6 +886,11 @@ def finalize_finish(conn, goal_id, *, now=None):
     report = get_report(conn, finish['report_id'])
     validate_report(conn, goal_id, report['data'])
     result = transition(conn, goal_id, finish['outcome'], actor=finish['actor'], now=now)
+    from . import todo
+    leader_session_id = goal['leader_session_id'] if finish['actor'] == board.HUMAN else finish['actor']
+    for index, item in enumerate(report['data'].get('user_todos', []), 1):
+        todo.add_native(conn, leader_session_id, item['title'], '来自任务「%s」：%s' % (goal['title'], item['detail']),
+                        '完成上述操作后，在人工待办中标记完成。', operation_key='report:%s:%s' % (report['id'], index), now=now)
     conn.execute("UPDATE goal_round_finishes SET status='finalized',finalized_at=? WHERE goal_id=? AND round=?", (board._time(now), goal_id, goal['current_round']))
     return {'finalized': True, 'already': False, 'goal': result, 'finish': get_finish(conn, goal_id)}
 

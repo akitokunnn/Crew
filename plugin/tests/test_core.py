@@ -790,7 +790,8 @@ class RuleTextTests(unittest.TestCase):
             self.assertNotIn("你不写业务代码", content)
         self.assertIn("跨组协助也由你统一验收", leader)
         self.assertIn("一份最终答复", leader)
-        self.assertIn("不自动归档", leader)
+        self.assertIn("用户验收通过后", leader)
+        self.assertIn("归档本组已无其他未完成任务的成员", leader)
         self.assertIn("用户新指令优先于 leader 旧安排", member)
 
 

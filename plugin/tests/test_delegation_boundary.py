@@ -72,14 +72,14 @@ class DelegationBoundaryTests(ShellFixture, unittest.TestCase):
                     reason = guard.check(self.home, {'session_id': sid, 'cwd': str(self.project),
                         'tool_name': tool, 'tool_input': {'prompt': 'work'}})
                     if sid == 's1':
-                        self.assertIn('成员不能继续派工', reason)
+                        self.assertIn('成员不能调用原生子代理或团队工具', reason)
                     else:
                         self.assertIsNone(reason)
 
 
 @unittest.skipUnless(os.name == 'nt' and shutil.which('powershell'), 'Windows dispatch integration')
 class DispatchScriptBoundaryTests(unittest.TestCase):
-    def test_skill_dispatch_checks_member_role_before_reading_input_or_starting_carrier(self):
+    def test_skill_dispatch_allows_both_roles_to_validate_input_without_starting_carrier(self):
         repository = Path(__file__).resolve().parents[2]
         for script, args in (('integrations/codex-dispatch/run_codex.ps1', []),
                              ('integrations/claude-dispatch/scripts/run_claude.ps1', ['-Mode', 'full'])):
@@ -93,7 +93,6 @@ class DispatchScriptBoundaryTests(unittest.TestCase):
                     result = subprocess.run([shutil.which('powershell'), '-NoProfile', '-ExecutionPolicy', 'Bypass',
                         '-File', str(repository / script), '-TaskFile', str(root / 'missing.md'), *args, '-NoWatch'],
                         env=env, capture_output=True, text=True, timeout=20)
-                    self.assertEqual(result.returncode, 2 if role == 'member' else 64, result.stdout + result.stderr)
-                    if role == 'member':
-                        self.assertIn('Crew members cannot dispatch another AI', result.stdout)
+                    self.assertEqual(result.returncode, 64, result.stdout + result.stderr)
+                    self.assertNotIn('Crew members cannot dispatch another AI', result.stdout)
                     self.assertFalse((root / 'home').exists())

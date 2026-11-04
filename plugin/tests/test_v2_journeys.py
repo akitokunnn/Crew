@@ -46,6 +46,7 @@ class V2JourneyTests(ShellFixture, unittest.TestCase):
 
     def report(self, outcome='progress', criterion='daily', status='simulated'):
         return {'outcome': outcome, 'summary': '隔离工作流演练：每日打卡页面与数据保存已交接。',
+            'user_test': [{'step': '打开打卡页面，记录今天。', 'expected': '今天显示已打卡。'}],
             'delivered': ['仅用于工作流测试的本地打卡页面'], 'unresolved': [],
             'acceptance': [{'criterion_id': criterion, 'status': status,
                             'evidence': [{'label': '隔离模拟证据', 'reference': 'fixture/checkins.html'}]}],

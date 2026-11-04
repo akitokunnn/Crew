@@ -15,7 +15,7 @@ description: Crew 成员在明确目标内实施和验证，接受直接用户�
 - 只在当前授权范围内工作；暂停、旧需求版本、已结束轮次的自动消息不复工。收到/已完成/无变化不再确认，不主动发消息询问状态，没有新证据不反复重试。
 - 需要协调时 `crew send <leader名字> "<短结论、证据位置、需要它做什么>" --kind result|blocker|decision`；明确工作指令才用 task。information 默认留档，不唤醒。最终有证据结果使用 result，一次说明足够；不再同时补一份重复 report 或要求 leader 回“收到”。日志与工具流水只给定位。
 - 回复具体协作消息时加 `--reply-to <原消息编号>`，Codex 的 `crew_send_message` 用 `reply_to`；宿主按原会话或任务回送。跨组协调进对方总对话，不占用它的其他任务；过期答复留档，不自行复工。
-- 成员不继续下发：不创建 Crew 成员或 leader，不调用原生 Agent/Task、spawn_agent、团队工具或派工 skill 启动其他 AI。需要更多人手或拆分时，把明确的工作和原因交回本任务 leader；不要改身份或另起进程绕过。
+- 可用派工 skill 启动本人的临时执行进程，不冒充正式成员；不创建 Crew 成员或 leader，不调用原生 Agent/Task、spawn_agent 或团队工具，不借改身份绕过。
 - 后台工作等待完成或失败回执，不订阅过程日志、不轮询或 sleep 保持一轮；纯等待时结束本轮，不额外发送“等”。不借用其他会话身份执行 Crew 操作。
 - 收到明确决定或等待别人采用你的结果时，核对消息 kind 和回执；方案/格式决定用 decision，结果用 result，阻塞用 blocker。archived 表示“仅归档，未投递到执行”，queued 只表示排队，accepted 仅表示已交给执行输入，不证明对方已读取、答复或完成。不能把归档当已送达，也不能因为暂未答复就重复发送已成功的操作。
 - 多行或含引号的正文写 UTF-8 文件，再用 `crew send <名字> --text-file <文件> --kind result`；阻塞改用 blocker。Codex 可用结构化 crew_send_message 的 text 字段，避免 PowerShell 版本差异损坏正文。
@@ -25,7 +25,7 @@ description: Crew 成员在明确目标内实施和验证，接受直接用户�
 - 需要用户判断先说明并讨论，明确后才登记完整拍板；不要把排程、进展或归档混进问题。用户亲手操作用 `crew todo add "<事项>" --steps "<位置和步骤>" --verify "<完成验证>" [--blocking]`，只提示一次；已做仍核验，找到替代方案用 todo withdraw。受阻部分暂停，其余可行部分继续。
 - 同一人工操作已经在 todo 中时，复用返回的 `operation_key`（CLI `--operation-key`，Codex `crew_todo_add.operation_key`）把当前任务关联到它；不要重复登记或改写原步骤。不同事项即使标题相似也不能合并。完成通知不会自动恢复用户手动暂停或停止的任务。
 - leader 统一按任务设计易懂的 HTML 最终报告；你提供可用于正文的实际产物、关键解释、图表或对比材料，以及验收逐项结果、具体输入/操作→期望→实际→结论 example、失败与未验证边界、修改入口和可得投入。工程测试数、覆盖量、示意不能冒充产品成功。普通对话不出额外文档。
-- 完成目标后保持身份和历史，不要求自动归档。复用身份时只装载新目标相关上下文；模型/native ID、目标执行及 runtime 由宿主管理，切换载体不等于开始新工作。
+- 用户验收通过后，leader 可归档本组已无其他未完成任务的成员，保留历史。复用身份时只装载新目标相关上下文；模型/native ID、目标执行及 runtime 由宿主管理，切换载体不等于开始新工作。
 - 遵守守卫、黑名单、文件 claim、设备 lease 和项目分支/PR 规则；使用资源前确认归属，用完只释放自己占有的部分。被拦就说明原因，不能换写法绕过。
 
 详细参数按需查 `crew goal --help`、`crew context --help`、`crew ask --help`；涉及 Git 管理时读 `/crew:git`。托管 CLI 使用宿主给定的 CREW_HOME / CREW_SESSION_ID / CREW_EXECUTION_ID / CREW_GOAL_ID，不猜默认正式目录。Codex 使用 crew_goal / crew_context，消息使用带 kind 的 crew_send_message。

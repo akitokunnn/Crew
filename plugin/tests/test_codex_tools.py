@@ -53,6 +53,17 @@ class CodexToolsTests(unittest.TestCase):
             'session_id': 'codex-crew', 'caller_session_id': 'codex-crew'}))
         self.call('crew_stop', {'target': 'builder', 'caller_session_id': 'peer-leader'}, success=False)
 
+    def test_archive_tool_binds_leader_and_rejects_member_cross_group_and_spoofing(self):
+        with mock.patch('crew.spawn.request_start', return_value={'ok': True}) as request:
+            self.call('crew_archive', {'target': 'builder'}, tools=self.leader)
+            self.assertEqual(request.call_args.args[2:], ('/api/session/archive', {
+                'session_id': 'codex-crew', 'caller_session_id': 'leader-crew'}))
+            request.reset_mock()
+            self.call('crew_archive', {'target': 'reviewer'}, success=False)
+            self.call('crew_archive', {'target': 'peer-worker'}, tools=self.leader, success=False)
+            self.call('crew_archive', {'target': 'builder', 'caller_session_id': 'peer-leader'}, tools=self.leader, success=False)
+            request.assert_not_called()
+
     def test_report_preview_returns_the_host_png_as_a_native_image_for_leader_and_member(self):
         image = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=')
         for sid in ('leader-crew', 'codex-crew'):

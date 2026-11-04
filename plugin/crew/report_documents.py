@@ -9,11 +9,20 @@ CONTENT_POLICY = ("default-src 'none'; script-src 'unsafe-inline'; style-src 'un
 VIEWER_POLICY = CONTENT_POLICY + "; frame-src about:"
 
 
+def user_test(data):
+    steps = data.get('user_test', [])
+    if not steps:
+        return ''
+    esc = lambda value: html.escape(str(value), quote=True)
+    return '<h2>请你实测</h2><ol>%s</ol>' % ''.join(
+        '<li><p>%s</p><p>预期：%s</p></li>' % (esc(item['step']), esc(item['expected'])) for item in steps)
+
+
 def verification(data):
     """A compact evidence appendix; the saved report data remains the full audit."""
     esc = lambda value: html.escape(str(value), quote=True)
     labels = {'passed': '通过', 'failed': '失败', 'unverified': '未验证', 'simulated': '模拟验证'}
-    parts = ['<p class="verification-note">以下为 AI 登记的验证结果，未验证与模拟验证不等于通过。</p>']
+    parts = [user_test(data), '<p class="verification-note">以下为 AI 登记的验证结果，未验证与模拟验证不等于通过。</p>']
     for item in data['acceptance']:
         sources = item.get('evidence', [])
         body = '<ul>' + ''.join('<li>%s：%s</li>' % (esc(source['label']), esc(source['reference'])) for source in sources) + '</ul>' if sources else '<p>尚未登记证据。</p>'
