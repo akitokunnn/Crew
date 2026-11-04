@@ -363,13 +363,16 @@ def sort_leaders(conn, project_name, leaders):
 
 @atomic
 def set_leader_order(conn, project_name, order):
+    from . import git_admin
     project(conn, project_name)
     if not isinstance(order, list) or any(not isinstance(sid, str) for sid in order):
         raise BoardError('order 必须是 session_id 数组')
     if len(order) != len(set(order)):
         raise BoardError('order 包含重复的 leader')
+    config = git_config(conn, project_name)
     leaders = {s['session_id'] for s in sessions(conn, project_name)
-               if s['role'] == 'leader' and s['status'] != 'closed' and not is_archived(conn, s['session_id'])}
+               if s['role'] == 'leader' and s['status'] != 'closed' and not is_archived(conn, s['session_id'])
+               and not git_admin.is_builtin(s, config)}
     foreign = set(order) - leaders
     if foreign:
         raise BoardError('id 不属于该项目当前显示的 leader：' + '、'.join(sorted(foreign)))
@@ -392,6 +395,7 @@ def leader_priorities(conn, project_name, leaders):
 
 @atomic
 def set_leader_priority(conn, project_name, ranks):
+    from . import git_admin
     project(conn, project_name)
     if not isinstance(ranks, list) or any(not isinstance(sid, str) for sid in ranks):
         raise BoardError('ranks 必须是 session_id 数组')
@@ -399,8 +403,10 @@ def set_leader_priority(conn, project_name, ranks):
         raise BoardError('最多设置 3 个优先 leader')
     if len(ranks) != len(set(ranks)):
         raise BoardError('ranks 包含重复的 leader')
+    config = git_config(conn, project_name)
     leaders = {s['session_id'] for s in sessions(conn, project_name)
-               if s['role'] == 'leader' and s['status'] != 'closed' and not is_archived(conn, s['session_id'])}
+               if s['role'] == 'leader' and s['status'] != 'closed' and not is_archived(conn, s['session_id'])
+               and not git_admin.is_builtin(s, config)}
     foreign = set(ranks) - leaders
     if foreign:
         raise BoardError('id 不属于该项目当前显示的 leader：' + '、'.join(sorted(foreign)))
@@ -445,7 +451,7 @@ def _identity(conn, project_name, session_id, name, role, group_name, now):
 
 
 def leader_group(name, group_name):
-    if name == "git管理员" and group_name == "git":
+    if name in ("git管理员", "Git 助手") and group_name == "git":
         return group_name
     if group_name is not None and group_name != name:
         raise BoardError("leader 分组必须与 crew 名同名")

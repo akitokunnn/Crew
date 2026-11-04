@@ -2,7 +2,7 @@
 import datetime as dt
 import json
 
-from . import board, channel, goals, presentation, session_presence, store, todo
+from . import board, channel, git_admin, goals, presentation, session_presence, store, todo
 
 
 def snapshot(service, conn, project):
@@ -11,8 +11,13 @@ def snapshot(service, conn, project):
         agents, agents_error = service.agents, service.agents_error
         unknown = agents_error is not None
     state, present, _ = session_presence.project_status(service, conn, project, agents, agents_error)
+    git_config = board.git_config(conn, project)
+    assistant = (board.session(conn, git_config['admin_session_id'])
+                 if git_config is not None and git_config['admin_session_id'] is not None else None)
+    builtin_id = assistant['session_id'] if assistant is not None and git_admin.is_builtin(assistant, git_config) else None
     people = [person for person in [*state['ungrouped'], *(member for group in state['groups'] for member in group['members'])]
-              if person['crew_name'] and person['status'] != 'closed' and not board.is_archived(conn, person['session_id'])]
+              if person['crew_name'] and person['status'] != 'closed' and not board.is_archived(conn, person['session_id'])
+              and not git_admin.is_builtin(person, git_config)]
     visible = {person['session_id']: person for person in people}
     counts = dict.fromkeys(('working', 'decisions', 'todos', 'approvals', 'waiting', 'acceptance', 'unread', 'errors'), 0)
     items, journals = [], {}
@@ -66,6 +71,8 @@ def snapshot(service, conn, project):
         counts['todos'] += 1
         items.append({'kind': 'todo', 'title': value['title'][:160], 'name': visible[value['session_id']]['crew_name'], 'detail': '待你动手'})
     for value in service.native_approvals(project):
+        if builtin_id is not None and value['session_id'] == builtin_id:
+            continue
         counts['approvals'] += 1
         items.append({'kind': 'approval', 'title': value.get('title') or '执行权限需要确认', 'name': '', 'detail': '待确认权限'})
     for value in goals.list_goals(conn, project):

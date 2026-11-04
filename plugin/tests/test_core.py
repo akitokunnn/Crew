@@ -63,7 +63,7 @@ class CoreCase(unittest.TestCase):
         def get(key, default=None):
             return None if key == "CLAUDE_CODE_SESSION_ID" else real_get(key, default)
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), mock.patch.object(os.environ, "get", side_effect=get), \
-                mock.patch("crew.spawn.request_state", return_value={"leaders": [], "members": []}):
+                mock.patch("crew.spawn.request_state", return_value={"leaders": [], "members": [], "git_assistant": None}):
             try:
                 code = cli.main(prefix + argv, agents_provider=(lambda: self.agents) if provider is None else provider,
                                 cwd=self.root if cwd is None else cwd, plugin_root=self.fake_plugin)

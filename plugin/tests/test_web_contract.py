@@ -82,7 +82,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
     def test_state_exact_shape_and_empty_limits(self):
         expected = {"project", "projects", "now", "agents_error", "notification", "leaders",
                     "members", "decisions", "candidates", "attention", "limits", "vscode_error", "models", "efforts", "channel", "themes",
-                    "runtimes", "todos", "todo_count", "goals", "ai", "native_approvals", "sounds"}
+                    "runtimes", "todos", "todo_count", "goals", "ai", "native_approvals", "sounds", "git_assistant"}
         state = self.state()
         self.assertEqual(set(state), expected)
 
@@ -97,7 +97,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         leader = state["leaders"][0]
         self.assertEqual(set(leader), {"session_id", "name", "goal", "status", "busy", "running", "web_chat",
             "cc_name", "last_seq", "last_reply_id", "read_seq", "unread", "pending", "notices_pending", "member_ids",
-            "model", "effort", "applied", "activity", "context", "where", "codex", "codex_older", "is_git_admin", "priority", "runtime", "native_handoff", "trust", "runtime_switch", "active_goal_id", "active_goal_ids", "active_execution_id", "member_defaults"})
+            "model", "effort", "applied", "activity", "context", "where", "codex", "codex_older", "priority", "runtime", "native_handoff", "trust", "runtime_switch", "active_goal_id", "active_goal_ids", "active_execution_id", "member_defaults"})
         self.assertIsNone(leader['member_defaults'])
         self.assertIsNone(leader['active_goal_id']); self.assertIsNone(leader['active_execution_id'])
         self.assertEqual(set(leader['runtime_switch']), {'allowed', 'reason', 'pending_handoff', 'last_switch_at'})
@@ -109,10 +109,12 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual((leader["session_id"], leader["member_ids"], leader["unread"]), ("s3", ["s1"], 0))
         # Leaders dispatch Codex for their own bulk work too (user 10-23), listed like members'.
         self.assertEqual((leader["codex"], leader["codex_older"]), ([], 0))
-        self.assertFalse(leader["is_git_admin"])
+        self.assertIsNone(state['git_assistant'])
+        self.assertNotIn('is_git_admin', leader)
         landing = self.state(None)
         self.assertEqual(set(landing), expected)
         self.assertIsNone(landing["project"])
+        self.assertIsNone(landing['git_assistant'])
         self.assertEqual(landing["channel"], {"unread": 0, "latest_id": 0, "digesting": False, "digest_error": None, "digest_id": None})
         for key in ("leaders", "members", "decisions", "attention", "goals"):
             self.assertEqual(landing[key], [])

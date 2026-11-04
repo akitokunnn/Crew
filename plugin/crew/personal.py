@@ -170,6 +170,8 @@ def overview(conn, *, project=None, limit=100):
         'SELECT s.session_id,s.project,s.crew_name,s.status,s.task,s.last_message,s.last_event_at '
         'FROM sessions s LEFT JOIN session_controls c ON c.session_id=s.session_id '
         "WHERE s.role='leader' AND s.status<>'closed' AND c.archived_status IS NULL AND COALESCE(c.removed,0)=0 "
+        "AND NOT EXISTS (SELECT 1 FROM git_management m WHERE m.project=s.project "
+        "AND m.admin_session_id=s.session_id AND s.group_name='git') "
         'ORDER BY s.started_at,s.session_id') if row['project'] in names]
     visible_leaders = {leader['session_id'] for leader in leaders}
     goals = [dict(row) for row in conn.execute(

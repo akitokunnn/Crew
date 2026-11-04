@@ -164,7 +164,7 @@ class RuntimeSpawnTests(RuntimeFixture):
     def test_who_does_not_try_claude_discovery_for_a_codex_session(self):
         runtimes.set(self.conn, "member-id", "codex", "native-thread")
         with mock.patch.object(cli, "_agents", side_effect=AssertionError("No Claude discovery")), \
-                mock.patch.object(spawn, "request_state", return_value={"leaders": [], "members": []}):
+                mock.patch.object(spawn, "request_state", return_value={"leaders": [], "members": [], "git_assistant": None}):
             code, output, errors = self.run_cli(["--session", "chief-id", "who", "builder", "--json"])
         self.assertEqual(code, 0, errors)
         self.assertEqual(json.loads(output)["session_id"], "member-id")

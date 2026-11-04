@@ -28,6 +28,35 @@ class WorkspaceActivityTests(unittest.TestCase):
         self.assertEqual(board.read_seq(self.conn, identity(1)), 0)
         self.service.chat.process_factory.assert_not_called()
 
+    def test_builtin_git_assistant_is_excluded_from_all_activity_counts(self):
+        from crew import todo
+        sid = identity(1)
+        self.register(sid, 'Git 助手', role='leader', group_name='git')
+        self.conn.execute("INSERT INTO git_management(project,enabled_at,base,admin_session_id) VALUES('alpha',?,'main',?)", (NOW, sid))
+        journal = self.service.chat.journal(sid)
+        journal.emit('assistant', id='reply', text='Unread Git reply')
+        board.ask(self.conn, sid, 'Git choice', ['A', 'B'], now=NOW)
+        todo.add(self.conn, sid, 'Git manual step', 'Open settings', 'Ready')
+        goal = goals.create(self.conn, 'alpha', sid, 'Git request', 'Review a branch', ['Merged'])
+        self.conn.execute("UPDATE goals SET status='awaiting_acceptance' WHERE id=?", (goal['id'],))
+        for status in ('working', 'waiting', 'error'):
+            with self.subTest(status=status), mock.patch.object(self.service.chat, 'running', return_value=True), \
+                    mock.patch.object(self.service, 'native_approvals', return_value=[{'session_id': sid, 'title': 'Git permission'}]):
+                journal.set_status(status)
+                before = self.conn.total_changes
+                value = self.snapshot()
+                self.assertEqual(value['counts'], dict.fromkeys(value['counts'], 0))
+                self.assertEqual(value['items'], [])
+                self.assertEqual(self.conn.total_changes, before)
+        self.assertEqual(board.read_seq(self.conn, sid), 0)
+
+    def test_legacy_git_binding_to_ordinary_leader_keeps_activity(self):
+        sid = identity(1)
+        self.register(sid, 'ordinary', role='leader')
+        self.conn.execute("INSERT INTO git_management(project,enabled_at,base,admin_session_id) VALUES('alpha',?,'main',?)", (NOW, sid))
+        self.service.chat.journal(sid).emit('assistant', id='reply', text='Ordinary reply')
+        self.assertEqual(self.snapshot()['counts']['unread'], 1)
+
     def test_working_is_observed_not_inferred_from_stale_database_status(self):
         self.register(identity(1), 'leader', role='leader')
         board.set_status(self.conn, identity(1), 'working', now=NOW)
