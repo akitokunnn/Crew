@@ -1,5 +1,7 @@
 # Crew
 
+> **V1 已弃用（2026-11-04）。** `main` 分支保留的是 V1（桌面包 0.2.40），仅作历史参考，不再开发、修复或发布。当前 Crew 在 [`rebuild/v2`](https://github.com/akitokunnn/Crew/tree/rebuild/v2) 分支开发，使用说明与开发指南以该分支为准。
+
 桌面与后台整合版接入本地历史库、完整工作区包导入导出、历史查看和按需上下文检索，并保留主干的多工作区、目录重定位、通知偏好、存储清理和运维功能。打开工作区时明确选择旧历史，应用启动不自动导入或向所有 leader 发盘点消息。使用与边界见[本地历史与接续](docs/storage-v2/implementation.md)；本轮盘点与验证见[整合交付记录](docs/DELIVERY_INTEGRATED_2026-10-26.md)。
 
 让一个人同时指挥多个 Claude Code / Codex 会话。用 Windows 桌面应用或浏览器打开工作文件夹，让 leader 直接推进目标、必要时协调成员，共用一块白板。
