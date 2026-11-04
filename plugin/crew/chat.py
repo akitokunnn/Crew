@@ -567,6 +567,19 @@ class Manager:
             with current.input_lock:
                 return dict(current.context) if current.context is not None else None
 
+    def context_state(self, session_id):
+        """Read native usage and compaction for one general or task execution."""
+        with self.lock:
+            current = self.processes.get(session_id)
+            phase = None
+            if current is not None and self.running(session_id):
+                with current.input_lock:
+                    if (current.journal.progress or {}).get('phase') == 'compacting':
+                        phase = 'compacting'
+                    elif current.pending_compact:
+                        phase = 'queued'
+            return {'context': self.context(session_id), 'compaction': phase}
+
     def history(self, session_id):
         journal = self.journal(session_id)
         control = None

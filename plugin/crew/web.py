@@ -1326,12 +1326,23 @@ class Service:
                     after_turn = data.get('after_turn', False)
                     if type(after_turn) is not bool:
                         raise ValueError('after_turn 必须是布尔值')
-                    if data.get('goal_id'):
-                        goals.get(conn, data['goal_id'], project)
-                        execution = self.chat.goal_controller.current(conn, data['goal_id'], target['session_id'])
-                        if execution is None:
-                            raise board.BoardError('这个任务还没有可压缩的执行会话')
-                        target = self.chat.goal_controller.target(conn, execution)
+                    if data.get('goal_id') is not None:
+                        goal_id = _text(data, 'goal_id')
+                        with self.chat.lock:
+                            goals.get(conn, goal_id, project)
+                            execution = self.chat.goal_controller.current(conn, goal_id, target['session_id'])
+                            if execution is None:
+                                raise board.BoardError('这个任务还没有可压缩的执行会话')
+                            expected = _optional_text(data, 'execution_id')
+                            if expected is not None and expected != execution['id']:
+                                raise board.Conflict('任务执行已变化，请刷新后再压缩')
+                            target = self.chat.goal_controller.target(conn, execution)
+                            result = self.chat.compact(
+                                target, caller_session_id=_optional_text(data, 'caller_session_id'), after_turn=after_turn)
+                            return {**result, 'session_id': target['session_id'], 'goal_id': goal_id,
+                                    'execution_id': execution['id']}
+                    if data.get('execution_id') is not None:
+                        raise board.BoardError('指定执行编号时必须同时指定任务')
                     return self.chat.compact(target, caller_session_id=_optional_text(data, 'caller_session_id'), after_turn=after_turn)
                 if path == '/api/session/options':
                     options = self.chat.set_options(conn, target['session_id'],
@@ -1551,11 +1562,12 @@ class Service:
 
     def chat_history(self, session_id, project_name=None, goal_id=None, *, include_previous=True):
         with closing(store.connect(self.home)) as conn:
-            if goal_id:
+            if goal_id is not None:
                 goals.get(conn, goal_id, self.selected_project(conn, project_name))
                 return self.chat.goal_controller.history(conn, goal_id, session_id, include_previous=include_previous)
             self.chat_session(conn, self.chat_project(conn, project_name, session_id), session_id)
-            return {**self.chat.history(session_id), 'read_seq': board.read_seq(conn, session_id)}
+            return {**self.chat.history(session_id), **self.chat.context_state(session_id),
+                    'read_seq': board.read_seq(conn, session_id)}
 
     def channel_messages(self, project_name=None, limit=20, before=None):
         with closing(store.connect(self.home)) as conn:
@@ -2001,7 +2013,8 @@ class Handler(BaseHTTPRequestHandler):
                 if url.path == '/api/goals':
                     self._send(200, {'goals': [goal_api.card(conn, goal) for goal in goals.list_goals(conn, project)]})
                 elif url.path == '/api/goal':
-                    self._send(200, goal_api.detail(conn, project, query.get('id', [''])[0]))
+                    self._send(200, goal_api.detail(conn, project, query.get('id', [''])[0],
+                                                  context_state=service.chat.context_state))
                 else:
                     goal_id = query.get('goal_id', [''])[0]
                     goals.get(conn, goal_id, project)
@@ -2075,6 +2088,7 @@ class Handler(BaseHTTPRequestHandler):
                                                     query.get('execution_id', [None])[0])
             self._send(200, content, media_type)
         elif url.path in ("/api/chat/history", "/api/chat/events"):
+            query = parse_qs(url.query, keep_blank_values=True)
             session_id = query.get("session_id", [""])[0]
             history = service.chat_history(session_id, query.get("project", [None])[0], query.get('goal_id', [None])[0],
                                            include_previous=url.path.endswith('/history'))

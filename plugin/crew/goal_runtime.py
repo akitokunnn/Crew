@@ -398,8 +398,10 @@ class Controller:
 
     def history(self, conn, goal_id, session_id, *, include_previous=True):
         execution = self.current(conn, goal_id, session_id)
-        value = ({'events': [], 'busy': False, 'running': False} if execution is None
-                 else self.manager.history(execution['id']))
+        value = ({'events': [], 'busy': False, 'running': False, 'context': None, 'compaction': None}
+                 if execution is None else self.manager.history(execution['id']))
+        if execution is not None:
+            value.update(self.manager.context_state(execution['id']))
         value.update(session_id=session_id, goal_id=goal_id,
                      execution_id=execution['id'] if execution else None,
                      response_mode='discussion' if execution and goals.discussion(conn, execution['id']) else 'work',
