@@ -361,9 +361,11 @@ svg.i.xs{width:12px;height:12px}
 .unread-div{color:var(--accent-text)}
 .unread-div::before,.unread-div::after{background:color-mix(in srgb,var(--accent) 35%,transparent)}
 .m-user{display:flex;flex-direction:column;align-items:flex-end;margin:18px 0}
+.m-user.pending{opacity:.72}
 .bubble{background:var(--user-bubble);padding:10px 15px;border-radius:18px 18px 6px 18px;max-width:78%;line-height:1.7;font-size:calc(15px * var(--fs))}
 .m-meta{font-size:calc(11.5px * var(--fs));color:var(--text-3);margin-top:4px;opacity:0;transition:opacity .15s}
 .m-user:hover .m-meta,.m-lead:hover .m-meta{opacity:1}
+.m-user.pending .m-meta,.m-user.failed .m-meta{opacity:1}
 .shot{display:block;width:260px;height:146px;border-radius:12px;margin:8px 0 2px auto;overflow:hidden;border:1px solid var(--line)}
 .m-lead{display:flex;gap:12px;margin:16px 0}
 .m-lead .body{min-width:0;flex:1;font-family:var(--font-reply);font-size:calc(15.5px * var(--fs));line-height:1.85;padding-top:3px}

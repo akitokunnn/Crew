@@ -43,7 +43,7 @@ async function route(request,response){
   if(name==='/api/goal'){const id=url.searchParams.get('id');return json(response,details.get(id));}
   if(name==='/api/documents'){assert(gid,'document reads must name their task');return json(response,{documents:details.get(gid)?.documents||[]});}
   if(name==='/api/chat/history')return json(response,journal(sid));
-  if(name==='/api/chat/events'){response.writeHead(200,{'Content-Type':'text/event-stream'});response.write(': connected\n\n');streams.push(response);return;}
+  if(name==='/api/chat/events'){response.writeHead(200,{'Content-Type':'text/event-stream','X-Crew-Execution-Id':'','X-Crew-Latest-Seq':String(journal(sid).events.at(-1)?.seq||0)});response.write(': connected\n\n');streams.push(response);return;}
   if(name==='/api/chat/read'){journal(sid).read_seq=body.seq;return json(response,{read_seq:body.seq});}
   if(name==='/api/goals/report'){
     const goal=state.goals.find(item=>item.id===gid),report=details.get(gid)?.reports.find(item=>item.id===url.searchParams.get('report_id'));

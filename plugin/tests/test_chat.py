@@ -215,6 +215,36 @@ class ChatTests(UsageFixture, unittest.TestCase):
             self.assertEqual(len(manager.history("s1")["events"]), 3)
             self.assertEqual(reads, [path, path, path])
 
+    def test_repeated_emit_avoids_rereads_and_external_append_preserves_content_and_sequence(self):
+        journal = self.journal
+        journal.emit('text', id='stream', text='seed')
+        original_read = Path.read_text
+        reads = []
+
+        def read_text(path, *args, **kwargs):
+            if path == journal.path:
+                reads.append(path)
+            return original_read(path, *args, **kwargs)
+
+        with mock.patch.object(Path, 'read_text', read_text):
+            for index in range(100):
+                journal.emit('text', id='stream', text=str(index))
+                journal.refresh()
+            self.assertEqual(reads, [])
+            external = {'seq': 102, 'type': 'message', 'id': 'external',
+                        'source': 'human', 'text': 'external append'}
+            self.write(journal.path, [external], append=True)
+            journal.refresh()
+            self.assertEqual(reads, [journal.path])
+            self.assertEqual(journal.events[-1], external)
+            journal.emit('text', id='stream', text='after external')
+            journal.refresh()
+            self.assertEqual(reads, [journal.path])
+        self.assertEqual([event['seq'] for event in journal.events], list(range(1, 104)))
+        self.assertEqual([event['text'] for event in journal.events],
+                         ['seed', *map(str, range(100)), 'external append', 'after external'])
+        self.assertEqual(chat.Journal(journal.path).events, journal.events)
+
     def test_crew_and_qq_sources_survive_cli_echo_and_replay(self):
         manager, process, _ = self.manager_with_process()
         for source in ("crew", "qq"):

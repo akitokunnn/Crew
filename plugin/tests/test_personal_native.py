@@ -217,7 +217,7 @@ class PersonalNativeTests(unittest.TestCase):
         with mock.patch('crew.settings.shutil.which', side_effect=AssertionError('opening must not discover CLI')):
             assistant = personal_api.open_assistant(self.home)
             manager = self.manager()
-            value = personal_api.state(self.home, history=manager.history, activity=manager.activity,
+            value = personal_api.state(self.home, history=manager.history, journal=manager.journal, activity=manager.activity,
                                        applied=manager.applied, context=manager.context)
         self.assertEqual(value['assistant']['session_id'], assistant['session_id'])
         self.assertEqual(value['members'], [value['assistant']])

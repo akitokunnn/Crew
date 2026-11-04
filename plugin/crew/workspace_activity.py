@@ -20,7 +20,7 @@ def snapshot(service, conn, project):
               and not git_admin.is_builtin(person, git_config)]
     visible = {person['session_id']: person for person in people}
     counts = dict.fromkeys(('working', 'decisions', 'todos', 'approvals', 'waiting', 'acceptance', 'unread', 'errors'), 0)
-    items, journals = [], {}
+    items, journals, histories = [], {}, {}
     for person in people:
         sid = person['session_id']
         execution = service.chat.goal_controller.display_execution(conn, sid)
@@ -36,10 +36,15 @@ def snapshot(service, conn, project):
         for context_key, read in contexts:
             if not service.chat.path(context_key).is_file():
                 continue
-            events = service.chat.history(context_key)['events']
+            if context_key not in histories:
+                histories[context_key] = service.chat.history(context_key)
+            events = histories[context_key]['events']
             if context_key == key:
                 journals[sid] = events
-            unread = presentation.chat_replies(events, after=read)
+            journal = service.chat.journal(context_key)
+            with journal.condition:
+                unread = presentation.chat_replies(journal.events, after=read,
+                    cache_key=(str(journal.path), journal.signature))
             # Members' internal replies are coordinated by their leader. The
             # human unread signal follows the existing leader conversation UI.
             if person['role'] == 'leader':

@@ -8,6 +8,7 @@ function node(){const classes=new Set(),children=[],attributes=new Map();return 
   classList:{add:x=>classes.add(x),remove:x=>classes.delete(x),toggle(x,on){if(on)classes.add(x);else classes.delete(x);},contains:x=>classes.has(x)}};}
 function host(){const nodes=new Map();return {...node(),querySelector(selector){if(!nodes.has(selector))nodes.set(selector,node());return nodes.get(selector);}};}
 function harness(){
+  const journals=new Map(),journalKey=params=>JSON.stringify([params.get("project")||"",params.get("session_id")]);
   const timers=new Map(),saved=new Map(),streams=[],connections=[],frames=new Map(),handlers=new Map();let next=1;
   const motion={matches:true};
   const sandbox={matchMedia:()=>motion,atob,btoa,URLSearchParams,AbortController,TextDecoder,
@@ -16,17 +17,109 @@ function harness(){
     localStorage:{getItem:key=>saved.get(key)??null,setItem:(key,value)=>saved.set(key,value)},
     document:{visibilityState:"visible",activeElement:null,querySelectorAll:()=>[],addEventListener(type,fn){if(!handlers.has(type))handlers.set(type,new Set());handlers.get(type).add(fn);},removeEventListener(type,fn){handlers.get(type)?.delete(fn);},createElement:node},
     setTimeout:(fn,ms)=>{const id=next++;timers.set(id,{fn,ms});return id;},clearTimeout:id=>timers.delete(id),requestAnimationFrame:fn=>{const id=next++;frames.set(id,fn);return id;},cancelAnimationFrame:id=>frames.delete(id),
-    fetch:async(url,{signal})=>{streams.push(String(url));let pending;const queue=[],stream={url:String(url),signal,emit(event){const chunk={value:new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`),done:false};if(pending){const {resolve}=pending;pending=null;resolve(chunk);}else queue.push(chunk);}};connections.push(stream);
+    fetch:async(url,{signal})=>{streams.push(String(url));let pending;const record=journals.get(journalKey(new URLSearchParams(String(url).split("?")[1])))||{executionId:"",latestSeq:0},headers=new Map([["X-Crew-Execution-Id",record.executionId],["X-Crew-Latest-Seq",String(record.latestSeq)]]);const queue=[],stream={url:String(url),signal,reads:0,emit(event){record.latestSeq=Math.max(record.latestSeq,event.seq);const chunk={value:new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`),done:false};if(pending){const {resolve}=pending;pending=null;resolve(chunk);}else queue.push(chunk);}};connections.push(stream);
       signal.addEventListener("abort",()=>{pending?.reject(Object.assign(Error("aborted"),{name:"AbortError"}));pending=null;},{once:true});
-      return {ok:true,body:{getReader:()=>({read:()=>queue.length?Promise.resolve(queue.shift()):new Promise((resolve,reject)=>{pending={resolve,reject};})})}};}};
+      return {ok:true,headers,body:{getReader:()=>({read:()=>{stream.reads++;return queue.length?Promise.resolve(queue.shift()):new Promise((resolve,reject)=>{pending={resolve,reject};});}})}};}};
   sandbox.window=sandbox;vm.createContext(sandbox);
   for(const file of ["vendor/markdown-it.min.js","browser-utils.js","chat.js","goal-work-ui.js"])vm.runInContext(fs.readFileSync(path.join(__dirname,"../crew/web",file),"utf8"),sandbox);
-  function mount(id,api,extra={},options={}){const target=host(),session={session_id:id,name:id,busy:false,last_seq:0,activity:null,where:"bg",...extra};sandbox.CrewChat.mount({host:target,session,state:{project:{name:"fixture"},leaders:[session],members:[]},api,toast(){},...options});return target;}
+  function mount(id,api,extra={},options={}){const target=host(),session={session_id:id,name:id,busy:false,last_seq:0,activity:null,where:"bg",...extra};const client=async(url,data)=>{const value=await api(url,data);if(url.startsWith("/api/chat/history?"))journals.set(journalKey(new URLSearchParams(url.split("?")[1])),{executionId:value.execution_id??"",latestSeq:value.events.at(-1)?.seq||0});return value;};sandbox.CrewChat.mount({host:target,session,state:{project:{name:"fixture"},leaders:[session],members:[]},api:client,toast(){},...options});return target;}
   function update(id,extra={}){const session={session_id:id,name:id,busy:false,last_seq:1,activity:null,where:"bg",...extra};sandbox.CrewChat.update({project:{name:"fixture"},leaders:[session],members:[]});}
   function visibility(visible,desktop=false){const type=desktop?"crew-tab-visibility":"visibilitychange";if(desktop)sandbox.crewTabVisible=visible;else sandbox.document.visibilityState=visible?"visible":"hidden";for(const fn of handlers.get(type)||[])fn({type,detail:{visible}});}
-  return {chat:sandbox.CrewChat,mount,update,visibility,timers,saved,streams,connections,handlers,sandbox,motion,flushFrames(){for(const [id,fn] of frames){frames.delete(id);fn();}}};
+  return {chat:sandbox.CrewChat,mount,update,visibility,timers,saved,streams,connections,handlers,sandbox,motion,setJournal(id,value,project="fixture"){journals.set(JSON.stringify([project,id]),value);},flushFrames(){for(const [id,fn] of frames){frames.delete(id);fn();}}};
 }
-const history=()=>({events:[],busy:false,read_seq:0});
+const history=()=>({events:[],busy:false,read_seq:0,first_seq:0,has_more:false});
+
+test("cached transcripts paint synchronously and catch up only through SSE after their cursor",async()=>{
+  for(const runtime of ["claude","codex"]){
+    const h=harness(),calls=[],read=async url=>{calls.push(url);return {...history(),events:[{seq:7,type:"message",id:"old",text:"缓存正文"}]};};
+    h.mount("leader",read,{runtime});await tick();h.chat.unmount();
+    const restored=h.mount("leader",read,{runtime});
+    assert.match(rendered(restored).join(""),/缓存正文/,"cached content is visible before a network promise settles");
+    await tick();assert.equal(calls.length,1);assert.match(calls[0],/tail=1500/);
+    assert.match(h.connections[1].url,/after=7/);h.connections[1].emit({seq:8,type:"message",id:"new",text:"增量正文"});
+    await tick();h.flushFrames();assert.match(rendered(restored).join(""),/增量正文/);h.chat.unmount();
+    assert([...h.saved.keys()].every(key=>key.startsWith("crew.draft:")),"transcripts never enter localStorage");
+  }
+});
+
+test("SSE execution changes and shortened journals discard cached records before reading any stream data",async()=>{
+  for(const replacement of [{executionId:"replacement",latestSeq:20},{executionId:"original",latestSeq:2}]){
+    const h=harness();let reads=0;
+    const read=async()=>({...history(),execution_id:++reads===1?"original":replacement.executionId,events:reads===1?[{seq:10,type:"message",id:"stale",text:"过期正文"}]:[{seq:1,type:"message",id:"fresh",text:"新日志正文"}]});
+    h.mount("leader",read);await tick();h.chat.unmount();
+    h.setJournal("leader",replacement);const restored=h.mount("leader",read);
+    assert.match(rendered(restored).join(""),/过期正文/);await tick();
+    assert.equal(h.connections[1].signal.aborted,true);assert.equal(h.connections[1].reads,0);
+    assert.equal(reads,2);assert.match(rendered(restored).join(""),/新日志正文/);assert.doesNotMatch(rendered(restored).join(""),/过期正文/);h.chat.unmount();
+  }
+});
+
+test("the transcript LRU evicts the least recently visited of more than eight scopes",async()=>{
+  const h=harness(),reads=new Map(),read=id=>async()=>{reads.set(id,(reads.get(id)||0)+1);return history();};
+  for(let i=0;i<9;i++){h.mount(String(i),read(String(i)));await tick();}
+  h.chat.unmount();h.mount("1",read("1"));await tick();assert.equal(reads.get("1"),1);
+  h.mount("0",read("0"));await tick();assert.equal(reads.get("0"),2);h.chat.unmount();
+});
+
+test("optimistic input is visible before send starts and merges a same-ID receipt without duplication",async()=>{
+  for(const runtime of ["claude","codex"])for(const bound of [false,true]){
+    const h=harness();let target,finish,payload;
+    h.saved.set("crew.draft:fixture:leader",JSON.stringify({text:"",images:[{media_type:"image/png",data:"AAAA"}]}));
+    target=h.mount("leader",async(url,data)=>{if(url!=="/api/chat/send")return history();payload=data;assert.match(rendered(target).join(""),/m-user pending/);assert.match(rendered(target).join(""),/立即可见/);return new Promise(resolve=>{finish=resolve;});},{runtime});await tick();
+    if(bound){h.chat.setTask({id:"goal",title:"任务甲",leader_session_id:"leader"});target.querySelector(".chat-task-binding").onclick();}
+    target.querySelector("textarea").value="立即可见";target.querySelector("textarea").oninput();target.querySelector("form").onsubmit({preventDefault(){}});
+    assert.match(rendered(target).join(""),/待确认/);assert.match(rendered(target).join(""),/data:image\/png;base64,AAAA/);
+    if(bound){assert.equal(payload.goal_id,"goal");assert.match(rendered(target).join(""),/→ 任务甲/);}
+    else h.connections[0].emit({seq:1,type:"message",id:payload.message_id,text:payload.text,source:"human",images:["receipt.png"]});
+    finish({accepted:true});await tick();h.flushFrames();
+    assert.equal(rendered(target).filter(html=>html.includes("立即可见")).length,1);assert.doesNotMatch(rendered(target).join(""),/m-user pending/);
+    assert.equal(target.querySelector("textarea").value,"");
+    if(bound){h.mount("other",async()=>history());await tick();target=h.mount("leader",async()=>history(),{runtime});await tick();assert.equal(rendered(target).filter(html=>html.includes("立即可见")).length,1);assert.match(rendered(target).join(""),/→ 任务甲/);}
+    h.chat.unmount();
+  }
+});
+
+test("rejected and uncertain sends retain their draft, true reason and one marked message without automatic retry",async()=>{
+  for(const accepted of [false,"unknown"])for(const bound of [false,true]){
+    const h=harness();let sends=0;
+    const target=h.mount("leader",async url=>url==="/api/chat/send"?(sends++,{accepted,error:"明确的投递原因"}):history());await tick();
+    if(bound){h.chat.setTask({id:"goal",title:"任务甲",leader_session_id:"leader"});target.querySelector(".chat-task-binding").onclick();}
+    target.querySelector("textarea").value="保留的输入";target.querySelector("textarea").oninput();target.querySelector("form").onsubmit({preventDefault(){}});await tick();h.flushFrames();
+    const html=rendered(target).join("");assert.match(html,accepted==="unknown"?/m-user pending/:/m-user failed/);assert.match(html,/明确的投递原因/);
+    assert.equal(rendered(target).filter(html=>html.includes("保留的输入")).length,1);if(bound)assert.match(html,/→ 任务甲/);
+    assert.equal(target.querySelector("textarea").value,"保留的输入");assert.equal(sends,1);h.chat.unmount();
+  }
+});
+
+test("a tail window renders orphan tool results, restores their owner on prepend and keeps the reading anchor",async()=>{
+  const h=harness(),calls=[],result={seq:3,type:"tool_result",tool_use_id:"tool",content:"窗口边界结果",is_error:false};
+  const target=h.mount("leader",async url=>{calls.push(url);return {...history(),has_more:!url.includes("before="),first_seq:url.includes("before=")?1:3,events:url.includes("before=")?[{seq:1,type:"assistant",id:"owner",content:[{type:"tool_use",id:"tool",name:"Shell",input:{}}]},{seq:2,type:"message",id:"earlier",text:"更早正文"}]:[result,{seq:4,type:"message",id:"anchor",text:"正在阅读"}]};});await tick();
+  assert.match(rendered(target).join(""),/窗口边界结果/);const scroll=target.querySelector(".chat-scroll"),inner=target.querySelector(".chat-inner");scroll.scrollHeight=1000;scroll.scrollTop=100;scroll.getBoundingClientRect=()=>({top:0,bottom:200});
+  const anchor=inner.children.find(node=>node.innerHTML.includes("正在阅读"));anchor.getBoundingClientRect=()=>({top:(inner.children.some(node=>node.innerHTML.includes("更早正文"))?200:80)-(scroll.scrollTop-100),bottom:240});
+  await inner.onclick({target:{closest:selector=>selector==="[data-chat-earlier]"?{}:null}});
+  assert.match(calls[1],/tail=1500/);assert.match(calls[1],/before=3/);assert.equal(anchor.getBoundingClientRect().top,80);
+  assert.equal(rendered(target).filter(html=>html.includes("窗口边界结果")).length,1);assert.doesNotMatch(rendered(target).join(""),/data-chat-earlier/);h.chat.unmount();
+});
+
+test("state polls update activity without regenerating transcript HTML or replacing its nodes",async()=>{
+  const h=harness(),target=h.mount("leader",async()=>({...history(),events:[{seq:1,type:"message",id:"message",text:"稳定正文"}]}));await tick();
+  const node=target.querySelector(".chat-inner").children.find(node=>node.innerHTML.includes("稳定正文"));let reads=0,value=node.dataset.html;
+  Object.defineProperty(node.dataset,"html",{get(){reads++;return value;},set(next){value=next;}});
+  for(let i=0;i<3;i++){h.update("leader",{busy:true,last_seq:1,activity:{phase:"thinking",output_tokens:i+1}});h.flushFrames();}
+  assert.equal(reads,0);assert(target.querySelector(".chat-inner").children.includes(node));assert.match(rendered(target).join(""),/思考中/);h.chat.unmount();
+});
+
+test("an unread anchor evicted from the new tail window positions the reader at the window top",async()=>{
+  const h=harness();
+  const first=h.mount("leader",async()=>({...history(),events:[{seq:1,type:"text",id:"old-unread",text:"旧未读正文"}]}));await tick();
+  first.querySelector(".chat-scroll").scrollTop=160;first.querySelector(".chat-scroll").onscroll();
+  for(let i=0;i<8;i++){h.mount("other-"+i,async()=>history());await tick();}
+  let release;
+  const restored=h.mount("leader",()=>new Promise(resolve=>{release=resolve;}));
+  restored.querySelector(".chat-scroll").scrollHeight=1000;
+  release({...history(),has_more:true,first_seq:20,events:[{seq:20,type:"text",id:"new-unread",text:"新窗口正文"}]});await tick();
+  assert.equal(restored.querySelector(".chat-scroll").scrollTop,0);assert.doesNotMatch(rendered(restored).join(""),/旧未读正文/);h.chat.unmount();
+});
 
 test("task binding follows the selected task, resets on switch and only scopes a highlighted send",async()=>{
   for(const runtime of ["claude","codex"]){
@@ -554,7 +647,7 @@ test("readonly status transitions preserve the same conversation draft and readi
 test("a detached conversation scroll event cannot reset the reading position while the same chat remounts",async()=>{
   const h=harness();const first=h.mount("leader",async()=>history(),{},{});await tick();const detached=first.querySelector(".chat-scroll");detached.scrollTop=160;detached.onscroll();
   h.mount("member",async()=>history(),{},{});await tick();
-  let release;const restored=h.mount("leader",()=>new Promise(resolve=>{release=resolve;}),{},{});detached.scrollTop=0;detached.onscroll();release(history());await tick();assert.equal(restored.querySelector(".chat-scroll").scrollTop,160);h.chat.unmount();
+  let reads=0;const restored=h.mount("leader",async()=>{reads++;return history();});detached.scrollTop=0;detached.onscroll();await tick();assert.equal(reads,0,"revisiting reuses the applied transcript");assert.equal(restored.querySelector(".chat-scroll").scrollTop,160);h.chat.unmount();
 });
 
 test("opening readonly first restores a persisted draft when work is explicitly resumed",async()=>{

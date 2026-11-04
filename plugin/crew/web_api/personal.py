@@ -9,13 +9,13 @@ def open_assistant(home, context_project=None):
         return personal.ensure_assistant(conn, home, context_project=context_project)
 
 
-def state(home, *, history, activity, applied, context):
+def state(home, *, history, journal, activity, applied, context):
     """Each callback takes one session_id and only reads its managed chat state."""
     with closing(store.connect(home)) as conn:
         assistant = personal.ensure_assistant(conn, home)
         snapshot = personal.overview(conn)
         ai = settings.get(conn)
-        sounds = event_sounds.snapshot(conn, None, history)
+        sounds = event_sounds.snapshot(conn, None, history, journal)
     sid = assistant['session_id']
     chat = history(sid)
     events = chat['events']

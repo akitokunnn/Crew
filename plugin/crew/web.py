@@ -626,7 +626,7 @@ class Service:
                 if identity in histories:
                     return histories[identity]
                 return self.chat.history(identity) if self.chat.path(identity).is_file() else None
-            result['sounds'] = event_sounds.snapshot(conn, result['project']['name'] if result['project'] else None, sound_history)
+            result['sounds'] = event_sounds.snapshot(conn, result['project']['name'] if result['project'] else None, sound_history, self.chat.journal)
             return result
 
     def _project_conversations(self, conn, name, agents, error):
@@ -707,7 +707,10 @@ class Service:
                          codex_older=len(own_tasks) - len(recent_tasks))
             if session['role'] == 'leader':
                 events = histories[sid]['events'] if sid in histories else []
-                replies = presentation.chat_replies(events)
+                journal = self.chat.journal(sid)
+                with journal.condition:
+                    replies = presentation.chat_replies(journal.events,
+                        cache_key=(str(journal.path), journal.signature))
                 read_seq = board.read_seq(conn, sid)
                 result['leaders'].append(dict(
                     session_id=sid, name=session['crew_name'], goal=session['task'], status=session['status'],
@@ -1851,11 +1854,16 @@ class Handler(BaseHTTPRequestHandler):
         controller = getattr(self.server, 'remote_controller', None)
         return controller is None or controller.request_active(getattr(self, 'remote_identity', None))
 
-    def _chat_events(self, journal, sequence):
+    def _chat_events(self, journal, sequence, execution_id):
+        with journal.condition:
+            journal.refresh()
+            latest_seq = journal.events[-1]['seq'] if journal.events else 0
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
         self.send_header("Connection", "close")
+        self.send_header("X-Crew-Execution-Id", execution_id or "")
+        self.send_header("X-Crew-Latest-Seq", str(latest_seq))
         self.end_headers()
         self.close_connection = True
         try:
@@ -2025,7 +2033,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, personal_api.notes(service.home, project=query.get('project', [None])[0],
                 include_archived=query.get('include_archived') == ['1']))
         elif url.path == '/api/assistant/state':
-            self._send(200, personal_api.state(service.home, history=service.chat.history,
+            self._send(200, personal_api.state(service.home, history=service.chat.history, journal=service.chat.journal,
                 activity=service.chat.activity, applied=service.chat.applied, context=service.chat.context))
         elif url.path == "/api/state":
             self._send(200, service.state(query.get("project", [None])[0]))
@@ -2122,12 +2130,28 @@ class Handler(BaseHTTPRequestHandler):
             history = service.chat_history(session_id, query.get("project", [None])[0], query.get('goal_id', [None])[0],
                                            include_previous=url.path.endswith('/history'))
             if url.path.endswith("/history"):
+                if 'tail' in query:
+                    tail = int(query['tail'][0])
+                    if not 1 <= tail <= 5000:
+                        raise ValueError('tail 必须为 1 到 5000 的正整数')
+                    events = history['events']
+                    end = len(events)
+                    if 'before' in query:
+                        before = int(query['before'][0])
+                        if before < 1:
+                            raise ValueError('before 必须为正整数')
+                        from bisect import bisect_left
+                        end = bisect_left(events, before, key=lambda event: event['seq'])
+                    start = max(0, end - tail)
+                    window = events[start:end]
+                    history = {**history, 'events': window, 'first_seq': window[0]['seq'] if window else 0,
+                               'has_more': start > 0}
                 self._send(200, history)
             else:
                 sequence = max(int(query.get("after", [0])[0]), int(self.headers.get("Last-Event-ID", 0)))
                 # Empty scoped conversations can be read without launching a model.
                 key = history.get('execution_id') or ('goal-' + query['goal_id'][0] + '-' + session_id if query.get('goal_id') else session_id)
-                self._chat_events(service.chat.journal(key), sequence)
+                self._chat_events(service.chat.journal(key), sequence, history.get('execution_id'))
         elif url.path in ("/api/usage", "/api/usage/export"):
             period = query.get("period", ["week"])[0]
             if url.path.endswith("/export"):

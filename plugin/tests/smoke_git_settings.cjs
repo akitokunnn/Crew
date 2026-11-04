@@ -28,7 +28,7 @@ async function route(request,response){
   calls.push({name,method:request.method,body,query:Object.fromEntries(url.searchParams)});
   if(name==='/api/access/context')return json(response,{remote:false,local_controls:true,local_desktop:true,authenticated:true});
   if(name==='/api/chat/history')return json(response,{events:[{seq:1,type:'text',id:'reply',text:'主干 develop → master，合并前核对测试证据。'}],busy:false,read_seq:0});
-  if(name==='/api/chat/events'){response.writeHead(200,{'Content-Type':'text/event-stream'});response.write(': connected\n\n');waiting.push(response);return;}
+  if(name==='/api/chat/events'){response.writeHead(200,{'Content-Type':'text/event-stream','X-Crew-Execution-Id':'','X-Crew-Latest-Seq':'1'});response.write(': connected\n\n');waiting.push(response);return;}
   if(name==='/api/chat/read')return json(response,{read_seq:body.seq});
   if(name==='/api/chat/send'){assert.equal(body.session_id,leader.session_id);assert(!Object.hasOwn(body,'goal_id'));return json(response,{ok:true,accepted:true,message_id:body.message_id});}
   if(name==='/api/git/enable'){assert.equal(body.runtime,'codex');graph='enabled';state.git_assistant=leader;settings={...settings,revision:'enabled',config:{base:body.base,stable:body.stable,branch_rules:'',admin_session_id:leader.session_id}};return json(response,{ok:true});}

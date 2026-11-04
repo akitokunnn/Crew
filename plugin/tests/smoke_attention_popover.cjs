@@ -22,7 +22,7 @@ const {chromium}=require('playwright'),fs=require('node:fs/promises'),path=requi
     if(name==='/api/runtimes')return json(res,{runtimes:state.runtimes});
     if(name==='/api/goal')return json(res,{goal:state.goals[0],executions:[{id:'execution',session_id:'leader',runtime:'claude',model:null,effort:null,round:1,requirement_version:1,generation:1,status:'idle'}],reports:[],documents:[],context:{items:[],manifest:{}}});
     if(name==='/api/chat/history')return json(res,{...(url.searchParams.has('goal_id')?{execution_id:'execution'}:{}),events:[{seq:1,type:'text',id:'reply',text:'声音评测继续推进。旁边的待办不会占用这段对话。'},...compactEvents],busy:false,running:false,read_seq:1});
-    if(name==='/api/chat/events'){res.fixtureSession=url.searchParams.get('session_id');res.writeHead(200,{'Content-Type':'text/event-stream'});res.write(': fixture\n\n');streams.push(res);return;}
+    if(name==='/api/chat/events'){res.fixtureSession=url.searchParams.get('session_id');res.writeHead(200,{'Content-Type':'text/event-stream','X-Crew-Execution-Id':'','X-Crew-Latest-Seq':String(compactEvents.at(-1)?.seq||1)});res.write(': fixture\n\n');streams.push(res);return;}
     if(req.method==='POST'){
       let raw='';for await(const chunk of req)raw+=chunk;const body=JSON.parse(raw);calls.push({name,body});
       if(name==='/api/chat/read')return json(res,{read_seq:body.seq});

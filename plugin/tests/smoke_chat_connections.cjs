@@ -225,14 +225,16 @@ if (!process.versions.electron) {
       await until(() => contains(firstView, '成员历史'), 'member conversation');
       await capture(firstView, 'member-history');
       await evaluate(firstView, `location.hash=${JSON.stringify('#leader=' + first.session_id + '&goal=' + info.goal)};true;`);
-      await until(() => contains(firstView, '任务历史'), 'task conversation');
-      await capture(firstView, 'goal-history');
+      await until(() => evaluate(firstView, `!!document.querySelector('#side-task-body [data-goal-tools]') && document.querySelector('#chat-host')?.textContent.includes(${JSON.stringify(first.marker)})`), 'task inspector with leader conversation');
+      assert(!(await contains(firstView, '任务历史')));
+      assert(requests.filter(request => ['/api/chat/history', '/api/chat/events'].includes(request.path)).every(request => !new URLSearchParams(request.query).has('goal_id')));
+      await capture(firstView, 'task-keeps-leader-history');
       await tabs.openAssistant();
       await until(() => contains(tabs.activeView, '助手历史'), 'global assistant conversation');
       await capture(tabs.activeView, 'assistant-history');
       await until(() => pendingStreams.size <= 1, 'assistant releases workspace streams');
-      evidence.checks.push('Member, independent task and global assistant conversations share the recovered connection lifecycle');
-      console.log('Member, task and assistant histories ready');
+      evidence.checks.push('Member and global assistant conversations share the recovered connection lifecycle; task inspection retains the leader conversation without a goal-scoped stream');
+      console.log('Member, task inspector and assistant histories ready');
 
       const assistantView = tabs.activeView;
       const watched = info.projects.slice(0, 6);
