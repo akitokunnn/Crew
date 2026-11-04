@@ -1,9 +1,9 @@
-/* Targeted real-browser check: late task metadata and a refresh beside an open report. */
+/* Targeted real-browser check: late task metadata preserves the general conversation. */
 const {chromium}=require('playwright');
 const {spawn}=require('node:child_process');
 const fs=require('node:fs/promises'),path=require('node:path'),assert=require('node:assert/strict');
-const root=path.resolve(__dirname,'../..'),before=process.argv.includes('--before');
-const out=path.join(root,'Temp/panel-refresh',before?'before':'fixed');
+const root=path.resolve(__dirname,'../..');
+const out=path.join(root,'Temp/ui-align/batch2/panel-refresh');
 let fixture,browser;
 async function main(){
   await fs.mkdir(out,{recursive:true});
@@ -32,32 +32,13 @@ async function main(){
   await page.locator('#side-task-body [data-goal-tools]').waitFor();
   await page.waitForTimeout(300);
   const chat=await page.evaluate(()=>{const input=document.querySelector('.composer textarea');return {sameInput:keptInput===input,sameHost:keptHost===document.querySelector('#chat-host'),draft:input.value,focused:document.activeElement===input,selection:[input.selectionStart,input.selectionEnd]};});
-  assert.equal(chat.sameInput,!before,'late execution metadata must retain the composer');
-  assert.equal(chat.sameHost,!before,'late execution metadata must retain the conversation');
+  assert.equal(chat.sameInput,true,'late execution metadata must retain the composer');
+  assert.equal(chat.sameHost,true,'late execution metadata must retain the conversation');
   assert.equal(chat.draft,'等待资料时保留的草稿');
-  if(!before){assert.equal(chat.focused,true);assert.deepEqual(chat.selection,[2,5]);}
+  assert.equal(chat.focused,true);assert.deepEqual(chat.selection,[2,5]);
   await page.screenshot({path:path.join(out,'02-after-detail.png')});
-  await page.locator('#side-task-body [data-goal-tools]').waitFor();
-  await page.locator('#side-task-body [data-goal-act="drawer"][data-kind="reports"]').click();
-  await page.locator('#goal-drawer .goal-report-card').first().click();
-  await page.locator('#goal-drawer iframe').waitFor();
-  await page.locator('#goal-drawer iframe').contentFrame().locator('body').waitFor({state:'attached'});
-  await page.locator('#goal-drawer iframe').contentFrame().locator('details summary').first().click();
-  await page.evaluate(()=>{window.keptFrame=document.querySelector('#goal-drawer iframe');window.reportLoads=0;keptFrame.addEventListener('load',()=>reportLoads++);});
-  await page.screenshot({path:path.join(out,'03-report-open.png')});
-  await page.route('**/api/documents?*',async route=>{await new Promise(resolve=>setTimeout(resolve,350));await route.continue();});
-  const refreshed=page.waitForResponse(response=>response.url().includes('/api/documents?'));
-  await page.locator('#goal-drawer [data-goal-act="refresh"]').click();
-  await refreshed;
-  await page.locator('#goal-drawer [data-goal-act="refresh"]:not([disabled])').waitFor();
-  await page.waitForTimeout(100);
-  const report=await page.evaluate(()=>({sameFrame:keptFrame===document.querySelector('#goal-drawer iframe'),loads:reportLoads}));
-  report.detailsOpen=await page.locator('#goal-drawer iframe').contentFrame().locator('details').first().evaluate(node=>node.open);
-  assert.equal(report.sameFrame,!before,'refreshing materials must retain the open report frame');
-  if(!before){assert.equal(report.loads,0,'the report must not reload');assert.equal(report.detailsOpen,true,'expanded report content must stay open');}
-  await page.screenshot({path:path.join(out,'04-after-refresh.png')});
   assert.deepEqual(errors,[]);
-  await fs.writeFile(path.join(out,'evidence.json'),JSON.stringify({chat,report,errors},null,2));
-  console.log(JSON.stringify({before,chat,report,errors,out}));
+  await fs.writeFile(path.join(out,'evidence.json'),JSON.stringify({chat,errors},null,2));
+  console.log(JSON.stringify({chat,errors,out}));
 }
 main().catch(error=>{console.error(error);process.exitCode=1;}).finally(async()=>{await browser?.close();fixture?.stdin.end('shutdown\n');});

@@ -910,7 +910,7 @@
     if (!active) return;
     active.state = state;
     CrewActivity.timestamp(state.now);
-    const session = state.leaders.concat(state.members).find(item => item.session_id === active.session.session_id);
+    const session = state.git_assistant?.session_id === active.session.session_id ? state.git_assistant : state.leaders.concat(state.members).find(item => item.session_id === active.session.session_id);
     if (session) {
       active.session = session;
       if (!active.readonly && session.last_seq >= active.cursor) setBusy(active, session.busy, session.last_seq);

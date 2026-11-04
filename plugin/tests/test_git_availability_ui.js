@@ -8,7 +8,7 @@ function harness(initial){
   const host={get innerHTML(){return markup;},set innerHTML(value){markup=value;},querySelector:selector=>selector==="#git-detail"?popup:null,querySelectorAll:()=>[],addEventListener:(name,fn)=>handlers.set(name,fn),removeEventListener:name=>handlers.delete(name)};
   const sandbox={document:{addEventListener:(name,fn)=>documentListeners.set(name,fn),removeEventListener:name=>documentListeners.delete(name)},window:{addEventListener:(name,fn)=>windowListeners.set(name,fn),removeEventListener:name=>windowListeners.delete(name)},setInterval:fn=>{timers.set(1,fn);return 1;},clearInterval:id=>timers.delete(id),clearTimeout(){}};
   vm.createContext(sandbox);vm.runInContext(fs.readFileSync(path.join(__dirname,"../crew/web/git.js"),"utf8")+"\nglobalThis.component=CrewGit;",sandbox);
-  const ui=sandbox.component;ui.mount(host,{project:"plain",catalog:()=>[{id:"codex",name:"Codex",available:true}],defaultRuntime:()=>"codex",api:async(route,body)=>{calls.push({route,body});return read?read():response;},toast(){},onChanged:async()=>{}});
+  const ui=sandbox.component;ui.mount(host,{project:"plain",state:{git_assistant:null},catalog:()=>[{id:"codex",name:"Codex",available:true}],defaultRuntime:()=>"codex",api:async(route,body)=>{calls.push({route,body});return read?read():response;},toast(){},onChanged:async()=>{}});
   function check(){const button={dataset:{gitAct:"check"},disabled:false};handlers.get("click")?.({target:{closest:selector=>selector==="[data-git-act]"?button:null}});}
   return{host,ui,calls,handlers,timers,documentListeners,windowListeners,check,set:value=>{response=value;read=null;},read:callback=>{read=callback;}};
 }

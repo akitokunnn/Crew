@@ -902,7 +902,6 @@ a.btn{color:inherit;text-decoration:none}
 .menu .sub-menu[hidden]{display:none}
 .menu small{display:block;margin-top:4px;color:var(--text-3);font-size:calc(11.5px * var(--fs));font-weight:400}
 .menu button:focus-visible{outline:2px solid var(--accent);outline-offset:-2px;background:var(--hover)}
-.menu .git-menu-link{color:var(--text-3)}
 .editor-handoff-note{margin:0;padding:4px 16px 10px;color:var(--text-3);font-size:calc(12px * var(--fs));line-height:1.6}.menu .editor-handoff-note{max-width:280px;padding:8px 10px 4px}
 
 /* Shared goal, member and runtime configuration dialogs. */

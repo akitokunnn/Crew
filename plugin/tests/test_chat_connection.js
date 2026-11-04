@@ -409,7 +409,7 @@ test("starting a queued goal retains the leader transcript, stream, draft and re
   const person={session_id:"leader",name:"测试负责人",runtime:"codex",model:null,effort:null,busy:false,last_seq:0,activity:null,where:"bg",priority:null,status:"idle",codex:[]};
   const goal={id:"goal",leader_session_id:"leader",title:"真实目标",request:"推进并交付",acceptance:[],status:"queued",current_round:1,requirement_version:1,version:1};
   const state={project:{name:"fixture"},leaders:[person],members:[],decisions:[],todos:[],goals:[goal],runtimes:[{id:"codex",name:"Codex",available:true,models:[],efforts:[]}]};
-  const main=host();nodes.set("main",main);nodes.set("goal-drawer",host());
+  const main=host();nodes.set("main",main);
   for(const id of ["chat-attention","attention-slot","attention-scope","attention-empty","native-approval-tray","decision-tray","side-task-section","side-attention-section","side-task-body","side-task-title","side-attention-count","right-panel"])nodes.set(id,host());
   Object.defineProperty(main,"innerHTML",{set(value){this.markup=value;for(const [,id]of value.matchAll(/id="([^"]+)"/g))nodes.set(id,host());},get(){return this.markup||"";}});
   h.sandbox.document.getElementById=id=>nodes.get(id)||null;

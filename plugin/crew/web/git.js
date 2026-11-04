@@ -5,6 +5,7 @@ const CrewGit = (() => {
   let host = null, options = null, data = null, generation = 0, loadedAt = null, cachedScroll = 0;
   let loading = false, operation = null, errorText = "";
   let selectedRuntime = "", runtimeExplicit = false;
+  let chatIdentity = null, repositoryOpen = false;
   const expandedConflicts = new Set();
   const ago = at => {
     const seconds = Math.max(0, (Date.now() - new Date(at)) / 1000);
@@ -55,7 +56,7 @@ const CrewGit = (() => {
     if (!runtimeExplicit) selectedRuntime = options.defaultRuntime?.() || "";
     const available = catalog.some(item => item.id === selectedRuntime && item.available);
     const runtimeError = available ? "" : catalog.some(item => item.available) ? "所选执行工具当前不可用，请重新选择。" : "没有可用的执行工具，请安装并登录 Codex 或 Claude Code 后刷新。";
-    return `<div class="page"><div class="git-enable-card"><span class="git-enable-icon">⑂</span><h1>启用 Git 管理</h1><button type="button" class="gits-link" data-git-act="settings">已有负责人？打开设置并绑定 leader ↗</button><p>Git 管理员会在独立 worktree 中统一推送和合并。选择日常合入的主干和发布用的稳定分支后，即可在这里查看请求、分支与 GitHub 状态。</p><form id="git-enable-form"><label for="git-base">主干分支 <span>日常合入</span></label><select id="git-base" name="base">${choices.branches.map(name => option(name, choices.base)).join("")}</select><label for="git-stable">稳定分支 <span>可留空</span></label><select id="git-stable" name="stable"><option value="" ${choices.stable === null ? "selected" : ""}>不设置稳定分支</option>${choices.branches.map(name => option(name, choices.stable)).join("")}</select><label for="git-runtime">管理员执行工具</label><select id="git-runtime" name="runtime"><option value="" disabled ${selectedRuntime === "" ? "selected" : ""}>请选择可用工具</option>${catalog.map(item => `<option value="${esc(item.id)}" ${item.id === selectedRuntime ? "selected" : ""} ${item.available ? "" : "disabled"}>${esc(item.name)}${item.available ? "" : " · 未就绪"}</option>`).join("")}</select><p id="git-runtime-status" class="git-error" role="status" ${runtimeError ? "" : "hidden"}>${esc(runtimeError)}</p><button type="submit" class="btn primary" data-git-act="enable" ${operation !== null || choices.branches.length === 0 || !available ? "disabled" : ""}>${operation === "enable" ? "正在启用…" : "启用"}</button></form>${choices.branches.length === 0 ? '<p class="git-error">仓库没有本地分支，无法启用。</p>' : ""}${errorText === "" ? "" : `<p class="git-error" role="alert">${esc(errorText)}</p>`}</div></div>`;
+    return `<div class="page"><div class="git-enable-card"><span class="git-enable-icon">⑂</span><h1>启用 Git 助手</h1><p>Git 助手会在独立 worktree 中统一推送和合并。选择日常合入的主干和发布用的稳定分支后，即可在这里查看请求、分支与 GitHub 状态。</p><form id="git-enable-form"><label for="git-base">主干分支 <span>日常合入</span></label><select id="git-base" name="base">${choices.branches.map(name => option(name, choices.base)).join("")}</select><label for="git-stable">稳定分支 <span>可留空</span></label><select id="git-stable" name="stable"><option value="" ${choices.stable === null ? "selected" : ""}>不设置稳定分支</option>${choices.branches.map(name => option(name, choices.stable)).join("")}</select><label for="git-runtime">助手执行工具</label><select id="git-runtime" name="runtime"><option value="" disabled ${selectedRuntime === "" ? "selected" : ""}>请选择可用工具</option>${catalog.map(item => `<option value="${esc(item.id)}" ${item.id === selectedRuntime ? "selected" : ""} ${item.available ? "" : "disabled"}>${esc(item.name)}${item.available ? "" : " · 未就绪"}</option>`).join("")}</select><p id="git-runtime-status" class="git-error" role="status" ${runtimeError ? "" : "hidden"}>${esc(runtimeError)}</p><button type="submit" class="btn primary" data-git-act="enable" ${operation !== null || choices.branches.length === 0 || !available ? "disabled" : ""}>${operation === "enable" ? "正在启用…" : "启用"}</button></form>${choices.branches.length === 0 ? '<p class="git-error">仓库没有本地分支，无法启用。</p>' : ""}${errorText === "" ? "" : `<p class="git-error" role="alert">${esc(errorText)}</p>`}</div></div>`;
   }
   function mergeRequests() {
     const labels = {open:"待处理", merging:"合并中", waiting_user:"等用户拍板", merged:"已合并", rejected:"已拒绝"};
@@ -65,7 +66,7 @@ const CrewGit = (() => {
       const pr = request.pr_number === null || data.github === null ? undefined : data.github.pull_requests.find(item => item.number === request.pr_number);
       return `<tr data-git-request="${request.id}"><td><span class="git-request-status ${request.status}">${labels[request.status]}</span></td><td><div class="git-request-description"><span>#${request.id}</span>${request.blocking ? '<b class="git-request-dependency">合并后继续</b>' : ""}${esc(request.description)}</div>${request.note === null ? "" : `<div class="git-request-note">${esc(request.note)}</div>`}</td><td><code>${esc(request.branch)}</code></td><td><span title="${esc(request.session_id)}">${esc(request.requester_name)}</span><div class="git-request-time">${esc(at(request.created_at))}</div></td><td>${request.pr_number === null ? '<span class="git-muted">—</span>' : pr === undefined ? `<span class="git-request-pr">#${request.pr_number}</span>` : prTag(pr)}</td></tr>`;
     }).join("");
-    return `<section class="git-requests" aria-labelledby="git-requests-title"><div class="git-requests-head"><h2 id="git-requests-title">合并请求 <span>${requests.filter(active).length} 件待处理</span></h2><span>完成后用 <code>crew git request</code> 交给管理员</span></div>${requests.length === 0 ? '<div class="git-requests-empty">还没有合并请求</div>' : `<div class="git-table-scroll"><table class="git-request-table"><thead><tr><th>状态</th><th>请求说明与结果</th><th>分支</th><th>提出者</th><th>PR</th></tr></thead><tbody>${rows}</tbody></table></div>`}</section>`;
+    return `<section class="git-requests" aria-labelledby="git-requests-title"><div class="git-requests-head"><h2 id="git-requests-title">合并请求 <span>${requests.filter(active).length} 件待处理</span></h2><span>完成后用 <code>crew git request</code> 交给 Git 助手</span></div>${requests.length === 0 ? '<div class="git-requests-empty">还没有合并请求</div>' : `<div class="git-table-scroll"><table class="git-request-table"><thead><tr><th>状态</th><th>请求说明与结果</th><th>分支</th><th>提出者</th><th>PR</th></tr></thead><tbody>${rows}</tbody></table></div>`}</section>`;
   }
   function originRelation(branch) {
     return branch.origin_relation ? `<div class="git-overview-meta">${esc(branch.origin_relation)}</div>` : "";
@@ -90,13 +91,34 @@ const CrewGit = (() => {
     const scroll = host.querySelector(".git-page")?.scrollTop ?? cachedScroll;
     if (data === null) { host.innerHTML = `<div id="git-view"><div class="head big git-head"><div class="title">Git</div>${settingsButton()}</div><div class="page"><div class="git-loading"><p class="note" role="${errorText ? "alert" : "status"}">${errorText === "" ? "正在读取仓库…" : esc(errorText)}</p>${errorText ? '<button type="button" class="btn" data-git-act="check">重新读取</button>' : ""}</div></div></div>`; return; }
     if (data.available === false) {
+      detachChat();
       host.innerHTML = `<div id="git-view"><div class="head big git-head"><div><div class="title">Git</div><div class="sub">${esc(data.repository)}${readStatus()}</div></div>${settingsButton()}</div><div class="page"><section class="git-enable-card"><span class="git-enable-icon" aria-hidden="true">⑂</span><h1>Git 功能暂不可用</h1><p role="status">${esc(data.reason)}</p><p>此工作区的聊天、任务和其他功能照常使用。Git 分支、提交与 worktree 功能需要 Git 仓库。</p><button type="button" class="btn" data-git-act="check" ${loading ? "disabled" : ""}>${loading ? "正在检查…" : "刷新检查"}</button>${errorText === "" ? "" : `<p class="git-error" role="alert">${esc(errorText)}</p>`}</section></div></div>`;
       return;
     }
-    const header = `<div class="head big git-head"><div><div class="title">${esc(data.repository)} <span class="git-heading-label">Git</span></div><div class="sub">${data.enabled ? "分支、提交与合并检查" : "项目 Git 管理"}${readStatus()}</div></div><div class="right">${refreshButton()}${settingsButton()}${data.enabled ? `${data.config.admin_session_id === null ? "" : `<button type="button" class="btn" data-act="leader" data-id="${esc(data.config.admin_session_id)}">和 git 管理员聊</button>`}<div class="git-fetch-meta">${data.last_fetch_at === null ? "尚未 fetch" : `上次 fetch · ${esc(at(data.last_fetch_at))}`}</div><button type="button" class="btn" data-git-act="fetch" title="执行 git fetch --prune origin" ${operation !== null || loading ? "disabled" : ""}>${operation === "fetch" ? "正在拉取…" : "拉取远端"}</button><details class="git-more"><summary aria-label="更多" title="更多">•••</summary><div><button type="button" data-git-act="settings">管理设置与停用…</button></div></details>` : ""}</div></div>`;
-    host.innerHTML = `<div id="git-view">${header}${data.enabled ? `<div class="page git-page"><div class="git-page-in">${overview()}${mergeRequests()}${errorText === "" ? "" : `<pre class="git-error" role="alert">${esc(errorText)}</pre>`}${data.github === null ? `<div class="git-github-unavailable"><strong>GitHub 不可用</strong><pre>${esc(data.github_reason)}</pre></div>` : ""}<section id="git-panel" aria-label="分支">${branchTable()}</section></div></div>` : enableCard()}</div>`;
+    const assistant = data.enabled ? options.state.git_assistant : null;
+    const header = `<div><div class="title">${esc(assistant === null ? data.repository : assistant.name)} <span class="git-heading-label">Git</span></div><div class="sub">${esc(data.repository)}${readStatus()}</div></div><div class="right">${refreshButton()}${settingsButton()}${assistant === null ? "" : `<div class="git-fetch-meta">${data.last_fetch_at === null ? "尚未 fetch" : `上次 fetch · ${esc(at(data.last_fetch_at))}`}</div><button type="button" class="btn" data-git-act="fetch" title="执行 git fetch --prune origin" ${operation !== null || loading ? "disabled" : ""}>${operation === "fetch" ? "正在拉取…" : "拉取远端"}</button>`}</div>`;
+    if (assistant === null) {
+      detachChat();
+      host.innerHTML = `<div id="git-view"><div class="head big git-head">${header}</div>${enableCard()}</div>`;
+      return;
+    }
+    const access = options.chatAccess(assistant), identity = `${assistant.session_id}:${access.readonly}:${access.readonlyReason ?? ""}`;
+    const summary = `<span class="git-assistant-branches"><b>${esc(assistant.base)}</b> → ${esc(assistant.stable === null ? "未设置稳定分支" : assistant.stable)}</span><span>进行中 ${assistant.requests.active}</span><span>等你 ${assistant.requests.waiting_user}</span><span>合并中 ${assistant.requests.merging}</span><span>排队 ${assistant.requests.queued}</span>`;
+    const repository = `${overview()}${mergeRequests()}${data.github === null ? `<div class="git-github-unavailable"><strong>GitHub 不可用</strong><pre>${esc(data.github_reason)}</pre></div>` : ""}<section id="git-panel" aria-label="分支">${branchTable()}</section>`;
+    if (chatIdentity !== identity) {
+      detachChat();
+      host.innerHTML = `<div id="git-view"><div class="head big git-head"></div><div class="git-assistant-summary" aria-label="Git 助手概况"></div><div class="git-operation-error"></div><div class="git-page"><details class="git-repository-details" ${repositoryOpen ? "open" : ""}><summary>分支与合并请求</summary><div class="git-page-in"></div></details></div><div id="git-chat-host" class="chat-host"></div></div>`;
+      host.querySelector(".git-repository-details").addEventListener("toggle", event => { repositoryOpen = event.target.open; });
+      CrewChat.mount({host:host.querySelector("#git-chat-host"), session:assistant, state:options.state, api:options.api, toast:options.toast, ...access,
+        beforeStop:() => options.beforeStop(assistant), onRouted:options.onRouted});
+      chatIdentity = identity;
+    } else CrewChat.update(options.state);
+    for (const [selector, markup] of [[".git-head",header],[".git-assistant-summary",summary],[".git-page-in",repository],[".git-operation-error",errorText === "" ? "" : `<pre class="git-error" role="alert">${esc(errorText)}</pre>`]]) {
+      const element = host.querySelector(selector);
+      if (element.innerHTML !== markup) element.innerHTML = markup;
+    }
     if (scroll !== undefined && host.querySelector(".git-page") !== null) host.querySelector(".git-page").scrollTop = scroll;
-    for (const detail of host.querySelectorAll(".git-conflicts")) detail.addEventListener("toggle", () => { if (detail.open) expandedConflicts.add(detail.dataset.gitConflicts); else expandedConflicts.delete(detail.dataset.gitConflicts); });
+    for (const detail of host.querySelectorAll(".git-conflicts")) detail.ontoggle = () => { if (detail.open) expandedConflicts.add(detail.dataset.gitConflicts); else expandedConflicts.delete(detail.dataset.gitConflicts); };
   }
   async function load() {
     if (loading) return;
@@ -120,7 +142,7 @@ const CrewGit = (() => {
       const result = await options.api(`/api/git/${name}`, {project:options.project, ...body});
       if (generation !== requestGeneration) return;
       if (name === "fetch" && !result.ok) { errorText = result.error; data.last_fetch_at = result.last_fetch_at; }
-      else { await load(); if (name === "enable" || name === "disable") await options.onChanged(); if (generation === requestGeneration) options.toast(name === "enable" ? "已启用 Git 管理" : name === "disable" ? "已停用 Git 管理" : result.output === "" ? "fetch 完成" : result.output); }
+      else { await load(); if (name === "enable" || name === "disable") await options.onChanged(); if (generation === requestGeneration) options.toast(name === "enable" ? "已启用 Git 助手" : name === "disable" ? "已停用 Git 助手" : result.output === "" ? "fetch 完成" : result.output); }
     } catch (error) { if (generation === requestGeneration) errorText = error.message; }
     finally { if (generation === requestGeneration) { operation = null; render(); } }
   }
@@ -150,14 +172,16 @@ const CrewGit = (() => {
   }
   function mount(element, settings) {
     const sameWorkspace = options !== null && options.project === settings.project && options.root === settings.root;
-    if (host === element && sameWorkspace) { options = settings; return; }
+    if (host === element && sameWorkspace) { options = settings; if (data !== null) render(); return; }
     unmount();
     if (!sameWorkspace) resetCache();
     host = element; options = settings;
     host.addEventListener("click", click); host.addEventListener("submit", submit); host.addEventListener("change", change);
     render(); if (data === null && !errorText) void load();
   }
+  function detachChat() { if (chatIdentity !== null) { CrewChat.unmount(); chatIdentity = null; } }
   function unmount() {
+    detachChat();
     cachedScroll = host?.querySelector(".git-page")?.scrollTop ?? cachedScroll;
     if (host !== null) { host.removeEventListener("click", click); host.removeEventListener("submit", submit); host.removeEventListener("change", change); }
     // A workspace owns this renderer. Leaving the Git page only detaches its UI;
@@ -165,6 +189,7 @@ const CrewGit = (() => {
     host = null;
   }
   function resetCache() {
+    detachChat(); repositoryOpen = false;
     generation++; data = null; loading = false; operation = null; errorText = ""; loadedAt = null; cachedScroll = 0;
     selectedRuntime = ""; runtimeExplicit = false; expandedConflicts.clear();
   }
@@ -172,8 +197,5 @@ const CrewGit = (() => {
     if (options === null || project !== options.project) return;
     resetCache(); if (host !== null) { render(); void load(); }
   }
-  return {mount, unmount, reload, get pendingPullRequests() {
-    if (data === null || !data.enabled || data.github === null) return null;
-    return data.github.pull_requests.filter(pr => pr.state === "OPEN").length;
-  }};
+  return {mount, unmount, reload};
 })();

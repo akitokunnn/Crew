@@ -86,12 +86,11 @@ def main():
                 'impact': '只影响本轮顺序。', 'options': [
                     {'label': '先验证主要流程', 'consequence': '先走主要流程，再看边界。'},
                     {'label': '先验证窄屏', 'consequence': '先走窄屏，再看主要流程。'}]})
-            board.join(case.conn, 'ui-git-admin', 'demo', 'Git 管理员', case.project, case.project, 'main', role='leader')
+            board.join(case.conn, 'ui-git-admin', 'demo', 'Git 助手', case.project, case.project, 'main', role='leader', group_name='git')
             case.git_repo()
             case.git('branch', '-M', 'main')
-            from crew import git_admin
-            git_admin.configure(case.conn, 'demo', {'revision': git_admin.revision(board.git_config(case.conn, 'demo')),
-                'admin_session_id': 'ui-git-admin', 'base': 'main', 'stable': '', 'branch_rules': ''})
+            board.enable_git(case.conn, 'demo', base='main', admin_session_id='ui-git-admin')
+
         navigation = []
         if os.environ.get('CREW_NAVIGATION_REVIEW_FIXTURE') == '1':
             other = case.root / 'navigation-project'

@@ -216,7 +216,7 @@
   }
   const priorityLeaders = () => state.leaders.filter(item => item.priority !== null).sort((a, b) => a.priority - b.priority);
   const priorityIds = () => priorityLeaders().map(item => item.session_id);
-  const sortableLeaders = item => (item.priority === null ? state.leaders.filter(leader => leader.priority === null) : priorityLeaders()).filter(leader => !leader.is_git_admin || item.is_git_admin);
+  const sortableLeaders = item => item.priority === null ? state.leaders.filter(leader => leader.priority === null) : priorityLeaders();
   const priorityAttrs = item => item.priority === null ? "" : `data-level="${item.priority}"`;
   const priorityBadge = (rank, corner = false) => rank === null ? "" : `<span class="priority-mark ${corner ? "corner" : ""}" data-level="${rank}" title="第 ${rank} 优先"><span class="rank">${rank}</span></span>`;
   function decisionPriority(item) {
@@ -237,7 +237,7 @@
     } finally { leaderOrderSaving = false; await loadState(true); }
   }
   async function saveNormalOrder(ids) {
-    const normal = ids.slice(), moving = new Set(ids), order = state.leaders.map(item => item.priority === null && moving.has(item.session_id) ? normal.shift() : item.session_id);
+    const normal = ids.slice(), order = state.leaders.map(item => item.priority === null ? normal.shift() : item.session_id);
     leaderOrderSaving = true;
     try { await api("/api/leaders/order", {project:state.project.name, order}); }
     finally { leaderOrderSaving = false; await loadState(true); }
@@ -247,7 +247,6 @@
     if (rank !== 0) ranks.splice(rank - 1, 0, id);
     return savePriority(ranks.slice(0, 3), before);
   }
-  const visibleLeaders = () => state.leaders.filter(item => !item.is_git_admin);
   function leaderAttention(item) {
     return item.pending + (nativeApprovals?.countForLeader(item.session_id) || 0) + state.goals.filter(goal => goal.leader_session_id === item.session_id && goal.status === "awaiting_acceptance").length;
   }
@@ -268,19 +267,19 @@
     $("presence-entry").setAttribute("aria-expanded",String(open));
   }
   function railQuota(label, limit) {
-    return `<span class="flyout-quota-row"><span><strong>${label}</strong><span>${quotaText(limit)}</span></span><progress max="100" ${limit?.used_percent == null ? "" : `value="${limit.used_percent}"`} aria-label="${label} 周额度已用"></progress><small>${limit === null ? "尚未采集额度" : `${date(limit.resets_at)} 重置`}</small></span>`;
+    return `<span class="flyout-quota-row"><span><strong>${label}</strong><span>${quotaText(limit)}</span></span>${limit?.used_percent == null ? "" : `<progress max="100" value="${limit.used_percent}" aria-label="${label} 周额度已用"></progress>`}<small>${limit === null ? "尚未采集额度" : `${date(limit.resets_at)} 重置`}</small></span>`;
   }
   function renderSidebar() {
     if (leaderDrag !== null || leaderOrderSaving) return;
     const themeIcon = {system:"auto",light:"sun",dark:"moon"}[theme], themeName = {system:"跟随系统",light:"日间",dark:"夜间"}[theme];
-    const leaders = visibleLeaders(), attention = leaders.reduce((sum,item) => sum + leaderAttention(item),0);
+    const leaders = state.leaders, attention = leaders.reduce((sum,item) => sum + leaderAttention(item),0);
     const channels = state.notification.channels;
     const connection = channels.some(channel => ["error","rejected"].includes(channel.state)) || state.notification.error !== null ? "error" : channels.every(channel => channel.state === "connected") ? "connected" : "disconnected";
     const failed = state.notification.away && (!channels.some(channel => channel.state === "connected") || state.notification.error !== null);
     const failure = failed ? JSON.stringify([state.notification.error,channels.map(channel => channel.state)]) : null;
     const flash = failure !== null && failure !== presenceFailure; presenceFailure = failure;
     const railButton = (act,label,icon,extra="",active=false) => `<button type="button" class="rail-button ${active ? "active" : ""}" data-act="${act}" title="${label}" aria-label="${label}" ${extra}>${ic(icon)}</button>`;
-    replace($("sidebar"), `<a class="rail-brand" href="/" title="${esc(projectDisplay(state.project))}" aria-label="${esc(projectDisplay(state.project))} · 工作区">${CrewTheme.logo()}</a><button type="button" id="leader-entry" class="rail-button leader-entry" data-act="leaders-toggle" title="Leader · ${attention} 件待你" aria-label="Leader，${attention} 件待你" aria-controls="leader-flyout" aria-expanded="${leadersOpen}"><span class="leader-stack">${leaders.slice(0,3).map(item => av(item.name,23)).join("") || ic("msg")}</span>${attention ? `<span class="rail-badge">${attention}</span>` : ""}</button><div class="rail-divider"></div>${railButton("view","主页","grid",'data-view="all"',view === "all")}${railButton("personal-notes","想法","pencil")}<a class="rail-button" href="/assistant.html" title="全局助手" aria-label="全局助手">${ic("msg")}</a><span class="rail-git">${railButton("view","Git","branch",'data-view="git"',view === "git")}${CrewGit.pendingPullRequests > 0 ? `<span class="rail-badge">${CrewGit.pendingPullRequests}</span>` : ""}</span><span class="rail-space"></span>${railButton("theme",`日间 / 夜间 · ${themeName}`,themeIcon)}<button type="button" id="presence-entry" class="rail-button presence-entry ${flash ? "presence-flash" : ""}" data-act="presence-toggle" title="${state.notification.away ? "我已离开" : "我在这里"}" aria-label="在场与消息连接" aria-controls="presence-popover" aria-expanded="${presenceOpen}"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 13h12v4H6zM7 17v5m10-5v5M5 7v6m14-6v6"/>${state.notification.away ? '<path d="M8 4h8v9"/>' : '<circle cx="12" cy="4" r="2"/><path d="M9 12V9a3 3 0 0 1 6 0v3"/>'}</svg><i class="presence-dot ${connection}"></i></button>${railButton("settings","设置","settings",'data-local-control')}
+    replace($("sidebar"), `<a class="rail-brand" href="/" title="${esc(projectDisplay(state.project))}" aria-label="${esc(projectDisplay(state.project))} · 工作区">${CrewTheme.logo()}</a><button type="button" id="leader-entry" class="rail-button leader-entry" data-act="leaders-toggle" title="Leader · ${attention} 件待你" aria-label="Leader，${attention} 件待你" aria-controls="leader-flyout" aria-expanded="${leadersOpen}"><span class="leader-stack">${leaders.slice(0,3).map(item => av(item.name,23)).join("") || ic("msg")}</span>${attention ? `<span class="rail-badge">${attention}</span>` : ""}</button><div class="rail-divider"></div>${railButton("view","主页","grid",'data-view="all"',view === "all")}${railButton("personal-notes","想法","pencil")}<a class="rail-button" href="/assistant.html" title="全局助手" aria-label="全局助手">${ic("msg")}</a><span class="rail-git">${railButton("view","Git","branch",'data-view="git"',view === "git")}${state.git_assistant?.attention > 0 ? `<span class="rail-badge">${state.git_assistant?.attention}</span>` : ""}</span><span class="rail-space"></span>${railButton("theme",`日间 / 夜间 · ${themeName}`,themeIcon)}<button type="button" id="presence-entry" class="rail-button presence-entry ${flash ? "presence-flash" : ""}" data-act="presence-toggle" title="${state.notification.away ? "我已离开" : "我在这里"}" aria-label="在场与消息连接" aria-controls="presence-popover" aria-expanded="${presenceOpen}"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 13h12v4H6zM7 17v5m10-5v5M5 7v6m14-6v6"/>${state.notification.away ? '<path d="M8 4h8v9"/>' : '<circle cx="12" cy="4" r="2"/><path d="M9 12V9a3 3 0 0 1 6 0v3"/>'}</svg><i class="presence-dot ${connection}"></i></button>${railButton("settings","设置","settings",'data-local-control')}
       <section id="leader-flyout" class="leader-flyout" data-open="${leadersOpen}" aria-label="Leader 列表" ${leadersOpen ? "" : "inert"}><button class="flyout-channel" data-act="view" data-view="channel">💬 交流区 <span>›</span>${state.channel.unread ? `<span class="b-unread">${state.channel.unread}</span>` : ""}</button><div class="flyout-leaders"><section data-leader-zone="priority">${leaders.filter(item => item.priority !== null).sort((a,b) => a.priority-b.priority).map(sidebarLeader).join("")}</section><section data-leader-zone="normal">${leaders.filter(item => item.priority === null).map((item,index) => sidebarLeader(item,index + leaders.filter(person => person.priority !== null).length)).join("")}</section><button class="flyout-new btn ghost" data-act="modal-leader">＋ 新对话</button></div><button class="flyout-quota" data-act="view" data-view="usage" aria-label="查看完整额度和用量">${railQuota("Claude",state.limits.claude.seven_day)}${railQuota("Codex",state.limits.codex)}</button></section>
       <section id="presence-popover" class="presence-popover" aria-label="在场与消息连接" ${presenceOpen ? "" : "hidden"}><button class="switch ${state.notification.manual_away ? "on" : ""}" data-act="away" role="switch" aria-checked="${state.notification.manual_away}"><span class="track"></span><span>我已离开</span></button>${notificationChannel()}${state.notification.error === null ? "" : `<p class="error-line">${esc(state.notification.error)}</p>`}<button class="text-link" data-local-control data-act="connection-settings">连接设置 ›</button></section>`);
   }
@@ -583,7 +582,7 @@
   }
   function renderAll() {
     if (allTab === "overview") {
-      replace($("main"), CrewWorkspaceHome.render({name:projectDisplay(state.project), leaders:state.leaders,
+      replace($("main"), CrewWorkspaceHome.render({name:projectDisplay(state.project), git_assistant:state.git_assistant, leaders:state.leaders,
         members:state.members, goals:state.goals || [], todos:state.todos || [], decisions:state.decisions},
         {taskCards:items => CrewGoals.cards(items, state.leaders), decisionCards:items => items.map(decisionCard).join(""), todoCards:items => items.map(todoCard).join(""),
           approvalCount:nativeApprovals?.count() || 0}));
@@ -685,7 +684,7 @@
     return modelMenu(item) + `<div class="menu-context">${item.where === "vscode" ? '<span class="context-hint">去 VS Code 里输入 /compact</span>' : `<button role="menuitem" data-act="compact" data-id="${esc(id)}">压缩上下文（${CrewContext.usage(item.context).percent === null ? CrewContext.usageText(item.context).replace("上下文", "当前") : `当前 ${CrewContext.usage(item.context).percent}%`}）</button>`}</div>`;
   }
   function menuButton(item, act, label, reason = "", danger = false, extra = "") {
-    if ((!localDesktop() && ["open-vscode", "session-handoff"].includes(act)) || (!localControls() && ["settings", "git-settings", "runtime-switch", "compact-department"].includes(act))) return "";
+    if ((!localDesktop() && ["open-vscode", "session-handoff"].includes(act)) || (!localControls() && ["settings", "runtime-switch", "compact-department"].includes(act))) return "";
     return `<button role="menuitem" data-act="${act}" data-id="${esc(item.session_id)}" ${reason ? `disabled title="${esc(reason)}"` : ""} ${danger ? 'class="danger"' : ""} ${extra}>${label}</button>`;
   }
   function submenu(item, label, html, danger = false) {
@@ -705,8 +704,7 @@
       const siblings = sortableLeaders(item), index = siblings.indexOf(item), members = membersOf(item.session_id), busy = members.filter(compactBusy).length;
       html += submenu(item, "设为优先", [1, 2, 3, 0].map(rank => `<button role="menuitemradio" aria-checked="${item.priority === (rank === 0 ? null : rank)}" data-act="set-priority" data-id="${esc(item.session_id)}" data-rank="${rank}"><span class="model-check">${item.priority === (rank === 0 ? null : rank) ? ic("check", "sm") : ""}</span>${rank === 0 ? "取消优先" : `第 ${rank} 优先`}</button>`).join(""));
       html += btn("leader-up", "上移", index === 0 ? "已经在最上面" : "") + btn("leader-down", "下移", index === siblings.length - 1 ? "已经在最下面" : "") + btn("group-tree", "看本组架构图") + btn("open-vscode", "转到 VS Code 里聊", editorHandoffReason(item) || (compactBusy(item) ? "会话正在工作，请等它空闲后再打开" : ""));
-      if (item.is_git_admin) html += `<button role="menuitem" class="git-menu-link" data-act="git-settings">项目 Git 设置</button>`;
-      else html += submenu(item, "结束这个 leader", members.length === 0 ? btn("close-group", "结束（组里没有下属）", "", true, 'data-with-members="false"') : btn("close-group", `<span>连下属一起归档<small>连 ${members.length} 个下属一起归档，其中 ${busy} 个在干活</small></span>`, "", true, 'data-with-members="true"') + btn("close-group", `<span>只结束 leader，下属退回待收编<small>${members.length} 个下属退回待收编，其中 ${busy} 个在干活</small></span>`, "", true, 'data-with-members="false"'), true);
+      html += submenu(item, "结束这个 leader", members.length === 0 ? btn("close-group", "结束（组里没有下属）", "", true, 'data-with-members="false"') : btn("close-group", `<span>连下属一起归档<small>连 ${members.length} 个下属一起归档，其中 ${busy} 个在干活</small></span>`, "", true, 'data-with-members="true"') + btn("close-group", `<span>只结束 leader，下属退回待收编<small>${members.length} 个下属退回待收编，其中 ${busy} 个在干活</small></span>`, "", true, 'data-with-members="false"'), true);
     } else {
       const groups = state.leaders.filter(group => group.session_id !== item.leader_session_id);
       html += groups.length ? submenu(item, "换组", groups.map(group => btn("move-to", esc(group.name), "", false, `data-group="${esc(group.name)}"`)).join("")) : btn("move-menu", "换组", "没有其他协作组");
@@ -796,7 +794,7 @@
     settingsReturn = document.activeElement; settingsOpen = true;
     if (mountedChat !== null) { CrewChat.unmount(); mountedChat = null; }
     if (mountedChannel) { CrewChannel.unmount(); mountedChannel = false; }
-    CrewGit.unmount(); goals?.closeDrawer(); if (cardId !== null) closeCard(); hideMenu();
+    CrewGit.unmount(); goals?.closeReport(); if (cardId !== null) closeCard(); hideMenu();
     $("app").inert = true; settingsUI?.open(category);
     $("settings-surface").querySelector(`[data-settings-category="${category}"]`)?.focus();
   }
@@ -825,7 +823,7 @@
     workspaceOpen = true;
     if (mountedChat !== null) { CrewChat.unmount(); mountedChat = null; }
     if (mountedChannel) { CrewChannel.unmount(); mountedChannel = false; }
-    CrewGit.unmount(); goals?.closeDrawer(); if (cardId !== null) closeCard(); hideMenu();
+    CrewGit.unmount(); goals?.closeReport(); if (cardId !== null) closeCard(); hideMenu();
     void workspaceSettings.open(project);
   }
   function openCompact(id) {
@@ -926,7 +924,7 @@
     const sameScope = next === "chat" && view === "chat" && leaderId === id && String(goalId) === String(nextGoal);
     if (!sameScope || readOnlyId !== readonly) { closeTaskTools(); closeAttention(); }
     if (view === "chat" && (next !== "chat" || leaderId !== id || readOnlyId !== readonly)) { CrewChat.unmount(); mountedChat = null; }
-    if (!sameScope) goals?.closeDrawer();
+    if (!sameScope) goals?.closeReport();
     view = next; leaderId = id; readOnlyId = readonly; goalId = next === "chat" ? nextGoal : null;
     render(); syncRoute();
     if (view === "usage" && usage === null && !usageLoading) loadUsage();
@@ -948,7 +946,7 @@
     $("app").classList.toggle("wide", view !== "chat" || leaderId === null); renderSidebar();
     if (view !== "channel" && mountedChannel) { CrewChannel.unmount(); mountedChannel = false; }
     if (view !== "git") CrewGit.unmount();
-    if (view === "chat") renderChat(); else { if (mountedChat !== null) { CrewChat.unmount(); mountedChat = null; } if (view === "all") renderAll(); if (view === "todos") renderTodos(); if (view === "channel") renderChannel(); if (view === "adopt") renderAdopt(); if (view === "usage") renderUsage(); if (view === "git") CrewGit.mount($("main"), {project, root:state.project.root, api, toast, catalog:runtimeList, defaultRuntime:() => taskRuntime("git"), onChanged:() => loadState(true), onSettings:() => gitSettings.open(project)}); }
+    if (view === "chat") renderChat(); else { if (mountedChat !== null) { CrewChat.unmount(); mountedChat = null; } if (view === "all") renderAll(); if (view === "todos") renderTodos(); if (view === "channel") renderChannel(); if (view === "adopt") renderAdopt(); if (view === "usage") renderUsage(); if (view === "git") CrewGit.mount($("main"), {project, root:state.project.root, state, api, toast, chatAccess, beforeStop:confirmIdentityStop, onRouted:async id => { await loadState(true); const target = state.goals.find(item => String(item.id) === String(id)); if (target) navigate("chat", target.leader_session_id, null, target.id); else toast("目标已不在当前工作区中，请刷新。"); }, catalog:runtimeList, defaultRuntime:() => taskRuntime("git"), onChanged:() => loadState(true), onSettings:() => gitSettings.open(project)}); }
     renderRight(); renderCard(); document.title = `(${state.decisions.filter(item => !item.held).length}) ${projectDisplay(state.project)} · Crew`;
   }
   function notifySounds(previous, fresh, requestedGeneration) {
@@ -1027,7 +1025,7 @@
     maintenance = window.CrewMaintenance.create({api,
       async onCleaned() { await loadState(true); if (view !== "all") navigate("all"); toast("已归档旧工作，可以重新开始"); }});
     gitSettings = CrewGitSettings.create({read:name => api(`/api/git/settings?project=${encodeURIComponent(name)}`), save:body => api("/api/git/settings", body),
-      onSaved:() => { CrewGit.reload(project); void loadState(true); }, onLeader:id => navigate("chat", id),
+      onSaved:async() => { await loadState(true); CrewGit.reload(project); }, toast,
       onDefaults:() => openSettings("ai"), onCreate:() => { navigate("git"); CrewGit.reload(project); }});
     workspaceSettings = window.CrewWorkspaceSettings.create({read:name => api(`/api/project/settings?project=${encodeURIComponent(name)}`),
       update:body => api("/api/project/update", body), remove:body => api("/api/project/remove", body),
@@ -1048,7 +1046,7 @@
     CrewChat.initFiles(api, toast);
     if (window.CrewNativeApprovals) nativeApprovals = window.CrewNativeApprovals.create({api,toast,refreshState:() => loadState(true),onChange() { if (!state || project === null) return; renderSidebar(); if (view === "chat") renderChat(); else if (view === "all") renderAll(); }});
     if (window.CrewDocuments && project !== null) documents = window.CrewDocuments.create({project, api, toast,
-      onChange:() => goals?.renderMaterials(),
+      onChange:() => { if (state && view === "chat") renderChat(); },
       onSource(item) {
         const owner = leader(item.leader_session_id) || leader(item.session_id) || leader(member(item.session_id)?.leader_session_id);
         if (owner) navigate("chat", owner.session_id, member(item.session_id)?.session_id || null, item.goal_id ?? goalId); else toast("来源 leader 已不在当前列表中。");
@@ -1061,7 +1059,7 @@
       refreshCatalog:refreshRuntimes, prepare:body => api("/api/session/runtime/prepare",body),
       switchRuntime:body => api("/api/session/runtime/switch",body), onChanged:() => { goals?.invalidate(); return loadState(true); }, toast});
     if (window.CrewGoals && project !== null) goals = window.CrewGoals.create({project, api, toast, state:() => state,
-      refreshState:() => loadState(true), onChange:() => { if (state && view === "chat") renderChat(); }, onReturn:returnToTaskPanel, onReader:active => { reportReaderOpen = active; $("chat-attention").inert = active || $("chat-attention").hidden; $("side-task-section").inert = active || !taskVisible; },
+      refreshState:() => loadState(true), onChange:() => { if (state && view === "chat") renderChat(); else if (state && view === "all") renderAll(); }, onReturn:returnToTaskPanel, onReader:active => { reportReaderOpen = active; $("chat-attention").inert = active || $("chat-attention").hidden; $("side-task-section").inert = active || !taskVisible; },
       renderDocuments:(items,id) => documents?.taskCards(items,id),
       onNavigate:id => { const item = (state.goals || []).find(item => String(item.id) === String(id)); if (item) { if (cardId !== null) closeCard(); navigate("chat", item.leader_session_id, null, item.id); } else toast("目标已不在当前工作区中，请刷新。"); }});
     applyTheme(); applyFontScale(); renderSettings();
@@ -1091,7 +1089,6 @@
       if (act === "connection-settings") { openSettings("connections"); return; }
       if (act === "settings") { openSettings(button.dataset.category || "ai", button.dataset.promptSession || null); return; }
       if (act === "personal-notes") { window.CrewPersonalNotes.create({api,project,projects:state.projects,onOpen:(name,sid) => { if(name===project)navigate("chat",sid);else location.href=`/?project=${encodeURIComponent(name)}#leader=${encodeURIComponent(sid)}`; }}).open(); return; }
-      if (act === "git-settings") { hideMenu(); gitSettings.open(project); return; }
       if (act === "workspace-settings") { openWorkspaceSettings(); return; }
       if (act === "confirm-stop-person") { const resolve = stopConfirmation; stopConfirmation = null; closeBackdrop(); resolve?.(true); return; }
       if (act === "submenu") { openSubmenu(button); return; }

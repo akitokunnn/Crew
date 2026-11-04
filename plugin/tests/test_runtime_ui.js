@@ -32,7 +32,7 @@ function harness(state = fixture(), fetcher = () => { throw new Error("Unexpecte
   const escape = value => String(value).replace(/[&<>"']/g, c => ({"&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"})[c]);
   const sandbox = {window:{}, document:{visibilityState:"visible",hasFocus:()=>true,activeElement:null, getElementById:id => nodes.get(id) || null, addEventListener:() => {}},
     location:{search:"?project=fixture", origin:"http://fixture.local", hash:""}, URLSearchParams, URL, fetch:fetcher, console,
-    CrewChat:{renderInline:escape, renderMarkdown:text => `<p>${escape(text)}</p>`}};
+    CrewTheme:{logo:()=>""}, CrewChat:{renderInline:escape, renderMarkdown:text => `<p>${escape(text)}</p>`}};
   vm.createContext(sandbox);
   const contextSource=fs.readFileSync(path.join(__dirname, "../crew/web/chat.js"), "utf8");
   vm.runInContext(contextSource.slice(0, contextSource.indexOf("})();")+5), sandbox);
@@ -45,7 +45,7 @@ function harness(state = fixture(), fetcher = () => { throw new Error("Unexpecte
   assert(source.endsWith(end + "\n") || source.endsWith(end));
   vm.runInContext(source.replace(end, `  window.ui = {runtimeList, runtimeInfo, defaultRuntime, modelEfforts, modelMenu, optionChange,
     optionsLabel, leaderPayload, renderLeaderRuntime, selectLeaderOption, refreshRuntimes, editorHandoffReason, sessionMenu, chatAccess,
-    saveNormalOrder, sortableLeaders, contextRing, contextControls, sidebarLeader, memberNode, workingRow, compactContext, compactions,
+    saveNormalOrder, sortableLeaders, railQuota, renderSidebar, contextRing, contextControls, sidebarLeader, memberNode, workingRow, compactContext, compactions,
     compactFailures, setGoal(client, id) {goals=client;goalId=id;},
     openTodos, todosOf, pendingOf, todoCard, todoTray, todoExpanded, todoActions,
     todoResolvePayload, resolveTodo, renderTodos, replace, action, changeSession,
@@ -67,13 +67,6 @@ test("archive and remove conflicts toast the exact backend Chinese reason",async
   }
 });
 
-test("reordering visible leaders preserves the hidden Git administrator exactly once",async()=>{
-  const state=fixture(),posts=[];state.project={name:"fixture"};state.leaders=[
-    {session_id:"a",name:"A",priority:null},{session_id:"git",name:"Git",priority:null,is_git_admin:true},{session_id:"b",name:"B",priority:null}];
-  const {ui}=harness(state);ui.services({api:async(path,data)=>posts.push({path,data}),loadState:async()=>{}});
-  assert.deepEqual(plain(ui.sortableLeaders(state.leaders[0]).map(item=>item.session_id)),["a","b"]);
-  await ui.saveNormalOrder(["b","a"]);assert.deepEqual(plain(posts[0]),{path:"/api/leaders/order",data:{project:"fixture",order:["b","git","a"]}});
-});
 
 test("new leader auto selects a sole runtime and asks for a choice when both are installed", () => {
   for(const installed of [["codex"],["claude"],["claude","codex"],[]]){
@@ -496,3 +489,20 @@ function taskHarness(runtime="codex") {
   ui.setGoal(client,"goal-1");
   return {state,ui,executions,refreshes};
 }
+
+test("leader order uses all backend leaders and keeps priority positions",async()=>{
+  const state=fixture(),posts=[];state.project={name:"fixture"};state.leaders=[{session_id:"a",priority:null},{session_id:"p",priority:1},{session_id:"b",priority:null}];
+  const {ui}=harness(state);ui.services({api:async(path,data)=>posts.push({path,data}),loadState:async()=>{}});
+  assert.deepEqual(plain(ui.sortableLeaders(state.leaders[0]).map(item=>item.session_id)),["a","b"]);
+  await ui.saveNormalOrder(["b","a"]);assert.deepEqual(plain(posts[0].data.order),["b","p","a"]);
+});
+test("uncollected quota has only text and a collected zero has an empty determinate bar",()=>{
+  const {ui}=harness();assert.doesNotMatch(ui.railQuota("Codex",null),/<progress/);assert.match(ui.railQuota("Codex",null),/未采集/);
+  const collected=ui.railQuota("Codex",{used_percent:0,resets_at:"2026-11-06T00:00:00Z"});assert.match(collected,/<progress max="100" value="0"/);
+});
+test("Git rail attention comes from state before any Git snapshot is read",()=>{
+  const state=fixture();Object.assign(state,{project:{name:"fixture"},leaders:[],git_assistant:{attention:7,pending:99},channel:{unread:0},notification:{channels:[],error:null,away:false},limits:{claude:{seven_day:null},codex:null}});
+  const {ui,nodes}=harness(state);nodes.set("sidebar",{innerHTML:"",dataset:{},contains:()=>false,querySelectorAll:()=>[]});ui.services({});
+  ui.renderSidebar();assert.match(nodes.get("sidebar").innerHTML,/class="rail-git"[\s\S]*?class="rail-badge">7<\/span>/);assert.doesNotMatch(nodes.get("sidebar").innerHTML,/>99<\/span>/);
+  state.git_assistant=null;ui.renderSidebar();assert.doesNotMatch(nodes.get("sidebar").innerHTML,/class="rail-badge"/);
+});
