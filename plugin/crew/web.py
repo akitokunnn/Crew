@@ -603,6 +603,7 @@ class Service:
         self.scan_usage(live_dispatch=True)
         with self.agents_lock:
             agents, error = self.agents, self.agents_error
+        agents = session_presence.external_agents(self.chat, agents)
         general_present = board.live_sessions(agents)
         with closing(store.connect(self.home)) as conn:
             result = {'project': None, 'projects': [{key: p[key] for key in ('name', 'display_name', 'theme')} for p in board.projects(conn)],
@@ -761,6 +762,7 @@ class Service:
 
     def managed_agents(self, conn, agents):
         scoped_native = self.chat.goal_controller.native_ids(conn)
+        agents = session_presence.external_agents(self.chat, agents)
         result = {a['sessionId']: dict(a) for a in agents if a['sessionId'] not in scoped_native}
         with self.chat.lock:
             for sid, current in self.chat.processes.items():
