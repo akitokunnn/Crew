@@ -15,7 +15,7 @@ def state(home, *, history, journal, activity, applied, context):
         assistant = personal.ensure_assistant(conn, home)
         snapshot = personal.overview(conn)
         ai = settings.get(conn)
-        sounds = event_sounds.snapshot(conn, None, history, journal)
+        sounds = event_sounds.snapshot(conn, home, None, history, journal)
     sid = assistant['session_id']
     chat = history(sid)
     events = chat['events']

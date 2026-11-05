@@ -358,7 +358,7 @@ def save_settings(home, backend_root, value):
         if 'execution' in value:
             settings.save_execution(conn, value['execution'])
         if 'sounds' in value:
-            event_sounds.save(conn, value['sounds'])
+            event_sounds.save(conn, value['sounds'], home)
     return settings_snapshot(home, backend_root)
 
 
