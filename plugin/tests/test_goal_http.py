@@ -1384,8 +1384,12 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         else:
             self.finish_turn(reply['execution_id'], self.processes[-1])
         manager.goal_controller.sync(self.conn, goal['id'])
-        goals.save_report(self.conn, goal['id'], {**self.report(), 'outcome': 'completed'})
-        goals.transition(self.conn, goal['id'], 'completed')
+        # The follow-up delivery is completed the only way a task can be: the user accepts it.
+        delivered = goals.save_report(self.conn, goal['id'], {**self.report(), 'outcome': 'awaiting_acceptance'})
+        goals.request_finish(self.conn, goal['id'], delivered['id'])
+        self.assertTrue(goals.finalize_finish(self.conn, goal['id'])['finalized'])
+        goals.review_acceptance(self.conn, goal['id'], True, expected_version=goals.get(self.conn, goal['id'])['version'])
+        self.assertEqual(goals.get(self.conn, goal['id'])['status'], 'completed')
         code, retry, _ = self.send_goal(goal, note, message_id='human-report-followup')
         self.assertEqual(code, 200, retry)
         self.assertTrue(retry['duplicate'])

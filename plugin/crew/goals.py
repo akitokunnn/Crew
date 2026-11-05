@@ -336,7 +336,10 @@ def transition(conn, goal_id, status, *, actor=board.HUMAN, reason=None, expecte
                     and goal['status'] == 'awaiting_acceptance' and actor == board.HUMAN
                     and conn.execute('SELECT 1 FROM goal_acceptances WHERE goal_id=? AND round=? AND report_id=? AND accepted=1 AND actor=?',
                         (goal_id, goal['current_round'], report['id'], board.HUMAN)).fetchone() is not None)
-        if (report is None or report['outcome'] != status) and not reviewed:
+        # Only the user's own acceptance of an awaiting_acceptance report completes a task; no report or AI path can.
+        if status == 'completed' and not reviewed:
+            raise board.Conflict('任务只能由用户本人看报告并点「通过」后完成')
+        if status == 'failed' and (report is None or report['outcome'] != status):
             raise board.Conflict('当前轮次尚无匹配结论的完整 HTML 交付报告')
     if status in TERMINAL and conn.execute("SELECT 1 FROM goal_executions WHERE goal_id=? AND round=? AND status IN ('running','pausing')",
                                           (goal_id, goal['current_round'])).fetchone():
@@ -853,8 +856,8 @@ def get_finish(conn, goal_id):
 @atomic
 def request_finish(conn, goal_id, report_id, *, actor=board.HUMAN, execution_id=None, now=None):
     goal, report = _row(conn, goal_id), get_report(conn, report_id)
-    if actor != board.HUMAN and report['outcome'] == 'completed':
-        raise board.BoardError('最终交付需要用户本人看报告并实测验收，outcome 用 awaiting_acceptance')
+    if report['outcome'] == 'completed':
+        raise board.BoardError('最终交付需要用户本人看报告并实测验收，outcome 用 awaiting_acceptance；只有用户点「通过」才会完成任务')
     if report['outcome'] == 'progress':
         raise board.BoardError('阶段报告不会结束任务，请完成验收后另行提交最终报告')
     _actor(conn, goal, actor)

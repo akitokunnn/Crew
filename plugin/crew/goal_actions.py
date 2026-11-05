@@ -28,7 +28,7 @@ def report_template(conn, goal_id):
             'examples': [{'kind': 'actual', 'input': '', 'expected': '', 'actual': '', 'conclusion': ''}],
             'document_html': '', 'artifacts': [], 'tradeoffs': [], 'follow_up': '',
             'investment': {'elapsed_seconds': None, 'usage': None, 'roles': [{'role': 'leader', 'contribution': ''}]},
-            '_help': {'outcome': '最终交付用 awaiting_acceptance；用户本人看报告并实测验收后通过；failed|cancelled 如实结束，progress 发布阶段成果',
+            '_help': {'outcome': '最终交付用 awaiting_acceptance；只有用户本人看报告、实测后点「通过」任务才完成，AI 提交 completed 会被拒绝；failed|cancelled 如实结束，progress 发布阶段成果',
                       'user_test': '对象数组 [{step,expected}]；awaiting_acceptance 时至少一项，步骤与预期均为非空文本',
                       'user_todos': '可选对象数组 [{title,detail}]；系统收尾成功时自动创建归属 leader 的人工待办，不挂在目标页',
                       'user_decisions': '可选对象数组 [{question,options:[],recommendation:null,why}]；系统收尾成功时自动创建归属 leader 的非阻塞待拍板',

@@ -18,16 +18,30 @@ class LeaderClosureTests(GoalFixture):
         self.assertTrue(result['finalized'])
         return result['goal'], report
 
-    def test_ai_completed_finish_is_rejected_and_human_finish_still_works(self):
+    def test_no_finish_or_transition_completes_a_task_without_the_users_acceptance(self):
         goal = self.goal()
         goals.transition(self.conn, goal['id'], 'running')
         report = goals.save_report(self.conn, goal['id'], self.report())
-        for actor in ('chief-id', 'member-id'):
+        # The CLI falls back to the user identity when no session is set, so even "user" cannot finish as completed.
+        for actor in ('chief-id', 'member-id', board.HUMAN):
             with self.subTest(actor=actor), self.assertRaisesRegex(board.BoardError, 'outcome 用 awaiting_acceptance'):
                 goals.request_finish(self.conn, goal['id'], report['id'], actor=actor)
+        for actor in ('chief-id', board.HUMAN):
+            with self.subTest(actor=actor), self.assertRaisesRegex(board.Conflict, '用户本人'):
+                goals.transition(self.conn, goal['id'], 'completed', actor=actor)
         self.assertIsNone(goals.get_finish(self.conn, goal['id']))
-        goals.request_finish(self.conn, goal['id'], report['id'])
-        self.assertEqual(goals.finalize_finish(self.conn, goal['id'])['goal']['status'], 'completed')
+        waiting, _ = self.ready()
+        for actor in ('chief-id', board.HUMAN):
+            with self.subTest(actor=actor), self.assertRaisesRegex(board.Conflict, '用户本人'):
+                goals.transition(self.conn, waiting['id'], 'completed', actor=actor)
+        with self.assertRaisesRegex(board.BoardError, '用户本人'):
+            goals.review_acceptance(self.conn, waiting['id'], True, actor='chief-id', expected_version=waiting['version'])
+        # AI goal tools expose no acceptance action at all.
+        with self.assertRaisesRegex(board.BoardError, 'action'):
+            goal_actions.dispatch(self.home, 'chief-id', None, 'accept', {'goal_id': waiting['id']})
+        self.assertEqual(goals.get(self.conn, waiting['id'])['status'], 'awaiting_acceptance')
+        done = goals.review_acceptance(self.conn, waiting['id'], True, expected_version=waiting['version'])
+        self.assertEqual(done['status'], 'completed')
 
     def test_user_test_and_todos_require_nonempty_text_objects(self):
         goal = self.goal()
