@@ -5,7 +5,7 @@ const CrewGit = (() => {
   let host = null, options = null, data = null, generation = 0, loadedAt = null, cachedScroll = 0;
   let loading = false, operation = null, errorText = "";
   let selectedRuntime = "", runtimeExplicit = false;
-  let chatIdentity = null, repositoryOpen = false;
+  let chatIdentity = null;
   const expandedConflicts = new Set();
   const ago = at => {
     const seconds = Math.max(0, (Date.now() - new Date(at)) / 1000);
@@ -89,31 +89,33 @@ const CrewGit = (() => {
   function render() {
     if (host === null) return;
     const scroll = host.querySelector(".git-page")?.scrollTop ?? cachedScroll;
-    if (data === null) { host.innerHTML = `<div id="git-view"><div class="head big git-head"><div class="title">Git</div>${settingsButton()}</div><div class="page"><div class="git-loading"><p class="note" role="${errorText ? "alert" : "status"}">${errorText === "" ? "正在读取仓库…" : esc(errorText)}</p>${errorText ? '<button type="button" class="btn" data-git-act="check">重新读取</button>' : ""}</div></div></div>`; return; }
-    if (data.available === false) {
+    const assistant = options.state.git_assistant;
+    // The assistant conversation comes from state and never waits for the repository scan.
+    if (assistant === null || data?.available === false) {
       detachChat();
-      host.innerHTML = `<div id="git-view"><div class="head big git-head"><div><div class="title">Git</div><div class="sub">${esc(data.repository)}${readStatus()}</div></div>${settingsButton()}</div><div class="page"><section class="git-enable-card"><span class="git-enable-icon" aria-hidden="true">⑂</span><h1>Git 功能暂不可用</h1><p role="status">${esc(data.reason)}</p><p>此工作区的聊天、任务和其他功能照常使用。Git 分支、提交与 worktree 功能需要 Git 仓库。</p><button type="button" class="btn" data-git-act="check" ${loading ? "disabled" : ""}>${loading ? "正在检查…" : "刷新检查"}</button>${errorText === "" ? "" : `<p class="git-error" role="alert">${esc(errorText)}</p>`}</section></div></div>`;
+      if (data === null) { host.innerHTML = `<div id="git-view"><div class="head big git-head"><div class="title">Git</div>${settingsButton()}</div><div class="page"><div class="git-loading"><p class="note" role="${errorText ? "alert" : "status"}">${errorText === "" ? "正在读取仓库…" : esc(errorText)}</p>${errorText ? '<button type="button" class="btn" data-git-act="check">重新读取</button>' : ""}</div></div></div>`; return; }
+      if (data.available === false) {
+        host.innerHTML = `<div id="git-view"><div class="head big git-head"><div><div class="title">Git</div><div class="sub">${esc(data.repository)}${readStatus()}</div></div>${settingsButton()}</div><div class="page"><section class="git-enable-card"><span class="git-enable-icon" aria-hidden="true">⑂</span><h1>Git 功能暂不可用</h1><p role="status">${esc(data.reason)}</p><p>此工作区的聊天、任务和其他功能照常使用。Git 分支、提交与 worktree 功能需要 Git 仓库。</p><button type="button" class="btn" data-git-act="check" ${loading ? "disabled" : ""}>${loading ? "正在检查…" : "刷新检查"}</button>${errorText === "" ? "" : `<p class="git-error" role="alert">${esc(errorText)}</p>`}</section></div></div>`;
+        return;
+      }
+      host.innerHTML = `<div id="git-view"><div class="head big git-head"><div><div class="title">${esc(data.repository)} <span class="git-heading-label">Git</span></div><div class="sub">${esc(data.repository)}${readStatus()}</div></div><div class="right">${refreshButton()}${settingsButton()}</div></div>${enableCard()}</div>`;
       return;
     }
-    const assistant = data.enabled ? options.state.git_assistant : null;
-    const header = `<div><div class="title">${esc(assistant === null ? data.repository : assistant.name)} <span class="git-heading-label">Git</span></div><div class="sub">${esc(data.repository)}${readStatus()}</div></div><div class="right">${refreshButton()}${settingsButton()}${assistant === null ? "" : `<div class="git-fetch-meta">${data.last_fetch_at === null ? "尚未 fetch" : `上次 fetch · ${esc(at(data.last_fetch_at))}`}</div><button type="button" class="btn" data-git-act="fetch" title="执行 git fetch --prune origin" ${operation !== null || loading ? "disabled" : ""}>${operation === "fetch" ? "正在拉取…" : "拉取远端"}</button>`}</div>`;
-    if (assistant === null) {
-      detachChat();
-      host.innerHTML = `<div id="git-view"><div class="head big git-head">${header}</div>${enableCard()}</div>`;
-      return;
-    }
+    const fetchMeta = data === null ? "" : `<div class="git-fetch-meta">${data.last_fetch_at === null ? "尚未 fetch" : `上次 fetch · ${esc(at(data.last_fetch_at))}`}</div><button type="button" class="btn" data-git-act="fetch" title="执行 git fetch --prune origin" ${operation !== null || loading ? "disabled" : ""}>${operation === "fetch" ? "正在拉取…" : "拉取远端"}</button>`;
+    const header = `<div><div class="title">${esc(assistant.name)} <span class="git-heading-label">Git</span></div><div class="sub">${data === null ? "" : esc(data.repository)}${readStatus()}</div></div><div class="right">${refreshButton()}${settingsButton()}${fetchMeta}</div>`;
     const access = options.chatAccess(assistant), identity = `${assistant.session_id}:${access.readonly}:${access.readonlyReason ?? ""}`;
     const summary = `<span class="git-assistant-branches"><b>${esc(assistant.base)}</b> → ${esc(assistant.stable === null ? "未设置稳定分支" : assistant.stable)}</span><span>进行中 ${assistant.requests.active}</span><span>等你 ${assistant.requests.waiting_user}</span><span>合并中 ${assistant.requests.merging}</span><span>排队 ${assistant.requests.queued}</span>`;
-    const repository = `${overview()}${mergeRequests()}${data.github === null ? `<div class="git-github-unavailable"><strong>GitHub 不可用</strong><pre>${esc(data.github_reason)}</pre></div>` : ""}<section id="git-panel" aria-label="分支">${branchTable()}</section>`;
+    const repository = data === null
+      ? `<div class="git-loading"><p class="note" role="${errorText ? "alert" : "status"}">${errorText === "" ? "正在读取仓库…" : esc(errorText)}</p>${errorText ? '<button type="button" class="btn" data-git-act="check">重新读取</button>' : ""}</div>`
+      : `${overview()}${mergeRequests()}${data.github === null ? `<div class="git-github-unavailable"><strong>GitHub 不可用</strong><pre>${esc(data.github_reason)}</pre></div>` : ""}<section id="git-panel" aria-label="分支">${branchTable()}</section>`;
     if (chatIdentity !== identity) {
       detachChat();
-      host.innerHTML = `<div id="git-view"><div class="head big git-head"></div><div class="git-assistant-summary" aria-label="Git 助手概况"></div><div class="git-operation-error"></div><div class="git-page"><details class="git-repository-details" ${repositoryOpen ? "open" : ""}><summary>分支与合并请求</summary><div class="git-page-in"></div></details></div><div id="git-chat-host" class="chat-host"></div></div>`;
-      host.querySelector(".git-repository-details").addEventListener("toggle", event => { repositoryOpen = event.target.open; });
+      host.innerHTML = `<div id="git-view"><div class="head big git-head"></div><div class="git-assistant-summary" aria-label="Git 助手概况"></div><div class="git-operation-error"></div><div class="git-body"><div id="git-chat-host" class="chat-host"></div><aside class="git-page" aria-label="仓库"><div class="git-page-in"></div></aside></div></div>`;
       CrewChat.mount({host:host.querySelector("#git-chat-host"), session:assistant, state:options.state, api:options.api, toast:options.toast, ...access,
         beforeStop:() => options.beforeStop(assistant), onRouted:options.onRouted});
       chatIdentity = identity;
     } else CrewChat.update(options.state);
-    for (const [selector, markup] of [[".git-head",header],[".git-assistant-summary",summary],[".git-page-in",repository],[".git-operation-error",errorText === "" ? "" : `<pre class="git-error" role="alert">${esc(errorText)}</pre>`]]) {
+    for (const [selector, markup] of [[".git-head",header],[".git-assistant-summary",summary],[".git-page-in",repository],[".git-operation-error",errorText === "" || data === null ? "" : `<pre class="git-error" role="alert">${esc(errorText)}</pre>`]]) {
       const element = host.querySelector(selector);
       if (element.innerHTML !== markup) element.innerHTML = markup;
     }
@@ -189,7 +191,7 @@ const CrewGit = (() => {
     host = null;
   }
   function resetCache() {
-    detachChat(); repositoryOpen = false;
+    detachChat();
     generation++; data = null; loading = false; operation = null; errorText = ""; loadedAt = null; cachedScroll = 0;
     selectedRuntime = ""; runtimeExplicit = false; expandedConflicts.clear();
   }
