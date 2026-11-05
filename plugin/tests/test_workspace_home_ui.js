@@ -9,6 +9,13 @@ const ui = window.CrewWorkspaceHome;
 const data = patch => ({name:"健身打卡",git_assistant:null,leaders:[],members:[],goals:[],todos:[],decisions:[],...patch});
 const render = snapshot => ui.render(snapshot, {settingsIcon:"<svg></svg>",decisionCards:items=>items.map(item=>`decision:${item.id}`).join(";"),taskCards: items => items.map(item=>`task:${item.id}`).join(";"),todoCards:items=>items.map(item=>`todo:${item.id}`).join(";")});
 
+test("home badge shares review, decision and TODO entries and ignores held or resolved work",()=>{
+  const snapshot=data({goals:[{id:"review",status:"awaiting_acceptance",acceptance_brief:{}},{id:"empty",status:"awaiting_acceptance",acceptance_brief:null},{id:"done",status:"completed"}],decisions:[{held:false},{held:true}],todos:[{status:"open"},{status:"done"},{status:"cancelled"}]});
+  assert.equal(ui.attentionCount(snapshot),3);
+  snapshot.goals[0].status="completed";snapshot.decisions[0].held=true;snapshot.todos[0].status="done";
+  assert.equal(ui.attentionCount(snapshot),0);
+});
+
 test("overview keeps task states and human TODO separate, without inferring work from processes", () => {
   const input = data({leaders:[{session_id:"L",status:"idle",running:true},{session_id:"discussion",status:"working"}],
     members:[{session_id:"M",status:"working",codex:[{status:"running"},{source:"skill_dispatch",status:"running"}]}],

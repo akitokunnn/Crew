@@ -23,6 +23,10 @@
       deliveries: goals.filter(goal => goal.report_available && goal.status !== "awaiting_acceptance"),
     };
   }
+  const attentionCount = data => {
+    const model = project(data);
+    return model.reviews.length + model.decisions.length + model.todos.length;
+  };
 
   // Acceptance is the user's own step: put the report gist and the hands-on
   // check list first, then open the full report or the task to decide.
@@ -37,7 +41,7 @@
 
   function render(data, {taskCards, decisionCards, todoCards, approvalCount = 0, settingsIcon}) {
     const model = project(data);
-    const attention = model.decisions.length + model.todos.length + model.reviews.length + approvalCount;
+    const attention = attentionCount(data) + approvalCount;
     const summary = model.activeCount ? `${model.activeCount} 个会话 / 派工执行中` : "从一个想法开始，把它一步步做完";
     const tasks = model.openGoals.length ? taskCards(model.openGoals) : "";
 
@@ -54,5 +58,5 @@
     const key = String(id);
     if (supplementsOpen.has(key)) supplementsOpen.delete(key); else supplementsOpen.add(key);
   }
-  window.CrewWorkspaceHome = {project, render, toggleSupplements};
+  window.CrewWorkspaceHome = {project, render, toggleSupplements, attentionCount};
 })();

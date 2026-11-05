@@ -39,6 +39,16 @@
   }
   const listIcon = () => '<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="3"/><path d="m7 8 1 1 2-2m-3 6 1 1 2-2m-3 6 1 1 2-2M13 8h4m-4 5h4m-4 5h4"/></svg>';
   const modeIcon = mode => mode === "autonomous" ? '<path d="m13 3-8 10h6l-1 8 9-11h-6z"/>' : '<path d="M8 12V6a2 2 0 0 1 4 0v5-7a2 2 0 0 1 4 0v8-5a2 2 0 0 1 4 0v8c0 4-3 6-7 6h-1c-2 0-3-1-4-3l-4-5a2 2 0 0 1 3-2l1 1z"/>';
+  function leaderTasks(items, selected) {
+    return `<div class="leader-tasks">${items.filter(item => !ended(item.status)).map(item => {
+      const review = item.status === "awaiting_acceptance", decision = item.pending_decision !== null;
+      const quiet = ["paused","pausing","queued","idle"].includes(item.status);
+      const state = review ? "review" : decision ? "decision" : quiet ? "quiet" : "running";
+      const icon = review ? '<circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/>' : decision ? '<circle cx="12" cy="12" r="9"/><path d="M9 9a3 3 0 0 1 6 0c0 2-3 2-3 4m0 3h.01"/>' : quiet ? '<circle cx="12" cy="12" r="9"/><path d="M9 8v8m6-8v8"/>' : '<circle cx="12" cy="12" r="9" stroke-dasharray="38 18"/><path d="m9 8 6 4-6 4z"/>';
+      const tag = review ? "验收" : decision ? "拍板" : ["paused","pausing"].includes(item.status) ? "暂停" : `${item.work_summary.done}/${item.work_summary.total}`;
+      return `<button type="button" class="leader-task" data-goal-act="open" data-goal-id="${esc(item.id)}" data-state="${state}" aria-pressed="${String(selected) === String(item.id)}"><svg class="i" viewBox="0 0 24 24" aria-hidden="true">${icon}</svg><span class="leader-task-title" title="${esc(item.title)}">${esc(item.title)}</span><span class="leader-task-tag">${tag}</span></button>`;
+    }).join("")}</div>`;
+  }
   function taskCard(item, people, selected, avatar, ago) {
     const review = item.status === "awaiting_acceptance", decision = !ended(item.status) && item.pending_decision;
     // Assignments are never released, so closed or removed members stay assigned but are no longer listed people.
@@ -51,7 +61,7 @@
   }
   function create(options) {
     const details = new Map(), loading = new Map(), requestedVersion = new Map(), errors = new Map();
-    const endedOpen = new Set(), conclusionsOpen = new Set(), reportNotesOpen = new Set(), supplementsOpen = new Set();
+    const endedClosed = new Set(), conclusionsOpen = new Set(), reportNotesOpen = new Set(), supplementsOpen = new Set();
     let pendingAction = "", actionError = "";
     let ownerId = null, goalId = null, reportGeneration = 0, reader = null, formOverlay = null, actionBusy = false;
     let reading = null, deliveryNotice = null;
@@ -69,7 +79,7 @@
     const changed = () => options.onChange?.();
     function restoreFocus(selector) {
       const target = document.querySelector?.(selector);
-      if (target?.closest?.('#side-task-section')) options.onReturn?.();
+      if (target?.closest?.('#task-list')) options.onReturn?.();
       (document.querySelector?.(selector) || document.querySelector?.('[data-act="tasks-toggle"]'))?.focus();
     }
     function executionFor(id) {
@@ -114,7 +124,7 @@
       const notesOpen = reportNotesOpen.has(`${key}:${report.id}`);
       const folds = report.summary.length > 40 || report.summary.includes("\n");
       const notes = unresolved.length ? `<div class="goal-delivery-notes"><button class="text-link" data-goal-act="report-notes-toggle" data-report-id="${esc(report.id)}" aria-expanded="${notesOpen}">尚存问题 · ${unresolved.length} 条 · ${notesOpen ? "收起" : "展开"}</button>${notesOpen ? `<p>报告记录的限制与未完成事项：</p><ul class="goal-delivery-unresolved-list">${unresolved.map(item => `<li>${esc(item)}</li>`).join("")}</ul>` : ""}</div>` : "";
-      return `<section class="goal-delivery" aria-label="当前交付结论"><div class="goal-delivery-head"><strong>本次结果</strong><span>${esc(outcomes[report.status])}</span></div><p class="goal-delivery-summary ${open ? "open" : ""}">${esc(report.summary)}</p>${active.status === "awaiting_acceptance" ? supplementsMarkup(active.supplements_after_report, [...state().leaders, ...state().members, ...(state().git_assistant === null ? [] : [state().git_assistant])], supplementsOpen.has(key)) : ""}<div class="goal-delivery-foot"><div class="goal-delivery-meta"><span>AI 验证</span>${recorded.length ? `<span class="goal-acceptance-total">共 ${esc(total)} 项</span>${recorded.map(([name,label]) => `<span class="goal-acceptance-count" data-kind="${name}">${label} ${esc(counts[name])}</span>`).join("")}` : "<span>没有逐项验收记录</span>"}</div><div class="goal-delivery-actions">${folds ? `<button class="text-link" data-goal-act="conclusion-toggle" data-report-id="${esc(report.id)}" aria-expanded="${open}">${open ? "收起" : "展开全文"}</button>` : ""}<button class="btn ghost" data-goal-act="delivery" data-goal-id="${esc(key)}">查看完整报告</button></div></div>${notes}</section>${notice}`;
+      return `<section class="goal-delivery" aria-label="当前交付结论"><div class="goal-delivery-head"><strong>本次结果</strong><span>${esc(outcomes[report.status])}</span></div><p class="goal-delivery-summary ${open ? "open" : ""}">${esc(report.summary)}</p>${active.status === "awaiting_acceptance" ? supplementsMarkup(active.supplements_after_report, [...state().leaders, ...state().members, ...(state().git_assistant === null ? [] : [state().git_assistant])], supplementsOpen.has(key)) : ""}<div class="goal-delivery-foot"><div class="goal-delivery-meta"><span>AI 验证</span>${recorded.length ? `<span class="goal-acceptance-total">共 ${esc(total)} 项</span>${recorded.map(([name,label]) => `<span class="goal-acceptance-count" data-kind="${name}">${label} ${esc(counts[name])}</span>`).join("")}` : "<span>没有逐项验收记录</span>"}</div><div class="goal-delivery-actions">${folds ? `<button class="text-link" data-goal-act="conclusion-toggle" data-report-id="${esc(report.id)}" aria-expanded="${open}">${open ? "收起" : "展开全文"}</button>` : ""}<button class="btn ghost" data-goal-act="delivery" data-goal-id="${esc(key)}">打开报告</button></div></div>${notes}</section>${notice}`;
     }
     function modeMarkup() {
       const active = goal();
@@ -125,9 +135,9 @@
       const review = list.filter(item => item.status === "awaiting_acceptance"), active = list.filter(item => !ended(item.status) && item.status !== "awaiting_acceptance"), done = list.filter(item => ended(item.status));
       const create = `<button type="button" class="btn ghost" data-goal-act="create" data-leader-id="${esc(id)}">＋ 建立目标</button>`;
       const group = (title, items) => items.length ? `<section class="task-list-group"><h3>${title}<span>${items.length}</span></h3>${items.map(item => taskCard(item, people, goalId, options.avatar, options.ago)).join("")}</section>` : "";
-      return `<header class="task-list-head">${listIcon()}<h2>任务<span>${review.length + active.length} 项进行中</span></h2>${create}</header><div class="task-list-scroll">${group("待你验收",review)}${group("进行中",active)}${done.length ? `<section class="task-list-group task-list-ended"><button type="button" class="task-ended-toggle" data-goal-act="ended-toggle" aria-expanded="${endedOpen.has(id)}" aria-controls="task-ended-items">${endedOpen.has(id) ? "⌄" : "›"} 已结束 ${done.length}</button><div id="task-ended-items" ${endedOpen.has(id) ? "" : "hidden"}>${done.map(item => taskCard(item, people, goalId, options.avatar, options.ago)).join("")}</div></section>` : ""}${list.length === 0 ? `<div class="goals-empty">还没有任务，明确需求后建立一个目标。${create}</div>` : ""}</div>`;
+      return `<header class="task-list-head">${listIcon()}<h2>任务<span>${review.length + active.length} 项进行中</span></h2>${create}</header><div class="task-list-scroll">${group("待你验收",review)}${group("进行中",active)}${done.length ? `<section class="task-list-group task-list-ended"><button type="button" class="task-ended-toggle" data-goal-act="ended-toggle" aria-expanded="${!endedClosed.has(id)}" aria-controls="task-ended-items">${!endedClosed.has(id) ? "⌄" : "›"} 已结束 ${done.length}</button><div id="task-ended-items" ${!endedClosed.has(id) ? "" : "hidden"}>${done.map(item => taskCard(item, people, goalId, options.avatar, options.ago)).join("")}</div></section>` : ""}${list.length === 0 ? `<div class="goals-empty">还没有任务，明确需求后建立一个目标。${create}</div>` : ""}</div>`;
     }
-    function sideMarkup() {
+    function detailMarkup() {
       if (goalId == null) return "";
       const active = goal();
       if (!active) return `<p class="note">${esc(errors.get(String(goalId)) || "正在读取任务…")}</p><button class="btn ghost" data-goal-act="refresh">重新读取</button>`;
@@ -136,7 +146,10 @@
       const actions = active.status === "awaiting_acceptance" ? [["accept","通过"],["reject","打回并说明"]] : active.status === "queued" ? [["start", "开始推进"]] : ["paused","waiting_user"].includes(active.status) ? [["resume", "继续推进"]] : !ended(active.status) && active.status !== "pausing" ? [["pause", "暂停目标"]] : [];
       if (!ended(active.status) && active.status !== "awaiting_acceptance") actions.push(["cancel", "取消目标"]);
       const actionButtons = `<div class="goal-actions">${actions.map(([action,label]) => `<button class="btn ${["start","resume","accept"].includes(action) ? "goal-primary-action" : "ghost"}" data-goal-act="action" data-action="${action}" ${actionBusy ? "disabled" : ""}>${pendingAction === action ? "正在处理…" : label}</button>`).join("")}</div>`;
-      return `<section class="goal-tools" data-goal-tools="${esc(active.id)}"><div class="goal-detail-title"><span class="goal-status" data-status="${esc(active.status)}">${esc(status(active.status))}</span><h1 title="${esc(active.title)}">${esc(active.title)}</h1></div>${active.status === "awaiting_acceptance" ? "" : actionButtons}<section class="task-requirements"><h2>需求</h2>${requirementsMarkup(active)}</section><section class="task-progress"><h2>进度</h2>${window.CrewGoalWork.markup(current()?.work_items || [], [...state().leaders, ...state().members])}<ul class="task-owners">${(current()?.executions || []).filter(item => item.round === active.current_round).map(item => `<li>${esc([...state().leaders, ...state().members].find(person => person.session_id === item.session_id)?.name)} · ${esc(status(item.status))}</li>`).join("")}</ul></section><section class="task-delivery" aria-label="交付"><h2>交付</h2>${deliveryMarkup(active, reports)}${active.status === "awaiting_acceptance" ? actionButtons : ""}${options.renderDocuments?.(result?.documents || [], goalId) || ""}${review ? `<details class="goal-review"><summary>${review.round < active.current_round ? "之前记录 · " : ""}${review.accepted ? "你已验收通过" : "你退回修改"}${review.note ? `：${esc(review.note.slice(0,80))}${review.note.length > 80 ? "…" : ""}` : ""}</summary><p>${esc(review.note || "你确认交付符合验收要求。")}<br><span>原始交付报告保持生成时的内容和状态。</span></p></details>` : ""}${actionError || errors.has(String(goalId)) && deliveryNotice?.goalId !== String(goalId) ? `<p class="goal-action-error error-line" role="alert">${esc(actionError || errors.get(String(goalId)))}</p>` : ""}</section>${followup}</section>`;
+      const people = [...state().leaders, ...state().members];
+      const testSteps = active.acceptance_brief?.user_test;
+      const userTest = active.status === "awaiting_acceptance" && testSteps?.length ? `<div class="task-user-test"><h3>怎么实测</h3><ol>${testSteps.map(item => `<li><p>${esc(item.step)}</p><p>预期：${esc(item.expected)}</p></li>`).join("")}</ol></div>` : "";
+      return `<header class="task-detail-head"><div class="goal-detail-title"><button type="button" class="icon-btn" data-act="tasks-back" aria-label="返回任务清单"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m14 6-6 6 6 6"/></svg></button><h1 title="${esc(active.title)}">${esc(active.title)}</h1><span class="goal-status" data-status="${esc(active.status)}">${esc(status(active.status))}</span></div><div class="task-detail-controls">${modeMarkup()}${active.status === "awaiting_acceptance" ? "" : actionButtons}</div></header><div class="task-detail-scroll"><section class="goal-tools" data-goal-tools="${esc(active.id)}"><p class="task-summary">${active.decision_mode.mode === "autonomous" ? "自主推进" : "由我拍板"}${active.current_round > 1 ? ` · 第 ${active.current_round} 轮` : ""} · ${active.working_count} 人在干活 · <time datetime="${esc(active.last_activity_at)}" title="${esc(when(active.last_activity_at))}">${esc(options.ago(active.last_activity_at))}</time></p><section class="task-delivery" tabindex="-1" aria-label="交付结果"><h2>交付结果</h2>${result == null && !errors.has(String(active.id)) ? '<p class="note">正在读取交付…</p>' : reports.length ? deliveryMarkup(active, reports) : '<p class="note">还没有交付</p>' + deliveryMarkup(active, reports)}${userTest}${active.status === "awaiting_acceptance" ? actionButtons : ""}${options.renderDocuments?.(result?.documents || [], goalId) || ""}${review ? `<details class="goal-review"><summary>${review.round < active.current_round ? "之前记录 · " : ""}${review.accepted ? "你已验收通过" : "你退回修改"}${review.note ? `：${esc(review.note.slice(0,80))}${review.note.length > 80 ? "…" : ""}` : ""}</summary><p>${esc(review.note || "你确认交付符合验收要求。")}<br><span>原始交付报告保持生成时的内容和状态。</span></p></details>` : ""}${actionError || errors.has(String(goalId)) && deliveryNotice?.goalId !== String(goalId) ? `<p class="goal-action-error error-line" role="alert">${esc(actionError || errors.get(String(goalId)))}</p>` : ""}</section><section class="task-progress"><h2>进度</h2>${window.CrewGoalWork.markup(result?.work_items || [], people)}<ul class="task-owners">${(result?.executions || []).filter(item => item.round === active.current_round).map(item => { const person = people.find(person => person.session_id === item.session_id); return `<li>${esc(person ? person.name : item.session_id + "（已离开）")} · ${esc(status(item.status))}</li>`; }).join("")}</ul></section><section class="task-requirements"><h2>需求</h2>${requirementsMarkup(active)}</section>${followup}</section></div>`;
     }
 
     function requirementsMarkup(active) {
@@ -267,7 +280,7 @@
       else if (act === "delivery") void openDelivery(button.dataset.goalId);
       else if (act === "retry-report") retryDirect();
       else if (act === "conclusion-toggle" || act === "report-notes-toggle") { const key = `${goalId}:${button.dataset.reportId}`, expanded = act === "report-notes-toggle" ? reportNotesOpen : conclusionsOpen; if (expanded.has(key)) expanded.delete(key); else expanded.add(key); changed(); }
-      else if (act === "ended-toggle") { if (endedOpen.has(ownerId)) endedOpen.delete(ownerId); else endedOpen.add(ownerId); changed(); }
+      else if (act === "ended-toggle") { if (endedClosed.has(ownerId)) endedClosed.delete(ownerId); else endedClosed.add(ownerId); changed(); }
       else if (act === "create") showCreate(button.dataset.leaderId);
       else if (act === "close-create" && !actionBusy) { const action = formOverlay?.querySelector("[data-goal-confirm]")?.dataset.goalConfirm; formOverlay?.remove(); formOverlay = null; restoreFocus(action ? `[data-action="${action}"]` : '[data-goal-act="create"]'); }
       else if (act === "refresh") void load();
@@ -289,8 +302,8 @@
       if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
       else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
     });
-    return {sync, closeReport, escape, listMarkup, modeMarkup, sideMarkup, cards:() => cards(goals(), state()?.leaders), refresh:load, currentGoal:goal, executionFor, replaceMain,
+    return {sync, closeReport, escape, listMarkup, detailMarkup, cards:() => cards(goals(), state()?.leaders), refresh:load, currentGoal:goal, executionFor, replaceMain,
       invalidate() { requestedVersion.clear(); details.clear(); }};
   }
-  window.CrewGoals = {create, cards, taskCard, listIcon, ended, status, reportPath, reportDocument, supplementsMarkup};
+  window.CrewGoals = {create, cards, taskCard, leaderTasks, listIcon, ended, status, reportPath, reportDocument, supplementsMarkup};
 })();

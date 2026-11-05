@@ -3,6 +3,8 @@
   let catalog = null, preferences = null, context = null, output = null, timer = null;
   let initialized = false, baseline = 0, revision = -1;
   const observed = new Map(), pending = new Map(), lastPlayed = new Map();
+  const decoded = new Map(), decoding = new Map();
+  const soundError = error => document.dispatchEvent(new CustomEvent("crew:sound-error", {detail:error.message}));
   const prefix = "crew.sound.event.", client = Math.random().toString(36).slice(2);
   let claimSequence = 0;
   const legacy = {muted:false, volume:.25};
@@ -18,7 +20,10 @@
     output.gain.setTargetAtTime(settings.muted ? 0 : settings.volume, context.currentTime, .015);
   }
   function configure(value, nextCatalog, nextRevision) {
-    if (nextCatalog) catalog = nextCatalog;
+    if (nextCatalog) {
+      catalog = nextCatalog;
+      for (const id of new Set([...decoded.keys(), ...decoding.keys()])) if (!catalog.presets[id]) forget(id);
+    }
     if (nextRevision < revision) return;
     revision = nextRevision;
     if (value) preferences = {...value};
@@ -45,19 +50,42 @@
     oscillator.onended = () => { oscillator.disconnect(); gain.disconnect(); };
     oscillator.start(at); oscillator.stop(at + duration);
   }
-  function notesFor(kind, settings = getSettings()) {
-    const cue = catalog?.kinds[kind];
-    return cue?.setting ? catalog.presets[settings[cue.setting]]?.notes : cue?.notes;
+  function presetFor(kind, settings) {
+    const cue = catalog.kinds[kind];
+    return cue.setting ? {id:settings[cue.setting], preset:catalog.presets[settings[cue.setting]]} : {id:kind, preset:cue};
   }
-  function renderNotes(notes, volume) {
-    const at = context.currentTime + .005;
+  function destinationFor(volume, duration) {
     let destination = output;
     if (volume !== undefined) {
       destination = context.createGain(); destination.gain.value = volume; destination.connect(context.destination);
       const previewOutput = destination;
-      setTimeout(() => previewOutput.disconnect(), 1500);
+      setTimeout(() => previewOutput.disconnect(), duration);
     }
+    return destination;
+  }
+  function renderNotes(notes, volume) {
+    const at = context.currentTime + .005, destination = destinationFor(volume, 1500);
     for (const [offset, startHz, endHz, duration, peak] of notes) note(destination, at + offset, startHz, endHz, duration, peak);
+  }
+  function forget(id) { decoded.delete(id); decoding.delete(id); }
+  async function bufferFor(id, url) {
+    if (decoded.has(id)) return decoded.get(id);
+    if (decoding.has(id)) return decoding.get(id);
+    const request = (async () => {
+      const response = await fetch(url);
+      if (!response.ok) throw Error(`自定义音效加载失败：${response.status} ${response.statusText}`);
+      const buffer = await context.decodeAudioData(await response.arrayBuffer());
+      if (decoding.get(id) === request) decoded.set(id, buffer);
+      return buffer;
+    })();
+    decoding.set(id, request);
+    try { return await request; } finally { if (decoding.get(id) === request) decoding.delete(id); }
+  }
+  async function renderPreset(id, preset, volume) {
+    if (preset.url) {
+      const buffer = await bufferFor(id, preset.url), source = context.createBufferSource();
+      source.buffer = buffer; source.connect(destinationFor(volume, buffer.duration * 1000 + 100)); source.onended = () => source.disconnect(); source.start();
+    } else renderNotes(preset.notes, volume);
   }
   function claim(id, token) {
     if (!id) return true;
@@ -99,14 +127,19 @@
     const settings = getSettings();
     if (!entries.length || settings.muted || !settings.volume || context?.state !== "running") return;
     entries.sort((a, b) => catalog.kinds[a.kind].priority - catalog.kinds[b.kind].priority);
-    const selected = entries.find(item => notesFor(item.kind)?.length);
+    const selected = entries.find(item => { const {preset} = presetFor(item.kind, settings); return preset?.url || preset?.notes?.length; });
     if (!selected) return;
     for (const entry of entries) lastPlayed.set(entry.kind, performance.now());
-    renderNotes(notesFor(selected.kind)); prune();
+    const {id, preset} = presetFor(selected.kind, settings);
+    try { await renderPreset(id, preset); } catch (error) { soundError(error); }
+    prune();
   }
   function play(kind, id = null) {
     const cue = catalog?.kinds[kind], settings = getSettings();
-    if (!cue || !notesFor(kind)?.length || settings.muted || !settings.volume || context?.state !== "running") return;
+    if (!cue || settings.muted || !settings.volume || context?.state !== "running") return;
+    const {id:presetId, preset} = presetFor(kind, settings);
+    if (!preset && presetId !== "off") { soundError(Error(`音效 ${presetId} 已缺失`)); return; }
+    if (!preset?.url && !preset?.notes?.length) return;
     if (performance.now() - (lastPlayed.get(kind) ?? -Infinity) < (cue.cooldown || 0)) return;
     const token = `${client}:${++claimSequence}`, entry = {kind, id, token};
     void Promise.resolve(withEventLock(entry, () => {
@@ -128,13 +161,18 @@
   }
   async function preview(kind, settings = getSettings()) {
     if (settings.muted || !settings.volume) return false;
-    const notes = notesFor(kind, settings);
-    if (!notes?.length) return false;
+    const {id, preset} = presetFor(kind, settings);
+    if (!preset) { if (id === "off") return false; throw Error(`音效 ${id} 已缺失`); }
     if (!await unlockAudio()) throw Error("浏览器尚未允许播放声音，请再次点击试听。");
-    renderNotes(notes, settings.volume); return true;
+    await renderPreset(id, preset, settings.volume); return true;
+  }
+  async function previewPreset(id, settings = getSettings()) {
+    if (settings.muted || !settings.volume) return false;
+    if (!await unlockAudio()) throw Error("浏览器尚未允许播放声音，请再次点击试听。");
+    await renderPreset(id, catalog.presets[id], settings.volume); return true;
   }
   function unlock() { void unlockAudio().catch(() => {}); }
   document.addEventListener("pointerdown", unlock, {once:true});
   document.addEventListener("keydown", unlock, {once:true});
-  window.CrewSound = Object.freeze({play, preview, configure, observe, getSettings});
+  window.CrewSound = Object.freeze({play, preview, previewPreset, forget, configure, observe, getSettings});
 })();

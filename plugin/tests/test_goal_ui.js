@@ -22,7 +22,15 @@ function harness(api,{fetch:fetcher}={}){
   return {module:sandbox.window.CrewGoals,client,main,state,calls,network,navigations,click,submit};
 }
 
-const surfaces=h=>h.client.sideMarkup("leader");
+const surfaces=h=>h.client.detailMarkup("leader");
+
+test("leader task rows exclude ended goals, preserve status precedence and escape titles",()=>{
+ const h=harness(),base=h.state.goals[0];
+ const items=[{...base,id:"review",status:"awaiting_acceptance",pending_decision:{question:"仍有拍板"}},{...base,id:"decision",pending_decision:{question:"拍板"}},{...base,id:"paused",status:"paused"},{...base,id:"queued",status:"queued"},{...base,id:"running",title:'<img src=x>',work_summary:{done:2,total:5}},...['completed','cancelled','failed'].map(status=>({...base,id:status,status}))];
+ const html=h.module.leaderTasks(items,"running");
+ assert.equal((html.match(/class="leader-task"/g)||[]).length,5);assert(html.includes('&lt;img src=x&gt;'));assert(!html.includes('<img'));assert(html.includes('aria-pressed="true"'));assert(html.includes('>验收</span>'));assert(html.includes('>拍板</span>'));assert(html.includes('>暂停</span>'));assert(html.includes('>2/5</span>'));
+ for(const status of ['completed','cancelled','failed'])assert(!html.includes(`data-goal-id="${status}"`));
+});
 
 test("ordinary conversation performs no goal reads and cards preserve status, group and escaped requirements",async()=>{
   const h=harness();h.client.sync("leader",null);await tick();assert.equal(h.calls.length,0);
@@ -73,10 +81,10 @@ test("execution selection keeps the same round and newest generation across amen
 });
 
 
-test("selecting a goal keeps the independent list and selected details available",async()=>{
-  const h=harness();h.client.sync("leader",null);assert(h.client.listMarkup("leader").includes('data-goal-id="a"'));assert.equal(h.client.sideMarkup(),"");
-  await h.click("open",{goalId:"a"});assert(h.client.listMarkup("leader").includes('data-goal-id="b"'));assert(h.client.listMarkup("leader").includes('aria-pressed="true"'));assert(surfaces(h).includes('data-goal-tools="a"'));
-  h.client.sync("leader",null);assert(!h.client.listMarkup("leader").includes('aria-pressed="true"'));
+test("selecting a goal opens floating details and marks its leader task row",async()=>{
+  const h=harness();h.client.sync("leader",null);assert(h.client.listMarkup("leader").includes('data-goal-id="a"'));assert.equal(h.client.detailMarkup(),"");
+  await h.click("open",{goalId:"a"});assert(surfaces(h).includes('data-goal-tools="a"'));assert(surfaces(h).includes('data-act="tasks-back"'));assert(!surfaces(h).includes('task-list-group'));assert(h.module.leaderTasks(h.state.goals,"a").includes('aria-pressed="true"'));
+  h.client.sync("leader",null);assert.equal(h.client.detailMarkup(),"");assert(!h.module.leaderTasks(h.state.goals,null).includes('aria-pressed="true"'));
 });
 
 test("goal details show structured acceptance titles, newest report and explicit reopen or resume actions",async()=>{
@@ -90,10 +98,10 @@ test("goal details show structured acceptance titles, newest report and explicit
   }
 });
 
-test("task list is independent of detail and creation lives in its header",async()=>{
-  const h=harness();h.client.sync("leader",null);assert.equal(h.client.sideMarkup(),"");
+test("floating list owns creation and detail owns the task controls",async()=>{
+  const h=harness();h.client.sync("leader",null);assert.equal(h.client.detailMarkup(),"");
   const list=h.client.listMarkup("leader");assert(list.includes('task-list-head'));assert(list.includes('data-goal-act="create"'));assert(!list.includes('data-goal-act="mode"'));assert(!list.includes('任务清单'));
-  h.client.sync("leader","a");await tick();assert(h.client.sideMarkup().includes('data-goal-tools="a"'));assert(h.client.modeMarkup().includes('data-goal-act="mode"'));
+  h.client.sync("leader","a");await tick();assert(h.client.detailMarkup().includes('data-goal-tools="a"'));assert(h.client.detailMarkup().includes('data-goal-act="mode"'));
 });
 test("task actions show pending and retained failure feedback and allow a deliberate retry",async()=>{
   let reject;const h=harness(async(url,data)=>data?new Promise((_resolve,fail)=>{reject=fail;}):{goal:{...h.state.goals[0]},executions:[],reports:[],context:{items:[],manifest:{}}});
@@ -121,7 +129,7 @@ test("opening a task shows this round's AI conclusion compactly and reads no rep
   h.client.sync("leader","a");await settle();
   assert.equal(h.network.length,0);assert.equal(h.main.appends,undefined);
   let markup=surfaces(h);
-  for(const text of ["本次结果","等待用户验收","AI 验证","共 4 项","通过 1","失败 1","未验证 2","尚存问题 · 1 条","查看完整报告","展开全文"])assert(markup.includes(text),text);
+  for(const text of ["本次结果","等待用户验收","AI 验证","共 4 项","通过 1","失败 1","未验证 2","尚存问题 · 1 条","打开报告","展开全文"])assert(markup.includes(text),text);
   assert(!markup.includes("模拟验证"),"a zero count is not listed");assert(markup.includes("&lt;script&gt;alert(1)&lt;/script&gt;"));assert(!markup.includes("<script>"));assert(markup.includes("补充说明".repeat(40)),"the full conclusion stays in place");
   assert(!markup.includes("旧轮次结论"));assert(!markup.includes("混说"),"unresolved details stay folded by default");assert(!markup.includes("你已验收"),"an AI report is not shown as the user's acceptance");
   await h.click("conclusion-toggle",{reportId:"r2"});markup=surfaces(h);
@@ -263,10 +271,10 @@ test("an open report follows the latest goal state without rewriting its frame, 
 
 test("the task list owns creation while detail keeps mode, requirements, progress and delivery",async()=>{
   const h=harness();h.client.sync("leader","a");await tick();
-  const heading=h.client.listMarkup("leader"),side=h.client.sideMarkup("leader");
-  assert(heading.includes("短句验证"));assert(!heading.includes('data-goal-act="general"'));assert(heading.includes('data-goal-act="create"'));assert(!heading.includes('data-goal-act="mode"'));assert(h.client.modeMarkup().includes('data-goal-act="mode"'));
+  const heading=h.client.listMarkup("leader"),side=h.client.detailMarkup("leader");
+  assert(heading.includes("短句验证"));assert(!heading.includes('data-goal-act="general"'));assert(heading.includes('data-goal-act="create"'));assert(!heading.includes('data-goal-act="mode"'));assert(h.client.detailMarkup().includes('data-goal-act="mode"'));
   for(const text of ["暂停目标","原始需求与验收标准","goal-actions"]){assert(!heading.includes(text),text);assert(side.includes(text),text);}
-  assert(side.indexOf('task-requirements')<side.indexOf('task-progress'));assert(side.indexOf('task-progress')<side.indexOf('task-delivery'));assert(!side.includes('<textarea'));for(const retired of ['data-goal-act="drawer"','data-goal-act="versions"',"goal-materials"])assert(!side.includes(retired),retired);
+  assert(side.indexOf('task-delivery')<side.indexOf('task-progress'));assert(side.indexOf('task-progress')<side.indexOf('task-requirements'));assert(!side.includes('<textarea'));for(const retired of ['data-goal-act="drawer"','data-goal-act="versions"',"goal-materials"])assert(!side.includes(retired),retired);
 });
 test("acceptance supplements stay folded, expand in version order and preserve authors and original text",async()=>{
   const items=[{version:3,text:"成员补充 <原文>",actor:"member",at:"2026-11-05T02:00:00Z"},{version:2,text:"第一条\n保持换行",actor:"user",at:"2026-11-05T01:00:00Z"}];
@@ -289,8 +297,15 @@ test("task cards use status-specific summaries, actual checklist progress and co
  html=card({status:"completed",now_doing:[],assignments:[{session_id:"m"},{session_id:"closed-member"}]});assert(html.includes("<i>界面成员</i>"));assert.equal((html.match(/<i>/g)||[]).length,1);
  html=card({status:"running",now_doing:[{title:"收尾",session_id:"closed-member"}]});assert(html.includes("正在：收尾"));assert(!html.includes("undefined"));
 });
-test("task list groups review, active and collapsed ended goals and omits empty groups",async()=>{
+test("task list groups review, active and expanded ended goals and omits empty groups",async()=>{
  const h=harness();h.client.sync("leader",null);h.state.goals[0].status="awaiting_acceptance";h.state.goals[0].acceptance_brief={summary:"完成摘要"};h.state.goals.push({...h.state.goals[1],id:"c",status:"completed"});
- let html=h.client.listMarkup("leader");assert(html.indexOf("待你验收")<html.indexOf("进行中<span>"));assert(html.includes('id="task-ended-items" hidden'));assert(html.includes("已结束 1"));await h.click("ended-toggle");html=h.client.listMarkup("leader");assert(!html.includes('id="task-ended-items" hidden'));
+ let html=h.client.listMarkup("leader");assert(html.indexOf("待你验收")<html.indexOf("进行中<span>"));assert(!html.includes('id="task-ended-items" hidden'));assert(html.includes("已结束 1"));await h.click("ended-toggle");html=h.client.listMarkup("leader");assert(html.includes('id="task-ended-items" hidden'));
  h.state.goals=[];html=h.client.listMarkup("leader");assert(!html.includes("task-list-group"));assert(html.includes("还没有任务"));assert(html.includes('data-goal-act="create"'));
+});
+
+test("a delivered task shows its delivery as loading, not as undelivered, until the detail arrives",async()=>{
+  let release;const h=harness(()=>new Promise(done=>{release=done;}));h.client.sync("leader","a");
+  const pending=h.client.detailMarkup();assert(pending.includes("正在读取交付"));assert(!pending.includes("还没有交付"));
+  release({goal:h.state.goals.find(item=>item.id==="a"),context:{items:[],manifest:{}},executions:[],reports:[],documents:[]});await tick();
+  assert(h.client.detailMarkup().includes("还没有交付"));
 });

@@ -67,12 +67,12 @@ if(!process.versions.electron){
       await type('主对话草稿');
       await wait(`!!document.querySelector('[data-goal-act="open"][data-goal-id="${bootstrap.goals[0]}"]')`);
       await click(`[data-goal-act="open"][data-goal-id="${bootstrap.goals[0]}"]`);
-      await wait('!!document.querySelector("#side-task-body [data-goal-tools]")');await check("opening a task keeps the idle general conversation and its draft",'document.querySelector("#chat-host textarea").value==="主对话草稿"&&!document.querySelector("#chat-host .chat-activity")');
+      await wait('!!document.querySelector("#task-list [data-goal-tools]")');await check("opening a task keeps the idle general conversation and its draft",'document.querySelector("#chat-host textarea").value==="主对话草稿"&&!document.querySelector("#chat-host .chat-activity")');
       await wait('!document.querySelector("[data-goal-act=mode][data-mode=autonomous]").disabled');await click('[data-goal-act="mode"][data-mode="autonomous"]');
       await check('task decision mode updates only the selected goal without starting another turn','document.querySelector("[data-goal-act=mode][data-mode=autonomous]").getAttribute("aria-pressed")==="true"');
       await check('AI work appears separately with its real blocker and exact acceptance constraint','document.querySelector(".goal-work").textContent.includes("400ms")&&document.querySelector(".goal-work").textContent.includes("尚未证明效果达标")&&document.querySelector(".goal-work").textContent.includes("0 / 1")');
       await capture('00-v2-task-worklist');
-      await check('task requirements remain directly visible and retired material controls stay absent','!!document.querySelector("#side-task-body .task-requirements")&&!document.querySelector("[data-goal-act=versions],[data-goal-act=materials]")');
+      await check('task requirements remain directly visible and retired material controls stay absent','!!document.querySelector("#task-list .task-requirements")&&!document.querySelector("[data-goal-act=versions],[data-goal-act=materials]")');
       await click('[data-goal-tools] [data-goal-act="delivery"]');
       await wait('Boolean(document.querySelector("[data-goal-act=edit-stage]"))');
       await click('[data-goal-act="edit-stage"]');
@@ -84,7 +84,7 @@ if(!process.versions.electron){
       await check('editing a stage report creates a new current document and retains the original report as history','document.querySelector(".goal-reader-heading")?.textContent.includes("第 2 稿")&&document.querySelector(".goal-reader-frame iframe")?.srcdoc.includes("用户补充：重叠发言")&&!document.querySelector(".goal-reader-frame iframe").srcdoc.includes("旧版阶段正文")');
       await capture('00-v2-stage-report-edited');
       await click('[data-goal-act="close-report"]');
-      await click('#side-task-section [data-act="side-section-close"]');await wait('document.querySelector("#chat-host textarea")?.value==="主对话草稿"');
+      await click('[data-act="tasks-back"]');await wait('document.querySelector("#chat-host textarea")?.value==="主对话草稿"');
       fixture.stdin.write('request\n');await until(()=>messages.some(value=>value.request),'cross-leader request');
       await wait('document.querySelector("#chat-host")?.textContent.includes("请确认接口格式")');
       await check('a cross-leader request enters general chat while its independent draft survives','document.querySelectorAll("#chat-host .chat-activity").length===1&&document.querySelector("#chat-host textarea").value==="主对话草稿"');
@@ -93,7 +93,7 @@ if(!process.versions.electron){
       await wait('document.querySelector("#chat-host textarea")?.value==="主对话草稿"&&!document.querySelector("#chat-host textarea").disabled&&!!document.querySelector("#chat-host .chat-activity")');
       await check('task changes preserve the general collaboration message and the same leader draft','!!document.querySelector("#chat-host .chat-activity")&&document.querySelector("#chat-host").textContent.includes("请确认接口格式")&&document.querySelector("#chat-host textarea").value==="主对话草稿"');
       nativeTheme.themeSource='dark';window.setSize(850,820);await capture('02-task-keeps-working');
-      await click('#side-task-section [data-section="tasks"]');await wait('document.querySelector("#chat-host textarea")?.value==="主对话草稿"');
+      await click('[data-act="tasks-back"]');await wait('document.querySelector("#chat-host textarea")?.value==="主对话草稿"');
       fixture.stdin.write('reply\n');await until(()=>messages.some(value=>value.replied),'reply routed to original task');
       await wait('!document.querySelector("#chat-host .chat-activity")');
       await check('a completed coordination reply clears only general progress while tasks stay active','document.querySelector("#chat-head [data-act=tasks-toggle]").textContent.includes("2")&&document.querySelector("#chat-host textarea").value==="主对话草稿"');

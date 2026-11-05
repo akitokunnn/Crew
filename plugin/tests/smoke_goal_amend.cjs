@@ -4,7 +4,7 @@ const fs = require('node:fs/promises'), path = require('node:path'), os = requir
 const {spawn, execFileSync} = require('node:child_process');
 const root = path.resolve(__dirname, '../..');
 const old = process.argv.includes('--old-code');
-const output = path.join(root, 'Temp/ui-align/batch2/goal-amend', old ? 'old-code' : 'current');
+const output = path.join(root, 'Temp/ui-align/batch4/goal-amend', old ? 'old-code' : 'current');
 
 async function main() {
   const profile = await fs.mkdtemp(path.join(os.tmpdir(), 'crew-goal-amend-chrome-'));
@@ -62,18 +62,18 @@ async function main() {
     const source = old ? execFileSync('git',['show','HEAD:plugin/crew/web/goal-ui.js'],{cwd:root,encoding:'utf8',windowsHide:true})
       : await fs.readFile(path.join(root,'plugin/crew/web/goal-ui.js'),'utf8');
     const css = (await Promise.all(['style.css','goal-ui.css'].map(name=>fs.readFile(path.join(root,'plugin/crew/web',name),'utf8')))).join('\n');
-    await evaluate(`document.body.innerHTML = '<aside id="side-task-section"></aside><main id="main"><div id="chat-host">原始测量会话</div></main>';
-      const style=document.createElement('style');style.textContent=${JSON.stringify(css)}+'body{font:16px system-ui;margin:0;color:#222}#side-task-section{padding:24px;width:300px}#main{position:absolute;inset:0 0 0 350px}.goal-report-reader{position:absolute;inset:0;background:white;display:flex;flex-direction:column}.goal-reader-head{display:flex;gap:16px;align-items:center;flex-wrap:wrap;padding:16px 24px}.goal-reader-frame{flex:1}.goal-reader-frame iframe{height:100%;width:100%}button{cursor:pointer}';document.head.append(style);`);
+    await evaluate(`document.body.innerHTML = '<aside id="task-list"></aside><main id="main"><div id="chat-host">原始测量会话</div></main>';
+      const style=document.createElement('style');style.textContent=${JSON.stringify(css)}+'body{font:16px system-ui;margin:0;color:#222}#task-list{padding:24px;width:300px}#main{position:absolute;inset:0 0 0 350px}.goal-report-reader{position:absolute;inset:0;background:white;display:flex;flex-direction:column}.goal-reader-head{display:flex;gap:16px;align-items:center;flex-wrap:wrap;padding:16px 24px}.goal-reader-frame{flex:1}.goal-reader-frame iframe{height:100%;width:100%}button{cursor:pointer}';document.head.append(style);`);
     await evaluate(await fs.readFile(path.join(root,'plugin/crew/web/goal-work-ui.js'),'utf8'));
     await evaluate(source);
     await evaluate(`
-      window.goal={id:'goal',leader_session_id:'leader',title:'保留压测结果',request:'完成测量并保留已有证据',status:'awaiting_acceptance',current_round:1,requirement_version:1,version:1,report_available:true,supplements_after_report:[]};
+      window.goal={decision_mode:{mode:'human'},working_count:0,last_activity_at:'2026-11-05T00:00:00Z',id:'goal',leader_session_id:'leader',title:'保留压测结果',request:'完成测量并保留已有证据',status:'awaiting_acceptance',current_round:1,requirement_version:1,version:1,report_available:true,supplements_after_report:[]};
       window.reports=[{id:'report-1',title:goal.title,round:1,requirement_version:1,version:1,status:'awaiting_acceptance',outcome:'awaiting_acceptance',summary:'原始测量已交付',acceptance_counts:{passed:1,failed:0,unverified:0,simulated:0},unresolved:[],url:'/report',created_at:'2026-11-05T00:00:00Z'}];
       window.executions=[{id:'old-round',session_id:'leader',round:0,generation:99,requirement_version:1},{id:'current-execution',session_id:'leader',round:1,generation:2,requirement_version:1},{id:'old-generation',session_id:'leader',round:1,generation:1,requirement_version:1}];
       window.state={git_assistant:null,members:[],leaders:[{session_id:'leader',name:'测试负责人'}],goals:[goal]};
       window.fetch=async()=>({ok:true,text:async()=>'<h1>原始测量结果</h1><p>这一轮的成功结果保留。</p>'});
-      window.client=CrewGoals.create({project:'fixture',state:()=>state,api:async()=>({goal:{...goal},executions,reports,context:{items:[],manifest:{}},documents:[]}),onChange:()=>document.getElementById('side-task-section').innerHTML=client.sideMarkup('leader')});
-      client.sync('leader','goal');await client.refresh();document.getElementById('side-task-section').innerHTML=client.sideMarkup('leader');
+      window.client=CrewGoals.create({project:'fixture',state:()=>state,ago:()=>"刚刚",api:async()=>({goal:{...goal},executions,reports,context:{items:[],manifest:{}},documents:[]}),onChange:()=>document.getElementById('task-list').innerHTML=client.detailMarkup('leader')});
+      client.sync('leader','goal');await client.refresh();document.getElementById('task-list').innerHTML=client.detailMarkup('leader');
       document.querySelector('[data-goal-act="delivery"]').click();
     `);
     const wait = async expression => {

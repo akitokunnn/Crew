@@ -6,6 +6,7 @@
   function theme(){let selected="system";try{selected=localStorage.getItem("crew.theme")||selected;}catch{}document.documentElement.dataset.theme=selected==="system"?(systemTheme.matches?"dark":"light"):selected;}
   theme();systemTheme.addEventListener("change",theme);window.addEventListener("storage",theme);
   const toast=message=>{const node=$("assistant-toast");node.textContent=message;node.hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>{node.hidden=true;},5000);};
+  document.addEventListener("crew:sound-error",event=>toast(event.detail));
   async function api(path,body) {
     const response=await fetch(path,{method:body===undefined?"GET":"POST",headers:{"X-Crew":"1",...(body===undefined?{}:{"Content-Type":"application/json"})},...(body===undefined?{}:{body:JSON.stringify(body)})});
     const value=await response.json();if(!response.ok)throw Error(value.error||`请求失败 (${response.status})`);return value;

@@ -501,7 +501,7 @@ test("uncollected quota has only text and a collected zero has an empty determin
   const collected=ui.railQuota("Codex",{used_percent:0,resets_at:"2026-11-06T00:00:00Z"});assert.match(collected,/<progress max="100" value="0"/);
 });
 test("Git rail attention comes from state before any Git snapshot is read",()=>{
-  const state=fixture();Object.assign(state,{project:{name:"fixture"},leaders:[],git_assistant:{attention:7,pending:99},channel:{unread:0},notification:{channels:[],error:null,away:false},limits:{claude:{seven_day:null},codex:null}});
+  const state=fixture();Object.assign(state,{project:{name:"fixture"},leaders:[],members:[],todos:[],decisions:[],git_assistant:{attention:7,pending:99},channel:{unread:0},notification:{channels:[],error:null,away:false},limits:{claude:{seven_day:null},codex:null}});
   const {ui,nodes}=harness(state);nodes.set("sidebar",{innerHTML:"",dataset:{},contains:()=>false,querySelectorAll:()=>[]});ui.services({});
   ui.renderSidebar();assert.match(nodes.get("sidebar").innerHTML,/class="rail-git"[\s\S]*?class="rail-badge">7<\/span>/);assert.doesNotMatch(nodes.get("sidebar").innerHTML,/>99<\/span>/);
   state.git_assistant=null;ui.renderSidebar();assert.doesNotMatch(nodes.get("sidebar").innerHTML,/class="rail-badge"/);

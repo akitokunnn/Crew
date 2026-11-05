@@ -289,7 +289,7 @@
   const query = context => new URLSearchParams({ ...projectQuery(context), session_id:context.session.session_id });
   function taskComposer(context) {
     context.taskButton.hidden = context.selectedTask === null;
-    context.taskButton.textContent = context.selectedTask === null ? "" : `📌 ${context.selectedTask.title}`;
+    context.taskButton.innerHTML = context.selectedTask === null ? "" : `${icon("handoff")}<span>${escape(context.selectedTask.title)}</span>`;
     context.taskButton.setAttribute("aria-pressed", String(context.taskBound));
     context.input.placeholder = context.taskBound ? `补充给任务「${context.selectedTask.title}」的要求` : `跟 ${context.session.name} 说…（可以直接粘贴截图）`;
   }
