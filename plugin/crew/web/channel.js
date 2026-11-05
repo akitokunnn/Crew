@@ -111,7 +111,7 @@
       renderMessages(context, "bottom");
       if (context.state.channel.latest_id > context.latestId) refresh(context);
     } catch (error) {
-      if (current(context)) { context.loading = false; context.inner.textContent = "交流区加载失败"; context.toast(error.message); }
+      if (current(context)) { context.loading = false; context.inner.textContent = "Leader 交流区加载失败"; context.toast(error.message); }
     }
   }
   async function older(context) {
@@ -164,7 +164,7 @@
       context.selected.clear(); context.allLeaders = false; renderTargets(context);
       // Fetch through intervening posts before advancing the cursor to our new message.
       merge(context, [result.message], false); renderMessages(context, "bottom"); refresh(context);
-      context.toast(allLeaders ? `已点名本工作区的 ${result.message.mentions.length} 位 leader` : to.length === 0 ? "已发到交流区" : `已发到交流区，点名的 ${to.join("、")} 会被叫醒`);
+      context.toast(allLeaders ? `已点名本工作区的 ${result.message.mentions.length} 位 leader` : to.length === 0 ? "已发到 Leader 交流区" : `已发到 Leader 交流区，点名的 ${to.join("、")} 会被叫醒`);
     } catch (error) { if (current(context)) context.toast(error.message); }
     finally { context.sending = false; if (current(context)) composerState(context); }
   }
@@ -172,7 +172,7 @@
     unmount();
     const context = {...options, digest:null, digestError:null, requestingDigest:false, originalMessages:[], originalsOpen:false, hasMoreOriginals:false, loadingOriginals:false, messages:[], selected:new Set(), allLeaders:false, latestId:0, readId:0, loading:true, loadingOlder:false, refreshing:false, reading:false, sending:false, composing:false, version:0};
     active = context;
-    options.host.innerHTML = '<div class="channel-pin" hidden></div><div class="scroll channel-scroll" tabindex="0" aria-label="交流区发言"><div class="channel-history"><button type="button" class="btn ghost channel-older" hidden>加载更早的</button></div><div class="chat-inner channel-inner"><div class="channel-empty">正在加载…</div></div></div><div class="composer-wrap channel-composer-wrap"><div class="channel-targets" role="group" aria-label="点名 leader"></div><form class="composer channel-composer"><textarea rows="1" aria-label="发到交流区" placeholder="和所有 leader 说…"></textarea><div class="c-row"><span class="hint">Enter 发送 · Shift+Enter 换行</span><button type="submit" class="send channel-send" aria-label="发送到交流区" disabled><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 11 7-7 7 7M12 4v16"/></svg></button></div></form></div>';
+    options.host.innerHTML = '<div class="channel-pin" hidden></div><div class="scroll channel-scroll" tabindex="0" aria-label="Leader 交流区发言"><div class="channel-history"><button type="button" class="btn ghost channel-older" hidden>加载更早的</button></div><div class="chat-inner channel-inner"><div class="channel-empty">正在加载…</div></div></div><div class="composer-wrap channel-composer-wrap"><div class="channel-targets" role="group" aria-label="点名 leader"></div><form class="composer channel-composer"><textarea rows="1" aria-label="发到 Leader 交流区" placeholder="和所有 leader 说…"></textarea><div class="c-row"><span class="hint">Enter 发送 · Shift+Enter 换行</span><button type="submit" class="send channel-send" aria-label="发送到 Leader 交流区" disabled><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 11 7-7 7 7M12 4v16"/></svg></button></div></form></div>';
     context.pin = options.host.querySelector(".channel-pin");
     context.digestButton.onclick = () => organize(context);
     context.scroll = options.host.querySelector(".channel-scroll"); context.inner = options.host.querySelector(".channel-inner");

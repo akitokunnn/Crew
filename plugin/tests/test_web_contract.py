@@ -1165,7 +1165,7 @@ assert.equal(f.targets.querySelectorAll().filter(item => item.pressed === "true"
 assert(f.send.disabled);
 assert(f.inner.innerHTML.includes('channel-user'));
 assert(f.inner.innerHTML.includes('<strong>确认</strong>发布'));
-assert.equal(f.toasts[0], "已发到交流区，点名的 Git、Design 会被叫醒");
+assert.equal(f.toasts[0], "已发到 Leader 交流区，点名的 Git、Design 会被叫醒");
 sandbox.CrewChannel.unmount();
 ''')
 
@@ -1199,7 +1199,7 @@ f.form.onsubmit({preventDefault:() => {}}); await flush();
 assert(f.inner.innerHTML.includes('发送期间到达的发言'));
 assert(f.inner.innerHTML.includes('我的发言'));
 assert(f.inner.innerHTML.indexOf('data-channel-id="26"') < f.inner.innerHTML.indexOf('data-channel-id="27"'));
-assert.equal(f.toasts[0], "已发到交流区");
+assert.equal(f.toasts[0], "已发到 Leader 交流区");
 assert.deepEqual(f.reads, [25, 27]);
 sandbox.CrewChannel.unmount();
 ''')

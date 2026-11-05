@@ -302,3 +302,10 @@ test("task list groups review, active and expanded ended goals and omits empty g
  let html=h.client.listMarkup("leader");assert(html.indexOf("待你验收")<html.indexOf("进行中<span>"));assert(!html.includes('id="task-ended-items" hidden'));assert(html.includes("已结束 1"));await h.click("ended-toggle");html=h.client.listMarkup("leader");assert(html.includes('id="task-ended-items" hidden'));
  h.state.goals=[];html=h.client.listMarkup("leader");assert(!html.includes("task-list-group"));assert(html.includes("还没有任务"));assert(html.includes('data-goal-act="create"'));
 });
+
+test("a delivered task shows its delivery as loading, not as undelivered, until the detail arrives",async()=>{
+  let release;const h=harness(()=>new Promise(done=>{release=done;}));h.client.sync("leader","a");
+  const pending=h.client.detailMarkup();assert(pending.includes("正在读取交付"));assert(!pending.includes("还没有交付"));
+  release({goal:h.state.goals.find(item=>item.id==="a"),context:{items:[],manifest:{}},executions:[],reports:[],documents:[]});await tick();
+  assert(h.client.detailMarkup().includes("还没有交付"));
+});
