@@ -37,9 +37,24 @@ def card(conn, value):
             data = json.loads(report['data_json'])
             brief = {'report_id': report['id'], 'summary': data['summary'], 'user_test': data.get('user_test'),
                      'created_at': report['created_at'], 'supplements_after_report': supplements}
+    work = goal_work.items(conn, value['id'])
+    doing = sorted((item for item in work if item['status'] == 'doing'), key=lambda item: (item['updated_at'], item['id']))
+    decision = conn.execute("SELECT d.id,d.question FROM goal_links l JOIN decisions d ON d.id=l.item_id "
+                            "WHERE l.kind='decision' AND l.goal_id=? AND d.status='open' ORDER BY d.created_at,d.id LIMIT 1",
+                            (value['id'],)).fetchone()
+    working = conn.execute("SELECT COUNT(DISTINCT session_id) FROM goal_executions WHERE goal_id=? AND round=? "
+                           "AND status IN ('running','pausing')", (value['id'], value['current_round'])).fetchone()[0]
+    # Latest stored activity across the task, its work items, executions and reports; display-only.
+    activity = conn.execute('SELECT MAX(at) FROM (SELECT updated_at AS at FROM goal_work_items WHERE goal_id=:g '
+                            'UNION ALL SELECT updated_at FROM goal_executions WHERE goal_id=:g '
+                            'UNION ALL SELECT created_at FROM goal_reports WHERE goal_id=:g '
+                            'UNION ALL SELECT created_at FROM goal_requirements WHERE goal_id=:g)', {'g': value['id']}).fetchone()[0]
     return {**value, 'request': req['request'], 'acceptance': req['acceptance'], 'native_handoffs': handoffs,
             'constraints': req['constraints'], 'report_available': bool(available), 'acceptance_brief': brief,
-            'work_summary': goal_work.summary(conn, value['id']), 'supplements_after_report': supplements}
+            'work_summary': goal_work.summary_of(work), 'supplements_after_report': supplements,
+            'now_doing': [{'key': item['key'], 'title': item['title'], 'session_id': item['owner_session_id']} for item in doing],
+            'pending_decision': dict(decision) if decision else None, 'working_count': working,
+            'last_activity_at': max(value['updated_at'], activity or value['updated_at'])}
 
 
 def context(conn, identity, execution_id=None):

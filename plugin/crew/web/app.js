@@ -16,7 +16,7 @@
   let leaderDrag = null, leaderOrderSaving = false;
   let allTab = "overview", period = "week", usageTab = "tree", usage = null, usageLoading = false, usageRequest = 0;
   let cardId = null, cardReturn = null, handoff = null, rightOpen = false, dialogReturn = null;
-  let theme = "system", leadersOpen = false, presenceOpen = false, presenceFailure = null;
+  let theme = "system", leadersOpen = true, presenceOpen = false, presenceFailure = null;
   let soundGeneration = 0;
   let runtimesCache = null, runtimesPromise = null, runtimesLoading = false, runtimesError = null;
   let auxiliaryDialog = 0;
@@ -27,7 +27,7 @@
   const sideDecisionsOpen = new Set(), decisionsOpen = new Set(), heldExpanded = new Set(), usageCollapsed = new Set(), operationIds = new Set();
   const todoExpanded = new Set(), todoActions = new Map(), todoSaving = new Set();
   let reportReaderOpen = false, behaviorSession = null;
-  let taskPanelScope = null, taskSidecar = null;
+  let taskPanelScope = null, taskSidecar = null, taskListScope = null, tasksOpen = true;
   let attentionScope = null, attentionVisible = false, taskVisible = false, sidecarFocus = "attention";
   let composingInput = null, compositionTimer = null, compositionRenderPending = false;
   const colors = ["#3E7C74", "#8A5A7E", "#A07A3A", "#4F6B8F", "#5E7F55", "#A8604F", "#8C7650", "#5C5F9E", "#A35D6A", "#4F7A8C", "#77773F"];
@@ -177,10 +177,10 @@
     const focusForm = focused?.form;
     const selection = focused && "selectionStart" in focused ? [focused.selectionStart, focused.selectionEnd] : null;
     const values = new Map(Array.from(node.querySelectorAll("[data-preserve]")).filter(item => "value" in item).map(item => [item.dataset.preserve, item.value]));
-    const scroll = Array.from(node.querySelectorAll(".page,.card-body,.tree,.tray-in,.lead-grid,.group-goal-list,.sb-leaders")).map(item => [item.className, item.scrollTop, item.scrollLeft]);
+    const scroll = Array.from(node.querySelectorAll(".page,.card-body,.tree,.tray-in,.lead-grid,.task-list-scroll,.leader-panel-leaders")).map(item => [item.className, item.scrollTop, item.scrollLeft]);
     node.innerHTML = html; node.dataset.render = html;
     for (const item of node.querySelectorAll("[data-preserve]")) if (values.has(item.dataset.preserve) && "value" in item) item.value = values.get(item.dataset.preserve);
-    for (const [name, top, left] of scroll) { const item = Array.from(node.querySelectorAll(".page,.card-body,.tree,.tray-in,.lead-grid,.group-goal-list,.sb-leaders")).find(item => item.className === name); if (item) { item.scrollTop = top; item.scrollLeft = left; } }
+    for (const [name, top, left] of scroll) { const item = Array.from(node.querySelectorAll(".page,.card-body,.tree,.tray-in,.lead-grid,.task-list-scroll,.leader-panel-leaders")).find(item => item.className === name); if (item) { item.scrollTop = top; item.scrollLeft = left; } }
     if (focusKey !== undefined) { const item = Array.from(node.querySelectorAll("[data-preserve]")).find(item => item.dataset.preserve === focusKey); if (item) { item.focus({preventScroll:true}); if (selection) item.setSelectionRange(...selection); } }
     else if (focused !== null) {
       const item = Array.from(node.querySelectorAll(focused.tagName)).find(item => item.id === focused.id && item.getAttribute("name") === focused.getAttribute("name") && item.getAttribute("type") === focused.getAttribute("type") && Object.entries(focusData).every(([key, value]) => item.dataset[key] === value) && (focusForm === null || focusForm === undefined || item.form !== null && item.form.id === focusForm.id && Object.entries(focusForm.dataset).every(([key, value]) => item.form.dataset[key] === value)));
@@ -250,24 +250,30 @@
   function leaderAttention(item) {
     return item.pending + (nativeApprovals?.countForLeader(item.session_id) || 0) + state.goals.filter(goal => goal.leader_session_id === item.session_id && goal.status === "awaiting_acceptance").length;
   }
-  function sidebarLeader(item, index) {
+  function sidebarLeader(item) {
     const selected = view === "chat" && leaderId === item.session_id && readOnlyId === null;
     const work = groupWork(item), attention = leaderAttention(item);
-    return `<div draggable="true" class="leader-row session-surface ${selected ? "active" : ""}" style="--item-delay:${Math.min(index,7) * 20}ms" data-act="leader" data-id="${esc(item.session_id)}" aria-label="${esc(item.name)}，${attention} 件待你" ${selected ? 'aria-current="page"' : ""}>${sessionOpen(item.session_id,"leader",item.name,selected)}${groupAvatar(item,work)}<span class="meta"><strong>${esc(item.name)}</strong>${item.goal === null ? "" : `<span class="goal" title="${esc(item.goal)}">${esc(item.goal)}</span>`}</span>${st(item.status)}${attention ? `<span class="b-pending">${attention}</span>` : ""}</div>`;
+    return `<div draggable="true" class="leader-row session-surface ${selected ? "active" : ""}" data-act="leader" data-id="${esc(item.session_id)}" aria-label="${esc(item.name)}，${attention} 件待你" ${selected ? 'aria-current="page"' : ""}>${sessionOpen(item.session_id,"leader",item.name,selected)}${groupAvatar(item,work)}<span class="meta"><strong>${esc(item.name)}</strong>${item.goal === null ? "" : `<span class="goal" title="${esc(item.goal)}">${esc(item.goal)}</span>`}</span>${st(item.status)}${attention ? `<span class="b-pending">${attention}</span>` : ""}</div>`;
   }
-  function setLeadersOpen(open, restore = false) {
+  function setLeadersOpen(open) {
     leadersOpen = open;
-    $("leader-flyout").dataset.open = String(open); $("leader-flyout").inert = !open;
-    $("leader-entry").setAttribute("aria-expanded",String(open));
-    if (open) { setPresenceOpen(false); $("leader-flyout").querySelector("button").focus({preventScroll:true}); }
-    else if (restore) $("leader-entry").focus({preventScroll:true});
+    $("leader-panel").dataset.open = String(open); $("leader-panel").inert = !open;
+    $("leader-entry").setAttribute("aria-expanded", String(open));
+    try { localStorage.setItem("crew.leadersOpen", String(open)); }
+    catch { leadersOpen = true; $("leader-panel").dataset.open = "true"; $("leader-panel").inert = false; $("leader-entry").setAttribute("aria-expanded", "true"); }
+  }
+  function setTasksOpen(open, restore = false) {
+    tasksOpen = open;
+    $("task-list").dataset.open = String(open); $("task-list").inert = !open;
+    $("chat-head").querySelector('[data-act="tasks-toggle"]').setAttribute("aria-expanded", String(open));
+    if (restore) $("chat-head").querySelector('[data-act="tasks-toggle"]').focus({preventScroll:true});
   }
   function setPresenceOpen(open) {
     presenceOpen = open; $("presence-popover").hidden = !open;
     $("presence-entry").setAttribute("aria-expanded",String(open));
   }
   function railQuota(label, limit) {
-    return `<span class="flyout-quota-row"><span><strong>${label}</strong><span>${quotaText(limit)}</span></span>${limit?.used_percent == null ? "" : `<progress max="100" value="${limit.used_percent}" aria-label="${label} 周额度已用"></progress>`}<small>${limit === null ? "尚未采集额度" : `${date(limit.resets_at)} 重置`}</small></span>`;
+    return `<span class="leader-panel-quota-row"><span><strong>${label}</strong><span>${quotaText(limit)}</span></span>${limit?.used_percent == null ? "" : `<progress max="100" value="${limit.used_percent}" aria-label="${label} 周额度已用"></progress>`}<small>${limit === null ? "尚未采集额度" : `${date(limit.resets_at)} 重置`}</small></span>`;
   }
   function renderSidebar() {
     if (leaderDrag !== null || leaderOrderSaving) return;
@@ -279,27 +285,28 @@
     const failure = failed ? JSON.stringify([state.notification.error,channels.map(channel => channel.state)]) : null;
     const flash = failure !== null && failure !== presenceFailure; presenceFailure = failure;
     const railButton = (act,label,icon,extra="",active=false) => `<button type="button" class="rail-button ${active ? "active" : ""}" data-act="${act}" title="${label}" aria-label="${label}" ${extra}>${ic(icon)}</button>`;
-    replace($("sidebar"), `<a class="rail-brand" href="/" title="${esc(projectDisplay(state.project))}" aria-label="${esc(projectDisplay(state.project))} · 工作区">${CrewTheme.logo()}</a><button type="button" id="leader-entry" class="rail-button leader-entry" data-act="leaders-toggle" title="Leader · ${attention} 件待你" aria-label="Leader，${attention} 件待你" aria-controls="leader-flyout" aria-expanded="${leadersOpen}"><span class="leader-stack">${leaders.slice(0,3).map(item => av(item.name,23)).join("") || ic("msg")}</span>${attention ? `<span class="rail-badge">${attention}</span>` : ""}</button><div class="rail-divider"></div>${railButton("view","主页","grid",'data-view="all"',view === "all")}${railButton("personal-notes","想法","pencil")}<a class="rail-button" href="/assistant.html" title="全局助手" aria-label="全局助手">${ic("msg")}</a><span class="rail-git">${railButton("view","Git","branch",'data-view="git"',view === "git")}${state.git_assistant?.attention > 0 ? `<span class="rail-badge">${state.git_assistant?.attention}</span>` : ""}</span><span class="rail-space"></span>${railButton("theme",`日间 / 夜间 · ${themeName}`,themeIcon)}<button type="button" id="presence-entry" class="rail-button presence-entry ${flash ? "presence-flash" : ""}" data-act="presence-toggle" title="${state.notification.away ? "我已离开" : "我在这里"}" aria-label="在场与消息连接" aria-controls="presence-popover" aria-expanded="${presenceOpen}"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 13h12v4H6zM7 17v5m10-5v5M5 7v6m14-6v6"/>${state.notification.away ? '<path d="M8 4h8v9"/>' : '<circle cx="12" cy="4" r="2"/><path d="M9 12V9a3 3 0 0 1 6 0v3"/>'}</svg><i class="presence-dot ${connection}"></i></button>${railButton("settings","设置","settings",'data-local-control')}
-      <section id="leader-flyout" class="leader-flyout" data-open="${leadersOpen}" aria-label="Leader 列表" ${leadersOpen ? "" : "inert"}><button class="flyout-channel" data-act="view" data-view="channel">💬 交流区 <span>›</span>${state.channel.unread ? `<span class="b-unread">${state.channel.unread}</span>` : ""}</button><div class="flyout-leaders"><section data-leader-zone="priority">${leaders.filter(item => item.priority !== null).sort((a,b) => a.priority-b.priority).map(sidebarLeader).join("")}</section><section data-leader-zone="normal">${leaders.filter(item => item.priority === null).map((item,index) => sidebarLeader(item,index + leaders.filter(person => person.priority !== null).length)).join("")}</section><button class="flyout-new btn ghost" data-act="modal-leader">＋ 新对话</button></div><button class="flyout-quota" data-act="view" data-view="usage" aria-label="查看完整额度和用量">${railQuota("Claude",state.limits.claude.seven_day)}${railQuota("Codex",state.limits.codex)}</button></section>
+    replace($("sidebar"), `<a class="rail-brand" href="/" title="${esc(projectDisplay(state.project))}" aria-label="${esc(projectDisplay(state.project))} · 工作区">${CrewTheme.logo()}</a><button type="button" id="leader-entry" class="rail-button leader-entry" data-act="leaders-toggle" title="Leader · ${attention} 件待你" aria-label="Leader，${attention} 件待你" aria-controls="leader-panel" aria-expanded="${leadersOpen}"><span class="leader-stack">${leaders.slice(0,3).map(item => av(item.name,23)).join("") || ic("msg")}</span>${attention ? `<span class="rail-badge">${attention}</span>` : ""}</button><div class="rail-divider"></div>${railButton("view","主页","grid",'data-view="all"',view === "all")}${railButton("personal-notes","想法","pencil")}<a class="rail-button" href="/assistant.html" title="全局助手" aria-label="全局助手">${ic("msg")}</a><span class="rail-git">${railButton("view","Git","branch",'data-view="git"',view === "git")}${state.git_assistant?.attention > 0 ? `<span class="rail-badge">${state.git_assistant?.attention}</span>` : ""}</span><span class="rail-space"></span>${railButton("theme",`日间 / 夜间 · ${themeName}`,themeIcon)}<button type="button" id="presence-entry" class="rail-button presence-entry ${flash ? "presence-flash" : ""}" data-act="presence-toggle" title="${state.notification.away ? "我已离开" : "我在这里"}" aria-label="在场与消息连接" aria-controls="presence-popover" aria-expanded="${presenceOpen}"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 13h12v4H6zM7 17v5m10-5v5M5 7v6m14-6v6"/>${state.notification.away ? '<path d="M8 4h8v9"/>' : '<circle cx="12" cy="4" r="2"/><path d="M9 12V9a3 3 0 0 1 6 0v3"/>'}</svg><i class="presence-dot ${connection}"></i></button>${railButton("settings","设置","settings",'data-local-control')}
       <section id="presence-popover" class="presence-popover" aria-label="在场与消息连接" ${presenceOpen ? "" : "hidden"}><button class="switch ${state.notification.manual_away ? "on" : ""}" data-act="away" role="switch" aria-checked="${state.notification.manual_away}"><span class="track"></span><span>我已离开</span></button>${notificationChannel()}${state.notification.error === null ? "" : `<p class="error-line">${esc(state.notification.error)}</p>`}<button class="text-link" data-local-control data-act="connection-settings">连接设置 ›</button></section>`);
+    replace($("leader-panel"), `<div class="leader-panel-content"><button class="leader-panel-channel" data-act="view" data-view="channel">💬 交流区 <span>›</span>${state.channel.unread ? `<span class="b-unread">${state.channel.unread}</span>` : ""}</button><div class="leader-panel-leaders"><section data-leader-zone="priority">${leaders.filter(item => item.priority !== null).sort((a,b) => a.priority-b.priority).map(sidebarLeader).join("")}</section><section data-leader-zone="normal">${leaders.filter(item => item.priority === null).map(sidebarLeader).join("")}</section><button class="leader-panel-new btn ghost" data-act="modal-leader">＋ 新对话</button></div><button class="leader-panel-quota" data-act="view" data-view="usage" aria-label="查看完整额度和用量">${railQuota("Claude",state.limits.claude.seven_day)}${railQuota("Codex",state.limits.codex)}</button></div>`);
+    $("leader-panel").dataset.open = String(leadersOpen); $("leader-panel").inert = !leadersOpen;
   }
   function clearLeaderDrop() {
-    $("sidebar").querySelectorAll(".drop-before,.drop-after,.drop-zone").forEach(item => item.classList.remove("drop-before", "drop-after", "drop-zone"));
+    $("leader-panel").querySelectorAll(".drop-before,.drop-after,.drop-zone").forEach(item => item.classList.remove("drop-before", "drop-after", "drop-zone"));
   }
   function finishLeaderDrag() {
     leaderDrag.classList.remove("dragging");
     leaderDrag = null;
-    $("sidebar").classList.remove("leader-drag-active");
+    $("leader-panel").classList.remove("leader-drag-active");
     clearLeaderDrop();
   }
   document.addEventListener("dragstart", event => {
-    const item = event.target.closest('#sidebar [data-act="leader"]');
+    const item = event.target.closest('#leader-panel [data-act="leader"]');
     if (item === null) return;
     if (leaderOrderSaving) { event.preventDefault(); return; }
     leaderDrag = item;
     item.classList.add("dragging");
     requestAnimationFrame(() => {
-      if (leaderDrag !== null) $("sidebar").classList.add("leader-drag-active");
+      if (leaderDrag !== null) $("leader-panel").classList.add("leader-drag-active");
     });
     event.dataTransfer.effectAllowed = "move";
     event.dataTransfer.setData("text/plain", item.dataset.id);
@@ -307,7 +314,7 @@
   document.addEventListener("dragover", event => {
     if (leaderDrag === null) return;
     clearLeaderDrop();
-    const zone = event.target.closest('#sidebar [data-leader-zone]');
+    const zone = event.target.closest('#leader-panel [data-leader-zone]');
     if (zone === null) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = "move";
@@ -317,7 +324,7 @@
   });
   document.addEventListener("drop", event => {
     if (leaderDrag === null) return;
-    const zone = event.target.closest('#sidebar [data-leader-zone]');
+    const zone = event.target.closest('#leader-panel [data-leader-zone]');
     if (zone === null) return;
     event.preventDefault();
     const id = leaderDrag.dataset.id, source = leaderDrag.closest('[data-leader-zone]').dataset.leaderZone;
@@ -431,6 +438,7 @@
     panel.hidden = !active || !attentionVisible && !rightOpen;
     panel.inert = panel.hidden || reportReaderOpen;
     $("side-task-section").inert = !taskVisible || reportReaderOpen;
+    if ($("task-list")) $("task-list").inert = !tasksOpen || reportReaderOpen;
     $("right-panel").hidden = !active || !rightOpen;
     $("right-panel").inert = !active || !rightOpen;
     slot.dataset.open = String(active && attentionVisible);
@@ -441,8 +449,14 @@
     }
     if (!panel.hidden) positionAttention();
     else { slot.style.height = "0px"; }
-    if (taskVisible) { const width = $("side-task-section").getBoundingClientRect().width; $("main").style.setProperty("--chat-side-space", window.innerWidth >= 1000 ? `${width + 24}px` : "0px"); }
-    else if (panel.hidden) $("main").style.setProperty("--chat-side-space", "0px");
+    if (taskVisible) {
+      const width = $("side-task-section").getBoundingClientRect().width;
+      $("main").style.setProperty("--chat-side-space", window.innerWidth >= 1000 ? `${width + 24}px` : "0px");
+      $("main").style.setProperty("--task-list-right", `${width + 24}px`);
+    } else {
+      $("main").style.setProperty("--task-list-right", panel.hidden ? "0px" : `${panel.getBoundingClientRect().width + 28}px`);
+      if (panel.hidden) $("main").style.setProperty("--chat-side-space", "0px");
+    }
   }
   function toggleSidecar(section) {
     sidecarFocus = section;
@@ -454,7 +468,7 @@
     taskVisible = true; $("side-task-section").hidden = false; syncSidecar();
   }
   function positionAttention() {
-    const host = $("goal-head") || $("chat-head"); if (!host) return;
+    const host = $("chat-head"); if (!host) return;
     const panel = $("chat-attention"), main = $("main"), rect = host.getBoundingClientRect();
     const width = Math.min(332, window.innerWidth - 24), top = Math.max(12, Math.min(rect.bottom + 10, window.innerHeight - 230));
     const height = Math.max(180, window.innerHeight - top - 14);
@@ -472,22 +486,21 @@
     const pending = pendingOf(leaderId), held = decisionsOf(leaderId).filter(item => item.held);
     const groupTodos = todosOf(leaderId);
     goals?.sync(leaderId, goalId);
-    const listing = goals?.showingList() === true;
     const access = chatAccess(item);
     const chatModel = `<button class="model-tag" data-act="model-menu" data-id="${esc(item.session_id)}" aria-haspopup="menu" title="切换模型和 effort"><span class="model-label">${esc(optionsLabel(item))}</span>${ic("down", "xs")}</button>`;
     const identity = `${item.session_id}:${access.readonly}:${access.readonlyReason ?? ""}`;
     if (mountedChat !== identity) {
       CrewChat.unmount();
-      const scaffold = '<div id="chat-head"></div><div id="goal-head"></div><div id="chat-host" class="chat-host"></div>';
+      const scaffold = '<div id="chat-head"></div><div id="chat-host" class="chat-host"></div><aside id="task-list" class="task-list" aria-label="任务" data-open="true"></aside>';
       if (goals) goals.replaceMain(scaffold); else $("main").innerHTML = scaffold;
       delete $("main").dataset.render;
       mountedChat = identity;
       CrewChat.mount({host:$("chat-host"), session:item, ...access, state, api, toast, beforeStop:() => confirmIdentityStop(item),
         async onRouted(id) { await loadState(true); if (mountedChat === identity) { const target = state.goals.find(goal => String(goal.id) === String(id)); if (target) navigate("chat", target.leader_session_id, null, target.id); else toast("目标已不在当前工作区中，请刷新。"); } }});
     }
-    const panelScope = `${leaderId}:${goalId}:${listing}`;
+    const panelScope = `${leaderId}:${goalId}`;
     if (taskPanelScope !== panelScope) {
-      const opened = goalId != null || listing;
+      const opened = goalId != null;
       if (opened && taskSidecar === null) { taskSidecar = {attentionVisible,rightOpen}; attentionVisible = false; rightOpen = false; }
       if (!opened && taskSidecar !== null) { ({attentionVisible,rightOpen} = taskSidecar); taskSidecar = null; }
       taskVisible = opened; $("side-task-section").hidden = !opened; taskPanelScope = panelScope;
@@ -499,16 +512,20 @@
     attentionScope = scope;
     replace($("native-approval-tray"), nativeApprovals?.chatMarkup(item.session_id, null, readOnlyId === null) || "");
     $("attention-scope").textContent = `${item.name} · 全部任务与总对话`;
-    replace($("chat-head"), `<div class="head">${readOnlyId === null ? groupAvatar(item, work) : av(item.name, 30)}<div class="heading-meta"><span class="chat-name" title="${esc(item.name)}">${esc(item.name)}</span>${runtimeBadge(item)}<span class="chat-scope" title="${esc(readOnlyId === null ? (item.goal ?? "") : `归 ${item.group} · 成员本人对话`)}">${esc(readOnlyId === null ? (item.goal ?? "") : `归 ${item.group} · 成员本人对话`)}</span>${group === undefined ? "" : `<span class="chat-member-stats ${work.active ? "is-working" : ""}">${members.length} 个下属 · ${members.filter(person => person.status === "working").length} 人在干活</span>`}</div><div class="right">${chatModel}<button class="icon-btn" data-act="card" data-id="${esc(item.session_id)}" title="资料" aria-label="资料">${ic("file", "sm")}</button><button type="button" class="attention-trigger ${attentionCount ? "has-items" : ""}" data-act="attention" aria-controls="side-attention-section" aria-expanded="${attentionVisible}" aria-label="待处理，${attentionCount} 件" title="待处理">${ic("inbox", "sm")}${attentionCount ? `<span class="attention-count">${attentionCount}</span>` : ""}</button>${group === undefined ? "" : `<button class="icon-btn rp-toggle" data-act="right-open" title="本组架构图" aria-label="本组架构图">${ic("grid")}</button>`}<button class="icon-btn" data-act="session-menu" data-id="${esc(item.session_id)}" aria-haspopup="menu" title="会话操作" aria-label="会话操作">⋯</button></div></div>`);
-    replace($("goal-head"), group ? goals?.groupMarkup(leaderId) || "" : "");
+    replace($("chat-head"), `<div class="head">${readOnlyId === null ? groupAvatar(item, work) : av(item.name, 30)}<div class="heading-meta"><span class="chat-name" title="${esc(item.name)}">${esc(item.name)}</span>${runtimeBadge(item)}<span class="chat-scope" title="${esc(readOnlyId === null ? (item.goal ?? "") : `归 ${item.group} · 成员本人对话`)}">${esc(readOnlyId === null ? (item.goal ?? "") : `归 ${item.group} · 成员本人对话`)}</span>${group === undefined ? "" : `<span class="chat-member-stats ${work.active ? "is-working" : ""}">${members.length} 个下属 · ${members.filter(person => person.status === "working").length} 人在干活</span>`}</div><div class="right">${chatModel}${readOnlyId === null ? `<button type="button" class="task-trigger" data-act="tasks-toggle" aria-controls="task-list" aria-expanded="${tasksOpen}" title="任务">${CrewGoals.listIcon()}<span>任务</span><span class="task-count">${state.goals.filter(task => task.leader_session_id === leaderId && !CrewGoals.ended(task.status)).length}</span></button><span class="chat-toolbar-divider" aria-hidden="true"></span>` : ""}<button type="button" class="attention-trigger ${attentionCount ? "has-items" : ""}" data-act="attention" aria-controls="side-attention-section" aria-expanded="${attentionVisible}" aria-label="待处理，${attentionCount} 件" title="待处理">${ic("inbox", "sm")}${attentionCount ? `<span class="attention-count">${attentionCount}</span>` : ""}</button>${group === undefined ? "" : `<button class="icon-btn rp-toggle" data-act="right-open" title="本组架构图" aria-label="本组架构图">${ic("grid")}</button>`}<button class="icon-btn" data-act="session-menu" data-id="${esc(item.session_id)}" aria-haspopup="menu" title="会话操作" aria-label="会话操作">⋯</button></div></div>`);
+    const listScope = readOnlyId === null ? leaderId : null;
+    if (taskListScope !== listScope) { tasksOpen = true; taskListScope = listScope; }
+    $("task-list").hidden = readOnlyId !== null;
+    if (readOnlyId === null) { replace($("task-list"), goals.listMarkup(leaderId)); setTasksOpen(tasksOpen); }
     replace($("decision-tray"), readOnlyId !== null ? "" : `<div class="tray-in">${todoTray(groupTodos, leaderId)}${pending.length === 0 ? "" : `<section class="tray-pending"><h3 class="attention-section-title">等你拍板 <span>${pending.length}</span></h3><div class="tray-list">${pending.map(sideDecision).join("")}</div></section>`}${heldGroup(held, "tray")}</div>`);
     $("attention-empty").hidden = permissions + (readOnlyId === null ? pending.length + held.length + groupTodos.length : 0) > 0;
     replace($("side-task-body"), goals?.sideMarkup(leaderId) || "");
-    $("side-task-title").textContent = goals?.currentGoal()?.title || "任务资料";
+    $("side-task-title").textContent = goals?.currentGoal()?.title || "任务详情";
+    replace($("side-task-mode"), taskVisible ? goals.modeMarkup() : "");
     $("side-attention-count").textContent = String(attentionCount);
     syncSidecar();
     CrewChat.update(state);
-    CrewChat.setTask(taskVisible && !listing ? goals.currentGoal() : null);
+    CrewChat.setTask(taskVisible ? goals.currentGoal() : null);
   }
   function chatAccess(item) {
     const control = item.native_handoff;
@@ -652,16 +669,12 @@
   function closeCard() { cardId = null; handoff = null; $("card").classList.remove("show"); $("card-back").classList.remove("show"); hideMenu(); renderRight(); returnFocus(cardReturn); }
   function renderCard() {
     if (cardId === null) return;
-    const item = sessionItem(cardId), isLeader = leader(cardId) !== undefined;
+    const item = member(cardId);
     if (item === undefined) { closeCard(); return; }
     const background = item.where === "bg", canStop = background && item.status === "working";
     const stopReason = background ? "这一轮没在工作" : item.where === "vscode" ? "开在 VS Code 里，去那边停" : "会话没在运行";
     const name = esc(item.name);
-    if (isLeader) replace($("card"), `<div class="card-head" data-session-menu="${esc(item.session_id)}" tabindex="0">${av(item.name,44)}<div style="min-width:0;flex:1"><div class="nm">${name}${contextControls(item,true)}</div><div class="meta">${runtimeBadge(item)}${st(item.status)}${memberModel(item)}</div></div><button class="icon-btn" data-act="card-close" aria-label="关闭会话资料">${ic("x")}</button></div>
-      <div class="card-actions">${window.CrewNativeHandoff?.markup(item,null) || ""}<button class="btn" data-act="group-tree">${ic("grid","sm")}本组架构图</button><span class="gap"></span><button class="icon-btn" data-act="session-menu" aria-label="会话操作">${ic("more")}</button></div>
-      <div class="card-body"><div class="sec"><h4>负责范围</h4><p>${item.goal === null || item.goal === "" ? "还没写" : CrewChat.renderInline(item.goal,item.session_id)}</p></div><div class="sec"><h4>本组进展</h4><p>${membersOf(item.session_id).length} 个下属 · ${groupWorkLabel(groupWork(item))}</p>${codexList(item)}</div></div>
-      <div class="card-foot"><code>${esc(item.session_id)}</code></div>`);
-    else replace($("card"), `<div class="card-head" data-session-menu="${esc(item.session_id)}" tabindex="0">${av(item.name, 44, true)}<div style="min-width:0;flex:1"><div class="nm">${name}${contextControls(item)}</div><div class="meta">${runtimeBadge(item)}${st(item.status)}<span>${ic(background ? "cloud" : item.where === "vscode" ? "code" : "clock", "xs")} ${background ? "后台运行" : item.where === "vscode" ? "开在 VS Code" : "没在运行"}</span><span>归 ${esc(item.group)}</span>${memberModel(item)}</div></div><button class="icon-btn" data-act="card-close" aria-label="关闭下属卡片">${ic("x")}</button></div>
+    replace($("card"), `<div class="card-head" data-session-menu="${esc(item.session_id)}" tabindex="0">${av(item.name, 44, true)}<div style="min-width:0;flex:1"><div class="nm">${name}${contextControls(item)}</div><div class="meta">${runtimeBadge(item)}${st(item.status)}<span>${ic(background ? "cloud" : item.where === "vscode" ? "code" : "clock", "xs")} ${background ? "后台运行" : item.where === "vscode" ? "开在 VS Code" : "没在运行"}</span><span>归 ${esc(item.group)}</span>${memberModel(item)}</div></div><button class="icon-btn" data-act="card-close" aria-label="关闭下属卡片">${ic("x")}</button></div>
       ${background && item.activity !== null ? `<div class="card-activity">${memberActivity(item)}</div>` : ""}
       <div class="card-actions"><button data-local-desktop class="btn primary" data-act="open-vscode" ${editorHandoffReason(item) ? `disabled title="${esc(editorHandoffReason(item))}"` : item.status === "working" ? 'disabled title="会话正在工作，请等它空闲后再打开"' : ""}>${ic("code", "sm")}在 VS Code 打开</button><span class="gap"></span><button class="icon-btn" data-act="rename" title="改名" aria-label="改名">${ic("pencil")}</button><button class="icon-btn" data-act="move-menu" title="换组" aria-label="换组">${ic("swap")}</button><button class="icon-btn" data-act="archive" title="归档" aria-label="归档">${ic("archive")}</button><button class="icon-btn" data-act="stop" ${canStop ? "" : "disabled"} title="${canStop ? "停下这一轮" : stopReason}" aria-label="停下这一轮">${ic("stop")}</button><button class="icon-btn" data-act="more-menu" title="更多" aria-label="更多">${ic("more")}</button></div>
       ${!localControls() ? "" : goalId == null ? runtimeSwitch?.entry(item) || "" : '<p class="editor-handoff-note">更换执行工具请回本组总对话，并先暂停该人员仍在推进的全部目标。</p>'}
@@ -741,7 +754,7 @@
     if (restore && menuAnchor?.isConnected) menuAnchor.focus({preventScroll:true});
   }
   function openSessionMenu(anchor, id, point = null) { showMenu(anchor, sessionMenu(sessionItem(id)), point); }
-  function sessionSurface(target) { return target.closest('[data-session-menu],#sidebar [data-act="leader"],[data-act="card"]'); }
+  function sessionSurface(target) { return target.closest('[data-session-menu],#leader-panel [data-act="leader"],[data-act="card"]'); }
   function openRename(id) {
     const item = sessionItem(id), isLeader = state.leaders.includes(item); hideMenu(); dialogReturn = focusDescriptor(document.activeElement);
     $("backdrop").innerHTML = `<form class="modal rename-modal" id="session-rename-form" data-id="${esc(id)}" data-original="${esc(item.name)}" role="dialog" aria-modal="true" aria-labelledby="rename-title"><div class="rename-heading"><span class="rename-icon">${ic("pencil")}</span><div><h3 id="rename-title">给${isLeader ? " leader " : "组员"}改名</h3><p class="d">${isLeader ? "本组 leader" : esc(item.group) + " 组的组员"}</p></div><button class="icon-btn" type="button" data-act="modal-close" aria-label="关闭改名">${ic("x")}</button></div><div class="rename-current">${av(item.name,32,!isLeader)}<div><span>当前名字</span><strong>${esc(item.name)}</strong></div></div><div class="field"><label for="session-new-name">新名字</label><input id="session-new-name" name="name" value="${esc(item.name)}" placeholder="取一个好辨认的名字" required maxlength="512" autocomplete="off"></div><p class="error-line" id="rename-error" role="alert"></p><div class="acts"><button class="btn ghost" type="button" data-act="modal-close">取消</button><button class="btn primary" type="submit" disabled>保存名字</button></div></form>`;
@@ -917,10 +930,11 @@
     if (location.hash.slice(1) !== hash) history.replaceState(null, "", `${location.pathname}${location.search}#${hash}`);
   }
   function navigate(next, id = null, readonly = null, nextGoal = undefined) {
-    if (leadersOpen) setLeadersOpen(false);
     if (presenceOpen) setPresenceOpen(false);
     if (nextGoal === undefined) nextGoal = next === "chat" && id === leaderId ? goalId : null;
     if (next === "chat" && nextGoal != null) readonly = null;
+    if (next !== "chat" || id !== leaderId) taskSidecar = null;
+    if (nextGoal != null && taskSidecar === null) taskSidecar = {attentionVisible,rightOpen};
     const sameScope = next === "chat" && view === "chat" && leaderId === id && String(goalId) === String(nextGoal);
     if (!sameScope || readOnlyId !== readonly) { closeTaskTools(); closeAttention(); }
     if (view === "chat" && (next !== "chat" || leaderId !== id || readOnlyId !== readonly)) { CrewChat.unmount(); mountedChat = null; }
@@ -942,7 +956,7 @@
   function render() {
     if (view !== "chat" || settingsOpen || workspaceOpen) closeAttention();
     if (settingsOpen || workspaceOpen) return;
-    if (view !== "chat") { closeTaskTools(); taskPanelScope = null; taskSidecar = null; goals?.sync(null, null); }
+    if (view !== "chat") { taskListScope = null; closeTaskTools(); taskPanelScope = null; taskSidecar = null; goals?.sync(null, null); }
     $("app").classList.toggle("wide", view !== "chat" || leaderId === null); renderSidebar();
     if (view !== "channel" && mountedChannel) { CrewChannel.unmount(); mountedChannel = false; }
     if (view !== "git") CrewGit.unmount();
@@ -1020,7 +1034,7 @@
     $("overlay-root").innerHTML = '<div class="card-back" id="card-back"></div><section class="card" id="card" role="dialog" aria-modal="true" aria-label="下属卡片" tabindex="-1"></section><div class="menu" id="menu" role="menu"></div><div class="backdrop" id="backdrop"></div><div id="settings-parking" hidden><section class="settings-popover" id="settings" aria-label="外观设置"></section></div>';
     const sideResize = new ResizeObserver(syncSidecar);
     sideResize.observe($("side-attention-section"));
-    sideResize.observe($("goal-head") || $("main"));
+    sideResize.observe($("main"));
     window.addEventListener("resize", syncSidecar);
     maintenance = window.CrewMaintenance.create({api,
       async onCleaned() { await loadState(true); if (view !== "all") navigate("all"); toast("已归档旧工作，可以重新开始"); }});
@@ -1043,6 +1057,7 @@
         remote:host => window.CrewRemoteAccess.mount(host,{read:()=>api("/api/remote-access"),action:body=>api("/api/remote-access",body)}),prompts:host => window.CrewBehaviorPrompts.mount(host,{read:query => api("/api/behavior-prompts?"+new URLSearchParams(query)),save:body => api("/api/behavior-prompts",body),project,session:behaviorSession || (view === "chat" ? readOnlyId || leaderId : null),execution:goals?.executionFor(behaviorSession || readOnlyId || leaderId)?.id}),appearance(host) { host.append($("settings")); return () => $("settings-parking").append($("settings")); }, connections:settingsConnections, storage:settingsStorage}});
     try { const stored = localStorage.getItem("crew.theme"); if (["system", "light", "dark"].includes(stored)) theme = stored; } catch (error) { toast(error.message); }
     try { const stored = Number(localStorage.getItem("crew.fontScale")); if (stored >= FONT_MIN && stored <= FONT_MAX) fontScale = stored; } catch (error) { toast(error.message); }
+    try { leadersOpen = localStorage.getItem("crew.leadersOpen") !== "false"; } catch { leadersOpen = true; }
     CrewChat.initFiles(api, toast);
     if (window.CrewNativeApprovals) nativeApprovals = window.CrewNativeApprovals.create({api,toast,refreshState:() => loadState(true),onChange() { if (!state || project === null) return; renderSidebar(); if (view === "chat") renderChat(); else if (view === "all") renderAll(); }});
     if (window.CrewDocuments && project !== null) documents = window.CrewDocuments.create({project, api, toast,
@@ -1053,13 +1068,13 @@
       }});
     memberUI = window.CrewMembers.create({api,toast,getLeader:id=>leader(id),globalChoice:()=>state?.ai?.member ?? null,catalog:runtimeList,
       refresh:async()=>{await refreshRuntimes();if(runtimesError)throw Error(runtimesError);},
-      onChanged:async(id,parent)=>{await loadState(true);if(id){goals?.closeList();navigate("chat",parent,id,null);}}});
+      onChanged:async(id,parent)=>{await loadState(true);if(id){navigate("chat",parent,id,null);}}});
     if (window.CrewRuntimeSwitch) runtimeSwitch = window.CrewRuntimeSwitch.create({
       getMember:id => state?.members.concat(state?.leaders || []).find(item => item.session_id === id), catalog:runtimeList, effortsFor:modelEfforts,
       refreshCatalog:refreshRuntimes, prepare:body => api("/api/session/runtime/prepare",body),
       switchRuntime:body => api("/api/session/runtime/switch",body), onChanged:() => { goals?.invalidate(); return loadState(true); }, toast});
     if (window.CrewGoals && project !== null) goals = window.CrewGoals.create({project, api, toast, state:() => state,
-      refreshState:() => loadState(true), onChange:() => { if (state && view === "chat") renderChat(); else if (state && view === "all") renderAll(); }, onReturn:returnToTaskPanel, onReader:active => { reportReaderOpen = active; $("chat-attention").inert = active || $("chat-attention").hidden; $("side-task-section").inert = active || !taskVisible; },
+      avatar:av, ago, refreshState:() => loadState(true), onChange:() => { if (state && view === "chat") renderChat(); else if (state && view === "all") renderAll(); }, onReturn:returnToTaskPanel, onReader:active => { reportReaderOpen = active; $("chat-attention").inert = active || $("chat-attention").hidden; $("side-task-section").inert = active || !taskVisible; if ($("task-list")) $("task-list").inert = active || !tasksOpen; },
       renderDocuments:(items,id) => documents?.taskCards(items,id),
       onNavigate:id => { const item = (state.goals || []).find(item => String(item.id) === String(id)); if (item) { if (cardId !== null) closeCard(); navigate("chat", item.leader_session_id, null, item.id); } else toast("目标已不在当前工作区中，请刷新。"); }});
     applyTheme(); applyFontScale(); renderSettings();
@@ -1074,7 +1089,6 @@
       if (button !== null && button.getAttribute('aria-expanded') !== 'true') openSubmenu(button);
     });
     document.addEventListener("pointerdown", event => {
-      if (leadersOpen && !event.target.closest('#leader-flyout,#leader-entry')) setLeadersOpen(false);
       if (presenceOpen && !event.target.closest('#presence-popover,#presence-entry')) setPresenceOpen(false);
     });
     document.addEventListener("click", event => {
@@ -1084,8 +1098,9 @@
       if (!event.target.closest("#menu") && !event.target.closest('[data-act$="-menu"]')) hideMenu();
       if (button === null || button.disabled) return;
       const act = button.dataset.act === "session-open" ? button.dataset.openAct : button.dataset.act, id = button.dataset.id;
+      if (act === "tasks-toggle") { setTasksOpen(!tasksOpen); return; }
       if (act === "leaders-toggle") { setLeadersOpen(!leadersOpen); return; }
-      if (act === "presence-toggle") { if (leadersOpen) setLeadersOpen(false); setPresenceOpen(!presenceOpen); return; }
+      if (act === "presence-toggle") { setPresenceOpen(!presenceOpen); return; }
       if (act === "connection-settings") { openSettings("connections"); return; }
       if (act === "settings") { openSettings(button.dataset.category || "ai", button.dataset.promptSession || null); return; }
       if (act === "personal-notes") { window.CrewPersonalNotes.create({api,project,projects:state.projects,onOpen:(name,sid) => { if(name===project)navigate("chat",sid);else location.href=`/?project=${encodeURIComponent(name)}#leader=${encodeURIComponent(sid)}`; }}).open(); return; }
@@ -1115,9 +1130,9 @@
       });
       else if (act === "wake-session") action(`wake:${id}`, async () => { await api("/api/wake", {session_id:id, text:"用户叫醒了你，请继续当前任务。"}); await loadState(true); toast("已叫醒"); });
       else if (act === "session-handoff") action(`continue:${id}`, async () => { await api("/api/open/continue", {session_id:id, confirm:handoff.needs_confirmation}); handoff = null; closeBackdrop(); await loadState(true); toast("已在 VS Code 接上同一个会话"); });
-      else if (act === "leader") { if (leadersOpen) setLeadersOpen(false,true); if (cardId !== null) closeCard(); goals?.closeList(); navigate("chat", id, null, null); }
-      else if (act === "active-goal") { const target = (state.goals || []).find(goal => String(goal.id) === button.dataset.goalId); if (target) { goals?.closeList(); navigate("chat",target.leader_session_id,id === target.leader_session_id ? null : id,target.id); } }
-      else if (act === "member-chat") { const item = member(id); if (item) { if (cardId !== null) closeCard(); goals?.closeList(); navigate("chat", item.leader_session_id, item.session_id, null); } }
+      else if (act === "leader") { tasksOpen = true; if (cardId !== null) closeCard(); navigate("chat", id, null, null); }
+      else if (act === "active-goal") { const target = (state.goals || []).find(goal => String(goal.id) === button.dataset.goalId); if (target) { navigate("chat",target.leader_session_id,id === target.leader_session_id ? null : id,target.id); } }
+      else if (act === "member-chat") { const item = member(id); if (item) { if (cardId !== null) closeCard(); navigate("chat", item.leader_session_id, item.session_id, null); } }
       else if (act === "view") { if (cardId !== null) closeCard(); if (button.dataset.view === "all") allTab = "overview"; navigate(button.dataset.view); }
       else if (act === "native-handoff" || act === "native-return") { const selectedGoal = button.dataset.goalId || null; action("native:" + id, () => CrewNativeHandoff.act(act.slice(7), id, selectedGoal, {api,refresh:async() => { if(selectedGoal) await goals?.refresh(selectedGoal); await loadState(true); },notice:toast})); }
       else if (act === "todo-toggle") { if (todoExpanded.has(id)) todoExpanded.delete(id); else todoExpanded.add(id); renderTodoSurface(); }
@@ -1163,7 +1178,7 @@
       else if (act === "goal-review") { const item = (state.goals || []).find(goal => String(goal.id) === id); if (item) { navigate("chat", item.leader_session_id, null, item.id); returnToTaskPanel(); } else toast("目标已不在当前工作区中，请刷新。"); }
       else if (act === "right-open") toggleSidecar("tree");
       else if (act === "right-close") { rightOpen = false; syncSidecar(); $("main").querySelector('[data-act="right-open"]')?.focus(); }
-      else if (act === "side-section-close") { if (button.dataset.section === "tasks") { goals.closeList(); navigate("chat", leaderId, readOnlyId, null); $("goal-head").querySelector('[data-goal-act="list"]').focus(); } else { attentionVisible = false; syncSidecar(); $("chat-head").querySelector('[data-act="attention"]')?.focus(); } }
+      else if (act === "side-section-close") { if (button.dataset.section === "tasks") { navigate("chat", leaderId, readOnlyId, null); $("chat-head").querySelector('[data-act="tasks-toggle"]')?.focus(); } else { attentionVisible = false; syncSidecar(); $("chat-head").querySelector('[data-act="attention"]')?.focus(); } }
       else if (act === "modal-leader") openModalLeader();
       else if (act === "leader-runtime" || act === "leader-model" || act === "leader-effort") {
         const form = $("leader-form"), field = {"leader-runtime":"runtime", "leader-model":"model", "leader-effort":"effort"}[act];
@@ -1262,11 +1277,10 @@
         } else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) items[event.key === "Home" ? 0 : event.key === "End" ? items.length - 1 : (index + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length].focus();
         return;
       }
-      if (event.key === "Escape" && leadersOpen) { event.preventDefault(); setLeadersOpen(false,true); return; }
       if (event.key === "Escape" && presenceOpen) { event.preventDefault(); setPresenceOpen(false); $("presence-entry").focus(); return; }
       if (event.key === "Escape" && settingsOpen) { closeSettings(); return; }
       if (settingsOpen) return;
-      if (event.key === "Escape") { if ($("menu").classList.contains("show")) { hideMenu(); return; } if ($("backdrop").classList.contains("show")) closeBackdrop(); else if (cardId !== null) closeCard(); else if (goals?.escape()) { event.preventDefault(); return; } else if (taskVisible) { event.preventDefault(); goals.closeList(); navigate("chat", leaderId, readOnlyId, null); $("goal-head").querySelector('[data-goal-act="list"]').focus(); } else if (attentionOpen() && !event.isComposing) { event.preventDefault(); if (attentionVisible) { attentionVisible = false; sidecarFocus = "attention"; syncSidecar(); $("chat-head").querySelector('[data-act="attention"]')?.focus(); } else closeAttention(true); } }
+      if (event.key === "Escape") { if ($("menu").classList.contains("show")) { hideMenu(); return; } if ($("backdrop").classList.contains("show")) closeBackdrop(); else if (cardId !== null) closeCard(); else if (goals?.escape()) { event.preventDefault(); return; } else if (tasksOpen && $("task-list")?.contains(document.activeElement)) { event.preventDefault(); setTasksOpen(false, true); } else if (taskVisible) { event.preventDefault(); navigate("chat", leaderId, readOnlyId, null); $("chat-head").querySelector('[data-act="tasks-toggle"]')?.focus(); } else if (attentionOpen() && !event.isComposing) { event.preventDefault(); if (attentionVisible) { attentionVisible = false; sidecarFocus = "attention"; syncSidecar(); $("chat-head").querySelector('[data-act="attention"]')?.focus(); } else closeAttention(true); } }
       if (event.key === "Tab") {
         const surface = $("backdrop").classList.contains("show") ? $("backdrop") : cardId !== null ? $("card") : null;
         if (surface === null) return;

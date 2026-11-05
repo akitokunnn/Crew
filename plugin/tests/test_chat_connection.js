@@ -500,10 +500,10 @@ test("starting a queued goal retains the leader transcript, stream, draft and re
   const h=harness(),nodes=new Map(),calls=[];
   let execution=null;
   const person={session_id:"leader",name:"测试负责人",runtime:"codex",model:null,effort:null,busy:false,last_seq:0,activity:null,where:"bg",priority:null,status:"idle",codex:[]};
-  const goal={id:"goal",leader_session_id:"leader",title:"真实目标",request:"推进并交付",acceptance:[],status:"queued",current_round:1,requirement_version:1,version:1};
+  const goal={assignments:[],work_summary:{total:0,done:0},decision_mode:{mode:"human"},now_doing:[],pending_decision:null,working_count:0,last_activity_at:"2026-11-05T00:00:00Z",supplements_after_report:[],id:"goal",leader_session_id:"leader",title:"真实目标",request:"推进并交付",acceptance:[],status:"queued",current_round:1,requirement_version:1,version:1};
   const state={project:{name:"fixture"},leaders:[person],members:[],decisions:[],todos:[],goals:[goal],runtimes:[{id:"codex",name:"Codex",available:true,models:[],efforts:[]}]};
   const main=host();nodes.set("main",main);
-  for(const id of ["chat-attention","attention-slot","attention-scope","attention-empty","native-approval-tray","decision-tray","side-task-section","side-attention-section","side-task-body","side-task-title","side-attention-count","right-panel"])nodes.set(id,host());
+  for(const id of ["chat-attention","attention-slot","attention-scope","attention-empty","native-approval-tray","decision-tray","side-task-section","side-attention-section","side-task-body","side-task-title","side-task-mode","side-attention-count","right-panel"])nodes.set(id,host());
   Object.defineProperty(main,"innerHTML",{set(value){this.markup=value;for(const [,id]of value.matchAll(/id="([^"]+)"/g))nodes.set(id,host());},get(){return this.markup||"";}});
   h.sandbox.document.getElementById=id=>nodes.get(id)||null;
   h.sandbox.location={search:"?project=fixture",origin:"http://fixture.local"};
@@ -521,7 +521,7 @@ test("starting a queued goal retains the leader transcript, stream, draft and re
   const appSource=fs.readFileSync(path.join(__dirname,"../crew/web/app.js"),"utf8").replace(/\r\n/g,"\n");
   vm.runInContext(appSource.replace("  setup();\n})();",'window.appFixture={renderChat,configure(value,client,request){state=value;goals=client;api=request;view="chat";leaderId="leader";goalId="goal";}};\n})();'),h.sandbox);
   vm.runInContext(fs.readFileSync(path.join(__dirname,"../crew/web/goal-ui.js"),"utf8"),h.sandbox);
-  const goalUI=h.sandbox.CrewGoals.create({project:"fixture",state:()=>state,api,toast(){},onChange:()=>h.sandbox.appFixture.renderChat(),refreshState:async()=>h.sandbox.appFixture.renderChat()});
+  const goalUI=h.sandbox.CrewGoals.create({project:"fixture",state:()=>state,api,avatar:()=>"",ago:()=>"",toast(){},onChange:()=>h.sandbox.appFixture.renderChat(),refreshState:async()=>h.sandbox.appFixture.renderChat()});
   h.sandbox.appFixture.configure(state,goalUI,api);h.sandbox.appFixture.renderChat();await tick();
   assert.equal(h.connections.length,1);const emptyStream=h.connections[0],queuedHost=nodes.get("chat-host");
   queuedHost.querySelector("textarea").value="目标开始后仍要保留的草稿";queuedHost.querySelector("textarea").oninput();

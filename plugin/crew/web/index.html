@@ -58,6 +58,7 @@
 <body>
   <div class="app" id="app">
     <aside class="sb" id="sidebar" aria-label="工作区导航"></aside>
+    <aside id="leader-panel" class="leader-panel" aria-label="Leader 列表" data-open="true"></aside>
     <main class="main" id="main" aria-label="工作区内容"></main>
   </div>
   <div id="overlay-root"></div>
@@ -71,7 +72,7 @@
     <aside class="rp" id="right-panel" aria-label="本组架构图" hidden></aside>
   </aside>
   <aside id="side-task-section" class="task-tools-panel" role="dialog" aria-labelledby="side-task-title" hidden>
-    <header class="attention-head"><div><h2 id="side-task-title">任务资料</h2></div><button type="button" class="icon-btn" data-act="side-section-close" data-section="tasks" aria-label="关闭任务资料">×</button></header>
+    <header class="attention-head"><div><h2 id="side-task-title">任务详情</h2></div><div id="side-task-mode"></div><button type="button" class="icon-btn" data-act="side-section-close" data-section="tasks" aria-label="关闭任务详情">×</button></header>
     <div id="side-task-body" class="task-tools-scroll"></div>
   </aside>
   <section id="settings-surface" aria-label="Crew 设置" hidden></section>

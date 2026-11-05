@@ -3,7 +3,7 @@ const {chromium}=require('playwright');
 const {spawn}=require('node:child_process');
 const fs=require('node:fs/promises'),path=require('node:path'),assert=require('node:assert/strict');
 const root=path.resolve(__dirname,'../..');
-const out=path.join(root,'Temp/ui-align/batch2/panel-refresh');
+const out=path.join(root,'Temp/ui-align/batch3/panel-refresh');
 let fixture,browser;
 async function main(){
   await fs.mkdir(out,{recursive:true});

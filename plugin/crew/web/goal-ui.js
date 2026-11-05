@@ -37,9 +37,21 @@
     if (items.length === 0) return "";
     return `<section class="goal-supplements"><button type="button" class="text-link" data-goal-act="supplements-toggle" aria-expanded="${open}">交付后你又补充了 ${items.length} 条 · ${open ? "收起" : "展开"}</button>${open ? `<ol>${[...items].sort((a,b) => a.version-b.version).map(item => `<li><div><span>需求 v${esc(item.version)}${item.actor === "user" ? "" : ` · ${esc(people.find(person => person.session_id === item.actor).name)}`}</span><time datetime="${esc(item.at)}">${esc(when(item.at))}</time></div><p>${esc(item.text)}</p></li>`).join("")}</ol>` : ""}</section>`;
   }
+  const listIcon = () => '<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="3"/><path d="m7 8 1 1 2-2m-3 6 1 1 2-2m-3 6 1 1 2-2M13 8h4m-4 5h4m-4 5h4"/></svg>';
+  const modeIcon = mode => mode === "autonomous" ? '<path d="m13 3-8 10h6l-1 8 9-11h-6z"/>' : '<path d="M8 12V6a2 2 0 0 1 4 0v5-7a2 2 0 0 1 4 0v8-5a2 2 0 0 1 4 0v8c0 4-3 6-7 6h-1c-2 0-3-1-4-3l-4-5a2 2 0 0 1 3-2l1 1z"/>';
+  function taskCard(item, people, selected, avatar, ago) {
+    const review = item.status === "awaiting_acceptance", decision = !ended(item.status) && item.pending_decision;
+    // Assignments are never released, so closed or removed members stay assigned but are no longer listed people.
+    const person = id => people.find(entry => entry.session_id === id);
+    const work = item.work_summary, doing = item.now_doing?.[0], doer = doing && person(doing.session_id);
+    const summary = review ? item.acceptance_brief?.summary : decision ? decision.question : item.status === "running" && doing ? `正在：${doer ? doer.name + " " : ""}${doing.title}` : "";
+    const icon = review ? '<circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/>' : decision ? '<circle cx="12" cy="12" r="9" stroke-dasharray="3 3"/><path d="M12 7v6m0 3v1"/>' : item.status === "running" ? `<circle class="task-ring-track" cx="12" cy="12" r="9"/><circle class="task-ring-value" cx="12" cy="12" r="9" pathLength="100" stroke-dasharray="${work.total === 0 ? 0 : work.done / work.total * 100} 100"/>` : '<circle cx="12" cy="12" r="9"/><path d="M9 8v8m6-8v8"/>';
+    const members = item.assignments.map(assignment => person(assignment.session_id)).filter(Boolean);
+    return `<button type="button" class="task-card ${review ? "is-review" : decision ? "is-decision" : ""}" data-goal-act="open" data-goal-id="${esc(item.id)}" aria-pressed="${String(selected) === String(item.id)}"><span class="task-card-heading"><svg class="i task-state-icon" viewBox="0 0 24 24" aria-hidden="true">${icon}</svg><strong title="${esc(item.title)}">${esc(item.title)}</strong><span class="goal-status" data-status="${esc(item.status)}">${review ? "待验收" : decision ? "等你拍板" : item.status === "running" ? "执行中" : esc(status(item.status))}</span></span>${summary ? `<span class="task-card-summary ${decision && !review ? "decision-question" : ""}" title="${esc(summary)}">${esc(summary)}</span>` : ""}${work.total > 0 ? `<span class="task-card-progress"><span>清单 ${work.done}/${work.total}</span><progress max="${work.total}" value="${work.done}" aria-label="${esc(item.title)} 清单进度"></progress></span>` : ""}<span class="task-card-foot"><span class="task-card-people"><span class="task-avatar-stack">${members.slice(0,3).map(person => avatar(person.name,18,true)).join("")}${members.length > 3 ? `<span class="task-avatar-more">+${members.length-3}</span>` : ""}</span><span>${item.working_count} 人在干活</span></span><span class="task-card-mode"><svg class="i" viewBox="0 0 24 24" aria-hidden="true">${modeIcon(item.decision_mode.mode)}</svg>${item.decision_mode.mode === "autonomous" ? "自主推进" : "由我拍板"}</span>${item.current_round > 1 ? `<span>第 ${item.current_round} 轮</span>` : ""}${review && item.supplements_after_report.length > 0 ? `<span class="task-card-supplements">交付后你补充了 ${item.supplements_after_report.length} 条</span>` : ""}<time class="task-card-updated" datetime="${esc(item.last_activity_at)}" title="${esc(when(item.last_activity_at))}">${esc(ago(item.last_activity_at))}</time></span></button>`;
+  }
   function create(options) {
     const details = new Map(), loading = new Map(), requestedVersion = new Map(), errors = new Map();
-    const expandedGroups = new Set(), conclusionsOpen = new Set(), reportNotesOpen = new Set(), supplementsOpen = new Set();
+    const endedOpen = new Set(), conclusionsOpen = new Set(), reportNotesOpen = new Set(), supplementsOpen = new Set();
     let pendingAction = "", actionError = "";
     let ownerId = null, goalId = null, reportGeneration = 0, reader = null, formOverlay = null, actionBusy = false;
     let reading = null, deliveryNotice = null;
@@ -58,7 +70,7 @@
     function restoreFocus(selector) {
       const target = document.querySelector?.(selector);
       if (target?.closest?.('#side-task-section')) options.onReturn?.();
-      (document.querySelector?.(selector) || document.querySelector?.('[data-goal-act="list"]'))?.focus();
+      (document.querySelector?.(selector) || document.querySelector?.('[data-act="tasks-toggle"]'))?.focus();
     }
     function executionFor(id) {
       const active = goal();
@@ -83,7 +95,7 @@
       loading.set(key, task); return task;
     }
     function sync(nextOwner, nextGoal) {
-      if (ownerId !== nextOwner || String(goalId) !== String(nextGoal)) { closeReport(); actionError = ""; ownerId = nextOwner; goalId = nextGoal; if (nextGoal != null) expandedGroups.delete(nextOwner); }
+      if (ownerId !== nextOwner || String(goalId) !== String(nextGoal)) { closeReport(); actionError = ""; ownerId = nextOwner; goalId = nextGoal; }
       const listed = byId(goalId), key = String(goalId);
       if (goalId != null && !loading.has(key) && (!requestedVersion.has(key) || listed && requestedVersion.get(key) !== signature(goalId))) void load();
       renderReport();
@@ -104,15 +116,19 @@
       const notes = unresolved.length ? `<div class="goal-delivery-notes"><button class="text-link" data-goal-act="report-notes-toggle" data-report-id="${esc(report.id)}" aria-expanded="${notesOpen}">尚存问题 · ${unresolved.length} 条 · ${notesOpen ? "收起" : "展开"}</button>${notesOpen ? `<p>报告记录的限制与未完成事项：</p><ul class="goal-delivery-unresolved-list">${unresolved.map(item => `<li>${esc(item)}</li>`).join("")}</ul>` : ""}</div>` : "";
       return `<section class="goal-delivery" aria-label="当前交付结论"><div class="goal-delivery-head"><strong>本次结果</strong><span>${esc(outcomes[report.status])}</span></div><p class="goal-delivery-summary ${open ? "open" : ""}">${esc(report.summary)}</p>${active.status === "awaiting_acceptance" ? supplementsMarkup(active.supplements_after_report, [...state().leaders, ...state().members, ...(state().git_assistant === null ? [] : [state().git_assistant])], supplementsOpen.has(key)) : ""}<div class="goal-delivery-foot"><div class="goal-delivery-meta"><span>AI 验证</span>${recorded.length ? `<span class="goal-acceptance-total">共 ${esc(total)} 项</span>${recorded.map(([name,label]) => `<span class="goal-acceptance-count" data-kind="${name}">${label} ${esc(counts[name])}</span>`).join("")}` : "<span>没有逐项验收记录</span>"}</div><div class="goal-delivery-actions">${folds ? `<button class="text-link" data-goal-act="conclusion-toggle" data-report-id="${esc(report.id)}" aria-expanded="${open}">${open ? "收起" : "展开全文"}</button>` : ""}<button class="btn ghost" data-goal-act="delivery" data-goal-id="${esc(key)}">查看完整报告</button></div></div>${notes}</section>${notice}`;
     }
-    function groupMarkup(id) {
-      const list = goals().filter(item => item.leader_session_id === id), active = goal();
-      return `<div class="group-goal-bar"><button class="btn ghost" data-goal-act="list" aria-expanded="${expandedGroups.has(id)}" aria-controls="side-task-section">任务清单 <span>${list.length}</span></button><span class="gap"></span>${active ? `<div class="goal-mode-control" role="group" aria-label="本任务决策方式">${[["human","由我拍板"],["autonomous","自主推进"]].map(([mode,label]) => `<button type="button" data-goal-act="mode" data-mode="${mode}" aria-pressed="${active.decision_mode?.mode === mode}" ${actionBusy ? "disabled" : ""}>${label}</button>`).join("")}</div>` : ""}<button class="btn ghost" data-goal-act="create" data-leader-id="${esc(id)}">＋ 建立目标</button></div>`;
+    function modeMarkup() {
+      const active = goal();
+      return active ? `<div class="goal-mode-control" role="group" aria-label="本任务决策方式">${[["human","由我拍板"],["autonomous","自主推进"]].map(([mode,label]) => `<button type="button" data-goal-act="mode" data-mode="${mode}" aria-pressed="${active.decision_mode?.mode === mode}" ${actionBusy ? "disabled" : ""}>${label}</button>`).join("")}</div>` : "";
     }
-    function sideMarkup(id = ownerId) {
-      if (goalId == null || expandedGroups.has(id)) {
-        const list = goals().filter(item => item.leader_session_id === id);
-        return `<div class="goal-quick-list">${list.map(item => `<button type="button" class="side-task-row" data-goal-act="open" data-goal-id="${esc(item.id)}" aria-current="${String(item.id) === String(goalId) ? "true" : "false"}"><span class="goal-status" data-status="${esc(item.status)}">${esc(status(item.status))}</span><span>${esc(item.title)}</span><span aria-hidden="true">›</span></button>`).join("") || '<p class="note">本组还没有任务。</p>'}</div><div class="side-task-links"><button class="text-link" data-goal-act="list">查看完整清单</button><button class="text-link" data-goal-act="create" data-leader-id="${esc(id)}">建立目标</button></div>`;
-      }
+    function listMarkup(id) {
+      const list = goals().filter(item => item.leader_session_id === id), people = [...state().leaders, ...state().members];
+      const review = list.filter(item => item.status === "awaiting_acceptance"), active = list.filter(item => !ended(item.status) && item.status !== "awaiting_acceptance"), done = list.filter(item => ended(item.status));
+      const create = `<button type="button" class="btn ghost" data-goal-act="create" data-leader-id="${esc(id)}">＋ 建立目标</button>`;
+      const group = (title, items) => items.length ? `<section class="task-list-group"><h3>${title}<span>${items.length}</span></h3>${items.map(item => taskCard(item, people, goalId, options.avatar, options.ago)).join("")}</section>` : "";
+      return `<header class="task-list-head">${listIcon()}<h2>任务<span>${review.length + active.length} 项进行中</span></h2>${create}</header><div class="task-list-scroll">${group("待你验收",review)}${group("进行中",active)}${done.length ? `<section class="task-list-group task-list-ended"><button type="button" class="task-ended-toggle" data-goal-act="ended-toggle" aria-expanded="${endedOpen.has(id)}" aria-controls="task-ended-items">${endedOpen.has(id) ? "⌄" : "›"} 已结束 ${done.length}</button><div id="task-ended-items" ${endedOpen.has(id) ? "" : "hidden"}>${done.map(item => taskCard(item, people, goalId, options.avatar, options.ago)).join("")}</div></section>` : ""}${list.length === 0 ? `<div class="goals-empty">还没有任务，明确需求后建立一个目标。${create}</div>` : ""}</div>`;
+    }
+    function sideMarkup() {
+      if (goalId == null) return "";
       const active = goal();
       if (!active) return `<p class="note">${esc(errors.get(String(goalId)) || "正在读取任务…")}</p><button class="btn ghost" data-goal-act="refresh">重新读取</button>`;
       const result = current(), reports = result?.reports || [], review = result?.acceptance_review || result?.previous_acceptance_review;
@@ -170,7 +186,7 @@
     // (or the newest historical one, labelled as such). Every await re-checks the generation, so a late
     // detail or HTML response can never open a report after the user switched, closed or chose other materials.
     async function openDelivery(id) {
-      const key = String(id); expandedGroups.delete(byId(id)?.leader_session_id);
+      const key = String(id);
       // Inside the same goal keep the person whose conversation is open; only cards from a list navigate.
       if (String(goalId) !== key) options.onNavigate(id);
       if (String(goalId) !== key) return;
@@ -224,7 +240,7 @@
     document.addEventListener("click", async event => {
       const button = event.target.closest("[data-goal-act]"); if (!button || button.disabled) return;
       const act = button.dataset.goalAct;
-      if (act === "open") { expandedGroups.delete(byId(button.dataset.goalId)?.leader_session_id); options.onNavigate(button.dataset.goalId); }
+      if (act === "open") options.onNavigate(button.dataset.goalId);
       else if (act === "leader-mode" && !actionBusy) {
         const leader = state()?.leaders.find(item => item.session_id === button.dataset.leaderId);
         const enabled = button.dataset.mode === "autonomous";
@@ -251,7 +267,7 @@
       else if (act === "delivery") void openDelivery(button.dataset.goalId);
       else if (act === "retry-report") retryDirect();
       else if (act === "conclusion-toggle" || act === "report-notes-toggle") { const key = `${goalId}:${button.dataset.reportId}`, expanded = act === "report-notes-toggle" ? reportNotesOpen : conclusionsOpen; if (expanded.has(key)) expanded.delete(key); else expanded.add(key); changed(); }
-      else if (act === "list") { expandedGroups.add(ownerId); closeReport(); changed(); document.querySelector?.('[data-goal-act="list"]')?.focus(); }
+      else if (act === "ended-toggle") { if (endedOpen.has(ownerId)) endedOpen.delete(ownerId); else endedOpen.add(ownerId); changed(); }
       else if (act === "create") showCreate(button.dataset.leaderId);
       else if (act === "close-create" && !actionBusy) { const action = formOverlay?.querySelector("[data-goal-confirm]")?.dataset.goalConfirm; formOverlay?.remove(); formOverlay = null; restoreFocus(action ? `[data-action="${action}"]` : '[data-goal-act="create"]'); }
       else if (act === "refresh") void load();
@@ -273,8 +289,8 @@
       if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
       else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
     });
-    return {sync, closeReport, escape, showList() { expandedGroups.add(ownerId); closeReport(); changed(); }, groupMarkup, sideMarkup, cards:() => cards(goals(), state()?.leaders), refresh:load, currentGoal:goal, executionFor, showingList:() => expandedGroups.has(ownerId), closeList:() => expandedGroups.delete(ownerId), replaceMain,
+    return {sync, closeReport, escape, listMarkup, modeMarkup, sideMarkup, cards:() => cards(goals(), state()?.leaders), refresh:load, currentGoal:goal, executionFor, replaceMain,
       invalidate() { requestedVersion.clear(); details.clear(); }};
   }
-  window.CrewGoals = {create, cards, status, reportPath, reportDocument, supplementsMarkup};
+  window.CrewGoals = {create, cards, taskCard, listIcon, ended, status, reportPath, reportDocument, supplementsMarkup};
 })();
