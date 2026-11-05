@@ -87,3 +87,33 @@ class GoalWorkTests(GoalFixture):
         with self.assertRaisesRegex(board.Conflict, '工作清单'):
             goal_actions.dispatch(self.home, 'chief-id', None, 'finish', {'goal_id': self.gid, 'report': self.report('awaiting_acceptance')}, controller=SimpleNamespace())
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM goal_reports').fetchone()[0], 0)
+
+
+class GoalCardFieldTests(GoalFixture):
+    def test_card_shows_current_work_open_question_workers_and_latest_activity(self):
+        goal = self.goal()
+        empty = goal_api.card(self.conn, goals.get(self.conn, goal['id']))
+        self.assertEqual((empty['now_doing'], empty['pending_decision'], empty['working_count']), ([], None, 0))
+        self.assertEqual(empty['last_activity_at'], goal['updated_at'])
+        goals.transition(self.conn, goal['id'], 'running')
+        lead = goals.create_execution(self.conn, goal['id'], 'chief-id', runtime='claude')
+        goals.set_execution_status(self.conn, lead['id'], 'running')
+        for key, owner in (('second', 'chief-id'), ('first', 'chief-id'), ('idle', 'chief-id')):
+            goal_work.add(self.conn, goal['id'], key, '做 ' + key, '通过', actor='chief-id', owner=owner)
+        for key, at in (('second', '2030-01-01T00:00:02'), ('first', '2030-01-01T00:00:01')):
+            goal_work.update(self.conn, goal['id'], key, 1, status='doing', actor='chief-id')
+            self.conn.execute('UPDATE goal_work_items SET updated_at=? WHERE goal_id=? AND key=?', (at, goal['id'], key))
+        first = board.ask(self.conn, 'chief-id', 'd.txt 用中文还是英文', ['中文', '英文'], execution_id=lead['id'])
+        board.ask(self.conn, 'chief-id', '第二个问题', ['是', '否'], execution_id=lead['id'])
+        board.ask(self.conn, 'chief-id', '与任务无关的问题', ['是', '否'])
+        card = goal_api.card(self.conn, goals.get(self.conn, goal['id']))
+        self.assertEqual(card['now_doing'], [{'key': 'first', 'title': '做 first', 'session_id': 'chief-id'},
+                                             {'key': 'second', 'title': '做 second', 'session_id': 'chief-id'}])
+        self.assertEqual(card['pending_decision'], {'id': first, 'question': 'd.txt 用中文还是英文'})
+        self.assertEqual(card['working_count'], 1)
+        self.assertEqual(card['last_activity_at'], '2030-01-01T00:00:02')
+        self.assertEqual(card['work_summary']['doing'], 2)
+        board.answer(self.conn, first, '中文')
+        self.assertEqual(goal_api.card(self.conn, goals.get(self.conn, goal['id']))['pending_decision']['question'], '第二个问题')
+        goals.set_execution_status(self.conn, lead['id'], 'idle')
+        self.assertEqual(goal_api.card(self.conn, goals.get(self.conn, goal['id']))['working_count'], 0)
