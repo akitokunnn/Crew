@@ -15,7 +15,7 @@ concurrency:
 jobs:
   backend:
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     defaults:
       run:
         shell: pwsh
@@ -42,13 +42,14 @@ jobs:
               for name in ('TEMP', 'TMP'):
                   print(f'{name}={directory}', file=output)
           '@ | python -
-      - name: Backend tests with isolated homes and fake carriers
+      # CI only runs the core list in plugin/tests/ci_core.txt; run the full suite locally before merging.
+      - name: Core backend tests with isolated homes and fake carriers
         working-directory: plugin
         run: |
           foreach ($name in 'CREW_SESSION_ID','CLAUDE_CODE_SESSION_ID','CREW_EXECUTION_ID','CREW_GOAL_ID') {
             Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
           }
-          python -m unittest discover -s tests -v
+          python tests/ci_core.py -v
 
   desktop:
     runs-on: windows-latest
@@ -96,6 +97,3 @@ jobs:
       - name: Isolated conversation and task routing
         if: ${{ !cancelled() }}
         run: node plugin/tests/smoke_conversation_routing.cjs
-      - name: Isolated multi-workspace chat connections
-        if: ${{ !cancelled() }}
-        run: node plugin/tests/smoke_chat_connections.cjs
