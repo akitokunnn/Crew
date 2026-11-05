@@ -20,7 +20,7 @@ function harness() {
   const settings=(project="demo",root="C:/fixture/demo")=>({project,root,state,chatAccess:()=>({readonly:false}),beforeStop(){},onRouted(){},catalog:()=>[{id:"codex",name:"Codex",available:true}],defaultRuntime:()=>"codex",api:async(route,body)=>{calls.push({project,root,route,body});const value=await read(route,body);if(body===undefined)state.git_assistant=value.enabled?assistant:null;return value;},toast:message=>toasts.push(message),onChanged:async()=>{changed++;}});
   function mount(project,root){ui.mount(host,settings(project,root));}
   function click(act,value){const button={dataset:act==="tab"?{gitTab:value}:act==="branch"?{gitBranch:value}:{gitAct:act}};handlers.get("click")({target:{closest:selector=>selector==="[data-git-act]"&&button.dataset.gitAct||selector==="[data-git-tab]"&&button.dataset.gitTab||selector==="[data-git-branch]"&&button.dataset.gitBranch?button:null}});}
-  return {host,calls,timers,ui,mounts,updates,assistant,mount,click,scroll,toasts,get changed(){return changed;},read:fn=>{read=fn;}};
+  return {host,calls,timers,ui,mounts,updates,assistant,state,mount,click,scroll,toasts,get changed(){return changed;},read:fn=>{read=fn;}};
 }
 test("returning to the same workspace shows its snapshot immediately without another scan or polling",async()=>{
   const h=harness();h.mount();await tick();assert(h.host.innerHTML.includes("仓库快照"));
@@ -67,4 +67,12 @@ test("Git mounts the assistant session and updates it without rebuilding the con
   const h=harness();h.assistant.runtime=runtime;h.read(async()=>enabled());h.mount();await tick();assert.equal(h.mounts.length,1);assert.equal(h.mounts[0].session.session_id,"git");assert.equal(h.mounts[0].session.runtime,runtime);assert(h.host.innerHTML.includes("进行中 4"));assert(h.host.innerHTML.includes("等你 1"));assert(h.host.innerHTML.includes("合并中 1"));assert(h.host.innerHTML.includes("排队 2"));assert(!h.host.innerHTML.includes('data-act="leader"'));
   h.assistant.requests.waiting_user=3;h.mount();assert.equal(h.mounts.length,1);assert.equal(h.updates.length,1);assert(h.host.innerHTML.includes("等你 3"));h.ui.unmount();
   }
+});
+
+test("the Git assistant conversation opens at once while the repository side loads on its own",async()=>{
+  const h=harness();h.state.git_assistant=h.assistant;let resolve;h.read(()=>new Promise(done=>{resolve=done;}));h.mount();await tick();
+  assert.equal(h.mounts.length,1);assert.equal(h.mounts[0].session.session_id,"git");
+  assert(h.host.innerHTML.includes("git-chat-host"));assert(h.host.innerHTML.includes("正在读取仓库"));assert.equal(h.calls.length,1);
+  resolve(enabled());await tick();assert.equal(h.mounts.length,1,"repository load does not remount the conversation");
+  assert(h.host.innerHTML.includes("已启用的仓库"));assert(!h.host.innerHTML.includes("正在读取仓库"));h.ui.unmount();
 });
