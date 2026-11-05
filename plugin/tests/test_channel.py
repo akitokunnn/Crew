@@ -79,7 +79,9 @@ class ChannelTests(unittest.TestCase):
 
     def test_all_mentions_skip_the_builtin_git_assistant_but_it_can_still_be_named(self):
         board.join(self.conn, 'g', 'demo', 'Git 助手', self.root, None, None, role='leader', group_name='git', now=NOW)
-        board.enable_git(self.conn, 'demo', base='main', admin_session_id='g')
+        # Branch discovery is the host's job; the test project is not a git repository.
+        with mock.patch.object(board, 'git_branches', return_value=('main', 'stable')):
+            board.enable_git(self.conn, 'demo', admin_session_id='g')
         value = channel.post(self.conn, 'demo', board.HUMAN, '请大家汇报进度', ['*'], source='web', now=NOW)
         self.assertEqual([item['session_id'] for item in value['mentions']], ['a', 'b'])
         self.assertEqual(board.pending_notices(self.conn, 'g'), [])
