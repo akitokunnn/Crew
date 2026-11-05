@@ -126,8 +126,8 @@ test("task binding follows the selected task, resets on switch and only scopes a
     const h=harness(),calls=[],toasts=[];
     const target=h.mount("leader",async(url,data)=>{calls.push({url,data});return url==="/api/chat/send"?{accepted:true}:history();},{runtime},{toast:text=>toasts.push(text)});
     await tick();const chip=target.querySelector(".chat-task-binding"),input=target.querySelector("textarea");
-    h.chat.setTask({id:"a",title:"任务甲",leader_session_id:"leader"});assert.equal(chip.textContent,"📌 任务甲");assert.equal(chip.getAttribute("aria-pressed"),"false");chip.onclick();assert.equal(chip.getAttribute("aria-pressed"),"true");
-    h.chat.setTask({id:"b",title:"任务乙",leader_session_id:"leader"});assert.equal(chip.textContent,"📌 任务乙");assert.equal(chip.getAttribute("aria-pressed"),"false");
+    h.chat.setTask({id:"a",title:"任务甲",leader_session_id:"leader"});assert(chip.innerHTML.includes("<span>任务甲</span>"));assert(chip.innerHTML.includes("<svg"));assert.equal(chip.getAttribute("aria-pressed"),"false");chip.onclick();assert.equal(chip.getAttribute("aria-pressed"),"true");
+    h.chat.setTask({id:"b",title:"任务乙",leader_session_id:"leader"});assert(chip.innerHTML.includes("<span>任务乙</span>"));assert.equal(chip.getAttribute("aria-pressed"),"false");
     input.value="普通交流";input.oninput();target.querySelector("form").onsubmit({preventDefault(){}});await tick();assert(!Object.hasOwn(calls.find(call=>call.url==="/api/chat/send").data,"goal_id"));
     chip.onclick();assert.equal(input.placeholder,"补充给任务「任务乙」的要求");input.value="补充要求";input.oninput();target.querySelector("form").onsubmit({preventDefault(){}});await tick();h.flushFrames();
     const send=calls.filter(call=>call.url==="/api/chat/send").at(-1).data;assert.equal(send.session_id,"leader");assert.equal(send.goal_id,"b");assert(send.message_id);assert(toasts.includes("已补充到任务，AI 会按新要求继续"));assert(rendered(target).join("").includes("→ 任务乙"));
@@ -503,7 +503,7 @@ test("starting a queued goal retains the leader transcript, stream, draft and re
   const goal={assignments:[],work_summary:{total:0,done:0},decision_mode:{mode:"human"},now_doing:[],pending_decision:null,working_count:0,last_activity_at:"2026-11-05T00:00:00Z",supplements_after_report:[],id:"goal",leader_session_id:"leader",title:"真实目标",request:"推进并交付",acceptance:[],status:"queued",current_round:1,requirement_version:1,version:1};
   const state={project:{name:"fixture"},leaders:[person],members:[],decisions:[],todos:[],goals:[goal],runtimes:[{id:"codex",name:"Codex",available:true,models:[],efforts:[]}]};
   const main=host();nodes.set("main",main);
-  for(const id of ["chat-attention","attention-slot","attention-scope","attention-empty","native-approval-tray","decision-tray","side-task-section","side-attention-section","side-task-body","side-task-title","side-task-mode","side-attention-count","right-panel"])nodes.set(id,host());
+  for(const id of ["chat-attention","attention-slot","attention-scope","attention-empty","native-approval-tray","decision-tray","side-attention-section","side-attention-count","right-panel"])nodes.set(id,host());
   Object.defineProperty(main,"innerHTML",{set(value){this.markup=value;for(const [,id]of value.matchAll(/id="([^"]+)"/g))nodes.set(id,host());},get(){return this.markup||"";}});
   h.sandbox.document.getElementById=id=>nodes.get(id)||null;
   h.sandbox.location={search:"?project=fixture",origin:"http://fixture.local"};

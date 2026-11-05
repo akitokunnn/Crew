@@ -27,8 +27,8 @@
   const sideDecisionsOpen = new Set(), decisionsOpen = new Set(), heldExpanded = new Set(), usageCollapsed = new Set(), operationIds = new Set();
   const todoExpanded = new Set(), todoActions = new Map(), todoSaving = new Set();
   let reportReaderOpen = false, behaviorSession = null;
-  let taskPanelScope = null, taskSidecar = null, taskListScope = null, tasksOpen = true;
-  let attentionScope = null, attentionVisible = false, taskVisible = false, sidecarFocus = "attention";
+  let taskListScope = null, tasksOpen = true, taskDeliveryFocus = null;
+  let attentionScope = null, attentionVisible = false, sidecarFocus = "attention";
   let composingInput = null, compositionTimer = null, compositionRenderPending = false;
   const colors = ["#3E7C74", "#8A5A7E", "#A07A3A", "#4F6B8F", "#5E7F55", "#A8604F", "#8C7650", "#5C5F9E", "#A35D6A", "#4F7A8C", "#77773F"];
   const statusText = {working:"在干活", waiting:"等你", idle:"空闲", offline:"离线", closed:"已归档"};
@@ -166,6 +166,7 @@
     if (undo !== null) { const button = document.createElement("button"); button.type = "button"; button.textContent = "撤销"; button.onclick = async () => { button.disabled = true; try { await undo(); node.remove(); } catch (error) { button.disabled = false; toast(error.message); } }; node.append(button); }
     $("toast-root").replaceChildren(node); setTimeout(() => node.remove(), undo === null ? 5000 : 12000);
   }
+  document.addEventListener("crew:sound-error", event => toast(event.detail));
   function replace(node, html) {
     if (node.dataset.render === html) return;
     // Recreating a textarea commits/discards the native IME session even if its
@@ -177,10 +178,10 @@
     const focusForm = focused?.form;
     const selection = focused && "selectionStart" in focused ? [focused.selectionStart, focused.selectionEnd] : null;
     const values = new Map(Array.from(node.querySelectorAll("[data-preserve]")).filter(item => "value" in item).map(item => [item.dataset.preserve, item.value]));
-    const scroll = Array.from(node.querySelectorAll(".page,.card-body,.tree,.tray-in,.lead-grid,.task-list-scroll,.leader-panel-leaders")).map(item => [item.className, item.scrollTop, item.scrollLeft]);
+    const scroll = Array.from(node.querySelectorAll(".page,.card-body,.tree,.tray-in,.lead-grid,.task-list-scroll,.task-detail-scroll,.leader-panel-leaders")).map(item => [item.className, item.scrollTop, item.scrollLeft]);
     node.innerHTML = html; node.dataset.render = html;
     for (const item of node.querySelectorAll("[data-preserve]")) if (values.has(item.dataset.preserve) && "value" in item) item.value = values.get(item.dataset.preserve);
-    for (const [name, top, left] of scroll) { const item = Array.from(node.querySelectorAll(".page,.card-body,.tree,.tray-in,.lead-grid,.task-list-scroll,.leader-panel-leaders")).find(item => item.className === name); if (item) { item.scrollTop = top; item.scrollLeft = left; } }
+    for (const [name, top, left] of scroll) { const item = Array.from(node.querySelectorAll(".page,.card-body,.tree,.tray-in,.lead-grid,.task-list-scroll,.task-detail-scroll,.leader-panel-leaders")).find(item => item.className === name); if (item) { item.scrollTop = top; item.scrollLeft = left; } }
     if (focusKey !== undefined) { const item = Array.from(node.querySelectorAll("[data-preserve]")).find(item => item.dataset.preserve === focusKey); if (item) { item.focus({preventScroll:true}); if (selection) item.setSelectionRange(...selection); } }
     else if (focused !== null) {
       const item = Array.from(node.querySelectorAll(focused.tagName)).find(item => item.id === focused.id && item.getAttribute("name") === focused.getAttribute("name") && item.getAttribute("type") === focused.getAttribute("type") && Object.entries(focusData).every(([key, value]) => item.dataset[key] === value) && (focusForm === null || focusForm === undefined || item.form !== null && item.form.id === focusForm.id && Object.entries(focusForm.dataset).every(([key, value]) => item.form.dataset[key] === value)));
@@ -253,7 +254,7 @@
   function sidebarLeader(item) {
     const selected = view === "chat" && leaderId === item.session_id && readOnlyId === null;
     const work = groupWork(item), attention = leaderAttention(item);
-    return `<div draggable="true" class="leader-row session-surface ${selected ? "active" : ""}" data-act="leader" data-id="${esc(item.session_id)}" aria-label="${esc(item.name)}，${attention} 件待你" ${selected ? 'aria-current="page"' : ""}>${sessionOpen(item.session_id,"leader",item.name,selected)}${groupAvatar(item,work)}<span class="meta"><strong>${esc(item.name)}</strong>${item.goal === null ? "" : `<span class="goal" title="${esc(item.goal)}">${esc(item.goal)}</span>`}</span>${st(item.status)}${attention ? `<span class="b-pending">${attention}</span>` : ""}</div>`;
+    return `<div draggable="true" class="leader-row session-surface ${selected ? "active" : ""}" data-act="leader" data-id="${esc(item.session_id)}" aria-label="${esc(item.name)}，${attention} 件待你" ${selected ? 'aria-current="page"' : ""}>${sessionOpen(item.session_id,"leader",item.name,selected)}${groupAvatar(item,work)}<span class="meta"><strong>${esc(item.name)}</strong>${item.goal === null ? "" : `<span class="goal" title="${esc(item.goal)}">${esc(item.goal)}</span>`}</span>${st(item.status)}${attention ? `<span class="b-pending">${attention}</span>` : ""}</div>${selected ? CrewGoals.leaderTasks(state.goals.filter(task => task.leader_session_id === item.session_id), goalId) : ""}`;
   }
   function setLeadersOpen(open) {
     leadersOpen = open;
@@ -266,6 +267,8 @@
     tasksOpen = open;
     $("task-list").dataset.open = String(open); $("task-list").inert = !open;
     $("chat-head").querySelector('[data-act="tasks-toggle"]').setAttribute("aria-expanded", String(open));
+    CrewChat.setTask(open && goalId !== null ? goals.currentGoal() : null);
+    if (!open && goalId !== null) { goalId = null; goals.sync(leaderId, null); replace($("task-list"), goals.listMarkup(leaderId)); renderSidebar(); syncRoute(); }
     if (restore) $("chat-head").querySelector('[data-act="tasks-toggle"]').focus({preventScroll:true});
   }
   function setPresenceOpen(open) {
@@ -279,15 +282,16 @@
     if (leaderDrag !== null || leaderOrderSaving) return;
     const themeIcon = {system:"auto",light:"sun",dark:"moon"}[theme], themeName = {system:"跟随系统",light:"日间",dark:"夜间"}[theme];
     const leaders = state.leaders, attention = leaders.reduce((sum,item) => sum + leaderAttention(item),0);
+    const homeAttention = CrewWorkspaceHome.attentionCount(state);
     const channels = state.notification.channels;
     const connection = channels.some(channel => ["error","rejected"].includes(channel.state)) || state.notification.error !== null ? "error" : channels.every(channel => channel.state === "connected") ? "connected" : "disconnected";
     const failed = state.notification.away && (!channels.some(channel => channel.state === "connected") || state.notification.error !== null);
     const failure = failed ? JSON.stringify([state.notification.error,channels.map(channel => channel.state)]) : null;
     const flash = failure !== null && failure !== presenceFailure; presenceFailure = failure;
     const railButton = (act,label,icon,extra="",active=false) => `<button type="button" class="rail-button ${active ? "active" : ""}" data-act="${act}" title="${label}" aria-label="${label}" ${extra}>${ic(icon)}</button>`;
-    replace($("sidebar"), `<a class="rail-brand" href="/" title="${esc(projectDisplay(state.project))}" aria-label="${esc(projectDisplay(state.project))} · 工作区">${CrewTheme.logo()}</a><button type="button" id="leader-entry" class="rail-button leader-entry" data-act="leaders-toggle" title="Leader · ${attention} 件待你" aria-label="Leader，${attention} 件待你" aria-controls="leader-panel" aria-expanded="${leadersOpen}"><span class="leader-stack">${leaders.slice(0,3).map(item => av(item.name,23)).join("") || ic("msg")}</span>${attention ? `<span class="rail-badge">${attention}</span>` : ""}</button><div class="rail-divider"></div>${railButton("view","主页","grid",'data-view="all"',view === "all")}${railButton("personal-notes","想法","pencil")}<a class="rail-button" href="/assistant.html" title="全局助手" aria-label="全局助手">${ic("msg")}</a><span class="rail-git">${railButton("view","Git","branch",'data-view="git"',view === "git")}${state.git_assistant?.attention > 0 ? `<span class="rail-badge">${state.git_assistant?.attention}</span>` : ""}</span><span class="rail-space"></span>${railButton("theme",`日间 / 夜间 · ${themeName}`,themeIcon)}<button type="button" id="presence-entry" class="rail-button presence-entry ${flash ? "presence-flash" : ""}" data-act="presence-toggle" title="${state.notification.away ? "我已离开" : "我在这里"}" aria-label="在场与消息连接" aria-controls="presence-popover" aria-expanded="${presenceOpen}"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 13h12v4H6zM7 17v5m10-5v5M5 7v6m14-6v6"/>${state.notification.away ? '<path d="M8 4h8v9"/>' : '<circle cx="12" cy="4" r="2"/><path d="M9 12V9a3 3 0 0 1 6 0v3"/>'}</svg><i class="presence-dot ${connection}"></i></button>${railButton("settings","设置","settings",'data-local-control')}
+    replace($("sidebar"), `<a class="rail-brand" href="/" title="${esc(projectDisplay(state.project))}" aria-label="${esc(projectDisplay(state.project))} · 工作区">${CrewTheme.logo()}</a><button type="button" id="leader-entry" class="rail-button leader-entry" data-act="leaders-toggle" title="Leader · ${attention} 件待你" aria-label="Leader，${attention} 件待你" aria-controls="leader-panel" aria-expanded="${leadersOpen}"><span class="leader-stack">${leaders.slice(0,3).map(item => av(item.name,23)).join("") || ic("msg")}</span>${attention ? `<span class="rail-badge">${attention}</span>` : ""}</button><div class="rail-divider"></div><span class="rail-home">${railButton("view","主页","grid",'data-view="all"',view === "all")}${homeAttention ? `<span class="rail-badge" aria-label="${homeAttention} 件待你处理">${homeAttention}</span>` : ""}</span>${railButton("personal-notes","想法","pencil")}<a class="rail-button" href="/assistant.html" title="全局助手" aria-label="全局助手">${ic("msg")}</a><span class="rail-git">${railButton("view","Git","branch",'data-view="git"',view === "git")}${state.git_assistant?.attention > 0 ? `<span class="rail-badge">${state.git_assistant?.attention}</span>` : ""}</span><span class="rail-space"></span>${railButton("theme",`日间 / 夜间 · ${themeName}`,themeIcon)}<button type="button" id="presence-entry" class="rail-button presence-entry ${flash ? "presence-flash" : ""}" data-act="presence-toggle" title="${state.notification.away ? "我已离开" : "我在这里"}" aria-label="在场与消息连接" aria-controls="presence-popover" aria-expanded="${presenceOpen}"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 13h12v4H6zM7 17v5m10-5v5M5 7v6m14-6v6"/>${state.notification.away ? '<path d="M8 4h8v9"/>' : '<circle cx="12" cy="4" r="2"/><path d="M9 12V9a3 3 0 0 1 6 0v3"/>'}</svg><i class="presence-dot ${connection}"></i></button>${railButton("settings","设置","settings",'data-local-control')}
       <section id="presence-popover" class="presence-popover" aria-label="在场与消息连接" ${presenceOpen ? "" : "hidden"}><button class="switch ${state.notification.manual_away ? "on" : ""}" data-act="away" role="switch" aria-checked="${state.notification.manual_away}"><span class="track"></span><span>我已离开</span></button>${notificationChannel()}${state.notification.error === null ? "" : `<p class="error-line">${esc(state.notification.error)}</p>`}<button class="text-link" data-local-control data-act="connection-settings">连接设置 ›</button></section>`);
-    replace($("leader-panel"), `<div class="leader-panel-content"><button class="leader-panel-channel" data-act="view" data-view="channel">💬 交流区 <span>›</span>${state.channel.unread ? `<span class="b-unread">${state.channel.unread}</span>` : ""}</button><div class="leader-panel-leaders"><section data-leader-zone="priority">${leaders.filter(item => item.priority !== null).sort((a,b) => a.priority-b.priority).map(sidebarLeader).join("")}</section><section data-leader-zone="normal">${leaders.filter(item => item.priority === null).map(sidebarLeader).join("")}</section><button class="leader-panel-new btn ghost" data-act="modal-leader">＋ 新对话</button></div><button class="leader-panel-quota" data-act="view" data-view="usage" aria-label="查看完整额度和用量">${railQuota("Claude",state.limits.claude.seven_day)}${railQuota("Codex",state.limits.codex)}</button></div>`);
+    replace($("leader-panel"), `<div class="leader-panel-content"><button class="leader-panel-channel" data-act="view" data-view="channel">${ic("msg")}交流区 <span>›</span>${state.channel.unread ? `<span class="b-unread">${state.channel.unread}</span>` : ""}</button><div class="leader-panel-leaders"><section data-leader-zone="priority">${leaders.filter(item => item.priority !== null).sort((a,b) => a.priority-b.priority).map(sidebarLeader).join("")}</section><section data-leader-zone="normal">${leaders.filter(item => item.priority === null).map(sidebarLeader).join("")}</section><button class="leader-panel-new btn ghost" data-act="modal-leader">＋ 新对话</button></div><button class="leader-panel-quota" data-act="view" data-view="usage" aria-label="查看完整额度和用量">${railQuota("Claude",state.limits.claude.seven_day)}${railQuota("Codex",state.limits.codex)}</button></div>`);
     $("leader-panel").dataset.open = String(leadersOpen); $("leader-panel").inert = !leadersOpen;
   }
   function clearLeaderDrop() {
@@ -426,7 +430,6 @@
     syncSidecar();
   }
   function attentionOpen() { return view === "chat" && (attentionVisible || rightOpen); }
-  function closeTaskTools() { taskVisible = false; $("side-task-section").hidden = true; CrewChat.setTask(null); syncSidecar(); }
   function closeAttention(restoreFocus = false) {
     attentionVisible = false; rightOpen = false;
     syncSidecar();
@@ -437,7 +440,6 @@
     const active = view === "chat" && (leaderId !== null || readOnlyId !== null) && !settingsOpen && !workspaceOpen;
     panel.hidden = !active || !attentionVisible && !rightOpen;
     panel.inert = panel.hidden || reportReaderOpen;
-    $("side-task-section").inert = !taskVisible || reportReaderOpen;
     if ($("task-list")) $("task-list").inert = !tasksOpen || reportReaderOpen;
     $("right-panel").hidden = !active || !rightOpen;
     $("right-panel").inert = !active || !rightOpen;
@@ -449,24 +451,17 @@
     }
     if (!panel.hidden) positionAttention();
     else { slot.style.height = "0px"; }
-    if (taskVisible) {
-      const width = $("side-task-section").getBoundingClientRect().width;
-      $("main").style.setProperty("--chat-side-space", window.innerWidth >= 1000 ? `${width + 24}px` : "0px");
-      $("main").style.setProperty("--task-list-right", `${width + 24}px`);
-    } else {
-      $("main").style.setProperty("--task-list-right", panel.hidden ? "0px" : `${panel.getBoundingClientRect().width + 28}px`);
-      if (panel.hidden) $("main").style.setProperty("--chat-side-space", "0px");
-    }
+    $("main").style.setProperty("--task-list-right", panel.hidden ? "0px" : `${panel.getBoundingClientRect().width + 28}px`);
+    if (panel.hidden) $("main").style.setProperty("--chat-side-space", "0px");
   }
+
   function toggleSidecar(section) {
     sidecarFocus = section;
     if (section === "tree") rightOpen = !rightOpen;
     else attentionVisible = !attentionVisible;
     syncSidecar();
   }
-  function returnToTaskPanel() {
-    taskVisible = true; $("side-task-section").hidden = false; syncSidecar();
-  }
+  function showTaskList() { navigate("chat", leaderId, null, null); setTasksOpen(true); }
   function positionAttention() {
     const host = $("chat-head"); if (!host) return;
     const panel = $("chat-attention"), main = $("main"), rect = host.getBoundingClientRect();
@@ -476,7 +471,7 @@
     panel.style.setProperty("--attention-max-height", `${rightOpen ? Math.max(90, Math.min(320, height * .46)) : Math.max(90, height - 66)}px`);
     const slot = $("attention-slot");
     slot.style.height = attentionVisible ? `${$("side-attention-section").getBoundingClientRect().height + 12}px` : "0px";
-    const reserve = !taskVisible && main.clientWidth - width - 36 >= 430;
+    const reserve = main.clientWidth - width - 36 >= 430;
     main.dataset.sideOverlap = String(!reserve);
     main.style.setProperty("--chat-side-space", reserve ? `${width + 28}px` : "0px");
   }
@@ -498,17 +493,10 @@
       CrewChat.mount({host:$("chat-host"), session:item, ...access, state, api, toast, beforeStop:() => confirmIdentityStop(item),
         async onRouted(id) { await loadState(true); if (mountedChat === identity) { const target = state.goals.find(goal => String(goal.id) === String(id)); if (target) navigate("chat", target.leader_session_id, null, target.id); else toast("目标已不在当前工作区中，请刷新。"); } }});
     }
-    const panelScope = `${leaderId}:${goalId}`;
-    if (taskPanelScope !== panelScope) {
-      const opened = goalId != null;
-      if (opened && taskSidecar === null) { taskSidecar = {attentionVisible,rightOpen}; attentionVisible = false; rightOpen = false; }
-      if (!opened && taskSidecar !== null) { ({attentionVisible,rightOpen} = taskSidecar); taskSidecar = null; }
-      taskVisible = opened; $("side-task-section").hidden = !opened; taskPanelScope = panelScope;
-    }
     const permissions = nativeApprovals?.countForChat(item.session_id, null, readOnlyId === null) || 0;
     const attentionCount = permissions + (readOnlyId === null ? pending.length + groupTodos.length : 0);
     const scope = item.session_id;
-    if (attentionScope !== scope && taskSidecar === null) closeAttention();
+    if (attentionScope !== scope) closeAttention();
     attentionScope = scope;
     replace($("native-approval-tray"), nativeApprovals?.chatMarkup(item.session_id, null, readOnlyId === null) || "");
     $("attention-scope").textContent = `${item.name} · 全部任务与总对话`;
@@ -516,16 +504,17 @@
     const listScope = readOnlyId === null ? leaderId : null;
     if (taskListScope !== listScope) { tasksOpen = true; taskListScope = listScope; }
     $("task-list").hidden = readOnlyId !== null;
-    if (readOnlyId === null) { replace($("task-list"), goals.listMarkup(leaderId)); setTasksOpen(tasksOpen); }
+    if (readOnlyId === null) { replace($("task-list"), goalId === null ? goals.listMarkup(leaderId) : goals.detailMarkup()); setTasksOpen(tasksOpen); }
     replace($("decision-tray"), readOnlyId !== null ? "" : `<div class="tray-in">${todoTray(groupTodos, leaderId)}${pending.length === 0 ? "" : `<section class="tray-pending"><h3 class="attention-section-title">等你拍板 <span>${pending.length}</span></h3><div class="tray-list">${pending.map(sideDecision).join("")}</div></section>`}${heldGroup(held, "tray")}</div>`);
     $("attention-empty").hidden = permissions + (readOnlyId === null ? pending.length + held.length + groupTodos.length : 0) > 0;
-    replace($("side-task-body"), goals?.sideMarkup(leaderId) || "");
-    $("side-task-title").textContent = goals?.currentGoal()?.title || "任务详情";
-    replace($("side-task-mode"), taskVisible ? goals.modeMarkup() : "");
     $("side-attention-count").textContent = String(attentionCount);
     syncSidecar();
     CrewChat.update(state);
-    CrewChat.setTask(taskVisible ? goals.currentGoal() : null);
+    CrewChat.setTask(tasksOpen && goalId !== null ? goals.currentGoal() : null);
+    if (taskDeliveryFocus !== null && String(goalId) === String(taskDeliveryFocus)) {
+      const delivery = $("task-list").querySelector(".task-delivery");
+      if (delivery) { delivery.scrollIntoView({block:"start"}); delivery.focus({preventScroll:true}); taskDeliveryFocus = null; }
+    }
   }
   function chatAccess(item) {
     const control = item.native_handoff;
@@ -590,7 +579,7 @@
   }
   function renderChannel() {
     if (!mountedChannel) {
-      $("main").innerHTML = '<div class="head"><div><div class="title">交流区</div><div class="sub">所有 leader 和用户的公共频道 · 点名才叫醒</div></div><button id="channel-digest-button" class="btn">整理</button></div><div id="channel-host" class="chat-host"></div>';
+      $("main").innerHTML = `<div class="head channel-head"><div><div class="title">${ic("msg")}交流区</div><div class="sub">所有 leader 和用户的公共频道 · 点名才叫醒</div></div><button id="channel-digest-button" class="btn">整理</button></div><div id="channel-host" class="chat-host"></div>`;
       delete $("main").dataset.render;
       mountedChannel = true;
       CrewChannel.mount({host:$("channel-host"), digestButton:$("channel-digest-button"), state, api, toast, onRead:channel => { Object.assign(state.channel, {unread:channel.unread, latest_id:channel.latest_id}); renderSidebar(); }});
@@ -795,7 +784,6 @@
   }
   function hideSettings() { if (settingsOpen) closeSettings(); }
   function closeSettings() {
-    taskPanelScope = null;
     settingsOpen = false; settingsUI?.hide(); $("app").inert = false;
     if (state !== null && project !== null) render();
     settingsReturn?.focus?.({preventScroll:true}); settingsReturn = null;
@@ -803,7 +791,7 @@
   function openSettings(category = "ai", targetSession = null) {
     if (!localControls()) return;
     behaviorSession = targetSession;
-    closeTaskTools(); closeAttention();
+    CrewChat.setTask(null); closeAttention();
     settingsReturn = document.activeElement; settingsOpen = true;
     if (mountedChat !== null) { CrewChat.unmount(); mountedChat = null; }
     if (mountedChannel) { CrewChannel.unmount(); mountedChannel = false; }
@@ -831,7 +819,7 @@
     });
   }
   function openWorkspaceSettings() {
-    closeTaskTools(); closeAttention();
+    CrewChat.setTask(null); closeAttention();
     if (window.navigator?.userAgent.includes("Electron/")) { location.assign(`/?workspace-settings=${encodeURIComponent(project)}`); return; }
     workspaceOpen = true;
     if (mountedChat !== null) { CrewChat.unmount(); mountedChat = null; }
@@ -933,10 +921,11 @@
     if (presenceOpen) setPresenceOpen(false);
     if (nextGoal === undefined) nextGoal = next === "chat" && id === leaderId ? goalId : null;
     if (next === "chat" && nextGoal != null) readonly = null;
-    if (next !== "chat" || id !== leaderId) taskSidecar = null;
-    if (nextGoal != null && taskSidecar === null) taskSidecar = {attentionVisible,rightOpen};
     const sameScope = next === "chat" && view === "chat" && leaderId === id && String(goalId) === String(nextGoal);
-    if (!sameScope || readOnlyId !== readonly) { closeTaskTools(); closeAttention(); }
+    if (!sameScope || readOnlyId !== readonly) CrewChat.setTask(null);
+    if (next !== "chat" || view !== "chat" || leaderId !== id || readOnlyId !== readonly) closeAttention();
+    if (next === "chat" && nextGoal !== null) tasksOpen = true;
+    taskDeliveryFocus = null;
     if (view === "chat" && (next !== "chat" || leaderId !== id || readOnlyId !== readonly)) { CrewChat.unmount(); mountedChat = null; }
     if (!sameScope) goals?.closeReport();
     view = next; leaderId = id; readOnlyId = readonly; goalId = next === "chat" ? nextGoal : null;
@@ -951,12 +940,12 @@
     else if (["all", "channel", "adopt", "usage", "git", "todos"].includes(hash)) { view = hash; leaderId = null; readOnlyId = null; }
     else { view = "all"; leaderId = null; readOnlyId = null; }
     if (view === "chat" && (readOnlyId === null ? leader(leaderId) === undefined : member(readOnlyId) === undefined)) { view = "all"; leaderId = null; readOnlyId = null; }
-    if (goalId !== null) { const goal = (state.goals || []).find(item => String(item.id) === goalId); if (!goal || goal.leader_session_id !== leaderId) goalId = null; else readOnlyId = null; }
+    if (goalId !== null) { const goal = (state.goals || []).find(item => String(item.id) === goalId); if (!goal || goal.leader_session_id !== leaderId) goalId = null; else { readOnlyId = null; tasksOpen = true; taskDeliveryFocus = goalId; } }
   }
   function render() {
     if (view !== "chat" || settingsOpen || workspaceOpen) closeAttention();
     if (settingsOpen || workspaceOpen) return;
-    if (view !== "chat") { taskListScope = null; closeTaskTools(); taskPanelScope = null; taskSidecar = null; goals?.sync(null, null); }
+    if (view !== "chat") { taskListScope = null; CrewChat.setTask(null); goals?.sync(null, null); }
     $("app").classList.toggle("wide", view !== "chat" || leaderId === null); renderSidebar();
     if (view !== "channel" && mountedChannel) { CrewChannel.unmount(); mountedChannel = false; }
     if (view !== "git") CrewGit.unmount();
@@ -1053,7 +1042,7 @@
       onSnapshot(value) { if (state !== null) state.ai = value.ai; runtimesCache = value.runtimes; renderLeaderRuntime(); },
       panels:{
         library:host => { mountSessionLibrary(host); },
-        sounds:host => window.CrewSoundSettings.mount(host,{read:()=>api("/api/settings"),save:body=>api("/api/settings",body)}),
+        sounds:host => window.CrewSoundSettings.mount(host,{read:()=>api("/api/settings"),save:body=>api("/api/settings",body),api,toast}),
         remote:host => window.CrewRemoteAccess.mount(host,{read:()=>api("/api/remote-access"),action:body=>api("/api/remote-access",body)}),prompts:host => window.CrewBehaviorPrompts.mount(host,{read:query => api("/api/behavior-prompts?"+new URLSearchParams(query)),save:body => api("/api/behavior-prompts",body),project,session:behaviorSession || (view === "chat" ? readOnlyId || leaderId : null),execution:goals?.executionFor(behaviorSession || readOnlyId || leaderId)?.id}),appearance(host) { host.append($("settings")); return () => $("settings-parking").append($("settings")); }, connections:settingsConnections, storage:settingsStorage}});
     try { const stored = localStorage.getItem("crew.theme"); if (["system", "light", "dark"].includes(stored)) theme = stored; } catch (error) { toast(error.message); }
     try { const stored = Number(localStorage.getItem("crew.fontScale")); if (stored >= FONT_MIN && stored <= FONT_MAX) fontScale = stored; } catch (error) { toast(error.message); }
@@ -1074,9 +1063,9 @@
       refreshCatalog:refreshRuntimes, prepare:body => api("/api/session/runtime/prepare",body),
       switchRuntime:body => api("/api/session/runtime/switch",body), onChanged:() => { goals?.invalidate(); return loadState(true); }, toast});
     if (window.CrewGoals && project !== null) goals = window.CrewGoals.create({project, api, toast, state:() => state,
-      avatar:av, ago, refreshState:() => loadState(true), onChange:() => { if (state && view === "chat") renderChat(); else if (state && view === "all") renderAll(); }, onReturn:returnToTaskPanel, onReader:active => { reportReaderOpen = active; $("chat-attention").inert = active || $("chat-attention").hidden; $("side-task-section").inert = active || !taskVisible; if ($("task-list")) $("task-list").inert = active || !tasksOpen; },
+      avatar:av, ago, refreshState:() => loadState(true), onChange:() => { if (state && view === "chat") renderChat(); else if (state && view === "all") renderAll(); }, onReturn:() => setTasksOpen(true), onReader:active => { reportReaderOpen = active; $("chat-attention").inert = active || $("chat-attention").hidden; if ($("task-list")) $("task-list").inert = active || !tasksOpen; },
       renderDocuments:(items,id) => documents?.taskCards(items,id),
-      onNavigate:id => { const item = (state.goals || []).find(item => String(item.id) === String(id)); if (item) { if (cardId !== null) closeCard(); navigate("chat", item.leader_session_id, null, item.id); } else toast("目标已不在当前工作区中，请刷新。"); }});
+      onNavigate:id => { const item = (state.goals || []).find(item => String(item.id) === String(id)); if (item) { if (cardId !== null) closeCard(); CrewChat.setTask(null); navigate("chat", item.leader_session_id, null, item.id); } else toast("目标已不在当前工作区中，请刷新。"); }});
     applyTheme(); applyFontScale(); renderSettings();
     window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyTheme);
     document.addEventListener("contextmenu", event => {
@@ -1098,7 +1087,8 @@
       if (!event.target.closest("#menu") && !event.target.closest('[data-act$="-menu"]')) hideMenu();
       if (button === null || button.disabled) return;
       const act = button.dataset.act === "session-open" ? button.dataset.openAct : button.dataset.act, id = button.dataset.id;
-      if (act === "tasks-toggle") { setTasksOpen(!tasksOpen); return; }
+      if (act === "tasks-toggle") { if (goalId !== null) showTaskList(); else setTasksOpen(!tasksOpen); return; }
+      if (act === "tasks-back") { showTaskList(); return; }
       if (act === "leaders-toggle") { setLeadersOpen(!leadersOpen); return; }
       if (act === "presence-toggle") { setPresenceOpen(!presenceOpen); return; }
       if (act === "connection-settings") { openSettings("connections"); return; }
@@ -1175,10 +1165,10 @@
       else if (act === "runtime-switch") runtimeSwitch?.open(id);
       else if (act === "font-reset") { setFontScale(1); renderSettings(); }
       else if (act === "attention") toggleSidecar("attention");
-      else if (act === "goal-review") { const item = (state.goals || []).find(goal => String(goal.id) === id); if (item) { navigate("chat", item.leader_session_id, null, item.id); returnToTaskPanel(); } else toast("目标已不在当前工作区中，请刷新。"); }
+      else if (act === "goal-review") { const item = (state.goals || []).find(goal => String(goal.id) === id); if (item) { navigate("chat", item.leader_session_id, null, item.id); taskDeliveryFocus = item.id; renderChat(); } else toast("目标已不在当前工作区中，请刷新。"); }
       else if (act === "right-open") toggleSidecar("tree");
       else if (act === "right-close") { rightOpen = false; syncSidecar(); $("main").querySelector('[data-act="right-open"]')?.focus(); }
-      else if (act === "side-section-close") { if (button.dataset.section === "tasks") { navigate("chat", leaderId, readOnlyId, null); $("chat-head").querySelector('[data-act="tasks-toggle"]')?.focus(); } else { attentionVisible = false; syncSidecar(); $("chat-head").querySelector('[data-act="attention"]')?.focus(); } }
+      else if (act === "side-section-close") { attentionVisible = false; syncSidecar(); $("chat-head").querySelector('[data-act="attention"]')?.focus(); }
       else if (act === "modal-leader") openModalLeader();
       else if (act === "leader-runtime" || act === "leader-model" || act === "leader-effort") {
         const form = $("leader-form"), field = {"leader-runtime":"runtime", "leader-model":"model", "leader-effort":"effort"}[act];
@@ -1280,7 +1270,7 @@
       if (event.key === "Escape" && presenceOpen) { event.preventDefault(); setPresenceOpen(false); $("presence-entry").focus(); return; }
       if (event.key === "Escape" && settingsOpen) { closeSettings(); return; }
       if (settingsOpen) return;
-      if (event.key === "Escape") { if ($("menu").classList.contains("show")) { hideMenu(); return; } if ($("backdrop").classList.contains("show")) closeBackdrop(); else if (cardId !== null) closeCard(); else if (goals?.escape()) { event.preventDefault(); return; } else if (tasksOpen && $("task-list")?.contains(document.activeElement)) { event.preventDefault(); setTasksOpen(false, true); } else if (taskVisible) { event.preventDefault(); navigate("chat", leaderId, readOnlyId, null); $("chat-head").querySelector('[data-act="tasks-toggle"]')?.focus(); } else if (attentionOpen() && !event.isComposing) { event.preventDefault(); if (attentionVisible) { attentionVisible = false; sidecarFocus = "attention"; syncSidecar(); $("chat-head").querySelector('[data-act="attention"]')?.focus(); } else closeAttention(true); } }
+      if (event.key === "Escape") { if ($("menu").classList.contains("show")) { hideMenu(); return; } if ($("backdrop").classList.contains("show")) closeBackdrop(); else if (cardId !== null) closeCard(); else if (goals?.escape()) { event.preventDefault(); return; } else if (view === "chat" && readOnlyId === null && tasksOpen) { event.preventDefault(); setTasksOpen(false, true); } else if (attentionOpen() && !event.isComposing) { event.preventDefault(); if (attentionVisible) { attentionVisible = false; sidecarFocus = "attention"; syncSidecar(); $("chat-head").querySelector('[data-act="attention"]')?.focus(); } else closeAttention(true); } }
       if (event.key === "Tab") {
         const surface = $("backdrop").classList.contains("show") ? $("backdrop") : cardId !== null ? $("card") : null;
         if (surface === null) return;

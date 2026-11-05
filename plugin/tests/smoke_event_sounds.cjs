@@ -3,7 +3,7 @@
 const {chromium} = require('playwright');
 const {spawn} = require('node:child_process');
 const fs = require('node:fs/promises'), path = require('node:path'), assert = require('node:assert/strict');
-const root = path.resolve(__dirname, '../..'), out = path.join(root, 'Temp/ui-align/batch3/event-sounds');
+const root = path.resolve(__dirname, '../..'), out = path.join(root, 'Temp/ui-align/batch4/event-sounds');
 const evidence = {checks: [], screenshots: [], consoleErrors: []};
 let fixture, browser;
 async function main() {
@@ -207,6 +207,8 @@ async function main() {
   await picker('leader').waitFor();
   check('Reload retains saved choices and does not replay old completions', await picker('leader').inputValue() === 'off' && await page.evaluate(() => __audioNotes.length) === 0);
   await page.emulateMedia({colorScheme:'dark'}); await shot('dark-settings');
+  await require('./custom_sounds_checks.cjs')({page,shot,check});
+  await require('./real_custom_sounds_checks.cjs')({page,info,root,shot,check});
   assert.deepEqual(evidence.consoleErrors, []);
 }
 main().catch(error => {evidence.error = error.stack || String(error); process.exitCode = 1;}).finally(async () => {

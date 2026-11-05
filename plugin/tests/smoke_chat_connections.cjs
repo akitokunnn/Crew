@@ -225,7 +225,7 @@ if (!process.versions.electron) {
       await until(() => contains(firstView, '成员历史'), 'member conversation');
       await capture(firstView, 'member-history');
       await evaluate(firstView, `location.hash=${JSON.stringify('#leader=' + first.session_id + '&goal=' + info.goal)};true;`);
-      await until(() => evaluate(firstView, `!!document.querySelector('#side-task-body [data-goal-tools]') && document.querySelector('#chat-host')?.textContent.includes(${JSON.stringify(first.marker)})`), 'task inspector with leader conversation');
+      await until(() => evaluate(firstView, `!!document.querySelector('#task-list [data-goal-tools]') && document.querySelector('#chat-host')?.textContent.includes(${JSON.stringify(first.marker)})`), 'task inspector with leader conversation');
       assert(!(await contains(firstView, '任务历史')));
       assert(requests.filter(request => ['/api/chat/history', '/api/chat/events'].includes(request.path)).every(request => !new URLSearchParams(request.query).has('goal_id')));
       await capture(firstView, 'task-keeps-leader-history');

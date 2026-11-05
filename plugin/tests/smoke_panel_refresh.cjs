@@ -3,7 +3,7 @@ const {chromium}=require('playwright');
 const {spawn}=require('node:child_process');
 const fs=require('node:fs/promises'),path=require('node:path'),assert=require('node:assert/strict');
 const root=path.resolve(__dirname,'../..');
-const out=path.join(root,'Temp/ui-align/batch3/panel-refresh');
+const out=path.join(root,'Temp/ui-align/batch4/panel-refresh');
 let fixture,browser;
 async function main(){
   await fs.mkdir(out,{recursive:true});
@@ -29,7 +29,7 @@ async function main(){
   await page.evaluate(()=>{window.keptInput=document.querySelector('.composer textarea');window.keptHost=document.querySelector('#chat-host');keptInput.setSelectionRange(2,5);});
   await page.screenshot({path:path.join(out,'01-before-detail.png')});
   releaseDetail();
-  await page.locator('#side-task-body [data-goal-tools]').waitFor();
+  await page.locator('#task-list [data-goal-tools]').waitFor();
   await page.waitForTimeout(300);
   const chat=await page.evaluate(()=>{const input=document.querySelector('.composer textarea');return {sameInput:keptInput===input,sameHost:keptHost===document.querySelector('#chat-host'),draft:input.value,focused:document.activeElement===input,selection:[input.selectionStart,input.selectionEnd]};});
   assert.equal(chat.sameInput,true,'late execution metadata must retain the composer');
