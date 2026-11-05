@@ -41,7 +41,7 @@ class GoalNotificationTests(GoalFixture):
 
     def stamp(self):return self.clock.isoformat(timespec='milliseconds').replace('+00:00','Z')
 
-    def finish(self, outcome='completed', *, finalized=True):
+    def finish(self, outcome='awaiting_acceptance', *, finalized=True):
         target=self.goal(now=self.stamp());goals.transition(self.conn,target['id'],'running',now=self.stamp())
         report=goals.save_report(self.conn,target['id'],self.report(outcome),now=self.stamp())
         goals.request_finish(self.conn,target['id'],report['id'],now=self.stamp())
@@ -56,7 +56,7 @@ class GoalNotificationTests(GoalFixture):
         self.inbox.tick();self.assertEqual(self.client.sent,[])
         self.push();self.assertEqual(len(self.client.sent),1)
         text=self.client.sent[0]['text']
-        for part in ('【完成】demo·chief：',target['title'],'已完成','直接回复这里，全局助手会处理。'):
+        for part in ('【完成】demo·chief：',target['title'],'待你验收','直接回复这里，全局助手会处理。'):
             self.assertIn(part,text)
         self.assertNotIn('localhost',text);self.assertNotIn('127.0.0.1',text);self.assertNotIn('/api/goals/report',text)
         key='goal-report:'+report['id']
@@ -104,7 +104,7 @@ class GoalNotificationTests(GoalFixture):
         self.assertNotIn('中间尝试',self.client.sent[0]['text'])
         self.assertNotIn('成员内部流水',self.client.sent[0]['text'])
         self.clock+=dt.timedelta(seconds=1)
-        report=goals.save_report(self.conn,target['id'],self.report(),now=self.stamp())
+        report=goals.save_report(self.conn,target['id'],self.report('awaiting_acceptance'),now=self.stamp())
         goals.request_finish(self.conn,target['id'],report['id'],now=self.stamp())
         goals.finalize_finish(self.conn,target['id'],now=self.stamp())
         self.push();self.assertEqual(len(self.client.sent),2)
@@ -161,7 +161,7 @@ class GoalNotificationTests(GoalFixture):
 
     def test_local_preview_addresses_are_not_sent_to_the_phone(self):
         target=self.goal(now=self.stamp());goals.transition(self.conn,target['id'],'running')
-        data=self.report();data['summary']='验证完成。预览 http://localhost:8616/report 与 http://127.0.0.1:8616/report'
+        data=self.report('awaiting_acceptance');data['summary']='验证完成。预览 http://localhost:8616/report 与 http://127.0.0.1:8616/report'
         report=goals.save_report(self.conn,target['id'],data,now=self.stamp())
         goals.request_finish(self.conn,target['id'],report['id'],now=self.stamp());goals.finalize_finish(self.conn,target['id'],now=self.stamp())
         self.push();text=self.client.sent[-1]['text']

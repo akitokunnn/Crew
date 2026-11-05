@@ -14,6 +14,14 @@ class GoalFixture(RuntimeFixture):
                             'Do not create a PR; measure short speaker handovers.',
                             [{'id': 'short', 'title': 'The new short speaker is identified'}], **options)
 
+    def accept(self, goal_id, *, actor=board.HUMAN, now=None):
+        """The only way a task completes: an awaiting_acceptance delivery the user accepts."""
+        report = goals.save_report(self.conn, goal_id, self.report('awaiting_acceptance'), now=now)
+        goals.request_finish(self.conn, goal_id, report['id'], actor=actor, now=now)
+        goals.finalize_finish(self.conn, goal_id, now=now)
+        goal = goals.get(self.conn, goal_id)
+        return goals.review_acceptance(self.conn, goal_id, True, expected_version=goal['version'], now=now), report
+
     def report(self, outcome='completed'):
         return {'outcome': outcome, 'summary': 'Measured the speaker handover.',
                 'user_test': [{'step': 'Replay the saved sample.', 'expected': 'Identify the short speaker.'}],
@@ -113,8 +121,7 @@ class GoalTests(GoalFixture):
         goal = self.goal(dependencies=[dependency['id']])
         self.assertFalse(goals.dispatch_check(self.conn, goal['id'])['allowed'])
         goals.transition(self.conn, dependency['id'], 'running')
-        goals.save_report(self.conn, dependency['id'], self.report())
-        goals.transition(self.conn, dependency['id'], 'completed')
+        self.accept(dependency['id'])
         old = goals.create_execution(self.conn, goal['id'], 'chief-id', runtime='claude')
         goals.set_execution_status(self.conn, old['id'], 'idle')
         new = goals.create_execution(self.conn, goal['id'], 'chief-id', runtime='codex')
@@ -127,8 +134,7 @@ class GoalTests(GoalFixture):
         goals.transition(self.conn, goal['id'], 'running')
         with self.assertRaises(board.Conflict):
             goals.transition(self.conn, goal['id'], 'completed')
-        report = goals.save_report(self.conn, goal['id'], self.report())
-        goals.transition(self.conn, goal['id'], 'completed')
+        _, report = self.accept(goal['id'])
         self.assertFalse(goals.dispatch_check(self.conn, goal['id'])['allowed'])
         self.assertEqual(board.session(self.conn, 'member-id')['status'], 'idle')
         self.assertFalse(board.is_archived(self.conn, 'member-id'))
@@ -304,7 +310,7 @@ class GoalTests(GoalFixture):
     def test_pause_blocks_pending_finish_but_amend_preserves_it(self):
         goal = self.goal()
         goals.transition(self.conn, goal['id'], 'running')
-        report = goals.save_report(self.conn, goal['id'], self.report())
+        report = goals.save_report(self.conn, goal['id'], self.report('awaiting_acceptance'))
         goals.request_finish(self.conn, goal['id'], report['id'])
         goals.request_pause(self.conn, goal['id'])
         self.assertFalse(goals.finalize_finish(self.conn, goal['id'])['finalized'])
@@ -320,7 +326,7 @@ class GoalTests(GoalFixture):
         goals.transition(self.conn, goal['id'], 'running')
         execution = goals.create_execution(self.conn, goal['id'], 'chief-id', runtime='codex')
         goals.set_execution_status(self.conn, execution['id'], 'running')
-        report = goals.save_report(self.conn, goal['id'], self.report())
+        report = goals.save_report(self.conn, goal['id'], self.report('awaiting_acceptance'))
         goals.request_finish(self.conn, goal['id'], report['id'])
         self.assertEqual(goals.request_cancel(self.conn, goal['id'])['status'], 'pausing')
         self.assertFalse(goals.finalize_cancel(self.conn, goal['id'])['finalized'])
