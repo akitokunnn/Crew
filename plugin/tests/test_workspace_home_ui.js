@@ -7,7 +7,7 @@ vm.runInNewContext(fs.readFileSync(path.join(__dirname,"../crew/web/goal-ui.js")
 vm.runInNewContext(fs.readFileSync(path.join(__dirname,"../crew/web/workspace-home.js"),"utf8"), {window});
 const ui = window.CrewWorkspaceHome;
 const data = patch => ({name:"健身打卡",git_assistant:null,leaders:[],members:[],goals:[],todos:[],decisions:[],...patch});
-const render = snapshot => ui.render(snapshot, {decisionCards:items=>items.map(item=>`decision:${item.id}`).join(";"),taskCards: items => items.map(item=>`task:${item.id}`).join(";"),todoCards:items=>items.map(item=>`todo:${item.id}`).join(";")});
+const render = snapshot => ui.render(snapshot, {settingsIcon:"<svg></svg>",decisionCards:items=>items.map(item=>`decision:${item.id}`).join(";"),taskCards: items => items.map(item=>`task:${item.id}`).join(";"),todoCards:items=>items.map(item=>`todo:${item.id}`).join(";")});
 
 test("overview keeps task states and human TODO separate, without inferring work from processes", () => {
   const input = data({leaders:[{session_id:"L",status:"idle",running:true},{session_id:"discussion",status:"working"}],

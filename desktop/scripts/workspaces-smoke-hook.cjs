@@ -248,7 +248,7 @@ app.once('browser-window-created', (_event, win) => {
       await capture('06-second-project-chat', second);
       for (let index = 0; index < live.length; index++) {
         const contents = live[index]; await select((await tabFor(projects[index].name)).id);
-        const preserved = await contents.executeJavaScript('({text:document.querySelector(".composer textarea")?.value,leader:document.querySelector("#chat-head .title")?.textContent,token:window.__tabQaToken,origin:performance.timeOrigin,hash:location.hash})');
+        const preserved = await contents.executeJavaScript('({text:document.querySelector(".composer textarea")?.value,leader:document.querySelector("#chat-head .chat-name")?.textContent,token:window.__tabQaToken,origin:performance.timeOrigin,hash:location.hash})');
         assert.equal(preserved.text, '仅属项目 ' + index); assert(preserved.leader.includes('标签验收 ' + (index + 1)));
         assert.equal(preserved.token, 'project-' + index); assert.equal(preserved.origin, identities[index].origin); assert.equal(preserved.hash, identities[index].hash);
       }
@@ -389,8 +389,10 @@ app.once('browser-window-created', (_event, win) => {
       assert.equal(await fs.readFile(path.join(managed.root,'retained.txt'),'utf8'),'keep the original files');
       assert.equal(await managedView.executeJavaScript('performance.timeOrigin'),managedOrigin);assert.equal(await managedView.executeJavaScript('document.querySelector(".composer textarea").value'),'工作区设置期间保留的草稿');
       evidence.checks.push('migration keeps stable identity, moves leader and member metadata, preserves the unsent draft and disk files, and starts no AI');
-      await click('.wss-close');await select(managedTab.id);await managedView.executeJavaScript('document.querySelector("[data-act=workspace-settings]").click()');
-      await wait('document.querySelector(".workspace-settings-dialog")?.open && document.querySelector("#workspace-root")','project brand gear opens privileged home settings');
+      await click('.wss-close');await select(managedTab.id);await managedView.executeJavaScript('document.querySelector("[data-act=view][data-view=all]").click()');
+      await until(()=>managedView.executeJavaScript('Boolean(document.querySelector(".wh-head [data-act=workspace-settings]"))'),'workspace home settings entry');
+      await managedView.executeJavaScript('document.querySelector(".wh-head [data-act=workspace-settings]").click()');
+      await wait('document.querySelector(".workspace-settings-dialog")?.open && document.querySelector("#workspace-root")','workspace home gear opens privileged home settings');
       assert.equal(await js('document.querySelector("#workspace-root").value'),relocated.project.root);
       const previousTheme=nativeTheme.themeSource;nativeTheme.themeSource='dark';win.setSize(860,650);
       await wait('document.documentElement.dataset.theme==="dark"','native system appearance updates');await capture('16-workspace-settings-dark-narrow');
