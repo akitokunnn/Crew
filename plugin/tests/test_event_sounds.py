@@ -1,4 +1,5 @@
 """Real settings storage and HTTP projections; only native model carriers are fake."""
+import base64
 import copy
 import tempfile
 from pathlib import Path
@@ -59,6 +60,83 @@ class EventSoundsTests(unittest.TestCase):
                 self.assertEqual(code, 400, value)
                 self.assertEqual(settings.get(self.case.conn), original)
                 self.assertEqual(event_sounds.get(self.case.home), event_sounds.DEFAULT)
+
+    WAV = b'RIFF\x24\x00\x00\x00WAVEfmt ' + bytes(28)
+
+    def upload(self, name='门铃', content=None, filename='bell.wav'):
+        body = {'name': name, 'filename': filename, 'data': base64.b64encode(self.WAV if content is None else content).decode()}
+        return self.case.request('/api/sounds/custom', body)[:2]
+
+    def test_custom_sound_upload_plays_selects_and_lists_in_every_catalog(self):
+        code, value = self.upload()
+        self.assertEqual(code, 200, value)
+        preset = value['preset']
+        self.assertRegex(preset['id'], r'^custom:[0-9a-f]{12}$')
+        self.assertEqual((preset['name'], preset['custom']), ('门铃', True))
+        self.assertEqual(preset['url'], '/api/sounds/custom/file?id=' + preset['id'])
+        code, content, headers = self.case.request(preset['url'], raw=True)
+        self.assertEqual((code, content, headers['Content-Type']), (200, self.WAV, 'audio/wav'))
+        for header, kind in ((b'OggS' + bytes(20), 'audio/ogg'), (b'ID3' + bytes(20), 'audio/mpeg'), (b'\xff\xfb' + bytes(20), 'audio/mpeg')):
+            code, value = self.upload('格式', header, filename='anything.wav')
+            self.assertEqual(code, 200, value)
+            self.assertEqual(self.case.request(value['preset']['url'], raw=True)[2]['Content-Type'], kind)
+        entry = {key: preset[key] for key in ('name', 'url', 'custom')}
+        self.assertEqual(self.state()['catalog']['presets'][preset['id']], entry)
+        self.assertIn('notes', self.state()['catalog']['presets']['soft'])
+        chosen = {**event_sounds.DEFAULT, 'leader': preset['id']}
+        code, value, _ = self.case.request('/api/settings', {'sounds': chosen})
+        self.assertEqual(code, 200, value)
+        self.assertEqual((value['sounds'], value['sound_missing']), (chosen, []))
+        self.assertEqual(value['sound_catalog']['presets'][preset['id']], entry)
+        self.assertEqual(self.state()['missing'], [])
+        self.assertTrue((self.case.home / 'sounds' / 'custom' / (preset['id'][7:] + '.wav')).is_file())
+        self.assertEqual(len(self.case.processes), 0)
+
+    def test_custom_sound_rejects_bad_files_and_limits_with_reasons(self):
+        for body, reason in (({'name': '', 'filename': 'a.wav', 'data': ''}, '1 到 20'),
+                             ({'name': '超' * 21, 'filename': 'a.wav', 'data': ''}, '1 到 20'),
+                             ({'name': '坏', 'filename': 'a.wav', 'data': '不是base64'}, 'base64'),
+                             ({'name': '假', 'filename': 'a.wav', 'data': base64.b64encode(b'not audio at all').decode()}, 'wav、mp3、ogg'),
+                             ({'name': '大', 'filename': 'a.wav', 'data': base64.b64encode(self.WAV + bytes(1024 * 1024)).decode()}, '1MB'),
+                             ({'name': '缺', 'data': ''}, 'filename')):
+            with self.subTest(reason=reason):
+                code, value, _ = self.case.request('/api/sounds/custom', body)
+                self.assertEqual(code, 400, value)
+                self.assertIn(reason, value['error'])
+        for index in range(event_sounds.CUSTOM_LIMIT):
+            self.assertEqual(self.upload('音效%d' % index)[0], 200)
+        code, value = self.upload('第21个')
+        self.assertEqual(code, 400, value)
+        self.assertIn('最多 20 个', value['error'])
+        code, value, _ = self.case.request('/api/settings', {'sounds': {**event_sounds.DEFAULT, 'delivery': 'custom:000000000000'}})
+        self.assertEqual(code, 400, value)
+        self.assertIn('不存在', value['error'])
+
+    def test_deleting_a_used_custom_sound_names_its_events_and_a_lost_file_is_reported_missing(self):
+        preset = self.upload()[1]['preset']
+        chosen = {**event_sounds.DEFAULT, 'leader': preset['id'], 'delivery': preset['id']}
+        self.assertEqual(self.case.request('/api/settings', {'sounds': chosen})[0], 200)
+        code, value, _ = self.case.request('/api/sounds/custom/delete', {'id': preset['id']})
+        self.assertEqual(code, 409, value)
+        self.assertIn('leader 回复完成', value['error'])
+        self.assertIn('任务交付', value['error'])
+        self.assertIn(preset['id'], self.state()['catalog']['presets'])
+        # A file removed outside Crew is reported as missing; the saved choice is not swapped for a default.
+        (self.case.home / 'sounds' / 'custom' / (preset['id'][7:] + '.wav')).unlink()
+        sounds = self.state()
+        self.assertEqual((sounds['preferences'], sounds['missing']), (chosen, ['leader', 'delivery']))
+        self.assertNotIn(preset['id'], sounds['catalog']['presets'])
+        self.assertEqual(self.case.request(preset['url'], raw=True)[0], 400)
+        with mock.patch('crew.runtime_catalog.Catalog.refresh', return_value=[]):
+            native = operations_chat.settings_snapshot(self.case.home, self.case.server.service.plugin_root)
+        self.assertEqual(native['sound_missing'], ['leader', 'delivery'])
+        other = self.upload('备用')[1]['preset']
+        self.assertEqual(self.case.request('/api/sounds/custom/delete', {'id': other['id']})[:2], (200, {'deleted': other['id']}))
+        self.assertNotIn(other['id'], self.state()['catalog']['presets'])
+        self.assertFalse(list((self.case.home / 'sounds' / 'custom').glob(other['id'][7:] + '.*')))
+        code, value, _ = self.case.request('/api/sounds/custom/delete', {'id': other['id']})
+        self.assertEqual(code, 400, value)
+        self.assertEqual(self.case.request('/api/sounds/custom/delete', {'id': '../index'})[0], 400)
 
     def completed_reply(self, runtime, goal=False):
         case = self.case

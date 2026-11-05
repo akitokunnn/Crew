@@ -626,7 +626,7 @@ class Service:
                 if identity in histories:
                     return histories[identity]
                 return self.chat.history(identity) if self.chat.path(identity).is_file() else None
-            result['sounds'] = event_sounds.snapshot(conn, result['project']['name'] if result['project'] else None, sound_history, self.chat.journal)
+            result['sounds'] = event_sounds.snapshot(conn, self.home, result['project']['name'] if result['project'] else None, sound_history, self.chat.journal)
             return result
 
     def _project_conversations(self, conn, name, agents, error):
@@ -1097,6 +1097,13 @@ class Service:
                 if board.session(conn, sid)['project'] != project:
                     raise board.BoardError('leader 不属于当前工作区')
                 return member_defaults.save(conn, sid, data['selection'], now=self.now().isoformat(timespec='milliseconds').replace('+00:00', 'Z'))
+        if path == '/api/sounds/custom':
+            return event_sounds.add_custom(self.home, data)
+        if path == '/api/sounds/custom/delete':
+            if not isinstance(data, dict) or set(data) != {'id'}:
+                raise board.BoardError('删除自定义音效只需要 id')
+            with self.write_lock, closing(store.connect(self.home)) as conn:
+                return event_sounds.delete_custom(conn, self.home, data['id'])
         if path == '/api/settings':
             if not data or not set(data) <= {'ai', 'execution', 'sounds'}:
                 raise ValueError('设置请求只能包含 ai、execution 和 sounds 配置')
@@ -1106,7 +1113,7 @@ class Service:
                 if 'execution' in data:
                     settings.save_execution(conn, data['execution'])
                 if 'sounds' in data:
-                    event_sounds.save(conn, data['sounds'])
+                    event_sounds.save(conn, data['sounds'], self.home)
             return self.settings_state()
         if path in ('/api/session/runtime/prepare','/api/session/runtime/switch'):
             with closing(store.connect(self.home)) as conn:
@@ -1771,6 +1778,7 @@ POST_PATHS.update(('/api/workspace-data/discover','/api/workspace-data/open','/a
 POST_PATHS.update(('/api/git/enable', '/api/git/disable', '/api/git/fetch', '/api/git/settings'))
 POST_PATHS.update(('/api/admin/update/prepare', '/api/admin/update/cancel'))
 POST_PATHS.add('/api/settings')
+POST_PATHS.update(('/api/sounds/custom', '/api/sounds/custom/delete'))
 POST_PATHS.update(('/api/storage/preview', '/api/storage/clean', '/api/storage/restore',
                    '/api/storage/trash/empty', '/api/storage/policy'))
 POST_PATHS.add('/api/member-defaults')
@@ -2119,6 +2127,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, service.git_settings(query.get('project', [None])[0]))
         elif url.path == "/api/git/commit":
             self._send(200, service.git_commit(query.get("project", [None])[0], query.get("sha", [""])[0]))
+        elif url.path == '/api/sounds/custom/file':
+            self._stream_storage_file(*event_sounds.custom_file(service.home, query.get('id', [''])[0]))
         elif url.path == '/api/chat/file':
             content, media_type = service.chat_file(query.get('session_id', [''])[0], query.get('name', [''])[0],
                                                     query.get('project', [None])[0], query.get('goal_id', [None])[0],
