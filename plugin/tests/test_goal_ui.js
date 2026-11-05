@@ -286,6 +286,8 @@ test("task cards use status-specific summaries, actual checklist progress and co
  html=card({pending_decision:{id:1,question:"选择验收范围"},now_doing:[{title:"不应抢占拍板",session_id:"m"}]});assert(html.includes("选择验收范围"));assert(html.includes('is-decision'));assert(!html.includes("不应抢占拍板"));
  html=card({status:"running",now_doing:[{title:"核对交互",session_id:"m"}],current_round:2,working_count:2,work_summary:{total:4,done:1},assignments:people.map(person=>({session_id:person.session_id}))});assert(html.includes("正在：界面成员 核对交互"));assert(html.includes("清单 1/4"));assert(html.includes('stroke-dasharray="25 100"'));assert(html.includes("第 2 轮"));assert(html.includes("2 人在干活"));assert(html.includes("+1"));assert(html.includes("3 分钟前"));
  html=card({status:"paused"});assert(!html.includes("task-card-summary"));
+ html=card({status:"completed",now_doing:[],assignments:[{session_id:"m"},{session_id:"closed-member"}]});assert(html.includes("<i>界面成员</i>"));assert.equal((html.match(/<i>/g)||[]).length,1);
+ html=card({status:"running",now_doing:[{title:"收尾",session_id:"closed-member"}]});assert(html.includes("正在：收尾"));assert(!html.includes("undefined"));
 });
 test("task list groups review, active and collapsed ended goals and omits empty groups",async()=>{
  const h=harness();h.client.sync("leader",null);h.state.goals[0].status="awaiting_acceptance";h.state.goals[0].acceptance_brief={summary:"完成摘要"};h.state.goals.push({...h.state.goals[1],id:"c",status:"completed"});
