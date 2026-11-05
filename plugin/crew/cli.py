@@ -859,7 +859,7 @@ def execute(conn, args, cwd, agents_provider):
     if cmd == "say":
         speaker = conn.execute("SELECT project FROM sessions WHERE session_id=?", (actor,)).fetchone()
         if speaker is None or speaker["project"] is None:
-            raise board.BoardError("交流区只给 leader 用；有事告诉你的 leader")
+            raise board.BoardError("Leader 交流区只给 leader 用；有事告诉你的 leader")
         return channel.post(conn, speaker["project"], actor, args.text, args.to)
     p = _project(conn, args, cwd)
     if cmd == "git":
