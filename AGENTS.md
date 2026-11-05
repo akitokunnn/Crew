@@ -97,6 +97,8 @@ node --test plugin/tests/test_*.js
 npm --prefix desktop test
 ```
 
+CI 只跑核心清单 [plugin/tests/ci_core.txt](plugin/tests/ci_core.txt)（`python tests/ci_core.py`，在 `plugin` 下执行），不含边缘载体和计时敏感的测试；合并前仍须在本地跑上面的全量。新增核心流程的测试模块时加进清单。
+
 桌面隔离交互：`node desktop/scripts/smoke-workspaces.cjs`。构建、便携包验收、图标检查见 [desktop/README.md](desktop/README.md)；使用方式见 [README.md](README.md)。
 
 - 验证记录对应实际提交与范围，汇合其他改动后复验受影响部分；自动检查与交互验收互相补充。
