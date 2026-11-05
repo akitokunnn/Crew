@@ -27,7 +27,10 @@ def items(conn, goal_id, round_number=None):
 
 
 def summary(conn, goal_id):
-    rows = items(conn, goal_id)
+    return summary_of(items(conn, goal_id))
+
+
+def summary_of(rows):
     active = [item for item in rows if item['status'] != 'cancelled']
     return {'total': len(active), 'done': sum(item['status'] == 'done' for item in active),
             'doing': sum(item['status'] == 'doing' for item in active),
