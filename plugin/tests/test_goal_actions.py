@@ -173,6 +173,20 @@ class GoalActionTests(GoalFixture):
         goals.set_execution_status(self.conn, execution['id'], 'idle')
         self.assertTrue(goals.finalize_finish(self.conn, goal['id'])['finalized'])
 
+    def test_create_errors_name_the_public_fields_and_the_unrecognized_ones(self):
+        # A real gpt-6-luna leader guessed objective/acceptance_criteria six times and gave up.
+        data = {'project': 'demo', 'title': 'Three files', 'objective': 'Do work', 'acceptance_criteria': ['Check it']}
+        with self.assertRaises(board.BoardError) as raised:
+            self.dispatch('create', data)
+        message = str(raised.exception)
+        for expected in ('data.request', 'data.acceptance', 'request（用户原话）', 'acceptance_criteria', 'objective'):
+            self.assertIn(expected, message)
+        self.assertNotIn('data.title', message)
+        self.assertNotIn('project', message.split('不认识的字段：')[1])
+        self.assertEqual(goals.list(self.conn, 'demo'), [])
+        created = self.dispatch('create', {'project': 'demo', 'title': 'Three files', 'request': 'Do work', 'acceptance': ['Check it']})
+        self.assertEqual(created['requirements']['request'], 'Do work')
+
     def test_strict_report_errors_teach_the_public_format_without_source_reading(self):
         goal = self.goal()
         for field, value, expected in (('outcome','achieved','completed|failed'), ('status','met','passed|failed'), ('evidence',['result.txt'],'label,reference')):

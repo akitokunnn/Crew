@@ -9,6 +9,12 @@ READ_ACTIONS = frozenset(('status', 'report-template', 'report.get', 'report.pre
 GOAL_ACTIONS = frozenset(('status', 'create', 'start', 'pause', 'resume', 'cancel', 'reopen',
                           'amend', 'assign', 'report-template', 'report.get', 'report.preview', 'report.publish', 'mode.set', 'finish', 'work.list', 'work.add', 'work.update')) | goal_artifacts.ACTIONS
 CONTEXT_ACTIONS = frozenset(('context.inspect', 'context.retrieve', 'context.put', 'context.correct', 'context.expire'))
+CREATE_FIELDS = frozenset(('title', 'request', 'acceptance', 'constraints', 'priority', 'dependencies', 'decision_mode',
+                           'source', 'leader', 'leader_session_id'))
+# Envelope keys the CLI and hosts add to every goal action.
+TRANSPORT_FIELDS = frozenset(('project', 'goal_id', 'confirmed', 'start', 'request_id'))
+CREATE_HELP = ('create 的 data 字段：title（标题）、request（用户原话）、acceptance（验收标准数组）、'
+               '可选 constraints（数组）、priority、dependencies、decision_mode')
 
 
 def report_template(conn, goal_id):
@@ -166,6 +172,11 @@ def dispatch(home, actor_session_id, execution_id, action, data, controller=None
             if not leader_id:
                 raise board.BoardError('创建目标必须指定主责 leader')
             leader = _person(conn, project, leader_id)
+            missing = [key for key in ('title', 'request', 'acceptance') if key not in data]
+            if missing:
+                unknown = sorted(set(data) - CREATE_FIELDS - TRANSPORT_FIELDS)
+                raise board.BoardError('create 缺少 data.' + '、data.'.join(missing) + '；' + CREATE_HELP
+                                       + ('；不认识的字段：' + '、'.join(unknown) if unknown else ''))
             return goals.create(conn, project, leader['session_id'], data.get('title'), data.get('request'),
                                 data.get('acceptance'), constraints=data.get('constraints', ()), priority=data.get('priority', 0),
                                 dependencies=data.get('dependencies', ()), actor=actor_session_id, source=data.get('source'),
