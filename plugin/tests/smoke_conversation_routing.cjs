@@ -42,7 +42,7 @@ if(!process.versions.electron){
       async function type(text){await js(`document.querySelector('#chat-host textarea').value=${JSON.stringify(text)};document.querySelector('#chat-host textarea').dispatchEvent(new Event('input',{bubbles:true}));true;`);}
       async function capture(name){await js('document.fonts.ready.then(()=>true)');await pause(120);wc.debugger.attach('1.3');try{const result=await wc.debugger.sendCommand('Page.captureScreenshot',{format:'png',fromSurface:true});const file=path.join(out,name+'.png');await fs.writeFile(file,Buffer.from(result.data,'base64'));evidence.screenshots.push(file);}finally{wc.debugger.detach();}}
       await window.loadURL(bootstrap.url+'/?project=demo#leader='+bootstrap.leader);
-      await wait('Boolean(document.querySelector("#goal-head [data-goal-act=list]"))');
+      await wait('Boolean(document.querySelector("#chat-head [data-act=tasks-toggle]"))');
       await check('real HTTP serves every stylesheet and script declared by the entry page',`(async()=>{const paths=[...document.querySelectorAll('link[rel=stylesheet],script[src]')].map(el=>el.href||el.src);return (await Promise.all(paths.map(url=>fetch(url).then(r=>r.status)))).every(status=>status===200)})()`);
       await click('[data-act="right-open"]');await pause(450);
       await check('real backend positions the original architecture in the visible right column','(()=>{const root=document.querySelector("#chat-attention"),p=root.getBoundingClientRect(),r=document.querySelector("#right-panel").getBoundingClientRect();return getComputedStyle(root).position==="fixed"&&r.width>200&&r.height>300&&r.right<=innerWidth&&Math.abs(p.top-r.top)<1&&!!document.querySelector("#right-panel .node")})()');
@@ -63,8 +63,8 @@ if(!process.versions.electron){
       window.setSize(390,844);await capture('00-leader-autonomy-mobile');window.setSize(1280,900);
       await trust("human");
       await check('leader authorization can be revoked without starting or pausing its independent tasks',
-        'document.querySelector("#goal-head [data-goal-act=list]").textContent.includes("2")&&!document.querySelector("#chat-host .chat-activity")');
-      await type('主对话草稿');await click('[data-goal-act="list"]');
+        'document.querySelector("#chat-head [data-act=tasks-toggle]").textContent.includes("2")&&!document.querySelector("#chat-host .chat-activity")');
+      await type('主对话草稿');
       await wait(`!!document.querySelector('[data-goal-act="open"][data-goal-id="${bootstrap.goals[0]}"]')`);
       await click(`[data-goal-act="open"][data-goal-id="${bootstrap.goals[0]}"]`);
       await wait('!!document.querySelector("#side-task-body [data-goal-tools]")');await check("opening a task keeps the idle general conversation and its draft",'document.querySelector("#chat-host textarea").value==="主对话草稿"&&!document.querySelector("#chat-host .chat-activity")');
@@ -89,14 +89,14 @@ if(!process.versions.electron){
       await wait('document.querySelector("#chat-host")?.textContent.includes("请确认接口格式")');
       await check('a cross-leader request enters general chat while its independent draft survives','document.querySelectorAll("#chat-host .chat-activity").length===1&&document.querySelector("#chat-host textarea").value==="主对话草稿"');
       await capture('01-general-coordination');
-      await click('[data-goal-act="list"]');await wait(`!!document.querySelector('[data-goal-act="open"][data-goal-id="${bootstrap.goals[0]}"]')`);await click(`[data-goal-act="open"][data-goal-id="${bootstrap.goals[0]}"]`);
+      await wait(`!!document.querySelector('[data-goal-act="open"][data-goal-id="${bootstrap.goals[0]}"]')`);await click(`[data-goal-act="open"][data-goal-id="${bootstrap.goals[0]}"]`);
       await wait('document.querySelector("#chat-host textarea")?.value==="主对话草稿"&&!document.querySelector("#chat-host textarea").disabled&&!!document.querySelector("#chat-host .chat-activity")');
       await check('task changes preserve the general collaboration message and the same leader draft','!!document.querySelector("#chat-host .chat-activity")&&document.querySelector("#chat-host").textContent.includes("请确认接口格式")&&document.querySelector("#chat-host textarea").value==="主对话草稿"');
       nativeTheme.themeSource='dark';window.setSize(850,820);await capture('02-task-keeps-working');
       await click('#side-task-section [data-section="tasks"]');await wait('document.querySelector("#chat-host textarea")?.value==="主对话草稿"');
       fixture.stdin.write('reply\n');await until(()=>messages.some(value=>value.replied),'reply routed to original task');
       await wait('!document.querySelector("#chat-host .chat-activity")');
-      await check('a completed coordination reply clears only general progress while tasks stay active','document.querySelector("#goal-head [data-goal-act=list]").textContent.includes("2")&&document.querySelector("#chat-host textarea").value==="主对话草稿"');
+      await check('a completed coordination reply clears only general progress while tasks stay active','document.querySelector("#chat-head [data-act=tasks-toggle]").textContent.includes("2")&&document.querySelector("#chat-host textarea").value==="主对话草稿"');
       await capture('03-general-idle-tasks-active');
       evidence.reply=messages.find(value=>value.replied);assert.equal(evidence.reply.parallel_tasks,2);assert.equal(evidence.reply.source_general_started,false);assert.equal(evidence.errors.length,0,JSON.stringify(evidence.errors));
       await click('#chat-head [data-act="session-menu"]');
