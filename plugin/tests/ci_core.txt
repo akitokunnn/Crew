@@ -1,10 +1,10 @@
 # CI 只跑这份核心清单：python tests/ci_core.py（在 plugin 目录下）。
-# 合并前本地照常跑全量：python -m unittest discover -s tests
+# 全量按需在本地跑（发版前或跨模块改动）：python -m unittest discover -s tests
 #
 # 每行一个测试模块，或“模块.类”只取其中一组；# 后面是注释。
 # 入选条件：覆盖核心流程，且不依赖真实计时、心跳、sleep 次数或连接中断时序。
 # 新增核心能力的测试模块时加到对应分组；边缘载体（QQ、飞书）、声音、遥测、
-# 外观类和计时敏感的测试不进清单，只在本地全量里跑。
+# 外观类和计时敏感的测试不进清单，改到它们时在本地跑对应模块。
 
 # 测试隔离护栏：禁止连到正式 Crew 端口
 test_test_isolation
