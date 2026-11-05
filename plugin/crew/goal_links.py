@@ -65,7 +65,8 @@ def _mark_delivered(conn, link, version):
 
 
 def deliver(controller, conn):
-    for row in conn.execute('SELECT * FROM goal_links'):
+    # Native delivery writes through a separate connection; release this read snapshot first.
+    for row in conn.execute('SELECT * FROM goal_links').fetchall():
         link = dict(row)
         table = 'decisions' if link['kind'] == 'decision' else 'todos'
         item = conn.execute('SELECT * FROM ' + table + ' WHERE id=?', (link['item_id'],)).fetchone()
@@ -81,13 +82,13 @@ def deliver(controller, conn):
             _mark_delivered(conn, link, version)
             continue
         goal = goals.get(conn, link['goal_id'])
-        if goal['current_round'] != link['round'] or goal['requirement_version'] != link['requirement_version'] or goal['status'] in goals.TERMINAL:
+        if goal['current_round'] != link['round'] or goal['status'] in goals.TERMINAL:
             with goals.transaction(conn):
                 conn.execute('UPDATE goal_links SET delivered_version=? WHERE kind=? AND item_id=? AND execution_id=?',
                              (version, link['kind'], link['item_id'], link['execution_id']))
                 board._event(conn,'goal:human-answer-archived',goal['project'],board.HUMAN,
                              {'kind':link['kind'],'id':link['item_id'],'version':version,'goal_id':goal['id'],
-                              'reason':'原轮次/需求版本已经失效或目标已经结束'},None)
+                              'reason':'原轮次已经失效或目标已经结束'},None)
             continue
         if goal['status'] in ('paused', 'pausing') or goal['manual_pause']:
             continue
@@ -120,9 +121,9 @@ def deliver(controller, conn):
         if goal['status'] == 'waiting_user':
             if conn.execute("SELECT 1 FROM goal_links l LEFT JOIN todos t ON l.kind='todo' AND t.id=l.item_id "
                             "LEFT JOIN decisions d ON l.kind='decision' AND d.id=l.item_id "
-                            "WHERE l.goal_id=? AND l.round=? AND l.requirement_version=? "
+                            "WHERE l.goal_id=? AND l.round=? "
                             "AND ((t.status='open' AND t.blocking=1) OR (d.status='open' AND d.blocking=1)) LIMIT 1",
-                            (goal['id'], goal['current_round'], goal['requirement_version'])).fetchone():
+                            (goal['id'], goal['current_round'])).fetchone():
                 continue
             goals.resume(conn, goal['id'], actor=item['resolved_by'] if source == 'crew' else board.HUMAN)
         try:

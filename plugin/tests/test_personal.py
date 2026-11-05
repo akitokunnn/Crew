@@ -97,6 +97,26 @@ class PersonalTests(unittest.TestCase):
         self.assertEqual(value['counts']['todos'], 1)
         self.assertEqual(value['todos'][0]['project'], 'mib')
 
+    def test_summary_excludes_only_bound_builtin_git_assistants(self):
+        a, b = self.project('alpha'), self.project('beta')
+        self.leader(a, 'ordinary')
+        self.leader(b, 'legacy')
+        board.register_session(self.conn, 'builtin', a['name'], a['root'], None, None,
+                               name='Git 助手', role='leader', group_name='git')
+        for project, sid in (('alpha', 'builtin'), ('beta', 'legacy')):
+            self.conn.execute('INSERT INTO git_management(project,enabled_at,base,admin_session_id) VALUES(?,?,?,?)',
+                              (project, store.now_iso(), 'main', sid))
+        assistant = self.assistant(selection={'runtime': 'codex', 'model': None, 'effort': None})
+        with closing(guard.readonly(self.home)) as conn:
+            before = conn.total_changes
+            snapshot = personal.overview(conn)
+            self.assertEqual(conn.total_changes, before)
+        self.assertEqual({row['session_id'] for row in snapshot['leaders']}, {'ordinary', 'legacy'})
+        self.assertEqual(snapshot['counts']['leaders'], 2)
+        scoped = personal_actions.dispatch(self.home, assistant['session_id'], 'summary', {'data': {'project': 'alpha'}})
+        self.assertEqual([row['session_id'] for row in scoped['leaders']], ['ordinary'])
+        self.assertEqual(scoped['counts']['leaders'], 1)
+
     def test_journal_proof_rejects_forged_source_missing_and_duplicate_ids(self):
         sid = self.assistant()['session_id']
         event = {'type': 'message', 'id': 'input', 'role': 'user', 'source': 'crew', 'text': '转达'}

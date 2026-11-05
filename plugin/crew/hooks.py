@@ -176,12 +176,12 @@ def handle(event, data, home, plugin_root, environ, git_provider=git_details, no
             if config is not None:
                 administrator = board.session(conn, config['admin_session_id']) if config['admin_session_id'] else None
                 if config['admin_session_id'] == data['session_id']:
-                    lines.append('你是本项目当前绑定的 Git 管理员，按项目规则统一推送、开 PR 和合并。')
+                    lines.append('你是本项目当前绑定的 Git 助手，按项目规则统一推送、开 PR 和合并。')
                 else:
-                    lines.append("本项目由 git 管理员「%s」统一推送和合并。做完用 `crew git request` 交给它，不要自己 push、开 PR、合并。" %
+                    lines.append("本项目由 Git 助手「%s」统一推送和合并。做完用 `crew git request` 交给它，需要商量时用 crew send 联系。不要自己 push、开 PR、合并。" %
                                  (administrator['crew_name'] if administrator else '未绑定'))
                 lines.append("分支规则（全文用 crew git policy 看）：\n" + "\n".join(config["branch_rules"].splitlines()[:6])
-                             if config["branch_rules"] else "git 管理员还没写分支规则，开工前先问它。全文用 crew git policy 看。")
+                             if config["branch_rules"] else "Git 助手还没写分支规则，开工前先问它。全文用 crew git policy 看。")
         if event == "user-prompt-submit" or (event == "session-start" and data.get("source") in ("resume", "compact")):
             reminder = rules.reminder(conn, data["session_id"], plugin_root)
             if reminder is not None:

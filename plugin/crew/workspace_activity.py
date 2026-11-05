@@ -2,7 +2,7 @@
 import datetime as dt
 import json
 
-from . import board, channel, goals, presentation, session_presence, store, todo
+from . import board, channel, git_admin, goals, presentation, session_presence, store, todo
 
 
 def snapshot(service, conn, project):
@@ -11,11 +11,16 @@ def snapshot(service, conn, project):
         agents, agents_error = service.agents, service.agents_error
         unknown = agents_error is not None
     state, present, _ = session_presence.project_status(service, conn, project, agents, agents_error)
+    git_config = board.git_config(conn, project)
+    assistant = (board.session(conn, git_config['admin_session_id'])
+                 if git_config is not None and git_config['admin_session_id'] is not None else None)
+    builtin_id = assistant['session_id'] if assistant is not None and git_admin.is_builtin(assistant, git_config) else None
     people = [person for person in [*state['ungrouped'], *(member for group in state['groups'] for member in group['members'])]
-              if person['crew_name'] and person['status'] != 'closed' and not board.is_archived(conn, person['session_id'])]
+              if person['crew_name'] and person['status'] != 'closed' and not board.is_archived(conn, person['session_id'])
+              and not git_admin.is_builtin(person, git_config)]
     visible = {person['session_id']: person for person in people}
     counts = dict.fromkeys(('working', 'decisions', 'todos', 'approvals', 'waiting', 'acceptance', 'unread', 'errors'), 0)
-    items, journals = [], {}
+    items, journals, histories = [], {}, {}
     for person in people:
         sid = person['session_id']
         execution = service.chat.goal_controller.display_execution(conn, sid)
@@ -31,10 +36,15 @@ def snapshot(service, conn, project):
         for context_key, read in contexts:
             if not service.chat.path(context_key).is_file():
                 continue
-            events = service.chat.history(context_key)['events']
+            if context_key not in histories:
+                histories[context_key] = service.chat.history(context_key)
+            events = histories[context_key]['events']
             if context_key == key:
                 journals[sid] = events
-            unread = presentation.chat_replies(events, after=read)
+            journal = service.chat.journal(context_key)
+            with journal.condition:
+                unread = presentation.chat_replies(journal.events, after=read,
+                    cache_key=(str(journal.path), journal.signature))
             # Members' internal replies are coordinated by their leader. The
             # human unread signal follows the existing leader conversation UI.
             if person['role'] == 'leader':
@@ -66,6 +76,8 @@ def snapshot(service, conn, project):
         counts['todos'] += 1
         items.append({'kind': 'todo', 'title': value['title'][:160], 'name': visible[value['session_id']]['crew_name'], 'detail': '待你动手'})
     for value in service.native_approvals(project):
+        if builtin_id is not None and value['session_id'] == builtin_id:
+            continue
         counts['approvals'] += 1
         items.append({'kind': 'approval', 'title': value.get('title') or '执行权限需要确认', 'name': '', 'detail': '待确认权限'})
     for value in goals.list_goals(conn, project):
@@ -73,8 +85,8 @@ def snapshot(service, conn, project):
             continue
         if value['status'] == 'awaiting_acceptance':
             counts['acceptance'] += 1
-        report = conn.execute('SELECT data_json,created_at FROM goal_reports WHERE goal_id=? AND round=? AND requirement_version=? '
-                              'ORDER BY version DESC LIMIT 1', (value['id'], value['current_round'], value['requirement_version'])).fetchone()
+        report = conn.execute('SELECT data_json,created_at FROM goal_reports WHERE goal_id=? AND round=? '
+                              'ORDER BY version DESC LIMIT 1', (value['id'], value['current_round'])).fetchone()
         if report and (value['status'] == 'awaiting_acceptance' or store.parse_iso(report['created_at']) >= service.now() - dt.timedelta(hours=24)):
             items.append({'kind': 'acceptance' if value['status'] == 'awaiting_acceptance' else 'delivery', 'title': value['title'][:160], 'name': visible[value['leader_session_id']]['crew_name'],
                           'detail': json.loads(report['data_json']).get('summary', '')[:160], 'at': report['created_at']})

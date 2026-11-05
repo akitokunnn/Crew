@@ -65,15 +65,15 @@ def _gate(conn, message):
     scopes = []
     waiting = None
     if message['target_scope'] == 'goal':
-        scopes.append((message['goal_id'], message['round'], message['requirement_version'], None))
+        scopes.append((message['goal_id'], message['round'], None))
     if message['source_execution']:
         source = goals.get_execution(conn, message['source_execution'])
-        scopes.append((source['goal_id'], source['round'], source['requirement_version'], source['id']))
-    for goal_id, round, version, execution_id in scopes:
-        gate = goals.dispatch_check(conn, goal_id, round=round, requirement_version=version, execution_id=execution_id)
+        scopes.append((source['goal_id'], source['round'], source['id']))
+    for goal_id, round, execution_id in scopes:
+        gate = goals.dispatch_check(conn, goal_id, round=round, execution_id=execution_id)
         if not gate['allowed']:
             goal = goals.get(conn, goal_id)
-            current = round == goal['current_round'] and version == goal['requirement_version']
+            current = round == goal['current_round']
             if current and goal['status'] in ('pausing', 'paused', 'waiting_user'):
                 waiting = gate['reason']
             else:

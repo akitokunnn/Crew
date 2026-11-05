@@ -98,7 +98,6 @@ class GoalActionTests(GoalFixture):
         self.assertEqual(self.call(tool, 'crew_goal', change)['version'], revised['version'])
         self.assertEqual(goals.get_execution(self.conn, execution['id'])['response_mode'], 'work')
         old_work = goal_work.items(self.conn, goal['id'])[0]
-        self.assertFalse(old_work['needs_review'])
         self.assertEqual((old_work['status'], old_work['note']), ('done', 'Original evidence retained'))
         added = self.call(tool, 'crew_goal', {'action': 'work.add', 'data': {'key': 'label', 'title': 'Correct label', 'acceptance': 'New label visible'}})
         self.call(tool, 'crew_goal', {'action': 'work.update', 'data': {'key': 'label', 'version': added['version'], 'status': 'done', 'note': 'Changed label checked'}})
@@ -145,15 +144,16 @@ class GoalActionTests(GoalFixture):
         self.assertEqual(self.host.calls[-1][2], 'member-id')
         self.assertEqual(self.host.calls[-1][-1]['source'], 'crew')
 
-    def test_execution_identity_and_stale_version_gate_every_write_but_not_status(self):
+    def test_execution_identity_is_required_and_amend_keeps_writes_available(self):
         goal = self.goal()
         execution = goals.create_execution(self.conn, goal['id'], 'chief-id', runtime='codex')
         with self.assertRaises(board.BoardError):
             self.dispatch('status', {}, actor='member-id', execution=execution['id'])
         goals.amend(self.conn, goal['id'], 'A new requirement')
         self.assertEqual(self.dispatch('status', {}, execution=execution['id'])['goal']['id'], goal['id'])
-        with self.assertRaises(board.Conflict):
-            self.dispatch('amend', {'text': 'Stale actor must not write'}, execution=execution['id'])
+        amended = self.dispatch('amend', {'text': 'Same execution can keep writing'}, execution=execution['id'])
+        self.assertEqual(amended['requirement_version'], 3)
+        self.assertEqual(amended['deliveries'], [])
 
     def test_template_is_self_describing_and_finish_waits_for_real_idle(self):
         goal = self.goal()
@@ -172,6 +172,20 @@ class GoalActionTests(GoalFixture):
         self.assertFalse(goals.dispatch_check(self.conn, goal['id'])['allowed'])
         goals.set_execution_status(self.conn, execution['id'], 'idle')
         self.assertTrue(goals.finalize_finish(self.conn, goal['id'])['finalized'])
+
+    def test_create_errors_name_the_public_fields_and_the_unrecognized_ones(self):
+        # A real gpt-6-luna leader guessed objective/acceptance_criteria six times and gave up.
+        data = {'project': 'demo', 'title': 'Three files', 'objective': 'Do work', 'acceptance_criteria': ['Check it']}
+        with self.assertRaises(board.BoardError) as raised:
+            self.dispatch('create', data)
+        message = str(raised.exception)
+        for expected in ('data.request', 'data.acceptance', 'request（用户原话）', 'acceptance_criteria', 'objective'):
+            self.assertIn(expected, message)
+        self.assertNotIn('data.title', message)
+        self.assertNotIn('project', message.split('不认识的字段：')[1])
+        self.assertEqual(goals.list(self.conn, 'demo'), [])
+        created = self.dispatch('create', {'project': 'demo', 'title': 'Three files', 'request': 'Do work', 'acceptance': ['Check it']})
+        self.assertEqual(created['requirements']['request'], 'Do work')
 
     def test_strict_report_errors_teach_the_public_format_without_source_reading(self):
         goal = self.goal()

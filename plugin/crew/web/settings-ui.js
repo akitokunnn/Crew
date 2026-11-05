@@ -4,8 +4,9 @@
   const clone = value => JSON.parse(JSON.stringify(value));
   const empty = () => ({runtime:null, model:null, effort:null});
   const tasks = [["assistant", "全局助手", "所有工作区共用一个助手；首次发送时使用此选择"], ["leader", "新建 leader", "新建 leader 时的载体、模型与思考强度；创建时仍可临时调整"], ["member", "leader 召唤组员", "新组员默认使用的大脑；每个 leader 也能单独覆盖。已有组员不受影响"], ["digest", "频道摘要", "将交流整理成摘要"], ["git", "Git 管理员", "检查改动、整理提交与合并"], ["operations", "运维 AI", "后台聊天与事故处理共用此选择；自动修复另按已保存策略执行"]];
-  const categories = [["ai", "AI 大脑", "载体、模型与任务分配"], ["execution", "执行权限", "文件与网络的访问范围"], ["prompts", "行为配置", "提示内容、覆盖范围与使用记录"], ["appearance", "外观", "让工作区更顺手"], ["sounds", "音效", "回复完成与任务交付的提示音"], ["remote", "局域网访问", "连接同一网络中的手机和电脑"], ["tools", "工具与更新", "本机执行工具"], ["connections", "消息渠道", "QQ、Lark / 飞书与远程通知"], ["storage", "存储与清理", "空间占用、回收与保留"], ["backend", "后台与运维", "运维对话、状态与配置"]];
+  const categories = [["library", "会话库", "查找、接入与管理已有会话"], ["ai", "AI 大脑", "载体、模型与任务分配"], ["execution", "执行权限", "文件与网络的访问范围"], ["prompts", "行为配置", "提示内容、覆盖范围与使用记录"], ["appearance", "外观", "让工作区更顺手"], ["sounds", "音效", "回复完成与任务交付的提示音"], ["remote", "局域网访问", "连接同一网络中的手机和电脑"], ["tools", "工具与更新", "本机执行工具"], ["connections", "消息渠道", "QQ、Lark / 飞书与远程通知"], ["storage", "存储与清理", "空间占用、回收与保留"], ["backend", "后台与运维", "运维对话、状态与配置"]];
   const icons = {
+    library:'<path d="M4 4h16v16H4zM8 8h8M8 12h8M8 16h5"/>',
     ai:'<rect x="6" y="6" width="12" height="12" rx="3"/><path d="M9 2v4m6-4v4M9 18v4m6-4v4M2 9h4m-4 6h4m12-6h4m-4 6h4"/><rect x="9" y="9" width="6" height="6" rx="1"/>',
     prompts:'<path d="M5 3h14v18H5zM8 7h8M8 11h8M8 15h5"/>',
     execution:'<path d="m12 3 8 3v6c0 4-4 7-8 9-4-2-8-5-8-9V6l8-3Z"/><path d="m8.5 12 2.5 2.5 4.5-5"/>',

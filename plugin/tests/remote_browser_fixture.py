@@ -27,8 +27,11 @@ def main():
     try:
         case.git_repo()
         case.git("branch", "-M", "main")
-        git_admin.configure(case.conn, "demo", {"revision":git_admin.revision(None), "enabled":True,
-            "admin_session_id":"s3", "base":"main", "stable":"", "branch_rules":"隔离测试，只读取提交图。"})
+        board.join(case.conn, "remote-git", "demo", "Git 助手", case.project, case.project, None,
+                   role="leader", group_name="git")
+        config = board.enable_git(case.conn, "demo", "main", "", admin_session_id="remote-git")
+        git_admin.configure(case.conn, "demo", {"revision":git_admin.revision(config), "enabled":True,
+            "base":"main", "stable":"", "branch_rules":"隔离测试，只读取提交图。"})
         service = case.server.service
         service.now = lambda: dt.datetime.now(dt.timezone.utc)
         other = case.home / 'other-project'

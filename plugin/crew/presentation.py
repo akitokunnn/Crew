@@ -1,7 +1,31 @@
 """Workspace views composed from recorded facts, without changing the board."""
+from collections import OrderedDict
+import threading
 
 
-def chat_replies(events, after=0):
+_replies = OrderedDict()
+_projection_lock = threading.RLock()
+
+
+def cached_projection(cache, key, compute):
+    """Bound recorded projections by journal path and the observed file signature."""
+    if key is None:
+        return compute()
+    with _projection_lock:
+        if key not in cache:
+            cache[key] = compute()
+            if len(cache) > 256:
+                cache.popitem(last=False)
+        cache.move_to_end(key)
+        return cache[key]
+
+
+def chat_replies(events, after=0, *, cache_key=None):
+    replies = cached_projection(_replies, cache_key, lambda: _chat_replies(events))
+    return [reply for reply in replies if reply['seq'] > after]
+
+
+def _chat_replies(events):
     """Project visible reply text, matching chat.js's stream/snapshot replay.
 
     Assistant events also carry tool calls. Only a change to reply text can
@@ -22,7 +46,7 @@ def chat_replies(events, after=0):
         if state['reply'] is None or state['reply']['text'] != text:
             state['reply'] = {'id': event['id'], 'seq': event['seq'], 'at': event.get('at'), 'text': text}
     return sorted((state['reply'] for state in messages.values()
-                   if state['reply']['text'].strip() and state['reply']['seq'] > after), key=lambda reply: reply['seq'])
+                   if state['reply']['text'].strip()), key=lambda reply: reply['seq'])
 
 
 def attention(conn, sessions, decisions, tasks, journals):

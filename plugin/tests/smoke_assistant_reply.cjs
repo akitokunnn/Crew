@@ -22,7 +22,7 @@ async function main(){
   await input.fill('你好，请回复这条测试消息。');await page.getByRole('button',{name:'发送',exact:true}).click();await page.getByText('你好，请回复这条测试消息。',{exact:true}).waitFor();
   const elapsed=page.locator('.chat-activity [data-activity-elapsed]'),tokenCount=page.locator('.chat-activity [data-activity-tokens]');
   await elapsed.waitFor();const firstClock=await elapsed.innerText();
-  await page.waitForFunction(before=>document.querySelector('.chat-activity [data-activity-elapsed]')?.textContent!==before,firstClock,{timeout:2500});
+  await page.waitForFunction(before=>{const text=document.querySelector('.chat-activity [data-activity-elapsed]')?.textContent||'';const value=Array.from(text.matchAll(/(\d+)(小时|分|秒)/g)).reduce((sum,part)=>sum+Number(part[1])*({小时:3600,分:60,秒:1})[part[2]],0);return value>before;},seconds(firstClock),{timeout:3500});
   assert(seconds(await elapsed.innerText())>seconds(firstClock));evidence.checks.push('waiting clock advances every second before the model replies');await shot('02-sent-waiting');
   fixture.stdin.write('tokens 120\n');await tokenCount.getByText('↓ 120 tokens',{exact:true}).waitFor({timeout:10000});
   evidence.checks.push('assistant shows native token usage in its own conversation page');await shot('03-native-usage');

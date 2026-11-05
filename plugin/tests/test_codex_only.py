@@ -51,7 +51,7 @@ class CodexOnlySpawnTests(runtime_fixtures.RuntimeFixture):
         for person in board.sessions(self.conn, 'demo'):
             runtimes.set(self.conn, person['session_id'], 'codex')
         state = {'leaders': [{'session_id': 'chief-id', 'status': 'working', 'where': 'bg', 'context': None}],
-                 'members': []}
+                 'members': [], 'git_assistant': None}
         # run_cli's own helper supplies an empty state, so invoke the production
         # context merger against the host snapshot separately below.
         with mock.patch('crew.cli._agents', side_effect=AssertionError('No Claude discovery')):

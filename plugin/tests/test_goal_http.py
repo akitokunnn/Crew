@@ -1021,9 +1021,9 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.assertNotIn('Separate general discussion.', json.dumps(own_history))
         goals.amend(self.conn, goal['id'], 'Update requirements without starting work.')
         pending = self.task_history(goal)
-        self.assertIsNone(pending['execution_id'])
+        self.assertEqual(pending['execution_id'], second['execution_id'])
         self.assertEqual([item['execution_id'] for item in pending['previous_executions']],
-                         [first['execution_id'], second['execution_id']])
+                         [first['execution_id']])
         self.assertEqual(goals.get(self.conn, goal['id'])['current_round'], 1)
 
     def pause_resume_history(self, runtime):
@@ -1360,7 +1360,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
                             for event in history['previous_executions'][0]['events']))
         self.assertTrue(any(event.get('text') == note for event in history['events']))
         self.assertEqual(goals.get_report(self.conn, report['id'])['html'], original['html'])
-        self.assertFalse(goals.get_report(self.conn, report['id'])['current'])
+        self.assertTrue(goals.get_report(self.conn, report['id'])['current'])
         execution = goals.get_execution(self.conn, reply['execution_id'])
         manifest = self.conn.execute('SELECT id FROM goal_context_manifests WHERE execution_id=?', (execution['id'],)).fetchone()[0]
         context_text = self.conn.execute('SELECT text FROM goal_context_manifests WHERE id=?', (manifest,)).fetchone()[0]
@@ -1423,7 +1423,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         after = goals.get(self.conn, goal['id'])
         self.assertEqual((after['id'], after['current_round'], after['status']), (goal['id'], 1, 'running'))
         self.assertEqual(after['requirements'], before['requirements'])
-        self.assertNotEqual(reply['execution_id'], old_execution)
+        self.assertEqual(reply['execution_id'], old_execution)
         self.assertEqual(self.task_history(goal)['response_mode'], 'work')
         self.assertEqual(goals.get_report(self.conn, report['id'])['html'], report['html'])
         detail = self.request('/api/goal?' + urlencode({'project': 'demo', 'id': goal['id']}))[1]
@@ -1612,7 +1612,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         code, detail, _ = self.request('/api/goal?' + urlencode({'project': 'demo', 'id': goal['id']}))
         self.assertEqual(code, 200, detail)
         self.assertEqual([(item['id'], item['version'], item['summary'], item['current']) for item in detail['reports']],
-                         [(report['id'], report['version'], report['data']['summary'], True) for report in reversed(saved)])
+                         [(report['id'], report['version'], report['data']['summary'], report['id'] == saved[-1]['id']) for report in reversed(saved)])
         self.assertEqual([item['created_at'] for item in detail['reports']],
                          ['2026-10-25T09:00:00.000Z', '2026-10-25T10:00:00.000Z', '2026-10-25T10:00:00.000Z'], 'saved time is shown as stored')
         goals.transition(self.conn, goal['id'], 'awaiting_acceptance')

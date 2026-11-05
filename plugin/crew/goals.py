@@ -232,9 +232,8 @@ def amend(conn, goal_id, text, *, acceptance=None, constraints=None, actor=board
     conn.execute('UPDATE goals SET requirement_version=? WHERE id=?', (version, goal_id))
     conn.execute('UPDATE goal_rounds SET requirement_version=? WHERE goal_id=? AND number=?',
                  (version, goal_id, goal['current_round']))
-    conn.execute("UPDATE goal_round_finishes SET status='superseded' WHERE goal_id=? AND round=? AND status='pending'", (goal_id, goal['current_round']))
-    from . import goal_context
-    goal_context._invalidate_source(conn, {'type': 'requirement', 'id': goal_id, 'version': goal['requirement_version']}, '需求已纠正或更新', at)
+    conn.execute("UPDATE goal_executions SET requirement_version=?,updated_at=? WHERE goal_id=? AND round=? "
+                 "AND status IN ('queued','running','pausing')", (version, at, goal_id, goal['current_round']))
     _touch(conn, goal_id, now)
     _control(conn, goal_id, actor)
     return get(conn, goal_id)
@@ -269,14 +268,12 @@ def dispatch_check(conn, goal_id, *, round=None, requirement_version=None, execu
     reason = None
     if round is not None and round != goal['current_round']:
         reason = '旧轮次仅供查阅，不能派发'
-    elif requirement_version is not None and requirement_version != goal['requirement_version']:
-        reason = '旧需求版本的排程已失效'
     elif goal['status'] not in ('queued', 'running') and not (responding and goal['status'] in ('completed', 'failed', 'awaiting_acceptance')):
         reason = '目标当前状态禁止派发：' + goal['status']
     elif goal['manual_pause']:
         reason = '用户暂停仍然有效'
-    elif conn.execute("SELECT 1 FROM goal_round_finishes WHERE goal_id=? AND round=? AND requirement_version=? AND status='pending'",
-                      (goal_id, goal['current_round'], goal['requirement_version'])).fetchone():
+    elif conn.execute("SELECT 1 FROM goal_round_finishes WHERE goal_id=? AND round=? AND status='pending'",
+                      (goal_id, goal['current_round'])).fetchone():
         reason = '本轮已请求最终交付，停止新增派发并等待实际执行结束'
     else:
         try:
@@ -292,8 +289,6 @@ def dispatch_check(conn, goal_id, *, round=None, requirement_version=None, execu
         execution = get_execution(conn, execution_id)
         if execution['goal_id'] != goal_id or execution['round'] != goal['current_round']:
             reason = '执行不属于此目标当前轮次'
-        elif execution['requirement_version'] != goal['requirement_version']:
-            reason = '执行尚未采用当前需求版本'
         elif execution['status'] not in ('queued', 'running', 'idle', 'offline'):
             reason = '执行状态禁止派发：' + execution['status']
         elif execution['generation'] != conn.execute('SELECT MAX(generation) FROM goal_executions WHERE goal_id=? AND round=? AND session_id=?',
@@ -335,8 +330,8 @@ def transition(conn, goal_id, status, *, actor=board.HUMAN, reason=None, expecte
                                          (goal_id, goal['current_round'])).fetchone():
         raise board.Conflict('尚有执行未确认停止，应显示暂停中')
     if status in ('completed', 'failed'):
-        report = conn.execute('SELECT id,outcome FROM goal_reports WHERE goal_id=? AND round=? AND requirement_version=? ORDER BY version DESC LIMIT 1',
-                              (goal_id, goal['current_round'], goal['requirement_version'])).fetchone()
+        report = conn.execute('SELECT id,outcome FROM goal_reports WHERE goal_id=? AND round=? ORDER BY version DESC LIMIT 1',
+                              (goal_id, goal['current_round'])).fetchone()
         reviewed = (status == 'completed' and report is not None and report['outcome'] == 'awaiting_acceptance'
                     and goal['status'] == 'awaiting_acceptance' and actor == board.HUMAN
                     and conn.execute('SELECT 1 FROM goal_acceptances WHERE goal_id=? AND round=? AND report_id=? AND accepted=1 AND actor=?',
@@ -351,8 +346,8 @@ def transition(conn, goal_id, status, *, actor=board.HUMAN, reason=None, expecte
     conn.execute('UPDATE goal_rounds SET status=?,outcome=?,reason=?,ended_at=? WHERE goal_id=? AND number=?',
                  (status, status if status in TERMINAL else None, reason, at if status in TERMINAL else None, goal_id, goal['current_round']))
     if status in TERMINAL:
-        conn.execute('UPDATE goal_executions SET status=?,ended_at=?,updated_at=? WHERE goal_id=? AND round=? AND requirement_version=?',
-                     (status, at, at, goal_id, goal['current_round'], goal['requirement_version']))
+        conn.execute('UPDATE goal_executions SET status=?,ended_at=?,updated_at=? WHERE goal_id=? AND round=?',
+                     (status, at, at, goal_id, goal['current_round']))
     _touch(conn, goal_id, now)
     _control(conn, goal_id, actor)
     return get(conn, goal_id)
@@ -385,12 +380,11 @@ def confirm_paused(conn, goal_id, *, actor=None, now=None):
 
 def _finished_review(conn, goal):
     finish = get_finish(conn, goal['id'])
-    if (not finish or finish['status'] != 'finalized' or finish['outcome'] != 'awaiting_acceptance'
-            or finish['requirement_version'] != goal['requirement_version']):
+    if not finish or finish['status'] != 'finalized' or finish['outcome'] != 'awaiting_acceptance':
         return None
-    latest = conn.execute('SELECT id FROM goal_reports WHERE goal_id=? AND round=? AND requirement_version=? '
+    latest = conn.execute('SELECT id FROM goal_reports WHERE goal_id=? AND round=? '
                           'ORDER BY version DESC LIMIT 1',
-                          (goal['id'], goal['current_round'], goal['requirement_version'])).fetchone()
+                          (goal['id'], goal['current_round'])).fetchone()
     if latest is None or latest['id'] != finish['report_id']:
         return None
     report = get_report(conn, finish['report_id'])
@@ -449,8 +443,8 @@ def continue_task(conn, goal_id, text, *, actor=board.HUMAN, discussion_executio
                     (goal_id, discussion_execution_id or '')).fetchone():
         raise board.Conflict('执行尚未确认停止，不能开始继续修改')
     text, at = _text(text, '继续修改内容'), board._time(now)
-    report = conn.execute('SELECT id FROM goal_reports WHERE goal_id=? AND round=? AND requirement_version=? ORDER BY version DESC LIMIT 1',
-                          (goal_id, goal['current_round'], goal['requirement_version'])).fetchone()
+    report = conn.execute('SELECT id FROM goal_reports WHERE goal_id=? AND round=? ORDER BY version DESC LIMIT 1',
+                          (goal_id, goal['current_round'])).fetchone()
     review = acceptance_review(conn, goal_id)
     finish = get_finish(conn, goal_id)
     previous_round = dict(conn.execute('SELECT * FROM goal_rounds WHERE goal_id=? AND number=?',
@@ -604,8 +598,6 @@ def set_execution_status(conn, execution_id, status, *, requirement_version=None
         _allow(conn, execution['goal_id'], round=execution['round'], requirement_version=requirement_version or execution['requirement_version'],
                **({'execution_id': execution_id, 'allow_discussion': True} if discussion(conn, execution_id) else {}))
     version = execution['requirement_version'] if requirement_version is None else requirement_version
-    if version != _row(conn, execution['goal_id'])['requirement_version'] and status == 'running':
-        raise board.Conflict('不能启动旧需求版本')
     at = board._time(now)
     conn.execute('UPDATE goal_executions SET status=?,requirement_version=?,error=?,updated_at=?,ended_at=? WHERE id=?',
                  (status, version, error, at, at if status in TERMINAL else None, execution_id))
@@ -616,11 +608,15 @@ def validate_report(conn, goal_id, data):
     """Validate product acceptance, not a count of engineering tests."""
     if not isinstance(data, dict):
         raise board.BoardError('报告必须为结构化对象')
-    goal, req = _row(conn, goal_id), requirements(conn, goal_id)
+    goal = _row(conn, goal_id)
     result = json.loads(_json(data))
-    for key, expected in (('goal_id', goal_id), ('round', goal['current_round']), ('requirement_version', goal['requirement_version'])):
+    for key, expected in (('goal_id', goal_id), ('round', goal['current_round'])):
         if key in result and result[key] != expected:
-            raise board.Conflict('报告基于旧目标、轮次或需求版本，需重新核对交付结论')
+            raise board.Conflict('报告目标或轮次不匹配')
+    version = result.get('requirement_version', goal['requirement_version'])
+    if type(version) is not int or not 1 <= version <= goal['requirement_version']:
+        raise board.Conflict('报告需求版本必须为已存在且不大于当前版本的正整数')
+    req = requirements(conn, goal_id, version)
     outcome = result.get('outcome')
     if outcome not in ('completed', 'failed', 'awaiting_acceptance', 'cancelled', 'progress'):
         raise board.BoardError('outcome=%r 无效；允许 completed|failed|awaiting_acceptance|cancelled|progress' % str(outcome)[:100])
@@ -660,9 +656,11 @@ def validate_report(conn, goal_id, data):
     for key in ('delivered', 'unresolved', 'artifacts', 'tradeoffs'):
         result[key] = _strings(result.get(key, []), key)
     result['follow_up'] = _text(result.get('follow_up', ''), '后续修改入口', required=False)
-    entries, standards = result.get('acceptance'), {item['id']: item['title'] for item in req['acceptance']}
-    if not isinstance(entries, builtins.list) or len(entries) != len(standards):
-        raise board.BoardError('必须逐项对应全部原始验收标准')
+    final = outcome in ('awaiting_acceptance', 'completed')
+    entries, standards = result.get('acceptance', []), {item['id']: item['title'] for item in req['acceptance']}
+    if not isinstance(entries, builtins.list) or final and len(entries) != len(standards):
+        raise board.BoardError('acceptance 必须为对象数组；awaiting_acceptance/completed 必须逐项对应全部原始验收标准')
+    result['acceptance'] = entries
     seen = set()
     for item in entries:
         if not isinstance(item, dict) or item.get('criterion_id') not in standards or item.get('criterion_id') in seen:
@@ -679,9 +677,10 @@ def validate_report(conn, goal_id, data):
                 raise board.BoardError('evidence 每项必须是 {label,reference} 对象，例如 {"label":"命令实测输出","reference":"artifacts/result.txt"}，不能只填字符串')
             _text(source.get('label'), '证据说明')
             _text(source.get('reference'), '证据定位')
-    examples = result.get('examples')
-    if not isinstance(examples, builtins.list) or not examples:
-        raise board.BoardError('最终报告至少需要一个具体 example')
+    examples = result.get('examples', [])
+    if not isinstance(examples, builtins.list) or final and not examples:
+        raise board.BoardError('examples 必须为对象数组；awaiting_acceptance/completed 至少需要一个具体 example')
+    result['examples'] = examples
     for example in examples:
         if not isinstance(example, dict) or example.get('kind') not in ('actual', 'illustrative'):
             raise board.BoardError('example 必须标明实测或示意')
@@ -689,9 +688,9 @@ def validate_report(conn, goal_id, data):
             _text(example.get(key), 'example ' + key)
     if outcome == 'completed' and (any(item['status'] != 'passed' for item in entries) or not any(item['kind'] == 'actual' for item in examples)):
         raise board.BoardError('未验证、模拟或仅示意 example 不能宣称目标达标')
-    investment = result.get('investment')
+    investment = result.get('investment', {})
     if not isinstance(investment, dict):
-        raise board.BoardError('必须提供投入记录，未知用量可明确注明')
+        raise board.BoardError('investment 可缺省；提供时必须为投入记录对象，未知用量可明确注明')
     duration = investment.get('elapsed_seconds')
     if duration is not None and (type(duration) not in (int, float) or not math.isfinite(duration) or duration < 0):
         raise board.BoardError('投入时间无效')
@@ -707,7 +706,7 @@ def validate_report(conn, goal_id, data):
     roles = investment.get('roles', [])
     if not isinstance(roles, builtins.list) or any(not isinstance(item, dict) or not isinstance(item.get('role'), str) or not item['role'].strip() for item in roles):
         raise board.BoardError('角色投入记录无效')
-    result.update(goal_id=goal_id, round=goal['current_round'], requirement_version=goal['requirement_version'])
+    result.update(goal_id=goal_id, round=goal['current_round'], requirement_version=version)
     return result
 
 
@@ -717,7 +716,7 @@ def render_report(conn, goal_id, data):
     labels = {'passed': '通过', 'failed': '失败', 'unverified': '未验证', 'simulated': '模拟验证'}
     counts = {key: sum(item['status'] == key for item in data['acceptance']) for key in labels}
     width, colors, offset, bars = 600, ['#497562', '#a9584c', '#888888', '#a78741'], 0, []
-    for (key, count), color in zip(counts.items(), colors):
+    for (key, count), color in zip(counts.items(), colors) if data['acceptance'] else ():
         size = width * count / len(data['acceptance'])
         bars.append('<rect x="%s" y="0" width="%s" height="24" fill="%s"/>' % (offset, size, color))
         offset += size
@@ -736,7 +735,7 @@ def render_report(conn, goal_id, data):
             ''.join('<tr><th>%s</th><td>%s</td></tr>' % (label, esc(example[key])) for key, label in (('input', '输入 / 操作'), ('expected', '期望'), ('actual', '实际'), ('conclusion', '结论')))))
     for key, title in (('delivered', '实际交付'), ('unresolved', '仍未解决'), ('artifacts', '产物与修改入口'), ('tradeoffs', '取舍')):
         sections.append('<h2>%s</h2>%s' % (title, listing(data[key])))
-    investment = data['investment']
+    investment = data.get('investment', {})
     sections.append('<h2>投入记录</h2><p>时间：%s；用量：%s</p>%s<p>%s</p><h2>后续</h2><p>%s</p>' %
                     (esc(str(investment['elapsed_seconds']) + ' 秒' if investment.get('elapsed_seconds') is not None else '未知'),
                      esc(_json(investment['usage']) if investment.get('usage') is not None else '未知，未估作零用量或费用'),
@@ -753,7 +752,7 @@ def save_report(conn, goal_id, data, *, now=None):
     identity = uuid.uuid4().hex
     version = conn.execute('SELECT COALESCE(MAX(version),0)+1 FROM goal_reports WHERE goal_id=? AND round=?', (goal_id, goal['current_round'])).fetchone()[0]
     rendered = render_report(conn, goal_id, validated)
-    conn.execute('INSERT INTO goal_reports VALUES(?,?,?,?,?,?,?,?,?)', (identity, goal_id, goal['current_round'], goal['requirement_version'], version, validated['outcome'], _json(validated), rendered, board._time(now)))
+    conn.execute('INSERT INTO goal_reports VALUES(?,?,?,?,?,?,?,?,?)', (identity, goal_id, goal['current_round'], validated['requirement_version'], version, validated['outcome'], _json(validated), rendered, board._time(now)))
     return get_report(conn, identity)
 
 
@@ -764,16 +763,19 @@ def get_report(conn, report_id):
     value = dict(row)
     value['data'] = json.loads(value.pop('data_json'))
     goal = _row(conn, value['goal_id'])
-    value['current'] = value['round'] == goal['current_round'] and value['requirement_version'] == goal['requirement_version']
+    latest = conn.execute('SELECT id FROM goal_reports WHERE goal_id=? AND round=? ORDER BY version DESC LIMIT 1',
+                          (value['goal_id'], goal['current_round'])).fetchone()
+    value['current'] = latest is not None and latest['id'] == report_id
     value['reopened'] = value['round'] < goal['current_round']
     return value
 
 
 def acceptance_review(conn, goal_id):
     goal = _row(conn, goal_id)
-    row = conn.execute('SELECT a.* FROM goal_acceptances a JOIN goal_reports r ON r.id=a.report_id '
-                       'WHERE a.goal_id=? AND a.round=? AND r.requirement_version=?',
-                       (goal_id, goal['current_round'], goal['requirement_version'])).fetchone()
+    row = conn.execute('SELECT a.* FROM goal_acceptances a WHERE a.goal_id=? AND a.round=? AND a.report_id='
+                       '(SELECT id FROM goal_reports WHERE goal_id=? AND round=? ORDER BY version DESC LIMIT 1) '
+                       'AND NOT EXISTS (SELECT 1 FROM goal_continuations c WHERE c.goal_id=a.goal_id AND c.report_id=a.report_id)',
+                       (goal_id, goal['current_round'], goal_id, goal['current_round'])).fetchone()
     return {**dict(row), 'accepted': bool(row['accepted'])} if row else None
 
 
@@ -799,8 +801,8 @@ def acceptance_target(conn, goal_id, accepted, *, note='', actor=board.HUMAN, ex
     if goal['status'] != 'awaiting_acceptance':
         raise board.Conflict('只有等待用户验收的当前轮次可以决定验收结果')
     _text(note, '验收说明', required=not accepted, limit=10000)
-    report = conn.execute('SELECT * FROM goal_reports WHERE goal_id=? AND round=? AND requirement_version=? ORDER BY version DESC LIMIT 1',
-                          (goal_id, goal['current_round'], goal['requirement_version'])).fetchone()
+    report = conn.execute('SELECT * FROM goal_reports WHERE goal_id=? AND round=? ORDER BY version DESC LIMIT 1',
+                          (goal_id, goal['current_round'])).fetchone()
     if report is None or report['outcome'] != 'awaiting_acceptance':
         raise board.Conflict('当前轮次最新报告不是待用户验收的报告')
     if report_id is not None and report_id != report['id']:
@@ -856,8 +858,8 @@ def request_finish(conn, goal_id, report_id, *, actor=board.HUMAN, execution_id=
     if report['outcome'] == 'progress':
         raise board.BoardError('阶段报告不会结束任务，请完成验收后另行提交最终报告')
     _actor(conn, goal, actor)
-    if report['goal_id'] != goal_id or report['round'] != goal['current_round'] or report['requirement_version'] != goal['requirement_version']:
-        raise board.Conflict('交付报告不属于目标当前轮次与需求版本')
+    if report['goal_id'] != goal_id or report['round'] != goal['current_round']:
+        raise board.Conflict('交付报告不属于目标当前轮次')
     old = get_finish(conn, goal_id)
     if old and old['report_id'] == report_id and old['status'] in ('pending', 'finalized'):
         return old
@@ -865,8 +867,8 @@ def request_finish(conn, goal_id, report_id, *, actor=board.HUMAN, execution_id=
         raise board.Conflict('只有正在推进或待验收的当前轮次能请求收尾')
     if execution_id is not None:
         execution = get_execution(conn, execution_id)
-        if execution['goal_id'] != goal_id or execution['round'] != goal['current_round'] or execution['requirement_version'] != goal['requirement_version'] or actor not in (board.HUMAN, execution['session_id']):
-            raise board.Conflict('收尾请求的执行身份或需求版本不匹配')
+        if execution['goal_id'] != goal_id or execution['round'] != goal['current_round'] or actor not in (board.HUMAN, execution['session_id']):
+            raise board.Conflict('收尾请求的执行身份不匹配')
     validate_report(conn, goal_id, report['data'])
     if report['outcome'] in ('completed', 'awaiting_acceptance'):
         from . import goal_work
@@ -889,9 +891,6 @@ def finalize_finish(conn, goal_id, *, now=None):
         return {'finalized': False, 'reason': '当前轮次没有有效收尾请求'}
     if finish['status'] == 'finalized':
         return {'finalized': True, 'already': True, 'goal': get(conn, goal_id), 'finish': finish}
-    if finish['requirement_version'] != goal['requirement_version']:
-        conn.execute("UPDATE goal_round_finishes SET status='superseded' WHERE goal_id=? AND round=?", (goal_id, goal['current_round']))
-        return {'finalized': False, 'reason': '需求已更新，旧收尾失效'}
     if goal['status'] in ('pausing', 'paused', 'waiting_user') or goal['manual_pause']:
         return {'finalized': False, 'reason': '暂停或等待用户期间不自动完成目标'}
     if conn.execute('SELECT 1 FROM goal_cancellations WHERE goal_id=? AND round=?', (goal_id, goal['current_round'])).fetchone():

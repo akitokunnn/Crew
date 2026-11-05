@@ -54,8 +54,7 @@ def goal_reason(conn, session_id, manager):
 def configurable_executions(conn, session_id):
     candidates = {}
     for item in scoped_executions(conn, session_id):
-        if (item['goal_status'] in goals.TERMINAL or item['round'] != item['current_round']
-                or item['requirement_version'] != item['goal_requirement_version']):
+        if item['goal_status'] in goals.TERMINAL or item['round'] != item['current_round']:
             continue
         previous = candidates.get(item['goal_id'])
         if previous is None or previous['generation'] < item['generation']:

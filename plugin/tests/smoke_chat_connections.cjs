@@ -156,7 +156,7 @@ if (!process.versions.electron) {
         const tab = await tabs.open(project, '#all');
         workspaceTabs.push(tab);
         try {
-          await until(() => evaluate(tabs.activeView, 'Boolean(document.querySelector(".leader-item"))'), 'workspace sidebar');
+          await until(() => evaluate(tabs.activeView, 'Boolean(document.querySelector(".leader-row"))'), 'workspace sidebar');
         } catch (error) {
           evidence.initializationFailure = await evaluate(tabs.activeView, `({url:location.href,
             modules:{CrewGitSettings:typeof CrewGitSettings,...Object.fromEntries(['CrewMaintenance','CrewWorkspaceSettings','CrewSettings','CrewMembers','CrewGoals'].map(name=>[name,typeof window[name]]))},
@@ -175,7 +175,7 @@ if (!process.versions.electron) {
         try { await until(() => contains(view, project.marker), 'history in workspace ' + index, 3500); }
         catch (error) {
           evidence.blocked = {workspace:index, streams:pendingStreams.size,
-            sidebar:await evaluate(view, 'Boolean(document.querySelector(".leader-item"))'),
+            sidebar:await evaluate(view, 'Boolean(document.querySelector(".leader-row"))'),
             chat:await evaluate(view, 'document.querySelector(".chat-inner")?.textContent || ""')};
           await capture(view, 'blocked-history-' + index);
           throw error;
@@ -225,14 +225,16 @@ if (!process.versions.electron) {
       await until(() => contains(firstView, '成员历史'), 'member conversation');
       await capture(firstView, 'member-history');
       await evaluate(firstView, `location.hash=${JSON.stringify('#leader=' + first.session_id + '&goal=' + info.goal)};true;`);
-      await until(() => contains(firstView, '任务历史'), 'task conversation');
-      await capture(firstView, 'goal-history');
+      await until(() => evaluate(firstView, `!!document.querySelector('#side-task-body [data-goal-tools]') && document.querySelector('#chat-host')?.textContent.includes(${JSON.stringify(first.marker)})`), 'task inspector with leader conversation');
+      assert(!(await contains(firstView, '任务历史')));
+      assert(requests.filter(request => ['/api/chat/history', '/api/chat/events'].includes(request.path)).every(request => !new URLSearchParams(request.query).has('goal_id')));
+      await capture(firstView, 'task-keeps-leader-history');
       await tabs.openAssistant();
       await until(() => contains(tabs.activeView, '助手历史'), 'global assistant conversation');
       await capture(tabs.activeView, 'assistant-history');
       await until(() => pendingStreams.size <= 1, 'assistant releases workspace streams');
-      evidence.checks.push('Member, independent task and global assistant conversations share the recovered connection lifecycle');
-      console.log('Member, task and assistant histories ready');
+      evidence.checks.push('Member and global assistant conversations share the recovered connection lifecycle; task inspection retains the leader conversation without a goal-scoped stream');
+      console.log('Member, task inspector and assistant histories ready');
 
       const assistantView = tabs.activeView;
       const watched = info.projects.slice(0, 6);

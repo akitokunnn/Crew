@@ -1,26 +1,21 @@
 'use strict';
 // Delivery reading journey in the real Electron renderer with an in-memory loopback API.
 // No model, production HOME or Crew service is used; userData is a fresh temporary directory.
-const {app,BrowserWindow}=require('electron'),fs=require('node:fs/promises'),path=require('node:path'),os=require('node:os'),http=require('node:http'),assert=require('node:assert/strict');
-const root=path.resolve(__dirname,'../..'),web=path.join(root,'plugin/crew/web'),output=path.join(root,'desktop/smoke-output/goal-delivery');
-const temporary=require('node:fs').mkdtempSync(path.join(os.tmpdir(),'crew-goal-delivery-'));
-app.setPath('userData',temporary);app.setPath('sessionData',temporary);
-// A fixed device scale keeps the requested window size equal to the CSS viewport on any display.
-app.commandLine.appendSwitch('force-device-scale-factor','1');
-const calls=[],streams=[],errors=[],steps=[],shots=[];let win,server,origin;
-const delayReport=new Map(),failReportOnce=new Set(),failDetailOnce=new Set();
+const {chromium}=require('playwright'),fs=require('node:fs/promises'),path=require('node:path'),http=require('node:http'),assert=require('node:assert/strict');
+const root=path.resolve(__dirname,'../..'),web=path.join(root,'plugin/crew/web'),output=path.join(root,'Temp/ui-align/batch2/goal-delivery');
+const calls=[],streams=[],errors=[],steps=[],shots=[];let browser,page,server,origin;
 const clone=value=>JSON.parse(JSON.stringify(value)),catalog=[{id:'codex',name:'Codex',available:true,models:[],efforts:[]},{id:'claude',name:'Claude Code',available:false,models:[],efforts:[]}];
 const theme={id:'green',name:'竹青',light:{'--accent':'#3E7C74','--on-accent':'#F7FBFA','--accent-text':'#2E6760'},dark:{'--accent':'#83B9A8','--on-accent':'#182A24','--accent-text':'#A8D6C7'}};
 const now=Date.now(),at=minutes=>new Date(now-minutes*60000).toISOString();
 function person(id,name,goal,extra={}){return {session_id:id,name,runtime:'codex',model:null,effort:null,status:'offline',where:'offline',busy:false,running:false,web_chat:false,last_seq:0,read_seq:0,last_reply_id:null,unread:0,pending:0,priority:null,goal,task:goal,context:null,activity:null,codex:[],codex_older:0,member_ids:[],applied:null,trust:{enabled:false},runtime_switch:{allowed:true},...extra};}
 const voice=person('voice-leader','录音质量','负责短句换人识别与交付验证',{active_goal_id:'goal-b'}),board=person('board-leader','风险看板','维护每周风险摘要');
-const state={project:{name:'交付阅读',root:'C:/fixture/project',theme:'green'},projects:[{name:'交付阅读',theme:'green'}],themes:[theme],runtimes:catalog,ai:{default:{runtime:'codex',model:null,effort:null},digest:null,git:null,operations:null},leaders:[voice,board],members:[],goals:[],decisions:[],todos:[],attention:[],candidates:{running:[],others:[]},limits:{claude:{seven_day:null,five_hour:null},codex:null},channel:{unread:0,latest_id:0,digesting:false,digest_error:null,digest_id:null},notification:{manual_away:false,away:false,error:null,channel:{state:'connected',detail:'隔离连接'}},vscode_error:null};
+const state={project:{name:'交付阅读',root:'C:/fixture/project',theme:'green'},projects:[{name:'交付阅读',theme:'green'}],themes:[theme],runtimes:catalog,ai:{default:{runtime:'codex',model:null,effort:null},digest:null,git:null,operations:null},git_assistant:null,leaders:[voice,board],members:[],goals:[],decisions:[],todos:[],attention:[],candidates:{running:[],others:[]},limits:{claude:{seven_day:null,five_hour:null},codex:null},channel:{unread:0,latest_id:0,digesting:false,digest_error:null,digest_id:null},notification:{manual_away:false,away:false,error:null,channels:[{id:'qq',name:'QQ',state:'connected',detail:null},{id:'lark',name:'Lark',state:'connected',detail:null}]},vscode_error:null};
 const longSummary='同一段录音上复测了 42 条短句：B 紧接短句接话的识别已改善，A 停顿后 B 接话 3 条里仍有 1 条把 B 并入 A。\n混说场景只做了示意对照，没有真机麦克风复测，因此不能宣称全部达标。'+'详细对照、失败样本和复测命令见完整报告。'.repeat(6);
 const executions=(id,leader,round,version,status='idle')=>[{id,session_id:leader,runtime:'codex',model:null,effort:null,round,requirement_version:version,generation:1,status}];
 const reportEntry=(goal,id,round,version,current,status,summary,counts,unresolved,minutes)=>({id,round,requirement_version:version,version:1,outcome:status,status,created_at:at(minutes),title:goal.title,summary,acceptance_counts:counts,unresolved,current,url:`/api/goals/report?goal_id=${goal.id}&report_id=${id}`});
 const details=new Map(),journals=new Map();
-function addGoal(goal,detail){const value={project:state.project.name,request:goal.request,acceptance:[{id:'a1',title:'同一录音前后对照'},{id:'a2',title:'报告带可复现 example'}],constraints:[],version:3,current_round:1,requirement_version:1,priority:0,updated_at:at(goal.minutes),report_available:detail.reports.length>0,...goal};delete value.minutes;state.goals.push(value);details.set(value.id,{goal:value,context:{items:[],manifest:{}},documents:[],acceptance_review:null,...detail,reports:detail.reports.map(make=>make(value))});}
-addGoal({id:'goal-a',leader_session_id:voice.session_id,title:'改善短句换人的识别表现',request:'使用同一段录音对照前后结果，保留原始输入；不要在未验证时宣称成功。',status:'awaiting_acceptance',minutes:12},
+function addGoal(goal,detail){const value={project:state.project.name,request:goal.request,acceptance:[{id:'a1',title:'同一录音前后对照'},{id:'a2',title:'报告带可复现 example'}],constraints:[],version:3,current_round:1,requirement_version:1,priority:0,updated_at:at(goal.minutes),supplements_after_report:[],report_available:detail.reports.length>0,...goal};delete value.minutes;const reports=detail.reports.map(make=>make(value));value.acceptance_brief=value.status==='awaiting_acceptance'?{report_id:reports[0].id,summary:reports[0].summary,user_test:[],created_at:reports[0].created_at,supplements_after_report:value.supplements_after_report}:null;state.goals.push(value);details.set(value.id,{goal:value,context:{items:[],manifest:{}},documents:[],acceptance_review:null,...detail,reports});}
+addGoal({id:'goal-a',leader_session_id:voice.session_id,title:'改善短句换人的识别表现',request:'使用同一段录音对照前后结果，保留原始输入；不要在未验证时宣称成功。',status:'awaiting_acceptance',requirement_version:3,supplements_after_report:[{version:2,text:'请补充手机上打开报告的验收步骤。',actor:'user',at:at(10)},{version:3,text:'复核补充：同一录音的原始结果需要保留。',actor:voice.session_id,at:at(9)}],minutes:12},
   {executions:executions('exec-a',voice.session_id,1,1),reports:[goal=>reportEntry(goal,'report-a1',1,1,true,'awaiting_acceptance',longSummary,{passed:4,failed:0,unverified:1,simulated:0},['实物场景尚缺真人展示证据','校准评估只覆盖给定样本','部分旧类别仍有回退风险','部署来源需要另行核对','仓库根目录仍有中间产物待整理'],12)]});
 addGoal({id:'goal-b',leader_session_id:voice.session_id,title:'交付可以直接打开的风险预警看板',request:'看板要给出当前风险、判断理由，并明确哪些结论尚未验证。',status:'running',current_round:2,requirement_version:2,minutes:20},
   {executions:executions('exec-b2',voice.session_id,2,2,'running'),reports:[goal=>reportEntry(goal,'report-b1',1,1,false,'completed','第一轮看板已能打开，风险判断理由齐全。',{passed:2,failed:0,unverified:0,simulated:0},[],300)]});
@@ -28,9 +23,8 @@ addGoal({id:'goal-c',leader_session_id:voice.session_id,title:'确认本周数�
 addGoal({id:'goal-e',leader_session_id:voice.session_id,title:'整理录音样本目录',request:'按说话人和场景整理已有样本，不删除任何原始文件。',status:'queued',minutes:60},{executions:[],reports:[]});
 addGoal({id:'goal-d',leader_session_id:board.session_id,title:'每周风险摘要邮件',request:'每周一汇总上周风险变化并标出未验证结论。',status:'completed',minutes:90},
   {executions:[],reports:[goal=>reportEntry(goal,'report-d1',1,1,true,'completed','三项验收标准均有实测证据：摘要按时生成、风险变化可追溯、未验证结论单独标出。',{passed:3,failed:0,unverified:0,simulated:0},[],90)]});
-function journal(sid,gid){const goal=state.goals.find(item=>item.id===gid),execution=gid?details.get(gid)?.executions.find(item=>item.session_id===sid&&item.round===goal.current_round):null,key=execution?.id||`${gid||'general'}:${sid}`;if(!journals.has(key))journals.set(key,{events:[],busy:false,read_seq:0,execution_id:execution?.id??null});return {key,value:journals.get(key)};}
-function seed(sid,gid,count,prefix){const {value}=journal(sid,gid);for(let index=0;index<count;index++)value.events.push({seq:value.events.length+1,type:'text',id:`${prefix}-${index}`,text:`${prefix}第 ${index+1} 条记录：保留原始录音，先测量误判位置，再按同一输入前后对照。`.repeat(2)});value.read_seq=value.events.length;}
-seed(voice.session_id,null,6,'总会话');seed(voice.session_id,'goal-b',40,'看板推进');seed(board.session_id,null,3,'看板总会话');
+function journal(sid){if(!journals.has(sid))journals.set(sid,{events:[],busy:false,read_seq:0});return journals.get(sid);}
+for(const owner of [voice,board])for(let i=0;i<6;i++)journal(owner.session_id).events.push({seq:i+1,type:'text',id:owner.session_id+'-'+i,text:'总会话第 '+(i+1)+' 条记录：保留原始录音与核验结果。'.repeat(6)});
 function json(response,value,status=200){response.writeHead(status,{'Content-Type':'application/json'});response.end(JSON.stringify(value));}
 async function route(request,response){
   const url=new URL(request.url,origin),name=url.pathname;let body;
@@ -38,6 +32,7 @@ async function route(request,response){
   if(!name.startsWith('/api/')){const file=path.resolve(web,'.'+(name==='/'?'/index.html':name));if(!file.startsWith(web+path.sep)){response.writeHead(403);return response.end();}try{const content=await fs.readFile(file);response.writeHead(200,{'Content-Type':({'.js':'text/javascript','.css':'text/css','.html':'text/html','.svg':'image/svg+xml','.woff2':'font/woff2'})[path.extname(file)]||'application/octet-stream'});return response.end(content);}catch(_){response.writeHead(404);return response.end();}}
   calls.push({name,method:request.method,body,query:Object.fromEntries(url.searchParams),at:Date.now()});
   const sid=body?.session_id||url.searchParams.get('session_id'),gid=body?.goal_id||url.searchParams.get('goal_id');
+  if(name==='/api/access/context')return json(response,{remote:false,local_controls:true,local_desktop:true,authenticated:true});
   if(name==='/api/state')return json(response,{...clone(state),project:url.searchParams.has('project')?clone(state.project):null});
   if(name==='/api/runtimes')return json(response,{runtimes:catalog});
   if(name==='/api/usage')return json(response,{tree:[{leader_session_id:voice.session_id,name:voice.name,tokens:14400,cost:0.051,share:100,codex_runs:3,codex_tokens:8500,
@@ -45,21 +40,14 @@ async function route(request,response){
       {session_id:'cc-member',name:'Claude组员',tokens:10800,cost:0.03825,share:75,codex_runs:0,codex_tokens:0},
       {session_id:'cx-member',name:'Codex组员',tokens:0,cost:0,share:0,codex_runs:2,codex_tokens:8000}]}],
     daily:[{date:'2026-10-27',display_name:'Claude组员',total_tokens:10800,cost_usd:0.03825}],models:[]});
-  if(name==='/api/goal'){const id=url.searchParams.get('id');if(failDetailOnce.delete(id))return json(response,{error:'隔离详情读取失败，可重试'},503);return json(response,details.get(id));}
+  if(name==='/api/goal'){const id=url.searchParams.get('id');return json(response,details.get(id));}
   if(name==='/api/documents'){assert(gid,'document reads must name their task');return json(response,{documents:details.get(gid)?.documents||[]});}
-  if(name==='/api/chat/history'){
-    const value=journal(sid,gid).value;
-    const previous_executions=gid?details.get(gid).executions.filter(item=>item.session_id===sid&&item.id!==value.execution_id)
-      .map(item=>({execution_id:item.id,round:item.round,generation:item.generation,events:journals.get(item.id)?.events||[]})):[];
-    return json(response,{...value,previous_executions});
-  }
-  if(name==='/api/chat/events'){const {key}=journal(sid,gid);response.writeHead(200,{'Content-Type':'text/event-stream','Cache-Control':'no-cache'});response.write(': connected\n\n');const stream={response,key,closed:false};streams.push(stream);response.on('close',()=>{stream.closed=true;});return;}
-  if(name==='/api/chat/read'){const {value}=journal(sid,gid);value.read_seq=body.seq;return json(response,{read_seq:body.seq});}
+  if(name==='/api/chat/history')return json(response,journal(sid));
+  if(name==='/api/chat/events'){response.writeHead(200,{'Content-Type':'text/event-stream','X-Crew-Execution-Id':'','X-Crew-Latest-Seq':String(journal(sid).events.at(-1)?.seq||0)});response.write(': connected\n\n');streams.push(response);return;}
+  if(name==='/api/chat/read'){journal(sid).read_seq=body.seq;return json(response,{read_seq:body.seq});}
   if(name==='/api/goals/report'){
     const goal=state.goals.find(item=>item.id===gid),report=details.get(gid)?.reports.find(item=>item.id===url.searchParams.get('report_id'));
     if(!goal||!report){response.writeHead(404);return response.end();}
-    if(delayReport.has(gid))await new Promise(resolve=>setTimeout(resolve,delayReport.get(gid)));
-    if(failReportOnce.delete(gid)){response.writeHead(503,{'Content-Type':'text/plain'});return response.end('fixture failure');}
     response.writeHead(200,{'Content-Type':'text/html'});
     return response.end(`<!doctype html><h1>${goal.title}</h1><p>报告 ${report.id} · 第 ${report.round} 轮 · 需求 v${report.requirement_version}</p><h2>example</h2><table><tr><th>输入</th><td>A 停顿后 B 接短句</td></tr><tr><th>实际</th><td>识别为 B</td></tr></table>${Array.from({length:60},(_,index)=>`<p>复测记录第 ${index+1} 段：同一录音逐条对照。</p>`).join('')}`);
   }
@@ -77,7 +65,7 @@ async function route(request,response){
     return json(response,{goal:detail.goal});
   }
   if(name==='/api/chat/send'&&!gid){
-    const {value}=journal(sid,null);value.busy=true;
+    const value=journal(sid);value.busy=true;
     value.events.push({seq:value.events.length+1,type:'message',id:body.message_id,text:body.text,source:'human',at:new Date().toISOString()});
     return json(response,{ok:true,accepted:true,message_id:body.message_id});
   }
@@ -89,357 +77,42 @@ async function route(request,response){
     detail.previous_acceptance_review=detail.acceptance_review;detail.acceptance_review=null;
     for(const report of detail.reports)report.current=false;
     detail.executions.push(...executions('followup-'+gid,sid,goal.current_round,goal.requirement_version,'running'));
-    const {value}=journal(sid,gid);value.busy=true;
+    const value=journal(sid);value.busy=true;
     value.events.push({seq:1,type:'message',id:body.message_id,text:body.text,source:'human',at:new Date().toISOString()});
     return json(response,{ok:true,accepted:true,message_id:body.message_id,goal_id:gid,execution_id:value.execution_id});
   }
   return json(response,{error:'未实现 fixture API: '+name},404);
 }
-const run=async code=>{const result=await win.webContents.executeJavaScript(`(async()=>{try{return{value:await (${code})};}catch(error){return{error:error.stack};}})()`);if(result.error)throw Error(result.error);return result.value;};
-async function wait(expression,label=expression){for(let i=0;i<200;i++){if(await run(expression))return;await new Promise(resolve=>setTimeout(resolve,30));}throw Error('等待超时 '+label);}
-const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
-async function click(selector){
-  const side=await run(`!!document.querySelector(${JSON.stringify(selector)})?.closest("#side-task-section")`);
-  if(side && !await run('!document.querySelector("#side-task-section").hidden')) await run('document.querySelector("[data-act=task-panel]").click()');
-  await run('document.querySelector('+JSON.stringify(selector)+')?.scrollIntoView({block:"nearest"})');
-  await run(`(()=>{const node=document.querySelector(${JSON.stringify(selector)});if(!node)throw Error("找不到 "+${JSON.stringify(selector)});const process=node.closest('.turn-process-body');if(process && !process.checkVisibility()){process.previousElementSibling.click();node.scrollIntoView({block:"nearest"});}node.click();})()`);}
-async function fill(selector,value){await run(`(()=>{const node=document.querySelector(${JSON.stringify(selector)});node.value=${JSON.stringify(value)};node.dispatchEvent(new Event('input',{bubbles:true}));})()`);}
-const text=selector=>run(`document.querySelector(${JSON.stringify(selector)})?.textContent ?? null`);
-async function shot(name){await sleep(160);const shot=await win.webContents.debugger.sendCommand('Page.captureScreenshot',{format:'png'});await fs.writeFile(path.join(output,name),Buffer.from(shot.data,'base64'));shots.push(name);}
-const since=mark=>calls.filter(call=>call.at>=mark);
-const reportCalls=list=>list.filter(call=>call.name==='/api/goals/report').map(call=>`${call.query.goal_id}/${call.query.report_id}`);
-async function open(width,height,hash){
-  // Create the next window before destroying the previous one; closing the last window would quit Electron.
-  const previous=win;win=new BrowserWindow({width,height,useContentSize:true,show:false,webPreferences:{nodeIntegration:false,contextIsolation:true,sandbox:true,offscreen:true,backgroundThrottling:false}});previous?.destroy();win.webContents.debugger.attach("1.3");
-  win.webContents.on('console-message',(_event,...args)=>{const message=typeof args[0]==='object'?args[0].message:args[1];if(String(message).includes('Uncaught'))errors.push(message);});
-  await win.loadURL(origin+'/?project='+encodeURIComponent(state.project.name)+'#'+hash);
-  const viewport=await run('({width:innerWidth,height:innerHeight,dpr:devicePixelRatio})');assert.deepEqual(viewport,{width,height,dpr:1},'predictable viewport');return viewport;
-}
-const listCards=`[...document.querySelectorAll('#goal-head .goal-card')].map(card=>({open:card.querySelector('[data-goal-act=open]').dataset.goalId,delivery:card.querySelector('[data-goal-act=delivery]')?.dataset.goalId??null}))`;
+const wait=source=>page.waitForFunction(source,null,{timeout:15000}),click=selector=>page.locator(selector).click(),text=selector=>page.locator(selector).innerText();
+async function shot(name){await page.waitForTimeout(350);await page.screenshot({path:path.join(output,name+'.png')});shots.push(name+'.png');}
+async function openTask(id){await page.goto(origin+'/?project='+encodeURIComponent(state.project.name)+'#leader='+details.get(id).goal.leader_session_id+'&goal='+id);await page.reload();await page.locator(`[data-goal-tools="${id}"]`).waitFor();}
 (async()=>{
-  await app.whenReady();await fs.mkdir(output,{recursive:true});
-  server=http.createServer((request,response)=>{route(request,response).catch(error=>{errors.push(error.stack);json(response,{error:error.message},500);});});await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));origin='http://127.0.0.1:'+server.address().port;
-  const viewports=[await open(1440,900,'leader='+voice.session_id)];
-  await wait('!!document.querySelector("#chat-host textarea") && document.querySelector(".chat-inner").textContent.includes("总会话第 6 条")');
-  assert.equal(await run('document.querySelectorAll("#sidebar [data-view=documents]").length'),0);
-  assert(!(await text('#sidebar')).match(/项目资料|交付资料|文档中心/));
-  await fill('#chat-host textarea','总会话里还没发出的草稿：看完交付再追问数据口径');
-
-  await click('[data-goal-act=list]');await wait('document.querySelector("#chat-host").hidden && !!document.querySelector(".goal-card")');
-  const cards=await run(listCards);assert.deepEqual(cards,[{open:'goal-a',delivery:'goal-a'},{open:'goal-b',delivery:'goal-b'},{open:'goal-c',delivery:null},{open:'goal-e',delivery:null}]);
-  assert.equal(await run('document.querySelectorAll("button button").length'),0,'no nested buttons');
-  assert(await run('[...document.querySelectorAll(".goal-card")].every(card=>card.textContent.includes("第 ") && card.textContent.includes("录音质量"))'));
-  await shot('01-任务清单-宽.png');steps.push('任务卡把「进入任务」与「查看交付报告」分成并列按钮；只有有报告的任务出现查看按钮');
-
-  let mark=Date.now();await click('[data-goal-act=open][data-goal-id=goal-c]');await wait('!!document.querySelector("[data-goal-detail=goal-c]") && !!document.querySelector("#chat-host .chat-inner")');await sleep(300);
-  assert.equal(await run('document.querySelector(".goal-delivery, .goal-report-reader, #goal-drawer:not([hidden])")'),null);assert.deepEqual(reportCalls(since(mark)),[]);assert(!since(mark).some(call=>call.name==='/api/documents'));
-  steps.push('普通点击没有报告的任务：正常进入，不加空面板、不展开资料、不请求 HTML');
-
-  await click('[data-goal-act=list]');await wait('!!document.querySelector(".goal-card")');
-  mark=Date.now();await click('[data-goal-act=delivery][data-goal-id=goal-a]');await wait('!!document.querySelector(".goal-report-reader iframe")');
-  const head=await text('.goal-report-reader .head');for(const part of ['改善短句换人的识别表现 · 交付报告','本轮报告','第 1 轮 · 需求 v1','AI 报告结果：等待用户验收','返回任务'])assert(head.includes(part),part);assert(!head.includes('暂无新交付'));
-  assert.equal(await run('document.querySelector(".goal-report-reader iframe").getAttribute("sandbox")'),'allow-scripts');assert(await run(`document.querySelector(".goal-report-reader iframe").srcdoc.includes("default-src 'none'") && document.querySelector(".goal-report-reader iframe").srcdoc.includes("report-a1")`));
-  assert.deepEqual(reportCalls(since(mark)),['goal-a/report-a1']);assert.equal(since(mark).filter(call=>call.name==='/api/goal').length,1);
-  assert(await run('location.hash.includes("goal=goal-a")'));await shot('02-直接阅读-本轮报告-宽.png');
-  steps.push('从清单一次点击「查看交付报告」：进入对应目标，读一次详情，直接在隔离阅读层打开本轮报告并标明轮次、结果和本轮关系');
-
-  await click('[data-goal-act=close-report]');await wait('!document.querySelector(".goal-report-reader") && !!document.querySelector("[data-goal-tools=goal-a] .goal-delivery")');
-  const panel=await text('.goal-delivery');for(const part of ['AI 提交的结论','第 1 轮报告 · 报告结果：等待用户验收','报告验收记录（AI 填写）','共 5 项','通过 4','未验证 1','报告补充说明 · 5 条','查看完整报告'])assert(panel.includes(part),part);assert(!panel.includes('模拟验证'),'zero counts are not listed');assert(!panel.includes('仍未解决 5 项'));
-  assert(!(await text('.goal-delivery-meta')).includes('补充说明'),'report notes are outside acceptance counts');
-  assert.equal(await run('document.activeElement.textContent'),'查看完整报告');assert.equal(await run('document.querySelector("#goal-drawer").hidden'),true);
-  const compact=await run('({head:document.querySelector("#goal-head").getBoundingClientRect().height,panel:document.querySelector(".goal-delivery").getBoundingClientRect().height,chat:document.querySelector("#chat-host").getBoundingClientRect().height})');
-  // Report notes now have their own row; preserve the existing chat-space requirement.
-  assert(compact.head<=55,'task header stays one line: '+compact.head);assert(compact.chat>380,'chat keeps its space: '+compact.chat);
-  await shot('03-返回任务-结论面板-宽.png');
-  await click('[data-goal-act=conclusion-toggle]');await wait('document.querySelector(".goal-delivery-summary").classList.contains("open")');
-  assert.equal(await run('document.querySelector(".goal-delivery-unresolved-list")'),null,'conclusion and notes expand independently');
-  await click('[data-goal-act=report-notes-toggle]');await wait('document.querySelectorAll(".goal-delivery-unresolved-list li").length===5');
-  assert(await run('document.querySelector(".goal-delivery-summary").textContent.includes("详细对照、失败样本和复测命令见完整报告。详细对照")'));await shot('04-长结论展开-宽.png');
-  await click('[data-goal-act=report-notes-toggle]');await click('[data-goal-act=conclusion-toggle]');await wait('!document.querySelector(".goal-delivery-summary").classList.contains("open")');
-  steps.push('「返回任务」显示共 5 项验收、通过 4 / 未验证 1；5 条报告补充说明单独展开，原文完整保留，不作为额外验收项，且与结论展开互不干扰');
-
-  await click('[data-goal-act=list]');await click('[data-goal-act=open][data-goal-id=goal-b]');
-  await wait('!!document.querySelector("[data-goal-tools=goal-b] .goal-delivery-gap") && !!document.querySelector("#chat-host textarea") && document.querySelector(".chat-inner").textContent.includes("看板推进第 40 条")');
-  assert((await text('.goal-delivery-gap')).includes('当前第 2 轮暂无新交付'));assert(!(await text('#goal-head')).includes('AI 提交的结论'));
-  await fill('#chat-host textarea','任务 B 里未发送的草稿');await run('(()=>{const scroll=document.querySelector(".chat-scroll");scroll.scrollTop=260;scroll.dispatchEvent(new Event("scroll"));document.querySelector("#chat-host textarea").dataset.smokeMark="kept";})()');
-  const scrollBefore=await run('document.querySelector(".chat-scroll").scrollTop');
-  mark=Date.now();await click('#side-task-body [data-goal-act=delivery]');await wait('!!document.querySelector(".goal-report-reader iframe")');
-  const historyHead=await text('.goal-report-reader .head');for(const part of ['历史报告','第 1 轮 · 需求 v1','AI 报告结果：已达标','当前第 2 轮暂无新交付'])assert(historyHead.includes(part),part);assert(!historyHead.includes('本轮报告'));
-  assert.deepEqual(reportCalls(since(mark)),['goal-b/report-b1']);await shot('05-历史报告-宽.png');
-  await run('document.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}))');await wait('!document.querySelector(".goal-report-reader")');
-  assert.deepEqual(await run('({draft:document.querySelector("#chat-host textarea").value,mark:document.querySelector("#chat-host textarea").dataset.smokeMark,scroll:document.querySelector(".chat-scroll").scrollTop})'),{draft:'任务 B 里未发送的草稿',mark:'kept',scroll:scrollBefore});
-  steps.push('重开后的目标只提示「当前第 2 轮暂无新交付」；可读第 1 轮历史报告且明确标为历史；Esc 返回后同一聊天节点、草稿与阅读位置保留');
-
-  await click('[data-goal-act=list]');delayReport.set('goal-a',900);mark=Date.now();await click('[data-goal-act=delivery][data-goal-id=goal-a]');await sleep(60);
-  await click(`[data-act=leader][data-id="${board.session_id}"]`);await wait(`location.hash==="#leader=${board.session_id}" && !!document.querySelector("#chat-host textarea")`);await sleep(1300);
-  assert.equal(await run('document.querySelector(".goal-report-reader")'),null,'late report HTML does not open on another group');assert.deepEqual(reportCalls(since(mark)),['goal-a/report-a1']);
-  steps.push('A 的报告晚到时已切到另一组：不会在 B 组突然打开旧报告');
-
-  await click(`[data-act=leader][data-id="${voice.session_id}"]`);await wait('!!document.querySelector("#chat-host textarea")');await click('[data-goal-act=list]');await wait('!!document.querySelector(".goal-card")');
-  await click('[data-goal-act=delivery][data-goal-id=goal-a]');await wait('document.querySelector(".goal-report-reader")?.textContent.includes("正在读取报告")');await click('[data-goal-act=close-report]');await sleep(1300);
-  assert.equal(await run('document.querySelector(".goal-report-reader")'),null,'closed reader stays closed');delayReport.delete('goal-a');
-  steps.push('报告读取中点「返回任务」：晚到的 HTML 不会让阅读层复活');
-
-  failReportOnce.add('goal-a');await click('#side-task-body [data-goal-act=delivery]');await wait('!!document.querySelector(".goal-reader-status .error-line")');
-  assert((await text('.goal-report-reader')).includes('报告暂时无法读取，请重试。'));await shot('06-报告读取失败-宽.png');
-  await click('[data-goal-act=retry-report]');await wait('!!document.querySelector(".goal-report-reader iframe")');await click('[data-goal-act=close-report]');await wait('!document.querySelector(".goal-report-reader")');
-  failDetailOnce.add('goal-a');await click('#side-task-body [data-goal-act=delivery]');await wait('document.querySelector("#side-task-body [role=alert]")?.textContent.includes("交付报告未能打开")');
-  assert((await text('#side-task-body [role=alert]')).includes('隔离详情读取失败，可重试'));assert.equal(await run('document.querySelectorAll("#side-task-body [role=alert]").length'),1,'the failure is shown once');await click('#side-task-body [role=alert] [data-goal-act=delivery]');await wait('!!document.querySelector(".goal-report-reader iframe")');
-  await click('[data-goal-act=close-report]');await wait('!document.querySelector(".goal-report-reader")');
-  steps.push('报告 HTML 与目标详情读取失败都如实显示错误，可在原位重试成功');
-
-  await click('[data-view=all]');await click('[data-act=all-tab][data-tab=goals]');await wait('document.querySelectorAll("#main [data-goal-act=delivery]").length===3');
-  mark=Date.now();await click('[data-goal-act=delivery][data-goal-id=goal-d]');await wait(`location.hash.includes("leader=${board.session_id}") && location.hash.includes("goal=goal-d") && !!document.querySelector(".goal-report-reader iframe")`);
-  assert((await text('.goal-report-reader .head')).includes('本轮报告'));assert.deepEqual(reportCalls(since(mark)),['goal-d/report-d1']);
-  await click('[data-goal-act=close-report]');await wait('!document.querySelector(".goal-report-reader") && !!document.querySelector("[data-goal-tools=goal-d] .goal-delivery")');
-  const closedHead=await text('#chat-head'),closedHint=await text('#goal-chat-hint');
-  assert(!closedHead.includes('本目标尚未启动'),closedHead);assert(!closedHint.includes('在此发送'),closedHint);assert(!closedHint.includes('开始本任务'),closedHint);
-  assert(await run('!!document.querySelector("#chat-host textarea") && !document.querySelector("#chat-host textarea").disabled'));assert((await text('.goal-followup-hint')).includes('继续聊'));await shot('07-已结束目标可继续聊-宽.png');
-  steps.push('从「全部 → 目标」跨组查看交付；已结束且无执行元数据的目标不再显示「本目标尚未启动」「在此发送会开始任务」');
-
-  await click(`[data-act=leader][data-id="${voice.session_id}"]`);await click('[data-goal-act=general]');await wait('!!document.querySelector("#chat-host textarea")');
-  assert.equal(await run('document.querySelector("#chat-host textarea").value'),'总会话里还没发出的草稿：看完交付再追问数据口径');
-  steps.push('整个阅读旅程后回到总会话，未发送草稿仍在');
-
-  // While reading, keyboard and pointer cannot reach the covered task area; the sidebar and group tree stay usable.
-  const key=async(keyCode,modifiers=[])=>{win.webContents.sendInputEvent({type:'keyDown',keyCode,modifiers});if(keyCode==='Enter')win.webContents.sendInputEvent({type:'char',keyCode:'\r',modifiers});win.webContents.sendInputEvent({type:'keyUp',keyCode,modifiers});await sleep(70);};
-  const where='(()=>{const node=document.activeElement;return {tag:node.tagName,label:String(node.dataset.goalAct||node.dataset.act||node.dataset.action||node.textContent).trim().slice(0,24),reader:!!node.closest(".goal-report-reader"),behind:!!node.closest("#main")&&!node.closest(".goal-report-reader"),sidebar:!!node.closest("#sidebar"),tree:!!node.closest("#right-panel")};})()';
-  const controls='JSON.stringify([...document.querySelectorAll("#main button,#main textarea,#main input")].filter(node=>!node.closest(".goal-report-reader")).map(node=>[node.dataset.goalAct||node.dataset.act||node.dataset.action||node.tagName,node.disabled,node.hidden,node.readOnly??null,node.getAttribute("tabindex")]))';
-  const coveredOnly='[...document.querySelector("#main").children].every(node=>node.classList.contains("goal-report-reader")?!node.inert:node.inert)';
-  const focusClose='document.querySelector(".goal-report-reader [data-goal-act=close-report]").focus()';
-  await click(`[data-act=leader][data-id="${voice.session_id}"]`);await click('[data-goal-act=list]');await wait('!!document.querySelector(".goal-card")');await click('[data-goal-act=open][data-goal-id=goal-a]');
-  await wait('!!document.querySelector("[data-goal-tools=goal-a] [data-action=accept]") && !!document.querySelector("#chat-host .chat-inner")');
-  await click('[data-act=right-open]');await click('[data-act=attention]');await sleep(420);
-  const controlsBefore=await run(controls);mark=Date.now();
-  await click('#side-task-body [data-goal-act=delivery]');await wait('!!document.querySelector(".goal-report-reader iframe")');
-  assert(await run(coveredOnly),'every task-area part behind the reader is inert, the reader is not');
-  assert(await run('document.querySelector("#chat-attention").inert&&!document.querySelector("#right-panel").hidden&&document.querySelector("#attention-slot").dataset.open==="true"'),'reader covers still-open auxiliary panels and prevents background input');
-  await run(focusClose);const backwards=[];for(let i=0;i<20;i++){await key('Tab',['shift']);backwards.push(await run(where));}
-  await run(focusClose);const forwards=[];for(let i=0;i<20;i++){await key('Tab');forwards.push(await run(where));}
-  assert.deepEqual([...backwards,...forwards].filter(item=>item.behind),[],'Tab and Shift+Tab never reach the covered task area');
-  assert(backwards[0].sidebar,'Shift+Tab from 返回任务 moves to the sidebar: '+JSON.stringify(backwards[0]));assert(!forwards.some(item=>item.tree),'the covered floating tree never steals report focus');
-  const blocked=await run('(()=>{const result={};for(const action of ["accept","reject"]){const button=document.querySelector("#side-task-body [data-action="+action+"]");button.focus();result[action]=document.activeElement===button;}const box=document.querySelector("#main").getBoundingClientRect();const x=Math.round(box.left+box.width/2),y=Math.round(box.top+box.height/2),hit=document.elementFromPoint(x,y);return {...result,x,y,hitReader:!!hit.closest(".goal-report-reader"),hitButton:!!hit.closest("button")};})()');
-  assert.equal(blocked.accept,false,'验收通过 cannot take focus');assert.equal(blocked.reject,false,'需要修改 cannot take focus');assert.deepEqual([blocked.hitReader,blocked.hitButton],[true,false],'the pointer lands on the reader, not on one of its buttons');
-  for(const type of ['mouseDown','mouseUp'])win.webContents.sendInputEvent({type,x:blocked.x,y:blocked.y,button:'left',clickCount:1});await sleep(250);
-  assert(await run('!!document.querySelector(".goal-report-reader")'),'a press over the covered task actions leaves the reader open');
-  assert.deepEqual(since(mark).filter(call=>call.method==='POST'&&call.name!=='/api/chat/read'),[],'nothing behind the reader was triggered');
-  await run(focusClose);await key('Escape');await wait('!document.querySelector(".goal-report-reader")');
-  assert.equal(await run('document.querySelectorAll("#main [inert]").length'),0);assert.equal(await run(controls),controlsBefore,'disabled, hidden and read-only states are unchanged');
-  assert.equal(await run('document.activeElement.dataset.goalAct'),'delivery','focus returns to the task');
-  assert(await run('!document.querySelector("#chat-attention").inert&&!document.querySelector("#right-panel").hidden&&document.querySelector("#attention-slot").dataset.open==="true"'),'return from reader restores both auxiliary panels');
-  assert(await run('(()=>{const accept=document.querySelector("#side-task-body [data-action=accept]");accept.focus();const ok=document.activeElement===accept;document.querySelector("#side-task-body [data-goal-act=delivery]").focus();return ok;})()'),'task actions are focusable again after closing');
-  const keyboard={backwards,forwards,blocked};
-  steps.push('阅读层打开时：Tab/Shift+Tab 只在侧栏与阅读层之间移动，浮卡收起，背后的「验收通过/需要修改」既不能聚焦也点不到；Esc 关闭后焦点回到任务，按钮的 disabled/hidden/只读状态不变');
-
-  // The same goal changes in the background while its report is open: the header follows, the document is never reloaded.
-  const goalA=state.goals.find(item=>item.id==='goal-a'),detailA=details.get('goal-a');
-  async function background(change,reports=[]){
-    const count=calls.filter(call=>call.name==='/api/goal').length;
-    Object.assign(goalA,change,{version:goalA.version+1,updated_at:new Date().toISOString()});detailA.reports.unshift(...reports.map(make=>make(goalA)));
-    for(const item of detailA.reports)item.current=item.round===goalA.current_round&&item.requirement_version===goalA.requirement_version;
-    for(let i=0;i<250&&calls.filter(call=>call.name==='/api/goal').length===count;i++)await sleep(30);
-    assert(calls.filter(call=>call.name==='/api/goal').length>count,'goal detail refreshed after the background change');await sleep(400);
-  }
-  const frameBox=()=>run('(()=>{const box=document.querySelector(".goal-report-reader iframe").getBoundingClientRect();return {x:Math.round(box.left),y:Math.round(box.top),width:600,height:300};})()');
-  const frameView=async()=>{const clip=await frameBox();const shot=await win.webContents.debugger.sendCommand('Page.captureScreenshot',{format:'png',clip:{...clip,scale:1}});return Buffer.from(shot.data,'base64');};
-  const readerHead=()=>text('.goal-report-reader .head');
-  const preserved=async(label,kept)=>{const result=await run('({marker:document.querySelector(".goal-report-reader iframe")?.dataset.smoke,loads:window.__reportLoads,srcdoc:document.querySelector(".goal-report-reader iframe").srcdoc,covered:'+coveredOnly+'})');assert.deepEqual(result,{marker:'same',loads:0,srcdoc:kept.srcdoc,covered:true},label);assert((await frameView()).equals(kept.view),label+': the rendered report view is unchanged');};
-  async function readWithMarker(selector){
-    await click(selector);await wait('!!document.querySelector(".goal-report-reader iframe")');await sleep(400);
-    await run('(()=>{const frame=document.querySelector(".goal-report-reader iframe");frame.dataset.smoke="same";window.__reportLoads=0;frame.addEventListener("load",()=>{window.__reportLoads++;});})()');
-    // Synthetic wheel/key input does not scroll the isolated sandboxed frame in a hidden window, and its document runs no
-    // script; so the evidence is that the same frame node never loads again and its rendered view stays identical.
-    return {view:await frameView(),srcdoc:await run('document.querySelector(".goal-report-reader iframe").srcdoc')};
-  }
-  let view=await readWithMarker('#side-task-body [data-goal-act=delivery]');const backgroundHeads=[];
-  await run('document.querySelector("#chat-head").dataset.smokeOld="1"');
-  await background({},[goal=>({...reportEntry(goal,'report-a1b',1,1,true,'awaiting_acceptance','第二稿：补充了混说场景的同一录音复测。',{passed:3,failed:0,unverified:1,simulated:0},[],1),version:2})]);
-  let readingHead=await readerHead();backgroundHeads.push(readingHead);for(const part of ['本轮较早报告','已有更新版本（第 2 稿）','第 1 轮 · 需求 v1 · 第 1 稿'])assert(readingHead.includes(part),part);await preserved('a newer draft in the same round',view);await shot('11-阅读中出现新稿-宽.png');
-  await background({status:'running',requirement_version:2});
-  readingHead=await readerHead();backgroundHeads.push(readingHead);for(const part of ['历史报告','需求已更新到 v2，本轮暂无新交付'])assert(readingHead.includes(part),part);
-  assert.equal(await run('document.querySelector("#chat-head").dataset.smokeOld'),'1','the chat scaffold stays mounted behind the reader');await preserved('requirement updated, task area retained',view);
-  await background({status:'queued',current_round:2,requirement_version:3});
-  readingHead=await readerHead();backgroundHeads.push(readingHead);assert(readingHead.includes('当前第 2 轮暂无新交付'),readingHead);await preserved('reopened into a new round',view);await shot('12-重开后仍在阅读历史报告-宽.png');
-  await background({status:'awaiting_acceptance'},[goal=>({...reportEntry(goal,'report-a2',2,3,true,'awaiting_acceptance','第二轮报告：混说场景已在真机复测。',{passed:2,failed:0,unverified:0,simulated:0},[],0),version:1})]);
-  readingHead=await readerHead();backgroundHeads.push(readingHead);for(const part of ['历史报告','本轮已有新报告'])assert(readingHead.includes(part),part);await preserved('a new round report arrived',view);
-  await key('Escape');await wait('!document.querySelector(".goal-report-reader") && (document.querySelector("[data-goal-tools=goal-a] .goal-delivery")?.textContent||"").includes("第二轮报告")');
-  assert.equal(await run('document.querySelectorAll("#main [inert]").length'),0);assert.equal(await run('document.activeElement.dataset.goalAct'),'delivery');assert.equal(await run('document.querySelector("#goal-drawer").hidden'),true);
-  steps.push('直接阅读中同一目标在后台出现新稿、需求更新（保留对话区）、重开换轮、新轮报告：阅读头部依次改为「本轮较早报告/历史报告」并说明原因，同一个 iframe 节点不再触发 load、srcdoc 与渲染画面不变（文档未重载），主区始终不可操作；返回任务后显示新一轮结论');
-
-  await click('[data-goal-act=drawer][data-kind=reports]');await wait('!!document.querySelector(".goal-report-card[data-report-id=report-a2]")');
-  await click('.goal-report-card[data-report-id=report-a2]');await wait('!!document.querySelector("#goal-drawer iframe") && !document.querySelector("[data-goal-act=expand-report]").disabled');
-  view=await readWithMarker('[data-goal-act=expand-report]');
-  await background({},[goal=>({...reportEntry(goal,'report-a2b',2,3,true,'awaiting_acceptance','第二轮第二稿。',{passed:2,failed:0,unverified:0,simulated:0},[],0),version:2})]);
-  readingHead=await readerHead();backgroundHeads.push(readingHead);for(const part of ['本轮较早报告','已有更新版本（第 2 稿）','第 2 轮 · 需求 v3 · 第 1 稿','返回交付资料'])assert(readingHead.includes(part),part);await preserved('manual reader, newer draft',view);await shot('13-手动阅读较早稿-宽.png');
-  await key('Escape');await wait('!document.querySelector(".goal-report-reader") && !document.querySelector("#goal-drawer").hidden');
-  const drawerList=await text('#goal-drawer .goal-report-list');for(const part of ['第 2 轮 · 第 2 稿 · 本轮报告','第 2 轮 · 第 1 稿 · 本轮较早报告','第 1 轮 · 第 2 稿 · 历史报告'])assert(drawerList.includes(part),part);
-  assert.equal(await run('document.querySelectorAll("#main [inert]").length'),0);await click('[data-goal-act=close-drawer]');
-  steps.push('手动「交付与文档 → 展开」阅读时出现同轮新稿：头部标为「本轮较早报告 · 已有更新版本」，文档不重载；Esc 与直接阅读一样关闭阅读层并解除遮挡，回到交付资料，列表按稿次标明本轮/较早/历史');
-
-  mark=Date.now();await click('#side-task-body [data-goal-act=delivery]');await wait('!!document.querySelector(".goal-report-reader iframe")');
-  assert(await run(`(()=>{const node=document.querySelector('#sidebar .session-open[data-id="${board.session_id}"]');node.focus();return document.activeElement===node;})()`),'the sidebar navigation button takes focus while reading');
-  await key('Enter');await wait(`location.hash==="#leader=${board.session_id}" && !document.querySelector(".goal-report-reader") && !!document.querySelector("#chat-host textarea")`);
-  assert.equal(await run('document.querySelectorAll("#main [inert]").length'),0);assert.deepEqual(reportCalls(since(mark)),['goal-a/report-a2b'],'viewing delivery reads the newest draft');
-  steps.push('阅读中用键盘在侧栏切到另一组：阅读层关闭、主区恢复可操作；查看交付读取最高稿次报告');
-
-  viewports.push(await open(860,760,`leader=${voice.session_id}`));await wait('!!document.querySelector("#chat-host textarea")');
-  await click('[data-goal-act=list]');await wait('!!document.querySelector(".goal-card")');await shot('08-任务清单-窄.png');
-  await click('[data-goal-act=open][data-goal-id=goal-a]');await wait('!!document.querySelector("[data-goal-tools=goal-a] .goal-delivery")');
-  const narrow=await run('({width:innerWidth,scroll:document.documentElement.scrollWidth,head:document.querySelector("#goal-head").getBoundingClientRect().height,chat:document.querySelector("#chat-host").getBoundingClientRect().height})');
-  assert(narrow.scroll<=narrow.width,'no horizontal overflow');assert(narrow.chat>250,'narrow chat keeps space: '+narrow.chat);await shot('09-结论面板-窄.png');
-  await click('#side-task-body [data-goal-act=delivery]');await wait('!!document.querySelector(".goal-report-reader iframe")');assert(await run('document.documentElement.scrollWidth<=innerWidth'));await shot('10-直接阅读-窄.png');
-  await click('[data-goal-act=close-report]');await wait('!document.querySelector(".goal-report-reader")');
-  steps.push('窄窗口：卡片、结论面板和阅读层无横向溢出，聊天区仍保留空间');
-
-  // Reproduce the production handoff ordering, with no native tool result to reconcile.
-  const former=journal(board.session_id,null).value;
-  for(const event of [
-    {type:'assistant',id:'start-tool',content:[{type:'tool_use',id:'start-call',name:'crew_goal',input:{action:'start',goal_id:'goal-d'}}]},
-    {type:'identity_handoff',target_execution:'retired-execution',text:'当前 Crew 身份已转交执行；保留此段历史，旧原生进程停止。'},
-    {type:'turn_result',status:'interrupted',success:false},{type:'status',status:'offline'}
-  ])former.events.push({...event,seq:former.events.length+1,at:new Date().toISOString()});
-  former.read_seq=former.events.length;
-  viewports.push(await open(1100,800,`leader=${board.session_id}`));
-  await wait('document.querySelector(".tool-state")?.textContent.includes("已转交")');
-  assert.equal(await run('document.querySelectorAll(".tool.live,.tool .spin").length'),0);
-  await click('[data-chat-fold="tool:start-call"]');
-  assert(await run('document.querySelector(".tool-steps").checkVisibility() && document.querySelector(".tool-steps").textContent.includes("未返回结果")'));
-  assert(!(await text('.tool-steps')).includes('执行失败'));
-  await run('document.querySelector("[data-chat-goal=goal-d]").scrollIntoView({block:"nearest"})');await shot('14-总会话工具已转交.png');
-  await click('[data-chat-goal=goal-d]');
-  await wait('location.hash.includes("goal=goal-d") && !!document.querySelector("[data-goal-detail=goal-d]")');
-  assert((await text('#goal-head')).includes('每周风险摘要邮件'));await shot('15-查看已完成任务.png');
-  steps.push('旧总会话的启动工具在转交、原生中断后显示已转交；无回执时保留结果未知，直接查看已完成任务，读取不会启动或恢复 AI');
-
-  // Long descriptions and enabled trust must not become a second permanent header card.
-  board.name='股市掌控者 · 大盘与持仓风险分析';board.goal='主控：已将临时并行工作交接给三名正式 Crew 成员，固定美日大盘方案并独立审查解除风险。'.repeat(6);
-  board.trust={enabled:true,goal:'moomoo 持仓卖出与风险提示 App 原型\n'+('授权范围：按用户目标自主协调、验证和交付；需要人工操作时登记待办。\n'.repeat(6))};
-  board.model='fixture-model-with-a-long-discovered-name';
-  addGoal({id:'compact-goal',leader_session_id:board.session_id,title:'大盘顶部预警：图示拆解、因果信号与历史验证，以及完整的边界条件与实际输入样本对照',request:'保留原始输入，分别验证美日大盘；说明未验证部分。',constraints:['不重复启动真实任务'],status:'running',minutes:0},
-    {executions:executions('compact-execution',board.session_id,1,1).map(item=>({...item,model:'fixture-model-with-a-long-discovered-name'})),reports:[]});
-  const compactHeaders=[];
-  await run('localStorage.setItem("crew.fontScale","1.35")');
-  for(const width of [1440,1100,860]){
-    await open(width,800,`leader=${board.session_id}&goal=compact-goal`);await wait('!!document.querySelector("[data-goal-detail=compact-goal]") && !!document.querySelector("#chat-host textarea")');
-    const size=await run('(()=>{const main=document.querySelector("#main").getBoundingClientRect(),chat=document.querySelector("#chat-host").getBoundingClientRect(),scope=document.querySelector(".chat-scope");return {width:innerWidth,top:chat.top-main.top,chat:chat.height,header:document.querySelector("#chat-head").getBoundingClientRect().height,scroll:document.documentElement.scrollWidth,scope:scope.getBoundingClientRect().height,scopeOverflow:scope.scrollWidth>scope.clientWidth};})()');
-    assert(size.top<235,'compact header at 135% scale: '+JSON.stringify(size));assert(size.header<85);assert(size.scope<30);assert(size.scopeOverflow);assert(size.scroll<=size.width);assert(size.chat>500);compactHeaders.push(size);
-    assert.equal(await run('document.querySelectorAll("#leader-trust-note,.leader-trust-note").length'),0);
-    await shot(`16-紧凑顶部-${width}.png`);
-  }
-  await open(1440,900,`leader=${board.session_id}&goal=compact-goal`);await wait('!!document.querySelector("[data-goal-detail=compact-goal]")');
-  await click('[data-goal-act=drawer][data-kind=context]');await wait('!document.querySelector("#goal-drawer").hidden');
-  const selected=await run('(()=>{const active=document.querySelector("[data-kind=context][data-goal-act=drawer]"),idle=document.querySelector("[data-kind=reports][data-goal-act=drawer]");return {expanded:active.getAttribute("aria-expanded"),idle:idle.getAttribute("aria-expanded"),color:getComputedStyle(active).color,idleColor:getComputedStyle(idle).color,marker:getComputedStyle(active).boxShadow};})()');
-  assert.equal(selected.expanded,'true');assert.equal(selected.idle,'false');assert.notEqual(selected.color,selected.idleColor);assert.notEqual(selected.marker,'none');await shot('17-上下文选中反馈.png');
-  await click('[data-goal-act=drawer][data-kind=requirements]');await wait('document.querySelector("#goal-drawer h2").textContent==="需求与验收"');
-  assert.equal(await run('document.querySelectorAll(".goal-materials [aria-expanded=true]").length'),1);assert.equal(await run('document.querySelector("[data-kind=context][data-goal-act=drawer]").getAttribute("aria-expanded")'),'false');
-  assert((await text('#goal-drawer')).includes('保留原始输入'));assert((await text('#goal-drawer')).includes('不重复启动真实任务'));assert.equal(await run('document.querySelectorAll("#goal-head .goal-requirements").length'),0);await shot('18-需求侧栏选中.png');
-  await click('[data-goal-act=drawer][data-kind=reports]');await wait('document.querySelector("#goal-drawer h2").textContent==="交付与文档"');assert.equal(await run('document.querySelectorAll(".goal-materials [aria-expanded=true]").length'),1);
-  await key('Escape');assert.equal(await run('document.querySelectorAll(".goal-materials [aria-expanded=true]").length'),0);
-  await click('#chat-head [data-act=leader-trust]');await wait('!!document.querySelector("#leader-trust-goal")');assert.equal(await run('document.querySelector("#leader-trust-goal").value'),board.trust.goal);await click('[data-lt-act=close]');
-  await run('document.documentElement.dataset.theme="dark"');await click('[data-goal-act=drawer][data-kind=context]');await shot('19-深色选中反馈.png');await key('Escape');
-  steps.push('135% 字号和长职责/长任务名下，信任开启不增加常驻卡片；三种资料共用侧栏并即时同步选中反馈，Esc 清除状态，信任授权全文可读且未保存或执行');
-
-  const forbidden=calls.filter(call=>['/api/chat/send','/api/goals/action','/api/goals/agent','/api/goals/create','/api/spawn','/api/chat/interrupt','/api/session/stop'].includes(call.name)||/wake|spawn|start/.test(call.name));
-  assert.deepEqual(forbidden,[]);const posts=[...new Set(calls.filter(call=>call.method==='POST').map(call=>call.name))];assert(posts.every(name=>name==='/api/chat/read'),posts.join(','));
-  // A deliberate rejection leaves the task's composer available. Only sending
-  // the user's follow-up starts the next round, and old delivery stays readable.
-  for(const initialStatus of ['awaiting_acceptance','completed']){
-    const id='followup-'+initialStatus;
-    addGoal({id,leader_session_id:voice.session_id,title:'报告收尾修改',request:'完成交付并保留证据',status:initialStatus,minutes:0},
-      {documents:[{id:initialStatus==='completed'?802:801,title:'仅此任务资料-'+initialStatus,path:'docs/'+id+'.md',kind:'report',important:false}],executions:executions('old-'+id,voice.session_id,1,1,'completed'),reports:[goal=>reportEntry(goal,'old-report-'+id,1,1,true,initialStatus,'原始报告结论',{passed:2,failed:0,unverified:0,simulated:0},[],0)]});
-    seed(voice.session_id,id,3,'原任务历史-'+initialStatus);
-    const originalJournal=journal(voice.session_id,id).value;
-    originalJournal.events.push({seq:4,type:'assistant',id:'old-tool-answer',content:[{type:'tool_use',id:'continuity-tool',name:'Bash',input:{command:'verify old report'}}]},
-      {seq:5,type:'tool_result',tool_use_id:'continuity-tool',content:'旧任务复测证据仍可展开'});originalJournal.read_seq=5;
-    const before=calls.filter(call=>call.name==='/api/chat/send').length;
-    await open(1440,900,`leader=${voice.session_id}&goal=${id}`);
-    await wait('!!document.querySelector("#chat-host textarea") && !!document.querySelector("[data-goal-detail]")');
-    assert.equal(calls.filter(call=>call.name==='/api/chat/send').length,before,'opening does not send');
-    if(initialStatus==='awaiting_acceptance'){
-      await click('[data-action=reject]');await wait('!!document.querySelector("[data-goal-confirm=reject]")');
-      await fill('[data-goal-confirm] textarea','报告收尾说明不完整，请补齐实际复测证据');
-      await click('[data-goal-confirm] button[type=submit]');
-      await wait('!document.querySelector("[data-goal-confirm]") && !!document.querySelector("#chat-host textarea")');
-      assert.equal(details.get(id).goal.status,'failed');
-      assert((await text('.goal-review')).includes('报告收尾说明不完整'));
-      await shot('20-退回修改后仍可继续聊.png');
+  try{
+    await fs.mkdir(output,{recursive:true});server=http.createServer((request,response)=>route(request,response).catch(error=>{errors.push(error.stack);json(response,{error:error.message},500);}));await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));origin='http://127.0.0.1:'+server.address().port;
+    browser=await chromium.launch({channel:'chrome',headless:true});page=await browser.newPage({viewport:{width:1440,height:900}});page.on('pageerror',error=>errors.push(error.stack));page.on('console',message=>{if(message.type()==='error')errors.push(message.text());});
+    await page.goto(origin+'/?project='+encodeURIComponent(state.project.name));await page.locator('.wh-review .goal-supplements').waitFor();assert.equal(await page.locator('.wh-review .goal-supplements li').count(),0);await shot('00-home-supplements-collapsed');await click('.wh-review [data-goal-act=supplements-toggle]');await page.locator('.wh-review .goal-supplements li').first().waitFor();assert.equal(await page.locator('.wh-review .goal-supplements li').count(),2);assert((await text('.wh-review .goal-supplements')).includes('录音质量'));await shot('00a-home-supplements-expanded');steps.push('主页待验收紧邻摘要显示补充，默认折叠，展开保留原文、版本顺序和会话名');
+    await openTask('goal-a');await shot('00b-task-supplements-collapsed');assert.equal(await page.locator('#side-task-body .goal-supplements li').count(),0);await click('#side-task-body [data-goal-act=supplements-toggle]');await page.locator('#side-task-body .goal-supplements li').first().waitFor();assert.equal(await page.locator('#side-task-body .goal-supplements li').count(),2);const times=await page.locator('#side-task-body .goal-supplements time').evaluateAll(nodes=>nodes.map(node=>node.dateTime));assert.deepEqual(times,details.get('goal-a').goal.supplements_after_report.map(item=>item.at));await shot('00c-task-supplements-expanded');await click('#side-task-body [data-goal-act=supplements-toggle]');steps.push('任务验收补充默认折叠；展开按需求版本顺序显示原文与时间；旧需求执行仍列在本轮进度');
+    await page.locator('#chat-host textarea').fill('总会话里尚未发送的草稿');const input=page.locator('#chat-host textarea');await input.evaluate(node=>node.dataset.smoke='same');
+    assert.equal(await page.locator('#side-task-body textarea').count(),0);assert.equal(await page.locator('#goal-head [role=tab]').count(),0);assert(await page.locator('.task-delivery [data-action=accept]').isVisible());assert(await page.locator('.task-delivery [data-action=reject]').isVisible());
+    const result=await text('.goal-delivery');for(const part of ['本次结果','共 5 项','通过 4','未验证 1','尚存问题 · 5 条','查看完整报告'])assert(result.includes(part),part);assert(!result.includes('模拟验证'));
+    await click('[data-goal-act=conclusion-toggle]');await click('[data-goal-act=report-notes-toggle]');assert.equal(await page.locator('.goal-delivery-unresolved-list li').count(),5);assert((await text('.goal-delivery-summary')).includes('详细对照、失败样本和复测命令见完整报告。'));await shot('01-delivery');steps.push('交付在右栏，AI 验证与尚存问题分列；长报告全文和问题清单分别展开');
+    await click('#side-task-body [data-goal-act=delivery]');await page.locator('.goal-reader-frame iframe').waitFor();const head=await text('.goal-report-reader .head');for(const part of ['改善短句换人的识别表现','当前版本','需求 v1','等待用户验收','返回任务'])assert(head.includes(part),part);assert.equal(await page.locator('.goal-reader-frame iframe').getAttribute('sandbox'),'allow-scripts');
+    assert(await page.locator('#main').evaluate(node=>[...node.children].every(child=>child.classList.contains('goal-report-reader')?!child.inert:child.inert)));assert.equal(await page.locator('.task-delivery [data-action=accept]').evaluate(node=>{node.focus();return document.activeElement===node;}),false);
+    await page.locator('.goal-reader-frame iframe').evaluate(node=>{node.dataset.smoke='same';window.reportLoads=0;node.addEventListener('load',()=>window.reportLoads++);});const srcdoc=await page.locator('.goal-reader-frame iframe').getAttribute('srcdoc');
+    const detail=details.get('goal-a');detail.goal.version++;detail.reports.unshift({...detail.reports[0],id:'report-a2',version:2});await wait('document.querySelector(".goal-report-reader .head").textContent.includes("已有更新版本")');assert.equal(await page.locator('.goal-reader-frame iframe').getAttribute('srcdoc'),srcdoc);assert.equal(await page.locator('.goal-reader-frame iframe').getAttribute('data-smoke'),'same');assert.equal(await page.evaluate(()=>window.reportLoads),0);await shot('02-reader-updated');
+    await page.keyboard.press('Escape');await page.locator('.goal-report-reader').waitFor({state:'detached'});assert.equal(await input.inputValue(),'总会话里尚未发送的草稿');assert.equal(await input.getAttribute('data-smoke'),'same');assert.equal(await page.evaluate(()=>document.activeElement.dataset.goalAct),'delivery');steps.push('阅读层隔离验收按钮；新稿到达时只更新标题，同一 iframe 不重载；Esc 回到原入口且总会话草稿和节点保留');
+    await click('#side-task-body [data-goal-act=delivery]');await page.locator('.goal-reader-frame iframe').waitFor();assert((await text('.goal-report-reader .head')).includes('当前版本'));assert((await text('.goal-report-reader .head')).includes('第 2 稿'));await page.keyboard.press('Escape');assert.equal(await page.locator('#goal-drawer,[data-goal-act=versions]').count(),0);assert.equal(await page.evaluate(()=>document.activeElement.dataset.goalAct),'delivery');steps.push('直接交付入口读取最新稿，Esc 返回任务且旧抽屉和成果版本入口不存在');
+    await click('#goal-head [data-goal-act=list]');await click('#side-task-body [data-goal-act=open][data-goal-id=goal-b]');assert.equal(await input.inputValue(),'总会话里尚未发送的草稿');await page.locator('.goal-delivery-gap').waitFor();assert((await text('.goal-delivery-gap')).includes('当前修改尚无新交付'));await click('#side-task-body [data-goal-act=delivery]');await page.locator('.goal-reader-frame iframe').waitFor();assert((await text('.goal-report-reader .head')).includes('历史报告'));await page.keyboard.press('Escape');steps.push('切任务仍是同一总会话；新一轮无报告时明确显示缺口，旧轮次只作为历史报告阅读');
+    await page.setViewportSize({width:390,height:844});await shot('03-mobile-task');assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));assert(await input.isVisible());assert(await input.evaluate(node=>node.getBoundingClientRect().width>200));await click('#side-task-body [data-goal-act=delivery]');await page.locator('.goal-reader-frame iframe').waitFor();await shot('04-mobile-report');await page.keyboard.press('Escape');steps.push('390px 任务右栏和报告阅读无横向溢出，输入框保持可用');await page.setViewportSize({width:1440,height:900});
+    for(const initialStatus of ['awaiting_acceptance','completed']){
+      const id='followup-'+initialStatus;addGoal({id,leader_session_id:voice.session_id,title:'报告收尾修改',request:'完成交付并保留证据',status:initialStatus,minutes:0},{documents:[{id:initialStatus==='completed'?802:801,title:'仅此任务资料-'+initialStatus,path:'docs/'+id+'.md',kind:'report',important:false}],executions:executions('old-'+id,voice.session_id,1,1,'completed'),reports:[goal=>reportEntry(goal,'old-report-'+id,1,1,true,initialStatus,'原始报告结论',{passed:2,failed:0,unverified:0,simulated:0},[],0)]});
+      await openTask(id);if(initialStatus==='awaiting_acceptance'){await click('[data-action=reject]');await page.locator('[data-goal-confirm=reject] textarea').fill('报告收尾缺少复测证据');await click('[data-goal-confirm=reject] button[type=submit]');await page.locator('.goal-status[data-status=failed]').waitFor();assert((await text('.goal-review')).includes('报告收尾缺少复测证据'));}
+      const pin=page.locator('.chat-task-binding');assert.equal(await pin.getAttribute('aria-pressed'),'false');await pin.click();await page.locator('#chat-host textarea').fill('请继续修改报告结尾');const sent=page.waitForResponse(response=>response.url().includes('/api/chat/send')&&response.request().method()==='POST');await click('#chat-host .send');assert((await sent).ok());await page.locator('.goal-status[data-status=running]').waitFor();assert.equal(details.get(id).goal.current_round,2);assert(await page.locator('.chat-task-label').filter({hasText:'→ 报告收尾修改'}).count());assert((await text('.goal-delivery-gap')).includes('历史版本'));await page.locator('#side-task-body').getByText('仅此任务资料-'+initialStatus,{exact:true}).waitFor();assert(!(await text('#side-task-body')).includes('仅此任务资料-'+(initialStatus==='completed'?'awaiting_acceptance':'completed')));await shot('05-bound-followup-'+initialStatus);await page.keyboard.press('Escape');
     }
-    await fill('#chat-host textarea','请继续修改报告结尾，说明收尾验证的实际结果。');
-    await wait('!!document.querySelector("#chat-host .send:not([disabled])")');
-    await click('#chat-host .send');
-    await wait(`document.querySelector("[data-goal-tools='${id}'] .goal-version").textContent.includes("2")`);
-    assert.equal(details.get(id).goal.current_round,2);
-    await wait(`document.querySelector('#chat-host .chat-inner')?.textContent.includes('原任务历史-${initialStatus}第 1 条记录')`);
-    await wait(`document.querySelector('#chat-host .chat-inner')?.textContent.includes('请继续修改报告结尾')`);
-    await open(1440,900,`leader=${voice.session_id}&goal=${id}`);
-    await wait(`document.querySelector('#chat-host .chat-inner')?.textContent.includes('原任务历史-${initialStatus}第 1 条记录')`);
-    await wait(`document.querySelector('#chat-host .chat-inner')?.textContent.includes('请继续修改报告结尾')`);
-    assert.equal(calls.filter(call=>call.name==='/api/chat/send').length,before+1);
-    const historicalTool=`#chat-host [data-chat-fold="history:old-${id}:tool:continuity-tool"]`;
-    await click(historicalTool);
-    assert.equal(await run(`document.querySelector(${JSON.stringify(historicalTool)}).getAttribute('aria-expanded')`),'true');
-    await shot('23-续聊保留历史和工具-'+initialStatus+'.png');
-    assert(await run('!!document.querySelector("#chat-host textarea")'));
-    if(initialStatus==='awaiting_acceptance')assert((await text('.goal-review')).includes('第 1 轮 · 你退回修改'));
-    assert((await text('.goal-delivery-gap')).includes('历史报告'));
-    await click('[data-goal-act=drawer][data-kind=reports]');
-    await wait(`document.querySelector("#goal-drawer").textContent.includes("仅此任务资料-${initialStatus}")`);
-    assert(!(await text('#goal-drawer')).includes('仅此任务资料-'+(initialStatus==='completed'?'awaiting_acceptance':'completed')));
-    assert.equal(await run('document.querySelectorAll("#sidebar [data-view=documents]").length'),0);
-    await shot('21-继续原任务-'+initialStatus+'.png');
-    await key('Escape');
-  }
-  assert(calls.filter(call=>call.name==='/api/documents').every(call=>call.query.goal_id));
-  steps.push('侧栏无项目资料/交付资料总览；切换不同任务时交付文档各归本任务，所有文档读取均携带 goal_id');
-  steps.push('待验收任务退回后可直接继续输入；已完成任务也可直接聊收尾修改；明确发送后同一任务进入新一轮，旧报告和退回理由仍可查阅');
-
-  const parallelIds=['parallel-a','parallel-b'];
-  for(const id of parallelIds)addGoal({id,leader_session_id:voice.session_id,title:id==='parallel-a'?'声纹资料复核':'报告收尾审查',request:'按本任务范围复核证据',status:'running',minutes:0},
-    {executions:executions('exec-'+id,voice.session_id,1,1,'running'),reports:[]});
-  voice.active_goal_ids=parallelIds;voice.active_goal_id='parallel-a';voice.status='working';voice.running=true;voice.busy=false;
-  await open(1440,900,`leader=${voice.session_id}`);
-  await wait('!!document.querySelector("#chat-host textarea") && document.querySelector("#goal-chat-hint").textContent.includes("2 个任务")');
-  assert((await text('#goal-chat-hint')).includes('总对话可继续安排任务和验收'));
-  await fill('#chat-host textarea','协调两个任务并分别核验，先保留这条草稿。');
-  await click('[data-act=active-goal][data-goal-id=parallel-a]');
-  await wait('!!document.querySelector("[data-goal-detail=parallel-a]") && !!document.querySelector("#chat-host textarea")');
-  assert.equal(await run('document.querySelector("#chat-host textarea").value'),'');
-  await click('[data-action=pause]');
-  await wait('document.querySelector("[data-goal-detail=parallel-a] .goal-status").textContent.includes("暂停")');
-  assert.equal(details.get('parallel-b').goal.status,'running');
-  await click('[data-goal-act=general]');
-  await wait('!!document.querySelector("#chat-host textarea") && !document.querySelector(".readonly-note")');
-  assert.equal(await run('document.querySelector("#chat-host textarea").value'),'协调两个任务并分别核验，先保留这条草稿。');
-  await fill('#chat-host textarea','继续协调报告验收，不改变另一个任务的执行。');
-  await wait('!!document.querySelector("#chat-host .send:not([disabled])")');
-  const generalMark=calls.length;await click('#chat-host .send');
-  await wait('document.querySelector("#chat-host textarea").value===""');
-  const generalSend=calls.slice(generalMark).filter(call=>call.name==='/api/chat/send');
-  assert.equal(generalSend.length,1);assert(!generalSend[0].body.goal_id);
-  assert(!(await run('location.hash')).includes('goal='));
-  assert.equal(details.get('parallel-a').goal.status,'paused');assert.equal(details.get('parallel-b').goal.status,'running');
-  await shot('22-多任务推进时总对话可协调.png');
-  steps.push('同一 leader 的总对话列出两个独立任务；总对话/任务草稿分开保留，暂停 A 不影响 B，总对话仍可输入且发送不会被路由到任一任务');
-  assert(calls.filter(call=>call.name==='/api/goals/report').every(call=>details.get(call.query.goal_id)?.reports.some(item=>item.id===call.query.report_id)));
-  const usageMark=calls.length;
-  await open(1440,900,'usage');
-  await wait(`document.querySelector('.utable')?.textContent.includes('Claude组员')`);
-  const usageText=await text('.utable');
-  for(const part of ['Claude组员','Codex组员','Codex 8.5K','Codex 500','Codex 8K','Claude 折合','Claude 占比'])assert(usageText.includes(part),part);
-  await shot('24-组员用量按稳定身份统计.png');
-  await click('[data-act=usage-fold]');
-  assert(!(await text('.utable')).includes('Claude组员'));assert((await text('.utable')).includes('Codex 8.5K'));
-  await click('[data-act=usage-fold]');
-  await click('[data-act=usage-tab][data-tab=daily]');assert((await text('.utable')).includes('Claude组员'));
-  await click('[data-act=usage-tab][data-tab=tree]');
-  await run(`document.documentElement.dataset.theme='dark'`);
-  win.setContentSize(940,900);await sleep(200);
-  assert((await text('.utable')).includes('Codex组员'));await shot('25-组员用量窄窗深色.png');
-  assert(calls.slice(usageMark).every(call=>call.method==='GET'),'usage reads must not wake model work');
-  steps.push('用量按结构显示 Claude/Codex 组员与 leader 本身，折叠仍保留整组 Codex 合计；按天、窄窗、深色可读，读取不派发任务');
-  assert.equal(errors.length,0,errors.join('\n'));
-  const evidence={ok:true,scope:'real Electron renderer with in-memory loopback fixtures; no model, production HOME, Crew service or user data',viewports,steps,shots,compact,narrow,keyboard,backgroundHeads,compactHeaders,selected,forbiddenCalls:forbidden,postEndpoints:posts,
-    endpoints:Object.entries(calls.reduce((count,call)=>({...count,[call.name]:(count[call.name]||0)+1}),{})),reportReads:reportCalls(calls),calls,errors,isolatedUserData:temporary};
-  await fs.writeFile(path.join(output,'evidence.json'),JSON.stringify(evidence,null,2));console.log('Goal delivery smoke passed:',output);
-  win.destroy();for(const stream of streams)stream.response.end();server.close();app.exit(0);
-})().catch(async error=>{console.error(error);await fs.mkdir(output,{recursive:true});await fs.writeFile(path.join(output,'failure.txt'),error.stack||String(error));await fs.writeFile(path.join(output,'evidence.json'),JSON.stringify({ok:false,steps,shots,calls,errors,failure:error.stack||String(error)},null,2));win?.destroy();for(const stream of streams)stream.response.end();server?.close();app.exit(1);});
+    steps.push('退回或已结束任务由点亮的小框继续，仍用 leader session + goal_id；旧报告和退回理由保留，文档严格归属当前任务');
+    assert(calls.filter(call=>call.name==='/api/chat/history'||call.name==='/api/chat/events'||call.name==='/api/chat/read').every(call=>!call.query.goal_id&&!call.body?.goal_id));assert(!calls.some(call=>call.name==='/api/chat/interrupt'));
+    const mark=calls.length;await page.goto(origin+'/?project='+encodeURIComponent(state.project.name)+'#usage');await page.reload();await page.locator('.utable tr').filter({hasText:'Claude组员'}).waitFor();for(const part of ['Claude组员','Codex组员','Codex 8.5K','Claude 折合'])assert((await text('.utable')).includes(part),part);await click('[data-act=usage-fold]');assert(!(await text('.utable')).includes('Claude组员'));assert((await text('.utable')).includes('Codex 8.5K'));await click('[data-act=usage-fold]');await click('[data-act=usage-tab][data-tab=daily]');assert((await text('.utable')).includes('Claude组员'));assert(calls.slice(mark).every(call=>call.method==='GET'||call.name==='/api/chat/read'));steps.push('完整用量页保留按成员身份、折叠合计和按天统计，读取不唤醒模型');
+    assert.deepEqual(errors,[]);assert(calls.filter(call=>call.name==='/api/documents').every(call=>call.query.goal_id));await fs.writeFile(path.join(output,'evidence.json'),JSON.stringify({ok:true,steps,shots,calls,errors},null,2));console.log(JSON.stringify({ok:true,checks:steps.length,evidence:path.join(output,'evidence.json')}));
+  }catch(error){console.error(error);process.exitCode=1;await fs.writeFile(path.join(output,'evidence.json'),JSON.stringify({ok:false,steps,shots,calls,errors,failure:error.stack},null,2));if(page)await shot('failure');}
+  finally{await browser?.close();for(const stream of streams)stream.end();server?.closeAllConnections();server?.close();}
+})();

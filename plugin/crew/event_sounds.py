@@ -1,5 +1,6 @@
 """Sound preferences and cues projected from successful replies and final delivery."""
 from contextlib import closing
+from collections import OrderedDict
 import copy
 import json
 import math
@@ -75,9 +76,16 @@ def save(conn, value):
     return value
 
 
-def reply_completion(events):
+_completions = OrderedDict()
+
+
+def reply_completion(events, *, cache_key=None):
+    return presentation.cached_projection(_completions, cache_key, lambda: _reply_completion(events, cache_key))
+
+
+def _reply_completion(events, cache_key):
     """A text delta, tool result, stop or compaction is never a completed reply."""
-    replies = presentation.chat_replies(events)
+    replies = presentation.chat_replies(events, cache_key=cache_key)
     boundary, latest, reply_index = 0, None, 0
     for event in events:
         if event['type'] not in ('turn_result', 'identity_handoff'):
@@ -93,7 +101,7 @@ def reply_completion(events):
     return latest
 
 
-def snapshot(conn, project, history):
+def snapshot(conn, project, history, journal):
     """history returns recorded events or None for a scope with no journal; no launch."""
     scope = '' if project is None else ' AND s.project=?'
     params = () if project is None else (project,)
@@ -117,7 +125,11 @@ def snapshot(conn, project, history):
     events = []
     for identity, kind in scopes:
         recorded = history(identity)
-        completion = reply_completion(recorded['events']) if recorded else None
+        completion = None
+        if recorded:
+            source = journal(identity)
+            with source.condition:
+                completion = reply_completion(source.events, cache_key=(str(source.path), source.signature))
         if completion is None:
             continue
         if identity in delivered and completion['at'] and store.parse_iso(completion['at']) <= store.parse_iso(delivered[identity]):
