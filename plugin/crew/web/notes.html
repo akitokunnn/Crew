@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light dark"><title>想法 · Crew</title>
+  <link rel="icon" href="/logo.svg"><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/notes.css">
+  <script src="/access-context.js" defer></script>
+  <script src="/browser-utils.js" defer></script>
+  <script src="/notes-model.js" defer></script><script src="/notes.js" defer></script>
+</head>
+<body class="notes-page">
+  <main class="nw-main" id="nw-main">
+    <header class="nw-head">
+      <div><h1>想法</h1><p class="nw-sub">随手记下，定期回顾；准备好了去聊聊，或转成任务。</p></div>
+      <div class="nw-head-acts">
+        <button type="button" class="btn" id="nw-review" data-act="review" aria-keyshortcuts="R">回顾</button>
+        <button type="button" class="btn ghost" id="nw-select-mode" data-act="select-mode" aria-pressed="false">多选</button>
+        <button type="button" class="btn ghost nw-narrow-only" data-act="manage-tags">管理标签</button>
+        <a class="btn ghost" href="/assistant.html">助手</a><a class="btn ghost" href="/">工作区</a>
+      </div>
+    </header>
+    <form class="nw-capture" id="nw-capture" autocomplete="off">
+      <div class="nw-capture-box">
+        <textarea id="nw-input" rows="1" placeholder="想到什么就写… 输入 # 打标签，@ 选工作区" aria-label="记下一个想法" aria-autocomplete="list" aria-controls="nw-suggest" aria-expanded="false"></textarea>
+        <button type="submit" class="btn primary nw-capture-send">记下<kbd>Enter</kbd></button>
+      </div>
+      <ul id="nw-suggest" class="nw-suggest" role="listbox" aria-label="补全建议" hidden></ul>
+      <div class="nw-capture-extra" id="nw-capture-extra"></div>
+      <p id="nw-capture-status" class="nw-capture-status" role="status" aria-live="polite"></p>
+    </form>
+    <div class="nw-filters" id="nw-filters" role="group" aria-label="筛选与排序"></div>
+    <div id="nw-error" class="nw-error" role="alert" hidden></div>
+    <div id="nw-wall" class="nw-wall"></div>
+  </main>
+  <aside class="nw-side" id="nw-side" aria-label="标签与归档"></aside>
+  <div class="nw-bulk" id="nw-bulk" role="region" aria-label="批量操作" hidden></div>
+  <div id="nw-toast" class="toast" role="status" aria-live="polite"></div>
+</body>
+</html>

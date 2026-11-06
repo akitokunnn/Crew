@@ -2,8 +2,10 @@
 const { loopback } = require('./core.cjs');
 const { presentation } = require('./workspace-activity.cjs');
 
-// The global assistant is a separate page that lives to the right of the
-// workspaces, so switching to or from it pushes whole pages sideways.
+// Global pages (idea wall, assistant) live to the right of the workspaces, in
+// this order, so switching to or from one pushes whole pages sideways.
+const GLOBAL_PAGES = { notes: { path: '/notes.html', name: '想法', rank: 1 }, assistant: { path: '/assistant.html', name: '助手', rank: 2 } };
+const isGlobal = tab => Object.hasOwn(GLOBAL_PAGES, tab?.kind ?? '');
 const SLIDE_MS = 340;
 // Chromium holds the window's frames until a brand-new page's renderer is up,
 // so a slide into a new page waits for its document, briefly; a slow backend
@@ -40,12 +42,12 @@ class WorkspaceTabs {
     this.activityTimer?.unref?.();
   }
 
-  _public(tab) { if (tab.kind === 'assistant') return {id:tab.id,kind:'assistant',name:'助手',project:null,loading:tab.loading,error:tab.error};
+  _public(tab) { if (isGlobal(tab)) return {id:tab.id,kind:tab.kind,name:GLOBAL_PAGES[tab.kind].name,project:null,loading:tab.loading,error:tab.error};
     return { id: tab.id, name: tab.project.display_name || tab.project.name, project: tab.project.name, loading: tab.loading, error: tab.error,
     readOnly:Boolean(tab.project.read_only), activity:tab.project.read_only ? {tone:'idle',label:'已保存的只读历史',badge:0,unread:0,items:[],stale:false,error:''} : tab.activity||null }; }
   async refreshActivity() {
     if(this.disposed||this.activityBusy||!this.readActivity||!this.entries.size)return;
-    const tabs=[...this.entries.values()].filter(tab=>tab.kind !== 'assistant' && !tab.project.read_only);
+    const tabs=[...this.entries.values()].filter(tab=>!isGlobal(tab) && !tab.project.read_only);
     if(!tabs.length)return;
     this.activityBusy=true;let changed=false;
     try{
@@ -62,8 +64,9 @@ class WorkspaceTabs {
     finally{this.activityBusy=false;if(changed&&!this.disposed)this._notify();}
   }
   state() {
-    // The assistant tab always sits last, matching its title-bar entry on the right.
-    const tabs = [...this.entries.values()].sort((a, b) => (a.kind === 'assistant') - (b.kind === 'assistant'));
+    // Global pages sit after the workspaces; the assistant stays last, matching its title-bar entry on the right.
+    const rank = tab => isGlobal(tab) ? GLOBAL_PAGES[tab.kind].rank : 0;
+    const tabs = [...this.entries.values()].sort((a, b) => rank(a) - rank(b));
     return { tabs: [{ id: 'home', name: '工作区', project: null, loading: false, error: false },
       ...tabs.map(tab => this._public(tab))], activeId: this.activeId,
       transition: this.slide ? { from: this.slide.from, to: this.slide.to } : null };
@@ -106,9 +109,8 @@ class WorkspaceTabs {
     try { url = new URL(value); } catch (_) { return { kind: 'blocked' }; }
     if (url.username || url.password) return { kind: 'blocked' };
     if (/^codex:\/\/threads\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) return {kind:'external'};
-    if (url.origin === this.origin && url.pathname === '/assistant.html' && !url.search) {
-      return {kind:tab.kind === 'assistant' ? 'same' : 'assistant'};
-    }
+    const page = Object.keys(GLOBAL_PAGES).find(kind => GLOBAL_PAGES[kind].path === url.pathname);
+    if (url.origin === this.origin && page && !url.search) return tab.kind === page ? { kind: 'same' } : { kind: 'global', page, hash: url.hash };
     if (url.origin === this.origin && url.pathname === '/') {
       const settings = url.searchParams.getAll('workspace-settings');
       if (settings.length === 1 && settings[0] === tab.project?.name && url.searchParams.size === 1) return { kind:'workspace-settings' };
@@ -128,7 +130,7 @@ class WorkspaceTabs {
     // A subframe cannot use navigation to select workspaces or open a browser.
     if (!isMainFrame) return;
     if (target.kind === 'home') { this.select('home'); return; }
-    if (target.kind === 'assistant') { void this.openAssistant().catch(this.onNavigationError); return; }
+    if (target.kind === 'global') { void this.openGlobal(target.page, target.hash).catch(this.onNavigationError); return; }
     if (target.kind === 'workspace-settings') { this.workspaceSettings(tab.project.name); return; }
     if (target.kind === 'project') { this._openProject(tab, target.name, target.hash); return; }
     if (target.kind === 'external' && !redirect) this.external(url);
@@ -144,7 +146,7 @@ class WorkspaceTabs {
         const target = this._destination(tab, url);
         if (target.kind === 'same') this.select(tab.id);
         else if (target.kind === 'home') this.select('home');
-        else if (target.kind === 'assistant') void this.openAssistant().catch(this.onNavigationError);
+        else if (target.kind === 'global') void this.openGlobal(target.page, target.hash).catch(this.onNavigationError);
         else if (target.kind === 'workspace-settings') this.workspaceSettings(tab.project.name);
         else if (target.kind === 'project') this._openProject(tab, target.name, target.hash);
         else if (target.kind === 'external') this.external(url);
@@ -155,7 +157,7 @@ class WorkspaceTabs {
     wc.on('before-input-event', (event, input) => { if (this._alive(tab)) this.onKeyboard(event, input); });
     wc.on('page-title-updated', event => {
       event.preventDefault();
-      if (this._alive(tab) && tab.kind !== 'assistant' && this._destination(tab, wc.getURL()).kind === 'same') this.onTitleChange(tab.project.name);
+      if (this._alive(tab) && !isGlobal(tab) && this._destination(tab, wc.getURL()).kind === 'same') this.onTitleChange(tab.project.name);
     });
     wc.on('did-start-loading', () => {
       if (this._alive(tab)) {
@@ -208,18 +210,26 @@ class WorkspaceTabs {
     return this._public(tab);
   }
 
-  async openAssistant() {
+  openAssistant(hash = '') { return this.openGlobal('assistant', hash); }
+  openNotes(hash = '') { return this.openGlobal('notes', hash); }
+  // One persistent document per global page; a link hash (#note=…, filters)
+  // reaches an open page in place so its drafts and scroll stay.
+  async openGlobal(kind, hash = '') {
     if (this.disposed) throw new Error('Workspace tabs are closed');
-    const existing = this.entries.get('assistant');
-    if (existing) { this.select(existing.id); return this._public(existing); }
-    const view = this.createView({kind:'assistant'});
-    const tab = {id:'assistant',kind:'assistant',project:null,view,loading:true,error:false,documentReady:false};
+    const existing = this.entries.get(kind);
+    if (existing) {
+      this.select(existing.id);
+      if (hash) await existing.view.webContents.executeJavaScript('location.hash=' + JSON.stringify(hash));
+      return this._public(existing);
+    }
+    const view = this.createView({kind});
+    const tab = {id:kind,kind,project:null,view,loading:true,error:false,documentReady:false};
     this.entries.set(tab.id,tab); this._wire(tab);
     this.stage.addChildView(view);
     if (typeof view.setBorderRadius === 'function') view.setBorderRadius(8);
     this.select(tab.id);
     try {
-      await view.webContents.loadURL(this.origin + '/assistant.html');
+      await view.webContents.loadURL(this.origin + GLOBAL_PAGES[kind].path + (hash.startsWith('#') ? hash : ''));
       if (this._alive(tab)) { tab.loading=false;this._syncPageVisibility(tab);this._notify(); }
     } catch(error) { if (this._alive(tab)) { this._error(tab);throw error; } }
     return this._public(tab);
@@ -239,7 +249,8 @@ class WorkspaceTabs {
       if (animate && this._slides(from, id)) {
         // The clock starts at the first frame: creating a view can keep the main
         // thread busy, and the slide must not skip its opening.
-        this.slide = { from, to: id, direction: id === 'assistant' ? 1 : -1, start: null, requested: this.now(), frame: null };
+        const order = this.state().tabs.map(tab => tab.id);
+        this.slide = { from, to: id, direction: order.indexOf(id) > order.indexOf(from) ? 1 : -1, start: null, requested: this.now(), frame: null };
         this.slide.frame = this.scheduleFrame(() => this._frame());
       }
     }
@@ -251,7 +262,7 @@ class WorkspaceTabs {
     return true;
   }
   _slides(from, to) {
-    if (from === to || from !== 'assistant' && to !== 'assistant' || this.bounds.width === 0) return false;
+    if (from === to || !isGlobal(this.entries.get(from)) && !isGlobal(this.entries.get(to)) || this.bounds.width === 0) return false;
     if ([from, to].some(id => id !== 'home' && this.entries.get(id).error)) return false;
     return !this.prefersReducedMotion();
   }

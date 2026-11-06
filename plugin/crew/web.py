@@ -1871,6 +1871,10 @@ STATIC.update({'/workspace-home.js': ('workspace-home.js', 'text/javascript; cha
 STATIC.update({'/assistant.html': ('assistant.html', 'text/html; charset=utf-8'),
                '/assistant.js': ('assistant.js', 'text/javascript; charset=utf-8'),
                '/assistant.css': ('assistant.css', 'text/css; charset=utf-8')})
+STATIC.update({'/notes.html': ('notes.html', 'text/html; charset=utf-8'),
+               '/notes.js': ('notes.js', 'text/javascript; charset=utf-8'),
+               '/notes-model.js': ('notes-model.js', 'text/javascript; charset=utf-8'),
+               '/notes.css': ('notes.css', 'text/css; charset=utf-8')})
 STATIC['/native-handoff-ui.js'] = ('native-handoff-ui.js', 'text/javascript; charset=utf-8')
 STATIC['/goal-work-ui.js'] = ('goal-work-ui.js', 'text/javascript; charset=utf-8')
 POST_PATHS.add('/api/remote-access')
