@@ -285,13 +285,14 @@
   const atBottom = context => context.scroll.scrollHeight - context.scroll.scrollTop - context.scroll.clientHeight < 64;
   const scopeKey = context => context.state.project?.name ?? "personal";
   const projectQuery = context => context.state.project ? {project:context.state.project.name} : {};
-  const keyFor = context => `crew.draft:${scopeKey(context)}:${context.session.session_id}`;
-  const query = context => new URLSearchParams({ ...projectQuery(context), session_id:context.session.session_id });
+  const goalScope = context => context.goalId ? {goal_id:context.goalId} : {};
+  const keyFor = context => `crew.draft:${scopeKey(context)}:${context.session.session_id}${context.goalId ? `:goal:${context.goalId}` : ""}`;
+  const query = context => new URLSearchParams({ ...projectQuery(context), session_id:context.session.session_id, ...goalScope(context) });
   function taskComposer(context) {
     context.taskButton.hidden = context.selectedTask === null;
     context.taskButton.innerHTML = context.selectedTask === null ? "" : `${icon("handoff")}<span>${escape(context.selectedTask.title)}</span>`;
     context.taskButton.setAttribute("aria-pressed", String(context.taskBound));
-    context.input.placeholder = context.taskBound ? `补充给任务「${context.selectedTask.title}」的要求` : `跟 ${context.session.name} 说…（可以直接粘贴截图）`;
+    context.input.placeholder = context.taskBound ? `补充给任务「${context.selectedTask.title}」的要求` : context.goalId ? `在任务「${context.goalTitle}」里跟 ${context.session.name} 说…` : `跟 ${context.session.name} 说…（可以直接粘贴截图）`;
   }
   function setTask(task) {
     if (active && !active.readonly) {
@@ -507,6 +508,7 @@
     if (item.kind === "process") return processHTML(context, item.view);
     if (item.kind === "compact_request" || item.kind === "compact") return `<div class="context-divider">${item.kind === "compact_request" ? "压缩上下文" : `上下文已压缩：${CrewContext.compactSize(item.pre_tokens)} → ${CrewContext.compactSize(item.post_tokens)}`}</div>`;
     if (item.kind === "error") return `<div class="chat-error" role="alert">${escape(item.text)}</div>`;
+    if (item.kind === "native_replaced") return `<div class="context-divider native-replaced" role="status">${escape(item.text)}</div>`;
     if (item.kind === "tool_result") {
       const output = typeof item.content === "string" ? item.content : JSON.stringify(item.content, null, 2);
       return `<div class="tool-steps" style="display:block"><div>${item.is_error ? "执行失败" : "结果"}</div><pre>${escape(output.slice(0, 2000))}</pre>${output.length > 2000 ? '<div>仅显示前 2000 字</div>' : ""}</div>`;
@@ -714,6 +716,10 @@
       if (incremental && event.type === "compact") notifyCompact(context.session.session_id, event, context.toast);
     }
     else if (event.type === "error") context.items.push({ ...event, id: `error:${event.seq}`, kind: "error", lastSeq: event.seq });
+    else if (event.type === "native_replaced") {
+      context.items.push({ ...event, id: `native_replaced:${event.seq}`, kind: "native_replaced", lastSeq: event.seq });
+      if (incremental) context.toast(event.text);
+    }
     if (incremental) { composerState(context); schedule(context); }
   }
   function scheduleRead(context) {
@@ -724,7 +730,7 @@
       const seq = context.cursor;
       context.cache.lastReadAt = Date.now(); context.reading = true;
       try {
-        const result = await context.api("/api/chat/read", { session_id: context.session.session_id, seq });
+        const result = await context.api("/api/chat/read", { session_id: context.session.session_id, seq, ...goalScope(context) });
         context.readSeq = result.read_seq; context.reading = false;
         if (current(context)) scheduleRead(context);
       } catch (error) { context.reading = false; context.toast(error.message); }
@@ -861,7 +867,7 @@
       const id = window.CrewBrowser.requestId();
       context.cache.pendingMessage = {fingerprint, id};
     }
-    const payload = { session_id: target === null ? context.session.session_id : target.leader_session_id, text, message_id:context.cache.pendingMessage.id, ...(target === null ? {} : {goal_id:target.id}) };
+    const payload = { session_id: target === null ? context.session.session_id : target.leader_session_id, text, message_id:context.cache.pendingMessage.id, ...(target === null ? goalScope(context) : {goal_id:target.id}) };
     if (context.cache.images.length > 0) payload.images = context.cache.images.slice();
     context.cache.sending = true;
     if (target === null) {
@@ -893,7 +899,7 @@
       if (target !== null) {
         delete pending.delivery; delete pending.deliveryError;
         context.toast("已补充到任务，AI 会按新要求继续");
-      } else if (view && current(context) && result.goal_id != null) context.onRouted?.(result.goal_id);
+      } else if (view && current(context) && result.goal_id != null && !context.goalId) context.onRouted?.(result.goal_id);
 
     } catch (error) {
       if (context.cache.pendingSendSeq === sendSeq) {
@@ -913,7 +919,7 @@
   function mount(options) {
     unmount();
     CrewActivity.timestamp(options.state.now);
-    const cacheKey = `${scopeKey(options)}:${options.session.session_id}`;
+    const cacheKey = `${scopeKey(options)}:${options.session.session_id}${options.goalId ? `:goal:${options.goalId}` : ""}`;
     let cache = sessions.get(cacheKey);
     if (!cache) {
       cache = { expanded: new Set(), scrollTop: null, first: true, unreadAnchor: null, text: "", images: [], version: 0, sending: false, pendingSendSeq: null, lastReadAt: 0, taskMessages: [] };
@@ -923,10 +929,10 @@
         if (saved !== null) { const draft = JSON.parse(saved); cache.text = draft.text; cache.images = draft.images; }
       } catch (error) { options.toast(error.message); }
     }
-    const context = { ...options, cacheKey, activityKey:`chat:${cacheKey}`, session:options.session, selectedTask:null, taskBound:false, cache, items: [], byId: new Map(), nodes: new Map(), results: new Map(), toolOwners: new Map(), toolStops: new Map(), events:[], firstSeq:0, hasMore:false, cursor: 0, readSeq: 0, busySeq: options.readonly ? 0 : options.session.last_seq, settledSeq:null, executionId:null, connectionGeneration:0, loadGeneration:0, readTimer: null, reconnectTimer: null, historyRetryTimer: null, historyFailed: false, interrupting: false, interruptError: "", interruptConfirmed: false, frame: null, loading: true, busy: cache.pendingSendSeq === null ? options.session.busy : true, reading: false, initialPosition: null, stream: null };
+    const context = { ...options, cacheKey, activityKey:`chat:${cacheKey}`, session:options.session, selectedTask:null, taskBound:false, cache, items: [], byId: new Map(), nodes: new Map(), results: new Map(), toolOwners: new Map(), toolStops: new Map(), events:[], firstSeq:0, hasMore:false, cursor: 0, readSeq: 0, busySeq: options.readonly || options.goalId ? 0 : options.session.last_seq, settledSeq:null, executionId:null, connectionGeneration:0, loadGeneration:0, readTimer: null, reconnectTimer: null, historyRetryTimer: null, historyFailed: false, interrupting: false, interruptError: "", interruptConfirmed: false, frame: null, loading: true, busy: cache.pendingSendSeq === null ? options.session.busy : true, reading: false, initialPosition: null, stream: null };
     active = context;
     options.host.classList.add("chat-host");
-    options.host.innerHTML = `<div class="chat-error chat-connection-error" role="alert" hidden></div><div class="scroll chat-scroll" tabindex="0" aria-label="${escape(options.session.name)}的对话记录"><div class="col chat-inner"></div></div><button type="button" class="jump" aria-label="回到最新消息">${icon("down")}回到最新</button>${options.readonly ? `<div class="readonly-note">${escape(options.readonlyReason || "此会话尚未由 Crew 托管。请先在原工具退出，再从会话操作中接管；历史记录保留。")}</div>` : `<div class="composer-wrap"><form class="composer"><div class="attach" hidden></div><textarea rows="1" aria-label="给 ${escape(options.session.name)} 发消息" placeholder="跟 ${escape(options.session.name)} 说…（可以直接粘贴截图）"></textarea><div class="c-row"><button type="button" class="icon-btn chat-image-button" title="附截图（也可以直接 Ctrl+V）" aria-label="添加图片">${icon("image")}</button><button type="button" class="chat-task-binding" aria-pressed="false" hidden></button><input class="chat-image-file" type="file" accept="image/*" multiple hidden><span class="hint"></span><button type="button" class="chat-stop" aria-label="停止当前回复" hidden><svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/></svg></button><button type="submit" class="send" aria-label="发送" disabled>${icon("up")}</button></div><div class="chat-interrupt-status" role="status" aria-live="polite" hidden></div><div class="chat-delivery-status" role="alert" hidden></div></form></div>`}`;
+    options.host.innerHTML = `<div class="chat-error chat-connection-error" role="alert" hidden></div><div class="scroll chat-scroll" tabindex="0" aria-label="${escape(options.session.name)}的对话记录"><div class="col chat-inner"></div></div><button type="button" class="jump" aria-label="回到最新消息">${icon("down")}回到最新</button>${options.readonly ? `<div class="readonly-note">${escape(options.readonlyReason || "此会话尚未由 Crew 托管。请先在原工具退出，再从会话操作中接管；历史记录保留。")}</div>` : `<div class="composer-wrap"><form class="composer"><div class="attach" hidden></div><textarea rows="1" aria-label="给 ${escape(options.session.name)} 发消息" placeholder="${options.goalId ? `在任务「${escape(options.goalTitle)}」里跟 ${escape(options.session.name)} 说…` : `跟 ${escape(options.session.name)} 说…（可以直接粘贴截图）`}"></textarea><div class="c-row"><button type="button" class="icon-btn chat-image-button" title="附截图（也可以直接 Ctrl+V）" aria-label="添加图片">${icon("image")}</button><button type="button" class="chat-task-binding" aria-pressed="false" hidden></button><input class="chat-image-file" type="file" accept="image/*" multiple hidden><span class="hint"></span><button type="button" class="chat-stop" aria-label="停止当前回复" hidden><svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/></svg></button><button type="submit" class="send" aria-label="发送" disabled>${icon("up")}</button></div><div class="chat-interrupt-status" role="status" aria-live="polite" hidden></div><div class="chat-delivery-status" role="alert" hidden></div></form></div>`}`;
     context.scroll = options.host.querySelector(".chat-scroll"); context.inner = options.host.querySelector(".chat-inner");
     context.jump = options.host.querySelector(".jump"); context.error = options.host.querySelector(".chat-connection-error");
     context.jump.onclick = () => { context.scroll.scrollTop = context.scroll.scrollHeight; context.jump.classList.remove("show"); scheduleRead(context); };

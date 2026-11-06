@@ -17,18 +17,87 @@ from pathlib import Path
 
 from . import behavior_prompts, guard, native_handoff, runtime_recovery, trust_mode
 
-from . import board, claude_limits, claude_subagents, codex_client, codex_visibility, git_admin, goals, hooks, install, messaging, models, personal, report_preview, runtime_switch, runtimes, settings, spawn, store, subagents, workspace_execution
+from . import board, claude_limits, claude_subagents, codex_client, codex_visibility, git_admin, goal_messages, goals, hooks, install, messaging, models, personal, report_preview, runtime_switch, runtimes, settings, spawn, store, subagents, workspace_execution
 
 
 PAUSED_FOR_UPDATE = "Crew 正在准备更新，暂不接受新任务；更新完成后再试"
 MAINTENANCE_HELD = "正在压缩该人员的记忆，完成后再发送"
 # Claude's own answer when --resume names a conversation it does not have.
 CLAUDE_NO_CONVERSATION = "No conversation found with session ID: "
-NATIVE_MISSING = ("原会话不存在：Claude 报告找不到原生会话 %s。Crew 不会换 ID 或另开会话冒充接回；"
-                  "自动投递、唤醒和恢复不再重复尝试。原生记录恢复后，由用户在此会话直接发送即可重试。")
+NATIVE_MISSING = ("原会话丢失：Claude 报告找不到原生会话 %s。Crew 会新开一个原生会话并交接任务背景；"
+                  "新会话不是原会话，原会话里的上下文不会接回。")
+NATIVE_REPLACED = "这是新开的原生会话：原会话 %s 已丢失，Crew 已交接任务背景；原会话里的上下文没有接回。"
+NATIVE_LOST_INPUT = "native-lost:"
 # Journal events only a running native conversation can produce.
 NATIVE_OUTPUT = {"assistant", "text", "tool_result", "compact"}
-HUMAN_SOURCES = ("human", "qq", "lark")
+
+
+def native_output(event):
+    return event['type'] in NATIVE_OUTPUT or event['type'] == 'turn_result' and event.get('success')
+
+
+def has_native_output(events):
+    return any(native_output(event) for event in events)
+
+
+def lost_turn(events):
+    """Text for the new native: the inputs the lost conversation never answered."""
+    pending = []
+    for event in reversed(events):
+        if native_output(event):
+            break
+        if event['type'] == 'message' and not event['id'].startswith(NATIVE_LOST_INPUT):
+            pending.append(event)
+    if not pending:
+        return ('[Crew] 原会话丢失后新开的会话。原会话没有留下未处理的输入；'
+                '请按交接材料核对当前进展后继续，已完成的部分不要重做。')
+    lines = ['[Crew] 原会话丢失后新开的会话。以下是原会话丢失前尚未得到处理的输入（按时间顺序），请在新会话中处理：']
+    for event in reversed(pending):
+        lines.append('（来源：%s%s，消息 %s）\n%s' % (event.get('source', 'human'),
+                     ' · ' + event['sender'] if event.get('sender') else '', event['id'], event['text']))
+    return '\n\n'.join(lines)
+
+
+def clear_unstarted_member_bindings(home):
+    """Unbind Claude general conversations that 0.3.10 prefilled for goal-spawned members.
+
+    Such a member only ever worked in its task executions; its general
+    conversation was bound to its own Crew ID although Claude never created
+    it. Only a member with goal executions whose general chat has no native
+    output qualifies. Each binding is re-checked inside its own write
+    transaction, so repeated or concurrent runs clear it exactly once.
+    """
+    home = Path(home)
+    if not store.db_path(home).is_file():
+        return []
+    cleared = []
+    query = ("SELECT s.session_id,s.project FROM sessions s WHERE s.role='member' AND s.session_id=? "
+             "AND EXISTS(SELECT 1 FROM goal_executions e WHERE e.session_id=s.session_id) "
+             "AND (EXISTS(SELECT 1 FROM session_runtimes r WHERE r.session_id=s.session_id AND r.runtime='claude' AND r.native_id=s.session_id) "
+             "OR EXISTS(SELECT 1 FROM session_runtime_bindings b WHERE b.session_id=s.session_id AND b.runtime='claude' AND b.native_id=s.session_id))")
+    with closing(store.connect(home)) as conn:
+        candidates = [row['session_id'] for row in conn.execute(
+            "SELECT session_id FROM session_runtimes WHERE runtime='claude' AND native_id=session_id "
+            "UNION SELECT session_id FROM session_runtime_bindings WHERE runtime='claude' AND native_id=session_id")]
+        for session_id in candidates:
+            with board.transaction(conn):
+                row = conn.execute(query, (session_id,)).fetchone()
+                if row is None:
+                    continue
+                journal = home / 'chat' / (session_id + '.jsonl')
+                events = Journal(journal).events
+                if has_native_output(events):
+                    continue
+                at = store.now_iso()
+                conn.execute("UPDATE session_runtimes SET native_id=NULL,updated_at=? "
+                             "WHERE session_id=? AND runtime='claude' AND native_id=?", (at, session_id, session_id))
+                conn.execute("UPDATE session_runtime_bindings SET native_id=NULL,updated_at=? "
+                             "WHERE session_id=? AND runtime='claude' AND native_id=?", (at, session_id, session_id))
+                board._event(conn, 'session:native-binding-cleared', row['project'], session_id,
+                             {'runtime': 'claude', 'native_id': session_id, 'journal_events': len(events),
+                              'reason': '带任务派出的组员总对话从未启动，清除预填的 Claude 绑定；下次收到消息时首次启动'}, at)
+                cleared.append(session_id)
+    return cleared
 
 
 class UpdatePaused(board.Conflict):
@@ -378,6 +447,13 @@ class Running:
         self.native_binding_confirmed = False
         # The native ID passed with --resume; None when this process starts a new native.
         self.resumed_native = None
+        # Set when Claude reported resumed_native missing; the reader then opens a new native.
+        self.native_lost = None
+        # {'lost_native': ..., optionally 'lost_execution': ...} this new process
+        # replaces, until Claude confirms the new native.
+        self.replacing = None
+        # Handoff text prefixed to the first input of a replacement general conversation.
+        self.replacement_handoff = None
         # Set while department maintenance compacts this native; owned=True means
         # maintenance started it and only the fixed compact command may enter.
         self.maintenance = None
@@ -411,6 +487,7 @@ class Manager:
         self.goal_controller = Controller(self)
         self.runtime_recovery = runtime_recovery.Controller(self)
         self.native_recovery = native_handoff.recover_interrupted(self.home)
+        self.native_binding_cleanup = clear_unstarted_member_bindings(self.home)
 
     @contextlib.contextmanager
     def work(self, background=False):
@@ -632,6 +709,11 @@ class Manager:
                         receipt=current.pending_native_accept
                         acknowledged=(record.get('type')=='user' and receipt is not None and record.get('uuid')==receipt[0]
                                       and record.get('message',{}).get('role')=='user')
+                        if known_native and current.replacing is not None:
+                            current.journal.emit('native_replaced', runtime='claude', native_id=record['session_id'],
+                                                 text=NATIVE_REPLACED % current.replacing['lost_native'],
+                                                 **current.replacing)
+                            current.replacing = None
                         if known_native and not current.native_binding_confirmed or acknowledged:
                             try:
                                 with closing(store.connect(self.home)) as native_conn:
@@ -675,9 +757,14 @@ class Manager:
                                     record.get("errors", []) + [record.get("result")]):
                                 current.journal.emit("error", text=NATIVE_MISSING % current.resumed_native,
                                                      native_missing=current.resumed_native, runtime="claude")
+                                if current.maintenance is None:
+                                    current.native_lost = current.resumed_native
                             if current.pending_compact and current.process.poll() is None:
                                 current.pending_compact = False
                                 self._send(session_id, "/compact")
+                        if (current.execution is not None and current.maintenance is None
+                                and not record.get("is_error")):
+                            goal_messages.return_turn(self.home, current.execution['id'], current.journal)
                     else:
                         current.journal.consume(record)
                 except (ValueError, KeyError, TypeError) as exc:
@@ -706,6 +793,36 @@ class Manager:
                     current.journal.set_status("offline")
             finally:
                 current.reader_done.set()
+        if current.native_lost is not None and current.stop_reason is None:
+            threading.Thread(target=self._replace_lost_native, args=(session_id, current),
+                             name="crew-native-replace", daemon=True).start()
+
+    def _replace_lost_native(self, key, current):
+        """Open a new native for a scope whose Claude conversation no longer exists.
+
+        The general conversation restarts under its own Crew ID (Claude has no
+        conversation by that ID); a goal execution continues in its next
+        generation. Either way the unanswered input is handed over with the
+        task background, and the new session announces itself as new.
+        """
+        with current.journal.condition:
+            current.journal.refresh()
+            events = list(current.journal.events)
+        marker = next(event for event in reversed(events) if event.get('native_missing') == current.native_lost)
+        identity = NATIVE_LOST_INPUT + key + ':' + str(marker['seq'])
+        text = lost_turn(events)
+        display = 'Crew：原会话丢失，已新开原生会话并交接任务背景。'
+        try:
+            if current.execution is None:
+                with closing(store.connect(self.home)) as conn:
+                    session = board.session(conn, key)
+                self.send(session, text, source='crew', identity=identity, display_text=display)
+            else:
+                self.goal_controller.replace_lost(current.execution['id'], current.native_lost, text,
+                                                  identity=identity, display_text=display)
+        except (board.BoardError, codex_client.CodexError, OSError, subprocess.SubprocessError) as exc:
+            current.journal.emit('error', text='原会话丢失后未能新开会话（下次输入时会再新开并交接）：%s: %s'
+                                 % (type(exc).__name__, exc))
 
     def _stderr(self, current):
         for line in current.process.stderr:
@@ -748,8 +865,7 @@ class Manager:
     def missing_native(self, conn, session):
         """The Claude native ID this scope would resume, when Claude already said it has none.
 
-        Native output after that report (a user's explicit retry once the
-        record is restored) clears it.
+        A confirmed replacement or any native output after that report clears it.
         """
         execution = session.get('_execution')
         if execution is None:
@@ -765,7 +881,7 @@ class Manager:
         with journal.condition:
             journal.refresh()
             for event in reversed(journal.events):
-                if event['type'] in NATIVE_OUTPUT or event['type'] == 'turn_result' and event.get('success'):
+                if native_output(event) or event['type'] == 'native_replaced':
                     return None
                 if event['type'] == 'error' and event.get('native_missing') == binding['native_id']:
                     return binding['native_id']
@@ -831,16 +947,25 @@ class Manager:
             pending=runtime_switch.pending(conn,session_id)
             permission_mode = settings.get_execution(conn)['claude']
             assistant = personal.is_assistant(conn, session_id)
-        native_events = {'message', 'assistant', 'text', 'tool_result', 'input_delivery', 'turn_result',
-                         'identity_handoff', 'subagent', 'compact', 'compact_request'}
-        fresh_native = not any(event['type'] in native_events for event in self.journal(session_id).events)
+            lost = self.missing_native(conn, session)
+            handoff = None if lost is None else runtime_switch.handoff(
+                conn, session, self.journal(session_id), intro=runtime_switch.LOST_NATIVE_INTRO)['text']
+            remembered = conn.execute('SELECT native_id FROM session_runtime_bindings WHERE session_id=? AND runtime=?',
+                                      (session_id, runtime)).fetchone()
+        # Inputs that never reached a native leave no history to resume.
+        no_output = not has_native_output(self.journal(session_id).events)
+        # A native this runtime once bound may hold accepted input without output yet.
+        fresh_native = no_output and (remembered is None or remembered['native_id'] is None)
         if resume and native_id is None and not fresh_native and (pending is None or pending['to_runtime']!=runtime):
             raise board.BoardError('原生会话 ID 丢失，不能猜测恢复或偷偷新建')
         native_resume=resume and native_id is not None
-        if assistant and runtime == 'claude' and native_id == session_id and fresh_native:
+        if assistant and runtime == 'claude' and native_id == session_id and no_output:
             # V2 0.3.1 prefilled a Claude identity before the assistant ever
             # started. Only that untouched assistant can take the first-start
-            # path; any actual input/output history still requires resume.
+            # path; any actual native output still requires resume.
+            native_resume = False
+        if lost is not None:
+            # Claude has no conversation under this ID; start it new, announced as new.
             native_resume = False
         if runtime == "codex":
             from .codex_runtime import CodexRunning
@@ -875,6 +1000,9 @@ class Manager:
                                        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
         current = Running(process, journal)
         current.resumed_native = session_id if native_resume else None
+        current.replacing = None if lost is None else {'lost_native': lost}
+        current.replacement_handoff = (None if lost is None else
+            '【Crew 新会话交接：原会话 %s 已丢失，这是新开的会话，原会话里的上下文没有接回】\n%s\n【交接结束】' % (lost, handoff))
         current.behavior_prompt_hash = behavior_prompts.manifest_hash(prompt_manifest)
         with closing(store.connect(self.home)) as prompt_conn:
             behavior_prompts.record_applied(prompt_conn, session_id, prompt_manifest, status='sent',
@@ -998,6 +1126,9 @@ class Manager:
                     git_admin.input_context(handoff_conn, logical, git_revision, self.plugin_root))
                 if current.execution is None:
                     text,handoff_id=runtime_switch.input_text(handoff_conn,session_id,text,identity)
+                    if current.runtime == 'claude' and current.replacement_handoff is not None:
+                        text = current.replacement_handoff + '\n\n' + text
+                        current.replacement_handoff = None
                     trust_context, authorization = trust_mode.input_context(handoff_conn, session_id, trust_context)
                     if authorization:
                         text = authorization + '\n\n' + text
@@ -1188,9 +1319,6 @@ class Manager:
                 raise board.Conflict("会话正在回复，自动消息等待当前轮次结束")
             if not self.running(session_id):
                 with closing(store.connect(self.home)) as spec_conn:
-                    missing = self.missing_native(spec_conn, session)
-                    if missing is not None and source not in HUMAN_SOURCES:
-                        raise board.BoardError(NATIVE_MISSING % missing)
                     spec, _ = self._resume_spec(spec_conn, session)
                 self._launch(session, spec, resume=True)
             delivery = 'steered' if steering else 'started'
@@ -1283,7 +1411,7 @@ class Manager:
                     raise board.BoardError('没有启动记录，不能恢复原生会话')
                 missing = self.missing_native(conn, target)
                 if missing is not None:
-                    raise board.BoardError(NATIVE_MISSING % missing)
+                    raise board.BoardError('原会话 %s 已丢失，新会话尚未开始，没有可压缩的原生历史' % missing)
                 spec = {**json.loads((self.home / 'spawn' / (target['spawn_id'] + '.json')).read_text(encoding='utf-8')),
                         'cwd': target['cwd'], 'project': target['project'],
                         '_workspace_notice': workspace_execution.migration_notice(conn, target)}
@@ -1501,6 +1629,8 @@ class Manager:
             if runtimes.get(conn, target["session_id"])["native_id"] is None:
                 # A goal-bound member has worked only inside task executions.
                 situation = "（这是你的总对话第一次启动；你在任务里的执行记录留在对应任务中，需要时用 crew goal status 查阅）"
+            elif self.missing_native(conn, target) is not None:
+                situation = "（你原来的原生会话已丢失，这是 Crew 新开的会话，任务背景交接在前面）"
             else:
                 situation = "（你原来的会话进程已经结束，Crew 在后台接着运行你）"
             message = "[Crew] " + introduction + situation + "：\n\n" + text
