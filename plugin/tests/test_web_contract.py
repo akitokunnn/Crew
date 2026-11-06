@@ -835,7 +835,8 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         for contract in ('aria-label="分支"', 'data-git-row=', 'class="git-conflicts"',
                          'data-git-act="settings"', 'data-git-act="refresh"', 'data-git-act="fetch"',
                          'git-github-unavailable',
-                         'data-git-request=', 'git-requests-title', 'git-chat-host',
+                         'class="git-request-cards"', '<article class="git-request-card" data-git-request=',
+                         'git-requests-title', 'git-chat-host',
                          'assistant.requests.waiting_user', 'CrewChat.mount'):
             self.assertIn(contract, script)
         self.assertIn('更新视图', script)
@@ -878,7 +879,7 @@ const callbacks = new Map(), page = {scrollTop:0};
 const host = require(require("node:path").resolve(process.argv[1], "../../../tests/git_ui_host.cjs"))({scroll:page,handlers:callbacks});
 const latest = {sha:"abcdef123", subject:"Fixture", author:"Crew", time:"2026-10-24T00:00:00Z"};
 const request = (id, status) => ({id, status, branch:"feature/<review>", session_id:"member", requester_name:"<member>",
-  description:"Done <script>alert(1)</script>", note:"Tested & reviewed", pr_number:42, created_at:latest.time});
+  blocking:id===3, description:"Done <script>alert(1)</script>", note:id===1?null:"Tested & reviewed", pr_number:id===1?null:id===2?99:42, created_at:latest.time});
 const data = {enabled:true, repository:"Fixture", config:{base:"develop", stable:null, admin_session_id:"git-admin"},
   base:{name:"develop", latest}, stable:null, requests:[request(7,"merged"),request(1,"open"),request(8,"rejected"),request(2,"waiting_user"),request(3,"merging")],
   branches:[], remote_only:[], commits:[], ref_unique_commits:{}, next_offset:null, last_fetch_at:null, recent_merge:null,
@@ -890,7 +891,25 @@ sandbox.component.mount(host, {project:"demo",state:{git_assistant:{session_id:"
 setImmediate(() => {
   const html = host.innerHTML;
   assert.equal(mounts[0].session.session_id,"git-admin");assert.ok(html.includes("git-chat-host"));
-  assert.deepEqual(Array.from(html.matchAll(/data-git-request="(\d+)"/g), match => Number(match[1])), [3,2,1,8,7]);
+  const cards = Array.from(html.matchAll(/<article class="git-request-card" data-git-request="(\d+)">([\s\S]*?)<\/article>/g));
+  assert.ok(html.includes('<div class="git-request-cards">'));
+  assert.deepEqual(cards.map(card => Number(card[1])), [3,2,1,8,7]);
+  for (const [, id, body] of cards) {
+    const heading = body.match(/^<div class="git-card-head">([\s\S]*?)<\/div>/)[1];
+    assert.match(heading, /^<span class="git-request-status [^"]+">[^<]+<\/span><span class="git-request-id">#/);
+    assert.ok(heading.includes(`<span class="git-request-id">#${id}</span>`));
+    assert.equal(heading.includes('<b class="git-request-dependency">合并后继续</b>'), id === "3");
+    assert.ok(body.includes('<div class="git-request-description">Done &lt;script&gt;alert(1)&lt;/script&gt;</div>'));
+    assert.equal(body.includes('<div class="git-request-note">Tested &amp; reviewed</div>'), id !== "1");
+    const facts = Array.from(body.matchAll(/<dt>(.*?)<\/dt><dd>([\s\S]*?)<\/dd>/g));
+    assert.deepEqual(facts.map(fact => fact[1]), ["分支", "提出者", "PR"]);
+    assert.equal(facts[0][2], '<code>feature/&lt;review&gt;</code>');
+    assert.equal(facts[1][2], `<span title="member">&lt;member&gt;</span><div class="git-request-time">${new Date(latest.time).toLocaleString("zh-CN", {month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit", hour12:false})}</div>`);
+    if (id === "1") assert.equal(facts[2][2], '<span class="git-muted">—</span>');
+    else if (id === "2") assert.equal(facts[2][2], '<span class="git-request-pr">#99</span>');
+    else assert.ok(facts[2][2].includes('href="https://example.test/pull/42" target="_blank" rel="noreferrer" title="Feature PR · OPEN"'));
+  }
+  assert.ok(!html.includes("<table"));
   for (const label of ["合并中", "等用户拍板", "待处理", "已拒绝", "已合并", "3 件待处理"]) assert.ok(html.includes(label), label);
   for (const value of ["feature/&lt;review&gt;", "&lt;member&gt;", "&lt;script&gt;", "Tested &amp; reviewed", 'href="https://example.test/pull/42"']) assert.ok(html.includes(value), value);
   assert.ok(!html.includes("<script>alert(1)</script>"));
