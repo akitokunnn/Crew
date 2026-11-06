@@ -1,5 +1,5 @@
 'use strict';
-const { app, BrowserWindow, WebContentsView, ipcMain, dialog, Menu, Tray, nativeImage, shell, clipboard } = require('electron');
+const { app, BrowserWindow, View, WebContentsView, ipcMain, dialog, Menu, Tray, nativeImage, nativeTheme, shell, clipboard, systemPreferences } = require('electron');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
@@ -663,7 +663,13 @@ else {
         webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true,
           additionalArguments: ['--crew-desktop-config=' + encodeURIComponent(JSON.stringify({ home: homePage, origin: backend.url, error:errorPage, instanceName:config.instanceName }))] } });
       tabs=new WorkspaceTabs(window,{origin:backend.url,
-        createView:()=>new WebContentsView({webPreferences:{contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true,...(config.smoke?{backgroundThrottling:false}:{})}}),
+        createView:()=>{
+          const view=new WebContentsView({webPreferences:{contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true,...(config.smoke?{backgroundThrottling:false}:{})}});
+          // Match the page's own first paint (system theme) so a loading page slides in without a white flash.
+          view.setBackgroundColor(nativeTheme.shouldUseDarkColors?'#1E1E1C':'#F6F5F1');return view;
+        },
+        createStage:()=>new View(),
+        prefersReducedMotion:()=>{const motion=systemPreferences.getAnimationSettings();return motion.prefersReducedMotion||!motion.shouldRenderRichAnimation;},
         onChange:state=>publishTabs(state),onHome:()=>{},external,openProject,workspaceSettings:name=>{void showHome('workspace-settings',name).catch(actionError);},
         onTitleChange:name=>{void core.projects(backend.url).then(items=>{if(!liveWindow())return;const item=items.find(project=>project.name===name);if(item)tabs.updateProject(item);}).catch(error=>console.error('Crew workspace metadata refresh failed:',error));},
         readActivity:names=>core.request(backend.url,'/api/workspaces/activity?'+new URLSearchParams(names.map(name=>['project',name])).toString(),undefined,4000),

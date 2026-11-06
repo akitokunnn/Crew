@@ -21,7 +21,7 @@ if (!process.versions.electron) {
   const timeout = setTimeout(() => child.kill(), 180000);
   child.once('exit', code => { clearTimeout(timeout); process.exitCode = code ?? 1; });
 } else {
-  const {app, BrowserWindow, WebContentsView, session} = require('electron');
+  const {app, BrowserWindow, View, WebContentsView, session, systemPreferences} = require('electron');
   const browserHome = nativeFs.mkdtempSync(path.join(os.tmpdir(), 'crew-chat-browser-'));
   app.setPath('userData', browserHome);
   app.setPath('sessionData', path.join(browserHome, 'sessions'));
@@ -117,6 +117,7 @@ if (!process.versions.electron) {
       await window.loadURL('data:text/html;charset=utf-8,<title>Isolated chat connections</title>');
       window.showInactive();
       tabs = new WorkspaceTabs(window, {origin:info.url, onNavigationError:error => evidence.errors.push(error.stack || String(error)),
+        createStage:() => new View(), prefersReducedMotion:() => systemPreferences.getAnimationSettings().prefersReducedMotion,
         createView() {
           const view = new WebContentsView({webPreferences:{nodeIntegration:false, contextIsolation:true,
             sandbox:true, backgroundThrottling:false}});
