@@ -92,6 +92,7 @@
   }
   const currentOptions = item => item.applied == null ? item : item.applied;
   function optionsLabel(item) { const options = currentOptions(item), model = options.model == null ? "默认" : modelName(options.model, item); return modelEfforts(item, options.model).length === 0 ? model : `${model} · ${options.effort == null ? "默认" : options.effort}`; }
+  function optionChangeNotice(item, changes) { return `下一步启用 ${optionsLabel({...item, ...changes, applied:null})}`; }
   function optionChange(item, field, value) {
     const runtime = runtimeInfo(item), options = currentOptions(item);
     if (!runtime.available) throw new Error(runtime.error || `${runtime.name} 暂不可用，请检查安装和登录。`);
@@ -1201,7 +1202,7 @@
         const field = act === "set-model" ? "model" : "effort", value = button.dataset[field] === "" ? null : button.dataset[field];
         const item = sessionItem(id), changes = optionChange(item, field, value);
         hideMenu(); await api("/api/session/options", {session_id:id, ...changes}); await loadState(true);
-        toast(`下一步起用 ${field === "model" ? value === null ? "默认" : modelName(value, item) : value}${changes.effort !== undefined && changes.effort !== null ? ` · ${changes.effort}` : ""}`);
+        toast(optionChangeNotice(item, changes));
       });
       else if (act === "modal-close") closeBackdrop();
       else if (act === "usage-period") { if (period === button.dataset.period) return; period = button.dataset.period; usage = null; renderUsage(); loadUsage(); }

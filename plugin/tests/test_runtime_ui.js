@@ -25,12 +25,12 @@ const form = (runtime="codex", model="", effort="") => ({dataset:{runtimeExplici
 
 function harness(state = fixture(), fetcher = () => { throw new Error("Unexpected network request"); }) {
   state.goals ??= [];
-  const nodes = new Map();
-  const node = () => ({innerHTML:"", textContent:"", className:"", hidden:false, dataset:{},classList:{contains:()=>false},
+  const nodes = new Map(), listeners = new Map();
+  const node = () => ({innerHTML:"", textContent:"", className:"", hidden:false, dataset:{},classList:{contains:()=>false,remove(){}},
     contains:() => false, querySelectorAll:() => [], setAttribute(name, value) { this[name] = value; }});
   for (const id of ["menu", "backdrop", "main", "leader-panel", "trust-error", "leader-runtime-options", "leader-runtime-status", "leader-model-options", "leader-effort-note", "leader-effort-options"]) nodes.set(id, node());
   const escape = value => String(value).replace(/[&<>"']/g, c => ({"&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"})[c]);
-  const sandbox = {window:{}, document:{visibilityState:"visible",hasFocus:()=>true,activeElement:null, getElementById:id => nodes.get(id) || null, addEventListener:() => {}},
+  const sandbox = {window:{}, document:{visibilityState:"visible",hasFocus:()=>true,activeElement:null, getElementById:id => nodes.get(id) || null, addEventListener:(type, handler) => listeners.set(type, handler)},
     location:{search:"?project=fixture", origin:"http://fixture.local", hash:""}, URLSearchParams, URL, fetch:fetcher, console,
     CrewTheme:{logo:()=>""}, CrewChat:{renderInline:escape, renderMarkdown:text => `<p>${escape(text)}</p>`}};
   vm.createContext(sandbox);
@@ -43,8 +43,9 @@ function harness(state = fixture(), fetcher = () => { throw new Error("Unexpecte
   // Expose lexical UI functions while leaving setup and its state-poll timer off.
   const end = "  setup();\n})();";
   assert(source.endsWith(end + "\n") || source.endsWith(end));
-  vm.runInContext(source.replace(end, `  window.ui = {runtimeList, runtimeInfo, defaultRuntime, modelEfforts, modelMenu, optionChange,
-    optionsLabel, leaderPayload, renderLeaderRuntime, selectLeaderOption, refreshRuntimes, editorHandoffReason, sessionMenu, chatAccess,
+  const clickSource = source.slice(source.indexOf('    document.addEventListener("click",'), source.indexOf('    document.addEventListener("input",'));
+  vm.runInContext(source.replace(end, `${clickSource}  window.ui = {runtimeList, runtimeInfo, defaultRuntime, modelEfforts, modelMenu, optionChange,
+    optionsLabel, optionChangeNotice, leaderPayload, renderLeaderRuntime, selectLeaderOption, refreshRuntimes, editorHandoffReason, sessionMenu, chatAccess,
     saveNormalOrder, sortableLeaders, railQuota, renderSidebar, contextRing, contextControls, sidebarLeader, memberNode, workingRow, compactContext, compactions,
     compactFailures, setGoal(client, id) {goals=client;goalId=id;},
     openTodos, todosOf, pendingOf, todoCard, todoTray, todoExpanded, todoActions,
@@ -54,7 +55,10 @@ function harness(state = fixture(), fetcher = () => { throw new Error("Unexpecte
     services(values) {if(values.api)api=values.api;if(values.loadState)loadState=values.loadState;if(values.toast)toast=values.toast;if(values.render)render=values.render;if(values.watchCompact)CrewChat.watchCompact=values.watchCompact;},
     setState(value) {state=value;runtimesCache=null;}};\n})();`), sandbox);
   sandbox.window.ui.setState(state);
-  return {ui:sandbox.window.ui, nodes, location:sandbox.location};
+  return {ui:sandbox.window.ui, nodes, location:sandbox.location, click(dataset) {
+    const button = {dataset, closest:selector => selector === "[data-act]" ? button : null};
+    listeners.get("click")({target:button});
+  }};
 }
 const plain = value => JSON.parse(JSON.stringify(value));
 
@@ -141,6 +145,47 @@ test("old states and sessions retain Claude defaults and Haiku effort behavior",
   assert(ui.modelMenu({session_id:"old", model:null, effort:null, applied:null}).includes('data-model="claude-sonnet"'));
   assert.equal(ui.modelEfforts("claude", "claude-haiku-4-5-20251001").length, 0);
   assert.equal(ui.runtimeInfo("codex").available, false);
+});
+
+for (const scenario of [
+  {name:"effort toast uses stored Sonnet instead of the applied model and never repeats low", runtime:"claude",
+    model:"claude-sonnet", effort:"high", applied:{model:"claude-opus", effort:"max"}, field:"effort", value:"low", expected:"下一步启用 Sonnet · low"},
+  {name:"model toast includes stored medium with Opus 5.5 instead of the applied effort", runtime:"claude",
+    model:"claude-sonnet", effort:"medium", applied:{model:"claude-sonnet", effort:"high"}, field:"model", value:"claude-opus", expected:"下一步启用 Opus 5.5 · medium"},
+  {name:"Haiku model toast omits effort even while applied options still support it", runtime:"claude",
+    model:"claude-sonnet", effort:"high", applied:{model:"claude-sonnet", effort:"high"}, field:"model", value:"claude-haiku-4-5-20251001", expected:"下一步启用 Haiku"},
+  {name:"default model toast keeps the stored effort rather than applied options", runtime:"claude",
+    model:"claude-sonnet", effort:"low", applied:{model:"claude-opus", effort:"max"}, field:"model", value:null, expected:"下一步启用 默认 · low"},
+  {name:"Codex effort toast names the stored model while applied still names another model", runtime:"codex",
+    model:"gpt-a", effort:"low", applied:{model:"gpt-b", effort:"max"}, field:"effort", value:"medium", expected:"下一步启用 GPT A · medium"},
+  {name:"Codex model toast keeps stored low rather than applied max", runtime:"codex",
+    model:"gpt-a", effort:"low", applied:{model:"gpt-b", effort:"max"}, field:"model", value:"gpt-a", expected:"下一步启用 GPT A · low"},
+  {name:"Codex model without effort omits the effort cleared by optionChange", runtime:"codex", where:"offline",
+    model:"gpt-a", effort:"medium", applied:{model:"gpt-a", effort:"medium"}, field:"model", value:"gpt-c", expected:"下一步启用 GPT C"},
+  {name:"null stored model and effort stay default even while applied has explicit values", runtime:"claude",
+    model:null, effort:null, applied:{model:"claude-sonnet", effort:"high"}, field:"model", value:null, expected:"下一步启用 默认 · 默认"},
+]) test(scenario.name, async () => {
+  for (const role of ["leaders", "members"]) {
+    const item = session({...scenario, where:scenario.where || "bg", running:scenario.where !== "offline"});
+    const state = {...fixture(), leaders:[], members:[], [role]:[item]}, requests = [], toasts = [];
+    state.runtimes[0].models.push({id:"claude-opus", name:"Opus 5.5"});
+    const {ui, click} = harness(state), changes = plain(ui.optionChange(item, scenario.field, scenario.value));
+    ui.services({api:async (url, body) => { requests.push({url, body:plain(body)}); return {}; },
+      loadState:async () => ui.setState({...state, [role]:[{...item, ...changes}]}), toast:text => toasts.push(text)});
+    click({act:`set-${scenario.field}`, id:item.session_id, [scenario.field]:scenario.value === null ? "" : scenario.value});
+    await new Promise(setImmediate);
+    assert.deepEqual(requests, [{url:"/api/session/options", body:{session_id:item.session_id, ...changes}}]);
+    assert.deepEqual(toasts, [scenario.expected], role);
+  }
+});
+
+test("a combined model and effort change overrides both stored and applied options in the notice", () => {
+  const state = fixture(); state.runtimes[0].models.push({id:"claude-opus", name:"Opus 5.5"});
+  const {ui} = harness(state), item = session({runtime:"claude", model:"claude-sonnet", effort:"low",
+    applied:{model:"claude-sonnet", effort:"high"}}), before = plain(item);
+  assert.equal(ui.optionChangeNotice(item, {model:"claude-opus", effort:"medium"}), "下一步启用 Opus 5.5 · medium");
+  assert.equal(ui.optionsLabel(item), "Sonnet · high");
+  assert.deepEqual(plain(item), before);
 });
 
 test("Codex editor handoff is disabled while leader chat and member history remain available", () => {
