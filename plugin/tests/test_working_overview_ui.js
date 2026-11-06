@@ -12,11 +12,11 @@ function harness(snapshot){
   const source=fs.readFileSync(path.join(__dirname,"../crew/web/app.js"),"utf8").replace(/\r\n/g,"\n");
   vm.runInContext(source.replace("  setup();\n})();",`replace=(node,html)=>{node.innerHTML=html;};
     window.ui={render(snapshot,tab){state=snapshot;allTab=tab;renderAll();return document.getElementById("main").innerHTML;},
-      sidebar(snapshot){state=snapshot;view="chat";leaderId=snapshot.leaders[0].session_id;return sidebarLeader(snapshot.leaders[0],0);},
+      sidebar(snapshot,member=null){state=snapshot;view="chat";leaderId=snapshot.leaders[0].session_id;readOnlyId=member;return sidebarLeader(snapshot.leaders[0],0);},
       node(snapshot){state=snapshot;return leaderNode(snapshot.leaders[0],true);}};
     })();`),sandbox);
   return {render:(tab="tree",next=snapshot)=>sandbox.window.ui.render(next,tab),
-    sidebar:(next=snapshot)=>sandbox.window.ui.sidebar(next),node:(next=snapshot)=>sandbox.window.ui.node(next)};
+    sidebar:(next=snapshot,member=null)=>sandbox.window.ui.sidebar(next,member),node:(next=snapshot)=>sandbox.window.ui.node(next)};
 }
 const person=(id,extra={})=>({session_id:id,name:id,status:"offline",runtime:"codex",where:"offline",busy:false,
   running:false,active_goal_id:null,context:null,applied:null,model:null,effort:null,codex:[],priority:null,
@@ -117,3 +117,21 @@ test("an observed skill dispatch keeps the group visible without claiming its id
     assert(!h.sidebar(next).includes('class="group-work-avatar"'));assert(!h.node(next).includes("状态未确认"),"historical uncertainty stays in session details, not the live relationship card");
   }
 });
+
+test("the sidebar leader row summarises group work, keeps its group during member chats and marks leader autonomy on both carriers",()=>{
+  for(const runtime of ["claude","codex"]){
+    const job={id:"job",source:"skill_dispatch",runtime,status:"running",task_name:"读取证据",pid:9,started_at:"2026-10-26T00:00:00Z",cwd:"C:/fixture",detail:null};
+    const snapshot=state([person("leader",{runtime,status:"working",codex:[job],trust:{enabled:true,goal:"完成登录页改版。数据迁移先问我"}})],
+      [person("worker",{status:"working",leader_session_id:"leader"})]);
+    snapshot.goals=[{id:"g1",leader_session_id:"leader",status:"running",title:"登录页",pending_decision:null,work_summary:{done:0,total:0}}];
+    const h=harness(snapshot),own=h.sidebar();
+    assert(own.includes('<i aria-hidden="true"></i>本组 2 人在干活 · 派工 1</span>'));assert(!own.includes('class="st '));
+    assert(own.includes('class="trust-mark" data-act="trust-open" data-id="leader" title="自主推进中：完成登录页改版"'));
+    assert(own.includes('class="leader-row session-surface active"'));assert(own.includes('aria-current="page"'));assert(own.includes('class="leader-task"'));
+    const inMember=h.sidebar(snapshot,"worker");
+    assert(inMember.includes('class="leader-row session-surface in-group"'));assert(!inMember.includes('aria-current="page"'));assert(inMember.includes('class="leader-task"'));
+    const quiet=structuredClone(snapshot);quiet.leaders[0]={...quiet.leaders[0],status:"waiting",codex:[],trust:{enabled:false,goal:"完成登录页改版"}};quiet.members[0].status="idle";
+    const html=h.sidebar(quiet);assert(html.includes('class="st waiting"'));assert(!html.includes("group-work-label"));assert(!html.includes("trust-mark"));
+  }
+});
+

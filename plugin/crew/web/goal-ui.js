@@ -39,12 +39,14 @@
   }
   const listIcon = () => '<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="3"/><path d="m7 8 1 1 2-2m-3 6 1 1 2-2m-3 6 1 1 2-2M13 8h4m-4 5h4m-4 5h4"/></svg>';
   const modeIcon = mode => mode === "autonomous" ? '<path d="m13 3-8 10h6l-1 8 9-11h-6z"/>' : '<path d="M8 12V6a2 2 0 0 1 4 0v5-7a2 2 0 0 1 4 0v8-5a2 2 0 0 1 4 0v8c0 4-3 6-7 6h-1c-2 0-3-1-4-3l-4-5a2 2 0 0 1 3-2l1 1z"/>';
+  // Running tasks share one play mark in the sidebar list and the task cards; progress lives in the checklist bar.
+  const runningIcon = '<circle cx="12" cy="12" r="9" stroke-dasharray="38 18"/><path d="m9 8 6 4-6 4z"/>';
   function leaderTasks(items, selected) {
     return `<div class="leader-tasks">${items.filter(item => !ended(item.status)).map(item => {
       const review = item.status === "awaiting_acceptance", decision = item.pending_decision !== null;
       const quiet = ["paused","pausing","queued","idle"].includes(item.status);
       const state = review ? "review" : decision ? "decision" : quiet ? "quiet" : "running";
-      const icon = review ? '<circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/>' : decision ? '<circle cx="12" cy="12" r="9"/><path d="M9 9a3 3 0 0 1 6 0c0 2-3 2-3 4m0 3h.01"/>' : quiet ? '<circle cx="12" cy="12" r="9"/><path d="M9 8v8m6-8v8"/>' : '<circle cx="12" cy="12" r="9" stroke-dasharray="38 18"/><path d="m9 8 6 4-6 4z"/>';
+      const icon = review ? '<circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/>' : decision ? '<circle cx="12" cy="12" r="9"/><path d="M9 9a3 3 0 0 1 6 0c0 2-3 2-3 4m0 3h.01"/>' : quiet ? '<circle cx="12" cy="12" r="9"/><path d="M9 8v8m6-8v8"/>' : runningIcon;
       const tag = review ? "验收" : decision ? "拍板" : ["paused","pausing"].includes(item.status) ? "暂停" : `${item.work_summary.done}/${item.work_summary.total}`;
       return `<button type="button" class="leader-task" data-goal-act="open" data-goal-id="${esc(item.id)}" data-state="${state}" aria-pressed="${String(selected) === String(item.id)}"><svg class="i" viewBox="0 0 24 24" aria-hidden="true">${icon}</svg><span class="leader-task-title" title="${esc(item.title)}">${esc(item.title)}</span><span class="leader-task-tag">${tag}</span></button>`;
     }).join("")}</div>`;
@@ -55,9 +57,10 @@
     const person = id => people.find(entry => entry.session_id === id);
     const work = item.work_summary, doing = item.now_doing?.[0], doer = doing && person(doing.session_id);
     const summary = review ? item.acceptance_brief?.summary : decision ? decision.question : item.status === "running" && doing ? `正在：${doer ? doer.name + " " : ""}${doing.title}` : "";
-    const icon = review ? '<circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/>' : decision ? '<circle cx="12" cy="12" r="9" stroke-dasharray="3 3"/><path d="M12 7v6m0 3v1"/>' : item.status === "running" ? `<circle class="task-ring-track" cx="12" cy="12" r="9"/><circle class="task-ring-value" cx="12" cy="12" r="9" pathLength="100" stroke-dasharray="${work.total === 0 ? 0 : work.done / work.total * 100} 100"/>` : '<circle cx="12" cy="12" r="9"/><path d="M9 8v8m6-8v8"/>';
+    const running = !review && !decision && item.status === "running";
+    const icon = review ? '<circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/>' : decision ? '<circle cx="12" cy="12" r="9" stroke-dasharray="3 3"/><path d="M12 7v6m0 3v1"/>' : running ? runningIcon : '<circle cx="12" cy="12" r="9"/><path d="M9 8v8m6-8v8"/>';
     const members = item.assignments.map(assignment => person(assignment.session_id)).filter(Boolean);
-    return `<button type="button" class="task-card ${review ? "is-review" : decision ? "is-decision" : ""}" data-goal-act="open" data-goal-id="${esc(item.id)}" aria-pressed="${String(selected) === String(item.id)}"><span class="task-card-heading"><svg class="i task-state-icon" viewBox="0 0 24 24" aria-hidden="true">${icon}</svg><strong title="${esc(item.title)}">${esc(item.title)}</strong><span class="goal-status" data-status="${esc(item.status)}">${review ? "待验收" : decision ? "等你拍板" : item.status === "running" ? "执行中" : esc(status(item.status))}</span></span>${summary ? `<span class="task-card-summary ${decision && !review ? "decision-question" : ""}" title="${esc(summary)}">${esc(summary)}</span>` : ""}${work.total > 0 ? `<span class="task-card-progress"><span>清单 ${work.done}/${work.total}</span><progress max="${work.total}" value="${work.done}" aria-label="${esc(item.title)} 清单进度"></progress></span>` : ""}<span class="task-card-foot"><span class="task-card-people"><span class="task-avatar-stack">${members.slice(0,3).map(person => avatar(person.name,18,true)).join("")}${members.length > 3 ? `<span class="task-avatar-more">+${members.length-3}</span>` : ""}</span><span>${item.working_count} 人在干活</span></span><span class="task-card-mode"><svg class="i" viewBox="0 0 24 24" aria-hidden="true">${modeIcon(item.decision_mode.mode)}</svg>${item.decision_mode.mode === "autonomous" ? "自主推进" : "由我拍板"}</span>${item.current_round > 1 ? `<span>第 ${item.current_round} 轮</span>` : ""}${review && item.supplements_after_report.length > 0 ? `<span class="task-card-supplements">交付后你补充了 ${item.supplements_after_report.length} 条</span>` : ""}<time class="task-card-updated" datetime="${esc(item.last_activity_at)}" title="${esc(when(item.last_activity_at))}">${esc(ago(item.last_activity_at))}</time></span></button>`;
+    return `<button type="button" class="task-card ${review ? "is-review" : decision ? "is-decision" : ""}" data-goal-act="open" data-goal-id="${esc(item.id)}" aria-pressed="${String(selected) === String(item.id)}"><span class="task-card-heading"><svg class="i task-state-icon ${running ? "running" : ""}" viewBox="0 0 24 24" aria-hidden="true">${icon}</svg><strong title="${esc(item.title)}">${esc(item.title)}</strong><span class="goal-status" data-status="${esc(item.status)}">${review ? "待验收" : decision ? "等你拍板" : item.status === "running" ? "执行中" : esc(status(item.status))}</span></span>${summary ? `<span class="task-card-summary ${decision && !review ? "decision-question" : ""}" title="${esc(summary)}">${esc(summary)}</span>` : ""}${work.total > 0 ? `<span class="task-card-progress"><span>清单 ${work.done}/${work.total}</span><progress max="${work.total}" value="${work.done}" aria-label="${esc(item.title)} 清单进度"></progress></span>` : ""}<span class="task-card-foot"><span class="task-card-people"><span class="task-avatar-stack">${members.slice(0,3).map(person => avatar(person.name,18,true)).join("")}${members.length > 3 ? `<span class="task-avatar-more">+${members.length-3}</span>` : ""}</span><span>${item.working_count} 人在干活</span></span><span class="task-card-mode"><svg class="i" viewBox="0 0 24 24" aria-hidden="true">${modeIcon(item.decision_mode.mode)}</svg>${item.decision_mode.mode === "autonomous" ? "自主推进" : "由我拍板"}</span>${item.current_round > 1 ? `<span>第 ${item.current_round} 轮</span>` : ""}${review && item.supplements_after_report.length > 0 ? `<span class="task-card-supplements">交付后你补充了 ${item.supplements_after_report.length} 条</span>` : ""}<time class="task-card-updated" datetime="${esc(item.last_activity_at)}" title="${esc(when(item.last_activity_at))}">${esc(ago(item.last_activity_at))}</time></span></button>`;
   }
   function create(options) {
     const details = new Map(), loading = new Map(), requestedVersion = new Map(), errors = new Map();
@@ -254,20 +257,6 @@
       const button = event.target.closest("[data-goal-act]"); if (!button || button.disabled) return;
       const act = button.dataset.goalAct;
       if (act === "open") options.onNavigate(button.dataset.goalId);
-      else if (act === "leader-mode" && !actionBusy) {
-        const leader = state()?.leaders.find(item => item.session_id === button.dataset.leaderId);
-        const enabled = button.dataset.mode === "autonomous";
-        if (!leader || Boolean(leader.trust?.enabled) === enabled) return;
-        actionBusy = true;
-        changed();
-        try {
-          await options.api("/api/trust", {leader_session_id:leader.session_id, enabled,
-            goal:leader.trust?.goal || leader.goal || "推进用户在本 leader 总会话交办的工作，遵守各任务原始要求与约束。"});
-          await options.refreshState();
-          options.toast("已保存 leader 授权，下次正常输入时传达。");
-        } catch (error) { options.toast(error.message); }
-        finally { actionBusy = false; changed(); }
-      }
       else if (act === "mode" && !actionBusy) {
         const active=goal();if(!active || active.decision_mode?.mode===button.dataset.mode)return;
         actionBusy=true;changed();
@@ -305,5 +294,5 @@
     return {sync, closeReport, escape, listMarkup, detailMarkup, cards:() => cards(goals(), state()?.leaders), refresh:load, currentGoal:goal, executionFor, replaceMain,
       invalidate() { requestedVersion.clear(); details.clear(); }};
   }
-  window.CrewGoals = {create, cards, taskCard, leaderTasks, listIcon, ended, status, reportPath, reportDocument, supplementsMarkup};
+  window.CrewGoals = {create, cards, taskCard, leaderTasks, listIcon, modeIcon, ended, status, reportPath, reportDocument, supplementsMarkup};
 })();
