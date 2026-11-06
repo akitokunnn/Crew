@@ -82,6 +82,7 @@ test_hook_project
 test_member_creation_http
 test_member_defaults
 test_member_launch_dedup
+test_member_native_binding
 test_leader_order
 test_leader_priority
 test_leader_trust_cli
