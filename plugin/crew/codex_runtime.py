@@ -13,7 +13,7 @@ import sys
 import tempfile
 import threading
 
-from . import board, codex_client, codex_events, codex_guard, codex_history, codex_subagents, codex_tools, codex_visibility, goals, guard, install, messaging, native_approvals, native_handoff, rules, settings, store, workspace_execution
+from . import board, codex_client, codex_events, codex_guard, codex_history, codex_subagents, codex_tools, codex_visibility, goal_messages, goals, guard, install, messaging, native_approvals, native_handoff, rules, settings, store, workspace_execution
 
 
 def process_identity(pid):
@@ -421,6 +421,7 @@ class CodexRunning:
                 board.set_status(conn, self.session_id, status)
 
     def _notification(self, method, params):
+        returned = False
         try:
             with self.input_lock:
                 if self._events is None:
@@ -469,6 +470,9 @@ class CodexRunning:
                                     conn.execute("UPDATE sessions SET last_message=? WHERE session_id=?", (text[:300], self.session_id))
                     if kind == "turn_result":
                         terminal = event
+                if (terminal is not None and terminal['success'] and self.execution is not None
+                        and self.maintenance is None):
+                    returned = True
                 if terminal is not None:
                     self._approval_cancelled_turn = terminal.get('turn_id') or self._events.turn_id
                     self._approvals.cancel('原生轮次已经结束', turn=self._approval_cancelled_turn)
@@ -480,6 +484,8 @@ class CodexRunning:
                             self.compact()
                         else:
                             self.journal.emit("compact_cancelled", reason="上一轮未成功结束，取消排队压缩")
+            if returned:
+                goal_messages.return_turn(self.home, self.execution['id'], self.journal)
         except Exception as exc:
             self.journal.emit("error", text="Codex 通知处理失败：" + str(exc))
             # Do not block the notification consumer while it is draining.

@@ -26,7 +26,7 @@ def wait_until(predicate, label, timeout=8):
     raise AssertionError('Timed out waiting for ' + label)
 
 
-class MemberNativeBindingTests(ShellFixture, unittest.TestCase):
+class MemberNativeFixture(ShellFixture):
     def setUp(self):
         super().setUp()
         board.update_cc_name(self.conn, 's3', 'cc-lead')
@@ -57,8 +57,9 @@ class MemberNativeBindingTests(ShellFixture, unittest.TestCase):
         message = 'No conversation found with session ID: ' + native_id
         process.emit({'type': 'result', 'subtype': 'error_during_execution', 'is_error': True,
                       'session_id': native_id, 'errors': [message]})
+        current = self.manager.processes[key]
         process.finish(1)
-        wait_until(lambda: self.manager.journal(key).status == 'offline', 'exit of ' + key)
+        wait_until(current.reader_done.is_set, 'exit of ' + key)
 
     def claude_goal_member(self):
         goal = self.goal()
@@ -73,6 +74,8 @@ class MemberNativeBindingTests(ShellFixture, unittest.TestCase):
         return [tuple(row) for row in self.conn.execute(
             'SELECT runtime,native_id FROM session_runtime_bindings WHERE session_id=?', (sid,))]
 
+
+class MemberNativeBindingTests(MemberNativeFixture, unittest.TestCase):
     def test_claude_goal_spawn_leaves_general_conversation_unbound(self):
         _, sid, key, native = self.claude_goal_member()
         self.assertEqual(len(self.processes), 1)
@@ -86,8 +89,9 @@ class MemberNativeBindingTests(ShellFixture, unittest.TestCase):
         _, sid, key, native = self.claude_goal_member()
         self.manager.send_message('s3', sid, 'Compute 1+1 and send me the result.', kind='task')
         self.manager.deliver_messages()
-        self.assertEqual(len(self.processes), 2)
-        general = self.processes[1]
+        general = [process for process in self.processes if sid in process.command]
+        self.assertEqual(len(general), 1)
+        general = general[0]
         self.assertIn('--session-id', general.command)
         self.assertNotIn('--resume', general.command)
         self.assertEqual(general.command[general.command.index('--session-id') + 1], sid)
@@ -123,47 +127,6 @@ class MemberNativeBindingTests(ShellFixture, unittest.TestCase):
         self.assertEqual(goals.get_execution(self.conn, key)['bindings'][0]['native_id'], 'member-thread-0')
         sent = self.clients[1].calls[-1][1]['input'][-1]['text']
         self.assertIn('总对话第一次启动', sent)
-
-    def test_missing_general_native_stops_automatic_retries_and_names_the_cause(self):
-        self.manager.wake(self.conn, board.session(self.conn, 's1'), 'Continue')
-        first = self.processes[0]
-        self.assertEqual(first.command[first.command.index('--resume') + 1], 's1')
-        self.missing_conversation('s1', first, 's1')
-        notice = [event for event in self.manager.journal('s1').events if event.get('native_missing') == 's1']
-        self.assertEqual(len(notice), 1)
-        self.assertIn('原会话不存在', notice[0]['text'])
-
-        self.manager.send_message('s3', 's1', 'Status?', kind='task')
-        self.manager.deliver_messages()
-        self.manager.deliver_messages()
-        self.assertEqual(len(self.processes), 1)
-        waiting = self.conn.execute("SELECT delivered_at,error FROM peer_messages WHERE target_session_id='s1'").fetchone()
-        self.assertIsNone(waiting['delivered_at'])
-        self.assertIn('原会话不存在', waiting['error'])
-        with self.assertRaisesRegex(board.BoardError, '原会话不存在'):
-            self.manager.wake(self.conn, board.session(self.conn, 's1'), 'Continue', caller_session_id='s3')
-        self.assertEqual(len(self.processes), 1)
-
-        # The user's explicit retry resumes the same ID; real output clears the report.
-        self.manager.send(board.session(self.conn, 's1'), 'Retry after restoring the record')
-        retry = self.processes[1]
-        self.assertEqual(retry.command[retry.command.index('--resume') + 1], 's1')
-        self.finish_claude_turn('s1', retry, 's1')
-        self.assertIsNone(self.manager.missing_native(self.conn, board.session(self.conn, 's1')))
-
-    def test_missing_goal_execution_native_stops_automatic_retries(self):
-        goal, sid, key, native = self.claude_goal_member()
-        self.processes[0].finish(0)
-        wait_until(lambda: self.manager.journal(key).status == 'offline', 'execution exit')
-        self.manager.goal_controller.live_native = frozenset()
-        self.manager.goal_controller.send(goal['id'], sid, 'Continue the task', source='crew')
-        resumed = self.processes[1]
-        self.assertEqual(resumed.command[resumed.command.index('--resume') + 1], native)
-        self.missing_conversation(key, resumed, native)
-        with self.assertRaisesRegex(board.BoardError, '原会话不存在'):
-            self.manager.goal_controller.send(goal['id'], sid, 'Continue again', source='crew')
-        self.assertEqual(len(self.processes), 2)
-        self.assertEqual(goals.get_execution(self.conn, key)['bindings'][0]['native_id'], native)
 
 
 if __name__ == '__main__':

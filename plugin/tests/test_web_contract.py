@@ -270,7 +270,8 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual(set(member), {"session_id", "name", "title", "leader_session_id", "group", "status",
             "status_note", "where", "task", "scope", "done_when", "branch", "worktree", "cwd", "cc_name",
             "web_chat", "progress", "codex", "codex_older", "leases", "claims", "model", "effort", "applied", "activity",
-            "context", "busy", "running", "runtime", "native_handoff", "runtime_switch", "active_goal_id", "active_goal_ids", "active_execution_id"})
+            "context", "busy", "running", "runtime", "native_handoff", "runtime_switch", "active_goal_id", "active_goal_ids", "active_execution_id",
+        "execution_records", "general_has_output"})
         self.assertEqual((member["name"], member["leader_session_id"], member["group"], member["scope"], member["done_when"]),
                          ("one", "s3", "lead", "Backend", "Tests pass"))
         self.assertEqual([row["text"] for row in member["progress"]], ["progress-" + str(i) for i in (6, 5, 4, 3, 2)])

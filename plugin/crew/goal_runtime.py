@@ -151,6 +151,49 @@ class Controller:
                     'reason': '换代或切载体时保留用户精确原话；普通轮次不重发', 'protected': True})
         return material
 
+    def lost_native_handoff(self, conn, execution):
+        """Hand a new generation what Crew recorded of a predecessor whose Claude conversation is gone.
+
+        Returns (replacing, material); empty once this generation has applied
+        context or produced native output of its own.
+        """
+        from . import chat, runtime_switch
+        if (conn.execute('SELECT 1 FROM goal_context_applied WHERE execution_id=? LIMIT 1', (execution['id'],)).fetchone()
+                or chat.has_native_output(self.manager.journal(execution['id']).events)):
+            return None, []
+        row = conn.execute('SELECT id FROM goal_executions WHERE goal_id=? AND session_id=? AND id<>? '
+                           'AND (round<? OR round=? AND generation<?) ORDER BY round DESC,generation DESC LIMIT 1',
+                           (execution['goal_id'], execution['session_id'], execution['id'],
+                            execution['round'], execution['round'], execution['generation'])).fetchone()
+        if row is None:
+            return None, []
+        previous = goals.get_execution(conn, row['id'])
+        lost = self.manager.missing_native(conn, self.target(conn, previous))
+        if lost is None:
+            return None, []
+        events = self.manager.journal(previous['id']).events
+        recent = '\n\n'.join(reversed(runtime_switch._texts(reversed(events))))[-runtime_switch.MAX_HANDOFF:]
+        last = next((text for text in ('\n'.join(block['text'] for block in event['content'] if block.get('type') == 'text').strip()
+                                       for event in reversed(events) if event['type'] == 'assistant') if text), '（没有记录到文字结果）')
+        text = ('原执行会话丢失交接：上一代执行 %s（第 %s 轮第 %s 代）的 Claude 原生会话 %s 已丢失。'
+                '本执行是 Crew 新开的会话，不是接回原会话；原会话里的上下文无法接回。'
+                '以下是 Crew 记录里该执行的最后结果和最近片段，仅为历史，先核对实际代码与证据，已完成的不重做。\n'
+                '最后结果：%s\n\n最近片段：\n%s' % (previous['id'], previous['round'], previous['generation'], lost,
+                                                 last[-runtime_switch.MAX_HANDOFF:], recent))
+        return ({'lost_native': lost, 'lost_execution': previous['id']},
+                [{'source': {'type': 'lost-native', 'id': previous['id']}, 'text': text,
+                  'reason': '原会话丢失后新开执行，交接原执行的记录摘要与最后结果', 'protected': True}])
+
+    def replace_lost(self, execution_id, lost, text, *, identity, display_text):
+        """End a generation whose Claude conversation is gone; the next generation takes over with a handoff."""
+        from . import chat
+        with self.manager.lock, closing(store.connect(self.home)) as conn:
+            execution = goals.get_execution(conn, execution_id)
+            if execution['status'] not in goals.TERMINAL:
+                goals.set_execution_status(conn, execution_id, 'failed', error=chat.NATIVE_MISSING % lost)
+        return self.send(execution['goal_id'], execution['session_id'], text, identity=identity,
+                         source='crew', display_text=display_text)
+
     def followup_context(self, conn, execution):
         """Continue the latest delivery, within this task or an explicit new round."""
         row = conn.execute('SELECT id FROM goal_reports WHERE goal_id=? AND (round<? OR (round=? AND requirement_version<?)) '
@@ -292,6 +335,7 @@ class Controller:
                                                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
         current = chat.Running(process, journal)
         current.resumed_native = native_id if binding is not None else None
+        current.replacing = session.get('_native_replacing')
         current.behavior_prompt_hash = behavior_prompts.manifest_hash(prompt_manifest)
         with closing(store.connect(self.home)) as prompt_conn:
             behavior_prompts.record_applied(prompt_conn, key, prompt_manifest, status='sent',
@@ -366,9 +410,10 @@ class Controller:
             observed = self.manager.context(key)
             history = {'known': observed is not None, 'tokens': observed['used'] if observed else None,
                        'source': 'native_context_usage', 'note': '原生历史未知时不当作零'}
+            replacing, lost = self.lost_native_handoff(conn, execution)
             prepared = goal_context.build(conn, key, base=BASE_INSTRUCTIONS,
                                           latest_input='' if text == goal['requirements']['request'] else text,
-                                          native_history=history, retrieval=self.human_handoff(conn, execution, identity) + self.followup_context(conn, execution),
+                                          native_history=history, retrieval=self.human_handoff(conn, execution, identity) + self.followup_context(conn, execution) + lost,
                                           limits={'native_history_tokens': 64000})
             if prepared['manifest']['rotation_required'] and not self.manager.busy(key):
                 if self.manager.running(key):
@@ -380,16 +425,19 @@ class Controller:
                 journal = self.manager.journal(key)
                 if not journal.path.exists():
                     journal.set_status('idle')
+                replacing, lost = self.lost_native_handoff(conn, execution)
                 prepared = goal_context.build(conn, key, base=BASE_INSTRUCTIONS,
                                               latest_input='' if text == goal['requirements']['request'] else text,
                                               native_history={'known': True, 'tokens': 0,
                                               'source': 'fresh_native_generation'}, limits={'native_history_tokens': 64000},
-                                              retrieval=self.human_handoff(conn, execution, identity) + self.followup_context(conn, execution))
+                                              retrieval=self.human_handoff(conn, execution, identity) + self.followup_context(conn, execution) + lost)
             current = self.manager.processes.get(key)
             if current is not None:
                 current.pause_interrupt = False
                 current.goal_manifests[identity] = prepared['manifest']['id']
             target['_goal_manifests'] = {identity: prepared['manifest']['id']}
+            if replacing is not None:
+                target['_native_replacing'] = replacing
             goals.set_execution_status(conn, key, 'running')
             result = self.manager.send(target, prepared['text'], display_text=text if display_text is None else display_text,
                                        identity=identity, images=images, source=source, sender=sender)

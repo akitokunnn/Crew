@@ -1,9 +1,16 @@
 """Goal mail is finite evidence, not a chain of automatic acknowledgements."""
+from contextlib import closing
 import hashlib
+import sqlite3
 import uuid
 
-from . import board, codex_client, goals, messaging
+from . import board, codex_client, goals, messaging, store
 from .message_receipts import ACTIONABLE, KINDS
+
+# A member reports back with one of these; any of them in the turn means nothing is returned for it.
+REPORT_KINDS = ('result', 'blocker', 'decision')
+HUMAN_SOURCES = ('human', 'qq', 'lark')
+RETURNED_REPLY_LIMIT = 6000
 
 @goals.atomic
 def queue(conn, sender_id, target_id, text, execution_id=None, *, message_id=None, kind='information', reply_to=None):
@@ -208,3 +215,58 @@ def deliver(controller, conn):
                          (result.get('execution_id'), board._time(None), item['message_id']))
             messaging.mark_delivered(conn, item['message_id'], accepted=True)
         blocked.add((goal_id, target_id, scope))
+
+
+def return_unreported(conn, execution_id, events):
+    """Hand a member's finished task turn to the goal leader when the member reported nothing.
+
+    ``events`` is the execution journal through the turn's successful
+    ``turn_result``. The returned mail is an ordinary ``result`` from that
+    execution, keyed by the turn so one turn is never returned twice. Turns
+    that only answered the user directly stay the user's conversation.
+    """
+    ends = [index for index, event in enumerate(events) if event['type'] == 'turn_result']
+    end = events[ends[-1]]
+    if not end.get('success'):
+        return None
+    window = events[(ends[-2] + 1 if len(ends) > 1 else 0):ends[-1]]
+    inputs = [event for event in window if event['type'] == 'message']
+    if not inputs or all(event.get('source') in HUMAN_SOURCES for event in inputs):
+        return None
+    execution = goals.get_execution(conn, execution_id)
+    goal = goals.get(conn, execution['goal_id'])
+    member = board.session(conn, execution['session_id'])
+    if member['role'] != 'member' or member['session_id'] == goal['leader_session_id']:
+        return None
+    if not goals.dispatch_check(conn, goal['id'], execution_id=execution_id)['allowed']:
+        return None
+    reported = conn.execute(
+        'SELECT 1 FROM goal_message_meta m JOIN peer_messages p ON p.id=m.message_id '
+        'WHERE m.source_execution=? AND p.target_session_id=? AND m.kind IN (%s) AND p.created_at>=? LIMIT 1'
+        % ','.join('?' * len(REPORT_KINDS)),
+        (execution_id, goal['leader_session_id'], *REPORT_KINDS, inputs[0]['at'])).fetchone()
+    if reported:
+        return None
+    reply = next((text for text in (
+        '\n'.join(block['text'] for block in event['content'] if block.get('type') == 'text').strip()
+        for event in reversed(window) if event['type'] == 'assistant') if text), '')
+    if len(reply) > RETURNED_REPLY_LIMIT:
+        reply = reply[:RETURNED_REPLY_LIMIT] + '\n……（已截断，完整内容见该组员的任务执行记录）'
+    body = ('[Crew 代为交回] 组员「%s」在任务「%s」中结束了一轮，但没有发送结果消息。'
+            '以下是它这一轮最后的回复，由 Crew 代为交回，不是组员主动回报；请按验收标准核对后决定验收或继续推进。\n\n%s'
+            % (member['crew_name'], goal['title'], reply or '（这一轮没有文字回复；请查看该组员的任务执行记录）'))
+    return queue(conn, member['session_id'], goal['leader_session_id'], body, execution_id,
+                 message_id='crew-turn-result:%s:%s' % (execution_id, end['seq']), kind='result')
+
+
+def return_turn(home, execution_id, journal):
+    """Called by either runtime right after a task turn ends; failures stay visible in that execution."""
+    with journal.condition:
+        journal.refresh()
+        events = list(journal.events)
+    try:
+        with closing(store.connect(home)) as conn:
+            return return_unreported(conn, execution_id, events)
+    except (sqlite3.Error, board.BoardError) as exc:
+        journal.emit('error', text='Crew 代为交回本轮结果失败：%s: %s' % (type(exc).__name__, exc))
+        return None

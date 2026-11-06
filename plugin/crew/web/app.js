@@ -7,6 +7,9 @@
   const localDesktop = () => !window.CrewAccess || CrewAccess.local_desktop;
   const project = new URLSearchParams(location.search).get("project");
   let state = null, view = "all", leaderId = null, readOnlyId = null, mountedChat = null, pollBusy = false, statePromise = Promise.resolve();
+  // Member page record choice: "general" or a goal id. The first default is kept, so
+  // later activity never switches the record under the reader.
+  const memberScopes = new Map();
   let mountedChannel = false;
   let settingsUI = null, settingsOpen = false, settingsReturn = null;
   let workspaceSettings = null, workspaceOpen = false, maintenance = null, gitSettings = null;
@@ -486,8 +489,26 @@
     main.dataset.sideOverlap = String(!reserve);
     main.style.setProperty("--chat-side-space", reserve ? `${width + 28}px` : "0px");
   }
+  function memberRecord(item) {
+    // A member that so far only worked in task executions opens on that work instead of an empty general conversation.
+    const records = item.execution_records, chosen = memberScopes.get(item.session_id);
+    if (chosen === "general") return null;
+    const picked = records.find(record => record.goal_id === chosen);
+    if (picked) return picked;
+    const fallback = item.general_has_output || records.length === 0 ? null : records[0];
+    if (records.length > 0) memberScopes.set(item.session_id, fallback === null ? "general" : fallback.goal_id);
+    return fallback;
+  }
+  function memberScopeBar(item, record) {
+    const records = item.execution_records;
+    if (records.length === 0) return "";
+    const label = record === null ? (item.general_has_output ? "成员本人总对话" : "成员本人总对话 · 还没有对话记录") : `来自任务「${record.title}」的执行记录`;
+    const option = (goal, text, pressed, title) => `<button type="button" class="member-scope-option" data-act="member-scope" data-id="${esc(item.session_id)}" data-goal="${esc(goal)}" aria-pressed="${pressed}" title="${esc(title)}">${esc(text)}</button>`;
+    return `<div class="member-scope-bar"><span class="member-scope-label" title="${esc(label)}">${esc(label)}</span><div class="member-scope-switch" role="group" aria-label="切换对话记录">${option("general", "总对话", record === null, "成员本人总对话")}${records.map(entry => option(entry.goal_id, entry.title, record?.goal_id === entry.goal_id, `任务「${entry.title}」的执行记录`)).join("")}</div></div>`;
+  }
   function renderChat() {
     const item = readOnlyId === null ? leader(leaderId) : member(readOnlyId), group = leader(leaderId), members = membersOf(leaderId);
+    const record = readOnlyId === null ? null : memberRecord(item);
     const work = group === undefined ? null : groupWork(group);
     const pending = pendingOf(leaderId), held = decisionsOf(leaderId).filter(item => item.held);
     const groupTodos = todosOf(leaderId);
@@ -496,14 +517,14 @@
     const chatModel = `<button class="model-tag" data-act="model-menu" data-id="${esc(item.session_id)}" aria-haspopup="menu" title="切换模型和 effort"><span class="model-label">${esc(optionsLabel(item))}</span>${ic("down", "xs")}</button>`;
     const trusted = Boolean(item.trust?.enabled), trustLabel = trusted ? "自主推进" : "由我拍板";
     const trustTag = readOnlyId === null ? `<button type="button" class="trust-tag" data-act="trust-open" data-id="${esc(item.session_id)}" data-mode="${trusted ? "autonomous" : "human"}" aria-haspopup="dialog" title="leader 决策方式：${trustLabel}${trusted ? `。授权范围：${esc(item.trust.goal)}` : ""}">${trustIcon(trusted)}<span>${trustLabel}</span></button>` : "";
-    const identity = `${item.session_id}:${access.readonly}:${access.readonlyReason ?? ""}`;
+    const identity = `${item.session_id}:${record?.goal_id ?? ""}:${access.readonly}:${access.readonlyReason ?? ""}`;
     if (mountedChat !== identity) {
       CrewChat.unmount();
       const scaffold = '<div id="chat-head"></div><div id="chat-host" class="chat-host"></div><aside id="task-list" class="task-list" aria-label="任务" data-open="true"></aside>';
       if (goals) goals.replaceMain(scaffold); else $("main").innerHTML = scaffold;
       delete $("main").dataset.render;
       mountedChat = identity;
-      CrewChat.mount({host:$("chat-host"), session:item, ...access, state, api, toast, beforeStop:() => confirmIdentityStop(item),
+      CrewChat.mount({host:$("chat-host"), session:item, goalId:record?.goal_id ?? null, goalTitle:record?.title ?? null, ...access, state, api, toast, beforeStop:() => confirmIdentityStop(item),
         async onRouted(id) { await loadState(true); if (mountedChat === identity) { const target = state.goals.find(goal => String(goal.id) === String(id)); if (target) navigate("chat", target.leader_session_id, null, target.id); else toast("目标已不在当前工作区中，请刷新。"); } }});
     }
     const permissions = nativeApprovals?.countForChat(item.session_id, null, readOnlyId === null) || 0;
@@ -517,7 +538,7 @@
     attentionScope = scope;
     replace($("native-approval-tray"), nativeApprovals?.chatMarkup(item.session_id, null, readOnlyId === null) || "");
     $("attention-scope").textContent = `${item.name} · 全部任务与总对话`;
-    replace($("chat-head"), `<div class="head">${readOnlyId === null ? groupAvatar(item, work) : av(item.name, 30)}<div class="heading-meta"><span class="chat-name" title="${esc(item.name)}">${esc(item.name)}</span>${runtimeBadge(item)}<span class="chat-scope" title="${esc(readOnlyId === null ? (item.goal ?? "") : `归 ${item.group} · 成员本人对话`)}">${esc(readOnlyId === null ? (item.goal ?? "") : `归 ${item.group} · 成员本人对话`)}</span>${group === undefined ? "" : `<span class="chat-member-stats ${work.active ? "is-working" : ""}">${members.length} 个下属 · ${members.filter(person => person.status === "working").length} 人在干活</span>`}</div><div class="right">${chatModel}${trustTag}${readOnlyId === null ? `<button type="button" class="task-trigger" data-act="tasks-toggle" aria-controls="task-list" aria-expanded="${tasksOpen}" title="任务">${CrewGoals.listIcon()}<span>任务</span><span class="task-count">${state.goals.filter(task => task.leader_session_id === leaderId && !CrewGoals.ended(task.status)).length}</span></button><span class="chat-toolbar-divider" aria-hidden="true"></span>` : ""}<button type="button" class="attention-trigger ${attentionCount ? "has-items" : ""}" data-act="attention" aria-controls="side-attention-section" aria-expanded="${attentionVisible}" aria-label="待处理，${attentionCount} 件" title="待处理">${ic("inbox", "sm")}${attentionCount ? `<span class="attention-count">${attentionCount}</span>` : ""}</button>${group === undefined ? "" : `<button class="icon-btn rp-toggle" data-act="right-open" title="本组架构图" aria-label="本组架构图">${ic("grid")}</button>`}<button class="icon-btn" data-act="session-menu" data-id="${esc(item.session_id)}" aria-haspopup="menu" title="会话操作" aria-label="会话操作">⋯</button></div></div>`);
+    replace($("chat-head"), `<div class="head">${readOnlyId === null ? groupAvatar(item, work) : av(item.name, 30)}<div class="heading-meta"><span class="chat-name" title="${esc(item.name)}">${esc(item.name)}</span>${runtimeBadge(item)}<span class="chat-scope" title="${esc(readOnlyId === null ? (item.goal ?? "") : `归 ${item.group} · 成员本人对话`)}">${esc(readOnlyId === null ? (item.goal ?? "") : `归 ${item.group} · 成员本人对话`)}</span>${group === undefined ? "" : `<span class="chat-member-stats ${work.active ? "is-working" : ""}">${members.length} 个下属 · ${members.filter(person => person.status === "working").length} 人在干活</span>`}</div><div class="right">${chatModel}${trustTag}${readOnlyId === null ? `<button type="button" class="task-trigger" data-act="tasks-toggle" aria-controls="task-list" aria-expanded="${tasksOpen}" title="任务">${CrewGoals.listIcon()}<span>任务</span><span class="task-count">${state.goals.filter(task => task.leader_session_id === leaderId && !CrewGoals.ended(task.status)).length}</span></button><span class="chat-toolbar-divider" aria-hidden="true"></span>` : ""}<button type="button" class="attention-trigger ${attentionCount ? "has-items" : ""}" data-act="attention" aria-controls="side-attention-section" aria-expanded="${attentionVisible}" aria-label="待处理，${attentionCount} 件" title="待处理">${ic("inbox", "sm")}${attentionCount ? `<span class="attention-count">${attentionCount}</span>` : ""}</button>${group === undefined ? "" : `<button class="icon-btn rp-toggle" data-act="right-open" title="本组架构图" aria-label="本组架构图">${ic("grid")}</button>`}<button class="icon-btn" data-act="session-menu" data-id="${esc(item.session_id)}" aria-haspopup="menu" title="会话操作" aria-label="会话操作">⋯</button></div></div>${readOnlyId === null ? "" : memberScopeBar(item, record)}`);
     const listScope = readOnlyId === null ? leaderId : null;
     if (taskListScope !== listScope) { tasksOpen = true; taskListScope = listScope; }
     $("task-list").hidden = readOnlyId !== null;
@@ -1209,6 +1230,7 @@
       else if (act === "attention") toggleSidecar("attention");
       else if (act === "goal-review") { const item = (state.goals || []).find(goal => String(goal.id) === id); if (item) { navigate("chat", item.leader_session_id, null, item.id); taskDeliveryFocus = item.id; renderChat(); } else toast("目标已不在当前工作区中，请刷新。"); }
       else if (act === "right-open") toggleSidecar("tree");
+      else if (act === "member-scope") { memberScopes.set(id, button.dataset.goal); renderChat(); }
       else if (act === "right-close") { rightOpen = false; syncSidecar(); $("main").querySelector('[data-act="right-open"]')?.focus(); }
       else if (act === "side-section-close") { attentionVisible = false; syncSidecar(); $("chat-head").querySelector('[data-act="attention"]')?.focus(); }
       else if (act === "modal-leader") openModalLeader();

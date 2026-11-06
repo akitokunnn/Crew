@@ -680,3 +680,24 @@ test("a busy turn has one progress row and swaps send for the icon stop until a 
   assert.equal(progress().length,1);assert.equal(target.querySelector(".hint").textContent,"");assert.equal(target.querySelector(".chat-delivery-status").hidden,true);assert.equal(target.querySelector(".chat-interrupt-status").hidden,true);
   h.update("worker",{busy:false});h.flushFrames();assert.equal(progress().length,0);assert.equal(stop.hidden,true);assert.equal(send.hidden,false);h.chat.unmount();
 });
+
+test("a member page can show one task execution record and talk to that task",async()=>{
+  const h=harness(),calls=[],toasts=[];let routed=0;
+  const api=async(url,data)=>{calls.push([url,data]);if(url==="/api/chat/send")return {accepted:true,goal_id:"goal-a",execution_id:"exec-a"};if(url==="/api/chat/read")return {read_seq:data.seq};
+    return {...history(),execution_id:"exec-a",events:[{seq:1,type:"message",id:"task",source:"crew",text:"计算 1 + 1"},{seq:2,type:"assistant",id:"reply",content:[{type:"text",text:"1 + 1 = 2"}]},{seq:3,type:"turn_result",status:"completed",success:true}]};};
+  const target=h.mount("member",api,{},{goalId:"goal-a",goalTitle:"算术A",toast:text=>toasts.push(text),onRouted(){routed++;}});await tick();h.flushFrames();
+  assert.match(calls[0][0],/goal_id=goal-a/);assert.match(h.connections[0].url,/goal_id=goal-a/);
+  assert.match(rendered(target).join(""),/1 \+ 1 = 2/);
+  assert.match(target.innerHTML,/placeholder="在任务「算术A」里跟 member 说…"/);
+  h.chat.setTask(null);assert.match(target.querySelector("textarea").placeholder,/在任务「算术A」里跟 member 说/);
+  target.querySelector("textarea").value="再算 2 + 2";target.querySelector("textarea").oninput();target.querySelector("form").onsubmit({preventDefault(){}});await tick();
+  const sent=calls.find(([url])=>url==="/api/chat/send")[1];
+  assert.equal(sent.session_id,"member");assert.equal(sent.goal_id,"goal-a");assert.equal(routed,0,"staying on the member page, not jumping to the leader task");
+  assert(h.saved.has("crew.draft:fixture:member:goal:goal-a"),"the task record keeps its own draft");
+  h.connections[0].emit({seq:4,type:"native_replaced",lost_native:"old",native_id:"new",text:"这是新开的原生会话：原会话 old 已丢失"});await tick();h.flushFrames();
+  assert.match(rendered(target).join(""),/context-divider native-replaced[^>]*>这是新开的原生会话/);
+  assert.deepEqual(toasts,["这是新开的原生会话：原会话 old 已丢失"]);
+  h.chat.unmount();
+  const general=h.mount("member",async url=>{calls.push([url]);return history();});await tick();
+  assert.doesNotMatch(calls.at(-1)[0],/goal_id/);assert.match(general.innerHTML,/placeholder="跟 member 说…（可以直接粘贴截图）"/);h.chat.unmount();
+});

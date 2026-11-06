@@ -629,6 +629,18 @@ class Service:
             result['sounds'] = event_sounds.snapshot(conn, self.home, result['project']['name'] if result['project'] else None, sound_history, self.chat.journal)
             return result
 
+    def member_execution_records(self, conn, session_id, active):
+        """A member's task executions for its own page: current ones first, then the most recent."""
+        order = {item['id']: index for index, item in enumerate(active)}
+        rows = conn.execute(
+            'SELECT e.id,e.goal_id,g.title,e.status FROM goal_executions e JOIN goals g ON g.id=e.goal_id '
+            'WHERE e.session_id=? AND e.round=g.current_round AND e.generation=(SELECT MAX(x.generation) '
+            'FROM goal_executions x WHERE x.goal_id=e.goal_id AND x.round=e.round AND x.session_id=e.session_id) '
+            'ORDER BY e.updated_at DESC,e.id', (session_id,)).fetchall()
+        records = [{'goal_id': row['goal_id'], 'title': row['title'], 'execution_id': row['id'],
+                    'status': row['status'], 'active': row['id'] in order} for row in rows]
+        return sorted(records, key=lambda item: order.get(item['execution_id'], len(order)))[:8]
+
     def _project_conversations(self, conn, name, agents, error):
         general_present = board.live_sessions(agents)
         result = {'leaders': [], 'members': [], 'decisions': [], 'git_assistant': None}
@@ -741,6 +753,8 @@ class Service:
                     session_id=sid, name=session['crew_name'], title=titles.get(sid),
                     active_goal_id=active_goals[sid], active_goal_ids=active_goal_ids[sid],
                     active_execution_id=active_scopes[sid][0]['id'] if active_scopes[sid] else None,
+                    execution_records=self.member_execution_records(conn, sid, active_scopes[sid]),
+                    general_has_output=sid in histories and chat.has_native_output(histories[sid]['events']),
                     runtime=runtimes.get(conn, sid)['runtime'],
                     native_handoff=native_handoff.describe(conn, sid),
                     runtime_switch=runtime_switch.state(conn,session,self.chat,agents,error),
