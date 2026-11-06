@@ -291,6 +291,7 @@ class Controller:
                                                text=True, encoding='utf-8', bufsize=1,
                                                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
         current = chat.Running(process, journal)
+        current.resumed_native = native_id if binding is not None else None
         current.behavior_prompt_hash = behavior_prompts.manifest_hash(prompt_manifest)
         with closing(store.connect(self.home)) as prompt_conn:
             behavior_prompts.record_applied(prompt_conn, key, prompt_manifest, status='sent',
