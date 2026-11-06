@@ -36,7 +36,13 @@ if(!process.versions.electron){
       async function trust(mode) {
         await click('#chat-head [data-act="session-menu"]');
         await js(`Array.from(document.querySelectorAll('#menu [data-act="submenu"]')).find(node=>node.textContent.includes('leader 决策方式')).click();true;`);
-        await click(`[data-goal-act="leader-mode"][data-mode="${mode}"]`);
+        await click(`#menu [data-act="leader-mode"][data-mode="${mode}"]`);
+        if(mode==='autonomous'){
+          await wait('document.querySelector("#trust-form [name=mode]:checked")?.value==="autonomous"','autonomy asks for its scope');
+          await js('document.querySelector("#trust-form").requestSubmit();true;');
+          await check('autonomy is not saved without a written scope','document.querySelector("#trust-error").textContent.includes("授权范围")&&!!document.querySelector("#trust-form")');
+          await js(`document.querySelector('#trust-goal').value='推进本组交办的工作，遵守各任务原始要求与约束';document.querySelector("#trust-form").requestSubmit();true;`);
+        }
         await wait(`(async()=>{const state=await fetch('/api/state?project=demo').then(r=>r.json());return state.leaders.find(item=>item.session_id===${JSON.stringify(bootstrap.leader)}).trust.enabled===${mode==='autonomous'}})()`);
       }
       async function type(text){await js(`document.querySelector('#chat-host textarea').value=${JSON.stringify(text)};document.querySelector('#chat-host textarea').dispatchEvent(new Event('input',{bubbles:true}));true;`);}
