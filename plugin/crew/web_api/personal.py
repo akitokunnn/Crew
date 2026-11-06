@@ -49,17 +49,38 @@ def prepare_send(home, session_id):
 
 def notes(home, *, project=None, include_archived=False):
     if not store.db_path(home).exists():
-        return {'notes': [], 'model_calls': 0}
-    with closing(guard.readonly(home)) as conn:
-        return {'notes': personal.list_notes(conn, project=project, include_archived=include_archived), 'model_calls': 0}
+        return {'notes': [], 'stale_days': personal.STALE_DAYS, 'model_calls': 0}
+    # Opening the wall upgrades note storage once; it never starts AI.
+    with closing(store.connect(home)) as conn:
+        personal.ensure_schema(conn)
+        return {'notes': personal.list_notes(conn, project=project, include_archived=include_archived),
+                'stale_days': personal.STALE_DAYS, 'model_calls': 0}
+
+
+def tags(home):
+    if not store.db_path(home).exists():
+        return {'tags': [], 'palette': list(personal.PALETTE), 'model_calls': 0}
+    with closing(store.connect(home)) as conn:
+        personal.ensure_schema(conn)
+        return {**personal.list_tags(conn), 'model_calls': 0}
+
+
+def _command(data):
+    if not isinstance(data, dict) or set(data) != {'action', 'data', 'request_id'}:
+        raise board.BoardError('请求体必须正好包含 action、data、request_id')
+    return data['action'], data['data'], data['request_id']
 
 
 def save_note(home, data):
-    if not isinstance(data, dict):
-        raise board.BoardError('想法操作参数必须为对象')
-    payload = {key: value for key, value in data.items() if key not in ('action', 'request_id')}
+    action, payload, request_id = _command(data)
     with closing(store.connect(home)) as conn:
-        return personal.note_action(conn, data.get('action'), payload, request_id=data.get('request_id'))
+        return personal.note_action(conn, action, payload, request_id=request_id)
+
+
+def save_tag(home, data):
+    action, payload, request_id = _command(data)
+    with closing(store.connect(home)) as conn:
+        return personal.tag_action(conn, action, payload, request_id=request_id)
 
 
 def note_recovery(home, note_id):

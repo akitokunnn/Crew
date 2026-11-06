@@ -27,9 +27,12 @@ GLOBAL_TABLES = frozenset((
     'ai_settings', 'ai_task_settings', 'execution_settings', 'sound_settings', 'trust_schema_migrations', 'usage_files',
     'notification_inbound', 'lark_notification_inbound',
     'personal_assistant', 'personal_note_requests', 'personal_action_receipts', 'task_artifact_requests',
+    # The tag library is shared by every workspace; discussions point at the
+    # HOME's assistant journal. Recovered notes re-register tags on first read.
+    'personal_note_tags', 'personal_note_discussions',
 ))
 FEATURE_TABLES = frozenset(('goal_decision_modes', 'goal_report_publications', 'personal_notes', 'personal_note_leaders',
-    'personal_assistant', 'personal_note_requests', 'personal_action_receipts', 'behavior_prompts',
+    'personal_note_tags', 'personal_note_discussions', 'personal_assistant', 'personal_note_requests', 'personal_action_receipts', 'behavior_prompts',
     'behavior_prompt_history', 'behavior_prompt_applications', 'imported_feature_audits',
     'task_artifact_versions', 'task_artifact_files', 'task_restore_operations', 'task_restore_files', 'task_artifact_requests'))
 

@@ -4,13 +4,13 @@ from urllib.parse import unquote, urlsplit
 
 GET_PATHS = frozenset((
     '/api/access/context', '/api/state', '/api/projects', '/api/workspaces/activity',
-    '/api/assistant/state', '/api/personal/notes', '/api/personal/notes/recovery',
+    '/api/assistant/state', '/api/personal/notes', '/api/personal/notes/recovery', '/api/personal/tags',
     '/api/goals', '/api/goal', '/api/goals/report', '/api/documents', '/api/comments',
     '/api/chat/history', '/api/chat/events', '/api/chat/file', '/api/files/content',
     '/api/git', '/api/git/commit', '/api/sounds/custom/file', '/api/usage', '/api/usage/export', '/api/channel', '/api/todos', '/api/runtimes',
 ))
 POST_PATHS = frozenset((
-    '/api/assistant/open', '/api/personal/notes', '/api/personal/notes/start',
+    '/api/assistant/open', '/api/personal/notes', '/api/personal/notes/start', '/api/personal/tags',
     '/api/personal/notes/recovery', '/api/chat/send', '/api/chat/interrupt', '/api/chat/read',
     '/api/leader', '/api/wake', '/api/spawn', '/api/member-defaults', '/api/roster/move', '/api/roster/remove',
     '/api/notifications/away', '/api/goals/create', '/api/goals/action', '/api/goals/context',

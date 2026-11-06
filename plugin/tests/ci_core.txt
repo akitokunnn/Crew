@@ -47,6 +47,7 @@ test_chat_loading
 test_channel
 test_leader_channel_http
 test_assistant_http
+test_notes_wall   # 想法墙：想法/标签动作、助手读写、去聊聊、导出恢复
 test_mixed_messaging
 test_message_receipts
 test_dispatch_visibility

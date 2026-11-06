@@ -19,9 +19,9 @@ class PersonalNotesTests(unittest.TestCase):
         self.root = Path(temporary.name)
         self.home = self.root / 'home'
 
-    def capture(self, **fields):
-        return api.save_note(self.home, {'action': 'capture', 'request_id': 'capture-1', 'text': '健身打卡 app',
-                                         'tags': ['健身'], **fields})
+    def capture(self, request_id='capture-1', **fields):
+        return api.save_note(self.home, {'action': 'capture', 'request_id': request_id,
+                                         'data': {'text': '健身打卡 app', 'tags': ['健身'], **fields}})
 
     def project(self):
         root = self.root / 'fitness'
@@ -33,13 +33,13 @@ class PersonalNotesTests(unittest.TestCase):
     def test_quick_capture_list_edit_and_archive_never_create_assistant_or_model(self):
         with (mock.patch('crew.settings.resolve', side_effect=AssertionError('no AI configuration')),
               mock.patch('subprocess.Popen', side_effect=AssertionError('no native process'))):
-            self.assertEqual(api.notes(self.home), {'notes': [], 'model_calls': 0})
+            self.assertEqual(api.notes(self.home), {'notes': [], 'stale_days': 14, 'model_calls': 0})
             self.assertFalse(self.home.exists())
             note = self.capture()['note']
             self.assertEqual(note['source'], {'type': 'human', 'surface': 'personal-notes'})
             self.assertEqual(len(api.notes(self.home)['notes']), 1)
-            changed = api.save_note(self.home, {'action': 'update', 'request_id': 'edit-1', 'note_id': note['id'],
-                'expected_version': note['version'], 'text': '简单健身打卡 app', 'state': 'archived'})['note']
+            changed = api.save_note(self.home, {'action': 'update', 'request_id': 'edit-1', 'data': {'note_id': note['id'],
+                'expected_version': note['version'], 'text': '简单健身打卡 app', 'state': 'archived'}})['note']
             self.assertEqual(changed['original_text'], '健身打卡 app')
             self.assertEqual(changed['tags'], ['健身'])
             self.assertEqual(changed['source'], note['source'])
@@ -53,14 +53,14 @@ class PersonalNotesTests(unittest.TestCase):
         first, again = self.capture(), self.capture()
         self.assertEqual(first['note']['id'], again['note']['id'])
         self.assertTrue(again['duplicate'])
-        data = {'action': 'update', 'request_id': 'edit', 'note_id': first['note']['id'],
-                'expected_version': 1, 'text': '修改内容', 'tags': ['应用']}
+        data = {'action': 'update', 'request_id': 'edit', 'data': {'note_id': first['note']['id'],
+                'expected_version': 1, 'text': '修改内容', 'tags': ['应用']}}
         updated = api.save_note(self.home, data)
         retried = api.save_note(self.home, data)
         self.assertTrue(retried['duplicate'])
         self.assertEqual(retried['note']['version'], updated['note']['version'])
         with self.assertRaisesRegex(board.Conflict, '不同的想法操作'):
-            api.save_note(self.home, {**data, 'text': '另一个修改'})
+            api.save_note(self.home, {**data, 'data': {**data['data'], 'text': '另一个修改'}})
         with self.assertRaisesRegex(board.Conflict, '已变化'):
             api.save_note(self.home, {**data, 'request_id': 'stale'})
 
@@ -78,7 +78,9 @@ class PersonalNotesTests(unittest.TestCase):
         self.assertEqual(first['session_id'], duplicate['session_id'])
         self.assertTrue(duplicate['duplicate'])
         self.assertEqual(len(manager.processes), 1)
-        saved = api.notes(self.home)['notes'][0]
+        self.assertEqual(api.notes(self.home)['notes'], [])
+        saved = api.notes(self.home, include_archived=True)['notes'][0]
+        self.assertEqual((saved['stage'], saved['state']), ('promoted', 'archived'))
         self.assertEqual(saved['leader']['source']['original_text'], '健身打卡 app')
         self.assertEqual(saved['leader']['source']['id'], note['id'])
         self.assertEqual(saved['leader']['status'], 'completed')

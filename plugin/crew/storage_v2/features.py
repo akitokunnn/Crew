@@ -21,7 +21,8 @@ FIELDS = {
     'goal_report_publications': ('fingerprint', 'created_at'),
     'goal_continuations': ('round', 'requirement_version', 'previous_status', 'reason', 'actor', 'review_json', 'finish_json', 'round_json', 'created_at'),
     'goal_discussion_executions': ('created_at', 'promoted_at'),
-    'personal_notes': ('original_text', 'text', 'tags_json', 'state', 'version', 'created_at', 'updated_at', 'source_json'),
+    'personal_notes': ('original_text', 'text', 'tags_json', 'state', 'version', 'created_at', 'updated_at', 'source_json',
+                       'title', 'pinned_at', 'snoozed_until', 'stage', 'last_discussed_at', 'reviewed_at', 'summary_json'),
     'personal_note_leaders': ('source_json', 'status', 'error', 'created_at', 'updated_at'),
     'native_session_controls': ('state', 'updated_at'),
     'behavior_prompt_applications': ('status', 'created_at'),
@@ -45,6 +46,18 @@ def _safe_manifest(value):
             'purpose': value.get('purpose'), 'imported_history': True}
 
 
+def _merge_order(rows):
+    """Merge targets before the notes merged into them, so each merged note can
+    reference its primary's record. Older sources have no merged_into column."""
+    by_id = {row['id']: row for row in rows}
+    def depth(row):
+        count = 0
+        while row.get('merged_into') in by_id:
+            row, count = by_id[row['merged_into']], count + 1
+        return count
+    return sorted(rows, key=depth)
+
+
 def project(p):
     """Project only explicit domain fields; no arbitrary source SQL/JSON replay."""
     parents = {}
@@ -55,7 +68,8 @@ def project(p):
         return next((m['id'] for m in p.mappings.get((table, p.sourcekey(table, row)), ()) if m['table'] == target), None)
 
     for kind in FIELDS:
-        for row in p.rows.get(kind, ()):
+        rows = p.rows.get(kind, ())
+        for row in (_merge_order(rows) if kind == 'personal_notes' else rows):
             owner = row.get('owner_session_id') or row.get('session_id')
             if kind in ('behavior_prompts', 'behavior_prompt_history'):
                 if row['scope'] == 'global':
@@ -82,6 +96,10 @@ def project(p):
                 refs['todo_id'] = mapped('todos', row['todo_id'], 'todos')
             elif kind in ('goal_report_publications', 'goal_continuations'):
                 refs['report_id'] = mapped('goal_reports', row['report_id'], 'reports')
+            elif kind == 'personal_notes':
+                # A merge travels when its primary is in this workspace. Tags,
+                # discussion links and global notes stay in the HOME.
+                refs['parent_record_id'] = parents.get(('personal_notes', row.get('merged_into')))
             elif kind == 'personal_note_leaders':
                 refs['parent_record_id'] = parents.get(('personal_notes', row['note_id']))
             elif kind in ('task_artifact_files', 'task_restore_operations'):
@@ -182,7 +200,8 @@ def activate(m):
                 m.insert(kind, dict(data, execution_id=row['execution_id'], message_id='imported:' + row['id'], promotion_json=None),
                          'workspace_feature_records', row['id'])
             elif kind == 'personal_notes':
-                m.insert(kind, dict(data, id=row['id'], project=m.project), 'workspace_feature_records', row['id'])
+                m.insert(kind, dict(data, id=row['id'], project=m.project, merged_into=row['parent_record_id']),
+                         'workspace_feature_records', row['id'])
             elif kind == 'personal_note_leaders':
                 m.insert(kind, dict(data, note_id=row['parent_record_id'], project=m.project,
                     request_id='imported:' + row['id'], session_id=row['owner_agent_id']), 'workspace_feature_records', row['id'])
