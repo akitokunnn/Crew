@@ -54,7 +54,7 @@ function tabsState(state){
   tabsBar.append(item);
  }
  tabsBar.append(button('打开工作区标签 · Ctrl+T',['M10 4v12','M4 10h12'],'home','crew-tab-add'));
- const active=state.tabs.find(tab=>tab.id===state.activeId);homePane.hidden=state.activeId!=='home';viewArea.classList.toggle('crew-view-active',state.activeId!=='home');
+ const active=state.tabs.find(tab=>tab.id===state.activeId);homePane.hidden=state.activeId!=='home'&&state.transition?.from!=='home';viewArea.classList.toggle('crew-view-active',state.activeId!=='home');
  recovery.hidden=!active?.error;if(active?.error)recovery.querySelector('p').textContent='暂时无法打开这个工作区，请检查连接后重试。其他标签仍然保留。';
  titleNode.textContent=active?.name || '工作区';
  const activeButton=tabsBar.querySelector('[data-tab-id="'+CSS.escape(state.activeId)+'"]');
