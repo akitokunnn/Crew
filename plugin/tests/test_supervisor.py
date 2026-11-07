@@ -656,6 +656,25 @@ class SupervisorUtilityTests(unittest.TestCase):
             self.assertEqual(reloaded._requests, set())
             self.assertIsNone(reloaded.last_request_id)
 
+    def test_backend_output_is_kept_in_the_logs_folder_and_bounded(self):
+        with tempfile.TemporaryDirectory(prefix="crew-admin-backend-log-") as directory:
+            admin = supervisor.Supervisor(directory)
+            trace = 'FileNotFoundError: ' + 'p' * 1500
+            for kind, line in (("stderr", "Traceback (most recent call last):"), ("stderr", trace),
+                               ("stderr", ""), ("stdout", "plain output")):
+                admin._output.put((admin._generation, kind, line))
+            admin._output.put((admin._generation + 1, "stderr", "old generation"))
+            admin._drain_output()
+            logs = Path(directory) / "desktop" / "logs"
+            lines = (logs / "backend.log").read_text(encoding="utf-8").splitlines()
+            self.assertEqual([line.split(" ", 2)[1:] for line in lines],
+                             [["stderr", "Traceback (most recent call last):"], ["stderr", trace], ["stdout", "plain output"]])
+            with mock.patch.object(supervisor, "MAX_BACKEND_LOG_BYTES", 64):
+                admin._output.put((admin._generation, "stderr", "after rotation"))
+                admin._drain_output()
+            self.assertIn(trace, (logs / "backend.previous.log").read_text(encoding="utf-8"))
+            self.assertTrue((logs / "backend.log").read_text(encoding="utf-8").endswith(" stderr after rotation\n"))
+
     def test_url_is_local_root_without_redirect_credentials_or_project_context(self):
         self.assertEqual(supervisor._url("http://127.0.0.1:1234/"), ("http://127.0.0.1:1234", 1234))
         for value in ("https://127.0.0.1:1234", "http://example.com:1234", "http://user@127.0.0.1:1234",

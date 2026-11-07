@@ -2246,7 +2246,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             # The HTTP boundary must return 500 and print the original traceback.
             traceback.print_exc()
-            self._send(500, {"error": "\u670d\u52a1\u5668\u9519\u8bef\uff0c\u8bf7\u67e5\u770b\u670d\u52a1\u7aef\u65e5\u5fd7"})
+            self._send(500, {"error": "\u670d\u52a1\u5668\u9519\u8bef\uff0c\u539f\u56e0\u89c1 Crew \u83dc\u5355\u201c\u5e2e\u52a9 \u2192 \u67e5\u770b\u65e5\u5fd7\u6587\u4ef6\u5939\u201d\u91cc\u7684 backend.log"})
 
     def log_message(self, format, *args):
         # The page polls every 3 seconds; access lines would bury real errors (tracebacks still print).
