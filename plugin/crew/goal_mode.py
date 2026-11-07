@@ -1,5 +1,5 @@
 """A task's decision policy, separate from native execution permissions."""
-from . import board, goals, trust_mode
+from . import behavior_prompts, board, goals, trust_mode
 
 MODES = frozenset(('human', 'autonomous'))
 
@@ -67,13 +67,9 @@ def context(conn, goal_id):
     policy = get(conn, goal_id)
     prefix = '本任务最新决策模式（goal %s，v%s）：%s。仅作用于本任务，以本条任务配置为准。\n' % (
         goal_id, policy['version'], 'AI 自主决策' if policy['mode'] == 'autonomous' else '用户拍板')
-    common = ('本设置不改变原生工具执行权限，不是启动或恢复任务的指令；人工停止仍须尊重。'
-              '用户亲手做的事登记人工 TODO，最终验收要求仍按本任务原要求执行。')
-    if policy['mode'] == 'autonomous':
-        return prefix + ('在已授权任务范围内自行选择方案、修改必要文件、调用实际可用的工具与服务；本模式不新增只读或禁止外部服务的限制。'
-                         '登记决定时明确 recommendation 和理由；程序仅在本任务仍有效时采纳建议。'
-                         '不能把其他任务或总对话的授权带入本任务。') + common
-    return prefix + '真正需要用户决定的取舍走拍板流程，不得继承其他任务或 leader 的自主授权。' + common
+    owner = goals.get(conn, goal_id)['leader_session_id']
+    return prefix + behavior_prompts.text(conn, 'goal_autonomous' if policy['mode'] == 'autonomous' else 'goal_human',
+                                          session_id=owner)
 
 
 def decision_policy(conn, decision_id):

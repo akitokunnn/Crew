@@ -170,7 +170,7 @@ def handle(event, data, home, plugin_root, environ, git_provider=git_details, no
                 lines = ["Crew 项目：%s" % p["name"], "我的 crew 名：%s" % (s["crew_name"] if s["crew_name"] is not None else "未收编（不要自己 crew join；用户说“收编到某某”时再照 /crew:member 收编）"),
                          "分组：%s；leader：%s；SendMessage 地址：%s" % (s["group_name"], leader["crew_name"] if leader else None, leader["cc_name"] if leader else None),
                          '命令行：python "%s" ...' % (Path(home).resolve() / "crew.py"),
-                         "请遵守 /crew:%s" % rules.skill_role(conn, s)] + lines
+                         "请遵守 Crew 注入的守则（[Crew {0}]，可能已被用户在设置里修改）；没有看到注入时调用 /crew:{0} 读取".format(rules.skill_role(conn, s))] + lines
                 lines.append("跨执行工具的会话消息用 crew send <crew名> \"<内容>\"；crew who <名字> 可查 runtime。双方都是 Claude Code 时仍可用 SendMessage。")
             config = board.git_config(conn, p["name"])
             if config is not None:

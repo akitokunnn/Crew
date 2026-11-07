@@ -56,6 +56,6 @@ def migration_notice(conn, session):
     for change in reversed(workspace_settings.directory_changes(conn, session['project'])):
         moved = next((item for item in change['sessions'] if item['session_id'] == session['session_id']), None)
         if moved and store.norm_path(moved['old_cwd']) != store.norm_path(moved['new_cwd']):
-            return ('工作区目录已迁移。本次执行工作目录为 %s；旧目录中的对话与文件引用保留为历史，'
-                    '不授予旧路径新的写入权限。' % session['cwd'])
+            from . import behavior_prompts
+            return behavior_prompts.text(conn, 'workspace_moved', session_id=session['session_id'], values={'cwd': session['cwd']})
     return None

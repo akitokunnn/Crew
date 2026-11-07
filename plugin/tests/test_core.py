@@ -734,9 +734,13 @@ class RuleReadTests(CoreCase):
 
 
 class RuleTextTests(unittest.TestCase):
+    def injected(self, role):
+        # Shared rules live once in the catalog; assert what each role actually receives.
+        from crew import behavior_prompts
+        return "\n".join(behavior_prompts.DEFAULTS[key] for key in behavior_prompts.bundle(role))
+
     def roles(self):
-        paths = (PLUGIN / "skills" / "leader" / "SKILL.md", PLUGIN / "skills" / "member" / "SKILL.md", PLUGIN / "agents" / "leader.md")
-        return [(path, path.read_text(encoding="utf-8")) for path in paths]
+        return [(role, self.injected(role)) for role in ("leader", "member")]
 
     def test_execution_context_preserves_sources_limits_and_handoff(self):
         for path, content in self.roles():
@@ -770,7 +774,7 @@ class RuleTextTests(unittest.TestCase):
                 self.assertRegex(content, r"todo")
 
     def test_user_facing_decisions_name_the_matter_and_keep_numbers_internal(self):
-        cases = self.roles() + [(PLUGIN / "skills" / "git" / "SKILL.md", (PLUGIN / "skills" / "git" / "SKILL.md").read_text(encoding="utf-8"))]
+        cases = self.roles() + [("git", self.injected("git"))]
         for path, content in cases:
             with self.subTest(path=path):
                 self.assertRegex(content, r"事项名称|一句话说是什么事|要用户决定的事")
@@ -783,8 +787,8 @@ class RuleTextTests(unittest.TestCase):
                 self.assertNotIn("然后只提题号", content)
 
     def test_leader_can_work_directly_without_waking_members_to_query_progress(self):
-        leader, member, agent = [content for _, content in self.roles()]
-        for content in (leader, agent):
+        leader, member = [content for _, content in self.roles()]
+        for content in (leader,):
             self.assertRegex(content, r"直接写业务代码|直接实施")
             self.assertRegex(content, r"不逐个叫醒成员查进度|状态查询读取已有事实，不叫醒成员")
             self.assertNotIn("你不写业务代码", content)

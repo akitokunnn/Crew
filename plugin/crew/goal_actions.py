@@ -3,7 +3,7 @@ from contextlib import closing
 import hashlib
 import json
 
-from . import board, goal_artifacts, goal_context, goal_mode, goal_reports, goal_work, goals, store
+from . import behavior_prompts, board, goal_artifacts, goal_context, goal_mode, goal_reports, goal_work, goals, store
 
 READ_ACTIONS = frozenset(('status', 'report-template', 'report.get', 'report.preview', 'context.inspect', 'context.retrieve', 'work.list')) | goal_artifacts.READ_ACTIONS
 GOAL_ACTIONS = frozenset(('status', 'create', 'start', 'pause', 'resume', 'cancel', 'reopen',
@@ -32,7 +32,7 @@ def report_template(conn, goal_id):
                       'user_test': '对象数组 [{step,expected}]；awaiting_acceptance 时至少一项，步骤与预期均为非空文本',
                       'user_todos': '可选对象数组 [{title,detail}]；系统收尾成功时自动创建归属 leader 的人工待办，不挂在目标页',
                       'user_decisions': '可选对象数组 [{question,options:[],recommendation:null,why}]；系统收尾成功时自动创建归属 leader 的非阻塞待拍板',
-                      'document_html': 'leader 按任务设计的自包含 HTML 正文（最多 512 KiB）；结构、图表和交互按需选择，CSS/JS 内联，图片用 data URI，不加载外网资源。验收记录另行展开。CLI 可用 finish --html-file <报告.html> 读取正文；Codex 在 report.document_html 传同样内容',
+                      'document_html': '自包含 HTML 正文（最多 512 KiB），写法与预览按 [Crew final_report]。CLI 可用 finish --html-file <报告.html> 读取正文；Codex 在 report.document_html 传同样内容',
                       'acceptance_status': 'passed|failed|unverified|simulated',
                       'acceptance': 'awaiting_acceptance/completed 必须覆盖全部标准；progress/failed/cancelled 可只列部分或省略，编号仍须合法且不重复',
                       'evidence': '对象数组，例如 [{"label":"命令实测输出","reference":"artifacts/result.txt"}]；未验证可用 []，不能填字符串数组',
@@ -313,7 +313,7 @@ def dispatch(home, actor_session_id, execution_id, action, data, controller=None
                     controller.sync(conn, goal_id)
                     return {'ok': True, 'goal': goals.get(conn, goal_id), 'resumed': 'finalization'}
             return controller.send(goal_id, goal['leader_session_id'],
-                                   data.get('text') or '明确恢复本目标；按原始要求与已有证据续接，先核对进度，不重复已经完成的工作。',
+                                   data.get('text') or behavior_prompts.text(conn, 'resume_nudge', session_id=goal['leader_session_id'], values={'reason': '用户明确恢复本目标，按原始要求与已有证据续接'}),
                                    source='human' if actor_session_id == board.HUMAN else 'crew')
         if action == 'reopen':
             return goals.reopen(conn, goal_id, data.get('text'), actor=actor_session_id)

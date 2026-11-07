@@ -44,4 +44,4 @@ def reminder(conn, session_id, plugin_root):
     read = conn.execute("SELECT role,digest FROM rule_reads WHERE session_id=?", (session_id,)).fetchone()
     if read is not None and (read["role"], read["digest"]) == (role, current):
         return None
-    return "Crew 守则（/crew:%s）有更新，你上次读的不是最新版。先调用 /crew:%s 重读一遍，再处理这条消息。" % (role, role)
+    return behavior_prompts.text(conn, 'role_reminder', session_id=session_id, values={'role': role}, plugin_root=plugin_root)

@@ -403,7 +403,7 @@ class AssistantNotesTests(NotesFixture):
             self.assertIn(action, skill, action)
             self.assertIn(action, tool, action)
         self.assertTrue(set(writes) <= set(context['write_actions']))
-        self.assertIn('note.annotate', context['instructions'])
+        self.assertIn('[Crew assistant]', context['instructions'])
 
 
 class NotesHttpFixture(ShellFixture):

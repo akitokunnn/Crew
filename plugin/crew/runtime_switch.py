@@ -162,15 +162,10 @@ def _texts(events):
     return chunks
 
 
-SWITCH_INTRO=('Crew 载体交接。Crew 身份、所属组、任务卡与文件未改变；两种工具的原生历史没有互相转换。',
-              '以下是白板事实和最近聊天片段，并非已经验证的成果；不要把历史中的完成声明当作验收证据。')
-LOST_NATIVE_INTRO=('Crew 新会话交接。原生会话已丢失，无法接回；Crew 身份、所属组、任务卡与文件未改变。',
-                   '以下是白板事实和最近聊天片段，并非已经验证的成果；不要把历史中的完成声明当作验收证据。')
-
-
-def handoff(conn,session,journal,intro=SWITCH_INTRO):
+def handoff(conn,session,journal,intro='switch_handoff'):
+    from . import behavior_prompts
     card=conn.execute('SELECT scope,done_when FROM session_cards WHERE session_id=?',(session['session_id'],)).fetchone()
-    lines=[*intro,
+    lines=[behavior_prompts.text(conn,intro,session_id=session['session_id']).rstrip('\n'),
            '成员：'+session['crew_name'],'项目：'+str(session['project']),'所属组：'+str(session['group_name'] or '未分组'),
            '当前任务：'+str(session.get('task') or '未填写'),'工作目录：'+str(session.get('cwd') or ''),'分支：'+str(session.get('branch') or '')]
     if card:lines+=['职责范围：'+str(card['scope'] or '未填写'),'完成标准：'+str(card['done_when'] or '未填写')]

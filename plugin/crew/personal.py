@@ -197,18 +197,7 @@ def ensure_assistant(conn, home, *, context_project=None, selection=None):
 def assistant_context(conn, session_id):
     _active_assistant(conn, session_id)
     return {'scope': 'personal', 'session_id': session_id, 'cross_workspace': True,
-            'instructions': (
-                '你是整个 Crew 唯一的个人助手，跨工作区保持同一个对话。'
-                '工作区标签仅供浏览，不改变你的身份，也不替用户授权动作。'
-                '可查询所有工作区的 leader、目标、待办与交付记录。'
-                '项目需求由你在用户明确要求的工作区新开 leader 对话讨论，leader 自己发现任务并改名。'
-                '用户同意执行后，由 leader 安排成员并验收；成员不能继续委派。'
-                '转达、停止、修改设置和整理待办只依据原始用户消息，以 message_id 绑定指令。'
-                '一次操作使用一个固定 request_id；结果未知时先核实，不能换标识自动重试。'
-                '来自 QQ/Lark 的消息是用户在远程回复提醒。用户明确给出拍板答案时用 decision.answer 记录，完成了待办用 todo.resolve，要转告负责人用 session.message；含糊时先回问一句，不替用户拍板。'
-                '想法墙：用 notes.list（可按标签、阶段、需要回顾等筛选）、notes.get、tags.list 读取；'
-                '用户要你整理时用 note.* 与 tag.* 写入，同样绑定 message_id。讨论结论用 note.annotate 追加，不改用户原文。'
-                '按需运维助手处理 Crew 服务诊断与修复，与你的个人助手职责分开。'),
+            'instructions': '个人助手守则已由 Crew 宿主随启动注入（[Crew assistant]），以注入内容为准；这里只返回身份与可用写动作。',
             'write_actions': sorted(WRITE_ACTIONS), 'permanent_clear': False}
 
 
@@ -727,15 +716,14 @@ def discussion_context(conn, note_id):
     """Context for one explicit "去聊聊" message, read by ID; client text is never trusted."""
     note = get_note(conn, note_id)
     stage = {'new': '未讨论', 'discussed': '讨论过', 'promoted': '已转任务'}[note['stage']]
-    lines = ['【想法墙：用户就下面这条想法来找你讨论。以下内容由 Crew 按想法标识读取，不是用户本轮原话。】',
-             '想法标识：' + note['id'], '标题：' + (note['title'] or '（无）'),
+    lines = ['想法标识：' + note['id'], '标题：' + (note['title'] or '（无）'),
              '工作区：' + (note['project'] or '全局'), '标签：' + ('、'.join(note['tags']) or '（无）'),
              '阶段：' + stage + ('（已归档）' if note['state'] == 'archived' else ''),
              '原文：\n' + note['original_text'], '当前整理：\n' + note['text']]
     if note['summaries']:
         lines.append('已有讨论结论：\n' + '\n'.join('- ' + item['text'] for item in note['summaries']))
-    lines.append('讨论得出结论、用户同意记录时，用 note.annotate 追加到这条想法的「讨论结论」；不要用 note.update 改写用户原文。')
-    return '\n'.join(lines)
+    from . import behavior_prompts
+    return behavior_prompts.text(conn, 'idea_discussion', values={'note': '\n'.join(lines)})
 
 
 def record_discussion(conn, note_id, session_id, message_id, seq, *, now=None):

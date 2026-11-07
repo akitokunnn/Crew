@@ -121,7 +121,8 @@ class GitRulesTests(CoreCase):
 
     def test_git_admin_startup_and_rule_reminder_use_git_skill(self):
         self.enable()
-        self.assertIn("请遵守 /crew:git", self.context("s3"))
+        self.assertIn("[Crew git]", self.context("s3"))
+        self.assertIn("/crew:git", self.context("s3"))
         self.assertIn("/crew:git", rules.reminder(self.conn, "s3", self.fake_plugin))
         data = self.data("s3", tool_name="Skill", tool_input={"skill": "crew:git"})
         self.assertEqual(hooks.handle("guard", data, self.home, self.fake_plugin, {}, now=NOW), (0, None))
@@ -132,6 +133,7 @@ class GitRulesTests(CoreCase):
     def test_ordinary_leader_keeps_leader_skill(self):
         self.enable()
         board.join(self.conn, "s2", "demo", "lead", self.root, store.norm_path(self.root), "main", role="leader", now=NOW)
-        self.assertIn("请遵守 /crew:leader", self.context("s2"))
+        self.assertIn("[Crew leader]", self.context("s2"))
+        self.assertIn("/crew:leader", self.context("s2"))
         self.assertIn("/crew:leader", rules.reminder(self.conn, "s2", self.fake_plugin))
         self.assertNotIn("/crew:git", rules.reminder(self.conn, "s2", self.fake_plugin))

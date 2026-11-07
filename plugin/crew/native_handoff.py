@@ -9,7 +9,7 @@ from urllib.parse import quote
 import threading
 import uuid
 
-from . import board, codex_client, codex_desktop, goals, native_home, runtimes, store
+from . import behavior_prompts, board, codex_client, codex_desktop, goals, native_home, runtimes, store
 
 
 # Production backend initialization is already serialized by HomeServiceLock.
@@ -179,9 +179,10 @@ def release(manager, session_id, execution_id=None):
         with closing(store.connect(manager.home)) as conn:
             value = describe(conn, session_id, execution_id)
             role = board.session(conn, session_id)['role']
+            instructions = behavior_prompts.desktop_instructions(conn, session_id, role)
     # Preflight before changing native instructions/processes. Desktop discovery
     # and readiness can take seconds; they must not block other conversations.
-    desktop = codex_desktop.prepare(manager.home, {**value, 'role': role})
+    desktop = codex_desktop.prepare(manager.home, {**value, 'role': role, 'desktop_instructions': instructions})
     with manager.lock:
         if manager.busy(key) or manager.maintenance_held(session_id):
             raise board.Conflict('会话正在执行，请等这一轮结束后再到 Codex 桌面继续')

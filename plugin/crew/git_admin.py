@@ -4,7 +4,7 @@ import json
 import uuid
 from pathlib import Path
 
-from . import board, models, runtimes, session_ops, settings
+from . import behavior_prompts, board, models, runtimes, session_ops, settings
 
 
 def revision(config):
@@ -54,7 +54,7 @@ def input_context(conn, session_id, previous_revision, plugin_root):
             '合并规则有更新，操作前用 %s 读取全文，遵守项目文件与远端分支保护。' %
             (admin['crew_name'] if admin else '未绑定', config['admin_session_id'], config['base'], config['stable'] or '未设置', command))
     if config['admin_session_id'] == session_id:
-        text += '你现在负责统一推送、PR 与合并；先读取 Git 助手守则：' + str(Path(plugin_root) / 'skills' / 'git' / 'SKILL.md')
+        text += '你现在负责统一推送、PR 与合并，按 Crew 注入的 Git 助手守则执行。'
     else:
         text += ('推送、开 PR、合并交给 Git 助手，用 crew git request "<改动、验证、后续>" [--blocking]'
                  '（Codex crew_git 的 request；确有后续阻塞才加 data.blocking=true）。'
@@ -93,12 +93,6 @@ def configure(conn, project_name, data, now=None):
     return {'ok': True, 'config': config, 'revision': revision(config)}
 
 
-TASK = """你是本项目内置的 Git 助手，不承接产品任务；开工先读以下本地 Crew 守则文本，Git 权限按后者：
-{leader_rules}
-{git_rules}
-先读项目 AGENTS.md、CLAUDE.md 和贡献文档，写出直接合入 base、分支 PR、分支命名、提交信息格式的规则，
-用 {policy_command} 保存。随后用 {requests_command} 处理请求；等待 CI 时不要轮询，Crew 会通知你。
-只在自己的 worktree 操作，不碰用户主工作区和组员未提交的内容。"""
 
 
 def enable(conn, home, plugin_root, project_name, launcher, base=None, stable=None, now=None, runtime=None):
@@ -117,10 +111,9 @@ def enable(conn, home, plugin_root, project_name, launcher, base=None, stable=No
         'model': configured['model'] if configured['runtime'] in (None, runtime) else None,
         'effort': configured['effort'] if configured['runtime'] in (None, runtime) else None}
     runtime = selected['runtime']
-    rules = Path(plugin_root).resolve() / "skills"
-    task = TASK.format(leader_rules=rules / "leader" / "SKILL.md", git_rules=rules / "git" / "SKILL.md",
-                       policy_command='crew_git(action="policy", data={"text":"规则正文"})' if runtime == 'codex' else 'crew git policy --set',
-                       requests_command='crew_git(action="requests")，处理后用 action="resolve"' if runtime == 'codex' else 'crew git requests')
+    task = behavior_prompts.text(conn, 'git_task', project=project_name, values={
+        'policy_command': 'crew_git(action="policy", data={"text":"规则正文"})' if runtime == 'codex' else 'crew git policy --set',
+        'requests_command': 'crew_git(action="requests")，处理后用 action="resolve"' if runtime == 'codex' else 'crew git requests'})
     result = launcher(conn, project_name, "Git 助手", task, group="git", role="leader",
                       new_worktree="crew/git-admin-" + uuid.uuid4().hex[:8], base=base, now=now,
                       model=selected['model'], effort=selected['effort'], agent="crew:git", runtime=runtime)

@@ -2,7 +2,7 @@
 import json
 from urllib.parse import urlencode
 
-from . import board, documents, goal_context, goal_work, goals, native_handoff
+from . import behavior_prompts, board, documents, goal_context, goal_work, goals, native_handoff
 
 ACCEPTANCE_STATUSES = ('passed', 'failed', 'unverified', 'simulated')
 
@@ -159,7 +159,7 @@ def post(service, conn, project, path, data):
                 goals.transition(conn, identity, 'running')
                 control.sync(conn, identity)
             else:
-                control.send(identity, value['leader_session_id'], '用户恢复当前目标，请按原始要求与已有证据继续。')
+                control.send(identity, value['leader_session_id'], behavior_prompts.text(conn, 'resume_nudge', session_id=value['leader_session_id'], values={'reason': '用户恢复当前目标，按原始要求与已有证据继续'}))
         elif action == 'cancel':
             goals.request_cancel(conn, identity)
             control.sync(conn, identity)
