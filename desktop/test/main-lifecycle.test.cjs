@@ -73,7 +73,7 @@ function harness(options = {}) {
     ipcMain:{ handle:(name,fn) => handlers.set(name,fn), on() {} },
     Menu:{ buildFromTemplate:menu, setApplicationMenu:value => { appMenu = value; }, getApplicationMenu:() => appMenu },
     nativeImage:{ createFromPath:() => ({}) }, shell:{ openExternal:async () => {}, openPath:async () => {} },
-    dialog:{ showMessageBox:async (...args) => { calls.dialogs++; if (args[0] instanceof Window) args[0].alive(); return { response:1 }; }, showOpenDialog:async () => ({ canceled:true }) } };
+    dialog:{ showMessageBox:async (...args) => { calls.dialogs++; if (args[0] instanceof Window) args[0].alive(); return { response:options.dialogResponse ?? 1 }; }, showOpenDialog:async () => ({ canceled:true }) } };
   class Backend {
     constructor() { this.url = options.backendUrl || 'http://127.0.0.1:12345'; }
     async start() { calls.backendStart++; await options.backendStart?.promise; }
@@ -310,6 +310,31 @@ test('a portable executable check finishing after quit cannot schedule relaunch'
   const applying=h.invoke('desktop:launch-settings-apply',{});await tick();assert.equal(h.calls.stat,1);
   h.app.quit();await tick();stat.resolve({isFile:() => true});await applying;await tick();
   assert.equal(h.calls.relaunch,0);assert.equal(h.calls.backendStop,1);assert.equal(h.calls.nativeQuit,1);
+});
+
+test('tray restart relaunches Crew after the normal cleanup when nothing is working',async () => {
+  const routes=[],h=harness({request:async (_base,route) => { routes.push(route); return {sessions:[{name:'lead',busy:false}]}; }});await h.boot();
+  h.trays[0].menu.template.find(item => item.id==='tray-restart').click();await tick();
+  assert.deepEqual(routes,['/api/admin/connection/plan']);assert.equal(h.calls.dialogs,0);
+  assert.equal(h.calls.relaunch,1);assert.equal(h.calls.backendStop,1);assert.equal(h.calls.nativeQuit,1);
+  assert.deepEqual(h.logs,[]);assert.deepEqual(h.shutdownErrors,[]);
+});
+
+test('restart warns about working sessions and cancelling keeps Crew running',async () => {
+  const h=harness({request:async () => ({sessions:[{name:'lead',busy:true}]})});await h.boot();
+  h.menuItem('app-restart').click();await tick();
+  assert.equal(h.calls.dialogs,1);assert.equal(h.calls.relaunch,0);assert.equal(h.calls.backendStop,0);assert.equal(h.calls.nativeQuit,0);
+  h.app.quit();await tick();
+});
+
+test('confirming restart over working sessions relaunches, and an unreachable backend does not block restart',async () => {
+  const h=harness({dialogResponse:0,request:async () => ({sessions:[{name:'lead',busy:true}]})});await h.boot();
+  h.menuItem('app-restart').click();await tick();
+  assert.equal(h.calls.dialogs,1);assert.equal(h.calls.relaunch,1);assert.equal(h.calls.nativeQuit,1);
+  const down=harness({request:async () => { throw new Error('fixture backend down'); }});await down.boot();
+  down.trays[0].menu.template.find(item => item.id==='tray-restart').click();await tick();
+  assert.equal(down.calls.dialogs,0);assert.equal(down.calls.relaunch,1);assert.equal(down.calls.nativeQuit,1);
+  assert.equal(down.logs.length,1);assert.match(String(down.logs[0][1]),/fixture backend down/);
 });
 
 test('a logs lookup finishing during shutdown cannot open a new dialog',async () => {

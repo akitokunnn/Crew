@@ -292,6 +292,33 @@ async function showLogs() {
   try { await fs.access(directory); if (liveWindow(target)) await shell.openPath(directory); }
   catch (_) { if (liveWindow(target)) await dialog.showMessageBox(target,{ type:'info',title:'Crew 日志',message:'还没有可查看的日志',detail:'出现启动问题时，会在这里保留最近的记录。',buttons:['好'],noLink:true }); }
 }
+async function scheduleRelaunch() {
+  const portable=process.env.PORTABLE_EXECUTABLE_FILE;
+  if(portable && !(await fs.stat(portable)).isFile())throw Error('便携程序文件不可用。');
+  if (quitting) return false;
+  app.relaunch({args:relaunchArgs(process.argv.slice(1),config.launchSettingsPath),...(portable?{execPath:portable}:{})});
+  return true;
+}
+async function restartCrew() {
+  if (quitting) return;
+  let busy=[];
+  // Restarting is also the remedy for an unreachable backend, so a failed check only skips the warning.
+  try { const plan=await core.request(backend.url,'/api/admin/connection/plan',undefined,3000); busy=Array.isArray(plan?.sessions)?plan.sessions.filter(item=>item.busy):[]; }
+  catch (error) { console.error('Crew restart check failed:',error); }
+  if (quitting) return;
+  if (busy.length) {
+    const names=busy.slice(0,5).map(item=>item.name).join('、')+(busy.length>5?' 等':'');
+    const result=await dialog.showMessageBox({type:'warning',title:'Crew',message:`有 ${busy.length} 个会话正在工作`,
+      detail:'重启会打断它们当前这一轮：'+names,buttons:['仍然重启','取消'],defaultId:1,cancelId:1,noLink:true});
+    if (result.response!==0 || quitting) return;
+  }
+  try { if(!(await scheduleRelaunch()))return; }
+  catch (error) {
+    if (!quitting) await dialog.showMessageBox({type:'error',title:'Crew',message:'无法重启 Crew',detail:error.message+'请手动退出后重新打开。',buttons:['好'],noLink:true});
+    return;
+  }
+  app.quit();
+}
 function workspaceMenu() {
   return [
     { id:'workspace-home', label:'工作区首页', accelerator:'CmdOrCtrl+Shift+O', click:menuAction(()=>showHome()) },
@@ -317,6 +344,7 @@ function workspaceMenu() {
     { type:'separator' },
     { id:'tab-close', label:'关闭当前标签', accelerator:'CmdOrCtrl+W', click:menuAction(()=>tabs.close(tabs.state().activeId)) },
     { id:'window-close',label:'收起到托盘',click:()=>{if(liveWindow())window.close();} },
+    { id:'app-restart', label:'重启 Crew', click:menuAction(restartCrew) },
     { id:'app-quit', label:'退出 Crew', accelerator:'CmdOrCtrl+Q', click:()=>app.quit() }
   ];
 }
@@ -636,12 +664,7 @@ else {
       }});
       launchSettings=new LaunchSettings(config,{backend,updates:crewUpdates,operations,bundledBackend:config.bundledBackendDir,onApplied:async()=>{
         if (quitting) return;
-        const portable=process.env.PORTABLE_EXECUTABLE_FILE;
-        try{
-          if(portable && !(await fs.stat(portable)).isFile())throw Error('便携程序文件不可用。');
-          if (quitting) return;
-          app.relaunch({args:relaunchArgs(process.argv.slice(1),config.launchSettingsPath),...(portable?{execPath:portable}:{})});
-        }
+        try{ if(!(await scheduleRelaunch()))return; }
         catch(error){throw Error('启动设置已保存，但重新启动失败：'+error.message+'；请手动重新打开 Crew。');}
         setTimeout(()=>app.quit(),250);
       }});
@@ -713,7 +736,7 @@ else {
         tray = new Tray(icon);
         tray.setToolTip(config.instanceName+' · 关闭窗口后继续运行');
         tray.setContextMenu(Menu.buildFromTemplate([{ label: '打开 Crew', click: showWindow },
-          { label: '工作区首页', click:menuAction(()=>showHome()) },{ label:'新建工作区…',click:menuAction(()=>showHome('new')) },{ label:'打开已有项目…',click:menuAction(()=>showHome('open')) }, { type: 'separator' }, { label:'关于 Crew',click:menuAction(aboutCrew) },{ label: '退出 Crew', click: () => app.quit() }]));
+          { label: '工作区首页', click:menuAction(()=>showHome()) },{ label:'新建工作区…',click:menuAction(()=>showHome('new')) },{ label:'打开已有项目…',click:menuAction(()=>showHome('open')) }, { type: 'separator' }, { label:'关于 Crew',click:menuAction(aboutCrew) },{ id:'tray-restart',label:'重启 Crew',click:menuAction(restartCrew) },{ label: '退出 Crew', click: () => app.quit() }]));
         tray.on('double-click', showWindow);
       }
       await window.loadURL(homePage);
