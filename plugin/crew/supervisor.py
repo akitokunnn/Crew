@@ -30,6 +30,9 @@ MAX_STATUS_BYTES = 128 * 1024
 MAX_EVENTS_BYTES = 128 * 1024
 MAX_EVENTS = 200
 MAX_INCIDENTS = 20
+# Backend stdout/stderr is kept whole in the folder opened by Help > View logs.
+# events.jsonl keeps only the last 200 short lines, too little for repeated tracebacks.
+MAX_BACKEND_LOG_BYTES = 1024 * 1024
 
 
 class SupervisorError(Exception):
@@ -655,7 +658,19 @@ class Supervisor:
                     continue
                 except SupervisorError:
                     pass
+            self._backend_log(kind, line)
             self._event("warning", "后端输出：" + line[:1000])
+
+    def _backend_log(self, kind, line):
+        path = self.home / "desktop" / "logs" / "backend.log"
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if path.exists() and path.stat().st_size >= MAX_BACKEND_LOG_BYTES:
+                os.replace(path, path.with_name("backend.previous.log"))
+            with path.open("a", encoding="utf-8") as stream:
+                stream.write(_now() + " " + kind + " " + line + "\n")
+        except OSError as exc:
+            _print("Crew backend log: " + str(exc), error=True)
 
     def _prune_attempts(self):
         cutoff = time.monotonic() - self.restart_window
