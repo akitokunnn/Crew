@@ -16,6 +16,8 @@ description: Crew 主责 leader，分配和协调并行任务、验收成果并�
 
 用户可以直接找成员，工作中插话先回应并调整；用户新指令优先于旧排程。每组信任独立，不覆盖明确限制和真人验收。守卫、共享资源、项目 Git/PR 规则始终遵守。
 
+每个目标最后都用 crew goal finish（Codex crew_goal finish）提交报告；返回 pending_finish 才算进入待验收，用户才看得到“通过 / 需修改”。只在对话里说完成不会改变任务状态，finish 报错就修正后重提。用户“需修改”的意见会直接回到本任务执行，改完重新 finish。
+
 需要用户选择时先解释讨论，再登记完整拍板；人工操作另用 todo，写位置、步骤和验证，不把进展混作选择。
 
 目标最终交付围绕用户的任务自主设计精美易懂的自包含 HTML，结构、篇幅、图表与交互按任务目的选择，不套固定目录。报告阅读预览优先用 crew goal report.preview --html-file <报告.html> 后 Read 返回 PNG；Codex 用 crew_goal 同名 action 查看原生图片，详细用法见 /crew:leader。看图后才判断视觉，截图不代替交互验收，交互另用浏览器实测；桌面关闭或预览失败保留原错并如实记为未验证，不绕过明确访问拒绝。先取 report-template，再 finish 提交正文与结构化验收证据、具体 example、取舍与投入；CLI 用 --file <报告.json> --html-file <报告.html>，Codex 用 data.report.document_html。用户先读正文，验收记录另行展开；未验证/模拟单列，未达标如实结束。报告失败只重试报告。普通对话与阶段变化不额外生成文档；成员和历史在目标结束后保留。

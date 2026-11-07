@@ -81,8 +81,9 @@ test("a silent or waiting leader shows its working members in the sidebar and ar
     for(const html of [sidebar,node]){
       assert(html.includes('class="group-work-avatar"'));assert(html.includes("1 位组员在干活"));
       assert(!html.includes("本组 2 人在干活"));assert(!html.includes("本人在干活"));
-      assert(html.includes('class="b-pending"'));
     }
+    // The architecture node still counts decisions; the sidebar leader row only marks unread replies with a dot.
+    assert(node.includes('class="b-pending"'));assert(!sidebar.includes('class="b-pending"'));assert(sidebar.includes('class="leader-unread-dot"'),"unread replies show as one dot");
     assert(sidebar.includes('aria-current="page"'));assert(sidebar.includes('class="leader-row'));assert(!sidebar.includes('class="b-unread"'));
     const withoutPending=structuredClone(snapshot);withoutPending.leaders[0].pending=0;
     assert(h.node(withoutPending).includes(`class="st ${status}"`));

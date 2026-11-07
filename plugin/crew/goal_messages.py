@@ -270,3 +270,76 @@ def return_turn(home, execution_id, journal):
     except (sqlite3.Error, board.BoardError) as exc:
         journal.emit('error', text='Crew 代为交回本轮结果失败：%s: %s' % (type(exc).__name__, exc))
         return None
+
+
+FINISH_REMINDER = 'crew-finish-reminder:'
+FINISH_REMINDER_GRACE = 30
+FINISH_REMINDER_TEXT = (
+    '[Crew 收尾检查] 任务「%s」在 Crew 里仍是「推进中」：你这一轮已经结束，但没有成员在执行、没有已提交的收尾，'
+    '也没有等用户的拍板或待办。只在对话里说“完成 / 待验收”不会改变任务状态，用户也看不到验收按钮。\n'
+    '- 已完成并验证：按守则写报告，用 crew goal finish（Codex：crew_goal finish）提交，outcome=awaiting_acceptance；'
+    '返回 pending_finish 才算提交成功。报错就按报错修正后重提，例如先把工作清单剩余项标 done 或 cancelled。\n'
+    '- 还有工作：继续推进，或派给成员。\n'
+    '- 需要用户决定或亲手操作：登记拍板或 todo 后结束本轮。\n'
+    '- 在等其他回执（如 Git 助手）：直接结束本轮，不用回复本消息。\n'
+    '这条检查每轮最多出现一次。')
+
+
+def remind_unfinished(controller, conn, now=None):
+    """Wake a goal's leader once when its turn ended with the task still running and nothing in flight.
+
+    The leader may have announced a delivery in chat without submitting ``finish``; that leaves the
+    task "running" with nobody working. Only the leader's own latest task execution is reminded, at
+    most once per ended turn: a turn that was itself a reminder never gets another one.
+    """
+    rows = conn.execute(
+        "SELECT e.id,e.goal_id,g.title,g.leader_session_id FROM goals g JOIN goal_executions e "
+        "ON e.goal_id=g.id AND e.round=g.current_round AND e.session_id=g.leader_session_id "
+        "WHERE g.status='running' AND g.manual_pause=0 AND e.status IN ('idle','offline') "
+        "AND e.generation=(SELECT MAX(generation) FROM goal_executions x WHERE x.goal_id=g.id AND x.round=g.current_round "
+        "AND x.session_id=g.leader_session_id) "
+        "AND NOT EXISTS (SELECT 1 FROM goal_executions o WHERE o.goal_id=g.id AND o.round=g.current_round "
+        "AND o.status IN ('queued','running','pausing')) "
+        "AND NOT EXISTS (SELECT 1 FROM goal_round_finishes f WHERE f.goal_id=g.id AND f.round=g.current_round AND f.status='pending') "
+        "AND NOT EXISTS (SELECT 1 FROM goal_message_meta m WHERE m.goal_id=g.id AND m.status='queued') "
+        "AND NOT EXISTS (SELECT 1 FROM goal_links l LEFT JOIN decisions d ON l.kind='decision' AND d.id=l.item_id "
+        "LEFT JOIN todos t ON l.kind='todo' AND t.id=l.item_id WHERE l.goal_id=g.id AND l.round=g.current_round "
+        "AND (d.status='open' OR t.status='open'))").fetchall()
+    cutoff = board._time(now)
+    for row in rows:
+        key = row['id']
+        if controller.manager.busy(key) or messaging.stopped(conn, row['leader_session_id']):
+            continue
+        journal = controller.manager.journal(key)
+        with journal.condition:
+            journal.refresh()
+            events = list(journal.events)
+        ends = [index for index, event in enumerate(events) if event['type'] == 'turn_result']
+        if not ends or not events[ends[-1]].get('success'):
+            continue
+        end = events[ends[-1]]
+        if any(event['type'] in ('message', 'input_delivery') for event in events[ends[-1] + 1:]):
+            continue  # Newer input is already on its way to this execution.
+        if _seconds_between(end['at'], cutoff) < FINISH_REMINDER_GRACE:
+            continue
+        window = events[(ends[-2] + 1 if len(ends) > 1 else 0):ends[-1]]
+        inputs = [event for event in window if event['type'] == 'message']
+        if not inputs or any(str(event.get('id', '')).startswith(FINISH_REMINDER) for event in inputs):
+            continue
+        identity = '%s%s:%s' % (FINISH_REMINDER, key, end['seq'])
+        refused = controller.finish_reminders_refused
+        if identity in journal.inputs or identity in refused:
+            continue
+        try:
+            controller.send(row['goal_id'], row['leader_session_id'], FINISH_REMINDER_TEXT % row['title'],
+                            identity=identity, source='crew')
+        except (board.BoardError, codex_client.CodexError, OSError) as exc:
+            # Shown once in the task's record; a refused reminder is not retried on every delivery pass.
+            refused.add(identity)
+            journal.emit('error', text='Crew 收尾检查未送达：%s: %s' % (type(exc).__name__, exc))
+
+
+def _seconds_between(earlier, later):
+    from datetime import datetime
+    parse = lambda value: datetime.fromisoformat(value.replace('Z', '+00:00'))
+    return (parse(later) - parse(earlier)).total_seconds()

@@ -1275,23 +1275,40 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
     def test_codex_member_handoff_does_not_mark_delivered_work_paused(self):
         self.member_return_after_acceptance('codex')
 
-    def test_human_rejection_continues_the_same_round_without_starting_a_model(self):
-        goal, report, _, process = self.awaiting_acceptance()
+    def test_human_rejection_resumes_the_same_task_with_the_note(self):
+        goal, report, execution_id, process = self.awaiting_acceptance()
         body = {'goal_id': goal['id'], 'action': 'reject', 'version': goal['version'], 'report_id': report['id']}
         code, result, _ = self.request('/api/goals/action?project=demo', body)
         self.assertEqual(code, 400, result)
         self.assertIsNone(process.poll(), 'Invalid decisions must not close native execution')
         code, result, _ = self.request('/api/goals/action?project=demo', {**body, 'note': 'The delivered page still fails the replay.'})
         self.assertEqual(code, 200, result)
-        self.assertEqual(result['goal']['status'], 'queued')
+        self.assertTrue(result['resumed'], result)
+        self.assertEqual(result['goal']['status'], 'running')
         self.assertFalse(result['acceptance_review']['accepted'])
         self.assertEqual(result['goal']['current_round'], 1)
         self.assertIn('The delivered page still fails the replay.', result['goal']['requirements']['request'])
-        self.assertEqual(len(board.pending_notices(self.conn, 's3')), 1)
+        # The change request goes straight into the task's own execution, not the leader's general chat.
+        self.assertEqual(board.pending_notices(self.conn, 's3'), [])
+        resumed = self.server.service.chat.processes[execution_id].process
+        self.assertIn('用户验收后要求修改：The delivered page still fails the replay.', resumed.stdin.getvalue())
         code, repeated, _ = self.request('/api/goals/action?project=demo', {**body, 'note': 'The delivered page still fails the replay.'})
         self.assertEqual(code, 409, repeated)
-        self.assertEqual(len(board.pending_notices(self.conn, 's3')), 1)
-        self.assertEqual(len(self.processes), 1)
+        self.assertEqual(board.pending_notices(self.conn, 's3'), [])
+
+    def test_rejection_that_cannot_resume_the_task_tells_the_leader_in_general_chat(self):
+        goal, report, execution_id, _ = self.awaiting_acceptance()
+        with mock.patch.object(self.server.service.chat.goal_controller, 'send', side_effect=board.Conflict('用户已停止此会话')):
+            code, result, _ = self.request('/api/goals/action?project=demo', {
+                'goal_id': goal['id'], 'action': 'reject', 'version': goal['version'], 'report_id': report['id'],
+                'note': 'Keep the original evidence.'})
+        self.assertEqual(code, 200, result)
+        self.assertEqual((result['resumed'], result['resume_error']), (False, '用户已停止此会话'))
+        self.assertEqual(result['goal']['status'], 'queued')
+        notices = board.pending_notices(self.conn, 's3')
+        self.assertEqual(len(notices), 1)
+        self.assertIn('Keep the original evidence.', notices[0]['text'])
+        self.assertIn('crew goal start ' + goal['id'], notices[0]['text'])
 
     def follow_up_delivered_goal(self, runtime, decision=None, note='Please fix the report conclusion and explain the final verification.', promote=True):
         goal, report, old_execution, process = self.awaiting_acceptance(runtime)
@@ -1412,7 +1429,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
             'goal_id': goal['id'], 'action': 'reject', 'version': goal['version'],
             'note': 'Preserve the original evidence and fix the conclusion.', 'report_id': report['id']})
         self.assertEqual(code, 200, result)
-        self.assertEqual(result['goal']['status'], 'queued')
+        self.assertEqual(result['goal']['status'], 'running')
         if runtime == 'codex':
             def fresh_client(**options):
                 client = codex_helpers.FakeClient(**options)
@@ -1439,8 +1456,8 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(retry['execution_id'], reply['execution_id'])
         self.assertEqual(len(self.processes), count)
 
-    def test_acceptance_notice_delivers_once_to_leader_general_chat_for_both_outcomes(self):
-        for action in ('accept', 'reject'):
+    def test_acceptance_notice_delivers_once_to_leader_general_chat(self):
+        for action in ('accept',):
             with self.subTest(action=action):
                 goal, report, _, _ = self.awaiting_acceptance()
                 body = {'goal_id': goal['id'], 'action': action, 'version': goal['version'],

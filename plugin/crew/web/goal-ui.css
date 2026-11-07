@@ -66,3 +66,16 @@
 .task-detail-scroll{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;padding:12px 16px 24px}.task-summary{font-size:11px;line-height:1.7;color:var(--text-3);margin:0 0 14px}.task-summary time{white-space:nowrap}
 .task-delivery{border-top:0;margin-top:0;padding-top:0;scroll-margin-top:12px}.task-user-test{font-size:12px;line-height:1.6}.task-user-test h3{font-size:12px;margin:14px 0 6px}.task-user-test ol{padding-left:20px}.task-user-test p{margin:4px 0}
 .leader-tasks{padding:3px 0 10px 18px}.leader-task{display:flex;align-items:center;gap:7px;width:100%;padding:8px 7px;text-align:left;border:0;border-radius:6px;background:none;color:var(--text-2);cursor:pointer;font:inherit;font-size:12px}.leader-task:hover{background:var(--hover)}.leader-task[aria-pressed=true]{background:var(--accent-soft);color:var(--accent-text)}.leader-task .i{width:17px;height:17px;flex:none}.leader-task-title{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.leader-task-tag{flex:none;font-size:10px;color:var(--text-3);font-variant-numeric:tabular-nums}.leader-task[data-state=review] .i{color:var(--working-text)}.leader-task[data-state=decision] .i{color:var(--warn)}.leader-task[data-state=running] .i{color:var(--task-running)}.leader-task[data-state=quiet] .i{color:var(--text-3)}
+/* Acceptance is the user's step: one banner at the top of the task, the same buttons in the report reader and on the home cards. */
+.review-buttons{display:inline-flex;flex-wrap:wrap;gap:8px}.review-buttons .btn{min-height:32px;padding:5px 14px;white-space:nowrap}
+.review-buttons .review-reject{color:var(--warn);border-color:var(--warn-line)}
+.task-review-banner{display:flex;align-items:center;flex-wrap:wrap;gap:10px 16px;margin:0 0 4px;padding:14px 16px;border:1px solid var(--warn-line);border-radius:12px;background:var(--warn-soft)}
+.task-review-banner.is-pending{border-color:var(--line);background:var(--accent-softer)}
+.task-review-text{display:flex;flex-direction:column;gap:3px;flex:1 1 260px;min-width:0;font-size:12.5px;line-height:1.6;color:var(--text-2)}
+.task-review-text strong{font-size:14px;color:var(--warn)}.task-review-banner.is-pending strong{color:var(--accent-text)}
+.task-review-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.goal-report-reader .head{gap:10px}.goal-report-reader .head .review-buttons{margin-left:auto}
+.review-buttons .review-observe{color:var(--text-2)}
+.task-review-banner.is-observing{border-color:var(--line);background:var(--accent-softer)}.task-review-banner.is-observing strong{color:var(--accent-text)}
+.goal-status[data-status="observing"]{color:var(--accent-text);background:var(--accent-soft)}
+.leader-task[data-state="observing"] .leader-task-tag{color:var(--accent-text)}
