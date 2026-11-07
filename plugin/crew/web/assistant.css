@@ -22,3 +22,6 @@
 @media(max-width:620px){.assistant-main>.head{height:auto;min-height:92px;padding:14px 16px;align-items:flex-start;flex-wrap:wrap;gap:10px}.assistant-main>.head .right{margin-left:0;flex-wrap:wrap}.assistant-main>.head .btn{min-height:40px}.assistant-main h1{font-size:19px}.assistant-main .sub{font-size:12px}.assistant-error{margin:6px 12px}.assistant-prompts-dialog{width:calc(100vw - 24px)}}
 
 .assistant-prompts-dialog{width:min(1000px,calc(100vw - 48px))}.assistant-prompts-dialog header{margin-bottom:22px}
+.assistant-chat .chat-note-chip{align-self:flex-start;display:inline-flex;align-items:center;gap:8px;max-width:100%;margin:2px 0 6px;padding:2px 9px;border:1px solid var(--accent);border-radius:7px;background:var(--accent-soft);color:var(--accent-text);font:inherit;font-size:12px;line-height:1.7;cursor:pointer}
+.assistant-chat .chat-note-chip>span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.assistant-chat .chat-note-chip[hidden]{display:none}

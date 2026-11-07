@@ -1039,6 +1039,8 @@ class Service:
             return behavior_prompts_api.post(self.home, data)
         if path == '/api/personal/notes':
             return personal_api.save_note(self.home, data)
+        if path == '/api/personal/tags':
+            return personal_api.save_tag(self.home, data)
         if path == '/api/personal/notes/recovery':
             return personal_api.recover_note(self.home, data)
         if path == '/api/personal/notes/start':
@@ -1521,7 +1523,14 @@ class Service:
                 text, images = data.get('text', ''), data.get('images', [])
                 if not isinstance(text, str) or (not text.strip() and not images):
                     raise ValueError('请提供文字或图片')
-                if project is None and personal.is_assistant(conn, session['session_id']):
+                note_id = data.get('note_id')
+                assistant = project is None and personal.is_assistant(conn, session['session_id'])
+                if note_id is not None and (not assistant or data.get('goal_id')):
+                    raise board.BoardError('只有发给全局助手的普通消息可以带想法')
+                # The note is read here by ID before anything is configured or
+                # sent; the page only names it and never supplies its text.
+                context = personal.discussion_context(conn, note_id) if note_id is not None else None
+                if assistant:
                     session = personal_api.prepare_send(self.home, session['session_id'])
                 if data.get('goal_id'):
                     goals.get(conn, data['goal_id'], project)
@@ -1529,7 +1538,16 @@ class Service:
                                                           images=images, identity=data.get('message_id'))
                 if not self.chat.path(session['session_id']).exists():
                     self.chat.journal(session['session_id']).set_status('idle')
-                return self.chat.send(session, text, images=images, identity=data.get('message_id'))
+                if context is None:
+                    return self.chat.send(session, text, images=images, identity=data.get('message_id'))
+                sent = self.chat.send(session, context + '\n\n' + text, images=images,
+                                      identity=data.get('message_id'), display_text=text)
+                seqs = [event['seq'] for event in self.chat.history(session['session_id'])['events']
+                        if event['type'] == 'message' and event['id'] == sent['message_id']]
+                if len(seqs) != 1:
+                    raise board.BoardError('消息已交给助手，但聊天记录里没有唯一的这条消息，未记入想法讨论')
+                return {**sent, 'note': personal.record_discussion(conn, note_id, session['session_id'],
+                                                                   sent['message_id'], seqs[0])}
             if path == '/api/chat/interrupt':
                 target = board.session(conn, _text(data, 'session_id'))
                 if target['project'] != project:
@@ -1775,6 +1793,7 @@ POST_PATHS.update({'/api/messages', '/api/todo/resolve', '/api/todo/undo'})
 POST_PATHS.update({'/api/assistant/open', '/api/assistant/native-action'})
 POST_PATHS.update({'/api/personal/notes', '/api/personal/notes/start', '/api/behavior-prompts'})
 POST_PATHS.add('/api/personal/notes/recovery')
+POST_PATHS.add('/api/personal/tags')
 POST_PATHS.update({'/api/session/native-handoff', '/api/session/native-return'})
 POST_PATHS.update({'/api/goals/create', '/api/goals/action', '/api/goals/context', '/api/goals/agent', '/api/chat/interrupt', '/api/decision/discuss', '/api/decision/ready'})
 POST_PATHS.update({'/api/trust', '/api/comments', '/api/decision/clarify'})
@@ -1852,6 +1871,10 @@ STATIC.update({'/workspace-home.js': ('workspace-home.js', 'text/javascript; cha
 STATIC.update({'/assistant.html': ('assistant.html', 'text/html; charset=utf-8'),
                '/assistant.js': ('assistant.js', 'text/javascript; charset=utf-8'),
                '/assistant.css': ('assistant.css', 'text/css; charset=utf-8')})
+STATIC.update({'/notes.html': ('notes.html', 'text/html; charset=utf-8'),
+               '/notes.js': ('notes.js', 'text/javascript; charset=utf-8'),
+               '/notes-model.js': ('notes-model.js', 'text/javascript; charset=utf-8'),
+               '/notes.css': ('notes.css', 'text/css; charset=utf-8')})
 STATIC['/native-handoff-ui.js'] = ('native-handoff-ui.js', 'text/javascript; charset=utf-8')
 STATIC['/goal-work-ui.js'] = ('goal-work-ui.js', 'text/javascript; charset=utf-8')
 POST_PATHS.add('/api/remote-access')
@@ -2054,6 +2077,8 @@ class Handler(BaseHTTPRequestHandler):
         elif url.path == '/api/personal/notes':
             self._send(200, personal_api.notes(service.home, project=query.get('project', [None])[0],
                 include_archived=query.get('include_archived') == ['1']))
+        elif url.path == '/api/personal/tags':
+            self._send(200, personal_api.tags(service.home))
         elif url.path == '/api/assistant/state':
             self._send(200, personal_api.state(service.home, history=service.chat.history, journal=service.chat.journal,
                 activity=service.chat.activity, applied=service.chat.applied, context=service.chat.context))
@@ -2212,6 +2237,8 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             # A closed browser connection cannot receive an error response.
             self.close_connection = True
+        except personal.TagMergeRequired as exc:
+            self._send(409, {'error': str(exc), **exc.detail})
         except board.Conflict as exc:
             self._send(409, {"error": str(exc)})
         except (board.BoardError, ValueError) as exc:

@@ -85,10 +85,15 @@ _GIT_DATA = {
 }
 _SPECS = [
     _spec('crew_personal', 'Only the global Crew personal assistant may use this tool. Read summary, session.detail, '
-          'goal.detail, documents.list, notes.list, prompt.get, prompt.history or prompt.applied across workspaces. '
+          'goal.detail, documents.list, notes.list, notes.get, tags.list, prompt.get, prompt.history or prompt.applied across workspaces. '
+          'notes.list data filters: tags (array), mode all|any, untagged, stage new|discussed|promoted, stale_only, '
+          'include_archived, project, limit, offset. notes.get data: note_id. '
           'Writes leader.create, session.message, session.stop, settings.save, prompt.save, prompt.reset, '
-          'decision.answer (data: decision_id, answer), todo.resolve, note.capture and note.update require the original human '
-          'message_id supplied by Crew and a stable request_id. Preserve the same ID when retrying; never repeat '
+          'decision.answer (data: decision_id, answer), todo.resolve, note.capture, note.update, note.annotate, note.archive, '
+          'note.restore, note.pin, note.snooze, note.merge, note.bulk, tag.create, tag.rename, tag.merge, tag.recolor and tag.remove '
+          'require the original human message_id supplied by Crew and a stable request_id; payloads follow the assistant skill. '
+          'Record discussion conclusions with note.annotate; never rewrite the original note text. '
+          'Preserve the same ID when retrying; never repeat '
           'successful actions or retry unknown outcomes under another ID. A selected workspace is not authorization.',
           {'action': _text('Action name.', max_length=100),
            'data': {'type': 'object', 'additionalProperties': True},

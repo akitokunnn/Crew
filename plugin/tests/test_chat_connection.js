@@ -2,7 +2,7 @@
 const assert=require("node:assert/strict"),fs=require("node:fs"),path=require("node:path"),vm=require("node:vm");
 const {test}=require("node:test");
 const tick=async()=>{for(let i=0;i<12;i++)await Promise.resolve();};
-function node(){const classes=new Set(),children=[],attributes=new Map();return {matches:()=>false,value:"",textContent:"",innerHTML:"",hidden:false,disabled:false,style:{setProperty(){}},dataset:{},scrollTop:0,scrollHeight:0,clientHeight:200,firstChild:null,children,contains:()=>false,querySelectorAll:()=>[],getBoundingClientRect:()=>({top:0}),setAttribute(name,value){attributes.set(name,String(value));},getAttribute:name=>attributes.get(name)??null,removeAttribute:name=>attributes.delete(name),
+function node(){const classes=new Set(),children=[],attributes=new Map();return {matches:()=>false,focus(){},setSelectionRange(){},value:"",textContent:"",innerHTML:"",hidden:false,disabled:false,style:{setProperty(){}},dataset:{},scrollTop:0,scrollHeight:0,clientHeight:200,firstChild:null,children,contains:()=>false,querySelectorAll:()=>[],getBoundingClientRect:()=>({top:0}),setAttribute(name,value){attributes.set(name,String(value));},getAttribute:name=>attributes.get(name)??null,removeAttribute:name=>attributes.delete(name),
   insertBefore(child,before){const old=children.indexOf(child);if(old>=0)children.splice(old,1);const index=before?children.indexOf(before):-1;children.splice(index<0?children.length:index,0,child);child.parentNode=this;this.firstChild=children[0]||null;for(let i=0;i<children.length;i++)children[i].nextSibling=children[i+1]||null;},
   remove(){const parent=this.parentNode;if(!parent)return;const index=parent.children.indexOf(this);if(index>=0)parent.children.splice(index,1);parent.firstChild=parent.children[0]||null;for(let i=0;i<parent.children.length;i++)parent.children[i].nextSibling=parent.children[i+1]||null;this.parentNode=null;},
   classList:{add:x=>classes.add(x),remove:x=>classes.delete(x),toggle(x,on){if(on)classes.add(x);else classes.delete(x);},contains:x=>classes.has(x)}};}
@@ -133,6 +133,32 @@ test("task binding follows the selected task, resets on switch and only scopes a
     const send=calls.filter(call=>call.url==="/api/chat/send").at(-1).data;assert.equal(send.session_id,"leader");assert.equal(send.goal_id,"b");assert(send.message_id);assert(toasts.includes("已补充到任务，AI 会按新要求继续"));assert(rendered(target).join("").includes("→ 任务乙"));
     assert(calls.filter(call=>call.url.includes("/api/chat/history")).every(call=>!call.url.includes("goal_id=")));assert(h.streams.every(url=>!url.includes("goal_id=")));
     h.chat.setTask(null);assert.equal(chip.hidden,true);h.chat.unmount();
+  }
+});
+
+test("an idea from the wall rides on exactly one send as note_id, prefilling only an empty composer",async()=>{
+  for(const runtime of ["claude","codex"]){
+    const h=harness(),calls=[],cleared=[];
+    const target=h.mount("assistant",async(url,data)=>{calls.push({url,data});return url==="/api/chat/send"?{accepted:true}:history();},{runtime},{onNoteCleared:()=>cleared.push("cleared")});
+    await tick();const chip=target.querySelector(".chat-note-chip"),input=target.querySelector("textarea"),sends=()=>calls.filter(call=>call.url==="/api/chat/send").map(call=>call.data);
+    h.chat.setNote({id:"note-1",title:"想法墙 <b>"},"帮我把这个想法想清楚");
+    assert.equal(chip.hidden,false);assert(chip.innerHTML.includes("想法：想法墙 &lt;b&gt;"));assert.match(chip.getAttribute("aria-label"),/点按移除/);
+    assert.equal(input.value,"帮我把这个想法想清楚");assert.equal(sends().length,0,"attaching an idea never sends");
+    target.querySelector("form").onsubmit({preventDefault(){}});await tick();h.flushFrames();
+    const first=sends()[0];assert.equal(first.note_id,"note-1");assert.equal(first.text,"帮我把这个想法想清楚");assert.equal(first.session_id,"assistant");
+    assert(!JSON.stringify(first).includes("想法墙"),"the idea text is never sent by the page");
+    assert.equal(chip.hidden,true);assert.deepEqual(cleared,["cleared"]);
+    input.value="接着聊";input.oninput();target.querySelector("form").onsubmit({preventDefault(){}});await tick();h.flushFrames();
+    assert(!Object.hasOwn(sends()[1],"note_id"),"later messages carry no note");
+    input.value="我已有的草稿";input.oninput();h.chat.setNote({id:"note-2",title:"另一条"},"帮我把这个想法想清楚");
+    assert.equal(input.value,"我已有的草稿","an existing draft is never replaced");
+    chip.onclick();assert.equal(chip.hidden,true);assert.equal(cleared.length,2);
+    target.querySelector("form").onsubmit({preventDefault(){}});await tick();h.flushFrames();
+    assert(!Object.hasOwn(sends()[2],"note_id"),"a removed idea is not sent");
+    h.chat.setNote({id:"note-3",title:"任务里不带"});h.chat.setTask({id:"g",title:"任务",leader_session_id:"assistant"});target.querySelector(".chat-task-binding").onclick();
+    input.value="补充";input.oninput();target.querySelector("form").onsubmit({preventDefault(){}});await tick();h.flushFrames();
+    assert.equal(sends()[3].goal_id,"g");assert(!Object.hasOwn(sends()[3],"note_id"),"a task supplement does not carry the idea");
+    h.chat.unmount();
   }
 });
 

@@ -4,8 +4,10 @@ from contextlib import closing
 from . import behavior_prompts, board, documents, goals, guard, personal, store
 
 
-READ_ACTIONS = frozenset(('summary', 'session.detail', 'goal.detail', 'documents.list', 'notes.list',
-                          'prompt.get', 'prompt.history', 'prompt.applied'))
+READ_ACTIONS = frozenset(('summary', 'session.detail', 'goal.detail', 'documents.list', 'notes.list', 'notes.get',
+                          'tags.list', 'prompt.get', 'prompt.history', 'prompt.applied'))
+# tags.list registers tags that predate the tag library on first read.
+REGISTERING_READS = frozenset(('tags.list',))
 
 
 def read(conn, action, data):
@@ -19,8 +21,15 @@ def read(conn, action, data):
     if action == 'prompt.applied':
         return behavior_prompts.inspect_applied(conn, data.get('scope_id'))
     if action == 'notes.list':
-        return {'notes': personal.list_notes(conn, project=data.get('project'),
-                                            include_archived=data.get('include_archived', False))}
+        return personal.query_notes(conn, data)
+    if action == 'notes.get':
+        if set(data) != {'note_id'}:
+            raise board.BoardError('notes.get 只需要 note_id')
+        return {'note': personal.get_note(conn, data['note_id']), 'stale_days': personal.STALE_DAYS}
+    if action == 'tags.list':
+        if data:
+            raise board.BoardError('tags.list 不需要参数')
+        return personal.list_tags(conn)
     if action == 'session.detail':
         value = personal._target(conn, data.get('session_id'))
         assignments = (goals.list_goals(conn, value['project'], leader_session_id=value['session_id'])
@@ -55,7 +64,7 @@ def dispatch(home, actor_session_id, action, data, *, read_events=None,
     if not isinstance(data, dict) or not isinstance(data.get('data', {}), dict):
         raise board.BoardError('助手操作参数必须为对象')
     reading = action in READ_ACTIONS
-    with closing(guard.readonly(home) if reading else store.connect(home)) as conn:
+    with closing(guard.readonly(home) if reading and action not in REGISTERING_READS else store.connect(home)) as conn:
         personal._active_assistant(conn, actor_session_id)
         if reading:
             return read(conn, action, data.get('data', {}))

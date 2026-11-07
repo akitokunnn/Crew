@@ -502,3 +502,80 @@ test('a page that fails mid-slide ends the slide with the recovery controls focu
   for (const view of f.views) assert.deepEqual(view.bounds, { x: 0, y: 0, width: WIDTH, height: 700 });
   assert.equal(f.window.webContents.focused, focused + 1);
 });
+
+// The idea wall is a second global page, between the workspaces and the assistant.
+test('the idea wall opens as one global page from a workspace link, without project polling or title updates', async () => {
+  const calls = [], titles = [];
+  const f = fixture({ setTimer: () => 1, clearTimer: () => {}, onTitleChange: name => titles.push(name),
+    readActivity: async names => { calls.push(names); return { projects: names.map(project => ({ project, counts: {}, items: [] })) }; } });
+  await f.manager.open({ name: 'A' });
+  const link = event(); f.views[0].webContents.emit('will-navigate', link, 'http://127.0.0.1:1234/notes.html');
+  assert.equal(link.prevented, true, 'the workspace document stays mounted');
+  await new Promise(resolve => setImmediate(resolve));
+  const notes = f.views[1].webContents;
+  assert.equal(f.views[1].project.kind, 'notes');
+  assert.deepEqual(notes.loads, ['http://127.0.0.1:1234/notes.html']);
+  assert.deepEqual(f.manager.state().tabs.at(-1), { id: 'notes', kind: 'notes', name: '想法', project: null, loading: false, error: false });
+  assert.equal(f.manager.state().activeId, 'notes'); assert.equal(notes.page.crewTabVisible, true);
+  await f.manager.openAssistant();
+  assert.deepEqual(f.manager.state().tabs.map(tab => tab.id), ['home', 'workspace-1', 'notes', 'assistant'], 'the assistant stays last');
+  // Filter changes on the wall are in-page hash navigation of the same document.
+  notes.emit('did-navigate-in-page', {}, 'http://127.0.0.1:1234/notes.html#tags=%E4%BA%A7%E5%93%81&mode=any', true);
+  notes.emit('page-title-updated', event());
+  assert.equal(f.manager.state().tabs.find(tab => tab.id === 'notes').error, false);
+  assert.deepEqual(titles, []);
+  await f.manager.refreshActivity(); assert(calls.every(names => names.every(name => name === 'A')));
+  const again = await f.manager.openNotes(); assert.equal(again.id, 'notes'); assert.equal(notes.loads.length, 1);
+  assert.equal(f.manager.close('notes'), true); assert.equal(notes.closed, 1);
+  f.manager.dispose();
+});
+
+test('“去聊聊” hands its note hash to the assistant, reusing an open assistant without reloading its draft', async () => {
+  const f = fixture(); await f.manager.openNotes();
+  const notes = f.views[0].webContents;
+  const chat = event(); notes.emit('will-navigate', chat, 'http://127.0.0.1:1234/assistant.html#note=n-1');
+  assert.equal(chat.prevented, true);
+  await new Promise(resolve => setImmediate(resolve));
+  const assistant = f.views[1].webContents;
+  assert.deepEqual(assistant.loads, ['http://127.0.0.1:1234/assistant.html#note=n-1']);
+  assert.equal(f.manager.state().activeId, 'assistant');
+  assistant.document.draft = '还没发出的草稿'; const calls = []; assistant.executeJavaScript = async text => calls.push(text);
+  f.manager.select('notes');
+  notes.emit('will-navigate', event(), 'http://127.0.0.1:1234/assistant.html#note=n-2');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(assistant.loads.length, 1); assert.equal(assistant.document.draft, '还没发出的草稿');
+  assert(calls.includes('location.hash="#note=n-2"'));
+  assert.equal(f.manager.state().activeId, 'assistant');
+  // A workspace task link from the wall still opens that workspace.
+  notes.emit('will-navigate', event(), 'http://127.0.0.1:1234/?project=fitness#leader=coach');
+  assert.deepEqual(f.projects, ['fitness']);
+  // A link the wall opens in a new window goes to the same global page.
+  assert.deepEqual(notes.popup({ url: 'http://127.0.0.1:1234/notes.html#view=archived' }), { action: 'deny' });
+  assert.equal(f.manager.state().activeId, 'notes');
+  f.manager.dispose();
+});
+
+test('project, idea wall and assistant slide in their tab order', async () => {
+  const f = await slideFixture(), a = await f.manager.open({ name: 'A' });
+  await f.manager.openNotes(); const [project, notes] = f.views;
+  assert.deepEqual(f.manager.state().transition, { from: a.id, to: 'notes' });
+  assert(project.bounds.x === 0); assert.equal(notes.bounds.x, WIDTH, 'the wall enters from the right of the workspace');
+  f.advance(400); settled(f); assert.equal(f.manager.activeView, notes);
+
+  await f.manager.openAssistant(); const assistant = f.views[2];
+  assert.deepEqual(f.manager.state().transition, { from: 'notes', to: 'assistant' });
+  assert.equal(assistant.bounds.x, WIDTH, 'the assistant sits to the right of the wall');
+  f.advance(400); settled(f);
+
+  f.manager.select('notes');
+  assert.deepEqual(f.manager.state().transition, { from: 'assistant', to: 'notes' });
+  assert.equal(notes.bounds.x, -WIDTH, 'going back to the wall slides it in from the left');
+  f.advance(400); settled(f); assert.equal(f.manager.activeView, notes);
+
+  f.manager.select(a.id);
+  f.advance(100); assert(notes.bounds.x > 0, 'leaving the wall for a workspace slides it out to the right');
+  f.advance(300); settled(f);
+
+  f.reduced = true; f.manager.select('notes');
+  assert.equal(f.manager.state().transition, null, 'reduced motion switches without a slide'); settled(f);
+});

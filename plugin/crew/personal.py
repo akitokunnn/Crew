@@ -4,6 +4,7 @@ This owner stores identity, personal notes and action receipts. Native execution
 and HTTP remain callers: opening the assistant never starts or discovers a CLI.
 """
 from contextlib import nullcontext
+import datetime
 import hashlib
 import json
 from pathlib import Path
@@ -13,9 +14,56 @@ from . import behavior_prompts, board, models, runtimes, settings, store, todo
 
 
 ENTRYPOINT = 'crew-assistant'
+NOTE_WRITE_ACTIONS = frozenset(('note.capture', 'note.update', 'note.annotate', 'note.archive', 'note.restore',
+                                'note.pin', 'note.snooze', 'note.merge', 'note.bulk'))
+TAG_WRITE_ACTIONS = frozenset(('tag.create', 'tag.rename', 'tag.merge', 'tag.recolor', 'tag.remove'))
 WRITE_ACTIONS = frozenset(('leader.create', 'session.message', 'session.stop',
-                           'settings.save', 'prompt.save', 'prompt.reset', 'decision.answer', 'todo.resolve', 'note.capture', 'note.update'))
+                           'settings.save', 'prompt.save', 'prompt.reset', 'decision.answer', 'todo.resolve')) | NOTE_WRITE_ACTIONS | TAG_WRITE_ACTIONS
 EXTERNAL_ACTIONS = frozenset(('leader.create', 'session.message', 'session.stop'))
+PALETTE = tuple('c%d' % index for index in range(10))
+STALE_DAYS = 14
+# Columns added after the first personal_notes release, applied in this order.
+NOTE_COLUMNS = (
+    ('source_json', "TEXT NOT NULL DEFAULT '{}'"),
+    ('title', 'TEXT'),
+    ('pinned_at', 'TEXT'),
+    ('snoozed_until', 'TEXT'),
+    ('merged_into', 'TEXT'),
+    ('stage', "TEXT NOT NULL DEFAULT 'new' CHECK(stage IN ('new','discussed','promoted'))"),
+    ('last_discussed_at', 'TEXT'),
+    ('reviewed_at', 'TEXT'),
+    ('summary_json', "TEXT NOT NULL DEFAULT '[]'"),
+)
+# Accepted payload keys per note/tag write: (required, optional).
+_NOTE_FIELDS = {
+    'note.capture': ({'text'}, {'title', 'tags', 'project'}),
+    'note.update': ({'note_id', 'expected_version'}, {'text', 'title', 'tags', 'project', 'state'}),
+    'note.pin': ({'note_id', 'expected_version', 'pinned'}, set()),
+    'note.snooze': ({'note_id', 'expected_version', 'until'}, set()),
+    'note.keep': ({'note_id', 'expected_version'}, set()),
+    'note.archive': ({'note_id', 'expected_version'}, set()),
+    'note.restore': ({'note_id', 'expected_version'}, set()),
+    'note.merge': ({'primary_id', 'note_ids', 'expected_versions'}, set()),
+    'note.unmerge': ({'note_id', 'expected_version'}, set()),
+    'note.bulk': ({'note_ids', 'expected_versions', 'op'}, {'value'}),
+    'note.annotate': ({'note_id', 'text'}, set()),
+    'tag.create': ({'name'}, {'color'}),
+    'tag.recolor': ({'name', 'color', 'expected_version'}, set()),
+    'tag.pin': ({'name', 'pinned', 'expected_version'}, set()),
+    'tag.reorder': ({'names'}, set()),
+    'tag.rename': ({'name', 'new_name', 'expected_version'}, set()),
+    'tag.merge': ({'from', 'into'}, set()),
+    'tag.remove': ({'name', 'expected_version'}, set()),
+}
+BULK_OPS = ('tag_add', 'tag_remove', 'archive', 'project')
+
+
+class TagMergeRequired(board.Conflict):
+    """Renaming onto an existing tag needs an explicit merge, never an implicit one."""
+
+    def __init__(self, target, affected):
+        super().__init__('标签「%s」已存在；改名会把 %s 条想法并入该标签，请确认后改用合并' % (target, affected))
+        self.detail = {'merge_required': True, 'target': target, 'affected': affected}
 
 
 def ensure_schema(conn):
@@ -28,10 +76,24 @@ def ensure_schema(conn):
                  'original_text TEXT NOT NULL, text TEXT NOT NULL, tags_json TEXT NOT NULL, '
                  "state TEXT NOT NULL DEFAULT 'open' CHECK(state IN ('open','archived')), "
                  'version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)')
-    if not any(row['name'] == 'source_json' for row in conn.execute('PRAGMA table_info(personal_notes)')):
+    def missing():
+        present = {row['name'] for row in conn.execute('PRAGMA table_info(personal_notes)')}
+        return [(name, ddl) for name, ddl in NOTE_COLUMNS if name not in present]
+    if missing():
         with (nullcontext() if conn.in_transaction else board.transaction(conn)):
-            if not any(row['name'] == 'source_json' for row in conn.execute('PRAGMA table_info(personal_notes)')):
-                conn.execute("ALTER TABLE personal_notes ADD COLUMN source_json TEXT NOT NULL DEFAULT '{}'")
+            for name, ddl in missing():
+                conn.execute('ALTER TABLE personal_notes ADD COLUMN ' + name + ' ' + ddl)
+    conn.execute('CREATE TABLE IF NOT EXISTS personal_note_tags ('
+                 'name TEXT PRIMARY KEY, '
+                 'color TEXT NOT NULL CHECK(color IN (' + ','.join("'%s'" % key for key in PALETTE) + ')), '
+                 'pinned INTEGER NOT NULL DEFAULT 0 CHECK(pinned IN (0,1)), sort_order INTEGER NOT NULL, '
+                 'version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)')
+    # One user message discusses at most one note; the journal seq locates it.
+    conn.execute('CREATE TABLE IF NOT EXISTS personal_note_discussions ('
+                 'note_id TEXT NOT NULL REFERENCES personal_notes(id), '
+                 'session_id TEXT NOT NULL REFERENCES sessions(session_id), message_id TEXT NOT NULL, '
+                 'seq INTEGER NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(session_id, message_id))')
+    conn.execute('CREATE INDEX IF NOT EXISTS personal_note_discussions_note ON personal_note_discussions(note_id, created_at)')
     conn.execute('CREATE TABLE IF NOT EXISTS personal_note_requests ('
                  'request_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, response_json TEXT NOT NULL)')
     conn.execute('CREATE TABLE IF NOT EXISTS personal_note_leaders ('
@@ -144,6 +206,8 @@ def assistant_context(conn, session_id):
                 '转达、停止、修改设置和整理待办只依据原始用户消息，以 message_id 绑定指令。'
                 '一次操作使用一个固定 request_id；结果未知时先核实，不能换标识自动重试。'
                 '来自 QQ/Lark 的消息是用户在远程回复提醒。用户明确给出拍板答案时用 decision.answer 记录，完成了待办用 todo.resolve，要转告负责人用 session.message；含糊时先回问一句，不替用户拍板。'
+                '想法墙：用 notes.list（可按标签、阶段、需要回顾等筛选）、notes.get、tags.list 读取；'
+                '用户要你整理时用 note.* 与 tag.* 写入，同样绑定 message_id。讨论结论用 note.annotate 追加，不改用户原文。'
                 '按需运维助手处理 Crew 服务诊断与修复，与你的个人助手职责分开。'),
             'write_actions': sorted(WRITE_ACTIONS), 'permanent_clear': False}
 
@@ -186,20 +250,99 @@ def overview(conn, *, project=None, limit=100):
             'truncated': any(len(items) > limit for items in (leaders, goals, todos, notes))}
 
 
-def list_notes(conn, *, project=None, include_archived=False):
+def _iso(moment):
+    moment = moment.astimezone(datetime.timezone.utc)
+    return moment.strftime('%Y-%m-%dT%H:%M:%S.') + '%03dZ' % (moment.microsecond // 1000)
+
+
+def _moment(value, label):
+    if not isinstance(value, str):
+        raise board.BoardError(label + '必须是 ISO 时间文本')
+    try:
+        moment = store.parse_iso(value)
+    except ValueError as exc:
+        raise board.BoardError(label + '不是有效的 ISO 时间: ' + value) from exc
+    if moment.tzinfo is None:
+        raise board.BoardError(label + '必须带时区: ' + value)
+    return _iso(moment)
+
+
+def _stale(value, now):
+    """Open, unpromoted, not snoozed, and untouched for longer than STALE_DAYS."""
+    if value['state'] != 'open' or value['stage'] == 'promoted':
+        return False
+    current = store.parse_iso(now)
+    if value['snoozed_until'] is not None and store.parse_iso(value['snoozed_until']) > current:
+        return False
+    activity = max(store.parse_iso(stamp) for stamp in (value['updated_at'], value['last_discussed_at'], value['reviewed_at'])
+                   if stamp is not None)
+    return activity < current - datetime.timedelta(days=STALE_DAYS)
+
+
+def list_notes(conn, *, project=None, include_archived=False, now=None):
     if not _has_table(conn, 'personal_notes'):
         return []
+    now = store.now_iso() if now is None else now
     rows = conn.execute('SELECT * FROM personal_notes ORDER BY updated_at DESC,id')
-    return [_note(row, conn) for row in rows if (include_archived or row['state'] == 'open')
+    return [_note(row, conn, now) for row in rows if (include_archived or row['state'] == 'open')
             and (project is None or row['project'] == project)]
 
 
-def _note(row, conn=None):
+def query_notes(conn, data, *, now=None):
+    """Assistant listing: the same note objects as the wall, filtered server-side."""
+    allowed = {'tags', 'mode', 'untagged', 'stage', 'stale_only', 'include_archived', 'project', 'limit', 'offset'}
+    if not isinstance(data, dict) or set(data) - allowed:
+        raise board.BoardError('notes.list 只支持参数: ' + '、'.join(sorted(allowed)))
+    tags = _tags(data.get('tags', []))
+    mode = data.get('mode', 'all')
+    if mode not in ('all', 'any'):
+        raise board.BoardError('mode 必须是 all 或 any')
+    flags = {key: data.get(key, False) for key in ('untagged', 'stale_only', 'include_archived')}
+    if any(type(value) is not bool for value in flags.values()):
+        raise board.BoardError('untagged、stale_only、include_archived 必须是布尔值')
+    if flags['untagged'] and tags:
+        raise board.BoardError('untagged 与 tags 不能同时使用')
+    stage = data.get('stage')
+    if stage not in (None, 'new', 'discussed', 'promoted'):
+        raise board.BoardError('stage 必须是 new、discussed 或 promoted')
+    project = data.get('project')
+    if project is not None:
+        _text(project, '工作区', 300)
+    offset, limit = data.get('offset', 0), data.get('limit', 100)
+    if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 500:
+        raise board.BoardError('offset 必须非负，limit 须为 1–500 的整数')
+    selected = []
+    for note in list_notes(conn, project=project, include_archived=flags['include_archived'], now=now):
+        present = set(note['tags'])
+        if tags and not (set(tags) <= present if mode == 'all' else set(tags) & present):
+            continue
+        if flags['untagged'] and present:
+            continue
+        if stage is not None and note['stage'] != stage:
+            continue
+        if flags['stale_only'] and not note['stale']:
+            continue
+        selected.append(note)
+    return {'notes': selected[offset:offset + limit], 'total': len(selected), 'offset': offset,
+            'next_offset': offset + limit if offset + limit < len(selected) else None, 'stale_days': STALE_DAYS}
+
+
+def _note(row, conn, now):
     value = dict(row)
     value['tags'] = json.loads(value.pop('tags_json'))
-    value['source'] = json.loads(value.pop('source_json', '{}'))
+    value['source'] = json.loads(value.pop('source_json'))
+    value['summaries'] = json.loads(value.pop('summary_json'))
+    value['merged_from'] = [item['id'] for item in conn.execute(
+        'SELECT id FROM personal_notes WHERE merged_into=? ORDER BY updated_at,id', (value['id'],))]
+    rows = conn.execute('SELECT session_id,seq,created_at FROM personal_note_discussions WHERE note_id=? '
+                        'ORDER BY created_at DESC,seq DESC', (value['id'],)).fetchall()
+    latest = rows[0] if rows else None
+    value['discussions'] = {'count': len(rows), 'last_at': latest['created_at'] if latest else None,
+                            'session_id': latest['session_id'] if latest else None,
+                            'last_seq': latest['seq'] if latest else None}
+    value['stale'] = _stale(value, now)
     value['leader'] = None
-    if conn is not None and _has_table(conn, 'personal_note_leaders'):
+    if _has_table(conn, 'personal_note_leaders'):
         link = conn.execute('SELECT project,session_id,status,error,source_json FROM personal_note_leaders WHERE note_id=?',
                             (value['id'],)).fetchone()
         if link is not None:
@@ -208,52 +351,420 @@ def _note(row, conn=None):
     return value
 
 
-def get_note(conn, note_id):
+def get_note(conn, note_id, *, now=None):
     _text(note_id, '想法标识', 300)
     row = conn.execute('SELECT * FROM personal_notes WHERE id=?', (note_id,)).fetchone() if _has_table(conn, 'personal_notes') else None
     if row is None:
         raise board.BoardError('个人想法不存在')
-    return _note(row, conn)
+    return _note(row, conn, store.now_iso() if now is None else now)
 
 
-def _write_note(conn, action, data, *, source):
-    """The note itself and a caller-owned receipt can commit together."""
-    now = store.now_iso()
+def _tag_color(name):
+    return PALETTE[int(hashlib.sha256(name.encode('utf-8')).hexdigest(), 16) % len(PALETTE)]
+
+
+def _register_tags(conn, names, now):
+    """Every tag used by a note has a registry row (color, pin, order)."""
+    for name in names:
+        if conn.execute('SELECT 1 FROM personal_note_tags WHERE name=?', (name,)).fetchone() is None:
+            order = conn.execute('SELECT COALESCE(MAX(sort_order)+1,0) FROM personal_note_tags').fetchone()[0]
+            conn.execute('INSERT INTO personal_note_tags(name,color,pinned,sort_order,version,created_at,updated_at) '
+                         'VALUES(?,?,0,?,1,?,?)', (name, _tag_color(name), order, now, now))
+
+
+def _unregistered_tags(conn):
+    used = {}
+    for row in conn.execute('SELECT tags_json FROM personal_notes ORDER BY created_at,id'):
+        used.update(dict.fromkeys(json.loads(row['tags_json'])))
+    known = {row['name'] for row in conn.execute('SELECT name FROM personal_note_tags')}
+    return [name for name in used if name not in known]
+
+
+def list_tags(conn, *, now=None):
+    """Tags with colors and open-note counts. Tags that predate the registry, or
+    arrived by import, are registered on this first read (color from the name)."""
+    now = store.now_iso() if now is None else now
+    if _unregistered_tags(conn):
+        with (nullcontext() if conn.in_transaction else board.transaction(conn)):
+            _register_tags(conn, _unregistered_tags(conn), now)
+    counts = {}
+    for row in conn.execute("SELECT tags_json FROM personal_notes WHERE state='open'"):
+        for name in json.loads(row['tags_json']):
+            counts[name] = counts.get(name, 0) + 1
+    return {'tags': [{'name': row['name'], 'color': row['color'], 'pinned': bool(row['pinned']),
+                      'sort_order': row['sort_order'], 'count': counts.get(row['name'], 0), 'version': row['version']}
+                     for row in conn.execute('SELECT * FROM personal_note_tags ORDER BY pinned DESC,sort_order,name')],
+            'palette': list(PALETTE)}
+
+
+def _fields(action, data):
+    if not isinstance(data, dict):
+        raise board.BoardError(action + ' 的参数必须是对象')
+    required, optional = _NOTE_FIELDS[action]
+    missing, extra = sorted(required - set(data)), sorted(set(data) - required - optional)
+    if missing or extra:
+        raise board.BoardError('%s 参数不符：缺少 %s；不支持 %s' % (action, '、'.join(missing) or '无', '、'.join(extra) or '无'))
+
+
+def _version(value, label='expected_version'):
+    if type(value) is not int:
+        raise board.BoardError(label + ' 必须是整数')
+    return value
+
+
+def _title(value):
+    return None if value is None else _text(value, '标题', 80).strip()
+
+
+def _row(conn, note_id):
+    _text(note_id, '想法标识', 300)
+    row = conn.execute('SELECT * FROM personal_notes WHERE id=?', (note_id,)).fetchone()
+    if row is None:
+        raise board.BoardError('个人想法不存在: ' + note_id)
+    return row
+
+
+def _current(row, expected):
+    if row['version'] != _version(expected):
+        raise board.Conflict('个人想法已变化，请刷新后重试: ' + row['id'])
+    return row
+
+
+def _set(conn, row, now, *, touch=True, **fields):
+    """Optimistic single-note write. ``touch`` is false for library-wide tag
+    maintenance, which must not reset the note's review clock."""
+    if touch:
+        fields['updated_at'] = now
+    changed = conn.execute('UPDATE personal_notes SET ' + ','.join(name + '=?' for name in fields) +
+                           ',version=version+1 WHERE id=? AND version=?',
+                           (*fields.values(), row['id'], row['version'])).rowcount
+    if changed != 1:
+        raise board.Conflict('个人想法已变化，请刷新后重试: ' + row['id'])
+
+
+def _batch(conn, note_ids, versions):
+    """Rows for a multi-note command; any stale version fails the whole command."""
+    if not isinstance(note_ids, list) or not 1 <= len(note_ids) <= 500:
+        raise board.BoardError('想法列表必须包含 1–500 条想法标识')
+    for identity in note_ids:
+        _text(identity, '想法标识', 300)
+    if len(set(note_ids)) != len(note_ids):
+        raise board.BoardError('想法列表不能重复')
+    if not isinstance(versions, dict) or set(versions) != set(note_ids):
+        raise board.BoardError('expected_versions 必须正好包含每条想法的版本')
+    return [_current(_row(conn, identity), versions[identity]) for identity in note_ids]
+
+
+def _merge(conn, data, now):
+    primary_id = _text(data['primary_id'], '主卡标识', 300)
+    if not isinstance(data['note_ids'], list) or primary_id in data['note_ids']:
+        raise board.BoardError('note_ids 必须是数组，且不能包含主卡')
+    rows = _batch(conn, [primary_id] + data['note_ids'], data['expected_versions'])
+    for row in rows:
+        if row['state'] != 'open' or row['merged_into'] is not None:
+            raise board.BoardError('只能合并未归档的想法: ' + row['id'])
+    if len(rows) < 2:
+        raise board.BoardError('合并至少需要另一条想法')
+    primary, others = rows[0], rows[1:]
+    sources = '\n'.join('- %s（原 id：%s）' % (row['original_text'], row['id']) for row in others)
+    text = _text(primary['text'] + '\n\n合并来源：\n' + sources, '合并后的想法内容')
+    tags = _tags(list(dict.fromkeys(name for row in rows for name in json.loads(row['tags_json']))))
+    _set(conn, primary, now, text=text, tags_json=_json(tags))
+    for row in others:
+        _set(conn, row, now, state='archived', merged_into=primary_id)
+    _register_tags(conn, tags, now)
+    return {'note': get_note(conn, primary_id, now=now), 'notes': [get_note(conn, row['id'], now=now) for row in rows]}
+
+
+def _bulk(conn, data, now):
+    op, value = data['op'], data.get('value')
+    if op not in BULK_OPS:
+        raise board.BoardError('批量操作必须是 ' + '、'.join(BULK_OPS))
+    if op in ('tag_add', 'tag_remove'):
+        value = _tags([value])[0]
+    elif op == 'project':
+        if 'value' not in data:
+            raise board.BoardError('批量改工作区必须提供 value（全局用 null）')
+        if value is not None:
+            board.project(conn, value)
+    elif value is not None:
+        raise board.BoardError('批量归档不接受 value')
+    rows = _batch(conn, data['note_ids'], data['expected_versions'])
+    for row in rows:
+        tags = json.loads(row['tags_json'])
+        if op == 'tag_add' and value not in tags:
+            _set(conn, row, now, tags_json=_json(_tags(tags + [value])))
+        elif op == 'tag_remove' and value in tags:
+            _set(conn, row, now, tags_json=_json([name for name in tags if name != value]))
+        elif op == 'archive' and row['state'] == 'open':
+            _set(conn, row, now, state='archived')
+        elif op == 'project' and row['project'] != value:
+            _set(conn, row, now, project=value)
+    if op == 'tag_add':
+        _register_tags(conn, [value], now)
+    return {'notes': [get_note(conn, row['id'], now=now) for row in rows]}
+
+
+def _note_write(conn, action, data, *, source, author, now):
+    """Apply one note command inside the caller's transaction.
+
+    ``source`` records where a captured note came from; ``author`` is the
+    source of an appended discussion summary (human or assistant message).
+    """
+    _fields(action, data)
     if action == 'note.capture':
+        text, tags, title = _text(data['text'], '想法内容'), _tags(data.get('tags', [])), _title(data.get('title'))
+        if data.get('project') is not None:
+            board.project(conn, data['project'])
         identity = str(uuid.uuid4())
-        conn.execute('INSERT INTO personal_notes(id,project,original_text,text,tags_json,state,created_at,updated_at,source_json) '
-                     'VALUES(?,?,?,?,?,?,?,?,?)', (identity, data.get('project'), data['text'], data['text'],
-                     _json(_tags(data.get('tags', []))), data.get('state', 'open'), now, now, _json(source)))
+        conn.execute('INSERT INTO personal_notes(id,project,original_text,text,tags_json,state,created_at,updated_at,source_json,title) '
+                     "VALUES(?,?,?,?,?,'open',?,?,?,?)", (identity, data.get('project'), text, text, _json(tags),
+                     now, now, _json(source), title))
+        _register_tags(conn, tags, now)
+        return {'note': get_note(conn, identity, now=now)}
+    if action == 'note.merge':
+        return _merge(conn, data, now)
+    if action == 'note.bulk':
+        return _bulk(conn, data, now)
+    row = _row(conn, data['note_id'])
+    if action == 'note.annotate':
+        entry = {'id': str(uuid.uuid4()), 'text': _text(data['text'], '讨论结论'), 'at': now, 'source': author}
+        _set(conn, row, now, summary_json=_json(json.loads(row['summary_json']) + [entry]))
+        return {'note': get_note(conn, row['id'], now=now)}
+    _current(row, data['expected_version'])
+    if action == 'note.update':
+        fields = {}
+        if 'text' in data:
+            fields['text'] = _text(data['text'], '想法内容')
+        if 'title' in data:
+            fields['title'] = _title(data['title'])
+        if 'tags' in data:
+            fields['tags_json'] = _json(_tags(data['tags']))
+            _register_tags(conn, json.loads(fields['tags_json']), now)
+        if 'project' in data:
+            if data['project'] is not None:
+                board.project(conn, data['project'])
+            fields['project'] = data['project']
+        if 'state' in data:
+            if data['state'] not in ('open', 'archived'):
+                raise board.BoardError('想法状态必须是 open 或 archived')
+            if data['state'] == 'open' and row['merged_into'] is not None:
+                raise board.BoardError('这条想法已并入 %s，请用 unmerge 拆分恢复' % row['merged_into'])
+            fields['state'] = data['state']
+        if not fields:
+            raise board.BoardError('update 至少要修改 text、title、tags、project 或 state 之一')
+    elif action == 'note.pin':
+        if type(data['pinned']) is not bool:
+            raise board.BoardError('pinned 必须是布尔值')
+        fields = {'pinned_at': now if data['pinned'] else None}
+    elif action == 'note.snooze':
+        fields = {'snoozed_until': None if data['until'] is None else _moment(data['until'], '暂缓到期时间')}
+    elif action == 'note.keep':
+        fields = {'reviewed_at': now}
+    elif action == 'note.archive':
+        if row['state'] != 'open':
+            raise board.BoardError('这条想法已经归档')
+        fields = {'state': 'archived'}
+    elif action == 'note.restore':
+        if row['state'] != 'archived':
+            raise board.BoardError('这条想法没有归档')
+        if row['merged_into'] is not None:
+            raise board.BoardError('这条想法已并入 %s，请用 unmerge 拆分恢复' % row['merged_into'])
+        fields = {'state': 'open'}
     else:
-        identity = data['note_id']
-        old = get_note(conn, identity)
-        changed = conn.execute('UPDATE personal_notes SET project=?,text=?,tags_json=?,state=?,version=version+1,updated_at=? '
-                               'WHERE id=? AND version=?', (data.get('project', old['project']), data['text'],
-                               _json(_tags(data.get('tags', old['tags']))), data.get('state', old['state']),
-                               now, identity, data['expected_version'])).rowcount
-        if changed != 1:
-            raise board.Conflict('个人想法已变化，请刷新后重试')
-    return get_note(conn, identity)
+        if row['merged_into'] is None:
+            raise board.BoardError('这条想法没有被合并')
+        fields = {'state': 'open', 'merged_into': None}
+    _set(conn, row, now, **fields)
+    return {'note': get_note(conn, row['id'], now=now)}
 
 
-def note_action(conn, action, data, *, request_id):
-    """An explicit UI note command is a local write, with zero model work."""
-    if action not in ('capture', 'update') or not isinstance(data, dict):
-        raise board.BoardError('想法操作必须是 capture 或 update，并提供对象参数')
+def _tag_name(value):
+    return _tags([value])[0]
+
+
+def _tag_row(conn, name):
+    row = conn.execute('SELECT * FROM personal_note_tags WHERE name=?', (name,)).fetchone()
+    if row is None:
+        raise board.BoardError('标签不存在: ' + name)
+    return row
+
+
+def _tag_current(conn, name, expected):
+    row = _tag_row(conn, _tag_name(name))
+    if row['version'] != _version(expected):
+        raise board.Conflict('标签已变化，请刷新后重试: ' + row['name'])
+    return row
+
+
+def _color(value):
+    if value not in PALETTE:
+        raise board.BoardError('标签颜色必须是 ' + '、'.join(PALETTE) + ' 之一')
+    return value
+
+
+def _tagged(conn, name):
+    return [row for row in conn.execute('SELECT * FROM personal_notes ORDER BY id').fetchall()
+            if name in json.loads(row['tags_json'])]
+
+
+def _retag(conn, mapping, now):
+    """Replace (or drop, for None) tags on every note, keeping first positions."""
+    affected = 0
+    for row in conn.execute('SELECT * FROM personal_notes ORDER BY id').fetchall():
+        tags = json.loads(row['tags_json'])
+        if not any(name in mapping for name in tags):
+            continue
+        result = list(dict.fromkeys(mapping.get(name, name) for name in tags if mapping.get(name, name) is not None))
+        _set(conn, row, now, touch=False, tags_json=_json(result))
+        affected += 1
+    return affected
+
+
+def _tag_write(conn, action, data, now):
+    _fields(action, data)
+    affected = None
+    if action == 'tag.create':
+        name = _tag_name(data['name'])
+        if conn.execute('SELECT 1 FROM personal_note_tags WHERE name=?', (name,)).fetchone() is not None:
+            raise board.Conflict('标签已存在: ' + name)
+        color = _color(data['color']) if 'color' in data else _tag_color(name)
+        order = conn.execute('SELECT COALESCE(MAX(sort_order)+1,0) FROM personal_note_tags').fetchone()[0]
+        conn.execute('INSERT INTO personal_note_tags(name,color,pinned,sort_order,version,created_at,updated_at) '
+                     'VALUES(?,?,0,?,1,?,?)', (name, color, order, now, now))
+    elif action in ('tag.recolor', 'tag.pin'):
+        row = _tag_current(conn, data['name'], data['expected_version'])
+        if action == 'tag.recolor':
+            column, value = 'color', _color(data['color'])
+        else:
+            if type(data['pinned']) is not bool:
+                raise board.BoardError('pinned 必须是布尔值')
+            column, value = 'pinned', int(data['pinned'])
+        conn.execute('UPDATE personal_note_tags SET ' + column + '=?,version=version+1,updated_at=? WHERE name=?',
+                     (value, now, row['name']))
+    elif action == 'tag.reorder':
+        names = data['names']
+        if not isinstance(names, list) or not names:
+            raise board.BoardError('names 必须是非空标签数组')
+        names = [_tag_row(conn, _tag_name(name))['name'] for name in names]
+        if len(set(names)) != len(names):
+            raise board.BoardError('names 不能重复')
+        rest = [row['name'] for row in conn.execute('SELECT name FROM personal_note_tags ORDER BY sort_order,name')
+                if row['name'] not in names]
+        for order, name in enumerate(names + rest):
+            conn.execute('UPDATE personal_note_tags SET sort_order=?,version=version+1,updated_at=? '
+                         'WHERE name=? AND sort_order<>?', (order, now, name, order))
+    elif action == 'tag.rename':
+        row = _tag_current(conn, data['name'], data['expected_version'])
+        new_name = _tag_name(data['new_name'])
+        if new_name == row['name']:
+            raise board.BoardError('新名称与原名称相同')
+        if conn.execute('SELECT 1 FROM personal_note_tags WHERE name=?', (new_name,)).fetchone() is not None:
+            raise TagMergeRequired(new_name, len(_tagged(conn, row['name'])))
+        conn.execute('UPDATE personal_note_tags SET name=?,version=version+1,updated_at=? WHERE name=?',
+                     (new_name, now, row['name']))
+        affected = _retag(conn, {row['name']: new_name}, now)
+    elif action == 'tag.merge':
+        into = _tag_row(conn, _tag_name(data['into']))['name']
+        sources = data['from']
+        if not isinstance(sources, list) or not sources:
+            raise board.BoardError('from 必须是非空标签数组')
+        sources = [_tag_row(conn, _tag_name(name))['name'] for name in sources]
+        if len(set(sources)) != len(sources) or into in sources:
+            raise board.BoardError('from 不能重复，也不能包含目标标签')
+        affected = _retag(conn, dict.fromkeys(sources, into), now)
+        conn.executemany('DELETE FROM personal_note_tags WHERE name=?', [(name,) for name in sources])
+    else:
+        row = _tag_current(conn, data['name'], data['expected_version'])
+        affected = _retag(conn, {row['name']: None}, now)
+        conn.execute('DELETE FROM personal_note_tags WHERE name=?', (row['name'],))
+    result = {'tags': list_tags(conn, now=now)['tags']}
+    if affected is not None:
+        result['affected'] = affected
+    return result
+
+
+def _local_write(conn, kind, action, data, request_id, now):
+    """One explicit UI command: a local transaction with zero model work."""
     _text(request_id, '操作标识', 300)
     ensure_schema(conn)
-    fingerprint = hashlib.sha256(_json({'action': action, 'data': data}).encode('utf-8')).hexdigest()
+    fingerprint = hashlib.sha256(_json({'action': kind + action if kind == 'tag.' else action,
+                                        'data': data}).encode('utf-8')).hexdigest()
     with board.transaction(conn):
         previous = conn.execute('SELECT * FROM personal_note_requests WHERE request_id=?', (request_id,)).fetchone()
         if previous is not None:
             if previous['fingerprint'] != fingerprint:
                 raise board.Conflict('此操作标识已经用于不同的想法操作')
             return {**json.loads(previous['response_json']), 'duplicate': True}
-        _prepare(conn, 'note.' + action, data, create_leader=None, send_message=None, stop_session=None)
-        note = _write_note(conn, 'note.' + action, data, source={'type': 'human', 'surface': 'personal-notes'})
-        result = {'ok': True, 'note': note, 'duplicate': False, 'model_calls': 0}
+        now = store.now_iso() if now is None else now
+        if kind == 'tag.':
+            value = _tag_write(conn, kind + action, data, now)
+        else:
+            value = _note_write(conn, kind + action, data, source={'type': 'human', 'surface': 'personal-notes'},
+                                author={'type': 'human'}, now=now)
+        result = {'ok': True, **value, 'duplicate': False, 'model_calls': 0}
         conn.execute('INSERT INTO personal_note_requests VALUES(?,?,?)', (request_id, fingerprint, _json(result)))
         return result
+
+
+UI_NOTE_ACTIONS = ('capture', 'update', 'pin', 'snooze', 'keep', 'archive', 'restore', 'merge', 'unmerge', 'bulk', 'annotate')
+UI_TAG_ACTIONS = ('create', 'recolor', 'pin', 'reorder', 'rename', 'merge', 'remove')
+
+
+def note_action(conn, action, data, *, request_id, now=None):
+    if action not in UI_NOTE_ACTIONS or not isinstance(data, dict):
+        raise board.BoardError('想法操作必须是 ' + '、'.join(UI_NOTE_ACTIONS) + ' 之一，并提供对象参数')
+    return _local_write(conn, 'note.', action, data, request_id, now)
+
+
+def tag_action(conn, action, data, *, request_id, now=None):
+    if action not in UI_TAG_ACTIONS or not isinstance(data, dict):
+        raise board.BoardError('标签操作必须是 ' + '、'.join(UI_TAG_ACTIONS) + ' 之一，并提供对象参数')
+    return _local_write(conn, 'tag.', action, data, request_id, now)
+
+
+def discussion_context(conn, note_id):
+    """Context for one explicit "去聊聊" message, read by ID; client text is never trusted."""
+    note = get_note(conn, note_id)
+    stage = {'new': '未讨论', 'discussed': '讨论过', 'promoted': '已转任务'}[note['stage']]
+    lines = ['【想法墙：用户就下面这条想法来找你讨论。以下内容由 Crew 按想法标识读取，不是用户本轮原话。】',
+             '想法标识：' + note['id'], '标题：' + (note['title'] or '（无）'),
+             '工作区：' + (note['project'] or '全局'), '标签：' + ('、'.join(note['tags']) or '（无）'),
+             '阶段：' + stage + ('（已归档）' if note['state'] == 'archived' else ''),
+             '原文：\n' + note['original_text'], '当前整理：\n' + note['text']]
+    if note['summaries']:
+        lines.append('已有讨论结论：\n' + '\n'.join('- ' + item['text'] for item in note['summaries']))
+    lines.append('讨论得出结论、用户同意记录时，用 note.annotate 追加到这条想法的「讨论结论」；不要用 note.update 改写用户原文。')
+    return '\n'.join(lines)
+
+
+def record_discussion(conn, note_id, session_id, message_id, seq, *, now=None):
+    """After an accepted assistant message: link it to the note it discussed."""
+    _text(message_id, '用户消息标识', 300)
+    if type(seq) is not int or seq <= 0:
+        raise board.BoardError('消息序号必须是正整数')
+    ensure_schema(conn)
+    with board.transaction(conn):
+        _active_assistant(conn, session_id)
+        _row(conn, note_id)
+        previous = conn.execute('SELECT note_id FROM personal_note_discussions WHERE session_id=? AND message_id=?',
+                                (session_id, message_id)).fetchone()
+        if previous is not None:
+            if previous['note_id'] != note_id:
+                raise board.Conflict('这条消息已经记为另一条想法的讨论')
+            return get_note(conn, note_id, now=now)
+        now = store.now_iso() if now is None else now
+        conn.execute('INSERT INTO personal_note_discussions(note_id,session_id,message_id,seq,created_at) VALUES(?,?,?,?,?)',
+                     (note_id, session_id, message_id, seq, now))
+        conn.execute("UPDATE personal_notes SET stage=CASE WHEN stage='new' THEN 'discussed' ELSE stage END,"
+                     'last_discussed_at=? WHERE id=?', (now, note_id))
+        return get_note(conn, note_id, now=now)
+
+
+def _promote(conn, note_id):
+    """A note handed to a leader as a task leaves the wall: archived and promoted."""
+    conn.execute("UPDATE personal_notes SET stage='promoted',state='archived',version=version+1,updated_at=? WHERE id=?",
+                 (store.now_iso(), note_id))
 
 
 def start_note(conn, note_id, project, *, request_id, create_leader):
@@ -298,6 +809,7 @@ def start_note(conn, note_id, project, *, request_id, create_leader):
                 raise board.Conflict('用户已经核实并关联另一对话；保留用户关联，不自动替换')
             conn.execute("UPDATE personal_note_leaders SET status='completed',session_id=?,updated_at=? WHERE note_id=?",
                          (session_id, store.now_iso(), note_id))
+            _promote(conn, note_id)
         return {'ok': True, 'note': get_note(conn, note_id), 'session_id': session_id, 'project': project, 'duplicate': False}
     except Exception as exc:
         conn.execute("UPDATE personal_note_leaders SET status='unknown',error=?,updated_at=? WHERE note_id=? AND status<>'completed'",
@@ -375,6 +887,7 @@ def bind_note_leader(conn, note_id, session_id, *, request_id, reason, actor=boa
             'previous_error': link['error'], 'at': store.now_iso()}
         conn.execute("UPDATE personal_note_leaders SET session_id=?,status='completed',source_json=?,updated_at=? WHERE note_id=?",
                      (session_id, _json(source), store.now_iso(), note_id))
+        _promote(conn, note_id)
         result = {'ok': True, 'note': get_note(conn, note_id), 'session_id': session_id,
                   'project': link['project'], 'duplicate': False, 'recovered': True, 'model_calls': 0}
         conn.execute('INSERT INTO personal_note_requests VALUES(?,?,?)', (request_id, fingerprint, _json(result)))
@@ -414,7 +927,7 @@ def _target(conn, identity):
     return value
 
 
-def _prepare(conn, action, data, *, create_leader, send_message, stop_session):
+def _prepare(conn, action, data, *, proof, create_leader, send_message, stop_session):
     """Validate before reserving a receipt or calling an external execution port."""
     if action == 'leader.create':
         if create_leader is None:
@@ -453,19 +966,15 @@ def _prepare(conn, action, data, *, create_leader, send_message, stop_session):
             raise board.BoardError('人工待办处理状态必须是 done 或 cancelled')
         if data.get('status') == 'cancelled' or data.get('note') is not None:
             _text(data.get('note'), '处理原因')
-    elif action in ('note.capture', 'note.update'):
-        _text(data.get('text'), '笔记内容')
-        _tags(data.get('tags', []))
-        if data.get('project') is not None:
-            board.project(conn, data['project'])
-        if data.get('state', 'open') not in ('open', 'archived'):
-            raise board.BoardError('笔记状态必须是 open 或 archived')
-        if action == 'note.update':
-            row = conn.execute('SELECT version FROM personal_notes WHERE id=?', (data.get('note_id'),)).fetchone()
-            if row is None:
-                raise board.BoardError('个人笔记不存在')
-            if type(data.get('expected_version')) is not int or data['expected_version'] != row['version']:
-                raise board.Conflict('个人笔记已变化，请刷新后重试')
+    elif action in NOTE_WRITE_ACTIONS or action in TAG_WRITE_ACTIONS:
+        # Dry-run the real write so conflicts and invalid input surface before
+        # a receipt is reserved; the savepoint discards it.
+        conn.execute('SAVEPOINT personal_note_check')
+        try:
+            _personal_write(conn, action, data, context=proof['context'], now=store.now_iso())
+        finally:
+            conn.execute('ROLLBACK TO personal_note_check')
+            conn.execute('RELEASE personal_note_check')
 
 
 def _route_answer(conn, decision_id, answer, source):
@@ -521,7 +1030,17 @@ def _apply(conn, action, data, *, request_id, proof, create_leader, send_message
     if action == 'todo.resolve':
         return todo.resolve(conn, data.get('project'), data['todo_id'], data['status'], note=data.get('note'),
                             expected_version=data.get('expected_version'))
-    return {'note': _write_note(conn, action, data, source=proof['context'])}
+    with board.transaction(conn):
+        return _personal_write(conn, action, data, context=proof['context'], now=store.now_iso())
+
+
+def _personal_write(conn, action, data, *, context, now):
+    """Assistant note/tag writes. Summaries carry the authorizing user
+    message's assistant session and journal seq."""
+    if action in TAG_WRITE_ACTIONS:
+        return _tag_write(conn, action, data, now)
+    author = {'type': 'assistant', 'session_id': context['session_id'], 'seq': context['seq']}
+    return _note_write(conn, action, data, source=context, author=author, now=now)
 
 
 def assistant_action(conn, action, data, *, request_id, instruction, context,
@@ -568,7 +1087,7 @@ def assistant_action(conn, action, data, *, request_id, instruction, context,
                 return {**json.loads(previous['response_json']), 'duplicate': True}
             raise board.Conflict('此操作已有记录（%s），不会重复执行；请先核实结果。%s' %
                                  (previous['status'], previous['error'] or ''))
-        _prepare(conn, action, data, **ports)
+        _prepare(conn, action, data, proof=proof, **ports)
         now = store.now_iso()
         conn.execute('INSERT INTO personal_action_receipts(request_id,action,fingerprint,instruction_json,status,created_at,updated_at) '
                      "VALUES(?,?,?,?,'pending',?,?)", (request_id, action, fingerprint, _json(proof), now, now))

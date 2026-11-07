@@ -125,8 +125,8 @@ class GoalArtifactTests(GoalFixture):
         with closing(store.connect(target)) as conn:
             self.assertEqual(goal_mode.get(conn, self.goal_id)['mode'], 'autonomous')
             self.assertEqual(artifacts.version_file_content(conn, target, self.goal_id, first['id'], 'app.txt')['content'], b'first')
-            notes = personal.list_notes(conn)
-            self.assertEqual([note['text'] for note in notes], ['Project idea'])
+            notes = personal.list_notes(conn, include_archived=True)
+            self.assertEqual([(note['text'], note['stage']) for note in notes], [('Project idea', 'promoted')])
             self.assertEqual(notes[0]['leader']['session_id'], 'chief-id')
             self.assertIsNone(conn.execute('SELECT * FROM personal_assistant').fetchone())
             self.assertEqual(conn.execute('SELECT COUNT(*) FROM personal_note_requests').fetchone()[0], 0)

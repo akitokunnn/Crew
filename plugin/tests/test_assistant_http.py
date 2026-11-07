@@ -87,8 +87,8 @@ class AssistantHttpTests(ShellFixture, unittest.TestCase):
             self.assertGreater(len(content), 30)
 
     def test_quick_note_capture_edit_and_start_keep_original_and_never_duplicate_leader(self):
-        body = {'action': 'capture', 'request_id': 'fitness-idea', 'text': '简单的健身打卡 App',
-                'tags': ['生活'], 'project': 'demo'}
+        body = {'action': 'capture', 'request_id': 'fitness-idea',
+                'data': {'text': '简单的健身打卡 App', 'tags': ['生活'], 'project': 'demo'}}
         code, captured, _ = self.request('/api/personal/notes', body)
         self.assertEqual(code, 200, captured)
         note = captured['note']
@@ -98,10 +98,11 @@ class AssistantHttpTests(ShellFixture, unittest.TestCase):
         self.assertTrue(again['duplicate'])
         self.assertEqual(self.processes, [])
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM sessions WHERE project IS NULL").fetchone()[0], 0)
-        code, updated, _ = self.request('/api/personal/notes', {**body, 'action': 'update', 'request_id': 'fitness-edited',
-            'note_id': note['id'], 'expected_version': note['version'], 'text': '健身打卡 App，先做每日打卡', 'state': 'open'})
+        code, updated, _ = self.request('/api/personal/notes', {'action': 'update', 'request_id': 'fitness-edited',
+            'data': {'note_id': note['id'], 'expected_version': note['version'], 'text': '健身打卡 App，先做每日打卡',
+                     'tags': ['生活'], 'project': 'demo', 'state': 'open'}})
         self.assertEqual(code, 200, updated)
-        self.assertEqual(updated['note']['original_text'], body['text'])
+        self.assertEqual(updated['note']['original_text'], body['data']['text'])
         code, listing, _ = self.request('/api/personal/notes?project=demo')
         self.assertEqual(code, 200, listing)
         self.assertEqual(len(listing['notes']), 1)
