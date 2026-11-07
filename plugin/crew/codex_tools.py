@@ -149,7 +149,8 @@ _SPECS = [
           {"id": {"type": "integer", "minimum": 1}, "question": _text("The clarified question."),
            "options": {"type": "array", "items": _text("One full action.", max_length=2000), "maxItems": 12},
            "recommendation": _text("One complete action label from the options."), "brief": _BRIEF_SCHEMA}, ("id",)),
-    _spec("crew_todo_add", "Register something the user must physically or manually do. "
+    _spec("crew_todo_add", "Register something the user must physically or manually do that needs tracking. "
+          "Quick, simple steps (a click, one command, a glance, a reply) are just explained in the conversation instead. "
           "Provide concrete steps and how completion will be confirmed; agents cannot mark it done. "
           "Reuse operation_key only for the same real-world action across tasks; the original instructions remain intact.",
           {"title": _text("The manual action.", max_length=500), "steps": _text("The user's exact steps."),
