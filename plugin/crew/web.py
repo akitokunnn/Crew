@@ -421,6 +421,7 @@ class Service:
                 try:
                     with self.chat.lock:
                         key = sid
+                        git_admin.wake_for_new_requests(conn, sid, now=self.now().isoformat())
                         if messaging.stopped(conn, sid) or self.chat.maintenance_held(sid):
                             continue
                         if self.chat.running(key):

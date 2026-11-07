@@ -8,7 +8,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 from unittest import mock
 
-from crew import board, git_admin, hooks, models, runtimes, settings, spawn, store, web
+from crew import board, git_admin, hooks, messaging, models, runtimes, settings, spawn, store, web
 from test_core import CoreCase, NOW
 from test_shell import PLUGIN, ShellFixture
 from tests.fixture_carriers import install_lookup
@@ -699,6 +699,28 @@ class GitHttpTests(ShellFixture, unittest.TestCase):
         request = board.request_git_merge(self.conn, "demo", "s1", "topic", "tests passed", title=None, blocking=True, now=NOW)
         board.resolve_git_request(self.conn, "demo", "s3", request["id"], "merged", "CI passed", now=NOW)
         return board.handoffs(self.conn, "s1")[0]
+
+    def test_merge_request_after_stop_wakes_git_assistant_but_earlier_request_does_not(self):
+        service = self.server.service
+        self.conn.execute("INSERT INTO git_management(project,enabled_at,base,admin_session_id) VALUES(?,?,?,?)",
+                          ("demo", NOW, "develop", "s3"))
+        board.request_git_merge(self.conn, "demo", "s1", "topic", "filed before the stop", title=None, now=NOW)
+        after = "2027-01-01T00:00:00.000Z"
+        self.conn.execute("INSERT INTO session_stop_gates VALUES(?,?,?)", ("s3", after, board.HUMAN))
+        with mock.patch.object(service.chat, "running", return_value=True), \
+                mock.patch.object(service.chat, "busy", return_value=False), \
+                mock.patch.object(service.chat, "send", return_value={"accepted": True}) as send:
+            service.deliver_notices()
+            send.assert_not_called()
+            self.assertTrue(messaging.stopped(self.conn, "s3"))
+            board.request_git_merge(self.conn, "demo", "s1", "topic", "filed after the stop", title=None,
+                                    now="2027-01-02T00:00:00.000Z")
+            service.deliver_notices()
+            send.assert_called_once()
+            self.assertIn("filed after the stop", send.call_args.args[1])
+        self.assertFalse(messaging.stopped(self.conn, "s3"))
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM events WHERE kind='git:admin_woken' AND session_id='s3'").fetchone()[0], 1)
+        self.assertEqual(board.pending_notices(self.conn, "s3"), [])
 
     def test_actionable_results_share_delivery_for_leaders_members_and_both_carriers(self):
         service = self.server.service

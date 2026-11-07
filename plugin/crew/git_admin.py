@@ -11,6 +11,25 @@ def revision(config):
     return hashlib.sha256(json.dumps(config, sort_keys=True).encode('utf-8')).hexdigest()
 
 
+def wake_for_new_requests(conn, session_id, now=None):
+    """A merge request filed after the Git assistant was stopped is the work it exists for, so it lifts that stop.
+
+    Requests that were already waiting when the user stopped it keep the stop in place.
+    """
+    gate = conn.execute('SELECT stopped_at FROM session_stop_gates WHERE session_id=?', (session_id,)).fetchone()
+    if gate is None:
+        return False
+    request = conn.execute("SELECT r.id,r.project FROM git_merge_requests r JOIN git_management g ON g.project=r.project "
+                           "WHERE g.admin_session_id=? AND r.status='open' AND r.created_at>? ORDER BY r.id LIMIT 1",
+                           (session_id, gate['stopped_at'])).fetchone()
+    if request is None:
+        return False
+    conn.execute('DELETE FROM session_stop_gates WHERE session_id=?', (session_id,))
+    board.record_event(conn, 'git:admin_woken', request['project'], session_id,
+                       {'request_id': request['id'], 'stopped_at': gate['stopped_at']}, now=now)
+    return True
+
+
 def is_builtin(session, config):
     return (config is not None and config['admin_session_id'] == session['session_id']
             and session['group_name'] == 'git')
