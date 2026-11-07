@@ -74,7 +74,7 @@ test_git_notice_migration
 # 会话启动、leader 与成员
 test_core
 test_shell.SpawnTests
-test_v2_identity
+test_home_identity
 test_open_session
 test_runtime_spawn
 test_session_ops

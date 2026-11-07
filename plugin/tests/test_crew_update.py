@@ -371,33 +371,8 @@ class HelperTests(ShellFixture, unittest.TestCase):
     def test_inspect_uses_session_plugin_without_discovering_or_changing_shared_claude(self):
         with mock.patch.object(updater, 'claude_command', side_effect=AssertionError('must not discover shared Claude')):
             value = updater.inspect(self.home, PLUGIN)
-        self.assertEqual(value['target']['generation'], 2)
         self.assertEqual(value['plugin']['state'], 'session-scoped')
         self.assertEqual(value['plugin']['source'], str(PLUGIN.resolve()))
-
-    def test_v1_target_is_rejected_without_switching_home(self):
-        legacy = copy_plugin(self.root / 'legacy')
-        (legacy / 'crew-product.json').unlink()
-        self.assertEqual(updater.target_info(legacy)['generation'], 1)
-        before = {path: path.read_bytes() for path in self.home.rglob('*') if path.is_file()}
-        with self.assertRaisesRegex(updater.UpdateError, '来源不是 Crew'):
-            updater.switch(self.home, legacy)
-        self.assertEqual(before, {path: path.read_bytes() for path in self.home.rglob('*') if path.is_file()})
-
-    def test_existing_v1_home_is_rejected_at_inspection_before_any_update_action(self):
-        legacy = copy_plugin(self.root / 'legacy')
-        (legacy / 'crew-product.json').unlink()
-        install.install(self.home, legacy)
-        previous = (self.home / 'runtime.json').read_bytes()
-        for action in (updater.inspect, updater.switch):
-            with self.assertRaisesRegex(updater.UpdateError, '命令入口属于 V1'):
-                action(self.home, PLUGIN)
-            self.assertEqual((self.home / 'runtime.json').read_bytes(), previous)
-        with mock.patch.object(Path, 'home', return_value=self.root):
-            for action in (updater.inspect, updater.switch):
-                with self.assertRaisesRegex(updater.UpdateError, 'V1 的 .crew'):
-                    action(self.root / '.crew', PLUGIN)
-        self.assertFalse((self.root / '.crew').exists())
 
     def test_update_lock_admits_one_updater(self):
         first = LockHolder(self.home)

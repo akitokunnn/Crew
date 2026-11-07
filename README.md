@@ -4,7 +4,7 @@
 
 0.3.13 任务收尾不再卡在“推进中”：leader 提交收尾才算数，漏了会提醒一次；主页卡片、任务详情和报告页都能直接“通过 / 需修改 / 先观察”，“先观察”的任务单独一栏、不叫醒 AI；leader 栏只显示未读小点。修复子代理缺少记录文件时工作台一直提示“服务器错误”，后端报错现在写进“帮助 → 查看日志文件夹”里的 backend.log。产品统一叫 **Crew**，历史数据和设置沿用。安装包选择与发布流程见[桌面更新](docs/DESKTOP_UPDATES.md)。
 
-Crew 用版本号区分更新，桌面包版本以 `desktop/package.json` 为准。工作区以任务和 TODO 为主页；全 Crew 共用一个跨工作区助手。现有数据目录 `~/.crew-v2` 沿用以保留历史，这个兼容标识不作为产品名称。开发主干为 `main`，日常修复的本地试用与推送流程见 [AGENTS.md](AGENTS.md) 的“本地试用与推送”。需求与验收边界见 [产品约定](docs/v2/PRODUCT.md)，开源参考见 [选型记录](docs/v2/OPEN_SOURCE.md)。
+Crew 用版本号区分更新，桌面包版本以 `desktop/package.json` 为准。工作区以任务和 TODO 为主页；全 Crew 共用一个跨工作区助手。数据目录为 `~/.crew`（0.3.15 起；此前的 `~/.crew-v2` 已一次性复制迁移过来）。开发主干为 `main`，日常修复的本地试用与推送流程见 [AGENTS.md](AGENTS.md) 的“本地试用与推送”。需求与验收边界见 [产品约定](docs/v2/PRODUCT.md)，开源参考见 [选型记录](docs/v2/OPEN_SOURCE.md)。
 
 已有旧 Crew 身份的文件夹可以明确选择“从全新记录开始”，使用原源码目录和独立的历史，不要求先导入工作区包。旧身份保留，新身份写入 `.crew/workspace-v2.json`。见 [0.3.1 修复说明](docs/v2/FIX_0.3.1_MIB_OPEN.md)。交互反馈见 [0.3.2 反馈复测](docs/v2/RETEST_0.3.2.md)，官方 Codex 桌面往返及显示边界见 [0.3.3 接续说明](docs/v2/NATIVE_DESKTOP_0.3.3_2026-10-30.md)。
 
@@ -97,7 +97,7 @@ claude plugin install crew@crew --scope user
 
 ### 命令行、浏览器与右键入口
 
-桌面首次启动或 Claude 插件初始化后，把 `%USERPROFILE%\.crew-v2\bin` 加进用户 PATH，新终端即可使用 `crew`。配置 PATH 前，可在 PowerShell 使用 `python "$env:USERPROFILE\.crew-v2\crew.py" <命令>`。
+桌面首次启动或 Claude 插件初始化后，把 `%USERPROFILE%\.crew\bin` 加进用户 PATH，新终端即可使用 `crew`。配置 PATH 前，可在 PowerShell 使用 `python "$env:USERPROFILE\.crew\crew.py" <命令>`。
 
 使用浏览器和登录自启时，执行 `crew autostart install`；需要文件夹右键入口时，再执行 `crew menu install`。之后在工作文件夹里运行 `crew start`，或右键选择“在这里启动 Crew”，会自动启用项目并打开网页。已有服务时用 `crew web --open` 打开当前项目。
 
@@ -226,7 +226,7 @@ Git 管理员可以自行定分支规则、推功能分支、开 PR、CI 绿后�
 
 - Claude 会话记录 `~/.claude/projects/**`（含子 agent）
 - Codex 会话记录 `~/.codex/sessions/**`（含周额度百分比和点数余额）
-- Windows 派工脚本在所选 `CREW_HOME`（未指定时 `~/.crew-v2`）写入 `codex_runs.jsonl` / `claude_runs.jsonl` 起止登记。Crew 按明确身份或原生绑定把进程挂到发起人的卡片下，展示载体、任务、运行与终态；悬停可看 PID 和目录。临时派工与正式组员分开，读取状态不唤醒 AI，只有开始登记且缺少进程身份的旧记录显示“状态未确认”。Codex 原生用量单独归集，Claude 派工不重复计入 Codex。
+- Windows 派工脚本在所选 `CREW_HOME`（未指定时 `~/.crew`）写入 `codex_runs.jsonl` / `claude_runs.jsonl` 起止登记。Crew 按明确身份或原生绑定把进程挂到发起人的卡片下，展示载体、任务、运行与终态；悬停可看 PID 和目录。临时派工与正式组员分开，读取状态不唤醒 AI，只有开始登记且缺少进程身份的旧记录显示“状态未确认”。Codex 原生用量单独归集，Claude 派工不重复计入 Codex。
 - leader 可以使用原生 Claude Code `Agent` / `Task` 和 Codex `spawn_agent` 子代理，它们不登记为 Crew 成员，任务名和状态保存在发起者的历史中。Crew 成员不能继续创建成员、leader 或原生子代理，也不能借派工脚本继续下发。已有子代理历史继续可读；后台启动回执不算完成，后续按原生通知更新，连接断开后未结束的任务显示“状态未确认”。
 
 Windows 的派工集成源码在 `integrations/codex-dispatch/` 与 `integrations/claude-dispatch/`，分别对应已安装 skill 的脚本与查看器；更新 Crew 安装包不会自动覆盖用户自定义的 skill。托管 CC 使用后台命令的完成/失败回执，禁用会逐事件启动新轮次的 Monitor；普通过程记录不转发给 leader，也不为纯等待另发回复。Mac / Linux 的 skill 脚本不在本次 Windows 集成范围。
@@ -257,7 +257,7 @@ Windows 的派工集成源码在 `integrations/codex-dispatch/` 与 `integration
 | `~/.crew/desktop/backend/` | 打包桌面版保留的后端源码，供 CLI 和 Codex 守卫继续使用 |
 | `~/.crew/codex_runs.jsonl` | 派活记录 |
 
-`~/.crew-v2` 是默认数据目录；桌面 `--home <目录>` 和 CLI `crew --home <目录> ...` 可使用独立目录，适合隔离测试。
+`~/.crew` 是默认数据目录；桌面 `--home <目录>` 和 CLI `crew --home <目录> ...` 可使用独立目录，适合隔离测试。
 
 ## 更新和开发
 

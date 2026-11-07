@@ -17,16 +17,6 @@ const { OperationsClient } = require('./operations.cjs');
 const { LaunchSettings, relaunchArgs } = require('./launch-settings.cjs');
 const product = require('./product.cjs');
 const config = core.options(process.argv.slice(1),{launchSettingsPath:path.join(app.getPath('appData'),product.settingsDirectory,'launch-settings.json')});
-config.productGeneration = 2;
-try { require('./backend-product.cjs').requireHomeGenerationSync(config.home,config.productGeneration); }
-catch(error) {
-  // Reject a V1 HOME before Electron profiles, administrator files or bundled
-  // backend materialization can create anything inside the selected directory.
-  console.error(error);
-  if(!config.smoke)dialog.showErrorBox('Crew 数据目录不兼容',error.message+'\n请通过 --home <独立的新目录> 启动 Crew，或在 Crew 启动设置中选择独立目录。');
-  app.exit(1);
-  return;
-}
 const administrator = new Administrator(config.home);
 const operations = new OperationsClient(config);
 app.setName(config.instanceName);
@@ -424,7 +414,7 @@ handle('desktop:admin-status',async()=>{
   if(backend?.startupError&&['healthy','degraded'].includes(status.state)&&status.url){
     const recovered=core.loopback(status.url);
     if(tabs&&tabs.state().tabs.every(tab=>tab.project===null)){
-      try { await backend.validateService(recovered); await core.projects(recovered); }
+      try { await core.projects(recovered); }
       catch(error) {
         // Keep the file-backed health page usable while HTTP is still down.
         // An old or not-yet-ready URL must never replace the offline origin.
@@ -626,7 +616,7 @@ else {
         backend.startupError=error.message;
         let candidate=config.serviceUrl;
         if(!candidate)try{candidate=JSON.parse(await fs.readFile(path.join(config.home,'web.json'),'utf8')).url;}catch(_){}
-        try{backend.url=error.code==='CREW_PRODUCT_GENERATION'?'http://127.0.0.1:0':core.loopback(candidate);}catch(_){backend.url='http://127.0.0.1:0';}
+        try{backend.url=core.loopback(candidate);}catch(_){backend.url='http://127.0.0.1:0';}
         pendingAction='admin';
       }
       if (quitting) return;

@@ -15,10 +15,10 @@ test('Crew keeps one public product name across windows and Windows packaging', 
   for (const target of [desktop.build.win, desktop.build.portable, desktop.build.nsis]) {
     assert.match(target.artifactName, /^Crew-\$\{version\}-/);
   }
-  // Existing installs and histories must survive the visible rename.
   assert.equal(desktop.build.appId, product.appId);
-  assert.equal(product.homeDirectory, '.crew-v2');
-  assert.equal(product.settingsDirectory, 'Crew V2');
+  assert.equal(product.appId, 'local.crew.desktop');
+  assert.equal(product.homeDirectory, '.crew');
+  assert.equal(product.settingsDirectory, 'Crew');
 });
 
 test('Claude plugin metadata follows the desktop release version', () => {

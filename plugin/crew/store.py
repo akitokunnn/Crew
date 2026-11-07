@@ -9,7 +9,7 @@ BUSY_TIMEOUT_MS = 5000
 
 
 def default_home():
-    return Path.home() / ".crew-v2"
+    return Path.home() / ".crew"
 
 
 def db_path(home):

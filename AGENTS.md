@@ -2,7 +2,7 @@
 
 ## 分支约定（2026-11-07）
 
-- 产品名称统一为 **Crew**，以版本号区分交付，不把 V2 加到应用、窗口、快捷方式或产物名称。已有安装身份、`Crew V2` 设置目录及 `~/.crew-v2` 数据目录仅保留为内部兼容标识，避免升级丢失历史与设置。
+- 产品名称统一为 **Crew**，以版本号区分交付，不把 V2 加到应用、窗口、快捷方式或产物名称。自 0.3.15 起数据目录为 `~/.crew`、启动设置目录为 `%APPDATA%\Crew`、安装身份为 `local.crew.desktop`；V1/V2 并存期的 `~/.crew-v2`、`Crew V2`、代际标记与 V1 保护已删除，不再保留兼容分支。
 - `main` 是唯一开发主干，内容就是原 `rebuild/v2` 的新版 Crew（2026-11-07 合入）。日常修复走下文“本地试用与推送”。
 - V1 已弃用，不再开发或修复；其源码基线保留在标签 `v1-0.2.40` 和 main 的历史里。`rebuild/v2`、`rebuild/test` 只作历史保留，不再提交。
 - 已确认需求见 `rebuild/test:docs/CREW_PRODUCT_REDESIGN_2026-10-28.md`，可用 `git show rebuild/test:docs/CREW_PRODUCT_REDESIGN_2026-10-28.md` 查看；旧实施与交付记录不作为 V2 已完成的依据。
@@ -118,7 +118,7 @@ CI 只跑核心清单 [plugin/tests/ci_core.txt](plugin/tests/ci_core.txt)（`py
 
 | 规则 | 由什么拦住 |
 | --- | --- |
-| 产品名为 Crew，代际标识只用于内部兼容；窗口、安装器、快捷方式和产物名称保持一致 | `desktop/test/version-sync.test.cjs`、`core.test.cjs` 与真实 Electron 工作区烟测；还原旧名称会触发失败 |
+| 产品名为 Crew，数据目录、设置目录与安装身份不带代际标识；窗口、安装器、快捷方式和产物名称保持一致 | `desktop/test/version-sync.test.cjs`、`core.test.cjs` 与真实 Electron 工作区烟测；还原旧名称会触发失败 |
 | 修改可见交互后，用真实浏览器走流程；控制台错误算失败，逐步保存截图，不以静态字符串检查替代 | `node plugin/tests/smoke_assistant_reply.cjs`、`node plugin/tests/smoke_v2_ui_revision.cjs`；截图在 `Temp/assistant-reply/`、`Temp/v2-ui-review/`，脚本支持装回旧错做反证 |
 | 触及原生接回时，验证同 ID、保持桌面打开、再次交出可直接发送及工具不重复；不把假载体、未知参数或仅一次恢复当成真实桌面闭环。真实 AI 仅在用户授权时使用隔离 HOME 和指定模型 | `test_native_handoff`、`test_codex_desktop`、`test_codex_desktop_bridge`（真实进程，覆盖关闭通知屏蔽和原拥有者恢复）；真实 AI 证据见 `docs/v2/NATIVE_DESKTOP_0.3.3_2026-10-30.md`。压缩另由 `test_codex_events` 真实事件回放覆盖 |
 | 助手使用完整的共享聊天状态契约，普通任务反馈保持原任务身份并保留已交付证据 | `test_assistant_http`、`test_goal_http`、`test_goal_acceptance` 与上述助手浏览器检查；工作区迁移使用真实恢复和包往返测试 |

@@ -76,14 +76,7 @@ def target_info(root):
                      ".claude-plugin/plugin.json", "defaults/blacklist.txt", "defaults/prices.json"):
         if not (root / required).is_file():
             raise UpdateError("桌面自带的 Crew 缺少必需文件：" + str(root / required))
-    marker = root / 'crew-product.json'
-    generation = 1
-    if marker.exists():
-        product = json.loads(marker.read_text(encoding='utf-8'))
-        generation = product.get('generation') if isinstance(product, dict) else None
-        if type(generation) is not int or generation != 2:
-            raise UpdateError('Crew 产品代际标记无效：' + str(marker))
-    return {"root": str(root), "version": manifest_version(root), "digest": digest(root), 'generation': generation}
+    return {"root": str(root), "version": manifest_version(root), "digest": digest(root)}
 
 
 def cli_entry(home):
@@ -176,23 +169,9 @@ def backup(home):
     return {"path": str(path), "bytes": path.stat().st_size, "integrity": "ok"}
 
 
-def validate_home(home):
-    home = Path(home).resolve()
-    if home == (Path.home() / '.crew').resolve():
-        raise UpdateError('Crew 不会更新 V1 的 .crew 数据目录')
-    previous = cli_entry(home)
-    if previous['state'] != 'missing':
-        previous_root = previous.get('plugin_root')
-        if not previous_root or target_info(previous_root)['generation'] != 2:
-            raise UpdateError('此 HOME 的命令入口属于 V1 或来源未确认；请使用独立的数据目录')
-    return home
-
-
 def switch(home, root):
     target = target_info(root)
-    if target['generation'] != 2:
-        raise UpdateError('更新来源不是 Crew；不能切换到旧版后台')
-    home = validate_home(home)
+    home = Path(home).resolve()
     from .home_migration import reset_deployment
     deployment = reset_deployment({'home': str(Path(home).resolve())})
     runtime = install.install(home, target["root"])
@@ -252,11 +231,9 @@ def hold(home, stream):
 
 
 def inspect(home, root):
-    validate_home(home)
     target = target_info(root)
     plugin = {'state': 'session-scoped', 'source': target['root'], 'source_version': target['version'],
-              'registered_version': target['version'], 'scope': 'managed-session'} if target['generation'] == 2 else {
-              'state': 'blocked', 'reason': '更新来源不是 Crew；不会修改共享的 V1 插件'}
+              'registered_version': target['version'], 'scope': 'managed-session'}
     return {"target": target, "cli": cli_entry(home), "plugin": plugin}
 
 
