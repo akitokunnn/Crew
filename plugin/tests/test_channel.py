@@ -138,6 +138,16 @@ class ChannelTests(unittest.TestCase):
         self.assertEqual(notice["source"], "web")
         self.assertEqual(notice["text"], "交流区：用户点名你：\nuser request\n\n（这是用户本人的话）")
 
+    def test_human_mention_wakes_a_stopped_leader_but_leader_mention_does_not(self):
+        from crew import messaging
+        for sid in ("a", "b"):
+            self.conn.execute("INSERT INTO session_stop_gates VALUES(?,?,?)", (sid, NOW, board.HUMAN))
+        self.post(to=["beta"])
+        self.assertTrue(messaging.stopped(self.conn, "b"))
+        channel.post(self.conn, "demo", board.HUMAN, "everyone", ["*"], source="web", now=NOW)
+        self.assertFalse(messaging.stopped(self.conn, "a"))
+        self.assertFalse(messaging.stopped(self.conn, "b"))
+
     def test_empty_body_and_invalid_limit_are_rejected(self):
         with self.assertRaises(board.BoardError):
             self.post(" \n ")

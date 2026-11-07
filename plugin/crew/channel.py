@@ -1,5 +1,5 @@
 """The project channel: shared posts, explicit mentions, and per-reader cursors."""
-from . import board, git_admin, store
+from . import board, git_admin, messaging, store
 
 
 def _leader(conn, project_name, session_id):
@@ -82,6 +82,9 @@ def post(conn, project_name, actor, body, to=(), source="crew", now=None):
     for target in targets:
         notice_id = None
         if target["session_id"] != actor:
+            if actor == board.HUMAN:
+                # The user's own mention is the same explicit wake as typing to that leader directly.
+                messaging.clear_stop(conn, target["session_id"])
             text = ("交流区：用户点名你：\n%s\n\n（这是用户本人的话）" % body if actor == board.HUMAN else
                     '交流区：「%s」点名你：\n%s\n\n回复用 crew say --to %s "…"；只是回"收到"就不用回。' %
                     (speaker_name, body, speaker_name))

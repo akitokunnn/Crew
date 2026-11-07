@@ -9,7 +9,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import ProxyHandler, Request, build_opener
 
-from crew import board, channel, session_ops, store, web
+from crew import board, channel, messaging, session_ops, store, web
 from test_shell import NOW, PLUGIN, ShellFixture
 import test_channel_digest as digest_fixture
 
@@ -354,6 +354,22 @@ class ChannelHttpTests(ShellFixture, unittest.TestCase):
                 service.deliver_notices()
         self.assertEqual(board.pending_notices(self.conn, sid), [])
         self.assertEqual(self.conn.execute("SELECT count(*) FROM events WHERE kind='test:notice_send'").fetchone()[0], 1)
+
+    def test_user_mention_delivers_to_a_stopped_leader_after_restart(self):
+        service = self.server.service
+        with mock.patch('crew.chat.shutil.which', return_value='claude.exe'):
+            sid = service.chat.start(self.conn, 'demo', 'receiver', '协调', role='leader', now=NOW)['session_id']
+            service.chat.journal(sid).set_status('idle')
+            service.chat.stop_identity(sid)
+            self.assertTrue(messaging.stopped(self.conn, sid))
+            channel.post(self.conn, 'demo', 's3', 'leader ping', to=['receiver'], now=NOW)
+            service.deliver_notices()
+            self.assertEqual(len(board.pending_notices(self.conn, sid)), 1)
+            code, result = self.request('/api/channel', {'body': '大家看一下', 'to': ['*']}, project='demo')
+            self.assertEqual(code, 200, result)
+            self.assertFalse(messaging.stopped(self.conn, sid))
+            service.deliver_notices()
+        self.assertEqual(board.pending_notices(self.conn, sid), [])
 
     def test_failed_notice_send_keeps_mention_pending(self):
         service = self.server.service
