@@ -17,6 +17,7 @@ def get(home, query):
         if action == 'list':
             return {'scope': scope, 'identity': prompts.scope_identity(conn, scope, identity),
                     'items': [prompts.get(conn, value, scope=scope, identity=identity) for value in prompts.KEYS],
+                    'groups': [{'id': key, 'label': label} for key, label in prompts.GROUPS.items()],
                     'applies': 'next_input', 'save_starts_execution': False}
         if action == 'get':
             return prompts.get(conn, key, scope=scope, identity=identity)

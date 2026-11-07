@@ -7,7 +7,7 @@ resulting context into each runtime's existing role instructions.
 import json
 import functools
 
-from . import board, store, todo
+from . import behavior_prompts, board, store, todo
 
 
 def _atomic(function):
@@ -80,19 +80,6 @@ def _text(value, label, *, required=False):
     return value.strip()
 
 
-def _instructions(goal):
-    return ("本组已启用信任模式。用户给定目标：\n" + goal +
-            "\n\n围绕此目标自行理解需求、选择方案、实施和验收，不再把工程技术取舍交回用户拍板。"
-            "判断前读取相关代码和约定，自己提出建议并写清取舍理由；登记决定时必须给出 recommendation，"
-            "Crew 会依据该建议记录自主答复。没有建议时先由 AI 自己判断，不能默认选择第一项。"
-            "真正需要用户亲手做的事登记为人工待办，写清操作步骤、确认方法与是否阻塞；继续推进其余工作。"
-            "及时给所属 leader 留报告。项目本来使用 Git 时，按项目规则保留可追踪的 commit、实际 SHA 和分支；"
-            "普通文件夹保留修改文件与复验入口，不要为满足报告擅自 git init。"
-            "方便用户事后要求修改或 fix。最终提供详细报告：目标对应的实现、方案与理由、实际验证范围/命令/结果/产物、"
-            "未验证部分、剩余问题和人工待办、产物及后续修改入口。区分会话自报、命令成功、独立验收和未验证；"
-            "不能把 exit 0 或绿色测试直接当成整个目标已经完成。")
-
-
 @_atomic
 def set(conn, project, enabled, goal=None, now=None, *, leader_session_id, actor=board.HUMAN):
     if actor != board.HUMAN:
@@ -132,14 +119,9 @@ def context(conn, session_id):
     prefix = ('本轮最新信任设置（仅属于 leader ' + (leader['crew_name'] or leader_id) + '，Crew ID ' + leader_id +
               '）：' + ('开启' if settings['enabled'] else '关闭') + '。本条覆盖此前的信任模式说明，不授权其他组。\n')
     if settings['enabled']:
-        delegation = ('\n你可以为自己负责的任务选择自主推进。新建任务默认自主推进，'
-                      '也可显式传 decision_mode=human|autonomous；已有任务用 crew goal mode.set '
-                      '（Codex crew_goal action=mode.set），传 goal_id、mode、expected_version。'
-                      '已有任务按各自模式执行，成员不能修改授权。') if session_id == leader_id else ''
-        return prefix + _instructions(settings['goal']) + delegation
-    return (prefix + '当前按普通模式协作；不得继续沿用此前开启信任模式的自主授权。真正需要用户决定的取舍按拍板流程，'
-            '用户亲手操作仍登记人工待办。保留目标记录：\n' + (settings['goal'] or '未设置') +
-            '\n保存设置不会启动任务；等待正常对话中的具体安排。')
+        delegation = ('\n' + behavior_prompts.text(conn, 'trust_leader', session_id=session_id)) if session_id == leader_id else ''
+        return prefix + behavior_prompts.text(conn, 'trust_on', session_id=session_id, values={'goal': settings['goal']}) + delegation
+    return prefix + behavior_prompts.text(conn, 'trust_off', session_id=session_id, values={'goal': settings['goal'] or '未设置'})
 
 
 def input_context(conn, session_id, previous=None):

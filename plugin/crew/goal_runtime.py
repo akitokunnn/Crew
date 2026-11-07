@@ -11,26 +11,9 @@ import uuid
 from . import board, goal_context, goals, install, messaging, models, native_handoff, report_preview, runtimes, spawn, store, trust_mode
 
 
-BASE_INSTRUCTIONS = """你在 Crew 内执行一个有明确终点的目标；身份、目标与授权由宿主绑定。
-用户原始要求、验收标准与已确认决定优先。只有 leader 能创建 Crew 成员；成员可用派工 skill 启动本人临时进程，不冒充成员，不创建 Crew 成员/leader，不用原生子代理或团队工具。
-只处理当前目标。普通解释和进度咨询直接回答，不另建目标、不额外写文档。
-用户或你补充需求后执行继续，判断影响、本轮调整、复用成功结果，不从头重来；用户补充先回应。交付后修改由用户验收打回或开新轮。
-总对话与各任务并行。跨组协作送到对方总对话协调；回复具体协作消息用 crew send --reply-to <原消息编号>（Codex crew_send_message 的 reply_to），由宿主回到原会话或任务，不猜对方当前任务，不把 AI 回复当成人工授权。
-内部确认/收到/没有新进展只存档，不回复确认，不逐条转述给用户，不主动发消息询问状态。
-后台工作等待完成或失败回执，不订阅过程日志来反复唤醒自己，不用轮询或 sleep 保持一轮；纯等待时结束本轮，不额外发送“等”。
-宿主已给出目标和要求，信息足够就直接工作；有具体缺口才用 crew goal status / crew context 查证。
-有新证据或阶段变化才存简短工作记录，完整日志只给位置，不频繁总结。
-可体验阶段成果用 crew goal report.publish --request-id <稳定标识> --file <报告.json>（outcome=progress），Codex crew_goal 同名 action；同标识重试、不重复发布。继续未完成工作，最终仍 finish，验收条件不变。
-需要保留可恢复的成果文件时用 version.capture，data 提供 request_id、label、明确的相对 files 清单；只捕获本任务真实成果，不扫描整个工作区。恢复必须由用户预览并操作，不能自动覆盖其他任务或用户后续修改。
-保持代码与证据可复核；不把测试数量或模拟覆盖量当成产品正确率。
-需要用户亲手操作用 crew todo；需要用户决定先解释讨论，聊清楚后才完整拍板。
-leader 负责最终交付；成员提供有证据的有限结果。工程选择由你判断，目标外事项只记建议。
-执行前建AI工作清单：crew goal work.add --data '{"key":"稳定编号","title":"工作内容","acceptance":"完成条件","dependencies":[]}'；Codex用crew_goal同名action和data。用户TODO不能代替AI清单。
-work.update（key、version、status=planned|doing|blocked|done|cancelled、note）更新；完成写证据，阻塞写原因。同key不重建，成员只更新自己的工作；work.list读清单，补充只调整受影响项。
-leader 自主设计自包含 HTML。crew goal report.preview --html-file <报告.html> 预览，CC Read PNG；Codex crew_goal 同名 action 传 data.document_html / report_id；viewport=desktop/mobile，详见 leader 守则。看图评视觉，交互另测。预览失败留原错、记未验证，不判目标失败、不绕过拒绝。
-crew goal report-template 填验收证据；awaiting_acceptance/completed 需全标准及example，其他outcome可缺项；投入可省。最终 awaiting_acceptance 必填 user_test。finish 前用 crew todo list、crew decisions 核对未结事项，完成或不需要的撤回（todo withdraw / 撤回拍板）；新人工操作填 user_todos、新决定填 user_decisions。crew goal finish --file <报告.json> --html-file <报告.html> 提交；Codex crew_goal finish 用 data.report.document_html。返回 pending_finish 才算待验收，口头说完成无效。HTML 内联 CSS/JS 与图片，无外网。
-用户本人看报告并实测验收后通过；之后 leader 可归档本组无其他未完成任务的成员。未达标如实结束并附失败证据；普通问答不出报告。
-遵循项目 PR/合并规则及用户限制。暂停或已结束轮次禁止复工，不用旧消息绕过。"""
+def protocol(conn, execution):
+    """Editable goal protocol for the session that owns this execution."""
+    return behavior_prompts.text(conn, 'goal_protocol', session_id=execution['session_id'])
 
 
 class Controller:
@@ -315,8 +298,11 @@ class Controller:
             with closing(store.connect(self.home)) as conn:
                 goals.bind_native(conn, key, 'claude', native_id, **options)
         install.ensure(self.home, self.manager.plugin_root)
+        with closing(store.connect(self.home)) as prompt_conn:
+            identity_text = behavior_prompts.text(prompt_conn, 'execution_identity', session_id=logical_id,
+                values={'crew_name': session['crew_name'], 'session_id': logical_id}, plugin_root=self.manager.plugin_root)
         command = spawn.command(native_id, session['crew_name'], session['role'], binding is not None,
-                                instructions=('你是 Crew「%s」的当前目标执行。目标规则和用户原始要求由宿主随输入装载；仅当前明确授权有效。' % session['crew_name']
+                                instructions=(identity_text
                                               + ('\n' + spec['_workspace_notice'] if spec.get('_workspace_notice') else '')),
                                 permission_mode=permission_mode, plugin_root=self.manager.plugin_root,
                                 preview_directory=report_preview.image_directory(self.home, logical_id, create=True),
@@ -412,7 +398,7 @@ class Controller:
             history = {'known': observed is not None, 'tokens': observed['used'] if observed else None,
                        'source': 'native_context_usage', 'note': '原生历史未知时不当作零'}
             replacing, lost = self.lost_native_handoff(conn, execution)
-            prepared = goal_context.build(conn, key, base=BASE_INSTRUCTIONS,
+            prepared = goal_context.build(conn, key, base=protocol(conn, execution),
                                           latest_input='' if text == goal['requirements']['request'] else text,
                                           native_history=history, retrieval=self.human_handoff(conn, execution, identity) + self.followup_context(conn, execution) + lost,
                                           limits={'native_history_tokens': 64000})
@@ -427,7 +413,7 @@ class Controller:
                 if not journal.path.exists():
                     journal.set_status('idle')
                 replacing, lost = self.lost_native_handoff(conn, execution)
-                prepared = goal_context.build(conn, key, base=BASE_INSTRUCTIONS,
+                prepared = goal_context.build(conn, key, base=protocol(conn, execution),
                                               latest_input='' if text == goal['requirements']['request'] else text,
                                               native_history={'known': True, 'tokens': 0,
                                               'source': 'fresh_native_generation'}, limits={'native_history_tokens': 64000},
@@ -586,7 +572,7 @@ class Controller:
                 continue
             try:
                 self.send(execution['goal_id'], execution['session_id'],
-                          'Crew 服务重启；仅续接本目标上次未完成的工作。先核对实际代码与证据，已完成则收尾，不能重做或扩展任务。',
+                          behavior_prompts.text(conn, 'resume_nudge', session_id=execution['session_id'], values={'reason': 'Crew 服务重启，本目标上次的工作被打断'}),
                           identity='recovery:' + self.epoch + ':' + key, source='crew')
             except (board.BoardError, OSError, subprocess.SubprocessError) as error:
                 detail = type(error).__name__ + ': ' + str(error)
@@ -623,7 +609,7 @@ class Controller:
                 prior = self.manager.journal(key).inputs.get(identity)
                 if prior and prior['status'] in ('submitted', 'unknown'):
                     continue
-                self.send(goal['id'], execution['session_id'], 'Crew 运维事故已恢复；仅续接暂停前的当前目标工作，先核对已有结果，不重复施工。',
+                self.send(goal['id'], execution['session_id'], behavior_prompts.text(conn, 'resume_nudge', session_id=execution['session_id'], values={'reason': 'Crew 运维事故已恢复，续接暂停前的当前目标工作'}),
                           identity=identity, source='crew')
                 conn.execute('INSERT OR IGNORE INTO goal_resumption_deliveries VALUES(?,?,?,?,?)',
                              (goal['id'], row['incident_id'], key, identity, store.now_iso()))

@@ -16,7 +16,7 @@ import sys
 import time
 import uuid
 
-from . import board, codex_guard
+from . import behavior_prompts, board, codex_guard
 
 
 _NATIVE_ID = re.compile(r'^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$', re.I)
@@ -105,6 +105,7 @@ class Desktop:
         self.native_home = _path(value['native_home'])
         self.scope_id = value['scope_id']
         self.role = value.get('role')
+        self.instructions = value.get('desktop_instructions')
         self.binding_path = self.root / 'bindings' / (self.native_id + '.json')
         self.installation = installation
 
@@ -129,11 +130,7 @@ class Desktop:
         role = self.role or (saved or {}).get('role')
         instructions = (saved or {}).get('desktop_instructions')
         if self.role or not instructions:
-            instructions = ('当前在 Codex 原生桌面继续同一个会话。Crew 专用工具在此入口不可用；'
-                            '继续用户的工作，不调用 crew_* 工具或自动唤醒 Crew 中的会话。'
-                            '回到 Crew 后由 Crew 恢复这些工具。')
-            if role == 'member':
-                instructions += '你是成员，不能继续下发任务或创建子代理。'
+            instructions = self.instructions or behavior_prompts.default_desktop_instructions(role)
         _write(self.binding_path, {'protocol': 1, 'scope_id': self.scope_id,
                                   'native_id': self.native_id, 'native_home': self.native_home,
                                   'state': state, 'desktop_instructions': instructions, 'role': role,

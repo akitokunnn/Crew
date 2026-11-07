@@ -4,7 +4,7 @@ import hashlib
 import sqlite3
 import uuid
 
-from . import board, codex_client, goals, messaging, store
+from . import behavior_prompts, board, codex_client, goals, messaging, store
 from .message_receipts import ACTIONABLE, KINDS
 
 # A member reports back with one of these; any of them in the turn means nothing is returned for it.
@@ -274,17 +274,6 @@ def return_turn(home, execution_id, journal):
 
 FINISH_REMINDER = 'crew-finish-reminder:'
 FINISH_REMINDER_GRACE = 30
-FINISH_REMINDER_TEXT = (
-    '[Crew 收尾检查] 任务「%s」在 Crew 里仍是「推进中」：你这一轮已经结束，但没有成员在执行、没有已提交的收尾，'
-    '也没有等用户的拍板或待办。只在对话里说“完成 / 待验收”不会改变任务状态，用户也看不到验收按钮。\n'
-    '- 已完成并验证：按守则写报告，用 crew goal finish（Codex：crew_goal finish）提交，outcome=awaiting_acceptance；'
-    '返回 pending_finish 才算提交成功。报错就按报错修正后重提，例如先把工作清单剩余项标 done 或 cancelled。\n'
-    '- 还有工作：继续推进，或派给成员。\n'
-    '- 需要用户决定或亲手操作：登记拍板或 todo 后结束本轮。\n'
-    '- 在等其他回执（如 Git 助手）：直接结束本轮，不用回复本消息。\n'
-    '这条检查每轮最多出现一次。')
-
-
 def remind_unfinished(controller, conn, now=None):
     """Wake a goal's leader once when its turn ended with the task still running and nothing in flight.
 
@@ -331,7 +320,9 @@ def remind_unfinished(controller, conn, now=None):
         if identity in journal.inputs or identity in refused:
             continue
         try:
-            controller.send(row['goal_id'], row['leader_session_id'], FINISH_REMINDER_TEXT % row['title'],
+            controller.send(row['goal_id'], row['leader_session_id'],
+                            behavior_prompts.text(conn, 'finish_reminder', session_id=row['leader_session_id'],
+                                                  values={'title': row['title']}),
                             identity=identity, source='crew')
         except (board.BoardError, codex_client.CodexError, OSError) as exc:
             # Shown once in the task's record; a refused reminder is not retried on every delivery pass.

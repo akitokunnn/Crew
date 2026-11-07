@@ -949,7 +949,7 @@ class Manager:
             assistant = personal.is_assistant(conn, session_id)
             lost = self.missing_native(conn, session)
             handoff = None if lost is None else runtime_switch.handoff(
-                conn, session, self.journal(session_id), intro=runtime_switch.LOST_NATIVE_INTRO)['text']
+                conn, session, self.journal(session_id), intro='lost_native_handoff')['text']
             remembered = conn.execute('SELECT native_id FROM session_runtime_bindings WHERE session_id=? AND runtime=?',
                                       (session_id, runtime)).fetchone()
         # Inputs that never reached a native leave no history to resume.
@@ -1694,7 +1694,7 @@ class Manager:
                     reason = "活进程在 30 分钟内未退出"
                 else:
                     try:
-                        self._resume(conn, session, "[Crew] Crew 服务刚重启，你上一轮做到一半被打断了。先看看做到哪了再接着做；如果其实已经做完，就照常收尾、按守则汇报。", now=now)
+                        self._resume(conn, session, behavior_prompts.text(conn, 'resume_nudge', session_id=session['session_id'], values={'reason': 'Crew 服务刚重启，你上一轮做到一半被打断了'}), now=now)
                     except board.Conflict as exc:
                         if (store.parse_iso(now) - store.parse_iso(started)).total_seconds() < 30 * 60:
                             continue

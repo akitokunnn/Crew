@@ -2,13 +2,10 @@
 import datetime as dt
 import subprocess
 
-from . import board, codex_client, goal_mode, goals, messaging, native_handoff, runtimes, store, trust_mode
+from . import behavior_prompts, board, codex_client, goal_mode, goals, messaging, native_handoff, runtimes, store, trust_mode
 
 
 BACKOFF_SECONDS = (5, 15, 45)
-CONTINUATION = ('[Crew] 原生载体意外退出，本轮未完成。继续同一个原生会话，先核对已有历史、实际状态与执行证据，'
-                '仅续接尚未完成的工作。已成功的操作不能重做，接收结果未知的操作先核实，不能推测失败后重发。'
-                '若其实已经完成，就照常收尾，并保持原授权和任务范围。')
 
 
 def _scope(current, key):
@@ -176,11 +173,13 @@ class Controller:
                 # may rotate context and create a generation, which is inappropriate here.
                 authorization = (goal_mode.context(conn, session['_execution']['goal_id']) if scope['execution_id']
                                  else trust_mode.context(conn, scope['session_id']))
-                text = CONTINUATION
+                continuation = behavior_prompts.text(conn, 'resume_nudge', session_id=scope['session_id'],
+                                                     values={'reason': '原生载体意外退出，本轮未完成，继续同一个原生会话'})
+                text = continuation
                 if authorization:
                     text = authorization + '\n\n' + text
                 result = self.manager.send(session, text, source='crew', identity=pending['identity'],
-                                           display_text=CONTINUATION, resume_existing=True)
+                                           display_text=continuation, resume_existing=True)
                 if result.get('accepted') is not True:
                     raise board.Conflict('原生载体未确认接收续回输入')
             except (board.BoardError, codex_client.CodexError, OSError, subprocess.SubprocessError) as exc:

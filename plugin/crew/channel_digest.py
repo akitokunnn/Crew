@@ -11,7 +11,6 @@ from pathlib import Path
 
 from . import behavior_prompts, board, channel, chat, codex_client, settings, store
 
-PROMPT = behavior_prompts.DEFAULTS['summary']
 HEADINGS = ("## 已定结论", "## 未定的事 · 在等谁", "## 各组跨组相关进展")
 DIGEST_TIMEOUT = 300
 
@@ -30,7 +29,7 @@ def prompt(previous, messages, instructions=''):
     # The output schema is a parser contract; all summarization behavior comes
     # from the editable summary template, without appending obsolete defaults.
     contract = '卡片输出协议：依次使用三个二级小标题“' + '”“'.join(HEADINGS) + '”；没有内容写“暂无”。\n'
-    return contract + (instructions or PROMPT) + "\n上一张要点卡：\n" + (previous or "（无，这是第一张要点卡）") + "\n\n新发言全文（JSON）：\n" + json.dumps(
+    return contract + (instructions or behavior_prompts.DEFAULTS['summary']) + "\n上一张要点卡：\n" + (previous or "（无，这是第一张要点卡）") + "\n\n新发言全文（JSON）：\n" + json.dumps(
         [{key: message[key] for key in ("speaker_name", "created_at", "mentions", "body")}
          for message in messages], ensure_ascii=False)
 

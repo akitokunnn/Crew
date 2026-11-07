@@ -141,8 +141,9 @@ class GitCommandTests(CoreCase):
         self.assertEqual(models.get(self.conn, administrator), {'model': None, 'effort': None})
         self.assertEqual(plan['command'], ['codex.exe', 'app-server'])
         brief = plan['files'][plan['spec']['md']]
-        self.assertIn(str(self.fake_plugin / 'skills' / 'leader' / 'SKILL.md'), brief)
-        self.assertIn(str(self.fake_plugin / 'skills' / 'git' / 'SKILL.md'), brief)
+        # Rules arrive through the editable injected configuration, not built-in file paths.
+        self.assertNotIn('SKILL.md', brief)
+        self.assertIn('crew_git(action="policy"', brief)
         self.assertNotIn('/crew:leader', brief)
         self.assertNotIn('/crew:git', brief)
 

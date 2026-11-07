@@ -102,6 +102,7 @@ class NativeApprovalTests(unittest.TestCase):
     def test_real_jsonl_process_waits_for_the_host_decision_before_effects(self):
         server = r'''
 import json, sys
+sys.stdin.reconfigure(encoding='utf-8')  # Codex reads UTF-8; the console code page must not decide.
 from pathlib import Path
 cwd, turn, waiting = None, 0, {}
 def send(value): print(json.dumps(value), flush=True)

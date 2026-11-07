@@ -439,14 +439,17 @@ class RemoteDecisionActionTests(GoalFixture):
         assistant = personal.ensure_assistant(self.conn, self.home)
         assistant_rules = behavior_prompts.DEFAULTS['assistant']
         context = personal.assistant_context(self.conn, assistant['session_id'])
-        for text in (assistant_rules, context['instructions']):
-            for part in ('QQ/Lark', 'decision.answer', 'todo.resolve', 'session.message', '含糊时先回问一句'):
-                self.assertIn(part, text)
+        for part in ('QQ/Lark', 'decision.answer', 'todo.resolve', 'session.message', '含糊时先回问一句'):
+            self.assertIn(part, assistant_rules)
+        # The tool result points at the injected rules instead of repeating them.
+        self.assertIn('[Crew assistant]', context['instructions'])
         leader_rules = behavior_prompts.DEFAULTS['leader']
-        for part in ('每件各建一个目标并分别 start', '已有同一任务就补充原目标', 'crew todo list', 'crew decisions', 'user_decisions'):
+        for part in ('每件各建一个目标并分别 start', '已有同一任务就补充原目标'):
             self.assertIn(part, leader_rules)
+        final_rules = behavior_prompts.DEFAULTS['final_report']
         for part in ('crew todo list', 'crew decisions', 'todo withdraw', '撤回拍板', 'user_todos', 'user_decisions'):
-            self.assertIn(part, goal_runtime.BASE_INSTRUCTIONS)
+            self.assertIn(part, final_rules)
+        self.assertIn('final_report', behavior_prompts.bundle('leader'))
 
     def test_missing_answered_or_unverified_decisions_are_rejected(self):
         assistant = personal.ensure_assistant(self.conn, self.home)

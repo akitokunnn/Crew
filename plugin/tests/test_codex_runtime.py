@@ -544,6 +544,7 @@ class CodexRuntimeTests(unittest.TestCase):
         # tiny protocol fixture replaces Codex entirely. No model is invoked.
         server = r'''
 import json, sys
+sys.stdin.reconfigure(encoding='utf-8')  # Codex reads UTF-8; the console code page must not decide.
 def send(value): print(json.dumps(value), flush=True)
 for line in sys.stdin:
     message = json.loads(line)

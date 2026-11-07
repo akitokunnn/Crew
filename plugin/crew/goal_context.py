@@ -3,7 +3,7 @@ import hashlib
 import json
 import uuid
 
-from . import board, goals
+from . import behavior_prompts, board, goals
 
 DEFAULT_LIMITS = {'base': 2000, 'work': 12000, 'retrieval': 6000}
 KINDS = frozenset(('rule', 'constraint', 'decision', 'fact', 'attempt', 'handoff', 'input', 'evidence', 'summary'))
@@ -216,13 +216,13 @@ def build(conn, execution_id, *, base='', latest_input='', retrieval=(), limits=
     materials = [_material('base', hashlib.sha256(base.encode()).hexdigest(), base, {'type': 'base', 'id': execution_id}, '最小执行指令', 'base', True),
                  _material('requirement:' + goal['id'], req['version'], required, {'type': 'requirement', 'id': goal['id'], 'version': req['version']}, '当前目标原始要求、验收与授权', protected=True)]
     if goals.discussion(conn, execution_id):
-        discussion_text = ('当前是已交付任务内的讨论回复，原任务状态、需求和验收保持不变。解释问题直接回答，不重新施工、不修改文件、不重建目标，不为普通问答提交 finish。'
-            '只有用户确实提出修改时，先用 crew goal amend（Codex crew_goal action=amend，data.text 写清具体修改）登记实际需求；'
-            '该结构化动作会转为同一任务内的迭代，随后才可更新工作清单、实施和交付。不要因为出现“第二轮”等词就猜测重开轮次。')
+        discussion_text = behavior_prompts.text(conn, 'goal_discussion', session_id=execution['session_id'])
         materials.append(_material('discussion:' + execution_id, '1', discussion_text,
             {'type': 'discussion-response', 'id': execution_id}, '回复与业务执行分开', protected=True))
     policy = goal_mode.get(conn, goal['id'])
-    materials.append(_material('decision-mode:' + goal['id'], policy['version'], goal_mode.context(conn, goal['id']),
+    mode_text = goal_mode.context(conn, goal['id'])
+    mode_version = '%s:%s' % (policy['version'], hashlib.sha256(mode_text.encode()).hexdigest()[:12])
+    materials.append(_material('decision-mode:' + goal['id'], mode_version, mode_text,
                                {'type': 'goal-decision-mode', 'id': goal['id'], 'version': policy['version']},
                                '仅本任务的决策授权', protected=True))
     if latest_input:
