@@ -7,7 +7,7 @@ window.crewActivity.onState(tab=>{
   $('items').replaceChildren();
   for(const item of activity.items||[]){
     const row=document.createElement('div');row.className='item';row.dataset.kind=item.kind;
-    const icon=document.createElement('span');icon.className='item-icon';icon.textContent=({decision:'?',todo:'↗',approval:'◇',working:'·',delivery:'✓',reply:'↩',error:'!'})[item.kind]||'·';
+    const icon=document.createElement('span');icon.className='item-icon';icon.textContent=({decision:'?',todo:'↗',approval:'◇',working:'·',delivery:'✓',acceptance:'✓',reply:'↩',error:'!'})[item.kind]||'·';
     const text=document.createElement('div');text.className='item-text';const title=document.createElement('p');title.className='item-title';title.textContent=item.title;
     const meta=document.createElement('p');meta.className='item-meta';meta.textContent=[item.name,item.detail].filter(Boolean).join(' · ');text.append(title,meta);row.append(icon,text);$('items').append(row);
   }

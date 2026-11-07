@@ -76,7 +76,8 @@ class Manager:
                           app_id=inbox.credentials[0] if inbox.credentials else '',
                           secret_configured=inbox.credentials is not None,
                           enabled=status['enabled'], state=status['channel']['state'],
-                          detail=status['channel']['detail'], bound=bound, error=status['error'])
+                          detail=status['channel']['detail'], bound=bound, error=status['error'],
+                          delivery=inbox.delivery_snapshot())
             if channel == 'lark':
                 result['domain'] = inbox.domain
             if not bound and inbox.enabled:
@@ -143,8 +144,7 @@ class Manager:
                 inbox.execute(conn, "UPDATE notification_messages SET status='retired'")
                 inbox.execute(conn, "UPDATE notification_replies SET status='cancelled' WHERE status IN ('queued','running','sending')")
             with inbox.lock:
-                inbox.config.update(owner_openid=None, since=None, current_project=None,
-                                    current_leader_session_id=None, leader_numbers={},
+                inbox.config.update(owner_openid=None, since=None,
                                     binding_code=secrets.token_hex(4).upper(), generation=secrets.token_hex(12))
                 inbox.save_config()
 

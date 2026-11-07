@@ -1,5 +1,5 @@
 'use strict';
-const { app, BrowserWindow, WebContentsView, ipcMain, dialog, Menu, Tray, nativeImage, shell, clipboard } = require('electron');
+const { app, BrowserWindow, View, WebContentsView, ipcMain, dialog, Menu, Tray, nativeImage, nativeTheme, shell, clipboard, systemPreferences } = require('electron');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
@@ -8,26 +8,41 @@ const storage = require('./storage.cjs');
 const chrome = require('./chrome.cjs');
 const { WorkspaceTabs } = require('./tabs.cjs');
 const { ActivityPreview } = require('./activity-preview.cjs');
+const { ReportPreviewRenderer, ReportPreviewClient } = require('./report-preview.cjs');
 const { installPermissions } = require('./permissions.cjs');
 const { ToolUpdates } = require('./tool-updates.cjs');
 const { CrewUpdates } = require('./crew-updates.cjs');
 const { Administrator } = require('./admin.cjs');
 const { OperationsClient } = require('./operations.cjs');
 const { LaunchSettings, relaunchArgs } = require('./launch-settings.cjs');
-const config = core.options(process.argv.slice(1),{launchSettingsPath:path.join(app.getPath('appData'),'Crew','launch-settings.json')});
+const product = require('./product.cjs');
+const config = core.options(process.argv.slice(1),{launchSettingsPath:path.join(app.getPath('appData'),product.settingsDirectory,'launch-settings.json')});
+config.productGeneration = 2;
+try { require('./backend-product.cjs').requireHomeGenerationSync(config.home,config.productGeneration); }
+catch(error) {
+  // Reject a V1 HOME before Electron profiles, administrator files or bundled
+  // backend materialization can create anything inside the selected directory.
+  console.error(error);
+  if(!config.smoke)dialog.showErrorBox('Crew 数据目录不兼容',error.message+'\n请通过 --home <独立的新目录> 启动 Crew，或在 Crew 启动设置中选择独立目录。');
+  app.exit(1);
+  return;
+}
 const administrator = new Administrator(config.home);
 const operations = new OperationsClient(config);
 app.setName(config.instanceName);
-if (process.platform === 'win32') app.setAppUserModelId('local.crew.desktop');
+if (process.platform === 'win32') app.setAppUserModelId(product.appId);
 config.bundledBackendDir = app.isPackaged ? path.join(process.resourcesPath, 'backend') : path.resolve(__dirname, '../../plugin');
 config.backendDir = config.backendDir || config.bundledBackendDir;
 config.helperBackendDir = config.bundledBackendDir;
+config.codexDesktopProxy = app.isPackaged
+  ? path.join(process.resourcesPath, 'app.asar.unpacked', 'assets', 'CrewCodexBridge.exe')
+  : path.resolve(__dirname, '../assets/CrewCodexBridge.exe');
 require('node:fs').mkdirSync(config.userData,{recursive:true});
 app.setPath('userData', config.userData);
 const homePage = pathToFileURL(path.join(__dirname, 'home.html')).href;
 const errorPage = pathToFileURL(path.join(__dirname, 'error.html')).href;
 let lastPublishedTab=null;
-let window, tray, backend, tabs, activityPreview, tools, crewUpdates, launchSettings, windowMenu, quitting = false, finishedQuit = false, parentDirectory = null, smokeStarted = false, pendingAction = null, pendingWorkspace = null, homeBootstrapped = false;
+let window, tray, backend, tabs, activityPreview, reportPreviews, tools, crewUpdates, launchSettings, windowMenu, quitting = false, finishedQuit = false, parentDirectory = null, smokeStarted = false, pendingAction = null, pendingWorkspace = null, homeBootstrapped = false;
 let startupWork = null, cleanupPromise = null;
 
 function liveWindow(target = window) {
@@ -58,6 +73,7 @@ async function cleanupResources() {
       finish('tool updates', () => tools?.close())
     ]);
     await Promise.all([...workspaceDataJobs].map(job=>finish('workspace data',()=>job)));
+    await finish('report previews', () => reportPreviews?.close());
     await finish('backend', () => backend?.stop());
   })();
   return cleanupPromise;
@@ -126,6 +142,7 @@ ipcMain.on('desktop:tabs-layout',(event,bounds)=>{
 ipcMain.handle('desktop:chrome-action', async (event, command, value) => {
   trustedChrome(event);
   if (command === 'home') return showHome();
+  if (command === 'assistant') return tabs.openAssistant();
   if (command === 'admin') return showHome('admin');
   if (command === 'settings') return showHome('settings');
   if (command === 'back') return tabs.back();
@@ -138,7 +155,7 @@ ipcMain.handle('desktop:chrome-action', async (event, command, value) => {
   throw new Error('不支持的窗口操作');
 });
 function external(url) {
-  try { const parsed = new URL(url); if (['http:', 'https:'].includes(parsed.protocol) && !parsed.username && !parsed.password) void shell.openExternal(parsed.href); }
+  try { const parsed = new URL(url); if ((['http:', 'https:'].includes(parsed.protocol) || /^codex:\/\/threads\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(url)) && !parsed.username && !parsed.password) void shell.openExternal(parsed.href).catch(error=>actionError(new Error('无法打开外部应用：'+error.message))); }
   catch (_) { /* Invalid external link: keep the application on its current page. */ }
 }
 async function showHome(action = null, workspace = null) {
@@ -163,7 +180,7 @@ function actionError(error) {
     .catch(failure=>console.error('Crew error dialog failed:',failure));
 }
 function menuAction(action) { return ()=>{ if (!liveWindow()) return; Promise.resolve().then(()=>{if(liveWindow())return action();}).catch(actionError); }; }
-async function openProject(name) {
+async function openProject(name, hash = '') {
   if (!liveWindow()) return false;
   const target = window;
   if(new URL(backend.url).port==='0')throw new Error(backend.startupError||'后台尚未连接，请查看系统管理员');
@@ -184,12 +201,16 @@ async function openProject(name) {
   const alreadyPrepared=preparedWorkspaces.delete(project.name);
   if(!alreadyOpen&&!alreadyPrepared)project=await storage.prepare(project,backend.url,chooseHistory,storageProgress,workspaceDataRequest);
   if(!project||!liveWindow(target))return false;
-  await tabs.open(project);return true;
+  await tabs.open(project, hash);return true;
 }
 function storageProgress(message){if(liveWindow())window.webContents.send('desktop:storage-progress',message);}
 async function chooseHistory({kind,discovery}) {
   if(!liveWindow())return null;
   const target=window;
+  if(kind==='history_missing'){
+    const answer=await dialog.showMessageBox(window,{type:'question',title:'打开为 Crew 工作区',message:'这个文件夹有旧 Crew 的工作区身份',detail:'可以使用现有源码，从全新的记录开始。旧版任务、聊天和文件夹身份会保留；新建记录不会启动 AI。需要接续原历史时，请取消并导入工作区包。',buttons:['从全新记录开始','取消'],defaultId:0,cancelId:1,noLink:true});
+    return liveWindow(target)&&answer.response===0?{action:'fresh'}:null;
+  }
   if(kind==='relocate'){
     const answer=await dialog.showMessageBox(window,{type:'question',title:'接续工作区',message:'发现已有工作区身份',detail:'可以将此目录设为本机工作位置，历史身份保持不变。Crew 会先停止该工作区在旧位置的执行；外部工具中的执行请自行退出。复制项目作为独立工作区时，请使用导出包的“复制为新工作区”。',buttons:['迁移目录并接续','取消'],defaultId:0,cancelId:1,noLink:true});
     return liveWindow(target)&&answer.response===0?'relocate':null;
@@ -202,8 +223,9 @@ async function chooseHistory({kind,discovery}) {
     selected=answer.response;if(selected>=candidates.length)return null;
   }
   const candidate=candidates[selected];if(!candidate)return null;
-  const answer=await dialog.showMessageBox(window,{type:'question',title:'升级工作区数据',message:'发现可以接续的旧版历史',detail:`${candidate.project}\n成员 ${candidate.counts.sessions||0} · 任务 ${candidate.counts.goals||0} · 报告 ${candidate.counts.reports||0} · 资料 ${candidate.counts.documents||0}\n\n升级会建立完整历史库，保留旧数据并校验关联和产出文件。查看、升级均不会启动 AI。`,buttons:['升级并接续','仅查看历史','取消'],defaultId:0,cancelId:2,noLink:true});
-  return !liveWindow(target)||answer.response===2?null:{action:answer.response===0?'upgrade':'view',candidate_id:candidate.id};
+  const buttons=['升级并接续','仅查看历史',...(discovery.can_start_fresh?['从全新记录开始']:[]),'取消'];
+  const answer=await dialog.showMessageBox(window,{type:'question',title:'升级工作区数据',message:'发现可以接续的旧版历史',detail:`${candidate.project}\n成员 ${candidate.counts.sessions||0} · 任务 ${candidate.counts.goals||0} · 报告 ${candidate.counts.reports||0} · 资料 ${candidate.counts.documents||0}\n\n升级会建立完整历史库，保留旧数据并校验关联和产出文件。查看、升级均不会启动 AI。`,buttons,defaultId:0,cancelId:buttons.length-1,noLink:true});
+  return !liveWindow(target)||answer.response===buttons.length-1?null:answer.response===2?{action:'fresh'}:{action:answer.response===0?'upgrade':'view',candidate_id:candidate.id};
 }
 async function exportWorkspace(name){
   const answer=await dialog.showSaveDialog(window,{title:'导出完整工作区',defaultPath:(name.replace(/[<>:"/\\|?*]/g,'_')||'workspace')+'.crewpack',filters:[{name:'Crew 工作区',extensions:['crewpack']}]});
@@ -402,7 +424,7 @@ handle('desktop:admin-status',async()=>{
   if(backend?.startupError&&['healthy','degraded'].includes(status.state)&&status.url){
     const recovered=core.loopback(status.url);
     if(tabs&&tabs.state().tabs.every(tab=>tab.project===null)){
-      try { await core.projects(recovered); }
+      try { await backend.validateService(recovered); await core.projects(recovered); }
       catch(error) {
         // Keep the file-backed health page usable while HTTP is still down.
         // An old or not-yet-ready URL must never replace the offline origin.
@@ -467,7 +489,8 @@ handle('desktop:crew-update-cancel',()=>crewUpdates.cancel());
 handle('desktop:crew-update-open',async kind=>{
   if(!['release','main'].includes(kind))throw new Error('不支持的版本链接');
   const online=crewUpdates.snapshot().online;
-  const target=kind==='release'?(online?.release?.url||'https://github.com/akitokunnn/Crew/releases'):(online?.main?.url||'https://github.com/akitokunnn/Crew');
+  if(kind==='release'&&!online?.release?.url)throw new Error('当前版本尚未登记正式发布包，请查看 main 分支。');
+  const target=kind==='release'?online.release.url:(online?.main?.url||'https://github.com/akitokunnn/Crew/tree/main');
   const url=new URL(target);
   if(url.protocol!=='https:'||url.hostname!=='github.com'||url.username||url.password||!(url.pathname==='/akitokunnn/Crew'||url.pathname.startsWith('/akitokunnn/Crew/')))throw new Error('版本链接不属于 Crew 官方仓库');
   await shell.openExternal(url.href);return {ok:true};
@@ -476,6 +499,8 @@ function settingsRequest(route, body, timeoutMs) {
   if (!backend?.url || new URL(backend.url).port === '0') throw Error(backend?.startupError || '后台尚未连接，请查看后台信息。');
   return core.request(backend.url, route, body, timeoutMs);
 }
+handle('desktop:prompts-get',query=>settingsRequest('/api/behavior-prompts?'+new URLSearchParams(query || {})));
+handle('desktop:prompts-save',body=>settingsRequest('/api/behavior-prompts',body));
 handle('desktop:settings-get',()=>operations.request('settings-get'));
 handle('desktop:settings-save',body=>operationsMutation('settings-save',body));
 handle('desktop:launch-settings-get',()=>launchSettings.get());
@@ -492,6 +517,8 @@ handle('desktop:settings-connection',()=>settingsRequest('/api/connections'));
 handle('desktop:settings-connection-save',body=>settingsRequest('/api/connections/configure',body));
 handle('desktop:settings-connection-action',body=>settingsRequest('/api/connections/action',body));
 handle('desktop:settings-connection-preferences',body=>settingsRequest('/api/connections/preferences',body));
+handle('desktop:remote-access-read',()=>settingsRequest('/api/remote-access'));
+handle('desktop:remote-access-action',body=>settingsRequest('/api/remote-access',body));
 handle('desktop:settings-away',away=>{
   if (typeof away !== 'boolean') throw Error('离开状态必须是 true 或 false');
   return settingsRequest('/api/notifications/away', {away});
@@ -506,10 +533,14 @@ handle('desktop:settings-ui',async()=>{
   // Only trusted home can load these fixed, packaged application assets.
   const directory = path.join(config.helperBackendDir, 'crew', 'web');
   return injectAssets(directory, [
+    ['executeJavaScript','browser-utils.js'],
     ['executeJavaScript','launch-settings-ui.js'], ['insertCSS','operations-ui.css'],
     ['executeJavaScript','operations-ui.js'], ['insertCSS','settings-ui.css'],
+    ['insertCSS','behavior-prompts-ui.css'], ['executeJavaScript','behavior-prompts-ui.js'],
+    ['executeJavaScript','sounds.js'], ['executeJavaScript','sound-settings-ui.js'],
     ['executeJavaScript','settings-ui.js'], ['executeJavaScript','connections-ui.js'],
-    ['insertCSS','storage-ui.css'], ['executeJavaScript','storage-ui.js']
+    ['insertCSS','storage-ui.css'], ['executeJavaScript','storage-ui.js'],
+    ['insertCSS','remote-access-ui.css'], ['executeJavaScript','remote-access-ui.js']
   ]);
 });
 handle('desktop:workspace-ui',async()=>{
@@ -595,8 +626,15 @@ else {
         backend.startupError=error.message;
         let candidate=config.serviceUrl;
         if(!candidate)try{candidate=JSON.parse(await fs.readFile(path.join(config.home,'web.json'),'utf8')).url;}catch(_){}
-        try{backend.url=core.loopback(candidate);}catch(_){backend.url='http://127.0.0.1:0';}
+        try{backend.url=error.code==='CREW_PRODUCT_GENERATION'?'http://127.0.0.1:0':core.loopback(candidate);}catch(_){backend.url='http://127.0.0.1:0';}
         pendingAction='admin';
+      }
+      if (quitting) return;
+      if (!backend.startupError) {
+        reportPreviews = new ReportPreviewClient({base:backend.url, request:core.request,
+          renderer:new ReportPreviewRenderer({BrowserWindow})});
+        try { await startupStep(reportPreviews.start()); }
+        catch (error) { console.error('Crew 报告预览不可用：', error.message); }
       }
       if (quitting) return;
       tools=new ToolUpdates(config,{onChange:state=>{if(liveWindow())window.webContents.send('desktop:tools-state',state);}});
@@ -625,7 +663,13 @@ else {
         webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true,
           additionalArguments: ['--crew-desktop-config=' + encodeURIComponent(JSON.stringify({ home: homePage, origin: backend.url, error:errorPage, instanceName:config.instanceName }))] } });
       tabs=new WorkspaceTabs(window,{origin:backend.url,
-        createView:()=>new WebContentsView({webPreferences:{contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true,...(config.smoke?{backgroundThrottling:false}:{})}}),
+        createView:()=>{
+          const view=new WebContentsView({webPreferences:{contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true,...(config.smoke?{backgroundThrottling:false}:{})}});
+          // Match the page's own first paint (system theme) so a loading page slides in without a white flash.
+          view.setBackgroundColor(nativeTheme.shouldUseDarkColors?'#1E1E1C':'#F6F5F1');return view;
+        },
+        createStage:()=>new View(),
+        prefersReducedMotion:()=>{const motion=systemPreferences.getAnimationSettings();return motion.prefersReducedMotion||!motion.shouldRenderRichAnimation;},
         onChange:state=>publishTabs(state),onHome:()=>{},external,openProject,workspaceSettings:name=>{void showHome('workspace-settings',name).catch(actionError);},
         onTitleChange:name=>{void core.projects(backend.url).then(items=>{if(!liveWindow())return;const item=items.find(project=>project.name===name);if(item)tabs.updateProject(item);}).catch(error=>console.error('Crew workspace metadata refresh failed:',error));},
         readActivity:names=>core.request(backend.url,'/api/workspaces/activity?'+new URLSearchParams(names.map(name=>['project',name])).toString(),undefined,4000),

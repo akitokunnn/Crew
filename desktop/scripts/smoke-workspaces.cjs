@@ -11,6 +11,7 @@ const { spawn } = require('node:child_process');
   const output = path.join(desktop, 'smoke-output/workspaces');
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
+  delete env.CREW_SESSION_ID; delete env.CLAUDE_CODE_SESSION_ID;
   const child = spawn(require('electron'), [
     '--require', path.join(__dirname, 'workspaces-smoke-hook.cjs'), desktop,
     '--smoke-test', '--home', home, '--smoke-output', path.join(output, 'unused.json'), '--isolated-sources'

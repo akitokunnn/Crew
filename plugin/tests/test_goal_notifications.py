@@ -21,7 +21,7 @@ class GoalNotificationTests(GoalFixture):
         self.clock=store.parse_iso(NOW);self.locked=False;self.client=FakeQQ();self.journals={}
         (self.home/'qq.json').write_text(json.dumps({'app_id':'fake-app','app_secret':'fake-secret'}),encoding='utf-8')
         (self.home/'notify.json').write_text(json.dumps({'owner_openid':'owner','since':NOW,'manual_away':False,
-            'current_leader_session_id':'chief-id','leader_numbers':{}}),encoding='utf-8')
+            }),encoding='utf-8')
         manager=SimpleNamespace(home=self.home,path=lambda sid:self.home/'chat'/(sid+'.jsonl'),journal=self.journal,
                                 busy=mock.Mock(return_value=False), work=lambda **kwargs: contextlib.nullcontext(True))
         self.controller=goal_runtime.Controller(manager)
@@ -41,7 +41,7 @@ class GoalNotificationTests(GoalFixture):
 
     def stamp(self):return self.clock.isoformat(timespec='milliseconds').replace('+00:00','Z')
 
-    def finish(self, outcome='completed', *, finalized=True):
+    def finish(self, outcome='awaiting_acceptance', *, finalized=True):
         target=self.goal(now=self.stamp());goals.transition(self.conn,target['id'],'running',now=self.stamp())
         report=goals.save_report(self.conn,target['id'],self.report(outcome),now=self.stamp())
         goals.request_finish(self.conn,target['id'],report['id'],now=self.stamp())
@@ -56,7 +56,7 @@ class GoalNotificationTests(GoalFixture):
         self.inbox.tick();self.assertEqual(self.client.sent,[])
         self.push();self.assertEqual(len(self.client.sent),1)
         text=self.client.sent[0]['text']
-        for part in ('目标交付',target['title'],'第 1 轮','已达标','Measured the speaker handover.','完整 HTML 报告','Crew'):
+        for part in ('【完成】demo·chief：',target['title'],'待你验收','直接回复这里，全局助手会处理。'):
             self.assertIn(part,text)
         self.assertNotIn('localhost',text);self.assertNotIn('127.0.0.1',text);self.assertNotIn('/api/goals/report',text)
         key='goal-report:'+report['id']
@@ -67,6 +67,12 @@ class GoalNotificationTests(GoalFixture):
         self.inbox.close();self.inbox=self.new_inbox();self.inbox.tick()
         self.assertEqual(len(self.client.sent),1)
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM notification_messages WHERE item_id=?',(key,)).fetchone()[0],1)
+
+    def test_cancelled_final_report_stays_quiet(self):
+        self.finish('cancelled')
+        self.push()
+        self.assertEqual(self.client.sent, [])
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM notification_messages').fetchone()[0], 0)
 
     def test_pending_finish_or_paused_goal_does_not_push_a_report(self):
         target,report=self.finish(finalized=False)
@@ -87,27 +93,30 @@ class GoalNotificationTests(GoalFixture):
         self.assertEqual(self.client.sent,[])
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM notification_messages').fetchone()[0],0)
 
-    def test_only_the_finalized_report_is_announced_not_drafts_member_progress_or_todos(self):
+    def test_todos_and_finalized_reports_are_announced_but_drafts_and_member_progress_are_not(self):
         target=self.goal(now=self.stamp());goals.transition(self.conn,target['id'],'running',now=self.stamp())
         draft_data=self.report();draft_data['summary']='中间尝试，没有最终结论'
         draft=goals.save_report(self.conn,target['id'],draft_data,now=self.stamp())
         board.report(self.conn,'member-id','成员内部流水，不应推送',now=self.stamp())
         todo.add(self.conn,'member-id','接入设备','在设置里连接','状态已连接',now=self.stamp())
-        self.push();self.assertEqual(self.client.sent,[])
+        self.push();self.assertEqual(len(self.client.sent),1)
+        self.assertIn('【TODO】',self.client.sent[0]['text'])
+        self.assertNotIn('中间尝试',self.client.sent[0]['text'])
+        self.assertNotIn('成员内部流水',self.client.sent[0]['text'])
         self.clock+=dt.timedelta(seconds=1)
-        report=goals.save_report(self.conn,target['id'],self.report(),now=self.stamp())
+        report=goals.save_report(self.conn,target['id'],self.report('awaiting_acceptance'),now=self.stamp())
         goals.request_finish(self.conn,target['id'],report['id'],now=self.stamp())
         goals.finalize_finish(self.conn,target['id'],now=self.stamp())
-        self.push();self.assertEqual(len(self.client.sent),1)
-        self.assertNotIn('中间尝试',self.client.sent[0]['text']);self.assertNotIn('成员内部流水',self.client.sent[0]['text'])
+        self.push();self.assertEqual(len(self.client.sent),2)
+        self.assertNotIn('中间尝试',self.client.sent[-1]['text']);self.assertNotIn('成员内部流水',self.client.sent[-1]['text'])
         self.assertIsNone(self.conn.execute('SELECT 1 FROM notification_messages WHERE item_id=?',('goal-report:'+draft['id'],)).fetchone())
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM notification_messages WHERE kind='goal_report'").fetchone()[0],1)
 
     def test_failed_and_waiting_acceptance_reports_keep_their_real_outcome(self):
-        for outcome,label in (('failed','未达标'),('awaiting_acceptance','待用户验收')):
+        for outcome,label in (('failed','未达标'),('awaiting_acceptance','待你验收')):
             with self.subTest(outcome=outcome):
                 self.finish(outcome);self.push()
-                self.assertIn('结论：'+label,self.client.sent[-1]['text'])
+                self.assertIn(label,self.client.sent[-1]['text'])
                 self.assertNotIn('已达标',self.client.sent[-1]['text'])
 
     def test_old_finalized_report_before_binding_window_is_not_pushed(self):
@@ -152,22 +161,22 @@ class GoalNotificationTests(GoalFixture):
 
     def test_local_preview_addresses_are_not_sent_to_the_phone(self):
         target=self.goal(now=self.stamp());goals.transition(self.conn,target['id'],'running')
-        data=self.report();data['summary']='验证完成。预览 http://localhost:8616/report 与 http://127.0.0.1:8616/report'
+        data=self.report('awaiting_acceptance');data['summary']='验证完成。预览 http://localhost:8616/report 与 http://127.0.0.1:8616/report'
         report=goals.save_report(self.conn,target['id'],data,now=self.stamp())
         goals.request_finish(self.conn,target['id'],report['id'],now=self.stamp());goals.finalize_finish(self.conn,target['id'],now=self.stamp())
         self.push();text=self.client.sent[-1]['text']
-        self.assertIn('验证完成',text);self.assertIn('本机地址请回 Crew 查看',text)
+        self.assertNotIn('验证完成',text);self.assertNotIn('本机地址请回 Crew 查看',text)
         self.assertNotIn('localhost',text);self.assertNotIn('127.0.0.1',text)
 
     def test_final_briefs_keep_individual_report_receipts_and_stay_short(self):
         reports=[]
         for _ in range(3):
             _,report=self.finish();reports.append(report['id'])
-        self.push();self.assertEqual(len(self.client.sent),3)
+        self.push();self.assertEqual(len(self.client.sent),1)
         for report_id in reports:
             row=self.conn.execute('SELECT status,message_id FROM notification_messages WHERE item_id=?',('goal-report:'+report_id,)).fetchone()
             self.assertEqual(row['status'],'sent')
-        self.assertEqual(len({item['result']['id'] for item in self.client.sent}),3)
+        self.assertEqual(len({row[0] for row in self.conn.execute('SELECT message_id FROM notification_messages')}),1)
         self.assertTrue(all(len(item['text'])<notifications.TEXT_LIMIT for item in self.client.sent))
 
     def test_archived_leader_after_batching_suppresses_final_report_at_flush(self):

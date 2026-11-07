@@ -7,13 +7,24 @@ import sqlite3
 import sys
 from pathlib import Path
 
-from . import board, store
+from . import board, goals, store
 
 TAIL = "Do not retry or work around it; tell the user."
 SHELLS = ("Bash", "PowerShell")
 WRITES = ("Edit", "Write", "NotebookEdit")
 REPAIR_BLACKLIST = object()
 SHELL_WORDS = re.compile(r'''(?:"(?:`.|\\.|[^"\\])*"|'(?:''|[^'])*'|[^\s;&|()"'])+|&&|\|\||[;&|()\n]''')
+
+
+def discussion_write_reason(conn, execution_id, tool):
+    """Known native editors need an explicit amendment of a delivered goal.
+
+    Crew business actions enforce this independently. Shell commands retain
+    their existing guard; this is not a general shell side-effect sandbox.
+    """
+    if tool in WRITES + ('apply_patch',) and goals.discussion(conn, execution_id):
+        return 'BLOCKED by Crew: 当前是交付后的讨论；如需修改，请先用 crew goal amend 更新当前任务，再继续实施。'
+    return None
 
 
 def git_operation(command):
@@ -137,6 +148,10 @@ def check(home, data, now=None):
             if p is None:
                 return reason
             sid = data["session_id"]
+            if reason is None and tool in ('Agent', 'Task', 'TeamCreate'):
+                member = conn.execute('SELECT role,crew_name FROM sessions WHERE session_id=?', (sid,)).fetchone()
+                if member is not None and member['crew_name'] and member['role'] == 'member':
+                    reason = 'Crew 成员不能调用原生子代理或团队工具；可用派工 skill 启动本人的临时执行进程。' + TAIL
             if reason is None and tool in SHELLS and git_operation(command):
                 config = board.git_config(conn, p["name"])
                 member = conn.execute("SELECT crew_name,status FROM sessions WHERE session_id=? AND project=?",

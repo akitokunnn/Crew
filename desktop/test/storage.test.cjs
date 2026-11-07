@@ -30,6 +30,18 @@ test('an identity marker with missing history reports recovery instead of regist
   const original=core.request;let count=0;core.request=async()=>{count++;return {status:'history_missing',message:'请先导入历史'};};
   try{await assert.rejects(storage.openDirectory('D:/project','base',()=>null),/导入历史/);assert.equal(count,1);}finally{core.request=original;}
 });
+
+test('a user can explicitly open a V1 folder with fresh V2 records and cancel without writing',async()=>{
+  const calls=[],project={name:'MIB',workspace_id:'new-v2'};
+  const discovery={status:'history_missing',can_start_fresh:true,message:'old marker'};
+  const request=async(base,route,body)=>{calls.push({route,body});return {project};};
+  assert.equal(await storage.resolveDiscovery(discovery,'D:/MIB','base',async context=>{
+    assert.equal(context.kind,'history_missing');return null;
+  },()=>{},request),undefined);
+  assert.equal(calls.length,0);
+  assert.equal(await storage.resolveDiscovery(discovery,'D:/MIB','base',async()=>({action:'fresh'}),()=>{},request),project);
+  assert.deepEqual(calls,[{route:'/api/workspace-data/open',body:{root:'D:/MIB',action:'fresh'}}]);
+});
 test('an older borrowed backend gives an actionable update message instead of creating empty history',async()=>{
   const http=require('node:http');let requests=0;
   const server=http.createServer((request,response)=>{requests++;response.writeHead(404,{'Content-Type':'application/json'});response.end(JSON.stringify({error:'接口不存在'}));});

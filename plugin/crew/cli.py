@@ -95,6 +95,8 @@ def parser():
     c.add_argument("--cwd", type=Path)
     c.add_argument("--name")
     command("projects")
+    c = command('archive')
+    c.add_argument('name')
     c = command("git").add_subparsers(dest="action", required=True)
     a = c.add_parser("enable")
     a.add_argument("--base")
@@ -129,6 +131,7 @@ def parser():
     c.add_argument("--scope")
     c.add_argument("--done-when")
     command("whoami", True)
+    command('rename', True).add_argument('name')
     command("task").add_argument("text")
     c = command("card", True)
     c.add_argument("--scope")
@@ -214,6 +217,7 @@ def parser():
     a.add_argument("--steps", required=True)
     a.add_argument("--verify", dest="verification", required=True)
     a.add_argument("--blocking", action="store_true")
+    a.add_argument('--operation-key', help='同一实际人工操作的稳定标识；多个任务复用时保留原事项')
     a.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
     a = todos.add_parser("withdraw")
     a.add_argument("id", type=int)
@@ -285,7 +289,15 @@ def parser():
                    help='默认 information 仅归档、不唤醒；决定用 decision，任务用 task，结果用 result，阻塞用 blocker。')
     a.add_argument('--message-id', help='调用方稳定重试编号；同一编号只用于完全相同的接收者、正文和类型。')
     a.add_argument('--reply-to', help='回复原协作消息编号，按其已记录的会话/任务归属回送。')
-    for namespace, actions in (('goal', ('create','status','start','pause','resume','cancel','reopen','amend','assign','report-template','finish')),
+    a = command('personal', True)
+    a.set_defaults(json=True)
+    a.add_argument('action')
+    a.add_argument('--message-id')
+    a.add_argument('--request-id')
+    payload = a.add_mutually_exclusive_group()
+    payload.add_argument('--data', help='JSON action payload')
+    payload.add_argument('--file', type=Path, help='UTF-8 JSON action payload')
+    for namespace, actions in (('goal', ('create','status','start','pause','resume','cancel','reopen','amend','assign','report-template','report.get','report.preview','report.publish','mode.set','finish','work.list','work.add','work.update','versions.list','versions.preview','versions.file','version.capture','version.restore')),
                                ('context', ('inspect','retrieve','put','correct','expire'))):
         goal_parser = command(namespace, True)
         goal_parser.set_defaults(json=True)
@@ -300,8 +312,10 @@ def parser():
             payload = entry.add_mutually_exclusive_group()
             payload.add_argument('--data', help='JSON object containing action data')
             payload.add_argument('--file', type=Path, help='UTF-8 JSON action data/report file')
-            if namespace == 'goal' and action == 'finish':
-                entry.add_argument('--html-file', type=Path, help='读取自包含 HTML 正文，与验收 JSON 一起保存')
+            if namespace == 'goal' and action in ('finish', 'report.publish', 'report.preview'):
+                entry.add_argument('--html-file', type=Path, help='读取自包含 HTML 正文，供报告保存或桌面预览')
+            if namespace == 'goal' and action in ('finish', 'report.publish'):
+                entry.add_argument('--request-id', default=argparse.SUPPRESS)
             for name in ('title','request','leader','to','task','text','reason','item','kind','source'):
                 entry.add_argument('--' + name, default=argparse.SUPPRESS)
             entry.add_argument('--acceptance', '--accept', action='append', default=argparse.SUPPRESS)
@@ -412,13 +426,15 @@ def _status_text(v, now=None):
     return "\n".join(lines)
 
 
-def _whoami_text(s):
+def _whoami_text(s, git_assistant=None):
     leader = s.get("leader")
     lines = [_session_line(s).strip(),
              "项目 %s  分组 %s  leader %s（地址 %s）" % (s["project"], s["group_name"] or "-",
                                                     leader["crew_name"] if leader else "-", leader["cc_name"] if leader else "-"),
              "worktree %s  分支 %s  会话 %s" % (s["worktree"] or "-", s["branch"] or "-", s["session_id"])]
     lines.append("运行端 %s  leader 运行端 %s" % (s.get("runtime", "claude"), leader.get("runtime", "claude") if leader else "-"))
+    if git_assistant is not None and git_assistant['session_id'] == s['session_id']:
+        lines.append('身份：本项目%sGit 助手' % ('内置 ' if git_assistant['group_name'] == 'git' else '历史绑定的 '))
     lines.append("负责范围：%s  完成标准：%s" % (s["scope"] if s["scope"] is not None else "-",
                                                s["done_when"] if s["done_when"] is not None else "-"))
     if s["last_message"]:
@@ -426,7 +442,7 @@ def _whoami_text(s):
     return "\n".join(lines)
 
 
-def _emit(value, as_json=False, command=None, channel_card=None):
+def _emit(value, as_json=False, command=None, channel_card=None, git_assistant=None):
     if command == 'send' and isinstance(value, dict):
         value = message_receipts.normalize(value)
     if as_json:
@@ -437,7 +453,7 @@ def _emit(value, as_json=False, command=None, channel_card=None):
         print(_status_text(value))
     elif command == "git":
         if "policy" in value:
-            print(value["policy"] if value["policy"] is not None else "git 管理员还没写分支规则，开工前先问它")
+            print(value["policy"] if value["policy"] is not None else "Git 助手还没写分支规则，开工前先问它")
         elif "request" in value:
             item = value["request"]
             print("合并请求 #%s · %s · %s%s\n%s" % (item["id"], item["status"], item["branch"], " · 合并后继续" if item.get("blocking") else "", item["note"] or item["description"]))
@@ -447,9 +463,11 @@ def _emit(value, as_json=False, command=None, channel_card=None):
                              item["pr_number"] if item["pr_number"] is not None else "-", ("[合并后继续] " if item.get("blocking") else "") + item["description"])
                             for item in value["requests"]) if value["requests"] else "暂无合并请求")
         elif value["enabled"]:
-            print("Git 管理已启用 · base: %s · stable: %s" % (value["base"], value["stable"] or "未设置"))
+            print("Git 助手已启用 · base: %s · stable: %s" % (value["base"], value["stable"] or "未设置"))
+            if git_assistant is not None:
+                print('Git 助手：%s（%s）' % (git_assistant['crew_name'], git_assistant['session_id']))
         else:
-            print("Git 管理未启用")
+            print("Git 助手未启用")
     elif command == "open":
         print("已取消，会话继续保持原样" if value.get("cancelled") else "已在 VS Code 打开会话：" + value["session_id"])
     elif command == "wake":
@@ -468,7 +486,7 @@ def _emit(value, as_json=False, command=None, channel_card=None):
         if value.get('message_id'):
             print('消息编号：' + value['message_id'])
     elif command == "whoami":
-        print(_whoami_text(value))
+        print(_whoami_text(value, git_assistant))
     elif command == "who":
         print(_whoami_text(value) + "\n" + _context_text(value))
     elif command == "channel":
@@ -521,12 +539,12 @@ def _goal_command(args, cwd):
     if not isinstance(payload, dict):
         raise board.BoardError('目标 data/JSON 文件必须为对象')
     action = args.action if args.command == 'goal' else 'context.' + args.action
-    if action == 'finish' and 'report' not in payload:
+    if action in ('finish', 'report.publish') and 'report' not in payload:
         payload = {'report': payload}
     html_file = getattr(args, 'html_file', None)
     if html_file is not None:
         from . import report_documents
-        report = payload.get('report')
+        report = payload if action == 'report.preview' else payload.get('report')
         if not isinstance(report, dict):
             raise board.BoardError('finish.report 必须为对象')
         if report.get('document_html'):
@@ -537,11 +555,11 @@ def _goal_command(args, cwd):
         if not document.strip():
             raise board.BoardError('HTML 正文文件不能为空')
         report['document_html'] = document
-    if action == 'finish' and isinstance(payload.get('report'), dict) and payload['report'].get('goal_id'):
+    if action in ('finish', 'report.publish') and isinstance(payload.get('report'), dict) and payload['report'].get('goal_id'):
         payload.setdefault('goal_id', payload['report']['goal_id'])
     for flag, field in (('title','title'),('request','request'),('leader','leader'),('to','to'),('task','task'),
                         ('text','text'),('reason','reason'),('item','item_id'),('kind','kind'),('acceptance','acceptance'),
-                        ('constraint','constraints'),('dependency','dependencies'),('priority','priority'),('confirmed','confirmed'),('start','start')):
+                        ('constraint','constraints'),('dependency','dependencies'),('priority','priority'),('confirmed','confirmed'),('start','start'),('request_id','request_id')):
         if hasattr(args, flag):
             payload[field] = getattr(args, flag)
     if hasattr(args, 'source'):
@@ -555,12 +573,36 @@ def _goal_command(args, cwd):
     with contextlib.closing(store.connect(args.home)) as conn:
         project = _project(conn, args, cwd)
     payload.setdefault('project', project)
-    if action in goal_actions.READ_ACTIONS:
+    if action in goal_actions.READ_ACTIONS and action != 'report.preview':
         return goal_actions.dispatch(args.home, _actor(args), execution_id, action, payload)
-    # All CLI mutations go through the existing owner process; no offline
-    # fallback can accidentally launch or duplicate an execution.
-    return spawn.request_start(args.home, project, '/api/goals/agent',
-                               {'action': action, 'data': payload, 'actor_session_id': _actor(args), 'execution_id': execution_id})
+    # Mutations and desktop report previews need the existing owner process;
+    # no offline fallback can launch or duplicate an execution.
+    result = spawn.request_start(args.home, project, '/api/goals/agent',
+                                 {'action': action, 'data': payload, 'actor_session_id': _actor(args), 'execution_id': execution_id})
+    if action == 'report.preview' and isinstance(result, dict) and result.get('ok') is False:
+        raise board.BoardError(str(result.get('error') or '报告预览未完成'))
+    return result
+
+
+def _personal_command(args):
+    from . import personal_actions, spawn
+    bound = os.environ.get('CREW_SESSION_ID') or os.environ.get('CLAUDE_CODE_SESSION_ID')
+    if bound and args.session_id is not None and args.session_id != bound:
+        raise board.BoardError('不能用 --session 改写宿主绑定的助手身份')
+    sid = bound or _session_id(args)
+    if args.file is not None:
+        if args.file.stat().st_size > 1024 * 1024:
+            raise board.BoardError('助手 JSON 文件超过 1 MiB')
+        payload = json.loads(args.file.read_text(encoding='utf-8-sig'))
+    else:
+        payload = json.loads(args.data) if args.data is not None else {}
+    if not isinstance(payload, dict):
+        raise board.BoardError('助手 data/JSON 文件必须为对象')
+    envelope = {'data': payload, 'message_id': args.message_id, 'request_id': args.request_id}
+    if args.action in personal_actions.READ_ACTIONS:
+        return personal_actions.dispatch(args.home, sid, args.action, envelope)
+    return spawn.request_start(args.home, '', '/api/assistant/native-action',
+                               {'action': args.action, 'data': envelope, 'actor_session_id': sid})
 
 
 def _goal_item_execution(conn, args, *, live=True):
@@ -629,6 +671,9 @@ def _with_context(home, project_name, sessions):
             session.update(context=None, context_reason=str(exc))
         return
     people = {session["session_id"]: session for session in [*state["leaders"], *state["members"]]}
+    if state['git_assistant'] is not None:
+        assistant = state['git_assistant']
+        people[assistant['session_id']] = assistant
     for session in sessions:
         sid = session["session_id"]
         current = people.get(sid)
@@ -662,6 +707,13 @@ def execute(conn, args, cwd, agents_provider):
         if p is None:
             raise board.BoardError("当前目录不属于已启用项目，请先 crew init")
         sid = _session_id(args)
+        host = os.environ.get('CREW_SESSION_ID') or os.environ.get('CLAUDE_CODE_SESSION_ID')
+        if host:
+            if sid != host:
+                raise board.BoardError('不能用 --session 改写宿主绑定的身份')
+            current = conn.execute('SELECT crew_name,role FROM sessions WHERE session_id=?', (host,)).fetchone()
+            if current is not None and current['crew_name'] and current['role'] != args.role:
+                raise board.BoardError('已有 Crew 会话不能通过 join 改变角色；成员需要拆分任务时请交回 leader')
         worktree, branch = git_details(cwd)
         agents = _agents(agents_provider, allow_failure=True)
         value = board.join(conn, sid, p["name"], args.name, cwd, worktree, branch, args.task, args.role, args.group, _cc_name(agents, sid))
@@ -678,6 +730,13 @@ def execute(conn, args, cwd, agents_provider):
         return value
     if cmd == "whoami":
         return _with_card(conn, board.whoami(conn, _session_id(args)))
+    if cmd == 'rename':
+        from . import session_ops
+        sid = _session_id(args)
+        host = os.environ.get('CREW_SESSION_ID') or os.environ.get('CLAUDE_CODE_SESSION_ID')
+        if host and sid != host:
+            raise board.BoardError('不能用 --session 改写宿主绑定的身份')
+        return session_ops.rename_self(conn, sid, args.name)
     if cmd == "task":
         return board.set_task(conn, _session_id(args), args.text)
     if cmd == "card":
@@ -714,8 +773,7 @@ def execute(conn, args, cwd, agents_provider):
         if execution_id:
             from . import goal_links, goals
             with goals.transaction(conn):
-                number = board.ask.__wrapped__(conn, _session_id(args), args.question, args.option, args.recommend, args.blocking, brief=brief)
-                goal_links.bind(conn, 'decision', number, execution_id)
+                number = board.ask.__wrapped__(conn, _session_id(args), args.question, args.option, args.recommend, args.blocking, brief=brief, execution_id=execution_id)
                 return number
         return board.ask(conn, _session_id(args), args.question, args.option, args.recommend, args.blocking, brief=brief)
     if cmd == "decision":
@@ -753,7 +811,8 @@ def execute(conn, args, cwd, agents_provider):
         if _actor(args) != board.HUMAN and trust_mode.resolve_leader(conn, _session_id(args), project) != leader_id:
             raise board.BoardError('会话只能访问自己所属 leader 的信任设置')
         if args.action == "set":
-            return trust_mode.set(conn, project, args.enabled == "on", args.goal, leader_session_id=leader_id)
+            return trust_mode.set(conn, project, args.enabled == "on", args.goal, leader_session_id=leader_id,
+                                  actor=os.environ.get('CREW_SESSION_ID') or os.environ.get('CLAUDE_CODE_SESSION_ID') or _actor(args))
         if args.action == "report":
             return trust_mode.report(conn, project, leader_id)
         return trust_mode.get(conn, project, leader_id)
@@ -773,13 +832,8 @@ def execute(conn, args, cwd, agents_provider):
         action = getattr(args, "action", None) or "list"
         if action == "add":
             execution_id = _goal_item_execution(conn, args)
-            if execution_id:
-                from . import goal_links, goals
-                with goals.transaction(conn):
-                    result = todo.add.__wrapped__(conn, _session_id(args), args.title, args.steps, args.verification, args.blocking)
-                    goal_links.bind(conn, 'todo', result['id'], execution_id)
-                    return result
-            return todo.add(conn, _session_id(args), args.title, args.steps, args.verification, args.blocking)
+            return todo.add_native(conn, _session_id(args), args.title, args.steps, args.verification,
+                                   blocking=args.blocking, operation_key=args.operation_key, execution_id=execution_id)
         if action == "withdraw":
             return todo.withdraw(conn, _session_id(args), args.id, args.reason)
         return todo.list(conn, project, all=args.all)
@@ -805,7 +859,7 @@ def execute(conn, args, cwd, agents_provider):
     if cmd == "say":
         speaker = conn.execute("SELECT project FROM sessions WHERE session_id=?", (actor,)).fetchone()
         if speaker is None or speaker["project"] is None:
-            raise board.BoardError("交流区只给 leader 用；有事告诉你的 leader")
+            raise board.BoardError("Leader 交流区只给 leader 用；有事告诉你的 leader")
         return channel.post(conn, speaker["project"], actor, args.text, args.to)
     p = _project(conn, args, cwd)
     if cmd == "git":
@@ -881,9 +935,19 @@ def execute(conn, args, cwd, agents_provider):
         return board.groups(conn, p)
     if cmd == "roster":
         return board.roster(conn, p, args.action, args.to if args.action == "move" else args.group, [args.name] if args.action == "move" else args.names, actor)
+    if cmd in ('leader', 'archive'):
+        host = os.environ.get('CREW_SESSION_ID') or os.environ.get('CLAUDE_CODE_SESSION_ID')
+        if host and actor != host:
+            raise board.BoardError('不能用 --session 改写宿主绑定的身份')
     if cmd == "leader":
         from . import spawn
-        return spawn.request_start(args.home, p, "/api/group/close", {"group": args.group, "with_members": args.with_members})
+        return spawn.request_start(args.home, p, "/api/group/close", {"group": args.group, "with_members": args.with_members,
+                                                                  "caller_session_id": actor})
+    if cmd == 'archive':
+        from . import spawn
+        target = board.named_session(conn, p, args.name)
+        return spawn.request_start(args.home, p, '/api/session/archive',
+                                   {'session_id': target['session_id'], 'caller_session_id': actor})
     if cmd == "events":
         if args.limit < 1:
             raise board.BoardError("--limit 必须大于 0")
@@ -976,6 +1040,10 @@ def main(argv=None, agents_provider=claude_agents, cwd=None, plugin_root=None):
                 **({'message_id': args.message_id} if args.message_id else {})})
             _emit(value, args.json, args.command)
             return 0
+        if args.command == 'personal':
+            value = _personal_command(args)
+            _emit(value, True, args.command)
+            return 0
         if args.command in ('goal', 'context'):
             value = _goal_command(args, cwd)
             _emit(value, True, args.command)
@@ -1007,6 +1075,7 @@ def main(argv=None, agents_provider=claude_agents, cwd=None, plugin_root=None):
                                      after=card['upto_message_id'] if card is not None else 0)
             _emit(value, args.json, args.command, channel_card=card)
             return 0
+        git_assistant = None
         if args.command == "install":
             value = install.install(args.home, plugin_root)
             with contextlib.closing(store.connect(args.home)) as conn:
@@ -1014,7 +1083,13 @@ def main(argv=None, agents_provider=claude_agents, cwd=None, plugin_root=None):
         else:
             with contextlib.closing(store.connect(args.home)) as conn:
                 value = doctor(conn, args.home, cwd) if args.command == "doctor" else execute(conn, args, cwd, agents_provider)
-        _emit(value, getattr(args, "json", False), args.command)
+                if (args.command == 'whoami' or args.command == 'git' and args.action in (None, 'status', 'enable')) and not getattr(args, 'json', False):
+                    project = value['project'] if args.command == 'whoami' else _project(conn, args, cwd)
+                    if project is not None:
+                        config = board.git_config(conn, project)
+                        if config is not None and config['admin_session_id'] is not None:
+                            git_assistant = board.session(conn, config['admin_session_id'])
+        _emit(value, getattr(args, "json", False), args.command, git_assistant=git_assistant)
         return 0
     except board.Conflict as exc:
         print("冲突: %s" % exc, file=sys.stderr)

@@ -135,7 +135,7 @@
         ...p.people.filter(item => item.running || item.external).map(item => `${item.name}：${item.external ? "外部运行，需在原工具中停止" : item.busy ? "正在工作" : "运行中，空闲"}`)]));
       parts.push(list("将取消或撤下", [`未完成目标 ${p.goals.unfinished.length} 个` + (p.goals.unfinished.length ? `：${p.goals.unfinished.map(goal => goal.title).join("、")}` : ""),
         `开放待办 ${p.todos} 项、待拍板 ${p.decisions} 项、文件声明 ${p.claims} 项、设备租约 ${p.leases} 项`]));
-      parts.push(list("退出新团队的工作记忆", [`交流区发言 ${p.channel.messages} 条、要点卡 ${p.channel.digests} 张`, `交接 ${p.handoffs} 条`, `项目、部门和任务记忆 ${p.context} 条`]));
+      parts.push(list("退出新团队的工作记忆", [`Leader 交流区发言 ${p.channel.messages} 条、要点卡 ${p.channel.digests} 张`, `交接 ${p.handoffs} 条`, `项目、部门和任务记忆 ${p.context} 条`]));
       parts.push(list("保留", [`项目文件与目录：${p.project.root}`, `交付文档 ${p.kept.documents} 份、目标报告 ${p.kept.reports} 份、已结束目标 ${p.kept.finished_goals} 个`,
         "原始对话与原生历史、归档记录", "账号、连接与模型设置", `全局规则 ${p.kept.crew_rules} 条`]));
       parts.push(historySection());

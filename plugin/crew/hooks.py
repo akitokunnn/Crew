@@ -9,7 +9,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import board, channel, git_process, goals, guard, install, messaging, rules, runtimes, store, trust_mode
+from . import board, channel, git_process, goals, guard, install, messaging, rules, runtimes, store
 
 EVENTS = ("session-start", "user-prompt-submit", "stop", "notification", "pre-ask", "post-ask", "session-end", "guard")
 
@@ -77,8 +77,9 @@ def _goal_hook(event, data, home, plugin_root, environ, now):
             raise board.BoardError('目标执行与 Claude 原生会话不匹配')
         logical = {**data, 'session_id': execution['session_id']}
         if event == 'guard':
-            gate = goals.dispatch_check(conn, execution['goal_id'], execution_id=execution_id)
+            gate = goals.dispatch_check(conn, execution['goal_id'], execution_id=execution_id, allow_discussion=True)
             reason = None if gate['allowed'] else 'BLOCKED by Crew: ' + gate['reason']
+            reason = reason or guard.discussion_write_reason(conn, execution_id, logical.get('tool_name'))
             reason = reason or guard.check(home, logical, now=now)
             if reason:
                 print(reason, file=sys.stderr)
@@ -153,9 +154,11 @@ def handle(event, data, home, plugin_root, environ, git_provider=git_details, no
             session = board.session(conn, data["session_id"])
             if session["crew_name"] and session["status"] != "closed" and not board.is_archived(conn, data["session_id"]):
                 lines.extend(messaging.take_for_hook(conn, data["session_id"], now=now))
-                autonomy = trust_mode.context(conn, data["session_id"])
-                if autonomy:
-                    lines.append(autonomy)
+                if not environ.get('CREW_SESSION_ID'):
+                    from . import trust_mode
+                    _, authorization = trust_mode.input_context(conn, data['session_id'])
+                    if authorization:
+                        lines.append(authorization)
         if event == "session-start":
             if board.is_archived(conn, data["session_id"]):
                 control = board.session_control(conn, data["session_id"])
@@ -167,18 +170,18 @@ def handle(event, data, home, plugin_root, environ, git_provider=git_details, no
                 lines = ["Crew 项目：%s" % p["name"], "我的 crew 名：%s" % (s["crew_name"] if s["crew_name"] is not None else "未收编（不要自己 crew join；用户说“收编到某某”时再照 /crew:member 收编）"),
                          "分组：%s；leader：%s；SendMessage 地址：%s" % (s["group_name"], leader["crew_name"] if leader else None, leader["cc_name"] if leader else None),
                          '命令行：python "%s" ...' % (Path(home).resolve() / "crew.py"),
-                         "请遵守 /crew:%s" % rules.skill_role(conn, s)] + lines
+                         "请遵守 Crew 注入的守则（[Crew {0}]，可能已被用户在设置里修改）；没有看到注入时调用 /crew:{0} 读取".format(rules.skill_role(conn, s))] + lines
                 lines.append("跨执行工具的会话消息用 crew send <crew名> \"<内容>\"；crew who <名字> 可查 runtime。双方都是 Claude Code 时仍可用 SendMessage。")
             config = board.git_config(conn, p["name"])
             if config is not None:
                 administrator = board.session(conn, config['admin_session_id']) if config['admin_session_id'] else None
                 if config['admin_session_id'] == data['session_id']:
-                    lines.append('你是本项目当前绑定的 Git 管理员，按项目规则统一推送、开 PR 和合并。')
+                    lines.append('你是本项目当前绑定的 Git 助手，按项目规则统一推送、开 PR 和合并。')
                 else:
-                    lines.append("本项目由 git 管理员「%s」统一推送和合并。做完用 `crew git request` 交给它，不要自己 push、开 PR、合并。" %
+                    lines.append("本项目由 Git 助手「%s」统一推送和合并。做完用 `crew git request` 交给它，需要商量时用 crew send 联系。不要自己 push、开 PR、合并。" %
                                  (administrator['crew_name'] if administrator else '未绑定'))
                 lines.append("分支规则（全文用 crew git policy 看）：\n" + "\n".join(config["branch_rules"].splitlines()[:6])
-                             if config["branch_rules"] else "git 管理员还没写分支规则，开工前先问它。全文用 crew git policy 看。")
+                             if config["branch_rules"] else "Git 助手还没写分支规则，开工前先问它。全文用 crew git policy 看。")
         if event == "user-prompt-submit" or (event == "session-start" and data.get("source") in ("resume", "compact")):
             reminder = rules.reminder(conn, data["session_id"], plugin_root)
             if reminder is not None:

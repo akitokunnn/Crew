@@ -4,7 +4,7 @@ import json
 import unittest
 from unittest import mock
 
-from crew import board, decision_briefs, notifications, runtimes, session_ops, store, web
+from crew import board, decision_briefs, notifications, personal, runtimes, session_ops, store, web
 from test_notifications import FakeQQ, buttons
 from test_shell import NOW, PLUGIN, ShellFixture
 
@@ -22,8 +22,7 @@ class RemoteRoutingTests(ShellFixture, unittest.TestCase):
         super().setUp()
         self.client, self.counter = FakeQQ(), 0
         (self.home / 'qq.json').write_text(json.dumps({'app_id': 'fake', 'app_secret': 'fake'}), encoding='utf-8')
-        (self.home / 'notify.json').write_text(json.dumps(dict(owner_openid='owner', since=NOW, manual_away=False,
-            current_leader_session_id=None, leader_numbers={})), encoding='utf-8')
+        (self.home / 'notify.json').write_text(json.dumps(dict(owner_openid='owner', since=NOW, manual_away=False)), encoding='utf-8')
         self.service = web.Service(self.home, PLUGIN, cwd=self.project, agents_provider=lambda: [],
             claude_root=self.claude, codex_root=self.codex, runs_file=self.runs, now=lambda: store.parse_iso(NOW),
             notification_client=self.client, lock_status=lambda: False, process_factory=self.process_factory,
@@ -56,12 +55,6 @@ class RemoteRoutingTests(ShellFixture, unittest.TestCase):
         board.init_project(self.conn, project, root, now=NOW)
         board.join(self.conn, sid, project, name, root, root, 'main', role='leader', now=NOW)
 
-    def sent_leader_message(self, kind='turn', sid='s3', project='demo'):
-        self.counter += 1
-        identity = 'outgoing-%s' % self.counter
-        self.inbox.record_message(self.conn, identity, dict(workspace=project, leader_session_id=sid, decision=None), kind, NOW)
-        self.inbox.deliver(self.conn, [identity], self.client.send_markdown, 'original leader message')
-        return self.client.sent[-1]['result']['ref_idx']
 
     def replies(self):
         return self.conn.execute('SELECT * FROM notification_replies ORDER BY rowid').fetchall()
@@ -155,82 +148,32 @@ class RemoteRoutingTests(ShellFixture, unittest.TestCase):
         self.assertNotIn('crew send lead', notice)
         self.assertNotIn('SendMessage', notice)
 
-    def test_quoted_old_question_is_not_answered_after_its_meaning_changes(self):
+    def test_quoted_old_question_is_context_for_assistant_without_direct_answer(self):
+        sid = personal.ensure_assistant(self.conn, self.home)['session_id']
         number = board.ask(self.conn, 's1', 'Old choice', ['Old action', 'Wait'])
         old = self.query(number)
         decision_briefs.revise(self.conn, 's1', number, recommendation='Wait for user review', brief=summary())
         self.receive('Agree with what I saw', old['result']['ref_idx'])
         self.assertIsNone(self.answer(number))
-        self.assertIn('已更新', self.client.sent[-1]['text'])
-        fresh = self.query(number)
-        self.receive('Wait for user review', fresh['result']['ref_idx'])
-        self.assertEqual(self.answer(number), 'Wait for user review')
+        self.assertEqual(self.replies()[0]['session_id'], sid)
+        self.assertIn('decision_id=' + str(number), json.loads(self.replies()[0]['text'])['text'])
 
-    def test_quote_routes_turns_and_replies_to_the_original_leader_without_switching_selection(self):
-        self.add_other_leader()
-        self.receive('/leader')
-        self.receive('/%s' % self.inbox.config['leader_numbers']['other-lead'])
-        for kind in ('turn', 'reply'):
-            with self.subTest(kind=kind):
-                ref = self.sent_leader_message(kind)
-                self.receive('Follow up on the original message', ref)
-                self.assertEqual(self.replies()[-1]['session_id'], 's3')
-                self.assertEqual(self.inbox.config['current_leader_session_id'], 'other-lead')
-                self.assertIn('demo·lead', self.client.sent[-1]['text'])
-        self.receive('A new ordinary message')
-        self.assertEqual(self.replies()[-1]['session_id'], 'other-lead')
 
-    def test_quote_to_an_archived_leader_never_falls_back_to_the_current_leader(self):
-        self.add_other_leader()
-        ref = self.sent_leader_message()
-        self.receive('/leader')
-        self.receive('/%s' % self.inbox.config['leader_numbers']['other-lead'])
-        session_ops.archive(self.conn, 's3', now=NOW)
-        self.receive('Reply to this one', ref)
-        self.assertEqual(self.replies(), [])
-        self.assertIn('归档', self.client.sent[-1]['text'])
 
-    def test_quote_of_a_multi_leader_batch_requires_an_explicit_recipient(self):
+    def test_quote_of_multi_leader_batch_preserves_all_sources_for_assistant(self):
+        sid = personal.ensure_assistant(self.conn, self.home)['session_id']
         self.add_other_leader()
-        for identity, project, sid in (('note-one', 'demo', 's3'), ('note-two', 'Other', 'other-lead')):
-            self.inbox.record_message(self.conn, identity, dict(workspace=project, leader_session_id=sid, decision=None), 'report', NOW)
+        for identity, project, leader in (('note-one', 'demo', 's3'), ('note-two', 'Other', 'other-lead')):
+            self.inbox.record_message(self.conn, identity, dict(workspace=project, leader_session_id=leader,
+                decision=None, item={'goal_id': identity}), 'goal_report', NOW)
         self.inbox.deliver(self.conn, ['note-one', 'note-two'], self.client.send_text, 'Two project notes')
-        ref = self.client.sent[-1]['result']['ref_idx']
-        self.receive('/1')
-        self.receive('Which one?', ref)
-        self.assertEqual(self.replies(), [])
-        self.assertIn('多个 leader', self.client.sent[-1]['text'])
+        self.receive('Which one?', self.client.sent[-1]['result']['ref_idx'])
+        self.assertEqual(self.replies()[0]['session_id'], sid)
+        text = json.loads(self.replies()[0]['text'])['text']
+        for part in ('demo', 'Other', 'session_id=s3', 'session_id=other-lead', 'goal_id=note-one', 'goal_id=note-two'):
+            self.assertIn(part, text)
 
-    def test_project_and_named_leader_selection_is_explicit_case_preserving_and_persistent(self):
-        self.add_other_leader()
-        self.receive('/projects')
-        self.assertIn('Other', self.client.sent[-1]['text'])
-        numbers = dict(self.inbox.config['leader_numbers'])
-        self.receive('/%s' % numbers['s3'])
-        self.receive('/Project Other')
-        self.assertEqual(self.inbox.config['current_project'], 'Other')
-        self.assertIsNone(self.inbox.config['current_leader_session_id'])
-        self.receive('Do not guess a leader')
-        self.assertEqual(self.replies(), [])
-        self.receive('/leader lead')
-        self.assertEqual(self.inbox.config['current_leader_session_id'], 'other-lead')
-        self.assertIn('已切换到 Other·lead', self.client.sent[-1]['text'])
-        self.receive('/where')
-        self.assertIn('Other·lead', self.client.sent[-1]['text'])
-        restarted = notifications.Inbox(self.service, self.client, lock_status=lambda: False)
-        self.addCleanup(restarted.close)
-        self.assertEqual(restarted.config['current_project'], 'Other')
-        self.assertEqual(restarted.config['current_leader_session_id'], 'other-lead')
-        self.assertEqual(restarted.config['leader_numbers'], numbers)
-        self.receive('/%s' % numbers['s3'])
-        self.assertEqual(self.inbox.config['current_project'], 'demo')
-        self.assertEqual(self.inbox.config['leader_numbers'], numbers)
 
-    def test_ambiguous_named_leader_does_not_pick_the_first_project(self):
-        self.add_other_leader()
-        self.receive('/leader lead')
-        self.assertIsNone(self.inbox.config['current_leader_session_id'])
-        self.assertIn('多个项目', self.client.sent[-1]['text'])
 
     def test_structured_qq_question_shows_the_reason_and_consequences(self):
         number = board.ask(self.conn, 's1', 'A long technical original', recommendation='Wait for user review', brief=summary())

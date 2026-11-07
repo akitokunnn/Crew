@@ -9,3 +9,11 @@
 .member-follow{padding:14px;border-radius:9px;background:var(--accent-softer);font-size:calc(12px * var(--fs));color:var(--text-2);line-height:1.8}
 .member-dialog .session-config-actions>.session-config-hint{flex:1;min-width:190px;margin:0;font-size:calc(11px * var(--fs))}.member-dialog .session-config-actions .gap{display:none}
 .member-default-entry{border:0;background:none;color:var(--text-3);padding:0;font:inherit;font-size:calc(10.5px * var(--fs));cursor:pointer;text-align:left;margin-top:5px}.member-default-entry:hover{color:var(--accent)}
+.member-scope-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:0 20px 8px;min-width:0}
+.member-scope-label{flex:1 1 220px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-2);font-size:calc(12px * var(--fs))}
+.member-scope-switch{display:flex;gap:6px;flex-wrap:wrap;min-width:0;max-width:100%}
+.member-scope-option{max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;border:1px solid var(--line-strong);border-radius:999px;background:var(--surface);color:var(--text-2);font:inherit;font-size:calc(11.5px * var(--fs));padding:3px 10px;cursor:pointer}
+.member-scope-option:hover{color:var(--accent);border-color:var(--accent)}
+.member-scope-option[aria-pressed="true"]{background:var(--accent-softer);border-color:var(--accent);color:var(--accent)}
+.member-scope-option:focus-visible{outline:none;box-shadow:0 0 0 3px var(--accent-softer)}
+.context-divider.native-replaced{color:var(--text-2)}

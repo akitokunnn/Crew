@@ -1,5 +1,5 @@
 """The project channel: shared posts, explicit mentions, and per-reader cursors."""
-from . import board, store
+from . import board, git_admin, store
 
 
 def _leader(conn, project_name, session_id):
@@ -39,29 +39,33 @@ def _mark_read(conn, project_name, reader, message_id, now):
 def post(conn, project_name, actor, body, to=(), source="crew", now=None):
     board.project(conn, project_name)
     if not isinstance(body, str):
-        raise board.BoardError("交流区正文必须是字符串")
+        raise board.BoardError("Leader 交流区正文必须是字符串")
     if not isinstance(to, (list, tuple)) or any(not isinstance(name, str) for name in to):
-        raise board.BoardError("交流区点名必须是名字数组")
+        raise board.BoardError("Leader 交流区点名必须是名字数组")
     if actor == board.HUMAN:
         speaker_name = "用户"
         if source != "web":
-            raise board.BoardError("用户交流区发言来源必须为 web")
+            raise board.BoardError("用户在 Leader 交流区的发言来源必须为 web")
     else:
         speaker = _leader(conn, project_name, actor)
         if speaker is None:
-            raise board.BoardError("交流区只给 leader 用；有事告诉你的 leader")
+            raise board.BoardError("Leader 交流区只给 leader 用；有事告诉你的 leader")
         speaker_name = speaker["crew_name"]
         if source != "crew":
-            raise board.BoardError("leader 交流区发言来源必须为 crew")
+            raise board.BoardError("leader 在 Leader 交流区的发言来源必须为 crew")
     body = body.strip()
     if not body:
-        raise board.BoardError("交流区发言不能为空")
+        raise board.BoardError("Leader 交流区发言不能为空")
     targets = []
     names = [name for name in to if name != '*']
     if '*' in to:
+        # "Everyone" means the ordinary leaders; the built-in Git assistant is only reached by name.
+        # The global assistant has no workspace and is never a project leader.
+        config = board.git_config(conn, project_name)
         leaders = [_leader(conn, project_name, row['leader_session_id']) for row in conn.execute(
             'SELECT leader_session_id FROM groups WHERE project=? AND closed_at IS NULL ORDER BY name', (project_name,))]
-        names = [leader['crew_name'] for leader in leaders if leader is not None] + names
+        names = [leader['crew_name'] for leader in leaders
+                 if leader is not None and not git_admin.is_builtin(leader, config)] + names
         if not names:
             raise board.BoardError('当前工作区没有可点名的 leader')
     identities = set()
@@ -129,7 +133,7 @@ def mark_read(conn, project_name, reader, message_id=None, now=None):
         message_id = _latest(conn, project_name)
     elif type(message_id) is not int or message_id < 0 or (message_id and conn.execute(
             "SELECT 1 FROM channel_messages WHERE project=? AND id=?", (project_name, message_id)).fetchone() is None):
-        raise board.BoardError("交流区发言不存在: " + str(message_id))
+        raise board.BoardError("Leader 交流区发言不存在: " + str(message_id))
     _mark_read(conn, project_name, reader, message_id, now)
     return {"read_id": _read_id(conn, project_name, reader), **state(conn, project_name, reader)}
 

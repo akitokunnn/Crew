@@ -20,7 +20,7 @@ import uuid
 
 TRANSFORM_VERSION = 'crew-v1-to-v2/1'
 NAMESPACE = uuid.UUID('11182da6-0b1e-5817-a488-4715fd5d599e')
-PRIVATE_TABLES = {'ai_settings', 'ai_task_settings', 'execution_settings', 'usage_files', 'trust_schema_migrations',
+PRIVATE_TABLES = {'ai_settings', 'ai_task_settings', 'execution_settings', 'sound_settings', 'usage_files', 'trust_schema_migrations',
                   'notification_inbound', 'lark_notification_inbound'}
 RELATIONS = {'handoff_deliveries': [('handoff_id', 'handoffs', 'id')],
              'channel_reads': [('message_id', 'channel_messages', 'id')],
@@ -84,7 +84,8 @@ def _safe_json(value):
     """Allow human-visible report fields, never arbitrary provider/config JSON."""
     allowed = {'summary', 'delivered', 'unresolved', 'artifacts', 'tradeoffs', 'acceptance', 'examples',
                'follow_up', 'criterion', 'criterion_id', 'status', 'evidence', 'label', 'reference',
-               'input', 'expected', 'actual', 'conclusion', 'kind', 'title', 'text', 'description'}
+               'input', 'expected', 'actual', 'conclusion', 'kind', 'title', 'text', 'description', 'outcome',
+               'investment', 'elapsed_seconds', 'usage', 'roles', 'role', 'contribution'}
     def clean(item):
         if isinstance(item, dict): return {k: clean(v) for k, v in item.items() if k in allowed}
         if isinstance(item, list): return [clean(v) for v in item]
@@ -210,6 +211,9 @@ def _select(schema, project):
                     continue
                 owned = row.get('session_id') is not None and row.get('session_id') in native
                 owned |= row.get('leader_session_id') is not None and row.get('leader_session_id') in sessions
+                owned |= name in ('behavior_prompts', 'behavior_prompt_history') and (
+                    row.get('scope') == 'project' and row.get('identity') == project or
+                    row.get('scope') == 'session' and row.get('identity') in sessions)
                 owned |= name == 'codex_sessions' and row.get('rollout_id') in native
                 owned |= name == 'codex_runs' and row.get('claude_session_id') in native
                 owned |= name == 'attention_resolutions' and any(row.get('item_id') in values.get((n, 'item_id'), ())
@@ -390,6 +394,7 @@ class _Projector:
     def __init__(self, repo, conn, origin, workspace, user, stamp, schema, rows, identity_project=None, source_home=None, project=None):
         self.repo, self.conn, self.origin, self.ws, self.user, self.stamp = repo, conn, origin, workspace, user, stamp
         self.schema, self.rows = schema, rows
+        self.source_home = Path(source_home) if source_home is not None else None
         self.identity_project = identity_project
         self.mappings = {}
         self.columns = {r[0]: {c['name'] for c in conn.execute('PRAGMA table_info(' + _quote(r[0]) + ')')}
@@ -590,8 +595,19 @@ class _Projector:
                     verification_markdown=row['verification'], blocking=row['blocking'], status=row['status'],
                     resolution_note=row.get('note'), resolved_at=row.get('resolved_at'))
         self.reports()
+        for row in self.rows.get('goal_acceptances', []):
+            report = next((item for item in self.rows.get('goal_reports', []) if item['id'] == row['report_id']), None)
+            mapped = None if report is None else next((item['id'] for item in self.mappings.get(
+                ('goal_reports', self.sourcekey('goal_reports', report)), ()) if item['table'] == 'reports'), None)
+            if mapped is None:
+                raise MigrationError('Acceptance references a report that was not projected')
+            self.entity('goal_acceptances', 'goal_acceptances', row, immutable=True,
+                goal_round_id=self.rounds[(row['goal_id'], row['round'])], report_id=mapped,
+                accepted=row['accepted'], note_markdown=row['note'], author_user_id=self.user, created_at=row['created_at'])
         self.channel()
         self.contexts()
+        from . import features
+        features.project(self)
 
     def decisions(self):
         briefs = {r['decision_id']: r for r in self.rows.get('decision_briefs', [])}
@@ -750,6 +766,13 @@ class _Projector:
                     agent = self.agent(goal.get('leader_session_id')); rid = self.rounds.get((row['goal_id'], row['round']))
                     data,html=_safe_json(row['data_json']),row['html']
                     parsed=json.loads(data)
+                    publication = json.loads(row['data_json']).get('publication')
+                    if isinstance(publication, dict):
+                        parsed['publication'] = {'stage': publication.get('stage'),
+                            'actor': self.agent(publication.get('actor')) or ('user' if publication.get('actor') == 'user' else 'historical-agent'),
+                            'execution_id': self.execs.get(publication.get('execution_id')),
+                            'source': {'type': (publication.get('source') or {}).get('type')}}
+                        data = _json(parsed)
                     body='\n\n'.join(str(v) for field in ('summary','delivered','unresolved','artifacts')
                         for v in (parsed.get(field,[]) if isinstance(parsed.get(field),list) else [parsed.get(field)]) if v) if isinstance(parsed,dict) else ''
                 if not agent: continue
@@ -758,7 +781,7 @@ class _Projector:
                     _, html_version, _ = self.artifact(source + ':' + str(row['id']), html.encode('utf-8'), 'report.html', 'report', 'text/html')
                 report=self.entity('reports', source, row, immutable=True, author_agent_id=agent, goal_round_id=rid,
                     kind='goal_delivery' if source == 'goal_reports' else 'phase', title='历史交付报告' if source == 'goal_reports' else '历史进展',
-                    summary=body[:300], outcome=row.get('outcome') or 'informational', body_markdown=body, data_json=data,
+                    summary=body[:300], outcome='informational' if row.get('outcome') == 'progress' else row.get('outcome') or 'informational', body_markdown=body, data_json=data,
                     html_artifact_version_id=html_version)
                 _,body_version,_=self.artifact(source + ':body:' + str(row['id']), body.encode('utf-8'), 'report.md', 'report', 'text/markdown')
                 for version in (body_version,html_version):

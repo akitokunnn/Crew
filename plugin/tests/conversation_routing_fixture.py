@@ -13,7 +13,7 @@ sys.path.insert(0, str(plugin_root))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import tests
 from test_goal_http import GoalHttpTests
-from crew import board, goals, runtimes, todo, web
+from crew import board, goal_actions, goal_work, goals, runtimes, todo, web
 import test_goal_http
 import test_shell
 
@@ -42,10 +42,72 @@ def main():
                 'message_id': 'native-ui-task-' + str(index)})
             assert code == 200, receipt
             work.append((goal['id'], receipt['execution_id']))
+            item = goal_work.add(case.conn, goal['id'], 'verify', '验证流式分段边界' if index == 0 else '完成界面联调',
+                '整段流结束后400ms内返回 A、B 及重叠片段' if index == 0 else '核对实际交互结果', actor='coordinator')
+            goal_work.update(case.conn, goal['id'], item['key'], item['version'], status='blocked',
+                             note='隔离演练：等待测试数据，尚未证明效果达标', actor='coordinator')
+            if index == 0:
+                report = case.report()
+                report.update(outcome='progress', summary='阶段方案待真实实验验证', document_html='<h1>旧版阶段正文</h1>')
+                report['acceptance'][0]['criterion_id'] = goal['requirements']['acceptance'][0]['id']
+                report['acceptance'][0]['status'] = 'unverified'
+                goal_actions.dispatch(case.home, 'coordinator', None, 'report.publish',
+                    {'goal_id': goal['id'], 'request_id': 'routing-stage', 'report': report})
         manager = case.server.service.chat
+        delivered = None
+        if os.environ.get('CREW_UI_REVIEW_FIXTURE') == '1':
+            from crew.codex_runtime import process_identity
+            for index in range(8):
+                stamp = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=8-index)
+                active = index >= 5
+                case.conn.execute('INSERT INTO codex_runs(run_id,crew_session_id,task_file,workdir,started_at,runtime,pid,pid_created) VALUES(?,?,?,?,?,?,?,?)',
+                    ('ui-dispatch-'+str(index), 'coordinator', '审查协作记录 ' + '长标题与原始说明。' * 12,
+                     str(case.project), stamp.isoformat(), 'claude' if index % 2 else 'codex',
+                     os.getpid() if active else None, process_identity(os.getpid()) if active else None))
+            code, reply, _ = case.request('/api/chat/send?project=demo', {'session_id': 'coordinator',
+                'text': '准备总会话，独立任务继续推进。', 'message_id': 'ui-general-ready'})
+            assert code == 200, reply
+            case.finish_turn('coordinator', manager.processes['coordinator'].process)
+            delivered_goal, delivered_report, _, _ = case.awaiting_acceptance()
+            code, accepted, _ = case.request('/api/goals/action?project=demo', {
+                'goal_id': delivered_goal['id'], 'action': 'accept',
+                'version': delivered_goal['version'], 'report_id': delivered_report['id']})
+            assert code == 200, accepted
+            delivered = {'goal_id': delivered_goal['id'], 'leader': 's3', 'report_id': delivered_report['id']}
+            # UI alignment exercises real stored acceptance/decision state without a live carrier.
+            review_goal, review_report, _, _ = case.awaiting_acceptance()
+            delivered['review_goal_id'] = review_goal['id']
+            delivered['review_report_id'] = review_report['id']
+            board.set_task(case.conn, 'coordinator', '协调声音评测与客户端联调，分别核对原始证据。')
+            board.set_task(case.conn, 's3', '维护录音样本，交付可复测的说话人识别结论。')
+            board.ask(case.conn, 'coordinator', '选择本轮验收方式', brief={
+                'title': '选择本轮验收方式', 'context': '隔离浏览器验收，使用假载体。',
+                'why_user': '需要你确定验收顺序。', 'recommendation_reason': '先验证主要流程。',
+                'impact': '只影响本轮顺序。', 'options': [
+                    {'label': '先验证主要流程', 'consequence': '先走主要流程，再看边界。'},
+                    {'label': '先验证窄屏', 'consequence': '先走窄屏，再看主要流程。'}]})
+            board.join(case.conn, 'ui-git-admin', 'demo', 'Git 助手', case.project, case.project, 'main', role='leader', group_name='git')
+            case.git_repo()
+            case.git('branch', '-M', 'main')
+            board.enable_git(case.conn, 'demo', base='main', admin_session_id='ui-git-admin')
+
+        navigation = []
+        if os.environ.get('CREW_NAVIGATION_REVIEW_FIXTURE') == '1':
+            other = case.root / 'navigation-project'
+            other.mkdir()
+            board.init_project(case.conn, 'navigation', other)
+            board.join(case.conn, 'nav-codex', 'navigation', '界面负责人', other, other, None, role='leader')
+            board.join(case.conn, 'nav-member', 'navigation', '界面核查', other, other, None, group_name='界面负责人')
+            runtimes.set(case.conn, 'nav-codex', 'codex')
+            runtimes.set(case.conn, 'nav-member', 'codex')
+            task = goals.create(case.conn, 'navigation', 'nav-codex',
+                '核对多个工作区之间的任务导航、独立草稿和全局助手入口在窄窗口下的完整显示',
+                '只查看已有任务，不开始执行', ['导航保持固定位置'])
+            navigation = [{'project': 'demo', 'leader': 'coordinator', 'member': 's1', 'goal': work[0][0], 'runtime': 'claude'},
+                          {'project': 'navigation', 'leader': 'nav-codex', 'member': 'nav-member', 'goal': task['id'], 'runtime': 'codex'}]
         print(json.dumps({'url': case.url, 'home': str(case.home), 'leader': 'coordinator',
                           'goals': [goal for goal, _ in work], 'plugin_root': str(plugin_root),
-                          'web_module': web.__file__}, ensure_ascii=False), flush=True)
+                          'web_module': web.__file__, 'delivered': delivered, 'navigation': navigation}, ensure_ascii=False), flush=True)
         original = None
         for line in sys.stdin:
             command = line.strip()
@@ -69,6 +131,23 @@ def main():
                                   'source_task_busy': True, 'source_general_started': False}), flush=True)
             elif command == 'shutdown':
                 break
+            elif command.startswith('finish-task:'):
+                target = command.split(':', 1)[1]
+                task = goals.get(case.conn, target)
+                execution = manager.goal_controller.current(case.conn, target, task['leader_session_id'])
+                case.finish_turn(execution['id'], manager.processes[execution['id']].process)
+                manager.goal_controller.sync(case.conn, target)
+                print(json.dumps({'task_finished': target}), flush=True)
+            elif command.startswith('compact-finish:'):
+                target = command.split(':', 1)[1]
+                key = 'coordinator' if target == 'general' else next(execution for goal, execution in work if goal == target)
+                current = manager.processes[key]
+                if current.pending_compact:
+                    case.finish_turn(key, current.process)
+                current.process.emit({'type': 'system', 'subtype': 'compact_boundary',
+                                      'compact_metadata': {'pre_tokens': 50000, 'post_tokens': 12000 if target == 'general' else None}})
+                current.process.emit({'type': 'result', 'local_command': 'compact'})
+                print(json.dumps({'compact_finished': target}), flush=True)
     finally:
         case.doCleanups()
         print(json.dumps({'closed': True}), flush=True)

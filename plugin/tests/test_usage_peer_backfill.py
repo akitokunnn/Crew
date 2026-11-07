@@ -1,7 +1,6 @@
 import tests  # Install the production-service connection guard.
 import contextlib
 import io
-import json
 import unittest
 from unittest import mock
 
@@ -85,13 +84,19 @@ class PeerBackfillTests(UsageFixture, unittest.TestCase):
         self.seed_scanned_file(main, "claude", [dict(prompt("old-peer", 20, "peer"), isMeta=True)],
                                ("project", "session-one", None))
         before_version = self.conn.execute("PRAGMA user_version").fetchone()[0]
-        child = self.claude / "project" / "session-one" / "subagents" / "agent-missing.jsonl"
+        child = self.claude / "project" / "session-one" / "subagents" / "agent-locked.jsonl"
         self.write(child, [assistant("child")])
-        with self.assertRaises(FileNotFoundError):
+        original = usage._lines
+
+        def locked(target, offset):
+            if target == child:
+                raise PermissionError(13, "locked", str(child))
+            return original(target, offset)
+
+        with mock.patch.object(usage, "_lines", locked), self.assertRaises(PermissionError):
             self.scan()
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM claude_prompts").fetchone()[0], 0)
         self.assertEqual(self.conn.execute("PRAGMA user_version").fetchone()[0], before_version)
-        child.with_suffix(".meta.json").write_text(json.dumps({"agentType": "Explore"}), encoding="utf-8")
         self.scan()
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM claude_prompts WHERE kind = 'peer'").fetchone()[0], 1)
         self.assertEqual(self.conn.execute("PRAGMA user_version").fetchone()[0], 2)

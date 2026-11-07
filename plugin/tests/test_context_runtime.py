@@ -290,7 +290,8 @@ class ContextRuntimeTests(UsageFixture, unittest.TestCase):
             manager.compact(session)
         resumed = manager.processes["s1"]
         self.assertIsNot(resumed, current)
-        self.assertEqual(resumed.process.command[-2:], ["--resume", "s1"])
+        command = resumed.process.command
+        self.assertEqual(command[command.index('--resume') + 1], 's1')
         self.assertEqual(self.requests(resumed)[-1]["message"]["content"], "/compact")
         self.assertIsNone(manager.context("s1"))
 

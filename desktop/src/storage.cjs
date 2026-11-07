@@ -3,7 +3,12 @@
 const core = require('./core.cjs');
 
 async function resolveDiscovery(discovery, root, base, choose, progress=()=>{}, request=core.request) {
-  if (discovery.status === 'history_missing') throw new Error(discovery.message);
+  if (discovery.status === 'history_missing') {
+    if (!discovery.can_start_fresh) throw new Error(discovery.message);
+    const selection=await choose({kind:'history_missing',discovery});
+    if(!selection)return undefined;
+    return (await request(base,'/api/workspace-data/open',{root,...selection},120000)).project;
+  }
   if (discovery.status === 'ready') {progress('正在读取并核对工作区历史…');try{return (await request(base, '/api/workspace-data/open', {root},120000)).project;}finally{progress('');}}
   if (discovery.status === 'new') return null;
   if (discovery.status === 'relocate_required') {

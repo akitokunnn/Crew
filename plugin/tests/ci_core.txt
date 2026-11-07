@@ -1,0 +1,94 @@
+# CI 只跑这份核心清单：python tests/ci_core.py（在 plugin 目录下）。
+# 全量按需在本地跑（发版前或跨模块改动）：python -m unittest discover -s tests
+#
+# 每行一个测试模块，或“模块.类”只取其中一组；# 后面是注释。
+# 入选条件：覆盖核心流程，且不依赖真实计时、心跳、sleep 次数或连接中断时序。
+# 新增核心能力的测试模块时加到对应分组；边缘载体（QQ、飞书）、声音、遥测、
+# 外观类和计时敏感的测试不进清单，改到它们时在本地跑对应模块。
+
+# 测试隔离护栏：禁止连到正式 Crew 端口
+test_test_isolation
+
+# 任务生命周期：建任务、补充要求、执行、验收与打回、报告
+test_goals
+test_goal_actions
+test_goal_amend
+test_goal_acceptance
+test_goal_artifacts
+test_goal_context
+test_goal_discussion_native
+test_goal_http
+test_goal_links
+test_goal_messages
+test_goal_modes_reports
+test_goal_notifications
+test_goal_recovery
+test_goal_work
+test_task_behavior_v2
+test_v2_journeys
+test_leader_closure
+test_report_documents
+test_documents
+test_document_cli
+
+# 待办与拍板
+test_todo
+test_shared_todo
+test_decision_briefs
+test_decision_flow
+test_cli_answers
+test_cli_cards
+test_cards_notices
+
+# 聊天路由与消息
+test_chat
+test_chat_http
+test_chat_loading
+test_channel
+test_leader_channel_http
+test_assistant_http
+test_notes_wall   # 想法墙：想法/标签动作、助手读写、去聊聊、导出恢复
+test_mixed_messaging
+test_message_receipts
+test_dispatch_visibility
+test_delegation_boundary
+
+# /api/state 与 web 契约
+test_web_contract
+test_workspace_views
+test_workspace_activity
+
+# 存储与迁移
+test_storage_v2_objects
+test_storage_v2_database
+test_storage_v2_context
+test_storage_v2_features
+test_storage_v2_packages
+test_storage_v2_activation
+test_storage_legacy
+test_storage_service
+test_home_migration
+test_peer_message_migration
+test_git_notice_migration
+
+# 会话启动、leader 与成员
+test_core
+test_shell.SpawnTests
+test_v2_identity
+test_open_session
+test_runtime_spawn
+test_session_ops
+test_live_sessions
+test_hook_project
+test_member_creation_http
+test_member_defaults
+test_member_launch_dedup
+test_member_native_binding
+test_native_replacement
+test_member_turn_result
+test_leader_order
+test_leader_priority
+test_leader_trust_cli
+test_trust_mode
+test_workspace_settings
+test_workspace_execution

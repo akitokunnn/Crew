@@ -47,7 +47,7 @@ Show-Line '{"type":"turn.completed","usage":{"input_tokens":12,"output_tokens":3
                 task = root / "task.md"
                 task.write_text("Fake task only. No model will be called.", encoding="utf-8")
                 if log_failure:
-                    (root / ".crew").write_text("not a directory", encoding="utf-8")
+                    (root / ".crew-v2").write_text("not a directory", encoding="utf-8")
                 harness = root / "fake-dispatch.ps1"
                 harness.write_text(r"""
 $ErrorActionPreference = 'Stop'
@@ -85,12 +85,12 @@ function Start-Process {
 exit $LASTEXITCODE
 """.replace("__SCRIPT__", literal(SCRIPT)).replace("__TASK__", literal(task)).replace("__ROOT__", literal(root)),
                                    encoding="utf-8-sig")
-                run_home = root / ('selected-home' if private_home else '.crew')
+                run_home = root / ('selected-home' if private_home else '.crew-v2')
                 env = {key: value for key, value in os.environ.items() if not key.startswith('CREW_')}
                 env.update(USERPROFILE=str(root), CLAUDE_CODE_SESSION_ID="fake-claude",
                            CREW_SESSION_ID='logical-chief', CREW_EXECUTION_ID='goal-execution', CREW_GOAL_ID='goal',
                            FAKE_CREW_RUN_HOME=str(run_home),
-                           FAKE_EXIT=str(code), FAKE_LOG_FAILURE="yes" if log_failure else "no",
+                           CREW_ROLE='member', FAKE_EXIT=str(code), FAKE_LOG_FAILURE="yes" if log_failure else "no",
                            FAKE_MALFORMED="yes" if malformed else "no")
                 if private_home:
                     env['CREW_HOME'] = str(run_home)
@@ -114,8 +114,7 @@ exit $LASTEXITCODE
                 self.assertEqual((records[1]['crew_session_id'], records[1]['crew_execution_id']), ('logical-chief', 'goal-execution'))
                 self.assertEqual(records[0]['pid'], 12345)
                 self.assertTrue(records[0]['pid_created'].startswith('win:'))
-                if private_home:
-                    self.assertFalse((root / '.crew').exists())
+                self.assertFalse((root / '.crew').exists())
                 self.assertTrue(records[1]['ephemeral'])
                 if malformed:
                     self.assertIsNone(records[1]['usage'])

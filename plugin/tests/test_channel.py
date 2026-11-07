@@ -77,6 +77,18 @@ class ChannelTests(unittest.TestCase):
         for sid in ('b', 'm', 'foreign'):
             self.assertEqual(board.pending_notices(self.conn, sid), [])
 
+    def test_all_mentions_skip_the_builtin_git_assistant_but_it_can_still_be_named(self):
+        board.join(self.conn, 'g', 'demo', 'Git 助手', self.root, None, None, role='leader', group_name='git', now=NOW)
+        # Branch discovery is the host's job; the test project is not a git repository.
+        with mock.patch.object(board, 'git_branches', return_value=('main', 'stable')):
+            board.enable_git(self.conn, 'demo', admin_session_id='g')
+        value = channel.post(self.conn, 'demo', board.HUMAN, '请大家汇报进度', ['*'], source='web', now=NOW)
+        self.assertEqual([item['session_id'] for item in value['mentions']], ['a', 'b'])
+        self.assertEqual(board.pending_notices(self.conn, 'g'), [])
+        named = channel.post(self.conn, 'demo', board.HUMAN, '请合并', ['*', 'Git 助手'], source='web', now=NOW)
+        self.assertEqual([item['session_id'] for item in named['mentions']], ['a', 'b', 'g'])
+        self.assertEqual(len(board.pending_notices(self.conn, 'g')), 1)
+
     def test_all_mentions_deduplicate_and_do_not_wake_the_speaker(self):
         value = self.post(to=['*', 'beta', 'alpha', '*'])
         self.assertEqual({item['session_id'] for item in value['mentions']}, {'a', 'b'})
@@ -174,11 +186,8 @@ class ChannelTests(unittest.TestCase):
         self.assertEqual(channel.mark_read(self.conn, "demo", "b", message["id"])["read_id"], message["id"])
         code, result = self.hook()
         self.assertEqual(code, 0)
-        text = result["hookSpecificOutput"]["additionalContext"]
-        self.assertIn("本轮最新信任设置", text)
-        self.assertIn("关闭", text)
-        self.assertNotIn("[Crew 交流区]", text)
-        self.assertNotIn("first line", text)
+        # Nothing new means no duplicate mode boilerplate is injected.
+        self.assertIsNone(result)
 
     def test_summary_excludes_own_posts_and_delivered_mentions(self):
         self.post("own", actor="b", to=["beta"])
@@ -218,19 +227,13 @@ class ChannelTests(unittest.TestCase):
         self.post()
         code, result = self.hook("m")
         self.assertEqual(code, 0)
-        text = result["hookSpecificOutput"]["additionalContext"]
-        self.assertIn("本轮最新信任设置：关闭", text)
-        self.assertIn("当前会话没有所属 leader", text)
-        self.assertNotIn("[Crew 交流区]", text)
+        self.assertIsNone(result)
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM channel_reads WHERE reader='m'").fetchone()[0], 0)
 
     def test_no_new_posts_adds_no_channel_context(self):
         code, result = self.hook()
         self.assertEqual(code, 0)
-        text = result["hookSpecificOutput"]["additionalContext"]
-        self.assertIn("本轮最新信任设置", text)
-        self.assertIn("关闭", text)
-        self.assertNotIn("[Crew 交流区]", text)
+        self.assertIsNone(result)
 
     def test_cli_say_and_member_rejection(self):
         result, output, error = self.run_cli(["say", "cli full text", "--to", "beta", "--json"])

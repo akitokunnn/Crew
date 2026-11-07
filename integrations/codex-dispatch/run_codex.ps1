@@ -16,7 +16,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$crewRunHome = if ($env:CREW_HOME) { [IO.Path]::GetFullPath($env:CREW_HOME) } else { Join-Path $env:USERPROFILE '.crew' }
+$crewRunHome = if ($env:CREW_HOME) { [IO.Path]::GetFullPath($env:CREW_HOME) } else { Join-Path $env:USERPROFILE '.crew-v2' }
 
 function ConvertTo-QuotedArg([string]$s) {
     return '"' + $s.TrimEnd('\').Replace('"', '\"') + '"'

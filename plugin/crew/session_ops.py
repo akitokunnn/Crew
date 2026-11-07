@@ -1,4 +1,4 @@
-"""Human session actions. They change Crew records, never the underlying process."""
+"""Authorized session actions. They change Crew records, never the underlying process."""
 from . import board
 
 
@@ -68,6 +68,20 @@ def rename(conn, session_id, name, now=None):
     return {'ok':True,'session':board.session(conn, session_id),'before':before}
 
 
+def rename_self(conn, session_id, name, now=None):
+    """A host-bound leader may describe its own work without changing identity."""
+    with board.transaction(conn):
+        person = board.session(conn, session_id)
+        group = conn.execute('SELECT 1 FROM groups WHERE project=? AND leader_session_id=? AND closed_at IS NULL',
+                             (person['project'], session_id)).fetchone()
+        if (person['role'] != 'leader' or not person['crew_name'] or person['status'] == 'closed'
+                or board.is_archived(conn, session_id) or group is None):
+            raise board.BoardError('只有当前 leader 可以自主改名；不会更改身份或创建新会话')
+        if isinstance(name, str) and name.strip() == person['crew_name']:
+            return {'ok': True, 'session': person, 'unchanged': True}
+        return rename.__wrapped__(conn, session_id, name, now=now)
+
+
 def _archive(conn, session, removed, now):
     session_id = session["session_id"]
     previous = control(conn, session_id)
@@ -80,8 +94,22 @@ def _archive(conn, session, removed, now):
     board._event(conn, 'session:remove' if removed else 'session:archive', session['project'], session_id, {}, now)
 
 
+def authorize_archive(conn, session_id, caller_session_id):
+    from . import spawn
+    session = board.session(conn, session_id)
+    if caller_session_id in (None, board.HUMAN):
+        return
+    spawn.authorize(conn, session['project'], caller_session_id, group=session['group_name'])
+    if session['role'] != 'member' or session['group_name'] is None:
+        raise board.BoardError('leader 只能归档自己当前组的成员')
+    if conn.execute("SELECT 1 FROM goal_executions WHERE session_id=? AND status IN ('running','pausing')",
+                    (session_id,)).fetchone():
+        raise board.Conflict('成员目标执行正在运行，请先等执行结束再归档')
+
+
 @board.atomic
-def archive(conn, session_id, removed=False, now=None):
+def archive(conn, session_id, removed=False, now=None, *, caller_session_id=None):
+    authorize_archive(conn, session_id, caller_session_id)
     session, before = board.session(conn, session_id), snapshot(conn, session_id)
     config = board.git_config(conn, session['project'])
     if config is not None and config['admin_session_id'] == session_id:
@@ -158,6 +186,8 @@ def _group_target(conn, project_name, group_name):
 
 
 def _close_group(conn, project_name, group_name, with_members, actor, now):
+    from . import spawn
+    spawn.authorize(conn, project_name, actor, group=group_name)
     group, leader = _group_target(conn, project_name, group_name)
     if group['closed_at'] is not None:
         raise board.Conflict('协作组已经关闭')

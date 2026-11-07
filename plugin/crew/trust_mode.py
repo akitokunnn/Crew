@@ -7,7 +7,7 @@ resulting context into each runtime's existing role instructions.
 import json
 import functools
 
-from . import board, store, todo
+from . import behavior_prompts, board, store, todo
 
 
 def _atomic(function):
@@ -64,6 +64,14 @@ def _leader_active(conn, leader):
                          (leader['project'], leader['session_id'])).fetchone() is not None)
 
 
+def can_manage_tasks(conn, project, leader_session_id, actor):
+    """Only the authorized owner can choose decision policies for its tasks."""
+    if actor != leader_session_id:
+        return False
+    leader = _leader(conn, project, leader_session_id)
+    return _leader_active(conn, leader) and get(conn, project, leader_session_id)['enabled']
+
+
 def _text(value, label, *, required=False):
     if value is None and not required:
         return None
@@ -72,21 +80,10 @@ def _text(value, label, *, required=False):
     return value.strip()
 
 
-def _instructions(goal):
-    return ("本组已启用信任模式。用户给定目标：\n" + goal +
-            "\n\n围绕此目标自行理解需求、选择方案、实施和验收，不再把工程技术取舍交回用户拍板。"
-            "判断前读取相关代码和约定，自己提出建议并写清取舍理由；登记决定时必须给出 recommendation，"
-            "Crew 会依据该建议记录自主答复。没有建议时先由 AI 自己判断，不能默认选择第一项。"
-            "真正需要用户亲手做的事登记为人工待办，写清操作步骤、确认方法与是否阻塞；继续推进其余工作。"
-            "及时给所属 leader 留报告。项目本来使用 Git 时，按项目规则保留可追踪的 commit、实际 SHA 和分支；"
-            "普通文件夹保留修改文件与复验入口，不要为满足报告擅自 git init。"
-            "方便用户事后要求修改或 fix。最终提供详细报告：目标对应的实现、方案与理由、实际验证范围/命令/结果/产物、"
-            "未验证部分、剩余问题和人工待办、产物及后续修改入口。区分会话自报、命令成功、独立验收和未验证；"
-            "不能把 exit 0 或绿色测试直接当成整个目标已经完成。")
-
-
 @_atomic
-def set(conn, project, enabled, goal=None, now=None, *, leader_session_id):
+def set(conn, project, enabled, goal=None, now=None, *, leader_session_id, actor=board.HUMAN):
+    if actor != board.HUMAN:
+        raise board.BoardError('leader 自主推进授权只能由用户设置')
     if type(enabled) is not bool:
         raise board.BoardError("enabled 必须是布尔值")
     leader = _leader(conn, project, leader_session_id)
@@ -122,10 +119,21 @@ def context(conn, session_id):
     prefix = ('本轮最新信任设置（仅属于 leader ' + (leader['crew_name'] or leader_id) + '，Crew ID ' + leader_id +
               '）：' + ('开启' if settings['enabled'] else '关闭') + '。本条覆盖此前的信任模式说明，不授权其他组。\n')
     if settings['enabled']:
-        return prefix + _instructions(settings['goal'])
-    return (prefix + '当前按普通模式协作；不得继续沿用此前开启信任模式的自主授权。真正需要用户决定的取舍按拍板流程，'
-            '用户亲手操作仍登记人工待办。保留目标记录：\n' + (settings['goal'] or '未设置') +
-            '\n保存设置不会启动任务；等待正常对话中的具体安排。')
+        delegation = ('\n' + behavior_prompts.text(conn, 'trust_leader', session_id=session_id)) if session_id == leader_id else ''
+        return prefix + behavior_prompts.text(conn, 'trust_on', session_id=session_id, values={'goal': settings['goal']}) + delegation
+    return prefix + behavior_prompts.text(conn, 'trust_off', session_id=session_id, values={'goal': settings['goal'] or '未设置'})
+
+
+def input_context(conn, session_id, previous=None):
+    """Send explicit settings once per change, including a former group's revocation."""
+    session = board.session(conn, session_id)
+    if session['project'] is None:
+        return None, None
+    leader_id = resolve_leader(conn, session_id)
+    if previous is None and (leader_id is None or get(conn, session['project'], leader_id)['updated_at'] is None):
+        return None, None
+    current = context(conn, session_id)
+    return current, current if current != previous else None
 
 
 def record_decision_scope(conn, decision_id, session_id):
@@ -166,8 +174,11 @@ def _decision(conn, decision_id):
 def auto_answer(conn, decision_id, reason=None, now=None):
     decision = _decision(conn, decision_id)
     leader_id = _decision_leader(conn, decision)
+    from . import goal_mode
+    policy = goal_mode.decision_policy(conn, decision_id)
+    enabled = policy['enabled'] if policy is not None else (leader_id is not None and get(conn, decision['project'], leader_id)['enabled'])
     if (leader_id is None or not _leader_active(conn, board.session(conn, leader_id))
-            or not get(conn, decision["project"], leader_id)["enabled"]):
+            or not enabled):
         return None
     existing = conn.execute("SELECT reason,recorded_at FROM trust_decisions WHERE decision_id=?", (decision_id,)).fetchone()
     if decision["status"] != "open":
@@ -184,7 +195,8 @@ def auto_answer(conn, decision_id, reason=None, now=None):
     board.answer.__wrapped__(conn, decision_id, recommendation, actor="trust:" + decision["session_id"], now=now)
     conn.execute("INSERT INTO trust_decisions(decision_id,reason,recorded_at) VALUES(?,?,?)", (decision_id, reason, timestamp))
     board._event(conn, "trust:decision", decision["project"], "trust:" + decision["session_id"],
-                 {"id": decision_id, "recommendation": recommendation, "reason": reason}, now)
+                 {"id": decision_id, "recommendation": recommendation, "reason": reason,
+                  "goal_policy": policy}, now)
     return {**_decision(conn, decision_id), "automated": True, "reason": reason, "reason_recorded_at": timestamp}
 
 

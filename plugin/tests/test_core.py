@@ -63,7 +63,7 @@ class CoreCase(unittest.TestCase):
         def get(key, default=None):
             return None if key == "CLAUDE_CODE_SESSION_ID" else real_get(key, default)
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), mock.patch.object(os.environ, "get", side_effect=get), \
-                mock.patch("crew.spawn.request_state", return_value={"leaders": [], "members": []}):
+                mock.patch("crew.spawn.request_state", return_value={"leaders": [], "members": [], "git_assistant": None}):
             try:
                 code = cli.main(prefix + argv, agents_provider=(lambda: self.agents) if provider is None else provider,
                                 cwd=self.root if cwd is None else cwd, plugin_root=self.fake_plugin)
@@ -418,7 +418,7 @@ class DeliveryTests(CoreCase):
         self.assertEqual(self.conn.execute("SELECT delivered_at FROM decisions WHERE id=?", (d,)).fetchone()[0], NOW)
         code, output = self.hook("user-prompt-submit", prompt="again")
         self.assertEqual(code, 0)
-        self.assertNotIn('待拍板 #', output['hookSpecificOutput']['additionalContext'])
+        self.assertIsNone(output)  # No duplicate answer or retired mode boilerplate.
 
     def test_handoffs_name_group_star_each_session_once(self):
         board.join(self.conn, "s1", "demo", "lead", self.root, str(self.root), "main", role="leader", now=NOW)
@@ -433,7 +433,7 @@ class DeliveryTests(CoreCase):
             self.assertEqual(board.handoffs(self.conn, sid), [])
             code, output = self.hook("user-prompt-submit", sid, prompt="again")
             self.assertEqual(code, 0)
-            self.assertNotIn('交接 #', output['hookSpecificOutput']['additionalContext'])
+            self.assertIsNone(output)  # The same handoff is delivered only once.
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM handoff_deliveries").fetchone()[0], 6)
 
     def test_session_start_delivers_handoff_but_not_answer(self):
@@ -734,9 +734,13 @@ class RuleReadTests(CoreCase):
 
 
 class RuleTextTests(unittest.TestCase):
+    def injected(self, role):
+        # Shared rules live once in the catalog; assert what each role actually receives.
+        from crew import behavior_prompts
+        return "\n".join(behavior_prompts.DEFAULTS[key] for key in behavior_prompts.bundle(role))
+
     def roles(self):
-        paths = (PLUGIN / "skills" / "leader" / "SKILL.md", PLUGIN / "skills" / "member" / "SKILL.md", PLUGIN / "agents" / "leader.md")
-        return [(path, path.read_text(encoding="utf-8")) for path in paths]
+        return [(role, self.injected(role)) for role in ("leader", "member")]
 
     def test_execution_context_preserves_sources_limits_and_handoff(self):
         for path, content in self.roles():
@@ -770,7 +774,7 @@ class RuleTextTests(unittest.TestCase):
                 self.assertRegex(content, r"todo")
 
     def test_user_facing_decisions_name_the_matter_and_keep_numbers_internal(self):
-        cases = self.roles() + [(PLUGIN / "skills" / "git" / "SKILL.md", (PLUGIN / "skills" / "git" / "SKILL.md").read_text(encoding="utf-8"))]
+        cases = self.roles() + [("git", self.injected("git"))]
         for path, content in cases:
             with self.subTest(path=path):
                 self.assertRegex(content, r"事项名称|一句话说是什么事|要用户决定的事")
@@ -783,14 +787,15 @@ class RuleTextTests(unittest.TestCase):
                 self.assertNotIn("然后只提题号", content)
 
     def test_leader_can_work_directly_without_waking_members_to_query_progress(self):
-        leader, member, agent = [content for _, content in self.roles()]
-        for content in (leader, agent):
+        leader, member = [content for _, content in self.roles()]
+        for content in (leader,):
             self.assertRegex(content, r"直接写业务代码|直接实施")
             self.assertRegex(content, r"不逐个叫醒成员查进度|状态查询读取已有事实，不叫醒成员")
             self.assertNotIn("你不写业务代码", content)
         self.assertIn("跨组协助也由你统一验收", leader)
         self.assertIn("一份最终答复", leader)
-        self.assertIn("不自动归档", leader)
+        self.assertIn("用户验收通过后", leader)
+        self.assertIn("归档本组已无其他未完成任务的成员", leader)
         self.assertIn("用户新指令优先于 leader 旧安排", member)
 
 

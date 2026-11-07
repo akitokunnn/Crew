@@ -15,7 +15,7 @@ from test_core import CoreCase, NOW
 class CompactCliTests(CoreCase):
     def setUp(self):
         super().setUp()
-        self.state_request = mock.Mock(return_value={"leaders": [], "members": []})
+        self.state_request = mock.Mock(return_value={"leaders": [], "members": [], "git_assistant": None})
 
     def run_cli(self, argv, sid="s1", provider=None, cwd=None):
         out, err = io.StringIO(), io.StringIO()
@@ -105,7 +105,7 @@ class CompactCliTests(CoreCase):
 
     def context_state(self, context):
         return {"leaders": [{"session_id": "s1", "context": context}],
-                "members": [{"session_id": "s2", "context": context}]}
+                "members": [{"session_id": "s2", "context": context}], "git_assistant": None}
 
     def test_status_and_who_show_context_and_keep_raw_json_counts(self):
         board.join(self.conn, "s1", "demo", "one", self.root, self.root, "main", role="leader", now=NOW)
@@ -122,6 +122,22 @@ class CompactCliTests(CoreCase):
                     self.assertEqual(session["context"], context)
                     self.assertIsNone(session["context_reason"])
         self.assertEqual(self.state_request.call_args.args, (self.home, "demo"))
+
+    def test_git_assistant_keeps_context_and_codex_status_outside_leaders(self):
+        from crew import runtimes
+        board.join(self.conn, 's1', 'demo', 'Git 助手', self.root, self.root, 'main', role='leader', group_name='git', now=NOW)
+        runtimes.set(self.conn, 's1', 'codex')
+        context = {'used': 421234, 'max': 1000000, 'source': 'live'}
+        self.state_request.return_value = {'leaders': [], 'members': [], 'git_assistant': {
+            'session_id': 's1', 'context': context, 'status': 'working', 'where': 'bg'}}
+        for arguments in (['who', 'Git 助手', '--json'], ['status', '--json']):
+            with self.subTest(arguments=arguments):
+                value = json.loads(self.assert_cli(arguments)[1])
+                session = value if arguments[0] == 'who' else next(
+                    session for group in value['groups'] for session in group['members'] if session['session_id'] == 's1')
+                self.assertEqual(session['context'], context)
+                self.assertEqual(session['status'], 'working')
+                self.assertEqual(session['where'], 'bg')
 
     def test_null_context_is_unknown_with_reason_in_text_and_json(self):
         self.state_request.return_value = self.context_state(None)

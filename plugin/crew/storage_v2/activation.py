@@ -43,7 +43,7 @@ TABLES = ('agents', 'groups', 'group_memberships', 'conversations', 'messages', 
           'message_positions', 'tool_calls', 'tool_results', 'goals', 'goal_dependencies', 'goal_requirements', 'goal_rounds',
           'goal_assignments', 'executions', 'reports', 'goal_acceptances', 'artifacts',
           'artifact_versions', 'artifact_links', 'blob_objects', 'context_items', 'context_versions',
-          'decisions', 'decision_versions', 'decision_options', 'decision_answers', 'todos')
+          'decisions', 'decision_versions', 'decision_options', 'decision_answers', 'todos', 'workspace_feature_records')
 TERMINAL = ('completed', 'failed', 'cancelled')
 VOLATILE_TABLES = {'events','document_scans','read_cursors','channel_reads','goal_execution_reads','rule_reads','trust_leader_migrations',
     'usage_files','claude_sessions','claude_requests','claude_prompts','claude_tool_calls','claude_compactions',
@@ -239,7 +239,8 @@ def _rows(conn, table, workspace_id):
 
 
 def _marker(root, workspace_id, *, allowed_source=None):
-    path = root / '.crew' / 'workspace.json'
+    from ..storage_service import _marker as marker_path
+    path = marker_path(root)
     if not path.resolve().is_relative_to(root):
         raise StorageConflict('Workspace marker points outside the selected directory')
     if path.exists():
@@ -409,7 +410,7 @@ class _Materializer:
                 leader_session_id=goal['owner_agent_id'],title=goal['title'],original_request=req['request_markdown'],
                 status=goal['status'] if goal['status'] in TERMINAL else 'paused',requirement_version=req['version_no'],
                 current_round=rnd['round_no'],priority=goal['priority'],dependencies_json=_json([d['requires_goal_id'] for d in self.data['goal_dependencies'] if d['goal_id']==goal['id']]),
-                manual_pause=1,reason='已接入可移植历史，等待用户明确继续。',version=goal['revision'],
+                manual_pause=0 if goal['status'] in TERMINAL else 1,reason='已接入可移植历史，等待用户明确继续。',version=goal['revision'],
                 created_at=goal['created_at'],updated_at=self.stamp),'goals',goal['id'])
         for req in self.data['goal_requirements']:
             acceptance=[]
@@ -496,7 +497,8 @@ class _Materializer:
                 else:
                     rendered='<!doctype html><meta charset="utf-8"><pre>'+html.escape(report['body_markdown'] or report['summary'])+'</pre>'
                 row=self.insert('goal_reports',dict(id=report['id'],goal_id=rnd['goal_id'],round=rnd['number'],
-                    requirement_version=rnd['requirement_version'],version=counters[key],outcome=report['outcome'],
+                    requirement_version=rnd['requirement_version'],version=counters[key],
+                    outcome='progress' if json.loads(report['data_json']).get('outcome') == 'progress' else report['outcome'],
                     data_json=report['data_json'],html=rendered,created_at=report['created_at']),'reports',report['id'])
                 self.report_rows[report['id']]=row
                 self.conn.execute('INSERT INTO notification_messages(item_id,project,leader_session_id,kind,created_at,content,status) VALUES(?,?,?,?,?,?,?)',
@@ -650,7 +652,7 @@ class _Materializer:
                 'todos',todo['id'])
             for table in ('notification_messages','lark_notification_messages'):
                 self.conn.execute('INSERT INTO '+table+'(item_id,project,leader_session_id,kind,created_at,content,status) VALUES(?,?,?,?,?,?,?)',
-                    ('todo:'+str(row['id']),self.project,todo['requester_agent_id'],'todo',self.stamp,'','archived'))
+                    ('todo:'+str(row['id'])+':created',self.project,todo['requester_agent_id'],'todo',self.stamp,'','archived'))
         latest={}
         for acceptance in sorted(self.data['goal_acceptances'],key=lambda a:(a['created_at'],a['id'])):
             rnd=self.rounds[acceptance['goal_round_id']]
@@ -684,7 +686,8 @@ def activate_workspace(repo, workspace_id, legacy_home, root, *, replace_source_
     legacy_home=Path(legacy_home).expanduser().resolve()
     repairs=repair_activations(repo,legacy_home,workspace_id)
     if type(replace_source_marker) is not bool:raise StorageError('replace_source_marker must be an explicit boolean')
-    marker=root/'.crew'/'workspace.json';source_marker=None
+    from ..storage_service import _marker as marker_path
+    marker=marker_path(root);source_marker=None
     if not marker.resolve().is_relative_to(root) or marker.exists() and marker.stat().st_size>4096:
         raise StorageConflict('目录标识路径或大小无效，未覆盖。')
     bound=repo.workspace_for_path(root,exact=True)
@@ -728,6 +731,8 @@ def activate_workspace(repo, workspace_id, legacy_home, root, *, replace_source_
                          (project,workspace['name']))
             materializer=_Materializer(repo,conn,workspace,project,root,legacy_home,data,created)
             materializer.people();materializer.tasks();materializer.reports_and_files();materializer.context();materializer.journals();materializer.decisions_and_todos()
+            from . import features
+            features.activate(materializer)
             importer=str(uuid.uuid5(uuid.UUID(repo.device_id),'local-user'))
             membership=conn.execute('SELECT id FROM portable.workspace_memberships WHERE workspace_id=? AND user_id=? AND deleted_at IS NULL',
                 (workspace_id,importer)).fetchone()

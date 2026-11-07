@@ -1,9 +1,10 @@
 name: Crew tests
 
+# 日常修复先合入本地 live 集成分支试用，攒一批再通过一个 PR 合进 main。
+# CI 只在这个批次 PR 上跑一次；合进 main 后不再重复跑。需要时也可手动触发。
 on:
   pull_request:
-  push:
-    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -15,7 +16,7 @@ concurrency:
 jobs:
   backend:
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     defaults:
       run:
         shell: pwsh
@@ -42,13 +43,14 @@ jobs:
               for name in ('TEMP', 'TMP'):
                   print(f'{name}={directory}', file=output)
           '@ | python -
-      - name: Backend tests with isolated homes and fake carriers
+      # CI only runs the core list in plugin/tests/ci_core.txt; run the full suite locally before merging.
+      - name: Core backend tests with isolated homes and fake carriers
         working-directory: plugin
         run: |
           foreach ($name in 'CREW_SESSION_ID','CLAUDE_CODE_SESSION_ID','CREW_EXECUTION_ID','CREW_GOAL_ID') {
             Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
           }
-          python -m unittest discover -s tests -v
+          python tests/ci_core.py -v
 
   desktop:
     runs-on: windows-latest

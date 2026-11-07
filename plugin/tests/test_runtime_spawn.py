@@ -76,7 +76,9 @@ class RuntimeSpawnTests(RuntimeFixture):
     def test_codex_brief_reads_local_rules_and_names_real_crew_tools(self):
         plan = self.plan(runtime="codex", model="gpt-selected", effort="xhigh")
         brief = plan["files"][plan["spec"]["md"]]
-        self.assertIn(str(PLUGIN / "skills" / "member" / "SKILL.md"), brief)
+        # Rules come from the editable injected configuration, never a built-in file path.
+        self.assertNotIn("SKILL.md", brief)
+        self.assertIn("以注入内容为准", brief)
         self.assertIn("crew_send_message", brief)
         self.assertIn("Crew 会话 ID", brief)
         self.assertNotIn("/crew:", brief)
@@ -87,7 +89,8 @@ class RuntimeSpawnTests(RuntimeFixture):
         plan = spawn.leader_plan(self.conn, self.home, PLUGIN, "demo", "new-chief", runtime="codex")
         self.assertEqual(plan["spec"]["runtime"], "codex")
         self.assertEqual(plan["command"], CODEX_COMMAND)
-        self.assertIn(str(PLUGIN / "skills" / "leader" / "SKILL.md"), plan["files"][plan["spec"]["md"]])
+        self.assertNotIn("SKILL.md", plan["files"][plan["spec"]["md"]])
+        self.assertIn("以注入内容为准", plan["files"][plan["spec"]["md"]])
 
     def test_new_leader_inherits_its_own_brain_without_changing_member_inheritance(self):
         settings.save(self.conn, {'default': {'runtime':'claude','model':None,'effort':None},
@@ -164,7 +167,7 @@ class RuntimeSpawnTests(RuntimeFixture):
     def test_who_does_not_try_claude_discovery_for_a_codex_session(self):
         runtimes.set(self.conn, "member-id", "codex", "native-thread")
         with mock.patch.object(cli, "_agents", side_effect=AssertionError("No Claude discovery")), \
-                mock.patch.object(spawn, "request_state", return_value={"leaders": [], "members": []}):
+                mock.patch.object(spawn, "request_state", return_value={"leaders": [], "members": [], "git_assistant": None}):
             code, output, errors = self.run_cli(["--session", "chief-id", "who", "builder", "--json"])
         self.assertEqual(code, 0, errors)
         self.assertEqual(json.loads(output)["session_id"], "member-id")

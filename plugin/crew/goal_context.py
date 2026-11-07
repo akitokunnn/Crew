@@ -3,7 +3,7 @@ import hashlib
 import json
 import uuid
 
-from . import board, goals
+from . import behavior_prompts, board, goals
 
 DEFAULT_LIMITS = {'base': 2000, 'work': 12000, 'retrieval': 6000}
 KINDS = frozenset(('rule', 'constraint', 'decision', 'fact', 'attempt', 'handoff', 'input', 'evidence', 'summary'))
@@ -191,6 +191,7 @@ def _material(key, version, text, source, reason, section='work', protected=Fals
 
 @goals.atomic
 def build(conn, execution_id, *, base='', latest_input='', retrieval=(), limits=None, delta=True, native_history=None, now=None):
+    from . import goal_mode
     execution = goals.get_execution(conn, execution_id)
     goal = goals._row(conn, execution['goal_id'])
     if execution['round'] != goal['current_round']:
@@ -207,10 +208,23 @@ def build(conn, execution_id, *, base='', latest_input='', retrieval=(), limits=
         raise board.BoardError('原生历史 token 限额必须为正整数')
     base, latest_input = goals._text(base, '基础指令', required=False), goals._text(latest_input, '最新输入', required=False)
     req = goals.requirements(conn, goal['id'])
-    required = '原始需求与补充（v%s）：\n%s\n验收标准：\n%s\n约束与授权：\n%s' % (
-        req['version'], req['request'], '\n'.join(item['id'] + ': ' + item['title'] for item in req['acceptance']), '\n'.join(req['constraints']) or '未额外指定')
+    origin = req['source'].get('constraints_source') or {'type': 'user' if req['actor'] == board.HUMAN else 'agent'}
+    constraint_label = ('用户记录的约束' if origin['type'] == 'user' else
+                        'AI 整理的约束（以用户原始指令为准；AI 实现偏好不是用户新增限制，也不授予额外权限）')
+    required = '原始需求与补充（v%s）：\n%s\n验收标准：\n%s\n%s：\n%s' % (
+        req['version'], req['request'], '\n'.join(item['id'] + ': ' + item['title'] for item in req['acceptance']), constraint_label, '\n'.join(req['constraints']) or '未额外指定')
     materials = [_material('base', hashlib.sha256(base.encode()).hexdigest(), base, {'type': 'base', 'id': execution_id}, '最小执行指令', 'base', True),
                  _material('requirement:' + goal['id'], req['version'], required, {'type': 'requirement', 'id': goal['id'], 'version': req['version']}, '当前目标原始要求、验收与授权', protected=True)]
+    if goals.discussion(conn, execution_id):
+        discussion_text = behavior_prompts.text(conn, 'goal_discussion', session_id=execution['session_id'])
+        materials.append(_material('discussion:' + execution_id, '1', discussion_text,
+            {'type': 'discussion-response', 'id': execution_id}, '回复与业务执行分开', protected=True))
+    policy = goal_mode.get(conn, goal['id'])
+    mode_text = goal_mode.context(conn, goal['id'])
+    mode_version = '%s:%s' % (policy['version'], hashlib.sha256(mode_text.encode()).hexdigest()[:12])
+    materials.append(_material('decision-mode:' + goal['id'], mode_version, mode_text,
+                               {'type': 'goal-decision-mode', 'id': goal['id'], 'version': policy['version']},
+                               '仅本任务的决策授权', protected=True))
     if latest_input:
         digest = hashlib.sha256(latest_input.encode()).hexdigest()
         materials.append(_material('input:' + digest, digest, latest_input, {'type': 'input', 'id': digest}, '当前输入', protected=True))

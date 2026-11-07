@@ -7,7 +7,7 @@ import unicodedata
 from contextlib import closing
 from pathlib import Path
 
-from . import store, usage
+from . import native_home, store, usage
 
 
 AGGREGATE_FIELDS = [*usage.CLAUDE_TOKENS, "total_tokens", "requests", "cost_usd", "priced_cost_usd", "unpriced_tokens"]
@@ -93,7 +93,7 @@ def _table(rows, fields):
 def _options(parser, defaults):
     values = {
         "claude_root": Path.home() / ".claude" / "projects",
-        "codex_root": Path.home() / ".codex" / "sessions",
+        "codex_root": native_home.codex_sessions(),
         "runs_file": None, "period": "week", "project": None, "json": False,
     }
     for key, value in values.items():

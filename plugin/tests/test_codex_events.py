@@ -99,6 +99,35 @@ class CodexEventsTests(unittest.TestCase):
         result = self.notify("thread/tokenUsage/updated", tokenUsage={"last": {"totalTokens": 1800, "outputTokens": 0}})
         self.assertFalse(any(e["type"] == "compact" for e in result))
 
+    def test_native_0165_compaction_usage_before_item_completion_releases_ui_wait(self):
+        # Recorded by the isolated real Luna probe: usage is sent before the
+        # completed item, and there is no second usage update after completion.
+        self.notify('thread/tokenUsage/updated', tokenUsage={'last': {'totalTokens': 17120, 'outputTokens': 9}})
+        self.notify('turn/started', turn={'id': 'compact-turn', 'status': 'inProgress'})
+        item = {'id': 'compaction-item', 'type': 'contextCompaction'}
+        events = self.notify('item/started', turnId='compact-turn', item=item)
+        events += self.notify('thread/tokenUsage/updated', turnId='compact-turn',
+                              tokenUsage={'last': {'totalTokens': 19264, 'outputTokens': 0}})
+        events += self.notify('item/completed', turnId='compact-turn', item=item)
+        events += self.notify('turn/completed', turn={'id': 'compact-turn', 'status': 'completed', 'items': []})
+        self.assertEqual([e for e in events if e['type'] == 'compact'],
+                         [{'type': 'compact', 'pre_tokens': 17120, 'post_tokens': 19264}])
+        self.assertEqual(events[-1], {'type': 'status', 'status': 'idle'})
+        self.notify('turn/started', turn={'id': 'next-turn', 'status': 'inProgress'})
+        reply = self.notify('item/completed', turnId='next-turn',
+                            item={'id': 'next-answer', 'type': 'agentMessage', 'text': 'After compact'})
+        self.assertEqual(reply[0]['content'][0]['text'], 'After compact')
+
+    def test_completed_compaction_without_usage_finishes_with_unknown_size(self):
+        item = {'id': 'compaction-item', 'type': 'contextCompaction'}
+        self.notify('item/started', item=item)
+        self.notify('item/completed', item=item)
+        events = self.notify('turn/completed', turn={'id': 'turn-1', 'status': 'completed', 'items': []})
+        self.assertEqual([e for e in events if e['type'] == 'compact'],
+                         [{'type': 'compact', 'pre_tokens': None, 'post_tokens': None}])
+        later = self.notify('thread/tokenUsage/updated', tokenUsage={'last': {'totalTokens': 19264, 'outputTokens': 0}})
+        self.assertFalse(any(e['type'] == 'compact' for e in later))
+
     def test_failed_compaction_never_emits_a_successful_compact_measurement(self):
         self.notify("thread/tokenUsage/updated", tokenUsage={"last": {"totalTokens": 40000, "outputTokens": 0}})
         self.notify("item/completed", item={"id": "compact", "type": "contextCompaction"})

@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Crew · 顶部交互原型</title>
+  <link rel="icon" href="../../plugin/crew/web/logo.svg">
+  <link rel="stylesheet" href="shared.css">
+  <link rel="stylesheet" href="variants/switcher.css">
+  <link rel="stylesheet" href="variants/sidebar.css">
+  <link rel="stylesheet" href="variants/document.css">
+  <link rel="stylesheet" href="variants/tabs.css">
+  <script src="variants/switcher.js" defer></script>
+  <script src="variants/sidebar.js" defer></script>
+  <script src="variants/document.js" defer></script>
+  <script src="variants/tabs.js" defer></script>
+  <script src="scenarios.js" defer></script>
+  <script src="lab.js" defer></script>
+</head>
+<body class="demo-page">
+  <nav class="lab-toolbar" id="lab-toolbar" aria-label="原型试用工具">
+    <a class="lab-back" href="index.html" aria-label="返回方案总览">← 方案总览</a>
+    <label>方案<select id="lab-variant"><option value="switcher">A · 单行切换</option><option value="sidebar">B · 侧栏导航</option><option value="document">C · 任务扉页</option><option value="tabs">D · 会话页签</option><option value="legacy">原版对照</option></select></label>
+    <label id="lab-task-count-control" hidden>任务量<select id="lab-task-count"><option value="few">3 项</option><option value="many">36 项</option></select></label>
+    <label>任务状态<select id="lab-status"><option value="queued">待规划</option><option value="running">推进中</option><option value="waiting">待拍板</option><option value="delivered">待验收</option></select></label>
+    <label class="lab-check"><input type="checkbox" id="lab-long-title">超长标题</label>
+    <button type="button" id="lab-theme" class="lab-button">深色</button>
+    <output class="lab-height" id="lab-height" aria-label="实际顶部高度"></output>
+    <button type="button" class="lab-button" data-action="toggle-tools">收起工具</button>
+  </nav>
+  <div id="demo-root"></div>
+  <footer class="prototype-footer"><span>本地交互原型 · 示例数据 · 不连接 AI</span><div><button type="button" data-action="note">记下感受</button><button type="button" data-action="toggle-tools">试用工具</button><a href="index.html">其他方案</a></div></footer>
+  <div id="overlay-root"></div>
+  <div class="lab-toast" id="toast" role="status" hidden></div>
+</body>
+</html>

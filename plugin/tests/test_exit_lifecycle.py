@@ -11,7 +11,7 @@ from types import MethodType, SimpleNamespace
 import unittest
 from unittest import mock
 
-from crew import channel, channel_digest, chat, codex_runtime, connections, notifications, settings, web
+from crew import channel, channel_digest, chat, codex_runtime, connections, notifications, report_preview, settings, web
 from test_chat import FakeProcess
 import test_channel
 from test_channel_digest import CARD
@@ -87,7 +87,7 @@ class ExitLifecycleTests(unittest.TestCase):
                 stop_reason=None, _closing=False, _approvals=mock.Mock(), _turn_ready=threading.Condition(lock),
                 _settings=threading.Condition(lock), pending_compact=False, client=client,
                 execution={'id': identity, 'session_id': role} if scoped else None,
-                _native_archived=False, thread_id='native-' + identity, reader_done=threading.Event(),
+                _native_archived=False, _archive_on_close=True, thread_id='native-' + identity, reader_done=threading.Event(),
                 _lease=SimpleNamespace(release=mock.Mock()), _status=journal.set_status)
             current.close = MethodType(codex_runtime.CodexRunning.close, current)
             current.reader = threading.Thread(target=codex_runtime.CodexRunning._watch, args=(current,), daemon=True)
@@ -187,6 +187,15 @@ class ExitLifecycleTests(unittest.TestCase):
             inbox.worker.start()
         connections.Manager.close(SimpleNamespace(inboxes=inboxes))
         self.assertEqual(results, [True, True], 'A second channel did not receive stop until the first channel finished')
+
+    def test_desktop_handoff_is_not_archived_by_a_later_manager_shutdown(self):
+        current = self.native('codex', 'leader', True)
+        current.close(archive=False)
+        self.assertTrue(current.reader_done.wait(2))
+        self.manager.close()
+        self.assertFalse(current._archive_on_close)
+        self.assertFalse(any(method == 'thread/archive' for method, _, _ in current.client.calls))
+        self.assertEqual(current._lease.release.call_count, 1)
 
 
 class DigestExitLifecycleTests(unittest.TestCase):
@@ -291,16 +300,23 @@ class DigestExitLifecycleTests(unittest.TestCase):
 
     def test_service_broadcasts_digest_cancellation_before_waiting_for_other_workers(self):
         actions = []
+        previews = report_preview.Manager(self.home)
+        self.addCleanup(previews.close)
         service = SimpleNamespace(stop=threading.Event(),
+            report_previews=previews,
             channel_digest=SimpleNamespace(stop=lambda: actions.append('digest-stop'), close=lambda: actions.append('digest-join')),
+            remote_access=SimpleNamespace(shutdown=lambda: actions.append('remote')),
             storage_cleanup=SimpleNamespace(close=lambda: actions.append('storage')),
             connections=SimpleNamespace(close=lambda: actions.append('connections')),
             notice_worker=SimpleNamespace(join=lambda: self.assertEqual(actions[0], 'digest-stop')),
-            ci_worker=None, chat=SimpleNamespace(close=lambda: actions.append('chat')),
+            ci_worker=None, chat=SimpleNamespace(lock=threading.RLock(), close=lambda: actions.append('chat')),
             maintenance=SimpleNamespace(close=lambda: actions.append('maintenance')), worker=None)
         web.Service.close(service)
         self.assertTrue(service.stop.is_set())
-        self.assertEqual(actions, ['digest-stop', 'storage', 'connections', 'chat', 'maintenance', 'digest-join'])
+        self.assertEqual(actions, ['digest-stop', 'remote', 'storage', 'connections', 'chat', 'maintenance', 'digest-join'])
+        preview = previews.capture('<p>Isolated shutdown fixture</p>', title='Shutdown', goal_id='fixture')
+        self.assertFalse(preview['ok'])
+        self.assertIn('宿主已关闭', preview['error'])
 
     def test_native_creation_in_progress_is_registered_before_close_can_snapshot_ownership(self):
         entered, release = threading.Event(), threading.Event()
@@ -336,22 +352,30 @@ class DigestExitLifecycleTests(unittest.TestCase):
 
     def test_service_close_failure_preserves_exception_after_closing_other_owned_resources(self):
         actions = []
+        previews = report_preview.Manager(self.home)
+        self.addCleanup(previews.close)
         failure = OSError('fixture digest termination denied')
         def stop_digest():
+            self.assertTrue(service.chat.closed, 'Application exit must block new native work before cleanup')
             actions.append('digest-stop')
             raise failure
         service = SimpleNamespace(stop=threading.Event(),
+            report_previews=previews,
             channel_digest=SimpleNamespace(stop=stop_digest, close=lambda: actions.append('digest-join')),
+            remote_access=SimpleNamespace(shutdown=lambda: actions.append('remote')),
             storage_cleanup=SimpleNamespace(close=lambda: actions.append('storage')),
             connections=SimpleNamespace(close=lambda: actions.append('connections')),
-            notice_worker=None, ci_worker=None, chat=SimpleNamespace(close=lambda: actions.append('chat')),
+            notice_worker=None, ci_worker=None, chat=SimpleNamespace(lock=threading.RLock(), close=lambda: actions.append('chat')),
             maintenance=SimpleNamespace(close=lambda: actions.append('maintenance')), worker=None)
         with mock.patch('crew.web.traceback.print_exc') as logged:
             with self.assertRaises(OSError) as raised:
                 web.Service.close(service)
         self.assertIs(raised.exception, failure)
-        self.assertEqual(actions, ['digest-stop', 'storage', 'connections', 'chat', 'maintenance', 'digest-join'])
+        self.assertEqual(actions, ['digest-stop', 'remote', 'storage', 'connections', 'chat', 'maintenance', 'digest-join'])
         logged.assert_called_once()
+        preview = previews.capture('<p>Isolated shutdown fixture</p>', title='Shutdown', goal_id='fixture')
+        self.assertFalse(preview['ok'])
+        self.assertIn('宿主已关闭', preview['error'])
 
 
 if __name__ == '__main__':

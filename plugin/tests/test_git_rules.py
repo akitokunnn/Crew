@@ -25,21 +25,21 @@ class GitRulesTests(CoreCase):
     def test_session_start_shows_first_six_policy_lines(self):
         self.enable("\n".join("规则%d" % i for i in range(1, 9)))
         context = self.context()
-        self.assertIn("本项目由 git 管理员「git管理员」统一推送和合并。做完用 `crew git request` 交给它，不要自己 push、开 PR、合并。", context)
+        self.assertIn("本项目由 Git 助手「git管理员」统一推送和合并。做完用 `crew git request` 交给它", context)
         self.assertIn("规则1\n规则2\n规则3\n规则4\n规则5\n规则6", context)
         self.assertNotIn("规则7", context)
         self.assertIn("全文用 crew git policy 看", context)
 
     def test_session_start_without_policy_tells_sessions_to_ask_admin(self):
         self.enable()
-        self.assertIn("git 管理员还没写分支规则，开工前先问它", self.context())
+        self.assertIn("Git 助手还没写分支规则，开工前先问它", self.context())
 
     def test_selected_administrators_actual_name_and_duties_are_used(self):
         self.enable('Project policy')
         self.conn.execute("UPDATE sessions SET crew_name='Repository lead' WHERE session_id='s3'")
         self.assertIn('「Repository lead」', self.context())
         own = self.context('s3')
-        self.assertIn('你是本项目当前绑定的 Git 管理员', own)
+        self.assertIn('你是本项目当前绑定的 Git 助手', own)
         self.assertNotIn('不要自己 push', own)
 
     def test_unenrolled_and_archived_sessions_still_receive_git_context(self):
@@ -50,7 +50,7 @@ class GitRulesTests(CoreCase):
         self.assertIn("统一推送和合并", self.context())
 
     def test_disabled_git_does_not_add_context(self):
-        self.assertNotIn("git 管理员", self.context())
+        self.assertNotIn("Git 助手", self.context())
 
     def test_enrolled_members_and_leaders_cannot_push_create_or_merge(self):
         self.enable()
@@ -121,7 +121,8 @@ class GitRulesTests(CoreCase):
 
     def test_git_admin_startup_and_rule_reminder_use_git_skill(self):
         self.enable()
-        self.assertIn("请遵守 /crew:git", self.context("s3"))
+        self.assertIn("[Crew git]", self.context("s3"))
+        self.assertIn("/crew:git", self.context("s3"))
         self.assertIn("/crew:git", rules.reminder(self.conn, "s3", self.fake_plugin))
         data = self.data("s3", tool_name="Skill", tool_input={"skill": "crew:git"})
         self.assertEqual(hooks.handle("guard", data, self.home, self.fake_plugin, {}, now=NOW), (0, None))
@@ -132,6 +133,7 @@ class GitRulesTests(CoreCase):
     def test_ordinary_leader_keeps_leader_skill(self):
         self.enable()
         board.join(self.conn, "s2", "demo", "lead", self.root, store.norm_path(self.root), "main", role="leader", now=NOW)
-        self.assertIn("请遵守 /crew:leader", self.context("s2"))
+        self.assertIn("[Crew leader]", self.context("s2"))
+        self.assertIn("/crew:leader", self.context("s2"))
         self.assertIn("/crew:leader", rules.reminder(self.conn, "s2", self.fake_plugin))
         self.assertNotIn("/crew:git", rules.reminder(self.conn, "s2", self.fake_plugin))

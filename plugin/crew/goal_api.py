@@ -2,7 +2,7 @@
 import json
 from urllib.parse import urlencode
 
-from . import board, documents, goal_context, goals
+from . import behavior_prompts, board, codex_client, documents, goal_context, goal_work, goals, native_handoff
 
 ACCEPTANCE_STATUSES = ('passed', 'failed', 'unverified', 'simulated')
 
@@ -14,16 +14,50 @@ def report_entry(project, value, row):
     return {'id': row['id'], 'round': row['round'], 'requirement_version': row['requirement_version'], 'version': row['version'],
             'outcome': row['outcome'], 'status': row['outcome'], 'created_at': row['created_at'], 'title': value['title'],
             'summary': data['summary'], 'acceptance_counts': {key: statuses.count(key) for key in ACCEPTANCE_STATUSES},
+            'publication': data.get('publication'),
             'unresolved': data['unresolved'],
-            'current': row['round'] == value['current_round'] and row['requirement_version'] == value['requirement_version'],
+            'current': row['round'] == value['current_round'] and row['version'] == value['latest_report_version'],
             'url': '/api/goals/report?' + urlencode({'project': project, 'goal_id': value['id'], 'report_id': row['id']})}
 
 
 def card(conn, value):
     req = value['requirements']
     available = conn.execute('SELECT 1 FROM goal_reports WHERE goal_id=?', (value['id'],)).fetchone()
-    return {**value, 'request': req['request'], 'acceptance': req['acceptance'],
-            'constraints': req['constraints'], 'report_available': bool(available)}
+    handoffs = [native_handoff.describe(conn, row['session_id'], row['id']) for row in conn.execute(
+        'SELECT id,session_id FROM goal_executions WHERE goal_id=? AND round=?', (value['id'], value['current_round']))]
+    brief = None
+    report = conn.execute('SELECT id,data_json,created_at FROM goal_reports WHERE goal_id=? AND round=? '
+                          'ORDER BY version DESC LIMIT 1', (value['id'], value['current_round'])).fetchone()
+    supplements = [] if report is None else [dict(row) for row in conn.execute(
+        'SELECT version,change_text AS text,actor,created_at AS at FROM goal_requirements '
+        'WHERE goal_id=? AND version>? AND created_at>? ORDER BY version',
+        (value['id'], json.loads(report['data_json'])['requirement_version'], report['created_at']))]
+    if value['status'] == 'awaiting_acceptance':
+        if report is not None:
+            data = json.loads(report['data_json'])
+            brief = {'report_id': report['id'], 'summary': data['summary'], 'user_test': data.get('user_test'),
+                     'created_at': report['created_at'], 'supplements_after_report': supplements}
+    work = goal_work.items(conn, value['id'])
+    doing = sorted((item for item in work if item['status'] == 'doing'), key=lambda item: (item['updated_at'], item['id']))
+    decision = conn.execute("SELECT d.id,d.question FROM goal_links l JOIN decisions d ON d.id=l.item_id "
+                            "WHERE l.kind='decision' AND l.goal_id=? AND d.status='open' ORDER BY d.created_at,d.id LIMIT 1",
+                            (value['id'],)).fetchone()
+    finish = conn.execute("SELECT 1 FROM goal_round_finishes WHERE goal_id=? AND round=? AND status='pending'",
+                          (value['id'], value['current_round'])).fetchone()
+    working = conn.execute("SELECT COUNT(DISTINCT session_id) FROM goal_executions WHERE goal_id=? AND round=? "
+                           "AND status IN ('running','pausing')", (value['id'], value['current_round'])).fetchone()[0]
+    # Latest stored activity across the task, its work items, executions and reports; display-only.
+    activity = conn.execute('SELECT MAX(at) FROM (SELECT updated_at AS at FROM goal_work_items WHERE goal_id=:g '
+                            'UNION ALL SELECT updated_at FROM goal_executions WHERE goal_id=:g '
+                            'UNION ALL SELECT created_at FROM goal_reports WHERE goal_id=:g '
+                            'UNION ALL SELECT created_at FROM goal_requirements WHERE goal_id=:g)', {'g': value['id']}).fetchone()[0]
+    return {**value, 'request': req['request'], 'acceptance': req['acceptance'], 'native_handoffs': handoffs,
+            'constraints': req['constraints'], 'report_available': bool(available), 'acceptance_brief': brief,
+            'work_summary': goal_work.summary_of(work), 'supplements_after_report': supplements,
+            'now_doing': [{'key': item['key'], 'title': item['title'], 'session_id': item['owner_session_id']} for item in doing],
+            'pending_decision': dict(decision) if decision else None, 'working_count': working,
+            'finish_pending': finish is not None, 'observing': goals.observation(conn, value['id']),
+            'last_activity_at': max(value['updated_at'], activity or value['updated_at'])}
 
 
 def context(conn, identity, execution_id=None):
@@ -39,18 +73,23 @@ def context(conn, identity, execution_id=None):
     return result
 
 
-def detail(conn, project, identity):
+def detail(conn, project, identity, *, context_state=None):
     value = goals.get(conn, identity, project)
     executions = [goals.get_execution(conn, row['id']) for row in conn.execute(
         'SELECT id FROM goal_executions WHERE goal_id=? ORDER BY round,generation', (identity,))]
-    current = [e for e in executions if e['round'] == value['current_round'] and
-               e['requirement_version'] == value['requirement_version'] and e['session_id'] == value['leader_session_id']]
+    for execution in executions:
+        execution['native_handoff'] = native_handoff.describe(conn, execution['session_id'], execution['id'])
+        if context_state is not None:
+            execution.update(context_state(execution['id']))
+    current = [e for e in executions if e['round'] == value['current_round'] and e['session_id'] == value['leader_session_id']]
     # Newest first by the stored report version within each round, the same order acceptance_target uses;
     # created_at is display-only because a saved clock can repeat or move backwards.
-    reports = [report_entry(project, value, row) for row in conn.execute(
+    latest = conn.execute('SELECT MAX(version) FROM goal_reports WHERE goal_id=? AND round=?',
+                          (identity, value['current_round'])).fetchone()[0]
+    reports = [report_entry(project, {**value, 'latest_report_version': latest}, row) for row in conn.execute(
         'SELECT id,round,requirement_version,version,outcome,data_json,created_at FROM goal_reports WHERE goal_id=? '
         'ORDER BY round DESC,version DESC', (identity,))]
-    return {'goal': card(conn, value), 'executions': executions,
+    return {'goal': card(conn, value), 'executions': executions, 'work_items': goal_work.items(conn, identity),
             'context': context(conn, identity, current[-1]['id'] if current else None), 'reports': reports,
             'documents': documents.list(conn, project, goal_id=identity),
             'acceptance_review': goals.acceptance_review(conn, identity),
@@ -58,9 +97,15 @@ def detail(conn, project, identity):
 
 
 def _previous_review(conn, goal_id, current_round):
-    row = conn.execute('SELECT * FROM goal_acceptances WHERE goal_id=? AND round<? ORDER BY round DESC LIMIT 1',
-                       (goal_id, current_round)).fetchone()
-    return {**dict(row), 'accepted': bool(row['accepted'])} if row else None
+    current = goals.get(conn, goal_id)
+    reports = conn.execute('SELECT id FROM goal_reports WHERE goal_id=? AND (round<? OR (round=? AND requirement_version<?)) '
+                           'ORDER BY round DESC,version DESC',
+                           (goal_id, current_round, current_round, current['requirement_version']))
+    for report in reports:
+        review = goals.report_review(conn, goal_id, report['id'])
+        if review is not None:
+            return review
+    return None
 
 
 def post(service, conn, project, path, data):
@@ -82,7 +127,8 @@ def post(service, conn, project, path, data):
         return control.agent_action(data.get('action'), data.get('data', {}), actor['session_id'], data.get('execution_id'))
     if path == '/api/goals/create':
         value = goals.create(conn, project, data.get('leader_session_id'), data.get('title'),
-                             data.get('request'), data.get('acceptance'), constraints=data.get('constraints', []))
+                             data.get('request'), data.get('acceptance'), constraints=data.get('constraints', []),
+                             decision_mode=data.get('decision_mode'))
         return {'goal': card(conn, value)}
     identity = data.get('goal_id')
     value = goals.get(conn, identity, project)
@@ -95,11 +141,31 @@ def post(service, conn, project, path, data):
             options = {'note': data.get('note', ''), 'expected_version': data.get('version'),
                        'report_id': data.get('report_id')}
             with control.manager.lock:
-                goals.acceptance_target(conn, identity, action == 'accept', **options)
+                report = goals.acceptance_target(conn, identity, action == 'accept', **options)
                 control.stop_delivered(conn, identity)
-                goals.review_acceptance(conn, identity, action == 'accept', **options)
-            return {'goal': card(conn, goals.get(conn, identity)),
-                    'acceptance_review': goals.acceptance_review(conn, identity)}
+                goals.review_acceptance(conn, identity, action == 'accept', notify_rejection=False, **options)
+            result = {}
+            if action == 'reject':
+                # A requested change is more work on this task: hand it straight to the task's own
+                # execution. Only when that is refused does the leader's general chat get the notice.
+                try:
+                    control.send(identity, value['leader_session_id'],
+                                 behavior_prompts.text(conn, 'rejection_input', session_id=value['leader_session_id'],
+                                                       values={'note': options['note']}),
+                                 identity='crew-rejection:%s:%s' % (identity, report['id']), source='crew')
+                    result['resumed'] = True
+                except (board.BoardError, codex_client.CodexError, OSError) as exc:
+                    board.queue_leader_notice(conn, value['leader_session_id'],
+                                              goals.rejection_notice(goals.get(conn, identity), options['note']), 'web')
+                    result.update(resumed=False, resume_error=str(exc))
+            return {**result, 'goal': card(conn, goals.get(conn, identity)),
+                    'acceptance_review': goals.report_review(conn, identity, report['id'])}
+        if action == 'observe':
+            if 'actor_session_id' in data or 'execution_id' in data:
+                raise board.BoardError('验收入口由用户本人操作，不能指定 AI 执行身份')
+            goals.observe(conn, identity, note=data.get('note', ''), expected_version=data.get('version'),
+                          report_id=data.get('report_id'))
+            return {'goal': card(conn, goals.get(conn, identity))}
         if action == 'pause':
             control.pause(identity)
         elif action == 'start':
@@ -116,7 +182,7 @@ def post(service, conn, project, path, data):
                 goals.transition(conn, identity, 'running')
                 control.sync(conn, identity)
             else:
-                control.send(identity, value['leader_session_id'], '用户恢复当前目标，请按原始要求与已有证据继续。')
+                control.send(identity, value['leader_session_id'], behavior_prompts.text(conn, 'resume_nudge', session_id=value['leader_session_id'], values={'reason': '用户恢复当前目标，按原始要求与已有证据继续'}))
         elif action == 'cancel':
             goals.request_cancel(conn, identity)
             control.sync(conn, identity)
@@ -142,5 +208,5 @@ def post(service, conn, project, path, data):
                 goal_context.invalidate(conn, item_id, data.get('reason', '用户标记失效'))
             else:
                 raise board.BoardError('未知上下文操作')
-        return detail(conn, project, identity)
+        return detail(conn, project, identity, context_state=control.manager.context_state)
     raise board.BoardError('未知目标接口')

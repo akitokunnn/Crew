@@ -130,9 +130,12 @@ app.once('browser-window-created', (_event, win) => {
     }
     let originalDialog, originalMessageBox;
     try {
+      assert.equal(app.getName(), 'Crew · 隔离测试');
+      evidence.checks.push('The real native app is named Crew and retains its isolated test identity');
       originalMessageBox=dialog.showMessageBox;
       dialog.showMessageBox=async(...args)=>{
         const options=args.at(-1);
+        if(options.title==='打开为 Crew 工作区')return {response:0};
         if(options.title==='升级工作区数据')return {response:0};
         return originalMessageBox.apply(dialog,args);
       };
@@ -142,6 +145,19 @@ app.once('browser-window-created', (_event, win) => {
       const state = await js('window.crewDesktop.bootstrap()'); evidence.service = state.service;
       assert.notEqual(new URL(state.service.url).port, '47811');
       const homeDirectory = process.argv[process.argv.indexOf('--home') + 1]; evidence.home = homeDirectory;
+      await click('#nav-settings');
+      await wait('!!document.querySelector("[data-settings-category=sounds]")', 'native sound category');
+      await click('[data-settings-category=sounds]');
+      await wait('!!document.querySelector("[data-sound-kind=leader]")', 'native sound controls');
+      await js(`for(const [kind,value] of [['leader','knock'],['assistant','off'],['delivery','bell']]){
+        const picker=document.querySelector('[data-sound-kind='+kind+']');picker.value=value;picker.dispatchEvent(new Event('input',{bubbles:true}));}`);
+      await click('[data-sound-save]');
+      await wait('document.querySelector("[data-sound-status]").textContent.includes("音效已保存")', 'native sound preferences saved');
+      const soundSettings = await core.request(state.service.url, '/api/settings');
+      assert.equal(soundSettings.sounds.leader, 'knock');assert.equal(soundSettings.sounds.assistant, 'off');assert.equal(soundSettings.sounds.delivery, 'bell');
+      await capture('01-native-sound-settings');
+      evidence.checks.push('native settings inject the sound owner and persist independent choices through real IPC to the shared backend without AI work');
+      await click('#nav-workspaces');
       const parent = path.join(homeDirectory, 'qa-workspaces'); await fs.mkdir(parent, { recursive:true });
       for (const name of ['Crew 视觉验收', '长路径与中文名称的工作区', '工具接入']) await core.newWorkspace(parent, name, state.service.url);
       const projects = await core.projects(state.service.url); seedLeaders(homeDirectory, projects.slice(0, 2));
@@ -152,6 +168,27 @@ app.once('browser-window-created', (_event, win) => {
       originalDialog = dialog.showOpenDialog;
       dialog.showOpenDialog = async () => ({ canceled:false, filePaths:[projects[0].root] });
       await click('#existing'); const first = await opened(projects[0].name);
+      await until(()=>first.executeJavaScript('Boolean(document.querySelector(".wh-head"))'),'V2 workspace task overview');
+      assert(await first.executeJavaScript('!document.querySelector(".composer") && document.querySelector(".wh-head").textContent.includes("新对话")'));
+      await capture('05-v2-workspace-overview', first);
+      await first.executeJavaScript('document.querySelector("[data-act=modal-leader]").click()');
+      assert(await first.executeJavaScript('document.activeElement.id==="leader-task" && !document.querySelector("#leader-name").required && !document.querySelector(".leader-options").open'));
+      await capture('05-v2-new-discussion', first);
+      await first.executeJavaScript('document.querySelector("[data-act=modal-close]").click()');
+      evidence.checks.push('V2 opens on tasks and TODO, with one initial message and optional name/AI settings for a new discussion');
+      assert(await first.executeJavaScript('document.querySelector("a[href=\\"/notes.html\\"]")?.getAttribute("aria-label")==="想法墙"'));
+      const captured = await first.executeJavaScript('fetch("/api/personal/notes",{method:"POST",headers:{"Content-Type":"application/json","X-Crew":"1"},body:JSON.stringify({action:"capture",data:{text:"我最近打算健身，先记下每日打卡 App 的想法"},request_id:"smoke-quick-note"})}).then(r=>r.json())');
+      assert.equal(captured.model_calls, 0);
+      assert(await first.executeJavaScript('fetch("/api/personal/notes").then(r=>r.json()).then(r=>r.notes.some(n=>n.text.includes("每日打卡")&&n.stage==="new"))'));
+      await first.executeJavaScript('const settings=document.querySelector("[data-act=settings]");settings.dataset.category="prompts";settings.click()');
+      await until(()=>first.executeJavaScript('Boolean(document.querySelector("[data-bp-key=summary]"))'),'behavior configuration scope');
+      await first.executeJavaScript('document.querySelector("[data-bp-key=summary]").click();const input=document.querySelector(".bp-editor textarea");input.value="先写结论，再列未验证内容。";input.dispatchEvent(new Event("input",{bubbles:true}));document.querySelector("[data-bp-action=save]").click()');
+      await until(()=>first.executeJavaScript('document.querySelector(".bp-panel [role=status]").textContent.includes("下一次正常输入")'),'prompt saved without model');
+      assert(await first.executeJavaScript('document.querySelector("[data-bp-scope]").value==="project" && document.querySelector(".bp-editor textarea").value==="先写结论，再列未验证内容。"'));
+      await capture('05-v2-behavior-config',first);
+      await first.executeJavaScript('document.querySelector("[data-settings-action=close]").click();delete document.querySelector("[data-act=settings]").dataset.category');
+      evidence.checks.push('the rail opens the notes wall; idea capture saves through real HTTP without a model');
+      evidence.checks.push('workspace behavior configuration saves with a version and next-input semantics without changing the open conversation');
       assert.equal(main.getURL(), initialUrl);
       evidence.checks.push('open existing folder uses directory IPC and opens a real project view while home remains mounted');
       await home(); await click('#new');
@@ -209,7 +246,7 @@ app.once('browser-window-created', (_event, win) => {
       await capture('06-second-project-chat', second);
       for (let index = 0; index < live.length; index++) {
         const contents = live[index]; await select((await tabFor(projects[index].name)).id);
-        const preserved = await contents.executeJavaScript('({text:document.querySelector(".composer textarea")?.value,leader:document.querySelector("#chat-head .title")?.textContent,token:window.__tabQaToken,origin:performance.timeOrigin,hash:location.hash})');
+        const preserved = await contents.executeJavaScript('({text:document.querySelector(".composer textarea")?.value,leader:document.querySelector("#chat-head .chat-name")?.textContent,token:window.__tabQaToken,origin:performance.timeOrigin,hash:location.hash})');
         assert.equal(preserved.text, '仅属项目 ' + index); assert(preserved.leader.includes('标签验收 ' + (index + 1)));
         assert.equal(preserved.token, 'project-' + index); assert.equal(preserved.origin, identities[index].origin); assert.equal(preserved.hash, identities[index].hash);
       }
@@ -350,8 +387,10 @@ app.once('browser-window-created', (_event, win) => {
       assert.equal(await fs.readFile(path.join(managed.root,'retained.txt'),'utf8'),'keep the original files');
       assert.equal(await managedView.executeJavaScript('performance.timeOrigin'),managedOrigin);assert.equal(await managedView.executeJavaScript('document.querySelector(".composer textarea").value'),'工作区设置期间保留的草稿');
       evidence.checks.push('migration keeps stable identity, moves leader and member metadata, preserves the unsent draft and disk files, and starts no AI');
-      await click('.wss-close');await select(managedTab.id);await managedView.executeJavaScript('document.querySelector("[data-act=workspace-settings]").click()');
-      await wait('document.querySelector(".workspace-settings-dialog")?.open && document.querySelector("#workspace-root")','project brand gear opens privileged home settings');
+      await click('.wss-close');await select(managedTab.id);await managedView.executeJavaScript('document.querySelector("[data-act=view][data-view=all]").click()');
+      await until(()=>managedView.executeJavaScript('Boolean(document.querySelector(".wh-head [data-act=workspace-settings]"))'),'workspace home settings entry');
+      await managedView.executeJavaScript('document.querySelector(".wh-head [data-act=workspace-settings]").click()');
+      await wait('document.querySelector(".workspace-settings-dialog")?.open && document.querySelector("#workspace-root")','workspace home gear opens privileged home settings');
       assert.equal(await js('document.querySelector("#workspace-root").value'),relocated.project.root);
       const previousTheme=nativeTheme.themeSource;nativeTheme.themeSource='dark';win.setSize(860,650);
       await wait('document.documentElement.dataset.theme==="dark"','native system appearance updates');await capture('16-workspace-settings-dark-narrow');
@@ -364,6 +403,36 @@ app.once('browser-window-created', (_event, win) => {
       assert.equal((await core.request(state.service.url,'/api/project/settings?project='+encodeURIComponent(managed.name))).sessions.length,2);
       await click('#refresh');await wait('document.querySelectorAll(".project").length===4','removed directory restored');
       evidence.checks.push('removal closes only its tab after success, keeps every record and file, and opening the same directory restores the stable workspace');
+      await click('.crew-chrome-assistant');
+      let assistant;
+      await until(()=>{assistant=webContents.getAllWebContents().find(contents=>contents.getURL()===state.service.url+'/assistant.html');return Boolean(assistant);},'one global assistant view');
+      await until(()=>assistant.executeJavaScript('Boolean(document.querySelector(".composer textarea")) && document.querySelector(".send").disabled && document.querySelector("#assistant-error").hidden'),'global assistant ready without a model turn');
+      await assistant.executeJavaScript('const field=document.querySelector(".composer textarea");field.value="跨工作区保留的助手草稿";field.dispatchEvent(new Event("input",{bubbles:true}));window.__assistantDocument=performance.timeOrigin;');
+      await capture('16-v2-global-assistant',assistant);
+      const assistantIdentity=await assistant.executeJavaScript('window.__assistantDocument');
+      await home();await click('.crew-chrome-assistant');
+      assert(await assistant.executeJavaScript('document.querySelector(".composer textarea").value==="跨工作区保留的助手草稿"'));
+      assert.equal(await assistant.executeJavaScript('performance.timeOrigin'),assistantIdentity);
+      const assistantState=await core.request(state.service.url,'/api/assistant/state');assert.equal(assistantState.project,null);assert.equal(assistantState.assistant.running,false);
+      assert.equal((await core.projects(state.service.url)).length,4);
+      evidence.checks.push('one global assistant opens with no AI launch or fake workspace, and retains its live conversation draft across workspace navigation');
+      await home();
+      const mibRoot=path.join(parent,'MIB-project');await fs.mkdir(path.join(mibRoot,'.crew'),{recursive:true});
+      const oldMarker=JSON.stringify({format:'crew-workspace',schema_version:2,workspace_id:'fa5c8ac4-f939-4b7a-8625-51fbc796562d'});
+      await fs.writeFile(path.join(mibRoot,'.crew/workspace.json'),oldMarker);
+      await fs.writeFile(path.join(mibRoot,'retained.txt'),'MIB source stays unchanged');
+      dialog.showOpenDialog=async()=>({canceled:false,filePaths:[mibRoot]});
+      await click('#existing');const mib=await opened('MIB-project');
+      await until(()=>mib.executeJavaScript('Boolean(document.querySelector(".wh-head"))'),'fresh MIB workspace overview');
+      assert.equal(await fs.readFile(path.join(mibRoot,'.crew/workspace.json'),'utf8'),oldMarker);
+      assert.equal(await fs.readFile(path.join(mibRoot,'retained.txt'),'utf8'),'MIB source stays unchanged');
+      const mibIdentity=JSON.parse(await fs.readFile(path.join(mibRoot,'.crew/workspace-v2.json'),'utf8'));
+      assert.notEqual(mibIdentity.workspace_id,JSON.parse(oldMarker).workspace_id);
+      const mibDiscovery=await core.request(state.service.url,'/api/workspace-data/discover',{root:mibRoot});
+      assert.equal(mibDiscovery.status,'ready');assert.equal(mibDiscovery.project.workspace_id,mibIdentity.workspace_id);
+      await home();await click('#existing');assert.equal((await tabs()).filter(tab=>tab.project==='MIB-project').length,1);
+      await capture('18-v2-fresh-mib',mib);
+      evidence.checks.push('a folder with a V1 identity opens with explicitly chosen fresh V2 records; original marker and source bytes remain intact and reopening keeps one V2 identity and tab');
       assert.equal(evidence.errors.length, 0, JSON.stringify(evidence.errors)); evidence.ok = true;
       await fs.writeFile(path.join(output, 'evidence.json'), JSON.stringify(evidence, null, 2));
       app.quit();

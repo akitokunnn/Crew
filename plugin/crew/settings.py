@@ -8,11 +8,11 @@ import sqlite3
 from . import board, guard, store
 
 
-PURPOSES = ('default', 'leader', 'member', 'digest', 'git', 'operations')
-TASK_OVERRIDES = ('leader', 'member')
+PURPOSES = ('default', 'leader', 'member', 'assistant', 'digest', 'git', 'operations')
+TASK_OVERRIDES = ('leader', 'member', 'assistant')
 FIELDS = ('runtime', 'model', 'effort')
 DEFAULT = {'default': {'runtime': None, 'model': None, 'effort': None},
-           'leader': None, 'member': None, 'digest': None, 'git': None, 'operations': None}
+           'leader': None, 'member': None, 'assistant': None, 'digest': None, 'git': None, 'operations': None}
 EXECUTION_DEFAULT = {'codex': 'workspace-write', 'claude': 'default'}
 EXECUTION_CHOICES = {'codex': ('read-only', 'workspace-write', 'danger-full-access'),
                      'claude': ('default', 'acceptEdits', 'bypassPermissions')}
@@ -39,7 +39,7 @@ def _selection(value, name):
 def validate(ai):
     """A null task follows default; an explicit task replaces all three fields."""
     if not isinstance(ai, dict) or 'default' not in ai or any(key not in PURPOSES for key in ai):
-        raise SettingsError('AI 设置必须包含 default，且只能包含 default、leader、member、digest、git、operations')
+        raise SettingsError('AI 设置必须包含 default，且只能包含 ' + '、'.join(PURPOSES))
     result = {'default': _selection(ai['default'], 'default')}
     for purpose in PURPOSES[1:]:
         value = ai.get(purpose)

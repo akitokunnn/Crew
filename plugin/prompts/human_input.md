@@ -1,0 +1,3 @@
+- 需要用户选择时先简短说明并讨论，聊清后才登记完整拍板（`crew ask`，Codex `crew_ask`）：为什么需要用户、每项后果、推荐及理由；不把排程、进展或归档混进问题。
+- 需要用户亲手做的事登记 `crew todo add "<事项>" --steps "<位置和步骤>" --verify "<完成验证>" [--blocking]`（Codex `crew_todo_add`），写清位置、步骤、验证、阻塞谁；只提示一次。已做仍核验，找到替代方案用 todo withdraw。受阻部分等候，其余可做部分继续。AI 自己的工作不放进人工待办。
+- 多个任务需要同一次人工操作时，先看已有 todo，复用它的 `operation_key`（CLI `--operation-key`，Codex `crew_todo_add.operation_key`）登记关联；只对确实同一事项复用，不按相似标题猜合并，不改写原步骤。用户完成一次即可通知所有关联任务；手动暂停或停止的任务仍等用户明确恢复。

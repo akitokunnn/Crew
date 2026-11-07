@@ -10,20 +10,24 @@ function enabled(commits=[commit("a","第一次读取",[],["main"])],next_offset
 function harness() {
   let markup="",read=async()=>snapshot("仓库快照");
   const calls=[],handlers=new Map(),timers=new Map(),popup={hidden:true},scroll={scrollTop:0};let changed=0;const toasts=[];
-  const host={get innerHTML(){return markup;},set innerHTML(value){markup=value;},querySelector:selector=>selector==="#git-detail"?popup:selector===".git-page"&&markup.includes("git-page")?scroll:null,querySelectorAll:()=>[],addEventListener:(name,fn)=>handlers.set(name,fn),removeEventListener:name=>handlers.delete(name)};
-  const sandbox={document:{addEventListener(){},removeEventListener(){}},window:{addEventListener(){},removeEventListener(){}},setInterval:fn=>{timers.set(1,fn);return 1;},clearInterval:id=>timers.delete(id),clearTimeout(){}};
+  const host=require('./git_ui_host.cjs')({scroll,handlers});
+  const mounts=[],updates=[],state={git_assistant:null};
+  const assistant={session_id:"git",name:"Git 助手",base:"main",stable:null,requests:{active:4,waiting_user:1,merging:1,queued:2},attention:8};
+
+  const sandbox={CrewChat:{mount:options=>mounts.push(options),update:state=>updates.push(state),unmount(){}},document:{addEventListener(){},removeEventListener(){}},window:{addEventListener(){},removeEventListener(){}},setInterval:fn=>{timers.set(1,fn);return 1;},clearInterval:id=>timers.delete(id),clearTimeout(){}};
   vm.createContext(sandbox);vm.runInContext(fs.readFileSync(path.join(__dirname,"../crew/web/git.js"),"utf8")+"\nglobalThis.component=CrewGit;",sandbox);
   const ui=sandbox.component;
-  const settings=(project="demo",root="C:/fixture/demo")=>({project,root,catalog:()=>[{id:"codex",name:"Codex",available:true}],defaultRuntime:()=>"codex",api:async(route,body)=>{calls.push({project,root,route,body});return read(route,body);},toast:message=>toasts.push(message),onChanged:async()=>{changed++;}});
+  const settings=(project="demo",root="C:/fixture/demo")=>({project,root,state,chatAccess:()=>({readonly:false}),beforeStop(){},onRouted(){},catalog:()=>[{id:"codex",name:"Codex",available:true}],defaultRuntime:()=>"codex",api:async(route,body)=>{calls.push({project,root,route,body});const value=await read(route,body);if(body===undefined)state.git_assistant=value.enabled?assistant:null;return value;},toast:message=>toasts.push(message),onChanged:async()=>{changed++;}});
   function mount(project,root){ui.mount(host,settings(project,root));}
   function click(act,value){const button={dataset:act==="tab"?{gitTab:value}:act==="branch"?{gitBranch:value}:{gitAct:act}};handlers.get("click")({target:{closest:selector=>selector==="[data-git-act]"&&button.dataset.gitAct||selector==="[data-git-tab]"&&button.dataset.gitTab||selector==="[data-git-branch]"&&button.dataset.gitBranch?button:null}});}
-  return {host,calls,timers,ui,mount,click,scroll,toasts,get changed(){return changed;},read:fn=>{read=fn;}};
+  return {host,calls,timers,ui,mounts,updates,assistant,state,mount,click,scroll,toasts,get changed(){return changed;},read:fn=>{read=fn;}};
 }
 test("returning to the same workspace shows its snapshot immediately without another scan or polling",async()=>{
   const h=harness();h.mount();await tick();assert(h.host.innerHTML.includes("仓库快照"));
   h.ui.unmount();h.host.innerHTML="聊天";h.read(()=>new Promise(()=>{}));h.mount();
   assert(h.host.innerHTML.includes("仓库快照"));assert.equal(h.calls.length,1);assert.equal(h.timers.size,0);h.ui.unmount();
 });
+
 test("a scan started before leaving remains shared and fills the cache without overwriting chat",async()=>{
   const h=harness();let resolve;h.read(()=>new Promise(done=>{resolve=done;}));h.mount();await tick();h.ui.unmount();h.host.innerHTML="聊天和草稿";
   resolve(snapshot("后台完成的读取"));await tick();assert.equal(h.host.innerHTML,"聊天和草稿");h.mount();
@@ -39,13 +43,11 @@ test("manual refresh keeps the last snapshot visible on failure and remains read
   reject(Error("fixture scan failed"));await tick();assert(h.host.innerHTML.includes("第一次读取"));assert(h.host.innerHTML.includes("fixture scan failed"));assert(h.host.innerHTML.includes("读取于"));
   h.read(async()=>enabled([commit("b","更新后的结果",[],["main"])]));h.click("refresh");await tick();assert(h.host.innerHTML.includes("更新后的结果"));assert(!h.host.innerHTML.includes("fixture scan failed"));assert(h.calls.every(call=>call.body===undefined));h.ui.unmount();
 });
-test("paging, selected view, branch and scroll survive leaving while more history is loading",async()=>{
-  const h=harness();h.read(async()=>enabled([commit("a","第一页",["b"],["main"])],80));h.mount();await tick();let resolve;
-  h.read(()=>new Promise(done=>{resolve=done;}));h.click("load-more");await tick();h.click("branch","main");h.click("tab","branches");h.scroll.scrollTop=260;h.ui.unmount();h.host.innerHTML="聊天";h.scroll.scrollTop=0;
-  resolve(enabled([commit("b","第二页")],null));await tick();h.mount();assert.equal(h.calls.length,2);assert(h.host.innerHTML.includes('id="git-branches-tab" aria-controls="git-panel" aria-selected="true"'));assert.equal(h.scroll.scrollTop,260);
-  h.click("tab","graph");assert(h.host.innerHTML.includes("第二页"));assert(h.host.innerHTML.includes('data-git-branch="main" aria-pressed="true"'));h.ui.unmount();
-});
-test("configuration saved while Git is unmounted invalidates without starting a scan",async()=>{
+test("the branch list preserves its scroll when leaving during a refresh and the removed graph has no entry",async()=>{
+  const h=harness();h.read(async()=>enabled());h.mount();await tick();let resolve;
+  h.read(()=>new Promise(done=>{resolve=done;}));h.click("refresh");await tick();h.scroll.scrollTop=260;h.ui.unmount();h.host.innerHTML="聊天";h.scroll.scrollTop=0;
+  resolve(enabled());await tick();h.mount();assert.equal(h.calls.length,2);assert.equal(h.scroll.scrollTop,260);assert(h.host.innerHTML.includes('aria-label="分支"'));assert(!h.host.innerHTML.includes('git-graph'));assert(!h.host.innerHTML.includes('data-git-tab'));h.ui.unmount();
+});test("configuration saved while Git is unmounted invalidates without starting a scan",async()=>{
   const h=harness();h.mount();await tick();h.ui.unmount();h.host.innerHTML="聊天";h.ui.reload("demo");assert.equal(h.calls.length,1);assert.equal(h.host.innerHTML,"聊天");
   h.read(async()=>snapshot("新配置"));h.mount();await tick();assert.equal(h.calls.length,2);assert(h.host.innerHTML.includes("新配置"));h.ui.unmount();
 });
@@ -58,4 +60,19 @@ test("fetch survives leaving and returning without repeating the write or toast"
   const h=harness();h.read(async()=>enabled());h.mount();await tick();let resolve;
   h.read((route,body)=>body?new Promise(done=>{resolve=done;}):Promise.resolve(enabled()));h.click("fetch");await tick();h.ui.unmount();h.host.innerHTML="聊天";h.mount();assert(h.host.innerHTML.includes("正在拉取"));
   assert.equal(h.calls.filter(call=>call.body).length,1);resolve({ok:true,output:"updated"});await tick();assert.equal(h.calls.filter(call=>call.body).length,1);assert.deepEqual(h.toasts,["updated"]);h.ui.unmount();h.mount();assert.deepEqual(h.toasts,["updated"]);h.ui.unmount();
+});
+
+test("Git mounts the assistant session and updates it without rebuilding the conversation",async()=>{
+  for(const runtime of ["claude","codex"]){
+  const h=harness();h.assistant.runtime=runtime;h.read(async()=>enabled());h.mount();await tick();assert.equal(h.mounts.length,1);assert.equal(h.mounts[0].session.session_id,"git");assert.equal(h.mounts[0].session.runtime,runtime);assert(h.host.innerHTML.includes("进行中 4"));assert(h.host.innerHTML.includes("等你 1"));assert(h.host.innerHTML.includes("合并中 1"));assert(h.host.innerHTML.includes("排队 2"));assert(!h.host.innerHTML.includes('data-act="leader"'));
+  h.assistant.requests.waiting_user=3;h.mount();assert.equal(h.mounts.length,1);assert.equal(h.updates.length,1);assert(h.host.innerHTML.includes("等你 3"));h.ui.unmount();
+  }
+});
+
+test("the Git assistant conversation opens at once while the repository side loads on its own",async()=>{
+  const h=harness();h.state.git_assistant=h.assistant;let resolve;h.read(()=>new Promise(done=>{resolve=done;}));h.mount();await tick();
+  assert.equal(h.mounts.length,1);assert.equal(h.mounts[0].session.session_id,"git");
+  assert(h.host.innerHTML.includes("git-chat-host"));assert(h.host.innerHTML.includes("正在读取仓库"));assert.equal(h.calls.length,1);
+  resolve(enabled());await tick();assert.equal(h.mounts.length,1,"repository load does not remount the conversation");
+  assert(h.host.innerHTML.includes("已启用的仓库"));assert(!h.host.innerHTML.includes("正在读取仓库"));h.ui.unmount();
 });

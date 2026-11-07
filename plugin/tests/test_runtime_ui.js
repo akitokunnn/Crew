@@ -24,38 +24,53 @@ const form = (runtime="codex", model="", effort="") => ({dataset:{runtimeExplici
   querySelector(selector) { return selector === '[type="submit"]' ? this.submit : this.refresh; }});
 
 function harness(state = fixture(), fetcher = () => { throw new Error("Unexpected network request"); }) {
-  const nodes = new Map();
-  const node = () => ({innerHTML:"", textContent:"", className:"", hidden:false, dataset:{},classList:{contains:()=>false},
+  state.goals ??= [];
+  const nodes = new Map(), listeners = new Map();
+  const node = () => ({innerHTML:"", textContent:"", className:"", hidden:false, dataset:{},classList:{contains:()=>false,remove(){}},
     contains:() => false, querySelectorAll:() => [], setAttribute(name, value) { this[name] = value; }});
-  for (const id of ["menu", "backdrop", "main", "trust-error", "leader-runtime-options", "leader-runtime-status", "leader-model-options", "leader-effort-note", "leader-effort-options"]) nodes.set(id, node());
+  for (const id of ["menu", "backdrop", "main", "leader-panel", "trust-error", "leader-runtime-options", "leader-runtime-status", "leader-model-options", "leader-effort-note", "leader-effort-options"]) nodes.set(id, node());
   const escape = value => String(value).replace(/[&<>"']/g, c => ({"&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"})[c]);
-  const sandbox = {window:{}, document:{visibilityState:"visible",hasFocus:()=>true,activeElement:null, getElementById:id => nodes.get(id) || null, addEventListener:() => {}},
+  const sandbox = {window:{}, document:{visibilityState:"visible",hasFocus:()=>true,activeElement:null, getElementById:id => nodes.get(id) || null, addEventListener:(type, handler) => listeners.set(type, handler)},
     location:{search:"?project=fixture", origin:"http://fixture.local", hash:""}, URLSearchParams, URL, fetch:fetcher, console,
-    CrewChat:{renderInline:escape, renderMarkdown:text => `<p>${escape(text)}</p>`}};
+    CrewTheme:{logo:()=>""}, CrewChat:{renderInline:escape, renderMarkdown:text => `<p>${escape(text)}</p>`}};
   vm.createContext(sandbox);
   const contextSource=fs.readFileSync(path.join(__dirname, "../crew/web/chat.js"), "utf8");
   vm.runInContext(contextSource.slice(0, contextSource.indexOf("})();")+5), sandbox);
   sandbox.CrewContext=sandbox.window.CrewContext;
   sandbox.CrewActivity={markup:()=>""};
-  vm.runInContext(fs.readFileSync(path.join(__dirname, "../crew/web/leader-trust-ui.js"), "utf8"), sandbox);
+  vm.runInContext(fs.readFileSync(path.join(__dirname,"../crew/web/workspace-home.js"),"utf8"),sandbox);
+  sandbox.CrewWorkspaceHome=sandbox.window.CrewWorkspaceHome;
   // Expose lexical UI functions while leaving setup and its state-poll timer off.
   const end = "  setup();\n})();";
   assert(source.endsWith(end + "\n") || source.endsWith(end));
-  vm.runInContext(source.replace(end, `  window.ui = {watchingChat, visibility(value) {view="chat";leaderId="session-codex";readOnlyId=value.member?"member":null;reportReaderOpen=!!value.reader;taskVisible=!!value.tools;attentionVisible=!!value.pending;rightOpen=!!value.tree;goals={showingList:()=>!!value.list,materialsOpen:()=>!!value.materials};$("main").dataset.sideOverlap=String(!!value.overlap);}, runtimeList, runtimeInfo, defaultRuntime, modelEfforts, modelMenu, optionChange,
-    optionsLabel, leaderPayload, renderLeaderRuntime, selectLeaderOption, refreshRuntimes, editorHandoffReason, sessionMenu, chatAccess, goalChatNotes,
-    contextRing, contextControls, sidebarLeader, memberNode, workingRow, compactContext, compactions,
+  const clickSource = source.slice(source.indexOf('    document.addEventListener("click",'), source.indexOf('    document.addEventListener("input",'));
+  vm.runInContext(source.replace(end, `${clickSource}  window.ui = {runtimeList, runtimeInfo, defaultRuntime, modelEfforts, modelMenu, optionChange,
+    optionsLabel, optionChangeNotice, leaderPayload, renderLeaderRuntime, selectLeaderOption, refreshRuntimes, editorHandoffReason, sessionMenu, chatAccess,
+    saveNormalOrder, sortableLeaders, railQuota, renderSidebar, contextRing, contextControls, sidebarLeader, memberNode, workingRow, compactContext, compactions,
+    compactFailures, setGoal(client, id) {goals=client;goalId=id;},
     openTodos, todosOf, pendingOf, todoCard, todoTray, todoExpanded, todoActions,
-    todoResolvePayload, resolveTodo, renderTodos, replace,
-    decisionTrust, trustReportUrl, readTrustReport,
+    todoResolvePayload, resolveTodo, renderTodos, replace, action, changeSession,
     compactDecisionText, decisionOptions, decisionCard, decisionsOpen,
-    commentButton, commentsMarkup, sessionComments, loadComments, postComment,
     route() {readRoute(); return {view,leaderId,readOnlyId};},
     services(values) {if(values.api)api=values.api;if(values.loadState)loadState=values.loadState;if(values.toast)toast=values.toast;if(values.render)render=values.render;if(values.watchCompact)CrewChat.watchCompact=values.watchCompact;},
     setState(value) {state=value;runtimesCache=null;}};\n})();`), sandbox);
   sandbox.window.ui.setState(state);
-  return {ui:sandbox.window.ui, nodes, location:sandbox.location};
+  return {ui:sandbox.window.ui, nodes, location:sandbox.location, click(dataset) {
+    const button = {dataset, closest:selector => selector === "[data-act]" ? button : null};
+    listeners.get("click")({target:button});
+  }};
 }
 const plain = value => JSON.parse(JSON.stringify(value));
+
+test("archive and remove conflicts toast the exact backend Chinese reason",async()=>{
+  for(const route of ["/api/session/archive","/api/session/remove"]){
+    const reason="会话仍有待验收任务，请先完成验收",toasts=[];
+    const {ui}=harness(fixture(),async()=>({ok:false,status:409,json:async()=>({error:reason})}));
+    ui.services({toast:text=>toasts.push(text)});
+    await ui.action(route,()=>ui.changeSession("member",route,"已处理",true));assert.deepEqual(toasts,[reason]);
+  }
+});
+
 
 test("new leader auto selects a sole runtime and asks for a choice when both are installed", () => {
   for(const installed of [["codex"],["claude"],["claude","codex"],[]]){
@@ -103,22 +118,10 @@ test("collected offline people can start a conversation while known external ses
   }
 });
 
-test("goal status controls composer access without promising discussion around a manual pause", () => {
-  const {ui}=harness(),person={web_chat:false,running:true,where:"vscode"};
-  for(const status of ["paused","pausing","cancelled"]){const access=ui.chatAccess(person,{status});assert.equal(access.readonly,true);assert.match(access.readonlyReason,status==="cancelled"?/再开一轮/:/明确恢复/);}
-  for(const status of ["queued","running","waiting_user","completed","failed","awaiting_acceptance"])assert.deepEqual(plain(ui.chatAccess(person,{status})),{readonly:false});
-});
 
-test("only a queued goal without native execution claims it has not started", () => {
-  const {ui}=harness();
-  for(const status of ["running","pausing","paused","waiting_user","awaiting_acceptance","completed","failed","cancelled"])assert.deepEqual(plain(ui.goalChatNotes({status},false,true)),{badge:"",hint:""},status);
-  const queued=ui.goalChatNotes({status:"queued"},false,false);assert.equal(queued.badge,"本目标尚未启动");assert.match(queued.hint,/会开始本任务/);
-  assert.deepEqual(plain(ui.goalChatNotes({status:"completed"},true,true)),{badge:"还没有该成员的执行记录",hint:"该成员在这个目标中还没有执行记录。"});
-  assert.match(ui.goalChatNotes({status:"running"},true,false).hint,/会启动该成员/);
-});
 
 test("a paused task does not lock the person's independent general conversation",()=>{
-  const state=fixture();state.goals=[{id:"goal",status:"paused"}];const {ui}=harness(state),person={active_goal_id:"goal",web_chat:true,running:false,where:"offline"};assert.equal(ui.chatAccess(person,null).readonly,false);assert.equal(ui.chatAccess(person,state.goals[0]).readonly,true);state.goals[0].status="completed";assert.equal(ui.chatAccess(person,null).readonly,false);
+  const state=fixture();state.goals=[{id:"goal",status:"paused"}];const {ui}=harness(state),person={active_goal_id:"goal",web_chat:true,running:false,where:"offline"};assert.equal(ui.chatAccess(person,null).readonly,false);assert.equal(ui.chatAccess(person).readonly,false);state.goals[0].status="completed";assert.equal(ui.chatAccess(person,null).readonly,false);
 });
 
 test("existing session model menus use its own tool catalog and never expose runtime conversion", () => {
@@ -142,6 +145,47 @@ test("old states and sessions retain Claude defaults and Haiku effort behavior",
   assert(ui.modelMenu({session_id:"old", model:null, effort:null, applied:null}).includes('data-model="claude-sonnet"'));
   assert.equal(ui.modelEfforts("claude", "claude-haiku-4-5-20251001").length, 0);
   assert.equal(ui.runtimeInfo("codex").available, false);
+});
+
+for (const scenario of [
+  {name:"effort toast uses stored Sonnet instead of the applied model and never repeats low", runtime:"claude",
+    model:"claude-sonnet", effort:"high", applied:{model:"claude-opus", effort:"max"}, field:"effort", value:"low", expected:"下一步启用 Sonnet · low"},
+  {name:"model toast includes stored medium with Opus 5.5 instead of the applied effort", runtime:"claude",
+    model:"claude-sonnet", effort:"medium", applied:{model:"claude-sonnet", effort:"high"}, field:"model", value:"claude-opus", expected:"下一步启用 Opus 5.5 · medium"},
+  {name:"Haiku model toast omits effort even while applied options still support it", runtime:"claude",
+    model:"claude-sonnet", effort:"high", applied:{model:"claude-sonnet", effort:"high"}, field:"model", value:"claude-haiku-4-5-20251001", expected:"下一步启用 Haiku"},
+  {name:"default model toast keeps the stored effort rather than applied options", runtime:"claude",
+    model:"claude-sonnet", effort:"low", applied:{model:"claude-opus", effort:"max"}, field:"model", value:null, expected:"下一步启用 默认 · low"},
+  {name:"Codex effort toast names the stored model while applied still names another model", runtime:"codex",
+    model:"gpt-a", effort:"low", applied:{model:"gpt-b", effort:"max"}, field:"effort", value:"medium", expected:"下一步启用 GPT A · medium"},
+  {name:"Codex model toast keeps stored low rather than applied max", runtime:"codex",
+    model:"gpt-a", effort:"low", applied:{model:"gpt-b", effort:"max"}, field:"model", value:"gpt-a", expected:"下一步启用 GPT A · low"},
+  {name:"Codex model without effort omits the effort cleared by optionChange", runtime:"codex", where:"offline",
+    model:"gpt-a", effort:"medium", applied:{model:"gpt-a", effort:"medium"}, field:"model", value:"gpt-c", expected:"下一步启用 GPT C"},
+  {name:"null stored model and effort stay default even while applied has explicit values", runtime:"claude",
+    model:null, effort:null, applied:{model:"claude-sonnet", effort:"high"}, field:"model", value:null, expected:"下一步启用 默认 · 默认"},
+]) test(scenario.name, async () => {
+  for (const role of ["leaders", "members"]) {
+    const item = session({...scenario, where:scenario.where || "bg", running:scenario.where !== "offline"});
+    const state = {...fixture(), leaders:[], members:[], [role]:[item]}, requests = [], toasts = [];
+    state.runtimes[0].models.push({id:"claude-opus", name:"Opus 5.5"});
+    const {ui, click} = harness(state), changes = plain(ui.optionChange(item, scenario.field, scenario.value));
+    ui.services({api:async (url, body) => { requests.push({url, body:plain(body)}); return {}; },
+      loadState:async () => ui.setState({...state, [role]:[{...item, ...changes}]}), toast:text => toasts.push(text)});
+    click({act:`set-${scenario.field}`, id:item.session_id, [scenario.field]:scenario.value === null ? "" : scenario.value});
+    await new Promise(setImmediate);
+    assert.deepEqual(requests, [{url:"/api/session/options", body:{session_id:item.session_id, ...changes}}]);
+    assert.deepEqual(toasts, [scenario.expected], role);
+  }
+});
+
+test("a combined model and effort change overrides both stored and applied options in the notice", () => {
+  const state = fixture(); state.runtimes[0].models.push({id:"claude-opus", name:"Opus 5.5"});
+  const {ui} = harness(state), item = session({runtime:"claude", model:"claude-sonnet", effort:"low",
+    applied:{model:"claude-sonnet", effort:"high"}}), before = plain(item);
+  assert.equal(ui.optionChangeNotice(item, {model:"claude-opus", effort:"medium"}), "下一步启用 Opus 5.5 · medium");
+  assert.equal(ui.optionsLabel(item), "Sonnet · high");
+  assert.deepEqual(plain(item), before);
 });
 
 test("Codex editor handoff is disabled while leader chat and member history remain available", () => {
@@ -225,25 +269,25 @@ test("explicit catalog refresh is deduplicated and old servers are never probed"
 const todo = extra => ({id:17, title:"在手机上确认登录", steps:"打开设置\n允许登录", verification:"告诉它已经授权",
   blocking:true, status:"open", note:"", session_id:"member-1", proposer_name:"连接助手", group:"登录",
   leader_session_id:"leader-1", leader_name:"登录", priority:1, created_at:"2026-10-24T00:00:00Z", updated_at:"2026-10-24T00:00:00Z", version:2, ...extra});
-const todoState = () => ({...fixture(), leaders:[{session_id:"leader-1", name:"登录"}], members:[],
-  decisions:[{id:90, leader_session_id:"leader-1", held:false}], todos:[todo({id:44}), todo({id:17}), todo({id:52, leader_session_id:"leader-2"})]});
+const todoState = () => ({...fixture(), project:{name:"fixture"}, leaders:[{session_id:"leader-1", name:"登录"}], members:[],
+  decisions:[{id:90, leader_session_id:"leader-1", session_id:"leader-1", asker:"登录", held:false, presentation_stage:"notice"}], todos:[todo({id:44}), todo({id:17}), todo({id:52, leader_session_id:"leader-2"})]});
 
-test("first open prioritizes personal actions while explicit routes and old default remain stable", () => {
+test("first open shows the workspace overview while explicit conversation and TODO routes remain stable", () => {
   const state = todoState(), {ui, location} = harness(state);
-  assert.equal(ui.route().view, "todos");
+  assert.equal(ui.route().view, "all");
   location.hash = "#leader=leader-1";
   assert.equal(ui.route().view, "chat");
   location.hash = "#all";
   assert.equal(ui.route().view, "all");
   state.todos = [];
   location.hash = "";
-  assert.equal(ui.route().leaderId, "leader-1");
-  assert.equal(ui.route().view, "chat");
+  assert.equal(ui.route().leaderId, null);
+  assert.equal(ui.route().view, "all");
   location.hash = "#todos";
   assert.equal(ui.route().view, "todos");
   delete state.todos;
   location.hash = "";
-  assert.equal(ui.route().view, "chat");
+  assert.equal(ui.route().view, "all");
 });
 
 test("personal action order comes from server and group trays and decisions have separate counts", () => {
@@ -330,28 +374,6 @@ test("a stale action retains the user's reason and asks them to review updated c
   assert.equal(ui.todoExpanded.has("44"), true);
 });
 
-test("decision trust follows its explicit leader and ignores legacy project mode", () => {
-  const state = todoState(); state.trust = {enabled:true, goal:"obsolete project goal"};
-  state.leaders[0].trust = {enabled:false, goal:"leader one"};
-  state.leaders.push({session_id:"leader-other", name:"Other", trust:{enabled:true, goal:"leader two"}});
-  const {ui} = harness(state);
-  assert.equal(ui.decisionTrust({leader_session_id:"leader-1"}).enabled, false);
-  assert.equal(ui.decisionTrust({leader_session_id:"leader-other"}).goal, "leader two");
-  assert.equal(ui.decisionTrust({session_id:"absent"}).enabled, false);
-});
-
-test("reports require an explicit current leader and scope the Markdown URL", async () => {
-  const {ui} = harness(todoState(), async (url, options) => {
-    assert.equal(url, "/api/trust/report?leader_session_id=leader-1&project=fixture");
-    assert.equal(options.headers["X-Crew"], "1");
-    return {ok:true, text:async () => "# 本组报告"};
-  });
-  assert.equal(await ui.readTrustReport("leader-1"), "# 本组报告");
-  await assert.rejects(ui.readTrustReport(), /当前项目的 leader/);
-  const error = harness(todoState(), async () => ({ok:false, text:async () => JSON.stringify({error:"leader不存在"})}));
-  await assert.rejects(error.ui.readTrustReport("leader-1"), /leader不存在/);
-});
-
 const decision = extra => ({id:71, asker:"连接助手", session_id:"member-1", leader_session_id:"leader-1", presentation_stage:"ready",
   question:"是否继续连接？", options:["A. 继续连接", "B. 暂缓连接"], recommendation:"A", held:false,
   brief:{title:"是否允许连接测试设备", context:"technical-only-context", why_user:"设备需要使用你的个人账户。",
@@ -418,40 +440,6 @@ test("overlong structured explanations keep a compact preview and the exact full
   assert(!card.includes('data-decision-context="71" open'));
 });
 
-test("group and member comment entries target the exact session and render readable escaped comments", () => {
-  const state = todoState(); state.members = [{session_id:"member-1", name:"连接助手", leader_session_id:"leader-1"}];
-  const {ui} = harness(state), member = state.members[0];
-  assert(ui.commentButton(state.leaders[0], true).includes('data-id="leader-1"'));
-  assert(ui.commentButton(member).includes('data-id="member-1"'));
-  const body = ui.commentsMarkup(member, {comments:[{text:"<script>comment</script>", created_at:"2026-10-24T00:00:00Z"}], draft:"待补充的要求"});
-  assert(body.includes("登录 组 · 评论会转告 leader"));
-  assert(body.includes("&lt;script&gt;comment&lt;/script&gt;"));
-  assert(!body.includes("<script>"));
-  assert(body.includes("待补充的要求"));
-});
-
-test("comment writes preserve failed drafts, then refresh the same session and clear successful text", async () => {
-  const state = todoState(), {ui, nodes} = harness(state), calls = [];
-  let fail = true;
-  const textarea = {value:"保留这段反馈"};
-  nodes.set("comments-form", {dataset:{sessionId:"leader-1"}, elements:{text:textarea}});
-  ui.services({api:async (url, body) => {
-    calls.push([url, body && plain(body)]);
-    if (body && fail) throw new Error("暂时无法发送");
-    return body ? {id:1} : {comments:[{id:1, text:"保留这段反馈", created_at:"2026-10-24T00:00:00Z"}]};
-  }, toast:() => {}});
-  await ui.postComment("leader-1", "保留这段反馈");
-  assert.equal(ui.sessionComments("leader-1").draft, "保留这段反馈");
-  assert.equal(ui.sessionComments("leader-1").error, "暂时无法发送");
-  fail = false;
-  await ui.postComment("leader-1", " 保留这段反馈 ");
-  assert.deepEqual(calls[1], ["/api/comments", {session_id:"leader-1", text:"保留这段反馈"}]);
-  assert.equal(calls[2][0], "/api/comments?session_id=leader-1");
-  assert.equal(ui.sessionComments("leader-1").comments.length, 1);
-  assert.equal(ui.sessionComments("leader-1").draft, "");
-  assert.equal(textarea.value, "");
-});
-
 test("live UI refresh preserves horizontal group scroll position", () => {
   const {ui} = harness(todoState());
   const before = {className:"lead-grid", scrollTop:12, scrollLeft:704};
@@ -494,7 +482,7 @@ test("every context ring is a named native button at low and high usage across b
       assert(!html.includes(' disabled'));assert(!html.includes('Leader <&"'));
       assert.equal((ui.contextControls(item).match(/<button /g)||[]).length,1,"the ring replaces the duplicate text control");
     }
-    assert(ui.sidebarLeader(state.leaders[0]).startsWith('<div draggable="true"'));
+    assert(ui.sidebarLeader(state.leaders[0],0).startsWith('<div draggable="true"'));
     assert(ui.memberNode(state.members[0]).includes('<div class="node session-surface'));
     assert(ui.workingRow(state.leaders[0]).includes('class="session-open"'));
   }
@@ -512,7 +500,7 @@ test("a ring queues only its own session, suppresses duplicate clicks, and clear
     release({ok:true,queued:true,message:"这一轮说完后压缩"});await pending;
     assert.equal(ui.compactions.get(id).phase,"queued");
     const own=ui.contextRing({...contextState(runtime).leaders[0],session_id:id});
-    assert(own.includes('aria-busy="true" disabled'));assert(own.includes("已排队"));
+    assert(own.includes('aria-busy="true" aria-disabled="true"'));assert(!own.includes(" disabled"),"stays focusable for keyboard users");assert(own.includes("已排队"));assert(own.includes("is-queued"));
     watcher.onFinish({type:"compact",seq:3});assert.equal(ui.compactions.size,0);
     assert(toasts.some(text=>text.includes("这一轮说完后压缩")));
   }
@@ -537,10 +525,29 @@ test("an externally owned ring gives the exact native-tool instruction without s
   await ui.compactContext("member");assert.equal(ui.compactions.size,0);assert.match(toasts[0],/Member.*原工具.*\/compact/);
 });
 
-test("covered chat never counts as actively read, while nonoverlapping auxiliary cards preserve watching",()=>{
-  for(const runtime of ["claude","codex"]){
-    const state=fixture();state.leaders=[session({runtime})];const {ui}=harness(state);
-    for(const [settings,expected] of [[{},true],[{tree:true},true],[{pending:true},true],[{tree:true,overlap:true},false],[{pending:true,overlap:true},false],[{tools:true},false],[{materials:true},false],[{reader:true},false],[{list:true},false],[{member:true},false]]){ui.visibility(settings);assert.equal(ui.watchingChat("session-codex"),expected,JSON.stringify({runtime,settings}));}
-    assert.equal(ui.watchingChat("different-leader"),false);
-  }
+// Task chats: one ring per person × task × execution, fed by the goal detail's execution context/compaction.
+function taskHarness(runtime="codex") {
+  const state=contextState(runtime),{ui}=harness(state),refreshes=[];
+  const executions={lead:{id:"exec-lead",session_id:"lead",round:2,generation:1,context:{used:12000,max:100000},compaction:null},
+    member:{id:"exec-member",session_id:"member",round:2,generation:1,context:{used:12000,max:100000},compaction:null}};
+  const client={executionFor:id=>executions[id]||null,currentGoal:()=>({id:"goal-1",title:"长任务 <名称>"}),refresh:id=>{refreshes.push(id);return Promise.resolve();}};
+  ui.setGoal(client,"goal-1");
+  return {state,ui,executions,refreshes};
+}
+
+test("leader order uses all backend leaders and keeps priority positions",async()=>{
+  const state=fixture(),posts=[];state.project={name:"fixture"};state.leaders=[{session_id:"a",priority:null},{session_id:"p",priority:1},{session_id:"b",priority:null}];
+  const {ui}=harness(state);ui.services({api:async(path,data)=>posts.push({path,data}),loadState:async()=>{}});
+  assert.deepEqual(plain(ui.sortableLeaders(state.leaders[0]).map(item=>item.session_id)),["a","b"]);
+  await ui.saveNormalOrder(["b","a"]);assert.deepEqual(plain(posts[0].data.order),["b","p","a"]);
+});
+test("uncollected quota has only text and a collected zero has an empty determinate bar",()=>{
+  const {ui}=harness();assert.doesNotMatch(ui.railQuota("Codex",null),/<progress/);assert.match(ui.railQuota("Codex",null),/未采集/);
+  const collected=ui.railQuota("Codex",{used_percent:0,resets_at:"2026-11-06T00:00:00Z"});assert.match(collected,/<progress max="100" value="0"/);
+});
+test("Git rail attention comes from state before any Git snapshot is read",()=>{
+  const state=fixture();Object.assign(state,{project:{name:"fixture"},leaders:[],members:[],todos:[],decisions:[],git_assistant:{attention:7,pending:99},channel:{unread:0},notification:{channels:[],error:null,away:false},limits:{claude:{seven_day:null},codex:null}});
+  const {ui,nodes}=harness(state);nodes.set("sidebar",{innerHTML:"",dataset:{},contains:()=>false,querySelectorAll:()=>[]});ui.services({});
+  ui.renderSidebar();assert.match(nodes.get("sidebar").innerHTML,/class="rail-git"[\s\S]*?class="rail-badge">7<\/span>/);assert.doesNotMatch(nodes.get("sidebar").innerHTML,/>99<\/span>/);
+  state.git_assistant=null;ui.renderSidebar();assert.doesNotMatch(nodes.get("sidebar").innerHTML,/class="rail-badge"/);
 });

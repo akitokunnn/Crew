@@ -243,7 +243,8 @@ class ContextHttpTests(ShellFixture, unittest.TestCase):
         self.stop_process(sid, process)
         self.assertEqual(self.request("/api/session/compact", {"session_id": sid})[0], 200)
         self.assertEqual(len(self.processes), 2)
-        self.assertEqual(self.commands[-1][-2:], ["--resume", sid])
+        command = self.commands[-1]
+        self.assertEqual(command[command.index('--resume') + 1], sid)
         self.assertEqual(json.loads(self.processes[-1].stdin.getvalue().splitlines()[-1])["message"]["content"], "/compact")
 
     def test_compact_rejects_foreign_workspace_and_missing_session(self):

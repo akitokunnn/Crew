@@ -363,13 +363,16 @@ def sort_leaders(conn, project_name, leaders):
 
 @atomic
 def set_leader_order(conn, project_name, order):
+    from . import git_admin
     project(conn, project_name)
     if not isinstance(order, list) or any(not isinstance(sid, str) for sid in order):
         raise BoardError('order 必须是 session_id 数组')
     if len(order) != len(set(order)):
         raise BoardError('order 包含重复的 leader')
+    config = git_config(conn, project_name)
     leaders = {s['session_id'] for s in sessions(conn, project_name)
-               if s['role'] == 'leader' and s['status'] != 'closed' and not is_archived(conn, s['session_id'])}
+               if s['role'] == 'leader' and s['status'] != 'closed' and not is_archived(conn, s['session_id'])
+               and not git_admin.is_builtin(s, config)}
     foreign = set(order) - leaders
     if foreign:
         raise BoardError('id 不属于该项目当前显示的 leader：' + '、'.join(sorted(foreign)))
@@ -392,6 +395,7 @@ def leader_priorities(conn, project_name, leaders):
 
 @atomic
 def set_leader_priority(conn, project_name, ranks):
+    from . import git_admin
     project(conn, project_name)
     if not isinstance(ranks, list) or any(not isinstance(sid, str) for sid in ranks):
         raise BoardError('ranks 必须是 session_id 数组')
@@ -399,8 +403,10 @@ def set_leader_priority(conn, project_name, ranks):
         raise BoardError('最多设置 3 个优先 leader')
     if len(ranks) != len(set(ranks)):
         raise BoardError('ranks 包含重复的 leader')
+    config = git_config(conn, project_name)
     leaders = {s['session_id'] for s in sessions(conn, project_name)
-               if s['role'] == 'leader' and s['status'] != 'closed' and not is_archived(conn, s['session_id'])}
+               if s['role'] == 'leader' and s['status'] != 'closed' and not is_archived(conn, s['session_id'])
+               and not git_admin.is_builtin(s, config)}
     foreign = set(ranks) - leaders
     if foreign:
         raise BoardError('id 不属于该项目当前显示的 leader：' + '、'.join(sorted(foreign)))
@@ -445,7 +451,7 @@ def _identity(conn, project_name, session_id, name, role, group_name, now):
 
 
 def leader_group(name, group_name):
-    if name == "git管理员" and group_name == "git":
+    if name in ("git管理员", "Git 助手") and group_name == "git":
         return group_name
     if group_name is not None and group_name != name:
         raise BoardError("leader 分组必须与 crew 名同名")
@@ -764,7 +770,7 @@ def unclaim(conn, session_id, pattern=None, now=None):
 
 
 @atomic
-def ask(conn, session_id, question, options=(), recommendation=None, blocking=False, now=None, *, brief=None):
+def ask(conn, session_id, question, options=(), recommendation=None, blocking=False, now=None, *, brief=None, execution_id=None):
     s = session(conn, session_id)
     from . import decision_briefs, trust_mode
     if brief is not None:
@@ -774,6 +780,9 @@ def ask(conn, session_id, question, options=(), recommendation=None, blocking=Fa
     decision_id = conn.execute("INSERT INTO decisions(project,session_id,question,options,recommendation,blocking,created_at) VALUES(?,?,?,?,?,?,?)",
                                (s["project"], session_id, question, json.dumps(list(options), ensure_ascii=False), recommendation, int(blocking), _time(now))).lastrowid
     trust_mode.record_decision_scope(conn, decision_id, session_id)
+    if execution_id is not None:
+        from . import goal_links
+        goal_links.bind(conn, 'decision', decision_id, execution_id)
     _event(conn, "decision:ask", s["project"], session_id, {"id": decision_id, "question": question}, now)
     if brief is not None:
         decision_briefs._save(conn, decision_id, brief, now)
@@ -819,14 +828,22 @@ def unhold(conn, decision_id, actor=HUMAN, now=None):
     return changed
 
 
+_OWNER_CHANNEL_ANSWER = object()
+
+
 @atomic
-def answer(conn, decision_id, text, actor=HUMAN, now=None):
+def answer(conn, decision_id, text, actor=HUMAN, now=None, *, _human_origin=None):
     d = conn.execute("SELECT * FROM decisions WHERE id=?", (decision_id,)).fetchone()
     if d is None or d["status"] != "open":
         raise BoardError("待拍板不存在或已处理: " + str(decision_id))
+    from . import goal_mode
+    policy = goal_mode.decision_policy(conn, decision_id)
+    verified_remote_human = _human_origin is _OWNER_CHANNEL_ANSWER and actor in ('qq', 'lark')
+    if actor != HUMAN and not verified_remote_human and policy is not None and not policy['enabled']:
+        raise BoardError('此任务当前需要用户拍板或已停止，AI 不能代替用户作答')
     conn.execute("UPDATE decisions SET status='answered',answer=?,answered_by=?,answered_at=? WHERE id=?", (text, actor, _time(now), decision_id))
     conn.execute("DELETE FROM decision_holds WHERE decision_id=?", (decision_id,))
-    _event(conn, "decision:answer", d["project"], actor, {"id": decision_id, "answer": text}, now)
+    _event(conn, "decision:answer", d["project"], actor, {"id": decision_id, "answer": text, "goal_policy": policy}, now)
 
 
 @atomic

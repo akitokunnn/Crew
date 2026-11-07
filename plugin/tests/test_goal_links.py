@@ -82,14 +82,14 @@ class GoalLinkTests(RuntimeFixture):
         self.assertIsNotNone(self.conn.execute('SELECT delivered_at FROM decisions WHERE id=?',(number,)).fetchone()[0])
         self.assert_no_global_mail()
 
-    def test_old_requirement_answer_is_archived_without_waking_any_execution(self):
+    def test_same_round_answer_is_delivered_after_amend(self):
         target,execution = self.target();number = self.decision(execution)
         goals.amend(self.conn,target['id'],'新增要求，不沿用原排程')
         self.deliver();self.deliver()
-        self.controller.send.assert_not_called()
+        self.controller.send.assert_called_once()
         self.assertEqual(goal_links.get(self.conn,'decision',number)['delivered_version'],1)
-        self.assertIsNone(self.conn.execute('SELECT delivered_at FROM decisions WHERE id=?',(number,)).fetchone()[0])
-        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM events WHERE kind='goal:human-answer-archived'").fetchone()[0],1)
+        self.assertIsNotNone(self.conn.execute('SELECT delivered_at FROM decisions WHERE id=?',(number,)).fetchone()[0])
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM events WHERE kind='goal:human-answer-archived'").fetchone()[0],0)
         self.assert_no_global_mail()
 
     def test_old_round_answer_cannot_wake_a_reopened_goal(self):

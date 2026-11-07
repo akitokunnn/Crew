@@ -54,8 +54,7 @@ def goal_reason(conn, session_id, manager):
 def configurable_executions(conn, session_id):
     candidates = {}
     for item in scoped_executions(conn, session_id):
-        if (item['goal_status'] in goals.TERMINAL or item['round'] != item['current_round']
-                or item['requirement_version'] != item['goal_requirement_version']):
+        if item['goal_status'] in goals.TERMINAL or item['round'] != item['current_round']:
             continue
         previous = candidates.get(item['goal_id'])
         if previous is None or previous['generation'] < item['generation']:
@@ -163,10 +162,10 @@ def _texts(events):
     return chunks
 
 
-def handoff(conn,session,journal):
+def handoff(conn,session,journal,intro='switch_handoff'):
+    from . import behavior_prompts
     card=conn.execute('SELECT scope,done_when FROM session_cards WHERE session_id=?',(session['session_id'],)).fetchone()
-    lines=['Crew 载体交接。Crew 身份、所属组、任务卡与文件未改变；两种工具的原生历史没有互相转换。',
-           '以下是白板事实和最近聊天片段，并非已经验证的成果；不要把历史中的完成声明当作验收证据。',
+    lines=[behavior_prompts.text(conn,intro,session_id=session['session_id']).rstrip('\n'),
            '成员：'+session['crew_name'],'项目：'+str(session['project']),'所属组：'+str(session['group_name'] or '未分组'),
            '当前任务：'+str(session.get('task') or '未填写'),'工作目录：'+str(session.get('cwd') or ''),'分支：'+str(session.get('branch') or '')]
     if card:lines+=['职责范围：'+str(card['scope'] or '未填写'),'完成标准：'+str(card['done_when'] or '未填写')]

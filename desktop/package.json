@@ -1,6 +1,6 @@
 {
   "name": "crew-desktop",
-  "version": "0.2.40",
+  "version": "0.3.14",
   "description": "Native Crew workspace launcher",
   "author": "Crew contributors",
   "license": "UNLICENSED",
@@ -10,9 +10,10 @@
     "start": "electron .",
     "test": "node --test test/*.test.cjs",
     "check:version": "node --test test/version-sync.test.cjs",
-    "prebuild": "npm run check:version",
+    "build:codex-bridge": "node scripts/build-codex-bridge.cjs",
+    "prebuild": "npm run check:version && npm run build:codex-bridge",
     "build": "node scripts/icon.cjs && electron-builder --win zip portable nsis --x64",
-    "prebuild:dir": "npm run check:version",
+    "prebuild:dir": "npm run check:version && npm run build:codex-bridge",
     "build:dir": "node scripts/icon.cjs && electron-builder --win dir --x64"
   },
   "devDependencies": {
@@ -20,9 +21,12 @@
     "electron-builder": "26.15.3"
   },
   "build": {
-    "appId": "local.crew.desktop",
+    "appId": "local.crew.desktop.v2",
     "productName": "Crew",
     "asar": true,
+    "asarUnpack": [
+      "assets/CrewCodexBridge.exe"
+    ],
     "directories": {
       "output": "dist",
       "buildResources": "assets"

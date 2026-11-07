@@ -72,6 +72,15 @@ class ModelWakeTests(shell.ShellFixture, unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Haiku.*不支持 effort"):
             spawn.command("sid", "name", "member", model=HAIKU, effort="low")
 
+    def test_preview_directory_only_extends_claude_file_access(self):
+        directory = self.root / 'preview images'
+        for role in ('leader', 'member'):
+            command = spawn.command('sid', 'name', role, preview_directory=directory)
+            self.assertEqual(command[command.index('--add-dir') + 1], str(directory.resolve()))
+            self.assertEqual(command.count('--add-dir'), 1)
+        command = spawn.command('sid', 'name', 'leader', runtime='codex', preview_directory=directory)
+        self.assertNotIn('--add-dir', command)
+
     def test_leader_options_saved_and_invalid_choices_fail_before_launch(self):
         code, result = self.request("/api/leader", {"name": "option-boss", "model": OPUS, "effort": "xhigh"})
         self.assertEqual(code, 200, result)
@@ -261,7 +270,7 @@ class ModelWakeTests(shell.ShellFixture, unittest.TestCase):
         self.assertEqual(self.request("/api/session/options", {"session_id": sid, "model": OPUS, "effort": "low"})[0], 200)
         self.assertEqual(self.request("/api/chat/send", {"session_id": sid, "text": "continue"})[0], 200)
         command = self.processes[-1].command
-        self.assertEqual(command[-2:], ["--resume", sid])
+        self.assertEqual(command[command.index('--resume') + 1], sid)
         self.assertEqual(command[command.index("--model") + 1], OPUS)
         self.assertEqual(command[command.index("--effort") + 1], "low")
         self.assertIsNone(manager.applied(sid))
@@ -279,7 +288,7 @@ class ModelWakeTests(shell.ShellFixture, unittest.TestCase):
         spec = self.spec({"id": target["spawn_id"]})
         self.assertEqual((spec["task"], spec["md"]), ("白板当前任务", None))
         process = self.processes[-1]
-        self.assertEqual(process.command[-2:], ["--resume", "s1"])
+        self.assertEqual(process.command[process.command.index('--resume') + 1], 's1')
         self.assertEqual(process.command[process.command.index("--name") + 1], "one")
         self.assertEqual(process.command[process.command.index("--model") + 1], OPUS)
         self.assertEqual(process.command[process.command.index("--effort") + 1], "high")
@@ -356,13 +365,20 @@ class ModelWakeTests(shell.ShellFixture, unittest.TestCase):
 
     def test_agent_poll_syncs_vscode_archives_before_auto_resume(self):
         service = self.server.service
+        # The ready signal precedes the worker's first auto-resume. Finish that
+        # cycle before instrumenting one explicit poll, or both race through
+        # the same mocks and falsely look like a duplicate resume.
+        service.stop.set()
+        service.worker.join(5)
+        self.assertFalse(service.worker.is_alive())
         resumed = []
 
         def inspect(conn, agents, now, runtime=None):
             self.assertTrue(board.is_archived(conn, "s1"))
             resumed.append("checked")
 
-        with mock.patch.object(service, "_refresh_vscode", side_effect=lambda: session_ops.archive(self.conn, "s1", now=shell.NOW)), \
+        with mock.patch.object(service, "stop", threading.Event()), \
+                mock.patch.object(service, "_refresh_vscode", side_effect=lambda: session_ops.archive(self.conn, "s1", now=shell.NOW)), \
                 mock.patch.object(service.chat, "auto_resume", side_effect=inspect), \
                 mock.patch.object(service.stop, "wait", return_value=True):
             service._poll_agents()

@@ -8,7 +8,7 @@ const {test} = require("node:test");
 function renderer() {
   const context = vm.createContext({matchMedia:() => ({matches:true}), atob, btoa});
   context.window = context;
-  for (const name of ["vendor/markdown-it.min.js", "chat.js"]) {
+  for (const name of ["vendor/markdown-it.min.js", "browser-utils.js", "chat.js"]) {
     vm.runInContext(fs.readFileSync(path.join(__dirname, "../crew/web", name), "utf8"), context);
   }
   return context.CrewChat;

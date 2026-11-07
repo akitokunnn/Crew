@@ -15,9 +15,10 @@ class FakeCodex(codex_runtime.CodexRunning):
 
     runtime = "codex"
 
-    def __init__(self, home, session_id, journal, router):
+    def __init__(self, home, session_id, journal, router, *, personal_handler=None):
         self.execution = None
         self.goal_handler = None
+        self.personal_handler = personal_handler
         self.home, self.session_id = home, session_id
         self.thread_id = "native-codex-" + session_id
         self._send_message, self._tool_lock = router, threading.RLock()

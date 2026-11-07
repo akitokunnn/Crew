@@ -14,7 +14,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import ProxyHandler, Request, build_opener
 
-from crew import session_ops, board, codex_runtime, decision_flow, store, themes, usage, web
+from crew import session_ops, board, codex_runtime, decision_flow, goals, store, themes, usage, web
 from test_shell import NOW, PLUGIN, ShellFixture
 from test_usage import assistant
 
@@ -82,9 +82,10 @@ class WebContractTests(ShellFixture, unittest.TestCase):
     def test_state_exact_shape_and_empty_limits(self):
         expected = {"project", "projects", "now", "agents_error", "notification", "leaders",
                     "members", "decisions", "candidates", "attention", "limits", "vscode_error", "models", "efforts", "channel", "themes",
-                    "runtimes", "todos", "todo_count", "goals", "ai", "native_approvals"}
+                    "runtimes", "todos", "todo_count", "goals", "ai", "native_approvals", "sounds", "git_assistant"}
         state = self.state()
         self.assertEqual(set(state), expected)
+
         self.assertEqual(set(state["project"]), {"name", "display_name", "root", "theme"})
         self.assertEqual(state["projects"], [{"name": "demo", "display_name": None, "theme": "celadon"}])
         self.assertEqual(state["project"]["theme"], "celadon")
@@ -96,7 +97,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         leader = state["leaders"][0]
         self.assertEqual(set(leader), {"session_id", "name", "goal", "status", "busy", "running", "web_chat",
             "cc_name", "last_seq", "last_reply_id", "read_seq", "unread", "pending", "notices_pending", "member_ids",
-            "model", "effort", "applied", "activity", "context", "where", "codex", "codex_older", "is_git_admin", "priority", "runtime", "trust", "runtime_switch", "active_goal_id", "active_goal_ids", "active_execution_id", "member_defaults"})
+            "model", "effort", "applied", "activity", "context", "where", "codex", "codex_older", "priority", "runtime", "native_handoff", "trust", "runtime_switch", "active_goal_id", "active_goal_ids", "active_execution_id", "member_defaults"})
         self.assertIsNone(leader['member_defaults'])
         self.assertIsNone(leader['active_goal_id']); self.assertIsNone(leader['active_execution_id'])
         self.assertEqual(set(leader['runtime_switch']), {'allowed', 'reason', 'pending_handoff', 'last_switch_at'})
@@ -108,13 +109,80 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual((leader["session_id"], leader["member_ids"], leader["unread"]), ("s3", ["s1"], 0))
         # Leaders dispatch Codex for their own bulk work too (user 10-23), listed like members'.
         self.assertEqual((leader["codex"], leader["codex_older"]), ([], 0))
-        self.assertFalse(leader["is_git_admin"])
+        self.assertIsNone(state['git_assistant'])
+        self.assertNotIn('is_git_admin', leader)
         landing = self.state(None)
         self.assertEqual(set(landing), expected)
         self.assertIsNone(landing["project"])
+        self.assertIsNone(landing['git_assistant'])
         self.assertEqual(landing["channel"], {"unread": 0, "latest_id": 0, "digesting": False, "digest_error": None, "digest_id": None})
         for key in ("leaders", "members", "decisions", "attention", "goals"):
             self.assertEqual(landing[key], [])
+
+    def test_archive_http_authorizes_caller_before_changing_or_stopping_identity(self):
+        board.roster(self.conn, 'demo', 'add', 'lead', session_ids=['s1'])
+        board.join(self.conn, 'foreign-lead', 'demo', 'foreign', self.project, self.project, 'main', role='leader')
+        for path in ('/api/session/archive', '/api/session/remove'):
+            for caller in ('s1', 'foreign-lead'):
+                with self.subTest(path=path, caller=caller):
+                    code, result, _ = self.request(path, {'session_id': 's1', 'caller_session_id': caller}, project='demo')
+                    self.assertEqual(code, 400, result)
+                    self.assertFalse(board.is_archived(self.conn, 's1'))
+            goal = goals.create(self.conn, 'demo', 's3', 'Work', 'Request', ['Works'])
+            goals.assign(self.conn, goal['id'], 's1', 'Work')
+            execution = goals.create_execution(self.conn, goal['id'], 's1', runtime='claude')
+            goals.set_execution_status(self.conn, execution['id'], 'running')
+            code, result, _ = self.request(path, {'session_id': 's1', 'caller_session_id': 's3'}, project='demo')
+            self.assertEqual(code, 409, result)
+            self.assertIn('先等执行结束', result['error'])
+            goals.set_execution_status(self.conn, execution['id'], 'idle')
+            with mock.patch.object(self.service.chat, 'busy', return_value=True):
+                code, result, _ = self.request(path, {'session_id': 's1', 'caller_session_id': 's3'}, project='demo')
+                self.assertEqual(code, 409, result)
+            code, result, _ = self.request(path, {'session_id': 's1', 'caller_session_id': 's3'}, project='demo')
+            self.assertEqual(code, 200, result)
+            self.assertTrue(board.is_archived(self.conn, 's1'))
+            session_ops.restore(self.conn, 's1')
+        # Owner UI retains its existing authority over an ungrouped member.
+        code, result, _ = self.request('/api/session/archive', {'session_id': 's2'}, project='demo')
+        self.assertEqual(code, 200, result)
+
+    def test_close_group_http_binds_current_leader_and_records_actor(self):
+        board.roster(self.conn, 'demo', 'add', 'lead', session_ids=['s1'])
+        board.join(self.conn, 'foreign-lead', 'demo', 'foreign', self.project, self.project, 'main', role='leader')
+        for caller in ('s1', 'foreign-lead'):
+            code, result, _ = self.request('/api/group/close', {'group': 'lead', 'caller_session_id': caller}, project='demo')
+            self.assertEqual(code, 400, result)
+            self.assertIsNone(self.conn.execute("SELECT closed_at FROM groups WHERE name='lead'").fetchone()[0])
+        code, result, _ = self.request('/api/group/close', {'group': 'lead', 'caller_session_id': 's3'}, project='demo')
+        self.assertEqual(code, 200, result)
+        self.assertEqual(self.conn.execute("SELECT session_id FROM events WHERE kind='leader:close'").fetchone()[0], 's3')
+
+    def test_leader_archive_checks_external_native_goal_ownership_for_both_carriers(self):
+        board.roster(self.conn, 'demo', 'add', 'lead', session_ids=['s1'])
+        goal = goals.create(self.conn, 'demo', 's3', 'Work', 'Request', ['Works'])
+        goals.assign(self.conn, goal['id'], 's1', 'Work')
+        for runtime in ('claude', 'codex'):
+            with self.subTest(runtime=runtime):
+                execution = goals.create_execution(self.conn, goal['id'], 's1', runtime=runtime)
+                goals.bind_native(self.conn, execution['id'], runtime, 'external-' + runtime)
+                goals.set_execution_status(self.conn, execution['id'], 'idle')
+                if runtime == 'claude':
+                    with mock.patch.object(self.service.chat, '_external_agents', return_value=[{'sessionId': 'external-claude', 'status': 'busy'}]):
+                        code, result, _ = self.request('/api/session/archive', {'session_id': 's1', 'caller_session_id': 's3'}, project='demo')
+                        self.assertEqual(code, 409, result)
+                else:
+                    from crew.codex_runtime import RuntimeLease
+                    journal = self.service.chat.journal(execution['id'])
+                    journal.set_status('working')
+                    lease = RuntimeLease(self.home, execution['id']).acquire()
+                    try:
+                        code, result, _ = self.request('/api/session/archive', {'session_id': 's1', 'caller_session_id': 's3'}, project='demo')
+                        self.assertEqual(code, 409, result)
+                    finally:
+                        lease.release()
+                    journal.set_status('idle')
+                self.assertFalse(board.is_archived(self.conn, 's1'))
 
     def test_goal_card_exact_shape_matches_create_list_state_and_detail_without_starting_work(self):
         before = len(self.processes)
@@ -125,12 +193,19 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         goal = response['goal']
         self.assertEqual(set(goal),{'id','project','leader_session_id','title','original_request','status',
             'requirement_version','current_round','priority','manual_pause','reason','version','created_at','updated_at',
-            'dependencies','requirements','assignments','rounds','request','acceptance','constraints','report_available'})
+            'dependencies','requirements','assignments','rounds','request','acceptance','constraints','report_available','acceptance_brief','native_handoffs','work_summary','decision_mode','supplements_after_report',
+            'now_doing','pending_decision','working_count','finish_pending','observing','last_activity_at'})
+        self.assertEqual((goal['decision_mode']['mode'], goal['decision_mode']['source'], goal['decision_mode']['version']),
+                         ('human','task-default',1))
         self.assertEqual((goal['project'],goal['leader_session_id'],goal['title'],goal['status']),('demo','s3','验证交付','queued'))
         self.assertEqual((goal['request'],goal['original_request']),('完成原始输入要求','完成原始输入要求'))
         self.assertEqual((goal['current_round'],goal['requirement_version'],goal['version']),(1,1,1))
         self.assertEqual(goal['acceptance'],[{'id':'a1','title':'具体 example 达标'}])
         self.assertFalse(goal['report_available']);self.assertFalse(goal['manual_pause'])
+        self.assertEqual(goal['native_handoffs'], [])
+        self.assertIsNone(goal['acceptance_brief'])
+        self.assertEqual(goal['supplements_after_report'], [])
+        self.assertEqual(goal['work_summary'], {'total':0,'done':0,'doing':0,'blocked':0,'revision':0})
         self.assertEqual((goal['dependencies'],goal['constraints']),([],[]))
         self.assertEqual(set(goal['requirements']),{'goal_id','version','request','change_text','actor','created_at','acceptance','constraints','source'})
         self.assertEqual(goal['requirements']['acceptance'],goal['acceptance'])
@@ -141,7 +216,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual(self.state()['goals'],[goal])
         self.assertEqual(self.request('/api/goals',project='demo')[:2],(200,{'goals':[goal]}))
         code, detail, _ = self.request('/api/goal',project='demo',id=goal['id'])
-        self.assertEqual(code,200,detail);self.assertEqual(set(detail),{'goal','executions','context','reports','documents','acceptance_review','previous_acceptance_review'})
+        self.assertEqual(code,200,detail);self.assertEqual(set(detail),{'goal','executions','context','reports','documents','acceptance_review','previous_acceptance_review','work_items'})
         self.assertEqual(detail['goal'],goal);self.assertEqual(detail['executions'],[]);self.assertEqual(detail['reports'],[])
         self.assertEqual(detail['documents'],[]); self.assertIsNone(detail['acceptance_review'])
         self.assertEqual(len(self.processes),before)
@@ -195,7 +270,8 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual(set(member), {"session_id", "name", "title", "leader_session_id", "group", "status",
             "status_note", "where", "task", "scope", "done_when", "branch", "worktree", "cwd", "cc_name",
             "web_chat", "progress", "codex", "codex_older", "leases", "claims", "model", "effort", "applied", "activity",
-            "context", "busy", "running", "runtime", "runtime_switch", "active_goal_id", "active_goal_ids", "active_execution_id"})
+            "context", "busy", "running", "runtime", "native_handoff", "runtime_switch", "active_goal_id", "active_goal_ids", "active_execution_id",
+        "execution_records", "general_has_output"})
         self.assertEqual((member["name"], member["leader_session_id"], member["group"], member["scope"], member["done_when"]),
                          ("one", "s3", "lead", "Backend", "Tests pass"))
         self.assertEqual([row["text"] for row in member["progress"]], ["progress-" + str(i) for i in (6, 5, 4, 3, 2)])
@@ -534,13 +610,14 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         messages = process.stdin.getvalue().splitlines()
         self.assertEqual(len(messages), len(before) + 1)
         combined = json.loads(messages[-1])["message"]["content"]
-        self.assertEqual(combined, "[Crew]\n1. First notice\n2. Second notice")
+        notice_text = "[Crew]\n1. First notice\n2. Second notice"
+        self.assertTrue(combined.endswith(notice_text))
         self.assertEqual(board.pending_notices(self.conn, sid), [])
         sent = list(self.conn.execute("SELECT sent_at FROM leader_notices WHERE session_id=?", (sid,)))
         self.assertEqual(len(sent), 2)
         self.assertTrue(all(store.parse_iso(row[0]) == self.clock for row in sent))
         event = [row for row in self.service.chat.history(sid)["events"] if row["type"] == "message"][-1]
-        self.assertEqual((event["source"], event["text"]), ("crew", combined))
+        self.assertEqual((event["source"], event["text"]), ("crew", notice_text))
         self.service.deliver_notices()
         self.assertEqual(process.stdin.getvalue().splitlines(), messages)
 
@@ -590,7 +667,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertTrue(sender.call_args.kwargs['identity'].startswith('leader-notices:'))
         self.assertEqual(len(self.processes), 2)
         resumed = self.processes[-1]
-        self.assertEqual(resumed.command[-2:], ["--resume", sid])
+        self.assertEqual(resumed.command[resumed.command.index('--resume') + 1], sid)
         self.assertEqual(json.loads(resumed.stdin.getvalue().splitlines()[-1])["session_id"], sid)
         self.assertEqual(json.loads(resumed.stdin.getvalue().splitlines()[-1])['uuid'], sender.call_args.kwargs['identity'])
         self.assertEqual(board.pending_notices(self.conn, sid), [])
@@ -756,12 +833,12 @@ class WebContractTests(ShellFixture, unittest.TestCase):
                 self.assertEqual(headers["Cache-Control"], "no-store")
                 assets[path] = content.decode("utf-8")
         script = assets["/git.js"]
-        for contract in ('data-git-branch=', 'data-git-tab="graph"', 'data-git-tab="branches"',
-                         'class="git-conflicts"', 'data-git-act="load-more"', 'data-git-act="active"',
+        for contract in ('aria-label="分支"', 'data-git-row=', 'class="git-conflicts"',
                          'data-git-act="settings"', 'data-git-act="refresh"', 'data-git-act="fetch"',
                          'git-github-unavailable',
-                         'data-git-request=', 'git-requests-title', '和 git 管理员聊',
-                         'aria-pressed=', 'aria-selected=', 'data-git-from=', 'data-git-to='):
+                         'class="git-request-cards"', '<article class="git-request-card" data-git-request=',
+                         'git-requests-title', 'git-chat-host',
+                         'assistant.requests.waiting_user', 'CrewChat.mount'):
             self.assertIn(contract, script)
         self.assertIn('更新视图', script)
         self.assertIn('重新读取视图，不拉取远端', script)
@@ -770,20 +847,17 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertNotIn('setInterval', script)
         self.assertIn('prefers-reduced-motion:reduce', assets["/git.css"])
         self.assertIn('var(--fs)', assets["/git.css"])
-        for contract in ('ROW = 34', 'tabindex="0"', 'aria-haspopup="dialog"',
-                         'git-merge-node', 'git-merge-label', 'git-stable-marker',
-                         'git-recent-merge', '/api/git/commit?project=', 'copy-sha',
-                         'expand-body', 'close-detail', 'pointerover', 'pointerout'):
-            self.assertIn(contract, script)
-        self.assertIn('-webkit-line-clamp:8', assets["/git.css"])
+        self.assertIn('git-recent-merge', script)
+        self.assertNotIn('data-git-tab="graph"', script)
         self.assertNotIn('git-commit-top', script)
         self.assertNotIn('git-commit-bottom', script)
         self.assertNotIn('66px', assets["/git.css"])
         _, app, _ = self.request("/app.js", raw=True)
         self.assertIn('data-view="git"', app.decode("utf-8"))
         self.assertIn('CrewGit.mount', app.decode("utf-8"))
-        self.assertIn('item.is_git_admin', app.decode("utf-8"))
-        self.assertIn('git-admin-tag', app.decode("utf-8"))
+        self.assertNotIn('is_git_admin', app.decode("utf-8"))
+        self.assertIn('state.git_assistant?.attention', app.decode("utf-8"))
+        self.assertNotIn('git-admin-tag', app.decode("utf-8"))
 
 
 class GitCiScheduleTests(unittest.TestCase):
@@ -798,28 +872,45 @@ class GitCiScheduleTests(unittest.TestCase):
         self.assertEqual(service.stop.wait.call_args_list, [mock.call(300)] * 2)
 
 
-class FrontendGitContractTests(unittest.TestCase):
-    def test_merge_requests_active_first_escaped_details_and_admin_chat(self):
+class FrontendGitRequestsContractTests(unittest.TestCase):
+    def test_merge_requests_active_first_escaped_details_and_assistant_chat(self):
         script = r'''
 const assert = require("node:assert/strict"), fs = require("node:fs"), vm = require("node:vm");
 const callbacks = new Map(), page = {scrollTop:0};
-const host = {innerHTML:"", querySelector:selector => selector === ".git-page" ? page : null,
-  querySelectorAll:() => [], addEventListener:(name, fn) => callbacks.set(name, fn), removeEventListener:() => {}};
+const host = require(require("node:path").resolve(process.argv[1], "../../../tests/git_ui_host.cjs"))({scroll:page,handlers:callbacks});
 const latest = {sha:"abcdef123", subject:"Fixture", author:"Crew", time:"2026-10-24T00:00:00Z"};
 const request = (id, status) => ({id, status, branch:"feature/<review>", session_id:"member", requester_name:"<member>",
-  description:"Done <script>alert(1)</script>", note:"Tested & reviewed", pr_number:42, created_at:latest.time});
+  blocking:id===3, description:"Done <script>alert(1)</script>", note:id===1?null:"Tested & reviewed", pr_number:id===1?null:id===2?99:42, created_at:latest.time});
 const data = {enabled:true, repository:"Fixture", config:{base:"develop", stable:null, admin_session_id:"git-admin"},
   base:{name:"develop", latest}, stable:null, requests:[request(7,"merged"),request(1,"open"),request(8,"rejected"),request(2,"waiting_user"),request(3,"merging")],
-  branches:[], remote_only:[], commits:[], ref_unique_commits:{}, next_offset:null, last_fetch_at:null,
+  branches:[], remote_only:[], commits:[], ref_unique_commits:{}, next_offset:null, last_fetch_at:null, recent_merge:null,
   github:{runs:[], pull_requests:[{number:42, title:"Feature PR", state:"OPEN", head:"feature/<review>", ci:"success", url:"https://example.test/pull/42", draft:false}]}};
-const sandbox = {setInterval:() => 1, clearInterval:() => {}};
+const mounts=[];const sandbox = {CrewChat:{mount:options=>mounts.push(options),update(){},unmount(){}},setInterval:() => 1, clearInterval:() => {}};
 vm.createContext(sandbox);
 vm.runInContext(fs.readFileSync(process.argv[1], "utf8") + "\nglobalThis.component = CrewGit;", sandbox);
-sandbox.component.mount(host, {project:"demo", api:async () => data, toast:() => {}, onChanged:async () => {}});
+sandbox.component.mount(host, {project:"demo",state:{git_assistant:{session_id:"git-admin",name:"Git 助手",base:"develop",stable:null,requests:{active:3,waiting_user:1,merging:1,queued:1},attention:1}},chatAccess:()=>({readonly:false}), api:async () => data, toast:() => {}, onChanged:async () => {}});
 setImmediate(() => {
   const html = host.innerHTML;
-  assert.ok(html.includes('data-act="leader" data-id="git-admin">和 git 管理员聊'));
-  assert.deepEqual(Array.from(html.matchAll(/data-git-request="(\d+)"/g), match => Number(match[1])), [3,2,1,8,7]);
+  assert.equal(mounts[0].session.session_id,"git-admin");assert.ok(html.includes("git-chat-host"));
+  const cards = Array.from(html.matchAll(/<article class="git-request-card" data-git-request="(\d+)">([\s\S]*?)<\/article>/g));
+  assert.ok(html.includes('<div class="git-request-cards">'));
+  assert.deepEqual(cards.map(card => Number(card[1])), [3,2,1,8,7]);
+  for (const [, id, body] of cards) {
+    const heading = body.match(/^<div class="git-card-head">([\s\S]*?)<\/div>/)[1];
+    assert.match(heading, /^<span class="git-request-status [^"]+">[^<]+<\/span><span class="git-request-id">#/);
+    assert.ok(heading.includes(`<span class="git-request-id">#${id}</span>`));
+    assert.equal(heading.includes('<b class="git-request-dependency">合并后继续</b>'), id === "3");
+    assert.ok(body.includes('<div class="git-request-description">Done &lt;script&gt;alert(1)&lt;/script&gt;</div>'));
+    assert.equal(body.includes('<div class="git-request-note">Tested &amp; reviewed</div>'), id !== "1");
+    const facts = Array.from(body.matchAll(/<dt>(.*?)<\/dt><dd>([\s\S]*?)<\/dd>/g));
+    assert.deepEqual(facts.map(fact => fact[1]), ["分支", "提出者", "PR"]);
+    assert.equal(facts[0][2], '<code>feature/&lt;review&gt;</code>');
+    assert.equal(facts[1][2], `<span title="member">&lt;member&gt;</span><div class="git-request-time">${new Date(latest.time).toLocaleString("zh-CN", {month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit", hour12:false})}</div>`);
+    if (id === "1") assert.equal(facts[2][2], '<span class="git-muted">—</span>');
+    else if (id === "2") assert.equal(facts[2][2], '<span class="git-request-pr">#99</span>');
+    else assert.ok(facts[2][2].includes('href="https://example.test/pull/42" target="_blank" rel="noreferrer" title="Feature PR · OPEN"'));
+  }
+  assert.ok(!html.includes("<table"));
   for (const label of ["合并中", "等用户拍板", "待处理", "已拒绝", "已合并", "3 件待处理"]) assert.ok(html.includes(label), label);
   for (const value of ["feature/&lt;review&gt;", "&lt;member&gt;", "&lt;script&gt;", "Tested &amp; reviewed", 'href="https://example.test/pull/42"']) assert.ok(html.includes(value), value);
   assert.ok(!html.includes("<script>alert(1)</script>"));
@@ -924,20 +1015,12 @@ assert.equal(root.dataset.projectTheme, "celadon");
 
 class FrontendGitContractTests(unittest.TestCase):
     def run_component(self, scenario):
-        bootstrap = r'''
-const assert = require("node:assert/strict");
-const fs = require("node:fs"), vm = require("node:vm");
-const documentListeners = new Map(), windowListeners = new Map();
-const document = {addEventListener:(name, fn) => documentListeners.set(name, fn), removeEventListener:name => documentListeners.delete(name)};
-const sandbox = {document, navigator:{clipboard:{writeText:async text => { copied.push(text); }}}, setTimeout, clearTimeout,
-  setInterval:() => { throw new Error('Git view must only read on demand'); }, clearInterval:() => {},
-  addEventListener:(name, fn) => windowListeners.set(name, fn), removeEventListener:name => windowListeners.delete(name), innerWidth:1000, innerHeight:800};
-sandbox.window = sandbox;
-vm.createContext(sandbox);
-vm.runInContext(fs.readFileSync(process.argv[1], "utf8"), sandbox);
-sandbox.CrewGit = vm.runInContext("CrewGit", sandbox);
-const flush = async () => { for (let index = 0; index < 20; index++) await Promise.resolve(); };
-const copied = [], calls = [], pending = [], rejecters = [], toasts = [];
+        bootstrap = r'''const assert = require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
+const sandbox={CrewChat:{mount(){},update(){},unmount(){}}};sandbox.window=sandbox;vm.createContext(sandbox);
+vm.runInContext(fs.readFileSync(process.argv[1],'utf8'),sandbox);sandbox.CrewGit=vm.runInContext('CrewGit',sandbox);
+const flush=async()=>{for(let index=0;index<20;index++)await Promise.resolve();};
+const calls=[],page={scrollTop:0},listeners=new Map();
+const host=require(path.resolve(process.argv[1],'../../../tests/git_ui_host.cjs'))({scroll:page,handlers:listeners});
 const sha = n => n.toString(16).padStart(40, "0");
 const pr = {number:17,title:'NewID <ready>',head:'feature/NewID',base:'develop',head_sha:sha(10),merge_sha:sha(9),state:'MERGED',draft:false,ci:'success',url:'https://github.com/fixture/demo/pull/17'};
 const commit = (n, parents, refs = []) => ({sha:sha(n),parents:parents.map(sha),refs,subject:'提交 <' + n + '>',body:'正文 <script>\n'.repeat(14),author:'作者',time:'2026-10-24T01:00:00Z',parent_branches:parents.map((_,i) => i === 0 ? 'develop' : 'feature/NewID'),pull_requests:n >= 9 ? [pr] : []});
@@ -945,23 +1028,10 @@ const commits = [commit(10,[9],['develop']),commit(9,[8,7]),commit(8,[7],['maste
 const latest = n => commits.find(item => item.sha === sha(n));
 const branch = (name,n) => ({name,latest:latest(n),origin_relation:'',sessions:[],worktrees:[],ahead:0,behind:0,merged:true,conflicts:[]});
 const fixture = {enabled:true,repository:'Demo',config:{base:'develop',stable:'master',admin_session_id:'git-admin'},requests:[],base:{name:'develop',latest:latest(10),origin_relation:''},stable:{name:'master',latest:latest(8),ahead:2,origin_relation:''},branches:[branch('develop',10),branch('master',8)],remote_only:[],ref_unique_commits:{develop:[],master:[]},commits,next_offset:3,recent_merge:commits[1],github:{pull_requests:[pr],runs:[]},last_fetch_at:null};
-const body = {scrollHeight:300,clientHeight:100}, expand = {hidden:false};
-const classes = new Set();
-const popup = {hidden:true,innerHTML:'',dataset:{},style:{},classList:{toggle:(name,on) => on ? classes.add(name) : classes.delete(name)},getBoundingClientRect:() => ({width:520,height:460}),querySelector:selector => selector === '.git-detail-body' ? body : expand,closest:selector => selector === '#git-detail' ? popup : null,contains:node => node === popup};
-const listeners = new Map(), page = {scrollTop:0};
-const host = {innerHTML:'',addEventListener:(name,fn) => listeners.set(name,fn),removeEventListener:name => listeners.delete(name),querySelector:selector => selector === '#git-detail' ? popup : selector === '.git-page' ? page : null,querySelectorAll:() => []};
-const row = n => { const node = {dataset:{gitSha:sha(n)},getBoundingClientRect:() => ({left:800,right:950,top:700}),matches:selector => selector === '[data-git-sha]',contains:other => other === node}; node.closest = selector => selector === '[data-git-sha], [data-git-node]' ? node : null; return node; };
-const button = act => { const node = {dataset:{gitAct:act}}; node.closest = selector => selector === '[data-git-act]' ? node : selector === '#git-detail' && ['copy-sha','expand-body','close-detail'].includes(act) ? popup : null; return node; };
-const snapshot = value => JSON.parse(JSON.stringify(value));
-const api = async route => { calls.push(route); if (route.startsWith('/api/git/commit?')) return new Promise((resolve,reject) => { pending.push(resolve); rejecters.push(reject); }); if (route === '/api/git?offset=3') return snapshot({...fixture,commits:[commit(7,[])],next_offset:null}); return snapshot(fixture); };
-const mount = project => sandbox.CrewGit.mount(host,{project,api,toast:text => toasts.push(text)});
-const hover = n => listeners.get('pointerover')({target:row(n),relatedTarget:null,clientX:800,clientY:700});
-let pointer = 0;
-const move = n => documentListeners.get('pointermove')({target:row(n),clientX:++pointer,clientY:100});
-const click = target => listeners.get('click')({target,clientX:800,clientY:700});
-const key = (key,target) => documentListeners.get('keydown')({key,target,preventDefault:() => { prevented++; }});
-let prevented = 0;
-const stats = {sha:sha(10),file_count:12,additions:139,deletions:27,files:Array.from({length:12},(_,i) => ({path:'file-'+i+'.txt',added:10,deleted:2,binary:false}))};
+const api=async route=>{calls.push(route);return JSON.parse(JSON.stringify(fixture));};
+const mount=project=>sandbox.CrewGit.mount(host,{project,state:{git_assistant:{session_id:"git-admin",name:"Git 助手",base:"develop",stable:null,requests:{active:3,waiting_user:1,merging:1,queued:1},attention:1}},chatAccess:()=>({readonly:false}),api,toast(){}});
+const button=act=>{const node={dataset:{gitAct:act},closest:selector=>selector==='[data-git-act]'?node:null};return node;};
+const click=target=>listeners.get('click')({target});
 '''
         script = bootstrap + "\n(async () => {\n" + scenario + "\n})().catch(error => { console.error(error); process.exitCode = 1; });"
         result = subprocess.run(["node", "-e", script, str(PLUGIN / "crew" / "web" / "git.js")],
@@ -971,14 +1041,12 @@ const stats = {sha:sha(10),file_count:12,additions:139,deletions:27,files:Array.
     def test_git_origin_relations_in_both_cards_and_local_branch_rows(self):
         self.run_component(r'''
 mount('demo'); await flush();
-const selectTab = name => { const target = {dataset:{gitTab:name},closest:selector => selector === '[data-git-tab]' ? target : null}; click(target); };
 for (const relation of ['落后 origin 15 个提交','领先 origin 2 个提交','与 origin 分叉（领先 3、落后 1 个提交）','：没有 origin']) {
   fixture.base.origin_relation = '本地 develop ' + relation;
   fixture.stable.origin_relation = '本地 master ' + relation;
   fixture.branches[0].origin_relation = fixture.base.origin_relation;
   fixture.branches[1].origin_relation = fixture.stable.origin_relation;
   const reads = calls.length;
-  selectTab('graph');
   assert(!host.innerHTML.includes(fixture.base.origin_relation));
   assert.equal(calls.length,reads);
   click(button('refresh')); await flush();
@@ -986,7 +1054,6 @@ for (const relation of ['落后 origin 15 个提交','领先 origin 2 个提交'
   assert.equal(calls.at(-1),'/api/git?offset=0');
   assert(host.innerHTML.includes(fixture.base.origin_relation));
   assert(host.innerHTML.includes(fixture.stable.origin_relation));
-  selectTab('branches');
   assert(host.innerHTML.includes('data-git-row="develop"'));
   assert(host.innerHTML.includes('data-git-row="master"'));
   assert(host.innerHTML.includes(fixture.base.origin_relation));
@@ -1001,87 +1068,7 @@ assert(calls.every(route => route === '/api/git?offset=0'));
 sandbox.CrewGit.unmount();
 ''')
 
-    def test_git_hover_statistics_pin_keyboard_and_cleanup(self):
-        self.run_component(r'''
-mount('demo'); await flush();
-assert.equal(calls.filter(route => route.startsWith('/api/git/commit?')).length,0);
-assert(host.innerHTML.includes('git-stable-marker'));
-assert(host.innerHTML.includes('master 在这里'));
-assert(host.innerHTML.includes('git-merge-node'));
-assert(host.innerHTML.includes('最近一次合入：'));
-assert(host.innerHTML.includes('PR #17 NewID &lt;ready&gt;'));
-hover(10); await flush();
-assert.equal(popup.hidden,false);
-assert(popup.innerHTML.includes('统计中…'));
-assert(popup.innerHTML.includes('&lt;script&gt;'));
-assert(popup.innerHTML.includes('已合并'));
-assert(popup.innerHTML.includes(sha(10)));
-assert.equal(popup.style.left,'268px');
-assert.equal(popup.style.top,'328px');
-assert.equal(expand.hidden,false);
-pending.shift()(stats); await flush();
-assert(popup.innerHTML.includes('12 个文件'));
-assert(popup.innerHTML.includes('file-9.txt'));
-assert(!popup.innerHTML.includes('file-10.txt'));
-click(row(10)); assert(classes.has('is-pinned'));
-hover(9); assert.equal(popup.dataset.gitDetailSha,sha(10));
-click(button('expand-body')); assert(!popup.innerHTML.includes('git-detail-body clamped'));
-click(button('copy-sha')); await flush(); assert.deepEqual(copied,[sha(10)]);
-const reads = calls.filter(route => route === '/api/git?offset=0').length;
-click(button('refresh')); await flush(); assert(classes.has('is-pinned')); assert.equal(popup.hidden,false);
-assert.equal(calls.filter(route => route === '/api/git?offset=0').length,reads+1);
-assert(!calls.some(route => route.startsWith('/api/git/fetch')));
-move(10); key('Escape',row(10)); assert.equal(popup.hidden,true);
-hover(10); assert.equal(popup.hidden,true);
-documentListeners.get('pointermove')({target:row(10),clientX:pointer,clientY:100}); assert.equal(popup.hidden,true);
-move(10); await flush(); assert(!popup.innerHTML.includes('统计中…')); assert.equal(popup.hidden,false);
-click(button('close-detail')); hover(10); assert.equal(popup.hidden,true);
-move(10); assert.equal(popup.hidden,false);
-assert.equal(calls.filter(route => route.startsWith('/api/git/commit?')).length,1);
-key('Enter',row(9)); assert.equal(prevented,1); assert(classes.has('is-pinned'));
-assert(popup.innerHTML.includes('合并 #17 feature/NewID → develop'));
-documentListeners.get('pointerdown')({target:{closest:() => null}}); assert.equal(popup.hidden,true);
-page.scrollTop = 240;
-const beforeReturn = calls.length;
-sandbox.CrewGit.unmount(); assert.equal(listeners.size,0); assert.equal(documentListeners.size,0); assert.equal(windowListeners.size,0);
-mount('demo'); await flush();
-assert.equal(calls.length,beforeReturn);
-assert.equal(page.scrollTop,240);
-assert(host.innerHTML.includes('按需更新'));
-assert.equal(popup.hidden,true);
-sandbox.CrewGit.unmount(); assert.equal(listeners.size,0); assert.equal(documentListeners.size,0); assert.equal(windowListeners.size,0);
-''')
 
-    def test_git_paging_and_project_isolation_for_inflight_statistics(self):
-        self.run_component(r'''
-mount('first'); await flush(); hover(10); await flush();
-sandbox.CrewGit.unmount(); mount('second'); await flush(); hover(10); await flush();
-assert.equal(calls.filter(route => route.startsWith('/api/git/commit?')).length,2);
-assert(calls.includes('/api/git/commit?project=first&sha='+sha(10)));
-assert(calls.includes('/api/git/commit?project=second&sha='+sha(10)));
-pending.shift()(stats); await flush(); assert(popup.innerHTML.includes('统计中…'));
-pending.shift()({...stats,file_count:2}); await flush(); assert(popup.innerHTML.includes('2 个文件'));
-click(button('load-more')); await flush();
-assert(calls.includes('/api/git?offset=3'));
-assert(host.innerHTML.includes('data-git-from="'+sha(8)+'" data-git-to="'+sha(7)+'"'));
-assert.equal([...host.innerHTML.matchAll(/class="git-commit /g)].length,4);
-sandbox.CrewGit.unmount();
-''')
-
-    def test_git_failed_statistics_show_reason_and_retry_on_next_open(self):
-        self.run_component(r'''
-mount('demo'); await flush(); hover(10); await flush();
-rejecters.shift()(new Error('fixture detail unavailable')); await flush();
-assert(popup.innerHTML.includes('统计失败：fixture detail unavailable'));
-key('Escape',row(10)); move(10); await flush();
-assert(popup.innerHTML.includes('统计中…'));
-assert.equal(calls.filter(route => route.startsWith('/api/git/commit?')).length,2);
-pending.pop()(stats); await flush();
-key('Escape',row(10)); move(10); await flush();
-assert(popup.innerHTML.includes('12 个文件'));
-assert.equal(calls.filter(route => route.startsWith('/api/git/commit?')).length,2);
-sandbox.CrewGit.unmount();
-''')
 
 
 class FrontendChannelContractTests(unittest.TestCase):
@@ -1198,7 +1185,7 @@ assert.equal(f.targets.querySelectorAll().filter(item => item.pressed === "true"
 assert(f.send.disabled);
 assert(f.inner.innerHTML.includes('channel-user'));
 assert(f.inner.innerHTML.includes('<strong>确认</strong>发布'));
-assert.equal(f.toasts[0], "已发到交流区，点名的 Git、Design 会被叫醒");
+assert.equal(f.toasts[0], "已发到 Leader 交流区，点名的 Git、Design 会被叫醒");
 sandbox.CrewChannel.unmount();
 ''')
 
@@ -1232,7 +1219,7 @@ f.form.onsubmit({preventDefault:() => {}}); await flush();
 assert(f.inner.innerHTML.includes('发送期间到达的发言'));
 assert(f.inner.innerHTML.includes('我的发言'));
 assert(f.inner.innerHTML.indexOf('data-channel-id="26"') < f.inner.innerHTML.indexOf('data-channel-id="27"'));
-assert.equal(f.toasts[0], "已发到交流区");
+assert.equal(f.toasts[0], "已发到 Leader 交流区");
 assert.deepEqual(f.reads, [25, 27]);
 sandbox.CrewChannel.unmount();
 ''')

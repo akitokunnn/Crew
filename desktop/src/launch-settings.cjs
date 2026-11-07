@@ -83,6 +83,8 @@ class LaunchSettings {
     const health=await this.request(url,'/api/admin/health');
     if (health?.ok !== true || health.service !== 'crew' || !Number.isSafeInteger(health.pid) || !health.instance_id || !health.version || typeof health.plugin_root!=='string' ||
         typeof health.home !== 'string' || !path.isAbsolute(health.home)) throw Error('此服务未返回有效的 Crew 身份；请检查地址或先升级后台。');
+    await require('./backend-product.cjs').requireGeneration(health.plugin_root,this.config.productGeneration);
+    await require('./backend-product.cjs').requireHomeGeneration(health.home,this.config.productGeneration);
     return health;
   }
   async _registeredService(home, checkHealth=url=>this._health(url)) {
@@ -114,9 +116,11 @@ class LaunchSettings {
       settings.home=path.resolve(settings.home);
       settings.service_url='';
     }
+    await require('./backend-product.cjs').requireHomeGeneration(settings.home,this.config.productGeneration);
     const directory=settings.mode==='existing' || settings.source === 'bundled' ? this.bundledBackend : settings.backend_directory;
     if (typeof directory !== 'string' || !path.isAbsolute(directory)) throw Error('后台程序目录必须是绝对路径。');
     const controlDirectory=await fs.realpath(directory);
+    await require('./backend-product.cjs').requireGeneration(controlDirectory,this.config.productGeneration);
     if(settings.mode==='local')settings.backend_directory=controlDirectory;
     for (const name of ['crew_supervisor.py',path.join('crew','web.py')]) {
       if (!(await fs.stat(path.join(controlDirectory,name))).isFile()) throw Error('后台源码不完整：缺少 '+name);

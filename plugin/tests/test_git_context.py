@@ -22,13 +22,18 @@ class GitContextTests(CoreCase):
             runtimes.set(self.conn, 's1', runtime)
             version, context = git_admin.input_context(self.conn, 's1', None, PLUGIN)
             self.assertIn('你现在负责', context)
-            self.assertIn('skills', context)
+            self.assertIn('Git 助手守则', context)
+            self.assertNotIn('SKILL.md', context)
             self.assertIn('crew_git' if runtime == 'codex' else 'crew git policy', context)
             self.assertLess(len(context), 650)
             self.assertEqual(git_admin.input_context(self.conn, 's1', version, PLUGIN), (version, None))
         _, worker_context = git_admin.input_context(self.conn, 's2', None, PLUGIN)
         self.assertIn('chief', worker_context)
-        self.assertIn('你不是 Git 管理员', worker_context)
+        self.assertIn('本项目 Git 助手为「chief」', worker_context)
+        self.assertIn('推送、开 PR、合并交给 Git 助手', worker_context)
+        self.assertIn('crew git request "<改动、验证、后续>" [--blocking]', worker_context)
+        self.assertIn('crew send "chief" "<内容>"', worker_context)
+        self.assertIn('crew_send_message', worker_context)
 
     def test_disabling_revokes_the_previous_assignment_once(self):
         previous, _ = git_admin.input_context(self.conn, 's1', None, PLUGIN)
@@ -63,7 +68,7 @@ class GitContextTests(CoreCase):
         runtimes.set(self.conn, 's1', 'codex')
         manager = chat.Manager(self.home, PLUGIN, lambda: [])
         send = mock.Mock(side_effect=[ValueError('fixture rejected input'), 'accepted', 'again'])
-        current = SimpleNamespace(runtime='codex', execution=None, send=send)
+        current = SimpleNamespace(runtime='codex', execution=None, send=send, thread_id='fixture-native-thread')
         manager.processes['s1'] = current
         try:
             with self.assertRaisesRegex(ValueError, 'fixture rejected input'):

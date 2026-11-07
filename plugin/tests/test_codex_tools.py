@@ -1,12 +1,13 @@
 """Codex board tool authorization uses temporary boards, never native runtimes."""
 import tests  # Install the production-service connection guard.
+import base64
 import json
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from crew import board, codex_tools, decision_briefs, documents, goals, runtimes, store, todo
+from crew import board, codex_tools, decision_briefs, documents, goals, report_preview, runtimes, store, todo
 
 
 class CodexToolsTests(unittest.TestCase):
@@ -52,6 +53,68 @@ class CodexToolsTests(unittest.TestCase):
             'session_id': 'codex-crew', 'caller_session_id': 'codex-crew'}))
         self.call('crew_stop', {'target': 'builder', 'caller_session_id': 'peer-leader'}, success=False)
 
+    def test_archive_tool_binds_leader_and_rejects_member_cross_group_and_spoofing(self):
+        with mock.patch('crew.spawn.request_start', return_value={'ok': True}) as request:
+            self.call('crew_archive', {'target': 'builder'}, tools=self.leader)
+            self.assertEqual(request.call_args.args[2:], ('/api/session/archive', {
+                'session_id': 'codex-crew', 'caller_session_id': 'leader-crew'}))
+            request.reset_mock()
+            self.call('crew_archive', {'target': 'reviewer'}, success=False)
+            self.call('crew_archive', {'target': 'peer-worker'}, tools=self.leader, success=False)
+            self.call('crew_archive', {'target': 'builder', 'caller_session_id': 'peer-leader'}, tools=self.leader, success=False)
+            request.assert_not_called()
+
+    def test_report_preview_returns_the_host_png_as_a_native_image_for_leader_and_member(self):
+        image = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=')
+        for sid in ('leader-crew', 'codex-crew'):
+            image_path = report_preview.image_directory(self.home, sid, create=True) / 'synthetic.png'
+            image_path.write_bytes(image)
+            receipt = {'ok':True, 'preview':{'id':'synthetic', 'path':str(image_path),
+                'width':1, 'height':1, 'console_errors':[], 'visual_verification':'not_performed'}}
+            calls = []
+            def host(action, data, actor, execution_id=None):
+                calls.append((action, data, actor, execution_id))
+                return receipt
+            tool = codex_tools.CodexTools(self.home, sid, goal_handler=host)
+            result = tool({'tool':'crew_goal', 'arguments':{'action':'report.preview', 'goal_id':'synthetic-goal',
+                'data':{'document_html':'<!doctype html><h1>Synthetic preview</h1>', 'viewport':'mobile'}}})
+            self.assertTrue(result['success'], result)
+            self.assertEqual(json.loads(result['contentItems'][0]['text']), receipt)
+            native_image = result['contentItems'][1]
+            self.assertEqual(set(native_image), {'type','imageUrl'})
+            self.assertEqual(native_image['type'], 'inputImage')
+            self.assertEqual(base64.b64decode(native_image['imageUrl'].removeprefix('data:image/png;base64,')), image)
+            self.assertEqual(calls, [('report.preview', {'goal_id':'synthetic-goal',
+                'document_html':'<!doctype html><h1>Synthetic preview</h1>', 'viewport':'mobile'}, sid, None)])
+
+    def test_report_preview_requires_its_host_and_keeps_render_or_attachment_failures(self):
+        missing = self.call('crew_goal', {'action':'report.preview', 'data':{'document_html':'<h1>Draft</h1>'}}, success=False)
+        self.assertEqual(missing['error']['code'], 'goal_host_unavailable')
+        host_failure = {'ok':False, 'error':'Crew desktop closed during rendering', 'status':'unavailable'}
+        tool = codex_tools.CodexTools(self.home, 'codex-crew', goal_handler=lambda *args, **kwargs:host_failure)
+        failed = self.call('crew_goal', {'action':'report.preview', 'data':{'report_id':'saved'}}, tools=tool, success=False)
+        self.assertEqual(failed, host_failure)
+        path = report_preview.image_directory(self.home, 'codex-crew') / 'missing.png'
+        receipt = {'ok':True, 'preview':{'id':'captured', 'path':str(path)}}
+        tool = codex_tools.CodexTools(self.home, 'codex-crew', goal_handler=lambda *args, **kwargs:receipt)
+        result = self.call('crew_goal', {'action':'report.preview', 'data':{'report_id':'saved'}}, tools=tool)
+        self.assertEqual(result['preview'], receipt['preview'])
+        self.assertIn('missing.png', result['input_image_error'])
+        self.assertIn('view_image', result['image_instruction'])
+
+    def test_report_preview_image_cannot_escape_its_bound_identity_directory(self):
+        for path in (self.home / 'report-previews' / 'root.png',
+                     report_preview.image_directory(self.home, 'leader-crew') / 'other-person.png',
+                     self.root / 'outside.png'):
+            with self.subTest(path=path):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b'Another artifact must not be returned to this actor')
+                tool = codex_tools.CodexTools(self.home, 'codex-crew', goal_handler=lambda *args, **kwargs:
+                    {'ok':True, 'preview':{'id':'not-owned', 'path':str(path)}})
+                result = self.call('crew_goal', {'action':'report.preview', 'data':{'report_id':'saved'}},
+                                   tools=tool, success=False)
+                self.assertEqual(result['error']['code'], 'preview_image_forbidden')
+
     def test_spawn_tool_supplies_only_host_bound_goal_execution_identity(self):
         goal = goals.create(self.conn, 'first', 'leader-crew', 'Tool spawning', 'Finite request', ['Done'])
         goals.transition(self.conn, goal['id'], 'running')
@@ -62,6 +125,12 @@ class CodexToolsTests(unittest.TestCase):
         self.assertEqual(request.call_args.args[2:], ('/api/spawn', {
             'name': 'new-member', 'task': 'Finite member task', 'role': 'member',
             'caller_session_id': 'leader-crew', 'caller_execution_id': execution['id']}))
+
+    def test_member_spawn_is_denied_locally_before_the_host_request(self):
+        with mock.patch('crew.spawn.request_start') as request:
+            result = self.call('crew_spawn', {'name': 'nested', 'task': 'Finite task'}, success=False)
+        self.assertIn('只有本项目当前 leader', result['error']['message'])
+        request.assert_not_called()
 
     def test_specs_use_the_app_server_wire_shape_and_are_independent_copies(self):
         specs = codex_tools.tool_specs()

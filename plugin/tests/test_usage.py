@@ -7,6 +7,7 @@ import sqlite3
 import tempfile
 import threading
 import unittest
+from unittest import mock
 from pathlib import Path
 from unittest import mock
 from tests.fixture_cleanup import cleanup_directory
@@ -237,6 +238,23 @@ class TestUsage(UsageFixture, unittest.TestCase):
         self.write(child, [])
         self.scan()
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM claude_requests").fetchone()[0], 2)
+
+    def test_subagent_without_readable_meta_still_counts_as_unknown_type(self):
+        main = self.main_file([assistant("one")])
+        parent = main.parent / main.stem / "subagents"
+        for agent, meta in (("missing", None), ("broken", "{"), ("untyped", "{}"), ("list", "[]")):
+            record = assistant("child-" + agent, 20)
+            record.update(isSidechain=True, agentId=agent)
+            path = self.write(parent / ("agent-" + agent + ".jsonl"), [record])
+            if meta is not None:
+                path.with_suffix(".meta.json").write_text(meta, encoding="utf-8")
+        result = self.scan()
+        self.assertEqual(result["skipped"], 0)
+        rows = self.conn.execute("SELECT agent_id, agent_type FROM claude_requests WHERE agent_id IS NOT NULL").fetchall()
+        self.assertEqual({row["agent_id"]: row["agent_type"] for row in rows},
+                         {"missing": None, "broken": None, "untyped": None, "list": None})
+        groups = {row["agent_type"]: row["requests"] for row in usage.by_agent_type(self.conn, None, None, PRICES)}
+        self.assertEqual(groups, {"main": 1, "unknown": 4})
 
     def test_prompt_origins_work_compactions_and_last_title(self):
         legacy = prompt("legacy", 65)
@@ -529,9 +547,16 @@ class TestUsage(UsageFixture, unittest.TestCase):
 
     def test_critical_file_error_is_propagated_and_scan_rolled_back(self):
         self.main_file([assistant("main")])
-        path = self.claude / "project" / "session-one" / "subagents" / "agent-missing.jsonl"
+        path = self.claude / "project" / "session-one" / "subagents" / "agent-locked.jsonl"
         self.write(path, [assistant("child")])
-        with self.assertRaises(FileNotFoundError):
+        original = usage._lines
+
+        def locked(target, offset):
+            if Path(target) == path:
+                raise PermissionError(13, "locked", str(path))
+            return original(target, offset)
+
+        with mock.patch.object(usage, "_lines", locked), self.assertRaises(PermissionError):
             self.scan()
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM claude_requests").fetchone()[0], 0)
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM usage_files").fetchone()[0], 0)

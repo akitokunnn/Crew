@@ -167,6 +167,10 @@ class ChatTests(UsageFixture, unittest.TestCase):
         journal.set_status(status)
         process = FakeProcess([])
         manager.processes["s1"] = chat.Running(process, journal)
+        # This fixture bypasses _launch_native; model its already supplied
+        # startup prompt so unrelated message tests do not simulate an update.
+        manager.processes['s1'].behavior_prompt_hash = chat.behavior_prompts.manifest_hash(
+            chat.behavior_prompts.for_session(self.conn, 's1', plugin_root=self.root))
         session = board.session(self.conn, "s1")
         return manager, process, session
 
@@ -210,6 +214,36 @@ class ChatTests(UsageFixture, unittest.TestCase):
             manager.journal("s1").message("own", "no reread")
             self.assertEqual(len(manager.history("s1")["events"]), 3)
             self.assertEqual(reads, [path, path, path])
+
+    def test_repeated_emit_avoids_rereads_and_external_append_preserves_content_and_sequence(self):
+        journal = self.journal
+        journal.emit('text', id='stream', text='seed')
+        original_read = Path.read_text
+        reads = []
+
+        def read_text(path, *args, **kwargs):
+            if path == journal.path:
+                reads.append(path)
+            return original_read(path, *args, **kwargs)
+
+        with mock.patch.object(Path, 'read_text', read_text):
+            for index in range(100):
+                journal.emit('text', id='stream', text=str(index))
+                journal.refresh()
+            self.assertEqual(reads, [])
+            external = {'seq': 102, 'type': 'message', 'id': 'external',
+                        'source': 'human', 'text': 'external append'}
+            self.write(journal.path, [external], append=True)
+            journal.refresh()
+            self.assertEqual(reads, [journal.path])
+            self.assertEqual(journal.events[-1], external)
+            journal.emit('text', id='stream', text='after external')
+            journal.refresh()
+            self.assertEqual(reads, [journal.path])
+        self.assertEqual([event['seq'] for event in journal.events], list(range(1, 104)))
+        self.assertEqual([event['text'] for event in journal.events],
+                         ['seed', *map(str, range(100)), 'external append', 'after external'])
+        self.assertEqual(chat.Journal(journal.path).events, journal.events)
 
     def test_crew_and_qq_sources_survive_cli_echo_and_replay(self):
         manager, process, _ = self.manager_with_process()
@@ -332,7 +366,9 @@ class ChatTests(UsageFixture, unittest.TestCase):
         self.assertEqual(uuid.UUID(request["request_id"]).version, 4)
         manager.journal("s1").consume({"type": "control_response", "response": {
             "subtype": "success", "request_id": request["request_id"]}})
-        self.assertEqual(manager.history("s1")["events"], before)
+        after = manager.history("s1")["events"]
+        self.assertEqual(after[:len(before)], before)
+        self.assertEqual([event for event in after if event['type'] in ('message', 'turn_result', 'status')], before)
         self.assertTrue(manager.busy("s1"))
 
     def test_interrupt_rejects_external_stopped_and_idle_sessions(self):

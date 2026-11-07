@@ -1,9 +1,16 @@
 """Goal mail is finite evidence, not a chain of automatic acknowledgements."""
+from contextlib import closing
 import hashlib
+import sqlite3
 import uuid
 
-from . import board, codex_client, goals, messaging
+from . import behavior_prompts, board, codex_client, goals, messaging, store
 from .message_receipts import ACTIONABLE, KINDS
+
+# A member reports back with one of these; any of them in the turn means nothing is returned for it.
+REPORT_KINDS = ('result', 'blocker', 'decision')
+HUMAN_SOURCES = ('human', 'qq', 'lark')
+RETURNED_REPLY_LIMIT = 6000
 
 @goals.atomic
 def queue(conn, sender_id, target_id, text, execution_id=None, *, message_id=None, kind='information', reply_to=None):
@@ -35,7 +42,8 @@ def queue(conn, sender_id, target_id, text, execution_id=None, *, message_id=Non
         goals._member(conn, goal, target_id)
     if kind == 'task' and source_goal and sender_id != source_goal['leader_session_id']:
         raise board.BoardError('任务分配由本目标 leader 负责')
-    receipt = messaging.queue_record(conn, sender_id, target_id, text, message_id, kind=kind, reply_to=reply_to)
+    receipt = messaging.queue_record(conn, sender_id, target_id, text, message_id, kind=kind, reply_to=reply_to,
+                                     deduplicate_reply=False)
     identity = receipt['message_id']
     old = conn.execute('SELECT * FROM goal_message_meta WHERE message_id=?', (identity,)).fetchone()
     if old:
@@ -64,15 +72,15 @@ def _gate(conn, message):
     scopes = []
     waiting = None
     if message['target_scope'] == 'goal':
-        scopes.append((message['goal_id'], message['round'], message['requirement_version'], None))
+        scopes.append((message['goal_id'], message['round'], None))
     if message['source_execution']:
         source = goals.get_execution(conn, message['source_execution'])
-        scopes.append((source['goal_id'], source['round'], source['requirement_version'], source['id']))
-    for goal_id, round, version, execution_id in scopes:
-        gate = goals.dispatch_check(conn, goal_id, round=round, requirement_version=version, execution_id=execution_id)
+        scopes.append((source['goal_id'], source['round'], source['id']))
+    for goal_id, round, execution_id in scopes:
+        gate = goals.dispatch_check(conn, goal_id, round=round, execution_id=execution_id)
         if not gate['allowed']:
             goal = goals.get(conn, goal_id)
-            current = round == goal['current_round'] and version == goal['requirement_version']
+            current = round == goal['current_round']
             if current and goal['status'] in ('pausing', 'paused', 'waiting_user'):
                 waiting = gate['reason']
             else:
@@ -207,3 +215,122 @@ def deliver(controller, conn):
                          (result.get('execution_id'), board._time(None), item['message_id']))
             messaging.mark_delivered(conn, item['message_id'], accepted=True)
         blocked.add((goal_id, target_id, scope))
+
+
+def return_unreported(conn, execution_id, events):
+    """Hand a member's finished task turn to the goal leader when the member reported nothing.
+
+    ``events`` is the execution journal through the turn's successful
+    ``turn_result``. The returned mail is an ordinary ``result`` from that
+    execution, keyed by the turn so one turn is never returned twice. Turns
+    that only answered the user directly stay the user's conversation.
+    """
+    ends = [index for index, event in enumerate(events) if event['type'] == 'turn_result']
+    end = events[ends[-1]]
+    if not end.get('success'):
+        return None
+    window = events[(ends[-2] + 1 if len(ends) > 1 else 0):ends[-1]]
+    inputs = [event for event in window if event['type'] == 'message']
+    if not inputs or all(event.get('source') in HUMAN_SOURCES for event in inputs):
+        return None
+    execution = goals.get_execution(conn, execution_id)
+    goal = goals.get(conn, execution['goal_id'])
+    member = board.session(conn, execution['session_id'])
+    if member['role'] != 'member' or member['session_id'] == goal['leader_session_id']:
+        return None
+    if not goals.dispatch_check(conn, goal['id'], execution_id=execution_id)['allowed']:
+        return None
+    reported = conn.execute(
+        'SELECT 1 FROM goal_message_meta m JOIN peer_messages p ON p.id=m.message_id '
+        'WHERE m.source_execution=? AND p.target_session_id=? AND m.kind IN (%s) AND p.created_at>=? LIMIT 1'
+        % ','.join('?' * len(REPORT_KINDS)),
+        (execution_id, goal['leader_session_id'], *REPORT_KINDS, inputs[0]['at'])).fetchone()
+    if reported:
+        return None
+    reply = next((text for text in (
+        '\n'.join(block['text'] for block in event['content'] if block.get('type') == 'text').strip()
+        for event in reversed(window) if event['type'] == 'assistant') if text), '')
+    if len(reply) > RETURNED_REPLY_LIMIT:
+        reply = reply[:RETURNED_REPLY_LIMIT] + '\n……（已截断，完整内容见该组员的任务执行记录）'
+    body = ('[Crew 代为交回] 组员「%s」在任务「%s」中结束了一轮，但没有发送结果消息。'
+            '以下是它这一轮最后的回复，由 Crew 代为交回，不是组员主动回报；请按验收标准核对后决定验收或继续推进。\n\n%s'
+            % (member['crew_name'], goal['title'], reply or '（这一轮没有文字回复；请查看该组员的任务执行记录）'))
+    return queue(conn, member['session_id'], goal['leader_session_id'], body, execution_id,
+                 message_id='crew-turn-result:%s:%s' % (execution_id, end['seq']), kind='result')
+
+
+def return_turn(home, execution_id, journal):
+    """Called by either runtime right after a task turn ends; failures stay visible in that execution."""
+    with journal.condition:
+        journal.refresh()
+        events = list(journal.events)
+    try:
+        with closing(store.connect(home)) as conn:
+            return return_unreported(conn, execution_id, events)
+    except (sqlite3.Error, board.BoardError) as exc:
+        journal.emit('error', text='Crew 代为交回本轮结果失败：%s: %s' % (type(exc).__name__, exc))
+        return None
+
+
+FINISH_REMINDER = 'crew-finish-reminder:'
+FINISH_REMINDER_GRACE = 30
+def remind_unfinished(controller, conn, now=None):
+    """Wake a goal's leader once when its turn ended with the task still running and nothing in flight.
+
+    The leader may have announced a delivery in chat without submitting ``finish``; that leaves the
+    task "running" with nobody working. Only the leader's own latest task execution is reminded, at
+    most once per ended turn: a turn that was itself a reminder never gets another one.
+    """
+    rows = conn.execute(
+        "SELECT e.id,e.goal_id,g.title,g.leader_session_id FROM goals g JOIN goal_executions e "
+        "ON e.goal_id=g.id AND e.round=g.current_round AND e.session_id=g.leader_session_id "
+        "WHERE g.status='running' AND g.manual_pause=0 AND e.status IN ('idle','offline') "
+        "AND e.generation=(SELECT MAX(generation) FROM goal_executions x WHERE x.goal_id=g.id AND x.round=g.current_round "
+        "AND x.session_id=g.leader_session_id) "
+        "AND NOT EXISTS (SELECT 1 FROM goal_executions o WHERE o.goal_id=g.id AND o.round=g.current_round "
+        "AND o.status IN ('queued','running','pausing')) "
+        "AND NOT EXISTS (SELECT 1 FROM goal_round_finishes f WHERE f.goal_id=g.id AND f.round=g.current_round AND f.status='pending') "
+        "AND NOT EXISTS (SELECT 1 FROM goal_message_meta m WHERE m.goal_id=g.id AND m.status='queued') "
+        "AND NOT EXISTS (SELECT 1 FROM goal_links l LEFT JOIN decisions d ON l.kind='decision' AND d.id=l.item_id "
+        "LEFT JOIN todos t ON l.kind='todo' AND t.id=l.item_id WHERE l.goal_id=g.id AND l.round=g.current_round "
+        "AND (d.status='open' OR t.status='open'))").fetchall()
+    cutoff = board._time(now)
+    for row in rows:
+        key = row['id']
+        if controller.manager.busy(key) or messaging.stopped(conn, row['leader_session_id']):
+            continue
+        journal = controller.manager.journal(key)
+        with journal.condition:
+            journal.refresh()
+            events = list(journal.events)
+        ends = [index for index, event in enumerate(events) if event['type'] == 'turn_result']
+        if not ends or not events[ends[-1]].get('success'):
+            continue
+        end = events[ends[-1]]
+        if any(event['type'] in ('message', 'input_delivery') for event in events[ends[-1] + 1:]):
+            continue  # Newer input is already on its way to this execution.
+        if _seconds_between(end['at'], cutoff) < FINISH_REMINDER_GRACE:
+            continue
+        window = events[(ends[-2] + 1 if len(ends) > 1 else 0):ends[-1]]
+        inputs = [event for event in window if event['type'] == 'message']
+        if not inputs or any(str(event.get('id', '')).startswith(FINISH_REMINDER) for event in inputs):
+            continue
+        identity = '%s%s:%s' % (FINISH_REMINDER, key, end['seq'])
+        refused = controller.finish_reminders_refused
+        if identity in journal.inputs or identity in refused:
+            continue
+        try:
+            controller.send(row['goal_id'], row['leader_session_id'],
+                            behavior_prompts.text(conn, 'finish_reminder', session_id=row['leader_session_id'],
+                                                  values={'title': row['title']}),
+                            identity=identity, source='crew')
+        except (board.BoardError, codex_client.CodexError, OSError) as exc:
+            # Shown once in the task's record; a refused reminder is not retried on every delivery pass.
+            refused.add(identity)
+            journal.emit('error', text='Crew 收尾检查未送达：%s: %s' % (type(exc).__name__, exc))
+
+
+def _seconds_between(earlier, later):
+    from datetime import datetime
+    parse = lambda value: datetime.fromisoformat(value.replace('Z', '+00:00'))
+    return (parse(later) - parse(earlier)).total_seconds()

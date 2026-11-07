@@ -1,6 +1,38 @@
 # Crew 桌面版
 
+0.3.14 “工具与更新”改为检查 `main` 上的版本（原 `rebuild/v2`）。后台程序来源选“指定后台程序目录”并指向 `C:\Tools\Crew-live\plugin` 时，页面改动按 Ctrl+R 生效，后台改动退出重开生效，只有桌面外壳改动需要重新打包。
+
+0.3.13 修复工作台反复提示“服务器错误”；后端输出写入日志文件夹的 backend.log，满 1 MB 轮换。数据目录与安装身份沿用。
+
+0.3.12 新增想法墙全局页面，与项目、全局助手之间同样整页滑动切换。数据目录与安装身份沿用。
+
+0.3.11 项目与全局助手之间整页横向滑动切换（系统减少动画时直接切换），工作区列表悬停整行变色、导出等按钮不再被截断；组员原会话丢失时自动新开并交接，启动时修复带任务派出组员的错误绑定。数据目录与安装身份沿用。
+
+0.3.10 任务详情进对话框右侧浮窗，Leader 栏列出进行中任务，支持自定义音效，任务只能由用户本人验收通过，Git 页先开助手对话。数据目录与安装身份沿用。
+
+0.3.9 Leader 列表改为常驻栏，任务清单改为对话框右侧的浮窗并默认打开，顶栏收成一行。数据目录与安装身份沿用。
+
+0.3.8 工作区改为图标栏加 Leader 滑出列表，任务详情在右侧查看，Git 由内置 Git 助手负责，交付按用户实测验收。数据目录与安装身份沿用。
+
+0.3.7 固定文档收尾习惯：新增机制或插件补必要 Markdown，修改行为先定位并更新已有功能说明，交付前核对一致性。普通问答、测试和小修不强制新增档案，但已有说明过期仍需更新。安装包选择、更新及发布流程见[桌面更新](../docs/DESKTOP_UPDATES.md)。
+
+0.3.6 起产品统一叫 Crew，以版本号区分交付。安装身份、已有数据和启动设置路径沿用；旧路径中的代际后缀仅用于兼容，不属于产品名称。
+
+默认数据目录沿用 `~/.crew-v2`，应用和快捷方式名称为“Crew”。不会在 V1 HOME 中启动或更新，源码更新只检查 `main`。全局助手在项目侧栏底部和桌面标题栏均可打开，跨工作区保持同一会话；工作台是项目主入口，展示任务、讨论、拍板、人工 TODO 与成果。快速想法可先本地保存，再显式开始聊。设置中的“行为配置”提供作用域、版本和实际发送记录。
+
+“设置 → 音效”单独管理 leader 回复完成、全局助手回复完成和任务交付的声音；每类可选内置音效或关闭，并可试听。总开关和音量也控制既有拍板、错误提示。保存后，项目页与助手使用同一份配置；保存与试听不会启动 AI。首次保存前保留网页已有的静音和音量偏好。
+
+设置中的“局域网访问”可开启独立网页入口、生成一次性配对码和移除设备。手机与其他电脑使用同一后台中的已有工作区和助手；本机文件管理、后台设置及原生桌面交接仍需在运行 Crew 的电脑上操作。访问默认关闭；电脑休眠或退出 Crew 后无法访问。详见 [0.3.4 使用与验证](../docs/v2/LAN_ACCESS_0.3.4_2026-11-01.md)。
+
+0.3.5 可在该卡片选择 ZeroTier 及其本机地址，手机加入并开启同一 ZeroTier 网络后，使用显示的网址配对。修改访问地址会短暂断开网页连接，任务执行与历史仍由原后台持有。普通 HTTP 的请求 ID 和复制由共享的 `browser-utils.js` 负责，网页与桌面注入使用同一资源。旧连接迁移和验证见 [0.3.5 说明](../docs/v2/ZEROTIER_0.3.5_2026-11-02.md)。
+
+Windows Codex 桌面接续通过交接与返回按钮轮流使用同一原生对话。Crew 打开专用的官方桌面窗口；点“回到 Crew”时窗口可以保持打开，结束后也能再次交出。已有普通窗口的旧交接需先释放其连接并接回，才能进入新路径。真实两次往返、工具验证和官方标签历史缓存的显示边界见 [0.3.3 接续说明](../docs/v2/NATIVE_DESKTOP_0.3.3_2026-10-30.md)。V2 与 V1 并存，无需先导入旧数据。
+
+以下版本段落保留为基线演进记录，不代表本次新版本的验证结果。
+
 原生 Electron 窗口、工作区首页和系统托盘。需要本机已有 Python 3，以及实际要使用的 Claude Code / Codex；普通工作文件夹无需 Git，后端继续使用 Python 标准库。
+
+Windows 构建还需 .NET Framework 4 自带的 C# 编译器。`npm run build` 与 `npm run build:dir` 会先编译 `native/CrewCodexBridge.cs`，找不到 `csc.exe` 或编译失败会中止构建。生成的 `assets/CrewCodexBridge.exe` 不提交 Git，打包时放在 `app.asar.unpacked/assets/`，通过后台环境传给原生桌面接续功能。开发模式可先运行 `npm --prefix desktop run build:codex-bridge`。
 
 0.2.40 修复普通 spawn 开工后又被目标分配重复启动成员的问题：自动派工遇到仍忙的成员总对话会明确返回冲突；`crew spawn --goal <ID>` 可直接创建并启动一个目标执行，反向重复唤醒也会拒绝。原生线程绑定跨总对话和目标统一检查唯一归属，并补齐并发回归及 GitHub Actions 自动测试。已有独立目标与用户明确发起的总对话继续保留各自历史。
 
@@ -35,7 +67,9 @@ npm start
 
 Git 的中间状态只更新台账，普通成功留待阅，不额外开启 AI 对话。请求方确有合入后的工作才标记 `--blocking` / `data.blocking=true`，成功后与拒绝阻塞按原身份接续。旧的未标记结果保留记录，不主动唤醒；用户答复和真实阻塞照常投递。
 
-每个工作区有独立标签页，切换时保留聊天草稿、当前 Leader、滚动和页面状态。重复打开同一工作区会切到已有标签。`Ctrl+T` 返回工作区选择，`Ctrl+Tab` / `Ctrl+Shift+Tab` 切换标签；`Ctrl+W` 关闭当前项目标签，不停止该工作区的 AI。只剩首页时 `Ctrl+W` 隐藏窗口。菜单还提供 `Ctrl+N` 新建、`Ctrl+O` 打开、`Alt+Left` 返回以及刷新当前标签。
+每个工作区有独立标签页，切换时保留聊天草稿、当前 Leader、滚动和页面状态。重复打开同一工作区会切到已有标签。`Ctrl+T` 返回工作区选择，`Ctrl+Tab` / `Ctrl+Shift+Tab` 切换标签；`Ctrl+W` 关闭当前项目标签，不停止该工作区的 AI。只剩首页时 `Ctrl+W` 隐藏窗口。菜单还提供 `Ctrl+N` 新建、`Ctrl+O` 打开、`Alt+Left` 返回以及刷新当前标签。全局助手标签固定在最右；进入助手时整页向左推开、助手从右侧滑入，返回时反向滑回（约 340 毫秒，首页则被助手覆盖或揭开）。动画中再次切换会从当前位置折返，焦点在落定后交给目标页；系统开启“减少动画”时直接切换。工作区之间、首页与工作区之间仍直接切换。
+
+隐藏标签会释放对话事件连接，切回后从已收到的消息位置补齐记录，后台任务继续执行。上下文压缩的结果通过短请求读取，多个压缩与工作区共用浏览器连接时仍可打开对话。隔离回归 `node plugin/tests/smoke_chat_connections.cjs` 覆盖多标签切换与消息补齐，证据保存在 `Temp/chat-connections/`。
 
 组内关系树的“添加”菜单可直接新建组员，也保留收编入口。设置页“AI 大脑 → leader 召唤组员”配置全局默认；每组标题下的“组员大脑”可单独覆盖，未设置时跟随全局规则，最终跟随所属 leader。手动新建会预填生效的大脑，也可临时改选；填写任务并点击“创建并开始”才执行。leader 与组员改名统一使用带身份说明的弹窗，失败保留输入，工作区改名仍在工作区设置。
 
@@ -43,7 +77,7 @@ Git 的中间状态只更新台账，普通成功留待阅，不额外开启 AI 
 
 “从 Crew 移除”先停止该工作区执行，再从列表移除登记，保留磁盘文件和全部记录。以后重新打开同一目录会恢复原工作区。
 
-打开工作区时可选择升级旧历史或只读查看，启动应用不会自动扫描并导入所有旧目录。首页和工作区菜单可导出完整 `.crewpack`；导入时选择恢复原身份的只读历史或复制为独立工作区，再明确绑定本机目录。导入不恢复旧电脑的执行权限，也不自动启动 AI。历史页可查看消息、附件、报告与保存的文件，项目侧栏的“项目资料”汇集登记文档；任务自己的交付与文档继续保留。详见[本地历史与接续](../docs/storage-v2/implementation.md)。
+打开工作区时可选择升级旧历史或只读查看，启动应用不会自动扫描并导入所有旧目录。首页和工作区菜单可导出完整 `.crewpack`；导入时选择恢复原身份的只读历史或复制为独立工作区，再明确绑定本机目录。导入不恢复旧电脑的执行权限，也不自动启动 AI。历史页可查看消息、附件、报告与保存的文件；项目资料统一从任务内的“交付与文档”进入，不设置侧栏文档总览。详见[本地历史与接续](../docs/storage-v2/implementation.md)。
 
 窗口和托盘会标明“独立数据”或“隔离测试”，便于区分使用的 HOME。历史库接口与“存储与清理”独立；后者继续提供占用、清理预览、回收与恢复。完整历史页隔离验收：`node desktop/scripts/smoke-history.cjs`。
 
@@ -107,20 +141,23 @@ npm run build
 
 ```powershell
 node scripts/smoke.cjs
-node scripts/smoke.cjs dist/win-unpacked/Crew.exe
+node scripts/smoke.cjs "dist/win-unpacked/Crew.exe"
 $crewVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
 node scripts/smoke.cjs "dist/Crew-$crewVersion-portable.exe"
 node scripts/smoke.cjs --reuse
 node scripts/smoke.cjs --visual
 node scripts/smoke-workspaces.cjs
 node scripts/smoke-handoff.cjs
+node scripts/smoke-remote-access.cjs
 node scripts/verify-bundle.cjs
-node scripts/verify-icons.cjs dist/win-unpacked/Crew.exe "dist/Crew-$crewVersion-portable.exe" "dist/Crew-$crewVersion-setup.exe"
+node scripts/verify-icons.cjs "dist/win-unpacked/Crew.exe" "dist/Crew-$crewVersion-portable.exe" "dist/Crew-$crewVersion-setup.exe"
 ```
 
 结果保存在 `smoke-output/source.json` / `packaged.json` / `portable.json` 及同名 PNG。单元测试另外覆盖已有服务复用、Git 根目录解析、新建仓库、已有文件保护与后端端口 0 / 优雅退出。
 
 `smoke-handoff.cjs` 在私有 HOME 用历史记录和假载体守卫验收交接、离线未知结果、真实失败、后续工具状态、折叠与多行草稿保留，以及窄窗深色外观；还核对“在干活”的 leader/下属总数、列表入口、组头人数和空态。证据和截图在 `smoke-output/handoff`。不会向模型发送输入。
+
+`smoke-remote-access.cjs` 使用真实源码桌面窗口、隔离后台与 SQLite，点通设置中的开启、配对、移除设备和关闭；验证原本机服务继续可用，模型启动数为零。结果与截图在 `../Temp/remote-desktop/current/`，`--old-bridge` 可恢复缺失 IPC 的旧错作反证。此脚本不支持包内注入钩子；打包版本用基础启动退出与 `verify-bundle.cjs` 的源码一致性检查。手机及浏览器旅程在根目录运行 `node plugin/tests/smoke_remote_access.cjs`，指定 `--lan-address <本机局域网IPv4>` 可使用真实网卡地址。
 
 启动与退出基准在仓库根目录执行 `node desktop/scripts/benchmark-lifecycle.cjs --label=after`。它使用空 HOME、复用 HOME、已有会话与三个工作区的测试 HOME，另验证借用后台、收起恢复，以及窗口销毁后的排队回调；每次都确认假载体守卫生效且模型启动次数为零。`--desktop=<基线源码中的desktop目录>` 可测另一份冻结源码，`--output=<JSON路径>` 保存结果。“空 HOME”不表示清空操作系统文件缓存，启动就绪与真正进程退出分别计时。
 
@@ -129,6 +166,8 @@ node scripts/verify-icons.cjs dist/win-unpacked/Crew.exe "dist/Crew-$crewVersion
 `--reuse` 会先创建一个完全隔离的测试服务，再检查真实应用退出后该服务仍存活；随后由测试服务的原始拥有者清理。不会复用生产 home 或正式服务。
 
 Renderer 使用 `contextIsolation: true`、`nodeIntegration: false` 和 sandbox；IPC 仅接受自有工作区首页的主 frame，各 IPC 暴露独立函数。项目使用独立 WebContentsView，没有 preload 或文件系统桥接。项目导航严格限制在对应本机项目，外站点击在系统浏览器打开，外站重定向被拒绝。实现依据 Electron 官方的 [安全指南](https://www.electronjs.org/docs/latest/tutorial/security/)、[WebContentsView](https://www.electronjs.org/docs/latest/api/web-contents-view)、[原生标题栏](https://www.electronjs.org/docs/latest/tutorial/custom-title-bar) 和 [Tray](https://www.electronjs.org/docs/latest/api/tray) 文档。
+
+0.3.5 增加报告截图预览。已连接桌面负责渲染 Crew 报告的桌面或手机视口并返回 PNG，后台负责目标鉴权、请求和产物；CC / Codex、leader / 已分配成员、总对话 / 目标执行共用 `report.preview`。这条能力只处理自包含报告正文，不是任意网址或项目文件的浏览器自动化。桌面退出后明确返回不可用，不安装外部浏览器、不唤醒模型；看图判断和交互验收仍须分别完成。协议、原生图片返回和错误说明见[报告预览设计](../docs/decisions-report-preview.md)。
 
 0.2.6 的 Crew 卡片会独立查询 GitHub 最新正式发布和主干版本；没有 Release 如实显示未发布，网络错误单独呈现。「统一后台与插件」仅应用当前桌面自带版本，与线上查询分开。详见 [桌面更新](../docs/DESKTOP_UPDATES.md)。
 
