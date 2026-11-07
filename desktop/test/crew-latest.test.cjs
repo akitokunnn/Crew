@@ -3,7 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { checkLatest, compareVersions } = require('../src/crew-latest.cjs');
 const API = 'https://api.github.com/repos/akitokunnn/Crew';
-const branchRoute = '/commits/rebuild%2Fv2';
+const branchRoute = '/commits/main';
 const build = {appId:'local.crew.desktop.v2'};
 const sha = '0123456789abcdef0123456789abcdef01234567';
 const stamp = '2026-10-25T08:34:39Z';
@@ -32,18 +32,18 @@ test('V2 source version is pinned to the observed branch commit without reading 
   const value = await checkLatest({ fetchImpl: f.fetchImpl, now: () => stamp });
   assert.equal(value.release, null); assert.equal(value.main.version, '0.2.5'); assert.equal(value.main.sha, sha);
   assert.equal(value.checked_at, stamp); assert.match(value.main.url, new RegExp('/blob/' + sha + '/desktop/package.json$'));
-  assert.equal(f.calls.length, 2); assert.equal(value.branch,'rebuild/v2'); assert.equal(value.main.branch,'rebuild/v2');
+  assert.equal(f.calls.length, 2); assert.equal(value.branch,'main'); assert.equal(value.main.branch,'main');
   for (const call of f.calls) {
     assert.equal(call.options.redirect, 'error'); assert.equal(call.options.credentials, 'omit');
     assert.equal(call.options.headers.Authorization, undefined); assert.ok(call.options.signal instanceof AbortSignal);
   }
 });
 
-test('V1 main and latest release are never used even if they advertise a newer version', async () => {
-  const f = fixture({ '/releases/latest': response({ tag_name: 'v99.0.0' }), '/commits/main': response(commit) });
+test('the release feed is never used even if it advertises a newer version', async () => {
+  const f = fixture({ '/releases/latest': response({ tag_name: 'v99.0.0' }) });
   const value = await checkLatest({ fetchImpl: f.fetchImpl });
   assert.equal(value.release,null); assert.equal(value.main.version, '0.2.5');
-  assert.equal(f.calls.some(call=>/releases|commits\/main/.test(call.url)),false);
+  assert.equal(f.calls.some(call=>/releases/.test(call.url)),false);
 });
 
 test('network, HTTP failures and rate limits remain visible', async () => {

@@ -489,8 +489,8 @@ handle('desktop:crew-update-cancel',()=>crewUpdates.cancel());
 handle('desktop:crew-update-open',async kind=>{
   if(!['release','main'].includes(kind))throw new Error('不支持的版本链接');
   const online=crewUpdates.snapshot().online;
-  if(kind==='release'&&!online?.release?.url)throw new Error('当前版本尚未登记正式发布包，请查看 rebuild/v2 分支。');
-  const target=kind==='release'?online.release.url:(online?.main?.url||'https://github.com/akitokunnn/Crew/tree/rebuild/v2');
+  if(kind==='release'&&!online?.release?.url)throw new Error('当前版本尚未登记正式发布包，请查看 main 分支。');
+  const target=kind==='release'?online.release.url:(online?.main?.url||'https://github.com/akitokunnn/Crew/tree/main');
   const url=new URL(target);
   if(url.protocol!=='https:'||url.hostname!=='github.com'||url.username||url.password||!(url.pathname==='/akitokunnn/Crew'||url.pathname.startsWith('/akitokunnn/Crew/')))throw new Error('版本链接不属于 Crew 官方仓库');
   await shell.openExternal(url.href);return {ok:true};
