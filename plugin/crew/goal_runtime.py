@@ -21,6 +21,7 @@ class Controller:
         self.manager = manager
         self.home = manager.home
         self.recovery = None
+        self.finish_reminders_refused = set()
         self.epoch = uuid.uuid4().hex
         self.live_native = None
         self.recovery_errors = {}

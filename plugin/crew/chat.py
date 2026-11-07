@@ -1222,6 +1222,7 @@ class Manager:
             from . import goal_links
             goal_links.deliver(self.goal_controller, conn)
             goal_messages.deliver(self.goal_controller, conn)
+            goal_messages.remind_unfinished(self.goal_controller, conn)
             for message in messaging.pending(conn):
                 sid = message["target_session_id"]
                 target = board.session(conn, sid)

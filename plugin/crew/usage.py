@@ -362,6 +362,20 @@ def _backfill_peer_prompts(conn, files, claude_root, counts):
     conn.execute("PRAGMA user_version = 2")
 
 
+def _subagent_type(path):
+    """Claude Code can leave a subagent transcript without readable .meta.json.
+
+    The transcript still counts; only its type is unknown. Raising here would
+    fail every usage scan, and with it every /api/state poll.
+    """
+    try:
+        meta = json.loads(path.with_suffix(".meta.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    value = meta.get("agentType") if isinstance(meta, dict) else None
+    return value if isinstance(value, str) and value else None
+
+
 def scan(conn, claude_root, codex_root, runs_file, *, receipts_only=False):
     """Return inserted/updated domain rows, skipped lines and their locations.
 
@@ -417,7 +431,7 @@ def scan(conn, claude_root, codex_root, runs_file, *, receipts_only=False):
             if kind.startswith("claude"):
                 identity = _claude_identity(path, claude_root, kind)
                 if kind == "claude_subagent":
-                    agent_type = json.loads(path.with_suffix(".meta.json").read_text(encoding="utf-8"))["agentType"]
+                    agent_type = _subagent_type(path)
             for begin, end, line in _lines(path, offset):
                 before = counts["inserted"], counts["updated"]
                 try:
@@ -926,7 +940,7 @@ def daily(conn, start, end, prices, project=None):
 def by_agent_type(conn, start, end, prices, project=None):
     groups = {}
     for request in _request_rows(conn, start, end, project):
-        key = request["agent_type"] if request["agent_id"] is not None else "main"
+        key = (request["agent_type"] or "unknown") if request["agent_id"] is not None else "main"
         if key not in groups:
             groups[key] = {"agent_type": key, **_aggregate()}
         _add(groups[key], request, prices)

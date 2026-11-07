@@ -2,7 +2,7 @@
 import json
 from urllib.parse import urlencode
 
-from . import behavior_prompts, board, documents, goal_context, goal_work, goals, native_handoff
+from . import behavior_prompts, board, codex_client, documents, goal_context, goal_work, goals, native_handoff
 
 ACCEPTANCE_STATUSES = ('passed', 'failed', 'unverified', 'simulated')
 
@@ -42,6 +42,8 @@ def card(conn, value):
     decision = conn.execute("SELECT d.id,d.question FROM goal_links l JOIN decisions d ON d.id=l.item_id "
                             "WHERE l.kind='decision' AND l.goal_id=? AND d.status='open' ORDER BY d.created_at,d.id LIMIT 1",
                             (value['id'],)).fetchone()
+    finish = conn.execute("SELECT 1 FROM goal_round_finishes WHERE goal_id=? AND round=? AND status='pending'",
+                          (value['id'], value['current_round'])).fetchone()
     working = conn.execute("SELECT COUNT(DISTINCT session_id) FROM goal_executions WHERE goal_id=? AND round=? "
                            "AND status IN ('running','pausing')", (value['id'], value['current_round'])).fetchone()[0]
     # Latest stored activity across the task, its work items, executions and reports; display-only.
@@ -54,6 +56,7 @@ def card(conn, value):
             'work_summary': goal_work.summary_of(work), 'supplements_after_report': supplements,
             'now_doing': [{'key': item['key'], 'title': item['title'], 'session_id': item['owner_session_id']} for item in doing],
             'pending_decision': dict(decision) if decision else None, 'working_count': working,
+            'finish_pending': finish is not None, 'observing': goals.observation(conn, value['id']),
             'last_activity_at': max(value['updated_at'], activity or value['updated_at'])}
 
 
@@ -140,9 +143,29 @@ def post(service, conn, project, path, data):
             with control.manager.lock:
                 report = goals.acceptance_target(conn, identity, action == 'accept', **options)
                 control.stop_delivered(conn, identity)
-                goals.review_acceptance(conn, identity, action == 'accept', **options)
-            return {'goal': card(conn, goals.get(conn, identity)),
+                goals.review_acceptance(conn, identity, action == 'accept', notify_rejection=False, **options)
+            result = {}
+            if action == 'reject':
+                # A requested change is more work on this task: hand it straight to the task's own
+                # execution. Only when that is refused does the leader's general chat get the notice.
+                try:
+                    control.send(identity, value['leader_session_id'],
+                                 behavior_prompts.text(conn, 'rejection_input', session_id=value['leader_session_id'],
+                                                       values={'note': options['note']}),
+                                 identity='crew-rejection:%s:%s' % (identity, report['id']), source='crew')
+                    result['resumed'] = True
+                except (board.BoardError, codex_client.CodexError, OSError) as exc:
+                    board.queue_leader_notice(conn, value['leader_session_id'],
+                                              goals.rejection_notice(goals.get(conn, identity), options['note']), 'web')
+                    result.update(resumed=False, resume_error=str(exc))
+            return {**result, 'goal': card(conn, goals.get(conn, identity)),
                     'acceptance_review': goals.report_review(conn, identity, report['id'])}
+        if action == 'observe':
+            if 'actor_session_id' in data or 'execution_id' in data:
+                raise board.BoardError('验收入口由用户本人操作，不能指定 AI 执行身份')
+            goals.observe(conn, identity, note=data.get('note', ''), expected_version=data.get('version'),
+                          report_id=data.get('report_id'))
+            return {'goal': card(conn, goals.get(conn, identity))}
         if action == 'pause':
             control.pause(identity)
         elif action == 'start':

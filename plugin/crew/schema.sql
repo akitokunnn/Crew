@@ -869,6 +869,14 @@ CREATE TABLE IF NOT EXISTS goal_acceptances (
  PRIMARY KEY(goal_id,round)
 );
 
+-- "观察中": the user has looked at this delivery and is fine so far, but keeps the task open to watch it
+-- in real use before deciding. The task stays awaiting_acceptance; nothing runs and no AI is woken.
+CREATE TABLE IF NOT EXISTS goal_observations (
+ goal_id TEXT NOT NULL REFERENCES goals(id), report_id TEXT NOT NULL REFERENCES goal_reports(id),
+ note TEXT NOT NULL DEFAULT '', actor TEXT NOT NULL, created_at TEXT NOT NULL,
+ PRIMARY KEY(goal_id,report_id)
+);
+
 -- Continuing an existing delivery preserves its previous finish and review.
 -- A new execution/requirement version does not imply a new user-visible round.
 CREATE TABLE IF NOT EXISTS goal_continuations (

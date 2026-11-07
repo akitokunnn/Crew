@@ -816,7 +816,8 @@ def acceptance_target(conn, goal_id, accepted, *, note='', actor=board.HUMAN, ex
 
 
 @atomic
-def review_acceptance(conn, goal_id, accepted, *, note='', actor=board.HUMAN, expected_version=None, report_id=None, now=None):
+def review_acceptance(conn, goal_id, accepted, *, note='', actor=board.HUMAN, expected_version=None, report_id=None,
+                      notify_rejection=True, now=None):
     report = acceptance_target(conn, goal_id, accepted, note=note, actor=actor,
                                expected_version=expected_version, report_id=report_id)
     goal = _row(conn, goal_id)
@@ -842,9 +843,62 @@ def review_acceptance(conn, goal_id, accepted, *, note='', actor=board.HUMAN, ex
         text = '任务「%s」用户验收通过。\n可归档的成员：%s。\n请完成收尾；可用 crew archive <名字>（Codex：crew_archive）归档这些成员。' % (goal['title'], '、'.join(names) if names else '无')
     else:
         result = continue_task(conn, goal_id, note, actor=actor, expected_version=expected_version, now=now)
-        text = '任务「%s」用户要求修改：%s\n已保留任务 ID %s 与第 %s 轮，请在同一任务内继续修改并重新提交用户验收。' % (goal['title'], note, goal_id, goal['current_round'])
+        if not notify_rejection:
+            return result
+        text = rejection_notice(goal, note)
     board._queue_leader_notice(conn, goal['leader_session_id'], text, 'web', now)
     return result
+
+
+def rejection_notice(goal, note):
+    """General-chat fallback when the rejected task could not be resumed in its own execution."""
+    return ('任务「%s」用户验收后要求修改：%s\n任务 ID %s 仍是第 %s 轮，已回到待开始。请用 crew goal start %s'
+            '（Codex：crew_goal 的 start）在本任务内按意见修改，完成并验证后重新 crew goal finish 提交验收。'
+            % (goal['title'], note, goal['id'], goal['current_round'], goal['id']))
+
+
+def _review_report(conn, goal):
+    return conn.execute('SELECT * FROM goal_reports WHERE goal_id=? AND round=? ORDER BY version DESC LIMIT 1',
+                        (goal['id'], goal['current_round'])).fetchone()
+
+
+@atomic
+def observe(conn, goal_id, *, note='', actor=board.HUMAN, expected_version=None, report_id=None, now=None):
+    """The user looked and is fine so far, but keeps the task open to watch it in real use.
+
+    The task stays awaiting_acceptance: nothing runs and no AI is woken. The user still decides with
+    accept or reject later; a newer report starts a fresh review.
+    """
+    if actor != board.HUMAN:
+        raise board.BoardError('“先观察”只能由用户本人标记')
+    if type(expected_version) is not int:
+        raise board.BoardError('先观察必须提供当前目标版本')
+    goal = _row(conn, goal_id)
+    _expected(goal, expected_version)
+    if goal['status'] != 'awaiting_acceptance':
+        raise board.Conflict('只有待验收的任务可以先观察')
+    note = _text(note, '观察说明', required=False, limit=10000)
+    report = _review_report(conn, goal)
+    if report is None or report['outcome'] != 'awaiting_acceptance':
+        raise board.Conflict('当前轮次最新报告不是待用户验收的报告')
+    if report_id is not None and report_id != report['id']:
+        raise board.Conflict('验收报告已变化，请重新查看最新报告')
+    conn.execute('INSERT INTO goal_observations(goal_id,report_id,note,actor,created_at) VALUES(?,?,?,?,?) '
+                 'ON CONFLICT(goal_id,report_id) DO UPDATE SET note=excluded.note,created_at=excluded.created_at',
+                 (goal_id, report['id'], note, actor, board._time(now)))
+    _touch(conn, goal_id, now)
+    return get(conn, goal_id)
+
+
+def observation(conn, goal_id):
+    """The user's "先观察" mark on the report currently waiting for acceptance, if any."""
+    goal = _row(conn, goal_id)
+    if goal['status'] != 'awaiting_acceptance':
+        return None
+    report = _review_report(conn, goal)
+    row = report and conn.execute('SELECT note,created_at FROM goal_observations WHERE goal_id=? AND report_id=?',
+                                  (goal_id, report['id'])).fetchone()
+    return dict(row) if row else None
 
 
 def get_finish(conn, goal_id):

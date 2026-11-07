@@ -83,12 +83,14 @@ def snapshot(service, conn, project):
     for value in goals.list_goals(conn, project):
         if value['leader_session_id'] not in visible:
             continue
-        if value['status'] == 'awaiting_acceptance':
+        # A delivery the user marked "先观察" is already looked at: it no longer asks for attention.
+        reviewing = value['status'] == 'awaiting_acceptance' and goals.observation(conn, value['id']) is None
+        if reviewing:
             counts['acceptance'] += 1
         report = conn.execute('SELECT data_json,created_at FROM goal_reports WHERE goal_id=? AND round=? '
                               'ORDER BY version DESC LIMIT 1', (value['id'], value['current_round'])).fetchone()
-        if report and (value['status'] == 'awaiting_acceptance' or store.parse_iso(report['created_at']) >= service.now() - dt.timedelta(hours=24)):
-            items.append({'kind': 'acceptance' if value['status'] == 'awaiting_acceptance' else 'delivery', 'title': value['title'][:160], 'name': visible[value['leader_session_id']]['crew_name'],
+        if report and (reviewing or store.parse_iso(report['created_at']) >= service.now() - dt.timedelta(hours=24)):
+            items.append({'kind': 'acceptance' if reviewing else 'delivery', 'title': value['title'][:160], 'name': visible[value['leader_session_id']]['crew_name'],
                           'detail': json.loads(report['data_json']).get('summary', '')[:160], 'at': report['created_at']})
     counts['unread'] += channel.state(conn, project)['unread']
     priority = {'approval': 0, 'decision': 1, 'acceptance': 2, 'todo': 3, 'waiting': 4, 'error': 5, 'delivery': 6, 'working': 7, 'reply': 8}
