@@ -49,6 +49,21 @@ test("cancel needs explicit confirmation and reject requires a preserved human n
   await h.submit(form);assert(!h.calls.some(call=>call.data));assert(error.textContent.includes("修改"));form.elements.note.value="缺少录音对照证据";await h.submit(form);assert.deepEqual(JSON.parse(JSON.stringify(h.calls.find(call=>call.data).data)),{goal_id:"a",action:"reject",version:1,note:"缺少录音对照证据"});
 });
 
+test("review buttons decide on the shown report from the home card, the task banner or the reader",async()=>{
+  const h=harness(async(url,data)=>data?{goal:{...h.state.goals[1],status:"completed"},resumed:true}:{goal:{...h.state.goals[0]},context:{items:[],manifest:{}},reports:[]});h.client.sync("leader","a");await tick();
+  const card=h.module.reviewButtons({id:"b",version:4},"report-b");
+  for(const part of ['data-review="accept"','data-review="reject"','data-goal-id="b"','data-version="4"','data-report-id="report-b"','>通过<','>需修改<'])assert(card.includes(part),part);
+  await h.click("review",{review:"accept",goalId:"b",version:"4",reportId:"report-b"});
+  assert.deepEqual(JSON.parse(JSON.stringify(h.calls.find(call=>call.data).data)),{goal_id:"b",action:"accept",version:4,report_id:"report-b",note:""},"a home card decides on its own goal, not the open task");
+  h.calls.length=0;await h.click("review",{review:"reject",goalId:"b",version:"4",reportId:"report-b"});assert(!h.calls.some(call=>call.data),"a requested change always asks for the reason first");
+  assert(card.includes('data-review="observe"'));assert(!h.module.reviewButtons({id:"b",version:5,observing:{note:"",created_at:"2026-11-07T00:00:00Z"}},"report-b").includes('data-review="observe"'),"an observed task offers only the final decision");
+  await h.click("review",{review:"observe",goalId:"b",version:"4",reportId:"report-b"});
+  assert.deepEqual(JSON.parse(JSON.stringify(h.calls.find(call=>call.data).data)),{goal_id:"b",action:"observe",version:4,report_id:"report-b"},"observing is one click and keeps the task open");
+  h.calls.length=0;await h.click("review",{review:"reject",goalId:"b",version:"4",reportId:"report-b"});
+  const error={textContent:""},button={disabled:false};const form={dataset:{goalConfirm:"reject",goalId:"b",version:"4",reportId:"report-b"},elements:{note:{value:"按钮太小"}},hasAttribute:name=>name==="data-goal-confirm",querySelector:selector=>selector===".error-line"?error:button};
+  await h.submit(form);assert.deepEqual(JSON.parse(JSON.stringify(h.calls.find(call=>call.data).data)),{goal_id:"b",action:"reject",version:4,report_id:"report-b",note:"按钮太小"});
+});
+
 test("delivered tasks invite direct follow-up and a new round keeps the earlier human review visible",async()=>{
   const h=harness(async()=>({goal:{...h.state.goals[0],status:"running",current_round:2},
     context:{items:[],manifest:{}},reports:[],acceptance_review:null,
@@ -92,7 +107,7 @@ test("goal details show structured acceptance titles, newest report and explicit
     const h=harness(async()=>({goal:{...h.state.goals[0],status,current_round:2,acceptance:[{id:"a1",title:"真实输入例子达标"}]},context:{items:[],manifest:{}},reports:[{id:"new",title:"短句验证",round:2,requirement_version:1,version:1,current:true,status:status==="awaiting_acceptance"?status:"completed",summary:"最新结论",acceptance_counts:{passed:1,failed:0,unverified:0,simulated:0},unresolved:[]},{id:"old",title:"短句验证",round:1,requirement_version:1,version:1,current:false,status:"failed",summary:"旧轮次结论",acceptance_counts:{passed:1,failed:0,unverified:0,simulated:0},unresolved:[]}]}));
     h.client.sync("leader","a");await tick();const markup=surfaces(h);assert(markup.includes("真实输入例子达标"));assert(!markup.includes("[object Object]"));
     assert(markup.includes("最新结论"));assert(!markup.includes("旧轮次结论"),"an older round report is never shown as this round's conclusion");
-    if(status==="waiting_user")assert(markup.includes('data-action="resume"'));else if(status==="completed")assert(!markup.includes('data-action="reopen"'));else{assert(markup.includes('data-action="accept"'));assert(markup.includes('data-action="reject"'));assert(!markup.includes('data-action="reopen"'));}
+    if(status==="waiting_user")assert(markup.includes('data-action="resume"'));else if(status==="completed")assert(!markup.includes('data-action="reopen"'));else{assert(markup.includes('class="task-review-banner"'));assert(markup.includes('data-review="accept"'));assert(markup.includes('data-review="reject"'));assert(!markup.includes('data-action="reopen"'));}
     if(status==="awaiting_acceptance")assert(markup.includes("待验收"));
     assert(h.calls.every(call=>call.data===undefined),"opening details does not start or reopen a goal");
   }

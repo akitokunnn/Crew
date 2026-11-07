@@ -99,6 +99,29 @@ class GoalAcceptanceTests(GoalFixture):
         self.assertIsNone(goals.acceptance_review(self.conn, goal['id']))
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM goal_acceptances').fetchone()[0], 1)
 
+    def test_observing_keeps_the_task_open_until_the_user_decides(self):
+        goal, report = self.awaiting()
+        with self.assertRaises(board.BoardError):
+            goals.observe(self.conn, goal['id'], actor='s3', expected_version=goal['version'])
+        with self.assertRaises(board.Conflict):
+            goals.observe(self.conn, goal['id'], expected_version=goal['version'], report_id='older-report')
+        watching = goals.observe(self.conn, goal['id'], note='先用两天', expected_version=goal['version'], report_id=report['id'])
+        self.assertEqual(watching['status'], 'awaiting_acceptance', 'observing is not an ending and starts nothing')
+        self.assertEqual(goals.observation(self.conn, goal['id'])['note'], '先用两天')
+        self.assertIsNone(goals.acceptance_review(self.conn, goal['id']))
+        done = goals.review_acceptance(self.conn, goal['id'], True, expected_version=watching['version'], report_id=report['id'])
+        self.assertEqual(done['status'], 'completed')
+        self.assertIsNone(goals.observation(self.conn, goal['id']), 'a decided task is no longer observed')
+
+    def test_a_requested_change_and_a_new_report_start_a_fresh_review(self):
+        goal, report = self.awaiting()
+        watching = goals.observe(self.conn, goal['id'], expected_version=goal['version'], report_id=report['id'])
+        goals.review_acceptance(self.conn, goal['id'], False, note='用了一天发现按钮会消失', expected_version=watching['version'])
+        goals.transition(self.conn, goal['id'], 'running')
+        goals.save_report(self.conn, goal['id'], self.report('awaiting_acceptance'))
+        goals.transition(self.conn, goal['id'], 'awaiting_acceptance')
+        self.assertIsNone(goals.observation(self.conn, goal['id']))
+
     def test_ai_stale_versions_and_a_superseded_report_cannot_be_accepted(self):
         goal, report = self.awaiting()
         with self.assertRaises(board.BoardError):
