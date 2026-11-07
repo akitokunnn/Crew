@@ -390,9 +390,8 @@ def _finished_review(conn, goal):
                           (goal['id'], goal['current_round'])).fetchone()
     if latest is None or latest['id'] != finish['report_id']:
         return None
-    report = get_report(conn, finish['report_id'])
-    validate_report(conn, goal['id'], report['data'])
-    return report
+    # The report was validated when it was finalized; later report rules must not strand older deliveries.
+    return get_report(conn, finish['report_id'])
 
 
 @atomic

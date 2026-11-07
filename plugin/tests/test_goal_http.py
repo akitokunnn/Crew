@@ -1214,6 +1214,22 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(len(self.server.service.chat.journal(execution_id).events), inputs)
         self.assertEqual(tuple(self.conn.execute('SELECT data_json,html FROM goal_reports WHERE id=?', (report['id'],)).fetchone()), original)
 
+    def test_user_resumes_review_whose_report_predates_current_report_rules(self):
+        goal, report, _, _ = self.awaiting_acceptance()
+        # Reports finalized before user_test became mandatory have no such field.
+        data = json.loads(self.conn.execute('SELECT data_json FROM goal_reports WHERE id=?', (report['id'],)).fetchone()[0])
+        data.pop('user_test', None)
+        self.conn.execute('UPDATE goal_reports SET data_json=? WHERE id=?', (json.dumps(data), report['id']))
+        goals.request_pause(self.conn, goal['id'], manual=True, reason='明确停止此人员')
+        self.server.service.chat.goal_controller.sync(self.conn, goal['id'])
+        current = goals.get(self.conn, goal['id'])
+        code, result, _ = self.request('/api/goals/action?project=demo', {
+            'goal_id': goal['id'], 'action': 'resume', 'version': current['version']})
+        self.assertEqual(code, 200, result)
+        self.assertEqual(result['resumed'], 'acceptance')
+        self.assertEqual(result['goal']['status'], 'awaiting_acceptance')
+        self.assertFalse(goals.get(self.conn, goal['id'])['manual_pause'])
+
     def test_agent_review_resume_cannot_override_manual_pause(self):
         goal, _, _, _ = self.awaiting_acceptance()
         goals.request_pause(self.conn, goal['id'], manual=True)
