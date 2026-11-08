@@ -30,7 +30,7 @@ function harness(state = fixture(), fetcher = () => { throw new Error("Unexpecte
     contains:() => false, querySelectorAll:() => [], setAttribute(name, value) { this[name] = value; }});
   for (const id of ["menu", "backdrop", "main", "leader-panel", "trust-error", "leader-runtime-options", "leader-runtime-status", "leader-model-options", "leader-effort-note", "leader-effort-options"]) nodes.set(id, node());
   const escape = value => String(value).replace(/[&<>"']/g, c => ({"&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"})[c]);
-  const sandbox = {window:{}, document:{visibilityState:"visible",hasFocus:()=>true,activeElement:null, getElementById:id => nodes.get(id) || null, addEventListener:(type, handler) => listeners.set(type, handler)},
+  const sandbox = {window:{matchMedia:() => ({matches:false})}, document:{visibilityState:"visible",hasFocus:()=>true,activeElement:null, getElementById:id => nodes.get(id) || null, addEventListener:(type, handler) => listeners.set(type, handler)},
     location:{search:"?project=fixture", origin:"http://fixture.local", hash:""}, URLSearchParams, URL, fetch:fetcher, console,
     CrewTheme:{logo:()=>""}, CrewChat:{renderInline:escape, renderMarkdown:text => `<p>${escape(text)}</p>`}};
   vm.createContext(sandbox);

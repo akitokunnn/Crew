@@ -20,6 +20,8 @@
   let allTab = "overview", period = "week", usageTab = "tree", usage = null, usageLoading = false, usageRequest = 0;
   let cardId = null, cardReturn = null, handoff = null, rightOpen = false, dialogReturn = null;
   let theme = "system", leadersOpen = true, presenceOpen = false, presenceFailure = null;
+  // 手机宽度下 Leader 栏是覆盖在内容上的抽屉：每次打开默认收起，选完即收，不改宽屏的记忆。
+  const narrowLayout = () => window.matchMedia("(max-width:760px)").matches;
   let soundGeneration = 0;
   let runtimesCache = null, runtimesPromise = null, runtimesLoading = false, runtimesError = null;
   let auxiliaryDialog = 0;
@@ -271,6 +273,7 @@
     leadersOpen = open;
     $("leader-panel").dataset.open = String(open); $("leader-panel").inert = !open;
     $("leader-entry").setAttribute("aria-expanded", String(open));
+    if (narrowLayout()) return;
     try { localStorage.setItem("crew.leadersOpen", String(open)); }
     catch { leadersOpen = true; $("leader-panel").dataset.open = "true"; $("leader-panel").inert = false; $("leader-entry").setAttribute("aria-expanded", "true"); }
   }
@@ -1036,7 +1039,7 @@
       const result = await api("/api/state"), previous = state; state = result;
       CrewSound.observe(state.sounds, state.now);
       nativeApprovals?.sync(state); CrewActivity.sync(state); applyTheme(); renderSettings();
-      if (project === null) { $("app").className = "workspace-entry"; $("sidebar").hidden = true; $("right-panel").hidden = true; replace($("main"), `<div class="workspace-home"><span class="workspace-logo" aria-hidden="true">${CrewTheme.logo()}</span><h1>Crew 工作区</h1><a class="btn" href="/assistant.html">全局助手</a><button data-local-control class="btn ghost" data-act="settings">设置</button><p class="note">选一个项目，继续聊。</p><div class="list">${state.projects.map(item => `<a class="li project-entry" style="${CrewTheme.projectStyle(state.themes, item.theme)}" href="/?project=${encodeURIComponent(item.name)}"><span class="project-logo" aria-hidden="true">${CrewTheme.logo()}</span><span class="grow">${esc(projectDisplay(item))}</span><span class="project-theme-name">${esc(CrewTheme.get(state.themes, item.theme).name)}</span>${ic("right")}</a>`).join("")}</div></div>`); document.title = "工作区 · Crew"; return; }
+      if (project === null) { $("app").className = "workspace-entry"; $("sidebar").hidden = true; $("leader-panel").hidden = true; $("right-panel").hidden = true; replace($("main"), `<div class="workspace-home"><span class="workspace-logo" aria-hidden="true">${CrewTheme.logo()}</span><h1>Crew 工作区</h1><a class="btn" href="/assistant.html">全局助手</a><button data-local-control class="btn ghost" data-act="settings">设置</button><p class="note">选一个项目，继续聊。</p><div class="list">${state.projects.map(item => `<a class="li project-entry" style="${CrewTheme.projectStyle(state.themes, item.theme)}" href="/?project=${encodeURIComponent(item.name)}"><span class="project-logo" aria-hidden="true">${CrewTheme.logo()}</span><span class="grow">${esc(projectDisplay(item))}</span><span class="project-theme-name">${esc(CrewTheme.get(state.themes, item.theme).name)}</span>${ic("right")}</a>`).join("")}</div></div>`); document.title = "工作区 · Crew"; return; }
       if (previous === null) readRoute();
       if (readOnlyId !== null && !state.members.some(item => item.session_id === readOnlyId)) { navigate("all"); toast("该会话已不在下属列表，已返回工作台"); }
       else if (view === "chat" && readOnlyId === null && leader(leaderId) === undefined) { navigate("all"); toast("这个 leader 已结束，已返回工作台"); }
@@ -1102,7 +1105,8 @@
         remote:host => window.CrewRemoteAccess.mount(host,{read:()=>api("/api/remote-access"),action:body=>api("/api/remote-access",body)}),prompts:host => window.CrewBehaviorPrompts.mount(host,{read:query => api("/api/behavior-prompts?"+new URLSearchParams(query)),save:body => api("/api/behavior-prompts",body),project,session:behaviorSession || (view === "chat" ? readOnlyId || leaderId : null),execution:goals?.executionFor(behaviorSession || readOnlyId || leaderId)?.id}),appearance(host) { host.append($("settings")); return () => $("settings-parking").append($("settings")); }, connections:settingsConnections, storage:settingsStorage}});
     try { const stored = localStorage.getItem("crew.theme"); if (["system", "light", "dark"].includes(stored)) theme = stored; } catch (error) { toast(error.message); }
     try { const stored = Number(localStorage.getItem("crew.fontScale")); if (stored >= FONT_MIN && stored <= FONT_MAX) fontScale = stored; } catch (error) { toast(error.message); }
-    try { leadersOpen = localStorage.getItem("crew.leadersOpen") !== "false"; } catch { leadersOpen = true; }
+    try { leadersOpen = !narrowLayout() && localStorage.getItem("crew.leadersOpen") !== "false"; } catch { leadersOpen = !narrowLayout(); }
+    $("leader-panel").dataset.open = String(leadersOpen); $("leader-panel").inert = !leadersOpen;
     CrewChat.initFiles(api, toast);
     if (window.CrewNativeApprovals) nativeApprovals = window.CrewNativeApprovals.create({api,toast,refreshState:() => loadState(true),onChange() { if (!state || project === null) return; renderSidebar(); if (view === "chat") renderChat(); else if (view === "all") renderAll(); }});
     if (window.CrewDocuments && project !== null) documents = window.CrewDocuments.create({project, api, toast,
@@ -1135,6 +1139,7 @@
     });
     document.addEventListener("pointerdown", event => {
       if (presenceOpen && !event.target.closest('#presence-popover,#presence-entry')) setPresenceOpen(false);
+      if (narrowLayout() && leadersOpen && !event.target.closest('#leader-panel,#leader-entry,#menu')) setLeadersOpen(false);
     });
     document.addEventListener("click", event => {
       if (event.target.id === "backdrop") { closeBackdrop(); return; }
@@ -1146,6 +1151,7 @@
       if (act === "tasks-toggle") { if (goalId !== null) showTaskList(); else setTasksOpen(!tasksOpen); return; }
       if (act === "tasks-back") { showTaskList(); return; }
       if (act === "leaders-toggle") { setLeadersOpen(!leadersOpen); return; }
+      if (narrowLayout() && leadersOpen && button.closest("#leader-panel")) setLeadersOpen(false);
       if (act === "presence-toggle") { setPresenceOpen(!presenceOpen); return; }
       if (act === "connection-settings") { openSettings("connections"); return; }
       if (act === "settings") { openSettings(button.dataset.category || "ai", button.dataset.promptSession || null); return; }
