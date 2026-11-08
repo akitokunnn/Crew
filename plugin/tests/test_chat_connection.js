@@ -11,7 +11,7 @@ function harness(){
   const journals=new Map(),journalKey=params=>JSON.stringify([params.get("project")||"",params.get("session_id")]);
   const timers=new Map(),saved=new Map(),streams=[],connections=[],frames=new Map(),handlers=new Map();let next=1;
   const motion={matches:true};
-  const sandbox={matchMedia:()=>motion,atob,btoa,URLSearchParams,AbortController,TextDecoder,
+  const sandbox={matchMedia:query=>query.includes("max-width")?{matches:false}:motion,atob,btoa,URLSearchParams,AbortController,TextDecoder,
     EventSource:class{static CLOSED=2;constructor(url){connections.push({url});}close(){}},
     addEventListener(type,fn){if(!handlers.has(type))handlers.set(type,new Set());handlers.get(type).add(fn);},removeEventListener(type,fn){handlers.get(type)?.delete(fn);},
     localStorage:{getItem:key=>saved.get(key)??null,setItem:(key,value)=>saved.set(key,value)},

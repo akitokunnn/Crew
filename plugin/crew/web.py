@@ -1856,6 +1856,9 @@ STATIC.update({'/settings-ui.js': ('settings-ui.js', 'text/javascript; charset=u
 STATIC.update({'/operations-ui.js': ('operations-ui.js', 'text/javascript; charset=utf-8'),
                '/operations-ui.css': ('operations-ui.css', 'text/css; charset=utf-8')})
 STATIC.update({'/member-ui.js': ('member-ui.js', 'text/javascript; charset=utf-8'), '/member-ui.css': ('member-ui.css', 'text/css; charset=utf-8')})
+# 手机外壳与各区域的手机样式（窄屏才加载）
+STATIC.update({f'/{name}.css': (f'{name}.css', 'text/css; charset=utf-8') for name in ('mobile', 'mobile-chat', 'mobile-home', 'mobile-pages')})
+STATIC['/mobile-shell.js'] = ('mobile-shell.js', 'text/javascript; charset=utf-8')
 STATIC['/launch-settings-ui.js'] = ('launch-settings-ui.js', 'text/javascript; charset=utf-8')
 STATIC.update({'/workspace-settings-ui.js': ('workspace-settings-ui.js', 'text/javascript; charset=utf-8'),
                '/workspace-settings-ui.css': ('workspace-settings-ui.css', 'text/css; charset=utf-8')})

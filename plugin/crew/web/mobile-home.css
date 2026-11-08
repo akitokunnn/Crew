@@ -1,0 +1,251 @@
+/* 手机样式（≤760px，由 <link media> 加载）。见 mobile.css 的设计基准。
+   本文件管：项目工作台（#all 及其子页）、待办（#todos）、Leader 交流区（#channel）、工作区入口（/）。
+   思路：iOS 大标题 + inset grouped 列表；卡片单列全宽；按钮 ≥44px；正文 15px、辅助 13px、最小 12px。 */
+
+/* ===================== 通用：整页一起滚动（大标题随内容滚走） ===================== */
+.main:has(>.wh-head),.main:has(.todos-page),.main:has(.page-in>.summary>.pill.tab){overflow-y:auto;-webkit-overflow-scrolling:touch}
+.main:has(>.wh-head)>.page,.main:has(.todos-page)>.page,.main:has(.page-in>.summary>.pill.tab)>.page{flex:none;height:auto;overflow:visible}
+
+/* 大标题页头（工作台子页、待办共用 .head.big） */
+.main:has(.todos-page)>.head.big,.main:has(.page-in>.summary>.pill.tab)>.head.big{height:auto;min-height:0;flex-wrap:wrap;align-items:flex-end;padding:calc(var(--m-safe-t) + 20px) var(--m-gutter) 12px;border-bottom:0}
+.main:has(.todos-page)>.head.big .title,.main:has(.page-in>.summary>.pill.tab)>.head.big .title{display:flex;align-items:center;gap:10px;font-size:28px;font-weight:700;line-height:1.2;letter-spacing:-.01em}
+.main:has(.todos-page)>.head.big .sub,.main:has(.page-in>.summary>.pill.tab)>.head.big .sub{display:block;margin-top:4px;font-size:var(--m-fs-meta);line-height:1.5;color:var(--text-2);white-space:normal}
+.todo-page-count{min-width:26px;height:26px;padding:0 8px;border-radius:13px;font-size:var(--m-fs-meta);box-sizing:border-box}
+.main:has(.todos-page) .page-in,.main:has(.page-in>.summary>.pill.tab) .page-in{padding:4px var(--m-gutter) 32px}
+
+/* ===================== 工作台页头：大标题 + 一个主要操作 ===================== */
+.head.wh-head{display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"eye act" "title title" "sub sub";align-items:center;gap:0 8px;height:auto;min-height:0;padding:calc(var(--m-safe-t) + 6px) var(--m-gutter) 16px;border-bottom:0}
+.wh-head>div:first-child{display:contents}
+.wh-eyebrow{grid-area:eye;font-size:var(--m-fs-meta);font-weight:600;letter-spacing:.04em;color:var(--text-3)}
+.wh-head h1.title{grid-area:title;margin:6px 0 2px;font-size:30px;font-weight:700;line-height:1.2;letter-spacing:-.02em;overflow-wrap:anywhere}
+.wh-head .sub{grid-area:sub;display:block;margin:0;font-size:var(--m-fs-meta);line-height:1.5;color:var(--text-2)}
+.wh-head>.right{grid-area:act;margin:0;gap:2px;flex-wrap:nowrap}
+.wh-head .icon-btn{width:var(--m-tap);height:var(--m-tap);border-radius:22px;color:var(--text-2)}
+.wh-head .icon-btn .i{width:22px;height:22px}
+.wh-head .btn.primary{min-height:40px;margin:2px 0;padding:0 16px;border-radius:20px;font-size:var(--m-fs-body);font-weight:600}
+.wh-page{padding:0 var(--m-gutter) 32px}
+
+/* ===================== 统计条：三格数字 + 架构图入口行 ===================== */
+.wh-overview{display:grid;align-items:stretch;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:0 0 28px;padding:0;border:0}
+.wh-overview-item{position:relative;display:flex;flex-direction:column;align-items:flex-start;justify-content:flex-start;gap:2px;min-width:0;min-height:78px;margin:0;padding:12px;box-sizing:border-box;border:1px solid var(--line);border-radius:var(--m-radius);background:var(--surface);color:var(--text-2);font-size:var(--m-fs-min);line-height:1.35;text-align:left;overflow-wrap:anywhere}
+.wh-overview-item strong{font-size:24px;line-height:1.2;font-weight:700;font-variant-numeric:tabular-nums;color:var(--text)}
+.wh-overview-item>.dot{position:absolute;top:14px;right:12px;margin:0}
+button.wh-overview-item:active{background:var(--hover)}
+.wh-overview .wh-people{grid-column:1/-1;display:flex;align-items:center;gap:12px;width:100%;min-height:52px;margin:0;padding:0 16px;box-sizing:border-box;border:1px solid var(--line);border-radius:var(--m-radius);background:var(--surface);color:var(--text);font-size:var(--m-fs-body);font-weight:500}
+.wh-overview .wh-people .i{width:20px;height:20px;color:var(--accent-text)}
+.wh-overview .wh-people::after{content:"›";margin-left:auto;font-size:22px;line-height:1;color:var(--text-3)}
+.wh-overview .wh-people:active{background:var(--hover)}
+
+/* ===================== 分区标题 ===================== */
+.wh-columns{display:flex!important;flex-direction:column;align-items:stretch;gap:28px}
+.wh-section-head{gap:8px;margin:0 0 10px;padding:0 4px}
+.wh-section-head h2{font-size:var(--m-fs-section);font-weight:650;line-height:1.3}
+.wh-section-head>span{min-width:22px;height:22px;padding:0 7px;box-sizing:border-box;border-radius:11px;background:var(--hover);color:var(--text-2);font-size:var(--m-fs-min);font-weight:600;line-height:22px;text-align:center;font-variant-numeric:tabular-nums}
+.wh-reviews,.wh-observing{margin-bottom:28px}
+.wh-attention{margin:0;padding:0;border-bottom:0}
+.wh-quiet{padding:16px;border-radius:var(--m-radius);background:var(--surface);border:1px solid var(--line);font-size:var(--m-fs-body);color:var(--text-2)}
+
+/* ===================== 待你验收卡片 ===================== */
+.wh-review-list{gap:12px}
+.wh-review{gap:12px;padding:16px;border-radius:var(--m-radius)}
+.wh-review-head{gap:6px 8px}
+.wh-review-head .goal-status{order:1;font-size:var(--m-fs-min);padding:3px 8px;border-radius:6px}
+.wh-review-owner{order:2;margin-left:auto;font-size:var(--m-fs-meta)}
+.wh-review-head strong{order:3;flex-basis:100%;font-size:var(--m-fs-section);font-weight:650;line-height:1.4}
+.wh-review-summary{font-size:var(--m-fs-body);line-height:1.6;-webkit-line-clamp:6}
+.wh-review-test{padding:12px 14px;border-radius:12px}
+.wh-review-test>span{font-size:var(--m-fs-meta)}
+.wh-review-test ol{gap:10px;padding-left:22px}
+.wh-review-test li{font-size:var(--m-fs-body);line-height:1.55}
+.wh-review-expected,.wh-review-more{font-size:var(--m-fs-meta)}
+.wh-review .goal-supplements .text-link{display:flex;align-items:center;min-height:var(--m-tap);font-size:14px}
+.wh-review .goal-supplements li,.wh-review .goal-supplements p{font-size:14px;overflow-wrap:anywhere}
+/* 操作：通过 / 需修改 一行两个大按钮，次要操作降为浅色，任务详情放最后 */
+.wh-review-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:4px}
+.wh-review-actions>.review-buttons{display:contents}
+.wh-review-actions .btn{justify-content:center;width:100%;min-height:var(--m-tap);margin:0;padding:0 12px;box-sizing:border-box;border-radius:12px;font-size:var(--m-fs-body);white-space:normal;text-align:center}
+.wh-review-actions .review-accept,.wh-review-actions .review-reject{font-weight:600}
+.wh-review-actions .btn.ghost{background:var(--hover);color:var(--text)}
+.wh-review-actions .review-observe{color:var(--text-2)}
+.wh-review-open{grid-column:1/-1;justify-self:end;display:inline-flex;align-items:center;min-height:var(--m-tap);margin:0;padding:0 4px;font-size:var(--m-fs-body)}
+
+/* 观察中 */
+.wh-observing{gap:10px}
+.wh-observing-row{gap:10px;padding:14px 16px;border-radius:var(--m-radius)}
+.wh-observing-title{flex-basis:100%;min-height:var(--m-tap)}
+.wh-observing-title strong{font-size:var(--m-fs-body)}
+.wh-observing-title>span:last-child{font-size:var(--m-fs-meta)}
+.wh-observing-row .review-buttons{display:grid;grid-template-columns:repeat(auto-fit,minmax(88px,1fr));width:100%;gap:8px}
+.wh-observing-row .review-buttons .btn{justify-content:center;min-height:var(--m-tap);border-radius:12px;font-size:var(--m-fs-body)}
+
+/* ===================== 待你处理：拍板 / TODO / 执行权限 ===================== */
+.wh-attention-list{gap:12px}
+.wh-action-item{position:relative;padding:14px 16px 16px;border-radius:var(--m-radius);border-left-width:4px}
+.wh-kind{margin-bottom:12px;padding:2px 8px;border-radius:6px;font-size:var(--m-fs-min);font-weight:600;line-height:1.6;letter-spacing:.02em}
+.wh-action-title{font-size:16px;font-weight:600;line-height:1.5}
+
+/* 拍板卡片：问题 → 为什么 → 建议 → 影响 → 选项（纵向） → 自由回复 → 技术背景 */
+.wh-action-item .dc-head{display:block}
+.wh-action-item .dc-top{gap:10px;padding:0}
+.wh-action-item .decision-card .dc-top .q{font-size:var(--m-fs-section);font-weight:600;line-height:1.45}
+.wh-action-item .decision-card .dc-top .av{margin-top:3px}
+.wh-action-item .dc-hold{position:absolute;top:4px;right:6px;min-width:var(--m-tap);min-height:var(--m-tap);margin:0;padding:0 12px;justify-content:center;font-size:14px;color:var(--text-2)}
+.decision-summary{padding:12px 10px 0!important;font-size:var(--m-fs-body);line-height:1.6;color:var(--text)}
+.wh-action-item .decision-summary{padding:12px 0 0!important}
+.decision-why,.decision-impact{color:var(--text)}
+.decision-why>span,.decision-impact>span{display:block;margin:0 0 2px;font-size:var(--m-fs-min);font-weight:600;color:var(--text-3)}
+.decision-recommendation{margin-top:12px;padding:12px 14px;border-radius:12px}
+.decision-recommendation strong{font-size:var(--m-fs-meta);font-weight:600}
+.decision-impact{margin-top:12px!important}
+.decision-clarify{font-size:var(--m-fs-meta)}
+.wh-action-item .dc-body{padding:16px 0 0}
+.dc .opts{gap:8px}
+.dc .opt{align-items:center;gap:10px;min-height:56px;padding:12px 14px;border-radius:12px;color:var(--text)}
+.dc .opt:active{background:var(--accent-softer)}
+.dc .opt .t{font-size:16px;line-height:1.45;overflow-wrap:anywhere}
+.decision-card .opt .t strong{font-weight:600}
+.dc .opt .t small{margin-top:3px;font-size:var(--m-fs-meta);line-height:1.5}
+.dc .opt .rec{padding:3px 8px;font-size:var(--m-fs-min);font-weight:600}
+.dc .free{gap:8px;margin-top:12px}
+.dc .free input{min-width:0;min-height:var(--m-tap);padding:0 14px;border-radius:12px;box-sizing:border-box}
+.dc .free .icon-btn{width:var(--m-tap);height:var(--m-tap);border-radius:12px;background:var(--accent-soft);color:var(--accent-text)}
+.decision-context{margin-top:14px;padding-top:0}
+.decision-context summary{display:flex;align-items:center;width:100%;min-height:var(--m-tap);font-size:14px;color:var(--text-2)}
+.decision-context .markdown{padding:0 0 4px;font-size:14px;line-height:1.7}
+.dc-result{padding:12px 0 0;font-size:var(--m-fs-meta)}
+
+/* TODO 卡片（工作台与“我的待办”共用） */
+.todo-card{border-radius:var(--m-radius)}
+.todo-top{gap:12px;padding:14px 16px 4px}
+.todo-check{width:22px;height:22px;border-radius:7px}
+.todo-title{font-size:16px!important;font-weight:600;line-height:1.45;overflow-wrap:anywhere}
+.todo-top .chev{width:20px;height:20px;margin-top:1px}
+.todo-meta{margin:0 16px 12px 50px;font-size:var(--m-fs-meta)!important}
+.todo-details{padding:2px 16px 12px 50px}
+.todo-details h4{font-size:var(--m-fs-meta)}
+.todo-details .markdown{font-size:var(--m-fs-body);line-height:1.65;overflow-wrap:anywhere}
+.todo-card-actions{gap:8px;padding:10px 12px}
+.todo-card-actions>.gap{display:none}
+.todo-card-actions>.btn{justify-content:center;min-height:var(--m-tap);padding:0 14px;border-radius:12px;font-size:var(--m-fs-body)!important}
+.todo-card-actions>.todo-done{flex:1 1 auto;font-weight:600;background:var(--accent-soft);border-color:transparent}
+.todo-resolution{padding:12px 16px 14px}
+.todo-resolution label{font-size:var(--m-fs-meta)}
+.todo-resolution .btn{min-height:var(--m-tap);border-radius:12px;font-size:var(--m-fs-body)}
+.todo-list{gap:12px}
+/* 卡片放在“待你处理”里时去掉自身留白，和拍板卡片左对齐 */
+.wh-action-item .todo-top{padding:0 0 4px}
+.wh-action-item .todo-meta{margin:0 0 12px 34px}
+.wh-action-item .todo-details{padding:2px 0 12px 34px}
+.wh-action-item .todo-card-actions{padding:12px 0 0}
+
+/* 执行权限 */
+.wh-permission{display:flex;align-items:center;min-height:52px;margin:0;padding:12px 16px;box-sizing:border-box;border-radius:var(--m-radius);font-size:var(--m-fs-body);font-weight:500}
+.native-approval{border-radius:var(--m-radius)}
+.native-approval summary,.native-approval-list .native-approval summary{min-height:52px;padding:10px 16px;font-size:14px}
+.native-approval-label{font-size:14px}
+.native-approval-owner{font-size:var(--m-fs-meta)}
+.native-approval-expand{font-size:var(--m-fs-min)}
+.native-approval-body{padding:0 16px 16px;font-size:14px}
+.native-approval-body strong,.native-approval-body label,.native-approval-scope{font-size:var(--m-fs-min)}
+.native-approval-body pre{font-size:var(--m-fs-min)}
+.native-approval-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.native-approval-actions .btn{justify-content:center;min-height:var(--m-tap);border-radius:12px;font-size:var(--m-fs-body)}
+.native-approval-command>summary{display:flex;align-items:center;min-height:var(--m-tap);padding:0;font-size:var(--m-fs-meta)}
+.native-approval-list{margin-top:16px}
+
+/* ===================== 任务列表 / 对话 / 成果：inset grouped 列表 ===================== */
+.wh-work .goal-rows,.wh-history .goal-rows,.wh-discussions,.wh-delivery-list{display:flex;flex-direction:column;gap:0;border:1px solid var(--line);border-radius:var(--m-radius);background:var(--surface);overflow:hidden}
+.wh-discussions{margin-top:12px}
+.wh-work .goal-row{grid-template-columns:auto minmax(0,1fr) auto;gap:6px 10px;min-height:60px;padding:12px 16px;box-sizing:border-box}
+.wh-work .goal-row:last-child{border-bottom:0}
+.wh-work .goal-row:active{background:var(--hover)}
+.wh-work .goal-row>strong{font-size:var(--m-fs-body);font-weight:550;line-height:1.45;white-space:normal;overflow-wrap:anywhere}
+.wh-work .goal-row .goal-status{font-size:var(--m-fs-min);padding:3px 7px;white-space:nowrap}
+.wh-work .goal-row-owner{max-width:84px;font-size:var(--m-fs-meta)}
+.wh-discussion-row{gap:4px;min-height:60px;padding:12px 16px;box-sizing:border-box}
+.wh-discussion-row:last-child{border-bottom:0}
+.wh-discussion-row>strong{font-size:var(--m-fs-body);font-weight:600}
+.wh-discussion-row>span{max-width:100%;font-size:var(--m-fs-meta)}
+.wh-discussion-row>span:last-child{color:var(--accent-text)}
+.wh-history{margin-top:16px;padding-top:4px;border-top:0}
+.wh-history summary{display:flex;align-items:center;min-height:var(--m-tap);padding:0 4px;font-size:14px}
+.wh-empty{padding:32px 20px;border-radius:var(--m-radius)}
+.wh-empty h2{font-size:19px}
+.wh-empty p{font-size:var(--m-fs-body);line-height:1.7}
+.wh-empty .btn{min-height:var(--m-tap);padding:0 20px;border-radius:22px;font-size:var(--m-fs-body)}
+
+.wh-deliveries{margin-top:28px;padding-top:0;border-top:0}
+.wh-delivery{gap:14px;min-height:64px;padding:12px 16px;box-sizing:border-box;border:0;border-bottom:1px solid var(--line);border-radius:0;background:none}
+.wh-delivery:last-child{border-bottom:0}
+.wh-delivery:active{background:var(--hover)}
+.wh-delivery>span:last-child{flex:1;gap:2px}
+.wh-delivery strong{font-size:var(--m-fs-body)}
+.wh-delivery>span>span{font-size:var(--m-fs-meta)}
+.wh-delivery::after{content:"›";flex:none;font-size:22px;line-height:1;color:var(--text-3)}
+
+/* ===================== 工作区动态子页（架构图 / 目标 / 拍板 / 在干活） ===================== */
+.page-in>.summary{flex-wrap:nowrap;gap:8px;margin:0 calc(-1 * var(--m-gutter)) 16px;padding:0 var(--m-gutter) 4px;overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch}
+.page-in>.summary::-webkit-scrollbar{display:none}
+.page-in>.summary>.pill{flex:none;min-height:40px;padding:0 14px;font-size:14px;white-space:nowrap}
+.page-in>.summary>.pill b{font-size:var(--m-fs-body)}
+.page-in>.summary~.list .li{min-height:56px;font-size:var(--m-fs-body)}
+/* 架构图：手机上各组纵向排列，不再横向滑动 */
+.groups-page .lead-grid{flex-direction:column;align-items:stretch;gap:16px;overflow:visible;padding:4px 0 16px}
+.groups-page .lead-col{flex:none;width:100%}
+.ov-head{flex-wrap:wrap}
+.ov-name{font-size:16px}
+.ov-count{font-size:var(--m-fs-meta)}
+.ov-go{min-height:var(--m-tap);font-size:14px}
+.page-in>.summary~.empty{font-size:var(--m-fs-body)}
+
+/* ===================== Leader 交流区 ===================== */
+.head.channel-head{height:auto;min-height:60px;padding:calc(var(--m-safe-t) + 8px) var(--m-gutter) 10px;gap:12px;align-items:center}
+.channel-head>div{flex:1;min-width:0}
+.channel-head .title{font-size:20px!important;font-weight:700;line-height:1.3}
+.channel-head .title .i{width:22px;height:22px}
+.channel-head .sub{display:block;margin-top:2px;font-size:var(--m-fs-meta)!important;line-height:1.45;color:var(--text-2);white-space:normal}
+#channel-digest-button{flex:none;min-height:var(--m-tap);padding:0 16px;border-radius:22px;font-size:var(--m-fs-body)}
+.channel-pin{padding:10px var(--m-gutter) 0}
+.channel-digest{border-radius:var(--m-radius)}
+.channel-digest>summary{display:flex;align-items:center;min-height:var(--m-tap);padding:0 16px;font-size:var(--m-fs-body)!important}
+.channel-digest>.m-lead{padding:0 16px 14px}
+.channel-digest .body{font-size:var(--m-fs-body)!important}
+#channel-host .channel-inner{padding:4px var(--m-gutter) 20px}
+.channel-empty{padding:56px 16px;font-size:var(--m-fs-body);line-height:1.6}
+.channel-message{margin:20px 0}
+.channel-message .body{min-width:0;font-size:16px!important}
+.channel-message .channel-content{overflow-wrap:anywhere}
+.channel-meta{gap:8px;font-size:var(--m-fs-meta)}
+.channel-meta strong{font-size:var(--m-fs-body)}
+.channel-meta time{font-size:var(--m-fs-min)}
+.channel-mention{font-size:var(--m-fs-min);padding:1px 8px}
+.channel-originals-toggle{display:flex;align-items:center;min-height:var(--m-tap);font-size:14px}
+.channel-original-list{padding:0 4px}
+.channel-older,.channel-originals-older{min-height:var(--m-tap);font-size:14px}
+/* 点名：单行横向滑动的胶囊 */
+#channel-host .channel-composer-wrap{padding:0 var(--m-gutter) 10px}
+.channel-targets{flex-wrap:nowrap;gap:8px;margin:0 calc(-1 * var(--m-gutter));padding:8px var(--m-gutter) 10px;overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch}
+.channel-targets::-webkit-scrollbar{display:none}
+.channel-target-label{flex:none;font-size:var(--m-fs-meta)}
+.channel-target{flex:none;min-height:40px;padding:0 14px;border-radius:20px;font-size:14px;white-space:nowrap}
+/* 输入框：文字和发送键同一行，像聊天软件 */
+#channel-host .channel-composer{display:flex;align-items:flex-end;gap:8px;padding:6px 6px 6px 16px;border-radius:24px}
+#channel-host .channel-composer textarea{flex:1;min-width:0;min-height:32px;padding:6px 0;font-size:16px!important;line-height:1.5;align-self:center}
+#channel-host .channel-composer .c-row{flex:none;margin:0}
+#channel-host .channel-composer .hint{display:none}
+#channel-host .channel-composer .send{width:var(--m-tap);height:var(--m-tap);min-height:var(--m-tap);border-radius:22px}
+
+/* ===================== 工作区入口（/） ===================== */
+.workspace-home{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;align-content:start;column-gap:8px;width:100%;max-width:none;margin:0;padding:calc(var(--m-safe-t) + 12px) var(--m-gutter) 32px;box-sizing:border-box}
+.workspace-home>.workspace-logo{grid-row:1;grid-column:1;width:36px;height:36px}
+.workspace-home>[data-act="settings"]{grid-row:1;grid-column:2;min-height:var(--m-tap);padding:0 12px;font-size:var(--m-fs-body);color:var(--accent-text)}
+.workspace-home>h1{grid-row:2;grid-column:1/-1;margin:18px 0 4px;font-size:30px;font-weight:700;line-height:1.2;letter-spacing:-.02em}
+.workspace-home>.note{grid-row:3;grid-column:1/-1;margin:0 0 16px;font-size:var(--m-fs-body);color:var(--text-2)}
+.workspace-home>.list{grid-row:4;grid-column:1/-1;border-radius:var(--m-radius)}
+.workspace-home>a.btn{grid-row:5;grid-column:1/-1;display:flex;align-items:center;min-height:52px;margin-top:16px;padding:0 16px;border:1px solid var(--line);border-radius:var(--m-radius);background:var(--surface);color:var(--text);font-size:16px}
+.workspace-home>a.btn::after{content:"›";margin-left:auto;font-size:22px;line-height:1;color:var(--text-3)}
+.workspace-home .project-entry{gap:14px;min-height:64px;padding:10px 16px;box-sizing:border-box}
+.workspace-home .project-entry:active{background:var(--hover)}
+.workspace-home .project-logo{width:36px;height:36px;flex:none}
+.workspace-home .project-entry>.grow{font-size:17px;font-weight:600;overflow-wrap:anywhere}
+.workspace-home .project-theme-name{flex:none;font-size:var(--m-fs-meta)}

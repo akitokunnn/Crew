@@ -118,7 +118,7 @@ const CrewGit = (() => {
       : `${overview()}${mergeRequests()}${data.github === null ? `<div class="git-github-unavailable"><strong>GitHub 不可用</strong><pre>${esc(data.github_reason)}</pre></div>` : ""}<section id="git-panel" aria-label="分支">${branchCards()}</section>`;
     if (chatIdentity !== identity) {
       detachChat();
-      host.innerHTML = `<div id="git-view"><div class="head big git-head"></div><div class="git-assistant-summary" aria-label="Git 助手概况"></div><div class="git-operation-error"></div><div class="git-body"><div id="git-chat-host" class="chat-host"></div><aside class="git-page" aria-label="仓库"><div class="git-page-in"></div></aside></div></div>`;
+      host.innerHTML = `<div id="git-view"><div class="head big git-head"></div><div class="git-assistant-summary" aria-label="Git 助手概况"></div><div class="git-operation-error"></div><div class="git-m-switch" role="radiogroup" aria-label="显示内容" hidden><input type="radio" name="git-m-pane" id="git-m-pane-repo" checked><label for="git-m-pane-repo">仓库</label><input type="radio" name="git-m-pane" id="git-m-pane-chat"><label for="git-m-pane-chat">对话</label></div><div class="git-body"><div id="git-chat-host" class="chat-host"></div><aside class="git-page" aria-label="仓库"><div class="git-page-in"></div></aside></div></div>`;
       CrewChat.mount({host:host.querySelector("#git-chat-host"), session:assistant, state:options.state, api:options.api, toast:options.toast, ...access,
         beforeStop:() => options.beforeStop(assistant), onRouted:options.onRouted});
       chatIdentity = identity;

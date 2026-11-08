@@ -771,6 +771,8 @@ a.btn{color:inherit;text-decoration:none}
 .gap{flex:1}
 .grow{min-width:0}
 .workspace-entry{display:block}
+/* 手机外壳的元素只在窄屏显示（mobile.css） */
+.m-back,#m-tabbar,#m-sheet,#m-sheet-backdrop{display:none}
 .workspace-home{width:min(560px,100%);margin:auto;padding:15vh 24px 40px}
 .workspace-home h1{font-size:var(--fs-xl);font-weight:500}
 .workspace-home a.li{color:inherit;text-decoration:none}
