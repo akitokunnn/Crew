@@ -266,6 +266,7 @@
   const transcriptFields = ["items", "byId", "results", "toolOwners", "toolStops", "events", "cursor", "firstSeq", "hasMore", "executionId", "readSeq", "busySeq", "settledSeq", "turn", "turnStart", "busy"];
   const compactNotified = new Map();
   let active = null;
+  let reading = null;
   const visible = () => document.visibilityState === "visible" && window.crewTabVisible !== false;
   const escape = value => String(value).replace(/[&<>"']/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]);
   const icon = kind => {
@@ -308,6 +309,23 @@
     if (context.note === null) context.noteButton.removeAttribute("aria-label");
     else context.noteButton.setAttribute("aria-label", `想法：${context.note.title}。点按移除，不再随消息带上`);
   }
+  function readingComposer(context) {
+    context.readingButton.hidden = reading === null;
+    if (reading === null) {
+      context.readingButton.innerHTML = "";
+      context.readingButton.removeAttribute("aria-label");
+      context.readingButton.removeAttribute("title");
+    } else {
+      context.readingButton.innerHTML = `<svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg><span>正在看：${escape(reading.label)}</span>`;
+      context.readingButton.setAttribute("aria-pressed", String(reading.attached));
+      context.readingButton.title = reading.attached ? "发消息时会告诉对方你正在看这份内容；点按取消" : "这条消息不附上正在看的内容；点按重新附上";
+      context.readingButton.setAttribute("aria-label", `正在看：${reading.label}，${reading.attached ? "会随消息附上" : "不随消息附上"}`);
+    }
+  }
+  function setReading(value) {
+    reading = value === null ? null : {label:value.label, data:value.data, attached:true};
+    if (active && !active.readonly) readingComposer(active);
+  }
   // Prefills only an empty composer, so an existing draft is never replaced.
   function setNote(note, prefill = null) {
     if (!active || active.readonly) return;
@@ -316,6 +334,17 @@
       active.input.value = prefill; active.cache.version += 1; saveDraft(active); resizeInput(active); composerState(active);
       active.input.focus(); active.input.setSelectionRange(prefill.length, prefill.length);
     }
+  }
+  function quote(text) {
+    if (!active || active.readonly) return false;
+    const quoted = text.trim().split(/\r?\n/).map(line => `> ${line}`).join("\n") + "\n\n";
+    const value = active.input.value;
+    active.input.value = value.trim() ? value.replace(/\s*$/, "\n\n") + quoted : quoted;
+    active.cache.version += 1; saveDraft(active); resizeInput(active); composerState(active);
+    active.input.focus({preventScroll:true});
+    active.input.setSelectionRange(active.input.value.length, active.input.value.length);
+    active.input.scrollTop = active.input.scrollHeight;
+    return true;
   }
 
   const transcriptKey = context => JSON.stringify([scopeKey(context), context.session.session_id, context.executionId]);
@@ -884,7 +913,8 @@
     // Keep this ID with the exact draft until acceptance, including an uncertain network failure.
     const target = context.taskBound ? context.selectedTask : null;
     const note = target === null ? context.note : null;
-    const fingerprint = JSON.stringify([text, context.cache.images, target?.id, note?.id]);
+    const attached = reading?.attached ? reading.data : null;
+    const fingerprint = JSON.stringify([text, context.cache.images, target?.id, note?.id, attached]);
     if (context.cache.pendingMessage?.fingerprint !== fingerprint) {
       const id = window.CrewBrowser.requestId();
       context.cache.pendingMessage = {fingerprint, id};
@@ -892,6 +922,7 @@
     const payload = { session_id: target === null ? context.session.session_id : target.leader_session_id, text, message_id:context.cache.pendingMessage.id, ...(target === null ? goalScope(context) : {goal_id:target.id}) };
     if (context.cache.images.length > 0) payload.images = context.cache.images.slice();
     if (note) payload.note_id = note.id;
+    if (attached) payload.reading = attached;
     context.cache.sending = true;
     if (target === null) {
       if (!previousBusy) context.cache.waitingSince = CrewActivity.timestamp(context.state.now);
@@ -956,7 +987,7 @@
     const context = { ...options, cacheKey, activityKey:`chat:${cacheKey}`, session:options.session, selectedTask:null, taskBound:false, note:null, cache, items: [], byId: new Map(), nodes: new Map(), results: new Map(), toolOwners: new Map(), toolStops: new Map(), events:[], firstSeq:0, hasMore:false, cursor: 0, readSeq: 0, busySeq: options.readonly || options.goalId ? 0 : options.session.last_seq, settledSeq:null, executionId:null, connectionGeneration:0, loadGeneration:0, readTimer: null, reconnectTimer: null, historyRetryTimer: null, historyFailed: false, interrupting: false, interruptError: "", interruptConfirmed: false, frame: null, loading: true, busy: cache.pendingSendSeq === null ? options.session.busy : true, reading: false, initialPosition: null, stream: null };
     active = context;
     options.host.classList.add("chat-host");
-    options.host.innerHTML = `<div class="chat-error chat-connection-error" role="alert" hidden></div><div class="scroll chat-scroll" tabindex="0" aria-label="${escape(options.session.name)}的对话记录"><div class="col chat-inner"></div></div><button type="button" class="jump" aria-label="回到最新消息">${icon("down")}回到最新</button>${options.readonly ? `<div class="readonly-note">${escape(options.readonlyReason || "此会话尚未由 Crew 托管。请先在原工具退出，再从会话操作中接管；历史记录保留。")}</div>` : `<div class="composer-wrap"><form class="composer"><div class="attach" hidden></div><button type="button" class="chat-note-chip" hidden></button><textarea rows="1" aria-label="给 ${escape(options.session.name)} 发消息" placeholder="${options.goalId ? `在任务「${escape(options.goalTitle)}」里跟 ${escape(options.session.name)} 说…` : `跟 ${escape(options.session.name)} 说…（可以直接粘贴截图）`}"></textarea><div class="c-row"><button type="button" class="icon-btn chat-image-button" title="附截图（也可以直接 Ctrl+V）" aria-label="添加图片">${icon("image")}</button><button type="button" class="chat-task-binding" aria-pressed="false" hidden></button><input class="chat-image-file" type="file" accept="image/*" multiple hidden><span class="hint"></span><button type="button" class="chat-stop" aria-label="停止当前回复" hidden><svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/></svg></button><button type="submit" class="send" aria-label="发送" disabled>${icon("up")}</button></div><div class="chat-interrupt-status" role="status" aria-live="polite" hidden></div><div class="chat-delivery-status" role="alert" hidden></div></form></div>`}`;
+    options.host.innerHTML = `<div class="chat-error chat-connection-error" role="alert" hidden></div><div class="scroll chat-scroll" tabindex="0" aria-label="${escape(options.session.name)}的对话记录"><div class="col chat-inner"></div></div><button type="button" class="jump" aria-label="回到最新消息">${icon("down")}回到最新</button>${options.readonly ? `<div class="readonly-note">${escape(options.readonlyReason || "此会话尚未由 Crew 托管。请先在原工具退出，再从会话操作中接管；历史记录保留。")}</div>` : `<div class="composer-wrap"><form class="composer"><div class="attach" hidden></div><button type="button" class="chat-note-chip" hidden></button><button type="button" class="chat-reading-chip" aria-pressed="true" hidden></button><textarea rows="1" aria-label="给 ${escape(options.session.name)} 发消息" placeholder="${options.goalId ? `在任务「${escape(options.goalTitle)}」里跟 ${escape(options.session.name)} 说…` : `跟 ${escape(options.session.name)} 说…（可以直接粘贴截图）`}"></textarea><div class="c-row"><button type="button" class="icon-btn chat-image-button" title="附截图（也可以直接 Ctrl+V）" aria-label="添加图片">${icon("image")}</button><button type="button" class="chat-task-binding" aria-pressed="false" hidden></button><input class="chat-image-file" type="file" accept="image/*" multiple hidden><span class="hint"></span><button type="button" class="chat-stop" aria-label="停止当前回复" hidden><svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/></svg></button><button type="submit" class="send" aria-label="发送" disabled>${icon("up")}</button></div><div class="chat-interrupt-status" role="status" aria-live="polite" hidden></div><div class="chat-delivery-status" role="alert" hidden></div></form></div>`}`;
     context.scroll = options.host.querySelector(".chat-scroll"); context.inner = options.host.querySelector(".chat-inner");
     context.jump = options.host.querySelector(".jump"); context.error = options.host.querySelector(".chat-connection-error");
     context.jump.onclick = () => { context.scroll.scrollTop = context.scroll.scrollHeight; context.jump.classList.remove("show"); scheduleRead(context); };
@@ -1000,6 +1031,8 @@
       context.taskButton.onclick = () => { context.taskBound = !context.taskBound; taskComposer(context); };
       context.noteButton = options.host.querySelector(".chat-note-chip");
       context.noteButton.onclick = () => { context.note = null; noteComposer(context); context.onNoteCleared?.(); context.input.focus(); };
+      context.readingButton = options.host.querySelector(".chat-reading-chip");
+      context.readingButton.onclick = () => { reading.attached = !reading.attached; readingComposer(context); };
       context.input.value = cache.text;
       context.input.oninput = () => { context.cache.version += 1; saveDraft(context); resizeInput(context); composerState(context); };
       context.input.onkeydown = event => {
@@ -1020,6 +1053,7 @@
       };
       options.host.querySelector("form").onsubmit = event => { event.preventDefault(); send(context); };
       renderAttachments(context); resizeInput(context);
+      readingComposer(context);
     }
     const cached = [...transcripts.entries()].reverse().find(([, entry]) => entry.cacheKey === cacheKey);
     if (cached) {
@@ -1110,5 +1144,5 @@
     if (visible()) timer = setTimeout(poll, 3000);
     return close;
   }
-  window.CrewChat = {setTask, setNote, mount, update, unmount, watchCompact, renderMarkdown, renderInline, initFiles};
+  window.CrewChat = {setTask, setNote, setReading, quote, mount, update, unmount, watchCompact, renderMarkdown, renderInline, initFiles};
 })();
