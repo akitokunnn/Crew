@@ -6,7 +6,8 @@ def read(conn, project, config, force=False):
     """git_view.view for the project's base/stable, plus each branch's owning leaders.
 
     A branch belongs to a leader when the leader or one of its members registered that branch or
-    worktree, or when they dispatched a task into that worktree. The Git assistant's own merge
+    worktree, created or committed on it in a shell command (branch_claims), or dispatched a task
+    into its worktree. The Git assistant's own merge
     worktree is plumbing, not work, so it is neither listed nor counted as an owner.
     """
     admin = conn.execute('SELECT branch FROM sessions WHERE session_id=?', (config['admin_session_id'],)).fetchone()
@@ -24,6 +25,11 @@ def read(conn, project, config, force=False):
             name = paths.get(store.norm_path(session['worktree']))
         if name is not None:
             direct.setdefault(name, []).append(sid)
+    claimed = {}
+    for row in conn.execute('SELECT branch,session_id FROM branch_claims WHERE project=? ORDER BY claimed_at DESC',
+                            (project['name'],)):
+        if row['branch'] in names and row['session_id'] in sessions:
+            claimed.setdefault(row['branch'], []).append(row['session_id'])
     dispatched = {}
     if paths:
         rows = conn.execute(
@@ -36,7 +42,7 @@ def read(conn, project, config, force=False):
     leaders = {}
     for branch in data['branches']:
         owners = []
-        for sid in direct.get(branch['name'], []) + dispatched.get(branch['name'], []):
+        for sid in direct.get(branch['name'], []) + claimed.get(branch['name'], []) + dispatched.get(branch['name'], []):
             session = sessions[sid]
             leader = session if session['role'] == 'leader' else board.leader_of(conn, sid)
             if leader is None or leader['session_id'] == config['admin_session_id']:
