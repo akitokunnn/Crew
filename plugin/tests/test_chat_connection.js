@@ -546,6 +546,7 @@ test("starting a queued goal retains the leader transcript, stream, draft and re
   };
   const appSource=fs.readFileSync(path.join(__dirname,"../crew/web/app.js"),"utf8").replace(/\r\n/g,"\n");
   vm.runInContext(appSource.replace("  setup();\n})();",'window.appFixture={renderChat,configure(value,client,request){state=value;goals=client;api=request;view="chat";leaderId="leader";goalId="goal";}};\n})();'),h.sandbox);
+  h.sandbox.CrewReader={pane:()=>null,refresh(){},close:()=>false,escape:()=>false};
   vm.runInContext(fs.readFileSync(path.join(__dirname,"../crew/web/goal-ui.js"),"utf8"),h.sandbox);
   const goalUI=h.sandbox.CrewGoals.create({project:"fixture",state:()=>state,api,avatar:()=>"",ago:()=>"",toast(){},onChange:()=>h.sandbox.appFixture.renderChat(),refreshState:async()=>h.sandbox.appFixture.renderChat()});
   h.sandbox.appFixture.configure(state,goalUI,api);h.sandbox.appFixture.renderChat();await tick();

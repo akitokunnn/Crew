@@ -28,7 +28,7 @@ from . import connections, session_delete, session_presence, storage_cleanup, wo
 from .storage_service import StorageService, HISTORY_PREFIX
 from . import personal, native_home, native_handoff
 from . import remote_access, remote_http
-from . import report_preview, event_sounds
+from . import report_preview, event_sounds, reading_context
 from .web_api import personal as personal_api
 from .web_api import behavior_prompts as behavior_prompts_api
 
@@ -1544,18 +1544,28 @@ class Service:
                 # The note is read here by ID before anything is configured or
                 # sent; the page only names it and never supplies its text.
                 context = personal.discussion_context(conn, note_id) if note_id is not None else None
+                reading = data.get('reading')
+                reading_text = (reading_context.context(conn, project, reading, self.resolve_file, session['session_id'])
+                                if reading is not None else None)
                 if assistant:
                     session = personal_api.prepare_send(self.home, session['session_id'])
                 if data.get('goal_id'):
                     goals.get(conn, data['goal_id'], project)
+                    if reading_text:
+                        return self.chat.goal_controller.send(data['goal_id'], session['session_id'],
+                                                              reading_text + '\n\n' + text, images=images,
+                                                              identity=data.get('message_id'), display_text=text)
                     return self.chat.goal_controller.send(data['goal_id'], session['session_id'], text,
                                                           images=images, identity=data.get('message_id'))
                 if not self.chat.path(session['session_id']).exists():
                     self.chat.journal(session['session_id']).set_status('idle')
-                if context is None:
+                prefix = '\n\n'.join(value for value in (context, reading_text) if value)
+                if not prefix:
                     return self.chat.send(session, text, images=images, identity=data.get('message_id'))
-                sent = self.chat.send(session, context + '\n\n' + text, images=images,
+                sent = self.chat.send(session, prefix + '\n\n' + text, images=images,
                                       identity=data.get('message_id'), display_text=text)
+                if note_id is None:
+                    return sent
                 seqs = [event['seq'] for event in self.chat.history(session['session_id'])['events']
                         if event['type'] == 'message' and event['id'] == sent['message_id']]
                 if len(seqs) != 1:
@@ -1914,6 +1924,8 @@ STATIC.update({'/goal-ui.js': ('goal-ui.js', 'text/javascript; charset=utf-8'),
 STATIC.update({f'/{name}.{ext}': (f'{name}.{ext}', 'text/javascript; charset=utf-8' if ext == 'js' else 'text/css; charset=utf-8') for name in ('personal-notes-ui', 'behavior-prompts-ui') for ext in ('js', 'css')})
 STATIC['/goal-versions-ui.js'] = ('goal-versions-ui.js', 'text/javascript; charset=utf-8')
 STATIC['/stage-report-ui.js'] = ('stage-report-ui.js', 'text/javascript; charset=utf-8')
+STATIC.update({'/reader-ui.js': ('reader-ui.js', 'text/javascript; charset=utf-8'),
+               '/reader-ui.css': ('reader-ui.css', 'text/css; charset=utf-8')})
 STATIC.update({'/settings-ui.js': ('settings-ui.js', 'text/javascript; charset=utf-8'),
                '/storage-ui.js': ('storage-ui.js', 'text/javascript; charset=utf-8'),
                '/storage-ui.css': ('storage-ui.css', 'text/css; charset=utf-8'),

@@ -122,7 +122,8 @@ body:has(#chat-head .member-scope-bar){--mc-scope:48px}
 :is(#chat-host,.assistant-chat) .composer{display:grid;grid-template-columns:auto minmax(0,1fr) auto auto;align-items:end;column-gap:4px;max-width:none;padding:3px 4px 3px 2px!important;border-radius:24px;box-shadow:none}
 :is(#chat-host,.assistant-chat) .composer:focus-within{box-shadow:0 0 0 3px var(--accent-softer)}
 :is(#chat-host,.assistant-chat) .composer>.attach{grid-column:1/-1;margin:6px 8px 6px;overflow-x:auto}
-:is(#chat-host,.assistant-chat) .composer>.chat-note-chip{grid-column:1/-1;justify-self:start;max-width:calc(100% - 16px);margin:6px 8px 2px;min-height:32px;font-size:var(--m-fs-meta)}
+:is(#chat-host,.assistant-chat) .composer>:is(.chat-note-chip,.chat-reading-chip){grid-column:1/-1;justify-self:start;max-width:calc(100% - 16px);margin:6px 8px 2px;min-height:32px;font-size:var(--m-fs-meta)}
+#chat-host .composer>.chat-reading-chip{grid-row:1}
 :is(#chat-host,.assistant-chat) .composer>textarea{grid-column:2;grid-row:3;align-self:center;min-height:24px;max-height:40dvh;padding:9px 4px;font-size:16px!important;line-height:1.5}
 :is(#chat-host,.assistant-chat) .composer>.c-row{display:contents}
 :is(#chat-host,.assistant-chat) .composer>textarea::placeholder{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}

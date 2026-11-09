@@ -54,11 +54,11 @@ test("sidebar has no materials overview and old document routes return to the wo
   assert.deepEqual(calls,[]);
 });
 
-function filesHarness() {
+function filesHarness(reader) {
   const handlers = {}, calls = [], fetches = [], notices = [];
   const actions = {".file-body":{innerHTML:""}, ".file-close":{}, ".file-open":{}, ".file-reveal":{}};
   const classes = new Set(), panel = {setAttribute(){}, innerHTML:"", classList:{add:value => classes.add(value), remove:value => classes.delete(value)}, querySelector:selector => actions[selector]};
-  const sandbox = {window:{markdownit:require(path.join(web, "vendor/markdown-it.min.js"))},
+  const sandbox = {window:{markdownit:require(path.join(web, "vendor/markdown-it.min.js")), ...(reader ? {CrewReader:reader} : {})},
     document:{createElement:() => panel, body:{append(){}}, addEventListener:(event, listener) => { handlers[event] = listener; }},
     location:{search:"?project=alpha"}, URLSearchParams, URL, console, matchMedia:() => ({matches:false, addEventListener(){}}), setInterval(){}, setTimeout, clearTimeout,
     fetch:async url => { fetches.push(url); return {ok:true, json:async () => ({content:"[子文件](./child.md)", truncated:false})}; }};
@@ -72,11 +72,11 @@ function filesHarness() {
     return {ok:true};
   }, value => notices.push(value));
   async function click(id) {
-    const link = {dataset:{documentId:id, filePath:"C:/outside/untrusted.md", fileSession:"forged-owner"},
+    const link = {textContent:" 交付总结 ", dataset:{documentId:id, filePath:"C:/outside/untrusted.md", fileSession:"forged-owner"},
       hasAttribute:name => name === "data-document-id", closest:selector => selector === "[data-file-path]" ? link : null};
     await handlers.click({target:link, preventDefault(){}, stopImmediatePropagation(){}});
   }
-  return {click, calls, fetches, notices, actions, classes};
+  return {click, calls, fetches, notices, actions, classes, panel};
 }
 test("document preview carries a numeric ID through resolve, content, open and reveal", async () => {
   const harness = filesHarness(); await harness.click("12");
@@ -84,9 +84,17 @@ test("document preview carries a numeric ID through resolve, content, open and r
   const params = new URL(harness.fetches[0], "http://fixture").searchParams;
   assert.equal(params.get("project"), "alpha"); assert.equal(params.get("document_id"), "12");
   assert(!params.has("path")); assert(!params.has("session_id"));
-  assert(harness.actions[".file-body"].innerHTML.includes('data-file-session="trusted-owner"'));
+  assert(harness.panel.innerHTML.includes('data-file-session="trusted-owner"'));
   await harness.actions[".file-open"].onclick(); await harness.actions[".file-reveal"].onclick();
   assert.deepEqual(harness.calls.slice(1), [["/api/files/open", {document_id:12}], ["/api/files/reveal", {document_id:12}]]);
+});
+test("beside a conversation a document opens in the reading pane and names itself for the composer", async () => {
+  const opened = [], reader = {canHost:() => true, chatButton:() => "", open:(host, options) => { opened.push({host, options}); return host; }, close(){}};
+  const harness = filesHarness(reader); await harness.click("12");
+  assert.equal(opened.length, 1); assert.equal(harness.classes.has("show"), false, "the drawer stays closed");
+  const {host, options} = opened[0];
+  assert.equal(host.className, "file-reader"); assert(host.innerHTML.includes("reader-quotable")); assert(host.innerHTML.includes('data-file-session="trusted-owner"'));
+  assert.equal(options.reading.label, "交付总结"); assert.deepEqual(plain(options.reading.data), {kind:"document", document_id:12});
 });
 test("invalid or rejected document IDs never fall back to a supplied file path", async () => {
   const harness = filesHarness();

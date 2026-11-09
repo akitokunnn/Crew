@@ -289,11 +289,11 @@
     const work = groupWork(item), unread = leaderUnread(item);
     return `<div draggable="true" class="leader-row session-surface ${selected ? "active" : inGroup ? "in-group" : ""}" data-act="leader" data-id="${esc(item.session_id)}" aria-label="${esc(item.name)}${unread ? "，有未读消息" : ""}" ${selected ? 'aria-current="page"' : ""}>${sessionOpen(item.session_id,"leader",item.name,selected)}${groupAvatar(item,work)}<span class="meta"><span class="leader-row-name"><strong>${esc(item.name)}</strong>${contextRing(item)}${trustMark(item)}${unread ? '<span class="leader-unread-dot" title="有未读消息"></span>' : ""}</span><span class="leader-row-sub">${item.goal === null ? "" : `<span class="goal" title="${esc(item.goal)}">${esc(item.goal)}</span>`}${work.active ? groupWorkLabel(work, true) : st(item.status)}</span>${leaderBranches(item)}</span></div>${inGroup ? CrewGoals.leaderTasks(state.goals.filter(task => task.leader_session_id === item.session_id), goalId) : ""}`;
   }
-  function setLeadersOpen(open) {
+  function setLeadersOpen(open, remember = true) {
     leadersOpen = open;
     $("leader-panel").dataset.open = String(open); $("leader-panel").inert = !open;
     $("leader-entry").setAttribute("aria-expanded", String(open));
-    if (narrowLayout()) return;
+    if (narrowLayout() || !remember) return;
     try { localStorage.setItem("crew.leadersOpen", String(open)); }
     catch { leadersOpen = true; $("leader-panel").dataset.open = "true"; $("leader-panel").inert = false; $("leader-entry").setAttribute("aria-expanded", "true"); }
   }
@@ -1201,8 +1201,13 @@
       getMember:id => state?.members.concat(state?.leaders || []).find(item => item.session_id === id), catalog:runtimeList, effortsFor:modelEfforts,
       refreshCatalog:refreshRuntimes, prepare:body => api("/api/session/runtime/prepare",body),
       switchRuntime:body => api("/api/session/runtime/switch",body), onChanged:() => { goals?.invalidate(); return loadState(true); }, toast});
+    // While a report or file is open the leader column steps aside for the conversation; it is not saved as a preference.
+    window.CrewReader.configure({
+      onActive:active => { reportReaderOpen = active; $("chat-attention").inert = active || $("chat-attention").hidden; if ($("task-list")) $("task-list").inert = active || !tasksOpen; },
+      collapseLeaders:() => { if (!leadersOpen) return false; setLeadersOpen(false, false); return true; },
+      restoreLeaders:() => { if (!leadersOpen) setLeadersOpen(true, false); }});
     if (window.CrewGoals && project !== null) goals = window.CrewGoals.create({project, api, toast, state:() => state,
-      avatar:av, ago, refreshState:() => loadState(true), onChange:() => { if (state && view === "chat") renderChat(); else if (state && view === "all") renderAll(); }, onReturn:() => setTasksOpen(true), onReader:active => { reportReaderOpen = active; $("chat-attention").inert = active || $("chat-attention").hidden; if ($("task-list")) $("task-list").inert = active || !tasksOpen; },
+      avatar:av, ago, refreshState:() => loadState(true), onChange:() => { if (state && view === "chat") renderChat(); else if (state && view === "all") renderAll(); }, onReturn:() => setTasksOpen(true),
       renderDocuments:(items,id) => documents?.taskCards(items,id),
       onNavigate:id => { const item = (state.goals || []).find(item => String(item.id) === String(id)); if (item) { if (cardId !== null) closeCard(); CrewChat.setTask(null); navigate("chat", item.leader_session_id, null, item.id); } else toast("目标已不在当前工作区中，请刷新。"); }});
     applyTheme(); applyFontScale(); renderSettings();
