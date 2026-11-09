@@ -400,7 +400,8 @@ CREATE TABLE IF NOT EXISTS leader_notices (
     source     TEXT NOT NULL CHECK (source IN ('web', 'qq', 'lark', 'crew')),
     text       TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    sent_at    TEXT
+    sent_at    TEXT,
+    wake       INTEGER NOT NULL DEFAULT 1   -- 0: wait for the leader's next conversation instead of starting a turn
 );
 CREATE INDEX IF NOT EXISTS leader_notices_pending ON leader_notices (session_id, sent_at);
 

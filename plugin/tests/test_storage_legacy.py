@@ -370,6 +370,27 @@ class LegacyTests(unittest.TestCase):
             self.assertEqual(conn.execute('SELECT count(*) FROM message_positions').fetchone()[0],2)
         self.assertEqual(self.run_import()['status'],'unchanged')
 
+    def test_interrupted_stream_status_flap_appends_versions(self):
+        # A restart writes offline after a cut-off stream; resuming writes
+        # working again, so the same content recurs as partial.
+        events=[{'type':'text','id':'cut','text':'hello','at':STAMP},{'type':'status','status':'working'}]
+        def project(status=None):
+            if status: events.append({'type':'status','status':status})
+            self.journal.write_text('\n'.join(json.dumps(e) for e in events)+'\n',encoding='utf-8')
+            return self.run_import()
+        project()
+        for status in ('offline','working','offline'):
+            project(status)
+            with closing(sqlite3.connect(self.db)) as conn:
+                conn.execute("UPDATE reports SET body=?",(status+str(len(events)),));conn.commit()
+            project()  # Replay of the same journal under a new source fingerprint.
+        with closing(self.repo.connect()) as conn:
+            rows=conn.execute('SELECT id,supersedes_message_id FROM messages ORDER BY rowid').fetchall()
+            self.assertEqual(len(rows),4)
+            self.assertEqual([r[1] for r in rows],[None,*[r[0] for r in rows[:-1]]])
+            self.assertEqual(conn.execute('PRAGMA foreign_key_check').fetchall(),[])
+        self.assertEqual(project()['status'],'unchanged')
+
     def _storage_service(self):
         from crew.storage_service import StorageService
         service=StorageService(self.source,isolated=True)

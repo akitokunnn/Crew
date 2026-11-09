@@ -261,7 +261,7 @@ class ConnectionTests(ConnectionFixture, unittest.TestCase):
             "INSERT INTO leader_notices VALUES(10,'demo','s3','qq','deleted','date',NULL);DELETE FROM leader_notices WHERE id=10;")
         with closing(store.connect(self.home)) as migrated:
             self.assertEqual(tuple(migrated.execute('SELECT * FROM leader_notices').fetchone()),
-                             (7, 'demo', 's3', 'qq', 'old', 'date', None))
+                             (7, 'demo', 's3', 'qq', 'old', 'date', None, 1))
             migrated.execute("INSERT INTO leader_notices(project,session_id,source,text,created_at) VALUES('demo','s3','lark','new','date')")
             self.assertEqual(migrated.execute('SELECT MAX(id) FROM leader_notices').fetchone()[0], 11)
 

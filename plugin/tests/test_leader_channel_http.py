@@ -371,6 +371,30 @@ class ChannelHttpTests(ShellFixture, unittest.TestCase):
             service.deliver_notices()
         self.assertEqual(board.pending_notices(self.conn, sid), [])
 
+    def test_user_todo_result_waits_for_the_leaders_next_conversation(self):
+        from crew import todo
+        service = self.server.service
+        with mock.patch('crew.chat.shutil.which', return_value='claude.exe'):
+            sid = service.chat.start(self.conn, 'demo', 'receiver', '协调', role='leader', now=NOW)['session_id']
+        service.chat.journal(sid).set_status('idle')
+        item = todo.add(self.conn, sid, '看完这批总结', '打开总结逐条看', '回复哪些可用', now=NOW)
+        todo.resolve(self.conn, 'demo', item['id'], 'done', note='第 3 条要改', now=NOW)
+        process = self.processes[-1]
+        before = process.stdin.getvalue()
+        with mock.patch.object(service.chat, 'send', wraps=service.chat.send) as send:
+            service.deliver_notices()
+        send.assert_not_called()
+        self.assertEqual(process.stdin.getvalue(), before)
+        self.assertEqual(len(board.pending_notices(self.conn, sid)), 1)
+        service.chat.send(board.session(self.conn, sid), '继续吧', source='human')
+        written = process.stdin.getvalue()[len(before):]
+        sent = json.dumps(json.loads(written.splitlines()[-1]), ensure_ascii=False)
+        for text in ('Crew 留档通知', '看完这批总结', '第 3 条要改', '[用户消息]', '继续吧'):
+            self.assertIn(text, sent)
+        shown = [event['text'] for event in service.chat.journal(sid).events if event['type'] == 'message']
+        self.assertEqual(shown[-1], '继续吧')
+        self.assertEqual(board.pending_notices(self.conn, sid), [])
+
     def test_failed_notice_send_keeps_mention_pending(self):
         service = self.server.service
         service.chat.journal('s3').message('earlier', 'earlier')

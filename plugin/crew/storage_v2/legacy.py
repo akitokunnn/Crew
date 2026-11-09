@@ -875,11 +875,27 @@ class _Projector:
                     message_key+=['tool-result-version',calls[group['tool_use_id']],outcome]
                     mid=self.id('messages','message',message_key)
             previous=self.journal_latest.get((cid,logical_hash))
+            supersedes=lambda message_id:self.conn.execute('SELECT supersedes_message_id FROM messages WHERE id=?',(message_id,)).fetchone()
+            existing=supersedes(mid)
             if previous==mid:
-                previous=self.conn.execute('SELECT supersedes_message_id FROM messages WHERE id=?',(mid,)).fetchone()[0]
+                previous=existing[0]
+            elif existing and existing[0]!=previous:
+                # The content returned to an earlier immutable version, e.g. an
+                # interrupted stream flips partial as status goes working ->
+                # offline -> working across a restart. Append it again after
+                # the current latest; a replay recognises that same version.
+                prior=supersedes(previous) if previous is not None else None
+                if prior and self.id('messages','message',message_key+['recurs-after',prior[0]])==previous:
+                    message_key,mid,previous=message_key+['recurs-after',prior[0]],previous,prior[0]
+                else:
+                    message_key=message_key+['recurs-after',previous]
+                    mid=self.id('messages','message',message_key)
             at=group['at']
             if not isinstance(at,str) or not at.endswith('Z'):
-                at=self.agents.get(sid,{}).get('started_at') or self.stamp
+                # Keep an earlier projection's fallback time: a fresh stamp
+                # would rewrite an immutable message on every replay.
+                kept=self.conn.execute('SELECT created_at FROM messages WHERE id=?',(mid,)).fetchone()
+                at=self.agents.get(sid,{}).get('started_at') or (kept[0] if kept else self.stamp)
             role=group['role']
             mid=self.message(message_key,cid,text,self.agent(sid) if role=='assistant' else None,role,
                 self.agents.get(sid,{}).get('crew_name') if role=='assistant' else None,

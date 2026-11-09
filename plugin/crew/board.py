@@ -1113,13 +1113,14 @@ def leader_of(conn, session_id):
     return dict(row) if row is not None else None
 
 
-def _queue_leader_notice(conn, leader_session_id, text, source, now=None):
+def _queue_leader_notice(conn, leader_session_id, text, source, now=None, *, wake=True):
+    """wake=False keeps the notice for the leader's next conversation instead of starting a turn for it."""
     s = session(conn, leader_session_id)
     if s["role"] != "leader":
         raise BoardError("只能给 leader 排通知: " + leader_session_id)
-    notice_id = conn.execute("INSERT INTO leader_notices(project,session_id,source,text,created_at) VALUES(?,?,?,?,?)",
-                             (s["project"], leader_session_id, source, text, _time(now))).lastrowid
-    _event(conn, "leader:notice", s["project"], leader_session_id, {"id": notice_id, "source": source}, now)
+    notice_id = conn.execute("INSERT INTO leader_notices(project,session_id,source,text,created_at,wake) VALUES(?,?,?,?,?,?)",
+                             (s["project"], leader_session_id, source, text, _time(now), int(wake))).lastrowid
+    _event(conn, "leader:notice", s["project"], leader_session_id, {"id": notice_id, "source": source, "wake": wake}, now)
     return notice_id
 
 
@@ -1130,6 +1131,11 @@ def queue_leader_notice(conn, leader_session_id, text, source, now=None):
 
 def pending_notices(conn, leader_session_id):
     return _rows(conn, "SELECT * FROM leader_notices WHERE session_id=? AND sent_at IS NULL ORDER BY id", (leader_session_id,))
+
+
+def quiet_notices(conn, leader_session_id):
+    return _rows(conn, "SELECT * FROM leader_notices WHERE session_id=? AND sent_at IS NULL AND wake=0 ORDER BY id",
+                 (leader_session_id,))
 
 
 @atomic
