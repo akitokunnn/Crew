@@ -69,8 +69,6 @@ class TodoTests(RuntimeFixture):
         added = self.add()
         with self.assertRaises(board.BoardError):
             todo.resolve(self.conn, "demo", added["id"], "done", actor="chief-id")
-        with self.assertRaises(board.BoardError):
-            todo.resolve(self.conn, "demo", added["id"], "cancelled")
         changed = todo.resolve(self.conn, "demo", added["id"], "done", note="device connected")
         with self.assertRaises(board.BoardError):
             todo.undo(self.conn, "demo", added["id"], changed["before"], changed["version"], actor="member-id")
@@ -89,7 +87,14 @@ class TodoTests(RuntimeFixture):
         self.assertEqual(todo.list(self.conn, "demo"), [])
         self.assertEqual(todo.list(self.conn, "demo", all=True)[0]["status"], "done")
 
-    def test_cancellation_requires_a_reason_and_preserves_it_in_the_notice(self):
+    def test_done_and_cancel_need_no_note(self):
+        done = todo.resolve(self.conn, "demo", self.add()["id"], "done", note="  ")
+        cancelled = todo.resolve(self.conn, "demo", self.add()["id"], "cancelled")
+        self.assertIsNone(done["todo"]["note"])
+        self.assertEqual(cancelled["todo"]["status"], "cancelled")
+        self.assertIsNone(cancelled["todo"]["note"])
+
+    def test_cancellation_reason_is_preserved_in_the_notice(self):
         added = self.add()
         changed = todo.resolve(self.conn, "demo", added["id"], "cancelled", note="Use the simulator instead")
         self.assertEqual(changed["todo"]["status"], "cancelled")

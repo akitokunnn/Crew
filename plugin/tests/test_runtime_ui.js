@@ -335,11 +335,12 @@ test("personal action cards escape titles and show source, blocking, expandable 
   assert(!expanded.includes("#44"));
 });
 
-test("completion note is optional, cancellation requires a reason, and shown version is preserved", () => {
+test("completion and cancellation notes are optional, and shown version is preserved", () => {
   const {ui} = harness(todoState()), item = todo({version:5});
   assert.deepEqual(plain(ui.todoResolvePayload(item, {status:"done", note:"  ", version:2})),
-    {id:17, status:"done", note:"", expected_version:2});
-  assert.throws(() => ui.todoResolvePayload(item, {status:"cancelled", note:"  ", version:2}), /原因/);
+    {id:17, status:"done", note:null, expected_version:2});
+  assert.deepEqual(plain(ui.todoResolvePayload(item, {status:"cancelled", note:"  ", version:2})),
+    {id:17, status:"cancelled", note:null, expected_version:2});
   assert.deepEqual(plain(ui.todoResolvePayload(item, {status:"cancelled", note:" 已换方案 ", version:2})),
     {id:17, status:"cancelled", note:"已换方案", expected_version:2});
 });

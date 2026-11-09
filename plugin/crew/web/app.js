@@ -568,13 +568,17 @@
     if (Array.isArray(value)) return `<${ordered ? "ol" : "ul"}>${value.map(text => `<li>${CrewChat.renderInline(String(text), item.session_id)}</li>`).join("")}</${ordered ? "ol" : "ul"}>`;
     return value ? CrewChat.renderMarkdown(String(value), item.session_id) : '<p class="note">还没写，可以去问它。</p>';
   }
+  function todoTint(item) {
+    const leader = state.leaders.find(person => person.session_id === item.leader_session_id);
+    return tint(leader?.name || item.leader_name || item.group || item.proposer_name || "");
+  }
   function todoCard(item) {
     const key = String(item.id), expanded = todoExpanded.has(key), draft = todoActions.get(key), saving = todoSaving.has(key);
     const owner = state.leaders.find(person => person.session_id === item.leader_session_id || person.session_id === item.session_id);
     const blocking = item.blocking ? `<span class="todo-blocking">卡着 ${esc(typeof item.blocking === "string" ? item.blocking : item.proposer_name || "本组")}</span>` : "";
     const group = item.group || item.leader_name || "未分组", proposer = item.proposer_name || "原会话";
     const linked = (item.goal_links || []).map(link => `<button class="btn ghost" data-goal-act="open" data-goal-id="${esc(link.goal_id)}">${esc(link.goal_title || "关联任务")}</button>`).join("");
-    return `<article class="todo-card ${expanded ? "open" : ""}" data-todo-id="${esc(key)}"><button class="todo-top" data-act="todo-toggle" data-id="${esc(key)}" aria-expanded="${expanded}" aria-controls="todo-details-${esc(key)}"><span class="todo-check" aria-hidden="true">${ic("check", "sm")}</span><span class="todo-title">${esc(item.title)}</span>${ic("down", "sm chev")}</button><div class="todo-meta"><span>${esc(group)} · ${esc(proposer)}</span><time title="${esc(date(item.created_at))}">${ago(item.created_at)}</time>${blocking}</div>${linked ? `<div class="todo-linked-tasks">${linked}</div>` : ""}<div class="todo-details" id="todo-details-${esc(key)}" ${expanded ? "" : "hidden"}><section><h4>怎么做</h4><div class="markdown">${todoInstructions(item.steps, item, true)}</div></section><section><h4>完成后怎么确认</h4><div class="markdown">${todoInstructions(item.verification, item)}</div></section></div><div class="todo-card-actions"><button class="btn todo-done" data-act="todo-action" data-id="${esc(key)}" data-status="done" ${saving ? "disabled" : ""}>${ic("check", "sm")}做完了</button><button class="btn ghost" data-act="todo-action" data-id="${esc(key)}" data-status="cancelled" ${saving ? "disabled" : ""}>不做了</button><span class="gap"></span><button class="btn ghost" data-act="todo-ask" data-id="${esc(key)}" ${owner === undefined ? 'disabled title="原 leader 已结束"' : ""}>去问它 ${ic("right", "xs")}</button></div>${draft === undefined ? "" : `<form class="todo-resolution" data-todo-form="${esc(key)}"><label for="todo-note-${esc(key)}">${draft.status === "cancelled" ? "为什么不做了" : "完成备注（可选）"}</label><textarea id="todo-note-${esc(key)}" name="note" rows="2" data-preserve="todo-note-${esc(key)}" placeholder="${draft.status === "cancelled" ? "告诉它原因，方便继续安排" : "比如：已授权，可以继续验证"}" ${draft.status === "cancelled" ? "required" : ""} ${saving ? "disabled" : ""}>${esc(draft.note)}</textarea>${draft.error ? `<p class="error-line" role="alert">${esc(draft.error)}</p>` : ""}<div class="acts"><button type="button" class="btn ghost" data-act="todo-action-close" data-id="${esc(key)}" ${saving ? "disabled" : ""}>取消</button><button type="submit" class="btn ${draft.status === "cancelled" ? "" : "primary"}" ${saving ? "disabled" : ""}>${saving ? "正在保存…" : draft.status === "cancelled" ? "确认不做" : "确认做完"}</button></div></form>`}</article>`;
+    return `<article class="todo-card ${expanded ? "open" : ""}" data-todo-id="${esc(key)}" style="--todo-ink:${todoTint(item)}"><button class="todo-top" data-act="todo-toggle" data-id="${esc(key)}" aria-expanded="${expanded}" aria-controls="todo-details-${esc(key)}"><span class="todo-check" aria-hidden="true">${ic("check", "sm")}</span><span class="todo-title">${esc(item.title)}</span>${ic("down", "sm chev")}</button><div class="todo-meta"><span>${esc(group)} · ${esc(proposer)}</span><time title="${esc(date(item.created_at))}">${ago(item.created_at)}</time>${blocking}</div>${linked ? `<div class="todo-linked-tasks">${linked}</div>` : ""}<div class="todo-details" id="todo-details-${esc(key)}" ${expanded ? "" : "hidden"}><section><h4>怎么做</h4><div class="markdown">${todoInstructions(item.steps, item, true)}</div></section><section><h4>完成后怎么确认</h4><div class="markdown">${todoInstructions(item.verification, item)}</div></section></div><div class="todo-card-actions"><button class="btn todo-done" data-act="todo-action" data-id="${esc(key)}" data-status="done" ${saving ? "disabled" : ""}>${ic("check", "sm")}做完了</button><button class="btn ghost" data-act="todo-action" data-id="${esc(key)}" data-status="cancelled" ${saving ? "disabled" : ""}>不做了</button><span class="gap"></span><button class="btn ghost" data-act="todo-ask" data-id="${esc(key)}" ${owner === undefined ? 'disabled title="原 leader 已结束"' : ""}>去问它 ${ic("right", "xs")}</button></div>${draft === undefined ? "" : `<form class="todo-resolution" data-todo-form="${esc(key)}"><label for="todo-note-${esc(key)}">${draft.status === "cancelled" ? "为什么不做了（可选）" : "完成备注（可选）"}</label><textarea id="todo-note-${esc(key)}" name="note" rows="2" data-preserve="todo-note-${esc(key)}" placeholder="${draft.status === "cancelled" ? "告诉它原因，方便继续安排" : "比如：已授权，可以继续验证"}" ${saving ? "disabled" : ""}>${esc(draft.note)}</textarea>${draft.error ? `<p class="error-line" role="alert">${esc(draft.error)}</p>` : ""}<div class="acts"><button type="button" class="btn ghost" data-act="todo-action-close" data-id="${esc(key)}" ${saving ? "disabled" : ""}>取消</button><button type="submit" class="btn ${draft.status === "cancelled" ? "" : "primary"}" ${saving ? "disabled" : ""}>${saving ? "正在保存…" : draft.status === "cancelled" ? "确认不做" : "确认做完"}</button></div></form>`}</article>`;
   }
   function todoTray(items, id) {
     if (items.length === 0) return "";
@@ -591,8 +595,7 @@
   }
   function todoResolvePayload(item, draft) {
     if (!item || !draft) throw new Error("这件待办已更新，请刷新后查看。");
-    const note = draft.note.trim();
-    if (draft.status === "cancelled" && note === "") throw new Error("请写一下不做的原因。");
+    const note = draft.note.trim() || null;
     if (!["done", "cancelled"].includes(draft.status)) throw new Error("待办状态无效。");
     return {id:item.id, status:draft.status, note, expected_version:draft.version};
   }
@@ -606,7 +609,7 @@
       const result = await api("/api/todo/resolve", payload);
       todoActions.delete(key); todoExpanded.delete(key);
       await loadState(true);
-      toast(payload.status === "done" ? "已标记做完" : "已说明不做的原因", async () => {
+      toast(payload.status === "done" ? "已标记做完" : "已标记不做", async () => {
         await api("/api/todo/undo", {id:item.id, before:result.before, version:result.version});
         await loadState(true); toast("已撤销");
       });
@@ -631,7 +634,7 @@
     if (allTab === "overview") {
       replace($("main"), CrewWorkspaceHome.render({name:projectDisplay(state.project), git_assistant:state.git_assistant, leaders:state.leaders,
         members:state.members, goals:state.goals || [], todos:state.todos || [], decisions:state.decisions},
-        {taskCards:items => CrewGoals.cards(items, state.leaders), decisionCards:items => items.map(decisionCard).join(""), todoCards:items => items.map(todoCard).join(""),
+        {taskCards:items => CrewGoals.cards(items, state.leaders), decisionCards:items => items.map(decisionCard).join(""), todoCards:items => items.map(todoCard).join(""), todoTint,
           approvalCount:nativeApprovals?.count() || 0, settingsIcon:ic("settings", "sm")}));
       return;
     }

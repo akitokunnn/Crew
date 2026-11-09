@@ -952,8 +952,7 @@ def _prepare(conn, action, data, *, proof, create_leader, send_message, stop_ses
         board.project(conn, item['project'])
         if data.get('status') not in ('done', 'cancelled'):
             raise board.BoardError('人工待办处理状态必须是 done 或 cancelled')
-        if data.get('status') == 'cancelled' or data.get('note') is not None:
-            _text(data.get('note'), '处理原因')
+        todo.optional_note(data.get('note'))
     elif action in NOTE_WRITE_ACTIONS or action in TAG_WRITE_ACTIONS:
         # Dry-run the real write so conflicts and invalid input surface before
         # a receipt is reserved; the savepoint discards it.

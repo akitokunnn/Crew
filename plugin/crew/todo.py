@@ -213,16 +213,20 @@ def _change(conn, before, status, note, actor, kind, now):
             "before": before, "version": after["version"]}
 
 
+def optional_note(note):
+    """Done and cancelled both accept no note; blank text means none."""
+    if note is None or isinstance(note, str) and not note.strip():
+        return None
+    return _text(note, "备注").strip()
+
+
 @board.atomic
 def resolve(conn, project_name, todo_id, status, note=None, actor=board.HUMAN, expected_version=None, now=None):
     if actor != board.HUMAN:
         raise board.BoardError("人工待办只能由用户本人标记完成或取消")
     if status not in ("done", "cancelled"):
         raise board.BoardError("人工待办处理状态必须是 done 或 cancelled")
-    if note is not None:
-        _text(note, "备注")
-    if status == "cancelled":
-        _text(note, "取消原因")
+    note = optional_note(note)
     before = _raw(conn, project_name, todo_id)
     _version(before, expected_version)
     return _change(conn, before, status, note, actor, "todo:resolve", now)
