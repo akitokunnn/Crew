@@ -136,3 +136,73 @@ class GitOverviewTests(CoreCase):
         self.assertEqual(self.owners(), [{"session_id": "chief", "name": "Chief"}])
         self.leader("chief", "Renamed chief", branch="topic")
         self.assertEqual(self.owners(), [{"session_id": "chief", "name": "Renamed chief"}])
+
+    def claim(self, sid, branch='topic', at=NOW, project='demo'):
+        self.conn.execute('INSERT INTO branch_claims(project,branch,session_id,claimed_at) VALUES(?,?,?,?)',
+                          (project, branch, sid, at))
+
+    def test_member_claim_maps_to_leader_and_leader_claim_maps_to_self(self):
+        self.leader('chief', 'Chief')
+        self.member('worker', 'Worker', 'Chief')
+        for sid in ('worker', 'chief'):
+            with self.subTest(sid=sid):
+                self.conn.execute('DELETE FROM branch_claims')
+                self.claim(sid)
+                self.assertEqual(self.owners(), [{'session_id': 'chief', 'name': 'Chief'}])
+
+    def test_direct_then_newest_claims_then_dispatch_with_leader_deduplication(self):
+        self.leader('direct', 'Direct', branch='topic')
+        self.member('direct-worker', 'Direct worker', 'Direct')
+        self.leader('older', 'Older claim')
+        self.leader('newer', 'Newer claim')
+        self.member('newer-worker', 'Newer worker', 'Newer claim')
+        self.leader('dispatched', 'Dispatched')
+        self.claim('older', at='2026-11-09T01:00:00Z')
+        self.claim('newer', at='2026-11-09T02:00:00Z')
+        self.claim('newer-worker', at='2026-11-09T03:00:00Z')
+        self.claim('direct-worker', at='2026-11-09T04:00:00Z')
+        self.dispatch('dispatch-run', 'dispatched', None, '2026-11-09T06:00:00Z')
+        self.dispatch('duplicate-run', 'newer-worker', None, '2026-11-09T07:00:00Z')
+        self.assertEqual(self.owners(), [
+            {'session_id': 'direct', 'name': 'Direct'},
+            {'session_id': 'newer', 'name': 'Newer claim'},
+            {'session_id': 'older', 'name': 'Older claim'},
+            {'session_id': 'dispatched', 'name': 'Dispatched'}])
+
+    def test_other_project_closed_sessions_and_git_assistant_claims_are_ignored(self):
+        other = self.base / 'other-project'
+        other.mkdir()
+        board.init_project(self.conn, 'other', other, now=NOW)
+        board.join(self.conn, 'outsider', 'other', 'Other chief', other, None, 'main', role='leader', now=NOW)
+        self.leader('closed-chief', 'Closed chief')
+        self.leader('open-chief', 'Open chief')
+        self.member('closed-worker', 'Closed worker', 'Open chief')
+        self.member('git-worker', 'Git worker', 'git')
+        for sid in ('closed-chief', 'closed-worker'):
+            board.set_status(self.conn, sid, 'closed', now=NOW)
+        for sid in ('closed-chief', 'closed-worker', 'git-admin', 'git-worker', 'outsider'):
+            self.claim(sid)
+        self.claim('outsider', project='other')
+        self.claim('open-chief', project='other')
+        self.assertEqual(self.owners(), [])
+
+    def test_claims_for_unlisted_branches_do_not_change_branches_or_owners(self):
+        self.leader('chief', 'Chief')
+        before = self.read()
+        for branch in ('main', 'crew/git-fixture', 'does-not-exist'):
+            self.claim('chief', branch=branch)
+        self.assertEqual(self.read(), before)
+        self.assertEqual(self.owners(), [])
+
+    def test_new_claims_and_updated_claim_times_are_visible_with_cached_git_scan(self):
+        self.leader('first', 'First')
+        self.leader('second', 'Second')
+        self.assertEqual(self.owners(), [])
+        self.claim('first', at='2026-11-09T01:00:00Z')
+        self.claim('second', at='2026-11-09T02:00:00Z')
+        self.assertEqual(self.owners(), [{'session_id': 'second', 'name': 'Second'},
+                                         {'session_id': 'first', 'name': 'First'}])
+        self.conn.execute('UPDATE branch_claims SET claimed_at=? WHERE session_id=?',
+                          ('2026-11-09T03:00:00Z', 'first'))
+        self.assertEqual(self.owners(), [{'session_id': 'first', 'name': 'First'},
+                                         {'session_id': 'second', 'name': 'Second'}])

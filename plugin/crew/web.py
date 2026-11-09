@@ -414,7 +414,7 @@ class Service:
             self.deliver_git_results(conn)
             leaders = [dict(row) for row in conn.execute(
                 "SELECT DISTINCT s.* FROM sessions s JOIN leader_notices n ON n.session_id=s.session_id "
-                "WHERE n.sent_at IS NULL AND s.role='leader' AND s.status!='closed'")]
+                "WHERE n.sent_at IS NULL AND n.wake=1 AND s.role='leader' AND s.status!='closed'")]
             for leader in leaders:
                 sid = leader['session_id']
                 batch = None

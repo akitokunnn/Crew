@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 import sys
 
-from . import board, goals, guard, runtimes, store
+from . import board, branch_claims, goals, guard, runtimes, store
 
 
 class InvalidHook(ValueError):
@@ -186,6 +186,9 @@ def main(argv=None, stdin=None, stdout=None, stderr=None):
     except Exception as exc:
         reason = "BLOCKED by Crew Codex guard: %s: %s. %s" % (type(exc).__name__, exc, guard.TAIL)
     if reason is None:
+        if payload.get("tool_name") == "Bash":
+            branch_claims.record_from_hook(args.home, args.session, payload["cwd"], payload["tool_input"]["command"],
+                                           execution_id=args.execution, stderr=stderr)
         return 0
     json.dump({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
                                       "permissionDecisionReason": reason}}, stdout, ensure_ascii=True)

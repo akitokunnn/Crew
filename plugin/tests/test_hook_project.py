@@ -1,8 +1,10 @@
 """Hook and guard membership follows registered sessions even after cwd changes."""
 import tests  # Install the production-service connection guard.
+import contextlib
+import io
 import unittest
 
-from crew import board, guard, rules
+from crew import board, goals, guard, hooks, rules
 from test_core import CoreCase, NOW
 
 
@@ -89,6 +91,83 @@ class RegisteredProjectTests(CoreCase):
                                                  tool_input={"file_path": str(self.root / "src" / "a.py")}), now=NOW)
         self.assertIsNotNone(reason)
         self.assertIn("文件归属", reason)
+
+
+class ClaudeBranchClaimTests(CoreCase):
+    def setUp(self):
+        super().setUp()
+        board.join(self.conn, 's3', 'demo', 'Chief', self.root, self.root, 'main', role='leader', now=NOW)
+        board.join(self.conn, 's1', 'demo', 'Worker', self.root, self.root, 'main', group_name='Chief', now=NOW)
+
+    def claims(self):
+        return [dict(row) for row in self.conn.execute(
+            'SELECT project,branch,session_id,goal_id FROM branch_claims ORDER BY branch')]
+
+    def execution(self, sid):
+        goal = goals.create(self.conn, 'demo', 's3', 'Claim branch', 'Create a branch', ['Branch has owner'])
+        if sid != 's3':
+            goals.assign(self.conn, goal['id'], sid, 'Create branch')
+        execution = goals.create_execution(self.conn, goal['id'], sid, runtime='claude')
+        native = 'native-' + execution['id']
+        goals.bind_native(self.conn, execution['id'], 'claude', native)
+        return goal, execution, native
+
+    def goal_hook(self, execution, native, tool, command):
+        return hooks.handle('guard', self.data(native, tool_name=tool, tool_input={'command': command}),
+                            self.home, self.fake_plugin,
+                            {'CREW_EXECUTION_ID': execution['id'], 'CREW_SESSION_ID': execution['session_id']}, now=NOW)
+
+    def test_allowed_shells_record_leaders_and_members(self):
+        expected = []
+        for sid in ('s1', 's3'):
+            for tool in ('Bash', 'PowerShell'):
+                name = sid + '-' + tool
+                with self.subTest(sid=sid, tool=tool):
+                    self.assertEqual(self.hook('guard', sid=sid, tool_name=tool,
+                                               tool_input={'command': 'git switch -c ' + name}), (0, None))
+                    expected.append({'project': 'demo', 'branch': name, 'session_id': sid, 'goal_id': None})
+        self.assertEqual(self.claims(), sorted(expected, key=lambda row: row['branch']))
+
+    def test_rejected_shell_command_does_not_record_any_branch(self):
+        self.conn.execute('INSERT INTO git_management(project,enabled_at,base,admin_session_id) VALUES(?,?,?,?)',
+                          ('demo', NOW, 'main', 's3'))
+        for tool in ('Bash', 'PowerShell'):
+            with self.subTest(tool=tool):
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    self.assertEqual(self.hook('guard', tool_name=tool,
+                                               tool_input={'command': 'git push; git switch -c blocked'}), (2, None))
+                self.assertIn('crew git request', err.getvalue())
+                self.assertEqual(self.claims(), [])
+
+    def test_non_shell_tool_does_not_record_command_like_content(self):
+        self.assertEqual(self.hook('guard', tool_name='Read',
+                                   tool_input={'file_path': str(self.root / 'notes.txt'),
+                                               'command': 'git switch -c not-a-shell'}), (0, None))
+        self.assertEqual(self.claims(), [])
+
+    def test_goal_shells_record_logical_identity_and_goal_for_both_roles(self):
+        expected = []
+        for sid in ('s1', 's3'):
+            for tool in ('Bash', 'PowerShell'):
+                with self.subTest(sid=sid, tool=tool):
+                    goal, execution, native = self.execution(sid)
+                    name = sid + '-' + tool
+                    self.assertEqual(self.goal_hook(execution, native, tool, 'git branch ' + name), (0, None))
+                    self.assertIsNone(self.conn.execute('SELECT 1 FROM sessions WHERE session_id=?', (native,)).fetchone())
+                    expected.append({'project': 'demo', 'branch': name, 'session_id': sid, 'goal_id': goal['id']})
+        self.assertEqual(self.claims(), sorted(expected, key=lambda row: row['branch']))
+
+    def test_goal_rejected_shell_and_non_shell_do_not_record(self):
+        self.conn.execute('INSERT INTO git_management(project,enabled_at,base,admin_session_id) VALUES(?,?,?,?)',
+                          ('demo', NOW, 'main', 's3'))
+        _, execution, native = self.execution('s1')
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(self.goal_hook(execution, native, 'Bash', 'git push; git switch -c blocked'), (2, None))
+        self.assertIn('crew git request', err.getvalue())
+        self.assertEqual(self.goal_hook(execution, native, 'Read', 'git branch non-shell'), (0, None))
+        self.assertEqual(self.claims(), [])
 
 
 if __name__ == "__main__":

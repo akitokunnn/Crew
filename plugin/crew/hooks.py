@@ -9,7 +9,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import board, channel, git_process, goals, guard, install, messaging, rules, runtimes, store
+from . import board, branch_claims, channel, git_process, goals, guard, install, messaging, rules, runtimes, store
 
 EVENTS = ("session-start", "user-prompt-submit", "stop", "notification", "pre-ask", "post-ask", "session-end", "guard")
 
@@ -84,8 +84,11 @@ def _goal_hook(event, data, home, plugin_root, environ, now):
             if reason:
                 print(reason, file=sys.stderr)
                 return 2, None
-        # Process state is reconciled from the owning runtime, not a late hook.
-        return 0, None
+    if event == 'guard' and data.get('tool_name') in guard.SHELLS:
+        branch_claims.record_from_hook(home, execution['session_id'], data['cwd'],
+                                       (data.get('tool_input') or {}).get('command', ''), execution_id=execution_id)
+    # Process state is reconciled from the owning runtime, not a late hook.
+    return 0, None
 
 
 def handle(event, data, home, plugin_root, environ, git_provider=git_details, now=None):
@@ -104,6 +107,9 @@ def handle(event, data, home, plugin_root, environ, git_provider=git_details, no
         if reason is not None:
             print(reason, file=sys.stderr)
             return 2, None
+        if data.get("tool_name") in guard.SHELLS:
+            branch_claims.record_from_hook(home, data["session_id"], data["cwd"],
+                                           (data.get("tool_input") or {}).get("command", ""))
         role = rules.SKILLS.get(data["tool_input"].get("skill")) if data.get("tool_name") == "Skill" else None
         if role is not None and guard.enabled_project(home, data["session_id"], data["cwd"]) is not None:
             with contextlib.closing(store.connect(home)) as conn:

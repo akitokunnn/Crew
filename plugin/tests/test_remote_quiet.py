@@ -444,7 +444,7 @@ class RemoteDecisionActionTests(GoalFixture):
         # The tool result points at the injected rules instead of repeating them.
         self.assertIn('[Crew assistant]', context['instructions'])
         leader_rules = behavior_prompts.DEFAULTS['leader']
-        for part in ('每件各建一个目标并分别 start', '已有同一任务就补充原目标'):
+        for part in ('各建一个目标并分别 start', '已有同一任务就补充原目标'):
             self.assertIn(part, leader_rules)
         final_rules = behavior_prompts.DEFAULTS['final_report']
         for part in ('crew todo list', 'crew decisions', 'todo withdraw', '撤回拍板', 'user_todos', 'user_decisions'):

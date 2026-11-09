@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from crew import board, codex_guard, codex_runtime, runtimes, store
+from crew import board, branch_claims, codex_guard, codex_runtime, goals, runtimes, store
 
 
 PLUGIN = Path(__file__).resolve().parents[1]
@@ -190,6 +190,75 @@ class CodexGuardTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("文件归属", result.stderr)
         self.assertEqual(json.loads(result.stdout)["hookSpecificOutput"]["permissionDecision"], "deny")
+
+    def run_claim_hook(self, payload, session='member', execution=None):
+        args = ['--home', str(self.home), '--session', session]
+        if execution is not None:
+            args += ['--execution', execution['id']]
+            payload = {**payload, 'session_id': 'native-' + execution['id']}
+        out, err = io.StringIO(), io.StringIO()
+        code = codex_guard.main(args, stdin=io.StringIO(json.dumps(payload)), stdout=out, stderr=err)
+        return code, out.getvalue(), err.getvalue()
+
+    def branch_claims(self):
+        return [dict(row) for row in self.conn.execute(
+            'SELECT project,branch,session_id,goal_id FROM branch_claims ORDER BY branch')]
+
+    def goal_execution(self, session):
+        board.join(self.conn, 'admin', 'demo', 'Chief', self.root, None, 'main', role='leader')
+        board.join(self.conn, 'member', 'demo', 'Worker', self.root, None, 'main', group_name='Chief')
+        goal = goals.create(self.conn, 'demo', 'admin', 'Claim branch', 'Create task branch', ['Branch has owner'])
+        if session != 'admin':
+            goals.assign(self.conn, goal['id'], session, 'Create branch')
+        execution = goals.create_execution(self.conn, goal['id'], session, runtime='codex')
+        goals.bind_native(self.conn, execution['id'], 'codex', 'native-' + execution['id'])
+        return goal, execution
+
+    def test_main_allowed_shell_records_bound_session(self):
+        self.assertEqual(self.run_claim_hook(self.payload('git switch -c ordinary')), (0, '', ''))
+        self.assertEqual(self.branch_claims(), [
+            {'project': 'demo', 'branch': 'ordinary', 'session_id': 'member', 'goal_id': None}])
+
+    def test_main_goal_shell_records_bound_identity_and_goal_for_both_roles(self):
+        expected = []
+        for session in ('member', 'admin'):
+            with self.subTest(session=session):
+                goal, execution = self.goal_execution(session)
+                payload = self.payload('git worktree add -b ' + session + '-branch ../tree')
+                self.assertEqual(self.run_claim_hook(payload, session, execution), (0, '', ''))
+                expected.append({'project': 'demo', 'branch': session + '-branch',
+                                 'session_id': session, 'goal_id': goal['id']})
+        self.assertEqual(self.branch_claims(), sorted(expected, key=lambda row: row['branch']))
+
+    def test_main_denied_shell_does_not_record_for_ordinary_or_goal_session(self):
+        self.conn.execute('INSERT INTO git_management(project,enabled_at,base,admin_session_id) VALUES(?,?,?,?)',
+                          ('demo', store.now_iso(), 'main', 'admin'))
+        _, execution = self.goal_execution('member')
+        for scoped in (None, execution):
+            with self.subTest(goal=scoped is not None):
+                code, out, err = self.run_claim_hook(self.payload('git push; git switch -c blocked'), execution=scoped)
+                self.assertEqual(code, 0)
+                self.assertEqual(json.loads(out)['hookSpecificOutput']['permissionDecision'], 'deny')
+                self.assertIn('crew git request', err)
+                self.assertEqual(self.branch_claims(), [])
+
+    def test_main_apply_patch_does_not_enter_branch_recorder(self):
+        patch = self.patch('*** Add File: notes.txt\n+git switch -c not-a-shell')
+        _, execution = self.goal_execution('member')
+        for scoped in (None, execution):
+            with self.subTest(goal=scoped is not None):
+                with mock.patch.object(branch_claims, 'record_from_hook',
+                                       side_effect=AssertionError('apply_patch cannot register shell branch claims')):
+                    self.assertEqual(self.run_claim_hook(self.payload(patch, 'apply_patch'), execution=scoped), (0, '', ''))
+                self.assertEqual(self.branch_claims(), [])
+
+    def test_main_recording_failure_keeps_allowed_tool_and_reports_reason(self):
+        with mock.patch.object(branch_claims, 'record', side_effect=OSError('fixture disk unavailable')):
+            code, out, err = self.run_claim_hook(self.payload('git branch topic'))
+        self.assertEqual(code, 0)
+        self.assertEqual(out, '')
+        self.assertEqual(err.splitlines(), ['Crew 未能记录分支归属：OSError: fixture disk unavailable'])
+        self.assertEqual(self.branch_claims(), [])
 
     @unittest.skipUnless(os.name == 'nt', 'Windows native hook shell wrapper')
     def test_powershell_wrapper_preserves_explicit_deny(self):

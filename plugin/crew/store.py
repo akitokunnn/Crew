@@ -26,7 +26,22 @@ def connect(home):
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA_FILE.read_text(encoding="utf-8"))
+    _migrate_quiet_leader_notices(conn)
     return conn
+
+
+def _migrate_quiet_leader_notices(conn):
+    """Existing notices keep waking the leader; only new quiet ones wait."""
+    if any(row['name'] == 'wake' for row in conn.execute('PRAGMA table_info(leader_notices)')):
+        return
+    conn.execute('BEGIN IMMEDIATE')
+    try:
+        if not any(row['name'] == 'wake' for row in conn.execute('PRAGMA table_info(leader_notices)')):
+            conn.execute('ALTER TABLE leader_notices ADD COLUMN wake INTEGER NOT NULL DEFAULT 1')
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
 
 
 def now_iso():

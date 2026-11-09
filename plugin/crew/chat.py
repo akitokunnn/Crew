@@ -1323,6 +1323,16 @@ class Manager:
                     spec, _ = self._resume_spec(spec_conn, session)
                 self._launch(session, spec, resume=True)
             delivery = 'steered' if steering else 'started'
+            quiet = []
+            if source in ('human', 'qq', 'lark') and '_execution' not in session and session['role'] == 'leader':
+                # Results the user left without waking the leader ride along with their next message.
+                with closing(store.connect(self.home)) as notice_conn:
+                    quiet = board.quiet_notices(notice_conn, session['session_id'])
+                if quiet:
+                    display_text = text if display_text is None else display_text
+                    text = ('[Crew 留档通知：用户在你上次回复后处理了以下事项，供参考，按需继续安排]\n'
+                            + '\n'.join('%s. %s' % (index, notice['text']) for index, notice in enumerate(quiet, 1))
+                            + '\n\n[用户消息]\n' + text)
             journal.emit('input_delivery', message_id=identity, digest=digest, status='submitted', delivery=delivery)
             try:
                 identity = self._send(session_id, text, display_text=display_text,
@@ -1336,6 +1346,10 @@ class Manager:
                              delivery=delivery, error=type(exc).__name__, detail=str(exc))
                 raise
             journal.emit('input_delivery', message_id=identity, digest=digest, status='accepted', delivery=delivery)
+            if quiet:
+                with closing(store.connect(self.home)) as notice_conn:
+                    for notice in quiet:
+                        board.mark_notice_sent(notice_conn, notice['id'])
         return {"ok": True, 'message_id': identity, 'accepted': True,
                 'delivery': delivery}
 
