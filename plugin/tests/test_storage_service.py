@@ -37,6 +37,22 @@ class StorageServiceTests(unittest.TestCase):
         with closing(self.storage.repository.connect()) as conn:
             self.assertEqual(conn.execute('SELECT COUNT(*) FROM workspaces').fetchone()[0],0)
 
+    def test_reopening_skips_history_rebuild_and_history_page_refreshes(self):
+        first = self.storage.open({'root': str(self.project), 'action': 'upgrade',
+            'candidate_id': self.storage.discover(self.project)['candidates'][0]['id']})
+        def batches():
+            with closing(self.storage.repository.connect()) as conn:
+                return conn.execute('SELECT COUNT(*) FROM import_batches').fetchone()[0]
+        self.assertEqual(batches(), 1)
+        with closing(store.connect(self.home)) as conn:
+            conn.execute("UPDATE sessions SET crew_name='Renamed' WHERE session_id='legacy-native-id'")
+        reopened = self.storage.open({'root': str(self.project)})
+        self.assertEqual(reopened['project']['workspace_id'], first['workspace_id'])
+        self.assertEqual(batches(), 1)
+        self.storage.history(first['workspace_id'])
+        self.assertEqual(batches(), 2)
+        self.assertTrue((self.home / 'backups' / 'crew.db').is_file())
+
     def test_unknown_selection_never_opens_an_empty_workspace(self):
         with self.assertRaisesRegex(ValueError,'选择'):
             self.storage.open({'root':str(self.project),'action':'upgrade','candidate_id':'missing'})

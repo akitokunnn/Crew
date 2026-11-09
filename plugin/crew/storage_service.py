@@ -301,7 +301,15 @@ class StorageService:
                     from . import board
                     with closing(store.connect(self.home)) as conn:
                         board.init_project(conn,project['name'],root)
-                return self.refresh(project['name'], write_marker=True)
+                    return self.refresh(project['name'], write_marker=True)
+                # Already registered: opening needs no history rebuild. The
+                # history page, export and handoff refresh when they are used.
+                workspace_id=project['workspace_id']
+                if Path(project['root']).is_dir():
+                    self.repository.bind_workspace(workspace_id, project['root'])
+                warning=self._write_marker(project['root'], workspace_id)
+                return {'workspace_id': workspace_id, 'status': 'ready', 'project': project,
+                        **({'warnings': [warning]} if warning else {})}
             if discovery['status'] == 'history_missing':
                 raise ValueError(discovery['message'])
             candidate = next((c for c in discovery['candidates'] if c['id'] == data.get('candidate_id')), None)
@@ -428,6 +436,16 @@ class StorageService:
     def history(self, workspace_id, *, conversation_id=None, collection=None, before=None, limit=50):
         workspace_id = str(uuid.UUID(workspace_id))
         limit = max(1, min(int(limit), 100))
+        if before is None and conversation_id is None and collection is None:
+            # First page of the history view: bring this workspace up to date.
+            with closing(self.repository.connect()) as conn:
+                local = conn.execute('SELECT legacy_project FROM local_legacy_projects WHERE workspace_id=? AND source_home=?',
+                                     (workspace_id, str(self.home))).fetchone()
+            if local:
+                with closing(_readonly(store.db_path(self.home))) as conn:
+                    live = conn.execute('SELECT 1 FROM projects WHERE name=?', (local[0],)).fetchone()
+                if live:
+                    self.refresh(local[0])
         with closing(self.repository.connect()) as conn:
             workspace = conn.execute('SELECT * FROM workspaces WHERE id=? AND deleted_at IS NULL', (workspace_id,)).fetchone()
             deleted = conn.execute("SELECT 1 FROM entity_tombstones WHERE workspace_id=? AND entity_type='workspaces' AND entity_id=? AND state='active' AND deleted_at IS NULL",(workspace_id,workspace_id)).fetchone()

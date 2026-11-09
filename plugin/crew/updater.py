@@ -4,7 +4,6 @@ The only target is the desktop's own plugin_root; nothing is downloaded. Each
 step prints one JSON result for the desktop transaction and fails explicitly.
 """
 import argparse
-import datetime
 import fnmatch
 import hashlib
 import json
@@ -94,16 +93,20 @@ def backup(home):
     source = store.db_path(home)
     if not source.is_file():
         raise UpdateError("没有找到 Crew 数据库：" + str(source))
-    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    directory = home / "backups" / ("update-%s-%s" % (stamp, uuid.uuid4().hex[:6]))
-    directory.mkdir(parents=True)
-    path = directory / "crew.db"
-    with closing(sqlite3.connect(source, timeout=30)) as origin, closing(sqlite3.connect(path)) as copy:
-        origin.backup(copy)
-    with closing(sqlite3.connect(path)) as copy:
-        checked = [row[0] for row in copy.execute("PRAGMA integrity_check")]
-    if checked != ["ok"]:
-        raise UpdateError("备份完整性检查失败：%s（备份 %s）" % ("; ".join(map(str, checked))[:500], path))
+    # The single backup copy: a verified new copy replaces the previous one.
+    path = home / "backups" / "crew.db"
+    path.parent.mkdir(exist_ok=True)
+    staged = path.with_name("crew.db.%s.tmp" % uuid.uuid4().hex)
+    try:
+        with closing(sqlite3.connect(source, timeout=30)) as origin, closing(sqlite3.connect(staged)) as copy:
+            origin.backup(copy)
+        with closing(sqlite3.connect(staged)) as copy:
+            checked = [row[0] for row in copy.execute("PRAGMA integrity_check")]
+        if checked != ["ok"]:
+            raise UpdateError("备份完整性检查失败：%s" % "; ".join(map(str, checked))[:500])
+        os.replace(staged, path)
+    finally:
+        staged.unlink(missing_ok=True)
     return {"path": str(path), "bytes": path.stat().st_size, "integrity": "ok"}
 
 
