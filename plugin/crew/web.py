@@ -24,7 +24,7 @@ from urllib.error import HTTPError, URLError
 from . import board, channel, channel_digest, chat, claude_limits, codex_runtime, documents, git_admin, git_ci, git_view, goal_api, goals, hooks, maintenance, messaging, models, notifications, open_session, presentation, runtime_catalog, runtime_switch, runtimes, session_library, session_ops, settings, spawn, store, themes, todo, trust_mode, updater, usage, usage_cli, vscode_sessions, workspace_execution, workspace_settings
 from .service_lock import HomeServiceLock
 from . import codex_client, member_defaults, operations_chat, operations_settings
-from . import connections, session_presence, storage_cleanup, workspace_activity
+from . import connections, session_delete, session_presence, storage_cleanup, workspace_activity
 from .storage_service import StorageService, HISTORY_PREFIX
 from . import personal, native_home, native_handoff
 from . import remote_access, remote_http
@@ -1361,9 +1361,10 @@ class Service:
                 if path == '/api/session/archive':
                     return self.archive_session(conn, target['session_id'], now=now,
                                                 caller_session_id=_optional_text(data, 'caller_session_id'))
-                if path == '/api/session/remove':
-                    return self.archive_session(conn, target['session_id'], removed=True, now=now,
-                                                caller_session_id=_optional_text(data, 'caller_session_id'))
+                if path == '/api/session/delete':
+                    if _optional_text(data, 'caller_session_id') not in (None, board.HUMAN):
+                        raise board.BoardError('只有用户可以删除会话')
+                    return self.delete_session(conn, target['session_id'], now=now)
                 if path == '/api/session/restore':
                     return session_ops.restore(conn, target['session_id'], now=now)
                 if path == '/api/session/undo':
@@ -1614,6 +1615,55 @@ class Service:
             self.chat.stop_managed(session_id)
             return result
 
+    def delete_session(self, conn, session_id, now=None):
+        """Tombstone the person (a leader with its whole group), stop owned processes,
+        then delete its web journal and native CC / Codex threads."""
+        with self.chat.lock:
+            _, people = session_ops.deletion_scope(conn, session_id)
+            ids = [person['session_id'] for person in people]
+            natives = {sid: session_delete.targets(conn, sid) for sid in ids}
+            self._assert_deletable(conn, people, natives)
+            result = session_ops.delete(conn, session_id, now=now)
+            self.chat.goal_controller.sync(conn)
+            for sid in ids:
+                self.chat.stop_managed(sid)
+                self.chat.journals.pop(sid, None)
+        errors, codex = [], {}
+        for sid in ids:
+            try:
+                self.chat.path(sid).unlink(missing_ok=True)
+            except OSError as exc:
+                errors.append('网页对话记录删除失败：%s' % exc)
+            for native in natives[sid]:
+                if native['runtime'] == 'codex':
+                    codex.setdefault(native['home'], []).append(native['native_id'])
+                    continue
+                try:
+                    session_delete.delete_claude(self.claude_root, native['native_id'])
+                except (OSError, ValueError) as exc:
+                    errors.append('Claude Code 会话 %s 删除失败：%s' % (native['native_id'], exc))
+        for home, native_ids in codex.items():
+            try:
+                session_delete.delete_codex(native_ids, home, process_factory=self.chat.process_factory)
+            except (codex_client.CodexError, OSError, ValueError) as exc:
+                errors.append('Codex 会话 %s 删除失败：%s' % ('、'.join(native_ids), exc))
+        return {**result, 'errors': errors}
+
+    def _assert_deletable(self, conn, people, natives):
+        """Never delete a transcript that a process outside Crew is still writing."""
+        with self.agents_lock:
+            agents, agents_error = self.agents, self.agents_error
+        external = {agent['sessionId'] for agent in session_presence.external_agents(self.chat, agents)}
+        for person in people:
+            sid, name = person['session_id'], person['crew_name'] or person['session_id']
+            claude = [native['native_id'] for native in natives[sid] if native['runtime'] == 'claude']
+            if claude and agents_error is not None:
+                raise board.Conflict('暂时读不到 Claude Code 进程状态，无法确认「%s」是否还开着，请稍后再删' % name)
+            if external.intersection(claude):
+                raise board.Conflict('「%s」还开在 VS Code 或终端里，先关掉那边的会话再删除' % name)
+            if conn.execute("SELECT 1 FROM native_session_controls WHERE session_id=? AND state<>'crew'", (sid,)).fetchone():
+                raise board.Conflict('「%s」已交给 Codex 桌面版，先接回 Crew 再删除' % name)
+
     def stop_archived(self, before, with_members=True):
         with self.chat.lock, closing(store.connect(self.home)) as conn:
             self.chat.goal_controller.sync(conn)
@@ -1799,7 +1849,7 @@ POST_PATHS.update({'/api/session/native-handoff', '/api/session/native-return'})
 POST_PATHS.update({'/api/goals/create', '/api/goals/action', '/api/goals/context', '/api/goals/agent', '/api/chat/interrupt', '/api/decision/discuss', '/api/decision/ready'})
 POST_PATHS.update({'/api/trust', '/api/comments', '/api/decision/clarify'})
 POST_PATHS.update({'/api/project/update', '/api/project/remove'})
-POST_PATHS.update('/api/session/' + action for action in ('rename', 'archive', 'remove', 'restore', 'undo', 'stop', 'options', 'compact'))
+POST_PATHS.update('/api/session/' + action for action in ('rename', 'archive', 'delete', 'restore', 'undo', 'stop', 'options', 'compact'))
 POST_PATHS.update(('/api/session/runtime/prepare','/api/session/runtime/switch'))
 POST_PATHS.update(('/api/attention/dismiss', '/api/notifications/away'))
 POST_PATHS.update(('/api/decision/hold', '/api/decision/unhold'))

@@ -62,8 +62,8 @@ function harness(state = fixture(), fetcher = () => { throw new Error("Unexpecte
 }
 const plain = value => JSON.parse(JSON.stringify(value));
 
-test("archive and remove conflicts toast the exact backend Chinese reason",async()=>{
-  for(const route of ["/api/session/archive","/api/session/remove"]){
+test("archive and delete conflicts toast the exact backend Chinese reason",async()=>{
+  for(const route of ["/api/session/archive","/api/session/delete"]){
     const reason="会话仍有待验收任务，请先完成验收",toasts=[];
     const {ui}=harness(fixture(),async()=>({ok:false,status:409,json:async()=>({error:reason})}));
     ui.services({toast:text=>toasts.push(text)});

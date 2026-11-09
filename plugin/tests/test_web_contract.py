@@ -122,7 +122,11 @@ class WebContractTests(ShellFixture, unittest.TestCase):
     def test_archive_http_authorizes_caller_before_changing_or_stopping_identity(self):
         board.roster(self.conn, 'demo', 'add', 'lead', session_ids=['s1'])
         board.join(self.conn, 'foreign-lead', 'demo', 'foreign', self.project, self.project, 'main', role='leader')
-        for path in ('/api/session/archive', '/api/session/remove'):
+        for caller in ('s1', 's3', 'foreign-lead'):
+            code, result, _ = self.request('/api/session/delete', {'session_id': 's1', 'caller_session_id': caller}, project='demo')
+            self.assertEqual(code, 400, result)
+            self.assertFalse(board.is_archived(self.conn, 's1'))
+        for path in ('/api/session/archive',):
             for caller in ('s1', 'foreign-lead'):
                 with self.subTest(path=path, caller=caller):
                     code, result, _ = self.request(path, {'session_id': 's1', 'caller_session_id': caller}, project='demo')
@@ -146,6 +150,61 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         # Owner UI retains its existing authority over an ungrouped member.
         code, result, _ = self.request('/api/session/archive', {'session_id': 's2'}, project='demo')
         self.assertEqual(code, 200, result)
+
+    def test_delete_removes_crew_and_native_conversations_and_takes_the_whole_group(self):
+        from crew import runtimes
+        member, lead, codex = (str(uuid.UUID(int=n)) for n in (1, 2, 3))
+        board.join(self.conn, lead, 'demo', 'boss', self.project, self.project, 'main', role='leader', now=NOW)
+        board.join(self.conn, member, 'demo', 'worker', self.project, self.project, 'main', now=NOW)
+        board.roster(self.conn, 'demo', 'move', 'boss', ['worker'], now=NOW)
+        board.join(self.conn, codex, 'demo', 'coder', self.project, self.project, 'main', now=NOW)
+        runtimes.set(self.conn, codex, 'codex', 'thread-coder-0001', now=NOW)
+        files = []
+        for sid in (member, lead, codex):
+            journal = self.home / 'chat' / (sid + '.jsonl')
+            journal.parent.mkdir(exist_ok=True)
+            journal.write_text('', encoding='utf-8')
+            files.append(journal)
+        for sid in (member, lead):
+            transcript = self.claude / 'C--project' / (sid + '.jsonl')
+            transcript.parent.mkdir(exist_ok=True)
+            transcript.write_text('{}', encoding='utf-8')
+            sidecar = self.claude / 'C--project' / sid / 'subagents'
+            sidecar.mkdir(parents=True)
+            (sidecar / 'agent-1.jsonl').write_text('{}', encoding='utf-8')
+            files += [transcript, sidecar.parent]
+        keep = self.claude / 'C--project' / (str(uuid.UUID(int=9)) + '.jsonl')
+        keep.write_text('{}', encoding='utf-8')
+
+        self.provider.return_value = [*self.provider.return_value,
+                                      {'sessionId': member, 'name': 'cc-worker', 'status': 'idle', 'cwd': str(self.project)}]
+        self.service.refresh_agents()
+        code, result, _ = self.request('/api/session/delete', {'session_id': lead}, project='demo')
+        self.assertEqual(code, 409, result)
+        self.assertIn('「worker」还开在 VS Code', result['error'])
+        self.assertFalse(board.is_archived(self.conn, lead))
+        self.assertTrue(all(path.exists() for path in files))
+
+        self.provider.return_value = self.provider.return_value[:-1]
+        self.service.refresh_agents()
+        with mock.patch('crew.session_delete.delete_codex') as delete_codex:
+            code, result, _ = self.request('/api/session/delete', {'session_id': codex}, project='demo')
+            self.assertEqual(code, 200, result)
+            self.assertEqual((result['deleted'], result['errors']), ([codex], []))
+            self.assertEqual(delete_codex.call_args.args[0], ['thread-coder-0001'])
+            code, result, _ = self.request('/api/session/delete', {'session_id': lead}, project='demo')
+            self.assertEqual(code, 200, result)
+            self.assertEqual((sorted(result['deleted']), result['errors']), (sorted([lead, member]), []))
+            self.assertEqual(delete_codex.call_count, 1)
+        self.assertFalse(any(path.exists() for path in files))
+        self.assertTrue(keep.exists())
+        state = self.state()
+        listed = {item['session_id'] for item in state['leaders'] + state['members']}
+        self.assertFalse(listed & {member, lead, codex})
+        for sid in (member, lead, codex):
+            self.assertEqual(board.session(self.conn, sid)['status'], 'closed')
+            self.assertEqual(board.session_control(self.conn, sid)['removed'], 1)
+        self.assertIsNotNone(self.conn.execute("SELECT closed_at FROM groups WHERE project='demo' AND name='boss'").fetchone()[0])
 
     def test_close_group_http_binds_current_leader_and_records_actor(self):
         board.roster(self.conn, 'demo', 'add', 'lead', session_ids=['s1'])

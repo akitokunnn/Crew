@@ -114,7 +114,7 @@ class LeaderWakeTests(ShellFixture, unittest.TestCase):
         self.assertIn('地址「cc-lead」', self.message()['text'])
 
     def test_archived_removed_and_closed_targets_still_rejected(self):
-        for target, removed, expected in [('s1', False, '已归档'), ('s2', True, '已移除')]:
+        for target, removed, expected in [('s1', False, '已归档'), ('s2', True, '已删除')]:
             session_ops.archive(self.conn, target, removed=removed, now=NOW)
             with self.subTest(target=target), self.assertRaisesRegex(board.BoardError, expected):
                 self.wake(target, 'other')

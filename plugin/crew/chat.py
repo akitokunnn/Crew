@@ -1566,7 +1566,7 @@ class Manager:
                 raise board.BoardError("网页服务正在关闭")
             control = board.session_control(conn, target["session_id"])
             if control and control["removed"]:
-                raise board.BoardError("目标已移除，不能叫醒")
+                raise board.BoardError("目标已删除，不能叫醒")
             if control and control["archived_status"] is not None:
                 raise board.BoardError("目标已归档，不能叫醒")
             if target["status"] == "closed":

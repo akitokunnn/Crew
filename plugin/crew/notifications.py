@@ -735,7 +735,7 @@ class Inbox:
                 decision = current
                 asker = board.session(conn, decision['session_id'])
                 if asker['status'] == 'closed' or board.is_archived(conn, asker['session_id']):
-                    error = '这条会话已归档或移出 Crew，答复尚未保存。请先在 Crew 恢复会话。'
+                    error = '这条会话已归档或删除，答复尚未保存。已归档的请先在 Crew 恢复会话。'
                 else:
                     board.answer.__wrapped__(conn, decision['id'], answer, actor=self.channel_id, now=now,
                                              _human_origin=board._OWNER_CHANNEL_ANSWER)

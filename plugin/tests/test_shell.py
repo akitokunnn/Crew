@@ -719,8 +719,8 @@ class WebTests(ShellFixture, unittest.TestCase):
         self.assertNotIn("archived-leader", status_text)
         self.assertNotIn("archived-member", status_text)
 
-    def test_archive_and_remove_stop_busy_and_idle_and_undo_does_not_restart(self):
-        for action in ('archive', 'remove'):
+    def test_archive_and_delete_stop_busy_and_idle_and_undo_does_not_restart(self):
+        for action in ('archive', 'delete'):
             for busy in (False, True):
                 with self.subTest(action=action, busy=busy):
                     sid = self.get('/api/leader', {'name': action + str(busy), 'task': 'work'})[1]['session_id']
@@ -731,7 +731,11 @@ class WebTests(ShellFixture, unittest.TestCase):
                     self.assertEqual(code, 200)
                     self.assertFalse(manager.running(sid))
                     self.assertTrue(manager.processes[sid].reader_done.is_set())
-                    self.assertEqual(self.get('/api/session/undo', {'session_id': sid, 'before': result['before']})[0], 200)
+                    if action == 'delete':
+                        self.assertEqual((result['deleted'], result['errors']), ([sid], []))
+                        self.assertFalse(manager.path(sid).exists())
+                    else:
+                        self.assertEqual(self.get('/api/session/undo', {'session_id': sid, 'before': result['before']})[0], 200)
                     self.assertEqual(len(self.processes), count)
                     self.assertFalse(manager.running(sid))
 
@@ -762,7 +766,7 @@ class WebTests(ShellFixture, unittest.TestCase):
         self.assertEqual(self.get('/api/group/close', {'group': 'lead', 'with_members': True})[0], 400)
         self.assertEqual(self.get('/api/group/undo', {'group': 'lead', 'before': {}})[0], 400)
         self.assertEqual(self.get('/api/session/archive', {'session_id': 's3'})[0], 400)
-        self.assertEqual(self.get('/api/session/remove', {'session_id': 's3'})[0], 400)
+        self.assertEqual(self.get('/api/session/delete', {'session_id': 's3'})[0], 400)
 
     def chat_start(self):
         code, result, _ = self.get("/api/leader", {"name": "web-boss", "task": "manage this group"})

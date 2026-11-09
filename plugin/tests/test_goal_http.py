@@ -162,8 +162,8 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
                 self.thread_id = 'archive-native-' + str(type(self).counter)
         with mock.patch('crew.codex_runtime._ObservedClient', IndependentClient):
             for runtime in ('claude', 'codex'):
-                for action in ('archive', 'remove', 'close'):
-                    with self.subTest(runtime=runtime, action=action):
+                for action in ('archive', 'delete', 'close'):
+                    with self.subTest(runtime=runtime, action=action), mock.patch('crew.session_delete.delete_codex'):
                         owner, member = runtime + '-' + action, runtime + '-' + action + '-member'
                         board.join(self.conn, owner, 'demo', owner, self.project, self.project, 'main', role='leader')
                         board.join(self.conn, member, 'demo', member, self.project, self.project, 'main', group_name=owner)
@@ -189,6 +189,9 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
                         saved = goals.get(self.conn, goal['id'])
                         self.assertTrue(saved['manual_pause'])
                         self.assertEqual(saved['status'], 'paused')
+                        if action == 'delete':
+                            self.assertEqual(sorted(archived['deleted']), sorted([owner, member]))
+                            continue
                         restore_path = '/api/group/undo' if action == 'close' else '/api/session/restore'
                         restore_data = {'group': owner, 'before': archived['before']} if action == 'close' else {'session_id': owner}
                         self.assertEqual(self.request(restore_path + '?project=demo', restore_data)[0], 200)

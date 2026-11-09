@@ -105,7 +105,7 @@ class WorkspaceViewsTests(UsageFixture, unittest.TestCase):
         self.assertEqual(beta["project"]["name"], "beta")
         self.assertEqual(set(directory(beta)), {"beta-leader", "beta-main", "beta-peer"})
 
-        code, removed, _ = self.request("/api/session/remove", {"session_id": "alpha-peer"}, project="alpha")
+        code, removed, _ = self.request("/api/session/archive", {"session_id": "alpha-peer"}, project="alpha")
         self.assertEqual(code, 200, removed)
         alpha = self.state("alpha")
         self.assertNotIn("alpha-peer", directory(alpha))

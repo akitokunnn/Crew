@@ -164,7 +164,7 @@
     const result = await response.json();
     if (!response.ok) { const error = new Error(result.error || "请求失败，请重试。"); error.status = response.status; error.details = result; throw error; }
     if (path === "/api/chat/send" && data.goal_id == null && member(data.session_id)) waitingSounds.set(data.session_id, {generation:++soundGeneration, afterSeq:sentAfter});
-    else if (["/api/session/stop", "/api/session/archive", "/api/session/remove"].includes(path)) waitingSounds.delete(data.session_id);
+    else if (["/api/session/stop", "/api/session/archive", "/api/session/delete"].includes(path)) waitingSounds.delete(data.session_id);
     return result;
   }
   function toast(message, undo = null) {
@@ -747,11 +747,11 @@
       const siblings = sortableLeaders(item), index = siblings.indexOf(item), members = membersOf(item.session_id), busy = members.filter(compactBusy).length;
       html += submenu(item, "设为优先", [1, 2, 3, 0].map(rank => `<button role="menuitemradio" aria-checked="${item.priority === (rank === 0 ? null : rank)}" data-act="set-priority" data-id="${esc(item.session_id)}" data-rank="${rank}"><span class="model-check">${item.priority === (rank === 0 ? null : rank) ? ic("check", "sm") : ""}</span>${rank === 0 ? "取消优先" : `第 ${rank} 优先`}</button>`).join(""));
       html += btn("leader-up", "上移", index === 0 ? "已经在最上面" : "") + btn("leader-down", "下移", index === siblings.length - 1 ? "已经在最下面" : "") + btn("group-tree", "看本组架构图") + btn("open-vscode", "转到 VS Code 里聊", editorHandoffReason(item) || (compactBusy(item) ? "会话正在工作，请等它空闲后再打开" : ""));
-      html += submenu(item, "结束这个 leader", members.length === 0 ? btn("close-group", "结束（组里没有下属）", "", true, 'data-with-members="false"') : btn("close-group", `<span>连下属一起归档<small>连 ${members.length} 个下属一起归档，其中 ${busy} 个在干活</small></span>`, "", true, 'data-with-members="true"') + btn("close-group", `<span>只结束 leader，下属退回待收编<small>${members.length} 个下属退回待收编，其中 ${busy} 个在干活</small></span>`, "", true, 'data-with-members="false"'), true);
+      html += submenu(item, "结束这个 leader", members.length === 0 ? btn("close-group", "结束（组里没有下属）", "", true, 'data-with-members="false"') : btn("close-group", `<span>连下属一起归档<small>连 ${members.length} 个下属一起归档，其中 ${busy} 个在干活</small></span>`, "", true, 'data-with-members="true"') + btn("close-group", `<span>只结束 leader，下属退回待收编<small>${members.length} 个下属退回待收编，其中 ${busy} 个在干活</small></span>`, "", true, 'data-with-members="false"'), true) + btn("delete-session", "删除…", "", true);
     } else {
       const groups = state.leaders.filter(group => group.session_id !== item.leader_session_id);
       html += groups.length ? submenu(item, "换组", groups.map(group => btn("move-to", esc(group.name), "", false, `data-group="${esc(group.name)}"`)).join("")) : btn("move-menu", "换组", "没有其他协作组");
-      html += btn("leave-group", "退组", item.leader_session_id === null ? "当前没有加入协作组" : "") + btn("archive", "归档", "", true) + btn("remove-session", "移出 Crew", "", true);
+      html += btn("leave-group", "退组", item.leader_session_id === null ? "当前没有加入协作组" : "") + btn("archive", "归档", "", true) + btn("delete-session", "删除…", "", true);
       if (item.where === "offline") html += btn("wake-session", "叫醒");
     }
     html += `<button type="button" role="menuitem" data-act="settings" data-category="prompts" data-prompt-session="${esc(item.session_id)}">行为配置与使用记录</button>`;
@@ -891,6 +891,13 @@
     hideMenu(); dialogReturn = focusDescriptor(document.activeElement);
 
     $("backdrop").innerHTML = `<div class="modal compact-modal" role="dialog" aria-modal="true" aria-labelledby="compact-title"><h3 id="compact-title">压缩「${esc(item.name)}」的上下文？</h3><p class="d">压缩这段总对话，保留工作记录。正在回复时会在本次回复结束后压缩。</p><div class="acts"><button class="btn ghost" type="button" data-act="modal-close">取消</button><button class="btn primary" type="button" data-act="compact-confirm" data-id="${esc(id)}">压缩</button></div></div>`;
+    $("backdrop").classList.add("show"); $("backdrop").querySelector('[data-act="modal-close"]').focus();
+  }
+  function openDelete(id) {
+    const item = sessionItem(id), members = state.leaders.includes(item) ? membersOf(id) : [];
+    hideMenu(); dialogReturn = focusDescriptor(document.activeElement);
+    const scope = members.length ? `<p class="d">会连同组里的 ${members.length} 个下属一起删除：${members.map(member => esc(member.name)).join("、")}。</p>` : "";
+    $("backdrop").innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-labelledby="delete-title"><h3 id="delete-title">删除「${esc(item.name)}」？</h3>${scope}<p class="d">会停止正在运行的会话，删除 Crew 里的网页对话记录，以及 Claude Code / Codex 里的原生会话记录。删除后无法恢复。</p><div class="acts"><button class="btn ghost" type="button" data-act="modal-close">取消</button><button class="btn danger" type="button" data-act="delete-confirm" data-id="${esc(id)}">删除</button></div></div>`;
     $("backdrop").classList.add("show"); $("backdrop").querySelector('[data-act="modal-close"]').focus();
   }
   async function compactContext(id) {
@@ -1278,11 +1285,16 @@
       else if (act === "usage-fold") { if (usageCollapsed.has(id)) usageCollapsed.delete(id); else usageCollapsed.add(id); renderUsage(); }
       else if (act === "rename") openRename(cardId);
       else if (act === "move-menu") { const item = member(id); showMenu(button, state.leaders.filter(group => group.session_id !== item.leader_session_id).map(group => `<button data-act="move-to" data-id="${esc(id)}" data-group="${esc(group.name)}">${av(group.name, 20)}${esc(group.name)}</button>`).join("")); }
-      else if (act === "more-menu") showMenu(button, `<button data-act="leave-group" data-id="${esc(id)}">${ic("leave", "sm")}退组</button><button class="danger" data-act="remove-session" data-id="${esc(id)}">${ic("x", "sm")}移出 Crew</button>`);
+      else if (act === "more-menu") showMenu(button, `<button data-act="leave-group" data-id="${esc(id)}">${ic("leave", "sm")}退组</button><button class="danger" data-act="delete-session" data-id="${esc(id)}">${ic("x", "sm")}删除…</button>`);
       else if (act === "move-to") action("move", async () => { const item = member(id); await api("/api/roster/move", {session_id:item.session_id, name:item.name, from:item.group, to:button.dataset.group}); hideMenu(); await loadState(true); toast(`已换到 ${button.dataset.group} 组`); });
       else if (act === "leave-group") action("leave", async () => { const item = member(id); await api("/api/roster/remove", {session_id:item.session_id, name:item.name, group:item.group}); hideMenu(); closeCard(); await loadState(true); toast("已退组，可以在待收编里重新收编"); });
       else if (act === "archive") action("archive", () => changeSession(id, "/api/session/archive", "已归档", true));
-      else if (act === "remove-session") action("remove", () => changeSession(id, "/api/session/remove", "已移出 Crew", true));
+      else if (act === "delete-session") openDelete(id);
+      else if (act === "delete-confirm") action(`delete:${id}`, async () => {
+        const result = await api("/api/session/delete", {session_id:id});
+        closeBackdrop(); hideMenu(); if (result.deleted.includes(cardId)) closeCard(); await loadState(true);
+        toast(result.errors.length ? `已从 Crew 删除，但有 ${result.errors.length} 项原生记录没删掉：${result.errors.join("；")}` : "已删除");
+      });
       else if (act === "stop") action("stop", async () => { await api("/api/session/stop", {session_id:id}); await loadState(true); toast("已请求中断本轮，正在等待停止确认"); });
       else if (act === "open-vscode") action(`open:${id}`, async () => {
         const reason = editorHandoffReason(sessionItem(id));

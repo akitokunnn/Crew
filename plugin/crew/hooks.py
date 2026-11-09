@@ -163,7 +163,7 @@ def handle(event, data, home, plugin_root, environ, git_provider=git_details, no
             if board.is_archived(conn, data["session_id"]):
                 control = board.session_control(conn, data["session_id"])
                 lines = ["Crew 项目：%s" % p["name"], "本会话已%s，本次启动不会重新加入协作。" %
-                         ("从 Crew 移除" if control["removed"] else "归档")]
+                         ("从 Crew 删除" if control["removed"] else "归档")]
             else:
                 s = board.whoami(conn, data["session_id"])
                 leader = s["leader"]
