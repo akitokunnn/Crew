@@ -2,14 +2,14 @@
 const {test}=require("node:test"),assert=require("node:assert/strict"),fs=require("node:fs"),path=require("node:path"),vm=require("node:vm");
 const tick=async()=>{for(let i=0;i<24;i++)await Promise.resolve();};
 const snapshot=label=>({enabled:false,repository:label,choices:{branches:["main"],base:"main",stable:null}});
-const commit=(sha,subject,parents=[],refs=[])=>({sha:sha.repeat(40),subject,parents:parents.map(item=>item.repeat(40)),refs,author:"Fixture",time:"2026-10-26T00:00:00Z",body:"",pull_requests:[],parent_branches:[]});
-function enabled(commits=[commit("a","第一次读取",[],["main"])],next_offset=null) {
-  const latest=commits[0],branch={name:"main",latest,origin_relation:"",sessions:[],worktrees:[],ahead:0,behind:0,conflicts:[],unique_commits:[],merged:true};
-  return {...snapshot("已启用的仓库"),enabled:true,config:{base:"main",stable:null,admin_session_id:"chief"},base:branch,stable:null,branches:[branch],remote_only:[],recent_merge:null,ref_unique_commits:{main:[]},requests:[],commits,next_offset,github:null,github_reason:"fixture offline",last_fetch_at:null};
+function enabled(subject="第一次读取") {
+  const latest={sha:"a".repeat(40),subject,author:"Fixture",time:"2026-10-26T00:00:00Z"};
+  const branch={name:"feature/cache",state:"unmerged",commits:1,behind:0,latest,worktree:null,owners:[]};
+  return {...snapshot("已启用的仓库"),enabled:true,config:{base:"main",stable:null,admin_session_id:"chief"},base:{name:"main",origin:true,unpushed:0,behind_origin:0},stable:null,branches:[branch],merged_hidden:0,requests:[],last_fetch_at:null};
 }
 function harness() {
-  let markup="",read=async()=>snapshot("仓库快照");
-  const calls=[],handlers=new Map(),timers=new Map(),popup={hidden:true},scroll={scrollTop:0};let changed=0;const toasts=[];
+  let read=async()=>snapshot("仓库快照");
+  const calls=[],handlers=new Map(),timers=new Map(),scroll={scrollTop:0};let changed=0;const toasts=[];
   const host=require('./git_ui_host.cjs')({scroll,handlers});
   const mounts=[],updates=[],state={git_assistant:null};
   const assistant={session_id:"git",name:"Git 助手",base:"main",stable:null,requests:{active:4,waiting_user:1,merging:1,queued:2},attention:8};
@@ -19,7 +19,7 @@ function harness() {
   const ui=sandbox.component;
   const settings=(project="demo",root="C:/fixture/demo")=>({project,root,state,chatAccess:()=>({readonly:false}),beforeStop(){},onRouted(){},catalog:()=>[{id:"codex",name:"Codex",available:true}],defaultRuntime:()=>"codex",api:async(route,body)=>{calls.push({project,root,route,body});const value=await read(route,body);if(body===undefined)state.git_assistant=value.enabled?assistant:null;return value;},toast:message=>toasts.push(message),onChanged:async()=>{changed++;}});
   function mount(project,root){ui.mount(host,settings(project,root));}
-  function click(act,value){const button={dataset:act==="tab"?{gitTab:value}:act==="branch"?{gitBranch:value}:{gitAct:act}};handlers.get("click")({target:{closest:selector=>selector==="[data-git-act]"&&button.dataset.gitAct||selector==="[data-git-tab]"&&button.dataset.gitTab||selector==="[data-git-branch]"&&button.dataset.gitBranch?button:null}});}
+  function click(act){const button={dataset:{gitAct:act}};handlers.get("click")({target:{closest:selector=>selector==="[data-git-act]"?button:null}});}
   return {host,calls,timers,ui,mounts,updates,assistant,state,mount,click,scroll,toasts,get changed(){return changed;},read:fn=>{read=fn;}};
 }
 test("returning to the same workspace shows its snapshot immediately without another scan or polling",async()=>{
@@ -41,7 +41,7 @@ test("manual refresh keeps the last snapshot visible on failure and remains read
   const h=harness();h.read(async()=>enabled());h.mount();await tick();let reject;
   h.read(()=>new Promise((_resolve,fail)=>{reject=fail;}));h.click("refresh");await tick();assert(h.host.innerHTML.includes("第一次读取"));assert(h.host.innerHTML.includes("正在更新，显示上次结果"));
   reject(Error("fixture scan failed"));await tick();assert(h.host.innerHTML.includes("第一次读取"));assert(h.host.innerHTML.includes("fixture scan failed"));assert(h.host.innerHTML.includes("读取于"));
-  h.read(async()=>enabled([commit("b","更新后的结果",[],["main"])]));h.click("refresh");await tick();assert(h.host.innerHTML.includes("更新后的结果"));assert(!h.host.innerHTML.includes("fixture scan failed"));assert(h.calls.every(call=>call.body===undefined));h.ui.unmount();
+  h.read(async()=>enabled("更新后的结果"));h.click("refresh");await tick();assert(h.host.innerHTML.includes("更新后的结果"));assert(!h.host.innerHTML.includes("fixture scan failed"));assert(h.calls.every(call=>call.body===undefined));h.ui.unmount();
 });
 test("the branch list preserves its scroll when leaving during a refresh and the removed graph has no entry",async()=>{
   const h=harness();h.read(async()=>enabled());h.mount();await tick();let resolve;

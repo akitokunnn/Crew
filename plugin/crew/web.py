@@ -21,7 +21,7 @@ from urllib.parse import parse_qs, quote, urlencode, urlsplit
 from urllib.request import ProxyHandler, build_opener
 from urllib.error import HTTPError, URLError
 
-from . import board, channel, channel_digest, chat, claude_limits, codex_runtime, documents, git_admin, git_ci, git_view, goal_api, goals, hooks, maintenance, messaging, models, notifications, open_session, presentation, runtime_catalog, runtime_switch, runtimes, session_library, session_ops, settings, spawn, store, themes, todo, trust_mode, updater, usage, usage_cli, vscode_sessions, workspace_execution, workspace_settings
+from . import board, channel, channel_digest, chat, claude_limits, codex_runtime, documents, git_admin, git_ci, git_overview, git_view, goal_api, goals, hooks, maintenance, messaging, models, notifications, open_session, presentation, runtime_catalog, runtime_switch, runtimes, session_library, session_ops, settings, spawn, store, themes, todo, trust_mode, updater, usage, usage_cli, vscode_sessions, workspace_execution, workspace_settings
 from .service_lock import HomeServiceLock
 from . import appearance, codex_client, member_defaults, operations_chat, operations_settings
 from . import connections, session_delete, session_presence, storage_cleanup, workspace_activity
@@ -612,7 +612,7 @@ class Service:
                       'runtimes': self.runtime_catalog.snapshot(),
                       'ai': settings.load(conn),
                       'now': self.now().isoformat(), 'agents_error': error, 'notification': self.notification_status(),
-                      'leaders': [], 'members': [], 'decisions': [], 'attention': [], 'git_assistant': None,
+                      'leaders': [], 'members': [], 'decisions': [], 'attention': [], 'git_assistant': None, 'git_branches': None,
                       'todos': [], 'todo_count': 0, 'goals': [], 'native_approvals': [],
                       'candidates': {'running': [], 'others': []},
                       'channel': {'unread': 0, 'latest_id': 0, 'digesting': False, 'digest_error': None, 'digest_id': None},
@@ -784,6 +784,7 @@ class Service:
             if git_config is not None and git_config['admin_session_id'] == sid:
                 result['git_assistant'] = git_admin.assistant_state(
                     conn, git_config, leader, decisions, builtin=sid in builtin_ids)
+        result['git_branches'] = self._git_branches(conn, status['project'], git_config)
         result['candidates'] = self.candidates(conn, name)
         from . import decision_briefs, decision_flow
         result['decisions'] = decision_flow.enrich(conn, decision_briefs.enrich(conn, result['decisions']))
@@ -839,15 +840,24 @@ class Service:
                     asker['cc_name'] = live[asker['session_id']]['name']
         return asker, leader
 
-    def git(self, project_name=None, offset=0):
-        if offset < 0:
-            raise ValueError("offset 必须大于或等于 0")
+    def _git_branches(self, conn, project, config):
+        """Branch chips for the leader list; a failed read carries its reason instead of breaking state."""
+        if config is None or git_view.unavailable_reason(project['root']) is not None:
+            return None
+        try:
+            return git_overview.read(conn, project, config)
+        except (OSError, git_view.GitError, subprocess.TimeoutExpired) as exc:
+            return {'error': str(exc)}
+
+    def git(self, project_name=None):
         with closing(store.connect(self.home)) as conn:
             name = self.selected_project(conn, project_name)
             project = board.project(conn, name)
             config = board.git_config(conn, name)
-            sessions = board.sessions(conn, name)
             requests = board.git_requests(conn, name, all=True) if config is not None else []
+            reason = git_view.unavailable_reason(project["root"])
+            # An explicit read rescans first, so the state assembled below reuses this result.
+            overview = git_overview.read(conn, project, config, force=True) if reason is None and config is not None else None
             with self.agents_lock:
                 agents, error = self.agents, self.agents_error
             agents = session_presence.external_agents(self.chat, agents)
@@ -857,13 +867,12 @@ class Service:
                   "requests": board.titled_requests(requests, lambda sid: vscode_sessions.session_title(self.claude_root, sid)),
                   "choices": {"branches": [], "base": None, "stable": None},
                   "repository": Path(project["root"]).name, "last_fetch_at": None}
-        reason = git_view.unavailable_reason(project["root"])
         if reason is not None:
             result.update(available=False, reason=reason)
             return result
         result['choices'] = git_view.branch_choices(project['root'])
-        if config is not None:
-            result.update(git_view.view(project["root"], config, sessions, offset=offset))
+        if overview is not None:
+            result.update(overview)
         return result
 
     def git_settings(self, project_name=None):
@@ -2223,7 +2232,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, service.channel_messages(query.get('project', [None])[0],
                                                     int(query.get('limit', [20])[0]), before))
         elif url.path == "/api/git":
-            self._send(200, service.git(query.get("project", [None])[0], int(query.get("offset", [0])[0])))
+            self._send(200, service.git(query.get("project", [None])[0]))
         elif url.path == '/api/git/settings':
             self._send(200, service.git_settings(query.get('project', [None])[0]))
         elif url.path == "/api/git/commit":

@@ -19,7 +19,7 @@ function harness(initial){
   vm.runInContext(fs.readFileSync(path.join(web,"git.js"),"utf8")+'\nglobalThis.component=CrewGit;',sandbox);
   const data={enabled:false,repository:"fixture",choices:{branches:["develop","main"],base:"develop",stable:"main"}};
   const options={project:"fixture",state:{git_assistant:null},catalog:()=>current,defaultRuntime:()=>sandbox.window.runtimeFixture.defaultRuntime(),
-    api:async(route,body)=>{calls.push({route,body});return route.startsWith("/api/git?")?data:{ok:true};},toast(){},onChanged:async()=>{changed++;}};
+    api:async(route,body)=>{calls.push({route,body});return route==="/api/git"?data:{ok:true};},toast(){},onChanged:async()=>{changed++;}};
   sandbox.component.mount(host,options);
   return {host,button,status,calls,get form(){return form;},get changed(){return changed;},ui:sandbox.component,
     choose(id){form.elements.runtime.value=id;handlers.get("change")({target:form.elements.runtime});},

@@ -82,7 +82,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
     def test_state_exact_shape_and_empty_limits(self):
         expected = {"project", "projects", "now", "agents_error", "notification", "leaders",
                     "members", "decisions", "candidates", "attention", "limits", "vscode_error", "models", "efforts", "channel", "themes",
-                    "runtimes", "todos", "todo_count", "goals", "ai", "native_approvals", "sounds", "git_assistant"}
+                    "runtimes", "todos", "todo_count", "goals", "ai", "native_approvals", "sounds", "git_assistant", "git_branches"}
         state = self.state()
         self.assertEqual(set(state), expected)
 
@@ -97,7 +97,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         leader = state["leaders"][0]
         self.assertEqual(set(leader), {"session_id", "name", "goal", "status", "busy", "running", "web_chat",
             "cc_name", "last_seq", "last_reply_id", "read_seq", "unread", "pending", "notices_pending", "member_ids",
-            "model", "effort", "applied", "activity", "context", "where", "codex", "codex_older", "priority", "runtime", "native_handoff", "trust", "runtime_switch", "active_goal_id", "active_goal_ids", "active_execution_id", "member_defaults"})
+            "model", "effort", "applied", "activity", "context", "where", "codex", "codex_older", "priority", "runtime", "native_handoff", "trust", "runtime_switch", "active_goal_id", "active_goal_ids", "active_execution_id", "member_defaults", "color", "avatar_version"})
         self.assertIsNone(leader['member_defaults'])
         self.assertIsNone(leader['active_goal_id']); self.assertIsNone(leader['active_execution_id'])
         self.assertEqual(set(leader['runtime_switch']), {'allowed', 'reason', 'pending_handoff', 'last_switch_at'})
@@ -892,11 +892,9 @@ class WebContractTests(ShellFixture, unittest.TestCase):
                 self.assertEqual(headers["Cache-Control"], "no-store")
                 assets[path] = content.decode("utf-8")
         script = assets["/git.js"]
-        for contract in ('aria-label="分支"', 'data-git-row=', 'class="git-conflicts"',
+        for contract in ('aria-label="分支"', 'class="git-lite-card ', 'class="git-lite-trunk"',
                          'data-git-act="settings"', 'data-git-act="refresh"', 'data-git-act="fetch"',
-                         'git-github-unavailable',
-                         'class="git-request-cards"', '<article class="git-request-card" data-git-request=',
-                         'git-requests-title', 'git-chat-host',
+                         'git-chat-host',
                          'assistant.requests.waiting_user', 'CrewChat.mount'):
             self.assertIn(contract, script)
         self.assertIn('更新视图', script)
@@ -906,7 +904,6 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertNotIn('setInterval', script)
         self.assertIn('prefers-reduced-motion:reduce', assets["/git.css"])
         self.assertIn('var(--fs)', assets["/git.css"])
-        self.assertIn('git-recent-merge', script)
         self.assertNotIn('data-git-tab="graph"', script)
         self.assertNotIn('git-commit-top', script)
         self.assertNotIn('git-commit-bottom', script)
@@ -929,56 +926,6 @@ class GitCiScheduleTests(unittest.TestCase):
         service._poll_git_ci()
         self.assertEqual(service.git_ci.poll.call_args_list, [mock.call(now=service.now().isoformat())] * 2)
         self.assertEqual(service.stop.wait.call_args_list, [mock.call(300)] * 2)
-
-
-class FrontendGitRequestsContractTests(unittest.TestCase):
-    def test_merge_requests_active_first_escaped_details_and_assistant_chat(self):
-        script = r'''
-const assert = require("node:assert/strict"), fs = require("node:fs"), vm = require("node:vm");
-const callbacks = new Map(), page = {scrollTop:0};
-const host = require(require("node:path").resolve(process.argv[1], "../../../tests/git_ui_host.cjs"))({scroll:page,handlers:callbacks});
-const latest = {sha:"abcdef123", subject:"Fixture", author:"Crew", time:"2026-10-24T00:00:00Z"};
-const request = (id, status) => ({id, status, branch:"feature/<review>", session_id:"member", requester_name:"<member>",
-  blocking:id===3, description:"Done <script>alert(1)</script>", note:id===1?null:"Tested & reviewed", pr_number:id===1?null:id===2?99:42, created_at:latest.time});
-const data = {enabled:true, repository:"Fixture", config:{base:"develop", stable:null, admin_session_id:"git-admin"},
-  base:{name:"develop", latest}, stable:null, requests:[request(7,"merged"),request(1,"open"),request(8,"rejected"),request(2,"waiting_user"),request(3,"merging")],
-  branches:[], remote_only:[], commits:[], ref_unique_commits:{}, next_offset:null, last_fetch_at:null, recent_merge:null,
-  github:{runs:[], pull_requests:[{number:42, title:"Feature PR", state:"OPEN", head:"feature/<review>", ci:"success", url:"https://example.test/pull/42", draft:false}]}};
-const mounts=[];const sandbox = {CrewChat:{mount:options=>mounts.push(options),update(){},unmount(){}},setInterval:() => 1, clearInterval:() => {}};
-vm.createContext(sandbox);
-vm.runInContext(fs.readFileSync(process.argv[1], "utf8") + "\nglobalThis.component = CrewGit;", sandbox);
-sandbox.component.mount(host, {project:"demo",state:{git_assistant:{session_id:"git-admin",name:"Git 助手",base:"develop",stable:null,requests:{active:3,waiting_user:1,merging:1,queued:1},attention:1}},chatAccess:()=>({readonly:false}), api:async () => data, toast:() => {}, onChanged:async () => {}});
-setImmediate(() => {
-  const html = host.innerHTML;
-  assert.equal(mounts[0].session.session_id,"git-admin");assert.ok(html.includes("git-chat-host"));
-  const cards = Array.from(html.matchAll(/<article class="git-request-card" data-git-request="(\d+)">([\s\S]*?)<\/article>/g));
-  assert.ok(html.includes('<div class="git-request-cards">'));
-  assert.deepEqual(cards.map(card => Number(card[1])), [3,2,1,8,7]);
-  for (const [, id, body] of cards) {
-    const heading = body.match(/^<div class="git-card-head">([\s\S]*?)<\/div>/)[1];
-    assert.match(heading, /^<span class="git-request-status [^"]+">[^<]+<\/span><span class="git-request-id">#/);
-    assert.ok(heading.includes(`<span class="git-request-id">#${id}</span>`));
-    assert.equal(heading.includes('<b class="git-request-dependency">合并后继续</b>'), id === "3");
-    assert.ok(body.includes('<div class="git-request-description">Done &lt;script&gt;alert(1)&lt;/script&gt;</div>'));
-    assert.equal(body.includes('<div class="git-request-note">Tested &amp; reviewed</div>'), id !== "1");
-    const facts = Array.from(body.matchAll(/<dt>(.*?)<\/dt><dd>([\s\S]*?)<\/dd>/g));
-    assert.deepEqual(facts.map(fact => fact[1]), ["分支", "提出者", "PR"]);
-    assert.equal(facts[0][2], '<code>feature/&lt;review&gt;</code>');
-    assert.equal(facts[1][2], `<span title="member">&lt;member&gt;</span><div class="git-request-time">${new Date(latest.time).toLocaleString("zh-CN", {month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit", hour12:false})}</div>`);
-    if (id === "1") assert.equal(facts[2][2], '<span class="git-muted">—</span>');
-    else if (id === "2") assert.equal(facts[2][2], '<span class="git-request-pr">#99</span>');
-    else assert.ok(facts[2][2].includes('href="https://example.test/pull/42" target="_blank" rel="noreferrer" title="Feature PR · OPEN"'));
-  }
-  assert.ok(!html.includes("<table"));
-  for (const label of ["合并中", "等用户拍板", "待处理", "已拒绝", "已合并", "3 件待处理"]) assert.ok(html.includes(label), label);
-  for (const value of ["feature/&lt;review&gt;", "&lt;member&gt;", "&lt;script&gt;", "Tested &amp; reviewed", 'href="https://example.test/pull/42"']) assert.ok(html.includes(value), value);
-  assert.ok(!html.includes("<script>alert(1)</script>"));
-  sandbox.component.unmount();
-});
-'''
-        result = subprocess.run(["node", "-e", script, str(PLUGIN / "crew" / "web" / "git.js")],
-                                capture_output=True, text=True, encoding="utf-8", timeout=10)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
 class FrontendThemeContractTests(unittest.TestCase):
@@ -1073,59 +1020,101 @@ assert.equal(root.dataset.projectTheme, "celadon");
 
 
 class FrontendGitContractTests(unittest.TestCase):
-    def run_component(self, scenario):
-        bootstrap = r'''const assert = require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
-const sandbox={CrewChat:{mount(){},update(){},unmount(){}}};sandbox.window=sandbox;vm.createContext(sandbox);
+    def test_branch_overview_groups_owners_requests_trunk_and_worktree_paths(self):
+        script = r'''const assert = require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
+class FixtureDate extends Date { static now() { return Date.parse('2026-11-09T01:00:00Z'); } }
+const sandbox={Date:FixtureDate,CrewChat:{mount(){},update(){},unmount(){}}};vm.createContext(sandbox);
 vm.runInContext(fs.readFileSync(process.argv[1],'utf8'),sandbox);sandbox.CrewGit=vm.runInContext('CrewGit',sandbox);
 const flush=async()=>{for(let index=0;index<20;index++)await Promise.resolve();};
-const calls=[],page={scrollTop:0},listeners=new Map();
+const calls=[],listeners=new Map();
+const page={scrollTop:0};
 const host=require(path.resolve(process.argv[1],'../../../tests/git_ui_host.cjs'))({scroll:page,handlers:listeners});
-const sha = n => n.toString(16).padStart(40, "0");
-const pr = {number:17,title:'NewID <ready>',head:'feature/NewID',base:'develop',head_sha:sha(10),merge_sha:sha(9),state:'MERGED',draft:false,ci:'success',url:'https://github.com/fixture/demo/pull/17'};
-const commit = (n, parents, refs = []) => ({sha:sha(n),parents:parents.map(sha),refs,subject:'提交 <' + n + '>',body:'正文 <script>\n'.repeat(14),author:'作者',time:'2026-10-24T01:00:00Z',parent_branches:parents.map((_,i) => i === 0 ? 'develop' : 'feature/NewID'),pull_requests:n >= 9 ? [pr] : []});
-const commits = [commit(10,[9],['develop']),commit(9,[8,7]),commit(8,[7],['master'])];
-const latest = n => commits.find(item => item.sha === sha(n));
-const branch = (name,n) => ({name,latest:latest(n),origin_relation:'',sessions:[],worktrees:[],ahead:0,behind:0,merged:true,conflicts:[]});
-const fixture = {enabled:true,repository:'Demo',config:{base:'develop',stable:'master',admin_session_id:'git-admin'},requests:[],base:{name:'develop',latest:latest(10),origin_relation:''},stable:{name:'master',latest:latest(8),ahead:2,origin_relation:''},branches:[branch('develop',10),branch('master',8)],remote_only:[],ref_unique_commits:{develop:[],master:[]},commits,next_offset:3,recent_merge:commits[1],github:{pull_requests:[pr],runs:[]},last_fetch_at:null};
-const api=async route=>{calls.push(route);return JSON.parse(JSON.stringify(fixture));};
-const mount=project=>sandbox.CrewGit.mount(host,{project,state:{git_assistant:{session_id:"git-admin",name:"Git 助手",base:"develop",stable:null,requests:{active:3,waiting_user:1,merging:1,queued:1},attention:1}},chatAccess:()=>({readonly:false}),api,toast(){}});
-const button=act=>{const node={dataset:{gitAct:act},closest:selector=>selector==='[data-git-act]'?node:null};return node;};
-const click=target=>listeners.get('click')({target});
+const visible={session_id:'visible',name:'侧栏 leader'},hidden={session_id:'hidden',name:'归档 leader'};
+const other={session_id:'other',name:'另一位 leader'};
+const latest={sha:'a'.repeat(40),subject:'修复 <script>alert("title")</script> & 校验',author:'作者',time:'2026-11-09T00:55:00Z'};
+const branches=[
+  {name:'feature/<script>alert("branch")</script>',state:'unmerged',commits:3,behind:2,latest,worktree:'c:\\FIXTURE\\Demo\\Temp\\wt\\feature',owners:[hidden,visible,other]},
+  {name:'feature/offline',state:'unmerged',commits:4,behind:0,latest,worktree:'C:/fixture/demo/Temp/wt/offline',owners:[hidden,other]},
+  {name:'feature/unowned',state:'unmerged',commits:5,behind:0,latest,worktree:null,owners:[]},
+  {name:'feature/push',state:'unpushed',commits:6,behind:1,latest,worktree:'D:/outside/worktree',owners:[visible]},
+  {name:'feature/rejected',state:'unpushed',commits:7,behind:0,latest,worktree:'C:/fixture/demo-other/worktree',owners:[other]}
+];
+// Terminal requests precede active ones for the same branch; they must not hide its active tag.
+const requests=[{id:80,status:'merged',branch:branches[0].name},
+  ...['open','merging','merged','waiting_user','rejected'].map((status,index)=>({id:index+1,status,branch:branches[index].name}))];
+const assistant={session_id:'git-admin',name:'Git 助手',base:'develop',stable:'master',requests:{active:3,waiting_user:1,merging:1,queued:1},attention:1};
+const fixture={enabled:true,repository:'Demo',config:{base:'develop',stable:'master',admin_session_id:'git-admin'},assistant,
+  choices:{branches:['develop','master'],base:'develop',stable:'master'},
+  base:{name:'develop',origin:true,unpushed:0,behind_origin:0},
+  stable:{name:'master',behind:9,ref:'remotes/origin/master',base_ref:'remotes/origin/develop'},
+  branches,requests,merged_hidden:11,last_fetch_at:null};
+const colors=new Map([['侧栏 leader','#137f6d'],['归档 leader','#8844aa'],['另一位 leader','#a06020']]);
+const settings={project:'demo',root:'C:\\fixture\\demo\\',state:{git_assistant:assistant},chatAccess:()=>({readonly:false}),
+  api:async(route,body)=>{assert.equal(body,undefined);calls.push(route);return JSON.parse(JSON.stringify(fixture));},toast(){},
+  leader:id=>id===visible.session_id?visible:undefined,
+  avatar:(name,size)=>`<i data-avatar="${name}" data-size="${size}"></i>`,tint:name=>{assert(colors.has(name));return colors.get(name);}};
+const sections=html=>Array.from(html.matchAll(/<section class="git-lite-section"><h3>(.*?)<\/h3>([\s\S]*?)<\/section>/g));
+const cards=html=>Array.from(html.matchAll(/<article class="git-lite-card (unmerged|unpushed)" style="--tint:([^"]+)">([\s\S]*?)<\/article>/g));
+const facts=card=>card.match(/<div class="git-lite-facts"[^>]*>(.*?)<\/div>/)[1];
+const refresh=async()=>{const button={dataset:{gitAct:'refresh'}};listeners.get('click')({target:{closest:selector=>{assert.equal(selector,'[data-git-act]');return button;}}});await flush();return host.querySelector('.git-page-in').innerHTML;};
+(async()=>{
+  sandbox.CrewGit.mount(host,settings);await flush();
+  const html=host.querySelector('.git-page-in').innerHTML;
+  assert(html.startsWith('<section id="git-panel" aria-label="分支">'));
+  assert.match(html,/<section class="git-lite-trunk" title="按 remotes\/origin\/master 与 remotes\/origin\/develop 计算">/);
+  assert(html.includes('master 落后 develop'));assert(html.includes('<strong>9</strong> 个提交'));
+  const groups=sections(html);assert.deepEqual(groups.map(group=>group[1]),['未合入 develop <span>3</span>','已合入 develop，还没推送 <span>2</span>']);
+  assert.deepEqual(cards(groups[0][2]).map(card=>card[1]),['unmerged','unmerged','unmerged']);
+  assert.deepEqual(cards(groups[1][2]).map(card=>card[1]),['unpushed','unpushed']);
+  const items=cards(html);assert.equal(items.length,5);
+  for(const [index,item] of items.entries())assert(item[3].includes(`${index+3} 个提交${index<3?'未合入':'未推送'}`));
+  const escapedName='feature/&lt;script&gt;alert(&quot;branch&quot;)&lt;/script&gt;';
+  const escapedSubject='修复 &lt;script&gt;alert(&quot;title&quot;)&lt;/script&gt; &amp; 校验';
+  assert(items[0][3].includes(`title="${escapedName}"`));assert(items[0][3].includes(`<span>${escapedName}</span>`));
+  for(const item of items)assert(item[3].includes(`<div class="git-lite-subject" title="${escapedSubject}">${escapedSubject}</div>`));
+  assert(!html.includes('<script>'));assert(!html.includes('<table'));
+  assert.equal(items[0][2],'#137f6d');assert(items[0][3].includes('class="git-lite-leader">侧栏 leader</span>'));
+  assert(items[0][3].includes('<i data-avatar="侧栏 leader" data-size="18"></i>'));assert(items[0][3].includes('等 3 位'));
+  assert(!items[0][3].includes('归档 leader'));
+  assert.equal(items[1][2],'#8844aa');assert(items[1][3].includes('class="git-lite-leader">归档 leader</span>'));
+  assert(items[1][3].includes('<i data-avatar="归档 leader" data-size="18"></i>'));assert(items[1][3].includes('等 2 位'));
+  assert.equal(items[2][2],'var(--text-3)');assert(items[2][3].includes('没找到对应的 leader'));
+  assert(!items[2][3].includes('data-avatar'));assert(!items[2][3].includes('git-lite-leader'));
+  assert(!items[3][3].includes('等 1 位'));
+  assert.deepEqual(Array.from(html.matchAll(/<span class="git-lite-request ([^"]+)">(.*?)<\/span>/g),match=>[match[1],match[2]]),
+    [['open','已提合并请求 #1'],['merging','助手合并中 #2'],['waiting_user','合并等你拍板 #4']]);
+  for(const index of [2,4])assert(!items[index][3].includes('git-lite-request'));
+  assert(!html.includes('#80'));assert(html.includes('另有 11 个分支已合入并推送，不再显示'));
+  assert.equal(facts(items[0][3]),'5 分钟前 · 落后 develop 2 · Temp/wt/feature');
+  assert.equal(facts(items[1][3]),'5 分钟前 · Temp/wt/offline');
+  assert.equal(facts(items[2][3]),'5 分钟前');
+  assert.equal(facts(items[3][3]),'5 分钟前 · 落后 develop 1 · D:/outside/worktree');
+  assert.equal(facts(items[4][3]),'5 分钟前 · C:/fixture/demo-other/worktree');
+  assert(!html.includes('落后 develop 0'));
+  for(const [base,note] of [
+    [{name:'develop',origin:false,unpushed:null,behind_origin:null},'develop 没有 origin，只看本地'],
+    [{name:'develop',origin:true,unpushed:3,behind_origin:2},'本地 develop 与 origin 分叉：3 个没推送，落后 2 个'],
+    [{name:'develop',origin:true,unpushed:3,behind_origin:0},'本地 develop 有 3 个提交还没推送'],
+    [{name:'develop',origin:true,unpushed:0,behind_origin:2},'本地 develop 落后 origin 2 个提交'],
+    [{name:'develop',origin:true,unpushed:0,behind_origin:0},'本地 develop 与 origin 一致']
+  ]){
+    fixture.base=base;const result=await refresh();
+    assert(result.includes(`<div class="git-lite-trunk-note">${note}</div>`));
+    assert.equal(sections(result).length,base.origin?2:1);
+    if(!base.origin){assert(!result.includes('已合入 develop，还没推送'));assert(!result.includes('git-lite-card unpushed'));assert.equal(cards(result).length,3);}
+  }
+  fixture.stable=null;fixture.branches=[];fixture.merged_hidden=0;
+  const empty=await refresh();
+  assert(empty.includes('没有设置稳定分支'));assert(!empty.includes('title="按 '));assert(!empty.includes('git-lite-trunk-number'));
+  const emptyGroups=sections(empty);assert.deepEqual(emptyGroups.map(group=>group[1]),['未合入 develop <span>0</span>','已合入 develop，还没推送 <span>0</span>']);
+  assert(emptyGroups[0][2].includes('所有分支都已合入'));assert(emptyGroups[1][2].includes('class="git-lite-empty">没有</div>'));
+  assert.equal(cards(empty).length,0);assert(!empty.includes('git-lite-hidden'));
+  assert(calls.every(route=>route==='/api/git'));sandbox.CrewGit.unmount();
+})().catch(error=>{console.error(error);process.exitCode=1;});
 '''
-        script = bootstrap + "\n(async () => {\n" + scenario + "\n})().catch(error => { console.error(error); process.exitCode = 1; });"
         result = subprocess.run(["node", "-e", script, str(PLUGIN / "crew" / "web" / "git.js")],
                                 capture_output=True, text=True, encoding="utf-8", timeout=10)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-
-    def test_git_origin_relations_in_both_cards_and_local_branch_rows(self):
-        self.run_component(r'''
-mount('demo'); await flush();
-for (const relation of ['落后 origin 15 个提交','领先 origin 2 个提交','与 origin 分叉（领先 3、落后 1 个提交）','：没有 origin']) {
-  fixture.base.origin_relation = '本地 develop ' + relation;
-  fixture.stable.origin_relation = '本地 master ' + relation;
-  fixture.branches[0].origin_relation = fixture.base.origin_relation;
-  fixture.branches[1].origin_relation = fixture.stable.origin_relation;
-  const reads = calls.length;
-  assert(!host.innerHTML.includes(fixture.base.origin_relation));
-  assert.equal(calls.length,reads);
-  click(button('refresh')); await flush();
-  assert.equal(calls.length,reads+1);
-  assert.equal(calls.at(-1),'/api/git?offset=0');
-  assert(host.innerHTML.includes(fixture.base.origin_relation));
-  assert(host.innerHTML.includes(fixture.stable.origin_relation));
-  assert(host.innerHTML.includes('data-git-row="develop"'));
-  assert(host.innerHTML.includes('data-git-row="master"'));
-  assert(host.innerHTML.includes(fixture.base.origin_relation));
-  assert(host.innerHTML.includes(fixture.stable.origin_relation));
-  assert.equal(calls.length,reads+1);
-}
-fixture.base.origin_relation = ''; fixture.stable.origin_relation = '';
-fixture.branches.forEach(branch => branch.origin_relation = ''); click(button('refresh')); await flush();
-assert(!host.innerHTML.includes('本地 develop'));
-assert(!host.innerHTML.includes('本地 master'));
-assert(calls.every(route => route === '/api/git?offset=0'));
-sandbox.CrewGit.unmount();
-''')
 
 
 

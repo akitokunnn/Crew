@@ -1,62 +1,48 @@
 "use strict";
 const CrewGit = (() => {
   const esc = value => String(value).replace(/[&<>"']/g, c => ({"&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"})[c]);
-  const DAY = 86400000;
   let host = null, options = null, data = null, generation = 0, loadedAt = null, cachedScroll = 0;
   let loading = false, operation = null, errorText = "";
   let selectedRuntime = "", runtimeExplicit = false;
   let chatIdentity = null;
-  const expandedConflicts = new Set();
   const ago = at => {
     const seconds = Math.max(0, (Date.now() - new Date(at)) / 1000);
     return seconds < 60 ? "刚刚" : seconds < 3600 ? `${Math.floor(seconds / 60)} 分钟前` : seconds < 86400 ? `${Math.floor(seconds / 3600)} 小时前` : `${Math.floor(seconds / 86400)} 天前`;
   };
   const at = value => new Date(value).toLocaleString("zh-CN", {month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit", hour12:false});
-  const inactive = branch => Date.now() - new Date(branch.latest.time) >= 30 * DAY;
-  const ciText = {success:"✓ 通过", failure:"✗ 失败", pending:"进行中", none:"无 CI"};
-  const ci = value => `<span class="git-ci ${value}"><i></i>${ciText[value]}</span>`;
-  const prsFor = name => data.github === null ? [] : data.github.pull_requests.filter(pr => pr.head === name).sort((a, b) => Number(b.state === "OPEN") - Number(a.state === "OPEN") || b.number - a.number);
-  const currentPR = branch => prsFor(branch.name).find(pr => pr.state === "OPEN");
-  const sessionName = session => session.name === null ? "未命名" : session.name;
-  const avatar = session => `<span class="git-avatar" title="${esc([sessionName(session), session.session_id, session.group, session.role, session.status].filter(value => value !== null).join(" · "))}">${esc(session.name === null ? "?" : session.name.slice(0, 1))}</span>`;
-  const prTag = pr => `<a class="git-pr ${pr.ci}" href="${esc(pr.url)}" target="_blank" rel="noreferrer" title="${esc(pr.title)} · ${esc(pr.state)}${pr.draft ? " · 草稿" : ""}"><i></i>#${pr.number}${pr.draft ? " 草稿" : ""}</a>`;
-  const branchNames = () => Array.from(new Set([...data.branches.map(item => item.name), ...data.remote_only.map(item => item.name.replace(/^origin\//, ""))])).sort();
-  const branchColor = name => name === data.config.base || name === `origin/${data.config.base}` ? "var(--accent)" : name === data.config.stable || name === `origin/${data.config.stable}` ? "var(--text-3)" : `var(--git-color-${branchNames().filter(item => item !== data.config.base && item !== data.config.stable).indexOf(name.replace(/^origin\//, "")) % 7})`;
-  function recentMerge() {
-    const merge = data.recent_merge;
-    if (merge === null) return '<div class="git-recent-merge git-muted">最近一次合入：暂无合并提交</div>';
-    const pr = merge.pull_requests.find(item => item.merge_sha === merge.sha);
-    const label = pr === undefined ? `${merge.parent_branches.slice(1).join(" + ")} → ${merge.parent_branches[0]}` : `PR #${pr.number} ${pr.title}`;
-    const text = pr === undefined ? esc(label) : `<a href="${esc(pr.url)}" target="_blank" rel="noreferrer">${esc(label)}</a>`;
-    return `<div class="git-recent-merge" title="${esc(new Date(merge.time).toLocaleString("zh-CN", {hour12:false}))}">最近一次合入：${text} · ${esc(new Date(merge.time).toLocaleTimeString("zh-CN", {hour:"2-digit", minute:"2-digit", hour12:false}))}</div>`;
+  const branchIcon = '<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="4" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="6" cy="20" r="2"/><path d="M6 6v12m0-5h5a7 7 0 0 0 7-5"/></svg>';
+  const requestLabels = {open:"已提合并请求", merging:"助手合并中", waiting_user:"合并等你拍板"};
+  // Worktrees inside the repository read better relative to it; outside ones keep their full path.
+  function shortPath(path) {
+    const root = String(options.root).replace(/\\/g, "/").replace(/\/+$/, ""), value = String(path).replace(/\\/g, "/");
+    return value.toLowerCase().startsWith(root.toLowerCase() + "/") ? value.slice(root.length + 1) : value;
   }
-  function branchTag(name) {
-    return `<span class="git-ref ${name.startsWith("origin/") ? "remote" : "local"}" style="--branch-color:${branchColor(name)}">${esc(name)}${name === data.config.base ? '<small>主干</small>' : name === data.config.stable ? '<small>稳定</small>' : ""}</span>`;
+  // Prefer an owner still shown in the leader list, so its colour and avatar match the sidebar.
+  const owner = branch => branch.owners.find(item => options.leader?.(item.session_id) !== undefined) ?? branch.owners[0] ?? null;
+  function branchCard(branch) {
+    const lead = owner(branch), request = data.requests.find(item => item.branch === branch.name && item.status in requestLabels);
+    const color = lead === null ? "var(--text-3)" : options.tint?.(lead.name) ?? "var(--accent)";
+    const count = `${branch.commits} 个提交${branch.state === "unmerged" ? "未合入" : "未推送"}`;
+    const facts = [ago(branch.latest.time), branch.behind > 0 ? `落后 ${data.base.name} ${branch.behind}` : "", branch.worktree === null ? "" : shortPath(branch.worktree)].filter(Boolean);
+    const who = lead === null ? '<span class="git-muted">没找到对应的 leader</span>'
+      : `${options.avatar?.(lead.name, 18) ?? ""}<span class="git-lite-leader">${esc(lead.name)}</span>${branch.owners.length > 1 ? `<span class="git-muted">等 ${branch.owners.length} 位</span>` : ""}`;
+    return `<article class="git-lite-card ${branch.state}" style="--tint:${color}"><div class="git-lite-card-head"><span class="git-lite-branch" title="${esc(branch.name)}">${branchIcon}<span>${esc(branch.name)}</span></span><span class="git-lite-count">${count}</span></div><div class="git-lite-owner">${who}${request === undefined ? "" : `<span class="git-lite-request ${request.status}">${requestLabels[request.status]} #${request.id}</span>`}</div><div class="git-lite-subject" title="${esc(branch.latest.subject)}">${esc(branch.latest.subject)}</div><div class="git-lite-facts" title="${esc([at(branch.latest.time), branch.latest.author, branch.worktree].filter(Boolean).join(" · "))}">${esc(facts.join(" · "))}</div></article>`;
   }
-  function statusTags(branch) {
-    const statuses = [], pr = currentPR(branch), protectedBranch = branch.name === data.config.base || branch.name === data.config.stable;
-    if (branch.conflicts.length > 0) statuses.push(["danger", "有冲突"]);
-    if (branch.behind > 0 && !branch.merged && !protectedBranch) statuses.push(["warn", "落后要 rebase"]);
-    if (pr !== undefined && pr.ci === "pending") statuses.push(["warn", "等 CI"]);
-    if (pr !== undefined && pr.ci === "failure") statuses.push(["danger", "CI 红"]);
-    if (branch.merged && !protectedBranch) statuses.push(["muted", "已合并可清理"]);
-    if (inactive(branch)) statuses.push(["muted", "30 天没动"]);
-    if (branch.worktrees.some(item => item.dirty)) statuses.push(["warn", "worktree 有没提交的改动"]);
-    if (!protectedBranch && !branch.merged && branch.conflicts.length === 0 && branch.behind === 0 && (pr === undefined || !["pending", "failure"].includes(pr.ci))) statuses.push(["success", "可合并"]);
-    return statuses.map(([kind, text]) => `<span class="git-status ${kind}">${text}</span>`).join("");
+  function trunkSummary() {
+    const base = data.base, stable = data.stable;
+    const note = !base.origin ? `${base.name} 没有 origin，只看本地`
+      : base.unpushed > 0 && base.behind_origin > 0 ? `本地 ${base.name} 与 origin 分叉：${base.unpushed} 个没推送，落后 ${base.behind_origin} 个`
+      : base.unpushed > 0 ? `本地 ${base.name} 有 ${base.unpushed} 个提交还没推送`
+      : base.behind_origin > 0 ? `本地 ${base.name} 落后 origin ${base.behind_origin} 个提交`
+      : `本地 ${base.name} 与 origin 一致`;
+    const lag = stable === null ? '<div class="git-lite-trunk-label">没有设置稳定分支</div>'
+      : `<div class="git-lite-trunk-label">${esc(stable.name)} 落后 ${esc(base.name)}</div><div class="git-lite-trunk-number"><strong>${stable.behind}</strong> 个提交</div>`;
+    return `<section class="git-lite-trunk" ${stable === null ? "" : `title="按 ${esc(stable.ref)} 与 ${esc(stable.base_ref)} 计算"`}>${lag}<div class="git-lite-trunk-note">${esc(note)}</div></section>`;
   }
-  function branchCards() {
-    const score = branch => branch.conflicts.length * 100 + Number(currentPR(branch)?.ci === "failure") * 80 + Number(branch.worktrees.some(item => item.dirty)) * 70 + Number(branch.behind > 0 && !branch.merged && branch.name !== data.config.base && branch.name !== data.config.stable) * 60 + Number(currentPR(branch)?.ci === "pending") * 50 + Number(branch.merged && branch.name !== data.config.base && branch.name !== data.config.stable) * 10 + Number(inactive(branch)) * 5;
-    const cards = [...data.branches].sort((a, b) => score(b) - score(a) || a.name.localeCompare(b.name)).map(branch => `<article class="git-branch-card" data-git-row="${esc(branch.name)}">
-      <div class="git-card-head">${branchTag(branch.name)}${branch.sessions.map(avatar).join("")}</div><div class="git-statuses">${statusTags(branch)}</div>${originRelation(branch)}${branch.sessions.length === 0 ? "" : `<div class="git-session-names">${branch.sessions.map(session => esc(sessionName(session))).join("、")}</div>`}
-      <dl class="git-card-facts">
-        <dt>Worktree</dt><dd>${branch.worktrees.length === 0 ? '<span class="git-muted">—</span>' : branch.worktrees.map(item => `<div class="git-worktree" title="${esc(item.path)}"><code>${esc(item.path)}</code>${item.dirty ? '<span class="git-dirty-dot" title="有没提交的改动"></span>' : ""}</div>`).join("")}</dd>
-        <dt>领先 / 落后主干</dt><dd><span class="git-counts"><b class="${branch.ahead > 0 ? "ahead" : ""}">↑ ${branch.ahead}</b><b class="${branch.behind > 0 ? "behind" : ""}">↓ ${branch.behind}</b></span></dd>
-        <dt>合并检查</dt><dd>${branch.conflicts.length === 0 ? '<span class="git-clean">✓ 干净</span>' : `<details class="git-conflicts" data-git-conflicts="${esc(branch.name)}" ${expandedConflicts.has(branch.name) ? "open" : ""}><summary>冲突 ${branch.conflicts.length} 个文件</summary><ul>${branch.conflicts.map(file => `<li><code>${esc(file)}</code></li>`).join("")}</ul></details>`}</dd>
-        <dt>PR 与 CI</dt><dd><div class="git-table-pr">${prsFor(branch.name).map(pr => `<span>${prTag(pr)}${ci(pr.ci)}<span class="git-pr-state">${({OPEN:"开放", MERGED:"已合并", CLOSED:"已关闭"})[pr.state]}</span></span>`).join("")}${prsFor(branch.name).length === 0 ? '<span class="git-muted">—</span>' : ""}</div></dd>
-        <dt>最后提交</dt><dd><div class="git-last-time" title="${esc(at(branch.latest.time))}">${ago(branch.latest.time)} · ${esc(branch.latest.author)}</div><div class="git-last-subject" title="${esc(branch.latest.subject)}">${esc(branch.latest.subject)}</div><code class="git-short-sha">${branch.latest.sha.slice(0, 7)}</code></dd>
-      </dl></article>`).join("");
-    return `<h3 class="git-branches-title">分支与负责会话</h3><div class="git-branch-cards">${cards}</div>${data.remote_only.length === 0 ? "" : `<section class="git-remote-only"><h3>远端独有分支 <span>${data.remote_only.length}</span></h3><div class="git-branch-cards">${data.remote_only.map(branch => `<article class="git-branch-card" data-git-row="${esc(branch.name)}"><div class="git-card-head">${branchTag(branch.name)}</div><dl class="git-card-facts"><dt>最后提交</dt><dd><div class="git-last-subject">${esc(branch.latest.subject)}</div><span class="git-last-time">${esc(branch.latest.author)} · ${ago(branch.latest.time)} · ${branch.latest.sha.slice(0, 7)}</span></dd><dt>PR 与 CI</dt><dd>${prsFor(branch.name.replace(/^origin\//, "")).map(prTag).join("")}</dd></dl></article>`).join("")}</div></section>`}`;
+  function branchOverview() {
+    const section = (title, items, empty) => `<section class="git-lite-section"><h3>${esc(title)} <span>${items.length}</span></h3>${items.length === 0 ? `<div class="git-lite-empty">${empty}</div>` : `<div class="git-lite-cards">${items.map(branchCard).join("")}</div>`}</section>`;
+    const unmerged = data.branches.filter(item => item.state === "unmerged"), unpushed = data.branches.filter(item => item.state === "unpushed");
+    return `${trunkSummary()}${section(`未合入 ${data.base.name}`, unmerged, "所有分支都已合入")}${data.base.origin ? section(`已合入 ${data.base.name}，还没推送`, unpushed, "没有") : ""}${data.merged_hidden > 0 ? `<p class="git-lite-hidden">另有 ${data.merged_hidden} 个分支已合入并推送，不再显示</p>` : ""}`;
   }
   function enableCard() {
     const choices = data.choices, option = (name, selected) => `<option value="${esc(name)}" ${name === selected ? "selected" : ""}>${esc(name)}</option>`;
@@ -65,31 +51,6 @@ const CrewGit = (() => {
     const available = catalog.some(item => item.id === selectedRuntime && item.available);
     const runtimeError = available ? "" : catalog.some(item => item.available) ? "所选执行工具当前不可用，请重新选择。" : "没有可用的执行工具，请安装并登录 Codex 或 Claude Code 后刷新。";
     return `<div class="page"><div class="git-enable-card"><span class="git-enable-icon">⑂</span><h1>启用 Git 助手</h1><p>Git 助手会在独立 worktree 中统一推送和合并。选择日常合入的主干和发布用的稳定分支后，即可在这里查看请求、分支与 GitHub 状态。</p><form id="git-enable-form"><label for="git-base">主干分支 <span>日常合入</span></label><select id="git-base" name="base">${choices.branches.map(name => option(name, choices.base)).join("")}</select><label for="git-stable">稳定分支 <span>可留空</span></label><select id="git-stable" name="stable"><option value="" ${choices.stable === null ? "selected" : ""}>不设置稳定分支</option>${choices.branches.map(name => option(name, choices.stable)).join("")}</select><label for="git-runtime">助手执行工具</label><select id="git-runtime" name="runtime"><option value="" disabled ${selectedRuntime === "" ? "selected" : ""}>请选择可用工具</option>${catalog.map(item => `<option value="${esc(item.id)}" ${item.id === selectedRuntime ? "selected" : ""} ${item.available ? "" : "disabled"}>${esc(item.name)}${item.available ? "" : " · 未就绪"}</option>`).join("")}</select><p id="git-runtime-status" class="git-error" role="status" ${runtimeError ? "" : "hidden"}>${esc(runtimeError)}</p><button type="submit" class="btn primary" data-git-act="enable" ${operation !== null || choices.branches.length === 0 || !available ? "disabled" : ""}>${operation === "enable" ? "正在启用…" : "启用"}</button></form>${choices.branches.length === 0 ? '<p class="git-error">仓库没有本地分支，无法启用。</p>' : ""}${errorText === "" ? "" : `<p class="git-error" role="alert">${esc(errorText)}</p>`}</div></div>`;
-  }
-  function mergeRequests() {
-    const labels = {open:"待处理", merging:"合并中", waiting_user:"等用户拍板", merged:"已合并", rejected:"已拒绝"};
-    const active = request => ["open", "merging", "waiting_user"].includes(request.status);
-    const requests = [...data.requests].sort((a, b) => Number(active(b)) - Number(active(a)) || b.id - a.id);
-    const cards = requests.map(request => {
-      const pr = request.pr_number === null || data.github === null ? undefined : data.github.pull_requests.find(item => item.number === request.pr_number);
-      return `<article class="git-request-card" data-git-request="${request.id}"><div class="git-card-head"><span class="git-request-status ${request.status}">${labels[request.status]}</span><span class="git-request-id">#${request.id}</span>${request.blocking ? '<b class="git-request-dependency">合并后继续</b>' : ""}</div><div class="git-request-description">${esc(request.description)}</div>${request.note === null ? "" : `<div class="git-request-note">${esc(request.note)}</div>`}<dl class="git-card-facts"><dt>分支</dt><dd><code>${esc(request.branch)}</code></dd><dt>提出者</dt><dd><span title="${esc(request.session_id)}">${esc(request.requester_name)}</span><div class="git-request-time">${esc(at(request.created_at))}</div></dd><dt>PR</dt><dd>${request.pr_number === null ? '<span class="git-muted">—</span>' : pr === undefined ? `<span class="git-request-pr">#${request.pr_number}</span>` : prTag(pr)}</dd></dl></article>`;
-    }).join("");
-    return `<section class="git-requests" aria-labelledby="git-requests-title"><div class="git-requests-head"><h2 id="git-requests-title">合并请求 <span>${requests.filter(active).length} 件待处理</span></h2><span>完成后用 <code>crew git request</code> 交给 Git 助手</span></div>${requests.length === 0 ? '<div class="git-requests-empty">还没有合并请求</div>' : `<div class="git-request-cards">${cards}</div>`}</section>`;
-  }
-  function originRelation(branch) {
-    return branch.origin_relation ? `<div class="git-overview-meta">${esc(branch.origin_relation)}</div>` : "";
-  }
-
-  function overview() {
-    let baseCI = `<span class="git-muted">${data.github === null ? "GitHub 不可用" : "最新提交暂无 CI"}</span>`;
-    if (data.github !== null) {
-      const run = data.github.runs.find(item => item.sha === data.base.latest.sha);
-      if (run !== undefined) {
-        const state = run.status !== "completed" ? "pending" : run.conclusion === "success" ? "success" : ["failure", "cancelled", "timed_out", "action_required", "startup_failure"].includes(run.conclusion) ? "failure" : "none";
-        baseCI = `<a class="git-run" href="${esc(run.url)}" target="_blank" rel="noreferrer">${ci(state)}<span>${run.sha.slice(0, 7)} · ${ago(run.time)}</span> ↗</a>`;
-      }
-    }
-    return `<div class="git-overview"><section class="git-overview-card base"><div class="git-overview-label"><i></i>主干 <b>${esc(data.base.name)}</b>${baseCI}</div><div class="git-overview-subject">${esc(data.base.latest.subject)}</div><div class="git-overview-meta">${data.base.latest.sha.slice(0, 7)} · ${esc(data.base.latest.author)} · ${ago(data.base.latest.time)}</div>${originRelation(data.base)}${recentMerge()}</section>${data.stable === null ? '<section class="git-overview-card stable"><div class="git-overview-label"><i></i>稳定分支</div><div class="git-overview-subject git-muted">未设置</div><div class="git-overview-meta">启用时可选择发布用的稳定分支</div></section>' : `<section class="git-overview-card stable"><div class="git-overview-label"><i></i>稳定 <b>${esc(data.stable.name)}</b></div><div class="git-overview-subject">${esc(data.base.name)} 领先 <strong>${data.stable.ahead}</strong> 个提交</div><div class="git-overview-meta">${data.stable.latest.sha.slice(0, 7)} · ${esc(data.stable.latest.subject)}</div>${originRelation(data.stable)}</section>`}</div>`;
   }
   const settingsButton = () => `<button type="button" class="btn" data-git-act="settings">Git 设置</button>`;
   const readStatus = () => loadedAt === null ? "" : `<span class="git-read-meta" role="status">读取于 ${esc(at(loadedAt))} · ${loading ? "正在更新，显示上次结果" : "按需更新"}</span>`;
@@ -115,7 +76,7 @@ const CrewGit = (() => {
     const summary = `<span class="git-assistant-branches"><b>${esc(assistant.base)}</b> → ${esc(assistant.stable === null ? "未设置稳定分支" : assistant.stable)}</span><span>进行中 ${assistant.requests.active}</span><span>等你 ${assistant.requests.waiting_user}</span><span>合并中 ${assistant.requests.merging}</span><span>排队 ${assistant.requests.queued}</span>`;
     const repository = data === null
       ? `<div class="git-loading"><p class="note" role="${errorText ? "alert" : "status"}">${errorText === "" ? "正在读取仓库…" : esc(errorText)}</p>${errorText ? '<button type="button" class="btn" data-git-act="check">重新读取</button>' : ""}</div>`
-      : `${overview()}${mergeRequests()}${data.github === null ? `<div class="git-github-unavailable"><strong>GitHub 不可用</strong><pre>${esc(data.github_reason)}</pre></div>` : ""}<section id="git-panel" aria-label="分支">${branchCards()}</section>`;
+      : `<section id="git-panel" aria-label="分支">${branchOverview()}</section>`;
     if (chatIdentity !== identity) {
       detachChat();
       host.innerHTML = `<div id="git-view"><div class="head big git-head"></div><div class="git-assistant-summary" aria-label="Git 助手概况"></div><div class="git-operation-error"></div><div class="git-m-switch" role="radiogroup" aria-label="显示内容" hidden><input type="radio" name="git-m-pane" id="git-m-pane-repo" checked><label for="git-m-pane-repo">仓库</label><input type="radio" name="git-m-pane" id="git-m-pane-chat"><label for="git-m-pane-chat">对话</label></div><div class="git-body"><div id="git-chat-host" class="chat-host"></div><aside class="git-page" aria-label="仓库"><div class="git-page-in"></div></aside></div></div>`;
@@ -128,7 +89,6 @@ const CrewGit = (() => {
       if (element.innerHTML !== markup) element.innerHTML = markup;
     }
     if (scroll !== undefined && host.querySelector(".git-page") !== null) host.querySelector(".git-page").scrollTop = scroll;
-    for (const detail of host.querySelectorAll(".git-conflicts")) detail.ontoggle = () => { if (detail.open) expandedConflicts.add(detail.dataset.gitConflicts); else expandedConflicts.delete(detail.dataset.gitConflicts); };
   }
   async function load() {
     if (loading) return;
@@ -136,7 +96,7 @@ const CrewGit = (() => {
     render();
     const requestGeneration = generation;
     try {
-      const fresh = await options.api("/api/git?offset=0");
+      const fresh = await options.api("/api/git");
       if (generation !== requestGeneration) return;
       data = fresh;
       loadedAt = new Date().toISOString(); errorText = "";
@@ -201,7 +161,7 @@ const CrewGit = (() => {
   function resetCache() {
     detachChat();
     generation++; data = null; loading = false; operation = null; errorText = ""; loadedAt = null; cachedScroll = 0;
-    selectedRuntime = ""; runtimeExplicit = false; expandedConflicts.clear();
+    selectedRuntime = ""; runtimeExplicit = false;
   }
   function reload(project = options?.project) {
     if (options === null || project !== options.project) return;

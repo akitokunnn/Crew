@@ -2,13 +2,14 @@
 import tests  # Install the production-service connection guard.
 import json
 import subprocess
+import tempfile
 import threading
 import unittest
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 from unittest import mock
 
-from crew import board, git_admin, hooks, messaging, models, runtimes, settings, spawn, store, web
+from crew import board, git_admin, git_view, hooks, messaging, models, runtimes, settings, spawn, store, web
 from test_core import CoreCase, NOW
 from test_shell import PLUGIN, ShellFixture
 from tests.fixture_carriers import install_lookup
@@ -410,45 +411,105 @@ class GitHttpTests(ShellFixture, unittest.TestCase):
         group = next(group for group in board.groups(self.conn, "demo") if group["name"] == "git")
         self.assertIsNotNone(group["closed_at"])
 
-    def test_enabled_get_passes_project_sessions_and_pagination(self):
-        other = self.root / "other-project"
-        other.mkdir()
-        board.init_project(self.conn, "other", other, now=NOW)
-        board.join(self.conn, "other-session", "other", "other", other, self.project, "topic", now=NOW)
-        self.request("/api/git/enable?project=demo", {"base": "topic", "stable": ""})
-        payload = {"branches": [], "commits": [{"sha": "fixture"}], "next_offset": 600,
-                   "github": None, "github_reason": "fixture stderr\n"}
+    def test_enabled_get_passes_config_excluded_assistant_branch_and_force(self):
+        code, config = self.request("/api/git/enable?project=demo", {"base": "topic", "stable": ""})
+        self.assertEqual(code, 200, config)
+        payload = {"base": {"name": "topic", "origin": False, "unpushed": None, "behind_origin": None},
+                   "stable": None, "branches": [], "merged_hidden": 2,
+                   "repository": self.project.name, "last_fetch_at": None}
         with mock.patch("crew.git_view.view", return_value=payload) as view, mock.patch("crew.git_view.fetch") as fetch:
-            code, result = self.request("/api/git?project=demo&offset=300")
-            fetch.assert_not_called()
-        self.assertEqual(code, 200, result)
-        self.assertTrue(result["enabled"])
-        self.assertEqual(result["commits"], payload["commits"])
-        self.assertEqual(result["github_reason"], "fixture stderr\n")
-        self.assertIsNone(result["config"]["stable"])
-        self.assertEqual(view.call_args.kwargs, {"offset": 300})
-        root, config, sessions = view.call_args.args
-        self.assertEqual(root, board.project(self.conn, "demo")["root"])
-        self.assertEqual(config["base"], "topic")
-        self.assertEqual({session["project"] for session in sessions}, {"demo"})
-        self.assertNotIn("other-session", {session["session_id"] for session in sessions})
-
-    def test_real_git_data_through_http(self):
-        board.join(self.conn, "s1", "demo", "one", self.project, self.project, "develop", now=NOW)
-        self.assertEqual(self.request("/api/git/enable?project=demo", {})[0], 200)
-        with mock.patch("crew.git_view._github", return_value=(None, "fixture GitHub unavailable\n")), \
-                mock.patch("crew.git_view.fetch") as fetch:
             code, result = self.request("/api/git?project=demo")
             fetch.assert_not_called()
         self.assertEqual(code, 200, result)
-        self.assertEqual(result["base"]["name"], "develop")
-        self.assertEqual(len(result["commits"]), 1)
-        self.assertEqual(result["commits"][0]["parents"], [])
-        branch = next(item for item in result["branches"] if item["name"] == "develop")
-        self.assertEqual((branch["ahead"], branch["behind"], branch["conflicts"]), (0, 0, []))
-        self.assertEqual(next(session for session in branch["sessions"] if session["session_id"] == "s1")["name"], "one")
-        self.assertEqual(branch["worktrees"][0]["dirty"], False)
-        self.assertEqual(result["github_reason"], "fixture GitHub unavailable\n")
+        self.assertTrue(result["enabled"])
+        self.assertEqual({key: result[key] for key in payload}, payload)
+        self.assertIsNone(result["config"]["stable"])
+        root = board.project(self.conn, "demo")["root"]
+        assistant = board.session(self.conn, config["admin_session_id"])
+        self.assertEqual(view.call_args_list, [
+            mock.call(root, config, exclude=(assistant["branch"],), force=True),
+            mock.call(root, config, exclude=(assistant["branch"],), force=False)])
+
+    def topic_owner_fixture(self):
+        self.git("switch", "topic")
+        self.git("-c", "user.name=Crew Test", "-c", "user.email=crew@example.invalid",
+                 "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "topic work")
+        self.git("switch", "develop")
+        board.join(self.conn, "s1", "demo", "one", self.project, None, "topic", group_name="lead", now=NOW)
+        code, config = self.request("/api/git/enable?project=demo", {})
+        self.assertEqual(code, 200, config)
+
+    def test_real_git_data_through_http(self):
+        self.topic_owner_fixture()
+        with mock.patch("crew.git_view.fetch") as fetch:
+            code, result = self.request("/api/git?project=demo")
+            fetch.assert_not_called()
+        self.assertEqual(code, 200, result)
+        self.assertEqual(result["base"], {"name": "develop", "origin": False,
+                                          "unpushed": None, "behind_origin": None})
+        self.assertEqual(result["stable"], {"name": "master", "behind": 0,
+                                            "ref": "heads/master", "base_ref": "heads/develop"})
+        self.assertEqual(result["merged_hidden"], 0)
+        self.assertEqual(len(result["branches"]), 1)
+        branch = result["branches"][0]
+        self.assertEqual((branch["name"], branch["state"], branch["commits"], branch["behind"]),
+                         ("topic", "unmerged", 1, 0))
+        self.assertEqual(branch["latest"]["sha"], self.git("rev-parse", "topic"))
+        self.assertEqual(branch["latest"]["subject"], "topic work")
+        self.assertIsNone(branch["worktree"])
+        self.assertEqual(branch["owners"], [{"session_id": "s3", "name": "lead"}])
+
+    def test_state_includes_git_branches_with_owners_when_enabled(self):
+        self.topic_owner_fixture()
+        with mock.patch("crew.git_view.view", wraps=git_view.view) as view:
+            code, result = self.request("/api/state?project=demo")
+        self.assertEqual(code, 200, result)
+        data = result["git_branches"]
+        self.assertEqual(data["base"]["name"], "develop")
+        self.assertEqual([branch["name"] for branch in data["branches"]], ["topic"])
+        self.assertEqual(data["branches"][0]["owners"], [{"session_id": "s3", "name": "lead"}])
+        self.assertEqual(data["merged_hidden"], 0)
+        view.assert_called_once()
+        self.assertEqual(view.call_args.kwargs["force"], False)
+
+    def test_state_git_branches_is_none_when_disabled(self):
+        with mock.patch("crew.git_overview.read") as read:
+            code, result = self.request("/api/state?project=demo")
+        self.assertEqual(code, 200, result)
+        self.assertIsNone(result["git_branches"])
+        read.assert_not_called()
+
+    def test_state_git_branches_is_none_for_non_repository(self):
+        temporary = tempfile.TemporaryDirectory(prefix="crew-git-state-ordinary-")
+        self.addCleanup(temporary.cleanup)
+        ordinary = temporary.name
+        self.assertIsNotNone(git_view.unavailable_reason(ordinary))
+        board.init_project(self.conn, "ordinary", ordinary, now=NOW)
+        self.conn.execute("INSERT INTO git_management(project,enabled_at,base) VALUES(?,?,?)",
+                          ("ordinary", NOW, "main"))
+        with mock.patch("crew.git_overview.read") as read:
+            code, result = self.request("/api/state?project=ordinary")
+        self.assertEqual(code, 200, result)
+        self.assertIsNone(result["git_branches"])
+        read.assert_not_called()
+
+    def test_state_preserves_git_read_errors_without_failing_request(self):
+        self.topic_owner_fixture()
+        failures = (git_view.GitError("boom"), OSError("fixture read denied"),
+                    subprocess.TimeoutExpired(["fixture-git"], 10))
+        for failure in failures:
+            with self.subTest(error_type=type(failure).__name__), \
+                    mock.patch("crew.git_view.view", side_effect=failure):
+                code, result = self.request("/api/state?project=demo")
+            self.assertEqual(code, 200, result)
+            self.assertEqual(result["git_branches"], {"error": str(failure)})
+
+    def test_enabled_get_propagates_git_read_error(self):
+        self.topic_owner_fixture()
+        with mock.patch("crew.git_view.view", side_effect=git_view.GitError("boom")):
+            code, result = self.request("/api/git?project=demo")
+        self.assertEqual(code, 400, result)
+        self.assertEqual(result["error"], "boom")
 
     def test_enable_reuses_admin_and_git_view_lists_project_merge_requests(self):
         code, config = self.request("/api/git/enable?project=demo", {})
@@ -459,7 +520,7 @@ class GitHttpTests(ShellFixture, unittest.TestCase):
         merged = board.request_git_merge(self.conn, "demo", "s1", "topic", "Implementation and tests", title=None, now=NOW)
         board.resolve_git_request(self.conn, "demo", sid, merged["id"], "merged", "CI passed", pr_number=17, now=NOW)
         opened = board.request_git_merge(self.conn, "demo", "s2", "master", "Needs review", title=None, now=NOW)
-        with mock.patch("crew.git_view.view", return_value={}):
+        with mock.patch("crew.git_overview.read", return_value={"branches": []}):
             code, result = self.request("/api/git?project=demo")
         self.assertEqual(code, 200, result)
         requests = {request["id"]: request for request in result["requests"]}
@@ -541,7 +602,7 @@ class GitHttpTests(ShellFixture, unittest.TestCase):
                 self.assertEqual(assistant['unread'], 2)
                 self.assertEqual(assistant['pending'], 2)  # Shared leader field also includes its member's choice.
                 self.assertEqual(assistant['attention'], 5)  # 2 waiting requests + 2 replies + 1 own open choice.
-                with mock.patch('crew.git_view.view', return_value={}):
+                with mock.patch('crew.git_overview.read', return_value={'branches': []}):
                     code, git = self.request('/api/git?project=demo')
                 self.assertEqual(code, 200, git)
                 self.assertEqual(git['assistant'], assistant)
@@ -554,7 +615,7 @@ class GitHttpTests(ShellFixture, unittest.TestCase):
 
     def test_disabled_assistant_is_null_and_legacy_ordinary_leader_stays_visible(self):
         self.assertIsNone(self.request('/api/state?project=demo')[1]['git_assistant'])
-        with mock.patch('crew.git_view.view', return_value={}):
+        with mock.patch('crew.git_overview.read', return_value={'branches': []}):
             self.assertIsNone(self.request('/api/git?project=demo')[1]['assistant'])
         board.enable_git(self.conn, 'demo', 'develop', '', admin_session_id='s3', now=NOW)
         board.join(self.conn, 'unbound-git', 'demo', 'git管理员', self.project, self.project,
@@ -568,7 +629,7 @@ class GitHttpTests(ShellFixture, unittest.TestCase):
         leader = next(item for item in state['leaders'] if item['session_id'] == 's3')
         self.assertEqual({key: value for key, value in state['git_assistant'].items()
                           if key not in {'builtin', 'base', 'stable', 'requests', 'attention'}}, leader)
-        with mock.patch('crew.git_view.view', return_value={}):
+        with mock.patch('crew.git_overview.read', return_value={'branches': []}):
             self.assertFalse(self.request('/api/git?project=demo')[1]['assistant']['builtin'])
         self.assertEqual(board.session(self.conn, 's3'), before)
         self.assertEqual(board.git_config(self.conn, 'demo'), config)
@@ -676,10 +737,8 @@ class GitHttpTests(ShellFixture, unittest.TestCase):
             self.assertEqual(self.request("/api/git/commit?project=other&sha=" + payload["sha"]), (200, payload))
             detail.assert_called_once_with(board.project(self.conn, "other")["root"], payload["sha"])
 
-    def test_invalid_project_branch_and_offset_and_csrf(self):
+    def test_invalid_project_branch_and_csrf(self):
         self.assertEqual(self.request("/api/git?project=unknown")[0], 400)
-        self.assertEqual(self.request("/api/git?project=demo&offset=-1")[0], 400)
-        self.assertEqual(self.request("/api/git?project=demo&offset=invalid")[0], 400)
         self.assertEqual(self.request("/api/git/enable?project=demo", {"base": "missing"})[0], 400)
         self.assertEqual(self.request("/api/git/enable?project=demo", {"stable": 42})[0], 400)
         self.assertEqual(self.request("/api/git/enable?project=demo", {}, header=False)[0], 403)
