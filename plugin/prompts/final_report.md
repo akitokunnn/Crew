@@ -9,7 +9,7 @@
 
 1. 成员结果到齐、你复核过，`crew goal work.list` 里的工作项都已 done 或 cancelled。
 2. 取 `crew goal report-template` 填验收证据（通过 / 失败 / 未验证 / 模拟）、产物与修改入口和取舍。awaiting_acceptance / completed 覆盖全部标准，并至少一个“输入 → 期望 → 实际 → 结论”的实测 example；progress / failed / cancelled 可列部分标准并省略 examples。投入可省，提供时未知用量写未知、不估作零，缓存单列。最终交付 outcome 用 awaiting_acceptance，必须写 user_test。
-3. 先 `crew todo list` 和 `crew decisions` 核对本组未结事项，已做完或不再需要的撤回（todo withdraw / 撤回拍板）；新的需要跟踪的人工操作写 user_todos（简单的直接写进报告的实测步骤和对话），新的需要用户定的事写 user_decisions。
+3. 先 `crew todo list` 和 `crew decisions` 核对本组未结事项，已做完或不再需要的撤回（todo withdraw / 撤回拍板）；新的需要用户处理的事项写 user_todos（很快的小事也可直接写进报告的实测步骤和对话），新的需要用户定的事写 user_decisions。
 4. 用 `crew goal finish <目标ID> --file <报告.json> --html-file <报告.html>` 一起提交正文和验收记录（Codex：`crew_goal` 的 finish，正文放 `data.report.document_html`）。返回 `pending_finish` 才算提交成功；本次原生响应结束后任务自动变成“待验收”，用户在主页、任务详情和报告里点“通过”或“需修改”。用户默认先读正文，验收记录另行展开。
 5. finish 报错就按报错修正后重提（如工作清单未完成、标准未覆盖、缺 example）；报告失败只重试报告，不重新派工程任务。finish 成功前不要对用户说“已完成 / 待验收”；只在对话里宣布交付不会改变任务状态。
 6. 用户点“需修改”时，意见会直接送进本任务执行：同一任务、同一轮内按意见修改，复用已有成果，改完验证后回到第 2 步重新 finish。用户点“通过”后任务完成，你会在总对话收到通知，再归档本组已无其他未完成任务的成员。
