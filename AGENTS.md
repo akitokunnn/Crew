@@ -64,7 +64,7 @@ git log -3 --oneline
 | `C:\Tools\Crew-fixes\<任务>` | `claude/<任务>` 等 | 每个需求一个分支一个工作目录，从 live 拉出：`git worktree add C:\Tools\Crew-fixes\<任务> -b claude/<任务> live` |
 
 - **修完合入 live：** 跑与改动相关的验证 → 检查 diff → 提交 → 在分支里 `git merge live`（有冲突就在分支里解决并复验）→ `powershell -ExecutionPolicy Bypass -File scripts\live.ps1 merge <分支>`。不开 PR、不 push。把脚本给出的生效方式（Ctrl+R 刷新、退出并重开 Crew，或要等打包）原样告诉用户。合入 live 即本次交付完成，随后清理该任务的工作目录和本地分支；不动其他 AI 正在使用的工作树或未提交改动。
-- **用户说“推”时：** `scripts\live.ps1 ship` 把 live 推上去开一个批次 PR，CI 通过后合进 main，live 与主目录随之对齐。用户说跳过 CI 时加 `-SkipCI`。main 要求走 PR、禁止强推和删除，不强制人工 review；不伪造检查，不用管理员旁路。
+- **用户说“推”时：** 先在 live 跑一遍下文“验证与交付”里的全量测试，失败先修复并合入 live 再继续；然后 `scripts\live.ps1 ship` 把 live 推上去开一个批次 PR，CI 通过后合进 main，live 与主目录随之对齐。用户说跳过 CI 时加 `-SkipCI`。main 要求走 PR、禁止强推和删除，不强制人工 review；不伪造检查，不用管理员旁路。
 - **别人直接合进 main 的改动**用 `scripts\live.ps1 sync` 并进 live。`scripts\live.ps1 status` 查看 live 里待推送的提交。
 - live 只前进不回退：不在里面直接改、不 reset、不强推。合入后发现问题，用新的修复提交或 `git revert` 走同样流程。
 - **打包**只在攒了桌面外壳改动或要发版时做，从与 main 对齐后的 live 打，步骤见 [Crew 桌面更新](docs/DESKTOP_UPDATES.md)。
@@ -93,11 +93,11 @@ git log -3 --oneline
 ## 验证与交付
 
 - **按改动规模验证，默认从简。** 文档、提示词、文案、样式及局部小改动，审阅 diff 并按需直接确认受影响效果即可；不默认新增测试、跑自动化测试、smoke test、全套回归或构建打包，也不反复执行已有充分证据的检查。
-- **较大功能改动才扩大验证。** 只有较大功能改动或用户明确要求时，才按影响范围安排 smoke test、完整回归及构建验收；局部修复如需测试，只选能直接证明修复有效的最小范围。不要为了合入机械追加检查。
+- **较大功能改动才扩大验证。** 只有较大功能改动或用户明确要求时，才按影响范围安排 smoke test 及构建验收；全量测试不在单个修复里跑，只在用户说“推”时跑（见下文）；局部修复如需测试，只选能直接证明修复有效的最小范围。不要为了合入机械追加检查。
 - **UI 设计、布局、样式与交互调整走 `prove-it`。** 在真实浏览器或桌面中查看改动后的界面，涉及交互时走一遍受影响流程，保留必要截图并说明实际观察结果；新做的显示和交互还要在约 375px 手机宽度和约 760px 窄屏下各看一遍。纯视觉调整不强制新增自动化测试；使用该 skill 时仍遵守本节的验证范围。
 - 合入 live 后用户会直接在正式 Crew 里试用；这是对局部验证的补充，不是跳过必要验证的理由。
 
-确需运行测试时，在测试进程中清理继承的 `CREW_SESSION_ID`、`CLAUDE_CODE_SESSION_ID`，避免把外层身份带入临时白板，不改用户的持久环境。以下命令仅供较大功能改动确需完整验证时使用，不是每次交付的必跑清单：
+确需运行测试时，在测试进程中清理继承的 `CREW_SESSION_ID`、`CLAUDE_CODE_SESSION_ID`，避免把外层身份带入临时白板，不改用户的持久环境。以下全量命令只在用户说“推”、把 live 整批合进 main 时跑一次；日常修复和合入 live 都不跑：
 
 ```powershell
 Push-Location plugin
@@ -107,7 +107,7 @@ node --test plugin/tests/test_*.js
 npm --prefix desktop test
 ```
 
-CI 只跑核心清单 [plugin/tests/ci_core.txt](plugin/tests/ci_core.txt)（`python tests/ci_core.py`，在 `plugin` 下执行），不含边缘载体和计时敏感的测试，只在批次 PR 上跑一次（也可手动触发）。合入 live 前跑改动相关的模块即可。上面的全量按需跑：发版前，或改动跨模块时（存储、`web.py`、`chat.py`、运行时启动，或 `test_shell` 这类多模块共用的测试基类）。新增核心流程的测试模块时加进清单。
+CI 只跑核心清单 [plugin/tests/ci_core.txt](plugin/tests/ci_core.txt)（`python tests/ci_core.py`，在 `plugin` 下执行），不含边缘载体和计时敏感的测试，只在批次 PR 上跑一次（也可手动触发）。合入 live 前只跑改动相关的模块，改动跨模块也一样（存储、`web.py`、`chat.py`、运行时启动或 `test_shell` 这类共用测试基类，都只挑直接相关的测试）。上面的全量只在用户说“推”、把 live 整批合进 main 时跑。新增核心流程的测试模块时加进清单。
 
 确需桌面 smoke test 时，使用隔离交互：`node desktop/scripts/smoke-workspaces.cjs`。需要构建或交付安装包时，验收与图标检查见 [desktop/README.md](desktop/README.md)；使用方式见 [README.md](README.md)。
 
