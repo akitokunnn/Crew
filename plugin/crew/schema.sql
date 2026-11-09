@@ -276,6 +276,16 @@ CREATE TABLE IF NOT EXISTS rule_reads (
     read_at TEXT NOT NULL
 );
 
+-- A leader's chosen color and compressed avatar (WebP/PNG/JPEG, at most 200KB).
+CREATE TABLE IF NOT EXISTS session_appearance (
+    session_id TEXT PRIMARY KEY REFERENCES sessions(session_id),
+    color TEXT,
+    avatar BLOB,
+    avatar_type TEXT,
+    avatar_version INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
+
 -- Explicit human choices survive hooks from the original running process.
 CREATE TABLE IF NOT EXISTS session_controls (
     session_id TEXT PRIMARY KEY REFERENCES sessions(session_id),

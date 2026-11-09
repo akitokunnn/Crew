@@ -145,6 +145,7 @@ def delete(conn, session_id, now=None):
                      (board._time(now), group['project'], group['name']))
     for person in people:
         _archive(conn, person, True, now, event='session:delete')
+        conn.execute('DELETE FROM session_appearance WHERE session_id=?', (person['session_id'],))
         if group is not None:
             conn.execute('UPDATE sessions SET group_name=NULL WHERE session_id=?', (person['session_id'],))
     return {'ok': True, 'deleted': [person['session_id'] for person in people]}

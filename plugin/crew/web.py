@@ -23,7 +23,7 @@ from urllib.error import HTTPError, URLError
 
 from . import board, channel, channel_digest, chat, claude_limits, codex_runtime, documents, git_admin, git_ci, git_view, goal_api, goals, hooks, maintenance, messaging, models, notifications, open_session, presentation, runtime_catalog, runtime_switch, runtimes, session_library, session_ops, settings, spawn, store, themes, todo, trust_mode, updater, usage, usage_cli, vscode_sessions, workspace_execution, workspace_settings
 from .service_lock import HomeServiceLock
-from . import codex_client, member_defaults, operations_chat, operations_settings
+from . import appearance, codex_client, member_defaults, operations_chat, operations_settings
 from . import connections, session_delete, session_presence, storage_cleanup, workspace_activity
 from .storage_service import StorageService, HISTORY_PREFIX
 from . import personal, native_home, native_handoff
@@ -663,6 +663,7 @@ class Service:
         visible_leaders = {s['session_id'] for s in sessions if s['role'] == 'leader'}
         result['goals'] = [goal for goal in result['goals'] if goal['leader_session_id'] in visible_leaders]
         member_choices = member_defaults.for_project(conn, name)
+        looks = appearance.all_looks(conn)
         with self.scan_lock:
             titles = usage.session_titles(self.claude_root, [s['session_id'] for s in sessions], self.title_cache)
             contexts = {sid: cached['context'] for sid, cached in self.title_cache.items()}
@@ -727,7 +728,7 @@ class Service:
                 read_seq = board.read_seq(conn, sid)
                 result['leaders'].append(dict(
                     session_id=sid, name=session['crew_name'], goal=session['task'], status=session['status'],
-                    member_defaults=member_choices.get(sid),
+                    member_defaults=member_choices.get(sid), **looks.get(sid, {'color': None, 'avatar_version': None}),
                     active_goal_id=active_goals[sid], active_goal_ids=active_goal_ids[sid],
                     active_execution_id=active_scopes[sid][0]['id'] if active_scopes[sid] else None,
                     runtime=runtimes.get(conn, sid)['runtime'],
@@ -1354,6 +1355,8 @@ class Service:
                         execution_id = execution['id']
                     operation = self.chat.native_handoff if path.endswith('native-handoff') else self.chat.native_return
                     return operation(target['session_id'], execution_id)
+                if path == '/api/session/appearance':
+                    return appearance.save(conn, target['session_id'], data, now)
                 if path == '/api/session/rename':
                     result = session_ops.rename(conn, target['session_id'], _text(data, 'name'), now=now)
                     result['native_warnings'] = self.chat.sync_native_titles(conn, target['session_id'])
@@ -1776,6 +1779,10 @@ class Service:
         return {**info, "content": content.decode("utf-8-sig", errors="replace"),
                 "truncated": size > limit, "portion": "\u672b\u5c3e" if tail else "\u5f00\u5934"}, "application/json; charset=utf-8"
 
+    def session_avatar(self, session_id):
+        with closing(store.connect(self.home)) as conn:
+            return appearance.avatar(conn, session_id)
+
     def chat_file(self, session_id, name, project_name=None, goal_id=None, execution_id=None):
         with closing(store.connect(self.home)) as conn:
             if goal_id:
@@ -1849,7 +1856,7 @@ POST_PATHS.update({'/api/session/native-handoff', '/api/session/native-return'})
 POST_PATHS.update({'/api/goals/create', '/api/goals/action', '/api/goals/context', '/api/goals/agent', '/api/chat/interrupt', '/api/decision/discuss', '/api/decision/ready'})
 POST_PATHS.update({'/api/trust', '/api/comments', '/api/decision/clarify'})
 POST_PATHS.update({'/api/project/update', '/api/project/remove'})
-POST_PATHS.update('/api/session/' + action for action in ('rename', 'archive', 'delete', 'restore', 'undo', 'stop', 'options', 'compact'))
+POST_PATHS.update('/api/session/' + action for action in ('appearance', 'rename', 'archive', 'delete', 'restore', 'undo', 'stop', 'options', 'compact'))
 POST_PATHS.update(('/api/session/runtime/prepare','/api/session/runtime/switch'))
 POST_PATHS.update(('/api/attention/dismiss', '/api/notifications/away'))
 POST_PATHS.update(('/api/decision/hold', '/api/decision/unhold'))
@@ -1931,6 +1938,7 @@ STATIC.update({'/notes.html': ('notes.html', 'text/html; charset=utf-8'),
                '/notes.css': ('notes.css', 'text/css; charset=utf-8')})
 STATIC['/native-handoff-ui.js'] = ('native-handoff-ui.js', 'text/javascript; charset=utf-8')
 STATIC['/goal-work-ui.js'] = ('goal-work-ui.js', 'text/javascript; charset=utf-8')
+STATIC['/leader-look.js'] = ('leader-look.js', 'text/javascript; charset=utf-8')
 POST_PATHS.add('/api/remote-access')
 POST_PATHS.update(report_preview.WORKER_PATHS)
 STATIC.update({'/access-context.js': ('access-context.js', 'text/javascript; charset=utf-8'),
@@ -2222,6 +2230,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, service.git_commit(query.get("project", [None])[0], query.get("sha", [""])[0]))
         elif url.path == '/api/sounds/custom/file':
             self._stream_storage_file(*event_sounds.custom_file(service.home, query.get('id', [''])[0]))
+        elif url.path == '/api/session/avatar':
+            content, media_type = service.session_avatar(query.get('session_id', [''])[0])
+            self._send(200, content, media_type, cache_control='private, max-age=31536000, immutable')
         elif url.path == '/api/chat/file':
             content, media_type = service.chat_file(query.get('session_id', [''])[0], query.get('name', [''])[0],
                                                     query.get('project', [None])[0], query.get('goal_id', [None])[0],

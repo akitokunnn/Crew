@@ -476,8 +476,12 @@
     const output = result && (typeof result.content === "string" ? result.content : JSON.stringify(result.content, null, 2));
     return `<button type="button" class="tool indent${result || ended ? "" : " live"}${open ? " open" : ""}" data-chat-fold="${escape(foldKey)}" aria-expanded="${open}">${result ? `<span class="${result.is_error ? "chat-error" : "ok"}">${icon("check")}</span>` : ended ? icon(stopped === "handoff" ? "handoff" : "close") : '<span class="spin" aria-label="执行中"></span>'}<span class="label">${escape(toolLabel(context, block))}</span>${!result && ended ? `<span class="tool-state">${ended[0]}</span>` : ""}${icon("right")}</button><div class="tool-steps"><div>输入 · ${escape(block.name)}</div><pre>${escape(JSON.stringify(block.input, null, 2))}</pre>${result ? `<div>${result.is_error ? "执行失败" : "结果"}</div><pre>${escape(output.slice(0, 2000))}</pre>${output.length > 2000 ? '<div>仅显示前 2000 字</div>' : ""}` : ended ? `<div>${ended[1]}</div>${goalId && context.onRouted ? `<button type="button" class="text-link" data-chat-goal="${escape(goalId)}">查看任务 →</button>` : ""}` : "<div>正在执行…</div>"}</div>`;
   }
+  function leadAvatar(session) {
+    const url = window.CrewLook?.avatarUrl(session), color = session.color ? escape(session.color) : "var(--accent)";
+    return `<div class="av round${url ? " has-img" : ""}" style="--s:30px;--tint:${color}">${url ? `<img src="${escape(url)}" alt="">` : escape(session.name.slice(0, 1))}</div>`;
+  }
   function assistantText(context, text, item) {
-    return `<div class="m-lead"><div class="av round" style="--s:30px;--tint:var(--accent)">${escape(context.session.name.slice(0, 1))}</div><div class="body"><div class="markdown">${renderMarkdown(text, context.session.session_id)}</div><div class="m-meta">${escape(context.session.name)}${item.at ? ` · ${timeOf(item.at)}` : ""}</div></div></div>`;
+    return `<div class="m-lead">${leadAvatar(context.session)}<div class="body"><div class="markdown">${renderMarkdown(text, context.session.session_id)}</div><div class="m-meta">${escape(context.session.name)}${item.at ? ` · ${timeOf(item.at)}` : ""}</div></div></div>`;
   }
   function turnView(turn) {
     const parts = turn.items.map(item => ({item, blocks:item.content === null ? (item.text ? [{type:"text", text:item.text}] : []) : item.content}));

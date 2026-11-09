@@ -56,8 +56,18 @@
     msg:'<path d="M21 15a3 3 0 0 1-3 3H9l-6 4V6a3 3 0 0 1 3-3h12a3 3 0 0 1 3 3v9Z"/>', team:'<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20v-.5a6.5 6.5 0 0 1 13 0v.5M15.5 4.7a3.5 3.5 0 0 1 0 6.6M18 13.6a6.5 6.5 0 0 1 3.5 5.9v.5"/>', download:'<path d="M12 3v12m-5-5 5 5 5-5M4 17v4h16v-4"/>'
   };
   const ic = (name, cls = "") => `<svg class="i ${cls}" viewBox="0 0 24 24" aria-hidden="true">${paths[name]}</svg>`;
-  function tint(name) { let n = 0; for (const c of name) n = (n + c.charCodeAt(0)) % colors.length; return colors[n]; }
-  const av = (name, size = 30, round = false) => `<span class="av ${round ? "round" : ""}" style="--s:${size}px;--tint:${tint(name)}">${esc(name.slice(0, 1))}</span>`;
+  function defaultTint(name) { let n = 0; for (const c of name) n = (n + c.charCodeAt(0)) % colors.length; return colors[n]; }
+  // Leaders may pick their own color and avatar; everything that draws a leader by name follows it.
+  let looks = new Map(), looksFrom = null;
+  function lookOf(name) {
+    if (state !== looksFrom) { looksFrom = state; looks = new Map((state?.leaders || []).map(person => [person.name, person])); }
+    return looks.get(name);
+  }
+  function tint(name) { return lookOf(name)?.color || defaultTint(name); }
+  const av = (name, size = 30, round = false) => {
+    const url = window.CrewLook?.avatarUrl(lookOf(name));
+    return `<span class="av ${round ? "round" : ""}${url ? " has-img" : ""}" style="--s:${size}px;--tint:${tint(name)}">${url ? `<img src="${esc(url)}" alt="">` : esc(name.slice(0, 1))}</span>`;
+  };
   const st = status => `<span class="st ${esc(status)}"><i class="dot ${esc(status)}"></i>${esc(statusText[status])}</span>`;
   const count = value => Number(value).toLocaleString("zh-CN", {maximumFractionDigits:1});
   const tokens = value => value === null ? "未知" : value >= 1000000 ? `${count(value / 1000000)}M` : value >= 1000 ? `${count(value / 1000)}K` : count(value);
@@ -744,7 +754,7 @@
     if (runtimeSwitch) html += btn("runtime-switch", "更换执行工具…", runtimeSwitch.reason(item));
     html += btn("stop", "停下这一轮", stopReason) + btn("compact", "压缩上下文", compactReason) + submenu(item, "模型和 effort", modelMenu(item)) + btn("session-rename", "改名");
     if (isLeader) {
-      html += btn("member-create", "新建组员") + btn("member-defaults", "组员默认大脑");
+      html += btn("leader-settings", "Leader 设置…") + btn("member-create", "新建组员") + btn("member-defaults", "组员默认大脑");
       html += submenu(item, "leader 决策方式", [["human","由我拍板"],["autonomous","自主推进"]].map(([mode,label]) => `<button type="button" role="menuitemradio" aria-checked="${Boolean(item.trust?.enabled) === (mode === "autonomous")}" data-act="leader-mode" data-id="${esc(item.session_id)}" data-mode="${mode}">${label}</button>`).join(""));
       html += btn("compact-department", "压缩整个部门…");
       const siblings = sortableLeaders(item), index = siblings.indexOf(item), members = membersOf(item.session_id), busy = members.filter(compactBusy).length;
@@ -793,6 +803,55 @@
     $("backdrop").innerHTML = `<form class="modal rename-modal" id="session-rename-form" data-id="${esc(id)}" data-original="${esc(item.name)}" role="dialog" aria-modal="true" aria-labelledby="rename-title"><div class="rename-heading"><span class="rename-icon">${ic("pencil")}</span><div><h3 id="rename-title">给${isLeader ? " leader " : "组员"}改名</h3><p class="d">${isLeader ? "本组 leader" : esc(item.group) + " 组的组员"}</p></div><button class="icon-btn" type="button" data-act="modal-close" aria-label="关闭改名">${ic("x")}</button></div><div class="rename-current">${av(item.name,32,!isLeader)}<div><span>当前名字</span><strong>${esc(item.name)}</strong></div></div><div class="field"><label for="session-new-name">新名字</label><input id="session-new-name" name="name" value="${esc(item.name)}" placeholder="取一个好辨认的名字" required maxlength="512" autocomplete="off"></div><p class="error-line" id="rename-error" role="alert"></p><div class="acts"><button class="btn ghost" type="button" data-act="modal-close">取消</button><button class="btn primary" type="submit" disabled>保存名字</button></div></form>`;
     $("backdrop").classList.add("show"); $("session-rename-form").elements.name.select();
   }
+  // Leader settings: one place for a leader's own look; more items can join this dialog later.
+  let lookDraft = null;
+  function openLeaderSettings(id) {
+    const item = state.leaders.find(person => person.session_id === id);
+    if (item === undefined) return;
+    hideMenu(); dialogReturn = focusDescriptor(document.activeElement);
+    lookDraft = {id, color:item.color || null, avatar:undefined, preview:null, note:"", error:"", saving:false};
+    renderLeaderSettings();
+    $("backdrop").classList.add("show");
+  }
+  function renderLeaderSettings() {
+    const item = state.leaders.find(person => person.session_id === lookDraft?.id);
+    if (item === undefined) { closeBackdrop(); return; }
+    const draft = lookDraft, color = draft.color || defaultTint(item.name), saved = window.CrewLook.avatarUrl(item);
+    const url = draft.avatar === undefined ? saved : draft.avatar === null ? null : draft.preview;
+    const changed = draft.avatar !== undefined || (draft.color || null) !== (item.color || null), busy = draft.saving ? "disabled" : "";
+    $("backdrop").innerHTML = `<form class="modal rename-modal leader-settings" id="leader-settings-form" data-id="${esc(item.session_id)}" role="dialog" aria-modal="true" aria-labelledby="leader-settings-title"><div class="rename-heading"><span class="rename-icon">${ic("team")}</span><div><h3 id="leader-settings-title">Leader 设置</h3><p class="d">${esc(item.name)}</p></div><button class="icon-btn" type="button" data-act="modal-close" aria-label="关闭 Leader 设置">${ic("x")}</button></div>
+      <div class="ls-preview"><span class="av${url ? " has-img" : ""}" style="--s:64px;--tint:${esc(color)}">${url ? `<img src="${esc(url)}" alt="">` : esc(item.name.slice(0, 1))}</span><div><strong>${esc(item.name)}</strong><span>头像、侧栏、待办和拍板卡片都用这套样式</span></div></div>
+      <section class="ls-sec"><h4>主题色</h4><div class="ls-swatches" role="radiogroup" aria-label="主题色">${colors.map(value => `<button type="button" class="ls-swatch" role="radio" style="--c:${value}" data-act="look-color" data-color="${value}" aria-checked="${value.toLowerCase() === color.toLowerCase()}" aria-label="颜色 ${value}" ${busy}></button>`).join("")}<label class="ls-custom" title="自定义颜色"><input type="color" value="${esc(color)}" data-look-color aria-label="自定义颜色" ${busy}><span>自定义</span></label></div><p class="ls-hint">${draft.color ? `当前：${esc(draft.color)}` : "当前：默认（按名字自动分配）"}${draft.color ? ` · <button type="button" class="text-link" data-act="look-color-reset" ${busy}>恢复默认</button>` : ""}</p></section>
+      <section class="ls-sec"><h4>头像</h4><div class="ls-avatar-acts"><label class="btn"><input type="file" accept="image/*" data-look-avatar hidden ${busy}>${url ? "换一张图片" : "上传图片"}</label>${url ? `<button type="button" class="btn ghost" data-act="look-avatar-remove" ${busy}>改回文字头像</button>` : ""}</div><p class="ls-hint">${draft.note ? esc(draft.note) : `图片会裁成正方形并压缩到 ${window.CrewLook.SIZE}×${window.CrewLook.SIZE} 以内、不超过 ${Math.round(window.CrewLook.MAX_BYTES / 1024)} KB。`}</p></section>
+      <p class="error-line" role="alert">${esc(draft.error)}</p><div class="acts"><button class="btn ghost" type="button" data-act="modal-close" ${busy}>取消</button><button class="btn primary" type="submit" ${changed && !draft.saving ? "" : "disabled"}>${draft.saving ? "正在保存…" : "保存"}</button></div></form>`;
+    if (draft.saving) $("leader-settings-form").dataset.saving = "true";
+  }
+  async function pickLeaderAvatar(input) {
+    const file = input.files?.[0], draft = lookDraft;
+    if (!file || draft === null) return;
+    draft.error = ""; draft.note = "正在压缩…"; renderLeaderSettings();
+    try {
+      const result = await window.CrewLook.compressSquare(file);
+      if (lookDraft !== draft) return;
+      if (lookDraft.preview) URL.revokeObjectURL(lookDraft.preview);
+      lookDraft.avatar = result; lookDraft.preview = URL.createObjectURL(result.blob);
+      lookDraft.note = `已压缩：${(file.size / 1024).toFixed(0)} KB → ${(result.size / 1024).toFixed(1)} KB，${result.width}×${result.height}`;
+    } catch (error) { lookDraft.note = ""; lookDraft.error = error.message; }
+    if ($("leader-settings-form")) renderLeaderSettings();
+  }
+  async function saveLeaderSettings() {
+    const draft = lookDraft;
+    if (draft === null || draft.saving) return;
+    const body = {session_id:draft.id, color:draft.color};
+    try { if (draft.avatar) body.avatar = {type:draft.avatar.type, data:await window.CrewLook.toBase64(draft.avatar.blob)}; else if (draft.avatar === null) body.avatar = null; }
+    catch (error) { draft.error = error.message; renderLeaderSettings(); return; }
+    draft.saving = true; draft.error = ""; renderLeaderSettings();
+    try { await api("/api/session/appearance", body); }
+    catch (error) { draft.saving = false; draft.error = error.message; renderLeaderSettings(); return; }
+    if (draft.preview) URL.revokeObjectURL(draft.preview);
+    lookDraft = null; $("backdrop").querySelector("form")?.removeAttribute("data-saving"); closeBackdrop();
+    try { await loadState(true); toast("Leader 设置已保存"); } catch (error) { toast("已保存，刷新失败：" + error.message); }
+  }
   async function saveRename(form) {
     const name = form.elements.name.value.trim();
     if (!name || name === form.dataset.original || form.dataset.saving === "true") return;
@@ -835,7 +894,7 @@
     $("backdrop").innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-labelledby="handoff-title"><h3 id="handoff-title">在 VS Code 接续对话</h3><p>已打开目录，等 VS Code 窗口准备好：<code>${esc(result.cwd)}</code></p><p>${result.needs_confirmation ? "接续时会停掉后台或终端这一份。" : "接上同一个会话。"}</p><div class="acts"><button class="btn ghost" data-act="modal-close">先不了</button><button class="btn primary" data-act="session-handoff" data-id="${esc(id)}">窗口好了，接上</button></div></div>`;
     $("backdrop").classList.add("show"); $("backdrop").querySelector('[data-act="session-handoff"]').focus();
   }
-  function closeBackdrop() { if ($("backdrop").querySelector('form[data-saving="true"]')) return; const resolve = stopConfirmation; stopConfirmation = null; resolve?.(false); auxiliaryDialog += 1; $("backdrop").classList.remove("show"); $("backdrop").innerHTML = ""; delete $("backdrop").dataset.render; returnFocus(dialogReturn); }
+  function closeBackdrop() { if ($("backdrop").querySelector('form[data-saving="true"]')) return; if (lookDraft?.preview) URL.revokeObjectURL(lookDraft.preview); lookDraft = null; const resolve = stopConfirmation; stopConfirmation = null; resolve?.(false); auxiliaryDialog += 1; $("backdrop").classList.remove("show"); $("backdrop").innerHTML = ""; delete $("backdrop").dataset.render; returnFocus(dialogReturn); }
   function confirmIdentityStop(item) {
     const affected = (state.goals || []).filter(goal => goal.leader_session_id === item.session_id && (["running","pausing","waiting_user"].includes(goal.status) || String(goal.id) === String(item.active_goal_id)));
     if (!affected.length) return Promise.resolve(true);
@@ -1168,7 +1227,7 @@
       if (act === "workspace-settings") { openWorkspaceSettings(); return; }
       if (act === "confirm-stop-person") { const resolve = stopConfirmation; stopConfirmation = null; closeBackdrop(); resolve?.(true); return; }
       if (act === "submenu") { openSubmenu(button); return; }
-      if (button.closest("#menu")) hideMenu(["member-create", "member-defaults", "session-rename", "leader-mode"].includes(act));
+      if (button.closest("#menu")) hideMenu(["member-create", "member-defaults", "session-rename", "leader-mode", "leader-settings"].includes(act));
       if (act === "session-menu") { openSessionMenu(button, id); }
       else if (act === "member-add-menu") { showMenu(button,`<button role="menuitem" data-act="member-create" data-id="${esc(id)}">${ic("plus","sm")}新建组员</button><button role="menuitem" data-act="member-adopt" data-id="${esc(id)}">${ic("inbox","sm")}收编已有会话</button>`); }
       else if (act === "member-create") { hideMenu(); memberUI.openCreate(id); }
@@ -1183,6 +1242,10 @@
       }
       else if (act === "member-adopt") { hideMenu();adoptLeaderId=id;navigate("adopt"); }
       else if (act === "session-rename") openRename(id);
+      else if (act === "leader-settings") openLeaderSettings(id);
+      else if (act === "look-color" && lookDraft) { lookDraft.color = button.dataset.color; lookDraft.error = ""; renderLeaderSettings(); }
+      else if (act === "look-color-reset" && lookDraft) { lookDraft.color = null; renderLeaderSettings(); }
+      else if (act === "look-avatar-remove" && lookDraft) { if (lookDraft.preview) URL.revokeObjectURL(lookDraft.preview); lookDraft.avatar = null; lookDraft.preview = null; lookDraft.note = ""; renderLeaderSettings(); }
       else if (act === "group-tree") { if (cardId !== null) closeCard(); navigate("chat", id); rightOpen = true; renderRight(); syncSidecar(); }
       else if (act === "set-priority") action("leader-order", () => setPriority(id, Number(button.dataset.rank)));
       else if (act === "leader-up" || act === "leader-down") action("leader-order", async () => {
@@ -1310,6 +1373,11 @@
       else if (act === "handoff-go") action("continue", async () => { await api("/api/open/continue", {session_id:id, confirm:handoff.needs_confirmation}); handoff = null; await loadState(true); toast("已在 VS Code 接上同一个会话"); });
       else if (act === "member-history") { const item = member(id); if (cardId !== null) closeCard(); navigate("chat", item.leader_session_id, item.session_id, null); }
     });
+    document.addEventListener("change", event => {
+      if (!event.target.closest("#leader-settings-form") || lookDraft === null) return;
+      if (event.target.matches("[data-look-color]")) { lookDraft.color = event.target.value; lookDraft.error = ""; renderLeaderSettings(); }
+      else if (event.target.matches("[data-look-avatar]")) void pickLeaderAvatar(event.target);
+    });
     document.addEventListener("input", event => {
       if (event.target.closest('#session-rename-form') && event.target.name === 'name') {
         const form=event.target.form;form.querySelector('[type=submit]').disabled = !event.target.value.trim() || event.target.value.trim() === form.dataset.original;
@@ -1325,6 +1393,7 @@
       if (form.dataset.todoForm !== undefined) { event.preventDefault(); const id = form.dataset.todoForm, draft = todoActions.get(id); if (draft) draft.note = form.elements.note.value; action(`todo:${id}`, () => resolveTodo(id)); }
       else if (form.dataset.answerForm !== undefined) { event.preventDefault(); const text = form.elements.answer.value.trim(); if (text !== "") action(`answer:${form.dataset.answerForm}`, () => answer(Number(form.dataset.answerForm), text)); }
       else if (form.id === "session-rename-form") { event.preventDefault(); void saveRename(form); }
+      else if (form.id === "leader-settings-form") { event.preventDefault(); void saveLeaderSettings(); }
       else if (form.id === "trust-form") { event.preventDefault(); void saveTrust(form); }
       else if (form.id === "leader-form") { event.preventDefault(); action("leader", async () => { const button = form.querySelector('[type="submit"]'); button.disabled = true; try { const result = await api("/api/leader", leaderPayload(form)); closeBackdrop(); await loadState(true); navigate("chat", result.session_id); } catch (error) { if ($("leader-error")) $("leader-error").textContent = error.message; } finally { button.disabled = !runtimeInfo(form.elements.runtime.value).available; } }); }
     });

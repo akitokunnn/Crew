@@ -6,7 +6,7 @@ GET_PATHS = frozenset((
     '/api/access/context', '/api/state', '/api/projects', '/api/workspaces/activity',
     '/api/assistant/state', '/api/personal/notes', '/api/personal/notes/recovery', '/api/personal/tags',
     '/api/goals', '/api/goal', '/api/goals/report', '/api/documents', '/api/comments',
-    '/api/chat/history', '/api/chat/events', '/api/chat/file', '/api/files/content',
+    '/api/chat/history', '/api/chat/events', '/api/chat/file', '/api/session/avatar', '/api/files/content',
     '/api/git', '/api/git/commit', '/api/sounds/custom/file', '/api/usage', '/api/usage/export', '/api/channel', '/api/todos', '/api/runtimes',
 ))
 POST_PATHS = frozenset((
@@ -19,7 +19,7 @@ POST_PATHS = frozenset((
     '/api/todo/resolve', '/api/todo/undo', '/api/comments',
     '/api/channel', '/api/channel/read', '/api/channel/digest', '/api/attention/dismiss',
     '/api/leaders/order', '/api/leaders/priority', '/api/project/theme',
-    '/api/session/rename', '/api/session/archive', '/api/session/delete', '/api/session/restore', '/api/session/undo',
+    '/api/session/appearance', '/api/session/rename', '/api/session/archive', '/api/session/delete', '/api/session/restore', '/api/session/undo',
     '/api/session/stop', '/api/session/compact', '/api/session/options',
     '/api/files/resolve', '/api/documents', '/api/documents/pin', '/api/documents/refresh',
 ))
