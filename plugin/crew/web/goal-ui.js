@@ -74,7 +74,6 @@
     let pendingAction = "", actionError = "";
     let ownerId = null, goalId = null, reportGeneration = 0, reader = null, formOverlay = null, actionBusy = false;
     let reading = null, deliveryNotice = null;
-    const covered = new Set();
     const state = () => options.state();
     const goals = () => state()?.goals || [];
     const byId = id => goals().find(item => String(item.id) === String(id));
@@ -95,10 +94,9 @@
       const active = goal();
       return (current()?.executions || []).filter(item => item.session_id === id && item.round === active?.current_round).sort((a,b) => b.generation - a.generation)[0] || null;
     }
-    function closeReader() { options.onReader?.(false); reader?.remove(); reader = null; reading = null; for (const node of covered) node.inert = false; covered.clear(); }
-    // The reader covers the task area: nothing behind it may take focus or input. The sidebar stays usable; onReader makes the floating auxiliary panels inert.
-    function cover() { for (const node of document.getElementById("main").children) if (node !== reader && !node.inert) { node.inert = true; covered.add(node); } }
-    function closeReport() { reportGeneration++; deliveryNotice = null; closeReader(); }
+    // CrewReader owns the layout beside the conversation and what stays usable behind the pane.
+    function closeReader(animate = false) { const pane = reader; reader = null; reading = null; if (pane) window.CrewReader.close(pane, {animate}); }
+    function closeReport(animate = false) { reportGeneration++; deliveryNotice = null; closeReader(animate); }
     async function load(id = goalId) {
       if (id == null) return;
       const key = String(id); if (loading.has(key)) return loading.get(key);
@@ -171,7 +169,7 @@
     }
     function readerHeadMarkup() {
       const active = goal(), report = reading.report, scope = reportScope(report, active, reading.reports);
-      return `<div class="goal-reader-heading"><div class="title">${esc(active.title)} · 交付报告</div><div class="sub goal-reader-meta"><span class="goal-report-scope" data-current="${scope.current}">${scope.label}</span><span>需求 v${esc(report.requirement_version)} · 第 ${esc(report.version)} 稿</span><span>AI 报告结果：${esc(outcomes[report.status])}</span>${scope.note ? `<span class="goal-reader-gap">${esc(scope.note)}</span>` : ""}<span>${esc(owner()?.name)}组 · 隔离预览</span></div></div>${report.status === "progress" && scope.current && !["completed","cancelled","awaiting_acceptance"].includes(active.status) ? `<button class="btn ghost" data-goal-act="edit-stage" data-report-id="${esc(report.id)}">编辑阶段说明</button>` : ""}${active.status === "awaiting_acceptance" && report.id === active.acceptance_brief?.report_id ? reviewButtons(active, report.id, actionBusy) : ""}<button class="btn" data-goal-act="close-report">返回任务</button>`;
+      return `<div class="goal-reader-heading"><div class="title">${esc(active.title)} · 交付报告</div><div class="sub goal-reader-meta"><span class="goal-report-scope" data-current="${scope.current}">${scope.label}</span><span>需求 v${esc(report.requirement_version)} · 第 ${esc(report.version)} 稿</span><span>AI 报告结果：${esc(outcomes[report.status])}</span>${scope.note ? `<span class="goal-reader-gap">${esc(scope.note)}</span>` : ""}<span>${esc(owner()?.name)}组 · 隔离预览</span></div></div>${report.status === "progress" && scope.current && !["completed","cancelled","awaiting_acceptance"].includes(active.status) ? `<button class="btn ghost" data-goal-act="edit-stage" data-report-id="${esc(report.id)}">编辑阶段说明</button>` : ""}${active.status === "awaiting_acceptance" && report.id === active.acceptance_brief?.report_id ? reviewButtons(active, report.id, actionBusy) : ""}${window.CrewReader.chatButton()}<button class="btn" data-goal-act="close-report">返回任务</button>`;
     }
     // Header and status follow the latest goal detail; the report document is written once, so later updates
     // never reload the iframe or lose the reading position.
@@ -183,22 +181,26 @@
         : reading.error ? `<div class="goal-reader-status"><p class="error-line" role="alert">${esc(reading.error)}</p><button class="btn" data-goal-act="retry-report">重新读取报告</button></div>` : "";
       if (body.dataset.markup !== status) { body.innerHTML = status; body.dataset.markup = status; body.hidden = !status; }
       const frame = reader.querySelector(".goal-reader-frame");
-      if (reading.html != null && frame.hidden) { frame.innerHTML = '<iframe title="目标完整交付报告" sandbox="allow-scripts" referrerpolicy="no-referrer"></iframe>'; frame.querySelector("iframe").srcdoc = reportDocument(reading.html); frame.hidden = false; }
+      if (reading.html != null && frame.hidden) { frame.innerHTML = '<iframe title="目标完整交付报告" sandbox="allow-scripts" referrerpolicy="no-referrer"></iframe>'; frame.querySelector("iframe").srcdoc = reportDocument(reading.html) + window.CrewReader.selectionScript; frame.hidden = false; }
       if (focused && !reader.contains(document.activeElement)) head.querySelector('[data-goal-act="close-report"]').focus();
     }
+    // The report opens beside the task conversation; the composer offers to tell the leader which draft is open.
     function openReader(next) {
-      options.onOverlay?.(); options.onReader?.(true);
-      reading = next; reader = document.createElement("section"); reader.className = "goal-report-reader"; reader.setAttribute("aria-label", "目标交付报告");
-      reader.innerHTML = '<div class="head goal-reader-head"></div><div class="goal-reader-body" hidden></div><div class="goal-reader-frame" hidden></div>';
-      document.getElementById("main").append(reader); cover(); renderReader(); reader.querySelector('[data-goal-act="close-report"]').focus();
+      options.onOverlay?.();
+      const pane = document.createElement("section"); pane.className = "goal-report-reader";
+      pane.innerHTML = '<div class="head goal-reader-head"></div><div class="goal-reader-body" hidden></div><div class="goal-reader-frame" hidden></div>';
+      reading = next; reader = pane;
+      window.CrewReader.open(pane, {label:"目标交付报告", reading:{label:`${goal().title} · 交付报告第 ${next.report.version} 稿`, data:{kind:"report", goal_id:next.goalId, report_id:next.report.id}},
+        onClose:() => { if (reader === pane) { reader = null; reading = null; reportGeneration++; deliveryNotice = null; } }});
+      renderReader(); pane.querySelector('[data-goal-act="close-report"]').focus({preventScroll:true});
     }
-    // app.js rebuilds the chat scaffold when the chat identity changes (read-only, execution, round). An open reader
-    // of the same goal stays mounted and keeps covering the new task area; navigation elsewhere has already closed it.
+    // app.js rebuilds the chat scaffold when the chat identity changes (read-only, execution, round). An open pane
+    // stays mounted beside or over the new task area; navigation elsewhere has already closed it.
     function replaceMain(markup) {
-      const main = document.getElementById("main");
-      if (!reader) { main.innerHTML = markup; return; }
-      for (const node of [...main.childNodes]) if (node !== reader) { covered.delete(node); node.remove(); }
-      reader.insertAdjacentHTML("beforebegin", markup); cover();
+      const main = document.getElementById("main"), pane = window.CrewReader.pane();
+      if (!pane) { main.innerHTML = markup; return; }
+      for (const node of [...main.childNodes]) if (node !== pane) node.remove();
+      pane.insertAdjacentHTML("beforebegin", markup); window.CrewReader.refresh();
     }
     async function readDirect(generation) {
       const target = reading;
@@ -230,7 +232,7 @@
       if (!reading || reading.loading) return;
       const generation = ++reportGeneration; reading.loading = true; reading.error = ""; renderReader(); void readDirect(generation);
     }
-    function returnFromReport() { closeReport(); changed(); restoreFocus('[data-goal-tools] [data-goal-act="delivery"]'); }
+    function returnFromReport() { closeReport(true); changed(); restoreFocus('[data-goal-tools] [data-goal-act="delivery"]'); }
     function showActionConfirm(action, active = goal()) {
       if (!active) return;
       formOverlay?.remove(); formOverlay = document.createElement("div"); formOverlay.className = "session-config-backdrop";
@@ -305,7 +307,7 @@
     function escape() {
       if (formOverlay) { if (actionBusy) return true; const action = formOverlay.querySelector("[data-goal-confirm]")?.dataset.goalConfirm; formOverlay.remove(); formOverlay = null; restoreFocus(action ? `[data-action="${action}"],[data-review="${action}"]` : '[data-goal-act="create"]'); }
       else if (reader) returnFromReport();
-      else return false;
+      else if (!window.CrewReader.escape()) return false;
       return true;
     }
     document.addEventListener("keydown", event => {

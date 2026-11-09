@@ -244,19 +244,29 @@
         if (sequence !== request) return;
         const openLabel = info.open_with === "vscode" ? "在 VS Code 打开" : "用默认程序打开";
         const openButton = !localDesktop || info.open_with === "blocked" ? "" : `<button class="btn file-open">${openLabel}</button>`;
-        panel.innerHTML = `<div class="card-head"><div class="file-title">${escape(info.path)}</div><button class="icon-btn file-close" aria-label="\u5173\u95ed">&times;</button></div>${localDesktop ? `<div class="card-actions">${openButton}<button class="btn file-reveal">\u5728\u6587\u4ef6\u5939\u4e2d\u663e\u793a</button></div>` : ""}<div class="card-body file-body"></div>`;
-        const body = panel.querySelector(".file-body");
-        if (info.open_with === "blocked") body.textContent = localDesktop ? "这类文件不直接打开，请用‘在文件夹中显示’" : "此格式暂不能在浏览器预览，请在运行 Crew 的电脑上查看。";
-        else if (info.kind === "image") body.innerHTML = `<img class="file-image" alt="${escape(info.path)}" src="${escape(fileContentUrl(info.path, data.session_id || "", null, true, documentLink ? data.document_id : null))}">`;
-        else {
-          if (content.truncated) body.innerHTML = `<p class="note">\u6587\u4ef6\u8f83\u5927\uff0c\u4ec5\u663e\u793a${escape(content.portion)} 256 KiB</p>`;
-          body.innerHTML += info.kind === "markdown" ? `<div class="markdown">${renderMarkdown(content.content, renderingSession, info.path)}</div>` : `<pre class="file-text">${escape(content.content)}</pre>`;
+        const actions = localDesktop ? `${openButton}<button class="btn file-reveal">在文件夹中显示</button>` : "";
+        const bodyMarkup = info.open_with === "blocked" ? escape(localDesktop ? "这类文件不直接打开，请用‘在文件夹中显示’" : "此格式暂不能在浏览器预览，请在运行 Crew 的电脑上查看。")
+          : info.kind === "image" ? `<img class="file-image" alt="${escape(info.path)}" src="${escape(fileContentUrl(info.path, data.session_id || "", null, true, documentLink ? data.document_id : null))}">`
+          : (content.truncated ? `<p class="note">文件较大，仅显示${escape(content.portion)} 256 KiB</p>` : "") + (info.kind === "markdown" ? `<div class="markdown">${renderMarkdown(content.content, renderingSession, info.path)}</div>` : `<pre class="file-text">${escape(content.content)}</pre>`);
+        // Beside a conversation the file opens in the shared reading pane; elsewhere (channel, assistant page) in the drawer.
+        const inPane = window.CrewReader !== undefined && window.CrewReader.canHost();
+        let host = panel;
+        if (inPane) {
+          panel.classList.remove("show");
+          host = document.createElement("section"); host.className = "file-reader";
+          host.innerHTML = `<div class="head file-reader-head"><div class="file-title" title="${escape(info.path)}">${escape(info.path)}</div><div class="file-reader-actions">${actions}${window.CrewReader.chatButton()}<button class="btn file-close">关闭</button></div></div><div class="file-reader-body reader-quotable">${bodyMarkup}</div>`;
+          const name = documentLink ? link.textContent.trim() : info.path.split(/[\/]/).pop();
+          window.CrewReader.open(host, {label:"文件预览", reading:{label:name, data:documentLink ? {kind:"document", document_id:data.document_id} : {kind:"file", path:info.path, session_id:data.session_id || ""}},
+            onClose:() => { if (sequence === request) request++; }});
+          host.querySelector(".file-close").onclick = () => window.CrewReader.close(host, {animate:true});
+        } else {
+          panel.innerHTML = `<div class="card-head"><div class="file-title">${escape(info.path)}</div><button class="icon-btn file-close" aria-label="关闭">&times;</button></div>${actions ? `<div class="card-actions">${actions}</div>` : ""}<div class="card-body file-body">${bodyMarkup}</div>`;
+          panel.querySelector(".file-close").onclick = () => { request++; panel.classList.remove("show"); };
         }
-        panel.querySelector(".file-close").onclick = () => { request++; panel.classList.remove("show"); };
-        for (const action of (!localDesktop ? [] : info.open_with === "blocked" ? ["reveal"] : ["open", "reveal"])) panel.querySelector(".file-" + action).onclick = async () => {
+        for (const action of (!localDesktop ? [] : info.open_with === "blocked" ? ["reveal"] : ["open", "reveal"])) host.querySelector(".file-" + action).onclick = async () => {
           try { await api("/api/files/" + action, resolved); } catch (error) { toast(error.message); }
         };
-        panel.classList.add("show");
+        if (inPane) host.querySelector(".file-close").focus({preventScroll:true}); else panel.classList.add("show");
       } catch (error) { toast(error.message); }
     }, true);
     document.addEventListener("keydown", event => { if (event.key === "Escape" && panel.classList.contains("show")) { event.stopImmediatePropagation(); request++; panel.classList.remove("show"); } });
