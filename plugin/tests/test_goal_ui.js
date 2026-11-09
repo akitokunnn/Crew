@@ -7,19 +7,28 @@ const settle=()=>new Promise(resolve=>setImmediate(resolve));
 const readerText=reader=>[".goal-reader-head",".goal-reader-body",".goal-reader-frame"].map(part=>reader.querySelector(part).innerHTML).join("");
 const frameOf=reader=>reader.querySelector(".goal-reader-frame").querySelector("iframe");
 function node(){const children=new Map();return {innerHTML:"",hidden:true,dataset:{},scrollTop:0,children:[],get childNodes(){return this.children;},setAttribute(){},focus(){},append(value){value.parent=this;this.children.push(value);this.appended=value;(this.appends??=[]).push(value);},remove(){this.removed=true;if(this.parent)this.parent.children.splice(this.parent.children.indexOf(this),1);this.parent=null;},insertAdjacentHTML(position,html){assert.equal(position,"beforebegin");const item=node();item.innerHTML=html;item.parent=this.parent;this.parent.children.splice(this.parent.children.indexOf(this),0,item);},querySelectorAll(){return [];},querySelector(selector){if(selector==="iframe"&&!this.innerHTML.includes("<iframe"))return null;if(!children.has(selector))children.set(selector,node());return children.get(selector);}};}
+// Follows the CrewReader contract (reader-ui.js): one pane appended to #main, closed by its element or by Escape,
+// kept across task-area rebuilds. Layout beside the conversation is covered by the browser walkthrough.
+function readerFake(main){
+  const reader={opened:[],refreshes:0,current:null,chatButton:()=>'<button data-reader-act="chat">收起对话</button>',selectionScript:"<script>selection-probe</script>",
+    open(pane,options){if(reader.current)reader.close();reader.current={pane,options};reader.opened.push(options);main.append(pane);return pane;},
+    close(pane=null){const entry=reader.current;if(!entry||pane&&entry.pane!==pane)return false;reader.current=null;entry.options.onClose?.();entry.pane.remove();return true;},
+    pane:()=>reader.current?.pane||null,refresh(){reader.refreshes++;},escape:()=>reader.close()};
+  return reader;
+}
 function harness(api,{fetch:fetcher}={}){
-  const handlers={},main=node(),calls=[],network=[],navigations=[];
+  const handlers={},main=node(),calls=[],network=[],navigations=[],reader=readerFake(main);
   const state={git_assistant:null,members:[],leaders:[{session_id:"leader",name:"验证组"}],goals:[
     {id:"a",leader_session_id:"leader",title:"短句验证",request:"保留原始要求",status:"running",current_round:1,requirement_version:1,version:1},
     {id:"b",leader_session_id:"leader",title:"性能目标",request:"另一份要求",status:"queued",current_round:1,version:1}]};
   for(const goal of state.goals) Object.assign(goal,{assignments:[],work_summary:{total:0,done:0,doing:0,blocked:0},decision_mode:{mode:"human",version:1},supplements_after_report:[],now_doing:[],pending_decision:null,working_count:0,last_activity_at:"2026-11-05T00:00:00Z"});
-  const sandbox={window:{},URLSearchParams,document:{activeElement:null,addEventListener(type,handler){(handlers[type]??=[]).push(handler);},getElementById:id=>id==="main"?main:null,createElement:node,body:{append(){}}},
+  const sandbox={window:{CrewReader:reader},URLSearchParams,document:{activeElement:null,addEventListener(type,handler){(handlers[type]??=[]).push(handler);},getElementById:id=>id==="main"?main:null,createElement:node,body:{append(){}}},
     fetch:async url=>{network.push(url);return fetcher?fetcher(url):{ok:true,text:async()=>"<h1>真实报告</h1>"};}};
   vm.createContext(sandbox);vm.runInContext(fs.readFileSync(path.join(__dirname,"../crew/web/goal-work-ui.js"),"utf8"),sandbox);vm.runInContext(fs.readFileSync(path.join(__dirname,"../crew/web/goal-ui.js"),"utf8"),sandbox);
   const client=sandbox.window.CrewGoals.create({project:"fixture",state:()=>state,avatar:(name)=>`<i>${name}</i>`,ago:()=>"刚刚",api:async(url,data)=>{calls.push({url,data});const result=api?await api(url,data):{goal:state.goals.find(item=>url.includes(`id=${item.id}`)),context:{items:[],manifest:{}},reports:[]};if(result.goal)result.goal={supplements_after_report:[],...result.goal};return url.startsWith("/api/documents?")?{documents:result.documents||[]}:result;},renderDocuments:items=>items.map(item=>`<span>${item.title}</span>`).join(""),toast(){},onChange(){},onNavigate(id){navigations.push(id);client.sync("leader",id);},onGeneral(){},refreshState:async()=>{}});
   async function click(act,extra={}){const button={disabled:false,closest:()=>null,dataset:{goalAct:act,...extra}};for(const handler of handlers.click||[])await handler({target:{closest:()=>button}});await tick();}
   async function submit(form){for(const handler of handlers.submit||[])await handler({target:form,preventDefault(){}});await tick();}
-  return {module:sandbox.window.CrewGoals,client,main,state,calls,network,navigations,click,submit};
+  return {module:sandbox.window.CrewGoals,client,main,state,calls,network,navigations,click,submit,reader};
 }
 
 const surfaces=h=>h.client.detailMarkup("leader");
@@ -199,6 +208,8 @@ test("one delivery click from the list opens the selected goal's current report 
   const reader=h.main.appended;assert.equal(h.main.appends.length,1);assert.equal(reader.className,"goal-report-reader");
   for(const text of ["返回任务","当前版本","需求 v2","AI 报告结果：等待用户验收","短句验证 · 交付报告",'sandbox="allow-scripts"'])assert(readerText(reader).includes(text),text);
   assert(!readerText(reader).includes("暂无新交付"));assert(frameOf(reader).srcdoc.includes("default-src 'none'"));assert(frameOf(reader).srcdoc.includes("真实报告"));
+  const srcdoc=frameOf(reader).srcdoc;assert(srcdoc.indexOf("selection-probe")<srcdoc.indexOf("真实报告"),"the selection probe runs before the report's own markup and policy");
+  const opened=h.reader.opened[0];assert.equal(opened.label,"目标交付报告");assert.equal(opened.reading.label,"短句验证 · 交付报告第 1 稿");assert.equal(JSON.stringify(opened.reading.data),JSON.stringify({kind:"report",goal_id:"a",report_id:opened.reading.data.report_id}));assert(readerText(reader).includes('data-reader-act="chat"'));
   assert(h.calls.every(call=>call.data===undefined),"reading never sends, starts or wakes");
   await h.click("close-report");assert.equal(reader.removed,true);assert.equal(h.client.escape(),false);
   assert(surfaces(h).includes('data-goal-tools="a"'),"returns to the task, not the list");assert.equal(h.network.length,1);assert.equal(h.calls.length,1);
@@ -252,13 +263,13 @@ function evolving(h,first){
   return {read:async()=>detail,async update(change,reports){Object.assign(goal,change,{version:goal.version+1,updated_at:`t${goal.version+1}`});detail=deliveryDetail(h,"a",{},reports);h.client.sync("leader","a");await settle();}};
 }
 
-test("an open report follows the latest goal state without rewriting its frame, and the covered task area stays inert across rebuilds",async()=>{
+test("an open report follows the latest goal state without rewriting its frame, and the reading pane stays open across task-area rebuilds",async()=>{
   let source;const h=harness(()=>source.read());Object.assign(h.state.goals[0],{status:"awaiting_acceptance"});
   source=evolving(h,[report("r1",1,{current:true,status:"awaiting_acceptance",summary:"第一稿"})]);const behind=taskArea(h);
   h.client.sync("leader","a");await settle();await h.click("delivery",{goalId:"a"});await settle();
   const reader=h.main.appended,host=reader.querySelector(".goal-reader-frame"),frame=frameOf(reader),srcdoc=frame.srcdoc;
   for(const text of ["当前版本","需求 v1 · 第 1 稿","返回任务"])assert(readerText(reader).includes(text),text);
-  assert.equal(behind.inert,true,"nothing behind the reader can take focus or input");assert.equal(reader.inert,undefined);
+  assert.equal(h.reader.pane(),reader,"the report is the open reading pane");
   let rewrites=0;const kept=host.innerHTML;Object.defineProperty(host,"innerHTML",{get:()=>kept,set:()=>{rewrites++;}});
   const unchanged=label=>{assert.equal(frameOf(reader),frame,label);assert.equal(frame.srcdoc,srcdoc,label);assert.equal(rewrites,0,label);assert.equal(reader.removed,undefined,label);assert.equal(h.main.appends.length,1,label);assert.equal(h.network.length,1,label);};
   const head=()=>reader.querySelector(".goal-reader-head").innerHTML;
@@ -272,14 +283,14 @@ test("an open report follows the latest goal state without rewriting its frame, 
   await source.update({status:"queued",current_round:2,requirement_version:3},[report("r1b",1,{version:2,requirement_version:1}),report("r1",1,{requirement_version:1})]);
   // Reopening changes the chat identity, so app.js rebuilds the task area around the open reader.
   h.client.replaceMain('<div id="chat-head"></div><div id="chat-host"></div>');
-  const rebuilt=h.main.children[0];assert.equal(behind.removed,true);assert.equal(h.main.children.at(-1),reader);assert.equal(h.main.children.length,2);assert.equal(rebuilt.inert,true,"the rebuilt task area is covered too");
+  const rebuilt=h.main.children[0];assert.equal(behind.removed,true);assert.equal(h.main.children.at(-1),reader);assert.equal(h.main.children.length,2);assert.equal(h.reader.refreshes,1,"the reading pane lays out the rebuilt task area again");
   assert(head().includes("当前修改尚无新交付"));unchanged("reopened round");
 
   await source.update({status:"awaiting_acceptance"},[report("r2",2,{requirement_version:3,current:true,status:"awaiting_acceptance"}),report("r1b",1,{version:2,requirement_version:1}),report("r1",1,{requirement_version:1})]);
   assert(head().includes("历史报告"));assert(head().includes("已有更新版本"));unchanged("a new round report arrived");
   assert(h.calls.every(call=>call.data===undefined&&call.url==="/api/goal?id=a"),"only read-only detail refreshes");
 
-  await h.click("close-report");assert.equal(reader.removed,true);assert.equal(rebuilt.inert,false,"closing restores the task area");assert(surfaces(h).includes('data-goal-tools="a"'));
+  await h.click("close-report");assert.equal(reader.removed,true);assert.equal(h.reader.pane(),null,"closing releases the reading pane");assert(surfaces(h).includes('data-goal-tools="a"'));
 });
 
 
