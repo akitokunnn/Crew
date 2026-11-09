@@ -59,7 +59,7 @@ tool(pending,'next-tool','Bash',dict(command='python next_case.py'))
 # The final persisted status is intentionally idle: the unresolved tool is a
 # rendering fixture, not permission to auto-resume a native/model process.
 from crew.storage_service import StorageService
-StorageService(home,isolated=True).refresh('handoff-demo',write_marker=True)
+StorageService(home).refresh('handoff-demo',write_marker=True)
 (home/'handoff-fixture.json').write_text(json.dumps(dict(project=str(project),goal_id=goal['id'])),encoding='utf-8')
 `;
   const prepared = spawnSync('python', ['-', home], {input:seed, encoding:'utf8', env, windowsHide:true});

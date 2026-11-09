@@ -61,7 +61,7 @@ class Service:
             from .cli import claude_agents
             agents_provider = claude_agents
         self.home, self.plugin_root = Path(home), Path(plugin_root)
-        self.storage = StorageService(self.home, isolated=isolated_sources)
+        self.storage = StorageService(self.home)
         self.storage.repair_pending()
         self.agents_provider, self.clock = agents_provider, now
         # Health reports which bundled source this process really runs.

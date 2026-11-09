@@ -39,10 +39,8 @@ def _readonly(path):
 
 
 class StorageService:
-    def __init__(self, home, *, isolated=False, legacy_homes=None):
+    def __init__(self, home):
         self.home = Path(home).resolve()
-        self.isolated = isolated
-        self.legacy_homes = legacy_homes
         self.lock = threading.RLock()
         self._repository = None
         self.downloads = {}
@@ -62,17 +60,9 @@ class StorageService:
         with self.lock:
             return repair_activations(self.repository,self.home)
 
-    def _homes(self):
-        homes = [self.home]
-        # An explicit/test HOME is an isolation boundary, including discovery.
-        if not self.isolated and store.norm_path(self.home) == store.norm_path(store.default_home()):
-            if self.legacy_homes is not None:
-                homes.extend(map(Path, self.legacy_homes))
-        return list(dict.fromkeys(p.resolve() for p in homes))
-
     def _candidates(self, root):
         candidates = []
-        for home in self._homes():
+        for home in (self.home,):
             path = store.db_path(home)
             if not path.is_file():
                 continue
@@ -324,16 +314,7 @@ class StorageService:
                 # View selection never adopts execution bindings from another HOME.
                 project = {**project, 'name': HISTORY_PREFIX + result['workspace_id'], 'read_only': True}
                 return {**result, 'project': project}
-            if not candidate['current']:
-                from . import workspace_recovery
-                original = legacy.migrate_workspace(self.repository, candidate['source_home'], candidate['project'])
-                recovery = workspace_recovery.import_workspace(candidate['source_home'], self.home, candidate['project'])
-                project = recovery['project']
-                return self.refresh(project, write_marker=True, origin_id=original['origin_id'],
-                    workspace_id=original['workspace_id'], identity_project=candidate['project'])
-            else:
-                project = candidate['project']
-            return self.refresh(project, write_marker=True)
+            return self.refresh(candidate['project'], write_marker=True)
 
     def export(self, data):
         from .storage_v2 import packages

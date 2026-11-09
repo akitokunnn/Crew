@@ -253,50 +253,6 @@ class ConnectionTests(ConnectionFixture, unittest.TestCase):
             text='继续', quoted_ref=old_message, attachments=[]))
         self.assertEqual(self.conn.execute('SELECT status FROM decisions WHERE id=?', (identity,)).fetchone()[0], 'open')
 
-    def test_old_notice_schema_migration_preserves_rows_and_accepts_lark(self):
-        self.conn.executescript("DROP TABLE leader_notices; CREATE TABLE leader_notices ("
-            "id INTEGER PRIMARY KEY AUTOINCREMENT,project TEXT NOT NULL,session_id TEXT NOT NULL,"
-            "source TEXT NOT NULL CHECK(source IN ('web','qq','crew')),text TEXT NOT NULL,created_at TEXT NOT NULL,sent_at TEXT);"
-            "INSERT INTO leader_notices VALUES(7,'demo','s3','qq','old','date',NULL);"
-            "INSERT INTO leader_notices VALUES(10,'demo','s3','qq','deleted','date',NULL);DELETE FROM leader_notices WHERE id=10;")
-        with closing(store.connect(self.home)) as migrated:
-            self.assertEqual(tuple(migrated.execute('SELECT * FROM leader_notices').fetchone()),
-                             (7, 'demo', 's3', 'qq', 'old', 'date', None))
-            migrated.execute("INSERT INTO leader_notices(project,session_id,source,text,created_at) VALUES('demo','s3','lark','new','date')")
-            self.assertEqual(migrated.execute('SELECT MAX(id) FROM leader_notices').fetchone()[0], 11)
-
-    def test_notice_migration_preserves_all_real_foreign_key_references(self):
-        decision = board.ask(self.conn, 's1', '问题', ['继续'], now=NOW)
-        self.conn.executescript("DROP TABLE leader_notices; CREATE TABLE leader_notices ("
-            "id INTEGER PRIMARY KEY AUTOINCREMENT,project TEXT NOT NULL,session_id TEXT NOT NULL,"
-            "source TEXT NOT NULL CHECK(source IN ('web','qq','crew')),text TEXT NOT NULL,created_at TEXT NOT NULL,sent_at TEXT);"
-            "INSERT INTO leader_notices VALUES(7,'demo','s3','qq','old','date',NULL);")
-        self.conn.execute("INSERT INTO todo_backfills VALUES('s3',7,'date')")
-        self.conn.execute('INSERT INTO decision_reviews VALUES(?,7,?)', (decision, 'date'))
-        message = self.conn.execute("INSERT INTO channel_messages(project,speaker_session_id,speaker_name,body,created_at) VALUES('demo','s3','lead','message','date')").lastrowid
-        self.conn.execute("INSERT INTO channel_mentions VALUES(?,'s3','lead',7)", (message,))
-        with closing(store.connect(self.home)) as migrated:
-            self.assertEqual(migrated.execute('PRAGMA foreign_keys').fetchone()[0], 1)
-            self.assertEqual(migrated.execute('PRAGMA foreign_key_check').fetchall(), [])
-            for table in ('todo_backfills', 'decision_reviews', 'channel_mentions'):
-                self.assertEqual(migrated.execute('SELECT notice_id FROM '+table).fetchone()[0], 7)
-            self.assertEqual(migrated.execute('SELECT text FROM leader_notices WHERE id=7').fetchone()[0], 'old')
-
-    def test_failed_notice_migration_rolls_back_and_restores_foreign_keys(self):
-        self.conn.executescript("DROP TABLE leader_notices; CREATE TABLE leader_notices ("
-            "id INTEGER PRIMARY KEY AUTOINCREMENT,project TEXT NOT NULL,session_id TEXT NOT NULL,"
-            "source TEXT NOT NULL CHECK(source IN ('web','qq','crew')),text TEXT NOT NULL,created_at TEXT NOT NULL,sent_at TEXT);")
-        self.conn.execute('PRAGMA foreign_keys=OFF')
-        self.conn.execute("INSERT INTO todo_backfills VALUES('s3',99,'date')")
-        self.conn.execute('PRAGMA foreign_keys=ON')
-        with self.assertRaises(sqlite3.IntegrityError):
-            store._migrate_remote_notice_source(self.conn)
-        self.assertEqual(self.conn.execute('PRAGMA foreign_keys').fetchone()[0], 1)
-        self.assertFalse(self.conn.in_transaction)
-        sql = self.conn.execute("SELECT sql FROM sqlite_master WHERE name='leader_notices'").fetchone()[0]
-        self.assertNotIn("'lark'", sql)
-        self.assertIsNone(self.conn.execute("SELECT 1 FROM sqlite_master WHERE name='leader_notices_updated'").fetchone())
-
     def test_receiver_back_does_not_need_lifecycle_lock_during_stop(self):
         self.configure('lark')
         self.bind('lark')

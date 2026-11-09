@@ -11,7 +11,6 @@ import json
 import os
 import socket
 import sqlite3
-import subprocess
 import sys
 import time
 import uuid
@@ -87,67 +86,6 @@ def cli_entry(home):
     if not (root / ".claude-plugin" / "plugin.json").is_file():
         return {"state": "broken", "plugin_root": str(root), "version": None}
     return {"state": "present", "plugin_root": str(root.resolve()), "version": manifest_version(root)}
-
-
-def claude_command():
-    from .chat import claude_executable
-    return [claude_executable()]
-
-
-def _run(command, args):
-    from .tool_updates import _run as run_tool
-    timeout = 30 if args[:2] == ["plugin", "list"] else 120
-    try:
-        return run_tool([*command, *args], timeout=timeout)
-    except subprocess.TimeoutExpired as exc:
-        raise UpdateError("claude %s 超过 %s 秒未完成，已停止该次命令，请重试" % (" ".join(args[:2]), timeout)) from exc
-
-
-def plugin_entries(command):
-    result = _run(command, ["plugin", "list", "--json"])
-    if result.returncode != 0:
-        raise UpdateError("claude plugin list 失败（退出码 %s）：%s" % (result.returncode, (result.stderr or result.stdout).strip()[:500]))
-    entries = json.loads(result.stdout)
-    if not isinstance(entries, list):
-        raise UpdateError("claude plugin list --json 没有返回数组")
-    return [entry for entry in entries if isinstance(entry, dict) and entry.get("id") == PLUGIN_ID]
-
-
-def plugin_state(target, command):
-    """Registered and actually read plugin source; readFromFolder wins over the cache."""
-    entries = plugin_entries(command)
-    if not entries:
-        return {"state": "not_installed"}
-    scopes = [str(entry.get("scope")) for entry in entries]
-    if scopes != ["user"]:
-        return {"state": "blocked", "scopes": scopes,
-                "reason": "Claude 中的 crew 插件安装在 %s 范围；桌面只同步 user 范围的单一安装。请在对应位置手动执行 "
-                          "claude plugin update crew@crew --scope <范围> 并核对版本后再试。" % "、".join(scopes)}
-    entry = entries[0]
-    folder = entry.get("readFromFolder")
-    source = Path(folder or entry["installPath"])
-    present = source.is_dir()
-    info = {"scope": "user", "registered_version": entry["version"], "source": str(source),
-            "read_from_folder": bool(folder), "source_version": manifest_version(source) if present else None,
-            "source_present": present, "matches": present and digest(source) == target["digest"]}
-    if info["matches"] and entry["version"] == target["version"]:
-        return {**info, "state": "current"}
-    if folder and not info["matches"]:
-        return {**info, "state": "blocked",
-                "reason": "Claude 插件实际读取 %s（版本 %s），内容与桌面自带的 %s（版本 %s）不同；官方 plugin update 不会改写这个目录。"
-                          "请先把该目录更新为与桌面相同的版本（例如源码仓库切到对应提交），或用当前桌面版本重新安装插件，再重新检查。"
-                          % (source, info["source_version"] or "未知", target["root"], target["version"])}
-    if folder:
-        return {**info, "state": "update"}
-    return {**info, "state": "blocked",
-            "reason": "Claude 插件从缓存 %s 读取，无法在更新前确认官方更新后的来源与桌面自带版本一致。请手动执行 "
-                      "claude plugin update crew@crew --scope user，并确认版本为 %s 后再检查。" % (source, target["version"])}
-
-
-def update_plugin(target, command):
-    # Keep the old helper operation as an explicit refusal for an older shell.
-    # Managed V2 sessions load --plugin-dir from their own backend source.
-    raise UpdateError('Crew 使用会话专用插件；不会更新共享的 V1 Claude 插件')
 
 
 def backup(home):
@@ -241,7 +179,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(prog="crew_update.py")
     parser.add_argument("--home", type=Path, required=True)
     commands = parser.add_subparsers(dest="operation", required=True)
-    for name in ("inspect", "plugin-update", "switch"):
+    for name in ("inspect", "switch"):
         commands.add_parser(name).add_argument("--target", type=Path, required=True)
     commands.add_parser("backup")
     commands.add_parser("lock")
@@ -255,8 +193,6 @@ def main(argv=None):
     try:
         if args.operation == "inspect":
             value = inspect(args.home, args.target)
-        elif args.operation == "plugin-update":
-            value = update_plugin(target_info(args.target), None)
         elif args.operation == "switch":
             value = switch(args.home, args.target)
         elif args.operation == "backup":

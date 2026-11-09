@@ -142,12 +142,6 @@ CREATE TABLE IF NOT EXISTS todo_backfills (
     queued_at TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS trust_settings (
-    project TEXT PRIMARY KEY REFERENCES projects(name),
-    enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0,1)),
-    goal TEXT,
-    updated_at TEXT NOT NULL
-);
 CREATE TABLE IF NOT EXISTS trust_decisions (
     decision_id INTEGER PRIMARY KEY REFERENCES decisions(id),
     reason TEXT NOT NULL,
@@ -261,7 +255,6 @@ CREATE TABLE IF NOT EXISTS git_ci_state (
     PRIMARY KEY (project, subject, run_key)
 );
 
-DROP TABLE IF EXISTS session_models;
 CREATE TABLE IF NOT EXISTS session_options (
     session_id TEXT PRIMARY KEY REFERENCES sessions(session_id),
     model TEXT,
@@ -695,8 +688,7 @@ CREATE TABLE IF NOT EXISTS runtime_switches (
 );
 CREATE INDEX IF NOT EXISTS runtime_switches_session ON runtime_switches(session_id,status,configured_at);
 
--- Leader-scoped trust. Legacy project settings seed only the leaders present
--- at upgrade time; later leaders start in ordinary mode.
+-- Leader-scoped trust.
 CREATE TABLE IF NOT EXISTS leader_trust_settings (
  leader_session_id TEXT PRIMARY KEY REFERENCES sessions(session_id),
  project TEXT NOT NULL REFERENCES projects(name),
@@ -704,37 +696,10 @@ CREATE TABLE IF NOT EXISTS leader_trust_settings (
  goal TEXT,
  updated_at TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS trust_leader_migrations (
- project TEXT PRIMARY KEY REFERENCES projects(name), migrated_at TEXT NOT NULL
-);
-INSERT OR IGNORE INTO leader_trust_settings
- SELECT s.session_id,s.project,t.enabled,t.goal,t.updated_at FROM sessions s
- JOIN trust_settings t ON t.project=s.project WHERE s.role='leader'
- AND NOT EXISTS(SELECT 1 FROM trust_leader_migrations m WHERE m.project=s.project);
-INSERT OR IGNORE INTO trust_leader_migrations
- SELECT name,strftime('%Y-%m-%dT%H:%M:%fZ','now') FROM projects;
 CREATE TABLE IF NOT EXISTS decision_leader_scopes (
  decision_id INTEGER PRIMARY KEY REFERENCES decisions(id),
  leader_session_id TEXT REFERENCES sessions(session_id)
 );
-CREATE TABLE IF NOT EXISTS trust_schema_migrations (
- name TEXT PRIMARY KEY, applied_at TEXT NOT NULL
-);
--- Historical scopes reflect upgrade-time membership, not reconstructed past
--- membership. NULL is deliberate and never guessed again after migration.
-INSERT OR IGNORE INTO decision_leader_scopes
- SELECT d.id,CASE WHEN s.role='leader' THEN s.session_id ELSE
-   (SELECT g.leader_session_id FROM groups g WHERE g.project=s.project AND g.name=s.group_name) END
- FROM decisions d LEFT JOIN sessions s ON s.session_id=d.session_id
- WHERE NOT EXISTS(SELECT 1 FROM trust_schema_migrations WHERE name='decision-leader-v1');
-DELETE FROM leader_notices
- WHERE source='crew' AND sent_at IS NULL AND id IN
- (SELECT n.id FROM events e JOIN json_each(CASE WHEN json_valid(e.detail) THEN e.detail ELSE '{}' END,'$.notice_ids') j
-  JOIN leader_notices n ON n.id=j.value AND n.project=e.project
-  WHERE e.kind='trust:set' AND j.type='integer'
-  AND NOT EXISTS(SELECT 1 FROM trust_schema_migrations WHERE name='decision-leader-v1'));
-INSERT OR IGNORE INTO trust_schema_migrations
- VALUES('decision-leader-v1',strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 
 -- Goal delivery keeps stable Crew identities separate from native executions.
 CREATE TABLE IF NOT EXISTS goals (

@@ -65,28 +65,6 @@ class CodexOnlySpawnTests(runtime_fixtures.RuntimeFixture):
             cli._with_context(self.home, 'demo', [chief])
         self.assertEqual((chief['status'], chief['where']), ('working', 'bg'))
 
-    def test_existing_paid_digest_migrates_without_losing_its_identity(self):
-        from crew import channel
-        message = channel.post(self.conn, 'demo', board.HUMAN, 'release ready', source='web')
-        self.conn.execute('DROP TABLE channel_digests')
-        self.conn.execute('''CREATE TABLE channel_digests (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, project TEXT NOT NULL,
-            upto_message_id INTEGER NOT NULL, body TEXT NOT NULL,
-            message_count INTEGER NOT NULL, trigger TEXT NOT NULL,
-            model TEXT NOT NULL, cost_usd REAL NOT NULL, created_at TEXT NOT NULL)''')
-        self.conn.execute('INSERT INTO channel_digests VALUES(7,?,?,?,?,?,?,?,?)',
-                          ('demo', message['id'], 'old paid card', 1, 'manual', 'haiku-original', .125, 'yesterday'))
-        with closing(store.connect(self.home)) as migrated:
-            card = channel.digest(migrated, 'demo')
-            self.assertEqual((card['id'], card['body'], card['model'], card['cost_usd'], card['runtime']),
-                             (7, 'old paid card', 'haiku-original', .125, 'claude'))
-            migrated.execute('INSERT INTO channel_digests(project,upto_message_id,body,message_count,trigger,model,runtime,cost_usd,created_at) VALUES(?,?,?,?,?,?,?,?,?)',
-                             ('demo', message['id'], 'new card', 1, 'manual', 'actual-codex', 'codex', None, 'today'))
-            latest = channel.digest(migrated, 'demo')
-            self.assertEqual(latest['id'], 8)
-            self.assertIsNone(latest['cost_usd'])
-            self.assertEqual(migrated.execute('PRAGMA foreign_key_check').fetchall(), [])
-
 
 if __name__ == '__main__':
     unittest.main()

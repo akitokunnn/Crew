@@ -10,7 +10,7 @@ import threading
 import unittest
 from unittest import mock
 
-from crew import board, codex_tools, personal, personal_actions, settings, store, web, workspace_recovery
+from crew import board, codex_tools, personal, personal_actions, settings, store, web
 from crew.web_api import personal as api
 import test_chat_http
 from test_codex_runtime import FakeClient
@@ -572,20 +572,6 @@ class NotesPortabilityTests(RuntimeFixture):
             self.assertEqual(restored['discussions']['count'], 0)
             self.assertEqual(conn.execute('SELECT COUNT(*) FROM personal_note_tags').fetchone()[0], 0)
             self.assertEqual({tag['name'] for tag in personal.list_tags(conn)['tags']}, {'app', 'dup'})
-
-    def test_workspace_recovery_keeps_note_fields_and_leaves_tag_library_and_discussions_in_home(self):
-        primary, child, orphan = self.prepare()
-        target = self.root / 'recovered-home'
-        workspace_recovery.import_workspace(self.home, target, 'demo')
-        with closing(store.connect(target)) as conn:
-            notes = {note['id']: note for note in personal.list_notes(conn, include_archived=True)}
-            self.assertEqual(set(notes), {primary['id'], child['id'], orphan['id']})
-            self.assertEqual((notes[primary['id']]['title'], notes[primary['id']]['stage']), ('主', 'discussed'))
-            self.assertEqual(notes[child['id']]['merged_into'], primary['id'])
-            self.assertEqual(notes[primary['id']]['summaries'][0]['text'], '结论')
-            self.assertEqual(conn.execute('SELECT COUNT(*) FROM personal_note_discussions').fetchone()[0], 0)
-            self.assertEqual(conn.execute('SELECT COUNT(*) FROM personal_note_tags').fetchone()[0], 0)
-            self.assertEqual(conn.execute('PRAGMA foreign_key_check').fetchall(), [])
 
 
 if __name__ == '__main__':

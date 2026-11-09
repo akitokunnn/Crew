@@ -69,8 +69,6 @@ test_storage_v2_activation
 test_storage_legacy
 test_storage_service
 test_home_migration
-test_peer_message_migration
-test_git_notice_migration
 
 # 会话启动、leader 与成员
 test_core

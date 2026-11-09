@@ -48,16 +48,6 @@ class ProductIdentityTests(unittest.TestCase):
             self.assertEqual(storage_cli.main(['list']), 0)
         constructor.assert_called_once_with(self.root / '.crew')
 
-    def test_default_home_does_not_discover_other_homes_and_explicit_homes_stay_isolated(self):
-        local = self.root / 'LocalAppData'
-        (local / 'Crew-previous').mkdir(parents=True)
-        os.environ['LOCALAPPDATA'] = str(local)
-        (self.root / '.crew-v2').mkdir()
-        self.assertEqual(StorageService(self.root / '.crew')._homes(), [self.root / '.crew'])
-        selected = self.root / 'explicit'
-        self.assertEqual(StorageService(selected)._homes(), [selected])
-        self.assertEqual(StorageService(self.root / '.crew', isolated=True)._homes(), [self.root / '.crew'])
-
 
 if __name__ == '__main__':
     unittest.main()

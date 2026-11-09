@@ -4,9 +4,9 @@
 
 0.3.13 任务收尾不再卡在“推进中”：leader 提交收尾才算数，漏了会提醒一次；主页卡片、任务详情和报告页都能直接“通过 / 需修改 / 先观察”，“先观察”的任务单独一栏、不叫醒 AI；leader 栏只显示未读小点。修复子代理缺少记录文件时工作台一直提示“服务器错误”，后端报错现在写进“帮助 → 查看日志文件夹”里的 backend.log。产品统一叫 **Crew**，历史数据和设置沿用。安装包选择与发布流程见[桌面更新](docs/DESKTOP_UPDATES.md)。
 
-Crew 用版本号区分更新，桌面包版本以 `desktop/package.json` 为准。工作区以任务和 TODO 为主页；全 Crew 共用一个跨工作区助手。数据目录为 `~/.crew`（0.3.15 起；此前的 `~/.crew-v2` 已一次性复制迁移过来）。开发主干为 `main`，日常修复的本地试用与推送流程见 [AGENTS.md](AGENTS.md) 的“本地试用与推送”。需求与验收边界见 [产品约定](docs/v2/PRODUCT.md)，开源参考见 [选型记录](docs/v2/OPEN_SOURCE.md)。
+Crew 用版本号区分更新，桌面包版本以 `desktop/package.json` 为准。工作区以任务和 TODO 为主页；全 Crew 共用一个跨工作区助手。数据目录为 `~/.crew`。开发主干为 `main`，日常修复的本地试用与推送流程见 [AGENTS.md](AGENTS.md) 的“本地试用与推送”。需求与验收边界见 [产品约定](docs/v2/PRODUCT.md)，开源参考见 [选型记录](docs/v2/OPEN_SOURCE.md)。
 
-已有旧 Crew 身份的文件夹可以明确选择“从全新记录开始”，使用原源码目录和独立的历史，不要求先导入工作区包。旧身份保留，新身份写入 `.crew/workspace-v2.json`。见 [0.3.1 修复说明](docs/v2/FIX_0.3.1_MIB_OPEN.md)。交互反馈见 [0.3.2 反馈复测](docs/v2/RETEST_0.3.2.md)，官方 Codex 桌面往返及显示边界见 [0.3.3 接续说明](docs/v2/NATIVE_DESKTOP_0.3.3_2026-10-30.md)。
+官方 Codex 桌面往返及显示边界见 [0.3.3 接续说明](docs/v2/NATIVE_DESKTOP_0.3.3_2026-10-30.md)。
 
 同一网络中的手机和电脑可从“设置 → 局域网访问”开启访问，在浏览器输入地址和一次性配对码。支持现有工作区、全局助手、任务、拍板、待办及报告；设备可以单独撤销，关闭访问不停止本机任务。电脑上的 Crew 必须保持运行。使用步骤与验证范围见 [0.3.4 局域网访问](docs/v2/LAN_ACCESS_0.3.4_2026-11-01.md)。公网接入留待配置域名后实施，见 [接入选型](docs/decisions-remote-access.md)。
 
@@ -53,7 +53,7 @@ Crew 用版本号区分更新，桌面包版本以 `desktop/package.json` 为准
 - **守卫**：检查黑名单、设备借用、文件归属和 Git 管理规则。Claude 使用插件 hooks，Codex 接入原生 shell / apply_patch 执行前 hook，覆盖边界见 [Codex 接入说明](docs/CODEX_INTEGRATION.md)。
 - **远程与用量**：QQ / Lark 普通私聊由全局助手处理，可答复提醒、登记拍板、查看及整理待办；用量页按组、会话、日期和模型汇总 Claude / Codex token，并按价格表折算参考金额。组员和 leader 的总对话、各任务及历史执行通过原生绑定归回稳定人员身份；结构表分别显示 Claude 与 Codex 用量，Crew 每周估算也包含组员。
 
-详细用法见 [工作流程](docs/WORKFLOWS.md) 和 [页面说明](docs/WEB_UX.md)，实现设计见 [docs/DESIGN.md](docs/DESIGN.md)，0.1.1 的历史变更与验证见 [交付记录](docs/DESKTOP_0.1.1.md)。
+详细用法见 [工作流程](docs/WORKFLOWS.md) 和 [页面说明](docs/WEB_UX.md)，实现设计见 [docs/DESIGN.md](docs/DESIGN.md)。
 
 持续产品方向、使用旅程研究与迭代取舍见 [产品演进](docs/PRODUCT_EVOLUTION.md)。
 
@@ -287,7 +287,7 @@ Windows 的派工集成源码在 `integrations/codex-dispatch/` 与 `integration
 
 ## 桌面版 0.1.1
 
-本版功能与实际验证记录见 [DESKTOP_0.1.1.md](docs/DESKTOP_0.1.1.md)。使用时以实际打包产物和已启动服务为准：
+使用时以实际打包产物和已启动服务为准：
 
 - 桌面多标签工作区：同一窗口打开多个项目，切换保留聊天草稿、所选 leader 和滚动位置；关闭标签保留后台任务。
 - 桌面外壳与安装入口：细标题栏、原生窗口按钮、统一应用 / 托盘图标，以及安装版。

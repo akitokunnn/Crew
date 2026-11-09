@@ -24,7 +24,7 @@ class StorageServiceTests(unittest.TestCase):
             board.init_project(conn, '股票预警', self.project)
             conn.execute("INSERT INTO sessions(session_id,project,crew_name,role,status,started_at,cwd) VALUES(?,?,?,?,?,?,?)",
                 ('legacy-native-id','股票预警','Leader','leader','offline',store.now_iso(),str(self.project)))
-        self.storage = StorageService(self.home, isolated=True)
+        self.storage = StorageService(self.home)
 
     def test_discovery_is_read_only_and_does_not_choose_or_upgrade(self):
         before = hashlib.sha256((self.home/'crew.db').read_bytes()).hexdigest()
@@ -65,7 +65,7 @@ class StorageServiceTests(unittest.TestCase):
         fresh_home = self.root / 'v2-home'
         with closing(store.connect(fresh_home)):
             pass
-        fresh = StorageService(fresh_home, isolated=True)
+        fresh = StorageService(fresh_home)
         found = fresh.discover(self.project)
         self.assertEqual(found['status'], 'history_missing')
         self.assertTrue(found['can_start_fresh'])
@@ -94,7 +94,7 @@ class StorageServiceTests(unittest.TestCase):
         clone = self.root / 'copied-project'
         shutil.copytree(self.project, clone)
         target_home = self.root / 'restored-home'
-        target = StorageService(target_home, isolated=True)
+        target = StorageService(target_home)
         imported = target.import_package({'path': str(package), 'mode': 'fork'})
         with mock.patch('subprocess.Popen', side_effect=AssertionError('Restoring starts no AI')):
             activated = activation.activate_workspace(target.repository, imported['workspace_id'],
@@ -114,7 +114,7 @@ class StorageServiceTests(unittest.TestCase):
         fresh_home = self.root / 'fresh-permission'
         with closing(store.connect(fresh_home)):
             pass
-        fresh = StorageService(fresh_home, isolated=True)
+        fresh = StorageService(fresh_home)
         native_open = Path.open
         def fail_new_marker(path, mode='r', *args, **kwargs):
             if path.name == 'workspace-v2.json' and mode == 'x':
@@ -127,7 +127,7 @@ class StorageServiceTests(unittest.TestCase):
         with closing(store.connect(fresh_home)) as conn:
             self.assertEqual(conn.execute('SELECT COUNT(*) FROM projects').fetchone()[0], 0)
         self.assertEqual(marker.read_bytes(), original)
-        recovered = StorageService(fresh_home, isolated=True).open({'root': str(self.project), 'action': 'fresh'})
+        recovered = StorageService(fresh_home).open({'root': str(self.project), 'action': 'fresh'})
         self.assertEqual(recovered['workspace_id'], pending['workspace_id'])
         self.assertEqual(fresh.discover(self.project)['status'], 'ready')
         self.assertFalse(fresh._fresh_intent_path(self.project).exists())
@@ -140,12 +140,12 @@ class StorageServiceTests(unittest.TestCase):
         fresh_home = self.root / 'interrupted-fresh'
         with closing(store.connect(fresh_home)):
             pass
-        fresh = StorageService(fresh_home, isolated=True)
+        fresh = StorageService(fresh_home)
         with mock.patch.object(fresh, 'refresh', side_effect=OSError('Interrupted after registration')):
             with self.assertRaisesRegex(OSError, 'Interrupted after registration'):
                 fresh.open({'root': str(self.project), 'action': 'fresh'})
         expected = fresh._fresh_intent(self.project)['workspace_id']
-        restarted = StorageService(fresh_home, isolated=True)
+        restarted = StorageService(fresh_home)
         self.assertTrue(restarted.discover(self.project)['can_start_fresh'])
         recovered = restarted.open({'root': str(self.project), 'action': 'fresh'})
         self.assertEqual(recovered['workspace_id'], expected)
@@ -161,12 +161,6 @@ class StorageServiceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '不能覆盖'):
             self.storage.open({'root': str(self.project), 'action': 'fresh'})
         self.assertEqual(self.storage.discover(self.project)['status'], 'history_missing')
-
-    def test_isolated_home_never_discovers_formal_sources(self):
-        extra=self.root/'other';extra.mkdir()
-        with mock.patch.object(store,'default_home',return_value=self.home):
-            service=StorageService(self.home,isolated=True,legacy_homes=[extra])
-            self.assertEqual(service._homes(),[self.home.resolve()])
 
     def test_history_is_paginated_and_cannot_return_another_workspace(self):
         repo=Repository(self.home)

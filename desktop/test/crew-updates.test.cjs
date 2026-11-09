@@ -55,7 +55,6 @@ function fixture(t, options = {}) {
         value = { target, cli: { plugin_root: switched ? config.backendDir : path.resolve('old-backend'), version: switched ? '0.1.2' : '0.1.1' },
           plugin: { state: 'session-scoped', registered_version: '0.1.2' } };
       } else if (operation === 'backup') value = { path: path.join(config.home, 'backups', 'update', 'crew.db'), integrity: 'ok', bytes: 8192 };
-      else if (operation === 'plugin-update') throw new Error('V2 must never update the shared V1 plugin');
       else if (operation === 'stopped') {
         assert.deepEqual(args.slice(4), ['--port', '51234', '--pid', '101', '--pid', '100', '--pid', '103', '--timeout', '20']);
       } else if (operation === 'switch') switched = true;

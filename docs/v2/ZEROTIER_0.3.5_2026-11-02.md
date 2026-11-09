@@ -20,16 +20,6 @@ ZeroTier 网络本身由 ZeroTier 管理。Crew 不读取其管理令牌，不�
 
 `browser-utils.js` 统一非安全上下文的请求标识和复制能力。聊天、快速想法、成果快照、阶段说明和运维共用标识生成；重试仍保留原操作标识。Git 复制失败保留完整 SHA 可供手动复制。
 
-## QQ 和 Lark
-
-按用户明确授权，将 `C:/Users/admin/.crew` 的 QQ、Lark 凭据与本人接收者、提醒偏好导入 `C:/Users/admin/.crew-v2`。目标五个配置文件此前不存在，本次仅创建这些文件：`qq.json`、`notify.json`、`lark.json`、`lark-notify.json`、`notification-routing.json`。两渠道启用，Lark 使用原 feishu 地区，主动提醒沿用 both，manual_away=false。旧文件字节及目标现有数据库保持不变。
-
-迁移入口是离线 `connection_import`，持有既有 HOME 服务锁，不启动模型或接收连接。重复导入跳过相同配置，不覆盖新版不同值；只保留账号、接收者与偏好，重置旧项目选择、leader 编号、扫描时间和投递代际。正式数据未因开发测试而启动或迁移。
-
-实际提醒由显式 `connection_probe --send` 执行，QQ/Lark 各一条本人测试消息，两边平台均返回消息 ID。回执在发送前创建；相同回执重复运行只返回 reused，不再发送，网络状态未知时也不盲目重发。平台 accepted 不等于用户手机已读。脱敏记录在 `Temp/connection-migration-2026-11-02/actual-import.json` 和 `actual-notification.json`，未在文档记录凭据或接收者 ID。
-
-配置导入和单次通知均没有启动旧版或新版正式收信后台。下次启动 V2 会沿用导入配置；未停止旧实例或修改 ZeroTier 服务。
-
 ## 验证
 
 所有开发交互使用隔离 HOME、真实 HTTP/SQLite 与假 AI 载体；真实外部发送仅限用户授权的 QQ/Lark 两条测试提醒。浏览器错误检查保留预期的错码、断网和授权失效 HTTP 错误，其他控制台错误及后台 stderr 均为空。

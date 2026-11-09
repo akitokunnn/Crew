@@ -393,7 +393,7 @@ class LegacyTests(unittest.TestCase):
 
     def _storage_service(self):
         from crew.storage_service import StorageService
-        service=StorageService(self.source,isolated=True)
+        service=StorageService(self.source)
         service._repository=self.repo
         return service
 
