@@ -164,7 +164,8 @@ def _notify(conn, item, text, now, source="web", route=None, sender=board.HUMAN)
     if sender == target['session_id']:
         return {'kind': 'silent', 'session_id': target['session_id']}
     if route["kind"] in ('leader_notice', 'silent') and target["role"] == "leader":
-        notice_id = board._queue_leader_notice(conn, target["session_id"], text, source, now)
+        # The user's own todo results wait for the leader's next conversation; AI withdrawals still wake it.
+        notice_id = board._queue_leader_notice(conn, target["session_id"], text, source, now, wake=sender != board.HUMAN)
         return {"kind": "leader_notice", "id": notice_id, "session_id": target["session_id"]}
     handoff_id = conn.execute("INSERT INTO handoffs(project,from_session,to_target,body,created_at) VALUES(?,?,?,?,?)",
                               (item["project"], sender, target["session_id"], text,

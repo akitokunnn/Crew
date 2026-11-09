@@ -34,6 +34,7 @@ def connect(home):
     _migrate_dispatch_receipts(conn)
     _migrate_shared_todo_links(conn)
     _migrate_notification_delivery(conn)
+    _migrate_quiet_leader_notices(conn)
     return conn
 
 
@@ -162,6 +163,20 @@ def _migrate_peer_message_receipts(conn):
                          "(SELECT 1 FROM goal_message_meta m WHERE m.message_id=peer_messages.id AND m.status='accepted')")
         conn.commit()
     except sqlite3.Error:
+        conn.rollback()
+        raise
+
+
+def _migrate_quiet_leader_notices(conn):
+    """Existing notices keep waking the leader; only new quiet ones wait."""
+    if any(row['name'] == 'wake' for row in conn.execute('PRAGMA table_info(leader_notices)')):
+        return
+    conn.execute('BEGIN IMMEDIATE')
+    try:
+        if not any(row['name'] == 'wake' for row in conn.execute('PRAGMA table_info(leader_notices)')):
+            conn.execute('ALTER TABLE leader_notices ADD COLUMN wake INTEGER NOT NULL DEFAULT 1')
+        conn.commit()
+    except BaseException:
         conn.rollback()
         raise
 
