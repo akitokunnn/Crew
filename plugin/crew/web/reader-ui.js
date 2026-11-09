@@ -89,12 +89,19 @@
   function close(pane = null, {animate = false} = {}) {
     if (!current || pane && current.pane !== pane) return false;
     const entry = current, host = main(); current = null;
+    const leaving = animate && !reduced() && entry.pane.isConnected;
+    // The leaving pane stays where it is and slides out, instead of jumping to full width under the layout reset.
+    if (leaving) {
+      const box = entry.pane.getBoundingClientRect(), frameBox = host.getBoundingClientRect();
+      entry.pane.style.setProperty("left", `${box.left - frameBox.left}px`, "important");
+      entry.pane.style.setProperty("bottom", `${frameBox.bottom - box.bottom}px`, "important");
+    }
     release(entry);
     observer.disconnect();
     if (host) { delete host.dataset.reader; delete host.dataset.readerChat; }
     if (entry.leaders) hooks.restoreLeaders();
     hooks.onActive(false);
-    if (animate && !reduced() && entry.pane.isConnected) {
+    if (leaving) {
       entry.pane.inert = true; entry.pane.classList.add("reader-leaving");
       setTimeout(() => entry.pane.remove(), LEAVE_MS);
     } else entry.pane.remove();
@@ -189,8 +196,32 @@
     if (typeof data.text !== "string" || !data.text.trim() || !rect || ![rect.left, rect.top, rect.right, rect.bottom].every(Number.isFinite)) { hideQuote(); return; }
     showQuote(data.text.trim(), {left:outer.left + rect.left, top:outer.top + rect.top, bottom:outer.top + rect.bottom, width:rect.right - rect.left});
   });
-  // Inline script for report iframes: posts the current selection to the parent. It reads nothing else.
-  const selectionScript = '<script>(()=>{let f=0;const p=()=>{f=0;const s=getSelection();const t=s&&!s.isCollapsed?String(s).trim():"";let r=null;if(t&&s.rangeCount){const b=s.getRangeAt(0).getBoundingClientRect();r={left:b.left,top:b.top,right:b.right,bottom:b.bottom};}parent.postMessage({crewReader:"selection",text:t.slice(0,4000),rect:r},"*");};const q=()=>{if(!f)f=requestAnimationFrame(p);};document.addEventListener("selectionchange",q);addEventListener("scroll",q,true);})();<\/script>';
+  // Runs inside the report iframes, which have no access to Crew: posts the selection to the parent, relays a
+  // nested report body's selection with its offset, and passes itself into that body before it loads.
+  function selectionProbe() {
+    let frame = 0;
+    const up = message => parent.postMessage(message, "*");
+    const post = () => {
+      frame = 0;
+      const selection = getSelection(), text = selection && !selection.isCollapsed ? String(selection).trim() : "";
+      const box = text && selection.rangeCount ? selection.getRangeAt(0).getBoundingClientRect() : null;
+      up({crewReader:"selection", text:text.slice(0, 4000), rect:box && {left:box.left, top:box.top, right:box.right, bottom:box.bottom}});
+    };
+    const queue = () => { if (!frame) frame = requestAnimationFrame(post); };
+    document.addEventListener("selectionchange", queue);
+    addEventListener("scroll", queue, true);
+    addEventListener("message", event => {
+      const data = event.data, node = [...document.querySelectorAll("iframe")].find(item => item.contentWindow === event.source);
+      if (!node || !data || data.crewReader !== "selection") return;
+      const offset = node.getBoundingClientRect(), rect = data.rect;
+      up({crewReader:"selection", text:data.text, rect:rect && {left:rect.left + offset.left, top:rect.top + offset.top, right:rect.right + offset.left, bottom:rect.bottom + offset.top}});
+    });
+    const tag = "<scr" + "ipt>" + document.currentScript.textContent + "</scr" + "ipt>";
+    document.addEventListener("DOMContentLoaded", () => {
+      for (const node of document.querySelectorAll("iframe[srcdoc]")) node.srcdoc = node.srcdoc.replace(/^(\s*<!doctype html>)?/i, head => head + tag);
+    });
+  }
+  const selectionScript = "<script>(" + selectionProbe + ")();</script>";
 
   const chatButton = () => '<button type="button" class="btn ghost reader-chat-toggle" data-reader-act="chat" aria-expanded="true"><svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16"/></svg><span class="reader-chat-hide">收起对话</span><span class="reader-chat-show">显示对话</span></button>';
   window.CrewReader = {

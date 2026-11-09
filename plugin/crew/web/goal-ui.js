@@ -11,9 +11,10 @@
   function reportPath(project, goalId, reportId) {
     return "/api/goals/report?" + new URLSearchParams({project, goal_id:goalId, report_id:reportId});
   }
-  function reportDocument(html) {
+  // prelude runs before the report's own markup, so a stricter policy the report declares later does not stop it.
+  function reportDocument(html, prelude = "") {
     // Match report_documents.VIEWER_POLICY. Inline charts run without origin, forms or top navigation.
-    return '<!doctype html><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; script-src \'unsafe-inline\'; style-src \'unsafe-inline\'; img-src data: blob:; font-src data:; media-src data:; base-uri \'none\'; form-action \'none\'; frame-src about:;"><meta name="referrer" content="no-referrer">' + html;
+    return '<!doctype html><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; script-src \'unsafe-inline\'; style-src \'unsafe-inline\'; img-src data: blob:; font-src data:; media-src data:; base-uri \'none\'; form-action \'none\'; frame-src about:;"><meta name="referrer" content="no-referrer">' + prelude + html;
   }
   function cards(goals, leaders = [], selected = null) {
     return goals.length ? `<div class="goal-rows">${goals.map(goal => {
@@ -181,7 +182,7 @@
         : reading.error ? `<div class="goal-reader-status"><p class="error-line" role="alert">${esc(reading.error)}</p><button class="btn" data-goal-act="retry-report">重新读取报告</button></div>` : "";
       if (body.dataset.markup !== status) { body.innerHTML = status; body.dataset.markup = status; body.hidden = !status; }
       const frame = reader.querySelector(".goal-reader-frame");
-      if (reading.html != null && frame.hidden) { frame.innerHTML = '<iframe title="目标完整交付报告" sandbox="allow-scripts" referrerpolicy="no-referrer"></iframe>'; frame.querySelector("iframe").srcdoc = reportDocument(reading.html) + window.CrewReader.selectionScript; frame.hidden = false; }
+      if (reading.html != null && frame.hidden) { frame.innerHTML = '<iframe title="目标完整交付报告" sandbox="allow-scripts" referrerpolicy="no-referrer"></iframe>'; frame.querySelector("iframe").srcdoc = reportDocument(reading.html, window.CrewReader.selectionScript); frame.hidden = false; }
       if (focused && !reader.contains(document.activeElement)) head.querySelector('[data-goal-act="close-report"]').focus();
     }
     // The report opens beside the task conversation; the composer offers to tell the leader which draft is open.

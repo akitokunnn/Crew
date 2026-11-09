@@ -254,8 +254,8 @@
         if (inPane) {
           panel.classList.remove("show");
           host = document.createElement("section"); host.className = "file-reader";
-          host.innerHTML = `<div class="head file-reader-head"><div class="file-title" title="${escape(info.path)}">${escape(info.path)}</div><div class="file-reader-actions">${actions}${window.CrewReader.chatButton()}<button class="btn file-close">关闭</button></div></div><div class="file-reader-body reader-quotable">${bodyMarkup}</div>`;
-          const name = documentLink ? link.textContent.trim() : info.path.split(/[\/]/).pop();
+          const name = documentLink ? link.textContent.trim() : info.path.split(/[\\/]/).pop();
+          host.innerHTML = `<div class="head file-reader-head"><div class="file-reader-heading"><div class="title">${escape(name)}</div><div class="sub file-path" title="${escape(info.path)}">${escape(info.path)}</div></div><div class="file-reader-actions">${actions}${window.CrewReader.chatButton()}<button class="btn file-close">关闭</button></div></div><div class="file-reader-body reader-quotable">${bodyMarkup}</div>`;
           window.CrewReader.open(host, {label:"文件预览", reading:{label:name, data:documentLink ? {kind:"document", document_id:data.document_id} : {kind:"file", path:info.path, session_id:data.session_id || ""}},
             onClose:() => { if (sequence === request) request++; }});
           host.querySelector(".file-close").onclick = () => window.CrewReader.close(host, {animate:true});
