@@ -164,3 +164,14 @@ def carry_forward(conn, goal_id, previous_version, *, actor):
                      (goal['requirement_version'], store.now_iso(), item['id']))
         row = conn.execute('SELECT * FROM goal_work_items WHERE id=?', (item['id'],)).fetchone()
         _record(conn, _item(row), actor)
+
+
+def hand_over(conn, goal_id, owner, *, actor):
+    """A task moving to another leader takes its unfinished work along; nobody is still doing it."""
+    for item in items(conn, goal_id):
+        if item['status'] in ('done', 'cancelled'):
+            continue
+        conn.execute("UPDATE goal_work_items SET owner_session_id=?,status=CASE status WHEN 'doing' THEN 'planned' ELSE status END,"
+                     'version=version+1,updated_at=? WHERE id=?', (owner, store.now_iso(), item['id']))
+        row = conn.execute('SELECT * FROM goal_work_items WHERE id=?', (item['id'],)).fetchone()
+        _record(conn, _item(row), actor)

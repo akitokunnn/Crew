@@ -23,6 +23,7 @@ test_goal_messages
 test_goal_modes_reports
 test_goal_notifications
 test_goal_recovery
+test_goal_transfer
 test_goal_work
 test_task_behavior_v2
 test_v2_journeys

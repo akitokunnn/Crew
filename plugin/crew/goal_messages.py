@@ -290,6 +290,7 @@ def remind_unfinished(controller, conn, now=None):
         "AND NOT EXISTS (SELECT 1 FROM goal_executions o WHERE o.goal_id=g.id AND o.round=g.current_round "
         "AND o.status IN ('queued','running','pausing')) "
         "AND NOT EXISTS (SELECT 1 FROM goal_round_finishes f WHERE f.goal_id=g.id AND f.round=g.current_round AND f.status='pending') "
+        "AND NOT EXISTS (SELECT 1 FROM goal_transfers h WHERE h.goal_id=g.id AND h.status='pending') "
         "AND NOT EXISTS (SELECT 1 FROM goal_message_meta m WHERE m.goal_id=g.id AND m.status='queued') "
         "AND NOT EXISTS (SELECT 1 FROM goal_links l LEFT JOIN decisions d ON l.kind='decision' AND d.id=l.item_id "
         "LEFT JOIN todos t ON l.kind='todo' AND t.id=l.item_id WHERE l.goal_id=g.id AND l.round=g.current_round "

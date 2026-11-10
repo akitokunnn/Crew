@@ -7,7 +7,7 @@ from . import behavior_prompts, board, goal_artifacts, goal_context, goal_mode, 
 
 READ_ACTIONS = frozenset(('status', 'report-template', 'report.get', 'report.preview', 'context.inspect', 'context.retrieve', 'work.list')) | goal_artifacts.READ_ACTIONS
 GOAL_ACTIONS = frozenset(('status', 'create', 'start', 'pause', 'resume', 'cancel', 'reopen',
-                          'amend', 'assign', 'report-template', 'report.get', 'report.preview', 'report.publish', 'mode.set', 'finish', 'work.list', 'work.add', 'work.update')) | goal_artifacts.ACTIONS
+                          'amend', 'assign', 'transfer', 'report-template', 'report.get', 'report.preview', 'report.publish', 'mode.set', 'finish', 'work.list', 'work.add', 'work.update')) | goal_artifacts.ACTIONS
 CONTEXT_ACTIONS = frozenset(('context.inspect', 'context.retrieve', 'context.put', 'context.correct', 'context.expire'))
 CREATE_FIELDS = frozenset(('title', 'request', 'acceptance', 'constraints', 'priority', 'dependencies', 'decision_mode',
                            'source', 'leader', 'leader_session_id'))
@@ -315,6 +315,21 @@ def dispatch(home, actor_session_id, execution_id, action, data, controller=None
             return controller.send(goal_id, goal['leader_session_id'],
                                    data.get('text') or behavior_prompts.text(conn, 'resume_nudge', session_id=goal['leader_session_id'], values={'reason': '用户明确恢复本目标，按原始要求与已有证据续接'}),
                                    source='human' if actor_session_id == board.HUMAN else 'crew')
+        if action == 'transfer':
+            host = _host(controller)
+            person = _person(conn, project, data.get('to') or data.get('leader') or data.get('leader_session_id') or '')
+            transfer = goals.request_transfer(conn, goal_id, person['session_id'], data.get('text') or data.get('note') or '',
+                                              actor=actor_session_id)
+            host.sync(conn, goal_id)
+            transfer = goals.get_transfer(conn, transfer['id'])
+            if transfer['status'] == 'failed':
+                raise board.Conflict('交接没有完成：' + transfer['error'])
+            pending = transfer['status'] == 'pending'
+            name = person['crew_name'] or person['session_id']
+            message = ('已登记交给 %s；本任务正在进行的执行结束后自动交接，由 %s 接着做。不要再在本任务里施工，告诉用户已交接即可。' % (name, name)
+                       if pending else '已交给 %s；%s 会收到交接通知和你的交接说明。你和你组里的成员不用再推进这个任务。' % (name, name))
+            return {'ok': True, 'pending_transfer': pending, 'transfer': transfer, 'goal': _status_goal(goals.get(conn, goal_id)),
+                    'message': message}
         if action == 'reopen':
             return goals.reopen(conn, goal_id, data.get('text'), actor=actor_session_id)
         if action == 'cancel':
