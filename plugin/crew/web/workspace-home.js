@@ -9,7 +9,9 @@
   function project({leaders, members, goals, todos, decisions}) {
     const people = [...leaders, ...members];
     const active = people.filter(person => person.status === "working");
-    const dispatches = people.flatMap(person => (person.codex || []).filter(job => job.source === "skill_dispatch" && job.status === "running"));
+    // Same rule as the workspace's working list: a native sub-agent counts only while its owner is not itself working.
+    const dispatches = people.flatMap(person => (person.codex || []).filter(job => job.status === "running"
+      && (job.source === "skill_dispatch" || job.source === "native_subagent" && person.status !== "working")));
     const open = goals.filter(goal => !ended.has(goal.status));
     const owners = new Set(goals.map(goal => goal.leader_session_id));
     return {
