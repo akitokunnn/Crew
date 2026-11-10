@@ -57,8 +57,9 @@ def _check_short(body):
 
 
 def _reply_hint(message_id):
-    return ('能一两句说清的，直接在交流区回：crew say --reply-to %d "…"（Codex 用 crew_say，reply_to=%d），私聊这边只写一句“已在交流区回复”；'
-            '需要长内容时，交流区回一句结论并加 --detail（Codex 用 detail=true），完整内容在私聊这边写。' % (message_id, message_id))
+    return ('能一两句说清的，直接在交流区口语回一句（尽量 50 字内，不复述资料来源）：crew say --reply-to %d "…"（Codex 用 crew_say，reply_to=%d），'
+            '私聊这边只写一句“已在交流区回复”；需要长内容时，交流区回一句结论并加 --detail（Codex 用 detail=true），完整内容在私聊这边写。'
+            % (message_id, message_id))
 
 
 def _latest(conn, project_name):

@@ -200,7 +200,9 @@ _SPECS = [
            'reply_to': _text('Original Crew message ID when replying; only reply to a message addressed to you.')},
           ("to", "text")),
     _spec('crew_say', 'Leader only: post in the project Leader channel (交流区), shared by all leaders and the user. '
-          'Talk like a group chat: one or two short sentences, at most 150 characters and 3 lines; no ACKs, progress logs or Git/CI status. '
+          'Talk like a colleague in a group chat: plain spoken Chinese, the conclusion first, ideally under 50 characters (hard limit 150 characters, 3 lines); '
+          'do not cite sources like "README says" or stack caveats; no ACKs, progress logs or Git/CI status. '
+          'When your change affects another group, post here and name its leader (naming wakes them) instead of also sending crew_send_message. '
           'Answer a post with reply_to (its # number). If the answer fits in a sentence or two, say it here and only note in your private '
           'conversation that you answered in the channel. If it needs a long explanation, post a one-line conclusion with detail=true and '
           'write the full answer in your private conversation. Naming leaders in to wakes them; unnamed posts wake nobody.',
