@@ -1,8 +1,8 @@
 "use strict";
 const {test}=require("node:test"),assert=require("node:assert/strict"),fs=require("node:fs"),path=require("node:path"),vm=require("node:vm");
 const tick=async()=>{for(let i=0;i<24;i++)await Promise.resolve();};
-const unavailable=(extra={})=>({available:false,reason:"这是普通文件夹，Git 功能暂不可用。",enabled:false,repository:"普通工作区",config:null,requests:[],choices:{branches:[],base:null,stable:null},...extra});
-const healthy=()=>({enabled:false,repository:"已有仓库",choices:{branches:["main"],base:"main",stable:null}});
+const unavailable=(extra={})=>({available:false,reason:"这是普通文件夹，Git 功能暂不可用。",enabled:false,repository:"普通工作区",config:null,requests:[],choices:{branches:[],base:null},...extra});
+const healthy=()=>({enabled:false,repository:"已有仓库",choices:{branches:["main"],base:"main"}});
 function harness(initial){
   let response=initial,markup="",read=null;const handlers=new Map(),timers=new Map(),documentListeners=new Map(),windowListeners=new Map(),calls=[],popup={hidden:true};
   const host={get innerHTML(){return markup;},set innerHTML(value){markup=value;},querySelector:selector=>selector==="#git-detail"?popup:null,querySelectorAll:()=>[],addEventListener:(name,fn)=>handlers.set(name,fn),removeEventListener:name=>handlers.delete(name)};

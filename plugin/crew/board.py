@@ -136,11 +136,14 @@ def set_project_theme(conn, project_name, theme, now=None):
 
 def git_config(conn, project_name):
     project(conn, project_name)
-    row = conn.execute("SELECT * FROM git_management WHERE project=?", (project_name,)).fetchone()
+    # Named columns: databases created before the integration branch still carry an unused `stable` column.
+    row = conn.execute("SELECT project,enabled_at,base,integration,admin_session_id,branch_rules "
+                       "FROM git_management WHERE project=?", (project_name,)).fetchone()
     return None if row is None else dict(row)
 
 
-def git_branches(conn, project_name, base=None, stable=None):
+def git_branches(conn, project_name, base=None, integration=None):
+    """Validate base and the optional local integration branch against local branches; "" means none."""
     from . import git_view
     try:
         choices = git_view.branch_choices(project(conn, project_name)["root"])
@@ -151,23 +154,20 @@ def git_branches(conn, project_name, base=None, stable=None):
         raise BoardError("没有可自动识别的主干分支，请指定 --base")
     if base not in choices["branches"]:
         raise BoardError("分支不存在: " + base)
-    if stable is None:
-        stable = next((name for name in ("master", "main") if name in choices["branches"] and name != base), None)
-    elif stable == "":
-        stable = None
-    if stable is not None and stable not in choices["branches"]:
-        raise BoardError("分支不存在: " + stable)
-    if stable == base:
-        raise BoardError("稳定分支必须与主干分支不同")
-    return base, stable
+    integration = integration or None
+    if integration is not None and integration not in choices["branches"]:
+        raise BoardError("分支不存在: " + integration)
+    if integration == base:
+        raise BoardError("本地集成分支必须与主干分支不同")
+    return base, integration
 
 
 @atomic
-def enable_git(conn, project_name, base=None, stable=None, now=None, admin_session_id=None):
-    base, stable = git_branches(conn, project_name, base, stable)
-    conn.execute("INSERT INTO git_management(project,enabled_at,base,stable) VALUES(?,?,?,?) "
-                 "ON CONFLICT(project) DO UPDATE SET base=excluded.base,stable=excluded.stable",
-                 (project_name, _time(now), base, stable))
+def enable_git(conn, project_name, base=None, integration=None, now=None, admin_session_id=None):
+    base, integration = git_branches(conn, project_name, base, integration)
+    conn.execute("INSERT INTO git_management(project,enabled_at,base,integration) VALUES(?,?,?,?) "
+                 "ON CONFLICT(project) DO UPDATE SET base=excluded.base,integration=excluded.integration",
+                 (project_name, _time(now), base, integration))
     if admin_session_id is not None:
         conn.execute("UPDATE git_management SET admin_session_id=? WHERE project=?", (admin_session_id, project_name))
     return git_config(conn, project_name)

@@ -35,6 +35,20 @@ class GitContextTests(CoreCase):
         self.assertIn('crew send "chief" "<内容>"', worker_context)
         self.assertIn('crew_send_message', worker_context)
 
+    def test_context_names_the_local_integration_branch_and_never_a_release_branch(self):
+        for runtime in ('claude', 'codex'):
+            runtimes.set(self.conn, 's1', runtime)
+            self.conn.execute("UPDATE git_management SET integration=NULL WHERE project='demo'")
+            previous, unset = git_admin.input_context(self.conn, 's1', None, PLUGIN)
+            self.assertIn('主干 main，本地集成分支 未设置。', unset)
+            self.conn.execute("UPDATE git_management SET integration='dev_live' WHERE project='demo'")
+            version, context = git_admin.input_context(self.conn, 's1', previous, PLUGIN)
+            self.assertNotEqual(version, previous)
+            self.assertIn('本地集成分支 dev_live（只在本机、不推送）', context)
+            for text in (unset, context):
+                self.assertNotIn('稳定分支', text)
+                self.assertNotIn('stable', text)
+
     def test_disabling_revokes_the_previous_assignment_once(self):
         previous, _ = git_admin.input_context(self.conn, 's1', None, PLUGIN)
         self.conn.execute("DELETE FROM git_management WHERE project='demo'")

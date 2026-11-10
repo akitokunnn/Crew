@@ -1032,42 +1032,55 @@ const host=require(path.resolve(process.argv[1],'../../../tests/git_ui_host.cjs'
 const visible={session_id:'visible',name:'侧栏 leader'},hidden={session_id:'hidden',name:'归档 leader'};
 const other={session_id:'other',name:'另一位 leader'};
 const latest={sha:'a'.repeat(40),subject:'修复 <script>alert("title")</script> & 校验',author:'作者',time:'2026-11-09T00:55:00Z'};
+const plain={remote:null,pr:null,dirty:null,outside_integration:null};
 const branches=[
-  {name:'feature/<script>alert("branch")</script>',state:'unmerged',commits:3,behind:2,latest,worktree:'c:\\FIXTURE\\Demo\\Temp\\wt\\feature',owners:[hidden,visible,other]},
-  {name:'feature/offline',state:'unmerged',commits:4,behind:0,latest,worktree:'C:/fixture/demo/Temp/wt/offline',owners:[hidden,other]},
-  {name:'feature/unowned',state:'unmerged',commits:5,behind:0,latest,worktree:null,owners:[]},
-  {name:'feature/push',state:'unpushed',commits:6,behind:1,latest,worktree:'D:/outside/worktree',owners:[visible]},
-  {name:'feature/rejected',state:'unpushed',commits:7,behind:0,latest,worktree:'C:/fixture/demo-other/worktree',owners:[other]}
+  {...plain,name:'feature/<script>alert("branch")</script>',state:'unmerged',commits:3,behind:2,latest,worktree:'c:\\FIXTURE\\Demo\\Temp\\wt\\feature',owners:[hidden,visible,other],
+   remote:{ahead:0},pr:{number:12,url:'https://github.com/example/demo/pull/12',draft:false,base:'develop',ci:'pending'},dirty:{files:4,build_outputs:9,error:null}},
+  {...plain,name:'feature/offline',state:'unmerged',commits:4,behind:0,latest,worktree:'C:/fixture/demo/Temp/wt/offline',owners:[hidden,other],remote:{ahead:2}},
+  {...plain,name:'feature/unowned',state:'unmerged',commits:5,behind:0,latest,worktree:null,owners:[],dirty:{files:null,build_outputs:null,error:'fatal: <bad>'}},
+  {...plain,name:'feature/push',state:'unpushed',commits:6,behind:1,latest,worktree:'D:/outside/worktree',owners:[visible]},
+  {...plain,name:'feature/rejected',state:'unpushed',commits:7,behind:0,latest,worktree:'C:/fixture/demo-other/worktree',owners:[other]},
+  {...plain,name:'proactive-debug',state:'merged',commits:0,behind:11,latest,worktree:'C:/fixture/demo/Temp/wt/proactive-debug',owners:[visible],dirty:{files:49,build_outputs:34,error:null}}
 ];
 // Terminal requests precede active ones for the same branch; they must not hide its active tag.
 const requests=[{id:80,status:'merged',branch:branches[0].name},
   ...['open','merging','merged','waiting_user','rejected'].map((status,index)=>({id:index+1,status,branch:branches[index].name}))];
-const assistant={session_id:'git-admin',name:'Git 助手',base:'develop',stable:'master',requests:{active:3,waiting_user:1,merging:1,queued:1},attention:1};
-const fixture={enabled:true,repository:'Demo',config:{base:'develop',stable:'master',admin_session_id:'git-admin'},assistant,
-  choices:{branches:['develop','master'],base:'develop',stable:'master'},
-  base:{name:'develop',origin:true,unpushed:0,behind_origin:0},
-  stable:{name:'master',behind:9,ref:'remotes/origin/master',base_ref:'remotes/origin/develop'},
-  branches,requests,merged_hidden:11,last_fetch_at:null};
+const assistant={session_id:'git-admin',name:'Git 助手',base:'develop',integration:null,requests:{active:3,waiting_user:1,merging:1,queued:1},attention:1};
+const fixture={enabled:true,repository:'Demo',config:{base:'develop',integration:null,admin_session_id:'git-admin'},assistant,
+  choices:{branches:['develop','master'],base:'develop'},
+  base:{name:'develop',origin:true,unpushed:0,behind_origin:0,worktree:'C:/fixture/demo',dirty:{files:0,build_outputs:35,error:null}},
+  integration:null,branches,requests,merged_hidden:11,last_fetch_at:null,pull_requests_at:'2026-11-09T00:58:00Z'};
 const colors=new Map([['侧栏 leader','#137f6d'],['归档 leader','#8844aa'],['另一位 leader','#a06020']]);
 const settings={project:'demo',root:'C:\\fixture\\demo\\',state:{git_assistant:assistant},chatAccess:()=>({readonly:false}),
   api:async(route,body)=>{assert.equal(body,undefined);calls.push(route);return JSON.parse(JSON.stringify(fixture));},toast(){},
   leader:id=>id===visible.session_id?visible:undefined,
   avatar:(name,size)=>`<i data-avatar="${name}" data-size="${size}"></i>`,tint:name=>{assert(colors.has(name));return colors.get(name);}};
 const sections=html=>Array.from(html.matchAll(/<section class="git-lite-section"><h3>(.*?)<\/h3>([\s\S]*?)<\/section>/g));
-const cards=html=>Array.from(html.matchAll(/<article class="git-lite-card (unmerged|unpushed)" style="--tint:([^"]+)">([\s\S]*?)<\/article>/g));
+const cards=html=>Array.from(html.matchAll(/<article class="git-lite-card (unmerged|unpushed|integrated|merged)" style="--tint:([^"]+)">([\s\S]*?)<\/article>/g));
 const facts=card=>card.match(/<div class="git-lite-facts"[^>]*>(.*?)<\/div>/)[1];
+const tags=card=>Array.from(card.match(/<div class="git-lite-tags">(.*?)<\/div>/)[1].matchAll(/>([^<]+)<\/(?:span|a)>/g),match=>match[1]);
 const refresh=async()=>{const button={dataset:{gitAct:'refresh'}};listeners.get('click')({target:{closest:selector=>{assert.equal(selector,'[data-git-act]');return button;}}});await flush();return host.querySelector('.git-page-in').innerHTML;};
 (async()=>{
   sandbox.CrewGit.mount(host,settings);await flush();
   const html=host.querySelector('.git-page-in').innerHTML;
   assert(html.startsWith('<section id="git-panel" aria-label="分支">'));
-  assert.match(html,/<section class="git-lite-trunk" title="按 remotes\/origin\/master 与 remotes\/origin\/develop 计算">/);
-  assert(html.includes('master 落后 develop'));assert(html.includes('<strong>9</strong> 个提交'));
-  const groups=sections(html);assert.deepEqual(groups.map(group=>group[1]),['未合入 develop <span>3</span>','已合入 develop，还没推送 <span>2</span>']);
+  assert(html.includes('<section class="git-lite-trunk"><div class="git-lite-trunk-label">主干 develop</div>'));
+  assert(!html.includes('稳定分支'));assert(!html.includes('master 落后'));assert(!html.includes('git-lite-trunk-number'));
+  // Build outputs alone do not make the base checkout look dirty.
+  assert(html.includes('<div class="git-lite-trunk-note">本地 develop 与 origin 一致</div>'));
+  const groups=sections(html);assert.deepEqual(groups.map(group=>group[1]),['未合入 develop <span>3</span>','已合入 develop，还没推送 <span>2</span>','已合入 develop，worktree 还有未提交改动 <span>1</span>']);
   assert.deepEqual(cards(groups[0][2]).map(card=>card[1]),['unmerged','unmerged','unmerged']);
   assert.deepEqual(cards(groups[1][2]).map(card=>card[1]),['unpushed','unpushed']);
-  const items=cards(html);assert.equal(items.length,5);
-  for(const [index,item] of items.entries())assert(item[3].includes(`${index+3} 个提交${index<3?'未合入':'未推送'}`));
+  assert.deepEqual(cards(groups[2][2]).map(card=>card[1]),['merged']);
+  const items=cards(html);assert.equal(items.length,6);
+  for(const [index,item] of items.slice(0,5).entries())assert(item[3].includes(`${index+3} 个提交${index<3?'未合入':'未推送'}`));
+  assert(items[5][3].includes('<span class="git-lite-count">已合入 develop</span>'));
+  assert.deepEqual(tags(items[0][3]),['已推送','PR #12','4 个未提交改动']);
+  assert(items[0][3].includes('href="https://github.com/example/demo/pull/12" target="_blank" rel="noopener"'));
+  assert(items[0][3].includes('另有 9 个 Binaries / Intermediate 编译产物未计入'));
+  assert.deepEqual(tags(items[1][3]),['已推送 · 本地多 2 个']);
+  assert.deepEqual(tags(items[2][3]),['只在本地','读取未提交改动失败']);assert(items[2][3].includes('title="fatal: &lt;bad&gt;"'));
+  assert.deepEqual(tags(items[5][3]),['只在本地','49 个未提交改动']);
   const escapedName='feature/&lt;script&gt;alert(&quot;branch&quot;)&lt;/script&gt;';
   const escapedSubject='修复 &lt;script&gt;alert(&quot;title&quot;)&lt;/script&gt; &amp; 校验';
   assert(items[0][3].includes(`title="${escapedName}"`));assert(items[0][3].includes(`<span>${escapedName}</span>`));
@@ -1090,22 +1103,39 @@ const refresh=async()=>{const button={dataset:{gitAct:'refresh'}};listeners.get(
   assert.equal(facts(items[2][3]),'5 分钟前');
   assert.equal(facts(items[3][3]),'5 分钟前 · 落后 develop 1 · D:/outside/worktree');
   assert.equal(facts(items[4][3]),'5 分钟前 · C:/fixture/demo-other/worktree');
+  assert.equal(facts(items[5][3]),'5 分钟前 · 落后 develop 11 · Temp/wt/proactive-debug');
   assert(!html.includes('落后 develop 0'));
   for(const [base,note] of [
-    [{name:'develop',origin:false,unpushed:null,behind_origin:null},'develop 没有 origin，只看本地'],
-    [{name:'develop',origin:true,unpushed:3,behind_origin:2},'本地 develop 与 origin 分叉：3 个没推送，落后 2 个'],
-    [{name:'develop',origin:true,unpushed:3,behind_origin:0},'本地 develop 有 3 个提交还没推送'],
-    [{name:'develop',origin:true,unpushed:0,behind_origin:2},'本地 develop 落后 origin 2 个提交'],
-    [{name:'develop',origin:true,unpushed:0,behind_origin:0},'本地 develop 与 origin 一致']
+    [{name:'develop',origin:false,unpushed:null,behind_origin:null,worktree:null,dirty:null},'develop 没有 origin，只看本地'],
+    [{name:'develop',origin:true,unpushed:3,behind_origin:2,worktree:null,dirty:null},'本地 develop 与 origin 分叉：3 个没推送，落后 2 个'],
+    [{name:'develop',origin:true,unpushed:3,behind_origin:0,worktree:null,dirty:null},'本地 develop 有 3 个提交还没推送'],
+    [{name:'develop',origin:true,unpushed:0,behind_origin:2,worktree:'C:/fixture/demo',dirty:{files:7,build_outputs:35,error:null}},'本地 develop 落后 origin 2 个提交 · develop 工作区有 7 个未提交改动'],
+    [{name:'develop',origin:true,unpushed:0,behind_origin:0,worktree:null,dirty:null},'本地 develop 与 origin 一致']
   ]){
     fixture.base=base;const result=await refresh();
     assert(result.includes(`<div class="git-lite-trunk-note">${note}</div>`));
-    assert.equal(sections(result).length,base.origin?2:1);
-    if(!base.origin){assert(!result.includes('已合入 develop，还没推送'));assert(!result.includes('git-lite-card unpushed'));assert.equal(cards(result).length,3);}
+    assert.equal(sections(result).length,base.origin?3:2);
+    if(!base.origin){assert(!result.includes('已合入 develop，还没推送'));assert(!result.includes('git-lite-card unpushed'));assert.equal(cards(result).length,4);}
   }
-  fixture.stable=null;fixture.branches=[];fixture.merged_hidden=0;
+  // With a local integration branch, unmerged work splits into "not in it yet" and "in it, waiting to be tested".
+  fixture.integration={name:'dev_live',ahead:5,behind:1,branches:['feature/offline'],worktree:'C:/fixture/demo-live',dirty:{files:2,build_outputs:0,error:null}};
+  fixture.branches=branches.map(item=>({...item}));
+  Object.assign(fixture.branches[0],{outside_integration:2});Object.assign(fixture.branches[1],{state:'integrated',outside_integration:0});
+  Object.assign(fixture.branches[2],{outside_integration:5});
+  const integrated=await refresh();
+  assert.deepEqual(sections(integrated).map(group=>group[1]),['还没进 dev_live <span>2</span>','已进 dev_live，待实测 <span>1</span>','已合入 develop，还没推送 <span>2</span>','已合入 develop，worktree 还有未提交改动 <span>1</span>']);
+  assert(integrated.includes('本地集成分支 dev_live <span>只在本机、不推送</span>'));
+  assert(integrated.includes('比 develop 多 <strong>5</strong> 个提交 · 1 个分支待实测'));
+  assert(integrated.includes('落后 develop 1 个提交 · dev_live 工作区有 2 个未提交改动'));
+  assert(integrated.includes('title="已进 dev_live、未合入 develop：feature/offline"'));
+  const split=cards(integrated);
+  assert(split[0][3].includes('<span class="git-lite-count">2 个提交未进 dev_live</span>'));
+  assert(facts(split[0][3]).startsWith('5 分钟前 · 共 3 个未合入 develop · '));
+  assert(split[1][3].includes('<span class="git-lite-count">5 个提交未进 dev_live</span>'));assert(!facts(split[1][3]).includes('共 '));
+  assert.equal(split[2][1],'integrated');assert(split[2][3].includes('<span class="git-lite-count">4 个提交待实测</span>'));
+  fixture.integration=null;fixture.branches=[];fixture.merged_hidden=0;
   const empty=await refresh();
-  assert(empty.includes('没有设置稳定分支'));assert(!empty.includes('title="按 '));assert(!empty.includes('git-lite-trunk-number'));
+  assert(!empty.includes('稳定分支'));assert(!empty.includes('git-lite-trunk-number'));assert(!empty.includes('本地集成分支'));
   const emptyGroups=sections(empty);assert.deepEqual(emptyGroups.map(group=>group[1]),['未合入 develop <span>0</span>','已合入 develop，还没推送 <span>0</span>']);
   assert(emptyGroups[0][2].includes('所有分支都已合入'));assert(emptyGroups[1][2].includes('class="git-lite-empty">没有</div>'));
   assert.equal(cards(empty).length,0);assert(!empty.includes('git-lite-hidden'));

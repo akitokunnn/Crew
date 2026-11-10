@@ -224,9 +224,9 @@ CREATE TABLE IF NOT EXISTS git_management (
     project TEXT PRIMARY KEY REFERENCES projects(name),
     enabled_at TEXT NOT NULL,
     base TEXT NOT NULL,
-    stable TEXT,
     admin_session_id TEXT REFERENCES sessions(session_id),
-    branch_rules TEXT
+    branch_rules TEXT,
+    integration TEXT
 );
 
 CREATE TABLE IF NOT EXISTS git_merge_requests (

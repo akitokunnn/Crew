@@ -100,7 +100,7 @@ def parser():
     c = command("git").add_subparsers(dest="action", required=True)
     a = c.add_parser("enable")
     a.add_argument("--base")
-    a.add_argument("--stable")
+    a.add_argument("--integration", help="只在本机、不推送的本地集成分支；省略即不启用")
     a.add_argument("--runtime", choices=runtimes.RUNTIMES, default=argparse.SUPPRESS)
     c.add_parser("disable")
     c.add_parser("status")
@@ -469,13 +469,13 @@ def _emit(value, as_json=False, command=None, channel_card=None, git_assistant=N
             print("%s 已经归 %s 管" % (item["branch"], item["leader"]["name"]) if item["already"]
                   else "已认领 %s，归 %s 管" % (item["branch"], item["leader"]["name"]))
         elif "branches" in value:
-            print("\n".join("%s · %s · %s 个提交%s · %s\n  %s" % (
-                item["name"], "未合入 " + value["base"] if item["state"] == "unmerged" else "已合入未推送", item["commits"],
+            print("\n".join("%s · %s%s · %s\n  %s" % (
+                item["name"], git_overview.describe(value, item),
                 "" if item["worktree"] is None else " · " + item["worktree"],
                 "、".join(owner["name"] for owner in item["owners"]) if item["owners"] else "没人认领",
-                item["latest"]["subject"]) for item in value["branches"]) if value["branches"] else "没有待合入或待推送的分支")
+                item["latest"]["subject"]) for item in value["branches"]) if value["branches"] else "没有待合入、待推送或有未提交改动的分支")
         elif value["enabled"]:
-            print("Git 助手已启用 · base: %s · stable: %s" % (value["base"], value["stable"] or "未设置"))
+            print("Git 助手已启用 · base: %s · 本地集成分支: %s" % (value["base"], value["integration"] or "未设置"))
             if git_assistant is not None:
                 print('Git 助手：%s（%s）' % (git_assistant['crew_name'], git_assistant['session_id']))
         else:
@@ -877,7 +877,7 @@ def execute(conn, args, cwd, agents_provider):
     if cmd == "git":
         if args.action in ("enable", "disable"):
             from . import spawn
-            body = {"base": args.base, "stable": args.stable} if args.action == "enable" else {}
+            body = {"base": args.base, "integration": args.integration} if args.action == "enable" else {}
             if hasattr(args, "runtime"):
                 body["runtime"] = args.runtime
             spawn.request_start(args.home, p, "/api/git/" + args.action, body)
@@ -902,7 +902,7 @@ def execute(conn, args, cwd, agents_provider):
                                                           args.note, args.pr_number)}
         config = board.git_config(conn, p)
         return {"enabled": config is not None, "base": None if config is None else config["base"],
-                "stable": None if config is None else config["stable"]}
+                "integration": None if config is None else config["integration"]}
     if cmd == "resource":
         if args.action == "add":
             return board.add_resource(conn, p, args.name, args.kind, args.desc, args.guard, actor)

@@ -99,7 +99,7 @@
 | `resources` | D `policies` 的资源定义；L `local_resources`；A | project+name作用域、kind/description/guard_regex全保留；device/dir/app路径需要本机绑定，不能在新机占用同名资源。 |
 | `leases` | L `local_resource_leases`；A | purpose/overwrites/taken/until/released/by/note全部保留；旧开放租约导入为失效历史，不等于新设备执行租约或云端run fence。 |
 | `claims` | L `local_file_claims`；A | 原pattern与note和释放时间保留，重新映射路径后重新取得占用，不携带活跃文件锁。 |
-| `git_management` | D `policies`；L Git仓库/工具绑定；A | base/stable/branch_rules及管理员agent保持；导入不启用git管理员、不提交或push，须确认新checkout。 |
+| `git_management` | D `policies`；L Git仓库/工具绑定；A | base/integration/branch_rules及管理员agent保持；旧库遗留的stable列只归档；导入不启用git管理员、不提交或push，须确认新checkout。 |
 | `git_merge_requests` | D `git_requests`；A | branch/description/status/pr_number/note/时间保持；provider remote identity需独立校验，merging状态不能自动续merge。 |
 | `git_ci_state` | C 本地远端状态缓存；D `git_results` 的历史观察；A | subject/run_key/sha/status/notified作为当时观察保留；新机重新取远端状态，不能把历史notified当发送授权。 |
 | `git_result_handoffs` | D `git_results`、`handoffs` 的关联；A | handoff、原提交agent、git管理员分别映射，不能仅以当前管理员覆盖原接收者。 |

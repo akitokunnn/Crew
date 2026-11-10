@@ -40,7 +40,7 @@ def assistant_state(conn, config, session_state, decisions, *, builtin):
     waiting = sum(item['status'] == 'waiting_user' for item in requests)
     pending = sum(item['session_id'] == session_state['session_id'] and item['status'] == 'open'
                   and not item['held'] for item in decisions)
-    return {**session_state, 'builtin': builtin, 'base': config['base'], 'stable': config['stable'],
+    return {**session_state, 'builtin': builtin, 'base': config['base'], 'integration': config['integration'],
             'requests': {'active': len(requests), 'waiting_user': waiting,
                          'merging': sum(item['status'] == 'merging' for item in requests),
                          'queued': sum(item['status'] == 'open' for item in requests)},
@@ -69,9 +69,10 @@ def input_context(conn, session_id, previous_revision, plugin_root):
         return None, '【Crew 当前 Git 管理；覆盖此前配置】Git 助手已停用。你不再因旧绑定拥有 Git 助手职责；Git 操作遵守项目当前规则。'
     admin = board.session(conn, config['admin_session_id']) if config['admin_session_id'] else None
     command = 'crew_git(action="policy")' if runtimes.get(conn, session_id)['runtime'] == 'codex' else 'crew git policy'
-    text = ('【Crew 当前 Git 管理；覆盖此前配置】本项目 Git 助手为「%s」（%s），主干 %s，稳定分支 %s。'
+    text = ('【Crew 当前 Git 管理；覆盖此前配置】本项目 Git 助手为「%s」（%s），主干 %s，本地集成分支 %s。'
             '合并规则有更新，操作前用 %s 读取全文，遵守项目文件与远端分支保护。' %
-            (admin['crew_name'] if admin else '未绑定', config['admin_session_id'], config['base'], config['stable'] or '未设置', command))
+            (admin['crew_name'] if admin else '未绑定', config['admin_session_id'], config['base'],
+             config['integration'] + '（只在本机、不推送）' if config['integration'] else '未设置', command))
     if config['admin_session_id'] == session_id:
         text += '你现在负责统一推送、PR 与合并，按 Crew 注入的 Git 助手守则执行。'
     else:
@@ -96,33 +97,33 @@ def configure(conn, project_name, data, now=None):
         return {'ok': True, 'config': None, 'revision': revision(None)}
     if current is None:
         raise board.BoardError('请先启用 Git 助手')
-    base, stable = data.get('base'), data.get('stable')
-    if not isinstance(base, str) or not base.strip() or not isinstance(stable, str):
-        raise board.BoardError('请选择主干分支，稳定分支可留空。')
+    base, integration = data.get('base'), data.get('integration')
+    if not isinstance(base, str) or not base.strip() or not isinstance(integration, str):
+        raise board.BoardError('请选择主干分支，本地集成分支可留空。')
     policy = data.get('branch_rules')
     if not isinstance(policy, str):
         raise board.BoardError('合并规则必须是文本。')
-    base, stable = board.git_branches(conn, project_name, base, stable)
-    conn.execute('UPDATE git_management SET base=?,stable=?,branch_rules=? WHERE project=?',
-                 (base, stable, policy.strip() or None, project_name))
+    base, integration = board.git_branches(conn, project_name, base, integration)
+    conn.execute('UPDATE git_management SET base=?,integration=?,branch_rules=? WHERE project=?',
+                 (base, integration, policy.strip() or None, project_name))
     config = board.git_config(conn, project_name)
     board._event(conn, 'git:settings', project_name, board.HUMAN,
-                 {'enabled': True, 'admin_session_id': current['admin_session_id'], 'base': base, 'stable': stable,
+                 {'enabled': True, 'admin_session_id': current['admin_session_id'], 'base': base, 'integration': integration,
                   'branch_rules': config['branch_rules']}, now)
     return {'ok': True, 'config': config, 'revision': revision(config)}
 
 
 
 
-def enable(conn, home, plugin_root, project_name, launcher, base=None, stable=None, now=None, runtime=None):
+def enable(conn, home, plugin_root, project_name, launcher, base=None, integration=None, now=None, runtime=None):
     if runtime is not None:
         runtimes.validate(runtime)
-    base, stable = board.git_branches(conn, project_name, base, stable)
+    base, integration = board.git_branches(conn, project_name, base, integration)
     config = board.git_config(conn, project_name)
     if config is not None and config["admin_session_id"] is not None:
         if runtime is not None and runtimes.get(conn, config["admin_session_id"])["runtime"] != runtime:
             raise board.Conflict("Git 助手已启用，请在它的会话菜单中切换载体")
-        return board.enable_git(conn, project_name, base, "" if stable is None else stable, now=now)
+        return board.enable_git(conn, project_name, base, integration, now=now)
     configured = settings.load(conn)
     configured = configured['git'] if configured['git'] is not None else configured['default']
     selected = settings.resolve(conn, 'git') if runtime is None else {
@@ -136,7 +137,7 @@ def enable(conn, home, plugin_root, project_name, launcher, base=None, stable=No
     result = launcher(conn, project_name, "Git 助手", task, group="git", role="leader",
                       new_worktree="crew/git-admin-" + uuid.uuid4().hex[:8], base=base, now=now,
                       model=selected['model'], effort=selected['effort'], agent="crew:git", runtime=runtime)
-    return board.enable_git(conn, project_name, base, "" if stable is None else stable, now=now,
+    return board.enable_git(conn, project_name, base, integration, now=now,
                             admin_session_id=result["session_id"])
 
 

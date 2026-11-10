@@ -48,7 +48,7 @@ Crew 用版本号区分更新，桌面包版本以 `desktop/package.json` 为准
 - **拍板和人工待办**：先通知这里需要你，点击听说明、聊清背景后再展示完整选项和后果；要你亲手做的事进入“我的待办”。答复与完成记录回到原目标及提出者，旧轮次不能据此复工。
 - **leader 自主推进**：总会话中独立选择“由我拍板／自主推进”。获授权 leader 可自主取舍，新建自己负责的任务默认自主推进，也可切换已有任务模式。各任务保存自己的决策方式；保存授权后随下次正常输入传达。原生权限、人工暂停及验收沿用现有规则。操作方式见[工作流程](docs/WORKFLOWS.md#leader-自主推进授权)。
 - **横排总览与评论**：“全部”页每组一列，可横向滚动；“在干活”统计与列表包含 leader 和下属，按会话计数，点击进入对应人员对话。组头的“本组”人数也包含 leader。组和成员可加评论。leader 可标第 1～3 优先，并调整普通组的顺序。
-- **Git 管理员**：Git 页右上角“Git 设置”可绑定已有 leader、更换负责人、调整主干 / 稳定分支和合并规则；也可新建独立 worktree 的专用管理员。保存不启动 AI，变更随下一次正常输入传达；停用仅解除绑定，保留组、会话与请求。设置独立于提交图读取，仓库读取失败仍可进入并重试。支持 Codex 或 Claude，已有负责人的大脑沿用本人会话设置。 Git 页在当前工作区标签内保留已读快照、分页、筛选与滚动，切回不重新扫描，也不定时扫描。顶部显示读取时间；“更新视图”重新读取，“拉取远端”才执行 fetch。修改 Git 设置或工作目录后旧快照失效，关闭标签或重载网页后首次进入重新读取。
+- **Git 管理员**：Git 页右上角“Git 设置”可绑定已有 leader、更换负责人、调整主干 / 本地集成分支（可留空，只在本机、不推送）和合并规则；发版分支由用户自己合，Crew 不管理；也可新建独立 worktree 的专用管理员。保存不启动 AI，变更随下一次正常输入传达；停用仅解除绑定，保留组、会话与请求。设置独立于提交图读取，仓库读取失败仍可进入并重试。支持 Codex 或 Claude，已有负责人的大脑沿用本人会话设置。 Git 页在当前工作区标签内保留已读快照、分页、筛选与滚动，切回不重新扫描，也不定时扫描。顶部显示读取时间；“更新视图”重新读取，“拉取远端”才执行 fetch。修改 Git 设置或工作目录后旧快照失效，关闭标签或重载网页后首次进入重新读取。
 - **通知按需唤醒**：合并中、等拍板只记台账；普通合并成功留作待阅。确实要等合入后继续时，AI 用 `crew git request "合入后跑集成验收并交付" --blocking`（Codex 的 `request` 使用 `data.blocking=true`）；只有这种成功和拒绝阻塞会唤醒提出者。比如“只改一行文档，已经收尾”不标记；“合入后还要验证集成并写最终结论”才标记。AI 撤回自己的待办不再启动自身对话；用户的完成、取消、撤销仍按原流程送回。
 - **守卫**：检查黑名单、设备借用、文件归属和 Git 管理规则。Claude 使用插件 hooks，Codex 接入原生 shell / apply_patch 执行前 hook，覆盖边界见 [Codex 接入说明](docs/CODEX_INTEGRATION.md)。
 - **远程与用量**：QQ / Lark 普通私聊由全局助手处理，可答复提醒、登记拍板、查看及整理待办；用量页按组、会话、日期和模型汇总 Claude / Codex token，并按价格表折算参考金额。组员和 leader 的总对话、各任务及历史执行通过原生绑定归回稳定人员身份；结构表分别显示 Claude 与 Codex 用量，Crew 每周估算也包含组员。
@@ -134,7 +134,7 @@ Claude 协作会话建议统一权限模式；`/crew:trust` 用于 Claude 的工
 | 同时打开多个工作区 | 桌面首页选择项目，会分别保留在顶部标签中；`Ctrl+Tab` 切换，关闭标签不停止后台任务 |
 | 检查 Claude Code / Codex 更新 | 桌面首页或应用菜单打开“工具与更新”；忙时可排队，工具空闲并通过安装来源检查后才更新；自动更新默认关闭 |
 | 调整 leader 优先级 | 右键 leader，可标第 1～3 优先；优先组置顶，普通组可调整顺序 |
-| 看 Git 分支和提交关系 | 网页左栏"Git"；首次选择 base / stable 后启用，可查看提交树、分支检查、worktree、负责会话与 GitHub PR / CI，手动"刷新（fetch）"更新远端引用 |
+| 看 Git 分支和提交关系 | 网页左栏"Git"；首次选择 base（可选本地集成分支）后启用；分支按“被 origin/base 或本地 base 包含即已合入”归类，标出是否已推送、open PR、worktree 未提交改动及负责 leader，手动"拉取远端"更新远端引用和 PR 列表 |
 | 把提交交给 Git 管理员 | 开工前 `crew git policy` 看规则，做完提交自己的分支后 `crew git request "<做了什么、测过什么、有没有要用户亲手验收的>" [--blocking]`；Git 页面看请求状态，点“和 git 管理员聊”进对话 |
 | 看用量 | 网页"用量"，或 `crew usage summary`、`crew usage sessions`、`crew usage codex` |
 | 看上下文、手动压缩 | 上下文占用达到 50% 显示橙圈，80% 变红；悬停看已用与上限。后台空闲会话点圈旁“压缩”并确认，leader 模型菜单任何占比都能压缩；VS Code 会话去那边输入 `/compact` |
@@ -201,7 +201,7 @@ PR 与 main 推送由 GitHub Actions 自动运行 Python、网页及桌面测试
 | `crew stop <名字或会话ID>` | 停止自己或本组成员的 Crew 托管执行；用户可指定项目内人员。确认退出并保留停止门槛，队列不能自动恢复 |
 | `crew open <名字>` | 两步在 VS Code 接续同一会话，停止空闲的原运行端前须明确确认 |
 | `crew web --open` | 按当前目录打开工作区，已有服务时复用 |
-| `crew git enable [--base 分支] [--stable 分支] [--runtime codex\|claude]` / `crew git disable` / `crew git status` | 启用并自动开 Git 管理员 / 收掉管理员的组并停用 / 查看配置；base 自动依次选 develop、dev、main、master，stable 选与 base 不同的 master 或 main |
+| `crew git enable [--base 分支] [--integration 分支] [--runtime codex\|claude]` / `crew git disable` / `crew git status` | 启用并自动开 Git 管理员 / 收掉管理员的组并停用 / 查看配置；base 自动依次选 develop、dev、main、master，本地集成分支省略即不启用 |
 | `crew git policy` / `crew git policy --set "<正文>"` | 看分支规则全文 / Git 管理员设置规则 |
 | `crew git request [--branch 分支] [--blocking] "<说明>"` / `crew git requests [--all]` | 本项目任何会话（含没收编的）提交合并请求（默认当前分支；确需合入后继续时显式加 `--blocking`） / 看活动队列或全部请求 |
 | `crew git resolve <编号> <merged\|rejected\|waiting_user\|merging> --note "<说明>" [--pr <号>]` | Git 管理员更新台账；中间状态静默，成功按等待标记保存待阅或接续，拒绝仍通知 |
@@ -219,7 +219,7 @@ PR 与 main 推送由 GitHub Actions 自动运行 Python、网页及桌面测试
 
 项目启用 Git 管理时，已收编会话在 Bash / PowerShell 执行 `git push`、`gh pr create`、`gh pr merge` 会被拦，按提示用 `crew git request` 交给 Git 管理员。Git 全局参数、可执行文件路径和连接命令同样检查；帮助命令与引号中的普通文本放行。Git 管理员可执行这些操作；未收编会话只在启动时看到协作提示。
 
-Git 管理员可以自行定分支规则、推功能分支、开 PR、CI 绿后合进 base、安排合并顺序、删已合并分支。合进 stable 或发版、force push 或改写已推送历史、删未合并分支、需要用户在编辑器或设备亲手验收、行为冲突要取舍，仍须 `crew ask` 登记拍板。Crew 后台每 5 分钟检查 base 最新提交失败的 CI 和请求对应 PR 的 CI 完成变化，排通知叫醒管理员，同一次运行只通知一次；GitHub 不可用时 Git 页面显示原因。
+Git 管理员可以自行定分支规则、推功能分支、开 PR、CI 绿后合进 base、安排合并顺序、删已合并分支。发版分支由用户自己合，管理员不合入也不推送；本地集成分支不推送。force push 或改写已推送历史、删未合并分支、需要用户在编辑器或设备亲手验收、行为冲突要取舍，仍须 `crew ask` 登记拍板。Crew 后台每 5 分钟检查 base 最新提交失败的 CI 和请求对应 PR 的 CI 完成变化，排通知叫醒管理员，同一次运行只通知一次；GitHub 不可用时 Git 页面显示原因。
 
 ## 用量分析
 

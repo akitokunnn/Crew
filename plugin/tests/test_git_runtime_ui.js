@@ -8,7 +8,7 @@ function harness(initial){
   const handlers=new Map(),calls=[],button={disabled:false},status={textContent:"",hidden:false},popup={hidden:true};let current=initial,form=null,markup="",changed=0;
   const host={get innerHTML(){return markup;},set innerHTML(value){markup=value;
     const selected=name=>{const content=value.match(new RegExp(`<select[^>]*name="${name}"[^>]*>([\\s\\S]*?)<\\/select>`))?.[1]||"";const options=[...content.matchAll(/<option value="([^"]*)"([^>]*)>/g)];return (options.find(item=>/\bselected\b/.test(item[2]))||options[0])?.[1]||"";};
-    if(value.includes('id="git-enable-form"')){form={id:"git-enable-form",elements:{base:{value:selected("base")},stable:{value:selected("stable")},runtime:{id:"git-runtime",value:selected("runtime")}}};button.disabled=/data-git-act="enable"[^>]*disabled/.test(value);}
+    if(value.includes('id="git-enable-form"')){form={id:"git-enable-form",elements:{base:{value:selected("base")},integration:{value:selected("integration")},runtime:{id:"git-runtime",value:selected("runtime")}}};button.disabled=/data-git-act="enable"[^>]*disabled/.test(value);}
   },querySelector(selector){return selector==="#git-detail"?popup:selector==='[data-git-act="enable"]'?button:selector==="#git-runtime-status"?status:null;},querySelectorAll:()=>[],addEventListener:(name,fn)=>handlers.set(name,fn),removeEventListener:name=>handlers.delete(name)};
   const sandbox={document:{addEventListener(){},removeEventListener(){},getElementById:()=>null},location:{search:"?project=fixture"},URLSearchParams,
     setInterval:()=>{throw Error("Git 页面不应定时扫描");},clearInterval(){},clearTimeout(){},window:{addEventListener(){},removeEventListener(){}}};
@@ -17,7 +17,7 @@ function harness(initial){
   vm.runInContext(app.replace('  setup();\n})();','window.runtimeFixture={defaultRuntime,set(value){state={runtimes:value};}};\n})();'),sandbox);
   sandbox.window.runtimeFixture.set(current);
   vm.runInContext(fs.readFileSync(path.join(web,"git.js"),"utf8")+'\nglobalThis.component=CrewGit;',sandbox);
-  const data={enabled:false,repository:"fixture",choices:{branches:["develop","main"],base:"develop",stable:"main"}};
+  const data={enabled:false,repository:"fixture",choices:{branches:["develop","main"],base:"develop"}};
   const options={project:"fixture",state:{git_assistant:null},catalog:()=>current,defaultRuntime:()=>sandbox.window.runtimeFixture.defaultRuntime(),
     api:async(route,body)=>{calls.push({route,body});return route==="/api/git"?data:{ok:true};},toast(){},onChanged:async()=>{changed++;}};
   sandbox.component.mount(host,options);
@@ -29,7 +29,7 @@ function harness(initial){
 
 test("Codex-only Git setup selects Codex and submits it exactly once with the existing branch choices",async()=>{
   const h=harness(catalog(false,true));await tick();assert.equal(h.form.elements.runtime.value,"codex");assert.equal(h.button.disabled,false);
-  h.submit();await tick();const posts=JSON.parse(JSON.stringify(h.calls.filter(item=>item.body)));assert.deepEqual(posts,[{route:"/api/git/enable",body:{project:"fixture",base:"develop",stable:"main",runtime:"codex"}}]);assert.equal(h.changed,1);h.ui.unmount();
+  h.submit();await tick();const posts=JSON.parse(JSON.stringify(h.calls.filter(item=>item.body)));assert.deepEqual(posts,[{route:"/api/git/enable",body:{project:"fixture",base:"develop",integration:"",runtime:"codex"}}]);assert.equal(h.changed,1);h.ui.unmount();
 });
 
 test("both installed without settings requires a choice while an explicit Codex choice survives refresh",async()=>{

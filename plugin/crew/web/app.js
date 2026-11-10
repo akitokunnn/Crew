@@ -277,13 +277,20 @@
     const hint = `自主推进中：${item.trust.goal.split(/[。！？!?\n]/)[0].trim()}`;
     return `<button type="button" class="trust-mark" data-act="trust-open" data-id="${esc(item.session_id)}" title="${esc(hint)}" aria-label="${esc(hint)}，点击设置决策方式">${trustIcon(true)}</button>`;
   }
-  // Branches this leader's group still has to merge or push, in the leader's own colour. Merged-and-pushed
-  // ones are gone; the Git page lists everything with details.
+  // Branches this leader's group still has to merge, test or push, or has uncommitted work in, in the leader's own
+  // colour. Merged-and-pushed clean ones are gone; the Git page lists everything with details.
   function leaderBranches(item) {
     const items = (state.git_branches?.branches || []).filter(branch => branch.owners.some(owner => owner.session_id === item.session_id));
     if (items.length === 0) return "";
-    const base = state.git_branches.base.name, hint = branch => `${branch.name}\n${branch.state === "unmerged" ? `${branch.commits} 个提交未合入 ${base}` : `已合入 ${base}，${branch.commits} 个提交还没推送`}`;
-    const chip = branch => `<span class="leader-branch ${branch.state}" title="${esc(hint(branch))}">${ic("branch")}<span class="leader-branch-name">${esc(branch.name.split("/").pop())}</span><b>${branch.state === "unmerged" ? branch.commits : "未推送"}</b></span>`;
+    const base = state.git_branches.base.name, integration = state.git_branches.integration?.name;
+    const status = branch => branch.state === "integrated" ? `${branch.commits} 个提交已进 ${integration}，待实测`
+      : branch.state === "unmerged" ? `${branch.commits} 个提交未合入 ${base}${integration ? `，其中 ${branch.outside_integration} 个未进 ${integration}` : ""}`
+      : branch.state === "unpushed" ? `已合入 ${base}，${branch.commits} 个提交还没推送` : `已合入 ${base}`;
+    const hint = branch => [branch.name, status(branch), branch.remote === null ? "只在本地" : "已推送", branch.pr === null ? "" : `PR #${branch.pr.number}`,
+      branch.dirty?.error ? `读取未提交改动失败：${branch.dirty.error}` : branch.dirty?.files ? `worktree 有 ${branch.dirty.files} 个未提交改动` : ""].filter(Boolean).join("\n");
+    const mark = branch => branch.state === "unmerged" ? (integration ? branch.outside_integration : branch.commits)
+      : branch.state === "integrated" ? "待测" : branch.state === "unpushed" ? "未推送" : branch.dirty?.files ? `${branch.dirty.files} 改动` : "读取失败";
+    const chip = branch => `<span class="leader-branch ${branch.state}${branch.dirty?.files ? " dirty" : ""}" title="${esc(hint(branch))}">${ic("branch")}<span class="leader-branch-name">${esc(branch.name.split("/").pop())}</span><b>${mark(branch)}</b></span>`;
     const more = items.slice(3);
     return `<span class="leader-branches" style="--tint:${tint(item.name)}" aria-label="${items.length} 个分支待处理">${items.slice(0, 3).map(chip).join("")}${more.length === 0 ? "" : `<span class="leader-branch more" title="${esc(more.map(hint).join("\n\n"))}">+${more.length}</span>`}</span>`;
   }

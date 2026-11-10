@@ -27,6 +27,7 @@ def connect(home):
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA_FILE.read_text(encoding="utf-8"))
     _migrate_quiet_leader_notices(conn)
+    _migrate_git_integration_branch(conn)
     return conn
 
 
@@ -38,6 +39,24 @@ def _migrate_quiet_leader_notices(conn):
     try:
         if not any(row['name'] == 'wake' for row in conn.execute('PRAGMA table_info(leader_notices)')):
             conn.execute('ALTER TABLE leader_notices ADD COLUMN wake INTEGER NOT NULL DEFAULT 1')
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+
+
+def _migrate_git_integration_branch(conn):
+    """Add the optional local integration branch, unset: a former release (stable) branch is not one.
+
+    Older databases keep their `stable` column untouched. Nothing reads or writes it any more, and leaving
+    it lets a backend still running the previous code keep working until Crew restarts.
+    """
+    if any(row['name'] == 'integration' for row in conn.execute('PRAGMA table_info(git_management)')):
+        return
+    conn.execute('BEGIN IMMEDIATE')
+    try:
+        if not any(row['name'] == 'integration' for row in conn.execute('PRAGMA table_info(git_management)')):
+            conn.execute('ALTER TABLE git_management ADD COLUMN integration TEXT')
         conn.commit()
     except BaseException:
         conn.rollback()

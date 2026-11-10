@@ -461,7 +461,7 @@ class CodexTools:
             if action == 'status':
                 config = board.git_config(conn, project)
                 return {'enabled': config is not None, 'base': config['base'] if config else None,
-                        'stable': config['stable'] if config else None}
+                        'integration': config['integration'] if config else None}
             if action == 'policy':
                 return {'policy': board.set_git_policy(conn, project, sid, data['text']) if 'text' in data
                         else board.git_policy(conn, project)}

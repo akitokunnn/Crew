@@ -86,7 +86,7 @@ Crew/
 | `decision_holds` | `decision_id PRIMARY KEY REFERENCES decisions(id)`、`held_at TEXT NOT NULL`；只记录挂起标记，答复或撤回时删除 |
 | `session_options` | `session_id TEXT PRIMARY KEY REFERENCES sessions(session_id)`、`model TEXT`、`effort TEXT`、`set_at TEXT NOT NULL`；两项都为 null 时删行，无记录表示账号默认 |
 | `rule_reads` | `session_id TEXT PRIMARY KEY REFERENCES sessions(session_id)`、`role TEXT NOT NULL`、`digest TEXT NOT NULL`、`read_at TEXT NOT NULL`；记录会话读过的角色守则 sha256 |
-| `git_management` | `project TEXT PRIMARY KEY REFERENCES projects(name)`、`enabled_at TEXT NOT NULL`、`base TEXT NOT NULL`、`stable TEXT`、`admin_session_id TEXT REFERENCES sessions(session_id)`、`branch_rules TEXT`；每项目一行，记录 Git 管理员与分支规则 |
+| `git_management` | `project TEXT PRIMARY KEY REFERENCES projects(name)`、`enabled_at TEXT NOT NULL`、`base TEXT NOT NULL`、`admin_session_id TEXT REFERENCES sessions(session_id)`、`branch_rules TEXT`、`integration TEXT`；每项目一行，记录 Git 管理员、分支规则和可选的本地集成分支。2026-11-10 前建的库另有不再读写的 `stable` 列，升级只追加 `integration`（初始为空），不删旧列 |
 | `git_merge_requests` | 项目、提出会话、分支、说明、状态、PR 号、结果说明、创建与更新时间；详见 §13 |
 | `git_ci_state` | 按项目、检查对象与 CI 运行记录状态和通知去重；详见 §13 |
 | `git_result_handoffs` | Git 结果与 handoff、接收组员及发送管理员的关联，沿用 handoff_deliveries 记账；详见 §13 |
@@ -415,20 +415,19 @@ File resolution also returns `open_with` from a server-side allowlist (case-inse
 
 ## 13. Git 管理
 
-Git 管理按项目启用。启用时保存时间与 base / stable，使用现有 `spawn --new-worktree` 机制在独立 worktree 开「git管理员」：数据库角色 leader、分组 git、agent `crew:git`、模型 `claude-sonnet-5-5`、effort high，预分配的会话 ID 写入配置。网页可沿用 leader 模型菜单改模型和 effort。停用在同一数据库事务中先删除 `git_management` 配置，再归档管理员和组员；提交后由 Service 停止对应网页托管进程。失败整体回滚。
+Git 管理按项目启用。启用时保存时间、base 与可选的本地集成分支，使用现有 `spawn --new-worktree` 机制在独立 worktree 开「git管理员」：数据库角色 leader、分组 git、agent `crew:git`、模型 `claude-sonnet-5-5`、effort high，预分配的会话 ID 写入配置。网页可沿用 leader 模型菜单改模型和 effort。停用在同一数据库事务中先删除 `git_management` 配置，再归档管理员和组员；提交后由 Service 停止对应网页托管进程。失败整体回滚。
 
 ```sql
 CREATE TABLE IF NOT EXISTS git_management (
     project TEXT PRIMARY KEY REFERENCES projects(name),
     enabled_at TEXT NOT NULL,
     base TEXT NOT NULL,
-    stable TEXT,
     admin_session_id TEXT REFERENCES sessions(session_id),
     branch_rules TEXT
 );
 ```
 
-`crew git enable [--base 分支] [--stable 分支]` 从当前项目的本地分支中校验选项。省略 base 时依次选择存在的 develop、dev、main、master；省略 stable 时按 master、main 顺序选择与 base 不同的分支，没有则留空。指定不存在的分支直接报错。`crew git disable` 停用，`crew git status` 显示是否启用及 base / stable。
+`crew git enable [--base 分支] [--integration 分支]` 从当前项目的本地分支中校验选项。省略 base 时依次选择存在的 develop、dev、main、master；本地集成分支只在本机、不推送，省略即不启用，必须与 base 不同。指定不存在的分支直接报错。`crew git disable` 停用，`crew git status` 显示是否启用及 base / 本地集成分支。发版分支由用户自己合，Crew 不配置也不统计。
 
 ### 数据与接口
 
@@ -438,13 +437,13 @@ CREATE TABLE IF NOT EXISTS git_management (
 |---|---|
 | `GET /api/git?project=P&offset=0` | 启用状态、配置、本地分支候选与自动选择值、仓库名；启用后返回本地分支、远端独有分支、提交页、base / stable 概况、GitHub 数据或失败原因、上次 fetch 时间与合并请求 |
 | `GET /api/git/commit?project=P&sha=S` | 已启用项目的单个提交改动统计：完整 sha、文件数、增删行数、文件清单（路径、增删行数、是否二进制，页面列前 10 个）；sha 无效或不存在返回 400 和原因 |
-| `POST /api/git/enable` | `{project, base?, stable?}`；校验本地分支、保存配置并开 Git 管理员 |
+| `POST /api/git/enable` | `{project, base?, integration?}`；校验本地分支、保存配置并开 Git 管理员 |
 | `POST /api/git/disable` | `{project}`；收管理员的组并删除启用配置 |
 | `POST /api/git/fetch` | `{project}`；运行 `git fetch --prune origin`，返回执行结果，失败保留命令报错原文 |
 
-启用接口的 `stable` 省略或 null 表示自动识别，显式 `""` 表示不配置 stable。
+启用接口的 `integration` 省略、null 或 `""` 都表示不启用本地集成分支，不自动识别。
 
-Git 计算引用：base / stable 优先使用存在的 `origin/<分支>`，否则用本地分支，配置表仍保存分支名。领先 / 落后、已合入、merge-tree、默认最近范围 stable 分隔、最近一次合入与 base 领先 stable 的数量均使用此口径。卡片显示选定引用的最新提交；本地与 origin 不一致时显示落后、领先或分叉数量，没有对应 origin 时显示“没有 origin”。本地分支仍保留在分支表，base / stable 行显示各自与 origin 的关系。
+分支归类：被 `origin/<base>` 或本地 `<base>` 任一包含即已合入（本地 base 没 pull 时不把已推到远端的分支误报为未合入），只含合并提交的分支不算有待合入的工作；启用本地集成分支时，未合入 base 的分支再分“已进集成分支、待实测”和“还没进”。已合入的分支只要 worktree 有未提交改动（`git status --no-optional-locks`，不计任意深度 `Binaries/`、`Intermediate/` 目录下的编译产物）也继续显示。每个分支标出 origin 有无同名分支、open PR（来自 CI 轮询或手动拉取远端时的 `gh pr list`，按 headRefName 关联）。refs/worktree 签名变化、强制读取或距上次超过 60 秒才重新跑 worktree status。主干卡片显示本地 base 与 origin 的领先、落后或分叉，没有 origin 时只看本地；本地集成分支显示比 base 多出的提交、落后 base 的提交和待实测分支数。
 
 本地分支给出最新提交（sha、标题、作者、时间）、上游、领先 / 落后 base 的提交数及是否已合入。预合并使用 `git merge-tree --write-tree --name-only --no-messages <base> <分支>`，退出码 1 时返回冲突文件。worktree 由 `git worktree list` 对应，dirty 检查使用 `git status --porcelain --untracked-files=no`，不把未跟踪文件算作未提交改动。同项目 `sessions` 按 branch 或 worktree 匹配，显示会话名、组、角色、状态。本地不存在的 `origin/*` 分支单独返回；`origin/HEAD` 不作为分支。
 
@@ -496,7 +495,7 @@ CREATE TABLE IF NOT EXISTS git_result_handoffs (
 );
 ```
 
-管理员按请求与任务卡核对范围，用 `git merge-tree` 预合并，按规则选择直接合或推分支开 PR，等待 CI 通知后合并，再 resolve（结果送回提出者，不发交流区；只有改变别组做法的合并才在交流区说一条）、直接通知有在途分支要 rebase 的负责人，最后清理已合并分支与 worktree。机械冲突自己解决；行为冲突要取舍、合 stable 或发版、force push 或改写已推送历史、删除未合并分支、编辑器或设备亲手验收，都先 `crew ask` 登记拍板。读大 diff 和 CI 日志等检查派只读 Codex。多请求先处理小且无冲突的，顺序影响到谁就直接告诉谁。
+管理员按请求与任务卡核对范围，用 `git merge-tree` 预合并，按规则选择直接合或推分支开 PR，等待 CI 通知后合并，再 resolve（结果送回提出者，不发交流区；只有改变别组做法的合并才在交流区说一条）、直接通知有在途分支要 rebase 的负责人，最后清理已合并分支与 worktree。机械冲突自己解决；行为冲突要取舍、force push 或改写已推送历史、删除未合并分支、编辑器或设备亲手验收，都先 `crew ask` 登记拍板。读大 diff 和 CI 日志等检查派只读 Codex。多请求先处理小且无冲突的，顺序影响到谁就直接告诉谁。
 
 网页 state 的 leader 项通过管理员 ID 返回 `is_git_admin`，左栏显示“Git”小标。Git 查询返回合并请求，页头“和 git 管理员聊”进入该会话的现有 leader 对话；请求区块活动在前，显示状态、分支、提出者和 PR。
 

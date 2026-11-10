@@ -865,7 +865,7 @@ class Service:
         result = {"enabled": config is not None, "config": config,
                   "assistant": conversations['git_assistant'],
                   "requests": board.titled_requests(requests, lambda sid: vscode_sessions.session_title(self.claude_root, sid)),
-                  "choices": {"branches": [], "base": None, "stable": None},
+                  "choices": {"branches": [], "base": None},
                   "repository": Path(project["root"]).name, "last_fetch_at": None}
         if reason is not None:
             result.update(available=False, reason=reason)
@@ -880,7 +880,7 @@ class Service:
             name = self.selected_project(conn, project_name)
             result = git_admin.snapshot(conn, name)
         root = result['project']['root']
-        result.update(choices={'branches': [], 'base': None, 'stable': None}, remotes=[])
+        result.update(choices={'branches': [], 'base': None}, remotes=[])
         try:
             reason = git_view.unavailable_reason(root)
             if reason is not None:
@@ -1221,11 +1221,11 @@ class Service:
             if path in ("/api/git/enable", "/api/git/disable"):
                 project = self.selected_project(conn, project_name if project_name is not None else data.get("project"))
                 if path == "/api/git/enable":
-                    stable = data.get("stable")
-                    if stable is not None and not isinstance(stable, str):
-                        raise ValueError("stable 必须是分支名或 null")
+                    integration = data.get("integration")
+                    if integration is not None and not isinstance(integration, str):
+                        raise ValueError("integration 必须是分支名或 null")
                     return git_admin.enable(conn, self.home, self.plugin_root, project, self.chat.start,
-                                            base=_optional_text(data, "base"), stable=stable, now=now,
+                                            base=_optional_text(data, "base"), integration=integration, now=now,
                                             runtime=data.get("runtime"))
                 result = git_admin.disable(conn, project, now=now)
                 if 'before' in result:

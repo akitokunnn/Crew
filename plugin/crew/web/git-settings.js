@@ -2,7 +2,7 @@
 const CrewGitSettings = (() => {
   const esc = value => String(value ?? "").replace(/[&<>"']/g, char => ({"&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"})[char]);
   const fields = snapshot => ({base:snapshot.config?.base || snapshot.choices.base || "",
-    stable:snapshot.config ? snapshot.config.stable || "" : snapshot.choices.stable || "", branch_rules:snapshot.config?.branch_rules || ""});
+    integration:snapshot.config?.integration || "", branch_rules:snapshot.config?.branch_rules || ""});
   function create(options) {
     const dialog = document.createElement("dialog");
     dialog.className = "git-settings-dialog"; dialog.setAttribute("aria-labelledby", "git-settings-title"); document.body.append(dialog);
@@ -22,11 +22,11 @@ const CrewGitSettings = (() => {
       let body = `<div class="gits-empty">${loading ? "正在读取项目 Git 设置…" : '<button type="button" class="btn" data-git-setting="reload">重新读取</button>'}</div>`;
       if (snapshot) {
         const option = (value, label, current) => `<option value="${esc(value)}" ${value === current ? "selected" : ""}>${esc(label)}</option>`;
-        const branchSelect = (id, value, empty) => `<select name="${id}" id="gits-${id}">${empty ? option("", "不设置稳定分支", value) : option("", "选择主干分支", value)}${value && !snapshot.choices.branches.includes(value) ? option(value, `${value} · 本地已不存在`, value) : ""}${snapshot.choices.branches.map(name => option(name, name, value)).join("")}</select>`;
+        const branchSelect = (id, value, empty) => `<select name="${id}" id="gits-${id}">${empty ? option("", "不启用", value) : option("", "选择主干分支", value)}${value && !snapshot.choices.branches.includes(value) ? option(value, `${value} · 本地已不存在`, value) : ""}${snapshot.choices.branches.map(name => option(name, name, value)).join("")}</select>`;
         body = `${snapshot.available ? "" : `<div class="gits-warning" role="alert"><strong>仓库读取未完成</strong><pre>${esc(snapshot.reason)}</pre><button type="button" class="btn" data-git-setting="reload">重新检查仓库</button></div>`}<form id="git-settings-form">
           <section class="gits-section"><div class="gits-section-head"><h3>Git 助手</h3><span class="gits-status">${snapshot.config ? "已启用" : "尚未启用"}</span></div><p>保存分支和合并规则，下次正常对话时读取最新配置。</p>${snapshot.config ? "" : '<button type="button" class="gits-link" data-git-setting="create">启用 Git 助手 ↗</button>'}</section>
-          <section class="gits-section"><h3>分支与合并</h3><p>主干接收日常改动，稳定分支用于发布。分支选择与合并规则按项目独立保存。</p><div class="gits-branches"><div><label for="gits-base">主干分支</label>${branchSelect("base", draft.base, false)}</div><div><label for="gits-stable">稳定分支 <small>可选</small></label>${branchSelect("stable", draft.stable, true)}</div></div>
-          <label for="gits-policy">合并规则</label><textarea id="gits-policy" name="branch_rules" rows="6" placeholder="例如：功能分支先提交 PR；测试和 CI 通过后合入 develop；发版合入 master 前请我确认。">${esc(draft.branch_rules)}</textarea><p class="gits-hint">写清 PR、验收、提交格式与清理规则。项目 AGENTS.md 和远端分支保护继续生效；Git 助手也能用 crew git policy 维护这里。</p></section>
+          <section class="gits-section"><h3>分支与合并</h3><p>主干接收日常改动并推送给团队。本地集成分支只在本机、不推送，用来先合在一起实测；留空即不启用。发版分支由你自己合并，Crew 不管理。分支选择与合并规则按项目独立保存。</p><div class="gits-branches"><div><label for="gits-base">主干分支</label>${branchSelect("base", draft.base, false)}</div><div><label for="gits-integration">本地集成分支 <small>可留空</small></label>${branchSelect("integration", draft.integration, true)}</div></div>
+          <label for="gits-policy">合并规则</label><textarea id="gits-policy" name="branch_rules" rows="6" placeholder="例如：功能分支先提交 PR；测试和 CI 通过后合入 develop；不要推送本地集成分支。">${esc(draft.branch_rules)}</textarea><p class="gits-hint">写清 PR、验收、提交格式与清理规则。项目 AGENTS.md 和远端分支保护继续生效；Git 助手也能用 crew git policy 维护这里。</p></section>
           <details class="gits-section gits-repository"><summary>仓库与权限来源 <span>查看地址与配置范围</span></summary><label>工作目录</label><code>${esc(snapshot.project.root)}</code><label>远程仓库 <small>来自 git remote -v</small></label>${snapshot.remotes.length ? snapshot.remotes.map(item => `<div class="gits-remote"><b>${esc(item.name)} <small>${esc(item.direction)}</small></b><code>${esc(item.url)}</code></div>`).join("") : '<p>未配置远程仓库。</p>'}<p class="gits-hint">远程地址与凭据由 Git / GitHub CLI 管理；GitHub 的审核、CI 和分支保护在仓库 Settings 中设置，Crew 会遵守这些规则。</p><button type="button" class="gits-link" data-git-setting="defaults">Git 助手的默认载体、模型与思考强度 ↗</button></details>
           ${snapshot.config ? `<section class="gits-disable"><div><strong>停用 Git 助手</strong><p>解除管理绑定，保留会话、组员、请求记录和所有分支。</p></div><button type="button" class="btn danger" data-git-setting="disable">停用…</button></section>` : ""}</form>`;
       }

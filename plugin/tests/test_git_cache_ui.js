@@ -1,18 +1,18 @@
 "use strict";
 const {test}=require("node:test"),assert=require("node:assert/strict"),fs=require("node:fs"),path=require("node:path"),vm=require("node:vm");
 const tick=async()=>{for(let i=0;i<24;i++)await Promise.resolve();};
-const snapshot=label=>({enabled:false,repository:label,choices:{branches:["main"],base:"main",stable:null}});
+const snapshot=label=>({enabled:false,repository:label,choices:{branches:["main"],base:"main"}});
 function enabled(subject="第一次读取") {
   const latest={sha:"a".repeat(40),subject,author:"Fixture",time:"2026-10-26T00:00:00Z"};
-  const branch={name:"feature/cache",state:"unmerged",commits:1,behind:0,latest,worktree:null,owners:[]};
-  return {...snapshot("已启用的仓库"),enabled:true,config:{base:"main",stable:null,admin_session_id:"chief"},base:{name:"main",origin:true,unpushed:0,behind_origin:0},stable:null,branches:[branch],merged_hidden:0,requests:[],last_fetch_at:null};
+  const branch={name:"feature/cache",state:"unmerged",commits:1,outside_integration:null,behind:0,latest,worktree:null,remote:null,pr:null,dirty:null,owners:[]};
+  return {...snapshot("已启用的仓库"),enabled:true,config:{base:"main",integration:null,admin_session_id:"chief"},base:{name:"main",origin:true,unpushed:0,behind_origin:0,worktree:null,dirty:null},integration:null,branches:[branch],merged_hidden:0,requests:[],last_fetch_at:null};
 }
 function harness() {
   let read=async()=>snapshot("仓库快照");
   const calls=[],handlers=new Map(),timers=new Map(),scroll={scrollTop:0};let changed=0;const toasts=[];
   const host=require('./git_ui_host.cjs')({scroll,handlers});
   const mounts=[],updates=[],state={git_assistant:null};
-  const assistant={session_id:"git",name:"Git 助手",base:"main",stable:null,requests:{active:4,waiting_user:1,merging:1,queued:2},attention:8};
+  const assistant={session_id:"git",name:"Git 助手",base:"main",integration:null,requests:{active:4,waiting_user:1,merging:1,queued:2},attention:8};
 
   const sandbox={CrewChat:{mount:options=>mounts.push(options),update:state=>updates.push(state),unmount(){}},document:{addEventListener(){},removeEventListener(){}},window:{addEventListener(){},removeEventListener(){}},setInterval:fn=>{timers.set(1,fn);return 1;},clearInterval:id=>timers.delete(id),clearTimeout(){}};
   vm.createContext(sandbox);vm.runInContext(fs.readFileSync(path.join(__dirname,"../crew/web/git.js"),"utf8")+"\nglobalThis.component=CrewGit;",sandbox);

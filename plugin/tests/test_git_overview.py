@@ -294,6 +294,38 @@ class GitOverviewTests(CoreCase):
         self.assertEqual(code, 1)
         self.assertIn('在岗的 leader', err)
 
+    def test_cli_and_codex_branch_lists_carry_integration_remote_pr_and_uncommitted_work(self):
+        self.leader('heir', 'Heir')
+        runtimes.set(self.conn, 'heir', 'codex')
+        # A merged branch whose worktree still has source edits is listed and adoptable, like the MIB proactive-* ones.
+        self.git('branch', 'drafts', 'main')
+        drafts = self.base / 'drafts-worktree'
+        self.git('worktree', 'add', str(drafts), 'drafts')
+        (drafts / 'draft.cpp').write_text('work\n', encoding='utf-8')
+        self.git('branch', 'trial', 'main')
+        board.enable_git(self.conn, 'demo', 'main', 'trial', admin_session_id='git-admin', now=NOW)
+        self.config = board.git_config(self.conn, 'demo')
+        git_view._pull_requests[git_view._root(self.root)] = {'at': NOW, 'open': {'topic': {
+            'number': 9, 'url': 'https://github.com/example/demo/pull/9', 'draft': False, 'base': 'main', 'ci': 'success'}}}
+        self.addCleanup(git_view._pull_requests.clear)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(cli.main(['--home', str(self.home), '--session', 'heir', 'git', 'branches'], cwd=self.root), 0)
+        text = out.getvalue()
+        self.assertIn('topic · 1 个提交未合入 main，其中 1 个未进 trial · 只在本地 · PR #9', text)
+        self.assertIn('drafts · 已合入 main · 只在本地 · 1 个未提交改动', text)
+        self.assertFalse([line for line in text.splitlines() if line.startswith('trial ')])
+        result = codex_tools.CodexTools(self.home, 'heir')({'tool': 'crew_git', 'arguments': {'action': 'branches', 'data': {}}})
+        listed = json.loads(result['contentItems'][0]['text'])
+        self.assertEqual(listed['integration'], 'trial')
+        items = {item['name']: item for item in listed['branches']}
+        self.assertEqual(set(items), {'topic', 'drafts'})
+        self.assertEqual((items['topic']['state'], items['topic']['outside_integration'], items['topic']['pr']['number']),
+                         ('unmerged', 1, 9))
+        self.assertEqual((items['drafts']['state'], items['drafts']['dirty']['files'], items['drafts']['remote']),
+                         ('merged', 1, None))
+        self.assertEqual(self.adopt('heir', 'drafts')['leader'], {'session_id': 'heir', 'name': 'Heir'})
+
     def test_codex_tool_lists_and_adopts_with_host_identity(self):
         self.leader('heir', 'Heir')
         self.member('worker', 'Worker', 'Heir')

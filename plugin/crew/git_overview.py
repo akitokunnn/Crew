@@ -3,7 +3,7 @@ from . import board, git_view, store
 
 
 def read(conn, project, config, force=False):
-    """git_view.view for the project's base/stable, plus each branch's owning leaders.
+    """git_view.view for the project's base and local integration branch, plus each branch's owning leaders.
 
     A branch belongs to a leader when the leader or one of its members registered that branch or
     worktree, created or committed on it in a shell command (branch_claims), or dispatched a task
@@ -76,7 +76,7 @@ def adopt(conn, project, config, branch, leader_session_id, now=None):
             raise board.BoardError('只有本项目当前在岗的 leader 能认领分支')
         item = next((entry for entry in read(conn, project, config)['branches'] if entry['name'] == branch), None)
         if item is None:
-            raise board.BoardError('分支 %s 不在待处理列表里：不存在，或已合入并推送' % branch)
+            raise board.BoardError('分支 %s 不在待处理列表里：不存在，或已合入、推送且没有未提交改动' % branch)
         owner = {'session_id': leader_session_id, 'name': leader['crew_name']}
         others = [entry['name'] for entry in item['owners'] if entry['session_id'] != leader_session_id]
         if others:
@@ -89,12 +89,39 @@ def adopt(conn, project, config, branch, leader_session_id, now=None):
     return {'branch': branch, 'leader': owner, 'already': bool(item['owners'])}
 
 
+def describe(listing, item):
+    """One line of branch facts for CLI output, in the Git page's wording."""
+    base, integration = listing['base'], listing['integration']
+    if item['state'] == 'integrated':
+        text = '%s 个提交已进 %s，待实测' % (item['commits'], integration)
+    elif item['state'] == 'unmerged':
+        text = '%s 个提交未合入 %s' % (item['commits'], base)
+        if integration is not None:
+            text += '，其中 %s 个未进 %s' % (item['outside_integration'], integration)
+    elif item['state'] == 'unpushed':
+        text = '已合入本地 %s，%s 个提交未推送' % (base, item['commits'])
+    else:
+        text = '已合入 %s' % base
+    facts = [text, '只在本地' if item['remote'] is None else '已推送' if item['remote']['ahead'] == 0
+             else '已推送，本地多 %s 个提交' % item['remote']['ahead']]
+    if item['pr'] is not None:
+        facts.append('PR #%s' % item['pr']['number'])
+    dirty = item['dirty']
+    if dirty is not None and dirty['error']:
+        facts.append('读取未提交改动失败：' + dirty['error'])
+    elif dirty is not None and dirty['files']:
+        facts.append('%s 个未提交改动' % dirty['files'])
+    return ' · '.join(facts)
+
+
 def branches(conn, project, config):
-    """Compact list for leaders' tools: every branch still to merge or push, with its owners."""
+    """Compact list for leaders' tools: every branch still to merge, test or push, or with uncommitted work."""
     if config is None:
         raise board.BoardError('请先启用 Git 管理')
     data = read(conn, project, config, force=True)
-    return {'base': data['base']['name'], 'branches': [
-        {'name': item['name'], 'state': item['state'], 'commits': item['commits'], 'worktree': item['worktree'],
-         'latest': {'subject': item['latest']['subject'], 'time': item['latest']['time']}, 'owners': item['owners']}
-        for item in data['branches']]}
+    return {'base': data['base']['name'],
+            'integration': None if data['integration'] is None else data['integration']['name'],
+            'branches': [{key: item[key] for key in ('name', 'state', 'commits', 'outside_integration', 'worktree',
+                                                     'remote', 'pr', 'dirty', 'owners')}
+                         | {'latest': {'subject': item['latest']['subject'], 'time': item['latest']['time']}}
+                         for item in data['branches']]}

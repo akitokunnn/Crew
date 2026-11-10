@@ -31,7 +31,7 @@ class CodexGitToolsTests(unittest.TestCase):
     def enable(self, project='demo', admin='admin'):
         # Opt-in is prepared by the host; this tool deliberately cannot enable
         # management or launch an administrator/native session.
-        with mock.patch.object(board, 'git_branches', return_value=('main', 'stable')):
+        with mock.patch.object(board, 'git_branches', return_value=('main', 'trial')):
             board.enable_git(self.conn, project, admin_session_id=admin)
 
     def call(self, sid, action, data=None, *, success=True, handler=None, **transport):
@@ -51,7 +51,7 @@ class CodexGitToolsTests(unittest.TestCase):
                   for name in ('sessions', 'groups', 'goals')}
         with (mock.patch('subprocess.Popen', side_effect=AssertionError('Ledger must not execute shell or start sessions')),
               mock.patch('crew.spawn.request_start', side_effect=AssertionError('No HTTP self-call'))):
-            self.assertEqual(self.call('member', 'status'), {'enabled': True, 'base': 'main', 'stable': 'stable'})
+            self.assertEqual(self.call('member', 'status'), {'enabled': True, 'base': 'main', 'integration': 'trial'})
             policy = self.call('admin', 'policy', {'text': 'Target main; require passing tests before merge'})
             self.assertEqual(self.call('member', 'policy'), policy)
             request = self.request()
@@ -106,7 +106,7 @@ class CodexGitToolsTests(unittest.TestCase):
         self.assertEqual(board.git_requests(self.conn, 'foreign')[0]['status'], 'open')
 
     def test_disabled_management_keeps_existing_read_and_write_semantics(self):
-        self.assertEqual(self.call('member', 'status'), {'enabled': False, 'base': None, 'stable': None})
+        self.assertEqual(self.call('member', 'status'), {'enabled': False, 'base': None, 'integration': None})
         self.assertEqual(self.call('member', 'requests'), {'requests': []})
         for action, data in (('policy', {}), ('policy', {'text': 'Rules'}),
                              ('request', {'description': 'Not enabled'}),
