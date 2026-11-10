@@ -11,6 +11,8 @@
   // later activity never switches the record under the reader.
   const memberScopes = new Map();
   let mountedChannel = false;
+  // One-shot landing spots when jumping between a channel post and the private chat it points at.
+  let channelFocus = null, chatFocus = null;
   let settingsUI = null, settingsOpen = false, settingsReturn = null;
   let workspaceSettings = null, workspaceOpen = false, maintenance = null, gitSettings = null;
   let nativeApprovals = null, memberUI = null, adoptLeaderId = null, sessionLibrary = null;
@@ -559,7 +561,9 @@
       if (goals) goals.replaceMain(scaffold); else $("main").innerHTML = scaffold;
       delete $("main").dataset.render;
       mountedChat = identity;
-      CrewChat.mount({host:$("chat-host"), session:item, goalId:record?.goal_id ?? null, goalTitle:record?.title ?? null, ...access, state, api, toast, beforeStop:() => confirmIdentityStop(item),
+      const focus = chatFocus?.session === item.session_id && readOnlyId === null && record === null ? chatFocus : null; chatFocus = null;
+      CrewChat.mount({host:$("chat-host"), session:item, goalId:record?.goal_id ?? null, goalTitle:record?.title ?? null, ...access, state, api, toast, focus, beforeStop:() => confirmIdentityStop(item),
+        openChannel(id) { channelFocus = id; navigate("channel"); },
         async onRouted(id) { await loadState(true); if (mountedChat === identity) { const target = state.goals.find(goal => String(goal.id) === String(id)); if (target) navigate("chat", target.leader_session_id, null, target.id); else toast("目标已不在当前工作区中，请刷新。"); } }});
     }
     const permissions = nativeApprovals?.countForChat(item.session_id, null, readOnlyId === null) || 0;
@@ -659,7 +663,9 @@
       $("main").innerHTML = `<div class="head channel-head"><div><div class="title">${ic("msg")}Leader 交流区</div><div class="sub">所有 leader 和用户的公共频道 · 点名才叫醒</div></div><button id="channel-digest-button" class="btn">整理</button></div><div id="channel-host" class="chat-host"></div>`;
       delete $("main").dataset.render;
       mountedChannel = true;
-      CrewChannel.mount({host:$("channel-host"), digestButton:$("channel-digest-button"), state, api, toast, onRead:channel => { Object.assign(state.channel, {unread:channel.unread, latest_id:channel.latest_id}); renderSidebar(); }});
+      const focus = channelFocus; channelFocus = null;
+      CrewChannel.mount({host:$("channel-host"), digestButton:$("channel-digest-button"), state, api, toast, focus, onRead:channel => { Object.assign(state.channel, {unread:channel.unread, latest_id:channel.latest_id}); renderSidebar(); },
+        openChat(id, target) { if (leader(id) === undefined) { toast("这位 leader 已不在列表里，看不到它的私聊"); return; } chatFocus = {session:id, ...target}; navigate("chat", id, null, null); }});
     }
     CrewChannel.update(state);
   }

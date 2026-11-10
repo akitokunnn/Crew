@@ -584,6 +584,10 @@
       if (item.text) html += assistantText(context, item.text, item);
       return html;
     }
+    if (item.source === "crew" && typeof item.id === "string" && item.id.startsWith("channel:")) {
+      // The user's own words from the Leader channel, delivered here as a mention.
+      return `<div class="m-user from-channel"><div class="bubble"><span class="message-text">${escape(item.text).replace(/\n/g, "<br>")}</span></div><div class="m-meta"><button type="button" class="text-link chat-channel-origin" data-chat-channel="${escape(item.id.split(":")[1])}">来自交流区 ↗</button>${item.at ? ` · ${escape(timeOf(item.at))}` : ""}</div></div>`;
+    }
     if (item.source === "peer" || item.source === "crew") {
       const sender = item.source === "crew" && !Object.hasOwn(item, "sender") ? "Crew" : item.sender === "user" ? "用户" : nameOf(context, item.sender);
       // The sender may have been ended or archived since; its relative paths then resolve against the project root.
@@ -662,7 +666,13 @@
     for (const key of context.nodes.keys()) if (!retained.has(key)) context.nodes.delete(key);
     renderActivity(context);
     if (context.initialPosition !== null) {
-      if (context.initialPosition === "unread") {
+      const focused = typeof context.initialPosition === "object" ? context.nodes.get(context.initialPosition.key) : null;
+      if (typeof context.initialPosition === "object") {
+        if (focused) {
+          context.scroll.scrollTop = focused.getBoundingClientRect().top - context.scroll.getBoundingClientRect().top + context.scroll.scrollTop - 12;
+          focused.classList.remove("chat-focus"); void focused.offsetWidth; focused.classList.add("chat-focus");
+        } else context.scroll.scrollTop = context.scroll.scrollHeight;
+      } else if (context.initialPosition === "unread") {
         const divider = context.nodes.get("unread");
         context.scroll.scrollTop = divider.getBoundingClientRect().top - context.scroll.getBoundingClientRect().top + context.scroll.scrollTop - 12;
       } else context.scroll.scrollTop = context.initialPosition === "bottom" ? context.scroll.scrollHeight : context.initialPosition;
@@ -877,6 +887,7 @@
         context.initialPosition = context.hasMore && history.read_seq < context.firstSeq ? 0 : unread ? "unread" : "bottom";
       } else context.initialPosition = context.cache.scrollTop === null ? "bottom" : context.cache.scrollTop;
       context.cache.first = false;
+      applyFocus(context);
       composerState(context); render(context); connect(context);
     } catch (error) {
       if (current(context) && generation === context.loadGeneration) {
@@ -886,6 +897,19 @@
         context.historyRetryTimer = setTimeout(() => { context.historyRetryTimer = null; void load(context); }, 3000);
       }
     }
+  }
+  function applyFocus(context) {
+    // Opened from a channel post: land on the user's channel words, or the last thing before that post.
+    const focus = context.focus;
+    if (!focus) return;
+    context.focus = null;
+    const entries = [...timeline(context)];
+    let target = focus.prefix ? entries.find(({item}) => typeof item.id === "string" && item.id.startsWith(focus.prefix)) : undefined;
+    if (!target && focus.at) {
+      const moment = Date.parse(focus.at);
+      target = entries.filter(({item}) => item.at && Date.parse(item.at) <= moment).pop();
+    }
+    if (target) context.initialPosition = {key:target.key};
   }
   async function loadEarlier(context) {
     if (context.loadingEarlier || !context.hasMore) return;
@@ -1004,6 +1028,8 @@
     context.scroll.onscroll = () => { if (!current(context)) return; context.cache.scrollTop = context.scroll.scrollTop; context.jump.classList.toggle("show", !atBottom(context)); scheduleRead(context); };
     context.inner.onclick = async event => {
       if (event.target.closest("[data-chat-earlier]")) { await loadEarlier(context); return; }
+      const channelButton = event.target.closest("[data-chat-channel]");
+      if (channelButton) { context.openChannel?.(Number(channelButton.dataset.chatChannel)); return; }
       const goalButton = event.target.closest("[data-chat-goal]");
       if (goalButton) {
         try { await context.onRouted(goalButton.dataset.chatGoal); }
@@ -1070,6 +1096,7 @@
       const [key, entry] = cached;
       transcripts.delete(key); transcripts.set(key, entry);
       Object.assign(context, entry.value, {loading:false, validateTranscript:true, initialPosition:cache.scrollTop ?? "bottom"});
+      applyFocus(context);
       composerState(context); render(context); void connect(context);
     } else void load(context);
     return { update, unmount };

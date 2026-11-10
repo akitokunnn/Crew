@@ -28,6 +28,7 @@ def connect(home):
     conn.executescript(SCHEMA_FILE.read_text(encoding="utf-8"))
     _migrate_quiet_leader_notices(conn)
     _migrate_git_integration_branch(conn)
+    _migrate_channel_replies(conn)
     return conn
 
 
@@ -39,6 +40,28 @@ def _migrate_quiet_leader_notices(conn):
     try:
         if not any(row['name'] == 'wake' for row in conn.execute('PRAGMA table_info(leader_notices)')):
             conn.execute('ALTER TABLE leader_notices ADD COLUMN wake INTEGER NOT NULL DEFAULT 1')
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+
+
+def _migrate_channel_replies(conn):
+    """Channel replies and pending answers; earlier posts stay plain and earlier mentions await nothing."""
+    columns = {'channel_messages': (('reply_to', 'INTEGER REFERENCES channel_messages(id)'),
+                                    ('detail', 'INTEGER NOT NULL DEFAULT 0'), ('auto', 'INTEGER NOT NULL DEFAULT 0')),
+               'channel_mentions': (('await_reply', 'INTEGER NOT NULL DEFAULT 0'),)}
+
+    def missing():
+        return [(table, name, kind) for table, wanted in columns.items()
+                for existing in [{row['name'] for row in conn.execute('PRAGMA table_info(%s)' % table)}]
+                for name, kind in wanted if name not in existing]
+    if not missing():
+        return
+    conn.execute('BEGIN IMMEDIATE')
+    try:
+        for table, name, kind in missing():
+            conn.execute('ALTER TABLE %s ADD COLUMN %s %s' % (table, name, kind))
         conn.commit()
     except BaseException:
         conn.rollback()

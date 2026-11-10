@@ -201,6 +201,8 @@ def parser():
     c = command("say", True)
     c.add_argument("text")
     c.add_argument("--to", action="append", default=[])
+    c.add_argument("--reply-to", type=int, help="回复的交流区发言编号（# 后面的数字）")
+    c.add_argument("--detail", action="store_true", help="完整内容写在你的私聊里，这条只是一句结论")
     c = command("channel", True)
     c.add_argument("--limit", type=int, default=20)
     c.add_argument("--raw", action="store_true", help="跳过要点卡，查看最近 N 条原始发言")
@@ -506,9 +508,7 @@ def _emit(value, as_json=False, command=None, channel_card=None, git_assistant=N
         if channel_card is not None:
             blocks.append("[Crew 交流区要点]\n" + channel_card['body'])
         for message in value:
-            mentions = " " + " ".join("@" + target["name"] for target in message["mentions"]) if message["mentions"] else ""
-            blocks.append("%s %s%s\n%s" % (store.parse_iso(message["created_at"]).astimezone().strftime("%m-%d %H:%M"),
-                                          message["speaker_name"], mentions, message["body"]))
+            blocks.append(channel.line(message, "%m-%d %H:%M") + "\n" + message["body"])
         if channel_card is not None and not value:
             blocks.append("要点之后暂无新发言")
         print("\n\n".join(blocks) if blocks else "交流区暂无发言")
@@ -872,7 +872,8 @@ def execute(conn, args, cwd, agents_provider):
         speaker = conn.execute("SELECT project FROM sessions WHERE session_id=?", (actor,)).fetchone()
         if speaker is None or speaker["project"] is None:
             raise board.BoardError("Leader 交流区只给 leader 用；有事告诉你的 leader")
-        return channel.post(conn, speaker["project"], actor, args.text, args.to)
+        return channel.post(conn, speaker["project"], actor, args.text, args.to,
+                            reply_to=args.reply_to, detail=args.detail)
     p = _project(conn, args, cwd)
     if cmd == "git":
         if args.action in ("enable", "disable"):

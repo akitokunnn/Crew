@@ -31,7 +31,7 @@ import json
 from pathlib import Path
 import sqlite3
 
-from . import board, decision_briefs, documents, goal_actions, goals, guard, message_receipts, personal, personal_actions, report_preview, runtimes, session_ops, store, todo
+from . import board, channel, decision_briefs, documents, goal_actions, goals, guard, message_receipts, personal, personal_actions, report_preview, runtimes, session_ops, store, todo
 
 
 class ToolError(ValueError):
@@ -199,6 +199,19 @@ _SPECS = [
            'kind': {'type': 'string', 'enum': ['task','result','blocker','decision','user_answer','information','ack']},
            'reply_to': _text('Original Crew message ID when replying; only reply to a message addressed to you.')},
           ("to", "text")),
+    _spec('crew_say', 'Leader only: post in the project Leader channel (交流区), shared by all leaders and the user. '
+          'Talk like a group chat: one or two short sentences, at most 150 characters and 3 lines; no ACKs, progress logs or Git/CI status. '
+          'Answer a post with reply_to (its # number). If the answer fits in a sentence or two, say it here and only note in your private '
+          'conversation that you answered in the channel. If it needs a long explanation, post a one-line conclusion with detail=true and '
+          'write the full answer in your private conversation. Naming leaders in to wakes them; unnamed posts wake nobody.',
+          {'text': _text('The short post.', max_length=2000),
+           'to': {'type': 'array', 'maxItems': 12, 'items': _text('Leader Crew name, or * for every leader.', max_length=512)},
+           'reply_to': {'type': 'integer', 'minimum': 1, 'description': 'Channel post number being answered.'},
+           'detail': {'type': 'boolean', 'description': 'True when the full answer is in your private conversation.'}},
+          ('text',)),
+    _spec('crew_channel', 'Leader only: read recent Leader channel (交流区) posts with their # numbers and the latest summary card; '
+          'marks them read for you.',
+          {'limit': {'type': 'integer', 'minimum': 1, 'description': 'How many recent posts, default 20.'}}),
     _spec('crew_stop', 'Explicitly stop yourself or one of your own members now; this closes managed native execution and prevents queued mail from restarting it. Text messages are not stop commands.',
           {'target': _TARGET}, ('target',)),
     _spec('crew_spawn', 'Leader only: create a member in your own group. Members must ask their leader to split work. The host binds the caller to its actual identity and goal execution.',
@@ -417,7 +430,7 @@ class CodexTools:
         if name in ('crew_goal', 'crew_context'):
             action = args['action'] if name == 'crew_goal' else 'context.' + args['action']
             return action == 'report.preview' or action in goal_actions.READ_ACTIONS
-        return name in ('crew_whoami','crew_status','crew_who','crew_decisions','crew_todo_list','crew_doc_list','crew_handoffs','crew_reports') or name == 'crew_card' and not args
+        return name in ('crew_channel','crew_whoami','crew_status','crew_who','crew_decisions','crew_todo_list','crew_doc_list','crew_handoffs','crew_reports') or name == 'crew_card' and not args
 
     def _dispatch(self, conn, actor, name, args):
         sid, project = self._session_id, self._project
@@ -433,6 +446,17 @@ class CodexTools:
             if name == 'crew_whoami':
                 return {**actor, **personal.assistant_context(conn, sid)}
             raise ToolError('forbidden', 'Global assistant actions use crew_personal with original user intent')
+        if name == 'crew_say':
+            return channel.post(conn, project, sid, args['text'], args.get('to', []),
+                                reply_to=args.get('reply_to'), detail=args.get('detail', False))
+        if name == 'crew_channel':
+            if channel._leader(conn, project, sid) is None:
+                raise ToolError('forbidden', 'Leader 交流区只给 leader 用；有事告诉你的 leader')
+            card = channel.digest(conn, project)
+            posts = channel.read(conn, project, sid, args.get('limit', 20),
+                                 after=card['upto_message_id'] if card is not None else 0)
+            return {'card': card['body'] if card is not None else None,
+                    'posts': [{'heading': channel.line(post, '%m-%d %H:%M'), 'body': post['body']} for post in posts]}
         if name == 'crew_rename':
             return session_ops.rename_self(conn, sid, args['name'])
         if name == 'crew_archive':

@@ -27,6 +27,15 @@ description: Crew 主责 leader。理解需求、直接实施和验证，必要�
 - 每个 leader 的自主推进授权独立，只能由用户设置。获授权后，在用户交办范围内自主选择、实施和验证；新建自己负责的任务默认自主推进，也可用 decision_mode=human|autonomous 明确选择。已有任务用 `crew goal mode.set --data '{"goal_id":"任务ID","mode":"autonomous","expected_version":1}'`（Codex `crew_goal` 的 `mode.set`）切换，expected_version 读取任务 decision_mode.version。已有任务继续按各自模式执行，成员不能修改授权。保存配置后随下次正常输入传达；人工停止、真人验收及“不要 PR”“等着”等明确要求继续生效。
 - 被收起或归档的 leader 留下的分支没人认领。用户让你接手，或你的任务确实要在那个分支上继续时，先 `crew git branches` 查看（Codex `crew_git` 的 `branches`，owners 为空即没人认领），再 `crew git adopt <分支>`（Codex `adopt`）认领；之后它归你的组，合并照常 `crew git request --branch <分支>`。别人在岗管着的分支不抢，先和对方商量。
 
+## Leader 交流区
+
+交流区是本工作区所有 leader 和用户的群聊。发言用 `crew say "…"`（Codex `crew_say`），看全文用 `crew channel`（Codex `crew_channel`）；每条发言有 # 编号，接话用 `--reply-to <编号>`。
+
+- 像人在群里说话：一两句话说完结论，不写长篇、标题和列表。宿主限 150 字、3 行，超了会被退回。
+- 用户在交流区点名你：能一两句答清的，直接在交流区 `--reply-to` 回答，私聊这边只写一句“已在交流区回复”；需要长内容的，交流区回一句结论并加 `--detail`（Codex `detail=true`），完整内容写在私聊。同时点名多位 leader 时各答各的部分，不重复别人已经说过的。
+- 主动说的情况：你的改动会影响别的组（共用文件或接口、合并后对方要 rebase）时说一句并点名相关 leader；要找别组帮忙或不知道某件事归谁时问一句；任务交付后说一句“XX 做完了，报告在任务里”。
+- 不发“收到”、进度流水、Git/PR/CI 状态，也不转述用户在私聊里说的话。点名才会叫醒对方，不点名的发言别人下一轮才会看到。
+
 Git 操作需要时读 `/crew:git`。Codex 对应入口为 crew_goal / crew_context，详细 data 可先读 status / report-template。
 
 共用规则（通用原则、协作与消息、拍板与人工待办、上下文、阶段报告、最终交付）由 Crew 宿主与本守则一起注入，标为 `[Crew <名称>]`，在设置的“行为配置”里查看和修改。

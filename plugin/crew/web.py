@@ -412,6 +412,7 @@ class Service:
     def deliver_notices(self):
         with self.write_lock, closing(store.connect(self.home)) as conn:
             self.deliver_git_results(conn)
+            self.settle_channel_mentions(conn)
             leaders = [dict(row) for row in conn.execute(
                 "SELECT DISTINCT s.* FROM sessions s JOIN leader_notices n ON n.session_id=s.session_id "
                 "WHERE n.sent_at IS NULL AND n.wake=1 AND s.role='leader' AND s.status!='closed'")]
@@ -445,16 +446,28 @@ class Service:
                         pending = board.pending_notices(conn, sid)
                         if not pending:
                             continue
+                        # The user's own channel words go in a batch of their own, shown in private as the user's message.
+                        from_user = channel.user_mentions(conn, [notice['id'] for notice in pending])
+                        if from_user:
+                            pending = [notice for notice in pending if notice['id'] in from_user]
                         pending_ids = {notice['id'] for notice in pending}
                         journal = self.chat.journal(sid)
                         batch = next((event for event in reversed(journal.events) if event['type'] == 'leader_notice_batch'
                                       and pending_ids.intersection(event['notice_ids'])), None)
                         if batch is None:
-                            identity = 'leader-notices:' + hashlib.sha256(','.join(str(n['id']) for n in pending).encode()).hexdigest()
+                            digest = hashlib.sha256(','.join(str(n['id']) for n in pending).encode()).hexdigest()
                             text = '[Crew]\n' + '\n'.join('%s. %s' % (index, notice['text'])
                                                            for index, notice in enumerate(pending, 1))
-                            batch = journal.emit('leader_notice_batch', id=identity, text=text, notice_ids=[n['id'] for n in pending])
-                        receipt = self.chat.send(leader, batch['text'], source='crew', identity=batch['id'])
+                            shown = {}
+                            if from_user:
+                                posts = [from_user[notice['id']] for notice in pending]
+                                # The id carries the first post so the private bubble can link back to the channel.
+                                shown = {'id': 'channel:%d:%s' % (posts[0]['id'], digest[:32]), 'sender': board.HUMAN,
+                                         'display': '\n\n'.join(post['body'] for post in posts)}
+                            batch = journal.emit('leader_notice_batch', **{'id': 'leader-notices:' + digest, **shown},
+                                                 text=text, notice_ids=[n['id'] for n in pending])
+                        receipt = self.chat.send(leader, batch['text'], source='crew', identity=batch['id'],
+                                                 display_text=batch.get('display'), sender=batch.get('sender'))
                         if not isinstance(receipt, dict) or receipt.get('accepted') is not True:
                             raise board.Conflict('NativeReceiptUnknown: 通知输入尚无确认的接收回执')
                         for identity in pending_ids.intersection(batch['notice_ids']):
@@ -469,6 +482,20 @@ class Service:
                         journal.emit('error', notice_batch=batch['id'], text=text)
                     board.record_event(conn, 'leader:notice_error', leader['project'], sid,
                                        {'error': detail}, now=self.now().isoformat())
+
+    def settle_channel_mentions(self, conn):
+        """A user mention the leader answered only in private gets a channel pointer once its turn is over."""
+        for row in conn.execute("SELECT DISTINCT t.session_id FROM channel_mentions t JOIN leader_notices n "
+                                "ON n.id=t.notice_id WHERE t.await_reply=1 AND n.sent_at IS NOT NULL").fetchall():
+            sid = row['session_id']
+            with self.chat.lock:
+                if self.chat.busy(sid):
+                    continue
+            try:
+                channel.settle(conn, sid, now=self.now().isoformat())
+            except board.BoardError as exc:
+                board.record_event(conn, 'channel:settle_error', None, sid,
+                                   {'error': '%s: %s' % (type(exc).__name__, exc)}, now=self.now().isoformat())
 
     def deliver_git_results(self, conn):
         pending = conn.execute(

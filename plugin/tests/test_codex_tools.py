@@ -46,6 +46,22 @@ class CodexToolsTests(unittest.TestCase):
         self.assertEqual(result["contentItems"][0]["type"], "inputText")
         return json.loads(result["contentItems"][0]["text"])
 
+    def test_codex_leader_says_and_reads_the_channel_but_members_cannot(self):
+        from crew import channel
+        asked = channel.post(self.conn, 'first', board.HUMAN, '你们看下这个', ['chief'], source='web')
+        posted = self.call('crew_say', {'text': '能修，细节私聊', 'reply_to': asked['id'], 'detail': True}, tools=self.leader)
+        self.assertEqual((posted['speaker_name'], posted['reply_to'], posted['detail']), ('chief', asked['id'], True))
+        self.assertEqual(self.conn.execute('SELECT await_reply FROM channel_mentions').fetchone()[0], 0)
+        too_long = self.call('crew_say', {'text': '长' * 151}, tools=self.leader, success=False)
+        self.assertIn('交流区像群聊一样说短话', too_long['error']['message'])
+        read = self.call('crew_channel', {}, tools=self.leader)
+        self.assertIsNone(read['card'])
+        self.assertEqual([post['body'] for post in read['posts']], ['你们看下这个', '能修，细节私聊'])
+        self.assertIn('回复 #%d 用户' % asked['id'], read['posts'][1]['heading'])
+        for name, args in (('crew_say', {'text': 'hi'}), ('crew_channel', {})):
+            result = self.call(name, args, success=False)
+            self.assertIn('交流区只给 leader 用', result['error']['message'])
+
     def test_stop_tool_uses_bound_actor_and_explicit_host_stop_endpoint(self):
         with mock.patch('crew.spawn.request_start', return_value={'ok': True, 'stopped': True}) as request:
             self.call('crew_stop', {'target': 'builder'})

@@ -4,7 +4,9 @@ import contextlib
 import io
 import json
 import os
+import sqlite3
 import tempfile
+from contextlib import closing
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -51,10 +53,13 @@ class ChannelTests(unittest.TestCase):
         message = self.post("**plan**\nsecond line", to=["beta"])
         self.assertEqual(message["speaker_session_id"], "a")
         self.assertEqual(message["speaker_name"], "alpha")
-        self.assertEqual(message["mentions"], [{"session_id": "b", "name": "beta"}])
+        self.assertEqual(message["mentions"], [{"session_id": "b", "name": "beta", "replied": False}])
         notice = board.pending_notices(self.conn, "b")[0]
         self.assertEqual(notice["source"], "crew")
-        self.assertEqual(notice["text"], '交流区：「alpha」点名你：\n**plan**\nsecond line\n\n回复用 crew say --to alpha "…"；只是回"收到"就不用回。')
+        self.assertEqual(notice["text"], '交流区：「alpha」点名你（交流区发言 #%d）：\n**plan**\nsecond line\n\n'
+                         '回复用 crew say --reply-to %d "…"（Codex 用 crew_say）；只是回"收到"就不用回。' % (message["id"], message["id"]))
+        # A leader naming another leader waits for nothing.
+        self.assertEqual(self.conn.execute("SELECT await_reply FROM channel_mentions").fetchone()[0], 0)
 
     def test_member_and_unadopted_cannot_post(self):
         board.register_session(self.conn, "new", "demo", self.root, None, None, now=NOW)
@@ -136,7 +141,9 @@ class ChannelTests(unittest.TestCase):
         self.assertEqual((message["speaker_session_id"], message["speaker_name"]), (board.HUMAN, "用户"))
         notice = board.pending_notices(self.conn, "b")[0]
         self.assertEqual(notice["source"], "web")
-        self.assertEqual(notice["text"], "交流区：用户点名你：\nuser request\n\n（这是用户本人的话）")
+        self.assertTrue(notice["text"].startswith("交流区：用户点名你（交流区发言 #%d）：\nuser request\n\n（这是用户本人的话）" % message["id"]))
+        self.assertIn("crew say --reply-to %d" % message["id"], notice["text"])
+        self.assertIn("--detail", notice["text"])
 
     def test_human_mention_wakes_a_stopped_leader_but_leader_mention_does_not(self):
         from crew import messaging
@@ -190,9 +197,10 @@ class ChannelTests(unittest.TestCase):
         self.assertEqual(code, 0)
         text = result["hookSpecificOutput"]["additionalContext"]
         self.assertIn("[Crew 交流区] 你上次看之后有 1 条新发言：", text)
-        self.assertIn("alpha（→ @alpha）：first line", text)
+        self.assertIn("- #%d " % message["id"], text)
+        self.assertIn("alpha @alpha：first line", text)
         self.assertNotIn("full detail", text)
-        self.assertTrue(text.endswith("全文用 crew channel 看"))
+        self.assertTrue(text.endswith("要接话用 crew say --reply-to <编号>"))
         self.assertEqual(channel.mark_read(self.conn, "demo", "b", message["id"])["read_id"], message["id"])
         code, result = self.hook()
         self.assertEqual(code, 0)
@@ -252,6 +260,68 @@ class ChannelTests(unittest.TestCase):
         result, output, error = self.run_cli(["say", "member attempt"], sid="m")
         self.assertEqual(result, 1)
         self.assertIn("交流区只给 leader 用；有事告诉你的 leader", error)
+
+    def test_leader_posts_stay_short_and_the_user_is_not_limited(self):
+        with self.assertRaisesRegex(board.BoardError, "交流区像群聊一样说短话：这条 151 字 1 行"):
+            self.post("字" * 151)
+        with self.assertRaisesRegex(board.BoardError, "上限 150 字 3 行"):
+            self.post("一\n二\n三\n四")
+        self.assertEqual(channel.messages(self.conn, "demo")["messages"], [])
+        self.post("字" * 150)
+        self.post("一\n\n二\n三")
+        channel.post(self.conn, "demo", board.HUMAN, "长" * 2000, source="web", now=NOW)
+        with self.assertRaisesRegex(board.BoardError, "用户发言不标私聊详情"):
+            channel.post(self.conn, "demo", board.HUMAN, "x", source="web", now=NOW, detail=True)
+
+    def test_reply_quotes_original_and_settles_the_users_mention(self):
+        asked = channel.post(self.conn, "demo", board.HUMAN, "两位看下登录为什么慢，顺便说说缓存方案要不要换", ["alpha", "beta"],
+                             source="web", now=NOW)
+        self.assertEqual([row[0] for row in self.conn.execute("SELECT await_reply FROM channel_mentions ORDER BY rowid")], [1, 1])
+        reply = channel.post(self.conn, "demo", "a", "慢在冷启动，已在修", reply_to=asked["id"], now=NOW)
+        self.assertEqual(reply["reply"], {"id": asked["id"], "speaker_session_id": board.HUMAN, "speaker_name": "用户",
+                                          "excerpt": "两位看下登录为什么慢，顺便说说缓存方案要不要换"})
+        self.assertFalse(reply["detail"])
+        detail = channel.post(self.conn, "demo", "b", "建议换，理由写在私聊", reply_to=asked["id"], detail=True, now=NOW)
+        self.assertTrue(detail["detail"])
+        mentions = channel.messages(self.conn, "demo")["messages"][0]["mentions"]
+        self.assertEqual([(item["name"], item["replied"]) for item in mentions], [("alpha", True), ("beta", True)])
+        self.assertEqual([row[0] for row in self.conn.execute("SELECT await_reply FROM channel_mentions ORDER BY rowid")], [0, 0])
+        with self.assertRaisesRegex(board.BoardError, "要回复的交流区发言不存在: 99"):
+            channel.post(self.conn, "demo", "a", "x", reply_to=99, now=NOW)
+        result, output, error = self.run_cli(["channel"], sid="m")
+        self.assertIn("回复 #%d 用户「两位看下登录为什么慢" % asked["id"], output)
+        self.assertIn("（细节在私聊）", output)
+
+    def test_settle_points_to_private_only_after_the_mention_was_delivered(self):
+        asked = channel.post(self.conn, "demo", board.HUMAN, "进度怎样", ["alpha"], source="web", now=NOW)
+        self.assertEqual(channel.settle(self.conn, "a", now=NOW), [])
+        board.mark_notice_sent(self.conn, board.pending_notices(self.conn, "a")[0]["id"], now=NOW)
+        [stub_id] = channel.settle(self.conn, "a", now=NOW)
+        stub = channel.messages(self.conn, "demo")["messages"][-1]
+        self.assertEqual((stub["id"], stub["body"], stub["reply_to"], stub["detail"], stub["auto"]),
+                         (stub_id, "回复在私聊里", asked["id"], True, True))
+        self.assertEqual(channel.settle(self.conn, "a", now=NOW), [])
+        # Answering in the channel first means no pointer is needed.
+        again = channel.post(self.conn, "demo", board.HUMAN, "再问一次", ["alpha"], source="web", now=NOW)
+        board.mark_notice_sent(self.conn, board.pending_notices(self.conn, "a")[0]["id"], now=NOW)
+        self.run_cli(["say", "好了", "--reply-to", str(again["id"])])
+        self.assertEqual(channel.settle(self.conn, "a", now=NOW), [])
+
+    def test_older_database_gains_reply_columns_and_keeps_posts(self):
+        message = self.post("before upgrade", to=["beta"])
+        self.conn.close()
+        with closing(sqlite3.connect(store.db_path(self.home))) as old:
+            for table, column in (("channel_messages", "reply_to"), ("channel_messages", "detail"),
+                                  ("channel_messages", "auto"), ("channel_mentions", "await_reply")):
+                old.execute("ALTER TABLE %s DROP COLUMN %s" % (table, column))
+            old.commit()
+        self.conn = store.connect(self.home)
+        self.addCleanup(self.conn.close)
+        [kept] = channel.messages(self.conn, "demo")["messages"]
+        self.assertEqual((kept["id"], kept["body"], kept["reply"], kept["detail"]), (message["id"], "before upgrade", None, False))
+        # Earlier mentions wait for no answer, so upgrading posts no pointers.
+        self.assertEqual(self.conn.execute("SELECT await_reply FROM channel_mentions").fetchone()[0], 0)
+        self.assertEqual(channel.post(self.conn, "demo", "b", "ok", reply_to=message["id"], now=NOW)["reply_to"], message["id"])
 
     def test_cli_unknown_and_unadopted_sessions_get_channel_rejection(self):
         board.register_session(self.conn, "new", "demo", self.root, None, None, now=NOW)

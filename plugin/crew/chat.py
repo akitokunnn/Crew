@@ -17,7 +17,7 @@ from pathlib import Path
 
 from . import behavior_prompts, guard, native_handoff, runtime_recovery, trust_mode
 
-from . import board, claude_limits, claude_subagents, codex_client, codex_visibility, git_admin, goal_messages, goals, hooks, install, messaging, models, personal, report_preview, runtime_switch, runtimes, settings, spawn, store, subagents, workspace_execution
+from . import board, channel, claude_limits, claude_subagents, codex_client, codex_visibility, git_admin, goal_messages, goals, hooks, install, messaging, models, personal, report_preview, runtime_switch, runtimes, settings, spawn, store, subagents, workspace_execution
 
 
 PAUSED_FOR_UPDATE = "Crew 正在准备更新，暂不接受新任务；更新完成后再试"
@@ -1135,6 +1135,11 @@ class Manager:
                     summary = self.goal_controller.general_context(handoff_conn, session_id)
                     if summary:
                         text = summary + '\n\n' + text
+                    if getattr(current, 'runtime', 'claude') == 'codex' and not assistant:
+                        # Claude leaders get this through the prompt hook; Codex has no hook.
+                        posts = channel.summary(handoff_conn, logical)
+                        if posts:
+                            text = posts + '\n\n' + text
                     if assistant and source in ('human', 'qq', 'lark'):
                         text = ('【Crew 本轮原始用户消息标识：%s。写入动作必须绑定此 message_id；'
                                 '不改变用户原话的授权范围。】\n\n' % identity) + text

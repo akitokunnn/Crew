@@ -404,7 +404,10 @@ CREATE TABLE IF NOT EXISTS channel_messages (
     speaker_session_id TEXT NOT NULL,      -- leader session id, or 'user'
     speaker_name       TEXT NOT NULL,
     body               TEXT NOT NULL,
-    created_at         TEXT NOT NULL
+    created_at         TEXT NOT NULL,
+    reply_to           INTEGER REFERENCES channel_messages(id),  -- the post this one answers
+    detail             INTEGER NOT NULL DEFAULT 0,  -- 1: the speaker wrote the full answer in its own conversation
+    auto               INTEGER NOT NULL DEFAULT 0   -- 1: Crew posted it because the leader answered only in private
 );
 CREATE INDEX IF NOT EXISTS channel_messages_project ON channel_messages (project, id);
 
@@ -413,6 +416,7 @@ CREATE TABLE IF NOT EXISTS channel_mentions (
     session_id TEXT NOT NULL REFERENCES sessions(session_id),
     name       TEXT NOT NULL,
     notice_id  INTEGER REFERENCES leader_notices(id),
+    await_reply INTEGER NOT NULL DEFAULT 0,  -- 1: the user named this leader and it has not answered in the channel yet
     PRIMARY KEY (message_id, session_id)
 );
 
