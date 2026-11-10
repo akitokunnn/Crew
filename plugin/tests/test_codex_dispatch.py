@@ -95,7 +95,8 @@ exit $LASTEXITCODE
                 if private_home:
                     env['CREW_HOME'] = str(run_home)
                 result = subprocess.run([POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(harness)],
-                                        capture_output=True, text=True, env=env, timeout=20)
+                                        capture_output=True, text=True, encoding='utf-8', env=env, timeout=20,
+                                        creationflags=subprocess.CREATE_NO_WINDOW)
                 self.assertEqual(result.returncode, code, result.stdout + result.stderr)
                 self.assertEqual((root / "waited").read_text(), "yes")
                 if log_failure:

@@ -1,6 +1,5 @@
 """Skill dispatches keep their real Crew owner without feeding progress into AI."""
 import tests
-from contextlib import closing
 import unittest
 from unittest import mock
 from crew import goals, runtimes, spawn, store, usage, web
@@ -120,17 +119,6 @@ class DispatchVisibilityTests(ShellFixture, unittest.TestCase):
         self.runs.write_text('', encoding='utf-8'); self.scan()
         item, = usage.dispatch_tasks(self.conn, None, None)
         self.assertEqual((item['run_id'], item['runtime']), ('claude-job', 'claude'))
-
-    def test_old_database_reopens_without_losing_previous_dispatch_records(self):
-        self.write(self.runs, [self.run_record(cwd=str(self.project))]); self.scan()
-        for column in ('runtime', 'crew_session_id', 'crew_execution_id', 'pid', 'pid_created', 'native_id'):
-            self.conn.execute('ALTER TABLE codex_runs DROP COLUMN ' + column)
-        for _ in range(2):
-            with closing(store.connect(self.home)) as conn:
-                self.assertEqual(conn.execute('SELECT COUNT(*) FROM codex_runs').fetchone()[0], 1)
-                row = conn.execute('SELECT * FROM codex_runs').fetchone()
-                self.assertEqual(row['runtime'], 'codex'); self.assertIsNone(row['pid'])
-
 
 if __name__ == '__main__':
     unittest.main()

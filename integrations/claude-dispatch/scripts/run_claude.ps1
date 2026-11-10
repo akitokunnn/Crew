@@ -14,6 +14,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $utf8 = New-Object Text.UTF8Encoding $false
+[Console]::OutputEncoding = $utf8
 $crewRunHome = if ($env:CREW_HOME) { [IO.Path]::GetFullPath($env:CREW_HOME) } else { Join-Path $env:USERPROFILE '.crew' }
 
 function ConvertTo-QuotedArg([string]$Value) {

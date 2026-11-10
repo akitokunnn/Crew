@@ -847,7 +847,10 @@
       if (lookDraft.preview) URL.revokeObjectURL(lookDraft.preview);
       lookDraft.avatar = result; lookDraft.preview = URL.createObjectURL(result.blob);
       lookDraft.note = `已压缩：${(file.size / 1024).toFixed(0)} KB → ${(result.size / 1024).toFixed(1)} KB，${result.width}×${result.height}`;
-    } catch (error) { lookDraft.note = ""; lookDraft.error = error.message; }
+    } catch (error) {
+      if (lookDraft !== draft) return;
+      draft.note = ""; draft.error = error.message;
+    }
     if ($("leader-settings-form")) renderLeaderSettings();
   }
   async function saveLeaderSettings() {
@@ -1224,7 +1227,7 @@
     });
     document.addEventListener("pointerdown", event => {
       if (presenceOpen && !event.target.closest('#presence-popover,#presence-entry')) setPresenceOpen(false);
-      if (narrowLayout() && leadersOpen && !event.target.closest('#leader-panel,[data-act="leaders-toggle"],#menu')) setLeadersOpen(false);
+      if (narrowLayout() && leadersOpen && !event.target.closest('#leader-panel,[data-act="leaders-toggle"],#menu,#m-tabbar,#m-sheet')) setLeadersOpen(false);
     });
     document.addEventListener("click", event => {
       if (event.target.id === "backdrop") { closeBackdrop(); return; }
@@ -1280,7 +1283,7 @@
       else if (act === "leader") { tasksOpen = !narrowLayout(); if (cardId !== null) closeCard(); navigate("chat", id, null, null); }
       else if (act === "active-goal") { const target = (state.goals || []).find(goal => String(goal.id) === button.dataset.goalId); if (target) { navigate("chat",target.leader_session_id,id === target.leader_session_id ? null : id,target.id); } }
       else if (act === "member-chat") { const item = member(id); if (item) { if (cardId !== null) closeCard(); navigate("chat", item.leader_session_id, item.session_id, null); } }
-      else if (act === "view") { if (cardId !== null) closeCard(); if (button.dataset.view === "all") allTab = "overview"; navigate(button.dataset.view); }
+      else if (act === "view") { if (narrowLayout() && leadersOpen) setLeadersOpen(false); if (cardId !== null) closeCard(); if (button.dataset.view === "all") allTab = "overview"; navigate(button.dataset.view); }
       else if (act === "native-handoff" || act === "native-return") { const selectedGoal = button.dataset.goalId || null; action("native:" + id, () => CrewNativeHandoff.act(act.slice(7), id, selectedGoal, {api,refresh:async() => { if(selectedGoal) await goals?.refresh(selectedGoal); await loadState(true); },notice:toast})); }
       else if (act === "todo-toggle") { if (todoExpanded.has(id)) todoExpanded.delete(id); else todoExpanded.add(id); renderTodoSurface(); }
       else if (act === "todo-action") {

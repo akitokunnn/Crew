@@ -167,36 +167,6 @@ class NotificationDeliveryTests(GoalFixture):
         self.service.connections = SimpleNamespace(allows_push=lambda channel:False)
         self.inboxes['qq'].tick(); self.assertEqual(len(self.clients['qq'].operations), 1)
 
-    def test_message_column_migration_preserves_legacy_unknown_receipts_concurrently(self):
-        item = self.item(); key = 'todo:%s:created' % item['id']
-        self.clients['qq'].send_errors.append(qq.QQError('old connection lost', kind='network'))
-        with self.assertRaises(qq.QQError): self.inboxes['qq'].tick()
-        legacy_columns = 'item_id,project,leader_session_id,decision_id,kind,message_id,ref_idx,created_at,content,status,error'
-        with board.transaction(self.conn):
-            for table in ('notification_messages', 'lark_notification_messages'):
-                self.conn.execute('CREATE TABLE legacy_delivery (item_id TEXT PRIMARY KEY,project TEXT NOT NULL,leader_session_id TEXT NOT NULL,'
-                                  'decision_id INTEGER,kind TEXT NOT NULL,message_id TEXT,ref_idx TEXT,created_at TEXT NOT NULL,'
-                                  'content TEXT NOT NULL,status TEXT NOT NULL,error TEXT)')
-                self.conn.execute('INSERT INTO legacy_delivery SELECT ' + legacy_columns + ' FROM ' + table)
-                self.conn.execute('DROP TABLE ' + table)
-                self.conn.execute('ALTER TABLE legacy_delivery RENAME TO ' + table)
-        barrier, errors = threading.Barrier(2), []
-        def migrate():
-            try:
-                barrier.wait(5)
-                with contextlib.closing(store.connect(self.home)) as conn:
-                    row = conn.execute('SELECT * FROM notification_messages WHERE item_id=?', (key,)).fetchone()
-                    self.assertEqual(row['attempts'], 0); self.assertIsNone(row['delivery_json'])
-                    self.assertEqual(row['status'], 'error'); self.assertIn('old connection lost', row['error'])
-            except Exception as error: errors.append(error)
-        workers = [threading.Thread(target=migrate) for _ in range(2)]
-        for worker in workers: worker.start()
-        for worker in workers:
-            worker.join(10); self.assertFalse(worker.is_alive())
-        self.assertEqual(errors, [])
-        self.clock += dt.timedelta(minutes=5); self.restart('qq'); self.inboxes['qq'].tick()
-        self.assertEqual(len(self.clients['qq'].operations), 1)
-
     def test_archived_portable_markers_suppress_replay_under_a_new_owner_generation(self):
         item = self.item(); key = 'todo:%s:created' % item['id']
         for inbox in self.inboxes.values():

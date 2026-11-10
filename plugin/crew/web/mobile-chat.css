@@ -185,13 +185,18 @@ body:has(#chat-head .member-scope-bar){--mc-scope:48px}
 /* 交付报告阅读器：整屏 */
 .goal-report-reader{position:fixed!important;inset:0!important;z-index:60!important;width:auto!important;max-width:none!important;border-radius:0!important;padding-top:var(--m-safe-t);box-sizing:border-box}
 .goal-report-reader .head{display:flex!important;flex-wrap:wrap!important;align-items:flex-start!important;height:auto!important;min-height:0!important;gap:8px!important;padding:8px 8px 10px var(--m-gutter)!important}
-.goal-report-reader .goal-reader-heading{order:1;flex:1 1 0;min-width:0;padding-top:6px}
+.goal-report-reader .goal-reader-heading{order:1;flex:1 0 100%;min-width:0;padding-top:6px}
 .goal-report-reader .title{font-size:var(--m-fs-section)!important;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .goal-report-reader .goal-reader-meta{display:flex;flex-wrap:wrap;gap:2px 8px;margin-top:4px;font-size:var(--m-fs-min)!important;line-height:1.5}
 .goal-report-reader .head>[data-goal-act=close-report]{order:2;flex:none;min-height:var(--m-tap);padding:0 12px!important;border:0;background:none;color:var(--accent-text);font-size:var(--m-fs-body)!important}
 .goal-report-reader .head>:not(.goal-reader-heading,[data-goal-act=close-report]){order:3}
 .goal-report-reader .head .review-buttons{flex:0 0 100%;margin-left:0!important;margin-right:8px;display:grid!important;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);gap:8px}
 .goal-report-reader .head .btn{min-height:var(--m-tap);justify-content:center;font-size:var(--m-fs-body)!important}
+.file-reader .head{flex-wrap:wrap}
+.file-reader .file-reader-heading{flex:1 0 100%}
+.file-reader .file-reader-actions{flex:1 0 100%;justify-content:flex-end}
+/* Reading temporarily covers these panels; closing it restores their existing state. */
+body:has(#main[data-reader]) #chat-attention{display:none!important}
 
 /* ================= 待你处理 + 本组架构图：铺满顶栏以下 ================= */
 #chat-attention.chat-sidepanels{top:calc(var(--mc-head) + var(--mc-scope))!important;left:0!important;right:0!important;bottom:0!important;width:auto!important;height:auto!important;z-index:23;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;pointer-events:auto;background:var(--bg);padding:0 0 calc(16px + var(--m-safe-b));box-sizing:border-box;transform:none}

@@ -3,7 +3,7 @@
 const {chromium}=require('playwright'),fs=require('node:fs/promises'),path=require('node:path'),http=require('node:http'),assert=require('node:assert/strict');
 const root=path.resolve(__dirname,'../..'),web=path.join(root,'plugin/crew/web'),output=path.join(root,'Temp/tasks/分支概况界面测试_evidence/smoke-git-settings');
 const calls=[],errors=[],expectedHttpErrors=[],checks=[],shots=[],waiting=[];
-let browser,page,server,origin,repositoryState='ready',failSave=false,staleSave=false;
+let browser,page,server,origin,repositoryState='ready',failSave=false,staleSave=false,branchAssignee=null;
 const leader={session_id:'git-chief',name:'Git 管理',runtime:'codex',model:null,effort:null,status:'offline',where:'offline',busy:false,running:false,web_chat:false,last_seq:0,read_seq:0,last_reply_id:null,unread:0,pending:0,priority:null,goal:'协调项目提交与合并',task:'协调项目提交与合并',context:null,activity:null,codex:[],codex_older:0,member_ids:[],applied:null,trust:{enabled:false},runtime_switch:{allowed:true}};
 Object.assign(leader,{name:'Git 助手',builtin:true,base:'develop',stable:'master',requests:{active:4,waiting_user:1,merging:1,queued:2},attention:3,pending:99});
 const catalog=[{id:'codex',name:'Codex',available:true,models:[],efforts:[]},{id:'claude',name:'Claude Code',available:true,models:[],efforts:[]}];
@@ -16,7 +16,7 @@ function branchSnapshot(){
   const stable={name:settings.config.stable,behind:4,ref:'remotes/origin/master',base_ref:'remotes/origin/develop'};
   const branches=[
     {name:'topic/<script>branch</script>/'+'long-segment-'.repeat(24),state:'unmerged',commits:3,behind:2,latest,worktree:'c:\\FIXTURE\\MIB\\Temp\\wt\\feature',owners:[{session_id:leader.session_id,name:leader.name},{session_id:'archived',name:'历史 leader'}]},
-    {name:'topic/no-owner',state:'unmerged',commits:1,behind:0,latest,worktree:null,owners:[]},
+    {name:'topic/no-owner',state:'unmerged',commits:1,behind:0,latest,worktree:null,owners:branchAssignee?[branchAssignee]:[]},
     {name:'topic/push',state:'unpushed',commits:2,behind:0,latest,worktree:'D:/outside/worktree',owners:[{session_id:'archived',name:'历史 leader'}]}
   ];
   const requests=[{id:7,status:'merging',branch:branches[0].name},{id:8,status:'waiting_user',branch:branches[2].name}];
@@ -38,6 +38,7 @@ async function route(request,response){
   if(name==='/api/chat/read')return json(response,{read_seq:body.seq});
   if(name==='/api/chat/send'){assert.equal(body.session_id,leader.session_id);assert(!Object.hasOwn(body,'goal_id'));return json(response,{ok:true,accepted:true,message_id:body.message_id});}
   if(name==='/api/git/enable'){assert.equal(body.runtime,'codex');repositoryState='enabled';state.git_assistant=leader;settings={...settings,revision:'enabled',config:{base:body.base,stable:body.stable,branch_rules:'',admin_session_id:leader.session_id}};return json(response,{ok:true});}
+  if(name==='/api/git/adopt'){assert.equal(body.project,project.name);assert.equal(body.branch,'topic/no-owner');assert.equal(body.leader_session_id,'branch-chief');branchAssignee={session_id:'branch-chief',name:'分支负责人'};return json(response,{branch:body.branch,leader:branchAssignee,already:false});}
   if(name==='/api/state')return json(response,state);
   if(name==='/api/runtimes')return json(response,{runtimes:catalog});
   if(name==='/api/git'){
@@ -88,8 +89,18 @@ async function main(){
     assert.match(await panel.locator('.git-lite-card').first().locator('.git-lite-branch').innerText(),/<script>branch<\/script>/);
     assert.match(await panel.locator('.git-lite-card').first().locator('.git-lite-subject').innerText(),/<script>提交<\/script>/);
     assert.match(await panel.locator('.git-lite-card').first().locator('.git-lite-facts').innerText(),/落后 develop 2 · Temp\/wt\/feature/);
-    assert.match(await panel.locator('.git-lite-card').nth(1).innerText(),/没找到对应的 leader/);
+    assert.match(await panel.locator('.git-lite-card').nth(1).innerText(),/没人认领/);
     assert.equal(await panel.locator('script,table,.git-request-card,.git-branch-card').count(),0);await shot('03-Git分支概况.png');
+  });
+  await check('手机从无人分支选择负责人，保留轮询中的控件并仅提交一次',async()=>{
+    state.leaders.push({...leader,session_id:'branch-chief',name:'分支负责人',builtin:false});
+    await page.setViewportSize({width:375,height:900});
+    const picker=page.locator('[data-git-adopt="topic/no-owner"]');await picker.waitFor();
+    const node=await picker.elementHandle();await picker.focus();await page.waitForResponse(response=>new URL(response.url()).pathname==='/api/state');
+    assert(await node.evaluate(element=>element===document.querySelector('[data-git-adopt="topic/no-owner"]')));
+    await picker.selectOption('branch-chief');await page.locator('.git-lite-card').filter({hasText:'topic/no-owner'}).locator('.git-lite-leader').filter({hasText:'分支负责人'}).waitFor();
+    assert.equal(calls.filter(call=>call.name==='/api/git/adopt').length,1);await shot('03a-手机认领分支.png');
+    await page.setViewportSize({width:1440,height:1000});
   });
   await check('分支概况长内容在明暗、375px 手机及 760px 窄屏无横向溢出',async()=>{
     const panel=page.locator('#git-panel');
@@ -109,7 +120,7 @@ async function main(){
   await check('深色窄窗口 Git 设置不横向溢出',async()=>{await run(`CrewTheme.setMode('dark');CrewTheme.apply(${JSON.stringify(state.themes)},'green','dark');void 0`);await page.setViewportSize({width:540,height:800});assert(await page.locator('.git-settings-dialog').evaluate(node=>node.scrollWidth<=node.clientWidth+1));await shot('05-Git设置窄屏.png');await page.setViewportSize({width:1440,height:1000});await click('[data-git-setting="close"]');});
   await check('跨页复用快照和草稿，未采集额度无填充',async()=>{const reads=calls.filter(call=>call.name==='/api/git').length;await click('#sidebar [data-view="all"]');await click('#leader-entry');assert.equal(await page.locator('.leader-panel-quota progress').count(),0);assert.match(await page.locator('.leader-panel-quota').innerText(),/未采集/);await shot('06-Leader未采集额度.png');await page.keyboard.press('Escape');await click('#sidebar [data-view="git"]');assert.equal(calls.filter(call=>call.name==='/api/git').length,reads);assert.equal(await page.locator('#git-chat-host textarea').inputValue(),'保留 Git 草稿');});
   await check('更新失败保留助手对话和原始原因',async()=>{repositoryState='error';await click('[data-git-act="refresh"]');await page.locator('.git-operation-error').filter({hasText:'读取超时'}).waitFor();assert.equal(await page.locator('#git-chat-host textarea').inputValue(),'保留 Git 草稿');repositoryState='enabled';});
-  await check('停用先确认，返回启用入口且不改普通 leaders',async()=>{await click('[data-git-act="settings"]');await click('[data-git-setting="disable"]');assert.notEqual(settings.config,null);await click('[data-git-setting="confirm-disable"]');await wait(`document.querySelector('[data-git-settings-note]').textContent.includes('已解除')`);await click('[data-git-setting="close"]');await page.locator('#git-enable-form').waitFor();assert.equal(state.leaders.length,0);});
+  await check('停用先确认，返回启用入口且不改普通 leaders',async()=>{await click('[data-git-act="settings"]');await click('[data-git-setting="disable"]');assert.notEqual(settings.config,null);await click('[data-git-setting="confirm-disable"]');await wait(`document.querySelector('[data-git-settings-note]').textContent.includes('已解除')`);await click('[data-git-setting="close"]');await page.locator('#git-enable-form').waitFor();assert.deepEqual(state.leaders.map(item=>item.session_id),['branch-chief']);});
   assert(calls.filter(call=>call.name==='/api/git/settings'&&call.method==='POST').every(call=>!Object.hasOwn(call.body,'admin_session_id')));assert.deepEqual(expectedHttpErrors.map(item=>item.status).sort((a,b)=>a-b),[400,409,500,503]);assert.deepEqual(errors,[]);
 }
 main().catch(async error=>{errors.push(error.stack);process.exitCode=1;if(page)await shot('failure.png');}).finally(async()=>{await browser?.close();for(const response of waiting)response.end();server?.closeAllConnections();if(server)await new Promise(resolve=>server.close(resolve));await fs.mkdir(output,{recursive:true});await fs.writeFile(path.join(output,'evidence.json'),JSON.stringify({ok:errors.length===0,checks,shots,errors,expectedHttpErrors,calls},null,2));console.log(JSON.stringify({ok:errors.length===0,checks:checks.length,errors,expectedHttpErrors,output}));});

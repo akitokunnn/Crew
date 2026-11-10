@@ -1078,7 +1078,7 @@ const refresh=async()=>{const button={dataset:{gitAct:'refresh'}};listeners.get(
   assert(!items[0][3].includes('归档 leader'));
   assert.equal(items[1][2],'#8844aa');assert(items[1][3].includes('class="git-lite-leader">归档 leader</span>'));
   assert(items[1][3].includes('<i data-avatar="归档 leader" data-size="18"></i>'));assert(items[1][3].includes('等 2 位'));
-  assert.equal(items[2][2],'var(--text-3)');assert(items[2][3].includes('没找到对应的 leader'));
+  assert.equal(items[2][2],'var(--text-3)');assert(items[2][3].includes('没人认领'));
   assert(!items[2][3].includes('data-avatar'));assert(!items[2][3].includes('git-lite-leader'));
   assert(!items[3][3].includes('等 1 位'));
   assert.deepEqual(Array.from(html.matchAll(/<span class="git-lite-request ([^"]+)">(.*?)<\/span>/g),match=>[match[1],match[2]]),

@@ -64,19 +64,24 @@ def adopt(conn, project, config, branch, leader_session_id, now=None):
     """
     if config is None:
         raise board.BoardError('请先启用 Git 管理')
-    leader = board.session(conn, leader_session_id)
-    if (leader['project'] != project['name'] or leader['role'] != 'leader' or leader['status'] == 'closed'
-            or board.is_archived(conn, leader_session_id) or leader_session_id == config['admin_session_id']):
-        raise board.BoardError('只有本项目当前在岗的 leader 能认领分支')
-    item = next((entry for entry in read(conn, project, config, force=True)['branches'] if entry['name'] == branch), None)
-    if item is None:
-        raise board.BoardError('分支 %s 不在待处理列表里：不存在，或已合入并推送' % branch)
-    owner = {'session_id': leader_session_id, 'name': leader['crew_name']}
-    others = [entry['name'] for entry in item['owners'] if entry['session_id'] != leader_session_id]
-    if others:
-        raise board.Conflict('分支 %s 归 %s 管，先和它商量' % (branch, '、'.join(others)))
-    if not item['owners']:
-        with board.transaction(conn):
+    # Scan Git before reserving the writer. Ownership is then read again under
+    # the same transaction as the claim, so simultaneous callers cannot both win.
+    read(conn, project, config, force=True)
+    with board.transaction(conn):
+        if board.git_config(conn, project['name']) != config:
+            raise board.Conflict('Git 设置已变化，请刷新后重试')
+        leader = board.session(conn, leader_session_id)
+        if (leader['project'] != project['name'] or leader['role'] != 'leader' or leader['status'] == 'closed'
+                or board.is_archived(conn, leader_session_id) or leader_session_id == config['admin_session_id']):
+            raise board.BoardError('只有本项目当前在岗的 leader 能认领分支')
+        item = next((entry for entry in read(conn, project, config)['branches'] if entry['name'] == branch), None)
+        if item is None:
+            raise board.BoardError('分支 %s 不在待处理列表里：不存在，或已合入并推送' % branch)
+        owner = {'session_id': leader_session_id, 'name': leader['crew_name']}
+        others = [entry['name'] for entry in item['owners'] if entry['session_id'] != leader_session_id]
+        if others:
+            raise board.Conflict('分支 %s 归 %s 管，先和它商量' % (branch, '、'.join(others)))
+        if not item['owners']:
             conn.execute(
                 'INSERT INTO branch_claims(project,branch,session_id,goal_id,claimed_at) VALUES(?,?,?,NULL,?) '
                 'ON CONFLICT(project,branch,session_id) DO UPDATE SET claimed_at=excluded.claimed_at',

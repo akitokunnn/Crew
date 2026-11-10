@@ -4,8 +4,9 @@ import contextlib
 import io
 import json
 import subprocess
+from unittest import mock
 
-from crew import board, cli, codex_tools, git_overview, git_view, runtimes, session_ops
+from crew import board, cli, codex_tools, git_overview, git_view, runtimes, session_ops, store
 from test_core import CoreCase, NOW
 
 
@@ -231,6 +232,26 @@ class GitOverviewTests(CoreCase):
         with self.assertRaisesRegex(board.Conflict, 'Owner'):
             self.adopt('rival')
         self.assertEqual(self.owners(), [{'session_id': 'owner', 'name': 'Owner'}])
+
+    def test_adoption_rechecks_owner_after_another_connection_claims_during_scan(self):
+        self.leader('heir', 'Heir')
+        self.leader('rival', 'Rival')
+        read = git_overview.read
+
+        def scanned(*args, **kwargs):
+            result = read(*args, **kwargs)
+            if kwargs.get('force'):
+                # A second UI / carrier finishes its claim after our repository
+                # scan, before this caller reserves the board write transaction.
+                with contextlib.closing(store.connect(self.home)) as other:
+                    other.execute('INSERT INTO branch_claims VALUES(?,?,?,?,?)',
+                                  ('demo', 'topic', 'rival', None, NOW))
+            return result
+
+        with mock.patch.object(git_overview, 'read', side_effect=scanned):
+            with self.assertRaisesRegex(board.Conflict, 'Rival'):
+                self.adopt('heir')
+        self.assertEqual(self.owners(), [{'session_id': 'rival', 'name': 'Rival'}])
 
     def test_only_current_leaders_of_the_project_adopt_listed_branches(self):
         self.leader('chief', 'Chief')
