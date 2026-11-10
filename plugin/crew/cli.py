@@ -11,7 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import board, channel, guard, install, message_receipts, runtimes, store, vscode_sessions
+from . import board, channel, git_overview, guard, install, message_receipts, runtimes, store, vscode_sessions
 from .hooks import git_details
 
 
@@ -110,6 +110,8 @@ def parser():
     a.add_argument("--branch")
     a.add_argument('--blocking', action='store_true', help='确实在等合并后继续工作；成功后唤醒提出者，否则成功仅记入待阅记录')
     c.add_parser("requests").add_argument("--all", action="store_true")
+    c.add_parser("branches", help="待合入或待推送的分支及其归属；没人认领的也在其中").add_argument("--json", action="store_true")
+    c.add_parser("adopt", help="leader 认领没有在岗 leader 的分支（例如被收起的 leader 留下的）").add_argument("branch")
     a = c.add_parser("resolve")
     a.add_argument("id", type=int)
     a.add_argument("status", choices=("merged", "rejected", "waiting_user", "merging"))
@@ -462,6 +464,16 @@ def _emit(value, as_json=False, command=None, channel_card=None, git_assistant=N
                             (item["id"], item["status"], item["branch"], item["requester_name"],
                              item["pr_number"] if item["pr_number"] is not None else "-", ("[合并后继续] " if item.get("blocking") else "") + item["description"])
                             for item in value["requests"]) if value["requests"] else "暂无合并请求")
+        elif "adopted" in value:
+            item = value["adopted"]
+            print("%s 已经归 %s 管" % (item["branch"], item["leader"]["name"]) if item["already"]
+                  else "已认领 %s，归 %s 管" % (item["branch"], item["leader"]["name"]))
+        elif "branches" in value:
+            print("\n".join("%s · %s · %s 个提交%s · %s\n  %s" % (
+                item["name"], "未合入 " + value["base"] if item["state"] == "unmerged" else "已合入未推送", item["commits"],
+                "" if item["worktree"] is None else " · " + item["worktree"],
+                "、".join(owner["name"] for owner in item["owners"]) if item["owners"] else "没人认领",
+                item["latest"]["subject"]) for item in value["branches"]) if value["branches"] else "没有待合入或待推送的分支")
         elif value["enabled"]:
             print("Git 助手已启用 · base: %s · stable: %s" % (value["base"], value["stable"] or "未设置"))
             if git_assistant is not None:
@@ -880,6 +892,11 @@ def execute(conn, args, cwd, agents_provider):
         elif args.action == "requests":
             return {"requests": board.titled_requests(board.git_requests(conn, p, args.all),
                                                       lambda sid: vscode_sessions.session_title(CLAUDE_PROJECTS, sid))}
+        elif args.action == "branches":
+            return git_overview.branches(conn, board.project(conn, p), board.git_config(conn, p))
+        elif args.action == "adopt":
+            return {"adopted": git_overview.adopt(conn, board.project(conn, p), board.git_config(conn, p),
+                                                  args.branch, _session_id(args))}
         elif args.action == "resolve":
             return {"request": board.resolve_git_request(conn, p, _session_id(args), args.id, args.status,
                                                           args.note, args.pr_number)}

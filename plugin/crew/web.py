@@ -1188,6 +1188,13 @@ class Service:
                 root = board.project(conn, project)["root"]
             git_view.require_repository(root)
             return git_view.fetch(root)
+        if path == "/api/git/adopt":
+            # Reads the repository first, so it runs outside the board write lock like fetch.
+            with closing(store.connect(self.home)) as conn:
+                name = self.selected_project(conn, project_name if project_name is not None else data.get("project"))
+                return git_overview.adopt(conn, board.project(conn, name), board.git_config(conn, name),
+                                          _text(data, "branch"), _text(data, "leader_session_id"),
+                                          now=self.now().isoformat(timespec="milliseconds").replace("+00:00", "Z"))
         with self.write_lock, closing(store.connect(self.home)) as conn:
             now = self.now().isoformat(timespec="milliseconds").replace("+00:00", "Z")
             if path == "/api/project/init":
@@ -1885,7 +1892,7 @@ POST_PATHS.add('/api/leaders/priority')
 POST_PATHS.update(('/api/files/resolve', '/api/files/open', '/api/files/reveal'))
 POST_PATHS.update(('/api/documents','/api/documents/pin','/api/documents/refresh'))
 POST_PATHS.update(('/api/workspace-data/discover','/api/workspace-data/open','/api/workspace-data/export','/api/workspace-data/preview','/api/workspace-data/import','/api/workspace-data/handoff','/api/workspace-data/activate'))
-POST_PATHS.update(('/api/git/enable', '/api/git/disable', '/api/git/fetch', '/api/git/settings'))
+POST_PATHS.update(('/api/git/enable', '/api/git/disable', '/api/git/fetch', '/api/git/adopt', '/api/git/settings'))
 POST_PATHS.update(('/api/admin/update/prepare', '/api/admin/update/cancel'))
 POST_PATHS.add('/api/settings')
 POST_PATHS.update(('/api/sounds/custom', '/api/sounds/custom/delete'))

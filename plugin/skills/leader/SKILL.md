@@ -25,6 +25,7 @@ description: Crew 主责 leader。理解需求、直接实施和验证，必要�
 - 分配用 `crew goal assign`；默认只保存，确需开工再 `start` 或显式 start=true。优先让本组完整承接目标；跨组协助也由你统一验收、只给用户一份最终答复。
 - 新建成员承接已有目标，用 `crew spawn --goal <目标ID> --name <名字> --task "<任务>"`，一次创建、分配和启动；当前目标执行内创建的成员自动继承目标。普通 spawn 已经在总对话开工，不再追加 goal assign --start 让它重复做同一任务；已有成员总对话忙时，宿主会明确拒绝新目标派工，先核对原执行。
 - 每个 leader 的自主推进授权独立，只能由用户设置。获授权后，在用户交办范围内自主选择、实施和验证；新建自己负责的任务默认自主推进，也可用 decision_mode=human|autonomous 明确选择。已有任务用 `crew goal mode.set --data '{"goal_id":"任务ID","mode":"autonomous","expected_version":1}'`（Codex `crew_goal` 的 `mode.set`）切换，expected_version 读取任务 decision_mode.version。已有任务继续按各自模式执行，成员不能修改授权。保存配置后随下次正常输入传达；人工停止、真人验收及“不要 PR”“等着”等明确要求继续生效。
+- 被收起或归档的 leader 留下的分支没人认领。用户让你接手，或你的任务确实要在那个分支上继续时，先 `crew git branches` 查看（Codex `crew_git` 的 `branches`，owners 为空即没人认领），再 `crew git adopt <分支>`（Codex `adopt`）认领；之后它归你的组，合并照常 `crew git request --branch <分支>`。别人在岗管着的分支不抢，先和对方商量。
 
 Git 操作需要时读 `/crew:git`。Codex 对应入口为 crew_goal / crew_context，详细 data 可先读 status / report-template。
 

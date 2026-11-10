@@ -5,6 +5,9 @@ const CrewGit = (() => {
   let loading = false, operation = null, errorText = "";
   let selectedRuntime = "", runtimeExplicit = false;
   let chatIdentity = null;
+  // The browser re-serializes markup (`<circle/>` → `<circle></circle>`), so innerHTML never equals what was
+  // written; compare with the last written string, or every poll rebuilds the panel and closes an open picker.
+  const written = new WeakMap();
   const ago = at => {
     const seconds = Math.max(0, (Date.now() - new Date(at)) / 1000);
     return seconds < 60 ? "刚刚" : seconds < 3600 ? `${Math.floor(seconds / 60)} 分钟前` : seconds < 86400 ? `${Math.floor(seconds / 3600)} 小时前` : `${Math.floor(seconds / 86400)} 天前`;
@@ -19,12 +22,18 @@ const CrewGit = (() => {
   }
   // Prefer an owner still shown in the leader list, so its colour and avatar match the sidebar.
   const owner = branch => branch.owners.find(item => options.leader?.(item.session_id) !== undefined) ?? branch.owners[0] ?? null;
+  // Branches left by archived leaders: the user hands one to a current leader, recorded like a branch it created.
+  function adoptPicker(branch) {
+    const leaders = options.state.leaders || [];
+    if (leaders.length === 0) return "";
+    return `<select class="git-lite-adopt" data-git-adopt="${esc(branch.name)}" aria-label="把 ${esc(branch.name)} 交给 leader"${operation !== null ? ' disabled=""' : ""}><option value="" selected="" disabled="">${operation === "adopt" ? "正在交给…" : "交给 leader…"}</option>${leaders.map(item => `<option value="${esc(item.session_id)}">${esc(item.name)}</option>`).join("")}</select>`;
+  }
   function branchCard(branch) {
     const lead = owner(branch), request = data.requests.find(item => item.branch === branch.name && item.status in requestLabels);
     const color = lead === null ? "var(--text-3)" : options.tint?.(lead.name) ?? "var(--accent)";
     const count = `${branch.commits} 个提交${branch.state === "unmerged" ? "未合入" : "未推送"}`;
     const facts = [ago(branch.latest.time), branch.behind > 0 ? `落后 ${data.base.name} ${branch.behind}` : "", branch.worktree === null ? "" : shortPath(branch.worktree)].filter(Boolean);
-    const who = lead === null ? '<span class="git-muted">没找到对应的 leader</span>'
+    const who = lead === null ? `<span class="git-muted">没人认领</span>${adoptPicker(branch)}`
       : `${options.avatar?.(lead.name, 18) ?? ""}<span class="git-lite-leader">${esc(lead.name)}</span>${branch.owners.length > 1 ? `<span class="git-muted">等 ${branch.owners.length} 位</span>` : ""}`;
     return `<article class="git-lite-card ${branch.state}" style="--tint:${color}"><div class="git-lite-card-head"><span class="git-lite-branch" title="${esc(branch.name)}">${branchIcon}<span>${esc(branch.name)}</span></span><span class="git-lite-count">${count}</span></div><div class="git-lite-owner">${who}${request === undefined ? "" : `<span class="git-lite-request ${request.status}">${requestLabels[request.status]} #${request.id}</span>`}</div><div class="git-lite-subject" title="${esc(branch.latest.subject)}">${esc(branch.latest.subject)}</div><div class="git-lite-facts" title="${esc([at(branch.latest.time), branch.latest.author, branch.worktree].filter(Boolean).join(" · "))}">${esc(facts.join(" · "))}</div></article>`;
   }
@@ -86,7 +95,7 @@ const CrewGit = (() => {
     } else CrewChat.update(options.state);
     for (const [selector, markup] of [[".git-head",header],[".git-assistant-summary",summary],[".git-page-in",repository],[".git-operation-error",errorText === "" || data === null ? "" : `<pre class="git-error" role="alert">${esc(errorText)}</pre>`]]) {
       const element = host.querySelector(selector);
-      if (element.innerHTML !== markup) element.innerHTML = markup;
+      if (written.get(element) !== markup) { element.innerHTML = markup; written.set(element, markup); }
     }
     if (scroll !== undefined && host.querySelector(".git-page") !== null) host.querySelector(".git-page").scrollTop = scroll;
   }
@@ -112,7 +121,7 @@ const CrewGit = (() => {
       const result = await options.api(`/api/git/${name}`, {project:options.project, ...body});
       if (generation !== requestGeneration) return;
       if (name === "fetch" && !result.ok) { errorText = result.error; data.last_fetch_at = result.last_fetch_at; }
-      else { await load(); if (name === "enable" || name === "disable") await options.onChanged(); if (generation === requestGeneration) options.toast(name === "enable" ? "已启用 Git 助手" : name === "disable" ? "已停用 Git 助手" : result.output === "" ? "fetch 完成" : result.output); }
+      else { await load(); if (name !== "fetch") await options.onChanged(); if (generation === requestGeneration) options.toast(name === "enable" ? "已启用 Git 助手" : name === "disable" ? "已停用 Git 助手" : name === "adopt" ? `${result.branch} 已交给 ${result.leader.name}` : result.output === "" ? "fetch 完成" : result.output); }
     } catch (error) { if (generation === requestGeneration) errorText = error.message; }
     finally { if (generation === requestGeneration) { operation = null; render(); } }
   }
@@ -133,7 +142,10 @@ const CrewGit = (() => {
     mutate("enable", {base:event.target.elements.base.value, stable:event.target.elements.stable.value, runtime});
   }
   function change(event) {
-    if (event.target.id !== "git-runtime") return;
+    if (event.target.id !== "git-runtime") {
+      if (event.target.dataset.gitAdopt !== undefined) mutate("adopt", {branch:event.target.dataset.gitAdopt, leader_session_id:event.target.value});
+      return;
+    }
     selectedRuntime = event.target.value; runtimeExplicit = true;
     const available = (options.catalog?.() || []).some(item => item.id === selectedRuntime && item.available);
     host.querySelector('[data-git-act="enable"]').disabled = !available || operation !== null || data.choices.branches.length === 0;

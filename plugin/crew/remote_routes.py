@@ -12,7 +12,7 @@ GET_PATHS = frozenset((
 POST_PATHS = frozenset((
     '/api/assistant/open', '/api/personal/notes', '/api/personal/notes/start', '/api/personal/tags',
     '/api/personal/notes/recovery', '/api/chat/send', '/api/chat/interrupt', '/api/chat/read',
-    '/api/leader', '/api/wake', '/api/spawn', '/api/member-defaults', '/api/roster/move', '/api/roster/remove',
+    '/api/leader', '/api/wake', '/api/spawn', '/api/member-defaults', '/api/roster/move', '/api/roster/remove', '/api/git/adopt',
     '/api/notifications/away', '/api/goals/create', '/api/goals/action', '/api/goals/context',
     '/api/goals/agent', '/api/answer', '/api/decision/hold', '/api/decision/unhold',
     '/api/decision/discuss', '/api/decision/ready', '/api/decision/clarify', '/api/native-approval',

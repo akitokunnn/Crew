@@ -710,6 +710,23 @@ class GitHttpTests(ShellFixture, unittest.TestCase):
                 self.assertEqual(self.request("/api/git/fetch?project=demo", {}), (200, result))
                 fetch.assert_called_once_with(board.project(self.conn, "demo")["root"])
 
+    def test_adopt_hands_unowned_branch_to_chosen_leader(self):
+        body = {"project": "demo", "branch": "topic", "leader_session_id": "heir"}
+        self.assertEqual(self.request("/api/git/adopt", body)[0], 400)
+        self.assertEqual(self.request("/api/git/enable?project=demo", {})[0], 200)
+        self.git("switch", "topic")
+        self.git("-c", "user.name=Crew Test", "-c", "user.email=crew@example.invalid", "-c", "commit.gpgsign=false",
+                 "commit", "--allow-empty", "-m", "orphan work")
+        self.git("switch", "develop")
+        board.join(self.conn, "heir", "demo", "Heir", self.project, None, "develop", role="leader", now=NOW)
+        self.assertEqual(self.request("/api/git/adopt", body, header=False)[0], 403)
+        self.assertEqual(self.request("/api/git/adopt", {**body, "branch": " "})[0], 400)
+        code, result = self.request("/api/git/adopt", body)
+        self.assertEqual(code, 200, result)
+        self.assertEqual(result, {"branch": "topic", "leader": {"session_id": "heir", "name": "Heir"}, "already": False})
+        branch = next(item for item in self.request("/api/git?project=demo")[1]["branches"] if item["name"] == "topic")
+        self.assertEqual(branch["owners"], [{"session_id": "heir", "name": "Heir"}])
+
     def test_commit_detail_returns_real_stats_and_invalid_sha_is_400(self):
         self.assertEqual(self.request("/api/git/commit?project=demo&sha=0000")[0], 400)
         self.assertEqual(self.request("/api/git/enable?project=demo", {})[0], 200)

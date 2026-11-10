@@ -1,8 +1,11 @@
 """Branch ownership uses an isolated board and a real temporary Git worktree."""
 import tests  # Install the production-service connection guard.
+import contextlib
+import io
+import json
 import subprocess
 
-from crew import board, git_overview, git_view
+from crew import board, cli, codex_tools, git_overview, git_view, runtimes, session_ops
 from test_core import CoreCase, NOW
 
 
@@ -206,3 +209,89 @@ class GitOverviewTests(CoreCase):
                           ('2026-11-09T03:00:00Z', 'first'))
         self.assertEqual(self.owners(), [{'session_id': 'first', 'name': 'First'},
                                          {'session_id': 'second', 'name': 'Second'}])
+
+    def adopt(self, sid, branch='topic'):
+        return git_overview.adopt(self.conn, self.project, self.config, branch, sid, now=NOW)
+
+    def test_leader_adopts_branch_left_by_archived_leader(self):
+        self.leader('gone', 'Gone', branch='topic')
+        self.leader('heir', 'Heir')
+        self.assertEqual(self.owners(), [{'session_id': 'gone', 'name': 'Gone'}])
+        session_ops.archive(self.conn, 'gone', now=NOW)
+        self.assertEqual(self.owners(), [])
+        self.assertEqual(self.adopt('heir'), {'branch': 'topic', 'leader': {'session_id': 'heir', 'name': 'Heir'},
+                                              'already': False})
+        self.assertEqual(self.owners(), [{'session_id': 'heir', 'name': 'Heir'}])
+        self.assertEqual(self.adopt('heir')['already'], True)
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM branch_claims').fetchone()[0], 1)
+
+    def test_branch_owned_by_another_current_leader_is_not_taken(self):
+        self.leader('owner', 'Owner', branch='topic')
+        self.leader('rival', 'Rival')
+        with self.assertRaisesRegex(board.Conflict, 'Owner'):
+            self.adopt('rival')
+        self.assertEqual(self.owners(), [{'session_id': 'owner', 'name': 'Owner'}])
+
+    def test_only_current_leaders_of_the_project_adopt_listed_branches(self):
+        self.leader('chief', 'Chief')
+        self.member('worker', 'Worker', 'Chief')
+        self.leader('archived', 'Archived')
+        session_ops.archive(self.conn, 'archived', now=NOW)
+        other = self.base / 'other-project'
+        other.mkdir()
+        board.init_project(self.conn, 'other', other, now=NOW)
+        board.join(self.conn, 'outsider', 'other', 'Outsider', other, None, 'main', role='leader', now=NOW)
+        for sid in ('worker', 'archived', 'outsider', 'git-admin'):
+            with self.subTest(sid=sid), self.assertRaisesRegex(board.BoardError, '在岗的 leader'):
+                self.adopt(sid)
+        for branch in ('main', 'crew/git-fixture', 'missing'):
+            with self.subTest(branch=branch), self.assertRaisesRegex(board.BoardError, '不在待处理列表'):
+                self.adopt('chief', branch)
+        with self.assertRaisesRegex(board.BoardError, '启用 Git'):
+            git_overview.adopt(self.conn, self.project, None, 'topic', 'chief')
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM branch_claims').fetchone()[0], 0)
+
+    def test_cli_lists_unowned_branches_and_adopts_for_caller(self):
+        self.leader('heir', 'Heir')
+
+        def run(*argv, sid='heir'):
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = cli.main(['--home', str(self.home), '--session', sid, *argv], cwd=self.root)
+            return code, out.getvalue(), err.getvalue()
+
+        code, out, _ = run('git', 'branches')
+        self.assertEqual(code, 0)
+        self.assertIn('topic', out)
+        self.assertIn('没人认领', out)
+        listed = json.loads(run('git', 'branches', '--json')[1])
+        self.assertEqual([(item['name'], item['owners']) for item in listed['branches']], [('topic', [])])
+        self.assertEqual(run('git', 'adopt', 'topic')[:2], (0, '已认领 topic，归 Heir 管\n'))
+        self.assertIn('Heir', run('git', 'branches')[1])
+        self.member('worker', 'Worker', 'Heir')
+        code, _, err = run('git', 'adopt', 'topic', sid='worker')
+        self.assertEqual(code, 1)
+        self.assertIn('在岗的 leader', err)
+
+    def test_codex_tool_lists_and_adopts_with_host_identity(self):
+        self.leader('heir', 'Heir')
+        self.member('worker', 'Worker', 'Heir')
+        for sid in ('heir', 'worker'):
+            runtimes.set(self.conn, sid, 'codex')
+
+        def call(sid, action, data=None):
+            result = codex_tools.CodexTools(self.home, sid)({'tool': 'crew_git', 'arguments': {
+                'action': action, 'data': {} if data is None else data}})
+            return result['success'], json.loads(result['contentItems'][0]['text'])
+
+        ok, listed = call('worker', 'branches')
+        self.assertTrue(ok)
+        self.assertEqual([(item['name'], item['owners']) for item in listed['branches']], [('topic', [])])
+        ok, error = call('worker', 'adopt', {'branch': 'topic'})
+        self.assertFalse(ok)
+        self.assertIn('在岗的 leader', error['error']['message'])
+        ok, adopted = call('heir', 'adopt', {'branch': 'topic'})
+        self.assertTrue(ok, adopted)
+        self.assertEqual(adopted['adopted']['leader'], {'session_id': 'heir', 'name': 'Heir'})
+        self.assertEqual(self.owners(), [{'session_id': 'heir', 'name': 'Heir'}])
+        self.assertFalse(call('heir', 'adopt', {})[0])

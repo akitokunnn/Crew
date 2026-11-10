@@ -71,6 +71,10 @@ _GIT_DATA = {
                'properties': {'text': {**_text('Branch policy to save.'), 'minLength': 0}}},
     'requests': {'type': 'object', 'additionalProperties': False,
                  'properties': {'all': {'type': 'boolean'}}},
+    'branches': {'type': 'object', 'properties': {}, 'additionalProperties': False},
+    'adopt': {'type': 'object', 'additionalProperties': False,
+              'properties': {'branch': _text('Branch to adopt, as listed by branches.', max_length=512)},
+              'required': ['branch']},
     'request': {'type': 'object', 'additionalProperties': False,
                 'properties': {'branch': {**_text('Branch; omitted uses the host-recorded current branch.'), 'minLength': 0},
                                'blocking': {'type': 'boolean', 'description': 'Set only when this merge blocks concrete follow-up work. Success then wakes the requester; ordinary success stays passive.'},
@@ -105,7 +109,9 @@ _SPECS = [
           {'target': _TARGET}, ('target',)),
     _spec('crew_git', 'Use the host-bound project Git ledger, without shell commands. Actions: status; policy '
           '(data.text writes, omitted reads); requests (data.all); request (data.branch/data.blocking optional, data.description required); '
-          'resolve (data.id, data.status, data.note, optional data.pr_number). Only the configured Git administrator '
+          'resolve (data.id, data.status, data.note, optional data.pr_number); branches (branches still to merge or push, '
+          'with owning leaders; owners=[] means nobody looks after it, e.g. its leader was archived); adopt (data.branch, '
+          'leader only: take over a branch that has no current leader). Only the configured Git administrator '
           'may write policy or resolve requests. Progress is silent; success only wakes explicitly blocking requests. '
           'Rejection remains actionable. This records requests/results; it does not run Git or merge code.',
           {'action': {'type': 'string', 'enum': list(_GIT_DATA)},
@@ -407,7 +413,7 @@ class CodexTools:
         if name == 'crew_personal':
             return args['action'] in personal_actions.READ_ACTIONS
         if name == 'crew_git':
-            return args['action'] in ('status', 'requests') or args['action'] == 'policy' and 'text' not in args.get('data', {})
+            return args['action'] in ('status', 'requests', 'branches') or args['action'] == 'policy' and 'text' not in args.get('data', {})
         if name in ('crew_goal', 'crew_context'):
             action = args['action'] if name == 'crew_goal' else 'context.' + args['action']
             return action == 'report.preview' or action in goal_actions.READ_ACTIONS
@@ -461,6 +467,16 @@ class CodexTools:
                         else board.git_policy(conn, project)}
             if action == 'requests':
                 return {'requests': board.git_requests(conn, project, all=data.get('all', False))}
+            if action in ('branches', 'adopt'):
+                import subprocess
+                from . import git_overview, git_view
+                config = board.git_config(conn, project)
+                try:
+                    if action == 'branches':
+                        return git_overview.branches(conn, board.project(conn, project), config)
+                    return {'adopted': git_overview.adopt(conn, board.project(conn, project), config, data['branch'], sid)}
+                except (git_view.GitError, OSError, subprocess.TimeoutExpired) as exc:
+                    raise ToolError('git_error', str(exc)) from None
             if action == 'request':
                 return {'request': board.request_git_merge(conn, project, sid, data.get('branch', actor['branch']),
                                                            data['description'], title=None, blocking=data.get('blocking', False))}

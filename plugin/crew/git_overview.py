@@ -53,3 +53,43 @@ def read(conn, project, config, force=False):
                 owners.append(leaders[leader['session_id']])
         branch['owners'] = owners
     return data
+
+
+def adopt(conn, project, config, branch, leader_session_id, now=None):
+    """Hand a branch no current leader looks after to `leader_session_id`.
+
+    Branches of archived or closed leaders lose their owner; the claim is recorded like a branch the
+    leader created, so it follows the same ownership rules afterwards. A branch another current
+    leader still owns is not taken over.
+    """
+    if config is None:
+        raise board.BoardError('请先启用 Git 管理')
+    leader = board.session(conn, leader_session_id)
+    if (leader['project'] != project['name'] or leader['role'] != 'leader' or leader['status'] == 'closed'
+            or board.is_archived(conn, leader_session_id) or leader_session_id == config['admin_session_id']):
+        raise board.BoardError('只有本项目当前在岗的 leader 能认领分支')
+    item = next((entry for entry in read(conn, project, config, force=True)['branches'] if entry['name'] == branch), None)
+    if item is None:
+        raise board.BoardError('分支 %s 不在待处理列表里：不存在，或已合入并推送' % branch)
+    owner = {'session_id': leader_session_id, 'name': leader['crew_name']}
+    others = [entry['name'] for entry in item['owners'] if entry['session_id'] != leader_session_id]
+    if others:
+        raise board.Conflict('分支 %s 归 %s 管，先和它商量' % (branch, '、'.join(others)))
+    if not item['owners']:
+        with board.transaction(conn):
+            conn.execute(
+                'INSERT INTO branch_claims(project,branch,session_id,goal_id,claimed_at) VALUES(?,?,?,NULL,?) '
+                'ON CONFLICT(project,branch,session_id) DO UPDATE SET claimed_at=excluded.claimed_at',
+                (project['name'], branch, leader_session_id, board._time(now)))
+    return {'branch': branch, 'leader': owner, 'already': bool(item['owners'])}
+
+
+def branches(conn, project, config):
+    """Compact list for leaders' tools: every branch still to merge or push, with its owners."""
+    if config is None:
+        raise board.BoardError('请先启用 Git 管理')
+    data = read(conn, project, config, force=True)
+    return {'base': data['base']['name'], 'branches': [
+        {'name': item['name'], 'state': item['state'], 'commits': item['commits'], 'worktree': item['worktree'],
+         'latest': {'subject': item['latest']['subject'], 'time': item['latest']['time']}, 'owners': item['owners']}
+        for item in data['branches']]}
