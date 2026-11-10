@@ -299,7 +299,7 @@ def parser():
     payload = a.add_mutually_exclusive_group()
     payload.add_argument('--data', help='JSON action payload')
     payload.add_argument('--file', type=Path, help='UTF-8 JSON action payload')
-    for namespace, actions in (('goal', ('create','status','start','pause','resume','cancel','reopen','amend','assign','report-template','report.get','report.preview','report.publish','mode.set','finish','work.list','work.add','work.update','versions.list','versions.preview','versions.file','version.capture','version.restore')),
+    for namespace, actions in (('goal', ('create','status','start','pause','resume','cancel','reopen','amend','assign','transfer','report-template','report.get','report.preview','report.publish','mode.set','finish','work.list','work.add','work.update','versions.list','versions.preview','versions.file','version.capture','version.restore')),
                                ('context', ('inspect','retrieve','put','correct','expire'))):
         goal_parser = command(namespace, True)
         goal_parser.set_defaults(json=True)

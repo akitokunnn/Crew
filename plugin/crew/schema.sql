@@ -836,6 +836,16 @@ CREATE TABLE IF NOT EXISTS goal_cancellations (
  goal_id TEXT PRIMARY KEY REFERENCES goals(id), round INTEGER NOT NULL,
  requested_at TEXT NOT NULL, actor TEXT NOT NULL
 );
+-- Handing a task to another leader waits for running turns to end; finished rows stay as history.
+CREATE TABLE IF NOT EXISTS goal_transfers (
+ id TEXT PRIMARY KEY, goal_id TEXT NOT NULL REFERENCES goals(id), round INTEGER NOT NULL,
+ from_session_id TEXT NOT NULL REFERENCES sessions(session_id),
+ to_session_id TEXT NOT NULL REFERENCES sessions(session_id),
+ note TEXT NOT NULL, actor TEXT NOT NULL,
+ status TEXT NOT NULL CHECK(status IN ('pending','finalized','failed')), error TEXT,
+ requested_at TEXT NOT NULL, finalized_at TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS goal_transfers_pending ON goal_transfers(goal_id) WHERE status='pending';
 CREATE TABLE IF NOT EXISTS session_stop_gates (
  session_id TEXT PRIMARY KEY REFERENCES sessions(session_id),
  stopped_at TEXT NOT NULL, stopped_by TEXT NOT NULL

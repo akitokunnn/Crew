@@ -1661,5 +1661,37 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(self.processes, [])
 
 
+    def test_user_hands_a_busy_task_to_another_leader_and_the_receiver_gets_the_handoff(self):
+        board.join(self.conn, 'next-lead', 'demo', 'next', self.project, self.project, 'main', role='leader', now=NOW)
+        goal = self.goal()
+        _, receipt, _ = self.send_goal(goal, text='Measure the first sample', message_id='before-transfer')
+        manager, task_process = self.server.service.chat, self.processes[-1]
+        task_process.emit({'type': 'assistant', 'message': {'id': 'before-transfer-answer', 'content': [{'type': 'text', 'text': 'Sample one measured at 320ms.'}]}})
+        current = goals.get(self.conn, goal['id'])
+        code, result, _ = self.request('/api/goals/action?project=demo', {
+            'goal_id': goal['id'], 'action': 'transfer', 'version': current['version'], 'to': 'next-lead', 'note': 'Sample two is left.'})
+        self.assertEqual(code, 200, result)
+        self.assertEqual(result['goal']['transfer_pending']['to_session_id'], 'next-lead')
+        self.assertEqual(result['goal']['leader_session_id'], 's3')
+        self.assertTrue(manager.running(receipt['execution_id']))  # The running turn is never interrupted.
+
+        self.finish_turn(receipt['execution_id'], task_process)
+        with self.server.service.chat.lock:
+            self.server.service.chat.goal_controller.sync(self.conn, goal['id'])
+        value = goals.get(self.conn, goal['id'])
+        self.assertEqual((value['leader_session_id'], value['status']), ('next-lead', 'queued'))
+        self.assertFalse(manager.running(receipt['execution_id']))
+        self.assertEqual(goals.get_execution(self.conn, receipt['execution_id'])['status'], 'cancelled')
+        notice = board.pending_notices(self.conn, 'next-lead')
+        self.assertEqual(len(notice), 1)
+        self.assertIn('Sample two is left.', notice[0]['text'])
+
+        code, result, _ = self.request('/api/goals/action?project=demo', {
+            'goal_id': goal['id'], 'action': 'start', 'version': value['version']})
+        self.assertEqual(code, 200, result)
+        sent = self.processes[-1].stdin.getvalue()
+        self.assertIn('Sample two is left.', sent)
+        self.assertIn('Sample one measured at 320ms.', sent)
+
 if __name__ == '__main__':
     unittest.main()

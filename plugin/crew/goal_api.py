@@ -56,7 +56,7 @@ def card(conn, value):
             'work_summary': goal_work.summary_of(work), 'supplements_after_report': supplements,
             'now_doing': [{'key': item['key'], 'title': item['title'], 'session_id': item['owner_session_id']} for item in doing],
             'pending_decision': dict(decision) if decision else None, 'working_count': working,
-            'finish_pending': finish is not None, 'observing': goals.observation(conn, value['id']),
+            'finish_pending': finish is not None, 'transfer_pending': goals.pending_transfer(conn, value['id']), 'observing': goals.observation(conn, value['id']),
             'last_activity_at': max(value['updated_at'], activity or value['updated_at'])}
 
 
@@ -188,6 +188,12 @@ def post(service, conn, project, path, data):
             control.sync(conn, identity)
         elif action == 'reopen':
             goals.reopen(conn, identity, data.get('reason', '用户继续此目标'))
+        elif action == 'transfer':
+            transfer = goals.request_transfer(conn, identity, data.get('to'), data.get('note', ''))
+            control.sync(conn, identity)
+            transfer = goals.get_transfer(conn, transfer['id'])
+            if transfer['status'] == 'failed':
+                raise board.Conflict('交接没有完成：' + transfer['error'])
         else:
             raise board.BoardError('未知目标操作')
         return {'goal': card(conn, goals.get(conn, identity))}
