@@ -78,7 +78,10 @@
   const leader = id => state.leaders.find(item => item.session_id === id);
   const member = id => state.members.find(item => item.session_id === id);
   const workingPeople = people => people.filter(item => item.status === "working");
-  const workingDispatches = people => people.flatMap(person => person.codex.filter(task => task.source === "skill_dispatch" && task.status === "running").map(task => ({person, task})));
+  // Running collaborations are observed work of their own: a skill dispatch is a separate process, and a native
+  // sub-agent or background task keeps going after its owner's turn ends. A working owner already shows its own sub-agents.
+  const runningCollab = (person, task) => task.status === "running" && (task.source === "skill_dispatch" || task.source === "native_subagent" && person.status !== "working");
+  const workingDispatches = people => people.flatMap(person => person.codex.filter(task => runningCollab(person, task)).map(task => ({person, task})));
   const HAIKU = "claude-haiku-4-5-20251001";
   const runtimeId = item => typeof item === "string" ? item : item?.runtime || "claude";
   const editorHandoffReason = item => runtimeId(item) === "codex" ? "Codex 会话在 Crew 内继续；暂不支持转到 VS Code" : "";
@@ -154,10 +157,11 @@
   function groupWork(item) {
     const team = membersOf(item.session_id), members = workingPeople(team).length;
     const self = item.status === "working", count = members + Number(self);
-    const dispatches = workingDispatches([item, ...team]).length;
+    const collabs = workingDispatches([item, ...team]), dispatches = collabs.length;
+    const subagents = collabs.filter(({task}) => task.source === "native_subagent").length, skills = dispatches - subagents;
     const people = count === 0 ? "" : self ? members > 0 ? `本组 ${count} 人在干活` : "本人在干活" : `${members} 位组员在干活`;
-    const label = [people, dispatches > 0 ? `${dispatches} 个派工在运行` : ""].filter(Boolean).join(" · ");
-    const brief = [people, dispatches > 0 ? `派工 ${dispatches}` : ""].filter(Boolean).join(" · ");
+    const label = [people, skills > 0 ? `${skills} 个派工在运行` : "", subagents > 0 ? `${subagents} 个子代理在运行` : ""].filter(Boolean).join(" · ");
+    const brief = [people, skills > 0 ? `派工 ${skills}` : "", subagents > 0 ? `子代理 ${subagents}` : ""].filter(Boolean).join(" · ");
     return {self, members, count, dispatches, active:count + dispatches > 0, label, brief};
   }
   const groupAvatar = (item, work) => !work.active ? av(item.name, 30) : `<span class="group-work-avatar" title="${esc(work.label)}">${av(item.name, 30)}</span>`;
@@ -455,7 +459,8 @@
   }
   function workingDispatchRow({person, task}) {
     const isLeader = leader(person.session_id) !== undefined;
-    return `<button class="li click" data-act="${isLeader ? "leader" : "member-chat"}" data-id="${esc(person.session_id)}" data-dispatch-id="${esc(task.id)}" title="查看发起人对话 · PID ${esc(task.pid)}"><span class="av" style="--s:32px;--tint:var(--working)">${ic("bolt", "sm")}</span><span class="grow"><span class="ttl">${CrewChat.renderInline(task.task_name, person.session_id)}${runtimeBadge(task, true)}</span><span class="li-sub">临时派工 · 由 ${esc(person.name)} 派出</span></span><span class="li-now">PID ${esc(task.pid)}</span>${st("working")}</button>`;
+    const skill = task.source === "skill_dispatch";
+    return `<button class="li click" data-act="${isLeader ? "leader" : "member-chat"}" data-id="${esc(person.session_id)}" data-dispatch-id="${esc(task.id)}" title="查看发起人对话${skill ? ` · PID ${esc(task.pid)}` : ""}"><span class="av" style="--s:32px;--tint:var(--working)">${ic("bolt", "sm")}</span><span class="grow"><span class="ttl">${CrewChat.renderInline(task.task_name, person.session_id)}${runtimeBadge(task, true)}</span><span class="li-sub">${skill ? `临时派工 · 由 ${esc(person.name)} 派出` : `子代理 · 由 ${esc(person.name)} 发起`}</span></span>${skill ? `<span class="li-now">PID ${esc(task.pid)}</span>` : ""}${st("working")}</button>`;
   }
   function renderRight() {
     if (view !== "chat" || leaderId === null) { $("right-panel").innerHTML = ""; delete $("right-panel").dataset.render; return; }

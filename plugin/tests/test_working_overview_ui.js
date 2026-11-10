@@ -119,6 +119,21 @@ test("an observed skill dispatch keeps the group visible without claiming its id
   }
 });
 
+test("an idle or waiting owner's running native sub-agent shows as group work; a working owner is not counted twice",()=>{
+  for(const runtime of ["claude","codex"])for(const status of ["idle","waiting"]){
+    const job={id:"subagent:root:a1",source:"native_subagent",runtime,status:"running",task_name:"Running cd C:/fixture",
+      started_at:"2026-10-26T00:00:00Z",detail:null};
+    const snapshot=state([person("leader",{runtime,status,codex:[job]})]);
+    const h=harness(snapshot),node=h.node(),sidebar=h.sidebar();
+    assert(sidebar.includes('class="group-work-avatar"'));assert(sidebar.includes("子代理 1"));
+    assert(node.includes("1 个子代理在运行"));assert(node.includes(`class="st ${status}"`),"the owner's own state stays honest");
+    const working=h.render("working");assert.equal(count(working),1);
+    assert(working.includes("子代理 · 由 leader 发起"));assert(!working.includes("PID"));assert.deepEqual(rows(working),[{action:"leader",id:"leader"}]);
+    const busy=structuredClone(snapshot);busy.leaders[0].status="working";
+    assert.equal(count(h.render("working",busy)),1);assert(h.node(busy).includes("本人在干活"));assert(!h.node(busy).includes("子代理在运行"));
+  }
+});
+
 test("the sidebar leader row summarises group work, keeps its group during member chats and marks leader autonomy on both carriers",()=>{
   for(const runtime of ["claude","codex"]){
     const job={id:"job",source:"skill_dispatch",runtime,status:"running",task_name:"读取证据",pid:9,started_at:"2026-10-26T00:00:00Z",cwd:"C:/fixture",detail:null};
