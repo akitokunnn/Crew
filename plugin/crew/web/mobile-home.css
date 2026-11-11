@@ -65,7 +65,6 @@ button.wh-overview-item:active{background:var(--hover)}
 .wh-review-actions>.review-buttons{display:contents}
 .wh-review-actions .btn{justify-content:center;width:100%;min-height:var(--m-tap);margin:0;padding:0 12px;box-sizing:border-box;border-radius:12px;font-size:var(--m-fs-body);white-space:normal;text-align:center}
 .wh-review-actions .review-accept,.wh-review-actions .review-reject{font-weight:600}
-.wh-review-actions .btn.ghost{background:var(--hover);color:var(--text)}
 .wh-review-actions .review-observe{color:var(--text-2)}
 .wh-review-open{grid-column:1/-1;justify-self:end;display:inline-flex;align-items:center;min-height:var(--m-tap);margin:0;padding:0 4px;font-size:var(--m-fs-body)}
 
@@ -109,6 +108,8 @@ button.wh-overview-item:active{background:var(--hover)}
 .dc .free{gap:8px;margin-top:12px}
 .dc .free input{min-width:0;min-height:var(--m-tap);padding:0 14px;border-radius:12px;box-sizing:border-box}
 .dc .free .icon-btn{width:var(--m-tap);height:var(--m-tap);border-radius:12px;background:var(--accent-soft);color:var(--accent-text)}
+.dc .free>.icon-btn[type=submit]{background:var(--accent);color:var(--on-accent)}
+.dc .free>.icon-btn[type=submit]:active{background:var(--accent-strong)}
 .decision-context{margin-top:14px;padding-top:0}
 .decision-context summary{display:flex;align-items:center;width:100%;min-height:var(--m-tap);font-size:14px;color:var(--text-2)}
 .decision-context .markdown{padding:0 0 4px;font-size:14px;line-height:1.7}
@@ -249,3 +250,8 @@ button.wh-overview-item:active{background:var(--hover)}
 .workspace-home .project-logo{width:36px;height:36px;flex:none}
 .workspace-home .project-entry>.grow{font-size:17px;font-weight:600;overflow-wrap:anywhere}
 .workspace-home .project-theme-name{flex:none;font-size:var(--m-fs-meta)}
+/* 手机上这些 summary 改成 flex 后失去默认三角，补一个折叠箭头，避免看起来像纯文字（拍板背景的 › 提示在 style.css）。 */
+:is(.wh-history,.channel-digest)>summary{list-style:none}
+:is(.wh-history,.channel-digest)>summary::-webkit-details-marker{display:none}
+:is(.wh-history,.channel-digest)>summary::after{content:"";flex:none;width:7px;height:7px;margin-left:10px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;opacity:.7;transform:translateY(-2px) rotate(45deg);transition:transform .15s}
+:is(.wh-history,.channel-digest)[open]>summary::after{transform:translateY(2px) rotate(-135deg)}
