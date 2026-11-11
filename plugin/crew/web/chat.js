@@ -189,6 +189,12 @@
     tokens[index].attrSet("rel", "noopener noreferrer");
     return linkOpen(tokens, index, options, env, renderer);
   };
+  const COPY_LABEL = '<svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h8"/></svg><span>复制</span>';
+  const COPIED_LABEL = '<svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg><span>已复制</span>';
+  for (const rule of ["fence", "code_block"]) {
+    const original = markdown.renderer.rules[rule];
+    markdown.renderer.rules[rule] = (...args) => `<div class="code-block">${original(...args)}<button type="button" class="code-copy" data-copy-code>${COPY_LABEL}</button></div>`;
+  }
   function fileContentUrl(path, sessionId, base, raw = false, documentId = null) {
     const params = new URLSearchParams(location.search);
     if (documentId !== null) {
@@ -209,6 +215,21 @@
     panel.setAttribute("role", "dialog");
     panel.setAttribute("aria-label", "\u6587\u4ef6\u9884\u89c8");
     document.body.append(panel);
+    document.addEventListener("click", async event => {
+      const button = event.target.closest("[data-copy-code]");
+      if (button === null) return;
+      event.preventDefault();
+      event.stopPropagation();
+      clearTimeout(button.copyTimer);
+      try {
+        await window.CrewBrowser.copyText((button.parentElement.querySelector("pre")?.textContent ?? "").replace(/\n$/, ""));
+      } catch (error) {
+        toast(`复制失败：${error.message}`);
+        return;
+      }
+      button.innerHTML = COPIED_LABEL; button.classList.add("copied");
+      button.copyTimer = setTimeout(() => { button.innerHTML = COPY_LABEL; button.classList.remove("copied"); }, 1600);
+    });
     document.addEventListener("click", async event => {
       const link = event.target.closest("[data-file-path]");
       if (link === null) {

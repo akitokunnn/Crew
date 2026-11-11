@@ -673,6 +673,9 @@ button.tool.indent,button.mline.indent{width:calc(100% - 42px)}
 .m-lead .body a{color:var(--accent-text);text-underline-offset:3px}
 .m-lead .body pre{max-width:100%;overflow:auto;padding:12px 14px;background:var(--hover-2);border:1px solid var(--line);border-radius:12px;font-size:calc(12.5px * var(--fs));line-height:1.7}
 .m-lead .body pre code{padding:0;background:transparent;border-radius:0;font-size:inherit}
+.code-block{position:relative;margin:1em 0}.code-block>pre{margin:0}.m-lead .body .code-block>pre{padding-right:78px}
+.code-copy{position:absolute;top:7px;right:7px;display:inline-flex;align-items:center;gap:4px;height:26px;padding:0 8px 0 6px;border:1px solid var(--line-strong);border-radius:7px;background:var(--surface);color:var(--text-2);font:inherit;font-size:var(--fs-xs);line-height:1;cursor:pointer;transition:color .15s,border-color .15s,background .15s}
+.code-copy:hover{color:var(--text);background:var(--surface-2);border-color:var(--text-3)}.code-copy:focus-visible{outline:2px solid var(--accent);outline-offset:1px}.code-copy.copied{color:var(--accent-text);border-color:var(--accent)}
 .m-lead .body blockquote{margin:10px 0;padding:2px 14px;border-left:2px solid var(--line-strong);color:var(--text-2)}
 .m-lead .body ul,.m-lead .body ol{margin:6px 0 10px;padding-left:24px}
 .m-lead .body table{display:block;width:100%;max-width:100%;overflow:auto;border-collapse:collapse;font-size:calc(13px * var(--fs));line-height:1.6}

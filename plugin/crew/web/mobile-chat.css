@@ -81,6 +81,7 @@ body:has(#chat-head .member-scope-bar){--mc-scope:48px}
 :is(#chat-host,.assistant-chat) .m-lead .body pre{margin:8px 0;padding:10px 12px;font-size:13px;line-height:1.6;white-space:pre;overflow-x:auto;-webkit-overflow-scrolling:touch;border-radius:10px}
 :is(#chat-host,.assistant-chat) .m-lead .body code{font-size:.84em;overflow-wrap:anywhere}
 :is(#chat-host,.assistant-chat) .m-lead .body pre code{overflow-wrap:normal}
+:is(#chat-host,.assistant-chat) .m-lead .body .code-block{margin:8px 0}:is(#chat-host,.assistant-chat) .m-lead .body .code-block>pre{margin:0}
 :is(#chat-host,.assistant-chat) .m-lead .body table{font-size:var(--m-fs-meta);-webkit-overflow-scrolling:touch}
 :is(#chat-host,.assistant-chat) .m-lead .body table{overflow-wrap:normal}
 :is(#chat-host,.assistant-chat) .m-lead .body :is(th,td){padding:6px 10px;word-break:keep-all}
