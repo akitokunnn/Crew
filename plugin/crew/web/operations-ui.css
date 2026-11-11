@@ -3,7 +3,7 @@
 .co-tabs{display:flex;gap:3px;padding:4px;border:1px solid var(--cs-line);border-radius:10px;background:color-mix(in srgb,var(--cs-card) 45%,var(--cs-bg))}
 .co-tabs button{min-width:68px;padding:6px 14px;border:0;border-radius:7px;background:none;color:var(--cs-muted);font-size:calc(13px * var(--cs-scale))}
 .co-tabs button[aria-selected=true]{background:var(--cs-card);color:var(--cs-text);box-shadow:0 1px 3px #0000000d}
-.co-brain,.co-retry{padding:6px 0;border:0;background:none;color:var(--cs-accent);font-size:calc(12px * var(--cs-scale))}
+.co-brain{padding:6px 0;border:0;background:none;color:var(--cs-accent);font-size:calc(12px * var(--cs-scale))}
 .co-brain span{margin-left:4px}
 .co-chat{display:flex;flex-direction:column;border:1px solid var(--cs-line);border-radius:14px;background:var(--cs-card);overflow:hidden}
 .co-chat-heading{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:20px 24px;border-bottom:1px solid var(--cs-line)}
@@ -34,6 +34,7 @@
 .co-compose-footer .cs-button{min-height:31px;padding:5px 12px}
 .co-status-row{display:flex;align-items:baseline;gap:12px;min-height:43px;padding:10px 22px 14px}
 .co-chat-status{flex:1;margin:0;color:var(--cs-muted);font-size:calc(11px * var(--cs-scale));overflow-wrap:anywhere}
+.co-retry{flex:none;min-height:31px;padding:5px 12px}
 .co-chat-elapsed{flex:none;color:var(--cs-muted);font-size:calc(11px * var(--cs-scale));font-variant-numeric:tabular-nums;white-space:nowrap}
 .co-error{color:var(--danger,#bd4f4f)!important}
 .co-config{display:grid;gap:18px}

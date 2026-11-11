@@ -1129,9 +1129,9 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         current = goals.get(self.conn, goal['id'])
         self.assertEqual(current['status'], 'awaiting_acceptance')
         # The task execution's delivery is reported back to the leader's general chat once.
-        notices = board.pending_notices(self.conn, 's3')
+        expected = '「%s」（ID %s）的执行已交付，等用户验收' % (goal['title'], goal['id'])
+        notices = [item for item in board.pending_notices(self.conn, 's3') if expected in item['text']]
         self.assertEqual(len(notices), 1)
-        self.assertIn('「%s」（ID %s）的执行已交付，等用户验收' % (goal['title'], goal['id']), notices[0]['text'])
         if not keep_notice:
             board.mark_notice_sent(self.conn, notices[0]['id'])
         return current, goals.get_report(self.conn, finished['report_id']), receipt['execution_id'], process

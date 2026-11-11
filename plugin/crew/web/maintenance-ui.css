@@ -3,14 +3,14 @@
 .maintenance-dialog::backdrop{background:#17201d55;backdrop-filter:blur(3px)}
 .maintenance-dialog *{box-sizing:border-box}
 .maintenance-dialog button,.maintenance-dialog input{font:inherit}
-.maintenance-dialog button{border:1px solid var(--line,#dedede);border-radius:8px;padding:7px 13px;background:transparent;color:inherit;cursor:pointer;line-height:1.4;white-space:nowrap}
-.maintenance-dialog button:hover{background:var(--hover,#f3f3f3)}
+.maintenance-dialog button{border:1px solid var(--line-strong,#d5d5d5);border-radius:8px;padding:7px 13px;background:var(--hover,#f3f3f3);color:inherit;cursor:pointer;line-height:1.4;white-space:nowrap}
+.maintenance-dialog button:not(.mt-primary,.mt-danger):hover{background:color-mix(in srgb,var(--mt-text) 9%,transparent)}
 .maintenance-dialog button:focus-visible,.maintenance-dialog input:focus-visible,.maintenance-dialog h2:focus-visible{outline:2px solid var(--mt-accent);outline-offset:3px}
 .maintenance-dialog button:disabled,.maintenance-dialog input:disabled{opacity:.5;cursor:not-allowed}
 .mt-header{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;padding:22px 26px 17px;border-bottom:1px solid var(--line,#e5e5e5);flex:none}
 .mt-header h2{margin:0 0 3px;font-size:1.45em;line-height:1.4;font-weight:500;outline:none}
 .mt-header p{margin:0;color:var(--mt-muted);font-size:.92em}
-.maintenance-dialog .mt-close{padding:0;width:30px;height:30px;font-size:22px;line-height:1;border:0;flex:none}
+.maintenance-dialog .mt-close{padding:0;width:30px;height:30px;font-size:22px;line-height:1;border:0;background:transparent;flex:none}
 .mt-body{min-height:0;overflow-y:auto;padding:18px 26px 22px;scrollbar-width:thin}
 .mt-intro,.mt-hint{margin:0 0 14px;color:var(--mt-muted);font-size:.92em;line-height:1.7}
 .mt-loading,.mt-empty{padding:18px 0;color:var(--mt-muted);text-align:center}

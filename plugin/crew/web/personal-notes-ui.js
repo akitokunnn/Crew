@@ -31,7 +31,7 @@
     return {async open(){
       if(dialog){dialog.focus();return;}
       dialog=document.createElement('dialog');dialog.className="personal-notes-dialog jot-dialog";
-      dialog.innerHTML=`<header><div><h2>随手记</h2><p>先记下来，整理、回顾和转任务都在想法墙。</p></div><button class="btn ghost" data-note-close aria-label="关闭随手记">×</button></header><form><textarea name="text" rows="3" required aria-label="随手记下一个想法" placeholder="一个点子、一件之后想做的事…（Enter 记下，Shift+Enter 换行）"></textarea><div class="pn-actions"><a class="text-link" href="/notes.html">打开想法墙 →</a><span class="gap"></span><button class="btn primary" type="submit">记下来</button></div></form><p role="status" aria-live="polite"></p><h3 class="pn-recent">最近 3 条</h3><div class="pn-items"><p class="note">正在读取…</p></div>`;
+      dialog.innerHTML=`<header><div><h2>随手记</h2><p>先记下来，整理、回顾和转任务都在想法墙。</p></div><button type="button" class="icon-btn" data-note-close aria-label="关闭随手记">×</button></header><form><textarea name="text" rows="3" required aria-label="随手记下一个想法" placeholder="一个点子、一件之后想做的事…（Enter 记下，Shift+Enter 换行）"></textarea><div class="pn-actions"><a class="btn ghost" href="/notes.html">打开想法墙 →</a><span class="gap"></span><button class="btn primary" type="submit">记下来</button></div></form><p role="status" aria-live="polite"></p><h3 class="pn-recent">最近 3 条</h3><div class="pn-items"><p class="note">正在读取…</p></div>`;
       document.body.append(dialog);dialog.showModal();
       try{field().value=localStorage.getItem(draftKey)||"";}catch{}
       field().focus();
