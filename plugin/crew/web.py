@@ -1414,7 +1414,7 @@ class Service:
                 if path == '/api/session/restore':
                     return session_ops.restore(conn, target['session_id'], now=now)
                 if path == '/api/session/undo':
-                    return session_ops.undo(conn, target['session_id'], data['before'], now=now)
+                    return session_ops.undo(conn, target['session_id'], data.get('before'), now=now)
                 if path == '/api/session/stop':
                     return self.chat.stop_identity(target['session_id'], caller_session_id=_optional_text(data, 'caller_session_id'))
                 if path == '/api/session/compact':
@@ -1648,7 +1648,7 @@ class Service:
                 self.stop_archived(result['before'], with_members=data.get('with_members') is True)
                 return result
             elif path == "/api/group/undo":
-                return session_ops.undo_group(conn, project, _text(data, 'group'), data['before'], now=now)
+                return session_ops.undo_group(conn, project, _text(data, 'group'), data.get('before'), now=now)
             elif path == "/api/roster/adopt":
                 candidate = self.candidate(conn, project, _text(data, "session_id"))
                 return self.adopt(conn, project, candidate, _text(data, "name"), _optional_text(data, "group"), now)

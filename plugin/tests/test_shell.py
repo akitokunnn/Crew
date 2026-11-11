@@ -761,6 +761,21 @@ class WebTests(ShellFixture, unittest.TestCase):
         self.assertEqual(self.get('/api/group/close?project=other', {'group': 'lead'})[0], 400)
         self.assertEqual(self.get('/api/group/undo?project=other', {'group': 'lead', 'before': {}})[0], 400)
 
+    def test_undo_http_requires_a_snapshot_without_mutating_or_starting_sessions(self):
+        original = session_ops.snapshot(self.conn, 's1')
+        groups = board.groups(self.conn, 'demo')
+        count = len(self.processes)
+        for route, target in (('/api/session/undo', {'session_id': 's1'}),
+                              ('/api/group/undo', {'group': 'lead'})):
+            for fields in ({}, {'before': None}, {'before': {}}):
+                with self.subTest(route=route, fields=fields):
+                    code, result, _ = self.get(route, {**target, **fields})
+                    self.assertEqual(code, 400)
+                    self.assertIn('撤销', result['error'])
+                    self.assertEqual(session_ops.snapshot(self.conn, 's1'), original)
+                    self.assertEqual(board.groups(self.conn, 'demo'), groups)
+                    self.assertEqual(len(self.processes), count)
+
     def test_group_http_rejects_git_administrator_and_session_archive(self):
         self.conn.execute("INSERT INTO git_management(project,enabled_at,base,admin_session_id) VALUES('demo',?,'main','s3')", (NOW,))
         self.assertEqual(self.get('/api/group/close', {'group': 'lead', 'with_members': True})[0], 400)
