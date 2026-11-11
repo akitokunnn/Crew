@@ -132,6 +132,42 @@ class GoalActionTests(GoalFixture):
         self.assertEqual(self.host.calls[0][-1]['source'], 'crew')
         self.assertTrue(self.host.calls[0][-1]['identity'].startswith('goal-start:'))
 
+    def test_create_with_start_begins_work_and_without_start_only_queues(self):
+        # A leader passed start on create; it used to be dropped silently and the task sat queued.
+        data = {'project': 'demo', 'title': 'Three files', 'request': 'Do work', 'acceptance': ['Check it']}
+        queued = self.dispatch('create', data)
+        self.assertEqual(queued['status'], 'queued')
+        self.assertEqual(self.host.calls, [])
+        with self.assertRaises(board.BoardError):
+            self.dispatch('create', {**data, 'start': True}, host=False)
+        self.assertEqual(len(goals.list(self.conn, 'demo')), 1)
+        started = self.dispatch('create', {**data, 'title': 'Now', 'start': True})
+        self.assertEqual(started['goal']['status'], 'running')
+        self.assertEqual(goals.get(self.conn, started['goal']['id'])['status'], 'running')
+        self.assertTrue(started['receipt']['ok'])
+        self.assertEqual(self.host.calls[-1][1:4], (started['goal']['id'], 'chief-id', 'Do work'))
+        self.assertEqual(self.host.calls[-1][-1]['source'], 'crew')
+        self.assertTrue(self.host.calls[-1][-1]['identity'].startswith('goal-start:'))
+        blocked = goals.create(self.conn, 'demo', 'chief-id', 'Earlier', 'First', ['Done'])
+        with self.assertRaises(board.Conflict) as refused:
+            self.dispatch('create', {**data, 'title': 'Later', 'dependencies': [blocked['id']], 'start': True})
+        later = [item for item in goals.list(self.conn, 'demo') if item['title'] == 'Later']
+        self.assertEqual([item['status'] for item in later], ['queued'])
+        self.assertIn(later[0]['id'], str(refused.exception))
+        self.assertIn('依赖目标尚未完成', str(refused.exception))
+
+    def test_codex_create_tool_passes_start_to_the_shared_route(self):
+        seen = []
+        def handler(action, data, sid, execution_id=None):
+            seen.append((action, data))
+            return {'goal': {'id': 'g'}, 'receipt': {'ok': True}}
+        execution = goals.create_execution(self.conn, self.goal()['id'], 'chief-id', runtime='codex')
+        self.call(self.tool(execution, handler), 'crew_goal',
+                  {'action': 'create', 'data': {'title': 'T', 'request': 'R', 'acceptance': ['A'], 'start': True}})
+        self.assertIs(seen[-1][1]['start'], True)
+        spec = next(item for item in codex_tools.tool_specs() if item['name'] == 'crew_goal')
+        self.assertIn('start (true starts it at once', spec['description'])
+
     def test_assignment_is_configuration_until_explicitly_started(self):
         goal = self.goal()
         assigned = self.dispatch('assign', {'goal_id': goal['id'], 'to': 'builder', 'task': 'Measure one sample'})

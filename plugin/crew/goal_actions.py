@@ -3,7 +3,7 @@ from contextlib import closing
 import hashlib
 import json
 
-from . import behavior_prompts, board, goal_artifacts, goal_context, goal_mode, goal_reports, goal_work, goals, store
+from . import behavior_prompts, board, codex_client, goal_artifacts, goal_context, goal_mode, goal_reports, goal_work, goals, store
 
 READ_ACTIONS = frozenset(('status', 'report-template', 'report.get', 'report.preview', 'context.inspect', 'context.retrieve', 'work.list')) | goal_artifacts.READ_ACTIONS
 GOAL_ACTIONS = frozenset(('status', 'create', 'start', 'pause', 'resume', 'cancel', 'reopen',
@@ -14,7 +14,8 @@ CREATE_FIELDS = frozenset(('title', 'request', 'acceptance', 'constraints', 'pri
 # Envelope keys the CLI and hosts add to every goal action.
 TRANSPORT_FIELDS = frozenset(('project', 'goal_id', 'confirmed', 'start', 'request_id'))
 CREATE_HELP = ('create 的 data 字段：title（标题）、request（用户原话）、acceptance（验收标准数组）、'
-               '可选 constraints（数组）、priority、dependencies、decision_mode')
+               '可选 constraints（数组）、priority、dependencies、decision_mode；'
+               'start=true 建完立即由主责 leader 开工，不带则只排队等开始')
 
 
 def report_template(conn, goal_id):
@@ -120,6 +121,22 @@ def _start_identity(goal, session_id, task=None):
     return 'goal-start:' + scope if task is None else 'goal-assign:' + scope + ':' + hashlib.sha256(task.encode('utf-8')).hexdigest()
 
 
+def _start(conn, controller, goal, person, actor_session_id, text=None):
+    goal_id = goal['id']
+    goals._member(conn, goal, person['session_id'])
+    controller.check_member_start(conn, goal_id, person['session_id'],
+                                  'human' if actor_session_id == board.HUMAN else 'crew')
+    # Check before leaving the queue, so a refused start does not show as running.
+    gate = goals.dispatch_check(conn, goal_id)
+    if not gate['allowed']:
+        raise board.Conflict(gate['reason'])
+    if goal['status'] == 'queued':
+        goal = goals.transition(conn, goal_id, 'running', actor=actor_session_id)
+    return controller.send(goal_id, person['session_id'], text or goal['requirements']['request'],
+                           identity=_start_identity(goal, person['session_id']),
+                           source='human' if actor_session_id == board.HUMAN else 'crew')
+
+
 def dispatch(home, actor_session_id, execution_id, action, data, controller=None):
     """Data is open JSON; it can never override the trusted actor/execution."""
     if action not in GOAL_ACTIONS | CONTEXT_ACTIONS or not isinstance(data, dict):
@@ -177,10 +194,21 @@ def dispatch(home, actor_session_id, execution_id, action, data, controller=None
                 unknown = sorted(set(data) - CREATE_FIELDS - TRANSPORT_FIELDS)
                 raise board.BoardError('create 缺少 data.' + '、data.'.join(missing) + '；' + CREATE_HELP
                                        + ('；不认识的字段：' + '、'.join(unknown) if unknown else ''))
-            return goals.create(conn, project, leader['session_id'], data.get('title'), data.get('request'),
-                                data.get('acceptance'), constraints=data.get('constraints', ()), priority=data.get('priority', 0),
-                                dependencies=data.get('dependencies', ()), actor=actor_session_id, source=data.get('source'),
-                                decision_mode=data.get('decision_mode'))
+            if data.get('start') is True:
+                _host(controller)
+            created = goals.create(conn, project, leader['session_id'], data.get('title'), data.get('request'),
+                                   data.get('acceptance'), constraints=data.get('constraints', ()), priority=data.get('priority', 0),
+                                   dependencies=data.get('dependencies', ()), actor=actor_session_id, source=data.get('source'),
+                                   decision_mode=data.get('decision_mode'))
+            if data.get('start') is not True:
+                return created
+            try:
+                receipt = _start(conn, controller, created, leader, actor_session_id)
+            except (board.BoardError, codex_client.CodexError, OSError) as exc:
+                # The goal exists; say so, so a retry starts it instead of creating a duplicate.
+                raise board.Conflict('任务已创建（%s，待开始），但没有开始：%s；处理后用 goal start %s 开始'
+                                     % (created['id'], exc, created['id'])) from exc
+            return {'goal': goals.get(conn, created['id']), 'receipt': receipt}
         if action == 'context.retrieve':
             from .storage_service import StorageService
             return StorageService(home).retrieve(project, {**data, 'goal_id':goal_id,
@@ -284,17 +312,7 @@ def dispatch(home, actor_session_id, execution_id, action, data, controller=None
         if action == 'start':
             _host(controller)
             person = _person(conn, project, data.get('session_id') or data.get('to') or goal['leader_session_id'])
-            goals._member(conn, goal, person['session_id'])
-            controller.check_member_start(conn, goal_id, person['session_id'],
-                                          'human' if actor_session_id == board.HUMAN else 'crew')
-            if goal['status'] == 'queued':
-                goal = goals.transition(conn, goal_id, 'running', actor=actor_session_id)
-            gate = goals.dispatch_check(conn, goal_id)
-            if not gate['allowed']:
-                raise board.Conflict(gate['reason'])
-            return controller.send(goal_id, person['session_id'], data.get('text') or goal['requirements']['request'],
-                                   identity=_start_identity(goal, person['session_id']),
-                                   source='human' if actor_session_id == board.HUMAN else 'crew')
+            return _start(conn, controller, goal, person, actor_session_id, data.get('text'))
         if action == 'pause':
             return _host(controller).pause(goal_id, manual=actor_session_id == board.HUMAN, actor=actor_session_id)
         if action == 'resume':
