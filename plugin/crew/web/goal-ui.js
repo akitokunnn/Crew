@@ -122,10 +122,10 @@
     function deliveryMarkup(active, reports) {
       const key = String(active.id);
       const notice = deliveryNotice?.goalId !== key ? "" : deliveryNotice.error == null ? '<p class="goal-delivery-status note" role="status">正在打开交付报告…</p>'
-        : `<p class="goal-action-error error-line" role="alert">交付报告未能打开：${esc(deliveryNotice.error)} <button class="text-link" data-goal-act="delivery" data-goal-id="${esc(key)}">重试</button></p>`;
+        : `<p class="goal-action-error error-line" role="alert">交付报告未能打开：${esc(deliveryNotice.error)} <button type="button" class="btn ghost" data-goal-act="delivery" data-goal-id="${esc(key)}">重试</button></p>`;
       if (!reports.length) return notice;
       const report = currentReport(reports, active);
-      if (!report) return `<div class="goal-delivery goal-delivery-gap"><span>${esc(reportScope(reports[0], active, reports).note)}。</span><button class="text-link" data-goal-act="delivery" data-goal-id="${esc(key)}">查看历史版本</button></div>${notice}`;
+      if (!report) return `<div class="goal-delivery goal-delivery-gap"><span>${esc(reportScope(reports[0], active, reports).note)}。</span><button type="button" class="btn ghost" data-goal-act="delivery" data-goal-id="${esc(key)}">查看历史版本</button></div>${notice}`;
       const open = conclusionsOpen.has(`${key}:${report.id}`), counts = report.acceptance_counts, unresolved = report.unresolved;
       const recorded = acceptanceLabels.filter(([name]) => counts[name] > 0);
       const total = recorded.reduce((sum, [name]) => sum + counts[name], 0);
