@@ -103,7 +103,8 @@ _SPECS = [
            'data': {'type': 'object', 'additionalProperties': True},
            'message_id': _text('Original user message ID supplied by the host.', max_length=300),
            'request_id': _text('Stable identity for this exact operation.', max_length=300)}, ('action',)),
-    _spec('crew_rename', 'Rename only your own Crew conversation with a concise useful title. Identity and history remain unchanged.',
+    _spec('crew_rename', 'Current leaders only: rename your own Crew conversation with a concise useful title. '
+          'Members cannot use it. Identity and history remain unchanged.',
           {'name': _text('New name for this conversation.', max_length=512)}, ('name',)),
     _spec('crew_archive', 'Archive a member of your own current group after its work ends. Only the current leader can do this.',
           {'target': _TARGET}, ('target',)),
@@ -116,7 +117,7 @@ _SPECS = [
           'Rejection remains actionable. This records requests/results; it does not run Git or merge code.',
           {'action': {'type': 'string', 'enum': list(_GIT_DATA)},
            'data': {'type': 'object', 'additionalProperties': True}}, ('action',)),
-    _spec('crew_goal', 'Explicit goal actions: status, create, start, pause, resume, cancel, reopen, amend, assign, transfer, mode.set, work.list/add/update, report-template, report.get, report.preview, report.publish, finish, versions.list/preview/file, version.capture. create data: title, request (verbatim user words), acceptance (array of criteria), optional constraints (array), priority, dependencies, decision_mode, start (true starts it at once with its leader; omitted only queues it). Preview report HTML with report.preview data.document_html (draft) or data.report_id (saved), plus viewport=desktop|mobile; the Crew desktop captures it and returns metadata plus a native image. AI work uses work.add with stable key, title, acceptance, optional owner_session_id/dependencies; work.update uses key, version, status and evidence/reason note. Never put AI work in human TODO. Publish a real milestone with report.publish data.report outcome=progress and stable request_id; this keeps the task running. Capture explicit relative files with version.capture data.files,label,request_id. Restore requires the user. A leader with user-granted autonomy may choose decision_mode=human|autonomous when creating its own tasks (default autonomous), and change its own task with mode.set data.goal_id,mode,expected_version. Members cannot change authorization. Final delivery puts the HTML in data.report.document_html with acceptance evidence, following the injected [Crew final_report] rules; report-template lists the fields. Ordinary Q&A creates no goal; create one only for new, self-contained work worth its own final report. Small tests, trial runs, log checks, tweaks or follow-ups continue inside the existing goal (amend) or are answered directly in the general conversation. When the user asks to hand a task to another leader, call transfer with goal_id, data.to (the receiving leader name) and data.text (a handoff note: progress, open issues, where things are); the receiver continues the task.',
+    _spec('crew_goal', 'Explicit goal actions: status, create, start, pause, resume, cancel, reopen, amend, assign, transfer, mode.set, work.list/add/update, report-template, report.get, report.preview, report.publish, finish, versions.list/preview/file, version.capture. create data: title, request (verbatim user words), acceptance (array of criteria), optional constraints (array), priority, dependencies, decision_mode, start (true starts it at once with its leader; omitted only queues it). Preview report HTML with report.preview data.document_html (draft) or data.report_id (saved), plus viewport=desktop|mobile; the Crew desktop captures it and returns metadata plus a native image. AI work uses work.add with stable key, title, acceptance, optional owner_session_id/dependencies; work.update uses key, version, status and evidence/reason note. Never put AI work in human TODO. Publish a real milestone with report.publish data.report outcome=progress and stable request_id; this keeps the task running. Capture explicit relative files with version.capture data.files,label,request_id. Restore requires the user. A leader with user-granted autonomy may choose decision_mode=human|autonomous when creating its own tasks (default autonomous), and change its own task with mode.set data.goal_id,mode,expected_version. Members cannot change authorization. Final delivery uses finish with data.report (fields from report-template, including the verification evidence); an authored self-contained HTML body is optional in data.report.document_html, per the injected [Crew final_report] rules. Whether to create, continue or amend a goal follows the injected role rules. When the user asks to hand a task to another leader, call transfer with goal_id, data.to (the receiving leader name) and data.text (a handoff note: progress, open issues, where things are); the receiver continues the task.',
           {'action': _text('Action name.', max_length=100), 'goal_id': _text('Goal id; omitted uses the bound execution.', max_length=100),
            'data': {'type': 'object', 'additionalProperties': True}}, ('action',)),
     _spec('crew_context', 'Inspect, retrieve or correct sourced context bound to your Crew identity and goal. Actions: inspect, retrieve, put, correct, expire. retrieve searches portable history with data.query, known_versions and limit_chars (max 6000). Preparing context does not mean the model read it.',
@@ -170,7 +171,8 @@ _SPECS = [
           {"id": {"type": "integer", "minimum": 1}, "reason": _text("Why this user action is no longer needed.")},
           ("id", "reason")),
     _spec("crew_doc_add", "Register an existing deliverable file from your project or worktree. "
-          "The host binds it to your current task. The original file stays in place; user pins are independent.",
+          "Inside a goal execution the host links it to that goal; from a general conversation it is registered "
+          "to this workspace only, without guessing a task. The original file stays in place; user pins are independent.",
           {"path": _text("A local project/worktree file path.", max_length=4096),
            "title": _text("A clear document title.", max_length=300),
            "summary": _text("What this deliverable contains.", max_length=4000),
@@ -629,8 +631,11 @@ class CodexTools:
                                               **({'reply_to': args['reply_to']} if 'reply_to' in args else {}))
             except board.BoardError as exc:
                 raise ToolError('delivery_conflict' if isinstance(exc, board.Conflict) else 'delivery_failed', str(exc)) from None
-            except Exception:
-                raise ToolError("delivery_failed", "The host could not accept the Crew message") from None
+            except Exception as exc:
+                # The router raised, so whether the message was saved is unknown; a blind resend may duplicate it.
+                raise ToolError("delivery_unknown", "Crew message outcome unknown: the host router raised %s. "
+                                "It may already be saved; do not resend at once, resend only if later evidence shows "
+                                "the recipient never got it." % type(exc).__name__) from None
             if not isinstance(receipt, dict) or receipt.get("ok") is not True:
                 raise ToolError("delivery_failed", "The host did not confirm acceptance of the Crew message")
             receipt = message_receipts.normalize(receipt, kind=args.get('kind', 'information'))

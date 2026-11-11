@@ -82,8 +82,8 @@ Crew/
 
 | 表 | 内容 |
 |---|---|
-| `decisions` | 题目、选项、建议、答复与状态；挂起时 `status` 仍为 `open` |
-| `decision_holds` | `decision_id PRIMARY KEY REFERENCES decisions(id)`、`held_at TEXT NOT NULL`；只记录挂起标记，答复或撤回时删除 |
+| `decisions` | 题目、选项、建议、答复与状态 |
+| `decision_holds` | `decision_id PRIMARY KEY REFERENCES decisions(id)`、`held_at TEXT NOT NULL`；已停用的旧“挂起”标记（2026-11-11 删除该功能），保留旧数据但不再读写 |
 | `session_options` | `session_id TEXT PRIMARY KEY REFERENCES sessions(session_id)`、`model TEXT`、`effort TEXT`、`set_at TEXT NOT NULL`；两项都为 null 时删行，无记录表示账号默认 |
 | `rule_reads` | `session_id TEXT PRIMARY KEY REFERENCES sessions(session_id)`、`role TEXT NOT NULL`、`digest TEXT NOT NULL`、`read_at TEXT NOT NULL`；记录会话读过的角色守则 sha256 |
 | `git_management` | `project TEXT PRIMARY KEY REFERENCES projects(name)`、`enabled_at TEXT NOT NULL`、`base TEXT NOT NULL`、`admin_session_id TEXT REFERENCES sessions(session_id)`、`branch_rules TEXT`、`integration TEXT`；每项目一行，记录 Git 管理员、分支规则和可选的本地集成分支。2026-11-10 前建的库另有不再读写的 `stable` 列，升级只追加 `integration`（初始为空），不删旧列 |
@@ -94,7 +94,7 @@ Crew/
 | `leader_priority` | `project TEXT NOT NULL REFERENCES projects(name)`、`session_id TEXT NOT NULL REFERENCES sessions(session_id)`、`position INTEGER NOT NULL CHECK (position BETWEEN 0 AND 2)`；主键 `(project, session_id)`，唯一 `(project, position)`。按项目保存最多三位优先 leader 的顺序；不可见项保留在表中，展示时只对仍显示的 leader 连续编号，归档撤销后自然恢复。连接数据库时通过 `CREATE TABLE IF NOT EXISTS` 创建 |
 | `project_themes` | `project TEXT PRIMARY KEY REFERENCES projects(name)`、`theme TEXT NOT NULL`、`assigned_at TEXT NOT NULL`；每项目一套主题，独立新表，不改变 `projects` |
 
-`decision_holds` 由 `schema.sql` 的 `CREATE TABLE IF NOT EXISTS` 在连接数据库时创建，不改变现有表结构、不需要迁移。`board.decisions` 返回 `held` 布尔值和可空的 `held_at`，默认仍列出全部 open 题，供下属侧 `crew` 沿用未答逻辑。
+`decision_holds` 是已停用的挂起标记：表仍由 `schema.sql` 创建，旧数据原样保留（storage_v2 包往返仍带 `held_at`），业务代码不再读写；`board.decisions` 不再返回 `held`，所有未答题都是普通待拍板。
 
 `schema.sql` 删除旧的单项模型设置表，再用 `CREATE TABLE IF NOT EXISTS` 建立 `session_options` 和 `rule_reads`。模型与 effort 清单只在 `crew/models.py` 定义，`/api/state.models` 带出 id、显示名和上下文上限 `context_window`，`efforts` 带出 low / medium / high / xhigh / max，前端从这份数据生成选项。可选 Opus 5.5、Sonnet 5.5、Fable 5.1、Haiku 4.5；默认跟账号设置走。Haiku 不支持 effort，显式同时指定 Haiku 和非空 effort 报错，切换到 Haiku 会清除原存 effort。
 
@@ -316,15 +316,13 @@ PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stder
 
 | 接口 | 内容 |
 |---|---|
-| `GET /api/state?project=P` | `project`（含 `name/root/theme`）、`projects`（每项 `name/theme`）、`themes`（完整主题目录及浅 / 深 token）、`leaders`（状态、未读、`read_seq`、本组未挂起的待拍板数 `pending`、待发通知数、成员）、`members`（有名字的非 leader：所在位置 bg / vscode / offline、任务、任务卡、最近 5 条进展、运行中和 24 小时内的 Codex、借用与文件归属）、`decisions`（只含未答，带提问者、其 leader、`held` 布尔值、可空 `held_at`）、`candidates`（三组）、`channel`（用户交流区 `unread` 未读数、`latest_id` 最新发言 id、`digesting` 是否整理中、可空的 `digest_error` 最近失败原因、可空的 `digest_id` 当前卡 id）、`limits`（Claude 两个窗口、Codex，拿不到为 null）、`attention`（QQ 推送用，跳过挂起题）、`notification`（含 channel 状态与 detail）、`agents_error`、`vscode_error`。journal 按文件签名缓存 |
+| `GET /api/state?project=P` | `project`（含 `name/root/theme`）、`projects`（每项 `name/theme`）、`themes`（完整主题目录及浅 / 深 token）、`leaders`（状态、未读、`read_seq`、本组待拍板数 `pending`、待发通知数、成员）、`members`（有名字的非 leader：所在位置 bg / vscode / offline、任务、任务卡、最近 5 条进展、运行中和 24 小时内的 Codex、借用与文件归属）、`decisions`（只含未答，带提问者、其 leader、`held` 布尔值、可空 `held_at`）、`candidates`（三组）、`channel`（用户交流区 `unread` 未读数、`latest_id` 最新发言 id、`digesting` 是否整理中、可空的 `digest_error` 最近失败原因、可空的 `digest_id` 当前卡 id）、`limits`（Claude 两个窗口、Codex，拿不到为 null）、`attention`（QQ 推送用）、`notification`（含 channel 状态与 detail）、`agents_error`、`vscode_error`。journal 按文件签名缓存 |
 | `POST /api/project/theme` | `{project,theme}` 保存当前项目主题，返回 `{ok:true,theme}`；正文和地址的项目必须一致，未知主题或项目返回错误 |
 | `POST /api/project/init` | name、root；启用已有本机目录 |
 | `POST /api/roster/adopt` | session_id、name、可选 group；没在运行的候选也能收编；进有 leader 的组时排 leader 通知 |
 | `POST /api/roster/move` / `POST /api/roster/remove` | 换组 / 退组，按 session_id |
 | `POST /api/group/close` | group、with_members；均不停止进程 |
 | `POST /api/answer` | id、text；保存后给提问者的 leader 排通知（来源 web），返回 `routed_to` |
-| `POST /api/decision/hold` | id；挂起未答题，首次挂起时给提问者的 leader 排通知（来源 web，无 leader 时不排），重复挂起不重复通知 |
-| `POST /api/decision/unhold` | id；取消挂起，放回待拍板，不排通知 |
 | `POST /api/spawn` | name、task、可选 group / role / cwd / new_worktree / base / model / effort；未给的模型与 effort 分别继承组 leader |
 | `POST /api/leaders/order` | project、order（当前项目左栏全部 leader 的 session_id 数组）；保存拖动顺序，重复、非本项目可见 leader 或缺少 leader 时返回 400 并说明原因 |
 | `POST /api/leaders/priority` | project、ranks（0～3 个 session_id 的完整新顺序）；首位为第 1 优先。重复、超过三个、非本项目当前显示的 leader 或项目不一致返回 400。`/api/state` 每个 leader 带 `priority: 1 / 2 / 3 / null`；归档、删除、结束项不展示，后面的有效级别依次补位。优先标记仅供用户查看，不传给 leader |
@@ -364,13 +362,13 @@ File resolution also returns `open_with` from a server-side allowlist (case-inse
 ### 会话整理、工作区视图与通知
 
 - `session_controls` 保存显式归档、删除和改名。删除（`POST /api/session/delete`，只有用户可调用）在数据库里只留 `removed=1` 的已关闭记录，hook 不会自动收编回来；leader 连同整组一起删除。提交后停止托管进程，再删除 `chat/<id>.jsonl`、该身份用过的 Claude 原生会话（`~/.claude/projects/*/<id>.jsonl` 及同名目录）和 Codex 线程（经 app-server `thread/delete`，对应 HOME 取自原生接回记录）。任务执行线程属于任务历史，保留。会话还被外部进程使用、Claude 进程状态读不到或已交给 Codex 桌面版时拒绝；原生记录删除失败逐条返回 `errors`。leader 改名同步组与成员归属，pending handoff 跟随；撤销恢复操作前的记录，不操作进程。
-- **leader 通知**：Crew 自己不发会话间消息。网页 / QQ 答完拍板、网页挂起拍板、收编进组、`crew join` 入组，以及 leader 用 `crew wake` 找 leader、交流区点名，都写进 `leader_notices`；网页服务每 2 秒把待发通知合并成一条 `[Crew]` 消息，经 `deliver_notices` 写进空闲的 leader（journal 记 source=crew）。在线空闲就送，离线且有网页日志就续跑后送；在 VS Code 等其他进程运行或进程状态未知时等现有逻辑送达。需要转告下属的事由 leader 用 SendMessage 转告。挂起通知附题号、提问者名字与 cc_name，要求转告"不卡流程的按推荐继续；卡流程的先做别的，先别再问这道题"；没有 leader 时不排。leader 对挂起题不催用户，汇报时单独列出。
+- **leader 通知**：Crew 自己不发会话间消息。网页 / QQ 答完拍板、收编进组、`crew join` 入组，以及 leader 用 `crew wake` 找 leader、交流区点名，都写进 `leader_notices`；网页服务每 2 秒把待发通知合并成一条 `[Crew]` 消息，经 `deliver_notices` 写进空闲的 leader（journal 记 source=crew）。在线空闲就送，离线且有网页日志就续跑后送；在 VS Code 等其他进程运行或进程状态未知时等现有逻辑送达。需要转告下属的事由 leader 用 SendMessage 转告。
 - **交流区发言与点名**：每项目一条发言流，leader 用 `crew say` 发言，用户通过网页发言；组员和未收编会话发言报“交流区只给 leader 用；有事告诉你的 leader”。`--to` / `to` 只能点同项目 leader，名字不存在先报错，不写入发言；自己点自己不排通知。leader 点名调用 `queue_leader_notice`，source 为 `crew`，内容为“交流区：「<名字>」点名你：\n<全文>\n\n回复用 crew say --to <名字> \"…\"；只是回\"收到\"就不用回。”用户点名 source 为 `web`，写明“交流区：用户点名你：”和“这是用户本人的话”。两者都复用 `deliver_notices`，不另起投递逻辑。未点名不叫醒，下一轮钩子顺带摘要；新发言不响网页提示音，也不推 QQ。
 - **交流区累积要点卡**：网页头部“整理”手动触发；服务既有 `_poll_agents` 每轮（间隔 10 秒）调用 `digest_channels`，检查所有项目自上一张卡后是否新增满 20 条，因此 `crew say` 直接写库也会被发现。每项目同时只跑一个后台线程。失败不写卡、不立即重试，以失败快照最后 id 为新计数基点，之后再满 20 条才自动尝试；手动随时可重试。失败原因和计数基点保存在服务内存中，重启后重新按当前卡计数。成功清空失败状态。
 - **生成输入与执行**：`channel_digest.py` 输入上一张卡全文（首次为空）与卡后全部发言的名字、时间、点名和正文 JSON，快照后新增的发言留到下一次。用 `models.HAIKU`，命令为 `claude -p --model claude-haiku-4-5-20251001 --output-format json --no-session-persistence --settings '{"disableAllHooks":true}' --strict-mcp-config --tools "" --disable-slash-commands`；stdin 送提示词，cwd 为 Crew home，继承环境时移除 `CLAUDE_CODE_SESSION_ID`。可执行文件与 chat 相同方式解析，Windows 无窗口，300 秒超时并终止子进程；从 JSON 取 `result` 与 `total_cost_usd`。退出码非零、`is_error`、超时或 JSON 非预期时，把真实错误类型及 stderr / result 摘要（最多 500 字）放入 state，不写卡。测试全部注入假进程。
 - **卡片内容与呈现**：中文 Markdown，固定“已定结论”“未定的事 · 在等谁”“各组跨组相关进展”，空块写“暂无”，约 1200 字内；保留有效旧结论、标明谁定的，已解决事项移到结论或删除。过滤 git 合并 / PR / CI、“收到”、用户原话转述、一对一事务与拍板编号。网页卡钉在滚动列表外，正文过长可独立滚动或收成标题；原文默认折叠并可分页，卡后发言正常显示，未读和点名通知口径不变。
 
-- **拍板挂起**：页面展示及计数规则见 [WEB_UX.md](WEB_UX.md)。取消挂起不排通知；归档或删除会话的未答题保留记录，但不继续催办。
+- **归档会话的拍板**：归档或删除会话的未答题保留记录，但不继续催办。
 - **归档同步**：现有 10 秒轮询里读 VS Code 归档名单，已收编会话被 VS Code 归档就经 `Service.archive_session` 写入归档控制并停止对应网页托管进程，记 `vscode:archived`；VS Code 取消归档不跟随。
 - **已读与任务卡**：`read_cursors` 记用户读到 leader journal 的哪条，算未读和"离开后"分隔线；`session_cards` 记下属的负责范围和完成标准，`sessions.task` 仍是"现在在做什么"。
 - `POST /api/attention/dismiss` 可撤销标记，并检查事项所属工作区；会话整理接口见上表。
@@ -378,7 +376,7 @@ File resolution also returns `open_with` from a server-side allowlist (case-inse
 - 派活脚本仓库副本在 `integrations/codex-dispatch/run_codex.ps1`：同 run_id 先写开始、再写结束，scanner upsert。只有未关联的 rollout 时状态为 unknown，最后日志时间不当完成时间。
 - QQ 由 `qq.Client(app_id, app_secret)` 通过 WebSocket 收事件、HTTPS 主动发送；重连交给传输层。`run` 抛 `QQError` 时保留真实原因并停止收发，不在通知层重试。首次私聊绑定主人，此后其他人的消息和按钮只记日志。
 - `notification_messages` 保存发送结果的 `id` / `ref_idx` 与问题、leader 的关系；`notification_inbound` 按 message_id / interaction_id 去重；`notification_replies` 排队并记录每条 QQ 来信的回复边界。凭证和回调临时票据不入库。发送失败保留明确错误，不自动重发；拒收时提示在手机 QQ 打开“允许主动发送”，下一次发送成功恢复通道状态。
-- QQ 命令忽略首尾空白且不分大小写：`/help`（`/h`）帮助、`/leader`（`/l`）列表、`/leader 2`（`/l 2`、`/2`）切换、`/decisions`（`/d`）未挂起待拍板、`/back`（`/b`）我回来了。列表优先展示已标记 leader（按有效级别，名字前加 ★1 / ★2 / ★3），其余沿用项目顺序及项目内 `leader_order`；稳定编号独立分配且归档后不复用。
+- QQ 命令忽略首尾空白且不分大小写：`/help`（`/h`）帮助、`/leader`（`/l`）列表、`/leader 2`（`/l 2`、`/2`）切换、`/decisions`（`/d`）待拍板、`/back`（`/b`）我回来了。列表优先展示已标记 leader（按有效级别，名字前加 ★1 / ★2 / ★3），其余沿用项目顺序及项目内 `leader_order`；稳定编号独立分配且归档后不复用。
 - QQ 推送时机、命令与附件限制见 [QQ.md](QQ.md)；离开期间的轮次回复按 `turn:<会话>:<idle 序号>` 防重发。
 - 通知仅在手动离开或锁屏时主动发送。用户口径（2026-10-23）：手动离开立即推送当前待办。锁屏来自已有桌面代理的带 token POST `/api/status`，不启动代理或操作桌面；代理故障单独提示。
 - QQ 拍板答复的 actor 与 leader 通知 source 均为 `qq`，按钮先应答 interaction 再校验内部问题标识、选项和状态。QQ 标题为 `项目·leader 待拍板`，回执为 `已保存：<问题前 20 字>…，已转告 leader。`；问题不超过 20 字不加省略号，没有 leader 时去掉转告语。网页操作行显示“答复拍板：<答复>”或“撤回一道拍板”。网页 / QQ 回复、组员进展和汇报都写事情；提到等用户拍板时必须已经 `crew ask` 登记，编号只留在命令和 leader、组员间的内部消息里。用户操作见 [QQ.md 的答拍板](QQ.md#答拍板)。
@@ -594,7 +592,7 @@ CC 复用 `Service.adopt`；整个登记、改名、分组和排通知现在在�
 
 ## 16. 项目标签的后台动态（2026-10-26）
 
-`workspace_activity.snapshot` 只读当前工作区的活跃身份、观察到的进程状态、未挂起拍板、开放人工待办、原生权限请求、目标验收状态及已有回复/报告。工作计数来自托管 busy 或外部 CC 进程，不把数据库遗留 working 直接当作正在运行。归档身份不产生新提示；未读沿用 leader 总对话、各目标最新执行的 read_seq 以及交流区游标，成员内部实现输出不增加人的未读。当前目标版本的报告才进入卡片，普通最近交付限制 24 小时、最多两条，待验收保留。
+`workspace_activity.snapshot` 只读当前工作区的活跃身份、观察到的进程状态、待拍板、开放人工待办、原生权限请求、目标验收状态及已有回复/报告。工作计数来自托管 busy 或外部 CC 进程，不把数据库遗留 working 直接当作正在运行。归档身份不产生新提示；未读沿用 leader 总对话、各目标最新执行的 read_seq 以及交流区游标，成员内部实现输出不增加人的未读。当前目标版本的报告才进入卡片，普通最近交付限制 24 小时、最多两条，待验收保留。
 
 `GET /api/workspaces/activity?project=A&project=B` 批量返回轻量计数与最多五条摘要，读取不调用完整 state、来源扫描或模型。项目失效独立返回原因，不影响同批其他项目。`WorkspaceTabs.refreshActivity` 每 5 秒读取所有打开项目，一次仅一个请求；关闭标签、重新打开或退出后的旧响应不能覆盖新实例。失败保留上次记录并标 stale，不显示成空闲；切换项目不清除既有读游标和待办。
 

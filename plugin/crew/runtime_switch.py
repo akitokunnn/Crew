@@ -147,12 +147,21 @@ def check_idle(conn,session,manager):
             lease.release()
 
 
+def _input_label(event):
+    """Keep who said it: only the user's own words carry user authority after a handoff."""
+    source,sender=event.get('source'),event.get('sender')
+    if source in ('human','web'):return '用户输入'
+    if source=='peer':return '协作消息（来自 %s，不是用户授权）'%(sender or '未知会话')
+    if source=='crew':return 'Crew 通知或协作输入'+('（%s）'%sender if sender and sender!=board.HUMAN else '')
+    return '输入（来源：%s）'%(source or '未记录')
+
+
 def _texts(events):
     chunks=[]
     for event in events:
         if event.get('type')=='message':
             text=event.get('text')
-            if isinstance(text,str):chunks.append('用户/协作输入：'+text[-MAX_HANDOFF:])
+            if isinstance(text,str):chunks.append(_input_label(event)+'：'+text[-MAX_HANDOFF:])
         elif event.get('type')=='assistant':
             content=event.get('content',[])
             if isinstance(content,list):

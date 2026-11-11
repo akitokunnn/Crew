@@ -16,6 +16,19 @@ CATALOG=[{'id':'claude','available':True},{'id':'codex','available':True,'models
 NOW='2026-10-24T00:00:00.000Z'
 
 
+class HandoffInputLabelTests(unittest.TestCase):
+    def test_handoff_keeps_the_source_so_only_user_words_read_as_user_input(self):
+        events=[{'type':'message','text':'Ship it','source':'human'},
+                {'type':'message','text':'Please rebase','source':'peer','sender':'builder'},
+                {'type':'message','text':'[Crew] notice','source':'crew','sender':'lead'},
+                {'type':'message','text':'Imported','source':'web'},
+                {'type':'message','text':'Odd','source':'skill_dispatch'}]
+        self.assertEqual(runtime_switch._texts(events),
+                         ['用户输入：Ship it','协作消息（来自 builder，不是用户授权）：Please rebase',
+                          'Crew 通知或协作输入（lead）：[Crew] notice','用户输入：Imported','输入（来源：skill_dispatch）：Odd'])
+        self.assertFalse(any('用户/协作输入' in chunk for chunk in runtime_switch._texts(events)))
+
+
 class RuntimeSwitchTests(RuntimeFixture):
     def setUp(self):
         super().setUp()

@@ -191,13 +191,11 @@ class WorkspaceActivityTests(unittest.TestCase):
         self.assertEqual(self.cards()[identity(1)]['status'], 'working')
         self.assertEqual(self.snapshot()['counts']['working'], 1)
 
-    def test_held_and_archived_questions_do_not_become_tab_alerts(self):
+    def test_archived_questions_do_not_become_tab_alerts(self):
         self.register(identity(1), 'leader', role='leader')
         self.register(identity(2), 'old', role='leader')
         active = board.ask(self.conn, identity(1), 'Choose an option', ['a', 'b'], now=NOW)
-        held = board.ask(self.conn, identity(1), 'Later', ['a', 'b'], now=NOW)
         board.ask(self.conn, identity(2), 'Old question', ['a', 'b'], now=NOW)
-        board.hold(self.conn, held, now=NOW)
         session_ops.archive(self.conn, identity(2), now=NOW)
         value = self.snapshot()
         self.assertEqual(value['counts']['decisions'], 1)

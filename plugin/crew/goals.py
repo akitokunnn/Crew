@@ -218,7 +218,7 @@ def amend(conn, goal_id, text, *, acceptance=None, constraints=None, actor=board
     _actor(conn, goal, actor, member=True)
     _expected(goal, expected_version)
     if goal['status'] in TERMINAL:
-        raise board.Conflict('已结束目标需要先明确重开一轮')
+        raise board.Conflict('任务已结束：已交付的任务在用户要求修改时用 amend 在原轮继续；已取消的任务需用户重开')
     text = _text(text, '需求补充')
     previous = requirements(conn, goal_id)
     version, at = goal['requirement_version'] + 1, board._time(now)
@@ -428,9 +428,12 @@ def resume(conn, goal_id, *, actor=board.HUMAN, automatic=False, now=None):
 
 
 @atomic
-def continue_task(conn, goal_id, text, *, actor=board.HUMAN, discussion_execution_id=None,
+def continue_task(conn, goal_id, text, *, actor=board.HUMAN, discussion_execution_id=None, user_requested=False,
                   acceptance=None, constraints=None, expected_version=None, now=None):
-    """Continue this task after delivery without inventing another round."""
+    """Continue this task after delivery without inventing another round.
+
+    user_requested: the leader relays a change the user asked for in a Crew-hosted turn the user started.
+    """
     goal = _row(conn, goal_id)
     response = discussion(conn, discussion_execution_id) if discussion_execution_id else None
     responding = get_execution(conn, discussion_execution_id) if response else None
@@ -438,7 +441,7 @@ def continue_task(conn, goal_id, text, *, actor=board.HUMAN, discussion_executio
                        or responding['round'] != goal['current_round'] or responding['requirement_version'] != goal['requirement_version']):
         raise board.Conflict('讨论执行与当前任务不匹配')
     _expected(goal, expected_version)
-    if actor != board.HUMAN and response is None:
+    if actor != board.HUMAN and response is None and not user_requested:
         raise board.BoardError('只有用户明确输入可以继续已交付的任务')
     if goal['manual_pause']:
         raise board.Conflict('用户暂停仍然有效；请明确恢复后继续')
@@ -628,8 +631,8 @@ def validate_report(conn, goal_id, data):
     _text(result.get('summary'), '报告结论')
     for key, fields in (('user_test', ('step', 'expected')), ('user_todos', ('title', 'detail'))):
         entries = result.get(key, [])
-        if not isinstance(entries, builtins.list) or key == 'user_test' and outcome == 'awaiting_acceptance' and not entries:
-            raise board.BoardError(key + ' 必须为对象数组；待用户验收必须提供非空 user_test')
+        if not isinstance(entries, builtins.list):
+            raise board.BoardError(key + ' 必须为对象数组')
         for item in entries:
             if not isinstance(item, dict):
                 raise board.BoardError(key + ' 每项必须为对象')
@@ -683,16 +686,23 @@ def validate_report(conn, goal_id, data):
             _text(source.get('label'), '证据说明')
             _text(source.get('reference'), '证据定位')
     examples = result.get('examples', [])
-    if not isinstance(examples, builtins.list) or final and not examples:
-        raise board.BoardError('examples 必须为对象数组；awaiting_acceptance/completed 至少需要一个具体 example')
+    if not isinstance(examples, builtins.list):
+        raise board.BoardError('examples 必须为对象数组')
     result['examples'] = examples
     for example in examples:
         if not isinstance(example, dict) or example.get('kind') not in ('actual', 'illustrative'):
             raise board.BoardError('example 必须标明实测或示意')
         for key in ('input', 'expected', 'actual', 'conclusion'):
             _text(example.get(key), 'example ' + key)
-    if outcome == 'completed' and (any(item['status'] != 'passed' for item in entries) or not any(item['kind'] == 'actual' for item in examples)):
+    if outcome == 'completed' and (any(item['status'] != 'passed' for item in entries)
+                                   or examples and not any(item['kind'] == 'actual' for item in examples)):
         raise board.BoardError('未验证、模拟或仅示意 example 不能宣称目标达标')
+    # Final delivery carries the AI's own verification: what was checked, where to recheck it, and what stayed
+    # uncovered. Concrete input/output cases (examples) fit reproducible behaviour and are optional otherwise.
+    if final and not any(item.get('evidence') for item in entries):
+        raise board.BoardError('最终交付需要验证证据：至少一项验收标准在 evidence 写明 AI 实际做了什么验证、结果在哪回查')
+    if final and any(item['status'] in ('unverified', 'simulated') for item in entries) and not result['unresolved']:
+        raise board.BoardError('有未验证或模拟验证的标准时，unresolved 必须写明没覆盖的边界')
     investment = result.get('investment', {})
     if not isinstance(investment, dict):
         raise board.BoardError('investment 可缺省；提供时必须为投入记录对象，未知用量可明确注明')
@@ -734,7 +744,8 @@ def render_report(conn, goal_id, data):
     for item in data['acceptance']:
         sections.append('<h3>%s · %s</h3>%s' % (esc(item['criterion']), esc(labels[item['status']]), listing([source['label'] + '：' + source['reference'] for source in item.get('evidence', [])])))
     sections.append(report_documents.user_test(data))
-    sections.append('<h2>具体 example</h2>')
+    if data['examples']:
+        sections.append('<h2>具体 example</h2>')
     for example in data['examples']:
         sections.append('<h3>%s</h3><table>%s</table>' % ('实测' if example['kind'] == 'actual' else '示意（非实测证据）',
             ''.join('<tr><th>%s</th><td>%s</td></tr>' % (label, esc(example[key])) for key, label in (('input', '输入 / 操作'), ('expected', '期望'), ('actual', '实际'), ('conclusion', '结论')))))
@@ -913,9 +924,9 @@ def get_finish(conn, goal_id):
 def request_finish(conn, goal_id, report_id, *, actor=board.HUMAN, execution_id=None, now=None):
     goal, report = _row(conn, goal_id), get_report(conn, report_id)
     if report['outcome'] == 'completed':
-        raise board.BoardError('最终交付需要用户本人看报告并实测验收，outcome 用 awaiting_acceptance；只有用户点「通过」才会完成任务')
+        raise board.BoardError('最终交付 outcome 用 awaiting_acceptance：只有用户确认后点「通过」才会完成任务，AI 不能直接提交 completed')
     if report['outcome'] == 'progress':
-        raise board.BoardError('阶段报告不会结束任务，请完成验收后另行提交最终报告')
+        raise board.BoardError('阶段报告不会结束任务；工作完成后提交 outcome=awaiting_acceptance 的最终报告，收尾后再等用户验收')
     _actor(conn, goal, actor)
     if report['goal_id'] != goal_id or report['round'] != goal['current_round']:
         raise board.Conflict('交付报告不属于目标当前轮次')
@@ -951,7 +962,7 @@ def _finish_notice(goal, report):
     text = '任务「%s」（ID %s）的执行%s。\n摘要：%s\n完整报告用 crew goal status %s 查看（Codex：crew_goal 的 status）。\n' % (
         goal['title'], goal['id'], status, summary or '（报告没有写摘要）', goal['id'])
     if report['outcome'] == 'awaiting_acceptance':
-        return text + '用几句话告诉用户结果和要实测的内容；验收由用户本人决定，不要替用户验收，也不要重做已交付的工作。'
+        return text + '用几句话告诉用户结果、你做过的验证和需要用户确认的内容；验收由用户决定，不要替用户验收，也不要重做已交付的工作。'
     if report['outcome'] == 'failed':
         return text + '向用户说明没达标的原因和建议的下一步；要不要继续由用户决定。'
     return text + '无需处理。'

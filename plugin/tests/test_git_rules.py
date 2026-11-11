@@ -25,7 +25,9 @@ class GitRulesTests(CoreCase):
     def test_session_start_shows_first_six_policy_lines(self):
         self.enable("\n".join("规则%d" % i for i in range(1, 9)))
         context = self.context()
-        self.assertIn("本项目由 Git 助手「git管理员」统一推送和合并。做完用 `crew git request` 交给它", context)
+        self.assertIn("本项目的推送、开 PR、合并交给 Git 助手「git管理员」：做完用 `crew git request` 交给它", context)
+        self.assertIn('crew send git管理员 "<内容>" --kind task', context)
+        self.assertIn("发版分支由用户自己处理", context)
         self.assertIn("规则1\n规则2\n规则3\n规则4\n规则5\n规则6", context)
         self.assertNotIn("规则7", context)
         self.assertIn("全文用 crew git policy 看", context)
@@ -40,14 +42,15 @@ class GitRulesTests(CoreCase):
         self.assertIn('「Repository lead」', self.context())
         own = self.context('s3')
         self.assertIn('你是本项目当前绑定的 Git 助手', own)
-        self.assertNotIn('不要自己 push', own)
+        self.assertNotIn('自己不 push', own)
+        self.assertIn('发版分支由用户自己处理，本地集成分支不推送', own)
 
     def test_unenrolled_and_archived_sessions_still_receive_git_context(self):
         self.enable("规则正文")
-        self.assertIn("统一推送和合并", self.context("plain"))
+        self.assertIn("交给 Git 助手", self.context("plain"))
         board.set_status(self.conn, "s1", "closed", now=NOW)
         self.conn.execute("INSERT INTO session_controls(session_id,archived_status) VALUES(?,?)", ("s1", "idle"))
-        self.assertIn("统一推送和合并", self.context())
+        self.assertIn("交给 Git 助手", self.context())
 
     def test_disabled_git_does_not_add_context(self):
         self.assertNotIn("Git 助手", self.context())
@@ -58,7 +61,7 @@ class GitRulesTests(CoreCase):
         for sid in ("s1", "s2"):
             for command in ("git push origin feature/x", "gh pr merge 12 --squash", "gh pr create --title test", "cd repo && GIT PUSH origin main"):
                 with self.subTest(sid=sid, command=command):
-                    self.assertIn("本项目由 git 管理员统一推送和合并：用 crew git request 交给它。", self.guard(sid, command=command))
+                    self.assertIn("本项目的推送、开 PR、合并交给 Git 助手：用 crew git request 交给它；发版分支由用户自己处理。", self.guard(sid, command=command))
         event = self.conn.execute("SELECT detail FROM events WHERE kind='hook:guard' ORDER BY id DESC LIMIT 1").fetchone()
         self.assertIn("crew git request", event["detail"])
 

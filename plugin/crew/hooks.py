@@ -177,15 +177,17 @@ def handle(event, data, home, plugin_root, environ, git_provider=git_details, no
                          "分组：%s；leader：%s；SendMessage 地址：%s" % (s["group_name"], leader["crew_name"] if leader else None, leader["cc_name"] if leader else None),
                          '命令行：python "%s" ...' % (Path(home).resolve() / "crew.py"),
                          "请遵守 Crew 注入的守则（[Crew {0}]，可能已被用户在设置里修改）；没有看到注入时调用 /crew:{0} 读取".format(rules.skill_role(conn, s))] + lines
-                lines.append("跨执行工具的会话消息用 crew send <crew名> \"<内容>\"；crew who <名字> 可查 runtime。双方都是 Claude Code 时仍可用 SendMessage。")
+                lines.append("跨执行工具的会话消息用 crew send <crew名> \"<内容>\" --kind task|result|blocker|decision（按用途选；资料留档才用 information，不会叫醒对方）；"
+                             "crew who <名字> 可查 runtime。双方都是 Claude Code 时仍可用 SendMessage。")
             config = board.git_config(conn, p["name"])
             if config is not None:
                 administrator = board.session(conn, config['admin_session_id']) if config['admin_session_id'] else None
                 if config['admin_session_id'] == data['session_id']:
-                    lines.append('你是本项目当前绑定的 Git 助手，按项目规则统一推送、开 PR 和合并。')
+                    lines.append('你是本项目当前绑定的 Git 助手，处理项目规则授权的推送、PR 与合并；发版分支由用户自己处理，本地集成分支不推送。')
                 else:
-                    lines.append("本项目由 Git 助手「%s」统一推送和合并。做完用 `crew git request` 交给它，需要商量时用 crew send 联系。不要自己 push、开 PR、合并。" %
-                                 (administrator['crew_name'] if administrator else '未绑定'))
+                    lines.append("本项目的推送、开 PR、合并交给 Git 助手「%s」：做完用 `crew git request` 交给它，需要商量时用 crew send %s \"<内容>\" --kind task 联系；"
+                                 "自己不 push、不开 PR、不合并。发版分支由用户自己处理。" %
+                                 ((administrator['crew_name'],) * 2 if administrator else ('未绑定', '<Git 助手>')))
                 lines.append("分支规则（全文用 crew git policy 看）：\n" + "\n".join(config["branch_rules"].splitlines()[:6])
                              if config["branch_rules"] else "Git 助手还没写分支规则，开工前先问它。全文用 crew git policy 看。")
         if event == "user-prompt-submit" or (event == "session-start" and data.get("source") in ("resume", "compact")):

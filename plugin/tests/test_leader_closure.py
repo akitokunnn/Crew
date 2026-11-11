@@ -43,14 +43,16 @@ class LeaderClosureTests(GoalFixture):
         done = goals.review_acceptance(self.conn, waiting['id'], True, expected_version=waiting['version'])
         self.assertEqual(done['status'], 'completed')
 
-    def test_user_test_and_todos_require_nonempty_text_objects(self):
+    def test_user_test_is_optional_but_supplied_steps_and_todos_need_nonempty_text_objects(self):
         goal = self.goal()
         data = self.report('awaiting_acceptance')
         missing = dict(data)
         del missing['user_test']
-        with self.assertRaisesRegex(board.BoardError, 'user_test'):
-            goals.save_report(self.conn, goal['id'], missing)
-        for field, values in (('user_test', ([], None, ['step'], [{'step': 'a', 'expected': ' '}], [{'expected': 'b'}])),
+        # Steps for the user are optional: AI verifies what it can and lists only what the user must confirm.
+        self.assertEqual(goals.save_report(self.conn, goal['id'], missing)['data']['user_test'], [])
+        self.assertEqual(goals.save_report(self.conn, goal['id'], {**data, 'user_test': []})['data']['user_test'], [])
+        self.conn.execute('DELETE FROM goal_reports')
+        for field, values in (('user_test', (None, ['step'], [{'step': 'a', 'expected': ' '}], [{'expected': 'b'}])),
                               ('user_todos', (None, ['todo'], [{'title': '', 'detail': 'a'}], [{'title': 'a'}]))):
             for value in values:
                 with self.subTest(field=field, value=value), self.assertRaises(board.BoardError):

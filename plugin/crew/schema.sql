@@ -494,6 +494,8 @@ CREATE TABLE IF NOT EXISTS decisions (
     delivered_at    TEXT                   -- when the answer was injected into the asking session
 );
 
+-- Retired "hold" marks (feature removed 2026-11-11). Business code no longer reads or writes them;
+-- the table stays so existing rows survive and storage_v2 packages keep their held_at round trip.
 CREATE TABLE IF NOT EXISTS decision_holds (
     decision_id INTEGER PRIMARY KEY REFERENCES decisions(id),
     held_at     TEXT NOT NULL

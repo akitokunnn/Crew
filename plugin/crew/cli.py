@@ -488,7 +488,8 @@ def _emit(value, as_json=False, command=None, channel_card=None, git_assistant=N
         if "notice_id" in value:
             print(value["message"])
         elif value.get("runtime") == "codex":
-            print('已叫醒 %s，它在后台运行，消息用 crew send %s "<内容>"' % (value["name"], value["name"]))
+            print('已叫醒 %s，它在后台运行，消息用 crew send %s "<内容>" --kind task|result|blocker|decision（按用途选）'
+                  % (value["name"], value["name"]))
         else:
             print("已叫醒 %s，它在后台运行，SendMessage 地址：%s" % (value["name"], value["address"]))
     elif command == "compact":

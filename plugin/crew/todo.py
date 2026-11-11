@@ -175,20 +175,24 @@ def _notify(conn, item, text, now, source="web", route=None, sender=board.HUMAN)
     return {"kind": "handoff", "id": handoff_id, "session_id": target["session_id"]}
 
 
-def _notice_text(conn, item, action, note=None):
+def _notice_text(conn, item, action, note=None, route=None):
     proposer = board.session(conn, item["session_id"])
     name = proposer["crew_name"] or proposer["session_id"][:8]
     text = "人工待办“%s”：%s。\n提出者：%s（Crew 会话 ID：%s）。" % (item["title"], action, name, item["session_id"])
     if note:
         text += "\n备注：" + note
+    # One manual item changing state does not resume a whole flow, and a manual stop still holds.
+    own = (route or _route(conn, item))["session_id"] == item["session_id"]
+    relay = "这是你提出的待办。" if own else "转告提出者。"
     if item["blocking"] and item["status"] == "done":
-        text += "\n这项原本卡住了 AI 流程，用户现已完成。请马上转告原提出者，并叫醒它继续后续工作。"
+        text += ("\n这项原本卡住 AI 流程，用户已完成。" + relay +
+                 "再核对其余阻塞、停止状态和授权，只安排已获授权的后续工作；用户手动停止的仍等用户恢复。")
     elif item["blocking"] and item["status"] == "open":
-        text += "\n这项重新处于待处理状态，仍卡住 AI 流程。请马上转告原提出者，恢复等待用户操作。"
+        text += "\n这项重新待处理，仍卡住 AI 流程。" + relay + "相关工作继续等用户完成。"
     elif item["blocking"]:
-        text += "\n这项原本卡住了 AI 流程，请马上转告原提出者；障碍已解除时叫醒它继续，否则按原因重新安排。"
+        text += "\n这项原本卡住 AI 流程，现已不再待处理。" + relay + "按原因重新安排后续，不当作用户已完成。"
     else:
-        text += "\n请转告原提出者，按更新后的待办状态继续安排。"
+        text += "\n" + relay + "按更新后的状态安排后续。"
     return text
 
 
@@ -284,7 +288,8 @@ def undo(conn, project_name, todo_id, before, version, actor=board.HUMAN, now=No
     _remove_pending_notification(conn, current["project"], operation["notification"])
     restored = _raw(conn, current["project"], todo_id)
     action = "用户撤销了上一操作，现已恢复为%s" % {"open": "待处理", "done": "已完成", "cancelled": "已取消", "withdrawn": "已撤回"}[restored["status"]]
-    notification = _notify(conn, restored, _notice_text(conn, restored, action), now, route=operation["notification"])
+    notification = _notify(conn, restored, _notice_text(conn, restored, action, route=operation["notification"]), now,
+                           route=operation["notification"])
     board._event(conn, "todo:undo", current["project"], actor,
                  {"id": todo_id, "before": current, "version": restored["version"], "notification": notification}, now)
     return {"ok": True, "todo": get(conn, current["project"], todo_id), "before": current, "version": restored["version"]}

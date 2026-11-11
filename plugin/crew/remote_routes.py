@@ -14,7 +14,7 @@ POST_PATHS = frozenset((
     '/api/personal/notes/recovery', '/api/chat/send', '/api/chat/interrupt', '/api/chat/read',
     '/api/leader', '/api/wake', '/api/spawn', '/api/member-defaults', '/api/roster/move', '/api/roster/remove', '/api/git/adopt',
     '/api/notifications/away', '/api/goals/create', '/api/goals/action', '/api/goals/context',
-    '/api/goals/agent', '/api/answer', '/api/decision/hold', '/api/decision/unhold',
+    '/api/goals/agent', '/api/answer',
     '/api/decision/discuss', '/api/decision/ready', '/api/decision/clarify', '/api/native-approval',
     '/api/todo/resolve', '/api/todo/undo', '/api/comments',
     '/api/channel', '/api/channel/read', '/api/channel/digest', '/api/attention/dismiss',

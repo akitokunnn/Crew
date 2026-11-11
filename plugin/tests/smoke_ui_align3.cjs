@@ -28,7 +28,7 @@ async function main(){
    {...running,id:'fixture-paused',title:'暂停核查截图',status:'paused',pending_decision:null},
    {...running,id:'fixture-queued',title:'下一项排队任务',status:'queued',work_summary:{total:3,done:0}},
    {...running,id:'fixture-other',leader_session_id:'other-leader',title:'其他 leader 的任务'});
-  state.decisions=clearAttention?[]:[{id:999,session_id:info.leader,leader_session_id:info.leader,asker:'负责人',question:'确认本轮验收范围',held:false,options:['全部','核心'],presentation_stage:'notice'}];
+  state.decisions=clearAttention?[]:[{id:999,session_id:info.leader,leader_session_id:info.leader,asker:'负责人',question:'确认本轮验收范围',options:['全部','核心'],presentation_stage:'notice'}];
   state.todos=clearAttention?[]:[{id:998,title:'人工检查窗口',goal_id:null,status:'open',version:1,session_id:info.leader,leader_session_id:info.leader,proposer_name:'负责人',group:'负责人',steps:['打开窗口'],verification:'结果可见',created_at:stamp}];
   for(const goal of state.goals)projected.set(goal.id,goal);await route.fulfill({response,json:state});
  });

@@ -20,7 +20,7 @@
       pastGoals: goals.filter(goal => ended.has(goal.status)),
       discussions: leaders.filter(person => !owners.has(person.session_id)),
       todos: todos.filter(todo => todo.status == null || todo.status === "open"),
-      decisions: decisions.filter(decision => !decision.held),
+      decisions,
       reviews: goals.filter(goal => goal.status === "awaiting_acceptance" && goal.acceptance_brief && !goal.observing),
       // Looked at and fine so far, kept open to watch in use: listed quietly, not counted as waiting for the user.
       observing: goals.filter(goal => goal.status === "awaiting_acceptance" && goal.acceptance_brief && goal.observing),

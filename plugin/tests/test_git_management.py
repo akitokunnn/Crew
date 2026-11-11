@@ -619,8 +619,6 @@ class GitHttpTests(ShellFixture, unittest.TestCase):
         journal.emit('assistant', id='unread-one', text='First unread reply')
         journal.emit('assistant', id='unread-two', text='Second unread reply')
         board.ask(self.conn, 'chief', 'Choose a branch', ['A', 'B'], now=NOW)
-        held = board.ask(self.conn, 'chief', 'Held choice', ['A', 'B'], now=NOW)
-        board.hold(self.conn, held, now=NOW)
         answered = board.ask(self.conn, 'chief', 'Answered choice', ['A', 'B'], now=NOW)
         board.answer(self.conn, answered, 'A', now=NOW)
         board.ask(self.conn, 's3', 'Another leader choice', ['A', 'B'], now=NOW)

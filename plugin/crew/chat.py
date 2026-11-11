@@ -22,6 +22,8 @@ from . import board, channel, claude_limits, claude_subagents, codex_client, cod
 
 PAUSED_FOR_UPDATE = "Crew 正在准备更新，暂不接受新任务；更新完成后再试"
 MAINTENANCE_HELD = "正在压缩该人员的记忆，完成后再发送"
+# crew send defaults to information, which is only archived; a reply must say what it is.
+REPLY_KIND = "--kind result（阻塞用 blocker，要对方做事用 task）"
 # Claude's own answer when --resume names a conversation it does not have.
 CLAUDE_NO_CONVERSATION = "No conversation found with session ID: "
 NATIVE_MISSING = ("原会话丢失：Claude 报告找不到原生会话 %s。Crew 会新开一个原生会话并交接任务背景；"
@@ -1623,7 +1625,7 @@ class Manager:
                     raise board.BoardError("leader 直接在网页上和它聊")
                 if caller["role"] == "member":
                     peer = any(runtimes.get(conn, s['session_id'])['runtime'] == 'codex' for s in (caller, target))
-                    reply = ('回复用 crew send ' + caller['crew_name'] + ' "<回复>"；Codex 也可用 crew_send_message。' if peer else
+                    reply = ('回复用 crew send ' + caller['crew_name'] + ' "<回复>" ' + REPLY_KIND + '；Codex 用 crew_send_message 并同样指定 kind。' if peer else
                              "回复用 SendMessage，地址「" + caller["cc_name"] + "」。" if caller["cc_name"] else
                              "回复前用 crew who " + caller["crew_name"] + " 查地址；离线时用 crew wake 接续原会话。")
                     notice = ("组员「" + caller["crew_name"] + "」（" + caller["group_name"] + "）找你：" + text + "。" + reply)
@@ -1632,7 +1634,7 @@ class Manager:
                     if not peer and caller["cc_name"] is None:
                         raise board.BoardError("leader 的 SendMessage 地址未知，请查明后再试")
                     notice = ("leader「" + caller["crew_name"] + "」（" + caller["group_name"] + "）找你：" + text +
-                              ('。回复用 crew send ' + caller['crew_name'] + ' "<回复>"，或 crew say --to ' + caller['crew_name'] + '。' if peer else
+                              ('。回复用 crew send ' + caller['crew_name'] + ' "<回复>" ' + REPLY_KIND + '，或 crew say --to ' + caller['crew_name'] + '。' if peer else
                                "。回复用 SendMessage，地址「" + caller["cc_name"] + "」，或 crew say --to " + caller["crew_name"] + "。"))
                 notice_id = board.queue_leader_notice(conn, target["session_id"], notice, "crew", now=now)
                 return {"ok": True, "session_id": target["session_id"], "name": target["crew_name"],
@@ -1661,7 +1663,7 @@ class Manager:
                 peer = any(runtimes.get(conn, s['session_id'])['runtime'] == 'codex' for s in (reply_to, target))
                 if not peer and reply_to["cc_name"] is None:
                     raise board.BoardError("leader 的 SendMessage 地址未知，请查明后再试")
-                message += ('\n\n回复 leader 用 crew send ' + reply_to['crew_name'] + ' "<回复>"；Codex 也可用 crew_send_message。' if peer else
+                message += ('\n\n回复 leader 用 crew send ' + reply_to['crew_name'] + ' "<回复>" ' + REPLY_KIND + '；Codex 用 crew_send_message 并同样指定 kind。' if peer else
                             "\n\n回复 leader 用 SendMessage，地址「" + reply_to["cc_name"] + "」。")
             sender = reply_to["crew_name"] if reply_to is not None else board.HUMAN
             created_spawn = self._resume(conn, target, message, sender=sender, now=now, source='human' if human else 'crew')

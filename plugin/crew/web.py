@@ -615,12 +615,13 @@ class Service:
         if leader is not None:
             peer = any(runtimes.get(conn, s['session_id'])['runtime'] == 'codex' for s in (session, leader))
             address = "（SendMessage 地址：%s）" % session["cc_name"] if session["cc_name"] else ""
-            notice = ("%s%s 已收编到你组。请用 SendMessage 欢迎它、说明你是它的 leader、守则 /crew:member，"
-                "并请它用 crew card 写下负责范围和完成标准；crew who 显示离线时，用 crew wake %s \"要它做的事\" "
-                "叫醒后按 crew 名 SendMessage。" % (session["crew_name"], address, session["crew_name"]))
+            notice = ("%s%s 已收编到你组。请用 SendMessage 欢迎它、说明你是它的 leader，请它按 Crew 注入的成员守则工作"
+                "（没看到注入时再读 /crew:member），并用 crew card 写下负责范围和完成标准；crew who 显示离线时，"
+                "用 crew wake %s \"要它做的事\" 叫醒后按 crew 名 SendMessage。" % (session["crew_name"], address, session["crew_name"]))
             if peer:
-                notice = ('%s 已收编到你组。请用 crew send %s "<欢迎与分工>"，说明你是它的 leader，'
-                          '请它阅读成员守则并用 crew card 写下负责范围和完成标准。离线时用 crew wake 接续原会话。' %
+                notice = ('%s 已收编到你组。请用 crew send %s "<欢迎与分工>" --kind task（Codex：crew_send_message，kind=task），'
+                          '说明你是它的 leader，请它按 Crew 注入的成员守则工作，并用 crew card 写下负责范围和完成标准；'
+                          '对方离线时 Crew 会接续它的原会话送达。' %
                           (session['crew_name'], session['crew_name']))
             board.queue_leader_notice.__wrapped__(conn, leader["session_id"],
                 notice,
@@ -715,7 +716,7 @@ class Service:
                 asker = board.session(conn, decision['session_id'])
                 leader_id=trust_mode.decision_leader(conn,decision['id'])
                 result['decisions'].append({**{key: decision[key] for key in (
-                    'id', 'session_id', 'question', 'options', 'recommendation', 'blocking', 'created_at', 'held', 'held_at')},
+                    'id', 'session_id', 'question', 'options', 'recommendation', 'blocking', 'created_at')},
                     'asker': asker['crew_name'], 'leader_session_id': leader_id,
                     'goal_id': links.get(('decision', decision['id']))})
         tasks = usage.dispatch_tasks(conn, None, None, project=name)
@@ -770,7 +771,7 @@ class Service:
                     last_seq=events[-1]['seq'] if events else 0, read_seq=read_seq,
                     last_reply_id=replies[-1]['id'] if replies else None,
                     unread=sum(reply['seq'] > read_seq for reply in replies),
-                    pending=sum(d['leader_session_id'] == sid and not d['held'] for d in result['decisions']),
+                    pending=sum(d['leader_session_id'] == sid for d in result['decisions']),
                     notices_pending=len(board.pending_notices(conn, sid)),
                     member_ids=[s['session_id'] for s in sessions if s['role'] != 'leader' and s['crew_name']
                                 and member_leaders[s['session_id']] is not None
@@ -1443,7 +1444,7 @@ class Service:
                     options = self.chat.set_options(conn, target['session_id'],
                                                     {key: data[key] for key in ('model', 'effort') if key in data}, now=now)
                     return {'ok': True, **options}
-            if path in ("/api/answer", "/api/decision/hold", "/api/decision/unhold"):
+            if path == "/api/answer":
                 if type(data.get("id")) is not int:
                     raise ValueError("id \u5fc5\u987b\u662f\u6574\u6570")
                 decision = conn.execute("SELECT * FROM decisions WHERE id=?", (data["id"],)).fetchone()
@@ -1451,23 +1452,6 @@ class Service:
                     raise board.BoardError("待拍板不存在: " + str(data["id"]))
                 if decision["project"] != project:
                     raise board.BoardError("待拍板不属于当前项目")
-                if path == "/api/decision/unhold":
-                    board.unhold(conn, data["id"], now=now)
-                    return {"ok": True}
-                if path == "/api/decision/hold":
-                    if board.hold(conn, data["id"], now=now):
-                        asker, leader = self.decision_participants(conn, decision)
-                        if leader is not None:
-                            notice = ('拍板 #%s：%s（SendMessage 地址：%s）\n问题：%s\n'
-                                      '用户挂起了，暂时不拍。请用 SendMessage 告诉提问的组员：'
-                                      '不卡流程的按推荐继续；卡流程的先做别的，先别再问这道题。' %
-                                      (data['id'], asker['crew_name'], asker['cc_name'], decision['question']))
-                            if any(runtimes.get(conn, s['session_id'])['runtime'] == 'codex' for s in (asker, leader)):
-                                notice = ('拍板 #%s：%s\n问题：%s\n用户挂起了，暂时不拍。请用 crew send %s "<处理安排>" 转告：'
-                                          '不卡流程的按推荐继续；卡流程的先做别的，先别再问这道题。' %
-                                          (data['id'], asker['crew_name'], decision['question'], asker['crew_name']))
-                            board.queue_leader_notice(conn, leader['session_id'], notice, 'web', now=now)
-                    return {"ok": True}
                 text = _text(data, 'text')
                 board.answer(conn, data["id"], text, board.HUMAN, now=now)
                 from . import goal_links
@@ -1476,14 +1460,7 @@ class Service:
                     return {'ok': True, 'goal_id': link['goal_id'], 'routed_to': decision['session_id']}
                 asker, leader = self.decision_participants(conn, decision)
                 if leader is not None:
-                    notice = ('拍板 #%s：%s（SendMessage 地址：%s）\n问题：%s\n答复：%s\n'
-                              '请马上用 SendMessage 转告并叫它继续' %
-                              (data['id'], asker['crew_name'], asker['cc_name'], decision['question'], text))
-                    if any(runtimes.get(conn, s['session_id'])['runtime'] == 'codex' for s in (asker, leader)):
-                        action = ('请按用户答复继续。' if asker['session_id'] == leader['session_id'] else
-                                  '请用 crew send %s "<答复与后续安排>" 转告；离线时用 crew wake 接续原会话。' % asker['crew_name'])
-                        notice = ('拍板 #%s：%s\n问题：%s\n答复：%s\n%s' %
-                                  (data['id'], asker['crew_name'], decision['question'], text, action))
+                    notice = messaging.decision_answer_notice(conn, data['id'], decision['question'], text, asker, leader)
                     board.queue_leader_notice(conn, leader['session_id'], notice, 'web', now=now)
                 return {"ok": True, 'routed_to': leader['crew_name'] if leader else None}
             if path in ("/api/open", "/api/open/continue"):
@@ -1912,7 +1889,6 @@ POST_PATHS.update({'/api/project/update', '/api/project/remove'})
 POST_PATHS.update('/api/session/' + action for action in ('appearance', 'rename', 'archive', 'delete', 'restore', 'undo', 'stop', 'options', 'compact'))
 POST_PATHS.update(('/api/session/runtime/prepare','/api/session/runtime/switch'))
 POST_PATHS.update(('/api/attention/dismiss', '/api/notifications/away'))
-POST_PATHS.update(('/api/decision/hold', '/api/decision/unhold'))
 POST_PATHS.update(('/api/channel', '/api/channel/read', '/api/channel/digest'))
 POST_PATHS.add('/api/leaders/order')
 POST_PATHS.add('/api/leaders/priority')

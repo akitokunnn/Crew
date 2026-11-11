@@ -48,7 +48,7 @@ function harness(state = fixture(), fetcher = () => { throw new Error("Unexpecte
     optionsLabel, optionChangeNotice, leaderPayload, renderLeaderRuntime, selectLeaderOption, refreshRuntimes, editorHandoffReason, sessionMenu, chatAccess,
     saveNormalOrder, sortableLeaders, railQuota, renderSidebar, contextRing, contextControls, sidebarLeader, memberNode, workingRow, compactContext, compactions,
     compactFailures, setGoal(client, id) {goals=client;goalId=id;},
-    openTodos, todosOf, pendingOf, todoCard, todoTray, todoExpanded, todoActions,
+    openTodos, todosOf, decisionsOf, todoCard, todoTray, todoExpanded, todoActions,
     todoResolvePayload, resolveTodo, renderTodos, replace, action, changeSession,
     compactDecisionText, decisionOptions, decisionCard, decisionsOpen,
     route() {readRoute(); return {view,leaderId,readOnlyId};},
@@ -270,7 +270,7 @@ const todo = extra => ({id:17, title:"在手机上确认登录", steps:"打开�
   blocking:true, status:"open", note:"", session_id:"member-1", proposer_name:"连接助手", group:"登录",
   leader_session_id:"leader-1", leader_name:"登录", priority:1, created_at:"2026-10-24T00:00:00Z", updated_at:"2026-10-24T00:00:00Z", version:2, ...extra});
 const todoState = () => ({...fixture(), project:{name:"fixture"}, leaders:[{session_id:"leader-1", name:"登录"}], members:[],
-  decisions:[{id:90, leader_session_id:"leader-1", session_id:"leader-1", asker:"登录", held:false, presentation_stage:"notice"}], todos:[todo({id:44}), todo({id:17}), todo({id:52, leader_session_id:"leader-2"})]});
+  decisions:[{id:90, leader_session_id:"leader-1", session_id:"leader-1", asker:"登录", presentation_stage:"notice"}], todos:[todo({id:44}), todo({id:17}), todo({id:52, leader_session_id:"leader-2"})]});
 
 test("first open shows the workspace overview while explicit conversation and TODO routes remain stable", () => {
   const state = todoState(), {ui, location} = harness(state);
@@ -295,7 +295,7 @@ test("personal action order comes from server and group trays and decisions have
   assert.deepEqual(plain(ui.openTodos().map(item => item.id)), [44, 17, 52]);
   const group = ui.todosOf("leader-1");
   assert.deepEqual(plain(group.map(item => item.id)), [44, 17]);
-  assert.equal(ui.pendingOf("leader-1").length, 1);
+  assert.equal(ui.decisionsOf("leader-1").length, 1);
   const tray = ui.todoTray(group, "leader-1");
   assert(tray.includes('class="todo-tray"'));
   assert(tray.includes('待你动手 <span>2</span>'));
@@ -376,7 +376,7 @@ test("a stale action retains the user's reason and asks them to review updated c
 });
 
 const decision = extra => ({id:71, asker:"连接助手", session_id:"member-1", leader_session_id:"leader-1", presentation_stage:"ready",
-  question:"是否继续连接？", options:["A. 继续连接", "B. 暂缓连接"], recommendation:"A", held:false,
+  question:"是否继续连接？", options:["A. 继续连接", "B. 暂缓连接"], recommendation:"A",
   brief:{title:"是否允许连接测试设备", context:"technical-only-context", why_user:"设备需要使用你的个人账户。",
     recommendation_reason:"可以继续验证连接功能。", impact:"会在本机保存一次登录状态。",
     options:[{label:"允许使用这个账户", consequence:"继续连接验证，登录状态会保存在本机。"},
@@ -406,7 +406,7 @@ test("decision briefs show human context, rationale and independent consequences
   assert.deepEqual(plain(ui.decisionOptions(item).map(option => option.index)), [0, 1]);
   assert.deepEqual(item.options, original);
   assert(card.includes('data-act="answer-option" data-id="71" data-option="1"'));
-  assert(card.includes('data-act="decision-hold"'));
+  assert(!card.includes('decision-hold') && !card.includes('挂起'));
   assert(!card.includes('data-decision-context="71" open'));
   ui.decisionsOpen.add(71);
   assert(ui.decisionCard(item).includes('data-decision-context="71" open'));

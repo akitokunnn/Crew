@@ -70,6 +70,10 @@ class GoalMessageTests(GoalFixture):
         for index in range(10):
             self.assertIn('Sample ' + str(index) + ' has new evidence', text)
         self.assertIn('不代表用户授权', text)
+        # The reply rule is stated once per batch; each message keeps its own sender and id.
+        self.assertEqual(text.count('--reply-to'), 1)
+        self.assertIn('--kind result|blocker --reply-to <消息编号>', text)
+        self.assertEqual(text.count(' · result · 消息'), 10)
         self.assertEqual(self.controller.send.call_args.kwargs['source'], 'peer')
         self.assertTrue(all(self.row(receipt)['status'] == 'accepted' for receipt in receipts))
         goal_messages.deliver(self.controller, self.conn)

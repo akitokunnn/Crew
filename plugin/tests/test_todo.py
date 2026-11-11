@@ -73,7 +73,7 @@ class TodoTests(RuntimeFixture):
         with self.assertRaises(board.BoardError):
             todo.undo(self.conn, "demo", added["id"], changed["before"], changed["version"], actor="member-id")
 
-    def test_done_note_is_saved_and_blocking_notice_tells_leader_to_wake_the_proposer(self):
+    def test_done_note_is_saved_and_blocking_notice_relays_without_ordering_a_resume(self):
         added = self.add(blocking=True)
         changed = todo.resolve(self.conn, "demo", added["id"], "done", note="Cable connected", expected_version=1)
         self.assertEqual(changed["todo"]["note"], "Cable connected")
@@ -82,8 +82,10 @@ class TodoTests(RuntimeFixture):
         self.assertEqual(changed["version"], 2)
         notices = board.pending_notices(self.conn, "chief-id")
         self.assertEqual(len(notices), 1)
-        for text in ("Connect the device", "builder", "member-id", "Cable connected", "叫醒它继续"):
+        for text in ("Connect the device", "builder", "member-id", "Cable connected", "转告提出者",
+                     "核对其余阻塞、停止状态和授权", "手动停止的仍等用户恢复"):
             self.assertIn(text, notices[0]["text"])
+        self.assertNotIn("叫醒它继续", notices[0]["text"])
         self.assertEqual(todo.list(self.conn, "demo"), [])
         self.assertEqual(todo.list(self.conn, "demo", all=True)[0]["status"], "done")
 
@@ -124,7 +126,7 @@ class TodoTests(RuntimeFixture):
         pending = board.pending_notices(self.conn, "chief-id")
         self.assertEqual(len(pending), 1)
         self.assertIn("撤销了上一操作", pending[0]["text"])
-        self.assertIn("恢复等待", pending[0]["text"])
+        self.assertIn("相关工作继续等用户完成", pending[0]["text"])
 
     def test_undo_corrects_an_already_delivered_notice_without_erasing_the_audit(self):
         added = self.add()
@@ -162,7 +164,7 @@ class TodoTests(RuntimeFixture):
         todo.undo(self.conn, "demo", added["id"], changed["before"], changed["version"])
         correction = board.handoffs(self.conn, "solo-id")
         self.assertEqual(len(correction), 1)
-        self.assertIn("恢复等待", correction[0]["body"])
+        self.assertIn("相关工作继续等用户完成", correction[0]["body"])
 
     def test_no_leader_unsent_handoff_is_removed_before_undo_correction(self):
         board.join(self.conn, "solo-id", "demo", "solo", self.root, self.root, "main")

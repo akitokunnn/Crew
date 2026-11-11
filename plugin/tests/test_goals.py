@@ -157,10 +157,9 @@ class GoalTests(GoalFixture):
         self.assertIn('Wrong speaker', report['html'])
         self.assertEqual(goals.transition(self.conn, goal['id'], 'failed')['status'], 'failed')
 
-    def test_missing_examples_unverified_or_simulated_evidence_cannot_claim_success(self):
+    def test_unverified_simulated_or_illustrative_only_evidence_cannot_claim_success(self):
         goal = self.goal()
-        for mutate in (lambda data: data.update(examples=[]),
-                       lambda data: data['acceptance'][0].update(status='simulated'),
+        for mutate in (lambda data: data['acceptance'][0].update(status='simulated'),
                        lambda data: data['acceptance'][0].update(status='unverified'),
                        lambda data: data['acceptance'][0].update(evidence=[]),
                        lambda data: data['examples'][0].update(kind='illustrative')):
@@ -169,6 +168,29 @@ class GoalTests(GoalFixture):
             with self.assertRaises(board.BoardError):
                 goals.save_report(self.conn, goal['id'], data)
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM goal_reports').fetchone()[0], 0)
+
+    def test_final_delivery_needs_verification_evidence_not_a_forced_example_or_user_test(self):
+        goal = self.goal()
+        data = self.report('awaiting_acceptance')
+        data.update(examples=[], user_test=[])
+        report = goals.save_report(self.conn, goal['id'], data)
+        self.assertEqual((report['data']['examples'], report['data']['user_test']), ([], []))
+        self.assertNotIn('具体 example', report['html'])
+        self.assertNotIn('请你实测', report['html'])
+        missing = self.report('awaiting_acceptance')
+        missing['acceptance'][0].update(status='unverified', evidence=[])
+        with self.assertRaisesRegex(board.BoardError, '验证证据'):
+            goals.save_report(self.conn, goal['id'], missing)
+        boundary = self.report('awaiting_acceptance')
+        boundary['acceptance'][0]['status'] = 'simulated'
+        with self.assertRaisesRegex(board.BoardError, 'unresolved'):
+            goals.save_report(self.conn, goal['id'], boundary)
+        boundary['unresolved'] = ['Only replayed against a recorded sample, not a live device']
+        self.assertEqual(goals.save_report(self.conn, goal['id'], boundary)['outcome'], 'awaiting_acceptance')
+        progress = self.report('progress')
+        progress['acceptance'][0].update(status='unverified', evidence=[])
+        progress.update(examples=[], user_test=[])
+        goals.save_report(self.conn, goal['id'], progress)
 
     def test_report_html_is_offline_escaped_and_retry_does_not_redispatch(self):
         goal = self.goal()

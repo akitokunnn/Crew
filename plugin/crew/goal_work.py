@@ -66,7 +66,8 @@ def _dependencies(conn, goal, key, values):
 def _writeable(conn, goal, actor):
     goals._actor(conn, goal, actor, member=True)
     if goal['status'] in goals.TERMINAL:
-        raise board.Conflict('已结束目标的工作清单保留为历史；请在新一轮继续')
+        raise board.Conflict('任务已结束，工作清单暂不能改。用户要求修改时，先在本任务用 amend 登记修改内容，'
+                             '任务会在原轮次继续并沿用这份清单；不要自行开新一轮。')
 
 
 def _record(conn, item, actor):

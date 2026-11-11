@@ -459,6 +459,20 @@ class CodexToolsTests(unittest.TestCase):
         result = self.call("crew_send_message", {"to": "reviewer", "text": "Hello"}, tools=tools,
                            success=False)
         self.assertNotIn("secret", str(result))
+        # The router raised: the outcome is unknown, so the tool must not claim it was never accepted.
+        self.assertIn("delivery_unknown", str(result))
+        self.assertIn("outcome unknown", str(result))
+        self.assertIn("do not resend at once", str(result))
+
+    def test_descriptions_state_real_scope_without_duplicating_role_rules(self):
+        specs = {spec["name"]: spec["description"] for spec in codex_tools.tool_specs()}
+        self.assertIn("Current leaders only", specs["crew_rename"])
+        self.assertIn("Members cannot use it", specs["crew_rename"])
+        self.assertIn("general conversation it is registered to this workspace only", specs["crew_doc_add"])
+        self.assertNotIn("binds it to your current task", specs["crew_doc_add"])
+        self.assertNotIn("Ordinary Q&A", specs["crew_goal"])
+        self.assertIn("follows the injected role rules", specs["crew_goal"])
+        self.assertIn("optional in data.report.document_html", specs["crew_goal"])
 
     def test_unknown_tools_and_bad_inputs_do_not_mutate_the_board(self):
         for name, args in (("shell", {"command": "anything"}), ("crew_task", {"text": ""}),

@@ -38,8 +38,7 @@ def is_builtin(session, config):
 def assistant_state(conn, config, session_state, decisions, *, builtin):
     requests = board.git_requests(conn, config['project'])
     waiting = sum(item['status'] == 'waiting_user' for item in requests)
-    pending = sum(item['session_id'] == session_state['session_id'] and item['status'] == 'open'
-                  and not item['held'] for item in decisions)
+    pending = sum(item['session_id'] == session_state['session_id'] and item['status'] == 'open' for item in decisions)
     return {**session_state, 'builtin': builtin, 'base': config['base'], 'integration': config['integration'],
             'requests': {'active': len(requests), 'waiting_user': waiting,
                          'merging': sum(item['status'] == 'merging' for item in requests),
@@ -74,11 +73,12 @@ def input_context(conn, session_id, previous_revision, plugin_root):
             (admin['crew_name'] if admin else '未绑定', config['admin_session_id'], config['base'],
              config['integration'] + '（只在本机、不推送）' if config['integration'] else '未设置', command))
     if config['admin_session_id'] == session_id:
-        text += '你现在负责统一推送、PR 与合并，按 Crew 注入的 Git 助手守则执行。'
+        text += ('你现在负责项目规则授权的推送、PR 与合并，按 Crew 注入的 Git 助手守则执行；'
+                 '发版分支由用户自己处理，本地集成分支不推送。')
     else:
         text += ('推送、开 PR、合并交给 Git 助手，用 crew git request "<改动、验证、后续>" [--blocking]'
                  '（Codex crew_git 的 request；确有后续阻塞才加 data.blocking=true）。'
-                 '需要商量时 crew send "%s" "<内容>"（Codex crew_send_message）。' %
+                 '需要商量时 crew send "%s" "<内容>" --kind task（Codex crew_send_message，kind=task）。发版分支由用户自己处理。' %
                  (admin['crew_name'] if admin else '未绑定'))
     return current, text
 

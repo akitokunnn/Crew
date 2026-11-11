@@ -14,7 +14,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import ProxyHandler, Request, build_opener
 
-from crew import session_ops, board, codex_runtime, decision_flow, goals, store, themes, usage, web
+from crew import session_ops, board, codex_runtime, decision_flow, goals, remote_routes, store, themes, usage, web
 from test_shell import NOW, PLUGIN, ShellFixture
 from test_usage import assistant
 
@@ -354,12 +354,11 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual({row["id"] for row in state["decisions"]}, {opened, own})
         decision = next(row for row in state["decisions"] if row["id"] == opened)
         self.assertEqual(set(decision), {"id", "session_id", "asker", "leader_session_id", "question",
-                                        "options", "recommendation", "blocking", "created_at", "held", "held_at", "brief", "needs_review",
+                                        "options", "recommendation", "blocking", "created_at", "brief", "needs_review",
                                         "goal_id", "presentation_stage", "discussed_at", "ready_at", "notice_id"})
         self.assertTrue(decision['needs_review'])
         self.assertIsNone(decision['brief'])
         self.assertEqual((decision["asker"], decision["leader_session_id"]), ("one", "s3"))
-        self.assertEqual((decision["held"], decision["held_at"]), (False, None))
         self.assertEqual((decision['goal_id'],decision['presentation_stage'],decision['discussed_at'],decision['ready_at'],decision['notice_id']),
                          (None,'notice',None,None,None))
         self.assertEqual(state["leaders"][0]["pending"], 2)
@@ -389,94 +388,40 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual(row['brief'],brief);self.assertEqual(row['options'],['立即发布','等待验收'])
         self.assertEqual(len(self.processes),before)
 
-    def test_hold_state_keeps_question_but_excludes_pending_and_attention(self):
+    def test_retired_hold_routes_are_gone_and_legacy_hold_rows_count_as_pending(self):
         active = board.ask(self.conn, "s1", "Choose API", now=NOW)
-        held = board.ask(self.conn, "s3", "Later question", now=NOW)
-        code, response, _ = self.request("/api/decision/hold", {"id": held})
-        self.assertEqual((code, response), (200, {"ok": True}))
-        state = self.state()
-        decisions = {row["id"]: row for row in state["decisions"]}
-        self.assertEqual(set(decisions), {active, held})
-        self.assertEqual((decisions[held]["held"], decisions[held]["held_at"]), (True, NOW))
-        self.assertEqual((decisions[active]["held"], decisions[active]["held_at"]), (False, None))
-        self.assertEqual(state["leaders"][0]["pending"], 1)
-        self.assertEqual([row["decision_id"] for row in state["attention"] if row["kind"] == "decision"], [active])
-        code, response, _ = self.request("/api/decision/unhold", {"id": held})
-        self.assertEqual((code, response), (200, {"ok": True}))
-        state = self.state()
-        self.assertEqual(state["leaders"][0]["pending"], 2)
-        self.assertEqual({row["decision_id"] for row in state["attention"] if row["kind"] == "decision"}, {active, held})
-
-    def test_hold_routes_member_and_self_to_leader_and_ungrouped_to_no_notice(self):
-        for sid in ("s1", "s2", "s3"):
-            with self.subTest(session_id=sid):
-                question = "Question for " + sid
-                decision = board.ask(self.conn, sid, question, now=NOW)
-                before = {row["id"] for row in board.pending_notices(self.conn, "s3")}
-                self.assertEqual(self.request("/api/decision/hold", {"id": decision})[:2], (200, {"ok": True}))
-                notices = [row for row in board.pending_notices(self.conn, "s3") if row["id"] not in before]
-                if sid == "s2":
-                    self.assertEqual(notices, [])
-                else:
-                    self.assertEqual(len(notices), 1)
-                    self.assertEqual(notices[0]["source"], "web")
-                    asker = board.session(self.conn, sid)
-                    for part in ("#" + str(decision), asker["crew_name"], asker["cc_name"], question,
-                                 "用户挂起了，暂时不拍", "请用 SendMessage 告诉提问的组员",
-                                 "不卡流程的按推荐继续", "卡流程的先做别的，先别再问这道题"):
-                        self.assertIn(part, notices[0]["text"])
-                notice_ids = {row["id"] for row in board.pending_notices(self.conn, "s3")}
-                self.clock += dt.timedelta(seconds=1)
-                self.assertEqual(self.request("/api/decision/hold", {"id": decision})[:2], (200, {"ok": True}))
-                self.assertEqual(self.request("/api/decision/unhold", {"id": decision})[:2], (200, {"ok": True}))
-                self.assertEqual(self.request("/api/decision/unhold", {"id": decision})[:2], (200, {"ok": True}))
-                self.assertEqual({row["id"] for row in board.pending_notices(self.conn, "s3")}, notice_ids)
-
-    def test_hold_notice_uses_current_sendmessage_address(self):
-        self.provider.return_value[0]["name"] = "cc-one-resumed"
-        self.service.refresh_agents()
-        decision = board.ask(self.conn, "s1", "Later with resumed process", now=NOW)
-        self.assertEqual(self.request("/api/decision/hold", {"id": decision})[0], 200)
-        self.assertIn("SendMessage 地址：cc-one-resumed", board.pending_notices(self.conn, "s3")[0]["text"])
-
-    def test_hold_routes_reject_bad_ids_processed_and_foreign_questions(self):
-        other = self.root / "other-project"
-        other.mkdir()
-        board.init_project(self.conn, "other", other, now=NOW)
-        board.join(self.conn, "foreign", "other", "foreign", other, other, "main", now=NOW)
-        foreign = board.ask(self.conn, "foreign", "Foreign question", now=NOW)
-        answered = board.ask(self.conn, "s1", "Already answered", now=NOW)
-        withdrawn = board.ask(self.conn, "s1", "Already withdrawn", now=NOW)
-        board.answer(self.conn, answered, "a", now=NOW)
-        board.withdraw(self.conn, "s1", withdrawn, now=NOW)
+        legacy = board.ask(self.conn, "s3", "Held before the feature was removed", now=NOW)
+        self.conn.execute("INSERT INTO decision_holds(decision_id,held_at) VALUES(?,?)", (legacy, NOW))
         for path in ("/api/decision/hold", "/api/decision/unhold"):
-            for data in ({}, {"id": True}, {"id": "1"}, {"id": 1.5}):
-                with self.subTest(path=path, data=data):
-                    code, response, _ = self.request(path, data)
-                    self.assertEqual((code, response), (400, {"error": "id 必须是整数"}))
-            for decision, reason in ((999, "待拍板不存在"), (foreign, "不属于当前项目"),
-                                     (answered, "尚未答复"), (withdrawn, "尚未答复")):
-                with self.subTest(path=path, decision=decision):
-                    code, response, _ = self.request(path, {"id": decision})
-                    self.assertEqual(code, 400)
-                    self.assertIn(reason, response["error"])
-        self.assertEqual(list(self.conn.execute("SELECT * FROM decision_holds")), [])
+            with self.subTest(path=path):
+                self.assertNotIn(path, web.POST_PATHS)
+                self.assertNotIn(path, remote_routes.POST_PATHS)
+                self.assertEqual(self.request(path, {"id": legacy})[0], 404)
+        state = self.state()
+        self.assertEqual({row["id"] for row in state["decisions"]}, {active, legacy})
+        self.assertEqual(state["leaders"][0]["pending"], 2)
+        self.assertEqual({row["decision_id"] for row in state["attention"] if row["kind"] == "decision"}, {active, legacy})
         self.assertEqual(board.pending_notices(self.conn, "s3"), [])
+        self.assertEqual(len(list(self.conn.execute("SELECT * FROM decision_holds"))), 1)
 
-    def test_answer_held_question_removes_hold_and_queues_normal_answer_notice(self):
-        decision = board.ask(self.conn, "s1", "Answer when ready", now=NOW)
-        self.assertEqual(self.request("/api/decision/hold", {"id": decision})[0], 200)
-        before = {row["id"] for row in board.pending_notices(self.conn, "s3")}
-        self.assertEqual(self.request("/api/answer", {"id": decision, "text": "Continue"})[:2],
-                         (200, {"ok": True, "routed_to": "lead"}))
-        notices = [row for row in board.pending_notices(self.conn, "s3") if row["id"] not in before]
-        self.assertEqual(len(notices), 1)
-        self.assertIn("答复：Continue", notices[0]["text"])
-        self.assertIn("请马上用 SendMessage 转告并叫它继续", notices[0]["text"])
-        self.assertEqual(self.state()["decisions"], [])
-        self.assertEqual(list(self.conn.execute("SELECT * FROM decision_holds")), [])
-        saved = board.decisions(self.conn, "demo", all=True)[0]
-        self.assertEqual((saved["status"], saved["answer"], saved["answered_by"]), ("answered", "Continue", "user"))
+    def test_answer_notice_relays_the_answer_without_ordering_a_resume(self):
+        for sid, relayed in (("s1", True), ("s3", False)):
+            with self.subTest(session_id=sid):
+                decision = board.ask(self.conn, sid, "Question for " + sid, now=NOW)
+                before = {row["id"] for row in board.pending_notices(self.conn, "s3")}
+                self.assertEqual(self.request("/api/answer", {"id": decision, "text": "Stop here"})[:2],
+                                 (200, {"ok": True, "routed_to": "lead"}))
+                notices = [row for row in board.pending_notices(self.conn, "s3") if row["id"] not in before]
+                self.assertEqual(len(notices), 1)
+                text = notices[0]["text"]
+                self.assertIn("用户答复：Stop here", text)
+                self.assertNotIn("叫它继续", text)
+                if relayed:
+                    self.assertIn("SendMessage 地址：" + board.session(self.conn, sid)["cc_name"], text)
+                    self.assertIn("先用 SendMessage 把答复转告提问者", text)
+                    self.assertIn("转告不等于叫它复工", text)
+                else:
+                    self.assertIn("这是你提的问题：按答复内容决定下一步", text)
 
     def test_closed_group_leader_has_no_independent_members(self):
         self.assertEqual(self.state()["leaders"][0]["member_ids"], ["s1"])
@@ -789,8 +734,9 @@ class WebContractTests(ShellFixture, unittest.TestCase):
                     self.assertEqual(notice["source"], "web")
                     asker = board.session(self.conn, sid)
                     for part in ("#" + str(decision), asker["crew_name"], asker["cc_name"], question,
-                                 "Use option A", "请马上用 SendMessage 转告并叫它继续"):
+                                 "用户答复：Use option A"):
                         self.assertIn(part, notice["text"])
+                    self.assertNotIn("叫它继续", notice["text"])
                 saved = self.conn.execute("SELECT answer,answered_by FROM decisions WHERE id=?", (decision,)).fetchone()
                 self.assertEqual(tuple(saved), ("Use option A", "user"))
 

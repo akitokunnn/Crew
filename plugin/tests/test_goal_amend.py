@@ -121,6 +121,29 @@ class GoalAmendTests(ShellFixture, unittest.TestCase):
                 self.idle(execution)
                 self.assertEqual(goals.get(self.conn, goal['id'])['status'], 'awaiting_acceptance')
 
+    def test_leader_amend_from_general_chat_continues_a_delivered_task_in_its_round_only_on_a_user_turn(self):
+        for runtime in ('claude', 'codex'):
+            for accepted in (False, True):
+                with self.subTest(runtime=runtime, accepted=accepted):
+                    goal, execution = self.prepared(runtime)
+                    self.control.agent_action('finish', {'report': self.report('awaiting_acceptance')}, 's3', execution['id'])
+                    self.idle(execution)
+                    delivered = goals.get(self.conn, goal['id'])
+                    if accepted:
+                        delivered = goals.review_acceptance(self.conn, goal['id'], True, expected_version=delivered['version'])
+                    journal = self.manager.journal('s3')
+                    journal.message('notice:' + goal['id'], '[Crew] notice', source='crew')
+                    with self.assertRaisesRegex(board.Conflict, '只有用户明确要求修改时才能继续'):
+                        self.amend(goal, 'Also cover long samples', actor='s3')
+                    self.assertEqual(goals.get(self.conn, goal['id'])['requirement_version'], delivered['requirement_version'])
+                    journal.message('user:' + goal['id'], 'Please also cover long samples', source='human')
+                    result = self.amend(goal, 'Also cover long samples', actor='s3')
+                    after = goals.get(self.conn, goal['id'])
+                    self.assertEqual((after['status'], after['current_round']), ('queued', delivered['current_round']))
+                    self.assertEqual(after['requirement_version'], delivered['requirement_version'] + 1)
+                    self.assertIn('crew goal start ' + goal['id'], result['message'])
+                    goals.transition(self.conn, goal['id'], 'cancelled')
+
     def test_ai_amend_skips_its_own_execution_and_reaches_or_defers_the_others(self):
         for runtime in ('claude', 'codex'):
             with self.subTest(runtime=runtime):
@@ -295,7 +318,8 @@ class AmendmentReportTests(GoalFixture):
             complete = self.report(outcome)
             complete.pop('investment')
             self.assertEqual(goals.save_report(self.conn, goal['id'], complete)['outcome'], outcome)
-            for field in ('acceptance', 'examples'):
+            self.assertEqual(goals.save_report(self.conn, goal['id'], {**complete, 'examples': []})['data']['examples'], [])
+            for field in ('acceptance',):
                 with self.subTest(outcome=outcome, field=field), self.assertRaises(board.BoardError):
                     goals.save_report(self.conn, goal['id'], {**complete, field: []})
         for changes in ({'investment': {'elapsed_seconds': -1}}, {'investment': {'usage': {'input_tokens': -1}}},

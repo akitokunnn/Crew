@@ -178,14 +178,12 @@ class TrustModeTests(unittest.TestCase):
             self.assertIn("依据提出者建议", result["reason"])
             self.assertIn("未另附取舍理由", result["reason"])
 
-    def test_automatic_answer_clears_hold_and_repeat_does_not_rewrite_audit(self):
+    def test_automatic_answer_repeat_does_not_rewrite_audit(self):
         self.set_mode(True, "目标", now=NOW)
         decision_id = self.ask()
-        board.hold(self.conn, decision_id, now=NOW)
         first = trust_mode.auto_answer(self.conn, decision_id, reason="原始理由", now=NOW)
         repeated = trust_mode.auto_answer(self.conn, decision_id, reason="后来改写", now="later")
         self.assertEqual(first, repeated)
-        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM decision_holds").fetchone()[0], 0)
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM trust_decisions").fetchone()[0], 1)
 
     def test_manual_answer_foreign_mode_and_disabled_mode_are_preserved(self):
@@ -201,15 +199,13 @@ class TrustModeTests(unittest.TestCase):
         self.assertIsNone(trust_mode.auto_answer(self.conn, pending, now=NOW))
         self.assertEqual(self.decision(pending)["status"], "open")
 
-    def test_answer_reason_and_hold_update_rollback_together(self):
+    def test_answer_and_reason_roll_back_together(self):
         self.set_mode(True, "目标", now=NOW)
         decision_id = self.ask()
-        board.hold(self.conn, decision_id, now=NOW)
         self.conn.executescript("CREATE TRIGGER fail_audit BEFORE INSERT ON trust_decisions BEGIN SELECT RAISE(ABORT,'audit failure'); END;")
         with self.assertRaises(sqlite3.IntegrityError):
             trust_mode.auto_answer(self.conn, decision_id, now=NOW)
         self.assertEqual(self.decision(decision_id)["status"], "open")
-        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM decision_holds").fetchone()[0], 1)
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM events WHERE kind='decision:answer'").fetchone()[0], 0)
 
     def test_invalid_decision_ids_and_reason_types_do_not_change_state(self):

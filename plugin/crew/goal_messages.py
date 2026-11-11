@@ -174,10 +174,10 @@ def deliver(controller, conn):
         for item in selected:
             sender = board.session(conn, item['sender_session_id'])
             lines.append('%s · %s · 消息%s\n%s' % (sender['crew_name'], item['kind'], item['message_id'], item['body']))
-            lines.append('需要反馈时：crew send %s "<实际结果或阻塞>" --kind result --reply-to %s；答复回原会话/任务，不猜当前任务。' %
-                         (sender['session_id'], item['message_id']))
             conn.execute('UPDATE goal_message_meta SET attempts=attempts+1,last_attempt_at=?,correlation_id=? WHERE message_id=?',
                          (board._time(None), identity, item['message_id']))
+        lines.append('有实际结果或阻塞再回复：crew send <上面的发送者> "<结果或阻塞>" --kind result|blocker --reply-to <消息编号>'
+                     '（Codex：crew_send_message 的 kind 与 reply_to）；宿主会送回原会话或任务，不猜你当前的任务。')
         senders = {item['sender_session_id'] for item in selected}
         sender_label = board.session(conn, next(iter(senders)))['crew_name'] if len(senders) == 1 else 'Crew'
         display = '\n\n'.join(item['body'] if len(senders) == 1 else

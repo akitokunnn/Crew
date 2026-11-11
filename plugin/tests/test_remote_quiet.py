@@ -93,7 +93,8 @@ class RemoteQuietTests(ShellFixture, unittest.TestCase):
             user_test=[dict(step='Open result', expected='Works')],
             user_todos=[dict(title='Connect device', detail='SECRET STEPS')],
             user_decisions=[dict(question='Release when?', why='SECRET WHY')],
-            acceptance=[dict(criterion_id='a1', status='unverified', evidence=[])],
+            acceptance=[dict(criterion_id='a1', status='unverified', evidence=[dict(label='Read the config', reference='SECRET PATH')])],
+            unresolved=['Not run against the real device'],
             examples=[dict(kind='actual', input='x', expected='y', actual='y', conclusion='measured')],
             investment=dict(elapsed_seconds=None, usage=None, roles=[]),
             document_html='<html><body>Integration report</body></html>'), now=NOW)
@@ -273,9 +274,9 @@ class RemoteQuietTests(ShellFixture, unittest.TestCase):
             for removed in ('/leader', '/projects', '/project', '/1'):
                 self.assertNotIn(removed, text)
 
-    def test_error_since_filter_and_resolved_or_held_items_stay_quiet(self):
-        number = board.ask(self.conn, 's1', 'Held', ['A'], now=NOW)
-        board.hold(self.conn, number, now=NOW)
+    def test_error_since_filter_and_resolved_items_stay_quiet(self):
+        number = board.ask(self.conn, 's1', 'Answered', ['A'], now=NOW)
+        board.answer(self.conn, number, 'A', now=NOW)
         action = todo.add(self.conn, 's1', 'Resolved', 'Do', 'Check', now=NOW)
         todo.resolve(self.conn, 'demo', action['id'], 'done')
         items = [dict(id=kind, kind=kind, session_id='s1', title='Old failure', detail='Old',
