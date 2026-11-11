@@ -251,3 +251,7 @@ body:has(#main[data-reader]) #chat-attention{display:none!important}
 .assistant-context .quiet,.assistant-context .assistant-loading{font-size:var(--m-fs-meta)!important}
 .assistant-page .toast{bottom:calc(var(--m-bottom) + 84px)!important}
 .assistant-chat .composer-wrap{padding-bottom:8px!important} /* 助手页底部有标签栏，安全区已由标签栏让出 */
+/* 执行者对话条：和成员切换条一样占顶栏下方一行 */
+body:has(#chat-head .exec-chat-bar){--mc-scope:58px}
+#chat-head .exec-chat-bar{width:auto;max-width:none;height:calc(var(--mc-scope) - 10px);box-sizing:border-box;margin:0 var(--m-gutter) 10px}
+#chat-head .exec-chat-bar .goal-status{display:none}

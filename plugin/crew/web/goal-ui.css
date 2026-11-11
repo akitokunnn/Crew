@@ -88,7 +88,27 @@
 .task-review-banner.is-observing{border-color:var(--line);background:var(--accent-softer)}.task-review-banner.is-observing strong{color:var(--accent-text)}
 .goal-status[data-status="observing"]{color:var(--accent-text);background:var(--accent-soft)}
 .leader-task[data-state="observing"] .leader-task-tag{color:var(--accent-text)}
-.task-exec-entry{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 10px}
-.task-exec-entry .note{font-size:calc(12px * var(--fs));color:var(--text-2)}
-/* The task panel covers the right edge, so the way back sits beside the label. */
-.leader-task-bar .member-scope-label{flex:0 1 auto}
+/* Entry to the leader's own execution of this task (task detail). */
+.task-exec-card{width:100%;display:flex;align-items:center;gap:12px;margin:0 0 14px;padding:11px 12px;border:1px solid var(--line-strong);border-radius:12px;background:var(--surface-2);color:var(--text);font:inherit;text-align:left;cursor:pointer;box-shadow:var(--shadow-sm);transition:border-color .15s,background .15s}
+.task-exec-card:hover{border-color:color-mix(in srgb,var(--accent) 45%,transparent);background:var(--accent-softer)}
+.task-exec-card:focus-visible{outline:none;box-shadow:0 0 0 3px var(--accent-soft)}
+.task-exec-card[aria-pressed="true"]{border-color:var(--accent);background:var(--accent-softer);box-shadow:none}
+.task-exec-avatar{position:relative;flex:none;display:inline-flex}
+.task-exec-dot{position:absolute;right:-2px;bottom:-2px;width:10px;height:10px;border-radius:50%;background:var(--text-3);border:2px solid var(--surface-2)}
+.task-exec-dot[data-working="true"]{background:var(--working)}
+.task-exec-card[aria-pressed="true"] .task-exec-dot{border-color:var(--surface)}
+.task-exec-text{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.task-exec-text strong{font-size:calc(13.5px * var(--fs));font-weight:600}
+.task-exec-text span{font-size:calc(11.5px * var(--fs));color:var(--text-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.task-exec-go{flex:none;display:inline-flex;align-items:center;gap:4px;padding:5px 10px;border-radius:999px;background:var(--accent);color:var(--on-accent);font-size:calc(12px * var(--fs));font-weight:500}
+.task-exec-card[aria-pressed="true"] .task-exec-go{background:var(--surface);color:var(--accent-text);border:1px solid var(--accent)}
+/* Chat head strip while the chat shows a task execution. */
+.exec-chat-bar{display:flex;align-items:center;gap:10px;width:fit-content;box-sizing:border-box;margin:10px 20px 10px;padding:7px 8px 7px 12px;border:1px solid color-mix(in srgb,var(--accent) 35%,transparent);border-left:3px solid var(--accent);border-radius:10px;background:var(--accent-softer);min-width:0;max-width:min(720px,calc(100% - 40px))}
+/* The task panel floats over the right of the chat; keep the strip (and its way back) left of it. */
+main:has(.task-list[data-open=true]:not([hidden])) .exec-chat-bar{max-width:min(720px,calc(100% - var(--task-list-right,0px) - 460px))}
+.exec-chat-icon{flex:none;display:inline-flex;color:var(--accent)}
+.exec-chat-meta{flex:0 1 auto;min-width:0;display:flex;flex-direction:column;line-height:1.35}
+.exec-chat-eyebrow{font-size:calc(11px * var(--fs));color:var(--accent-text);font-weight:500}
+.exec-chat-title{font-size:calc(13.5px * var(--fs));font-weight:600;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.exec-chat-bar .goal-status{flex:none}
+.exec-chat-back{flex:none;margin-left:6px;padding:5px 11px;font-size:calc(12.5px * var(--fs))}

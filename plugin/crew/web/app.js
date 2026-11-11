@@ -541,11 +541,12 @@
   function leaderTaskRecord() {
     const task = leaderTaskChat === null ? undefined : (state.goals || []).find(item => String(item.id) === String(leaderTaskChat) && item.leader_session_id === leaderId);
     if (task === undefined) { leaderTaskChat = null; return null; }
-    return {goal_id:task.id, title:task.title};
+    return {goal_id:task.id, title:task.title, status:task.status};
   }
+  // The leader's task execution is a different conversation from its general chat; say so where the eye lands.
   function leaderTaskBar(record) {
     if (readOnlyId !== null || record === null) return "";
-    return `<div class="member-scope-bar leader-task-bar"><span class="member-scope-label" title="${esc(`任务「${record.title}」的执行对话`)}">${esc(`任务「${record.title}」的执行对话`)}</span><div class="member-scope-switch"><button type="button" class="member-scope-option" data-act="leader-general" title="回到 leader 总对话">回到总对话</button></div></div>`;
+    return `<div class="exec-chat-bar"><span class="exec-chat-icon">${CrewGoals.listIcon()}</span><span class="exec-chat-meta"><span class="exec-chat-eyebrow">任务执行对话</span><span class="exec-chat-title" title="${esc(record.title)}">${esc(record.title)}</span></span><span class="goal-status" data-status="${esc(record.status)}">${esc(CrewGoals.status(record.status))}</span><button type="button" class="btn ghost exec-chat-back" data-act="leader-general" title="回到 leader 总对话"><svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><path d="m14 6-6 6 6 6"/></svg>回到总对话</button></div>`;
   }
   function memberScopeBar(item, record) {
     const records = item.execution_records;
