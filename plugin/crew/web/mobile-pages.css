@@ -12,10 +12,10 @@
 .nw-head{flex-wrap:nowrap;align-items:center;gap:8px;padding:14px 0 4px}
 .nw-head>div:first-child{min-width:0}
 .nw-head h1{font-size:28px;font-weight:500;letter-spacing:-.01em;line-height:1.2}
-.nw-head-acts{flex-wrap:nowrap;gap:0;margin-right:-10px}
+.nw-head-acts{flex-wrap:nowrap;gap:6px}
 .nw-head-acts>a{display:none!important}
-.nw-head-acts .btn{min-height:var(--m-tap);padding:0 10px;border:0;background:none;color:var(--accent-text);font-size:var(--m-fs-body);border-radius:var(--m-radius-sm)}
-.nw-head-acts .btn:active{background:var(--hover)}
+.nw-head-acts .btn{min-height:var(--m-tap);padding:0 10px;border:1px solid var(--line);background:var(--hover);color:var(--accent-text);font-size:var(--m-fs-body);border-radius:var(--m-radius-sm)}
+.nw-head-acts .btn:active{background:color-mix(in srgb,var(--text) 9%,transparent)}
 .nw-badge{min-width:20px;height:20px;font-size:12px}
 
 /* 输入框吸附在顶部，滚动时一直可写 */

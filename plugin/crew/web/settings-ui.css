@@ -70,8 +70,9 @@
 .cs-footer{display:flex;align-items:center;gap:10px;position:sticky;bottom:0;margin-top:auto;padding:16px 40px;border-top:1px solid var(--cs-line);background:var(--cs-bg);z-index:1}
 .cs-status{flex:1;min-width:0;margin:0;font-size:calc(12px * var(--cs-scale));line-height:1.65;color:var(--cs-muted);overflow-wrap:anywhere}
 .cs-status.cs-error{color:var(--danger,#bd4f4f)}
-.cs-button{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:8px 14px;min-height:36px;border:1px solid var(--cs-line);border-radius:8px;background:var(--cs-card);color:var(--cs-text);font-size:calc(12.5px * var(--cs-scale))!important;font-weight:500;line-height:1.5;white-space:nowrap}
+.cs-button{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:8px 14px;min-height:36px;border:1px solid var(--line-strong,var(--cs-line));border-radius:8px;background:var(--hover,var(--cs-card));color:var(--cs-text);font-size:calc(12.5px * var(--cs-scale))!important;font-weight:500;line-height:1.5;white-space:nowrap}
 .cs-button:hover{filter:brightness(.97)}
+.cs-button:not(.cs-primary):hover:not(:disabled){filter:none;background:color-mix(in srgb,var(--cs-text) 9%,transparent)}
 .cs-primary{border-color:var(--cs-accent);background:var(--cs-accent);color:var(--on-accent,#fff)}
 .cs-tool-row{display:flex;justify-content:space-between;align-items:center;gap:18px;padding:20px 0;border-bottom:1px solid var(--cs-line)}
 .cs-tool-row:last-child{border-bottom:0;padding-bottom:0}
