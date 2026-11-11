@@ -251,6 +251,7 @@ body:has(>.nw-menu)::after{content:"";position:fixed;inset:0;z-index:69;backgrou
 .modal .field input,.modal .field textarea,.modal select{padding:11px 12px;border-radius:var(--m-radius-sm)}
 .modal .field input{min-height:var(--m-tap)}
 .modal details>summary{padding:10px 0;font-size:var(--m-fs-body)}
+.modal .leader-options>summary{min-height:40px;padding:0 14px;box-sizing:border-box}
 .model-options{gap:8px}
 .model-option{min-height:40px;padding:0 14px;border-radius:var(--m-radius-sm);font-size:14px}
 .runtime-option{padding:8px 14px}
