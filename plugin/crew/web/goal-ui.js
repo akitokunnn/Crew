@@ -169,9 +169,18 @@
 
     // The leader's own execution of this task is a separate conversation; the chat only switches to it when asked.
     function execEntry(active, result) {
-      if (!(result?.executions || []).some(item => item.session_id === active.leader_session_id)) return "";
+      const runs = (result?.executions || []).filter(item => item.session_id === active.leader_session_id);
+      if (!runs.length) return "";
+      const run = runs.filter(item => item.round === active.current_round).sort((a,b) => b.generation - a.generation)[0] || null;
+      const name = owner()?.name || "leader", working = run?.status === "running";
       const showing = String(options.execChat?.() ?? "") === String(active.id);
-      return `<div class="task-exec-entry"><button type="button" class="btn ghost" data-goal-act="exec-chat" data-goal-id="${esc(active.id)}" aria-pressed="${showing}">${showing ? "回到总对话" : "执行者对话"}</button><span class="note">${showing ? "左边正在显示 leader 在这个任务里的执行对话" : "看 leader 执行这个任务的过程，并直接在里面说话"}</span></div>`;
+      const runLabels = {running:"正在执行", queued:"排队中", pausing:"暂停中", idle:"空闲，等待下一步", offline:"没在运行"};
+      const state = run ? esc(runLabels[run.status] || status(run.status)) : "本轮还没开始";
+      const arrow = '<svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 12H5m6-6-6 6 6 6"/></svg>';
+      return `<button type="button" class="task-exec-card" data-goal-act="exec-chat" data-goal-id="${esc(active.id)}" aria-pressed="${showing}" title="${showing ? "回到 leader 总对话" : `在左侧对话区打开 ${esc(name)} 执行这个任务的对话`}">`
+        + `<span class="task-exec-avatar">${options.avatar(name, 32)}<i class="task-exec-dot" data-working="${working}" aria-hidden="true"></i></span>`
+        + `<span class="task-exec-text"><strong>${showing ? "正在看执行者对话" : "执行者对话"}</strong><span>${esc(name)} · ${state}${showing ? " · 已在左侧打开" : " · 看过程、直接插话"}</span></span>`
+        + `<span class="task-exec-go">${showing ? "回到总对话" : `${arrow}打开`}</span></button>`;
     }
 
     function requirementsMarkup(active) {
