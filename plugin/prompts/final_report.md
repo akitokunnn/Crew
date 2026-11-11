@@ -1,17 +1,17 @@
-真正目标的每轮最终交付，由 leader 围绕用户的任务自主制作一份精美、直观、易懂的 HTML 报告；CC / Codex、自己完成或成员协作都遵循同一要求。普通问答和阶段变化不出最终报告。
+真正目标的每轮最终交付，由 leader 围绕用户的任务提交一份最终报告；CC / Codex、自己完成或成员协作都遵循同一要求。普通问答和阶段变化不出最终报告。
 
-- 写法：先想清楚用户要看懂什么、判断什么、接下来做什么，再决定结构、篇幅、排版及图表、对比、示例或交互。选型突出推荐与取舍，盘点突出全貌、能力和现状，实现或修复突出成果、使用方式和实际效果；其他任务同样按目的组织，不固定套用目录。结论清楚，解释到位，重点突出，细节可查，脱离执行过程也能理解和验收。
-- 格式：先保存自包含 HTML 正文，CSS/JS 内联、图片用 data URI，不依赖外网资源。
-- CC 版式：动笔前用 Skill 加载 `artifact-design`，按其中 claude.ai Artifact 页面的设计规范写（标题、颜色变量与深浅色、排版层次、手机宽度）；用 Write 存成本地 .html，交给 report.preview 和 finish。不调用 Artifact 工具，不发布或上传到 claude.ai，除非用户明确要求发布；它允许的外部 CDN 也不用，仍按上条自包含。没有这个 skill 时照同样风格自己写，不另找发布入口。
-- 预览：CC 执行 `crew goal report.preview --html-file <报告.html> --data '{"viewport":"desktop"}'`，再用 Read 查看返回 `preview.path` 的 PNG；手机排版用 `viewport=mobile` 另看一张。Codex 用 `crew_goal` 的 `report.preview`，`data` 提供 `document_html` 和 `viewport=desktop|mobile`，直接查看返回的原生图片；附件失败时按返回的绝对路径用原生 `view_image` 查看，不重复已成功的截图。已保存的报告可传 `report_id` 代替正文；总对话指定 `goal_id`，目标执行内可用绑定目标。看过图片后再判断布局，不能只因生成 PNG 成功就宣称视觉通过；截图不验证按钮、折叠、筛选等交互，交互另用浏览器工具核对。
-- 预览不可用：Crew 桌面未连接、预览失败或浏览器工具不可用时，保留原始报错，把未完成的视觉或交互核对记为未验证，仍提交可阅读的 HTML 与已取得的实际证据。不反复调用失效宿主，不把“预览未完成”扩大成代码或业务验收失败；不能编造已打开、已看图，不擅自安装或改造用户的浏览器环境，不改用其他入口绕过明确的访问拒绝。
+- 写法：先想清楚用户要看懂什么、判断什么、接下来做什么，再决定结构和篇幅。选型突出推荐与取舍，盘点突出全貌、能力和现状，实现或修复突出成果、使用方式和实际效果；其他任务同样按目的组织，不固定套用目录。结论清楚，重点突出，细节可查，脱离执行过程也能理解和验收。
+- 形式由你按成果判断，用户明确要求某种形式时照办。需要图表、对比或交互才讲得清时写 HTML 正文：自包含，CSS/JS 内联、图片用 data URI，不依赖外网资源；CC 可先用 Skill 加载 `artifact-design` 参考版式，但不调用 Artifact 工具、不发布或上传到 claude.ai，除非用户明确要求。验收记录已能说清时可以不写正文，Crew 按验收记录生成报告；已有完整交付文档时在报告里指向它，不重复誊写。
+- 预览（写了 HTML 正文、需要确认排版时）：CC 执行 `crew goal report.preview --html-file <报告.html> --data '{"viewport":"desktop"}'`，再用 Read 查看返回 `preview.path` 的 PNG；手机排版要紧时再用 `viewport=mobile` 看一张。Codex 用 `crew_goal` 的 `report.preview`，`data` 提供 `document_html` 和 `viewport=desktop|mobile`，直接查看返回的原生图片；附件失败时按返回的绝对路径用原生 `view_image` 查看，不重复已成功的截图。已保存的报告可传 `report_id` 代替正文；总对话指定 `goal_id`，目标执行内可用绑定目标。看过图片才能谈布局；截图不验证按钮、折叠、筛选等交互，交互另用浏览器工具核对。
+- 预览不可用（桌面未连接、预览失败或浏览器工具不可用）时，保留原始报错，把未完成的视觉核对记为未验证，照常提交；不反复调用失效宿主，不把“预览未完成”扩大成业务验收失败，不编造已看图，不擅自安装或改造用户的浏览器环境，不绕过明确的访问拒绝。
+
 每个目标都必须走完下面的收尾，否则任务一直停在“推进中”，用户看不到验收按钮：
 
 1. 成员结果到齐、你复核过，`crew goal work.list` 里的工作项都已 done 或 cancelled。
-2. 取 `crew goal report-template` 填验收证据（通过 / 失败 / 未验证 / 模拟）、产物与修改入口和取舍。awaiting_acceptance / completed 覆盖全部标准，并至少一个“输入 → 期望 → 实际 → 结论”的实测 example；progress / failed / cancelled 可列部分标准并省略 examples。投入可省，提供时未知用量写未知、不估作零，缓存单列。最终交付 outcome 用 awaiting_acceptance，必须写 user_test。
-3. 先 `crew todo list` 和 `crew decisions` 核对本组未结事项，已做完或不再需要的撤回（todo withdraw / 撤回拍板）；新的需要用户处理的事项写 user_todos（很快的小事也可直接写进报告的实测步骤和对话），新的需要用户定的事写 user_decisions。
-4. 用 `crew goal finish <目标ID> --file <报告.json> --html-file <报告.html>` 一起提交正文和验收记录（Codex：`crew_goal` 的 finish，正文放 `data.report.document_html`）。返回 `pending_finish` 才算提交成功；本次原生响应结束后任务自动变成“待验收”，用户在主页、任务详情和报告里点“通过”或“需修改”。用户默认先读正文，验收记录另行展开。
+2. 取 `crew goal report-template` 填验收证据（通过 / 失败 / 未验证 / 模拟）、产物与修改入口和取舍。awaiting_acceptance / completed 覆盖全部标准，并提供 example 作为验证证据：写清怎么验证、结果如何；有可复现的行为时用具体案例（输入或操作、期望、实际、结论），无法验证时写明边界，不伪造实际结果。progress / failed / cancelled 可列部分标准并省略 examples。投入可省，提供时未知用量写未知、不估作零，缓存单列。最终交付 outcome 用 awaiting_acceptance；user_test 只写用户确认时值得亲自看或试的关键几步，AI 已验证过的不要求用户重复。
+3. 先 `crew todo list` 和 `crew decisions` 核对本组未结事项，已做完或不再需要的撤回（todo withdraw / 撤回拍板）；新的需要用户处理的事项写 user_todos（很快的小事也可直接写进报告和对话），新的需要用户定的事写 user_decisions。
+4. 用 `crew goal finish <目标ID> --file <报告.json> [--html-file <报告.html>]` 提交验收记录和可选正文（Codex：`crew_goal` 的 finish，正文放 `data.report.document_html`）。返回 `pending_finish` 表示收尾已受理；本次原生响应结束、宿主完成收尾后，任务才变成“待验收”，用户在主页、任务详情和报告里点“通过”或“需修改”。
 5. finish 报错就按报错修正后重提（如工作清单未完成、标准未覆盖、缺 example）；报告失败只重试报告，不重新派工程任务。finish 成功前不要对用户说“已完成 / 待验收”；只在对话里宣布交付不会改变任务状态。
 6. 用户点“需修改”时，意见会直接送进本任务执行：同一任务、同一轮内按意见修改，复用已有成果，改完验证后回到第 2 步重新 finish。用户点“通过”后任务完成，你会在总对话收到通知，再归档本组已无其他未完成任务的成员。
 
-未达标可以如实用 failed 结束并附失败证据。待真实执行结束才收尾；用户本人看报告并实测验收后才算通过。
+能自己验证的尽量自己验证完（写测试、操作界面、搭环境实际运行等），报告写清怎么测的、结果如何；验证不了的如实写明。未达标可以如实用 failed 结束并附失败证据。待真实执行结束才收尾；用户看报告确认并点“通过”才算完成。

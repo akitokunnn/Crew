@@ -331,6 +331,8 @@ svg.i.xs{width:12px;height:12px}
 .free{display:flex;gap:8px;margin-top:8px}
 .free input{flex:1;border:1px solid var(--line-strong);background:transparent;border-radius:10px;padding:8px 12px;outline:none;transition:border-color .15s}
 .free input:focus{border-color:color-mix(in srgb,var(--accent) 60%,transparent)}
+.free>.icon-btn[type=submit]{width:38px;height:auto;min-height:36px;background:var(--accent);color:var(--on-accent)}
+.free>.icon-btn[type=submit]:hover{background:var(--accent-strong);color:var(--on-accent)}
 .dc.done{border-color:var(--line)}
 .dc.done .dc-top .q{color:var(--text-2)}
 .dc-result{display:flex;align-items:center;gap:8px;padding:0 14px 12px;font-size:calc(12.5px * var(--fs));color:var(--accent-text)}
@@ -475,7 +477,8 @@ svg.i.xs{width:12px;height:12px}
 .btn:hover{background:var(--hover)}
 .btn.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
 .btn.primary:hover{background:var(--accent-strong);border-color:var(--accent-strong)}
-.btn.ghost{border-color:transparent}
+.btn.ghost{border-color:var(--line);background:var(--hover);color:var(--text)}
+.btn.ghost:hover{background:color-mix(in srgb,var(--text) 9%,transparent);border-color:var(--line-strong)}
 .card-actions .gap{flex:1}
 .card-body{overflow:auto;padding:6px 18px 18px;flex:1}
 .sec{margin-top:16px}
