@@ -79,3 +79,7 @@
 .task-review-banner.is-observing{border-color:var(--line);background:var(--accent-softer)}.task-review-banner.is-observing strong{color:var(--accent-text)}
 .goal-status[data-status="observing"]{color:var(--accent-text);background:var(--accent-soft)}
 .leader-task[data-state="observing"] .leader-task-tag{color:var(--accent-text)}
+.task-exec-entry{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 10px}
+.task-exec-entry .note{font-size:calc(12px * var(--fs));color:var(--text-2)}
+/* The task panel covers the right edge, so the way back sits beside the label. */
+.leader-task-bar .member-scope-label{flex:0 1 auto}
