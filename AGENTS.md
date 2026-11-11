@@ -80,7 +80,7 @@ git log -3 --oneline
 | 局域网访问、设备认证与远程能力边界 | `plugin/crew/remote_access.py`、`remote_http.py`、`remote_routes.py`；`web.py` 只组合监听与既有业务接口 |
 | 网络接口识别 | `network_addresses.py` |
 | 消息、通知与人工答复路由 | `plugin/crew/messaging.py`、`board.py`、`todo.py`、`goal_links.py`；自动投递在 `web.py` |
-| Git 设置、读取与进程 | `plugin/crew/git_admin.py`、`git_view.py`（未合入/未推送分支与稳定分支落后数）、`git_overview.py`（分支归属 leader，供 Git 页和侧栏）、`branch_claims.py`（从 CC / Codex 放行的 shell 命令登记谁建了或提交了哪个分支）、`git_process.py`；界面 `plugin/crew/web/git*` |
+| Git 设置、读取与进程 | `plugin/crew/git_admin.py`、`git_view.py`（相对主干的分支归类、未推送状态及可选本地集成分支）、`git_overview.py`（分支归属 leader，供 Git 页和侧栏）、`branch_claims.py`（从 CC / Codex 放行的 shell 命令登记谁建了或提交了哪个分支）、`git_process.py`；界面 `plugin/crew/web/git*` |
 | 会话启动、停止、载体切换 | `chat.py`、`spawn.py`、`codex_runtime.py`、`runtime_switch.py`（均在 `plugin/crew/`） |
 | 目标、轮次、动态上下文 | `plugin/crew/goals.py`、`goal_runtime.py`、`goal_context.py` |
 | 工作区改名、迁移、可恢复移除 | `plugin/crew/workspace_settings.py`、`workspace_execution.py` |
