@@ -1141,9 +1141,18 @@ def finalize_transfer(conn, goal_id, *, now=None):
     conn.execute('UPDATE goals SET leader_session_id=? WHERE id=?', (to, goal_id))
     from . import goal_work
     goal_work.hand_over(conn, goal_id, to, actor=transfer['actor'])
-    # The new leader's group may keep working on the task's branches.
-    conn.execute('INSERT OR IGNORE INTO branch_claims(project,branch,session_id,goal_id,claimed_at) '
-                 'SELECT DISTINCT project,branch,?,goal_id,? FROM branch_claims WHERE goal_id=?', (to, at, goal_id))
+    # The task's branches go with it: the new leader answers for them and the old leader's group no longer does.
+    group = [giver['session_id']] + [row['session_id'] for row in conn.execute(
+        'SELECT s.session_id FROM sessions s JOIN groups g ON g.project=s.project AND g.name=s.group_name '
+        'WHERE g.leader_session_id=?', (giver['session_id'],))]
+    branches = [row['branch'] for row in conn.execute(
+        'SELECT DISTINCT branch FROM branch_claims WHERE project=? AND goal_id=?', (goal['project'], goal_id))]
+    for branch in branches:
+        conn.execute('DELETE FROM branch_claims WHERE project=? AND branch=? AND session_id IN (%s)' % ','.join('?' * len(group)),
+                     (goal['project'], branch, *group))
+        conn.execute('INSERT INTO branch_claims(project,branch,session_id,goal_id,claimed_at) VALUES(?,?,?,?,?) '
+                     'ON CONFLICT(project,branch,session_id) DO UPDATE SET goal_id=excluded.goal_id,claimed_at=excluded.claimed_at',
+                     (goal['project'], branch, to, goal_id, at))
     conn.execute("UPDATE goal_transfers SET status='finalized',finalized_at=? WHERE id=?", (at, transfer['id']))
     text, wake = _transfer_notice(goal, transfer, giver, status, manual_pause)
     board._queue_leader_notice(conn, to, text, 'crew', now, wake=wake)

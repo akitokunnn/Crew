@@ -6,7 +6,7 @@ import json
 import subprocess
 from unittest import mock
 
-from crew import board, cli, codex_tools, git_overview, git_view, runtimes, session_ops, store
+from crew import board, cli, codex_tools, git_overview, git_view, goals, runtimes, session_ops, store
 from test_core import CoreCase, NOW
 
 
@@ -109,18 +109,16 @@ class GitOverviewTests(CoreCase):
         self.assertEqual([item["name"] for item in changed["branches"]], ["topic"])
         self.assertEqual(changed["merged_hidden"], 0)
 
-    def test_direct_owners_precede_dispatches_with_latest_first_and_no_duplicates(self):
-        self.leader("direct", "Direct", branch="topic")
-        self.member("same-owner", "Same owner", "Direct", worktree=self.worktree)
+    def test_registration_precedes_dispatches_and_newest_dispatch_wins_alone(self):
         self.leader("older", "Older")
         self.leader("newer", "Newer")
         self.dispatch("older-run", "older", None, "2026-11-09T01:00:00Z")
         self.dispatch("newer-run", "newer", None, "2026-11-09T02:00:00Z")
-        self.dispatch("duplicate-run", "same-owner", None, "2026-11-09T03:00:00Z")
-        self.assertEqual(self.owners(), [
-            {"session_id": "direct", "name": "Direct"},
-            {"session_id": "newer", "name": "Newer"},
-            {"session_id": "older", "name": "Older"}])
+        self.assertEqual(self.owners(), [{"session_id": "newer", "name": "Newer"}])
+        self.leader("direct", "Direct")
+        self.member("same-owner", "Same owner", "Direct", worktree=self.worktree)
+        self.dispatch("latest-run", "older", None, "2026-11-09T03:00:00Z")
+        self.assertEqual(self.owners(), [{"session_id": "direct", "name": "Direct"}])
 
     def test_other_project_registration_and_dispatch_are_not_owners(self):
         other = self.base / "other-project"
@@ -154,24 +152,47 @@ class GitOverviewTests(CoreCase):
                 self.claim(sid)
                 self.assertEqual(self.owners(), [{'session_id': 'chief', 'name': 'Chief'}])
 
-    def test_direct_then_newest_claims_then_dispatch_with_leader_deduplication(self):
+    def test_one_owner_newest_claim_then_registration_then_dispatch(self):
         self.leader('direct', 'Direct', branch='topic')
-        self.member('direct-worker', 'Direct worker', 'Direct')
         self.leader('older', 'Older claim')
         self.leader('newer', 'Newer claim')
         self.member('newer-worker', 'Newer worker', 'Newer claim')
         self.leader('dispatched', 'Dispatched')
-        self.claim('older', at='2026-11-09T01:00:00Z')
-        self.claim('newer', at='2026-11-09T02:00:00Z')
-        self.claim('newer-worker', at='2026-11-09T03:00:00Z')
-        self.claim('direct-worker', at='2026-11-09T04:00:00Z')
         self.dispatch('dispatch-run', 'dispatched', None, '2026-11-09T06:00:00Z')
-        self.dispatch('duplicate-run', 'newer-worker', None, '2026-11-09T07:00:00Z')
-        self.assertEqual(self.owners(), [
-            {'session_id': 'direct', 'name': 'Direct'},
-            {'session_id': 'newer', 'name': 'Newer claim'},
-            {'session_id': 'older', 'name': 'Older claim'},
-            {'session_id': 'dispatched', 'name': 'Dispatched'}])
+        self.claim('older', at='2026-11-09T01:00:00Z')
+        self.claim('newer-worker', at='2026-11-09T03:00:00Z')
+        self.assertEqual(self.owners(), [{'session_id': 'newer', 'name': 'Newer claim'}])
+        self.conn.execute('DELETE FROM branch_claims')
+        self.assertEqual(self.owners(), [{'session_id': 'direct', 'name': 'Direct'}])
+        self.leader('direct', 'Direct', branch='main')
+        self.assertEqual(self.owners(), [{'session_id': 'dispatched', 'name': 'Dispatched'}])
+
+    def test_claim_made_for_a_task_answers_to_its_current_leader(self):
+        self.leader('giver', 'Giver')
+        self.member('giver-worker', 'Giver worker', 'Giver', branch='topic')
+        self.leader('receiver', 'Receiver')
+        goal = goals.create(self.conn, 'demo', 'giver', 'Speaker work', 'Keep going on topic', ['Done'])
+        self.conn.execute('INSERT INTO branch_claims VALUES(?,?,?,?,?)', ('demo', 'topic', 'giver-worker', goal['id'], NOW))
+        self.assertEqual(self.owners(), [{'session_id': 'giver', 'name': 'Giver'}])
+        # Claims kept from before handovers moved branches still follow the task, ahead of the old group's registration.
+        self.conn.execute('UPDATE goals SET leader_session_id=? WHERE id=?', ('receiver', goal['id']))
+        self.assertEqual(self.owners(), [{'session_id': 'receiver', 'name': 'Receiver'}])
+        self.assertEqual(git_overview.holder(self.conn, 'demo', 'topic', 'git-admin'),
+                         {'session_id': 'receiver', 'name': 'Receiver'})
+
+    def test_holder_reads_claims_then_branch_registration_without_git(self):
+        self.leader('chief', 'Chief')
+        self.member('worker', 'Worker', 'Chief', branch='topic')
+        self.leader('rival', 'Rival')
+        with mock.patch('crew.git_view.view', side_effect=AssertionError('No Git scan')):
+            self.assertEqual(git_overview.holder(self.conn, 'demo', 'topic', 'git-admin'),
+                             {'session_id': 'chief', 'name': 'Chief'})
+            self.claim('rival')
+            self.assertEqual(git_overview.holder(self.conn, 'demo', 'topic', 'git-admin'),
+                             {'session_id': 'rival', 'name': 'Rival'})
+            self.assertIsNone(git_overview.holder(self.conn, 'demo', 'other', 'git-admin'))
+            # Without Git management there is no assistant to leave out.
+            self.assertEqual(git_overview.holder(self.conn, 'demo', 'topic'), {'session_id': 'rival', 'name': 'Rival'})
 
     def test_other_project_closed_sessions_and_git_assistant_claims_are_ignored(self):
         other = self.base / 'other-project'
@@ -204,12 +225,10 @@ class GitOverviewTests(CoreCase):
         self.assertEqual(self.owners(), [])
         self.claim('first', at='2026-11-09T01:00:00Z')
         self.claim('second', at='2026-11-09T02:00:00Z')
-        self.assertEqual(self.owners(), [{'session_id': 'second', 'name': 'Second'},
-                                         {'session_id': 'first', 'name': 'First'}])
+        self.assertEqual(self.owners(), [{'session_id': 'second', 'name': 'Second'}])
         self.conn.execute('UPDATE branch_claims SET claimed_at=? WHERE session_id=?',
                           ('2026-11-09T03:00:00Z', 'first'))
-        self.assertEqual(self.owners(), [{'session_id': 'first', 'name': 'First'},
-                                         {'session_id': 'second', 'name': 'Second'}])
+        self.assertEqual(self.owners(), [{'session_id': 'first', 'name': 'First'}])
 
     def adopt(self, sid, branch='topic'):
         return git_overview.adopt(self.conn, self.project, self.config, branch, sid, now=NOW)

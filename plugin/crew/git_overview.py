@@ -1,23 +1,72 @@
-"""Branches still needing attention, each tied to the leader whose group works on it."""
+"""Branches still needing attention, each tied to the one leader whose group works on it."""
 from . import board, git_view, store
 
 
-def read(conn, project, config, force=False):
-    """git_view.view for the project's base and local integration branch, plus each branch's owning leaders.
+def _sessions(conn, project_name, admin_session_id):
+    """Open sessions of the project; the Git assistant's own is plumbing and never answers for a branch."""
+    return {row['session_id']: dict(row) for row in conn.execute(
+        "SELECT session_id,crew_name,role,group_name,branch,worktree FROM sessions "
+        "WHERE project=? AND status!='closed' AND session_id IS NOT ?", (project_name, admin_session_id))}
 
-    A branch belongs to a leader when the leader or one of its members registered that branch or
-    worktree, created or committed on it in a shell command (branch_claims), or dispatched a task
-    into its worktree. The Git assistant's own merge
-    worktree is plumbing, not work, so it is neither listed nor counted as an owner.
+
+def _claims(conn, project_name, branch=None):
+    """(branch, session) per claim, newest first. A claim made while running a task answers to that task's
+    current leader, so a task handed to another leader takes its branches along."""
+    rows = conn.execute(
+        'SELECT c.branch,COALESCE(g.leader_session_id,c.session_id) AS session_id FROM branch_claims c '
+        'LEFT JOIN goals g ON g.id=c.goal_id AND g.project=c.project '
+        'WHERE c.project=? AND (? IS NULL OR c.branch=?) ORDER BY c.claimed_at DESC',
+        (project_name, branch, branch))
+    return [(row['branch'], row['session_id']) for row in rows]
+
+
+def _owner(conn, sessions, candidates):
+    """The leader of the first candidate session in a current leader's group, else None.
+
+    `sessions` leaves out closed sessions and the Git assistant, so neither they nor their groups own anything.
     """
-    admin = conn.execute('SELECT branch FROM sessions WHERE session_id=?', (config['admin_session_id'],)).fetchone()
+    for sid in candidates:
+        session = sessions.get(sid)
+        if session is None:
+            continue
+        leader = session if session['role'] == 'leader' else board.leader_of(conn, sid)
+        if leader is not None and leader['session_id'] in sessions:
+            return {'session_id': leader['session_id'], 'name': sessions[leader['session_id']]['crew_name']}
+    return None
+
+
+def holder(conn, project_name, branch, admin_session_id=None):
+    """The leader answering for `branch` from its claims, else a session registered on it by name; no Git scan.
+
+    Used before recording a new claim: another leader's group touching the branch does not make it theirs.
+    """
+    sessions = _sessions(conn, project_name, admin_session_id)
+    candidates = [sid for _, sid in _claims(conn, project_name, branch)]
+    candidates += [sid for sid, session in sessions.items() if session['branch'] == branch]
+    return _owner(conn, sessions, candidates)
+
+
+def read(conn, project, config, force=False):
+    """git_view.view for the project's base and local integration branch, plus the leader answering for each branch.
+
+    A branch belongs to one leader at a time, the first found of: the newest claim (its group created,
+    committed on or adopted it, or a task it now leads was claimed there; see branch_claims), a session of
+    its group registered on that branch or worktree, then the newest task dispatched into its worktree.
+    Later work by another leader's group does not take a branch over; handing the task over does.
+    `owners` holds that one leader, or nothing. The Git assistant's own merge worktree is plumbing, not
+    work, so it is neither listed nor counted as an owner.
+    """
+    admin_id = config['admin_session_id']
+    admin = conn.execute('SELECT branch FROM sessions WHERE session_id=?', (admin_id,)).fetchone()
     exclude = () if admin is None or admin['branch'] is None else (admin['branch'],)
     data = git_view.view(project['root'], config, exclude=exclude, force=force)
-    sessions = {row['session_id']: dict(row) for row in conn.execute(
-        "SELECT session_id,crew_name,role,group_name,branch,worktree FROM sessions "
-        "WHERE project=? AND status!='closed' AND session_id!=?", (project['name'], config['admin_session_id']))}
+    sessions = _sessions(conn, project['name'], admin_id)
     names = {branch['name'] for branch in data['branches']}
     paths = {store.norm_path(branch['worktree']): branch['name'] for branch in data['branches'] if branch['worktree']}
+    claimed = {}
+    for name, sid in _claims(conn, project['name']):
+        if name in names:
+            claimed.setdefault(name, []).append(sid)
     direct = {}
     for sid, session in sessions.items():
         name = session['branch'] if session['branch'] in names else None
@@ -25,11 +74,6 @@ def read(conn, project, config, force=False):
             name = paths.get(store.norm_path(session['worktree']))
         if name is not None:
             direct.setdefault(name, []).append(sid)
-    claimed = {}
-    for row in conn.execute('SELECT branch,session_id FROM branch_claims WHERE project=? ORDER BY claimed_at DESC',
-                            (project['name'],)):
-        if row['branch'] in names and row['session_id'] in sessions:
-            claimed.setdefault(row['branch'], []).append(row['session_id'])
     dispatched = {}
     if paths:
         rows = conn.execute(
@@ -37,21 +81,12 @@ def read(conn, project, config, force=False):
             "WHERE COALESCE(crew_session_id,claude_session_id) IS NOT NULL ORDER BY started_at DESC").fetchall()
         for row in rows:
             name = paths.get(store.norm_path(row['workdir']))
-            if name is not None and row['sid'] in sessions:
+            if name is not None:
                 dispatched.setdefault(name, []).append(row['sid'])
-    leaders = {}
     for branch in data['branches']:
-        owners = []
-        for sid in direct.get(branch['name'], []) + claimed.get(branch['name'], []) + dispatched.get(branch['name'], []):
-            session = sessions[sid]
-            leader = session if session['role'] == 'leader' else board.leader_of(conn, sid)
-            if leader is None or leader['session_id'] == config['admin_session_id']:
-                continue
-            if leader['session_id'] not in leaders:
-                leaders[leader['session_id']] = {'session_id': leader['session_id'], 'name': leader['crew_name']}
-            if leaders[leader['session_id']] not in owners:
-                owners.append(leaders[leader['session_id']])
-        branch['owners'] = owners
+        name = branch['name']
+        owner = _owner(conn, sessions, claimed.get(name, []) + direct.get(name, []) + dispatched.get(name, []))
+        branch['owners'] = [] if owner is None else [owner]
     return data
 
 

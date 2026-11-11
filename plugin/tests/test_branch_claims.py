@@ -205,6 +205,24 @@ class BranchClaimRecordTests(CoreCase):
             self.assertEqual(branch_claims.record(self.home, sid, str(self.root), 'git branch topic', now=NOW), ['topic'])
         self.assertEqual([row['session_id'] for row in self.claims()], ['s1', 's2'])
 
+    def test_branch_another_leader_holds_stays_theirs_until_it_is_free(self):
+        for sid, name, role, group, branch in (('a', 'A', 'leader', None, 'main'), ('a-worker', 'A worker', 'member', 'A', 'main'),
+                                               ('b', 'B', 'leader', None, 'main'), ('b-worker', 'B worker', 'member', 'B', 'main'),
+                                               ('c', 'C', 'leader', None, 'feature')):
+            board.join(self.conn, sid, 'demo', name, self.root, self.root, branch, role=role, group_name=group, now=NOW)
+
+        def record(sid, branch='topic'):
+            return branch_claims.record(self.home, sid, str(self.root), 'git branch ' + branch, now=NOW)
+        self.assertEqual(record('a'), ['topic'])
+        for sid in ('b', 'b-worker'):
+            with self.subTest(sid=sid):
+                self.assertEqual(record(sid), [])
+                self.assertEqual(record(sid, 'feature'), [])
+        self.assertEqual(record('a-worker'), ['topic'])
+        self.assertEqual([(row['branch'], row['session_id']) for row in self.claims()], [('topic', 'a'), ('topic', 'a-worker')])
+        board.set_status(self.conn, 'a', 'closed', now=NOW)
+        self.assertEqual(record('b-worker'), ['topic'])
+
 
 class BranchClaimHookErrorTests(unittest.TestCase):
     def test_expected_failures_report_type_and_message_on_one_line(self):

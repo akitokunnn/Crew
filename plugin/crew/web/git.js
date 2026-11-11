@@ -20,8 +20,8 @@ const CrewGit = (() => {
     const root = String(options.root).replace(/\\/g, "/").replace(/\/+$/, ""), value = String(path).replace(/\\/g, "/");
     return value.toLowerCase().startsWith(root.toLowerCase() + "/") ? value.slice(root.length + 1) : value;
   }
-  // Prefer an owner still shown in the leader list, so its colour and avatar match the sidebar.
-  const owner = branch => branch.owners.find(item => options.leader?.(item.session_id) !== undefined) ?? branch.owners[0] ?? null;
+  // A branch has one leader at a time; handing its task over moves it.
+  const owner = branch => branch.owners[0] ?? null;
   // Branches left by archived leaders: the user hands one to a current leader, recorded like a branch it created.
   function adoptPicker(branch) {
     const leaders = options.state.leaders || [];
@@ -52,7 +52,7 @@ const CrewGit = (() => {
     const facts = [ago(branch.latest.time), branch.state === "unmerged" && data.integration !== null && branch.commits > branch.outside_integration ? `共 ${branch.commits} 个未合入 ${data.base.name}` : "",
       branch.behind > 0 ? `落后 ${data.base.name} ${branch.behind}` : "", branch.worktree === null ? "" : shortPath(branch.worktree)].filter(Boolean);
     const who = lead === null ? `<span class="git-muted">没人认领</span>${adoptPicker(branch)}`
-      : `${options.avatar?.(lead.name, 18) ?? ""}<span class="git-lite-leader">${esc(lead.name)}</span>${branch.owners.length > 1 ? `<span class="git-muted">等 ${branch.owners.length} 位</span>` : ""}`;
+      : `${options.avatar?.(lead.name, 18) ?? ""}<span class="git-lite-leader">${esc(lead.name)}</span>`;
     return `<article class="git-lite-card ${branch.state}" style="--tint:${color}"><div class="git-lite-card-head"><span class="git-lite-branch" title="${esc(branch.name)}">${branchIcon}<span>${esc(branch.name)}</span></span><span class="git-lite-count">${count}</span></div><div class="git-lite-owner">${who}${request === undefined ? "" : `<span class="git-lite-request ${request.status}">${requestLabels[request.status]} #${request.id}</span>`}</div>${branchTags(branch)}<div class="git-lite-subject" title="${esc(branch.latest.subject)}">${esc(branch.latest.subject)}</div><div class="git-lite-facts" title="${esc([at(branch.latest.time), branch.latest.author, branch.worktree].filter(Boolean).join(" · "))}">${esc(facts.join(" · "))}</div></article>`;
   }
   const uncommitted = trunk => trunk.dirty?.error ? `${trunk.name} 工作区读取失败：${trunk.dirty.error}` : trunk.dirty?.files ? `${trunk.name} 工作区有 ${trunk.dirty.files} 个未提交改动` : "";

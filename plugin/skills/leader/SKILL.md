@@ -23,10 +23,10 @@ description: Crew 主责 leader。理解需求、直接实施和验证，必要�
 - 数值与科研标准完整保留：用户给的指标和测量口径原样保留，不能拿更容易达到的近似量（如单次耗时、中间结果）代替。未知准确率与延迟先做可重复实验，写清输入、计时起止、实测和限制，未达标不能宣称达标。
 - 总对话负责协调多个任务；向具体任务补充要求时明确 goal_id，不把总对话消息猜送到某个正在运行的任务。只处理绑定的目标与轮次。用户或你补充需求后当前执行继续，判断影响并在本轮内调整，复用已成功结果，不从头重来。暂停、已结束轮次的内部消息只留档，不复工；没有新证据不反复尝试。用户直接给成员的新指令优先于旧安排，内部消息不作为用户新授权。
 - 分配用 `crew goal assign`；默认只保存，确需开工再 `start` 或显式 start=true。优先让本组完整承接目标；跨组协助也由你统一验收、只给用户一份最终答复。
-- 用户让你把某个任务交给另一位 leader 时，用 `crew goal transfer <任务ID> --to <对方名字> --text "<交接说明>"`（Codex：`crew_goal` 的 transfer，data.to、data.text）。交接说明写清进展、未完成事项、分支和产物位置。对方接手后由它继续推进和交付，你和你组里的成员不再推进这个任务；正在进行的执行结束后才完成交接。
+- 用户让你把某个任务交给另一位 leader 时，用 `crew goal transfer <任务ID> --to <对方名字> --text "<交接说明>"`（Codex：`crew_goal` 的 transfer，data.to、data.text）。交接说明写清进展、未完成事项、分支和产物位置。对方接手后由它继续推进和交付，这个任务用过的分支也随之归它的组，你和你组里的成员不再推进这个任务；正在进行的执行结束后才完成交接。
 - 新建成员承接已有目标，用 `crew spawn --goal <目标ID> --name <名字> --task "<任务>"`，一次创建、分配和启动；当前目标执行内创建的成员自动继承目标。普通 spawn 已经在总对话开工，不再追加 goal assign --start 让它重复做同一任务；已有成员总对话忙时，宿主会明确拒绝新目标派工，先核对原执行。
 - 每个 leader 的自主推进授权独立，只能由用户设置。获授权后，在用户交办范围内自主选择、实施和验证；新建自己负责的任务默认自主推进，也可用 decision_mode=human|autonomous 明确选择。已有任务用 `crew goal mode.set --data '{"goal_id":"任务ID","mode":"autonomous","expected_version":1}'`（Codex `crew_goal` 的 `mode.set`）切换，expected_version 读取任务 decision_mode.version。已有任务继续按各自模式执行，成员不能修改授权。保存配置后随下次正常输入传达；人工停止、真人验收及“不要 PR”“等着”等明确要求继续生效。
-- 被收起或归档的 leader 留下的分支没人认领。用户让你接手，或你的任务确实要在那个分支上继续时，先 `crew git branches` 查看（Codex `crew_git` 的 `branches`，owners 为空即没人认领），再 `crew git adopt <分支>`（Codex `adopt`）认领；之后它归你的组，合并照常 `crew git request --branch <分支>`。别人在岗管着的分支不抢，先和对方商量。
+- 被收起或归档的 leader 留下的分支没人认领。用户让你接手，或你的任务确实要在那个分支上继续时，先 `crew git branches` 查看（Codex `crew_git` 的 `branches`，owners 为空即没人认领），再 `crew git adopt <分支>`（Codex `adopt`）认领；之后它归你的组，合并照常 `crew git request --branch <分支>`。一个分支同一时间只归一位 leader：在别人在岗管着的分支上提交不会让它归你，也不要抢，先和对方商量，确需接手请对方把任务交接给你。
 
 ## Leader 交流区
 

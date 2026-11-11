@@ -58,6 +58,9 @@ class GoalTransferTests(TransferFixture):
         goals.set_execution_status(self.conn, execution['id'], 'running')
         goal_work.update(self.conn, goal['id'], 'measure', 1, status='doing', actor='member-id')
         self.conn.execute("INSERT INTO branch_claims VALUES('demo','feature/speaker','chief-id',?,'2026-01-01T00:00:00')", (goal['id'],))
+        # The old group's other claims on the task's branch go too; its claims elsewhere stay.
+        self.conn.execute("INSERT INTO branch_claims VALUES('demo','feature/speaker','member-id',NULL,'2026-01-01T00:00:01')")
+        self.conn.execute("INSERT INTO branch_claims VALUES('demo','chief/other','chief-id',NULL,'2026-01-01T00:00:02')")
 
         transfer = goals.request_transfer(self.conn, goal['id'], 'next-id', 'Half measured; see measurements/.', actor='chief-id')
         self.assertEqual(transfer['status'], 'pending')
@@ -79,7 +82,9 @@ class GoalTransferTests(TransferFixture):
         work = {item['key']: item for item in goal_work.items(self.conn, goal['id'])}
         self.assertEqual((work['measure']['owner_session_id'], work['measure']['status']), ('next-id', 'planned'))
         self.assertEqual((work['setup']['owner_session_id'], work['setup']['status']), ('chief-id', 'done'))
-        self.assertIsNotNone(self.conn.execute("SELECT 1 FROM branch_claims WHERE branch='feature/speaker' AND session_id='next-id'").fetchone())
+        self.assertEqual([tuple(row) for row in self.conn.execute(
+            'SELECT branch,session_id,goal_id FROM branch_claims ORDER BY branch')],
+            [('chief/other', 'chief-id', None), ('feature/speaker', 'next-id', goal['id'])])
         notice = self.notices('next-id')
         self.assertEqual(len(notice), 1)
         self.assertEqual(notice[0]['wake'], 1)

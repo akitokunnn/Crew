@@ -16,7 +16,7 @@ function branchSnapshot(){
   const integration=settings.config.integration===null?null:{name:settings.config.integration,ahead:5,behind:1,branches:['topic/tested'],worktree:null,dirty:null};
   const plain={remote:null,pr:null,dirty:null,outside_integration:null};
   const branches=[
-    {...plain,name:'topic/<script>branch</script>/'+'long-segment-'.repeat(24),state:'unmerged',commits:3,outside_integration:3,behind:2,latest,worktree:'c:\\FIXTURE\\MIB\\Temp\\wt\\feature',owners:[{session_id:leader.session_id,name:leader.name},{session_id:'archived',name:'历史 leader'}],
+    {...plain,name:'topic/<script>branch</script>/'+'long-segment-'.repeat(24),state:'unmerged',commits:3,outside_integration:3,behind:2,latest,worktree:'c:\\FIXTURE\\MIB\\Temp\\wt\\feature',owners:[{session_id:leader.session_id,name:leader.name}],
      remote:{ahead:1},pr:{number:12,url:'https://github.com/example/project/pull/12',draft:true,base:'develop',ci:'pending'},dirty:{files:4,build_outputs:9,error:null}},
     {...plain,name:'topic/no-owner',state:'unmerged',commits:1,outside_integration:1,behind:0,latest,worktree:null,owners:branchAssignee?[branchAssignee]:[]},
     {...plain,name:'topic/tested',state:'integrated',commits:2,outside_integration:0,behind:0,latest,worktree:null,remote:{ahead:0},owners:[{session_id:leader.session_id,name:leader.name}]},

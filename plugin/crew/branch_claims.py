@@ -2,7 +2,7 @@
 
 Leaders often open worktrees with plain Git, which Crew never sees otherwise. The Claude Code
 and Codex PreToolUse hooks pass every allowed shell command here; the Git page uses the
-recorded sessions to tie branches to their leaders (and to the task they were running).
+recorded sessions to tie each branch to its leader (and to the task they were running).
 """
 from contextlib import closing
 import ntpath
@@ -12,7 +12,7 @@ import sqlite3
 import subprocess
 import sys
 
-from . import board, git_process, guard, store
+from . import board, git_overview, git_process, guard, store
 
 SEPARATORS = ("&&", "||", ";", "|", "&", "(", ")", "\n")
 # Options of `git` itself that consume the following word.
@@ -148,7 +148,8 @@ def record(home, session_id, cwd, command, execution_id=None, now=None):
     """Store the branches `command` creates or commits to for a Crew session in a project.
 
     Only sessions already on the board count; the command has not run yet, so a commit's
-    branch is the one currently checked out.
+    branch is the one currently checked out. A branch another current leader answers for stays
+    theirs: working on it does not claim it, only handing the task over moves it.
     """
     found = parse(command, cwd)
     if not found or not store.db_path(home).exists():
@@ -173,7 +174,16 @@ def record(home, session_id, cwd, command, execution_id=None, now=None):
             row = conn.execute("SELECT goal_id FROM goal_executions WHERE id=?", (execution_id,)).fetchone()
             goal = None if row is None else row["goal_id"]
         names = list(dict.fromkeys(branches))
+        config = board.git_config(conn, session["project"])
+        admin = None if config is None else config["admin_session_id"]
+        own = board.session(conn, session_id)
+        own = own if own["role"] == "leader" else board.leader_of(conn, session_id)
+
+        def free(name):
+            holder = git_overview.holder(conn, session["project"], name, admin)
+            return holder is None or own is not None and holder["session_id"] == own["session_id"]
         with board.transaction(conn):
+            names = [name for name in names if free(name)]
             for name in names:
                 conn.execute(
                     "INSERT INTO branch_claims(project,branch,session_id,goal_id,claimed_at) VALUES(?,?,?,?,?) "
