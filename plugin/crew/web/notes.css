@@ -198,7 +198,7 @@
 .nw-review-card .nw-title{font-size:16px}
 .nw-review-card .nw-body{-webkit-line-clamp:14;line-clamp:14}
 .nw-review-done{text-align:center;color:var(--text-3);font-size:12.5px;margin:10px 0 0}
-.nw-review-nav{width:36px;height:36px;font-size:16px}
+.nw-review-nav{width:36px;height:36px;font-size:16px;border:1px solid var(--line-strong)}
 .nw-review-keys{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:18px}
 .nw-review-keys kbd{font-family:var(--font-mono);font-size:11px;padding:0 5px;border:1px solid var(--line-strong);border-radius:4px;margin-right:2px}
 

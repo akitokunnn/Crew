@@ -179,8 +179,8 @@
       + `<select data-act="sort" aria-label="排序"><option value="updated" ${view.sort === "updated" ? "selected" : ""}>最近更新</option><option value="created" ${view.sort === "created" ? "selected" : ""}>创建时间</option><option value="discussed" ${view.sort === "discussed" ? "selected" : ""}>最近讨论</option></select>`
       + `<div class="nw-seg" role="radiogroup" aria-label="分组"><button type="button" role="radio" aria-checked="${view.group === "time"}" data-act="group" data-value="time">按时间</button><button type="button" role="radio" aria-checked="${view.group === "stage"}" data-act="group" data-value="stage">按阶段</button></div>`
       + `<select class="nw-narrow-only" data-act="view" aria-label="查看">${Object.entries(viewNames).map(([key, label]) => `<option value="${key}" ${view.view === key ? "selected" : ""}>${label}</option>`).join("")}</select>`
-      + (filtered ? `<button type="button" class="text-link" data-act="clear-filters">清除筛选</button>` : "")
-      + (view.view !== "open" ? `<span class="nw-viewing">正在看：${viewNames[view.view]}<button type="button" class="text-link" data-act="view-open">返回全部想法</button></span>` : "");
+      + (filtered ? `<button type="button" class="btn sm ghost" data-act="clear-filters">清除筛选</button>` : "")
+      + (view.view !== "open" ? `<span class="nw-viewing">正在看：${viewNames[view.view]}<button type="button" class="btn sm ghost" data-act="view-open">返回全部想法</button></span>` : "");
   }
   function renderSide() {
     // No counts until the notes are read: an empty rail would read as "no ideas".
