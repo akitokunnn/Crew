@@ -8,10 +8,10 @@
 每个目标都必须走完下面的收尾，否则任务一直停在“推进中”，用户看不到验收按钮：
 
 1. 成员结果到齐、你复核过，`crew goal work.list` 里的工作项都已 done 或 cancelled。
-2. 取 `crew goal report-template` 填验收证据（通过 / 失败 / 未验证 / 模拟）、产物与修改入口和取舍。awaiting_acceptance / completed 覆盖全部标准，并提供 example 作为验证证据：写清怎么验证、结果如何；有可复现的行为时用具体案例（输入或操作、期望、实际、结论），无法验证时写明边界，不伪造实际结果。progress / failed / cancelled 可列部分标准并省略 examples。投入可省，提供时未知用量写未知、不估作零，缓存单列。最终交付 outcome 用 awaiting_acceptance；user_test 只写用户确认时值得亲自看或试的关键几步，AI 已验证过的不要求用户重复。
+2. 取 `crew goal report-template` 填验收证据（通过 / 失败 / 未验证 / 模拟）、产物与修改入口和取舍。awaiting_acceptance / completed 覆盖全部标准，每条在 evidence 里写清怎么验证、结果如何、在哪能复查；未验证或模拟的标准把边界写进 unresolved，不伪造实际结果。有可复现的行为时可附 example 具体案例（输入或操作、期望、实际、结论），并标明是实际还是示意。progress / failed / cancelled 可列部分标准。投入可省，提供时未知用量写未知、不估作零，缓存单列。最终交付 outcome 用 awaiting_acceptance；user_test 只写用户确认时值得亲自看或试的关键几步，AI 已验证过的不要求用户重复。
 3. 先 `crew todo list` 和 `crew decisions` 核对本组未结事项，已做完或不再需要的撤回（todo withdraw / 撤回拍板）；新的需要用户处理的事项写 user_todos（很快的小事也可直接写进报告和对话），新的需要用户定的事写 user_decisions。
 4. 用 `crew goal finish <目标ID> --file <报告.json> [--html-file <报告.html>]` 提交验收记录和可选正文（Codex：`crew_goal` 的 finish，正文放 `data.report.document_html`）。返回 `pending_finish` 表示收尾已受理；本次原生响应结束、宿主完成收尾后，任务才变成“待验收”，用户在主页、任务详情和报告里点“通过”或“需修改”。
-5. finish 报错就按报错修正后重提（如工作清单未完成、标准未覆盖、缺 example）；报告失败只重试报告，不重新派工程任务。finish 成功前不要对用户说“已完成 / 待验收”；只在对话里宣布交付不会改变任务状态。
+5. finish 报错就按报错修正后重提（如工作清单未完成、标准未覆盖、缺验证证据）；报告失败只重试报告，不重新派工程任务。finish 成功前不要对用户说“已完成 / 待验收”；只在对话里宣布交付不会改变任务状态。
 6. 用户点“需修改”时，意见会直接送进本任务执行：同一任务、同一轮内按意见修改，复用已有成果，改完验证后回到第 2 步重新 finish。用户点“通过”后任务完成，你会在总对话收到通知，再归档本组已无其他未完成任务的成员。
 
 能自己验证的尽量自己验证完（写测试、操作界面、搭环境实际运行等），报告写清怎么测的、结果如何；验证不了的如实写明。未达标可以如实用 failed 结束并附失败证据。待真实执行结束才收尾；用户看报告确认并点“通过”才算完成。
