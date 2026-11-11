@@ -943,6 +943,20 @@ def request_finish(conn, goal_id, report_id, *, actor=board.HUMAN, execution_id=
     return get_finish(conn, goal_id)
 
 
+def _finish_notice(goal, report):
+    summary = report['data'].get('summary', '').strip()
+    if len(summary) > 600:
+        summary = summary[:600] + '…'
+    status = {'awaiting_acceptance': '已交付，等用户验收', 'failed': '未达标结束', 'cancelled': '已取消结束'}[report['outcome']]
+    text = '任务「%s」（ID %s）的执行%s。\n摘要：%s\n完整报告用 crew goal status %s 查看（Codex：crew_goal 的 status）。\n' % (
+        goal['title'], goal['id'], status, summary or '（报告没有写摘要）', goal['id'])
+    if report['outcome'] == 'awaiting_acceptance':
+        return text + '用几句话告诉用户结果和要实测的内容；验收由用户本人决定，不要替用户验收，也不要重做已交付的工作。'
+    if report['outcome'] == 'failed':
+        return text + '向用户说明没达标的原因和建议的下一步；要不要继续由用户决定。'
+    return text + '无需处理。'
+
+
 @atomic
 def finalize_finish(conn, goal_id, *, now=None):
     goal, finish = _row(conn, goal_id), get_finish(conn, goal_id)
@@ -968,6 +982,11 @@ def finalize_finish(conn, goal_id, *, now=None):
         board.ask.__wrapped__(conn, goal['leader_session_id'], '来自任务「%s」：%s\n原因：%s' %
                   (goal['title'], item['question'], item['why']), item.get('options', []),
                   item.get('recommendation'), blocking=False, now=now)
+    # The leader's general chat does not share the task execution's context; tell it the task has
+    # come back, unless that general chat submitted this delivery itself.
+    if finish['execution_id'] is not None or finish['actor'] != goal['leader_session_id']:
+        board._queue_leader_notice(conn, goal['leader_session_id'], _finish_notice(goal, report),
+                                   'crew', now, wake=report['outcome'] != 'cancelled')
     conn.execute("UPDATE goal_round_finishes SET status='finalized',finalized_at=? WHERE goal_id=? AND round=?", (board._time(now), goal_id, goal['current_round']))
     return {'finalized': True, 'already': False, 'goal': result, 'finish': get_finish(conn, goal_id)}
 

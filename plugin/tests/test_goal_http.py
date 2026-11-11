@@ -1103,7 +1103,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
             'artifacts': ['sample.json'], 'tradeoffs': [], 'follow_up': 'User can replay sample.',
             'investment': {'usage': None, 'roles': []}}
 
-    def awaiting_acceptance(self, runtime='claude'):
+    def awaiting_acceptance(self, runtime='claude', keep_notice=False):
         if runtime == 'codex':
             patcher = mock.patch('crew.codex_runtime._ObservedClient', codex_helpers.FakeClient)
             patcher.start()
@@ -1128,7 +1128,33 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.server.service.chat.goal_controller.sync(self.conn, goal['id'])
         current = goals.get(self.conn, goal['id'])
         self.assertEqual(current['status'], 'awaiting_acceptance')
+        # The task execution's delivery is reported back to the leader's general chat once.
+        notices = board.pending_notices(self.conn, 's3')
+        self.assertEqual(len(notices), 1)
+        self.assertIn('「%s」（ID %s）的执行已交付，等用户验收' % (goal['title'], goal['id']), notices[0]['text'])
+        if not keep_notice:
+            board.mark_notice_sent(self.conn, notices[0]['id'])
         return current, goals.get_report(self.conn, finished['report_id']), receipt['execution_id'], process
+
+    def delivery_reaches_general_chat(self, runtime):
+        goal, _, execution_id, _ = self.awaiting_acceptance(runtime, keep_notice=True)
+        notice = board.pending_notices(self.conn, 's3')[0]
+        self.assertEqual(notice['wake'], 1)
+        manager = self.server.service.chat
+        self.server.service.deliver_notices()
+        self.assertEqual(board.pending_notices(self.conn, 's3'), [])
+        self.assertNotEqual(execution_id, 's3')
+        if runtime == 'codex':
+            sent = [params for name, params in manager.processes['s3'].client.calls if name == 'turn/start'][-1]['input'][0]['text']
+        else:
+            sent = json.loads(manager.processes['s3'].process.stdin.getvalue().splitlines()[-1])['message']['content']
+        self.assertIn(notice['text'], sent)
+
+    def test_claude_task_delivery_reaches_the_leaders_general_chat(self):
+        self.delivery_reaches_general_chat('claude')
+
+    def test_codex_task_delivery_reaches_the_leaders_general_chat(self):
+        self.delivery_reaches_general_chat('codex')
 
     def test_human_acceptance_closes_idle_native_and_preserves_report_bytes(self):
         goal, report, execution_id, process = self.awaiting_acceptance()

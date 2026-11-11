@@ -176,6 +176,46 @@ class LeaderClosureTests(GoalFixture):
             goals.review_acceptance(self.conn, goal['id'], True, expected_version=goal['version'])
         self.assertEqual(len(board.pending_notices(self.conn, 'chief-id')), 1)
 
+    def finish_from(self, session_id, outcome, runtime='claude'):
+        goal = self.goal()
+        goals.assign(self.conn, goal['id'], session_id, 'Work')
+        goals.transition(self.conn, goal['id'], 'running')
+        execution = goals.create_execution(self.conn, goal['id'], session_id, runtime=runtime)
+        report = goals.save_report(self.conn, goal['id'], {**self.report(outcome), 'summary': 'Measured <exactly> once.'})
+        goals.request_finish(self.conn, goal['id'], report['id'], actor=session_id, execution_id=execution['id'])
+        self.assertTrue(goals.finalize_finish(self.conn, goal['id'])['finalized'])
+        return goal
+
+    def test_task_execution_delivery_reports_back_to_the_leaders_general_chat_once(self):
+        for runtime in ('claude', 'codex'):
+            with self.subTest(runtime=runtime):
+                self.conn.execute('DELETE FROM leader_notices')
+                goal = self.finish_from('chief-id', 'awaiting_acceptance', runtime)
+                notices = board.pending_notices(self.conn, 'chief-id')
+                self.assertEqual(len(notices), 1)
+                self.assertEqual((notices[0]['source'], notices[0]['wake']), ('crew', 1))
+                for part in (goal['title'], goal['id'], '等用户验收', 'Measured <exactly> once.', 'crew goal status'):
+                    self.assertIn(part, notices[0]['text'])
+                self.assertTrue(goals.finalize_finish(self.conn, goal['id'])['already'])
+                self.assertEqual(len(board.pending_notices(self.conn, 'chief-id')), 1)
+
+    def test_failed_delivery_wakes_the_leader_and_cancelled_one_is_kept_quietly(self):
+        for outcome, status, wake in (('failed', '未达标', 1), ('cancelled', '已取消', 0)):
+            with self.subTest(outcome=outcome):
+                self.conn.execute('DELETE FROM leader_notices')
+                self.finish_from('chief-id', outcome)
+                notices = board.pending_notices(self.conn, 'chief-id')
+                self.assertEqual(len(notices), 1)
+                self.assertIn(status, notices[0]['text'])
+                self.assertEqual(notices[0]['wake'], wake)
+
+    def test_delivery_submitted_from_the_leaders_own_general_chat_is_not_echoed_back(self):
+        self.ready()
+        self.assertEqual(board.pending_notices(self.conn, 'chief-id'), [])
+        self.conn.execute('DELETE FROM leader_notices')
+        self.ready(board.HUMAN)
+        self.assertEqual(len(board.pending_notices(self.conn, 'chief-id')), 1)
+
     def test_reject_continues_same_task_round_and_notifies_once(self):
         goal, report = self.ready()
         result = goals.review_acceptance(self.conn, goal['id'], False, note='Keep <this> exact opinion.', expected_version=goal['version'])
