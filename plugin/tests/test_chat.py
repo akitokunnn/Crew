@@ -144,12 +144,13 @@ class ChatTests(UsageFixture, unittest.TestCase):
     def test_child_environment_keeps_persistent_settings_and_clears_parent_identity(self):
         env = chat.child_environment({"name": "boss", "group": "boss", "role": "leader", "id": "spawn-1"},
               {"PATH": "system", "CLAUDE_CODE_ENTRYPOINT": "sdk-cli", "CLAUDE_CODE_SESSION_ID": "parent", "CLAUDE_CODE_CHILD_SESSION": "1",
-               "CLAUDE_API_KEY": "keep", "CREW_GROUP": "parent", "ANTHROPIC_API_KEY": "keep-too"},
+               "CLAUDE_API_KEY": "keep", "CREW_GROUP": "parent", "ANTHROPIC_API_KEY": "keep-too", "CLAUDE_CONFIG_DIR": "isolated-profile"},
               {"CLAUDE_API_KEY"})
         self.assertNotIn("CLAUDE_CODE_SESSION_ID", env)
         self.assertNotIn("CLAUDE_CODE_CHILD_SESSION", env)
         self.assertEqual(env["CLAUDE_CODE_ENTRYPOINT"], "crew-web")
         self.assertEqual(env["CLAUDE_API_KEY"], "keep")
+        self.assertEqual(env["CLAUDE_CONFIG_DIR"], "isolated-profile")
         self.assertEqual(env["MSYS_NO_PATHCONV"], "1")
         self.assertEqual((env["CREW_NAME"], env["CREW_GROUP"], env["CREW_ROLE"]), ("boss", "boss", "leader"))
 

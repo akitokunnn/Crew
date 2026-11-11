@@ -174,9 +174,11 @@ def child_environment(spec, environ=None, persistent_names=None):
                 with winreg.OpenKey(hive, path) as key:
                     for index in range(winreg.QueryInfoKey(key)[1]):
                         persistent_names.add(winreg.EnumValue(key, index)[0].upper())
+    # The selected native profile is configuration, not the parent's session identity.
     env = {name: value for name, value in env.items()
            if not name.upper().startswith("CREW_")
-           and (not name.upper().startswith("CLAUDE") or name.upper() in persistent_names)}
+           and (not name.upper().startswith("CLAUDE") or name.upper() in persistent_names
+                or name.upper() == 'CLAUDE_CONFIG_DIR')}
     # VS Code hides sdk-cli transcripts; identify this human-facing host explicitly.
     env.update(CLAUDE_CODE_ENTRYPOINT="crew-web", CREW_NAME=spec["name"], CREW_ROLE=spec["role"], CREW_SPAWN_ID=spec["id"],
                MSYS_NO_PATHCONV="1")
