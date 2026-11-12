@@ -186,7 +186,7 @@
       context.selected.clear(); context.allLeaders = false; renderTargets(context);
       // Fetch through intervening posts before advancing the cursor to our new message.
       merge(context, [result.message], false); renderMessages(context, "bottom"); refresh(context);
-      context.toast(allLeaders ? `已点名本工作区的 ${result.message.mentions.length} 位 leader` : to.length === 0 ? "已发到 Leader 交流区" : `已发到 Leader 交流区，点名的 ${to.join("、")} 会被叫醒`);
+      context.toast(allLeaders ? `已点名本工作区的 ${result.message.mentions.length} 位 leader` : result.message.mentions.length === 0 ? "已发到 Leader 交流区" : `已发到 Leader 交流区，点名的 ${result.message.mentions.map(item => item.name).join("、")} 会被叫醒`);
     } catch (error) { if (current(context)) context.toast(error.message); }
     finally { context.sending = false; if (current(context)) composerState(context); }
   }

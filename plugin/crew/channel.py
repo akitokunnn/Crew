@@ -79,6 +79,21 @@ def _mark_read(conn, project_name, reader, message_id, now):
                  "updated_at=excluded.updated_at", (project_name, reader, message_id, board._time(now)))
 
 
+def _named_in_body(conn, project_name, body, actor):
+    """Leaders written as @name in the post; a longer name wins where one name starts another."""
+    leaders = [_leader(conn, project_name, row[0]) for row in conn.execute(
+        "SELECT leader_session_id FROM groups WHERE project=? AND closed_at IS NULL", (project_name,))]
+    found, text = [], body
+    for leader in sorted((item for item in leaders if item is not None and item["session_id"] != actor),
+                         key=lambda item: len(item["crew_name"]), reverse=True):
+        token = "@" + leader["crew_name"]
+        at = text.find(token)
+        if at >= 0:
+            found.append((at, leader["crew_name"]))
+            text = text.replace(token, " " * len(token))
+    return [name for _, name in sorted(found)]
+
+
 @board.atomic
 def post(conn, project_name, actor, body, to=(), source="crew", now=None, reply_to=None, detail=False):
     board.project(conn, project_name)
@@ -121,6 +136,8 @@ def post(conn, project_name, actor, body, to=(), source="crew", now=None, reply_
                  if leader is not None and not git_admin.is_builtin(leader, config)] + names
         if not names:
             raise board.BoardError('当前工作区没有可点名的 leader')
+    # Leaders write "@name" in the text as in any group chat; that names them just like --to.
+    names += _named_in_body(conn, project_name, body, actor)
     identities = set()
     for name in dict.fromkeys(names):
         target = board.named_session(conn, project_name, name)

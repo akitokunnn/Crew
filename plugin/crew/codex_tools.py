@@ -208,7 +208,7 @@ _SPECS = [
           'When your change affects another group, post here and name its leader (naming wakes them) instead of also sending crew_send_message. '
           'Answer a post with reply_to (its # number). If the answer fits in a sentence or two, say it here and only note in your private '
           'conversation that you answered in the channel. If it needs a long explanation, post a one-line conclusion with detail=true and '
-          'write the full answer in your private conversation. Naming leaders in to wakes them; unnamed posts wake nobody.',
+          'write the full answer in your private conversation. Naming a leader wakes them: write @name in the text or list it in to; unnamed posts wake nobody.',
           {'text': _text('The short post.', max_length=2000),
            'to': {'type': 'array', 'maxItems': 12, 'items': _text('Leader Crew name, or * for every leader.', max_length=512)},
            'reply_to': {'type': 'integer', 'minimum': 1, 'description': 'Channel post number being answered.'},

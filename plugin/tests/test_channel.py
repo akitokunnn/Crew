@@ -136,6 +136,25 @@ class ChannelTests(unittest.TestCase):
         self.assertEqual(board.pending_notices(self.conn, "a"), [])
         self.assertEqual(len(board.pending_notices(self.conn, "b")), 1)
 
+    def test_at_name_in_text_names_the_leader_like_to(self):
+        # Leaders naturally write "@name" in the post; it must wake that leader, not stay plain text.
+        board.join(self.conn, "c", "demo", "beta team", self.root, None, None, role="leader", now=NOW)
+        message = self.post("@beta team 接口改了；@beta 你那边不用动。@alpha @member a@b")
+        self.assertEqual([item["name"] for item in message["mentions"]], ["beta team", "beta"])
+        self.assertEqual(len(board.pending_notices(self.conn, "b")), 1)
+        self.assertEqual(len(board.pending_notices(self.conn, "c")), 1)
+        self.assertEqual(board.pending_notices(self.conn, "a"), [])
+        # Written both ways, the leader is still woken once.
+        message = self.post("@beta 再看下", to=["beta"])
+        self.assertEqual([item["name"] for item in message["mentions"]], ["beta"])
+        self.assertEqual(len(board.pending_notices(self.conn, "b")), 2)
+
+    def test_cli_say_with_at_name_wakes_the_leader(self):
+        result, output, error = self.run_cli(["say", "@beta 合并前先 rebase", "--json"])
+        self.assertEqual(result, 0, error)
+        self.assertEqual(json.loads(output)["mentions"], [{"session_id": "b", "name": "beta", "replied": False}])
+        self.assertEqual(len(board.pending_notices(self.conn, "b")), 1)
+
     def test_human_post_uses_web_notice(self):
         message = channel.post(self.conn, "demo", board.HUMAN, "user request", ["beta"], source="web", now=NOW)
         self.assertEqual((message["speaker_session_id"], message["speaker_name"]), (board.HUMAN, "用户"))
