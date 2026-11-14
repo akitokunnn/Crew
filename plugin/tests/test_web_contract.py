@@ -980,9 +980,9 @@ const other={session_id:'other',name:'另一位 leader'};
 const latest={sha:'a'.repeat(40),subject:'修复 <script>alert("title")</script> & 校验',author:'作者',time:'2026-11-09T00:55:00Z'};
 const plain={remote:null,pr:null,dirty:null,outside_integration:null};
 const branches=[
-  {...plain,name:'feature/<script>alert("branch")</script>',state:'unmerged',commits:3,behind:2,latest,worktree:'c:\\FIXTURE\\Demo\\Temp\\wt\\feature',owners:[hidden,visible,other],
+  {...plain,name:'feature/<script>alert("branch")</script>',state:'unmerged',commits:3,behind:2,latest,worktree:'c:\\FIXTURE\\Demo\\Temp\\wt\\feature',owners:[visible],
    remote:{ahead:0},pr:{number:12,url:'https://github.com/example/demo/pull/12',draft:false,base:'develop',ci:'pending'},dirty:{files:4,build_outputs:9,error:null}},
-  {...plain,name:'feature/offline',state:'unmerged',commits:4,behind:0,latest,worktree:'C:/fixture/demo/Temp/wt/offline',owners:[hidden,other],remote:{ahead:2}},
+  {...plain,name:'feature/offline',state:'unmerged',commits:4,behind:0,latest,worktree:'C:/fixture/demo/Temp/wt/offline',owners:[hidden],remote:{ahead:2}},
   {...plain,name:'feature/unowned',state:'unmerged',commits:5,behind:0,latest,worktree:null,owners:[],dirty:{files:null,build_outputs:null,error:'fatal: <bad>'}},
   {...plain,name:'feature/push',state:'unpushed',commits:6,behind:1,latest,worktree:'D:/outside/worktree',owners:[visible]},
   {...plain,name:'feature/rejected',state:'unpushed',commits:7,behind:0,latest,worktree:'C:/fixture/demo-other/worktree',owners:[other]},
@@ -1033,10 +1033,10 @@ const refresh=async()=>{const button={dataset:{gitAct:'refresh'}};listeners.get(
   for(const item of items)assert(item[3].includes(`<div class="git-lite-subject" title="${escapedSubject}">${escapedSubject}</div>`));
   assert(!html.includes('<script>'));assert(!html.includes('<table'));
   assert.equal(items[0][2],'#137f6d');assert(items[0][3].includes('class="git-lite-leader">侧栏 leader</span>'));
-  assert(items[0][3].includes('<i data-avatar="侧栏 leader" data-size="18"></i>'));assert(items[0][3].includes('等 3 位'));
+  assert(items[0][3].includes('<i data-avatar="侧栏 leader" data-size="18"></i>'));assert(!items[0][3].includes('等 '));
   assert(!items[0][3].includes('归档 leader'));
   assert.equal(items[1][2],'#8844aa');assert(items[1][3].includes('class="git-lite-leader">归档 leader</span>'));
-  assert(items[1][3].includes('<i data-avatar="归档 leader" data-size="18"></i>'));assert(items[1][3].includes('等 2 位'));
+  assert(items[1][3].includes('<i data-avatar="归档 leader" data-size="18"></i>'));assert(!items[1][3].includes('等 '));
   assert.equal(items[2][2],'var(--text-3)');assert(items[2][3].includes('没人认领'));
   assert(!items[2][3].includes('data-avatar'));assert(!items[2][3].includes('git-lite-leader'));
   assert(!items[3][3].includes('等 1 位'));
