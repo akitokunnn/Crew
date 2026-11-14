@@ -69,7 +69,7 @@ class PortableFeatureTests(RuntimeFixture):
         report = GoalFixture.report(self, 'progress')
         report['acceptance'][0]['criterion_id'] = goals.get(self.conn, goal['id'])['requirements']['acceptance'][0]['id']
         goal_reports.publish(self.conn, goal['id'], report, request_id='stage-one', expected_version=0)
-        delivered = dict(report, outcome='awaiting_acceptance')
+        delivered = dict(report, outcome='awaiting_acceptance', document_html='<h1>First delivery</h1><table><tr><td>app.txt</td></tr></table>')
         delivery = goals.save_report(self.conn, goal['id'], delivered)
         ready = goals.transition(self.conn, goal['id'], 'awaiting_acceptance')
         goals.review_acceptance(self.conn, goal['id'], True, note='Kept review before a small correction.', expected_version=ready['version'])

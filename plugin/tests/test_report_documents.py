@@ -51,6 +51,7 @@ class ReportDocumentTests(GoalFixture):
 
     def test_legacy_or_empty_document_still_renders_the_existing_report(self):
         goal = self.goal()
-        previous = goals.render_report(self.conn, goal['id'], self.report())
-        self.assertEqual(goals.render_report(self.conn, goal['id'], {**self.report(), 'document_html': ''}), previous)
+        # Final delivery requires a page now; outcomes without one keep Crew's generated page.
+        previous = goals.render_report(self.conn, goal['id'], self.report('failed'))
+        self.assertEqual(goals.render_report(self.conn, goal['id'], {**self.report('failed'), 'document_html': ''}), previous)
         self.assertNotIn('<iframe', previous)

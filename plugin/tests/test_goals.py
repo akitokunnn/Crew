@@ -23,7 +23,10 @@ class GoalFixture(RuntimeFixture):
         return goals.review_acceptance(self.conn, goal_id, True, expected_version=goal['version'], now=now), report
 
     def report(self, outcome='completed'):
-        return {'outcome': outcome, 'summary': 'Measured the speaker handover.',
+        # Final delivery carries an authored page; other outcomes keep Crew's generated page.
+        page = {'document_html': '<h1>Speaker handover</h1><table><tr><th>Input</th><th>Expected</th><th>Actual</th></tr>'
+                                 '<tr><td>A pauses; B says one short sentence</td><td>B</td><td>measured</td></tr></table>'}
+        return {**(page if outcome in ('awaiting_acceptance', 'completed') else {}), 'outcome': outcome, 'summary': 'Measured the speaker handover.',
                 'user_test': [{'step': 'Replay the saved sample.', 'expected': 'Identify the short speaker.'}],
                 'delivered': ['A repeatable speaker handover measurement'], 'unresolved': [],
                 'acceptance': [{'criterion_id': 'short', 'status': 'passed' if outcome == 'completed' else 'failed',
@@ -169,14 +172,33 @@ class GoalTests(GoalFixture):
                 goals.save_report(self.conn, goal['id'], data)
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM goal_reports').fetchone()[0], 0)
 
-    def test_final_delivery_needs_verification_evidence_not_a_forced_example_or_user_test(self):
+    def test_final_delivery_needs_a_page_a_concrete_example_and_verification_evidence(self):
+        # User ruling 2026-11-15: the final report is a readable HTML page with a concrete case; user_test stays optional.
         goal = self.goal()
         data = self.report('awaiting_acceptance')
-        data.update(examples=[], user_test=[])
+        data.update(user_test=[])
         report = goals.save_report(self.conn, goal['id'], data)
-        self.assertEqual((report['data']['examples'], report['data']['user_test']), ([], []))
-        self.assertNotIn('具体 example', report['html'])
+        self.assertEqual(report['data']['user_test'], [])
+        self.assertIn('Speaker handover', report['html'])
         self.assertNotIn('请你实测', report['html'])
+        for outcome in ('awaiting_acceptance', 'completed'):
+            for blank in ('', '   '):
+                with self.subTest(outcome=outcome, page=blank):
+                    page = self.report(outcome)
+                    page['document_html'] = blank
+                    with self.assertRaisesRegex(board.BoardError, 'HTML 页面.*具体案例.*可视化'):
+                        goals.save_report(self.conn, goal['id'], page)
+            missing_page = self.report(outcome)
+            missing_page.pop('document_html')
+            with self.assertRaisesRegex(board.BoardError, 'document_html'):
+                goals.save_report(self.conn, goal['id'], missing_page)
+            case = self.report(outcome)
+            case['examples'] = []
+            with self.assertRaisesRegex(board.BoardError, '具体 example'):
+                goals.save_report(self.conn, goal['id'], case)
+        illustrative = self.report('awaiting_acceptance')
+        illustrative['examples'][0]['kind'] = 'illustrative'
+        self.assertEqual(goals.save_report(self.conn, goal['id'], illustrative)['data']['examples'][0]['kind'], 'illustrative')
         missing = self.report('awaiting_acceptance')
         missing['acceptance'][0].update(status='unverified', evidence=[])
         with self.assertRaisesRegex(board.BoardError, '验证证据'):
@@ -187,14 +209,19 @@ class GoalTests(GoalFixture):
             goals.save_report(self.conn, goal['id'], boundary)
         boundary['unresolved'] = ['Only replayed against a recorded sample, not a live device']
         self.assertEqual(goals.save_report(self.conn, goal['id'], boundary)['outcome'], 'awaiting_acceptance')
-        progress = self.report('progress')
-        progress['acceptance'][0].update(status='unverified', evidence=[])
-        progress.update(examples=[], user_test=[])
-        goals.save_report(self.conn, goal['id'], progress)
+        # Stage, failed and cancelled reports keep the generated page and need no case.
+        for outcome in ('progress', 'failed', 'cancelled'):
+            with self.subTest(outcome=outcome):
+                other = self.report(outcome)
+                other['acceptance'][0].update(status='unverified', evidence=[])
+                other.update(examples=[], user_test=[])
+                saved = goals.save_report(self.conn, goal['id'], other)
+                self.assertIn('验收概览', saved['html'])
+                self.assertNotIn('具体 example', saved['html'])
 
     def test_report_html_is_offline_escaped_and_retry_does_not_redispatch(self):
         goal = self.goal()
-        data = self.report()
+        data = self.report('failed')  # no authored page: exercises Crew's generated page
         data['summary'] = '<script>fetch("https://example.invalid")</script>'
         data['examples'][0]['input'] = '<img src="https://bad.invalid" onerror="alert(1)">'
         report = goals.save_report(self.conn, goal['id'], data)

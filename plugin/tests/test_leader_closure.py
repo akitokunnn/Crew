@@ -64,9 +64,10 @@ class LeaderClosureTests(GoalFixture):
     def test_user_test_is_saved_and_escaped_in_standard_and_authored_reports(self):
         goal = self.goal()
         steps = [{'step': 'Open <button>', 'expected': 'See "Ready" & continue'}, {'step': 'Click save', 'expected': 'Saved'}]
-        for document in ('', '<h1>My report</h1>'):
+        # A final delivery always has an authored page; the generated page remains for other outcomes.
+        for outcome, document in (('failed', ''), ('awaiting_acceptance', '<h1>My report</h1>')):
             with self.subTest(document=document):
-                report = goals.save_report(self.conn, goal['id'], {**self.report('awaiting_acceptance'), 'user_test': steps, 'document_html': document})
+                report = goals.save_report(self.conn, goal['id'], {**self.report(outcome), 'user_test': steps, 'document_html': document})
                 self.assertEqual(goals.get_report(self.conn, report['id'])['data']['user_test'], steps)
                 self.assertIn('<h2>请你实测</h2><ol>', report['html'])
                 self.assertIn('Open &lt;button&gt;', report['html'])

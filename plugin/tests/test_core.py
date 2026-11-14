@@ -721,8 +721,13 @@ class RuleTextTests(unittest.TestCase):
                 self.assertRegex(content, r"不再发 ACK|不再确认|不回复确认")
                 self.assertRegex(content, r"不(?:自动)?建目标")
                 self.assertIn("example", content)
-                # The final report's form is the leader's call; HTML is no longer mandatory.
+                # Final delivery is a readable HTML page with a concrete example (user ruling 2026-11-15).
                 self.assertIn("最终报告", content)
+                self.assertIn("HTML", content)
+        leader = self.roles()[0][1]
+        self.assertRegex(leader, r"必须有：至少一个具体案例.*至少一处帮助理解的可视化")
+        self.assertIn("提交前至少把最终要交的页面预览一次", leader)
+        self.assertNotIn("形式由你按成果判断", leader)
         member = self.roles()[1][1]
         self.assertIn("--kind result|blocker|decision", member)
         self.assertRegex(member, r"不再.*重复 report")

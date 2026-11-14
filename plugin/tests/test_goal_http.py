@@ -1100,6 +1100,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
             'unresolved': [], 'acceptance': [{'criterion_id': 'a1', 'status': 'passed',
             'evidence': [{'label': 'Measurement', 'reference': 'sample.json'}]}],
             'examples': [{'kind': 'actual', 'input': 'A pauses then B speaks', 'expected': 'B', 'actual': 'B', 'conclusion': 'Passed'}],
+            'document_html': '<h1>Short reply</h1><table><tr><th>Input</th><th>Actual</th></tr><tr><td>A pauses then B speaks</td><td>B</td></tr></table>',
             'artifacts': ['sample.json'], 'tradeoffs': [], 'follow_up': 'User can replay sample.',
             'investment': {'usage': None, 'roles': []}}
 
@@ -1671,6 +1672,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
                 'user_test': [{'step': 'Replay sample.json.', 'expected': 'Identify B.'}],
                 'acceptance': [{'criterion_id': 'a1', 'status': 'passed', 'evidence': [{'label': 'Log', 'reference': 'a.json'}]}],
                 'examples': [{'kind': 'actual', 'input': 'A', 'expected': 'B', 'actual': 'B', 'conclusion': 'Passed'}],
+                'document_html': '<h1>Speaker test</h1><table><tr><td>A</td><td>B</td></tr></table>',
                 'artifacts': [], 'tradeoffs': [], 'follow_up': '', 'investment': {'usage': None, 'roles': []}}
         saved = [goals.save_report(self.conn, goal['id'], {**data, 'summary': summary}, now=now) for summary, now in (
             ('first draft', '2026-10-25T10:00:00.000Z'), ('same millisecond, newer version', '2026-10-25T10:00:00.000Z'),

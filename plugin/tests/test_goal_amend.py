@@ -318,8 +318,7 @@ class AmendmentReportTests(GoalFixture):
             complete = self.report(outcome)
             complete.pop('investment')
             self.assertEqual(goals.save_report(self.conn, goal['id'], complete)['outcome'], outcome)
-            self.assertEqual(goals.save_report(self.conn, goal['id'], {**complete, 'examples': []})['data']['examples'], [])
-            for field in ('acceptance',):
+            for field in ('acceptance', 'examples', 'document_html'):
                 with self.subTest(outcome=outcome, field=field), self.assertRaises(board.BoardError):
                     goals.save_report(self.conn, goal['id'], {**complete, field: []})
         for changes in ({'investment': {'elapsed_seconds': -1}}, {'investment': {'usage': {'input_tokens': -1}}},

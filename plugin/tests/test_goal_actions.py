@@ -35,6 +35,10 @@ class GoalActionTests(GoalFixture):
     def report(self, outcome='awaiting_acceptance'):
         return {**super().report(), 'outcome': outcome}
 
+    def without_page(self):
+        # The CLI supplies the page from --html-file instead of the JSON.
+        return {key: value for key, value in self.report().items() if key != 'document_html'}
+
     def setUp(self):
         super().setUp()
         self.host = Host(self.home)
@@ -415,7 +419,7 @@ class GoalActionTests(GoalFixture):
                     return self.dispatch(action, data, actor=actor, execution=execution_id)
                 if runtime == 'claude':
                     path = self.root / '验收.json'
-                    path.write_text(json.dumps({**self.report(), 'goal_id': goal['id']}), encoding='utf-8')
+                    path.write_text(json.dumps({**self.without_page(), 'goal_id': goal['id']}), encoding='utf-8')
                     def route(home, project, endpoint, body):
                         return handler(body['action'], body['data'], body['actor_session_id'], body['execution_id'])
                     environment = {'CREW_SESSION_ID':'chief-id','CREW_EXECUTION_ID':execution['id'],'CREW_GOAL_ID':goal['id']}
@@ -443,7 +447,7 @@ class GoalActionTests(GoalFixture):
             code, _, errors = self.invoke_cli(['goal','finish',goal['id'],'--file',str(path),'--html-file',str(html_path)])
             self.assertNotEqual(code, 0)
             self.assertIn('不能覆盖已有正文', errors)
-            path.write_text(json.dumps(self.report()), encoding='utf-8')
+            path.write_text(json.dumps(self.without_page()), encoding='utf-8')
             html_path.write_text('  ', encoding='utf-8')
             code, _, errors = self.invoke_cli(['goal','finish',goal['id'],'--file',str(path),'--html-file',str(html_path)])
             self.assertNotEqual(code, 0)

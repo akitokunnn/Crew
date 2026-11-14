@@ -63,7 +63,7 @@ SPECS = (
          'CC / Codex · 交付后讨论执行', '交付后讨论的每轮输入'),
     Spec('report', '阶段报告', 'delivery', '持续更新的阶段报告、阶段发布和成果版本快照。',
          'CC / Codex · 全部角色', _BUNDLED),
-    Spec('final_report', '最终交付报告', 'delivery', '最终交付报告的写法、预览、验收记录和提交，是唯一的最终交付规则；报告形式由 AI 按任务判断，用户明确要求时照办。',
+    Spec('final_report', '最终交付报告', 'delivery', '最终交付报告页面（含具体案例和帮助理解的可视化）的写法、预览、验收记录和提交，是唯一的最终交付规则。',
          'CC / Codex · leader、Git 助手', _BUNDLED),
     Spec('finish_reminder', '收尾检查提醒', 'delivery', 'leader 一轮结束但任务仍在推进中、又没有提交收尾时，提醒它 finish 或说明在等什么。',
          'CC / Codex · leader 目标执行', '任务停在推进中且本轮结束后，每轮最多一次', ('title',)),
