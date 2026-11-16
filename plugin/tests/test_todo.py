@@ -44,15 +44,12 @@ class TodoTests(RuntimeFixture):
             self.add(blocking=1)
         self.assertEqual(len(todo.list(self.conn, "demo")), 1)
 
-    def test_priority_is_blocking_then_leader_rank_then_creation_time(self):
-        board.set_leader_priority(self.conn, "demo", ["peer-chief-id", "chief-id"])
-        first = self.add(title="older low-priority", now="2026-10-24T00:00:00.000Z")
-        ranked = self.add("peer-worker-id", "ranked group", now="2026-10-24T00:02:00.000Z")
+    def test_order_is_blocking_then_creation_time(self):
+        first = self.add(title="older", now="2026-10-24T00:00:00.000Z")
+        other = self.add("peer-worker-id", "other group", now="2026-10-24T00:02:00.000Z")
         blocking = self.add(title="blocking", blocking=True, now="2026-10-24T00:03:00.000Z")
-        same_rank = self.add("peer-worker-id", "later ranked group", now="2026-10-24T00:04:00.000Z")
         ordered = todo.list(self.conn, "demo")
-        self.assertEqual([item["id"] for item in ordered], [blocking["id"], ranked["id"], same_rank["id"], first["id"]])
-        self.assertEqual([item["priority"] for item in ordered], [2, 1, 1, 2])
+        self.assertEqual([item["id"] for item in ordered], [blocking["id"], first["id"], other["id"]])
 
     def test_project_boundaries_apply_to_reads_and_writes(self):
         added = self.add("foreign-id", "Foreign manual action")

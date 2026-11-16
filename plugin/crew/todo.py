@@ -63,11 +63,6 @@ def _enrich(conn, item):
     from . import goal_links
     proposer = board.session(conn, item["session_id"])
     leader = _leader(conn, proposer)
-    rank = None
-    if leader is not None:
-        priority = conn.execute("SELECT position FROM leader_priority WHERE project=? AND session_id=?",
-                                (item["project"], leader["session_id"])).fetchone()
-        rank = priority[0] + 1 if priority is not None else None
     links = goal_links.list_links(conn, 'todo', item['id'])
     key = conn.execute('SELECT operation_key FROM todo_operation_keys WHERE todo_id=? ORDER BY operation_key LIMIT 1', (item['id'],)).fetchone()
     return {**item, "blocking": bool(item["blocking"]),
@@ -76,7 +71,7 @@ def _enrich(conn, item):
             "proposer_name": proposer["crew_name"] or proposer["cc_name"] or proposer["session_id"][:8],
             "group": proposer["group_name"], "group_name": proposer["group_name"],
             "leader_session_id": leader["session_id"] if leader is not None else None,
-            "leader_name": leader["crew_name"] if leader is not None else None, "priority": rank}
+            "leader_name": leader["crew_name"] if leader is not None else None}
 
 
 def get(conn, project_name, todo_id):
@@ -94,9 +89,7 @@ def list(conn, project_name=None, all=False):
         clauses.append("status='open'")
     rows = conn.execute("SELECT * FROM todos" + (" WHERE " + " AND ".join(clauses) if clauses else ""), args)
     items = [_enrich(conn, dict(row)) for row in rows]
-    return sorted(items, key=lambda item: (item["status"] != "open", not item["blocking"],
-                                         item["priority"] if item["priority"] is not None else 999,
-                                         item["created_at"], item["id"]))
+    return sorted(items, key=lambda item: (item["status"] != "open", not item["blocking"], item["created_at"], item["id"]))
 
 
 @board.atomic

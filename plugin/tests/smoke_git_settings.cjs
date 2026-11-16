@@ -4,7 +4,7 @@ const {chromium}=require('playwright'),fs=require('node:fs/promises'),path=requi
 const root=path.resolve(__dirname,'../..'),web=path.join(root,'plugin/crew/web'),output=path.join(root,'Temp/tasks/分支概况界面测试_evidence/smoke-git-settings');
 const calls=[],errors=[],expectedHttpErrors=[],checks=[],shots=[],waiting=[];
 let browser,page,server,origin,repositoryState='ready',failSave=false,staleSave=false,branchAssignee=null;
-const leader={session_id:'git-chief',name:'Git 管理',runtime:'codex',model:null,effort:null,status:'offline',where:'offline',busy:false,running:false,web_chat:false,last_seq:0,read_seq:0,last_reply_id:null,unread:0,pending:0,priority:null,goal:'协调项目提交与合并',task:'协调项目提交与合并',context:null,activity:null,codex:[],codex_older:0,member_ids:[],applied:null,trust:{enabled:false},runtime_switch:{allowed:true}};
+const leader={session_id:'git-chief',name:'Git 管理',runtime:'codex',model:null,effort:null,status:'offline',where:'offline',busy:false,running:false,web_chat:false,last_seq:0,read_seq:0,last_reply_id:null,unread:0,pending:0,pinned:false,goal:'协调项目提交与合并',task:'协调项目提交与合并',context:null,activity:null,codex:[],codex_older:0,member_ids:[],applied:null,trust:{enabled:false},runtime_switch:{allowed:true}};
 Object.assign(leader,{name:'Git 助手',builtin:true,base:'develop',integration:'dev_live',requests:{active:4,waiting_user:1,merging:1,queued:2},attention:3,pending:99});
 const catalog=[{id:'codex',name:'Codex',available:true,models:[],efforts:[]},{id:'claude',name:'Claude Code',available:true,models:[],efforts:[]}];
 const project={name:'MIB fixture',display_name:'MIB 协作',root:'C:/fixture/MIB',theme:'green'};

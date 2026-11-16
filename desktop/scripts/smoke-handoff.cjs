@@ -31,7 +31,7 @@ with closing(store.connect(home)) as conn:
                           'pending-member':'核对下一轮工具的真实结果 · 成员本人任务'}[sid])
   runtimes.set(conn,sid,runtime)
   board.set_status(conn,sid,'offline')
- board.set_leader_priority(conn,'handoff-demo',['handoff-codex'])
+ conn.execute("INSERT INTO leader_pins(project,session_id) VALUES('handoff-demo','handoff-codex')")
  goal=goals.create(conn,'handoff-demo','handoff-codex','交接后的独立任务','查看交接说明；验收不会启动任务。',['历史与真实回执保持可追溯'])
  todo.backfill(conn)
  conn.execute('UPDATE leader_notices SET sent_at=created_at')

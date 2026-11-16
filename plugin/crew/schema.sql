@@ -212,12 +212,11 @@ CREATE TABLE IF NOT EXISTS leader_order (
     PRIMARY KEY (project, session_id)
 );
 
-CREATE TABLE IF NOT EXISTS leader_priority (
+-- Pinned leaders show first; among themselves they keep the leader_order order.
+CREATE TABLE IF NOT EXISTS leader_pins (
     project TEXT NOT NULL REFERENCES projects(name),
     session_id TEXT NOT NULL REFERENCES sessions(session_id),
-    position INTEGER NOT NULL CHECK (position BETWEEN 0 AND 2),
-    PRIMARY KEY (project, session_id),
-    UNIQUE (project, position)
+    PRIMARY KEY (project, session_id)
 );
 
 CREATE TABLE IF NOT EXISTS git_management (

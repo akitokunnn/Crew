@@ -97,7 +97,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         leader = state["leaders"][0]
         self.assertEqual(set(leader), {"session_id", "name", "goal", "status", "busy", "running", "web_chat",
             "cc_name", "last_seq", "last_reply_id", "read_seq", "unread", "pending", "notices_pending", "member_ids",
-            "model", "effort", "applied", "activity", "context", "where", "codex", "codex_older", "priority", "runtime", "native_handoff", "trust", "runtime_switch", "active_goal_id", "active_goal_ids", "active_execution_id", "member_defaults", "color", "avatar_version"})
+            "model", "effort", "applied", "activity", "context", "where", "codex", "codex_older", "pinned", "runtime", "native_handoff", "trust", "runtime_switch", "active_goal_id", "active_goal_ids", "active_execution_id", "member_defaults", "color", "avatar_version"})
         self.assertIsNone(leader['member_defaults'])
         self.assertIsNone(leader['active_goal_id']); self.assertIsNone(leader['active_execution_id'])
         self.assertEqual(set(leader['runtime_switch']), {'allowed', 'reason', 'pending_handoff', 'last_switch_at'})
@@ -105,7 +105,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertTrue(leader['runtime_switch']['reason'])  # The fixture leader is external, not owned by Crew.
         self.assertFalse(leader['runtime_switch']['pending_handoff'])
         self.assertIsNone(leader['runtime_switch']['last_switch_at'])
-        self.assertIsNone(leader['priority'])
+        self.assertFalse(leader['pinned'])
         self.assertEqual((leader["session_id"], leader["member_ids"], leader["unread"]), ("s3", ["s1"], 0))
         # Leaders dispatch Codex for their own bulk work too (user 10-23), listed like members'.
         self.assertEqual((leader["codex"], leader["codex_older"]), ([], 0))
@@ -951,7 +951,7 @@ assert.equal(root.dataset.projectTheme, "celadon");
         self.assertEqual(themes.THEMES[0]["dark"]["--accent"], "#7DB3AA")
         expected_tokens = {"--accent", "--accent-strong", "--accent-text", "--on-accent",
                            "--accent-soft", "--accent-softer", "--bg", "--panel", "--panel-2",
-                           "--surface", "--surface-2", "--user-bubble", "--p1", "--p2", "--p3"}
+                           "--surface", "--surface-2", "--user-bubble"}
         for item in themes.THEMES:
             for mode in ("light", "dark"):
                 with self.subTest(theme=item["id"], mode=mode):

@@ -46,7 +46,7 @@ function harness(state = fixture(), fetcher = () => { throw new Error("Unexpecte
   const clickSource = source.slice(source.indexOf('    document.addEventListener("click",'), source.indexOf('    document.addEventListener("input",'));
   vm.runInContext(source.replace(end, `${clickSource}  window.ui = {runtimeList, runtimeInfo, defaultRuntime, modelEfforts, modelMenu, optionChange,
     optionsLabel, optionChangeNotice, leaderPayload, renderLeaderRuntime, selectLeaderOption, refreshRuntimes, editorHandoffReason, sessionMenu, chatAccess,
-    saveNormalOrder, sortableLeaders, railQuota, renderSidebar, contextRing, contextControls, sidebarLeader, memberNode, workingRow, compactContext, compactions,
+    setPinned, sortableLeaders, railQuota, renderSidebar, contextRing, contextControls, sidebarLeader, memberNode, workingRow, compactContext, compactions,
     compactFailures, setGoal(client, id) {goals=client;goalId=id;},
     openTodos, todosOf, decisionsOf, todoCard, todoTray, todoExpanded, todoActions,
     todoResolvePayload, resolveTodo, renderTodos, replace, action, changeSession,
@@ -189,7 +189,7 @@ test("a combined model and effort change overrides both stored and applied optio
 });
 
 test("Codex editor handoff is disabled while leader chat and member history remain available", () => {
-  const state = fixture(), leader = session({session_id:"lead", name:"Codex leader", priority:null, member_ids:["member"]});
+  const state = fixture(), leader = session({session_id:"lead", name:"Codex leader", pinned:false, member_ids:["member"]});
   const member = session({session_id:"member", name:"Codex member", leader_session_id:"lead", status:"idle", web_chat:true});
   state.leaders = [leader]; state.members = [member];
   const {ui} = harness(state), reason = "Codex 会话在 Crew 内继续；暂不支持转到 VS Code";
@@ -268,7 +268,7 @@ test("explicit catalog refresh is deduplicated and old servers are never probed"
 
 const todo = extra => ({id:17, title:"在手机上确认登录", steps:"打开设置\n允许登录", verification:"告诉它已经授权",
   blocking:true, status:"open", note:"", session_id:"member-1", proposer_name:"连接助手", group:"登录",
-  leader_session_id:"leader-1", leader_name:"登录", priority:1, created_at:"2026-10-24T00:00:00Z", updated_at:"2026-10-24T00:00:00Z", version:2, ...extra});
+  leader_session_id:"leader-1", leader_name:"登录", created_at:"2026-10-24T00:00:00Z", updated_at:"2026-10-24T00:00:00Z", version:2, ...extra});
 const todoState = () => ({...fixture(), project:{name:"fixture"}, leaders:[{session_id:"leader-1", name:"登录"}], members:[],
   decisions:[{id:90, leader_session_id:"leader-1", session_id:"leader-1", asker:"登录", presentation_stage:"notice"}], todos:[todo({id:44}), todo({id:17}), todo({id:52, leader_session_id:"leader-2"})]});
 
@@ -392,7 +392,7 @@ test("a decision first invites discussion and exposes structured choices only af
 });
 
 test("decision briefs show human context, rationale and independent consequences while preserving original choice indices", () => {
-  const state = todoState(); state.leaders[0].priority = null;
+  const state = todoState(); state.leaders[0].pinned = false;
   const {ui} = harness(state), item = decision(), original = item.options.slice();
   const card = ui.decisionCard(item), summary = card.split('<details')[0];
   assert(summary.includes("是否允许连接测试设备"));
@@ -413,7 +413,7 @@ test("decision briefs show human context, rationale and independent consequences
 });
 
 test("legacy decisions expose missing explanations, compact the title and fold the full source without inventing reasons", () => {
-  const state = todoState(); state.leaders[0].priority = null;
+  const state = todoState(); state.leaders[0].pinned = false;
   const {ui} = harness(state), question = "原始技术描述".repeat(50) + "\n第二段技术资料";
   const card = ui.decisionCard(decision({brief:null, question})), visible = card.split('<details')[0];
   assert(visible.includes("缺少说明"));
@@ -428,7 +428,7 @@ test("legacy decisions expose missing explanations, compact the title and fold t
 });
 
 test("overlong structured explanations keep a compact preview and the exact full text in folded detail", () => {
-  const state = todoState(); state.leaders[0].priority = null;
+  const state = todoState(); state.leaders[0].pinned = false;
   const {ui} = harness(state), item = decision();
   const explanation = "完整而明确的说明。".repeat(80);
   item.brief.why_user = explanation;
@@ -455,7 +455,7 @@ test("live UI refresh preserves horizontal group scroll position", () => {
 });
 
 test("only a leader menu offers whole-department compaction, separate from compacting one session", () => {
-  const state = fixture(), leader = session({session_id:"lead", name:"Leader", runtime:"claude", priority:null, member_ids:["member"]});
+  const state = fixture(), leader = session({session_id:"lead", name:"Leader", runtime:"claude", pinned:false, member_ids:["member"]});
   const member = session({session_id:"member", name:"Member", runtime:"claude", leader_session_id:"lead", status:"idle", web_chat:true});
   state.leaders = [leader]; state.members = [member];
   const {ui} = harness(state), menu = ui.sessionMenu(leader);
@@ -466,7 +466,7 @@ test("only a leader menu offers whole-department compaction, separate from compa
 
 function contextState(runtime="codex") {
   const state=fixture(),lead=session({session_id:"lead",name:'Leader <&"',runtime,context:{used:12000,max:100000},
-    status:"idle",busy:false,priority:null,goal:"goal",pending:0,unread:0,codex:[],member_ids:["member"]});
+    status:"idle",busy:false,pinned:false,goal:"goal",pending:0,unread:0,codex:[],member_ids:["member"]});
   const member={...lead,session_id:"member",name:"Member",leader_session_id:"lead",group:"Leader",task:"task"};
   return {...state,project:{name:"fixture"},leaders:[lead],members:[member],decisions:[]};
 }
@@ -536,11 +536,13 @@ function taskHarness(runtime="codex") {
   return {state,ui,executions,refreshes};
 }
 
-test("leader order uses all backend leaders and keeps priority positions",async()=>{
-  const state=fixture(),posts=[];state.project={name:"fixture"};state.leaders=[{session_id:"a",priority:null},{session_id:"p",priority:1},{session_id:"b",priority:null}];
-  const {ui}=harness(state);ui.services({api:async(path,data)=>posts.push({path,data}),loadState:async()=>{}});
-  assert.deepEqual(plain(ui.sortableLeaders(state.leaders[0]).map(item=>item.session_id)),["a","b"]);
-  await ui.saveNormalOrder(["b","a"]);assert.deepEqual(plain(posts[0].data.order),["b","p","a"]);
+test("pinning keeps both parts ordered and saves the whole leader list",async()=>{
+  const state=fixture(),posts=[],toasts=[];state.project={name:"fixture"};state.leaders=[{session_id:"p",name:"P",pinned:true},{session_id:"a",name:"A",pinned:false},{session_id:"b",name:"B",pinned:false}];
+  const {ui}=harness(state);ui.services({api:async(path,data)=>posts.push({path,data:plain(data)}),loadState:async()=>{},toast:text=>toasts.push(text)});
+  assert.deepEqual(plain(ui.sortableLeaders(state.leaders[1]).map(item=>item.session_id)),["a","b"]);
+  await ui.setPinned("b",true);assert.deepEqual(posts[0],{path:"/api/leaders/order",data:{project:"fixture",order:["b","p","a"],pinned:["b","p"]}});
+  await ui.setPinned("p",false);assert.deepEqual(posts[1].data,{project:"fixture",order:["p","a","b"],pinned:[]});
+  assert.deepEqual(toasts,["已置顶「B」","已取消置顶「P」"]);
 });
 test("uncollected quota has only text and a collected zero has an empty determinate bar",()=>{
   const {ui}=harness();assert.doesNotMatch(ui.railQuota("Codex",null),/<progress/);assert.match(ui.railQuota("Codex",null),/未采集/);

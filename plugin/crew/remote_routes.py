@@ -18,7 +18,7 @@ POST_PATHS = frozenset((
     '/api/decision/discuss', '/api/decision/ready', '/api/decision/clarify', '/api/native-approval',
     '/api/todo/resolve', '/api/todo/undo', '/api/comments',
     '/api/channel', '/api/channel/read', '/api/channel/digest', '/api/attention/dismiss',
-    '/api/leaders/order', '/api/leaders/priority', '/api/project/theme',
+    '/api/leaders/order', '/api/project/theme',
     '/api/session/appearance', '/api/session/rename', '/api/session/archive', '/api/session/delete', '/api/session/restore', '/api/session/undo',
     '/api/session/stop', '/api/session/compact', '/api/session/options',
     '/api/files/resolve', '/api/documents', '/api/documents/pin', '/api/documents/refresh',

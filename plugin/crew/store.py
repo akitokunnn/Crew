@@ -29,6 +29,7 @@ def connect(home):
     _migrate_quiet_leader_notices(conn)
     _migrate_git_integration_branch(conn)
     _migrate_channel_replies(conn)
+    _migrate_leader_pins(conn)
     return conn
 
 
@@ -62,6 +63,23 @@ def _migrate_channel_replies(conn):
     try:
         for table, name, kind in missing():
             conn.execute('ALTER TABLE %s ADD COLUMN %s %s' % (table, name, kind))
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+
+
+def _migrate_leader_pins(conn):
+    """The former 1-3 leader priorities become pins; the old table goes away."""
+    def old_table():
+        return conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='leader_priority'").fetchone()
+    if old_table() is None:
+        return
+    conn.execute('BEGIN IMMEDIATE')
+    try:
+        if old_table() is not None:
+            conn.execute('INSERT OR IGNORE INTO leader_pins(project,session_id) SELECT project,session_id FROM leader_priority')
+            conn.execute('DROP TABLE leader_priority')
         conn.commit()
     except BaseException:
         conn.rollback()

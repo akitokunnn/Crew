@@ -354,26 +354,35 @@ def sessions(conn, project_name):
     return _rows(conn, "SELECT * FROM sessions WHERE project=? ORDER BY crew_name,started_at", (project_name,))
 
 
+def pinned_leaders(conn, project_name):
+    return {row['session_id'] for row in conn.execute('SELECT session_id FROM leader_pins WHERE project=?', (project_name,))}
+
+
 def sort_leaders(conn, project_name, leaders):
+    """Pinned leaders first; within each part the saved order, then the rest as found."""
+    pinned = pinned_leaders(conn, project_name)
     positions = {row['session_id']: row['position'] for row in conn.execute(
         'SELECT session_id,position FROM leader_order WHERE project=?', (project_name,))}
-    return sorted(leaders, key=lambda leader: (leader['session_id'] not in positions,
+    return sorted(leaders, key=lambda leader: (leader['session_id'] not in pinned, leader['session_id'] not in positions,
                   positions.get(leader['session_id'])))
 
 
 @atomic
-def set_leader_order(conn, project_name, order):
+def set_leader_order(conn, project_name, order, pinned=None):
+    """Save the whole shown leader order and, when given, which of them are pinned."""
     from . import git_admin
     project(conn, project_name)
     if not isinstance(order, list) or any(not isinstance(sid, str) for sid in order):
         raise BoardError('order 必须是 session_id 数组')
     if len(order) != len(set(order)):
         raise BoardError('order 包含重复的 leader')
+    if pinned is not None and (not isinstance(pinned, list) or any(not isinstance(sid, str) for sid in pinned)):
+        raise BoardError('pinned 必须是 session_id 数组')
     config = git_config(conn, project_name)
     leaders = {s['session_id'] for s in sessions(conn, project_name)
                if s['role'] == 'leader' and s['status'] != 'closed' and not is_archived(conn, s['session_id'])
                and not git_admin.is_builtin(s, config)}
-    foreign = set(order) - leaders
+    foreign = (set(order) | set(pinned or ())) - leaders
     if foreign:
         raise BoardError('id 不属于该项目当前显示的 leader：' + '、'.join(sorted(foreign)))
     missing = leaders - set(order)
@@ -382,37 +391,10 @@ def set_leader_order(conn, project_name, order):
     conn.execute('DELETE FROM leader_order WHERE project=?', (project_name,))
     conn.executemany('INSERT INTO leader_order(project,session_id,position) VALUES(?,?,?)',
                      [(project_name, sid, position) for position, sid in enumerate(order)])
-    return {'ok': True}
-
-
-def leader_priorities(conn, project_name, leaders):
-    visible = {leader['session_id'] for leader in leaders}
-    ordered = [row['session_id'] for row in conn.execute(
-        'SELECT session_id FROM leader_priority WHERE project=? ORDER BY position', (project_name,))
-        if row['session_id'] in visible]
-    return {sid: rank for rank, sid in enumerate(ordered, 1)}
-
-
-@atomic
-def set_leader_priority(conn, project_name, ranks):
-    from . import git_admin
-    project(conn, project_name)
-    if not isinstance(ranks, list) or any(not isinstance(sid, str) for sid in ranks):
-        raise BoardError('ranks 必须是 session_id 数组')
-    if len(ranks) > 3:
-        raise BoardError('最多设置 3 个优先 leader')
-    if len(ranks) != len(set(ranks)):
-        raise BoardError('ranks 包含重复的 leader')
-    config = git_config(conn, project_name)
-    leaders = {s['session_id'] for s in sessions(conn, project_name)
-               if s['role'] == 'leader' and s['status'] != 'closed' and not is_archived(conn, s['session_id'])
-               and not git_admin.is_builtin(s, config)}
-    foreign = set(ranks) - leaders
-    if foreign:
-        raise BoardError('id 不属于该项目当前显示的 leader：' + '、'.join(sorted(foreign)))
-    conn.execute('DELETE FROM leader_priority WHERE project=?', (project_name,))
-    conn.executemany('INSERT INTO leader_priority(project,session_id,position) VALUES(?,?,?)',
-                     [(project_name, sid, position) for position, sid in enumerate(ranks)])
+    if pinned is not None:
+        # Only shown leaders are rewritten: an archived leader keeps its pin for when it comes back.
+        conn.executemany('DELETE FROM leader_pins WHERE project=? AND session_id=?', [(project_name, sid) for sid in leaders])
+        conn.executemany('INSERT INTO leader_pins(project,session_id) VALUES(?,?)', [(project_name, sid) for sid in set(pinned)])
     return {'ok': True}
 
 

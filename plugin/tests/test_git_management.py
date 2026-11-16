@@ -661,8 +661,8 @@ class GitHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(other_state['leaders'], [])
         self.assertEqual(other_state['git_assistant']['attention'], 3)
         self.assertEqual(self.request('/api/leaders/order?project=demo', {'project': 'demo', 'order': ['s3']})[0], 200)
-        self.assertEqual(self.request('/api/leaders/priority?project=demo', {'project': 'demo', 'ranks': ['s3']})[0], 200)
-        self.assertEqual(self.request('/api/leaders/priority?project=demo', {'project': 'demo', 'ranks': ['chief']})[0], 400)
+        self.assertEqual(self.request('/api/leaders/order?project=demo', {'project': 'demo', 'order': ['s3'], 'pinned': ['s3']})[0], 200)
+        self.assertEqual(self.request('/api/leaders/order?project=demo', {'project': 'demo', 'order': ['s3'], 'pinned': ['chief']})[0], 400)
 
     def test_disabled_assistant_is_null_and_legacy_ordinary_leader_stays_visible(self):
         self.assertIsNone(self.request('/api/state?project=demo')[1]['git_assistant'])

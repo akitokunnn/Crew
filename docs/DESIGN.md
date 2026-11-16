@@ -91,7 +91,7 @@ Crew/
 | `git_ci_state` | 按项目、检查对象与 CI 运行记录状态和通知去重；详见 §13 |
 | `git_result_handoffs` | Git 结果与 handoff、接收组员及发送管理员的关联，沿用 handoff_deliveries 记账；详见 §13 |
 | `leader_order` | `project TEXT NOT NULL REFERENCES projects(name)`、`session_id TEXT NOT NULL REFERENCES sessions(session_id)`、`position INTEGER NOT NULL`；联合主键 `(project, session_id)`，每项目独立保存左栏顺序，新 leader 排在已保存位置后并保持原相对顺序；连接数据库时通过 `CREATE TABLE IF NOT EXISTS` 创建 |
-| `leader_priority` | `project TEXT NOT NULL REFERENCES projects(name)`、`session_id TEXT NOT NULL REFERENCES sessions(session_id)`、`position INTEGER NOT NULL CHECK (position BETWEEN 0 AND 2)`；主键 `(project, session_id)`，唯一 `(project, position)`。按项目保存最多三位优先 leader 的顺序；不可见项保留在表中，展示时只对仍显示的 leader 连续编号，归档撤销后自然恢复。连接数据库时通过 `CREATE TABLE IF NOT EXISTS` 创建 |
+| `leader_pins` | `project TEXT NOT NULL REFERENCES projects(name)`、`session_id TEXT NOT NULL REFERENCES sessions(session_id)`；主键 `(project, session_id)`。按项目保存置顶的 leader；置顶的排在前面，各自内部按 `leader_order` 排序。不可见项保留在表中，归档撤销后仍置顶。旧库的 `leader_priority`（最多三位优先）在连接时一次性转成置顶并删除 |
 | `project_themes` | `project TEXT PRIMARY KEY REFERENCES projects(name)`、`theme TEXT NOT NULL`、`assigned_at TEXT NOT NULL`；每项目一套主题，独立新表，不改变 `projects` |
 
 `decision_holds` 是已停用的挂起标记：表仍由 `schema.sql` 创建，旧数据原样保留（storage_v2 包往返仍带 `held_at`），业务代码不再读写；`board.decisions` 不再返回 `held`，所有未答题都是普通待拍板。
@@ -325,8 +325,7 @@ PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stder
 | `POST /api/group/close` | group、with_members；均不停止进程 |
 | `POST /api/answer` | id、text；保存后给提问者的 leader 排通知（来源 web），返回 `routed_to` |
 | `POST /api/spawn` | name、task、可选 group / role / cwd / new_worktree / base / model / effort；未给的模型与 effort 分别继承组 leader |
-| `POST /api/leaders/order` | project、order（当前项目左栏全部 leader 的 session_id 数组）；保存拖动顺序，重复、非本项目可见 leader 或缺少 leader 时返回 400 并说明原因 |
-| `POST /api/leaders/priority` | project、ranks（0～3 个 session_id 的完整新顺序）；首位为第 1 优先。重复、超过三个、非本项目当前显示的 leader 或项目不一致返回 400。`/api/state` 每个 leader 带 `priority: 1 / 2 / 3 / null`；归档、删除、结束项不展示，后面的有效级别依次补位。优先标记仅供用户查看，不传给 leader |
+| `POST /api/leaders/order` | project、order（当前项目左栏全部 leader 的 session_id 数组）、可选 pinned（其中置顶的 session_id 数组，给出时整体替换当前显示 leader 的置顶状态）；保存拖动顺序与置顶，重复、非本项目可见 leader 或缺少 leader 时返回 400 并说明原因。`/api/state` 每个 leader 带 `pinned: true / false`，置顶的排在前面 |
 | `POST /api/leader` | name、task（成员可选）、可选 model / effort；起 leader，null 为账号默认 |
 | `POST /api/wake` | name 或 session_id、text、调用者会话 id；叫醒离线组员，返回 ok / session_id / name / address；leader 找另一个 leader 时返回排通知结果 |
 | `GET /api/channel?project=P&before=ID&limit=N` | 按项目分页拉取交流区，before 可省略；返回 `messages`、`has_more`、`latest_id`、`digest`（当前卡及 `total_message_count`，无卡为 null）。每条含 `id`、`project`、`speaker_session_id`、`speaker_name`、`body`、`mentions`（`session_id` / `name` 数组）、`created_at`，页内按时间正序 |

@@ -87,7 +87,7 @@ test_member_native_binding
 test_native_replacement
 test_member_turn_result
 test_leader_order
-test_leader_priority
+test_leader_pins
 test_leader_trust_cli
 test_trust_mode
 test_workspace_settings

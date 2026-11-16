@@ -19,7 +19,7 @@ function harness(snapshot){
     sidebar:(next=snapshot,member=null)=>sandbox.window.ui.sidebar(next,member),node:(next=snapshot)=>sandbox.window.ui.node(next)};
 }
 const person=(id,extra={})=>({session_id:id,name:id,status:"offline",runtime:"codex",where:"offline",busy:false,
-  running:false,active_goal_id:null,context:null,applied:null,model:null,effort:null,codex:[],priority:null,
+  running:false,active_goal_id:null,context:null,applied:null,model:null,effort:null,codex:[],pinned:false,
   task:null,goal:"leader 的任务",pending:0,comments_count:0,...extra});
 const state=(leaders,members=[])=>({project:{name:"fixture"},leaders,members,decisions:[],todos:[],goals:[{id:"g1"},{id:"g2"},{id:"g3"}],
   runtimes:[{id:"codex",name:"Codex",models:[],efforts:[]},{id:"claude",name:"Claude Code",models:[],efforts:[]}]});
@@ -73,7 +73,7 @@ test("state refresh updates both the count and rows without mutating server snap
 
 test("a silent or waiting leader shows its working members in the sidebar and architecture without pretending to work itself",()=>{
   for(const runtime of ["claude","codex"])for(const status of ["idle","waiting","offline"]){
-    const snapshot=state([person("leader",{runtime,status,priority:1,pending:1,unread:2}),person("other")],
+    const snapshot=state([person("leader",{runtime,status,pinned:true,pending:1,unread:2}),person("other")],
       [person("worker",{runtime:runtime==="codex"?"claude":"codex",status:"working",leader_session_id:"leader"}),
        person("waiting",{status:"waiting",busy:true,leader_session_id:"leader"}),
        person("someone-else",{status:"working",leader_session_id:"other"})]);

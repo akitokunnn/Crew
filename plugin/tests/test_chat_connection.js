@@ -525,7 +525,7 @@ test("terminal turns without a tool result remain explicitly unknown, and do not
 test("starting a queued goal retains the leader transcript, stream, draft and reading position",async()=>{
   const h=harness(),nodes=new Map(),calls=[];
   let execution=null;
-  const person={session_id:"leader",name:"测试负责人",runtime:"codex",model:null,effort:null,busy:false,last_seq:0,activity:null,where:"bg",priority:null,status:"idle",codex:[]};
+  const person={session_id:"leader",name:"测试负责人",runtime:"codex",model:null,effort:null,busy:false,last_seq:0,activity:null,where:"bg",pinned:false,status:"idle",codex:[]};
   const goal={assignments:[],work_summary:{total:0,done:0},decision_mode:{mode:"human"},now_doing:[],pending_decision:null,working_count:0,last_activity_at:"2026-11-05T00:00:00Z",supplements_after_report:[],id:"goal",leader_session_id:"leader",title:"真实目标",request:"推进并交付",acceptance:[],status:"queued",current_round:1,requirement_version:1,version:1};
   const state={project:{name:"fixture"},leaders:[person],members:[],decisions:[],todos:[],goals:[goal],runtimes:[{id:"codex",name:"Codex",available:true,models:[],efforts:[]}]};
   const main=host();nodes.set("main",main);

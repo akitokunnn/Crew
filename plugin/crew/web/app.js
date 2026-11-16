@@ -238,39 +238,21 @@
       return `<div class="qq-status ${esc(channel.state)}" role="status"${hint ? ` title="${esc(hint)}"` : ""}><div class="qq-state"><i></i>${esc(channel.name)} · ${esc(labels[channel.state] || channel.state)}</div>${hint ? `<div class="qq-detail">${esc(hint)}</div>` : ""}</div>`;
     }).join("");
   }
-  const priorityLeaders = () => state.leaders.filter(item => item.priority !== null).sort((a, b) => a.priority - b.priority);
-  const priorityIds = () => priorityLeaders().map(item => item.session_id);
-  const sortableLeaders = item => item.priority === null ? state.leaders.filter(leader => leader.priority === null) : priorityLeaders();
-  const priorityAttrs = item => item.priority === null ? "" : `data-level="${item.priority}"`;
-  const priorityBadge = (rank, corner = false) => rank === null ? "" : `<span class="priority-mark ${corner ? "corner" : ""}" data-level="${rank}" title="第 ${rank} 优先"><span class="rank">${rank}</span></span>`;
-  function decisionPriority(item) {
-    const owner = leader(item.leader_session_id);
-    return owner === undefined ? null : owner.priority;
-  }
-  async function savePriority(ranks, before) {
-    const evicted = before.find(id => !ranks.includes(id));
-    const inserted = ranks.some(id => !before.includes(id));
-    const evictedName = evicted === undefined ? null : leader(evicted).name;
+  // Pinned leaders come first (the backend sorts them); each part keeps its own order.
+  const pinnedIds = () => state.leaders.filter(item => item.pinned).map(item => item.session_id);
+  const sortableLeaders = item => state.leaders.filter(leader => leader.pinned === item.pinned);
+  async function saveLeaders(pinned, normal) {
     leaderOrderSaving = true;
-    try {
-      await api("/api/leaders/priority", {project:state.project.name, ranks});
-      if (inserted && evicted !== undefined) toast(`${evictedName} 已移出优先`, async () => {
-        await api("/api/leaders/priority", {project:state.project.name, ranks:before});
-        await loadState(true); toast("已撤销");
-      });
-    } finally { leaderOrderSaving = false; await loadState(true); }
-  }
-  async function saveNormalOrder(ids) {
-    const normal = ids.slice(), order = state.leaders.map(item => item.priority === null ? normal.shift() : item.session_id);
-    leaderOrderSaving = true;
-    try { await api("/api/leaders/order", {project:state.project.name, order}); }
+    try { await api("/api/leaders/order", {project:state.project.name, order:[...pinned, ...normal], pinned}); }
     finally { leaderOrderSaving = false; await loadState(true); }
   }
-  function setPriority(id, rank) {
-    const before = priorityIds(), ranks = before.filter(sid => sid !== id);
-    if (rank !== 0) ranks.splice(rank - 1, 0, id);
-    return savePriority(ranks.slice(0, 3), before);
+  async function setPinned(id, pinned) {
+    const top = pinnedIds().filter(sid => sid !== id), rest = state.leaders.map(item => item.session_id).filter(sid => sid !== id && !top.includes(sid));
+    await (pinned ? saveLeaders([id, ...top], rest) : saveLeaders(top, [id, ...rest]));
+    toast(pinned ? `已置顶「${leader(id).name}」` : `已取消置顶「${leader(id).name}」`);
   }
+  const pinIcon = '<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3h6l-1 6 4 4v2H6v-2l4-4-1-6Zm3 12v6"/></svg>';
+  const pinButton = item => `<button type="button" class="leader-pin" data-act="leader-pin" data-id="${esc(item.session_id)}" aria-pressed="${item.pinned}" title="${item.pinned ? "取消置顶" : "置顶"}" aria-label="${item.pinned ? "取消置顶" : "置顶"}「${esc(item.name)}」">${pinIcon}</button>`;
   // A leader is mainly a conversation: its mark is one dot for unread replies. Decisions, approvals and
   // acceptance are counted on the workspace home, not on each leader.
   const leaderUnread = item => item.unread > 0;
@@ -301,7 +283,7 @@
     // A member conversation stays inside its leader's group: that leader keeps a quieter selection and its tasks.
     const inGroup = view === "chat" && leaderId === item.session_id, selected = inGroup && readOnlyId === null;
     const work = groupWork(item), unread = leaderUnread(item);
-    return `<div draggable="true" class="leader-row session-surface ${selected ? "active" : inGroup ? "in-group" : ""}" data-act="leader" data-id="${esc(item.session_id)}" aria-label="${esc(item.name)}${unread ? "，有未读消息" : ""}" ${selected ? 'aria-current="page"' : ""}>${sessionOpen(item.session_id,"leader",item.name,selected)}${groupAvatar(item,work)}<span class="meta"><span class="leader-row-name"><strong>${esc(item.name)}</strong>${contextRing(item)}${trustMark(item)}${unread ? '<span class="leader-unread-dot" title="有未读消息"></span>' : ""}</span><span class="leader-row-sub">${item.goal === null ? "" : `<span class="goal" title="${esc(item.goal)}">${esc(item.goal)}</span>`}${work.active ? groupWorkLabel(work, true) : st(item.status)}</span>${leaderBranches(item)}</span></div>${inGroup ? CrewGoals.leaderTasks(state.goals.filter(task => task.leader_session_id === item.session_id), goalId) : ""}`;
+    return `<div draggable="true" class="leader-row session-surface${item.pinned ? " pinned" : ""} ${selected ? "active" : inGroup ? "in-group" : ""}" data-act="leader" data-id="${esc(item.session_id)}" aria-label="${esc(item.name)}${unread ? "，有未读消息" : ""}" ${selected ? 'aria-current="page"' : ""}>${sessionOpen(item.session_id,"leader",item.name,selected)}${groupAvatar(item,work)}<span class="meta"><span class="leader-row-name"><strong>${esc(item.name)}</strong>${contextRing(item)}${trustMark(item)}${unread ? '<span class="leader-unread-dot" title="有未读消息"></span>' : ""}</span><span class="leader-row-sub">${item.goal === null ? "" : `<span class="goal" title="${esc(item.goal)}">${esc(item.goal)}</span>`}${work.active ? groupWorkLabel(work, true) : st(item.status)}</span>${leaderBranches(item)}</span>${pinButton(item)}</div>${inGroup ? CrewGoals.leaderTasks(state.goals.filter(task => task.leader_session_id === item.session_id), goalId) : ""}`;
   }
   function setLeadersOpen(open, remember = true) {
     leadersOpen = open;
@@ -339,7 +321,7 @@
     const railButton = (act,label,icon,extra="",active=false) => `<button type="button" class="rail-button ${active ? "active" : ""}" data-act="${act}" title="${label}" aria-label="${label}" ${extra}>${ic(icon)}</button>`;
     replace($("sidebar"), `<a class="rail-brand" href="/" title="${esc(projectDisplay(state.project))}" aria-label="${esc(projectDisplay(state.project))} · 工作区">${CrewTheme.logo()}</a><button type="button" id="leader-entry" class="rail-button leader-entry" data-act="leaders-toggle" title="Leader${unread ? " · 有未读消息" : ""}" aria-label="Leader${unread ? "，有未读消息" : ""}" aria-controls="leader-panel" aria-expanded="${leadersOpen}">${ic("team")}${unread ? '<span class="rail-dot" aria-hidden="true"></span>' : ""}</button><div class="rail-divider"></div><span class="rail-home">${railButton("view","主页","grid",'data-view="all"',view === "all")}${homeAttention ? `<span class="rail-badge" aria-label="${homeAttention} 件待你处理">${homeAttention}</span>` : ""}</span><a class="rail-button" href="/notes.html" title="想法墙" aria-label="想法墙">${ic("pencil")}</a><a class="rail-button" href="/assistant.html" title="全局助手" aria-label="全局助手">${ic("msg")}</a><span class="rail-git">${railButton("view","Git","branch",'data-view="git"',view === "git")}${state.git_assistant?.attention > 0 ? `<span class="rail-badge">${state.git_assistant?.attention}</span>` : ""}</span><span class="rail-space"></span>${railButton("theme",`日间 / 夜间 · ${themeName}`,themeIcon)}<button type="button" id="presence-entry" class="rail-button presence-entry ${flash ? "presence-flash" : ""}" data-act="presence-toggle" title="${state.notification.away ? "我已离开" : "我在这里"}" aria-label="在场与消息连接" aria-controls="presence-popover" aria-expanded="${presenceOpen}"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 13h12v4H6zM7 17v5m10-5v5M5 7v6m14-6v6"/>${state.notification.away ? '<path d="M8 4h8v9"/>' : '<circle cx="12" cy="4" r="2"/><path d="M9 12V9a3 3 0 0 1 6 0v3"/>'}</svg><i class="presence-dot ${connection}"></i></button>${railButton("settings","设置","settings",'data-local-control')}
       <section id="presence-popover" class="presence-popover" aria-label="在场与消息连接" ${presenceOpen ? "" : "hidden"}><button class="switch ${state.notification.manual_away ? "on" : ""}" data-act="away" role="switch" aria-checked="${state.notification.manual_away}"><span class="track"></span><span>我已离开</span></button>${notificationChannel()}${state.notification.error === null ? "" : `<p class="error-line">${esc(state.notification.error)}</p>`}<button class="text-link" data-local-control data-act="connection-settings">连接设置 ›</button></section>`);
-    replace($("leader-panel"), `<div class="leader-panel-content"><header class="leader-panel-head"><h2>Leader</h2><span>${leaders.length} 位组长</span></header><button class="leader-panel-channel" data-act="view" data-view="channel">${ic("msg")}Leader 交流区 <span>›</span>${state.channel.unread ? `<span class="b-unread">${state.channel.unread}</span>` : ""}</button><div class="leader-panel-leaders"><section data-leader-zone="priority">${leaders.filter(item => item.priority !== null).sort((a,b) => a.priority-b.priority).map(sidebarLeader).join("")}</section><section data-leader-zone="normal">${leaders.filter(item => item.priority === null).map(sidebarLeader).join("")}</section><button class="leader-panel-new btn ghost" data-act="modal-leader">＋ 新对话</button></div><button class="leader-panel-quota" data-act="view" data-view="usage" aria-label="查看完整额度和用量">${railQuota("Claude",state.limits.claude.seven_day)}${railQuota("Codex",state.limits.codex)}</button></div>`);
+    replace($("leader-panel"), `<div class="leader-panel-content"><header class="leader-panel-head"><h2>Leader</h2><span>${leaders.length} 位组长</span></header><button class="leader-panel-channel" data-act="view" data-view="channel">${ic("msg")}Leader 交流区 <span>›</span>${state.channel.unread ? `<span class="b-unread">${state.channel.unread}</span>` : ""}</button><div class="leader-panel-leaders"><section class="leader-zone-pinned ${leaders.some(item => item.pinned) ? "" : "empty"}" data-leader-zone="pinned" aria-label="置顶 leader"><div class="leader-zone-label">${pinIcon}<span>置顶</span><em>拖到这里置顶</em></div>${leaders.filter(item => item.pinned).map(sidebarLeader).join("")}</section><section data-leader-zone="normal">${leaders.filter(item => !item.pinned).map(sidebarLeader).join("")}</section><button class="leader-panel-new btn ghost" data-act="modal-leader">＋ 新对话</button></div><button class="leader-panel-quota" data-act="view" data-view="usage" aria-label="查看完整额度和用量">${railQuota("Claude",state.limits.claude.seven_day)}${railQuota("Codex",state.limits.codex)}</button></div>`);
     $("leader-panel").dataset.open = String(leadersOpen); $("leader-panel").inert = !leadersOpen;
   }
   function clearLeaderDrop() {
@@ -379,17 +361,16 @@
     const zone = event.target.closest('#leader-panel [data-leader-zone]');
     if (zone === null) return;
     event.preventDefault();
-    const id = leaderDrag.dataset.id, source = leaderDrag.closest('[data-leader-zone]').dataset.leaderZone;
+    const id = leaderDrag.dataset.id;
     const target = zone.dataset.leaderZone, item = event.target.closest('[data-act="leader"]');
     if (item === leaderDrag) { finishLeaderDrag(); renderSidebar(); return; }
-    const before = priorityIds(), after = item !== null && item.classList.contains("drop-after");
+    const after = item !== null && item.classList.contains("drop-after");
     const ids = [...zone.querySelectorAll('[data-act="leader"]')].map(item => item.dataset.id).filter(sid => sid !== id);
     const index = item === null ? ids.length : ids.indexOf(item.dataset.id) + (after ? 1 : 0);
     ids.splice(index, 0, id);
     finishLeaderDrag();
-    if (target === "priority") action("leader-order", () => savePriority(ids.slice(0, 3), before));
-    else if (source === "priority") action("leader-order", () => savePriority(before.filter(sid => sid !== id), before));
-    else action("leader-order", () => saveNormalOrder(ids));
+    if (target === "pinned") action("leader-order", () => saveLeaders(ids, state.leaders.map(item => item.session_id).filter(sid => !ids.includes(sid))));
+    else action("leader-order", () => saveLeaders(pinnedIds().filter(sid => sid !== id), ids));
   });
   document.addEventListener("dragend", () => {
     if (leaderDrag === null) return;
@@ -427,7 +408,7 @@
     const missing = !brief || !brief.why_user || options.some(option => !option.consequence) || (item.recommendation && !brief.recommendation_reason);
     const context = brief ? brief.context : item.question;
     const longBrief = brief && ([brief.why_user, brief.recommendation_reason, brief.impact, ...options.flatMap(option => [option.label, option.consequence])].some(value => Array.from(String(value || "")).length > 280) || options.some(option => Array.from(option.label).length > 140));
-    return `<article class="dc decision-card" data-dc="${item.id}"><div class="dc-head"><div class="dc-top">${av(item.asker, 22, true)}<h3 class="q">${CrewChat.renderInline(title, item.session_id)}</h3>${priorityBadge(decisionPriority(item))}<span class="from">${esc(item.asker)}</span></div></div><div class="decision-summary">${brief?.why_user ? `<p class="decision-why"><span>为什么需要你</span>${decisionPreview(brief.why_user, item.session_id)}</p>` : '<p class="decision-missing">缺少说明：还没说清为什么需要你来决定。</p>'}${brief?.recommendation_reason ? `<div class="decision-recommendation"><strong>${recommended ? `建议：${decisionPreview(recommended.label, item.session_id, 140)}` : "推荐理由"}</strong><p>${decisionPreview(brief.recommendation_reason, item.session_id)}</p></div>` : ""}${brief?.impact ? `<p class="decision-impact"><span>影响</span>${decisionPreview(brief.impact, item.session_id)}</p>` : ""}${missing ? `<div class="decision-clarify"><span>这张卡的说明还不完整</span><button type="button" class="btn ghost" data-act="decision-clarify" data-id="${item.id}">让 leader 说明白</button></div>` : ""}</div><div class="dc-body"><div class="opts">${options.map(option => `<button class="opt ${option.recommended ? "recommended" : ""}" data-act="answer-option" data-id="${item.id}" data-option="${option.index}"><span class="t"><strong>${decisionPreview(option.label, item.session_id, 140)}</strong><small class="${option.consequence ? "" : "missing-consequence"}">${option.consequence ? decisionPreview(option.consequence, item.session_id) : "尚未说明这个选择的结果"}</small></span>${option.recommended ? '<span class="rec">推荐</span>' : ""}</button>`).join("")}</div><form class="free" data-answer-form="${item.id}"><input data-preserve="answer-${item.id}" name="answer" placeholder="或者直接说你的想法，回车发送" required aria-label="答复 ${esc(item.asker)}"><button class="icon-btn" type="submit" title="发送答复">${ic("check", "sm")}</button></form>${context || !brief || longBrief ? `<details class="decision-context" data-decision-context="${item.id}" ${opened ? "open" : ""}><summary>${brief ? longBrief ? "完整说明与技术背景" : "技术背景" : "查看原文和原选项"}</summary><div class="markdown">${longBrief ? decisionLongExplanation(item, options) : ""}${context ? CrewChat.renderMarkdown(context, item.session_id) : ""}${brief ? "" : `<ul>${(item.options || []).map(option => `<li>${CrewChat.renderInline(option, item.session_id)}</li>`).join("")}</ul>`}</div></details>` : ""}</div></article>`;
+    return `<article class="dc decision-card" data-dc="${item.id}"><div class="dc-head"><div class="dc-top">${av(item.asker, 22, true)}<h3 class="q">${CrewChat.renderInline(title, item.session_id)}</h3><span class="from">${esc(item.asker)}</span></div></div><div class="decision-summary">${brief?.why_user ? `<p class="decision-why"><span>为什么需要你</span>${decisionPreview(brief.why_user, item.session_id)}</p>` : '<p class="decision-missing">缺少说明：还没说清为什么需要你来决定。</p>'}${brief?.recommendation_reason ? `<div class="decision-recommendation"><strong>${recommended ? `建议：${decisionPreview(recommended.label, item.session_id, 140)}` : "推荐理由"}</strong><p>${decisionPreview(brief.recommendation_reason, item.session_id)}</p></div>` : ""}${brief?.impact ? `<p class="decision-impact"><span>影响</span>${decisionPreview(brief.impact, item.session_id)}</p>` : ""}${missing ? `<div class="decision-clarify"><span>这张卡的说明还不完整</span><button type="button" class="btn ghost" data-act="decision-clarify" data-id="${item.id}">让 leader 说明白</button></div>` : ""}</div><div class="dc-body"><div class="opts">${options.map(option => `<button class="opt ${option.recommended ? "recommended" : ""}" data-act="answer-option" data-id="${item.id}" data-option="${option.index}"><span class="t"><strong>${decisionPreview(option.label, item.session_id, 140)}</strong><small class="${option.consequence ? "" : "missing-consequence"}">${option.consequence ? decisionPreview(option.consequence, item.session_id) : "尚未说明这个选择的结果"}</small></span>${option.recommended ? '<span class="rec">推荐</span>' : ""}</button>`).join("")}</div><form class="free" data-answer-form="${item.id}"><input data-preserve="answer-${item.id}" name="answer" placeholder="或者直接说你的想法，回车发送" required aria-label="答复 ${esc(item.asker)}"><button class="icon-btn" type="submit" title="发送答复">${ic("check", "sm")}</button></form>${context || !brief || longBrief ? `<details class="decision-context" data-decision-context="${item.id}" ${opened ? "open" : ""}><summary>${brief ? longBrief ? "完整说明与技术背景" : "技术背景" : "查看原文和原选项"}</summary><div class="markdown">${longBrief ? decisionLongExplanation(item, options) : ""}${context ? CrewChat.renderMarkdown(context, item.session_id) : ""}${brief ? "" : `<ul>${(item.options || []).map(option => `<li>${CrewChat.renderInline(option, item.session_id)}</li>`).join("")}</ul>`}</div></details>` : ""}</div></article>`;
   }
   function sideDecision(item) {
     const title = item.brief?.title || compactDecisionText(item.question);
@@ -455,7 +436,7 @@
   }
   function leaderNode(item, clickable) {
     const work = groupWork(item);
-    return `<div class="session-node leader-unit"><${clickable ? "button" : "div"} class="node ${clickable ? "click" : ""} leader-node ${item.priority === null ? "" : "priority"}" ${priorityAttrs(item)} ${clickable ? `data-act="leader" data-session-menu="${esc(item.session_id)}" data-id="${esc(item.session_id)}"` : ""}>${priorityBadge(item.priority, true)}<span class="node-top">${groupAvatar(item, work)}<span class="nm">${esc(item.name)}<span class="tag" style="background:var(--hover);color:var(--text-3)">leader</span>${runtimeBadge(item)}</span>${item.pending > 0 ? `<span class="b-pending" style="margin-left:auto">${item.pending}</span>` : st(item.status)}</span><span class="leader-work-summary">${groupWorkLabel(work)}</span><span class="now" style="margin-left:39px">${CrewChat.renderInline(item.goal, item.session_id)}</span>${codexList(item)}</${clickable ? "button" : "div"}></div>`;
+    return `<div class="session-node leader-unit"><${clickable ? "button" : "div"} class="node ${clickable ? "click" : ""} leader-node" ${clickable ? `data-act="leader" data-session-menu="${esc(item.session_id)}" data-id="${esc(item.session_id)}"` : ""}><span class="node-top">${groupAvatar(item, work)}<span class="nm">${esc(item.name)}${item.pinned ? `<span class="pin-mark" title="已置顶">${pinIcon}</span>` : ""}<span class="tag" style="background:var(--hover);color:var(--text-3)">leader</span>${runtimeBadge(item)}</span>${item.pending > 0 ? `<span class="b-pending" style="margin-left:auto">${item.pending}</span>` : st(item.status)}</span><span class="leader-work-summary">${groupWorkLabel(work)}</span><span class="now" style="margin-left:39px">${CrewChat.renderInline(item.goal, item.session_id)}</span>${codexList(item)}</${clickable ? "button" : "div"}></div>`;
   }
   function workingRow(item) {
     const isLeader = leader(item.session_id) !== undefined;
@@ -692,7 +673,7 @@
     else if (allTab === "native-approvals") body = `<div class="native-approval-list">${nativeApprovals?.markup() || empty("没有等待你确认的执行权限")}</div>`;
     else if (allTab === "pending") {
       const grouped = new Set();
-      body = state.leaders.slice().sort((a, b) => (a.priority === null ? 4 : a.priority) - (b.priority === null ? 4 : b.priority)).map(item => { const list = decisionsOf(item.session_id); list.forEach(item => grouped.add(item.id)); return list.length === 0 ? "" : `<section class="ov-group"><div class="ov-head">${av(item.name, 26)}<span class="ov-name">${esc(item.name)}</span><span class="ov-count">${list.length} 件</span><button class="btn ghost ov-go" data-act="leader" data-id="${esc(item.session_id)}">进入对话 ${ic("right", "sm")}</button></div><div class="ov-list">${list.map(decisionCard).join("")}</div></section>`; }).join("");
+      body = state.leaders.map(item => { const list = decisionsOf(item.session_id); list.forEach(item => grouped.add(item.id)); return list.length === 0 ? "" : `<section class="ov-group"><div class="ov-head">${av(item.name, 26)}<span class="ov-name">${esc(item.name)}</span><span class="ov-count">${list.length} 件</span><button class="btn ghost ov-go" data-act="leader" data-id="${esc(item.session_id)}">进入对话 ${ic("right", "sm")}</button></div><div class="ov-list">${list.map(decisionCard).join("")}</div></section>`; }).join("");
       const ungrouped = pending.filter(item => !grouped.has(item.id));
       if (ungrouped.length > 0) body += `<section class="ov-group"><div class="ov-head"><span class="ov-name">未分组</span><span class="ov-count">${ungrouped.length} 件</span></div><div class="ov-list">${ungrouped.map(decisionCard).join("")}</div></section>`;
       if (pending.length === 0) body = empty("没有等你拍板的事");
@@ -784,7 +765,7 @@
     const isLeader = state.leaders.includes(item), stopReason = item.where !== "bg" ? item.where === "vscode" ? "开在 VS Code 里，去那边停" : "会话没在运行" : !compactBusy(item) ? "这一轮没在工作" : "";
     const compactReason = item.where === "vscode" ? "请在原工具里输入 /compact" : "";
     const btn = (act, label, reason = "", danger = false, extra = "") => menuButton(item, act, label, reason, danger, extra);
-    let html = isLeader ? btn("leader", "打开对话") + btn("dispatch-history", "临时协作记录") : btn("member-history", "进入本人对话") + btn("card", "资料与操作") + btn("open-vscode", "在 VS Code 打开", editorHandoffReason(item) || (item.status === "working" ? "会话正在工作，请等它空闲后再打开" : ""));
+    let html = isLeader ? btn("leader", "打开对话") + btn("leader-pin", item.pinned ? "取消置顶" : "置顶") + btn("dispatch-history", "临时协作记录") : btn("member-history", "进入本人对话") + btn("card", "资料与操作") + btn("open-vscode", "在 VS Code 打开", editorHandoffReason(item) || (item.status === "working" ? "会话正在工作，请等它空闲后再打开" : ""));
     if (runtimeSwitch) html += btn("runtime-switch", "更换执行工具…", runtimeSwitch.reason(item));
     html += btn("stop", "停下这一轮", stopReason) + btn("compact", "压缩上下文", compactReason) + submenu(item, "模型和 effort", modelMenu(item)) + btn("session-rename", "改名");
     if (isLeader) {
@@ -792,7 +773,6 @@
       html += submenu(item, "leader 决策方式", [["human","由我拍板"],["autonomous","自主推进"]].map(([mode,label]) => `<button type="button" role="menuitemradio" aria-checked="${Boolean(item.trust?.enabled) === (mode === "autonomous")}" data-act="leader-mode" data-id="${esc(item.session_id)}" data-mode="${mode}">${label}</button>`).join(""));
       html += btn("compact-department", "压缩整个部门…");
       const siblings = sortableLeaders(item), index = siblings.indexOf(item), members = membersOf(item.session_id), busy = members.filter(compactBusy).length;
-      html += submenu(item, "设为优先", [1, 2, 3, 0].map(rank => `<button role="menuitemradio" aria-checked="${item.priority === (rank === 0 ? null : rank)}" data-act="set-priority" data-id="${esc(item.session_id)}" data-rank="${rank}"><span class="model-check">${item.priority === (rank === 0 ? null : rank) ? ic("check", "sm") : ""}</span>${rank === 0 ? "取消优先" : `第 ${rank} 优先`}</button>`).join(""));
       html += btn("leader-up", "上移", index === 0 ? "已经在最上面" : "") + btn("leader-down", "下移", index === siblings.length - 1 ? "已经在最下面" : "") + btn("group-tree", "看本组架构图") + btn("open-vscode", "转到 VS Code 里聊", editorHandoffReason(item) || (compactBusy(item) ? "会话正在工作，请等它空闲后再打开" : ""));
       html += submenu(item, "结束这个 leader", members.length === 0 ? btn("close-group", "结束（组里没有下属）", "", true, 'data-with-members="false"') : btn("close-group", `<span>连下属一起归档<small>连 ${members.length} 个下属一起归档，其中 ${busy} 个在干活</small></span>`, "", true, 'data-with-members="true"') + btn("close-group", `<span>只结束 leader，下属退回待收编<small>${members.length} 个下属退回待收编，其中 ${busy} 个在干活</small></span>`, "", true, 'data-with-members="false"'), true) + btn("delete-session", "删除…", "", true);
     } else {
@@ -1292,12 +1272,11 @@
       else if (act === "look-color-reset" && lookDraft) { lookDraft.color = null; renderLeaderSettings(); }
       else if (act === "look-avatar-remove" && lookDraft) { if (lookDraft.preview) URL.revokeObjectURL(lookDraft.preview); lookDraft.avatar = null; lookDraft.preview = null; lookDraft.note = ""; renderLeaderSettings(); }
       else if (act === "group-tree") { if (cardId !== null) closeCard(); navigate("chat", id); rightOpen = true; renderRight(); syncSidecar(); }
-      else if (act === "set-priority") action("leader-order", () => setPriority(id, Number(button.dataset.rank)));
+      else if (act === "leader-pin") { hideMenu(); action("leader-order", () => setPinned(id, !leader(id).pinned)); }
       else if (act === "leader-up" || act === "leader-down") action("leader-order", async () => {
-        const item = leader(id), order = sortableLeaders(item).map(item => item.session_id), before = order.slice(), index = order.indexOf(id), other = index + (act === "leader-up" ? -1 : 1);
+        const item = leader(id), order = sortableLeaders(item).map(item => item.session_id), index = order.indexOf(id), other = index + (act === "leader-up" ? -1 : 1);
         [order[index], order[other]] = [order[other], order[index]];
-        if (item.priority === null) await saveNormalOrder(order);
-        else await savePriority(order, before);
+        await (item.pinned ? saveLeaders(order, state.leaders.filter(item => !item.pinned).map(item => item.session_id)) : saveLeaders(pinnedIds(), order));
       });
       else if (act === "close-group") action(`group:${id}`, async () => {
         const group = leader(id).name, result = await api("/api/group/close", {group, with_members:button.dataset.withMembers === "true"});

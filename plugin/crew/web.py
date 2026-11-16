@@ -807,10 +807,10 @@ class Service:
         builtin_ids = {session['session_id'] for session in sessions if git_admin.is_builtin(session, git_config)}
         result['leaders'] = board.sort_leaders(conn, name, [leader for leader in leader_cards
                                                          if leader['session_id'] not in builtin_ids])
-        priorities = board.leader_priorities(conn, name, result['leaders'])
+        pinned = board.pinned_leaders(conn, name)
         for leader in leader_cards:
             sid = leader['session_id']
-            leader['priority'] = priorities.get(sid)
+            leader['pinned'] = sid in pinned
             if git_config is not None and git_config['admin_session_id'] == sid:
                 result['git_assistant'] = git_admin.assistant_state(
                     conn, git_config, leader, decisions, builtin=sid in builtin_ids)
@@ -1238,7 +1238,7 @@ class Service:
                 if type(data.get('away')) is not bool:
                     raise ValueError('离开状态必须是 true 或 false')
                 return self.set_away(data['away'])
-            if path in ('/api/channel', '/api/channel/read', '/api/channel/digest', '/api/project/theme', '/api/leaders/order', '/api/leaders/priority', '/api/documents', '/api/documents/pin', '/api/documents/refresh', '/api/native-approval') and 'project' in data:
+            if path in ('/api/channel', '/api/channel/read', '/api/channel/digest', '/api/project/theme', '/api/leaders/order', '/api/documents', '/api/documents/pin', '/api/documents/refresh', '/api/native-approval') and 'project' in data:
                 body_project = _text(data, 'project')
                 if project_name is not None and body_project != project_name:
                     raise board.BoardError('请求正文和地址中的项目不一致')
@@ -1353,10 +1353,7 @@ class Service:
                                               reply_to=data.get('reply_to'))
             if path == '/api/leaders/order':
                 _text(data, 'project')
-                return board.set_leader_order(conn, project, data.get('order'))
-            if path == '/api/leaders/priority':
-                _text(data, 'project')
-                return board.set_leader_priority(conn, project, data.get('ranks'))
+                return board.set_leader_order(conn, project, data.get('order'), data.get('pinned'))
             if path == '/api/project/theme':
                 return board.set_project_theme(conn, project, _text(data, 'theme'), now=now)
             if path == '/api/channel':
@@ -1893,7 +1890,6 @@ POST_PATHS.update(('/api/session/runtime/prepare','/api/session/runtime/switch')
 POST_PATHS.update(('/api/attention/dismiss', '/api/notifications/away'))
 POST_PATHS.update(('/api/channel', '/api/channel/read', '/api/channel/digest'))
 POST_PATHS.add('/api/leaders/order')
-POST_PATHS.add('/api/leaders/priority')
 POST_PATHS.update(('/api/files/resolve', '/api/files/open', '/api/files/reveal'))
 POST_PATHS.update(('/api/documents','/api/documents/pin','/api/documents/refresh'))
 POST_PATHS.update(('/api/workspace-data/discover','/api/workspace-data/open','/api/workspace-data/export','/api/workspace-data/preview','/api/workspace-data/import','/api/workspace-data/handoff','/api/workspace-data/activate'))
