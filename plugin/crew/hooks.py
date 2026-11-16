@@ -81,6 +81,9 @@ def _goal_hook(event, data, home, plugin_root, environ, now):
             reason = None if gate['allowed'] else 'BLOCKED by Crew: ' + gate['reason']
             reason = reason or guard.discussion_write_reason(conn, execution_id, logical.get('tool_name'))
             reason = reason or guard.check(home, logical, now=now)
+            if not reason and data.get('tool_name') in guard.SHELLS:
+                reason = branch_claims.task_branch_reason(home, data['cwd'], (data.get('tool_input') or {}).get('command', ''),
+                                                          execution_id)
             if reason:
                 print(reason, file=sys.stderr)
                 return 2, None

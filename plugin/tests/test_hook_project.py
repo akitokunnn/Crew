@@ -2,6 +2,8 @@
 import tests  # Install the production-service connection guard.
 import contextlib
 import io
+from pathlib import Path
+import subprocess
 import unittest
 
 from crew import board, goals, guard, hooks, rules
@@ -93,6 +95,15 @@ class RegisteredProjectTests(CoreCase):
         self.assertIn("文件归属", reason)
 
 
+def init_repo(root):
+    hooks = Path(root).parent / 'empty-git-hooks'
+    hooks.mkdir(exist_ok=True)
+    for args in (('init',), ('config', 'core.hooksPath', str(hooks)), ('config', 'user.name', 'Task Branch Fixture'),
+                 ('config', 'user.email', 'task-branch@example.invalid'), ('config', 'commit.gpgsign', 'false'),
+                 ('commit', '--allow-empty', '-m', 'initial')):
+        subprocess.run(['git', '-C', str(root), *args], check=True, capture_output=True, timeout=20)
+
+
 class ClaudeBranchClaimTests(CoreCase):
     def setUp(self):
         super().setUp()
@@ -157,6 +168,20 @@ class ClaudeBranchClaimTests(CoreCase):
                     self.assertIsNone(self.conn.execute('SELECT 1 FROM sessions WHERE session_id=?', (native,)).fetchone())
                     expected.append({'project': 'demo', 'branch': name, 'session_id': sid, 'goal_id': goal['id']})
         self.assertEqual(self.claims(), sorted(expected, key=lambda row: row['branch']))
+
+    def test_goal_execution_cannot_open_a_second_task_branch(self):
+        init_repo(self.root)
+        _, execution, native = self.execution('s1')
+        self.assertEqual(self.goal_hook(execution, native, 'Bash', 'git branch feature/task'), (0, None))
+        subprocess.run(['git', '-C', str(self.root), 'branch', 'feature/task'], check=True, capture_output=True, timeout=20)
+        for tool in ('Bash', 'PowerShell'):
+            with self.subTest(tool=tool):
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    self.assertEqual(self.goal_hook(execution, native, tool, 'git worktree add -b feature/task-voice ../voice'),
+                                     (2, None))
+                self.assertIn('本任务已有分支 feature/task', err.getvalue())
+        self.assertEqual([row['branch'] for row in self.claims()], ['feature/task'])
 
     def test_goal_rejected_shell_and_non_shell_do_not_record(self):
         self.conn.execute('INSERT INTO git_management(project,enabled_at,base,admin_session_id) VALUES(?,?,?,?)',

@@ -117,7 +117,7 @@ class BranchClaimParseTests(unittest.TestCase):
                 self.assertEqual(branch_claims.parse(command, self.cwd), [])
 
 
-class BranchClaimRecordTests(CoreCase):
+class GitRepoCase(CoreCase):
     def setUp(self):
         super().setUp()
         hooks = self.base / 'empty-hooks'
@@ -138,6 +138,7 @@ class BranchClaimRecordTests(CoreCase):
         return [dict(row) for row in self.conn.execute(
             'SELECT project,branch,session_id,goal_id,claimed_at FROM branch_claims ORDER BY branch,session_id')]
 
+class BranchClaimRecordTests(GitRepoCase):
     def test_creation_command_records_branch_in_registered_project(self):
         worktree = self.base / 'created-tree'
         command = 'git worktree add -b created "%s"' % worktree
@@ -222,6 +223,76 @@ class BranchClaimRecordTests(CoreCase):
         self.assertEqual([(row['branch'], row['session_id']) for row in self.claims()], [('topic', 'a'), ('topic', 'a-worker')])
         board.set_status(self.conn, 'a', 'closed', now=NOW)
         self.assertEqual(record('b-worker'), ['topic'])
+
+    def test_shell_variable_is_not_recorded_as_a_branch(self):
+        self.assertEqual(branch_claims.record(self.home, 's1', str(self.root),
+                                             'b=topic; git worktree add -b "$b" ../tree', now=NOW), [])
+        self.assertEqual(self.claims(), [])
+
+
+class TaskBranchTests(GitRepoCase):
+    def setUp(self):
+        super().setUp()
+        board.join(self.conn, 's3', 'demo', 'Chief', self.root, self.root, 'main', role='leader', now=NOW)
+        board.join(self.conn, 'm1', 'demo', 'Helper', self.root, self.root, 'main', group_name='Chief', now=NOW)
+        self.goal = goals.create(self.conn, 'demo', 's3', 'One branch', 'Work on one branch', ['One branch'])
+        goals.assign(self.conn, self.goal['id'], 'm1', 'Help')
+        self.leader = goals.create_execution(self.conn, self.goal['id'], 's3', runtime='claude')
+        self.member = goals.create_execution(self.conn, self.goal['id'], 'm1', runtime='codex')
+
+    def reason(self, command, execution=None):
+        execution = self.leader if execution is None else execution
+        return branch_claims.task_branch_reason(self.home, str(self.root), command, execution['id'])
+
+    def start(self, name='feature/task'):
+        tree = self.base / 'task-tree'
+        command = 'git worktree add -b %s "%s"' % (name, tree)
+        self.assertIsNone(self.reason(command))
+        self.assertEqual(branch_claims.record(self.home, 's3', str(self.root), command,
+                                             execution_id=self.leader['id'], now=NOW), [name])
+        self.git('worktree', 'add', '-b', name, str(tree))
+        return tree
+
+    def test_first_branch_is_free_but_two_at_once_are_not(self):
+        self.assertIsNone(self.reason('git switch -c feature/task'))
+        reason = self.reason('git worktree add -b feature/a ../a && git worktree add -b feature/b ../b')
+        self.assertIn('一个任务只用一个分支', reason)
+        self.assertIn('feature/a、feature/b', reason)
+
+    def test_second_branch_of_the_task_is_blocked_for_leader_and_member(self):
+        tree = self.start()
+        for execution in (self.leader, self.member):
+            for command in ('git worktree add -b feature/task-voice ../voice', 'git checkout -b feature/task-fix',
+                            'git switch -c feature/task-rt', 'git branch feature/task-upload'):
+                with self.subTest(execution=execution['session_id'], command=command):
+                    reason = self.reason(command, execution)
+                    self.assertIn('本任务已有分支 feature/task', reason)
+                    self.assertIn(str(tree).replace('\\', '/').casefold(), reason.replace('\\', '/').casefold())
+
+    def test_task_branch_itself_and_other_commands_stay_allowed(self):
+        self.start()
+        for command in ('git checkout -B feature/task', 'git commit -m work', 'git branch -d old', 'git status',
+                        'git worktree add ../again feature/task'):
+            with self.subTest(command=command):
+                self.assertIsNone(self.reason(command))
+
+    def test_ordinary_chat_and_other_tasks_are_not_limited(self):
+        self.start()
+        other = goals.create(self.conn, 'demo', 's3', 'Other', 'Other work', ['Done'])
+        execution = goals.create_execution(self.conn, other['id'], 's3', runtime='claude')
+        self.assertIsNone(branch_claims.task_branch_reason(self.home, str(self.root), 'git switch -c other', None))
+        self.assertIsNone(self.reason('git switch -c other', execution))
+
+    def test_deleted_task_branch_and_base_branch_do_not_count(self):
+        tree = self.start()
+        self.git('worktree', 'remove', str(tree))
+        self.git('branch', '-D', 'feature/task')
+        self.assertIsNone(self.reason('git switch -c feature/again'))
+        self.conn.execute('INSERT INTO git_management(project,enabled_at,base,admin_session_id) VALUES(?,?,?,?)',
+                          ('demo', NOW, 'main', 's3'))
+        self.assertEqual(branch_claims.record(self.home, 's3', str(self.root), 'git commit -m base',
+                                             execution_id=self.leader['id'], now=NOW), ['main'])
+        self.assertIsNone(self.reason('git switch -c feature/again'))
 
 
 class BranchClaimHookErrorTests(unittest.TestCase):

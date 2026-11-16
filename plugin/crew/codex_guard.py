@@ -156,7 +156,7 @@ def check(home, session_id, payload, execution_id=None):
         if reason is not None:
             return str(reason)
         if tool == "Bash":
-            return guard.check(home, data)
+            return guard.check(home, data) or branch_claims.task_branch_reason(home, cwd, command, execution_id)
         paths = patch_paths(command)
         for path in paths:
             absolute = store.norm_path(path if os.path.isabs(path) else Path(cwd) / path)

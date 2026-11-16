@@ -144,6 +144,63 @@ def parse(command, cwd):
     return found
 
 
+def _literal(name):
+    # `git worktree add -b "$b"` names a shell variable; the real branch is unknown until it is committed on.
+    return not any(mark in name for mark in "$`%")
+
+
+def _worktrees(root):
+    """{branch: worktree directory} for every checkout of the repository."""
+    result = git_process.run(["-C", root, "worktree", "list", "--porcelain"], timeout=5)
+    found, directory = {}, None
+    for line in result.stdout.splitlines() if result.returncode == 0 else ():
+        if line.startswith("worktree "):
+            directory = line[len("worktree "):]
+        elif line.startswith("branch refs/heads/") and directory is not None:
+            found[line[len("branch refs/heads/"):]] = directory
+    return found
+
+
+def task_branch_reason(home, cwd, command, execution_id):
+    """A task works on one branch: block a command in its execution that would create another one.
+
+    The task's branch is one it already claimed that still exists (the base and the local
+    integration branch never count); recreating that same branch stays allowed.
+    """
+    if execution_id is None or not store.db_path(home).exists():
+        return None
+    created = list(dict.fromkeys(value for kind, value in parse(command, cwd) if kind == "branch"))
+    if not created:
+        return None
+    with closing(guard.readonly(home)) as conn:
+        goal = conn.execute("SELECT g.id,g.project FROM goal_executions e JOIN goals g ON g.id=e.goal_id "
+                            "WHERE e.id=?", (execution_id,)).fetchone()
+        if goal is None:
+            return None
+        root = board.project(conn, goal["project"])["root"]
+        config = board.git_config(conn, goal["project"]) or {}
+        shared = {config.get("base"), config.get("integration")}
+        claimed = [row["branch"] for row in conn.execute(
+            "SELECT DISTINCT branch FROM branch_claims WHERE project=? AND goal_id=? ORDER BY claimed_at,branch",
+            (goal["project"], goal["id"]))]
+    existing = [name for name in claimed if name not in shared and _literal(name) and git_process.run(
+        ["-C", root, "rev-parse", "--verify", "--quiet", "refs/heads/" + name], timeout=5).returncode == 0]
+    if existing:
+        extra = [name for name in created if name not in existing]
+        if not extra:
+            return None
+        branch = existing[0]
+        place = _worktrees(root).get(branch)
+        where = ("它检出在 %s，进那个目录工作" % place if place else
+                 "需要工作目录就用 git worktree add <目录> %s（不带 -b）" % branch)
+        return ("BLOCKED by Crew: 一个任务只用一个分支。本任务已有分支 %s，不要再建 %s；"
+                "各轮、返工和成员都在这个分支上提交，%s。%s" % (branch, "、".join(extra), where, guard.TAIL))
+    if len(created) > 1:
+        return ("BLOCKED by Crew: 一个任务只用一个分支，一次只能建一个，不要同时建 %s；"
+                "成员并行时共用这个分支的工作目录，按文件归属分工。%s" % ("、".join(created), guard.TAIL))
+    return None
+
+
 def record(home, session_id, cwd, command, execution_id=None, now=None):
     """Store the branches `command` creates or commits to for a Crew session in a project.
 
@@ -157,7 +214,8 @@ def record(home, session_id, cwd, command, execution_id=None, now=None):
     branches = []
     for kind, value in found:
         if kind == "branch":
-            branches.append(value)
+            if _literal(value):
+                branches.append(value)
             continue
         result = git_process.run(["-C", value, "branch", "--show-current"], timeout=3)
         # Outside a checkout or on a detached HEAD there is no branch to own.

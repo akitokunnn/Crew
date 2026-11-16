@@ -16,6 +16,15 @@ from crew import board, branch_claims, codex_guard, codex_runtime, goals, runtim
 PLUGIN = Path(__file__).resolve().parents[1]
 
 
+def init_repo(root):
+    hooks = Path(root).parent / 'empty-git-hooks'
+    hooks.mkdir(exist_ok=True)
+    for args in (('init',), ('config', 'core.hooksPath', str(hooks)), ('config', 'user.name', 'Task Branch Fixture'),
+                 ('config', 'user.email', 'task-branch@example.invalid'), ('config', 'commit.gpgsign', 'false'),
+                 ('commit', '--allow-empty', '-m', 'initial')):
+        subprocess.run(['git', '-C', str(root), *args], check=True, capture_output=True, timeout=20)
+
+
 class CodexGuardTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="crew-codex-guard-")
@@ -229,6 +238,18 @@ class CodexGuardTests(unittest.TestCase):
                 expected.append({'project': 'demo', 'branch': session + '-branch',
                                  'session_id': session, 'goal_id': goal['id']})
         self.assertEqual(self.branch_claims(), sorted(expected, key=lambda row: row['branch']))
+
+    def test_goal_execution_cannot_open_a_second_task_branch(self):
+        init_repo(self.root)
+        _, execution = self.goal_execution('member')
+        self.assertEqual(self.run_claim_hook(self.payload('git branch feature/task'), execution=execution), (0, '', ''))
+        subprocess.run(['git', '-C', str(self.root), 'branch', 'feature/task'], check=True, capture_output=True, timeout=20)
+        code, out, err = self.run_claim_hook(self.payload('git switch -c feature/task-fix'), execution=execution)
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)['hookSpecificOutput']['permissionDecision'], 'deny')
+        self.assertIn('本任务已有分支 feature/task', err)
+        self.assertEqual([row['branch'] for row in self.branch_claims()], ['feature/task'])
+        self.assertEqual(self.run_claim_hook(self.payload('git switch -c ordinary')), (0, '', ''))
 
     def test_main_denied_shell_does_not_record_for_ordinary_or_goal_session(self):
         self.conn.execute('INSERT INTO git_management(project,enabled_at,base,admin_session_id) VALUES(?,?,?,?)',
