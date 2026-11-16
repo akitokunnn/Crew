@@ -283,6 +283,15 @@ class CodexRuntimeTests(unittest.TestCase):
         self.assertNotIn('turn/steer', [method for method, _ in client.calls])
         self.assertEqual([event['id'] for event in running.journal.events if event['type'] == 'message'], ['input-first'])
 
+    def test_leader_message_steers_busy_turn_when_host_allows(self):
+        running, client = self.make_running()
+        running.send('start work', 'input-first')
+        running.send('先停下设备操作', 'peer:leader', source='peer', sender='lead', steer=True)
+        steer = [params for method, params in client.calls if method == 'turn/steer']
+        self.assertEqual(steer, [{'input': [{'type': 'text', 'text': '先停下设备操作'}], 'turnId': 'turn-1'}])
+        self.assertEqual([event['id'] for event in running.journal.events if event['type'] == 'message'],
+                         ['input-first', 'peer:leader'])
+
     def test_resume_requires_existing_native_id_and_reinjects_guard_and_rules(self):
         with self.assertRaisesRegex(board.BoardError, "丢失"):
             self.make_running(resume=True)

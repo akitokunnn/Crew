@@ -582,7 +582,8 @@ class CodexRunning:
             self._tool_results[call_id] = signature, copy.deepcopy(result)
             return result
 
-    def send(self, text, identity, display_text=None, source="human", images=None, sender=None, image_files=None):
+    def send(self, text, identity, display_text=None, source="human", images=None, sender=None, image_files=None,
+             steer=False):
         if self.execution and text.strip() != '/compact':
             with closing(guard.readonly(self.home)) as conn:
                 gate = goals.dispatch_check(conn, self.execution['goal_id'],
@@ -594,7 +595,7 @@ class CodexRunning:
             if self._closing or self.process.poll() is not None:
                 raise board.BoardError("Codex 会话已经离线")
             if self.journal.status == "working":
-                if source not in ("human", "qq", "lark"):
+                if source not in ("human", "qq", "lark") and not steer:
                     raise board.Conflict("Codex 正在回复，自动消息等待当前轮次结束")
                 if text.strip() == "/compact":
                     self.compact()

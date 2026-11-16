@@ -612,10 +612,18 @@
     if (item.source === "peer" || item.source === "crew") {
       const sender = item.source === "crew" && !Object.hasOwn(item, "sender") ? "Crew" : item.sender === "user" ? "用户" : nameOf(context, item.sender);
       // The sender may have been ended or archived since; its relative paths then resolve against the project root.
-      const peer = item.source === "peer" ? context.state.leaders.concat(context.state.members).find(person => person.cc_name === item.sender) : undefined;
+      // Crew records the sender's Crew name; older records may carry the Claude address instead.
+      const people = context.state.leaders.concat(context.state.members);
+      const peer = item.source === "peer" ? people.find(person => person.name === item.sender) ?? people.find(person => person.cc_name === item.sender) : undefined;
       const pathSession = item.source !== "peer" ? context.session.session_id : peer === undefined ? "" : peer.session_id;
       const foldKey = `peer:${item.id}`;
       const open = context.cache.expanded.has(foldKey);
+      if (peer !== undefined && peer.session_id === context.session.leader_session_id) {
+        // The member's own leader speaks into the conversation like the user does, so it reads as a message, not a log line.
+        const long = item.text.length > 360 || item.text.split("\n").length > 8;
+        const fold = long ? `<button type="button" class="text-link leader-fold${open ? " open" : ""}" data-chat-fold="${escape(foldKey)}" aria-expanded="${open}"><span class="more">展开全文</span><span class="less">收起</span></button>` : "";
+        return `<div class="m-user from-leader${long ? " long" : ""}"><div class="bubble"><div class="leader-text">${renderMarkdown(item.text, pathSession)}</div></div><div class="m-meta"><span class="leader-from">来自 leader「${escape(sender)}」</span>${item.at ? ` · ${escape(timeOf(item.at))}` : ""}${fold}</div></div>`;
+      }
       return `<button type="button" class="mline indent${open ? " open" : ""}" data-chat-fold="${escape(foldKey)}" aria-expanded="${open}"><span class="who">${escape(sender)} → ${escape(context.session.name)}：</span><span class="txt">${renderInline(item.text.replace(/\s+/g, " "), pathSession)}</span>${item.at ? `<span>${timeOf(item.at)}</span>` : ""}${icon("right")}</button><div class="mfull">${renderMarkdown(item.text, pathSession)}</div>`;
     }
     const images = item.taskImages ? `<div class="message-images">${item.taskImages.map((image, index) => `<img src="data:${escape(image.media_type)};base64,${escape(image.data)}" alt="图片 ${index + 1}">`).join("")}</div>` : item.images ? `<div class="message-images">${item.images.map((name, index) => {

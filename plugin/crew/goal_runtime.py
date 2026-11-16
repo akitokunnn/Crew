@@ -340,11 +340,14 @@ class Controller:
         current.reader.start()
         return command
 
-    def send(self, goal_id, session_id, text, *, identity=None, images=None, source='human', display_text=None, sender=None):
+    def send(self, goal_id, session_id, text, *, identity=None, images=None, source='human', display_text=None, sender=None,
+             steer=False):
         with self.manager.work():
-            return self._send(goal_id, session_id, text, identity=identity, images=images, source=source, display_text=display_text, sender=sender)
+            return self._send(goal_id, session_id, text, identity=identity, images=images, source=source,
+                              display_text=display_text, sender=sender, steer=steer)
 
-    def _send(self, goal_id, session_id, text, *, identity=None, images=None, source='human', display_text=None, sender=None):
+    def _send(self, goal_id, session_id, text, *, identity=None, images=None, source='human', display_text=None, sender=None,
+              steer=False):
         identity = str(uuid.uuid4()) if identity is None else identity
         with self.manager.lock, closing(store.connect(self.home)) as conn:
             goal = goals.get(conn, goal_id)
@@ -392,7 +395,7 @@ class Controller:
             prior = journal.inputs.get(identity)
             if prior is not None and prior['status'] != 'rejected':
                 result = self.manager.send(target, text, identity=identity, images=images, source=source,
-                                           display_text=display_text, sender=sender)
+                                           display_text=display_text, sender=sender, steer=steer)
                 return {**result, 'goal_id': goal_id, 'execution_id': key}
             observed = self.manager.context(key)
             history = {'known': observed is not None, 'tokens': observed['used'] if observed else None,
@@ -427,7 +430,7 @@ class Controller:
                 target['_native_replacing'] = replacing
             goals.set_execution_status(conn, key, 'running')
             result = self.manager.send(target, prepared['text'], display_text=text if display_text is None else display_text,
-                                       identity=identity, images=images, source=source, sender=sender)
+                                       identity=identity, images=images, source=source, sender=sender, steer=steer)
             if execution['runtime'] == 'codex' and not result.get('duplicate'):
                 goal_context.mark_applied(conn, prepared['manifest']['id'], execution_id=key)
             return {**result, 'goal_id': goal_id, 'execution_id': key}

@@ -392,6 +392,16 @@ class ChatTests(UsageFixture, unittest.TestCase):
         self.assertEqual(result['delivery'], 'steered')
         self.assertTrue(manager.busy('s1'))
 
+    def test_only_permitted_automatic_input_joins_a_working_claude_turn(self):
+        manager, process, session = self.manager_with_process('working')
+        with self.assertRaisesRegex(board.Conflict, '等待当前轮次结束'):
+            manager.send(session, '自动消息', identity='peer:other', source='peer', sender='two')
+        self.assertEqual(process.stdin.getvalue(), '')
+        result = manager.send(session, '先停下设备操作', identity='peer:leader', source='peer', sender='lead', steer=True)
+        messages = [json.loads(line) for line in process.stdin.getvalue().splitlines()]
+        self.assertEqual([message['uuid'] for message in messages], ['peer:leader'])
+        self.assertEqual(result['delivery'], 'steered')
+
     def test_input_retry_does_not_submit_the_native_request_twice(self):
         manager, process, session = self.manager_with_process()
         manager.send(session, 'one instruction', identity='input-once')

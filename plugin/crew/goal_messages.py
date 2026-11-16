@@ -36,6 +36,10 @@ def queue(conn, sender_id, target_id, text, execution_id=None, *, message_id=Non
         leader = board.session(conn, source_goal['leader_session_id'])
         scope = ('goal' if target_id == leader['session_id'] or
                  target['role'] == 'member' and target['group_name'] == leader['group_name'] else 'general')
+    else:
+        goal = leader_task(conn, sender_id, target)
+        if goal is not None:
+            route, scope = {'round': goal['current_round'], 'requirement_version': goal['requirement_version']}, 'goal'
     if goal is None:
         return messaging.queue_record(conn, sender_id, target_id, text, message_id, kind=kind, reply_to=reply_to)
     if scope == 'goal':
@@ -66,6 +70,28 @@ def queue(conn, sender_id, target_id, text, execution_id=None, *, message_id=Non
                   goal['id'] + ':' + str(route['round']), fingerprint if not duplicate else uuid.uuid4().hex,
                   int(kind in ('task', 'blocker', 'decision')), int(kind == 'task'), status, at, at, scope, reply_to))
     return messaging.receipt(conn, identity)
+
+
+def from_leader(conn, sender_id, target):
+    """True when the sender leads the target member's own group."""
+    return target['role'] == 'member' and conn.execute(
+        'SELECT 1 FROM groups g JOIN sessions s ON s.session_id=g.leader_session_id '
+        "WHERE g.project=? AND g.name=? AND g.closed_at IS NULL AND g.leader_session_id=? AND s.role='leader'",
+        (target['project'], target['group_name'], sender_id)).fetchone() is not None
+
+
+def leader_task(conn, sender_id, target):
+    """The one in-progress task a leader writing from its general conversation shares with its member.
+
+    The member works that task in its own execution, so the message belongs there, not in the member's
+    general conversation. With no such task, or several, the message stays general.
+    """
+    if not from_leader(conn, sender_id, target):
+        return None
+    rows = conn.execute("SELECT g.id FROM goals g JOIN goal_assignments a ON a.goal_id=g.id "
+                        "WHERE g.leader_session_id=? AND a.session_id=? AND a.status='assigned' "
+                        "AND g.status IN ('queued','running')", (sender_id, target['session_id'])).fetchall()
+    return goals.get(conn, rows[0]['id']) if len(rows) == 1 else None
 
 
 def _gate(conn, message):
@@ -148,13 +174,15 @@ def deliver(controller, conn):
             _failed(conn, message, type(exc).__name__ + ': ' + str(exc))
             continue
         key = target['id'] if target else message['target_session_id'] if message['target_scope'] == 'general' else None
-        if key and controller.manager.busy(key):
+        # A leader's word reaches its own member mid-turn, like the user's; other mail waits for the turn to end.
+        steer = from_leader(conn, message['sender_session_id'], board.session(conn, message['target_session_id']))
+        if key and controller.manager.busy(key) and not steer:
             continue
         correlation = message['correlation_id'] if message['correlation_id'].startswith('peer-batch:') else None
         groups.setdefault((message['goal_id'], message['target_session_id'], message['target_scope'], message['round'],
-                           message['requirement_version'], correlation), []).append(message)
+                           message['requirement_version'], steer, correlation), []).append(message)
     blocked = set()
-    for (goal_id, target_id, scope, _, _, correlation), batch in sorted(groups.items(), key=lambda pair: pair[0][-1] is None):
+    for (goal_id, target_id, scope, _, _, steer, correlation), batch in sorted(groups.items(), key=lambda pair: pair[0][-1] is None):
         if (goal_id, target_id, scope) in blocked:
             continue
         # Deterministic bounded batches, no model summarizer and no per-message wake.
@@ -187,10 +215,10 @@ def deliver(controller, conn):
                 if not controller.manager.path(target_id).exists():
                     controller.manager.journal(target_id).set_status('idle')
                 result = controller.manager.send(board.session(conn, target_id), '\n\n'.join(lines), identity=identity,
-                                                 source='peer', sender=sender_label, display_text=display)
+                                                 source='peer', sender=sender_label, display_text=display, steer=steer)
             else:
                 result = controller.send(goal_id, target_id, '\n\n'.join(lines), identity=identity, source='peer',
-                                         sender=sender_label, display_text=display)
+                                         sender=sender_label, display_text=display, steer=steer)
             if result.get('accepted') is not True:
                 raise board.Conflict('NativeReceiptUnknown: input has no confirmed native acceptance')
         except (board.BoardError, codex_client.CodexError, OSError) as exc:

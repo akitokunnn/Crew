@@ -1102,7 +1102,8 @@ class Manager:
             result = spawn._execute(conn, plan, launch, members, member_session_ids)
             return {**result, **goal_receipt, "session_id": session_id, "role": spec["role"]}
 
-    def _send(self, session_id, text, display_text=None, source='human', identity=None, images=None, sender=None):
+    def _send(self, session_id, text, display_text=None, source='human', identity=None, images=None, sender=None,
+              steer=False):
         current = self.processes[session_id]
         logical = current.execution['session_id'] if current.execution is not None else session_id
         with closing(store.connect(self.home)) as control_conn:
@@ -1165,7 +1166,7 @@ class Manager:
             try:
                 current.interrupt_requested = False
                 result=current.send(text, identity, display_text=original_text, source=source,
-                                    images=images, sender=sender, image_files=files)
+                                    images=images, sender=sender, image_files=files, steer=steer)
                 if prompt_application is not None:
                     with closing(store.connect(self.home)) as prompt_conn:
                         behavior_prompts.delivered(prompt_conn, prompt_application['id'], confirmed=True,
@@ -1213,8 +1214,9 @@ class Manager:
 
     def send_message(self, sender_id, target_id, text, message_id=None, execution_id=None, kind='information', reply_to=None):
         with self.lock, closing(store.connect(self.home)) as conn:
-            if execution_id or reply_to is not None:
-                from . import goal_messages
+            from . import goal_messages
+            if (execution_id or reply_to is not None
+                    or goal_messages.leader_task(conn, sender_id, board.session(conn, target_id)) is not None):
                 return goal_messages.queue(conn, sender_id, target_id, text, execution_id,
                                            message_id=message_id, kind=kind, reply_to=reply_to)
             return messaging.queue(conn, sender_id, target_id, text, message_id=message_id, kind=kind)
@@ -1242,7 +1244,9 @@ class Manager:
                     continue
                 if native_handoff.blocked(conn, sid):
                     continue
-                if self.busy(sid):
+                # A leader's word reaches its own member mid-turn, like the user's; other mail waits.
+                steer = goal_messages.from_leader(conn, message["sender_session_id"], target)
+                if self.busy(sid) and not steer:
                     continue
                 sender = board.session(conn, message["sender_session_id"])
                 body = messaging.text(conn, message)
@@ -1250,7 +1254,7 @@ class Manager:
                     if not self.path(sid).exists():
                         self.journal(sid).set_status('idle')
                     result = self.send(target, body, display_text=message['body'], source='peer',
-                                       identity='peer:' + message['id'], sender=sender['crew_name'])
+                                       identity='peer:' + message['id'], sender=sender['crew_name'], steer=steer)
                     if not isinstance(result, dict) or result.get('accepted') is not True:
                         raise board.Conflict('执行输入尚无确认的接收回执')
                     messaging.mark_delivered(conn, message["id"], accepted=True)
@@ -1276,7 +1280,8 @@ class Manager:
 
     @_admitted
     def send(self, session, text, source='human', identity=None, images=None, display_text=None, sender=None,
-             *, resume_existing=False):
+             *, resume_existing=False, steer=False):
+        """``steer`` lets a non-human input join a turn already in progress, as the user's input does."""
         images = validate_images(images)
         session_id = session.get('_storage_id', session["session_id"])
         identity = str(uuid.uuid4()) if identity is None else identity
@@ -1325,7 +1330,7 @@ class Manager:
                     raise board.Conflict('成员的目标执行正在工作，不能向总对话重复派工；'
                                          '请明确目标继续原执行或等待当前任务结束：' + active)
             steering = self.running(session_id) and self.journal(session_id).status == "working"
-            if steering and source not in ("human", "qq", "lark"):
+            if steering and source not in ("human", "qq", "lark") and not steer:
                 raise board.Conflict("会话正在回复，自动消息等待当前轮次结束")
             if not self.running(session_id):
                 with closing(store.connect(self.home)) as spec_conn:
@@ -1345,7 +1350,7 @@ class Manager:
             journal.emit('input_delivery', message_id=identity, digest=digest, status='submitted', delivery=delivery)
             try:
                 identity = self._send(session_id, text, display_text=display_text,
-                                      source=source, identity=identity, images=images, sender=sender)
+                                      source=source, identity=identity, images=images, sender=sender, steer=steer)
             except (codex_client.RpcError, board.BoardError) as exc:
                 journal.emit('input_delivery', message_id=identity, digest=digest, status='rejected',
                              delivery=delivery, error=type(exc).__name__, detail=str(exc))

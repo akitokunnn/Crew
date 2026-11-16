@@ -714,6 +714,15 @@ button.tool.indent,button.mline.indent{width:calc(100% - 42px)}
 @keyframes channel-flash{from{background:var(--accent-soft)}to{background:transparent}}
 .channel-flash,.chat-focus{animation:channel-flash 1.8s ease-out;border-radius:10px}
 .m-user.from-channel .m-meta{opacity:1}
+/* The member's own leader speaking into the conversation: same place as the user, its own tint. */
+.m-user.from-leader .bubble{background:color-mix(in srgb,var(--accent) 14%,var(--user-bubble));box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--accent) 22%,transparent);white-space:normal;text-align:left}
+.m-user.from-leader .leader-text>:first-child{margin-top:0}.m-user.from-leader .leader-text>:last-child{margin-bottom:0}
+.m-user.from-leader .leader-text :is(p,ul,ol,pre,h1,h2,h3,h4){margin:0 0 6px}.m-user.from-leader .leader-text :is(h1,h2,h3,h4){font-size:1em;font-weight:600}
+.m-user.from-leader.long .leader-text{max-height:10.5em;overflow:hidden;-webkit-mask-image:linear-gradient(#000 70%,transparent);mask-image:linear-gradient(#000 70%,transparent)}
+.m-user.from-leader.long:has(.leader-fold.open) .leader-text{max-height:none;-webkit-mask-image:none;mask-image:none}
+.m-user.from-leader .m-meta{opacity:1}
+.m-user.from-leader .leader-from{color:var(--accent-text)}
+.leader-fold{font-size:inherit;margin-left:10px}.leader-fold .less,.leader-fold.open .more{display:none}.leader-fold.open .less{display:inline}
 .chat-channel-origin{font-size:inherit}
 .channel-empty{text-align:center;padding:60px 12px;color:var(--text-3);font-size:calc(13px * var(--fs))}
 .channel-targets{max-width:760px;margin:0 auto;display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:4px 4px 10px}
