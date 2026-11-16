@@ -890,6 +890,44 @@ class WebTests(ShellFixture, unittest.TestCase):
         self.assertFalse(manager.running(selected))
         self.assertTrue(manager.running(other))
 
+    def test_idle_reclaim_closes_only_long_idle_natives_and_next_send_resumes(self):
+        session_id = self.chat_start()
+        working = self.get("/api/leader", {"name": "busy-boss"})[1]["session_id"]
+        manager = self.server.service.chat
+        self.processes[0].emit({"type": "result"})
+        self.chat_wait(session_id, lambda journal: journal.status == "idle")
+        now = dt.datetime.now(dt.timezone.utc)
+        self.assertEqual(manager.reclaim_idle(now=now + dt.timedelta(minutes=5)), [])
+        self.assertEqual(manager.reclaim_idle(now=now + dt.timedelta(minutes=31)), [session_id])
+        self.assertFalse(manager.running(session_id))
+        self.assertTrue(manager.running(working))
+        events = manager.journal(session_id).events
+        self.assertEqual(manager.journal(session_id).status, "offline")
+        self.assertEqual([e["reason"] for e in events if e["type"] == "runtime_released"], ["idle"])
+        self.assertFalse([e for e in events if e["type"] in ("error", "turn_result") and not e.get("success", True)])
+        self.assertEqual(self.get("/api/chat/send", {"session_id": session_id, "text": "back"})[0], 200)
+        resumed = self.processes[-1].command
+        self.assertEqual(resumed[resumed.index("--resume") + 1], session_id)
+
+    def test_idle_reclaim_waits_for_background_tasks_and_can_be_disabled(self):
+        session_id = self.chat_start()
+        manager = self.server.service.chat
+        process = self.processes[0]
+        process.emit({"type": "system", "subtype": "task_started", "task_id": "shell-1", "task_type": "local_bash"})
+        process.emit({"type": "result"})
+        self.chat_wait(session_id, lambda journal: journal.status == "idle")
+        later = dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=2)
+        self.assertEqual(manager.reclaim_idle(now=later), [])
+        process.emit({"type": "system", "subtype": "task_notification", "task_id": "shell-1", "status": "completed"})
+        current = manager.processes[session_id]
+        deadline = dt.datetime.now() + dt.timedelta(seconds=3)
+        while current.background_tasks and dt.datetime.now() < deadline:
+            threading.Event().wait(.02)
+        self.assertEqual(manager.reclaim_idle(now=later, idle_seconds=0), [])
+        self.assertEqual(manager.reclaim_idle(now=later), [session_id])
+        self.assertEqual(chat.idle_reclaim_seconds({"CREW_IDLE_RECLAIM_MINUTES": "0"}), 0)
+        self.assertEqual(chat.idle_reclaim_seconds({"CREW_IDLE_RECLAIM_MINUTES": "x"}), chat.IDLE_RECLAIM_MINUTES * 60)
+
     def test_resume_drains_previous_reader_before_new_turn_status(self):
         session_id = self.chat_start()
         previous = self.server.service.chat.processes[session_id]

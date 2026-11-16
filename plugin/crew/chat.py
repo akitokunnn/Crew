@@ -3,6 +3,7 @@ import base64
 import collections
 import contextlib
 from contextlib import closing
+import datetime
 import functools
 import hashlib
 import json
@@ -32,6 +33,31 @@ NATIVE_REPLACED = "这是新开的原生会话：原会话 %s 已丢失，Crew �
 NATIVE_LOST_INPUT = "native-lost:"
 # Journal events only a running native conversation can produce.
 NATIVE_OUTPUT = {"assistant", "text", "tool_result", "compact"}
+# An owned native idle this long is closed; the next input resumes the same
+# native ID. CREW_IDLE_RECLAIM_MINUTES overrides it, 0 keeps every process.
+IDLE_RECLAIM_MINUTES = 30
+
+
+def idle_reclaim_seconds(environ=None):
+    value = (os.environ if environ is None else environ).get('CREW_IDLE_RECLAIM_MINUTES')
+    try:
+        minutes = IDLE_RECLAIM_MINUTES if value is None or not value.strip() else float(value)
+    except ValueError:
+        minutes = IDLE_RECLAIM_MINUTES
+    return max(0.0, minutes) * 60
+
+
+def track_background(current, record):
+    """Background shells and agents outlive the turn's result inside the native process."""
+    task = record.get('task_id')
+    if record.get('type') != 'system' or not task or record.get('ambient'):
+        return
+    subtype = record.get('subtype')
+    if subtype == 'task_started':
+        current.background_tasks.add(task)
+    elif subtype == 'task_notification' or (subtype == 'task_updated' and
+            (record.get('patch') or {}).get('status') not in (None, 'pending', 'running')):
+        current.background_tasks.discard(task)
 
 
 def native_output(event):
@@ -447,6 +473,8 @@ class Running:
         self.unexpected_exit = False
         self.stderr = collections.deque(maxlen=20)
         self.reader_done = threading.Event()
+        # Native background task IDs still running after their turn (see track_background).
+        self.background_tasks = set()
         self.pending_native_accept = None
         self.native_binding_confirmed = False
         # The native ID passed with --resume; None when this process starts a new native.
@@ -741,6 +769,7 @@ class Manager:
                         with closing(store.connect(self.home)) as goal_conn:
                             goal_context.mark_applied(goal_conn, current.goal_manifests.pop(record['uuid']),
                                                       execution_id=current.execution['id'])
+                    track_background(current, record)
                     if record["type"] == "control_response":
                         self._control_response(current, record["response"])
                     if record["type"] == 'system' and record.get('subtype') == 'compact_boundary' and not record.get('parent_tool_use_id'):
@@ -1825,6 +1854,68 @@ class Manager:
                 current.process.stdin.write(json.dumps(request) + "\n")
                 current.process.stdin.flush()
         return {"ok": True}
+
+    def _idle_for(self, current, now):
+        """Seconds since this native last did anything, or None while it must stay resident."""
+        if (current.process.poll() is not None or getattr(current, 'maintenance', None) is not None
+                or current.pending_compact or getattr(current, 'pending_native_accept', None) is not None
+                or getattr(current, 'replacing', None) is not None or getattr(current, 'native_lost', None) is not None
+                or getattr(current, 'background_tasks', None)):
+            return None
+        journal = current.journal
+        with journal.condition:
+            journal.refresh()
+            if journal.status != 'idle' or not journal.events:
+                return None
+            if any(task.get('status') == 'running' for task in journal.subagents.values()):
+                return None
+            last = journal.events[-1]['at']
+        return (now - store.parse_iso(last)).total_seconds()
+
+    def reclaim_idle(self, now=None, idle_seconds=None):
+        """Close owned natives idle past the limit; the next input resumes the same native ID."""
+        limit = idle_reclaim_seconds() if idle_seconds is None else idle_seconds
+        if not limit:
+            return []
+        now = store.parse_iso(store.now_iso()) if now is None else now
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=datetime.timezone.utc)
+        reclaimed = []
+        with self.lock:
+            if self.closed:
+                return []
+            for key, current in list(self.processes.items()):
+                with current.input_lock:
+                    idle = self._idle_for(current, now)
+                    if idle is None or idle < limit:
+                        continue
+                    current.stop_reason = 'idle_reclaim'
+                    if getattr(current, 'runtime', 'claude') != 'codex':
+                        try:
+                            current.process.stdin.close()
+                        except OSError as exc:
+                            current.stop_reason = None
+                            current.journal.emit('error', text='空闲回收关闭输入失败，进程保留：' + str(exc))
+                            continue
+                try:
+                    if getattr(current, 'runtime', 'claude') == 'codex':
+                        # Keep the thread unarchived: it is resumed, not finished.
+                        current.close(archive=False)
+                    else:
+                        try:
+                            current.process.wait(timeout=10)
+                        except subprocess.TimeoutExpired:
+                            current.process.terminate()
+                            current.process.wait(timeout=10)
+                except (OSError, subprocess.SubprocessError, codex_client.CodexError) as exc:
+                    # The shared poller must survive one stuck native; the next poll retries it.
+                    current.journal.emit('error', text='空闲回收未能结束进程：%s: %s' % (type(exc).__name__, exc))
+                    continue
+                if not current.reader_done.wait(10):
+                    current.journal.emit('error', text='空闲回收后进程输出尚未排空')
+                current.journal.emit('runtime_released', reason='idle', idle_seconds=int(idle))
+                reclaimed.append(key)
+        return reclaimed
 
     def stop_managed(self, session_id, *, reason='managed_stop'):
         """Terminate an owned process, including busy turns, and drain its output."""

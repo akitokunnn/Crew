@@ -275,6 +275,7 @@ Windows 的派工集成源码在 `integrations/codex-dispatch/` 与 `integration
 - 混合工具消息使用 `crew send` / `crew_send_message`，明确指定 task、result、blocker 或 decision；默认 information 和 ack 仅归档，不会唤醒对方。回执“已交给执行输入”不代表模型已读或任务完成。Claude 原生 SendMessage 不能直接寻址 Codex。离线成员用 `crew wake <名字> "<要它做的事>"` 恢复原会话；VS Code、终端或后台仍有活进程时拒绝重复启动，进程状态未知时也拒绝启动。
 - **被叫醒的会话如果 VS Code 里还留着旧标签，不要在旧标签里直接打字**，否则可能两个进程同时写一个会话；要接过去请用网页卡片上的“在 VS Code 打开”。
 - 服务启动后会续跑聊天日志最后状态仍是 working 的未归档会话；用户停止或手动暂停的不会自动恢复。如果原进程还活着，等它退出再续跑，最多等 30 分钟。idle / offline 的不自动续跑。
+- 后台托管的 CC / Codex 进程空闲 30 分钟会自动关掉以省内存（有后台任务、正在回复或压缩的不关），显示为离线；之后给它发消息、组员回信或 leader 通知时自动用原会话接回，第一句会多等几秒。设环境变量 `CREW_IDLE_RECLAIM_MINUTES` 可改时长，0 表示不回收。
 - Claude 在线会话的权限模式不同时，原生 SendMessage 可能等人批准；后台会话使用设置页选择的原生权限模式，并保留 Crew 守卫。项目的信任目标不会替代执行工具的权限配置。
 - leader 起动时可选模型和 effort，默认跟账号设置走；同工具的新下属可继承 leader 设置，跨工具不继承不兼容模型。Haiku 4.5 不支持 effort，Codex 的可选模型与档位来自本机原生列表。对话头部显示进程回报的实际“模型 · effort”，菜单可切换；后台下属卡片只读显示。忙时显示阶段、计时与本轮输出 token。
 - 已经开着的会话要 `/reload-plugins` 或重开，才会加载插件的钩子和守卫；网页收编会登记身份，不会替它加载插件。

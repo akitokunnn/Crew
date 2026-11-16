@@ -161,6 +161,8 @@ class Service:
                 with self.write_lock, closing(store.connect(self.home)) as conn:
                     self.chat.auto_resume(conn, agents, now=self.now().isoformat(timespec="milliseconds").replace("+00:00", "Z"),
                                           runtime=None if error is None else 'codex')
+                # Journal times are wall-clock, so idle time is measured on the same clock.
+                self.chat.reclaim_idle()
             except (sqlite3.Error, OSError, subprocess.SubprocessError):
                 # A temporary failure in another task sharing this worker must
                 # not permanently disable agent discovery and VS Code scans.
