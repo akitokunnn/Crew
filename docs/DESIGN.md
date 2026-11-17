@@ -429,7 +429,7 @@ CREATE TABLE IF NOT EXISTS git_management (
 
 ### 数据与接口
 
-页面查询、检查与手动 fetch 在 `board.project(...)["root"]` 运行。查询与检查只读；Git 管理员的推送、合并与清理只在它自己的 worktree 进行，不动用户主工作区或组员未提交的内容。
+页面查询、检查与手动 fetch 在 `board.project(...)["root"]` 运行。查询与检查只读；Git 管理员的推送、合并与清理在它自己的 worktree 进行，不动用户主工作区或组员未提交的内容；base 检出在用户主工作区时，管理员可在那里用 `git merge --ff-only` 把本地 base 快进到合好的结果再推送，让本地与远端 base 一致，快进被拒就停下告诉用户。
 
 | 接口 | 内容 |
 |---|---|
