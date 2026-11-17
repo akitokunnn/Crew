@@ -47,6 +47,8 @@ SPECS = (
          'CC / Codex · Git 助手', _BUNDLED, path='skills/git/SKILL.md'),
     Spec('assistant', '全局助手守则', 'roles', '跨工作区个人助手的查询、写动作、想法墙与授权边界。',
          'CC / Codex · 全局助手', _BUNDLED, path='skills/assistant/SKILL.md'),
+    Spec('language', '回复语言', 'shared', '所有角色对用户和组内输出使用的语言。',
+         'CC / Codex · 全部角色', _BUNDLED),
     Spec('common', '通用工作原则', 'shared', '所有角色共用的授权、证据、推进和文档维护原则。',
          'CC / Codex · 全部角色', _BUNDLED),
     Spec('collaboration', '协作与消息', 'shared', '回复用户、Git 请求、组内消息类型与回执、跨组协作、等待和守卫。',
@@ -109,10 +111,10 @@ LABELS = {spec.key: spec.label for spec in SPECS}
 KEYS = tuple(SPEC)
 ROLE_KEYS = ('leader', 'member', 'assistant', 'git')
 BUNDLES = {
-    'leader': ('common', 'leader', 'collaboration', 'human_input', 'context', 'report', 'final_report'),
-    'member': ('common', 'member', 'member_boundary', 'collaboration', 'human_input', 'context', 'report'),
-    'git': ('common', 'git', 'collaboration', 'human_input', 'context', 'report', 'final_report'),
-    'assistant': ('common', 'assistant', 'context'),
+    'leader': ('common', 'leader', 'collaboration', 'human_input', 'context', 'report', 'final_report', 'language'),
+    'member': ('common', 'member', 'member_boundary', 'collaboration', 'human_input', 'context', 'report', 'language'),
+    'git': ('common', 'git', 'collaboration', 'human_input', 'context', 'report', 'final_report', 'language'),
+    'assistant': ('common', 'assistant', 'context', 'language'),
 }
 _PLACEHOLDER = re.compile(r'\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}')
 
