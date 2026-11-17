@@ -26,7 +26,7 @@ from .service_lock import HomeServiceLock
 from . import appearance, codex_client, member_defaults, operations_chat, operations_settings
 from . import connections, session_delete, session_presence, storage_cleanup, workspace_activity
 from .storage_service import StorageService, HISTORY_PREFIX
-from . import personal, native_home, native_handoff
+from . import personal, native_home, native_handoff, native_skills
 from . import remote_access, remote_http
 from . import report_preview, event_sounds, reading_context
 from .web_api import personal as personal_api
@@ -1723,6 +1723,22 @@ class Service:
             return {**self.chat.history(session_id), **self.chat.context_state(session_id),
                     'read_seq': board.read_seq(conn, session_id)}
 
+    def chat_skills(self, session_id, project_name=None, goal_id=None, refresh=False):
+        """Skills the carrier behind this composer can invoke, from its own native discovery."""
+        with closing(store.connect(self.home)) as conn:
+            execution = None
+            if goal_id is not None:
+                goals.get(conn, goal_id, self.selected_project(conn, project_name))
+                execution = self.chat.goal_controller.current(conn, goal_id, session_id)
+                session = board.session(conn, session_id)
+            else:
+                session = self.chat_session(conn, self.chat_project(conn, project_name, session_id), session_id)
+            runtime = execution['runtime'] if execution is not None else runtimes.get(conn, session_id)['runtime']
+            codex_home = (native_handoff.home_for(conn, session_id, execution['id'] if execution else None)
+                          if runtime == 'codex' else None)
+        return native_skills.list_skills(runtime, session['cwd'], self.plugin_root, codex_home=codex_home,
+                                         refresh=refresh)
+
     def channel_messages(self, project_name=None, limit=20, before=None):
         with closing(store.connect(self.home)) as conn:
             project = self.selected_project(conn, project_name)
@@ -1931,6 +1947,8 @@ STATIC.update({'/goal-ui.js': ('goal-ui.js', 'text/javascript; charset=utf-8'),
                '/goal-ui.css': ('goal-ui.css', 'text/css; charset=utf-8')})
 STATIC.update({f'/{name}.{ext}': (f'{name}.{ext}', 'text/javascript; charset=utf-8' if ext == 'js' else 'text/css; charset=utf-8') for name in ('personal-notes-ui', 'behavior-prompts-ui') for ext in ('js', 'css')})
 STATIC['/goal-versions-ui.js'] = ('goal-versions-ui.js', 'text/javascript; charset=utf-8')
+STATIC.update({'/skill-picker.js': ('skill-picker.js', 'text/javascript; charset=utf-8'),
+               '/skill-picker.css': ('skill-picker.css', 'text/css; charset=utf-8')})
 STATIC['/stage-report-ui.js'] = ('stage-report-ui.js', 'text/javascript; charset=utf-8')
 STATIC.update({'/reader-ui.js': ('reader-ui.js', 'text/javascript; charset=utf-8'),
                '/reader-ui.css': ('reader-ui.css', 'text/css; charset=utf-8')})
@@ -2262,6 +2280,9 @@ class Handler(BaseHTTPRequestHandler):
         elif url.path == '/api/session/avatar':
             content, media_type = service.session_avatar(query.get('session_id', [''])[0])
             self._send(200, content, media_type, cache_control='private, max-age=31536000, immutable')
+        elif url.path == '/api/chat/skills':
+            self._send(200, service.chat_skills(query.get('session_id', [''])[0], query.get('project', [None])[0],
+                                                query.get('goal_id', [None])[0], query.get('refresh', [''])[0] == '1'))
         elif url.path == '/api/chat/file':
             content, media_type = service.chat_file(query.get('session_id', [''])[0], query.get('name', [''])[0],
                                                     query.get('project', [None])[0], query.get('goal_id', [None])[0],

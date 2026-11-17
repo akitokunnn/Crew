@@ -1099,8 +1099,13 @@
       context.readingButton = options.host.querySelector(".chat-reading-chip");
       context.readingButton.onclick = () => { reading.attached = !reading.attached; readingComposer(context); };
       context.input.value = cache.text;
-      context.input.oninput = () => { context.cache.version += 1; saveDraft(context); resizeInput(context); composerState(context); };
+      context.skills = CrewSkillPicker.attach({input: context.input, host: options.host.querySelector("form"), load: refresh => {
+        const params = query(context); if (refresh) params.set("refresh", "1");
+        return context.api(`/api/chat/skills?${params}`);
+      }});
+      context.input.oninput = () => { context.cache.version += 1; saveDraft(context); resizeInput(context); composerState(context); context.skills.update(); };
       context.input.onkeydown = event => {
+        if (context.skills.keydown(event)) return;
         if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); if (!context.send.disabled) send(context); }
       };
       context.input.onpaste = event => {

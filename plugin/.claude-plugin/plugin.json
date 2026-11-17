@@ -5,5 +5,9 @@
   "author": {
     "name": "akitokunnn"
   },
-  "repository": "https://github.com/akitokunnn/Crew"
+  "repository": "https://github.com/akitokunnn/Crew",
+  "skills": [
+    "./skills",
+    "./user-skills"
+  ]
 }

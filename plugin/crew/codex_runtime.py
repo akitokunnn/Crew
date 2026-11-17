@@ -13,7 +13,7 @@ import sys
 import tempfile
 import threading
 
-from . import board, codex_client, codex_events, codex_guard, codex_history, codex_subagents, codex_tools, codex_visibility, goal_messages, goals, guard, install, messaging, native_approvals, native_handoff, rules, settings, store, workspace_execution
+from . import board, codex_client, codex_events, codex_guard, codex_history, codex_subagents, codex_tools, codex_visibility, goal_messages, goals, guard, install, messaging, native_approvals, native_handoff, native_skills, rules, settings, store, workspace_execution
 
 
 def process_identity(pid):
@@ -325,7 +325,9 @@ class CodexRunning:
             self.client = _ObservedClient(cwd=cwd, env=env,
                                           on_notification=self._notification, tool_handler=self._tool,
                                           approval_handler=self._approval,
-                                          process_factory=own_process)
+                                          process_factory=own_process,
+                                          # Crew's user-invoked skills (not the injected role rules) join Codex's native list.
+                                          skill_roots=[native_skills.user_skills_root(self.plugin_root)])
             self.process = self.client.process
             self._approval_process = self.process
             if native_id:
