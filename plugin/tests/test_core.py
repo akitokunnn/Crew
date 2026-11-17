@@ -401,13 +401,14 @@ class DeliveryTests(CoreCase):
 
     def test_session_start_delivers_handoff_but_not_answer(self):
         d = board.ask(self.conn, "s1", "question", now=NOW)
-        board.answer(self.conn, d, "reply", now=NOW)
+        # Unique tokens: the context also carries absolute paths, which may contain ordinary words.
+        board.answer(self.conn, d, "decision-answer-only-in-db", now=NOW)
         board.handoff(self.conn, "s2", "one", "startup", now=NOW)
         code, out = self.hook("session-start")
         self.assertEqual(code, 0)
         context = out["hookSpecificOutput"]["additionalContext"]
         self.assertIn("startup", context)
-        self.assertNotIn("reply", context)
+        self.assertNotIn("decision-answer-only-in-db", context)
         self.assertEqual(board.handoffs(self.conn, "s1"), [])
         self.assertIsNone(self.conn.execute("SELECT delivered_at FROM decisions WHERE id=?", (d,)).fetchone()[0])
 
