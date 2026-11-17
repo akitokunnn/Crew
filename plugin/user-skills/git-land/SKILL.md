@@ -10,8 +10,9 @@ argument-hint: 测过可以进主干的功能、分支或测试包
 
 ## 开始前
 
-- **找主干和集成分支。** 在 Crew 里先运行 `crew whoami` 和 `crew git status`：base 是主干，integration 是本地集成分支（比如 live、dev_live）。不在 Crew 里就读项目的 AGENTS.md、CLAUDE.md 和贡献文档；仍然确定不了就问用户。
-- **在 Crew 里，只有 Git 助手能推送和合并。** 如果你不是 Git 助手，先完成第 1 步，再用 `crew git request` 把锁定的范围交给 Git 助手（Codex 用 `crew_git(action="request")`），告诉用户已经转交，然后停在这里。
+- **先确认是不是在 Crew 里。** 运行 `crew whoami`（Codex 用 `crew_whoami`）：能显示你的 Crew 名字和角色，才算在 Crew 里。命令不存在、报错，或者提示会话未登记、目录未启用 Crew，都算不在 Crew 里：这时没有 Git 助手这一层，由你按项目文档直接完成全部步骤。
+- **找主干和集成分支。** 在 Crew 里用 `crew git status`：base 是主干，integration 是本地集成分支（比如 live、dev_live）。不在 Crew 里就读项目的 AGENTS.md、CLAUDE.md 和贡献文档；仍然确定不了就问用户。
+- **在 Crew 里，只有 Git 助手能推送和合并。** 如果你在 Crew 里但不是 Git 助手，先完成第 1 步，再用 `crew git request` 把锁定的范围交给 Git 助手（Codex 用 `crew_git(action="request")`），告诉用户已经转交，然后停在这里。
 - 项目规定主干必须走 PR 的，第 4 步按 PR 流程走：推功能分支，开 PR，CI 通过后合并，再把本地主干快进到 `origin/<主干>`。
 - 始终禁止：force push、改写已推送的历史、删除未合并的分支、推送本地集成分支、合入或推送发版分支（比如 master）。确实需要这些操作时，先问用户。
 
@@ -21,7 +22,7 @@ argument-hint: 测过可以进主干的功能、分支或测试包
 
 ## 2. 整理本地主干
 
-这一步默认不停下来，处理完直接进入第 3 步。只有一种情况要先问用户：有价值的修改会被覆盖，或者会发生冲突。
+这一步默认不停下来，处理完直接进入第 3 步。只有一种情况要先问用户：**未提交**的有价值修改，会被这次更新覆盖或与之冲突。本地独有提交不属于这种情况：它们已经提交，不会丢，有冲突在第 3 步处理。判断是否重叠时，用命令结果对比文件名（`git status --short` 列出的文件，和 `git diff --name-only <主干> origin/<主干>`、`git diff --name-only <主干> <锁定的提交>` 列出的文件），不要凭印象。
 
 到主干所在的工作区（通常是用户的主工作区），检查两类内容：
 
