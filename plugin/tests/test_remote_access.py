@@ -180,6 +180,12 @@ class RemoteAccessTests(unittest.TestCase):
         self.assertEqual([200, 400], sorted(results))
         self.assertEqual(1, len(self.controller.snapshot()['devices']))
 
+    def test_local_only_route_reads_body_before_rejecting(self):
+        cookie, _ = self.login()
+        status, value, _ = self.request('/api/files/open', {'path': 'x' * (8 * 1024 * 1024)}, cookie=cookie)
+        self.assertEqual(403, status)
+        self.assertEqual('此操作只能在电脑上的 Crew 中进行', value['error'])
+
     def test_remote_human_actions_and_local_only_routes(self):
         cookie, _ = self.login()
         for path in ('/api/admin/config', '/api/storage/clean', '/api/assistant/native-action',

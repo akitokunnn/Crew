@@ -329,6 +329,9 @@ class Controller:
                     return reply(303, {'error': '请先登录 Crew'}, location='/remote/login?next=' + quote(remote_routes.safe_next(handler.path), safe=''))
                 return reply(401, {'error': '请先登录 Crew', 'login_url': '/remote/login'})
             if path not in ('/remote/login', '/remote/logout') and not remote_routes.permitted(method, path, self.static_paths):
+                if method == 'POST':
+                    # 先读完已登录设备的请求体再拒绝；带着未读数据关连接，Windows 会重置连接，手机只看到网络错误。
+                    handler.rfile.read(length)
                 return reply(403, {'error': '此操作只能在电脑上的 Crew 中进行'})
             data = None
             if method == 'POST':
