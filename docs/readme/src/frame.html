@@ -1,0 +1,11 @@
+<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="base.css">
+<script>const q=new URLSearchParams(location.search);document.documentElement.dataset.theme=q.get('theme')||'light'</script>
+<style>
+body{width:1280px}
+.canvas{width:1280px;padding:52px 80px;background:linear-gradient(160deg,var(--bg1),var(--paper) 52%,var(--bg2))}
+:root{--bg1:#E3EFEB;--bg2:#F2EADC;--edge:rgba(44,43,39,.12)}
+html[data-theme=dark]{--bg1:#1D2826;--bg2:#2A251C;--edge:rgba(255,255,255,.10)}
+.grid{-webkit-mask-image:radial-gradient(ellipse at 50% 0%,#000 0%,transparent 70%);mask-image:radial-gradient(ellipse at 50% 0%,#000 0%,transparent 70%)}
+.shot{position:relative;display:block;width:1120px;border-radius:14px;box-shadow:0 0 0 1px var(--edge),0 2px 4px rgba(0,0,0,.06),0 28px 64px -18px rgba(30,30,28,.35)}
+</style></head><body><div class="canvas"><div class="grid"></div><img class="shot" id="shot"></div>
+<script>document.getElementById('shot').src=q.get('img')</script></body></html>
