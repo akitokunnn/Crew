@@ -94,6 +94,18 @@ class CodexVisibilityTests(unittest.TestCase):
         self.assertEqual(client.request.call_args.args, ('thread/unarchive', {'threadId': 'owned'}))
         self.assertEqual(client.request.call_args_list[1].args[1]['cursor'], 'page2')
 
+    def test_owned_goal_restore_includes_native_threads_with_an_inherited_source(self):
+        client = mock.Mock()
+        def native_request(method, params):
+            if method == 'thread/list':
+                rows = [{'id': 'owned', 'source': 'vscode'}, {'id': 'other', 'source': 'appServer'}]
+                sources = params.get('sourceKinds')
+                return {'data': [row for row in rows if not sources or row['source'] in sources], 'nextCursor': None}
+            return {}
+        client.request.side_effect = native_request
+        codex_visibility.restore_internal(client, 'owned')
+        self.assertEqual(client.request.call_args.args, ('thread/unarchive', {'threadId': 'owned'}))
+
     def test_archive_failure_preserves_reason_and_still_closes_native_process(self):
         with closing(store.connect(self.home)) as conn:
             board.register_session(conn, 'worker', 'demo', self.root, None, 'main', name='worker', role='leader')

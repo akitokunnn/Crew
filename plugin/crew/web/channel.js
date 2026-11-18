@@ -20,9 +20,30 @@
     const html = `<span class="channel-target-label">点名</span>${all}${context.state.leaders.map(item => `<button type="button" class="channel-target ${context.allLeaders || context.selected.has(item.session_id) ? "selected" : ""}" data-channel-to="${escape(item.session_id)}" aria-pressed="${context.allLeaders || context.selected.has(item.session_id)}" ${context.sending ? "disabled" : ""}>@${escape(item.name)}</button>`).join("")}${ids.size === 0 ? '<span class="note">还没有 leader</span>' : ""}`;
     if (context.targets.innerHTML !== html) context.targets.innerHTML = html;
   }
+  function mentionHTML(message, item) {
+    // Only the user's mentions wait for an answer; a leader's mention is a plain name.
+    const state = message.speaker_session_id !== "user" ? "" : item.replied ? " replied" : " waiting";
+    const title = state === " replied" ? "已在交流区回复" : state === " waiting" ? "还没在交流区回复" : "";
+    return `<span class="channel-mention${state}"${title ? ` title="${title}"` : ""}>@${escape(item.name)}${state === " replied" ? " ✓" : ""}</span>`;
+  }
   function messageHTML(message) {
     const user = message.speaker_session_id === "user";
-    return `<article class="m-lead channel-message ${user ? "channel-user" : ""}" data-channel-id="${message.id}"><span class="av round" style="--s:30px;--tint:var(--accent)">${escape(message.speaker_name.slice(0, 1))}</span><div class="body"><div class="channel-meta"><strong>${escape(message.speaker_name)}</strong><time datetime="${escape(message.created_at)}">${escape(time(message.created_at))}</time></div><div class="${user ? "bubble" : "channel-content"}"><div class="markdown">${CrewChat.renderMarkdown(message.body, message.speaker_session_id)}</div>${message.mentions.length === 0 ? "" : `<div class="channel-mentions">${message.mentions.map(item => `<span class="channel-mention">@${escape(item.name)}</span>`).join("")}</div>`}</div></div></article>`;
+    const quote = message.reply ? `<button type="button" class="channel-quote" data-channel-jump="${message.reply.id}" title="看原发言">回复 ${escape(message.reply.speaker_name)}：${escape(message.reply.excerpt)}</button>` : "";
+    const detail = !user && message.detail ? `<button type="button" class="channel-detail text-link" data-channel-detail="${message.id}">私聊详情 →</button>` : "";
+    return `<article class="m-lead channel-message ${user ? "channel-user" : ""}${message.auto ? " channel-auto" : ""}" data-channel-id="${message.id}"><span class="av round" style="--s:30px;--tint:var(--accent)">${escape(message.speaker_name.slice(0, 1))}</span><div class="body"><div class="channel-meta"><strong>${escape(message.speaker_name)}</strong><time datetime="${escape(message.created_at)}">${escape(time(message.created_at))}</time></div>${quote}<div class="${user ? "bubble" : "channel-content"}"><div class="markdown">${CrewChat.renderMarkdown(message.body, message.speaker_session_id)}</div>${detail}${message.mentions.length === 0 ? "" : `<div class="channel-mentions">${message.mentions.map(item => mentionHTML(message, item)).join("")}</div>`}</div></div></article>`;
+  }
+  function jump(context, id) {
+    const node = context.inner.querySelector(`[data-channel-id="${Number(id)}"]`);
+    if (!node) { context.toast("这条发言不在当前列表里，可能已整理进要点卡或在更早的记录中"); return; }
+    node.scrollIntoView({block:"center"});
+    node.classList.remove("channel-flash"); void node.offsetWidth; node.classList.add("channel-flash");
+  }
+  function openDetail(context, id) {
+    const message = context.messages.concat(context.originalMessages).find(item => item.id === Number(id));
+    if (!message) return;
+    // A reply to the user lands on the user's own words in that private chat; otherwise on the moment it was said.
+    const focus = {at:message.created_at, prefix:message.reply && message.reply.speaker_session_id === "user" ? `channel:${message.reply.id}:` : null};
+    context.openChat(message.speaker_session_id, focus);
   }
   function renderMessages(context, position = "keep") {
     const height = context.scroll.scrollHeight, top = context.scroll.scrollTop;
@@ -109,6 +130,7 @@
       context.hasMore = result.has_more && (context.digest === null || context.pageBefore > context.digest.upto_message_id);
       context.loading = false; renderDigest(context);
       renderMessages(context, "bottom");
+      if (context.focus != null) { const id = context.focus; context.focus = null; jump(context, id); }
       if (context.state.channel.latest_id > context.latestId) refresh(context);
     } catch (error) {
       if (current(context)) { context.loading = false; context.inner.textContent = "Leader 交流区加载失败"; context.toast(error.message); }
@@ -164,7 +186,7 @@
       context.selected.clear(); context.allLeaders = false; renderTargets(context);
       // Fetch through intervening posts before advancing the cursor to our new message.
       merge(context, [result.message], false); renderMessages(context, "bottom"); refresh(context);
-      context.toast(allLeaders ? `已点名本工作区的 ${result.message.mentions.length} 位 leader` : to.length === 0 ? "已发到 Leader 交流区" : `已发到 Leader 交流区，点名的 ${to.join("、")} 会被叫醒`);
+      context.toast(allLeaders ? `已点名本工作区的 ${result.message.mentions.length} 位 leader` : result.message.mentions.length === 0 ? "已发到 Leader 交流区" : `已发到 Leader 交流区，点名的 ${result.message.mentions.map(item => item.name).join("、")} 会被叫醒`);
     } catch (error) { if (current(context)) context.toast(error.message); }
     finally { context.sending = false; if (current(context)) composerState(context); }
   }
@@ -184,6 +206,8 @@
         context.originalsOpen = !context.originalsOpen; renderMessages(context);
         if (context.originalsOpen && context.originalMessages.length === 0) originals(context);
       } else if (event.target.closest(".channel-originals-older")) originals(context);
+      else if (event.target.closest("[data-channel-jump]")) jump(context, event.target.closest("[data-channel-jump]").dataset.channelJump);
+      else if (event.target.closest("[data-channel-detail]")) openDetail(context, event.target.closest("[data-channel-detail]").dataset.channelDetail);
     };
     context.scroll.onscroll = () => markRead(context);
     context.visibility = () => markRead(context);

@@ -1,4 +1,5 @@
 """Read-only Git views; fetching is an explicit, separate operation."""
+from concurrent.futures import ThreadPoolExecutor
 import copy
 import datetime
 import hashlib
@@ -34,14 +35,21 @@ def require_repository(root):
 
 
 _lock = threading.RLock()
-_refs_cache = {}
-_dirty_cache = {}
-_github_cache = {}
-_history_cache = {}
+_overview_cache = {}
 _commit_cache = {}
 _last_fetch = {}
+# Open pull requests from the last successful GitHub read (CI poller or explicit fetch); views never call gh.
+_pull_requests = {}
 _OPEN_PR_LIMIT = 2 ** 31 - 1
-_COMMIT_FORMAT = "%H%x00%P%x00%s%x00%an%x00%cI%x00%b"
+# Repeated reads within this window (the sidebar polls every few seconds) reuse the last scan.
+_FRESH_SECONDS = 10
+# `git status` in every worktree is the costly part on large checkouts. Working-tree edits change no ref, so
+# besides forced reads and ref/worktree changes the status scan only reruns after this interval.
+_STATUS_SECONDS = 60
+# Tracked build outputs a local compile rewrites. Untracked outputs are already left out by .gitignore; tracked
+# ones (Unreal's Binaries/ and Intermediate/, at the root, under Plugins/* or nested deeper) are recognised by
+# directory name at any depth rather than fixed paths.
+_BUILD_OUTPUT_DIRS = frozenset({"binaries", "intermediate"})
 
 _REF_FORMAT = ("%(refname)%00%(objectname)%00%(subject)%00%(authorname)%00"
                "%(committerdate:iso-strict)%00%(upstream:short)%00%(symref)")
@@ -83,8 +91,7 @@ def branch_choices(root):
     _, refs = _refs(root)
     branches = [r["ref"][11:] for r in refs if r["ref"].startswith("refs/heads/")]
     base = next((name for name in ("develop", "dev", "main", "master") if name in branches), None)
-    stable = next((name for name in ("master", "main") if name in branches and name != base), None)
-    return {"branches": branches, "base": base, "stable": stable}
+    return {"branches": branches, "base": base}
 
 
 def remotes(root):
@@ -99,179 +106,214 @@ def remotes(root):
     return result
 
 
-def _calculation_ref(refs, name):
-    remote = "refs/remotes/origin/" + name
-    return remote if any(ref["ref"] == remote for ref in refs) else "refs/heads/" + name
+def _count(root, *args):
+    return int(_git(root, "rev-list", "--count", *args, "--").stdout)
 
 
-def _branch_summary(root, refs, name):
-    selected = _calculation_ref(refs, name)
-    ref = next(ref for ref in refs if ref["ref"] == selected)
-    relation = ""
-    if selected.startswith("refs/remotes/"):
-        behind, ahead = map(int, _git(root, "rev-list", "--left-right", "--count",
-                                     selected + "...refs/heads/" + name).stdout.split())
-        if ahead and behind:
-            relation = f"本地 {name} 与 origin 分叉（领先 {ahead}、落后 {behind} 个提交）"
-        elif behind:
-            relation = f"本地 {name} 落后 origin {behind} 个提交"
-        elif ahead:
-            relation = f"本地 {name} 领先 origin {ahead} 个提交"
-    else:
-        relation = f"本地 {name}：没有 origin"
-    return {"name": name, "ref": selected, "latest": ref["latest"], "origin_relation": relation}
+def _outside(root, *excluded):
+    """Commits on local branches that none of `excluded` reach: {sha: parents}, in one Git call."""
+    graph = {}
+    for line in _git(root, "rev-list", "--parents", "--branches", "--not", *excluded, "--").stdout.splitlines():
+        sha, *parents = line.split()
+        graph[sha] = parents
+    return graph
 
 
-def _branch_data(root, refs, base, stable):
-    locals_ = {r["ref"][11:]: r for r in refs if r["ref"].startswith("refs/heads/")}
-    for name in (base, stable):
-        if name is not None and name not in locals_:
-            raise GitError("本地分支不存在: " + name)
-    base_data = _branch_summary(root, refs, base)
-    base_ref = base_data["ref"]
-    branches = []
-    for name, ref in locals_.items():
-        branch_ref = "refs/heads/" + name
-        behind, ahead = map(int, _git(root, "rev-list", "--left-right", "--count",
-                                     base_ref + "..." + branch_ref).stdout.split())
-        unique = _git(root, "rev-list", branch_ref, "--not", base_ref).stdout.splitlines() if ahead else []
-        conflicts = []
-        if ahead:
-            merge = _git(root, "merge-tree", "--write-tree", "--name-only", "--no-messages",
-                         base_ref, branch_ref, allowed=(0, 1))
-            if merge.returncode == 1:
-                conflicts = merge.stdout.splitlines()[1:]
-        branches.append({"name": name, "latest": ref["latest"], "upstream": ref["upstream"],
-                         "ahead": ahead, "behind": behind, "merged": ahead == 0,
-                         "conflicts": conflicts, "unique_commits": unique,
-                         "origin_relation": _branch_summary(root, refs, name)["origin_relation"]
-                         if name in (base, stable) else ""})
-    remote_only = []
-    ref_unique_commits = {branch["name"]: branch["unique_commits"] for branch in branches}
-    for ref in refs:
-        if ref["ref"].startswith("refs/remotes/origin/") and not ref["symbolic"]:
-            name = ref["ref"][13:]
-            ref_unique_commits[name] = _git(root, "rev-list", ref["ref"], "--not", base_ref).stdout.splitlines()
-            if name[7:] not in locals_:
-                remote_only.append({"name": name, "latest": ref["latest"], "upstream": None})
-    stable_data = None
-    if stable is not None:
-        stable_data = _branch_summary(root, refs, stable)
-        stable_data["ahead"] = int(_git(root, "rev-list", "--count", stable_data["ref"] + ".." + base_ref).stdout)
-    return {"branches": branches, "remote_only": remote_only, "ref_unique_commits": ref_unique_commits,
-            "base": base_data, "stable": stable_data}
+def _reach(graph, tip, copied=()):
+    """Non-merge commits reachable from `tip` inside `graph`, leaving out those in `copied`.
+
+    Every commit between a tip and an outside commit is outside too, so walking only `graph` is exact.
+    Merge commits carry no work of their own: a branch whose only outside commits merge base back in
+    (a release branch that merged develop, say) has nothing left to merge.
+    """
+    seen, stack, work = set(), [tip], 0
+    while stack:
+        sha = stack.pop()
+        if sha in graph and sha not in seen:
+            seen.add(sha)
+            work += len(graph[sha]) < 2 and sha not in copied
+            stack.extend(graph[sha])
+    return work
 
 
-def _worktrees(root):
-    output = _git(root, "worktree", "list", "--porcelain", "-z").stdout
-    trees = []
-    now = time.monotonic()
+def _copied(root, target, tip):
+    """Commits reachable from `tip` whose change `target` already carries as a different commit.
+
+    A cherry-picked or rebased copy has its own SHA, so reachability alone reads the original as missing;
+    Git's patch-id comparison (`--cherry-mark`) recognises it. Several commits squashed into one are not
+    recognised and stay counted.
+    """
+    output = _git(root, "rev-list", "--cherry-mark", "--right-only", "--no-merges", target + "..." + tip, "--").stdout
+    return {line[1:] for line in output.splitlines() if line.startswith("=")}
+
+
+def _worktree_paths(output):
+    """refs/heads/<name> -> checkout path, from `worktree list --porcelain -z`."""
+    paths = {}
     for record in output.split("\0\0"):
-        if not record:
-            continue
         fields = dict(field.split(" ", 1) if " " in field else (field, "")
                       for field in record.split("\0") if field)
-        path = fields["worktree"]
-        key = _root(path)
-        cached = _dirty_cache.get(key)
-        if cached is None or now - cached[0] >= 60:
-            dirty = bool(_git(path, "status", "--porcelain", "--untracked-files=no").stdout)
-            _dirty_cache[key] = (now, dirty)
-        else:
-            dirty = cached[1]
-        trees.append({"path": path, "dirty": dirty, "branch": fields.get("branch")})
-    return trees
+        if "branch" in fields:
+            paths[fields["branch"]] = fields["worktree"]
+    return paths
 
 
-def _commit_labels(refs):
-    labels = {}
-    for ref in refs:
-        if ref["symbolic"]:
+def _overview(root, refs, trees, base, integration, exclude):
+    """Classify every local branch against base and the optional local integration branch.
+
+    Merged means reached by local <base> or origin/<base>, so a stale local base does not hide pushed
+    merges; a commit whose copy (cherry-pick, rebase) is there counts as merged too, likewise for the
+    integration branch. Merged branches stay in the result only while they have a worktree, whose uncommitted
+    changes decide later whether they are shown.
+    """
+    locals_ = {r["ref"][11:]: r for r in refs if r["ref"].startswith("refs/heads/")}
+    for name in (base, integration):
+        if name is not None and name not in locals_:
+            raise GitError("本地分支不存在: " + name)
+    have = {r["ref"] for r in refs}
+    origin_base = "refs/remotes/origin/" + base
+    base_refs = ["refs/heads/" + base] + ([origin_base] if origin_base in have else [])
+    outside_base = _outside(root, *base_refs)
+    # Without origin/<base> there is nowhere to push, so merged locally means done.
+    unpushed_graph = _outside(root, origin_base) if origin_base in have else {}
+    outside_integration = None if integration is None else _outside(root, *base_refs, "refs/heads/" + integration)
+    branches, hidden, integrated = [], 0, []
+    for name, ref in locals_.items():
+        if name in (base, integration) or name in exclude:
             continue
-        if ref["ref"].startswith("refs/heads/"):
-            name = ref["ref"][11:]
-        elif ref["ref"].startswith("refs/remotes/origin/"):
-            name = ref["ref"][13:]
+        head, tip = "refs/heads/" + name, ref["latest"]["sha"]
+        pending, copies, known = None, {}, set()
+
+        def copied(target):
+            if target not in copies:
+                copies[target] = _copied(root, target, tip)
+            return copies[target]
+
+        # Commits brought over as copies (cherry-pick, rebase) count as merged where their copy landed.
+        commits = _reach(outside_base, tip)
+        for target in base_refs:
+            if not commits:
+                break
+            known |= copied(target)
+            commits = _reach(outside_base, tip, known)
+        if commits:
+            if outside_integration is not None:
+                pending = _reach(outside_integration, tip, known)
+                if pending:
+                    known |= copied("refs/heads/" + integration)
+                    pending = _reach(outside_integration, tip, known)
+            state = "unmerged" if pending is None or pending else "integrated"
         else:
+            # Copies only in the local base are not pushed yet.
+            commits = _reach(unpushed_graph, tip, copied(origin_base) if copies and origin_base in have else ())
+            state = "unpushed" if commits else "merged"
+        if state == "merged" and head not in trees:
+            hidden += 1
             continue
-        labels.setdefault(ref["latest"]["sha"], []).append(name)
-    return labels
+        if state == "integrated":
+            integrated.append(name)
+        remote = "refs/remotes/origin/" + name
+        branches.append({"name": name, "state": state, "commits": commits, "outside_integration": pending,
+                         "behind": _count(root, *base_refs, "--not", head),
+                         "remote": {"ahead": _count(root, head, "--not", remote)} if remote in have else None,
+                         "latest": ref["latest"], "worktree": trees.get(head)})
+    branches.sort(key=lambda item: item["latest"]["time"], reverse=True)
+    base_data = {"name": base, "origin": origin_base in have, "unpushed": None, "behind_origin": None,
+                 "worktree": trees.get("refs/heads/" + base)}
+    if origin_base in have:
+        behind, ahead = map(int, _git(root, "rev-list", "--left-right", "--count",
+                                      origin_base + "...refs/heads/" + base, "--").stdout.split())
+        base_data.update(unpushed=ahead, behind_origin=behind)
+    integration_data = None
+    if integration is not None:
+        head = "refs/heads/" + integration
+        integration_data = {"name": integration, "ahead": _reach(outside_base, locals_[integration]["latest"]["sha"]),
+                            "behind": _count(root, *base_refs, "--not", head), "branches": integrated,
+                            "worktree": trees.get(head)}
+    return {"base": base_data, "integration": integration_data, "branches": branches, "merged_hidden": hidden}
 
 
-def _commit_records(output, refs):
-    labels = _commit_labels(refs)
-    fields = output.split("\0")[:-1]
-    commits = []
-    for index in range(0, len(fields), 6):
-        sha, parents, subject, author, timestamp, body = fields[index:index + 6]
-        commits.append({"sha": sha, "parents": parents.split(), "refs": labels.get(sha, []),
-                        "subject": subject, "body": body.rstrip("\n"), "author": author, "time": timestamp})
-    return commits
+def _status(path):
+    """Uncommitted files in one worktree, build outputs counted apart; never takes the index lock."""
+    if not os.path.isdir(path):
+        return None
+    try:
+        result = _run(path, ["git", "--no-optional-locks", "-c", "core.quotepath=false",
+                             "status", "--porcelain=v1", "-z", "--untracked-files=all"])
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"files": None, "build_outputs": None, "error": str(exc)}
+    if result.returncode:
+        return {"files": None, "build_outputs": None, "error": (result.stderr or result.stdout).strip()}
+    records, files, outputs, index = result.stdout.split("\0"), 0, 0, 0
+    while index < len(records):
+        record = records[index]
+        index += 1
+        if not record:
+            continue
+        if record[0] in "RC" or record[1] in "RC":
+            index += 1  # The original path of a rename or copy follows as its own record.
+        if _BUILD_OUTPUT_DIRS.intersection(part.lower() for part in record[3:].split("/")[:-1]):
+            outputs += 1
+        else:
+            files += 1
+    return {"files": files, "build_outputs": outputs, "error": None}
 
 
-def _history_plan(root, refs, stable):
-    signature = tuple((ref["ref"], ref["latest"]["sha"], ref["symbolic"]) for ref in refs)
+def _statuses(paths):
+    with ThreadPoolExecutor(max_workers=max(1, min(8, len(paths)))) as pool:
+        return dict(zip(paths, pool.map(_status, paths)))
+
+
+def _assemble(overview, statuses, pull_requests):
+    """Join the cached graph scan with worktree status and known pull requests; runs no Git."""
+    data = copy.deepcopy(overview)
+    listed = []
+    for branch in data["branches"]:
+        dirty = statuses.get(branch["worktree"])
+        branch["dirty"] = dirty
+        opened = None if pull_requests is None else pull_requests["open"].get(branch["name"])
+        branch["pr"] = None if opened is None else copy.deepcopy(opened)
+        if branch["state"] != "merged" or (dirty is not None and (dirty["files"] or dirty["error"])):
+            listed.append(branch)
+        else:
+            data["merged_hidden"] += 1
+    data["branches"] = listed
+    for trunk in (data["base"], data["integration"]):
+        if trunk is not None:
+            trunk["dirty"] = statuses.get(trunk["worktree"])
+    data["pull_requests_at"] = None if pull_requests is None else pull_requests["at"]
+    return data
+
+
+def view(root, config, exclude=(), force=False):
+    """Branches still to merge, test in the integration branch or push, plus worktrees with uncommitted work.
+
+    Merged-and-pushed branches with clean (or no) worktrees are only counted. The graph scan reruns when
+    refs or worktrees change; unforced reads within _FRESH_SECONDS reuse the last result without running
+    Git. Worktree status reruns with the graph scan, on forced reads, or after _STATUS_SECONDS.
+    """
     key = _root(root)
-    cached = _history_cache.get(key)
-    if cached is not None and cached[0] == (signature, stable):
-        return cached[1]
-    history = _git(root, "log", "--all", "--topo-order", "--format=%H").stdout.splitlines()
-    if stable is None:
-        recent = history
-    else:
-        branches = [ref["ref"] for ref in refs if not ref["symbolic"] and
-                    (ref["ref"].startswith("refs/heads/") or ref["ref"].startswith("refs/remotes/origin/"))]
-        recent = _git(root, "rev-list", "--topo-order", *branches,
-                      "--not", _calculation_ref(refs, stable)).stdout.splitlines()
-        recent.append(next(ref["latest"]["sha"] for ref in refs if ref["ref"] == _calculation_ref(refs, stable)))
-    shown = set(recent)
-    plan = {"shas": recent + [sha for sha in history if sha not in shown], "recent_count": len(recent)}
-    _history_cache[key] = ((signature, stable), plan)
-    return plan
-
-
-def _commits(root, refs, offset, limit, stable):
-    plan = _history_plan(root, refs, stable)
-    end = min(offset + limit, len(plan["shas"]))
-    if offset == 0:
-        end = min(end, plan["recent_count"])
-    shas = plan["shas"][offset:end]
-    commits = []
-    if shas:
-        output = _git(root, "log", "--no-walk=unsorted", "-z", "--format=" + _COMMIT_FORMAT, *shas).stdout
-        commits = _commit_records(output, refs)
-    return commits, end if end < len(plan["shas"]) else None
-
-
-def _latest_merge(root, refs, base):
-    output = _git(root, "log", "--first-parent", "--merges", "-1", "-z", "--format=" + _COMMIT_FORMAT,
-                  _calculation_ref(refs, base)).stdout
-    commits = _commit_records(output, refs)
-    return commits[0] if commits else None
-
-
-def _commit_context(root, commits, refs, base, github):
-    labels = _commit_labels(refs)
-    parents = list(dict.fromkeys(parent for commit in commits for parent in commit["parents"]))
-    unresolved = [sha for sha in parents if sha not in labels]
-    names = {}
-    for patterns in ((_calculation_ref(refs, base),), ("refs/heads/*", "refs/remotes/origin/*")):
-        if not unresolved:
-            break
-        output = _git(root, "name-rev", "--name-only", "--always",
-                      *("--refs=" + pattern for pattern in patterns), *unresolved).stdout.splitlines()
-        for sha, name in zip(unresolved, output):
-            # A second-parent route cannot identify the branch that was merged.
-            if "^" not in name and name != sha:
-                names[sha] = re.sub(r"~\d+$", "", name).removeprefix("remotes/")
-        unresolved = [sha for sha in unresolved if sha not in names]
-    names.update((sha, sha[:7]) for sha in unresolved)
-    prs = [] if github is None else github["pull_requests"]
-    for commit in commits:
-        commit["parent_branches"] = [sorted(labels[sha], key=lambda name: (name != base, name.startswith("origin/"), name))[0]
-                                     if sha in labels else names[sha] for sha in commit["parents"]]
-        commit["pull_requests"] = [copy.deepcopy(pr) for pr in prs
-                                   if commit["sha"] in (pr["head_sha"], pr["merge_sha"])]
+    settings = (config["base"], config["integration"], tuple(sorted(exclude)))
+    with _lock:
+        now = time.monotonic()
+        cached = _overview_cache.get(key)
+        if force or cached is None or cached["settings"] != settings or now - cached["checked"] >= _FRESH_SECONDS:
+            signature, refs = _refs(root)
+            trees = _git(root, "worktree", "list", "--porcelain", "-z").stdout
+            signature = hashlib.sha256((signature + trees).encode("utf-8")).hexdigest()
+            if cached is None or cached["settings"] != settings or cached["signature"] != signature:
+                data = _overview(root, refs, _worktree_paths(trees), settings[0], settings[1], settings[2])
+                cached = {"settings": settings, "signature": signature, "data": data, "statuses": None}
+                _overview_cache[key] = cached
+            cached["checked"] = now
+        if force or cached["statuses"] is None or now - cached["status_checked"] >= _STATUS_SECONDS:
+            overview = cached["data"]
+            paths = sorted({item["worktree"] for item in [*overview["branches"], overview["base"],
+                                                           overview["integration"] or {}] if item.get("worktree")})
+            cached.update(statuses=_statuses(paths), status_checked=now)
+        data = _assemble(cached["data"], cached["statuses"], _pull_requests.get(key))
+        data.update(repository=Path(root).name, last_fetch_at=_last_fetch.get(key))
+        return data
 
 
 def _numstat(output):
@@ -344,14 +386,31 @@ def _github_repo(root):
     return match.group(1)
 
 
+_PR_FIELDS = ("number,title,headRefName,headRefOid,baseRefName,mergeCommit,state,isDraft,statusCheckRollup,url,closedAt,"
+              "isCrossRepository")
+
+
+def _open_pull_requests(root, repo):
+    """List open PRs and remember them by head name for the branch view."""
+    opened = _gh_json(root, "pr", "list", "--repo", repo, "--state", "open",
+                      "--limit", str(_OPEN_PR_LIMIT), "--json", _PR_FIELDS)
+    # Local branches match open PRs by head name; a fork's same-named head is someone else's branch.
+    by_head = {}
+    for pr in opened:
+        if not pr["isCrossRepository"]:
+            by_head.setdefault(pr["headRefName"], {"number": pr["number"], "url": pr["url"], "draft": pr["isDraft"],
+                                                   "base": pr["baseRefName"], "ci": _ci(pr["statusCheckRollup"])})
+    with _lock:
+        _pull_requests[_root(root)] = {"at": datetime.datetime.now(datetime.timezone.utc).isoformat(), "open": by_head}
+    return opened
+
+
 def _github(root, base, github_repo=None):
     try:
         repo = _github_repo(root) if github_repo is None else github_repo
-        fields = "number,title,headRefName,headRefOid,baseRefName,mergeCommit,state,isDraft,statusCheckRollup,url,closedAt"
-        opened = _gh_json(root, "pr", "list", "--repo", repo, "--state", "open",
-                          "--limit", str(_OPEN_PR_LIMIT), "--json", fields)
-        merged = _gh_json(root, "pr", "list", "--repo", repo, "--state", "merged", "--limit", "20", "--json", fields)
-        closed = _gh_json(root, "pr", "list", "--repo", repo, "--state", "closed", "--limit", "20", "--json", fields)
+        opened = _open_pull_requests(root, repo)
+        merged = _gh_json(root, "pr", "list", "--repo", repo, "--state", "merged", "--limit", "20", "--json", _PR_FIELDS)
+        closed = _gh_json(root, "pr", "list", "--repo", repo, "--state", "closed", "--limit", "20", "--json", _PR_FIELDS)
         recent_by_number = {pr["number"]: pr for pr in merged + closed}
         recent = sorted(recent_by_number.values(), key=lambda pr: pr["closedAt"], reverse=True)[:20]
         prs = [{"number": pr["number"], "title": pr["title"], "head": pr["headRefName"],
@@ -372,48 +431,6 @@ def _github(root, base, github_repo=None):
         return None, str(exc)
 
 
-def view(root, config, sessions, offset=0, limit=80, github_repo=None):
-    """Return one graph page and current branch/worktree/session/GitHub details."""
-    if offset < 0 or limit < 1:
-        raise ValueError("offset 必须非负，limit 必须大于零")
-    limit = min(limit, 80)
-    key = _root(root)
-    base, stable = config["base"], config["stable"]
-    with _lock:
-        signature, refs = _refs(root)
-        cached = _refs_cache.get(key)
-        cache_key = (signature, base, stable)
-        if cached is None or cached[0] != cache_key:
-            data = _branch_data(root, refs, base, stable)
-            data["recent_merge"] = _latest_merge(root, refs, base)
-            _refs_cache[key] = (cache_key, data)
-        else:
-            data = cached[1]
-        data = copy.deepcopy(data)
-        worktrees = _worktrees(root)
-        for branch in data["branches"]:
-            branch["worktrees"] = [{"path": tree["path"], "dirty": tree["dirty"]} for tree in worktrees
-                                   if tree["branch"] == "refs/heads/" + branch["name"]]
-            paths = {_root(tree["path"]) for tree in branch["worktrees"]}
-            branch["sessions"] = [{"session_id": session["session_id"], "name": session["crew_name"],
-                                   "group": session["group_name"], "role": session["role"], "status": session["status"]}
-                                  for session in sessions if session["branch"] == branch["name"]
-                                  or session["worktree"] is not None and _root(session["worktree"]) in paths]
-        commits, next_offset = _commits(root, refs, offset, limit, stable)
-        gh_key = (key, base, github_repo)
-        now = time.monotonic()
-        gh_cached = _github_cache.get(gh_key)
-        if gh_cached is None or now - gh_cached[0] >= 60:
-            github, reason = _github(root, base, github_repo)
-            _github_cache[gh_key] = (now, github, reason)
-        else:
-            _, github, reason = gh_cached
-        _commit_context(root, commits + ([] if data["recent_merge"] is None else [data["recent_merge"]]), refs, base, github)
-        data.update(repository=Path(root).name, commits=commits, next_offset=next_offset,
-                    github=copy.deepcopy(github), github_reason=reason, last_fetch_at=_last_fetch.get(key))
-        return data
-
-
 def fetch(root):
     """Fetch only when explicitly requested by the refresh endpoint."""
     key = _root(root)
@@ -425,9 +442,13 @@ def fetch(root):
     with _lock:
         if result.returncode == 0:
             _last_fetch[key] = datetime.datetime.now(datetime.timezone.utc).isoformat()
-            _refs_cache.pop(key, None)
-            for gh_key in list(_github_cache):
-                if gh_key[0] == key:
-                    del _github_cache[gh_key]
-        return {"ok": result.returncode == 0, "output": result.stdout, "error": result.stderr,
-                "last_fetch_at": _last_fetch.get(key)}
+            _overview_cache.pop(key, None)
+        outcome = {"ok": result.returncode == 0, "output": result.stdout, "error": result.stderr,
+                   "last_fetch_at": _last_fetch.get(key), "pull_requests_error": None}
+    if outcome["ok"]:
+        # The explicit remote refresh also renews which branches have open PRs; gh problems keep their reason.
+        try:
+            _open_pull_requests(root, _github_repo(root))
+        except (FileNotFoundError, GitError, subprocess.TimeoutExpired) as exc:
+            outcome["pull_requests_error"] = str(exc)
+    return outcome

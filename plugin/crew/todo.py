@@ -63,11 +63,6 @@ def _enrich(conn, item):
     from . import goal_links
     proposer = board.session(conn, item["session_id"])
     leader = _leader(conn, proposer)
-    rank = None
-    if leader is not None:
-        priority = conn.execute("SELECT position FROM leader_priority WHERE project=? AND session_id=?",
-                                (item["project"], leader["session_id"])).fetchone()
-        rank = priority[0] + 1 if priority is not None else None
     links = goal_links.list_links(conn, 'todo', item['id'])
     key = conn.execute('SELECT operation_key FROM todo_operation_keys WHERE todo_id=? ORDER BY operation_key LIMIT 1', (item['id'],)).fetchone()
     return {**item, "blocking": bool(item["blocking"]),
@@ -76,7 +71,7 @@ def _enrich(conn, item):
             "proposer_name": proposer["crew_name"] or proposer["cc_name"] or proposer["session_id"][:8],
             "group": proposer["group_name"], "group_name": proposer["group_name"],
             "leader_session_id": leader["session_id"] if leader is not None else None,
-            "leader_name": leader["crew_name"] if leader is not None else None, "priority": rank}
+            "leader_name": leader["crew_name"] if leader is not None else None}
 
 
 def get(conn, project_name, todo_id):
@@ -94,9 +89,7 @@ def list(conn, project_name=None, all=False):
         clauses.append("status='open'")
     rows = conn.execute("SELECT * FROM todos" + (" WHERE " + " AND ".join(clauses) if clauses else ""), args)
     items = [_enrich(conn, dict(row)) for row in rows]
-    return sorted(items, key=lambda item: (item["status"] != "open", not item["blocking"],
-                                         item["priority"] if item["priority"] is not None else 999,
-                                         item["created_at"], item["id"]))
+    return sorted(items, key=lambda item: (item["status"] != "open", not item["blocking"], item["created_at"], item["id"]))
 
 
 @board.atomic
@@ -164,7 +157,8 @@ def _notify(conn, item, text, now, source="web", route=None, sender=board.HUMAN)
     if sender == target['session_id']:
         return {'kind': 'silent', 'session_id': target['session_id']}
     if route["kind"] in ('leader_notice', 'silent') and target["role"] == "leader":
-        notice_id = board._queue_leader_notice(conn, target["session_id"], text, source, now)
+        # The user's own todo results wait for the leader's next conversation; AI withdrawals still wake it.
+        notice_id = board._queue_leader_notice(conn, target["session_id"], text, source, now, wake=sender != board.HUMAN)
         return {"kind": "leader_notice", "id": notice_id, "session_id": target["session_id"]}
     handoff_id = conn.execute("INSERT INTO handoffs(project,from_session,to_target,body,created_at) VALUES(?,?,?,?,?)",
                               (item["project"], sender, target["session_id"], text,
@@ -174,20 +168,24 @@ def _notify(conn, item, text, now, source="web", route=None, sender=board.HUMAN)
     return {"kind": "handoff", "id": handoff_id, "session_id": target["session_id"]}
 
 
-def _notice_text(conn, item, action, note=None):
+def _notice_text(conn, item, action, note=None, route=None):
     proposer = board.session(conn, item["session_id"])
     name = proposer["crew_name"] or proposer["session_id"][:8]
     text = "人工待办“%s”：%s。\n提出者：%s（Crew 会话 ID：%s）。" % (item["title"], action, name, item["session_id"])
     if note:
         text += "\n备注：" + note
+    # One manual item changing state does not resume a whole flow, and a manual stop still holds.
+    own = (route or _route(conn, item))["session_id"] == item["session_id"]
+    relay = "这是你提出的待办。" if own else "转告提出者。"
     if item["blocking"] and item["status"] == "done":
-        text += "\n这项原本卡住了 AI 流程，用户现已完成。请马上转告原提出者，并叫醒它继续后续工作。"
+        text += ("\n这项原本卡住 AI 流程，用户已完成。" + relay +
+                 "再核对其余阻塞、停止状态和授权，只安排已获授权的后续工作；用户手动停止的仍等用户恢复。")
     elif item["blocking"] and item["status"] == "open":
-        text += "\n这项重新处于待处理状态，仍卡住 AI 流程。请马上转告原提出者，恢复等待用户操作。"
+        text += "\n这项重新待处理，仍卡住 AI 流程。" + relay + "相关工作继续等用户完成。"
     elif item["blocking"]:
-        text += "\n这项原本卡住了 AI 流程，请马上转告原提出者；障碍已解除时叫醒它继续，否则按原因重新安排。"
+        text += "\n这项原本卡住 AI 流程，现已不再待处理。" + relay + "按原因重新安排后续，不当作用户已完成。"
     else:
-        text += "\n请转告原提出者，按更新后的待办状态继续安排。"
+        text += "\n" + relay + "按更新后的状态安排后续。"
     return text
 
 
@@ -213,16 +211,20 @@ def _change(conn, before, status, note, actor, kind, now):
             "before": before, "version": after["version"]}
 
 
+def optional_note(note):
+    """Done and cancelled both accept no note; blank text means none."""
+    if note is None or isinstance(note, str) and not note.strip():
+        return None
+    return _text(note, "备注").strip()
+
+
 @board.atomic
 def resolve(conn, project_name, todo_id, status, note=None, actor=board.HUMAN, expected_version=None, now=None):
     if actor != board.HUMAN:
         raise board.BoardError("人工待办只能由用户本人标记完成或取消")
     if status not in ("done", "cancelled"):
         raise board.BoardError("人工待办处理状态必须是 done 或 cancelled")
-    if note is not None:
-        _text(note, "备注")
-    if status == "cancelled":
-        _text(note, "取消原因")
+    note = optional_note(note)
     before = _raw(conn, project_name, todo_id)
     _version(before, expected_version)
     return _change(conn, before, status, note, actor, "todo:resolve", now)
@@ -279,7 +281,8 @@ def undo(conn, project_name, todo_id, before, version, actor=board.HUMAN, now=No
     _remove_pending_notification(conn, current["project"], operation["notification"])
     restored = _raw(conn, current["project"], todo_id)
     action = "用户撤销了上一操作，现已恢复为%s" % {"open": "待处理", "done": "已完成", "cancelled": "已取消", "withdrawn": "已撤回"}[restored["status"]]
-    notification = _notify(conn, restored, _notice_text(conn, restored, action), now, route=operation["notification"])
+    notification = _notify(conn, restored, _notice_text(conn, restored, action, route=operation["notification"]), now,
+                           route=operation["notification"])
     board._event(conn, "todo:undo", current["project"], actor,
                  {"id": todo_id, "before": current, "version": restored["version"], "notification": notification}, now)
     return {"ok": True, "todo": get(conn, current["project"], todo_id), "before": current, "version": restored["version"]}

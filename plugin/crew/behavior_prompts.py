@@ -47,6 +47,8 @@ SPECS = (
          'CC / Codex · Git 助手', _BUNDLED, path='skills/git/SKILL.md'),
     Spec('assistant', '全局助手守则', 'roles', '跨工作区个人助手的查询、写动作、想法墙与授权边界。',
          'CC / Codex · 全局助手', _BUNDLED, path='skills/assistant/SKILL.md'),
+    Spec('language', '回复语言', 'shared', '所有角色对用户和组内输出使用的语言。',
+         'CC / Codex · 全部角色', _BUNDLED),
     Spec('common', '通用工作原则', 'shared', '所有角色共用的授权、证据、推进和文档维护原则。',
          'CC / Codex · 全部角色', _BUNDLED),
     Spec('collaboration', '协作与消息', 'shared', '回复用户、Git 请求、组内消息类型与回执、跨组协作、等待和守卫。',
@@ -63,7 +65,7 @@ SPECS = (
          'CC / Codex · 交付后讨论执行', '交付后讨论的每轮输入'),
     Spec('report', '阶段报告', 'delivery', '持续更新的阶段报告、阶段发布和成果版本快照。',
          'CC / Codex · 全部角色', _BUNDLED),
-    Spec('final_report', '最终交付报告', 'delivery', '最终 HTML 报告的写法、预览、验收记录和提交，是唯一的最终交付规则。',
+    Spec('final_report', '最终交付报告', 'delivery', '最终交付报告页面（含具体案例和帮助理解的可视化）的写法、预览、验收记录和提交，是唯一的最终交付规则。',
          'CC / Codex · leader、Git 助手', _BUNDLED),
     Spec('finish_reminder', '收尾检查提醒', 'delivery', 'leader 一轮结束但任务仍在推进中、又没有提交收尾时，提醒它 finish 或说明在等什么。',
          'CC / Codex · leader 目标执行', '任务停在推进中且本轮结束后，每轮最多一次', ('title',)),
@@ -99,6 +101,8 @@ SPECS = (
          '辅助调用 · 运维助手', '每次运维对话'),
     Spec('idea_discussion', '想法讨论', 'helper', '在想法墙点“去聊聊”时附给全局助手的说明；想法内容填入 {{note}}。',
          'CC / Codex · 全局助手', '从想法墙发起讨论时', ('note',)),
+    Spec('reading_context', '阅读附注', 'helper', '边看任务报告或文档边对话时，附在用户消息前的说明；正在看的内容填入 {{reading}}。',
+         'CC / Codex · leader、成员', '用户在阅读区旁边发消息时', ('reading',)),
     Spec('summary', '频道摘要', 'helper', '把交流区新发言整理进累积要点卡。',
          '辅助调用 · 摘要模型', '交流区摘要更新时'),
 )
@@ -107,10 +111,10 @@ LABELS = {spec.key: spec.label for spec in SPECS}
 KEYS = tuple(SPEC)
 ROLE_KEYS = ('leader', 'member', 'assistant', 'git')
 BUNDLES = {
-    'leader': ('common', 'leader', 'collaboration', 'human_input', 'context', 'report', 'final_report'),
-    'member': ('common', 'member', 'member_boundary', 'collaboration', 'human_input', 'context', 'report'),
-    'git': ('common', 'git', 'collaboration', 'human_input', 'context', 'report', 'final_report'),
-    'assistant': ('common', 'assistant', 'context'),
+    'leader': ('common', 'leader', 'collaboration', 'human_input', 'context', 'report', 'final_report', 'language'),
+    'member': ('common', 'member', 'member_boundary', 'collaboration', 'human_input', 'context', 'report', 'language'),
+    'git': ('common', 'git', 'collaboration', 'human_input', 'context', 'report', 'final_report', 'language'),
+    'assistant': ('common', 'assistant', 'context', 'language'),
 }
 _PLACEHOLDER = re.compile(r'\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}')
 

@@ -19,11 +19,12 @@ def main():
             board.init_project(conn, 'fixture', root)
             board.join(conn, 'leader', 'fixture', 'Report leader', root, root, None, role='leader')
             goal = goals.create(conn, 'fixture', 'leader', '验收报告测试', '核对实测步骤', [{'id': 'short', 'title': '步骤与预期可以阅读'}])
-            data = GoalFixture.report(None, 'awaiting_acceptance')
+            # The generated page now serves only non-final outcomes; a final delivery always has an authored page.
+            data = GoalFixture.report(None, 'failed')
             data['user_test'] = [{'step': '打开 <设备页>，输入 A & B。', 'expected': '看到“准备就绪”。'},
                                  {'step': '点击保存。', 'expected': '看到“已保存”。'}]
             standard = goals.save_report(conn, goal['id'], data)
-            authored = goals.save_report(conn, goal['id'], {**data, 'document_html': '<h1>验收报告测试</h1><p>独立报告正文。</p>'})
+            authored = goals.save_report(conn, goal['id'], {**GoalFixture.report(None, 'awaiting_acceptance'), 'user_test': data['user_test'], 'document_html': '<h1>验收报告测试</h1><p>独立报告正文。</p>'})
             print(json.dumps({'standard': standard['html'], 'authored': authored['html']}, ensure_ascii=False))
     assert not root.exists()
 

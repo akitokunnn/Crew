@@ -3,43 +3,45 @@ from contextlib import closing
 import hashlib
 import json
 
-from . import behavior_prompts, board, goal_artifacts, goal_context, goal_mode, goal_reports, goal_work, goals, store
+from . import behavior_prompts, board, codex_client, goal_artifacts, goal_context, goal_mode, goal_reports, goal_work, goals, store
 
 READ_ACTIONS = frozenset(('status', 'report-template', 'report.get', 'report.preview', 'context.inspect', 'context.retrieve', 'work.list')) | goal_artifacts.READ_ACTIONS
 GOAL_ACTIONS = frozenset(('status', 'create', 'start', 'pause', 'resume', 'cancel', 'reopen',
-                          'amend', 'assign', 'report-template', 'report.get', 'report.preview', 'report.publish', 'mode.set', 'finish', 'work.list', 'work.add', 'work.update')) | goal_artifacts.ACTIONS
+                          'amend', 'assign', 'transfer', 'report-template', 'report.get', 'report.preview', 'report.publish', 'mode.set', 'finish', 'work.list', 'work.add', 'work.update')) | goal_artifacts.ACTIONS
 CONTEXT_ACTIONS = frozenset(('context.inspect', 'context.retrieve', 'context.put', 'context.correct', 'context.expire'))
 CREATE_FIELDS = frozenset(('title', 'request', 'acceptance', 'constraints', 'priority', 'dependencies', 'decision_mode',
                            'source', 'leader', 'leader_session_id'))
 # Envelope keys the CLI and hosts add to every goal action.
 TRANSPORT_FIELDS = frozenset(('project', 'goal_id', 'confirmed', 'start', 'request_id'))
 CREATE_HELP = ('create 的 data 字段：title（标题）、request（用户原话）、acceptance（验收标准数组）、'
-               '可选 constraints（数组）、priority、dependencies、decision_mode')
+               '可选 constraints（数组）、priority、dependencies、decision_mode；'
+               'start=true 建完立即由主责 leader 开工，不带则只排队等开始')
 
 
 def report_template(conn, goal_id):
     goal = goals.get(conn, goal_id)
     return {'goal_id': goal_id, 'round': goal['current_round'], 'requirement_version': goal['requirement_version'],
             'outcome': 'awaiting_acceptance', 'summary': '', 'delivered': [], 'unresolved': [],
-            'user_test': [{'step': '', 'expected': ''}], 'user_todos': [], 'user_decisions': [],
+            'user_test': [], 'user_todos': [], 'user_decisions': [],
             'acceptance': [{'criterion_id': item['id'], 'status': 'unverified',
                             'evidence': [{'label': '', 'reference': ''}]}
                            for item in goal['requirements']['acceptance']],
             'examples': [{'kind': 'actual', 'input': '', 'expected': '', 'actual': '', 'conclusion': ''}],
             'document_html': '', 'artifacts': [], 'tradeoffs': [], 'follow_up': '',
             'investment': {'elapsed_seconds': None, 'usage': None, 'roles': [{'role': 'leader', 'contribution': ''}]},
-            '_help': {'outcome': '最终交付用 awaiting_acceptance；只有用户本人看报告、实测后点「通过」任务才完成，AI 提交 completed 会被拒绝；failed|cancelled 如实结束，progress 发布阶段成果',
-                      'user_test': '对象数组 [{step,expected}]；awaiting_acceptance 时至少一项，步骤与预期均为非空文本',
+            '_help': {'outcome': '最终交付用 awaiting_acceptance，用户确认后点「通过」任务才完成，AI 提交 completed 会被拒绝；failed|cancelled 如实结束，progress 发布阶段成果',
+                      'verification': 'awaiting_acceptance/completed 要给出验证证据：AI 实际做了什么验证写在 acceptance[].evidence（结果用 status），没覆盖的边界写进 unresolved；能自己验证的先自己验证，用户验收是最终确认',
+                      'user_test': '可选对象数组 [{step,expected}]：只写需要用户亲自确认的步骤（如只有用户能做的设备、账号或体验检查），没有就留 []',
                       'user_todos': '可选对象数组 [{title,detail}]；系统收尾成功时自动创建归属 leader 的人工待办，不挂在目标页',
                       'user_decisions': '可选对象数组 [{question,options:[],recommendation:null,why}]；系统收尾成功时自动创建归属 leader 的非阻塞待拍板',
-                      'document_html': '自包含 HTML 正文（最多 512 KiB），写法与预览按 [Crew final_report]。CLI 可用 finish --html-file <报告.html> 读取正文；Codex 在 report.document_html 传同样内容',
+                      'document_html': 'awaiting_acceptance/completed 必填：让人方便理解和阅读的自包含 HTML 页面（最多 512 KiB），至少一个具体案例和一处帮助理解的可视化（图表、流程或结构图、对比表、截图等），提交前用 report.preview 至少预览一次；写法按 [Crew final_report]。progress/failed/cancelled 可省略，省略时 Crew 按结构化字段生成。CLI 用 finish --html-file <报告.html> 读取正文；Codex 在 report.document_html 传同样内容',
                       'acceptance_status': 'passed|failed|unverified|simulated',
                       'acceptance': 'awaiting_acceptance/completed 必须覆盖全部标准；progress/failed/cancelled 可只列部分或省略，编号仍须合法且不重复',
-                      'evidence': '对象数组，例如 [{"label":"命令实测输出","reference":"artifacts/result.txt"}]；未验证可用 []，不能填字符串数组',
-                      'examples_kind': 'actual|illustrative；awaiting_acceptance/completed 至少一个，其他 outcome 可省略或 []；示意不能冒充实测',
+                      'evidence': '对象数组 [{label:做了什么验证及结果, reference:在哪回查}]，例如 [{"label":"跑相关测试 12 项全过","reference":"artifacts/test.txt"}]；未验证可用 []，不能填字符串数组',
+                      'examples': '对象数组 [{kind,input,expected,actual,conclusion}]：awaiting_acceptance/completed 至少一个具体案例（输入或操作→期望→实际→结论），与页面里的案例一致；kind 为 actual|illustrative，示意不能冒充实测；其他 outcome 可留 []',
                       'text_arrays': 'delivered/unresolved/artifacts/tradeoffs 都是文本数组',
                       'investment': '可省略；提供时校验数值，未知 elapsed_seconds/usage 保留 null，不估作零；角色格式 {role,contribution}；缓存用量单列',
-                      'submit': '最终交付用 crew goal finish --file <报告.json>；阶段成果把 outcome 改 progress，用 crew goal report.publish --request-id <稳定标识> --file <报告.json>，继续工作；所有 passed 必须有实际证据'}}
+                      'submit': '最终交付用 crew goal finish --file <报告.json> --html-file <报告.html>；阶段成果把 outcome 改 progress，用 crew goal report.publish --request-id <稳定标识> --file <报告.json>，继续工作；passed/failed 必须有实际证据'}}
 
 
 def _person(conn, project, value):
@@ -57,6 +59,21 @@ def _host(controller):
 
 
 BUSY_AUTOMATIC_INPUT = '自动消息等待当前轮次结束'
+DELIVERED = frozenset(('awaiting_acceptance', 'completed', 'failed'))
+
+
+def _user_turn(controller, session_id):
+    """True when this conversation's current turn was started by the user's own message.
+
+    Only Crew-hosted conversations record input provenance; an external session cannot prove it.
+    """
+    manager = getattr(controller, 'manager', None)
+    if manager is None or not manager.path(session_id).exists():
+        return False
+    journal = manager.journal(session_id)
+    with journal.condition:
+        source = next((event.get('source') for event in reversed(journal.events) if event.get('type') == 'message'), None)
+    return source == 'human'
 
 
 def _deliver_amendment(conn, value, text, actor, controller, own_execution_id=None):
@@ -120,6 +137,22 @@ def _start_identity(goal, session_id, task=None):
     return 'goal-start:' + scope if task is None else 'goal-assign:' + scope + ':' + hashlib.sha256(task.encode('utf-8')).hexdigest()
 
 
+def _start(conn, controller, goal, person, actor_session_id, text=None):
+    goal_id = goal['id']
+    goals._member(conn, goal, person['session_id'])
+    controller.check_member_start(conn, goal_id, person['session_id'],
+                                  'human' if actor_session_id == board.HUMAN else 'crew')
+    # Check before leaving the queue, so a refused start does not show as running.
+    gate = goals.dispatch_check(conn, goal_id)
+    if not gate['allowed']:
+        raise board.Conflict(gate['reason'])
+    if goal['status'] == 'queued':
+        goal = goals.transition(conn, goal_id, 'running', actor=actor_session_id)
+    return controller.send(goal_id, person['session_id'], text or goal['requirements']['request'],
+                           identity=_start_identity(goal, person['session_id']),
+                           source='human' if actor_session_id == board.HUMAN else 'crew')
+
+
 def dispatch(home, actor_session_id, execution_id, action, data, controller=None):
     """Data is open JSON; it can never override the trusted actor/execution."""
     if action not in GOAL_ACTIONS | CONTEXT_ACTIONS or not isinstance(data, dict):
@@ -177,10 +210,21 @@ def dispatch(home, actor_session_id, execution_id, action, data, controller=None
                 unknown = sorted(set(data) - CREATE_FIELDS - TRANSPORT_FIELDS)
                 raise board.BoardError('create 缺少 data.' + '、data.'.join(missing) + '；' + CREATE_HELP
                                        + ('；不认识的字段：' + '、'.join(unknown) if unknown else ''))
-            return goals.create(conn, project, leader['session_id'], data.get('title'), data.get('request'),
-                                data.get('acceptance'), constraints=data.get('constraints', ()), priority=data.get('priority', 0),
-                                dependencies=data.get('dependencies', ()), actor=actor_session_id, source=data.get('source'),
-                                decision_mode=data.get('decision_mode'))
+            if data.get('start') is True:
+                _host(controller)
+            created = goals.create(conn, project, leader['session_id'], data.get('title'), data.get('request'),
+                                   data.get('acceptance'), constraints=data.get('constraints', ()), priority=data.get('priority', 0),
+                                   dependencies=data.get('dependencies', ()), actor=actor_session_id, source=data.get('source'),
+                                   decision_mode=data.get('decision_mode'))
+            if data.get('start') is not True:
+                return created
+            try:
+                receipt = _start(conn, controller, created, leader, actor_session_id)
+            except (board.BoardError, codex_client.CodexError, OSError) as exc:
+                # The goal exists; say so, so a retry starts it instead of creating a duplicate.
+                raise board.Conflict('任务已创建（%s，待开始），但没有开始：%s；处理后用 goal start %s 开始'
+                                     % (created['id'], exc, created['id'])) from exc
+            return {'goal': goals.get(conn, created['id']), 'receipt': receipt}
         if action == 'context.retrieve':
             from .storage_service import StorageService
             return StorageService(home).retrieve(project, {**data, 'goal_id':goal_id,
@@ -263,6 +307,18 @@ def dispatch(home, actor_session_id, execution_id, action, data, controller=None
                 return goals.continue_task(conn, goal_id, data.get('text'), actor=actor_session_id,
                     discussion_execution_id=execution_id, acceptance=data.get('acceptance'), constraints=data.get('constraints'),
                     expected_version=data.get('expected_version'))
+            if execution is None and actor_session_id != board.HUMAN and goal['status'] in DELIVERED:
+                # A leader relaying the user's change after delivery continues this task in its own round and
+                # never opens another round. (The user's own web supplements keep their existing path.)
+                if not _user_turn(controller, actor_session_id):
+                    raise board.Conflict('任务已交付；只有用户明确要求修改时才能继续。请在用户提出修改的那次对话里调用 amend，'
+                                         '或请用户在任务里点「需修改」。')
+                value = goals.continue_task(conn, goal_id, data.get('text'), actor=actor_session_id, user_requested=True,
+                                            acceptance=data.get('acceptance'), constraints=data.get('constraints'),
+                                            expected_version=data.get('expected_version'))
+                return {**value, 'message': '已登记修改，任务仍在第 %s 轮、回到待开始，原工作清单沿用。用 crew goal start %s'
+                        '（Codex：crew_goal 的 start）在本任务内接着改，完成并验证后重新 finish 提交验收。'
+                        % (value['current_round'], goal_id)}
             amended = goals.amend(conn, goal_id, data.get('text'), acceptance=data.get('acceptance'),
                                   constraints=data.get('constraints'), actor=actor_session_id, expected_version=data.get('expected_version'))
             return _deliver_amendment(conn, amended, data['text'], actor_session_id, controller, execution_id)
@@ -284,17 +340,7 @@ def dispatch(home, actor_session_id, execution_id, action, data, controller=None
         if action == 'start':
             _host(controller)
             person = _person(conn, project, data.get('session_id') or data.get('to') or goal['leader_session_id'])
-            goals._member(conn, goal, person['session_id'])
-            controller.check_member_start(conn, goal_id, person['session_id'],
-                                          'human' if actor_session_id == board.HUMAN else 'crew')
-            if goal['status'] == 'queued':
-                goal = goals.transition(conn, goal_id, 'running', actor=actor_session_id)
-            gate = goals.dispatch_check(conn, goal_id)
-            if not gate['allowed']:
-                raise board.Conflict(gate['reason'])
-            return controller.send(goal_id, person['session_id'], data.get('text') or goal['requirements']['request'],
-                                   identity=_start_identity(goal, person['session_id']),
-                                   source='human' if actor_session_id == board.HUMAN else 'crew')
+            return _start(conn, controller, goal, person, actor_session_id, data.get('text'))
         if action == 'pause':
             return _host(controller).pause(goal_id, manual=actor_session_id == board.HUMAN, actor=actor_session_id)
         if action == 'resume':
@@ -315,6 +361,21 @@ def dispatch(home, actor_session_id, execution_id, action, data, controller=None
             return controller.send(goal_id, goal['leader_session_id'],
                                    data.get('text') or behavior_prompts.text(conn, 'resume_nudge', session_id=goal['leader_session_id'], values={'reason': '用户明确恢复本目标，按原始要求与已有证据续接'}),
                                    source='human' if actor_session_id == board.HUMAN else 'crew')
+        if action == 'transfer':
+            host = _host(controller)
+            person = _person(conn, project, data.get('to') or data.get('leader') or data.get('leader_session_id') or '')
+            transfer = goals.request_transfer(conn, goal_id, person['session_id'], data.get('text') or data.get('note') or '',
+                                              actor=actor_session_id)
+            host.sync(conn, goal_id)
+            transfer = goals.get_transfer(conn, transfer['id'])
+            if transfer['status'] == 'failed':
+                raise board.Conflict('交接没有完成：' + transfer['error'])
+            pending = transfer['status'] == 'pending'
+            name = person['crew_name'] or person['session_id']
+            message = ('已登记交给 %s；本任务正在进行的执行结束后自动交接，由 %s 接着做。不要再在本任务里施工，告诉用户已交接即可。' % (name, name)
+                       if pending else '已交给 %s；%s 会收到交接通知和你的交接说明。你和你组里的成员不用再推进这个任务。' % (name, name))
+            return {'ok': True, 'pending_transfer': pending, 'transfer': transfer, 'goal': _status_goal(goals.get(conn, goal_id)),
+                    'message': message}
         if action == 'reopen':
             return goals.reopen(conn, goal_id, data.get('text'), actor=actor_session_id)
         if action == 'cancel':
@@ -329,7 +390,7 @@ def dispatch(home, actor_session_id, execution_id, action, data, controller=None
                 report = goals.save_report(conn, goal_id, data.get('report'))
                 finish = goals.request_finish(conn, goal_id, report['id'], actor=actor_session_id, execution_id=execution_id)
             # Never interrupt this tool's own native caller or pretend it is idle.
-            message = '报告已收录；本次原生响应实际结束后，程序自动按报告结论收尾，无需重复提交。最终交付需要用户本人看报告并实测验收，outcome 用 awaiting_acceptance。'
+            message = '报告已收录；本次原生响应实际结束后，程序按本次 outcome 自动收尾，无需重复提交。'
             if report['outcome'] == 'awaiting_acceptance':
                 message += '收尾后进入等待用户验收；验收决定仍需用户本人提交，不能声称用户无需验收。'
             return {'ok': True, 'pending_finish': True, 'report_id': report['id'], 'finish': finish,

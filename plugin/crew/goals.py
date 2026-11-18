@@ -15,6 +15,7 @@ STATES = frozenset(('queued', 'running', 'pausing', 'paused', 'waiting_user',
 TERMINAL = frozenset(('completed', 'failed', 'cancelled'))
 EXECUTION_STATES = STATES | {'idle', 'offline'}
 ACTIVE_EXECUTIONS = frozenset(('queued', 'running', 'pausing'))
+LEADER_GONE = '主责 leader 已归档或移除'
 _OPERATIONS = object()
 TRANSITIONS = {
     'queued': {'running', 'paused', 'cancelled', 'failed'},
@@ -217,7 +218,7 @@ def amend(conn, goal_id, text, *, acceptance=None, constraints=None, actor=board
     _actor(conn, goal, actor, member=True)
     _expected(goal, expected_version)
     if goal['status'] in TERMINAL:
-        raise board.Conflict('已结束目标需要先明确重开一轮')
+        raise board.Conflict('任务已结束：已交付的任务在用户要求修改时用 amend 在原轮继续；已取消的任务需用户重开')
     text = _text(text, '需求补充')
     previous = requirements(conn, goal_id)
     version, at = goal['requirement_version'] + 1, board._time(now)
@@ -275,6 +276,8 @@ def dispatch_check(conn, goal_id, *, round=None, requirement_version=None, execu
     elif conn.execute("SELECT 1 FROM goal_round_finishes WHERE goal_id=? AND round=? AND status='pending'",
                       (goal_id, goal['current_round'])).fetchone():
         reason = '本轮已请求最终交付，停止新增派发并等待实际执行结束'
+    elif (transfer := pending_transfer(conn, goal_id)) is not None:
+        reason = '任务正在交给 %s，等当前执行结束后由对方继续' % (board.session(conn, transfer['to_session_id'])['crew_name'] or transfer['to_session_id'])
     else:
         try:
             _member(conn, goal, goal['leader_session_id'])
@@ -390,9 +393,8 @@ def _finished_review(conn, goal):
                           (goal['id'], goal['current_round'])).fetchone()
     if latest is None or latest['id'] != finish['report_id']:
         return None
-    report = get_report(conn, finish['report_id'])
-    validate_report(conn, goal['id'], report['data'])
-    return report
+    # The report was validated when it was finalized; later report rules must not strand older deliveries.
+    return get_report(conn, finish['report_id'])
 
 
 @atomic
@@ -426,9 +428,12 @@ def resume(conn, goal_id, *, actor=board.HUMAN, automatic=False, now=None):
 
 
 @atomic
-def continue_task(conn, goal_id, text, *, actor=board.HUMAN, discussion_execution_id=None,
+def continue_task(conn, goal_id, text, *, actor=board.HUMAN, discussion_execution_id=None, user_requested=False,
                   acceptance=None, constraints=None, expected_version=None, now=None):
-    """Continue this task after delivery without inventing another round."""
+    """Continue this task after delivery without inventing another round.
+
+    user_requested: the leader relays a change the user asked for in a Crew-hosted turn the user started.
+    """
     goal = _row(conn, goal_id)
     response = discussion(conn, discussion_execution_id) if discussion_execution_id else None
     responding = get_execution(conn, discussion_execution_id) if response else None
@@ -436,7 +441,7 @@ def continue_task(conn, goal_id, text, *, actor=board.HUMAN, discussion_executio
                        or responding['round'] != goal['current_round'] or responding['requirement_version'] != goal['requirement_version']):
         raise board.Conflict('讨论执行与当前任务不匹配')
     _expected(goal, expected_version)
-    if actor != board.HUMAN and response is None:
+    if actor != board.HUMAN and response is None and not user_requested:
         raise board.BoardError('只有用户明确输入可以继续已交付的任务')
     if goal['manual_pause']:
         raise board.Conflict('用户暂停仍然有效；请明确恢复后继续')
@@ -626,8 +631,8 @@ def validate_report(conn, goal_id, data):
     _text(result.get('summary'), '报告结论')
     for key, fields in (('user_test', ('step', 'expected')), ('user_todos', ('title', 'detail'))):
         entries = result.get(key, [])
-        if not isinstance(entries, builtins.list) or key == 'user_test' and outcome == 'awaiting_acceptance' and not entries:
-            raise board.BoardError(key + ' 必须为对象数组；待用户验收必须提供非空 user_test')
+        if not isinstance(entries, builtins.list):
+            raise board.BoardError(key + ' 必须为对象数组')
         for item in entries:
             if not isinstance(item, dict):
                 raise board.BoardError(key + ' 每项必须为对象')
@@ -681,16 +686,32 @@ def validate_report(conn, goal_id, data):
             _text(source.get('label'), '证据说明')
             _text(source.get('reference'), '证据定位')
     examples = result.get('examples', [])
-    if not isinstance(examples, builtins.list) or final and not examples:
-        raise board.BoardError('examples 必须为对象数组；awaiting_acceptance/completed 至少需要一个具体 example')
+    if not isinstance(examples, builtins.list):
+        raise board.BoardError('examples 必须为对象数组')
+    if final and not examples:
+        raise board.BoardError('最终交付至少需要一个具体 example：{"kind":"actual|illustrative","input":"输入或操作","expected":"期望",'
+                               '"actual":"实际","conclusion":"结论"}，标明实际或示意，与页面里的案例一致')
     result['examples'] = examples
     for example in examples:
         if not isinstance(example, dict) or example.get('kind') not in ('actual', 'illustrative'):
             raise board.BoardError('example 必须标明实测或示意')
         for key in ('input', 'expected', 'actual', 'conclusion'):
             _text(example.get(key), 'example ' + key)
-    if outcome == 'completed' and (any(item['status'] != 'passed' for item in entries) or not any(item['kind'] == 'actual' for item in examples)):
+    if outcome == 'completed' and (any(item['status'] != 'passed' for item in entries)
+                                   or not any(item['kind'] == 'actual' for item in examples)):
         raise board.BoardError('未验证、模拟或仅示意 example 不能宣称目标达标')
+    # Final delivery (user ruling 2026-11-15) is a readable HTML page with a concrete case and a visualization, plus
+    # the AI's own verification: what was checked, where to recheck it, and what stayed uncovered. The page's
+    # charts are required by the rules and error text only; HTML is not parsed for them. The generated fallback
+    # page cannot carry task-specific cases or charts, so it serves progress/failed/cancelled only.
+    if final and not result.get('document_html', '').strip():
+        raise board.BoardError('最终交付需要一个让人方便理解和阅读的 HTML 页面：放在 document_html（CLI 用 finish --html-file），'
+                               '页面里至少一个具体案例和一处帮助理解的可视化（图表、流程或结构图、对比表、截图等），'
+                               '提交前用 report.preview 预览确认可读')
+    if final and not any(item.get('evidence') for item in entries):
+        raise board.BoardError('最终交付需要验证证据：至少一项验收标准在 evidence 写明 AI 实际做了什么验证、结果在哪回查')
+    if final and any(item['status'] in ('unverified', 'simulated') for item in entries) and not result['unresolved']:
+        raise board.BoardError('有未验证或模拟验证的标准时，unresolved 必须写明没覆盖的边界')
     investment = result.get('investment', {})
     if not isinstance(investment, dict):
         raise board.BoardError('investment 可缺省；提供时必须为投入记录对象，未知用量可明确注明')
@@ -732,7 +753,8 @@ def render_report(conn, goal_id, data):
     for item in data['acceptance']:
         sections.append('<h3>%s · %s</h3>%s' % (esc(item['criterion']), esc(labels[item['status']]), listing([source['label'] + '：' + source['reference'] for source in item.get('evidence', [])])))
     sections.append(report_documents.user_test(data))
-    sections.append('<h2>具体 example</h2>')
+    if data['examples']:
+        sections.append('<h2>具体 example</h2>')
     for example in data['examples']:
         sections.append('<h3>%s</h3><table>%s</table>' % ('实测' if example['kind'] == 'actual' else '示意（非实测证据）',
             ''.join('<tr><th>%s</th><td>%s</td></tr>' % (label, esc(example[key])) for key, label in (('input', '输入 / 操作'), ('expected', '期望'), ('actual', '实际'), ('conclusion', '结论')))))
@@ -911,9 +933,9 @@ def get_finish(conn, goal_id):
 def request_finish(conn, goal_id, report_id, *, actor=board.HUMAN, execution_id=None, now=None):
     goal, report = _row(conn, goal_id), get_report(conn, report_id)
     if report['outcome'] == 'completed':
-        raise board.BoardError('最终交付需要用户本人看报告并实测验收，outcome 用 awaiting_acceptance；只有用户点「通过」才会完成任务')
+        raise board.BoardError('最终交付 outcome 用 awaiting_acceptance：只有用户确认后点「通过」才会完成任务，AI 不能直接提交 completed')
     if report['outcome'] == 'progress':
-        raise board.BoardError('阶段报告不会结束任务，请完成验收后另行提交最终报告')
+        raise board.BoardError('阶段报告不会结束任务；工作完成后提交 outcome=awaiting_acceptance 的最终报告，收尾后再等用户验收')
     _actor(conn, goal, actor)
     if report['goal_id'] != goal_id or report['round'] != goal['current_round']:
         raise board.Conflict('交付报告不属于目标当前轮次')
@@ -941,6 +963,20 @@ def request_finish(conn, goal_id, report_id, *, actor=board.HUMAN, execution_id=
     return get_finish(conn, goal_id)
 
 
+def _finish_notice(goal, report):
+    summary = report['data'].get('summary', '').strip()
+    if len(summary) > 600:
+        summary = summary[:600] + '…'
+    status = {'awaiting_acceptance': '已交付，等用户验收', 'failed': '未达标结束', 'cancelled': '已取消结束'}[report['outcome']]
+    text = '任务「%s」（ID %s）的执行%s。\n摘要：%s\n完整报告用 crew goal status %s 查看（Codex：crew_goal 的 status）。\n' % (
+        goal['title'], goal['id'], status, summary or '（报告没有写摘要）', goal['id'])
+    if report['outcome'] == 'awaiting_acceptance':
+        return text + '用几句话告诉用户结果、你做过的验证和需要用户确认的内容；验收由用户决定，不要替用户验收，也不要重做已交付的工作。'
+    if report['outcome'] == 'failed':
+        return text + '向用户说明没达标的原因和建议的下一步；要不要继续由用户决定。'
+    return text + '无需处理。'
+
+
 @atomic
 def finalize_finish(conn, goal_id, *, now=None):
     goal, finish = _row(conn, goal_id), get_finish(conn, goal_id)
@@ -966,6 +1002,11 @@ def finalize_finish(conn, goal_id, *, now=None):
         board.ask.__wrapped__(conn, goal['leader_session_id'], '来自任务「%s」：%s\n原因：%s' %
                   (goal['title'], item['question'], item['why']), item.get('options', []),
                   item.get('recommendation'), blocking=False, now=now)
+    # The leader's general chat does not share the task execution's context; tell it the task has
+    # come back, unless that general chat submitted this delivery itself.
+    if finish['execution_id'] is not None or finish['actor'] != goal['leader_session_id']:
+        board._queue_leader_notice(conn, goal['leader_session_id'], _finish_notice(goal, report),
+                                   'crew', now, wake=report['outcome'] != 'cancelled')
     conn.execute("UPDATE goal_round_finishes SET status='finalized',finalized_at=? WHERE goal_id=? AND round=?", (board._time(now), goal_id, goal['current_round']))
     return {'finalized': True, 'already': False, 'goal': result, 'finish': get_finish(conn, goal_id)}
 
@@ -998,6 +1039,140 @@ def finalize_cancel(conn, goal_id, *, now=None):
         return {'finalized': False, 'reason': '等待原生执行实际停止'}
     result = transition(conn, goal_id, 'cancelled', actor=request['actor'], reason='用户或负责人已取消本轮', now=now)
     return {'finalized': True, 'already': False, 'goal': result}
+
+
+def pending_transfer(conn, goal_id):
+    row = conn.execute("SELECT * FROM goal_transfers WHERE goal_id=? AND status='pending'", (goal_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def get_transfer(conn, transfer_id):
+    row = conn.execute('SELECT * FROM goal_transfers WHERE id=?', (transfer_id,)).fetchone()
+    if row is None:
+        raise board.BoardError('任务交接记录不存在')
+    return dict(row)
+
+
+def _transfer_target(conn, goal, session_id):
+    target = board.session(conn, session_id)
+    try:
+        if target['role'] != 'leader':
+            raise board.BoardError('not a leader')
+        _member(conn, {'project': goal['project'], 'leader_session_id': session_id}, session_id)
+    except board.BoardError:
+        raise board.BoardError('只能交给本工作区在岗、带有本组的 leader：%s' % (target['crew_name'] or session_id)) from None
+    return target
+
+
+@atomic
+def request_transfer(conn, goal_id, to_session_id, note='', *, actor=board.HUMAN, now=None):
+    """Record that the task moves to another leader; the host finalizes once no execution is running."""
+    goal = _row(conn, goal_id)
+    _actor(conn, goal, actor)
+    if not isinstance(to_session_id, str) or not to_session_id:
+        raise board.BoardError('请指定接手的 leader')
+    if goal['status'] in TERMINAL:
+        raise board.Conflict('已结束的任务不能交接；需要继续请先重开')
+    if to_session_id == goal['leader_session_id']:
+        raise board.BoardError('任务已经由这个 leader 负责')
+    _transfer_target(conn, goal, to_session_id)
+    note = _text(note or '', '交接说明', required=False, limit=20000).strip()
+    old = pending_transfer(conn, goal_id)
+    if old is not None:
+        if old['to_session_id'] == to_session_id:
+            return old
+        raise board.Conflict('任务正在交给另一位 leader，等那次交接完成后再改')
+    if conn.execute("SELECT 1 FROM goal_round_finishes WHERE goal_id=? AND round=? AND status='pending'",
+                    (goal_id, goal['current_round'])).fetchone():
+        raise board.Conflict('本轮已提交交付、等待收尾；收尾后再交接')
+    if conn.execute('SELECT 1 FROM goal_cancellations WHERE goal_id=? AND round=?', (goal_id, goal['current_round'])).fetchone():
+        raise board.Conflict('任务已请求取消，不能再交接')
+    identity, at = uuid.uuid4().hex, board._time(now)
+    conn.execute("INSERT INTO goal_transfers VALUES(?,?,?,?,?,?,?,'pending',NULL,?,NULL)",
+                 (identity, goal_id, goal['current_round'], goal['leader_session_id'], to_session_id, note, actor, at))
+    board._event(conn, 'goal:transfer-requested', goal['project'], actor,
+                 {'goal_id': goal_id, 'transfer_id': identity, 'from': goal['leader_session_id'], 'to': to_session_id}, now)
+    _touch(conn, goal_id, now)
+    return get_transfer(conn, identity)
+
+
+def _transfer_notice(goal, transfer, giver, status, manual_pause):
+    text = '任务「%s」（ID %s）已从 %s 交给你负责%s。\n交接说明：%s\n' % (
+        goal['title'], goal['id'], giver['crew_name'] or giver['session_id'],
+        '，是用户的安排' if transfer['actor'] == board.HUMAN else '', transfer['note'] or '（没有写）')
+    text += ('原负责人组里的成员已退出此任务，需要人手用 crew goal assign 从你组里安排（Codex：crew_goal 的 assign）；'
+             '未完成的工作清单项已转到你名下，用 work.list 查看。\n')
+    if manual_pause or status in ('pausing', 'paused'):
+        return text + '任务目前暂停，等用户恢复后再继续，不要自行开工。', False
+    if status == 'waiting_user':
+        return text + '任务在等用户答复，答复到达前不要开工。', False
+    if status == 'awaiting_acceptance':
+        return text + '任务已交付、等用户验收；用户要求修改时由你在本任务内处理，现在无需开工。', False
+    return (text + '请用 crew goal start %s（Codex：crew_goal 的 start）在本任务内接着做：先核对已有进展、交付物和代码，'
+            '已完成的不要重做。' % goal['id']), True
+
+
+@atomic
+def finalize_transfer(conn, goal_id, *, now=None):
+    transfer = pending_transfer(conn, goal_id)
+    if transfer is None:
+        return {'finalized': False, 'reason': '没有待完成的交接'}
+    if conn.execute("SELECT 1 FROM goal_executions WHERE goal_id=? AND status IN ('running','pausing')", (goal_id,)).fetchone():
+        return {'finalized': False, 'reason': '等待当前执行结束'}
+    goal, at, to = _row(conn, goal_id), board._time(now), transfer['to_session_id']
+    try:
+        if goal['status'] in TERMINAL:
+            raise board.BoardError('任务已结束，交接作废')
+        _transfer_target(conn, goal, to)
+    except board.BoardError as exc:
+        conn.execute("UPDATE goal_transfers SET status='failed',error=?,finalized_at=? WHERE id=?", (str(exc), at, transfer['id']))
+        board._event(conn, 'goal:transfer-failed', goal['project'], transfer['actor'],
+                     {'goal_id': goal_id, 'transfer_id': transfer['id'], 'error': str(exc)}, now)
+        return {'finalized': False, 'reason': str(exc)}
+    giver = board.session(conn, goal['leader_session_id'])
+    conn.execute("UPDATE goal_assignments SET status='released',updated_at=? WHERE goal_id=? AND session_id<>? AND status='assigned'",
+                 (at, goal_id, to))
+    conn.execute("INSERT INTO goal_assignments VALUES(?,?,?,'assigned',?,?) ON CONFLICT(goal_id,session_id) "
+                 "DO UPDATE SET status='assigned',updated_at=excluded.updated_at",
+                 (goal_id, to, requirements(conn, goal_id)['request'], at, at))
+    conn.execute("UPDATE goal_executions SET status='cancelled',ended_at=?,updated_at=? WHERE goal_id=? AND session_id<>? "
+                 "AND status NOT IN ('completed','failed','cancelled')", (at, at, goal_id, to))
+    status, manual_pause = goal['status'], goal['manual_pause']
+    if (status in ('pausing', 'paused') and goal['reason'] == LEADER_GONE
+            and (giver['status'] == 'closed' or board.is_archived(conn, giver['session_id']))):
+        # Only the departed leader stopped this task; handing it on is what lifts that stop.
+        status, manual_pause = 'queued', 0
+        conn.execute('UPDATE goals SET manual_pause=0 WHERE id=?', (goal_id,))
+    if status in ('queued', 'running'):
+        status = 'queued'
+        conn.execute("UPDATE goals SET status='queued',reason=? WHERE id=?", ('交给新负责人接着做', goal_id))
+        conn.execute("UPDATE goal_rounds SET status='queued' WHERE goal_id=? AND number=?", (goal_id, goal['current_round']))
+    conn.execute('UPDATE goals SET leader_session_id=? WHERE id=?', (to, goal_id))
+    from . import goal_work
+    goal_work.hand_over(conn, goal_id, to, actor=transfer['actor'])
+    # The task's branches go with it: the new leader answers for them and the old leader's group no longer does.
+    group = [giver['session_id']] + [row['session_id'] for row in conn.execute(
+        'SELECT s.session_id FROM sessions s JOIN groups g ON g.project=s.project AND g.name=s.group_name '
+        'WHERE g.leader_session_id=?', (giver['session_id'],))]
+    branches = [row['branch'] for row in conn.execute(
+        'SELECT DISTINCT branch FROM branch_claims WHERE project=? AND goal_id=?', (goal['project'], goal_id))]
+    for branch in branches:
+        conn.execute('DELETE FROM branch_claims WHERE project=? AND branch=? AND session_id IN (%s)' % ','.join('?' * len(group)),
+                     (goal['project'], branch, *group))
+        conn.execute('INSERT INTO branch_claims(project,branch,session_id,goal_id,claimed_at) VALUES(?,?,?,?,?) '
+                     'ON CONFLICT(project,branch,session_id) DO UPDATE SET goal_id=excluded.goal_id,claimed_at=excluded.claimed_at',
+                     (goal['project'], branch, to, goal_id, at))
+    conn.execute("UPDATE goal_transfers SET status='finalized',finalized_at=? WHERE id=?", (at, transfer['id']))
+    text, wake = _transfer_notice(goal, transfer, giver, status, manual_pause)
+    board._queue_leader_notice(conn, to, text, 'crew', now, wake=wake)
+    if transfer['actor'] != giver['session_id']:
+        board._queue_leader_notice(conn, giver['session_id'], '用户把任务「%s」（ID %s）交给了 %s 负责，你和你组里的成员不用再推进它。'
+                                   % (goal['title'], goal_id, board.session(conn, to)['crew_name'] or to), 'crew', now, wake=False)
+    board._event(conn, 'goal:transfer', goal['project'], transfer['actor'],
+                 {'goal_id': goal_id, 'transfer_id': transfer['id'], 'from': giver['session_id'], 'to': to}, now)
+    _touch(conn, goal_id, now)
+    _control(conn, goal_id, transfer['actor'])
+    return {'finalized': True, 'goal': get(conn, goal_id), 'transfer': get_transfer(conn, transfer['id'])}
 
 
 def operations_callbacks(home):

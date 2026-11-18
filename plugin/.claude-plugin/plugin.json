@@ -1,9 +1,13 @@
 {
   "name": "crew",
-  "version": "0.3.14",
+  "version": "0.3.17",
   "description": "Coordinate Claude Code and Codex sessions with leader groups, shared workspaces, handoffs, decisions, documents and runtime guards.",
   "author": {
     "name": "akitokunnn"
   },
-  "repository": "https://github.com/akitokunnn/Crew"
+  "repository": "https://github.com/akitokunnn/Crew",
+  "skills": [
+    "./skills",
+    "./user-skills"
+  ]
 }

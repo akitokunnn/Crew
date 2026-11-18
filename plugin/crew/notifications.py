@@ -12,7 +12,7 @@ from pathlib import Path
 from urllib.error import URLError
 from urllib.request import ProxyHandler, Request, build_opener
 
-from . import board, chat, decision_briefs, goal_links, goals, personal, qq, runtimes, store, todo, trust_mode
+from . import board, chat, decision_briefs, goal_links, goals, messaging, personal, qq, store, todo, trust_mode
 from .web_api import personal as personal_api
 
 TEXT_LIMIT = 2000  # 10-23 实测 5000 字也能发；2000 一段是为了手机上好读。
@@ -23,7 +23,7 @@ ASSISTANT_UNAVAILABLE = '全局助手未启用，请先在 Crew 打开全局助�
 REMINDER_FOOTER = '直接回复这里，全局助手会处理。'
 
 HELP = ('/help（/h）帮助\n/where（/w）确认全局助手是否启用\n'
-        '/decisions（/d）所有项目未挂起的待拍板\n/todo（/t）查看要你亲手做的待办\n/back（/b）我回来了\n'
+        '/decisions（/d）所有项目的待拍板\n/todo（/t）查看要你亲手做的待办\n/back（/b）我回来了\n'
         '普通文字和图片交给全局助手；引用提醒会带上事项来源。拍板可用 /decisions 查看并点按钮作答。')
 
 
@@ -358,7 +358,7 @@ class Inbox:
                 decision = None
                 if item['kind'] == 'decision':
                     decision = next((d for d in board.decisions(conn, item['project'])
-                                     if d['id'] == item['decision_id'] and not d['held']), None)
+                                     if d['id'] == item['decision_id']), None)
                     if decision is None:
                         continue
                 leader = self._decision_leader(conn, decision) if decision else self._leader(conn, item['session_id'])
@@ -440,7 +440,7 @@ class Inbox:
         if row['kind'] == 'todo':
             return todo.get(conn, row['project'], item['todo_id'])['status'] == 'open'
         if row['kind'] == 'decision':
-            current = next((d for d in board.decisions(conn, row['project']) if d['id'] == row['decision_id'] and not d['held']), None)
+            current = next((d for d in board.decisions(conn, row['project']) if d['id'] == row['decision_id']), None)
             return current is not None and self.snapshot_matches(conn, current, row)
         if row['kind'] == 'goal_report':
             return bool(finalized_goal_reports(conn, row['project'], self.config['since'], item['report_id']))
@@ -696,12 +696,8 @@ class Inbox:
 
     def show_questions(self, conn, identity):
         entries = []
-        held_count = 0
         for project in board.projects(conn):
             for decision in board.decisions(conn, project['name']):
-                if decision['held']:
-                    held_count += 1
-                    continue
                 asker = board.session(conn, decision['session_id'])
                 leader = self._decision_leader(conn, decision)
                 label = leader['crew_name'] if leader is not None else '无leader'
@@ -712,11 +708,9 @@ class Inbox:
             self.record_message(conn, key, entry, 'query', self.service.now().isoformat())
             self.deliver(conn, [key], self.client.send_markdown, *self.question_message(entry))
         if not entries:
-            self.send_text('当前没有未挂起的待拍板。')
+            self.send_text('当前没有待拍板。')
         elif len(entries) > 10:
             self.send_text('本次只显示前 10 道，剩余 %s 道未答拍板。' % (len(entries) - 10))
-        if held_count:
-            self.send_text('另有 %s 道挂起。' % held_count)
 
     def save_answer(self, conn, decision, answer, identity, expected_snapshot=None):
         error = None
@@ -735,23 +729,14 @@ class Inbox:
                 decision = current
                 asker = board.session(conn, decision['session_id'])
                 if asker['status'] == 'closed' or board.is_archived(conn, asker['session_id']):
-                    error = '这条会话已归档或移出 Crew，答复尚未保存。请先在 Crew 恢复会话。'
+                    error = '这条会话已归档或删除，答复尚未保存。已归档的请先在 Crew 恢复会话。'
                 else:
                     board.answer.__wrapped__(conn, decision['id'], answer, actor=self.channel_id, now=now,
                                              _human_origin=board._OWNER_CHANNEL_ANSWER)
                     linked_goal = goal_links.get(conn,'decision',decision['id'])
                     leader = self._decision_leader(conn, decision) if linked_goal is None else None
                     if leader is not None:
-                        mixed = any(runtimes.get(conn, person['session_id'])['runtime'] == 'codex'
-                                    for person in (asker, leader))
-                        if mixed:
-                            action = ('请按用户答复继续' if asker['session_id'] == leader['session_id'] else
-                                      '请马上用 crew send %s "<用户答复>" 转告并叫它继续；Codex 也可用 crew_send_message' % asker['crew_name'])
-                            notice = '#%s\n提问者：%s（Crew ID：%s）\n问题：%s\n答复：%s\n%s' % (
-                                decision['id'], asker['crew_name'], asker['session_id'], decision['question'], answer, action)
-                        else:
-                            notice = '#%s\n提问者：%s（cc_name：%s）\n问题：%s\n答复：%s\n请马上用 SendMessage 转告并叫它继续' % (
-                                decision['id'], asker['crew_name'], asker['cc_name'], decision['question'], answer)
+                        notice = messaging.decision_answer_notice(conn, decision['id'], decision['question'], answer, asker, leader)
                         board._queue_leader_notice(conn, leader['session_id'], notice, self.channel_id, now=now)
         if error:
             self.send_text(error)

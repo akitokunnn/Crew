@@ -8,7 +8,7 @@ import threading
 from types import SimpleNamespace
 from unittest import mock
 
-from crew import board, chat, cli, codex_tools, goal_links, goals, messaging, runtimes, store, todo, workspace_recovery
+from crew import board, chat, cli, codex_tools, goal_links, goals, messaging, runtimes, store, todo
 from crew.goal_runtime import Controller
 from tests.test_runtimes import RuntimeFixture
 
@@ -174,20 +174,6 @@ class SharedTodoTests(RuntimeFixture):
                          operation_key=item['operation_key'])
         self.assertNotEqual(item['id'], other['id'])
 
-    def test_workspace_recovery_keeps_shared_links_keys_and_each_receipt(self):
-        first, one = self.target()
-        second, two = self.target('other-id', 'codex')
-        item = self.add(one); self.add(two)
-        self.conn.execute('UPDATE goal_links SET delivered_version=2 WHERE execution_id=?', (one['id'],))
-        target = self.root / 'recovered'
-        workspace_recovery.import_workspace(self.home, target, 'demo')
-        with contextlib.closing(store.connect(target)) as conn:
-            key = conn.execute('SELECT * FROM todo_operation_keys WHERE operation_key=?', (item['operation_key'],)).fetchone()
-            restored = todo.get(conn, 'demo', key['todo_id'])
-            self.assertCountEqual(restored['goal_ids'], [first['id'], second['id']])
-            self.assertCountEqual([link['delivered_version'] for link in restored['goal_links']], [0, 2])
-            self.assertEqual(conn.execute('PRAGMA foreign_key_check').fetchall(), [])
-
     def test_completed_explicit_operation_is_not_reopened_by_a_retry(self):
         first, one = self.target()
         item = self.add(one)
@@ -199,34 +185,3 @@ class SharedTodoTests(RuntimeFixture):
         self.add(two)
         self.deliver(); self.deliver()
         self.assertEqual(self.controller.send.call_count, 2)
-
-    def test_legacy_single_link_migration_preserves_receipts_and_is_concurrent_safe(self):
-        goal, execution = self.target()
-        item = self.add(execution)
-        self.conn.execute("UPDATE goal_links SET delivered_version=5 WHERE kind='todo'")
-        with board.transaction(self.conn):
-            self.conn.execute('CREATE TABLE legacy_goal_links (kind TEXT NOT NULL,item_id INTEGER NOT NULL,goal_id TEXT NOT NULL '
-                              'REFERENCES goals(id),round INTEGER NOT NULL,requirement_version INTEGER NOT NULL,execution_id TEXT '
-                              'NOT NULL REFERENCES goal_executions(id),delivered_version INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(kind,item_id))')
-            self.conn.execute('INSERT INTO legacy_goal_links SELECT * FROM goal_links')
-            self.conn.execute('DROP TABLE goal_links')
-            self.conn.execute('ALTER TABLE legacy_goal_links RENAME TO goal_links')
-        before = dict(self.conn.execute('SELECT * FROM goal_links').fetchone())
-        barrier, errors = threading.Barrier(2), []
-        def migrate():
-            try:
-                barrier.wait(5)
-                with contextlib.closing(store.connect(self.home)) as conn:
-                    self.assertEqual(dict(conn.execute('SELECT * FROM goal_links').fetchone()), before)
-                    self.assertEqual(conn.execute('PRAGMA foreign_key_check').fetchall(), [])
-            except Exception as error:
-                errors.append(error)
-        workers = [threading.Thread(target=migrate) for _ in range(2)]
-        for worker in workers: worker.start()
-        for worker in workers:
-            worker.join(10); self.assertFalse(worker.is_alive())
-        self.assertEqual(errors, [])
-        _, other = self.target('other-id')
-        self.add(other)
-        self.assertEqual(len(goal_links.list_links(self.conn, 'todo', item['id'])), 2)
-        self.assertEqual(goal_links.get(self.conn, 'todo', item['id'])['item_id'], item['id'])

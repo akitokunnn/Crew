@@ -30,6 +30,8 @@ PATH_COLUMNS = {'projects': ('root',), 'sessions': ('cwd', 'worktree'),
                 'claude_sessions': ('cwd',), 'codex_sessions': ('path', 'cwd'),
                 'codex_runs': ('task_file', 'workdir'),
                 'project_directory_changes': ('old_root', 'new_root')}
+# storage-v2 maps each workspace to the HOME whose crew.db it came from.
+STORAGE_HOME_COLUMNS = {'local_legacy_projects': 'source_home', 'local_legacy_entity_mappings': 'source_home'}
 SOURCE_CHANGED = '源数据已变化，目标是上次副本，请选新空目录或使用目标已有数据'
 
 
@@ -224,6 +226,24 @@ def _backup(private, staging, source, target):
         new.commit()
         if new.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
             raise HomeMigrationError('迁移后的白板数据库完整性检查失败')
+
+
+def _storage(staging, source, target):
+    database = staging / 'storage-v2' / 'crew.sqlite3'
+    if not database.is_file():
+        return
+    with closing(sqlite3.connect(database)) as conn:
+        names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        for table, column in STORAGE_HOME_COLUMNS.items():
+            if table not in names:
+                continue
+            for row_id, text in conn.execute('SELECT rowid,"' + column + '" FROM "' + table + '"').fetchall():
+                changed = _relocate(text, source, target)
+                if changed != text:
+                    conn.execute('UPDATE "' + table + '" SET "' + column + '"=? WHERE rowid=?', (changed, row_id))
+        conn.commit()
+        if conn.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
+            raise HomeMigrationError('迁移后的 storage-v2 数据库完整性检查失败')
 
 
 def _metadata(staging, source, target):
@@ -445,6 +465,7 @@ def copy(value):
                     else:
                         shutil.copy2(source / relative, destination)
                 _database(source, stage, target)
+                _storage(stage, source, target)
                 _metadata(stage, source, target)
                 marker.update(phase='publishing', files=[{'path': path.as_posix(), 'directory': True}
                                                        if (stage / path).is_dir() else

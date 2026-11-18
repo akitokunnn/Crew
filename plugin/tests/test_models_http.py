@@ -156,10 +156,6 @@ class ModelWakeTests(shell.ShellFixture, unittest.TestCase):
         self.assertEqual(self.request("/api/session/model", {"session_id": "s3", "model": OPUS})[0], 404)
         self.assertEqual(self.request("/api/session/options", {"session_id": "s3"})[0], 400)
         self.assertEqual(self.conn.execute("SELECT name FROM sqlite_master WHERE name='session_models'").fetchall(), [])
-        self.conn.execute("CREATE TABLE session_models(session_id TEXT PRIMARY KEY,model TEXT,set_at TEXT)")
-        migrated = store.connect(self.home)
-        migrated.close()
-        self.assertEqual(self.conn.execute("SELECT name FROM sqlite_master WHERE name='session_models'").fetchall(), [])
 
     def test_haiku_switch_clears_offline_effort_and_explicit_effort_is_invalid(self):
         models.set(self.conn, "s3", OPUS, "xhigh")

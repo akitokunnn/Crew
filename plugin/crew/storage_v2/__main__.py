@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 
 from . import Repository
-from . import legacy, packages
+from . import packages
 from .. import store
 
 
@@ -15,7 +15,6 @@ def main(argv=None):
     parser.add_argument('--home', type=Path, default=Path(os.environ['CREW_HOME']) if os.environ.get('CREW_HOME') else store.default_home())
     commands=parser.add_subparsers(dest='command',required=True)
     commands.add_parser('list')
-    migrate=commands.add_parser('migrate');migrate.add_argument('--source',type=Path,required=True);migrate.add_argument('--project',required=True)
     export=commands.add_parser('export');export.add_argument('workspace_id');export.add_argument('destination',type=Path)
     preview=commands.add_parser('preview');preview.add_argument('package',type=Path)
     incoming=commands.add_parser('import');incoming.add_argument('package',type=Path);incoming.add_argument('--mode',choices=('fork','restore_readonly'),default='restore_readonly');incoming.add_argument('--operation-id')
@@ -27,7 +26,6 @@ def main(argv=None):
     else:
         repo=Repository(args.home)
         if args.command=='list':result={'workspaces':repo.list_workspaces()}
-        elif args.command=='migrate':result=legacy.migrate_workspace(repo,args.source,args.project)
         elif args.command=='export':
             with closing(repo.connect()) as conn:result=packages.export_workspace(conn,repo.objects,args.workspace_id,args.destination)
         elif args.command=='import':

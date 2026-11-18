@@ -162,8 +162,8 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
                 self.thread_id = 'archive-native-' + str(type(self).counter)
         with mock.patch('crew.codex_runtime._ObservedClient', IndependentClient):
             for runtime in ('claude', 'codex'):
-                for action in ('archive', 'remove', 'close'):
-                    with self.subTest(runtime=runtime, action=action):
+                for action in ('archive', 'delete', 'close'):
+                    with self.subTest(runtime=runtime, action=action), mock.patch('crew.session_delete.delete_codex'):
                         owner, member = runtime + '-' + action, runtime + '-' + action + '-member'
                         board.join(self.conn, owner, 'demo', owner, self.project, self.project, 'main', role='leader')
                         board.join(self.conn, member, 'demo', member, self.project, self.project, 'main', group_name=owner)
@@ -189,6 +189,9 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
                         saved = goals.get(self.conn, goal['id'])
                         self.assertTrue(saved['manual_pause'])
                         self.assertEqual(saved['status'], 'paused')
+                        if action == 'delete':
+                            self.assertEqual(sorted(archived['deleted']), sorted([owner, member]))
+                            continue
                         restore_path = '/api/group/undo' if action == 'close' else '/api/session/restore'
                         restore_data = {'group': owner, 'before': archived['before']} if action == 'close' else {'session_id': owner}
                         self.assertEqual(self.request(restore_path + '?project=demo', restore_data)[0], 200)
@@ -1097,10 +1100,11 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
             'unresolved': [], 'acceptance': [{'criterion_id': 'a1', 'status': 'passed',
             'evidence': [{'label': 'Measurement', 'reference': 'sample.json'}]}],
             'examples': [{'kind': 'actual', 'input': 'A pauses then B speaks', 'expected': 'B', 'actual': 'B', 'conclusion': 'Passed'}],
+            'document_html': '<h1>Short reply</h1><table><tr><th>Input</th><th>Actual</th></tr><tr><td>A pauses then B speaks</td><td>B</td></tr></table>',
             'artifacts': ['sample.json'], 'tradeoffs': [], 'follow_up': 'User can replay sample.',
             'investment': {'usage': None, 'roles': []}}
 
-    def awaiting_acceptance(self, runtime='claude'):
+    def awaiting_acceptance(self, runtime='claude', keep_notice=False):
         if runtime == 'codex':
             patcher = mock.patch('crew.codex_runtime._ObservedClient', codex_helpers.FakeClient)
             patcher.start()
@@ -1125,7 +1129,33 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.server.service.chat.goal_controller.sync(self.conn, goal['id'])
         current = goals.get(self.conn, goal['id'])
         self.assertEqual(current['status'], 'awaiting_acceptance')
+        # The task execution's delivery is reported back to the leader's general chat once.
+        expected = '「%s」（ID %s）的执行已交付，等用户验收' % (goal['title'], goal['id'])
+        notices = [item for item in board.pending_notices(self.conn, 's3') if expected in item['text']]
+        self.assertEqual(len(notices), 1)
+        if not keep_notice:
+            board.mark_notice_sent(self.conn, notices[0]['id'])
         return current, goals.get_report(self.conn, finished['report_id']), receipt['execution_id'], process
+
+    def delivery_reaches_general_chat(self, runtime):
+        goal, _, execution_id, _ = self.awaiting_acceptance(runtime, keep_notice=True)
+        notice = board.pending_notices(self.conn, 's3')[0]
+        self.assertEqual(notice['wake'], 1)
+        manager = self.server.service.chat
+        self.server.service.deliver_notices()
+        self.assertEqual(board.pending_notices(self.conn, 's3'), [])
+        self.assertNotEqual(execution_id, 's3')
+        if runtime == 'codex':
+            sent = [params for name, params in manager.processes['s3'].client.calls if name == 'turn/start'][-1]['input'][0]['text']
+        else:
+            sent = json.loads(manager.processes['s3'].process.stdin.getvalue().splitlines()[-1])['message']['content']
+        self.assertIn(notice['text'], sent)
+
+    def test_claude_task_delivery_reaches_the_leaders_general_chat(self):
+        self.delivery_reaches_general_chat('claude')
+
+    def test_codex_task_delivery_reaches_the_leaders_general_chat(self):
+        self.delivery_reaches_general_chat('codex')
 
     def test_human_acceptance_closes_idle_native_and_preserves_report_bytes(self):
         goal, report, execution_id, process = self.awaiting_acceptance()
@@ -1213,6 +1243,22 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(len(self.processes), launches)
         self.assertEqual(len(self.server.service.chat.journal(execution_id).events), inputs)
         self.assertEqual(tuple(self.conn.execute('SELECT data_json,html FROM goal_reports WHERE id=?', (report['id'],)).fetchone()), original)
+
+    def test_user_resumes_review_whose_report_predates_current_report_rules(self):
+        goal, report, _, _ = self.awaiting_acceptance()
+        # Reports finalized before user_test became mandatory have no such field.
+        data = json.loads(self.conn.execute('SELECT data_json FROM goal_reports WHERE id=?', (report['id'],)).fetchone()[0])
+        data.pop('user_test', None)
+        self.conn.execute('UPDATE goal_reports SET data_json=? WHERE id=?', (json.dumps(data), report['id']))
+        goals.request_pause(self.conn, goal['id'], manual=True, reason='明确停止此人员')
+        self.server.service.chat.goal_controller.sync(self.conn, goal['id'])
+        current = goals.get(self.conn, goal['id'])
+        code, result, _ = self.request('/api/goals/action?project=demo', {
+            'goal_id': goal['id'], 'action': 'resume', 'version': current['version']})
+        self.assertEqual(code, 200, result)
+        self.assertEqual(result['resumed'], 'acceptance')
+        self.assertEqual(result['goal']['status'], 'awaiting_acceptance')
+        self.assertFalse(goals.get(self.conn, goal['id'])['manual_pause'])
 
     def test_agent_review_resume_cannot_override_manual_pause(self):
         goal, _, _, _ = self.awaiting_acceptance()
@@ -1626,6 +1672,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
                 'user_test': [{'step': 'Replay sample.json.', 'expected': 'Identify B.'}],
                 'acceptance': [{'criterion_id': 'a1', 'status': 'passed', 'evidence': [{'label': 'Log', 'reference': 'a.json'}]}],
                 'examples': [{'kind': 'actual', 'input': 'A', 'expected': 'B', 'actual': 'B', 'conclusion': 'Passed'}],
+                'document_html': '<h1>Speaker test</h1><table><tr><td>A</td><td>B</td></tr></table>',
                 'artifacts': [], 'tradeoffs': [], 'follow_up': '', 'investment': {'usage': None, 'roles': []}}
         saved = [goals.save_report(self.conn, goal['id'], {**data, 'summary': summary}, now=now) for summary, now in (
             ('first draft', '2026-10-25T10:00:00.000Z'), ('same millisecond, newer version', '2026-10-25T10:00:00.000Z'),
@@ -1641,6 +1688,38 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(target['id'], detail['reports'][0]['id'], 'the newest projected report is the one acceptance reviews')
         self.assertEqual(self.processes, [])
 
+
+    def test_user_hands_a_busy_task_to_another_leader_and_the_receiver_gets_the_handoff(self):
+        board.join(self.conn, 'next-lead', 'demo', 'next', self.project, self.project, 'main', role='leader', now=NOW)
+        goal = self.goal()
+        _, receipt, _ = self.send_goal(goal, text='Measure the first sample', message_id='before-transfer')
+        manager, task_process = self.server.service.chat, self.processes[-1]
+        task_process.emit({'type': 'assistant', 'message': {'id': 'before-transfer-answer', 'content': [{'type': 'text', 'text': 'Sample one measured at 320ms.'}]}})
+        current = goals.get(self.conn, goal['id'])
+        code, result, _ = self.request('/api/goals/action?project=demo', {
+            'goal_id': goal['id'], 'action': 'transfer', 'version': current['version'], 'to': 'next-lead', 'note': 'Sample two is left.'})
+        self.assertEqual(code, 200, result)
+        self.assertEqual(result['goal']['transfer_pending']['to_session_id'], 'next-lead')
+        self.assertEqual(result['goal']['leader_session_id'], 's3')
+        self.assertTrue(manager.running(receipt['execution_id']))  # The running turn is never interrupted.
+
+        self.finish_turn(receipt['execution_id'], task_process)
+        with self.server.service.chat.lock:
+            self.server.service.chat.goal_controller.sync(self.conn, goal['id'])
+        value = goals.get(self.conn, goal['id'])
+        self.assertEqual((value['leader_session_id'], value['status']), ('next-lead', 'queued'))
+        self.assertFalse(manager.running(receipt['execution_id']))
+        self.assertEqual(goals.get_execution(self.conn, receipt['execution_id'])['status'], 'cancelled')
+        notice = board.pending_notices(self.conn, 'next-lead')
+        self.assertEqual(len(notice), 1)
+        self.assertIn('Sample two is left.', notice[0]['text'])
+
+        code, result, _ = self.request('/api/goals/action?project=demo', {
+            'goal_id': goal['id'], 'action': 'start', 'version': value['version']})
+        self.assertEqual(code, 200, result)
+        sent = self.processes[-1].stdin.getvalue()
+        self.assertIn('Sample two is left.', sent)
+        self.assertIn('Sample one measured at 320ms.', sent)
 
 if __name__ == '__main__':
     unittest.main()

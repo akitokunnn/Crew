@@ -1,6 +1,6 @@
 {
   "name": "crew-desktop",
-  "version": "0.3.14",
+  "version": "0.3.17",
   "description": "Native Crew workspace launcher",
   "author": "Crew contributors",
   "license": "UNLICENSED",
@@ -21,7 +21,7 @@
     "electron-builder": "26.15.3"
   },
   "build": {
-    "appId": "local.crew.desktop.v2",
+    "appId": "local.crew.desktop",
     "productName": "Crew",
     "asar": true,
     "asarUnpack": [

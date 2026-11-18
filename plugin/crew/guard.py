@@ -9,7 +9,9 @@ from pathlib import Path
 
 from . import board, goals, store
 
-TAIL = "Do not retry or work around it; tell the user."
+# Shared by every block: never bypass it, but repairing an authorized cause or retrying after
+# the condition clears is not a workaround. Each reason states its own cause and next step.
+TAIL = "Do not work around it; handle the stated cause within your authority, or ask the user if only they can."
 SHELLS = ("Bash", "PowerShell")
 WRITES = ("Edit", "Write", "NotebookEdit")
 REPAIR_BLACKLIST = object()
@@ -108,7 +110,7 @@ def blacklist_reason(home, data):
     except (BlacklistError, OSError, UnicodeError) as exc:
         if tool in ("Edit", "Write", "Read") and _path(data) == store.norm_path(Path(home) / "blacklist.txt"):
             return REPAIR_BLACKLIST
-        return "BLOCKED by guard: %s: %s. Fix %s first. %s" % (type(exc).__name__, exc, Path(home) / "blacklist.txt", TAIL)
+        return "BLOCKED by guard: %s: %s. Fix %s first (only that file stays editable), then check again. %s" % (type(exc).__name__, exc, Path(home) / "blacklist.txt", TAIL)
     for number, names, regex, reason in rules:
         if ("*" in names or tool.casefold() in names) and regex.search(subject):
             return "BLOCKED by guard (blacklist.txt line %d): %s. %s" % (number, reason, TAIL)
@@ -158,13 +160,13 @@ def check(home, data, now=None):
                                       (sid, p["name"])).fetchone()
                 if (config is not None and config["admin_session_id"] != sid and member is not None
                         and member["crew_name"] and member["status"] != "closed" and not board.is_archived(conn, sid)):
-                    reason = "本项目由 git 管理员统一推送和合并：用 crew git request 交给它。 " + TAIL
+                    reason = "本项目的推送、开 PR、合并交给 Git 助手：用 crew git request 交给它；发版分支由用户自己处理。" + TAIL
             if reason is None and tool in SHELLS:
                 active = {l["resource"]: l for l in board.leases(conn, p["name"])}
                 for resource in board.resources(conn, p["name"]):
                     lease = active.get(resource["name"])
                     if resource["guard_regex"] is not None and lease is not None and lease["holder_session"] != sid and re.search(resource["guard_regex"], command):
-                        reason = "设备正在被借用；%s；等对方归还，或用 SendMessage 找对方 / leader 协商。%s" % (board.lease_description(lease), TAIL)
+                        reason = "设备正在被借用；%s；等对方归还后再试，或找对方 / leader 协商（crew send 或 SendMessage）。%s" % (board.lease_description(lease), TAIL)
                         break
             if reason is None and tool in WRITES:
                 path = _path(data)
@@ -183,12 +185,12 @@ def check(home, data, now=None):
                 board.record_event(conn, "hook:guard", p["name"], sid, detail, now=now)
     except (sqlite3.Error, OSError) as exc:
         if reason is not None:
-            return reason.removesuffix(TAIL) + "白板读取失败: %s: %s。%s" % (type(exc).__name__, exc, TAIL)
+            return reason.removesuffix(TAIL) + "白板读取失败: %s: %s。稍后再试，持续失败请告诉用户。%s" % (type(exc).__name__, exc, TAIL)
         if tool in SHELLS and ("crew.py" in command or "crew_cli.py" in command or command.startswith("crew ")):
             print("白板读取失败，诊断命令按约定放行: %s: %s" % (type(exc).__name__, exc), file=sys.stderr)
             return None
         if tool in SHELLS + WRITES:
-            return "白板读取失败: %s: %s。%s" % (type(exc).__name__, exc, TAIL)
+            return "白板读取失败: %s: %s。稍后再试，持续失败请告诉用户。%s" % (type(exc).__name__, exc, TAIL)
         print("白板读取失败，此工具不在阻止范围内: %s: %s" % (type(exc).__name__, exc), file=sys.stderr)
         return None
     return reason

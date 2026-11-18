@@ -14,6 +14,7 @@ import math
 import mimetypes
 import os
 from pathlib import Path
+import shutil
 import sqlite3
 import tempfile
 import uuid
@@ -875,11 +876,27 @@ class _Projector:
                     message_key+=['tool-result-version',calls[group['tool_use_id']],outcome]
                     mid=self.id('messages','message',message_key)
             previous=self.journal_latest.get((cid,logical_hash))
+            supersedes=lambda message_id:self.conn.execute('SELECT supersedes_message_id FROM messages WHERE id=?',(message_id,)).fetchone()
+            existing=supersedes(mid)
             if previous==mid:
-                previous=self.conn.execute('SELECT supersedes_message_id FROM messages WHERE id=?',(mid,)).fetchone()[0]
+                previous=existing[0]
+            elif existing and existing[0]!=previous:
+                # The content returned to an earlier immutable version, e.g. an
+                # interrupted stream flips partial as status goes working ->
+                # offline -> working across a restart. Append it again after
+                # the current latest; a replay recognises that same version.
+                prior=supersedes(previous) if previous is not None else None
+                if prior and self.id('messages','message',message_key+['recurs-after',prior[0]])==previous:
+                    message_key,mid,previous=message_key+['recurs-after',prior[0]],previous,prior[0]
+                else:
+                    message_key=message_key+['recurs-after',previous]
+                    mid=self.id('messages','message',message_key)
             at=group['at']
             if not isinstance(at,str) or not at.endswith('Z'):
-                at=self.agents.get(sid,{}).get('started_at') or self.stamp
+                # Keep an earlier projection's fallback time: a fresh stamp
+                # would rewrite an immutable message on every replay.
+                kept=self.conn.execute('SELECT created_at FROM messages WHERE id=?',(mid,)).fetchone()
+                at=self.agents.get(sid,{}).get('started_at') or (kept[0] if kept else self.stamp)
             role=group['role']
             mid=self.message(message_key,cid,text,self.agent(sid) if role=='assistant' else None,role,
                 self.agents.get(sid,{}).get('crew_name') if role=='assistant' else None,
@@ -978,8 +995,6 @@ def migrate_workspace(repo, source_home, project, *, origin_id=None, workspace_i
         files, missing = _files(home, rows, project)
         files,missing,cached=_cached_documents(repo,ws,home,project,schema,rows,files,missing)
         fingerprint = _fingerprint(rows, files)
-        snapshot_hash,snapshot_size=_file_digest(snapshot)
-        private = vault / (snapshot_hash + '.sqlite3')
         account, importer = repo.ensure_local_identity()
         batch = str(uuid.uuid5(NAMESPACE, _json([origin, ws, identity_project, fingerprint, TRANSFORM_VERSION])))
         stamp = _now()
@@ -989,9 +1004,15 @@ def migrate_workspace(repo, source_home, project, *, origin_id=None, workspace_i
                 return {'workspace_id': ws, 'import_batch_id': batch, 'project': project, 'source_home': str(home),
                         'source_fingerprint': fingerprint, 'status': 'unchanged', 'missing_files': missing, 'origin_id': origin,
                         'cached_files':cached,'source_unavailable_using_snapshot':bool(cached)}
-            # Avoid unreferenced full copies when only another workspace in
-            # the shared source changed and this selected history is identical.
-            _private_copy(snapshot,private,snapshot_hash,snapshot_size)
+            # One rolling backup of the in-use database, replaced only when this
+            # history actually changed; no per-change full copies accumulate.
+            backup = home / 'backups' / 'crew.db'
+            backup.parent.mkdir(exist_ok=True)
+            staged = backup.with_name('crew.db.' + uuid.uuid4().hex + '.tmp')
+            try:
+                shutil.copyfile(snapshot, staged); os.replace(staged, backup)
+            finally:
+                staged.unlink(missing_ok=True)
             with repo.transaction(conn):
                 p = _Projector(repo, conn, origin, ws, None, stamp, schema, rows, identity_project,home,project)
                 settings = next(iter(rows.get('project_settings', [])), {})
@@ -1005,13 +1026,12 @@ def migrate_workspace(repo, source_home, project, *, origin_id=None, workspace_i
                 p.project()
                 file_index = []
                 document_versions={}
-                private_files = []
-                raw_directory = vault / 'files'
-                raw_directory.mkdir(exist_ok=True)
+                # Stable copies for this projection only; removed with the stage.
+                raw_directory = Path(temp) / 'files'
+                raw_directory.mkdir()
                 for name, item in sorted(files.items()):
                     raw_path = raw_directory / item['sha256']
                     _private_copy(item['source_path'],raw_path,item['sha256'],item['size_bytes'])
-                    private_files.append({**item, 'path': name, 'vault_file': str(raw_path)})
                     if item['role'] == 'journal':
                         p.journal(item['owner'], raw_path, name)
                         continue
@@ -1078,43 +1098,18 @@ def migrate_workspace(repo, source_home, project, *, origin_id=None, workspace_i
                     raise SourceChangedError('Legacy source changed while migrating; retry under writer gate')
                 violations = conn.execute('PRAGMA foreign_key_check').fetchall()
                 if violations: raise MigrationError('Migrated foreign key violation: ' + str(tuple(violations[0])))
-                indexes = vault / 'batches'; indexes.mkdir(exist_ok=True)
-                index = indexes / (batch + '.json')
-                if not index.exists():
-                    with index.open('x', encoding='utf-8') as stream:
-                        stream.write(_json({'private_snapshot': str(private), 'project': project, 'files': private_files,
-                                            'origin_id': origin, 'workspace_id': ws, 'source_fingerprint': fingerprint}))
+                # Only the latest refresh's source records are kept. Older
+                # document mappings stay: they recover documents whose files
+                # were later removed. Package-import ledgers are untouched.
+                conn.execute("DELETE FROM legacy_records WHERE workspace_id=? AND import_batch_id<>? "
+                    "AND import_batch_id IN (SELECT id FROM import_batches WHERE workspace_id=? AND source_format='crew-v1') "
+                    "AND NOT (source_table='documents' AND disposition='mapped')", (ws, batch, ws))
                 _bind_legacy(conn,ws,home,project,fingerprint,stamp)
         return {'workspace_id': ws, 'import_batch_id': batch, 'project': project, 'source_home': str(home),
                 'source_fingerprint': fingerprint, 'status': 'migrated', 'table_counts': {n: len(r) for n, r in rows.items()},
-                **dispositions, 'missing_files': missing, 'private_snapshot': str(private), 'origin_id': origin,
+                **dispositions, 'missing_files': missing, 'backup': str(backup), 'origin_id': origin,
                 'changed_after_snapshot': source_changed,'cached_files':cached,
                 'source_unavailable_using_snapshot':bool(cached)}
-
-
-def legacy_snapshot(repo, workspace_id):
-    """Latest typed V1 rows/files for a separately gated UI materializer.
-
-    Never execute source schema SQL. Files refer to immutable V2 objects, not
-    to the old source machine's paths. All discovered table slots are retained.
-    """
-    with closing(repo.connect()) as conn:
-        row = conn.execute('SELECT id,legacy_origin_id,archive_artifact_version_id FROM import_batches WHERE workspace_id=? '
-                           'ORDER BY created_at DESC,rowid DESC LIMIT 1', (workspace_id,)).fetchone()
-        if row is None: raise MigrationError('No legacy snapshot for workspace')
-        index = repo.directory / 'migration-vault' / row['legacy_origin_id'] / 'batches' / (row['id'] + '.json')
-        if index.exists():
-            private = json.loads(index.read_text(encoding='utf-8'))
-            schema = _read(Path(private['private_snapshot']))
-            private['rows'] = _select(schema, private['project'])
-            private['tables'] = {name: [{'key': _key(schema[name], r), 'row': _pack(r)} for r in rr]
-                                 for name, rr in private['rows'].items()}
-            return private
-        blob = conn.execute('SELECT o.sha256 FROM artifact_versions v JOIN blob_objects o ON o.id=v.blob_id WHERE v.id=?', (row['archive_artifact_version_id'],)).fetchone()
-        payload = json.loads(repo.objects.path_for(workspace_id, blob[0]).read_bytes())
-        payload['rows'] = {name: [{k: _untyped(v) for k, v in entry['row'].items()} for entry in entries]
-                           for name, entries in payload['tables'].items()}
-        return payload
 
 
 def resolve_entity(repo, workspace_id, source_table, primary_key, target_table):

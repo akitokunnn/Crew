@@ -18,28 +18,6 @@ from crew import board, chat, codex_runtime, goals, hooks, install, messaging, o
 from test_shell import NOW, PLUGIN, ShellFixture
 
 HELPER = PLUGIN / "crew_update.py"
-FAKE_CLAUDE = r'''
-import json, sys
-from pathlib import Path
-state_path = Path(sys.argv[1]); state = json.loads(state_path.read_text(encoding="utf-8"))
-args = sys.argv[2:]
-if args[:3] == ["plugin", "list", "--json"]:
-    print(json.dumps(state["entries"]))
-    raise SystemExit(0)
-if args[:2] == ["plugin", "update"]:
-    state["calls"].append(args)
-    if state.get("fail"):
-        print(json.dumps({"command": "update", "outcome": "failed", "message": state["fail"], "failureCode": "fixture"}))
-        print("x " + state["fail"], file=sys.stderr)
-        state_path.write_text(json.dumps(state), encoding="utf-8")
-        raise SystemExit(1)
-    old = state["entries"][0]["version"]
-    state["entries"][0]["version"] = state["new_version"]
-    state_path.write_text(json.dumps(state), encoding="utf-8")
-    print(json.dumps({"command": "update", "outcome": "ok", "updateOutcome": "updated", "oldVersion": old, "newVersion": state["new_version"]}))
-    raise SystemExit(0)
-raise SystemExit(2)
-'''
 
 
 def copy_plugin(target):
@@ -303,18 +281,6 @@ class HelperTests(ShellFixture, unittest.TestCase):
                                 text=True, encoding="utf-8", timeout=60, input=stdin)
         return result.returncode, json.loads(result.stdout.strip().splitlines()[-1])
 
-    def fake_claude(self, entries, **state):
-        path = self.root / "claude-state.json"
-        path.write_text(json.dumps({"entries": entries, "calls": [], **state}), encoding="utf-8")
-        script = self.root / "fake_claude.py"
-        script.write_text(FAKE_CLAUDE, encoding="utf-8")
-        return [sys.executable, str(script), str(path)], path
-
-    def entry(self, folder, version, scope="user"):
-        return {"id": "crew@crew", "version": version, "scope": scope, "enabled": True,
-                "installPath": str(self.root / "cache" / version), "readFromFolder": str(folder),
-                "folderVersion": updater.manifest_version(folder)}
-
     def test_backup_uses_sqlite_backup_and_integrity_check(self):
         code, value = self.helper("backup")
         self.assertEqual(code, 0, value)
@@ -339,65 +305,10 @@ class HelperTests(ShellFixture, unittest.TestCase):
         (target / "crew" / "extra.py").write_text("counted", encoding="utf-8")
         self.assertNotEqual(updater.digest(target), base)
 
-    def test_plugin_state_prefers_read_from_folder_and_explains_mismatches(self):
-        target = updater.target_info(copy_plugin(self.root / "target"))
-        same, other = copy_plugin(self.root / "same"), copy_plugin(self.root / "other")
-        (other / "crew" / "changed.py").write_text("# local edit", encoding="utf-8")
-        command, _ = self.fake_claude([])
-        self.assertEqual(updater.plugin_state(target, command), {"state": "not_installed"})
-        command, _ = self.fake_claude([self.entry(same, target["version"])])
-        self.assertEqual(updater.plugin_state(target, command)["state"], "current")
-        command, _ = self.fake_claude([self.entry(same, "0.1.1")])
-        self.assertEqual(updater.plugin_state(target, command)["state"], "update")
-        command, _ = self.fake_claude([self.entry(other, "0.1.1")])
-        blocked = updater.plugin_state(target, command)
-        self.assertEqual(blocked["state"], "blocked")
-        self.assertIn("plugin update 不会改写这个目录", blocked["reason"])
-        command, _ = self.fake_claude([self.entry(same, "0.1.1", scope="project")])
-        self.assertIn("project", updater.plugin_state(target, command)["reason"])
-        cached = {**self.entry(same, "0.1.1"), "readFromFolder": None, "installPath": str(other)}
-        command, _ = self.fake_claude([cached])
-        self.assertIn("无法在更新前确认", updater.plugin_state(target, command)["reason"])
-
-    def test_shared_plugin_update_is_refused_without_invoking_claude(self):
-        target = updater.target_info(copy_plugin(self.root / "target"))
-        with mock.patch.object(updater, '_run', side_effect=AssertionError('must not invoke shared Claude')):
-            with self.assertRaisesRegex(updater.UpdateError, '不会更新共享的 V1'):
-                updater.update_plugin(target, ['forbidden-claude'])
-        code, value = self.helper('plugin-update', '--target', target['root'])
-        self.assertEqual(code, 1)
-        self.assertIn('不会更新共享的 V1', value['error'])
-
     def test_inspect_uses_session_plugin_without_discovering_or_changing_shared_claude(self):
-        with mock.patch.object(updater, 'claude_command', side_effect=AssertionError('must not discover shared Claude')):
-            value = updater.inspect(self.home, PLUGIN)
-        self.assertEqual(value['target']['generation'], 2)
+        value = updater.inspect(self.home, PLUGIN)
         self.assertEqual(value['plugin']['state'], 'session-scoped')
         self.assertEqual(value['plugin']['source'], str(PLUGIN.resolve()))
-
-    def test_v1_target_is_rejected_without_switching_home(self):
-        legacy = copy_plugin(self.root / 'legacy')
-        (legacy / 'crew-product.json').unlink()
-        self.assertEqual(updater.target_info(legacy)['generation'], 1)
-        before = {path: path.read_bytes() for path in self.home.rglob('*') if path.is_file()}
-        with self.assertRaisesRegex(updater.UpdateError, '来源不是 Crew'):
-            updater.switch(self.home, legacy)
-        self.assertEqual(before, {path: path.read_bytes() for path in self.home.rglob('*') if path.is_file()})
-
-    def test_existing_v1_home_is_rejected_at_inspection_before_any_update_action(self):
-        legacy = copy_plugin(self.root / 'legacy')
-        (legacy / 'crew-product.json').unlink()
-        install.install(self.home, legacy)
-        previous = (self.home / 'runtime.json').read_bytes()
-        for action in (updater.inspect, updater.switch):
-            with self.assertRaisesRegex(updater.UpdateError, '命令入口属于 V1'):
-                action(self.home, PLUGIN)
-            self.assertEqual((self.home / 'runtime.json').read_bytes(), previous)
-        with mock.patch.object(Path, 'home', return_value=self.root):
-            for action in (updater.inspect, updater.switch):
-                with self.assertRaisesRegex(updater.UpdateError, 'V1 的 .crew'):
-                    action(self.root / '.crew', PLUGIN)
-        self.assertFalse((self.root / '.crew').exists())
 
     def test_update_lock_admits_one_updater(self):
         first = LockHolder(self.home)

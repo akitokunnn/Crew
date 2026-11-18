@@ -171,6 +171,8 @@ class UnstartedMemberBindingTests(MemberNativeFixture, unittest.TestCase):
         self.assertEqual(chat.clear_unstarted_member_bindings(self.home), [])
         self.assertEqual(len(self.cleared(sid)), 1)
 
+        # With no task in progress between them, leader mail goes to the member's general conversation.
+        self.conn.execute("UPDATE goal_assignments SET status='released' WHERE session_id=?", (sid,))
         self.manager.send_message('s3', sid, 'Compute 1+1 and send me the result.', kind='task')
         self.manager.deliver_messages()
         general = next(process for process in self.processes if sid in process.command)

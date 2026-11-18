@@ -348,63 +348,26 @@ class ClaimTests(CoreCase):
                 self.assertEqual(board.patterns_overlap(b, a), expected)
 
 
-class DecisionHoldTests(CoreCase):
-    def test_hold_preserves_open_question_and_member_board_count(self):
+class GuardTailTests(unittest.TestCase):
+    def test_shared_block_tail_forbids_bypass_but_not_authorized_repair_or_waiting(self):
+        self.assertNotIn('Do not retry', guard.TAIL)
+        self.assertIn('Do not work around it', guard.TAIL)
+        self.assertIn('ask the user if only they can', guard.TAIL)
+
+
+class RetiredDecisionHoldTests(CoreCase):
+    def test_legacy_hold_row_is_kept_but_question_stays_an_ordinary_open_one(self):
         decision = board.ask(self.conn, "s1", "later?", ["a", "b"], "a", True, now=NOW)
-        self.assertTrue(board.hold(self.conn, decision, now=NOW))
+        self.conn.execute("INSERT INTO decision_holds(decision_id,held_at) VALUES(?,?)", (decision, NOW))
+        self.assertFalse(hasattr(board, "hold") or hasattr(board, "unhold"))
         saved = board.decisions(self.conn, "demo")[0]
-        self.assertEqual((saved["status"], saved["held"], saved["held_at"]), ("open", True, NOW))
-        self.assertEqual((saved["options"], saved["recommendation"], saved["blocking"]), (["a", "b"], "a", 1))
+        self.assertEqual((saved["id"], saved["status"]), (decision, "open"))
+        self.assertNotIn("held", saved)
         self.assertEqual(board.status(self.conn, "demo", self.agents)["open_decisions"], 1)
-        self.assertEqual(board.deliver(self.conn, "s1", now=NOW)["answers"], [])
-
-    def test_repeated_hold_preserves_first_timestamp_and_event(self):
-        decision = board.ask(self.conn, "s1", "later?", now=NOW)
-        self.assertTrue(board.hold(self.conn, decision, now=NOW))
-        self.assertFalse(board.hold(self.conn, decision, now="2026-10-21T09:00:00.000Z"))
-        self.assertEqual(board.decisions(self.conn, "demo")[0]["held_at"], NOW)
-        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM events WHERE kind='decision:hold'").fetchone()[0], 1)
-
-    def test_unhold_and_repeated_unhold_restore_active_question(self):
-        decision = board.ask(self.conn, "s1", "later?", now=NOW)
-        board.hold(self.conn, decision, now=NOW)
-        self.assertTrue(board.unhold(self.conn, decision, now=NOW))
-        self.assertFalse(board.unhold(self.conn, decision, now=NOW))
-        saved = board.decisions(self.conn, "demo")[0]
-        self.assertEqual((saved["status"], saved["held"], saved["held_at"]), ("open", False, None))
-        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM events WHERE kind='decision:unhold'").fetchone()[0], 1)
-
-    def test_missing_and_processed_questions_reject_hold_and_unhold(self):
-        answered = board.ask(self.conn, "s1", "answered?", now=NOW)
-        withdrawn = board.ask(self.conn, "s1", "withdrawn?", now=NOW)
-        board.answer(self.conn, answered, "a", now=NOW)
-        board.withdraw(self.conn, "s1", withdrawn, now=NOW)
-        for operation in (board.hold, board.unhold):
-            with self.subTest(operation=operation.__name__, decision="missing"):
-                with self.assertRaisesRegex(board.BoardError, "待拍板不存在"):
-                    operation(self.conn, 999, now=NOW)
-            for decision in (answered, withdrawn):
-                with self.subTest(operation=operation.__name__, decision=decision):
-                    with self.assertRaisesRegex(board.BoardError, "尚未答复"):
-                        operation(self.conn, decision, now=NOW)
-
-    def test_answer_deletes_hold_and_remains_deliverable(self):
-        decision = board.ask(self.conn, "s1", "later?", now=NOW)
-        board.hold(self.conn, decision, now=NOW)
         board.answer(self.conn, decision, "a", now=NOW)
-        saved = board.decisions(self.conn, "demo", all=True)[0]
-        self.assertEqual((saved["status"], saved["answer"], saved["held"], saved["held_at"]),
-                         ("answered", "a", False, None))
-        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM decision_holds").fetchone()[0], 0)
         self.assertEqual([row["id"] for row in board.deliver(self.conn, "s1", now=NOW)["answers"]], [decision])
-
-    def test_withdraw_deletes_hold(self):
-        decision = board.ask(self.conn, "s1", "later?", now=NOW)
-        board.hold(self.conn, decision, now=NOW)
-        board.withdraw(self.conn, "s1", decision, now=NOW)
-        saved = board.decisions(self.conn, "demo", all=True)[0]
-        self.assertEqual((saved["status"], saved["held"], saved["held_at"]), ("withdrawn", False, None))
-        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM decision_holds").fetchone()[0], 0)
+        # Existing data is preserved as is; nothing reads or rewrites the retired table.
+        self.assertEqual(self.conn.execute("SELECT decision_id,held_at FROM decision_holds").fetchall()[0][:], (decision, NOW))
 
 
 class DeliveryTests(CoreCase):
@@ -438,13 +401,14 @@ class DeliveryTests(CoreCase):
 
     def test_session_start_delivers_handoff_but_not_answer(self):
         d = board.ask(self.conn, "s1", "question", now=NOW)
-        board.answer(self.conn, d, "reply", now=NOW)
+        # Unique tokens: the context also carries absolute paths, which may contain ordinary words.
+        board.answer(self.conn, d, "decision-answer-only-in-db", now=NOW)
         board.handoff(self.conn, "s2", "one", "startup", now=NOW)
         code, out = self.hook("session-start")
         self.assertEqual(code, 0)
         context = out["hookSpecificOutput"]["additionalContext"]
         self.assertIn("startup", context)
-        self.assertNotIn("reply", context)
+        self.assertNotIn("decision-answer-only-in-db", context)
         self.assertEqual(board.handoffs(self.conn, "s1"), [])
         self.assertIsNone(self.conn.execute("SELECT delivered_at FROM decisions WHERE id=?", (d,)).fetchone()[0])
 
@@ -758,7 +722,13 @@ class RuleTextTests(unittest.TestCase):
                 self.assertRegex(content, r"不再发 ACK|不再确认|不回复确认")
                 self.assertRegex(content, r"不(?:自动)?建目标")
                 self.assertIn("example", content)
+                # Final delivery is a readable HTML page with a concrete example (user ruling 2026-11-15).
+                self.assertIn("最终报告", content)
                 self.assertIn("HTML", content)
+        leader = self.roles()[0][1]
+        self.assertRegex(leader, r"必须有：至少一个具体案例.*至少一处帮助理解的可视化")
+        self.assertIn("提交前至少把最终要交的页面预览一次", leader)
+        self.assertNotIn("形式由你按成果判断", leader)
         member = self.roles()[1][1]
         self.assertIn("--kind result|blocker|decision", member)
         self.assertRegex(member, r"不再.*重复 report")

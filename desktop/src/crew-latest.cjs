@@ -3,7 +3,6 @@
 const API = 'https://api.github.com/repos/akitokunnn/Crew';
 const WEB = 'https://github.com/akitokunnn/Crew';
 const BRANCH = 'main';
-const APP_ID = require('./product.cjs').appId;
 const VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 
 function parseVersion(value) {
@@ -76,8 +75,6 @@ async function checkLatest({ fetchImpl = globalThis.fetch, timeoutMs = 10000, no
     catch (error) { throw new Error('GitHub 版本查询没有返回有效 JSON', { cause: error }); }
   }
   const work = (async () => {
-    // The repository's latest release and main belong to V1. V2 only follows
-    // its explicit development branch until it has a separate release feed.
     const commit = await get('/commits/' + encodeURIComponent(BRANCH));
     if (!commit || typeof commit.sha !== 'string' || !/^[0-9a-f]{40}$/.test(commit.sha)) throw new Error('GitHub 开发分支提交信息无效');
     const committed_at = date(commit.commit?.committer?.date, '提交时间');
@@ -89,7 +86,6 @@ async function checkLatest({ fetchImpl = globalThis.fetch, timeoutMs = 10000, no
     try { packageJson = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.from(encoded, 'base64'))); }
     catch (error) { throw new Error('GitHub 开发分支版本文件不是有效 JSON', { cause: error }); }
     if (!packageJson || packageJson.name !== 'crew-desktop' || typeof packageJson.version !== 'string') throw new Error('GitHub 开发分支版本文件缺少 Crew 版本');
-    if (packageJson.build?.appId !== APP_ID) throw new Error('GitHub main 尚未发布匹配的 Crew 源码；不会使用 V1 更新');
     parseVersion(packageJson.version);
     return { release: null, branch: BRANCH, main: { version: packageJson.version, sha: commit.sha, branch: BRANCH,
       url: WEB + '/blob/' + commit.sha + '/desktop/package.json', committed_at }, checked_at: now() };

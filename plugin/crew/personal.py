@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 import uuid
 
-from . import behavior_prompts, board, models, runtimes, settings, store, todo
+from . import behavior_prompts, board, models, settings, store, todo
 
 
 ENTRYPOINT = 'crew-assistant'
@@ -952,8 +952,7 @@ def _prepare(conn, action, data, *, proof, create_leader, send_message, stop_ses
         board.project(conn, item['project'])
         if data.get('status') not in ('done', 'cancelled'):
             raise board.BoardError('人工待办处理状态必须是 done 或 cancelled')
-        if data.get('status') == 'cancelled' or data.get('note') is not None:
-            _text(data.get('note'), '处理原因')
+        todo.optional_note(data.get('note'))
     elif action in NOTE_WRITE_ACTIONS or action in TAG_WRITE_ACTIONS:
         # Dry-run the real write so conflicts and invalid input surface before
         # a receipt is reserved; the savepoint discards it.
@@ -978,14 +977,9 @@ def _route_answer(conn, decision_id, answer, source):
     if leader is None or (leader['project'] != decision['project'] or leader['role'] != 'leader'
                           or leader['status'] == 'closed' or board.is_archived(conn, leader_id)):
         return None
+    from . import messaging
     asker = board.session(conn, decision['session_id'])
-    if any(runtimes.get(conn, s['session_id'])['runtime'] == 'codex' for s in (asker, leader)):
-        action = ('请按用户答复继续。' if asker['session_id'] == leader['session_id'] else
-                  '请用 crew send %s "<答复与后续安排>" 转告；离线时用 crew wake 接续原会话。' % asker['crew_name'])
-        notice = '拍板 #%s：%s\n问题：%s\n答复：%s\n%s' % (decision_id, asker['crew_name'], decision['question'], answer, action)
-    else:
-        notice = ('拍板 #%s：%s（SendMessage 地址：%s）\n问题：%s\n答复：%s\n请马上用 SendMessage 转告并叫它继续' %
-                  (decision_id, asker['crew_name'], asker['cc_name'], decision['question'], answer))
+    notice = messaging.decision_answer_notice(conn, decision_id, decision['question'], answer, asker, leader)
     board._queue_leader_notice(conn, leader['session_id'], notice, source if source in ('qq', 'lark') else 'web')
     return {'leader_session_id': leader['session_id']}
 

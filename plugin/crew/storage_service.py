@@ -39,10 +39,8 @@ def _readonly(path):
 
 
 class StorageService:
-    def __init__(self, home, *, isolated=False, legacy_homes=None):
+    def __init__(self, home):
         self.home = Path(home).resolve()
-        self.isolated = isolated
-        self.legacy_homes = legacy_homes
         self.lock = threading.RLock()
         self._repository = None
         self.downloads = {}
@@ -62,23 +60,9 @@ class StorageService:
         with self.lock:
             return repair_activations(self.repository,self.home)
 
-    def _homes(self):
-        homes = [self.home]
-        # An explicit/test HOME is an isolation boundary, including discovery.
-        if not self.isolated and store.norm_path(self.home) == store.norm_path(store.default_home()):
-            if self.legacy_homes is not None:
-                homes.extend(map(Path, self.legacy_homes))
-            else:
-                # V2 has independent storage, while V1 remains an explicit
-                # read-only discovery source until the user chooses migration.
-                homes.append(Path.home() / '.crew')
-                if os.environ.get('LOCALAPPDATA'):
-                    homes.extend(sorted(Path(os.environ['LOCALAPPDATA']).glob('Crew-*')))
-        return list(dict.fromkeys(p.resolve() for p in homes))
-
     def _candidates(self, root):
         candidates = []
-        for home in self._homes():
+        for home in (self.home,):
             path = store.db_path(home)
             if not path.is_file():
                 continue
@@ -317,7 +301,15 @@ class StorageService:
                     from . import board
                     with closing(store.connect(self.home)) as conn:
                         board.init_project(conn,project['name'],root)
-                return self.refresh(project['name'], write_marker=True)
+                    return self.refresh(project['name'], write_marker=True)
+                # Already registered: opening needs no history rebuild. The
+                # history page, export and handoff refresh when they are used.
+                workspace_id=project['workspace_id']
+                if Path(project['root']).is_dir():
+                    self.repository.bind_workspace(workspace_id, project['root'])
+                warning=self._write_marker(project['root'], workspace_id)
+                return {'workspace_id': workspace_id, 'status': 'ready', 'project': project,
+                        **({'warnings': [warning]} if warning else {})}
             if discovery['status'] == 'history_missing':
                 raise ValueError(discovery['message'])
             candidate = next((c for c in discovery['candidates'] if c['id'] == data.get('candidate_id')), None)
@@ -330,16 +322,7 @@ class StorageService:
                 # View selection never adopts execution bindings from another HOME.
                 project = {**project, 'name': HISTORY_PREFIX + result['workspace_id'], 'read_only': True}
                 return {**result, 'project': project}
-            if not candidate['current']:
-                from . import workspace_recovery
-                original = legacy.migrate_workspace(self.repository, candidate['source_home'], candidate['project'])
-                recovery = workspace_recovery.import_workspace(candidate['source_home'], self.home, candidate['project'])
-                project = recovery['project']
-                return self.refresh(project, write_marker=True, origin_id=original['origin_id'],
-                    workspace_id=original['workspace_id'], identity_project=candidate['project'])
-            else:
-                project = candidate['project']
-            return self.refresh(project, write_marker=True)
+            return self.refresh(candidate['project'], write_marker=True)
 
     def export(self, data):
         from .storage_v2 import packages
@@ -453,6 +436,16 @@ class StorageService:
     def history(self, workspace_id, *, conversation_id=None, collection=None, before=None, limit=50):
         workspace_id = str(uuid.UUID(workspace_id))
         limit = max(1, min(int(limit), 100))
+        if before is None and conversation_id is None and collection is None:
+            # First page of the history view: bring this workspace up to date.
+            with closing(self.repository.connect()) as conn:
+                local = conn.execute('SELECT legacy_project FROM local_legacy_projects WHERE workspace_id=? AND source_home=?',
+                                     (workspace_id, str(self.home))).fetchone()
+            if local:
+                with closing(_readonly(store.db_path(self.home))) as conn:
+                    live = conn.execute('SELECT 1 FROM projects WHERE name=?', (local[0],)).fetchone()
+                if live:
+                    self.refresh(local[0])
         with closing(self.repository.connect()) as conn:
             workspace = conn.execute('SELECT * FROM workspaces WHERE id=? AND deleted_at IS NULL', (workspace_id,)).fetchone()
             deleted = conn.execute("SELECT 1 FROM entity_tombstones WHERE workspace_id=? AND entity_type='workspaces' AND entity_id=? AND state='active' AND deleted_at IS NULL",(workspace_id,workspace_id)).fetchone()

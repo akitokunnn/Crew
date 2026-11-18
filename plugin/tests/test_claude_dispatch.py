@@ -54,7 +54,8 @@ exit $LASTEXITCODE
                                CREW_EXECUTION_ID='execution', CREW_GOAL_ID='goal', CODEX_THREAD_ID='codex-parent',
                                CREW_ROLE='member', FAKE_EXIT=str(code), FAKE_MALFORMED='yes' if malformed else 'no')
                     result = subprocess.run([POWERSHELL, '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(harness)],
-                                            capture_output=True, text=True, env=env, timeout=20)
+                                            capture_output=True, text=True, encoding='utf-8', env=env, timeout=20,
+                                            creationflags=subprocess.CREATE_NO_WINDOW)
                     expected = 1 if malformed else code
                     self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
                     records = [json.loads(line) for line in (run_home / 'claude_runs.jsonl').read_text(encoding='utf-8').splitlines()]

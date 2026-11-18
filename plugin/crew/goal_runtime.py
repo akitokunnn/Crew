@@ -340,11 +340,14 @@ class Controller:
         current.reader.start()
         return command
 
-    def send(self, goal_id, session_id, text, *, identity=None, images=None, source='human', display_text=None, sender=None):
+    def send(self, goal_id, session_id, text, *, identity=None, images=None, source='human', display_text=None, sender=None,
+             steer=False):
         with self.manager.work():
-            return self._send(goal_id, session_id, text, identity=identity, images=images, source=source, display_text=display_text, sender=sender)
+            return self._send(goal_id, session_id, text, identity=identity, images=images, source=source,
+                              display_text=display_text, sender=sender, steer=steer)
 
-    def _send(self, goal_id, session_id, text, *, identity=None, images=None, source='human', display_text=None, sender=None):
+    def _send(self, goal_id, session_id, text, *, identity=None, images=None, source='human', display_text=None, sender=None,
+              steer=False):
         identity = str(uuid.uuid4()) if identity is None else identity
         with self.manager.lock, closing(store.connect(self.home)) as conn:
             goal = goals.get(conn, goal_id)
@@ -392,7 +395,7 @@ class Controller:
             prior = journal.inputs.get(identity)
             if prior is not None and prior['status'] != 'rejected':
                 result = self.manager.send(target, text, identity=identity, images=images, source=source,
-                                           display_text=display_text, sender=sender)
+                                           display_text=display_text, sender=sender, steer=steer)
                 return {**result, 'goal_id': goal_id, 'execution_id': key}
             observed = self.manager.context(key)
             history = {'known': observed is not None, 'tokens': observed['used'] if observed else None,
@@ -400,7 +403,7 @@ class Controller:
             replacing, lost = self.lost_native_handoff(conn, execution)
             prepared = goal_context.build(conn, key, base=protocol(conn, execution),
                                           latest_input='' if text == goal['requirements']['request'] else text,
-                                          native_history=history, retrieval=self.human_handoff(conn, execution, identity) + self.followup_context(conn, execution) + lost,
+                                          native_history=history, retrieval=self.human_handoff(conn, execution, identity) + self.followup_context(conn, execution) + lost + self.transfer_handoff(conn, execution),
                                           limits={'native_history_tokens': 64000})
             if prepared['manifest']['rotation_required'] and not self.manager.busy(key):
                 if self.manager.running(key):
@@ -417,7 +420,7 @@ class Controller:
                                               latest_input='' if text == goal['requirements']['request'] else text,
                                               native_history={'known': True, 'tokens': 0,
                                               'source': 'fresh_native_generation'}, limits={'native_history_tokens': 64000},
-                                              retrieval=self.human_handoff(conn, execution, identity) + self.followup_context(conn, execution) + lost)
+                                              retrieval=self.human_handoff(conn, execution, identity) + self.followup_context(conn, execution) + lost + self.transfer_handoff(conn, execution))
             current = self.manager.processes.get(key)
             if current is not None:
                 current.pause_interrupt = False
@@ -427,7 +430,7 @@ class Controller:
                 target['_native_replacing'] = replacing
             goals.set_execution_status(conn, key, 'running')
             result = self.manager.send(target, prepared['text'], display_text=text if display_text is None else display_text,
-                                       identity=identity, images=images, source=source, sender=sender)
+                                       identity=identity, images=images, source=source, sender=sender, steer=steer)
             if execution['runtime'] == 'codex' and not result.get('duplicate'):
                 goal_context.mark_applied(conn, prepared['manifest']['id'], execution_id=key)
             return {**result, 'goal_id': goal_id, 'execution_id': key}
@@ -469,7 +472,7 @@ class Controller:
                                  "AND status NOT IN ('completed','failed','cancelled')" +
                                  (' AND id=?' if goal_id else ''), (goal_id,) if goal_id else ()).fetchall():
             if goal['leader_session_id'] in unavailable:
-                goals.request_pause(conn, goal['id'], actor=goals._OPERATIONS, reason='主责 leader 已归档或移除')
+                goals.request_pause(conn, goal['id'], actor=goals._OPERATIONS, reason=goals.LEADER_GONE)
         rows = conn.execute('SELECT e.id,e.session_id,e.goal_id,g.leader_session_id,g.status goal_status,e.status,e.round, '
                             'g.current_round FROM goal_executions e '
                             'JOIN goals g ON g.id=e.goal_id' + (' WHERE e.goal_id=?' if goal_id else ''),
@@ -534,6 +537,10 @@ class Controller:
                                      (' WHERE goal_id=?' if goal_id else ''), (goal_id,) if goal_id else ()).fetchall()
         for row in cancellations:
             goals.finalize_cancel(conn, row['goal_id'])
+        transfers = conn.execute("SELECT goal_id FROM goal_transfers WHERE status='pending'" +
+                                 (' AND goal_id=?' if goal_id else ''), (goal_id,) if goal_id else ()).fetchall()
+        for row in transfers:
+            self.finalize_transfer(conn, row['goal_id'])
         running = conn.execute("SELECT id,leader_session_id FROM goals WHERE status='running' AND manual_pause=0" +
                                (' AND id=?' if goal_id else ''), (goal_id,) if goal_id else ()).fetchall()
         for value in running:
@@ -544,6 +551,48 @@ class Controller:
             executions = conn.execute('SELECT id FROM goal_executions WHERE goal_id=?', (value['id'],)).fetchall()
             if blocked and not any(self.manager.busy(e['id']) for e in executions):
                 goals.transition(conn, value['id'], 'waiting_user', actor=value['leader_session_id'])
+
+    def finalize_transfer(self, conn, goal_id):
+        """Hand the task over once nobody is mid-turn; idle processes of the old side are closed first."""
+        transfer = goals.pending_transfer(conn, goal_id)
+        if transfer is None:
+            return None
+        keys = [row['id'] for row in conn.execute('SELECT id FROM goal_executions WHERE goal_id=? AND session_id<>?',
+                                                 (goal_id, transfer['to_session_id']))]
+        if any(self.manager.busy(key) for key in keys):
+            return {'finalized': False, 'reason': '等待当前执行结束'}
+        for key in keys:
+            if self.manager.running(key):
+                self.manager.stop_managed(key)
+        return goals.finalize_transfer(conn, goal_id)
+
+    def transfer_handoff(self, conn, execution):
+        """The first input of the receiving leader carries the giver's note and last words."""
+        from . import runtime_switch
+        if conn.execute('SELECT 1 FROM goal_context_applied WHERE execution_id=? LIMIT 1', (execution['id'],)).fetchone():
+            return []
+        transfer = conn.execute("SELECT * FROM goal_transfers WHERE goal_id=? AND status='finalized' "
+                                'ORDER BY finalized_at DESC LIMIT 1', (execution['goal_id'],)).fetchone()
+        if transfer is None or transfer['to_session_id'] != execution['session_id']:
+            return []
+        if conn.execute('SELECT 1 FROM goal_executions WHERE goal_id=? AND session_id=? AND id<>? AND created_at>=?',
+                        (execution['goal_id'], execution['session_id'], execution['id'], transfer['finalized_at'])).fetchone():
+            return []  # An earlier execution after the handover already received it.
+        giver = board.session(conn, transfer['from_session_id'])
+        row = conn.execute('SELECT id FROM goal_executions WHERE goal_id=? AND session_id=? ORDER BY round DESC,generation DESC LIMIT 1',
+                           (execution['goal_id'], giver['session_id'])).fetchone()
+        last, recent = '（原负责人在本任务里没有执行记录）', ''
+        if row is not None:
+            events = self.manager.journal(row['id']).events
+            recent = '\n\n'.join(reversed(runtime_switch._texts(reversed(events))))[-runtime_switch.MAX_HANDOFF:]
+            last = next((text for text in ('\n'.join(block['text'] for block in event['content'] if block.get('type') == 'text').strip()
+                                           for event in reversed(events) if event['type'] == 'assistant') if text), '（没有记录到文字结果）')
+        text = ('任务交接：本任务原由 %s 负责，已交给你（%s）。以下是交接说明和原负责人在本任务里的最后结果、最近片段，仅为历史；'
+                '先核对实际代码、交付物和工作清单，已完成的不要重做。\n交接说明：%s\n最后结果：%s\n\n最近片段：\n%s'
+                % (giver['crew_name'] or giver['session_id'], '用户安排' if transfer['actor'] == board.HUMAN else '原负责人安排',
+                   transfer['note'] or '（没有写）', last[-runtime_switch.MAX_HANDOFF:], recent or '（无）'))
+        return [{'source': {'type': 'goal-transfer', 'id': transfer['id']}, 'text': text,
+                 'reason': '任务换负责人后，交给接手 leader 的交接说明与原负责人的最后结果', 'protected': True}]
 
     def recover(self, conn, agents, runtime=None):
         """One restart snapshot; only previously running current executions resume."""

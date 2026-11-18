@@ -3,6 +3,7 @@ import base64
 import collections
 import contextlib
 from contextlib import closing
+import datetime
 import functools
 import hashlib
 import json
@@ -17,11 +18,13 @@ from pathlib import Path
 
 from . import behavior_prompts, guard, native_handoff, runtime_recovery, trust_mode
 
-from . import board, claude_limits, claude_subagents, codex_client, codex_visibility, git_admin, goal_messages, goals, hooks, install, messaging, models, personal, report_preview, runtime_switch, runtimes, settings, spawn, store, subagents, workspace_execution
+from . import board, channel, claude_limits, claude_subagents, codex_client, codex_visibility, git_admin, goal_messages, goals, hooks, install, messaging, models, personal, report_preview, runtime_switch, runtimes, settings, spawn, store, subagents, workspace_execution
 
 
 PAUSED_FOR_UPDATE = "Crew 正在准备更新，暂不接受新任务；更新完成后再试"
 MAINTENANCE_HELD = "正在压缩该人员的记忆，完成后再发送"
+# crew send defaults to information, which is only archived; a reply must say what it is.
+REPLY_KIND = "--kind result（阻塞用 blocker，要对方做事用 task）"
 # Claude's own answer when --resume names a conversation it does not have.
 CLAUDE_NO_CONVERSATION = "No conversation found with session ID: "
 NATIVE_MISSING = ("原会话丢失：Claude 报告找不到原生会话 %s。Crew 会新开一个原生会话并交接任务背景；"
@@ -30,6 +33,31 @@ NATIVE_REPLACED = "这是新开的原生会话：原会话 %s 已丢失，Crew �
 NATIVE_LOST_INPUT = "native-lost:"
 # Journal events only a running native conversation can produce.
 NATIVE_OUTPUT = {"assistant", "text", "tool_result", "compact"}
+# An owned native idle this long is closed; the next input resumes the same
+# native ID. CREW_IDLE_RECLAIM_MINUTES overrides it, 0 keeps every process.
+IDLE_RECLAIM_MINUTES = 30
+
+
+def idle_reclaim_seconds(environ=None):
+    value = (os.environ if environ is None else environ).get('CREW_IDLE_RECLAIM_MINUTES')
+    try:
+        minutes = IDLE_RECLAIM_MINUTES if value is None or not value.strip() else float(value)
+    except ValueError:
+        minutes = IDLE_RECLAIM_MINUTES
+    return max(0.0, minutes) * 60
+
+
+def track_background(current, record):
+    """Background shells and agents outlive the turn's result inside the native process."""
+    task = record.get('task_id')
+    if record.get('type') != 'system' or not task or record.get('ambient'):
+        return
+    subtype = record.get('subtype')
+    if subtype == 'task_started':
+        current.background_tasks.add(task)
+    elif subtype == 'task_notification' or (subtype == 'task_updated' and
+            (record.get('patch') or {}).get('status') not in (None, 'pending', 'running')):
+        current.background_tasks.discard(task)
 
 
 def native_output(event):
@@ -174,9 +202,11 @@ def child_environment(spec, environ=None, persistent_names=None):
                 with winreg.OpenKey(hive, path) as key:
                     for index in range(winreg.QueryInfoKey(key)[1]):
                         persistent_names.add(winreg.EnumValue(key, index)[0].upper())
+    # The selected native profile is configuration, not the parent's session identity.
     env = {name: value for name, value in env.items()
            if not name.upper().startswith("CREW_")
-           and (not name.upper().startswith("CLAUDE") or name.upper() in persistent_names)}
+           and (not name.upper().startswith("CLAUDE") or name.upper() in persistent_names
+                or name.upper() == 'CLAUDE_CONFIG_DIR')}
     # VS Code hides sdk-cli transcripts; identify this human-facing host explicitly.
     env.update(CLAUDE_CODE_ENTRYPOINT="crew-web", CREW_NAME=spec["name"], CREW_ROLE=spec["role"], CREW_SPAWN_ID=spec["id"],
                MSYS_NO_PATHCONV="1")
@@ -443,6 +473,8 @@ class Running:
         self.unexpected_exit = False
         self.stderr = collections.deque(maxlen=20)
         self.reader_done = threading.Event()
+        # Native background task IDs still running after their turn (see track_background).
+        self.background_tasks = set()
         self.pending_native_accept = None
         self.native_binding_confirmed = False
         # The native ID passed with --resume; None when this process starts a new native.
@@ -737,6 +769,7 @@ class Manager:
                         with closing(store.connect(self.home)) as goal_conn:
                             goal_context.mark_applied(goal_conn, current.goal_manifests.pop(record['uuid']),
                                                       execution_id=current.execution['id'])
+                    track_background(current, record)
                     if record["type"] == "control_response":
                         self._control_response(current, record["response"])
                     if record["type"] == 'system' and record.get('subtype') == 'compact_boundary' and not record.get('parent_tool_use_id'):
@@ -1086,8 +1119,8 @@ class Manager:
                             goal_receipt.update(self.goal_controller.send(bound_goal, session_id, task, source='crew'))
                             return
                         plan["command"] = self._launch(session, spec)
-                        text = (spec["task"] if chosen_runtime == "codex" else "Read the file " + spec["md"] +
-                                " with the Read tool and follow it. It is your task brief from Crew.")
+                        text = (spec["task"] if chosen_runtime == "codex" else "用 Read 工具读取 " + spec["md"] +
+                                " 并照做，这是 Crew 给你的任务说明。")
                         self._send(session_id, text, spec["task"], source="crew")
                 except Exception:
                     live = [key for key in self._identity_keys(conn, session_id) if self.running(key)]
@@ -1098,7 +1131,8 @@ class Manager:
             result = spawn._execute(conn, plan, launch, members, member_session_ids)
             return {**result, **goal_receipt, "session_id": session_id, "role": spec["role"]}
 
-    def _send(self, session_id, text, display_text=None, source='human', identity=None, images=None, sender=None):
+    def _send(self, session_id, text, display_text=None, source='human', identity=None, images=None, sender=None,
+              steer=False):
         current = self.processes[session_id]
         logical = current.execution['session_id'] if current.execution is not None else session_id
         with closing(store.connect(self.home)) as control_conn:
@@ -1135,6 +1169,11 @@ class Manager:
                     summary = self.goal_controller.general_context(handoff_conn, session_id)
                     if summary:
                         text = summary + '\n\n' + text
+                    if getattr(current, 'runtime', 'claude') == 'codex' and not assistant:
+                        # Claude leaders get this through the prompt hook; Codex has no hook.
+                        posts = channel.summary(handoff_conn, logical)
+                        if posts:
+                            text = posts + '\n\n' + text
                     if assistant and source in ('human', 'qq', 'lark'):
                         text = ('【Crew 本轮原始用户消息标识：%s。写入动作必须绑定此 message_id；'
                                 '不改变用户原话的授权范围。】\n\n' % identity) + text
@@ -1156,7 +1195,7 @@ class Manager:
             try:
                 current.interrupt_requested = False
                 result=current.send(text, identity, display_text=original_text, source=source,
-                                    images=images, sender=sender, image_files=files)
+                                    images=images, sender=sender, image_files=files, steer=steer)
                 if prompt_application is not None:
                     with closing(store.connect(self.home)) as prompt_conn:
                         behavior_prompts.delivered(prompt_conn, prompt_application['id'], confirmed=True,
@@ -1204,8 +1243,9 @@ class Manager:
 
     def send_message(self, sender_id, target_id, text, message_id=None, execution_id=None, kind='information', reply_to=None):
         with self.lock, closing(store.connect(self.home)) as conn:
-            if execution_id or reply_to is not None:
-                from . import goal_messages
+            from . import goal_messages
+            if (execution_id or reply_to is not None
+                    or goal_messages.leader_task(conn, sender_id, board.session(conn, target_id)) is not None):
                 return goal_messages.queue(conn, sender_id, target_id, text, execution_id,
                                            message_id=message_id, kind=kind, reply_to=reply_to)
             return messaging.queue(conn, sender_id, target_id, text, message_id=message_id, kind=kind)
@@ -1233,7 +1273,9 @@ class Manager:
                     continue
                 if native_handoff.blocked(conn, sid):
                     continue
-                if self.busy(sid):
+                # A leader's word reaches its own member mid-turn, like the user's; other mail waits.
+                steer = goal_messages.from_leader(conn, message["sender_session_id"], target)
+                if self.busy(sid) and not steer:
                     continue
                 sender = board.session(conn, message["sender_session_id"])
                 body = messaging.text(conn, message)
@@ -1241,7 +1283,7 @@ class Manager:
                     if not self.path(sid).exists():
                         self.journal(sid).set_status('idle')
                     result = self.send(target, body, display_text=message['body'], source='peer',
-                                       identity='peer:' + message['id'], sender=sender['crew_name'])
+                                       identity='peer:' + message['id'], sender=sender['crew_name'], steer=steer)
                     if not isinstance(result, dict) or result.get('accepted') is not True:
                         raise board.Conflict('执行输入尚无确认的接收回执')
                     messaging.mark_delivered(conn, message["id"], accepted=True)
@@ -1267,7 +1309,8 @@ class Manager:
 
     @_admitted
     def send(self, session, text, source='human', identity=None, images=None, display_text=None, sender=None,
-             *, resume_existing=False):
+             *, resume_existing=False, steer=False):
+        """``steer`` lets a non-human input join a turn already in progress, as the user's input does."""
         images = validate_images(images)
         session_id = session.get('_storage_id', session["session_id"])
         identity = str(uuid.uuid4()) if identity is None else identity
@@ -1316,17 +1359,27 @@ class Manager:
                     raise board.Conflict('成员的目标执行正在工作，不能向总对话重复派工；'
                                          '请明确目标继续原执行或等待当前任务结束：' + active)
             steering = self.running(session_id) and self.journal(session_id).status == "working"
-            if steering and source not in ("human", "qq", "lark"):
+            if steering and source not in ("human", "qq", "lark") and not steer:
                 raise board.Conflict("会话正在回复，自动消息等待当前轮次结束")
             if not self.running(session_id):
                 with closing(store.connect(self.home)) as spec_conn:
                     spec, _ = self._resume_spec(spec_conn, session)
                 self._launch(session, spec, resume=True)
             delivery = 'steered' if steering else 'started'
+            quiet = []
+            if source in ('human', 'qq', 'lark') and '_execution' not in session and session['role'] == 'leader':
+                # Results the user left without waking the leader ride along with their next message.
+                with closing(store.connect(self.home)) as notice_conn:
+                    quiet = board.quiet_notices(notice_conn, session['session_id'])
+                if quiet:
+                    display_text = text if display_text is None else display_text
+                    text = ('[Crew 留档通知：用户在你上次回复后处理了以下事项，供参考，按需继续安排]\n'
+                            + '\n'.join('%s. %s' % (index, notice['text']) for index, notice in enumerate(quiet, 1))
+                            + '\n\n[用户消息]\n' + text)
             journal.emit('input_delivery', message_id=identity, digest=digest, status='submitted', delivery=delivery)
             try:
                 identity = self._send(session_id, text, display_text=display_text,
-                                      source=source, identity=identity, images=images, sender=sender)
+                                      source=source, identity=identity, images=images, sender=sender, steer=steer)
             except (codex_client.RpcError, board.BoardError) as exc:
                 journal.emit('input_delivery', message_id=identity, digest=digest, status='rejected',
                              delivery=delivery, error=type(exc).__name__, detail=str(exc))
@@ -1336,6 +1389,10 @@ class Manager:
                              delivery=delivery, error=type(exc).__name__, detail=str(exc))
                 raise
             journal.emit('input_delivery', message_id=identity, digest=digest, status='accepted', delivery=delivery)
+            if quiet:
+                with closing(store.connect(self.home)) as notice_conn:
+                    for notice in quiet:
+                        board.mark_notice_sent(notice_conn, notice['id'])
         return {"ok": True, 'message_id': identity, 'accepted': True,
                 'delivery': delivery}
 
@@ -1566,7 +1623,7 @@ class Manager:
                 raise board.BoardError("网页服务正在关闭")
             control = board.session_control(conn, target["session_id"])
             if control and control["removed"]:
-                raise board.BoardError("目标已移除，不能叫醒")
+                raise board.BoardError("目标已删除，不能叫醒")
             if control and control["archived_status"] is not None:
                 raise board.BoardError("目标已归档，不能叫醒")
             if target["status"] == "closed":
@@ -1602,7 +1659,7 @@ class Manager:
                     raise board.BoardError("leader 直接在网页上和它聊")
                 if caller["role"] == "member":
                     peer = any(runtimes.get(conn, s['session_id'])['runtime'] == 'codex' for s in (caller, target))
-                    reply = ('回复用 crew send ' + caller['crew_name'] + ' "<回复>"；Codex 也可用 crew_send_message。' if peer else
+                    reply = ('回复用 crew send ' + caller['crew_name'] + ' "<回复>" ' + REPLY_KIND + '；Codex 用 crew_send_message 并同样指定 kind。' if peer else
                              "回复用 SendMessage，地址「" + caller["cc_name"] + "」。" if caller["cc_name"] else
                              "回复前用 crew who " + caller["crew_name"] + " 查地址；离线时用 crew wake 接续原会话。")
                     notice = ("组员「" + caller["crew_name"] + "」（" + caller["group_name"] + "）找你：" + text + "。" + reply)
@@ -1611,7 +1668,7 @@ class Manager:
                     if not peer and caller["cc_name"] is None:
                         raise board.BoardError("leader 的 SendMessage 地址未知，请查明后再试")
                     notice = ("leader「" + caller["crew_name"] + "」（" + caller["group_name"] + "）找你：" + text +
-                              ('。回复用 crew send ' + caller['crew_name'] + ' "<回复>"，或 crew say --to ' + caller['crew_name'] + '。' if peer else
+                              ('。回复用 crew send ' + caller['crew_name'] + ' "<回复>" ' + REPLY_KIND + '，或 crew say --to ' + caller['crew_name'] + '。' if peer else
                                "。回复用 SendMessage，地址「" + caller["cc_name"] + "」，或 crew say --to " + caller["crew_name"] + "。"))
                 notice_id = board.queue_leader_notice(conn, target["session_id"], notice, "crew", now=now)
                 return {"ok": True, "session_id": target["session_id"], "name": target["crew_name"],
@@ -1640,7 +1697,7 @@ class Manager:
                 peer = any(runtimes.get(conn, s['session_id'])['runtime'] == 'codex' for s in (reply_to, target))
                 if not peer and reply_to["cc_name"] is None:
                     raise board.BoardError("leader 的 SendMessage 地址未知，请查明后再试")
-                message += ('\n\n回复 leader 用 crew send ' + reply_to['crew_name'] + ' "<回复>"；Codex 也可用 crew_send_message。' if peer else
+                message += ('\n\n回复 leader 用 crew send ' + reply_to['crew_name'] + ' "<回复>" ' + REPLY_KIND + '；Codex 用 crew_send_message 并同样指定 kind。' if peer else
                             "\n\n回复 leader 用 SendMessage，地址「" + reply_to["cc_name"] + "」。")
             sender = reply_to["crew_name"] if reply_to is not None else board.HUMAN
             created_spawn = self._resume(conn, target, message, sender=sender, now=now, source='human' if human else 'crew')
@@ -1797,6 +1854,68 @@ class Manager:
                 current.process.stdin.write(json.dumps(request) + "\n")
                 current.process.stdin.flush()
         return {"ok": True}
+
+    def _idle_for(self, current, now):
+        """Seconds since this native last did anything, or None while it must stay resident."""
+        if (current.process.poll() is not None or getattr(current, 'maintenance', None) is not None
+                or current.pending_compact or getattr(current, 'pending_native_accept', None) is not None
+                or getattr(current, 'replacing', None) is not None or getattr(current, 'native_lost', None) is not None
+                or getattr(current, 'background_tasks', None)):
+            return None
+        journal = current.journal
+        with journal.condition:
+            journal.refresh()
+            if journal.status != 'idle' or not journal.events:
+                return None
+            if any(task.get('status') == 'running' for task in journal.subagents.values()):
+                return None
+            last = journal.events[-1]['at']
+        return (now - store.parse_iso(last)).total_seconds()
+
+    def reclaim_idle(self, now=None, idle_seconds=None):
+        """Close owned natives idle past the limit; the next input resumes the same native ID."""
+        limit = idle_reclaim_seconds() if idle_seconds is None else idle_seconds
+        if not limit:
+            return []
+        now = store.parse_iso(store.now_iso()) if now is None else now
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=datetime.timezone.utc)
+        reclaimed = []
+        with self.lock:
+            if self.closed:
+                return []
+            for key, current in list(self.processes.items()):
+                with current.input_lock:
+                    idle = self._idle_for(current, now)
+                    if idle is None or idle < limit:
+                        continue
+                    current.stop_reason = 'idle_reclaim'
+                    if getattr(current, 'runtime', 'claude') != 'codex':
+                        try:
+                            current.process.stdin.close()
+                        except OSError as exc:
+                            current.stop_reason = None
+                            current.journal.emit('error', text='空闲回收关闭输入失败，进程保留：' + str(exc))
+                            continue
+                try:
+                    if getattr(current, 'runtime', 'claude') == 'codex':
+                        # Keep the thread unarchived: it is resumed, not finished.
+                        current.close(archive=False)
+                    else:
+                        try:
+                            current.process.wait(timeout=10)
+                        except subprocess.TimeoutExpired:
+                            current.process.terminate()
+                            current.process.wait(timeout=10)
+                except (OSError, subprocess.SubprocessError, codex_client.CodexError) as exc:
+                    # The shared poller must survive one stuck native; the next poll retries it.
+                    current.journal.emit('error', text='空闲回收未能结束进程：%s: %s' % (type(exc).__name__, exc))
+                    continue
+                if not current.reader_done.wait(10):
+                    current.journal.emit('error', text='空闲回收后进程输出尚未排空')
+                current.journal.emit('runtime_released', reason='idle', idle_seconds=int(idle))
+                reclaimed.append(key)
+        return reclaimed
 
     def stop_managed(self, session_id, *, reason='managed_stop'):
         """Terminate an owned process, including busy turns, and drain its output."""

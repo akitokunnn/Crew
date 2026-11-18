@@ -1,0 +1,11 @@
+@font-face{font-family:"HarmonyOS Sans SC";font-weight:400;src:url("../../../desktop/assets/fonts/HarmonyOS_Sans_SC_Regular.woff2") format("woff2")}
+@font-face{font-family:"HarmonyOS Sans SC";font-weight:500;src:url("../../../desktop/assets/fonts/HarmonyOS_Sans_SC_Medium.woff2") format("woff2")}
+:root{--paper:#F6F5F1;--card:#FFFFFF;--ink:#2C2B27;--muted:#76736A;--faint:#A9A59A;--line:#E2DED4;--accent:#3E7C74;--mint:#8AC6B8;--mint-soft:#DCEDE8;--warm:#B07A26;--warm-soft:#F6EAD3;--violet:#6A5FA8;--violet-soft:#E8E3F7;--ok:#3B8057;--mark-bg:#29312E;--mark-fg:#F6F5F1;--dot:rgba(44,43,39,.10);--shadow:0 1px 2px rgba(44,43,39,.06),0 8px 24px rgba(44,43,39,.08)}
+html[data-theme=dark]{--paper:#1E1E1C;--card:#262624;--ink:#E7E4DB;--muted:#A19D92;--faint:#6F6C64;--line:#363531;--accent:#7DB3AA;--mint:#8AC6B8;--mint-soft:#22332F;--warm:#D6A55A;--warm-soft:#3B3020;--violet:#A79BE0;--violet-soft:#2E2A45;--ok:#86B995;--mark-bg:#F6F5F1;--mark-fg:#29312E;--dot:rgba(231,228,219,.08);--shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px rgba(0,0,0,.35)}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{background:transparent}
+body{font-family:"HarmonyOS Sans SC","Microsoft YaHei",sans-serif;color:var(--ink);-webkit-font-smoothing:antialiased}
+.canvas{position:relative;overflow:hidden;border-radius:28px;background:var(--paper)}
+.grid{position:absolute;inset:0;background-image:radial-gradient(var(--dot) 1.2px,transparent 1.3px);background-size:22px 22px;-webkit-mask-image:linear-gradient(100deg,transparent 30%,#000 75%);mask-image:linear-gradient(100deg,transparent 30%,#000 75%)}
+.pill{display:inline-flex;align-items:center;gap:7px;height:30px;padding:0 13px;border:1px solid var(--line);border-radius:999px;background:var(--card);font-size:14px;color:var(--muted);white-space:nowrap}
+.pill i{width:8px;height:8px;border-radius:50%;display:inline-block}

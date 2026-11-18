@@ -21,9 +21,6 @@ class TrustModeTests(unittest.TestCase):
         self.conn = store.connect(self.base / "home")
         self.addCleanup(self.conn.close)
         self.conn.executescript("""
-            CREATE TABLE IF NOT EXISTS trust_settings (
-                project TEXT PRIMARY KEY REFERENCES projects(name),
-                enabled INTEGER NOT NULL, goal TEXT, updated_at TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS trust_decisions (
                 decision_id INTEGER PRIMARY KEY REFERENCES decisions(id),
                 reason TEXT NOT NULL, recorded_at TEXT NOT NULL);
@@ -181,14 +178,12 @@ class TrustModeTests(unittest.TestCase):
             self.assertIn("依据提出者建议", result["reason"])
             self.assertIn("未另附取舍理由", result["reason"])
 
-    def test_automatic_answer_clears_hold_and_repeat_does_not_rewrite_audit(self):
+    def test_automatic_answer_repeat_does_not_rewrite_audit(self):
         self.set_mode(True, "目标", now=NOW)
         decision_id = self.ask()
-        board.hold(self.conn, decision_id, now=NOW)
         first = trust_mode.auto_answer(self.conn, decision_id, reason="原始理由", now=NOW)
         repeated = trust_mode.auto_answer(self.conn, decision_id, reason="后来改写", now="later")
         self.assertEqual(first, repeated)
-        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM decision_holds").fetchone()[0], 0)
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM trust_decisions").fetchone()[0], 1)
 
     def test_manual_answer_foreign_mode_and_disabled_mode_are_preserved(self):
@@ -204,15 +199,13 @@ class TrustModeTests(unittest.TestCase):
         self.assertIsNone(trust_mode.auto_answer(self.conn, pending, now=NOW))
         self.assertEqual(self.decision(pending)["status"], "open")
 
-    def test_answer_reason_and_hold_update_rollback_together(self):
+    def test_answer_and_reason_roll_back_together(self):
         self.set_mode(True, "目标", now=NOW)
         decision_id = self.ask()
-        board.hold(self.conn, decision_id, now=NOW)
         self.conn.executescript("CREATE TRIGGER fail_audit BEFORE INSERT ON trust_decisions BEGIN SELECT RAISE(ABORT,'audit failure'); END;")
         with self.assertRaises(sqlite3.IntegrityError):
             trust_mode.auto_answer(self.conn, decision_id, now=NOW)
         self.assertEqual(self.decision(decision_id)["status"], "open")
-        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM decision_holds").fetchone()[0], 1)
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM events WHERE kind='decision:answer'").fetchone()[0], 0)
 
     def test_invalid_decision_ids_and_reason_types_do_not_change_state(self):
@@ -302,23 +295,6 @@ class TrustModeTests(unittest.TestCase):
         self.assertIn('THIS GROUP REPORT', draft)
         self.assertNotIn('OTHER GROUP PRIVATE', draft)
 
-    def test_old_project_setting_migrates_once_and_new_leaders_default_off(self):
-        self.conn.execute('INSERT INTO trust_settings(project,enabled,goal,updated_at) VALUES(?,?,?,?)',('alpha',1,'旧项目目标',NOW))
-        self.conn.execute('DELETE FROM trust_leader_migrations WHERE project=?',('alpha',))
-        migrated = store.connect(self.base / 'home')
-        try:
-            self.assertEqual(trust_mode.get(migrated,'alpha','lead-a')['goal'],'旧项目目标')
-            self.assertTrue(trust_mode.get(migrated,'alpha','lead-b')['enabled'])
-            board.register_session(migrated,'new-leader','alpha',self.root,None,'main',name='new-leader',role='leader',now=NOW)
-            self.assertFalse(trust_mode.get(migrated,'alpha','new-leader')['enabled'])
-            trust_mode.set(migrated,'alpha',False,leader_session_id='lead-a')
-        finally:migrated.close()
-        again=store.connect(self.base / 'home')
-        try:
-            self.assertFalse(trust_mode.get(again,'alpha','lead-a')['enabled'])
-            self.assertFalse(trust_mode.get(again,'alpha','new-leader')['enabled'])
-        finally:again.close()
-
     def test_claude_general_prompt_receives_current_group_authority_without_waking(self):
         self.set_mode(True,'A组保留的历史目标')
         self.set_mode(True,'B组不应传入的目标',leader='lead-b')
@@ -338,29 +314,6 @@ class TrustModeTests(unittest.TestCase):
                 self.assertEqual(self.get_mode()['goal'],'A组保留的历史目标')
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM leader_notices').fetchone()[0],0)
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM goal_executions').fetchone()[0],0)
-
-    def test_upgrade_binds_old_decisions_once_and_deletes_only_exact_pending_notice_ids(self):
-        number=self.ask()
-        pending=board._queue_leader_notice(self.conn,'lead-a','legacy notice with no identifying text','crew',NOW)
-        sent=board._queue_leader_notice(self.conn,'lead-a','already sent','crew',NOW)
-        unrelated=board._queue_leader_notice(self.conn,'lead-a','must stay','crew',NOW)
-        foreign=board._queue_leader_notice(self.conn,'foreign','another project','crew',NOW)
-        web_notice=board._queue_leader_notice(self.conn,'lead-a','web source','web',NOW)
-        self.conn.execute('UPDATE leader_notices SET sent_at=? WHERE id=?',(NOW,sent))
-        board._event(self.conn,'trust:set','alpha',board.HUMAN,{'notice_ids':[pending,sent,foreign,web_notice]},NOW)
-        self.conn.execute("DELETE FROM trust_schema_migrations WHERE name='decision-leader-v1'")
-        migrated=store.connect(self.base/'home')
-        try:
-            ids={row[0] for row in migrated.execute('SELECT id FROM leader_notices')}
-            self.assertNotIn(pending,ids)
-            self.assertTrue({sent,unrelated,foreign,web_notice}.issubset(ids))
-            self.assertEqual(migrated.execute('SELECT leader_session_id FROM decision_leader_scopes WHERE decision_id=?',(number,)).fetchone()[0],'lead-a')
-            migrated.execute("UPDATE sessions SET group_name='lead-b' WHERE session_id='member'")
-        finally:migrated.close()
-        again=store.connect(self.base/'home')
-        try:
-            self.assertEqual(again.execute('SELECT leader_session_id FROM decision_leader_scopes WHERE decision_id=?',(number,)).fetchone()[0],'lead-a')
-        finally:again.close()
 
     def test_archived_closed_or_retired_leader_cannot_auto_answer_old_question(self):
         number=board.ask(self.conn,'member','原组的未答问题',['保留小范围方案','扩大实现范围'],'保留小范围方案')

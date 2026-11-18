@@ -46,6 +46,22 @@ class CodexToolsTests(unittest.TestCase):
         self.assertEqual(result["contentItems"][0]["type"], "inputText")
         return json.loads(result["contentItems"][0]["text"])
 
+    def test_codex_leader_says_and_reads_the_channel_but_members_cannot(self):
+        from crew import channel
+        asked = channel.post(self.conn, 'first', board.HUMAN, '你们看下这个', ['chief'], source='web')
+        posted = self.call('crew_say', {'text': '能修，细节私聊', 'reply_to': asked['id'], 'detail': True}, tools=self.leader)
+        self.assertEqual((posted['speaker_name'], posted['reply_to'], posted['detail']), ('chief', asked['id'], True))
+        self.assertEqual(self.conn.execute('SELECT await_reply FROM channel_mentions').fetchone()[0], 0)
+        too_long = self.call('crew_say', {'text': '长' * 151}, tools=self.leader, success=False)
+        self.assertIn('交流区像群聊一样说短话', too_long['error']['message'])
+        read = self.call('crew_channel', {}, tools=self.leader)
+        self.assertIsNone(read['card'])
+        self.assertEqual([post['body'] for post in read['posts']], ['你们看下这个', '能修，细节私聊'])
+        self.assertIn('回复 #%d 用户' % asked['id'], read['posts'][1]['heading'])
+        for name, args in (('crew_say', {'text': 'hi'}), ('crew_channel', {})):
+            result = self.call(name, args, success=False)
+            self.assertIn('交流区只给 leader 用', result['error']['message'])
+
     def test_stop_tool_uses_bound_actor_and_explicit_host_stop_endpoint(self):
         with mock.patch('crew.spawn.request_start', return_value={'ok': True, 'stopped': True}) as request:
             self.call('crew_stop', {'target': 'builder'})
@@ -443,6 +459,23 @@ class CodexToolsTests(unittest.TestCase):
         result = self.call("crew_send_message", {"to": "reviewer", "text": "Hello"}, tools=tools,
                            success=False)
         self.assertNotIn("secret", str(result))
+        # The router raised: the outcome is unknown, so the tool must not claim it was never accepted.
+        self.assertIn("delivery_unknown", str(result))
+        self.assertIn("outcome unknown", str(result))
+        self.assertIn("do not resend at once", str(result))
+
+    def test_descriptions_state_real_scope_without_duplicating_role_rules(self):
+        specs = {spec["name"]: spec["description"] for spec in codex_tools.tool_specs()}
+        self.assertIn("Current leaders only", specs["crew_rename"])
+        self.assertIn("Members cannot use it", specs["crew_rename"])
+        self.assertIn("general conversation it is registered to this workspace only", specs["crew_doc_add"])
+        self.assertNotIn("binds it to your current task", specs["crew_doc_add"])
+        self.assertNotIn("Ordinary Q&A", specs["crew_goal"])
+        self.assertIn("follows the injected role rules", specs["crew_goal"])
+        self.assertIn("readable self-contained HTML page in data.report.document_html", specs["crew_goal"])
+        self.assertIn("at least one concrete example", specs["crew_goal"])
+        self.assertIn("final version of the page with report.preview at least once before finish", specs["crew_goal"])
+        self.assertNotIn("optional in data.report.document_html", specs["crew_goal"])
 
     def test_unknown_tools_and_bad_inputs_do_not_mutate_the_board(self):
         for name, args in (("shell", {"command": "anything"}), ("crew_task", {"text": ""}),

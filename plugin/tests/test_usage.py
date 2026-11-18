@@ -132,17 +132,6 @@ class TestUsage(UsageFixture, unittest.TestCase):
         self.assertEqual(usage.summary(self.conn, None, None, PRICES)['codex']['rollouts'], 0)
         self.assertEqual(usage.by_session(self.conn, None, None, PRICES)[0]['codex_runs'], 1)
 
-    def test_legacy_dispatch_schema_upgrades_in_place_and_reconnect_is_idempotent(self):
-        self.write(self.runs, [self.run_record()]); self.scan()
-        self.conn.execute('ALTER TABLE codex_runs DROP COLUMN ephemeral')
-        self.conn.execute('ALTER TABLE codex_runs DROP COLUMN usage_json')
-        for _ in range(2):
-            with contextlib.closing(store.connect(self.home)) as conn:
-                row = conn.execute('SELECT * FROM codex_runs').fetchone()
-                self.assertEqual(row['run_id'], 'run-one')
-                self.assertEqual(row['ephemeral'], 0)
-                self.assertIsNone(row['usage_json'])
-
     def test_scan_reserves_writer_before_reading_migration_version(self):
         outcomes = []
         original = usage._backfill_peer_prompts

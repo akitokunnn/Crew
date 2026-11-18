@@ -369,7 +369,7 @@ class WorkspaceCleanupTests(MaintenanceFixture, unittest.TestCase):
         messaging.queue(self.conn, worker, boss, 'old mail for the leader')
         board.queue_leader_notice(self.conn, boss, 'old queued notice', 'crew')
         board.join(self.conn, 'git-admin', 'demo', 'git管理员', self.project, self.project, 'main', role='leader', group_name='git', now=NOW)
-        self.conn.execute("INSERT INTO git_management(project,enabled_at,base,stable,admin_session_id,branch_rules) "
+        self.conn.execute("INSERT INTO git_management(project,enabled_at,base,integration,admin_session_id,branch_rules) "
                           "VALUES('demo',?,'main',NULL,'git-admin','keep main green')", (NOW,))
         (self.project / 'deliverable.md').write_text('# kept\n', encoding='utf-8')
         documents.register(self.conn, boss, 'deliverable.md', title='Deliverable', summary='kept', project='demo')

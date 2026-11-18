@@ -43,14 +43,16 @@ class LeaderClosureTests(GoalFixture):
         done = goals.review_acceptance(self.conn, waiting['id'], True, expected_version=waiting['version'])
         self.assertEqual(done['status'], 'completed')
 
-    def test_user_test_and_todos_require_nonempty_text_objects(self):
+    def test_user_test_is_optional_but_supplied_steps_and_todos_need_nonempty_text_objects(self):
         goal = self.goal()
         data = self.report('awaiting_acceptance')
         missing = dict(data)
         del missing['user_test']
-        with self.assertRaisesRegex(board.BoardError, 'user_test'):
-            goals.save_report(self.conn, goal['id'], missing)
-        for field, values in (('user_test', ([], None, ['step'], [{'step': 'a', 'expected': ' '}], [{'expected': 'b'}])),
+        # Steps for the user are optional: AI verifies what it can and lists only what the user must confirm.
+        self.assertEqual(goals.save_report(self.conn, goal['id'], missing)['data']['user_test'], [])
+        self.assertEqual(goals.save_report(self.conn, goal['id'], {**data, 'user_test': []})['data']['user_test'], [])
+        self.conn.execute('DELETE FROM goal_reports')
+        for field, values in (('user_test', (None, ['step'], [{'step': 'a', 'expected': ' '}], [{'expected': 'b'}])),
                               ('user_todos', (None, ['todo'], [{'title': '', 'detail': 'a'}], [{'title': 'a'}]))):
             for value in values:
                 with self.subTest(field=field, value=value), self.assertRaises(board.BoardError):
@@ -62,9 +64,10 @@ class LeaderClosureTests(GoalFixture):
     def test_user_test_is_saved_and_escaped_in_standard_and_authored_reports(self):
         goal = self.goal()
         steps = [{'step': 'Open <button>', 'expected': 'See "Ready" & continue'}, {'step': 'Click save', 'expected': 'Saved'}]
-        for document in ('', '<h1>My report</h1>'):
+        # A final delivery always has an authored page; the generated page remains for other outcomes.
+        for outcome, document in (('failed', ''), ('awaiting_acceptance', '<h1>My report</h1>')):
             with self.subTest(document=document):
-                report = goals.save_report(self.conn, goal['id'], {**self.report('awaiting_acceptance'), 'user_test': steps, 'document_html': document})
+                report = goals.save_report(self.conn, goal['id'], {**self.report(outcome), 'user_test': steps, 'document_html': document})
                 self.assertEqual(goals.get_report(self.conn, report['id'])['data']['user_test'], steps)
                 self.assertIn('<h2>请你实测</h2><ol>', report['html'])
                 self.assertIn('Open &lt;button&gt;', report['html'])
@@ -174,6 +177,46 @@ class LeaderClosureTests(GoalFixture):
         self.assertIn('crew archive', notices[0]['text'])
         with self.assertRaises(board.Conflict):
             goals.review_acceptance(self.conn, goal['id'], True, expected_version=goal['version'])
+        self.assertEqual(len(board.pending_notices(self.conn, 'chief-id')), 1)
+
+    def finish_from(self, session_id, outcome, runtime='claude'):
+        goal = self.goal()
+        goals.assign(self.conn, goal['id'], session_id, 'Work')
+        goals.transition(self.conn, goal['id'], 'running')
+        execution = goals.create_execution(self.conn, goal['id'], session_id, runtime=runtime)
+        report = goals.save_report(self.conn, goal['id'], {**self.report(outcome), 'summary': 'Measured <exactly> once.'})
+        goals.request_finish(self.conn, goal['id'], report['id'], actor=session_id, execution_id=execution['id'])
+        self.assertTrue(goals.finalize_finish(self.conn, goal['id'])['finalized'])
+        return goal
+
+    def test_task_execution_delivery_reports_back_to_the_leaders_general_chat_once(self):
+        for runtime in ('claude', 'codex'):
+            with self.subTest(runtime=runtime):
+                self.conn.execute('DELETE FROM leader_notices')
+                goal = self.finish_from('chief-id', 'awaiting_acceptance', runtime)
+                notices = board.pending_notices(self.conn, 'chief-id')
+                self.assertEqual(len(notices), 1)
+                self.assertEqual((notices[0]['source'], notices[0]['wake']), ('crew', 1))
+                for part in (goal['title'], goal['id'], '等用户验收', 'Measured <exactly> once.', 'crew goal status'):
+                    self.assertIn(part, notices[0]['text'])
+                self.assertTrue(goals.finalize_finish(self.conn, goal['id'])['already'])
+                self.assertEqual(len(board.pending_notices(self.conn, 'chief-id')), 1)
+
+    def test_failed_delivery_wakes_the_leader_and_cancelled_one_is_kept_quietly(self):
+        for outcome, status, wake in (('failed', '未达标', 1), ('cancelled', '已取消', 0)):
+            with self.subTest(outcome=outcome):
+                self.conn.execute('DELETE FROM leader_notices')
+                self.finish_from('chief-id', outcome)
+                notices = board.pending_notices(self.conn, 'chief-id')
+                self.assertEqual(len(notices), 1)
+                self.assertIn(status, notices[0]['text'])
+                self.assertEqual(notices[0]['wake'], wake)
+
+    def test_delivery_submitted_from_the_leaders_own_general_chat_is_not_echoed_back(self):
+        self.ready()
+        self.assertEqual(board.pending_notices(self.conn, 'chief-id'), [])
+        self.conn.execute('DELETE FROM leader_notices')
+        self.ready(board.HUMAN)
         self.assertEqual(len(board.pending_notices(self.conn, 'chief-id')), 1)
 
     def test_reject_continues_same_task_round_and_notifies_once(self):

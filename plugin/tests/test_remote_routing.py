@@ -131,9 +131,10 @@ class RemoteRoutingTests(ShellFixture, unittest.TestCase):
                 decision = next(item for item in board.decisions(self.conn, 'demo') if item['id'] == number)
                 self.inbox.save_answer(self.conn, decision, 'Continue', 'mixed-%s' % number)
                 notice = next(item['text'] for item in board.pending_notices(self.conn, 's3')
-                              if item['text'].startswith('#%s\n' % number))
-                self.assertIn('crew send one', notice)
-                self.assertIn('Crew ID：s1', notice)
+                              if item['text'].startswith('拍板 #%s：' % number))
+                self.assertIn('crew send one "<用户答复与后续安排>" --kind user_answer', notice)
+                self.assertIn('kind=user_answer', notice)
+                self.assertIn('转告不等于叫它复工', notice)
                 self.assertNotIn('SendMessage', notice)
                 self.assertEqual(self.answer(number), 'Continue')
 
@@ -144,7 +145,7 @@ class RemoteRoutingTests(ShellFixture, unittest.TestCase):
         decision = next(item for item in board.decisions(self.conn, 'demo') if item['id'] == number)
         self.inbox.save_answer(self.conn, decision, 'Continue', 'own-answer')
         notice = board.pending_notices(self.conn, 's3')[0]['text']
-        self.assertIn('请按用户答复继续', notice)
+        self.assertIn('这是你提的问题：按答复内容决定下一步', notice)
         self.assertNotIn('crew send lead', notice)
         self.assertNotIn('SendMessage', notice)
 

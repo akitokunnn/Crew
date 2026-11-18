@@ -4,14 +4,12 @@ The only target is the desktop's own plugin_root; nothing is downloaded. Each
 step prints one JSON result for the desktop transaction and fails explicitly.
 """
 import argparse
-import datetime
 import fnmatch
 import hashlib
 import json
 import os
 import socket
 import sqlite3
-import subprocess
 import sys
 import time
 import uuid
@@ -76,14 +74,7 @@ def target_info(root):
                      ".claude-plugin/plugin.json", "defaults/blacklist.txt", "defaults/prices.json"):
         if not (root / required).is_file():
             raise UpdateError("桌面自带的 Crew 缺少必需文件：" + str(root / required))
-    marker = root / 'crew-product.json'
-    generation = 1
-    if marker.exists():
-        product = json.loads(marker.read_text(encoding='utf-8'))
-        generation = product.get('generation') if isinstance(product, dict) else None
-        if type(generation) is not int or generation != 2:
-            raise UpdateError('Crew 产品代际标记无效：' + str(marker))
-    return {"root": str(root), "version": manifest_version(root), "digest": digest(root), 'generation': generation}
+    return {"root": str(root), "version": manifest_version(root), "digest": digest(root)}
 
 
 def cli_entry(home):
@@ -96,103 +87,32 @@ def cli_entry(home):
     return {"state": "present", "plugin_root": str(root.resolve()), "version": manifest_version(root)}
 
 
-def claude_command():
-    from .chat import claude_executable
-    return [claude_executable()]
-
-
-def _run(command, args):
-    from .tool_updates import _run as run_tool
-    timeout = 30 if args[:2] == ["plugin", "list"] else 120
-    try:
-        return run_tool([*command, *args], timeout=timeout)
-    except subprocess.TimeoutExpired as exc:
-        raise UpdateError("claude %s 超过 %s 秒未完成，已停止该次命令，请重试" % (" ".join(args[:2]), timeout)) from exc
-
-
-def plugin_entries(command):
-    result = _run(command, ["plugin", "list", "--json"])
-    if result.returncode != 0:
-        raise UpdateError("claude plugin list 失败（退出码 %s）：%s" % (result.returncode, (result.stderr or result.stdout).strip()[:500]))
-    entries = json.loads(result.stdout)
-    if not isinstance(entries, list):
-        raise UpdateError("claude plugin list --json 没有返回数组")
-    return [entry for entry in entries if isinstance(entry, dict) and entry.get("id") == PLUGIN_ID]
-
-
-def plugin_state(target, command):
-    """Registered and actually read plugin source; readFromFolder wins over the cache."""
-    entries = plugin_entries(command)
-    if not entries:
-        return {"state": "not_installed"}
-    scopes = [str(entry.get("scope")) for entry in entries]
-    if scopes != ["user"]:
-        return {"state": "blocked", "scopes": scopes,
-                "reason": "Claude 中的 crew 插件安装在 %s 范围；桌面只同步 user 范围的单一安装。请在对应位置手动执行 "
-                          "claude plugin update crew@crew --scope <范围> 并核对版本后再试。" % "、".join(scopes)}
-    entry = entries[0]
-    folder = entry.get("readFromFolder")
-    source = Path(folder or entry["installPath"])
-    present = source.is_dir()
-    info = {"scope": "user", "registered_version": entry["version"], "source": str(source),
-            "read_from_folder": bool(folder), "source_version": manifest_version(source) if present else None,
-            "source_present": present, "matches": present and digest(source) == target["digest"]}
-    if info["matches"] and entry["version"] == target["version"]:
-        return {**info, "state": "current"}
-    if folder and not info["matches"]:
-        return {**info, "state": "blocked",
-                "reason": "Claude 插件实际读取 %s（版本 %s），内容与桌面自带的 %s（版本 %s）不同；官方 plugin update 不会改写这个目录。"
-                          "请先把该目录更新为与桌面相同的版本（例如源码仓库切到对应提交），或用当前桌面版本重新安装插件，再重新检查。"
-                          % (source, info["source_version"] or "未知", target["root"], target["version"])}
-    if folder:
-        return {**info, "state": "update"}
-    return {**info, "state": "blocked",
-            "reason": "Claude 插件从缓存 %s 读取，无法在更新前确认官方更新后的来源与桌面自带版本一致。请手动执行 "
-                      "claude plugin update crew@crew --scope user，并确认版本为 %s 后再检查。" % (source, target["version"])}
-
-
-def update_plugin(target, command):
-    # Keep the old helper operation as an explicit refusal for an older shell.
-    # Managed V2 sessions load --plugin-dir from their own backend source.
-    raise UpdateError('Crew 使用会话专用插件；不会更新共享的 V1 Claude 插件')
-
-
 def backup(home):
     """SQLite online backup, then an integrity check of the copy."""
     home = Path(home).resolve()
     source = store.db_path(home)
     if not source.is_file():
         raise UpdateError("没有找到 Crew 数据库：" + str(source))
-    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    directory = home / "backups" / ("update-%s-%s" % (stamp, uuid.uuid4().hex[:6]))
-    directory.mkdir(parents=True)
-    path = directory / "crew.db"
-    with closing(sqlite3.connect(source, timeout=30)) as origin, closing(sqlite3.connect(path)) as copy:
-        origin.backup(copy)
-    with closing(sqlite3.connect(path)) as copy:
-        checked = [row[0] for row in copy.execute("PRAGMA integrity_check")]
-    if checked != ["ok"]:
-        raise UpdateError("备份完整性检查失败：%s（备份 %s）" % ("; ".join(map(str, checked))[:500], path))
+    # The single backup copy: a verified new copy replaces the previous one.
+    path = home / "backups" / "crew.db"
+    path.parent.mkdir(exist_ok=True)
+    staged = path.with_name("crew.db.%s.tmp" % uuid.uuid4().hex)
+    try:
+        with closing(sqlite3.connect(source, timeout=30)) as origin, closing(sqlite3.connect(staged)) as copy:
+            origin.backup(copy)
+        with closing(sqlite3.connect(staged)) as copy:
+            checked = [row[0] for row in copy.execute("PRAGMA integrity_check")]
+        if checked != ["ok"]:
+            raise UpdateError("备份完整性检查失败：%s" % "; ".join(map(str, checked))[:500])
+        os.replace(staged, path)
+    finally:
+        staged.unlink(missing_ok=True)
     return {"path": str(path), "bytes": path.stat().st_size, "integrity": "ok"}
-
-
-def validate_home(home):
-    home = Path(home).resolve()
-    if home == (Path.home() / '.crew').resolve():
-        raise UpdateError('Crew 不会更新 V1 的 .crew 数据目录')
-    previous = cli_entry(home)
-    if previous['state'] != 'missing':
-        previous_root = previous.get('plugin_root')
-        if not previous_root or target_info(previous_root)['generation'] != 2:
-            raise UpdateError('此 HOME 的命令入口属于 V1 或来源未确认；请使用独立的数据目录')
-    return home
 
 
 def switch(home, root):
     target = target_info(root)
-    if target['generation'] != 2:
-        raise UpdateError('更新来源不是 Crew；不能切换到旧版后台')
-    home = validate_home(home)
+    home = Path(home).resolve()
     from .home_migration import reset_deployment
     deployment = reset_deployment({'home': str(Path(home).resolve())})
     runtime = install.install(home, target["root"])
@@ -252,11 +172,9 @@ def hold(home, stream):
 
 
 def inspect(home, root):
-    validate_home(home)
     target = target_info(root)
     plugin = {'state': 'session-scoped', 'source': target['root'], 'source_version': target['version'],
-              'registered_version': target['version'], 'scope': 'managed-session'} if target['generation'] == 2 else {
-              'state': 'blocked', 'reason': '更新来源不是 Crew；不会修改共享的 V1 插件'}
+              'registered_version': target['version'], 'scope': 'managed-session'}
     return {"target": target, "cli": cli_entry(home), "plugin": plugin}
 
 
@@ -264,7 +182,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(prog="crew_update.py")
     parser.add_argument("--home", type=Path, required=True)
     commands = parser.add_subparsers(dest="operation", required=True)
-    for name in ("inspect", "plugin-update", "switch"):
+    for name in ("inspect", "switch"):
         commands.add_parser(name).add_argument("--target", type=Path, required=True)
     commands.add_parser("backup")
     commands.add_parser("lock")
@@ -278,8 +196,6 @@ def main(argv=None):
     try:
         if args.operation == "inspect":
             value = inspect(args.home, args.target)
-        elif args.operation == "plugin-update":
-            value = update_plugin(target_info(args.target), None)
         elif args.operation == "switch":
             value = switch(args.home, args.target)
         elif args.operation == "backup":

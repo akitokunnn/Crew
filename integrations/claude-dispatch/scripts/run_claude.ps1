@@ -14,7 +14,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $utf8 = New-Object Text.UTF8Encoding $false
-$crewRunHome = if ($env:CREW_HOME) { [IO.Path]::GetFullPath($env:CREW_HOME) } else { Join-Path $env:USERPROFILE '.crew-v2' }
+[Console]::OutputEncoding = $utf8
+$crewRunHome = if ($env:CREW_HOME) { [IO.Path]::GetFullPath($env:CREW_HOME) } else { Join-Path $env:USERPROFILE '.crew' }
 
 function ConvertTo-QuotedArg([string]$Value) {
     # Windows argv quoting, including quotes and trailing backslashes.

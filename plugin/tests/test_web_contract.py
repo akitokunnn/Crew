@@ -14,7 +14,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import ProxyHandler, Request, build_opener
 
-from crew import session_ops, board, codex_runtime, decision_flow, goals, store, themes, usage, web
+from crew import session_ops, board, codex_runtime, decision_flow, goals, remote_routes, store, themes, usage, web
 from test_shell import NOW, PLUGIN, ShellFixture
 from test_usage import assistant
 
@@ -82,7 +82,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
     def test_state_exact_shape_and_empty_limits(self):
         expected = {"project", "projects", "now", "agents_error", "notification", "leaders",
                     "members", "decisions", "candidates", "attention", "limits", "vscode_error", "models", "efforts", "channel", "themes",
-                    "runtimes", "todos", "todo_count", "goals", "ai", "native_approvals", "sounds", "git_assistant"}
+                    "runtimes", "todos", "todo_count", "goals", "ai", "native_approvals", "sounds", "git_assistant", "git_branches"}
         state = self.state()
         self.assertEqual(set(state), expected)
 
@@ -97,7 +97,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         leader = state["leaders"][0]
         self.assertEqual(set(leader), {"session_id", "name", "goal", "status", "busy", "running", "web_chat",
             "cc_name", "last_seq", "last_reply_id", "read_seq", "unread", "pending", "notices_pending", "member_ids",
-            "model", "effort", "applied", "activity", "context", "where", "codex", "codex_older", "priority", "runtime", "native_handoff", "trust", "runtime_switch", "active_goal_id", "active_goal_ids", "active_execution_id", "member_defaults"})
+            "model", "effort", "applied", "activity", "context", "where", "codex", "codex_older", "pinned", "runtime", "native_handoff", "trust", "runtime_switch", "active_goal_id", "active_goal_ids", "active_execution_id", "member_defaults", "color", "avatar_version"})
         self.assertIsNone(leader['member_defaults'])
         self.assertIsNone(leader['active_goal_id']); self.assertIsNone(leader['active_execution_id'])
         self.assertEqual(set(leader['runtime_switch']), {'allowed', 'reason', 'pending_handoff', 'last_switch_at'})
@@ -105,7 +105,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertTrue(leader['runtime_switch']['reason'])  # The fixture leader is external, not owned by Crew.
         self.assertFalse(leader['runtime_switch']['pending_handoff'])
         self.assertIsNone(leader['runtime_switch']['last_switch_at'])
-        self.assertIsNone(leader['priority'])
+        self.assertFalse(leader['pinned'])
         self.assertEqual((leader["session_id"], leader["member_ids"], leader["unread"]), ("s3", ["s1"], 0))
         # Leaders dispatch Codex for their own bulk work too (user 10-23), listed like members'.
         self.assertEqual((leader["codex"], leader["codex_older"]), ([], 0))
@@ -122,7 +122,11 @@ class WebContractTests(ShellFixture, unittest.TestCase):
     def test_archive_http_authorizes_caller_before_changing_or_stopping_identity(self):
         board.roster(self.conn, 'demo', 'add', 'lead', session_ids=['s1'])
         board.join(self.conn, 'foreign-lead', 'demo', 'foreign', self.project, self.project, 'main', role='leader')
-        for path in ('/api/session/archive', '/api/session/remove'):
+        for caller in ('s1', 's3', 'foreign-lead'):
+            code, result, _ = self.request('/api/session/delete', {'session_id': 's1', 'caller_session_id': caller}, project='demo')
+            self.assertEqual(code, 400, result)
+            self.assertFalse(board.is_archived(self.conn, 's1'))
+        for path in ('/api/session/archive',):
             for caller in ('s1', 'foreign-lead'):
                 with self.subTest(path=path, caller=caller):
                     code, result, _ = self.request(path, {'session_id': 's1', 'caller_session_id': caller}, project='demo')
@@ -146,6 +150,61 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         # Owner UI retains its existing authority over an ungrouped member.
         code, result, _ = self.request('/api/session/archive', {'session_id': 's2'}, project='demo')
         self.assertEqual(code, 200, result)
+
+    def test_delete_removes_crew_and_native_conversations_and_takes_the_whole_group(self):
+        from crew import runtimes
+        member, lead, codex = (str(uuid.UUID(int=n)) for n in (1, 2, 3))
+        board.join(self.conn, lead, 'demo', 'boss', self.project, self.project, 'main', role='leader', now=NOW)
+        board.join(self.conn, member, 'demo', 'worker', self.project, self.project, 'main', now=NOW)
+        board.roster(self.conn, 'demo', 'move', 'boss', ['worker'], now=NOW)
+        board.join(self.conn, codex, 'demo', 'coder', self.project, self.project, 'main', now=NOW)
+        runtimes.set(self.conn, codex, 'codex', 'thread-coder-0001', now=NOW)
+        files = []
+        for sid in (member, lead, codex):
+            journal = self.home / 'chat' / (sid + '.jsonl')
+            journal.parent.mkdir(exist_ok=True)
+            journal.write_text('', encoding='utf-8')
+            files.append(journal)
+        for sid in (member, lead):
+            transcript = self.claude / 'C--project' / (sid + '.jsonl')
+            transcript.parent.mkdir(exist_ok=True)
+            transcript.write_text('{}', encoding='utf-8')
+            sidecar = self.claude / 'C--project' / sid / 'subagents'
+            sidecar.mkdir(parents=True)
+            (sidecar / 'agent-1.jsonl').write_text('{}', encoding='utf-8')
+            files += [transcript, sidecar.parent]
+        keep = self.claude / 'C--project' / (str(uuid.UUID(int=9)) + '.jsonl')
+        keep.write_text('{}', encoding='utf-8')
+
+        self.provider.return_value = [*self.provider.return_value,
+                                      {'sessionId': member, 'name': 'cc-worker', 'status': 'idle', 'cwd': str(self.project)}]
+        self.service.refresh_agents()
+        code, result, _ = self.request('/api/session/delete', {'session_id': lead}, project='demo')
+        self.assertEqual(code, 409, result)
+        self.assertIn('「worker」还开在 VS Code', result['error'])
+        self.assertFalse(board.is_archived(self.conn, lead))
+        self.assertTrue(all(path.exists() for path in files))
+
+        self.provider.return_value = self.provider.return_value[:-1]
+        self.service.refresh_agents()
+        with mock.patch('crew.session_delete.delete_codex') as delete_codex:
+            code, result, _ = self.request('/api/session/delete', {'session_id': codex}, project='demo')
+            self.assertEqual(code, 200, result)
+            self.assertEqual((result['deleted'], result['errors']), ([codex], []))
+            self.assertEqual(delete_codex.call_args.args[0], ['thread-coder-0001'])
+            code, result, _ = self.request('/api/session/delete', {'session_id': lead}, project='demo')
+            self.assertEqual(code, 200, result)
+            self.assertEqual((sorted(result['deleted']), result['errors']), (sorted([lead, member]), []))
+            self.assertEqual(delete_codex.call_count, 1)
+        self.assertFalse(any(path.exists() for path in files))
+        self.assertTrue(keep.exists())
+        state = self.state()
+        listed = {item['session_id'] for item in state['leaders'] + state['members']}
+        self.assertFalse(listed & {member, lead, codex})
+        for sid in (member, lead, codex):
+            self.assertEqual(board.session(self.conn, sid)['status'], 'closed')
+            self.assertEqual(board.session_control(self.conn, sid)['removed'], 1)
+        self.assertIsNotNone(self.conn.execute("SELECT closed_at FROM groups WHERE project='demo' AND name='boss'").fetchone()[0])
 
     def test_close_group_http_binds_current_leader_and_records_actor(self):
         board.roster(self.conn, 'demo', 'add', 'lead', session_ids=['s1'])
@@ -194,7 +253,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual(set(goal),{'id','project','leader_session_id','title','original_request','status',
             'requirement_version','current_round','priority','manual_pause','reason','version','created_at','updated_at',
             'dependencies','requirements','assignments','rounds','request','acceptance','constraints','report_available','acceptance_brief','native_handoffs','work_summary','decision_mode','supplements_after_report',
-            'now_doing','pending_decision','working_count','finish_pending','observing','last_activity_at'})
+            'now_doing','pending_decision','working_count','finish_pending','transfer_pending','observing','last_activity_at'})
         self.assertEqual((goal['decision_mode']['mode'], goal['decision_mode']['source'], goal['decision_mode']['version']),
                          ('human','task-default',1))
         self.assertEqual((goal['project'],goal['leader_session_id'],goal['title'],goal['status']),('demo','s3','验证交付','queued'))
@@ -295,12 +354,11 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual({row["id"] for row in state["decisions"]}, {opened, own})
         decision = next(row for row in state["decisions"] if row["id"] == opened)
         self.assertEqual(set(decision), {"id", "session_id", "asker", "leader_session_id", "question",
-                                        "options", "recommendation", "blocking", "created_at", "held", "held_at", "brief", "needs_review",
+                                        "options", "recommendation", "blocking", "created_at", "brief", "needs_review",
                                         "goal_id", "presentation_stage", "discussed_at", "ready_at", "notice_id"})
         self.assertTrue(decision['needs_review'])
         self.assertIsNone(decision['brief'])
         self.assertEqual((decision["asker"], decision["leader_session_id"]), ("one", "s3"))
-        self.assertEqual((decision["held"], decision["held_at"]), (False, None))
         self.assertEqual((decision['goal_id'],decision['presentation_stage'],decision['discussed_at'],decision['ready_at'],decision['notice_id']),
                          (None,'notice',None,None,None))
         self.assertEqual(state["leaders"][0]["pending"], 2)
@@ -330,94 +388,40 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual(row['brief'],brief);self.assertEqual(row['options'],['立即发布','等待验收'])
         self.assertEqual(len(self.processes),before)
 
-    def test_hold_state_keeps_question_but_excludes_pending_and_attention(self):
+    def test_retired_hold_routes_are_gone_and_legacy_hold_rows_count_as_pending(self):
         active = board.ask(self.conn, "s1", "Choose API", now=NOW)
-        held = board.ask(self.conn, "s3", "Later question", now=NOW)
-        code, response, _ = self.request("/api/decision/hold", {"id": held})
-        self.assertEqual((code, response), (200, {"ok": True}))
-        state = self.state()
-        decisions = {row["id"]: row for row in state["decisions"]}
-        self.assertEqual(set(decisions), {active, held})
-        self.assertEqual((decisions[held]["held"], decisions[held]["held_at"]), (True, NOW))
-        self.assertEqual((decisions[active]["held"], decisions[active]["held_at"]), (False, None))
-        self.assertEqual(state["leaders"][0]["pending"], 1)
-        self.assertEqual([row["decision_id"] for row in state["attention"] if row["kind"] == "decision"], [active])
-        code, response, _ = self.request("/api/decision/unhold", {"id": held})
-        self.assertEqual((code, response), (200, {"ok": True}))
-        state = self.state()
-        self.assertEqual(state["leaders"][0]["pending"], 2)
-        self.assertEqual({row["decision_id"] for row in state["attention"] if row["kind"] == "decision"}, {active, held})
-
-    def test_hold_routes_member_and_self_to_leader_and_ungrouped_to_no_notice(self):
-        for sid in ("s1", "s2", "s3"):
-            with self.subTest(session_id=sid):
-                question = "Question for " + sid
-                decision = board.ask(self.conn, sid, question, now=NOW)
-                before = {row["id"] for row in board.pending_notices(self.conn, "s3")}
-                self.assertEqual(self.request("/api/decision/hold", {"id": decision})[:2], (200, {"ok": True}))
-                notices = [row for row in board.pending_notices(self.conn, "s3") if row["id"] not in before]
-                if sid == "s2":
-                    self.assertEqual(notices, [])
-                else:
-                    self.assertEqual(len(notices), 1)
-                    self.assertEqual(notices[0]["source"], "web")
-                    asker = board.session(self.conn, sid)
-                    for part in ("#" + str(decision), asker["crew_name"], asker["cc_name"], question,
-                                 "用户挂起了，暂时不拍", "请用 SendMessage 告诉提问的组员",
-                                 "不卡流程的按推荐继续", "卡流程的先做别的，先别再问这道题"):
-                        self.assertIn(part, notices[0]["text"])
-                notice_ids = {row["id"] for row in board.pending_notices(self.conn, "s3")}
-                self.clock += dt.timedelta(seconds=1)
-                self.assertEqual(self.request("/api/decision/hold", {"id": decision})[:2], (200, {"ok": True}))
-                self.assertEqual(self.request("/api/decision/unhold", {"id": decision})[:2], (200, {"ok": True}))
-                self.assertEqual(self.request("/api/decision/unhold", {"id": decision})[:2], (200, {"ok": True}))
-                self.assertEqual({row["id"] for row in board.pending_notices(self.conn, "s3")}, notice_ids)
-
-    def test_hold_notice_uses_current_sendmessage_address(self):
-        self.provider.return_value[0]["name"] = "cc-one-resumed"
-        self.service.refresh_agents()
-        decision = board.ask(self.conn, "s1", "Later with resumed process", now=NOW)
-        self.assertEqual(self.request("/api/decision/hold", {"id": decision})[0], 200)
-        self.assertIn("SendMessage 地址：cc-one-resumed", board.pending_notices(self.conn, "s3")[0]["text"])
-
-    def test_hold_routes_reject_bad_ids_processed_and_foreign_questions(self):
-        other = self.root / "other-project"
-        other.mkdir()
-        board.init_project(self.conn, "other", other, now=NOW)
-        board.join(self.conn, "foreign", "other", "foreign", other, other, "main", now=NOW)
-        foreign = board.ask(self.conn, "foreign", "Foreign question", now=NOW)
-        answered = board.ask(self.conn, "s1", "Already answered", now=NOW)
-        withdrawn = board.ask(self.conn, "s1", "Already withdrawn", now=NOW)
-        board.answer(self.conn, answered, "a", now=NOW)
-        board.withdraw(self.conn, "s1", withdrawn, now=NOW)
+        legacy = board.ask(self.conn, "s3", "Held before the feature was removed", now=NOW)
+        self.conn.execute("INSERT INTO decision_holds(decision_id,held_at) VALUES(?,?)", (legacy, NOW))
         for path in ("/api/decision/hold", "/api/decision/unhold"):
-            for data in ({}, {"id": True}, {"id": "1"}, {"id": 1.5}):
-                with self.subTest(path=path, data=data):
-                    code, response, _ = self.request(path, data)
-                    self.assertEqual((code, response), (400, {"error": "id 必须是整数"}))
-            for decision, reason in ((999, "待拍板不存在"), (foreign, "不属于当前项目"),
-                                     (answered, "尚未答复"), (withdrawn, "尚未答复")):
-                with self.subTest(path=path, decision=decision):
-                    code, response, _ = self.request(path, {"id": decision})
-                    self.assertEqual(code, 400)
-                    self.assertIn(reason, response["error"])
-        self.assertEqual(list(self.conn.execute("SELECT * FROM decision_holds")), [])
+            with self.subTest(path=path):
+                self.assertNotIn(path, web.POST_PATHS)
+                self.assertNotIn(path, remote_routes.POST_PATHS)
+                self.assertEqual(self.request(path, {"id": legacy})[0], 404)
+        state = self.state()
+        self.assertEqual({row["id"] for row in state["decisions"]}, {active, legacy})
+        self.assertEqual(state["leaders"][0]["pending"], 2)
+        self.assertEqual({row["decision_id"] for row in state["attention"] if row["kind"] == "decision"}, {active, legacy})
         self.assertEqual(board.pending_notices(self.conn, "s3"), [])
+        self.assertEqual(len(list(self.conn.execute("SELECT * FROM decision_holds"))), 1)
 
-    def test_answer_held_question_removes_hold_and_queues_normal_answer_notice(self):
-        decision = board.ask(self.conn, "s1", "Answer when ready", now=NOW)
-        self.assertEqual(self.request("/api/decision/hold", {"id": decision})[0], 200)
-        before = {row["id"] for row in board.pending_notices(self.conn, "s3")}
-        self.assertEqual(self.request("/api/answer", {"id": decision, "text": "Continue"})[:2],
-                         (200, {"ok": True, "routed_to": "lead"}))
-        notices = [row for row in board.pending_notices(self.conn, "s3") if row["id"] not in before]
-        self.assertEqual(len(notices), 1)
-        self.assertIn("答复：Continue", notices[0]["text"])
-        self.assertIn("请马上用 SendMessage 转告并叫它继续", notices[0]["text"])
-        self.assertEqual(self.state()["decisions"], [])
-        self.assertEqual(list(self.conn.execute("SELECT * FROM decision_holds")), [])
-        saved = board.decisions(self.conn, "demo", all=True)[0]
-        self.assertEqual((saved["status"], saved["answer"], saved["answered_by"]), ("answered", "Continue", "user"))
+    def test_answer_notice_relays_the_answer_without_ordering_a_resume(self):
+        for sid, relayed in (("s1", True), ("s3", False)):
+            with self.subTest(session_id=sid):
+                decision = board.ask(self.conn, sid, "Question for " + sid, now=NOW)
+                before = {row["id"] for row in board.pending_notices(self.conn, "s3")}
+                self.assertEqual(self.request("/api/answer", {"id": decision, "text": "Stop here"})[:2],
+                                 (200, {"ok": True, "routed_to": "lead"}))
+                notices = [row for row in board.pending_notices(self.conn, "s3") if row["id"] not in before]
+                self.assertEqual(len(notices), 1)
+                text = notices[0]["text"]
+                self.assertIn("用户答复：Stop here", text)
+                self.assertNotIn("叫它继续", text)
+                if relayed:
+                    self.assertIn("SendMessage 地址：" + board.session(self.conn, sid)["cc_name"], text)
+                    self.assertIn("先用 SendMessage 把答复转告提问者", text)
+                    self.assertIn("转告不等于叫它复工", text)
+                else:
+                    self.assertIn("这是你提的问题：按答复内容决定下一步", text)
 
     def test_closed_group_leader_has_no_independent_members(self):
         self.assertEqual(self.state()["leaders"][0]["member_ids"], ["s1"])
@@ -730,8 +734,9 @@ class WebContractTests(ShellFixture, unittest.TestCase):
                     self.assertEqual(notice["source"], "web")
                     asker = board.session(self.conn, sid)
                     for part in ("#" + str(decision), asker["crew_name"], asker["cc_name"], question,
-                                 "Use option A", "请马上用 SendMessage 转告并叫它继续"):
+                                 "用户答复：Use option A"):
                         self.assertIn(part, notice["text"])
+                    self.assertNotIn("叫它继续", notice["text"])
                 saved = self.conn.execute("SELECT answer,answered_by FROM decisions WHERE id=?", (decision,)).fetchone()
                 self.assertEqual(tuple(saved), ("Use option A", "user"))
 
@@ -833,11 +838,9 @@ class WebContractTests(ShellFixture, unittest.TestCase):
                 self.assertEqual(headers["Cache-Control"], "no-store")
                 assets[path] = content.decode("utf-8")
         script = assets["/git.js"]
-        for contract in ('aria-label="分支"', 'data-git-row=', 'class="git-conflicts"',
+        for contract in ('aria-label="分支"', 'class="git-lite-card ', 'class="git-lite-trunk"',
                          'data-git-act="settings"', 'data-git-act="refresh"', 'data-git-act="fetch"',
-                         'git-github-unavailable',
-                         'class="git-request-cards"', '<article class="git-request-card" data-git-request=',
-                         'git-requests-title', 'git-chat-host',
+                         'git-chat-host',
                          'assistant.requests.waiting_user', 'CrewChat.mount'):
             self.assertIn(contract, script)
         self.assertIn('更新视图', script)
@@ -847,7 +850,6 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertNotIn('setInterval', script)
         self.assertIn('prefers-reduced-motion:reduce', assets["/git.css"])
         self.assertIn('var(--fs)', assets["/git.css"])
-        self.assertIn('git-recent-merge', script)
         self.assertNotIn('data-git-tab="graph"', script)
         self.assertNotIn('git-commit-top', script)
         self.assertNotIn('git-commit-bottom', script)
@@ -870,56 +872,6 @@ class GitCiScheduleTests(unittest.TestCase):
         service._poll_git_ci()
         self.assertEqual(service.git_ci.poll.call_args_list, [mock.call(now=service.now().isoformat())] * 2)
         self.assertEqual(service.stop.wait.call_args_list, [mock.call(300)] * 2)
-
-
-class FrontendGitRequestsContractTests(unittest.TestCase):
-    def test_merge_requests_active_first_escaped_details_and_assistant_chat(self):
-        script = r'''
-const assert = require("node:assert/strict"), fs = require("node:fs"), vm = require("node:vm");
-const callbacks = new Map(), page = {scrollTop:0};
-const host = require(require("node:path").resolve(process.argv[1], "../../../tests/git_ui_host.cjs"))({scroll:page,handlers:callbacks});
-const latest = {sha:"abcdef123", subject:"Fixture", author:"Crew", time:"2026-10-24T00:00:00Z"};
-const request = (id, status) => ({id, status, branch:"feature/<review>", session_id:"member", requester_name:"<member>",
-  blocking:id===3, description:"Done <script>alert(1)</script>", note:id===1?null:"Tested & reviewed", pr_number:id===1?null:id===2?99:42, created_at:latest.time});
-const data = {enabled:true, repository:"Fixture", config:{base:"develop", stable:null, admin_session_id:"git-admin"},
-  base:{name:"develop", latest}, stable:null, requests:[request(7,"merged"),request(1,"open"),request(8,"rejected"),request(2,"waiting_user"),request(3,"merging")],
-  branches:[], remote_only:[], commits:[], ref_unique_commits:{}, next_offset:null, last_fetch_at:null, recent_merge:null,
-  github:{runs:[], pull_requests:[{number:42, title:"Feature PR", state:"OPEN", head:"feature/<review>", ci:"success", url:"https://example.test/pull/42", draft:false}]}};
-const mounts=[];const sandbox = {CrewChat:{mount:options=>mounts.push(options),update(){},unmount(){}},setInterval:() => 1, clearInterval:() => {}};
-vm.createContext(sandbox);
-vm.runInContext(fs.readFileSync(process.argv[1], "utf8") + "\nglobalThis.component = CrewGit;", sandbox);
-sandbox.component.mount(host, {project:"demo",state:{git_assistant:{session_id:"git-admin",name:"Git 助手",base:"develop",stable:null,requests:{active:3,waiting_user:1,merging:1,queued:1},attention:1}},chatAccess:()=>({readonly:false}), api:async () => data, toast:() => {}, onChanged:async () => {}});
-setImmediate(() => {
-  const html = host.innerHTML;
-  assert.equal(mounts[0].session.session_id,"git-admin");assert.ok(html.includes("git-chat-host"));
-  const cards = Array.from(html.matchAll(/<article class="git-request-card" data-git-request="(\d+)">([\s\S]*?)<\/article>/g));
-  assert.ok(html.includes('<div class="git-request-cards">'));
-  assert.deepEqual(cards.map(card => Number(card[1])), [3,2,1,8,7]);
-  for (const [, id, body] of cards) {
-    const heading = body.match(/^<div class="git-card-head">([\s\S]*?)<\/div>/)[1];
-    assert.match(heading, /^<span class="git-request-status [^"]+">[^<]+<\/span><span class="git-request-id">#/);
-    assert.ok(heading.includes(`<span class="git-request-id">#${id}</span>`));
-    assert.equal(heading.includes('<b class="git-request-dependency">合并后继续</b>'), id === "3");
-    assert.ok(body.includes('<div class="git-request-description">Done &lt;script&gt;alert(1)&lt;/script&gt;</div>'));
-    assert.equal(body.includes('<div class="git-request-note">Tested &amp; reviewed</div>'), id !== "1");
-    const facts = Array.from(body.matchAll(/<dt>(.*?)<\/dt><dd>([\s\S]*?)<\/dd>/g));
-    assert.deepEqual(facts.map(fact => fact[1]), ["分支", "提出者", "PR"]);
-    assert.equal(facts[0][2], '<code>feature/&lt;review&gt;</code>');
-    assert.equal(facts[1][2], `<span title="member">&lt;member&gt;</span><div class="git-request-time">${new Date(latest.time).toLocaleString("zh-CN", {month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit", hour12:false})}</div>`);
-    if (id === "1") assert.equal(facts[2][2], '<span class="git-muted">—</span>');
-    else if (id === "2") assert.equal(facts[2][2], '<span class="git-request-pr">#99</span>');
-    else assert.ok(facts[2][2].includes('href="https://example.test/pull/42" target="_blank" rel="noreferrer" title="Feature PR · OPEN"'));
-  }
-  assert.ok(!html.includes("<table"));
-  for (const label of ["合并中", "等用户拍板", "待处理", "已拒绝", "已合并", "3 件待处理"]) assert.ok(html.includes(label), label);
-  for (const value of ["feature/&lt;review&gt;", "&lt;member&gt;", "&lt;script&gt;", "Tested &amp; reviewed", 'href="https://example.test/pull/42"']) assert.ok(html.includes(value), value);
-  assert.ok(!html.includes("<script>alert(1)</script>"));
-  sandbox.component.unmount();
-});
-'''
-        result = subprocess.run(["node", "-e", script, str(PLUGIN / "crew" / "web" / "git.js")],
-                                capture_output=True, text=True, encoding="utf-8", timeout=10)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
 class FrontendThemeContractTests(unittest.TestCase):
@@ -999,7 +951,7 @@ assert.equal(root.dataset.projectTheme, "celadon");
         self.assertEqual(themes.THEMES[0]["dark"]["--accent"], "#7DB3AA")
         expected_tokens = {"--accent", "--accent-strong", "--accent-text", "--on-accent",
                            "--accent-soft", "--accent-softer", "--bg", "--panel", "--panel-2",
-                           "--surface", "--surface-2", "--user-bubble", "--p1", "--p2", "--p3"}
+                           "--surface", "--surface-2", "--user-bubble"}
         for item in themes.THEMES:
             for mode in ("light", "dark"):
                 with self.subTest(theme=item["id"], mode=mode):
@@ -1014,59 +966,140 @@ assert.equal(root.dataset.projectTheme, "celadon");
 
 
 class FrontendGitContractTests(unittest.TestCase):
-    def run_component(self, scenario):
-        bootstrap = r'''const assert = require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
-const sandbox={CrewChat:{mount(){},update(){},unmount(){}}};sandbox.window=sandbox;vm.createContext(sandbox);
+    def test_branch_overview_groups_owners_requests_trunk_and_worktree_paths(self):
+        script = r'''const assert = require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
+class FixtureDate extends Date { static now() { return Date.parse('2026-11-09T01:00:00Z'); } }
+const sandbox={Date:FixtureDate,CrewChat:{mount(){},update(){},unmount(){}}};vm.createContext(sandbox);
 vm.runInContext(fs.readFileSync(process.argv[1],'utf8'),sandbox);sandbox.CrewGit=vm.runInContext('CrewGit',sandbox);
 const flush=async()=>{for(let index=0;index<20;index++)await Promise.resolve();};
-const calls=[],page={scrollTop:0},listeners=new Map();
+const calls=[],listeners=new Map();
+const page={scrollTop:0};
 const host=require(path.resolve(process.argv[1],'../../../tests/git_ui_host.cjs'))({scroll:page,handlers:listeners});
-const sha = n => n.toString(16).padStart(40, "0");
-const pr = {number:17,title:'NewID <ready>',head:'feature/NewID',base:'develop',head_sha:sha(10),merge_sha:sha(9),state:'MERGED',draft:false,ci:'success',url:'https://github.com/fixture/demo/pull/17'};
-const commit = (n, parents, refs = []) => ({sha:sha(n),parents:parents.map(sha),refs,subject:'提交 <' + n + '>',body:'正文 <script>\n'.repeat(14),author:'作者',time:'2026-10-24T01:00:00Z',parent_branches:parents.map((_,i) => i === 0 ? 'develop' : 'feature/NewID'),pull_requests:n >= 9 ? [pr] : []});
-const commits = [commit(10,[9],['develop']),commit(9,[8,7]),commit(8,[7],['master'])];
-const latest = n => commits.find(item => item.sha === sha(n));
-const branch = (name,n) => ({name,latest:latest(n),origin_relation:'',sessions:[],worktrees:[],ahead:0,behind:0,merged:true,conflicts:[]});
-const fixture = {enabled:true,repository:'Demo',config:{base:'develop',stable:'master',admin_session_id:'git-admin'},requests:[],base:{name:'develop',latest:latest(10),origin_relation:''},stable:{name:'master',latest:latest(8),ahead:2,origin_relation:''},branches:[branch('develop',10),branch('master',8)],remote_only:[],ref_unique_commits:{develop:[],master:[]},commits,next_offset:3,recent_merge:commits[1],github:{pull_requests:[pr],runs:[]},last_fetch_at:null};
-const api=async route=>{calls.push(route);return JSON.parse(JSON.stringify(fixture));};
-const mount=project=>sandbox.CrewGit.mount(host,{project,state:{git_assistant:{session_id:"git-admin",name:"Git 助手",base:"develop",stable:null,requests:{active:3,waiting_user:1,merging:1,queued:1},attention:1}},chatAccess:()=>({readonly:false}),api,toast(){}});
-const button=act=>{const node={dataset:{gitAct:act},closest:selector=>selector==='[data-git-act]'?node:null};return node;};
-const click=target=>listeners.get('click')({target});
+const visible={session_id:'visible',name:'侧栏 leader'},hidden={session_id:'hidden',name:'归档 leader'};
+const other={session_id:'other',name:'另一位 leader'};
+const latest={sha:'a'.repeat(40),subject:'修复 <script>alert("title")</script> & 校验',author:'作者',time:'2026-11-09T00:55:00Z'};
+const plain={remote:null,pr:null,dirty:null,outside_integration:null};
+const branches=[
+  {...plain,name:'feature/<script>alert("branch")</script>',state:'unmerged',commits:3,behind:2,latest,worktree:'c:\\FIXTURE\\Demo\\Temp\\wt\\feature',owners:[visible],
+   remote:{ahead:0},pr:{number:12,url:'https://github.com/example/demo/pull/12',draft:false,base:'develop',ci:'pending'},dirty:{files:4,build_outputs:9,error:null}},
+  {...plain,name:'feature/offline',state:'unmerged',commits:4,behind:0,latest,worktree:'C:/fixture/demo/Temp/wt/offline',owners:[hidden],remote:{ahead:2}},
+  {...plain,name:'feature/unowned',state:'unmerged',commits:5,behind:0,latest,worktree:null,owners:[],dirty:{files:null,build_outputs:null,error:'fatal: <bad>'}},
+  {...plain,name:'feature/push',state:'unpushed',commits:6,behind:1,latest,worktree:'D:/outside/worktree',owners:[visible]},
+  {...plain,name:'feature/rejected',state:'unpushed',commits:7,behind:0,latest,worktree:'C:/fixture/demo-other/worktree',owners:[other]},
+  {...plain,name:'proactive-debug',state:'merged',commits:0,behind:11,latest,worktree:'C:/fixture/demo/Temp/wt/proactive-debug',owners:[visible],dirty:{files:49,build_outputs:34,error:null}}
+];
+// Terminal requests precede active ones for the same branch; they must not hide its active tag.
+const requests=[{id:80,status:'merged',branch:branches[0].name},
+  ...['open','merging','merged','waiting_user','rejected'].map((status,index)=>({id:index+1,status,branch:branches[index].name}))];
+const assistant={session_id:'git-admin',name:'Git 助手',base:'develop',integration:null,requests:{active:3,waiting_user:1,merging:1,queued:1},attention:1};
+const fixture={enabled:true,repository:'Demo',config:{base:'develop',integration:null,admin_session_id:'git-admin'},assistant,
+  choices:{branches:['develop','master'],base:'develop'},
+  base:{name:'develop',origin:true,unpushed:0,behind_origin:0,worktree:'C:/fixture/demo',dirty:{files:0,build_outputs:35,error:null}},
+  integration:null,branches,requests,merged_hidden:11,last_fetch_at:null,pull_requests_at:'2026-11-09T00:58:00Z'};
+const colors=new Map([['侧栏 leader','#137f6d'],['归档 leader','#8844aa'],['另一位 leader','#a06020']]);
+const settings={project:'demo',root:'C:\\fixture\\demo\\',state:{git_assistant:assistant},chatAccess:()=>({readonly:false}),
+  api:async(route,body)=>{assert.equal(body,undefined);calls.push(route);return JSON.parse(JSON.stringify(fixture));},toast(){},
+  leader:id=>id===visible.session_id?visible:undefined,
+  avatar:(name,size)=>`<i data-avatar="${name}" data-size="${size}"></i>`,tint:name=>{assert(colors.has(name));return colors.get(name);}};
+const sections=html=>Array.from(html.matchAll(/<section class="git-lite-section"><h3>(.*?)<\/h3>([\s\S]*?)<\/section>/g));
+const cards=html=>Array.from(html.matchAll(/<article class="git-lite-card (unmerged|unpushed|integrated|merged)" style="--tint:([^"]+)">([\s\S]*?)<\/article>/g));
+const facts=card=>card.match(/<div class="git-lite-facts"[^>]*>(.*?)<\/div>/)[1];
+const tags=card=>Array.from(card.match(/<div class="git-lite-tags">(.*?)<\/div>/)[1].matchAll(/>([^<]+)<\/(?:span|a)>/g),match=>match[1]);
+const refresh=async()=>{const button={dataset:{gitAct:'refresh'}};listeners.get('click')({target:{closest:selector=>{assert.equal(selector,'[data-git-act]');return button;}}});await flush();return host.querySelector('.git-page-in').innerHTML;};
+(async()=>{
+  sandbox.CrewGit.mount(host,settings);await flush();
+  const html=host.querySelector('.git-page-in').innerHTML;
+  assert(html.startsWith('<section id="git-panel" aria-label="分支">'));
+  assert(html.includes('<section class="git-lite-trunk"><div class="git-lite-trunk-label">主干 develop</div>'));
+  assert(!html.includes('稳定分支'));assert(!html.includes('master 落后'));assert(!html.includes('git-lite-trunk-number'));
+  // Build outputs alone do not make the base checkout look dirty.
+  assert(html.includes('<div class="git-lite-trunk-note">本地 develop 与 origin 一致</div>'));
+  const groups=sections(html);assert.deepEqual(groups.map(group=>group[1]),['未合入 develop <span>3</span>','已合入 develop，还没推送 <span>2</span>','已合入 develop，worktree 还有未提交改动 <span>1</span>']);
+  assert.deepEqual(cards(groups[0][2]).map(card=>card[1]),['unmerged','unmerged','unmerged']);
+  assert.deepEqual(cards(groups[1][2]).map(card=>card[1]),['unpushed','unpushed']);
+  assert.deepEqual(cards(groups[2][2]).map(card=>card[1]),['merged']);
+  const items=cards(html);assert.equal(items.length,6);
+  for(const [index,item] of items.slice(0,5).entries())assert(item[3].includes(`${index+3} 个提交${index<3?'未合入':'未推送'}`));
+  assert(items[5][3].includes('<span class="git-lite-count">已合入 develop</span>'));
+  assert.deepEqual(tags(items[0][3]),['已推送','PR #12','4 个未提交改动']);
+  assert(items[0][3].includes('href="https://github.com/example/demo/pull/12" target="_blank" rel="noopener"'));
+  assert(items[0][3].includes('另有 9 个 Binaries / Intermediate 编译产物未计入'));
+  assert.deepEqual(tags(items[1][3]),['已推送 · 本地多 2 个']);
+  assert.deepEqual(tags(items[2][3]),['只在本地','读取未提交改动失败']);assert(items[2][3].includes('title="fatal: &lt;bad&gt;"'));
+  assert.deepEqual(tags(items[5][3]),['只在本地','49 个未提交改动']);
+  const escapedName='feature/&lt;script&gt;alert(&quot;branch&quot;)&lt;/script&gt;';
+  const escapedSubject='修复 &lt;script&gt;alert(&quot;title&quot;)&lt;/script&gt; &amp; 校验';
+  assert(items[0][3].includes(`title="${escapedName}"`));assert(items[0][3].includes(`<span>${escapedName}</span>`));
+  for(const item of items)assert(item[3].includes(`<div class="git-lite-subject" title="${escapedSubject}">${escapedSubject}</div>`));
+  assert(!html.includes('<script>'));assert(!html.includes('<table'));
+  assert.equal(items[0][2],'#137f6d');assert(items[0][3].includes('class="git-lite-leader">侧栏 leader</span>'));
+  assert(items[0][3].includes('<i data-avatar="侧栏 leader" data-size="18"></i>'));assert(!items[0][3].includes('等 '));
+  assert(!items[0][3].includes('归档 leader'));
+  assert.equal(items[1][2],'#8844aa');assert(items[1][3].includes('class="git-lite-leader">归档 leader</span>'));
+  assert(items[1][3].includes('<i data-avatar="归档 leader" data-size="18"></i>'));assert(!items[1][3].includes('等 '));
+  assert.equal(items[2][2],'var(--text-3)');assert(items[2][3].includes('没人认领'));
+  assert(!items[2][3].includes('data-avatar'));assert(!items[2][3].includes('git-lite-leader'));
+  assert(!items[3][3].includes('等 1 位'));
+  assert.deepEqual(Array.from(html.matchAll(/<span class="git-lite-request ([^"]+)">(.*?)<\/span>/g),match=>[match[1],match[2]]),
+    [['open','已提合并请求 #1'],['merging','助手合并中 #2'],['waiting_user','合并等你拍板 #4']]);
+  for(const index of [2,4])assert(!items[index][3].includes('git-lite-request'));
+  assert(!html.includes('#80'));assert(html.includes('另有 11 个分支已合入并推送，不再显示'));
+  assert.equal(facts(items[0][3]),'5 分钟前 · 落后 develop 2 · Temp/wt/feature');
+  assert.equal(facts(items[1][3]),'5 分钟前 · Temp/wt/offline');
+  assert.equal(facts(items[2][3]),'5 分钟前');
+  assert.equal(facts(items[3][3]),'5 分钟前 · 落后 develop 1 · D:/outside/worktree');
+  assert.equal(facts(items[4][3]),'5 分钟前 · C:/fixture/demo-other/worktree');
+  assert.equal(facts(items[5][3]),'5 分钟前 · 落后 develop 11 · Temp/wt/proactive-debug');
+  assert(!html.includes('落后 develop 0'));
+  for(const [base,note] of [
+    [{name:'develop',origin:false,unpushed:null,behind_origin:null,worktree:null,dirty:null},'develop 没有 origin，只看本地'],
+    [{name:'develop',origin:true,unpushed:3,behind_origin:2,worktree:null,dirty:null},'本地 develop 与 origin 分叉：3 个没推送，落后 2 个'],
+    [{name:'develop',origin:true,unpushed:3,behind_origin:0,worktree:null,dirty:null},'本地 develop 有 3 个提交还没推送'],
+    [{name:'develop',origin:true,unpushed:0,behind_origin:2,worktree:'C:/fixture/demo',dirty:{files:7,build_outputs:35,error:null}},'本地 develop 落后 origin 2 个提交 · develop 工作区有 7 个未提交改动'],
+    [{name:'develop',origin:true,unpushed:0,behind_origin:0,worktree:null,dirty:null},'本地 develop 与 origin 一致']
+  ]){
+    fixture.base=base;const result=await refresh();
+    assert(result.includes(`<div class="git-lite-trunk-note">${note}</div>`));
+    assert.equal(sections(result).length,base.origin?3:2);
+    if(!base.origin){assert(!result.includes('已合入 develop，还没推送'));assert(!result.includes('git-lite-card unpushed'));assert.equal(cards(result).length,4);}
+  }
+  // With a local integration branch, unmerged work splits into "not in it yet" and "in it, waiting to be tested".
+  fixture.integration={name:'dev_live',ahead:5,behind:1,branches:['feature/offline'],worktree:'C:/fixture/demo-live',dirty:{files:2,build_outputs:0,error:null}};
+  fixture.branches=branches.map(item=>({...item}));
+  Object.assign(fixture.branches[0],{outside_integration:2});Object.assign(fixture.branches[1],{state:'integrated',outside_integration:0});
+  Object.assign(fixture.branches[2],{outside_integration:5});
+  const integrated=await refresh();
+  assert.deepEqual(sections(integrated).map(group=>group[1]),['还没进 dev_live <span>2</span>','已进 dev_live，待实测 <span>1</span>','已合入 develop，还没推送 <span>2</span>','已合入 develop，worktree 还有未提交改动 <span>1</span>']);
+  assert(integrated.includes('本地集成分支 dev_live <span>只在本机、不推送</span>'));
+  assert(integrated.includes('比 develop 多 <strong>5</strong> 个提交 · 1 个分支待实测'));
+  assert(integrated.includes('落后 develop 1 个提交 · dev_live 工作区有 2 个未提交改动'));
+  assert(integrated.includes('title="已进 dev_live、未合入 develop：feature/offline"'));
+  const split=cards(integrated);
+  assert(split[0][3].includes('<span class="git-lite-count">2 个提交未进 dev_live</span>'));
+  assert(facts(split[0][3]).startsWith('5 分钟前 · 共 3 个未合入 develop · '));
+  assert(split[1][3].includes('<span class="git-lite-count">5 个提交未进 dev_live</span>'));assert(!facts(split[1][3]).includes('共 '));
+  assert.equal(split[2][1],'integrated');assert(split[2][3].includes('<span class="git-lite-count">4 个提交待实测</span>'));
+  const integratedBranch=fixture.branches.find(item=>item.state==='integrated');
+  fixture.integration=null;fixture.branches=[];fixture.merged_hidden=0;
+  const empty=await refresh();
+  assert(!empty.includes('稳定分支'));assert(!empty.includes('git-lite-trunk-number'));assert(!empty.includes('本地集成分支'));
+  // Nothing waiting anywhere: one cleared card instead of a heading and placeholder per stage.
+  assert.equal(sections(empty).length,0);assert(empty.includes('<div class="git-lite-clear-title">分支都处理完了</div>'));
+  assert(empty.includes('<div class="git-lite-clear-note">没有待合入 develop、待推送的分支</div>'));
+  assert.equal(cards(empty).length,0);assert(!empty.includes('git-lite-hidden'));assert(!empty.includes('另有 '));
+  fixture.integration={name:'dev_live',ahead:1,behind:0,branches:['feature/offline'],worktree:null,dirty:null};
+  fixture.branches=[{...integratedBranch}];fixture.merged_hidden=4;
+  const partly=await refresh();
+  // Only the stage holding a branch keeps a heading; the empty ones fold into one line.
+  assert.deepEqual(sections(partly).map(group=>group[1]),['已进 dev_live，待实测 <span>1</span>']);
+  assert(partly.includes('没有待进 dev_live、待推送的分支</p>'));assert(!partly.includes('git-lite-clear-title'));
+  assert(partly.includes('<p class="git-lite-hidden">另有 4 个分支已合入并推送，不再显示</p>'));
+  assert(calls.every(route=>route==='/api/git'));sandbox.CrewGit.unmount();
+})().catch(error=>{console.error(error);process.exitCode=1;});
 '''
-        script = bootstrap + "\n(async () => {\n" + scenario + "\n})().catch(error => { console.error(error); process.exitCode = 1; });"
         result = subprocess.run(["node", "-e", script, str(PLUGIN / "crew" / "web" / "git.js")],
                                 capture_output=True, text=True, encoding="utf-8", timeout=10)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-
-    def test_git_origin_relations_in_both_cards_and_local_branch_rows(self):
-        self.run_component(r'''
-mount('demo'); await flush();
-for (const relation of ['落后 origin 15 个提交','领先 origin 2 个提交','与 origin 分叉（领先 3、落后 1 个提交）','：没有 origin']) {
-  fixture.base.origin_relation = '本地 develop ' + relation;
-  fixture.stable.origin_relation = '本地 master ' + relation;
-  fixture.branches[0].origin_relation = fixture.base.origin_relation;
-  fixture.branches[1].origin_relation = fixture.stable.origin_relation;
-  const reads = calls.length;
-  assert(!host.innerHTML.includes(fixture.base.origin_relation));
-  assert.equal(calls.length,reads);
-  click(button('refresh')); await flush();
-  assert.equal(calls.length,reads+1);
-  assert.equal(calls.at(-1),'/api/git?offset=0');
-  assert(host.innerHTML.includes(fixture.base.origin_relation));
-  assert(host.innerHTML.includes(fixture.stable.origin_relation));
-  assert(host.innerHTML.includes('data-git-row="develop"'));
-  assert(host.innerHTML.includes('data-git-row="master"'));
-  assert(host.innerHTML.includes(fixture.base.origin_relation));
-  assert(host.innerHTML.includes(fixture.stable.origin_relation));
-  assert.equal(calls.length,reads+1);
-}
-fixture.base.origin_relation = ''; fixture.stable.origin_relation = '';
-fixture.branches.forEach(branch => branch.origin_relation = ''); click(button('refresh')); await flush();
-assert(!host.innerHTML.includes('本地 develop'));
-assert(!host.innerHTML.includes('本地 master'));
-assert(calls.every(route => route === '/api/git?offset=0'));
-sandbox.CrewGit.unmount();
-''')
 
 
 

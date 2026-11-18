@@ -102,8 +102,8 @@ class ManagedRuntimeTests(ShellFixture, unittest.TestCase):
         current = FakeCodex(self.home, PLUGIN, board.session(self.conn, 's1'), {}, {}, self.manager.journal('s1'), None)
         self.manager.processes['s1'] = current
         current.journal.set_status('working')
-        receipt = self.manager.send_message('s3', 's1', '继续已批准的任务', message_id='stable-call', kind='task')
-        again = self.manager.send_message('s3', 's1', '继续已批准的任务', message_id='stable-call', kind='task')
+        receipt = self.manager.send_message('s2', 's1', '附上已核对的结果', message_id='stable-call', kind='result')
+        again = self.manager.send_message('s2', 's1', '附上已核对的结果', message_id='stable-call', kind='result')
         self.assertEqual(receipt['message_id'], again['message_id'])
         self.manager.deliver_messages()
         self.assertEqual(current.calls, [])
@@ -114,6 +114,18 @@ class ManagedRuntimeTests(ShellFixture, unittest.TestCase):
         self.assertEqual(messaging.pending(self.conn, 's1'), [])
         self.manager.deliver_messages()
         self.assertEqual(len(current.calls), 1)
+
+    def test_own_leader_message_steers_into_busy_member_turn(self):
+        current = FakeCodex(self.home, PLUGIN, board.session(self.conn, 's1'), {}, {}, self.manager.journal('s1'), None)
+        self.manager.processes['s1'] = current
+        current.journal.set_status('working')
+        self.manager.send_message('s3', 's1', '先停下设备上的操作', kind='task')
+        self.manager.deliver_messages()
+        self.assertEqual(len(current.calls), 1)
+        self.assertIn('先停下设备上的操作', current.calls[0][1])
+        self.assertEqual(messaging.pending(self.conn, 's1'), [])
+        message = [event for event in self.manager.history('s1')['events'] if event['type'] == 'message'][-1]
+        self.assertEqual((message['source'], message['sender'], message['text']), ('peer', 'lead', '先停下设备上的操作'))
 
     def test_claude_hook_receives_peer_mail_with_trusted_crew_sender(self):
         (self.home / 'blacklist.txt').write_text('# isolated\n', encoding='utf-8')

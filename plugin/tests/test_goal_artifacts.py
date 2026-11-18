@@ -107,36 +107,6 @@ class GoalArtifactTests(GoalFixture):
         with self.assertRaisesRegex(board.BoardError, '用户明确'):
             artifacts.restore_version(self.conn, self.home, self.goal_id, first['id'], expected_files={}, actor='chief-id')
 
-    def test_workspace_recovery_preserves_task_objects_notes_modes_and_scoped_prompts_without_global_assistant(self):
-        from crew import behavior_prompts, goal_mode, goal_reports, personal, workspace_recovery
-        first = self.capture('recoverable')
-        personal.ensure_assistant(self.conn, self.home)
-        project_note = personal.note_action(self.conn, 'capture', {'text': 'Project idea', 'project': 'demo'}, request_id='project-note')['note']
-        global_note = personal.note_action(self.conn, 'capture', {'text': 'Global idea'}, request_id='global-note')['note']
-        for note in (project_note, global_note):
-            personal.start_note(self.conn, note['id'], 'demo', request_id='link-' + note['id'],
-                                create_leader=lambda *args, **kwargs: {'session_id': 'chief-id'})
-        behavior_prompts.save(self.conn, 'common', 'Only this workspace', scope='project', identity='demo', expected_version=0)
-        behavior_prompts.save(self.conn, 'common', 'Private global setting', expected_version=0)
-        goal_mode.set_mode(self.conn, self.goal_id, 'autonomous', expected_version=1)
-        report = goal_reports.publish(self.conn, self.goal_id, self.report('progress'), request_id='published')
-        target = self.root / 'recovered-home'
-        workspace_recovery.import_workspace(self.home, target, 'demo')
-        with closing(store.connect(target)) as conn:
-            self.assertEqual(goal_mode.get(conn, self.goal_id)['mode'], 'autonomous')
-            self.assertEqual(artifacts.version_file_content(conn, target, self.goal_id, first['id'], 'app.txt')['content'], b'first')
-            notes = personal.list_notes(conn, include_archived=True)
-            self.assertEqual([(note['text'], note['stage']) for note in notes], [('Project idea', 'promoted')])
-            self.assertEqual(notes[0]['leader']['session_id'], 'chief-id')
-            self.assertIsNone(conn.execute('SELECT * FROM personal_assistant').fetchone())
-            self.assertEqual(conn.execute('SELECT COUNT(*) FROM personal_note_requests').fetchone()[0], 0)
-            self.assertEqual(behavior_prompts.get(conn, 'common', scope='project', identity='demo')['content'], 'Only this workspace')
-            self.assertIsNone(conn.execute("SELECT * FROM behavior_prompts WHERE scope='global'").fetchone())
-            for table in ('notification_messages', 'lark_notification_messages'):
-                self.assertEqual(conn.execute('SELECT status FROM ' + table + ' WHERE item_id=?',
-                                               ('goal-progress:' + report['report_id'],)).fetchone()[0], 'archived')
-            self.assertEqual(conn.execute('PRAGMA foreign_key_check').fetchall(), [])
-
 
 if __name__ == '__main__':
     import unittest

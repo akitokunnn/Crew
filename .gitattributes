@@ -3,3 +3,5 @@ desktop/assets/crew.svg -text
 # Keep the upstream launcher and license bytes reproducible on Windows.
 plugin/crew/vendor/distlib/*.exe -text
 plugin/crew/vendor/distlib/*.txt text eol=lf
+# README 配图导出脚本由 Git Bash 执行，保持 LF。
+docs/readme/src/render.sh text eol=lf

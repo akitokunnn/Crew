@@ -179,6 +179,28 @@ class CodexRuntimeTests(unittest.TestCase):
         self.assertIn('不能创建 Crew 成员/leader、调用原生子代理或团队工具', params['developerInstructions'])
         self.assertIn('可以使用派工 skill 启动本人的临时执行进程', params['developerInstructions'])
 
+    def test_idle_reclaim_closes_goal_execution_without_archiving_its_thread(self):
+        with closing(store.connect(self.home)) as conn:
+            board.join(conn, 'leader', 'demo', 'leader', self.root, None, 'main', role='leader')
+            board.roster(conn, 'demo', 'move', 'leader', session_ids=['worker'])
+            goal = goals.create(conn, 'demo', 'leader', 'Finite task', 'Build result', ['Done'])
+            goals.assign(conn, goal['id'], 'worker', 'Build result')
+            execution = goals.create_execution(conn, goal['id'], 'worker', runtime='codex')
+            self.session = board.session(conn, 'worker')
+        running, client = self.make_running(execution=execution)
+        running.send('work', 'message-1')
+        client.finish()
+        self.assertEqual(running.journal.status, 'idle')
+        manager = chat.Manager(self.home, self.plugin, lambda: [])
+        manager.processes[execution['id']] = running
+        later = store.parse_iso(store.now_iso()) + chat.datetime.timedelta(minutes=31)
+        self.assertEqual(manager.reclaim_idle(now=later), [execution['id']])
+        self.assertTrue(client.closed)
+        self.assertNotIn('thread/archive', [call[0] for call in client.calls])
+        self.assertEqual(running.journal.status, 'offline')
+        self.assertFalse([event for event in running.journal.events if event['type'] == 'error'])
+        self.assertEqual([event['reason'] for event in running.journal.events if event['type'] == 'runtime_released'], ['idle'])
+
     def test_explicit_execution_permission_is_used_only_when_a_carrier_starts(self):
         with closing(store.connect(self.home)) as conn:
             settings.save_execution(conn, {'codex': 'danger-full-access', 'claude': 'default'})
@@ -282,6 +304,15 @@ class CodexRuntimeTests(unittest.TestCase):
             running.send('收到，再确认一次', 'automatic', source='peer')
         self.assertNotIn('turn/steer', [method for method, _ in client.calls])
         self.assertEqual([event['id'] for event in running.journal.events if event['type'] == 'message'], ['input-first'])
+
+    def test_leader_message_steers_busy_turn_when_host_allows(self):
+        running, client = self.make_running()
+        running.send('start work', 'input-first')
+        running.send('先停下设备操作', 'peer:leader', source='peer', sender='lead', steer=True)
+        steer = [params for method, params in client.calls if method == 'turn/steer']
+        self.assertEqual(steer, [{'input': [{'type': 'text', 'text': '先停下设备操作'}], 'turnId': 'turn-1'}])
+        self.assertEqual([event['id'] for event in running.journal.events if event['type'] == 'message'],
+                         ['input-first', 'peer:leader'])
 
     def test_resume_requires_existing_native_id_and_reinjects_guard_and_rules(self):
         with self.assertRaisesRegex(board.BoardError, "丢失"):
@@ -551,6 +582,8 @@ for line in sys.stdin:
     method = message.get('method')
     if method == 'initialize':
         send({'id':message['id'],'result':{'userAgent':'fixture'}})
+    elif method == 'skills/extraRoots/set':
+        send({'id':message['id'],'result':{}})
     elif method == 'thread/start':
         send({'id':message['id'],'result':{'thread':{'id':'fixture-thread','turns':[]},'model':'fixture-model','reasoningEffort':'medium'}})
     elif method == 'turn/start':

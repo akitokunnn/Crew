@@ -1,0 +1,50 @@
+/* Reading pane (reader-ui.js). split: conversation left, pane right. stack: pane on top, conversation below. full: pane only. */
+.reader-pane{position:absolute;inset:0;z-index:25;display:flex;flex-direction:column;min-width:0;background:var(--bg);transition:left .34s var(--ease),bottom .34s var(--ease),box-shadow .34s ease;animation:crew-reader-enter .34s var(--ease)}
+#main[data-reader=split]>.reader-pane{left:var(--reader-chat);border-left:1px solid var(--line-strong);box-shadow:-18px 0 36px -30px rgb(0 0 0 / .45)}
+#main[data-reader=stack]>.reader-pane{bottom:calc(100% - var(--reader-top))!important;border-bottom:1px solid var(--line-strong);animation-name:crew-reader-drop}
+.reader-pane.reader-leaving{animation:crew-reader-leave .26s var(--ease) forwards;pointer-events:none}
+@keyframes crew-reader-enter{from{opacity:0;transform:translateX(32px)}to{opacity:1;transform:none}}
+@keyframes crew-reader-drop{from{opacity:0;transform:translateY(-16px)}to{opacity:1;transform:none}}
+@keyframes crew-reader-leave{from{opacity:1;transform:none}to{opacity:0;transform:translateX(32px)}}
+
+/* The conversation keeps its place and narrows to the left column; its toolbar waits until reading ends. */
+#main>#chat-head{transition:margin-right .34s var(--ease)}
+#chat-host{transition:margin-right .34s var(--ease),margin-top .34s var(--ease)}
+#main[data-reader=split]>#chat-head,#main[data-reader=split]>#chat-host{margin-right:calc(100% - var(--reader-chat))}
+#main[data-reader=split] #chat-head .head>.right,#main[data-reader=stack]>#chat-head{display:none}
+#main[data-reader=split] .composer-wrap{padding-left:14px;padding-right:14px}
+#main[data-reader=stack]>#chat-host{margin-top:var(--reader-top);margin-right:0}
+/* The task list fades out with its own transition instead of showing through the pane while it slides in. */
+#main[data-reader]>.task-list{opacity:0;visibility:hidden;transform:translateX(8px);pointer-events:none}
+#main.reader-resizing{cursor:col-resize;user-select:none}
+#main.reader-resizing :is(#chat-head,#chat-host,.reader-pane){transition:none}
+#main.reader-resizing iframe{pointer-events:none}
+
+.reader-divider{display:none;position:absolute;top:0;bottom:0;left:-5px;width:10px;z-index:3;cursor:col-resize;touch-action:none}
+#main[data-reader=split]>.reader-pane>.reader-divider{display:block}
+.reader-divider::after{content:"";position:absolute;top:0;bottom:0;left:5px;width:1px;background:transparent;transition:background-color .18s ease,box-shadow .18s ease}
+.reader-divider::before{content:"";position:absolute;top:50%;left:2px;width:6px;height:40px;margin-top:-20px;border-radius:3px;background:var(--line-strong);opacity:0;transform:scaleY(.6);transition:opacity .18s ease,transform .22s var(--ease)}
+.reader-divider:is(:hover,:focus-visible)::after,#main.reader-resizing .reader-divider::after{background:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.reader-divider:is(:hover,:focus-visible)::before,#main.reader-resizing .reader-divider::before{opacity:1;transform:none;background:var(--accent)}
+.reader-divider:focus-visible{outline:none}
+
+.reader-chat-toggle{display:inline-flex;align-items:center;gap:6px}
+.reader-chat-toggle .reader-chat-show,#main[data-reader=full] .reader-chat-toggle .reader-chat-hide{display:none}
+#main[data-reader=full] .reader-chat-toggle .reader-chat-show{display:inline}
+#main[data-reader-chat=none] .reader-chat-toggle{display:none}
+
+.reader-quote{position:absolute;z-index:4;display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border:1px solid var(--line-strong);border-radius:999px;background:var(--surface);color:var(--text);font:inherit;font-size:calc(12px * var(--fs));white-space:nowrap;box-shadow:var(--shadow-lg);cursor:pointer;opacity:0;transform:translateY(6px) scale(.94);pointer-events:none;transition:opacity .16s ease,transform .2s var(--ease),color .16s ease,border-color .16s ease}
+.reader-quote.show{opacity:1;transform:none;pointer-events:auto}
+.reader-quote:hover{color:var(--accent-text);border-color:var(--accent)}
+
+/* File preview inside the pane. */
+.file-reader .head{height:auto;min-height:62px;padding:12px 16px;gap:10px}
+.file-reader-heading{flex:1;min-width:0}
+.file-reader-heading .title{font-size:calc(14px * var(--fs));overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.file-reader-heading .file-path{margin-top:3px;font-family:var(--font-mono);font-size:calc(11px * var(--fs));color:var(--text-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.file-reader .file-reader-actions{display:flex;align-items:center;flex-wrap:wrap;gap:6px}
+.file-reader .file-reader-actions .btn{font-size:calc(11px * var(--fs))}
+.file-reader-body{flex:1;min-height:0;overflow:auto;padding:22px clamp(18px,4vw,48px) 40px}
+.file-reader-body>.markdown,.file-reader-body>.file-text,.file-reader-body>.note{max-width:860px;margin-left:auto;margin-right:auto}
+
+@media(prefers-reduced-motion:reduce){.reader-pane,.reader-pane.reader-leaving,#main>#chat-head,#chat-host,.reader-quote,.reader-divider::before,.reader-divider::after{animation:none!important;transition:none!important}}

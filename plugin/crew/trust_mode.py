@@ -191,7 +191,7 @@ def auto_answer(conn, decision_id, reason=None, now=None):
               "未另附取舍理由；本次自主答复依据提出者建议，未补写推测理由。")
     timestamp = store.now_iso() if now is None else now
     # board.answer is atomic itself. Reuse its transaction body so the answer,
-    # removal of a hold, audit event and reason are one indivisible operation.
+    # audit event and reason are one indivisible operation.
     board.answer.__wrapped__(conn, decision_id, recommendation, actor="trust:" + decision["session_id"], now=now)
     conn.execute("INSERT INTO trust_decisions(decision_id,reason,recorded_at) VALUES(?,?,?)", (decision_id, reason, timestamp))
     board._event(conn, "trust:decision", decision["project"], "trust:" + decision["session_id"],
@@ -273,7 +273,8 @@ def report(conn, project, leader_session_id):
                          "时间：" + item["created_at"], _quote(item["body"])])
     sections.extend(["## 工作分支、交付记录与后续 fix 入口",
                      "以下分支与 worktree 来自登记记录，未现场运行 git 验证。分支名本身不证明已提交或合并；"
-                     "应由交付会话在最终报告补齐实际 commit SHA、改动文件、验证范围与遗留项。"])
+                     "交付会话在最终报告补齐实际改动、验证范围与遗留项：涉及 Git 时写实际提交与分支，"
+                     "普通文件夹或无代码交付写对应文件、记录或产物位置。"])
     for session in board.sessions(conn, project):
         if session['session_id'] not in session_ids:
             continue
@@ -291,6 +292,6 @@ def report(conn, project, leader_session_id):
                              _field("分支 / PR", request["branch"] + " / " + ("#" + str(request["pr_number"]) if request["pr_number"] else "未记录")),
                              _field("提交者说明（自报）", request["description"]), _field("处理记录", request["note"])])
     sections.extend(["## 交付前仍需核对", "由负责的 leader 对照用户目标和各会话完成标准逐项给出证据，"
-                     "明确已实现、已验证、未验证、尚未完成与待用户操作的内容。保留上述决定、理由和 commits，"
-                     "后续 fix 引用决定编号、会话、worktree、分支及实际 commit SHA，重新验证受影响范围。"])
+                     "明确已实现、已验证、未验证、尚未完成与待用户操作的内容。保留上述决定和理由；"
+                     "后续 fix 引用决定编号、会话及实际改动位置（用了 Git 时含分支与提交），重新验证受影响范围。"])
     return "\n\n".join(sections) + "\n"

@@ -1,7 +1,7 @@
 """Human acceptance is separate evidence and never rewrites AI delivery reports."""
 import tests
 from contextlib import closing
-from crew import board, goals, store, workspace_recovery
+from crew import board, goals, store
 from tests.test_goals import GoalFixture
 
 
@@ -37,43 +37,12 @@ class GoalAcceptanceTests(GoalFixture):
         amended = goals.amend(self.conn, goal['id'], 'Make the title shorter.')
         self.assertEqual(amended['requirements']['source']['constraints_source']['type'], 'agent')
 
-    def test_workspace_recovery_keeps_continuation_and_prior_review_without_execution(self):
-        goal, report = self.awaiting()
-        goals.review_acceptance(self.conn, goal['id'], True, note='Original delivery accepted.', expected_version=goal['version'])
-        goals.continue_task(self.conn, goal['id'], 'Keep the task and correct one label.')
-        destination = self.home.parent / 'restored-continuation'
-        workspace_recovery.import_workspace(self.home, destination, goal['project'])
-        with closing(store.connect(destination)) as conn:
-            restored = goals.get(conn, goal['id'])
-            self.assertEqual((restored['current_round'], restored['status']), (1, 'paused'))
-            review = goals.report_review(conn, goal['id'], report['id'])
-            self.assertEqual(review['note'], 'Original delivery accepted.')
-            self.assertEqual(conn.execute('SELECT COUNT(*) FROM goal_continuations').fetchone()[0], 1)
-            self.assertEqual(goals.get_report(conn, report['id'])['html'], report['html'])
-
     def awaiting(self):
         goal = self.goal()
         goals.transition(self.conn, goal['id'], 'running')
         report = goals.save_report(self.conn, goal['id'], self.report('awaiting_acceptance'))
         goal = goals.transition(self.conn, goal['id'], 'awaiting_acceptance')
         return goal, report
-
-    def test_recovery_keeps_completed_task_and_inert_discussion_history(self):
-        goal, report = self.awaiting()
-        accepted = goals.review_acceptance(self.conn, goal['id'], True, note='Accepted before question.', expected_version=goal['version'])
-        execution = goals.create_execution(self.conn, goal['id'], 'chief-id', runtime='codex', discussion_message_id='explain-error')
-        goals.set_execution_status(self.conn, execution['id'], 'running')
-        destination = self.home.parent / 'restored-discussion'
-        workspace_recovery.import_workspace(self.home, destination, goal['project'])
-        with closing(store.connect(destination)) as conn:
-            self.assertEqual(goals.get(conn, goal['id'])['status'], 'completed')
-            self.assertEqual(goals.get_execution(conn, execution['id'])['response_mode'], 'discussion')
-            self.assertFalse(goals.dispatch_check(conn, goal['id'], execution_id=execution['id'])['allowed'])
-            self.assertEqual(goals.acceptance_review(conn, goal['id'])['note'], 'Accepted before question.')
-        self.conn.execute('UPDATE goals SET manual_pause=1 WHERE id=?', (goal['id'],))
-        self.assertFalse(goals.dispatch_check(self.conn, goal['id'], execution_id=execution['id'], allow_discussion=True)['allowed'])
-        with self.assertRaises(board.Conflict):
-            goals.create_execution(self.conn, goal['id'], 'chief-id', runtime='codex', discussion_message_id='cannot-bypass-pause')
 
     def test_human_acceptance_completes_without_altering_the_ai_report(self):
         goal, report = self.awaiting()

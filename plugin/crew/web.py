@@ -21,14 +21,14 @@ from urllib.parse import parse_qs, quote, urlencode, urlsplit
 from urllib.request import ProxyHandler, build_opener
 from urllib.error import HTTPError, URLError
 
-from . import board, channel, channel_digest, chat, claude_limits, codex_runtime, documents, git_admin, git_ci, git_view, goal_api, goals, hooks, maintenance, messaging, models, notifications, open_session, presentation, runtime_catalog, runtime_switch, runtimes, session_library, session_ops, settings, spawn, store, themes, todo, trust_mode, updater, usage, usage_cli, vscode_sessions, workspace_execution, workspace_settings
+from . import board, channel, channel_digest, chat, claude_limits, codex_runtime, documents, git_admin, git_ci, git_overview, git_view, goal_api, goals, hooks, maintenance, messaging, models, notifications, open_session, presentation, runtime_catalog, runtime_switch, runtimes, session_library, session_ops, settings, spawn, store, themes, todo, trust_mode, updater, usage, usage_cli, vscode_sessions, workspace_execution, workspace_settings
 from .service_lock import HomeServiceLock
-from . import codex_client, member_defaults, operations_chat, operations_settings
-from . import connections, session_presence, storage_cleanup, workspace_activity
+from . import appearance, codex_client, member_defaults, operations_chat, operations_settings
+from . import connections, session_delete, session_presence, storage_cleanup, workspace_activity
 from .storage_service import StorageService, HISTORY_PREFIX
-from . import personal, native_home, native_handoff
+from . import personal, native_home, native_handoff, native_skills
 from . import remote_access, remote_http
-from . import report_preview, event_sounds
+from . import report_preview, event_sounds, reading_context
 from .web_api import personal as personal_api
 from .web_api import behavior_prompts as behavior_prompts_api
 
@@ -61,7 +61,7 @@ class Service:
             from .cli import claude_agents
             agents_provider = claude_agents
         self.home, self.plugin_root = Path(home), Path(plugin_root)
-        self.storage = StorageService(self.home, isolated=isolated_sources)
+        self.storage = StorageService(self.home)
         self.storage.repair_pending()
         self.agents_provider, self.clock = agents_provider, now
         # Health reports which bundled source this process really runs.
@@ -161,6 +161,8 @@ class Service:
                 with self.write_lock, closing(store.connect(self.home)) as conn:
                     self.chat.auto_resume(conn, agents, now=self.now().isoformat(timespec="milliseconds").replace("+00:00", "Z"),
                                           runtime=None if error is None else 'codex')
+                # Journal times are wall-clock, so idle time is measured on the same clock.
+                self.chat.reclaim_idle()
             except (sqlite3.Error, OSError, subprocess.SubprocessError):
                 # A temporary failure in another task sharing this worker must
                 # not permanently disable agent discovery and VS Code scans.
@@ -412,15 +414,17 @@ class Service:
     def deliver_notices(self):
         with self.write_lock, closing(store.connect(self.home)) as conn:
             self.deliver_git_results(conn)
+            self.settle_channel_mentions(conn)
             leaders = [dict(row) for row in conn.execute(
                 "SELECT DISTINCT s.* FROM sessions s JOIN leader_notices n ON n.session_id=s.session_id "
-                "WHERE n.sent_at IS NULL AND s.role='leader' AND s.status!='closed'")]
+                "WHERE n.sent_at IS NULL AND n.wake=1 AND s.role='leader' AND s.status!='closed'")]
             for leader in leaders:
                 sid = leader['session_id']
                 batch = None
                 try:
                     with self.chat.lock:
                         key = sid
+                        git_admin.wake_for_new_requests(conn, sid, now=self.now().isoformat())
                         if messaging.stopped(conn, sid) or self.chat.maintenance_held(sid):
                             continue
                         if self.chat.running(key):
@@ -444,16 +448,28 @@ class Service:
                         pending = board.pending_notices(conn, sid)
                         if not pending:
                             continue
+                        # The user's own channel words go in a batch of their own, shown in private as the user's message.
+                        from_user = channel.user_mentions(conn, [notice['id'] for notice in pending])
+                        if from_user:
+                            pending = [notice for notice in pending if notice['id'] in from_user]
                         pending_ids = {notice['id'] for notice in pending}
                         journal = self.chat.journal(sid)
                         batch = next((event for event in reversed(journal.events) if event['type'] == 'leader_notice_batch'
                                       and pending_ids.intersection(event['notice_ids'])), None)
                         if batch is None:
-                            identity = 'leader-notices:' + hashlib.sha256(','.join(str(n['id']) for n in pending).encode()).hexdigest()
+                            digest = hashlib.sha256(','.join(str(n['id']) for n in pending).encode()).hexdigest()
                             text = '[Crew]\n' + '\n'.join('%s. %s' % (index, notice['text'])
                                                            for index, notice in enumerate(pending, 1))
-                            batch = journal.emit('leader_notice_batch', id=identity, text=text, notice_ids=[n['id'] for n in pending])
-                        receipt = self.chat.send(leader, batch['text'], source='crew', identity=batch['id'])
+                            shown = {}
+                            if from_user:
+                                posts = [from_user[notice['id']] for notice in pending]
+                                # The id carries the first post so the private bubble can link back to the channel.
+                                shown = {'id': 'channel:%d:%s' % (posts[0]['id'], digest[:32]), 'sender': board.HUMAN,
+                                         'display': '\n\n'.join(post['body'] for post in posts)}
+                            batch = journal.emit('leader_notice_batch', **{'id': 'leader-notices:' + digest, **shown},
+                                                 text=text, notice_ids=[n['id'] for n in pending])
+                        receipt = self.chat.send(leader, batch['text'], source='crew', identity=batch['id'],
+                                                 display_text=batch.get('display'), sender=batch.get('sender'))
                         if not isinstance(receipt, dict) or receipt.get('accepted') is not True:
                             raise board.Conflict('NativeReceiptUnknown: 通知输入尚无确认的接收回执')
                         for identity in pending_ids.intersection(batch['notice_ids']):
@@ -468,6 +484,20 @@ class Service:
                         journal.emit('error', notice_batch=batch['id'], text=text)
                     board.record_event(conn, 'leader:notice_error', leader['project'], sid,
                                        {'error': detail}, now=self.now().isoformat())
+
+    def settle_channel_mentions(self, conn):
+        """A user mention the leader answered only in private gets a channel pointer once its turn is over."""
+        for row in conn.execute("SELECT DISTINCT t.session_id FROM channel_mentions t JOIN leader_notices n "
+                                "ON n.id=t.notice_id WHERE t.await_reply=1 AND n.sent_at IS NOT NULL").fetchall():
+            sid = row['session_id']
+            with self.chat.lock:
+                if self.chat.busy(sid):
+                    continue
+            try:
+                channel.settle(conn, sid, now=self.now().isoformat())
+            except board.BoardError as exc:
+                board.record_event(conn, 'channel:settle_error', None, sid,
+                                   {'error': '%s: %s' % (type(exc).__name__, exc)}, now=self.now().isoformat())
 
     def deliver_git_results(self, conn):
         pending = conn.execute(
@@ -587,12 +617,13 @@ class Service:
         if leader is not None:
             peer = any(runtimes.get(conn, s['session_id'])['runtime'] == 'codex' for s in (session, leader))
             address = "（SendMessage 地址：%s）" % session["cc_name"] if session["cc_name"] else ""
-            notice = ("%s%s 已收编到你组。请用 SendMessage 欢迎它、说明你是它的 leader、守则 /crew:member，"
-                "并请它用 crew card 写下负责范围和完成标准；crew who 显示离线时，用 crew wake %s \"要它做的事\" "
-                "叫醒后按 crew 名 SendMessage。" % (session["crew_name"], address, session["crew_name"]))
+            notice = ("%s%s 已收编到你组。请用 SendMessage 欢迎它、说明你是它的 leader，请它按 Crew 注入的成员守则工作"
+                "（没看到注入时再读 /crew:member），并用 crew card 写下负责范围和完成标准；crew who 显示离线时，"
+                "用 crew wake %s \"要它做的事\" 叫醒后按 crew 名 SendMessage。" % (session["crew_name"], address, session["crew_name"]))
             if peer:
-                notice = ('%s 已收编到你组。请用 crew send %s "<欢迎与分工>"，说明你是它的 leader，'
-                          '请它阅读成员守则并用 crew card 写下负责范围和完成标准。离线时用 crew wake 接续原会话。' %
+                notice = ('%s 已收编到你组。请用 crew send %s "<欢迎与分工>" --kind task（Codex：crew_send_message，kind=task），'
+                          '说明你是它的 leader，请它按 Crew 注入的成员守则工作，并用 crew card 写下负责范围和完成标准；'
+                          '对方离线时 Crew 会接续它的原会话送达。' %
                           (session['crew_name'], session['crew_name']))
             board.queue_leader_notice.__wrapped__(conn, leader["session_id"],
                 notice,
@@ -611,7 +642,7 @@ class Service:
                       'runtimes': self.runtime_catalog.snapshot(),
                       'ai': settings.load(conn),
                       'now': self.now().isoformat(), 'agents_error': error, 'notification': self.notification_status(),
-                      'leaders': [], 'members': [], 'decisions': [], 'attention': [], 'git_assistant': None,
+                      'leaders': [], 'members': [], 'decisions': [], 'attention': [], 'git_assistant': None, 'git_branches': None,
                       'todos': [], 'todo_count': 0, 'goals': [], 'native_approvals': [],
                       'candidates': {'running': [], 'others': []},
                       'channel': {'unread': 0, 'latest_id': 0, 'digesting': False, 'digest_error': None, 'digest_id': None},
@@ -662,6 +693,7 @@ class Service:
         visible_leaders = {s['session_id'] for s in sessions if s['role'] == 'leader'}
         result['goals'] = [goal for goal in result['goals'] if goal['leader_session_id'] in visible_leaders]
         member_choices = member_defaults.for_project(conn, name)
+        looks = appearance.all_looks(conn)
         with self.scan_lock:
             titles = usage.session_titles(self.claude_root, [s['session_id'] for s in sessions], self.title_cache)
             contexts = {sid: cached['context'] for sid, cached in self.title_cache.items()}
@@ -686,7 +718,7 @@ class Service:
                 asker = board.session(conn, decision['session_id'])
                 leader_id=trust_mode.decision_leader(conn,decision['id'])
                 result['decisions'].append({**{key: decision[key] for key in (
-                    'id', 'session_id', 'question', 'options', 'recommendation', 'blocking', 'created_at', 'held', 'held_at')},
+                    'id', 'session_id', 'question', 'options', 'recommendation', 'blocking', 'created_at')},
                     'asker': asker['crew_name'], 'leader_session_id': leader_id,
                     'goal_id': links.get(('decision', decision['id']))})
         tasks = usage.dispatch_tasks(conn, None, None, project=name)
@@ -726,7 +758,7 @@ class Service:
                 read_seq = board.read_seq(conn, sid)
                 result['leaders'].append(dict(
                     session_id=sid, name=session['crew_name'], goal=session['task'], status=session['status'],
-                    member_defaults=member_choices.get(sid),
+                    member_defaults=member_choices.get(sid), **looks.get(sid, {'color': None, 'avatar_version': None}),
                     active_goal_id=active_goals[sid], active_goal_ids=active_goal_ids[sid],
                     active_execution_id=active_scopes[sid][0]['id'] if active_scopes[sid] else None,
                     runtime=runtimes.get(conn, sid)['runtime'],
@@ -741,7 +773,7 @@ class Service:
                     last_seq=events[-1]['seq'] if events else 0, read_seq=read_seq,
                     last_reply_id=replies[-1]['id'] if replies else None,
                     unread=sum(reply['seq'] > read_seq for reply in replies),
-                    pending=sum(d['leader_session_id'] == sid and not d['held'] for d in result['decisions']),
+                    pending=sum(d['leader_session_id'] == sid for d in result['decisions']),
                     notices_pending=len(board.pending_notices(conn, sid)),
                     member_ids=[s['session_id'] for s in sessions if s['role'] != 'leader' and s['crew_name']
                                 and member_leaders[s['session_id']] is not None
@@ -775,13 +807,14 @@ class Service:
         builtin_ids = {session['session_id'] for session in sessions if git_admin.is_builtin(session, git_config)}
         result['leaders'] = board.sort_leaders(conn, name, [leader for leader in leader_cards
                                                          if leader['session_id'] not in builtin_ids])
-        priorities = board.leader_priorities(conn, name, result['leaders'])
+        pinned = board.pinned_leaders(conn, name)
         for leader in leader_cards:
             sid = leader['session_id']
-            leader['priority'] = priorities.get(sid)
+            leader['pinned'] = sid in pinned
             if git_config is not None and git_config['admin_session_id'] == sid:
                 result['git_assistant'] = git_admin.assistant_state(
                     conn, git_config, leader, decisions, builtin=sid in builtin_ids)
+        result['git_branches'] = self._git_branches(conn, status['project'], git_config)
         result['candidates'] = self.candidates(conn, name)
         from . import decision_briefs, decision_flow
         result['decisions'] = decision_flow.enrich(conn, decision_briefs.enrich(conn, result['decisions']))
@@ -837,15 +870,24 @@ class Service:
                     asker['cc_name'] = live[asker['session_id']]['name']
         return asker, leader
 
-    def git(self, project_name=None, offset=0):
-        if offset < 0:
-            raise ValueError("offset 必须大于或等于 0")
+    def _git_branches(self, conn, project, config):
+        """Branch chips for the leader list; a failed read carries its reason instead of breaking state."""
+        if config is None or git_view.unavailable_reason(project['root']) is not None:
+            return None
+        try:
+            return git_overview.read(conn, project, config)
+        except (OSError, git_view.GitError, subprocess.TimeoutExpired) as exc:
+            return {'error': str(exc)}
+
+    def git(self, project_name=None):
         with closing(store.connect(self.home)) as conn:
             name = self.selected_project(conn, project_name)
             project = board.project(conn, name)
             config = board.git_config(conn, name)
-            sessions = board.sessions(conn, name)
             requests = board.git_requests(conn, name, all=True) if config is not None else []
+            reason = git_view.unavailable_reason(project["root"])
+            # An explicit read rescans first, so the state assembled below reuses this result.
+            overview = git_overview.read(conn, project, config, force=True) if reason is None and config is not None else None
             with self.agents_lock:
                 agents, error = self.agents, self.agents_error
             agents = session_presence.external_agents(self.chat, agents)
@@ -853,15 +895,14 @@ class Service:
         result = {"enabled": config is not None, "config": config,
                   "assistant": conversations['git_assistant'],
                   "requests": board.titled_requests(requests, lambda sid: vscode_sessions.session_title(self.claude_root, sid)),
-                  "choices": {"branches": [], "base": None, "stable": None},
+                  "choices": {"branches": [], "base": None},
                   "repository": Path(project["root"]).name, "last_fetch_at": None}
-        reason = git_view.unavailable_reason(project["root"])
         if reason is not None:
             result.update(available=False, reason=reason)
             return result
         result['choices'] = git_view.branch_choices(project['root'])
-        if config is not None:
-            result.update(git_view.view(project["root"], config, sessions, offset=offset))
+        if overview is not None:
+            result.update(overview)
         return result
 
     def git_settings(self, project_name=None):
@@ -869,7 +910,7 @@ class Service:
             name = self.selected_project(conn, project_name)
             result = git_admin.snapshot(conn, name)
         root = result['project']['root']
-        result.update(choices={'branches': [], 'base': None, 'stable': None}, remotes=[])
+        result.update(choices={'branches': [], 'base': None}, remotes=[])
         try:
             reason = git_view.unavailable_reason(root)
             if reason is not None:
@@ -1177,6 +1218,13 @@ class Service:
                 root = board.project(conn, project)["root"]
             git_view.require_repository(root)
             return git_view.fetch(root)
+        if path == "/api/git/adopt":
+            # Reads the repository first, so it runs outside the board write lock like fetch.
+            with closing(store.connect(self.home)) as conn:
+                name = self.selected_project(conn, project_name if project_name is not None else data.get("project"))
+                return git_overview.adopt(conn, board.project(conn, name), board.git_config(conn, name),
+                                          _text(data, "branch"), _text(data, "leader_session_id"),
+                                          now=self.now().isoformat(timespec="milliseconds").replace("+00:00", "Z"))
         with self.write_lock, closing(store.connect(self.home)) as conn:
             now = self.now().isoformat(timespec="milliseconds").replace("+00:00", "Z")
             if path == "/api/project/init":
@@ -1190,7 +1238,7 @@ class Service:
                 if type(data.get('away')) is not bool:
                     raise ValueError('离开状态必须是 true 或 false')
                 return self.set_away(data['away'])
-            if path in ('/api/channel', '/api/channel/read', '/api/channel/digest', '/api/project/theme', '/api/leaders/order', '/api/leaders/priority', '/api/documents', '/api/documents/pin', '/api/documents/refresh', '/api/native-approval') and 'project' in data:
+            if path in ('/api/channel', '/api/channel/read', '/api/channel/digest', '/api/project/theme', '/api/leaders/order', '/api/documents', '/api/documents/pin', '/api/documents/refresh', '/api/native-approval') and 'project' in data:
                 body_project = _text(data, 'project')
                 if project_name is not None and body_project != project_name:
                     raise board.BoardError('请求正文和地址中的项目不一致')
@@ -1203,11 +1251,11 @@ class Service:
             if path in ("/api/git/enable", "/api/git/disable"):
                 project = self.selected_project(conn, project_name if project_name is not None else data.get("project"))
                 if path == "/api/git/enable":
-                    stable = data.get("stable")
-                    if stable is not None and not isinstance(stable, str):
-                        raise ValueError("stable 必须是分支名或 null")
+                    integration = data.get("integration")
+                    if integration is not None and not isinstance(integration, str):
+                        raise ValueError("integration 必须是分支名或 null")
                     return git_admin.enable(conn, self.home, self.plugin_root, project, self.chat.start,
-                                            base=_optional_text(data, "base"), stable=stable, now=now,
+                                            base=_optional_text(data, "base"), integration=integration, now=now,
                                             runtime=data.get("runtime"))
                 result = git_admin.disable(conn, project, now=now)
                 if 'before' in result:
@@ -1305,10 +1353,7 @@ class Service:
                                               reply_to=data.get('reply_to'))
             if path == '/api/leaders/order':
                 _text(data, 'project')
-                return board.set_leader_order(conn, project, data.get('order'))
-            if path == '/api/leaders/priority':
-                _text(data, 'project')
-                return board.set_leader_priority(conn, project, data.get('ranks'))
+                return board.set_leader_order(conn, project, data.get('order'), data.get('pinned'))
             if path == '/api/project/theme':
                 return board.set_project_theme(conn, project, _text(data, 'theme'), now=now)
             if path == '/api/channel':
@@ -1353,6 +1398,8 @@ class Service:
                         execution_id = execution['id']
                     operation = self.chat.native_handoff if path.endswith('native-handoff') else self.chat.native_return
                     return operation(target['session_id'], execution_id)
+                if path == '/api/session/appearance':
+                    return appearance.save(conn, target['session_id'], data, now)
                 if path == '/api/session/rename':
                     result = session_ops.rename(conn, target['session_id'], _text(data, 'name'), now=now)
                     result['native_warnings'] = self.chat.sync_native_titles(conn, target['session_id'])
@@ -1360,13 +1407,14 @@ class Service:
                 if path == '/api/session/archive':
                     return self.archive_session(conn, target['session_id'], now=now,
                                                 caller_session_id=_optional_text(data, 'caller_session_id'))
-                if path == '/api/session/remove':
-                    return self.archive_session(conn, target['session_id'], removed=True, now=now,
-                                                caller_session_id=_optional_text(data, 'caller_session_id'))
+                if path == '/api/session/delete':
+                    if _optional_text(data, 'caller_session_id') not in (None, board.HUMAN):
+                        raise board.BoardError('只有用户可以删除会话')
+                    return self.delete_session(conn, target['session_id'], now=now)
                 if path == '/api/session/restore':
                     return session_ops.restore(conn, target['session_id'], now=now)
                 if path == '/api/session/undo':
-                    return session_ops.undo(conn, target['session_id'], data['before'], now=now)
+                    return session_ops.undo(conn, target['session_id'], data.get('before'), now=now)
                 if path == '/api/session/stop':
                     return self.chat.stop_identity(target['session_id'], caller_session_id=_optional_text(data, 'caller_session_id'))
                 if path == '/api/session/compact':
@@ -1395,7 +1443,7 @@ class Service:
                     options = self.chat.set_options(conn, target['session_id'],
                                                     {key: data[key] for key in ('model', 'effort') if key in data}, now=now)
                     return {'ok': True, **options}
-            if path in ("/api/answer", "/api/decision/hold", "/api/decision/unhold"):
+            if path == "/api/answer":
                 if type(data.get("id")) is not int:
                     raise ValueError("id \u5fc5\u987b\u662f\u6574\u6570")
                 decision = conn.execute("SELECT * FROM decisions WHERE id=?", (data["id"],)).fetchone()
@@ -1403,23 +1451,6 @@ class Service:
                     raise board.BoardError("待拍板不存在: " + str(data["id"]))
                 if decision["project"] != project:
                     raise board.BoardError("待拍板不属于当前项目")
-                if path == "/api/decision/unhold":
-                    board.unhold(conn, data["id"], now=now)
-                    return {"ok": True}
-                if path == "/api/decision/hold":
-                    if board.hold(conn, data["id"], now=now):
-                        asker, leader = self.decision_participants(conn, decision)
-                        if leader is not None:
-                            notice = ('拍板 #%s：%s（SendMessage 地址：%s）\n问题：%s\n'
-                                      '用户挂起了，暂时不拍。请用 SendMessage 告诉提问的组员：'
-                                      '不卡流程的按推荐继续；卡流程的先做别的，先别再问这道题。' %
-                                      (data['id'], asker['crew_name'], asker['cc_name'], decision['question']))
-                            if any(runtimes.get(conn, s['session_id'])['runtime'] == 'codex' for s in (asker, leader)):
-                                notice = ('拍板 #%s：%s\n问题：%s\n用户挂起了，暂时不拍。请用 crew send %s "<处理安排>" 转告：'
-                                          '不卡流程的按推荐继续；卡流程的先做别的，先别再问这道题。' %
-                                          (data['id'], asker['crew_name'], decision['question'], asker['crew_name']))
-                            board.queue_leader_notice(conn, leader['session_id'], notice, 'web', now=now)
-                    return {"ok": True}
                 text = _text(data, 'text')
                 board.answer(conn, data["id"], text, board.HUMAN, now=now)
                 from . import goal_links
@@ -1428,14 +1459,7 @@ class Service:
                     return {'ok': True, 'goal_id': link['goal_id'], 'routed_to': decision['session_id']}
                 asker, leader = self.decision_participants(conn, decision)
                 if leader is not None:
-                    notice = ('拍板 #%s：%s（SendMessage 地址：%s）\n问题：%s\n答复：%s\n'
-                              '请马上用 SendMessage 转告并叫它继续' %
-                              (data['id'], asker['crew_name'], asker['cc_name'], decision['question'], text))
-                    if any(runtimes.get(conn, s['session_id'])['runtime'] == 'codex' for s in (asker, leader)):
-                        action = ('请按用户答复继续。' if asker['session_id'] == leader['session_id'] else
-                                  '请用 crew send %s "<答复与后续安排>" 转告；离线时用 crew wake 接续原会话。' % asker['crew_name'])
-                        notice = ('拍板 #%s：%s\n问题：%s\n答复：%s\n%s' %
-                                  (data['id'], asker['crew_name'], decision['question'], text, action))
+                    notice = messaging.decision_answer_notice(conn, data['id'], decision['question'], text, asker, leader)
                     board.queue_leader_notice(conn, leader['session_id'], notice, 'web', now=now)
                 return {"ok": True, 'routed_to': leader['crew_name'] if leader else None}
             if path in ("/api/open", "/api/open/continue"):
@@ -1530,18 +1554,28 @@ class Service:
                 # The note is read here by ID before anything is configured or
                 # sent; the page only names it and never supplies its text.
                 context = personal.discussion_context(conn, note_id) if note_id is not None else None
+                reading = data.get('reading')
+                reading_text = (reading_context.context(conn, project, reading, self.resolve_file, session['session_id'])
+                                if reading is not None else None)
                 if assistant:
                     session = personal_api.prepare_send(self.home, session['session_id'])
                 if data.get('goal_id'):
                     goals.get(conn, data['goal_id'], project)
+                    if reading_text:
+                        return self.chat.goal_controller.send(data['goal_id'], session['session_id'],
+                                                              reading_text + '\n\n' + text, images=images,
+                                                              identity=data.get('message_id'), display_text=text)
                     return self.chat.goal_controller.send(data['goal_id'], session['session_id'], text,
                                                           images=images, identity=data.get('message_id'))
                 if not self.chat.path(session['session_id']).exists():
                     self.chat.journal(session['session_id']).set_status('idle')
-                if context is None:
+                prefix = '\n\n'.join(value for value in (context, reading_text) if value)
+                if not prefix:
                     return self.chat.send(session, text, images=images, identity=data.get('message_id'))
-                sent = self.chat.send(session, context + '\n\n' + text, images=images,
+                sent = self.chat.send(session, prefix + '\n\n' + text, images=images,
                                       identity=data.get('message_id'), display_text=text)
+                if note_id is None:
+                    return sent
                 seqs = [event['seq'] for event in self.chat.history(session['session_id'])['events']
                         if event['type'] == 'message' and event['id'] == sent['message_id']]
                 if len(seqs) != 1:
@@ -1590,7 +1624,7 @@ class Service:
                 self.stop_archived(result['before'], with_members=data.get('with_members') is True)
                 return result
             elif path == "/api/group/undo":
-                return session_ops.undo_group(conn, project, _text(data, 'group'), data['before'], now=now)
+                return session_ops.undo_group(conn, project, _text(data, 'group'), data.get('before'), now=now)
             elif path == "/api/roster/adopt":
                 candidate = self.candidate(conn, project, _text(data, "session_id"))
                 return self.adopt(conn, project, candidate, _text(data, "name"), _optional_text(data, "group"), now)
@@ -1612,6 +1646,55 @@ class Service:
             self.chat.goal_controller.sync(conn)
             self.chat.stop_managed(session_id)
             return result
+
+    def delete_session(self, conn, session_id, now=None):
+        """Tombstone the person (a leader with its whole group), stop owned processes,
+        then delete its web journal and native CC / Codex threads."""
+        with self.chat.lock:
+            _, people = session_ops.deletion_scope(conn, session_id)
+            ids = [person['session_id'] for person in people]
+            natives = {sid: session_delete.targets(conn, sid) for sid in ids}
+            self._assert_deletable(conn, people, natives)
+            result = session_ops.delete(conn, session_id, now=now)
+            self.chat.goal_controller.sync(conn)
+            for sid in ids:
+                self.chat.stop_managed(sid)
+                self.chat.journals.pop(sid, None)
+        errors, codex = [], {}
+        for sid in ids:
+            try:
+                self.chat.path(sid).unlink(missing_ok=True)
+            except OSError as exc:
+                errors.append('网页对话记录删除失败：%s' % exc)
+            for native in natives[sid]:
+                if native['runtime'] == 'codex':
+                    codex.setdefault(native['home'], []).append(native['native_id'])
+                    continue
+                try:
+                    session_delete.delete_claude(self.claude_root, native['native_id'])
+                except (OSError, ValueError) as exc:
+                    errors.append('Claude Code 会话 %s 删除失败：%s' % (native['native_id'], exc))
+        for home, native_ids in codex.items():
+            try:
+                session_delete.delete_codex(native_ids, home, process_factory=self.chat.process_factory)
+            except (codex_client.CodexError, OSError, ValueError) as exc:
+                errors.append('Codex 会话 %s 删除失败：%s' % ('、'.join(native_ids), exc))
+        return {**result, 'errors': errors}
+
+    def _assert_deletable(self, conn, people, natives):
+        """Never delete a transcript that a process outside Crew is still writing."""
+        with self.agents_lock:
+            agents, agents_error = self.agents, self.agents_error
+        external = {agent['sessionId'] for agent in session_presence.external_agents(self.chat, agents)}
+        for person in people:
+            sid, name = person['session_id'], person['crew_name'] or person['session_id']
+            claude = [native['native_id'] for native in natives[sid] if native['runtime'] == 'claude']
+            if claude and agents_error is not None:
+                raise board.Conflict('暂时读不到 Claude Code 进程状态，无法确认「%s」是否还开着，请稍后再删' % name)
+            if external.intersection(claude):
+                raise board.Conflict('「%s」还开在 VS Code 或终端里，先关掉那边的会话再删除' % name)
+            if conn.execute("SELECT 1 FROM native_session_controls WHERE session_id=? AND state<>'crew'", (sid,)).fetchone():
+                raise board.Conflict('「%s」已交给 Codex 桌面版，先接回 Crew 再删除' % name)
 
     def stop_archived(self, before, with_members=True):
         with self.chat.lock, closing(store.connect(self.home)) as conn:
@@ -1639,6 +1722,22 @@ class Service:
             self.chat_session(conn, self.chat_project(conn, project_name, session_id), session_id)
             return {**self.chat.history(session_id), **self.chat.context_state(session_id),
                     'read_seq': board.read_seq(conn, session_id)}
+
+    def chat_skills(self, session_id, project_name=None, goal_id=None, refresh=False):
+        """Skills the carrier behind this composer can invoke, from its own native discovery."""
+        with closing(store.connect(self.home)) as conn:
+            execution = None
+            if goal_id is not None:
+                goals.get(conn, goal_id, self.selected_project(conn, project_name))
+                execution = self.chat.goal_controller.current(conn, goal_id, session_id)
+                session = board.session(conn, session_id)
+            else:
+                session = self.chat_session(conn, self.chat_project(conn, project_name, session_id), session_id)
+            runtime = execution['runtime'] if execution is not None else runtimes.get(conn, session_id)['runtime']
+            codex_home = (native_handoff.home_for(conn, session_id, execution['id'] if execution else None)
+                          if runtime == 'codex' else None)
+        return native_skills.list_skills(runtime, session['cwd'], self.plugin_root, codex_home=codex_home,
+                                         refresh=refresh)
 
     def channel_messages(self, project_name=None, limit=20, before=None):
         with closing(store.connect(self.home)) as conn:
@@ -1725,6 +1824,10 @@ class Service:
         return {**info, "content": content.decode("utf-8-sig", errors="replace"),
                 "truncated": size > limit, "portion": "\u672b\u5c3e" if tail else "\u5f00\u5934"}, "application/json; charset=utf-8"
 
+    def session_avatar(self, session_id):
+        with closing(store.connect(self.home)) as conn:
+            return appearance.avatar(conn, session_id)
+
     def chat_file(self, session_id, name, project_name=None, goal_id=None, execution_id=None):
         with closing(store.connect(self.home)) as conn:
             if goal_id:
@@ -1798,17 +1901,15 @@ POST_PATHS.update({'/api/session/native-handoff', '/api/session/native-return'})
 POST_PATHS.update({'/api/goals/create', '/api/goals/action', '/api/goals/context', '/api/goals/agent', '/api/chat/interrupt', '/api/decision/discuss', '/api/decision/ready'})
 POST_PATHS.update({'/api/trust', '/api/comments', '/api/decision/clarify'})
 POST_PATHS.update({'/api/project/update', '/api/project/remove'})
-POST_PATHS.update('/api/session/' + action for action in ('rename', 'archive', 'remove', 'restore', 'undo', 'stop', 'options', 'compact'))
+POST_PATHS.update('/api/session/' + action for action in ('appearance', 'rename', 'archive', 'delete', 'restore', 'undo', 'stop', 'options', 'compact'))
 POST_PATHS.update(('/api/session/runtime/prepare','/api/session/runtime/switch'))
 POST_PATHS.update(('/api/attention/dismiss', '/api/notifications/away'))
-POST_PATHS.update(('/api/decision/hold', '/api/decision/unhold'))
 POST_PATHS.update(('/api/channel', '/api/channel/read', '/api/channel/digest'))
 POST_PATHS.add('/api/leaders/order')
-POST_PATHS.add('/api/leaders/priority')
 POST_PATHS.update(('/api/files/resolve', '/api/files/open', '/api/files/reveal'))
 POST_PATHS.update(('/api/documents','/api/documents/pin','/api/documents/refresh'))
 POST_PATHS.update(('/api/workspace-data/discover','/api/workspace-data/open','/api/workspace-data/export','/api/workspace-data/preview','/api/workspace-data/import','/api/workspace-data/handoff','/api/workspace-data/activate'))
-POST_PATHS.update(('/api/git/enable', '/api/git/disable', '/api/git/fetch', '/api/git/settings'))
+POST_PATHS.update(('/api/git/enable', '/api/git/disable', '/api/git/fetch', '/api/git/adopt', '/api/git/settings'))
 POST_PATHS.update(('/api/admin/update/prepare', '/api/admin/update/cancel'))
 POST_PATHS.add('/api/settings')
 POST_PATHS.update(('/api/sounds/custom', '/api/sounds/custom/delete'))
@@ -1846,7 +1947,11 @@ STATIC.update({'/goal-ui.js': ('goal-ui.js', 'text/javascript; charset=utf-8'),
                '/goal-ui.css': ('goal-ui.css', 'text/css; charset=utf-8')})
 STATIC.update({f'/{name}.{ext}': (f'{name}.{ext}', 'text/javascript; charset=utf-8' if ext == 'js' else 'text/css; charset=utf-8') for name in ('personal-notes-ui', 'behavior-prompts-ui') for ext in ('js', 'css')})
 STATIC['/goal-versions-ui.js'] = ('goal-versions-ui.js', 'text/javascript; charset=utf-8')
+STATIC.update({'/skill-picker.js': ('skill-picker.js', 'text/javascript; charset=utf-8'),
+               '/skill-picker.css': ('skill-picker.css', 'text/css; charset=utf-8')})
 STATIC['/stage-report-ui.js'] = ('stage-report-ui.js', 'text/javascript; charset=utf-8')
+STATIC.update({'/reader-ui.js': ('reader-ui.js', 'text/javascript; charset=utf-8'),
+               '/reader-ui.css': ('reader-ui.css', 'text/css; charset=utf-8')})
 STATIC.update({'/settings-ui.js': ('settings-ui.js', 'text/javascript; charset=utf-8'),
                '/storage-ui.js': ('storage-ui.js', 'text/javascript; charset=utf-8'),
                '/storage-ui.css': ('storage-ui.css', 'text/css; charset=utf-8'),
@@ -1855,6 +1960,9 @@ STATIC.update({'/settings-ui.js': ('settings-ui.js', 'text/javascript; charset=u
 STATIC.update({'/operations-ui.js': ('operations-ui.js', 'text/javascript; charset=utf-8'),
                '/operations-ui.css': ('operations-ui.css', 'text/css; charset=utf-8')})
 STATIC.update({'/member-ui.js': ('member-ui.js', 'text/javascript; charset=utf-8'), '/member-ui.css': ('member-ui.css', 'text/css; charset=utf-8')})
+# 手机外壳与各区域的手机样式（窄屏才加载）
+STATIC.update({f'/{name}.css': (f'{name}.css', 'text/css; charset=utf-8') for name in ('mobile', 'mobile-chat', 'mobile-home', 'mobile-pages')})
+STATIC['/mobile-shell.js'] = ('mobile-shell.js', 'text/javascript; charset=utf-8')
 STATIC['/launch-settings-ui.js'] = ('launch-settings-ui.js', 'text/javascript; charset=utf-8')
 STATIC.update({'/workspace-settings-ui.js': ('workspace-settings-ui.js', 'text/javascript; charset=utf-8'),
                '/workspace-settings-ui.css': ('workspace-settings-ui.css', 'text/css; charset=utf-8')})
@@ -1877,6 +1985,7 @@ STATIC.update({'/notes.html': ('notes.html', 'text/html; charset=utf-8'),
                '/notes.css': ('notes.css', 'text/css; charset=utf-8')})
 STATIC['/native-handoff-ui.js'] = ('native-handoff-ui.js', 'text/javascript; charset=utf-8')
 STATIC['/goal-work-ui.js'] = ('goal-work-ui.js', 'text/javascript; charset=utf-8')
+STATIC['/leader-look.js'] = ('leader-look.js', 'text/javascript; charset=utf-8')
 POST_PATHS.add('/api/remote-access')
 POST_PATHS.update(report_preview.WORKER_PATHS)
 STATIC.update({'/access-context.js': ('access-context.js', 'text/javascript; charset=utf-8'),
@@ -2161,13 +2270,19 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, service.channel_messages(query.get('project', [None])[0],
                                                     int(query.get('limit', [20])[0]), before))
         elif url.path == "/api/git":
-            self._send(200, service.git(query.get("project", [None])[0], int(query.get("offset", [0])[0])))
+            self._send(200, service.git(query.get("project", [None])[0]))
         elif url.path == '/api/git/settings':
             self._send(200, service.git_settings(query.get('project', [None])[0]))
         elif url.path == "/api/git/commit":
             self._send(200, service.git_commit(query.get("project", [None])[0], query.get("sha", [""])[0]))
         elif url.path == '/api/sounds/custom/file':
             self._stream_storage_file(*event_sounds.custom_file(service.home, query.get('id', [''])[0]))
+        elif url.path == '/api/session/avatar':
+            content, media_type = service.session_avatar(query.get('session_id', [''])[0])
+            self._send(200, content, media_type, cache_control='private, max-age=31536000, immutable')
+        elif url.path == '/api/chat/skills':
+            self._send(200, service.chat_skills(query.get('session_id', [''])[0], query.get('project', [None])[0],
+                                                query.get('goal_id', [None])[0], query.get('refresh', [''])[0] == '1'))
         elif url.path == '/api/chat/file':
             content, media_type = service.chat_file(query.get('session_id', [''])[0], query.get('name', [''])[0],
                                                     query.get('project', [None])[0], query.get('goal_id', [None])[0],

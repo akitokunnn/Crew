@@ -146,6 +146,32 @@ class HomeMigrationTests(unittest.TestCase):
         self.assertIn(shlex.quote((self.target / 'crew.py').as_posix()), launcher)
         self.assertNotIn('.crew-home-migration-', launcher)
 
+    def test_copy_moves_storage_workspace_mappings_to_the_new_home(self):
+        storage = self.source / 'storage-v2'
+        storage.mkdir()
+        with closing(sqlite3.connect(storage / 'crew.sqlite3')) as conn:
+            conn.execute('CREATE TABLE local_legacy_projects(workspace_id TEXT PRIMARY KEY, source_home TEXT NOT NULL, '
+                         'legacy_project TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(source_home,legacy_project))')
+            conn.execute('CREATE TABLE local_legacy_entity_mappings(workspace_id TEXT, source_home TEXT, legacy_project TEXT, '
+                         'entity_id TEXT, PRIMARY KEY(workspace_id,source_home,legacy_project,entity_id))')
+            conn.execute('CREATE TABLE messages(id TEXT PRIMARY KEY, body TEXT)')
+            conn.executemany('INSERT INTO local_legacy_projects VALUES(?,?,?,?)',
+                             [('w1', str(self.source), 'inside', 'fixture'), ('w2', str(self.root / 'other home'), 'outside', 'fixture')])
+            conn.execute('INSERT INTO local_legacy_entity_mappings VALUES(?,?,?,?)', ('w1', str(self.source), 'inside', 'e1'))
+            conn.execute('INSERT INTO messages VALUES(?,?)', ('m1', 'history quotes ' + str(self.source)))
+            conn.commit()
+        home_migration.copy(self.value)
+        uri = (self.target / 'storage-v2' / 'crew.sqlite3').as_uri() + '?mode=ro&immutable=1'
+        with closing(sqlite3.connect(uri, uri=True)) as conn:
+            self.assertEqual(conn.execute('SELECT workspace_id,source_home FROM local_legacy_projects ORDER BY 1').fetchall(),
+                             [('w1', str(self.target.resolve())), ('w2', str(self.root / 'other home'))])
+            self.assertEqual(conn.execute('SELECT source_home FROM local_legacy_entity_mappings').fetchall(),
+                             [(str(self.target.resolve()),)])
+            self.assertEqual(conn.execute('SELECT body FROM messages').fetchone()[0], 'history quotes ' + str(self.source))
+        with closing(sqlite3.connect((storage / 'crew.sqlite3').as_uri() + '?mode=ro&immutable=1', uri=True)) as conn:
+            self.assertEqual(conn.execute("SELECT source_home FROM local_legacy_projects WHERE workspace_id='w1'").fetchone()[0],
+                             str(self.source))
+
     def test_runtime_registries_and_browser_profiles_are_not_copied_but_history_is_kept(self):
         for relative in ('web.json', 'desktop/admin/status.json', 'desktop/admin/control.json',
                          'desktop/ui/Local Storage/cache', 'desktop/profiles/p1/Cookies'):

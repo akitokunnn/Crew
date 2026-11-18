@@ -9,7 +9,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import ProxyHandler, Request, build_opener
 
-from crew import board, channel, session_ops, store, web
+from crew import board, channel, messaging, session_ops, store, web
 from test_shell import NOW, PLUGIN, ShellFixture
 import test_channel_digest as digest_fixture
 
@@ -114,7 +114,7 @@ class LeaderWakeTests(ShellFixture, unittest.TestCase):
         self.assertIn('地址「cc-lead」', self.message()['text'])
 
     def test_archived_removed_and_closed_targets_still_rejected(self):
-        for target, removed, expected in [('s1', False, '已归档'), ('s2', True, '已移除')]:
+        for target, removed, expected in [('s1', False, '已归档'), ('s2', True, '已删除')]:
             session_ops.archive(self.conn, target, removed=removed, now=NOW)
             with self.subTest(target=target), self.assertRaisesRegex(board.BoardError, expected):
                 self.wake(target, 'other')
@@ -213,7 +213,7 @@ class ChannelHttpTests(ShellFixture, unittest.TestCase):
         message = result['message']
         self.assertEqual(message['speaker_session_id'], board.HUMAN)
         self.assertEqual(message['speaker_name'], '用户')
-        self.assertEqual(message['mentions'], [{'session_id': 's3', 'name': 'lead'}])
+        self.assertEqual(message['mentions'], [{'session_id': 's3', 'name': 'lead', 'replied': False}])
         notice = board.pending_notices(self.conn, 's3')[0]
         self.assertEqual(notice['source'], 'web')
         self.assertIn('用户点名你', notice['text'])
@@ -354,6 +354,77 @@ class ChannelHttpTests(ShellFixture, unittest.TestCase):
                 service.deliver_notices()
         self.assertEqual(board.pending_notices(self.conn, sid), [])
         self.assertEqual(self.conn.execute("SELECT count(*) FROM events WHERE kind='test:notice_send'").fetchone()[0], 1)
+
+    def test_user_mention_delivers_to_a_stopped_leader_after_restart(self):
+        service = self.server.service
+        with mock.patch('crew.chat.shutil.which', return_value='claude.exe'):
+            sid = service.chat.start(self.conn, 'demo', 'receiver', '协调', role='leader', now=NOW)['session_id']
+            service.chat.journal(sid).set_status('idle')
+            service.chat.stop_identity(sid)
+            self.assertTrue(messaging.stopped(self.conn, sid))
+            channel.post(self.conn, 'demo', 's3', 'leader ping', to=['receiver'], now=NOW)
+            service.deliver_notices()
+            self.assertEqual(len(board.pending_notices(self.conn, sid)), 1)
+            code, result = self.request('/api/channel', {'body': '大家看一下', 'to': ['*']}, project='demo')
+            self.assertEqual(code, 200, result)
+            self.assertFalse(messaging.stopped(self.conn, sid))
+            service.deliver_notices()
+            # The user's words go first, on their own; the leader's ping follows once that turn is over.
+            self.assertEqual(len(board.pending_notices(self.conn, sid)), 1)
+            service.chat.journal(sid).set_status('idle')
+            service.deliver_notices()
+        self.assertEqual(board.pending_notices(self.conn, sid), [])
+
+    def test_user_todo_result_waits_for_the_leaders_next_conversation(self):
+        from crew import todo
+        service = self.server.service
+        with mock.patch('crew.chat.shutil.which', return_value='claude.exe'):
+            sid = service.chat.start(self.conn, 'demo', 'receiver', '协调', role='leader', now=NOW)['session_id']
+        service.chat.journal(sid).set_status('idle')
+        item = todo.add(self.conn, sid, '看完这批总结', '打开总结逐条看', '回复哪些可用', now=NOW)
+        todo.resolve(self.conn, 'demo', item['id'], 'done', note='第 3 条要改', now=NOW)
+        process = self.processes[-1]
+        before = process.stdin.getvalue()
+        with mock.patch.object(service.chat, 'send', wraps=service.chat.send) as send:
+            service.deliver_notices()
+        send.assert_not_called()
+        self.assertEqual(process.stdin.getvalue(), before)
+        self.assertEqual(len(board.pending_notices(self.conn, sid)), 1)
+        service.chat.send(board.session(self.conn, sid), '继续吧', source='human')
+        written = process.stdin.getvalue()[len(before):]
+        sent = json.dumps(json.loads(written.splitlines()[-1]), ensure_ascii=False)
+        for text in ('Crew 留档通知', '看完这批总结', '第 3 条要改', '[用户消息]', '继续吧'):
+            self.assertIn(text, sent)
+        shown = [event['text'] for event in service.chat.journal(sid).events if event['type'] == 'message']
+        self.assertEqual(shown[-1], '继续吧')
+        self.assertEqual(board.pending_notices(self.conn, sid), [])
+
+    def test_user_channel_words_show_in_private_as_the_users_message(self):
+        service = self.server.service
+        with mock.patch('crew.chat.shutil.which', return_value='claude.exe'):
+            sid = service.chat.start(self.conn, 'demo', 'receiver', '协调', role='leader', now=NOW)['session_id']
+        service.chat.journal(sid).set_status('idle')
+        channel.post(self.conn, 'demo', 's3', 'leader ping', to=['receiver'], now=NOW)
+        code, result = self.request('/api/channel', {'body': '你和 lead 看下这个', 'to': ['receiver']}, project='demo')
+        self.assertEqual(code, 200, result)
+        post = result['message']
+        service.deliver_notices()
+        shown = [event for event in service.chat.journal(sid).events if event['type'] == 'message']
+        self.assertTrue(shown[-1]['id'].startswith('channel:%d:' % post['id']))
+        self.assertEqual((shown[-1]['text'], shown[-1]['sender'], shown[-1]['source']), ('你和 lead 看下这个', 'user', 'crew'))
+        sent = self.processes[-1].stdin.getvalue()
+        self.assertIn('crew say --reply-to %d' % post['id'], sent)
+        self.assertNotIn('leader ping', sent)
+        # The leader's own ping waits for the next free turn, in an ordinary Crew batch.
+        self.assertEqual([n['text'] for n in board.pending_notices(self.conn, sid)][0].count('leader ping'), 1)
+        service.deliver_notices()
+        self.assertEqual(len(board.pending_notices(self.conn, sid)), 1)
+        self.assertEqual(channel.messages(self.conn, 'demo')['messages'][-1]['id'], post['id'])
+        service.chat.journal(sid).set_status('idle')
+        service.deliver_notices()
+        stub = channel.messages(self.conn, 'demo')['messages'][-1]
+        self.assertEqual((stub['speaker_session_id'], stub['reply_to'], stub['auto']), (sid, post['id'], True))
+        self.assertEqual(board.pending_notices(self.conn, sid), [])
 
     def test_failed_notice_send_keeps_mention_pending(self):
         service = self.server.service

@@ -111,7 +111,7 @@ def _relative_path(value):
     if (path.is_absolute() or not path.parts or any(p in ('.', '..') for p in value.split('/'))
             or ':' in value or any(ord(c) < 32 for c in value)
             or any(p.endswith((' ', '.')) or reserved.match(p) for p in path.parts)
-            or any(part.lower() in ('.git', '.crew', '.crew-v2') for part in path.parts)):
+            or any(part.lower() in ('.git', '.crew') for part in path.parts)):
         raise board.BoardError('文件路径必须在项目内，且不能指向 Git/Crew 元数据')
     return path.as_posix()
 

@@ -3,7 +3,23 @@ import hashlib
 from pathlib import Path
 import uuid
 
-from . import board, message_receipts
+from . import board, message_receipts, runtimes
+
+
+def decision_answer_notice(conn, decision_id, question, answer, asker, leader):
+    """Leader notice after the user answers a question outside a goal (web, QQ/Lark, assistant).
+
+    Relaying the answer is not a resume order: the answer may say stop, and a manual stop still holds.
+    """
+    peer = any(runtimes.get(conn, person['session_id'])['runtime'] == 'codex' for person in (asker, leader))
+    address = '' if peer else '（SendMessage 地址：%s）' % (asker['cc_name'] or '未知，用 crew who %s 查' % asker['crew_name'])
+    text = '拍板 #%s：%s%s\n问题：%s\n用户答复：%s\n' % (decision_id, asker['crew_name'], address, question, answer)
+    if asker['session_id'] == leader['session_id']:
+        return text + '这是你提的问题：按答复内容决定下一步，答复要你停下或改方向时照办。'
+    relay = ('crew send %s "<用户答复与后续安排>" --kind user_answer（Codex：crew_send_message，kind=user_answer）'
+             % asker['crew_name'] if peer else 'SendMessage')
+    return text + ('先用 %s 把答复转告提问者，再按答复内容安排后续：答复要求停下或改方向时照办；'
+                   '对方被用户手动停止或另有阻塞时，转告不等于叫它复工。' % relay)
 
 
 def stopped(conn, session_id):

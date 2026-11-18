@@ -11,7 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import board, channel, guard, install, message_receipts, runtimes, store, vscode_sessions
+from . import board, channel, git_overview, guard, install, message_receipts, runtimes, store, vscode_sessions
 from .hooks import git_details
 
 
@@ -100,7 +100,7 @@ def parser():
     c = command("git").add_subparsers(dest="action", required=True)
     a = c.add_parser("enable")
     a.add_argument("--base")
-    a.add_argument("--stable")
+    a.add_argument("--integration", help="只在本机、不推送的本地集成分支；省略即不启用")
     a.add_argument("--runtime", choices=runtimes.RUNTIMES, default=argparse.SUPPRESS)
     c.add_parser("disable")
     c.add_parser("status")
@@ -110,6 +110,8 @@ def parser():
     a.add_argument("--branch")
     a.add_argument('--blocking', action='store_true', help='确实在等合并后继续工作；成功后唤醒提出者，否则成功仅记入待阅记录')
     c.add_parser("requests").add_argument("--all", action="store_true")
+    c.add_parser("branches", help="待合入或待推送的分支及其归属；没人认领的也在其中").add_argument("--json", action="store_true")
+    c.add_parser("adopt", help="leader 认领没有在岗 leader 的分支（例如被收起的 leader 留下的）").add_argument("branch")
     a = c.add_parser("resolve")
     a.add_argument("id", type=int)
     a.add_argument("status", choices=("merged", "rejected", "waiting_user", "merging"))
@@ -199,6 +201,8 @@ def parser():
     c = command("say", True)
     c.add_argument("text")
     c.add_argument("--to", action="append", default=[])
+    c.add_argument("--reply-to", type=int, help="回复的交流区发言编号（# 后面的数字）")
+    c.add_argument("--detail", action="store_true", help="完整内容写在你的私聊里，这条只是一句结论")
     c = command("channel", True)
     c.add_argument("--limit", type=int, default=20)
     c.add_argument("--raw", action="store_true", help="跳过要点卡，查看最近 N 条原始发言")
@@ -297,7 +301,7 @@ def parser():
     payload = a.add_mutually_exclusive_group()
     payload.add_argument('--data', help='JSON action payload')
     payload.add_argument('--file', type=Path, help='UTF-8 JSON action payload')
-    for namespace, actions in (('goal', ('create','status','start','pause','resume','cancel','reopen','amend','assign','report-template','report.get','report.preview','report.publish','mode.set','finish','work.list','work.add','work.update','versions.list','versions.preview','versions.file','version.capture','version.restore')),
+    for namespace, actions in (('goal', ('create','status','start','pause','resume','cancel','reopen','amend','assign','transfer','report-template','report.get','report.preview','report.publish','mode.set','finish','work.list','work.add','work.update','versions.list','versions.preview','versions.file','version.capture','version.restore')),
                                ('context', ('inspect','retrieve','put','correct','expire'))):
         goal_parser = command(namespace, True)
         goal_parser.set_defaults(json=True)
@@ -462,8 +466,18 @@ def _emit(value, as_json=False, command=None, channel_card=None, git_assistant=N
                             (item["id"], item["status"], item["branch"], item["requester_name"],
                              item["pr_number"] if item["pr_number"] is not None else "-", ("[合并后继续] " if item.get("blocking") else "") + item["description"])
                             for item in value["requests"]) if value["requests"] else "暂无合并请求")
+        elif "adopted" in value:
+            item = value["adopted"]
+            print("%s 已经归 %s 管" % (item["branch"], item["leader"]["name"]) if item["already"]
+                  else "已认领 %s，归 %s 管" % (item["branch"], item["leader"]["name"]))
+        elif "branches" in value:
+            print("\n".join("%s · %s%s · %s\n  %s" % (
+                item["name"], git_overview.describe(value, item),
+                "" if item["worktree"] is None else " · " + item["worktree"],
+                "、".join(owner["name"] for owner in item["owners"]) if item["owners"] else "没人认领",
+                item["latest"]["subject"]) for item in value["branches"]) if value["branches"] else "没有待合入、待推送或有未提交改动的分支")
         elif value["enabled"]:
-            print("Git 助手已启用 · base: %s · stable: %s" % (value["base"], value["stable"] or "未设置"))
+            print("Git 助手已启用 · base: %s · 本地集成分支: %s" % (value["base"], value["integration"] or "未设置"))
             if git_assistant is not None:
                 print('Git 助手：%s（%s）' % (git_assistant['crew_name'], git_assistant['session_id']))
         else:
@@ -474,7 +488,8 @@ def _emit(value, as_json=False, command=None, channel_card=None, git_assistant=N
         if "notice_id" in value:
             print(value["message"])
         elif value.get("runtime") == "codex":
-            print('已叫醒 %s，它在后台运行，消息用 crew send %s "<内容>"' % (value["name"], value["name"]))
+            print('已叫醒 %s，它在后台运行，消息用 crew send %s "<内容>" --kind task|result|blocker|decision（按用途选）'
+                  % (value["name"], value["name"]))
         else:
             print("已叫醒 %s，它在后台运行，SendMessage 地址：%s" % (value["name"], value["address"]))
     elif command == "compact":
@@ -494,9 +509,7 @@ def _emit(value, as_json=False, command=None, channel_card=None, git_assistant=N
         if channel_card is not None:
             blocks.append("[Crew 交流区要点]\n" + channel_card['body'])
         for message in value:
-            mentions = " " + " ".join("@" + target["name"] for target in message["mentions"]) if message["mentions"] else ""
-            blocks.append("%s %s%s\n%s" % (store.parse_iso(message["created_at"]).astimezone().strftime("%m-%d %H:%M"),
-                                          message["speaker_name"], mentions, message["body"]))
+            blocks.append(channel.line(message, "%m-%d %H:%M") + "\n" + message["body"])
         if channel_card is not None and not value:
             blocks.append("要点之后暂无新发言")
         print("\n\n".join(blocks) if blocks else "交流区暂无发言")
@@ -860,12 +873,13 @@ def execute(conn, args, cwd, agents_provider):
         speaker = conn.execute("SELECT project FROM sessions WHERE session_id=?", (actor,)).fetchone()
         if speaker is None or speaker["project"] is None:
             raise board.BoardError("Leader 交流区只给 leader 用；有事告诉你的 leader")
-        return channel.post(conn, speaker["project"], actor, args.text, args.to)
+        return channel.post(conn, speaker["project"], actor, args.text, args.to,
+                            reply_to=args.reply_to, detail=args.detail)
     p = _project(conn, args, cwd)
     if cmd == "git":
         if args.action in ("enable", "disable"):
             from . import spawn
-            body = {"base": args.base, "stable": args.stable} if args.action == "enable" else {}
+            body = {"base": args.base, "integration": args.integration} if args.action == "enable" else {}
             if hasattr(args, "runtime"):
                 body["runtime"] = args.runtime
             spawn.request_start(args.home, p, "/api/git/" + args.action, body)
@@ -880,12 +894,17 @@ def execute(conn, args, cwd, agents_provider):
         elif args.action == "requests":
             return {"requests": board.titled_requests(board.git_requests(conn, p, args.all),
                                                       lambda sid: vscode_sessions.session_title(CLAUDE_PROJECTS, sid))}
+        elif args.action == "branches":
+            return git_overview.branches(conn, board.project(conn, p), board.git_config(conn, p))
+        elif args.action == "adopt":
+            return {"adopted": git_overview.adopt(conn, board.project(conn, p), board.git_config(conn, p),
+                                                  args.branch, _session_id(args))}
         elif args.action == "resolve":
             return {"request": board.resolve_git_request(conn, p, _session_id(args), args.id, args.status,
                                                           args.note, args.pr_number)}
         config = board.git_config(conn, p)
         return {"enabled": config is not None, "base": None if config is None else config["base"],
-                "stable": None if config is None else config["stable"]}
+                "integration": None if config is None else config["integration"]}
     if cmd == "resource":
         if args.action == "add":
             return board.add_resource(conn, p, args.name, args.kind, args.desc, args.guard, actor)

@@ -47,11 +47,12 @@ class V2JourneyTests(ShellFixture, unittest.TestCase):
     def report(self, outcome='progress', criterion='daily', status='simulated'):
         return {'outcome': outcome, 'summary': '隔离工作流演练：每日打卡页面与数据保存已交接。',
             'user_test': [{'step': '打开打卡页面，记录今天。', 'expected': '今天显示已打卡。'}],
-            'delivered': ['仅用于工作流测试的本地打卡页面'], 'unresolved': [],
+            'delivered': ['仅用于工作流测试的本地打卡页面'], 'unresolved': ['仅隔离模拟，未做真实交互验收'],
             'acceptance': [{'criterion_id': criterion, 'status': status,
                             'evidence': [{'label': '隔离模拟证据', 'reference': 'fixture/checkins.html'}]}],
             'examples': [{'input': '记录今天', 'expected': '今天显示已打卡', 'actual': '脚本模拟已打卡',
                           'conclusion': '工作流通过，非真实模型产物验收', 'kind': 'illustrative'}],
+            'document_html': '<h1>打卡演练</h1><table><tr><th>操作</th><th>实际</th></tr><tr><td>记录今天</td><td>脚本模拟已打卡（示意）</td></tr></table>',
             'artifacts': ['fixture/checkins.html'], 'tradeoffs': ['仅验证 Crew 任务闭环'],
             'follow_up': '真实成果需另做交互验收',
             'investment': {'elapsed_seconds': 1, 'usage': None, 'roles': [{'role': 'leader', 'contribution': '脚本驱动工作流'}]}}

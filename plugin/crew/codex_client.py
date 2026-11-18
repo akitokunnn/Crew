@@ -106,7 +106,7 @@ def command(executable="codex", *, env=None):
 class Client:
     def __init__(self, executable="codex", *, cwd=None, env=None, on_notification=None,
                  tool_handler=None, approval_handler=None, process_factory=None,
-                 timeout=30, client_version="0.2.1"):
+                 timeout=30, client_version="0.2.1", skill_roots=None):
         self.timeout = timeout
         self.on_notification = on_notification
         self.tool_handler, self.approval_handler = tool_handler, approval_handler
@@ -137,6 +137,8 @@ class Client:
                 "clientInfo": {"name": "crew", "title": "Crew", "version": client_version},
                 "capabilities": {"experimentalApi": True}})
             self._send({"method": "initialized", "params": {}})
+            if skill_roots:
+                self.request("skills/extraRoots/set", {"extraRoots": [str(root) for root in skill_roots]})
         except BaseException:
             self.close()
             raise

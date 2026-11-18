@@ -66,7 +66,8 @@ def _dependencies(conn, goal, key, values):
 def _writeable(conn, goal, actor):
     goals._actor(conn, goal, actor, member=True)
     if goal['status'] in goals.TERMINAL:
-        raise board.Conflict('已结束目标的工作清单保留为历史；请在新一轮继续')
+        raise board.Conflict('任务已结束，工作清单暂不能改。用户要求修改时，先在本任务用 amend 登记修改内容，'
+                             '任务会在原轮次继续并沿用这份清单；不要自行开新一轮。')
 
 
 def _record(conn, item, actor):
@@ -162,5 +163,16 @@ def carry_forward(conn, goal_id, previous_version, *, actor):
             continue
         conn.execute('UPDATE goal_work_items SET requirement_version=?,version=version+1,updated_at=? WHERE id=?',
                      (goal['requirement_version'], store.now_iso(), item['id']))
+        row = conn.execute('SELECT * FROM goal_work_items WHERE id=?', (item['id'],)).fetchone()
+        _record(conn, _item(row), actor)
+
+
+def hand_over(conn, goal_id, owner, *, actor):
+    """A task moving to another leader takes its unfinished work along; nobody is still doing it."""
+    for item in items(conn, goal_id):
+        if item['status'] in ('done', 'cancelled'):
+            continue
+        conn.execute("UPDATE goal_work_items SET owner_session_id=?,status=CASE status WHEN 'doing' THEN 'planned' ELSE status END,"
+                     'version=version+1,updated_at=? WHERE id=?', (owner, store.now_iso(), item['id']))
         row = conn.execute('SELECT * FROM goal_work_items WHERE id=?', (item['id'],)).fetchone()
         _record(conn, _item(row), actor)

@@ -9,7 +9,7 @@ function fixture(t, options = {}) {
   const config = { home: options.home || path.resolve('fixture-home'), backendDir: path.resolve('fixture-backend'), python: 'fixture-python', desktopVersion: options.desktopVersion || '0.1.2' };
   const calls = [], phases = [];
   let restarted = false, switched = false, releases = 0;
-  const target = { root: config.backendDir, version: '0.1.2', digest: 'production-digest', generation: options.generation ?? 2 };
+  const target = { root: config.backendDir, version: '0.1.2', digest: 'production-digest' };
   const health = () => ({ ok: true, service: 'crew', home: config.home, pid: restarted ? 202 : 101,
     instance_id: restarted ? 'new-instance' : 'old-instance', version: restarted && options.wrongRestart ? '0.1.1' : '0.1.2',
     plugin_root: config.backendDir, port: 51234 });
@@ -53,10 +53,8 @@ function fixture(t, options = {}) {
       let value = {};
       if (operation === 'inspect') {
         value = { target, cli: { plugin_root: switched ? config.backendDir : path.resolve('old-backend'), version: switched ? '0.1.2' : '0.1.1' },
-          plugin: options.pluginBlocked ? { state: 'blocked', reason: '插件实际来源与桌面不同' } :
-            { state: 'session-scoped', registered_version: '0.1.2' } };
+          plugin: { state: 'session-scoped', registered_version: '0.1.2' } };
       } else if (operation === 'backup') value = { path: path.join(config.home, 'backups', 'update', 'crew.db'), integrity: 'ok', bytes: 8192 };
-      else if (operation === 'plugin-update') throw new Error('V2 must never update the shared V1 plugin');
       else if (operation === 'stopped') {
         assert.deepEqual(args.slice(4), ['--port', '51234', '--pid', '101', '--pid', '100', '--pid', '103', '--timeout', '20']);
       } else if (operation === 'switch') switched = true;
@@ -108,27 +106,6 @@ test('stop timeout keeps the backup and never switches or starts a replacement b
   assert.equal(result.phase, 'error'); assert.match(result.error, /停止超时/); assert.equal(result.backup.integrity, 'ok');
   assert.equal(f.calls.includes('stop'), true); assert.equal(f.calls.includes('switch'), false); assert.equal(f.calls.includes('start'), false);
   assert.equal(f.releases, 1);
-});
-
-test('a mismatched actual plugin source blocks update before closing the gate', async t => {
-  const f = fixture(t, { pluginBlocked: true });
-  const result = await f.manager.update();
-  assert.equal(result.phase, 'error'); assert.match(result.error, /共享的 V1 插件/);
-  assert.equal(f.calls.includes('prepare'), false); assert.equal(f.calls.includes('backup'), false); assert.equal(f.releases, 1);
-});
-
-test('V1 source is rejected before preparing, backing up or stopping the current backend', async t => {
-  const f = fixture(t, { generation:1 });
-  const result = await f.manager.update();
-  assert.equal(result.phase, 'error'); assert.match(result.error, /不是 Crew/);
-  assert.deepEqual(f.calls,['lock','inspect','health','unlock']);
-});
-
-test('the canonical V1 HOME is rejected before starting a helper or taking a lock', async t => {
-  const f = fixture(t,{home:path.join(os.homedir(),'.crew')});
-  const result = await f.manager.update();
-  assert.equal(result.phase,'error'); assert.match(result.error,/V1.*数据目录/);
-  assert.deepEqual(f.calls,[]);
 });
 
 test('restart verification failure is never reported as a successful update or reconnected', async t => {

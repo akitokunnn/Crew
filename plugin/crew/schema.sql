@@ -142,12 +142,6 @@ CREATE TABLE IF NOT EXISTS todo_backfills (
     queued_at TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS trust_settings (
-    project TEXT PRIMARY KEY REFERENCES projects(name),
-    enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0,1)),
-    goal TEXT,
-    updated_at TEXT NOT NULL
-);
 CREATE TABLE IF NOT EXISTS trust_decisions (
     decision_id INTEGER PRIMARY KEY REFERENCES decisions(id),
     reason TEXT NOT NULL,
@@ -218,21 +212,20 @@ CREATE TABLE IF NOT EXISTS leader_order (
     PRIMARY KEY (project, session_id)
 );
 
-CREATE TABLE IF NOT EXISTS leader_priority (
+-- Pinned leaders show first; among themselves they keep the leader_order order.
+CREATE TABLE IF NOT EXISTS leader_pins (
     project TEXT NOT NULL REFERENCES projects(name),
     session_id TEXT NOT NULL REFERENCES sessions(session_id),
-    position INTEGER NOT NULL CHECK (position BETWEEN 0 AND 2),
-    PRIMARY KEY (project, session_id),
-    UNIQUE (project, position)
+    PRIMARY KEY (project, session_id)
 );
 
 CREATE TABLE IF NOT EXISTS git_management (
     project TEXT PRIMARY KEY REFERENCES projects(name),
     enabled_at TEXT NOT NULL,
     base TEXT NOT NULL,
-    stable TEXT,
     admin_session_id TEXT REFERENCES sessions(session_id),
-    branch_rules TEXT
+    branch_rules TEXT,
+    integration TEXT
 );
 
 CREATE TABLE IF NOT EXISTS git_merge_requests (
@@ -248,6 +241,17 @@ CREATE TABLE IF NOT EXISTS git_merge_requests (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+-- Who created or committed on a branch, seen in the shell commands Crew's hooks allow.
+-- goal_id is the task the session was executing then, when it was one.
+CREATE TABLE IF NOT EXISTS branch_claims (
+    project TEXT NOT NULL REFERENCES projects(name),
+    branch TEXT NOT NULL,
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    goal_id TEXT,
+    claimed_at TEXT NOT NULL,
+    PRIMARY KEY (project, branch, session_id)
+);
 CREATE INDEX IF NOT EXISTS git_merge_requests_project ON git_merge_requests (project, status, id);
 
 CREATE TABLE IF NOT EXISTS git_ci_state (
@@ -261,7 +265,6 @@ CREATE TABLE IF NOT EXISTS git_ci_state (
     PRIMARY KEY (project, subject, run_key)
 );
 
-DROP TABLE IF EXISTS session_models;
 CREATE TABLE IF NOT EXISTS session_options (
     session_id TEXT PRIMARY KEY REFERENCES sessions(session_id),
     model TEXT,
@@ -274,6 +277,16 @@ CREATE TABLE IF NOT EXISTS rule_reads (
     role TEXT NOT NULL,
     digest TEXT NOT NULL,
     read_at TEXT NOT NULL
+);
+
+-- A leader's chosen color and compressed avatar (WebP/PNG/JPEG, at most 200KB).
+CREATE TABLE IF NOT EXISTS session_appearance (
+    session_id TEXT PRIMARY KEY REFERENCES sessions(session_id),
+    color TEXT,
+    avatar BLOB,
+    avatar_type TEXT,
+    avatar_version INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
 );
 
 -- Explicit human choices survive hooks from the original running process.
@@ -379,7 +392,8 @@ CREATE TABLE IF NOT EXISTS leader_notices (
     source     TEXT NOT NULL CHECK (source IN ('web', 'qq', 'lark', 'crew')),
     text       TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    sent_at    TEXT
+    sent_at    TEXT,
+    wake       INTEGER NOT NULL DEFAULT 1   -- 0: wait for the leader's next conversation instead of starting a turn
 );
 CREATE INDEX IF NOT EXISTS leader_notices_pending ON leader_notices (session_id, sent_at);
 
@@ -389,7 +403,10 @@ CREATE TABLE IF NOT EXISTS channel_messages (
     speaker_session_id TEXT NOT NULL,      -- leader session id, or 'user'
     speaker_name       TEXT NOT NULL,
     body               TEXT NOT NULL,
-    created_at         TEXT NOT NULL
+    created_at         TEXT NOT NULL,
+    reply_to           INTEGER REFERENCES channel_messages(id),  -- the post this one answers
+    detail             INTEGER NOT NULL DEFAULT 0,  -- 1: the speaker wrote the full answer in its own conversation
+    auto               INTEGER NOT NULL DEFAULT 0   -- 1: Crew posted it because the leader answered only in private
 );
 CREATE INDEX IF NOT EXISTS channel_messages_project ON channel_messages (project, id);
 
@@ -398,6 +415,7 @@ CREATE TABLE IF NOT EXISTS channel_mentions (
     session_id TEXT NOT NULL REFERENCES sessions(session_id),
     name       TEXT NOT NULL,
     notice_id  INTEGER REFERENCES leader_notices(id),
+    await_reply INTEGER NOT NULL DEFAULT 0,  -- 1: the user named this leader and it has not answered in the channel yet
     PRIMARY KEY (message_id, session_id)
 );
 
@@ -475,6 +493,8 @@ CREATE TABLE IF NOT EXISTS decisions (
     delivered_at    TEXT                   -- when the answer was injected into the asking session
 );
 
+-- Retired "hold" marks (feature removed 2026-11-11). Business code no longer reads or writes them;
+-- the table stays so existing rows survive and storage_v2 packages keep their held_at round trip.
 CREATE TABLE IF NOT EXISTS decision_holds (
     decision_id INTEGER PRIMARY KEY REFERENCES decisions(id),
     held_at     TEXT NOT NULL
@@ -685,8 +705,7 @@ CREATE TABLE IF NOT EXISTS runtime_switches (
 );
 CREATE INDEX IF NOT EXISTS runtime_switches_session ON runtime_switches(session_id,status,configured_at);
 
--- Leader-scoped trust. Legacy project settings seed only the leaders present
--- at upgrade time; later leaders start in ordinary mode.
+-- Leader-scoped trust.
 CREATE TABLE IF NOT EXISTS leader_trust_settings (
  leader_session_id TEXT PRIMARY KEY REFERENCES sessions(session_id),
  project TEXT NOT NULL REFERENCES projects(name),
@@ -694,37 +713,10 @@ CREATE TABLE IF NOT EXISTS leader_trust_settings (
  goal TEXT,
  updated_at TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS trust_leader_migrations (
- project TEXT PRIMARY KEY REFERENCES projects(name), migrated_at TEXT NOT NULL
-);
-INSERT OR IGNORE INTO leader_trust_settings
- SELECT s.session_id,s.project,t.enabled,t.goal,t.updated_at FROM sessions s
- JOIN trust_settings t ON t.project=s.project WHERE s.role='leader'
- AND NOT EXISTS(SELECT 1 FROM trust_leader_migrations m WHERE m.project=s.project);
-INSERT OR IGNORE INTO trust_leader_migrations
- SELECT name,strftime('%Y-%m-%dT%H:%M:%fZ','now') FROM projects;
 CREATE TABLE IF NOT EXISTS decision_leader_scopes (
  decision_id INTEGER PRIMARY KEY REFERENCES decisions(id),
  leader_session_id TEXT REFERENCES sessions(session_id)
 );
-CREATE TABLE IF NOT EXISTS trust_schema_migrations (
- name TEXT PRIMARY KEY, applied_at TEXT NOT NULL
-);
--- Historical scopes reflect upgrade-time membership, not reconstructed past
--- membership. NULL is deliberate and never guessed again after migration.
-INSERT OR IGNORE INTO decision_leader_scopes
- SELECT d.id,CASE WHEN s.role='leader' THEN s.session_id ELSE
-   (SELECT g.leader_session_id FROM groups g WHERE g.project=s.project AND g.name=s.group_name) END
- FROM decisions d LEFT JOIN sessions s ON s.session_id=d.session_id
- WHERE NOT EXISTS(SELECT 1 FROM trust_schema_migrations WHERE name='decision-leader-v1');
-DELETE FROM leader_notices
- WHERE source='crew' AND sent_at IS NULL AND id IN
- (SELECT n.id FROM events e JOIN json_each(CASE WHEN json_valid(e.detail) THEN e.detail ELSE '{}' END,'$.notice_ids') j
-  JOIN leader_notices n ON n.id=j.value AND n.project=e.project
-  WHERE e.kind='trust:set' AND j.type='integer'
-  AND NOT EXISTS(SELECT 1 FROM trust_schema_migrations WHERE name='decision-leader-v1'));
-INSERT OR IGNORE INTO trust_schema_migrations
- VALUES('decision-leader-v1',strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 
 -- Goal delivery keeps stable Crew identities separate from native executions.
 CREATE TABLE IF NOT EXISTS goals (
@@ -849,6 +841,16 @@ CREATE TABLE IF NOT EXISTS goal_cancellations (
  goal_id TEXT PRIMARY KEY REFERENCES goals(id), round INTEGER NOT NULL,
  requested_at TEXT NOT NULL, actor TEXT NOT NULL
 );
+-- Handing a task to another leader waits for running turns to end; finished rows stay as history.
+CREATE TABLE IF NOT EXISTS goal_transfers (
+ id TEXT PRIMARY KEY, goal_id TEXT NOT NULL REFERENCES goals(id), round INTEGER NOT NULL,
+ from_session_id TEXT NOT NULL REFERENCES sessions(session_id),
+ to_session_id TEXT NOT NULL REFERENCES sessions(session_id),
+ note TEXT NOT NULL, actor TEXT NOT NULL,
+ status TEXT NOT NULL CHECK(status IN ('pending','finalized','failed')), error TEXT,
+ requested_at TEXT NOT NULL, finalized_at TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS goal_transfers_pending ON goal_transfers(goal_id) WHERE status='pending';
 CREATE TABLE IF NOT EXISTS session_stop_gates (
  session_id TEXT PRIMARY KEY REFERENCES sessions(session_id),
  stopped_at TEXT NOT NULL, stopped_by TEXT NOT NULL

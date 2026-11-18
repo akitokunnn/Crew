@@ -3,7 +3,7 @@
   const esc=value=>String(value??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
   const drafts=new Map();
   async function edit({api,goal,report,onSaved}) {
-    const dialog=document.createElement('dialog');dialog.className="personal-notes-dialog stage-report-dialog";dialog.innerHTML='<header><h2>编辑阶段说明</h2><button class="btn ghost" data-close aria-label="关闭编辑">×</button></header><p role="status">正在读取…</p><div data-editor></div>';document.body.append(dialog);dialog.showModal();let saved,request,busy=false;
+    const dialog=document.createElement('dialog');dialog.className="personal-notes-dialog stage-report-dialog";dialog.innerHTML='<header><h2>编辑阶段说明</h2><button type="button" class="icon-btn" data-close aria-label="关闭编辑">×</button></header><p role="status">正在读取…</p><div data-editor></div>';document.body.append(dialog);dialog.showModal();let saved,request,busy=false;
     const close=()=>{if(!busy){dialog.close();dialog.remove();}};dialog.querySelector('[data-close]').onclick=close;dialog.oncancel=event=>{event.preventDefault();close();};
     const key=`${goal.id}:${report.id}`,status=dialog.querySelector('[role=status]');
     try{

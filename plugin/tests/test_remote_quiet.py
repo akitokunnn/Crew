@@ -93,7 +93,8 @@ class RemoteQuietTests(ShellFixture, unittest.TestCase):
             user_test=[dict(step='Open result', expected='Works')],
             user_todos=[dict(title='Connect device', detail='SECRET STEPS')],
             user_decisions=[dict(question='Release when?', why='SECRET WHY')],
-            acceptance=[dict(criterion_id='a1', status='unverified', evidence=[])],
+            acceptance=[dict(criterion_id='a1', status='unverified', evidence=[dict(label='Read the config', reference='SECRET PATH')])],
+            unresolved=['Not run against the real device'],
             examples=[dict(kind='actual', input='x', expected='y', actual='y', conclusion='measured')],
             investment=dict(elapsed_seconds=None, usage=None, roles=[]),
             document_html='<html><body>Integration report</body></html>'), now=NOW)
@@ -273,9 +274,9 @@ class RemoteQuietTests(ShellFixture, unittest.TestCase):
             for removed in ('/leader', '/projects', '/project', '/1'):
                 self.assertNotIn(removed, text)
 
-    def test_error_since_filter_and_resolved_or_held_items_stay_quiet(self):
-        number = board.ask(self.conn, 's1', 'Held', ['A'], now=NOW)
-        board.hold(self.conn, number, now=NOW)
+    def test_error_since_filter_and_resolved_items_stay_quiet(self):
+        number = board.ask(self.conn, 's1', 'Answered', ['A'], now=NOW)
+        board.answer(self.conn, number, 'A', now=NOW)
         action = todo.add(self.conn, 's1', 'Resolved', 'Do', 'Check', now=NOW)
         todo.resolve(self.conn, 'demo', action['id'], 'done')
         items = [dict(id=kind, kind=kind, session_id='s1', title='Old failure', detail='Old',
@@ -444,7 +445,7 @@ class RemoteDecisionActionTests(GoalFixture):
         # The tool result points at the injected rules instead of repeating them.
         self.assertIn('[Crew assistant]', context['instructions'])
         leader_rules = behavior_prompts.DEFAULTS['leader']
-        for part in ('每件各建一个目标并分别 start', '已有同一任务就补充原目标'):
+        for part in ('各建一个目标并分别 start', '已有同一任务就补充原目标'):
             self.assertIn(part, leader_rules)
         final_rules = behavior_prompts.DEFAULTS['final_report']
         for part in ('crew todo list', 'crew decisions', 'todo withdraw', '撤回拍板', 'user_todos', 'user_decisions'):

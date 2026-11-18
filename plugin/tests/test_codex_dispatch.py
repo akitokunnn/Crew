@@ -47,7 +47,7 @@ Show-Line '{"type":"turn.completed","usage":{"input_tokens":12,"output_tokens":3
                 task = root / "task.md"
                 task.write_text("Fake task only. No model will be called.", encoding="utf-8")
                 if log_failure:
-                    (root / ".crew-v2").write_text("not a directory", encoding="utf-8")
+                    (root / ".crew").write_text("not a directory", encoding="utf-8")
                 harness = root / "fake-dispatch.ps1"
                 harness.write_text(r"""
 $ErrorActionPreference = 'Stop'
@@ -85,7 +85,7 @@ function Start-Process {
 exit $LASTEXITCODE
 """.replace("__SCRIPT__", literal(SCRIPT)).replace("__TASK__", literal(task)).replace("__ROOT__", literal(root)),
                                    encoding="utf-8-sig")
-                run_home = root / ('selected-home' if private_home else '.crew-v2')
+                run_home = root / ('selected-home' if private_home else '.crew')
                 env = {key: value for key, value in os.environ.items() if not key.startswith('CREW_')}
                 env.update(USERPROFILE=str(root), CLAUDE_CODE_SESSION_ID="fake-claude",
                            CREW_SESSION_ID='logical-chief', CREW_EXECUTION_ID='goal-execution', CREW_GOAL_ID='goal',
@@ -95,7 +95,8 @@ exit $LASTEXITCODE
                 if private_home:
                     env['CREW_HOME'] = str(run_home)
                 result = subprocess.run([POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(harness)],
-                                        capture_output=True, text=True, env=env, timeout=20)
+                                        capture_output=True, text=True, encoding='utf-8', env=env, timeout=20,
+                                        creationflags=subprocess.CREATE_NO_WINDOW)
                 self.assertEqual(result.returncode, code, result.stdout + result.stderr)
                 self.assertEqual((root / "waited").read_text(), "yes")
                 if log_failure:
@@ -114,7 +115,7 @@ exit $LASTEXITCODE
                 self.assertEqual((records[1]['crew_session_id'], records[1]['crew_execution_id']), ('logical-chief', 'goal-execution'))
                 self.assertEqual(records[0]['pid'], 12345)
                 self.assertTrue(records[0]['pid_created'].startswith('win:'))
-                self.assertFalse((root / '.crew').exists())
+                self.assertEqual((root / '.crew').exists(), not private_home)
                 self.assertTrue(records[1]['ephemeral'])
                 if malformed:
                     self.assertIsNone(records[1]['usage'])

@@ -9,20 +9,21 @@ const ui = window.CrewWorkspaceHome;
 const data = patch => ({name:"健身打卡",git_assistant:null,leaders:[],members:[],goals:[],todos:[],decisions:[],...patch});
 const render = snapshot => ui.render(snapshot, {settingsIcon:"<svg></svg>",decisionCards:items=>items.map(item=>`decision:${item.id}`).join(";"),taskCards: items => items.map(item=>`task:${item.id}`).join(";"),todoCards:items=>items.map(item=>`todo:${item.id}`).join(";")});
 
-test("home badge shares review, decision and TODO entries and ignores held or resolved work",()=>{
-  const snapshot=data({goals:[{id:"review",status:"awaiting_acceptance",acceptance_brief:{}},{id:"empty",status:"awaiting_acceptance",acceptance_brief:null},{id:"done",status:"completed"}],decisions:[{held:false},{held:true}],todos:[{status:"open"},{status:"done"},{status:"cancelled"}]});
+test("home badge shares review, decision and TODO entries and ignores resolved work",()=>{
+  const snapshot=data({goals:[{id:"review",status:"awaiting_acceptance",acceptance_brief:{}},{id:"empty",status:"awaiting_acceptance",acceptance_brief:null},{id:"done",status:"completed"}],decisions:[{id:1}],todos:[{status:"open"},{status:"done"},{status:"cancelled"}]});
   assert.equal(ui.attentionCount(snapshot),3);
-  snapshot.goals[0].status="completed";snapshot.decisions[0].held=true;snapshot.todos[0].status="done";
+  snapshot.goals[0].status="completed";snapshot.decisions=[];snapshot.todos[0].status="done";
   assert.equal(ui.attentionCount(snapshot),0);
 });
 
 test("overview keeps task states and human TODO separate, without inferring work from processes", () => {
   const input = data({leaders:[{session_id:"L",status:"idle",running:true},{session_id:"discussion",status:"working"}],
-    members:[{session_id:"M",status:"working",codex:[{status:"running"},{source:"skill_dispatch",status:"running"}]}],
+    members:[{session_id:"M",status:"working",codex:[{status:"running"},{source:"skill_dispatch",status:"running"},{source:"native_subagent",status:"running"}]},
+      {session_id:"N",status:"idle",codex:[{source:"native_subagent",status:"running"},{source:"native_subagent",status:"unknown"}]}],
     goals:[{id:"research",leader_session_id:"L",status:"waiting_user"},{id:"done",leader_session_id:"L",status:"completed",report_available:true}],
-    todos:[{id:1,status:"open"},{id:2,status:"done"}],decisions:[{id:1,held:false},{id:2,held:true}]});
+    todos:[{id:1,status:"open"},{id:2,status:"done"}],decisions:[{id:1}]});
   const original=JSON.stringify(input), model=ui.project(input);
-  assert.equal(model.activeCount,3);
+  assert.equal(model.activeCount,4);
   assert.equal(model.openGoals[0].id,"research");assert.equal(model.pastGoals[0].id,"done");
   assert.equal(model.discussions.length,1);assert.equal(model.discussions[0].session_id,"discussion");
   assert.equal(model.todos.length,1);assert.equal(model.decisions.length,1);

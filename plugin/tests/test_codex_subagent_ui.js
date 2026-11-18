@@ -16,7 +16,7 @@ test("native task status renders spinner, check only on success, and separate fa
   }
 });
 test("leader and member nodes both include native child task rows while preserving ordinary dispatch rows",()=>{
-  const person={session_id:"worker",name:"负责人",runtime:"codex",status:"idle",priority:null,pending:0,goal:"隔离验收",task:"核对流程",where:"bg",codex:[task()],codex_older:0,context:null,activity:null,applied:null,model:null,effort:null};
+  const person={session_id:"worker",name:"负责人",runtime:"codex",status:"idle",pinned:false,pending:0,goal:"隔离验收",task:"核对流程",where:"bg",codex:[task()],codex_older:0,context:null,activity:null,applied:null,model:null,effort:null};
   ui.setState({leaders:[],members:[],runtimes:[],ai:{}});
   assert(ui.leaderNode(person,true).includes("检查界面 &lt;safe&gt;"));assert(ui.memberNode(person).includes("检查界面 &lt;safe&gt;"));
   const dispatch=ui.codexMarkup(task({source:"dispatch",status:"succeeded",ended_at:new Date().toISOString()}));

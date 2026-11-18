@@ -43,7 +43,7 @@ class WorkspaceGitCapabilityTests(ShellFixture, unittest.TestCase):
         self.assertEqual(code, 200, result)
         self.assertIs(result['available'], False)
         self.assertIn(reason, result['reason'])
-        self.assertEqual(result['choices'], {'branches': [], 'base': None, 'stable': None})
+        self.assertEqual(result['choices'], {'branches': [], 'base': None})
         self.assertEqual(result['repository'], self.workspace.name)
         self.assertIn('requests', result)
         self.assertIn('last_fetch_at', result)
@@ -102,7 +102,7 @@ class WorkspaceGitCapabilityTests(ShellFixture, unittest.TestCase):
 
     def test_missing_git_is_unavailable_without_losing_the_saved_configuration(self):
         subprocess.run(['git', '-C', str(self.workspace), 'init', '-b', 'main'], check=True, capture_output=True)
-        self.conn.execute('INSERT INTO git_management(project,enabled_at,base,stable) VALUES(?,?,?,?)',
+        self.conn.execute('INSERT INTO git_management(project,enabled_at,base,integration) VALUES(?,?,?,?)',
                           ('ordinary', NOW, 'main', None))
         self.conn.commit()
         real_which = shutil.which

@@ -2,7 +2,7 @@
 const assert=require("node:assert/strict"),fs=require("node:fs"),path=require("node:path"),vm=require("node:vm");
 const {test}=require("node:test");
 const tick=async()=>{for(let i=0;i<12;i++)await Promise.resolve();};
-function node(){const classes=new Set(),children=[],attributes=new Map();return {matches:()=>false,focus(){},setSelectionRange(){},value:"",textContent:"",innerHTML:"",hidden:false,disabled:false,style:{setProperty(){}},dataset:{},scrollTop:0,scrollHeight:0,clientHeight:200,firstChild:null,children,contains:()=>false,querySelectorAll:()=>[],getBoundingClientRect:()=>({top:0}),setAttribute(name,value){attributes.set(name,String(value));},getAttribute:name=>attributes.get(name)??null,removeAttribute:name=>attributes.delete(name),
+function node(){const classes=new Set(),children=[],attributes=new Map();return {matches:()=>false,focus(){},setSelectionRange(){},value:"",textContent:"",innerHTML:"",hidden:false,disabled:false,style:{setProperty(){}},dataset:{},scrollTop:0,scrollHeight:0,clientHeight:200,firstChild:null,children,contains:()=>false,querySelectorAll:()=>[],getBoundingClientRect:()=>({top:0}),setAttribute(name,value){attributes.set(name,String(value));},getAttribute:name=>attributes.get(name)??null,removeAttribute:name=>attributes.delete(name),append(child){this.insertBefore(child,null);},addEventListener(){},
   insertBefore(child,before){const old=children.indexOf(child);if(old>=0)children.splice(old,1);const index=before?children.indexOf(before):-1;children.splice(index<0?children.length:index,0,child);child.parentNode=this;this.firstChild=children[0]||null;for(let i=0;i<children.length;i++)children[i].nextSibling=children[i+1]||null;},
   remove(){const parent=this.parentNode;if(!parent)return;const index=parent.children.indexOf(this);if(index>=0)parent.children.splice(index,1);parent.firstChild=parent.children[0]||null;for(let i=0;i<parent.children.length;i++)parent.children[i].nextSibling=parent.children[i+1]||null;this.parentNode=null;},
   classList:{add:x=>classes.add(x),remove:x=>classes.delete(x),toggle(x,on){if(on)classes.add(x);else classes.delete(x);},contains:x=>classes.has(x)}};}
@@ -11,7 +11,7 @@ function harness(){
   const journals=new Map(),journalKey=params=>JSON.stringify([params.get("project")||"",params.get("session_id")]);
   const timers=new Map(),saved=new Map(),streams=[],connections=[],frames=new Map(),handlers=new Map();let next=1;
   const motion={matches:true};
-  const sandbox={matchMedia:()=>motion,atob,btoa,URLSearchParams,AbortController,TextDecoder,
+  const sandbox={matchMedia:query=>query.includes("max-width")?{matches:false}:motion,atob,btoa,URLSearchParams,AbortController,TextDecoder,
     EventSource:class{static CLOSED=2;constructor(url){connections.push({url});}close(){}},
     addEventListener(type,fn){if(!handlers.has(type))handlers.set(type,new Set());handlers.get(type).add(fn);},removeEventListener(type,fn){handlers.get(type)?.delete(fn);},
     localStorage:{getItem:key=>saved.get(key)??null,setItem:(key,value)=>saved.set(key,value)},
@@ -21,7 +21,7 @@ function harness(){
       signal.addEventListener("abort",()=>{pending?.reject(Object.assign(Error("aborted"),{name:"AbortError"}));pending=null;},{once:true});
       return {ok:true,headers,body:{getReader:()=>({read:()=>{stream.reads++;return queue.length?Promise.resolve(queue.shift()):new Promise((resolve,reject)=>{pending={resolve,reject};});}})}};}};
   sandbox.window=sandbox;vm.createContext(sandbox);
-  for(const file of ["vendor/markdown-it.min.js","browser-utils.js","chat.js","goal-work-ui.js"])vm.runInContext(fs.readFileSync(path.join(__dirname,"../crew/web",file),"utf8"),sandbox);
+  for(const file of ["vendor/markdown-it.min.js","browser-utils.js","skill-picker.js","chat.js","goal-work-ui.js"])vm.runInContext(fs.readFileSync(path.join(__dirname,"../crew/web",file),"utf8"),sandbox);
   function mount(id,api,extra={},options={}){const target=host(),session={session_id:id,name:id,busy:false,last_seq:0,activity:null,where:"bg",...extra};const client=async(url,data)=>{const value=await api(url,data);if(url.startsWith("/api/chat/history?"))journals.set(journalKey(new URLSearchParams(url.split("?")[1])),{executionId:value.execution_id??"",latestSeq:value.events.at(-1)?.seq||0});return value;};sandbox.CrewChat.mount({host:target,session,state:{project:{name:"fixture"},leaders:[session],members:[]},api:client,toast(){},...options});return target;}
   function update(id,extra={}){const session={session_id:id,name:id,busy:false,last_seq:1,activity:null,where:"bg",...extra};sandbox.CrewChat.update({project:{name:"fixture"},leaders:[session],members:[]});}
   function visibility(visible,desktop=false){const type=desktop?"crew-tab-visibility":"visibilitychange";if(desktop)sandbox.crewTabVisible=visible;else sandbox.document.visibilityState=visible?"visible":"hidden";for(const fn of handlers.get(type)||[])fn({type,detail:{visible}});}
@@ -525,7 +525,7 @@ test("terminal turns without a tool result remain explicitly unknown, and do not
 test("starting a queued goal retains the leader transcript, stream, draft and reading position",async()=>{
   const h=harness(),nodes=new Map(),calls=[];
   let execution=null;
-  const person={session_id:"leader",name:"测试负责人",runtime:"codex",model:null,effort:null,busy:false,last_seq:0,activity:null,where:"bg",priority:null,status:"idle",codex:[]};
+  const person={session_id:"leader",name:"测试负责人",runtime:"codex",model:null,effort:null,busy:false,last_seq:0,activity:null,where:"bg",pinned:false,status:"idle",codex:[]};
   const goal={assignments:[],work_summary:{total:0,done:0},decision_mode:{mode:"human"},now_doing:[],pending_decision:null,working_count:0,last_activity_at:"2026-11-05T00:00:00Z",supplements_after_report:[],id:"goal",leader_session_id:"leader",title:"真实目标",request:"推进并交付",acceptance:[],status:"queued",current_round:1,requirement_version:1,version:1};
   const state={project:{name:"fixture"},leaders:[person],members:[],decisions:[],todos:[],goals:[goal],runtimes:[{id:"codex",name:"Codex",available:true,models:[],efforts:[]}]};
   const main=host();nodes.set("main",main);
@@ -546,6 +546,7 @@ test("starting a queued goal retains the leader transcript, stream, draft and re
   };
   const appSource=fs.readFileSync(path.join(__dirname,"../crew/web/app.js"),"utf8").replace(/\r\n/g,"\n");
   vm.runInContext(appSource.replace("  setup();\n})();",'window.appFixture={renderChat,configure(value,client,request){state=value;goals=client;api=request;view="chat";leaderId="leader";goalId="goal";}};\n})();'),h.sandbox);
+  h.sandbox.CrewReader={pane:()=>null,refresh(){},close:()=>false,escape:()=>false};
   vm.runInContext(fs.readFileSync(path.join(__dirname,"../crew/web/goal-ui.js"),"utf8"),h.sandbox);
   const goalUI=h.sandbox.CrewGoals.create({project:"fixture",state:()=>state,api,avatar:()=>"",ago:()=>"",toast(){},onChange:()=>h.sandbox.appFixture.renderChat(),refreshState:async()=>h.sandbox.appFixture.renderChat()});
   h.sandbox.appFixture.configure(state,goalUI,api);h.sandbox.appFixture.renderChat();await tick();

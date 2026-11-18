@@ -1,0 +1,49 @@
+<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="base.css">
+<script>document.documentElement.dataset.theme=new URLSearchParams(location.search).get('theme')||'light'</script>
+<style>
+body{width:1280px;height:500px}
+.canvas{width:1280px;height:500px;padding:44px 48px}
+.row{position:relative;display:grid;grid-template-columns:repeat(4,1fr);gap:44px}
+.step{position:relative;background:var(--card);border:1px solid var(--line);border-radius:18px;padding:20px 20px 18px;height:300px;box-shadow:var(--shadow);display:flex;flex-direction:column}
+.step:not(:last-child)::after{content:"";position:absolute;right:-36px;top:42px;width:28px;height:2px;background:var(--faint)}
+.step:not(:last-child)::before{content:"";position:absolute;right:-37px;top:37px;border:6px solid transparent;border-left:8px solid var(--faint);border-right:0}
+.no{display:flex;align-items:center;gap:10px;font-size:13px;color:var(--muted);letter-spacing:1px}
+.no b{width:28px;height:28px;border-radius:9px;background:var(--mark-bg);color:var(--mark-fg);display:inline-flex;align-items:center;justify-content:center;font-size:14px;font-weight:500;letter-spacing:0}
+h3{margin-top:16px;font-size:21px;font-weight:500}
+.d{margin-top:7px;font-size:14px;line-height:1.6;color:var(--muted);height:45px}
+.v{margin-top:auto;border-radius:12px;background:var(--paper);border:1px solid var(--line);padding:12px;height:122px;font-size:12.5px;overflow:hidden}
+.bubble{background:var(--mint-soft);color:var(--ink);border-radius:12px 12px 4px 12px;padding:9px 11px;line-height:1.55;margin-left:18px}
+.meta{margin-top:8px;color:var(--faint);font-size:11.5px;text-align:right}
+.li{display:flex;align-items:center;gap:8px;height:30px;border-bottom:1px dashed var(--line)}
+.li:last-child{border:0}
+.li i{width:14px;height:14px;border-radius:4px;border:1.5px solid var(--faint);flex:none}
+.li i.on{border-color:var(--accent);background:var(--accent)}
+.li span{flex:1}
+.li em{font-style:normal;color:var(--faint);font-size:11.5px}
+.mem{display:flex;align-items:center;gap:8px;height:32px}
+.av{width:22px;height:22px;border-radius:50%;flex:none;display:inline-flex;align-items:center;justify-content:center;font-size:11px;font-weight:500}
+.bar{flex:1;height:6px;border-radius:3px;background:var(--line);overflow:hidden}
+.bar u{display:block;height:100%;border-radius:3px}
+.rt{font-size:11px;color:var(--muted);width:66px;text-align:right}
+.rep h4{font-size:13.5px;font-weight:500}
+.rep .chk{display:flex;align-items:center;gap:7px;height:24px;color:var(--muted)}
+.rep .chk b{color:var(--ok);font-weight:500}
+.rep .ok{margin-top:6px;display:inline-flex;gap:6px;align-items:center;padding:3px 9px;border-radius:999px;background:color-mix(in srgb,var(--ok) 16%,transparent);color:var(--ok);font-size:11.5px;font-weight:500}
+.lane{position:relative;margin-top:30px;height:66px;border:1.5px dashed color-mix(in srgb,var(--warm) 55%,var(--line));border-top:0;border-radius:0 0 22px 22px;margin-left:120px;margin-right:120px}
+.lane::before{content:"";position:absolute;left:-7px;top:-12px;border:6px solid transparent;border-bottom:9px solid color-mix(in srgb,var(--warm) 55%,var(--line));border-top:0}
+.lane .lab{position:absolute;left:50%;bottom:-17px;transform:translateX(-50%);display:flex;align-items:center;gap:10px;background:var(--paper);padding:0 14px;white-space:nowrap;font-size:15px;color:var(--ink)}
+.lane .lab .pill{height:28px;font-size:13px}
+.lane .lab .w{color:var(--warm);font-weight:500}
+</style></head><body><div class="canvas">
+<div class="row">
+  <div class="step"><div class="no"><b>1</b>你</div><h3>说清目标</h3><div class="d">一句话说要什么、怎么算完成；<br>随手的想法也能直接开聊。</div>
+    <div class="v"><div class="bubble">首页改版这周做完，手机上也要好看，旧链接不能断。</div><div class="meta">发给 产品负责人</div></div></div>
+  <div class="step"><div class="no"><b>2</b>leader</div><h3>拆成任务</h3><div class="d">排好工作清单，分派给组员；<br>Claude Code 与 Codex 可混编。</div>
+    <div class="v"><div class="li"><i class="on"></i><span>梳理页面与旧链接</span><em>完成</em></div><div class="li"><i class="on"></i><span>移动端布局重做</span><em>进行中</em></div><div class="li"><i></i><span>回归与截图验收</span><em>待开始</em></div></div></div>
+  <div class="step"><div class="no"><b>3</b>组员</div><h3>并行推进</h3><div class="d">各自的分支与上下文，互相发消息<br>协作；leader 盯进度、处理卡点。</div>
+    <div class="v"><div class="mem"><span class="av" style="background:var(--mint-soft);color:var(--accent)">页</span><span class="bar"><u style="width:86%;background:var(--accent)"></u></span><span class="rt">Claude Code</span></div><div class="mem"><span class="av" style="background:var(--warm-soft);color:var(--warm)">端</span><span class="bar"><u style="width:58%;background:var(--warm)"></u></span><span class="rt">Codex</span></div><div class="mem"><span class="av" style="background:var(--violet-soft);color:var(--violet)">测</span><span class="bar"><u style="width:32%;background:var(--violet)"></u></span><span class="rt">Codex</span></div></div></div>
+  <div class="step"><div class="no"><b>4</b>leader</div><h3>交付报告</h3><div class="d">好读的 HTML 报告，带具体案例、图表和逐项验收证据。</div>
+    <div class="v rep"><h4>首页改版 · 第 2 轮交付</h4><div class="chk"><b>✓</b>手机 375px 无横向滚动</div><div class="chk"><b>✓</b>旧链接 42 条全部跳转</div><span class="ok">验收 6/6 通过</span></div></div>
+</div>
+<div class="lane"><div class="lab"><span class="w">需要你时才来找你</span><span class="pill"><i style="background:var(--warm)"></i>拍板</span><span class="pill"><i style="background:var(--violet)"></i>人工待办</span><span class="pill"><i style="background:var(--ok)"></i>验收</span></div></div>
+</div></body></html>

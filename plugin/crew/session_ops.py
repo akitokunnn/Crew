@@ -82,7 +82,7 @@ def rename_self(conn, session_id, name, now=None):
         return rename.__wrapped__(conn, session_id, name, now=now)
 
 
-def _archive(conn, session, removed, now):
+def _archive(conn, session, removed, now, event=None):
     session_id = session["session_id"]
     previous = control(conn, session_id)
     if not previous or previous['archived_status'] is None:
@@ -91,7 +91,7 @@ def _archive(conn, session, removed, now):
     _set_control(conn, session_id, removed=int(bool(removed or (previous and previous['removed']))))
     ended_at = session['ended_at'] if previous and previous['archived_status'] is not None else board._time(now)
     conn.execute("UPDATE sessions SET status='closed',status_note=NULL,ended_at=? WHERE session_id=?", (ended_at,session_id))
-    board._event(conn, 'session:remove' if removed else 'session:archive', session['project'], session_id, {}, now)
+    board._event(conn, event or ('session:remove' if removed else 'session:archive'), session['project'], session_id, {}, now)
 
 
 def authorize_archive(conn, session_id, caller_session_id):
@@ -116,6 +116,39 @@ def archive(conn, session_id, removed=False, now=None, *, caller_session_id=None
         raise board.BoardError('到 Git 页关闭 Git 管理')
     _archive(conn, session, removed, now)
     return {'ok':True,'session':board.session(conn, session_id),'before':before}
+
+
+def deletion_scope(conn, session_id):
+    """A leader is deleted with its whole open group; anyone else alone."""
+    session = board.session(conn, session_id)
+    group = None
+    if session['role'] == 'leader' and session['group_name']:
+        group = conn.execute('SELECT * FROM groups WHERE project=? AND name=? AND leader_session_id=?',
+                             (session['project'], session['group_name'], session_id)).fetchone()
+    people = [session]
+    if group is not None:
+        people += board._rows(conn, 'SELECT * FROM sessions WHERE project=? AND group_name=? AND session_id<>? '
+                              'ORDER BY session_id', (session['project'], group['name'], session_id))
+    config = board.git_config(conn, session['project'])
+    if config is not None and any(config['admin_session_id'] == person['session_id'] for person in people):
+        raise board.BoardError('到 Git 页关闭 Git 管理')
+    return (dict(group) if group is not None else None), people
+
+
+@board.atomic
+def delete(conn, session_id, now=None):
+    """Permanent removal keeps only a closed, removed tombstone so a still-running
+    native process cannot re-register the identity through its hooks."""
+    group, people = deletion_scope(conn, session_id)
+    if group is not None and group['closed_at'] is None:
+        conn.execute('UPDATE groups SET closed_at=? WHERE project=? AND name=?',
+                     (board._time(now), group['project'], group['name']))
+    for person in people:
+        _archive(conn, person, True, now, event='session:delete')
+        conn.execute('DELETE FROM session_appearance WHERE session_id=?', (person['session_id'],))
+        if group is not None:
+            conn.execute('UPDATE sessions SET group_name=NULL WHERE session_id=?', (person['session_id'],))
+    return {'ok': True, 'deleted': [person['session_id'] for person in people]}
 
 
 @board.atomic

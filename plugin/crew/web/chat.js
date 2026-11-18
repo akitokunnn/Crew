@@ -189,6 +189,12 @@
     tokens[index].attrSet("rel", "noopener noreferrer");
     return linkOpen(tokens, index, options, env, renderer);
   };
+  const COPY_LABEL = '<svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h8"/></svg><span>复制</span>';
+  const COPIED_LABEL = '<svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg><span>已复制</span>';
+  for (const rule of ["fence", "code_block"]) {
+    const original = markdown.renderer.rules[rule];
+    markdown.renderer.rules[rule] = (...args) => `<div class="code-block">${original(...args)}<button type="button" class="code-copy" data-copy-code>${COPY_LABEL}</button></div>`;
+  }
   function fileContentUrl(path, sessionId, base, raw = false, documentId = null) {
     const params = new URLSearchParams(location.search);
     if (documentId !== null) {
@@ -209,6 +215,21 @@
     panel.setAttribute("role", "dialog");
     panel.setAttribute("aria-label", "\u6587\u4ef6\u9884\u89c8");
     document.body.append(panel);
+    document.addEventListener("click", async event => {
+      const button = event.target.closest("[data-copy-code]");
+      if (button === null) return;
+      event.preventDefault();
+      event.stopPropagation();
+      clearTimeout(button.copyTimer);
+      try {
+        await window.CrewBrowser.copyText((button.parentElement.querySelector("pre")?.textContent ?? "").replace(/\n$/, ""));
+      } catch (error) {
+        toast(`复制失败：${error.message}`);
+        return;
+      }
+      button.innerHTML = COPIED_LABEL; button.classList.add("copied");
+      button.copyTimer = setTimeout(() => { button.innerHTML = COPY_LABEL; button.classList.remove("copied"); }, 1600);
+    });
     document.addEventListener("click", async event => {
       const link = event.target.closest("[data-file-path]");
       if (link === null) {
@@ -244,19 +265,29 @@
         if (sequence !== request) return;
         const openLabel = info.open_with === "vscode" ? "在 VS Code 打开" : "用默认程序打开";
         const openButton = !localDesktop || info.open_with === "blocked" ? "" : `<button class="btn file-open">${openLabel}</button>`;
-        panel.innerHTML = `<div class="card-head"><div class="file-title">${escape(info.path)}</div><button class="icon-btn file-close" aria-label="\u5173\u95ed">&times;</button></div>${localDesktop ? `<div class="card-actions">${openButton}<button class="btn file-reveal">\u5728\u6587\u4ef6\u5939\u4e2d\u663e\u793a</button></div>` : ""}<div class="card-body file-body"></div>`;
-        const body = panel.querySelector(".file-body");
-        if (info.open_with === "blocked") body.textContent = localDesktop ? "这类文件不直接打开，请用‘在文件夹中显示’" : "此格式暂不能在浏览器预览，请在运行 Crew 的电脑上查看。";
-        else if (info.kind === "image") body.innerHTML = `<img class="file-image" alt="${escape(info.path)}" src="${escape(fileContentUrl(info.path, data.session_id || "", null, true, documentLink ? data.document_id : null))}">`;
-        else {
-          if (content.truncated) body.innerHTML = `<p class="note">\u6587\u4ef6\u8f83\u5927\uff0c\u4ec5\u663e\u793a${escape(content.portion)} 256 KiB</p>`;
-          body.innerHTML += info.kind === "markdown" ? `<div class="markdown">${renderMarkdown(content.content, renderingSession, info.path)}</div>` : `<pre class="file-text">${escape(content.content)}</pre>`;
+        const actions = localDesktop ? `${openButton}<button class="btn file-reveal">在文件夹中显示</button>` : "";
+        const bodyMarkup = info.open_with === "blocked" ? escape(localDesktop ? "这类文件不直接打开，请用‘在文件夹中显示’" : "此格式暂不能在浏览器预览，请在运行 Crew 的电脑上查看。")
+          : info.kind === "image" ? `<img class="file-image" alt="${escape(info.path)}" src="${escape(fileContentUrl(info.path, data.session_id || "", null, true, documentLink ? data.document_id : null))}">`
+          : (content.truncated ? `<p class="note">文件较大，仅显示${escape(content.portion)} 256 KiB</p>` : "") + (info.kind === "markdown" ? `<div class="markdown">${renderMarkdown(content.content, renderingSession, info.path)}</div>` : `<pre class="file-text">${escape(content.content)}</pre>`);
+        // Beside a conversation the file opens in the shared reading pane; elsewhere (channel, assistant page) in the drawer.
+        const inPane = window.CrewReader !== undefined && window.CrewReader.canHost();
+        let host = panel;
+        if (inPane) {
+          panel.classList.remove("show");
+          host = document.createElement("section"); host.className = "file-reader";
+          const name = documentLink ? link.textContent.trim() : info.path.split(/[\\/]/).pop();
+          host.innerHTML = `<div class="head file-reader-head"><div class="file-reader-heading"><div class="title">${escape(name)}</div><div class="sub file-path" title="${escape(info.path)}">${escape(info.path)}</div></div><div class="file-reader-actions">${actions}${window.CrewReader.chatButton()}<button class="btn file-close">关闭</button></div></div><div class="file-reader-body reader-quotable">${bodyMarkup}</div>`;
+          window.CrewReader.open(host, {label:"文件预览", reading:{label:name, data:documentLink ? {kind:"document", document_id:data.document_id} : {kind:"file", path:info.path, session_id:data.session_id || ""}},
+            onClose:() => { if (sequence === request) request++; }});
+          host.querySelector(".file-close").onclick = () => window.CrewReader.close(host, {animate:true});
+        } else {
+          panel.innerHTML = `<div class="card-head"><div class="file-title">${escape(info.path)}</div><button class="icon-btn file-close" aria-label="关闭">&times;</button></div>${actions ? `<div class="card-actions">${actions}</div>` : ""}<div class="card-body file-body">${bodyMarkup}</div>`;
+          panel.querySelector(".file-close").onclick = () => { request++; panel.classList.remove("show"); };
         }
-        panel.querySelector(".file-close").onclick = () => { request++; panel.classList.remove("show"); };
-        for (const action of (!localDesktop ? [] : info.open_with === "blocked" ? ["reveal"] : ["open", "reveal"])) panel.querySelector(".file-" + action).onclick = async () => {
+        for (const action of (!localDesktop ? [] : info.open_with === "blocked" ? ["reveal"] : ["open", "reveal"])) host.querySelector(".file-" + action).onclick = async () => {
           try { await api("/api/files/" + action, resolved); } catch (error) { toast(error.message); }
         };
-        panel.classList.add("show");
+        if (inPane) host.querySelector(".file-close").focus({preventScroll:true}); else panel.classList.add("show");
       } catch (error) { toast(error.message); }
     }, true);
     document.addEventListener("keydown", event => { if (event.key === "Escape" && panel.classList.contains("show")) { event.stopImmediatePropagation(); request++; panel.classList.remove("show"); } });
@@ -266,6 +297,7 @@
   const transcriptFields = ["items", "byId", "results", "toolOwners", "toolStops", "events", "cursor", "firstSeq", "hasMore", "executionId", "readSeq", "busySeq", "settledSeq", "turn", "turnStart", "busy"];
   const compactNotified = new Map();
   let active = null;
+  let reading = null;
   const visible = () => document.visibilityState === "visible" && window.crewTabVisible !== false;
   const escape = value => String(value).replace(/[&<>"']/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]);
   const icon = kind => {
@@ -308,6 +340,23 @@
     if (context.note === null) context.noteButton.removeAttribute("aria-label");
     else context.noteButton.setAttribute("aria-label", `想法：${context.note.title}。点按移除，不再随消息带上`);
   }
+  function readingComposer(context) {
+    context.readingButton.hidden = reading === null;
+    if (reading === null) {
+      context.readingButton.innerHTML = "";
+      context.readingButton.removeAttribute("aria-label");
+      context.readingButton.removeAttribute("title");
+    } else {
+      context.readingButton.innerHTML = `<svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg><span>正在看：${escape(reading.label)}</span>`;
+      context.readingButton.setAttribute("aria-pressed", String(reading.attached));
+      context.readingButton.title = reading.attached ? "发消息时会告诉对方你正在看这份内容；点按取消" : "这条消息不附上正在看的内容；点按重新附上";
+      context.readingButton.setAttribute("aria-label", `正在看：${reading.label}，${reading.attached ? "会随消息附上" : "不随消息附上"}`);
+    }
+  }
+  function setReading(value) {
+    reading = value === null ? null : {label:value.label, data:value.data, attached:true};
+    if (active && !active.readonly) readingComposer(active);
+  }
   // Prefills only an empty composer, so an existing draft is never replaced.
   function setNote(note, prefill = null) {
     if (!active || active.readonly) return;
@@ -316,6 +365,17 @@
       active.input.value = prefill; active.cache.version += 1; saveDraft(active); resizeInput(active); composerState(active);
       active.input.focus(); active.input.setSelectionRange(prefill.length, prefill.length);
     }
+  }
+  function quote(text) {
+    if (!active || active.readonly) return false;
+    const quoted = text.trim().split(/\r?\n/).map(line => `> ${line}`).join("\n") + "\n\n";
+    const value = active.input.value;
+    active.input.value = value.trim() ? value.replace(/\s*$/, "\n\n") + quoted : quoted;
+    active.cache.version += 1; saveDraft(active); resizeInput(active); composerState(active);
+    active.input.focus({preventScroll:true});
+    active.input.setSelectionRange(active.input.value.length, active.input.value.length);
+    active.input.scrollTop = active.input.scrollHeight;
+    return true;
   }
 
   const transcriptKey = context => JSON.stringify([scopeKey(context), context.session.session_id, context.executionId]);
@@ -476,8 +536,12 @@
     const output = result && (typeof result.content === "string" ? result.content : JSON.stringify(result.content, null, 2));
     return `<button type="button" class="tool indent${result || ended ? "" : " live"}${open ? " open" : ""}" data-chat-fold="${escape(foldKey)}" aria-expanded="${open}">${result ? `<span class="${result.is_error ? "chat-error" : "ok"}">${icon("check")}</span>` : ended ? icon(stopped === "handoff" ? "handoff" : "close") : '<span class="spin" aria-label="执行中"></span>'}<span class="label">${escape(toolLabel(context, block))}</span>${!result && ended ? `<span class="tool-state">${ended[0]}</span>` : ""}${icon("right")}</button><div class="tool-steps"><div>输入 · ${escape(block.name)}</div><pre>${escape(JSON.stringify(block.input, null, 2))}</pre>${result ? `<div>${result.is_error ? "执行失败" : "结果"}</div><pre>${escape(output.slice(0, 2000))}</pre>${output.length > 2000 ? '<div>仅显示前 2000 字</div>' : ""}` : ended ? `<div>${ended[1]}</div>${goalId && context.onRouted ? `<button type="button" class="text-link" data-chat-goal="${escape(goalId)}">查看任务 →</button>` : ""}` : "<div>正在执行…</div>"}</div>`;
   }
+  function leadAvatar(session) {
+    const url = window.CrewLook?.avatarUrl(session), color = session.color ? escape(session.color) : "var(--accent)";
+    return `<div class="av round${url ? " has-img" : ""}" style="--s:30px;--tint:${color}">${url ? `<img src="${escape(url)}" alt="">` : escape(session.name.slice(0, 1))}</div>`;
+  }
   function assistantText(context, text, item) {
-    return `<div class="m-lead"><div class="av round" style="--s:30px;--tint:var(--accent)">${escape(context.session.name.slice(0, 1))}</div><div class="body"><div class="markdown">${renderMarkdown(text, context.session.session_id)}</div><div class="m-meta">${escape(context.session.name)}${item.at ? ` · ${timeOf(item.at)}` : ""}</div></div></div>`;
+    return `<div class="m-lead">${leadAvatar(context.session)}<div class="body"><div class="markdown">${renderMarkdown(text, context.session.session_id)}</div><div class="m-meta">${escape(context.session.name)}${item.at ? ` · ${timeOf(item.at)}` : ""}</div></div></div>`;
   }
   function turnView(turn) {
     const parts = turn.items.map(item => ({item, blocks:item.content === null ? (item.text ? [{type:"text", text:item.text}] : []) : item.content}));
@@ -541,13 +605,25 @@
       if (item.text) html += assistantText(context, item.text, item);
       return html;
     }
+    if (item.source === "crew" && typeof item.id === "string" && item.id.startsWith("channel:")) {
+      // The user's own words from the Leader channel, delivered here as a mention.
+      return `<div class="m-user from-channel"><div class="bubble"><span class="message-text">${escape(item.text).replace(/\n/g, "<br>")}</span></div><div class="m-meta"><button type="button" class="text-link chat-channel-origin" data-chat-channel="${escape(item.id.split(":")[1])}">来自交流区 ↗</button>${item.at ? ` · ${escape(timeOf(item.at))}` : ""}</div></div>`;
+    }
     if (item.source === "peer" || item.source === "crew") {
       const sender = item.source === "crew" && !Object.hasOwn(item, "sender") ? "Crew" : item.sender === "user" ? "用户" : nameOf(context, item.sender);
       // The sender may have been ended or archived since; its relative paths then resolve against the project root.
-      const peer = item.source === "peer" ? context.state.leaders.concat(context.state.members).find(person => person.cc_name === item.sender) : undefined;
+      // Crew records the sender's Crew name; older records may carry the Claude address instead.
+      const people = context.state.leaders.concat(context.state.members);
+      const peer = item.source === "peer" ? people.find(person => person.name === item.sender) ?? people.find(person => person.cc_name === item.sender) : undefined;
       const pathSession = item.source !== "peer" ? context.session.session_id : peer === undefined ? "" : peer.session_id;
       const foldKey = `peer:${item.id}`;
       const open = context.cache.expanded.has(foldKey);
+      if (peer !== undefined && peer.session_id === context.session.leader_session_id) {
+        // The member's own leader speaks into the conversation like the user does, so it reads as a message, not a log line.
+        const long = item.text.length > 360 || item.text.split("\n").length > 8;
+        const fold = long ? `<button type="button" class="text-link leader-fold${open ? " open" : ""}" data-chat-fold="${escape(foldKey)}" aria-expanded="${open}"><span class="more">展开全文</span><span class="less">收起</span></button>` : "";
+        return `<div class="m-user from-leader${long ? " long" : ""}"><div class="bubble"><div class="leader-text">${renderMarkdown(item.text, pathSession)}</div></div><div class="m-meta"><span class="leader-from">来自 leader「${escape(sender)}」</span>${item.at ? ` · ${escape(timeOf(item.at))}` : ""}${fold}</div></div>`;
+      }
       return `<button type="button" class="mline indent${open ? " open" : ""}" data-chat-fold="${escape(foldKey)}" aria-expanded="${open}"><span class="who">${escape(sender)} → ${escape(context.session.name)}：</span><span class="txt">${renderInline(item.text.replace(/\s+/g, " "), pathSession)}</span>${item.at ? `<span>${timeOf(item.at)}</span>` : ""}${icon("right")}</button><div class="mfull">${renderMarkdown(item.text, pathSession)}</div>`;
     }
     const images = item.taskImages ? `<div class="message-images">${item.taskImages.map((image, index) => `<img src="data:${escape(image.media_type)};base64,${escape(image.data)}" alt="图片 ${index + 1}">`).join("")}</div>` : item.images ? `<div class="message-images">${item.images.map((name, index) => {
@@ -619,7 +695,13 @@
     for (const key of context.nodes.keys()) if (!retained.has(key)) context.nodes.delete(key);
     renderActivity(context);
     if (context.initialPosition !== null) {
-      if (context.initialPosition === "unread") {
+      const focused = typeof context.initialPosition === "object" ? context.nodes.get(context.initialPosition.key) : null;
+      if (typeof context.initialPosition === "object") {
+        if (focused) {
+          context.scroll.scrollTop = focused.getBoundingClientRect().top - context.scroll.getBoundingClientRect().top + context.scroll.scrollTop - 12;
+          focused.classList.remove("chat-focus"); void focused.offsetWidth; focused.classList.add("chat-focus");
+        } else context.scroll.scrollTop = context.scroll.scrollHeight;
+      } else if (context.initialPosition === "unread") {
         const divider = context.nodes.get("unread");
         context.scroll.scrollTop = divider.getBoundingClientRect().top - context.scroll.getBoundingClientRect().top + context.scroll.scrollTop - 12;
       } else context.scroll.scrollTop = context.initialPosition === "bottom" ? context.scroll.scrollHeight : context.initialPosition;
@@ -834,6 +916,7 @@
         context.initialPosition = context.hasMore && history.read_seq < context.firstSeq ? 0 : unread ? "unread" : "bottom";
       } else context.initialPosition = context.cache.scrollTop === null ? "bottom" : context.cache.scrollTop;
       context.cache.first = false;
+      applyFocus(context);
       composerState(context); render(context); connect(context);
     } catch (error) {
       if (current(context) && generation === context.loadGeneration) {
@@ -843,6 +926,19 @@
         context.historyRetryTimer = setTimeout(() => { context.historyRetryTimer = null; void load(context); }, 3000);
       }
     }
+  }
+  function applyFocus(context) {
+    // Opened from a channel post: land on the user's channel words, or the last thing before that post.
+    const focus = context.focus;
+    if (!focus) return;
+    context.focus = null;
+    const entries = [...timeline(context)];
+    let target = focus.prefix ? entries.find(({item}) => typeof item.id === "string" && item.id.startsWith(focus.prefix)) : undefined;
+    if (!target && focus.at) {
+      const moment = Date.parse(focus.at);
+      target = entries.filter(({item}) => item.at && Date.parse(item.at) <= moment).pop();
+    }
+    if (target) context.initialPosition = {key:target.key};
   }
   async function loadEarlier(context) {
     if (context.loadingEarlier || !context.hasMore) return;
@@ -880,7 +976,8 @@
     // Keep this ID with the exact draft until acceptance, including an uncertain network failure.
     const target = context.taskBound ? context.selectedTask : null;
     const note = target === null ? context.note : null;
-    const fingerprint = JSON.stringify([text, context.cache.images, target?.id, note?.id]);
+    const attached = reading?.attached ? reading.data : null;
+    const fingerprint = JSON.stringify([text, context.cache.images, target?.id, note?.id, attached]);
     if (context.cache.pendingMessage?.fingerprint !== fingerprint) {
       const id = window.CrewBrowser.requestId();
       context.cache.pendingMessage = {fingerprint, id};
@@ -888,6 +985,7 @@
     const payload = { session_id: target === null ? context.session.session_id : target.leader_session_id, text, message_id:context.cache.pendingMessage.id, ...(target === null ? goalScope(context) : {goal_id:target.id}) };
     if (context.cache.images.length > 0) payload.images = context.cache.images.slice();
     if (note) payload.note_id = note.id;
+    if (attached) payload.reading = attached;
     context.cache.sending = true;
     if (target === null) {
       if (!previousBusy) context.cache.waitingSince = CrewActivity.timestamp(context.state.now);
@@ -952,13 +1050,15 @@
     const context = { ...options, cacheKey, activityKey:`chat:${cacheKey}`, session:options.session, selectedTask:null, taskBound:false, note:null, cache, items: [], byId: new Map(), nodes: new Map(), results: new Map(), toolOwners: new Map(), toolStops: new Map(), events:[], firstSeq:0, hasMore:false, cursor: 0, readSeq: 0, busySeq: options.readonly || options.goalId ? 0 : options.session.last_seq, settledSeq:null, executionId:null, connectionGeneration:0, loadGeneration:0, readTimer: null, reconnectTimer: null, historyRetryTimer: null, historyFailed: false, interrupting: false, interruptError: "", interruptConfirmed: false, frame: null, loading: true, busy: cache.pendingSendSeq === null ? options.session.busy : true, reading: false, initialPosition: null, stream: null };
     active = context;
     options.host.classList.add("chat-host");
-    options.host.innerHTML = `<div class="chat-error chat-connection-error" role="alert" hidden></div><div class="scroll chat-scroll" tabindex="0" aria-label="${escape(options.session.name)}的对话记录"><div class="col chat-inner"></div></div><button type="button" class="jump" aria-label="回到最新消息">${icon("down")}回到最新</button>${options.readonly ? `<div class="readonly-note">${escape(options.readonlyReason || "此会话尚未由 Crew 托管。请先在原工具退出，再从会话操作中接管；历史记录保留。")}</div>` : `<div class="composer-wrap"><form class="composer"><div class="attach" hidden></div><button type="button" class="chat-note-chip" hidden></button><textarea rows="1" aria-label="给 ${escape(options.session.name)} 发消息" placeholder="${options.goalId ? `在任务「${escape(options.goalTitle)}」里跟 ${escape(options.session.name)} 说…` : `跟 ${escape(options.session.name)} 说…（可以直接粘贴截图）`}"></textarea><div class="c-row"><button type="button" class="icon-btn chat-image-button" title="附截图（也可以直接 Ctrl+V）" aria-label="添加图片">${icon("image")}</button><button type="button" class="chat-task-binding" aria-pressed="false" hidden></button><input class="chat-image-file" type="file" accept="image/*" multiple hidden><span class="hint"></span><button type="button" class="chat-stop" aria-label="停止当前回复" hidden><svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/></svg></button><button type="submit" class="send" aria-label="发送" disabled>${icon("up")}</button></div><div class="chat-interrupt-status" role="status" aria-live="polite" hidden></div><div class="chat-delivery-status" role="alert" hidden></div></form></div>`}`;
+    options.host.innerHTML = `<div class="chat-error chat-connection-error" role="alert" hidden></div><div class="scroll chat-scroll" tabindex="0" aria-label="${escape(options.session.name)}的对话记录"><div class="col chat-inner"></div></div><button type="button" class="jump" aria-label="回到最新消息">${icon("down")}回到最新</button>${options.readonly ? `<div class="readonly-note">${escape(options.readonlyReason || "此会话尚未由 Crew 托管。请先在原工具退出，再从会话操作中接管；历史记录保留。")}</div>` : `<div class="composer-wrap"><form class="composer"><div class="attach" hidden></div><button type="button" class="chat-note-chip" hidden></button><button type="button" class="chat-reading-chip" aria-pressed="true" hidden></button><textarea rows="1" aria-label="给 ${escape(options.session.name)} 发消息" placeholder="${options.goalId ? `在任务「${escape(options.goalTitle)}」里跟 ${escape(options.session.name)} 说…` : `跟 ${escape(options.session.name)} 说…（可以直接粘贴截图）`}"></textarea><div class="c-row"><button type="button" class="icon-btn chat-image-button" title="附截图（也可以直接 Ctrl+V）" aria-label="添加图片">${icon("image")}</button><button type="button" class="chat-task-binding" aria-pressed="false" hidden></button><input class="chat-image-file" type="file" accept="image/*" multiple hidden><span class="hint"></span><button type="button" class="chat-stop" aria-label="停止当前回复" hidden><svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/></svg></button><button type="submit" class="send" aria-label="发送" disabled>${icon("up")}</button></div><div class="chat-interrupt-status" role="status" aria-live="polite" hidden></div><div class="chat-delivery-status" role="alert" hidden></div></form></div>`}`;
     context.scroll = options.host.querySelector(".chat-scroll"); context.inner = options.host.querySelector(".chat-inner");
     context.jump = options.host.querySelector(".jump"); context.error = options.host.querySelector(".chat-connection-error");
     context.jump.onclick = () => { context.scroll.scrollTop = context.scroll.scrollHeight; context.jump.classList.remove("show"); scheduleRead(context); };
     context.scroll.onscroll = () => { if (!current(context)) return; context.cache.scrollTop = context.scroll.scrollTop; context.jump.classList.toggle("show", !atBottom(context)); scheduleRead(context); };
     context.inner.onclick = async event => {
       if (event.target.closest("[data-chat-earlier]")) { await loadEarlier(context); return; }
+      const channelButton = event.target.closest("[data-chat-channel]");
+      if (channelButton) { context.openChannel?.(Number(channelButton.dataset.chatChannel)); return; }
       const goalButton = event.target.closest("[data-chat-goal]");
       if (goalButton) {
         try { await context.onRouted(goalButton.dataset.chatGoal); }
@@ -996,9 +1096,16 @@
       context.taskButton.onclick = () => { context.taskBound = !context.taskBound; taskComposer(context); };
       context.noteButton = options.host.querySelector(".chat-note-chip");
       context.noteButton.onclick = () => { context.note = null; noteComposer(context); context.onNoteCleared?.(); context.input.focus(); };
+      context.readingButton = options.host.querySelector(".chat-reading-chip");
+      context.readingButton.onclick = () => { reading.attached = !reading.attached; readingComposer(context); };
       context.input.value = cache.text;
-      context.input.oninput = () => { context.cache.version += 1; saveDraft(context); resizeInput(context); composerState(context); };
+      context.skills = CrewSkillPicker.attach({input: context.input, host: options.host.querySelector("form"), load: refresh => {
+        const params = query(context); if (refresh) params.set("refresh", "1");
+        return context.api(`/api/chat/skills?${params}`);
+      }});
+      context.input.oninput = () => { context.cache.version += 1; saveDraft(context); resizeInput(context); composerState(context); context.skills.update(); };
       context.input.onkeydown = event => {
+        if (context.skills.keydown(event)) return;
         if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); if (!context.send.disabled) send(context); }
       };
       context.input.onpaste = event => {
@@ -1016,12 +1123,14 @@
       };
       options.host.querySelector("form").onsubmit = event => { event.preventDefault(); send(context); };
       renderAttachments(context); resizeInput(context);
+      readingComposer(context);
     }
     const cached = [...transcripts.entries()].reverse().find(([, entry]) => entry.cacheKey === cacheKey);
     if (cached) {
       const [key, entry] = cached;
       transcripts.delete(key); transcripts.set(key, entry);
       Object.assign(context, entry.value, {loading:false, validateTranscript:true, initialPosition:cache.scrollTop ?? "bottom"});
+      applyFocus(context);
       composerState(context); render(context); void connect(context);
     } else void load(context);
     return { update, unmount };
@@ -1106,5 +1215,5 @@
     if (visible()) timer = setTimeout(poll, 3000);
     return close;
   }
-  window.CrewChat = {setTask, setNote, mount, update, unmount, watchCompact, renderMarkdown, renderInline, initFiles};
+  window.CrewChat = {setTask, setNote, setReading, quote, mount, update, unmount, watchCompact, renderMarkdown, renderInline, initFiles};
 })();

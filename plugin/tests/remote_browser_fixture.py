@@ -31,7 +31,7 @@ def main():
                    role="leader", group_name="git")
         config = board.enable_git(case.conn, "demo", "main", "", admin_session_id="remote-git")
         git_admin.configure(case.conn, "demo", {"revision":git_admin.revision(config), "enabled":True,
-            "base":"main", "stable":"", "branch_rules":"隔离测试，只读取提交图。"})
+            "base":"main", "integration":"", "branch_rules":"隔离测试，只读取提交图。"})
         service = case.server.service
         service.now = lambda: dt.datetime.now(dt.timezone.utc)
         other = case.home / 'other-project'

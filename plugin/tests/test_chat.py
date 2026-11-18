@@ -144,12 +144,13 @@ class ChatTests(UsageFixture, unittest.TestCase):
     def test_child_environment_keeps_persistent_settings_and_clears_parent_identity(self):
         env = chat.child_environment({"name": "boss", "group": "boss", "role": "leader", "id": "spawn-1"},
               {"PATH": "system", "CLAUDE_CODE_ENTRYPOINT": "sdk-cli", "CLAUDE_CODE_SESSION_ID": "parent", "CLAUDE_CODE_CHILD_SESSION": "1",
-               "CLAUDE_API_KEY": "keep", "CREW_GROUP": "parent", "ANTHROPIC_API_KEY": "keep-too"},
+               "CLAUDE_API_KEY": "keep", "CREW_GROUP": "parent", "ANTHROPIC_API_KEY": "keep-too", "CLAUDE_CONFIG_DIR": "isolated-profile"},
               {"CLAUDE_API_KEY"})
         self.assertNotIn("CLAUDE_CODE_SESSION_ID", env)
         self.assertNotIn("CLAUDE_CODE_CHILD_SESSION", env)
         self.assertEqual(env["CLAUDE_CODE_ENTRYPOINT"], "crew-web")
         self.assertEqual(env["CLAUDE_API_KEY"], "keep")
+        self.assertEqual(env["CLAUDE_CONFIG_DIR"], "isolated-profile")
         self.assertEqual(env["MSYS_NO_PATHCONV"], "1")
         self.assertEqual((env["CREW_NAME"], env["CREW_GROUP"], env["CREW_ROLE"]), ("boss", "boss", "leader"))
 
@@ -390,6 +391,16 @@ class ChatTests(UsageFixture, unittest.TestCase):
         self.assertEqual(messages[0]['message']['content'], '先回答我的补充，再继续')
         self.assertEqual(result['delivery'], 'steered')
         self.assertTrue(manager.busy('s1'))
+
+    def test_only_permitted_automatic_input_joins_a_working_claude_turn(self):
+        manager, process, session = self.manager_with_process('working')
+        with self.assertRaisesRegex(board.Conflict, '等待当前轮次结束'):
+            manager.send(session, '自动消息', identity='peer:other', source='peer', sender='two')
+        self.assertEqual(process.stdin.getvalue(), '')
+        result = manager.send(session, '先停下设备操作', identity='peer:leader', source='peer', sender='lead', steer=True)
+        messages = [json.loads(line) for line in process.stdin.getvalue().splitlines()]
+        self.assertEqual([message['uuid'] for message in messages], ['peer:leader'])
+        self.assertEqual(result['delivery'], 'steered')
 
     def test_input_retry_does_not_submit_the_native_request_twice(self):
         manager, process, session = self.manager_with_process()

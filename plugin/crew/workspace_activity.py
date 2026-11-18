@@ -2,7 +2,7 @@
 import datetime as dt
 import json
 
-from . import board, channel, git_admin, goals, presentation, session_presence, store, todo
+from . import board, channel, git_admin, goals, presentation, session_presence, store, todo, usage
 
 
 def snapshot(service, conn, project):
@@ -21,6 +21,7 @@ def snapshot(service, conn, project):
     visible = {person['session_id']: person for person in people}
     counts = dict.fromkeys(('working', 'decisions', 'todos', 'approvals', 'waiting', 'acceptance', 'unread', 'errors'), 0)
     items, journals, histories = [], {}, {}
+    dispatches = None
     for person in people:
         sid = person['session_id']
         execution = service.chat.goal_controller.display_execution(conn, sid)
@@ -62,6 +63,18 @@ def snapshot(service, conn, project):
             if execution:
                 title = goals.get(conn, execution['goal_id'])['title']
             items.append({'kind': 'working', 'title': title[:160], 'name': person['crew_name'], 'detail': '正在推进'})
+        else:
+            # Same rule as the workspace page: a running skill dispatch or native sub-agent is observed work
+            # that outlives its owner's turn, so the owner's workspace is still in progress.
+            if dispatches is None:
+                dispatches = {task['session_id'] for task in usage.dispatch_tasks(conn, None, None, project=project)
+                              if task['status'] == 'running'}
+            running = next((task for task_key in dict.fromkeys((sid, key)) for task in service.chat.subagent_tasks(task_key)
+                            if task['status'] == 'running'), None)
+            if running is not None or sid in dispatches:
+                counts['working'] += 1
+                items.append({'kind': 'working', 'title': (running['task_name'] if running else person['task'] or '临时派工')[:160],
+                              'name': person['crew_name'], 'detail': '子代理在运行' if running else '派工在运行'})
     decisions = board.decisions(conn, project, all=True)
     attention = presentation.attention(conn, people, decisions, [], journals)
     for value in attention:

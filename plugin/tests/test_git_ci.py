@@ -14,8 +14,8 @@ class GitCiTests(CoreCase):
         super().setUp()
         board.join(self.conn, "git-admin", "demo", "git管理员", self.root, self.root,
                    "main", role="leader", now=NOW)
-        self.conn.execute("INSERT INTO git_management VALUES(?,?,?,?,?,?)",
-                          ("demo", NOW, "main", None, "git-admin", None))
+        self.conn.execute("INSERT INTO git_management(project,enabled_at,base,admin_session_id,branch_rules) "
+                          "VALUES(?,?,?,?,?)", ("demo", NOW, "main", "git-admin", None))
         self.conn.execute(
             "INSERT INTO git_merge_requests(project,session_id,branch,description,status,pr_number,created_at,updated_at) "
             "VALUES(?,?,?,?,?,?,?,?)", ("demo", "s1", "topic", "tests passed", "merging", 12, NOW, NOW))
@@ -32,7 +32,7 @@ class GitCiTests(CoreCase):
             payload = self.base_runs
         elif args[args.index("--state") + 1] == "open":
             payload = [{"number": 12, "title": "topic", "headRefName": "topic", "headRefOid": self.sha,
-                        "mergeCommit": None, "baseRefName": "main", "state": "OPEN", "isDraft": False, "closedAt": None,
+                        "mergeCommit": None, "baseRefName": "main", "state": "OPEN", "isDraft": False, "isCrossRepository": False, "closedAt": None,
                         "url": "https://github.com/example/repo/pull/12",
                         "statusCheckRollup": [{"status": "IN_PROGRESS" if self.status == "IN_PROGRESS" else "COMPLETED",
                                                "conclusion": "" if self.status == "IN_PROGRESS" else self.status,

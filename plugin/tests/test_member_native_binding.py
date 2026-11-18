@@ -85,8 +85,31 @@ class MemberNativeBindingTests(MemberNativeFixture, unittest.TestCase):
         self.assertEqual(runtimes.get(self.conn, sid), {'runtime': 'claude', 'native_id': None})
         self.assertEqual(self.general_binding(sid), [('claude', None)])
 
+    def test_leader_general_message_to_member_lands_in_their_shared_task(self):
+        goal, sid, key, native = self.claude_goal_member()
+        process = self.processes[0]
+        process.emit({'type': 'system', 'subtype': 'init', 'session_id': native})
+        self.manager.goal_controller.send(goal['id'], sid, 'keep going', identity='human-turn')
+        wait_until(lambda: self.manager.busy(key), 'member task turn')
+        before = len(process.stdin.getvalue().splitlines())
+        receipt = self.manager.send_message('s3', sid, 'Stop touching the device for now.', kind='task')
+        meta = self.conn.execute('SELECT goal_id,target_scope FROM goal_message_meta WHERE message_id=?',
+                                 (receipt['message_id'],)).fetchone()
+        self.assertEqual(tuple(meta), (goal['id'], 'goal'))
+        self.manager.deliver_messages()
+        self.assertEqual([item for item in self.processes if sid in item.command], [])  # No general conversation.
+        lines = process.stdin.getvalue().splitlines()[before:]
+        self.assertEqual(len(lines), 1)
+        self.assertIn('Stop touching the device for now.', json.loads(lines[0])['message']['content'])
+        message = [event for event in self.manager.history(key)['events'] if event['type'] == 'message'][-1]
+        self.assertEqual((message['source'], message['text']), ('peer', 'Stop touching the device for now.'))
+        self.assertEqual(self.conn.execute('SELECT status FROM goal_message_meta WHERE message_id=?',
+                                           (receipt['message_id'],)).fetchone()['status'], 'accepted')
+
     def test_leader_message_to_goal_spawned_claude_member_starts_general_conversation_once(self):
         _, sid, key, native = self.claude_goal_member()
+        # With no task in progress between them, leader mail stays in the member's general conversation.
+        self.conn.execute("UPDATE goal_assignments SET status='released' WHERE session_id=?", (sid,))
         self.manager.send_message('s3', sid, 'Compute 1+1 and send me the result.', kind='task')
         self.manager.deliver_messages()
         general = [process for process in self.processes if sid in process.command]

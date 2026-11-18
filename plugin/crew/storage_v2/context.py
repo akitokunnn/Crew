@@ -108,9 +108,9 @@ def _candidates(conn, workspace_id, goal_id, tokens, agent_id=None):
                             ' ORDER BY d.blocking DESC,d.updated_at DESC,d.id LIMIT 12',
                             (workspace_id, goal_id) if goal_id else (workspace_id,)):
         text = ('待拍板：' + row['question_markdown'] + '\n需要用户的原因：' + row['why_user'] +
-                '\n影响：' + row['impact_markdown'] + '\n挂起：' + ('是' if row['held_at'] else '否'))
+                '\n影响：' + row['impact_markdown'])
         add('decisions', row, row['question_title'], text, 170, required=goal_id is not None,
-            fields=['current_version_id', 'status', 'held_at', 'question_markdown', 'why_user', 'impact_markdown'])
+            fields=['current_version_id', 'status', 'question_markdown', 'why_user', 'impact_markdown'])
 
     for row in conn.execute("SELECT t.* FROM todos t WHERE t.workspace_id=? AND t.status='open'" +
                             (' AND EXISTS(SELECT 1 FROM goal_rounds r WHERE r.workspace_id=t.workspace_id '

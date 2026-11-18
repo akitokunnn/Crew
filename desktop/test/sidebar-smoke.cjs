@@ -22,13 +22,12 @@ if (typeof electron === 'string') {
   app.commandLine.appendSwitch('user-data-dir',temporary);
   app.commandLine.appendSwitch('disk-cache-dir',path.join(temporary,'cache'));
   app.on('window-all-closed',()=>{});
-  const palette = {'--p1':'#008FA8','--p2':'#B52B96','--p3':'#5555DC'};
-  const theme = {id:'celadon',name:'青瓷',light:{...palette,'--accent':'#3E7C74','--accent-text':'#2E6760','--on-accent':'#F7FBFA'},dark:{...palette,'--accent':'#7DB3AA','--accent-text':'#7DB3AA','--on-accent':'#15201E'}};
+  const theme = {id:'celadon',name:'青瓷',light:{'--accent':'#3E7C74','--accent-text':'#2E6760','--on-accent':'#F7FBFA'},dark:{'--accent':'#7DB3AA','--accent-text':'#7DB3AA','--on-accent':'#15201E'}};
   function person(index) {
     return {session_id:'leader-'+index,name:index===1?'多模态':index===2?'语音和声纹':'资料组'+String(index).padStart(2,'0'),
       runtime:'codex',model:null,effort:null,status:'idle',where:'bg',busy:false,running:true,web_chat:true,
       last_seq:0,read_seq:0,last_reply_id:null,unread:index<=2?314:0,pending:index<=2?3:0,
-      priority:index<=2?index:null,goal:'调度自己的成员，按原始要求完成验证与交付',task:'隔离布局验收',
+      pinned:index<=2,goal:'调度自己的成员，按原始要求完成验证与交付',task:'隔离布局验收',
       context:index<=2?{used:1300,max:10000}:null,activity:null,codex:[],codex_older:0,member_ids:[],
       applied:null,trust:{enabled:false},runtime_switch:{allowed:true}};
   }
@@ -58,9 +57,10 @@ if (typeof electron === 'string') {
     if(name==='/api/comments')return json(response,{comments:[]});
     if(name==='/api/documents')return json(response,{documents:[]});
     if(name==='/api/settings')return json(response,{ai:state.ai,execution:{codex:'workspace-write',claude:'default'},runtimes:state.runtimes});
-    if(name==='/api/leaders/priority') {
-      if(!Array.isArray(body.ranks)||body.ranks.length>3||body.ranks.some(id=>!state.leaders.some(item=>item.session_id===id)))throw Error('Invalid fixture ranks');
-      for(const item of state.leaders) {const index=body.ranks.indexOf(item.session_id);item.priority=index<0?null:index+1;}
+    if(name==='/api/leaders/order') {
+      if(!Array.isArray(body.order)||body.order.length!==state.leaders.length||!Array.isArray(body.pinned)||body.pinned.some(id=>!body.order.includes(id)))throw Error('Invalid fixture order');
+      state.leaders.sort((a,b)=>body.order.indexOf(a.session_id)-body.order.indexOf(b.session_id));
+      for(const item of state.leaders)item.pinned=body.pinned.includes(item.session_id);
       return json(response,{ok:true});
     }
     errors.push('Unexpected fixture API: '+request.method+' '+name);
@@ -123,7 +123,7 @@ if (typeof electron === 'string') {
     await evaluate(`document.querySelector('#sidebar [data-id="leader-3"]').click()`);
     await wait('location.hash.includes("leader-3")');
     const unselected=await evaluate('('+selectionStyle+')()');
-    check(caseId,'selected priority leader has a distinct persistent visual',selected.active&&!unselected.active&&JSON.stringify(selected.style)!==JSON.stringify(unselected.style),{selected,unselected});
+    check(caseId,'selected pinned leader has a distinct persistent visual',selected.active&&!unselected.active&&JSON.stringify(selected.style)!==JSON.stringify(unselected.style),{selected,unselected});
     await evaluate(`(${scrollFinder})().scrollTop=170`);
     const before=await evaluate('('+layout+')()');
     const previousName=state.leaders[10].name;state.leaders[10].name='资料组11刷新'+caseId;
@@ -150,13 +150,13 @@ if (typeof electron === 'string') {
     }
     if(mode==='light'&&width===1440&&fontScale===1) {
       const drag=async target=>{
-        await evaluate(`(()=>{const source=document.querySelector('#sidebar [data-act="leader"][data-id="leader-3"]'),zone=document.querySelector('#sidebar [data-leader-zone="${target}"] .sec-label'),data=new DataTransfer();source.dispatchEvent(new DragEvent('dragstart',{bubbles:true,dataTransfer:data}));zone.dispatchEvent(new DragEvent('dragover',{bubbles:true,cancelable:true,dataTransfer:data}));zone.dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:data}));source.dispatchEvent(new DragEvent('dragend',{bubbles:true,dataTransfer:data}));})()`);
+        await evaluate(`(()=>{const source=document.querySelector('#sidebar [data-act="leader"][data-id="leader-3"]'),zone=document.querySelector('#leader-panel [data-leader-zone="${target}"]'),data=new DataTransfer();source.dispatchEvent(new DragEvent('dragstart',{bubbles:true,dataTransfer:data}));zone.dispatchEvent(new DragEvent('dragover',{bubbles:true,cancelable:true,dataTransfer:data}));zone.dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:data}));source.dispatchEvent(new DragEvent('dragend',{bubbles:true,dataTransfer:data}));})()`);
       };
-      const initial=calls.filter(call=>call.name==='/api/leaders/priority').length;
-      await drag('priority');await wait(`document.querySelector('#sidebar [data-id="leader-3"]').closest('[data-leader-zone]').dataset.leaderZone==='priority'`);
+      const initial=calls.filter(call=>call.name==='/api/leaders/order').length;
+      await drag('pinned');await wait(`document.querySelector('#sidebar [data-id="leader-3"]').closest('[data-leader-zone]').dataset.leaderZone==='pinned'`);
       await drag('normal');await wait(`document.querySelector('#sidebar [data-id="leader-3"]').closest('[data-leader-zone]').dataset.leaderZone==='normal'`);
-      const writes=calls.filter(call=>call.name==='/api/leaders/priority').slice(initial);
-      check(caseId,'HTML5 drag/drop zones persist one priority and one cancellation',writes.length===2&&JSON.stringify(writes[0].body.ranks)===JSON.stringify(['leader-1','leader-2','leader-3'])&&JSON.stringify(writes[1].body.ranks)===JSON.stringify(['leader-1','leader-2']),writes);
+      const writes=calls.filter(call=>call.name==='/api/leaders/order').slice(initial);
+      check(caseId,'HTML5 drag/drop zones persist one pin and one unpin',writes.length===2&&JSON.stringify(writes[0].body.pinned)===JSON.stringify(['leader-1','leader-2','leader-3'])&&JSON.stringify(writes[1].body.pinned)===JSON.stringify(['leader-1','leader-2']),writes);
     }
     results.push({case:caseId,top,refreshed,bottom,focused});win.destroy();win=null;
   }

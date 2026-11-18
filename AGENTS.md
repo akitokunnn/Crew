@@ -2,7 +2,7 @@
 
 ## 分支约定（2026-11-07）
 
-- 产品名称统一为 **Crew**，以版本号区分交付，不把 V2 加到应用、窗口、快捷方式或产物名称。已有安装身份、`Crew V2` 设置目录及 `~/.crew-v2` 数据目录仅保留为内部兼容标识，避免升级丢失历史与设置。
+- 产品名称统一为 **Crew**，以版本号区分交付，不把 V2 加到应用、窗口、快捷方式或产物名称。自 0.3.15 起数据目录为 `~/.crew`、启动设置目录为 `%APPDATA%\Crew`、安装身份为 `local.crew.desktop`；V1/V2 并存期的 `~/.crew-v2`、`Crew V2`、代际标记与 V1 保护已删除，不再保留兼容分支。
 - `main` 是唯一开发主干，内容就是原 `rebuild/v2` 的新版 Crew（2026-11-07 合入）。日常修复走下文“本地试用与推送”。
 - V1 已弃用，不再开发或修复；其源码基线保留在标签 `v1-0.2.40` 和 main 的历史里。`rebuild/v2`、`rebuild/test` 只作历史保留，不再提交。
 - 已确认需求见 `rebuild/test:docs/CREW_PRODUCT_REDESIGN_2026-10-28.md`，可用 `git show rebuild/test:docs/CREW_PRODUCT_REDESIGN_2026-10-28.md` 查看；旧实施与交付记录不作为 V2 已完成的依据。
@@ -33,6 +33,8 @@ git log -3 --oneline
 - 普通文件夹可作为工作区，不强制 Git，也不自动 `git init`。Git 相关能力才需要仓库。
 - CC 与 Codex 都是 AI 载体，现有功能需考虑两者。模型与 effort 使用原生发现及用户设置，不把某台机器的清单写死。
 - **举一反三，按能力补齐同类入口。** 用户指出一处问题时，主动横向核对 CC / Codex、leader / 成员、总会话 / 目标执行及前台 / 后台路径；适用的同类场景一并修复和验证，不能只补用户当时提到的工具名或载体。共用的数据、状态和界面优先复用；确有原生能力差异时保留真实差异并明确说明。交付前逐项确认覆盖范围，不能把“只完成其中一边”概括成全部完成。
+- **新做的显示和交互同步适配手机与窄屏。** 新增或重做的页面、面板、卡片、弹窗、按钮组等可见内容，在同一次改动里一并处理窄屏和手机：沿用现有断点（`style.css` 的 1023px / 760px / 620px，手机聊天另见 `mobile-chat.css`），内容不横向溢出，按钮和操作在触屏上点得到，不能只靠悬停才出现，长文本能换行或截断。不能留到“以后再适配”。
+- **多流程任务里死板的部分派给 Codex。** 主控（Claude）接到要分多步、多处改动的任务时，先拆分：规格能写死、照做不需要判断的部分，用 `codex-dispatch` skill 写任务书，开子代理交给 Codex 执行。这类部分包括按确定文案改字、按精确 CSS 规格改样式、照现成模式批量改同类入口、补指定测试、大面积只读盘点。需要设计取舍、根因排查、产品判断的部分由主控自己做，或交给 Claude 子代理。互不依赖的部分并行派出。主控负责拆分、记录用户裁决和最终验收：自己看 diff、复跑相关测试并实测界面，不把 Codex 的自述当作完成证据。Codex 环境跑不了的浏览器或桌面验收由主控补做。
 - leader 自主分配并协调成员推进多个任务，负责验收和最终交付，需要时可直接实施。总对话与各任务独立；启动任务不暂停其他任务，不把总对话输入猜送进某个任务。减少无效汇报、重复上下文和模型唤醒。普通交流直接说话，用户要求的最终目标交付再生成报告。
 - 错误保留真实原因和用户输入；不静默换路径、吞错或自动重做已经成功的操作。别为假想风险堆兼容分支。
 - 测试只使用隔离 home、临时目录和假载体。未经用户明确安排，不停止或重启正式 Crew、不唤醒真实 AI、不写正式数据库。正式 Crew 运行 `C:\Tools\Crew-live` 的源码，只能通过“本地试用与推送”合入 live 来更新，不在 live 里直接改。
@@ -62,7 +64,7 @@ git log -3 --oneline
 | `C:\Tools\Crew-fixes\<任务>` | `claude/<任务>` 等 | 每个需求一个分支一个工作目录，从 live 拉出：`git worktree add C:\Tools\Crew-fixes\<任务> -b claude/<任务> live` |
 
 - **修完合入 live：** 跑与改动相关的验证 → 检查 diff → 提交 → 在分支里 `git merge live`（有冲突就在分支里解决并复验）→ `powershell -ExecutionPolicy Bypass -File scripts\live.ps1 merge <分支>`。不开 PR、不 push。把脚本给出的生效方式（Ctrl+R 刷新、退出并重开 Crew，或要等打包）原样告诉用户。合入 live 即本次交付完成，随后清理该任务的工作目录和本地分支；不动其他 AI 正在使用的工作树或未提交改动。
-- **用户说“推”时：** `scripts\live.ps1 ship` 把 live 推上去开一个批次 PR，CI 通过后合进 main，live 与主目录随之对齐。用户说跳过 CI 时加 `-SkipCI`。main 要求走 PR、禁止强推和删除，不强制人工 review；不伪造检查，不用管理员旁路。
+- **用户说“推”时：** 先在 live 跑一遍下文“验证与交付”里的全量测试，失败先修复并合入 live 再继续；然后 `scripts\live.ps1 ship` 把 live 推上去开一个批次 PR，CI 通过后合进 main，live 与主目录随之对齐。用户说跳过 CI 时加 `-SkipCI`。main 要求走 PR、禁止强推和删除，不强制人工 review；不伪造检查，不用管理员旁路。
 - **别人直接合进 main 的改动**用 `scripts\live.ps1 sync` 并进 live。`scripts\live.ps1 status` 查看 live 里待推送的提交。
 - live 只前进不回退：不在里面直接改、不 reset、不强推。合入后发现问题，用新的修复提交或 `git revert` 走同样流程。
 - **打包**只在攒了桌面外壳改动或要发版时做，从与 main 对齐后的 live 打，步骤见 [Crew 桌面更新](docs/DESKTOP_UPDATES.md)。
@@ -76,9 +78,9 @@ git log -3 --oneline
 | 工作区首页、全局设置、网页 UI | `desktop/src/home*`、`plugin/crew/web/` |
 | HTTP / CLI | `plugin/crew/web.py`、`cli.py` |
 | 局域网访问、设备认证与远程能力边界 | `plugin/crew/remote_access.py`、`remote_http.py`、`remote_routes.py`；`web.py` 只组合监听与既有业务接口 |
-| 网络接口识别、旧版连接配置导入与一次性提醒测试 | `network_addresses.py`、`connection_import.py`、`connection_probe.py`；不复制业务数据库或旧投递状态 |
+| 网络接口识别 | `network_addresses.py` |
 | 消息、通知与人工答复路由 | `plugin/crew/messaging.py`、`board.py`、`todo.py`、`goal_links.py`；自动投递在 `web.py` |
-| Git 设置、读取与进程 | `plugin/crew/git_admin.py`、`git_view.py`、`git_process.py`；界面 `plugin/crew/web/git*` |
+| Git 设置、读取与进程 | `plugin/crew/git_admin.py`、`git_view.py`（相对主干的分支归类、未推送状态及可选本地集成分支）、`git_overview.py`（分支归属 leader，供 Git 页和侧栏）、`branch_claims.py`（从 CC / Codex 放行的 shell 命令登记谁建了或提交了哪个分支）、`git_process.py`；界面 `plugin/crew/web/git*` |
 | 会话启动、停止、载体切换 | `chat.py`、`spawn.py`、`codex_runtime.py`、`runtime_switch.py`（均在 `plugin/crew/`） |
 | 目标、轮次、动态上下文 | `plugin/crew/goals.py`、`goal_runtime.py`、`goal_context.py` |
 | 工作区改名、迁移、可恢复移除 | `plugin/crew/workspace_settings.py`、`workspace_execution.py` |
@@ -91,11 +93,11 @@ git log -3 --oneline
 ## 验证与交付
 
 - **按改动规模验证，默认从简。** 文档、提示词、文案、样式及局部小改动，审阅 diff 并按需直接确认受影响效果即可；不默认新增测试、跑自动化测试、smoke test、全套回归或构建打包，也不反复执行已有充分证据的检查。
-- **较大功能改动才扩大验证。** 只有较大功能改动或用户明确要求时，才按影响范围安排 smoke test、完整回归及构建验收；局部修复如需测试，只选能直接证明修复有效的最小范围。不要为了合入机械追加检查。
-- **UI 设计、布局、样式与交互调整走 `prove-it`。** 在真实浏览器或桌面中查看改动后的界面，涉及交互时走一遍受影响流程，保留必要截图并说明实际观察结果。纯视觉调整不强制新增自动化测试；使用该 skill 时仍遵守本节的验证范围。
+- **较大功能改动才扩大验证。** 只有较大功能改动或用户明确要求时，才按影响范围安排 smoke test 及构建验收；全量测试不在单个修复里跑，只在用户说“推”时跑（见下文）；局部修复如需测试，只选能直接证明修复有效的最小范围。不要为了合入机械追加检查。
+- **UI 设计、布局、样式与交互调整走 `prove-it`。** 在真实浏览器或桌面中查看改动后的界面，涉及交互时走一遍受影响流程，保留必要截图并说明实际观察结果；新做的显示和交互还要在约 375px 手机宽度和约 760px 窄屏下各看一遍。能用不算完成：截图后按挑剔的设计眼光再查一遍美观和可见性——和周围组件的设计语言是否一致、用户扫一眼能否注意到、对比度够不够、会不会被面板遮挡，浅色和深色主题都要看；不直接套用不相干组件的现成样式了事。纯视觉调整不强制新增自动化测试；使用该 skill 时仍遵守本节的验证范围。
 - 合入 live 后用户会直接在正式 Crew 里试用；这是对局部验证的补充，不是跳过必要验证的理由。
 
-确需运行测试时，在测试进程中清理继承的 `CREW_SESSION_ID`、`CLAUDE_CODE_SESSION_ID`，避免把外层身份带入临时白板，不改用户的持久环境。以下命令仅供较大功能改动确需完整验证时使用，不是每次交付的必跑清单：
+确需运行测试时，在测试进程中清理继承的 `CREW_SESSION_ID`、`CLAUDE_CODE_SESSION_ID`，避免把外层身份带入临时白板，不改用户的持久环境。以下全量命令只在用户说“推”、把 live 整批合进 main 时跑一次；日常修复和合入 live 都不跑：
 
 ```powershell
 Push-Location plugin
@@ -105,7 +107,7 @@ node --test plugin/tests/test_*.js
 npm --prefix desktop test
 ```
 
-CI 只跑核心清单 [plugin/tests/ci_core.txt](plugin/tests/ci_core.txt)（`python tests/ci_core.py`，在 `plugin` 下执行），不含边缘载体和计时敏感的测试，只在批次 PR 上跑一次（也可手动触发）。合入 live 前跑改动相关的模块即可。上面的全量按需跑：发版前，或改动跨模块时（存储、`web.py`、`chat.py`、运行时启动，或 `test_shell` 这类多模块共用的测试基类）。新增核心流程的测试模块时加进清单。
+CI 只跑核心清单 [plugin/tests/ci_core.txt](plugin/tests/ci_core.txt)（`python tests/ci_core.py`，在 `plugin` 下执行），不含边缘载体和计时敏感的测试，只在批次 PR 上跑一次（也可手动触发）。合入 live 前只跑改动相关的模块，改动跨模块也一样（存储、`web.py`、`chat.py`、运行时启动或 `test_shell` 这类共用测试基类，都只挑直接相关的测试）。上面的全量只在用户说“推”、把 live 整批合进 main 时跑。新增核心流程的测试模块时加进清单。
 
 确需桌面 smoke test 时，使用隔离交互：`node desktop/scripts/smoke-workspaces.cjs`。需要构建或交付安装包时，验收与图标检查见 [desktop/README.md](desktop/README.md)；使用方式见 [README.md](README.md)。
 
@@ -118,10 +120,9 @@ CI 只跑核心清单 [plugin/tests/ci_core.txt](plugin/tests/ci_core.txt)（`py
 
 | 规则 | 由什么拦住 |
 | --- | --- |
-| 产品名为 Crew，代际标识只用于内部兼容；窗口、安装器、快捷方式和产物名称保持一致 | `desktop/test/version-sync.test.cjs`、`core.test.cjs` 与真实 Electron 工作区烟测；还原旧名称会触发失败 |
+| 产品名为 Crew，数据目录、设置目录与安装身份不带代际标识；窗口、安装器、快捷方式和产物名称保持一致 | `desktop/test/version-sync.test.cjs`、`core.test.cjs` 与真实 Electron 工作区烟测；还原旧名称会触发失败 |
 | 修改可见交互后，用真实浏览器走流程；控制台错误算失败，逐步保存截图，不以静态字符串检查替代 | `node plugin/tests/smoke_assistant_reply.cjs`、`node plugin/tests/smoke_v2_ui_revision.cjs`；截图在 `Temp/assistant-reply/`、`Temp/v2-ui-review/`，脚本支持装回旧错做反证 |
 | 触及原生接回时，验证同 ID、保持桌面打开、再次交出可直接发送及工具不重复；不把假载体、未知参数或仅一次恢复当成真实桌面闭环。真实 AI 仅在用户授权时使用隔离 HOME 和指定模型 | `test_native_handoff`、`test_codex_desktop`、`test_codex_desktop_bridge`（真实进程，覆盖关闭通知屏蔽和原拥有者恢复）；真实 AI 证据见 `docs/v2/NATIVE_DESKTOP_0.3.3_2026-10-30.md`。压缩另由 `test_codex_events` 真实事件回放覆盖 |
 | 助手使用完整的共享聊天状态契约，普通任务反馈保持原任务身份并保留已交付证据 | `test_assistant_http`、`test_goal_http`、`test_goal_acceptance` 与上述助手浏览器检查；工作区迁移使用真实恢复和包往返测试 |
 | 远程认证覆盖页面、API、事件流和附件；关闭访问与本机业务生命周期独立，断线不重发成功输入 | `test_remote_access`、`test_remote_http`、`test_remote_routes`、`test_remote_integration`；`node plugin/tests/smoke_remote_access.cjs` 走真实浏览器，支持 `--lan-address` 与 `--old-mobile` 反证 |
 | ZeroTier 按实际网卡识别，绑定失败不降级为全部网络；普通 HTTP 下请求 ID 和复制能力仍可用 | `test_network_addresses`、`test_remote_network`、`test_browser_utils.js`、`smoke_remote_access.cjs --old-http`；`smoke_remote_peer.py` 使用独立 WSL 网络客户端 |
-| 旧连接迁移不覆盖新配置，不带旧路由和投递进度；测试通知每渠道只发一次，不把平台接收当手机已读 | `test_connection_import`、`test_connection_probe`，固定回执在发送前占用，重复运行不重发 |

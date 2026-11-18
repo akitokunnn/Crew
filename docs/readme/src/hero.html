@@ -1,0 +1,73 @@
+<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="base.css">
+<script>document.documentElement.dataset.theme=new URLSearchParams(location.search).get('theme')||'light'</script>
+<style>
+body{width:1280px;height:540px}
+.canvas{width:1280px;height:540px}
+.glow{position:absolute;right:-120px;top:-80px;width:760px;height:700px;background:radial-gradient(closest-side,color-mix(in srgb,var(--mint) 38%,transparent),transparent);opacity:.55}
+.copy{position:absolute;left:76px;top:78px;width:600px}
+.brand{display:flex;align-items:center;gap:16px}
+.brand svg{width:58px;height:58px}
+.brand b{font-weight:500;font-size:56px;letter-spacing:-.5px;line-height:1}
+.eyebrow{margin-top:44px;font-size:15px;letter-spacing:3px;color:var(--accent);font-weight:500}
+h1{margin-top:14px;font-weight:500;font-size:50px;line-height:1.18;letter-spacing:.5px}
+p.sub{margin-top:20px;font-size:19px;line-height:1.7;color:var(--muted);width:640px}
+.chips{margin-top:30px;display:flex;gap:10px}
+.art{position:absolute;right:40px;top:30px;width:560px;height:480px}
+.art svg.orbit{position:absolute;inset:0}
+.node{position:absolute;display:flex;align-items:center;justify-content:center;border-radius:50%;font-weight:500}
+.you{left:232px;top:192px;width:96px;height:96px;background:var(--mark-bg);color:var(--mark-fg);font-size:26px;box-shadow:0 0 0 10px color-mix(in srgb,var(--mint) 30%,transparent)}
+.lead{width:64px;height:64px;font-size:17px;box-shadow:var(--shadow)}
+.l1{left:84px;top:66px;background:var(--mint-soft);color:var(--accent);border:2px solid var(--accent)}
+.l2{left:420px;top:120px;background:var(--warm-soft);color:var(--warm);border:2px solid var(--warm)}
+.l3{left:300px;top:372px;background:var(--violet-soft);color:var(--violet);border:2px solid var(--violet)}
+.m{width:22px;height:22px;background:var(--card);border:2px solid var(--line)}
+.m.busy{border-color:var(--ok)}
+.m.busy::after{content:"";width:8px;height:8px;border-radius:50%;background:var(--ok)}
+.tag{position:absolute;font-size:12.5px;color:var(--muted);background:var(--card);border:1px solid var(--line);border-radius:7px;padding:3px 8px;white-space:nowrap}
+.card{position:absolute;background:var(--card);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);padding:13px 16px;font-size:14px;white-space:nowrap}
+.card .k{font-size:12px;letter-spacing:1px;font-weight:500;margin-bottom:5px;display:flex;align-items:center;gap:6px}
+.card .t{font-size:15px;font-weight:500}
+.card .s{font-size:12.5px;color:var(--muted);margin-top:4px}
+.decide{left:0;top:262px}
+.decide .k{color:var(--warm)}
+.report{left:372px;top:6px}
+.report .k{color:var(--ok)}
+.dot{width:7px;height:7px;border-radius:50%;display:inline-block}
+</style></head><body><div class="canvas"><div class="grid"></div><div class="glow"></div>
+<div class="copy">
+  <div class="brand"><svg viewBox="0 0 24 24"><rect x="0.5" y="0.5" width="23" height="23" rx="6" fill="var(--mark-bg)"/><path d="M14.26 8.54 A4.90 4.90 0 1 0 14.26 15.46" fill="none" stroke="var(--mark-fg)" stroke-width="2.8" stroke-linecap="round"/><circle cx="17.4" cy="16.4" r="1.75" fill="#8AC6B8"/></svg><b>Crew</b></div>
+  <div class="eyebrow">AI 团队协作桌面</div>
+  <h1>一个人，<br>带一整支 AI 团队</h1>
+  <p class="sub">同时指挥多位 Claude Code 与 Codex，leader 带着组员并行推进；<br>交付好读的报告，只在需要你拍板时来找你。</p>
+  <div class="chips"><span class="pill"><i style="background:#D97757"></i>Claude Code</span><span class="pill"><i style="background:var(--ink)"></i>Codex</span><span class="pill">Windows 桌面</span><span class="pill">手机网页</span></div>
+</div>
+<div class="art">
+  <svg class="orbit" viewBox="0 0 560 480" fill="none">
+    <circle cx="280" cy="240" r="150" stroke="var(--line)" stroke-width="1.5" stroke-dasharray="3 7"/>
+    <circle cx="280" cy="240" r="226" stroke="var(--line)" stroke-width="1.2" stroke-dasharray="2 9"/>
+    <path d="M280 240 L116 98" stroke="var(--accent)" stroke-width="1.6" opacity=".55"/>
+    <path d="M280 240 L452 152" stroke="var(--warm)" stroke-width="1.6" opacity=".55"/>
+    <path d="M280 240 L332 404" stroke="var(--violet)" stroke-width="1.6" opacity=".55"/>
+    <path d="M116 98 L60 40 M116 98 L40 150 M116 98 L170 22" stroke="var(--accent)" stroke-width="1.2" opacity=".35"/>
+    <path d="M452 152 L520 92 M452 152 L530 216" stroke="var(--warm)" stroke-width="1.2" opacity=".35"/>
+    <path d="M332 404 L250 452 M332 404 L420 446 M332 404 L470 380" stroke="var(--violet)" stroke-width="1.2" opacity=".35"/>
+  </svg>
+  <div class="node you">你</div>
+  <div class="node lead l1">产品</div>
+  <div class="node lead l2">前端</div>
+  <div class="node lead l3">测试</div>
+  <div class="node m busy" style="left:49px;top:29px"></div>
+  <div class="node m" style="left:29px;top:139px"></div>
+  <div class="node m busy" style="left:159px;top:11px"></div>
+  <div class="node m busy" style="left:509px;top:81px"></div>
+  <div class="node m" style="left:519px;top:205px"></div>
+  <div class="node m busy" style="left:239px;top:441px"></div>
+  <div class="node m" style="left:409px;top:435px"></div>
+  <div class="node m busy" style="left:459px;top:369px"></div>
+  <span class="tag" style="left:64px;top:140px">Claude Code</span>
+  <span class="tag" style="left:420px;top:192px">Codex</span>
+  <span class="tag" style="left:244px;top:390px">Codex</span>
+  <div class="card decide"><div class="k"><span class="dot" style="background:var(--warm)"></span>等你拍板</div><div class="t">先上线移动端还是桌面端？</div><div class="s">产品负责人 · 附推荐与后果</div></div>
+  <div class="card report"><div class="k"><span class="dot" style="background:var(--ok)"></span>交付报告</div><div class="t">首页改版 · 验收 6/6 通过</div></div>
+</div>
+</div></body></html>

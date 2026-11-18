@@ -31,7 +31,7 @@ import json
 from pathlib import Path
 import sqlite3
 
-from . import board, decision_briefs, documents, goal_actions, goals, guard, message_receipts, personal, personal_actions, report_preview, runtimes, session_ops, store, todo
+from . import board, channel, decision_briefs, documents, goal_actions, goals, guard, message_receipts, personal, personal_actions, report_preview, runtimes, session_ops, store, todo
 
 
 class ToolError(ValueError):
@@ -71,6 +71,10 @@ _GIT_DATA = {
                'properties': {'text': {**_text('Branch policy to save.'), 'minLength': 0}}},
     'requests': {'type': 'object', 'additionalProperties': False,
                  'properties': {'all': {'type': 'boolean'}}},
+    'branches': {'type': 'object', 'properties': {}, 'additionalProperties': False},
+    'adopt': {'type': 'object', 'additionalProperties': False,
+              'properties': {'branch': _text('Branch to adopt, as listed by branches.', max_length=512)},
+              'required': ['branch']},
     'request': {'type': 'object', 'additionalProperties': False,
                 'properties': {'branch': {**_text('Branch; omitted uses the host-recorded current branch.'), 'minLength': 0},
                                'blocking': {'type': 'boolean', 'description': 'Set only when this merge blocks concrete follow-up work. Success then wakes the requester; ordinary success stays passive.'},
@@ -99,18 +103,22 @@ _SPECS = [
            'data': {'type': 'object', 'additionalProperties': True},
            'message_id': _text('Original user message ID supplied by the host.', max_length=300),
            'request_id': _text('Stable identity for this exact operation.', max_length=300)}, ('action',)),
-    _spec('crew_rename', 'Rename only your own Crew conversation with a concise useful title. Identity and history remain unchanged.',
+    _spec('crew_rename', 'Current leaders only: rename your own Crew conversation with a concise useful title. '
+          'Members cannot use it. Identity and history remain unchanged.',
           {'name': _text('New name for this conversation.', max_length=512)}, ('name',)),
     _spec('crew_archive', 'Archive a member of your own current group after its work ends. Only the current leader can do this.',
           {'target': _TARGET}, ('target',)),
     _spec('crew_git', 'Use the host-bound project Git ledger, without shell commands. Actions: status; policy '
           '(data.text writes, omitted reads); requests (data.all); request (data.branch/data.blocking optional, data.description required); '
-          'resolve (data.id, data.status, data.note, optional data.pr_number). Only the configured Git administrator '
+          'resolve (data.id, data.status, data.note, optional data.pr_number); branches (branches still to merge or push, '
+          'with the one leader answering for each; owners=[] means nobody looks after it, e.g. its leader was archived); '
+          'adopt (data.branch, leader only: take over a branch that has no current leader; a branch another current leader '
+          'owns moves only when they transfer the task). Only the configured Git administrator '
           'may write policy or resolve requests. Progress is silent; success only wakes explicitly blocking requests. '
           'Rejection remains actionable. This records requests/results; it does not run Git or merge code.',
           {'action': {'type': 'string', 'enum': list(_GIT_DATA)},
            'data': {'type': 'object', 'additionalProperties': True}}, ('action',)),
-    _spec('crew_goal', 'Explicit goal actions: status, create, start, pause, resume, cancel, reopen, amend, assign, mode.set, work.list/add/update, report-template, report.get, report.preview, report.publish, finish, versions.list/preview/file, version.capture. create data: title, request (verbatim user words), acceptance (array of criteria), optional constraints (array), priority, dependencies, decision_mode. Preview report HTML with report.preview data.document_html (draft) or data.report_id (saved), plus viewport=desktop|mobile; the Crew desktop captures it and returns metadata plus a native image. AI work uses work.add with stable key, title, acceptance, optional owner_session_id/dependencies; work.update uses key, version, status and evidence/reason note. Never put AI work in human TODO. Publish a real milestone with report.publish data.report outcome=progress and stable request_id; this keeps the task running. Capture explicit relative files with version.capture data.files,label,request_id. Restore requires the user. A leader with user-granted autonomy may choose decision_mode=human|autonomous when creating its own tasks (default autonomous), and change its own task with mode.set data.goal_id,mode,expected_version. Members cannot change authorization. Final delivery puts the HTML in data.report.document_html with acceptance evidence, following the injected [Crew final_report] rules; report-template lists the fields. Ordinary Q&A creates no goal.',
+    _spec('crew_goal', 'Explicit goal actions: status, create, start, pause, resume, cancel, reopen, amend, assign, transfer, mode.set, work.list/add/update, report-template, report.get, report.preview, report.publish, finish, versions.list/preview/file, version.capture. create data: title, request (verbatim user words), acceptance (array of criteria), optional constraints (array), priority, dependencies, decision_mode, start (true starts it at once with its leader; omitted only queues it). Preview report HTML with report.preview data.document_html (draft) or data.report_id (saved), plus viewport=desktop|mobile; the Crew desktop captures it and returns metadata plus a native image. AI work uses work.add with stable key, title, acceptance, optional owner_session_id/dependencies; work.update uses key, version, status and evidence/reason note. Never put AI work in human TODO. Publish a real milestone with report.publish data.report outcome=progress and stable request_id; this keeps the task running. Capture explicit relative files with version.capture data.files,label,request_id. Restore requires the user. A leader with user-granted autonomy may choose decision_mode=human|autonomous when creating its own tasks (default autonomous), and change its own task with mode.set data.goal_id,mode,expected_version. Members cannot change authorization. Final delivery (awaiting_acceptance) uses finish with data.report: fields from report-template including the verification evidence and at least one concrete example, plus a readable self-contained HTML page in data.report.document_html with that example and at least one visualization that aids understanding; preview the final version of the page with report.preview at least once before finish, per the injected [Crew final_report] rules. Whether to create, continue or amend a goal follows the injected role rules. When the user asks to hand a task to another leader, call transfer with goal_id, data.to (the receiving leader name) and data.text (a handoff note: progress, open issues, where things are); the receiver continues the task and takes over its branches.',
           {'action': _text('Action name.', max_length=100), 'goal_id': _text('Goal id; omitted uses the bound execution.', max_length=100),
            'data': {'type': 'object', 'additionalProperties': True}}, ('action',)),
     _spec('crew_context', 'Inspect, retrieve or correct sourced context bound to your Crew identity and goal. Actions: inspect, retrieve, put, correct, expire. retrieve searches portable history with data.query, known_versions and limit_chars (max 6000). Preparing context does not mean the model read it.',
@@ -149,7 +157,8 @@ _SPECS = [
           {"id": {"type": "integer", "minimum": 1}, "question": _text("The clarified question."),
            "options": {"type": "array", "items": _text("One full action.", max_length=2000), "maxItems": 12},
            "recommendation": _text("One complete action label from the options."), "brief": _BRIEF_SCHEMA}, ("id",)),
-    _spec("crew_todo_add", "Register something the user must physically or manually do. "
+    _spec("crew_todo_add", "Register anything you judge the user may need to handle: hands-on actions, reading summaries or drafts to give feedback, checking or confirming results, providing material. "
+          "No goal is required. Very quick things may also just be said in the conversation. "
           "Provide concrete steps and how completion will be confirmed; agents cannot mark it done. "
           "Reuse operation_key only for the same real-world action across tasks; the original instructions remain intact.",
           {"title": _text("The manual action.", max_length=500), "steps": _text("The user's exact steps."),
@@ -163,7 +172,8 @@ _SPECS = [
           {"id": {"type": "integer", "minimum": 1}, "reason": _text("Why this user action is no longer needed.")},
           ("id", "reason")),
     _spec("crew_doc_add", "Register an existing deliverable file from your project or worktree. "
-          "The host binds it to your current task. The original file stays in place; user pins are independent.",
+          "Inside a goal execution the host links it to that goal; from a general conversation it is registered "
+          "to this workspace only, without guessing a task. The original file stays in place; user pins are independent.",
           {"path": _text("A local project/worktree file path.", max_length=4096),
            "title": _text("A clear document title.", max_length=300),
            "summary": _text("What this deliverable contains.", max_length=4000),
@@ -192,6 +202,21 @@ _SPECS = [
            'kind': {'type': 'string', 'enum': ['task','result','blocker','decision','user_answer','information','ack']},
            'reply_to': _text('Original Crew message ID when replying; only reply to a message addressed to you.')},
           ("to", "text")),
+    _spec('crew_say', 'Leader only: post in the project Leader channel (交流区), shared by all leaders and the user. '
+          'Talk like a colleague in a group chat: plain spoken Chinese, the conclusion first, ideally under 50 characters (hard limit 150 characters, 3 lines); '
+          'do not cite sources like "README says" or stack caveats; no ACKs, progress logs or Git/CI status. '
+          'When your change affects another group, post here and name its leader (naming wakes them) instead of also sending crew_send_message. '
+          'Answer a post with reply_to (its # number). If the answer fits in a sentence or two, say it here and only note in your private '
+          'conversation that you answered in the channel. If it needs a long explanation, post a one-line conclusion with detail=true and '
+          'write the full answer in your private conversation. Naming a leader wakes them: write @name in the text or list it in to; unnamed posts wake nobody.',
+          {'text': _text('The short post.', max_length=2000),
+           'to': {'type': 'array', 'maxItems': 12, 'items': _text('Leader Crew name, or * for every leader.', max_length=512)},
+           'reply_to': {'type': 'integer', 'minimum': 1, 'description': 'Channel post number being answered.'},
+           'detail': {'type': 'boolean', 'description': 'True when the full answer is in your private conversation.'}},
+          ('text',)),
+    _spec('crew_channel', 'Leader only: read recent Leader channel (交流区) posts with their # numbers and the latest summary card; '
+          'marks them read for you.',
+          {'limit': {'type': 'integer', 'minimum': 1, 'description': 'How many recent posts, default 20.'}}),
     _spec('crew_stop', 'Explicitly stop yourself or one of your own members now; this closes managed native execution and prevents queued mail from restarting it. Text messages are not stop commands.',
           {'target': _TARGET}, ('target',)),
     _spec('crew_spawn', 'Leader only: create a member in your own group. Members must ask their leader to split work. The host binds the caller to its actual identity and goal execution.',
@@ -406,11 +431,11 @@ class CodexTools:
         if name == 'crew_personal':
             return args['action'] in personal_actions.READ_ACTIONS
         if name == 'crew_git':
-            return args['action'] in ('status', 'requests') or args['action'] == 'policy' and 'text' not in args.get('data', {})
+            return args['action'] in ('status', 'requests', 'branches') or args['action'] == 'policy' and 'text' not in args.get('data', {})
         if name in ('crew_goal', 'crew_context'):
             action = args['action'] if name == 'crew_goal' else 'context.' + args['action']
             return action == 'report.preview' or action in goal_actions.READ_ACTIONS
-        return name in ('crew_whoami','crew_status','crew_who','crew_decisions','crew_todo_list','crew_doc_list','crew_handoffs','crew_reports') or name == 'crew_card' and not args
+        return name in ('crew_channel','crew_whoami','crew_status','crew_who','crew_decisions','crew_todo_list','crew_doc_list','crew_handoffs','crew_reports') or name == 'crew_card' and not args
 
     def _dispatch(self, conn, actor, name, args):
         sid, project = self._session_id, self._project
@@ -426,6 +451,17 @@ class CodexTools:
             if name == 'crew_whoami':
                 return {**actor, **personal.assistant_context(conn, sid)}
             raise ToolError('forbidden', 'Global assistant actions use crew_personal with original user intent')
+        if name == 'crew_say':
+            return channel.post(conn, project, sid, args['text'], args.get('to', []),
+                                reply_to=args.get('reply_to'), detail=args.get('detail', False))
+        if name == 'crew_channel':
+            if channel._leader(conn, project, sid) is None:
+                raise ToolError('forbidden', 'Leader 交流区只给 leader 用；有事告诉你的 leader')
+            card = channel.digest(conn, project)
+            posts = channel.read(conn, project, sid, args.get('limit', 20),
+                                 after=card['upto_message_id'] if card is not None else 0)
+            return {'card': card['body'] if card is not None else None,
+                    'posts': [{'heading': channel.line(post, '%m-%d %H:%M'), 'body': post['body']} for post in posts]}
         if name == 'crew_rename':
             return session_ops.rename_self(conn, sid, args['name'])
         if name == 'crew_archive':
@@ -454,12 +490,22 @@ class CodexTools:
             if action == 'status':
                 config = board.git_config(conn, project)
                 return {'enabled': config is not None, 'base': config['base'] if config else None,
-                        'stable': config['stable'] if config else None}
+                        'integration': config['integration'] if config else None}
             if action == 'policy':
                 return {'policy': board.set_git_policy(conn, project, sid, data['text']) if 'text' in data
                         else board.git_policy(conn, project)}
             if action == 'requests':
                 return {'requests': board.git_requests(conn, project, all=data.get('all', False))}
+            if action in ('branches', 'adopt'):
+                import subprocess
+                from . import git_overview, git_view
+                config = board.git_config(conn, project)
+                try:
+                    if action == 'branches':
+                        return git_overview.branches(conn, board.project(conn, project), config)
+                    return {'adopted': git_overview.adopt(conn, board.project(conn, project), config, data['branch'], sid)}
+                except (git_view.GitError, OSError, subprocess.TimeoutExpired) as exc:
+                    raise ToolError('git_error', str(exc)) from None
             if action == 'request':
                 return {'request': board.request_git_merge(conn, project, sid, data.get('branch', actor['branch']),
                                                            data['description'], title=None, blocking=data.get('blocking', False))}
@@ -586,8 +632,11 @@ class CodexTools:
                                               **({'reply_to': args['reply_to']} if 'reply_to' in args else {}))
             except board.BoardError as exc:
                 raise ToolError('delivery_conflict' if isinstance(exc, board.Conflict) else 'delivery_failed', str(exc)) from None
-            except Exception:
-                raise ToolError("delivery_failed", "The host could not accept the Crew message") from None
+            except Exception as exc:
+                # The router raised, so whether the message was saved is unknown; a blind resend may duplicate it.
+                raise ToolError("delivery_unknown", "Crew message outcome unknown: the host router raised %s. "
+                                "It may already be saved; do not resend at once, resend only if later evidence shows "
+                                "the recipient never got it." % type(exc).__name__) from None
             if not isinstance(receipt, dict) or receipt.get("ok") is not True:
                 raise ToolError("delivery_failed", "The host did not confirm acceptance of the Crew message")
             receipt = message_receipts.normalize(receipt, kind=args.get('kind', 'information'))

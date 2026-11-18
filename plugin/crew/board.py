@@ -136,11 +136,14 @@ def set_project_theme(conn, project_name, theme, now=None):
 
 def git_config(conn, project_name):
     project(conn, project_name)
-    row = conn.execute("SELECT * FROM git_management WHERE project=?", (project_name,)).fetchone()
+    # Named columns: databases created before the integration branch still carry an unused `stable` column.
+    row = conn.execute("SELECT project,enabled_at,base,integration,admin_session_id,branch_rules "
+                       "FROM git_management WHERE project=?", (project_name,)).fetchone()
     return None if row is None else dict(row)
 
 
-def git_branches(conn, project_name, base=None, stable=None):
+def git_branches(conn, project_name, base=None, integration=None):
+    """Validate base and the optional local integration branch against local branches; "" means none."""
     from . import git_view
     try:
         choices = git_view.branch_choices(project(conn, project_name)["root"])
@@ -151,23 +154,20 @@ def git_branches(conn, project_name, base=None, stable=None):
         raise BoardError("没有可自动识别的主干分支，请指定 --base")
     if base not in choices["branches"]:
         raise BoardError("分支不存在: " + base)
-    if stable is None:
-        stable = next((name for name in ("master", "main") if name in choices["branches"] and name != base), None)
-    elif stable == "":
-        stable = None
-    if stable is not None and stable not in choices["branches"]:
-        raise BoardError("分支不存在: " + stable)
-    if stable == base:
-        raise BoardError("稳定分支必须与主干分支不同")
-    return base, stable
+    integration = integration or None
+    if integration is not None and integration not in choices["branches"]:
+        raise BoardError("分支不存在: " + integration)
+    if integration == base:
+        raise BoardError("本地集成分支必须与主干分支不同")
+    return base, integration
 
 
 @atomic
-def enable_git(conn, project_name, base=None, stable=None, now=None, admin_session_id=None):
-    base, stable = git_branches(conn, project_name, base, stable)
-    conn.execute("INSERT INTO git_management(project,enabled_at,base,stable) VALUES(?,?,?,?) "
-                 "ON CONFLICT(project) DO UPDATE SET base=excluded.base,stable=excluded.stable",
-                 (project_name, _time(now), base, stable))
+def enable_git(conn, project_name, base=None, integration=None, now=None, admin_session_id=None):
+    base, integration = git_branches(conn, project_name, base, integration)
+    conn.execute("INSERT INTO git_management(project,enabled_at,base,integration) VALUES(?,?,?,?) "
+                 "ON CONFLICT(project) DO UPDATE SET base=excluded.base,integration=excluded.integration",
+                 (project_name, _time(now), base, integration))
     if admin_session_id is not None:
         conn.execute("UPDATE git_management SET admin_session_id=? WHERE project=?", (admin_session_id, project_name))
     return git_config(conn, project_name)
@@ -354,26 +354,35 @@ def sessions(conn, project_name):
     return _rows(conn, "SELECT * FROM sessions WHERE project=? ORDER BY crew_name,started_at", (project_name,))
 
 
+def pinned_leaders(conn, project_name):
+    return {row['session_id'] for row in conn.execute('SELECT session_id FROM leader_pins WHERE project=?', (project_name,))}
+
+
 def sort_leaders(conn, project_name, leaders):
+    """Pinned leaders first; within each part the saved order, then the rest as found."""
+    pinned = pinned_leaders(conn, project_name)
     positions = {row['session_id']: row['position'] for row in conn.execute(
         'SELECT session_id,position FROM leader_order WHERE project=?', (project_name,))}
-    return sorted(leaders, key=lambda leader: (leader['session_id'] not in positions,
+    return sorted(leaders, key=lambda leader: (leader['session_id'] not in pinned, leader['session_id'] not in positions,
                   positions.get(leader['session_id'])))
 
 
 @atomic
-def set_leader_order(conn, project_name, order):
+def set_leader_order(conn, project_name, order, pinned=None):
+    """Save the whole shown leader order and, when given, which of them are pinned."""
     from . import git_admin
     project(conn, project_name)
     if not isinstance(order, list) or any(not isinstance(sid, str) for sid in order):
         raise BoardError('order 必须是 session_id 数组')
     if len(order) != len(set(order)):
         raise BoardError('order 包含重复的 leader')
+    if pinned is not None and (not isinstance(pinned, list) or any(not isinstance(sid, str) for sid in pinned)):
+        raise BoardError('pinned 必须是 session_id 数组')
     config = git_config(conn, project_name)
     leaders = {s['session_id'] for s in sessions(conn, project_name)
                if s['role'] == 'leader' and s['status'] != 'closed' and not is_archived(conn, s['session_id'])
                and not git_admin.is_builtin(s, config)}
-    foreign = set(order) - leaders
+    foreign = (set(order) | set(pinned or ())) - leaders
     if foreign:
         raise BoardError('id 不属于该项目当前显示的 leader：' + '、'.join(sorted(foreign)))
     missing = leaders - set(order)
@@ -382,37 +391,10 @@ def set_leader_order(conn, project_name, order):
     conn.execute('DELETE FROM leader_order WHERE project=?', (project_name,))
     conn.executemany('INSERT INTO leader_order(project,session_id,position) VALUES(?,?,?)',
                      [(project_name, sid, position) for position, sid in enumerate(order)])
-    return {'ok': True}
-
-
-def leader_priorities(conn, project_name, leaders):
-    visible = {leader['session_id'] for leader in leaders}
-    ordered = [row['session_id'] for row in conn.execute(
-        'SELECT session_id FROM leader_priority WHERE project=? ORDER BY position', (project_name,))
-        if row['session_id'] in visible]
-    return {sid: rank for rank, sid in enumerate(ordered, 1)}
-
-
-@atomic
-def set_leader_priority(conn, project_name, ranks):
-    from . import git_admin
-    project(conn, project_name)
-    if not isinstance(ranks, list) or any(not isinstance(sid, str) for sid in ranks):
-        raise BoardError('ranks 必须是 session_id 数组')
-    if len(ranks) > 3:
-        raise BoardError('最多设置 3 个优先 leader')
-    if len(ranks) != len(set(ranks)):
-        raise BoardError('ranks 包含重复的 leader')
-    config = git_config(conn, project_name)
-    leaders = {s['session_id'] for s in sessions(conn, project_name)
-               if s['role'] == 'leader' and s['status'] != 'closed' and not is_archived(conn, s['session_id'])
-               and not git_admin.is_builtin(s, config)}
-    foreign = set(ranks) - leaders
-    if foreign:
-        raise BoardError('id 不属于该项目当前显示的 leader：' + '、'.join(sorted(foreign)))
-    conn.execute('DELETE FROM leader_priority WHERE project=?', (project_name,))
-    conn.executemany('INSERT INTO leader_priority(project,session_id,position) VALUES(?,?,?)',
-                     [(project_name, sid, position) for position, sid in enumerate(ranks)])
+    if pinned is not None:
+        # Only shown leaders are rewritten: an archived leader keeps its pin for when it comes back.
+        conn.executemany('DELETE FROM leader_pins WHERE project=? AND session_id=?', [(project_name, sid) for sid in leaders])
+        conn.executemany('INSERT INTO leader_pins(project,session_id) VALUES(?,?)', [(project_name, sid) for sid in set(pinned)])
     return {'ok': True}
 
 
@@ -792,40 +774,12 @@ def ask(conn, session_id, question, options=(), recommendation=None, blocking=Fa
 
 def decisions(conn, project_name, all=False):
     from . import trust_mode
-    rows = _rows(conn, "SELECT d.*,h.held_at FROM decisions d LEFT JOIN decision_holds h ON h.decision_id=d.id "
-                 "WHERE d.project=?" + ("" if all else " AND d.status='open'") + " ORDER BY d.id", (project_name,))
+    rows = _rows(conn, "SELECT * FROM decisions WHERE project=?" + ("" if all else " AND status='open'") + " ORDER BY id",
+                 (project_name,))
     for row in rows:
         row["options"] = json.loads(row["options"])
-        row["held"] = row["held_at"] is not None
         row['leader_session_id'] = trust_mode.decision_leader(conn, row['id'])
     return rows
-
-
-@atomic
-def hold(conn, decision_id, actor=HUMAN, now=None):
-    d = conn.execute("SELECT * FROM decisions WHERE id=?", (decision_id,)).fetchone()
-    if d is None:
-        raise BoardError("待拍板不存在: " + str(decision_id))
-    if d["status"] != "open":
-        raise BoardError("只能挂起尚未答复的问题: " + str(decision_id))
-    changed = conn.execute("INSERT INTO decision_holds(decision_id,held_at) VALUES(?,?) "
-                           "ON CONFLICT(decision_id) DO NOTHING", (decision_id, _time(now))).rowcount > 0
-    if changed:
-        _event(conn, "decision:hold", d["project"], actor, {"id": decision_id}, now)
-    return changed
-
-
-@atomic
-def unhold(conn, decision_id, actor=HUMAN, now=None):
-    d = conn.execute("SELECT * FROM decisions WHERE id=?", (decision_id,)).fetchone()
-    if d is None:
-        raise BoardError("待拍板不存在: " + str(decision_id))
-    if d["status"] != "open":
-        raise BoardError("只能取消挂起尚未答复的问题: " + str(decision_id))
-    changed = conn.execute("DELETE FROM decision_holds WHERE decision_id=?", (decision_id,)).rowcount > 0
-    if changed:
-        _event(conn, "decision:unhold", d["project"], actor, {"id": decision_id}, now)
-    return changed
 
 
 _OWNER_CHANNEL_ANSWER = object()
@@ -842,7 +796,6 @@ def answer(conn, decision_id, text, actor=HUMAN, now=None, *, _human_origin=None
     if actor != HUMAN and not verified_remote_human and policy is not None and not policy['enabled']:
         raise BoardError('此任务当前需要用户拍板或已停止，AI 不能代替用户作答')
     conn.execute("UPDATE decisions SET status='answered',answer=?,answered_by=?,answered_at=? WHERE id=?", (text, actor, _time(now), decision_id))
-    conn.execute("DELETE FROM decision_holds WHERE decision_id=?", (decision_id,))
     _event(conn, "decision:answer", d["project"], actor, {"id": decision_id, "answer": text, "goal_policy": policy}, now)
 
 
@@ -851,7 +804,6 @@ def withdraw(conn, session_id, decision_id, now=None):
     s = session(conn, session_id)
     if conn.execute("UPDATE decisions SET status='withdrawn' WHERE id=? AND session_id=? AND status='open'", (decision_id, session_id)).rowcount == 0:
         raise BoardError("只能撤回自己尚未答复的问题")
-    conn.execute("DELETE FROM decision_holds WHERE decision_id=?", (decision_id,))
     _event(conn, "decision:withdraw", s["project"], session_id, {"id": decision_id}, now)
 
 
@@ -1113,13 +1065,14 @@ def leader_of(conn, session_id):
     return dict(row) if row is not None else None
 
 
-def _queue_leader_notice(conn, leader_session_id, text, source, now=None):
+def _queue_leader_notice(conn, leader_session_id, text, source, now=None, *, wake=True):
+    """wake=False keeps the notice for the leader's next conversation instead of starting a turn for it."""
     s = session(conn, leader_session_id)
     if s["role"] != "leader":
         raise BoardError("只能给 leader 排通知: " + leader_session_id)
-    notice_id = conn.execute("INSERT INTO leader_notices(project,session_id,source,text,created_at) VALUES(?,?,?,?,?)",
-                             (s["project"], leader_session_id, source, text, _time(now))).lastrowid
-    _event(conn, "leader:notice", s["project"], leader_session_id, {"id": notice_id, "source": source}, now)
+    notice_id = conn.execute("INSERT INTO leader_notices(project,session_id,source,text,created_at,wake) VALUES(?,?,?,?,?,?)",
+                             (s["project"], leader_session_id, source, text, _time(now), int(wake))).lastrowid
+    _event(conn, "leader:notice", s["project"], leader_session_id, {"id": notice_id, "source": source, "wake": wake}, now)
     return notice_id
 
 
@@ -1130,6 +1083,11 @@ def queue_leader_notice(conn, leader_session_id, text, source, now=None):
 
 def pending_notices(conn, leader_session_id):
     return _rows(conn, "SELECT * FROM leader_notices WHERE session_id=? AND sent_at IS NULL ORDER BY id", (leader_session_id,))
+
+
+def quiet_notices(conn, leader_session_id):
+    return _rows(conn, "SELECT * FROM leader_notices WHERE session_id=? AND sent_at IS NULL AND wake=0 ORDER BY id",
+                 (leader_session_id,))
 
 
 @atomic

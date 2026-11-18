@@ -19,7 +19,7 @@ function harness(snapshot){
     sidebar:(next=snapshot,member=null)=>sandbox.window.ui.sidebar(next,member),node:(next=snapshot)=>sandbox.window.ui.node(next)};
 }
 const person=(id,extra={})=>({session_id:id,name:id,status:"offline",runtime:"codex",where:"offline",busy:false,
-  running:false,active_goal_id:null,context:null,applied:null,model:null,effort:null,codex:[],priority:null,
+  running:false,active_goal_id:null,context:null,applied:null,model:null,effort:null,codex:[],pinned:false,
   task:null,goal:"leader 的任务",pending:0,comments_count:0,...extra});
 const state=(leaders,members=[])=>({project:{name:"fixture"},leaders,members,decisions:[],todos:[],goals:[{id:"g1"},{id:"g2"},{id:"g3"}],
   runtimes:[{id:"codex",name:"Codex",models:[],efforts:[]},{id:"claude",name:"Claude Code",models:[],efforts:[]}]});
@@ -73,7 +73,7 @@ test("state refresh updates both the count and rows without mutating server snap
 
 test("a silent or waiting leader shows its working members in the sidebar and architecture without pretending to work itself",()=>{
   for(const runtime of ["claude","codex"])for(const status of ["idle","waiting","offline"]){
-    const snapshot=state([person("leader",{runtime,status,priority:1,pending:1,unread:2}),person("other")],
+    const snapshot=state([person("leader",{runtime,status,pinned:true,pending:1,unread:2}),person("other")],
       [person("worker",{runtime:runtime==="codex"?"claude":"codex",status:"working",leader_session_id:"leader"}),
        person("waiting",{status:"waiting",busy:true,leader_session_id:"leader"}),
        person("someone-else",{status:"working",leader_session_id:"other"})]);
@@ -116,6 +116,21 @@ test("an observed skill dispatch keeps the group visible without claiming its id
     assert(working.includes("临时派工 · 由 leader 派出"));assert.deepEqual(rows(working),[{action:"leader",id:"leader"}]);
     const next=structuredClone(snapshot);next.leaders[0].codex[0].status="unknown";
     assert(!h.sidebar(next).includes('class="group-work-avatar"'));assert(!h.node(next).includes("状态未确认"),"historical uncertainty stays in session details, not the live relationship card");
+  }
+});
+
+test("an idle or waiting owner's running native sub-agent shows as group work; a working owner is not counted twice",()=>{
+  for(const runtime of ["claude","codex"])for(const status of ["idle","waiting"]){
+    const job={id:"subagent:root:a1",source:"native_subagent",runtime,status:"running",task_name:"Running cd C:/fixture",
+      started_at:"2026-10-26T00:00:00Z",detail:null};
+    const snapshot=state([person("leader",{runtime,status,codex:[job]})]);
+    const h=harness(snapshot),node=h.node(),sidebar=h.sidebar();
+    assert(sidebar.includes('class="group-work-avatar"'));assert(sidebar.includes("子代理 1"));
+    assert(node.includes("1 个子代理在运行"));assert(node.includes(`class="st ${status}"`),"the owner's own state stays honest");
+    const working=h.render("working");assert.equal(count(working),1);
+    assert(working.includes("子代理 · 由 leader 发起"));assert(!working.includes("PID"));assert.deepEqual(rows(working),[{action:"leader",id:"leader"}]);
+    const busy=structuredClone(snapshot);busy.leaders[0].status="working";
+    assert.equal(count(h.render("working",busy)),1);assert(h.node(busy).includes("本人在干活"));assert(!h.node(busy).includes("子代理在运行"));
   }
 });
 

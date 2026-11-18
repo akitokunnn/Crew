@@ -23,6 +23,7 @@ test_goal_messages
 test_goal_modes_reports
 test_goal_notifications
 test_goal_recovery
+test_goal_transfer
 test_goal_work
 test_task_behavior_v2
 test_v2_journeys
@@ -48,6 +49,7 @@ test_channel
 test_leader_channel_http
 test_assistant_http
 test_notes_wall   # 想法墙：想法/标签动作、助手读写、去聊聊、导出恢复
+test_reading_context
 test_mixed_messaging
 test_message_receipts
 test_dispatch_visibility
@@ -68,13 +70,11 @@ test_storage_v2_activation
 test_storage_legacy
 test_storage_service
 test_home_migration
-test_peer_message_migration
-test_git_notice_migration
 
 # 会话启动、leader 与成员
 test_core
 test_shell.SpawnTests
-test_v2_identity
+test_home_identity
 test_open_session
 test_runtime_spawn
 test_session_ops
@@ -85,9 +85,10 @@ test_member_defaults
 test_member_launch_dedup
 test_member_native_binding
 test_native_replacement
+test_native_skills
 test_member_turn_result
 test_leader_order
-test_leader_priority
+test_leader_pins
 test_leader_trust_cli
 test_trust_mode
 test_workspace_settings

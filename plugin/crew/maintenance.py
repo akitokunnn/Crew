@@ -810,7 +810,6 @@ class Manager:
         counts['todos'] = conn.execute("UPDATE todos SET status='cancelled',note=CASE WHEN note IS NULL OR note='' THEN ? "
                                        "ELSE note||char(10)||? END,resolved_by=?,resolved_at=?,updated_at=?,version=version+1 "
                                        "WHERE project=? AND status='open'", (note, note, board.HUMAN, now, now, project)).rowcount
-        conn.execute("DELETE FROM decision_holds WHERE decision_id IN (SELECT id FROM decisions WHERE project=? AND status='open')", (project,))
         counts['decisions'] = conn.execute("UPDATE decisions SET status='withdrawn' WHERE project=? AND status='open'", (project,)).rowcount
         counts['claims'] = conn.execute('UPDATE claims SET released_at=? WHERE project=? AND released_at IS NULL', (now, project)).rowcount
         counts['leases'] = conn.execute('UPDATE leases SET released_at=?,released_by=?,release_note=? WHERE project=? AND released_at IS NULL',

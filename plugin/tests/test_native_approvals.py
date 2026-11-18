@@ -118,6 +118,8 @@ for line in sys.stdin:
         send({'method':'turn/completed','params':{'threadId':'thread-fixture','turn':{'id':target,'status':'completed','items':[]}}})
     elif method == 'initialize':
         send({'id':message['id'],'result':{}})
+    elif method == 'skills/extraRoots/set':
+        send({'id':message['id'],'result':{}})
     elif method == 'thread/start':
         cwd = params['cwd']
         send({'id':message['id'],'result':{'thread':{'id':'thread-fixture'},'model':'protocol-fixture','reasoningEffort':None}})

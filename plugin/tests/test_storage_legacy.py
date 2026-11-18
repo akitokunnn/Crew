@@ -76,15 +76,15 @@ class LegacyTests(unittest.TestCase):
 
         result = self.run_import()
         self.assertEqual(before, self.db.read_bytes())
-        snapshot = legacy.legacy_snapshot(self.repo, result['workspace_id'])
-        self.assertEqual(set(snapshot['rows']), source_tables)
-        self.assertEqual([r['name'] for r in snapshot['rows']['projects']], ['a'])
-        self.assertEqual(snapshot['rows']['opaque'][0]['body'], b'\x00\xffPRIVATE_BLOB')
-        self.assertEqual(snapshot['rows']['opaque'][0]['big'], 9223372036854775807)
-        self.assertEqual(snapshot['rows']['ai_settings'], [])
-        self.assertEqual([r['id'] for r in snapshot['rows']['opaque']], [1])
-        saved = next(r for r in snapshot['files'] if r['role'] == 'journal')
-        self.assertEqual(Path(saved['vault_file']).read_bytes(), self.original_journal)
+        # One rolling backup of the whole source; nothing else accumulates.
+        backup = Path(result['backup'])
+        self.assertEqual(backup, self.source.resolve() / 'backups' / 'crew.db')
+        with closing(sqlite3.connect(backup)) as conn:
+            self.assertEqual({row[0] for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}, source_tables)
+            self.assertEqual(conn.execute('SELECT body,big FROM opaque').fetchone(), (b'\x00\xffPRIVATE_BLOB', 9223372036854775807))
+        vault = self.repo.directory / 'migration-vault' / self.origin
+        self.assertEqual(sorted(p.name for p in vault.iterdir()), [])
         self.assertGreater(result['archive_only'], 0)
         with closing(self.repo.connect()) as conn:
             self.assertEqual(conn.execute('PRAGMA foreign_key_check').fetchall(), [])
@@ -95,13 +95,13 @@ class LegacyTests(unittest.TestCase):
 
     def test_unchanged_workspace_does_not_archive_other_workspace_only_writes(self):
         self.run_import()
-        before={p.name for p in (self.repo.directory/'migration-vault'/self.origin).glob('*.sqlite3')}
+        backup=self.source/'backups'/'crew.db'; before=backup.stat().st_mtime_ns
         with closing(sqlite3.connect(self.db)) as conn:
             conn.execute('INSERT INTO reports(project,session_id,body,created_at) VALUES(?,?,?,?)',('b','other-native','unrelated new report',STAMP))
             conn.commit()
         result=self.run_import()
         self.assertEqual(result['status'],'unchanged')
-        self.assertEqual(before,{p.name for p in (self.repo.directory/'migration-vault'/self.origin).glob('*.sqlite3')})
+        self.assertEqual(before,backup.stat().st_mtime_ns)
 
     def test_concurrent_source_registration_publishes_one_complete_identity(self):
         from concurrent.futures import ThreadPoolExecutor
@@ -192,8 +192,6 @@ class LegacyTests(unittest.TestCase):
                     'VALUES(?,?,?,?,?,?,?,?,?,?)', (project+'-exec',project+'-goal',1,sid,1,'claude','running',1,STAMP,STAMP))
             conn.commit()
         result = self.run_import()
-        snapshot = legacy.legacy_snapshot(self.repo, result['workspace_id'])
-        self.assertEqual([r['id'] for r in snapshot['rows']['goal_executions']], ['a-exec'])
         with closing(self.repo.connect()) as conn:
             self.assertEqual(conn.execute('SELECT status FROM executions').fetchone()[0], 'paused')
 
@@ -370,9 +368,42 @@ class LegacyTests(unittest.TestCase):
             self.assertEqual(conn.execute('SELECT count(*) FROM message_positions').fetchone()[0],2)
         self.assertEqual(self.run_import()['status'],'unchanged')
 
+    def test_refresh_keeps_only_latest_source_records(self):
+        first=self.run_import()
+        with closing(sqlite3.connect(self.db)) as conn:
+            conn.execute("UPDATE reports SET body='second refresh'");conn.commit()
+        second=self.run_import()
+        self.assertNotEqual(first['import_batch_id'],second['import_batch_id'])
+        with closing(self.repo.connect()) as conn:
+            batches={r[0] for r in conn.execute("SELECT import_batch_id FROM legacy_records "
+                "WHERE NOT (source_table='documents' AND disposition='mapped')")}
+            self.assertEqual(batches,{second['import_batch_id']})
+            self.assertEqual(conn.execute('SELECT count(*) FROM import_batches').fetchone()[0],2)
+
+    def test_interrupted_stream_status_flap_appends_versions(self):
+        # A restart writes offline after a cut-off stream; resuming writes
+        # working again, so the same content recurs as partial.
+        events=[{'type':'text','id':'cut','text':'hello','at':STAMP},{'type':'status','status':'working'}]
+        def project(status=None):
+            if status: events.append({'type':'status','status':status})
+            self.journal.write_text('\n'.join(json.dumps(e) for e in events)+'\n',encoding='utf-8')
+            return self.run_import()
+        project()
+        for status in ('offline','working','offline'):
+            project(status)
+            with closing(sqlite3.connect(self.db)) as conn:
+                conn.execute("UPDATE reports SET body=?",(status+str(len(events)),));conn.commit()
+            project()  # Replay of the same journal under a new source fingerprint.
+        with closing(self.repo.connect()) as conn:
+            rows=conn.execute('SELECT id,supersedes_message_id FROM messages ORDER BY rowid').fetchall()
+            self.assertEqual(len(rows),4)
+            self.assertEqual([r[1] for r in rows],[None,*[r[0] for r in rows[:-1]]])
+            self.assertEqual(conn.execute('PRAGMA foreign_key_check').fetchall(),[])
+        self.assertEqual(project()['status'],'unchanged')
+
     def _storage_service(self):
         from crew.storage_service import StorageService
-        service=StorageService(self.source,isolated=True)
+        service=StorageService(self.source)
         service._repository=self.repo
         return service
 

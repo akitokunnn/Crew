@@ -1,0 +1,14 @@
+<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="base.css">
+<script>const q=new URLSearchParams(location.search);document.documentElement.dataset.theme=q.get('theme')||'light'</script>
+<style>
+body{width:1280px;height:830px}
+:root{--bg1:#E3EFEB;--bg2:#F2EADC;--bezel:#1C1C1B}
+html[data-theme=dark]{--bg1:#1D2826;--bg2:#2A251C;--bezel:#0E0E0D}
+.canvas{width:1280px;height:830px;background:linear-gradient(160deg,var(--bg1),var(--paper) 52%,var(--bg2));display:flex;align-items:flex-start;justify-content:center;gap:72px;padding-top:52px}
+.grid{-webkit-mask-image:radial-gradient(ellipse at 50% 0%,#000 0%,transparent 70%);mask-image:radial-gradient(ellipse at 50% 0%,#000 0%,transparent 70%)}
+.phone{position:relative;padding:10px;border-radius:46px;background:var(--bezel);box-shadow:0 2px 4px rgba(0,0,0,.08),0 30px 60px -18px rgba(30,30,28,.45)}
+.phone img{display:block;width:300px;border-radius:36px}
+.phone:nth-child(3){margin-top:48px}
+</style></head><body><div class="canvas"><div class="grid"></div>
+<div class="phone"><img id="a"></div><div class="phone"><img id="b"></div></div>
+<script>a.src=q.get('a');b.src=q.get('b')</script></body></html>

@@ -18,7 +18,9 @@ def restore_internal(client, native_id):
     """
     cursor = None
     while True:
-        params = {'archived': True, 'limit': 100, 'sourceKinds': ['appServer']}
+        # The native client may inherit a source such as vscode or desktop.
+        # Ownership comes from the exact stored goal binding, not that label.
+        params = {'archived': True, 'limit': 100}
         if cursor:
             params['cursor'] = cursor
         page = client.request('thread/list', params)

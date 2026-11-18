@@ -44,15 +44,12 @@ class TodoTests(RuntimeFixture):
             self.add(blocking=1)
         self.assertEqual(len(todo.list(self.conn, "demo")), 1)
 
-    def test_priority_is_blocking_then_leader_rank_then_creation_time(self):
-        board.set_leader_priority(self.conn, "demo", ["peer-chief-id", "chief-id"])
-        first = self.add(title="older low-priority", now="2026-10-24T00:00:00.000Z")
-        ranked = self.add("peer-worker-id", "ranked group", now="2026-10-24T00:02:00.000Z")
+    def test_order_is_blocking_then_creation_time(self):
+        first = self.add(title="older", now="2026-10-24T00:00:00.000Z")
+        other = self.add("peer-worker-id", "other group", now="2026-10-24T00:02:00.000Z")
         blocking = self.add(title="blocking", blocking=True, now="2026-10-24T00:03:00.000Z")
-        same_rank = self.add("peer-worker-id", "later ranked group", now="2026-10-24T00:04:00.000Z")
         ordered = todo.list(self.conn, "demo")
-        self.assertEqual([item["id"] for item in ordered], [blocking["id"], ranked["id"], same_rank["id"], first["id"]])
-        self.assertEqual([item["priority"] for item in ordered], [2, 1, 1, 2])
+        self.assertEqual([item["id"] for item in ordered], [blocking["id"], first["id"], other["id"]])
 
     def test_project_boundaries_apply_to_reads_and_writes(self):
         added = self.add("foreign-id", "Foreign manual action")
@@ -69,13 +66,11 @@ class TodoTests(RuntimeFixture):
         added = self.add()
         with self.assertRaises(board.BoardError):
             todo.resolve(self.conn, "demo", added["id"], "done", actor="chief-id")
-        with self.assertRaises(board.BoardError):
-            todo.resolve(self.conn, "demo", added["id"], "cancelled")
         changed = todo.resolve(self.conn, "demo", added["id"], "done", note="device connected")
         with self.assertRaises(board.BoardError):
             todo.undo(self.conn, "demo", added["id"], changed["before"], changed["version"], actor="member-id")
 
-    def test_done_note_is_saved_and_blocking_notice_tells_leader_to_wake_the_proposer(self):
+    def test_done_note_is_saved_and_blocking_notice_relays_without_ordering_a_resume(self):
         added = self.add(blocking=True)
         changed = todo.resolve(self.conn, "demo", added["id"], "done", note="Cable connected", expected_version=1)
         self.assertEqual(changed["todo"]["note"], "Cable connected")
@@ -84,12 +79,21 @@ class TodoTests(RuntimeFixture):
         self.assertEqual(changed["version"], 2)
         notices = board.pending_notices(self.conn, "chief-id")
         self.assertEqual(len(notices), 1)
-        for text in ("Connect the device", "builder", "member-id", "Cable connected", "叫醒它继续"):
+        for text in ("Connect the device", "builder", "member-id", "Cable connected", "转告提出者",
+                     "核对其余阻塞、停止状态和授权", "手动停止的仍等用户恢复"):
             self.assertIn(text, notices[0]["text"])
+        self.assertNotIn("叫醒它继续", notices[0]["text"])
         self.assertEqual(todo.list(self.conn, "demo"), [])
         self.assertEqual(todo.list(self.conn, "demo", all=True)[0]["status"], "done")
 
-    def test_cancellation_requires_a_reason_and_preserves_it_in_the_notice(self):
+    def test_done_and_cancel_need_no_note(self):
+        done = todo.resolve(self.conn, "demo", self.add()["id"], "done", note="  ")
+        cancelled = todo.resolve(self.conn, "demo", self.add()["id"], "cancelled")
+        self.assertIsNone(done["todo"]["note"])
+        self.assertEqual(cancelled["todo"]["status"], "cancelled")
+        self.assertIsNone(cancelled["todo"]["note"])
+
+    def test_cancellation_reason_is_preserved_in_the_notice(self):
         added = self.add()
         changed = todo.resolve(self.conn, "demo", added["id"], "cancelled", note="Use the simulator instead")
         self.assertEqual(changed["todo"]["status"], "cancelled")
@@ -119,7 +123,7 @@ class TodoTests(RuntimeFixture):
         pending = board.pending_notices(self.conn, "chief-id")
         self.assertEqual(len(pending), 1)
         self.assertIn("撤销了上一操作", pending[0]["text"])
-        self.assertIn("恢复等待", pending[0]["text"])
+        self.assertIn("相关工作继续等用户完成", pending[0]["text"])
 
     def test_undo_corrects_an_already_delivered_notice_without_erasing_the_audit(self):
         added = self.add()
@@ -157,7 +161,7 @@ class TodoTests(RuntimeFixture):
         todo.undo(self.conn, "demo", added["id"], changed["before"], changed["version"])
         correction = board.handoffs(self.conn, "solo-id")
         self.assertEqual(len(correction), 1)
-        self.assertIn("恢复等待", correction[0]["body"])
+        self.assertIn("相关工作继续等用户完成", correction[0]["body"])
 
     def test_no_leader_unsent_handoff_is_removed_before_undo_correction(self):
         board.join(self.conn, "solo-id", "demo", "solo", self.root, self.root, "main")

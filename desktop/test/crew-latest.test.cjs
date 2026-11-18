@@ -4,7 +4,6 @@ const assert = require('node:assert/strict');
 const { checkLatest, compareVersions } = require('../src/crew-latest.cjs');
 const API = 'https://api.github.com/repos/akitokunnn/Crew';
 const branchRoute = '/commits/main';
-const build = {appId:'local.crew.desktop.v2'};
 const sha = '0123456789abcdef0123456789abcdef01234567';
 const stamp = '2026-10-25T08:34:39Z';
 const commit = { sha, commit: { committer: { date: stamp } } };
@@ -17,7 +16,7 @@ function response(value, status = 200, properties = {}) {
 function fixture(overrides = {}) {
   const calls = [];
   const routes = { [branchRoute]: response(commit),
-    ['/contents/desktop/package.json?ref=' + sha]: response(contents({ name: 'crew-desktop', version: '0.2.5', build })), ...overrides };
+    ['/contents/desktop/package.json?ref=' + sha]: response(contents({ name: 'crew-desktop', version: '0.2.5' })), ...overrides };
   return { calls, fetchImpl: async (url, options) => {
     calls.push({ url, options });
     const result = routes[url.slice(API.length)];
@@ -27,7 +26,7 @@ function fixture(overrides = {}) {
   } };
 }
 
-test('V2 source version is pinned to the observed branch commit without reading the V1 release feed', async () => {
+test('source version is pinned to the observed main commit without reading the release feed', async () => {
   const f = fixture();
   const value = await checkLatest({ fetchImpl: f.fetchImpl, now: () => stamp });
   assert.equal(value.release, null); assert.equal(value.main.version, '0.2.5'); assert.equal(value.main.sha, sha);
@@ -64,9 +63,8 @@ test('redirects, malformed JSON, wrong repository package and invalid fields are
     { [branchRoute]: response({ sha, commit: { committer: { date: 'bad' } } }) },
     { ['/contents/desktop/package.json?ref=' + sha]: response({ path: 'desktop/package.json', encoding: 'base64', content: '@invalid' }) },
     { ['/contents/desktop/package.json?ref=' + sha]: response(contents({ name: 'other', version: '0.2.5' })) },
-    { ['/contents/desktop/package.json?ref=' + sha]: response(contents({ name: 'crew-desktop', version: 'latest', build })) },
-    { ['/contents/desktop/package.json?ref=' + sha]: response(contents({ name: 'crew-desktop', version: '0.2.40' })) },
-    { ['/contents/desktop/package.json?ref=' + sha]: response(contents({ name: 'crew-desktop', version: '0.2.40', build:{appId:'local.crew.desktop'} })) }
+    { ['/contents/desktop/package.json?ref=' + sha]: response(contents({ name: 'crew-desktop', version: 'latest' })) },
+    { ['/contents/desktop/package.json?ref=' + sha]: response(contents({ name: 'crew-desktop' })) }
   ];
   for (const value of cases) await assert.rejects(checkLatest({ fetchImpl: fixture(value).fetchImpl }), /GitHub|Crew 版本/);
 });
