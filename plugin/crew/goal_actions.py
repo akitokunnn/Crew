@@ -34,7 +34,7 @@ def report_template(conn, goal_id):
                       'user_test': '可选对象数组 [{step,expected}]：只写需要用户亲自确认的步骤（如只有用户能做的设备、账号或体验检查），没有就留 []',
                       'user_todos': '可选对象数组 [{title,detail}]；系统收尾成功时自动创建归属 leader 的人工待办，不挂在目标页',
                       'user_decisions': '可选对象数组 [{question,options:[],recommendation:null,why}]；系统收尾成功时自动创建归属 leader 的非阻塞待拍板',
-                      'document_html': 'awaiting_acceptance/completed 必填：让人方便理解和阅读的自包含 HTML 页面（最多 512 KiB），至少一个具体案例和一处帮助理解的可视化（图表、流程或结构图、对比表、截图等），提交前用 report.preview 至少预览一次；写法按 [Crew final_report]。progress/failed/cancelled 可省略，省略时 Crew 按结构化字段生成。CLI 用 finish --html-file <报告.html> 读取正文；Codex 在 report.document_html 传同样内容',
+                      'document_html': 'awaiting_acceptance/completed 必填：让人方便理解和阅读的自包含 HTML 页面（最多 512 KiB），至少一个具体案例和一处帮助理解的可视化（图表、流程或结构图、对比表、截图等），第一屏先写结论和逐条问题（哪里不行、影响什么、怎么处理），提交前用 report.preview 至少预览一次；写法按 [Crew final_report]。progress/failed/cancelled 可省略，省略时 Crew 按结构化字段生成。CLI 用 finish --html-file <报告.html> 读取正文；Codex 在 report.document_html 传同样内容',
                       'acceptance_status': 'passed|failed|unverified|simulated',
                       'acceptance': 'awaiting_acceptance/completed 必须覆盖全部标准；progress/failed/cancelled 可只列部分或省略，编号仍须合法且不重复',
                       'evidence': '对象数组 [{label:做了什么验证及结果, reference:在哪回查}]，例如 [{"label":"跑相关测试 12 项全过","reference":"artifacts/test.txt"}]；未验证可用 []，不能填字符串数组',
