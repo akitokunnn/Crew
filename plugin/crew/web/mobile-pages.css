@@ -155,7 +155,7 @@ body:has(>.nw-menu)::after{content:"";position:fixed;inset:0;z-index:69;backgrou
 .git-lite-card{padding:12px 14px;border-radius:var(--m-radius);font-size:14px}
 .git-lite-branch{font-size:13px}
 .git-lite-count,.git-lite-request,.git-lite-facts{font-size:12px}
-.git-lite-empty{padding:16px;font-size:14px;border-radius:var(--m-radius)}
+.git-lite-clear{padding:16px;border-radius:var(--m-radius)}.git-lite-clear-title{font-size:15px}.git-lite-clear-note,.git-lite-clear-line{font-size:13px}
 .git-loading .note{font-size:14px}
 .git-enable-card{margin:16px var(--m-gutter) 24px;padding:20px;border-radius:var(--m-radius)}
 .git-enable-card p,.git-enable-card label{font-size:14px}

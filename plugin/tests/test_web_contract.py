@@ -1079,12 +1079,21 @@ const refresh=async()=>{const button={dataset:{gitAct:'refresh'}};listeners.get(
   assert(facts(split[0][3]).startsWith('5 分钟前 · 共 3 个未合入 develop · '));
   assert(split[1][3].includes('<span class="git-lite-count">5 个提交未进 dev_live</span>'));assert(!facts(split[1][3]).includes('共 '));
   assert.equal(split[2][1],'integrated');assert(split[2][3].includes('<span class="git-lite-count">4 个提交待实测</span>'));
+  const integratedBranch=fixture.branches.find(item=>item.state==='integrated');
   fixture.integration=null;fixture.branches=[];fixture.merged_hidden=0;
   const empty=await refresh();
   assert(!empty.includes('稳定分支'));assert(!empty.includes('git-lite-trunk-number'));assert(!empty.includes('本地集成分支'));
-  const emptyGroups=sections(empty);assert.deepEqual(emptyGroups.map(group=>group[1]),['未合入 develop <span>0</span>','已合入 develop，还没推送 <span>0</span>']);
-  assert(emptyGroups[0][2].includes('所有分支都已合入'));assert(emptyGroups[1][2].includes('class="git-lite-empty">没有</div>'));
-  assert.equal(cards(empty).length,0);assert(!empty.includes('git-lite-hidden'));
+  // Nothing waiting anywhere: one cleared card instead of a heading and placeholder per stage.
+  assert.equal(sections(empty).length,0);assert(empty.includes('<div class="git-lite-clear-title">分支都处理完了</div>'));
+  assert(empty.includes('<div class="git-lite-clear-note">没有待合入 develop、待推送的分支</div>'));
+  assert.equal(cards(empty).length,0);assert(!empty.includes('git-lite-hidden'));assert(!empty.includes('另有 '));
+  fixture.integration={name:'dev_live',ahead:1,behind:0,branches:['feature/offline'],worktree:null,dirty:null};
+  fixture.branches=[{...integratedBranch}];fixture.merged_hidden=4;
+  const partly=await refresh();
+  // Only the stage holding a branch keeps a heading; the empty ones fold into one line.
+  assert.deepEqual(sections(partly).map(group=>group[1]),['已进 dev_live，待实测 <span>1</span>']);
+  assert(partly.includes('没有待进 dev_live、待推送的分支</p>'));assert(!partly.includes('git-lite-clear-title'));
+  assert(partly.includes('<p class="git-lite-hidden">另有 4 个分支已合入并推送，不再显示</p>'));
   assert(calls.every(route=>route==='/api/git'));sandbox.CrewGit.unmount();
 })().catch(error=>{console.error(error);process.exitCode=1;});
 '''

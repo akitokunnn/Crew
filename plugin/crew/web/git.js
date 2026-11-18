@@ -13,6 +13,7 @@ const CrewGit = (() => {
     return seconds < 60 ? "刚刚" : seconds < 3600 ? `${Math.floor(seconds / 60)} 分钟前` : seconds < 86400 ? `${Math.floor(seconds / 3600)} 小时前` : `${Math.floor(seconds / 86400)} 天前`;
   };
   const at = value => new Date(value).toLocaleString("zh-CN", {month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit", hour12:false});
+  const checkIcon = '<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>';
   const branchIcon = '<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="4" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="6" cy="20" r="2"/><path d="M6 6v12m0-5h5a7 7 0 0 0 7-5"/></svg>';
   const requestLabels = {open:"已提合并请求", merging:"助手合并中", waiting_user:"合并等你拍板"};
   // Worktrees inside the repository read better relative to it; outside ones keep their full path.
@@ -70,11 +71,20 @@ const CrewGit = (() => {
     return `<section class="git-lite-trunk">${baseBlock}${integrationBlock}</section>`;
   }
   function branchOverview() {
-    const section = (title, items, empty) => `<section class="git-lite-section"><h3>${esc(title)} <span>${items.length}</span></h3>${items.length === 0 ? `<div class="git-lite-empty">${empty}</div>` : `<div class="git-lite-cards">${items.map(branchCard).join("")}</div>`}</section>`;
-    const pick = state => data.branches.filter(item => item.state === state), integration = data.integration?.name, dirty = pick("merged");
-    const waiting = integration ? `${section(`还没进 ${integration}`, pick("unmerged"), `所有分支都已进 ${esc(integration)} 或合入 ${esc(data.base.name)}`)}${section(`已进 ${integration}，待实测`, pick("integrated"), "没有")}`
-      : section(`未合入 ${data.base.name}`, pick("unmerged"), "所有分支都已合入");
-    return `${trunkSummary()}${waiting}${data.base.origin ? section(`已合入 ${data.base.name}，还没推送`, pick("unpushed"), "没有") : ""}${dirty.length ? section(`已合入 ${data.base.name}，worktree 还有未提交改动`, dirty, "") : ""}${data.merged_hidden > 0 ? `<p class="git-lite-hidden">另有 ${data.merged_hidden} 个分支已合入并推送，不再显示</p>` : ""}`;
+    const pick = state => data.branches.filter(item => item.state === state), integration = data.integration?.name, base = data.base.name;
+    // Each stage a branch can wait in; `short` names it in the one line that sums up the empty ones.
+    const stages = (integration ? [{title: `还没进 ${integration}`, items: pick("unmerged"), short: `待进 ${integration}`},
+      {title: `已进 ${integration}，待实测`, items: pick("integrated"), short: "待实测"}]
+      : [{title: `未合入 ${base}`, items: pick("unmerged"), short: `待合入 ${base}`}])
+      .concat(data.base.origin ? [{title: `已合入 ${base}，还没推送`, items: pick("unpushed"), short: "待推送"}] : []);
+    const dirty = pick("merged");
+    if (dirty.length) stages.push({title: `已合入 ${base}，worktree 还有未提交改动`, items: dirty});
+    const busy = stages.filter(stage => stage.items.length), clear = stages.filter(stage => !stage.items.length);
+    const section = stage => `<section class="git-lite-section"><h3>${esc(stage.title)} <span>${stage.items.length}</span></h3><div class="git-lite-cards">${stage.items.map(branchCard).join("")}</div></section>`;
+    const none = `没有${clear.map(stage => stage.short).join("、")}的分支`;
+    const hidden = data.merged_hidden > 0 ? `另有 ${data.merged_hidden} 个分支已合入并推送，不再显示` : "";
+    if (!busy.length) return `${trunkSummary()}<section class="git-lite-clear">${checkIcon}<div><div class="git-lite-clear-title">分支都处理完了</div><div class="git-lite-clear-note">${esc(none)}</div>${hidden ? `<div class="git-lite-clear-note">${hidden}</div>` : ""}</div></section>`;
+    return `${trunkSummary()}${busy.map(section).join("")}${clear.length ? `<p class="git-lite-clear-line">${checkIcon}${esc(none)}</p>` : ""}${hidden ? `<p class="git-lite-hidden">${hidden}</p>` : ""}`;
   }
   function enableCard() {
     const choices = data.choices, option = (name, selected) => `<option value="${esc(name)}" ${name === selected ? "selected" : ""}>${esc(name)}</option>`;
