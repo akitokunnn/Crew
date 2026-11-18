@@ -195,6 +195,51 @@ class GitViewTests(unittest.TestCase):
         ahead = next(item for item in self.view()["branches"] if item["name"] == "ahead")
         self.assertEqual((ahead["state"], ahead["commits"], ahead["outside_integration"]), ("unmerged", 2, 1))
 
+    def add_in_worktree(self, name):
+        (self.worktree / name).write_text(name + "\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.worktree), "add", name], check=True, capture_output=True, timeout=20)
+        subprocess.run(["git", "-C", str(self.worktree), "-c", "commit.gpgsign=false", "-c", "user.name=T", "-c",
+                        "user.email=t@example.invalid", "-c", "core.hooksPath=" + str(self.hooks), "commit", "-m", name],
+                       check=True, capture_output=True, timeout=20)
+        return subprocess.run(["git", "-C", str(self.worktree), "rev-parse", "HEAD"], check=True, capture_output=True,
+                              text=True, timeout=20).stdout.strip()
+
+    def test_cherry_picked_copies_count_as_integrated(self):
+        # The integration branch got the work as fresh commits with other SHAs, not by merging the branch.
+        second = self.add_in_worktree("second.txt")
+        self.git("branch", "trial", self.develop)
+        self.git("switch", "trial")
+        self.git("cherry-pick", self.ahead, second)
+        self.git("switch", "develop")
+        self.config["integration"] = "trial"
+        ahead = next(item for item in self.view()["branches"] if item["name"] == "ahead")
+        self.assertEqual((ahead["state"], ahead["commits"], ahead["outside_integration"]), ("integrated", 2, 0))
+        self.assertEqual(self.view()["integration"]["branches"], ["ahead"])
+
+    def test_only_copied_commits_leave_the_not_integrated_count(self):
+        self.git("branch", "trial", self.develop)
+        self.git("switch", "trial")
+        self.git("cherry-pick", self.ahead)
+        self.git("switch", "develop")
+        self.add_in_worktree("second.txt")
+        self.config["integration"] = "trial"
+        ahead = next(item for item in self.view(force=True)["branches"] if item["name"] == "ahead")
+        self.assertEqual((ahead["state"], ahead["commits"], ahead["outside_integration"]), ("unmerged", 2, 1))
+
+    def test_branch_copied_into_base_is_merged(self):
+        self.git("cherry-pick", self.ahead)
+        self.git("update-ref", "refs/remotes/origin/develop", "HEAD")
+        data = self.view()
+        # Merged with a clean worktree: only counted, like a branch merged the ordinary way.
+        self.assertEqual({item["name"] for item in data["branches"]}, {"conflict"})
+        self.assertEqual(data["merged_hidden"], 3)
+
+    def test_copy_only_in_local_base_waits_for_push(self):
+        self.git("update-ref", "refs/remotes/origin/develop", self.merge)
+        self.git("cherry-pick", self.ahead)
+        ahead = next(item for item in self.view()["branches"] if item["name"] == "ahead")
+        self.assertEqual((ahead["state"], ahead["commits"]), ("unpushed", 1))
+
     def test_same_named_origin_branch_marks_pushed_and_local_extra_commits(self):
         self.git("update-ref", "refs/remotes/origin/ahead", self.merge)
         branches = {item["name"]: item for item in self.view()["branches"]}

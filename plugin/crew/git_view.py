@@ -119,8 +119,8 @@ def _outside(root, *excluded):
     return graph
 
 
-def _reach(graph, tip):
-    """Non-merge commits reachable from `tip` inside `graph`.
+def _reach(graph, tip, copied=()):
+    """Non-merge commits reachable from `tip` inside `graph`, leaving out those in `copied`.
 
     Every commit between a tip and an outside commit is outside too, so walking only `graph` is exact.
     Merge commits carry no work of their own: a branch whose only outside commits merge base back in
@@ -131,9 +131,20 @@ def _reach(graph, tip):
         sha = stack.pop()
         if sha in graph and sha not in seen:
             seen.add(sha)
-            work += len(graph[sha]) < 2
+            work += len(graph[sha]) < 2 and sha not in copied
             stack.extend(graph[sha])
     return work
+
+
+def _copied(root, target, tip):
+    """Commits reachable from `tip` whose change `target` already carries as a different commit.
+
+    A cherry-picked or rebased copy has its own SHA, so reachability alone reads the original as missing;
+    Git's patch-id comparison (`--cherry-mark`) recognises it. Several commits squashed into one are not
+    recognised and stay counted.
+    """
+    output = _git(root, "rev-list", "--cherry-mark", "--right-only", "--no-merges", target + "..." + tip, "--").stdout
+    return {line[1:] for line in output.splitlines() if line.startswith("=")}
 
 
 def _worktree_paths(output):
@@ -151,7 +162,8 @@ def _overview(root, refs, trees, base, integration, exclude):
     """Classify every local branch against base and the optional local integration branch.
 
     Merged means reached by local <base> or origin/<base>, so a stale local base does not hide pushed
-    merges. Merged branches stay in the result only while they have a worktree, whose uncommitted
+    merges; a commit whose copy (cherry-pick, rebase) is there counts as merged too, likewise for the
+    integration branch. Merged branches stay in the result only while they have a worktree, whose uncommitted
     changes decide later whether they are shown.
     """
     locals_ = {r["ref"][11:]: r for r in refs if r["ref"].startswith("refs/heads/")}
@@ -170,14 +182,30 @@ def _overview(root, refs, trees, base, integration, exclude):
         if name in (base, integration) or name in exclude:
             continue
         head, tip = "refs/heads/" + name, ref["latest"]["sha"]
-        pending = None
+        pending, copies, known = None, {}, set()
+
+        def copied(target):
+            if target not in copies:
+                copies[target] = _copied(root, target, tip)
+            return copies[target]
+
+        # Commits brought over as copies (cherry-pick, rebase) count as merged where their copy landed.
         commits = _reach(outside_base, tip)
+        for target in base_refs:
+            if not commits:
+                break
+            known |= copied(target)
+            commits = _reach(outside_base, tip, known)
         if commits:
             if outside_integration is not None:
-                pending = _reach(outside_integration, tip)
+                pending = _reach(outside_integration, tip, known)
+                if pending:
+                    known |= copied("refs/heads/" + integration)
+                    pending = _reach(outside_integration, tip, known)
             state = "unmerged" if pending is None or pending else "integrated"
         else:
-            commits = _reach(unpushed_graph, tip)
+            # Copies only in the local base are not pushed yet.
+            commits = _reach(unpushed_graph, tip, copied(origin_base) if copies and origin_base in have else ())
             state = "unpushed" if commits else "merged"
         if state == "merged" and head not in trees:
             hidden += 1
