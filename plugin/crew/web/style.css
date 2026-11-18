@@ -670,15 +670,17 @@ button.tool.indent,button.mline.indent{width:calc(100% - 42px)}
 .m-lead .body,.m-lead .markdown{overflow-wrap:anywhere}
 .m-lead .body strong{font-weight:500}
 .m-lead .body a{color:var(--accent-text);text-underline-offset:3px}
-.m-lead .body pre{max-width:100%;overflow:auto;padding:12px 14px;background:var(--hover-2);border:1px solid var(--line);border-radius:12px;font-size:calc(12.5px * var(--fs));line-height:1.7}
-.m-lead .body pre code{padding:0;background:transparent;border-radius:0;font-size:inherit}
-.code-block{position:relative;margin:1em 0}.code-block>pre{margin:0}.m-lead .body .code-block>pre{padding-right:78px}
+.m-lead .body pre,:is(.file-reader-body,.file-body) .markdown pre{max-width:100%;overflow:auto;padding:12px 14px;background:var(--hover-2);border:1px solid var(--line);border-radius:12px;font-size:calc(12.5px * var(--fs));line-height:1.7}
+.m-lead .body pre code,:is(.file-reader-body,.file-body) .markdown pre code{padding:0;background:transparent;border-radius:0;font-size:inherit}
+.code-block{position:relative;margin:1em 0}.code-block>pre{margin:0}.m-lead .body .code-block>pre,:is(.file-reader-body,.file-body) .markdown .code-block>pre{padding-right:78px}
 .code-copy{position:absolute;top:7px;right:7px;display:inline-flex;align-items:center;gap:4px;height:26px;padding:0 8px 0 6px;border:1px solid var(--line-strong);border-radius:7px;background:var(--surface);color:var(--text-2);font:inherit;font-size:var(--fs-xs);line-height:1;cursor:pointer;transition:color .15s,border-color .15s,background .15s}
 .code-copy:hover{color:var(--text);background:var(--surface-2);border-color:var(--text-3)}.code-copy:focus-visible{outline:2px solid var(--accent);outline-offset:1px}.code-copy.copied{color:var(--accent-text);border-color:var(--accent)}
 .m-lead .body blockquote{margin:10px 0;padding:2px 14px;border-left:2px solid var(--line-strong);color:var(--text-2)}
 .m-lead .body ul,.m-lead .body ol{margin:6px 0 10px;padding-left:24px}
-.m-lead .body table{display:block;width:100%;max-width:100%;overflow:auto;border-collapse:collapse;font-size:calc(13px * var(--fs));line-height:1.6}
-.m-lead .body th,.m-lead .body td{padding:6px 10px;border:1px solid var(--line);text-align:left}
+.m-lead .body table,:is(.file-reader-body,.file-body) .markdown table{display:block;width:100%;max-width:100%;overflow:auto;border-collapse:collapse;font-size:calc(13px * var(--fs));line-height:1.6}
+.m-lead .body th,.m-lead .body td,:is(.file-reader-body,.file-body) .markdown :is(th,td){padding:6px 10px;border:1px solid var(--line);text-align:left}
+/* Short Chinese headers stay on one line in a narrow preview instead of stacking a character per row. */
+:is(.file-reader-body,.file-body) .markdown th{word-break:keep-all}
 .m-lead .body hr{border:0;border-top:1px solid var(--line);margin:16px 0}
 .channel-history{text-align:center;padding:14px 24px 0}
 .channel-pin{flex:none;padding:12px 24px 0}
@@ -738,6 +740,10 @@ button.tool.indent,button.mline.indent{width:calc(100% - 42px)}
 .chat-error{margin:12px 0;color:var(--danger);font-size:calc(13px * var(--fs));line-height:1.6;overflow-wrap:anywhere}
 .readonly-note{flex:none;margin:0;padding:14px 24px 18px;text-align:center;font-size:calc(12px * var(--fs));color:var(--text-3);border-top:1px solid var(--line)}
 .c-row .hint{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* A narrow composer (beside a reading pane, or a narrow window) drops the key hint rather than cutting it
+   mid-word; a notice in the same place (the session is still in its own tool) always stays. */
+.composer{container:crew-composer/inline-size}
+@container crew-composer (max-width:30em){.c-row .hint.key-hint{display:none}}
 .composer textarea:focus-visible{outline:none}
 .btn:disabled,.opt:disabled{opacity:.45}
 .btn.danger,.danger-text{color:var(--danger)}
@@ -920,7 +926,7 @@ a.btn{color:inherit;text-decoration:none}
 .file-preview{width:680px;z-index:45}
 .file-title{overflow-wrap:anywhere;min-width:0;font-family:var(--font-mono);font-size:13px}
 .file-body{padding-top:14px}
-.file-image,.file-body .markdown img{max-width:100%;height:auto}
+.file-image,:is(.file-reader-body,.file-body) .markdown img{max-width:100%;height:auto}
 .file-text{font-family:var(--font-mono);white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px}
 [data-file-path]{color:var(--accent-text);text-decoration:underline;cursor:pointer;overflow-wrap:anywhere}
 /* Session context menus share the model picker and support nested panels. */

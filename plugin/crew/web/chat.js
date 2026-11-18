@@ -276,7 +276,7 @@
           panel.classList.remove("show");
           host = document.createElement("section"); host.className = "file-reader";
           const name = documentLink ? link.textContent.trim() : info.path.split(/[\\/]/).pop();
-          host.innerHTML = `<div class="head file-reader-head"><div class="file-reader-heading"><div class="title">${escape(name)}</div><div class="sub file-path" title="${escape(info.path)}">${escape(info.path)}</div></div><div class="file-reader-actions">${actions}${window.CrewReader.chatButton()}<button class="btn file-close">关闭</button></div></div><div class="file-reader-body reader-quotable">${bodyMarkup}</div>`;
+          host.innerHTML = `<div class="head file-reader-head"><div class="file-reader-heading reader-heading"><div class="title">${escape(name)}</div><div class="sub file-path" title="${escape(info.path)}">${escape(info.path)}</div></div><div class="file-reader-actions reader-actions">${actions}${window.CrewReader.chatButton()}<button class="btn file-close">关闭</button></div></div><div class="file-reader-body reader-quotable">${bodyMarkup}</div>`;
           window.CrewReader.open(host, {label:"文件预览", reading:{label:name, data:documentLink ? {kind:"document", document_id:data.document_id} : {kind:"file", path:info.path, session_id:data.session_id || ""}},
             onClose:() => { if (sequence === request) request++; }});
           host.querySelector(".file-close").onclick = () => window.CrewReader.close(host, {animate:true});
@@ -428,6 +428,7 @@
     context.send.disabled = context.loading || context.cache.sending || !hasContent;
     const external = context.session.where === "vscode";
     context.hint.textContent = context.busy || context.cache.sending ? "" : external ? "会话仍在原工具中；退出并交给 Crew 后才能接话" : "Enter 发送 · Shift+Enter 换行";
+    context.hint.classList.toggle("key-hint", !external);
     context.send.hidden = context.busy && !hasContent;
     context.send.title = context.busy ? "工作中插话" : "发送";
     const stopReason = external ? "回复在 VS Code 或终端中运行，请在原工具中断。" : context.session.where !== "bg" && !context.session.running ? "正在等待 Crew 托管会话，稍后可停止。" : "";

@@ -189,9 +189,10 @@ body:has(#chat-head .member-scope-bar){--mc-scope:48px}
 .goal-report-reader .goal-reader-heading{order:1;flex:1 0 100%;min-width:0;padding-top:6px}
 .goal-report-reader .title{font-size:var(--m-fs-section)!important;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .goal-report-reader .goal-reader-meta{display:flex;flex-wrap:wrap;gap:2px 8px;margin-top:4px;font-size:var(--m-fs-min)!important;line-height:1.5}
-.goal-report-reader .head>[data-goal-act=close-report]{order:2;flex:none;min-height:var(--m-tap);padding:0 12px!important;border:0;background:none;color:var(--accent-text);font-size:var(--m-fs-body)!important}
-.goal-report-reader .head>:not(.goal-reader-heading,[data-goal-act=close-report]){order:3}
-.goal-report-reader .head .review-buttons{flex:0 0 100%;margin-left:0!important;margin-right:8px;display:grid!important;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);gap:8px}
+/* Heading on top; the decision buttons fill the next row; the conversation toggle and 返回任务 sit right-aligned below. */
+.goal-report-reader .reader-actions{order:2;flex:1 0 100%;gap:8px}
+.goal-report-reader [data-goal-act=close-report]{flex:none;min-height:var(--m-tap);padding:0 12px!important;border:0;background:none;color:var(--accent-text);font-size:var(--m-fs-body)!important}
+.goal-report-reader .head .review-buttons{flex:0 0 calc(100% - 8px);margin-left:0!important;margin-right:8px;display:grid!important;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);gap:8px}
 .goal-report-reader .head .btn{min-height:var(--m-tap);justify-content:center;font-size:var(--m-fs-body)!important}
 .file-reader .head{flex-wrap:wrap}
 .file-reader .file-reader-heading{flex:1 0 100%}
