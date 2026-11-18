@@ -3,7 +3,8 @@
   const esc = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
   const clone = value => JSON.parse(JSON.stringify(value));
   function effective(leader, globalChoice) {
-    return clone(leader.member_defaults ?? globalChoice ?? {runtime:leader.runtime,model:leader.model ?? null,effort:leader.effort ?? null});
+    const chosen = clone(leader.member_defaults ?? globalChoice ?? {runtime:leader.runtime,model:leader.model ?? null,effort:leader.effort ?? null,speed:leader.speed ?? null});
+    return {...chosen, speed:chosen.speed ?? null};
   }
   function validate(choice, catalog) {
     const selected = clone(choice), available = catalog.filter(item => item.available);
@@ -12,6 +13,8 @@
     if (!runtime?.available) throw Error(runtime?.error || "请选择已就绪的执行载体；可重新检测后再试。");
     const model = runtime.models?.find(item => item.id === selected.model);
     if (selected.effort && model?.efforts && !model.efforts.includes(selected.effort)) throw Error("这个模型不支持所选思考强度，请重新选择。");
+    if (selected.speed && runtime.id !== "codex") throw Error("速度只适用于 Codex，请改为原生默认。");
+    if (selected.speed && model?.speeds && !window.CrewSettings.speedsFor(runtime, model.id).some(item => item.id === selected.speed)) throw Error("这个模型不支持所选速度，请重新选择。");
     return selected;
   }
   function create(options) {
@@ -47,8 +50,8 @@
       if (event.target.name === "inherit") { inherit = event.target.checked; render(); overlay.querySelector('input[name="inherit"]').focus(); return; }
       const field = event.target.dataset.aiField; if (!field) return;
       draft[field] = event.target.value.trim() || null;
-      if (field === "runtime") { draft.model = null; draft.effort = null; }
-      if (field === "runtime" || field === "model") {
+      if (field === "runtime") { draft.model = null; draft.effort = null; draft.speed = null; }
+      if (field === "runtime" || field === "model" || field === "speed") {
         overlay.querySelector('[data-member-brain]').innerHTML = fields();
         overlay.querySelector(`[data-ai-field="${field}"]`).focus();
       }

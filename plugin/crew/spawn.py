@@ -24,10 +24,10 @@ def _check_ignore(root):
         raise board.BoardError('Git 工作区忽略规则检查无法执行：'+str(exc)) from exc
 
 def command(session_id, name, role, resume=False, model=None, effort=None, agent=None, runtime="claude", instructions=None,
-            permission_mode='default', plugin_root=None, preview_directory=None):
-    models.validate_options(model, effort, runtime=runtime)
+            permission_mode='default', plugin_root=None, preview_directory=None, speed=None):
+    models.validate_options(model, effort, runtime=runtime, speed=speed)
     if runtime == "codex":
-        # Model, effort, start/resume and native thread id are RPC parameters;
+        # Model, effort, speed, start/resume and native thread id are RPC parameters;
         # Claude's --session-id/--resume flags do not belong on app-server.
         return codex_client.command()
     args = ["claude", "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
@@ -83,7 +83,7 @@ def authorize(conn, project_name, caller_session_id, role="member", group=None):
 
 def prepare(conn, home, plugin_root, project_name, name, task, group=None, role="member",
             cwd=None, new_worktree=None, base=None, now=None, model=models.INHERIT, effort=models.INHERIT, agent=None,
-            runtime=models.INHERIT):
+            runtime=models.INHERIT, speed=models.INHERIT):
     _text(name, "\u540d\u5b57")
     _text(task, "\u4efb\u52a1")
     if role not in ("member", "leader"):
@@ -143,12 +143,15 @@ def prepare(conn, home, plugin_root, project_name, name, task, group=None, role=
     runtimes.validate(runtime)
     inherited = (member_choice
                  if member_choice is not None and runtime == member_choice['runtime']
-                 else defaults if defaults is not None else {"model": None, "effort": None})
+                 else defaults if defaults is not None else {"model": None, "effort": None, "speed": None})
     if model is models.INHERIT:
         model = inherited["model"]
     if effort is models.INHERIT:
         effort = None if model == models.HAIKU else inherited["effort"]
-    models.validate_options(model, effort, runtime=runtime)
+    if speed is models.INHERIT:
+        # Speed is a Codex service tier; a Claude carrier has none to inherit.
+        speed = inherited.get("speed") if runtime == "codex" else None
+    models.validate_options(model, effort, runtime=runtime, speed=speed)
     if role == "leader":
         leader_name = "\u5c31\u662f\u4f60\u81ea\u5df1"
     elif leader is not None and leader["status"] not in ("offline", "closed"):
@@ -172,7 +175,7 @@ def prepare(conn, home, plugin_root, project_name, name, task, group=None, role=
              (name, role, project_name, group if group is not None else "\u672a\u5206\u7ec4", leader_name, rules, task))
     spec = {"id": spawn_id, "name": name, "group": group, "role": role, "task": task,
             "cwd": str(directory), "project": project_name, "agent": ("crew:leader" if agent is None else agent) if role == "leader" else None,
-            "md": str(md_path), "runtime": runtime, "model": model, "effort": effort,
+            "md": str(md_path), "runtime": runtime, "model": model, "effort": effort, "speed": speed,
             "created_at": store.now_iso() if now is None else now}
     return {"id": spawn_id, "session_id": session_id, "command": command(session_id, name, role, model=model, effort=effort, agent=agent, runtime=runtime,
             permission_mode=settings.get_execution(conn)['claude'], plugin_root=plugin_root), "spec": spec,
@@ -203,10 +206,10 @@ def _execute(conn, plan, launcher, members=(), member_session_ids=()):
 
 def leader_plan(conn, home, plugin_root, project_name, name, members=(), task=None, cwd=None,
                 new_worktree=None, base=None, now=None, member_session_ids=(), model=models.INHERIT, effort=models.INHERIT, group=None, agent=None,
-                runtime=models.INHERIT):
+                runtime=models.INHERIT, speed=models.INHERIT):
     plan = prepare(conn, home, plugin_root, project_name, name, "\u7ba1\u7406\u5206\u7ec4 " + name if task is None else task,
                    role="leader", cwd=cwd, new_worktree=new_worktree, base=base, now=now, model=model, effort=effort,
-                   group=group, agent=agent, runtime=runtime)
+                   group=group, agent=agent, runtime=runtime, speed=speed)
     for member in members:
         _text(member, "\u7ec4\u5458\u540d\u5b57")
     for s in board.roster_targets(conn, project_name, members, member_session_ids):
@@ -278,6 +281,8 @@ def cli_dispatch(args, cwd, plugin_root):
                     body['model'] = args.model
                 if hasattr(args, 'effort'):
                     body['effort'] = args.effort
+                if hasattr(args, 'speed'):
+                    body['speed'] = args.speed
                 if hasattr(args, "runtime"):
                     body["runtime"] = args.runtime
                 if caller:
@@ -286,7 +291,7 @@ def cli_dispatch(args, cwd, plugin_root):
             return leader_plan(conn, args.home, plugin_root, project["name"], args.name,
                                args.members.split(",") if args.members is not None else (), args.task,
                                args.cwd, args.new_worktree, model=getattr(args, 'model', models.INHERIT), effort=getattr(args, 'effort', models.INHERIT),
-                               runtime=getattr(args, "runtime", models.INHERIT))
+                               runtime=getattr(args, "runtime", models.INHERIT), speed=getattr(args, 'speed', models.INHERIT))
         if not args.dry_run:
             body = {
                 "name": args.name, "task": args.task, "group": group, "role": args.role,
@@ -301,6 +306,8 @@ def cli_dispatch(args, cwd, plugin_root):
                 body["model"] = args.model
             if hasattr(args, "effort"):
                 body["effort"] = args.effort
+            if hasattr(args, "speed"):
+                body["speed"] = args.speed
             if hasattr(args, "runtime"):
                 body["runtime"] = args.runtime
             return request_start(args.home, project["name"], "/api/spawn", body)
@@ -318,7 +325,8 @@ def cli_dispatch(args, cwd, plugin_root):
             group = leader['group_name']
         plan = prepare(conn, args.home, plugin_root, project["name"], args.name, args.task, group,
                        args.role, args.cwd, args.new_worktree, args.base, model=getattr(args, "model", models.INHERIT),
-                       effort=getattr(args, "effort", models.INHERIT), runtime=getattr(args, "runtime", models.INHERIT))
+                       effort=getattr(args, "effort", models.INHERIT), runtime=getattr(args, "runtime", models.INHERIT),
+                       speed=getattr(args, "speed", models.INHERIT))
         if goal is not None:
             # Native goal IDs are allocated by the host, never the general-chat
             # session ID in this preparation-only plan.

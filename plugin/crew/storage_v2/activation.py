@@ -451,6 +451,7 @@ class _Materializer:
                 round=rnd['number'],session_id=execution['agent_id'],generation=execution['attempt_no'],runtime=self.runtime,
                 model=execution['requested_model'] if execution['status'] in TERMINAL else self.execution_defaults['model'],
                 effort=execution['requested_effort'] if execution['status'] in TERMINAL else self.execution_defaults['effort'],
+                speed=None if execution['status'] in TERMINAL or self.runtime != 'codex' else self.execution_defaults['speed'],
                 status=execution['status'] if execution['status'] in TERMINAL else 'paused',requirement_version=rnd['requirement_version'],
                 created_at=execution['created_at'],updated_at=self.stamp,ended_at=execution['finished_at'],error=execution['error_summary']),
                 'executions',execution['id'])

@@ -3,13 +3,14 @@ const {test} = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs"), path = require("node:path"), vm = require("node:vm");
 const sandbox = {window:{}}; vm.createContext(sandbox);
+vm.runInContext(fs.readFileSync(path.join(__dirname,"../crew/web/settings-ui.js"),"utf8"),sandbox);
 vm.runInContext(fs.readFileSync(path.join(__dirname,"../crew/web/runtime-switch-ui.js"),"utf8"),sandbox);
 const switching = sandbox.window.CrewRuntimeSwitch;
 const plain = value => JSON.parse(JSON.stringify(value));
 const member = extra => ({session_id:"member",runtime:"claude",where:"offline",status:"offline",model:"opus",effort:"max",runtime_switch:{allowed:true},...extra});
 const catalog = [
   {id:"claude",name:"Claude Code",available:true,models:[{id:"opus"},{id:"claude-haiku-4-5-20251001"}],efforts:["low","medium","high","max"]},
-  {id:"codex",name:"Codex",available:true,models:[{id:"gpt",efforts:["low","medium"]},{id:"image",efforts:[]}],efforts:["low","medium","high"]}
+  {id:"codex",name:"Codex",available:true,models:[{id:"gpt",efforts:["low","medium"],speeds:[{id:"priority",name:"Fast"}]},{id:"image",efforts:[]}],efforts:["low","medium","high"]}
 ];
 const target = extra => ({runtime:"codex",model:null,effort:null,...extra});
 
@@ -23,7 +24,7 @@ test("switching blocks active and external writers before consulting stale allow
 });
 
 test("target defaults are explicit nulls and never inherit source model or effort",()=>{
-  assert.deepEqual(plain(switching.targetPayload(member(),target(),catalog,null)),{session_id:"member",runtime:"codex",model:null,effort:null});
+  assert.deepEqual(plain(switching.targetPayload(member(),target(),catalog,null)),{session_id:"member",runtime:"codex",model:null,effort:null,speed:null});
   assert.throws(()=>switching.targetPayload(member(),target({runtime:"claude"}),catalog,null),/另一个/);
 });
 
@@ -37,7 +38,14 @@ test("switch previews reject models and efforts outside the chosen runtime catal
 
 test("the edited handoff is included exactly for a fresh bound preview",()=>{
   const text="原摘要\n人工补充：保留已知限制，不声称已完成。";
-  assert.deepEqual(plain(switching.targetPayload(member(),target({model:"gpt",effort:"medium"}),catalog,text)),{session_id:"member",runtime:"codex",model:"gpt",effort:"medium",handoff:text});
+  assert.deepEqual(plain(switching.targetPayload(member(),target({model:"gpt",effort:"medium"}),catalog,text)),{session_id:"member",runtime:"codex",model:"gpt",effort:"medium",speed:null,handoff:text});
+});
+
+test("a Codex target speed must be a tier the target model offers and never reaches Claude",()=>{
+  assert.equal(plain(switching.targetPayload(member(),target({model:"gpt",speed:"priority"}),catalog,null)).speed,"priority");
+  assert.equal(plain(switching.targetPayload(member(),target({speed:"default"}),catalog,null)).speed,"default");
+  assert.throws(()=>switching.targetPayload(member(),target({model:"gpt",speed:"ultrafast"}),catalog,null),/速度/);
+  assert.throws(()=>switching.targetPayload(member({runtime:"codex"}),target({runtime:"claude",speed:"priority"}),catalog,null),/只适用于 Codex/);
 });
 
 test("unavailable tools retain their actionable error and cannot prepare",()=>{

@@ -520,7 +520,7 @@ def mark_read(conn, execution_id, read_seq, *, now=None):
 
 
 @atomic
-def configure_execution(conn, execution_id, runtime, *, model=None, effort=None, now=None):
+def configure_execution(conn, execution_id, runtime, *, model=None, effort=None, now=None, speed=None):
     """Persist an idle target configuration; caller still owns native liveness checks."""
     current = get_execution(conn, execution_id)
     if runtime not in ('claude', 'codex'):
@@ -530,10 +530,10 @@ def configure_execution(conn, execution_id, runtime, *, model=None, effort=None,
     goal = _row(conn, current['goal_id'])
     if goal['status'] in TERMINAL or current['round'] != goal['current_round']:
         raise board.Conflict('已结束轮次不能配置为新工作')
-    if (current['runtime'], current['model'], current['effort']) == (runtime, model, effort):
+    if (current['runtime'], current['model'], current['effort'], current['speed']) == (runtime, model, effort, speed):
         return current
-    conn.execute('UPDATE goal_executions SET runtime=?,model=?,effort=?,updated_at=? WHERE id=?',
-                 (runtime, model, effort, board._time(now), execution_id))
+    conn.execute('UPDATE goal_executions SET runtime=?,model=?,effort=?,speed=?,updated_at=? WHERE id=?',
+                 (runtime, model, effort, speed, board._time(now), execution_id))
     if current['runtime'] != runtime:
         conn.execute('DELETE FROM goal_context_applied WHERE execution_id=?', (execution_id,))
     _touch(conn, current['goal_id'], now)
@@ -541,7 +541,7 @@ def configure_execution(conn, execution_id, runtime, *, model=None, effort=None,
 
 
 @atomic
-def create_execution(conn, goal_id, session_id, *, runtime, model=None, effort=None, discussion_message_id=None, now=None):
+def create_execution(conn, goal_id, session_id, *, runtime, model=None, effort=None, discussion_message_id=None, now=None, speed=None):
     goal = _row(conn, goal_id)
     if discussion_message_id is not None:
         _text(discussion_message_id, '用户消息编号', limit=160)
@@ -552,7 +552,7 @@ def create_execution(conn, goal_id, session_id, *, runtime, model=None, effort=N
     _member(conn, goal, session_id)
     if runtime not in ('claude', 'codex'):
         raise board.BoardError('执行工具无效')
-    for value, label in ((model, '模型'), (effort, '档位')):
+    for value, label in ((model, '模型'), (effort, '档位'), (speed, '速度')):
         if value is not None:
             _text(value, label, limit=300)
     if conn.execute("SELECT 1 FROM goal_assignments WHERE goal_id=? AND session_id=? AND status='assigned'", (goal_id, session_id)).fetchone() is None:
@@ -563,8 +563,9 @@ def create_execution(conn, goal_id, session_id, *, runtime, model=None, effort=N
     generation = conn.execute('SELECT COALESCE(MAX(generation),0)+1 FROM goal_executions WHERE goal_id=? AND round=? AND session_id=?',
                               (goal_id, goal['current_round'], session_id)).fetchone()[0]
     identity, at = uuid.uuid4().hex, board._time(now)
-    conn.execute('INSERT INTO goal_executions VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-                 (identity, goal_id, goal['current_round'], session_id, generation, runtime, model, effort,
+    conn.execute('INSERT INTO goal_executions(id,goal_id,round,session_id,generation,runtime,model,effort,speed,status,'
+                 'requirement_version,created_at,updated_at,ended_at,error) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                 (identity, goal_id, goal['current_round'], session_id, generation, runtime, model, effort, speed,
                   'queued', goal['requirement_version'], at, at, None, None))
     if discussion_message_id is not None:
         conn.execute('INSERT INTO goal_discussion_executions VALUES(?,?,?,NULL,NULL)', (identity, discussion_message_id, at))
@@ -572,7 +573,7 @@ def create_execution(conn, goal_id, session_id, *, runtime, model=None, effort=N
 
 
 @atomic
-def bind_native(conn, execution_id, runtime, native_id, *, model=None, effort=None, now=None):
+def bind_native(conn, execution_id, runtime, native_id, *, model=None, effort=None, now=None, speed=None):
     execution = get_execution(conn, execution_id)
     if runtime not in ('claude', 'codex'):
         raise board.BoardError('执行工具无效')
@@ -582,9 +583,10 @@ def bind_native(conn, execution_id, runtime, native_id, *, model=None, effort=No
         raise board.Conflict('同一执行代次的原生绑定不能被另一段历史覆盖')
     runtimes.check_native_owner(conn, runtime, native_id, execution_id=execution_id)
     try:
-        conn.execute('INSERT INTO goal_execution_bindings VALUES(?,?,?,?,?,?) ON CONFLICT(execution_id,runtime) '
-                     'DO UPDATE SET model=excluded.model,effort=excluded.effort,updated_at=excluded.updated_at',
-                     (execution_id, runtime, native_id, model, effort, board._time(now)))
+        conn.execute('INSERT INTO goal_execution_bindings(execution_id,runtime,native_id,model,effort,speed,updated_at) '
+                     'VALUES(?,?,?,?,?,?,?) ON CONFLICT(execution_id,runtime) '
+                     'DO UPDATE SET model=excluded.model,effort=excluded.effort,speed=excluded.speed,updated_at=excluded.updated_at',
+                     (execution_id, runtime, native_id, model, effort, speed, board._time(now)))
     except sqlite3.IntegrityError as exc:
         raise board.Conflict('原生历史已绑定其他目标执行') from exc
     return get_execution(conn, execution['id'])

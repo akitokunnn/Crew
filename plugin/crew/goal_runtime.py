@@ -96,7 +96,7 @@ class Controller:
             goals.assign(conn, goal_id, session_id, '处理用户在此目标内的输入')
         mapping, options = runtimes.get(conn, session_id), models.get(conn, session_id)
         return goals.create_execution(conn, goal_id, session_id, runtime=mapping['runtime'],
-                                      model=options['model'], effort=options['effort'])
+                                      model=options['model'], effort=options['effort'], speed=options['speed'])
 
     def ensure_discussion(self, conn, goal_id, session_id, identity):
         current = self.current(conn, goal_id, session_id)
@@ -109,7 +109,8 @@ class Controller:
         self.stop_delivered(conn, goal_id)
         mapping, options = runtimes.get(conn, session_id), models.get(conn, session_id)
         return goals.create_execution(conn, goal_id, session_id, runtime=mapping['runtime'],
-                                      model=options['model'], effort=options['effort'], discussion_message_id=identity)
+                                      model=options['model'], effort=options['effort'], speed=options['speed'],
+                                      discussion_message_id=identity)
 
     def target(self, conn, execution):
         return {**board.session(conn, execution['session_id']), '_storage_id': execution['id'],
@@ -277,7 +278,7 @@ class Controller:
                     raise board.Conflict(gate['reason'])
             from . import settings
             permission_mode = settings.get_execution(conn)['claude']
-        options = {'model': execution['model'], 'effort': execution['effort']}
+        options = {'model': execution['model'], 'effort': execution['effort'], 'speed': execution['speed']}
         binding = next((item for item in execution['bindings'] if item['runtime'] == execution['runtime']), None)
         if execution['runtime'] == 'claude' and binding is not None:
             if self.live_native is None:

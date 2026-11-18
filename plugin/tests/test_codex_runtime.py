@@ -29,6 +29,7 @@ class FakeClient:
     def __init__(self, **kwargs):
         self.kwargs, self.calls, self.closed = kwargs, [], False
         self.process, self.turn_id, self.thread_id = FakeProcess(), None, "native-1"
+        self.service_tier = None
         self.transport_done, self.notifications_done = threading.Event(), threading.Event()
         self.fail_turn = False
 
@@ -37,7 +38,9 @@ class FakeClient:
 
     def start_thread(self, **params):
         self.calls.append(("thread/start", params))
+        self.service_tier = params.get("serviceTier")
         return {"thread": {"id": self.thread_id}, "model": "actual-model", "reasoningEffort": "medium",
+                "serviceTier": self.service_tier,
                 "sandbox": {"type": "workspaceWrite", "networkAccess": False,
                             "excludeTmpdirEnvVar": True, "excludeSlashTmp": True,
                             "writableRoots": params.get('config', {}).get('sandbox_workspace_write', {}).get('writable_roots', [])}}
@@ -45,7 +48,9 @@ class FakeClient:
     def resume_thread(self, identity, **params):
         self.thread_id = identity
         self.calls.append(("thread/resume", {"threadId": identity, **params}))
+        self.service_tier = params.get("serviceTier")
         return {"thread": {"id": identity}, "model": "actual-model", "reasoningEffort": "medium",
+                "serviceTier": self.service_tier,
                 "sandbox": {"type": "workspaceWrite", "networkAccess": False,
                             "excludeTmpdirEnvVar": True, "excludeSlashTmp": True,
                             "writableRoots": params.get('config', {}).get('sandbox_workspace_write', {}).get('writable_roots', [])}}
@@ -82,8 +87,10 @@ class FakeClient:
         if method == "thread/list":
             return {"data": [], "nextCursor": None}
         if method == "thread/settings/update":
+            self.service_tier = params.get("serviceTier", self.service_tier)
             self.emit("thread/settings/updated", threadSettings={"model": params.get("model", "actual-model"),
-                                                                 "effort": params.get("effort", "medium")})
+                                                                 "effort": params.get("effort", "medium"),
+                                                                 "serviceTier": self.service_tier})
         return {}
 
     def close(self):
@@ -249,7 +256,7 @@ class CodexRuntimeTests(unittest.TestCase):
     def test_initialization_binds_thread_identity_without_model_turn(self):
         running, client = self.make_running(options={"model": "requested-model", "effort": "high"})
         self.assertEqual([method for method, _ in client.calls], ["thread/start", "thread/name/set"])
-        self.assertEqual(running.applied, {"model": "actual-model", "effort": "medium"})
+        self.assertEqual(running.applied, {"model": "actual-model", "effort": "medium", "speed": None})
         start = client.calls[0][1]
         self.assertEqual(start["sandbox"], "workspace-write")
         self.assertEqual(start["approvalPolicy"], "on-request")
@@ -480,10 +487,29 @@ class CodexRuntimeTests(unittest.TestCase):
     def test_settings_are_actual_native_reply_and_null_reset_is_explicit(self):
         running, client = self.make_running()
         running.set_options({"model": "new-model", "effort": "high"})
-        self.assertEqual(running.applied, {"model": "new-model", "effort": "high"})
+        self.assertEqual(running.applied, {"model": "new-model", "effort": "high", "speed": None})
         with self.assertRaisesRegex(ValueError, "停止"):
             running.set_options({"model": "new-model", "effort": None})
         self.assertEqual(running.applied["effort"], "high")
+
+    def test_speed_is_the_native_service_tier_and_unset_leaves_codex_setting(self):
+        plain_running, plain = self.make_running()
+        self.assertNotIn("serviceTier", plain.calls[0][1])
+        plain_running.close()
+        self.assertTrue(plain_running.reader_done.wait(2))
+        running, client = self.make_running(options={"model": None, "effort": None, "speed": "priority"})
+        self.assertEqual(client.calls[0][1]["serviceTier"], "priority")
+        self.assertEqual(running.applied["speed"], "priority")
+        running.set_options({"model": None, "effort": None, "speed": "default"})
+        self.assertEqual(client.calls[-1], ("thread/settings/update", {"threadId": "native-1", "serviceTier": "default"}))
+        self.assertEqual(running.applied["speed"], "default")
+        with self.assertRaisesRegex(ValueError, "停止"):
+            running.set_options({"model": None, "effort": None, "speed": None})
+        self.assertEqual(running.applied["speed"], "default")
+        running.close()
+        self.assertTrue(running.reader_done.wait(2))
+        _, resumed = self.make_running(options={"model": None, "effort": None, "speed": "priority"}, resume=True)
+        self.assertEqual(resumed.calls[0], ("thread/resume", {**resumed.calls[0][1], "serviceTier": "priority"}))
 
     def test_tools_bind_sender_and_deduplicate_call_id(self):
         router = mock.Mock(return_value={"ok": True})

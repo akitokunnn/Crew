@@ -1053,7 +1053,8 @@ class Manager:
     @_admitted
     def start(self, conn, project_name, name, task=None, group=None, role="member", members=(), cwd=None,
               new_worktree=None, base=None, now=None, member_session_ids=(), model=models.INHERIT, effort=models.INHERIT, agent=None,
-              runtime=models.INHERIT, caller_session_id=None, caller_execution_id=None, goal_id=None, _registered=None):
+              runtime=models.INHERIT, caller_session_id=None, caller_execution_id=None, goal_id=None, _registered=None,
+              speed=models.INHERIT):
         with self.lock:
             bound_goal = None
             if caller_execution_id is not None and caller_session_id is None:
@@ -1088,10 +1089,12 @@ class Manager:
             if role == "leader":
                 plan = spawn.leader_plan(conn, self.home, self.plugin_root, project_name, name, members, task,
                                          cwd=cwd, new_worktree=new_worktree, base=base, now=now,
-                                         member_session_ids=member_session_ids, model=model, effort=effort, group=group, agent=agent, runtime=runtime)
+                                         member_session_ids=member_session_ids, model=model, effort=effort, group=group, agent=agent, runtime=runtime,
+                                         speed=speed)
             else:
                 plan = spawn.prepare(conn, self.home, self.plugin_root, project_name, name, task, group, role,
-                                     cwd=cwd, new_worktree=new_worktree, base=base, now=now, model=model, effort=effort, runtime=runtime)
+                                     cwd=cwd, new_worktree=new_worktree, base=base, now=now, model=model, effort=effort, runtime=runtime,
+                                     speed=speed)
             session_id = plan["session_id"]
             spec = plan["spec"]
             goal_receipt = {}
@@ -1109,7 +1112,7 @@ class Manager:
                 # unbound until a native actually reports it.
                 runtimes.set(conn, session_id, chosen_runtime,
                              session_id if chosen_runtime == "claude" and bound_goal is None else None, now=now)
-                models.set(conn, session_id, spec["model"], spec["effort"], now=now)
+                models.set(conn, session_id, spec["model"], spec["effort"], now=now, speed=spec.get("speed"))
                 if _registered is not None:
                     _registered(session_id)
                 try:
@@ -1233,9 +1236,9 @@ class Manager:
             raise
         return identity
 
-    def prepare_runtime(self,conn,session_id,runtime,catalog,model=None,effort=None,handoff=None,now=None):
+    def prepare_runtime(self,conn,session_id,runtime,catalog,model=None,effort=None,handoff=None,now=None,speed=None):
         with self.lock:
-            return runtime_switch.prepare(conn,board.session(conn,session_id),self,runtime,catalog,model,effort,handoff,now)
+            return runtime_switch.prepare(conn,board.session(conn,session_id),self,runtime,catalog,model,effort,handoff,now,speed=speed)
 
     def switch_runtime(self,conn,session_id,preview_id,confirm,catalog,now=None):
         with self.lock:
@@ -1807,7 +1810,7 @@ class Manager:
     def set_options(self, conn, session_id, changes, now=None):
         with self.lock:
             if not changes:
-                raise ValueError("至少提供 model 或 effort")
+                raise ValueError("至少提供 model、effort 或 speed")
             runtime = runtimes.get(conn, session_id)["runtime"]
             if runtime == "codex":
                 options = {**models.get(conn, session_id), **changes}
@@ -1816,6 +1819,8 @@ class Manager:
                     self.processes[session_id].set_options(options)
                 models.set(conn, session_id, **options, now=now)
                 return options
+            if changes.get("speed") is not None:
+                raise ValueError("Claude Code 不支持速度设置；速度只适用于 Codex 会话")
             if "effort" in changes and changes["effort"] is None and self.running(session_id):
                 raise ValueError("运行中的会话不能将 effort 恢复默认；请选择具体档位，或停止后设为 null 以在下次启动跟随账号设置")
             options = {**models.get(conn, session_id), **changes}

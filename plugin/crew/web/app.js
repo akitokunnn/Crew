@@ -112,9 +112,20 @@
     const runtime = runtimeInfo(item), model = (runtime.models || []).find(model => model.id === modelId);
     return model && Array.isArray(model.efforts) ? model.efforts : runtime.efforts || [];
   }
+  // Codex speed (service tier); other runtimes have none.
+  const modelSpeeds = (item, modelId) => window.CrewSettings.speedsFor(runtimeInfo(item), modelId);
+  const speedName = (item, id) => window.CrewSettings.speedName(runtimeInfo(item), id);
   const currentOptions = item => item.applied == null ? item : item.applied;
-  function optionsLabel(item) { const options = currentOptions(item), model = options.model == null ? "默认" : modelName(options.model, item); return modelEfforts(item, options.model).length === 0 ? model : `${model} · ${options.effort == null ? "默认" : options.effort}`; }
-  function optionChangeNotice(item, changes) { return `下一步启用 ${optionsLabel({...item, ...changes, applied:null})}`; }
+  function optionsLabel(item) {
+    const options = currentOptions(item), model = options.model == null ? "默认" : modelName(options.model, item);
+    const label = modelEfforts(item, options.model).length === 0 ? model : `${model} · ${options.effort == null ? "默认" : options.effort}`;
+    // Standard speed is the norm; only a faster tier is worth a label.
+    return runtimeId(item) === "codex" && options.speed != null && options.speed !== "default" ? `${label} · ${speedName(item, options.speed)}` : label;
+  }
+  function optionChangeNotice(item, changes) {
+    if (Object.keys(changes).length === 1 && "speed" in changes) return `下一步启用速度：${changes.speed === null ? "跟随 Codex 设置" : speedName(item, changes.speed)}`;
+    return `下一步启用 ${optionsLabel({...item, ...changes, applied:null})}`;
+  }
   function optionChange(item, field, value) {
     const runtime = runtimeInfo(item), options = currentOptions(item);
     if (!runtime.available) throw new Error(runtime.error || `${runtime.name} 暂不可用，请检查安装和登录。`);
@@ -126,6 +137,13 @@
         if (item.where === "bg" || item.running) throw new Error("这个模型不支持当前 effort，请先选择兼容的 effort，或停下会话后切换。");
         changes.effort = null;
       }
+      const oldSpeed = item.speed ?? null;
+      if (runtime.id === "codex" && oldSpeed !== null && !modelSpeeds(item, value).some(speed => speed.id === oldSpeed)) {
+        if (item.where === "bg" || item.running) throw new Error("这个模型不支持当前速度，请先选择兼容的速度，或停下会话后切换。");
+        changes.speed = null;
+      }
+    } else if (field === "speed") {
+      if (value !== null && !modelSpeeds(item, item.model ?? options.model).some(speed => speed.id === value)) throw new Error("这个模型不支持所选速度，请重新选择。");
     } else if (!modelEfforts(item, item.model ?? options.model).includes(value)) throw new Error("这个模型不支持所选 effort，请重新选择。");
     return changes;
   }
@@ -538,7 +556,7 @@
     const groupTodos = todosOf(leaderId);
     goals?.sync(leaderId, goalId);
     const access = chatAccess(item);
-    const chatModel = `<button class="model-tag" data-act="model-menu" data-id="${esc(item.session_id)}" aria-haspopup="menu" title="切换模型和 effort"><span class="model-label">${esc(optionsLabel(item))}</span>${ic("down", "xs")}</button>`;
+    const chatModel = `<button class="model-tag" data-act="model-menu" data-id="${esc(item.session_id)}" aria-haspopup="menu" title="${runtimeId(item) === "codex" ? "切换模型、effort 和速度" : "切换模型和 effort"}"><span class="model-label">${esc(optionsLabel(item))}</span>${ic("down", "xs")}</button>`;
     const trusted = Boolean(item.trust?.enabled), trustLabel = trusted ? "自主推进" : "由我拍板";
     const trustTag = readOnlyId === null ? `<button type="button" class="trust-tag" data-act="trust-open" data-id="${esc(item.session_id)}" data-mode="${trusted ? "autonomous" : "human"}" aria-haspopup="dialog" title="leader 决策方式：${trustLabel}${trusted ? `。授权范围：${esc(item.trust.goal)}` : ""}">${trustIcon(trusted)}<span>${trustLabel}</span></button>` : "";
     const identity = `${item.session_id}:${record?.goal_id ?? ""}:${access.readonly}:${access.readonlyReason ?? ""}`;
@@ -747,8 +765,10 @@
   let menuAnchor = null;
   function modelMenu(item) {
     const id = item.session_id, options = currentOptions(item), runtime = runtimeInfo(item), efforts = modelEfforts(item, item.model ?? options.model), unsupported = efforts.length === 0;
+    const configuredSpeed = item.speed ?? null, speeds = runtime.id === "codex" ? [{id:null, name:"默认", description:"跟随 Codex 自身设置"}, ...modelSpeeds(item, item.model ?? options.model)] : [];
+    const speedGroup = speeds.length === 0 ? "" : `<div role="group" aria-labelledby="menu-speed-label"><div class="mtitle" id="menu-speed-label">速度</div>${speeds.map(speed => `<button role="menuitemradio" aria-checked="${configuredSpeed === speed.id}" data-act="set-speed" data-id="${esc(id)}" data-speed="${speed.id === null ? "" : esc(speed.id)}" ${speed.description ? `title="${esc(speed.description)}"` : ""} ${runtime.available ? "" : "disabled"}><span class="model-check">${configuredSpeed === speed.id ? ic("check", "sm") : ""}</span>${esc(speed.name)}</button>`).join("")}</div>`;
     const error = !runtime.available ? runtime.error || `${runtime.name} 暂不可用，请检查安装和登录。` : null;
-    return `<div class="menu-runtime">${runtimeBadge(item)}<span>执行工具</span></div>${error ? `<div class="runtime-error" role="status">${esc(error)}</div>` : ""}<div role="group" aria-labelledby="menu-model-label"><div class="mtitle" id="menu-model-label">模型</div>${[{id:null, name:"默认"}].concat(runtime.models || []).map(model => `<button role="menuitemradio" aria-checked="${item.model === model.id}" data-act="set-model" data-id="${esc(id)}" data-model="${model.id === null ? "" : esc(model.id)}" ${runtime.available ? "" : "disabled"}><span class="model-check">${item.model === model.id ? ic("check", "sm") : ""}</span>${esc(model.name)}</button>`).join("")}</div><div role="group" aria-labelledby="menu-effort-label" aria-disabled="${unsupported}"><div class="mtitle" id="menu-effort-label">effort${unsupported ? " · 此模型不支持" : ""}</div>${efforts.map(effort => `<button role="menuitemradio" aria-checked="${options.effort === effort}" data-act="set-effort" data-id="${esc(id)}" data-effort="${esc(effort)}" ${runtime.available ? "" : "disabled"}><span class="model-check">${options.effort === effort ? ic("check", "sm") : ""}</span>${esc(effort)}</button>`).join("")}</div>${Array.isArray(state.runtimes) ? `<button role="menuitem" class="runtime-refresh" data-act="runtimes-refresh" data-id="${esc(id)}" ${runtimesLoading ? "disabled" : ""}>${runtimesLoading ? "检测中…" : "重新检测执行工具和模型"}</button>` : ""}`;
+    return `<div class="menu-runtime">${runtimeBadge(item)}<span>执行工具</span></div>${error ? `<div class="runtime-error" role="status">${esc(error)}</div>` : ""}<div role="group" aria-labelledby="menu-model-label"><div class="mtitle" id="menu-model-label">模型</div>${[{id:null, name:"默认"}].concat(runtime.models || []).map(model => `<button role="menuitemradio" aria-checked="${item.model === model.id}" data-act="set-model" data-id="${esc(id)}" data-model="${model.id === null ? "" : esc(model.id)}" ${runtime.available ? "" : "disabled"}><span class="model-check">${item.model === model.id ? ic("check", "sm") : ""}</span>${esc(model.name)}</button>`).join("")}</div><div role="group" aria-labelledby="menu-effort-label" aria-disabled="${unsupported}"><div class="mtitle" id="menu-effort-label">effort${unsupported ? " · 此模型不支持" : ""}</div>${efforts.map(effort => `<button role="menuitemradio" aria-checked="${options.effort === effort}" data-act="set-effort" data-id="${esc(id)}" data-effort="${esc(effort)}" ${runtime.available ? "" : "disabled"}><span class="model-check">${options.effort === effort ? ic("check", "sm") : ""}</span>${esc(effort)}</button>`).join("")}</div>${speedGroup}${Array.isArray(state.runtimes) ? `<button role="menuitem" class="runtime-refresh" data-act="runtimes-refresh" data-id="${esc(id)}" ${runtimesLoading ? "disabled" : ""}>${runtimesLoading ? "检测中…" : "重新检测执行工具和模型"}</button>` : ""}`;
   }
   function modelControls(item) {
     const id = item.session_id;
@@ -767,7 +787,7 @@
     const btn = (act, label, reason = "", danger = false, extra = "") => menuButton(item, act, label, reason, danger, extra);
     let html = isLeader ? btn("leader", "打开对话") + btn("leader-pin", item.pinned ? "取消置顶" : "置顶") + btn("dispatch-history", "临时协作记录") : btn("member-history", "进入本人对话") + btn("card", "资料与操作") + btn("open-vscode", "在 VS Code 打开", editorHandoffReason(item) || (item.status === "working" ? "会话正在工作，请等它空闲后再打开" : ""));
     if (runtimeSwitch) html += btn("runtime-switch", "更换执行工具…", runtimeSwitch.reason(item));
-    html += btn("stop", "停下这一轮", stopReason) + btn("compact", "压缩上下文", compactReason) + submenu(item, "模型和 effort", modelMenu(item)) + btn("session-rename", "改名");
+    html += btn("stop", "停下这一轮", stopReason) + btn("compact", "压缩上下文", compactReason) + submenu(item, runtimeId(item) === "codex" ? "模型、effort 和速度" : "模型和 effort", modelMenu(item)) + btn("session-rename", "改名");
     if (isLeader) {
       html += btn("leader-settings", "Leader 设置…") + btn("member-create", "新建组员") + btn("member-defaults", "组员默认大脑");
       html += submenu(item, "leader 决策方式", [["human","由我拍板"],["autonomous","自主推进"]].map(([mode,label]) => `<button type="button" role="menuitemradio" aria-checked="${Boolean(item.trust?.enabled) === (mode === "autonomous")}" data-act="leader-mode" data-id="${esc(item.session_id)}" data-mode="${mode}">${label}</button>`).join(""));
@@ -1018,7 +1038,7 @@
     if (form === null) return;
     if (form.dataset.runtimeExplicit !== "true") {
       const selected = taskRuntime("leader"), selection = state?.ai?.leader ?? state?.ai?.default;
-      if (form.elements.runtime.value !== selected) { form.elements.runtime.value = selected; form.elements.model.value = selection?.model || ""; form.elements.effort.value = selection?.effort || ""; }
+      if (form.elements.runtime.value !== selected) { form.elements.runtime.value = selected; form.elements.model.value = selection?.model || ""; form.elements.effort.value = selection?.effort || ""; form.elements.speed.value = selected === "codex" ? selection?.speed || "" : ""; }
     }
     const runtime = runtimeInfo(form.elements.runtime.value);
     $("leader-runtime-options").innerHTML = runtimeList().map(item => `<button type="button" class="model-option runtime-option ${item.id === runtime.id ? "on" : ""}" data-act="leader-runtime" data-runtime="${esc(item.id)}" aria-pressed="${item.id === runtime.id}">${esc(item.name)}${item.available ? "" : '<small>未就绪</small>'}</button>`).join("");
@@ -1036,25 +1056,31 @@
     $("leader-effort-options").setAttribute("aria-disabled", String(unsupported || !runtime.available));
     const shownEfforts = ["", ...efforts]; if (form.elements.effort.value && !shownEfforts.includes(form.elements.effort.value)) shownEfforts.push(form.elements.effort.value);
     $("leader-effort-options").innerHTML = shownEfforts.map(effort => `<button type="button" class="model-option ${form.elements.effort.value === effort ? "on" : ""}" data-act="leader-effort" data-effort="${esc(effort)}" aria-pressed="${form.elements.effort.value === effort}" ${!runtime.available ? "disabled" : ""}>${effort === "" ? "原生默认" : esc(effort)}</button>`).join("");
+    $("leader-speed-field").hidden = runtime.id !== "codex";
+    const shownSpeeds = [{id:"", name:"原生默认", description:"跟随 Codex 自身设置"}, ...modelSpeeds(runtime.id, form.elements.model.value || null)];
+    if (form.elements.speed.value && !shownSpeeds.some(speed => speed.id === form.elements.speed.value)) shownSpeeds.push({id:form.elements.speed.value, name:form.elements.speed.value, description:"当前选择，所选模型未列出"});
+    $("leader-speed-options").innerHTML = runtime.id !== "codex" ? "" : shownSpeeds.map(speed => `<button type="button" class="model-option ${form.elements.speed.value === speed.id ? "on" : ""}" data-act="leader-speed" data-speed="${esc(speed.id)}" aria-pressed="${form.elements.speed.value === speed.id}" ${speed.description ? `title="${esc(speed.description)}"` : ""} ${!runtime.available ? "disabled" : ""}>${esc(speed.name)}</button>`).join("");
     form.querySelector('[type="submit"]').disabled = !runtime.available || operationIds.has("leader");
   }
   function leaderPayload(form) {
     const runtime = runtimeInfo(form.elements.runtime.value), model = form.elements.model.value || null, effort = form.elements.effort.value || null;
+    const speed = runtime.id === "codex" ? form.elements.speed.value || null : null;
     if (!runtime.id) throw new Error(runtimePrompt());
     if (!runtime.available) throw new Error(runtime.error || `${runtime.name} 暂不可用，请检查安装和登录。`);
     const knownModel = (runtime.models || []).find(item => item.id === model);
     if (effort !== null && knownModel && Array.isArray(knownModel.efforts) && !knownModel.efforts.includes(effort)) throw new Error("这个模型不支持所选 effort，请重新选择。");
-    return {name:form.elements.name.value.trim() || undefined, task:form.elements.task.value.trim(), runtime:runtime.id, model, effort};
+    if (speed !== null && knownModel && Array.isArray(knownModel.speeds) && !modelSpeeds(runtime.id, model).some(item => item.id === speed)) throw new Error("这个模型不支持所选速度，请重新选择。");
+    return {name:form.elements.name.value.trim() || undefined, task:form.elements.task.value.trim(), runtime:runtime.id, model, effort, speed};
   }
   function selectLeaderOption(form, field, value) {
     form.dataset.runtimeExplicit = "true";
     form.elements[field].value = value;
-    if (field === "runtime") { form.elements.model.value = ""; form.elements.effort.value = ""; }
+    if (field === "runtime") { form.elements.model.value = ""; form.elements.effort.value = ""; form.elements.speed.value = ""; }
   }
   function openModalLeader() {
     dialogReturn = focusDescriptor(document.activeElement);
-    const selection = state?.ai?.leader ?? state?.ai?.default, initialRuntime = taskRuntime("leader"), initialModel = selection?.model || "", initialEffort = selection?.effort || "";
-    $("backdrop").innerHTML = `<form class="modal leader-modal" id="leader-form" role="dialog" aria-modal="true" aria-labelledby="leader-title"><h3 id="leader-title">开始新对话</h3><p class="d">说说你的想法。leader 会和你明确任务，在得到执行同意后推进。</p><div class="field"><label for="leader-task">想做什么？</label><textarea id="leader-task" name="task" rows="4" placeholder="比如：我最近打算健身，帮我做一个简单的打卡 App。" required></textarea></div><details class="leader-options"><summary>对话名称与 AI 设置</summary><div class="field"><label for="leader-name">对话名称</label><input id="leader-name" name="name" placeholder="可留空，leader 会根据讨论更新名字"></div><div class="field"><span class="field-label" id="leader-runtime-label">执行工具</span><input type="hidden" name="runtime" value="${esc(initialRuntime)}"><div class="model-options runtime-options" id="leader-runtime-options" role="group" aria-labelledby="leader-runtime-label"></div><button type="button" class="runtime-refresh" data-act="runtimes-refresh">重新检测执行工具和模型</button></div><div class="field"><span class="field-label" id="leader-model-label">用什么模型</span><input type="hidden" name="model" value="${esc(initialModel)}"><div class="model-options" id="leader-model-options" role="group" aria-labelledby="leader-model-label"></div></div><div class="field" id="leader-effort-field"><span class="field-label" id="leader-effort-label">effort<span class="effort-note" id="leader-effort-note" hidden>此模型不支持</span></span><input type="hidden" name="effort" value="${esc(initialEffort)}"><div class="model-options effort-options" id="leader-effort-options" role="group" aria-labelledby="leader-effort-label" aria-disabled="false"></div></div></details><p id="leader-runtime-status" role="status"></p><p class="error-line" id="leader-error"></p><div class="acts"><button class="btn ghost" type="button" data-act="modal-close">取消</button><button class="btn primary" type="submit">发送并开始讨论</button></div></form>`;
+    const selection = state?.ai?.leader ?? state?.ai?.default, initialRuntime = taskRuntime("leader"), initialModel = selection?.model || "", initialEffort = selection?.effort || "", initialSpeed = initialRuntime === "codex" ? selection?.speed || "" : "";
+    $("backdrop").innerHTML = `<form class="modal leader-modal" id="leader-form" role="dialog" aria-modal="true" aria-labelledby="leader-title"><h3 id="leader-title">开始新对话</h3><p class="d">说说你的想法。leader 会和你明确任务，在得到执行同意后推进。</p><div class="field"><label for="leader-task">想做什么？</label><textarea id="leader-task" name="task" rows="4" placeholder="比如：我最近打算健身，帮我做一个简单的打卡 App。" required></textarea></div><details class="leader-options"><summary>对话名称与 AI 设置</summary><div class="field"><label for="leader-name">对话名称</label><input id="leader-name" name="name" placeholder="可留空，leader 会根据讨论更新名字"></div><div class="field"><span class="field-label" id="leader-runtime-label">执行工具</span><input type="hidden" name="runtime" value="${esc(initialRuntime)}"><div class="model-options runtime-options" id="leader-runtime-options" role="group" aria-labelledby="leader-runtime-label"></div><button type="button" class="runtime-refresh" data-act="runtimes-refresh">重新检测执行工具和模型</button></div><div class="field"><span class="field-label" id="leader-model-label">用什么模型</span><input type="hidden" name="model" value="${esc(initialModel)}"><div class="model-options" id="leader-model-options" role="group" aria-labelledby="leader-model-label"></div></div><div class="field" id="leader-effort-field"><span class="field-label" id="leader-effort-label">effort<span class="effort-note" id="leader-effort-note" hidden>此模型不支持</span></span><input type="hidden" name="effort" value="${esc(initialEffort)}"><div class="model-options effort-options" id="leader-effort-options" role="group" aria-labelledby="leader-effort-label" aria-disabled="false"></div></div><div class="field" id="leader-speed-field" hidden><span class="field-label" id="leader-speed-label">速度<span class="effort-note">仅 Codex · 较快档位用量更高</span></span><input type="hidden" name="speed" value="${esc(initialSpeed)}"><div class="model-options effort-options" id="leader-speed-options" role="group" aria-labelledby="leader-speed-label"></div></div></details><p id="leader-runtime-status" role="status"></p><p class="error-line" id="leader-error"></p><div class="acts"><button class="btn ghost" type="button" data-act="modal-close">取消</button><button class="btn primary" type="submit">发送并开始讨论</button></div></form>`;
     $("backdrop").classList.add("show"); renderLeaderRuntime(); $("leader-task").focus();
     refreshRuntimes();
   }
@@ -1335,8 +1361,8 @@
       else if (act === "right-close") { rightOpen = false; syncSidecar(); $("main").querySelector('[data-act="right-open"]')?.focus(); }
       else if (act === "side-section-close") { attentionVisible = false; syncSidecar(); $("chat-head").querySelector('[data-act="attention"]')?.focus(); }
       else if (act === "modal-leader") openModalLeader();
-      else if (act === "leader-runtime" || act === "leader-model" || act === "leader-effort") {
-        const form = $("leader-form"), field = {"leader-runtime":"runtime", "leader-model":"model", "leader-effort":"effort"}[act];
+      else if (act === "leader-runtime" || act === "leader-model" || act === "leader-effort" || act === "leader-speed") {
+        const form = $("leader-form"), field = {"leader-runtime":"runtime", "leader-model":"model", "leader-effort":"effort", "leader-speed":"speed"}[act];
         selectLeaderOption(form,field,button.dataset[field]);
         $("leader-error").textContent = "";
         renderLeaderRuntime();
@@ -1362,8 +1388,8 @@
       else if (act === "compact-confirm") {
         action(`compact:${id}`, async () => { closeBackdrop(); await compactContext(id); });
       }
-      else if (act === "set-model" || act === "set-effort") action(`options:${id}`, async () => {
-        const field = act === "set-model" ? "model" : "effort", value = button.dataset[field] === "" ? null : button.dataset[field];
+      else if (act === "set-model" || act === "set-effort" || act === "set-speed") action(`options:${id}`, async () => {
+        const field = {"set-model":"model", "set-effort":"effort", "set-speed":"speed"}[act], value = button.dataset[field] === "" ? null : button.dataset[field];
         const item = sessionItem(id), changes = optionChange(item, field, value);
         hideMenu(); await api("/api/session/options", {session_id:id, ...changes}); await loadState(true);
         toast(optionChangeNotice(item, changes));

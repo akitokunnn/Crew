@@ -34,7 +34,7 @@ class MemberDefaultTests(RuntimeFixture):
             member_defaults.save(self.conn,'chief-id',own)
         result = self.plan()
         self.assertEqual((result['runtime'],result['model'],result['effort']),('codex','group-model','low'))
-        self.assertEqual(member_defaults.for_project(self.conn,'demo'),{'chief-id':own})
+        self.assertEqual(member_defaults.for_project(self.conn,'demo'),{'chief-id':{**own,'speed':None}})
         member_defaults.save(self.conn,'chief-id',None)
         self.assertEqual(self.plan()['model'],'global-model')
 

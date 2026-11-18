@@ -10,8 +10,8 @@ from . import board, guard, store
 
 PURPOSES = ('default', 'leader', 'member', 'assistant', 'digest', 'git', 'operations')
 TASK_OVERRIDES = ('leader', 'member', 'assistant')
-FIELDS = ('runtime', 'model', 'effort')
-DEFAULT = {'default': {'runtime': None, 'model': None, 'effort': None},
+FIELDS = ('runtime', 'model', 'effort', 'speed')
+DEFAULT = {'default': {'runtime': None, 'model': None, 'effort': None, 'speed': None},
            'leader': None, 'member': None, 'assistant': None, 'digest': None, 'git': None, 'operations': None}
 EXECUTION_DEFAULT = {'codex': 'workspace-write', 'claude': 'default'}
 EXECUTION_CHOICES = {'codex': ('read-only', 'workspace-write', 'danger-full-access'),
@@ -23,11 +23,16 @@ class SettingsError(board.BoardError):
 
 
 def _selection(value, name):
+    # Choices saved before Codex speed existed lack it and keep following Codex's own setting.
+    if isinstance(value, dict) and 'speed' not in value:
+        value = {**value, 'speed': None}
     if not isinstance(value, dict) or set(value) != set(FIELDS):
-        raise SettingsError(name + ' 必须包含 runtime、model、effort 三个字段')
+        raise SettingsError(name + ' 必须包含 runtime、model、effort、speed 字段')
     if value['runtime'] not in (None, 'claude', 'codex'):
         raise SettingsError(name + '.runtime 必须是 null、claude 或 codex')
-    for field, limit in (('model', 300), ('effort', 100)):
+    if value['runtime'] == 'claude' and value['speed'] is not None:
+        raise SettingsError(name + '.speed 只适用于 Codex；Claude Code 请设为 null')
+    for field, limit in (('model', 300), ('effort', 100), ('speed', 100)):
         text = value[field]
         if text is not None and (not isinstance(text, str) or not text.strip() or text != text.strip()
                                  or len(text) > limit or text.startswith('-')
@@ -142,7 +147,7 @@ def save(source, ai):
 
 
 def resolve(source, purpose='default', which=None):
-    """Select runtime/model/effort without switching an explicit carrier."""
+    """Select runtime/model/effort/speed without switching an explicit carrier."""
     if purpose not in PURPOSES:
         raise SettingsError('未知 AI 设置用途: ' + str(purpose))
     ai = get(source)

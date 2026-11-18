@@ -36,8 +36,13 @@ class Catalog:
                             page = client.list_models(**({"cursor": cursor} if cursor else {}))
                             for item in page["data"]:
                                 efforts = [choice["reasoningEffort"] for choice in item.get("supportedReasoningEfforts", [])]
+                                # Speeds are Codex service tiers; standard speed ("default") is always available.
+                                speeds = [{"id": tier["id"], "name": tier.get("name") or tier["id"],
+                                           "description": tier.get("description") or ""}
+                                          for tier in item.get("serviceTiers") or []]
                                 entries.append({"id": item.get("model") or item["id"], "name": item.get("displayName") or item["id"],
                                                 "efforts": efforts, "default_effort": item.get("defaultReasoningEffort"),
+                                                "speeds": speeds, "default_speed": item.get("defaultServiceTier"),
                                                 "context_window": item.get("contextWindow")})
                             cursor = page.get("nextCursor")
                             if not cursor:

@@ -139,6 +139,8 @@ def _codex(text, process_factory, selected, cancelled=None):
                 if selected['effort'] is not None:
                     config['model_reasoning_effort'] = selected['effort']
                 options = {'model': selected['model']} if selected['model'] is not None else {}
+                if selected.get('speed') is not None:
+                    options['serviceTier'] = selected['speed']
                 client.timeout = remaining()
                 started = client.start_thread(cwd=cwd, ephemeral=True, sandbox='read-only', approvalPolicy='never',
                                                dynamicTools=[], environments=[], config=config, **options,

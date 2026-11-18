@@ -66,9 +66,9 @@ def set(conn, session_id, runtime, native_id=None, now=None):
                      (session_id, runtime, native_id, store.now_iso() if now is None else now))
     except sqlite3.IntegrityError as exc:
         raise board.Conflict("原生会话已经绑定到另一个 Crew 会话") from exc
-    options=conn.execute('SELECT model,effort FROM session_options WHERE session_id=?',(session_id,)).fetchone()
+    options=conn.execute('SELECT model,effort,speed FROM session_options WHERE session_id=?',(session_id,)).fetchone()
     existing=conn.execute('SELECT native_id FROM session_runtime_bindings WHERE session_id=? AND runtime=?',(session_id,runtime)).fetchone()
     remembered=native_id if native_id is not None or existing is None else existing['native_id']
-    conn.execute('INSERT INTO session_runtime_bindings(session_id,runtime,native_id,model,effort,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(session_id,runtime) DO UPDATE SET native_id=excluded.native_id,model=excluded.model,effort=excluded.effort,updated_at=excluded.updated_at',
-                 (session_id,runtime,remembered,options['model'] if options else None,options['effort'] if options else None,store.now_iso() if now is None else now))
+    conn.execute('INSERT INTO session_runtime_bindings(session_id,runtime,native_id,model,effort,speed,updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(session_id,runtime) DO UPDATE SET native_id=excluded.native_id,model=excluded.model,effort=excluded.effort,speed=excluded.speed,updated_at=excluded.updated_at',
+                 (session_id,runtime,remembered,options['model'] if options else None,options['effort'] if options else None,options['speed'] if options else None,store.now_iso() if now is None else now))
     return get(conn, session_id)

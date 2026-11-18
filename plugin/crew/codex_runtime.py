@@ -304,6 +304,8 @@ class CodexRunning:
                   "sandbox": sandbox_mode, "approvalPolicy": "never" if sandbox_mode == 'danger-full-access' else 'on-request'}
         if options.get("model") is not None:
             params["model"] = options["model"]
+        if options.get("speed") is not None:
+            params["serviceTier"] = options["speed"]
         self._crew_resume_params = dict(params)
         self._lease = RuntimeLease(self.home, execution['id'] if execution else self.session_id).acquire()
         def own_process(command, **kwargs):
@@ -360,11 +362,13 @@ class CodexRunning:
                             if key not in ('started_at', 'ended_at', 'updated_at')},
                             'status': 'unknown', 'detail': '会话重新连接，子代理状态未确认'})
                 self._subagents = codex_subagents.Events(self.thread_id, self.journal.subagents.values())
-                self.applied = {"model": result["model"], "effort": result.get("reasoningEffort")}
+                self.applied = {"model": result["model"], "effort": result.get("reasoningEffort"),
+                                "speed": result.get("serviceTier")}
             with closing(store.connect(self.home)) as conn:
                 if execution:
                     goals.bind_native(conn, execution['id'], 'codex', self.thread_id,
-                                      model=self.applied['model'], effort=self.applied['effort'])
+                                      model=self.applied['model'], effort=self.applied['effort'],
+                                      speed=self.applied['speed'])
                 else:
                     runtimes.set(conn, self.session_id, "codex", native_id=self.thread_id)
                 native_handoff.remember(conn, self.session_id, self.thread_id, self.native_home,
@@ -436,7 +440,8 @@ class CodexRunning:
                     self._turn_ready.notify_all()
                 if method == "thread/settings/updated":
                     settings = params["threadSettings"]
-                    self.applied = {"model": settings["model"], "effort": settings.get("effort")}
+                    self.applied = {"model": settings["model"], "effort": settings.get("effort"),
+                                    "speed": settings.get("serviceTier")}
                     self._settings_revision += 1
                     self._settings.notify_all()
                 if (method == "hook/completed" and params.get("run", {}).get("eventName") == "preToolUse"
@@ -656,13 +661,15 @@ class CodexRunning:
 
     def set_options(self, options):
         with self.input_lock:
-            if any(options.get(key) is None and self._options.get(key) is not None for key in ("model", "effort")):
+            if any(options.get(key) is None and self._options.get(key) is not None for key in ("model", "effort", "speed")):
                 raise ValueError("运行中的 Codex 不能恢复账号默认选项；请先停止会话，再设为 null 后启动")
             changes = {key: value for key, value in options.items()
-                       if key in ("model", "effort") and value is not None and value != self._options.get(key)}
+                       if key in ("model", "effort", "speed") and value is not None and value != self._options.get(key)}
             revision = self._settings_revision
         if changes:
-            self.client.request("thread/settings/update", {"threadId": self.thread_id, **changes})
+            # Crew calls the service tier "speed"; Codex names it serviceTier.
+            native = {"serviceTier" if key == "speed" else key: value for key, value in changes.items()}
+            self.client.request("thread/settings/update", {"threadId": self.thread_id, **native})
             with self._settings:
                 if not self._settings.wait_for(lambda: (self._settings_revision > revision and
                                                        all(self.applied.get(key) == value for key, value in changes.items()))

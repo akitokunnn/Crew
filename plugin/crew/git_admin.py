@@ -129,14 +129,16 @@ def enable(conn, home, plugin_root, project_name, launcher, base=None, integrati
     selected = settings.resolve(conn, 'git') if runtime is None else {
         'runtime': runtime,
         'model': configured['model'] if configured['runtime'] in (None, runtime) else None,
-        'effort': configured['effort'] if configured['runtime'] in (None, runtime) else None}
+        'effort': configured['effort'] if configured['runtime'] in (None, runtime) else None,
+        'speed': configured.get('speed') if runtime == 'codex' and configured['runtime'] in (None, runtime) else None}
     runtime = selected['runtime']
     task = behavior_prompts.text(conn, 'git_task', project=project_name, values={
         'policy_command': 'crew_git(action="policy", data={"text":"规则正文"})' if runtime == 'codex' else 'crew git policy --set',
         'requests_command': 'crew_git(action="requests")，处理后用 action="resolve"' if runtime == 'codex' else 'crew git requests'})
     result = launcher(conn, project_name, "Git 助手", task, group="git", role="leader",
                       new_worktree="crew/git-admin-" + uuid.uuid4().hex[:8], base=base, now=now,
-                      model=selected['model'], effort=selected['effort'], agent="crew:git", runtime=runtime)
+                      model=selected['model'], effort=selected['effort'], agent="crew:git", runtime=runtime,
+                      speed=selected['speed'])
     return board.enable_git(conn, project_name, base, integration, now=now,
                             admin_session_id=result["session_id"])
 

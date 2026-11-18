@@ -84,7 +84,7 @@ class RuntimeMappingTests(RuntimeFixture):
 class RuntimeModelTests(RuntimeFixture):
     def test_claude_options_keep_their_existing_shape_and_validation(self):
         models.set(self.conn, "member-id", "claude-opus-5-5", "max")
-        self.assertEqual(models.get(self.conn, "member-id"), {"model": "claude-opus-5-5", "effort": "max"})
+        self.assertEqual(models.get(self.conn, "member-id"), {"model": "claude-opus-5-5", "effort": "max", "speed": None})
         with self.assertRaises(ValueError):
             models.validate_options("bad model", "high")
         models.validate_options('claude-future-custom', 'high')
@@ -94,13 +94,41 @@ class RuntimeModelTests(RuntimeFixture):
     def test_codex_model_ids_are_not_a_stale_static_claude_allowlist(self):
         runtimes.set(self.conn, "member-id", "codex")
         models.set(self.conn, "member-id", "gpt-future-codex", "xhigh")
-        self.assertEqual(models.get(self.conn, "member-id"), {"model": "gpt-future-codex", "effort": "xhigh"})
+        self.assertEqual(models.get(self.conn, "member-id"), {"model": "gpt-future-codex", "effort": "xhigh", "speed": None})
         for model, effort in (("claude-opus-5-5", "high"), ("sonnet", "high"), ("gpt-new", "arbitrary"),
                               ("bad model", "high"), ([], "high")):
             with self.subTest(model=model, effort=effort), self.assertRaises(ValueError):
                 models.validate_options(model, effort, runtime="codex")
         models.set(self.conn, "member-id", None, None)
-        self.assertEqual(models.get(self.conn, "member-id"), {"model": None, "effort": None})
+        self.assertEqual(models.get(self.conn, "member-id"), {"model": None, "effort": None, "speed": None})
+
+    def test_codex_speed_follows_catalog_tiers_and_is_codex_only(self):
+        catalog = [{"id": "fast-model", "efforts": [], "speeds": [{"id": "priority", "name": "Fast"},
+                                                                   {"id": "ultrafast", "name": "Ultrafast"}]},
+                   {"id": "plain-model", "efforts": [], "speeds": [{"id": "priority", "name": "Fast"}]}]
+        for speed in (None, "default", "priority", "ultrafast"):
+            models.validate_options("fast-model", None, runtime="codex", catalog=catalog, speed=speed)
+        with self.assertRaisesRegex(ValueError, "不支持所选速度"):
+            models.validate_options("plain-model", None, runtime="codex", catalog=catalog, speed="ultrafast")
+        # Without a chosen model only a tier every listed model offers is safe.
+        models.validate_options(None, None, runtime="codex", catalog=catalog, speed="priority")
+        with self.assertRaises(ValueError):
+            models.validate_options(None, None, runtime="codex", catalog=catalog, speed="ultrafast")
+        raw = {"data": [{"id": "gpt-real", "model": "gpt-real",
+                         "serviceTiers": [{"id": "priority", "name": "Fast", "description": "2x speed"}]}]}
+        models.validate_options("gpt-real", None, runtime="codex", catalog=raw, speed="priority")
+        for bad in ("bad speed", "-x", 3, ""):
+            with self.subTest(speed=bad), self.assertRaises(ValueError):
+                models.validate_speed(bad, runtime="codex")
+        with self.assertRaisesRegex(ValueError, "Claude Code"):
+            models.validate_options(None, None, runtime="claude", speed="priority")
+        runtimes.set(self.conn, "member-id", "codex", "native-speed")
+        models.set(self.conn, "member-id", None, None, speed="priority")
+        self.assertEqual(models.get(self.conn, "member-id"), {"model": None, "effort": None, "speed": "priority"})
+        self.assertEqual(self.conn.execute("SELECT speed FROM session_runtime_bindings WHERE session_id='member-id' "
+                                           "AND runtime='codex'").fetchone()[0], "priority")
+        models.set(self.conn, "member-id", None, None)
+        self.assertIsNone(self.conn.execute("SELECT 1 FROM session_options WHERE session_id='member-id'").fetchone())
 
     def test_runtime_catalog_limits_models_and_their_supported_efforts(self):
         catalog = {"data": [{"id": "gpt-real", "model": "gpt-real",

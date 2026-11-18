@@ -1190,7 +1190,7 @@ class Service:
             with self.write_lock,closing(store.connect(self.home)) as conn:
                 stamp=self.now().isoformat(timespec='milliseconds').replace('+00:00','Z')
                 if path.endswith('/prepare'):
-                    return self.chat.prepare_runtime(conn,target['session_id'],desired,catalog,model=data.get('model'),effort=data.get('effort'),handoff=data.get('handoff'),now=stamp)
+                    return self.chat.prepare_runtime(conn,target['session_id'],desired,catalog,model=data.get('model'),effort=data.get('effort'),handoff=data.get('handoff'),now=stamp,speed=data.get('speed'))
                 return self.chat.switch_runtime(conn,target['session_id'],data['preview_id'],data.get('confirm'),catalog,now=stamp)
         if path in ("/api/files/resolve", "/api/files/open", "/api/files/reveal"):
             if project_name is not None and data.get('project') is not None and data['project'] != project_name:
@@ -1441,7 +1441,7 @@ class Service:
                     return self.chat.compact(target, caller_session_id=_optional_text(data, 'caller_session_id'), after_turn=after_turn)
                 if path == '/api/session/options':
                     options = self.chat.set_options(conn, target['session_id'],
-                                                    {key: data[key] for key in ('model', 'effort') if key in data}, now=now)
+                                                    {key: data[key] for key in ('model', 'effort', 'speed') if key in data}, now=now)
                     return {'ok': True, **options}
             if path == "/api/answer":
                 if type(data.get("id")) is not int:
@@ -1504,7 +1504,8 @@ class Service:
                                        goal_id=_optional_text(data, 'goal_id'),
                                        model=data["model"] if "model" in data else models.INHERIT,
                                        effort=data["effort"] if "effort" in data else models.INHERIT,
-                                       runtime=data["runtime"] if "runtime" in data else models.INHERIT)
+                                       runtime=data["runtime"] if "runtime" in data else models.INHERIT,
+                                       speed=data["speed"] if "speed" in data else models.INHERIT)
             if path == "/api/leader":
                 caller = _optional_text(data, 'caller_session_id')
                 spawn.authorize(conn, project, caller, role='leader')
@@ -1517,10 +1518,11 @@ class Service:
                 from . import discussion
                 name = _optional_text(data, 'name') or discussion.initial_name(conn, project)
                 task = _optional_text(data, "task")
-                selected = settings.resolve(conn, 'leader') if data.get('runtime') is None else {'runtime': runtimes.validate(data['runtime']), 'model': None, 'effort': None}
+                selected = settings.resolve(conn, 'leader') if data.get('runtime') is None else {'runtime': runtimes.validate(data['runtime']), 'model': None, 'effort': None, 'speed': None}
                 runtime = selected['runtime']
                 model = models.validate(data['model'] if 'model' in data else selected['model'], runtime=runtime)
                 effort = models.validate_effort(data['effort'] if 'effort' in data else selected['effort'], runtime=runtime)
+                speed = models.validate_speed(data['speed'] if 'speed' in data else selected['speed'], runtime=runtime)
                 candidate_members = [(self.candidate(conn, project, _text(member, "session_id")), _text(member, "name"))
                                      for member in data.get("candidate_members", [])]
                 names = {name, *members}
@@ -1532,14 +1534,15 @@ class Service:
                 # Check the leader and existing members before adopting anyone.
                 spawn.leader_plan(conn, self.home, self.plugin_root, project, name, members,
                                   task, cwd=_optional_text(data, "cwd"), new_worktree=_optional_text(data, "new_worktree"), now=now,
-                                  member_session_ids=member_session_ids, model=model, effort=effort, runtime=runtime)
+                                  member_session_ids=member_session_ids, model=model, effort=effort, runtime=runtime, speed=speed)
                 for candidate, member_name in candidate_members:
                     self.adopt(conn, project, candidate, member_name, None, now)
                 return self.chat.start(conn, project, name, task, role="leader",
                                        caller_session_id=caller,
                                        members=members, member_session_ids=member_session_ids + [candidate["session_id"] for candidate, _ in candidate_members],
                                        cwd=_optional_text(data, "cwd"),
-                                       new_worktree=_optional_text(data, "new_worktree"), now=now, model=model, effort=effort, runtime=runtime)
+                                       new_worktree=_optional_text(data, "new_worktree"), now=now, model=model, effort=effort, runtime=runtime,
+                                       speed=speed)
             if path == "/api/chat/send":
                 session = board.session(conn, _text(data, 'session_id'))
                 if session['project'] != project:

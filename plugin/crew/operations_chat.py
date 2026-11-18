@@ -210,6 +210,8 @@ def _codex(selected, prompt, cwd, emit, register):
                   'developerInstructions': '仅进行 Crew 运维诊断；不执行写入、服务控制或业务任务。'}
         if selected['model'] is not None:
             params['model'] = selected['model']
+        if selected.get('speed') is not None:
+            params['serviceTier'] = selected['speed']
         client.start_thread(**params)
         turn = {} if selected['effort'] is None else {'effort': selected['effort']}
         client.start_turn(prompt, **turn)

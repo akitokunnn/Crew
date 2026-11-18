@@ -21,7 +21,7 @@ class MemberCreationHttpTests(ShellFixture, unittest.TestCase):
         self.thread.start()
         self.addCleanup(self.close_server)
         self.url = self.server.url
-        self.choice = {'runtime':'claude','model':'claude-sonnet-5-5','effort':'high'}
+        self.choice = {'runtime':'claude','model':'claude-sonnet-5-5','effort':'high','speed':None}
 
     def test_owner_can_save_defaults_and_create_a_member_by_stable_leader_id_after_rename(self):
         code, value, _ = self.request('/api/member-defaults?project=demo', {'leader_session_id':'s3','selection':self.choice})
@@ -37,7 +37,7 @@ class MemberCreationHttpTests(ShellFixture, unittest.TestCase):
         sid=value['session_id']
         self.assertEqual(board.session(self.conn,sid)['group_name'],'renamed leader')
         self.assertEqual(runtimes.get(self.conn,sid)['runtime'],'claude')
-        self.assertEqual(models.get(self.conn,sid),{'model':'claude-sonnet-5-5','effort':'high'})
+        self.assertEqual(models.get(self.conn,sid),{'model':'claude-sonnet-5-5','effort':'high','speed':None})
         self.assertEqual(len(self.processes),1)
         self.assertFalse(self.server.service.chat.running('s3'))
 

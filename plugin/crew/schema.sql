@@ -269,7 +269,8 @@ CREATE TABLE IF NOT EXISTS session_options (
     session_id TEXT PRIMARY KEY REFERENCES sessions(session_id),
     model TEXT,
     effort TEXT,
-    set_at TEXT NOT NULL
+    set_at TEXT NOT NULL,
+    speed TEXT
 );
 
 CREATE TABLE IF NOT EXISTS rule_reads (
@@ -677,6 +678,7 @@ CREATE TABLE IF NOT EXISTS session_runtime_bindings (
  model TEXT,
  effort TEXT,
  updated_at TEXT NOT NULL,
+ speed TEXT,
  PRIMARY KEY(session_id,runtime),
  UNIQUE(runtime,native_id)
 );
@@ -701,7 +703,8 @@ CREATE TABLE IF NOT EXISTS runtime_switches (
  attempted_at TEXT,
  accepted_message_id TEXT,
  consumed_at TEXT,
- last_error TEXT
+ last_error TEXT,
+ target_speed TEXT
 );
 CREATE INDEX IF NOT EXISTS runtime_switches_session ON runtime_switches(session_id,status,configured_at);
 
@@ -751,7 +754,7 @@ CREATE TABLE IF NOT EXISTS goal_executions (
  session_id TEXT NOT NULL REFERENCES sessions(session_id), generation INTEGER NOT NULL,
  runtime TEXT NOT NULL CHECK(runtime IN ('claude','codex')), model TEXT, effort TEXT,
  status TEXT NOT NULL, requirement_version INTEGER NOT NULL,
- created_at TEXT NOT NULL, updated_at TEXT NOT NULL, ended_at TEXT, error TEXT,
+ created_at TEXT NOT NULL, updated_at TEXT NOT NULL, ended_at TEXT, error TEXT, speed TEXT,
  FOREIGN KEY(goal_id,round) REFERENCES goal_rounds(goal_id,number),
  UNIQUE(goal_id,round,session_id,generation)
 );
@@ -759,7 +762,7 @@ CREATE INDEX IF NOT EXISTS goal_executions_goal ON goal_executions(goal_id,round
 CREATE TABLE IF NOT EXISTS goal_execution_bindings (
  execution_id TEXT NOT NULL REFERENCES goal_executions(id),
  runtime TEXT NOT NULL CHECK(runtime IN ('claude','codex')), native_id TEXT,
- model TEXT, effort TEXT, updated_at TEXT NOT NULL,
+ model TEXT, effort TEXT, updated_at TEXT NOT NULL, speed TEXT,
  PRIMARY KEY(execution_id,runtime), UNIQUE(runtime,native_id)
 );
 CREATE TABLE IF NOT EXISTS goal_reports (

@@ -2,7 +2,31 @@
 (() => {
   const esc = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
   const clone = value => JSON.parse(JSON.stringify(value));
-  const empty = () => ({runtime:null, model:null, effort:null});
+  const empty = () => ({runtime:null, model:null, effort:null, speed:null});
+  // Codex speed is its service tier: "default" is standard speed, null leaves it to Codex's own setting.
+  const STANDARD_SPEED = {id:"default", name:"标准", description:""};
+  function speedsFor(runtime, modelId) {
+    if (runtime?.id !== "codex") return [];
+    const listed = (runtime.models || []).filter(item => Array.isArray(item.speeds));
+    const model = listed.find(item => item.id === modelId);
+    // Without a known model, offer only tiers every listed model has.
+    const tiers = model ? model.speeds : listed.length ? listed[0].speeds.filter(tier => listed.every(item => item.speeds.some(other => other.id === tier.id))) : [];
+    return [STANDARD_SPEED, ...tiers.filter(tier => tier.id !== STANDARD_SPEED.id)];
+  }
+  function speedName(runtime, id) {
+    if (id === STANDARD_SPEED.id) return STANDARD_SPEED.name;
+    for (const model of runtime?.models || []) { const tier = (model.speeds || []).find(item => item.id === id); if (tier) return tier.name || id; }
+    return id;
+  }
+  function speedOptions(value, choices) {
+    return `<option value="">原生默认</option>${choices.map(item => `<option value="${esc(item.id)}" ${item.id === value ? "selected" : ""}>${esc(item.name)}</option>`).join("")}${value && !choices.some(item => item.id === value) ? `<option value="${esc(value)}" selected>当前 · ${esc(value)}</option>` : ""}`;
+  }
+  // The tier's own description (cost and speed) under the picker; option labels stay short.
+  function speedNote(runtime, modelId, value) {
+    if (!value) return "沿用 Codex 自身配置";
+    if (value === STANDARD_SPEED.id) return "标准速度与用量";
+    return speedsFor(runtime, modelId).find(item => item.id === value)?.description || "所选模型未列出这个速度";
+  }
   const tasks = [["assistant", "全局助手", "所有工作区共用一个助手；首次发送时使用此选择"], ["leader", "新建 leader", "新建 leader 时的载体、模型与思考强度；创建时仍可临时调整"], ["member", "leader 召唤组员", "新组员默认使用的大脑；每个 leader 也能单独覆盖。已有组员不受影响"], ["digest", "频道摘要", "将交流整理成摘要"], ["git", "Git 管理员", "检查改动、整理提交与合并"], ["operations", "运维 AI", "后台聊天与事故处理共用此选择；自动修复另按已保存策略执行"]];
   const categories = [["library", "会话库", "查找、接入与管理已有会话"], ["ai", "AI 大脑", "载体、模型与任务分配"], ["execution", "执行权限", "文件与网络的访问范围"], ["prompts", "行为配置", "提示内容、覆盖范围与使用记录"], ["appearance", "外观", "让工作区更顺手"], ["sounds", "音效", "回复完成与任务交付的提示音"], ["remote", "局域网访问", "连接同一网络中的手机和电脑"], ["tools", "工具与更新", "本机执行工具"], ["connections", "消息渠道", "QQ、Lark / 飞书与远程通知"], ["storage", "存储与清理", "空间占用、回收与保留"], ["backend", "后台与运维", "运维对话、状态与配置"]];
   const icons = {
@@ -36,7 +60,8 @@
     return available.length === 1 ? available[0].id : "";
   }
   function initialAI(snapshot) {
-    const ai = {default:empty(), assistant:null, leader:null, member:null, digest:null, git:null, operations:null, ...clone(snapshot.ai || {})};
+    // Same key order as the saved snapshot, so an untouched draft never reads as an unsaved change.
+    const ai = {default:empty(), leader:null, member:null, assistant:null, digest:null, git:null, operations:null, ...clone(snapshot.ai || {})};
     if (!ai.default.runtime) ai.default.runtime = defaultRuntime(ai, snapshot.runtimes || []) || null;
     return ai;
   }
@@ -46,10 +71,12 @@
       if (ai[key] == null) continue;
       for (const field of ["model", "effort"]) if (ai[key][field] !== null && !ai[key][field].trim()) throw Error("模型和 effort 为空时请选择原生默认。");
       const selectedRuntime = ai[key].runtime || defaultRuntime(null,catalog);
-      if (key === "default" && !selectedRuntime && ai[key].model === null && ai[key].effort === null) continue;
+      if (key === "default" && !selectedRuntime && ai[key].model === null && ai[key].effort === null && !ai[key].speed) continue;
       if (!selectedRuntime) throw Error(`${key === "default" ? "默认大脑" : tasks.find(item => item[0] === key)[1]}：请选择执行载体，或使用“跟随默认”。`);
       const runtime = catalog.find(item => item.id === selectedRuntime), model = runtime?.models?.find(item => item.id === ai[key].model);
       if (ai[key].effort !== null && model && Array.isArray(model.efforts) && !model.efforts.includes(ai[key].effort)) throw Error(`${model.name || model.id} 不支持所填的 effort，请按实际支持情况修改。`);
+      if (ai[key].speed && selectedRuntime !== "codex") throw Error("速度只适用于 Codex，请改为原生默认。");
+      if (ai[key].speed && model && Array.isArray(model.speeds) && !speedsFor(runtime, model.id).some(item => item.id === ai[key].speed)) throw Error(`${model.name || model.id} 不支持所选速度，请重新选择。`);
     }
     return clone(ai);
   }
@@ -65,7 +92,9 @@
     const runtime = catalog.find(item => item.id === (selection.runtime || defaultRuntime(null,catalog))), model = runtime?.models?.find(item => item.id === selection.model);
     const efforts = model && Array.isArray(model.efforts) ? model.efforts : runtime?.efforts || [];
     const saved = selection.runtime && !runtime ? `<option value="${esc(selection.runtime)}" selected>${esc(selection.runtime)} · 未检测到</option>` : "";
-    return `<div class="cs-fields"><label>执行载体<select data-ai-key="${key}" data-ai-field="runtime"><option value="">${catalog.filter(item => item.available).length === 1 ? "自动使用唯一可用载体" : "请选择载体"}</option>${catalog.map(item => `<option value="${esc(item.id)}" ${item.id === selection.runtime ? "selected" : ""} ${item.available ? "" : "disabled"}>${esc(item.name || item.id)}${item.available ? "" : " · 未就绪"}</option>`).join("")}${saved}</select></label><label>模型${choiceMarkup(key, "model", selection.model, runtime?.models || [], customFields.has(key+":model"))}</label><label>思考强度 · effort${choiceMarkup(key, "effort", selection.effort, efforts.map(id => ({id})), customFields.has(key+":effort"))}</label></div>${runtime && !runtime.available ? `<p class="cs-warning">${esc(runtime.error || "该载体暂不可用，请检查安装与登录。已保存的选择会保留。")}</p>` : ""}`;
+    const codex = runtime?.id === "codex";
+    const speed = codex ? `<label>速度<select data-ai-key="${key}" data-ai-field="speed">${speedOptions(selection.speed ?? null, speedsFor(runtime, selection.model))}</select><span class="cs-speed-note" data-ai-speed-note="${key}">${esc(speedNote(runtime, selection.model, selection.speed ?? null))}</span></label>` : "";
+    return `<div class="cs-fields${codex ? " cs-fields-speed" : ""}"><label>执行载体<select data-ai-key="${key}" data-ai-field="runtime"><option value="">${catalog.filter(item => item.available).length === 1 ? "自动使用唯一可用载体" : "请选择载体"}</option>${catalog.map(item => `<option value="${esc(item.id)}" ${item.id === selection.runtime ? "selected" : ""} ${item.available ? "" : "disabled"}>${esc(item.name || item.id)}${item.available ? "" : " · 未就绪"}</option>`).join("")}${saved}</select></label><label>模型${choiceMarkup(key, "model", selection.model, runtime?.models || [], customFields.has(key+":model"))}</label><label>思考强度 · effort${choiceMarkup(key, "effort", selection.effort, efforts.map(id => ({id})), customFields.has(key+":effort"))}</label>${speed}</div>${runtime && !runtime.available ? `<p class="cs-warning">${esc(runtime.error || "该载体暂不可用，请检查安装与登录。已保存的选择会保留。")}</p>` : ""}`;
   }
   function create(options) {
     const root = options.host;
@@ -88,7 +117,7 @@
     }
     function renderAI() {
       const catalog = snapshot.runtimes || [];
-      content.innerHTML = `<section class="cs-card cs-default"><div class="cs-card-heading"><div><h2>默认大脑</h2><p>选择“跟随默认”的用途使用这里的选择；下面可分别指定大脑。</p></div><span class="cs-badge">默认</span></div>${selectionMarkup("default", draft.default, catalog, customFields)}<p class="cs-hint">下拉选择本机检测到的模型与强度；也可自定义输入。选择“原生默认”沿用工具配置。</p></section><div class="cs-section-heading"><h2>任务分配</h2><p>按用途选择大脑，也可以全部跟随默认。</p></div><div class="cs-task-list">${tasks.map(([key, title, description]) => `<section class="cs-card" data-ai-task="${key}" tabindex="-1"><div class="cs-card-heading"><div><h3>${title}</h3><p>${description}</p></div><label class="cs-inherit"><input type="checkbox" data-ai-inherit="${key}" ${draft[key] === null ? "checked" : ""}>${key === "member" ? "跟随各自 leader" : "跟随默认"}</label></div>${draft[key] === null ? `<p class="cs-follow">${key === 'member' ? '使用所属 leader 的载体、模型与思考强度；在组内设置时可覆盖。' : '使用默认大脑的载体、模型与思考强度。'}</p>` : selectionMarkup(key, draft[key], catalog, customFields)}</section>`).join("")}</div><p class="cs-footnote">保存设置不会运行 AI。新建会话时仍可单独选择；组员沿用 leader 的明确分配。</p>`;
+      content.innerHTML = `<section class="cs-card cs-default"><div class="cs-card-heading"><div><h2>默认大脑</h2><p>选择“跟随默认”的用途使用这里的选择；下面可分别指定大脑。</p></div><span class="cs-badge">默认</span></div>${selectionMarkup("default", draft.default, catalog, customFields)}<p class="cs-hint">下拉选择本机检测到的模型与强度；也可自定义输入。选择“原生默认”沿用工具配置。速度只对 Codex 生效，较快的档位会消耗更多用量。</p></section><div class="cs-section-heading"><h2>任务分配</h2><p>按用途选择大脑，也可以全部跟随默认。</p></div><div class="cs-task-list">${tasks.map(([key, title, description]) => `<section class="cs-card" data-ai-task="${key}" tabindex="-1"><div class="cs-card-heading"><div><h3>${title}</h3><p>${description}</p></div><label class="cs-inherit"><input type="checkbox" data-ai-inherit="${key}" ${draft[key] === null ? "checked" : ""}>${key === "member" ? "跟随各自 leader" : "跟随默认"}</label></div>${draft[key] === null ? `<p class="cs-follow">${key === 'member' ? '使用所属 leader 的载体、模型与思考强度；在组内设置时可覆盖。' : '使用默认大脑的载体、模型与思考强度。'}</p>` : selectionMarkup(key, draft[key], catalog, customFields)}</section>`).join("")}</div><p class="cs-footnote">保存设置不会运行 AI。新建会话时仍可单独选择；组员沿用 leader 的明确分配。</p>`;
     }
     function renderTools() {
       content.innerHTML = `<section class="cs-card"><div class="cs-card-heading"><div><h2>执行工具</h2><p>以下信息来自本机实际检测。</p></div><button type="button" class="cs-button" data-settings-action="reload">重新检测</button></div>${(snapshot.runtimes || []).map(item => `<div class="cs-tool-row"><div><strong>${esc(item.name || item.id)}</strong><p>${esc(item.error || (item.available ? "已就绪" : "未就绪"))}</p></div><span class="cs-badge ${item.available ? "cs-ready" : ""}">${item.available ? "可用" : "需配置"}</span></div>`).join("")}</section><p class="cs-footnote">安装、登录与工具更新可在 Crew 桌面首页的设置中管理。</p>`;
@@ -145,7 +174,7 @@
       else if (element.dataset.aiInherit) { const task = element.dataset.aiInherit; draft[task] = element.checked ? null : clone(draft.default); render(); }
       else if (key && field) {
         draft[key][field] = element.value.trim() || null;
-        if (field === "runtime") { draft[key].model = null; draft[key].effort = null; }
+        if (field === "runtime") { draft[key].model = null; draft[key].effort = null; draft[key].speed = null; }
         // A model change never silently invents or replaces an explicit effort.
         if (field === "runtime") {
           const focused = document.activeElement === element;
@@ -157,11 +186,18 @@
           const efforts = model && Array.isArray(model.efforts) ? model.efforts : runtime?.efforts || [];
           const picker = content.querySelector(`[data-ai-key="${key}"][data-ai-field="effort"]`);
           if (picker.tagName === "SELECT") picker.innerHTML = choiceOptions(draft[key].effort, efforts.map(id => ({id})));
+          // Like effort, an explicit speed is kept; saving reports a tier the new model lacks.
+          const speedPicker = content.querySelector(`[data-ai-key="${key}"][data-ai-field="speed"]`);
+          if (speedPicker) speedPicker.innerHTML = speedOptions(draft[key].speed ?? null, speedsFor(runtime, draft[key].model));
+        }
+        if (field === "model" || field === "speed") {
+          const speedLabel = content.querySelector(`[data-ai-speed-note="${key}"]`);
+          if (speedLabel) speedLabel.textContent = speedNote(snapshot.runtimes.find(item => item.id === (draft[key].runtime || defaultRuntime(null,snapshot.runtimes))), draft[key].model, draft[key].speed ?? null);
         }
         error = ""; note = ""; controls();
       }
     });
     return {open(next = "ai") { category = next; root.hidden = false; if (!snapshot && !["connections", "storage", "prompts"].includes(category)) void load(); else render(); }, hide() { root.hidden = true; release(); }, reload:load, save, getDraft:() => clone(draft)};
   }
-  window.CrewSettings = {create, defaultRuntime, initialAI, validate, selectionMarkup, initialExecution, validateExecution, executionMarkup};
+  window.CrewSettings = {create, defaultRuntime, initialAI, validate, selectionMarkup, initialExecution, validateExecution, executionMarkup, speedsFor, speedName};
 })();
