@@ -1101,7 +1101,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
             'evidence': [{'label': 'Measurement', 'reference': 'sample.json'}]}],
             'examples': [{'kind': 'actual', 'input': 'A pauses then B speaks', 'expected': 'B', 'actual': 'B', 'conclusion': 'Passed'}],
             'document_html': '<h1>Short reply</h1><table><tr><th>Input</th><th>Actual</th></tr><tr><td>A pauses then B speaks</td><td>B</td></tr></table>',
-            'artifacts': ['sample.json'], 'tradeoffs': [], 'follow_up': 'User can replay sample.',
+            'artifacts': ['sample.json'], 'folder': '.', 'tradeoffs': [], 'follow_up': 'User can replay sample.',
             'investment': {'usage': None, 'roles': []}}
 
     def awaiting_acceptance(self, runtime='claude', keep_notice=False):
@@ -1662,6 +1662,34 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(self.processes, [], 'Reading report conclusions never starts a model')
         self.assertIsNone(self.conn.execute('SELECT 1 FROM goal_executions WHERE goal_id=?', (goal['id'],)).fetchone())
 
+    def test_open_folder_opens_the_declared_delivery_folder_or_the_workspace_root_on_this_computer(self):
+        goal_ids = []
+        for title in ('Speaker test', 'Other task'):
+            code, created, _ = self.request('/api/goals/create?project=demo', {
+                'leader_session_id': 's3', 'title': title, 'request': 'Measure short replies.', 'acceptance': ['Works']})
+            self.assertEqual(code, 200, created)
+            goal_ids.append(created['goal']['id'])
+        root = board.project(self.conn, 'demo')['root']
+        os.makedirs(os.path.join(root, 'deliveries', 'v1'))
+        final = goals.save_report(self.conn, goal_ids[0], {**self.report(), 'folder': 'deliveries/v1'})
+        stage = goals.save_report(self.conn, goal_ids[0], {**{key: value for key, value in self.report().items() if key != 'folder'}, 'outcome': 'progress'})
+        code, detail, _ = self.request('/api/goal?' + urlencode({'project': 'demo', 'id': goal_ids[0]}))
+        self.assertEqual(code, 200, detail)
+        folders = {item['id']: item['folder'] for item in detail['reports']}
+        self.assertEqual(folders, {final['id']: {'path': os.path.abspath(os.path.join(root, 'deliveries', 'v1')), 'declared': True},
+                                   stage['id']: {'path': os.path.abspath(root), 'declared': False}})
+        with mock.patch('crew.web.os.startfile') as opener:
+            for report in (final, stage):
+                code, result, _ = self.request('/api/goals/report/folder?project=demo', {'goal_id': goal_ids[0], 'report_id': report['id']})
+                self.assertEqual((code, result), (200, {'ok': True, **folders[report['id']]}))
+            self.assertEqual([call.args for call in opener.call_args_list], [(folders[final['id']]['path'],), (folders[stage['id']]['path'],)])
+            code, result, _ = self.request('/api/goals/report/folder?project=demo', {'goal_id': goal_ids[1], 'report_id': final['id']})
+            self.assertEqual((code, result.get('error')), (400, '报告不属于此目标'))
+            os.rmdir(os.path.join(root, 'deliveries', 'v1'))
+            code, result, _ = self.request('/api/goals/report/folder?project=demo', {'goal_id': goal_ids[0], 'report_id': final['id']})
+            self.assertEqual((code, result.get('error')), (400, '交付文件夹不存在：' + folders[final['id']]['path']))
+            self.assertEqual(opener.call_count, 2, 'a missing folder or a foreign report opens nothing')
+
     def test_detail_orders_reports_by_saved_version_like_acceptance_even_when_the_clock_repeats_or_moves_back(self):
         code, created, _ = self.request('/api/goals/create?project=demo', {
             'leader_session_id': 's3', 'title': 'Speaker test', 'request': 'Measure short replies.', 'acceptance': ['Works']})
@@ -1673,7 +1701,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
                 'acceptance': [{'criterion_id': 'a1', 'status': 'passed', 'evidence': [{'label': 'Log', 'reference': 'a.json'}]}],
                 'examples': [{'kind': 'actual', 'input': 'A', 'expected': 'B', 'actual': 'B', 'conclusion': 'Passed'}],
                 'document_html': '<h1>Speaker test</h1><table><tr><td>A</td><td>B</td></tr></table>',
-                'artifacts': [], 'tradeoffs': [], 'follow_up': '', 'investment': {'usage': None, 'roles': []}}
+                'artifacts': [], 'folder': '.', 'tradeoffs': [], 'follow_up': '', 'investment': {'usage': None, 'roles': []}}
         saved = [goals.save_report(self.conn, goal['id'], {**data, 'summary': summary}, now=now) for summary, now in (
             ('first draft', '2026-10-25T10:00:00.000Z'), ('same millisecond, newer version', '2026-10-25T10:00:00.000Z'),
             ('newest version, clock moved back', '2026-10-25T09:00:00.000Z'))]

@@ -5,6 +5,7 @@ import functools
 import html
 import json
 import math
+import os
 import sqlite3
 import uuid
 
@@ -666,6 +667,8 @@ def validate_report(conn, goal_id, data):
     for key in ('delivered', 'unresolved', 'artifacts', 'tradeoffs'):
         result[key] = _strings(result.get(key, []), key)
     result['follow_up'] = _text(result.get('follow_up', ''), '后续修改入口', required=False)
+    if 'folder' in result:
+        result['folder'] = _text(result['folder'], 'folder 交付文件夹', required=False, limit=1000).strip()
     final = outcome in ('awaiting_acceptance', 'completed')
     entries, standards = result.get('acceptance', []), {item['id']: item['title'] for item in req['acceptance']}
     if not isinstance(entries, builtins.list) or final and len(entries) != len(standards):
@@ -773,9 +776,26 @@ def render_report(conn, goal_id, data):
     return '<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; base-uri \'none\'; form-action \'none\'"><title>%s</title><style>body{font:16px/1.7 system-ui,sans-serif;max-width:960px;margin:40px auto;padding:0 24px;color:#292929;background:#fafafa}h2{margin-top:32px}svg{width:100%%;max-width:600px}table{border-collapse:collapse;width:100%%}th,td{border:1px solid #ddd;text-align:left;vertical-align:top;padding:10px;white-space:pre-wrap;overflow-wrap:anywhere}th{width:140px}p,li{white-space:pre-wrap;overflow-wrap:anywhere}</style><body>%s</body></html>' % (esc(goal['title']), ''.join(sections))
 
 
+def report_folder(root, data):
+    """Where a report's 「打开文件夹」 leads: the delivery folder the AI declared, else the workspace root.
+
+    A relative folder is read against the current workspace root, so it follows a workspace move."""
+    declared = data.get('folder') or ''
+    return {'path': os.path.abspath(os.path.join(root, declared)), 'declared': bool(declared)}
+
+
 @atomic
 def save_report(conn, goal_id, data, *, now=None):
     goal, validated = _row(conn, goal_id), validate_report(conn, goal_id, data)
+    # Checked when a delivery is submitted only: saved reports stay valid if the folder later moves.
+    if validated['outcome'] in ('awaiting_acceptance', 'completed'):
+        if not validated.get('folder'):
+            raise board.BoardError('最终交付需要 folder：本轮交付物所在的文件夹（相对工作区根目录或绝对路径），'
+                                   '用户在报告上点「打开文件夹」直接打开它；交付只在代码里时填所在仓库或 worktree 的目录')
+        root = board.project(conn, goal['project'])['root']
+        folder = report_folder(root, validated)['path']
+        if not os.path.isdir(folder):
+            raise board.BoardError('folder 交付文件夹不存在或不是文件夹：%s（相对路径按工作区根目录 %s 解析）' % (folder, root))
     identity = uuid.uuid4().hex
     version = conn.execute('SELECT COALESCE(MAX(version),0)+1 FROM goal_reports WHERE goal_id=? AND round=?', (goal_id, goal['current_round'])).fetchone()[0]
     rendered = render_report(conn, goal_id, validated)

@@ -28,7 +28,7 @@ function harness(api,{fetch:fetcher}={}){
   const client=sandbox.window.CrewGoals.create({project:"fixture",state:()=>state,avatar:(name)=>`<i>${name}</i>`,ago:()=>"刚刚",api:async(url,data)=>{calls.push({url,data});const result=api?await api(url,data):{goal:state.goals.find(item=>url.includes(`id=${item.id}`)),context:{items:[],manifest:{}},reports:[]};if(result.goal)result.goal={supplements_after_report:[],...result.goal};return url.startsWith("/api/documents?")?{documents:result.documents||[]}:result;},renderDocuments:items=>items.map(item=>`<span>${item.title}</span>`).join(""),toast(){},onChange(){},onNavigate(id){navigations.push(id);client.sync("leader",id);},onGeneral(){},refreshState:async()=>{}});
   async function click(act,extra={}){const button={disabled:false,closest:()=>null,dataset:{goalAct:act,...extra}};for(const handler of handlers.click||[])await handler({target:{closest:()=>button}});await tick();}
   async function submit(form){for(const handler of handlers.submit||[])await handler({target:form,preventDefault(){}});await tick();}
-  return {module:sandbox.window.CrewGoals,client,main,state,calls,network,navigations,click,submit,reader};
+  return {module:sandbox.window.CrewGoals,client,main,state,calls,network,navigations,click,submit,reader,window:sandbox.window};
 }
 
 const surfaces=h=>h.client.detailMarkup("leader");
@@ -196,6 +196,22 @@ test("a reopened round says it has no new delivery instead of presenting the old
   h.client.sync("leader","a");await settle();let markup=surfaces(h);
   assert(markup.includes("当前修改尚无新交付"));assert(markup.includes("查看历史版本"));assert(!markup.includes("本次结果"));assert(!markup.includes("第一轮结论"));
   h.client.sync("leader","b");await settle();markup=surfaces(h);assert(!markup.includes("goal-delivery"));assert(!markup.includes("暂无新交付"));assert.equal(h.network.length,0);
+});
+
+test("every report offers 打开文件夹 on this computer only, naming the folder it opens",async()=>{
+  const folder={path:"C:\work\<out>",declared:true};
+  const h=harness(async url=>url==="/api/goals/report/folder"?{ok:true,...folder}:deliveryDetail(h,"a",{status:"awaiting_acceptance"},[report("r1",1,{current:true,status:"awaiting_acceptance",folder})]));
+  h.client.sync("leader","a");await settle();
+  let markup=surfaces(h);
+  assert(markup.includes('data-goal-act="open-folder" data-goal-id="a" data-report-id="r1" title="打开交付文件夹：C:\work\&lt;out&gt;">打开文件夹</button>'),"task delivery names the declared folder");
+  await h.click("delivery",{goalId:"a"});await settle();
+  assert(readerText(h.main.appended).includes('data-goal-act="open-folder" data-goal-id="a" data-report-id="r1"'),"the report reader offers it too");
+  await h.click("open-folder",{goalId:"a",reportId:"r1"});
+  assert.equal(JSON.stringify(h.calls.at(-1)),JSON.stringify({url:"/api/goals/report/folder",data:{goal_id:"a",report_id:"r1"}}));
+  assert(h.module.folderButton("a","r0",{path:"C:\work",declared:false}).includes('title="报告没有登记交付文件夹，打开工作区：C:\work"'),"an older report says it opens the workspace");
+  h.window.CrewAccess={local_desktop:false};h.client.sync("leader","a");await settle();
+  assert(!surfaces(h).includes("open-folder"),"a phone never shows a button for a folder on this computer");
+  assert.equal(h.module.folderButton("a","r1",folder),"");
 });
 
 test("one delivery click from the list opens the selected goal's current report in the isolated reader and returns to the task",async()=>{

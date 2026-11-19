@@ -53,7 +53,7 @@ class V2JourneyTests(ShellFixture, unittest.TestCase):
             'examples': [{'input': '记录今天', 'expected': '今天显示已打卡', 'actual': '脚本模拟已打卡',
                           'conclusion': '工作流通过，非真实模型产物验收', 'kind': 'illustrative'}],
             'document_html': '<h1>打卡演练</h1><table><tr><th>操作</th><th>实际</th></tr><tr><td>记录今天</td><td>脚本模拟已打卡（示意）</td></tr></table>',
-            'artifacts': ['fixture/checkins.html'], 'tradeoffs': ['仅验证 Crew 任务闭环'],
+            'artifacts': ['fixture/checkins.html'], 'folder': '.', 'tradeoffs': ['仅验证 Crew 任务闭环'],
             'follow_up': '真实成果需另做交互验收',
             'investment': {'elapsed_seconds': 1, 'usage': None, 'roles': [{'role': 'leader', 'contribution': '脚本驱动工作流'}]}}
 

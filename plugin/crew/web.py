@@ -1210,6 +1210,20 @@ class Service:
             else:
                 subprocess.Popen(["explorer", "/select," + info["path"]])
             return {"ok": True}
+        if path == '/api/goals/report/folder':
+            # Desktop only: not in remote_routes, so a phone never opens a folder on this computer.
+            with closing(store.connect(self.home)) as conn:
+                project = self.selected_project(conn, project_name if project_name is not None else data.get('project'))
+                goal_id = _text(data, 'goal_id')
+                goals.get(conn, goal_id, project)
+                report = goals.get_report(conn, _text(data, 'report_id'))
+                if report['goal_id'] != goal_id:
+                    raise board.BoardError('报告不属于此目标')
+                folder = goals.report_folder(board.project(conn, project)['root'], report['data'])
+            if not os.path.isdir(folder['path']):
+                raise board.BoardError(('交付文件夹' if folder['declared'] else '工作区文件夹') + '不存在：' + folder['path'])
+            os.startfile(folder['path'])
+            return {'ok': True, **folder}
         if path == "/api/git/fetch":
             with closing(store.connect(self.home)) as conn:
                 project = self.selected_project(conn, project_name if project_name is not None else data.get("project"))
@@ -1909,7 +1923,7 @@ POST_PATHS.update(('/api/session/runtime/prepare','/api/session/runtime/switch')
 POST_PATHS.update(('/api/attention/dismiss', '/api/notifications/away'))
 POST_PATHS.update(('/api/channel', '/api/channel/read', '/api/channel/digest'))
 POST_PATHS.add('/api/leaders/order')
-POST_PATHS.update(('/api/files/resolve', '/api/files/open', '/api/files/reveal'))
+POST_PATHS.update(('/api/files/resolve', '/api/files/open', '/api/files/reveal', '/api/goals/report/folder'))
 POST_PATHS.update(('/api/documents','/api/documents/pin','/api/documents/refresh'))
 POST_PATHS.update(('/api/workspace-data/discover','/api/workspace-data/open','/api/workspace-data/export','/api/workspace-data/preview','/api/workspace-data/import','/api/workspace-data/handoff','/api/workspace-data/activate'))
 POST_PATHS.update(('/api/git/enable', '/api/git/disable', '/api/git/fetch', '/api/git/adopt', '/api/git/settings'))
