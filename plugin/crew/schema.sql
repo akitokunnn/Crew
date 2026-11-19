@@ -999,3 +999,35 @@ CREATE TABLE IF NOT EXISTS goal_work_history (
     created_at TEXT NOT NULL,
     PRIMARY KEY(item_id,version)
 );
+
+-- Architecture board: each workspace's domain tree. A part nests under one parent part (NULL = top level) and may
+-- own one leader for the shared work of its layer, or be a plain folder. Positions and collapse are the board layout.
+CREATE TABLE IF NOT EXISTS domains (
+    id         TEXT PRIMARY KEY,
+    project    TEXT NOT NULL REFERENCES projects(name),
+    parent_id  TEXT REFERENCES domains(id),
+    name       TEXT NOT NULL,
+    x          REAL NOT NULL DEFAULT 0,
+    y          REAL NOT NULL DEFAULT 0,
+    collapsed  INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS domains_project ON domains (project, parent_id);
+-- A leader's place on the board: at most one part per leader and one leader per part; NULL part = unassigned.
+-- An archived leader keeps its place for when it comes back.
+CREATE TABLE IF NOT EXISTS domain_leaders (
+    session_id TEXT PRIMARY KEY REFERENCES sessions(session_id),
+    project    TEXT NOT NULL REFERENCES projects(name),
+    domain_id  TEXT REFERENCES domains(id),
+    x          REAL,
+    y          REAL,
+    updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS domain_leaders_part ON domain_leaders (domain_id) WHERE domain_id IS NOT NULL;
+-- Bumped by every board edit, so a page holding an older copy (and its undo steps) knows to reload first.
+CREATE TABLE IF NOT EXISTS domain_boards (
+    project    TEXT PRIMARY KEY REFERENCES projects(name),
+    version    INTEGER NOT NULL,
+    updated_at TEXT NOT NULL
+);

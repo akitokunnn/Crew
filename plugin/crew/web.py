@@ -29,6 +29,7 @@ from .storage_service import StorageService, HISTORY_PREFIX
 from . import personal, native_home, native_handoff, native_skills
 from . import remote_access, remote_http
 from . import report_preview, event_sounds, reading_context
+from . import domains
 from .web_api import personal as personal_api
 from .web_api import behavior_prompts as behavior_prompts_api
 
@@ -642,7 +643,7 @@ class Service:
                       'runtimes': self.runtime_catalog.snapshot(),
                       'ai': settings.load(conn),
                       'now': self.now().isoformat(), 'agents_error': error, 'notification': self.notification_status(),
-                      'leaders': [], 'members': [], 'decisions': [], 'attention': [], 'git_assistant': None, 'git_branches': None,
+                      'leaders': [], 'members': [], 'decisions': [], 'attention': [], 'git_assistant': None, 'git_branches': None, 'domains': None,
                       'todos': [], 'todo_count': 0, 'goals': [], 'native_approvals': [],
                       'candidates': {'running': [], 'others': []},
                       'channel': {'unread': 0, 'latest_id': 0, 'digesting': False, 'digest_error': None, 'digest_id': None},
@@ -816,6 +817,7 @@ class Service:
                     conn, git_config, leader, decisions, builtin=sid in builtin_ids)
         result['git_branches'] = self._git_branches(conn, status['project'], git_config)
         result['candidates'] = self.candidates(conn, name)
+        result['domains'] = domains.summary(conn, name)
         from . import decision_briefs, decision_flow
         result['decisions'] = decision_flow.enrich(conn, decision_briefs.enrich(conn, result['decisions']))
         result['attention'] = presentation.attention(conn, sessions, decisions, tasks,
@@ -1252,7 +1254,7 @@ class Service:
                 if type(data.get('away')) is not bool:
                     raise ValueError('离开状态必须是 true 或 false')
                 return self.set_away(data['away'])
-            if path in ('/api/channel', '/api/channel/read', '/api/channel/digest', '/api/project/theme', '/api/leaders/order', '/api/documents', '/api/documents/pin', '/api/documents/refresh', '/api/native-approval') and 'project' in data:
+            if path in ('/api/channel', '/api/channel/read', '/api/channel/digest', '/api/project/theme', '/api/leaders/order', '/api/domains', '/api/documents', '/api/documents/pin', '/api/documents/refresh', '/api/native-approval') and 'project' in data:
                 body_project = _text(data, 'project')
                 if project_name is not None and body_project != project_name:
                     raise board.BoardError('请求正文和地址中的项目不一致')
@@ -1368,6 +1370,8 @@ class Service:
             if path == '/api/leaders/order':
                 _text(data, 'project')
                 return board.set_leader_order(conn, project, data.get('order'), data.get('pinned'))
+            if path == '/api/domains':
+                return domains.apply(conn, project, data.get('ops'), data.get('base_version'), now=now)
             if path == '/api/project/theme':
                 return board.set_project_theme(conn, project, _text(data, 'theme'), now=now)
             if path == '/api/channel':
@@ -1927,6 +1931,7 @@ POST_PATHS.update(('/api/session/runtime/prepare','/api/session/runtime/switch')
 POST_PATHS.update(('/api/attention/dismiss', '/api/notifications/away'))
 POST_PATHS.update(('/api/channel', '/api/channel/read', '/api/channel/digest'))
 POST_PATHS.add('/api/leaders/order')
+POST_PATHS.add('/api/domains')
 POST_PATHS.update(('/api/files/resolve', '/api/files/open', '/api/files/reveal', '/api/goals/report/folder'))
 POST_PATHS.update(('/api/documents','/api/documents/pin','/api/documents/refresh'))
 POST_PATHS.update(('/api/workspace-data/discover','/api/workspace-data/open','/api/workspace-data/export','/api/workspace-data/preview','/api/workspace-data/import','/api/workspace-data/handoff','/api/workspace-data/activate'))
@@ -2007,6 +2012,8 @@ STATIC.update({'/notes.html': ('notes.html', 'text/html; charset=utf-8'),
 STATIC['/native-handoff-ui.js'] = ('native-handoff-ui.js', 'text/javascript; charset=utf-8')
 STATIC['/goal-work-ui.js'] = ('goal-work-ui.js', 'text/javascript; charset=utf-8')
 STATIC['/leader-look.js'] = ('leader-look.js', 'text/javascript; charset=utf-8')
+STATIC.update({'/architecture.js': ('architecture.js', 'text/javascript; charset=utf-8'),
+               '/architecture.css': ('architecture.css', 'text/css; charset=utf-8')})
 POST_PATHS.add('/api/remote-access')
 POST_PATHS.update(report_preview.WORKER_PATHS)
 STATIC.update({'/access-context.js': ('access-context.js', 'text/javascript; charset=utf-8'),
@@ -2292,6 +2299,9 @@ class Handler(BaseHTTPRequestHandler):
                                                     int(query.get('limit', [20])[0]), before))
         elif url.path == "/api/git":
             self._send(200, service.git(query.get("project", [None])[0]))
+        elif url.path == '/api/domains':
+            with closing(store.connect(service.home)) as conn:
+                self._send(200, domains.snapshot(conn, service.selected_project(conn, query.get('project', [None])[0])))
         elif url.path == '/api/git/settings':
             self._send(200, service.git_settings(query.get('project', [None])[0]))
         elif url.path == "/api/git/commit":

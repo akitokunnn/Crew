@@ -89,6 +89,7 @@ test_native_skills
 test_member_turn_result
 test_leader_order
 test_leader_pins
+test_domains
 test_leader_trust_cli
 test_trust_mode
 test_workspace_settings

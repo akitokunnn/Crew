@@ -1,5 +1,5 @@
 """Authorized session actions. They change Crew records, never the underlying process."""
-from . import board
+from . import board, domains
 
 
 CONTROL_FIELDS = ('archived_status', 'archived_note', 'archived_ended_at', 'removed', 'name_override')
@@ -146,6 +146,7 @@ def delete(conn, session_id, now=None):
     for person in people:
         _archive(conn, person, True, now, event='session:delete')
         conn.execute('DELETE FROM session_appearance WHERE session_id=?', (person['session_id'],))
+        domains.release_leader(conn, person['session_id'])
         if group is not None:
             conn.execute('UPDATE sessions SET group_name=NULL WHERE session_id=?', (person['session_id'],))
     return {'ok': True, 'deleted': [person['session_id'] for person in people]}

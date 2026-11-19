@@ -82,9 +82,11 @@ class WebContractTests(ShellFixture, unittest.TestCase):
     def test_state_exact_shape_and_empty_limits(self):
         expected = {"project", "projects", "now", "agents_error", "notification", "leaders",
                     "members", "decisions", "candidates", "attention", "limits", "vscode_error", "models", "efforts", "channel", "themes",
-                    "runtimes", "todos", "todo_count", "goals", "ai", "native_approvals", "sounds", "git_assistant", "git_branches"}
+                    "runtimes", "todos", "todo_count", "goals", "ai", "native_approvals", "sounds", "git_assistant", "git_branches",
+                    "domains"}
         state = self.state()
         self.assertEqual(set(state), expected)
+        self.assertEqual(state["domains"], {"version": 0, "paths": {}})
 
         self.assertEqual(set(state["project"]), {"name", "display_name", "root", "theme"})
         self.assertEqual(state["projects"], [{"name": "demo", "display_name": None, "theme": "celadon"}])
