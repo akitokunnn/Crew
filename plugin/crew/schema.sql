@@ -1000,8 +1000,8 @@ CREATE TABLE IF NOT EXISTS goal_work_history (
     PRIMARY KEY(item_id,version)
 );
 
--- Architecture board: each workspace's domain tree. A part nests under one parent part (NULL = top level) and may
--- own one leader for the shared work of its layer, or be a plain folder. Positions and collapse are the board layout.
+-- Architecture board: each workspace's domain tree. A part nests under one parent part (NULL = top level); any
+-- number of leaders work in it and one of them may lead it. Positions and collapse are the board layout.
 CREATE TABLE IF NOT EXISTS domains (
     id         TEXT PRIMARY KEY,
     project    TEXT NOT NULL REFERENCES projects(name),
@@ -1014,20 +1014,23 @@ CREATE TABLE IF NOT EXISTS domains (
     updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS domains_project ON domains (project, parent_id);
--- A leader's place on the board: at most one part per leader and one leader per part; NULL part = unassigned.
--- An archived leader keeps its place for when it comes back.
+-- The part a leader works in (at most one; NULL = unassigned). lead=1 marks the one leading that part, owning
+-- the work its sub-parts share (unique per part, see store migration). An archived leader keeps its place.
+-- x/y are unused since leaders are listed inside their part.
 CREATE TABLE IF NOT EXISTS domain_leaders (
     session_id TEXT PRIMARY KEY REFERENCES sessions(session_id),
     project    TEXT NOT NULL REFERENCES projects(name),
     domain_id  TEXT REFERENCES domains(id),
     x          REAL,
     y          REAL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    lead       INTEGER NOT NULL DEFAULT 0
 );
-CREATE UNIQUE INDEX IF NOT EXISTS domain_leaders_part ON domain_leaders (domain_id) WHERE domain_id IS NOT NULL;
 -- Bumped by every board edit, so a page holding an older copy (and its undo steps) knows to reload first.
+-- direction: TB draws the tree top-down, LR left-to-right like a blueprint.
 CREATE TABLE IF NOT EXISTS domain_boards (
     project    TEXT PRIMARY KEY REFERENCES projects(name),
     version    INTEGER NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    direction  TEXT NOT NULL DEFAULT 'TB' CHECK (direction IN ('TB', 'LR'))
 );

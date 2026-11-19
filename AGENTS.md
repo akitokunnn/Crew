@@ -122,7 +122,6 @@ CI 只跑核心清单 [plugin/tests/ci_core.txt](plugin/tests/ci_core.txt)（`py
 | --- | --- |
 | 产品名为 Crew，数据目录、设置目录与安装身份不带代际标识；窗口、安装器、快捷方式和产物名称保持一致 | `desktop/test/version-sync.test.cjs`、`core.test.cjs` 与真实 Electron 工作区烟测；还原旧名称会触发失败 |
 | 修改可见交互后，用真实浏览器走流程；控制台错误算失败，逐步保存截图，不以静态字符串检查替代 | `node plugin/tests/smoke_assistant_reply.cjs`、`node plugin/tests/smoke_v2_ui_revision.cjs`；截图在 `Temp/assistant-reply/`、`Temp/v2-ui-review/`，脚本支持装回旧错做反证 |
-| 触及原生接回时，验证同 ID、保持桌面打开、再次交出可直接发送及工具不重复；不把假载体、未知参数或仅一次恢复当成真实桌面闭环。真实 AI 仅在用户授权时使用隔离 HOME 和指定模型 | `test_native_handoff`、`test_codex_desktop`、`test_codex_desktop_bridge`（真实进程，覆盖关闭通知屏蔽和原拥有者恢复）；真实 AI 证据见 `docs/v2/NATIVE_DESKTOP_0.3.3_2026-10-30.md`。压缩另由 `test_codex_events` 真实事件回放覆盖 |
 | 助手使用完整的共享聊天状态契约，普通任务反馈保持原任务身份并保留已交付证据 | `test_assistant_http`、`test_goal_http`、`test_goal_acceptance` 与上述助手浏览器检查；工作区迁移使用真实恢复和包往返测试 |
 | 远程认证覆盖页面、API、事件流和附件；关闭访问与本机业务生命周期独立，断线不重发成功输入 | `test_remote_access`、`test_remote_http`、`test_remote_routes`、`test_remote_integration`；`node plugin/tests/smoke_remote_access.cjs` 走真实浏览器，支持 `--lan-address` 与 `--old-mobile` 反证 |
 | ZeroTier 按实际网卡识别，绑定失败不降级为全部网络；普通 HTTP 下请求 ID 和复制能力仍可用 | `test_network_addresses`、`test_remote_network`、`test_browser_utils.js`、`smoke_remote_access.cjs --old-http`；`smoke_remote_peer.py` 使用独立 WSL 网络客户端 |

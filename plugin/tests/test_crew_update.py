@@ -171,8 +171,6 @@ class UpdateGateTests(ShellFixture, unittest.TestCase):
             self.service.chat.send(board.session(self.conn, sid), "new work")
         with self.assertRaises(chat.UpdatePaused):
             self.service.post("/api/spawn", {"name": "late", "task": "late task"}, "demo")
-        with self.assertRaises(chat.UpdatePaused):
-            self.service.post("/api/open/continue", {"session_id": "s1"}, "demo")
         # Background workers leave queued work untouched while the gate holds.
         self.service.chat.deliver_messages()
         self.service.chat.auto_resume(self.conn, [], now=NOW)

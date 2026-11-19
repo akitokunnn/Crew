@@ -11,15 +11,11 @@
 
 调查的源码锚点：Happier `ae70fc7129e56ce17919e61028555eaa9956b7e0` 的 `apps/cli/src/backends/codex/appServer/bootstrapCodexTuiHome.ts`；Harnss `dc1dfd8a33caa46a1eefcfe9e14697b27ac4c33d` 的 `electron/src/ipc/codex-sessions.ts`；Cotal `8866e1e1a05be1e6f07c5eb7dc398f743fb8a465` 的 `extensions/connector-core/smoke/cross-path-dedup.smoke.ts`。
 
-## Codex 桌面接续
+## Codex 桌面接续（已删除）
 
-[官方桌面命令](https://learn.chatgpt.com/docs/app/commands)提供 `codex://threads/<thread-id>` 深链；[原生命令说明](https://learn.chatgpt.com/docs/developer-commands)提供 `/app`，描述的是继续已有 saved chat。[App Server 文档](https://learn.chatgpt.com/docs/app-server)是 thread/start、resume、历史读取与 dynamicTools 行为的依据。
+0.3.3 起的“交给 Codex 桌面 / 回到 Crew”和“在 VS Code 中继续”于 2026-11-19 按用户裁决删除：实际几乎没用，且依赖 Codex 内部写入锁行为和 Windows 专用桥接组件，维护成本高。
 
-Crew 自己启动 app-server，不假装连接到桌面进程。交给桌面前必须空闲、释放 Crew 的原生进程并持久记录外部控制；接回必须使用同一 ID，恢复 Crew 指令与实际工具处理连接，并按原生 turn/item 身份导入新增历史。目标执行有自己的 native ID，不能以 leader 总对话替代。
-
-2026-10-30 的隔离原生验证确认：Codex CLI 0.165.0 的 `thread/resume` 没有 `dynamicTools` 替换参数，原线程工具定义仍持久保留；不能据此声称原生桌面有 Crew 的工具处理器。另一个原生客户端仍持有 writer 时，接回必须如实保留冲突，关闭实际持有者后再恢复同 ID。`thread/unsubscribe` 本身不足以释放该版本的 writer。
-
-深链不带 HOME 参数，Crew 绑定的原生 HOME 必须可由桌面读取。操作系统接受打开请求，不证明桌面已经接管；假载体同 ID 往返，也不证明真实桌面完成续聊。验收记录必须分别写清。
+仍然有效的结论：Crew 自己启动 app-server，不连接桌面进程。同一 Codex 线程同一时间只有一个 writer；用户自己在 Codex 客户端打开 Crew 的线程时，Crew 续接会如实报占用（`codex_binding.WriterBusy`），不换 ID、不抢占。`thread/unsubscribe` 本身不足以释放 writer。
 
 ## 为什么保留现有协议适配
 

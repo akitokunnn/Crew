@@ -39,9 +39,8 @@
     try {
       if(!opened){await api("/api/assistant/open",{});opened=true;}
       const state=await api("/api/assistant/state");assistantSession=state.assistant.session_id;CrewSound.observe(state.sounds,state.now);overview(state);error("");
-      $("assistant-native").innerHTML=CrewNativeHandoff.markup(state.assistant);
-      const readonly=Boolean(state.assistant.native_handoff?.external),identity=`${state.assistant.session_id}:${readonly}`;
-      if(mounted!==identity){CrewChat.unmount();CrewChat.mount({host:$("assistant-chat"),session:state.assistant,state,api,toast,readonly,readonlyReason:"会话已交给 Codex 桌面。结束桌面输入后，点“回到 Crew”同步并继续。",onRouted:()=>{},onNoteCleared:dropNote});mounted=identity;attachNote();}
+      const identity=state.assistant.session_id;
+      if(mounted!==identity){CrewChat.unmount();CrewChat.mount({host:$("assistant-chat"),session:state.assistant,state,api,toast,onRouted:()=>{},onNoteCleared:dropNote});mounted=identity;attachNote();}
       else CrewChat.update(state);
     }catch(failure){error(failure.message||"暂时连不上助手");}
     finally{loading=false;timer=setTimeout(refresh,4000);}
@@ -61,11 +60,6 @@
     note={id,title:found.title||found.text.split("\n").map(line=>line.trim()).find(Boolean)};notePrefill=true;attachNote();
   }
   window.addEventListener("hashchange",()=>{void readNote();});
-  $("assistant-native").addEventListener("click",async event=>{
-    const button=event.target.closest("[data-act]");if(!button||button.disabled)return;button.disabled=true;
-    try{await CrewNativeHandoff.act(button.dataset.act.slice(7),button.dataset.id,null,{api,refresh,notice:toast});}
-    catch(failure){error(failure.message);button.disabled=false;}
-  });
   $("assistant-prompts").onclick=()=>{const dialog=document.createElement("dialog");dialog.className="personal-notes-dialog assistant-prompts-dialog";dialog.innerHTML='<header><h2>助手行为配置</h2><button class="btn ghost" data-close aria-label="关闭行为配置">×</button></header><div data-prompts></div>';document.body.append(dialog);dialog.showModal();const cleanup=CrewBehaviorPrompts.mount(dialog.querySelector('[data-prompts]'),{read:query=>api("/api/behavior-prompts?"+new URLSearchParams(query)),save:body=>api("/api/behavior-prompts",body),session:assistantSession});const close=()=>{cleanup();dialog.close();dialog.remove();};dialog.querySelector('[data-close]').onclick=close;dialog.oncancel=event=>{event.preventDefault();close();};};
   $("assistant-notes").onclick=()=>CrewPersonalNotes.create({api}).open();
   (async()=>{if(window.CrewAccess && !await CrewAccess.ready)return;$("assistant-prompts").hidden=Boolean(window.CrewAccess&&!CrewAccess.local_controls);CrewChat.initFiles(api,toast);void refresh();void readNote();})();

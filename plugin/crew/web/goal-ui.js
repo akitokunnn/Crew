@@ -91,7 +91,7 @@
       return loaded && (!listed || loaded.version >= listed.version) ? loaded : listed;
     };
     const owner = () => state()?.leaders.find(item => item.session_id === ownerId);
-    const signature = id => { const item = byId(id); return JSON.stringify([item?.version,item?.updated_at,item?.report_available,item?.work_summary?.revision,item?.decision_mode?.version,item?.native_handoffs]); };
+    const signature = id => { const item = byId(id); return JSON.stringify([item?.version,item?.updated_at,item?.report_available,item?.work_summary?.revision,item?.decision_mode?.version]); };
     const changed = () => options.onChange?.();
     function restoreFocus(selector) {
       const target = document.querySelector?.(selector);

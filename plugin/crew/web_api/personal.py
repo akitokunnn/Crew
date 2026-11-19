@@ -25,7 +25,6 @@ def state(home, *, history, journal, activity, applied, context):
         **{key: assistant['configuration'][key] for key in ('model', 'effort')},
         running=chat['running'], busy=chat['busy'], activity=activity(sid), applied=applied(sid),
         context=context(sid), last_seq=events[-1]['seq'] if events else 0, web_chat=True,
-        native_handoff=chat.get('native_handoff'),
         where='bg', status='working' if chat['busy'] else 'idle' if chat['running'] else 'offline',
         source='crew', chat_unread=0, goals=[], active_goal_id=None, active_goal_ids=[],
         delegation=[], subagents=[])

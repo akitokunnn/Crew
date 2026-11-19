@@ -12,16 +12,16 @@ function boot(fetch){
 }
 const response=(status,value)=>({status,ok:status>=200&&status<300,json:async()=>value});
 const local={remote:false,client:'local',local_controls:true,local_desktop:true,authenticated:true,
-  host_admin:true,native_handoff:true,vscode_continue:true};
+  host_admin:true};
 const browser={remote:true,client:'browser',local_controls:false,local_desktop:false,authenticated:true,
-  host_admin:false,native_handoff:false,vscode_continue:false};
+  host_admin:false};
 test('controls stay unavailable until the actual access context is known',async()=>{
   let release;const pending=new Promise(resolve=>release=resolve);const app=boot(()=>pending);
   const access=app.window.CrewAccess;
   assert.equal(access.client,'');
-  for(const field of ['local_controls','local_desktop','host_admin','native_handoff','vscode_continue']) assert.equal(access[field],false);
+  for(const field of ['local_controls','local_desktop','host_admin']) assert.equal(access[field],false);
   release(response(200,local));assert.equal(await access.ready,true);
-  for(const field of ['client','local_controls','local_desktop','host_admin','native_handoff','vscode_continue']) assert.equal(access[field],local[field]);
+  for(const field of ['client','local_controls','local_desktop','host_admin']) assert.equal(access[field],local[field]);
 });
 test('failed or malformed context never silently enables local actions',async()=>{
   for(const value of [response(503,{error:'后台未就绪'}),response(200,{remote:false})]){
@@ -47,11 +47,11 @@ test('desktop and browser flags are exposed and every required new field is vali
   for(const value of [desktop,browser]){
     const app=boot(async()=>response(200,value));
     assert.equal(await app.window.CrewAccess.ready,true);
-    for(const field of ['client','local_controls','local_desktop','host_admin','native_handoff','vscode_continue']){
+    for(const field of ['client','local_controls','local_desktop','host_admin']){
       assert.equal(app.window.CrewAccess[field],value[field]);
     }
   }
-  for(const field of ['client','host_admin','native_handoff','vscode_continue']){
+  for(const field of ['client','host_admin']){
     for(const invalid of [undefined,field==='client'?'unknown':'true']){
       const app=boot(async()=>response(200,{...local,[field]:invalid}));
       assert.equal(await app.window.CrewAccess.ready,false);

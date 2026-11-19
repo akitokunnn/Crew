@@ -10,10 +10,9 @@
     "start": "electron .",
     "test": "node --test test/*.test.cjs",
     "check:version": "node --test test/version-sync.test.cjs",
-    "build:codex-bridge": "node scripts/build-codex-bridge.cjs",
-    "prebuild": "npm run check:version && npm run build:codex-bridge",
+    "prebuild": "npm run check:version",
     "build": "node scripts/icon.cjs && electron-builder --win zip portable nsis --x64",
-    "prebuild:dir": "npm run check:version && npm run build:codex-bridge",
+    "prebuild:dir": "npm run check:version",
     "build:dir": "node scripts/icon.cjs && electron-builder --win dir --x64"
   },
   "devDependencies": {
@@ -24,9 +23,6 @@
     "appId": "local.crew.desktop",
     "productName": "Crew",
     "asar": true,
-    "asarUnpack": [
-      "assets/CrewCodexBridge.exe"
-    ],
     "directories": {
       "output": "dist",
       "buildResources": "assets"

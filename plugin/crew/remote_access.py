@@ -430,7 +430,7 @@ class Controller:
                 capabilities = remote_routes.DESKTOP_CAPABILITIES if desktop else remote_routes.CAPABILITIES
                 return reply(200, {'remote': True, 'client': identity['kind'], 'authenticated': True,
                                    'local_controls': desktop, 'local_desktop': False, 'host_admin': False,
-                                   'native_handoff': False, 'vscode_continue': False, 'capabilities': capabilities,
+                                   'capabilities': capabilities,
                                    'device_id': identity['device_id']})
             if method == 'POST':
                 handler.remote_body = json.dumps(remote_routes.human_payload(path, data, identity['kind']), ensure_ascii=False).encode('utf-8')

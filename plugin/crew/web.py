@@ -21,12 +21,12 @@ from urllib.parse import parse_qs, quote, urlencode, urlsplit
 from urllib.request import ProxyHandler, build_opener
 from urllib.error import HTTPError, URLError
 
-from . import board, channel, channel_digest, chat, claude_limits, codex_runtime, documents, git_admin, git_ci, git_overview, git_view, goal_api, goals, hooks, maintenance, messaging, models, notifications, open_session, presentation, runtime_catalog, runtime_switch, runtimes, session_library, session_ops, settings, spawn, store, themes, todo, trust_mode, updater, usage, usage_cli, vscode_sessions, workspace_execution, workspace_settings
+from . import board, channel, channel_digest, chat, claude_limits, codex_runtime, documents, git_admin, git_ci, git_overview, git_view, goal_api, goals, hooks, maintenance, messaging, models, notifications, presentation, runtime_catalog, runtime_switch, runtimes, session_library, session_ops, settings, spawn, store, themes, todo, trust_mode, updater, usage, usage_cli, vscode_sessions, workspace_execution, workspace_settings
 from .service_lock import HomeServiceLock
 from . import appearance, codex_client, member_defaults, operations_chat, operations_settings
 from . import connections, session_delete, session_presence, storage_cleanup, workspace_activity
 from .storage_service import StorageService, HISTORY_PREFIX
-from . import personal, native_home, native_handoff, native_skills
+from . import codex_binding, personal, native_home, native_skills
 from . import host_workspace, remote_access, remote_http
 from . import report_preview, event_sounds, reading_context
 from . import domains
@@ -56,11 +56,10 @@ def _vscode_state_db():
 
 
 # HTTP entries that start or feed model work must pass the update gate before
-# any side effect (adoption, git admin setup, VS Code takeover, digest).
+# any side effect (adoption, git admin setup, digest).
 MODEL_WORK = {"/api/spawn", "/api/leader", "/api/wake", "/api/chat/send", "/api/session/compact",
-              "/api/open", "/api/open/continue", "/api/git/enable", "/api/channel/digest",
-              "/api/maintenance/department/compact"}
-MODEL_WORK.update({'/api/session/native-handoff', '/api/session/native-return', '/api/assistant/native-action'})
+              "/api/git/enable", "/api/channel/digest", "/api/maintenance/department/compact",
+              '/api/assistant/native-action'}
 
 
 class Service:
@@ -772,7 +771,6 @@ class Service:
                     active_goal_id=active_goals[sid], active_goal_ids=active_goal_ids[sid],
                     active_execution_id=active_scopes[sid][0]['id'] if active_scopes[sid] else None,
                     runtime=runtimes.get(conn, sid)['runtime'],
-                    native_handoff=native_handoff.describe(conn, sid),
                     runtime_switch=runtime_switch.state(conn,session,self.chat,agents,error),
                     trust=trust_mode.get(conn,name,sid),
                     **models.get(conn, sid), applied=self.chat.applied(key), activity=self.chat.activity(key),
@@ -798,7 +796,6 @@ class Service:
                     execution_records=self.member_execution_records(conn, sid, active_scopes[sid]),
                     general_has_output=sid in histories and chat.has_native_output(histories[sid]['events']),
                     runtime=runtimes.get(conn, sid)['runtime'],
-                    native_handoff=native_handoff.describe(conn, sid),
                     runtime_switch=runtime_switch.state(conn,session,self.chat,agents,error),
                     **models.get(conn, sid), applied=self.chat.applied(key), activity=self.chat.activity(key),
                     context=context, busy=self.chat.busy(sid) or (sid in general_present and general_present[sid].get('status') == 'busy'),
@@ -1312,8 +1309,7 @@ class Service:
                     self.stop_archived(result['before'])
                 return {'ok': True}
             personal_paths = {'/api/chat/send', '/api/chat/read', '/api/chat/interrupt',
-                              '/api/session/stop', '/api/session/compact',
-                              '/api/session/native-handoff', '/api/session/native-return'}
+                              '/api/session/stop', '/api/session/compact'}
             project = (self.chat_project(conn, project_name, data.get('session_id'))
                        if path in personal_paths and not data.get('goal_id')
                        else self.selected_project(conn, project_name))
@@ -1440,16 +1436,6 @@ class Service:
                 target = board.session(conn, _text(data, 'session_id'))
                 if target['project'] != project:
                     raise board.BoardError('会话不属于当前工作区')
-                if path in ('/api/session/native-handoff', '/api/session/native-return'):
-                    execution_id = None
-                    if data.get('goal_id'):
-                        goals.get(conn, data['goal_id'], project)
-                        execution = self.chat.goal_controller.current(conn, data['goal_id'], target['session_id'])
-                        if execution is None:
-                            raise board.BoardError('这个任务还没有可接续的原生会话')
-                        execution_id = execution['id']
-                    operation = self.chat.native_handoff if path.endswith('native-handoff') else self.chat.native_return
-                    return operation(target['session_id'], execution_id)
                 if path == '/api/session/appearance':
                     return appearance.save(conn, target['session_id'], data, now)
                 if path == '/api/session/rename':
@@ -1514,16 +1500,6 @@ class Service:
                     notice = messaging.decision_answer_notice(conn, data['id'], decision['question'], text, asker, leader)
                     board.queue_leader_notice(conn, leader['session_id'], notice, 'web', now=now)
                 return {"ok": True, 'routed_to': leader['crew_name'] if leader else None}
-            if path in ("/api/open", "/api/open/continue"):
-                target = (board.session(conn, _text(data, "session_id")) if path.endswith("/continue") or data.get("session_id") is not None else
-                          board.named_session(conn, project, _text(data, "name")))
-                if target["project"] != project:
-                    raise board.BoardError("会话不属于当前项目")
-                if path == "/api/open":
-                    return open_session.begin(conn, target["session_id"], self.agents_provider,
-                                              self.claude_root.parent / "sessions", manager=self.chat)
-                return open_session.resume(conn, target["session_id"], self.agents_provider, data.get("confirm") is True,
-                                           self.claude_root.parent / "sessions", now=now, manager=self.chat)
             if path == "/api/wake":
                 target = (board.session(conn, _text(data, "session_id")) if data.get("session_id") is not None else
                           board.named_session(conn, project, _text(data, "name")))
@@ -1748,8 +1724,6 @@ class Service:
                 raise board.Conflict('暂时读不到 Claude Code 进程状态，无法确认「%s」是否还开着，请稍后再删' % name)
             if external.intersection(claude):
                 raise board.Conflict('「%s」还开在 VS Code 或终端里，先关掉那边的会话再删除' % name)
-            if conn.execute("SELECT 1 FROM native_session_controls WHERE session_id=? AND state<>'crew'", (sid,)).fetchone():
-                raise board.Conflict('「%s」已交给 Codex 桌面版，先接回 Crew 再删除' % name)
 
     def stop_archived(self, before, with_members=True):
         with self.chat.lock, closing(store.connect(self.home)) as conn:
@@ -1789,7 +1763,7 @@ class Service:
             else:
                 session = self.chat_session(conn, self.chat_project(conn, project_name, session_id), session_id)
             runtime = execution['runtime'] if execution is not None else runtimes.get(conn, session_id)['runtime']
-            codex_home = (native_handoff.home_for(conn, session_id, execution['id'] if execution else None)
+            codex_home = (codex_binding.home_for(conn, session_id, execution['id'] if execution else None)
                           if runtime == 'codex' else None)
         return native_skills.list_skills(runtime, session['cwd'], self.plugin_root, codex_home=codex_home,
                                          refresh=refresh)
@@ -1950,13 +1924,12 @@ class Service:
             return result
 
 
-POST_PATHS = {"/api/project/init", "/api/project/theme", "/api/open", "/api/open/continue", "/api/answer", "/api/spawn", "/api/leader", "/api/wake", "/api/roster/move", "/api/roster/remove", "/api/group/close", "/api/group/undo", "/api/roster/adopt", "/api/chat/send", '/api/chat/read'}
+POST_PATHS = {"/api/project/init", "/api/project/theme", "/api/answer", "/api/spawn", "/api/leader", "/api/wake", "/api/roster/move", "/api/roster/remove", "/api/group/close", "/api/group/undo", "/api/roster/adopt", "/api/chat/send", '/api/chat/read'}
 POST_PATHS.update({'/api/messages', '/api/todo/resolve', '/api/todo/undo'})
 POST_PATHS.update({'/api/assistant/open', '/api/assistant/native-action'})
 POST_PATHS.update({'/api/personal/notes', '/api/personal/notes/start', '/api/behavior-prompts'})
 POST_PATHS.add('/api/personal/notes/recovery')
 POST_PATHS.add('/api/personal/tags')
-POST_PATHS.update({'/api/session/native-handoff', '/api/session/native-return'})
 POST_PATHS.update({'/api/goals/create', '/api/goals/action', '/api/goals/context', '/api/goals/agent', '/api/chat/interrupt', '/api/decision/discuss', '/api/decision/ready'})
 POST_PATHS.update({'/api/trust', '/api/comments', '/api/decision/clarify'})
 POST_PATHS.update({'/api/project/update', '/api/project/remove'})
@@ -2043,7 +2016,6 @@ STATIC.update({'/notes.html': ('notes.html', 'text/html; charset=utf-8'),
                '/notes.js': ('notes.js', 'text/javascript; charset=utf-8'),
                '/notes-model.js': ('notes-model.js', 'text/javascript; charset=utf-8'),
                '/notes.css': ('notes.css', 'text/css; charset=utf-8')})
-STATIC['/native-handoff-ui.js'] = ('native-handoff-ui.js', 'text/javascript; charset=utf-8')
 STATIC['/goal-work-ui.js'] = ('goal-work-ui.js', 'text/javascript; charset=utf-8')
 STATIC['/leader-look.js'] = ('leader-look.js', 'text/javascript; charset=utf-8')
 STATIC.update({'/architecture.js': ('architecture.js', 'text/javascript; charset=utf-8'),
@@ -2198,10 +2170,8 @@ class Handler(BaseHTTPRequestHandler):
         elif local_settings_path and not self._owner_access():
             self._send(403, {'error': '此设置只允许本机 Crew 页面访问'})
         elif url.path == '/api/access/context':
-            native = sys.platform == 'win32'
             self._send(200, {'remote': False, 'client': 'local', 'authenticated': True,
-                             'local_controls': True, 'local_desktop': True, 'host_admin': True,
-                             'native_handoff': native, 'vscode_continue': native})
+                             'local_controls': True, 'local_desktop': True, 'host_admin': True})
         elif url.path == '/api/remote-access':
             self._send(200, service.remote_access.snapshot())
         elif url.path == '/api/workspace-data/history':

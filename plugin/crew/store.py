@@ -31,7 +31,40 @@ def connect(home):
     _migrate_channel_replies(conn)
     _migrate_leader_pins(conn)
     _migrate_codex_speed(conn)
+    _migrate_domain_members(conn)
     return conn
+
+
+def _migrate_domain_members(conn):
+    """Parts hold any number of leaders now, at most one of them leading; boards remember their direction.
+
+    The first board version allowed one leader per part. Its placements stay as plain members (nobody leads),
+    and its boards switch to the top-down tree like new ones.
+    """
+    def pending():
+        leaders = {row['name'] for row in conn.execute('PRAGMA table_info(domain_leaders)')}
+        boards = {row['name'] for row in conn.execute('PRAGMA table_info(domain_boards)')}
+        indexes = {row['name'] for row in conn.execute('PRAGMA index_list(domain_leaders)')}
+        return ('lead' not in leaders, 'direction' not in boards, 'domain_leaders_part' in indexes,
+                'domain_leaders_lead' not in indexes)
+    if not any(pending()):
+        return
+    conn.execute('BEGIN IMMEDIATE')
+    try:
+        lead, direction, old_index, new_index = pending()
+        if lead:
+            conn.execute('ALTER TABLE domain_leaders ADD COLUMN lead INTEGER NOT NULL DEFAULT 0')
+        if direction:
+            conn.execute("ALTER TABLE domain_boards ADD COLUMN direction TEXT NOT NULL DEFAULT 'TB' "
+                         "CHECK (direction IN ('TB', 'LR'))")
+        if old_index:
+            conn.execute('DROP INDEX domain_leaders_part')
+        if new_index:
+            conn.execute('CREATE UNIQUE INDEX domain_leaders_lead ON domain_leaders (domain_id) WHERE lead=1')
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
 
 
 def _migrate_codex_speed(conn):

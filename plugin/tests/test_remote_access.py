@@ -193,7 +193,7 @@ class RemoteAccessTests(unittest.TestCase):
     def test_remote_human_actions_and_local_only_routes(self):
         cookie, _ = self.login()
         for path in ('/api/admin/config', '/api/storage/clean', '/api/assistant/native-action',
-                     '/api/session/native-handoff', '/api/files/open', '/api/files/reveal'):
+                     '/api/files/open', '/api/files/reveal'):
             self.assertEqual(403, self.request(path, {}, cookie=cookie)[0])
         for data in ({'action': 'assign'}, {'action': 'mode.set', 'actor_session_id': 'leader'},
                      {'action': 'mode.set', 'execution_id': 'execution'}):

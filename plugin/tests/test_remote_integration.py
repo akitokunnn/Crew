@@ -4,7 +4,6 @@ import base64
 import http.client
 import json
 import socket
-import sys
 import threading
 import time
 import unittest
@@ -160,8 +159,7 @@ class RemoteIntegrationTests(ShellFixture, unittest.TestCase):
         post = (
             '/api/remote-access', '/api/admin/update/prepare', '/api/admin/update/cancel',
             '/api/admin/connection/prepare', '/api/admin/chat/send', '/api/admin/chat/interrupt',
-            '/api/admin/config', '/api/open', '/api/open/continue', '/api/files/open', '/api/files/reveal',
-            '/api/session/native-handoff', '/api/session/native-return', '/api/workspace-data/preview',
+            '/api/admin/config', '/api/files/open', '/api/files/reveal', '/api/workspace-data/preview',
             '/api/workspace-data/import', '/api/workspace-data/handoff', '/api/messages',
             '/api/assistant/native-action', '/api/goals/report/folder',
             '/api/report-preview/worker/register', '/api/report-preview/worker/next',
@@ -189,11 +187,9 @@ class RemoteIntegrationTests(ShellFixture, unittest.TestCase):
         status, local_context, _ = self.request('/api/access/context')
         self.assertEqual(200, status)
         self.assertEqual({**common, 'remote': False, 'client': 'local', 'local_controls': True,
-                          'local_desktop': True, 'host_admin': True,
-                          'native_handoff': sys.platform == 'win32', 'vscode_continue': sys.platform == 'win32'},
+                          'local_desktop': True, 'host_admin': True},
                          local_context)
-        remote = {**common, 'remote': True, 'local_desktop': False, 'host_admin': False,
-                  'native_handoff': False, 'vscode_continue': False}
+        remote = {**common, 'remote': True, 'local_desktop': False, 'host_admin': False}
         capabilities = dict.fromkeys(('chat', 'tasks', 'decisions', 'todos', 'notes', 'reports', 'files'), True)
         for client, device, headers, controls, flags in (
                 ('browser', browser, {}, False, capabilities),

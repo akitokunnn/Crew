@@ -36,7 +36,7 @@ async function route(request,response){
     try{const content=await fs.readFile(file);response.writeHead(200,{'Content-Type':({'.js':'text/javascript','.css':'text/css','.html':'text/html','.svg':'image/svg+xml','.woff2':'font/woff2'})[path.extname(file)]||'application/octet-stream'});return response.end(content);}catch(_){response.writeHead(404);return response.end();}
   }
   calls.push({name,method:request.method,body,query:Object.fromEntries(url.searchParams)});
-  if(name==='/api/access/context')return json(response,{remote:false,client:'local',local_controls:true,local_desktop:true,authenticated:true,host_admin:true,native_handoff:process.platform==='win32',vscode_continue:process.platform==='win32'});
+  if(name==='/api/access/context')return json(response,{remote:false,client:'local',local_controls:true,local_desktop:true,authenticated:true,host_admin:true});
   if(name==='/api/chat/history')return json(response,{events:[{seq:1,type:'text',id:'reply',text:'主干 develop，合并前核对测试证据。'}],busy:false,read_seq:0});
   if(name==='/api/chat/events'){response.writeHead(200,{'Content-Type':'text/event-stream','X-Crew-Execution-Id':'','X-Crew-Latest-Seq':'1'});response.write(': connected\n\n');waiting.push(response);return;}
   if(name==='/api/chat/read')return json(response,{read_seq:body.seq});
