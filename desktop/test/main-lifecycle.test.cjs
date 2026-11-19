@@ -8,6 +8,7 @@ const vm = require('node:vm');
 const { pathToFileURL } = require('node:url');
 const http = require('node:http');
 const { listen } = require('./fixtures/loopback.cjs');
+const python = require('../src/python.cjs');
 
 const source = fs.readFileSync(process.env.CREW_MAIN_LIFECYCLE_SOURCE || path.join(__dirname, '../src/main.cjs'), 'utf8');
 const tick = async () => { for (let index = 0; index < 80; index++) await Promise.resolve(); };
@@ -76,13 +77,13 @@ function harness(options = {}) {
   const electron = { app, BrowserWindow:Window, WebContentsView:class {}, Tray:FakeTray,
     ipcMain:{ handle:(name,fn) => handlers.set(name,fn), on() {} },
     Menu:{ buildFromTemplate:menu, setApplicationMenu:value => { appMenu = value; }, getApplicationMenu:() => appMenu },
-    nativeImage:{ createFromPath:() => ({}) }, shell:{ openExternal:async () => {}, openPath:async () => {} }, safeStorage:{},
+    nativeImage:{ createFromPath:file => { calls.image = file; return {}; } }, shell:{ openExternal:async () => {}, openPath:async () => {} }, safeStorage:{},
     session:{ defaultSession:{ webRequest:{ onBeforeSendHeaders:(filter, listener) => { webRequests.headers = { filter, listener }; }, onCompleted:(filter, listener) => { webRequests.completed = { filter, listener }; } } } },
     dialog:{ showMessageBox:async (...args) => { calls.dialogs++; if (args[0] instanceof Window) args[0].alive(); return { response:options.dialogResponse ?? 1 }; }, showOpenDialog:async () => ({ canceled:true }),
       showSaveDialog:async () => ({ canceled:false, filePath:'C:\\Users\\me\\demo.crewpack' }) } };
   class Backend {
     constructor() { this.url = options.backendUrl || 'http://127.0.0.1:12345'; }
-    async start() { calls.backendStart++; await options.backendStart?.promise; }
+    async start() { calls.backendStart++; calls.backendPath = sandbox.process.env.PATH; await options.backendStart?.promise; if(options.backendError)throw options.backendError; }
     async stop() { calls.backendStop++; await options.backendStop?.promise; }
   }
   class RemoteBackend {
@@ -141,9 +142,9 @@ function harness(options = {}) {
   const modules = {
     electron,
     'node:fs':{ mkdirSync() {} },
-    'node:fs/promises':{ readFile:async file => readGate ? readGate.promise : String(file).endsWith('plugin.json') ? '{"name":"crew","version":"0.3.17"}' : '/* fixture asset */', mkdir:async () => {}, writeFile:async () => {}, access:async () => options.accessGate?.promise,
+    'node:fs/promises':{ readFile:async file => readGate ? readGate.promise : String(file).endsWith('plugin.json') ? '{"name":"crew","version":"0.3.17"}' : String(file).endsWith('web.json') ? JSON.stringify(options.recoveryRecord) : '/* fixture asset */', mkdir:async () => {}, writeFile:async () => {}, access:async () => options.accessGate?.promise,
       stat:async () => { calls.stat++; return options.statGate ? options.statGate.promise : {isFile:() => true}; } },
-    './core.cjs':{ options:() => config, Backend, RemoteBackend, loopback:value => value, remoteHealth:value => value,
+    './core.cjs':{ options:() => config, Backend, RemoteBackend, loopback:require('../src/core.cjs').loopback, remoteHealth:value => value,
       projects:async () => projectGate ? projectGate.promise : [{ name:'demo', root:'C:\\demo', directory_state:{ status:'ready' } }],
       newWorkspace:async (parent,name,base) => { calls.created = { parent, name, base }; return { name }; },
       hostFolders:async (base,directory) => ({ base, path:directory }),
@@ -151,6 +152,8 @@ function harness(options = {}) {
       request:async (base,route,body,timeoutMs) => options.request ? options.request(base,route,body,timeoutMs) : options.storageWrite&&route.startsWith('/api/workspace-data/')?options.storageWrite.promise:{} },
     './storage.cjs':{ prepare:async (project,base,_choose,_progress,request) => {if(options.storageWrite)await request(base,'/api/workspace-data/open',{});return project;} },
     './chrome.cjs':{ windowOptions:() => ({}) }, './tabs.cjs':{ WorkspaceTabs:Tabs },
+    './menu.cjs':require('../src/menu.cjs'), './login-shell.cjs':{ readLoginShellPath:() => options.loginPath.promise },
+    './python.cjs':python,
     './activity-preview.cjs':{ ActivityPreview:Preview }, './permissions.cjs':{ installPermissions() {} },
     './report-preview.cjs':{ReportPreviewClient, ReportPreviewRenderer:class {}},
     './tool-updates.cjs':{ ToolUpdates:Tools }, './crew-updates.cjs':{ CrewUpdates:Updates },
@@ -160,7 +163,7 @@ function harness(options = {}) {
     './remote-backends.cjs':{ RemoteBackends:class { constructor(file) { calls.remoteFile = file; } async credential(id) { return { id, token:'t'.repeat(43) }; } } }
   };
   const sandbox = { require:name => Object.hasOwn(modules,name) ? modules[name] : require(name), __dirname:path.join(__dirname,'../src'),
-    process:{ argv:['fixture','main.cjs'], platform:'win32', env:{...options.env}, versions:{}, resourcesPath:path.resolve('fixture resources') }, URL, URLSearchParams, Buffer,
+    process:{ argv:['fixture','main.cjs'], platform:options.platform || 'win32', env:{...options.env}, versions:{}, resourcesPath:path.resolve('fixture resources') }, URL, URLSearchParams, Buffer,
     Promise:ObservedPromise, setTimeout, clearTimeout, setInterval, clearInterval,
     console:{ error:(...args) => logs.push(args), log() {} } };
   // Electron loads main.cjs through the CommonJS function wrapper.
@@ -220,6 +223,43 @@ test('normal close keeps the shell alive and explicit quit cleans it up exactly 
   assert.equal(h.calls.backendStop,1); assert.equal(h.calls.toolsClose,1); assert.equal(h.calls.updatesClose,1);
   assert.equal(h.calls.nativeQuit,1); assert.equal(h.trays[0].isDestroyed(),true);
   assert.deepEqual(h.logs,[]); assert.deepEqual(h.shutdownErrors,[]);
+});
+
+test('Mac launch waits for the shell PATH and Dock activation restores the hidden window', async () => {
+  const loginPath = deferred(), h = harness({platform:'darwin',loginPath});
+  h.ready.resolve(); await tick();
+  assert.equal(h.calls.backendStart,0);
+  loginPath.resolve('/opt/homebrew/bin:/usr/bin'); await h.boot();
+  assert.equal(h.calls.backendPath,'/opt/homebrew/bin:/usr/bin');
+  assert.equal(h.menu().template[0].role,'appMenu');
+  assert.equal(h.menuItem('window-back').accelerator,'Cmd+[');
+  assert.equal(path.basename(h.calls.image),'crew-trayTemplate.png');
+  assert.equal((await h.invoke('desktop:bootstrap')).platform,'darwin');
+  assert.equal(h.handlers.has('desktop:crew-update-apply'),false);
+  assert.equal(h.handlers.has('desktop:tools-check'),true);
+  h.windows[0].close(); assert.equal(h.windows[0].isDestroyed(),false);
+  h.app.emit('activate'); assert.equal(h.calls.windowShow,1);
+  h.app.quit(); await tick();
+  assert.deepEqual(h.logs,[]);
+});
+
+test('Mac shell failure blocks the backend and displays the real startup error', async () => {
+  const loginPath = deferred(), h = harness({platform:'darwin',loginPath});
+  h.ready.resolve(); await tick(); loginPath.reject(new Error('fixture shell error')); await tick();
+  assert.equal(h.calls.backendStart,0);
+  assert.equal(h.windows.length,0);
+  assert.equal(h.calls.dialogs,1);
+  assert.equal(h.calls.nativeQuit,1);
+  assert.match(h.logs[0][0].message,/fixture shell error/);
+});
+
+test('a stale local service record cannot replace the Python version failure on the home page', async () => {
+  const loginPath = deferred(); loginPath.resolve('/opt/homebrew/bin:/usr/bin');
+  const message = 'Crew 需要 Python 3.11 或更新版本，当前 python3 是 3.10。 可用 Homebrew 安装：brew install python';
+  const h = harness({platform:'darwin',loginPath,backendError:new python.PythonVersionError(message),recoveryRecord:{url:'http://127.0.0.1:12345'}});
+  await h.boot();
+  await assert.rejects(h.invoke('desktop:bootstrap'),{message});
+  h.app.quit(); await tick();
 });
 
 test('quit waits for a workspace data operation before stopping its backend and never reopens disposed tabs',async()=>{

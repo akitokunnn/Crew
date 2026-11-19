@@ -110,6 +110,12 @@ npm run build
 
 构建版本读取本目录 `package.json`，产物包括 `dist/Crew-<version>-win-x64.zip`、`dist/Crew-<version>-portable.exe`、`dist/Crew-<version>-setup.exe`。ZIP 解压一次后直接运行目录中的 `Crew.exe`，日常启动无需重复解包；portable 是每次启动时临时解包的单文件程序；setup 是当前用户安装器，提供开始菜单、桌面快捷方式和卸载入口。`dist/win-unpacked/Crew.exe` 是同版未压缩目录，日常使用建议 ZIP 目录版或安装版。安装器与应用未做代码签名；EXE 原生图标资源仍正常嵌入。后端源码随应用放在 `resources/backend`，打包版会将后端按内容哈希保留到所选 home 的 `desktop/backend`，保证 portable 解包目录清理后 CLI 和守卫路径仍有效；Python 与 Git 使用本机安装。
 
+### Mac 构建
+
+在 GitHub Actions 手动运行「Crew Mac build」。工作流使用 `macos-15` arm64 runner，在 `desktop` 中执行 `npm run build:mac`，并对 `dist/mac-arm64/Crew.app` 做签名校验和隔离启动退出冒烟。Windows 开发机不能执行这套 Mac 签名打包流程。[构建工作流](../.github/workflows/mac-build.yml)
+
+从运行记录下载 `Crew-mac-arm64`，内含 `Crew-<version>-mac-arm64.dmg`、`Crew-<version>-mac-arm64.zip` 和 `smoke-output/`，保留 7 天。应用使用 ad-hoc 签名，未使用 Developer ID 或提交公证，首次打开会遇到 Gatekeeper 提示。在 Apple 芯片 Mac 复验包时，运行 `node scripts/smoke.cjs` 和 `node scripts/verify-bundle.cjs`，分别检查启动退出与包内源码一致性。[安装和试用步骤](../docs/MAC.md)
+
 验收新版本且保留正在运行的正式实例时，使用独立数据目录。此入口不会复制正式会话、QQ 凭据或自动恢复旧任务：
 
 ```powershell

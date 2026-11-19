@@ -4,6 +4,11 @@
   const panel = $('tools-page'), workspace = $('workspaces-page');
   let snapshot = null, request = null, setting = false, settingNote = '', globalError = '';
   const supported = typeof bridge?.toolsSnapshot === 'function';
+  const mac = bridge?.platform === 'darwin';
+  if (supported && mac) {
+    $('tools-preferences').hidden = true;
+    $('tools-note').textContent = 'Mac 版暂不支持一键更新，请用原安装方式更新。';
+  }
   function text(value) { return typeof value === 'string' ? value : value?.message || ''; }
   function node(tag, className, value) {
     const element = document.createElement(tag); if (className) element.className = className;
@@ -22,7 +27,7 @@
     if (labels[tool.phase]) return labels[tool.phase];
     if (tool.error) return tool.phase === 'error' ? '操作失败' : '检查失败';
     if (!tool.installed_version) return '未检测到';
-    if (tool.update_available) return tool.can_update ? '有更新' : tool.can_queue ? '会话使用中' : '需手动更新';
+    if (tool.update_available) return mac ? '有新版本' : tool.can_update ? '有更新' : tool.can_queue ? '会话使用中' : '需手动更新';
     if (tool.phase === 'done') return '已更新';
     return tool.latest_version ? '已是最新' : '已安装';
   }
@@ -56,22 +61,27 @@
       }
       card.append(header, versions);
       const method = installation(tool); if (method) card.append(node('p', 'tool-installation', '安装方式：' + method));
-      const footer = node('div', 'tool-card-footer'), messages = node('div', 'tool-messages'), actions = node('div', 'tool-card-actions');
+      const footer = node('div', 'tool-card-footer'), messages = node('div', 'tool-messages');
       const distinct = new Set();
       for (const [value, error] of [[tool.message, false], [tool.blocked_reason, false], [tool.manual_update, false], [tool.error, true]]) {
         const message = text(value); if (!message || distinct.has(message)) continue; distinct.add(message);
         messages.append(node('p', 'tool-message' + (error ? ' error' : ''), message));
       }
-      const update = node('button', 'button secondary', tool.phase === 'updating' ? '正在更新…' : tool.phase === 'queued' ? '已排队' : !tool.can_update && tool.can_queue ? '等待会话结束后更新' : '更新');
-      update.type = 'button'; update.dataset.toolUpdate = tool.id;
-      update.disabled = busy || request !== null || !(tool.can_update || tool.can_queue) || !tool.update_available || ['updating', 'queued', 'checking'].includes(tool.phase);
-      if (tool.blocked_reason) update.title = text(tool.blocked_reason);
-      update.addEventListener('click', () => { void operation(tool.id, () => bridge.toolsUpdate(tool.id)); }); actions.append(update);
-      if (tool.phase === 'queued') {
-        const cancel = node('button', 'button secondary', '取消等待'); cancel.type = 'button'; cancel.dataset.toolCancel = tool.id; cancel.disabled = request !== null;
-        cancel.addEventListener('click', () => { void operation(tool.id, () => bridge.toolsCancel(tool.id)); }); actions.append(cancel);
+      footer.append(messages);
+      if (!mac) {
+        const actions = node('div', 'tool-card-actions');
+        const update = node('button', 'button secondary', tool.phase === 'updating' ? '正在更新…' : tool.phase === 'queued' ? '已排队' : !tool.can_update && tool.can_queue ? '等待会话结束后更新' : '更新');
+        update.type = 'button'; update.dataset.toolUpdate = tool.id;
+        update.disabled = busy || request !== null || !(tool.can_update || tool.can_queue) || !tool.update_available || ['updating', 'queued', 'checking'].includes(tool.phase);
+        if (tool.blocked_reason) update.title = text(tool.blocked_reason);
+        update.addEventListener('click', () => { void operation(tool.id, () => bridge.toolsUpdate(tool.id)); }); actions.append(update);
+        if (tool.phase === 'queued') {
+          const cancel = node('button', 'button secondary', '取消等待'); cancel.type = 'button'; cancel.dataset.toolCancel = tool.id; cancel.disabled = request !== null;
+          cancel.addEventListener('click', () => { void operation(tool.id, () => bridge.toolsCancel(tool.id)); }); actions.append(cancel);
+        }
+        footer.append(actions);
       }
-      footer.append(messages, actions); card.append(footer); $('tools-list').append(card);
+      card.append(footer); $('tools-list').append(card);
     }
   }
   function consume(value) {
@@ -94,7 +104,7 @@
   $('nav-workspaces').addEventListener('click', () => select(false));
   $('nav-tools').addEventListener('click', show);
   $('tools-check').addEventListener('click', () => { void operation('check', () => bridge.toolsCheck()); });
-  $('tools-auto').addEventListener('change', async () => {
+  if (!mac) $('tools-auto').addEventListener('change', async () => {
     if (setting) return;
     const enabled = $('tools-auto').checked; setting = true; settingNote = ''; globalError = ''; render();
     try { consume(await bridge.toolsSettings({autoUpdate:enabled})); settingNote = enabled ? '已开启' : '已关闭'; }

@@ -26,6 +26,7 @@ test('closing tool metadata cancels its owned helper promptly without starting q
   const pending = command(), started = deferred(), states = [], operations = [];
   let stopped = 0;
   const manager = new ToolUpdates({home,backendDir:home,python:'fixture'}, {
+    platform:'win32',
     onChange:state => states.push(state),
     run:(_exe,args) => { operations.push(args[3]); started.resolve(); return pending.promise; },
     stopReadOnly:async child => { assert.equal(child,pending.child); stopped++; pending.reject(abortError()); }
@@ -111,7 +112,7 @@ test('read-only cancellation reaps its actual helper and descendant process',asy
   for(let attempt=0;attempt<200;attempt++) { try { ids=JSON.parse(await fs.readFile(pids,'utf8')); break; } catch { await delay(10); } }
   assert.equal(ids?.length,2,'fixture parent and descendant must both be running');
   const time=performance.now(); await reads.close(); const elapsed=performance.now()-time;
-  assert.equal((await outcome).name,'AbortError'); assert.notEqual(child.exitCode,null);
+  assert.equal((await outcome).name,'AbortError'); assert.ok(child.exitCode !== null || child.signalCode !== null);
   for(const pid of ids) assert.throws(() => process.kill(pid,0),/ESRCH|not found/i,'owned process remains alive: '+pid);
   assert(elapsed<3000,'owned helper cancellation took '+elapsed+'ms');
   console.log('owned read-only helper tree cancelled in '+elapsed.toFixed(1)+'ms');

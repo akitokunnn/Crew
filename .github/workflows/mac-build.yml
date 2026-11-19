@@ -1,0 +1,77 @@
+name: Crew Mac build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['mac-build/**']
+
+permissions:
+  contents: read
+
+jobs:
+  mac-build:
+    # 使用比 macOS 26 成熟的 macOS 15 arm64 镜像，2026-11-19 已核对 https://github.com/actions/runner-images/blob/main/README.md#available-images
+    runs-on: macos-15
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: bash
+    env:
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - name: Use a canonical isolated temporary directory
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          directory = Path(os.environ['RUNNER_TEMP']).resolve() / 'crew-tests'
+          directory.mkdir(parents=True, exist_ok=True)
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as output:
+              for name in ('TMPDIR', 'TEMP', 'TMP'):
+                  print(f'{name}={directory}', file=output)
+          PY
+      - name: Core backend tests with isolated homes and fake carriers
+        working-directory: plugin
+        run: |
+          unset CREW_SESSION_ID CLAUDE_CODE_SESSION_ID CREW_EXECUTION_ID CREW_GOAL_ID
+          python tests/ci_core.py -v
+      - name: Install desktop dependencies
+        working-directory: desktop
+        run: npm ci
+      - name: Desktop unit tests
+        working-directory: desktop
+        run: |
+          unset CREW_SESSION_ID CLAUDE_CODE_SESSION_ID CREW_EXECUTION_ID CREW_GOAL_ID
+          npm test
+      - name: Build arm64 DMG and ZIP
+        id: package
+        working-directory: desktop
+        run: npm run build:mac
+      - name: Verify signature and smoke-test the packaged app
+        working-directory: desktop
+        run: |
+          unset CREW_SESSION_ID CLAUDE_CODE_SESSION_ID CREW_EXECUTION_ID CREW_GOAL_ID
+          mkdir -p smoke-output
+          {
+            codesign --verify --deep --strict dist/mac-arm64/Crew.app
+            node scripts/smoke.cjs
+          } 2>&1 | tee smoke-output/mac-packaged.log
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() && steps.package.outcome == 'success' }}
+        with:
+          name: Crew-mac-arm64
+          path: |
+            desktop/dist/Crew-*-mac-arm64.dmg
+            desktop/dist/Crew-*-mac-arm64.zip
+            desktop/smoke-output/
+          if-no-files-found: error
+          retention-days: 7

@@ -8,6 +8,8 @@ const { createWriteStream } = require('node:fs');
 const { pipeline } = require('node:stream/promises');
 const { spawn, execFile } = require('node:child_process');
 const { promisify } = require('node:util');
+const { defaultPython, checkPythonVersion } = require('./python.cjs');
+const { samePath } = require('./paths.cjs');
 const run = promisify(execFile);
 
 function loopback(value) {
@@ -50,7 +52,7 @@ function serviceOrigin(base) {
   return loopback(base);
 }
 
-function options(args, {launchSettingsPath} = {}) {
+function options(args, {launchSettingsPath, platform = process.platform} = {}) {
   const explicit = {};
   const fields = { '--home': 'home', '--python': 'python', '--port': 'port', '--backend-dir': 'backendDir', '--smoke-output': 'smokeOutput', '--service-url': 'serviceUrl', '--profile': 'profile', '--launch-settings':'launchSettingsPath' };
   for (let index = 0; index < args.length; index++) {
@@ -65,7 +67,7 @@ function options(args, {launchSettingsPath} = {}) {
     explicit[fields[key]] = key === '--port' ? Number(value) : value;
   }
   const product=require('./product.cjs');
-  const defaults={home:path.join(os.homedir(),product.homeDirectory),python:'python',port:0};
+  const defaults={home:path.join(os.homedir(),product.homeDirectory),python:defaultPython(platform),port:0};
   const file=explicit.launchSettingsPath || (explicit.isolated || explicit.smoke ? path.join(path.resolve(explicit.home || defaults.home),'desktop','launch-settings.json') : launchSettingsPath);
   const saved=require('./launch-settings.cjs').readSync(file);
   const stored=saved ? {home:saved.home,python:saved.python,port:saved.port,backendSource:saved.source,
@@ -81,7 +83,7 @@ function options(args, {launchSettingsPath} = {}) {
   if (result.smokeVisual && !result.smoke) throw new Error('视觉验收只允许使用隔离 smoke 模式');
   result.home = path.resolve(result.home);
   const normalHome = path.resolve(os.homedir(), product.homeDirectory);
-  const sameHome = process.platform === 'win32' ? result.home.toLowerCase() === normalHome.toLowerCase() : result.home === normalHome;
+  const sameHome = samePath(result.home, normalHome, platform);
   result.instanceName = result.isolated || result.smoke ? product.name+' · 隔离测试' : sameHome ? product.name : product.name+' · 独立数据';
   if (result.smoke && (sameHome || result.port === 47811)) throw new Error('smoke 必须使用隔离 home 和测试端口');
   if (result.serviceUrl) {
@@ -197,7 +199,7 @@ async function confirmedStopped(config, candidate) {
   const script = path.join(config.backendDir, 'crew_supervisor.py');
   try {
     await fs.access(script);
-    const {stdout} = await run(config.python || 'python', [script, '--home', config.home, '--probe'],
+    const {stdout} = await run(config.python || defaultPython(), [script, '--home', config.home, '--probe'],
       {windowsHide:true,timeout:10000,maxBuffer:131072,env:{...process.env,PYTHONIOENCODING:'utf-8'}});
     const probe = JSON.parse(stdout);
     return probe.can_start === true && probe.url === candidate;
@@ -257,6 +259,7 @@ class Backend {
         if (!connectionRefused(error) && !await confirmedStopped(this.config,candidate)) throw new Error('现有 Crew 服务暂时不可用，请稍后重试：' + error.message);
       }
     }
+    await checkPythonVersion(this.config.python);
     let script = path.join(this.config.backendDir, 'crew_supervisor.py');
     try { await fs.access(script); this.supervised = true; }
     catch (error) {

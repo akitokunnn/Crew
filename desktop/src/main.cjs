@@ -6,6 +6,9 @@ const { pathToFileURL } = require('node:url');
 const core = require('./core.cjs');
 const storage = require('./storage.cjs');
 const chrome = require('./chrome.cjs');
+const { applicationMenuTemplate, backAccelerator, isBackShortcut } = require('./menu.cjs');
+const { readLoginShellPath } = require('./login-shell.cjs');
+const { PythonVersionError } = require('./python.cjs');
 const { WorkspaceTabs } = require('./tabs.cjs');
 const { ActivityPreview } = require('./activity-preview.cjs');
 const { ReportPreviewRenderer, ReportPreviewClient } = require('./report-preview.cjs');
@@ -17,6 +20,7 @@ const { OperationsClient } = require('./operations.cjs');
 const { LaunchSettings, relaunchArgs } = require('./launch-settings.cjs');
 const { RemoteBackends } = require('./remote-backends.cjs');
 const product = require('./product.cjs');
+const platform = process.platform;
 const config = core.options(process.argv.slice(1),{launchSettingsPath:path.join(app.getPath('appData'),product.settingsDirectory,'launch-settings.json')});
 const administrator = new Administrator(config.home);
 const operations = new OperationsClient(config);
@@ -323,7 +327,7 @@ function keyboard(event,input){
   else if(ctrl&&!input.alt&&!input.shift&&key==='t')action=()=>showHome();
   else if(ctrl&&!input.alt&&!input.shift&&key==='w')action=()=>tabs.close(tabs.state().activeId);
   else if((ctrl&&!input.alt&&key==='r')||key==='f5')action=()=>tabs.reload();
-  else if(input.alt&&!ctrl&&key==='arrowleft')action=()=>tabs.back();
+  else if(isBackShortcut(platform,input))action=()=>tabs.back();
   if(action){event.preventDefault();menuAction(action)();}
 }
 function aboutCrew() {
@@ -386,15 +390,15 @@ function workspaceMenu() {
     ...local({ id:'tools-updates',label:'工具与更新…',click:menuAction(()=>showHome('tools')) }),
     { id:'app-settings',label:'设置…',accelerator:'CmdOrCtrl+,',click:menuAction(()=>showHome('settings')) },
     { type:'separator' },
-    { id:'window-back', label:'返回上一页', accelerator:'Alt+Left', click:menuAction(()=>tabs.back()) },
+    { id:'window-back', label:'返回上一页', accelerator:backAccelerator(platform), click:menuAction(()=>tabs.back()) },
     { id:'window-reload', label:'刷新当前标签',accelerator:'CmdOrCtrl+R',click:menuAction(()=>tabs.reload()) },
     { id:'tab-next',label:'下一个标签',accelerator:'Ctrl+Tab',click:menuAction(()=>tabs.cycle(1)) },
     { id:'tab-previous',label:'上一个标签',accelerator:'Ctrl+Shift+Tab',click:menuAction(()=>tabs.cycle(-1)) },
     { type:'separator' },
     { id:'tab-close', label:'关闭当前标签', accelerator:'CmdOrCtrl+W', click:menuAction(()=>tabs.close(tabs.state().activeId)) },
-    { id:'window-close',label:'收起到托盘',click:()=>{if(liveWindow())window.close();} },
+    { id:'window-close',label:platform==='darwin'?'关闭窗口':'收起到托盘',click:()=>{if(liveWindow())window.close();} },
     { id:'app-restart', label:'重启 Crew', click:menuAction(restartCrew) },
-    { id:'app-quit', label:'退出 Crew', accelerator:'CmdOrCtrl+Q', click:()=>app.quit() }
+    { id:'app-quit', label:'退出 Crew', ...(platform==='darwin'?{}:{accelerator:'CmdOrCtrl+Q'}), click:()=>app.quit() }
   ];
 }
 async function settled() {
@@ -483,7 +487,7 @@ handle('desktop:bootstrap', async () => {
   if (!liveWindow(target)) return null;
   for(const project of projects)tabs.updateProject(project);
   homeBootstrapped=true;
-  return { projects, service: { url:backend.url, owned:backend.owned, remote:Boolean(backend.remote) }, pendingAction:action, ...(workspace ? {pendingWorkspace:workspace} : {}) };
+  return { platform, projects, service: { url:backend.url, owned:backend.owned, remote:Boolean(backend.remote) }, pendingAction:action, ...(workspace ? {pendingWorkspace:workspace} : {}) };
 });
 handle('desktop:connection',()=>connectionState());
 handle('desktop:admin-status',async()=>{
@@ -574,19 +578,21 @@ localHandle('desktop:tools-check',()=>tools.check());
 localHandle('desktop:tools-update',id=>tools.update(id));
 localHandle('desktop:tools-cancel',id=>tools.cancel(id));
 localHandle('desktop:tools-settings',settings=>tools.settings(settings));
-localHandle('desktop:crew-update-snapshot',()=>crewUpdates.snapshot());
-localHandle('desktop:crew-update-check',()=>crewUpdates.check());
-localHandle('desktop:crew-update-apply',()=>{if(launchSettings?.pending)throw Error('正在切换后台连接，请等待完成。');return crewUpdates.update();});
-localHandle('desktop:crew-update-cancel',()=>crewUpdates.cancel());
-localHandle('desktop:crew-update-open',async kind=>{
-  if(!['release','main'].includes(kind))throw new Error('不支持的版本链接');
-  const online=crewUpdates.snapshot().online;
-  if(kind==='release'&&!online?.release?.url)throw new Error('当前版本尚未登记正式发布包，请查看 main 分支。');
-  const target=kind==='release'?online.release.url:(online?.main?.url||'https://github.com/akitokunnn/Crew/tree/main');
-  const url=new URL(target);
-  if(url.protocol!=='https:'||url.hostname!=='github.com'||url.username||url.password||!(url.pathname==='/akitokunnn/Crew'||url.pathname.startsWith('/akitokunnn/Crew/')))throw new Error('版本链接不属于 Crew 官方仓库');
-  await shell.openExternal(url.href);return {ok:true};
-});
+if (platform !== 'darwin') {
+  localHandle('desktop:crew-update-snapshot',()=>crewUpdates.snapshot());
+  localHandle('desktop:crew-update-check',()=>crewUpdates.check());
+  localHandle('desktop:crew-update-apply',()=>{if(launchSettings?.pending)throw Error('正在切换后台连接，请等待完成。');return crewUpdates.update();});
+  localHandle('desktop:crew-update-cancel',()=>crewUpdates.cancel());
+  localHandle('desktop:crew-update-open',async kind=>{
+    if(!['release','main'].includes(kind))throw new Error('不支持的版本链接');
+    const online=crewUpdates.snapshot().online;
+    if(kind==='release'&&!online?.release?.url)throw new Error('当前版本尚未登记正式发布包，请查看 main 分支。');
+    const target=kind==='release'?online.release.url:(online?.main?.url||'https://github.com/akitokunnn/Crew/tree/main');
+    const url=new URL(target);
+    if(url.protocol!=='https:'||url.hostname!=='github.com'||url.username||url.password||!(url.pathname==='/akitokunnn/Crew'||url.pathname.startsWith('/akitokunnn/Crew/')))throw new Error('版本链接不属于 Crew 官方仓库');
+    await shell.openExternal(url.href);return {ok:true};
+  });
+}
 function settingsRequest(route, body, timeoutMs) {
   if (!backend?.url || new URL(backend.url).port === '0') throw Error(backend?.startupError || '后台尚未连接，请查看后台信息。');
   return core.request(backend.url, route, body, timeoutMs);
@@ -709,9 +715,14 @@ handle('desktop:ready', async info => {
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', showWindow);
+  if (platform === 'darwin') app.on('activate', showWindow);
   app.whenReady().then(async () => {
     if (quitting) return;
     try {
+      if (platform === 'darwin') {
+        process.env.PATH = await startupStep(readLoginShellPath());
+        if (quitting) return;
+      }
       // A LAN connection runs no local Python, so its packaged UI assets are read in place.
       if (app.isPackaged && !remoteMode) {
         config.helperBackendDir=await startupStep(core.materializeBackend(config.bundledBackendDir,config.home));
@@ -746,8 +757,11 @@ else {
           // connect. Keep the shell and its file-backed health page available.
           console.error('Crew backend unavailable:',error);
           backend.startupError=error.message;
-          let candidate=config.serviceUrl;
-          if(!candidate)try{candidate=JSON.parse(await fs.readFile(path.join(config.home,'web.json'),'utf8')).url;}catch(_){}
+          let candidate;
+          if (!(error instanceof PythonVersionError)) {
+            candidate=config.serviceUrl;
+            if(!candidate)try{candidate=JSON.parse(await fs.readFile(path.join(config.home,'web.json'),'utf8')).url;}catch(_){}
+          }
           try{backend.url=core.loopback(candidate);}catch(_){backend.url='http://127.0.0.1:0';}
           pendingAction='admin';
         }
@@ -832,15 +846,12 @@ else {
       });
       window.on('close', event => { if (!quitting) { event.preventDefault(); window.hide(); } });
       window.on('closed', () => { window = null; });
-      Menu.setApplicationMenu(Menu.buildFromTemplate([
-        { label:'工作区', submenu:workspaceMenu() },
-        { label:'编辑', submenu:[{ role:'undo',label:'撤销' },{ role:'redo',label:'重做' },{ type:'separator' },{ role:'cut',label:'剪切' },{ role:'copy',label:'复制' },{ role:'paste',label:'粘贴' },{ role:'selectAll',label:'全选' }] },
-        { label:'帮助', submenu:[{ id:'app-about',label:'关于 Crew',click:menuAction(aboutCrew) },{ id:'app-logs',label:'查看日志文件夹',click:menuAction(showLogs) }] }
-      ]));
-      window.setAutoHideMenuBar(true); window.setMenuBarVisibility(false);
+      const help = [{ id:'app-about',label:'关于 Crew',click:menuAction(aboutCrew) },{ id:'app-logs',label:'查看日志文件夹',click:menuAction(showLogs) }];
+      Menu.setApplicationMenu(Menu.buildFromTemplate(applicationMenuTemplate(platform, workspaceMenu(), help)));
+      if (platform !== 'darwin') { window.setAutoHideMenuBar(true); window.setMenuBarVisibility(false); }
       windowMenu = Menu.buildFromTemplate([...workspaceMenu(),{ type:'separator' },{ label:'关于 Crew',click:menuAction(aboutCrew) },{ label:'查看日志文件夹',click:menuAction(showLogs) }]);
       if (!config.smoke) {
-        const icon = nativeImage.createFromPath(path.join(__dirname, '../assets/crew-tray.png'));
+        const icon = nativeImage.createFromPath(path.join(__dirname, '../assets', platform==='darwin'?'crew-trayTemplate.png':'crew-tray.png'));
         tray = new Tray(icon);
         tray.setToolTip(config.instanceName+' · 关闭窗口后继续运行');
         tray.setContextMenu(Menu.buildFromTemplate([{ label: '打开 Crew', click: showWindow },
@@ -857,7 +868,7 @@ else {
         const directory=path.join(config.home,'desktop','logs');
         try { await fs.mkdir(directory,{recursive:true}); await fs.writeFile(path.join(directory,'app.log'),new Date().toISOString()+'\n'+(error.stack||String(error))); } catch (_) { /* A log failure must not hide the recovery action. */ }
         const result=await dialog.showMessageBox({type:'error',title:'Crew',message:'暂时无法打开 Crew',
-          detail:'请确认 Crew 可以连接，且本机已安装 Python 3，然后重试。可在工作区的日志目录查看详细记录。',
+          detail:platform==='darwin'?error.message:'请确认 Crew 可以连接，且本机已安装 Python 3，然后重试。可在工作区的日志目录查看详细记录。',
           buttons:['重试','关闭'],defaultId:0,cancelId:1,noLink:true});
         if(result.response===0)app.relaunch();
       }

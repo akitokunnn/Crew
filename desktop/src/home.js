@@ -1,5 +1,6 @@
 'use strict';
 const $ = id => document.getElementById(id);
+if (window.crewDesktop.platform === 'darwin') $('home-shortcut').textContent = '⌘T';
 let busy = false;
 let homeReady = false;
 let dispatching = false;

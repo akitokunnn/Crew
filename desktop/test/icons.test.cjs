@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { inflateSync } = require('node:zlib');
 const icon = require('../scripts/icon.cjs');
 const { peResources } = require('../scripts/verify-icons.cjs');
 const assets = path.resolve(__dirname, '../assets');
@@ -39,6 +40,32 @@ test('16px taskbar image has transparent rounded corners, a bright ring, and a d
   assert.ok(at(4, 8)[0] > 200, 'open ring must survive small-size rasterization');
   const point = at(11, 10);
   assert.ok(point[1] > point[0] + 20 && point[1] > point[2], 'crew point must remain a separate teal mark');
+});
+
+test('both Mac tray template PNGs contain a black ring and point on transparent pixels', () => {
+  for (const [file,size] of [['crew-trayTemplate.png',16],['crew-trayTemplate@2x.png',32]]) {
+    const png = fs.readFileSync(path.join(assets,file));
+    assert.equal(png.readUInt32BE(16),size);
+    assert.equal(png.readUInt32BE(20),size);
+    const data = [];
+    for (let offset = 8; offset < png.length;) {
+      const count = png.readUInt32BE(offset), kind = png.toString('ascii',offset+4,offset+8);
+      if (kind === 'IDAT') data.push(png.subarray(offset+8,offset+8+count));
+      if (kind === 'pHYs') assert.equal(png.readUInt32BE(offset+8),Math.round(size * 72 / 16 / 0.0254));
+      offset += 12+count;
+    }
+    const rows = inflateSync(Buffer.concat(data)), stride = 1+size*4;
+    assert.equal(rows.length,stride*size);
+    const alpha = (x,y) => rows[y*stride+4+x*4];
+    for (let y=0;y<size;y++) {
+      assert.equal(rows[y*stride],0);
+      for (let x=0;x<size;x++) assert.deepEqual([...rows.subarray(y*stride+1+x*4,y*stride+4+x*4)],[0,0,0]);
+    }
+    assert.equal(alpha(0,0),0);
+    assert.equal(alpha(size/2,size/2),0);
+    assert.ok(alpha(size/4,size/2)>128,'ring is visible');
+    assert.ok(alpha(size===16?11:23,size===16?10:21)>128,'separate point is visible');
+  }
 });
 
 test('icon manifest verifies actual files and malformed ICO / PE input is rejected', () => {

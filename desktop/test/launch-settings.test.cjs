@@ -43,7 +43,7 @@ async function fixture(t,options={}) {
   };
   const manager=new LaunchSettings(config,{backend,updates,operations,remotes,remoteRequest,bundledBackend:source,request,
     probePort:options.realPort?undefined:async()=>{calls.push('probe-port');},
-    run:async(exe,args,settings)=>{calls.push('python-version');assert.equal(exe,'fixture-python');assert.deepEqual(args,['--version']);assert.equal(settings.windowsHide,true);return{stdout:options.oldPython?'Python 3.8.1':'Python 3.13.0'};},
+    run:async(exe,args,settings)=>{calls.push('python-version');assert.equal(exe,'fixture-python');assert.deepEqual(args,['-c',"import sys;print('%d.%d'%sys.version_info[:2])"]);assert.equal(settings.windowsHide,true);return{stdout:options.oldPython?'3.8':'3.13'};},
     onApplied:async()=>{calls.push('relaunch');assert.ok(readSync(config.launchSettingsPath));}});
   const settings={mode:'local',home,source:'bundled',backend_directory:source,service_url:'',port:0,python:'fixture-python',remote_backend:''};
   if(options.startupFailure){backend.startupError='后台启动失败';backend.supervised=true;backend.url='http://127.0.0.1:0';}

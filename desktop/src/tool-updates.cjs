@@ -4,14 +4,16 @@ const path = require('node:path');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const { ReadOnlyCommands } = require('./readonly-command.cjs');
+const { defaultPython } = require('./python.cjs');
 const execute = promisify(execFile);
 const IDS = ['claude', 'codex'];
 const names = { claude:'Claude Code', codex:'Codex' };
 const clone = value => JSON.parse(JSON.stringify(value));
 
 class ToolUpdates {
-  constructor(config, { onChange = () => {}, run = execute, clock = () => new Date().toISOString(), stopReadOnly } = {}) {
+  constructor(config, { onChange = () => {}, run = execute, clock = () => new Date().toISOString(), stopReadOnly, platform = process.platform } = {}) {
     this.config = config; this.onChange = onChange; this.run = run; this.clock = clock;
+    this.platform = platform;
     this.reads = new ReadOnlyCommands({ run, stopReadOnly });
     this.file = path.join(config.home, 'desktop', 'tool-update-settings.json');
     this.autoUpdate = false; this.queue = new Map(); this.records = new Map();
@@ -26,13 +28,15 @@ class ToolUpdates {
   }
   _emit() { if (!this.closed) this.onChange(this.snapshot()); }
   async initialize() {
-    try {
-      const saved = JSON.parse(await fs.readFile(this.file, 'utf8'));
-      this.autoUpdate = saved.autoUpdate === true;
-      if (Array.isArray(saved.queue)) for (const entry of saved.queue) {
-        if (IDS.includes(entry?.id) && ['manual', 'auto'].includes(entry.source) && (entry.source === 'manual' || this.autoUpdate)) this.queue.set(entry.id, entry.source);
-      }
-    } catch (error) { if (error.code !== 'ENOENT') this.lastError = '更新设置读取失败：' + error.message; }
+    if (this.platform !== 'darwin') {
+      try {
+        const saved = JSON.parse(await fs.readFile(this.file, 'utf8'));
+        this.autoUpdate = saved.autoUpdate === true;
+        if (Array.isArray(saved.queue)) for (const entry of saved.queue) {
+          if (IDS.includes(entry?.id) && ['manual', 'auto'].includes(entry.source) && (entry.source === 'manual' || this.autoUpdate)) this.queue.set(entry.id, entry.source);
+        }
+      } catch (error) { if (error.code !== 'ENOENT') this.lastError = '更新设置读取失败：' + error.message; }
+    }
     this._emit();
     return this.snapshot();
   }
@@ -42,7 +46,7 @@ class ToolUpdates {
     const repeat = (fn, ms) => { const timer = setInterval(fn, ms); timer.unref(); this.timers.push(timer); };
     later(() => { void this.check(); }, 5000);
     repeat(() => { void this.check(); }, 6 * 60 * 60 * 1000);
-    repeat(() => { void this._drain(); }, 60000);
+    if (this.platform !== 'darwin') repeat(() => { void this._drain(); }, 60000);
   }
   _save() {
     const contents = JSON.stringify({ autoUpdate:this.autoUpdate, queue:[...this.queue].map(([id, source]) => ({id, source})) }, null, 2);
@@ -59,7 +63,7 @@ class ToolUpdates {
     const args = [path.join(backendDir, 'crew_tool_versions.py'), '--home', this.config.home, operation];
     if (id !== undefined) args.push(id);
     const run = operation === 'check' ? this.reads.run.bind(this.reads) : this.run;
-    const result = await run(this.config.python || 'python', args, { cwd:backendDir, windowsHide:true,
+    const result = await run(this.config.python || defaultPython(this.platform), args, { cwd:backendDir, windowsHide:true,
       timeout:operation === 'update' ? 0 : 45000, maxBuffer:1024 * 1024,
       env:{...process.env, PYTHONUNBUFFERED:'1', PYTHONIOENCODING:'utf-8'} });
     const value = JSON.parse(result.stdout);
@@ -81,14 +85,14 @@ class ToolUpdates {
         if (!result.ok || !Array.isArray(result.runtimes) || result.runtimes.length !== 2 ||
           new Set(result.runtimes.map(item => item.id)).size !== 2) throw new Error(result.error || '版本检查结果不完整');
         for (const item of result.runtimes) {
-          this._record(item);
+          this._record(this.platform === 'darwin' ? {...item, can_update:false, can_queue:false, blocked_reason:null, manual_update:null} : item);
           if (!this.queue.has(item.id) && this.records.get(item.id).phase !== 'updating') {
             this.records.set(item.id, { ...this.records.get(item.id), phase:item.error ? 'error' : 'idle', message:null });
           }
         }
         this.checkedAt = result.checked_at || this.clock(); this.lastError = null;
         if (this.autoUpdate) for (const item of result.runtimes) if (item.update_available && (item.can_update || item.can_queue) && !this.queue.has(item.id)) this.queue.set(item.id, 'auto');
-        await this._save();
+        if (this.platform !== 'darwin') await this._save();
       } catch (error) { if (!(this.closed && error.name === 'AbortError')) this.lastError = '检查失败：' + error.message; }
       finally { this._checking = null; this._emit(); }
       if (!this.lastError && this.queue.size) await this._drain();
@@ -98,6 +102,7 @@ class ToolUpdates {
     return this._checking;
   }
   async update(id) {
+    this.requireUpdates();
     if (!IDS.includes(id)) throw new Error('不支持的工具');
     if (this.closed) throw new Error('工具更新已停止');
     this.queue.set(id, 'manual');
@@ -148,6 +153,7 @@ class ToolUpdates {
     return this._draining;
   }
   async cancel(id) {
+    this.requireUpdates();
     if (!IDS.includes(id)) throw new Error('不支持的工具');
     if (this.records.get(id).phase === 'updating') throw new Error('更新已经开始，请等待完成');
     this.queue.delete(id);
@@ -155,6 +161,7 @@ class ToolUpdates {
     await this._save(); this._emit(); return this.snapshot();
   }
   async settings(value) {
+    this.requireUpdates();
     if (!value || typeof value.autoUpdate !== 'boolean' || Object.keys(value).some(key => key !== 'autoUpdate')) throw new Error('更新设置无效');
     this.autoUpdate = value.autoUpdate;
     if (!this.autoUpdate) for (const [id, source] of this.queue) if (source === 'auto' && this.records.get(id).phase !== 'updating') {
@@ -164,6 +171,9 @@ class ToolUpdates {
     await this._save(); this._emit();
     if (this.autoUpdate) void this.check();
     return this.snapshot();
+  }
+  requireUpdates() {
+    if (this.platform === 'darwin') throw new Error('Mac 版暂不支持一键更新，请用原安装方式更新。');
   }
   async close() {
     this.closed = true;

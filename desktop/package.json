@@ -13,7 +13,9 @@
     "prebuild": "npm run check:version",
     "build": "node scripts/icon.cjs && electron-builder --win zip portable nsis --x64",
     "prebuild:dir": "npm run check:version",
-    "build:dir": "node scripts/icon.cjs && electron-builder --win dir --x64"
+    "build:dir": "node scripts/icon.cjs && electron-builder --win dir --x64",
+    "prebuild:mac": "npm run check:version",
+    "build:mac": "node scripts/icon.cjs && electron-builder --mac dmg zip --arm64"
   },
   "devDependencies": {
     "electron": "45.0.0",
@@ -54,6 +56,22 @@
       ],
       "icon": "assets/crew.ico",
       "signExecutable": false
+    },
+    "mac": {
+      "artifactName": "Crew-${version}-mac-${arch}.${ext}",
+      "target": [
+        { "target": "dmg", "arch": ["arm64"] },
+        { "target": "zip", "arch": ["arm64"] }
+      ],
+      "icon": "assets/crew-1024.png",
+      "category": "public.app-category.developer-tools",
+      "identity": "-",
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "notarize": false
+    },
+    "dmg": {
+      "artifactName": "Crew-${version}-mac-${arch}.dmg"
     },
     "portable": {
       "artifactName": "Crew-${version}-portable.exe"

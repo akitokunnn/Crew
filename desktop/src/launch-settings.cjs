@@ -9,7 +9,8 @@ const {execFile} = require('node:child_process');
 const {promisify} = require('node:util');
 const execute = promisify(execFile);
 const FIELDS = ['mode','home','source','backend_directory','service_url','port','python','remote_backend'];
-const samePath = (left,right) => process.platform === 'win32' ? path.resolve(left).toLowerCase() === path.resolve(right).toLowerCase() : path.resolve(left) === path.resolve(right);
+const { samePath } = require('./paths.cjs');
+const { checkPythonVersion } = require('./python.cjs');
 
 function shape(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== FIELDS.length || FIELDS.some(key => !(key in value))) throw Error('启动设置必须完整填写连接方式、目录、地址、端口、Python 与局域网设备。');
@@ -175,9 +176,7 @@ class LaunchSettings {
       const url=core.loopback('http://127.0.0.1:'+settings.port);
       if(!(this.backend.owned && this.backend.child?.exitCode===null && !this.backend.child.signalCode && this.backend.url===url))await this.probePort(settings.port);
     }
-    const python=await this.run(settings.python,['--version'],{windowsHide:true,timeout:10000,encoding:'utf8'});
-    const version=String(python.stdout || python.stderr).trim().match(/^Python (\d+)\.(\d+)/);
-    if (!version || Number(version[1]) < 3 || Number(version[1]) === 3 && Number(version[2]) < 11) throw Error('Crew 需要 Python 3.11 或更高版本。');
+    await checkPythonVersion(settings.python, {execute:this.run});
     const current=fromConfig(this.config,this.backend), homeChanged=!samePath(settings.home,current.home);
     const sourceChanged=settings.mode==='local' && (settings.source !== current.source || settings.source === 'custom' && !samePath(settings.backend_directory,current.backend_directory));
     const impact={home_changed:homeChanged,source_changed:sourceChanged,

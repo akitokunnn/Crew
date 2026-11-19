@@ -1,6 +1,7 @@
 'use strict';
 const path = require('node:path');
 const {execFile} = require('node:child_process');
+const { defaultPython } = require('./python.cjs');
 
 const ACTIONS = new Set(['snapshot', 'send', 'interrupt', 'config-get', 'config-save', 'settings-get', 'settings-save', 'home-inspect', 'home-copy', 'reset-deployment', 'prepare-home']);
 
@@ -10,7 +11,7 @@ class OperationsClient {
     this.execute = execute;
   }
 
-  request(action, body = {}, {python=this.config.python || 'python'} = {}) {
+  request(action, body = {}, {python=this.config.python || defaultPython()} = {}) {
     if (!ACTIONS.has(action)) return Promise.reject(new Error('不支持的运维操作'));
     const env = {...process.env};
     for (const name of Object.keys(env)) {

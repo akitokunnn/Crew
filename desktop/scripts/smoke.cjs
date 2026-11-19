@@ -1,21 +1,28 @@
 'use strict';
 const fs = require('node:fs/promises'); const path = require('node:path'); const { spawn } = require('node:child_process');
 const { Backend, projects, newWorkspace } = require('../src/core.cjs');
+const { defaultPython } = require('../src/python.cjs');
+const { bundlePaths } = require('./bundle-paths.cjs');
 (async () => {
-  const values = process.argv.slice(2), reuse = values.includes('--reuse'), visual = values.includes('--visual'), binary = values.find(value => !['--reuse','--visual'].includes(value));
-  const root = path.resolve(__dirname, '..'), executable = binary ? path.resolve(binary) : require('electron');
-  const kind = (binary ? (executable.endsWith('-portable.exe') ? 'portable' : 'packaged') : 'source') + (reuse ? '-reuse' : '') + (visual ? '-visual' : '');
+  const values = process.argv.slice(2), reuse = values.includes('--reuse'), visual = values.includes('--visual');
+  const source = values.includes('--source'), packaged = values.includes('--packaged');
+  const binary = values.find(value => !['--reuse','--visual','--source','--packaged'].includes(value));
+  if (source && (packaged || binary)) throw new Error('--source 不能与包内程序路径或 --packaged 同用');
+  const mac = process.platform === 'darwin', root = path.resolve(__dirname, '..');
+  const usePackage = binary || packaged || mac && !source;
+  const executable = binary ? path.resolve(binary) : usePackage ? bundlePaths(root).executable : require('electron');
+  const kind = (usePackage ? (executable.endsWith('-portable.exe') ? 'portable' : 'packaged') : 'source') + (reuse ? '-reuse' : '') + (visual ? '-visual' : '');
   await fs.mkdir(path.join(root, '.cache'), { recursive:true });
   const home = await fs.mkdtemp(path.join(root, '.cache', 'smoke-'));
   const output = path.join(root, 'smoke-output', kind + '.json');
   const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE; delete env.CREW_SESSION_ID; delete env.CLAUDE_CODE_SESSION_ID;
   const extractTemp = path.join(root, '.cache', 'portable-temp'); await fs.mkdir(extractTemp, { recursive: true });
   env.TEMP = extractTemp; env.TMP = extractTemp;
-  const args = [...(!binary ? [root] : []), '--smoke-test', '--home', home, '--smoke-output', output, '--isolated-sources'];
+  const args = [...(!usePackage ? [root] : []), '--smoke-test', '--home', home, '--smoke-output', output, '--isolated-sources'];
   if (visual) args.push('--smoke-visual');
   let borrowed = null;
   if (reuse || visual) {
-    const preparer = new Backend({ home, backendDir: path.resolve(root, '../plugin'), python: 'python', port: 0, isolated: true, smoke: true });
+    const preparer = new Backend({ home, backendDir: path.resolve(root, '../plugin'), python: defaultPython(), port: 0, isolated: true, smoke: true });
     await preparer.start();
     try {
       if (visual) {
@@ -35,7 +42,7 @@ const { Backend, projects, newWorkspace } = require('../src/core.cjs');
   const code = await new Promise((resolve, reject) => { const timer = setTimeout(() => { child.kill(); reject(new Error('Electron smoke timed out: ' + errors)); }, timeout); child.once('error', error => { clearTimeout(timer); reject(error); }); child.once('exit', value => { clearTimeout(timer); resolve(value); }); });
   if (code !== 0) throw new Error('Electron exited ' + code + ': ' + errors);
   const result = JSON.parse(await fs.readFile(output, 'utf8'));
-  if (result.home !== home || !result.window || !result.contextIsolation || result.nodeIntegration || !result.sandbox || result.renderer.nodeAvailable || !result.ownedServiceExited || !result.chrome?.ready || result.chrome.height !== 36 || result.menuBarVisible) throw new Error('Desktop smoke invariant failed: ' + JSON.stringify(result));
+  if (result.home !== home || !result.window || !result.contextIsolation || result.nodeIntegration || !result.sandbox || result.renderer.nodeAvailable || !result.ownedServiceExited || !result.chrome?.ready || result.chrome.height !== 36 || (!mac && result.menuBarVisible)) throw new Error('Desktop smoke invariant failed: ' + JSON.stringify(result));
   if (visual && (!result.visual?.homeNavigation || result.visual.workspaceChrome.page !== 'home' || !result.visual.workspaceChrome.activeProject)) throw new Error('Desktop navigation chrome failed');
   if (borrowed && (result.service.owned || !result.borrowedServiceStillAvailable || !Array.isArray(await projects(borrowed.url)))) throw new Error('Borrowed service was stopped by the app');
   console.log(JSON.stringify({ executable, evidence: output, ...result }, null, 2));

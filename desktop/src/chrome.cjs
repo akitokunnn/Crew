@@ -16,8 +16,9 @@ function pageKind(value, home, origin, errorPage) {
 function windowOptions(platform = process.platform) {
   return {
     titleBarStyle: 'hidden',
-    ...(platform === 'darwin' ? {} : { titleBarOverlay: { color: COLOR, symbolColor: '#525252', height: HEIGHT } }),
-    autoHideMenuBar: true,
+    // The 12 pt macOS buttons get equal (36 - 12) / 2 pt top and bottom margins.
+    ...(platform === 'darwin' ? { trafficLightPosition: { x:12, y:(HEIGHT - 12) / 2 } }
+      : { titleBarOverlay: { color: COLOR, symbolColor: '#525252', height: HEIGHT }, autoHideMenuBar:true }),
     backgroundColor: COLOR,
     resizable: true, minimizable: true, maximizable: true, closable: true
   };

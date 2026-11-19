@@ -2,6 +2,14 @@
 const {test}=require("node:test"),assert=require("node:assert/strict"),vm=require("node:vm"),fs=require("node:fs"),path=require("node:path");
 const {webcrypto}=require("node:crypto");
 const source=fs.readFileSync(path.join(__dirname,"../crew/web/browser-utils.js"),"utf8");
+test("shortcut labels follow the browser client platform",()=>{
+  const sandbox={window:{},navigator:{userAgentData:{platform:"macOS"}}};
+  vm.runInNewContext(source,sandbox);
+  const shortcut=sandbox.window.CrewBrowser.keyboardShortcut;
+  assert.equal(shortcut("V"),"⌘V");
+  assert.equal(shortcut("Z",{shift:true,platform:"MacIntel"}),"⇧⌘Z");
+  assert.equal(shortcut("Z",{shift:true,platform:"Win32"}),"Ctrl+Shift+Z");
+});
 test("HTTP browser identifiers work without the secure-context randomUUID API",()=>{
   const sandbox={window:{},crypto:{getRandomValues:array=>webcrypto.getRandomValues(array)}};
   vm.runInNewContext(source,sandbox);

@@ -3,6 +3,7 @@
 const assert=require('node:assert/strict');
 const fs=require('node:fs/promises'),path=require('node:path');
 const {createHash}=require('node:crypto');
+const {bundlePaths}=require('./bundle-paths.cjs');
 const desktop=path.resolve(__dirname,'..');
 const digest=bytes=>createHash('sha256').update(bytes).digest('hex');
 async function files(directory,prefix='') {
@@ -18,8 +19,8 @@ async function files(directory,prefix='') {
 }
 (async()=>{
   const asar=await import('@electron/asar');
-  const application=path.resolve(process.argv[2]||path.join(desktop,'dist/win-unpacked'));
-  const archive=path.join(application,'resources/app.asar'),backend=path.join(application,'resources/backend');
+  const {application,resources}=bundlePaths(desktop,process.platform,process.argv[2]);
+  const archive=path.join(resources,'app.asar'),backend=path.join(resources,'backend');
   const expected=JSON.parse(await fs.readFile(path.join(desktop,'package.json'),'utf8'));
   const packaged=JSON.parse(asar.extractFile(archive,'package.json'));
   for(const key of ['name','version','main'])assert.equal(packaged[key],expected[key]);
