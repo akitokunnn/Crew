@@ -528,6 +528,53 @@ class NativeHandoffTests(unittest.TestCase):
             returned = manager.native_return('worker')
         self.assertEqual((returned['state'], returned['native_id']), ('crew', 'native-1'))
 
+    def test_thread_held_by_another_native_client_rejects_ordinary_input_with_reason(self):
+        # The user opened a Crew-owned thread in the Codex desktop while Crew had released it as idle.
+        manager = self.manager()
+        first, _ = self.make_running()
+        first.close()
+        self.assertTrue(first.reader_done.wait(2))
+        def holding(client, identity, **params):
+            client.calls.append(('thread/resume', {'threadId': identity, **params}))
+            raise codex_client.RpcError('thread/resume', {'code': -32600,
+                'message': 'thread %s already has an active writer' % identity})
+        with mock.patch.object(fixtures.FakeClient, 'resume_thread', holding):
+            with self.assertRaises(native_handoff.WriterBusy) as caught:
+                manager.send(self.session, '桌面还开着这个对话', source='human')
+        self.assertIsInstance(caught.exception, board.Conflict)
+        self.assertIn('关闭持有此对话的 Codex 客户端', str(caught.exception))
+        self.assertIn('thread native-1 already has an active writer', str(caught.exception))
+        refused = self.clients[-1]
+        self.assertTrue(refused.closed)
+        self.assertEqual([method for method, _ in refused.calls], ['thread/resume'])
+        self.assertFalse(manager.running('worker'))
+        with closing(store.connect(self.home)) as conn:
+            self.assertEqual(native_handoff.describe(conn, 'worker')['state'], 'crew')
+            self.assertEqual(runtimes.get(conn, 'worker')['native_id'], 'native-1')
+        # Crew's own lease was released, so the same thread resumes once the other client lets go.
+        manager.send(self.session, '桌面已关闭', source='human')
+        self.assertTrue(manager.running('worker'))
+        resumed = next(params for method, params in self.clients[-1].calls if method == 'thread/resume')
+        self.assertEqual(resumed['threadId'], 'native-1')
+
+    def test_return_through_real_resume_keeps_the_return_specific_writer_guidance(self):
+        manager = self.manager()
+        with self.history_factory([]):
+            running, _ = self.make_running()
+            manager.processes['worker'] = running
+            manager.native_handoff('worker')
+        def holding(client, identity, **params):
+            client.calls.append(('thread/resume', {'threadId': identity, **params}))
+            raise codex_client.RpcError('thread/resume', {'code': -32600,
+                'message': 'thread %s already has an active writer' % identity})
+        with mock.patch.object(fixtures.FakeClient, 'resume_thread', holding):
+            with self.assertRaisesRegex(board.Conflict, '再点击“回到 Crew”'):
+                manager.native_return('worker')
+        with closing(store.connect(self.home)) as conn:
+            saved = native_handoff.describe(conn, 'worker')
+        self.assertEqual(saved['state'], 'external')
+        self.assertTrue(saved['last_error'].endswith('原生原因：thread/resume: thread native-1 already has an active writer'))
+
     def test_archived_native_return_http_preserves_reason_and_replaces_old_error_without_unarchiving(self):
         with closing(store.connect(self.home)) as conn:
             runtimes.set(conn, 'worker', 'codex', 'native-archived')

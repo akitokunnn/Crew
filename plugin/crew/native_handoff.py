@@ -19,6 +19,24 @@ _TRANSITION_LOCK = threading.RLock()
 _ACTIVE_TOKENS = set()
 
 
+class WriterBusy(board.Conflict):
+    """Codex refused thread/resume because another native client holds the thread's writer."""
+
+    def __init__(self, native_error):
+        self.native_error = str(native_error)
+        super().__init__('Codex 桌面或其他 Codex 客户端正打开着这个对话、占用写入连接，Crew 暂时不能续接。'
+                         '请先在那边结束执行并关闭持有此对话的 Codex 客户端（仅离开对话页面可能不会释放连接）后重试；'
+                         '原对话和历史都已保留。原生原因：' + self.native_error)
+
+
+def writer_busy(exc):
+    """Translate Codex's single-writer refusal; other errors return None and pass through unchanged."""
+    if (isinstance(exc, codex_client.RpcError) and exc.method == 'thread/resume'
+            and 'already has an active writer' in str(exc)):
+        return WriterBusy(exc)
+    return None
+
+
 def recover_interrupted(home):
     """Expose explicit return after a previous host stopped mid-transition.
 
@@ -265,10 +283,10 @@ def reclaim(manager, session_id, execution_id=None):
         return {**result, 'ok': True}
     except Exception as exc:
         failure = exc
-        if (isinstance(exc, codex_client.RpcError) and exc.method == 'thread/resume'
-                and 'already has an active writer' in str(exc)):
+        busy = exc if isinstance(exc, WriterBusy) else writer_busy(exc)
+        if busy is not None:
             failure = board.Conflict('Codex 原生客户端仍持有此对话的写入连接。请先结束那边的执行并关闭持有此对话的原生客户端，'
-                '再点击“回到 Crew”。仅离开页面可能不会释放连接；原对话、历史和排队消息均已保留。原生原因：' + str(exc))
+                '再点击“回到 Crew”。仅离开页面可能不会释放连接；原对话、历史和排队消息均已保留。原生原因：' + busy.native_error)
         elif isinstance(exc, codex_client.RpcError):
             failure = board.Conflict('无法接回 Codex 会话。原生原因：' + str(exc))
         with manager.lock:

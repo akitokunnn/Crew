@@ -337,7 +337,13 @@ class CodexRunning:
                     codex_visibility.restore_internal(self.client, native_id)
                 # Native dynamic tools are persisted by thread/start. Current
                 # thread/resume has no tool replacement field.
-                result = self.client.resume_thread(native_id, **params)
+                try:
+                    result = self.client.resume_thread(native_id, **params)
+                except codex_client.RpcError as exc:
+                    busy = native_handoff.writer_busy(exc)
+                    if busy is None:
+                        raise
+                    raise busy from exc
             else:
                 result = self.client.start_thread(ephemeral=False, dynamicTools=codex_tools.tool_specs(assistant=assistant), **params)
             self.thread_id = result["thread"]["id"]
