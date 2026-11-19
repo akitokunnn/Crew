@@ -7,8 +7,8 @@ const calls=[],streams=[],errors=[];
 let win,server,origin,failRename=true;
 const brain={runtime:'codex',model:'test-code',effort:'high'};
 const catalog=[{id:'codex',name:'Codex',available:true,models:[{id:'test-code',name:'测试代码模型',efforts:['low','high']}],efforts:['low','high']},{id:'claude',name:'Claude Code',available:true,models:[{id:'test-review',name:'测试审查模型',efforts:['medium','high']}],efforts:['medium','high']}];
-function person(id,name,extra={}){return {session_id:id,name,...brain,status:'offline',where:'offline',busy:false,running:false,web_chat:true,last_seq:0,read_seq:0,last_reply_id:null,unread:0,pending:0,pinned:false,goal:'交互隔离测试',task:'交互隔离测试',context:null,activity:null,scope:null,done_when:null,progress:[],leases:[],claims:[],branch:null,cwd:'C:/fixture/project',codex:[],codex_older:0,member_ids:[],applied:null,trust:{enabled:false},runtime_switch:{allowed:true},...extra};}
-const state={project:{name:'交互验收',root:'C:/fixture/project',theme:'green'},projects:[{name:'交互验收',theme:'green'}],themes:[{id:'green',name:'竹青',light:{'--accent':'#3E7C74','--on-accent':'#F7FBFA'},dark:{'--accent':'#83B9A8','--on-accent':'#182A24'}}],runtimes:catalog,ai:{default:brain,leader:null,member:null,digest:null,git:null,operations:null},leaders:[person('chief','产品体验')],members:[person('member','界面实现',{leader_session_id:'chief',group:'产品体验'})],goals:[],decisions:[],todos:[],attention:[],candidates:{running:[],others:[]},limits:{claude:{seven_day:null,five_hour:null},codex:null},channel:{unread:0,latest_id:0,digesting:false},notification:{manual_away:false,away:false,error:null,channel:{state:'unbound'}},vscode_error:null};
+function person(id,name,extra={}){return {session_id:id,name,...brain,status:'offline',where:'offline',busy:false,running:false,web_chat:true,last_seq:0,read_seq:0,last_reply_id:null,unread:0,pending:0,pinned:false,goal:'交互隔离测试',task:'交互隔离测试',context:null,activity:null,scope:null,done_when:null,progress:[],leases:[],claims:[],branch:null,cwd:'C:/fixture/project',codex:[],codex_older:0,member_ids:[],applied:null,trust:{enabled:false},runtime_switch:{allowed:true},active_goal_ids:[],active_goal_id:null,active_execution_id:null,notices_pending:0,native_handoff:null,avatar_version:null,color:null,speed:null,execution_records:[],...extra};}
+const state={project:{name:'交互验收',root:'C:/fixture/project',theme:'green'},projects:[{name:'交互验收',theme:'green'}],themes:[{id:'green',name:'竹青',light:{'--accent':'#3E7C74','--on-accent':'#F7FBFA'},dark:{'--accent':'#83B9A8','--on-accent':'#182A24'}}],runtimes:catalog,ai:{default:brain,leader:null,member:null,digest:null,git:null,operations:null},leaders:[person('chief','产品体验')],members:[person('member','界面实现',{leader_session_id:'chief',group:'产品体验'})],goals:[],decisions:[],todos:[],attention:[],candidates:{running:[],others:[]},limits:{claude:{seven_day:null,five_hour:null},codex:null},channel:{unread:0,latest_id:0,digesting:false},notification:{manual_away:false,away:false,error:null,channel:{state:'unbound'},channels:[{id:'qq',state:'unbound'}]},vscode_error:null,native_approvals:[],models:[],efforts:['low','high'],git_branches:null,git_assistant:null,agents_error:null,todo_count:0,now:new Date().toISOString(),sounds:{preferences:null,revision:0,catalog:{presets:{}},events:[]}};
 function json(res,value,status=200){res.writeHead(status,{'Content-Type':'application/json'});res.end(JSON.stringify(value));}
 async function route(req,res){
   const url=new URL(req.url,origin),name=url.pathname;let body;
@@ -20,6 +20,7 @@ async function route(req,res){
     catch(error){res.writeHead(404);return res.end();}
   }
   calls.push({name,body});
+  if(name==='/api/access/context')return json(res,{remote:false,local_controls:true,local_desktop:true});
   if(name==='/api/state')return json(res,state);
   if(name==='/api/runtimes')return json(res,{runtimes:catalog});
   if(name==='/api/chat/history')return json(res,{events:[],busy:false,read_seq:0});
@@ -56,7 +57,7 @@ async function shot(name){await new Promise(resolve=>setTimeout(resolve,120));aw
   assert(!calls.some(item=>['/api/spawn','/api/member-defaults','/api/chat/send'].includes(item.name)));
   await click('[data-act=member-defaults]');await wait('!!document.querySelector(".member-dialog input[name=inherit]")');await click('.member-dialog input[name=inherit]');await choose('runtime','claude');await choose('model','test-review');await choose('effort','high');await shot('member-defaults.png');
   await click('.member-dialog [type=submit]');await wait('document.querySelector(".member-dialog").parentElement.hidden');
-  assert.deepEqual(state.leaders[0].member_defaults,{runtime:'claude',model:'test-review',effort:'high'});assert(!calls.some(item=>item.name==='/api/spawn'||item.name==='/api/chat/send'));
+  assert.deepEqual(state.leaders[0].member_defaults,{runtime:'claude',model:'test-review',effort:'high',speed:null});assert(!calls.some(item=>item.name==='/api/spawn'||item.name==='/api/chat/send'));
   // Card and context-menu rename use the same styled dialog and preserve failed input.
   await click('[data-act=card][data-id=member]');await wait('document.activeElement.dataset.act==="card-close"');await click('#card [data-act=rename]');
   await wait('document.activeElement.id==="session-new-name"');assert(await run('document.querySelector("#session-rename-form [type=submit]").disabled'));assert.equal(await run('document.querySelector("#rename-title").textContent'),'给组员改名');
