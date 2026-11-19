@@ -895,11 +895,27 @@ class InstallAndCliTests(CoreCase):
         self.assertTrue((self.home / "crew.py").is_file())
         python = str(Path(sys.executable).resolve()).replace('%', '%%')
         self.assertEqual((self.home / "bin" / "crew.cmd").read_text(encoding="utf-8"), '@"' + python + '" "%~dp0..\\crew.py" %*\n')
+        self.assertEqual((self.home / "bin" / "python").exists(), os.name != "nt",
+                         "Windows keeps the system python; POSIX gets Crew's interpreter")
         for name in ("blacklist.txt", "prices.json"):
             (self.home / name).write_text("custom", encoding="utf-8")
         install.install(self.home, self.fake_plugin, now="2026-10-22T00:00:00.000Z")
         for name in ("blacklist.txt", "prices.json"):
             self.assertEqual((self.home / name).read_text(encoding="utf-8"), "custom")
+
+    def test_posix_install_puts_crews_python_first_for_hooks_and_sessions(self):
+        # macOS has no `python`; plugin hooks and the crew skill call it through HOME/bin.
+        import shlex
+        home = self.base / "posix-home"
+        home.mkdir()
+        install._launchers(home, only_missing=False, windows=False)
+        python = shlex.quote(Path(sys.executable).resolve().as_posix())
+        shim = home / "bin" / "python"
+        self.assertEqual(shim.read_text(encoding="utf-8"), '#!/bin/sh\nexec ' + python + ' "$@"\n')
+        self.assertFalse((home / "bin" / "crew.exe").exists())
+        shim.unlink()
+        install._launchers(home, only_missing=True, windows=False)
+        self.assertTrue(shim.is_file(), "existing homes gain the shim on the next session launch")
 
     def test_install_missing_prices_fails_before_writing(self):
         fresh = self.base / "fresh"

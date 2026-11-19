@@ -1,4 +1,5 @@
 """An independently owned HTTP listener; it never starts or stops Crew's service."""
+import os
 import socket
 import threading
 import time
@@ -7,7 +8,7 @@ from http.server import ThreadingHTTPServer
 
 class _Server(ThreadingHTTPServer):
     daemon_threads = True
-    allow_reuse_address = False
+    allow_reuse_address = os.name != 'nt'
 
     def __init__(self, address, handler, controller, stop_event):
         self.remote_controller = controller
