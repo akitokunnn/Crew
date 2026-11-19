@@ -72,6 +72,16 @@ class MemberLaunchDedupTests(ShellFixture, unittest.TestCase):
             self.manager.wake(self.conn, board.session(self.conn, sid), 'Run again', caller_session_id='s3')
         self.assertEqual(set(self.manager.processes), {key})
 
+    def test_general_chat_does_not_open_parts_of_a_task_its_own_execution_splits(self):
+        goal = self.goal()
+        goals.assign(self.conn, goal['id'], 's3', 'Split the experiment')
+        goals.create_execution(self.conn, goal['id'], 's3', runtime='codex')
+        with self.assertRaisesRegex(board.Conflict, '任务执行在推进'):
+            self.manager.start(self.conn, 'demo', 'duplicate-part', 'Run once',
+                               runtime='codex', caller_session_id='s3', goal_id=goal['id'])
+        self.assertEqual(len(self.clients), 0)
+        self.assertIsNone(self.conn.execute("SELECT 1 FROM sessions WHERE crew_name='duplicate-part'").fetchone())
+
     def test_codex_bound_spawn_and_reverse_wake_only_start_one_thread(self):
         self.goal_bound_spawn('codex')
 
