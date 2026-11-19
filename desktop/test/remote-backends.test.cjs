@@ -11,11 +11,13 @@ const safeStorage = (available = true, rotated = false) => ({ isAsyncEncryptionA
 async function fixture(t, options = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'crew-remote-backends-'));
   t.after(() => fs.rm(root, { recursive:true, force:true }));
-  const file = path.join(root, 'Crew', 'remote-backends.json'), pairs = [];
+  const file = path.join(root, 'Crew', 'remote-backends.json'), pairs = [], healthChecks = [];
+  const hostNames = options.hostNames || ['书房的 Mac', '书房的 Mac'];
   const tokens = [TOKEN, NEW_TOKEN];
   const store = new RemoteBackends(file, { safeStorage:safeStorage(options.available !== false, options.rotated), now:() => new Date('2026-11-19T08:00:00Z'),
-    pair:async (url, body) => { pairs.push({ url, body }); if (options.refuse) throw Error('配对码无效或已过期，请在电脑上重新生成'); return { url, device_id:'device-' + pairs.length, token:tokens[pairs.length - 1] }; } });
-  return { root, file, store, pairs };
+    pair:async (url, body) => { pairs.push({ url, body }); if (options.refuse) throw Error('配对码无效或已过期，请在电脑上重新生成'); return { url, device_id:'device-' + pairs.length, token:tokens[pairs.length - 1] }; },
+    health:async credential => { healthChecks.push(credential); return { ok:true, service:'crew', version:'0.3.17', home:'C:\Users\host\.crew', instance_id:'host-1', host_name:hostNames[healthChecks.length - 1] }; } });
+  return { root, file, store, pairs, healthChecks };
 }
 
 test('pairing saves the host beside the launch settings with only an OS-encrypted token', async t => {
@@ -24,7 +26,9 @@ test('pairing saves the host beside the launch settings with only an OS-encrypte
   const saved = await f.store.pair({ url:' 192.168.1.20:47812 ', code:' 12345678 ', device_name:' 书房电脑 ' });
   assert.deepEqual(f.pairs, [{ url:'http://192.168.1.20:47812', body:{ code:'12345678', device_name:'书房电脑' } }]);
   assert.deepEqual(Object.keys(saved).sort(), ['device_id', 'id', 'name', 'paired_at', 'url']);
-  assert.equal(saved.name, '192.168.1.20:47812'); assert.equal(saved.paired_at, '2026-11-19T08:00:00.000Z');
+  assert.equal(saved.name, '书房的 Mac', 'listed by the host computer name it reports');
+  assert.deepEqual(f.healthChecks, [{ url:'http://192.168.1.20:47812', token:TOKEN }], 'the name is read with the new device token');
+  assert.equal(saved.paired_at, '2026-11-19T08:00:00.000Z');
   const raw = await fs.readFile(f.file, 'utf8'), data = JSON.parse(raw);
   assert.equal(data.version, 1); assert.equal(data.backends.length, 1); assert(!raw.includes(TOKEN), 'the device token is never written as text');
   assert.deepEqual(await f.store.list(), [saved]);
@@ -32,10 +36,10 @@ test('pairing saves the host beside the launch settings with only an OS-encrypte
 });
 
 test('pairing the same address again replaces its token and device in place', async t => {
-  const f = await fixture(t);
+  const f = await fixture(t, { hostNames:['书房的 Mac', '改名后的 Mac'] });
   const first = await f.store.pair({ url:'http://192.168.1.20:47812', code:'12345678', device_name:'书房电脑' });
   const second = await f.store.pair({ url:'192.168.1.20:47812/', code:'87654321', device_name:'书房电脑' });
-  assert.equal(second.id, first.id); assert.equal(second.device_id, 'device-2');
+  assert.equal(second.id, first.id); assert.equal(second.device_id, 'device-2'); assert.equal(second.name, '改名后的 Mac');
   assert.equal((await f.store.list()).length, 1); assert.equal((await f.store.credential(first.id)).token, NEW_TOKEN);
 });
 

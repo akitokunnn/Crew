@@ -183,7 +183,7 @@ test('desktop pairing asks for a device token without a cookie or page origin', 
   await assert.rejects(core.pairDesktop(invalid.url, { code:'12345678', device_name:'x' }), /配对结果无效/);
 });
 test('a saved LAN host connects only as a desktop device, and an expired token reports the lost authorization', async t => {
-  const health = { ok:true, service:'crew', version:'0.3.17', home:'/Users/host/.crew', instance_id:'host-instance', pid:9, warnings:[] };
+  const health = { ok:true, service:'crew', version:'0.3.17', home:'/Users/host/.crew', instance_id:'host-instance', host_name:'书房的 Mac', pid:9, warnings:[] };
   const good = await host(t, { '/api/access/context':[200, { client:'desktop', remote:true }], '/api/admin/health':[200, health] });
   const credentials = url => ({ credential:async id => ({ id, name:'书房主机', url, token:TOKEN }) });
   t.after(() => core.authorizeRemote(null));

@@ -6,6 +6,7 @@ import io
 import json
 import mimetypes
 import os
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -2216,7 +2217,7 @@ class Handler(BaseHTTPRequestHandler):
                              'pid': os.getpid(), 'workers': workers,
                              'warnings': [name for name, running in workers.items() if not running],
                              'version': service.version, 'plugin_root': str(service.plugin_root.resolve()),
-                             'instance_id': service.instance_id, 'port': self.server.server_port,
+                             'instance_id': service.instance_id, 'host_name': socket.gethostname(), 'port': self.server.server_port,
                              'update_gate': service.chat.paused() is not None})
         elif url.path == '/api/workspaces/activity':
             with closing(store.connect(service.home)) as conn:

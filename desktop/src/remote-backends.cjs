@@ -22,8 +22,8 @@ function validate(value) {
 }
 
 class RemoteBackends {
-  constructor(file, { safeStorage, pair = core.pairDesktop, now = () => new Date() }) {
-    this.file = file; this.safeStorage = safeStorage; this.pairDesktop = pair; this.now = now;
+  constructor(file, { safeStorage, pair = core.pairDesktop, health = credential => core.remoteRequest(credential, '/api/admin/health'), now = () => new Date() }) {
+    this.file = file; this.safeStorage = safeStorage; this.pairDesktop = pair; this.health = health; this.now = now;
   }
   async _read() {
     let raw;
@@ -52,8 +52,10 @@ class RemoteBackends {
     if (typeof code !== 'string' || !/^\d{8}$/.test(code.trim())) throw Error('请输入主机上显示的 8 位配对码');
     if (typeof device_name !== 'string' || !device_name.trim()) throw Error('请填写本机设备名');
     const paired = await this.pairDesktop(origin, { code:code.trim(), device_name:device_name.trim() });
+    // The host's own computer name, read with the new token, is how this device is listed and shown.
+    const host = core.remoteHealth(await this.health({ url:paired.url, token:paired.token }));
     const data = await this._read(), previous = data.backends.find(item => item.url === paired.url);
-    const record = { id:previous?.id || crypto.randomUUID(), name:previous?.name || new URL(paired.url).host, url:paired.url,
+    const record = { id:previous?.id || crypto.randomUUID(), name:host.host_name.trim(), url:paired.url,
       device_id:paired.device_id, token:(await this.safeStorage.encryptStringAsync(paired.token)).toString('base64'), paired_at:this.now().toISOString() };
     await this._save({ version:1, backends:previous ? data.backends.map(item => item === previous ? record : item) : [...data.backends, record] });
     const { token:_token, ...saved } = record;

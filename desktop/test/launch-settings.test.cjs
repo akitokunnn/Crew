@@ -30,7 +30,7 @@ async function fixture(t,options={}) {
     if(route==='/api/admin/connection/prepare'){assert.deepEqual(body,{instance_id:'fixture-instance'});if(options.prepareFailure)throw Error('运维修复仍在运行');return{ok:true,pid:101,instance_id:'fixture-instance',managed_pids:[102],gate_id:'fixture-gate'};}
     throw Error('Unexpected route '+route);
   };
-  const hostHealth={ok:true,service:'crew',version:options.hostVersion||'0.0.0-test',home:'/Users/host/.crew',instance_id:'host-instance',pid:7,warnings:[]};
+  const hostHealth={ok:true,service:'crew',version:options.hostVersion||'0.0.0-test',home:'/Users/host/.crew',instance_id:'host-instance',host_name:'书房的 Mac',pid:7,warnings:[]};
   const saved=[{id:'saved-host',name:'192.168.1.20:47812',url:'http://192.168.1.20:47812',device_id:'device-1',paired_at:'2026-11-19T08:00:00.000Z'}];
   const remotes={async list(){return saved;},async credential(id){const item=saved.find(entry=>entry.id===id);if(!item)throw Error('已保存的局域网设备不存在，请在连接设置中重新选择后台');return{...item,token:'t'.repeat(43)};},
     async pair(body){calls.push('pair');return{...saved[0],paired:body};}};

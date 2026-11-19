@@ -62,9 +62,9 @@ test('desktop and browser flags are exposed and every required new field is vali
 
 test('capability flags mark the page so a Crew desktop client keeps settings and a browser does not',async()=>{
   const desktop={...browser,client:'desktop',local_controls:true};
-  for(const [value,expected] of [[local,{accessClient:'local',accessLocalControls:'true',accessLocalDesktop:'true',accessVscodeContinue:'true'}],
-    [desktop,{accessClient:'desktop',accessLocalControls:'true',accessLocalDesktop:'false',accessVscodeContinue:'false'}],
-    [browser,{accessClient:'browser',accessLocalControls:'false',accessLocalDesktop:'false',accessVscodeContinue:'false'}]]){
+  for(const [value,expected] of [[local,{accessClient:'local',accessLocalControls:'true',accessLocalDesktop:'true'}],
+    [desktop,{accessClient:'desktop',accessLocalControls:'true',accessLocalDesktop:'false'}],
+    [browser,{accessClient:'browser',accessLocalControls:'false',accessLocalDesktop:'false'}]]){
     const app=boot(async()=>response(200,value));await app.window.CrewAccess.ready;
     assert.deepEqual({...app.document.documentElement.dataset},expected);
   }

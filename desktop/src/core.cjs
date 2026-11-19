@@ -171,7 +171,7 @@ async function pairDesktop(address, { code, device_name }) {
 
 function remoteHealth(value) {
   if (value?.ok !== true || value.service !== 'crew' || typeof value.version !== 'string' || !value.version ||
-      typeof value.home !== 'string' || !value.home || !value.instance_id) throw new Error('此地址没有返回有效的 Crew 主机信息，请确认地址和主机版本');
+      typeof value.home !== 'string' || !value.home || !value.instance_id || typeof value.host_name !== 'string' || !value.host_name.trim()) throw new Error('此地址没有返回有效的 Crew 主机信息，请确认地址和主机版本');
   return value;
 }
 
