@@ -2,7 +2,8 @@
 (() => {
   const escape=value=>String(value??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
   function markup(person,execution=null) {
-    if (window.CrewAccess && !window.CrewAccess.local_desktop) return "";
+    // Codex desktop handoff operates the host's own Codex app; only a host that supports it shows it.
+    if (window.CrewAccess && !window.CrewAccess.native_handoff) return "";
     const source=execution||person,control=source.native_handoff;
     if(source.runtime!=="codex"||!control?.native_id)return "";
     const external=control.state!=="crew",changing=["releasing","returning"].includes(control.state);

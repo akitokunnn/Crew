@@ -118,7 +118,7 @@ finally:
         await shot('04-enabled');evidence.checks.push('The UI starts a real isolated listener whose API rejects anonymous access');
         await click('[data-remote-action=pair]');await wait('Boolean(document.querySelector(".remote-pair strong"))','one-time pairing code');
         const code=await js('document.querySelector(".remote-pair strong").textContent');assert.match(code,/^\d{8}$/);await shot('05-pair-code');
-        const login=await request(remote,'/remote/login',{code,device_name:'桌面验收设备'});assert.equal(login.status,200);
+        const login=await request(remote,'/remote/login',{code,device_name:'桌面验收设备',kind:'browser'});assert.equal(login.status,200);
         const cookie=login.headers['set-cookie'][0].split(';',1)[0];assert.equal((await request(remote,'/api/state?project=demo',undefined,cookie)).status,200);
         await wait('Boolean(document.querySelector("[data-remote-action=revoke]"))&&!document.querySelector(".remote-pair strong")','paired device appears and used code disappears');
         await shot('06-paired');evidence.checks.push('A real HTTP browser session pairs once, reads state, and appears in native settings');

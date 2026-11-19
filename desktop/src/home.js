@@ -5,7 +5,16 @@ let homeReady = false;
 let dispatching = false;
 const homeActions = [];
 let workspaceSettings = null, workspaceSettingsLoading = null, workspaceMaintenance = null;
-function failure(error) { $('error').textContent = error.message || String(error); $('error').hidden = false; }
+// Connected to a LAN host: folders are the host's, chosen in the page's host folder picker.
+const remote = window.crewDesktop.remote === true;
+let connection = {mode:remote ? 'remote' : 'local'}, remoteParent = null, bannerNote = '', bannerPending = false, repairing = false;
+function message(error) { return String(error?.message || error).replace(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/, ''); }
+function failure(error) {
+  // The LAN banner already explains a lost connection or authorization; other errors still show here.
+  if (remote && connection.error && message(error) === connection.error) { $('error').hidden = true; return; }
+  $('error').textContent = error.message || String(error); $('error').hidden = false;
+}
+function hostFolder(title, confirm, start = '') { return window.CrewHostFolders.pick({title, confirm, start, host:connection.name || ''}); }
 window.crewDesktop.onStorageProgress?.(message=>{const status=$('storage-progress');if(status){status.textContent=message;status.hidden=!message;}});
 async function action(callback) {
   if (busy) return;
@@ -29,8 +38,8 @@ async function refresh() {
   $('service').textContent = '正在连接…';
   try {
     const state = await window.crewDesktop.bootstrap();
-    $('service').textContent = '已连接'; $('service').classList.remove('failed');
-    $('service').title = state.service.owned ? '由桌面管理本机服务' : '已接续正在运行的本机服务';
+    $('service').textContent = remote ? '已连接 · ' + (connection.name || '局域网主机') : '已连接'; $('service').classList.remove('failed');
+    $('service').title = remote ? '已连接到局域网主机 ' + state.service.url : state.service.owned ? '由桌面管理本机服务' : '已接续正在运行的本机服务';
     $('project-count').textContent = String(state.projects.length);
     let notice = $('project-locations');
     if (!notice) { notice = document.createElement('section'); notice.id = 'project-locations'; notice.className = 'workspace-location-notice'; notice.setAttribute('role','status'); $('projects').before(notice); }
@@ -66,7 +75,10 @@ async function refresh() {
       exportButton.addEventListener('click',()=>action(()=>window.crewDesktop.storageExport(project.name)));
       row.append(button, exportButton);
       if(project.workspace_id&&!project.read_only){const history=document.createElement('button');history.type='button';history.className='project-action';history.textContent='历史';history.title='查看完整保存历史';history.onclick=()=>action(()=>openWorkspace('storage:'+project.workspace_id));row.append(history);}
-      if(project.can_activate){const resume=document.createElement('button');resume.type='button';resume.className='project-action';resume.textContent='接续';resume.title='绑定本机目录后在Crew接续';resume.onclick=()=>action(async()=>{await window.crewDesktop.storageActivate(project.workspace_id);await refresh();});row.append(resume);}
+      if(project.can_activate){const resume=document.createElement('button');resume.type='button';resume.className='project-action';resume.textContent='接续';resume.title=remote?'绑定主机上的代码目录后在 Crew 接续':'绑定本机目录后在Crew接续';resume.onclick=()=>action(async()=>{
+        if(remote){const root=await hostFolder('选择工作区副本的代码目录','绑定副本并接续');if(!root)return;await window.crewDesktop.storageActivate(project.workspace_id,root);}
+        else await window.crewDesktop.storageActivate(project.workspace_id);
+        await refresh();});row.append(resume);}
       if(!project.read_only)row.append(settings);$('projects').append(row);
     }
     return state;
@@ -83,7 +95,8 @@ async function openWorkspaceSettings(name, selection) {
         api:(route, body) => window.crewDesktop.workspaceMaintenance(route, body), onCleaned:() => { void refresh().catch(failure); }});
       workspaceSettings = window.CrewWorkspaceSettings.create({host:$('workspace-settings-host'),
         read:key => window.crewDesktop.workspaceGet(key), update:body => window.crewDesktop.workspaceUpdate(body),
-        remove:body => window.crewDesktop.workspaceRemove(body), pickDirectory:current => window.crewDesktop.workspaceDirectory(current),
+        remove:body => window.crewDesktop.workspaceRemove(body),
+        pickDirectory:current => remote ? hostFolder('选择工作目录', '使用此目录', current) : window.crewDesktop.workspaceDirectory(current),
         openCleanup:(key, label) => { void workspaceMaintenance.openCleanup(key, label); },
         onSaved:() => { void refresh().catch(failure); }, onRemoved:() => { void refresh().catch(failure); },
         onClose:key => document.querySelector('[data-project-settings="'+CSS.escape(key)+'"]')?.focus({preventScroll:true})});
@@ -119,18 +132,25 @@ function relocationChoice(relocation) {
     dialog.append(title,message,path,label,buttons); document.body.append(dialog); dialog.addEventListener('cancel',event=>{event.preventDefault();finish({kind:'cancel'});}); dialog.showModal(); select.focus();
   });
 }
+async function chooseExisting() {
+  if (!remote) return window.crewDesktop.chooseExisting();
+  const directory = await hostFolder('打开主机上的文件夹', '打开此文件夹');
+  return directory ? window.crewDesktop.openExistingDirectory(directory) : null;
+}
 function openExisting() { return action(async () => {
-  const project = await window.crewDesktop.chooseExisting();
+  const project = await chooseExisting();
   if (!project) return;
   if (!project.relocation) { await openWorkspace(project.name); return; }
   const choice = await relocationChoice(project.relocation);
   if (choice.kind === 'relink') await openWorkspaceSettings(choice.project, {root:project.relocation.directory});
   if (choice.kind === 'new') { const created = await window.crewDesktop.registerExisting(project.relocation.directory); await openWorkspace(created.name); }
 }); }
-document.getElementById('import-workspace')?.addEventListener('click',()=>action(async()=>{await window.crewDesktop.storageImport();await refresh();}));
+// Importing a package reads a file on the host's own disk, so it stays on the host.
+$('import-workspace').hidden = remote;
+if (!remote) $('import-workspace').addEventListener('click',()=>action(async()=>{await window.crewDesktop.storageImport();await refresh();}));
 function openCreate() { $('error').hidden = true; $('create-panel').hidden = false; $('name').focus(); }
 function resetCreate() {
-  $('create-form').reset(); $('location').textContent = '尚未选择文件夹'; $('location').removeAttribute('title');
+  $('create-form').reset(); remoteParent = null; $('location').textContent = '尚未选择文件夹'; $('location').removeAttribute('title');
 }
 async function flushHomeActions() {
   if (!homeReady || busy || dispatching) return;
@@ -164,8 +184,14 @@ $('existing').addEventListener('click', openExisting);
 $('new').addEventListener('click', openCreate);
 function closeCreate() { $('create-panel').hidden = true; $('new').focus(); }
 $('cancel').addEventListener('click', closeCreate);
-$('choose-parent').addEventListener('click', () => action(async () => { const directory = await window.crewDesktop.chooseParent(); if (directory) { $('location').textContent = directory; $('location').title = directory; } }));
-$('create-form').addEventListener('submit', event => { event.preventDefault(); action(async () => { const project = await window.crewDesktop.createWorkspace($('name').value); await openWorkspace(project.name, true); }); });
+$('choose-parent').addEventListener('click', () => action(async () => {
+  const directory = remote ? await hostFolder('选择新工作区的保存位置', '保存到这里', remoteParent || '') : await window.crewDesktop.chooseParent();
+  if (directory) { if (remote) remoteParent = directory; $('location').textContent = directory; $('location').title = directory; }
+}));
+$('create-form').addEventListener('submit', event => { event.preventDefault(); action(async () => {
+  const project = remote ? await window.crewDesktop.createWorkspace($('name').value, remoteParent) : await window.crewDesktop.createWorkspace($('name').value);
+  await openWorkspace(project.name, true);
+}); });
 $('refresh').addEventListener('click', () => action(refresh));
 document.addEventListener('keydown', event => { if (event.key === 'Escape' && !$('create-panel').hidden && !busy) closeCreate(); });
 async function finishStartup(state) {
@@ -176,7 +202,95 @@ async function finishStartup(state) {
   if (state.pendingAction === 'workspace-settings') await openWorkspaceSettings(state.pendingWorkspace);
   await flushHomeActions();
 }
-refresh().then(finishStartup, async error => {
+function bannerButton(text, kind, onClick) {
+  const button = document.createElement('button'); button.type = 'button'; button.className = 'button ' + kind; button.textContent = text;
+  button.disabled = bannerPending; button.addEventListener('click', onClick); return button;
+}
+async function bannerAction(note, work) {
+  if (bannerPending) return;
+  bannerPending = true; bannerNote = note; renderBanner();
+  try { await work(); }
+  catch (error) { bannerNote = message(error); bannerPending = false; renderBanner(true); }
+}
+// Reconnect with the saved device's new token, or return to this computer's backend; both reopen Crew.
+async function reopen(settings) {
+  const result = await window.crewDesktop.launchSettingsApply({settings, home_action:'existing'});
+  if (result.restarting !== true) throw new Error('连接设置没有变化，Crew 未重新打开。');
+}
+async function reconnect() { await reopen((await window.crewDesktop.launchSettingsGet()).settings); }
+function switchLocal() {
+  return bannerAction('正在切回本机后台，Crew 将重新打开…', async () => {
+    const launch = await window.crewDesktop.launchSettingsGet();
+    await reopen({...launch.settings, mode:'local', remote_backend:''});
+  });
+}
+async function openRepair() {
+  if (bannerPending) return;
+  try { repairing = {device_name:(await window.crewDesktop.launchSettingsGet()).device_name}; bannerNote = ''; }
+  catch (error) { bannerNote = message(error); }
+  renderBanner(); $('remote-banner').querySelector('input[name="code"]')?.focus();
+}
+function repairForm() {
+  const form = document.createElement('form'); form.className = 'remote-repair'; form.setAttribute('aria-label', '重新配对');
+  const field = (label, name, attributes) => {
+    const wrapper = document.createElement('label'), input = document.createElement('input'); wrapper.textContent = label;
+    input.name = name; input.required = true; input.autocomplete = 'off'; Object.assign(input, attributes); wrapper.append(input); return wrapper;
+  };
+  form.append(field('主机上的新配对码', 'code', {inputMode:'numeric', maxLength:8, placeholder:'8 位数字'}), field('本机设备名', 'device', {maxLength:80, value:repairing.device_name}));
+  const actions = document.createElement('div'); actions.className = 'remote-repair-actions';
+  const submit = document.createElement('button'); submit.type = 'submit'; submit.className = 'button primary'; submit.textContent = bannerPending ? '正在配对…' : '重新配对并打开'; submit.disabled = bannerPending;
+  actions.append(bannerButton('取消', 'secondary', () => { repairing = false; bannerNote = ''; renderBanner(); }), submit);
+  form.append(actions);
+  form.elements.device.addEventListener('input', () => { repairing.device_name = form.elements.device.value; });
+  form.addEventListener('submit', event => {
+    event.preventDefault();
+    const code = form.elements.code.value.trim(), device_name = form.elements.device.value.trim();
+    void bannerAction('已提交配对，正在连接主机…', async () => {
+      await window.crewDesktop.remoteBackendPair({url:connection.url, code, device_name});
+      bannerNote = '已重新配对，Crew 正在重新打开…'; renderBanner();
+      await reconnect();
+    });
+  });
+  for (const input of form.querySelectorAll('input')) input.disabled = bannerPending;
+  return form;
+}
+function renderBanner(failed = false) {
+  const banner = $('remote-banner');
+  if (!remote) { banner.hidden = true; return; }
+  const name = connection.name || '局域网主机', expired = connection.auth_expired, unreachable = !expired && Boolean(connection.error);
+  const mismatch = !expired && !unreachable && connection.host_version && connection.local_version && connection.host_version !== connection.local_version;
+  banner.replaceChildren(); banner.hidden = !(expired || unreachable || mismatch);
+  if (banner.hidden) return;
+  banner.dataset.tone = expired ? 'warning' : unreachable ? 'error' : 'info';
+  banner.setAttribute('role', expired || unreachable ? 'alert' : 'status');
+  const text = document.createElement('div'); text.className = 'remote-banner-text';
+  const title = document.createElement('strong'), detail = document.createElement('p');
+  if (expired) { title.textContent = '授权已失效，请在主机上重新生成配对码'; detail.textContent = `在 ${name} 上打开“设置 → 局域网访问”生成新的配对码，然后在这里重新配对；也可以切回本机后台。`; }
+  else if (unreachable) { title.textContent = `暂时无法连接 ${name}`; detail.textContent = connection.error + '。主机恢复后会自动重新连接，也可以切回本机后台。'; }
+  else { title.textContent = `已连接到 ${name}（版本 ${connection.host_version}），本机版本 ${connection.local_version}，部分功能可能不一致`; detail.hidden = true; }
+  text.append(title, detail);
+  if (bannerNote) { const note = document.createElement('p'); note.className = 'remote-banner-note' + (failed ? ' is-error' : ''); note.setAttribute('role', failed ? 'alert' : 'status'); note.textContent = bannerNote; text.append(note); }
+  banner.append(text);
+  if (expired && repairing) { banner.append(repairForm()); return; }
+  if (expired || unreachable) {
+    const actions = document.createElement('div'); actions.className = 'remote-banner-actions';
+    if (expired && connection.url) actions.append(bannerButton('重新配对', 'primary', () => { void openRepair(); }));
+    actions.append(bannerButton('切回本机', 'secondary', () => { void switchLocal(); }));
+    banner.append(actions);
+  }
+}
+function applyConnection(state) {
+  const expiredNow = state.auth_expired && !connection.auth_expired, recovered = connection.error && !state.error;
+  connection = state; renderBanner();
+  if (expiredNow) {
+    // Leave settings or administrator pages so the expired authorization is seen at once.
+    $('nav-workspaces').click(); $('error').hidden = true;
+    $('service').textContent = '授权已失效'; $('service').classList.add('failed');
+  }
+  if (recovered && homeReady) void action(refresh);
+}
+if (remote) window.crewDesktop.onConnection(applyConnection);
+(remote ? window.crewDesktop.connection().then(applyConnection) : Promise.resolve()).then(refresh).then(finishStartup, async error => {
   failure(error);
   // The persistent picker must still receive native menu actions after a failed first refresh.
   await finishStartup({ projects:[] });

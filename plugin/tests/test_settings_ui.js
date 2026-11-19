@@ -120,3 +120,13 @@ test("Codex speed is offered from catalog tiers and Claude never carries one",()
   ai.default={runtime:"claude",model:null,effort:null,speed:"priority"};assert.throws(()=>ui.validate(ai,fast),/只适用于 Codex/);
   assert.equal(ui.speedName(fast[1],"priority"),"Fast");assert.equal(ui.speedName(fast[1],"default"),"标准");
 });
+
+test("a LAN host connection labels host settings and offers no LAN access card or local backend wording",()=>{
+  const {root,content}=panelHarness();
+  ui.create({host:root,remote:true,read:()=>new Promise(()=>{}),save:()=>{},panels:{}}).open("backend");
+  assert.match(root.innerHTML,/Crew · 所连主机/);assert.match(root.innerHTML,/所连主机的设置 · 所有工作区共用/);
+  assert.doesNotMatch(root.innerHTML,/data-settings-category="remote"/);
+  const local=panelHarness();
+  ui.create({host:local.root,read:()=>new Promise(()=>{}),save:()=>{},panels:{remote(){}}}).open("remote");
+  assert.match(local.root.innerHTML,/Crew · 本机偏好/);assert.match(local.root.innerHTML,/data-settings-category="remote"/);
+});

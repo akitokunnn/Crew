@@ -59,3 +59,22 @@ test('desktop and browser flags are exposed and every required new field is vali
     }
   }
 });
+
+test('capability flags mark the page so a Crew desktop client keeps settings and a browser does not',async()=>{
+  const desktop={...browser,client:'desktop',local_controls:true};
+  for(const [value,expected] of [[local,{accessClient:'local',accessLocalControls:'true',accessLocalDesktop:'true',accessVscodeContinue:'true'}],
+    [desktop,{accessClient:'desktop',accessLocalControls:'true',accessLocalDesktop:'false',accessVscodeContinue:'false'}],
+    [browser,{accessClient:'browser',accessLocalControls:'false',accessLocalDesktop:'false',accessVscodeContinue:'false'}]]){
+    const app=boot(async()=>response(200,value));await app.window.CrewAccess.ready;
+    assert.deepEqual({...app.document.documentElement.dataset},expected);
+  }
+});
+test('an expired Crew desktop client is sent back to its home page to re-pair instead of a browser login',async()=>{
+  let requests=0;const desktop={...browser,client:'desktop',local_controls:true};
+  const app=boot(async()=>++requests===1?response(200,desktop):response(401,{error:'设备授权已失效，请在主机上重新生成配对码'}));
+  await app.window.CrewAccess.ready;await app.window.fetch('/api/state?project=健身');
+  const [text,link]=app.nodes.get('access-notice').children;
+  assert.match(text.textContent,/重新生成配对码/);assert.equal(link.href,'/');assert.equal(link.textContent,'返回 Crew 首页');
+  assert.equal(app.window.CrewAccess.client,'desktop');assert.equal(app.window.CrewAccess.local_controls,false);
+  assert.equal(app.document.documentElement.dataset.accessLocalControls,'false');assert.deepEqual(app.events,['crew-access-expired']);
+});

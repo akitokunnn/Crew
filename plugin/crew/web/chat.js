@@ -252,8 +252,10 @@
         const renderingSession = documentLink ? (typeof info.session_id === "string" ? info.session_id : "") : data.session_id;
         const resolved = documentLink ? {document_id:data.document_id} : {path:info.path, session_id:data.session_id};
         const localDesktop = !window.CrewAccess || window.CrewAccess.local_desktop;
+        // A Crew desktop client connected to a host cannot open host files either; name where they open.
+        const elsewhere = window.CrewAccess?.client === "desktop" ? "此格式不能在这里预览，请在主机上的 Crew 中查看。" : "此格式暂不能在浏览器预览，请在运行 Crew 的电脑上查看。";
         if (info.type === "external" && info.open_with === "default") {
-          if (!localDesktop) throw Error("此格式暂不能在浏览器预览，请在运行 Crew 的电脑上查看。任务报告可从“交付与文档”打开。");
+          if (!localDesktop) throw Error(elsewhere + "任务报告可从“交付与文档”打开。");
           await api("/api/files/open", resolved); return;
         }
         let content;
@@ -266,7 +268,7 @@
         const openLabel = info.open_with === "vscode" ? "在 VS Code 打开" : "用默认程序打开";
         const openButton = !localDesktop || info.open_with === "blocked" ? "" : `<button class="btn file-open">${openLabel}</button>`;
         const actions = localDesktop ? `${openButton}<button class="btn file-reveal">在文件夹中显示</button>` : "";
-        const bodyMarkup = info.open_with === "blocked" ? escape(localDesktop ? "这类文件不直接打开，请用‘在文件夹中显示’" : "此格式暂不能在浏览器预览，请在运行 Crew 的电脑上查看。")
+        const bodyMarkup = info.open_with === "blocked" ? escape(localDesktop ? "这类文件不直接打开，请用‘在文件夹中显示’" : elsewhere)
           : info.kind === "image" ? `<img class="file-image" alt="${escape(info.path)}" src="${escape(fileContentUrl(info.path, data.session_id || "", null, true, documentLink ? data.document_id : null))}">`
           : (content.truncated ? `<p class="note">文件较大，仅显示${escape(content.portion)} 256 KiB</p>` : "") + (info.kind === "markdown" ? `<div class="markdown">${renderMarkdown(content.content, renderingSession, info.path)}</div>` : `<pre class="file-text">${escape(content.content)}</pre>`);
         // Beside a conversation the file opens in the shared reading pane; elsewhere (channel, assistant page) in the drawer.

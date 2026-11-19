@@ -127,6 +127,8 @@ $crewVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
 
 隔离连接迁移验收：`node desktop/scripts/smoke-launch-settings.cjs`（在仓库根目录执行），使用两个临时 HOME 和不可发现 AI CLI 的测试环境，验证真实停止、复制、配置重载及新后台启动。
 
+“连接与目录”的第三种连接方式是“局域网主机”：填主机“设置 → 局域网访问”里显示的地址、主机生成的配对码和本机设备名，连接并保存后选中应用，Crew 重新打开即连到那台主机。已保存的设备放在启动设置目录的 `remote-backends.json`，设备令牌只以系统安全存储（Windows DPAPI、macOS 钥匙串）加密后保存。连到主机时不启动本机后台、不运行 Python；工作区、聊天、任务、设置、Git 设置、存储清理、维护、收编和历史都在主机上执行，新建 / 打开工作区、更改工作目录和接续历史用页面内的“主机文件夹”选择器选主机目录，导出会下载到本机。导入工作区包、交接材料、工具与 Crew 更新、局域网访问开关和运维对话只在主机上操作，系统管理员只读显示主机健康状态；主机版本不同时首页提示，授权失效时首页提供“重新配对”和“切回本机”。
+
 运维管理员常态使用程序监测。“自动修复”可设置启用开关、Crew 源码 Git 根目录、处理时限、复现与验证命令数组及合入分支，保存到 `home/desktop/admin/operations/policy.json`；打包后的后台目录不是 Git 仓库。开启时核实配置；关闭时允许留空，且不会中止已经执行的修复。已有配置未写 `enabled` 时保持旧行为。修复始终在隔离工作树里进行，应用前还须遵守项目 PR/合并规则并独立复验。portable 缺少已验证的运行中 Git 回退基线时会以 `NoVerifiedBaseline` 拒绝自动激活，保留 commit 和报告；不会把其它源码目录冒充已经运行过的旧版本。
 
 `.npmrc` 将 npm 下载缓存放在本目录，以上环境变量将 Electron 和打包下载也限制在本目录。新的终端构建时同样配置缓存：
@@ -156,6 +158,8 @@ node scripts/verify-icons.cjs "dist/win-unpacked/Crew.exe" "dist/Crew-$crewVersi
 结果保存在 `smoke-output/source.json` / `packaged.json` / `portable.json` 及同名 PNG。单元测试另外覆盖已有服务复用、Git 根目录解析、新建仓库、已有文件保护与后端端口 0 / 优雅退出。
 
 `smoke-handoff.cjs` 在私有 HOME 用历史记录和假载体守卫验收交接、离线未知结果、真实失败、后续工具状态、折叠与多行草稿保留，以及窄窗深色外观；还核对“在干活”的 leader/下属总数、列表入口、组头人数和空态。证据和截图在 `smoke-output/handoff`。不会向模型发送输入。
+
+`smoke-remote-backend.cjs`（在仓库根目录执行）启动隔离主机后台（真实 HTTP / SQLite，局域网入口绑定 127.0.0.1，假载体）和隔离 HOME 与启动设置目录的源码客户端，走添加设备 → 应用（记录重启参数后按原参数重开）→ 主机工作区 → 主机文件夹新建 → 工作区聊天页 → 设置与只读管理员 → 导出下载 → 主机强制下线 → 重新配对 → 重连；浅色 / 深色、1220 / 760 宽截图与证据在 `../Temp/remote-backend/`，模型启动数为零。
 
 `smoke-remote-access.cjs` 使用真实源码桌面窗口、隔离后台与 SQLite，点通设置中的开启、配对、移除设备和关闭；验证原本机服务继续可用，模型启动数为零。结果与截图在 `../Temp/remote-desktop/current/`，`--old-bridge` 可恢复缺失 IPC 的旧错作反证。此脚本不支持包内注入钩子；打包版本用基础启动退出与 `verify-bundle.cjs` 的源码一致性检查。手机及浏览器旅程在根目录运行 `node plugin/tests/smoke_remote_access.cjs`，指定 `--lan-address <本机局域网IPv4>` 可使用真实网卡地址。
 

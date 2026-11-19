@@ -140,7 +140,7 @@ print(json.dumps({'goal_id':goal['id'],'execution_id':execution['id']}))
     const launch = new LaunchSettings(initial, {backend:first, updates, operations, bundledBackend:plugin, run:execute,
       onApplied:async saved => { requestedRelaunch = true; check('application callback sees saved target HOME', saved.home === target && readSync(preferences).home === target); }});
     const body = {settings:{mode:'local', home:target, source:'bundled', backend_directory:plugin,
-      service_url:'', port:0, python:interpreter}, home_action:'copy'};
+      service_url:'', port:0, python:interpreter, remote_backend:''}, home_action:'copy'};
     const preview = await launch.validate(body);
     check('real HTTP preview lists leader and member', preview.impact.sessions.length === 2 && preview.impact.goals_count === 1);
     check('real Python HOME inspection permits a new directory', preview.inspection.can_copy && preview.impact.copy_required);

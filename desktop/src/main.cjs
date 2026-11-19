@@ -1,5 +1,5 @@
 'use strict';
-const { app, BrowserWindow, View, WebContentsView, ipcMain, dialog, Menu, Tray, nativeImage, nativeTheme, shell, clipboard, systemPreferences } = require('electron');
+const { app, BrowserWindow, View, WebContentsView, ipcMain, dialog, Menu, Tray, nativeImage, nativeTheme, shell, clipboard, systemPreferences, safeStorage, session } = require('electron');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
@@ -15,10 +15,16 @@ const { CrewUpdates } = require('./crew-updates.cjs');
 const { Administrator } = require('./admin.cjs');
 const { OperationsClient } = require('./operations.cjs');
 const { LaunchSettings, relaunchArgs } = require('./launch-settings.cjs');
+const { RemoteBackends } = require('./remote-backends.cjs');
 const product = require('./product.cjs');
 const config = core.options(process.argv.slice(1),{launchSettingsPath:path.join(app.getPath('appData'),product.settingsDirectory,'launch-settings.json')});
 const administrator = new Administrator(config.home);
 const operations = new OperationsClient(config);
+// Saved LAN hosts sit beside the launch settings, outside every HOME.
+const remotes = new RemoteBackends(path.join(path.dirname(config.launchSettingsPath),'remote-backends.json'),{safeStorage});
+// Connected to a LAN host: no backend, Python or HOME of this computer is used for Crew data.
+const remoteMode = Boolean(config.remoteBackend);
+const AUTH_EXPIRED = '授权已失效，请在主机上重新生成配对码';
 app.setName(config.instanceName);
 if (process.platform === 'win32') app.setAppUserModelId(product.appId);
 config.bundledBackendDir = app.isPackaged ? path.join(process.resourcesPath, 'backend') : path.resolve(__dirname, '../../plugin');
@@ -33,7 +39,7 @@ const homePage = pathToFileURL(path.join(__dirname, 'home.html')).href;
 const errorPage = pathToFileURL(path.join(__dirname, 'error.html')).href;
 let lastPublishedTab=null;
 let window, tray, backend, tabs, activityPreview, reportPreviews, tools, crewUpdates, launchSettings, windowMenu, quitting = false, finishedQuit = false, parentDirectory = null, smokeStarted = false, pendingAction = null, pendingWorkspace = null, homeBootstrapped = false;
-let startupWork = null, cleanupPromise = null;
+let startupWork = null, cleanupPromise = null, remoteHeartbeat = null, localVersion = null;
 
 function liveWindow(target = window) {
   return !quitting && target === window && !!target && !target.isDestroyed() && !target.webContents.isDestroyed();
@@ -57,6 +63,7 @@ async function cleanupResources() {
     // Let resources already being constructed finish before closing them. The
     // continuation checks quitting before it can construct the next resource.
     if (startupWork) await finish('startup', () => startupWork);
+    clearInterval(remoteHeartbeat);
     await Promise.all([
       finish('connection change', () => launchSettings?.pending),
       finish('Crew update', () => crewUpdates?.close()),
@@ -79,11 +86,14 @@ async function injectAssets(directory, files) {
   return {ok:liveWindow(target)};
 }
 const preparedWorkspaces=new Set(), workspaceDataJobs=new Set();
-function workspaceDataRequest(base, route, body, timeoutMs=120000) {
+function workspaceDataJob(start) {
   if(quitting)return Promise.reject(new Error('Crew 正在退出，未开始新的工作区数据操作'));
-  const pending=core.request(base,route,body,timeoutMs);
+  const pending=start();
   workspaceDataJobs.add(pending);
   return pending.finally(()=>workspaceDataJobs.delete(pending));
+}
+function workspaceDataRequest(base, route, body, timeoutMs=120000) {
+  return workspaceDataJob(()=>core.request(base,route,body,timeoutMs));
 }
 
 function trusted(event) {
@@ -92,6 +102,38 @@ function trusted(event) {
   }
 }
 function handle(channel, callback) { ipcMain.handle(channel, async (event, ...args) => { trusted(event); return callback(...args); }); }
+// Operations on this computer's own backend, tools or files; a LAN host keeps them on the host.
+function localHandle(channel, callback) { handle(channel, (...args) => { if (remoteMode) throw new Error('连接局域网主机时，这项操作只能在主机上的 Crew 中进行'); return callback(...args); }); }
+function remoteHandle(channel, callback) { handle(channel, (...args) => { if (!remoteMode) throw new Error('这项操作只用于连接局域网主机'); return callback(...args); }); }
+function connectionState() {
+  if (!remoteMode) return {mode:'local'};
+  return {mode:'remote', id:config.remoteBackend, name:backend?.name || null, url:backend?.remote && new URL(backend.url).port !== '0' ? backend.url : null,
+    host_version:backend?.health?.version || null, local_version:localVersion, auth_expired:Boolean(backend?.authExpired), error:backend?.startupError || null};
+}
+function publishConnection() { if (liveWindow()) window.webContents.send('desktop:connection', connectionState()); }
+// Any 401 from the connected host, from the shell or a workspace page, means the device was revoked or expired.
+function remoteAuthExpired() {
+  if (!backend?.remote || backend.authExpired) return;
+  backend.authExpired = true; backend.startupError = AUTH_EXPIRED;
+  publishConnection();
+  if (liveWindow() && window.webContents.getURL() === homePage) tabs?.select('home');
+}
+async function remoteCheck() {
+  if (quitting || backend.authExpired) return;
+  const context = await core.request(backend.url,'/api/access/context',undefined,8000);
+  if (!backend.startupError || context.client !== 'desktop') return;
+  backend.health = core.remoteHealth(await core.request(backend.url,'/api/admin/health',undefined,8000));
+  if (backend.authExpired) return;
+  backend.startupError = null; publishConnection();
+}
+function attachDeviceToken(origin, token) {
+  // Workspace pages load from the host. Only that exact origin receives the device token.
+  const filter = {urls:['http://*/*']}, target = url => new URL(url).origin === origin;
+  session.defaultSession.webRequest.onBeforeSendHeaders(filter, (details, callback) => {
+    callback({requestHeaders:target(details.url) ? {...details.requestHeaders, Authorization:'Bearer ' + token} : details.requestHeaders});
+  });
+  session.defaultSession.webRequest.onCompleted(filter, details => { if (details.statusCode === 401 && target(details.url)) remoteAuthExpired(); });
+}
 function trustedChrome(event) {
   if (!liveWindow() || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame ||
       ![homePage,errorPage].includes(event.senderFrame.url)) throw new Error('窗口操作只允许来自 Crew 窗口');
@@ -182,11 +224,7 @@ async function openProject(name, hash = '') {
   }
   if (!liveWindow(target)) return false;
   if(!project)throw new Error('工作区不存在，请刷新列表');
-  if (!project.read_only) {
-    const [location]=await core.projectLocations([project]);
-    if (!liveWindow(target)) return false;
-    if(location.directory_state.status!=='ready'){await showHome('workspace-settings',name);return false;}
-  }
+  if(!project.read_only&&project.directory_state.status!=='ready'){await showHome('workspace-settings',name);return false;}
   const alreadyOpen=tabs.state().tabs.some(tab=>tab.project===project.name);
   const alreadyPrepared=preparedWorkspaces.delete(project.name);
   if(!alreadyOpen&&!alreadyPrepared)project=await storage.prepare(project,backend.url,chooseHistory,storageProgress,workspaceDataRequest);
@@ -220,7 +258,15 @@ async function chooseHistory({kind,discovery}) {
 async function exportWorkspace(name){
   const answer=await dialog.showSaveDialog(window,{title:'导出完整工作区',defaultPath:(name.replace(/[<>:"/\\|?*]/g,'_')||'workspace')+'.crewpack',filters:[{name:'Crew 工作区',extensions:['crewpack']}]});
   if(answer.canceled||!liveWindow())return null;
-  const result=await workspaceDataRequest(backend.url,'/api/workspace-data/export',{project:name,destination:answer.filePath},120000);
+  let result;
+  if(remoteMode){
+    // The host writes the package into its own HOME; this computer downloads it to the chosen file.
+    result=await workspaceDataRequest(backend.url,'/api/workspace-data/export',{project:name},120000);
+    if(typeof result.download_id!=='string'||!result.download_id)throw new Error('主机没有返回可下载的导出文件，请确认主机版本');
+    storageProgress('正在从主机下载工作区包…');
+    try{await workspaceDataJob(()=>core.download(backend.url,'/api/workspace-data/download?'+new URLSearchParams({id:result.download_id}),answer.filePath));}
+    finally{storageProgress('');}
+  }else result=await workspaceDataRequest(backend.url,'/api/workspace-data/export',{project:name,destination:answer.filePath},120000);
   if(!liveWindow())return result;
   await dialog.showMessageBox(window,{type:'info',title:'工作区已导出',message:'完整工作区包已保存',detail:answer.filePath+'\n包含历史记录及已保存的产出文件。'+(result.cached_files?.length?`\n${result.cached_files.length} 项资料原件暂不可用，已携带校验通过的保存版本。`:''),buttons:['好'],noLink:true});
   return result;
@@ -242,12 +288,15 @@ async function importWorkspace(){
   }
   if(liveWindow())await tabs.open(result.project);return result;
 }
-async function activateWorkspace(workspaceId){
-  const directory=await dialog.showOpenDialog(window,{title:'选择新工作区副本的本机代码目录',buttonLabel:'绑定副本并接续',properties:['openDirectory']});
-  if(directory.canceled||!liveWindow())return null;
-  storageProgress('正在恢复本机工作区界面，执行保持停止…');
+async function activateWorkspace(workspaceId,root){
+  if(root===undefined){
+    const directory=await dialog.showOpenDialog(window,{title:'选择新工作区副本的本机代码目录',buttonLabel:'绑定副本并接续',properties:['openDirectory']});
+    if(directory.canceled||!liveWindow())return null;
+    root=directory.filePaths[0];
+  }
+  storageProgress(remoteMode?'正在恢复主机上的工作区界面，执行保持停止…':'正在恢复本机工作区界面，执行保持停止…');
   try{
-    const result=await workspaceDataRequest(backend.url,'/api/workspace-data/activate',{workspace_id:workspaceId,root:directory.filePaths[0],replace_source_marker:true},120000);
+    const result=await workspaceDataRequest(backend.url,'/api/workspace-data/activate',{workspace_id:workspaceId,root,replace_source_marker:true},120000);
     if(liveWindow())await tabs.open(result.project);return result;
   }finally{storageProgress('');}
 }
@@ -303,7 +352,8 @@ async function restartCrew() {
   if (quitting) return;
   let busy=[];
   // Restarting is also the remedy for an unreachable backend, so a failed check only skips the warning.
-  try { const plan=await core.request(backend.url,'/api/admin/connection/plan',undefined,3000); busy=Array.isArray(plan?.sessions)?plan.sessions.filter(item=>item.busy):[]; }
+  // A LAN host's sessions keep running on the host; restarting this window never interrupts them.
+  if (!remoteMode) try { const plan=await core.request(backend.url,'/api/admin/connection/plan',undefined,3000); busy=Array.isArray(plan?.sessions)?plan.sessions.filter(item=>item.busy):[]; }
   catch (error) { console.error('Crew restart check failed:',error); }
   if (quitting) return;
   if (busy.length) {
@@ -320,21 +370,23 @@ async function restartCrew() {
   app.quit();
 }
 function workspaceMenu() {
+  // Importing packages, handoff material and tool / Crew updates stay on a LAN host's own computer.
+  const local = item => remoteMode ? [] : [item];
   return [
     { id:'workspace-home', label:'工作区首页', accelerator:'CmdOrCtrl+Shift+O', click:menuAction(()=>showHome()) },
     { id:'workspace-new-tab', label:'打开工作区标签', accelerator:'CmdOrCtrl+T', click:menuAction(()=>showHome()) },
     { id:'workspace-new', label:'新建工作区…', accelerator:'CmdOrCtrl+N', click:menuAction(()=>showHome('new')) },
     { id:'workspace-open', label:'打开已有项目…', accelerator:'CmdOrCtrl+O', click:menuAction(()=>showHome('open')) },
-    { id:'workspace-import', label:'导入工作区包…', click:menuAction(importWorkspace) },
+    ...local({ id:'workspace-import', label:'导入工作区包…', click:menuAction(importWorkspace) }),
     { id:'workspace-export', label:'导出当前工作区…', click:menuAction(()=>{const active=tabs?.state().tabs.find(t=>t.id===tabs.state().activeId);if(active?.project)return exportWorkspace(active.project);return dialog.showMessageBox(window,{message:'请先打开要导出的工作区',buttons:['好']});}) },
-    { id:'workspace-handoff', label:'生成 Codex / VS Code 交接材料…', click:menuAction(()=>{const active=tabs?.state().tabs.find(t=>t.id===tabs.state().activeId);if(active?.project)return exportHandoff(active.project);return dialog.showMessageBox(window,{message:'请先打开要交接的工作区',buttons:['好']});}) },
+    ...local({ id:'workspace-handoff', label:'生成 Codex / VS Code 交接材料…', click:menuAction(()=>{const active=tabs?.state().tabs.find(t=>t.id===tabs.state().activeId);if(active?.project)return exportHandoff(active.project);return dialog.showMessageBox(window,{message:'请先打开要交接的工作区',buttons:['好']});}) }),
     { id:'workspace-history', label:'查看已保存的完整历史', click:menuAction(()=>{const active=tabs?.state().tabs.find(t=>t.id===tabs.state().activeId);if(active?.project)return viewHistory(active.project);}) },
     { id:'workspace-settings', label:'当前工作区设置…', enabled:Boolean(tabs?.state().tabs.find(tab=>tab.id===tabs.state().activeId)?.project), click:menuAction(()=>{
       const active=tabs.state().tabs.find(tab=>tab.id===tabs.state().activeId);
       if(active?.project)return showHome('workspace-settings',active.project);
     }) },
     { id:'system-administrator',label:'系统管理员…',click:menuAction(()=>showHome('admin')) },
-    { id:'tools-updates',label:'工具与更新…',click:menuAction(()=>showHome('tools')) },
+    ...local({ id:'tools-updates',label:'工具与更新…',click:menuAction(()=>showHome('tools')) }),
     { id:'app-settings',label:'设置…',accelerator:'CmdOrCtrl+,',click:menuAction(()=>showHome('settings')) },
     { type:'separator' },
     { id:'window-back', label:'返回上一页', accelerator:'Alt+Left', click:menuAction(()=>tabs.back()) },
@@ -429,14 +481,22 @@ async function visualEvidence(target, evidence) {
 
 handle('desktop:bootstrap', async () => {
   const target = window;
-  if(new URL(backend.url).port==='0')throw new Error(backend.startupError||'后台尚未连接，请查看系统管理员');
-  const projects = await core.projectLocations(await core.projects(backend.url)), action = pendingAction, workspace = pendingWorkspace; pendingAction = null; pendingWorkspace = null;
+  if(new URL(backend.url).port==='0'||backend.remote&&backend.startupError)throw new Error(backend.startupError||'后台尚未连接，请查看系统管理员');
+  const projects = await core.projects(backend.url), action = pendingAction, workspace = pendingWorkspace; pendingAction = null; pendingWorkspace = null;
   if (!liveWindow(target)) return null;
   for(const project of projects)tabs.updateProject(project);
   homeBootstrapped=true;
-  return { projects, service: { url:backend.url, owned:backend.owned }, pendingAction:action, ...(workspace ? {pendingWorkspace:workspace} : {}) };
+  return { projects, service: { url:backend.url, owned:backend.owned, remote:Boolean(backend.remote) }, pendingAction:action, ...(workspace ? {pendingWorkspace:workspace} : {}) };
 });
+handle('desktop:connection',()=>connectionState());
 handle('desktop:admin-status',async()=>{
+  if(remoteMode){
+    // Read-only host health; restarting or repairing the host happens on the host.
+    if(backend.startupError)throw new Error(backend.startupError);
+    const health=core.remoteHealth(await core.request(backend.url,'/api/admin/health'));backend.health=health;
+    return {remote:true,state:health.warnings?.length?'degraded':'healthy',checked_at:new Date().toISOString(),name:backend.name,url:backend.url,
+      version:health.version,local_version:localVersion,home:health.home,service_pid:health.pid,instance_id:health.instance_id,warnings:health.warnings||[]};
+  }
   const status=await administrator.snapshot();
   if (!liveWindow()) return status;
   if(backend?.startupError&&['healthy','degraded'].includes(status.state)&&status.url){
@@ -460,51 +520,68 @@ handle('desktop:home-ready',()=>{
   if(pendingAction){const action=pendingAction,project=pendingWorkspace;pendingAction=null;pendingWorkspace=null;window.webContents.send('desktop:home-action',{action,...(project?{project}:{})});}
   return {ok:true};
 });
-handle('desktop:admin-check',()=>administrator.request('check'));
-handle('desktop:admin-restart',()=>administrator.request('recover'));
-handle('desktop:admin-chat-snapshot',()=>operations.request('snapshot'));
+localHandle('desktop:admin-check',()=>administrator.request('check'));
+localHandle('desktop:admin-restart',()=>administrator.request('recover'));
+localHandle('desktop:admin-chat-snapshot',()=>operations.request('snapshot'));
 function operationsMutation(action,body){
   if(launchSettings?.pending)throw Error('后台连接正在切换，完成后再发送消息或修改设置。');
   return operations.request(action,body);
 }
-handle('desktop:admin-chat-send',body=>operationsMutation('send',body));
-handle('desktop:admin-chat-interrupt',()=>operations.request('interrupt'));
-handle('desktop:admin-config-get',()=>operations.request('config-get'));
-handle('desktop:admin-config-save',body=>operationsMutation('config-save',body));
-handle('desktop:existing', async () => {
-  const result = await dialog.showOpenDialog(window, { title: '选择工作区文件夹', buttonLabel: '打开工作区', properties: ['openDirectory'] });
-  if (result.canceled) return null;
-  const project=await storage.openDirectory(result.filePaths[0], backend.url, chooseHistory,storageProgress,workspaceDataRequest);
+localHandle('desktop:admin-chat-send',body=>operationsMutation('send',body));
+localHandle('desktop:admin-chat-interrupt',()=>operations.request('interrupt'));
+localHandle('desktop:admin-config-get',()=>operations.request('config-get'));
+localHandle('desktop:admin-config-save',body=>operationsMutation('config-save',body));
+async function openDirectory(directory) {
+  const project=await storage.openDirectory(directory, backend.url, chooseHistory,storageProgress,workspaceDataRequest);
   if(project?.name)preparedWorkspaces.add(project.name);
   return project;
+}
+localHandle('desktop:existing', async () => {
+  const result = await dialog.showOpenDialog(window, { title: '选择工作区文件夹', buttonLabel: '打开工作区', properties: ['openDirectory'] });
+  if (result.canceled) return null;
+  return openDirectory(result.filePaths[0]);
+});
+// A LAN host's folders are chosen in the home page's host folder picker.
+remoteHandle('desktop:host-folders',directory=>core.hostFolders(backend.url,directory));
+remoteHandle('desktop:existing-directory',directory=>{
+  if(typeof directory!=='string'||!directory)throw new Error('请选择主机上的文件夹');
+  return openDirectory(directory);
 });
 handle('desktop:existing-new',directory=>core.existingWorkspace(directory,backend.url,{newProject:true}));
-handle('desktop:storage-import',importWorkspace);
+localHandle('desktop:storage-import',importWorkspace);
 handle('desktop:storage-export',name=>exportWorkspace(name));
-handle('desktop:storage-activate',workspaceId=>activateWorkspace(workspaceId));
-handle('desktop:parent', async () => {
+handle('desktop:storage-activate',(workspaceId,root)=>{
+  if(remoteMode!==(typeof root==='string'))throw new Error(remoteMode?'请选择主机上的代码目录':'请通过系统对话框选择代码目录');
+  return activateWorkspace(workspaceId,root);
+});
+localHandle('desktop:parent', async () => {
   const result = await dialog.showOpenDialog(window, { title: '选择新工作区的保存位置', buttonLabel: '选择此位置', properties: ['openDirectory'] });
   if (result.canceled) return null;
   parentDirectory = result.filePaths[0];
   return parentDirectory;
 });
-handle('desktop:create', async name => {
+handle('desktop:create', async (name,parent) => {
+  if (remoteMode) {
+    if (typeof parent !== 'string' || !parent) throw new Error('请先选择主机上的保存位置');
+    return core.newWorkspace(parent, name, backend.url);
+  }
+  if (parent !== undefined) throw new Error('请通过系统对话框选择保存位置');
   if (!parentDirectory) throw new Error('请先选择工作区的保存位置');
   const result=await core.newWorkspace(parentDirectory, name, backend.url);parentDirectory=null;return result;
 });
 handle('desktop:open', async name => {
   return {ok:await openProject(name)};
 });
-handle('desktop:tools-snapshot',()=>tools.snapshot());
-handle('desktop:tools-check',()=>tools.check());
-handle('desktop:tools-update',id=>tools.update(id));
-handle('desktop:tools-cancel',id=>tools.cancel(id));
-handle('desktop:tools-settings',settings=>tools.settings(settings));
-handle('desktop:crew-update-snapshot',()=>crewUpdates.snapshot());
-handle('desktop:crew-update-check',()=>crewUpdates.check());
-handle('desktop:crew-update-apply',()=>{if(launchSettings?.pending)throw Error('正在切换后台连接，请等待完成。');return crewUpdates.update();});
-handle('desktop:crew-update-cancel',()=>crewUpdates.cancel());
-handle('desktop:crew-update-open',async kind=>{
+localHandle('desktop:tools-snapshot',()=>tools.snapshot());
+localHandle('desktop:tools-check',()=>tools.check());
+localHandle('desktop:tools-update',id=>tools.update(id));
+localHandle('desktop:tools-cancel',id=>tools.cancel(id));
+localHandle('desktop:tools-settings',settings=>tools.settings(settings));
+localHandle('desktop:crew-update-snapshot',()=>crewUpdates.snapshot());
+localHandle('desktop:crew-update-check',()=>crewUpdates.check());
+localHandle('desktop:crew-update-apply',()=>{if(launchSettings?.pending)throw Error('正在切换后台连接，请等待完成。');return crewUpdates.update();});
+localHandle('desktop:crew-update-cancel',()=>crewUpdates.cancel());
+localHandle('desktop:crew-update-open',async kind=>{
   if(!['release','main'].includes(kind))throw new Error('不支持的版本链接');
   const online=crewUpdates.snapshot().online;
   if(kind==='release'&&!online?.release?.url)throw new Error('当前版本尚未登记正式发布包，请查看 main 分支。');
@@ -519,11 +596,21 @@ function settingsRequest(route, body, timeoutMs) {
 }
 handle('desktop:prompts-get',query=>settingsRequest('/api/behavior-prompts?'+new URLSearchParams(query || {})));
 handle('desktop:prompts-save',body=>settingsRequest('/api/behavior-prompts',body));
-handle('desktop:settings-get',()=>operations.request('settings-get'));
-handle('desktop:settings-save',body=>operationsMutation('settings-save',body));
+// A LAN host's settings live in its HOME and are read and saved through its HTTP settings API.
+handle('desktop:settings-get',async()=>{
+  if(!remoteMode)return operations.request('settings-get');
+  await settingsRequest('/api/runtimes?refresh=1',undefined,45000);
+  return settingsRequest('/api/settings');
+});
+handle('desktop:settings-save',body=>{
+  if(!remoteMode)return operationsMutation('settings-save',body);
+  if(launchSettings?.pending)throw Error('后台连接正在切换，完成后再发送消息或修改设置。');
+  return settingsRequest('/api/settings',body);
+});
 handle('desktop:launch-settings-get',()=>launchSettings.get());
 handle('desktop:launch-settings-validate',body=>launchSettings.validate(body));
 handle('desktop:launch-settings-apply',body=>launchSettings.apply(body));
+handle('desktop:remote-backend-pair',body=>launchSettings.pair(body));
 handle('desktop:launch-settings-pick',async body=>{
   if(!body || !['home','backend','python'].includes(body.kind) || typeof body.current!=='string')throw Error('请选择有效的目录或 Python 程序。');
   const file=body.kind==='python';
@@ -535,8 +622,8 @@ handle('desktop:settings-connection',()=>settingsRequest('/api/connections'));
 handle('desktop:settings-connection-save',body=>settingsRequest('/api/connections/configure',body));
 handle('desktop:settings-connection-action',body=>settingsRequest('/api/connections/action',body));
 handle('desktop:settings-connection-preferences',body=>settingsRequest('/api/connections/preferences',body));
-handle('desktop:remote-access-read',()=>settingsRequest('/api/remote-access'));
-handle('desktop:remote-access-action',body=>settingsRequest('/api/remote-access',body));
+localHandle('desktop:remote-access-read',()=>settingsRequest('/api/remote-access'));
+localHandle('desktop:remote-access-action',body=>settingsRequest('/api/remote-access',body));
 handle('desktop:settings-away',away=>{
   if (typeof away !== 'boolean') throw Error('离开状态必须是 true 或 false');
   return settingsRequest('/api/notifications/away', {away});
@@ -587,7 +674,7 @@ handle('desktop:workspace-remove',async body=>{
   const result=await settingsRequest('/api/project/remove',body,180000);
   if(result.removed&&liveWindow())tabs.closeProject(result.project); return result;
 });
-handle('desktop:workspace-directory',async current=>{
+localHandle('desktop:workspace-directory',async current=>{
   if(typeof current!=='string')throw Error('工作目录必须是路径文本。');
   const result=await dialog.showOpenDialog(window,{title:'选择工作目录',buttonLabel:'选择此目录',defaultPath:current,properties:['openDirectory']});
   return result.canceled ? null : result.filePaths[0];
@@ -628,53 +715,77 @@ else {
   app.whenReady().then(async () => {
     if (quitting) return;
     try {
-      if (app.isPackaged) {
+      // A LAN connection runs no local Python, so its packaged UI assets are read in place.
+      if (app.isPackaged && !remoteMode) {
         config.helperBackendDir=await startupStep(core.materializeBackend(config.bundledBackendDir,config.home));
         if (quitting) return;
         if(config.backendSource==='bundled')config.backendDir=config.helperBackendDir;
       }
-      backend = new core.Backend(config);
-      try { await startupStep(backend.start()); }
-      catch (error) {
+      if (remoteMode) {
+        localVersion=JSON.parse(await startupStep(fs.readFile(path.join(config.bundledBackendDir,'.claude-plugin','plugin.json'),'utf8'))).version;
+        backend = new core.RemoteBackend(config.remoteBackend,{credentials:remotes,onUnauthorized:remoteAuthExpired});
+        try { await startupStep(backend.start()); }
+        catch (error) {
+          if (quitting) return;
+          // The window still opens: the home page explains the failure and offers re-pairing or switching back.
+          console.error('Crew LAN host unavailable:',error);
+          if(!backend.authExpired)backend.startupError=error.message;
+        }
         if (quitting) return;
-        if(config.smoke)throw error;
-        // The administrator must remain reachable even when no workspace can
-        // connect. Keep the shell and its file-backed health page available.
-        console.error('Crew backend unavailable:',error);
-        backend.startupError=error.message;
-        let candidate=config.serviceUrl;
-        if(!candidate)try{candidate=JSON.parse(await fs.readFile(path.join(config.home,'web.json'),'utf8')).url;}catch(_){}
-        try{backend.url=core.loopback(candidate);}catch(_){backend.url='http://127.0.0.1:0';}
-        pendingAction='admin';
+        if (new URL(backend.url).port !== '0') {
+          attachDeviceToken(backend.url,(await remotes.credential(config.remoteBackend)).token);
+          // Keeps this device shown online on the host, notices a revoked authorization while idle,
+          // and reconnects once a host that was unreachable at startup answers again.
+          remoteHeartbeat=setInterval(()=>{ void remoteCheck().catch(error=>console.error('Crew LAN host check failed:',error)); },30000);
+          remoteHeartbeat.unref?.();
+        }
+      } else {
+        backend = new core.Backend(config);
+        try { await startupStep(backend.start()); }
+        catch (error) {
+          if (quitting) return;
+          if(config.smoke)throw error;
+          // The administrator must remain reachable even when no workspace can
+          // connect. Keep the shell and its file-backed health page available.
+          console.error('Crew backend unavailable:',error);
+          backend.startupError=error.message;
+          let candidate=config.serviceUrl;
+          if(!candidate)try{candidate=JSON.parse(await fs.readFile(path.join(config.home,'web.json'),'utf8')).url;}catch(_){}
+          try{backend.url=core.loopback(candidate);}catch(_){backend.url='http://127.0.0.1:0';}
+          pendingAction='admin';
+        }
       }
       if (quitting) return;
-      if (!backend.startupError) {
+      // The host already forbids report preview workers for LAN devices; only this computer's backend gets one.
+      if (!remoteMode && !backend.startupError) {
         reportPreviews = new ReportPreviewClient({base:backend.url, request:core.request,
           renderer:new ReportPreviewRenderer({BrowserWindow})});
         try { await startupStep(reportPreviews.start()); }
         catch (error) { console.error('Crew 报告预览不可用：', error.message); }
       }
       if (quitting) return;
-      tools=new ToolUpdates(config,{onChange:state=>{if(liveWindow())window.webContents.send('desktop:tools-state',state);}});
+      if (!remoteMode) tools=new ToolUpdates(config,{onChange:state=>{if(liveWindow())window.webContents.send('desktop:tools-state',state);}});
       config.desktopVersion=app.getVersion();
       crewUpdates=new CrewUpdates(config,backend,{onChange:state=>{if(liveWindow())window.webContents.send('desktop:crew-update-state',state);},onRestart:async health=>{
         backend.startupError=null;
         if(tabs&&tabs.origin!==backend.url)throw new Error('更新后服务地址变化；工作区标签已保留，请重新打开 Crew。');
         publishTabs();
       }});
-      launchSettings=new LaunchSettings(config,{backend,updates:crewUpdates,operations,bundledBackend:config.bundledBackendDir,onApplied:async()=>{
+      launchSettings=new LaunchSettings(config,{backend,updates:crewUpdates,operations,remotes,bundledBackend:config.bundledBackendDir,onApplied:async()=>{
         if (quitting) return;
         try{ if(!(await scheduleRelaunch()))return; }
         catch(error){throw Error('启动设置已保存，但重新启动失败：'+error.message+'；请手动重新打开 Crew。');}
         setTimeout(()=>app.quit(),250);
       }});
-      await startupStep(tools.initialize());
-      if (quitting) return;
-      if(!config.smoke&&!config.isolated&&!backend.startupError)tools.start();
+      if (tools) {
+        await startupStep(tools.initialize());
+        if (quitting) return;
+        if(!config.smoke&&!config.isolated&&!backend.startupError)tools.start();
+      }
       window = new BrowserWindow({ width: 1220, height: 850, minWidth: 820, minHeight: 600,
         show: false, title: config.instanceName, icon: path.join(__dirname, '../assets/crew.png'), ...chrome.windowOptions(),
         webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true,
-          additionalArguments: ['--crew-desktop-config=' + encodeURIComponent(JSON.stringify({ home: homePage, origin: backend.url, error:errorPage, instanceName:config.instanceName }))] } });
+          additionalArguments: ['--crew-desktop-config=' + encodeURIComponent(JSON.stringify({ home: homePage, origin: backend.url, error:errorPage, instanceName:config.instanceName, remote:remoteMode }))] } });
       tabs=new WorkspaceTabs(window,{origin:backend.url,
         createView:()=>{
           const view=new WebContentsView({webPreferences:{contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true,...(config.smoke?{backgroundThrottling:false}:{})}});

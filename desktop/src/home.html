@@ -9,6 +9,7 @@
   <link rel="stylesheet" href="home-tools.css">
   <link rel="stylesheet" href="home-health.css">
   <link rel="stylesheet" href="home-settings.css">
+  <link rel="stylesheet" href="home-folders.css">
 </head>
 <body>
   <aside aria-label="导航">
@@ -27,6 +28,7 @@
       </div>
     </header>
     <div class="workspace-content">
+      <section id="remote-banner" class="remote-banner" aria-live="polite" hidden></section>
       <section id="create-panel" class="create-panel" aria-labelledby="create-title" hidden>
         <div class="panel-heading"><h2 id="create-title">新建工作区</h2><span>创建一个新的文件夹工作区</span></div>
         <form id="create-form">
@@ -85,6 +87,7 @@
   <script src="home-crew-updates.js"></script>
   <script src="home-health.js"></script>
   <script src="home-settings.js"></script>
+  <script src="home-folders.js"></script>
   <script src="home.js"></script>
 </body>
 </html>

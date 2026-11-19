@@ -63,7 +63,7 @@
 *{box-sizing:border-box}
 html,body{height:100%}
 body{margin:0;background:var(--bg);color:var(--text);font:calc(14px * var(--fs))/1.55 var(--font-ui);-webkit-font-smoothing:antialiased;overflow:hidden}
-[data-access-remote="true"] [data-local-control],[data-access-remote="true"] [data-local-desktop],[data-access-remote="true"] [data-act="workspace-settings"],[data-access-remote="true"] [data-act="settings"],[data-access-remote="true"] [data-act="open-vscode"],[data-access-remote="true"] [data-doc-act="open"]{display:none!important}
+[data-access-local-controls="false"] [data-local-control],[data-access-local-controls="false"] [data-act="workspace-settings"],[data-access-local-controls="false"] [data-act="settings"],[data-access-vscode-continue="false"] [data-act="open-vscode"],[data-access-local-desktop="false"] [data-doc-act="open"]{display:none!important}
 .access-notice{position:fixed;z-index:200;top:12px;left:50%;transform:translateX(-50%);width:min(600px,calc(100vw - 24px));box-sizing:border-box;display:flex;align-items:center;gap:14px;padding:15px 18px;border:1px solid var(--warn-line);border-radius:12px;background:var(--surface);color:var(--text);box-shadow:var(--shadow-lg)}.access-notice span{flex:1}.access-notice .btn{flex:none}
 
 
@@ -1004,7 +1004,7 @@ a.btn{color:inherit;text-decoration:none}
 
 .dispatch-history{max-height:55vh;overflow:auto}.dispatch-history .chip{align-items:flex-start}.dispatch-history .chip .grow{min-width:0;overflow-wrap:anywhere}
 
-[data-access-remote="true"] [data-view="adopt"],[data-access-remote="true"] [data-act="git-settings"],[data-access-remote="true"] [data-git-act="settings"],[data-access-remote="true"] [data-git-act="fetch"],[data-access-remote="true"] [data-git-act="enable"]{display:none!important}
+[data-access-local-controls="false"] [data-view="adopt"],[data-access-local-controls="false"] [data-act="git-settings"],[data-access-local-controls="false"] [data-git-act="settings"],[data-access-local-controls="false"] [data-git-act="fetch"],[data-access-local-controls="false"] [data-git-act="enable"]{display:none!important}
 
 /* A single rail leaves the workspace to conversations and tasks. */
 :root{--sb-w:64px}

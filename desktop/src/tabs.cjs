@@ -1,5 +1,5 @@
 'use strict';
-const { loopback } = require('./core.cjs');
+const { serviceOrigin } = require('./core.cjs');
 const { presentation } = require('./workspace-activity.cjs');
 
 // Global pages (idea wall, assistant) live to the right of the workspaces, in
@@ -26,7 +26,7 @@ class WorkspaceTabs {
     onNavigationError = error => console.error('Workspace navigation failed:', error) }) {
     if (!window?.contentView || typeof createView !== 'function' || typeof createStage !== 'function') throw new TypeError('A window, stage and view factory are required');
     if (typeof prefersReducedMotion !== 'function') throw new TypeError('The system reduced-motion setting reader is required');
-    this.window = window; this.origin = loopback(origin); this.createView = createView;
+    this.window = window; this.origin = serviceOrigin(origin); this.createView = createView;
     this.prefersReducedMotion = prefersReducedMotion; this.now = now; this.scheduleFrame = scheduleFrame; this.cancelFrame = cancelFrame;
     this.slide = null;
     this.onChange = onChange; this.onHome = onHome; this.external = external;
@@ -74,7 +74,7 @@ class WorkspaceTabs {
   get activeView() { return this.entries.get(this.activeId)?.view || null; }
   reconnect(origin) {
     if (this.entries.size !== 0) throw new Error('已有工作区标签时不能更换服务地址');
-    this.origin = loopback(origin);
+    this.origin = serviceOrigin(origin);
     this._notify();
   }
   _notify() { if (!this.disposed) this.onChange(this.state()); }

@@ -54,7 +54,7 @@ body.m-chat .main{height:100dvh!important}
 .m-sheet-item>span{flex:1;min-width:0}
 .m-sheet-item>small{color:var(--text-3);font-size:var(--m-fs-meta)}
 .m-sheet-item .m-count{min-width:20px;height:20px;padding:0 6px;box-sizing:border-box;border-radius:10px;background:var(--warn);color:var(--on-accent);font-size:12px;font-weight:700;line-height:20px;text-align:center}
-[data-access-remote="true"] .m-sheet-item[data-local-control]{display:none}
+[data-access-local-controls="false"] .m-sheet-item[data-local-control]{display:none}
 
 /* ---- Leader 列表：全屏页面（像聊天软件的会话列表） ---- */
 .leader-panel{position:fixed!important;inset:0 0 var(--m-bottom) 0!important;width:auto!important;height:auto!important;z-index:30!important;background:var(--bg)!important;box-shadow:none!important;transition:none!important}
