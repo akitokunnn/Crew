@@ -17,7 +17,7 @@ const {chromium}=require('playwright'),fs=require('node:fs/promises'),path=requi
   const json=(res,value,status=200)=>{res.writeHead(status,{'Content-Type':'application/json'});res.end(JSON.stringify(value));};
   async function route(req,res){
     const url=new URL(req.url,origin),name=url.pathname;
-    if(name==='/api/access/context')return json(res,{remote:false,local_desktop:true,local_controls:true,authenticated:true});
+    if(name==='/api/access/context')return json(res,{remote:false,client:'local',local_desktop:true,local_controls:true,authenticated:true,host_admin:true,native_handoff:process.platform==='win32',vscode_continue:process.platform==='win32'});
     if(name==='/api/state'){polls++;return json(res,state);}
     if(name==='/api/runtimes')return json(res,{runtimes:state.runtimes});
     if(name==='/api/goal')return json(res,{goal:state.goals[0],executions:[{id:'execution',session_id:'leader',runtime:'claude',model:null,effort:null,round:1,requirement_version:1,generation:1,status:'idle'}],reports:[],documents:[],context:{items:[],manifest:{}}});

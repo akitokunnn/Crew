@@ -4,6 +4,7 @@ import base64
 import http.client
 import json
 import socket
+import sys
 import threading
 import time
 import unittest
@@ -48,10 +49,10 @@ class RemoteIntegrationTests(ShellFixture, unittest.TestCase):
             self.thread.join(5)
             self.assertFalse(self.thread.is_alive())
 
-    def request(self, path, data=None, raw=False, *, remote=False, authenticated=True, headers=None):
+    def request(self, path, data=None, raw=False, *, remote=False, authenticated=True, headers=None, origin=True):
         url = self.remote_url if remote else self.url
         target = urlsplit(url)
-        values = {'Origin': url}
+        values = {'Origin': url} if origin else {}
         if remote and authenticated and self.cookie:
             values['Cookie'] = self.cookie
         body = None if data is None else json.dumps(data, ensure_ascii=False).encode('utf-8')
@@ -77,7 +78,7 @@ class RemoteIntegrationTests(ShellFixture, unittest.TestCase):
     def login(self):
         status, pair, _ = self.request('/api/remote-access', {'action': 'pair'})
         self.assertEqual(status, 200, pair)
-        status, result, headers = self.request('/remote/login', {'code': pair['code'], 'device_name': '隔离手机'},
+        status, result, headers = self.request('/remote/login', {'code': pair['code'], 'device_name': '隔离手机', 'kind': 'browser'},
                                               remote=True, authenticated=False)
         self.assertEqual(status, 200, result)
         self.cookie = headers['Set-Cookie'].split(';', 1)[0]
@@ -89,10 +90,22 @@ class RemoteIntegrationTests(ShellFixture, unittest.TestCase):
         self.assertNotIn(pair['code'], json.dumps(snapshot))
         return snapshot['devices'][0]['id']
 
-    def event_stream(self, query, *, after=None):
+    def pair_desktop(self):
+        status, pair, _ = self.request('/api/remote-access', {'action': 'pair'})
+        self.assertEqual(200, status, pair)
+        status, result, headers = self.request('/remote/login', {
+            'code': pair['code'], 'kind': 'desktop', 'device_name': '隔离桌面',
+        }, remote=True, authenticated=False, origin=False)
+        self.assertEqual(200, status, result)
+        self.assertNotIn('Set-Cookie', headers)
+        return result['device_id'], {'Authorization': 'Bearer ' + result['token']}
+
+    def event_stream(self, query, *, after=None, authorization=None):
         target = urlsplit(self.remote_url)
         connection = http.client.HTTPConnection(target.hostname, target.port, timeout=3)
-        headers = {'Cookie': self.cookie, 'Origin': self.remote_url, 'Accept': 'text/event-stream'}
+        headers = {'Accept': 'text/event-stream'}
+        headers.update(authorization if authorization is not None else {
+            'Cookie': self.cookie, 'Origin': self.remote_url})
         if after is not None:
             headers['Last-Event-ID'] = str(after)
         connection.request('GET', '/api/chat/events?' + urlencode(query), headers=headers)
@@ -138,6 +151,110 @@ class RemoteIntegrationTests(ShellFixture, unittest.TestCase):
             with self.subTest(path=path, body=body):
                 self.assertEqual(self.request(path, body, remote=True)[0], 403)
         self.assertEqual(self.processes, [])
+
+    def test_desktop_forbidden_routes_return_403_before_business_dispatch(self):
+        self.start_remote()
+        _, bearer = self.pair_desktop()
+        # An independent contract list detects a route mistakenly dropped from the implementation.
+        get = ('/api/remote-access', '/api/admin/connection/plan', '/api/admin/chat', '/api/admin/config')
+        post = (
+            '/api/remote-access', '/api/admin/update/prepare', '/api/admin/update/cancel',
+            '/api/admin/connection/prepare', '/api/admin/chat/send', '/api/admin/chat/interrupt',
+            '/api/admin/config', '/api/open', '/api/open/continue', '/api/files/open', '/api/files/reveal',
+            '/api/session/native-handoff', '/api/session/native-return', '/api/workspace-data/preview',
+            '/api/workspace-data/import', '/api/workspace-data/handoff', '/api/messages',
+            '/api/assistant/native-action', '/api/goals/report/folder',
+            '/api/report-preview/worker/register', '/api/report-preview/worker/next',
+            '/api/report-preview/worker/result', '/api/report-preview/worker/close',
+        )
+        for method, paths in (('GET', get), ('POST', post)):
+            for path in paths:
+                with self.subTest(method=method, path=path):
+                    body = {'probe': 'x' * (8 * 1024 * 1024)} if path == '/api/goals/report/folder' else {}
+                    status, value, _ = self.request(path, body if method == 'POST' else None,
+                                                    remote=True, origin=False, headers=bearer)
+                    self.assertEqual(403, status)
+                    self.assertEqual({'error': '此操作只能在主机上的 Crew 中进行'}, value)
+        for body in (None, {}):
+            self.assertEqual(404, self.request('/api/not-yet-invented', body, remote=True, headers=bearer)[0])
+        status, result, _ = self.request('/api/goals/report/folder?project=demo', {})
+        self.assertEqual(400, status)
+        self.assertIn('goal_id', result['error'])
+
+    def test_access_context_and_desktop_owner_routes_use_real_service(self):
+        self.start_remote()
+        browser = self.login()
+        desktop, bearer = self.pair_desktop()
+        common = {'authenticated': True}
+        status, local_context, _ = self.request('/api/access/context')
+        self.assertEqual(200, status)
+        self.assertEqual({**common, 'remote': False, 'client': 'local', 'local_controls': True,
+                          'local_desktop': True, 'host_admin': True,
+                          'native_handoff': sys.platform == 'win32', 'vscode_continue': sys.platform == 'win32'},
+                         local_context)
+        remote = {**common, 'remote': True, 'local_desktop': False, 'host_admin': False,
+                  'native_handoff': False, 'vscode_continue': False}
+        capabilities = dict.fromkeys(('chat', 'tasks', 'decisions', 'todos', 'notes', 'reports', 'files'), True)
+        for client, device, headers, controls, flags in (
+                ('browser', browser, {}, False, capabilities),
+                ('desktop', desktop, bearer, True, {**capabilities, 'settings': True, 'workspaces': True, 'storage': True})):
+            status, context, _ = self.request('/api/access/context', remote=True, headers=headers)
+            self.assertEqual(200, status)
+            self.assertEqual({**remote, 'client': client, 'device_id': device, 'local_controls': controls,
+                              'capabilities': flags}, context)
+        workspace_id = self.server.service.storage.refresh('demo')['workspace_id']
+        for path in ('/api/storage', '/api/connections', '/api/settings', '/api/project/settings?project=demo',
+                     '/api/workspace-data/history?' + urlencode({'workspace_id': workspace_id})):
+            with self.subTest(path=path):
+                self.assertEqual(200, self.request(path, remote=True, origin=False, headers=bearer)[0])
+                self.assertEqual(403, self.request(path, remote=True)[0])
+        body = {'target': 'none'}
+        self.assertEqual(200, self.request('/api/connections/preferences', body, remote=True, origin=False, headers=bearer)[0])
+        self.assertEqual(403, self.request('/api/connections/preferences', body, remote=True)[0])
+
+    def test_desktop_stream_keeps_device_online_and_revocation_ends_stream(self):
+        self.start_remote()
+        device, bearer = self.pair_desktop()
+        controller = self.server.service.remote_access
+        stamp = [0]
+        controller.monotonic = lambda: stamp[0]
+        query = {'project': 'demo', 'session_id': 's3'}
+        _, response = self.event_stream(query, authorization=bearer)
+        stamp[0] = 100
+        self.assertTrue(self.request('/api/remote-access')[1]['devices'][0]['online'])
+        self.assertEqual(200, self.request('/api/remote-access', {'action': 'revoke', 'device_id': device})[0])
+        self.assertEqual(b'', response.read())
+        self.assertEqual([], self.request('/api/remote-access')[1]['devices'])
+        status, result, _ = self.request('/api/chat/events?' + urlencode(query), remote=True, headers=bearer)
+        self.assertEqual(401, status)
+        self.assertEqual('设备授权已失效，请在主机上重新生成配对码', result['error'])
+
+    def test_host_workspace_routes_are_shared_by_desktop_and_local_only(self):
+        self.start_remote()
+        self.login()
+        _, bearer = self.pair_desktop()
+        path = '/api/host/folders?' + urlencode({'path': str(self.root)})
+        local = self.request(path)
+        desktop = self.request(path, remote=True, headers=bearer, origin=False)
+        self.assertEqual(200, local[0])
+        self.assertEqual(local[:2], desktop[:2])
+        self.assertEqual(403, self.request(path, remote=True)[0])
+        self.assertEqual(400, self.request('/api/host/folders?path=relative', remote=True, headers=bearer)[0])
+        existing = '/api/host/workspace/existing'
+        new = '/api/host/workspace/new'
+        open_body = {'directory': str(self.project), 'new_project': False}
+        new_body = {'parent': str(self.root), 'name': 'Host workspace'}
+        self.assertEqual(403, self.request(existing, open_body, remote=True)[0])
+        self.assertEqual(403, self.request(new, new_body, remote=True)[0])
+        status, result, _ = self.request(new, new_body, remote=True, origin=False, headers=bearer)
+        self.assertEqual(200, status, result)
+        self.assertEqual('Host workspace', result['name'])
+        self.assertTrue((self.root / result['name']).is_dir())
+        status, result, _ = self.request(existing, open_body)
+        self.assertEqual(200, status, result)
+        self.assertEqual('demo', result['name'])
+        statuses = {row['name']: row['directory_state'] for row in self.request('/api/projects')[1]['projects']}
+        self.assertEqual({'Host workspace': {'status': 'ready'}, 'demo': {'status': 'ready'}}, statuses)
 
     def scopes_round_trip(self, runtime):
         if runtime == 'codex':

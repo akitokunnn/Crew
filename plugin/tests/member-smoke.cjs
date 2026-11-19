@@ -20,7 +20,7 @@ async function route(req,res){
     catch(error){res.writeHead(404);return res.end();}
   }
   calls.push({name,body});
-  if(name==='/api/access/context')return json(res,{remote:false,local_controls:true,local_desktop:true});
+  if(name==='/api/access/context')return json(res,{remote:false,client:'local',local_controls:true,local_desktop:true,authenticated:true,host_admin:true,native_handoff:process.platform==='win32',vscode_continue:process.platform==='win32'});
   if(name==='/api/state')return json(res,state);
   if(name==='/api/runtimes')return json(res,{runtimes:catalog});
   if(name==='/api/chat/history')return json(res,{events:[],busy:false,read_seq:0});

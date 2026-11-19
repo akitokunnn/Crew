@@ -157,7 +157,7 @@ function createNotesApi({now = () => Date.now()} = {}) {
     const name = url.pathname;
     calls.push({method, name, query: Object.fromEntries(url.searchParams), body});
     if (failNext && failNext.path === name) { const failure = failNext; failNext = null; return {status: failure.status, body: {error: failure.error}}; }
-    if (name === '/api/access/context') return {status: 200, body: {remote: false, local_controls: true, local_desktop: true, authenticated: true}};
+    if (name === '/api/access/context') return {status: 200, body: {remote: false, client: 'local', local_controls: true, local_desktop: true, authenticated: true, host_admin: true, native_handoff: process.platform === 'win32', vscode_continue: process.platform === 'win32'}};
     if (name === '/api/projects') return {status: 200, body: {projects}};
     if (name === '/api/personal/notes' && method === 'GET') {
       const archived = url.searchParams.get('include_archived') === '1', project = url.searchParams.get('project');

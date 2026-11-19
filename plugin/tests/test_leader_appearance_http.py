@@ -78,8 +78,8 @@ class LeaderAppearanceHttpTests(ShellFixture, unittest.TestCase):
         appearance.save(self.conn, 's3', {'color': '#112233', 'avatar': {'data': encoded(WEBP)}}, NOW)
         session_ops.delete(self.conn, 's3', now=NOW)
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM session_appearance').fetchone()[0], 0)
-        self.assertTrue(remote_routes.permitted('POST', '/api/session/appearance'))
-        self.assertTrue(remote_routes.permitted('GET', '/api/session/avatar'))
+        self.assertTrue(remote_routes.permitted('POST', '/api/session/appearance', (), 'browser'))
+        self.assertTrue(remote_routes.permitted('GET', '/api/session/avatar', (), 'browser'))
 
 
 if __name__ == '__main__':

@@ -221,8 +221,8 @@ class DomainHttpTests(ShellFixture, unittest.TestCase):
 
     def test_page_assets_and_remote_routes(self):
         self.assertIn('/api/domains', web.POST_PATHS)
-        self.assertTrue(remote_routes.permitted('GET', '/api/domains'))
-        self.assertTrue(remote_routes.permitted('POST', '/api/domains'))
+        self.assertTrue(remote_routes.permitted('GET', '/api/domains', (), 'browser'))
+        self.assertTrue(remote_routes.permitted('POST', '/api/domains', (), 'browser'))
         for asset in ('/architecture.js', '/architecture.css'):
             with self.subTest(asset=asset):
                 with self.opener.open(self.server.url + asset, timeout=5) as response:

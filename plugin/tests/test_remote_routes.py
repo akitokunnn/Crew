@@ -9,22 +9,34 @@ class RemoteRouteTests(unittest.TestCase):
                      '/api/files/reveal', '/api/goals/report/folder', '/api/session/native-handoff', '/api/assistant/native-action',
                      '/api/workspace-data/import', '/api/storage/clean', '/api/not-yet-invented'):
             for method in ('GET', 'POST'):
-                self.assertFalse(remote_routes.permitted(method, path), (method, path))
-        self.assertTrue(remote_routes.permitted('GET', '/app.js', {'/app.js'}))
-        self.assertFalse(remote_routes.permitted('GET', '/new.js', {'/app.js'}))
+                self.assertFalse(remote_routes.permitted(method, path, (), 'browser'), (method, path))
+        self.assertTrue(remote_routes.permitted('GET', '/app.js', {'/app.js'}, 'browser'))
+        self.assertFalse(remote_routes.permitted('GET', '/new.js', {'/app.js'}, 'browser'))
 
     def test_goal_report_and_version_controls_never_select_an_ai_actor(self):
-        for action in ('mode.set', 'report.publish', 'version.capture', 'version.restore', 'versions.list', 'versions.preview'):
-            data = {'action': action, 'data': {'goal_id': 'goal'}}
-            self.assertEqual('user', remote_routes.human_payload('/api/goals/agent', data)['actor_session_id'])
-        for data in ({'action': 'assign'}, {'action': 'mode.set', 'actor_session_id': 'leader'},
-                     {'action': 'mode.set', 'execution_id': None},
-                     {'action': 'mode.set', 'data': {'actor_session_id': 'leader'}}):
-            with self.assertRaises(PermissionError):
-                remote_routes.human_payload('/api/goals/agent', data)
+        for kind in ('browser', 'desktop'):
+            for action in ('mode.set', 'report.publish', 'version.capture', 'version.restore', 'versions.list', 'versions.preview'):
+                data = {'action': action, 'data': {'goal_id': 'goal'}}
+                self.assertEqual('user', remote_routes.human_payload('/api/goals/agent', data, kind)['actor_session_id'])
+            for data in ({'action': 'assign'}, {'action': 'mode.set', 'actor_session_id': 'leader'},
+                         {'action': 'mode.set', 'execution_id': None},
+                         {'action': 'mode.set', 'data': {'actor_session_id': 'leader'}}):
+                with self.assertRaises(PermissionError):
+                    remote_routes.human_payload('/api/goals/agent', data, kind)
         # An execution target is not automatically a claim to be its AI actor.
         target = {'execution_id': 'previous-version', 'path': 'image.png'}
-        self.assertEqual(target, remote_routes.human_payload('/api/files/resolve', target))
+        self.assertEqual(target, remote_routes.human_payload('/api/files/resolve', target, 'browser'))
+
+    def test_only_desktop_can_supply_native_candidates_and_neither_can_claim_ai_identity(self):
+        for kind in ('browser', 'desktop'):
+            for field in ('caller_session_id', 'caller_execution_id', 'actor_session_id'):
+                with self.subTest(kind=kind, field=field), self.assertRaises(PermissionError):
+                    remote_routes.human_payload('/api/leader', {field: None}, kind)
+        for members in ([], [{'session_id': 'native'}]):
+            data = {'candidate_members': members}
+            self.assertEqual(data, remote_routes.human_payload('/api/leader', data, 'desktop'))
+            with self.assertRaises(PermissionError):
+                remote_routes.human_payload('/api/leader', data, 'browser')
 
     def test_login_return_preserves_project_and_fragment_but_never_changes_origin(self):
         target = '/?project=demo#leader=leader-42'

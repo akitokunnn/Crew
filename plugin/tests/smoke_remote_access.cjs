@@ -27,7 +27,7 @@ async function main(){
   if(oldHttp){for(const file of ['personal-notes-ui.js','stage-report-ui.js']){const body=execFileSync('git',['show','b2b19a3:plugin/crew/web/'+file],{cwd:root,encoding:'utf8'});await mobile.route('**/'+file,route=>route.fulfill({status:200,contentType:'text/javascript',body}));}}
   let missingAddress=false;
   if(addressChange||oldAddress){await pc.route('**/api/remote-access*',async route=>{if(route.request().method()!=='GET'||!missingAddress)return route.continue();const response=await route.fetch(),value=await response.json();value.addresses=value.addresses.filter(row=>row.address!==lanAddress);value.addresses.push({address:'192.0.2.47',name:'Changed test adapter',kind:'zerotier',available:true,reason:null,bound:false,url:null});await route.fulfill({response,json:value});});}
-  if(oldAddress){let body=await fs.readFile(path.join(root,'plugin/crew/web/remote-access-ui.js'),'utf8');body=body.replace('${address&&!list.some(entry=>entry.address===address)?`<option value="${esc(address)}" selected disabled>${esc(address)} · 当前不可用</option>`:""}','');await pc.route('**/remote-access-ui.js',route=>route.fulfill({status:200,contentType:'text/javascript',body}));}
+  if(oldAddress){let body=await fs.readFile(path.join(root,'plugin/crew/web/remote-access-ui.js'),'utf8');body=body.replace('${missing}${!address?', '${!address?');await pc.route('**/remote-access-ui.js',route=>route.fulfill({status:200,contentType:'text/javascript',body}));}
   async function shot(page,name){await page.screenshot({path:path.join(out,name+'.png'),fullPage:true,animations:'disabled'});evidence.screenshots.push(name+'.png');}
   async function check(label,fn){assert(await fn(),label);evidence.checks.push(label);}
   async function localAction(body){return pc.evaluate(async body=>{const response=await fetch('/api/remote-access',{method:'POST',headers:{'Content-Type':'application/json','X-Crew':'1'},body:JSON.stringify(body)});const value=await response.json();if(!response.ok)throw Error(value.error);return value;},body);}
@@ -36,8 +36,8 @@ async function main(){
   await pc.goto(info.url+'/?project=demo');await pc.locator('#sidebar [data-act="settings"]').click();await pc.locator('[data-settings-category="remote"]').click();await pc.locator('.remote-binding,[data-remote-action="start"],[data-remote-action="pair"]').first().waitFor();
   if(zerotier){
     let lifecyclePosts=0;pc.on('request',request=>{if(request.method()==='POST'&&new URL(request.url()).pathname==='/api/remote-access'&&['start','stop'].includes(request.postDataJSON()?.action))lifecyclePosts++;});
-    await check('ZeroTier is an explicit selectable network, not an all-interface listener',()=>pc.locator('[name="remote-method"][value="zerotier"]').count().then(count=>count===1));
-    await pc.locator('[name="remote-method"][value="zerotier"]').check();await pc.locator('[name="remote-bind"]').selectOption(lanAddress);
+    await check('The ZeroTier address is selectable in the network dropdown',()=>pc.locator(`[name="remote-bind"] option[value="${lanAddress}"]:enabled`).count().then(count=>count===1));
+    await pc.locator('[name="remote-bind"]').selectOption(lanAddress);
     const saved=await pc.evaluate(()=>fetch('/api/remote-access').then(r=>r.json()));
     await check('Selecting the discovered ZeroTier address leaves execution and access stopped',()=>!saved.enabled&&lifecyclePosts===0&&saved.addresses.some(item=>item.address===lanAddress&&item.kind==='zerotier'&&item.available));
     await shot(pc,'00a-zerotier-selection');await pc.setViewportSize({width:390,height:844});await shot(pc,'00b-zerotier-settings-phone');await pc.setViewportSize({width:1440,height:1000});

@@ -27,7 +27,7 @@ from . import appearance, codex_client, member_defaults, operations_chat, operat
 from . import connections, session_delete, session_presence, storage_cleanup, workspace_activity
 from .storage_service import StorageService, HISTORY_PREFIX
 from . import personal, native_home, native_handoff, native_skills
-from . import remote_access, remote_http
+from . import host_workspace, remote_access, remote_http
 from . import report_preview, event_sounds, reading_context
 from . import domains
 from .web_api import personal as personal_api
@@ -1050,6 +1050,14 @@ class Service:
                 return {'approval': current.resolve_approval(identity, allow)}
         raise board.Conflict('审批已结束或不属于当前工作区，请刷新')
 
+    def _init_project(self, conn, name, root, now):
+        root = Path(root).expanduser().resolve()
+        if not root.is_dir():
+            raise board.BoardError("项目目录不存在：" + str(root))
+        result = board.init_project(conn, _text({'name': name}, 'name'), root, now=now)
+        self.default_project = result["name"]
+        return result
+
     def post(self, path, data, project_name=None):
         if not isinstance(data, dict):
             raise ValueError("JSON \u8bf7\u6c42\u5fc5\u987b\u662f\u5bf9\u8c61")
@@ -1213,7 +1221,7 @@ class Service:
                 subprocess.Popen(["explorer", "/select," + info["path"]])
             return {"ok": True}
         if path == '/api/goals/report/folder':
-            # Desktop only: not in remote_routes, so a phone never opens a folder on this computer.
+            # The remote route rules reserve native folder opening for the host.
             with closing(store.connect(self.home)) as conn:
                 project = self.selected_project(conn, project_name if project_name is not None else data.get('project'))
                 goal_id = _text(data, 'goal_id')
@@ -1244,12 +1252,15 @@ class Service:
         with self.write_lock, closing(store.connect(self.home)) as conn:
             now = self.now().isoformat(timespec="milliseconds").replace("+00:00", "Z")
             if path == "/api/project/init":
-                root = Path(_text(data, "root")).expanduser().resolve()
-                if not root.is_dir():
-                    raise board.BoardError("项目目录不存在：" + str(root))
-                result = board.init_project(conn, _text(data, "name"), root, now=now)
-                self.default_project = result["name"]
-                return result
+                return self._init_project(conn, data.get("name"), _text(data, "root"), now)
+            if path in ('/api/host/workspace/existing', '/api/host/workspace/new'):
+                def register(name, root):
+                    return self._init_project(conn, name, root, now)
+
+                if path == '/api/host/workspace/new':
+                    return host_workspace.new(data.get('parent'), data.get('name'), register)
+                projects = self.storage.decorate_projects(board.projects(conn, include_removed=True))
+                return host_workspace.existing(projects, _text(data, 'directory'), data.get('new_project'), register)
             if path == '/api/notifications/away':
                 if type(data.get('away')) is not bool:
                     raise ValueError('离开状态必须是 true 或 false')
@@ -2016,6 +2027,7 @@ STATIC.update({'/architecture.js': ('architecture.js', 'text/javascript; charset
                '/architecture.css': ('architecture.css', 'text/css; charset=utf-8')})
 POST_PATHS.add('/api/remote-access')
 POST_PATHS.update(report_preview.WORKER_PATHS)
+POST_PATHS.update(('/api/host/workspace/existing', '/api/host/workspace/new'))
 STATIC.update({'/access-context.js': ('access-context.js', 'text/javascript; charset=utf-8'),
                '/browser-utils.js': ('browser-utils.js', 'text/javascript; charset=utf-8'),
                '/remote-access-ui.js': ('remote-access-ui.js', 'text/javascript; charset=utf-8'),
@@ -2036,19 +2048,27 @@ class Handler(BaseHTTPRequestHandler):
         controller = getattr(self.server, 'remote_controller', None)
         return controller is None or controller.request_active(getattr(self, 'remote_identity', None))
 
+    def _owner_access(self):
+        identity = getattr(self, 'remote_identity', None)
+        return self._connection_access() or (identity is not None and identity['kind'] == 'desktop')
+
     def _chat_events(self, journal, sequence, execution_id):
         with journal.condition:
             journal.refresh()
             latest_seq = journal.events[-1]['seq'] if journal.events else 0
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Connection", "close")
-        self.send_header("X-Crew-Execution-Id", execution_id or "")
-        self.send_header("X-Crew-Latest-Seq", str(latest_seq))
-        self.end_headers()
-        self.close_connection = True
+        controller = getattr(self.server, 'remote_controller', None)
+        if controller is not None:
+            device_id = self.remote_identity['device_id']
+            controller.stream_opened(device_id)
         try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "close")
+            self.send_header("X-Crew-Execution-Id", execution_id or "")
+            self.send_header("X-Crew-Latest-Seq", str(latest_seq))
+            self.close_connection = True
+            self.end_headers()
             remote_stop = getattr(self.server, 'remote_stop_event', None)
             heartbeat = time.monotonic()
             while not self.server.service.stop.is_set() and self._request_active():
@@ -2067,6 +2087,9 @@ class Handler(BaseHTTPRequestHandler):
                     break
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
             pass
+        finally:
+            if controller is not None:
+                controller.stream_closed(device_id)
 
     def _send(self, code, content, content_type="application/json; charset=utf-8", attachment=None, cache_control='no-store'):
         if isinstance(content, (dict, list)):
@@ -2124,6 +2147,8 @@ class Handler(BaseHTTPRequestHandler):
         local_settings_path = local_settings_path or url.path.startswith('/api/workspace-data/')
         local_settings_path = local_settings_path or url.path == '/api/remote-access'
         local_settings_path = local_settings_path or url.path in report_preview.WORKER_PATHS
+        local_settings_path = local_settings_path or url.path in (
+            '/api/host/folders', '/api/host/workspace/existing', '/api/host/workspace/new')
         if method == "POST":
             length = int(self.headers.get('Content-Length', '0'))
             if url.path in report_preview.WORKER_PATHS and length > report_preview.MAX_BODY:
@@ -2132,7 +2157,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             payload = (self.remote_body if hasattr(self, 'remote_body')
                        else self.rfile.read(length) if length > 0 else b'')
-            if local_settings_path and not self._connection_access():
+            if local_settings_path and not self._owner_access():
                 self._send(403, {'error': '此设置只允许本机 Crew 页面访问'})
                 return
             # Drain the request before an early error, so Windows can deliver
@@ -2147,11 +2172,13 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("\u8bf7\u63d0\u4f9b JSON \u8bf7\u6c42\u4f53")
             data = json.loads(payload.decode("utf-8"))
             self._send(200, service.post(url.path, data, query.get("project", [None])[0]))
-        elif local_settings_path and not self._connection_access():
+        elif local_settings_path and not self._owner_access():
             self._send(403, {'error': '此设置只允许本机 Crew 页面访问'})
         elif url.path == '/api/access/context':
-            self._send(200, {'remote': False, 'authenticated': True,
-                             'local_controls': True, 'local_desktop': True})
+            native = sys.platform == 'win32'
+            self._send(200, {'remote': False, 'client': 'local', 'authenticated': True,
+                             'local_controls': True, 'local_desktop': True, 'host_admin': True,
+                             'native_handoff': native, 'vscode_continue': native})
         elif url.path == '/api/remote-access':
             self._send(200, service.remote_access.snapshot())
         elif url.path == '/api/workspace-data/history':
@@ -2257,10 +2284,13 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, service.storage_cleanup.snapshot())
         elif url.path == '/api/project/settings':
             self._send(200, service.workspace_state(query.get('project', [None])[0]))
+        elif url.path == '/api/host/folders':
+            self._send(200, host_workspace.folders(query.get('path', [''])[0]))
         elif url.path == '/api/projects':
             with closing(store.connect(service.home)) as conn:
                 projects = board.projects(conn, include_removed=True) if query.get('include_removed') == ['1'] else board.projects(conn)
-            self._send(200, {'projects': service.storage.decorate_projects(projects) + service.storage.portable_projects()})
+            projects = service.storage.decorate_projects(projects) + service.storage.portable_projects()
+            self._send(200, {'projects': host_workspace.with_directory_state(projects)})
         elif url.path == '/api/documents':
             self._send(200,service.document_list(query.get('project',[None])[0],query.get('leader_session_id',[None])[0],
                                                  query.get('goal_id',[None])[0]))

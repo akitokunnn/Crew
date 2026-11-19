@@ -11,47 +11,81 @@ async function panel(value=initial(),effect=null){
   const action=async body=>{calls.push(clone(body));if(effect)await effect(body);if(body.action==='stop')state.enabled=false;if(body.action==='start'){state.enabled=true;state.bind=body.bind;state.urls=['http://'+body.bind+':'+body.port];}return clone(state);};
   const close=window.CrewRemoteAccess.mount(host,{read,action});await new Promise(setImmediate);
   return {host,calls,close,setState:next=>{state=next;},setReadError:value=>{readError=value;},refresh:async()=>{tick();await new Promise(setImmediate);},
-    select:(name,value)=>host.onchange({target:{name,value}}),click:kind=>host.onclick({target:{closest:()=>({dataset:{remoteAction:kind},disabled:false})}})};
+    select:value=>host.onchange({target:{name:'remote-bind',value}}),
+    click:(kind,deviceId)=>host.onclick({target:{closest:()=>({dataset:{remoteAction:kind,deviceId},disabled:false})}})};
 }
 test('selecting ZeroTier preserves a draft without starting access, then binds only the chosen address',async()=>{
-  const p=await panel();p.select('remote-method','zerotier');await p.refresh();assert.deepEqual(p.calls,[]);await p.click('start');
+  const p=await panel();p.select('10.8.9.7');await p.refresh();assert.deepEqual(p.calls,[]);await p.click('start');
   assert.deepEqual(p.calls,[{action:'start',bind:'10.8.9.7',port:47812}]);assert.match(p.host.innerHTML,/http:\/\/10\.8\.9\.7/);p.close();
 });
-test('missing ZeroTier never silently falls back to all interfaces or a LAN address',async()=>{
-  const value=initial();value.addresses=value.addresses.filter(row=>row.kind==='lan');const p=await panel(value);p.select('remote-method','zerotier');await p.click('start');
-  assert.deepEqual(p.calls,[]);assert.match(p.host.innerHTML,/未检测到可用的 ZeroTier 地址/);assert.match(p.host.innerHTML,/data-remote-action="start" disabled/);p.close();
+test('one dropdown lists non-loopback interfaces and does not start when none is available',async()=>{
+  const value=initial();
+  value.addresses[0]={...value.addresses[0],available:false,description:'Intel Ethernet'};
+  value.addresses[1]={...value.addresses[1],available:false,description:'ZeroTier'};
+  value.addresses.push({address:'127.0.0.1',kind:'loopback',name:'Loopback',available:true});
+  const p=await panel(value);await p.click('start');
+  assert.deepEqual(p.calls,[]);
+  assert.equal(p.host.innerHTML.match(/<select /g).length,1);
+  assert.doesNotMatch(p.host.innerHTML,/remote-method|127\.0\.0\.1/);
+  assert.match(p.host.innerHTML,/<option value="192\.168\.1\.7"\s+disabled>192\.168\.1\.7 · Wi-Fi · Intel Ethernet · 不可用/);
+  assert.match(p.host.innerHTML,/<option value="10\.8\.9\.7"\s+disabled>10\.8\.9\.7 · ZeroTier · 不可用/);
+  assert.match(p.host.innerHTML,/未检测到可用的网络地址，请检查网络连接后刷新/);
+  assert.match(p.host.innerHTML,/data-remote-action="start" disabled/);p.close();
 });
 test('switching makes one stop and one start and does not submit a second lifecycle action while pending',async()=>{
   let release;const pending=new Promise(resolve=>release=resolve),value={...initial(),enabled:true,bind:'192.168.1.7'};
-  const p=await panel(value,body=>body.action==='stop'?pending:undefined);p.select('remote-method','zerotier');const first=p.click('switch');await p.click('switch');assert.deepEqual(p.calls,[{action:'stop'}]);release();await first;
+  const p=await panel(value,body=>body.action==='stop'?pending:undefined);p.select('10.8.9.7');const first=p.click('switch');await p.click('switch');assert.deepEqual(p.calls,[{action:'stop'}]);release();await first;
   assert.deepEqual(p.calls,[{action:'stop'},{action:'start',bind:'10.8.9.7',port:47812}]);p.close();
 });
 test('a failed switch keeps the selected address and actual stopped state, with no automatic retry',async()=>{
-  let fail=true;const p=await panel({...initial(),enabled:true,bind:'192.168.1.7'},body=>{if(body.action==='start'&&fail)throw Error('端口被占用');});p.select('remote-method','zerotier');await p.click('switch');await p.refresh();
+  let fail=true;const p=await panel({...initial(),enabled:true,bind:'192.168.1.7'},body=>{if(body.action==='start'&&fail)throw Error('端口被占用');});p.select('10.8.9.7');await p.click('switch');await p.refresh();
   assert.match(p.host.innerHTML,/端口被占用/);assert.match(p.host.innerHTML,/data-remote-action="start"/);assert.equal(p.calls.length,2);fail=false;await p.click('start');
   assert.deepEqual(p.calls.map(row=>row.action),['stop','start','start']);assert(p.calls.filter(row=>row.action==='start').every(row=>row.bind==='10.8.9.7'));p.close();
 });
 test('stop rejection never reaches start, and a later read cannot replace the real operation error',async()=>{
-  const p=await panel({...initial(),enabled:true,bind:'192.168.1.7'},()=>{throw Error('关闭服务失败');});p.select('remote-method','zerotier');p.setReadError('读取失败');await p.click('switch');
+  const p=await panel({...initial(),enabled:true,bind:'192.168.1.7'},()=>{throw Error('关闭服务失败');});p.select('10.8.9.7');p.setReadError('读取失败');await p.click('switch');
   assert.deepEqual(p.calls,[{action:'stop'}]);await p.refresh();assert.match(p.host.innerHTML,/关闭服务失败/);assert.doesNotMatch(p.host.innerHTML,/读取失败/);p.close();
 });
 test('a disappeared selected adapter is retained and blocks start instead of choosing another network',async()=>{
-  const p=await panel();p.select('remote-method','zerotier');const value=initial();value.addresses[1].available=false;value.addresses[1].reason='ZeroTier 当前未连接';p.setState(value);await p.refresh();await p.click('start');
+  const p=await panel();p.select('10.8.9.7');const value=initial();value.addresses[1].available=false;value.addresses[1].reason='ZeroTier 当前未连接';p.setState(value);await p.refresh();await p.click('start');
   assert.deepEqual(p.calls,[]);assert.match(p.host.innerHTML,/ZeroTier 当前未连接/);assert.match(p.host.innerHTML,/value="10.8.9.7" selected disabled/);p.close();
 });
 
-test('stopping a legacy all-network listener visibly selects LAN before the next explicit start',async()=>{
+test('the current all-network listener is selected and disappears after stopping',async()=>{
   const p=await panel({...initial(),enabled:true,bind:'0.0.0.0'});
-  assert.match(p.host.innerHTML,/value="all" checked/);await p.click('stop');
-  assert.match(p.host.innerHTML,/value="lan" checked/);assert.doesNotMatch(p.host.innerHTML,/value="all"/);
+  assert.match(p.host.innerHTML,/value="0\.0\.0\.0" selected\s*>全部网络 · 当前设置/);await p.click('stop');
+  assert.match(p.host.innerHTML,/value="192\.168\.1\.7" selected/);assert.doesNotMatch(p.host.innerHTML,/value="0\.0\.0\.0"/);
   assert.deepEqual(p.calls,[{action:'stop'}]);await p.click('start');
   assert.deepEqual(p.calls,[{action:'stop'},{action:'start',bind:'192.168.1.7',port:47812}]);p.close();
 });
 
+test('an active loopback listener can pair without appearing in the dropdown',async()=>{
+  const p=await panel({...initial(),enabled:true,bind:'127.0.0.1'});
+  assert.doesNotMatch(p.host.innerHTML,/<option value="127\.0\.0\.1"|data-remote-action="pair" disabled/);
+  p.close();
+});
+
 test('a removed selected address remains visibly unavailable until the user explicitly chooses its replacement',async()=>{
-  const p=await panel();p.select('remote-method','zerotier');const value=initial();value.addresses[1].address='10.8.9.8';p.setState(value);await p.refresh();
+  const p=await panel();p.select('10.8.9.7');const value=initial();value.addresses[1].address='10.8.9.8';p.setState(value);await p.refresh();
   assert.match(p.host.innerHTML,/value="10\.8\.9\.7" selected disabled>10\.8\.9\.7 · 当前不可用/);
   assert.match(p.host.innerHTML,/原地址当前不可用/);await p.click('start');assert.deepEqual(p.calls,[]);
-  p.select('remote-bind','10.8.9.8');assert.deepEqual(p.calls,[]);await p.click('start');
+  p.select('10.8.9.8');assert.deepEqual(p.calls,[]);await p.click('start');
   assert.deepEqual(p.calls,[{action:'start',bind:'10.8.9.8',port:47812}]);p.close();
+});
+
+test('devices show type and status and use the revoke actions',async()=>{
+  const last_seen_at='2026-11-17T08:00:00Z';
+  const p=await panel({...initial(),enabled:true,bind:'192.168.1.7',devices:[
+    {id:'mac',name:'工作电脑',kind:'desktop',online:true,last_seen_at},
+    {id:'phone',name:'手机',kind:'browser',online:false,last_seen_at},
+  ]});
+  assert.match(p.host.innerHTML,/工作电脑<\/strong><small>Crew 桌面客户端<\/small>\s*<small class="remote-online">在线/);
+  assert.match(p.host.innerHTML,/手机<\/strong><small>浏览器<\/small>\s*<small>最近使用 2026/);
+  assert.match(p.host.innerHTML,/data-device-id="mac"\s*>强制下线/);
+  assert.match(p.host.innerHTML,/30 天不用会自动失效；强制下线后需要重新配对。/);
+  assert.match(p.host.innerHTML,/data-remote-action="revoke_all"\s*>全部下线/);
+  await p.click('revoke','mac');
+  await p.click('revoke_all');
+  assert.deepEqual(p.calls,[{action:'revoke',device_id:'mac'},{action:'revoke_all'}]);
+  p.close();
 });

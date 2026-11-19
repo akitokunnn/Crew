@@ -57,6 +57,7 @@ test_delegation_boundary
 
 # /api/state 与 web 契约
 test_web_contract
+test_host_workspace
 test_workspace_views
 test_workspace_activity
 

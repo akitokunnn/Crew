@@ -11,10 +11,17 @@ function boot(fetch){
   return {window,document,nodes,events};
 }
 const response=(status,value)=>({status,ok:status>=200&&status<300,json:async()=>value});
+const local={remote:false,client:'local',local_controls:true,local_desktop:true,authenticated:true,
+  host_admin:true,native_handoff:true,vscode_continue:true};
+const browser={remote:true,client:'browser',local_controls:false,local_desktop:false,authenticated:true,
+  host_admin:false,native_handoff:false,vscode_continue:false};
 test('controls stay unavailable until the actual access context is known',async()=>{
   let release;const pending=new Promise(resolve=>release=resolve);const app=boot(()=>pending);
-  assert.equal(app.window.CrewAccess.local_controls,false);assert.equal(app.window.CrewAccess.local_desktop,false);
-  release(response(200,{remote:false,local_controls:true,local_desktop:true}));assert.equal(await app.window.CrewAccess.ready,true);assert.equal(app.window.CrewAccess.local_controls,true);
+  const access=app.window.CrewAccess;
+  assert.equal(access.client,'');
+  for(const field of ['local_controls','local_desktop','host_admin','native_handoff','vscode_continue']) assert.equal(access[field],false);
+  release(response(200,local));assert.equal(await access.ready,true);
+  for(const field of ['client','local_controls','local_desktop','host_admin','native_handoff','vscode_continue']) assert.equal(access[field],local[field]);
 });
 test('failed or malformed context never silently enables local actions',async()=>{
   for(const value of [response(503,{error:'后台未就绪'}),response(200,{remote:false})]){
@@ -23,7 +30,7 @@ test('failed or malformed context never silently enables local actions',async()=
 });
 test('an expired write prompts once, preserves the exact response, and never retries the POST',async()=>{
   let requests=0;const denied=response(401,{error:'连接已失效'});
-  const app=boot(async()=>++requests===1?response(200,{remote:true,local_controls:false,local_desktop:false,authenticated:true}):denied);
+  const app=boot(async()=>++requests===1?response(200,browser):denied);
   await app.window.CrewAccess.ready;
   assert.equal(await app.window.fetch('/api/chat/send',{method:'POST',body:'original input'}),denied);
   assert.equal(requests,2);assert.equal(app.window.CrewAccess.expired,true);assert.deepEqual(app.events,['crew-access-expired']);
@@ -31,6 +38,24 @@ test('an expired write prompts once, preserves the exact response, and never ret
   await app.window.fetch('/api/chat/history');assert.deepEqual(app.events,['crew-access-expired']);
 });
 test('a different origin refusing a request does not replace the Crew connection',async()=>{
-  let requests=0;const app=boot(async()=>++requests===1?response(200,{remote:false,local_controls:true,local_desktop:true}):response(401,{}));
+  let requests=0;const app=boot(async()=>++requests===1?response(200,local):response(401,{}));
   await app.window.CrewAccess.ready;await app.window.fetch('https://elsewhere.invalid/api/example');assert.equal(app.window.CrewAccess.expired,false);assert.equal(app.window.CrewAccess.local_controls,true);
+});
+
+test('desktop and browser flags are exposed and every required new field is validated',async()=>{
+  const desktop={...browser,client:'desktop',local_controls:true};
+  for(const value of [desktop,browser]){
+    const app=boot(async()=>response(200,value));
+    assert.equal(await app.window.CrewAccess.ready,true);
+    for(const field of ['client','local_controls','local_desktop','host_admin','native_handoff','vscode_continue']){
+      assert.equal(app.window.CrewAccess[field],value[field]);
+    }
+  }
+  for(const field of ['client','host_admin','native_handoff','vscode_continue']){
+    for(const invalid of [undefined,field==='client'?'unknown':'true']){
+      const app=boot(async()=>response(200,{...local,[field]:invalid}));
+      assert.equal(await app.window.CrewAccess.ready,false);
+      assert.equal(app.nodes.get('access-notice').children[0].textContent,'连接状态不完整，请重新读取。');
+    }
+  }
 });

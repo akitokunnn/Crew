@@ -6,6 +6,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import secrets
 import shutil
 import socket
@@ -18,9 +19,13 @@ import uuid
 from . import network_addresses, remote_routes
 
 COOKIE = 'crew_remote_session'
-SESSION_SECONDS = 7 * 24 * 60 * 60
+IDLE_SECONDS = 30 * 24 * 60 * 60
+COOKIE_MAX_AGE = 400 * 24 * 60 * 60
+ONLINE_SECONDS = 90
 PAIR_SECONDS = 5 * 60
 MAX_BODY = 40 * 1024 * 1024
+DEVICE_KINDS = ('browser', 'desktop')
+AUTH_EXPIRED = {'error': '设备授权已失效，请在主机上重新生成配对码', 'login_url': '/remote/login'}
 private_address = network_addresses.private_address
 
 
@@ -32,14 +37,23 @@ def _hash(value):
     return hashlib.sha256(value.encode('ascii')).hexdigest()
 
 
+def _migrate_v1(value):
+    devices = [{**item, 'kind': 'browser', 'expires_at': item['last_seen_at'] + IDLE_SECONDS}
+               for item in value['devices']]
+    return {**value, 'version': 2, 'devices': devices}
+
+
 class Controller:
-    def __init__(self, home, listener_factory, *, clock=time.time, network=None):
+    def __init__(self, home, listener_factory, *, clock=time.time, monotonic=time.monotonic, network=None):
         self.home = Path(home)
         self.path = self.home / 'remote-access.json'
         self.cookie_name = COOKIE + '_' + hashlib.sha256(os.path.normcase(str(self.home.resolve())).encode('utf-8')).hexdigest()[:16]
         self.listener_factory = listener_factory
         self.network = network or network_addresses.Discovery()
         self.clock = clock
+        self.monotonic = monotonic
+        self.last_authenticated = {}
+        self.stream_counts = {}
         self.lock = threading.RLock()
         self.lifecycle_lock = threading.RLock()
         self.listener = None
@@ -48,19 +62,20 @@ class Controller:
         self.attempts = []
         self.last_error = None
         self.configuration_invalid = False
-        self.data = {'version': 1, 'enabled': False, 'bind': '0.0.0.0', 'port': 47812, 'devices': []}
+        self.data = {'version': 2, 'enabled': False, 'bind': '0.0.0.0', 'port': 47812, 'devices': []}
         if self.path.exists():
             try:
                 value = json.loads(self.path.read_text(encoding='utf-8'))
                 self._validate_saved(value)
-                self.data = value
+                self.data = _migrate_v1(value) if value['version'] == 1 else value
             except (OSError, ValueError) as error:
                 self.last_error = '远程访问配置无法读取，原文件已保留：' + str(error)
                 self.configuration_invalid = True
 
     @staticmethod
     def _validate_saved(value):
-        if not isinstance(value, dict) or value.get('version') != 1 or not isinstance(value.get('enabled'), bool):
+        if (not isinstance(value, dict) or type(value.get('version')) is not int
+                or value['version'] not in (1, 2) or not isinstance(value.get('enabled'), bool)):
             raise ValueError('远程访问配置无效；原文件已保留')
         Controller._address(value.get('bind'), value.get('port'))
         if not isinstance(value.get('devices'), list):
@@ -73,6 +88,7 @@ class Controller:
                     or any(not isinstance(item.get(key), (int, float)) or isinstance(item[key], bool)
                            or not math.isfinite(item[key]) or not 0 <= item[key] < 253402300799
                            for key in ('created_at', 'last_seen_at', 'expires_at'))
+                    or (value['version'] == 2 and item.get('kind') not in DEVICE_KINDS)
                     or item['id'] in identities or item['token_hash'] in hashes):
                 raise ValueError('远程设备记录无效；原文件已保留')
             identities.add(item['id'])
@@ -124,6 +140,7 @@ class Controller:
         network = self.network.snapshot()
         with self.lock:
             now = self.clock()
+            monotonic_now = self.monotonic()
             port = self.listener.port if self.listener is not None else self.data['port']
             addresses = []
             for item in network['addresses']:
@@ -138,8 +155,10 @@ class Controller:
                     'discovery': {key: network[key] for key in ('source', 'complete', 'error')},
                     'binding_available': binding_error is None, 'binding_error': binding_error,
                     'last_error': self.last_error, 'configuration_invalid': self.configuration_invalid,
-                    'devices': [{key: _iso(item[key]) if key.endswith('_at') else item[key]
-                                 for key in ('id', 'name', 'created_at', 'last_seen_at', 'expires_at')}
+                    'devices': [{'id': item['id'], 'name': item['name'], 'kind': item['kind'],
+                                 'created_at': _iso(item['created_at']), 'last_seen_at': _iso(item['last_seen_at']),
+                                 'expires_at': _iso(item['expires_at']),
+                                 'online': self._online(item['id'], monotonic_now)}
                                 for item in self.data['devices'] if item['expires_at'] > now],
                     'pair_pending': bool(self.pair and self.pair['expires_at'] > now),
                     'pair_expires_at': _iso(self.pair['expires_at']) if self.pair and self.pair['expires_at'] > now else None}
@@ -196,6 +215,10 @@ class Controller:
                         raise ValueError('设备不存在或已撤销')
                     devices = [] if action == 'revoke_all' else [item for item in self.data['devices'] if item['id'] != data['device_id']]
                     self._save({**self.data, 'devices': devices})
+                    if action == 'revoke_all':
+                        self.last_authenticated.clear()
+                    else:
+                        self.last_authenticated.pop(data['device_id'], None)
             return self.snapshot()
 
     def start_saved(self):
@@ -221,7 +244,22 @@ class Controller:
             return self.listener is not None and self.data['enabled'] and any(item['id'] == identity.get('device_id') and item['expires_at'] > self.clock()
                                                       for item in self.data['devices'])
 
-    def _session(self, headers):
+    def stream_opened(self, device_id):
+        with self.lock:
+            self.stream_counts[device_id] = self.stream_counts.get(device_id, 0) + 1
+
+    def stream_closed(self, device_id):
+        with self.lock:
+            if self.stream_counts[device_id] == 1:
+                del self.stream_counts[device_id]
+            else:
+                self.stream_counts[device_id] -= 1
+
+    def _online(self, device_id, now):
+        last = self.last_authenticated.get(device_id)
+        return device_id in self.stream_counts or (last is not None and now - last < ONLINE_SECONDS)
+
+    def _cookie_token(self, headers):
         values = headers.get_all('Cookie') or []
         if len(values) != 1:
             return None
@@ -229,19 +267,31 @@ class Controller:
         try:
             cookies.load(values[0])
             token = cookies[self.cookie_name].value
-            if len(token) != 43:
-                return None
-            digest = _hash(token)
-        except (CookieError, KeyError, ValueError, UnicodeError):
+        except (CookieError, KeyError, ValueError):
             return None
+        return token if len(token) == 43 and token.isascii() else None
+
+    def _session(self, headers, authorization):
+        if authorization is not None:
+            if len(authorization) != 1 or not re.fullmatch(r'Bearer [A-Za-z0-9_-]{43}', authorization[0]):
+                return None
+            kind, token = 'desktop', authorization[0][7:]
+        else:
+            kind, token = 'browser', self._cookie_token(headers)
+            if token is None:
+                return None
+        digest = _hash(token)
         with self.lock:
             now = self.clock()
             for item in self.data['devices']:
-                if item['expires_at'] > now and secrets.compare_digest(item['token_hash'], digest):
+                if (item['kind'] == kind and item['expires_at'] > now
+                        and secrets.compare_digest(item['token_hash'], digest)):
                     if now - item['last_seen_at'] >= 60:
-                        devices = [{**row, 'last_seen_at': now} if row['id'] == item['id'] else row for row in self.data['devices']]
+                        updated = {**item, 'last_seen_at': now, 'expires_at': now + IDLE_SECONDS}
+                        devices = [updated if row is item else row for row in self.data['devices']]
                         self._save({**self.data, 'devices': devices})
-                    return {'device_id': item['id'], 'expires_at': item['expires_at'], 'name': item['name']}
+                    self.last_authenticated[item['id']] = self.monotonic()
+                    return {'device_id': item['id'], 'kind': kind, 'name': item['name']}
         return None
 
     def _login(self, data, address):
@@ -261,12 +311,16 @@ class Controller:
             if not isinstance(name, str) or not 1 <= len(name.strip()) <= 80 or any(ord(char) < 32 for char in name):
                 raise ValueError('设备名称应为 1 到 80 个可见字符')
             token = secrets.token_urlsafe(32)
-            item = {'id': str(uuid.uuid4()), 'name': name.strip(), 'token_hash': _hash(token),
-                    'created_at': now, 'last_seen_at': now, 'expires_at': now + SESSION_SECONDS}
+            item = {'id': str(uuid.uuid4()), 'name': name.strip(), 'kind': data['kind'],
+                    'token_hash': _hash(token), 'created_at': now, 'last_seen_at': now,
+                    'expires_at': now + IDLE_SECONDS}
             devices = [row for row in self.data['devices'] if row['expires_at'] > now]
             self._save({**self.data, 'devices': devices + [item]})
+            active_ids = {row['id'] for row in devices}
+            self.last_authenticated = {key: stamp for key, stamp in self.last_authenticated.items() if key in active_ids}
+            self.last_authenticated[item['id']] = self.monotonic()
             self.pair = None
-            return token
+            return token, item['id']
 
     @staticmethod
     def _reply(handler, status, value, *, cookie=None, location=None, html=False):
@@ -305,7 +359,10 @@ class Controller:
             if host_values not in ([host] for host in hosts):
                 return reply(403, {'error': '访问地址不匹配，请使用电脑显示的局域网地址'})
             origin = handler.headers.get_all('Origin')
-            if (origin is not None and origin != ['http://' + host_values[0]]) or (method == 'POST' and origin is None):
+            authorization = handler.headers.get_all('Authorization')
+            path = urlsplit(handler.path).path
+            if ((origin is not None and origin != ['http://' + host_values[0]])
+                    or (method == 'POST' and origin is None and authorization is None and path != '/remote/login')):
                 return reply(403, {'error': '请求必须来自当前 Crew 页面'})
             if handler.headers.get_all('Transfer-Encoding'):
                 return reply(400, {'error': '不支持此请求编码'})
@@ -313,26 +370,29 @@ class Controller:
             if len(lengths) > 1 or (lengths and (not lengths[0].isascii() or not lengths[0].isdigit())):
                 return reply(400, {'error': '请求长度无效'})
             length = int(lengths[0]) if lengths else 0
-            path = urlsplit(handler.path).path
             if length > (2048 if path == '/remote/login' else MAX_BODY):
                 return reply(413, {'error': '请求内容过大'})
             if method not in ('GET', 'POST') or (method == 'GET' and length):
                 return reply(405, {'error': '不支持此请求方法'})
             if method == 'POST' and (handler.headers.get_all('X-Crew') != ['1'] or length <= 0):
                 return reply(403, {'error': '请求必须来自 Crew 页面并包含 JSON 内容'})
+            identity = self._session(handler.headers, authorization) if authorization is not None or path != '/remote/login' else None
+            if authorization is not None and identity is None:
+                return reply(401, AUTH_EXPIRED)
             if path == '/remote/login' and method == 'GET':
                 return reply(200, (Path(__file__).parent / 'web' / 'remote-login.html').read_bytes(), html=True)
-            identity = self._session(handler.headers)
             if identity is None and path != '/remote/login':
                 if method == 'GET' and path in self.static_paths and (path == '/' or path.endswith('.html')):
                     from urllib.parse import quote
                     return reply(303, {'error': '请先登录 Crew'}, location='/remote/login?next=' + quote(remote_routes.safe_next(handler.path), safe=''))
                 return reply(401, {'error': '请先登录 Crew', 'login_url': '/remote/login'})
-            if path not in ('/remote/login', '/remote/logout') and not remote_routes.permitted(method, path, self.static_paths):
+            if path not in ('/remote/login', '/remote/logout') and not remote_routes.permitted(
+                    method, path, self.static_paths, identity['kind']):
                 if method == 'POST':
                     # 先读完已登录设备的请求体再拒绝；带着未读数据关连接，Windows 会重置连接，手机只看到网络错误。
                     handler.rfile.read(length)
-                return reply(403, {'error': '此操作只能在电脑上的 Crew 中进行'})
+                host = '主机' if identity['kind'] == 'desktop' else '电脑'
+                return reply(403, {'error': f'此操作只能在{host}上的 Crew 中进行'})
             data = None
             if method == 'POST':
                 body = handler.rfile.read(length)
@@ -343,25 +403,37 @@ class Controller:
                     return reply(400, {'error': '请求必须是 JSON 对象'})
                 handler.remote_body = body
             if path == '/remote/login':
-                if set(data) - {'code', 'device_name', 'next'}:
+                kind = data.get('kind')
+                if origin is None and authorization is None and kind != 'desktop':
+                    return reply(403, {'error': '请求必须来自当前 Crew 页面'})
+                if kind not in DEVICE_KINDS:
+                    return reply(400, {'error': '设备类型必须是 browser 或 desktop'})
+                fields = {'code', 'device_name', 'kind', 'next'} if kind == 'browser' else {'code', 'device_name', 'kind'}
+                if set(data) - fields:
                     return reply(400, {'error': '未知登录字段'})
-                token = self._login(data, handler.client_address[0])
+                token, device_id = self._login(data, handler.client_address[0])
+                if kind == 'desktop':
+                    return reply(200, {'ok': True, 'token': token, 'device_id': device_id})
                 return reply(200, {'ok': True, 'next': remote_routes.safe_next(data.get('next', '/'))},
-                             cookie='%s=%s; Path=/; HttpOnly; SameSite=Strict; Max-Age=%s' % (self.cookie_name, token, SESSION_SECONDS))
+                             cookie='%s=%s; Path=/; HttpOnly; SameSite=Strict; Max-Age=%s' % (self.cookie_name, token, COOKIE_MAX_AGE))
+            desktop = identity['kind'] == 'desktop'
             if path == '/remote/logout':
                 if method != 'POST':
                     return reply(405, {'error': '退出登录需要 POST 请求'})
                 self.action({'action': 'revoke', 'device_id': identity['device_id']})
-                return reply(200, {'ok': True, 'next': '/remote/login'}, cookie=self.cookie_name + '=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0')
+                cookie = None if desktop else self.cookie_name + '=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0'
+                return reply(200, {'ok': True, 'next': '/remote/login'}, cookie=cookie)
             handler.remote_identity = identity
             if not self.request_active(identity):
-                return reply(401, {'error': '远程访问已关闭或登录已失效', 'login_url': '/remote/login'})
-            if path == '/api/access/context':
-                return reply(200, {'remote': True, 'authenticated': True, 'local_controls': False,
-                                   'local_desktop': False, 'capabilities': remote_routes.CAPABILITIES,
+                return reply(401, AUTH_EXPIRED if desktop else {'error': '远程访问已关闭或登录已失效', 'login_url': '/remote/login'})
+            if method == 'GET' and path == '/api/access/context':
+                capabilities = remote_routes.DESKTOP_CAPABILITIES if desktop else remote_routes.CAPABILITIES
+                return reply(200, {'remote': True, 'client': identity['kind'], 'authenticated': True,
+                                   'local_controls': desktop, 'local_desktop': False, 'host_admin': False,
+                                   'native_handoff': False, 'vscode_continue': False, 'capabilities': capabilities,
                                    'device_id': identity['device_id']})
             if method == 'POST':
-                handler.remote_body = json.dumps(remote_routes.human_payload(path, data), ensure_ascii=False).encode('utf-8')
+                handler.remote_body = json.dumps(remote_routes.human_payload(path, data, identity['kind']), ensure_ascii=False).encode('utf-8')
             return False
         except PermissionError as error:
             return reply(429 if str(error).startswith('尝试') else 403, {'error': str(error)})
