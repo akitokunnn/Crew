@@ -55,7 +55,10 @@ const CrewArchitecture = (() => {
       const place = m.places.get(item.session_id);
       if (place && place.x !== null && place.y !== null) continue;
       const part = place?.domain_id ? m.parts.get(place.domain_id) : null;
-      if (part) { m.auto.set(item.session_id, {x:part.x + COLUMN, y:part.y}); continue; }
+      if (part) {
+        const y = (m.children.get(part.id) || []).reduce((bottom, child) => Math.max(bottom, child.y + PART_H + ROW_GAP), part.y);
+        m.auto.set(item.session_id, {x:part.x + COLUMN, y}); continue;
+      }
       const column = Math.floor(loose / 6), row = loose % 6; loose++;
       m.auto.set(item.session_id, {x:content ? minX - COLUMN - column * COLUMN : column * COLUMN, y:(content ? minY : 0) + row * (LEADER_H + ROW_GAP)});
     }
