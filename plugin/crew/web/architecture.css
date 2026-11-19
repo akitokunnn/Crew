@@ -1,4 +1,4 @@
-/* Architecture board: a blueprint-style canvas of parts (folders of the domain tree) and the leaders they own. */
+/* Architecture board: the domain tree as a canvas; part cards list their leaders, unplaced ones wait in a shelf. */
 #arch-view{display:flex;flex-direction:column;flex:1;min-height:0}
 .arch-head .title{display:flex;align-items:center;gap:8px}
 .arch-head .title>svg.i{width:18px;height:18px;color:var(--accent-text)}
@@ -24,7 +24,6 @@
 .arch-world{position:absolute;left:0;top:0;transform-origin:0 0}
 .arch-wires{position:absolute;left:0;top:0;max-width:none;max-height:none;overflow:visible;pointer-events:none}
 .arch-wire{fill:none;stroke:color-mix(in srgb,var(--text-3) 75%,transparent);stroke-width:2;stroke-linecap:round}
-.arch-wire.leader{stroke:color-mix(in srgb,var(--tint) 80%,var(--text-3))}
 .arch-wire.draft{stroke:var(--accent);stroke-dasharray:6 5}
 .arch-wire.draft.ok{stroke-dasharray:none;stroke-width:2.5}
 .arch-nodes{position:absolute;left:0;top:0}
@@ -37,50 +36,86 @@
 .arch-node.flash{animation:arch-flash 1.8s var(--ease)}
 @keyframes arch-flash{0%,45%{box-shadow:0 0 0 6px color-mix(in srgb,var(--accent) 38%,transparent),var(--shadow-sm)}100%{box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 32%,transparent),var(--shadow-sm)}}
 
-/* part: header strip like a blueprint node, body says who owns the layer */
-.arch-part{width:212px}
+/* part: a blueprint-style header, then the leaders working in it (the lead first) */
+.arch-part{width:248px}
 .arch-part.collapsed{box-shadow:5px 5px 0 -1px var(--surface),5px 5px 0 0 var(--line-strong),var(--shadow-sm)}
 .arch-part.collapsed.selected{box-shadow:5px 5px 0 -1px var(--surface),5px 5px 0 0 var(--line-strong),0 0 0 2px color-mix(in srgb,var(--accent) 32%,transparent)}
-.arch-part-head{height:42px;display:flex;align-items:center;gap:6px;padding:0 12px 0 6px;border-bottom:1px solid var(--line);border-radius:11px 11px 0 0;
-  background:color-mix(in srgb,var(--accent) 10%,var(--surface))}
+.arch-part-head{height:42px;display:flex;align-items:center;gap:6px;padding:0 10px 0 6px;border-bottom:1px solid var(--line);border-radius:11px 11px 0 0;
+  background:color-mix(in srgb,var(--accent) 10%,var(--surface));cursor:grab}
 .arch-part-head>svg.i{color:var(--accent-text);flex:none}
 .arch-part-name{flex:1;min-width:0;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .arch-fold{width:26px;height:26px;display:grid;place-items:center;flex:none;border:0;border-radius:7px;background:transparent;color:var(--text-3);cursor:pointer;padding:0}
 .arch-fold:hover:not(:disabled){background:var(--hover);color:var(--text)}
 .arch-fold:disabled{opacity:.28;cursor:default}
-.arch-count{flex:none;min-width:20px;height:20px;padding:0 6px;border-radius:10px;display:grid;place-items:center;font-size:calc(11px * var(--fs));font-variant-numeric:tabular-nums;
+.arch-count{flex:none;display:inline-flex;align-items:center;gap:3px;height:20px;padding:0 7px;border-radius:10px;font-size:calc(11px * var(--fs));font-variant-numeric:tabular-nums;
   background:var(--accent-soft);color:var(--accent-text)}
+.arch-count svg.i{width:12px;height:12px}
 .arch-rename{flex:1;min-width:0;height:28px;font:inherit;font-weight:500;padding:0 7px;border:1px solid var(--accent);border-radius:7px;background:var(--surface);color:var(--text);outline:none;user-select:text}
-.arch-part-body{min-height:36px;display:flex;align-items:center;padding:7px 12px 8px;font-size:calc(12px * var(--fs));color:var(--text-2)}
-.arch-owner{display:flex;align-items:center;gap:7px;min-width:0}
-.arch-owner>span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.arch-owner b{font-weight:500;color:color-mix(in srgb,var(--tint) 70%,var(--text))}
-.arch-owner.archived,.arch-folder-note,.arch-muted{color:var(--text-3)}
+.arch-members{padding:5px}
+.arch-part-note{margin:0;padding:9px 8px;font-size:calc(12px * var(--fs));color:var(--text-3)}
 
-/* leader: theme-colour strip, status and the one-line brief; the whole card opens the chat */
-.arch-leader{width:252px;padding:7px 12px 10px 16px;cursor:pointer}
-.arch-leader::before{content:"";position:absolute;left:5px;top:10px;bottom:10px;width:3px;border-radius:2px;background:var(--tint)}
-.arch-leader:hover{border-color:color-mix(in srgb,var(--tint) 45%,var(--line-strong))}
-.arch-leader-head{height:28px;display:flex;align-items:center;gap:8px;min-width:0}
-.arch-leader-name{flex:1;min-width:0;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.arch-leader-goal{margin:5px 0 0;min-height:36px;font-size:calc(12px * var(--fs));line-height:1.5;color:var(--text-2);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere}
-.arch-leader-open{display:block;margin-top:4px;font-size:calc(11.5px * var(--fs));color:var(--accent-text);opacity:0;transition:opacity .15s}
-.arch-leader:hover .arch-leader-open,.arch-leader.selected .arch-leader-open{opacity:1}
-@media (hover:none){.arch-leader-open{opacity:1}}
+/* a leader in a part or in the shelf: theme colour, name, brief, status; click opens the chat, drag moves it */
+.arch-member{position:relative;display:flex;align-items:center;gap:9px;min-height:44px;padding:5px 8px 5px 11px;border-radius:9px;cursor:pointer;
+  transition:background .12s}
+.arch-member+.arch-member{margin-top:2px}
+.arch-member::before{content:"";position:absolute;left:3px;top:9px;bottom:9px;width:3px;border-radius:2px;background:var(--tint)}
+.arch-member:hover{background:var(--hover)}
+.arch-member.lead{background:color-mix(in srgb,var(--accent) 7%,transparent)}
+.arch-member.lead:hover{background:color-mix(in srgb,var(--accent) 12%,transparent)}
+.arch-member.dragging{opacity:.35}
+.arch-member .av{--s:24px}
+.arch-member-text{flex:1;min-width:0;display:flex;flex-direction:column;line-height:1.35}
+.arch-member-line{display:flex;align-items:center;gap:6px;min-width:0}
+.arch-member-name{min-width:0;font-weight:500;font-size:calc(13px * var(--fs));overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.arch-lead{flex:none;padding:0 6px;border-radius:6px;font-size:calc(10.5px * var(--fs));line-height:17px;background:var(--accent);color:var(--on-accent)}
+.arch-member-brief{font-size:calc(11.5px * var(--fs));color:var(--text-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.arch-member .st{flex:none;font-size:calc(11px * var(--fs))}
+.arch-member.flash{animation:arch-row-flash 1.8s var(--ease)}
+@keyframes arch-row-flash{0%,45%{background:var(--accent-soft)}100%{background:transparent}}
 
-/* pins: hollow when free, filled when wired; generous hit area */
+/* pins: hollow when free, filled when wired; left/right for the blueprint, top/bottom for the tree */
 .arch-pin{position:absolute;top:15px;width:12px;height:12px;border-radius:50%;border:2px solid var(--text-3);background:var(--surface);z-index:1;cursor:crosshair;transition:transform .12s}
 .arch-pin::after{content:"";position:absolute;inset:-8px;border-radius:50%}
 .arch-pin.in{left:-7px}
 .arch-pin.out{right:-7px}
+.arch-canvas[data-dir="TB"] .arch-pin{left:calc(50% - 6px);right:auto}
+.arch-canvas[data-dir="TB"] .arch-pin.in{top:-7px}
+.arch-canvas[data-dir="TB"] .arch-pin.out{top:auto;bottom:-7px}
 .arch-pin.linked{background:var(--text-3)}
-.arch-leader .arch-pin{border-color:color-mix(in srgb,var(--tint) 80%,var(--text-3))}
-.arch-leader .arch-pin.linked{background:color-mix(in srgb,var(--tint) 80%,var(--text-3))}
 .arch-pin:hover{transform:scale(1.35)}
+
+/* leaders not in the tree yet */
+.arch-shelf{position:absolute;left:14px;top:14px;z-index:3;width:236px;max-height:calc(100% - 80px);display:flex;flex-direction:column;
+  border:1px solid var(--line-strong);border-radius:12px;background:var(--surface);box-shadow:var(--shadow-sm);transition:border-color .15s,box-shadow .15s}
+.arch-shelf[data-open="false"]{width:auto}
+.arch-shelf.drop-target{border-color:var(--accent);box-shadow:0 0 0 4px var(--accent-soft),var(--shadow-lg)}
+.arch-shelf-head{flex:none;display:flex;align-items:center;gap:7px;width:100%;height:38px;padding:0 10px 0 12px;border:0;border-radius:11px;background:transparent;
+  color:var(--text);cursor:pointer;font-size:calc(13px * var(--fs));font-weight:500}
+.arch-shelf-head:hover{background:var(--hover)}
+.arch-shelf-head>svg.i:first-child{color:var(--accent-text)}
+.arch-shelf-head>span{flex:1;text-align:left}
+.arch-shelf-head b{min-width:20px;height:20px;padding:0 6px;border-radius:10px;display:grid;place-items:center;font-size:calc(11px * var(--fs));font-weight:500;
+  background:var(--hover);color:var(--text-2);font-variant-numeric:tabular-nums}
+.arch-shelf-head>svg.i:last-child{color:var(--text-3)}
+.arch-shelf-body{min-height:0;overflow:auto;padding:0 5px 6px;border-top:1px solid var(--line)}
+.arch-shelf-body .arch-member:first-child{margin-top:5px}
+.arch-shelf-note{margin:0;padding:8px 8px 4px;font-size:calc(11.5px * var(--fs));line-height:1.55;color:var(--text-3)}
+.arch-ghost{position:absolute;left:0;top:0;z-index:7;display:flex;align-items:center;gap:7px;max-width:220px;padding:5px 11px 5px 6px;border-radius:999px;
+  border:1px solid color-mix(in srgb,var(--tint) 55%,var(--line-strong));background:var(--surface);box-shadow:var(--shadow-lg);pointer-events:none;font-size:calc(12.5px * var(--fs));font-weight:500}
+.arch-ghost[hidden]{display:none}
+.arch-ghost span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* direction: architecture tree (top-down) or blueprint (left-to-right) */
+.arch-dir{display:inline-flex;padding:2px;border:1px solid var(--line-strong);border-radius:10px;background:var(--surface)}
+.arch-dir button{display:inline-flex;align-items:center;gap:5px;height:28px;padding:0 9px;border:0;border-radius:8px;background:transparent;color:var(--text-2);cursor:pointer;
+  font-size:calc(12.5px * var(--fs));white-space:nowrap}
+.arch-dir button:hover{color:var(--text);background:var(--hover)}
+.arch-dir button[aria-checked="true"]{background:var(--accent-soft);color:var(--accent-text);font-weight:500}
+.arch-dir svg.i{width:15px;height:15px}
 
 .arch-marquee{position:absolute;border:1px solid var(--accent);background:var(--accent-softer);border-radius:4px;pointer-events:none;z-index:3}
 .arch-drop-label{position:absolute;left:0;top:0;z-index:5;max-width:320px;padding:5px 10px;border-radius:8px;background:var(--text);color:var(--bg);font-size:calc(12px * var(--fs));pointer-events:none;box-shadow:var(--shadow-lg)}
-.arch-empty{position:absolute;left:50%;top:14px;transform:translateX(-50%);z-index:2;width:min(680px,calc(100% - 32px));display:flex;align-items:center;gap:18px;
+.arch-empty{position:absolute;left:266px;top:14px;z-index:2;width:min(680px,calc(100% - 282px));display:flex;align-items:center;gap:18px;
   padding:14px 16px 14px 18px;border:1px solid var(--line-strong);border-radius:14px;background:var(--surface);box-shadow:var(--shadow-sm)}
 .arch-empty[hidden]{display:none}
 .arch-empty-text{flex:1;min-width:0}
@@ -113,6 +148,7 @@
 @media (max-width:1023px){
   .arch-hint{max-width:calc(100% - 220px)}
   .arch-head .arch-tidy-label{display:none}
+  .arch-dir span{display:none}
 }
 @media (max-width:760px){
   .arch-head .right{flex-wrap:wrap;justify-content:flex-end}
@@ -124,7 +160,8 @@
   .arch-fold{width:34px;height:34px;margin-left:-4px}
   .arch-pin{pointer-events:none;cursor:default}
   .arch-pin:hover{transform:none}
-  .arch-leader{cursor:pointer}
+  .arch-shelf{left:10px;top:10px;max-width:calc(100% - 20px)}
+  .arch-empty{left:10px;width:calc(100% - 20px);top:58px}
   /* Phone chat header: a second-row chip beside the runtime, model and trust tags, shortened first when tight. */
   /* Only the leader's own part fits there; the full path stays in the label, and it takes the brief's place. */
   #chat-head .head .chat-domain-path{order:11;flex:0 1 auto;min-width:0;max-width:30vw;height:28px;margin:0 auto 8px 6px;padding:0 8px;border:0;border-radius:8px;

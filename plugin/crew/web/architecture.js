@@ -1,10 +1,12 @@
 "use strict";
-// Architecture board: the workspace's domain tree drawn as a node graph. A part nests under another part and may
-// own one leader for its layer's shared work; sub-parts and leaders hang on a part when dropped on it or wired from
-// its pin. Positions and folds are saved with the tree; the camera stays in this browser. Editing needs a window
-// wider than a phone; on phones the board can be panned, zoomed and leaders opened.
+// Architecture board: the workspace's domain tree. Parts nest under parts; each part card lists the leaders working
+// in it (any number), at most one of them leading the layer. Leaders not placed yet wait in the 未归属 shelf and are
+// dragged into a part; parts hang under a part when dropped on it or wired from its pin. The tree draws top-down
+// (an architecture tree) or left-to-right (a blueprint); positions, folds and direction are saved with the tree,
+// the camera stays in this browser. Editing needs a window wider than a phone; phones can look, pan, zoom and open
+// a leader.
 const CrewArchitecture = (() => {
-  const PART_W = 212, LEADER_W = 252, PIN_Y = 21, PART_H = 76, LEADER_H = 104, COLUMN = 320, ROW_GAP = 24;
+  const PART_W = 248, HEAD_H = 42, PIN_Y = 21, ROW_H = 48, GAP_TB = 64, GAP_LR = 96, GAP_CROSS = 28;
   const MIN_ZOOM = .2, MAX_ZOOM = 2, SLOP = 4, HISTORY = 100, NAME_MAX = 40;
   const phone = window.matchMedia("(max-width:760px)");
   const esc = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"})[c]);
@@ -12,89 +14,69 @@ const CrewArchitecture = (() => {
   const ICON = {
     plus:'<path d="M12 5v14M5 12h14"/>', minus:'<path d="M5 12h14"/>',
     undo:'<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>', redo:'<path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/>',
-    tidy:'<rect x="3" y="9" width="6" height="5" rx="1.5"/><rect x="15" y="3" width="6" height="5" rx="1.5"/><rect x="15" y="15" width="6" height="5" rx="1.5"/><path d="M9 11.5h3v-6h3M12 11.5v6h3"/>',
+    tidy:'<path d="M4 4h16M4 10h10M4 16h16M4 22h10"/>',
     fit:'<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>', down:'<path d="m6 9 6 6 6-6"/>', right:'<path d="m9 6 6 6-6 6"/>',
-    folder:'<path d="M3 6.5h6.5l2 2.5H21v10.5H3z"/>', board:'<rect x="9" y="3" width="6" height="5" rx="1.5"/><rect x="3" y="16" width="6" height="5" rx="1.5"/><rect x="15" y="16" width="6" height="5" rx="1.5"/><path d="M12 8v4M6 16v-2a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v2"/>'
+    folder:'<path d="M3 6.5h6.5l2 2.5H21v10.5H3z"/>',
+    tb:'<rect x="8" y="3" width="8" height="5" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/><rect x="14" y="16" width="7" height="5" rx="1.5"/><path d="M12 8v4M6.5 16v-2.5a1.5 1.5 0 0 1 1.5-1.5h8a1.5 1.5 0 0 1 1.5 1.5V16"/>',
+    lr:'<rect x="3" y="9" width="5" height="6" rx="1.5"/><rect x="16" y="3" width="5" height="6" rx="1.5"/><rect x="16" y="15" width="5" height="6" rx="1.5"/><path d="M8 12h3M11 12c2 0 2-6 5-6M11 12c2 0 2 6 5 6"/>',
+    people:'<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20v-.5a6.5 6.5 0 0 1 13 0v.5M15.5 4.7a3.5 3.5 0 0 1 0 6.6M18 13.6a6.5 6.5 0 0 1 3.5 5.9v.5"/>'
   };
   const STATUS = {working:"在干活", waiting:"等你", idle:"空闲", offline:"离线", closed:"已归档"};
+  const DIRECTION = {TB:"上→下", LR:"左→右"};
 
   let host = null, options = null, board = null, project = null, errorText = "", loadToken = 0;
   let camera = null, selection = new Set(), undoStack = [], redoStack = [], queue = Promise.resolve(), busy = 0;
   let gesture = null, renaming = null, menu = null, focusRequest = null, spaceDown = false, cached = null, leaderSignature = "";
-  let pendingFit = null, resizer = null;
-  const pointers = new Map(), pending = new Map();
+  let pendingFit = null, resizer = null, pendingDirection = null, shelfOpen = null;
+  const pointers = new Map(), pending = new Map(), sizes = new Map();
 
-  const key = (kind, id) => `${kind}:${id}`;
-  const split = k => { const at = k.indexOf(":"); return [k.slice(0, at), k.slice(at + 1)]; };
   const editable = () => !phone.matches;
   const clampZoom = z => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z));
   const $ = selector => host?.querySelector(selector);
+  const direction = () => pendingDirection ?? board?.direction ?? "TB";
+  const partEl = id => host?.querySelector(`.arch-part[data-part="${CSS.escape(id)}"]`);
 
   // ---- model ----------------------------------------------------------------------------------------------------
   function model() {
     const leadersList = options.state.leaders || [];
     if (cached && cached.board === board && cached.leadersList === leadersList) return cached;
+    const order = new Map(leadersList.map((item, index) => [item.session_id, index]));
     const parts = new Map(board.parts.map(part => [part.id, part]));
-    const places = new Map(board.leaders.map(place => [place.session_id, place]));
     const leaders = new Map(leadersList.map(item => [item.session_id, item]));
-    const children = new Map(), holder = new Map();
+    const places = new Map(board.leaders.filter(place => leaders.has(place.session_id)).map(place => [place.session_id, place]));
+    const children = new Map(), members = new Map();
     for (const part of board.parts) { if (!children.has(part.parent_id)) children.set(part.parent_id, []); children.get(part.parent_id).push(part); }
-    for (const place of board.leaders) if (place.domain_id !== null) holder.set(place.domain_id, place);
-    cached = {board, leadersList, parts, places, leaders, children, holder, auto:new Map()};
-    autoPlace(cached);
+    for (const place of places.values()) { if (!members.has(place.domain_id)) members.set(place.domain_id, []); members.get(place.domain_id).push(place); }
+    for (const list of members.values()) list.sort((a, b) => (b.lead - a.lead) || (order.get(a.session_id) - order.get(b.session_id)));
+    const loose = leadersList.filter(item => !places.has(item.session_id));
+    cached = {board, leadersList, parts, leaders, places, children, members, loose};
     return cached;
   }
-  // Leaders without a saved place: beside their part, or in a column left of everything else.
-  function autoPlace(m) {
-    let minX = Infinity, minY = Infinity;
-    for (const part of board.parts) { minX = Math.min(minX, part.x); minY = Math.min(minY, part.y); }
-    for (const place of board.leaders) if (place.x !== null && m.leaders.has(place.session_id)) { minX = Math.min(minX, place.x); minY = Math.min(minY, place.y); }
-    const content = Number.isFinite(minX);
-    let loose = 0;
-    for (const item of m.leaders.values()) {
-      const place = m.places.get(item.session_id);
-      if (place && place.x !== null && place.y !== null) continue;
-      const part = place?.domain_id ? m.parts.get(place.domain_id) : null;
-      if (part) {
-        const y = (m.children.get(part.id) || []).reduce((bottom, child) => Math.max(bottom, child.y + PART_H + ROW_GAP), part.y);
-        m.auto.set(item.session_id, {x:part.x + COLUMN, y}); continue;
-      }
-      const column = Math.floor(loose / 6), row = loose % 6; loose++;
-      m.auto.set(item.session_id, {x:content ? minX - COLUMN - column * COLUMN : column * COLUMN, y:(content ? minY : 0) + row * (LEADER_H + ROW_GAP)});
-    }
-  }
-  function partHidden(m, id) {
+  function hidden(m, id) {
     for (let part = m.parts.get(m.parts.get(id)?.parent_id); part; part = m.parts.get(part.parent_id)) if (part.collapsed) return true;
     return false;
   }
-  function leaderHidden(m, sessionId) {
-    const domain = m.places.get(sessionId)?.domain_id, part = domain ? m.parts.get(domain) : null;
-    return part ? part.collapsed || partHidden(m, part.id) : false;
-  }
-  const visible = (m, k) => { const [kind, id] = split(k); return kind === "part" ? m.parts.has(id) && !partHidden(m, id) : m.leaders.has(id) && !leaderHidden(m, id); };
+  const visible = (m, id) => m.parts.has(id) && !hidden(m, id);
   function ancestors(m, id) { const out = []; for (let part = m.parts.get(m.parts.get(id)?.parent_id); part; part = m.parts.get(part.parent_id)) out.push(part.id); return out; }
-  // Everything below a part: its sub-parts at any depth and the leaders they own.
   function descendants(m, id) {
-    const out = [], walk = partId => {
-      const owner = m.holder.get(partId); if (owner && m.leaders.has(owner.session_id)) out.push(key("leader", owner.session_id));
-      for (const child of m.children.get(partId) || []) { out.push(key("part", child.id)); walk(child.id); }
-    };
+    const out = [], walk = partId => { for (const child of m.children.get(partId) || []) { out.push(child.id); walk(child.id); } };
     walk(id); return out;
   }
-  const parentOf = (m, k) => { const [kind, id] = split(k); return kind === "part" ? m.parts.get(id)?.parent_id ?? null : m.places.get(id)?.domain_id ?? null; };
-  function posOf(m, k) {
-    if (gesture?.positions?.has(k)) return gesture.positions.get(k);
-    if (pending.has(k)) return pending.get(k).pos;
-    const [kind, id] = split(k);
-    if (kind === "part") { const part = m.parts.get(id); return {x:part.x, y:part.y}; }
-    const place = m.places.get(id);
-    return place && place.x !== null && place.y !== null ? {x:place.x, y:place.y} : m.auto.get(id) || {x:0, y:0};
+  const membersOf = (m, id) => m.members.get(id) || [];
+  function posOf(m, id) {
+    if (gesture?.positions?.has(id)) return gesture.positions.get(id);
+    if (pending.has(id)) return pending.get(id).pos;
+    const part = m.parts.get(id); return {x:part.x, y:part.y};
   }
-  function sizeOf(k) {
-    const node = host?.querySelector(`.arch-node[data-key="${CSS.escape(k)}"]`);
-    return node ? {w:node.offsetWidth, h:node.offsetHeight} : k.startsWith("part:") ? {w:PART_W, h:PART_H} : {w:LEADER_W, h:LEADER_H};
+  function sizeOf(m, id) {
+    if (sizes.has(id)) return sizes.get(id);
+    const part = m.parts.get(id), rows = part?.collapsed ? 0 : membersOf(m, id).length;
+    return {w:PART_W, h:HEAD_H + (part?.collapsed ? 34 : Math.max(1, rows) * ROW_H + 12)};
   }
-  const nameOf = (m, k) => { const [kind, id] = split(k); return kind === "part" ? m.parts.get(id)?.name : m.leaders.get(id)?.name ?? m.places.get(id)?.name; };
+  function measure() {
+    sizes.clear();
+    for (const node of host.querySelectorAll(".arch-part")) sizes.set(node.dataset.part, {w:node.offsetWidth, h:node.offsetHeight});
+  }
 
   // ---- rendering ------------------------------------------------------------------------------------------------
   function scaffold() {
@@ -102,7 +84,8 @@ const CrewArchitecture = (() => {
       <div class="head big arch-head"></div>
       <div class="arch-canvas" tabindex="0" aria-label="架构图画板" aria-describedby="arch-hint">
         <div class="arch-world"><svg class="arch-wires" aria-hidden="true"></svg><div class="arch-nodes"></div></div>
-        <div class="arch-marquee" hidden></div><div class="arch-drop-label" hidden></div>
+        <div class="arch-marquee" hidden></div><div class="arch-drop-label" hidden></div><div class="arch-ghost" hidden></div>
+        <aside class="arch-shelf" aria-label="未归属的 leader"></aside>
         <div class="arch-empty" hidden></div>
         <p class="arch-hint" id="arch-hint"></p>
         <div class="arch-zoom" role="group" aria-label="缩放"><button type="button" data-arch-act="zoom-out" aria-label="缩小">${icon(ICON.minus)}</button><button type="button" class="arch-zoom-value" data-arch-act="zoom-reset" title="恢复 100%"></button><button type="button" data-arch-act="zoom-in" aria-label="放大">${icon(ICON.plus)}</button><button type="button" data-arch-act="fit" title="显示全部 (Home)" aria-label="显示全部">${icon(ICON.fit)}</button></div>
@@ -122,84 +105,101 @@ const CrewArchitecture = (() => {
   }
   function renderHead() {
     const head = $(".arch-head"); if (!head || board === null) return;
-    const m = model(), loose = [...m.leaders.keys()].filter(id => !m.places.get(id)?.domain_id).length;
-    const edit = editable(), picked = edit && selection.size > 1 ? ` · 已选 ${selection.size} 项` : "";
-    const tools = edit ? `<button type="button" class="btn primary arch-new" data-arch-act="new">${icon(ICON.plus)}新 part</button><span class="arch-tool-gap" aria-hidden="true"></span><button type="button" class="icon-btn" data-arch-act="undo" title="撤销${undoStack.length ? `：${esc(undoStack.at(-1).label)}` : ""} (Ctrl+Z)" aria-label="撤销" ${undoStack.length ? "" : "disabled"}>${icon(ICON.undo)}</button><button type="button" class="icon-btn" data-arch-act="redo" title="重做${redoStack.length ? `：${esc(redoStack.at(-1).label)}` : ""} (Ctrl+Shift+Z)" aria-label="重做" ${redoStack.length ? "" : "disabled"}>${icon(ICON.redo)}</button><button type="button" class="btn ghost" data-arch-act="tidy" title="按领域树自动排列（可撤销）">${icon(ICON.tidy)}<span class="arch-tidy-label">自动排列</span></button>` : "";
-    const markup = `<div class="arch-heading"><div class="title">${icon(ICON.board)}架构图${busy ? '<span class="arch-saving">保存中…</span>' : ""}</div><div class="sub">${board.parts.length} 个 part · ${m.leaders.size} 位 leader${loose ? ` · ${loose} 位未归属` : ""}${picked}${edit ? "" : ' · <span title="在电脑上打开 Crew 可以编辑">只读</span>'}</div></div><div class="right">${tools}</div>`;
+    const m = model(), edit = editable(), dir = direction();
+    const picked = edit && selection.size > 1 ? ` · 已选 ${selection.size} 个 part` : "";
+    const toggle = `<div class="arch-dir" role="radiogroup" aria-label="架构图方向">${["TB", "LR"].map(value => `<button type="button" role="radio" aria-checked="${dir === value}" data-arch-act="direction" data-direction="${value}" title="${value === "TB" ? "架构树：从上到下" : "蓝图：从左到右"}">${icon(ICON[value.toLowerCase()])}<span>${DIRECTION[value]}</span></button>`).join("")}</div>`;
+    const tools = edit ? `${toggle}<span class="arch-tool-gap" aria-hidden="true"></span><button type="button" class="btn primary arch-new" data-arch-act="new">${icon(ICON.plus)}新 part</button><button type="button" class="icon-btn" data-arch-act="undo" title="撤销${undoStack.length ? `：${esc(undoStack.at(-1).label)}` : ""} (Ctrl+Z)" aria-label="撤销" ${undoStack.length ? "" : "disabled"}>${icon(ICON.undo)}</button><button type="button" class="icon-btn" data-arch-act="redo" title="重做${redoStack.length ? `：${esc(redoStack.at(-1).label)}` : ""} (Ctrl+Shift+Z)" aria-label="重做" ${redoStack.length ? "" : "disabled"}>${icon(ICON.redo)}</button><button type="button" class="btn ghost" data-arch-act="tidy" title="按当前方向自动排列（可撤销）">${icon(ICON.tidy)}<span class="arch-tidy-label">自动排列</span></button>` : "";
+    const markup = `<div class="arch-heading"><div class="title">${icon(ICON.tb)}架构图${busy ? '<span class="arch-saving">保存中…</span>' : ""}</div><div class="sub">${board.parts.length} 个 part · ${m.leaders.size} 位 leader${m.loose.length ? ` · ${m.loose.length} 位未归属` : ""}${picked}${edit ? "" : ' · <span title="在电脑上打开 Crew 可以编辑">只读</span>'}</div></div><div class="right">${tools}</div>`;
     if (head.dataset.render !== markup) { head.innerHTML = markup; head.dataset.render = markup; }
     const hint = $(".arch-hint");
-    const text = edit ? "拖到 part 上或从圆点拉线来挂接 · 左键框选 · 右键 / 空格拖动平移 · 滚轮缩放" : "拖动平移 · 双指缩放 · 点 leader 进入对话 · 在电脑上可以编辑";
+    const text = edit ? "把 leader 拖进 part 归入 · 拖 part 到 part 上或从圆点拉线改挂 · 右键 leader 设负责人 · 右键 / 空格拖动平移 · 滚轮缩放" : "拖动平移 · 双指缩放 · 点 leader 进入对话 · 在电脑上可以编辑";
     if (hint.textContent !== text) hint.textContent = text;
   }
+  function memberRow(m, item, lead, partName) {
+    const status = STATUS[item.status] ? item.status : "idle";
+    return `<div class="arch-member${lead ? " lead" : ""}${gesture?.type === "leader" && gesture.moved && gesture.leader === item.session_id ? " dragging" : ""}" data-leader="${esc(item.session_id)}" style="--tint:${esc(options.tint(item.name))}" role="link" aria-label="${esc(item.name)}${lead ? `，「${esc(partName)}」负责人` : ""}，${STATUS[status]}，进入对话">`
+      + `${options.avatar(item.name, 24)}<span class="arch-member-text"><span class="arch-member-line"><b class="arch-member-name" title="${esc(item.name)}">${esc(item.name)}</b>${lead ? '<span class="arch-lead" title="本层负责人：负责这一层各子 part 共用的部分">负责</span>' : ""}</span>`
+      + `<span class="arch-member-brief" title="${esc(item.goal || "")}">${item.goal ? esc(item.goal) : "还没有简介"}</span></span>`
+      + `<span class="st ${status}" title="${STATUS[status]}"><i class="dot ${status}"></i><span>${STATUS[status]}</span></span></div>`;
+  }
   function partNode(m, part) {
-    const k = key("part", part.id), p = posOf(m, k), owner = m.holder.get(part.id);
-    const leader = owner ? m.leaders.get(owner.session_id) : null, kids = (m.children.get(part.id) || []).length + (owner && leader ? 1 : 0);
-    const hidden = part.collapsed ? descendants(m, part.id).length : 0;
-    const body = leader ? `<span class="arch-owner" style="--tint:${esc(options.tint(leader.name))}">${options.avatar(leader.name, 18)}<span>负责 <b>${esc(leader.name)}</b></span></span>`
-      : owner ? `<span class="arch-owner archived" title="这位 leader 已归档；挂上别的 leader 会替换它">已归档的 ${esc(owner.name)}</span>`
-      : `<span class="arch-folder-note">${editable() ? "文件夹 · 拖 leader 到这里负责本层" : "文件夹"}</span>`;
+    const p = posOf(m, part.id), people = membersOf(m, part.id), kids = (m.children.get(part.id) || []).length;
+    const below = part.collapsed ? descendants(m, part.id) : [];
+    const folded = part.collapsed ? [people.length + below.reduce((n, id) => n + membersOf(m, id).length, 0), below.length] : null;
+    const body = part.collapsed
+      ? `<p class="arch-part-note">已折叠${folded[0] ? ` · ${folded[0]} 位 leader` : ""}${folded[1] ? ` · ${folded[1]} 个子 part` : ""}</p>`
+      : people.length ? people.map(place => memberRow(m, m.leaders.get(place.session_id), place.lead, part.name)).join("")
+      : `<p class="arch-part-note">${editable() ? "把 leader 拖到这里" : "还没有 leader"}</p>`;
     const name = renaming === part.id ? `<input class="arch-rename" value="${esc(part.name)}" maxlength="${NAME_MAX}" aria-label="part 名称" spellcheck="false">`
       : `<span class="arch-part-name" title="${esc(part.name)}${editable() ? "（双击改名）" : ""}">${esc(part.name)}</span>`;
-    return `<div class="arch-node arch-part${selection.has(k) ? " selected" : ""}${part.collapsed ? " collapsed" : ""}${gesture?.keys?.includes(k) ? " dragging" : ""}" data-key="${esc(k)}" style="transform:translate(${p.x}px,${p.y}px)" role="group" aria-label="part ${esc(part.name)}">`
-      + `<span class="arch-pin in${part.parent_id ? " linked" : ""}" data-pin="in" title="上级 part：拖到别的 part 改挂"></span>`
-      + `<div class="arch-part-head"><button type="button" class="arch-fold" data-arch-act="fold" data-id="${esc(part.id)}" aria-expanded="${!part.collapsed}" aria-label="${part.collapsed ? "展开" : "折叠"} ${esc(part.name)}" ${kids || part.collapsed ? "" : "disabled"}>${icon(part.collapsed ? ICON.right : ICON.down)}</button>${icon(ICON.folder)}${name}${hidden ? `<span class="arch-count" title="折叠了 ${hidden} 项">${hidden}</span>` : ""}</div>`
-      + `<div class="arch-part-body">${body}</div>`
-      + `<span class="arch-pin out${kids ? " linked" : ""}" data-pin="out" title="下属：拉线连到子 part 或负责的 leader"></span></div>`;
+    const cls = `${selection.has(part.id) ? " selected" : ""}${part.collapsed ? " collapsed" : ""}${gesture?.ids?.includes(part.id) ? " dragging" : ""}`;
+    return `<div class="arch-node arch-part${cls}" data-part="${esc(part.id)}" style="transform:translate(${p.x}px,${p.y}px)" role="group" aria-label="part ${esc(part.name)}">`
+      + `<span class="arch-pin in${part.parent_id ? " linked" : ""}" data-pin="in" title="上级 part：拉到别的 part 改挂，拉到空白处移出"></span>`
+      + `<div class="arch-part-head"><button type="button" class="arch-fold" data-arch-act="fold" data-id="${esc(part.id)}" aria-expanded="${!part.collapsed}" aria-label="${part.collapsed ? "展开" : "折叠"} ${esc(part.name)}" ${kids || people.length || part.collapsed ? "" : "disabled"}>${icon(part.collapsed ? ICON.right : ICON.down)}</button>${icon(ICON.folder)}${name}${!part.collapsed && people.length ? `<span class="arch-count" title="${people.length} 位 leader">${icon(ICON.people)}${people.length}</span>` : ""}</div>`
+      + `<div class="arch-members">${body}</div>`
+      + `<span class="arch-pin out${kids ? " linked" : ""}" data-pin="out" title="下级 part：拉线连到别的 part，或拉到空白处新建"></span></div>`;
   }
-  function leaderNode(m, item) {
-    const k = key("leader", item.session_id), p = posOf(m, k), status = STATUS[item.status] ? item.status : "idle";
-    const placed = Boolean(m.places.get(item.session_id)?.domain_id);
-    return `<div class="arch-node arch-leader${selection.has(k) ? " selected" : ""}${gesture?.keys?.includes(k) ? " dragging" : ""}" data-key="${esc(k)}" style="--tint:${esc(options.tint(item.name))};transform:translate(${p.x}px,${p.y}px)" role="link" aria-label="${esc(item.name)}，${STATUS[status]}，进入对话">`
-      + `<span class="arch-pin in${placed ? " linked" : ""}" data-pin="in" title="所属 part：拉线到 part 改挂"></span>`
-      + `<div class="arch-leader-head">${options.avatar(item.name, 28)}<span class="arch-leader-name" title="${esc(item.name)}">${esc(item.name)}</span><span class="st ${status}"><i class="dot ${status}"></i>${STATUS[status]}</span></div>`
-      + `<p class="arch-leader-goal" title="${esc(item.goal || "")}">${item.goal ? esc(item.goal) : '<span class="arch-muted">还没有简介</span>'}</p>`
-      + `<span class="arch-leader-open">进入对话 ›</span></div>`;
+  function renderShelf(m) {
+    const shelf = $(".arch-shelf"); if (!shelf) return;
+    const open = shelfOpen ?? (!phone.matches);
+    shelf.dataset.open = String(open);
+    const rows = m.loose.map(item => memberRow(m, item, false, "")).join("");
+    shelf.innerHTML = `<button type="button" class="arch-shelf-head" data-arch-act="shelf" aria-expanded="${open}">${icon(ICON.people)}<span>未归属</span><b>${m.loose.length}</b>${icon(open ? ICON.down : ICON.right)}</button>`
+      + `<div class="arch-shelf-body" ${open ? "" : "hidden"}>${rows || `<p class="arch-shelf-note">所有 leader 都在架构里了${editable() ? "；把 leader 拖到这里可移出" : ""}</p>`}${rows && editable() ? '<p class="arch-shelf-note">拖进 part 归入</p>' : ""}</div>`;
   }
   function renderWorld() {
-    const m = model(), nodes = $(".arch-nodes");
-    if (!nodes) return;
-    const markup = board.parts.filter(part => !partHidden(m, part.id)).map(part => partNode(m, part)).join("")
-      + [...m.leaders.values()].filter(item => !leaderHidden(m, item.session_id)).map(item => leaderNode(m, item)).join("");
-    nodes.innerHTML = markup;
+    const nodes = $(".arch-nodes"); if (!nodes) return;
+    const m = model();
+    $(".arch-canvas").dataset.dir = direction();
+    nodes.innerHTML = board.parts.filter(part => !hidden(m, part.id)).map(part => partNode(m, part)).join("");
+    measure();
+    renderShelf(m);
     renderWires();
     const empty = $(".arch-empty");
     empty.hidden = board.parts.length > 0;
-    if (!empty.hidden) empty.innerHTML = `<div class="arch-empty-text"><h2>把领域拆成一棵树</h2><p>part 可以层层嵌套，比如 感知 › 视觉 › 相机；每个 part 可以挂一位 leader 负责这一层共用的部分，也可以只是文件夹。${editable() ? "新建 part 后，把 leader 拖到它上面，或从 part 右侧的圆点拉线连过去。" : "在电脑上打开 Crew 可以编辑。"}</p></div>${editable() ? `<button type="button" class="btn primary" data-arch-act="new">${icon(ICON.plus)}新建第一个 part</button>` : ""}`;
+    if (!empty.hidden) empty.innerHTML = `<div class="arch-empty-text"><h2>把领域拆成一棵树</h2><p>part 可以层层嵌套，比如 感知 › 视觉 › 相机；一个 part 里可以放多位 leader，其中一位可以设为本层负责人，负责下面各子 part 共用的部分。${editable() ? "新建 part 后，把左侧未归属的 leader 拖进去。" : "在电脑上打开 Crew 可以编辑。"}</p></div>${editable() ? `<button type="button" class="btn primary" data-arch-act="new">${icon(ICON.plus)}新建第一个 part</button>` : ""}`;
     if (renaming !== null) {
       const input = $(".arch-rename");
-      if (input && document.activeElement !== input) { reveal(key("part", renaming)); input.focus({preventScroll:true}); input.select(); }
+      if (input && document.activeElement !== input) { reveal(renaming); input.focus({preventScroll:true}); input.select(); }
     }
   }
-  const bend = (a, b) => Math.max(40, Math.abs(b.x - a.x) * .5);
-  const wirePath = (a, b) => { const dx = bend(a, b); return `M${a.x} ${a.y}C${a.x + dx} ${a.y} ${b.x - dx} ${b.y} ${b.x} ${b.y}`; };
-  const outPin = (m, partId) => { const p = posOf(m, key("part", partId)); return {x:p.x + PART_W, y:p.y + PIN_Y}; };
-  const inPin = (m, k) => { const p = posOf(m, k); return {x:p.x, y:p.y + PIN_Y}; };
+  // Wires: a blueprint curve left-to-right, a tree elbow top-down. Each returns its path and the box it covers.
+  function wire(a, b, tb) {
+    if (!tb) {
+      const dx = Math.max(40, Math.abs(b.x - a.x) * .5);
+      return {d:`M${a.x} ${a.y}C${a.x + dx} ${a.y} ${b.x - dx} ${b.y} ${b.x} ${b.y}`, x0:Math.min(a.x, b.x - dx), x1:Math.max(a.x + dx, b.x), y0:Math.min(a.y, b.y), y1:Math.max(a.y, b.y)};
+    }
+    const gap = b.y - a.y, wide = Math.abs(b.x - a.x);
+    if (gap < 32) {
+      const dy = Math.max(40, Math.abs(gap) * .5);
+      return {d:`M${a.x} ${a.y}C${a.x} ${a.y + dy} ${b.x} ${b.y - dy} ${b.x} ${b.y}`, x0:Math.min(a.x, b.x), x1:Math.max(a.x, b.x), y0:Math.min(a.y, b.y - dy), y1:Math.max(a.y + dy, b.y)};
+    }
+    if (wide < 1) return {d:`M${a.x} ${a.y}V${b.y}`, x0:a.x, x1:a.x, y0:a.y, y1:b.y};
+    const mid = a.y + Math.min(GAP_TB / 2, gap / 2), r = Math.min(10, wide / 2, (gap) / 4), s = Math.sign(b.x - a.x);
+    return {d:`M${a.x} ${a.y}V${mid - r}Q${a.x} ${mid} ${a.x + s * r} ${mid}H${b.x - s * r}Q${b.x} ${mid} ${b.x} ${mid + r}V${b.y}`,
+            x0:Math.min(a.x, b.x), x1:Math.max(a.x, b.x), y0:a.y, y1:b.y};
+  }
+  function outPin(m, id) { const p = posOf(m, id), s = sizeOf(m, id); return direction() === "TB" ? {x:p.x + s.w / 2, y:p.y + s.h} : {x:p.x + s.w, y:p.y + PIN_Y}; }
+  function inPin(m, id) { const p = posOf(m, id), s = sizeOf(m, id); return direction() === "TB" ? {x:p.x + s.w / 2, y:p.y} : {x:p.x, y:p.y + PIN_Y}; }
   // The SVG box spans exactly the wires: Chrome skips painting an SVG whose own box is off screen, overflow or not.
   function renderWires() {
     const m = model(), svg = $(".arch-wires"); if (!svg) return;
-    const wires = [];
-    for (const part of board.parts) if (part.parent_id !== null && !partHidden(m, part.id)) wires.push(["arch-wire", "", outPin(m, part.parent_id), inPin(m, key("part", part.id))]);
-    for (const item of m.leaders.values()) {
-      const domain = m.places.get(item.session_id)?.domain_id;
-      if (domain && !leaderHidden(m, item.session_id)) wires.push(["arch-wire leader", `--tint:${esc(options.tint(item.name))}`, outPin(m, domain), inPin(m, key("leader", item.session_id))]);
-    }
+    const tb = direction() === "TB", wires = [];
+    for (const part of board.parts) if (part.parent_id !== null && !hidden(m, part.id)) wires.push(["arch-wire", wire(outPin(m, part.parent_id), inPin(m, part.id), tb)]);
     if (gesture?.type === "wire" && gesture.moved) {
-      const from = gesture.pin === "out" ? outPin(m, split(gesture.from)[1]) : gesture.end, to = gesture.pin === "out" ? gesture.end : inPin(m, gesture.from);
-      wires.push([`arch-wire draft${gesture.over ? " ok" : ""}`, "", from, to]);
+      const from = gesture.pin === "out" ? outPin(m, gesture.from) : gesture.end, to = gesture.pin === "out" ? gesture.end : inPin(m, gesture.from);
+      wires.push([`arch-wire draft${gesture.over ? " ok" : ""}`, wire(from, to, tb)]);
     }
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    for (const [, , a, b] of wires) {
-      const dx = bend(a, b);
-      x0 = Math.min(x0, a.x, b.x - dx); x1 = Math.max(x1, a.x + dx, b.x); y0 = Math.min(y0, a.y, b.y); y1 = Math.max(y1, a.y, b.y);
-    }
+    for (const [, w] of wires) { x0 = Math.min(x0, w.x0); y0 = Math.min(y0, w.y0); x1 = Math.max(x1, w.x1); y1 = Math.max(y1, w.y1); }
     if (!wires.length) { x0 = y0 = 0; x1 = y1 = 1; }
     x0 -= 4; y0 -= 4; x1 += 4; y1 += 4;
     Object.assign(svg.style, {left:`${x0}px`, top:`${y0}px`, width:`${x1 - x0}px`, height:`${y1 - y0}px`});
     svg.setAttribute("viewBox", `${x0} ${y0} ${x1 - x0} ${y1 - y0}`);
-    svg.innerHTML = wires.map(([cls, style, a, b]) => `<path class="${cls}"${style ? ` style="${style}"` : ""} d="${wirePath(a, b)}"/>`).join("");
+    svg.innerHTML = wires.map(([cls, w]) => `<path class="${cls}" d="${w.d}"/>`).join("");
   }
   function renderSelection() {
-    for (const node of host.querySelectorAll(".arch-node")) node.classList.toggle("selected", selection.has(node.dataset.key));
+    for (const node of host.querySelectorAll(".arch-part")) node.classList.toggle("selected", selection.has(node.dataset.part));
     renderHead();
   }
   function applyCamera() {
@@ -220,6 +220,11 @@ const CrewArchitecture = (() => {
     } catch { /* fall through to fitting the board */ }
     return null;
   }
+  function setShelf(open) {
+    shelfOpen = open;
+    try { localStorage.setItem("crew.architecture.shelf", String(open)); } catch { /* per-viewer convenience */ }
+    renderShelf(model());
+  }
 
   // ---- camera ---------------------------------------------------------------------------------------------------
   function canvasRect() { return $(".arch-canvas").getBoundingClientRect(); }
@@ -229,52 +234,55 @@ const CrewArchitecture = (() => {
     camera = {x:sx - (sx - camera.x) * next / camera.z, y:sy - (sy - camera.y) * next / camera.z, z:next};
     applyCamera(); saveCamera();
   }
-  // Pan just enough to bring a node fully into view.
-  function reveal(k) {
-    const node = host.querySelector(`.arch-node[data-key="${CSS.escape(k)}"]`); if (!node) return;
+  // Pan just enough to bring a part fully into view.
+  function reveal(id) {
+    const node = partEl(id); if (!node) return;
     const r = canvasRect(), b = node.getBoundingClientRect(), margin = 32;
     const dx = b.left < r.left + margin ? r.left + margin - b.left : b.right > r.right - margin ? r.right - margin - b.right : 0;
     const dy = b.top < r.top + margin ? r.top + margin - b.top : b.bottom > r.bottom - 64 ? r.bottom - 64 - b.bottom : 0;
     if (dx || dy) { camera = {...camera, x:camera.x + dx, y:camera.y + dy}; applyCamera(); saveCamera(); }
   }
   function zoomCenter(factor) { const r = canvasRect(); zoomAt(camera.z * factor, r.left + r.width / 2, r.top + r.height / 2); }
-  function bounds(keys) {
+  function bounds(ids) {
     const m = model(); let box = null;
-    for (const k of keys) {
-      const p = posOf(m, k), size = sizeOf(k);
+    for (const id of ids) {
+      if (!m.parts.has(id)) continue;
+      const p = posOf(m, id), size = sizeOf(m, id);
       box = box === null ? {x0:p.x, y0:p.y, x1:p.x + size.w, y1:p.y + size.h}
         : {x0:Math.min(box.x0, p.x), y0:Math.min(box.y0, p.y), x1:Math.max(box.x1, p.x + size.w), y1:Math.max(box.y1, p.y + size.h)};
     }
     return box;
   }
-  const shownKeys = () => [...host.querySelectorAll(".arch-node")].map(node => node.dataset.key);
-  function fit(keys = shownKeys(), maxZoom = 1) {
-    const r = canvasRect(), box = bounds(keys), pad = r.width < 500 ? 24 : 56;
+  const shownIds = () => [...host.querySelectorAll(".arch-part")].map(node => node.dataset.part);
+  function fit(ids = shownIds(), maxZoom = 1) {
+    const r = canvasRect(), box = bounds(ids), pad = r.width < 500 ? 24 : 56;
     // Not laid out yet (the page is still appearing): fit once the canvas has a size.
-    if (r.width === 0 || r.height === 0) { pendingFit = [keys, maxZoom]; return; }
+    if (r.width === 0 || r.height === 0) { pendingFit = [ids, maxZoom]; return; }
     pendingFit = null;
-    if (box === null) { camera = {x:r.width / 2 - 100, y:Math.max(80, r.height / 3), z:1}; applyCamera(); return; }
-    // Keep clear of the first-use banner at the top and the hint and zoom bar at the bottom.
-    const banner = $(".arch-empty"), top = banner && !banner.hidden ? banner.offsetTop + banner.offsetHeight + 16 : pad, bottom = pad + 24;
-    const z = clampZoom(Math.min(maxZoom, (r.width - pad * 2) / Math.max(1, box.x1 - box.x0), (r.height - top - bottom) / Math.max(1, box.y1 - box.y0)));
-    camera = {z, x:(r.width - (box.x1 - box.x0) * z) / 2 - box.x0 * z, y:top + (r.height - top - bottom - (box.y1 - box.y0) * z) / 2 - box.y0 * z};
+    if (box === null) { camera = {x:r.width / 2 - PART_W / 2, y:Math.max(80, r.height / 3), z:1}; applyCamera(); return; }
+    // Keep clear of the shelf and the first-use banner, and of the hint and zoom bar at the bottom.
+    const shelf = $(".arch-shelf"), banner = $(".arch-empty");
+    const left = shelf && !phone.matches && shelf.dataset.open === "true" ? shelf.offsetLeft + shelf.offsetWidth + 24 : pad;
+    const top = banner && !banner.hidden ? banner.offsetTop + banner.offsetHeight + 16 : pad, bottom = pad + 24;
+    const z = clampZoom(Math.min(maxZoom, (r.width - left - pad) / Math.max(1, box.x1 - box.x0), (r.height - top - bottom) / Math.max(1, box.y1 - box.y0)));
+    camera = {z, x:left + (r.width - left - pad - (box.x1 - box.x0) * z) / 2 - box.x0 * z, y:top + (r.height - top - bottom - (box.y1 - box.y0) * z) / 2 - box.y0 * z};
     applyCamera(); saveCamera();
   }
-  // From the chat path: show a part (or the nearest shown one above it) and flash it.
+  function flash(node) { if (!node) return; node.classList.remove("flash"); void node.offsetWidth; node.classList.add("flash"); }
+  // From the chat path or the right panel: show the leader's part (or the nearest shown one above it) and flash both.
   function applyFocus() {
     if (focusRequest === null || board === null || host === null) return;
     const m = model(), request = focusRequest; focusRequest = null;
-    let target = null;
-    if (request.part && m.parts.has(request.part)) target = [request.part, ...ancestors(m, request.part)].find(id => !partHidden(m, id));
-    const keys = target ? [key("part", target)] : [];
-    if (request.leader && visible(m, key("leader", request.leader))) keys.push(key("leader", request.leader));
-    if (!keys.length) return;
-    selection = new Set(keys); renderSelection();
-    fit(keys, Math.max(camera?.z ?? 1, .9));
-    for (const k of keys) {
-      const node = host.querySelector(`.arch-node[data-key="${CSS.escape(k)}"]`);
-      if (node) { node.classList.remove("flash"); void node.offsetWidth; node.classList.add("flash"); }
+    const domain = request.part && m.parts.has(request.part) ? request.part : m.places.get(request.leader)?.domain_id;
+    if (!domain) {
+      if (request.leader && m.leaders.has(request.leader)) { setShelf(true); flash(host.querySelector(`.arch-shelf [data-leader="${CSS.escape(request.leader)}"]`)); }
+      return;
     }
+    const target = [domain, ...ancestors(m, domain)].find(id => !hidden(m, id));
+    selection = new Set([target]); renderSelection();
+    fit([target], Math.max(camera?.z ?? 1, .9));
+    flash(partEl(target));
+    if (request.leader) flash(partEl(target)?.querySelector(`[data-leader="${CSS.escape(request.leader)}"]`));
   }
 
   // ---- saving and undo ------------------------------------------------------------------------------------------
@@ -283,9 +291,9 @@ const CrewArchitecture = (() => {
     try {
       const result = await options.api(`/api/domains?project=${encodeURIComponent(name)}`);
       if (token !== loadToken || name !== project) return;
-      board = result; errorText = ""; cached = null;
+      board = result; errorText = ""; cached = null; pendingDirection = null;
       if (clearHistory) { undoStack = []; redoStack = []; }
-      selection = new Set([...selection].filter(k => host === null || visible(model(), k)));
+      if (host !== null) { const m = model(); selection = new Set([...selection].filter(id => visible(m, id))); }
     } catch (error) {
       if (token !== loadToken) return;
       errorText = error.message || "读取架构图失败";
@@ -295,22 +303,16 @@ const CrewArchitecture = (() => {
     const first = camera === null;
     render();
     if (first && board !== null) { camera = loadCamera(); if (camera === null) { camera = {x:0, y:0, z:1}; fit(); } applyCamera(); }
-    applyFocus(); settleLeaders();
-  }
-  // A leader without a saved place is drawn where it would fit; save that once, so adding parts later doesn't move it.
-  function settleLeaders() {
-    if (!editable() || board === null || host === null || busy > 0 || gesture !== null) return;
-    const m = model(), items = [...m.auto].map(([id, p]) => ({kind:"leader", id, x:Math.round(p.x), y:Math.round(p.y)}));
-    if (items.length) commit("放置 leader", [{op:"move", items}], {undoable:false});
+    applyFocus();
   }
   function run(task) {
     busy++; renderHead();
     queue = queue.then(task).catch(error => {
-      pending.clear();
+      pending.clear(); pendingDirection = null;
       if (error.status === 409) { undoStack = []; redoStack = []; options.toast("架构图在别处改过了，已重新载入；之前的撤销记录已清空。"); }
       else options.toast(error.message || "保存失败，请重试。");
       return load(error.status === 409);
-    }).finally(() => { busy--; if (host !== null && board !== null) { render(); } });
+    }).finally(() => { busy--; if (host !== null && board !== null) render(); });
     return queue;
   }
   async function send(ops) {
@@ -321,54 +323,60 @@ const CrewArchitecture = (() => {
   // The undo batch: each op's opposite in reverse order, from the board before the batch and what the server did.
   function invert(before, ops, effects) {
     const parts = new Map(before.parts.map(part => [part.id, part])), places = new Map(before.leaders.map(place => [place.session_id, place]));
-    const m = model(), back = [];
+    const back = [];
     ops.forEach((op, index) => {
       const effect = effects[index];
       let steps = [];
       if (op.op === "create") steps = [{op:"delete", id:effect.id}];
       else if (op.op === "rename") steps = [{op:"rename", id:op.id, name:parts.get(op.id).name}];
       else if (op.op === "collapse") steps = [{op:"collapse", id:op.id, collapsed:parts.get(op.id).collapsed}];
+      else if (op.op === "direction") steps = [{op:"direction", direction:before.direction}];
       else if (op.op === "parent") steps = [{op:"parent", id:op.id, parent_id:parts.get(op.id).parent_id}];
-      else if (op.op === "move") steps = [{op:"move", items:op.items.map(item => {
-        const old = item.kind === "part" ? parts.get(item.id) : places.get(item.id);
-        const at = old && old.x !== null && old.y !== null ? old : before.auto?.get(item.id) || m.auto.get(item.id) || item;
-        return {kind:item.kind, id:item.id, x:at.x, y:at.y};
-      })}];
-      else if (op.op === "assign") steps = [{op:"assign", session_id:op.session_id, domain_id:places.get(op.session_id)?.domain_id ?? null},
-        ...(effect ? [{op:"assign", session_id:effect.session_id, domain_id:effect.domain_id}] : [])];
-      else if (op.op === "delete") {
+      else if (op.op === "move") steps = [{op:"move", items:op.items.map(item => ({id:item.id, x:parts.get(item.id).x, y:parts.get(item.id).y}))}];
+      else if (op.op === "assign") {
+        const old = places.get(op.session_id);
+        steps = [{op:"assign", session_id:op.session_id, domain_id:old?.domain_id ?? null}, ...(old?.lead ? [{op:"lead", session_id:op.session_id, lead:true}] : [])];
+      } else if (op.op === "lead") {
+        const was = places.get(op.session_id)?.lead === true;
+        steps = op.lead ? (effect.previous && effect.previous !== op.session_id ? [{op:"lead", session_id:effect.previous, lead:true}] : was ? [] : [{op:"lead", session_id:op.session_id, lead:false}])
+          : was ? [{op:"lead", session_id:op.session_id, lead:true}] : [];
+      } else if (op.op === "delete") {
         const part = parts.get(op.id);
         steps = [{op:"create", id:part.id, name:part.name, parent_id:effect.parent_id, x:part.x, y:part.y, collapsed:part.collapsed},
           ...effect.children.map(child => ({op:"parent", id:child, parent_id:part.id})),
-          ...(effect.leader ? [{op:"assign", session_id:effect.leader, domain_id:part.id}] : [])];
+          ...effect.leaders.map(session_id => ({op:"assign", session_id, domain_id:part.id})),
+          ...(effect.lead ? [{op:"lead", session_id:effect.lead, lead:true}] : [])];
       }
       back.unshift(...steps);
     });
     return back;
   }
-  // One user action. Moves show at once; the rest redraws when the server answers.
-  function commit(label, ops, {positions = null, undoable = true, after = null} = {}) {
+  // One user action. Moves (and a direction switch) show at once; the rest redraws when the server answers.
+  function commit(label, ops, {positions = null, dir = null, undoable = true, after = null} = {}) {
     const token = {};
-    if (positions) for (const [k, pos] of positions) pending.set(k, {pos, token});
-    if (positions) { renderWorld(); }
+    if (positions) for (const [id, pos] of positions) pending.set(id, {pos, token});
+    if (dir) pendingDirection = dir;
+    if (positions || dir) renderWorld();
     return run(async () => {
-      const before = {...board, auto:new Map(model().auto)};
+      const before = board;
       const result = await send(ops);
-      for (const [k, value] of pending) if (value.token === token) pending.delete(k);
+      for (const [id, value] of pending) if (value.token === token) pending.delete(id);
+      if (dir) pendingDirection = null;
       let step = null;
       if (undoable) { step = {label, forward:ops, backward:invert(before, ops, result.effects)}; undoStack.push(step); if (undoStack.length > HISTORY) undoStack.shift(); redoStack = []; }
       after?.(result, before, step);
     });
   }
+  function replay(ops) { return ops.length ? send(ops) : Promise.resolve(); }
   function undo() {
     if (!editable() || !undoStack.length) return;
     const step = undoStack.pop();
-    run(async () => { try { await send(step.backward); redoStack.push(step); } catch (error) { undoStack.push(step); throw error; } });
+    run(async () => { try { await replay(step.backward); redoStack.push(step); } catch (error) { undoStack.push(step); throw error; } });
   }
   function redo() {
     if (!editable() || !redoStack.length) return;
     const step = redoStack.pop();
-    run(async () => { try { await send(step.forward); undoStack.push(step); } catch (error) { redoStack.push(step); throw error; } });
+    run(async () => { try { await replay(step.forward); undoStack.push(step); } catch (error) { redoStack.push(step); throw error; } });
   }
   // A toast's 撤销 undoes that step only while nothing newer sits on top of it.
   const undoStep = step => () => {
@@ -378,24 +386,26 @@ const CrewArchitecture = (() => {
 
   // ---- edits ----------------------------------------------------------------------------------------------------
   function newId() { const bytes = new Uint8Array(6); crypto.getRandomValues(bytes); return "p" + [...bytes].map(b => b.toString(16).padStart(2, "0")).join(""); }
-  function freeName(m, base = "新 part") { const names = new Set(board.parts.map(part => part.name)); if (!names.has(base)) return base; for (let n = 2; ; n++) if (!names.has(`${base} ${n}`)) return `${base} ${n}`; }
-  // The next free row to the right of a part, below what already hangs there.
-  function slotBelow(m, partId, skip = new Set()) {
-    const parent = posOf(m, key("part", partId));
-    let y = parent.y, any = false;
-    const owner = m.holder.get(partId);
-    const kids = [...(owner && m.leaders.has(owner.session_id) ? [key("leader", owner.session_id)] : []), ...(m.children.get(partId) || []).map(part => key("part", part.id))];
-    for (const k of kids) if (!skip.has(k) && visible(m, k)) { const p = posOf(m, k); y = Math.max(y, p.y + sizeOf(k).h + ROW_GAP); any = true; }
-    return {x:parent.x + COLUMN, y:any ? y : parent.y};
+  function freeName(base = "新 part") { const names = new Set(board.parts.map(part => part.name)); if (!names.has(base)) return base; for (let n = 2; ; n++) if (!names.has(`${base} ${n}`)) return `${base} ${n}`; }
+  // Where a new child of a part goes: one level further, after the children already shown there.
+  function slotFor(m, parentId, skip = new Set()) {
+    const p = posOf(m, parentId), s = sizeOf(m, parentId), tb = direction() === "TB";
+    const kids = (m.children.get(parentId) || []).filter(child => !skip.has(child.id) && visible(m, child.id));
+    if (tb) {
+      const y = p.y + s.h + GAP_TB;
+      return {x:kids.length ? Math.max(...kids.map(child => posOf(m, child.id).x + sizeOf(m, child.id).w)) + GAP_CROSS : p.x, y};
+    }
+    const x = p.x + s.w + GAP_LR;
+    return {x, y:kids.length ? Math.max(...kids.map(child => posOf(m, child.id).y + sizeOf(m, child.id).h)) + GAP_CROSS : p.y};
   }
   function createPart(parentId = null, at = null) {
     if (!editable()) return;
-    const m = model(), id = newId(), name = freeName(m);
-    let pos = at ?? (parentId !== null ? slotBelow(m, parentId) : null);
-    if (pos === null) { const r = canvasRect(); pos = toWorld(r.left + r.width / 2 - PART_W / 2 * camera.z, r.top + r.height / 2 - PART_H / 2 * camera.z); }
+    const m = model(), id = newId(), name = freeName();
+    let pos = at ?? (parentId !== null ? slotFor(m, parentId) : null);
+    if (pos === null) { const r = canvasRect(); pos = toWorld(r.left + r.width / 2 - PART_W / 2 * camera.z, r.top + r.height / 2 - 40 * camera.z); }
     const ops = [{op:"create", id, name, parent_id:parentId, x:Math.round(pos.x), y:Math.round(pos.y)}];
     if (parentId !== null && m.parts.get(parentId).collapsed) ops.push({op:"collapse", id:parentId, collapsed:false});
-    commit("新建 part", ops, {after:() => { selection = new Set([key("part", id)]); renaming = id; }});
+    commit("新建 part", ops, {after:() => { selection = new Set([id]); renaming = id; }});
   }
   function startRename(id) { if (!editable()) return; renaming = id; renderWorld(); }
   function finishRename(save) {
@@ -409,112 +419,140 @@ const CrewArchitecture = (() => {
   }
   function setCollapsed(id, collapsed) {
     const m = model(), part = m.parts.get(id); if (!part || part.collapsed === collapsed) return;
-    if (collapsed) selection = new Set([...selection].filter(k => !descendants(m, id).includes(k)));
+    if (collapsed) { const below = new Set(descendants(m, id)); selection = new Set([...selection].filter(item => !below.has(item))); }
     commit(collapsed ? "折叠" : "展开", [{op:"collapse", id, collapsed}], {undoable:false});
   }
-  function attachOps(m, keys, partId) {
-    const ops = [];
-    for (const k of keys) { const [kind, id] = split(k); ops.push(kind === "part" ? {op:"parent", id, parent_id:partId} : {op:"assign", session_id:id, domain_id:partId}); }
-    return ops;
-  }
-  // Which of the dragged nodes may hang on `partId`: no cycles, at most one leader, and not where they already are.
-  function attachable(m, keys, partId) {
-    if (keys.includes(key("part", partId))) return null;
+  // Which of the dragged parts may hang on `partId`: no cycles, only the tops of a dragged branch, not where they are.
+  function attachable(m, ids, partId) {
+    if (ids.includes(partId)) return null;
     const above = new Set([partId, ...ancestors(m, partId)]);
-    if (keys.some(k => k.startsWith("part:") && above.has(split(k)[1]))) return null;
-    const dragged = new Set(keys.filter(k => k.startsWith("part:")).map(k => split(k)[1]));
-    const tops = keys.filter(k => { for (let p = parentOf(m, k); p !== null; p = m.parts.get(p)?.parent_id ?? null) if (dragged.has(p)) return false; return true; });
-    const moving = tops.filter(k => parentOf(m, k) !== partId);
-    const leaders = moving.filter(k => k.startsWith("leader:"));
-    const result = leaders.length > 1 ? moving.filter(k => k.startsWith("part:")) : moving;
-    return result.length ? result : null;
+    if (ids.some(id => above.has(id))) return null;
+    const dragged = new Set(ids);
+    const tops = ids.filter(id => !ancestors(m, id).some(up => dragged.has(up)));
+    const moving = tops.filter(id => m.parts.get(id).parent_id !== partId);
+    return moving.length ? moving : null;
   }
-  function displacedToast(result, before, step, partId, leaderId) {
-    const effect = result.effects.find(item => item?.op === "displaced");
-    if (!effect) return;
-    const m = model(), old = m.leaders.get(effect.session_id)?.name ?? before.leaders.find(place => place.session_id === effect.session_id)?.name ?? "原来的 leader";
-    options.toast(`「${m.parts.get(partId)?.name ?? ""}」改由 ${m.leaders.get(leaderId)?.name ?? ""} 负责，${old} 已移出`, undoStep(step));
+  function detachPart(id) {
+    const m = model(), from = m.parts.get(id)?.parent_id;
+    if (!from) return;
+    commit(`从「${m.parts.get(from)?.name}」移出`, [{op:"parent", id, parent_id:null}],
+      {after:(result, before, step) => options.toast(`「${m.parts.get(id).name}」已从「${m.parts.get(from)?.name}」移出，成为顶层 part`, undoStep(step))});
   }
-  function detach(k) {
-    const m = model(), [kind, id] = split(k), from = parentOf(m, k);
-    if (from === null) return;
-    commit(`从「${m.parts.get(from)?.name}」移出`, [kind === "part" ? {op:"parent", id, parent_id:null} : {op:"assign", session_id:id, domain_id:null}],
-      {after:(result, before, step) => options.toast(`${nameOf(m, k)} 已从「${m.parts.get(from)?.name}」移出`, undoStep(step))});
+  function connect(id, partId) {
+    const m = model(), ids = attachable(m, [id], partId);
+    if (ids === null) { if (m.parts.get(id).parent_id !== partId) options.toast("不能挂到它自己或它的下级下面"); return; }
+    commit(`挂到「${m.parts.get(partId).name}」下`, [{op:"parent", id, parent_id:partId}]);
   }
-  function connect(k, partId) {
-    const m = model(), keys = attachable(m, [k], partId);
-    if (keys === null) { if (parentOf(m, k) !== partId) options.toast("不能挂到它自己或它的下级下面"); return; }
-    const leaderId = k.startsWith("leader:") ? split(k)[1] : null;
-    commit(`挂到「${m.parts.get(partId).name}」下`, attachOps(m, keys, partId), {after:(result, before, step) => leaderId && displacedToast(result, before, step, partId, leaderId)});
+  // A part grows by a row when a leader joins it; parts it would then cover move down with their branches.
+  function makeRoom(m, partId) {
+    const p = posOf(m, partId), s = sizeOf(m, partId), grow = membersOf(m, partId).length ? ROW_H : 12;
+    const bottom = p.y + s.h, above = new Set([partId, ...ancestors(m, partId)]), moved = new Map();
+    for (const id of shownIds()) {
+      if (above.has(id)) continue;
+      const q = posOf(m, id), size = sizeOf(m, id);
+      // Parts right below keep their distance to it; ones far enough away stay put.
+      if (q.x >= p.x + s.w || q.x + size.w <= p.x || q.y < bottom - 1 || q.y - bottom >= GAP_TB + grow) continue;
+      const shift = grow;
+      for (const branch of [id, ...descendants(m, id)]) {
+        if (moved.has(branch)) continue;
+        const at = posOf(m, branch); moved.set(branch, {x:at.x, y:at.y + shift});
+      }
+    }
+    return moved;
+  }
+  function placeLeader(sessionId, partId) {
+    const m = model(), item = m.leaders.get(sessionId), from = m.places.get(sessionId)?.domain_id ?? null;
+    if (!item || from === partId) return;
+    const lead = m.places.get(sessionId)?.lead, room = partId ? makeRoom(m, partId) : new Map();
+    commit(partId ? `${item.name} 归入「${m.parts.get(partId).name}」` : `${item.name} 移出到未归属`,
+      [{op:"assign", session_id:sessionId, domain_id:partId}, ...(room.size ? [moveOp(room)] : [])],
+      {positions:room.size ? room : null, after:(result, before, step) => { if (lead) options.toast(`${item.name} 不再是「${m.parts.get(from)?.name}」的负责人`, undoStep(step)); }});
+  }
+  function setLead(sessionId, lead) {
+    const m = model(), place = m.places.get(sessionId); if (!place) return;
+    const part = m.parts.get(place.domain_id)?.name, item = m.leaders.get(sessionId);
+    commit(lead ? `${item.name} 负责「${part}」` : `取消 ${item.name} 的负责人`, [{op:"lead", session_id:sessionId, lead}]);
   }
   function deleteParts(ids) {
     if (!editable() || !ids.length) return;
     const m = model(), names = ids.map(id => `「${m.parts.get(id)?.name}」`).join("、");
-    selection = new Set([...selection].filter(k => !ids.includes(split(k)[1])));
+    selection = new Set([...selection].filter(id => !ids.includes(id)));
     commit(`删除 ${names}`, ids.map(id => ({op:"delete", id})),
-      {after:(result, before, step) => options.toast(`已删除 ${names}，下面的 part 和 leader 已上移一层`, undoStep(step))});
+      {after:(result, before, step) => options.toast(`已删除 ${names}，里面的 leader 和子 part 已上移一层`, undoStep(step))});
   }
-  function selectBranch(id) { const m = model(); selection = new Set([key("part", id), ...descendants(m, id).filter(k => visible(m, k))]); renderSelection(); }
-  // Lay the tree out left to right: a part, then its leader and sub-parts one column further, centred on them.
-  function tidy() {
-    if (!editable()) return;
-    const m = model(), next = new Map(), height = k => sizeOf(k).h;
-    let cursor = 0;
-    const place = (part, depth) => {
-      const k = key("part", part.id), x = depth * COLUMN, owner = m.holder.get(part.id), kids = [];
-      if (!part.collapsed) {
-        if (owner && m.leaders.has(owner.session_id)) kids.push(key("leader", owner.session_id));
-        for (const child of [...(m.children.get(part.id) || [])].sort((a, b) => a.y - b.y)) kids.push(key("part", child.id));
-      }
-      if (!kids.length) { next.set(k, {x, y:cursor}); cursor += height(k) + ROW_GAP; return; }
-      const top = cursor;
-      for (const kid of kids) {
-        if (kid.startsWith("leader:")) { next.set(kid, {x:x + COLUMN, y:cursor}); cursor += height(kid) + ROW_GAP; }
-        else place(m.parts.get(split(kid)[1]), depth + 1);
-      }
-      next.set(k, {x, y:Math.max(top, Math.round((top + cursor - ROW_GAP) / 2 - height(k) / 2))});
+  function selectBranch(id) { const m = model(); selection = new Set([id, ...descendants(m, id).filter(item => visible(m, item))]); renderSelection(); }
+  // Lay the tree out in a direction: depth along the main axis (rows top-down, columns left-to-right), siblings
+  // side by side in their current order, each part centred over its children. Folded branches travel along.
+  function layout(dir) {
+    const m = model(), tb = dir === "TB", out = new Map();
+    const main = id => tb ? sizeOf(m, id).h : sizeOf(m, id).w, cross = id => tb ? sizeOf(m, id).w : sizeOf(m, id).h;
+    const order = list => [...list].sort((a, b) => tb ? (a.x - b.x) || (a.y - b.y) : (a.y - b.y) || (a.x - b.x));
+    const kids = id => m.parts.get(id).collapsed ? [] : order(m.children.get(id) || []);
+    const roots = order(m.children.get(null) || []), extent = [], span = new Map();
+    const depth = (id, d) => { extent[d] = Math.max(extent[d] || 0, main(id)); kids(id).forEach(child => depth(child.id, d + 1)); };
+    roots.forEach(root => depth(root.id, 0));
+    const offset = [0];
+    for (let d = 1; d < extent.length; d++) offset[d] = offset[d - 1] + extent[d - 1] + (tb ? GAP_TB : GAP_LR);
+    const width = id => { const total = kids(id).reduce((sum, child, index) => sum + width(child.id) + (index ? GAP_CROSS : 0), 0); const s = Math.max(cross(id), total); span.set(id, s); return s; };
+    roots.forEach(root => width(root.id));
+    const place = (id, d, start) => {
+      const list = kids(id), total = list.reduce((sum, child, index) => sum + span.get(child.id) + (index ? GAP_CROSS : 0), 0);
+      let cursor = start + (span.get(id) - total) / 2;
+      for (const child of list) { place(child.id, d + 1, cursor); cursor += span.get(child.id) + GAP_CROSS; }
+      const along = Math.round(start + (span.get(id) - cross(id)) / 2);
+      out.set(id, tb ? {x:along, y:offset[d]} : {x:offset[d], y:along});
     };
-    for (const root of [...(m.children.get(null) || [])].sort((a, b) => a.y - b.y)) { place(root, 0); cursor += ROW_GAP * 2; }
-    const loose = [...m.leaders.keys()].filter(id => !m.places.get(id)?.domain_id).map(id => key("leader", id)).sort((a, b) => posOf(m, a).y - posOf(m, b).y);
-    let y = 0;
-    for (const k of loose) { next.set(k, {x:board.parts.length ? -COLUMN - 40 : 0, y}); y += height(k) + ROW_GAP; }
-    // Folded branches travel with their part.
-    for (const part of board.parts) if (part.collapsed && next.has(key("part", part.id))) {
-      const from = posOf(m, key("part", part.id)), to = next.get(key("part", part.id));
-      for (const k of descendants(m, part.id)) { const p = posOf(m, k); next.set(k, {x:p.x + to.x - from.x, y:p.y + to.y - from.y}); }
+    let cursor = 0;
+    for (const root of roots) { place(root.id, 0, cursor); cursor += span.get(root.id) + GAP_CROSS * 2; }
+    for (const part of board.parts) if (part.collapsed && out.has(part.id)) {
+      const from = posOf(m, part.id), to = out.get(part.id);
+      for (const id of descendants(m, part.id)) { const p = posOf(m, id); out.set(id, {x:p.x + to.x - from.x, y:p.y + to.y - from.y}); }
     }
-    const items = [...next].map(([k, p]) => ({kind:split(k)[0], id:split(k)[1], x:Math.round(p.x), y:Math.round(p.y)}));
-    if (!items.length) return;
-    commit("自动排列", [{op:"move", items}], {positions:next});
-    requestAnimationFrame(() => fit([...next.keys()].filter(k => visible(m, k))));
+    return out;
+  }
+  const moveOp = positions => ({op:"move", items:[...positions].map(([id, p]) => ({id, x:Math.round(p.x), y:Math.round(p.y)}))});
+  function tidy() {
+    if (!editable() || !board.parts.length) return;
+    const next = layout(direction());
+    commit("自动排列", [moveOp(next)], {positions:next});
+    requestAnimationFrame(() => fit());
+  }
+  function switchDirection(dir) {
+    if (!editable() || dir === direction()) return;
+    const next = layout(dir);
+    commit(`改为${DIRECTION[dir]}`, [{op:"direction", direction:dir}, ...(next.size ? [moveOp(next)] : [])], {positions:next, dir});
+    requestAnimationFrame(() => fit());
   }
 
   // ---- pointer gestures -----------------------------------------------------------------------------------------
-  function nodeAt(clientX, clientY) { return document.elementFromPoint(clientX, clientY)?.closest?.(".arch-node") || null; }
+  function under(clientX, clientY) { return document.elementFromPoint(clientX, clientY); }
   function capture(event) { try { $(".arch-canvas").setPointerCapture(event.pointerId); } catch { /* pointer already gone */ } }
   function pointerDown(event) {
-    if (event.target.closest(".arch-menu, .arch-zoom, .arch-rename, .arch-empty button")) return;
+    if (event.target.closest(".arch-menu, .arch-zoom, .arch-rename, .arch-empty button, .arch-shelf-head")) return;
     closeMenu();
     if (renaming !== null) finishRename(true);
     $(".arch-canvas").focus({preventScroll:true});
     pointers.set(event.pointerId, {x:event.clientX, y:event.clientY});
     if (pointers.size === 2 && (gesture === null || gesture.type === "pan" || !gesture.moved)) { cancelGesture(); startPinch(); return; }
     if (pointers.size > 1 || event.target.closest("[data-arch-act]")) return;
-    const node = event.target.closest(".arch-node"), pin = event.target.closest(".arch-pin"), edit = editable();
+    const node = event.target.closest(".arch-part"), pin = event.target.closest(".arch-pin"), row = event.target.closest(".arch-member"), edit = editable();
     const start = {id:event.pointerId, x:event.clientX, y:event.clientY, moved:false};
     if (event.button === 1 || event.button === 2 || (event.button === 0 && spaceDown)) {
-      event.preventDefault(); gesture = {...start, type:"pan", camera:{...camera}, button:event.button, node:node?.dataset.key ?? null}; return;
+      event.preventDefault();
+      gesture = {...start, type:"pan", camera:{...camera}, button:event.button, part:node?.dataset.part ?? null, leader:row?.dataset.leader ?? null}; return;
     }
     if (event.button !== 0) return;
+    if (row) { gesture = edit ? {...start, type:"leader", leader:row.dataset.leader} : {...start, type:"pan", camera:{...camera}, tap:row.dataset.leader}; return; }
+    if (event.target.closest(".arch-shelf")) return;
     if (edit && pin && node) {
-      if (event.altKey && pin.dataset.pin === "in") { detach(node.dataset.key); return; }
-      gesture = {...start, type:"wire", from:node.dataset.key, pin:pin.dataset.pin, end:toWorld(event.clientX, event.clientY), over:null}; return;
+      if (event.altKey && pin.dataset.pin === "in") { detachPart(node.dataset.part); return; }
+      gesture = {...start, type:"wire", from:node.dataset.part, pin:pin.dataset.pin, end:toWorld(event.clientX, event.clientY), over:null}; return;
     }
     if (node) {
-      const k = node.dataset.key;
-      if (edit && (event.shiftKey || event.ctrlKey || event.metaKey)) { if (selection.has(k)) selection.delete(k); else selection.add(k); renderSelection(); return; }
-      if (edit) { if (!selection.has(k)) { selection = new Set([k]); renderSelection(); } gesture = {...start, type:"node", key:k}; }
-      else gesture = {...start, type:"pan", camera:{...camera}, tap:k};
+      const id = node.dataset.part;
+      if (edit && (event.shiftKey || event.ctrlKey || event.metaKey)) { if (selection.has(id)) selection.delete(id); else selection.add(id); renderSelection(); return; }
+      if (edit) { if (!selection.has(id)) { selection = new Set([id]); renderSelection(); } gesture = {...start, type:"part", part:id}; }
+      else gesture = {...start, type:"pan", camera:{...camera}};
       return;
     }
     gesture = edit && event.pointerType === "mouse"
@@ -526,9 +564,15 @@ const CrewArchitecture = (() => {
     if (gesture?.type === "pinch") { movePinch(); return; }
     if (gesture === null || gesture.id !== event.pointerId) return;
     const dx = event.clientX - gesture.x, dy = event.clientY - gesture.y;
-    if (!gesture.moved) { if (Math.hypot(dx, dy) < SLOP) return; gesture.moved = true; capture(event); if (gesture.type === "node") beginDrag(); }
+    if (!gesture.moved) {
+      if (Math.hypot(dx, dy) < SLOP) return;
+      gesture.moved = true; capture(event);
+      if (gesture.type === "part") beginDrag();
+      if (gesture.type === "leader") beginLeaderDrag();
+    }
     if (gesture.type === "pan") { camera = {...camera, x:gesture.camera.x + dx, y:gesture.camera.y + dy}; applyCamera(); }
-    else if (gesture.type === "node") moveDrag(dx, dy, event);
+    else if (gesture.type === "part") moveDrag(dx, dy, event);
+    else if (gesture.type === "leader") moveLeaderDrag(event);
     else if (gesture.type === "wire") moveWire(event);
     else if (gesture.type === "marquee") moveMarquee(event);
   }
@@ -536,32 +580,28 @@ const CrewArchitecture = (() => {
     pointers.delete(event.pointerId);
     if (gesture?.type === "pinch") { if (pointers.size < 2) { gesture = null; saveCamera(); } return; }
     if (gesture === null || gesture.id !== event.pointerId) return;
-    const done = gesture;
     if (event.type === "pointercancel") { cancelGesture(); return; }
-    gesture = null;
+    const done = gesture; gesture = null;
     if (done.type === "pan") {
       if (done.moved) saveCamera();
-      else if (done.button === 2) openMenu(done.node, event.clientX, event.clientY);
-      else if (done.tap) tap(done.tap);
+      else if (done.button === 2) openMenu(done, event.clientX, event.clientY);
+      else if (done.tap) options.openLeader(done.tap);
       else if (done.clear && selection.size) { selection.clear(); renderSelection(); }
-    } else if (done.type === "node") {
+    } else if (done.type === "part") {
       if (done.moved) finishDrag(done);
-      else if (done.key.startsWith("leader:")) tap(done.key);
-      // A plain click inside a multi-selection picks just that node (the selection stayed for a possible drag).
-      else if (selection.size > 1) { selection = new Set([done.key]); renderSelection(); }
-    } else if (done.type === "wire") finishWire(done);
+      // A plain click inside a multi-selection picks just that part (the selection stayed for a possible drag).
+      else if (selection.size > 1) { selection = new Set([done.part]); renderSelection(); }
+    } else if (done.type === "leader") { if (done.moved) finishLeaderDrag(done); else options.openLeader(done.leader); }
+    else if (done.type === "wire") finishWire(done);
     else if (done.type === "marquee") { $(".arch-marquee").hidden = true; if (!done.moved && !done.additive && selection.size) { selection.clear(); renderSelection(); } }
   }
   function cancelGesture() {
     const done = gesture; gesture = null;
     if (done === null) return;
-    if (done.type === "node" && done.moved) { host.querySelector(".arch-drop-label").hidden = true; renderWorld(); }
-    if (done.type === "wire") { clearOver(); renderWires(); }
+    $(".arch-drop-label").hidden = true; $(".arch-ghost").hidden = true; clearOver();
+    if ((done.type === "part" || done.type === "leader") && done.moved) renderWorld();
+    if (done.type === "wire") renderWires();
     if (done.type === "marquee") $(".arch-marquee").hidden = true;
-  }
-  function tap(k) {
-    const [kind, id] = split(k);
-    if (kind === "leader") options.openLeader(id);
   }
   function startPinch() {
     const [a, b] = [...pointers.values()];
@@ -573,94 +613,115 @@ const CrewArchitecture = (() => {
     const wx = (gesture.middle.x - r.left - start.x) / start.z, wy = (gesture.middle.y - r.top - start.y) / start.z;
     camera = {z, x:(a.x + b.x) / 2 - r.left - wx * z, y:(a.y + b.y) / 2 - r.top - wy * z}; applyCamera();
   }
-  // Dragging moves the selection; a folded part carries its hidden branch along.
+  function label(text, event) {
+    const box = $(".arch-drop-label"), r = canvasRect();
+    if (text === null) { box.hidden = true; return; }
+    box.textContent = text; box.style.transform = `translate(${event.clientX - r.left + 14}px,${event.clientY - r.top + 16}px)`; box.hidden = false;
+  }
+  function clearOver() { for (const node of host.querySelectorAll(".drop-target")) node.classList.remove("drop-target"); }
+  // Dragging moves the selected parts; a folded part carries its hidden branch along.
   function beginDrag() {
-    const m = model(), keys = [...selection].filter(k => visible(m, k));
-    const carried = new Set(keys);
-    for (const k of keys) if (k.startsWith("part:") && m.parts.get(split(k)[1]).collapsed) for (const hidden of descendants(m, split(k)[1])) carried.add(hidden);
-    gesture.keys = keys; gesture.origin = new Map([...carried].map(k => [k, posOf(m, k)])); gesture.positions = new Map(gesture.origin);
-    for (const k of keys) host.querySelector(`.arch-node[data-key="${CSS.escape(k)}"]`)?.classList.add("dragging");
+    const m = model(), ids = [...selection].filter(id => visible(m, id));
+    const carried = new Set(ids);
+    for (const id of ids) if (m.parts.get(id).collapsed) for (const below of descendants(m, id)) carried.add(below);
+    gesture.ids = ids; gesture.origin = new Map([...carried].map(id => [id, posOf(m, id)])); gesture.positions = new Map(gesture.origin);
+    for (const id of ids) partEl(id)?.classList.add("dragging");
   }
   function moveDrag(dx, dy, event) {
     const z = camera.z;
-    for (const [k, origin] of gesture.origin) {
-      const pos = {x:origin.x + dx / z, y:origin.y + dy / z}; gesture.positions.set(k, pos);
-      const node = host.querySelector(`.arch-node[data-key="${CSS.escape(k)}"]`); if (node) node.style.transform = `translate(${pos.x}px,${pos.y}px)`;
+    for (const [id, origin] of gesture.origin) {
+      const pos = {x:origin.x + dx / z, y:origin.y + dy / z}; gesture.positions.set(id, pos);
+      const node = partEl(id); if (node) node.style.transform = `translate(${pos.x}px,${pos.y}px)`;
     }
     renderWires();
-    const m = model(), under = nodeAt(event.clientX, event.clientY), target = under?.classList.contains("arch-part") ? split(under.dataset.key)[1] : null;
-    const keys = target === null ? null : attachable(m, gesture.keys, target);
-    gesture.drop = keys === null ? null : {part:target, keys};
+    const m = model(), target = under(event.clientX, event.clientY)?.closest?.(".arch-part");
+    const ids = target ? attachable(m, gesture.ids, target.dataset.part) : null;
+    gesture.drop = ids === null ? null : {part:target.dataset.part, ids};
     clearOver();
-    const label = $(".arch-drop-label");
-    if (gesture.drop) {
-      under.classList.add("drop-target");
-      const multipleLeaders = gesture.keys.filter(k => k.startsWith("leader:")).length > 1;
-      label.textContent = `松开挂到「${m.parts.get(target).name}」下${multipleLeaders ? "（一个 part 只挂一位 leader，leader 不挂）" : ""}`;
-      const r = canvasRect(); label.style.transform = `translate(${event.clientX - r.left + 14}px,${event.clientY - r.top + 16}px)`; label.hidden = false;
-    } else label.hidden = true;
+    if (gesture.drop) { target.classList.add("drop-target"); label(`松开挂到「${m.parts.get(gesture.drop.part).name}」下`, event); } else label(null);
   }
-  function clearOver() { for (const node of host.querySelectorAll(".drop-target")) node.classList.remove("drop-target"); }
   function finishDrag(done) {
-    $(".arch-drop-label").hidden = true; clearOver();
-    for (const node of host.querySelectorAll(".dragging")) node.classList.remove("dragging");
-    const m = model(), positions = new Map(done.positions);
-    let ops = [], label = "移动";
+    label(null); clearOver();
+    for (const node of host.querySelectorAll(".arch-part.dragging")) node.classList.remove("dragging");
+    const m = model(), positions = new Map(done.positions), tb = direction() === "TB";
+    const ops = [];
+    let text = "移动";
     if (done.drop) {
-      const {part, keys} = done.drop, slot = slotBelow(m, part, new Set(keys));
-      let y = slot.y;
-      for (const k of [...keys].sort((a, b) => positions.get(a).y - positions.get(b).y)) {
-        const from = positions.get(k), dx = slot.x - from.x, dy = y - from.y;
-        const branch = new Set(k.startsWith("part:") ? descendants(m, split(k)[1]) : []);
-        for (const [moved, pos] of positions) if (moved === k || branch.has(moved)) positions.set(moved, {x:pos.x + dx, y:pos.y + dy});
-        y += sizeOf(k).h + ROW_GAP;
+      const {part, ids} = done.drop, slot = slotFor(m, part, new Set(ids));
+      let cursor = tb ? slot.x : slot.y;
+      for (const id of [...ids].sort((a, b) => tb ? positions.get(a).x - positions.get(b).x : positions.get(a).y - positions.get(b).y)) {
+        const from = positions.get(id), to = tb ? {x:cursor, y:slot.y} : {x:slot.x, y:cursor}, dx = to.x - from.x, dy = to.y - from.y;
+        const branch = new Set([id, ...descendants(m, id)]);
+        for (const [moved, pos] of positions) if (branch.has(moved)) positions.set(moved, {x:pos.x + dx, y:pos.y + dy});
+        cursor += (tb ? sizeOf(m, id).w : sizeOf(m, id).h) + GAP_CROSS;
       }
-      ops = attachOps(m, keys, part);
-      label = `挂到「${m.parts.get(part).name}」下`;
+      ops.push(...ids.map(id => ({op:"parent", id, parent_id:part})));
+      text = `挂到「${m.parts.get(part).name}」下`;
     }
-    ops.push({op:"move", items:[...positions].map(([k, p]) => ({kind:split(k)[0], id:split(k)[1], x:Math.round(p.x), y:Math.round(p.y)}))});
-    const leaderId = done.drop?.keys.find(k => k.startsWith("leader:"));
-    commit(label, ops, {positions, after:(result, before, step) => {
-      if (leaderId) displacedToast(result, before, step, done.drop.part, split(leaderId)[1]);
-      if (done.drop) requestAnimationFrame(() => done.drop.keys.forEach(reveal));
-    }});
+    ops.push(moveOp(positions));
+    commit(text, ops, {positions, after:() => { if (done.drop) requestAnimationFrame(() => done.drop.ids.forEach(reveal)); }});
+  }
+  // Leaders are carried as a chip; dropping on a part puts them there, on the shelf takes them out.
+  function beginLeaderDrag() {
+    const m = model(), item = m.leaders.get(gesture.leader), ghost = $(".arch-ghost");
+    ghost.innerHTML = `${options.avatar(item.name, 22)}<span>${esc(item.name)}</span>`; ghost.style.setProperty("--tint", options.tint(item.name)); ghost.hidden = false;
+    gesture.from = m.places.get(gesture.leader)?.domain_id ?? null;
+    for (const row of host.querySelectorAll(`[data-leader="${CSS.escape(gesture.leader)}"]`)) row.classList.add("dragging");
+  }
+  function moveLeaderDrag(event) {
+    const r = canvasRect(), ghost = $(".arch-ghost");
+    ghost.style.transform = `translate(${event.clientX - r.left + 10}px,${event.clientY - r.top + 10}px)`;
+    const m = model(), hit = under(event.clientX, event.clientY), part = hit?.closest?.(".arch-part"), shelf = hit?.closest?.(".arch-shelf");
+    clearOver();
+    gesture.target = undefined;
+    if (part && part.dataset.part !== gesture.from) { gesture.target = part.dataset.part; part.classList.add("drop-target"); label(`松开归入「${m.parts.get(part.dataset.part).name}」`, event); }
+    else if (shelf && gesture.from !== null) { gesture.target = null; shelf.classList.add("drop-target"); label("松开移出到未归属", event); }
+    else label(null);
+  }
+  function finishLeaderDrag(done) {
+    label(null); clearOver(); $(".arch-ghost").hidden = true;
+    for (const row of host.querySelectorAll(".arch-member.dragging")) row.classList.remove("dragging");
+    if (done.target !== undefined) placeLeader(done.leader, done.target);
   }
   function wireTarget(done, clientX, clientY) {
-    const m = model(), node = nodeAt(clientX, clientY); if (!node) return null;
-    const k = node.dataset.key;
-    if (done.pin === "out") { const partId = split(done.from)[1]; return attachable(m, [k], partId) ? k : null; }
-    return node.classList.contains("arch-part") && attachable(m, [done.from], split(k)[1]) ? k : null;
+    const m = model(), node = under(clientX, clientY)?.closest?.(".arch-part"); if (!node) return null;
+    const id = node.dataset.part;
+    if (done.pin === "out") return attachable(m, [id], done.from) ? id : null;
+    return attachable(m, [done.from], id) ? id : null;
   }
   function moveWire(event) {
     gesture.end = toWorld(event.clientX, event.clientY);
     gesture.over = wireTarget(gesture, event.clientX, event.clientY);
     clearOver();
-    if (gesture.over) host.querySelector(`.arch-node[data-key="${CSS.escape(gesture.over)}"]`)?.classList.add("drop-target");
+    if (gesture.over) partEl(gesture.over)?.classList.add("drop-target");
     renderWires();
   }
   function finishWire(done) {
     clearOver(); renderWires();
     if (!done.moved) return;
     if (done.over === null) {
-      if (done.pin === "in") detach(done.from);
-      else createPart(split(done.from)[1], {x:Math.round(done.end.x), y:Math.round(done.end.y - PIN_Y)});
+      if (done.pin === "in") detachPart(done.from);
+      else {
+        const tb = direction() === "TB";
+        createPart(done.from, tb ? {x:Math.round(done.end.x - PART_W / 2), y:Math.round(done.end.y)} : {x:Math.round(done.end.x), y:Math.round(done.end.y - PIN_Y)});
+      }
       return;
     }
-    if (done.pin === "out") connect(done.over, split(done.from)[1]); else connect(done.from, split(done.over)[1]);
+    if (done.pin === "out") connect(done.over, done.from); else connect(done.from, done.over);
   }
   function moveMarquee(event) {
     const r = canvasRect(), box = $(".arch-marquee");
     const x0 = Math.min(gesture.x, event.clientX), y0 = Math.min(gesture.y, event.clientY), x1 = Math.max(gesture.x, event.clientX), y1 = Math.max(gesture.y, event.clientY);
     Object.assign(box.style, {left:`${x0 - r.left}px`, top:`${y0 - r.top}px`, width:`${x1 - x0}px`, height:`${y1 - y0}px`}); box.hidden = false;
     const picked = new Set(gesture.additive ? gesture.base : []);
-    for (const node of host.querySelectorAll(".arch-node")) {
+    for (const node of host.querySelectorAll(".arch-part")) {
       const b = node.getBoundingClientRect();
-      if (b.right >= x0 && b.left <= x1 && b.bottom >= y0 && b.top <= y1) picked.add(node.dataset.key);
+      if (b.right >= x0 && b.left <= x1 && b.bottom >= y0 && b.top <= y1) picked.add(node.dataset.part);
     }
     selection = picked; renderSelection();
   }
   function wheel(event) {
-    if (event.target.closest(".arch-menu")) return;
+    if (event.target.closest(".arch-menu, .arch-shelf-body")) return;
     event.preventDefault();
     if (!event.ctrlKey && Math.abs(event.deltaX) > 0) { camera = {...camera, x:camera.x - event.deltaX, y:camera.y - event.deltaY}; applyCamera(); saveCamera(); return; }
     const delta = event.deltaMode === 1 ? event.deltaY * 16 : event.deltaY;
@@ -668,23 +729,26 @@ const CrewArchitecture = (() => {
   }
 
   // ---- menu, keyboard, buttons ----------------------------------------------------------------------------------
-  function openMenu(k, clientX, clientY) {
+  function openMenu(target, clientX, clientY) {
     const m = model(), edit = editable(), items = [];
-    if (k && k.startsWith("part:")) {
-      const id = split(k)[1], part = m.parts.get(id);
-      if (!selection.has(k)) { selection = new Set([k]); renderSelection(); }
-      if (edit) items.push(["rename", "改名", "F2"], ["child", "新建子 part"]);
-      if (part.collapsed || descendants(m, id).length) items.push(["fold", part.collapsed ? "展开" : "折叠"]);
-      if (edit) { items.push(["branch", "选中这一支"]); if (part.parent_id) items.push(["detach", `从「${m.parts.get(part.parent_id).name}」移出`]); items.push(["delete", "删除 part", "Del", "danger"]); }
-    } else if (k) {
-      const id = split(k)[1], domain = m.places.get(id)?.domain_id;
+    if (target.leader) {
+      const place = m.places.get(target.leader), part = place ? m.parts.get(place.domain_id) : null;
       items.push(["open", "进入对话"]);
-      if (edit && domain) items.push(["detach", `从「${m.parts.get(domain)?.name}」移出`]);
+      if (edit && part) {
+        items.push(place.lead ? ["unlead", `不再负责「${part.name}」`] : ["lead", `设为「${part.name}」负责人`]);
+        items.push(["leave", "移出到未归属"]);
+      }
+    } else if (target.part) {
+      const id = target.part, part = m.parts.get(id);
+      if (!selection.has(id)) { selection = new Set([id]); renderSelection(); }
+      if (edit) items.push(["rename", "改名", "F2"], ["child", "新建子 part"]);
+      if (part.collapsed || descendants(m, id).length || membersOf(m, id).length) items.push(["fold", part.collapsed ? "展开" : "折叠"]);
+      if (edit) { items.push(["branch", "选中这一支"]); if (part.parent_id) items.push(["detach", `从「${m.parts.get(part.parent_id).name}」移出`]); items.push(["delete", "删除 part", "Del", "danger"]); }
     } else {
       if (edit) items.push(["here", "在这里新建 part"], ["tidy", "自动排列"]);
       items.push(["fit", "显示全部", "Home"]);
     }
-    menu = {key:k, at:toWorld(clientX, clientY)};
+    menu = {...target, at:toWorld(clientX, clientY)};
     const box = $(".arch-menu"), r = canvasRect();
     box.innerHTML = items.map(([cmd, text, hint, tone]) => `<button type="button" role="menuitem" class="${tone || ""}" data-arch-act="menu" data-cmd="${cmd}"><span>${esc(text)}</span>${hint ? `<kbd>${hint}</kbd>` : ""}</button>`).join("");
     box.hidden = false;
@@ -695,14 +759,17 @@ const CrewArchitecture = (() => {
   function closeMenu() { if (menu === null) return; menu = null; const box = $(".arch-menu"); if (box) { box.hidden = true; box.innerHTML = ""; } }
   function menuCommand(cmd) {
     const current = menu; closeMenu();
-    const m = model(), k = current?.key, id = k ? split(k)[1] : null;
-    if (cmd === "rename") startRename(id);
+    const m = model(), id = current?.part, leader = current?.leader;
+    if (cmd === "open") options.openLeader(leader);
+    else if (cmd === "lead") setLead(leader, true);
+    else if (cmd === "unlead") setLead(leader, false);
+    else if (cmd === "leave") placeLeader(leader, null);
+    else if (cmd === "rename") startRename(id);
     else if (cmd === "child") createPart(id);
     else if (cmd === "fold") setCollapsed(id, !m.parts.get(id).collapsed);
     else if (cmd === "branch") selectBranch(id);
-    else if (cmd === "detach") detach(k);
+    else if (cmd === "detach") detachPart(id);
     else if (cmd === "delete") deleteParts([id]);
-    else if (cmd === "open") options.openLeader(id);
     else if (cmd === "here") createPart(null, {x:Math.round(current.at.x), y:Math.round(current.at.y)});
     else if (cmd === "tidy") tidy();
     else if (cmd === "fit") fit();
@@ -714,6 +781,8 @@ const CrewArchitecture = (() => {
     else if (act === "undo") undo();
     else if (act === "redo") redo();
     else if (act === "tidy") tidy();
+    else if (act === "direction") switchDirection(button.dataset.direction);
+    else if (act === "shelf") setShelf(!(shelfOpen ?? !phone.matches));
     else if (act === "fit") fit();
     else if (act === "zoom-in") zoomCenter(1.2);
     else if (act === "zoom-out") zoomCenter(1 / 1.2);
@@ -725,8 +794,10 @@ const CrewArchitecture = (() => {
   function doubleClick(event) {
     if (!editable()) return;
     const node = event.target.closest(".arch-part");
-    if (node && !event.target.closest("[data-arch-act], .arch-pin")) startRename(split(node.dataset.key)[1]);
+    if (node && event.target.closest(".arch-part-head") && !event.target.closest("[data-arch-act], .arch-pin")) startRename(node.dataset.part);
   }
+  // The menu opens on a right click without movement (pointerup); a right drag pans instead.
+  function contextMenu(event) { event.preventDefault(); }
   function keyDown(event) {
     if (event.target.classList?.contains("arch-rename")) {
       if (event.key === "Enter") { event.preventDefault(); finishRename(true); }
@@ -740,10 +811,10 @@ const CrewArchitecture = (() => {
     if (!event.target.closest(".arch-canvas")) return;
     if (mod && k === "z") { event.preventDefault(); if (event.shiftKey) redo(); else undo(); }
     else if (mod && k === "y") { event.preventDefault(); redo(); }
-    else if (mod && k === "a" && editable()) { event.preventDefault(); selection = new Set(shownKeys()); renderSelection(); }
-    else if ((event.key === "Delete" || event.key === "Backspace") && editable()) { const ids = [...selection].filter(item => item.startsWith("part:")).map(item => split(item)[1]); if (ids.length) { event.preventDefault(); deleteParts(ids); } }
-    else if (event.key === "F2" && editable()) { const only = [...selection]; if (only.length === 1 && only[0].startsWith("part:")) { event.preventDefault(); startRename(split(only[0])[1]); } }
-    else if (event.key === "Home" || (k === "f" && !mod)) { event.preventDefault(); fit(k === "f" && selection.size ? [...selection] : shownKeys(), k === "f" && selection.size ? 1.2 : 1); }
+    else if (mod && k === "a" && editable()) { event.preventDefault(); selection = new Set(shownIds()); renderSelection(); }
+    else if ((event.key === "Delete" || event.key === "Backspace") && editable()) { if (selection.size) { event.preventDefault(); deleteParts([...selection]); } }
+    else if (event.key === "F2" && editable()) { if (selection.size === 1) { event.preventDefault(); startRename([...selection][0]); } }
+    else if (event.key === "Home" || (k === "f" && !mod)) { event.preventDefault(); fit(k === "f" && selection.size ? [...selection] : shownIds(), k === "f" && selection.size ? 1.2 : 1); }
     else if (event.key === "Escape") { if (gesture) cancelGesture(); else if (menu) closeMenu(); else if (selection.size) { selection.clear(); renderSelection(); } }
   }
   function keyUp(event) { if (event.key === " ") { spaceDown = false; $(".arch-canvas")?.classList.remove("panning"); } }
@@ -758,7 +829,7 @@ const CrewArchitecture = (() => {
 
   // ---- lifecycle ------------------------------------------------------------------------------------------------
   const listeners = [["click", click], ["dblclick", doubleClick], ["keydown", keyDown], ["keyup", keyUp], ["focusout", focusOut]];
-  const canvasListeners = [["pointerdown", pointerDown], ["pointermove", pointerMove], ["pointerup", pointerUp], ["pointercancel", pointerUp], ["contextmenu", event => event.preventDefault()]];
+  const canvasListeners = [["pointerdown", pointerDown], ["pointermove", pointerMove], ["pointerup", pointerUp], ["pointercancel", pointerUp], ["contextmenu", contextMenu]];
   function mount(element, settings) {
     if (settings.focus) focusRequest = settings.focus;
     if (host === element && project === settings.project) { update(settings); applyFocus(); return; }
@@ -766,8 +837,9 @@ const CrewArchitecture = (() => {
     options = settings;
     if (project !== settings.project) {
       project = settings.project; board = null; cached = null; errorText = ""; camera = null; selection = new Set();
-      undoStack = []; redoStack = []; pending.clear(); renaming = null;
+      undoStack = []; redoStack = []; pending.clear(); renaming = null; pendingDirection = null;
     }
+    if (shelfOpen === null) { try { const saved = localStorage.getItem("crew.architecture.shelf"); if (saved !== null) shelfOpen = saved === "true"; } catch { /* default by width */ } }
     host = element; host.innerHTML = scaffold(); delete host.dataset.render;
     for (const [type, handler] of listeners) host.addEventListener(type, handler);
     const canvas = $(".arch-canvas");
@@ -790,7 +862,7 @@ const CrewArchitecture = (() => {
     const remote = settings.state.domains?.version ?? 0;
     if (remote > board.version && busy === 0 && gesture === null) { void load(true); return; }
     const next = signature(settings.state);
-    if (next !== leaderSignature && gesture === null && renaming === null) { leaderSignature = next; cached = null; renderWorld(); settleLeaders(); }
+    if (next !== leaderSignature && gesture === null && renaming === null) { leaderSignature = next; cached = null; renderWorld(); }
     renderHead();
   }
   function unmount() {
@@ -802,5 +874,5 @@ const CrewArchitecture = (() => {
     }
     gesture = null; pointers.clear(); menu = null; spaceDown = false; renaming = null; host = null;
   }
-  return {mount, update, unmount, icon:ICON.board};
+  return {mount, update, unmount};
 })();
