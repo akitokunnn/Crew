@@ -240,8 +240,8 @@ class Supervisor:
     def _port_free(self, url):
         # This Windows installation silently drops connections to closed
         # loopback ports, so TimeoutError alone cannot distinguish them from a
-        # hung listener. A non-listening exclusive bind proves the port is
-        # unoccupied; SO_REUSEADDR is deliberately never enabled here.
+        # hung listener. Use an exclusive bind on Windows because SO_REUSEADDR
+        # can take over an occupied port there. On POSIX, allow rebinding past TIME_WAIT.
         if self._alive() is not False:
             return False
         try:
@@ -249,6 +249,8 @@ class Supervisor:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
                 if os.name == "nt":
                     probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+                else:
+                    probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 probe.bind(("127.0.0.1", port))
             return True
         except (OSError, SupervisorError):

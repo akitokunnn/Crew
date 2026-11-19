@@ -77,7 +77,7 @@ def _sources(home, plugin_root):
     return missing
 
 
-def _launchers(home, only_missing):
+def _launchers(home, only_missing, windows=os.name == 'nt'):
     (home / "bin").mkdir(exist_ok=True)
     # Preserve the native interpreter and Windows-native paths added in 0.2.x.
     windows_python = str(Path(sys.executable).resolve()).replace('%', '%%')
@@ -86,13 +86,18 @@ def _launchers(home, only_missing):
     entrypoint = shlex.quote((home / 'crew.py').as_posix())
     shell = '#!/bin/sh\nexec ' + python + ' ' + entrypoint + ' "$@"\n'
     launchers = [(home / "crew.py", LAUNCHER), (home / "bin" / "crew.cmd", command), (home / "bin" / "crew", shell)]
-    if os.name == 'nt':
+    if windows:
         launchers.append((home / 'bin' / 'crew.exe', _windows_launcher()))
+    else:
+        # macOS ships no `python` command. HOME/bin leads PATH for every
+        # Crew-launched session, so the plugin hooks and the documented
+        # `python <CREW_HOME>/crew.py` reach this backend's interpreter.
+        launchers.append((home / 'bin' / 'python', '#!/bin/sh\nexec ' + python + ' "$@"\n'))
     for path, text in launchers:
         if only_missing and path.exists():
             continue
         _write(path, text)
-        if path.name == "crew":
+        if path.name in ("crew", "python"):
             path.chmod(0o755)
 
 

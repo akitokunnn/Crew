@@ -690,6 +690,16 @@ class RuntimeLeaseTests(unittest.TestCase):
         self.assertIsInstance(identity, str)
         self.assertEqual(codex_runtime.process_identity(os.getpid()), identity)
 
+    def test_macos_process_identity_uses_c_locale_without_changing_parent_environment(self):
+        result = subprocess.CompletedProcess([], 0, " Thu Nov 19 18:20:01 2026\n", "")
+        with mock.patch.object(os, "name", "posix"), mock.patch.object(sys, "platform", "darwin"), \
+             mock.patch.dict(os.environ, {"LC_ALL": "ja_JP.UTF-8", "PATH": "/usr/bin"}, clear=True), \
+             mock.patch.object(subprocess, "run", return_value=result) as run:
+            self.assertEqual(codex_runtime.process_identity(101), "ps:Thu Nov 19 18:20:01 2026")
+            self.assertEqual(os.environ["LC_ALL"], "ja_JP.UTF-8")
+        run.assert_called_once_with(["ps", "-p", "101", "-o", "lstart="], capture_output=True, text=True,
+                                    encoding="utf-8", timeout=5, env={"LC_ALL": "C", "PATH": "/usr/bin"})
+
     def test_failed_sidecar_cleanup_still_releases_kernel_lock(self):
         lease = codex_runtime.RuntimeLease(self.home, "crew").acquire()
         native = FakeProcess()

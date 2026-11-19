@@ -45,6 +45,16 @@ def _optional_text(data, key):
     return None if data.get(key) is None else _text(data, key)
 
 
+def _vscode_state_db():
+    if sys.platform == "win32":
+        config = Path(os.environ["APPDATA"])
+    elif sys.platform == "darwin":
+        config = Path.home() / "Library" / "Application Support"
+    else:
+        config = Path.home() / ".config"
+    return config / "Code" / "User" / "globalStorage" / "state.vscdb"
+
+
 # HTTP entries that start or feed model work must pass the update gate before
 # any side effect (adoption, git admin setup, VS Code takeover, digest).
 MODEL_WORK = {"/api/spawn", "/api/leader", "/api/wake", "/api/chat/send", "/api/session/compact",
@@ -83,8 +93,7 @@ class Service:
         self.scanned_at = None
         self.crew_usage = (None, None)
         self.title_cache = {}
-        self.vscode_state_db = (Path(os.environ["APPDATA"]) / "Code" / "User" / "globalStorage" / "state.vscdb"
-                                if vscode_state_db is None else Path(vscode_state_db))
+        self.vscode_state_db = _vscode_state_db() if vscode_state_db is None else Path(vscode_state_db)
         self.vscode_session_caches = {}
         self.vscode_sessions, self.vscode_record_ids = {}, {}
         self.vscode_hidden_ids = None
@@ -1203,12 +1212,21 @@ class Service:
                 return info
             if info["error"] is not None:
                 raise board.BoardError(info["error"])
+            if sys.platform not in ("win32", "darwin"):
+                raise board.BoardError("当前系统暂不支持从 Crew 打开文件")
             if path == "/api/files/open":
                 if info["open_with"] == "blocked":
                     raise board.BoardError("这类文件不直接打开，请用‘在文件夹中显示’")
-                target = ("vscode://file/" + quote(Path(info["path"]).as_posix(), safe="/:")
-                          if info["open_with"] == "vscode" else info["path"])
-                os.startfile(target)
+                target = info["path"]
+                if info["open_with"] == "vscode":
+                    uri_path = "/" + Path(target).as_posix() if sys.platform == "win32" else target
+                    target = "vscode://file" + quote(uri_path, safe="/:")
+                if sys.platform == "darwin":
+                    subprocess.Popen(["open", target])
+                else:
+                    os.startfile(target)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", "-R", info["path"]])
             else:
                 subprocess.Popen(["explorer", "/select," + info["path"]])
             return {"ok": True}
@@ -1224,7 +1242,12 @@ class Service:
                 folder = goals.report_folder(board.project(conn, project)['root'], report['data'])
             if not os.path.isdir(folder['path']):
                 raise board.BoardError(('交付文件夹' if folder['declared'] else '工作区文件夹') + '不存在：' + folder['path'])
-            os.startfile(folder['path'])
+            if sys.platform == "darwin":
+                subprocess.Popen(["open", folder['path']])
+            elif sys.platform == "win32":
+                os.startfile(folder['path'])
+            else:
+                raise board.BoardError("当前系统暂不支持从 Crew 打开文件夹")
             return {'ok': True, **folder}
         if path == "/api/git/fetch":
             with closing(store.connect(self.home)) as conn:

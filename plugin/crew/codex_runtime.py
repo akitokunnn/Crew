@@ -65,7 +65,7 @@ def process_identity(pid):
         return "linux:" + boot + ":" + fields[19]
     # macOS ps exposes process start time rather than trusting PID existence.
     result = subprocess.run(["ps", "-p", str(pid), "-o", "lstart="], capture_output=True,
-                            text=True, encoding="utf-8", timeout=5)
+                            text=True, encoding="utf-8", timeout=5, env={**os.environ, "LC_ALL": "C"})
     if result.returncode == 1 and not result.stdout.strip():
         return None
     if result.returncode or not result.stdout.strip():

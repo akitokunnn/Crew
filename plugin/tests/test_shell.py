@@ -333,6 +333,7 @@ class WebTests(ShellFixture, unittest.TestCase):
         self.assertEqual(self.server.server_address[0], "127.0.0.1")
         self.assertIsNone(state["agents_error"])
 
+    @mock.patch("crew.open_session.sys.platform", "win32")
     def test_open_two_steps_rechecks_busy_and_confirmation_before_closing(self):
         directory = self.server.service.claude_root.parent / "sessions"
         directory.mkdir()
@@ -342,7 +343,7 @@ class WebTests(ShellFixture, unittest.TestCase):
         self.provider.return_value = [{"sessionId": "s1", "pid": 101, "name": "one", "status": "idle"}]
         with mock.patch("crew.open_session.open_folder") as folder, \
              mock.patch("crew.open_session.close_terminal") as closer, \
-             mock.patch("crew.open_session.os.startfile") as uri:
+             mock.patch("crew.open_session.os.startfile", create=True) as uri:
             code, first, _ = self.get("/api/open", {"name": "one"})
             self.assertEqual(code, 200)
             self.assertTrue(first["needs_window_ready"])
@@ -364,6 +365,14 @@ class WebTests(ShellFixture, unittest.TestCase):
             closer.assert_called_once()
             uri.assert_called_once_with("vscode://anthropic.claude-code/open?session=s1")
 
+    def test_vscode_handoff_on_macos_returns_the_supported_platform_message(self):
+        with mock.patch("crew.open_session.sys.platform", "darwin"):
+            for path in ("/api/open", "/api/open/continue"):
+                with self.subTest(path=path):
+                    code, result, _ = self.get(path, {"session_id": "s1"})
+                    self.assertEqual((code, result), (400, {"error": "在 VS Code 中继续目前只支持 Windows"}))
+
+    @mock.patch("crew.open_session.sys.platform", "win32")
     def test_cli_managed_open_uses_running_web_manager_and_detaches_sdk(self):
         code, created, _ = self.get("/api/leader", {"name": "web-open", "task": "work"})
         self.assertEqual(code, 200)
@@ -379,7 +388,7 @@ class WebTests(ShellFixture, unittest.TestCase):
         self.provider.return_value = [{"sessionId": session_id, "pid": 202, "name": "web-open", "status": "idle"}]
         with mock.patch("crew.open_session.open_folder") as folder, \
              mock.patch("crew.open_session.close_terminal") as closer, \
-             mock.patch("crew.open_session.os.startfile") as uri, \
+             mock.patch("crew.open_session.os.startfile", create=True) as uri, \
              mock.patch("builtins.input", side_effect=["", "yes"]):
             code, output, errors = self.run_cli(["open", "web-open"])
         self.assertEqual(code, 0, errors)

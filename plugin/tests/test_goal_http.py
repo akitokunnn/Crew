@@ -1689,6 +1689,13 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
             code, result, _ = self.request('/api/goals/report/folder?project=demo', {'goal_id': goal_ids[0], 'report_id': final['id']})
             self.assertEqual((code, result.get('error')), (400, '交付文件夹不存在：' + folders[final['id']]['path']))
             self.assertEqual(opener.call_count, 2, 'a missing folder or a foreign report opens nothing')
+        with mock.patch('crew.web.sys.platform', 'darwin'), mock.patch('crew.web.subprocess.Popen') as popen:
+            code, result, _ = self.request('/api/goals/report/folder?project=demo', {'goal_id': goal_ids[0], 'report_id': stage['id']})
+            self.assertEqual((code, result), (200, {'ok': True, **folders[stage['id']]}))
+            self.assertEqual(popen.call_args.args, (['open', folders[stage['id']]['path']],), 'macOS shows the folder in Finder')
+        with mock.patch('crew.web.sys.platform', 'linux'):
+            code, result, _ = self.request('/api/goals/report/folder?project=demo', {'goal_id': goal_ids[0], 'report_id': stage['id']})
+            self.assertEqual((code, result.get('error')), (400, '当前系统暂不支持从 Crew 打开文件夹'))
 
     def test_detail_orders_reports_by_saved_version_like_acceptance_even_when_the_clock_repeats_or_moves_back(self):
         code, created, _ = self.request('/api/goals/create?project=demo', {

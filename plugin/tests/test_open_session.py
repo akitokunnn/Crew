@@ -10,6 +10,7 @@ from test_core import CoreCase, NOW
 class OpenSessionTests(CoreCase):
     def setUp(self):
         super().setUp()
+        self.enterContext(mock.patch("crew.open_session.sys.platform", "win32"))
         self.process_dir = self.base / "processes"
         self.process_dir.mkdir()
         self.live = []
@@ -58,6 +59,20 @@ class OpenSessionTests(CoreCase):
             open_session.resume(self.conn, 's1', provider, confirm=True, uri_opener=self.uris.append, manager=manager)
         self.assertEqual(self.folders, [])
         self.assertEqual(self.uris, [])
+        manager.detach.assert_not_called()
+
+    def test_non_windows_rejects_all_entry_points_before_handoff(self):
+        provider = mock.Mock()
+        manager = mock.Mock()
+        operations = (lambda: open_session.begin(self.conn, 's1', provider, manager=manager),
+                      lambda: open_session.resume(self.conn, 's1', provider, confirm=True, manager=manager),
+                      lambda: open_session.cli_open(self.conn, self.home, 's1', provider))
+        for platform in ('darwin', 'linux'):
+            with self.subTest(platform=platform), mock.patch("crew.open_session.sys.platform", platform):
+                for operate in operations:
+                    with self.assertRaisesRegex(board.BoardError, "在 VS Code 中继续目前只支持 Windows"):
+                        operate()
+        provider.assert_not_called()
         manager.detach.assert_not_called()
 
     def test_terminal_confirmation_closes_only_cli_and_records_event(self):
@@ -127,7 +142,7 @@ class OpenSessionTests(CoreCase):
             return True
 
         kernel.GetProcessTimes.side_effect = process_times
-        with mock.patch("crew.open_session.ctypes.WinDLL", return_value=kernel):
+        with mock.patch("crew.open_session.ctypes.WinDLL", return_value=kernel, create=True):
             with self.assertRaises(board.Conflict):
                 open_session.close_terminal(record)
         kernel.TerminateProcess.assert_not_called()
@@ -144,7 +159,7 @@ class OpenSessionTests(CoreCase):
             return True
 
         kernel.GetProcessTimes.side_effect = process_times
-        with mock.patch("crew.open_session.ctypes.WinDLL", return_value=kernel):
+        with mock.patch("crew.open_session.ctypes.WinDLL", return_value=kernel, create=True):
             with self.assertRaises(board.Conflict):
                 open_session.close_terminal(record, self.process_dir)
         kernel.TerminateProcess.assert_not_called()

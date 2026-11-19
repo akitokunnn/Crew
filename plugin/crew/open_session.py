@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -13,6 +14,8 @@ from . import board, runtimes
 
 
 def _editor_session(conn, session_id):
+    if sys.platform != "win32":
+        raise board.BoardError("在 VS Code 中继续目前只支持 Windows")
     session = board.session(conn, session_id)
     if runtimes.get(conn, session_id)['runtime'] != 'claude':
         raise board.BoardError('Codex 会话请在 Crew 内继续；暂不支持转到 VS Code')
