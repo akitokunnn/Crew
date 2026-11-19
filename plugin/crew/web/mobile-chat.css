@@ -233,7 +233,6 @@ body:has(#main[data-reader]) #chat-attention{display:none!important}
 .assistant-main>.head .right{flex:none;flex-wrap:nowrap!important;gap:6px!important;margin-left:auto!important}
 .assistant-main>.head .btn{min-height:var(--m-tap)!important;padding:0 10px!important;font-size:var(--m-fs-body)!important;border-color:var(--line);background:var(--hover);color:var(--accent-text)}
 .assistant-main>.head a.btn[href="/"]{display:none}
-.assistant-main>.head #assistant-native:empty{display:none}
 .assistant-error{margin:8px var(--m-gutter)!important;font-size:var(--m-fs-meta)}
 .assistant-chat .composer-wrap{max-width:none!important}
 .assistant-chat .assistant-loading{font-size:var(--m-fs-meta)}

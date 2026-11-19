@@ -310,8 +310,6 @@ PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stder
 - Windows 的 npm `claude.cmd` 会另起原生子进程；托管会话直接启动该安装目录的 `bin/claude.exe`，让 Manager 持有的 PID 与 `claude agents` 一致，交接时可以确认进程归属。
 - 子进程设置 `CLAUDE_CODE_ENTRYPOINT=crew-web`，使 VS Code 扩展能发现原 ID 和历史；`sdk-cli` 等程序会话会被扩展过滤。仍用 `-p/stream-json`，不修改 transcript 或扩展，交接按 Manager 持有的 PID 核对归属。
 - 后台子进程环境设置 `MSYS_NO_PATHCONV=1`，避免 Git Bash 转换任务正文中的 Windows 路径；不修改系统或用户环境。
-- `crew open NAME` 与网页使用相同的两步流程：先 `code <cwd>` 打开正确目录；用户确认窗口已经就绪后，再打开 `vscode://anthropic.claude-code/open?session=<ID>`。第一步不关闭会话，取消保留原运行端。第二步重新查询 agents 和 PID 注册文件；忙会话拒绝交接，网页进程须属于当前 Manager，确认后仅关闭该进程的 stdin 并等正常退出。遗留终端会话只有明确确认且空闲才关闭，并核对 PID 创建时间；VS Code 进程永远不关闭。
-- 有网页聊天记录的 `crew open` 通过 `HOME/web.json` 调同一服务，确保释放的是 Manager 管理的进程。在 VS Code 里继续时网页保留历史并禁用发言，避免同时恢复两份。
 
 网页接口：
 
@@ -345,7 +343,6 @@ PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stder
 | `POST /api/files/reveal` | Same fields; validates file, invokes `explorer /select,<absolute path>`, returns `ok`. All file POST APIs require `X-Crew: 1`. |
 | `POST /api/session/stop` | session_id；向本服务托管且正在干活的会话写 stream-json `control_request`（subtype=interrupt） |
 | `POST /api/session/rename\|archive\|remove\|restore\|undo` | 精确 session_id；返回 `session` 与供撤销的 `before` |
-| `POST /api/open` / `POST /api/open/continue` | 两步转到 VS Code |
 | `POST /api/notifications/away`、`POST /api/attention/dismiss` | 手动离开、收起待处理 |
 | `GET /api/usage` / `GET /api/usage/export` | 用量（含 leader → 下属 → Codex 的 `tree`）与 CSV |
 
@@ -361,7 +358,7 @@ File resolution also returns `open_with` from a server-side allowlist (case-inse
 
 ### 会话整理、工作区视图与通知
 
-- `session_controls` 保存显式归档、删除和改名。删除（`POST /api/session/delete`，只有用户可调用）在数据库里只留 `removed=1` 的已关闭记录，hook 不会自动收编回来；leader 连同整组一起删除。提交后停止托管进程，再删除 `chat/<id>.jsonl`、该身份用过的 Claude 原生会话（`~/.claude/projects/*/<id>.jsonl` 及同名目录）和 Codex 线程（经 app-server `thread/delete`，对应 HOME 取自原生接回记录）。任务执行线程属于任务历史，保留。会话还被外部进程使用、Claude 进程状态读不到或已交给 Codex 桌面版时拒绝；原生记录删除失败逐条返回 `errors`。leader 改名同步组与成员归属，pending handoff 跟随；撤销恢复操作前的记录，不操作进程。
+- `session_controls` 保存显式归档、删除和改名。删除（`POST /api/session/delete`，只有用户可调用）在数据库里只留 `removed=1` 的已关闭记录，hook 不会自动收编回来；leader 连同整组一起删除。提交后停止托管进程，再删除 `chat/<id>.jsonl`、该身份用过的 Claude 原生会话（`~/.claude/projects/*/<id>.jsonl` 及同名目录）和 Codex 线程（经 app-server `thread/delete`，对应 HOME 取自 Codex 线程绑定记录）。任务执行线程属于任务历史，保留。会话还被外部进程使用或 Claude 进程状态读不到时拒绝；原生记录删除失败逐条返回 `errors`。leader 改名同步组与成员归属，pending handoff 跟随；撤销恢复操作前的记录，不操作进程。
 - **leader 通知**：Crew 自己不发会话间消息。网页 / QQ 答完拍板、收编进组、`crew join` 入组，以及 leader 用 `crew wake` 找 leader、交流区点名，都写进 `leader_notices`；网页服务每 2 秒把待发通知合并成一条 `[Crew]` 消息，经 `deliver_notices` 写进空闲的 leader（journal 记 source=crew）。在线空闲就送，离线且有网页日志就续跑后送；在 VS Code 等其他进程运行或进程状态未知时等现有逻辑送达。需要转告下属的事由 leader 用 SendMessage 转告。
 - **交流区发言与点名**：每项目一条发言流，leader 用 `crew say` 发言，用户通过网页发言；组员和未收编会话发言报“交流区只给 leader 用；有事告诉你的 leader”。`--to` / `to` 只能点同项目 leader，名字不存在先报错，不写入发言；自己点自己不排通知。leader 点名调用 `queue_leader_notice`，source 为 `crew`，内容为“交流区：「<名字>」点名你：\n<全文>\n\n回复用 crew say --to <名字> \"…\"；只是回\"收到\"就不用回。”用户点名 source 为 `web`，写明“交流区：用户点名你：”和“这是用户本人的话”。两者都复用 `deliver_notices`，不另起投递逻辑。未点名不叫醒，下一轮钩子顺带摘要；新发言不响网页提示音，也不推 QQ。
 - **交流区累积要点卡**：网页头部“整理”手动触发；服务既有 `_poll_agents` 每轮（间隔 10 秒）调用 `digest_channels`，检查所有项目自上一张卡后是否新增满 20 条，因此 `crew say` 直接写库也会被发现。每项目同时只跑一个后台线程。失败不写卡、不立即重试，以失败快照最后 id 为新计数基点，之后再满 20 条才自动尝试；手动随时可重试。失败原因和计数基点保存在服务内存中，重启后重新按当前卡计数。成功清空失败状态。
@@ -406,7 +403,7 @@ File resolution also returns `open_with` from a server-side allowlist (case-inse
 | 白板用 SQLite，全机一份 | 多会话同时写；借设备要先到先得 | 每项目一堆 JSON 文件：并发写会互相覆盖 |
 | leader 是普通会话 + 角色定义，一个 leader 管一个分组，可以并存 | 用户要能直接点进每个会话；分组按"一个部分"划分 | 官方 Agent teams：队友只能由 leader 新生，不能收编已有会话，恢复后队友丢失，Windows 只能挤在一个终端 |
 | 全放行模式 + 守卫黑名单 | 夜里不卡确认框；模式一致后跨会话消息不用批准 | 逐条确认 + 白名单：写 `.claude` 目录在除全放行外的所有模式都会弹框 |
-| 成员和 leader 统一用常驻 CLI，网页收发 stream-json | 用户默认在网页里看对话和工具，需要时转到 VS Code；CLI 保留跨会话收件箱、transcript 和原会话 ID，可恢复 | 新成员开终端窗口：已按用户确定的工作流改为默认后台；Agent SDK：当前 CLI 已满足需求，无需增加 Python 依赖 |
+| 成员和 leader 统一用常驻 CLI，网页收发 stream-json | 用户默认在网页里看对话和工具；CLI 保留跨会话收件箱、transcript 和原会话 ID，可恢复 | 新成员开终端窗口：已按用户确定的工作流改为默认后台；Agent SDK：当前 CLI 已满足需求，无需增加 Python 依赖 |
 | 网页只和 leader 聊，下属在 VS Code 里聊；leader 当中转站（2026-10-22 用户拍板，参照 Paperclip 的 CEO） | 用户先在 VS Code 里和会话聊出需求，收编后仍习惯在那里直接说；集中处理进展和拍板靠 leader | 网页上也和下属聊：同一会话同时只能在一个进程里跑，VS Code 里的会话收不到可靠的网页消息 |
 | Crew 不发会话间消息，要告诉下属的事写 leader 通知，由 leader 转告 | 只有会话自己能调用 SendMessage；leader 本来就在网页托管，能直接写进它的输入 | Crew 自己做一套发消息机制：官方跨会话收件入口没有可靠送达确认 |
 | 待收编按 VS Code 会话列表口径，VS Code 归档单向同步 | 用户在 VS Code 侧栏里管理会话，两边看到的应一致 | 只列活进程（漏掉没在运行的会话）；跟随取消归档（少见，代码量约三倍） |

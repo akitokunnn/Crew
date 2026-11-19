@@ -89,8 +89,6 @@ SPECS = (
          'CC / Codex', '换载体后的第一条输入（用户可在预览里再改）'),
     Spec('lost_native_handoff', '会话丢失交接开头', 'host', '原生会话丢失、改用新会话时交接材料的开头说明。',
          'CC / Codex', '新会话的第一条输入'),
-    Spec('codex_desktop', 'Codex 桌面交接', 'host', '把会话交给 Codex 原生桌面继续时替换的说明；成员另附成员边界。',
-         'Codex 桌面', '交给 Codex 桌面时'),
     Spec('git_task', 'Git 助手开工任务', 'host', '启用 Git 管理时交给 Git 助手的第一项任务。',
          'CC / Codex · Git 助手', '启用 Git 管理、创建 Git 助手时', ('policy_command', 'requests_command')),
     Spec('role_reminder', '守则更新提醒', 'host', '内置守则文件更新后提醒 CC 会话重读。',
@@ -170,19 +168,6 @@ def text(conn, key, *, project=None, session_id=None, values=None, plugin_root=N
     """Effective prompt text for one key, with overrides and placeholders applied."""
     item = resolve(conn, project=project, session_id=session_id, keys=(key,), plugin_root=plugin_root)['prompts'][0]
     return fill(key, item['content'], values)
-
-
-def desktop_instructions(conn, session_id, role):
-    """Codex desktop handoff text; members also keep their delegation boundary."""
-    value = text(conn, 'codex_desktop', session_id=session_id).rstrip('\n')
-    if role == 'member':
-        value += '\n' + text(conn, 'member_boundary', session_id=session_id).rstrip('\n')
-    return value
-
-
-def default_desktop_instructions(role):
-    value = default_text('codex_desktop').rstrip('\n')
-    return value + ('\n' + default_text('member_boundary').rstrip('\n') if role == 'member' else '')
 
 
 def global_text(home, key, values=None):

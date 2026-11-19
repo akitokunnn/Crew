@@ -47,7 +47,7 @@ function harness(state = fixture(), fetcher = () => { throw new Error("Unexpecte
   assert(source.endsWith(end + "\n") || source.endsWith(end));
   const clickSource = source.slice(source.indexOf('    document.addEventListener("click",'), source.indexOf('    document.addEventListener("input",'));
   vm.runInContext(source.replace(end, `${clickSource}  window.ui = {runtimeList, runtimeInfo, defaultRuntime, modelEfforts, modelMenu, optionChange,
-    optionsLabel, optionChangeNotice, leaderPayload, renderLeaderRuntime, selectLeaderOption, refreshRuntimes, editorHandoffReason, sessionMenu, chatAccess,
+    optionsLabel, optionChangeNotice, leaderPayload, renderLeaderRuntime, selectLeaderOption, refreshRuntimes, sessionMenu, chatAccess,
     setPinned, sortableLeaders, railQuota, renderSidebar, contextRing, contextControls, sidebarLeader, memberNode, workingRow, compactContext, compactions,
     compactFailures, setGoal(client, id) {goals=client;goalId=id;},
     openTodos, todosOf, decisionsOf, todoCard, todoTray, todoExpanded, todoActions,
@@ -221,23 +221,14 @@ test("a combined model and effort change overrides both stored and applied optio
   assert.deepEqual(plain(item), before);
 });
 
-test("Codex editor handoff is disabled while leader chat and member history remain available", () => {
+test("session menus keep leader chat and member history without a VS Code handoff", () => {
   const state = fixture(), leader = session({session_id:"lead", name:"Codex leader", pinned:false, member_ids:["member"]});
   const member = session({session_id:"member", name:"Codex member", leader_session_id:"lead", status:"idle", web_chat:true});
   state.leaders = [leader]; state.members = [member];
-  const {ui} = harness(state), reason = "Codex 会话在 Crew 内继续；暂不支持转到 VS Code";
-  for (const item of [leader, member]) {
-    const markup = ui.sessionMenu(item);
-    assert.equal(ui.editorHandoffReason(item), reason);
-    assert.match(markup, new RegExp('data-act="open-vscode"[^>]*disabled title="' + reason + '"'));
-    assert(markup.includes('<p class="editor-handoff-note">' + reason + '</p>'));
-  }
+  const {ui} = harness(state);
   assert.match(ui.sessionMenu(leader), /data-act="leader"[^>]*>打开对话/);
   assert.match(ui.sessionMenu(member), /data-act="member-history"[^>]*>进入本人对话/);
-  assert.equal(ui.editorHandoffReason({runtime:"claude"}), "");
-  const claude = {...member, runtime:"claude"};
-  assert.match(ui.sessionMenu(claude), /data-act="open-vscode"[^>]*>在 VS Code 打开/);
-  assert(!ui.sessionMenu(claude).includes(reason));
+  for (const item of [leader, member, {...member, runtime:"claude"}]) assert(!ui.sessionMenu(item).includes("VS Code"));
 });
 
 test("creation preserves custom models and explicit efforts and reports known capability conflicts", () => {

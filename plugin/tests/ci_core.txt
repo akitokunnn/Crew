@@ -76,7 +76,6 @@ test_home_migration
 test_core
 test_shell.SpawnTests
 test_home_identity
-test_open_session
 test_runtime_spawn
 test_session_ops
 test_live_sessions

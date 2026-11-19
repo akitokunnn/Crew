@@ -7,7 +7,7 @@ import uuid
 from unittest import mock
 
 import tests
-from crew import board, chat, codex_client, codex_runtime, goal_mode, goals, native_handoff, runtimes, store, trust_mode
+from crew import board, chat, codex_client, codex_runtime, goal_mode, goals, runtimes, store, trust_mode
 from test_codex_runtime import FakeClient
 from test_shell import PLUGIN, ShellFixture
 
@@ -215,19 +215,16 @@ class RuntimeRecoveryTests(ShellFixture, unittest.TestCase):
         self.poll(100)
         self.assertIs(self.manager.processes[key], previous)
 
-    def test_goal_pause_cancel_and_native_external_ownership_block_pending_recovery(self):
-        for control in ('pause', 'cancel', 'external'):
+    def test_goal_pause_and_cancel_block_pending_recovery(self):
+        for control in ('pause', 'cancel'):
             with self.subTest(control=control):
                 key, sid, goal_id = self.start_scope('codex', task=True)
                 previous = self.crash(key)
                 self.poll(0)
                 if control == 'pause':
                     goals.request_pause(self.conn, goal_id)
-                elif control == 'cancel':
-                    goals.request_cancel(self.conn, goal_id)
                 else:
-                    self.conn.execute("UPDATE native_session_controls SET state='external' WHERE scope_id=?", (key,))
-                    self.assertTrue(native_handoff.blocked(self.conn, sid, key))
+                    goals.request_cancel(self.conn, goal_id)
                 self.poll(100)
                 self.poll(1000)
                 self.assertIs(self.manager.processes[key], previous)

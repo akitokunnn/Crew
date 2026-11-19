@@ -13,7 +13,7 @@ import sys
 import tempfile
 import threading
 
-from . import board, codex_client, codex_events, codex_guard, codex_history, codex_subagents, codex_tools, codex_visibility, goal_messages, goals, guard, install, messaging, native_approvals, native_handoff, native_skills, rules, settings, store, workspace_execution
+from . import board, codex_binding, codex_client, codex_events, codex_guard, codex_subagents, codex_tools, codex_visibility, goal_messages, goals, guard, install, messaging, native_approvals, native_skills, rules, settings, store, workspace_execution
 
 
 def process_identity(pid):
@@ -213,8 +213,6 @@ class CodexRunning:
         from . import runtimes
         self.home, self.plugin_root = Path(home).resolve(), Path(plugin_root).resolve()
         with closing(store.connect(self.home)) as conn:
-            native_handoff.assert_control(conn, session['session_id'], execution['id'] if execution else None,
-                                          spec.get('_native_control_token'))
             session = workspace_execution.execution_session(conn, session)
             directory_notice = workspace_execution.migration_notice(conn, session)
         install.ensure(self.home, self.plugin_root)
@@ -265,7 +263,7 @@ class CodexRunning:
             if mapping["runtime"] != "codex":
                 raise board.BoardError("Crew 会话尚未绑定 Codex 运行时")
             native_id = mapping.get("native_id")
-            self.native_home = native_handoff.home_for(conn, self.session_id, execution['id'] if execution else None)
+            self.native_home = codex_binding.home_for(conn, self.session_id, execution['id'] if execution else None)
             role = rules.skill_role(conn, session)
             assistant = role == 'assistant'
             # A newly created administrator starts before enable() binds its ID.
@@ -306,7 +304,6 @@ class CodexRunning:
             params["model"] = options["model"]
         if options.get("speed") is not None:
             params["serviceTier"] = options["speed"]
-        self._crew_resume_params = dict(params)
         self._lease = RuntimeLease(self.home, execution['id'] if execution else self.session_id).acquire()
         def own_process(command, **kwargs):
             process = process_factory(command, **kwargs)
@@ -340,7 +337,7 @@ class CodexRunning:
                 try:
                     result = self.client.resume_thread(native_id, **params)
                 except codex_client.RpcError as exc:
-                    busy = native_handoff.writer_busy(exc)
+                    busy = codex_binding.writer_busy(exc)
                     if busy is None:
                         raise
                     raise busy from exc
@@ -355,10 +352,6 @@ class CodexRunning:
                     status='confirmed', evidence=('Codex thread/resume' if native_id else 'Codex thread/start') +
                     ' 已接收本次 developerInstructions；thread=' + self.thread_id)
             self.behavior_prompt_hash = behavior_prompts.manifest_hash(self._behavior_manifest)
-            if spec.get('_native_history_sync'):
-                if (result['thread'].get('status') or {}).get('type') == 'active':
-                    raise board.Conflict('Codex 原生会话仍在执行，请结束后再回到 Crew')
-                codex_history.sync(self.client, self.thread_id, self.journal)
             self.sync_title()
             with self.input_lock:
                 self._events = codex_events.Events(self.thread_id)
@@ -377,8 +370,8 @@ class CodexRunning:
                                       speed=self.applied['speed'])
                 else:
                     runtimes.set(conn, self.session_id, "codex", native_id=self.thread_id)
-                native_handoff.remember(conn, self.session_id, self.thread_id, self.native_home,
-                                        execution['id'] if execution else None)
+                codex_binding.remember(conn, self.session_id, self.thread_id, self.native_home,
+                                       execution['id'] if execution else None)
             self.journal.reset_runtime()
             self._status("idle")
             with self.input_lock:
@@ -749,25 +742,6 @@ class CodexRunning:
                     self.journal.emit("error", text="Codex 进程租约清理失败：" + str(exc))
                 finally:
                     self.reader_done.set()
-
-    def prepare_desktop_handoff(self):
-        """Checkpoint and annotate continuation; the desktop has no Crew handler."""
-        with self.input_lock:
-            if self.journal.status == 'working' or self.pending_compact or self.maintenance is not None:
-                raise board.Conflict('会话仍在执行，不能交给 Codex 桌面')
-            if self._closing or self.process.poll() is not None:
-                raise board.BoardError('Codex 连接已经关闭')
-            codex_history.checkpoint(self.client, self.thread_id, self.journal)
-            with closing(store.connect(self.home)) as conn:
-                instructions = behavior_prompts.desktop_instructions(conn, self.session_id, self.session['role'])
-            result = self.client.resume_thread(self.thread_id, developerInstructions=instructions)
-            if result['thread']['id'] != self.thread_id:
-                raise board.BoardError('Codex 交接返回了不同的原生 ID，未打开桌面')
-
-    def restore_crew_instructions(self):
-        result = self.client.resume_thread(self.thread_id, **self._crew_resume_params)
-        if result['thread']['id'] != self.thread_id:
-            raise board.BoardError('Codex 恢复 Crew 指令时返回了不同的原生 ID')
 
     def close(self, *, archive=True):
         if not archive:

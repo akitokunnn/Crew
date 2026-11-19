@@ -36,8 +36,7 @@ DESKTOP_FORBIDDEN = {
     'POST': frozenset((
         '/api/remote-access', '/api/admin/update/prepare', '/api/admin/update/cancel',
         '/api/admin/connection/prepare', '/api/admin/chat/send', '/api/admin/chat/interrupt',
-        '/api/admin/config', '/api/open', '/api/open/continue', '/api/files/open', '/api/files/reveal',
-        '/api/session/native-handoff', '/api/session/native-return', '/api/workspace-data/preview',
+        '/api/admin/config', '/api/files/open', '/api/files/reveal', '/api/workspace-data/preview',
         '/api/workspace-data/import', '/api/workspace-data/handoff', '/api/messages',
         '/api/assistant/native-action', '/api/goals/report/folder',
     )) | report_preview.WORKER_PATHS,

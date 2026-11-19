@@ -505,8 +505,8 @@
     }
     if (verb === "answer" && /^\d+$/.test(words[2])) return `答复拍板：${words.slice(3).join(" ")}`;
     if (verb === "withdraw" && /^\d+$/.test(words[2])) return "撤回一道拍板";
-    if ((verb === "open" || verb === "who" || verb === "join") && words[2] !== undefined) {
-      const label = {open:"在 VS Code 打开", who:"查看下属", join:"登记下属"}[verb];
+    if ((verb === "who" || verb === "join") && words[2] !== undefined) {
+      const label = {who:"查看下属", join:"登记下属"}[verb];
       return `${label} ${words[2]}`;
     }
     if (verb === "card") return words.includes("--scope") || words.includes("--done-when") ? "更新任务卡" : "查看任务卡";
@@ -563,7 +563,6 @@
     return {turn, process, final:final ? {...final.item, content:indexes.map(index => final.blocks[index]), text:""} : null};
   }
   function turnDuration(turn) {
-    if (turn.nativeImported) return null;
     const milliseconds = Date.parse(turn.endedAt) - Date.parse(turn.startedAt);
     if (!Number.isFinite(milliseconds) || milliseconds < 0) return null;
     const seconds = Math.round(milliseconds / 1000);
@@ -733,7 +732,7 @@
   function assistant(context, event) {
     let item = context.byId.get(event.id);
     if (!item) {
-      context.turn ||= {seq:context.turnStart?.seq ?? event.seq, startedAt:context.turnStart?.at ?? event.at, finished:false, items:[], nativeImported:!!event.native_imported};
+      context.turn ||= {seq:context.turnStart?.seq ?? event.seq, startedAt:context.turnStart?.at ?? event.at, finished:false, items:[]};
       item = { id: event.id, kind: "assistant", seq: event.seq, lastSeq: event.seq, at: event.at, text: "", content: null, replyText:"", replySeq:0, turn:context.turn };
       context.turn.items.push(item);
       context.items.push(item); context.byId.set(item.id, item);

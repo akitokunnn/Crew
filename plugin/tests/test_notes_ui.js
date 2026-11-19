@@ -107,11 +107,11 @@ function assistantPage(hash, notes) {
     document: {documentElement: {dataset: {}}, addEventListener() {}, createElement: stub, createTextNode: text => ({text}), getElementById: id => { if (!nodes.has(id)) nodes.set(id, stub()); return nodes.get(id); }},
     fetch: async (url, options) => {
       calls.push({url, method: options.method});
-      const value = url === "/api/assistant/state" ? {assistant: {session_id: "assistant", native_handoff: null}, projects: [], todos: [], goals: [], sounds: {}, now: "now"}
+      const value = url === "/api/assistant/state" ? {assistant: {session_id: "assistant"}, projects: [], todos: [], goals: [], sounds: {}, now: "now"}
         : url.startsWith("/api/personal/notes") ? {notes, stale_days: 14} : {};
       return {ok: true, status: 200, json: async () => value};
     },
-    CrewSound: {observe() {}}, CrewNativeHandoff: {markup: () => ""}, CrewPersonalNotes: {create: () => ({open() {}})},
+    CrewSound: {observe() {}}, CrewPersonalNotes: {create: () => ({open() {}})},
     CrewChat: {initFiles() {}, unmount() {}, update() {}, mount: options => chat.mounts.push(options), setNote: (value, prefill) => chat.notes.push([value, prefill])}};
   sandbox.window = sandbox;
   vm.runInNewContext(web("assistant.js"), sandbox);

@@ -2,8 +2,8 @@
 (() => {
   const originalFetch = window.fetch.bind(window);
   const unavailable = {remote:false, client:"", local_controls:false, local_desktop:false, authenticated:false,
-    host_admin:false, native_handoff:false, vscode_continue:false};
-  const flags = ["remote", "local_controls", "local_desktop", "host_admin", "native_handoff", "vscode_continue"];
+    host_admin:false};
+  const flags = ["remote", "local_controls", "local_desktop", "host_admin"];
   let context = unavailable;
   let expired = false;
   function loginUrl() { return "/remote/login?next=" + encodeURIComponent(location.pathname + location.search + location.hash); }
@@ -43,6 +43,5 @@
   })();
   window.CrewAccess = {ready, get remote() { return context.remote; }, get client() { return context.client; },
     get local_controls() { return context.local_controls; }, get local_desktop() { return context.local_desktop; },
-    get host_admin() { return context.host_admin; }, get native_handoff() { return context.native_handoff; },
-    get vscode_continue() { return context.vscode_continue; }, get expired() { return expired; }};
+    get host_admin() { return context.host_admin; }, get expired() { return expired; }};
 })();

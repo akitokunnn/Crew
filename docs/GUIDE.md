@@ -190,7 +190,6 @@ PR 与 main 推送由 GitHub Actions 自动运行 Python、网页及桌面测试
 | `crew wake <名字> "<消息>"` | leader 或用户叫醒离线组员；leader 找别的 leader、组员找自己的 leader 时排通知，空闲时送达；用户找 leader 直接在页面聊；服务未运行或组员进程状态未知时报错 |
 | `crew compact [<名字>]` | 通过网页服务压缩自己的组员，用户也可指定会话；网页 leader 不带名字或指定自己时，等这一轮说完后压缩 |
 | `crew stop <名字或会话ID>` | 停止自己或本组成员的 Crew 托管执行；用户可指定项目内人员。确认退出并保留停止门槛，队列不能自动恢复 |
-| `crew open <名字>` | 两步在 VS Code 接续同一会话，停止空闲的原运行端前须明确确认 |
 | `crew web --open` | 按当前目录打开工作区，已有服务时复用 |
 | `crew git enable [--base 分支] [--integration 分支] [--runtime codex\|claude]` / `crew git disable` / `crew git status` | 启用并自动开 Git 管理员 / 收掉管理员的组并停用 / 查看配置；base 自动依次选 develop、dev、main、master，本地集成分支省略即不启用 |
 | `crew git policy` / `crew git policy --set "<正文>"` | 看分支规则全文 / Git 管理员设置规则 |
@@ -299,8 +298,6 @@ Windows 的派工集成源码在 `integrations/codex-dispatch/` 与 `integration
 0.3.13 任务收尾不再卡在“推进中”：leader 提交收尾才算数，漏了会提醒一次；主页卡片、任务详情和报告页都能直接“通过 / 需修改 / 先观察”，“先观察”的任务单独一栏、不叫醒 AI；leader 栏只显示未读小点。修复子代理缺少记录文件时工作台一直提示“服务器错误”，后端报错现在写进“帮助 → 查看日志文件夹”里的 backend.log。产品统一叫 **Crew**，历史数据和设置沿用。安装包选择与发布流程见[桌面更新](DESKTOP_UPDATES.md)。
 
 Crew 用版本号区分更新，桌面包版本以 `desktop/package.json` 为准。工作区以任务和 TODO 为主页；全 Crew 共用一个跨工作区助手。数据目录为 `~/.crew`。开发主干为 `main`，日常修复的本地试用与推送流程见 [AGENTS.md](../AGENTS.md) 的“本地试用与推送”。需求与验收边界见 [产品约定](v2/PRODUCT.md)，开源参考见 [选型记录](v2/OPEN_SOURCE.md)。
-
-官方 Codex 桌面往返及显示边界见 [0.3.3 接续说明](v2/NATIVE_DESKTOP_0.3.3_2026-10-30.md)。
 
 同一网络中的手机和电脑可从“设置 → 局域网访问”开启访问，在浏览器输入地址和一次性配对码。支持现有工作区、全局助手、任务、拍板、待办及报告；设备可以单独撤销，关闭访问不停止本机任务。电脑上的 Crew 必须保持运行。使用步骤与验证范围见 [0.3.4 局域网访问](v2/LAN_ACCESS_0.3.4_2026-11-01.md)。公网接入留待配置域名后实施，见 [接入选型](decisions-remote-access.md)。
 

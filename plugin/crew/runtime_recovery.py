@@ -2,7 +2,7 @@
 import datetime as dt
 import subprocess
 
-from . import behavior_prompts, board, codex_client, goal_mode, goals, messaging, native_handoff, runtimes, store, trust_mode
+from . import behavior_prompts, board, codex_client, goal_mode, goals, messaging, runtimes, store, trust_mode
 
 
 BACKOFF_SECONDS = (5, 15, 45)
@@ -67,8 +67,6 @@ class Controller:
                 or messaging.stopped(conn, logical) or current is not None and (
                     current.stop_reason is not None or current.interrupt_requested)):
             raise board.BoardError('会话已停止、归档、移除或工作区已停用')
-        if native_handoff.blocked(conn, logical, scope['execution_id']):
-            raise board.BoardError('会话已交给外部载体，保留外部控制权')
         if scope['execution_id']:
             execution = goals.get_execution(conn, key)
             gate = goals.dispatch_check(conn, execution['goal_id'], execution_id=key, allow_discussion=True)

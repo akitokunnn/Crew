@@ -152,11 +152,6 @@ function harness(options = {}) {
     boot:async () => { ready.resolve(); await tick(); assert.equal(windows.length,1); assert.equal(trays.length,1); } };
 }
 
-test('desktop bridge configuration points outside ASAR in packaged mode and at local assets in development', () => {
-  assert.equal(harness().config.codexDesktopProxy, path.resolve(__dirname, '../assets/CrewCodexBridge.exe'));
-  assert.equal(harness({ packaged:true }).config.codexDesktopProxy, path.resolve('fixture resources', 'app.asar.unpacked', 'assets', 'CrewCodexBridge.exe'));
-});
-
 test('remote access IPC reads and changes the connected backend only from the trusted home', async t => {
   const requests=[];
   const server=http.createServer(async(req,res)=>{

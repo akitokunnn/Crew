@@ -17,7 +17,7 @@ async function route(request,response){
   if(!name.startsWith('/api/')){const file=path.resolve(web,'.'+(name==='/'?'/index.html':name));if(!file.startsWith(web+path.sep)){response.writeHead(403);return response.end();}try{const content=await fs.readFile(file);response.writeHead(200,{'Content-Type':({'.js':'text/javascript','.css':'text/css','.html':'text/html','.svg':'image/svg+xml','.woff2':'font/woff2'})[path.extname(file)]||'application/octet-stream'});return response.end(content);}catch(_){response.writeHead(404);return response.end();}}
   calls.push({name,body,query:Object.fromEntries(url.searchParams)});
   const sid=body?.session_id||url.searchParams.get('session_id'),gid=body?.goal_id||url.searchParams.get('goal_id');
-  if(name==='/api/access/context')return json(response,{remote:false,client:'local',local_controls:true,local_desktop:true,authenticated:true,host_admin:true,native_handoff:process.platform==='win32',vscode_continue:process.platform==='win32'});
+  if(name==='/api/access/context')return json(response,{remote:false,client:'local',local_controls:true,local_desktop:true,authenticated:true,host_admin:true});
   if(name==='/api/state')return json(response,{...clone(state),project:url.searchParams.has('project')?clone(state.project):null});
   if(name==='/api/runtimes')return json(response,{runtimes:catalog});
   if(name==='/api/leader'){const value=person('leader-'+(++serial),body.name);state.leaders.push(value);return json(response,{session_id:value.session_id});}

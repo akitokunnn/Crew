@@ -2,7 +2,7 @@
 import json
 from urllib.parse import urlencode
 
-from . import behavior_prompts, board, codex_client, documents, goal_context, goal_work, goals, native_handoff
+from . import behavior_prompts, board, codex_client, documents, goal_context, goal_work, goals
 
 ACCEPTANCE_STATUSES = ('passed', 'failed', 'unverified', 'simulated')
 
@@ -23,8 +23,6 @@ def report_entry(project, value, row, root):
 def card(conn, value):
     req = value['requirements']
     available = conn.execute('SELECT 1 FROM goal_reports WHERE goal_id=?', (value['id'],)).fetchone()
-    handoffs = [native_handoff.describe(conn, row['session_id'], row['id']) for row in conn.execute(
-        'SELECT id,session_id FROM goal_executions WHERE goal_id=? AND round=?', (value['id'], value['current_round']))]
     brief = None
     report = conn.execute('SELECT id,data_json,created_at FROM goal_reports WHERE goal_id=? AND round=? '
                           'ORDER BY version DESC LIMIT 1', (value['id'], value['current_round'])).fetchone()
@@ -54,7 +52,7 @@ def card(conn, value):
                             'UNION ALL SELECT created_at FROM goal_requirements WHERE goal_id=:g)', {'g': value['id']}).fetchone()[0]
     # When the task ended: every terminal path goes through goals.transition, which stamps the current round's ended_at.
     ended_at = next(row['ended_at'] for row in value['rounds'] if row['number'] == value['current_round']) if value['status'] in goals.TERMINAL else None
-    return {**value, 'request': req['request'], 'acceptance': req['acceptance'], 'native_handoffs': handoffs,
+    return {**value, 'request': req['request'], 'acceptance': req['acceptance'],
             'constraints': req['constraints'], 'report_available': bool(available), 'acceptance_brief': brief,
             'work_summary': goal_work.summary_of(work), 'supplements_after_report': supplements,
             'now_doing': [{'key': item['key'], 'title': item['title'], 'session_id': item['owner_session_id']} for item in doing],
@@ -80,9 +78,8 @@ def detail(conn, project, identity, *, context_state=None):
     value = goals.get(conn, identity, project)
     executions = [goals.get_execution(conn, row['id']) for row in conn.execute(
         'SELECT id FROM goal_executions WHERE goal_id=? ORDER BY round,generation', (identity,))]
-    for execution in executions:
-        execution['native_handoff'] = native_handoff.describe(conn, execution['session_id'], execution['id'])
-        if context_state is not None:
+    if context_state is not None:
+        for execution in executions:
             execution.update(context_state(execution['id']))
     current = [e for e in executions if e['round'] == value['current_round'] and e['session_id'] == value['leader_session_id']]
     # Newest first by the stored report version within each round, the same order acceptance_target uses;

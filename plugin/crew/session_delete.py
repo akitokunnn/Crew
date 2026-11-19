@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 import shutil
 
-from . import codex_client, native_handoff
+from . import codex_binding, codex_client
 
 NATIVE_ID = re.compile(r'[0-9A-Za-z][0-9A-Za-z_-]{7,127}\Z')
 
@@ -23,7 +23,7 @@ def targets(conn, session_id):
         found.add((current['runtime'], current['native_id']))
     found.update((row['runtime'], row['native_id']) for row in conn.execute(
         'SELECT runtime,native_id FROM session_runtime_bindings WHERE session_id=? AND native_id IS NOT NULL', (session_id,)))
-    home = str(native_handoff.home_for(conn, session_id))
+    home = str(codex_binding.home_for(conn, session_id))
     return [{'runtime': runtime, 'native_id': native_id, 'home': home if runtime == 'codex' else None}
             for runtime, native_id in sorted(found)]
 

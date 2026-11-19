@@ -99,7 +99,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         leader = state["leaders"][0]
         self.assertEqual(set(leader), {"session_id", "name", "goal", "status", "busy", "running", "web_chat",
             "cc_name", "last_seq", "last_reply_id", "read_seq", "unread", "pending", "notices_pending", "member_ids",
-            "model", "effort", "speed", "applied", "activity", "context", "where", "codex", "codex_older", "pinned", "runtime", "native_handoff", "trust", "runtime_switch", "active_goal_id", "active_goal_ids", "active_execution_id", "member_defaults", "color", "avatar_version"})
+            "model", "effort", "speed", "applied", "activity", "context", "where", "codex", "codex_older", "pinned", "runtime", "trust", "runtime_switch", "active_goal_id", "active_goal_ids", "active_execution_id", "member_defaults", "color", "avatar_version"})
         self.assertIsNone(leader['member_defaults'])
         self.assertIsNone(leader['active_goal_id']); self.assertIsNone(leader['active_execution_id'])
         self.assertEqual(set(leader['runtime_switch']), {'allowed', 'reason', 'pending_handoff', 'last_switch_at'})
@@ -254,7 +254,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         goal = response['goal']
         self.assertEqual(set(goal),{'id','project','leader_session_id','title','original_request','status',
             'requirement_version','current_round','priority','manual_pause','reason','version','created_at','updated_at',
-            'dependencies','requirements','assignments','rounds','request','acceptance','constraints','report_available','acceptance_brief','native_handoffs','work_summary','decision_mode','supplements_after_report',
+            'dependencies','requirements','assignments','rounds','request','acceptance','constraints','report_available','acceptance_brief','work_summary','decision_mode','supplements_after_report',
             'now_doing','pending_decision','working_count','finish_pending','transfer_pending','observing','last_activity_at','ended_at'})
         self.assertEqual((goal['decision_mode']['mode'], goal['decision_mode']['source'], goal['decision_mode']['version']),
                          ('human','task-default',1))
@@ -263,7 +263,6 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual((goal['current_round'],goal['requirement_version'],goal['version']),(1,1,1))
         self.assertEqual(goal['acceptance'],[{'id':'a1','title':'具体 example 达标'}])
         self.assertFalse(goal['report_available']);self.assertFalse(goal['manual_pause'])
-        self.assertEqual(goal['native_handoffs'], [])
         self.assertIsNone(goal['acceptance_brief'])
         self.assertEqual(goal['supplements_after_report'], [])
         self.assertEqual(goal['work_summary'], {'total':0,'done':0,'doing':0,'blocked':0,'revision':0})
@@ -331,7 +330,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual(set(member), {"session_id", "name", "title", "leader_session_id", "group", "status",
             "status_note", "where", "task", "scope", "done_when", "branch", "worktree", "cwd", "cc_name",
             "web_chat", "progress", "codex", "codex_older", "leases", "claims", "model", "effort", "speed", "applied", "activity",
-            "context", "busy", "running", "runtime", "native_handoff", "runtime_switch", "active_goal_id", "active_goal_ids", "active_execution_id",
+            "context", "busy", "running", "runtime", "runtime_switch", "active_goal_id", "active_goal_ids", "active_execution_id",
         "execution_records", "general_has_output"})
         self.assertEqual((member["name"], member["leader_session_id"], member["group"], member["scope"], member["done_when"]),
                          ("one", "s3", "lead", "Backend", "Tests pass"))
