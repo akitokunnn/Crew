@@ -1086,6 +1086,18 @@ class Manager:
                 if group not in (None, leader['group_name']):
                     raise board.BoardError('成员分组必须属于目标的主责 leader')
                 group = leader['group_name']
+            if role == 'member' and caller_session_id not in (None, board.HUMAN) and bound_goal is None:
+                # Members are executions of one part of a task, not standing teammates.
+                raise board.BoardError('执行只能开在任务里：crew spawn --goal <任务ID> --name <这块活的短名> --task "<任务书>"'
+                                       '（Codex 用 crew_spawn 的 goal_id）；没有任务的零活自己做，或用原生子代理、一次性派工')
+            if (role == 'member' and bound_goal is not None and caller_execution_id is None
+                    and caller_session_id not in (None, board.HUMAN) and conn.execute(
+                        "SELECT 1 FROM goal_executions e JOIN goals g ON g.id=e.goal_id WHERE e.goal_id=? AND e.session_id=? "
+                        "AND e.round=g.current_round AND e.status NOT IN ('completed','failed','cancelled')",
+                        (bound_goal, caller_session_id)).fetchone()):
+                # The task's own execution splits it; a second splitter in the general chat duplicates parts.
+                raise board.Conflict('这个任务已有你自己的任务执行在推进，拆分和开执行由那段执行负责，总对话不再重复开；'
+                                     '要补充要求请发给该任务（goal_id）')
             if role == "leader":
                 plan = spawn.leader_plan(conn, self.home, self.plugin_root, project_name, name, members, task,
                                          cwd=cwd, new_worktree=new_worktree, base=base, now=now,
@@ -1904,8 +1916,10 @@ class Manager:
                             continue
                 try:
                     if getattr(current, 'runtime', 'claude') == 'codex':
-                        # Keep the thread unarchived: it is resumed, not finished.
-                        current.close(archive=False)
+                        # A task execution's thread leaves the Codex sidebar while idle;
+                        # resuming restores it (codex_visibility.restore_internal). Person
+                        # threads stay unarchived: only Crew goal bindings are ever restored.
+                        current.close(archive=bool(getattr(current, 'execution', None)))
                     else:
                         try:
                             current.process.wait(timeout=10)

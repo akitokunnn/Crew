@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from crew import board, guard, spawn
+from crew import board, goals, guard, spawn
 from test_shell import ShellFixture
 
 
@@ -29,7 +29,11 @@ class DelegationBoundaryTests(ShellFixture, unittest.TestCase):
             with self.subTest(project=project, role=role, group=group):
                 with self.assertRaises(board.BoardError):
                     spawn.authorize(self.conn, project, 's3', role, group)
-        result = self.make_spawn('allowed', caller_session_id='s3')
+        with self.assertRaisesRegex(board.BoardError, '执行只能开在任务里'):
+            self.make_spawn('loose', caller_session_id='s3')
+        self.assertEqual(self.processes, [])
+        goal = goals.transition(self.conn, goals.create(self.conn, 'demo', 's3', 'Split work', 'Request', ['Done'])['id'], 'running')
+        result = self.make_spawn('allowed', caller_session_id='s3', goal_id=goal['id'])
         self.assertEqual(board.session(self.conn, result['session_id'])['group_name'], 'lead')
         self.assertEqual(len(self.processes), 1)
 

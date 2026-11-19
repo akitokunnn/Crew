@@ -76,8 +76,9 @@ class LeaderFinishReminderTests(MemberNativeFixture, unittest.TestCase):
     def test_busy_member_or_submitted_finish_means_no_reminder(self):
         goal = self.goal()
         key = self.leader_turn(goal)
+        # The leader's own task execution opens the part; its general chat no longer does.
         created = self.manager.start(self.conn, 'demo', 'arith', 'Compute 1+1', runtime='claude',
-                                     caller_session_id='s3', goal_id=goal['id'])
+                                     caller_session_id='s3', caller_execution_id=key)
         wait_until(lambda: self.manager.busy(created['execution_id']), 'member working')
         self.manager.goal_controller.sync(self.conn, goal['id'])
         self.remind(key, 60)

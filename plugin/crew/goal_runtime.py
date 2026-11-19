@@ -552,6 +552,31 @@ class Controller:
             executions = conn.execute('SELECT id FROM goal_executions WHERE goal_id=?', (value['id'],)).fetchall()
             if blocked and not any(self.manager.busy(e['id']) for e in executions):
                 goals.transition(conn, value['id'], 'waiting_user', actor=value['leader_session_id'])
+        self.retire_finished_members(conn)
+
+    def retire_finished_members(self, conn):
+        """A member exists for parts of tasks; once every task it worked on is accepted,
+        cancelled or handed over, archive it (history kept, restorable). Members that
+        never had a task (adopted sessions) and failed tasks, which may be retried, stay."""
+        from . import session_ops
+        rows = conn.execute(
+            "SELECT s.session_id FROM sessions s LEFT JOIN session_controls c ON c.session_id=s.session_id "
+            "WHERE s.role='member' AND s.group_name IS NOT NULL AND s.status<>'closed' "
+            "AND c.archived_status IS NULL AND COALESCE(c.removed,0)=0 "
+            "AND EXISTS (SELECT 1 FROM goal_assignments a WHERE a.session_id=s.session_id) "
+            "AND NOT EXISTS (SELECT 1 FROM goal_assignments a JOIN goals g ON g.id=a.goal_id "
+            "  WHERE a.session_id=s.session_id AND a.status='assigned' AND g.status NOT IN ('completed','cancelled')) "
+            "AND NOT EXISTS (SELECT 1 FROM goal_executions e WHERE e.session_id=s.session_id "
+            "  AND e.status IN ('queued','running','pausing'))").fetchall()
+        retired = []
+        for row in rows:
+            identity = row['session_id']
+            if any(self.manager.busy(key) for key in self.manager._identity_keys(conn, identity)):
+                continue
+            session_ops.archive(conn, identity)
+            self.manager.stop_managed(identity, reason='session_archive')
+            retired.append(identity)
+        return retired
 
     def finalize_transfer(self, conn, goal_id):
         """Hand the task over once nobody is mid-turn; idle processes of the old side are closed first."""

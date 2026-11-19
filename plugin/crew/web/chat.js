@@ -501,7 +501,7 @@
     if (verb === "spawn") {
       const nameIndex = words.indexOf("--name");
       const name = words[nameIndex === -1 ? 2 : nameIndex + 1];
-      return name !== undefined && !name.startsWith("--") ? `开新下属 ${name}` : null;
+      return name !== undefined && !name.startsWith("--") ? `开执行 ${name}` : null;
     }
     if (verb === "answer" && /^\d+$/.test(words[2])) return `答复拍板：${words.slice(3).join(" ")}`;
     if (verb === "withdraw" && /^\d+$/.test(words[2])) return "撤回一道拍板";

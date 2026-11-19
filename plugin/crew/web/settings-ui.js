@@ -27,7 +27,7 @@
     if (value === STANDARD_SPEED.id) return "标准速度与用量";
     return speedsFor(runtime, modelId).find(item => item.id === value)?.description || "所选模型未列出这个速度";
   }
-  const tasks = [["assistant", "全局助手", "所有工作区共用一个助手；首次发送时使用此选择"], ["leader", "新建 leader", "新建 leader 时的载体、模型与思考强度；创建时仍可临时调整"], ["member", "leader 召唤组员", "新组员默认使用的大脑；每个 leader 也能单独覆盖。已有组员不受影响"], ["digest", "频道摘要", "将交流整理成摘要"], ["git", "Git 管理员", "检查改动、整理提交与合并"], ["operations", "运维 AI", "后台聊天与事故处理共用此选择；自动修复另按已保存策略执行"]];
+  const tasks = [["assistant", "全局助手", "所有工作区共用一个助手；首次发送时使用此选择"], ["leader", "新建 leader", "新建 leader 时的载体、模型与思考强度；创建时仍可临时调整"], ["member", "leader 开执行", "任务里新开的执行默认使用的大脑；每个 leader 也能单独覆盖，开执行时也可单独指定。已在跑的不受影响"], ["digest", "频道摘要", "将交流整理成摘要"], ["git", "Git 管理员", "检查改动、整理提交与合并"], ["operations", "运维 AI", "后台聊天与事故处理共用此选择；自动修复另按已保存策略执行"]];
   const categories = [["library", "会话库", "查找、接入与管理已有会话"], ["ai", "AI 大脑", "载体、模型与任务分配"], ["execution", "执行权限", "文件与网络的访问范围"], ["prompts", "行为配置", "提示内容、覆盖范围与使用记录"], ["appearance", "外观", "让工作区更顺手"], ["sounds", "音效", "回复完成与任务交付的提示音"], ["remote", "局域网访问", "连接同一网络中的手机和电脑"], ["tools", "工具与更新", "本机执行工具"], ["connections", "消息渠道", "QQ、Lark / 飞书与远程通知"], ["storage", "存储与清理", "空间占用、回收与保留"], ["backend", "后台与运维", "运维对话、状态与配置"]];
   const icons = {
     library:'<path d="M4 4h16v16H4zM8 8h8M8 12h8M8 16h5"/>',

@@ -988,6 +988,19 @@ a.btn{color:inherit;text-decoration:none}
 .members>.session-node:last-child{margin-bottom:0}
 .members>.session-node::before{content:"";position:absolute;left:-18px;top:25px;width:18px;border-top:1.5px solid var(--line-strong)}
 .cx-summary{font-size:calc(11.5px * var(--fs));color:var(--text-3)}
+/* Right panel: leader → open task → its executions. */
+.members>.rp-task{position:relative;margin-bottom:16px}
+.members>.rp-task:last-child{margin-bottom:0}
+.members>.rp-task::before{content:"";position:absolute;left:-18px;top:17px;width:18px;border-top:1.5px solid var(--line-strong)}
+.rp-task>.members{margin-left:14px;padding-top:12px}
+.rp-task-title{display:flex;align-items:center;gap:8px;width:100%;min-height:34px;padding:6px 10px;border:1px dashed var(--line-strong);border-radius:10px;background:var(--surface);color:var(--text);font:inherit;font-size:calc(12.5px * var(--fs));font-weight:500;text-align:left;cursor:pointer;transition:border-color .15s,background .15s}
+.rp-task-title:hover{border-color:color-mix(in srgb,var(--accent) 45%,var(--line-strong));background:var(--hover)}
+.rp-task-title:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.rp-task-title>span:first-child{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rp-task-title .goal-status{flex:none}
+.rp-task-title.is-static{cursor:default;color:var(--text-3);font-weight:400;background:transparent}
+.rp-task-title.is-static:hover{border-color:var(--line-strong);background:transparent}
+.rp-empty{margin:16px 4px 6px;padding:14px;border:1px dashed var(--line);border-radius:12px;font-size:calc(12.5px * var(--fs));color:var(--text-3);line-height:1.6}
 
 .dispatch-history{max-height:55vh;overflow:auto}.dispatch-history .chip{align-items:flex-start}.dispatch-history .chip .grow{min-width:0;overflow-wrap:anywhere}
 

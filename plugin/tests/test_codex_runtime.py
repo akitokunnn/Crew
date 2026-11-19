@@ -158,7 +158,7 @@ class CodexRuntimeTests(unittest.TestCase):
                 self.assertIs(params['config']['agents']['enabled'], False)
                 self.assertIs(params['config']['features']['multi_agent'], False)
                 self.assertIs(params['config']['features']['multi_agent_v2'], False)
-                self.assertIn('不能创建 Crew 成员/leader、调用原生子代理或团队工具', params['developerInstructions'])
+                self.assertIn('不能开执行、建 leader、调用原生子代理或团队工具', params['developerInstructions'])
                 self.assertIn('可以使用派工 skill 启动本人的临时执行进程', params['developerInstructions'])
 
     def test_leader_preserves_user_native_agent_settings(self):
@@ -183,10 +183,10 @@ class CodexRuntimeTests(unittest.TestCase):
         params = client.calls[0][1]
         self.assertIs(params['config']['agents']['enabled'], False)
         self.assertIs(params['config']['features']['multi_agent_v2'], False)
-        self.assertIn('不能创建 Crew 成员/leader、调用原生子代理或团队工具', params['developerInstructions'])
+        self.assertIn('不能开执行、建 leader、调用原生子代理或团队工具', params['developerInstructions'])
         self.assertIn('可以使用派工 skill 启动本人的临时执行进程', params['developerInstructions'])
 
-    def test_idle_reclaim_closes_goal_execution_without_archiving_its_thread(self):
+    def test_idle_reclaim_archives_a_goal_execution_thread_until_it_resumes(self):
         with closing(store.connect(self.home)) as conn:
             board.join(conn, 'leader', 'demo', 'leader', self.root, None, 'main', role='leader')
             board.roster(conn, 'demo', 'move', 'leader', session_ids=['worker'])
@@ -203,10 +203,23 @@ class CodexRuntimeTests(unittest.TestCase):
         later = store.parse_iso(store.now_iso()) + chat.datetime.timedelta(minutes=31)
         self.assertEqual(manager.reclaim_idle(now=later), [execution['id']])
         self.assertTrue(client.closed)
-        self.assertNotIn('thread/archive', [call[0] for call in client.calls])
+        # An idle execution leaves the Codex sidebar; resuming restores it (restore_internal).
+        self.assertEqual([call for call in client.calls if call[0] == 'thread/archive'],
+                         [('thread/archive', {'threadId': running.thread_id})])
         self.assertEqual(running.journal.status, 'offline')
         self.assertFalse([event for event in running.journal.events if event['type'] == 'error'])
         self.assertEqual([event['reason'] for event in running.journal.events if event['type'] == 'runtime_released'], ['idle'])
+
+    def test_idle_reclaim_keeps_a_person_thread_unarchived(self):
+        running, client = self.make_running()
+        running.send('work', 'message-1')
+        client.finish()
+        manager = chat.Manager(self.home, self.plugin, lambda: [])
+        manager.processes['worker'] = running
+        later = store.parse_iso(store.now_iso()) + chat.datetime.timedelta(minutes=31)
+        self.assertEqual(manager.reclaim_idle(now=later), ['worker'])
+        self.assertTrue(client.closed)
+        self.assertNotIn('thread/archive', [call[0] for call in client.calls])
 
     def test_explicit_execution_permission_is_used_only_when_a_carrier_starts(self):
         with closing(store.connect(self.home)) as conn:
