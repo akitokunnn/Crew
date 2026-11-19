@@ -17,7 +17,7 @@
     return {
       activeCount: active.length + dispatches.length,
       openGoals: open,
-      pastGoals: goals.filter(goal => ended.has(goal.status)),
+      pastGoals: goals.filter(goal => ended.has(goal.status)).sort((a, b) => b.ended_at.localeCompare(a.ended_at)),
       discussions: leaders.filter(person => !owners.has(person.session_id)),
       todos: todos.filter(todo => todo.status == null || todo.status === "open"),
       decisions,

@@ -410,6 +410,14 @@ class GoalTests(GoalFixture):
         self.assertEqual(goals.get(self.conn, goal['id'])['status'], 'cancelled')
         self.assertTrue(goals.finalize_cancel(self.conn, goal['id'])['already'])
 
+    def test_card_ended_at_is_when_the_current_round_ended(self):
+        from crew import goal_api
+        goal = self.goal()
+        goals.transition(self.conn, goal['id'], 'running', now='2026-11-19T08:00:00Z')
+        self.assertIsNone(goal_api.card(self.conn, goals.get(self.conn, goal['id']))['ended_at'])
+        goals.transition(self.conn, goal['id'], 'cancelled', now='2026-11-19T09:30:00Z')
+        self.assertEqual(goal_api.card(self.conn, goals.get(self.conn, goal['id']))['ended_at'], '2026-11-19T09:30:00Z')
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -52,13 +52,15 @@ def card(conn, value):
                             'UNION ALL SELECT updated_at FROM goal_executions WHERE goal_id=:g '
                             'UNION ALL SELECT created_at FROM goal_reports WHERE goal_id=:g '
                             'UNION ALL SELECT created_at FROM goal_requirements WHERE goal_id=:g)', {'g': value['id']}).fetchone()[0]
+    # When the task ended: every terminal path goes through goals.transition, which stamps the current round's ended_at.
+    ended_at = next(row['ended_at'] for row in value['rounds'] if row['number'] == value['current_round']) if value['status'] in goals.TERMINAL else None
     return {**value, 'request': req['request'], 'acceptance': req['acceptance'], 'native_handoffs': handoffs,
             'constraints': req['constraints'], 'report_available': bool(available), 'acceptance_brief': brief,
             'work_summary': goal_work.summary_of(work), 'supplements_after_report': supplements,
             'now_doing': [{'key': item['key'], 'title': item['title'], 'session_id': item['owner_session_id']} for item in doing],
             'pending_decision': dict(decision) if decision else None, 'working_count': working,
             'finish_pending': finish is not None, 'transfer_pending': goals.pending_transfer(conn, value['id']), 'observing': goals.observation(conn, value['id']),
-            'last_activity_at': max(value['updated_at'], activity or value['updated_at'])}
+            'last_activity_at': max(value['updated_at'], activity or value['updated_at']), 'ended_at': ended_at}
 
 
 def context(conn, identity, execution_id=None):

@@ -342,8 +342,9 @@ test("task cards use status-specific summaries, actual checklist progress and co
  html=card({status:"running",now_doing:[{title:"收尾",session_id:"closed-member"}]});assert(html.includes("正在：收尾"));assert(!html.includes("undefined"));
 });
 test("task list groups review, active and expanded ended goals and omits empty groups",async()=>{
- const h=harness();h.client.sync("leader",null);h.state.goals[0].status="awaiting_acceptance";h.state.goals[0].acceptance_brief={summary:"完成摘要"};h.state.goals.push({...h.state.goals[1],id:"c",status:"completed"});
- let html=h.client.listMarkup("leader");assert(html.indexOf("待你验收")<html.indexOf("进行中<span>"));assert(!html.includes('id="task-ended-items" hidden'));assert(html.includes("已结束 1"));await h.click("ended-toggle");html=h.client.listMarkup("leader");assert(html.includes('id="task-ended-items" hidden'));
+ const h=harness();h.client.sync("leader",null);h.state.goals[0].status="awaiting_acceptance";h.state.goals[0].acceptance_brief={summary:"完成摘要"};h.state.goals.push({...h.state.goals[1],id:"c",status:"completed",ended_at:"2026-11-18T09:00:00Z"},{...h.state.goals[1],id:"d",status:"cancelled",ended_at:"2026-11-19T09:00:00Z"},{...h.state.goals[1],id:"e",status:"failed",ended_at:"2026-11-17T09:00:00Z"});
+ let html=h.client.listMarkup("leader");assert(html.indexOf("待你验收")<html.indexOf("进行中<span>"));assert(!html.includes('id="task-ended-items" hidden'));assert(html.includes("已结束 3"));
+ const endedOrder=html.slice(html.indexOf('id="task-ended-items"')).match(/data-goal-id="[^"]+"/g).filter((id,i,all)=>all.indexOf(id)===i);assert.deepEqual(endedOrder,['data-goal-id="d"','data-goal-id="c"','data-goal-id="e"']);await h.click("ended-toggle");html=h.client.listMarkup("leader");assert(html.includes('id="task-ended-items" hidden'));
  h.state.goals=[];html=h.client.listMarkup("leader");assert(!html.includes("task-list-group"));assert(html.includes("还没有任务"));assert(html.includes('data-goal-act="create"'));
 });
 

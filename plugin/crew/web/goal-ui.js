@@ -7,6 +7,7 @@
   const acceptanceLabels = [["passed","通过"],["failed","失败"],["unverified","未验证"],["simulated","模拟验证"]];
   const status = value => labels[value] || value || "待规划";
   const ended = value => ["completed", "failed", "cancelled"].includes(value);
+  const latestEndedFirst = (a, b) => b.ended_at.localeCompare(a.ended_at);
   const when = value => value ? new Date(value).toLocaleString("zh-CN", {month:"numeric",day:"numeric",hour:"2-digit",minute:"2-digit"}) : "时间未记录";
   function reportPath(project, goalId, reportId) {
     return "/api/goals/report?" + new URLSearchParams({project, goal_id:goalId, report_id:reportId});
@@ -147,7 +148,7 @@
     function listMarkup(id) {
       const list = goals().filter(item => item.leader_session_id === id), people = [...state().leaders, ...state().members];
       const review = list.filter(item => item.status === "awaiting_acceptance" && !item.observing), observing = list.filter(item => item.status === "awaiting_acceptance" && item.observing);
-      const active = list.filter(item => !ended(item.status) && item.status !== "awaiting_acceptance"), done = list.filter(item => ended(item.status));
+      const active = list.filter(item => !ended(item.status) && item.status !== "awaiting_acceptance"), done = list.filter(item => ended(item.status)).sort(latestEndedFirst);
       const create = `<button type="button" class="btn ghost" data-goal-act="create" data-leader-id="${esc(id)}">＋ 建立目标</button>`;
       const group = (title, items) => items.length ? `<section class="task-list-group"><h3>${title}<span>${items.length}</span></h3>${items.map(item => taskCard(item, people, goalId, options.avatar, options.ago)).join("")}</section>` : "";
       return `<header class="task-list-head">${listIcon()}<h2>任务<span>${review.length + observing.length + active.length} 项进行中</span></h2>${create}<button type="button" class="icon-btn task-list-close" data-act="tasks-toggle" aria-label="收起任务" hidden><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button></header><div class="task-list-scroll">${group("待你验收",review)}${group("观察中",observing)}${group("进行中",active)}${done.length ? `<section class="task-list-group task-list-ended"><button type="button" class="task-ended-toggle" data-goal-act="ended-toggle" aria-expanded="${!endedClosed.has(id)}" aria-controls="task-ended-items">${!endedClosed.has(id) ? "⌄" : "›"} 已结束 ${done.length}</button><div id="task-ended-items" ${!endedClosed.has(id) ? "" : "hidden"}>${done.map(item => taskCard(item, people, goalId, options.avatar, options.ago)).join("")}</div></section>` : ""}${list.length === 0 ? `<div class="goals-empty">还没有任务，明确需求后建立一个目标。${create}</div>` : ""}</div>`;
