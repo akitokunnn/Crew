@@ -86,23 +86,32 @@ def _cache(path):
     return result
 
 
-def read(home, cache_path=None, now=None):
-    """Return two optional windows, choosing the newest observation per window.
+def latest(home, cache_path=None):
+    """Return the newest observation per window, as last seen.
 
-    Reads only quota fields from Claude's optional local cache. An expired window
-    retains its observation/reset time, but its used_percent is unknown (None).
+    Reads only quota fields from Claude's optional local cache. A window that has
+    since reset keeps its last used_percent, which the weekly history records.
     """
     with _lock:
         result = _saved(home)
     for name, value in _cache(cache_path).items():
         if name not in result or _time(value["captured_at"]) > _time(result[name]["captured_at"]):
             result[name] = value
+    return {name: result.get(name) for name in WINDOWS}
+
+
+def read(home, cache_path=None, now=None):
+    """Return two optional windows for display.
+
+    An expired window retains its observation/reset time, but its used_percent is unknown (None).
+    """
+    result = latest(home, cache_path)
     current = _time(now)
-    for value in result.values():
+    for value in filter(None, result.values()):
         value["expired"] = value["resets_at"] is not None and _time(value["resets_at"]) <= current
         if value["expired"]:
             value["used_percent"] = None
-    return {name: result.get(name) for name in WINDOWS}
+    return result
 
 
 def capture(home, record, now=None):

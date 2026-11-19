@@ -47,7 +47,7 @@ TABLES = ('agents', 'groups', 'group_memberships', 'conversations', 'messages', 
 TERMINAL = ('completed', 'failed', 'cancelled')
 VOLATILE_TABLES = {'events','document_scans','read_cursors','channel_reads','goal_execution_reads','rule_reads','trust_leader_migrations',
     'usage_files','claude_sessions','claude_requests','claude_prompts','claude_tool_calls','claude_compactions',
-    'codex_sessions','codex_runs','codex_rate_limits'}
+    'codex_sessions','codex_runs','codex_rate_limits','claude_weeks'}
 
 
 def _json(value):

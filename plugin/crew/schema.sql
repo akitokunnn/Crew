@@ -670,6 +670,15 @@ CREATE TABLE IF NOT EXISTS codex_rate_limits (
     PRIMARY KEY (rollout_id, ts)
 );
 
+-- One row per Claude weekly quota window seen. claude-limits.json keeps only the newest
+-- window, so past weeks' account percentages live here; Crew's share is costed on read.
+CREATE TABLE IF NOT EXISTS claude_weeks (
+    resets_at     TEXT PRIMARY KEY,    -- window end, rounded to the minute (sources differ in sub-seconds)
+    since         TEXT NOT NULL,       -- resets_at minus 7 days
+    used_percent  REAL,                -- last account percentage seen in this window; NULL = never seen
+    captured_at   TEXT
+);
+
 -- A Crew identity can return to each runtime's own native history/options.
 CREATE TABLE IF NOT EXISTS session_runtime_bindings (
  session_id TEXT NOT NULL REFERENCES sessions(session_id),

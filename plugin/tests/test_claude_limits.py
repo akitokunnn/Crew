@@ -92,6 +92,8 @@ class ClaudeLimitsTests(unittest.TestCase):
                                                 "source": "stream", "expired": True})
         self.assertEqual(limits["seven_day"]["used_percent"], 95)
         self.assertEqual(path.read_bytes(), before)
+        # The weekly history still needs the last percentage of a window that has reset.
+        self.assertEqual(claude_limits.latest(self.home, cache_path=self.cache)["five_hour"]["used_percent"], 5)
 
     def test_explicit_null_is_unknown_and_does_not_become_zero_or_reuse_older_cache(self):
         self.write_cache({"five_hour": {"utilization": 9, "resets_at": RESET}})

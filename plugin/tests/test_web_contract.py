@@ -555,6 +555,9 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         code, report, _ = self.request("/api/usage", project="demo")
         self.assertEqual(code, 200, report)
         self.assertEqual(report["summary"]["claude_limits"]["seven_day"]["crew"], crew)
+        [week] = report["claude_weeks"]
+        self.assertEqual((week["since"], week["used_percent"], week["current"]), ("2026-10-15T08:00:00.000Z", 25, True))
+        self.assertAlmostEqual(week["crew"]["cost_usd"], 0.01275)
 
     def test_claude_crew_reuses_cache_until_next_usage_scan(self):
         self.week_limit((self.clock + dt.timedelta(days=1)).isoformat())

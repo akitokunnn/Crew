@@ -1856,7 +1856,10 @@ class Service:
             if full or live_dispatch:
                 usage.scan(conn, self.claude_root, self.codex_root, self.runs_file, receipts_only=not full)
             if full:
-                seven_day = claude_limits.read(self.home, cache_path=self.claude_root.parent.parent / '.claude.json', now=now)['seven_day']
+                cache_path = self.claude_root.parent.parent / '.claude.json'
+                week = claude_limits.latest(self.home, cache_path=cache_path)['seven_day']
+                seven_day = claude_limits.read(self.home, cache_path=cache_path, now=now)['seven_day']
+                usage.record_claude_week(conn, week)
                 crew = None
                 if seven_day is not None and seven_day['used_percent'] is not None and seven_day['resets_at'] is not None:
                     crew = usage.crew_weekly(conn, seven_day, usage.load_prices(self.home / 'prices.json'), now)
@@ -1889,6 +1892,7 @@ class Service:
                 return functions[what](conn, start, end, prices, project=name)
             result = {key: fn(conn, start, end, prices, project=name) for key, fn in functions.items() if key != "requests"}
             result['summary']['claude_limits'] = self._claude_limits()
+            result['claude_weeks'] = usage.claude_weeks(conn, prices, self.now())
             result["codex"] = usage.codex_tasks(conn, start, end, project=name)
             result.update(scope=scope, project=project)
             return result

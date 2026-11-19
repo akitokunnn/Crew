@@ -496,7 +496,12 @@ class TestUsage(UsageFixture, unittest.TestCase):
         self.assertEqual(usage.summary(self.conn, stamp(20), stamp(21), PRICES)["claude"]["requests"], 1)
         prices_file = self.root / "prices.json"
         prices_file.write_text(json.dumps(PRICES), encoding="utf-8")
-        self.assertEqual(usage.load_prices(prices_file), PRICES)
+        # Bundled prices fill in models the home copy predates; the home copy's own entries win.
+        bundled = json.loads(usage.DEFAULT_PRICES.read_text(encoding="utf-8"))
+        prices_file.write_text(json.dumps({**PRICES, "claude-opus-5-5": PRICES["claude-test"]}), encoding="utf-8")
+        loaded = usage.load_prices(prices_file)
+        self.assertEqual((loaded["claude-test"], loaded["claude-opus-5-5"]), (PRICES["claude-test"], PRICES["claude-test"]))
+        self.assertEqual(loaded["claude-haiku-5-5"], bundled["claude-haiku-5-5"])
 
     def test_unsplit_cache_tokens_are_explicitly_unpriced(self):
         record = assistant("legacy")
