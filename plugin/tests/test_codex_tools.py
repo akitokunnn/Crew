@@ -142,6 +142,15 @@ class CodexToolsTests(unittest.TestCase):
             'name': 'new-member', 'task': 'Finite member task', 'role': 'member',
             'caller_session_id': 'leader-crew', 'caller_execution_id': execution['id']}))
 
+    def test_spawn_tool_from_the_general_chat_names_the_task_and_brain(self):
+        tool = codex_tools.CodexTools(self.home, 'leader-crew')
+        with mock.patch('crew.spawn.request_start', return_value={'ok': True, 'session_id': 'part'}) as request:
+            self.call('crew_spawn', {'name': '推理接入', 'task': 'Finite part', 'goal_id': 'goal-1',
+                                     'runtime': 'codex', 'model': 'gpt-test', 'effort': 'low'}, tools=tool)
+        self.assertEqual(request.call_args.args[2:], ('/api/spawn', {
+            'name': '推理接入', 'task': 'Finite part', 'role': 'member', 'caller_session_id': 'leader-crew',
+            'goal_id': 'goal-1', 'runtime': 'codex', 'model': 'gpt-test', 'effort': 'low'}))
+
     def test_member_spawn_is_denied_locally_before_the_host_request(self):
         with mock.patch('crew.spawn.request_start') as request:
             result = self.call('crew_spawn', {'name': 'nested', 'task': 'Finite task'}, success=False)

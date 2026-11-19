@@ -1086,6 +1086,10 @@ class Manager:
                 if group not in (None, leader['group_name']):
                     raise board.BoardError('成员分组必须属于目标的主责 leader')
                 group = leader['group_name']
+            if role == 'member' and caller_session_id not in (None, board.HUMAN) and bound_goal is None:
+                # Members are executions of one part of a task, not standing teammates.
+                raise board.BoardError('执行只能开在任务里：crew spawn --goal <任务ID> --name <这块活的短名> --task "<任务书>"'
+                                       '（Codex 用 crew_spawn 的 goal_id）；没有任务的零活自己做，或用原生子代理、一次性派工')
             if role == "leader":
                 plan = spawn.leader_plan(conn, self.home, self.plugin_root, project_name, name, members, task,
                                          cwd=cwd, new_worktree=new_worktree, base=base, now=now,
@@ -1904,8 +1908,10 @@ class Manager:
                             continue
                 try:
                     if getattr(current, 'runtime', 'claude') == 'codex':
-                        # Keep the thread unarchived: it is resumed, not finished.
-                        current.close(archive=False)
+                        # A task execution's thread leaves the Codex sidebar while idle;
+                        # resuming restores it (codex_visibility.restore_internal). Person
+                        # threads stay unarchived: only Crew goal bindings are ever restored.
+                        current.close(archive=bool(getattr(current, 'execution', None)))
                     else:
                         try:
                             current.process.wait(timeout=10)

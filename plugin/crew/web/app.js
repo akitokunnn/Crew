@@ -181,7 +181,7 @@
     const self = item.status === "working", count = members + Number(self);
     const collabs = workingDispatches([item, ...team]), dispatches = collabs.length;
     const subagents = collabs.filter(({task}) => task.source === "native_subagent").length, skills = dispatches - subagents;
-    const people = count === 0 ? "" : self ? members > 0 ? `本组 ${count} 人在干活` : "本人在干活" : `${members} 位组员在干活`;
+    const people = count === 0 ? "" : self ? members > 0 ? `本人和 ${members} 个执行在干活` : "本人在干活" : `${members} 个执行在干活`;
     const label = [people, skills > 0 ? `${skills} 个派工在运行` : "", subagents > 0 ? `${subagents} 个子代理在运行` : ""].filter(Boolean).join(" · ");
     const brief = [people, skills > 0 ? `派工 ${skills}` : "", subagents > 0 ? `子代理 ${subagents}` : ""].filter(Boolean).join(" · ");
     return {self, members, count, dispatches, active:count + dispatches > 0, label, brief};
@@ -448,9 +448,9 @@
     if (!active.length) return "";
     return `<span class="cx-list"><span class="cx-heading">进行中的协作 <span>${active.length}</span></span>${active.slice(0, 2).map(task => codexMarkup(task, "cx", item.session_id)).join("")}${active.length > 2 ? `<span class="cx-summary">另有 ${active.length - 2} 项协作，详情见会话资料</span>` : ""}</span>`;
   };
-  function memberNode(item) {
+  function memberNode(item, goalId = null) {
     const where = item.where === "bg" ? "cloud" : item.where === "vscode" ? "code" : "clock";
-    return `<div class="session-node"><div class="node session-surface click ${readOnlyId === item.session_id ? "sel" : ""}" data-act="member-chat" data-session-menu="${esc(item.session_id)}" data-id="${esc(item.session_id)}">${sessionOpen(item.session_id, "member-chat", `和「${item.name}」对话`)}<span class="node-top">${av(item.name, 26, true)}<span class="nm">${esc(item.name)}${runtimeBadge(item, true)}${contextRing(item)}<span class="where" title="${item.where === "bg" ? "后台运行" : item.where === "vscode" ? "开在 VS Code" : "没在运行"}">${ic(where, "xs")}</span></span>${st(item.status)}</span>${memberModel(item)}<span class="now">${item.task === null ? "还没写" : CrewChat.renderInline(item.task, item.session_id)}</span>${memberActivity(item)}${codexList(item)}</div><div class="session-node-actions"><button class="session-details" data-act="card" data-id="${esc(item.session_id)}">资料与操作</button></div></div>`;
+    return `<div class="session-node"><div class="node session-surface click ${readOnlyId === item.session_id ? "sel" : ""}" data-act="member-chat" data-session-menu="${esc(item.session_id)}" data-id="${esc(item.session_id)}"${goalId === null ? "" : ` data-goal-id="${esc(goalId)}"`}>${sessionOpen(item.session_id, "member-chat", `和「${item.name}」对话`)}<span class="node-top">${av(item.name, 26, true)}<span class="nm">${esc(item.name)}${runtimeBadge(item, true)}${contextRing(item)}<span class="where" title="${item.where === "bg" ? "后台运行" : item.where === "vscode" ? "开在 VS Code" : "没在运行"}">${ic(where, "xs")}</span></span>${st(item.status)}</span>${memberModel(item)}<span class="now">${item.task === null ? "还没写" : CrewChat.renderInline(item.task, item.session_id)}</span>${memberActivity(item)}${codexList(item)}</div><div class="session-node-actions"><button class="session-details" data-act="card" data-id="${esc(item.session_id)}">资料与操作</button></div></div>`;
   }
   function leaderNode(item, clickable) {
     const work = groupWork(item);
@@ -466,10 +466,21 @@
     const skill = task.source === "skill_dispatch";
     return `<button class="li click" data-act="${isLeader ? "leader" : "member-chat"}" data-id="${esc(person.session_id)}" data-dispatch-id="${esc(task.id)}" title="查看发起人对话${skill ? ` · PID ${esc(task.pid)}` : ""}"><span class="av" style="--s:32px;--tint:var(--working)">${ic("bolt", "sm")}</span><span class="grow"><span class="ttl">${CrewChat.renderInline(task.task_name, person.session_id)}${runtimeBadge(task, true)}</span><span class="li-sub">${skill ? `临时派工 · 由 ${esc(person.name)} 派出` : `子代理 · 由 ${esc(person.name)} 发起`}</span></span>${skill ? `<span class="li-now">PID ${esc(task.pid)}</span>` : ""}${st("working")}</button>`;
   }
+  // Members are executions of parts of tasks: group them under the open task they work on.
   function renderRight() {
     if (view !== "chat" || leaderId === null) { $("right-panel").innerHTML = ""; delete $("right-panel").dataset.render; return; }
-    const item = leader(leaderId), members = membersOf(leaderId);
-    replace($("right-panel"), `<div class="head"><div><div class="title" title="${esc(item.name)} 组" style="font-size:calc(13px * var(--fs))">本组架构图</div><div class="sub">${members.length} 个下属</div><button class="member-default-entry" data-act="member-defaults" data-id="${esc(item.session_id)}">组员大脑 · ${item.member_defaults || state.ai?.member ? esc((item.member_defaults ?? state.ai.member).runtime ? runtimeInfo((item.member_defaults ?? state.ai.member).runtime).name : "自动选择") : "跟随 leader"} ›</button></div><div class="right"><button class="btn ghost" data-act="member-add-menu" data-id="${esc(item.session_id)}" style="padding:5px 9px;font-size:calc(12.5px * var(--fs))">${ic("plus", "sm")}添加</button><button class="icon-btn rp-close" data-act="right-close" aria-label="关闭架构图">${ic("x")}</button></div></div><div class="tree">${leaderNode(item,true)}<div class="members">${members.map(memberNode).join("")}</div><div class="rp-note">点任意人进入本人对话；资料与操作或右键可查看卡片。${ic("code", "xs")} VS Code，${ic("cloud", "xs")} Crew 后台。</div></div>`);
+    const item = leader(leaderId), members = membersOf(leaderId), placed = new Set();
+    const tasks = (state.goals || []).filter(goal => goal.leader_session_id === leaderId && !["completed", "failed", "cancelled"].includes(goal.status));
+    const groups = tasks.map(task => {
+      const runs = members.filter(person => (person.execution_records || []).some(record => String(record.goal_id) === String(task.id) && !placed.has(person.session_id)));
+      runs.forEach(person => placed.add(person.session_id));
+      return {task, runs};
+    }).filter(group => group.runs.length);
+    const loose = members.filter(person => !placed.has(person.session_id));
+    const taskGroup = ({task, runs}) => `<section class="rp-task"><button type="button" class="rp-task-title" data-act="rp-task" data-goal-id="${esc(task.id)}" title="打开任务：${esc(task.title)}"><span>${esc(task.title)}</span><span class="goal-status" data-status="${esc(task.status)}">${esc(CrewGoals.status(task.status))}</span></button><div class="members">${runs.map(person => memberNode(person, task.id)).join("")}</div></section>`;
+    const others = loose.length ? `<section class="rp-task"><div class="rp-task-title is-static"><span>没挂在进行中的任务上</span></div><div class="members">${loose.map(person => memberNode(person)).join("")}</div></section>` : "";
+    const body = groups.length || loose.length ? `<div class="members rp-tasks">${groups.map(taskGroup).join("")}${others}</div>` : `<p class="rp-empty">现在没有执行。leader 拆活时会在任务里开执行，任务验收、取消或交接后自动收起。</p>`;
+    replace($("right-panel"), `<div class="head"><div><div class="title" title="${esc(item.name)} 组" style="font-size:calc(13px * var(--fs))">本组在干活</div><div class="sub">${members.length} 个执行 · ${groups.length} 个任务</div><button class="member-default-entry" data-act="member-defaults" data-id="${esc(item.session_id)}">执行默认大脑 · ${item.member_defaults || state.ai?.member ? esc((item.member_defaults ?? state.ai.member).runtime ? runtimeInfo((item.member_defaults ?? state.ai.member).runtime).name : "自动选择") : "跟随 leader"} ›</button></div><div class="right"><button class="icon-btn rp-close" data-act="right-close" aria-label="关闭面板">${ic("x")}</button></div></div><div class="tree">${leaderNode(item,true)}${body}<div class="rp-note">点执行看过程、直接插话。${ic("code", "xs")} VS Code，${ic("cloud", "xs")} Crew 后台。</div></div>`);
     syncSidecar();
   }
   function attentionOpen() { return view === "chat" && (attentionVisible || rightOpen); }
@@ -582,7 +593,7 @@
     attentionScope = scope;
     replace($("native-approval-tray"), nativeApprovals?.chatMarkup(item.session_id, null, readOnlyId === null) || "");
     $("attention-scope").textContent = `${item.name} · 全部任务与总对话`;
-    replace($("chat-head"), `<div class="head"><button type="button" class="icon-btn m-back" data-act="leaders-toggle" aria-label="返回 Leader 列表">${ic("left")}</button>${readOnlyId === null ? groupAvatar(item, work) : av(item.name, 30)}<div class="heading-meta"><span class="chat-name" title="${esc(item.name)}">${esc(item.name)}</span>${runtimeBadge(item)}<span class="chat-scope" title="${esc(readOnlyId === null ? (item.goal ?? "") : `归 ${item.group} · 成员本人对话`)}">${esc(readOnlyId === null ? (item.goal ?? "") : `归 ${item.group} · 成员本人对话`)}</span>${group === undefined ? "" : `<span class="chat-member-stats ${work.active ? "is-working" : ""}">${members.length} 个下属 · ${members.filter(person => person.status === "working").length} 人在干活</span>`}</div><div class="right">${chatModel}${trustTag}${readOnlyId === null ? `<button type="button" class="task-trigger" data-act="tasks-toggle" aria-controls="task-list" aria-expanded="${tasksOpen}" title="任务">${CrewGoals.listIcon()}<span>任务</span><span class="task-count">${state.goals.filter(task => task.leader_session_id === leaderId && !CrewGoals.ended(task.status)).length}</span></button><span class="chat-toolbar-divider" aria-hidden="true"></span>` : ""}<button type="button" class="attention-trigger ${attentionCount ? "has-items" : ""}" data-act="attention" aria-controls="side-attention-section" aria-expanded="${attentionVisible}" aria-label="待处理，${attentionCount} 件" title="待处理">${ic("inbox", "sm")}${attentionCount ? `<span class="attention-count">${attentionCount}</span>` : ""}</button>${group === undefined ? "" : `<button class="icon-btn rp-toggle" data-act="right-open" title="本组架构图" aria-label="本组架构图">${ic("grid")}</button>`}<button class="icon-btn" data-act="session-menu" data-id="${esc(item.session_id)}" aria-haspopup="menu" title="会话操作" aria-label="会话操作">⋯</button></div></div>${readOnlyId === null ? leaderTaskBar(record) : memberScopeBar(item, record)}`);
+    replace($("chat-head"), `<div class="head"><button type="button" class="icon-btn m-back" data-act="leaders-toggle" aria-label="返回 Leader 列表">${ic("left")}</button>${readOnlyId === null ? groupAvatar(item, work) : av(item.name, 30)}<div class="heading-meta"><span class="chat-name" title="${esc(item.name)}">${esc(item.name)}</span>${runtimeBadge(item)}<span class="chat-scope" title="${esc(readOnlyId === null ? (item.goal ?? "") : `归 ${item.group} · 成员本人对话`)}">${esc(readOnlyId === null ? (item.goal ?? "") : `归 ${item.group} · 成员本人对话`)}</span>${group === undefined ? "" : `<span class="chat-member-stats ${work.active ? "is-working" : ""}">${members.length} 个执行 · ${members.filter(person => person.status === "working").length} 个在干活</span>`}</div><div class="right">${chatModel}${trustTag}${readOnlyId === null ? `<button type="button" class="task-trigger" data-act="tasks-toggle" aria-controls="task-list" aria-expanded="${tasksOpen}" title="任务">${CrewGoals.listIcon()}<span>任务</span><span class="task-count">${state.goals.filter(task => task.leader_session_id === leaderId && !CrewGoals.ended(task.status)).length}</span></button><span class="chat-toolbar-divider" aria-hidden="true"></span>` : ""}<button type="button" class="attention-trigger ${attentionCount ? "has-items" : ""}" data-act="attention" aria-controls="side-attention-section" aria-expanded="${attentionVisible}" aria-label="待处理，${attentionCount} 件" title="待处理">${ic("inbox", "sm")}${attentionCount ? `<span class="attention-count">${attentionCount}</span>` : ""}</button>${group === undefined ? "" : `<button class="icon-btn rp-toggle" data-act="right-open" title="本组在干活" aria-label="本组在干活">${ic("grid")}</button>`}<button class="icon-btn" data-act="session-menu" data-id="${esc(item.session_id)}" aria-haspopup="menu" title="会话操作" aria-label="会话操作">⋯</button></div></div>${readOnlyId === null ? leaderTaskBar(record) : memberScopeBar(item, record)}`);
     const listScope = readOnlyId === null ? leaderId : null;
     // A selected task lives in the task panel; closing it on narrow screens would drop goalId (setTasksOpen clears it).
     if (taskListScope !== listScope) { tasksOpen = !narrowLayout() || goalId !== null; taskListScope = listScope; }
@@ -686,7 +697,7 @@
     const dispatches = workingDispatches([...state.leaders, ...state.members]);
     const chip = (tab, icon, label, amount) => `<button class="pill tab ${allTab === tab ? "on" : ""}" data-act="all-tab" data-tab="${tab}">${icon}${amount === null ? "" : `<b>${amount}</b>`}${label}</button>`;
     let body;
-    if (allTab === "tree") body = state.leaders.length === 0 ? `<div class="empty">${ic("grid")}<div>还没有 leader。先起一个 leader，再添加新组员或收编已有会话。</div><div class="empty-acts"><button class="btn primary" data-act="modal-leader">${ic("plus", "sm")}起 leader</button><button class="btn" data-act="view" data-view="adopt">${ic("inbox", "sm")}打开会话库</button></div></div>` : `<div class="lead-grid" tabindex="0" aria-label="各组架构，可横向滚动查看">${state.leaders.map(item => `<div class="lead-col">${leaderNode(item, true)}<div class="members">${membersOf(item.session_id).map(memberNode).join("")}</div></div>`).join("")}</div>`;
+    if (allTab === "tree") body = state.leaders.length === 0 ? `<div class="empty">${ic("grid")}<div>还没有 leader。先起一个 leader，或从会话库收编已有会话。</div><div class="empty-acts"><button class="btn primary" data-act="modal-leader">${ic("plus", "sm")}起 leader</button><button class="btn" data-act="view" data-view="adopt">${ic("inbox", "sm")}打开会话库</button></div></div>` : `<div class="lead-grid" tabindex="0" aria-label="各组架构，可横向滚动查看">${state.leaders.map(item => `<div class="lead-col">${leaderNode(item, true)}<div class="members">${membersOf(item.session_id).map(memberNode).join("")}</div></div>`).join("")}</div>`;
     else if (allTab === "goals") body = goals?.cards() || empty("还没有执行目标");
     else if (allTab === "native-approvals") body = `<div class="native-approval-list">${nativeApprovals?.markup() || empty("没有等待你确认的执行权限")}</div>`;
     else if (allTab === "pending") {
@@ -696,7 +707,7 @@
       if (ungrouped.length > 0) body += `<section class="ov-group"><div class="ov-head"><span class="ov-name">未分组</span><span class="ov-count">${ungrouped.length} 件</span></div><div class="ov-list">${ungrouped.map(decisionCard).join("")}</div></section>`;
       if (pending.length === 0) body = empty("没有等你拍板的事");
     } else body = working.length + dispatches.length === 0 ? empty("没有正在干活的会话") : `<div class="list">${working.map(workingRow).join("")}${dispatches.map(workingDispatchRow).join("")}</div>`;
-    replace($("main"), `<div class="head big"><div><div class="title">工作区动态</div><div class="sub">${esc(projectDisplay(state.project))} 的 ${state.leaders.length} 个 leader，${state.members.length} 个下属</div></div></div><div class="page"><div class="page-in ${allTab === "tree" ? "groups-page" : ""}"><div class="summary">${chip("overview", ic("grid", "sm"), "返回工作台", null)}${openTodos().length > 0 ? `<button class="pill todo-summary" data-act="view" data-view="todos">${ic("check", "sm")}<b>${openTodos().length}</b> 件待你动手 ${ic("right", "xs")}</button>` : ""}${nativeApprovals?.count() ? chip("native-approvals", "", " 执行权限待确认", nativeApprovals.count()) : ""}${chip("tree", ic("grid", "sm"), "架构图", null)}${chip("goals", ic("check", "sm"), "目标", (state.goals || []).length)}${chip("pending", '<i class="dot waiting"></i>', " 件等你拍板", pending.length)}${chip("working", '<i class="dot working"></i>', " 个在干活", working.length + dispatches.length)}<button class="pill tab" data-act="view" data-view="adopt">${ic("inbox", "sm")}会话库 · 查找与接入 ${ic("right", "xs")}</button></div>${body}</div></div>`);
+    replace($("main"), `<div class="head big"><div><div class="title">工作区动态</div><div class="sub">${esc(projectDisplay(state.project))} 的 ${state.leaders.length} 个 leader，${state.members.length} 个执行</div></div></div><div class="page"><div class="page-in ${allTab === "tree" ? "groups-page" : ""}"><div class="summary">${chip("overview", ic("grid", "sm"), "返回工作台", null)}${openTodos().length > 0 ? `<button class="pill todo-summary" data-act="view" data-view="todos">${ic("check", "sm")}<b>${openTodos().length}</b> 件待你动手 ${ic("right", "xs")}</button>` : ""}${nativeApprovals?.count() ? chip("native-approvals", "", " 执行权限待确认", nativeApprovals.count()) : ""}${chip("tree", ic("grid", "sm"), "架构图", null)}${chip("goals", ic("check", "sm"), "目标", (state.goals || []).length)}${chip("pending", '<i class="dot waiting"></i>', " 件等你拍板", pending.length)}${chip("working", '<i class="dot working"></i>', " 个在干活", working.length + dispatches.length)}<button class="pill tab" data-act="view" data-view="adopt">${ic("inbox", "sm")}会话库 · 查找与接入 ${ic("right", "xs")}</button></div>${body}</div></div>`);
   }
   function renderAdopt() { mountSessionLibrary($("main")); }
   function mountSessionLibrary(host) {
@@ -806,12 +817,12 @@
     if (runtimeSwitch) html += btn("runtime-switch", "更换执行工具…", runtimeSwitch.reason(item));
     html += btn("stop", "停下这一轮", stopReason) + btn("compact", "压缩上下文", compactReason) + submenu(item, runtimeId(item) === "codex" ? "模型、effort 和速度" : "模型和 effort", modelMenu(item)) + btn("session-rename", "改名");
     if (isLeader) {
-      html += btn("leader-settings", "Leader 设置…") + btn("member-create", "新建组员") + btn("member-defaults", "组员默认大脑");
+      html += btn("leader-settings", "Leader 设置…") + btn("member-defaults", "执行默认大脑");
       html += submenu(item, "leader 决策方式", [["human","由我拍板"],["autonomous","自主推进"]].map(([mode,label]) => `<button type="button" role="menuitemradio" aria-checked="${Boolean(item.trust?.enabled) === (mode === "autonomous")}" data-act="leader-mode" data-id="${esc(item.session_id)}" data-mode="${mode}">${label}</button>`).join(""));
       html += btn("compact-department", "压缩整个部门…");
       const siblings = sortableLeaders(item), index = siblings.indexOf(item), members = membersOf(item.session_id), busy = members.filter(compactBusy).length;
-      html += btn("leader-up", "上移", index === 0 ? "已经在最上面" : "") + btn("leader-down", "下移", index === siblings.length - 1 ? "已经在最下面" : "") + btn("group-tree", "看本组架构图") + btn("open-vscode", "转到 VS Code 里聊", editorHandoffReason(item) || (compactBusy(item) ? "会话正在工作，请等它空闲后再打开" : ""));
-      html += submenu(item, "结束这个 leader", members.length === 0 ? btn("close-group", "结束（组里没有下属）", "", true, 'data-with-members="false"') : btn("close-group", `<span>连下属一起归档<small>连 ${members.length} 个下属一起归档，其中 ${busy} 个在干活</small></span>`, "", true, 'data-with-members="true"') + btn("close-group", `<span>只结束 leader，下属退回待收编<small>${members.length} 个下属退回待收编，其中 ${busy} 个在干活</small></span>`, "", true, 'data-with-members="false"'), true) + btn("delete-session", "删除…", "", true);
+      html += btn("leader-up", "上移", index === 0 ? "已经在最上面" : "") + btn("leader-down", "下移", index === siblings.length - 1 ? "已经在最下面" : "") + btn("group-tree", "看本组在干活") + btn("open-vscode", "转到 VS Code 里聊", editorHandoffReason(item) || (compactBusy(item) ? "会话正在工作，请等它空闲后再打开" : ""));
+      html += submenu(item, "结束这个 leader", members.length === 0 ? btn("close-group", "结束（没有执行）", "", true, 'data-with-members="false"') : btn("close-group", `<span>连执行一起归档<small>连 ${members.length} 个执行一起归档，其中 ${busy} 个在干活</small></span>`, "", true, 'data-with-members="true"') + btn("close-group", `<span>只结束 leader，执行退回待收编<small>${members.length} 个执行退回待收编，其中 ${busy} 个在干活</small></span>`, "", true, 'data-with-members="false"'), true) + btn("delete-session", "删除…", "", true);
     } else {
       const groups = state.leaders.filter(group => group.session_id !== item.leader_session_id);
       html += groups.length ? submenu(item, "换组", groups.map(group => btn("move-to", esc(group.name), "", false, `data-group="${esc(group.name)}"`)).join("")) : btn("move-menu", "换组", "没有其他协作组");
@@ -1012,7 +1023,7 @@
   function openDelete(id) {
     const item = sessionItem(id), members = state.leaders.includes(item) ? membersOf(id) : [];
     hideMenu(); dialogReturn = focusDescriptor(document.activeElement);
-    const scope = members.length ? `<p class="d">会连同组里的 ${members.length} 个下属一起删除：${members.map(member => esc(member.name)).join("、")}。</p>` : "";
+    const scope = members.length ? `<p class="d">会连同组里的 ${members.length} 个执行一起删除：${members.map(member => esc(member.name)).join("、")}。</p>` : "";
     $("backdrop").innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-labelledby="delete-title"><h3 id="delete-title">删除「${esc(item.name)}」？</h3>${scope}<p class="d">会停止正在运行的会话，删除 Crew 里的网页对话记录，以及 Claude Code / Codex 里的原生会话记录。删除后无法恢复。</p><div class="acts"><button class="btn ghost" type="button" data-act="modal-close">取消</button><button class="btn danger" type="button" data-act="delete-confirm" data-id="${esc(id)}">删除</button></div></div>`;
     $("backdrop").classList.add("show"); $("backdrop").querySelector('[data-act="modal-close"]').focus();
   }
@@ -1262,6 +1273,7 @@
       renderDocuments:(items,id) => documents?.taskCards(items,id),
       execChat:() => leaderTaskChat,
       onExecChat:id => { leaderTaskChat = String(leaderTaskChat) === String(id) ? null : id; CrewChat.setTask(null); renderChat(); if (leaderTaskChat !== null && narrowLayout()) setTasksOpen(false); },
+      onMemberExec:(id, goal) => { const item = member(id); if (!item) { toast("这个执行已经收起，记录在会话库里。"); return; } memberScopes.set(item.session_id, goal); if (cardId !== null) closeCard(); CrewChat.setTask(null); navigate("chat", item.leader_session_id, item.session_id, null); if (narrowLayout()) setTasksOpen(false); },
       onNavigate:id => { const item = (state.goals || []).find(item => String(item.id) === String(id)); if (item) { if (cardId !== null) closeCard(); CrewChat.setTask(null); navigate("chat", item.leader_session_id, null, item.id); } else toast("目标已不在当前工作区中，请刷新。"); }});
     applyTheme(); applyFontScale(); renderSettings();
     window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyTheme);
@@ -1295,10 +1307,8 @@
       if (act === "workspace-settings") { openWorkspaceSettings(); return; }
       if (act === "confirm-stop-person") { const resolve = stopConfirmation; stopConfirmation = null; closeBackdrop(); resolve?.(true); return; }
       if (act === "submenu") { openSubmenu(button); return; }
-      if (button.closest("#menu")) hideMenu(["member-create", "member-defaults", "session-rename", "leader-mode", "leader-settings"].includes(act));
+      if (button.closest("#menu")) hideMenu(["member-defaults", "session-rename", "leader-mode", "leader-settings"].includes(act));
       if (act === "session-menu") { openSessionMenu(button, id); }
-      else if (act === "member-add-menu") { showMenu(button,`<button role="menuitem" data-act="member-create" data-id="${esc(id)}">${ic("plus","sm")}新建组员</button><button role="menuitem" data-act="member-adopt" data-id="${esc(id)}">${ic("inbox","sm")}收编已有会话</button>`); }
-      else if (act === "member-create") { hideMenu(); memberUI.openCreate(id); }
       else if (act === "member-defaults") { hideMenu(); memberUI.openDefaults(id); }
       else if (act === "trust-open") openTrust(id);
       else if (act === "leader-mode") {
@@ -1330,7 +1340,8 @@
       else if (act === "session-handoff") action(`continue:${id}`, async () => { await api("/api/open/continue", {session_id:id, confirm:handoff.needs_confirmation}); handoff = null; closeBackdrop(); await loadState(true); toast("已在 VS Code 接上同一个会话"); });
       else if (act === "leader") { tasksOpen = !narrowLayout(); if (cardId !== null) closeCard(); navigate("chat", id, null, null); }
       else if (act === "active-goal") { const target = (state.goals || []).find(goal => String(goal.id) === button.dataset.goalId); if (target) { navigate("chat",target.leader_session_id,id === target.leader_session_id ? null : id,target.id); } }
-      else if (act === "member-chat") { const item = member(id); if (item) { if (cardId !== null) closeCard(); navigate("chat", item.leader_session_id, item.session_id, null); } }
+      else if (act === "member-chat") { const item = member(id); if (item) { if (button.dataset.goalId) memberScopes.set(item.session_id, button.dataset.goalId); if (cardId !== null) closeCard(); navigate("chat", item.leader_session_id, item.session_id, null); } }
+      else if (act === "rp-task") { const goal = (state.goals || []).find(item => String(item.id) === String(button.dataset.goalId)); if (goal) { if (cardId !== null) closeCard(); CrewChat.setTask(null); navigate("chat", goal.leader_session_id, null, goal.id); } }
       else if (act === "view") { if (narrowLayout() && leadersOpen) setLeadersOpen(false); if (cardId !== null) closeCard(); if (button.dataset.view === "all") allTab = "overview"; navigate(button.dataset.view); }
       else if (act === "native-handoff" || act === "native-return") { const selectedGoal = button.dataset.goalId || null; action("native:" + id, () => CrewNativeHandoff.act(act.slice(7), id, selectedGoal, {api,refresh:async() => { if(selectedGoal) await goals?.refresh(selectedGoal); await loadState(true); },notice:toast})); }
       else if (act === "todo-toggle") { if (todoExpanded.has(id)) todoExpanded.delete(id); else todoExpanded.add(id); renderTodoSurface(); }

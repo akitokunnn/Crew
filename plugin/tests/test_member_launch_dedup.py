@@ -39,7 +39,7 @@ class MemberLaunchDedupTests(ShellFixture, unittest.TestCase):
         goal = self.goal()
         created = self.manager.start(self.conn, 'demo', 'worker',
             'Read the task brief and run the experiment for goal ' + goal['id'],
-            group='lead', runtime=runtime, caller_session_id='s3')
+            group='lead', runtime=runtime)
         sid = created['session_id']
         self.assertTrue(self.manager.busy(sid))
         original = self.manager.processes[sid]
@@ -133,8 +133,7 @@ class MemberLaunchDedupTests(ShellFixture, unittest.TestCase):
 
     def test_another_host_cannot_dispatch_goal_while_general_member_is_working(self):
         goal = self.goal()
-        self.manager.start(self.conn, 'demo', 'host-worker', 'Run once',
-                           runtime='codex', caller_session_id='s3')
+        self.manager.start(self.conn, 'demo', 'host-worker', 'Run once', group='lead', runtime='codex')
         other = chat.Manager(self.home, PLUGIN, lambda: [], self.process_factory)
         self.addCleanup(other.close)
         with self.assertRaisesRegex(board.Conflict, '总对话'):
@@ -154,8 +153,7 @@ class MemberLaunchDedupTests(ShellFixture, unittest.TestCase):
 
     def test_unknown_foreign_lease_returns_conflict_without_starting_another_thread(self):
         goal = self.goal()
-        self.manager.start(self.conn, 'demo', 'host-worker', 'Run once',
-                           runtime='codex', caller_session_id='s3')
+        self.manager.start(self.conn, 'demo', 'host-worker', 'Run once', group='lead', runtime='codex')
         other = chat.Manager(self.home, PLUGIN, lambda: [], self.process_factory)
         self.addCleanup(other.close)
         with mock.patch('crew.codex_runtime.RuntimeLease.acquire', side_effect=PermissionError('lease unreadable')):
@@ -167,11 +165,9 @@ class MemberLaunchDedupTests(ShellFixture, unittest.TestCase):
     def test_failed_first_turn_keeps_live_member_online_and_rejects_duplicate_spawn(self):
         with mock.patch.object(FakeClient, 'start_turn', side_effect=RuntimeError('fixture start refused')):
             with self.assertRaisesRegex(RuntimeError, 'fixture start refused'):
-                self.manager.start(self.conn, 'demo', 'retry-worker', 'Run once',
-                                   runtime='codex', caller_session_id='s3')
+                self.manager.start(self.conn, 'demo', 'retry-worker', 'Run once', group='lead', runtime='codex')
             with self.assertRaises(board.Conflict):
-                self.manager.start(self.conn, 'demo', 'retry-worker', 'Run once',
-                                   runtime='codex', caller_session_id='s3')
+                self.manager.start(self.conn, 'demo', 'retry-worker', 'Run once', group='lead', runtime='codex')
         self.assertEqual(len(self.clients), 1)
 
 
@@ -205,7 +201,7 @@ class MemberLaunchHttpTests(ShellFixture, unittest.TestCase):
         goal = goals.create(self.conn, 'demo', 's3', 'Experiment', 'Run once', ['Evidence'])
         goals.transition(self.conn, goal['id'], 'running')
         code, first, _ = self.request('/api/spawn?project=demo', {'name': 'http-worker',
-            'task': 'Run once', 'runtime': 'codex', 'caller_session_id': 's3'})
+            'task': 'Run once', 'runtime': 'codex', 'leader_session_id': 's3'})
         self.assertEqual(code, 200, first)
         code, second, _ = self.request('/api/goals/agent?project=demo', {'actor_session_id': 's3',
             'action': 'assign', 'data': {'goal_id': goal['id'], 'to': 'http-worker', 'task': 'Run again', 'start': True}})

@@ -3,7 +3,7 @@ import tests
 import threading
 import unittest
 
-from crew import board, member_defaults, models, runtimes, store, web
+from crew import board, goals, member_defaults, models, runtimes, store, web
 import test_chat_http
 from test_shell import NOW, PLUGIN, ShellFixture
 
@@ -75,9 +75,15 @@ class MemberCreationHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(board.session(self.conn, value['session_id'])['role'], 'leader')
         self.assertEqual(len(self.processes), 1)
 
-    def test_leader_can_create_member_but_cannot_create_another_leader(self):
+    def test_leader_opens_members_only_inside_a_task_and_cannot_create_another_leader(self):
         code, value, _ = self.request('/api/spawn?project=demo', {
-            'caller_session_id': 's3', 'name': 'direct member', 'task': 'Finite task'})
+            'caller_session_id': 's3', 'name': 'loose member', 'task': 'Finite task'})
+        self.assertEqual(code, 400, value)
+        self.assertIn('执行只能开在任务里', value['error'])
+        self.assertEqual(self.processes, [])
+        goal = goals.transition(self.conn, goals.create(self.conn, 'demo', 's3', 'Split work', 'Request', ['Done'])['id'], 'running')
+        code, value, _ = self.request('/api/spawn?project=demo', {
+            'caller_session_id': 's3', 'name': 'direct member', 'task': 'Finite task', 'goal_id': goal['id']})
         self.assertEqual(code, 200, value)
         self.assertEqual(board.session(self.conn, value['session_id'])['group_name'], 'lead')
         code, value, _ = self.request('/api/leader?project=demo', {
