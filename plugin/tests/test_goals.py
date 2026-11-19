@@ -1,6 +1,8 @@
 """Goal delivery invariants against a real temporary migrated SQLite board."""
 from contextlib import closing
 import json
+import os
+import tempfile
 import unittest
 
 import tests
@@ -34,7 +36,7 @@ class GoalFixture(RuntimeFixture):
                 'examples': [{'input': 'A pauses; B says one short sentence', 'expected': 'Identify B',
                               'actual': 'B' if outcome == 'completed' else 'A',
                               'conclusion': 'Pass' if outcome == 'completed' else 'Wrong speaker', 'kind': 'actual'}],
-                'artifacts': ['measurements/sample-1.json'], 'tradeoffs': ['No PR as requested'],
+                'artifacts': ['measurements/sample-1.json'], 'folder': '.', 'tradeoffs': ['No PR as requested'],
                 'follow_up': 'Re-run the same sample with the next model version.',
                 'investment': {'elapsed_seconds': 12, 'usage': None, 'roles': [{'role': 'leader', 'contribution': 'Measured and checked results'}]}}
 
@@ -171,6 +173,29 @@ class GoalTests(GoalFixture):
             with self.assertRaises(board.BoardError):
                 goals.save_report(self.conn, goal['id'], data)
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM goal_reports').fetchone()[0], 0)
+
+    def test_final_delivery_names_an_existing_folder_the_user_can_open(self):
+        # User ruling 2026-11-19: every final report has an 「打开文件夹」 that leads to the deliverables.
+        goal, root = self.goal(), board.project(self.conn, 'demo')['root']
+        (self.root / 'out').mkdir()
+        (self.root / 'note.txt').write_text('x', encoding='utf-8')
+        missing = self.report('awaiting_acceptance')
+        missing.pop('folder')
+        for folder, error in ((None, '最终交付需要 folder'), ('', '最终交付需要 folder'), ('  ', '最终交付需要 folder'),
+                              ('gone', '不存在或不是文件夹'), ('note.txt', '不存在或不是文件夹'), (7, 'folder 交付文件夹文本无效')):
+            with self.subTest(folder=folder), self.assertRaisesRegex(board.BoardError, error):
+                goals.save_report(self.conn, goal['id'], missing if folder is None else {**missing, 'folder': folder})
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM goal_reports').fetchone()[0], 0)
+        saved = goals.save_report(self.conn, goal['id'], {**missing, 'folder': ' out '})
+        self.assertEqual(saved['data']['folder'], 'out')
+        self.assertEqual(goals.report_folder(root, saved['data']), {'path': os.path.abspath(os.path.join(root, 'out')), 'declared': True})
+        with tempfile.TemporaryDirectory() as outside:
+            elsewhere = goals.save_report(self.conn, goal['id'], {**missing, 'folder': outside})
+            self.assertEqual(goals.report_folder(root, elsewhere['data'])['path'], os.path.abspath(outside))
+        # Stage results and reports saved before this rule keep working and fall back to the workspace root.
+        progress = goals.save_report(self.conn, goal['id'], {**missing, 'outcome': 'progress'})
+        self.assertNotIn('folder', progress['data'])
+        self.assertEqual(goals.report_folder(root, progress['data']), {'path': os.path.abspath(root), 'declared': False})
 
     def test_final_delivery_needs_a_page_a_concrete_example_and_verification_evidence(self):
         # User ruling 2026-11-15: the final report is a readable HTML page with a concrete case; user_test stays optional.

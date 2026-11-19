@@ -1,6 +1,7 @@
 """Delivery, human acceptance and leader cleanup against isolated real SQLite."""
 import json
 import subprocess
+from pathlib import Path
 from unittest import mock
 
 import tests
@@ -122,8 +123,11 @@ class LeaderClosureTests(GoalFixture):
         goal, report = self.ready()
         newer = goals.save_report(self.conn, goal['id'], {**self.report('awaiting_acceptance'), 'summary': 'New summary'}, now='2020-01-01T00:00:00Z')
         card = goal_api.card(self.conn, goals.get(self.conn, goal['id']))
+        folder = card['acceptance_brief'].pop('folder')
         self.assertEqual(card['acceptance_brief'], {'report_id': newer['id'], 'summary': 'New summary',
             'user_test': newer['data']['user_test'], 'created_at': newer['created_at'], 'supplements_after_report': []})
+        self.assertTrue(folder['declared'])
+        self.assertTrue(Path(folder['path']).samefile(self.root), 'the declared folder resolves against the workspace root')
         goals.review_acceptance(self.conn, goal['id'], False, note='Please fix.', expected_version=goal['version'])
         self.assertIsNone(goal_api.card(self.conn, goals.get(self.conn, goal['id']))['acceptance_brief'])
         goals.transition(self.conn, goal['id'], 'running')

@@ -7,7 +7,7 @@ from . import behavior_prompts, board, codex_client, documents, goal_context, go
 ACCEPTANCE_STATUSES = ('passed', 'failed', 'unverified', 'simulated')
 
 
-def report_entry(project, value, row):
+def report_entry(project, value, row, root):
     """Read-only projection of the saved, already validated report data; no model or rewrite."""
     data = json.loads(row['data_json'])
     statuses = [item['status'] for item in data['acceptance']]
@@ -15,7 +15,7 @@ def report_entry(project, value, row):
             'outcome': row['outcome'], 'status': row['outcome'], 'created_at': row['created_at'], 'title': value['title'],
             'summary': data['summary'], 'acceptance_counts': {key: statuses.count(key) for key in ACCEPTANCE_STATUSES},
             'publication': data.get('publication'),
-            'unresolved': data['unresolved'],
+            'unresolved': data['unresolved'], 'folder': goals.report_folder(root, data),
             'current': row['round'] == value['current_round'] and row['version'] == value['latest_report_version'],
             'url': '/api/goals/report?' + urlencode({'project': project, 'goal_id': value['id'], 'report_id': row['id']})}
 
@@ -36,6 +36,7 @@ def card(conn, value):
         if report is not None:
             data = json.loads(report['data_json'])
             brief = {'report_id': report['id'], 'summary': data['summary'], 'user_test': data.get('user_test'),
+                     'folder': goals.report_folder(board.project(conn, value['project'], include_removed=True)['root'], data),
                      'created_at': report['created_at'], 'supplements_after_report': supplements}
     work = goal_work.items(conn, value['id'])
     doing = sorted((item for item in work if item['status'] == 'doing'), key=lambda item: (item['updated_at'], item['id']))
@@ -86,7 +87,8 @@ def detail(conn, project, identity, *, context_state=None):
     # created_at is display-only because a saved clock can repeat or move backwards.
     latest = conn.execute('SELECT MAX(version) FROM goal_reports WHERE goal_id=? AND round=?',
                           (identity, value['current_round'])).fetchone()[0]
-    reports = [report_entry(project, {**value, 'latest_report_version': latest}, row) for row in conn.execute(
+    root = board.project(conn, project)['root']
+    reports = [report_entry(project, {**value, 'latest_report_version': latest}, row, root) for row in conn.execute(
         'SELECT id,round,requirement_version,version,outcome,data_json,created_at FROM goal_reports WHERE goal_id=? '
         'ORDER BY round DESC,version DESC', (identity,))]
     return {'goal': card(conn, value), 'executions': executions, 'work_items': goal_work.items(conn, identity),

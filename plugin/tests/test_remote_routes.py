@@ -6,7 +6,7 @@ from crew import remote_routes
 class RemoteRouteTests(unittest.TestCase):
     def test_new_internal_or_unknown_endpoints_are_closed_by_default(self):
         for path in ('/api/admin/chat/send', '/api/connections', '/api/files/open',
-                     '/api/files/reveal', '/api/session/native-handoff', '/api/assistant/native-action',
+                     '/api/files/reveal', '/api/goals/report/folder', '/api/session/native-handoff', '/api/assistant/native-action',
                      '/api/workspace-data/import', '/api/storage/clean', '/api/not-yet-invented'):
             for method in ('GET', 'POST'):
                 self.assertFalse(remote_routes.permitted(method, path), (method, path))

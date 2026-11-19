@@ -52,6 +52,12 @@
       return `<button type="button" class="leader-task" data-goal-act="open" data-goal-id="${esc(item.id)}" data-state="${state}" aria-pressed="${String(selected) === String(item.id)}"><svg class="i" viewBox="0 0 24 24" aria-hidden="true">${icon}</svg><span class="leader-task-title" title="${esc(item.title)}">${esc(item.title)}</span><span class="leader-task-tag">${tag}</span></button>`;
     }).join("")}</div>`;
   }
+  // Opens the report's delivery folder on this computer; a phone (remote access) gets no button and no route.
+  function folderButton(goalId, reportId, folder) {
+    if (!folder || (window.CrewAccess && !window.CrewAccess.local_desktop)) return "";
+    const title = folder.declared ? `打开交付文件夹：${folder.path}` : `报告没有登记交付文件夹，打开工作区：${folder.path}`;
+    return `<button type="button" class="btn ghost" data-goal-act="open-folder" data-goal-id="${esc(goalId)}" data-report-id="${esc(reportId)}" title="${esc(title)}">打开文件夹</button>`;
+  }
   // The user's own acceptance decision. The same two buttons appear on the workspace home, at the top of the
   // task detail and in the report reader, always bound to the report the user is looking at.
   function reviewButtons(item, reportId, busy = false) {
@@ -132,7 +138,7 @@
       const notesOpen = reportNotesOpen.has(`${key}:${report.id}`);
       const folds = report.summary.length > 40 || report.summary.includes("\n");
       const notes = unresolved.length ? `<div class="goal-delivery-notes"><button class="text-link" data-goal-act="report-notes-toggle" data-report-id="${esc(report.id)}" aria-expanded="${notesOpen}">尚存问题 · ${unresolved.length} 条 · ${notesOpen ? "收起" : "展开"}</button>${notesOpen ? `<p>报告记录的限制与未完成事项：</p><ul class="goal-delivery-unresolved-list">${unresolved.map(item => `<li>${esc(item)}</li>`).join("")}</ul>` : ""}</div>` : "";
-      return `<section class="goal-delivery" aria-label="当前交付结论"><div class="goal-delivery-head"><strong>本次结果</strong><span>${esc(outcomes[report.status])}</span></div><p class="goal-delivery-summary ${open ? "open" : ""}">${esc(report.summary)}</p>${active.status === "awaiting_acceptance" ? supplementsMarkup(active.supplements_after_report, [...state().leaders, ...state().members, ...(state().git_assistant === null ? [] : [state().git_assistant])], supplementsOpen.has(key)) : ""}<div class="goal-delivery-foot"><div class="goal-delivery-meta"><span>AI 验证</span>${recorded.length ? `<span class="goal-acceptance-total">共 ${esc(total)} 项</span>${recorded.map(([name,label]) => `<span class="goal-acceptance-count" data-kind="${name}">${label} ${esc(counts[name])}</span>`).join("")}` : "<span>没有逐项验收记录</span>"}</div><div class="goal-delivery-actions">${folds ? `<button class="text-link" data-goal-act="conclusion-toggle" data-report-id="${esc(report.id)}" aria-expanded="${open}">${open ? "收起" : "展开全文"}</button>` : ""}<button class="btn ghost" data-goal-act="delivery" data-goal-id="${esc(key)}">打开报告</button></div></div>${notes}</section>${notice}`;
+      return `<section class="goal-delivery" aria-label="当前交付结论"><div class="goal-delivery-head"><strong>本次结果</strong><span>${esc(outcomes[report.status])}</span></div><p class="goal-delivery-summary ${open ? "open" : ""}">${esc(report.summary)}</p>${active.status === "awaiting_acceptance" ? supplementsMarkup(active.supplements_after_report, [...state().leaders, ...state().members, ...(state().git_assistant === null ? [] : [state().git_assistant])], supplementsOpen.has(key)) : ""}<div class="goal-delivery-foot"><div class="goal-delivery-meta"><span>AI 验证</span>${recorded.length ? `<span class="goal-acceptance-total">共 ${esc(total)} 项</span>${recorded.map(([name,label]) => `<span class="goal-acceptance-count" data-kind="${name}">${label} ${esc(counts[name])}</span>`).join("")}` : "<span>没有逐项验收记录</span>"}</div><div class="goal-delivery-actions">${folds ? `<button class="text-link" data-goal-act="conclusion-toggle" data-report-id="${esc(report.id)}" aria-expanded="${open}">${open ? "收起" : "展开全文"}</button>` : ""}${folderButton(key, report.id, report.folder)}<button class="btn ghost" data-goal-act="delivery" data-goal-id="${esc(key)}">打开报告</button></div></div>${notes}</section>${notice}`;
     }
     function modeMarkup() {
       const active = goal();
@@ -188,7 +194,7 @@
     }
     function readerHeadMarkup() {
       const active = goal(), report = reading.report, scope = reportScope(report, active, reading.reports);
-      return `<div class="goal-reader-heading reader-heading"><div class="title">${esc(active.title)} · 交付报告</div><div class="sub goal-reader-meta"><span class="goal-report-scope" data-current="${scope.current}">${scope.label}</span><span>需求 v${esc(report.requirement_version)} · 第 ${esc(report.version)} 稿</span><span>AI 报告结果：${esc(outcomes[report.status])}</span>${scope.note ? `<span class="goal-reader-gap">${esc(scope.note)}</span>` : ""}<span>${esc(owner()?.name)}组 · 隔离预览</span></div></div><div class="reader-actions">${report.status === "progress" && scope.current && !["completed","cancelled","awaiting_acceptance"].includes(active.status) ? `<button class="btn ghost" data-goal-act="edit-stage" data-report-id="${esc(report.id)}">编辑阶段说明</button>` : ""}${active.status === "awaiting_acceptance" && report.id === active.acceptance_brief?.report_id ? reviewButtons(active, report.id, actionBusy) : ""}${window.CrewReader.chatButton()}<button class="btn" data-goal-act="close-report">返回任务</button></div>`;
+      return `<div class="goal-reader-heading reader-heading"><div class="title">${esc(active.title)} · 交付报告</div><div class="sub goal-reader-meta"><span class="goal-report-scope" data-current="${scope.current}">${scope.label}</span><span>需求 v${esc(report.requirement_version)} · 第 ${esc(report.version)} 稿</span><span>AI 报告结果：${esc(outcomes[report.status])}</span>${scope.note ? `<span class="goal-reader-gap">${esc(scope.note)}</span>` : ""}<span>${esc(owner()?.name)}组 · 隔离预览</span></div></div><div class="reader-actions">${report.status === "progress" && scope.current && !["completed","cancelled","awaiting_acceptance"].includes(active.status) ? `<button class="btn ghost" data-goal-act="edit-stage" data-report-id="${esc(report.id)}">编辑阶段说明</button>` : ""}${active.status === "awaiting_acceptance" && report.id === active.acceptance_brief?.report_id ? reviewButtons(active, report.id, actionBusy) : ""}${folderButton(active.id, report.id, report.folder)}${window.CrewReader.chatButton()}<button class="btn" data-goal-act="close-report">返回任务</button></div>`;
     }
     // Header and status follow the latest goal detail; the report document is written once, so later updates
     // never reload the iframe or lose the reading position.
@@ -322,6 +328,12 @@
       else if (act === "edit-stage") { const active=goal(),report=current()?.reports.find(item => item.id===button.dataset.reportId);if(active&&report)void window.CrewStageReport.edit({api:options.api,goal:active,report,onSaved:async()=>{await options.refreshState();await load(active.id);options.toast("阶段说明已保存为新版本。");}}); }
       else if (act === "supplements-toggle") { const home = button.closest("[data-home-supplements]"); if (home) { window.CrewWorkspaceHome.toggleSupplements(home.dataset.homeSupplements); changed(); return; } if (supplementsOpen.has(String(goalId))) supplementsOpen.delete(String(goalId)); else supplementsOpen.add(String(goalId)); changed(); }
       else if (act === "delivery") void openDelivery(button.dataset.goalId);
+      else if (act === "open-folder") {
+        button.disabled = true;
+        try { await options.api("/api/goals/report/folder", {goal_id:button.dataset.goalId, report_id:button.dataset.reportId}); }
+        catch (error) { options.toast(error.message); }
+        finally { button.disabled = false; }
+      }
       else if (act === "retry-report") retryDirect();
       else if (act === "conclusion-toggle" || act === "report-notes-toggle") { const key = `${goalId}:${button.dataset.reportId}`, expanded = act === "report-notes-toggle" ? reportNotesOpen : conclusionsOpen; if (expanded.has(key)) expanded.delete(key); else expanded.add(key); changed(); }
       else if (act === "ended-toggle") { if (endedClosed.has(ownerId)) endedClosed.delete(ownerId); else endedClosed.add(ownerId); changed(); }
@@ -354,5 +366,5 @@
     return {sync, closeReport, escape, listMarkup, detailMarkup, cards:() => cards(goals(), state()?.leaders), refresh:load, currentGoal:goal, executionFor, replaceMain,
       invalidate() { requestedVersion.clear(); details.clear(); }};
   }
-  window.CrewGoals = {create, cards, taskCard, reviewButtons, leaderTasks, listIcon, modeIcon, ended, status, reportPath, reportDocument, supplementsMarkup};
+  window.CrewGoals = {create, cards, taskCard, reviewButtons, folderButton, leaderTasks, listIcon, modeIcon, ended, status, reportPath, reportDocument, supplementsMarkup};
 })();
