@@ -4,11 +4,6 @@
   const panel = $('tools-page'), workspace = $('workspaces-page');
   let snapshot = null, request = null, setting = false, settingNote = '', globalError = '';
   const supported = typeof bridge?.toolsSnapshot === 'function';
-  const mac = bridge?.platform === 'darwin';
-  if (supported && mac) {
-    $('tools-preferences').hidden = true;
-    $('tools-note').textContent = 'Mac 版暂不支持一键更新，请用原安装方式更新。';
-  }
   function text(value) { return typeof value === 'string' ? value : value?.message || ''; }
   function node(tag, className, value) {
     const element = document.createElement(tag); if (className) element.className = className;
@@ -27,13 +22,13 @@
     if (labels[tool.phase]) return labels[tool.phase];
     if (tool.error) return tool.phase === 'error' ? '操作失败' : '检查失败';
     if (!tool.installed_version) return '未检测到';
-    if (tool.update_available) return mac ? '有新版本' : tool.can_update ? '有更新' : tool.can_queue ? '会话使用中' : '需手动更新';
+    if (tool.update_available) return tool.can_update ? '有更新' : tool.can_queue ? '会话使用中' : '需手动更新';
     if (tool.phase === 'done') return '已更新';
     return tool.latest_version ? '已是最新' : '已安装';
   }
   function installation(tool) {
     const value = typeof tool.installation === 'string' ? tool.installation : tool.installation?.label || tool.installation?.kind || '';
-    return {npm:'npm', native:'官方安装', unknown:'未识别', missing:'未安装'}[value] || value;
+    return {npm:'npm', native:'官方安装', homebrew:'Homebrew', unknown:'未识别', missing:'未安装'}[value] || value;
   }
   function render() {
     const busy = Boolean(snapshot?.checking || request === 'check');
@@ -68,7 +63,7 @@
         messages.append(node('p', 'tool-message' + (error ? ' error' : ''), message));
       }
       footer.append(messages);
-      if (!mac) {
+      {
         const actions = node('div', 'tool-card-actions');
         const update = node('button', 'button secondary', tool.phase === 'updating' ? '正在更新…' : tool.phase === 'queued' ? '已排队' : !tool.can_update && tool.can_queue ? '等待会话结束后更新' : '更新');
         update.type = 'button'; update.dataset.toolUpdate = tool.id;
@@ -104,7 +99,7 @@
   $('nav-workspaces').addEventListener('click', () => select(false));
   $('nav-tools').addEventListener('click', show);
   $('tools-check').addEventListener('click', () => { void operation('check', () => bridge.toolsCheck()); });
-  if (!mac) $('tools-auto').addEventListener('change', async () => {
+  $('tools-auto').addEventListener('change', async () => {
     if (setting) return;
     const enabled = $('tools-auto').checked; setting = true; settingNote = ''; globalError = ''; render();
     try { consume(await bridge.toolsSettings({autoUpdate:enabled})); settingNote = enabled ? '已开启' : '已关闭'; }

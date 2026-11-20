@@ -40,19 +40,19 @@ async function mount(platform) {
   return {$,calls,settled};
 }
 
-test('Mac tools page checks versions and replaces the Crew card and update actions with installation guidance', async () => {
+test('Mac tools page offers the same tool updates and auto-update preference as Windows', async () => {
   const {$,calls,settled} = await mount('darwin');
   assert.equal($('tools-page').hidden,false);
+  // Crew itself still updates by downloading a new dmg on Mac.
   assert.equal($('crew-update-card').hidden,true);
   assert.equal($('crew-mac-update-card').hidden,false);
-  assert.equal($('tools-preferences').hidden,true);
-  assert.equal($('tools-note').textContent,'Mac 版暂不支持一键更新，请用原安装方式更新。');
+  assert.equal($('tools-preferences').hidden,false);
   $('tools-check').click(); await settled();
   assert.deepEqual(calls,['tools snapshot','tools snapshot','tools check']);
   const list = $('tools-list');
-  assert.ok(list.find(el=>el.textContent==='有新版本'));
+  assert.ok(list.find(el=>el.textContent==='有更新'));
   assert.ok(list.find(el=>el.textContent==='1.1.0'));
-  assert.equal(list.find(el=>el.dataset.toolUpdate),undefined);
+  assert.ok(list.find(el=>el.dataset.toolUpdate==='codex'));
 });
 
 test('Windows retains the Crew card, saved auto-update controls and tool update action', async () => {

@@ -32,29 +32,24 @@ test('checks deduplicate, display both versions and never auto-update without op
   assert.equal(f.calls[0].options.timeout,45000);
 });
 
-test('Mac checks both tools without queuing updates or loading or rewriting saved update settings', async t => {
+test('Mac loads saved update settings and updates through the helper like Windows', async t => {
   const home = await fs.mkdtemp(path.join(os.tmpdir(),'crew-mac-tools-test-'));
+  const operations = [];
   const manager = new ToolUpdates({home,backendDir:home}, {platform:'darwin',run:async (exe,args) => {
-    assert.equal(exe,'python3'); assert.deepEqual(args.slice(3),['check']);
-    return {stdout:JSON.stringify(checked())};
+    assert.equal(exe,'python3'); operations.push(args.slice(3));
+    if (args[3] === 'check') return {stdout:JSON.stringify(checked())};
+    return {stdout:JSON.stringify({ok:true,operation:'update',runtime:args[4],status:'updated',after:{id:args[4],installed_version:'1.1.0',latest_version:'1.1.0',update_available:false}})};
   }});
   t.after(async () => { await manager.close(); await fs.rm(home,{recursive:true,force:true}); });
   await fs.mkdir(path.dirname(manager.file));
-  const saved = JSON.stringify({autoUpdate:true,queue:[{id:'claude',source:'manual'}]});
-  await fs.writeFile(manager.file,saved);
-  await manager.initialize();
-  const state = await manager.check();
-  assert.equal(state.lastError,null);
-  assert.equal(state.autoUpdate,false);
-  for (const tool of state.tools) {
-    assert.equal(tool.update_available,true);
-    assert.equal(tool.latest_version,'1.1.0');
-    assert.equal(tool.can_update,false);
-    assert.equal(tool.phase,'idle');
-  }
-  await assert.rejects(manager.update('claude'),/Mac 版暂不支持/);
-  await assert.rejects(manager.settings({autoUpdate:true}),/Mac 版暂不支持/);
-  assert.equal(await fs.readFile(manager.file,'utf8'),saved);
+  await fs.writeFile(manager.file,JSON.stringify({autoUpdate:true,queue:[]}));
+  assert.equal((await manager.initialize()).autoUpdate,true);
+  const state = await manager.update('claude');
+  assert.deepEqual(operations,[['update','claude']]);
+  assert.equal(state.tools[0].phase,'done');
+  assert.equal(state.tools[0].installed_version,'1.1.0');
+  assert.equal((await manager.settings({autoUpdate:false})).autoUpdate,false);
+  assert.equal(JSON.parse(await fs.readFile(manager.file,'utf8')).autoUpdate,false);
 });
 
 test('tool checks use bundled control code when the inactive custom backend is missing',async t=>{
