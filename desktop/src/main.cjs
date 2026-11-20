@@ -514,7 +514,8 @@ handle('desktop:admin-status',async()=>{
       }
     }
   }
-  return status;
+  // Startup lands on this page when the backend cannot start; carry the real reason here (e.g. Python too old).
+  return backend?.startupError?{...status,startup_error:backend.startupError}:status;
 });
 handle('desktop:home-ready',()=>{
   homeBootstrapped=true;
