@@ -244,12 +244,12 @@ class VSCodeServiceTests(unittest.TestCase):
         empty = identity(8)
         self.record(empty).write_bytes(b"")
         excluded.append(empty)
-        crew_web, recordless, hidden_recordless = identity(9), identity(10), identity(11)
-        self.record(crew_web, entrypoint="crew-web")
+        interactive, recordless, hidden_recordless = identity(9), identity(10), identity(11)
+        self.record(interactive, entrypoint="cli")
         self.hidden([hidden_recordless])
-        self.agents[:] = [self.agent(sid) for sid in [*excluded, crew_web, recordless, hidden_recordless]]
+        self.agents[:] = [self.agent(sid) for sid in [*excluded, interactive, recordless, hidden_recordless]]
         self.refresh()
-        self.assertEqual(self.ids(), {"running": {crew_web, recordless}, "others": set()})
+        self.assertEqual(self.ids(), {"running": {interactive, recordless}, "others": set()})
         recordless_candidate = self.service.candidate(self.conn, "alpha", recordless)
         self.assertEqual(recordless_candidate["title"], "cc-" + recordless)
         self.assertTrue(recordless_candidate["running"])
