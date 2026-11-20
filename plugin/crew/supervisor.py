@@ -901,6 +901,11 @@ class Supervisor:
                     maintenance = self._maintenance()
                     if maintenance:
                         self._restart_due = None
+                        # Reap an owned backend that exited during maintenance: on
+                        # POSIX an unreaped child stays a zombie and still looks
+                        # alive to pid probes (os.kill(pid, 0)) from repair tools.
+                        if self.process is not None:
+                            self.process.poll()
                         self._state("paused", maintenance)
                         self._publish()
                     else:
