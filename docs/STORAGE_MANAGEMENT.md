@@ -42,8 +42,6 @@
 | 最后同步主干后的聊天、通知、Codex、网页接口与存储回归 | 405 项，2 项环境限制跳过，其余通过 |
 | 网页 `node --test plugin/tests/test_*.js` | 最后同步后 160 项通过 |
 | 桌面 `npm --prefix desktop test` | 128 项通过 |
-| `node desktop/scripts/smoke-storage.cjs` | 真实桌面、IPC、HTTP 与临时文件的 7 项检查通过，包含释放、恢复和清空回收站 |
-| `electron desktop/test/storage-smoke.cjs` | 8 项 Chromium 交互检查通过，包含 CSP、480px 窄窗、放大字体、失败与异步关闭 |
 | `node desktop/scripts/smoke-workspaces.cjs` | 40 项既有工作区交互检查通过 |
 | portable / setup 构建与图标 | 两种包构建成功；未压缩应用与便携包隔离启动、服务退出检查通过，三个 EXE 图标检查通过 |
 

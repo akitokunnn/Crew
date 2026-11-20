@@ -152,7 +152,12 @@ app.once('browser-window-created', (_event, win) => {
       await js(`for(const [kind,value] of [['leader','knock'],['assistant','off'],['delivery','bell']]){
         const picker=document.querySelector('[data-sound-kind='+kind+']');picker.value=value;picker.dispatchEvent(new Event('input',{bubbles:true}));}`);
       await click('[data-sound-save]');
-      await wait('document.querySelector("[data-sound-status]").textContent.includes("音效已保存")', 'native sound preferences saved');
+      // On timeout, report what the pane shows (a remounted pane once dropped the confirmation).
+      try { await wait('document.querySelector("[data-sound-status]").textContent.includes("音效已保存")', 'native sound preferences saved'); }
+      catch (error) {
+        const seen = await js('JSON.stringify({status:document.querySelector("[data-sound-status]")?.textContent, saveDisabled:document.querySelector("[data-sound-save]")?.disabled, values:[...document.querySelectorAll("[data-sound-kind]")].map(item=>item.value)})');
+        throw new Error(error.message + ' ' + seen);
+      }
       const soundSettings = await core.request(state.service.url, '/api/settings');
       assert.equal(soundSettings.sounds.leader, 'knock');assert.equal(soundSettings.sounds.assistant, 'off');assert.equal(soundSettings.sounds.delivery, 'bell');
       await capture('01-native-sound-settings');

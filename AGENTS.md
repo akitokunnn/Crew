@@ -109,7 +109,7 @@ npm --prefix desktop test
 
 CI 只跑核心清单 [plugin/tests/ci_core.txt](plugin/tests/ci_core.txt)（`python tests/ci_core.py`，在 `plugin` 下执行），不含边缘载体和计时敏感的测试，只在批次 PR 上跑一次（也可手动触发）。合入 live 前只跑改动相关的模块，改动跨模块也一样（存储、`web.py`、`chat.py`、运行时启动或 `test_shell` 这类共用测试基类，都只挑直接相关的测试）。上面的全量只在用户说“推”、把 live 整批合进 main 时跑。新增核心流程的测试模块时加进清单。
 
-确需桌面 smoke test 时，使用隔离交互：`node desktop/scripts/smoke-workspaces.cjs`。需要构建或交付安装包时，验收与图标检查见 [desktop/README.md](desktop/README.md)；使用方式见 [README.md](README.md)。
+冒烟脚本只保留 4 个：`node desktop/scripts/smoke-workspaces.cjs`（桌面工作区交互，CI 跑；本地需设 `CREW_TEST_SHOW_WINDOW=1` 让窗口可见才能截图）、`node plugin/tests/smoke_conversation_routing.cjs`（对话路由，CI 跑）、`node desktop/scripts/smoke.cjs`（源码或安装包启动，发版和 Mac 构建跑）、`node desktop/scripts/smoke-remote-backend.cjs`（桌面客户端连局域网主机）。都在仓库根目录执行，使用隔离 HOME 和假载体。其余验证靠单元测试和 `prove-it` 走查，不再为单个改动新增一次性冒烟脚本。需要构建或交付安装包时，验收与图标检查见 [desktop/README.md](desktop/README.md)；使用方式见 [README.md](README.md)。
 
 - 验证记录对应实际提交与范围；汇合其他改动确实影响已验证行为时，才复验相关部分。未运行测试就如实说明，不为补齐交付格式追加测试。
 - 需要交付产物时，产物应与最终源码一致，分别核实构建、启动退出及实际部署；只改本项目版本，不误改依赖。
@@ -121,7 +121,7 @@ CI 只跑核心清单 [plugin/tests/ci_core.txt](plugin/tests/ci_core.txt)（`py
 | 规则 | 由什么拦住 |
 | --- | --- |
 | 产品名为 Crew，数据目录、设置目录与安装身份不带代际标识；窗口、安装器、快捷方式和产物名称保持一致 | `desktop/test/version-sync.test.cjs`、`core.test.cjs` 与真实 Electron 工作区烟测；还原旧名称会触发失败 |
-| 修改可见交互后，用真实浏览器走流程；控制台错误算失败，逐步保存截图，不以静态字符串检查替代 | `node plugin/tests/smoke_assistant_reply.cjs`、`node plugin/tests/smoke_v2_ui_revision.cjs`；截图在 `Temp/assistant-reply/`、`Temp/v2-ui-review/`，脚本支持装回旧错做反证 |
-| 助手使用完整的共享聊天状态契约，普通任务反馈保持原任务身份并保留已交付证据 | `test_assistant_http`、`test_goal_http`、`test_goal_acceptance` 与上述助手浏览器检查；工作区迁移使用真实恢复和包往返测试 |
-| 远程认证覆盖页面、API、事件流和附件；关闭访问与本机业务生命周期独立，断线不重发成功输入 | `test_remote_access`、`test_remote_http`、`test_remote_routes`、`test_remote_integration`；`node plugin/tests/smoke_remote_access.cjs` 走真实浏览器，支持 `--lan-address` 与 `--old-mobile` 反证 |
-| ZeroTier 按实际网卡识别，绑定失败不降级为全部网络；普通 HTTP 下请求 ID 和复制能力仍可用 | `test_network_addresses`、`test_remote_network`、`test_browser_utils.js`、`smoke_remote_access.cjs --old-http`；`smoke_remote_peer.py` 使用独立 WSL 网络客户端 |
+| 修改可见交互后，用真实浏览器走流程；控制台错误算失败，逐步保存截图，不以静态字符串检查替代 | 按上文 `prove-it` 在真实浏览器或桌面中走查并截图；CI 另跑 `node plugin/tests/smoke_conversation_routing.cjs` 与 `node desktop/scripts/smoke-workspaces.cjs` |
+| 助手使用完整的共享聊天状态契约，普通任务反馈保持原任务身份并保留已交付证据 | `test_assistant_http`、`test_goal_http`、`test_goal_acceptance`；工作区迁移使用真实恢复和包往返测试 |
+| 远程认证覆盖页面、API、事件流和附件；关闭访问与本机业务生命周期独立，断线不重发成功输入 | `test_remote_access`、`test_remote_http`、`test_remote_routes`、`test_remote_integration`；桌面客户端连主机走 `node desktop/scripts/smoke-remote-backend.cjs` |
+| ZeroTier 按实际网卡识别，绑定失败不降级为全部网络；普通 HTTP 下请求 ID 和复制能力仍可用 | `test_network_addresses`、`test_remote_network`、`test_browser_utils.js` |

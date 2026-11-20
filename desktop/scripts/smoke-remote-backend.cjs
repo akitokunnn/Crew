@@ -172,7 +172,8 @@ finally:
       }
       async function size(width) {
         win.setContentSize(width, 850);
-        try { await until(() => js(`innerWidth===${width}`), 'window width ' + width, 10000); }
+        // Display scaling (200% on one Windows host) can round the content width by one pixel.
+        try { await until(() => js(`Math.abs(innerWidth-${width})<=1`), 'window width ' + width, 10000); }
         catch (error) { throw Error(error.message + ' (content ' + win.getContentSize() + ', inner ' + await js('innerWidth+"x"+innerHeight+" dpr "+devicePixelRatio') + ', maximized ' + win.isMaximized() + ')'); }
       }
       async function shots(name) {

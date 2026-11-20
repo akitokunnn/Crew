@@ -16,7 +16,7 @@ class BrowserPortTests(unittest.TestCase):
         self.service = mock.Mock(home=Path(temporary.name))
 
     def test_reject_os_assigned_bad_port_before_registration_or_workers(self):
-        real_bind = web.ThreadingHTTPServer.server_bind
+        real_bind = web.Server.server_bind
         assigned, sockets = [], []
         def bind(server):
             self.assertFalse((self.service.home / 'web.json').exists())
@@ -26,7 +26,7 @@ class BrowserPortTests(unittest.TestCase):
             assigned.append(server.server_port)
             if len(assigned) == 1:
                 server.server_port = 6669  # The failing smoke allocation.
-        with mock.patch.object(web.ThreadingHTTPServer, 'server_bind', bind):
+        with mock.patch.object(web.Server, 'server_bind', bind):
             server = web.Server(self.service, port=0)
         try:
             self.assertEqual(len(assigned), 2)
@@ -46,13 +46,13 @@ class BrowserPortTests(unittest.TestCase):
         self.assertFalse((self.service.home / 'web.json').exists())
 
     def test_bad_allocations_have_a_finite_limit_and_close_every_socket(self):
-        real_bind = web.ThreadingHTTPServer.server_bind
+        real_bind = web.Server.server_bind
         sockets = []
         def bind(server):
             real_bind(server)
             sockets.append(server.socket)
             server.server_port = 6669
-        with mock.patch.object(web.ThreadingHTTPServer, 'server_bind', bind):
+        with mock.patch.object(web.Server, 'server_bind', bind):
             with self.assertRaisesRegex(board.BoardError, '连续分配.*未启动'):
                 web.Server(self.service, port=0)
         self.assertEqual(len(sockets), web.MAX_BROWSER_PORT_ATTEMPTS)
@@ -62,7 +62,7 @@ class BrowserPortTests(unittest.TestCase):
 
     def test_create_failure_closes_service_and_preserves_bind_error(self):
         with mock.patch('crew.web.Service', return_value=self.service), \
-                mock.patch.object(web.ThreadingHTTPServer, 'server_bind', side_effect=OSError('address occupied')):
+                mock.patch.object(web.Server, 'server_bind', side_effect=OSError('address occupied')):
             with self.assertRaisesRegex(OSError, 'address occupied'):
                 web.create_server(self.service.home, self.service.home, port=0)
         self.service.close.assert_called_once_with()
