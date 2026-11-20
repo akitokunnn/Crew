@@ -532,7 +532,7 @@ def _total(row):
     return row["input_tokens"] + row["cache_write_tokens"] + row["cache_read_tokens"] + row["output_tokens"]
 
 
-def _money(row, prices):
+def price(row, prices):
     if row["model"] not in prices:
         # Zero-token rows (Claude Code's "<synthetic>" placeholder messages) cost nothing whatever the model.
         return (0.0 if _total(row) == 0 else None), 0.0, _total(row)
@@ -547,7 +547,7 @@ def _money(row, prices):
     return (None if unsplit else cost), cost, unsplit
 
 
-def _crew_sessions(conn):
+def crew_sessions(conn):
     """Claude sessions counted as Crew: current leaders and grouped members, with their native bindings."""
     crew = {row['session_id'] for row in conn.execute("SELECT session_id FROM sessions "
         "WHERE role='leader' OR (group_name IS NOT NULL AND group_name!='')")}
@@ -559,7 +559,7 @@ def _week_costs(conn, crew, since, reset, prices, now):
     crew_cost = machine_cost = 0.0
     for row in conn.execute('SELECT * FROM claude_requests WHERE ts>=? AND ts<? AND ts<=?',
                             (_iso(since), _iso(reset), _iso(now))):
-        cost = _money(row, prices)[0]
+        cost = price(row, prices)[0]
         machine_cost = None if cost is None or machine_cost is None else machine_cost + cost
         if row['session_id'] in crew:
             crew_cost = None if cost is None or crew_cost is None else crew_cost + cost
@@ -585,7 +585,7 @@ def crew_weekly(conn, seven_day, prices, now):
     if reset <= now:
         return None
     since = reset - CLAUDE_WEEK
-    cost = _week_costs(conn, _crew_sessions(conn), since, reset, prices, now)[0]
+    cost = _week_costs(conn, crew_sessions(conn), since, reset, prices, now)[0]
     return {**_points(cost), "since": _iso(since)}
 
 
@@ -623,7 +623,7 @@ def claude_weeks(conn, prices, now):
     recorded = [dict(row) for row in conn.execute("SELECT * FROM claude_weeks ORDER BY resets_at")]
     if not recorded:
         return []
-    crew = _crew_sessions(conn)
+    crew = crew_sessions(conn)
     first = conn.execute("SELECT MIN(ts) FROM claude_requests WHERE session_id IN (SELECT value FROM json_each(?))",
                          (json.dumps(sorted(crew)),)).fetchone()[0]
     windows, earlier = [], None
@@ -656,7 +656,7 @@ def _add(result, request, prices):
         result[field] += request[field]
     result["total_tokens"] += _total(request)
     result["requests"] += 1
-    cost, priced, unpriced = _money(request, prices)
+    cost, priced, unpriced = price(request, prices)
     result["priced_cost_usd"] += priced
     result["unpriced_tokens"] += unpriced
     result["cost_usd"] = None if cost is None or result["cost_usd"] is None else result["cost_usd"] + cost
@@ -1055,6 +1055,6 @@ def requests(conn, start, end, prices, project=None):
         row = dict(request)
         row["display_name"] = names[row["session_id"]]["display_name"]
         row["total_tokens"] = _total(row)
-        row["cost_usd"], row["priced_cost_usd"], row["unpriced_tokens"] = _money(row, prices)
+        row["cost_usd"], row["priced_cost_usd"], row["unpriced_tokens"] = price(row, prices)
         result.append(row)
     return result
