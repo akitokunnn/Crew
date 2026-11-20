@@ -1678,7 +1678,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         folders = {item['id']: item['folder'] for item in detail['reports']}
         self.assertEqual(folders, {final['id']: {'path': os.path.abspath(os.path.join(root, 'deliveries', 'v1')), 'declared': True},
                                    stage['id']: {'path': os.path.abspath(root), 'declared': False}})
-        with mock.patch('crew.web.os.startfile') as opener:
+        with mock.patch('crew.web.sys.platform', 'win32'), mock.patch('crew.web.os.startfile', create=True) as opener:
             for report in (final, stage):
                 code, result, _ = self.request('/api/goals/report/folder?project=demo', {'goal_id': goal_ids[0], 'report_id': report['id']})
                 self.assertEqual((code, result), (200, {'ok': True, **folders[report['id']]}))

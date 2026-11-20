@@ -760,11 +760,11 @@ class RuleTextTests(unittest.TestCase):
         leader, member = [content for _, content in self.roles()]
         for content in (leader,):
             self.assertRegex(content, r"直接写业务代码|直接实施")
-            self.assertRegex(content, r"不逐个叫醒成员查进度|状态查询读取已有事实，不叫醒成员")
+            self.assertRegex(content, r"不逐个叫醒(?:成员|执行)查进度|状态查询读取已有事实，不叫醒成员")
             self.assertNotIn("你不写业务代码", content)
         self.assertIn("跨组协助也由你统一验收", leader)
         self.assertIn("一份最终答复", leader)
-        self.assertIn("用户验收通过后", leader)
+        self.assertIn("用户点“通过”后任务完成", leader)
         self.assertIn("归档本组已无其他未完成任务的成员", leader)
         self.assertIn("用户新指令优先于 leader 旧安排", member)
 

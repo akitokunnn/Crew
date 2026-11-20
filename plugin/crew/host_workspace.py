@@ -52,7 +52,8 @@ def folders(path):
                 hidden = child.name.startswith('.') or (
                     os.name == 'nt' and bool(child.lstat().st_file_attributes & stat.FILE_ATTRIBUTE_HIDDEN))
                 entries.append({'name': child.name, 'path': str(child),
-                                'git': (child / '.git').exists(), 'hidden': hidden})
+                                # lexists: macOS system entries such as /.resolve reject any child lookup (EINVAL); they are not repositories.
+                                'git': os.path.lexists(child / '.git'), 'hidden': hidden})
         roots = ([str(root) for drive in string.ascii_uppercase if (root := Path(drive + ':\\')).is_dir()]
                  if os.name == 'nt' else ['/'])
     except OSError as error:
