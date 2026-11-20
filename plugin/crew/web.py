@@ -2444,6 +2444,9 @@ MAX_BROWSER_PORT_ATTEMPTS = 16
 class Server(ThreadingHTTPServer):
     daemon_threads = True
 
+    def server_bind(self):
+        remote_http.bind_without_fqdn(self)
+
     def __init__(self, service, port=47811):
         self.service = service
         if port and port in FETCH_BLOCKED_PORTS:
