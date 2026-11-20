@@ -227,6 +227,7 @@ class StartupTests(unittest.TestCase):
                 self.assertEqual(0, cli.main(["--home", str(self.home), "start"], cwd=self.root, plugin_root=PLUGIN))
         start.assert_called_once_with(self.home, PLUGIN, self.root, None)
 
+    @unittest.skipUnless(sys.platform == "win32", "Windows 登录计划任务专用的进程参数")
     def test_task_start_uses_only_current_user_task_without_registering_or_stopping(self):
         runner = Mock(return_value=subprocess.CompletedProcess([], 0, '{"installed":true}', ""))
         with patch.object(autostart, "_windows"):
