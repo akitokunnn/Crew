@@ -2,7 +2,7 @@
 
 Crew 接入独立的本地历史库，位于 `<CREW_HOME>/storage-v2/crew.sqlite3`。领域结构有 55 张表；本机目录、设备、导入映射和执行绑定另放在 `local_*` 表。文件内容按工作区及 SHA-256 保存于 `storage-v2/objects/`。工作目录中 `.crew/workspace.json` 只保存永久工作区 ID 和格式版本。桌面版本以 `desktop/package.json` 为准。
 
-HTTP 接口使用 `/api/workspace-data/`（发现、打开、导出、包预览、导入、接续、历史和交接材料）；`/api/storage/` 继续用于存储占用和清理，两种预览保持独立。隔离历史界面验收在仓库根目录执行 `node desktop/scripts/smoke-history.cjs`，结果位于 `desktop/smoke-output/history/`。
+HTTP 接口使用 `/api/workspace-data/`（发现、打开、导出、包预览、导入、接续、历史和交接材料）；`/api/storage/` 继续用于存储占用和清理，两种预览保持独立。
 
 ## 使用
 

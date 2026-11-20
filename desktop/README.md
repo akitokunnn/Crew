@@ -65,7 +65,7 @@ Git 的中间状态只更新台账，普通成功留待阅，不额外开启 AI 
 
 每个工作区有独立标签页，切换时保留聊天草稿、当前 Leader、滚动和页面状态。重复打开同一工作区会切到已有标签。`Ctrl+T` 返回工作区选择，`Ctrl+Tab` / `Ctrl+Shift+Tab` 切换标签；`Ctrl+W` 关闭当前项目标签，不停止该工作区的 AI。只剩首页时 `Ctrl+W` 隐藏窗口。菜单还提供 `Ctrl+N` 新建、`Ctrl+O` 打开、`Alt+Left` 返回以及刷新当前标签。全局助手标签固定在最右；进入助手时整页向左推开、助手从右侧滑入，返回时反向滑回（约 340 毫秒，首页则被助手覆盖或揭开）。动画中再次切换会从当前位置折返，焦点在落定后交给目标页；系统开启“减少动画”时直接切换。工作区之间、首页与工作区之间仍直接切换。
 
-隐藏标签会释放对话事件连接，切回后从已收到的消息位置补齐记录，后台任务继续执行。上下文压缩的结果通过短请求读取，多个压缩与工作区共用浏览器连接时仍可打开对话。隔离回归 `node plugin/tests/smoke_chat_connections.cjs` 覆盖多标签切换与消息补齐，证据保存在 `Temp/chat-connections/`。
+隐藏标签会释放对话事件连接，切回后从已收到的消息位置补齐记录，后台任务继续执行。上下文压缩的结果通过短请求读取，多个压缩与工作区共用浏览器连接时仍可打开对话。
 
 组内关系树的“添加”菜单可直接新建组员，也保留收编入口。设置页“AI 大脑 → leader 召唤组员”配置全局默认；每组标题下的“组员大脑”可单独覆盖，未设置时跟随全局规则，最终跟随所属 leader。手动新建会预填生效的大脑，也可临时改选；填写任务并点击“创建并开始”才执行。leader 与组员改名统一使用带身份说明的弹窗，失败保留输入，工作区改名仍在工作区设置。
 
@@ -75,7 +75,7 @@ Git 的中间状态只更新台账，普通成功留待阅，不额外开启 AI 
 
 打开工作区时可选择升级旧历史或只读查看，启动应用不会自动扫描并导入所有旧目录。首页和工作区菜单可导出完整 `.crewpack`；导入时选择恢复原身份的只读历史或复制为独立工作区，再明确绑定本机目录。导入不恢复旧电脑的执行权限，也不自动启动 AI。历史页可查看消息、附件、报告与保存的文件；项目资料统一从任务内的“交付与文档”进入，不设置侧栏文档总览。详见[本地历史与接续](../docs/storage-v2/implementation.md)。
 
-窗口和托盘会标明“独立数据”或“隔离测试”，便于区分使用的 HOME。历史库接口与“存储与清理”独立；后者继续提供占用、清理预览、回收与恢复。完整历史页隔离验收：`node desktop/scripts/smoke-history.cjs`。
+窗口和托盘会标明“独立数据”或“隔离测试”，便于区分使用的 HOME。历史库接口与“存储与清理”独立；后者继续提供占用、清理预览、回收与恢复。
 
 “设置 → 消息渠道”可同时配置 QQ 与 Lark / 飞书。按页面步骤创建机器人、保存凭证、建立连接，再用自己的账号私聊机器人发送绑定码；无需编辑 JSON 或重启 Crew。页面提供重连、断开、重新绑定与测试通知，已保存的 Secret 不回显。Lark 当前支持私聊文字和引用拍板答复，完整权限与事件订阅说明见[消息渠道连接流程](../docs/REMOTE_CHANNELS.md)。
 
@@ -98,7 +98,7 @@ $crewVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
 
 显式地址必须是健康的本机 Crew 服务，失败直接退出，不另起后台。界面默认数据位于 `home/desktop/ui`，`--profile` 使用 `home/desktop/profiles/<安全名称>`，不会争抢旧版界面的实例锁。后台源码仍位于稳定的 `home/desktop/backend`。菜单「查看日志文件夹」可打开本地 `home/desktop/logs`，其中保留后台最近的 stderr 和启动错误。
 
-「设置 → 存储与清理」使用实际连接的后台 HOME 展示占用和清理预览。旧备份、未引用图片与过期默认导出包移入回收站后保留 7 天，恢复遇到新同名文件时不会覆盖；移动到回收站不会算作已释放空间。自动维护仅清理过期启动日志与到期回收站内容。工作区菜单中的归档清理继续整理工作状态，保留全部历史。保留规则见 [存储管理](../docs/STORAGE_MANAGEMENT.md)，完整隔离交互验收执行 `node desktop/scripts/smoke-storage.cjs`（在仓库根目录）。
+「设置 → 存储与清理」使用实际连接的后台 HOME 展示占用和清理预览。旧备份、未引用图片与过期默认导出包移入回收站后保留 7 天，恢复遇到新同名文件时不会覆盖；移动到回收站不会算作已释放空间。自动维护仅清理过期启动日志与到期回收站内容。工作区菜单中的归档清理继续整理工作状态，保留全部历史。保留规则见 [存储管理](../docs/STORAGE_MANAGEMENT.md)。
 
 Windows 命令行中的服务地址使用上例的 `--service-url=地址` 形式。Electron 会为防止协议启动参数注入而拒绝「独立 URL 参数后还有其他参数」的命令；这发生在应用代码加载之前。也可以在所有应用参数前加 `--`。该行为依据 [Electron 原生参数检查](https://github.com/electron/electron/blob/main/shell/app/command_line_args.cc)，不会通过关闭它来处理。
 
@@ -127,8 +127,6 @@ $crewVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
 
 桌面的“连接与目录”可修改数据目录、后台来源、已有后台地址、固定端口和 Python。数据目录变更可复制现有数据并保留旧目录，也可使用目标目录的数据；空目录从零开始。先检查并展示受影响会话，再明确停止会话、暂停目标、确认自有后台退出后应用和重新打开。借用的后台由其原窗口管理。源码可选随应用更新或指定后台程序目录；页面分别展示所选配置和实际运行来源。启动设置保存在 HOME 外的本机应用数据目录，显式命令行参数优先。坏源码或解释器可在此页修正，自带控制程序不随其切换。
 
-隔离连接迁移验收：`node desktop/scripts/smoke-launch-settings.cjs`（在仓库根目录执行），使用两个临时 HOME 和不可发现 AI CLI 的测试环境，验证真实停止、复制、配置重载及新后台启动。
-
 “连接与目录”的第三种连接方式是“局域网主机”：填主机“设置 → 局域网访问”里显示的地址、主机生成的配对码和本机设备名，连接并保存后选中应用，Crew 重新打开即连到那台主机。已保存的设备放在启动设置目录的 `remote-backends.json`，设备令牌只以系统安全存储（Windows DPAPI、macOS 钥匙串）加密后保存。连到主机时不启动本机后台、不运行 Python；工作区、聊天、任务、设置、Git 设置、存储清理、维护、收编和历史都在主机上执行，新建 / 打开工作区、更改工作目录和接续历史用页面内的“主机文件夹”选择器选主机目录，导出会下载到本机。导入工作区包、交接材料、工具与 Crew 更新、局域网访问开关和运维对话只在主机上操作，系统管理员只读显示主机健康状态；主机版本不同时首页提示，授权失效时首页提供“重新配对”和“切回本机”。
 
 运维管理员常态使用程序监测。“自动修复”可设置启用开关、Crew 源码 Git 根目录、处理时限、复现与验证命令数组及合入分支，保存到 `home/desktop/admin/operations/policy.json`；打包后的后台目录不是 Git 仓库。开启时核实配置；关闭时允许留空，且不会中止已经执行的修复。已有配置未写 `enabled` 时保持旧行为。修复始终在隔离工作树里进行，应用前还须遵守项目 PR/合并规则并独立复验。portable 缺少已验证的运行中 Git 回退基线时会以 `NoVerifiedBaseline` 拒绝自动激活，保留 commit 和报告；不会把其它源码目录冒充已经运行过的旧版本。
@@ -151,23 +149,13 @@ node scripts/smoke.cjs "dist/Crew-$crewVersion-portable.exe"
 node scripts/smoke.cjs --reuse
 node scripts/smoke.cjs --visual
 node scripts/smoke-workspaces.cjs
-node scripts/smoke-handoff.cjs
-node scripts/smoke-remote-access.cjs
 node scripts/verify-bundle.cjs
 node scripts/verify-icons.cjs "dist/win-unpacked/Crew.exe" "dist/Crew-$crewVersion-portable.exe" "dist/Crew-$crewVersion-setup.exe"
 ```
 
 结果保存在 `smoke-output/source.json` / `packaged.json` / `portable.json` 及同名 PNG。单元测试另外覆盖已有服务复用、Git 根目录解析、新建仓库、已有文件保护与后端端口 0 / 优雅退出。
 
-`smoke-handoff.cjs` 在私有 HOME 用历史记录和假载体守卫验收交接、离线未知结果、真实失败、后续工具状态、折叠与多行草稿保留，以及窄窗深色外观；还核对“在干活”的 leader/下属总数、列表入口、组头人数和空态。证据和截图在 `smoke-output/handoff`。不会向模型发送输入。
-
 `smoke-remote-backend.cjs`（在仓库根目录执行）启动隔离主机后台（真实 HTTP / SQLite，局域网入口绑定 127.0.0.1，假载体）和隔离 HOME 与启动设置目录的源码客户端，走添加设备 → 应用（记录重启参数后按原参数重开）→ 主机工作区 → 主机文件夹新建 → 工作区聊天页 → 设置与只读管理员 → 导出下载 → 主机强制下线 → 重新配对 → 重连；浅色 / 深色、1220 / 760 宽截图与证据在 `../Temp/remote-backend/`，模型启动数为零。
-
-`smoke-remote-access.cjs` 使用真实源码桌面窗口、隔离后台与 SQLite，点通设置中的开启、配对、移除设备和关闭；验证原本机服务继续可用，模型启动数为零。结果与截图在 `../Temp/remote-desktop/current/`，`--old-bridge` 可恢复缺失 IPC 的旧错作反证。此脚本不支持包内注入钩子；打包版本用基础启动退出与 `verify-bundle.cjs` 的源码一致性检查。手机及浏览器旅程在根目录运行 `node plugin/tests/smoke_remote_access.cjs`，指定 `--lan-address <本机局域网IPv4>` 可使用真实网卡地址。
-
-启动与退出基准在仓库根目录执行 `node desktop/scripts/benchmark-lifecycle.cjs --label=after`。它使用空 HOME、复用 HOME、已有会话与三个工作区的测试 HOME，另验证借用后台、收起恢复，以及窗口销毁后的排队回调；每次都确认假载体守卫生效且模型启动次数为零。`--desktop=<基线源码中的desktop目录>` 可测另一份冻结源码，`--output=<JSON路径>` 保存结果。“空 HOME”不表示清空操作系统文件缓存，启动就绪与真正进程退出分别计时。
-
-构建后执行 `node desktop/scripts/benchmark-packaged-lifecycle.cjs`，用实际应用版本比对目录程序、单文件 portable，以及 ZIP 解压出的同版程序；外层启动、Electron 创建和 renderer 就绪分段计时，ZIP 的一次解压单独记录。单文件解包发生在 Electron 创建前，不能计作 Crew 界面或后台初始化耗时。结果默认在 `desktop/.cache/packaged-lifecycle-<version>.json`。
 
 `--reuse` 会先创建一个完全隔离的测试服务，再检查真实应用退出后该服务仍存活；随后由测试服务的原始拥有者清理。不会复用生产 home 或正式服务。
 
@@ -177,7 +165,7 @@ Renderer 使用 `contextIsolation: true`、`nodeIntegration: false` 和 sandbox�
 
 0.2.6 的 Crew 卡片会独立查询 GitHub 最新正式发布和主干版本；没有 Release 如实显示未发布，网络错误单独呈现。「统一后台与插件」仅应用当前桌面自带版本，与线上查询分开。详见 [桌面更新](../docs/DESKTOP_UPDATES.md)。
 
-桌面页面权限按功能处理：Crew 首页和工作区复制内容直接允许；读取剪贴板、通知、摄像头和麦克风、全屏在使用时弹出原生申请，允许结果仅保留到本页关闭或应用退出。文件和目录继续通过原生选择框授权。外部页面和子框架不获得这些权限。绑定命令复制失败时会自动选中，可按 Ctrl+C，状态刷新不取消选中。隔离回归：`electron desktop/test/clipboard-smoke.cjs`（在根目录使用 desktop/node_modules/.bin/electron）。测试查询真实权限，但模拟复制投递，不读写用户系统剪贴板。
+桌面页面权限按功能处理：Crew 首页和工作区复制内容直接允许；读取剪贴板、通知、摄像头和麦克风、全屏在使用时弹出原生申请，允许结果仅保留到本页关闭或应用退出。文件和目录继续通过原生选择框授权。外部页面和子框架不获得这些权限。绑定命令复制失败时会自动选中，可按 Ctrl+C，状态刷新不取消选中。
 
 运维聊天发送前会显示载体尚未配置或不可用的原因，并提供“选择运维 AI”入口；选择默认大脑或单独配置“运维 AI”后保存，返回即可继续发送，聊天草稿保留。运维的独立选择不要求同时设置全局默认大脑；只有一个可用载体时仍可自动使用。
 
@@ -185,7 +173,7 @@ Renderer 使用 `contextIsolation: true`、`nodeIntegration: false` 和 sandbox�
 
 工作区首页会检测原目录是否可访问。目录改名或移动后，点击工作区重新定位；直接打开新位置时，也会先询问是否关联失效的原工作区。确认后沿用已有的停止与迁移流程，保留身份、目标和对话，不搬动磁盘文件，不自动启动 AI。误建的重复工作区可先从 Crew 移除（记录保留），再将原工作区关联到该位置；活跃工作区不能抢占同一目录。改显示名后，页面、项目列表、桌面标签、窗口标题和远程项目列表同步，内部标识保持稳定。
 
-AI 大脑的任务分配包含“新建 leader”，可单独选择载体、模型和思考强度，或跟随默认。保存只影响之后新建的 leader；已有 leader/成员保持各自设置。新用途单独保存，已有后台读取的默认设置格式保留。目录与改名隔离验收：`node desktop/test/workspace-recovery-smoke.cjs`，测试 HOME 与真实服务独立，测试进程 PATH 不含 AI CLI。
+AI 大脑的任务分配包含“新建 leader”，可单独选择载体、模型和思考强度，或跟随默认。保存只影响之后新建的 leader；已有 leader/成员保持各自设置。新用途单独保存，已有后台读取的默认设置格式保留。
 
 0.2.11 汇合工作区改名/重定位、通知渠道选择与独立 leader 大脑，以及部门压缩、工作区清理和交流区全体点名；保留重新定位提示和清理预览两个独立入口。
 

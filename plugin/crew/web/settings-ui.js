@@ -122,6 +122,9 @@
     function renderTools() {
       content.innerHTML = `<section class="cs-card"><div class="cs-card-heading"><div><h2>执行工具</h2><p>${options.remote ? "以下信息来自所连主机的实际检测。" : "以下信息来自本机实际检测。"}</p></div><button type="button" class="cs-button" data-settings-action="reload">重新检测</button></div>${(snapshot.runtimes || []).map(item => `<div class="cs-tool-row"><div><strong>${esc(item.name || item.id)}</strong><p>${esc(item.error || (item.available ? "已就绪" : "未就绪"))}</p></div><span class="cs-badge ${item.available ? "cs-ready" : ""}">${item.available ? "可用" : "需配置"}</span></div>`).join("")}</section><p class="cs-footnote">${options.remote ? "安装、登录与工具更新请在主机上的 Crew 中管理。" : "安装、登录与工具更新可在 Crew 桌面首页的设置中管理。"}</p>`;
     }
+    // Panels read and save their own data; only "backend" renders from the settings snapshot.
+    // A snapshot load finishing must not remount them, or an in-flight panel save loses its result.
+    const ownsData = name => name !== "backend" && Boolean(options.panels?.[name]);
     function render() {
       release();
       for (const button of root.querySelectorAll("[data-settings-category]")) { const active = button.dataset.settingsCategory === category; button.classList.toggle("active", active); button.setAttribute("aria-current", active ? "page" : "false"); }
@@ -143,7 +146,7 @@
       const request = ++generation, edited = changed(); loading = true; error = ""; note = ""; render();
       try { const value = await options.read(); if (request !== generation) return; snapshot = value; if (!edited) { draft = initialAI(value); executionDraft = initialExecution(value); } options.onSnapshot?.(value); }
       catch (caught) { if (request === generation) error = caught.message || String(caught); }
-      finally { if (request === generation) { loading = false; if (root.hidden || ["connections", "storage", "prompts"].includes(category) && cleanup) controls(); else render(); } }
+      finally { if (request === generation) { loading = false; if (root.hidden || ownsData(category) && cleanup) controls(); else render(); } }
     }
     async function save() {
       if (!snapshot || saving) return;
@@ -161,7 +164,7 @@
         render(); content.querySelector(`[data-ai-key="${key}"][data-ai-field="${field}"]`).focus(); return;
       }
       // Like open(): a category reached after a panel-only start still reads the settings it shows.
-      if (button.dataset.settingsCategory) { category = button.dataset.settingsCategory; if (!snapshot && !loading && !["connections", "storage", "prompts"].includes(category)) void load(); else render(); return; }
+      if (button.dataset.settingsCategory) { category = button.dataset.settingsCategory; if (!snapshot && !loading && !ownsData(category)) void load(); else render(); return; }
       const action = button.dataset.settingsAction;
       if (action === "close") options.onClose?.();
       if (action === "reload") void load();
@@ -198,7 +201,7 @@
         error = ""; note = ""; controls();
       }
     });
-    return {open(next = "ai") { category = next; root.hidden = false; if (!snapshot && !["connections", "storage", "prompts"].includes(category)) void load(); else render(); }, hide() { root.hidden = true; release(); }, reload:load, save, getDraft:() => clone(draft)};
+    return {open(next = "ai") { category = next; root.hidden = false; if (!snapshot && !ownsData(category)) void load(); else render(); }, hide() { root.hidden = true; release(); }, reload:load, save, getDraft:() => clone(draft)};
   }
   window.CrewSettings = {create, defaultRuntime, initialAI, validate, selectionMarkup, initialExecution, validateExecution, executionMarkup, speedsFor, speedName};
 })();

@@ -89,13 +89,16 @@ test("opening message channels does not wait for or start AI model discovery",()
   settings.hide();assert.equal(cleanups,1);
 });
 
-test("late AI discovery cannot remount active message channels or discard their credential draft",async()=>{
-  const {root,content}=panelHarness();let resolve,reads=0,mounts=0,cleanups=0;
-  const settings=ui.create({host:root,read:()=>{reads++;return new Promise(done=>{resolve=done;});},save:()=>{throw Error("not saving AI settings");},panels:{connections(host){mounts++;host.secretDraft="";return()=>{cleanups++;host.secretDraft="";};}}});
-  settings.open("ai");assert.equal(reads,1);settings.open("connections");content.secretDraft="typed-while-discovery-pending";
-  resolve({ai:config(),runtimes:catalog});for(let i=0;i<12;i++)await Promise.resolve();
-  assert.equal(mounts,1);assert.equal(cleanups,0);assert.equal(content.secretDraft,"typed-while-discovery-pending");
-  settings.hide();assert.equal(cleanups,1);
+test("late AI discovery cannot remount an active self-loading panel or discard its in-progress state",async()=>{
+  // Sounds once lost its "saved" confirmation this way when the snapshot finished during a save.
+  for(const name of ["connections","sounds","remote"]){
+    const {root,content}=panelHarness();let resolve,reads=0,mounts=0,cleanups=0;
+    const settings=ui.create({host:root,read:()=>{reads++;return new Promise(done=>{resolve=done;});},save:()=>{throw Error("not saving AI settings");},panels:{[name](host){mounts++;host.secretDraft="";return()=>{cleanups++;host.secretDraft="";};}}});
+    settings.open("ai");assert.equal(reads,1);settings.open(name);content.secretDraft="typed-while-discovery-pending";
+    resolve({ai:config(),runtimes:catalog});for(let i=0;i<12;i++)await Promise.resolve();
+    assert.equal(mounts,1,name);assert.equal(cleanups,0,name);assert.equal(content.secretDraft,"typed-while-discovery-pending",name);
+    settings.hide();assert.equal(cleanups,1,name);
+  }
 });
 
 test("storage opens independently and late model discovery preserves its cleanup preview",async()=>{
